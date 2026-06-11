@@ -1,0 +1,21 @@
+{
+  "name": "collector",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "build": "tsc -b && node scripts/build-assets.mjs",
+    "test": "npm run build && node --test dist-tests/**/*.test.js",
+    "test:gui": "npm run build && node scripts/gui-smoke.mjs",
+    "dev:api": "npm run build && node apps/api/dist/server.js",
+    "dev:desktop": "npm run build && electron apps/desktop-capture/dist/main.js",
+    "clean": "node scripts/clean.mjs"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.322",
+    "@types/node": "^24.0.0",
+    "electron": "^42.4.0",
+    "typescript": "^5.8.3"
+  }
+}

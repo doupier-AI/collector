@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": ["chrome"],
+    "lib": ["ES2022", "DOM"]
+  },
+  "references": [
+    { "path": "../../packages/capture-contracts" }
+  ],
+  "include": ["src/**/*.ts"]
+}

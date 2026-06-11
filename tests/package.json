@@ -1,0 +1,6 @@
+{
+  "name": "@collector/tests",
+  "private": true,
+  "type": "module",
+  "dependencies": { "@collector/api": "0.1.0", "@collector/capture-contracts": "0.1.0" }
+}

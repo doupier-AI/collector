@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Collector Capture</title><link rel="stylesheet" href="styles.css"></head>
+<body>
+  <main>
+    <header><div><h1>快速采集</h1><p>粘贴文本、链接，或拖放本地文件。</p></div><span class="badge">Capture Inbox</span></header>
+    <form id="capture-form">
+      <label>内容<textarea id="content" rows="8" autofocus placeholder="在此手动粘贴。应用不会主动读取剪贴板。"></textarea></label>
+      <section id="drop-zone" tabindex="-1" aria-disabled="true"><strong>拖放文件，或点击选择</strong><span>PDF、Markdown、TXT、PNG、JPEG、WebP，最大 20 MiB</span><input id="file-input" type="file" hidden multiple accept=".txt,.md,.pdf,.png,.jpg,.jpeg,.webp"><pre id="files"></pre></section>
+      <div class="grid">
+        <label>来源说明<input id="source" placeholder="可选；填写后提高证据等级"></label>
+        <label>主题 ID<input id="topic" placeholder="可选"></label>
+      </div>
+      <label>备注<input id="note" placeholder="为什么要保存这条内容？"></label>
+      <details><summary>设置</summary><label>全局快捷键<input id="shortcut" value="CommandOrControl+Shift+Space"></label></details>
+      <footer><span id="status" aria-live="polite">正在初始化...</span><button id="submit-button" type="submit" disabled>提交 <kbd>Ctrl</kbd>+<kbd>Enter</kbd></button></footer>
+    </form>
+  </main>
+  <script type="module" src="renderer.js"></script>
+</body>
+</html>

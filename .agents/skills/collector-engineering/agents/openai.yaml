@@ -1,0 +1,4 @@
+interface:
+  display_name: "Collector Engineering"
+  short_description: "Collector 桌面、本地 API 与知识处理工程规范"
+  default_prompt: "Use $collector-engineering to implement and verify the next Collector milestone."

@@ -1,0 +1,1 @@
+Collector desktop file selection smoke test.
