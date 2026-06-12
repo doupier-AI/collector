@@ -6,3 +6,4 @@ dist-tests/
 *.log
 *.tsbuildinfo
 apps/browser-extension/build/
+release/
