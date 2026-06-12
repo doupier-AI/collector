@@ -9,7 +9,8 @@
   "references": [
     { "path": "../api" },
     { "path": "../../packages/capture-contracts" },
-    { "path": "../../packages/capture-client" }
+    { "path": "../../packages/capture-client" },
+    { "path": "../../packages/model-gateway" }
   ],
   "include": ["src/**/*.ts", "src/**/*.cts"]
 }

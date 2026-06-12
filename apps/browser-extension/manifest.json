@@ -8,5 +8,5 @@
   "background": { "service_worker": "background.js", "type": "module" },
   "icons": { "16": "icon.svg", "32": "icon.svg", "48": "icon.svg", "128": "icon.svg" },
   "content_scripts": [{ "matches": ["http://*/*", "https://*/*"], "js": ["content.js"], "run_at": "document_idle" }],
-  "action": { "default_title": "Collector Capture", "default_icon": "icon.svg" }
+  "action": { "default_title": "Collector Capture", "default_icon": "icon.svg", "default_popup": "popup.html" }
 }

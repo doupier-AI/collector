@@ -7,6 +7,7 @@
   "dependencies": {
     "@collector/api": "0.1.0",
     "@collector/capture-client": "0.1.0",
-    "@collector/capture-contracts": "0.1.0"
+    "@collector/capture-contracts": "0.1.0",
+    "@collector/model-gateway": "0.1.0"
   }
 }

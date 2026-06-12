@@ -4,4 +4,5 @@ dist/
 dist-tests/
 .collector-data/
 *.log
+*.tsbuildinfo
 apps/browser-extension/build/

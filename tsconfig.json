@@ -3,6 +3,7 @@
   "references": [
     { "path": "packages/capture-contracts" },
     { "path": "packages/capture-client" },
+    { "path": "packages/model-gateway" },
     { "path": "apps/api" },
     { "path": "apps/browser-extension" },
     { "path": "apps/desktop-capture" },

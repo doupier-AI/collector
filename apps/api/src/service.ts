@@ -7,20 +7,59 @@ import {
   evidenceGradeFor,
   validateCaptureInput,
   type ArtifactRecord,
+  type AgentRunRecord,
   type CaptureInput,
   type CaptureRecord,
   type InboxItem,
   type PreflightEvaluation,
   type ReviewDecision,
   type ReviewProposalRecord,
+  type RelationRecord,
+  type TopicRecord,
+  type TopicWorkspace,
 } from "@collector/capture-contracts";
-import { JsonStore } from "./store.js";
+import type { CollectorStore } from "./store.js";
+import { SourceParser } from "./parsers.js";
+import { ModelGateway } from "@collector/model-gateway";
 
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
 
 export class CaptureService {
-  constructor(private readonly store: JsonStore, private readonly artifactRoot: string) {}
+  private standardTasks: Promise<void> = Promise.resolve();
+  private deepTasks: Promise<void> = Promise.resolve();
+  private readonly scheduledRunIds = new Set<string>();
+
+  constructor(
+    private readonly store: CollectorStore,
+    private readonly artifactRoot: string,
+    private readonly parser = new SourceParser(),
+    private modelGateway?: ModelGateway,
+  ) {}
+
+  setModelGateway(gateway: ModelGateway | undefined): void {
+    this.modelGateway = gateway;
+    if (gateway) void this.resumePendingModelRuns();
+  }
+
+  async resumePendingModelRuns(): Promise<void> {
+    if (!this.modelGateway) return;
+    for (const capture of this.store.listCaptures()) {
+      const fragments = this.store.listFragments(capture.id);
+      for (const run of this.store.listAgentRuns(capture.id).filter((item) => item.status === "queued" || item.status === "running")) {
+        this.scheduleModelRun(capture, fragments, run);
+      }
+    }
+  }
+
+  async drainBackgroundTasks(): Promise<void> { await Promise.all([this.standardTasks, this.deepTasks]); }
+  getAiConfiguration(): { consent: boolean; configured: boolean; provider?: string; model?: string } {
+    return { consent: this.store.getSetting("ai_consent") === "true", configured: this.store.getSetting("deepseek_configured") === "true", provider: this.modelGateway?.providerName, model: this.modelGateway?.modelName };
+  }
+  async setAiConfiguration(consent: boolean, configured: boolean): Promise<void> {
+    await this.store.saveSetting("ai_consent", String(consent));
+    await this.store.saveSetting("deepseek_configured", String(configured));
+  }
 
   preflight(value: unknown): PreflightEvaluation {
     validateCaptureInput(value);
@@ -65,6 +104,7 @@ export class CaptureService {
     }
     const existing = this.store.getCaptureByClientId(input.clientCaptureId);
     if (existing) return existing;
+    if (input.topicId && !this.store.getTopic(input.topicId)) throw new ValidationError("Unknown topicId");
     const preflight = this.preflight(input);
     const record: CaptureRecord = {
       ...input,
@@ -75,8 +115,9 @@ export class CaptureService {
       preflight,
       createdAt: new Date().toISOString(),
     };
-    await this.store.saveCapture(record);
-    if (record.content?.trim()) await this.enrich(record);
+    if (input.topicId) await this.store.saveCaptureWithTopicMembership(record, input.topicId);
+    else await this.store.saveCapture(record);
+    if (!preflight.duplicate && preflight.processable) await this.enrich(record);
     return record;
   }
 
@@ -92,6 +133,7 @@ export class CaptureService {
       fragments: this.store.listFragments(capture.id),
       knowledgeItems: this.store.listKnowledgeItems(capture.id),
       reviewProposals: this.store.listReviewProposals(capture.id),
+      agentRuns: this.store.listAgentRuns(capture.id),
     }));
   }
 
@@ -99,9 +141,105 @@ export class CaptureService {
     if (!["accepted", "rejected", "deferred"].includes(decision)) throw new ValidationError("Invalid review decision");
     const existing = this.store.getReviewProposal(id);
     if (!existing) throw new NotFoundError("Review proposal not found");
+    if (existing.decision === decision) return existing;
+    if (existing.decision === "accepted" || existing.decision === "rejected") throw new ValidationError("Final review decision cannot be changed; revoke an accepted relation explicitly");
     const updated = { ...existing, decision, decidedAt: new Date().toISOString() };
-    await this.store.saveReviewProposal(updated);
+    const relation: RelationRecord | undefined = decision === "accepted" ? {
+      id: randomUUID(), proposalId: existing.id, sourceCaptureId: existing.captureId,
+      targetCaptureId: existing.targetCaptureId, relationType: existing.relationType,
+      evidenceFragmentIds: existing.evidenceFragmentIds, status: "active", version: 1,
+      createdAt: updated.decidedAt,
+    } : undefined;
+    await this.store.saveDecision(updated, {
+      id: randomUUID(), proposalId: existing.id, relationId: relation?.id, action: decision, createdAt: updated.decidedAt,
+    }, relation);
     return updated;
+  }
+
+  listRelations(captureId?: string): RelationRecord[] { return this.store.listRelations(captureId); }
+
+  async requestDeepAnalysis(captureId: string): Promise<AgentRunRecord> {
+    const capture = this.getCapture(captureId);
+    if (capture.aiProcessingDisabled) throw new ValidationError("AI processing is disabled for this capture");
+    if (!this.modelGateway) throw new ValidationError("DeepSeek is not configured and authorized");
+    const fragments = this.store.listFragments(captureId);
+    if (!fragments.length) throw new ValidationError("Capture has no parsed fragments for deep analysis");
+    const existing = this.store.listAgentRuns(captureId).find((run) => run.processingLevel === "L3" && (run.status === "queued" || run.status === "running"));
+    if (existing) return existing;
+    const run: AgentRunRecord = {
+      id: randomUUID(), captureId, provider: this.modelGateway.providerName, model: "deepseek-v4-pro",
+      promptVersion: this.modelGateway.promptVersion, processingLevel: "L3", status: "queued",
+      retryCount: 0, createdAt: new Date().toISOString(),
+    };
+    await this.store.saveAgentRun(run);
+    this.scheduleModelRun(capture, fragments, run);
+    return run;
+  }
+
+  async revokeRelation(id: string): Promise<RelationRecord> {
+    const existing = this.store.getRelation(id);
+    if (!existing) throw new NotFoundError("Relation not found");
+    if (existing.status === "revoked") return existing;
+    const revokedAt = new Date().toISOString();
+    const updated = { ...existing, status: "revoked" as const, version: existing.version + 1, revokedAt };
+    await this.store.saveRelationAudit(updated, {
+      id: randomUUID(), proposalId: existing.proposalId, relationId: existing.id, action: "revoked", createdAt: revokedAt,
+    });
+    return updated;
+  }
+
+  async createTopic(title: string, source?: { captureId: string; agentRunId: string; evidenceFragmentIds: string[] }): Promise<TopicRecord> {
+    if (!title.trim()) throw new ValidationError("title is required");
+    const existingSuggestion = source && this.store.listTopics().find((topic) => topic.sourceAgentRunId === source.agentRunId && topic.title === title.trim());
+    if (existingSuggestion) return existingSuggestion;
+    if (source && !this.store.getCapture(source.captureId)) throw new ValidationError("Unknown source capture");
+    if (source) {
+      const allowedFragments = new Set(this.store.listFragments(source.captureId).map((fragment) => fragment.id));
+      if (!source.evidenceFragmentIds.length || source.evidenceFragmentIds.some((id) => !allowedFragments.has(id))) throw new ValidationError("Topic suggestion must cite valid source fragments");
+      if (!this.store.listAgentRuns(source.captureId).some((run) => run.id === source.agentRunId && run.status === "succeeded")) throw new ValidationError("Unknown successful source AgentRun");
+    }
+    const now = new Date().toISOString();
+    const topic: TopicRecord = {
+      id: randomUUID(), title: title.trim(), status: "active", origin: source ? "ai_suggestion" : "user",
+      ...(source ? { sourceCaptureId: source.captureId, sourceAgentRunId: source.agentRunId, evidenceFragmentIds: source.evidenceFragmentIds } : {}),
+      createdAt: now, updatedAt: now,
+    };
+    if (source) await this.store.saveTopicWithMembership(topic, source.captureId);
+    else await this.store.saveTopic(topic);
+    return topic;
+  }
+
+  listTopics(): TopicRecord[] { return this.store.listTopics(); }
+
+  async updateTopic(id: string, patch: { title?: string; status?: "active" | "archived" }): Promise<TopicRecord> {
+    const existing = this.store.getTopic(id);
+    if (!existing) throw new NotFoundError("Topic not found");
+    if (patch.title !== undefined && !patch.title.trim()) throw new ValidationError("title must not be empty");
+    const updated = { ...existing, ...(patch.title !== undefined ? { title: patch.title.trim() } : {}), ...(patch.status ? { status: patch.status } : {}), updatedAt: new Date().toISOString() };
+    await this.store.saveTopic(updated);
+    return updated;
+  }
+
+  async addTopicMember(topicId: string, captureId: string): Promise<void> {
+    if (!this.store.getTopic(topicId)) throw new NotFoundError("Topic not found");
+    if (!this.store.getCapture(captureId)) throw new NotFoundError("Capture not found");
+    await this.store.saveTopicMembership(topicId, captureId, new Date().toISOString());
+  }
+
+  async removeTopicMember(topicId: string, captureId: string): Promise<void> {
+    if (!this.store.getTopic(topicId)) throw new NotFoundError("Topic not found");
+    await this.store.removeTopicMembership(topicId, captureId);
+  }
+
+  getTopicWorkspace(topicId: string): TopicWorkspace {
+    const topic = this.store.getTopic(topicId);
+    if (!topic) throw new NotFoundError("Topic not found");
+    const ids = new Set(this.store.listTopicCaptureIds(topicId));
+    return {
+      topic,
+      captures: this.listInbox().filter((item) => ids.has(item.capture.id)),
+      relations: this.store.listRelations().filter((relation) => relation.status === "active" && (ids.has(relation.sourceCaptureId) || Boolean(relation.targetCaptureId && ids.has(relation.targetCaptureId)))),
+    };
   }
 
   async createArtifact(fileName: string, mimeType: string, bytes: Uint8Array): Promise<ArtifactRecord> {
@@ -128,14 +266,30 @@ export class CaptureService {
   }
 
   private async enrich(record: CaptureRecord): Promise<void> {
-    const text = record.content!.trim();
-    const fragment = {
-      id: randomUUID(), captureId: record.id, ordinal: 0, text, locator: record.locator, createdAt: new Date().toISOString(),
-    };
-    const item = {
+    const artifacts = (record.artifactIds ?? []).map((id) => this.store.getArtifact(id)).filter((item): item is ArtifactRecord => Boolean(item));
+    let parsed;
+    try {
+      parsed = await this.parser.parse(record, artifacts);
+      if (parsed.snapshot) {
+        const snapshot = await this.createArtifact(parsed.snapshot.fileName, parsed.snapshot.mimeType, parsed.snapshot.bytes);
+        record.artifactIds = [...(record.artifactIds ?? []), snapshot.id];
+        await this.store.saveCapture(record);
+      }
+    } catch {
+      record.status = "needs_processing";
+      await this.store.saveCapture(record);
+      return;
+    }
+    if (!parsed.fragments.length) return;
+    const createdAt = new Date().toISOString();
+    const fragments = parsed.fragments.map((fragment, ordinal) => ({
+      id: randomUUID(), captureId: record.id, ordinal, text: fragment.text, locator: fragment.locator, createdAt,
+    }));
+    const items = fragments.map((fragment) => ({
       id: randomUUID(), captureId: record.id, fragmentId: fragment.id, kind: "source_excerpt" as const,
-      content: text, origin: "source" as const, createdAt: new Date().toISOString(),
-    };
+      content: fragment.text, origin: "source" as const, createdAt,
+    }));
+    const text = fragments.map((fragment) => fragment.text).join("\n\n");
     const candidates = this.store.listCaptures().filter((candidate) => candidate.id !== record.id && candidate.content?.trim());
     let target: CaptureRecord | undefined;
     let bestScore = 0;
@@ -150,11 +304,90 @@ export class CaptureService {
       targetCaptureId: relationType === "independent" ? undefined : target?.id,
       relationType,
       confidence: relationType === "independent" ? Math.max(0.5, 1 - bestScore) : Math.min(0.95, Math.max(0.5, bestScore)),
-      evidenceFragmentIds: [fragment.id],
+      evidenceFragmentIds: fragments.map((fragment) => fragment.id),
       rationale: relationType === "independent" ? "No sufficiently similar stored capture was found" : "Lexical overlap with an existing capture",
       createdAt: new Date().toISOString(),
     };
-    await this.store.saveEnrichment(fragment, item, proposal);
+    await this.store.saveEnrichment(fragments, items, proposal);
+    await this.enqueueModelRun(record, fragments);
+  }
+
+  private async enqueueModelRun(record: CaptureRecord, fragments: Array<{ id: string; captureId: string; ordinal: number; text: string; locator?: CaptureRecord["locator"]; createdAt: string }>): Promise<void> {
+    if (!this.modelGateway || record.aiProcessingDisabled || record.preflight.processingLevel === "L0") return;
+    const run: AgentRunRecord = {
+      id: randomUUID(), captureId: record.id, provider: this.modelGateway.providerName, model: this.modelGateway.modelName,
+      promptVersion: this.modelGateway.promptVersion, processingLevel: record.preflight.processingLevel,
+      status: "queued", retryCount: 0, createdAt: new Date().toISOString(),
+    };
+    await this.store.saveAgentRun(run);
+    this.scheduleModelRun(record, fragments, run);
+  }
+
+  private scheduleModelRun(record: CaptureRecord, fragments: Array<{ id: string; captureId: string; ordinal: number; text: string; locator?: CaptureRecord["locator"]; createdAt: string }>, run: AgentRunRecord): void {
+    if (this.scheduledRunIds.has(run.id)) return;
+    this.scheduledRunIds.add(run.id);
+    const queue = run.processingLevel === "L3" ? this.deepTasks : this.standardTasks;
+    const scheduled = queue.catch(() => undefined).then(async () => {
+      try { await this.executeModelRun(record, fragments, run); }
+      catch {
+        await this.store.saveAgentRun({ ...run, status: "failed", errorCode: "provider_error", errorMessage: "Unexpected model processing failure", completedAt: new Date().toISOString() });
+      }
+    }).finally(() => { this.scheduledRunIds.delete(run.id); });
+    if (run.processingLevel === "L3") this.deepTasks = scheduled;
+    else this.standardTasks = scheduled;
+  }
+
+  private async executeModelRun(record: CaptureRecord, fragments: Array<{ id: string; captureId: string; ordinal: number; text: string; locator?: CaptureRecord["locator"]; createdAt: string }>, run: AgentRunRecord): Promise<void> {
+    const gateway = this.modelGateway;
+    if (!gateway) return;
+    const requestedModel = run.processingLevel === "L3" ? "deepseek-v4-pro" : gateway.modelName;
+    const running = { ...run, provider: gateway.providerName, model: requestedModel, promptVersion: gateway.promptVersion, status: "running" as const };
+    await this.store.saveAgentRun(running);
+    const candidates = this.store.listCaptures()
+      .filter((candidate) => candidate.id !== record.id && candidate.content?.trim())
+      .slice(0, 20)
+      .map((candidate) => ({ id: candidate.id, content: candidate.content!.slice(0, 4_000) }));
+    const result = await gateway.extract(fragments, candidates, { model: requestedModel, thinking: run.processingLevel === "L3" });
+    const completedAt = new Date().toISOString();
+    if (!result.extraction) {
+      await this.store.saveAgentRun({
+        ...running, status: "failed", retryCount: result.retryCount, latencyMs: result.latencyMs,
+        inputTokens: result.usage?.inputTokens, outputTokens: result.usage?.outputTokens,
+        estimatedCostUsd: result.estimatedCostUsd,
+        errorCode: result.errorCode, errorMessage: result.errorMessage, completedAt,
+      });
+      return;
+    }
+    const knownCaptureIds = new Set(this.store.listCaptures().map((capture) => capture.id));
+    const invalidTarget = result.extraction.relationSuggestions.find((relation) => relation.targetCaptureId && !knownCaptureIds.has(relation.targetCaptureId));
+    if (invalidTarget) {
+      await this.store.saveAgentRun({
+        ...running, status: "failed", retryCount: result.retryCount, latencyMs: result.latencyMs,
+        inputTokens: result.usage?.inputTokens, outputTokens: result.usage?.outputTokens,
+        estimatedCostUsd: result.estimatedCostUsd, errorCode: "invalid_schema",
+        errorMessage: "Model referenced an unknown target capture", completedAt,
+      });
+      return;
+    }
+    const fragmentById = new Map(fragments.map((fragment) => [fragment.id, fragment]));
+    const createdAt = completedAt;
+    const knowledgeItems = [
+      ...result.extraction.concepts.map((item) => ({ kind: "concept" as const, content: `${item.name}: ${item.text}`, fragmentId: item.fragmentIds[0] })),
+      ...result.extraction.claims.map((item) => ({ kind: "claim" as const, content: item.statement, fragmentId: item.fragmentIds[0] })),
+      ...result.extraction.questions.map((item) => ({ kind: "question" as const, content: item.question, fragmentId: item.fragmentIds[0] })),
+    ].map((item) => ({ id: randomUUID(), captureId: record.id, ...item, origin: "ai_inference" as const, createdAt }));
+    const proposals = result.extraction.relationSuggestions.map((relation) => ({
+      id: randomUUID(), captureId: record.id, targetCaptureId: relation.targetCaptureId,
+      relationType: relation.relationType, confidence: relation.confidence,
+      evidenceFragmentIds: relation.fragmentIds.filter((id) => fragmentById.has(id)),
+      rationale: relation.rationale, createdAt,
+    }));
+    await this.store.saveModelResult(knowledgeItems, proposals, {
+      ...running, status: "succeeded", retryCount: result.retryCount, latencyMs: result.latencyMs,
+      inputTokens: result.usage?.inputTokens, outputTokens: result.usage?.outputTokens,
+      estimatedCostUsd: result.estimatedCostUsd,
+      output: { summary: result.extraction.summary, topicSuggestions: result.extraction.topicSuggestions }, completedAt,
+    });
   }
 }
 

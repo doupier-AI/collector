@@ -1,4 +1,4 @@
-import type { ArtifactRecord, CaptureInput, CaptureRecord, InboxItem, PreflightEvaluation, ReviewDecision, ReviewProposalRecord } from "@collector/capture-contracts";
+import type { ArtifactRecord, CaptureInput, CaptureRecord, InboxItem, PreflightEvaluation, RelationRecord, ReviewDecision, ReviewProposalRecord, TopicRecord, TopicWorkspace } from "@collector/capture-contracts";
 
 export interface CaptureClientOptions {
   baseUrl: string;
@@ -37,6 +37,20 @@ export class CaptureClient {
       method: "POST", body: JSON.stringify({ decision }),
     });
   }
+
+  createPairingCode(name: string): Promise<{ code: string; expiresAt: string }> {
+    return this.request("/v1/pairings", { method: "POST", body: JSON.stringify({ name }) });
+  }
+  listRelations(captureId?: string): Promise<RelationRecord[]> { return this.request(`/v1/relations${captureId ? `?captureId=${encodeURIComponent(captureId)}` : ""}`, { method: "GET" }); }
+  revokeRelation(id: string): Promise<RelationRecord> { return this.request(`/v1/relations/${encodeURIComponent(id)}/revoke`, { method: "POST" }); }
+  createTopic(title: string): Promise<TopicRecord> { return this.request("/v1/topics", { method: "POST", body: JSON.stringify({ title }) }); }
+  createSuggestedTopic(input: { title: string; sourceCaptureId: string; sourceAgentRunId: string; evidenceFragmentIds: string[] }): Promise<TopicRecord> { return this.request("/v1/topics", { method: "POST", body: JSON.stringify(input) }); }
+  listTopics(): Promise<TopicRecord[]> { return this.request("/v1/topics", { method: "GET" }); }
+  updateTopic(id: string, patch: { title?: string; status?: "active" | "archived" }): Promise<TopicRecord> { return this.request(`/v1/topics/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(patch) }); }
+  getTopicWorkspace(id: string): Promise<TopicWorkspace> { return this.request(`/v1/topics/${encodeURIComponent(id)}/workspace`, { method: "GET" }); }
+  addTopicMember(topicId: string, captureId: string): Promise<{ added: true }> { return this.request(`/v1/topics/${encodeURIComponent(topicId)}/members/${encodeURIComponent(captureId)}`, { method: "POST" }); }
+  removeTopicMember(topicId: string, captureId: string): Promise<{ removed: true }> { return this.request(`/v1/topics/${encodeURIComponent(topicId)}/members/${encodeURIComponent(captureId)}`, { method: "DELETE" }); }
+  requestDeepAnalysis(captureId: string): Promise<import("@collector/capture-contracts").AgentRunRecord> { return this.request(`/v1/captures/${encodeURIComponent(captureId)}/deep-analysis`, { method: "POST" }); }
 
   async uploadArtifact(file: Blob, fileName: string): Promise<ArtifactRecord> {
     const headers: Record<string, string> = {

@@ -6,6 +6,11 @@ interface SelectionContext {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "collector:get-page") {
+    const content = document.body?.innerText.replace(/\n{3,}/g, "\n\n").trim().slice(0, 1_000_000) ?? "";
+    sendResponse({ content });
+    return;
+  }
   if (message?.type !== "collector:get-selection") return;
   sendResponse(getSelectionContext());
 });

@@ -33,9 +33,21 @@ export interface FileLocator {
   mimeType: string;
   checksum: string;
   pageNumber?: number;
+  startLine?: number;
+  endLine?: number;
+  heading?: string;
+  blockType?: "heading" | "paragraph" | "list" | "code";
 }
 
-export type CaptureLocator = BrowserLocator | UserSuppliedLocator | FileLocator;
+export interface TextLocator {
+  kind: "text";
+  startLine: number;
+  endLine: number;
+  heading?: string;
+  blockType?: "heading" | "paragraph" | "list" | "code";
+}
+
+export type CaptureLocator = BrowserLocator | UserSuppliedLocator | FileLocator | TextLocator;
 
 export interface CaptureInput {
   captureType: CaptureType;
@@ -48,6 +60,7 @@ export interface CaptureInput {
   note?: string;
   topicId?: string;
   artifactIds?: string[];
+  aiProcessingDisabled?: boolean;
   clientCaptureId: string;
   capturedAt: string;
 }
@@ -101,11 +114,71 @@ export interface ReviewProposalRecord {
   createdAt: string;
 }
 
+export interface RelationRecord {
+  id: string;
+  proposalId: string;
+  sourceCaptureId: string;
+  targetCaptureId?: string;
+  relationType: RelationType;
+  evidenceFragmentIds: string[];
+  status: "active" | "revoked";
+  version: number;
+  createdAt: string;
+  revokedAt?: string;
+}
+
+export interface UserDecisionRecord {
+  id: string;
+  proposalId?: string;
+  relationId?: string;
+  action: ReviewDecision | "revoked";
+  createdAt: string;
+}
+
+export interface TopicRecord {
+  id: string;
+  title: string;
+  status: "active" | "archived";
+  origin?: "user" | "ai_suggestion";
+  sourceCaptureId?: string;
+  sourceAgentRunId?: string;
+  evidenceFragmentIds?: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TopicWorkspace {
+  topic: TopicRecord;
+  captures: InboxItem[];
+  relations: RelationRecord[];
+}
+
 export interface InboxItem {
   capture: CaptureRecord;
   fragments: FragmentRecord[];
   knowledgeItems: KnowledgeItemRecord[];
   reviewProposals: ReviewProposalRecord[];
+  agentRuns?: AgentRunRecord[];
+}
+
+export interface AgentRunRecord {
+  id: string;
+  captureId: string;
+  provider: string;
+  model: string;
+  promptVersion: string;
+  processingLevel: ProcessingLevel;
+  status: "queued" | "running" | "succeeded" | "failed" | "skipped";
+  inputTokens?: number;
+  outputTokens?: number;
+  estimatedCostUsd?: number;
+  latencyMs?: number;
+  retryCount: number;
+  errorCode?: string;
+  errorMessage?: string;
+  output?: unknown;
+  createdAt: string;
+  completedAt?: string;
 }
 
 export interface ArtifactRecord {
@@ -127,6 +200,7 @@ export const MAX_ARTIFACT_BYTES = 20 * 1024 * 1024;
 export const ACCEPTED_MIME_TYPES = new Set([
   "text/plain",
   "text/markdown",
+  "text/html",
   "application/pdf",
   "image/png",
   "image/jpeg",
