@@ -65,7 +65,7 @@ if ($guiSmoke) {
 
 $trackedCandidates = Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction SilentlyContinue |
   Where-Object {
-    $_.FullName -notmatch '\\(node_modules|\.git|dist|dist-tests|build|\.collector-data|\.npm-cache)\\' -and
+    $_.FullName -notmatch '\\(node_modules|\.git|dist|dist-tests|build|release|\.collector-data|\.npm-cache)\\' -and
     $_.Length -lt 2MB
   }
 foreach ($file in $trackedCandidates) {

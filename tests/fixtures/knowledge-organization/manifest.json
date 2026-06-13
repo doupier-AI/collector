@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "purpose": "PRD 2.0 recent organization and topic document golden inputs",
+  "locale": "zh-CN",
+  "materials": [
+    {
+      "id": "local-cloud-routing-a",
+      "file": "01-local-cloud-routing.md",
+      "source": "user_supplied",
+      "expectedCluster": "本地模型与云模型分工"
+    },
+    {
+      "id": "local-cloud-routing-b",
+      "file": "02-privacy-and-cost.md",
+      "source": "user_supplied",
+      "expectedCluster": "本地模型与云模型分工"
+    },
+    {
+      "id": "duplicate-routing",
+      "file": "03-near-duplicate.txt",
+      "source": "user_supplied",
+      "expectedCluster": "本地模型与云模型分工",
+      "nearDuplicateOf": "local-cloud-routing-a"
+    },
+    {
+      "id": "routing-conflict",
+      "file": "04-conflicting-view.md",
+      "source": "user_supplied",
+      "expectedCluster": "本地模型与云模型分工",
+      "containsConflict": true
+    },
+    {
+      "id": "unrelated-cooking",
+      "file": "05-unrelated-note.txt",
+      "source": "user_supplied",
+      "expectedCluster": null
+    },
+    {
+      "id": "unknown-source-claim",
+      "file": "06-unknown-source.md",
+      "source": "unknown",
+      "expectedCluster": "本地模型与云模型分工",
+      "requiresUncertainty": true
+    },
+    {
+      "id": "long-workflow-material",
+      "file": "07-long-workflow.md",
+      "source": "user_supplied",
+      "expectedCluster": "AI 工作流可靠性"
+    }
+  ],
+  "expectedBehaviors": {
+    "recentOrganization": [
+      "相关材料可以形成稳定的候选分组",
+      "近重复材料不能被当作多个独立观点放大",
+      "冲突观点保留在同一方向中但不能被抹平",
+      "无关烹饪笔记保持未归类或独立",
+      "来源不明材料可以整理但不能被写成已核验事实"
+    ],
+    "topicDocument": [
+      "文档只基于被选入专题的材料",
+      "关键结论引用对应材料片段",
+      "冲突观点以差异或限制呈现",
+      "来源不明陈述带不确定性提示",
+      "未覆盖的知识以折叠缺口呈现而非自动补齐"
+    ]
+  }
+}

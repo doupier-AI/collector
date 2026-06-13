@@ -11,6 +11,7 @@
     "build": "tsc -b && node scripts/build-assets.mjs",
     "test": "npm run build && node --test dist-tests/**/*.test.js",
     "test:gui": "npm run build && node scripts/gui-smoke.mjs",
+    "prototype:shell": "electron scripts/open-single-shell-prototype.mjs",
     "dev:api": "npm run build && node apps/api/dist/server.js",
     "dev:desktop": "npm run build && electron apps/desktop-capture/dist/main.js",
     "clean": "node scripts/clean.mjs",

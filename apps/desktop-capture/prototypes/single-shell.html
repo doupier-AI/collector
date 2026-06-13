@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'">
+  <title>Collector 单窗口原型</title>
+  <link rel="stylesheet" href="single-shell.css">
+</head>
+<body>
+  <section class="variant variant-a" data-variant="A">
+    <aside class="rail">
+      <div class="brand"><span>C</span><strong>Collector</strong></div>
+      <nav>
+        <button class="active"><i>近</i><span>近期收集</span></button>
+        <button><i>题</i><span>专题</span></button>
+        <button><i>材</i><span>全部材料</span></button>
+      </nav>
+      <div class="rail-spacer"></div>
+      <button class="rail-action" data-open-capture><i>+</i><span>快速采集</span></button>
+      <button class="rail-action"><i>设</i><span>设置</span></button>
+    </aside>
+    <main class="focus-main">
+      <header class="page-head"><div><small>RECENT</small><h1>最近正在形成的方向</h1><p>18 条新材料，被整理成 3 个方向。</p></div><button class="primary" data-open-capture>收集内容 <kbd>Ctrl ⇧ Space</kbd></button></header>
+      <div class="cluster-grid">
+        <article class="cluster featured"><span class="signal">7 条 · 今天新增 3 条</span><h2>本地模型与云模型如何分工</h2><p>材料集中讨论隐私、调用成本，以及哪些轻任务值得留在设备上处理。</p><div class="material-peek"><span>本地模型适合高频轻任务</span><span>成本策略不能覆盖数据控制权</span></div><footer><button>查看材料</button><button class="accent">保存为专题</button></footer></article>
+        <article class="cluster"><span class="signal">5 条 · 更新于 18:42</span><h2>AI 工作流的可靠执行</h2><p>任务恢复、幂等、人工确认和 step 级成本记录正在形成共同脉络。</p><footer><button>查看材料</button><button>生成文档</button></footer></article>
+        <article class="cluster"><span class="signal">3 条</span><h2>信息采集的产品边界</h2><p>如何在低摩擦采集与来源合法性之间保持清晰边界。</p><footer><button>查看材料</button><button>保存为专题</button></footer></article>
+        <article class="loose"><strong>3 条暂未归类</strong><p>它们被保留下来，没有被强行放进现有方向。</p><button>查看零散材料</button></article>
+      </div>
+    </main>
+    <aside class="context-pane"><small>CONTINUE</small><h3>上次停在这里</h3><p>专题《Collector AI 工作流》有 2 条新材料可整理。</p><div class="document-preview"><b>专题主文档</b><span>版本 3 · 昨天更新</span><div></div><div></div><div class="short"></div></div><button class="wide">继续查看专题</button></aside>
+  </section>
+
+  <section class="variant variant-b" data-variant="B">
+    <header class="command-bar"><div class="brand"><span>C</span><strong>Collector</strong></div><nav><button class="active">近期</button><button>专题</button><button>材料</button><button>设置</button></nav><button class="capture-pill" data-open-capture>＋ 收集 <kbd>Ctrl ⇧ Space</kbd></button></header>
+    <main class="desk">
+      <section class="desk-intro"><p class="date">6 月 13 日，星期六</p><h1>你最近在反复关注什么？</h1><p>Collector 只整理你已经收集的内容。选择一个方向，再决定是否形成专题。</p></section>
+      <section class="desk-list">
+        <article><div class="index">01</div><div class="desk-copy"><div class="meta">7 条材料 / 3 个来源</div><h2>本地处理与云端综合的边界</h2><p>一个方向正在变清晰：隐私和成本并不是两套模型路由规则，而是同一次决策的两个约束。</p><div class="chips"><span>本地去重</span><span>授权</span><span>批处理</span></div></div><div class="desk-actions"><button>展开</button><button class="ink">整理成专题</button></div></article>
+        <article><div class="index">02</div><div class="desk-copy"><div class="meta">5 条材料 / 存在 1 处不同观点</div><h2>可靠的 AI 任务不应依赖一个长请求</h2><p>材料涉及 checkpoint、重试累计费用、人工等待状态和专题更新互斥。</p></div><div class="desk-actions"><button>展开</button><button>稍后处理</button></div></article>
+        <article class="unclustered"><div class="index">··</div><div class="desk-copy"><div class="meta">暂未归类</div><h2>另外还有 3 条零散材料</h2><p>没有足够依据放入上述方向。它们仍然可以被搜索和单独选择。</p></div><div class="desk-actions"><button>查看</button></div></article>
+      </section>
+    </main>
+  </section>
+
+  <section class="variant variant-c" data-variant="C">
+    <aside class="dock"><div class="dock-logo">C</div><button class="active" title="全部材料">材</button><button title="近期收集">近</button><button title="专题">题</button><div class="dock-spacer"></div><button data-open-capture title="快速采集">＋</button><button title="设置">设</button></aside>
+    <section class="stream">
+      <header><div><small>ALL MATERIALS</small><h1>材料流</h1></div><label class="search">⌕ <input placeholder="搜索收集内容"></label></header>
+      <div class="day"><span>今天</span><i></i></div>
+      <article class="stream-item selected"><span class="source browser">网页</span><div><h3>本地模型与云模型的任务分工</h3><p>高频、规则明确、隐私敏感的任务更适合优先在本地执行……</p><small>aihot.virxact.com · 19:24</small></div></article>
+      <article class="stream-item"><span class="source paste">粘贴</span><div><h3>成本策略不能覆盖数据控制权</h3><p>对于包含工作记录或私人对话的材料，即使云模型价格很低……</p><small>用户提供 · 18:51</small></div></article>
+      <article class="stream-item"><span class="source file">PDF</span><div><h3>Durable execution notes</h3><p>长任务应该拆成可以恢复的步骤，每一步成功后保存 checkpoint。</p><small>workflow-notes.pdf · 第 8 页</small></div></article>
+      <div class="day"><span>昨天</span><i></i></div>
+      <article class="stream-item"><span class="source browser">网页</span><div><h3>模型路由不只比较价格</h3><p>批量处理可以减少重复提示词和小请求产生的固定开销。</p><small>示例来源 · 昨天 22:03</small></div></article>
+    </section>
+    <aside class="inspector"><div class="inspector-head"><small>CONTEXT</small><button>•••</button></div><h2>这条材料可能属于</h2><article class="topic-suggestion"><span>已有专题</span><strong>Collector 的 AI 架构</strong><p>当前专题已有 6 条材料。加入前不会自动修改主文档。</p><button class="primary">查看专题</button><button>暂不处理</button></article><hr><h3>来源</h3><p class="source-detail">网页选区，可返回原页面和附近上下文。</p><button class="text-button">打开原始来源 ↗</button></aside>
+  </section>
+
+  <div class="capture-mode" id="capture-mode" aria-hidden="true">
+    <div class="capture-backdrop" data-close-capture></div>
+    <section class="capture-panel" role="dialog" aria-modal="true" aria-labelledby="capture-title">
+      <header><div class="brand"><span>C</span><strong id="capture-title">收集到 Collector</strong></div><button class="close" data-close-capture aria-label="关闭">×</button></header>
+      <textarea id="prototype-input" placeholder="粘贴内容、链接，或拖入文件…"></textarea>
+      <div class="drop-hint"><span>＋</span><p>添加文件</p><small>TXT、Markdown、PDF 或图片</small></div>
+      <footer><span>内容会先保存在本地</span><button id="prototype-submit">收集 <kbd>Ctrl ↵</kbd></button></footer>
+    </section>
+  </div>
+
+  <div class="toast" id="toast">已保存到材料流</div>
+  <div class="prototype-switcher" aria-label="原型版本切换">
+    <button id="previous-variant" aria-label="上一个版本">←</button>
+    <span id="variant-label">A · Focus Rail</span>
+    <button id="next-variant" aria-label="下一个版本">→</button>
+  </div>
+  <script src="single-shell.js"></script>
+</body>
+</html>
