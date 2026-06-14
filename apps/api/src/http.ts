@@ -29,7 +29,6 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         const body = await readJson(request) as { name?: string };
         return json(response, 201, auth.createPairingCode(body.name?.trim() || "Collector Client"));
       }
-      if (request.method === "GET" && url.pathname === "/v1/inbox") return json(response, 200, service.listInbox());
       if (request.method === "POST" && url.pathname === "/v1/recent-organization/runs") {
         return json(response, 202, await service.organizeRecent(header(request, "idempotency-key")));
       }
@@ -71,7 +70,6 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         return json(response, 200, result);
       }
 
-      if (request.method === "GET" && url.pathname === "/v1/relations") return json(response, 200, service.listRelations(url.searchParams.get("captureId") ?? undefined));
       if (request.method === "GET" && url.pathname === "/v1/topics") return json(response, 200, service.listTopics());
       if (request.method === "POST" && url.pathname === "/v1/topics") {
         const body = await readJson(request) as { title?: string; sourceCaptureId?: string; sourceAgentRunId?: string; evidenceFragmentIds?: string[]; materialIds?: string[] };
@@ -100,14 +98,6 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (request.method === "POST" && deepAnalysisMatch) return json(response, 202, await service.requestDeepAnalysis(decodeURIComponent(deepAnalysisMatch[1])));
       const match = url.pathname.match(/^\/v1\/captures\/([^/]+)$/);
       if (request.method === "GET" && match) return json(response, 200, service.getCapture(decodeURIComponent(match[1])));
-      const reviewMatch = url.pathname.match(/^\/v1\/review-proposals\/([^/]+)\/decision$/);
-      if (request.method === "POST" && reviewMatch) {
-        const body = await readJson(request) as { decision?: "accepted" | "rejected" | "deferred" };
-        if (!body.decision) throw new ValidationError("decision is required");
-        return json(response, 200, await service.decideReviewProposal(decodeURIComponent(reviewMatch[1]), body.decision));
-      }
-      const relationMatch = url.pathname.match(/^\/v1\/relations\/([^/]+)\/revoke$/);
-      if (request.method === "POST" && relationMatch) return json(response, 200, await service.revokeRelation(decodeURIComponent(relationMatch[1])));
       if (request.method === "POST" && url.pathname === "/v1/topics/from-cluster") {
         const body = await readJson(request) as { clusterSnapshotId?: string; clusterIndex?: number; title?: string; materialIds?: string[] };
         if (!body.clusterSnapshotId) throw new ValidationError("clusterSnapshotId is required");

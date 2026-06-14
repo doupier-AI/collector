@@ -115,10 +115,10 @@ test("create topic manually with materialIds", async (t) => {
   // Verify workspace includes both captures
   const wsResp = await fetch(`${base}/v1/topics/${topic.id}/workspace`, { headers });
   assert.equal(wsResp.status, 200);
-  const ws = await wsResp.json() as { captures: Array<{ capture: { id: string } }> };
+  const ws = await wsResp.json() as { captures: Array<{ id: string }> };
   assert.equal(ws.captures.length, 2);
-  assert.ok(ws.captures.some((c) => c.capture.id === cap1.id));
-  assert.ok(ws.captures.some((c) => c.capture.id === cap2.id));
+  assert.ok(ws.captures.some((c) => c.id === cap1.id));
+  assert.ok(ws.captures.some((c) => c.id === cap2.id));
 });
 
 test("same material can belong to multiple topics", async (t) => {

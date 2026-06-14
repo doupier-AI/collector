@@ -10,12 +10,8 @@ import {
   type AgentRunRecord,
   type CaptureInput,
   type CaptureRecord,
-  type InboxItem,
   type PreflightEvaluation,
   type RecentClusterSnapshotRecord,
-  type ReviewDecision,
-  type ReviewProposalRecord,
-  type RelationRecord,
   type AiBudgetSettings,
   type AiUsageSummary,
   type ModelCallRecord,
@@ -141,15 +137,6 @@ export class CaptureService {
     return record;
   }
 
-  listInbox(): InboxItem[] {
-    return this.store.listCaptures().map((capture) => ({
-      capture,
-      fragments: this.store.listFragments(capture.id),
-      knowledgeItems: this.store.listKnowledgeItems(capture.id),
-      reviewProposals: this.store.listReviewProposals(capture.id),
-      agentRuns: this.store.listAgentRuns(capture.id),
-    }));
-  }
 
   async organizeRecent(idempotencyKey?: string): Promise<WorkflowRunRecord> {
     if (!idempotencyKey?.trim()) throw new ValidationError("Idempotency-Key is required");
@@ -249,26 +236,6 @@ export class CaptureService {
     return this.getWorkflowRun(id);
   }
 
-  async decideReviewProposal(id: string, decision: ReviewDecision): Promise<ReviewProposalRecord> {
-    if (!["accepted", "rejected", "deferred"].includes(decision)) throw new ValidationError("Invalid review decision");
-    const existing = this.store.getReviewProposal(id);
-    if (!existing) throw new NotFoundError("Review proposal not found");
-    if (existing.decision === decision) return existing;
-    if (existing.decision === "accepted" || existing.decision === "rejected") throw new ValidationError("Final review decision cannot be changed; revoke an accepted relation explicitly");
-    const updated = { ...existing, decision, decidedAt: new Date().toISOString() };
-    const relation: RelationRecord | undefined = decision === "accepted" ? {
-      id: randomUUID(), proposalId: existing.id, sourceCaptureId: existing.captureId,
-      targetCaptureId: existing.targetCaptureId, relationType: existing.relationType,
-      evidenceFragmentIds: existing.evidenceFragmentIds, status: "active", version: 1,
-      createdAt: updated.decidedAt,
-    } : undefined;
-    await this.store.saveDecision(updated, {
-      id: randomUUID(), proposalId: existing.id, relationId: relation?.id, action: decision, createdAt: updated.decidedAt,
-    }, relation);
-    return updated;
-  }
-
-  listRelations(captureId?: string): RelationRecord[] { return this.store.listRelations(captureId); }
 
   async requestDeepAnalysis(captureId: string): Promise<AgentRunRecord> {
     const capture = this.getCapture(captureId);
@@ -288,17 +255,6 @@ export class CaptureService {
     return run;
   }
 
-  async revokeRelation(id: string): Promise<RelationRecord> {
-    const existing = this.store.getRelation(id);
-    if (!existing) throw new NotFoundError("Relation not found");
-    if (existing.status === "revoked") return existing;
-    const revokedAt = new Date().toISOString();
-    const updated = { ...existing, status: "revoked" as const, version: existing.version + 1, revokedAt };
-    await this.store.saveRelationAudit(updated, {
-      id: randomUUID(), proposalId: existing.proposalId, relationId: existing.id, action: "revoked", createdAt: revokedAt,
-    });
-    return updated;
-  }
 
   async createTopic(title: string, secondArg?: { captureId: string; agentRunId: string; evidenceFragmentIds: string[] } | string[]): Promise<TopicRecord> {
     if (!title.trim()) throw new ValidationError("title is required");
@@ -356,11 +312,8 @@ export class CaptureService {
     const topic = this.store.getTopic(topicId);
     if (!topic) throw new NotFoundError("Topic not found");
     const ids = new Set(this.store.listTopicCaptureIds(topicId));
-    return {
-      topic,
-      captures: this.listInbox().filter((item) => ids.has(item.capture.id)),
-      relations: this.store.listRelations().filter((relation) => relation.status === "active" && (ids.has(relation.sourceCaptureId) || Boolean(relation.targetCaptureId && ids.has(relation.targetCaptureId)))),
-    };
+    const captures = this.store.listCaptures().filter((c) => ids.has(c.id));
+    return { topic, captures, relations: [] };
   }
 
   async createArtifact(fileName: string, mimeType: string, bytes: Uint8Array): Promise<ArtifactRecord> {
@@ -406,30 +359,7 @@ export class CaptureService {
     const fragments = parsed.fragments.map((fragment, ordinal) => ({
       id: randomUUID(), captureId: record.id, ordinal, text: fragment.text, locator: fragment.locator, createdAt,
     }));
-    const items = fragments.map((fragment) => ({
-      id: randomUUID(), captureId: record.id, fragmentId: fragment.id, kind: "source_excerpt" as const,
-      content: fragment.text, origin: "source" as const, createdAt,
-    }));
-    const text = fragments.map((fragment) => fragment.text).join("\n\n");
-    const candidates = this.store.listCaptures().filter((candidate) => candidate.id !== record.id && candidate.content?.trim());
-    let target: CaptureRecord | undefined;
-    let bestScore = 0;
-    for (const candidate of candidates) {
-      const score = tokenOverlap(text, candidate.content!);
-      if (score > bestScore) { bestScore = score; target = candidate; }
-    }
-    const relationType = record.preflight.duplicate ? "duplicate" : bestScore >= 0.25 ? "related" : "independent";
-    const proposal: ReviewProposalRecord = {
-      id: randomUUID(),
-      captureId: record.id,
-      targetCaptureId: relationType === "independent" ? undefined : target?.id,
-      relationType,
-      confidence: relationType === "independent" ? Math.max(0.5, 1 - bestScore) : Math.min(0.95, Math.max(0.5, bestScore)),
-      evidenceFragmentIds: fragments.map((fragment) => fragment.id),
-      rationale: relationType === "independent" ? "No sufficiently similar stored capture was found" : "Lexical overlap with an existing capture",
-      createdAt: new Date().toISOString(),
-    };
-    await this.store.saveEnrichment(fragments, items, proposal);
+    await this.store.saveFragments(fragments);
     await this.enqueueModelRun(record, fragments);
   }
 
@@ -492,18 +422,7 @@ export class CaptureService {
     }
     const fragmentById = new Map(fragments.map((fragment) => [fragment.id, fragment]));
     const createdAt = completedAt;
-    const knowledgeItems = [
-      ...result.extraction.concepts.map((item) => ({ kind: "concept" as const, content: `${item.name}: ${item.text}`, fragmentId: item.fragmentIds[0] })),
-      ...result.extraction.claims.map((item) => ({ kind: "claim" as const, content: item.statement, fragmentId: item.fragmentIds[0] })),
-      ...result.extraction.questions.map((item) => ({ kind: "question" as const, content: item.question, fragmentId: item.fragmentIds[0] })),
-    ].map((item) => ({ id: randomUUID(), captureId: record.id, ...item, origin: "ai_inference" as const, createdAt }));
-    const proposals = result.extraction.relationSuggestions.map((relation) => ({
-      id: randomUUID(), captureId: record.id, targetCaptureId: relation.targetCaptureId,
-      relationType: relation.relationType, confidence: relation.confidence,
-      evidenceFragmentIds: relation.fragmentIds.filter((id) => fragmentById.has(id)),
-      rationale: relation.rationale, createdAt,
-    }));
-    await this.store.saveModelResult(knowledgeItems, proposals, {
+    await this.store.saveAgentRun({
       ...running, status: "succeeded", retryCount: result.retryCount, latencyMs: result.latencyMs,
       inputTokens: result.usage?.inputTokens, outputTokens: result.usage?.outputTokens,
       estimatedCostUsd: result.estimatedCostUsd,

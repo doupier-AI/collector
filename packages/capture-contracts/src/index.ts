@@ -150,7 +150,7 @@ export interface TopicRecord {
 
 export interface TopicWorkspace {
   topic: TopicRecord;
-  captures: InboxItem[];
+  captures: CaptureRecord[];
   relations: RelationRecord[];
 }
 
@@ -356,6 +356,42 @@ export interface PendingMaterialChange {
   changeType: "added" | "modified" | "removed";
   materialId: string;
   detectedAt: string;
+}
+
+
+// ── Backup & Export (Issue 11) ──────────────────────────────
+
+export interface BackupManifest {
+  manifestVersion: 1;
+  createdAt: string;
+  checksums: { sqlite: string; artifacts: Record<string, string> };
+  exportedTopicIds: string[];
+  exportedMaterialCount: number;
+  collectionVersion: string;
+}
+
+export interface BackupRecord {
+  id: string;
+  path: string;
+  sizeBytes: number;
+  manifestVersion: number;
+  createdAt: string;
+  status: "completed" | "failed";
+  errorMessage?: string;
+}
+
+export interface ExportRequest {
+  includeArtifacts: boolean;
+  format: "markdown" | "json" | "both";
+  topicIds?: string[];
+}
+
+export interface ExportResult {
+  id: string;
+  path: string;
+  sizeBytes: number;
+  manifest: BackupManifest;
+  createdAt: string;
 }
 
 export const MAX_ARTIFACT_BYTES = 20 * 1024 * 1024;

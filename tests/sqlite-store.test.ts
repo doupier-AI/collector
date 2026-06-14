@@ -93,7 +93,7 @@ test("workflow migration creates formal versioned tables", async (t) => {
   const database = new DatabaseSync(databasePath, { readOnly: true });
   const tables = (database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name);
   for (const table of ["workflow_runs", "workflow_steps", "model_calls", "recent_cluster_snapshots"]) assert.ok(tables.includes(table));
-  assert.equal((database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 8);
+  assert.equal((database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 9);
   database.close();
   t.after(() => rm(root, { recursive: true, force: true }));
 });

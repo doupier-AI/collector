@@ -24,6 +24,7 @@ export interface CollectorStore {
   saveCapture(record: CaptureRecord): Promise<void>;
   saveCaptureWithTopicMembership(record: CaptureRecord, topicId: string): Promise<void>;
   saveArtifact(record: ArtifactRecord): Promise<void>;
+  saveFragments(fragments: FragmentRecord[]): Promise<void>;
   saveEnrichment(fragments: FragmentRecord[], items: KnowledgeItemRecord[], proposal: ReviewProposalRecord): Promise<void>;
   saveReviewProposal(record: ReviewProposalRecord): Promise<void>;
   saveAgentRun(record: AgentRunRecord): Promise<void>;
@@ -68,6 +69,8 @@ export interface CollectorStore {
   detectMaterialChanges(topicId: string): { added: string[]; removed: string[] };
   saveUpdatePreview(record: import("@collector/capture-contracts").UpdatePreview): Promise<void>;
   getLatestUpdatePreview(topicId: string): import("@collector/capture-contracts").UpdatePreview | undefined;
+  saveBackupRecord(record: import("@collector/capture-contracts").BackupRecord): Promise<void>;
+  listBackupRecords(): import("@collector/capture-contracts").BackupRecord[];
   close?(): void;
 }
 
@@ -146,6 +149,14 @@ export class SqliteStore implements CollectorStore {
     return { ...row, affectedSectionIds: JSON.parse(row.affected_section_ids_json), proposedAdditions: JSON.parse(row.proposed_additions_json), proposedModifications: JSON.parse(row.proposed_modifications_json), keptSections: JSON.parse(row.kept_sections_json), conflicts: JSON.parse(row.conflicts_json) };
   }
 
+    async saveBackupRecord(record: import("@collector/capture-contracts").BackupRecord): Promise<void> {
+    this.db().prepare("INSERT OR REPLACE INTO backup_records (id, path, size_bytes, manifest_version, created_at, status, error_message) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(record.id, record.path, record.sizeBytes, record.manifestVersion, record.createdAt, record.status, record.errorMessage ?? null);
+  }
+  listBackupRecords(): import("@collector/capture-contracts").BackupRecord[] {
+    return this.db().prepare("SELECT id, path, size_bytes as sizeBytes, manifest_version as manifestVersion, created_at as createdAt, status, error_message as errorMessage FROM backup_records ORDER BY created_at DESC").all() as any[];
+  }
+
     close(): void {
     this.database?.close();
     this.database = undefined;
@@ -221,6 +232,12 @@ export class SqliteStore implements CollectorStore {
       for (const fragment of fragments) this.insertFragment(fragment);
       for (const item of items) this.insertKnowledgeItem(item);
       this.insertReviewProposal(proposal);
+    });
+  }
+
+  async saveFragments(fragments: FragmentRecord[]): Promise<void> {
+    this.transaction(() => {
+      for (const fragment of fragments) this.insertFragment(fragment);
     });
   }
 
@@ -621,6 +638,13 @@ export class SqliteStore implements CollectorStore {
       });
       version = 8;
     }
+    if (version < 9) {
+      this.transaction(() => {
+        this.db().exec("CREATE TABLE IF NOT EXISTS backup_records (id TEXT PRIMARY KEY, path TEXT NOT NULL, size_bytes INTEGER NOT NULL, manifest_version INTEGER NOT NULL, created_at TEXT NOT NULL, status TEXT NOT NULL, error_message TEXT)");
+        this.db().exec("INSERT INTO schema_migrations(version, applied_at) VALUES (9, datetime('now'))");
+      });
+      version = 9;
+    }
 
   }
 
@@ -778,6 +802,7 @@ export class JsonStore implements CollectorStore {
   async saveCaptureWithTopicMembership(record: CaptureRecord, topicId: string) { this.data.captures[record.id] = record; this.data.captureByClientId[record.clientCaptureId] = record.id; this.data.captureByChecksum[record.checksum] = record.id; this.data.topicMemberships ??= {}; this.data.topicMemberships[`${topicId}:${record.id}`] = { topicId, captureId: record.id, createdAt: record.createdAt }; await this.flush(); }
   async saveArtifact(record: ArtifactRecord) { this.data.artifacts[record.id] = record; await this.flush(); }
   async saveEnrichment(fragments: FragmentRecord[], items: KnowledgeItemRecord[], proposal: ReviewProposalRecord) { for (const fragment of fragments) this.data.fragments[fragment.id] = fragment; for (const item of items) this.data.knowledgeItems[item.id] = item; this.data.reviewProposals[proposal.id] = proposal; await this.flush(); }
+  async saveFragments(fragments: FragmentRecord[]) { for (const fragment of fragments) this.data.fragments[fragment.id] = fragment; await this.flush(); }
   async saveReviewProposal(record: ReviewProposalRecord) { this.data.reviewProposals[record.id] = record; await this.flush(); }
   async saveAgentRun(record: AgentRunRecord) { this.data.agentRuns ??= {}; this.data.agentRuns[record.id] = record; await this.flush(); }
   async saveModelResult(items: KnowledgeItemRecord[], proposals: ReviewProposalRecord[], run: AgentRunRecord) { for (const item of items) this.data.knowledgeItems[item.id] = item; for (const proposal of proposals) this.data.reviewProposals[proposal.id] = proposal; this.data.agentRuns ??= {}; this.data.agentRuns[run.id] = run; await this.flush(); }
@@ -820,6 +845,8 @@ export class JsonStore implements CollectorStore {
   detectMaterialChanges(_topicId: string): { added: string[]; removed: string[] } { return { added: [], removed: [] }; }
   async saveUpdatePreview(_record: any): Promise<void> { throw new Error("Update previews require SQLite persistence"); }
   getLatestUpdatePreview(_topicId: string): any { return undefined; }
+  async saveBackupRecord(_record: any): Promise<void> { throw new Error("Backup requires SQLite persistence"); }
+  listBackupRecords(): any[] { return []; }
   listRevisions(captureId: string) { return Object.values(this.data.materialRevisions ?? {}).filter((r: any) => r.captureId === captureId).sort((a: any, b: any) => b.ordinal - a.ordinal); }
   async saveRevision(record: { id: string; captureId: string; content: string; ordinal: number; createdAt: string }) { this.data.materialRevisions ??= {}; this.data.materialRevisions[record.id] = record; await this.flush(); }
   async trashCapture(id: string, trashedAt: string) { const record = this.data.captures[id]; if (!record || (record as any).trashedAt) return false; (record as any).trashedAt = trashedAt; await this.flush(); return true; }

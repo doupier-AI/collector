@@ -1,5 +1,5 @@
 ﻿import { initCapture } from "./renderer.js";
-import { initWorkspace } from "./workspace-renderer.js";
+// TODO: workspace-renderer to be rewritten by Gemini
 import { initSettings } from "./settings-renderer.js";
 
 type Tab = "capture" | "workspace" | "settings";
@@ -24,7 +24,7 @@ function switchTab(tab: Tab) {
   if (tab === "workspace" && !workspaceInitialized) {
     workspaceInitialized = true;
     const root = document.querySelector<HTMLElement>("#section-workspace")!;
-    initWorkspace(root);
+    // initWorkspace(root); // TODO: re-enable after Gemini UI rewrite
   }
   if (tab === "settings" && !settingsInitialized) {
     settingsInitialized = true;
