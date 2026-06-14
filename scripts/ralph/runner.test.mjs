@@ -152,7 +152,8 @@ test("unauthorized implementation commits are removed without discarding their c
 test("Windows command resolution passes metacharacters as an argument, not shell text", () => {
   const invocation = resolveCommand("codex", ["--model", "model&echo injected"]);
   if (process.platform === "win32") {
-    assert.equal(invocation.executable.toLowerCase().endsWith("powershell.exe"), true);
+    assert.equal(invocation.executable, process.execPath);
+    assert.match(invocation.args[0], /@openai[\\/]codex[\\/]bin[\\/]codex\.js$/);
     assert.equal(invocation.args.at(-1), "model&echo injected");
     assert.equal(invocation.args.includes("/c"), false);
   }

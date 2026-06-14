@@ -153,8 +153,20 @@ function findPowerShellShim(name) {
   return [appDataCandidate, ...candidates].find((path) => path && existsSync(path));
 }
 
+function findCodexJavaScriptEntry() {
+  const shim = findPowerShellShim("codex");
+  if (!shim) return undefined;
+  const entry = join(shim, "..", "node_modules", "@openai", "codex", "bin", "codex.js");
+  return existsSync(entry) ? entry : undefined;
+}
+
 export function resolveCommand(name, args) {
-  if (process.platform === "win32" && (name === "npm" || name === "codex")) {
+  if (process.platform === "win32" && name === "codex") {
+    const entry = findCodexJavaScriptEntry();
+    if (!entry) throw new Error("Unable to locate the @openai/codex JavaScript entry point");
+    return { executable: process.execPath, args: [entry, ...args] };
+  }
+  if (process.platform === "win32" && name === "npm") {
     const shim = findPowerShellShim(name);
     if (!shim) throw new Error(`Unable to locate ${name}.ps1 on PATH`);
     const powershell = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
