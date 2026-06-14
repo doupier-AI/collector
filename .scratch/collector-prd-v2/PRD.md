@@ -30,6 +30,9 @@ Resolution: open
 ## Issues
 
 1. [`01-recoverable-local-workflow.md`](issues/01-recoverable-local-workflow.md)
+   - [`01a-publish-local-recent-snapshot.md`](issues/01a-publish-local-recent-snapshot.md)
+   - [`01b-recover-local-recent-workflow.md`](issues/01b-recover-local-recent-workflow.md)
+   - [`01c-connect-recent-collection-ui.md`](issues/01c-connect-recent-collection-ui.md)
 2. [`02-single-window-application-shell.md`](issues/02-single-window-application-shell.md)
 3. [`03-material-library-and-search.md`](issues/03-material-library-and-search.md)
 4. [`04-material-history-and-trash.md`](issues/04-material-history-and-trash.md)
