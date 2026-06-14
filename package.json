@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "build": "tsc -b && node scripts/build-assets.mjs",
-    "test": "npm run build && node --test dist-tests/**/*.test.js",
+    "test": "npm run build && node --test dist-tests/**/*.test.js scripts/ralph/*.test.mjs",
     "test:gui": "npm run build && node scripts/gui-smoke.mjs",
     "prototype:shell": "electron scripts/open-single-shell-prototype.mjs",
     "dev:api": "npm run build && node apps/api/dist/server.js",
@@ -17,7 +17,10 @@
     "clean": "node scripts/clean.mjs",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
-    "pack:local": "npm run build && node scripts/pack-local.mjs"
+    "pack:local": "npm run build && node scripts/pack-local.mjs",
+    "ralph:dry": "powershell -ExecutionPolicy Bypass -File scripts/ralph/once.ps1 -DryRun",
+    "ralph:once": "powershell -ExecutionPolicy Bypass -File scripts/ralph/once.ps1",
+    "ralph:afk": "powershell -ExecutionPolicy Bypass -File scripts/ralph/afk.ps1"
   },
   "devDependencies": {
     "@electron/packager": "^20.0.1",
