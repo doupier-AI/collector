@@ -40,16 +40,48 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (request.method === "GET" && workflowRunMatch) return json(response, 200, service.getWorkflowRun(decodeURIComponent(workflowRunMatch[1])));
       const cancelMatch = url.pathname.match(/^\/v1\/recent-organization\/runs\/([^/]+)\/cancel$/);
       if (request.method === "POST" && cancelMatch) return json(response, 200, service.cancelWorkflowRun(decodeURIComponent(cancelMatch[1])));
+      // ── Materials ────────────────────────────────────────────────
+      if (request.method === "GET" && url.pathname === "/v1/materials") {
+        const page = Number(url.searchParams.get("page") ?? "1");
+        const limit = Number(url.searchParams.get("limit") ?? "50");
+        return json(response, 200, service.listMaterials(url.searchParams.get("q") ?? undefined, page, limit, url.searchParams.get("trash") === "true"));
+      }
+      const materialMatch = url.pathname.match(/^\/v1\/materials\/([^/]+)$/);
+      if (request.method === "GET" && materialMatch) return json(response, 200, service.getMaterial(decodeURIComponent(materialMatch[1])));
+      // Material revisions
+      const revisionMatch = url.pathname.match(/^\/v1\/materials\/([^/]+)\/revisions$/);
+      if (request.method === "GET" && revisionMatch) return json(response, 200, service.listRevisions(decodeURIComponent(revisionMatch[1])));
+      if (request.method === "POST" && revisionMatch) {
+        const body = await readJson(request) as { content?: string };
+        if (!body.content) throw new ValidationError("content is required");
+        return json(response, 201, await service.editRevision(decodeURIComponent(revisionMatch[1]), body.content));
+      }
+      // Material trash & restore
+      const trashMatch = url.pathname.match(/^\/v1\/materials\/([^/]+)\/trash$/);
+      if (request.method === "PUT" && trashMatch) return json(response, 200, await service.trashMaterial(decodeURIComponent(trashMatch[1])));
+      const restoreMatch = url.pathname.match(/^\/v1\/materials\/([^/]+)\/restore$/);
+      if (request.method === "PUT" && restoreMatch) return json(response, 200, await service.restoreMaterial(decodeURIComponent(restoreMatch[1])));
+      // Material delete impact & permanent delete
+      const impactMatch = url.pathname.match(/^\/v1\/materials\/([^/]+)\/delete-impact$/);
+      if (request.method === "GET" && impactMatch) return json(response, 200, service.getDeleteImpact(decodeURIComponent(impactMatch[1])));
+      if (request.method === "DELETE" && materialMatch) {
+        const acknowledge = url.searchParams.get("acknowledgeImpact") === "true";
+        const result = await service.permanentDelete(decodeURIComponent(materialMatch[1]), acknowledge);
+        if ((result as any).impactBlocked) return json(response, 409, { error: { code: "impact_exists", message: "This material has downstream impact. Review impact and retry with ?acknowledgeImpact=true" } });
+        return json(response, 200, result);
+      }
+
       if (request.method === "GET" && url.pathname === "/v1/relations") return json(response, 200, service.listRelations(url.searchParams.get("captureId") ?? undefined));
       if (request.method === "GET" && url.pathname === "/v1/topics") return json(response, 200, service.listTopics());
       if (request.method === "POST" && url.pathname === "/v1/topics") {
-        const body = await readJson(request) as { title?: string; sourceCaptureId?: string; sourceAgentRunId?: string; evidenceFragmentIds?: string[] };
+        const body = await readJson(request) as { title?: string; sourceCaptureId?: string; sourceAgentRunId?: string; evidenceFragmentIds?: string[]; materialIds?: string[] };
         const hasSourceField = body.sourceCaptureId !== undefined || body.sourceAgentRunId !== undefined || body.evidenceFragmentIds !== undefined;
         if (hasSourceField && (!body.sourceCaptureId || !body.sourceAgentRunId || !body.evidenceFragmentIds)) throw new ValidationError("Topic suggestion source is incomplete");
         const source = body.sourceCaptureId && body.sourceAgentRunId && body.evidenceFragmentIds
           ? { captureId: body.sourceCaptureId, agentRunId: body.sourceAgentRunId, evidenceFragmentIds: body.evidenceFragmentIds }
           : undefined;
-        return json(response, 201, await service.createTopic(body.title ?? "", source));
+        const secondArg = source ?? body.materialIds;
+        return json(response, 201, await service.createTopic(body.title ?? "", secondArg as any));
       }
       if (request.method === "POST" && url.pathname === "/v1/captures/preflight") {
         return json(response, 200, service.preflight(await readJson(request)));
@@ -76,6 +108,15 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       }
       const relationMatch = url.pathname.match(/^\/v1\/relations\/([^/]+)\/revoke$/);
       if (request.method === "POST" && relationMatch) return json(response, 200, await service.revokeRelation(decodeURIComponent(relationMatch[1])));
+      if (request.method === "POST" && url.pathname === "/v1/topics/from-cluster") {
+        const body = await readJson(request) as { clusterSnapshotId?: string; clusterIndex?: number; title?: string; materialIds?: string[] };
+        if (!body.clusterSnapshotId) throw new ValidationError("clusterSnapshotId is required");
+        if (body.clusterIndex === undefined || body.clusterIndex < 0) throw new ValidationError("clusterIndex is required");
+        if (!body.title) throw new ValidationError("title is required");
+        return json(response, 201, await service.promoteClusterToTopic(body.clusterSnapshotId, body.clusterIndex, body.title, body.materialIds));
+      }
+      const topicSuggestionsMatch = url.pathname.match(/^\/v1\/topics\/([^/]+)\/suggestions$/);
+      if (request.method === "GET" && topicSuggestionsMatch) return json(response, 200, service.getTopicSuggestions(decodeURIComponent(topicSuggestionsMatch[1])));
       const topicMatch = url.pathname.match(/^\/v1\/topics\/([^/]+)$/);
       if (request.method === "POST" && topicMatch) {
         const body = await readJson(request) as { title?: string; status?: "active" | "archived" };
@@ -156,5 +197,5 @@ function setCors(request: IncomingMessage, response: ServerResponse) {
     response.setHeader("Vary", "Origin");
   }
   response.setHeader("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key, X-File-Name, Authorization");
-  response.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  response.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
 }

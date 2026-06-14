@@ -1,0 +1,45 @@
+﻿  listMaterials(query?: string, page?: number, limit?: number): { items: Array<{ id: string; title: string; sourceType: string; capturedAt: string; snippet: string; hasSource: boolean }>; total: number } {
+    const all = this.store.listCaptures()
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const q = query?.trim().toLowerCase();
+    const filtered = q
+      ? all.filter(c => (c.content ?? "").toLowerCase().includes(q) || (c.sourceTitle ?? "").toLowerCase().includes(q) || (c.sourceUrl ?? "").toLowerCase().includes(q))
+      : all;
+    const total = filtered.length;
+    const p = page ?? 1;
+    const l = limit ?? 50;
+    const items = filtered.slice((p - 1) * l, p * l).map(c => ({
+      id: c.id,
+      title: materialTitle(c),
+      sourceType: c.captureType,
+      capturedAt: c.capturedAt,
+      snippet: (c.content ?? c.sourceUrl ?? "").slice(0, 200),
+      hasSource: Boolean(c.sourceUrl || c.locator?.kind === "file" || c.locator?.kind === "browser"),
+    }));
+    return { items, total };
+  }
+
+  getMaterial(id: string): {
+    id: string; title: string; sourceType: string; capturedAt: string;
+    content: string; sourceUrl?: string; fileName?: string; pageNumber?: number;
+    evidenceGrade: string; processingStatus: string;
+    fragments: Array<{ text: string; locator: Record<string, unknown> }>;
+  } {
+    const record = this.store.getCapture(id);
+    if (!record) throw new NotFoundError("Material not found");
+    const fragments = this.store.listFragments(id);
+    return {
+      id: record.id,
+      title: materialTitle(record),
+      sourceType: record.captureType,
+      capturedAt: record.capturedAt,
+      content: record.content ?? "",
+      sourceUrl: record.sourceUrl,
+      fileName: record.locator?.kind === "file" ? record.locator.fileName : undefined,
+      pageNumber: record.locator?.kind === "file" ? record.locator.pageNumber : undefined,
+      evidenceGrade: record.evidenceGrade,
+      processingStatus: record.status,
+      fragments: fragments.map(f => ({ text: f.text, locator: (f.locator ?? {}) as Record<string, unknown> })),
+    };
+  }
+

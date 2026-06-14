@@ -69,6 +69,7 @@ interface StoreData {
   topics?: Record<string, TopicRecord>;
   topicMemberships?: Record<string, { topicId: string; captureId: string; createdAt: string }>;
   settings?: Record<string, string>;
+  materialRevisions?: Record<string, { id: string; captureId: string; content: string; ordinal: number; createdAt: string }>;
 }
 
 const EMPTY_DATA: StoreData = {
@@ -613,7 +614,13 @@ export class JsonStore implements CollectorStore {
   completeWorkflowStep(_step: WorkflowStepRecord, _run: WorkflowRunRecord, _snapshot?: RecentClusterSnapshotRecord): boolean { return false; }
   failWorkflowStep(_step: WorkflowStepRecord, _run: WorkflowRunRecord): boolean { return false; }
   cancelWorkflowRun(_run: WorkflowRunRecord): boolean { return false; }
-  private flush() { this.writeQueue = this.writeQueue.then(async () => { const temporaryPath = `${this.filePath}.tmp`; await writeFile(temporaryPath, JSON.stringify(this.data, null, 2), "utf8"); await rename(temporaryPath, this.filePath); }); return this.writeQueue; }
+  listRevisions(captureId: string) { return Object.values(this.data.materialRevisions ?? {}).filter((r: any) => r.captureId === captureId).sort((a: any, b: any) => b.ordinal - a.ordinal); }
+  async saveRevision(record: { id: string; captureId: string; content: string; ordinal: number; createdAt: string }) { this.data.materialRevisions ??= {}; this.data.materialRevisions[record.id] = record; await this.flush(); }
+  async trashCapture(id: string, trashedAt: string) { const record = this.data.captures[id]; if (!record || (record as any).trashedAt) return false; (record as any).trashedAt = trashedAt; await this.flush(); return true; }
+  async restoreCapture(id: string) { const record = this.data.captures[id]; if (!record || !(record as any).trashedAt) return false; delete (record as any).trashedAt; await this.flush(); return true; }
+  async deleteCapture(id: string) { const record = this.data.captures[id]; if (!record) return false; delete this.data.captures[id]; delete this.data.captureByClientId[record.clientCaptureId]; delete this.data.captureByChecksum[record.checksum]; for (const key of Object.keys(this.data.fragments)) { if (this.data.fragments[key].captureId === id) delete this.data.fragments[key]; } for (const key of Object.keys(this.data.knowledgeItems)) { if (this.data.knowledgeItems[key].captureId === id) delete this.data.knowledgeItems[key]; } for (const key of Object.keys(this.data.reviewProposals)) { if (this.data.reviewProposals[key].captureId === id) delete this.data.reviewProposals[key]; } for (const key of Object.keys(this.data.agentRuns ?? {})) { if (this.data.agentRuns![key].captureId === id) delete this.data.agentRuns![key]; } for (const key of Object.keys(this.data.relations ?? {})) { const r = this.data.relations![key]; if (r.sourceCaptureId === id || r.targetCaptureId === id) delete this.data.relations![key]; } for (const key of Object.keys(this.data.topicMemberships ?? {})) { if (this.data.topicMemberships![key].captureId === id) delete this.data.topicMemberships![key]; } if (this.data.materialRevisions) { for (const key of Object.keys(this.data.materialRevisions)) { if (this.data.materialRevisions[key].captureId === id) delete this.data.materialRevisions[key]; } } await this.flush(); return true; }
+  getDeleteImpact(captureId: string) { const memberships = Object.values(this.data.topicMemberships ?? {}).filter(m => m.captureId === captureId).map(m => { const topic = this.data.topics?.[m.topicId]; return { topicId: m.topicId, topicTitle: topic?.title ?? "(unnamed)" }; }); const workflowInputs: Array<{ workflowRunId: string; workflowType: string }> = []; const citationCount = Object.values(this.data.relations ?? {}).filter(r => (r.sourceCaptureId === captureId || r.targetCaptureId === captureId) && r.status === "active").length; const hasNoImpact = memberships.length === 0 && workflowInputs.length === 0 && citationCount === 0; return { topicMemberships: memberships, workflowInputs, citationCount, hasNoImpact }; }
+    private flush() { this.writeQueue = this.writeQueue.then(async () => { const temporaryPath = `${this.filePath}.tmp`; await writeFile(temporaryPath, JSON.stringify(this.data, null, 2), "utf8"); await rename(temporaryPath, this.filePath); }); return this.writeQueue; }
 }
 
 export function defaultDataPaths(root = join(process.cwd(), ".collector-data")) {

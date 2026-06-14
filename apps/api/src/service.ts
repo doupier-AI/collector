@@ -294,8 +294,10 @@ export class CaptureService {
     return updated;
   }
 
-  async createTopic(title: string, source?: { captureId: string; agentRunId: string; evidenceFragmentIds: string[] }): Promise<TopicRecord> {
+  async createTopic(title: string, secondArg?: { captureId: string; agentRunId: string; evidenceFragmentIds: string[] } | string[]): Promise<TopicRecord> {
     if (!title.trim()) throw new ValidationError("title is required");
+    const source = Array.isArray(secondArg) ? undefined : secondArg;
+    const materialIds = Array.isArray(secondArg) ? secondArg : undefined;
     const existingSuggestion = source && this.store.listTopics().find((topic) => topic.sourceAgentRunId === source.agentRunId && topic.title === title.trim());
     if (existingSuggestion) return existingSuggestion;
     if (source && !this.store.getCapture(source.captureId)) throw new ValidationError("Unknown source capture");
@@ -311,6 +313,13 @@ export class CaptureService {
       createdAt: now, updatedAt: now,
     };
     if (source) await this.store.saveTopicWithMembership(topic, source.captureId);
+    else if (materialIds) {
+      await this.store.saveTopic(topic);
+      for (const captureId of materialIds) {
+        if (!this.store.getCapture(captureId)) continue;
+        await this.store.saveTopicMembership(topic.id, captureId, now);
+      }
+    }
     else await this.store.saveTopic(topic);
     return topic;
   }
@@ -495,6 +504,135 @@ export class CaptureService {
       output: { summary: result.extraction.summary, topicSuggestions: result.extraction.topicSuggestions }, completedAt,
     });
   }
+
+  // ── Materials (Issue 03) ──────────────────────────────────────────
+  listMaterials(query?: string, page?: number, limit?: number, trash?: boolean) {
+    const all = this.store.listCaptures()
+      .filter((c: any) => trash ? Boolean(c.trashedAt) : !c.trashedAt)
+      .sort((a: any, b: any) => b.createdAt.localeCompare(a.createdAt));
+    const q = query?.trim().toLowerCase();
+    const filtered = q
+      ? all.filter((c: any) => (c.content ?? "").toLowerCase().includes(q) || (c.sourceTitle ?? "").toLowerCase().includes(q) || (c.sourceUrl ?? "").toLowerCase().includes(q))
+      : all;
+    const total = filtered.length;
+    const p = page ?? 1;
+    const l = limit ?? 50;
+    const items = filtered.slice((p - 1) * l, p * l).map((c: any) => ({
+      id: c.id,
+      title: materialTitle(c),
+      sourceType: c.captureType,
+      capturedAt: c.capturedAt,
+      snippet: (c.content ?? c.sourceUrl ?? "").slice(0, 200),
+      hasSource: Boolean(c.sourceUrl || c.locator?.kind === "file" || c.locator?.kind === "browser"),
+      trashedAt: c.trashedAt,
+    }));
+    return { items, total };
+  }
+
+  getMaterial(id: string) {
+    const record = this.store.getCapture(id);
+    if (!record) throw new NotFoundError("Material not found");
+    const fragments = this.store.listFragments(id);
+    const revisions = (this.store as any).listRevisions(id);
+    const revisionCount = revisions.length;
+    const trashed = Boolean((record as any).trashedAt);
+    const latestRevision = revisions[0];
+    const content = latestRevision ? latestRevision.content : (record.content ?? "");
+    return {
+      id: record.id,
+      title: materialTitle(record),
+      sourceType: record.captureType,
+      capturedAt: record.capturedAt,
+      content,
+      sourceUrl: record.sourceUrl,
+      fileName: record.locator?.kind === "file" ? (record.locator as any).fileName : undefined,
+      pageNumber: record.locator?.kind === "file" ? (record.locator as any).pageNumber : undefined,
+      evidenceGrade: record.evidenceGrade,
+      processingStatus: record.status,
+      trashedAt: (record as any).trashedAt,
+      trashed,
+      revisionCount,
+      fragments: fragments.map(f => ({ text: f.text, locator: (f.locator ?? {}) as Record<string, unknown> })),
+    };
+  }
+
+  // ── Revisions (Issue 04) ──────────────────────────────────────────
+  listRevisions(materialId: string) {
+    if (!this.store.getCapture(materialId)) throw new NotFoundError("Material not found");
+    return (this.store as any).listRevisions(materialId);
+  }
+
+  async editRevision(materialId: string, content: string) {
+    const record = this.store.getCapture(materialId);
+    if (!record) throw new NotFoundError("Material not found");
+    const existing = (this.store as any).listRevisions(materialId);
+    const ordinal = (existing[0]?.ordinal ?? 0) + 1;
+    const revision = { id: randomUUID(), captureId: materialId, content, ordinal, createdAt: new Date().toISOString() };
+    await (this.store as any).saveRevision(revision);
+    return revision;
+  }
+
+  async trashMaterial(id: string) {
+    const ok = await (this.store as any).trashCapture(id, new Date().toISOString());
+    if (!ok) throw new NotFoundError("Material not found or already trashed");
+    return { trashed: true };
+  }
+
+  async restoreMaterial(id: string) {
+    const ok = await (this.store as any).restoreCapture(id);
+    if (!ok) throw new NotFoundError("Material not found or not trashed");
+    return { restored: true };
+  }
+
+  getDeleteImpact(id: string) {
+    if (!this.store.getCapture(id)) throw new NotFoundError("Material not found");
+    return (this.store as any).getDeleteImpact(id);
+  }
+
+  async permanentDelete(id: string, acknowledge?: boolean) {
+    if (!this.store.getCapture(id)) throw new NotFoundError("Material not found");
+    if (!acknowledge) {
+      const impact = (this.store as any).getDeleteImpact(id);
+      if (!impact.hasNoImpact) return { impactBlocked: true };
+    }
+    await (this.store as any).deleteCapture(id);
+    return { deleted: true };
+  }
+
+  // ── Topic Promotion (Issue 06) ────────────────────────────────────
+  async promoteClusterToTopic(clusterSnapshotId: string, clusterIndex: number, title: string, materialIds: string[] | undefined) {
+    if (!title?.trim()) throw new ValidationError("title is required");
+    const ids = materialIds ?? [];
+    if (!ids.length) throw new ValidationError("At least one material is required");
+    const now = new Date().toISOString();
+    const topic: TopicRecord = {
+      id: randomUUID(), title: title.trim(), status: "active", createdAt: now, updatedAt: now,
+    };
+    await this.store.saveTopic(topic);
+    for (const captureId of ids) {
+      if (!this.store.getCapture(captureId)) throw new NotFoundError("Material not found: " + captureId);
+      await this.store.saveTopicMembership(topic.id, captureId, now);
+    }
+    return topic;
+  }
+
+  getTopicSuggestions(topicId: string) {
+    const topic = this.store.getTopic(topicId);
+    if (!topic) throw new NotFoundError("Topic not found");
+    const memberIds = new Set(this.store.listTopicCaptureIds(topicId));
+    return this.store.listCaptures()
+      .filter((c: any) => !c.trashedAt && !memberIds.has(c.id))
+      .slice(0, 10)
+      .map((c: any) => ({ id: c.id, title: materialTitle(c), snippet: (c.content ?? "").slice(0, 200) }));
+  }
+}
+
+function materialTitle(record: CaptureRecord): string {
+  let urlSlug: string | undefined;
+  if (record.sourceUrl) {
+    try { urlSlug = new URL(record.sourceUrl).pathname.split("/").pop()?.split("?")[0]; } catch { /* invalid URL */ }
+  }
+  return record.sourceTitle || urlSlug || (record.locator?.kind === "file" ? ((record.locator as any)?.fileName ?? "Untitled File") : undefined) || (record.content ?? "").slice(0, 80).replace(/\s+/g, " ").trim() || "Untitled";
 }
 
 export function checksumCapture(input: CaptureInput): string {

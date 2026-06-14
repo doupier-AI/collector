@@ -80,6 +80,7 @@ export interface CaptureRecord extends CaptureInput {
   evidenceGrade: EvidenceGrade;
   preflight: PreflightEvaluation;
   createdAt: string;
+  trashedAt?: string;
 }
 
 export interface FragmentRecord {

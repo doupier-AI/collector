@@ -109,6 +109,27 @@ try {
   })()`);
   console.log("AI config:", JSON.stringify(aiConfig));
 
+  // Stage 5: Recent organization
+  console.log("GUI smoke: switching to recent organization");
+  await evaluate(cdp, "document.querySelector('#nav-recent').click()");
+  await delay(500);
+  await waitFor(async () => await evaluate(cdp, "document.querySelector('#recent-pane').style.display !== 'none'"), "recent pane visible");
+  
+  console.log("GUI smoke: triggering recent organization");
+  await evaluate(cdp, "document.querySelector('#organize-button').click()");
+  
+  // Wait for completion - polling runs in the renderer
+  await waitFor(async () => {
+    var text = await evaluate(cdp, "document.querySelector('#organize-status').textContent");
+    return text && text.includes("完成");
+  }, "recent organization completed", 60);
+  console.log("GUI smoke: recent organization completed");
+  
+  // Verify snapshot via SQLite
+  var snaps = await readSnapshots(dataDir);
+  console.log("Recent snapshots: " + snaps.length);
+  if (snaps.length < 1) throw new Error("Expected at least 1 recent snapshot");
+
   // Final report
   const store = await readStore(dataDir);
   console.log(JSON.stringify({
@@ -187,6 +208,15 @@ async function readStore(directory) {
     return { captures, artifacts };
   } finally { database.close(); }
 }
+
+async function readSnapshots(directory) {
+  var db = new DatabaseSync(join(directory, "collector.sqlite"), { readOnly: true });
+  try {
+    return db.prepare("SELECT id, record_json FROM recent_cluster_snapshots ORDER BY publication_sequence DESC").all()
+      .map(function(row) { return JSON.parse(row.record_json); });
+  } finally { db.close(); }
+}
+
 
 async function waitFor(predicate, label) {
   for (let i = 0; i < 50; i += 1) {
