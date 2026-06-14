@@ -35,4 +35,3 @@ Resolution: open
 - [`01a-publish-local-recent-snapshot.md`](01a-publish-local-recent-snapshot.md)
 
 ## Comments
-

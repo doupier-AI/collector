@@ -33,4 +33,3 @@ Resolution: open
 - [`02-single-window-application-shell.md`](02-single-window-application-shell.md)
 
 ## Comments
-

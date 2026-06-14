@@ -37,4 +37,3 @@ Resolution: open
 None - can start immediately.
 
 ## Comments
-
