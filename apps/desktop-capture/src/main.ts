@@ -72,11 +72,11 @@ function createShellWindow(): BrowserWindow {
       sandbox: process.env.COLLECTOR_GUI_NO_SANDBOX !== "1",
     },
   });
-  browserWindow.webContents.on("preload-error", (_event, preloadPath, error) => console.error(`Collector preload failed: ${preloadPath}`, error));
+  browserWindow.webContents.on("preload-error", (_event, preloadPath, error) => { console.error(`Collector preload failed: ${preloadPath}`, error); browserWindow.show(); });
   browserWindow.webContents.on("console-message", (details) => {
     if (details.level === "warning" || details.level === "error") console.error(`Collector renderer: ${details.message}`);
   });
-  void browserWindow.loadFile(join(__dirname, "shell.html"));
+  void browserWindow.loadFile(join(__dirname, "shell.html")); setTimeout(() => { if (!browserWindow.isDestroyed() && !browserWindow.isVisible()) browserWindow.show(); }, 5000);
   browserWindow.on("close", (event) => { if (!quitting) { event.preventDefault(); browserWindow.hide(); } });
   return browserWindow;
 }
