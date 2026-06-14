@@ -87,6 +87,8 @@ test("implementation prompt scopes a fresh agent to one issue and the TDD skill"
   assert.match(prompt, /.agents\/skills\/tdd\/SKILL\.md/);
   assert.match(prompt, /one issue/i);
   assert.match(prompt, /do not commit/i);
+  assert.match(prompt, /do not run the Collector project check.*outer runner performs/i);
+  assert.match(prompt, /Encoding UTF8/i);
   assert.doesNotMatch(prompt, /02-next-slice\.md/);
 });
 
@@ -98,7 +100,12 @@ test("Codex approval policy is placed before the exec subcommand", () => {
     sandbox: "workspace-write",
   });
 
-  assert.deepEqual(args.slice(0, 7), ["-a", "never", "--disable", "plugins", "--disable", "multi_agent", "exec"]);
+  assert.deepEqual(args.slice(0, 6), ["-a", "never", "--disable", "plugins", "--disable", "multi_agent"]);
+  if (process.platform === "win32") {
+    const execIndex = args.indexOf("exec");
+    assert.deepEqual(args.slice(execIndex - 2, execIndex), ["-c", "windows.sandbox=\"elevated\""]);
+  }
+  assert.ok(args.includes("exec"));
   assert.ok(args.includes("--ignore-user-config"));
   assert.equal(args.at(-1), "-");
 });

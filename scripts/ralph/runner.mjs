@@ -103,7 +103,9 @@ Execution rules:
 - Preserve unrelated user changes and local-first security boundaries.
 - Do not update issue metadata, do not commit, do not push, and do not invoke real cloud models.
 - If a product or interface decision is missing, stop and report needs_human instead of guessing.
-- Run focused checks while developing. The outer runner performs the final repository verification.
+- Use simple individual shell commands. Do not combine PowerShell commands with semicolons or start a nested PowerShell process.
+- When reading text with PowerShell, always pass -Encoding UTF8.
+- Run focused tests while developing. Do not run the Collector project check or GUI smoke; the outer runner performs those checks and final repository verification.
 
 Return only the structured result required by the supplied JSON schema.`;
 }
@@ -285,6 +287,9 @@ export function buildCodexArgs({ root, schemaPath, outputPath, model, sandbox })
     "-a", "never",
     "--disable", "plugins",
     "--disable", "multi_agent",
+  ];
+  if (process.platform === "win32") args.push("-c", "windows.sandbox=\"elevated\"");
+  args.push(
     "exec",
     "--ephemeral",
     "--ignore-user-config",
@@ -292,7 +297,7 @@ export function buildCodexArgs({ root, schemaPath, outputPath, model, sandbox })
     "-s", sandbox,
     "--output-schema", schemaPath,
     "--output-last-message", outputPath,
-  ];
+  );
   if (model) args.push("--model", model);
   args.push("-");
   return args;
