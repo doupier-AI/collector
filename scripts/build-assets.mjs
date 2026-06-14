@@ -1,4 +1,4 @@
-import { cp, mkdir, rm } from "node:fs/promises";
+﻿import { cp, mkdir, rm } from "node:fs/promises";
 
 const extensionBuild = new URL("../apps/browser-extension/build/", import.meta.url);
 await rm(extensionBuild, { recursive: true, force: true });
@@ -13,10 +13,8 @@ await cp(new URL("../apps/browser-extension/popup.html", import.meta.url), new U
 const desktopDist = new URL("../apps/desktop-capture/dist/", import.meta.url);
 await rm(new URL("preload.js", desktopDist), { force: true });
 await rm(new URL("preload.js.map", desktopDist), { force: true });
-await cp(new URL("../apps/desktop-capture/src/index.html", import.meta.url), new URL("index.html", desktopDist));
+await cp(new URL("../apps/desktop-capture/src/shell.html", import.meta.url), new URL("shell.html", desktopDist));
 await cp(new URL("../apps/desktop-capture/src/styles.css", import.meta.url), new URL("styles.css", desktopDist));
-await cp(new URL("../apps/desktop-capture/src/workspace.html", import.meta.url), new URL("workspace.html", desktopDist));
 await cp(new URL("../apps/desktop-capture/src/workspace.css", import.meta.url), new URL("workspace.css", desktopDist));
-await cp(new URL("../apps/desktop-capture/src/settings.html", import.meta.url), new URL("settings.html", desktopDist));
 await cp(new URL("../apps/desktop-capture/src/settings.css", import.meta.url), new URL("settings.css", desktopDist));
 console.log("Static assets built.");

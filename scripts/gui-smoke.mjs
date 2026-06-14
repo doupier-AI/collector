@@ -45,7 +45,7 @@ try {
   const cdp = await connectCdp(target.webSocketDebuggerUrl);
   await cdp.call("Runtime.enable");
   console.log("GUI smoke: waiting for preload bridge");
-  await waitFor(async () => await evaluate(cdp, "document.documentElement.dataset.collectorRenderer === 'ready'"), "renderer init");
+  await waitFor(async () => await evaluate(cdp, "document.querySelector('#section-capture.active') !== null"), "renderer init");
 
   // Stage 1: Text capture
   await evaluate(cdp, `(() => {
@@ -78,13 +78,11 @@ try {
     return artifact && capture;
   }, "file capture persisted");
 
-  // Stage 3: Navigate to workspace
-  const distDir = join(root, "apps", "desktop-capture", "dist").replace(/\\/g, "/");
-  const workspaceUrl = `file:///${distDir}/workspace.html`;
-  console.log("GUI smoke: navigating to workspace:", workspaceUrl);
-  await cdp.call("Page.enable");
-  await cdp.call("Page.navigate", { url: workspaceUrl });
-  await waitFor(async () => await evaluate(cdp, "document.documentElement.dataset.collectorWorkspace === 'ready'"), "workspace init");
+  // Stage 3: Navigate to workspace tab
+  console.log("GUI smoke: switching to workspace tab");
+  await evaluate(cdp, "document.querySelector('#nav-workspace').click()");
+  await delay(500);
+  await waitFor(async () => await evaluate(cdp, "document.querySelector('#section-workspace.active') !== null"), "workspace tab active");
   const wsBridge = await evaluate(cdp, "typeof window.collector?.workspace");
   console.log("Workspace bridge:", wsBridge);
   if (wsBridge !== "object") throw new Error("Workspace bridge not available");
@@ -96,11 +94,11 @@ try {
   console.log("Workspace data:", JSON.stringify(wsData));
   if (wsData.inboxCount < 2) throw new Error(`Expected at least 2 inbox items, got ${wsData.inboxCount}`);
 
-  // Stage 4: Navigate to settings
-  const settingsUrl = `file:///${distDir}/settings.html`;
-  console.log("GUI smoke: navigating to settings:", settingsUrl);
-  await cdp.call("Page.navigate", { url: settingsUrl });
-  await waitFor(async () => await evaluate(cdp, "document.documentElement.dataset.collectorSettings === 'ready'"), "settings init");
+  // Stage 4: Navigate to settings tab
+  console.log("GUI smoke: switching to settings tab");
+  await evaluate(cdp, "document.querySelector('#nav-settings').click()");
+  await delay(500);
+  await waitFor(async () => await evaluate(cdp, "document.querySelector('#section-settings.active') !== null"), "settings tab active");
   const settingsBridge = await evaluate(cdp, "typeof window.collector?.settings");
   console.log("Settings bridge:", settingsBridge);
   if (settingsBridge !== "object") throw new Error("Settings bridge not available");
@@ -135,7 +133,7 @@ async function waitForTarget(port) {
     try {
       const response = await fetch(`http://127.0.0.1:${port}/json/list`);
       const targets = await response.json();
-      const target = targets.find((t) => t.type === "page" && t.url.includes("index.html"));
+      const target = targets.find((t) => t.type === "page" && t.url.includes("shell.html"));
       if (target) return target;
     } catch (e) { lastError = e; }
     await delay(150);

@@ -1,4 +1,4 @@
-import type {
+﻿import type {
   ArtifactRecord,
   CaptureInput,
   CaptureRecord,
@@ -13,10 +13,10 @@ interface CaptureBridge {
   submit(input: CaptureInput): Promise<CaptureRecord>;
   upload(file: File): Promise<ArtifactRecord>;
   hide(): void;
-  openWorkspace(): void;
-  openSettings(): void;
+  navigate(tab: string): void;
   onFocus(callback: () => void): void;
   onShortcutError(callback: (shortcut: string) => void): void;
+  onModeChange(callback: (mode: string) => void): void;
 }
 
 interface WorkspaceBridge {
@@ -30,15 +30,14 @@ interface WorkspaceBridge {
   addTopicMember(topicId: string, captureId: string): Promise<unknown>;
   removeTopicMember(topicId: string, captureId: string): Promise<unknown>;
   deepAnalysis(captureId: string): Promise<unknown>;
-  openCapture(): void;
-  openSettings(): void;
+  navigateTo(tab: string): void;
 }
 
 interface SettingsBridge {
   get(): Promise<{ shortcut: string; ai: { consent: boolean; configured: boolean; provider?: string; model?: string; unavailable?: boolean } }>;
   saveAi(value: { consent: boolean; apiKey?: string }): Promise<{ consent: boolean; configured: boolean; provider?: string; model?: string }>;
   saveShortcut(value: string): Promise<{ shortcut: string }>;
-  openWorkspace(): void;
+  navigateTo(tab: string): void;
 }
 
 declare global {

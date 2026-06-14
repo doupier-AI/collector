@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, Tray, nativeImage, safeStorage } from "electron";
+﻿import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, Tray, nativeImage, safeStorage } from "electron";
 import type { Server } from "node:http";
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -17,19 +17,19 @@ if (process.env.COLLECTOR_DISABLE_GPU === "1") app.disableHardwareAcceleration()
 if (process.env.COLLECTOR_INSTANCE_ID) app.setPath("userData", join(app.getPath("userData"), instanceId.replace(/[^a-zA-Z0-9_-]/g, "_")));
 
 let client: CaptureClient;
-let captureWindow: BrowserWindow | undefined;
-let workspaceWindow: BrowserWindow | undefined;
-let settingsWindow: BrowserWindow | undefined;
+let shellWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let embeddedApi: Server | undefined;
 let embeddedService: CaptureService | undefined;
 let embeddedStore: CollectorStore | undefined;
 let shortcut = defaultShortcut;
+let compactMode = false;
 let quitting = false;
+let preCompactTab = "workspace";
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
-else app.on("second-instance", showCaptureWindow);
+else app.on("second-instance", showShellWindow);
 
 app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
@@ -38,22 +38,22 @@ app.whenReady().then(async () => {
   const masterToken = await loadMasterToken();
   embeddedApi = await ensureLocalApi(masterToken, await loadDeepSeekKey());
   client = new CaptureClient({ baseUrl: apiBaseUrl, token: masterToken });
-  captureWindow = createWindow("index.html", { width: 560, height: 370, title: "Collector", alwaysOnTop: true, resizable: true });
+  shellWindow = createShellWindow();
   const shortcutRegistered = registerShortcut(shortcut);
   tray = new Tray(createTrayIcon());
   tray.setToolTip("Collector");
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: "快速采集", click: showCaptureWindow },
-    { label: "知识工作台", click: showWorkspaceWindow },
-    { label: "设置", click: showSettingsWindow },
+    { label: "快速采集", click: () => enterCompactMode() },
+    { label: "知识工作台", click: () => showShellNormal("workspace") },
+    { label: "设置", click: () => showShellNormal("settings") },
     { label: "浏览器扩展配对", click: () => void showExtensionPairingCode() },
     { type: "separator" },
     { label: "退出", click: () => { quitting = true; app.quit(); } },
   ]));
-  tray.on("click", showCaptureWindow);
+  tray.on("click", () => enterCompactMode());
   if (!shortcutRegistered) {
-    showCaptureWindow();
-    captureWindow.webContents.once("did-finish-load", () => captureWindow?.webContents.send("capture:shortcut-error", shortcut));
+    showShellNormal("capture");
+    shellWindow.webContents.once("did-finish-load", () => shellWindow?.webContents.send("capture:shortcut-error", shortcut));
   }
 }).catch((error) => {
   console.error("Collector failed to start", error);
@@ -64,9 +64,9 @@ app.on("window-all-closed", () => { /* Tray owns the application lifecycle. */ }
 app.on("before-quit", () => { quitting = true; });
 app.on("will-quit", () => { globalShortcut.unregisterAll(); embeddedApi?.close(); embeddedStore?.close?.(); });
 
-function createWindow(fileName: string, options: { width: number; height: number; title: string; alwaysOnTop?: boolean; resizable?: boolean }): BrowserWindow {
+function createShellWindow(): BrowserWindow {
   const browserWindow = new BrowserWindow({
-    ...options, show: false, backgroundColor: "#0d0d0d", autoHideMenuBar: true,
+    width: 1240, height: 820, show: false, backgroundColor: "#0d0d0d", autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, "preload.cjs"), contextIsolation: true, nodeIntegration: false,
       sandbox: process.env.COLLECTOR_GUI_NO_SANDBOX !== "1",
@@ -76,31 +76,57 @@ function createWindow(fileName: string, options: { width: number; height: number
   browserWindow.webContents.on("console-message", (details) => {
     if (details.level === "warning" || details.level === "error") console.error(`Collector renderer: ${details.message}`);
   });
-  void browserWindow.loadFile(join(__dirname, fileName));
+  void browserWindow.loadFile(join(__dirname, "shell.html"));
   browserWindow.on("close", (event) => { if (!quitting) { event.preventDefault(); browserWindow.hide(); } });
   return browserWindow;
 }
 
-function showCaptureWindow(): void { captureWindow?.show(); captureWindow?.focus(); captureWindow?.webContents.send("capture:focus"); }
-function showWorkspaceWindow(): void {
-  workspaceWindow ??= createWindow("workspace.html", { width: 1240, height: 820, title: "Collector Workspace", resizable: true });
-  workspaceWindow.show(); workspaceWindow.focus();
+function enterCompactMode(): void {
+  if (!shellWindow) return;
+  preCompactTab = "workspace"; // will be restored on exit
+  compactMode = true;
+  shellWindow.setSize(560, 420);
+  shellWindow.center();
+  shellWindow.webContents.send("shell:mode", "compact");
+  showShellWindow();
 }
-function showSettingsWindow(): void {
-  settingsWindow ??= createWindow("settings.html", { width: 900, height: 680, title: "Collector Settings", resizable: true });
-  settingsWindow.show(); settingsWindow.focus();
+
+function exitCompactMode(): void {
+  if (!shellWindow) return;
+  compactMode = false;
+  shellWindow.setSize(1240, 820);
+  shellWindow.center();
+  shellWindow.webContents.send("shell:mode", "normal");
+}
+
+function showShellWindow(): void {
+  shellWindow?.show();
+  shellWindow?.focus();
+  shellWindow?.webContents.send("capture:focus");
+}
+
+function showShellNormal(tab: string): void {
+  if (compactMode) exitCompactMode();
+  shellWindow?.webContents.send("shell:navigate", tab);
+  showShellWindow();
 }
 
 function registerShortcut(accelerator: string): boolean {
   globalShortcut.unregister(shortcut);
-  const registered = globalShortcut.register(accelerator, showCaptureWindow);
+  const registered = globalShortcut.register(accelerator, () => {
+    if (compactMode) {
+      exitCompactMode();
+      shellWindow?.hide();
+    } else {
+      enterCompactMode();
+    }
+  });
   if (registered) shortcut = accelerator;
   return registered;
 }
 
 function assertTrustedRenderer(senderId: number): void {
-  const trusted = [captureWindow, workspaceWindow, settingsWindow].some((candidate) => candidate?.webContents.id === senderId);
-  if (!trusted) throw new Error("Untrusted IPC sender");
+  if (shellWindow?.webContents.id !== senderId) throw new Error("Untrusted IPC sender");
 }
 
 ipcMain.handle("capture:submit", async (event, input: CaptureInput) => { assertTrustedRenderer(event.sender.id); return client.createCapture(input); });
@@ -110,10 +136,8 @@ ipcMain.handle("capture:upload", async (event, file: { path: string; name: strin
   const bytes = await readFile(file.path);
   return client.uploadArtifact(new Blob([bytes], { type: file.type }), file.name);
 });
-ipcMain.on("capture:hide", (event) => { assertTrustedRenderer(event.sender.id); captureWindow?.hide(); });
-ipcMain.on("window:open-capture", showCaptureWindow);
-ipcMain.on("window:open-workspace", showWorkspaceWindow);
-ipcMain.on("window:open-settings", showSettingsWindow);
+ipcMain.on("shell:hide", () => { shellWindow?.hide(); });
+ipcMain.on("shell:navigate", (_event, tab: string) => { showShellNormal(tab); });
 
 ipcMain.handle("workspace:load", async (event) => { assertTrustedRenderer(event.sender.id); const [inbox, topics, relations] = await Promise.all([client.listInbox(), client.listTopics(), client.listRelations()]); return { inbox, topics, relations }; });
 ipcMain.handle("workspace:decide", async (event, id: string, decision: ReviewDecision) => { assertTrustedRenderer(event.sender.id); return client.decideReviewProposal(id, decision); });
@@ -198,9 +222,24 @@ async function loadDesktopPreferences(): Promise<{ shortcut?: string }> {
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return {}; throw error; }
 }
 async function saveDesktopPreferences(value: { shortcut: string }): Promise<void> {
-  await mkdir(app.getPath("userData"), { recursive: true }); await writeFile(join(app.getPath("userData"), "desktop-preferences.json"), JSON.stringify(value, null, 2), "utf8");
+  await mkdir(app.getPath("userData"), { recursive: true }); await writeFile(join(app.getPath("userData"), "desktop-preferences.json"), JSON.stringify(value), "utf8");
 }
-function createTrayIcon() {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" rx="8" fill="#111"/><path d="M9 9h14v14H9z" fill="none" stroke="#fff" stroke-width="2"/><path d="M12 13h8M12 17h6" stroke="#fff" stroke-width="2"/></svg>`;
-  return nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`);
+
+function createTrayIcon(): Electron.NativeImage {
+  const icon = nativeImage.createEmpty();
+  const size = 32;
+  const canvas = Buffer.alloc(size * size * 4, 0);
+  const radius = 10; const cx = 12; const cy = 13;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const offset = (y * size + x) * 4;
+      const dx = Math.abs(x - cx); const dy = Math.abs(y - cy);
+      const inside = (dx * dx + dy * dy) <= (radius * radius);
+      if (inside) {
+        canvas[offset] = 0x3b; canvas[offset + 1] = 0x82; canvas[offset + 2] = 0xf6; canvas[offset + 3] = 255;
+      }
+    }
+  }
+  icon.addRepresentation({ width: size, height: size, buffer: canvas, scaleFactor: 1.0 });
+  return icon;
 }

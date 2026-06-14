@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, webUtils } from "electron";
+﻿import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { ArtifactRecord, CaptureInput, CaptureRecord, ReviewDecision } from "@collector/capture-contracts";
 
 contextBridge.exposeInMainWorld("collector", {
@@ -7,11 +7,11 @@ contextBridge.exposeInMainWorld("collector", {
     upload: (file: File): Promise<ArtifactRecord> => ipcRenderer.invoke("capture:upload", {
       path: webUtils.getPathForFile(file), name: file.name, type: file.type, size: file.size,
     }),
-    hide: () => ipcRenderer.send("capture:hide"),
-    openWorkspace: () => ipcRenderer.send("window:open-workspace"),
-    openSettings: () => ipcRenderer.send("window:open-settings"),
+    hide: () => ipcRenderer.send("shell:hide"),
+    navigate: (tab: string) => ipcRenderer.send("shell:navigate", tab),
     onFocus: (callback: () => void) => ipcRenderer.on("capture:focus", callback),
     onShortcutError: (callback: (shortcut: string) => void) => ipcRenderer.on("capture:shortcut-error", (_event, shortcut) => callback(shortcut)),
+    onModeChange: (callback: (mode: string) => void) => ipcRenderer.on("shell:mode", (_event, mode) => callback(mode)),
   },
   workspace: {
     load: () => ipcRenderer.invoke("workspace:load"),
@@ -24,13 +24,12 @@ contextBridge.exposeInMainWorld("collector", {
     addTopicMember: (topicId: string, captureId: string) => ipcRenderer.invoke("workspace:add-topic-member", topicId, captureId),
     removeTopicMember: (topicId: string, captureId: string) => ipcRenderer.invoke("workspace:remove-topic-member", topicId, captureId),
     deepAnalysis: (captureId: string) => ipcRenderer.invoke("workspace:deep-analysis", captureId),
-    openCapture: () => ipcRenderer.send("window:open-capture"),
-    openSettings: () => ipcRenderer.send("window:open-settings"),
+    navigateTo: (tab: string) => ipcRenderer.send("shell:navigate", tab),
   },
   settings: {
     get: () => ipcRenderer.invoke("settings:get"),
     saveAi: (value: { consent: boolean; apiKey?: string }) => ipcRenderer.invoke("settings:save-ai", value),
     saveShortcut: (value: string) => ipcRenderer.invoke("settings:save-shortcut", value),
-    openWorkspace: () => ipcRenderer.send("window:open-workspace"),
+    navigateTo: (tab: string) => ipcRenderer.send("shell:navigate", tab),
   },
 });

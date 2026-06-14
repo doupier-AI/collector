@@ -1,0 +1,48 @@
+﻿<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'"><title>Collector</title><link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="workspace.css"><link rel="stylesheet" href="settings.css"></head>
+<body id="shell-body">
+  <nav id="shell-nav" class="shell-nav">
+    <div class="nav-brand">Collector</div>
+    <div class="nav-tabs">
+      <button id="nav-capture" class="nav-tab active" data-tab="capture">采集</button>
+      <button id="nav-workspace" class="nav-tab" data-tab="workspace">工作台</button>
+      <button id="nav-settings" class="nav-tab" data-tab="settings">设置</button>
+    </div>
+    <div class="nav-actions"><span id="compact-hint" class="compact-hint">Esc 退出采集模式</span></div>
+  </nav>
+  <div id="shell-content" class="shell-content">
+    <section id="section-capture" class="shell-section active">
+      <main class="capture-shell">
+        <form id="capture-form" class="composer">
+          <textarea id="content" autofocus aria-label="采集内容" placeholder="粘贴一段内容、一个链接，或拖入文件…"></textarea>
+          <div id="attachments" class="attachments" aria-live="polite"></div>
+          <footer class="composer-footer">
+            <div class="left-actions"><button id="attach" class="icon-button attach-button" type="button" title="添加文件">＋</button><span id="status" data-kind="ready" aria-live="polite">内容只会在你提交后保存</span></div>
+            <button id="submit-button" class="submit-button" type="submit" disabled><span>收集</span><kbd>Ctrl ↵</kbd></button>
+          </footer>
+          <input id="file-input" type="file" hidden multiple accept=".txt,.md,.pdf,.png,.jpg,.jpeg,.webp">
+        </form>
+      </main>
+    </section>
+    <section id="section-workspace" class="shell-section">
+      <main class="app-shell">
+        <aside class="sidebar"><div class="app-name"><span class="brand-mark">C</span><strong>Collector</strong></div><nav><button id="nav-inbox" class="nav-item active"><span>收件箱</span><b id="inbox-count">0</b></button><button id="nav-topics" class="nav-item"><span>主题</span><b id="topic-count">0</b></button></nav><div class="sidebar-spacer"></div></aside>
+        <section class="collection-pane"><header><div><span class="eyebrow">KNOWLEDGE</span><h1 id="collection-title">收件箱</h1></div><button id="refresh" class="icon-button" title="刷新">↻</button></header><input id="search" class="search" placeholder="搜索当前列表"><div id="collection-list" class="collection-list"></div></section>
+        <section id="detail" class="detail-pane"><div class="empty-state"><span class="empty-glyph">⌘</span><h2>选择一条内容</h2><p>查看原文、引用、模型运行和审核建议。</p></div></section>
+      </main>
+    </section>
+    <section id="section-settings" class="shell-section">
+      <main class="settings-shell">
+        <aside><div class="app-name"><span class="brand-mark">C</span><strong>Collector</strong></div><nav><button class="nav-item active" data-section="general">通用</button><button class="nav-item" data-section="ai">AI 服务</button><button class="nav-item" data-section="data">数据</button><button class="nav-item" data-section="future">后续能力</button></nav></aside>
+        <section class="settings-content">
+          <header><span class="eyebrow">SETTINGS</span><h1 id="page-title">通用</h1><p id="page-copy">控制 Collector 的桌面行为。</p></header>
+          <div id="general" class="settings-section active"><article class="setting-card"><div><h2>快速采集快捷键</h2><p>从任意应用唤起极简采集窗。</p></div><div class="control-row"><input id="shortcut" value="CommandOrControl+Shift+Space"><button id="save-shortcut" class="button primary">保存</button></div><span id="shortcut-status" class="status"></span></article></div>
+          <div id="ai" class="settings-section"><article class="setting-card"><div><h2>DeepSeek</h2><p>Key 只交给 Electron Main Process，并通过系统安全存储保存。</p></div><label class="toggle-row"><input id="ai-consent" type="checkbox"><span>允许将未禁用的 Fragment 发送到 DeepSeek</span></label><label class="field"><span>替换 API Key</span><input id="deepseek-key" type="password" autocomplete="off" placeholder="仅在新增或更换时填写"></label><div class="control-row"><button id="save-ai" class="button primary">保存 AI 设置</button><span id="ai-status" class="status"></span></div></article><article class="setting-card muted-card"><div><h2>模型与预算策略</h2><p>自定义默认模型、月度预算和 L3 审批规则。</p></div><span class="coming">后续提供</span></article></div>
+          <div id="data" class="settings-section"><article class="setting-card muted-card"><div><h2>导入与导出</h2><p>导出 Markdown、JSON 备份，以及从其他知识工具导入。</p></div><span class="coming">后续提供</span></article><article class="setting-card muted-card"><div><h2>数据位置</h2><p>查看数据库和 Artifact 目录，并管理备份。</p></div><span class="coming">后续提供</span></article></div>
+          <div id="future" class="settings-section"><article class="setting-card muted-card"><div><h2>同步与移动端</h2><p>多设备同步、移动分享入口和冲突处理。</p></div><span class="coming">未启用</span></article><article class="setting-card muted-card"><div><h2>学习计划</h2><p>目标、任务、反馈和动态重排将在知识闭环稳定后实施。</p></div><span class="coming">后续阶段</span></article></div>
+        </section>
+      </main>
+    </section>
+  </div>
+  <script type="module" src="shell-renderer.js"></script>
+</body></html>
