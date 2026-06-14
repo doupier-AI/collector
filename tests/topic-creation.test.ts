@@ -42,7 +42,7 @@ test("create topic from cluster promotes with materials as members", async (t) =
 
   // Run recent organization to get a cluster
   const run = await service.organizeRecent("topic-cluster-run");
-  assert.equal(await service.resumeRecentOrganizationRuns(), 4);
+  assert.equal(await service.resumeRecentOrganizationRuns(), 3);
   assert.equal(service.getWorkflowRun(run.id).status, "completed");
   const snapshot = service.getLatestRecentClusterSnapshot();
   assert.ok(snapshot);
@@ -267,10 +267,10 @@ test("topic suggestions return related captures", async (t) => {
   // Get suggestions
   const suggestResp = await fetch(`${base}/v1/topics/${topic.id}/suggestions`, { headers });
   assert.equal(suggestResp.status, 200);
-  const suggestions = await suggestResp.json() as { captures: Array<{ capture: { id: string } }> };
-  assert.ok(suggestions.captures.length > 0, "Should return at least one suggestion");
+  const suggestions = await suggestResp.json() as Array<{ id: string }>;
+  assert.ok(suggestions.length > 0, "Should return at least one suggestion");
   // The related capture should be suggested, not the cooking recipe
-  const suggestIds = suggestions.captures.map((c) => c.capture.id);
+  const suggestIds = suggestions.map((c) => c.id);
   assert.ok(suggestIds.includes(cap3.id), "Related JavaScript capture should be suggested");
 });
 
@@ -328,7 +328,7 @@ test("promote cluster preserves all materials", async (t) => {
   const cap1 = await c1.json() as { id: string };
 
   const run = await service.organizeRecent("preserve-run");
-  assert.equal(await service.resumeRecentOrganizationRuns(), 4);
+  assert.equal(await service.resumeRecentOrganizationRuns(), 3);
   const snapshot = service.getLatestRecentClusterSnapshot();
 
   const clusterIndex = snapshot.clusters.findIndex((c) => c.materialIds.includes(cap1.id));

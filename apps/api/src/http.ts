@@ -47,7 +47,7 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         return json(response, 200, service.listMaterials(url.searchParams.get("q") ?? undefined, page, limit, url.searchParams.get("trash") === "true"));
       }
       const materialMatch = url.pathname.match(/^\/v1\/materials\/([^/]+)$/);
-      if (request.method === "GET" && materialMatch) return json(response, 200, service.getMaterial(decodeURIComponent(materialMatch[1])));
+      if (request.method === "GET" && materialMatch) { return json(response, 200, service.getMaterial(decodeURIComponent(materialMatch[1]))); }
       // Material revisions
       const revisionMatch = url.pathname.match(/^\/v1\/materials\/([^/]+)\/revisions$/);
       if (request.method === "GET" && revisionMatch) return json(response, 200, service.listRevisions(decodeURIComponent(revisionMatch[1])));

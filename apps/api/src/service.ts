@@ -525,6 +525,7 @@ export class CaptureService {
       snippet: (c.content ?? c.sourceUrl ?? "").slice(0, 200),
       hasSource: Boolean(c.sourceUrl || c.locator?.kind === "file" || c.locator?.kind === "browser"),
       trashedAt: c.trashedAt,
+      trashed: Boolean(c.trashedAt),
     }));
     return { items, total };
   }
@@ -573,14 +574,18 @@ export class CaptureService {
   }
 
   async trashMaterial(id: string) {
-    const ok = await (this.store as any).trashCapture(id, new Date().toISOString());
-    if (!ok) throw new NotFoundError("Material not found or already trashed");
+    const record = this.store.getCapture(id);
+    if (!record) throw new NotFoundError("Material not found");
+    if ((record as any).trashedAt) return { alreadyTrashed: true, trashed: true };
+    await (this.store as any).trashCapture(id, new Date().toISOString());
     return { trashed: true };
   }
 
   async restoreMaterial(id: string) {
-    const ok = await (this.store as any).restoreCapture(id);
-    if (!ok) throw new NotFoundError("Material not found or not trashed");
+    const record = this.store.getCapture(id);
+    if (!record) throw new NotFoundError("Material not found");
+    if (!(record as any).trashedAt) return { notTrashed: true, restored: true };
+    await (this.store as any).restoreCapture(id);
     return { restored: true };
   }
 
