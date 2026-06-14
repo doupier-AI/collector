@@ -33,13 +33,17 @@ export class CaptureService {
   private deepTasks: Promise<void> = Promise.resolve();
   private recentOrganizationTasks: Promise<void> = Promise.resolve();
   private readonly scheduledRunIds = new Set<string>();
+  private readonly recentWorkerId = randomUUID();
 
   constructor(
     private readonly store: CollectorStore,
     private readonly artifactRoot: string,
     private readonly parser = new SourceParser(),
     private modelGateway?: ModelGateway,
-  ) {}
+    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number } = {},
+  ) {
+    if (this.options.autoRunRecentOrganization !== false) this.scheduleRecentOrganization();
+  }
 
   setModelGateway(gateway: ModelGateway | undefined): void {
     this.modelGateway = gateway;
@@ -157,44 +161,68 @@ export class CaptureService {
       id: randomUUID(), workflowType: "recent_organization", idempotencyKey,
       materialIds, materialSetVersion, status: "queued", createdAt: now,
     };
-    await this.store.saveWorkflowRun(run);
-    this.scheduleRecentOrganization(run, materials);
+    const steps: WorkflowStepRecord[] = (["freeze_materials", "exact_deduplication", "publish_snapshot"] as const).map((stepType) => ({
+      id: randomUUID(), workflowRunId: run.id, stepType, status: "queued", createdAt: now,
+    }));
+    await this.store.createWorkflowRun(run, steps);
+    this.scheduleRecentOrganization();
     return run;
   }
 
-  private scheduleRecentOrganization(run: WorkflowRunRecord, materials: CaptureRecord[]): void {
+  private scheduleRecentOrganization(): void {
+    if (this.options.autoRunRecentOrganization === false) return;
     this.recentOrganizationTasks = this.recentOrganizationTasks.catch(() => undefined).then(async () => {
       await new Promise<void>((resolve) => setImmediate(resolve));
-      const startedAt = new Date().toISOString();
-      const processing: WorkflowRunRecord = { ...run, status: "processing", startedAt };
-      try {
-        await this.store.saveWorkflowRun(processing);
-        await this.executeRecentOrganization(processing, materials);
-      } catch (error) {
-        const completedAt = new Date().toISOString();
-        const errorMessage = error instanceof Error ? error.message : "Unexpected recent organization failure";
-        await this.store.saveWorkflowRun({ ...processing, status: "failed", errorMessage, completedAt });
-      }
+      await this.resumeRecentOrganizationRuns();
     });
   }
 
-  private async executeRecentOrganization(run: WorkflowRunRecord, materials: CaptureRecord[]): Promise<void> {
-    const completedAt = new Date().toISOString();
-    const representativeByChecksum = new Map<string, string>();
-    for (const material of materials) {
-      if (!representativeByChecksum.has(material.checksum)) representativeByChecksum.set(material.checksum, material.id);
+  async resumeRecentOrganizationRuns(maxSteps = Number.POSITIVE_INFINITY): Promise<number> {
+    let completedCount = 0;
+    while (completedCount < maxSteps) {
+      let progressed = false;
+      for (const run of this.store.listRecoverableWorkflowRuns()) {
+        if (completedCount >= maxSteps) break;
+        const now = new Date();
+        const claimed = this.store.claimWorkflowStep(run.id, this.recentWorkerId, now.toISOString(), new Date(now.getTime() + (this.options.recentLeaseMs ?? 30_000)).toISOString());
+        if (!claimed) continue;
+        progressed = true;
+        const processing: WorkflowRunRecord = { ...run, status: "processing", startedAt: run.startedAt ?? now.toISOString() };
+        try {
+          const { step, snapshot } = this.executeRecentOrganizationStep(processing, claimed);
+          if (this.store.completeWorkflowStep(step, snapshot ? { ...processing, status: "completed", completedAt: step.completedAt! } : processing, snapshot)) {
+            completedCount += 1;
+          }
+        } catch {
+          const completedAt = new Date().toISOString();
+          this.store.failWorkflowStep({ ...claimed, status: "failed", completedAt }, { ...processing, status: "failed", errorMessage: "Recent organization step failed", completedAt });
+          completedCount += 1;
+        }
+      }
+      if (!progressed) break;
     }
-    const representativeIds = [...representativeByChecksum.values()];
-    const steps: WorkflowStepRecord[] = [
-      { id: randomUUID(), workflowRunId: run.id, stepType: "freeze_materials", status: "completed", output: { materialIds: run.materialIds, materialSetVersion: run.materialSetVersion }, createdAt: run.startedAt ?? run.createdAt, completedAt },
-      { id: randomUUID(), workflowRunId: run.id, stepType: "exact_deduplication", status: "completed", output: { representativeMaterialIds: representativeIds }, createdAt: run.startedAt ?? run.createdAt, completedAt },
-      { id: randomUUID(), workflowRunId: run.id, stepType: "publish_snapshot", status: "completed", createdAt: run.startedAt ?? run.createdAt, completedAt },
-    ];
-    const snapshot: RecentClusterSnapshotRecord = {
-      id: randomUUID(), workflowRunId: run.id, materialSetVersion: run.materialSetVersion, clusters: [],
-      unclusteredMaterialIds: representativeIds, createdAt: completedAt,
-    };
-    await this.store.publishRecentClusterSnapshot({ ...run, status: "completed", completedAt }, steps, snapshot);
+    return completedCount;
+  }
+
+  private executeRecentOrganizationStep(run: WorkflowRunRecord, claimed: WorkflowStepRecord): { step: WorkflowStepRecord; snapshot?: RecentClusterSnapshotRecord } {
+    const completedAt = new Date().toISOString();
+    let output: unknown;
+    let snapshot: RecentClusterSnapshotRecord | undefined;
+    if (claimed.stepType === "freeze_materials") {
+      output = { materialIds: run.materialIds, materialSetVersion: run.materialSetVersion };
+    } else if (claimed.stepType === "exact_deduplication") {
+      const representativeByChecksum = new Map<string, string>();
+      for (const id of run.materialIds) {
+        const material = this.store.getCapture(id);
+        if (material && !representativeByChecksum.has(material.checksum)) representativeByChecksum.set(material.checksum, material.id);
+      }
+      output = { representativeMaterialIds: [...representativeByChecksum.values()] };
+    } else {
+      const deduplication = this.store.getWorkflowSteps(run.id).find((step) => step.stepType === "exact_deduplication");
+      const representativeMaterialIds = (deduplication?.output as { representativeMaterialIds?: string[] } | undefined)?.representativeMaterialIds ?? [];
+      snapshot = { id: randomUUID(), workflowRunId: run.id, materialSetVersion: run.materialSetVersion, clusters: [], unclusteredMaterialIds: representativeMaterialIds, createdAt: completedAt };
+    }
+    return { step: { ...claimed, status: "completed", output, completedAt }, snapshot };
   }
 
   getWorkflowRun(id: string): WorkflowRunRecord {

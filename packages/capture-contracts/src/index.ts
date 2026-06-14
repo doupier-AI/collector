@@ -192,7 +192,7 @@ export interface ArtifactRecord {
   createdAt: string;
 }
 
-export type WorkflowRunStatus = "queued" | "processing" | "completed" | "failed";
+export type WorkflowRunStatus = "queued" | "processing" | "completed" | "failed" | "cancelled";
 
 export interface WorkflowRunRecord {
   id: string;
@@ -212,8 +212,12 @@ export interface WorkflowStepRecord {
   workflowRunId: string;
   stepType: "freeze_materials" | "exact_deduplication" | "publish_snapshot";
   status: "queued" | "processing" | "completed" | "failed";
+  attempt?: number;
+  leaseOwner?: string;
+  leaseExpiresAt?: string;
   output?: unknown;
   createdAt: string;
+  startedAt?: string;
   completedAt?: string;
 }
 

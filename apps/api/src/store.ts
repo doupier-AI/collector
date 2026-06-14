@@ -44,6 +44,12 @@ export interface CollectorStore {
   getLatestRecentClusterSnapshot(): RecentClusterSnapshotRecord | undefined;
   saveWorkflowRun(run: WorkflowRunRecord): Promise<void>;
   publishRecentClusterSnapshot(run: WorkflowRunRecord, steps: WorkflowStepRecord[], snapshot: RecentClusterSnapshotRecord): Promise<void>;
+  getWorkflowSteps(runId: string): WorkflowStepRecord[];
+  listRecoverableWorkflowRuns(): WorkflowRunRecord[];
+  createWorkflowRun(run: WorkflowRunRecord, steps: WorkflowStepRecord[]): Promise<void>;
+  claimWorkflowStep(runId: string, owner: string, now: string, leaseExpiresAt: string): WorkflowStepRecord | undefined;
+  completeWorkflowStep(step: WorkflowStepRecord, run: WorkflowRunRecord, snapshot?: RecentClusterSnapshotRecord): boolean;
+  failWorkflowStep(step: WorkflowStepRecord, run: WorkflowRunRecord): boolean;
   close?(): void;
 }
 
@@ -227,6 +233,66 @@ export class SqliteStore implements CollectorStore {
     });
   }
 
+  getWorkflowSteps(runId: string): WorkflowStepRecord[] {
+    return this.listRecords<WorkflowStepRecord>("SELECT record_json FROM workflow_steps WHERE workflow_run_id = ? ORDER BY ordinal", runId);
+  }
+
+  listRecoverableWorkflowRuns(): WorkflowRunRecord[] {
+    return this.listRecords<WorkflowRunRecord>("SELECT record_json FROM workflow_runs WHERE status IN ('queued', 'processing') ORDER BY created_at");
+  }
+
+  async createWorkflowRun(run: WorkflowRunRecord, steps: WorkflowStepRecord[]): Promise<void> {
+    this.transaction(() => {
+      this.upsertWorkflowRun(run);
+      const insert = this.db().prepare("INSERT INTO workflow_steps (id, workflow_run_id, step_type, status, created_at, ordinal, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)");
+      steps.forEach((step, ordinal) => insert.run(step.id, step.workflowRunId, step.stepType, step.status, step.createdAt, ordinal, JSON.stringify(step)));
+    });
+  }
+
+  claimWorkflowStep(runId: string, owner: string, now: string, leaseExpiresAt: string): WorkflowStepRecord | undefined {
+    let claimed: WorkflowStepRecord | undefined;
+    this.transaction(() => {
+      const row = this.db().prepare(`SELECT record_json FROM workflow_steps
+        WHERE workflow_run_id = ? AND (status = 'queued' OR (status = 'processing' AND lease_expires_at <= ?))
+        ORDER BY ordinal LIMIT 1`).get(runId, now) as { record_json: string } | undefined;
+      if (!row) return;
+      const step = JSON.parse(row.record_json) as WorkflowStepRecord;
+      claimed = { ...step, status: "processing", attempt: (step.attempt ?? 0) + 1, leaseOwner: owner, leaseExpiresAt, startedAt: step.startedAt ?? now };
+      this.db().prepare("UPDATE workflow_steps SET status = 'processing', lease_owner = ?, lease_expires_at = ?, record_json = ? WHERE id = ?")
+        .run(owner, leaseExpiresAt, JSON.stringify(claimed), step.id);
+    });
+    return claimed;
+  }
+
+  completeWorkflowStep(step: WorkflowStepRecord, run: WorkflowRunRecord, snapshot?: RecentClusterSnapshotRecord): boolean {
+    let completed = false;
+    this.transaction(() => {
+      const result = this.db().prepare("UPDATE workflow_steps SET status = 'completed', lease_owner = NULL, lease_expires_at = NULL, record_json = ? WHERE id = ? AND status = 'processing' AND lease_owner = ?")
+        .run(JSON.stringify(step), step.id, step.leaseOwner ?? "");
+      if (result.changes !== 1) return;
+      this.upsertWorkflowRun(run);
+      if (snapshot) {
+        const sequence = (this.db().prepare("SELECT COALESCE(MAX(publication_sequence), 0) + 1 AS sequence FROM recent_cluster_snapshots").get() as { sequence: number }).sequence;
+        this.db().prepare("INSERT INTO recent_cluster_snapshots (id, workflow_run_id, material_set_version, created_at, publication_sequence, record_json) VALUES (?, ?, ?, ?, ?, ?)")
+          .run(snapshot.id, snapshot.workflowRunId, snapshot.materialSetVersion, snapshot.createdAt, sequence, JSON.stringify(snapshot));
+      }
+      completed = true;
+    });
+    return completed;
+  }
+
+  failWorkflowStep(step: WorkflowStepRecord, run: WorkflowRunRecord): boolean {
+    let failed = false;
+    this.transaction(() => {
+      const result = this.db().prepare("UPDATE workflow_steps SET status = 'failed', lease_owner = NULL, lease_expires_at = NULL, record_json = ? WHERE id = ? AND status = 'processing' AND lease_owner = ?")
+        .run(JSON.stringify(step), step.id, step.leaseOwner ?? "");
+      if (result.changes !== 1) return;
+      this.upsertWorkflowRun(run);
+      failed = true;
+    });
+    return failed;
+  }
+
   private createSchema(): void {
     this.db().exec(`
       CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
@@ -333,7 +399,22 @@ export class SqliteStore implements CollectorStore {
           INSERT INTO schema_migrations(version, applied_at) VALUES (3, datetime('now'));
         `);
       });
+      version = 3;
     }
+    if (version < 4) {
+      this.transaction(() => {
+        this.db().exec(`
+          ALTER TABLE workflow_steps ADD COLUMN ordinal INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE workflow_steps ADD COLUMN lease_owner TEXT;
+          ALTER TABLE workflow_steps ADD COLUMN lease_expires_at TEXT;
+          UPDATE workflow_steps SET ordinal = CASE step_type WHEN 'freeze_materials' THEN 0 WHEN 'exact_deduplication' THEN 1 ELSE 2 END;
+          CREATE UNIQUE INDEX workflow_steps_run_ordinal_idx ON workflow_steps(workflow_run_id, ordinal);
+          CREATE INDEX workflow_steps_claim_idx ON workflow_steps(status, lease_expires_at);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (4, datetime('now'));
+        `);
+      });
+    }
+
   }
 
   private async migrateLegacyJson(): Promise<void> {
@@ -508,6 +589,12 @@ export class JsonStore implements CollectorStore {
   getLatestRecentClusterSnapshot(): RecentClusterSnapshotRecord | undefined { return undefined; }
   async saveWorkflowRun(_run: WorkflowRunRecord): Promise<void> { throw new Error("Recent organization requires SQLite persistence"); }
   async publishRecentClusterSnapshot(_run: WorkflowRunRecord, _steps: WorkflowStepRecord[], _snapshot: RecentClusterSnapshotRecord): Promise<void> { throw new Error("Recent organization requires SQLite persistence"); }
+  getWorkflowSteps(_runId: string): WorkflowStepRecord[] { return []; }
+  listRecoverableWorkflowRuns(): WorkflowRunRecord[] { return []; }
+  async createWorkflowRun(_run: WorkflowRunRecord, _steps: WorkflowStepRecord[]): Promise<void> { throw new Error("Recent organization requires SQLite persistence"); }
+  claimWorkflowStep(_runId: string, _owner: string, _now: string, _leaseExpiresAt: string): WorkflowStepRecord | undefined { return undefined; }
+  completeWorkflowStep(_step: WorkflowStepRecord, _run: WorkflowRunRecord, _snapshot?: RecentClusterSnapshotRecord): boolean { return false; }
+  failWorkflowStep(_step: WorkflowStepRecord, _run: WorkflowRunRecord): boolean { return false; }
   private flush() { this.writeQueue = this.writeQueue.then(async () => { const temporaryPath = `${this.filePath}.tmp`; await writeFile(temporaryPath, JSON.stringify(this.data, null, 2), "utf8"); await rename(temporaryPath, this.filePath); }); return this.writeQueue; }
 }
 
