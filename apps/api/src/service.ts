@@ -1,4 +1,4 @@
-﻿import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -16,6 +16,9 @@ import {
   type ReviewDecision,
   type ReviewProposalRecord,
   type RelationRecord,
+  type AiBudgetSettings,
+  type AiUsageSummary,
+  type ModelCallRecord,
   type TopicDocumentVersionRecord,
   type DocumentSection,
   type TopicRecord,
@@ -26,6 +29,7 @@ import {
 import type { CollectorStore } from "./store.js";
 import { SourceParser } from "./parsers.js";
 import { ModelGateway } from "@collector/model-gateway";
+import { type Verifier, FakeVerifier, VerificationWorkflow } from "./verification.js";
 
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
@@ -672,6 +676,23 @@ export class CaptureService {
     return completed;
   }
 
+  
+  private scheduleVerification(version: import("@collector/capture-contracts").TopicDocumentVersionRecord): void {
+    const store = this.store;
+    void (async () => {
+      try {
+        const policyConfig = store.getVerificationPolicy();
+        const workflow = new VerificationWorkflow(new FakeVerifier(), policyConfig);
+        const claims = await workflow.verifyClaims(version.sections);
+        if (claims.length > 0) {
+          const verifiedClaims = claims.map((c) => ({ ...c, documentVersionId: version.id }));
+          await store.saveVerificationClaims(verifiedClaims);
+        }
+      } catch (err) {
+        console.error("Verification failed for document " + version.id, err);
+      }
+    })();
+  }
   private executeTopicDocumentStep(run: WorkflowRunRecord, step: WorkflowStepRecord): { step: WorkflowStepRecord; version?: TopicDocumentVersionRecord } {
     const completedAt = new Date().toISOString();
     const out: WorkflowStepRecord = { ...step, status: "completed", completedAt };
@@ -711,9 +732,224 @@ export class CaptureService {
       const now2 = new Date().toISOString();
       const version: TopicDocumentVersionRecord = { id: (randomUUID as any)(), topicId: topic?.id ?? run.materialIds[0], title: topic?.title ?? "Untitled Document", materialSetVersion: run.materialSetVersion, documentVersion: nextVersion, sections, gapItems: [], verificationSummary: {}, status: "published", createdAt: now2, publishedAt: now2 };
       this.store.saveTopicDocumentVersion(version);
+      // Schedule async verification after document publish
+      this.scheduleVerification(version);
       return { step: out, version };
     }
     return { step: out };
+  }
+
+  
+  
+  // ── Incremental Document Update (Issue 09) ─────────────────
+
+  previewDocumentUpdate(topicId: string): import("@collector/capture-contracts").UpdatePreview | null {
+    const topic = this.store.getTopic(topicId);
+    if (!topic) throw new NotFoundError("Topic not found");
+
+    const prevDoc = this.store.getLatestTopicDocumentVersion(topicId);
+    if (!prevDoc) return null; // No previous document to update
+
+    const { added, removed } = this.store.detectMaterialChanges(topicId);
+    if (!added.length && !removed.length) return null; // No changes
+
+    // Build update preview
+    const now = new Date().toISOString();
+    const preview: import("@collector/capture-contracts").UpdatePreview = {
+      id: crypto.randomUUID(),
+      topicId,
+      previousDocumentVersionId: prevDoc.id,
+      nextDocumentVersion: prevDoc.documentVersion + 1,
+      affectedSectionIds: [],
+      proposedAdditions: [],
+      proposedModifications: [],
+      keptSections: [],
+      conflicts: [],
+      status: "pending",
+      createdAt: now,
+    };
+
+    // New materials -> proposed additions
+    for (const matId of added) {
+      const mat = this.store.getCapture(matId);
+      if (!mat) continue;
+      const frags = this.store.listFragments(matId);
+      preview.affectedSectionIds.push(matId);
+      preview.proposedAdditions.push({
+        heading: (mat.content ?? mat.sourceUrl ?? "New material").slice(0, 80),
+        markdown: (mat.content ?? "").slice(0, 500),
+        citationIds: frags.map((f) => f.id),
+      });
+    }
+
+    // Removed materials -> check if they have citations in document
+    for (const matId of removed) {
+      const affectedSections = prevDoc.sections.filter((s) =>
+        s.citationIds.some((cid) => {
+          const frags = this.store.listFragments(matId);
+          return frags.some((f) => f.id === cid);
+        })
+      );
+      for (const section of affectedSections) {
+        if (section.protectedByUser) {
+          preview.conflicts.push({ sectionId: section.id, reason: "deleted_reference" });
+        } else {
+          preview.proposedModifications.push({
+            sectionId: section.id,
+            heading: section.heading + " [citation missing]",
+            markdown: section.markdown,
+            citationIds: section.citationIds.filter((cid) => !preview.affectedSectionIds.includes(cid)),
+          });
+        }
+        preview.affectedSectionIds.push(section.id);
+      }
+    }
+
+    // Protected sections are kept as-is
+    preview.keptSections = prevDoc.sections
+      .filter((s) => s.protectedByUser && !preview.affectedSectionIds.includes(s.id))
+      .map((s) => s.id);
+
+    return preview;
+  }
+
+  async confirmDocumentUpdate(topicId: string, previewId: string, accepted: boolean): Promise<import("@collector/capture-contracts").UpdatePreview> {
+    const preview = this.store.getLatestUpdatePreview(topicId);
+    if (!preview || preview.id !== previewId) throw new NotFoundError("Update preview not found");
+
+    if (!accepted) {
+      const rejected: import("@collector/capture-contracts").UpdatePreview = { ...preview, status: "rejected" };
+      await this.store.saveUpdatePreview(rejected);
+      return rejected;
+    }
+
+    // Build new document version from preview
+    const prevDoc = this.store.getTopicDocumentVersion(preview.previousDocumentVersionId);
+    if (!prevDoc) throw new NotFoundError("Previous document version not found");
+
+    const now = new Date().toISOString();
+    const newSections: import("@collector/capture-contracts").DocumentSection[] = [];
+
+    // Keep unmodified sections
+    for (const section of prevDoc.sections) {
+      if (preview.keptSections.includes(section.id)) {
+        newSections.push(section);
+      }
+    }
+
+    // Apply modifications
+    for (const mod of preview.proposedModifications) {
+      newSections.push({
+        id: crypto.randomUUID(),
+        heading: mod.heading,
+        markdown: mod.markdown,
+        citationIds: mod.citationIds,
+        protectedByUser: false,
+      });
+    }
+
+    // Add new sections
+    for (const add of preview.proposedAdditions) {
+      newSections.push({
+        id: crypto.randomUUID(),
+        heading: add.heading,
+        markdown: add.markdown,
+        citationIds: add.citationIds,
+        protectedByUser: false,
+      });
+    }
+
+    const version: import("@collector/capture-contracts").TopicDocumentVersionRecord = {
+      id: crypto.randomUUID(),
+      topicId,
+      title: prevDoc.title,
+      materialSetVersion: crypto.randomUUID(),
+      documentVersion: preview.nextDocumentVersion,
+      sections: newSections,
+      gapItems: preview.conflicts.map((c) => ({ kind: "unsupported_claim" as const, text: `Removed material affected section ${c.sectionId}` })),
+      verificationSummary: {},
+      status: "published",
+      createdAt: now,
+      publishedAt: now,
+    };
+
+    await this.store.saveTopicDocumentVersion(version);
+
+    const confirmed: import("@collector/capture-contracts").UpdatePreview = { ...preview, status: "confirmed" };
+    await this.store.saveUpdatePreview(confirmed);
+    return confirmed;
+  }
+// ── Verification (Issue 08) ──────────────────────────────────
+
+  getVerificationPolicy(): import("@collector/capture-contracts").VerificationPolicyConfig {
+    return this.store.getVerificationPolicy();
+  }
+  async updateVerificationPolicy(config: import("@collector/capture-contracts").VerificationPolicyConfig): Promise<import("@collector/capture-contracts").VerificationPolicyConfig> {
+    await this.store.saveVerificationPolicy(config);
+    return this.store.getVerificationPolicy();
+  }
+  getVerificationClaims(documentVersionId: string): import("@collector/capture-contracts").VerificationClaim[] {
+    return this.store.listVerificationClaims(documentVersionId);
+  }
+// ── AI Usage & Budget (Issue 10) ──────────────────────────────────
+
+  getAiUsage(year?: number, month?: number): AiUsageSummary {
+    const now = new Date();
+    const y = year ?? now.getUTCFullYear();
+    const m = month ?? (now.getUTCMonth() + 1);
+    const start = new Date(Date.UTC(y, m - 1, 1)).toISOString();
+    const end = new Date(Date.UTC(y, m, 1)).toISOString();
+    const calls = this.store.getMonthModelCalls(y, m);
+    const completed = calls.filter((c: any) => c.status === 'completed');
+    const failed = calls.filter((c: any) => c.status === 'failed');
+    const totalInput = completed.reduce((s: number, c: any) => s + (c.inputTokens || 0), 0);
+    const totalOutput = completed.reduce((s: number, c: any) => s + (c.outputTokens || 0), 0);
+    const totalCost = completed.reduce((s: number, c: any) => s + (c.estimatedCostUsd || 0), 0);
+    const byModel: Record<string, any> = {};
+    const byPurpose: Record<string, any> = {};
+    for (const c of completed) {
+      const mc = c as any;
+      byModel[mc.model] = byModel[mc.model] || { calls: 0, tokens: 0, costUsd: 0 };
+      byModel[mc.model].calls++;
+      byModel[mc.model].tokens += (mc.inputTokens || 0) + (mc.outputTokens || 0);
+      byModel[mc.model].costUsd += mc.estimatedCostUsd || 0;
+      byPurpose[mc.purpose] = byPurpose[mc.purpose] || { calls: 0, tokens: 0, costUsd: 0 };
+      byPurpose[mc.purpose].calls++;
+      byPurpose[mc.purpose].tokens += (mc.inputTokens || 0) + (mc.outputTokens || 0);
+      byPurpose[mc.purpose].costUsd += mc.estimatedCostUsd || 0;
+    }
+    return {
+      periodStart: start, periodEnd: end,
+      totalCalls: calls.length, completedCalls: completed.length, failedCalls: failed.length,
+      totalInputTokens: totalInput, totalOutputTokens: totalOutput, totalCostUsd: Math.round(totalCost * 10000) / 10000,
+      byModel, byPurpose,
+      successRate: calls.length > 0 ? Math.round((completed.length / calls.length) * 10000) / 10000 : 1,
+    };
+  }
+
+  getAiBudgetSettings(): AiBudgetSettings {
+    const limit = parseFloat(this.store.getAiBudgetSetting('monthly_limit_usd') || '0');
+    const warning = parseFloat(this.store.getAiBudgetSetting('warning_threshold_usd') || '0');
+    const enabled = this.store.getAiBudgetSetting('enabled') === 'true';
+    const now = new Date();
+    const currentCost = this.store.getMonthModelCallCostUsd(now.getUTCFullYear(), now.getUTCMonth() + 1);
+    let status: AiBudgetSettings['status'] = 'ok';
+    if (enabled && limit > 0 && currentCost >= limit) status = 'exceeded';
+    else if (enabled && warning > 0 && currentCost >= warning) status = 'warning';
+    return { monthlyLimitUsd: limit, warningThresholdUsd: warning, enabled, currentMonthCostUsd: currentCost, status };
+  }
+
+  async updateAiBudgetSettings(settings: { monthlyLimitUsd?: number; warningThresholdUsd?: number; enabled?: boolean }): Promise<AiBudgetSettings> {
+    if (settings.monthlyLimitUsd !== undefined) await this.store.saveAiBudgetSetting('monthly_limit_usd', String(settings.monthlyLimitUsd));
+    if (settings.warningThresholdUsd !== undefined) await this.store.saveAiBudgetSetting('warning_threshold_usd', String(settings.warningThresholdUsd));
+    if (settings.enabled !== undefined) await this.store.saveAiBudgetSetting('enabled', String(settings.enabled));
+    return this.getAiBudgetSettings();
+  }
+
+  checkAiBudget(): boolean {
+    const budget = this.getAiBudgetSettings();
+    if (!budget.enabled || budget.monthlyLimitUsd <= 0) return true;
+    return budget.currentMonthCostUsd < budget.monthlyLimitUsd;
   }
 
 }

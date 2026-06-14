@@ -1,4 +1,4 @@
-﻿import { contextBridge, ipcRenderer, webUtils } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { ArtifactRecord, CaptureInput, CaptureRecord, ReviewDecision } from "@collector/capture-contracts";
 
 contextBridge.exposeInMainWorld("collector", {
@@ -25,6 +25,12 @@ contextBridge.exposeInMainWorld("collector", {
     removeTopicMember: (topicId: string, captureId: string) => ipcRenderer.invoke("workspace:remove-topic-member", topicId, captureId),
     deepAnalysis: (captureId: string) => ipcRenderer.invoke("workspace:deep-analysis", captureId),
     navigateTo: (tab: string) => ipcRenderer.send("shell:navigate", tab),
+  },
+    recent: {
+    organize: (idempotencyKey?: string) => ipcRenderer.invoke("recent:organize", idempotencyKey),
+    snapshot: () => ipcRenderer.invoke("recent:snapshot"),
+    run: (id: string) => ipcRenderer.invoke("recent:run", id),
+    cancel: (id: string) => ipcRenderer.invoke("recent:cancel", id),
   },
   settings: {
     get: () => ipcRenderer.invoke("settings:get"),

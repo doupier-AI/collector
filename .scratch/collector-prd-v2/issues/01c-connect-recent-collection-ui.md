@@ -3,7 +3,7 @@
 Status: ready-for-agent
 Category: enhancement
 Type: AFK
-Resolution: open
+Resolution: completed
 
 ## Parent
 

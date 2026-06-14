@@ -1,5 +1,140 @@
 import type { AgentRunRecord, InboxItem, TopicWorkspace } from "@collector/capture-contracts";
 
+
+function initRecent(bridge: Window["collector"]["recent"]) {
+  const section = document.querySelector<HTMLElement>("#recent-section")!;
+  const badge = document.querySelector<HTMLElement>("#recent-status-badge")!;
+  const summary = document.querySelector<HTMLElement>("#recent-summary")!;
+  const organizeBtn = document.querySelector<HTMLButtonElement>("#recent-organize")!;
+  const errorEl = document.querySelector<HTMLElement>("#recent-error")!;
+  const resultEl = document.querySelector<HTMLElement>("#recent-result")!;
+  const clusterCount = document.querySelector<HTMLElement>("#recent-cluster-count")!;
+  const viewUnclustered = document.querySelector<HTMLButtonElement>("#recent-view-unclustered")!;
+  const retryBtn = document.querySelector<HTMLButtonElement>("#recent-retry")!;
+
+  let activeRunId: string | undefined;
+  let polling = false;
+
+  async function load() {
+    try {
+      const snapshot = await bridge.snapshot();
+      if (snapshot) {
+        const clustered = snapshot.clusters.reduce((sum: number, c: { materialIds: string[] }) => sum + c.materialIds.length, 0);
+        const unclustered = snapshot.unclusteredMaterialIds.length;
+        clusterCount.textContent = `${snapshot.clusters.length} 个聚类，${clustered} 条已归类，${unclustered} 条未归类`;
+        viewUnclustered.hidden = unclustered === 0;
+        retryBtn.hidden = true;
+        resultEl.hidden = false;
+        badge.dataset.status = "completed";
+        badge.textContent = "已完成";
+        summary.textContent = "最近一次整理已完成。";
+        organizeBtn.textContent = "重新整理";
+        organizeBtn.disabled = false;
+        errorEl.textContent = "";
+      }
+    } catch {
+      // No snapshot yet
+      badge.dataset.status = "idle";
+      badge.textContent = "待整理";
+      resultEl.hidden = true;
+    }
+  }
+
+  async function pollRun() {
+    if (!activeRunId || polling) return;
+    polling = true;
+    try {
+      const run = await bridge.run(activeRunId);
+      if (run.status === "completed") {
+        badge.dataset.status = "completed";
+        badge.textContent = "已完成";
+        summary.textContent = "整理已完成。";
+        organizeBtn.disabled = false;
+        organizeBtn.textContent = "重新整理";
+        errorEl.textContent = "";
+        activeRunId = undefined;
+        await load(); // refresh snapshot
+      } else if (run.status === "failed") {
+        badge.dataset.status = "failed";
+        badge.textContent = "失败";
+        summary.textContent = "整理过程出错。";
+        errorEl.textContent = run.errorMessage || "未知错误";
+        retryBtn.hidden = false;
+        viewUnclustered.hidden = true;
+        resultEl.hidden = false;
+        clusterCount.textContent = "上次整理失败，仍可查看之前的快照。";
+        organizeBtn.disabled = false;
+        organizeBtn.textContent = "重新整理";
+        activeRunId = undefined;
+      } else if (run.status === "queued" || run.status === "processing") {
+        badge.dataset.status = "processing";
+        badge.textContent = run.status === "queued" ? "排队中" : "处理中";
+        summary.textContent = run.status === "queued" ? "整理任务已加入队列。" : "正在分析材料…";
+        organizeBtn.disabled = true;
+        organizeBtn.textContent = "整理中…";
+        errorEl.textContent = "";
+        resultEl.hidden = true;
+      }
+    } catch {
+      // run not found or error - stop polling
+      activeRunId = undefined;
+    }
+    polling = false;
+  }
+
+  organizeBtn.addEventListener("click", async () => {
+    try {
+      errorEl.textContent = "";
+      organizeBtn.disabled = true;
+      organizeBtn.textContent = "提交中…";
+      const idempotencyKey = `recent-${Date.now()}`;
+      const run = await bridge.organize(idempotencyKey);
+      activeRunId = run.id;
+      badge.dataset.status = run.status;
+      badge.textContent = "排队中";
+      summary.textContent = "整理任务已加入队列。";
+      retryBtn.hidden = true;
+      viewUnclustered.hidden = true;
+      resultEl.hidden = false;
+      clusterCount.textContent = "正在初始化…";
+      // Start polling
+      let attempts = 0;
+      const poll = setInterval(async () => {
+        await pollRun();
+        attempts++;
+        if (!activeRunId || attempts > 120) { // 2 min timeout
+          clearInterval(poll);
+          if (attempts > 120 && activeRunId) {
+            errorEl.textContent = "整理超时，请稍后刷新查看状态。";
+            organizeBtn.disabled = false;
+            organizeBtn.textContent = "重新整理";
+            activeRunId = undefined;
+          }
+        }
+      }, 1500);
+    } catch (err) {
+      errorEl.textContent = (err as Error).message;
+      organizeBtn.disabled = false;
+      organizeBtn.textContent = "立即整理";
+    }
+  });
+
+  retryBtn.addEventListener("click", () => {
+    errorEl.textContent = "";
+    retryBtn.hidden = true;
+    organizeBtn.click();
+  });
+
+  viewUnclustered.addEventListener("click", () => {
+    // Navigate to materials view showing unclassified items
+    // navigateTo is not available on recent bridge, handled via inbox button
+    // The snapshot's unclusteredMaterialIds can be used to filter
+  });
+
+  // Initial load
+  void load();
+}
+
 export function initWorkspace(root: HTMLElement) {
   
   const bridge = window.collector?.workspace;

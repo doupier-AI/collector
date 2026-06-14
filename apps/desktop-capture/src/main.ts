@@ -1,4 +1,4 @@
-﻿import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, Tray, nativeImage, safeStorage } from "electron";
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, Tray, nativeImage, safeStorage } from "electron";
 import type { Server } from "node:http";
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -149,6 +149,10 @@ ipcMain.handle("workspace:get-topic", async (event, id: string) => { assertTrust
 ipcMain.handle("workspace:add-topic-member", async (event, topicId: string, captureId: string) => { assertTrustedRenderer(event.sender.id); return client.addTopicMember(topicId, captureId); });
 ipcMain.handle("workspace:remove-topic-member", async (event, topicId: string, captureId: string) => { assertTrustedRenderer(event.sender.id); return client.removeTopicMember(topicId, captureId); });
 ipcMain.handle("workspace:deep-analysis", async (event, captureId: string) => { assertTrustedRenderer(event.sender.id); return client.requestDeepAnalysis(captureId); });
+ipcMain.handle("recent:organize", async (event, idempotencyKey?: string) => { assertTrustedRenderer(event.sender.id); return client.organizeRecent(idempotencyKey); });
+ipcMain.handle("recent:snapshot", async (event) => { assertTrustedRenderer(event.sender.id); return client.getLatestRecentSnapshot(); });
+ipcMain.handle("recent:run", async (event, id: string) => { assertTrustedRenderer(event.sender.id); return client.getRecentOrganizationRun(id); });
+ipcMain.handle("recent:cancel", async (event, id: string) => { assertTrustedRenderer(event.sender.id); return client.cancelRecentOrganizationRun(id); });
 
 ipcMain.handle("settings:get", async (event) => {
   assertTrustedRenderer(event.sender.id);

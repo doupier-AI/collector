@@ -1,4 +1,4 @@
-﻿import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { ValidationError, NotFoundError, CaptureService } from "./service.js";
 import { LocalAuth, PairingRateLimitError } from "./auth.js";
 
@@ -147,6 +147,46 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       }
       const topicWorkspaceMatch = url.pathname.match(/^\/v1\/topics\/([^/]+)\/workspace$/);
       if (request.method === "GET" && topicWorkspaceMatch) return json(response, 200, service.getTopicWorkspace(decodeURIComponent(topicWorkspaceMatch[1])));
+
+      
+      
+      // ── Incremental Document Update ──────────────────────
+      if (request.method === "POST" && (url.pathname.match(/^\/v1\/topics\/([^/]+)\/document-update-preview$/))) {
+        const previewTopicId = decodeURIComponent(url.pathname.match(/^\/v1\/topics\/([^/]+)\/document-update-preview$/)![1]);
+        const preview = service.previewDocumentUpdate(previewTopicId);
+        return json(response, preview ? 200 : 204, preview ?? { message: "No changes detected" });
+      }
+      if (request.method === "POST" && (url.pathname.match(/^\/v1\/topics\/([^/]+)\/document-update-confirm$/))) {
+        const confirmTopicId = decodeURIComponent(url.pathname.match(/^\/v1\/topics\/([^/]+)\/document-update-confirm$/)![1]);
+        const body = await readJson(request) as { previewId: string; accepted: boolean };
+        return json(response, 200, await service.confirmDocumentUpdate(confirmTopicId, body.previewId, body.accepted));
+      }
+// ── Verification ─────────────────────────────────────
+      if (request.method === "GET" && url.pathname === "/v1/settings/verification-policy") {
+        return json(response, 200, service.getVerificationPolicy());
+      }
+      if (request.method === "PUT" && url.pathname === "/v1/settings/verification-policy") {
+        const policyBody = await readJson(request) as import("@collector/capture-contracts").VerificationPolicyConfig;
+        return json(response, 200, await service.updateVerificationPolicy(policyBody));
+      }
+      const verifClaimsMatch = url.pathname.match(/^\/v1\/documents\/([^/]+)\/verification-claims$/);
+      if (request.method === "GET" && verifClaimsMatch) {
+        return json(response, 200, service.getVerificationClaims(decodeURIComponent(verifClaimsMatch[1])));
+      }
+// ── AI Usage & Budget ──────────────────────────────────
+      if (request.method === "GET" && url.pathname === "/v1/ai-usage") {
+        const y = url.searchParams.get("year");
+        const m = url.searchParams.get("month");
+        return json(response, 200, service.getAiUsage(y ? Number(y) : undefined, m ? Number(m) : undefined));
+      }
+      if (request.method === "GET" && url.pathname === "/v1/settings/ai-budget") {
+        return json(response, 200, service.getAiBudgetSettings());
+      }
+      if (request.method === "PUT" && url.pathname === "/v1/settings/ai-budget") {
+        const budgetBody = await readJson(request) as { monthlyLimitUsd?: number; warningThresholdUsd?: number; enabled?: boolean };
+        return json(response, 200, await service.updateAiBudgetSettings(budgetBody));
+      }
+
       return json(response, 404, { error: { code: "not_found", message: "Route not found" } });
     } catch (error) {
       if (error instanceof PairingRateLimitError) {

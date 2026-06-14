@@ -225,11 +225,43 @@ export interface WorkflowStepRecord {
 export interface ModelCallRecord {
   id: string;
   workflowRunId: string;
+  workflowStepId?: string;
   provider: string;
   model: string;
+  purpose: string;
+  promptVersion: string;
   status: "queued" | "processing" | "completed" | "failed" | "cancelled";
+  inputTokens: number;
+  outputTokens: number;
+  cacheHitTokens: number;
+  estimatedCostUsd: number;
+  latencyMs: number;
+  retryCount: number;
+  errorMessage?: string;
   createdAt: string;
   completedAt?: string;
+}
+
+export interface AiUsageSummary {
+  periodStart: string;
+  periodEnd: string;
+  totalCalls: number;
+  completedCalls: number;
+  failedCalls: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCostUsd: number;
+  byModel: Record<string, { calls: number; tokens: number; costUsd: number }>;
+  byPurpose: Record<string, { calls: number; tokens: number; costUsd: number }>;
+  successRate: number;
+}
+
+export interface AiBudgetSettings {
+  monthlyLimitUsd: number;
+  warningThresholdUsd: number;
+  enabled: boolean;
+  currentMonthCostUsd: number;
+  status: "ok" | "warning" | "exceeded";
 }
 
 export interface RecentClusterSnapshotRecord {
@@ -271,6 +303,59 @@ export interface DocumentOutline {
 
 export interface ApiError {
   error: { code: string; message: string; details?: unknown };
+}
+
+
+// ── Verification (Issue 08) ────────────────────────────────
+
+export type VerificationPolicy = "offline" | "verify_only";
+
+export interface VerificationClaim {
+  id: string;
+  documentVersionId: string;
+  sectionId: string;
+  statement: string;
+  fragmentIds: string[];
+  status: "pending" | "supported" | "disputed" | "outdated" | "insufficient" | "unverified";
+  sources: Array<{ url: string; title?: string; snippet: string; accessedAt: string }>;
+  confidence: number;
+  summary: string;
+  costUsd: number;
+  createdAt: string;
+  verifiedAt?: string;
+}
+
+export interface VerificationPolicyConfig {
+  policy: VerificationPolicy;
+  maxQueries?: number;
+  maxPages?: number;
+  timeoutMs?: number;
+  maxResponseBytes?: number;
+}
+
+
+// ── Incremental Document Update (Issue 09) ──────────────────
+
+export interface UpdatePreview {
+  id: string;
+  topicId: string;
+  previousDocumentVersionId: string;
+  nextDocumentVersion: number;
+  affectedSectionIds: string[];
+  proposedAdditions: Array<{ heading: string; markdown: string; citationIds: string[] }>;
+  proposedModifications: Array<{ sectionId: string; heading: string; markdown: string; citationIds: string[] }>;
+  keptSections: string[];
+  conflicts: Array<{ sectionId: string; reason: "protected_by_user" | "deleted_reference" | "material_removed" }>;
+  status: "pending" | "confirmed" | "rejected";
+  createdAt: string;
+}
+
+export interface PendingMaterialChange {
+  id: string;
+  topicId: string;
+  changeType: "added" | "modified" | "removed";
+  materialId: string;
+  detectedAt: string;
 }
 
 export const MAX_ARTIFACT_BYTES = 20 * 1024 * 1024;

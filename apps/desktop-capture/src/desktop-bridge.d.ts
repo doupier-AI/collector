@@ -1,4 +1,4 @@
-﻿import type {
+import type {
   ArtifactRecord,
   CaptureInput,
   CaptureRecord,
@@ -33,6 +33,13 @@ interface WorkspaceBridge {
   navigateTo(tab: string): void;
 }
 
+interface RecentBridge {
+  organize(idempotencyKey?: string): Promise<import("@collector/capture-contracts").WorkflowRunRecord>;
+  snapshot(): Promise<import("@collector/capture-contracts").RecentClusterSnapshotRecord>;
+  run(id: string): Promise<import("@collector/capture-contracts").WorkflowRunRecord>;
+  cancel(id: string): Promise<import("@collector/capture-contracts").WorkflowRunRecord>;
+}
+
 interface SettingsBridge {
   get(): Promise<{ shortcut: string; ai: { consent: boolean; configured: boolean; provider?: string; model?: string; unavailable?: boolean } }>;
   saveAi(value: { consent: boolean; apiKey?: string }): Promise<{ consent: boolean; configured: boolean; provider?: string; model?: string }>;
@@ -42,7 +49,7 @@ interface SettingsBridge {
 
 declare global {
   interface Window {
-    collector: { capture: CaptureBridge; workspace: WorkspaceBridge; settings: SettingsBridge };
+    collector: { capture: CaptureBridge; workspace: WorkspaceBridge; recent: RecentBridge; settings: SettingsBridge };
   }
 }
 

@@ -1,7 +1,7 @@
-﻿import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import type { AgentRunRecord, ArtifactRecord, CaptureRecord, FragmentRecord, KnowledgeItemRecord, RecentClusterSnapshotRecord, RelationRecord, ReviewProposalRecord, TopicRecord, UserDecisionRecord, WorkflowRunRecord, WorkflowStepRecord, TopicDocumentVersionRecord } from "@collector/capture-contracts";
+import type { AgentRunRecord, ArtifactRecord, CaptureRecord, FragmentRecord, KnowledgeItemRecord, RecentClusterSnapshotRecord, RelationRecord, ReviewProposalRecord, TopicRecord, UserDecisionRecord, WorkflowRunRecord, WorkflowStepRecord, TopicDocumentVersionRecord, ModelCallRecord, AiBudgetSettings, VerificationClaim, VerificationPolicyConfig } from "@collector/capture-contracts";
 
 export interface CollectorStore {
   init(): Promise<void>;
@@ -55,6 +55,19 @@ export interface CollectorStore {
   getTopicDocumentVersion(id: string): import("@collector/capture-contracts").TopicDocumentVersionRecord | undefined;
   listTopicDocumentVersions(topicId: string): import("@collector/capture-contracts").TopicDocumentVersionRecord[];
   getLatestTopicDocumentVersion(topicId: string): import("@collector/capture-contracts").TopicDocumentVersionRecord | undefined;
+  saveModelCall(record: ModelCallRecord): Promise<void>;
+  listModelCalls(workflowRunId?: string): ModelCallRecord[];
+  getAiBudgetSetting(key: string): string | undefined;
+  saveAiBudgetSetting(key: string, value: string): Promise<void>;
+  getMonthModelCallCostUsd(year: number, month: number): number;
+  getMonthModelCalls(year: number, month: number): ModelCallRecord[];
+  saveVerificationClaims(claims: VerificationClaim[]): Promise<void>;
+  listVerificationClaims(documentVersionId: string): VerificationClaim[];
+  getVerificationPolicy(): VerificationPolicyConfig;
+  saveVerificationPolicy(config: VerificationPolicyConfig): Promise<void>;
+  detectMaterialChanges(topicId: string): { added: string[]; removed: string[] };
+  saveUpdatePreview(record: import("@collector/capture-contracts").UpdatePreview): Promise<void>;
+  getLatestUpdatePreview(topicId: string): import("@collector/capture-contracts").UpdatePreview | undefined;
   close?(): void;
 }
 
@@ -94,7 +107,46 @@ export class SqliteStore implements CollectorStore {
     await this.migrateLegacyJson();
   }
 
-  close(): void {
+  // ── AI Usage & Verification ──────────────────────────
+  async saveModelCall(record: ModelCallRecord): Promise<void> {
+    this.db().prepare("INSERT INTO model_calls (id, workflow_run_id, workflow_step_id, provider, model, purpose, prompt_version, status, input_tokens, output_tokens, cache_hit_tokens, estimated_cost_usd, latency_ms, retry_count, error_message, created_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(record.id, record.workflowRunId, record.workflowStepId ?? null, record.provider, record.model, record.purpose, record.promptVersion,
+        record.status, record.inputTokens, record.outputTokens, record.cacheHitTokens, record.estimatedCostUsd, record.latencyMs, record.retryCount,
+        record.errorMessage ?? null, record.createdAt, JSON.stringify(record));
+  }
+  listModelCalls(workflowRunId?: string): ModelCallRecord[] {
+    const sql = workflowRunId ? "SELECT record_json FROM model_calls WHERE workflow_run_id = ? ORDER BY created_at" : "SELECT record_json FROM model_calls ORDER BY created_at DESC";
+    return workflowRunId ? this.listRecords<ModelCallRecord>(sql, workflowRunId) : this.listRecords<ModelCallRecord>(sql);
+  }
+  getAiBudgetSetting(key: string): string | undefined { return (this.db().prepare("SELECT value FROM ai_budget_settings WHERE key = ?").get(key) as { value: string } | undefined)?.value; }
+  async saveAiBudgetSetting(key: string, value: string): Promise<void> { this.db().prepare("INSERT INTO ai_budget_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(key, value); }
+  getMonthModelCallCostUsd(year: number, month: number): number { const start = new Date(Date.UTC(year, month - 1, 1)).toISOString(); const end = new Date(Date.UTC(year, month, 1)).toISOString(); return (this.db().prepare("SELECT COALESCE(SUM(estimated_cost_usd), 0) AS total FROM model_calls WHERE created_at >= ? AND created_at < ? AND status = 'completed'").get(start, end) as { total: number }).total; }
+  getMonthModelCalls(year: number, month: number): ModelCallRecord[] { const start = new Date(Date.UTC(year, month - 1, 1)).toISOString(); const end = new Date(Date.UTC(year, month, 1)).toISOString(); return this.listRecords<ModelCallRecord>("SELECT record_json FROM model_calls WHERE created_at >= ? AND created_at < ? ORDER BY created_at", start, end); }
+  async saveVerificationClaims(claims: VerificationClaim[]): Promise<void> { const stmt = this.db().prepare("INSERT OR REPLACE INTO verification_claims (id, document_version_id, section_id, statement, fragment_ids, status, sources, confidence, summary, cost_usd, created_at, verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"); for (const cl of claims) { stmt.run(cl.id, cl.documentVersionId, cl.sectionId, cl.statement, JSON.stringify(cl.fragmentIds), cl.status, JSON.stringify(cl.sources), cl.confidence, cl.summary, cl.costUsd, cl.createdAt, cl.verifiedAt ?? null); } }
+  listVerificationClaims(documentVersionId: string): VerificationClaim[] { const rows = this.db().prepare("SELECT * FROM verification_claims WHERE document_version_id = ? ORDER BY created_at").all(documentVersionId) as any[]; return rows.map((r: any) => ({ ...r, fragmentIds: JSON.parse(r.fragment_ids), sources: JSON.parse(r.sources) })); }
+  getVerificationPolicy(): VerificationPolicyConfig { const gv = (k: string) => (this.db().prepare("SELECT value FROM verification_policy WHERE key = ?").get(k) as any)?.value; return { policy: (gv("policy") || "offline") as VerificationPolicyConfig["policy"], maxQueries: Number(gv("max_queries") ?? 5), maxPages: Number(gv("max_pages") ?? 3), timeoutMs: Number(gv("timeout_ms") ?? 30000), maxResponseBytes: Number(gv("max_response_bytes") ?? 1048576) }; }
+  async saveVerificationPolicy(config: VerificationPolicyConfig): Promise<void> { const stmt = this.db().prepare("INSERT OR REPLACE INTO verification_policy (key, value) VALUES (?, ?)"); stmt.run("policy", config.policy); if (config.maxQueries !== undefined) stmt.run("max_queries", String(config.maxQueries)); if (config.maxPages !== undefined) stmt.run("max_pages", String(config.maxPages)); if (config.timeoutMs !== undefined) stmt.run("timeout_ms", String(config.timeoutMs)); if (config.maxResponseBytes !== undefined) stmt.run("max_response_bytes", String(config.maxResponseBytes)); }
+
+    detectMaterialChanges(topicId: string): { added: string[]; removed: string[] } {
+    const current = this.listTopicCaptureIds(topicId);
+    const prevDoc = this.getLatestTopicDocumentVersion(topicId);
+    const prev = prevDoc ? (this.db().prepare("SELECT materialIds FROM workflow_runs WHERE materialSetVersion = ?").get(prevDoc.materialSetVersion) as any) : null;
+    const prevIds: string[] = prev ? JSON.parse(prev.materialIds || "[]") : [];
+    const added = current.filter((id: string) => !prevIds.includes(id));
+    const removed = prevIds.filter((id: string) => !current.includes(id));
+    return { added, removed };
+  }
+  async saveUpdatePreview(record: import("@collector/capture-contracts").UpdatePreview): Promise<void> {
+    this.db().prepare("INSERT OR REPLACE INTO update_previews (id, topic_id, previous_document_version_id, next_document_version, affected_section_ids_json, proposed_additions_json, proposed_modifications_json, kept_sections_json, conflicts_json, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(record.id, record.topicId, record.previousDocumentVersionId, record.nextDocumentVersion, JSON.stringify(record.affectedSectionIds), JSON.stringify(record.proposedAdditions), JSON.stringify(record.proposedModifications), JSON.stringify(record.keptSections), JSON.stringify(record.conflicts), record.status, record.createdAt);
+  }
+  getLatestUpdatePreview(topicId: string): import("@collector/capture-contracts").UpdatePreview | undefined {
+    const row = this.db().prepare("SELECT * FROM update_previews WHERE topic_id = ? ORDER BY created_at DESC LIMIT 1").get(topicId) as any;
+    if (!row) return undefined;
+    return { ...row, affectedSectionIds: JSON.parse(row.affected_section_ids_json), proposedAdditions: JSON.parse(row.proposed_additions_json), proposedModifications: JSON.parse(row.proposed_modifications_json), keptSections: JSON.parse(row.kept_sections_json), conflicts: JSON.parse(row.conflicts_json) };
+  }
+
+    close(): void {
     this.database?.close();
     this.database = undefined;
   }
@@ -497,6 +549,78 @@ export class SqliteStore implements CollectorStore {
       });
       version = 5;
     }
+    if (version < 6) {
+      this.transaction(() => {
+        this.db().exec(`
+          ALTER TABLE model_calls ADD COLUMN workflow_step_id TEXT;
+          ALTER TABLE model_calls ADD COLUMN purpose TEXT NOT NULL DEFAULT 'extraction';
+          ALTER TABLE model_calls ADD COLUMN prompt_version TEXT NOT NULL DEFAULT 'v1';
+          ALTER TABLE model_calls ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE model_calls ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE model_calls ADD COLUMN cache_hit_tokens INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE model_calls ADD COLUMN estimated_cost_usd REAL NOT NULL DEFAULT 0;
+          ALTER TABLE model_calls ADD COLUMN latency_ms INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE model_calls ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0;
+          ALTER TABLE model_calls ADD COLUMN error_message TEXT;
+          CREATE TABLE IF NOT EXISTS ai_budget_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+          INSERT OR IGNORE INTO ai_budget_settings (key, value) VALUES ('monthly_limit_usd', '0');
+          INSERT OR IGNORE INTO ai_budget_settings (key, value) VALUES ('warning_threshold_usd', '0');
+          INSERT OR IGNORE INTO ai_budget_settings (key, value) VALUES ('enabled', 'false');
+          INSERT INTO schema_migrations(version, applied_at) VALUES (6, datetime('now'));
+        `);
+      });
+      version = 6;
+    }
+    if (version < 7) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE IF NOT EXISTS verification_claims (
+            id TEXT PRIMARY KEY,
+            document_version_id TEXT NOT NULL,
+            section_id TEXT NOT NULL,
+            statement TEXT NOT NULL,
+            fragment_ids TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL,
+            sources TEXT NOT NULL DEFAULT '[]',
+            confidence REAL NOT NULL DEFAULT 0,
+            summary TEXT NOT NULL DEFAULT '',
+            cost_usd REAL NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            verified_at TEXT,
+            FOREIGN KEY(document_version_id) REFERENCES topic_document_versions(id)
+          );
+          CREATE TABLE IF NOT EXISTS verification_policy (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+          INSERT OR IGNORE INTO verification_policy (key, value) VALUES ('policy', 'offline');
+          INSERT OR IGNORE INTO verification_policy (key, value) VALUES ('max_queries', '5');
+          INSERT OR IGNORE INTO verification_policy (key, value) VALUES ('max_pages', '3');
+          INSERT OR IGNORE INTO verification_policy (key, value) VALUES ('timeout_ms', '30000');
+          INSERT OR IGNORE INTO verification_policy (key, value) VALUES ('max_response_bytes', '1048576');
+          INSERT INTO schema_migrations(version, applied_at) VALUES (7, datetime('now'));
+        `);
+      });
+      version = 7;
+    }
+    if (version < 8) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE IF NOT EXISTS update_previews (
+            id TEXT PRIMARY KEY,
+            topic_id TEXT NOT NULL,
+            previous_document_version_id TEXT NOT NULL,
+            next_document_version INTEGER NOT NULL,
+            affected_section_ids_json TEXT NOT NULL,
+            proposed_additions_json TEXT NOT NULL,
+            proposed_modifications_json TEXT NOT NULL,
+            kept_sections_json TEXT NOT NULL,
+            conflicts_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL
+          );
+          INSERT INTO schema_migrations(version, applied_at) VALUES (8, datetime('now'));
+        `);
+      });
+      version = 8;
+    }
 
   }
 
@@ -683,6 +807,19 @@ export class JsonStore implements CollectorStore {
   getTopicDocumentVersion(_id: string): any { return undefined; }
   listTopicDocumentVersions(_topicId: string): any[] { return []; }
   getLatestTopicDocumentVersion(_topicId: string): any { return undefined; }
+  async saveModelCall(_record: any): Promise<void> { throw new Error("AI budget requires SQLite persistence"); }
+  listModelCalls(_workflowRunId?: string): any[] { return []; }
+  getAiBudgetSetting(_key: string): string | undefined { return undefined; }
+  async saveAiBudgetSetting(_key: string, _value: string): Promise<void> { throw new Error("AI budget requires SQLite persistence"); }
+  getMonthModelCallCostUsd(_year: number, _month: number): number { return 0; }
+  getMonthModelCalls(_year: number, _month: number): any[] { return []; }
+  async saveVerificationClaims(_claims: any[]): Promise<void> { throw new Error("Verification requires SQLite persistence"); }
+  listVerificationClaims(_documentVersionId: string): any[] { return []; }
+  getVerificationPolicy(): any { return { policy: "offline", maxQueries: 5, maxPages: 3, timeoutMs: 30000, maxResponseBytes: 1048576 }; }
+  async saveVerificationPolicy(_config: any): Promise<void> { throw new Error("Verification requires SQLite persistence"); }
+  detectMaterialChanges(_topicId: string): { added: string[]; removed: string[] } { return { added: [], removed: [] }; }
+  async saveUpdatePreview(_record: any): Promise<void> { throw new Error("Update previews require SQLite persistence"); }
+  getLatestUpdatePreview(_topicId: string): any { return undefined; }
   listRevisions(captureId: string) { return Object.values(this.data.materialRevisions ?? {}).filter((r: any) => r.captureId === captureId).sort((a: any, b: any) => b.ordinal - a.ordinal); }
   async saveRevision(record: { id: string; captureId: string; content: string; ordinal: number; createdAt: string }) { this.data.materialRevisions ??= {}; this.data.materialRevisions[record.id] = record; await this.flush(); }
   async trashCapture(id: string, trashedAt: string) { const record = this.data.captures[id]; if (!record || (record as any).trashedAt) return false; (record as any).trashedAt = trashedAt; await this.flush(); return true; }

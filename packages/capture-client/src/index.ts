@@ -52,6 +52,23 @@ export class CaptureClient {
   removeTopicMember(topicId: string, captureId: string): Promise<{ removed: true }> { return this.request(`/v1/topics/${encodeURIComponent(topicId)}/members/${encodeURIComponent(captureId)}`, { method: "DELETE" }); }
   requestDeepAnalysis(captureId: string): Promise<import("@collector/capture-contracts").AgentRunRecord> { return this.request(`/v1/captures/${encodeURIComponent(captureId)}/deep-analysis`, { method: "POST" }); }
 
+  
+  organizeRecent(idempotencyKey?: string): Promise<import("@collector/capture-contracts").WorkflowRunRecord> {
+    return this.request("/v1/recent-organization/runs", {
+      method: "POST",
+      headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
+    });
+  }
+  getLatestRecentSnapshot(): Promise<import("@collector/capture-contracts").RecentClusterSnapshotRecord> {
+    return this.request("/v1/recent-organization/snapshots/latest", { method: "GET" });
+  }
+  getRecentOrganizationRun(id: string): Promise<import("@collector/capture-contracts").WorkflowRunRecord> {
+    return this.request(`/v1/recent-organization/runs/${encodeURIComponent(id)}`, { method: "GET" });
+  }
+  cancelRecentOrganizationRun(id: string): Promise<import("@collector/capture-contracts").WorkflowRunRecord> {
+    return this.request(`/v1/recent-organization/runs/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+  }
+
   async uploadArtifact(file: Blob, fileName: string): Promise<ArtifactRecord> {
     const headers: Record<string, string> = {
       "Content-Type": file.type || "application/octet-stream",
