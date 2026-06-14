@@ -12,11 +12,14 @@ import {
   type CaptureRecord,
   type InboxItem,
   type PreflightEvaluation,
+  type RecentClusterSnapshotRecord,
   type ReviewDecision,
   type ReviewProposalRecord,
   type RelationRecord,
   type TopicRecord,
   type TopicWorkspace,
+  type WorkflowRunRecord,
+  type WorkflowStepRecord,
 } from "@collector/capture-contracts";
 import type { CollectorStore } from "./store.js";
 import { SourceParser } from "./parsers.js";
@@ -28,6 +31,7 @@ export class NotFoundError extends Error {}
 export class CaptureService {
   private standardTasks: Promise<void> = Promise.resolve();
   private deepTasks: Promise<void> = Promise.resolve();
+  private recentOrganizationTasks: Promise<void> = Promise.resolve();
   private readonly scheduledRunIds = new Set<string>();
 
   constructor(
@@ -52,7 +56,7 @@ export class CaptureService {
     }
   }
 
-  async drainBackgroundTasks(): Promise<void> { await Promise.all([this.standardTasks, this.deepTasks]); }
+  async drainBackgroundTasks(): Promise<void> { await Promise.all([this.standardTasks, this.deepTasks, this.recentOrganizationTasks]); }
   getAiConfiguration(): { consent: boolean; configured: boolean; provider?: string; model?: string } {
     return { consent: this.store.getSetting("ai_consent") === "true", configured: this.store.getSetting("deepseek_configured") === "true", provider: this.modelGateway?.providerName, model: this.modelGateway?.modelName };
   }
@@ -135,6 +139,74 @@ export class CaptureService {
       reviewProposals: this.store.listReviewProposals(capture.id),
       agentRuns: this.store.listAgentRuns(capture.id),
     }));
+  }
+
+  async organizeRecent(idempotencyKey?: string): Promise<WorkflowRunRecord> {
+    if (!idempotencyKey?.trim()) throw new ValidationError("Idempotency-Key is required");
+    const materials = this.store.listCaptures()
+      .filter((capture) => capture.status !== "failed")
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
+    const materialIds = materials.map((capture) => capture.id);
+    const materialSetVersion = createHash("sha256")
+      .update(JSON.stringify(materials.map((capture) => [capture.id, capture.checksum])))
+      .digest("hex");
+    const existing = this.store.findWorkflowRun("recent_organization", idempotencyKey, materialSetVersion);
+    if (existing) return existing;
+    const now = new Date().toISOString();
+    const run: WorkflowRunRecord = {
+      id: randomUUID(), workflowType: "recent_organization", idempotencyKey,
+      materialIds, materialSetVersion, status: "queued", createdAt: now,
+    };
+    await this.store.saveWorkflowRun(run);
+    this.scheduleRecentOrganization(run, materials);
+    return run;
+  }
+
+  private scheduleRecentOrganization(run: WorkflowRunRecord, materials: CaptureRecord[]): void {
+    this.recentOrganizationTasks = this.recentOrganizationTasks.catch(() => undefined).then(async () => {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const startedAt = new Date().toISOString();
+      const processing: WorkflowRunRecord = { ...run, status: "processing", startedAt };
+      try {
+        await this.store.saveWorkflowRun(processing);
+        await this.executeRecentOrganization(processing, materials);
+      } catch (error) {
+        const completedAt = new Date().toISOString();
+        const errorMessage = error instanceof Error ? error.message : "Unexpected recent organization failure";
+        await this.store.saveWorkflowRun({ ...processing, status: "failed", errorMessage, completedAt });
+      }
+    });
+  }
+
+  private async executeRecentOrganization(run: WorkflowRunRecord, materials: CaptureRecord[]): Promise<void> {
+    const completedAt = new Date().toISOString();
+    const representativeByChecksum = new Map<string, string>();
+    for (const material of materials) {
+      if (!representativeByChecksum.has(material.checksum)) representativeByChecksum.set(material.checksum, material.id);
+    }
+    const representativeIds = [...representativeByChecksum.values()];
+    const steps: WorkflowStepRecord[] = [
+      { id: randomUUID(), workflowRunId: run.id, stepType: "freeze_materials", status: "completed", output: { materialIds: run.materialIds, materialSetVersion: run.materialSetVersion }, createdAt: run.startedAt ?? run.createdAt, completedAt },
+      { id: randomUUID(), workflowRunId: run.id, stepType: "exact_deduplication", status: "completed", output: { representativeMaterialIds: representativeIds }, createdAt: run.startedAt ?? run.createdAt, completedAt },
+      { id: randomUUID(), workflowRunId: run.id, stepType: "publish_snapshot", status: "completed", createdAt: run.startedAt ?? run.createdAt, completedAt },
+    ];
+    const snapshot: RecentClusterSnapshotRecord = {
+      id: randomUUID(), workflowRunId: run.id, materialSetVersion: run.materialSetVersion, clusters: [],
+      unclusteredMaterialIds: representativeIds, createdAt: completedAt,
+    };
+    await this.store.publishRecentClusterSnapshot({ ...run, status: "completed", completedAt }, steps, snapshot);
+  }
+
+  getWorkflowRun(id: string): WorkflowRunRecord {
+    const run = this.store.getWorkflowRun(id);
+    if (!run) throw new NotFoundError("Workflow run not found");
+    return run;
+  }
+
+  getLatestRecentClusterSnapshot(): RecentClusterSnapshotRecord {
+    const snapshot = this.store.getLatestRecentClusterSnapshot();
+    if (!snapshot) throw new NotFoundError("Recent cluster snapshot not found");
+    return snapshot;
   }
 
   async decideReviewProposal(id: string, decision: ReviewDecision): Promise<ReviewProposalRecord> {

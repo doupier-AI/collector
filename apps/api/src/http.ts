@@ -30,6 +30,14 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         return json(response, 201, auth.createPairingCode(body.name?.trim() || "Collector Client"));
       }
       if (request.method === "GET" && url.pathname === "/v1/inbox") return json(response, 200, service.listInbox());
+      if (request.method === "POST" && url.pathname === "/v1/recent-organization/runs") {
+        return json(response, 202, await service.organizeRecent(header(request, "idempotency-key")));
+      }
+      if (request.method === "GET" && url.pathname === "/v1/recent-organization/snapshots/latest") {
+        return json(response, 200, service.getLatestRecentClusterSnapshot());
+      }
+      const workflowRunMatch = url.pathname.match(/^\/v1\/recent-organization\/runs\/([^/]+)$/);
+      if (request.method === "GET" && workflowRunMatch) return json(response, 200, service.getWorkflowRun(decodeURIComponent(workflowRunMatch[1])));
       if (request.method === "GET" && url.pathname === "/v1/relations") return json(response, 200, service.listRelations(url.searchParams.get("captureId") ?? undefined));
       if (request.method === "GET" && url.pathname === "/v1/topics") return json(response, 200, service.listTopics());
       if (request.method === "POST" && url.pathname === "/v1/topics") {

@@ -1,7 +1,7 @@
 import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import type { AgentRunRecord, ArtifactRecord, CaptureRecord, FragmentRecord, KnowledgeItemRecord, RelationRecord, ReviewProposalRecord, TopicRecord, UserDecisionRecord } from "@collector/capture-contracts";
+import type { AgentRunRecord, ArtifactRecord, CaptureRecord, FragmentRecord, KnowledgeItemRecord, RecentClusterSnapshotRecord, RelationRecord, ReviewProposalRecord, TopicRecord, UserDecisionRecord, WorkflowRunRecord, WorkflowStepRecord } from "@collector/capture-contracts";
 
 export interface CollectorStore {
   init(): Promise<void>;
@@ -39,6 +39,11 @@ export interface CollectorStore {
   saveSetting(key: string, value: string): Promise<void>;
   saveClientToken(id: string, name: string, tokenHash: string, createdAt: string): Promise<void>;
   hasClientToken(tokenHash: string): boolean;
+  getWorkflowRun(id: string): WorkflowRunRecord | undefined;
+  findWorkflowRun(workflowType: WorkflowRunRecord["workflowType"], idempotencyKey: string, materialSetVersion: string): WorkflowRunRecord | undefined;
+  getLatestRecentClusterSnapshot(): RecentClusterSnapshotRecord | undefined;
+  saveWorkflowRun(run: WorkflowRunRecord): Promise<void>;
+  publishRecentClusterSnapshot(run: WorkflowRunRecord, steps: WorkflowStepRecord[], snapshot: RecentClusterSnapshotRecord): Promise<void>;
   close?(): void;
 }
 
@@ -73,6 +78,7 @@ export class SqliteStore implements CollectorStore {
     this.database = new DatabaseSync(this.filePath);
     this.database.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
     this.createSchema();
+    this.migrateSchema();
     await this.migrateLegacyJson();
   }
 
@@ -194,6 +200,33 @@ export class SqliteStore implements CollectorStore {
     return Boolean(this.db().prepare("SELECT 1 AS present FROM paired_clients WHERE token_hash = ?").get(tokenHash));
   }
 
+  getWorkflowRun(id: string): WorkflowRunRecord | undefined {
+    return this.getRecord<WorkflowRunRecord>("SELECT record_json FROM workflow_runs WHERE id = ?", id);
+  }
+
+  findWorkflowRun(workflowType: WorkflowRunRecord["workflowType"], idempotencyKey: string, materialSetVersion: string): WorkflowRunRecord | undefined {
+    return this.getRecord<WorkflowRunRecord>("SELECT record_json FROM workflow_runs WHERE workflow_type = ? AND idempotency_key = ? AND material_set_version = ? AND status != 'failed' ORDER BY created_at DESC LIMIT 1", workflowType, idempotencyKey, materialSetVersion);
+  }
+
+  getLatestRecentClusterSnapshot(): RecentClusterSnapshotRecord | undefined {
+    return this.getRecord<RecentClusterSnapshotRecord>("SELECT record_json FROM recent_cluster_snapshots ORDER BY publication_sequence DESC LIMIT 1");
+  }
+
+  async saveWorkflowRun(run: WorkflowRunRecord): Promise<void> {
+    this.upsertWorkflowRun(run);
+  }
+
+  async publishRecentClusterSnapshot(run: WorkflowRunRecord, steps: WorkflowStepRecord[], snapshot: RecentClusterSnapshotRecord): Promise<void> {
+    this.transaction(() => {
+      this.upsertWorkflowRun(run);
+      const insertStep = this.db().prepare("INSERT INTO workflow_steps (id, workflow_run_id, step_type, status, created_at, record_json) VALUES (?, ?, ?, ?, ?, ?)");
+      for (const step of steps) insertStep.run(step.id, step.workflowRunId, step.stepType, step.status, step.createdAt, JSON.stringify(step));
+      const sequence = (this.db().prepare("SELECT COALESCE(MAX(publication_sequence), 0) + 1 AS sequence FROM recent_cluster_snapshots").get() as { sequence: number }).sequence;
+      this.db().prepare("INSERT INTO recent_cluster_snapshots (id, workflow_run_id, material_set_version, created_at, publication_sequence, record_json) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(snapshot.id, snapshot.workflowRunId, snapshot.materialSetVersion, snapshot.createdAt, sequence, JSON.stringify(snapshot));
+    });
+  }
+
   private createSchema(): void {
     this.db().exec(`
       CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
@@ -257,6 +290,50 @@ export class SqliteStore implements CollectorStore {
       );
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (1, datetime('now'));
     `);
+  }
+
+  private migrateSchema(): void {
+    let version = (this.db().prepare("SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations").get() as { version: number }).version;
+    if (version < 2) {
+      this.transaction(() => {
+        this.db().exec(`
+        CREATE TABLE workflow_runs (
+          id TEXT PRIMARY KEY, workflow_type TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+          material_set_version TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, record_json TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX workflow_runs_active_idempotency_idx
+          ON workflow_runs(workflow_type, idempotency_key, material_set_version) WHERE status != 'failed';
+        CREATE TABLE workflow_steps (
+          id TEXT PRIMARY KEY, workflow_run_id TEXT NOT NULL, step_type TEXT NOT NULL,
+          status TEXT NOT NULL, created_at TEXT NOT NULL, record_json TEXT NOT NULL,
+          FOREIGN KEY(workflow_run_id) REFERENCES workflow_runs(id)
+        );
+        CREATE TABLE model_calls (
+          id TEXT PRIMARY KEY, workflow_run_id TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
+          status TEXT NOT NULL, created_at TEXT NOT NULL, record_json TEXT NOT NULL,
+          FOREIGN KEY(workflow_run_id) REFERENCES workflow_runs(id)
+        );
+        CREATE TABLE recent_cluster_snapshots (
+          id TEXT PRIMARY KEY, workflow_run_id TEXT NOT NULL UNIQUE, material_set_version TEXT NOT NULL,
+          created_at TEXT NOT NULL, record_json TEXT NOT NULL,
+          FOREIGN KEY(workflow_run_id) REFERENCES workflow_runs(id)
+        );
+        INSERT INTO schema_migrations(version, applied_at) VALUES (2, datetime('now'));
+      `);
+      });
+      version = 2;
+    }
+    if (version < 3) {
+      this.transaction(() => {
+        this.db().exec(`
+          ALTER TABLE recent_cluster_snapshots ADD COLUMN publication_sequence INTEGER;
+          UPDATE recent_cluster_snapshots SET publication_sequence = rowid WHERE publication_sequence IS NULL;
+          CREATE UNIQUE INDEX recent_cluster_snapshots_publication_idx
+            ON recent_cluster_snapshots(publication_sequence);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (3, datetime('now'));
+        `);
+      });
+    }
   }
 
   private async migrateLegacyJson(): Promise<void> {
@@ -348,6 +425,13 @@ export class SqliteStore implements CollectorStore {
       record.id, record.captureId, record.status, record.provider, record.model, record.createdAt, JSON.stringify(record),
     );
   }
+
+  private upsertWorkflowRun(run: WorkflowRunRecord): void {
+    this.db().prepare(`INSERT INTO workflow_runs (id, workflow_type, idempotency_key, material_set_version, status, created_at, record_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET status=excluded.status, record_json=excluded.record_json`)
+      .run(run.id, run.workflowType, run.idempotencyKey, run.materialSetVersion, run.status, run.createdAt, JSON.stringify(run));
+  }
   private insertRelation(record: RelationRecord): void { this.db().prepare(`INSERT INTO relations (id, proposal_id, source_capture_id, target_capture_id, status, created_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status=excluded.status, record_json=excluded.record_json`).run(record.id, record.proposalId, record.sourceCaptureId, record.targetCaptureId ?? null, record.status, record.createdAt, JSON.stringify(record)); }
   private insertUserDecision(record: UserDecisionRecord): void { this.db().prepare("INSERT INTO user_decisions (id, proposal_id, relation_id, created_at, record_json) VALUES (?, ?, ?, ?, ?)").run(record.id, record.proposalId ?? null, record.relationId ?? null, record.createdAt, JSON.stringify(record)); }
   private insertTopic(record: TopicRecord): void { this.db().prepare(`INSERT INTO topics (id, status, updated_at, record_json) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at, record_json=excluded.record_json`).run(record.id, record.status, record.updatedAt, JSON.stringify(record)); }
@@ -419,6 +503,11 @@ export class JsonStore implements CollectorStore {
   async saveSetting(key: string, value: string) { this.data.settings ??= {}; this.data.settings[key] = value; await this.flush(); }
   async saveClientToken(id: string, name: string, tokenHash: string, createdAt: string) { this.data.clientTokens ??= {}; this.data.clientTokens[tokenHash] = { id, name, tokenHash, createdAt }; await this.flush(); }
   hasClientToken(tokenHash: string) { return Boolean(this.data.clientTokens?.[tokenHash]); }
+  getWorkflowRun(_id: string): WorkflowRunRecord | undefined { return undefined; }
+  findWorkflowRun(_workflowType: WorkflowRunRecord["workflowType"], _idempotencyKey: string, _materialSetVersion: string): WorkflowRunRecord | undefined { return undefined; }
+  getLatestRecentClusterSnapshot(): RecentClusterSnapshotRecord | undefined { return undefined; }
+  async saveWorkflowRun(_run: WorkflowRunRecord): Promise<void> { throw new Error("Recent organization requires SQLite persistence"); }
+  async publishRecentClusterSnapshot(_run: WorkflowRunRecord, _steps: WorkflowStepRecord[], _snapshot: RecentClusterSnapshotRecord): Promise<void> { throw new Error("Recent organization requires SQLite persistence"); }
   private flush() { this.writeQueue = this.writeQueue.then(async () => { const temporaryPath = `${this.filePath}.tmp`; await writeFile(temporaryPath, JSON.stringify(this.data, null, 2), "utf8"); await rename(temporaryPath, this.filePath); }); return this.writeQueue; }
 }
 

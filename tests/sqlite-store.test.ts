@@ -3,7 +3,8 @@ import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { ArtifactRecord, CaptureRecord, FragmentRecord, KnowledgeItemRecord, ReviewProposalRecord } from "@collector/capture-contracts";
+import { DatabaseSync } from "node:sqlite";
+import type { ArtifactRecord, CaptureRecord, FragmentRecord, KnowledgeItemRecord, RecentClusterSnapshotRecord, ReviewProposalRecord, WorkflowRunRecord, WorkflowStepRecord } from "@collector/capture-contracts";
 import { SqliteStore } from "@collector/api";
 
 function records() {
@@ -81,4 +82,71 @@ test("legacy migration uses an explicit marker when JSON contains artifacts but 
   assert.equal(backups.length, 1);
   await chmod(join(root, backups[0]), 0o666);
   t.after(() => rm(root, { recursive: true, force: true }));
+});
+
+test("workflow migration creates formal versioned tables", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "collector-workflow-schema-"));
+  const databasePath = join(root, "collector.sqlite");
+  const store = new SqliteStore(databasePath);
+  await store.init();
+  store.close();
+  const database = new DatabaseSync(databasePath, { readOnly: true });
+  const tables = (database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name);
+  for (const table of ["workflow_runs", "workflow_steps", "model_calls", "recent_cluster_snapshots"]) assert.ok(tables.includes(table));
+  assert.equal((database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 3);
+  database.close();
+  t.after(() => rm(root, { recursive: true, force: true }));
+});
+
+test("snapshot publication rolls back the completed run when the snapshot cannot be inserted", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "collector-workflow-atomic-"));
+  const store = new SqliteStore(join(root, "collector.sqlite"));
+  await store.init();
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  const createdAt = "2026-06-14T00:00:00.000Z";
+  const makeRun = (id: string): WorkflowRunRecord => ({
+    id, workflowType: "recent_organization", idempotencyKey: id, materialIds: [], materialSetVersion: id,
+    status: "completed", createdAt, startedAt: createdAt, completedAt: createdAt,
+  });
+  const makeStep = (runId: string): WorkflowStepRecord => ({
+    id: `step-${runId}`, workflowRunId: runId, stepType: "publish_snapshot", status: "completed", createdAt, completedAt: createdAt,
+  });
+  const firstRun = makeRun("run-1");
+  const firstSnapshot: RecentClusterSnapshotRecord = {
+    id: "snapshot-1", workflowRunId: firstRun.id, materialSetVersion: firstRun.materialSetVersion,
+    clusters: [], unclusteredMaterialIds: [], createdAt,
+  };
+  await store.publishRecentClusterSnapshot(firstRun, [makeStep(firstRun.id)], firstSnapshot);
+  const secondRun = makeRun("run-2");
+  await assert.rejects(() => store.publishRecentClusterSnapshot(secondRun, [makeStep(secondRun.id)], { ...firstSnapshot, workflowRunId: secondRun.id }));
+  assert.equal(store.getWorkflowRun(secondRun.id), undefined);
+  assert.deepEqual(store.getLatestRecentClusterSnapshot(), firstSnapshot);
+});
+
+test("latest snapshot follows publication order when timestamps are equal", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "collector-workflow-order-"));
+  const store = new SqliteStore(join(root, "collector.sqlite"));
+  await store.init();
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  const createdAt = "2026-06-14T00:00:00.000Z";
+  const publish = async (runId: string, snapshotId: string) => {
+    const run: WorkflowRunRecord = {
+      id: runId, workflowType: "recent_organization", idempotencyKey: runId, materialIds: [],
+      materialSetVersion: runId, status: "completed", createdAt, startedAt: createdAt, completedAt: createdAt,
+    };
+    const step: WorkflowStepRecord = {
+      id: `step-${runId}`, workflowRunId: runId, stepType: "publish_snapshot",
+      status: "completed", createdAt, completedAt: createdAt,
+    };
+    const snapshot: RecentClusterSnapshotRecord = {
+      id: snapshotId, workflowRunId: runId, materialSetVersion: runId,
+      clusters: [], unclusteredMaterialIds: [], createdAt,
+    };
+    await store.publishRecentClusterSnapshot(run, [step], snapshot);
+    return snapshot;
+  };
+
+  await publish("run-later-id", "snapshot-z");
+  const actuallyLatest = await publish("run-earlier-id", "snapshot-a");
+  assert.deepEqual(store.getLatestRecentClusterSnapshot(), actuallyLatest);
 });

@@ -196,6 +196,8 @@ queued
 首版使用模块化单体内的进程内执行器：
 
 - SQLite 保存 `WorkflowRun` 和 `WorkflowStep`；
+- 已实现的首个 `recent_organization` 切片使用 `queued -> processing -> completed | failed` 状态机；API 触发只负责持久化排队记录，执行与请求生命周期解耦；
+- 成功发布时，完成状态、步骤和 `RecentClusterSnapshot` 在同一事务提交；最新快照由数据库发布序号确定，不依赖毫秒时间戳或随机 ID；
 - 执行器按任务类型设置有限并发；
 - 通过租约或原子状态转换领取任务，避免重启或多实例重复执行；
 - 工作流定义是显式 TypeScript step 列表和状态转换；

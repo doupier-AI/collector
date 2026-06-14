@@ -2,7 +2,7 @@
 
 Status: ready-for-agent
 Category: enhancement
-Type: AFK
+Type: HITL
 Resolution: open
 
 ## Parent
@@ -40,3 +40,5 @@ Resolution: open
 None - can start immediately.
 
 ## Comments
+
+- 2026-06-14: 本 Issue 已拆分为 `01a`、`01b`、`01c`，仅作为父级验收跟踪项，不再由 AFK 调度器直接执行。全部子 Issue 完成后再关闭父项。

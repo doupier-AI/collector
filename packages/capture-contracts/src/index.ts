@@ -192,6 +192,50 @@ export interface ArtifactRecord {
   createdAt: string;
 }
 
+export type WorkflowRunStatus = "queued" | "processing" | "completed" | "failed";
+
+export interface WorkflowRunRecord {
+  id: string;
+  workflowType: "recent_organization";
+  idempotencyKey: string;
+  materialIds: string[];
+  materialSetVersion: string;
+  status: WorkflowRunStatus;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  errorMessage?: string;
+}
+
+export interface WorkflowStepRecord {
+  id: string;
+  workflowRunId: string;
+  stepType: "freeze_materials" | "exact_deduplication" | "publish_snapshot";
+  status: "queued" | "processing" | "completed" | "failed";
+  output?: unknown;
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface ModelCallRecord {
+  id: string;
+  workflowRunId: string;
+  provider: string;
+  model: string;
+  status: "queued" | "processing" | "completed" | "failed";
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface RecentClusterSnapshotRecord {
+  id: string;
+  workflowRunId: string;
+  materialSetVersion: string;
+  clusters: Array<{ id: string; name: string; summary: string; materialIds: string[] }>;
+  unclusteredMaterialIds: string[];
+  createdAt: string;
+}
+
 export interface ApiError {
   error: { code: string; message: string; details?: unknown };
 }
