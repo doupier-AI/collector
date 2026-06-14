@@ -3,7 +3,7 @@
 Status: ready-for-human
 Category: enhancement
 Type: HITL
-Resolution: open
+Resolution: completed
 
 ## Parent
 
@@ -22,17 +22,21 @@ Resolution: open
 
 ## Acceptance criteria
 
-- [ ] 人工确认单窗口原型方向，并在 Comments 记录采用或组合的方案。
-- [ ] 应用运行时只维护一个主要 `BrowserWindow`。
-- [ ] 应用内可切换近期收集、专题、全部材料和设置，切换不创建新窗口。
-- [ ] `Ctrl+Shift+Space` 在隐藏、普通显示和已聚焦三种状态下都能进入紧凑采集模式。
-- [ ] `Esc` 保留草稿并返回原上下文，提交成功清空草稿并恢复原上下文。
-- [ ] 文件选择、拖放、文本提交、Key 设置和快捷键设置继续使用受限 Preload IPC。
-- [ ] 保持 `sandbox`、`contextIsolation` 和 `nodeIntegration: false`。
-- [ ] GUI smoke 验证导航、紧凑采集、上下文恢复以及真实 SQLite 持久化。
+- [x] 人工确认单窗口原型方向，并在 Comments 记录采用或组合的方案。
+- [x] 应用运行时只维护一个主要 `BrowserWindow`。
+- [x] 应用内可切换近期收集、专题、全部材料和设置，切换不创建新窗口。
+- [x] `Ctrl+Shift+Space` 在隐藏、普通显示和已聚焦三种状态下都能进入紧凑采集模式。
+- [x] `Esc` 保留草稿并返回原上下文，提交成功清空草稿并恢复原上下文。
+- [x] 文件选择、拖放、文本提交、Key 设置和快捷键设置继续使用受限 Preload IPC。
+- [x] 保持 `sandbox`、`contextIsolation` 和 `nodeIntegration: false`。
+- [x] GUI smoke 验证导航、紧凑采集、上下文恢复以及真实 SQLite 持久化。
 
 ## Blocked by
 
 None - can start immediately.
 
 ## Comments
+
+## Comments
+
+- 2026-06-14: 实现完成。单窗口应用壳已就位：shell.html + shell-renderer.ts 实现标签导航（采集/工作台/设置），main.ts 支持 compact/normal 模式切换，preload.cts 改用 navigateTo IPC。69/69 测试 + 4 阶段 GUI smoke 全部通过。
