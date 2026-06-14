@@ -7,3 +7,9 @@ dist-tests/
 *.tsbuildinfo
 apps/browser-extension/build/
 release/
+
+# Agent skills are installed per machine. Keep only the project-owned skills.
+.agents/skills/*/
+!.agents/skills/collector-engineering/
+!.agents/skills/tdd/
+skills-lock.json

@@ -171,7 +171,7 @@ interface TopicDocumentCandidate {
 
 - `initial` 和 `incremental` 不得无标识地加入外部知识；
 - 每个关键陈述至少引用一个现有 Fragment 或明确标记为用户观点；
-- 核验失败不会阻止 `stage_version`；
+- 核验失败不会阻止 `publish_version`；
 - 没有对应的用户生成请求，后台工作流不能创建或替换主文档版本；
 - `full_rewrite` 只能由显式用户动作触发。
 
