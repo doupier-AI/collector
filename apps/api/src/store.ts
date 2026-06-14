@@ -1,4 +1,4 @@
-import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+﻿import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import type { AgentRunRecord, ArtifactRecord, CaptureRecord, FragmentRecord, KnowledgeItemRecord, RecentClusterSnapshotRecord, RelationRecord, ReviewProposalRecord, TopicRecord, UserDecisionRecord, WorkflowRunRecord, WorkflowStepRecord } from "@collector/capture-contracts";
@@ -50,6 +50,7 @@ export interface CollectorStore {
   claimWorkflowStep(runId: string, owner: string, now: string, leaseExpiresAt: string): WorkflowStepRecord | undefined;
   completeWorkflowStep(step: WorkflowStepRecord, run: WorkflowRunRecord, snapshot?: RecentClusterSnapshotRecord): boolean;
   failWorkflowStep(step: WorkflowStepRecord, run: WorkflowRunRecord): boolean;
+  cancelWorkflowRun(run: WorkflowRunRecord): boolean;
   close?(): void;
 }
 
@@ -291,6 +292,22 @@ export class SqliteStore implements CollectorStore {
       failed = true;
     });
     return failed;
+  }
+
+  cancelWorkflowRun(run: WorkflowRunRecord): boolean {
+    let cancelled = false;
+    this.transaction(() => {
+      const now = new Date().toISOString();
+      const queuedSteps = this.db().prepare("SELECT id, record_json FROM workflow_steps WHERE workflow_run_id = ? AND status = 'queued'").all(run.id) as { id: string; record_json: string }[];
+      for (const row of queuedSteps) {
+        const step = JSON.parse(row.record_json);
+        this.db().prepare("UPDATE workflow_steps SET status = 'cancelled', record_json = ? WHERE id = ?").run(JSON.stringify({ ...step, status: "cancelled", completedAt: now }), row.id);
+      }
+      const cancelledRun = { ...run, status: "cancelled", completedAt: now };
+      const result = this.db().prepare("UPDATE workflow_runs SET status = 'cancelled', record_json = ? WHERE id = ? AND status IN ('queued','processing')").run(JSON.stringify(cancelledRun), run.id);
+      cancelled = result.changes === 1;
+    });
+    return cancelled;
   }
 
   private createSchema(): void {
@@ -595,6 +612,7 @@ export class JsonStore implements CollectorStore {
   claimWorkflowStep(_runId: string, _owner: string, _now: string, _leaseExpiresAt: string): WorkflowStepRecord | undefined { return undefined; }
   completeWorkflowStep(_step: WorkflowStepRecord, _run: WorkflowRunRecord, _snapshot?: RecentClusterSnapshotRecord): boolean { return false; }
   failWorkflowStep(_step: WorkflowStepRecord, _run: WorkflowRunRecord): boolean { return false; }
+  cancelWorkflowRun(_run: WorkflowRunRecord): boolean { return false; }
   private flush() { this.writeQueue = this.writeQueue.then(async () => { const temporaryPath = `${this.filePath}.tmp`; await writeFile(temporaryPath, JSON.stringify(this.data, null, 2), "utf8"); await rename(temporaryPath, this.filePath); }); return this.writeQueue; }
 }
 

@@ -302,7 +302,7 @@ test("completed recent runs and snapshots survive reopening SQLite", async (t) =
 test("recent organization exposes processing and persists a failed run", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-recent-failed-"));
   class FailingStepStore extends SqliteStore {
-    override completeWorkflowStep(step, run, snapshot) {
+    override completeWorkflowStep(step: Parameters<SqliteStore["completeWorkflowStep"]>[0], run: Parameters<SqliteStore["completeWorkflowStep"]>[1], snapshot?: Parameters<SqliteStore["completeWorkflowStep"]>[2]): boolean {
       if (step.stepType === "publish_snapshot") throw new Error("simulated snapshot publication failure");
       return super.completeWorkflowStep(step, run, snapshot);
     }
@@ -314,9 +314,9 @@ test("recent organization exposes processing and persists a failed run", async (
   await auth.registerTrustedToken(token, "test");
   const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
   const server = createApiServer(service, auth);
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(async () => {
-    await new Promise((resolve) => server.close(() => resolve()));
+    await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
     await rm(root, { recursive: true, force: true });
   });
@@ -342,4 +342,36 @@ test("recent organization exposes processing and persists a failed run", async (
   assert.equal(failed.status, "failed");
   assert.match(failed.errorMessage ?? "", /snapshot publication|Recent organization step failed/);
   assert.equal(failed.completedAt !== undefined, true);
+});
+
+test("cancelling a processing run stops further steps and preserves completed work", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "collector-recent-cancel-"));
+  const store = new SqliteStore(join(root, "collector.sqlite"));
+  await store.init();
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
+
+  await service.createCapture({
+    captureType: "pasted_text",
+    content: "Cancel test material.",
+    locator: { kind: "user_supplied" },
+    clientCaptureId: "cancel-capture-1",
+    capturedAt: new Date().toISOString(),
+  }, "cancel-capture-1");
+
+  const run = await service.organizeRecent("cancel-key");
+  assert.equal(run.status, "queued");
+
+  assert.equal(await service.resumeRecentOrganizationRuns(1), 1);
+  assert.equal(service.getWorkflowRun(run.id).status, "processing");
+
+  const cancelled = service.cancelWorkflowRun(run.id);
+  assert.equal(cancelled.status, "cancelled");
+
+  assert.equal(await service.resumeRecentOrganizationRuns(), 0);
+  const steps = store.getWorkflowSteps(run.id);
+  const completedCount = steps.filter((s) => s.status === "completed").length;
+  const cancelledCount = steps.filter((s) => s.status === "cancelled").length;
+  assert.equal(completedCount, 1);
+  assert.ok(cancelledCount >= 1);
 });

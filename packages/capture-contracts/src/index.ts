@@ -211,7 +211,7 @@ export interface WorkflowStepRecord {
   id: string;
   workflowRunId: string;
   stepType: "freeze_materials" | "exact_deduplication" | "publish_snapshot";
-  status: "queued" | "processing" | "completed" | "failed";
+  status: "queued" | "processing" | "completed" | "failed" | "cancelled";
   attempt?: number;
   leaseOwner?: string;
   leaseExpiresAt?: string;
@@ -226,7 +226,7 @@ export interface ModelCallRecord {
   workflowRunId: string;
   provider: string;
   model: string;
-  status: "queued" | "processing" | "completed" | "failed";
+  status: "queued" | "processing" | "completed" | "failed" | "cancelled";
   createdAt: string;
   completedAt?: string;
 }

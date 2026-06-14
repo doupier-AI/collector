@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+﻿import { createHash, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -235,6 +235,12 @@ export class CaptureService {
     const snapshot = this.store.getLatestRecentClusterSnapshot();
     if (!snapshot) throw new NotFoundError("Recent cluster snapshot not found");
     return snapshot;
+  }
+
+  cancelWorkflowRun(id: string): WorkflowRunRecord {
+    const run = this.getWorkflowRun(id);
+    if (!this.store.cancelWorkflowRun(run)) throw new ValidationError("Workflow run cannot be cancelled");
+    return this.getWorkflowRun(id);
   }
 
   async decideReviewProposal(id: string, decision: ReviewDecision): Promise<ReviewProposalRecord> {

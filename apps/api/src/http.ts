@@ -1,4 +1,4 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+﻿import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { ValidationError, NotFoundError, CaptureService } from "./service.js";
 import { LocalAuth, PairingRateLimitError } from "./auth.js";
 
@@ -38,6 +38,8 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       }
       const workflowRunMatch = url.pathname.match(/^\/v1\/recent-organization\/runs\/([^/]+)$/);
       if (request.method === "GET" && workflowRunMatch) return json(response, 200, service.getWorkflowRun(decodeURIComponent(workflowRunMatch[1])));
+      const cancelMatch = url.pathname.match(/^\/v1\/recent-organization\/runs\/([^/]+)\/cancel$/);
+      if (request.method === "POST" && cancelMatch) return json(response, 200, service.cancelWorkflowRun(decodeURIComponent(cancelMatch[1])));
       if (request.method === "GET" && url.pathname === "/v1/relations") return json(response, 200, service.listRelations(url.searchParams.get("captureId") ?? undefined));
       if (request.method === "GET" && url.pathname === "/v1/topics") return json(response, 200, service.listTopics());
       if (request.method === "POST" && url.pathname === "/v1/topics") {
