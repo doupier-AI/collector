@@ -117,6 +117,20 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       }
       const topicSuggestionsMatch = url.pathname.match(/^\/v1\/topics\/([^/]+)\/suggestions$/);
       if (request.method === "GET" && topicSuggestionsMatch) return json(response, 200, service.getTopicSuggestions(decodeURIComponent(topicSuggestionsMatch[1])));
+
+      // ── Topic Documents ──────────────────────────────────────
+      const docGenerateMatch = url.pathname.match(/^\/v1\/topics\/([^/]+)\/documents$/);
+      if (request.method === "POST" && docGenerateMatch) {
+        const docBody = await readJson(request) as { idempotencyKey?: string };
+        const docRun = await service.generateTopicDocument(decodeURIComponent(docGenerateMatch[1]), docBody.idempotencyKey);
+        return json(response, 202, docRun);
+      }
+      const docLatestMatch = url.pathname.match(/^\/v1\/topics\/([^/]+)\/documents\/latest$/);
+      if (request.method === "GET" && docLatestMatch) {
+        const docVersion = service.getLatestTopicDocument(decodeURIComponent(docLatestMatch[1]));
+        if (!docVersion) return json(response, 404, { error: { code: "not_found", message: "No document version found" } });
+        return json(response, 200, docVersion);
+      }
       const topicMatch = url.pathname.match(/^\/v1\/topics\/([^/]+)$/);
       if (request.method === "POST" && topicMatch) {
         const body = await readJson(request) as { title?: string; status?: "active" | "archived" };

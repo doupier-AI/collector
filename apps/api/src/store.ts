@@ -1,7 +1,7 @@
 ﻿import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import type { AgentRunRecord, ArtifactRecord, CaptureRecord, FragmentRecord, KnowledgeItemRecord, RecentClusterSnapshotRecord, RelationRecord, ReviewProposalRecord, TopicRecord, UserDecisionRecord, WorkflowRunRecord, WorkflowStepRecord } from "@collector/capture-contracts";
+import type { AgentRunRecord, ArtifactRecord, CaptureRecord, FragmentRecord, KnowledgeItemRecord, RecentClusterSnapshotRecord, RelationRecord, ReviewProposalRecord, TopicRecord, UserDecisionRecord, WorkflowRunRecord, WorkflowStepRecord, TopicDocumentVersionRecord } from "@collector/capture-contracts";
 
 export interface CollectorStore {
   init(): Promise<void>;
@@ -51,6 +51,10 @@ export interface CollectorStore {
   completeWorkflowStep(step: WorkflowStepRecord, run: WorkflowRunRecord, snapshot?: RecentClusterSnapshotRecord): boolean;
   failWorkflowStep(step: WorkflowStepRecord, run: WorkflowRunRecord): boolean;
   cancelWorkflowRun(run: WorkflowRunRecord): boolean;
+  saveTopicDocumentVersion(record: import("@collector/capture-contracts").TopicDocumentVersionRecord): Promise<void>;
+  getTopicDocumentVersion(id: string): import("@collector/capture-contracts").TopicDocumentVersionRecord | undefined;
+  listTopicDocumentVersions(topicId: string): import("@collector/capture-contracts").TopicDocumentVersionRecord[];
+  getLatestTopicDocumentVersion(topicId: string): import("@collector/capture-contracts").TopicDocumentVersionRecord | undefined;
   close?(): void;
 }
 
@@ -214,6 +218,44 @@ export class SqliteStore implements CollectorStore {
 
   findWorkflowRun(workflowType: WorkflowRunRecord["workflowType"], idempotencyKey: string, materialSetVersion: string): WorkflowRunRecord | undefined {
     return this.getRecord<WorkflowRunRecord>("SELECT record_json FROM workflow_runs WHERE workflow_type = ? AND idempotency_key = ? AND material_set_version = ? AND status != 'failed' ORDER BY created_at DESC LIMIT 1", workflowType, idempotencyKey, materialSetVersion);
+  }
+
+  async saveTopicDocumentVersion(record: import("@collector/capture-contracts").TopicDocumentVersionRecord): Promise<void> {
+    this.db().prepare(`INSERT INTO topic_document_versions (id, topic_id, title, material_set_version, document_version, status, sections_json, gap_items_json, verification_summary_json, created_at, published_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(record.id, record.topicId, record.title, record.materialSetVersion, record.documentVersion, record.status,
+        JSON.stringify(record.sections), JSON.stringify(record.gapItems),
+        record.verificationSummary ? JSON.stringify(record.verificationSummary) : null,
+        record.createdAt, record.publishedAt ?? null);
+  }
+  getTopicDocumentVersion(id: string): import("@collector/capture-contracts").TopicDocumentVersionRecord | undefined {
+    const row = this.db().prepare("SELECT * FROM topic_document_versions WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    return this.hydrateDocVersion(row);
+  }
+  listTopicDocumentVersions(topicId: string): import("@collector/capture-contracts").TopicDocumentVersionRecord[] {
+    const rows = this.db().prepare("SELECT * FROM topic_document_versions WHERE topic_id = ? ORDER BY document_version DESC").all(topicId) as Array<Record<string, unknown>>;
+    return rows.map((r) => this.hydrateDocVersion(r));
+  }
+  getLatestTopicDocumentVersion(topicId: string): import("@collector/capture-contracts").TopicDocumentVersionRecord | undefined {
+    const row = this.db().prepare("SELECT * FROM topic_document_versions WHERE topic_id = ? ORDER BY document_version DESC LIMIT 1").get(topicId) as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    return this.hydrateDocVersion(row);
+  }
+  private hydrateDocVersion(row: Record<string, unknown>): import("@collector/capture-contracts").TopicDocumentVersionRecord {
+    return {
+      id: row.id as string,
+      topicId: row.topic_id as string,
+      title: row.title as string,
+      materialSetVersion: row.material_set_version as string,
+      documentVersion: row.document_version as number,
+      sections: JSON.parse(row.sections_json as string),
+      gapItems: JSON.parse(row.gap_items_json as string),
+      verificationSummary: row.verification_summary_json ? JSON.parse(row.verification_summary_json as string) : {},
+      status: row.status as "draft" | "published",
+      createdAt: row.created_at as string,
+      publishedAt: row.published_at as string | undefined,
+    };
   }
 
   getLatestRecentClusterSnapshot(): RecentClusterSnapshotRecord | undefined {
@@ -432,6 +474,29 @@ export class SqliteStore implements CollectorStore {
         `);
       });
     }
+    if (version < 5) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE IF NOT EXISTS topic_document_versions (
+            id TEXT PRIMARY KEY,
+            topic_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            material_set_version TEXT NOT NULL,
+            document_version INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft',
+            sections_json TEXT NOT NULL DEFAULT '[]',
+            gap_items_json TEXT NOT NULL DEFAULT '[]',
+            verification_summary_json TEXT,
+            created_at TEXT NOT NULL,
+            published_at TEXT,
+            FOREIGN KEY(topic_id) REFERENCES topics(id)
+          );
+          CREATE INDEX topic_document_versions_topic_idx ON topic_document_versions(topic_id, document_version DESC);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (5, datetime('now'));
+        `);
+      });
+      version = 5;
+    }
 
   }
 
@@ -614,6 +679,10 @@ export class JsonStore implements CollectorStore {
   completeWorkflowStep(_step: WorkflowStepRecord, _run: WorkflowRunRecord, _snapshot?: RecentClusterSnapshotRecord): boolean { return false; }
   failWorkflowStep(_step: WorkflowStepRecord, _run: WorkflowRunRecord): boolean { return false; }
   cancelWorkflowRun(_run: WorkflowRunRecord): boolean { return false; }
+  async saveTopicDocumentVersion(_record: any): Promise<void> { throw new Error("Topic documents require SQLite persistence"); }
+  getTopicDocumentVersion(_id: string): any { return undefined; }
+  listTopicDocumentVersions(_topicId: string): any[] { return []; }
+  getLatestTopicDocumentVersion(_topicId: string): any { return undefined; }
   listRevisions(captureId: string) { return Object.values(this.data.materialRevisions ?? {}).filter((r: any) => r.captureId === captureId).sort((a: any, b: any) => b.ordinal - a.ordinal); }
   async saveRevision(record: { id: string; captureId: string; content: string; ordinal: number; createdAt: string }) { this.data.materialRevisions ??= {}; this.data.materialRevisions[record.id] = record; await this.flush(); }
   async trashCapture(id: string, trashedAt: string) { const record = this.data.captures[id]; if (!record || (record as any).trashedAt) return false; (record as any).trashedAt = trashedAt; await this.flush(); return true; }

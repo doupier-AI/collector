@@ -197,7 +197,7 @@ export type WorkflowRunStatus = "queued" | "processing" | "completed" | "failed"
 
 export interface WorkflowRunRecord {
   id: string;
-  workflowType: "recent_organization";
+  workflowType: "recent_organization" | "topic_document";
   idempotencyKey: string;
   materialIds: string[];
   materialSetVersion: string;
@@ -211,7 +211,7 @@ export interface WorkflowRunRecord {
 export interface WorkflowStepRecord {
   id: string;
   workflowRunId: string;
-  stepType: "freeze_materials" | "exact_deduplication" | "publish_snapshot";
+  stepType: "freeze_materials" | "exact_deduplication" | "publish_snapshot" | "freeze_material_set" | "check_citations" | "build_outline" | "draft_sections" | "merge_sections" | "publish_version";
   status: "queued" | "processing" | "completed" | "failed" | "cancelled";
   attempt?: number;
   leaseOwner?: string;
@@ -239,6 +239,34 @@ export interface RecentClusterSnapshotRecord {
   clusters: Array<{ id: string; name: string; summary: string; materialIds: string[] }>;
   unclusteredMaterialIds: string[];
   createdAt: string;
+}
+
+
+export interface DocumentSection {
+  id: string;
+  heading: string;
+  markdown: string;
+  citationIds: string[];
+  protectedByUser: boolean;
+}
+
+export interface TopicDocumentVersionRecord {
+  id: string;
+  topicId: string;
+  title: string;
+  materialSetVersion: string;
+  documentVersion: number;
+  sections: DocumentSection[];
+  gapItems: Array<{ kind: "unexplained_term" | "unsupported_claim" | "missing_context"; text: string }>;
+  verificationSummary: Record<string, number>;
+  status: "draft" | "published";
+  createdAt: string;
+  publishedAt?: string;
+}
+
+export interface DocumentOutline {
+  title: string;
+  sections: Array<{ heading: string; keyPoints: string[] }>;
 }
 
 export interface ApiError {

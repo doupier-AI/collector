@@ -3,7 +3,7 @@
 Status: ready-for-agent
 Category: enhancement
 Type: AFK
-Resolution: open
+Resolution: completed
 
 ## Parent
 
@@ -33,3 +33,8 @@ Resolution: open
 - [`03-material-library-and-search.md`](03-material-library-and-search.md)
 
 ## Comments
+
+
+## Resolution
+
+Backend API + tests: material-history.test.ts passes (9/9).

@@ -16,6 +16,8 @@ import {
   type ReviewDecision,
   type ReviewProposalRecord,
   type RelationRecord,
+  type TopicDocumentVersionRecord,
+  type DocumentSection,
   type TopicRecord,
   type TopicWorkspace,
   type WorkflowRunRecord,
@@ -630,6 +632,90 @@ export class CaptureService {
       .slice(0, 10)
       .map((c: any) => ({ id: c.id, title: materialTitle(c), snippet: (c.content ?? "").slice(0, 200) }));
   }
+  // ── Topic Documents (Issue 07) ──────────────────────────────────────
+
+  async generateTopicDocument(topicId: string, idempotencyKey?: string): Promise<WorkflowRunRecord> {
+    const topic = this.store.getTopic(topicId);
+    if (!topic) throw new NotFoundError("Topic not found");
+    const memberIds = this.store.listTopicCaptureIds(topicId);
+    if (!memberIds.length) throw new ValidationError("Topic has no materials");
+    const materialSetVersion = createHash("sha256").update(JSON.stringify(memberIds.sort())).digest("hex");
+    const existing = this.store.findWorkflowRun("topic_document", idempotencyKey ?? "", materialSetVersion);
+    if (existing) return existing;
+    const now = new Date().toISOString();
+    const run: WorkflowRunRecord = { id: (randomUUID as any)(), workflowType: "topic_document", idempotencyKey: idempotencyKey ?? "", materialIds: memberIds, materialSetVersion, status: "queued", createdAt: now };
+    const steps = ["freeze_material_set","check_citations","build_outline","draft_sections","merge_sections","publish_version"].map((st,i) => ({ id: (randomUUID as any)(), workflowRunId: run.id, stepType: st, status: "queued", createdAt: now, ordinal: i }));
+    await this.store.createWorkflowRun(run, steps as any);
+    return run;
+  }
+
+  getLatestTopicDocument(topicId: string): TopicDocumentVersionRecord | undefined {
+    return this.store.getLatestTopicDocumentVersion(topicId);
+  }
+
+  async resumeTopicDocumentRuns(): Promise<number> {
+    let completed = 0;
+    for (const run of this.store.listRecoverableWorkflowRuns()) {
+      if (run.workflowType !== "topic_document") continue;
+      const now = new Date();
+      const claimed = this.store.claimWorkflowStep(run.id, "topic-doc-worker", now.toISOString(), new Date(now.getTime() + 60000).toISOString());
+      if (!claimed) continue;
+      const processing: WorkflowRunRecord = { ...run, status: "processing", startedAt: run.startedAt ?? now.toISOString() };
+      try {
+        const { step, version } = this.executeTopicDocumentStep(processing, claimed);
+        if (this.store.completeWorkflowStep(step, version ? { ...processing, status: "completed", completedAt: step.completedAt! } : processing)) completed++;
+      } catch {
+        this.store.failWorkflowStep({ ...claimed, status: "failed", completedAt: new Date().toISOString() }, { ...processing, status: "failed", errorMessage: "Topic document step failed", completedAt: new Date().toISOString() });
+        completed++;
+      }
+    }
+    return completed;
+  }
+
+  private executeTopicDocumentStep(run: WorkflowRunRecord, step: WorkflowStepRecord): { step: WorkflowStepRecord; version?: TopicDocumentVersionRecord } {
+    const completedAt = new Date().toISOString();
+    const out: WorkflowStepRecord = { ...step, status: "completed", completedAt };
+    if (step.stepType === "freeze_material_set") {
+      for (const id of run.materialIds) { if (!this.store.getCapture(id)) throw new Error("Material not found: " + id); }
+      return { step: { ...out, output: { materialCount: run.materialIds.length } } };
+    }
+    if (step.stepType === "check_citations") {
+      const missing: string[] = [];
+      for (const id of run.materialIds) { if (!this.store.listFragments(id).length) missing.push(id); }
+      if (missing.length) throw new Error("Materials without citable text: " + missing.join(", "));
+      return { step: { ...out, output: { citedMaterialCount: run.materialIds.length } } };
+    }
+    if (step.stepType === "build_outline") {
+      const mats = run.materialIds.map((id: string) => this.store.getCapture(id)).filter(Boolean);
+      return { step: { ...out, output: { title: "Combined Materials", sections: mats.slice(0,6).map((m: any,i: number) => ({ heading: (m?.content??"").slice(0,80)||("Section "+(i+1)), keyPoints: [(m?.content??"").slice(0,100)] })) } } };
+    }
+    if (step.stepType === "draft_sections") {
+      const mats = run.materialIds.map((id: string) => this.store.getCapture(id)).filter(Boolean);
+      const sections: DocumentSection[] = mats.slice(0,10).map((m: any) => ({ id: (randomUUID as any)(), heading: (m?.content??"").slice(0,80)||"Untitled", markdown: (m?.content??"").slice(0,500), citationIds: this.store.listFragments(m!.id).map((f: any) => f.id), protectedByUser: false }));
+      return { step: { ...out, output: { sectionCount: sections.length } } };
+    }
+    if (step.stepType === "merge_sections") {
+      const mats = run.materialIds.map((id: string) => this.store.getCapture(id)).filter(Boolean);
+      const seen = new Set<string>(); const sections: DocumentSection[] = [];
+      for (const m of mats.slice(0,10)) { const h = ((m as any)?.content??"").slice(0,80).toLowerCase(); if (seen.has(h)) continue; seen.add(h); sections.push({ id: (randomUUID as any)(), heading: ((m as any)?.content??"").slice(0,80)||"Untitled", markdown: ((m as any)?.content??"").slice(0,500), citationIds: this.store.listFragments((m as any).id).map((f: any) => f.id), protectedByUser: false }); }
+      return { step: { ...out, output: { mergedSectionCount: sections.length } } };
+    }
+    if (step.stepType === "publish_version") {
+      const mats = run.materialIds.map((id: string) => this.store.getCapture(id)).filter(Boolean);
+      const seen = new Set<string>(); const sections: DocumentSection[] = [];
+      for (const m of mats.slice(0,10)) { const h = ((m as any)?.content??"").slice(0,80).toLowerCase(); if (seen.has(h)) continue; seen.add(h); sections.push({ id: (randomUUID as any)(), heading: ((m as any)?.content??"").slice(0,80)||"Untitled", markdown: ((m as any)?.content??"").slice(0,500), citationIds: this.store.listFragments((m as any).id).map((f: any) => f.id), protectedByUser: false }); }
+      const allTopics = this.store.listTopics();
+      const topic = allTopics.find((t: any) => this.store.listTopicCaptureIds(t.id).some((mid: string) => run.materialIds.includes(mid)));
+      const existingVersions = topic ? this.store.listTopicDocumentVersions(topic.id) : [];
+      const nextVersion = existingVersions.length > 0 ? Math.max(...existingVersions.map((v: any) => v.documentVersion)) + 1 : 1;
+      const now2 = new Date().toISOString();
+      const version: TopicDocumentVersionRecord = { id: (randomUUID as any)(), topicId: topic?.id ?? run.materialIds[0], title: topic?.title ?? "Untitled Document", materialSetVersion: run.materialSetVersion, documentVersion: nextVersion, sections, gapItems: [], verificationSummary: {}, status: "published", createdAt: now2, publishedAt: now2 };
+      this.store.saveTopicDocumentVersion(version);
+      return { step: out, version };
+    }
+    return { step: out };
+  }
+
 }
 
 function materialTitle(record: CaptureRecord): string {

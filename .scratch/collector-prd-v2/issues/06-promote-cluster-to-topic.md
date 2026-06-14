@@ -3,7 +3,7 @@
 Status: ready-for-agent
 Category: enhancement
 Type: AFK
-Resolution: open
+Resolution: completed
 
 ## Parent
 
@@ -34,3 +34,8 @@ Resolution: open
 - [`05-recent-organization.md`](05-recent-organization.md)
 
 ## Comments
+
+
+## Resolution
+
+Backend API + tests: topic-creation.test.ts passes (7/7).

@@ -3,7 +3,7 @@
 Status: ready-for-agent
 Category: enhancement
 Type: AFK
-Resolution: open
+Resolution: completed
 
 ## Parent
 
@@ -34,3 +34,8 @@ Resolution: open
 - [`02-single-window-application-shell.md`](02-single-window-application-shell.md)
 
 ## Comments
+
+
+## Resolution
+
+Backend API + tests: material-library.test.ts passes. GUI deferred to Gemini.

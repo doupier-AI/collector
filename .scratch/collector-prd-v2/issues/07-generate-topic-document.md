@@ -3,7 +3,7 @@
 Status: ready-for-agent
 Category: enhancement
 Type: AFK
-Resolution: open
+Resolution: completed
 
 ## Parent
 
@@ -37,3 +37,8 @@ Resolution: open
 - [`06-promote-cluster-to-topic.md`](06-promote-cluster-to-topic.md)
 
 ## Comments
+
+
+## Resolution
+
+Backend infrastructure complete: contracts, SQLite v5 migration, API routes, workflow executor. Tests: topic-document.test.ts (3/3 pass).
