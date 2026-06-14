@@ -3,7 +3,7 @@
 Status: ready-for-agent
 Category: enhancement
 Type: HITL
-Resolution: open
+Resolution: completed
 
 ## Parent
 
