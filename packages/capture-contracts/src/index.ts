@@ -1,4 +1,4 @@
-export const CAPTURE_TYPES = [
+﻿export const CAPTURE_TYPES = [
   "browser_selection",
   "browser_page",
   "pasted_text",
@@ -211,7 +211,7 @@ export interface WorkflowRunRecord {
 export interface WorkflowStepRecord {
   id: string;
   workflowRunId: string;
-  stepType: "freeze_materials" | "exact_deduplication" | "publish_snapshot" | "freeze_material_set" | "check_citations" | "build_outline" | "draft_sections" | "merge_sections" | "publish_version";
+  stepType: "freeze_materials" | "exact_deduplication" | "cluster_materials" | "publish_snapshot" | "freeze_material_set" | "check_citations" | "build_outline" | "draft_sections" | "merge_sections" | "publish_version";
   status: "queued" | "processing" | "completed" | "failed" | "cancelled";
   attempt?: number;
   leaseOwner?: string;
@@ -224,7 +224,7 @@ export interface WorkflowStepRecord {
 
 export interface ModelCallRecord {
   id: string;
-  workflowRunId: string;
+  workflowRunId?: string;
   workflowStepId?: string;
   provider: string;
   model: string;
@@ -306,7 +306,7 @@ export interface ApiError {
 }
 
 
-// ── Verification (Issue 08) ────────────────────────────────
+// 閳光偓閳光偓 Verification (Issue 08) 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓
 
 export type VerificationPolicy = "offline" | "verify_only";
 
@@ -334,7 +334,7 @@ export interface VerificationPolicyConfig {
 }
 
 
-// ── Incremental Document Update (Issue 09) ──────────────────
+// 閳光偓閳光偓 Incremental Document Update (Issue 09) 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓
 
 export interface UpdatePreview {
   id: string;
@@ -359,7 +359,7 @@ export interface PendingMaterialChange {
 }
 
 
-// ── Backup & Export (Issue 11) ──────────────────────────────
+// 閳光偓閳光偓 Backup & Export (Issue 11) 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓
 
 export interface BackupManifest {
   manifestVersion: 1;

@@ -97,7 +97,7 @@ export class ModelGateway {
       try {
         const request: ModelProviderRequest = {
           model: requestedModel,
-          responseFormat: { type: "json_object" },
+          responseFormat: { type: "json_object" } as const,
           thinking,
           maxTokens: thinking ? 3_000 : 1_400,
           timeoutMs: thinking ? 180_000 : 75_000,
@@ -127,6 +127,106 @@ export class ModelGateway {
       provider: this.provider.name, model: lastModel, usage: totalUsage, estimatedCostUsd: estimateCost(lastModel, totalUsage, this.options.pricing), retryCount: 1,
       latencyMs: Math.round(performance.now() - startedAt), errorCode: lastError?.code, errorMessage: lastError?.message,
     };
+  }
+
+  async clusterMaterials(materials: Array<{ id: string; content: string }>, options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number } = {}): Promise<{ clusters: Array<{ name: string; summary: string; materialIds: string[] }>; unclusteredMaterialIds: string[] }> {
+    if (materials.length <= 1) return { clusters: [], unclusteredMaterialIds: materials.map((m) => m.id) };
+    const requestedModel = options.model ?? this.modelName;
+    const validIds = new Set(materials.map((m) => m.id));
+    const materialList = materials.map((m) => "[MATERIAL " + m.id + "] " + m.content.slice(0, 800)).join("\n\n");
+    const prompt = `You are a knowledge organizer. Group related materials into topic clusters. Return valid JSON only.\n\nMaterials:\n${materialList}\n\nReturn a JSON object with:\n- "clusters": array of { "name": string, "summary": string (one sentence), "materialIds": string[] }\n- "unclusteredMaterialIds": string[] for materials that do not fit any cluster\n\nRULES:\n- Every materialId must appear exactly once across all clusters and unclusteredMaterialIds.\n- Do not invent new IDs.\n- If materials are unrelated, put all in unclusteredMaterialIds.\n- Clusters should be meaningful, not forced.`;
+    const request: ModelProviderRequest = {
+      prompt, model: requestedModel, responseFormat: { type: "json_object" } as const,
+      thinking: options.thinking ?? false, maxTokens: options.maxTokens ?? 4000, timeoutMs: options.timeoutMs ?? 30000,
+    };
+    try {
+      const response = await this.provider.complete(request);
+      if (!response.content?.trim()) return { clusters: [], unclusteredMaterialIds: materials.map((m) => m.id) };
+      const parsed: Record<string, unknown> = JSON.parse(response.content.trim());
+      const clusters: Array<{ name: string; summary: string; materialIds: string[] }> = [];
+      const seenIds = new Set<string>();
+      if (Array.isArray(parsed.clusters)) {
+        for (const c of parsed.clusters as Array<Record<string, unknown>>) {
+          if (typeof c.name !== "string" || !c.name.trim()) continue;
+          if (typeof c.summary !== "string" || !c.summary.trim()) continue;
+          if (!Array.isArray(c.materialIds)) continue;
+          const materialIds: string[] = (c.materialIds as unknown[]).filter((id: unknown) => typeof id === "string" && validIds.has(id as string)) as string[];
+          if (!materialIds.length) continue;
+          for (const id of materialIds) seenIds.add(id);
+          clusters.push({ name: (c.name as string).trim(), summary: (c.summary as string).trim(), materialIds });
+        }
+      }
+      const unclusteredMaterialIds = materials.map((m) => m.id).filter((id) => !seenIds.has(id));
+      return { clusters, unclusteredMaterialIds };
+    } catch {
+      return { clusters: [], unclusteredMaterialIds: materials.map((m) => m.id) };
+    }
+  }
+  async generateDocumentOutline(materials: Array<{ id: string; content: string }>, topicTitle: string, options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number } = {}): Promise<{ title: string; sections: Array<{ heading: string; keyPoints: string[] }> } | { errorCode: string; errorMessage: string }> {
+    if (!materials.length) return { errorCode: "empty_response", errorMessage: "No materials for outline generation" };
+    const requestedModel = options.model ?? this.modelName;
+    const materialText = materials.map((m) => "[MATERIAL " + m.id + "]\n" + m.content.slice(0, 1500)).join("\n\n---\n\n");
+    const prompt = "You are a technical writer. Create a document outline based on the provided materials about \"" + topicTitle + "\". Return valid JSON only.\n\nMaterials:\n" + materialText + "\n\nReturn JSON:\n{\n  \"title\": string (descriptive document title),\n  \"sections\": [\n    { \"heading\": string, \"keyPoints\": string[] (2-4 key points per section) }\n  ]\n}\n\nRULES:\n- Create 3-6 coherent sections that organize the materials logically.\n- Each keyPoint must be a complete sentence.\n- Do not invent content not present in the materials.";
+    const request = {
+      prompt, model: requestedModel, responseFormat: { type: "json_object" } as const,
+      thinking: options.thinking ?? false, maxTokens: options.maxTokens ?? 3000, timeoutMs: options.timeoutMs ?? 60000,
+    };
+    try {
+      const response = await this.provider.complete(request);
+      if (!response.content?.trim()) return { errorCode: "empty_response", errorMessage: "Empty outline response" };
+      const parsed = JSON.parse(response.content.trim());
+      const title = typeof parsed.title === "string" && parsed.title.trim() ? parsed.title.trim() : topicTitle;
+      const sections: Array<{ heading: string; keyPoints: string[] }> = [];
+      if (Array.isArray(parsed.sections)) {
+        for (const s of parsed.sections) {
+          if (typeof s?.heading !== "string" || !s.heading.trim()) continue;
+          const keyPoints = Array.isArray(s.keyPoints) ? s.keyPoints.filter((kp: unknown) => typeof kp === "string" && kp.trim()).map((kp: string) => kp.trim()).slice(0, 6) : [];
+          if (!keyPoints.length) continue;
+          sections.push({ heading: s.heading.trim(), keyPoints });
+        }
+      }
+      if (!sections.length) return { errorCode: "invalid_schema", errorMessage: "No valid sections in outline" };
+      return { title, sections };
+    } catch (err) {
+      return { errorCode: "provider_error", errorMessage: err instanceof Error ? err.message : "Outline generation failed" };
+    }
+  }
+
+  async generateDocumentSections(outline: { title: string; sections: Array<{ heading: string; keyPoints: string[] }> }, materials: Array<{ id: string; content: string; fragmentIds: string[] }>, options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number } = {}): Promise<{ sections: Array<{ heading: string; markdown: string; citationIds: string[] }> } | { errorCode: string; errorMessage: string }> {
+    if (!outline.sections.length || !materials.length) return { errorCode: "empty_response", errorMessage: "No sections or materials" };
+    const requestedModel = options.model ?? this.modelName;
+    const materialText = materials.map((m) => "[MATERIAL " + m.id + "]\n" + m.content.slice(0, 2000)).join("\n\n---\n\n");
+    const sectionSpecs = outline.sections.map((s, i) => "SECTION " + (i + 1) + ": \"" + s.heading + "\"\nKey Points: " + s.keyPoints.join("; ")).join("\n\n");
+    const prompt = "You are a technical writer. Draft full sections for a learning document titled \"" + outline.title + "\". Return valid JSON only.\n\nOutline:\n" + sectionSpecs + "\n\nSource Materials:\n" + materialText + "\n\nReturn JSON:\n{\n  \"sections\": [\n    {\n      \"heading\": string (matches outline heading),\n      \"markdown\": string (2-4 paragraph markdown section),\n      \"citationMaterialIds\": string[] (MATERIAL ids you cited)\n    }\n  ]\n}\n\nRULES:\n- Draft one section per outline entry.\n- Write in clear, educational prose.\n- Cite materials by their MATERIAL id when you use specific information.\n- Only use material IDs from the provided list.\n- Do not invent content beyond what the materials contain.";
+    const request = {
+      prompt, model: requestedModel, responseFormat: { type: "json_object" } as const,
+      thinking: options.thinking ?? true, maxTokens: options.maxTokens ?? 8000, timeoutMs: options.timeoutMs ?? 120000,
+    };
+    try {
+      const response = await this.provider.complete(request);
+      if (!response.content?.trim()) return { errorCode: "empty_response", errorMessage: "Empty sections response" };
+      const parsed = JSON.parse(response.content.trim());
+      const sections: Array<{ heading: string; markdown: string; citationIds: string[] }> = [];
+      const validMaterialIds = new Set(materials.map((m) => m.id));
+      if (Array.isArray(parsed.sections)) {
+        for (const s of parsed.sections) {
+          if (typeof s?.heading !== "string" || !s.heading.trim()) continue;
+          if (typeof s?.markdown !== "string" || !s.markdown.trim()) continue;
+          const rawIds = Array.isArray(s.citationMaterialIds) ? s.citationMaterialIds.filter((id: unknown) => typeof id === "string" && validMaterialIds.has(id)) : [];
+          const citationIds: string[] = [];
+          for (const mid of rawIds) {
+            const mat = materials.find((m) => m.id === mid);
+            if (mat) citationIds.push(...mat.fragmentIds);
+          }
+          const uniqueCitations = [...new Set(citationIds)];
+          sections.push({ heading: s.heading.trim(), markdown: s.markdown.trim(), citationIds: uniqueCitations });
+        }
+      }
+      if (!sections.length) return { errorCode: "invalid_schema", errorMessage: "No valid sections generated" };
+      return { sections };
+    } catch (err) {
+      return { errorCode: "provider_error", errorMessage: err instanceof Error ? err.message : "Section generation failed" };
+    }
   }
 }
 

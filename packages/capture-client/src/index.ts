@@ -1,4 +1,4 @@
-import type { ArtifactRecord, CaptureInput, CaptureRecord, InboxItem, PreflightEvaluation, RelationRecord, ReviewDecision, ReviewProposalRecord, TopicRecord, TopicWorkspace } from "@collector/capture-contracts";
+﻿import type { ArtifactRecord, CaptureInput, CaptureRecord, InboxItem, PreflightEvaluation, RelationRecord, ReviewDecision, ReviewProposalRecord, TopicRecord, TopicWorkspace } from "@collector/capture-contracts";
 
 export interface CaptureClientOptions {
   baseUrl: string;
@@ -69,6 +69,39 @@ export class CaptureClient {
     return this.request(`/v1/recent-organization/runs/${encodeURIComponent(id)}/cancel`, { method: "POST" });
   }
 
+
+  // ── Materials CRUD ──
+  listMaterials(params?: { q?: string; page?: number; limit?: number; trash?: boolean }): Promise<{ items: Array<{ id: string; title: string; sourceType: string; content: string; evidenceGrade: string; revisionCount: number; trashed: boolean; createdAt: string }>; total: number }> {
+    const sp = new URLSearchParams();
+    if (params?.q) sp.set("q", params.q);
+    if (params?.page) sp.set("page", String(params.page));
+    if (params?.limit) sp.set("limit", String(params.limit));
+    if (params?.trash) sp.set("trash", "true");
+    const qs = sp.toString();
+    return this.request(`/v1/materials${qs ? `?${qs}` : ""}`, {});
+  }
+  getMaterial(id: string): Promise<{ id: string; title: string; sourceType: string; content: string; evidenceGrade: string; fragments: unknown[]; revisionCount: number; trashed: boolean; createdAt: string }> {
+    return this.request(`/v1/materials/${encodeURIComponent(id)}`, {});
+  }
+  listRevisions(materialId: string): Promise<Array<{ id: string; captureId: string; content: string; ordinal: number; createdAt: string }>> {
+    return this.request(`/v1/materials/${encodeURIComponent(materialId)}/revisions`, {});
+  }
+  editRevision(materialId: string, content: string): Promise<{ id: string; captureId: string; content: string; ordinal: number; createdAt: string }> {
+    return this.request(`/v1/materials/${encodeURIComponent(materialId)}/revisions`, { method: "POST", body: JSON.stringify({ content }) });
+  }
+  trashMaterial(id: string): Promise<{ trashed: boolean }> {
+    return this.request(`/v1/materials/${encodeURIComponent(id)}/trash`, { method: "PUT" });
+  }
+  restoreMaterial(id: string): Promise<{ restored: boolean }> {
+    return this.request(`/v1/materials/${encodeURIComponent(id)}/restore`, { method: "PUT" });
+  }
+  getDeleteImpact(id: string): Promise<{ hasNoImpact: boolean; topicMemberships: Array<{ topicId: string; topicTitle: string }>; workflowInputs: Array<{ workflowRunId: string; workflowType: string }>; citationCount: number }> {
+    return this.request(`/v1/materials/${encodeURIComponent(id)}/delete-impact`, {});
+  }
+  permanentDelete(id: string, acknowledgeImpact?: boolean): Promise<{ deleted: boolean }> {
+    const qs = acknowledgeImpact ? "?acknowledgeImpact=true" : "";
+    return this.request(`/v1/materials/${encodeURIComponent(id)}${qs}`, { method: "DELETE" });
+  }
   async uploadArtifact(file: Blob, fileName: string): Promise<ArtifactRecord> {
     const headers: Record<string, string> = {
       "Content-Type": file.type || "application/octet-stream",

@@ -71,6 +71,12 @@ export interface CollectorStore {
   getLatestUpdatePreview(topicId: string): import("@collector/capture-contracts").UpdatePreview | undefined;
   saveBackupRecord(record: import("@collector/capture-contracts").BackupRecord): Promise<void>;
   listBackupRecords(): import("@collector/capture-contracts").BackupRecord[];
+  listRevisions(captureId: string): Array<{ id: string; captureId: string; content: string; ordinal: number; createdAt: string }>;
+  saveRevision(record: { id: string; captureId: string; content: string; ordinal: number; createdAt: string }): Promise<void>;
+  trashCapture(id: string, trashedAt: string): Promise<boolean>;
+  restoreCapture(id: string): Promise<boolean>;
+  deleteCapture(id: string): Promise<boolean>;
+  getDeleteImpact(captureId: string): { topicMemberships: Array<{ topicId: string; topicTitle: string }>; workflowInputs: Array<{ workflowRunId: string; workflowType: string }>; citationCount: number; hasNoImpact: boolean };
   close?(): void;
 }
 
@@ -110,10 +116,10 @@ export class SqliteStore implements CollectorStore {
     await this.migrateLegacyJson();
   }
 
-  // ── AI Usage & Verification ──────────────────────────
+  // 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?AI Usage & Verification 闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴滈箖姊洪崘鎻掑辅闁稿鎹囬弻宥夊礂婢跺﹣澹曢梻浣稿暱閸樻粓宕戦幘缁樼厓闁稿繐顦禍楣冩⒑閸愭彃甯ㄩ柛瀣崌閺屽秹宕楁径濠佸闂備礁鍟块崢婊堝磻閹剧粯鐓冮柛蹇擃槸娴?
   async saveModelCall(record: ModelCallRecord): Promise<void> {
     this.db().prepare("INSERT INTO model_calls (id, workflow_run_id, workflow_step_id, provider, model, purpose, prompt_version, status, input_tokens, output_tokens, cache_hit_tokens, estimated_cost_usd, latency_ms, retry_count, error_message, created_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(record.id, record.workflowRunId, record.workflowStepId ?? null, record.provider, record.model, record.purpose, record.promptVersion,
+      .run(record.id, (record.workflowRunId ?? null), record.workflowStepId ?? null, record.provider, record.model, record.purpose, record.promptVersion,
         record.status, record.inputTokens, record.outputTokens, record.cacheHitTokens, record.estimatedCostUsd, record.latencyMs, record.retryCount,
         record.errorMessage ?? null, record.createdAt, JSON.stringify(record));
   }
@@ -155,6 +161,53 @@ export class SqliteStore implements CollectorStore {
   }
   listBackupRecords(): import("@collector/capture-contracts").BackupRecord[] {
     return this.db().prepare("SELECT id, path, size_bytes as sizeBytes, manifest_version as manifestVersion, created_at as createdAt, status, error_message as errorMessage FROM backup_records ORDER BY created_at DESC").all() as any[];
+  }
+
+  listRevisions(captureId: string): Array<{ id: string; captureId: string; content: string; ordinal: number; createdAt: string }> {
+    return this.db().prepare("SELECT id, capture_id AS captureId, content, ordinal, created_at AS createdAt FROM material_revisions WHERE capture_id = ? ORDER BY ordinal DESC").all(captureId) as any[];
+  }
+
+  async saveRevision(record: { id: string; captureId: string; content: string; ordinal: number; createdAt: string }): Promise<void> {
+    this.db().prepare("INSERT INTO material_revisions (id, capture_id, content, ordinal, created_at) VALUES (?, ?, ?, ?, ?)").run(record.id, record.captureId, record.content, record.ordinal, record.createdAt);
+  }
+
+  async trashCapture(id: string, trashedAt: string): Promise<boolean> {
+    const capture = this.getCapture(id);
+    if (!capture || (capture as any).trashedAt) return false;
+    (capture as any).trashedAt = trashedAt;
+    await this.saveCapture(capture);
+    return true;
+  }
+
+  async restoreCapture(id: string): Promise<boolean> {
+    const capture = this.getCapture(id);
+    if (!capture || !(capture as any).trashedAt) return false;
+    delete (capture as any).trashedAt;
+    await this.saveCapture(capture);
+    return true;
+  }
+
+  async deleteCapture(id: string): Promise<boolean> {
+    const capture = this.getCapture(id);
+    if (!capture) return false;
+    this.transaction(() => {
+      this.db().prepare("DELETE FROM material_revisions WHERE capture_id = ?").run(id);
+      this.db().prepare("DELETE FROM knowledge_items WHERE capture_id = ?").run(id);
+      this.db().prepare("DELETE FROM review_proposals WHERE capture_id = ?").run(id);
+      this.db().prepare("DELETE FROM agent_runs WHERE capture_id = ?").run(id);
+      this.db().prepare("DELETE FROM relations WHERE source_capture_id = ? OR target_capture_id = ?").run(id, id);
+      this.db().prepare("DELETE FROM topic_memberships WHERE capture_id = ?").run(id);
+      this.db().prepare("DELETE FROM fragments WHERE capture_id = ?").run(id);
+      this.db().prepare("DELETE FROM captures WHERE id = ?").run(id);
+    });
+    return true;
+  }
+
+  getDeleteImpact(captureId: string): { topicMemberships: Array<{ topicId: string; topicTitle: string }>; workflowInputs: Array<{ workflowRunId: string; workflowType: string }>; citationCount: number; hasNoImpact: boolean } {
+    const memberships = (this.db().prepare("SELECT tm.topic_id AS topicId, COALESCE(json_extract(t.record_json, \"$.title\"), \"(unnamed)\") AS topicTitle FROM topic_memberships tm LEFT JOIN topics t ON tm.topic_id = t.id WHERE tm.capture_id = ?").all(captureId) as any[]);
+    const citationCount = (this.db().prepare("SELECT COUNT(*) AS cnt FROM relations WHERE (source_capture_id = ? OR target_capture_id = ?) AND json_extract(record_json, \"$.status\") = \"active\"").get(captureId, captureId) as { cnt: number }).cnt;
+    const hasNoImpact = memberships.length === 0 && citationCount === 0;
+    return { topicMemberships: memberships, workflowInputs: [], citationCount, hasNoImpact };
   }
 
     close(): void {
@@ -646,7 +699,28 @@ export class SqliteStore implements CollectorStore {
       version = 9;
     }
 
+
+    if (version < 10) {
+      this.transaction(() => {
+        this.db().exec("CREATE TABLE IF NOT EXISTS material_revisions (id TEXT PRIMARY KEY, capture_id TEXT NOT NULL, content TEXT NOT NULL, ordinal INTEGER NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY(capture_id) REFERENCES captures(id))");
+        this.db().exec("CREATE INDEX IF NOT EXISTS material_revisions_capture_idx ON material_revisions(capture_id, ordinal)");
+        this.db().exec("INSERT INTO schema_migrations(version, applied_at) VALUES (10, datetime('now'))");
+      });
+      version = 10;
+    }
+    if (version < 11) {
+      this.transaction(() => {
+        this.db().exec("CREATE TABLE IF NOT EXISTS model_calls_v2 (id TEXT PRIMARY KEY, workflow_run_id TEXT, workflow_step_id TEXT, provider TEXT NOT NULL, model TEXT NOT NULL, purpose TEXT NOT NULL, prompt_version TEXT NOT NULL, status TEXT NOT NULL, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, cache_hit_tokens INTEGER NOT NULL DEFAULT 0, estimated_cost_usd REAL NOT NULL DEFAULT 0, latency_ms INTEGER NOT NULL DEFAULT 0, retry_count INTEGER NOT NULL DEFAULT 0, error_message TEXT, created_at TEXT NOT NULL, record_json TEXT NOT NULL)");
+        this.db().exec("INSERT INTO model_calls_v2 SELECT * FROM model_calls");
+        this.db().exec("DROP TABLE model_calls");
+        this.db().exec("ALTER TABLE model_calls_v2 RENAME TO model_calls");
+        this.db().exec("CREATE INDEX IF NOT EXISTS model_calls_workflow_idx ON model_calls(workflow_run_id, created_at)");
+        this.db().exec("INSERT INTO schema_migrations(version, applied_at) VALUES (11, datetime('now'))");
+      });
+      version = 11;
+    }
   }
+
 
   private async migrateLegacyJson(): Promise<void> {
     if (!this.legacyJsonPath) return;

@@ -25,6 +25,18 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (!auth.isAuthorized(requestToken(request))) {
         return json(response, 401, { error: { code: "unauthorized", message: "Collector client is not paired" } });
       }
+
+      if (request.method === "GET" && url.pathname === "/v1/data-paths") {
+        return json(response, 200, service.getDataPaths());
+      }
+      if (request.method === "GET" && url.pathname === "/v1/ai-configuration") {
+        return json(response, 200, service.getAiConfiguration());
+      }
+      if (request.method === "POST" && url.pathname === "/v1/ai-configuration") {
+        const aiBody = await readJson(request) as { consent?: boolean; configured?: boolean };
+        await service.setAiConfiguration(aiBody.consent ?? false, aiBody.configured ?? false);
+        return json(response, 200, service.getAiConfiguration());
+      }
       if (request.method === "POST" && url.pathname === "/v1/pairings") {
         const body = await readJson(request) as { name?: string };
         return json(response, 201, auth.createPairingCode(body.name?.trim() || "Collector Client"));
@@ -115,6 +127,9 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         const docRun = await service.generateTopicDocument(decodeURIComponent(docGenerateMatch[1]), docBody.idempotencyKey);
         return json(response, 202, docRun);
       }
+      if (request.method === "GET" && docGenerateMatch) {
+        return json(response, 200, service.listTopicDocumentVersions(decodeURIComponent(docGenerateMatch[1])));
+      }
       const docLatestMatch = url.pathname.match(/^\/v1\/topics\/([^/]+)\/documents\/latest$/);
       if (request.method === "GET" && docLatestMatch) {
         const docVersion = service.getLatestTopicDocument(decodeURIComponent(docLatestMatch[1]));
@@ -158,6 +173,12 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (request.method === "PUT" && url.pathname === "/v1/settings/verification-policy") {
         const policyBody = await readJson(request) as import("@collector/capture-contracts").VerificationPolicyConfig;
         return json(response, 200, await service.updateVerificationPolicy(policyBody));
+      }
+      const docByIdMatch = url.pathname.match(/^\/v1\/documents\/([^/]+)$/);
+      if (request.method === "GET" && docByIdMatch) {
+        const doc = service.getTopicDocumentVersion(decodeURIComponent(docByIdMatch[1]));
+        if (!doc) return json(response, 404, { error: { code: "not_found", message: "Document not found" } });
+        return json(response, 200, doc);
       }
       const verifClaimsMatch = url.pathname.match(/^\/v1\/documents\/([^/]+)\/verification-claims$/);
       if (request.method === "GET" && verifClaimsMatch) {

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -23,6 +24,7 @@ import {
   type WorkflowStepRecord,
 } from "@collector/capture-contracts";
 import type { CollectorStore } from "./store.js";
+import { defaultDataPaths } from "./store.js";
 import { SourceParser } from "./parsers.js";
 import { ModelGateway } from "@collector/model-gateway";
 import { type Verifier, FakeVerifier, VerificationWorkflow } from "./verification.js";
@@ -69,6 +71,12 @@ export class CaptureService {
   async setAiConfiguration(consent: boolean, configured: boolean): Promise<void> {
     await this.store.saveSetting("ai_consent", String(consent));
     await this.store.saveSetting("deepseek_configured", String(configured));
+  }
+
+  getDataPaths(): { database: string; artifacts: string; databaseExists: boolean } {
+    const root = process.env.COLLECTOR_DATA_DIR ?? join(process.cwd(), ".collector-data");
+    const database = join(root, "collector.sqlite");
+    return { database, artifacts: join(root, "artifacts"), databaseExists: existsSync(database) };
   }
 
   preflight(value: unknown): PreflightEvaluation {
@@ -154,7 +162,7 @@ export class CaptureService {
       id: randomUUID(), workflowType: "recent_organization", idempotencyKey,
       materialIds, materialSetVersion, status: "queued", createdAt: now,
     };
-    const steps: WorkflowStepRecord[] = (["freeze_materials", "exact_deduplication", "publish_snapshot"] as const).map((stepType) => ({
+    const steps: WorkflowStepRecord[] = (["freeze_materials", "exact_deduplication", "cluster_materials", "publish_snapshot"] as const).map((stepType) => ({
       id: randomUUID(), workflowRunId: run.id, stepType, status: "queued", createdAt: now,
     }));
     await this.store.createWorkflowRun(run, steps);
@@ -182,7 +190,7 @@ export class CaptureService {
         progressed = true;
         const processing: WorkflowRunRecord = { ...run, status: "processing", startedAt: run.startedAt ?? now.toISOString() };
         try {
-          const { step, snapshot } = this.executeRecentOrganizationStep(processing, claimed);
+          const { step, snapshot } = await this.executeRecentOrganizationStep(processing, claimed);
           if (this.store.completeWorkflowStep(step, snapshot ? { ...processing, status: "completed", completedAt: step.completedAt! } : processing, snapshot)) {
             completedCount += 1;
           }
@@ -197,7 +205,7 @@ export class CaptureService {
     return completedCount;
   }
 
-  private executeRecentOrganizationStep(run: WorkflowRunRecord, claimed: WorkflowStepRecord): { step: WorkflowStepRecord; snapshot?: RecentClusterSnapshotRecord } {
+  private async executeRecentOrganizationStep(run: WorkflowRunRecord, claimed: WorkflowStepRecord): Promise<{ step: WorkflowStepRecord; snapshot?: RecentClusterSnapshotRecord }> {
     const completedAt = new Date().toISOString();
     let output: unknown;
     let snapshot: RecentClusterSnapshotRecord | undefined;
@@ -210,10 +218,17 @@ export class CaptureService {
         if (material && !representativeByChecksum.has(material.checksum)) representativeByChecksum.set(material.checksum, material.id);
       }
       output = { representativeMaterialIds: [...representativeByChecksum.values()] };
+    } else if (claimed.stepType === "cluster_materials") {
+      const dedup = this.store.getWorkflowSteps(run.id).find((s) => s.stepType === "exact_deduplication");
+      const repIds = (dedup?.output as { representativeMaterialIds?: string[] } | undefined)?.representativeMaterialIds ?? [];
+      output = { clusters: [], unclusteredMaterialIds: repIds };
     } else {
-      const deduplication = this.store.getWorkflowSteps(run.id).find((step) => step.stepType === "exact_deduplication");
-      const representativeMaterialIds = (deduplication?.output as { representativeMaterialIds?: string[] } | undefined)?.representativeMaterialIds ?? [];
-      snapshot = { id: randomUUID(), workflowRunId: run.id, materialSetVersion: run.materialSetVersion, clusters: [], unclusteredMaterialIds: representativeMaterialIds, createdAt: completedAt };
+      const dedup = this.store.getWorkflowSteps(run.id).find((s) => s.stepType === "exact_deduplication");
+      const repIds = (dedup?.output as { representativeMaterialIds?: string[] } | undefined)?.representativeMaterialIds ?? [];
+      const clusterStep = this.store.getWorkflowSteps(run.id).find((s) => s.stepType === "cluster_materials");
+      const clusterOut = clusterStep?.output as { clusters?: Array<{ name: string; summary: string; materialIds: string[] }>; unclusteredMaterialIds?: string[] } | undefined;
+      const clusters = (clusterOut?.clusters ?? []).map((c, i) => ({ id: randomUUID(), name: c.name, summary: c.summary, materialIds: c.materialIds }));
+      snapshot = { id: randomUUID(), workflowRunId: run.id, materialSetVersion: run.materialSetVersion, clusters, unclusteredMaterialIds: clusterOut?.unclusteredMaterialIds ?? repIds, createdAt: completedAt };
     }
     return { step: { ...claimed, status: "completed", output, completedAt }, snapshot };
   }
@@ -574,6 +589,14 @@ export class CaptureService {
 
   getLatestTopicDocument(topicId: string): TopicDocumentVersionRecord | undefined {
     return this.store.getLatestTopicDocumentVersion(topicId);
+  }
+
+  listTopicDocumentVersions(topicId: string): TopicDocumentVersionRecord[] {
+    return this.store.listTopicDocumentVersions(topicId);
+  }
+
+  getTopicDocumentVersion(documentId: string): TopicDocumentVersionRecord | undefined {
+    return this.store.getTopicDocumentVersion(documentId);
   }
 
   async resumeTopicDocumentRuns(): Promise<number> {

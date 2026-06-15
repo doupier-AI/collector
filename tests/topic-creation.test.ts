@@ -42,7 +42,7 @@ test("create topic from cluster promotes with materials as members", async (t) =
 
   // Run recent organization to get a cluster
   const run = await service.organizeRecent("topic-cluster-run");
-  assert.equal(await service.resumeRecentOrganizationRuns(), 3);
+  assert.equal(await service.resumeRecentOrganizationRuns(), 4);
   assert.equal(service.getWorkflowRun(run.id).status, "completed");
   const snapshot = service.getLatestRecentClusterSnapshot();
   assert.ok(snapshot);
@@ -328,7 +328,7 @@ test("promote cluster preserves all materials", async (t) => {
   const cap1 = await c1.json() as { id: string };
 
   const run = await service.organizeRecent("preserve-run");
-  assert.equal(await service.resumeRecentOrganizationRuns(), 3);
+  assert.equal(await service.resumeRecentOrganizationRuns(), 4);
   const snapshot = service.getLatestRecentClusterSnapshot();
 
   const clusterIndex = snapshot.clusters.findIndex((c) => c.materialIds.includes(cap1.id));

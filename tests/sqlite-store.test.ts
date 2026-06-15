@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -92,8 +92,8 @@ test("workflow migration creates formal versioned tables", async (t) => {
   store.close();
   const database = new DatabaseSync(databasePath, { readOnly: true });
   const tables = (database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name);
-  for (const table of ["workflow_runs", "workflow_steps", "model_calls", "recent_cluster_snapshots"]) assert.ok(tables.includes(table));
-  assert.equal((database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 9);
+  for (const table of ["workflow_runs", "workflow_steps", "model_calls", "recent_cluster_snapshots", "material_revisions"]) assert.ok(tables.includes(table));
+  assert.equal((database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 11);
   database.close();
   t.after(() => rm(root, { recursive: true, force: true }));
 });
