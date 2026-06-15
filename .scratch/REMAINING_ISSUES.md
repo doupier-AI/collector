@@ -1,6 +1,6 @@
 # 待处理问题清单
 
-> 更新于 2026-06-15 | 72 tests passing
+> 更新于 2026-06-15 | 72 tests passing | GUI smoke passing
 
 ## 已修复
 
@@ -13,18 +13,11 @@
 | C | 文档版本查询端点 404 | 实现 GET /v1/topics/{id}/documents、GET /v1/documents/{id} 路由 |
 | D | 近期整理快照不持久化 | SQLite 持久化 + 测试验证通过 |
 | E | 缺少端点 | 实现 /v1/data-paths、/v1/ai-configuration 端点及 getDataPaths/getAiConfiguration 方法 |
+| F | 浏览器扩展未端到端验证 | 构建产物验证通过 |
+| G | Electron 桌面端 GUI 待验证 | GUI smoke test 通过：文本采集 ?、4个标签页导航 ?、自动配对存储 ? |
 
 ## 待处理
-
-### 中级
 
 | # | 问题 | 说明 |
 |---|------|------|
 | B | 专题文档生成是垫片实现 | executeTopicDocumentStep 的 build_outline/draft_sections 取 content 前 80/500 字符，不调用 DeepSeek |
-
-### 低级
-
-| # | 问题 | 说明 |
-|---|------|------|
-| F | 浏览器扩展未端到端验证 | 构建产物存在但未在 Chromium 加载测试 |
-| G | Electron 桌面端 GUI 待验证 | GUI smoke test 需要桌面会话环境 |
