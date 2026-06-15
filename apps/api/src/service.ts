@@ -608,7 +608,7 @@ export class CaptureService {
       if (!claimed) continue;
       const processing: WorkflowRunRecord = { ...run, status: "processing", startedAt: run.startedAt ?? now.toISOString() };
       try {
-        const { step, version } = this.executeTopicDocumentStep(processing, claimed);
+        const { step, version } = await this.executeTopicDocumentStep(processing, claimed);
         if (this.store.completeWorkflowStep(step, version ? { ...processing, status: "completed", completedAt: step.completedAt! } : processing)) completed++;
       } catch {
         this.store.failWorkflowStep({ ...claimed, status: "failed", completedAt: new Date().toISOString() }, { ...processing, status: "failed", errorMessage: "Topic document step failed", completedAt: new Date().toISOString() });
@@ -635,7 +635,7 @@ export class CaptureService {
       }
     })();
   }
-  private executeTopicDocumentStep(run: WorkflowRunRecord, step: WorkflowStepRecord): { step: WorkflowStepRecord; version?: TopicDocumentVersionRecord } {
+  private async executeTopicDocumentStep(run: WorkflowRunRecord, step: WorkflowStepRecord): Promise<{ step: WorkflowStepRecord; version?: TopicDocumentVersionRecord }> {
     const completedAt = new Date().toISOString();
     const out: WorkflowStepRecord = { ...step, status: "completed", completedAt };
     if (step.stepType === "freeze_material_set") {
@@ -650,11 +650,39 @@ export class CaptureService {
     }
     if (step.stepType === "build_outline") {
       const mats = run.materialIds.map((id: string) => this.store.getCapture(id)).filter(Boolean);
+      if (this.modelGateway) {
+        try {
+          const allTopics = this.store.listTopics();
+          const topic = allTopics.find((t: any) => this.store.listTopicCaptureIds(t.id).some((mid: string) => run.materialIds.includes(mid)));
+          const materialInputs = mats.map((m: any) => ({ id: m.id, content: m.content ?? "" }));
+          const result = await this.modelGateway.generateDocumentOutline(materialInputs, topic?.title ?? "Untitled Document");
+          if (!("errorCode" in result)) {
+            return { step: { ...out, output: result } };
+          }
+        } catch (e) { console.error("Outline generation failed:", e instanceof Error ? e.message : e); }
+      }
       return { step: { ...out, output: { title: "Combined Materials", sections: mats.slice(0,6).map((m: any,i: number) => ({ heading: (m?.content??"").slice(0,80)||("Section "+(i+1)), keyPoints: [(m?.content??"").slice(0,100)] })) } } };
     }
     if (step.stepType === "draft_sections") {
       const mats = run.materialIds.map((id: string) => this.store.getCapture(id)).filter(Boolean);
-      const sections: DocumentSection[] = mats.slice(0,10).map((m: any) => ({ id: (randomUUID as any)(), heading: (m?.content??"").slice(0,80)||"Untitled", markdown: (m?.content??"").slice(0,500), citationIds: this.store.listFragments(m!.id).map((f: any) => f.id), protectedByUser: false }));
+      if (this.modelGateway) {
+        try {
+          const outlineStep = this.store.getWorkflowSteps(run.id).find((s) => s.stepType === "build_outline");
+          const outline = outlineStep?.output as { title: string; sections: Array<{ heading: string; keyPoints: string[] }> } | undefined;
+          if (outline?.sections?.length) {
+            const materialInputs = mats.map((m: any) => ({ id: m.id, content: m.content ?? "", fragmentIds: this.store.listFragments(m.id).map((f: any) => f.id) }));
+            const result = await this.modelGateway.generateDocumentSections(outline, materialInputs);
+            if (!("errorCode" in result)) {
+              const sections: DocumentSection[] = result.sections.map((s) => {
+                const citedFragIds = s.citationIds.flatMap((mid) => this.store.listFragments(mid).map((f: any) => f.id));
+                return { id: randomUUID(), heading: s.heading, markdown: s.markdown, citationIds: citedFragIds, protectedByUser: false };
+              });
+              return { step: { ...out, output: { sectionCount: sections.length } } };
+            }
+          }
+        } catch (e) { console.error("Section drafting failed:", e instanceof Error ? e.message : e); }
+      }
+      const sections: DocumentSection[] = mats.slice(0,10).map((m: any) => ({ id: randomUUID(), heading: (m?.content??"").slice(0,80)||"Untitled", markdown: (m?.content??"").slice(0,500), citationIds: this.store.listFragments(m!.id).map((f: any) => f.id), protectedByUser: false }));
       return { step: { ...out, output: { sectionCount: sections.length } } };
     }
     if (step.stepType === "merge_sections") {
