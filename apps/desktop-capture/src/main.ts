@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, Tray, nativeImage, safeStorage } from "electron";
+﻿import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, Tray, nativeImage, safeStorage } from "electron";
 import type { Server } from "node:http";
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer, defaultDataPaths, type CollectorStore } from "@collector/api";
 import { CaptureClient } from "@collector/capture-client";
-import { MAX_ARTIFACT_BYTES, type CaptureInput, type ReviewDecision } from "@collector/capture-contracts";
+import { MAX_ARTIFACT_BYTES, type CaptureInput} from "@collector/capture-contracts";
 import { DeepSeekProvider, ModelGateway } from "@collector/model-gateway";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
@@ -129,7 +129,7 @@ function assertTrustedRenderer(senderId: number): void {
   if (shellWindow?.webContents.id !== senderId) throw new Error("Untrusted IPC sender");
 }
 
-ipcMain.handle("capture:submit", async (event, input: CaptureInput) => { assertTrustedRenderer(event.sender.id); return client.createCapture(input); });
+ipcMain.handle("capture:submit", async (event, input: CaptureInput) => { assertTrustedRenderer(event.sender.id); console.log("[main] capture:submit received"); try { const result = await client.createCapture(input); console.log("[main] capture:submit success, id:", result.id); return result; } catch (e) { console.error("[main] capture:submit FAILED:", e instanceof Error ? e.message : e); throw e; } });
 ipcMain.handle("capture:upload", async (event, file: { path: string; name: string; type: string; size: number }) => {
   assertTrustedRenderer(event.sender.id);
   if (file.size > MAX_ARTIFACT_BYTES) throw new Error("文件超过 20 MiB 限制");
@@ -139,9 +139,20 @@ ipcMain.handle("capture:upload", async (event, file: { path: string; name: strin
 ipcMain.on("shell:hide", () => { shellWindow?.hide(); });
 ipcMain.on("shell:navigate", (_event, tab: string) => { showShellNormal(tab); });
 
-ipcMain.handle("workspace:load", async (event) => { assertTrustedRenderer(event.sender.id); const [inbox, topics, relations] = await Promise.all([client.listInbox(), client.listTopics(), client.listRelations()]); return { inbox, topics, relations }; });
-ipcMain.handle("workspace:decide", async (event, id: string, decision: ReviewDecision) => { assertTrustedRenderer(event.sender.id); return client.decideReviewProposal(id, decision); });
-ipcMain.handle("workspace:revoke", async (event, id: string) => { assertTrustedRenderer(event.sender.id); return client.revokeRelation(id); });
+ipcMain.handle("workspace:load", async (event) => {
+  assertTrustedRenderer(event.sender.id);
+  const [inboxResult, topicsResult, relationsResult] = await Promise.allSettled([
+    client.listInbox(), client.listTopics(), client.listRelations(),
+  ]);
+  const topics = topicsResult.status === "fulfilled" ? topicsResult.value : [];
+  const relations = relationsResult.status === "fulfilled" ? relationsResult.value : [];
+  const rawInbox = inboxResult.status === "fulfilled" ? inboxResult.value : [];
+  if (inboxResult.status === "rejected") console.error("workspace:load inbox failed:", inboxResult.reason);
+  if (topicsResult.status === "rejected") console.error("workspace:load topics failed:", topicsResult.reason);
+  if (relationsResult.status === "rejected") console.error("workspace:load relations failed:", relationsResult.reason);
+  const inbox = rawInbox.map((item: any) => ({ ...item.capture, fragments: item.fragments, knowledgeItems: item.knowledgeItems, reviewProposals: item.reviewProposals, agentRuns: item.agentRuns }));
+  return { inbox, topics, relations };
+});
 ipcMain.handle("workspace:create-topic", async (event, title: string) => { assertTrustedRenderer(event.sender.id); return client.createTopic(title); });
 ipcMain.handle("workspace:create-suggested-topic", async (event, input: Parameters<CaptureClient["createSuggestedTopic"]>[0]) => { assertTrustedRenderer(event.sender.id); return client.createSuggestedTopic(input); });
 ipcMain.handle("workspace:update-topic", async (event, id: string, patch: Parameters<CaptureClient["updateTopic"]>[1]) => { assertTrustedRenderer(event.sender.id); return client.updateTopic(id, patch); });
@@ -149,6 +160,16 @@ ipcMain.handle("workspace:get-topic", async (event, id: string) => { assertTrust
 ipcMain.handle("workspace:add-topic-member", async (event, topicId: string, captureId: string) => { assertTrustedRenderer(event.sender.id); return client.addTopicMember(topicId, captureId); });
 ipcMain.handle("workspace:remove-topic-member", async (event, topicId: string, captureId: string) => { assertTrustedRenderer(event.sender.id); return client.removeTopicMember(topicId, captureId); });
 ipcMain.handle("workspace:deep-analysis", async (event, captureId: string) => { assertTrustedRenderer(event.sender.id); return client.requestDeepAnalysis(captureId); });
+
+  // ── Materials CRUD ──
+  ipcMain.handle("material:list", async (event, params?: { q?: string; page?: number; limit?: number; trash?: boolean }) => { assertTrustedRenderer(event.sender.id); return client.listMaterials(params); });
+  ipcMain.handle("material:get", async (event, id: string) => { assertTrustedRenderer(event.sender.id); return client.getMaterial(id); });
+  ipcMain.handle("material:revisions", async (event, id: string) => { assertTrustedRenderer(event.sender.id); return client.listRevisions(id); });
+  ipcMain.handle("material:edit", async (event, id: string, content: string) => { assertTrustedRenderer(event.sender.id); return client.editRevision(id, content); });
+  ipcMain.handle("material:trash", async (event, id: string) => { assertTrustedRenderer(event.sender.id); return client.trashMaterial(id); });
+  ipcMain.handle("material:restore", async (event, id: string) => { assertTrustedRenderer(event.sender.id); return client.restoreMaterial(id); });
+  ipcMain.handle("material:delete-impact", async (event, id: string) => { assertTrustedRenderer(event.sender.id); return client.getDeleteImpact(id); });
+  ipcMain.handle("material:permanent-delete", async (event, id: string, acknowledge?: boolean) => { assertTrustedRenderer(event.sender.id); return client.permanentDelete(id, acknowledge); });
 ipcMain.handle("recent:organize", async (event, idempotencyKey?: string) => { assertTrustedRenderer(event.sender.id); return client.organizeRecent(idempotencyKey); });
 ipcMain.handle("recent:snapshot", async (event) => { assertTrustedRenderer(event.sender.id); return client.getLatestRecentSnapshot(); });
 ipcMain.handle("recent:run", async (event, id: string) => { assertTrustedRenderer(event.sender.id); return client.getRecentOrganizationRun(id); });

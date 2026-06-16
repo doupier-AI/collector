@@ -382,3 +382,40 @@ test("cancelling a processing run stops further steps and preserves completed wo
   assert.equal(completedCount, 1);
   assert.ok(cancelledCount >= 1);
 });
+
+test("workspace:load returns inbox, topics, and relations", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "collector-wsload-"));
+  const store = new SqliteStore(join(root, "collector.sqlite"));
+  await store.init();
+  const auth = new LocalAuth(store);
+  const token = "wsload-token";
+  await auth.registerTrustedToken(token, "test");
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
+  const server = createApiServer(service, auth);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    store.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  const addr = server.address();
+  if (!addr || typeof addr === "string") throw new Error("Server did not bind");
+  const base = `http://127.0.0.1:${addr.port}`;
+  const headers = { Authorization: `Bearer ${token}` };
+
+  // Verify all three workspace:load endpoints respond (even if empty)
+  const inboxRes = await fetch(`${base}/v1/inbox`, { headers });
+  assert.equal(inboxRes.status, 200);
+  const inbox = await inboxRes.json();
+  assert.ok(Array.isArray(inbox));
+
+  const topicsRes = await fetch(`${base}/v1/topics`, { headers });
+  assert.equal(topicsRes.status, 200);
+  const topics = await topicsRes.json();
+  assert.ok(Array.isArray(topics));
+
+  const relationsRes = await fetch(`${base}/v1/relations`, { headers });
+  assert.equal(relationsRes.status, 200);
+  const relations = await relationsRes.json();
+  assert.ok(Array.isArray(relations));
+});
