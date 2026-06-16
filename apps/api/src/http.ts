@@ -82,6 +82,8 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         return json(response, 200, result);
       }
 
+      if (request.method === "GET" && url.pathname === "/v1/inbox") return json(response, 200, service.listInbox());
+      if (request.method === "GET" && url.pathname === "/v1/relations") { const relCaptureId = url.searchParams.get("captureId") ?? undefined; return json(response, 200, service.listRelations(relCaptureId)); }
       if (request.method === "GET" && url.pathname === "/v1/topics") return json(response, 200, service.listTopics());
       if (request.method === "POST" && url.pathname === "/v1/topics") {
         const body = await readJson(request) as { title?: string; sourceCaptureId?: string; sourceAgentRunId?: string; evidenceFragmentIds?: string[]; materialIds?: string[] };
