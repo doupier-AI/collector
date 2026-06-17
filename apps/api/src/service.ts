@@ -142,6 +142,12 @@ export class CaptureService {
   listInbox(): import("@collector/capture-contracts").InboxItem[] { return this.store.listCaptures().map((capture) => ({ capture, fragments: this.store.listFragments(capture.id), knowledgeItems: this.store.listKnowledgeItems(capture.id), reviewProposals: this.store.listReviewProposals(capture.id), agentRuns: this.store.listAgentRuns(capture.id), })); }
   listRelations(captureId?: string): import("@collector/capture-contracts").RelationRecord[] { return this.store.listRelations(captureId); }
 
+
+  async testAiConnection(): Promise<{ ok: true; model: string } | { ok: false; error: string }> {
+    if (!this.modelGateway) return { ok: false, error: "Model gateway is not configured" };
+    return this.modelGateway.testConnection();
+  }
+
   getCapture(id: string): CaptureRecord {
     const record = this.store.getCapture(id);
     if (!record) throw new NotFoundError("Capture not found");

@@ -29,6 +29,10 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (request.method === "GET" && url.pathname === "/v1/data-paths") {
         return json(response, 200, service.getDataPaths());
       }
+      if (request.method === "POST" && url.pathname === "/v1/ai-configuration/test") {
+        const testResult = await service.testAiConnection();
+        return json(response, testResult.ok ? 200 : 502, testResult);
+      }
       if (request.method === "GET" && url.pathname === "/v1/ai-configuration") {
         return json(response, 200, service.getAiConfiguration());
       }

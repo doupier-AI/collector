@@ -187,6 +187,15 @@ ipcMain.handle("settings:save-shortcut", async (event, value: string) => {
   await saveDesktopPreferences({ shortcut });
   return { shortcut };
 });
+ipcMain.handle("settings:test-connection", async (event, key?: string) => {
+  assertTrustedRenderer(event.sender.id);
+  const apiKey = key?.trim() || await loadDeepSeekKey();
+  if (!apiKey) throw new Error("No API key configured");
+  const tempGateway = new ModelGateway(new DeepSeekProvider({ apiKey: () => apiKey }));
+  const result = await tempGateway.testConnection({ timeoutMs: 15000 });
+  return result;
+});
+
 ipcMain.handle("settings:save-ai", async (event, value: { consent: boolean; apiKey?: string }) => {
   assertTrustedRenderer(event.sender.id);
   if (!embeddedService || !embeddedStore) throw new Error("AI 设置仅在 Collector 内置服务中可用");

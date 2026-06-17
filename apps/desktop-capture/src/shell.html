@@ -1,11 +1,13 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'"><title>Collector</title><link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="workspace.css"><link rel="stylesheet" href="settings.css"></head>
 <body id="shell-body">
   <nav id="shell-nav" class="shell-nav">
     <div class="nav-brand">Collector</div>
     <div class="nav-tabs">
       <button id="nav-capture" class="nav-tab active" data-tab="capture">采集</button>
-      <button id="nav-workspace" class="nav-tab" data-tab="workspace">工作台</button>
+      <button id="nav-recent" class="nav-tab" data-tab="recent">近期收集</button>
+      <button id="nav-topics" class="nav-tab" data-tab="topics">专题</button>
+      <button id="nav-materials" class="nav-tab" data-tab="materials">全部材料</button>
       <button id="nav-settings" class="nav-tab" data-tab="settings">设置</button>
     </div>
     <div class="nav-actions"><span id="compact-hint" class="compact-hint">Esc 退出采集模式</span></div>
@@ -24,28 +26,50 @@
         </form>
       </main>
     </section>
-    <section id="section-workspace" class="shell-section">
-      <main class="app-shell">
-        <aside class="sidebar"><div class="app-name"><span class="brand-mark">C</span><strong>Collector</strong></div><nav><button id="nav-inbox" class="nav-item active"><span>收件箱</span><b id="inbox-count">0</b></button><button id="nav-topics" class="nav-item"><span>主题</span><b id="topic-count">0</b></button></nav><div class="sidebar-spacer"></div></aside>
-        <section class="collection-pane">
-        <div id="recent-section" class="recent-section">
-          <div class="recent-header">
-            <span class="recent-label">近期整理</span>
-            <span id="recent-status-badge" class="recent-badge" data-status="idle">待整理</span>
+    <section id="section-recent" class="shell-section">
+      <main class="app-shell no-sidebar">
+        <section class="collection-pane full-width">
+          <div id="recent-org-section" class="recent-section">
+            <div class="recent-header">
+              <span class="recent-label">近期整理</span>
+              <span id="recent-status-badge" class="recent-badge" data-status="idle">待整理</span>
+            </div>
+            <p id="recent-summary" class="recent-summary">对近期采集的材料进行聚类与分组。</p>
+            <div class="recent-actions">
+              <button id="recent-organize" class="button primary">立即整理</button>
+              <span id="recent-error" class="recent-error"></span>
+            </div>
+            <div id="recent-result" class="recent-result" hidden>
+              <span id="recent-cluster-count"></span>
+              <button id="recent-view-unclustered" class="button-link" hidden>查看未归类材料</button>
+              <button id="recent-retry" class="button-link" hidden>重新整理</button>
+            </div>
           </div>
-          <p id="recent-summary" class="recent-summary">对近期采集的材料进行聚类与分组。</p>
-          <div class="recent-actions">
-            <button id="recent-organize" class="button primary">立即整理</button>
-            <span id="recent-error" class="recent-error"></span>
-          </div>
-          <div id="recent-result" class="recent-result" hidden>
-            <span id="recent-cluster-count"></span>
-            <button id="recent-view-unclustered" class="button-link" hidden>查看未归类材料</button>
-            <button id="recent-retry" class="button-link" hidden>重新整理</button>
-          </div>
-        </div>
-        <header><div><span class="eyebrow">KNOWLEDGE</span><h1 id="collection-title">收件箱</h1></div><button id="refresh" class="icon-button" title="刷新">↻</button></header><input id="search" class="search" placeholder="搜索当前列表"><div id="collection-list" class="collection-list"></div></section>
-        <section id="detail" class="detail-pane"><div class="empty-state"><span class="empty-glyph">⌘</span><h2>选择一条内容</h2><p>查看原文、引用、模型运行和审核建议。</p></div></section>
+          <header><div><span class="eyebrow">RECENT</span><h1 id="recent-title">近期收集</h1></div><button id="recent-refresh" class="icon-button" title="刷新">↻</button></header>
+          <input id="recent-search" class="search" placeholder="搜索近期收集…">
+          <div id="recent-list" class="collection-list"></div>
+        </section>
+        <section id="recent-detail" class="detail-pane"><div class="empty-state"><span class="empty-glyph">⌃</span><h2>选择一条内容</h2><p>查看原文、引用和模型运行记录。</p></div></section>
+      </main>
+    </section>
+    <section id="section-topics" class="shell-section">
+      <main class="app-shell no-sidebar">
+        <section class="collection-pane full-width">
+          <header><div><span class="eyebrow">TOPICS</span><h1 id="topics-title">专题</h1></div><button id="topics-refresh" class="icon-button" title="刷新">↻</button></header>
+          <input id="topics-search" class="search" placeholder="搜索专题…">
+          <div id="topics-list" class="collection-list"></div>
+        </section>
+        <section id="topics-detail" class="detail-pane"><div class="empty-state"><span class="empty-glyph">⌃</span><h2>选择一个专题</h2><p>查看专题成员、关系和文档。</p></div></section>
+      </main>
+    </section>
+    <section id="section-materials" class="shell-section">
+      <main class="app-shell no-sidebar">
+        <section class="collection-pane full-width">
+          <header><div><span class="eyebrow">MATERIALS</span><h1 id="materials-title">全部材料</h1></div><button id="materials-refresh" class="icon-button" title="刷新">↻</button></header>
+          <input id="materials-search" class="search" placeholder="搜索全部材料…">
+          <div id="materials-list" class="collection-list"></div>
+        </section>
+        <section id="materials-detail" class="detail-pane"><div class="empty-state"><span class="empty-glyph">⌃</span><h2>选择一条材料</h2><p>查看原文和来源信息。</p></div></section>
       </main>
     </section>
     <section id="section-settings" class="shell-section">

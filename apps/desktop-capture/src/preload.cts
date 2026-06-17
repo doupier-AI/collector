@@ -1,5 +1,5 @@
-import { contextBridge, ipcRenderer, webUtils } from "electron";
-import type { ArtifactRecord, CaptureInput, CaptureRecord, ReviewDecision } from "@collector/capture-contracts";
+﻿import { contextBridge, ipcRenderer, webUtils } from "electron";
+import type { ArtifactRecord, CaptureInput, CaptureRecord } from "@collector/capture-contracts";
 
 contextBridge.exposeInMainWorld("collector", {
   capture: {
@@ -15,8 +15,6 @@ contextBridge.exposeInMainWorld("collector", {
   },
   workspace: {
     load: () => ipcRenderer.invoke("workspace:load"),
-    decide: (id: string, decision: ReviewDecision) => ipcRenderer.invoke("workspace:decide", id, decision),
-    revoke: (id: string) => ipcRenderer.invoke("workspace:revoke", id),
     createTopic: (title: string) => ipcRenderer.invoke("workspace:create-topic", title),
     createSuggestedTopic: (input: unknown) => ipcRenderer.invoke("workspace:create-suggested-topic", input),
     updateTopic: (id: string, patch: unknown) => ipcRenderer.invoke("workspace:update-topic", id, patch),
@@ -24,18 +22,27 @@ contextBridge.exposeInMainWorld("collector", {
     addTopicMember: (topicId: string, captureId: string) => ipcRenderer.invoke("workspace:add-topic-member", topicId, captureId),
     removeTopicMember: (topicId: string, captureId: string) => ipcRenderer.invoke("workspace:remove-topic-member", topicId, captureId),
     deepAnalysis: (captureId: string) => ipcRenderer.invoke("workspace:deep-analysis", captureId),
-    navigateTo: (tab: string) => ipcRenderer.send("shell:navigate", tab),
   },
-    recent: {
+  recent: {
     organize: (idempotencyKey?: string) => ipcRenderer.invoke("recent:organize", idempotencyKey),
     snapshot: () => ipcRenderer.invoke("recent:snapshot"),
     run: (id: string) => ipcRenderer.invoke("recent:run", id),
     cancel: (id: string) => ipcRenderer.invoke("recent:cancel", id),
   },
+  material: {
+    list: (params?: { q?: string; page?: number; limit?: number; trash?: boolean }) => ipcRenderer.invoke("material:list", params),
+    get: (id: string) => ipcRenderer.invoke("material:get", id),
+    revisions: (id: string) => ipcRenderer.invoke("material:revisions", id),
+    edit: (id: string, content: string) => ipcRenderer.invoke("material:edit", id, content),
+    trash: (id: string) => ipcRenderer.invoke("material:trash", id),
+    restore: (id: string) => ipcRenderer.invoke("material:restore", id),
+    deleteImpact: (id: string) => ipcRenderer.invoke("material:delete-impact", id),
+    permanentDelete: (id: string, acknowledge?: boolean) => ipcRenderer.invoke("material:permanent-delete", id, acknowledge),
+  },
   settings: {
     get: () => ipcRenderer.invoke("settings:get"),
+    testConnection: (key?: string) => ipcRenderer.invoke("settings:test-connection", key),
     saveAi: (value: { consent: boolean; apiKey?: string }) => ipcRenderer.invoke("settings:save-ai", value),
     saveShortcut: (value: string) => ipcRenderer.invoke("settings:save-shortcut", value),
-    navigateTo: (tab: string) => ipcRenderer.send("shell:navigate", tab),
   },
 });

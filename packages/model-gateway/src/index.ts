@@ -228,6 +228,23 @@ export class ModelGateway {
       return { errorCode: "provider_error", errorMessage: err instanceof Error ? err.message : "Section generation failed" };
     }
   }
+
+
+  async testConnection(options: { model?: string; timeoutMs?: number } = {}): Promise<{ ok: true; model: string } | { ok: false; error: string }> {
+    try {
+      const response = await this.provider.complete({
+        prompt: "Say 'ok'",
+        model: options.model ?? this.modelName,
+        maxTokens: 10,
+        timeoutMs: options.timeoutMs ?? 15000,
+        responseFormat: { type: "json_object" } as const,
+        thinking: false,
+      });
+      return { ok: true, model: response.model ?? (options.model ?? this.modelName) };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : "Connection test failed" };
+    }
+  }
 }
 
 export class FakeProvider implements ModelProvider {
