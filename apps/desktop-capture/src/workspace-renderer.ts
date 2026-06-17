@@ -325,6 +325,14 @@ function setupRecentOrg(root: HTMLElement, bridge: typeof window.collector): voi
     }
   });
 
+  viewUnclustered.addEventListener("click", () => {
+    bridge.capture.navigate("materials");
+  });
+
+  retryBtn.addEventListener("click", () => {
+    recentOrganize.click();
+  });
+
   void loadRecent();
 }
 
