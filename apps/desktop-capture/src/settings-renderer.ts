@@ -65,7 +65,7 @@
     saveAi.disabled = true;
     try {
       const result = await bridge.saveAi({ consent: aiConsent.checked, apiKey: deepSeekKey.value.trim() || undefined });
-      deepSeekKey.value = ""; deepSeekKey.placeholder = "Key 已保存（安全存储）"; renderAiStatus(result);
+      deepSeekKey.type = "password"; toggleEye.classList.remove("showing"); deepSeekKey.placeholder = "Key 已保存（安全存储）"; renderAiStatus(result);
     } catch (error) { setStatus(aiStatus, message(error), "error"); }
     finally { saveAi.disabled = false; }
   });
