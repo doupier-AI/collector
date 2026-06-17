@@ -1,4 +1,4 @@
-﻿export function initSettings() {
+export function initSettings() {
   const bridge = window.collector?.settings;
   if (!bridge) throw new Error("Collector settings bridge is unavailable");
 
@@ -19,7 +19,6 @@
   const testConn = document.querySelector<HTMLButtonElement>("#test-connection")!;
   const testConnSvg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>';
 
-  const MASK = "•".repeat(16);
   document.documentElement.dataset.collectorSettings = "ready";
   document.querySelector("#open-workspace")?.addEventListener("click", () => bridge.navigateTo("workspace"));
   document.querySelectorAll<HTMLButtonElement>("[data-section]").forEach((button) => button.addEventListener("click", () => showSection(button.dataset.section as keyof typeof titles)));
@@ -28,18 +27,16 @@
     catch (error) { setStatus(shortcutStatus, message(error), "error"); }
   });
 
-  // Eye toggle
   toggleEye.addEventListener("click", () => {
     const isPassword = deepSeekKey.type === "password";
     deepSeekKey.type = isPassword ? "text" : "password";
     toggleEye.classList.toggle("showing", !isPassword);
   });
 
-  // Test connection
   testConn.addEventListener("click", async () => {
     testConn.disabled = true;
     testConn.classList.remove("success", "error");
-    testConn.innerHTML = testConnSvg + " 测试中\u2026";
+    testConn.innerHTML = testConnSvg + " 测试中…";
     try {
       const key = deepSeekKey.value.trim() || undefined;
       const result = await bridge.testConnection(key);
@@ -65,10 +62,11 @@
   saveAi.addEventListener("click", async () => {
     saveAi.disabled = true;
     try {
-      const rawKey = deepSeekKey.value.trim();
-      const sentKey = (rawKey === MASK || !rawKey) ? undefined : rawKey;
-      const result = await bridge.saveAi({ consent: aiConsent.checked, apiKey: sentKey });
-      deepSeekKey.type = "password"; toggleEye.classList.remove("showing"); deepSeekKey.value = MASK; deepSeekKey.placeholder = "Key 已保存（安全存储）"; renderAiStatus(result);
+      const rawKey = deepSeekKey.value.trim() || undefined;
+      const result = await bridge.saveAi({ consent: aiConsent.checked, apiKey: rawKey });
+      if (result.apiKey) { deepSeekKey.value = result.apiKey; deepSeekKey.type = "password"; toggleEye.classList.remove("showing"); }
+      deepSeekKey.placeholder = "Key 已保存（安全存储）";
+      renderAiStatus(result);
     } catch (error) { setStatus(aiStatus, message(error), "error"); }
     finally { saveAi.disabled = false; }
   });
@@ -77,11 +75,14 @@
 
   async function load() {
     try {
-      const value = await bridge.get(); shortcut.value = value.shortcut; aiConsent.checked = value.ai.consent;
+      const value = await bridge.get();
+      shortcut.value = value.shortcut;
+      aiConsent.checked = value.ai.consent;
+      if (value.ai.apiKey) { deepSeekKey.value = value.ai.apiKey; deepSeekKey.type = "password"; }
       if (value.ai.unavailable) { saveAi.disabled = true; setStatus(aiStatus, "当前连接外部 API，AI 设置只能在服务宿主中修改", "error"); }
       else {
         renderAiStatus(value.ai);
-        if (value.ai.configured) { deepSeekKey.value = "••••••••••••••••"; deepSeekKey.placeholder = "Key 已保存 · 输入新 Key 以更换"; }
+        if (value.ai.configured) { deepSeekKey.placeholder = "Key 已保存 · 输入新 Key 以更换"; }
       }
     } catch (error) { setStatus(aiStatus, message(error), "error"); }
   }

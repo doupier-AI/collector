@@ -177,7 +177,9 @@ ipcMain.handle("recent:cancel", async (event, id: string) => { assertTrustedRend
 
 ipcMain.handle("settings:get", async (event) => {
   assertTrustedRenderer(event.sender.id);
-  return { shortcut, ai: embeddedService?.getAiConfiguration() ?? { consent: false, configured: false, unavailable: true } };
+  const savedKey = await loadDeepSeekKey();
+  const ai = embeddedService?.getAiConfiguration() ?? { consent: false, configured: false, unavailable: true };
+  return { shortcut, ai: { ...ai, apiKey: savedKey } };
 });
 ipcMain.handle("settings:save-shortcut", async (event, value: string) => {
   assertTrustedRenderer(event.sender.id);
@@ -204,7 +206,8 @@ ipcMain.handle("settings:save-ai", async (event, value: { consent: boolean; apiK
   if (value.apiKey?.trim()) await saveDeepSeekKey(value.apiKey.trim());
   await embeddedService.setAiConfiguration(value.consent, Boolean(key));
   embeddedService.setModelGateway(value.consent && key ? new ModelGateway(new DeepSeekProvider({ apiKey: () => key })) : undefined);
-  return embeddedService.getAiConfiguration();
+  const savedKey = await loadDeepSeekKey();
+  return { ...embeddedService.getAiConfiguration(), apiKey: savedKey };
 });
 
 async function ensureLocalApi(masterToken: string, deepSeekKey?: string): Promise<Server | undefined> {

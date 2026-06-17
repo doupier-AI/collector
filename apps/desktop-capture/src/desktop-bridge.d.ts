@@ -38,8 +38,8 @@ interface RecentBridge {
 }
 
 interface SettingsBridge {
-  get(): Promise<{ shortcut: string; ai: { consent: boolean; configured: boolean; provider?: string; model?: string; unavailable?: boolean } }>;
-  saveAi(value: { consent: boolean; apiKey?: string }): Promise<{ consent: boolean; configured: boolean; provider?: string; model?: string }>;
+  get(): Promise<{ shortcut: string; ai: { consent: boolean; configured: boolean; apiKey?: string; provider?: string; model?: string; unavailable?: boolean } }>;
+  saveAi(value: { consent: boolean; apiKey?: string }): Promise<{ consent: boolean; configured: boolean; apiKey?: string; provider?: string; model?: string }>;
     testConnection(key?: string): Promise<{ ok: true; model: string } | { ok: false; error: string }>;
   saveShortcut(value: string): Promise<{ shortcut: string }>;
   navigateTo(tab: string): void;
