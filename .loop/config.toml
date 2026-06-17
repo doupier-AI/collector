@@ -1,0 +1,105 @@
+﻿# Collector Loop Configuration
+# This file controls all loop behavior. Change it, not the skills.
+
+[discovery]
+# Ordered list of discovery sources to run. Comment out to disable.
+enabled_sources = [
+    "ci",
+    "issues",
+    "commits",
+    "qa_checklist",
+    "gateway_health",
+    "dependency_audit",
+]
+
+[discovery.ci]
+command = "npm test"
+# "report" = CI failure is noted but loop continues
+# "block_handoff" = CI failure stops handoff from dispatching
+failure_action = "report"
+
+[discovery.issues]
+path = ".scratch/"
+status_field = "Status"
+triage_states = [
+    "needs-triage",
+    "needs-info",
+    "ready-for-agent",
+    "ready-for-human",
+    "wontfix",
+]
+trigger_status = "needs-triage"
+skip_types = []
+
+[discovery.commits]
+lookback_hours = 12
+package_groups = [
+    "apps/api/",
+    "apps/desktop-capture/",
+    "packages/",
+    "scripts/",
+    ".scratch/",
+]
+sensitive_patterns = [
+    "sqlite",
+    "migration",
+    "store",
+    "preload",
+    "ipc",
+    "contextBridge",
+]
+
+
+
+[discovery.gateway_health]
+path = "apps/model-gateway/"
+enabled = true
+
+[discovery.dependency_audit]
+command = "npm audit --json"
+severity_threshold = "high"
+enabled = true
+
+[handoff]
+skip_hitl = true
+worktree_prefix = "codex/loop/"
+worktree_dir = ".worktrees/"
+
+[verification]
+mechanical_check_command = "npm test"
+review_model = "gpt-4.1"
+review_reasoning = "high"
+playwright_enabled = true
+
+[persistence]
+merge_strategy = "no-ff"
+cleanup_worktrees = true
+
+[budget]
+max_tokens_per_run = 80000
+max_retries_per_task = 2
+
+
+[qa]
+# 每个 loop 轮次都跑 QA，不依赖 issue
+enabled = true
+
+[[qa.scenarios]]
+name = "桌面悬浮窗采集"
+description = "启动 Electron 桌面端，Ctrl+Shift+Space 呼出悬浮窗，粘贴文本，Ctrl+Enter 提交，验证材料出现在全部材料中"
+type = "playwright"
+
+[[qa.scenarios]]
+name = "浏览器扩展右键采集"
+description = "加载浏览器扩展，在任意网页选中文本，右键采集到 Collector，验证材料出现"
+type = "playwright"
+
+[[qa.scenarios]]
+name = "专题文档生成"
+description = "端到端验证专题创建和文档生成管道：创建专题 → 生成大纲 → 起草文档 → 验证输出"
+type = "api"
+
+[[qa.scenarios]]
+name = "API 健康检查与数据路径"
+description = "启动 API 服务，验证 /health 返回 200，/v1/data-paths 返回有效数据路径"
+type = "api"

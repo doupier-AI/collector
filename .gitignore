@@ -13,3 +13,5 @@ release/
 !.agents/skills/collector-engineering/
 !.agents/skills/tdd/
 skills-lock.json
+
+.worktrees/

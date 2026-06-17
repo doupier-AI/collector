@@ -1,0 +1,32 @@
+{
+  "name": "collector",
+  "version": "1.0.0",
+  "description": "Local-first knowledge collector: capture, organize, and verify information across desktop and browser",
+  "author": {
+    "name": "rappingzhuge",
+    "url": "https://github.com/rappingzhuge"
+  },
+  "repository": "https://github.com/rappingzhuge/collector.git",
+  "license": "MIT",
+  "homepage": "https://github.com/rappingzhuge/collector",
+  "keywords": [
+    "collector",
+    "knowledge-management",
+    "electron",
+    "chrome-extension"
+  ],
+  "skills": "./agents/skills/",
+  "interface": {
+    "displayName": "Collector",
+    "shortDescription": "Local-first knowledge collector with desktop capture and browser extension",
+    "longDescription": "Collector is a local-first knowledge management tool that helps you capture information from desktop and browser, organize into topics, and verify key claims. Built with Electron, TypeScript, and a Chrome extension for seamless information capture.",
+    "developerName": "rappingzhuge",
+    "category": "Productivity",
+    "capabilities": [
+      "Skill Developer",
+      "Local Knowledge Base"
+    ],
+    "websiteURL": "https://github.com/rappingzhuge/collector",
+    "brandColor": "#2563EB"
+  }
+}

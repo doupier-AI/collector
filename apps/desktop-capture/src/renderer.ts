@@ -1,4 +1,4 @@
-interface UploadedArtifact { id: string; fileName: string; mimeType: string; checksum: string }
+﻿interface UploadedArtifact { id: string; fileName: string; mimeType: string; checksum: string }
 
 export function initCapture() {
   
@@ -42,7 +42,8 @@ export function initCapture() {
       }
       const text = content.value.trim();
       const url = isUrl(text) ? text : undefined;
-      await window.collector.capture.submit({
+      console.log('[collector] submitting capture via IPC...');
+      const result = await window.collector.capture.submit({
         captureType: artifacts.length ? "local_file" : url ? "pasted_url" : "pasted_text",
         content: url ? undefined : text || undefined,
         sourceUrl: url,
@@ -53,10 +54,12 @@ export function initCapture() {
         clientCaptureId: `desktop-${crypto.randomUUID()}`,
         capturedAt: new Date().toISOString(),
       });
+      console.log('[collector] submit succeeded, id:', result.id);
       clearDraft();
       setStatus("已收集", "success");
       setTimeout(() => window.collector.capture.hide(), 420);
     } catch (error) {
+      console.error('[collector] submit FAILED:', error instanceof Error ? error.message : error);
       saveDraft();
       setStatus(error instanceof Error ? error.message : "保存失败，内容已保留", "error");
       syncSubmitState();
