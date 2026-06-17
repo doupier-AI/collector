@@ -312,7 +312,7 @@ function setupRecentOrg(root: HTMLElement, bridge: typeof window.collector): voi
     recentSummary.textContent = "正在启动整理…";
     recentError.textContent = "";
     try {
-      const result = await bridge!.recent.organize() as WorkflowRunRecord;
+      const result = await bridge!.recent.organize('recent-ui-' + crypto.randomUUID()) as WorkflowRunRecord;
       activeRunId = result.id;
       recentBadge.dataset.status = "processing";
       recentBadge.textContent = "处理中…";
