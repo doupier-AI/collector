@@ -19,6 +19,7 @@
   const testConn = document.querySelector<HTMLButtonElement>("#test-connection")!;
   const testConnSvg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>';
 
+  const MASK = "•".repeat(16);
   document.documentElement.dataset.collectorSettings = "ready";
   document.querySelector("#open-workspace")?.addEventListener("click", () => bridge.navigateTo("workspace"));
   document.querySelectorAll<HTMLButtonElement>("[data-section]").forEach((button) => button.addEventListener("click", () => showSection(button.dataset.section as keyof typeof titles)));
@@ -64,8 +65,10 @@
   saveAi.addEventListener("click", async () => {
     saveAi.disabled = true;
     try {
-      const result = await bridge.saveAi({ consent: aiConsent.checked, apiKey: deepSeekKey.value.trim() || undefined });
-      deepSeekKey.type = "password"; toggleEye.classList.remove("showing"); deepSeekKey.placeholder = "Key 已保存（安全存储）"; renderAiStatus(result);
+      const rawKey = deepSeekKey.value.trim();
+      const sentKey = (rawKey === MASK || !rawKey) ? undefined : rawKey;
+      const result = await bridge.saveAi({ consent: aiConsent.checked, apiKey: sentKey });
+      deepSeekKey.type = "password"; toggleEye.classList.remove("showing"); deepSeekKey.value = MASK; deepSeekKey.placeholder = "Key 已保存（安全存储）"; renderAiStatus(result);
     } catch (error) { setStatus(aiStatus, message(error), "error"); }
     finally { saveAi.disabled = false; }
   });
@@ -78,7 +81,7 @@
       if (value.ai.unavailable) { saveAi.disabled = true; setStatus(aiStatus, "当前连接外部 API，AI 设置只能在服务宿主中修改", "error"); }
       else {
         renderAiStatus(value.ai);
-        if (value.ai.configured) { deepSeekKey.placeholder = "Key 已保存 · 输入新 Key 以更换"; }
+        if (value.ai.configured) { deepSeekKey.value = "••••••••••••••••"; deepSeekKey.placeholder = "Key 已保存 · 输入新 Key 以更换"; }
       }
     } catch (error) { setStatus(aiStatus, message(error), "error"); }
   }
