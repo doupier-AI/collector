@@ -79,7 +79,7 @@ export function initWorkspace(root: HTMLElement, view: ViewMode): void {
       for (const item of filtered) {
         const btn = document.createElement("button");
         btn.className = `list-item${selectedId === item.id ? " active" : ""}`;
-        btn.innerHTML = `<strong>${escapeHtml(captureLabel(item))}</strong><p>${escapeHtml(snippet(item.content ?? ""))}</p><div class="list-meta"><span>${escapeHtml(item.captureType ?? "capture")}</span><span>${escapeHtml(item.capturedAt?.slice(0, 10) ?? "")}</span></div>`;
+        btn.innerHTML = `<strong>${escapeHtml(captureLabel(item))}</strong><p>${escapeHtml(snippet(item.content ?? ""))}</p><div class="list-meta"><span>${escapeHtml(item.capturedAt?.slice(0, 10) ?? "")}</span></div>`;
         btn.addEventListener("click", () => {
           selectedId = item.id;
           renderList();
@@ -114,7 +114,7 @@ export function initWorkspace(root: HTMLElement, view: ViewMode): void {
   function renderCaptureDetail(item: FlatCapture): void {
     detailEl.replaceChildren();
     const header = div("detail-header");
-    header.innerHTML = `<div><span class="eyebrow">CAPTURE</span><h2>${escapeHtml(captureLabel(item))}</h2></div><div class="badges">${escapeHtml(item.captureType ?? "text")}</div>`;
+    header.innerHTML = `<div><span class="eyebrow">CAPTURE</span><h2>${escapeHtml(captureLabel(item))}</h2></div>`;
     detailEl.append(header);
 
     if (item.content) {
