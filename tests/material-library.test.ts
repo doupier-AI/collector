@@ -1,13 +1,12 @@
 ﻿import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { CaptureService, JsonStore, LocalAuth, createApiServer } from "@collector/api";
+import { CaptureService, MemoryStore, LocalAuth, createApiServer } from "@collector/api";
 
 test("material library lists and searches captures", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "collector-materials-"));
-  const store = new JsonStore(join(root, "store.json"));
+  const root = join(tmpdir(), `collector-materials-${crypto.randomUUID()}`);
+  const store = new MemoryStore();
   await store.init();
   const auth = new LocalAuth(store);
   const token = "test-token";
@@ -15,7 +14,7 @@ test("material library lists and searches captures", async (t) => {
 
   const server = createApiServer(new CaptureService(store, join(root, "artifacts")), auth);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(async () => { await new Promise<void>((r) => server.close(() => r())); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { await new Promise<void>((r) => server.close(() => r())); store.close?.(); });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");
   const base = `http://127.0.0.1:${address.port}`;
@@ -68,15 +67,15 @@ test("material library lists and searches captures", async (t) => {
 });
 
 test("material detail returns 404 for unknown id", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "collector-mat-404-"));
-  const store = new JsonStore(join(root, "store.json"));
+  const root = join(tmpdir(), `collector-mat-404-${crypto.randomUUID()}`);
+  const store = new MemoryStore();
   await store.init();
   const auth = new LocalAuth(store);
   const token = "test-token";
   await auth.registerTrustedToken(token);
   const server = createApiServer(new CaptureService(store, join(root, "artifacts")), auth);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(async () => { await new Promise<void>((r) => server.close(() => r())); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { await new Promise<void>((r) => server.close(() => r())); store.close?.(); });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");
   const base = `http://127.0.0.1:${address.port}`;

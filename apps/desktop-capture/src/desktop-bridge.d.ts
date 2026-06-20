@@ -4,8 +4,10 @@ import type {
   CaptureRecord,
   InboxItem,
   RelationRecord,
+  TopicDocumentVersionRecord,
   TopicRecord,
   TopicWorkspace,
+  WorkflowRunRecord,
 } from "@collector/capture-contracts";
 
 interface CaptureBridge {
@@ -16,6 +18,8 @@ interface CaptureBridge {
   onFocus(callback: () => void): void;
   onShortcutError(callback: (shortcut: string) => void): void;
   onModeChange(callback: (mode: string) => void): void;
+  onNavigate(callback: (tab: string) => void): void;
+  onDataCleared(callback: () => void): void;
 }
 
 interface WorkspaceBridge {
@@ -27,6 +31,9 @@ interface WorkspaceBridge {
   addTopicMember(topicId: string, captureId: string): Promise<unknown>;
   removeTopicMember(topicId: string, captureId: string): Promise<unknown>;
   deepAnalysis(captureId: string): Promise<unknown>;
+  generateDocument(topicId: string, idempotencyKey?: string): Promise<WorkflowRunRecord>;
+  listDocuments(topicId: string): Promise<TopicDocumentVersionRecord[]>;
+  getLatestDocument(topicId: string): Promise<TopicDocumentVersionRecord | null>;
   navigateTo(tab: string): void;
 }
 
@@ -42,7 +49,7 @@ interface SettingsBridge {
   saveAi(value: { consent: boolean; apiKey?: string }): Promise<{ consent: boolean; configured: boolean; apiKey?: string; provider?: string; model?: string }>;
     testConnection(key?: string): Promise<{ ok: true; model: string } | { ok: false; error: string }>;
   saveShortcut(value: string): Promise<{ shortcut: string }>;
-  navigateTo(tab: string): void;
+  clearAllData(): Promise<{ cleared: boolean }>;
 }
 
 

@@ -186,9 +186,7 @@ ipcMain.handle("recent:cancel", async (event, id: string) => { assertTrustedRend
 
 ipcMain.handle("settings:get", async (event) => {
   assertTrustedRenderer(event.sender.id);
-  console.log('[Main] settings:get called');
   const savedKey = await loadDeepSeekKey();
-  console.log('[Main] settings:get loaded key:', savedKey ? 'present (length: ' + savedKey.length + ')' : 'not found');
   const ai = embeddedService?.getAiConfiguration() ?? { consent: false, configured: false, unavailable: true };
   return { shortcut, ai: { ...ai, apiKey: savedKey } };
 });
@@ -202,90 +200,33 @@ ipcMain.handle("settings:save-shortcut", async (event, value: string) => {
 });
 ipcMain.handle("settings:test-connection", async (event, key?: string) => {
   assertTrustedRenderer(event.sender.id);
-  console.log('[Main] settings:test-connection called, provided key:', key ? 'yes' : 'no');
   // 如果前端没有提供 key，尝试使用已保存的 key
   const apiKey = key?.trim() || await loadDeepSeekKey();
-  console.log('[Main] settings:test-connection using key:', apiKey ? 'present' : 'missing');
   if (!apiKey) throw new Error("请先配置 DeepSeek API Key");
   const tempGateway = new ModelGateway(new DeepSeekProvider({ apiKey: () => apiKey }));
   const result = await tempGateway.testConnection({ timeoutMs: 15000 });
-  console.log('[Main] settings:test-connection result:', result.ok ? 'success' : 'failed');
   return result;
 });
 
 ipcMain.handle("settings:save-ai", async (event, value: { consent: boolean; apiKey?: string }) => {
   assertTrustedRenderer(event.sender.id);
-  console.log('[Main] settings:save-ai called, consent:', value.consent, 'apiKey provided:', value.apiKey !== undefined, 'value:', JSON.stringify(value.apiKey));
   if (!embeddedService || !embeddedStore) throw new Error("AI 设置仅在 Collector 内置服务中可用");
-  
-  // 区分三种情况：
-  // 1. value.apiKey === undefined → 不修改 key，使用已保存的
-  // 2. value.apiKey === "" → 清除已保存的 key
-  // 3. value.apiKey === "sk-..." → 保存新的 key
-  let finalKey: string | undefined;
-  if (value.apiKey === undefined) {
-    // 不修改，使用已保存的
-    finalKey = await loadDeepSeekKey();
-    console.log('[Main] settings:save-ai keeping existing key');
-  } else if (value.apiKey === '') {
-    // 清除 key
-    finalKey = undefined;
-    console.log('[Main] settings:save-ai clearing key');
-    // 删除文件
+  // 如果前端提供了新的 key，使用它；否则使用已保存的 key
+  const key = value.apiKey?.trim() || await loadDeepSeekKey();
+  if (value.consent && !key) throw new Error("启用云端 AI 前必须提供 DeepSeek API Key");
+  // 只有当用户输入了新的 key 时才保存
+  if (value.apiKey?.trim()) {
     try {
-      const fs = require('fs');
-      const path = require('path');
-      const keyPath = path.join(app.getPath("userData"), "deepseek-key.bin");
-      if (fs.existsSync(keyPath)) {
-        fs.unlinkSync(keyPath);
-        console.log('[Main] Deleted deepseek-key.bin');
-      }
-    } catch (error) {
-      console.error('[Main] Failed to delete key file:', error);
-    }
-  } else {
-    // 保存新 key
-    finalKey = value.apiKey.trim();
-    try {
-      await saveDeepSeekKey(finalKey);
-      console.log('[Main] settings:save-ai new key saved');
+      await saveDeepSeekKey(value.apiKey.trim());
     } catch (error) {
       console.error("Failed to save API key:", error);
       throw new Error("保存 API Key 失败，请重试");
     }
   }
-  
-  console.log('[Main] settings:save-ai final key:', finalKey ? 'present' : 'cleared');
-  if (value.consent && !finalKey) throw new Error("启用云端 AI 前必须提供 DeepSeek API Key");
-  await embeddedService.setAiConfiguration(value.consent, Boolean(finalKey));
-  embeddedService.setModelGateway(value.consent && finalKey ? new ModelGateway(new DeepSeekProvider({ apiKey: () => finalKey })) : undefined);
-  return { ...embeddedService.getAiConfiguration(), apiKey: finalKey };
-});
-
-ipcMain.handle("settings:clear-all-data", async (event) => {
-  assertTrustedRenderer(event.sender.id);
-  const result = await dialog.showMessageBox({
-    type: "warning",
-    title: "清除所有数据",
-    message: "此操作将永久删除所有已收集的材料、专题、工作流记录和生成的文档。",
-    detail: "以下内容将被保留：\n• 浏览器扩展配对凭证\n• DeepSeek API Key 及 AI 配置\n• 快捷键设置\n\n此操作不可撤销。",
-    buttons: ["取消", "确认清除"],
-    defaultId: 0,
-    cancelId: 0,
-  });
-  if (result.response === 0) return { cleared: false };
-
-  embeddedScheduler?.stop();
-  try {
-    if (embeddedService) {
-      await embeddedService.clearAllData();
-    }
-    console.log("[Main] All user data cleared successfully");
-    shellWindow?.webContents.send("data:cleared");
-    return { cleared: true };
-  } finally {
-    embeddedScheduler?.start();
-  }
+  await embeddedService.setAiConfiguration(value.consent, Boolean(key));
+  embeddedService.setModelGateway(value.consent && key ? new ModelGateway(new DeepSeekProvider({ apiKey: () => key })) : undefined);
+  const savedKey = await loadDeepSeekKey();
+  return { ...embeddedService.getAiConfiguration(), apiKey: savedKey };
 });
 
 async function ensureLocalApi(masterToken: string, deepSeekKey?: string): Promise<Server | undefined> {
@@ -344,66 +285,21 @@ async function loadMasterToken(): Promise<string> {
 }
 async function loadDeepSeekKey(): Promise<string | undefined> {
   const path = join(app.getPath("userData"), "deepseek-key.bin");
-  try {
-    const fileData = await readFile(path);
-    const isEncryptionAvailable = safeStorage.isEncryptionAvailable();
-    
-    // Detect file format: encrypted files are binary, plaintext is UTF-8 text
-    let isEncryptedFile = false;
-    try {
-      const textContent = fileData.toString('utf8');
-      // If it looks like an API key (starts with sk- or reasonable length with valid chars), it's plaintext
-      if (textContent.startsWith('sk-') || 
-          (textContent.length > 10 && textContent.length < 200 && /^[a-zA-Z0-9._-]+$/.test(textContent))) {
-        isEncryptedFile = false;
-      } else {
-        isEncryptedFile = true;
-      }
-    } catch {
-      // Cannot convert to UTF-8, must be encrypted binary
-      isEncryptedFile = true;
+  try { 
+    if (safeStorage.isEncryptionAvailable()) {
+      return safeStorage.decryptString(await readFile(path)); 
+    } else {
+      // 尝试读取明文文件（之前可能以明文保存）
+      console.warn("[Main] safeStorage unavailable, reading DeepSeek key as plaintext");
+      return await readFile(path, "utf8");
     }
-    
-    console.log('[Main] loadDeepSeekKey: encryption available:', isEncryptionAvailable, 'file appears encrypted:', isEncryptedFile);
-    
-    // Case 1: File is encrypted and safeStorage is available - normal decryption
-    if (isEncryptedFile && isEncryptionAvailable) {
-      const decrypted = safeStorage.decryptString(fileData);
-      console.log('[Main] Successfully decrypted key, length:', decrypted.length);
-      return decrypted;
-    }
-    
-    // Case 2: File is plaintext and safeStorage is unavailable - read directly
-    if (!isEncryptedFile && !isEncryptionAvailable) {
-      console.warn('[Main] Reading plaintext key (safeStorage unavailable)');
-      return fileData.toString('utf8');
-    }
-    
-    // Case 3: File is encrypted but safeStorage is unavailable - cannot load
-    if (isEncryptedFile && !isEncryptionAvailable) {
-      console.error('[Main] CRITICAL: Encrypted file found but safeStorage unavailable!');
-      console.error('[Main] Please re-enter your API key to save it in plaintext mode.');
-      return undefined;
-    }
-    
-    // Case 4: File is plaintext but safeStorage is available - migrate to encrypted
-    if (!isEncryptedFile && isEncryptionAvailable) {
-      console.log('[Main] Migrating plaintext key to encrypted format');
-      const plaintext = fileData.toString('utf8');
-      await writeFile(path, safeStorage.encryptString(plaintext));
-      console.log('[Main] Migration complete');
-      return plaintext;
-    }
-    
-    return undefined;
-  } catch (error) {
+  }
+  catch (error) { 
     const err = error as NodeJS.ErrnoException;
-    if (err.code === 'ENOENT') {
-      console.log('[Main] deepseek-key.bin not found');
-      return undefined;
-    }
-    console.error('[Main] Failed to load DeepSeek key:', err.message);
-    return undefined;
+    if (err.code === "ENOENT") return undefined; 
+    // 如果解密失败（例如系统密钥链问题），记录错误但不中断应用
+    console.error("Failed to decrypt DeepSeek key, treating as unconfigured:", err.message);
+    return undefined; 
   }
 }
 async function saveDeepSeekKey(value: string): Promise<void> {

@@ -6,7 +6,13 @@ export interface Verifier {
 }
 
 export class FakeVerifier implements Verifier {
+  private warned = false;
+
   async verify(claims: Omit<VerificationClaim, "id" | "status" | "sources" | "confidence" | "summary" | "costUsd" | "verifiedAt">[], config: VerificationPolicyConfig): Promise<VerificationClaim[]> {
+    if (!this.warned) {
+      console.warn("FakeVerifier is active — no real verification provider configured. All verification results are simulated and should not be treated as validated.");
+      this.warned = true;
+    }
     const now = new Date().toISOString();
     return claims.map((claim, index) => {
       // Cycle through different verification results
@@ -21,7 +27,7 @@ export class FakeVerifier implements Verifier {
         status,
         sources,
         confidence: status === "supported" ? 0.85 : status === "disputed" ? 0.5 : 0.3,
-        summary: status === "supported" ? "Verified by external source" : status === "disputed" ? "Conflicting evidence found" : status === "insufficient" ? "Not enough evidence" : "Not verified",
+        summary: `[SIMULATED] ${status === "supported" ? "Verified by external source" : status === "disputed" ? "Conflicting evidence found" : status === "insufficient" ? "Not enough evidence" : "Not verified"}`,
         costUsd: 0,
         verifiedAt: now,
       };

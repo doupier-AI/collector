@@ -4,6 +4,7 @@ import { SqliteStore, defaultDataPaths } from "./store.js";
 import { LocalAuth } from "./auth.js";
 import { randomBytes } from "node:crypto";
 import { DeepSeekProvider, ModelGateway } from "@collector/model-gateway";
+import { WorkflowScheduler } from "./scheduler.js";
 
 const port = Number(process.env.COLLECTOR_PORT ?? 43110);
 const paths = defaultDataPaths(process.env.COLLECTOR_DATA_DIR);
@@ -24,4 +25,32 @@ const gateway = consent && apiKey ? new ModelGateway(new DeepSeekProvider({ apiK
 const service = new CaptureService(store, paths.artifacts, undefined, gateway);
 await service.resumePendingModelRuns();
 const server = createApiServer(service, auth, { instanceId: process.env.COLLECTOR_INSTANCE_ID });
+
+// 启动工作流调度器守护进程
+const scheduler = new WorkflowScheduler(service);
+scheduler.start();
+
 server.listen(port, "127.0.0.1", () => console.log(`Collector API listening on http://127.0.0.1:${port}`));
+
+// 优雅关闭：监听 SIGTERM/SIGINT 信号
+function gracefulShutdown(signal: string): void {
+  console.log(`\nReceived ${signal}. Shutting down gracefully...`);
+  
+  // 停止调度器
+  scheduler.stop();
+  
+  // 关闭 HTTP 服务器
+  server.close(() => {
+    console.log("HTTP server closed");
+    process.exit(0);
+  });
+  
+  // 强制退出超时（5秒）
+  setTimeout(() => {
+    console.error("Forced shutdown after timeout");
+    process.exit(1);
+  }, 5000).unref();
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));

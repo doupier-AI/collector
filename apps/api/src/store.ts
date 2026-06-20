@@ -47,6 +47,7 @@ export interface CollectorStore {
   publishRecentClusterSnapshot(run: WorkflowRunRecord, steps: WorkflowStepRecord[], snapshot: RecentClusterSnapshotRecord): Promise<void>;
   getWorkflowSteps(runId: string): WorkflowStepRecord[];
   listRecoverableWorkflowRuns(): WorkflowRunRecord[];
+  listWorkflowRuns(workflowType?: string): WorkflowRunRecord[];
   createWorkflowRun(run: WorkflowRunRecord, steps: WorkflowStepRecord[]): Promise<void>;
   claimWorkflowStep(runId: string, owner: string, now: string, leaseExpiresAt: string): WorkflowStepRecord | undefined;
   completeWorkflowStep(step: WorkflowStepRecord, run: WorkflowRunRecord, snapshot?: RecentClusterSnapshotRecord): boolean;
@@ -78,6 +79,7 @@ export interface CollectorStore {
   deleteCapture(id: string): Promise<boolean>;
   getDeleteImpact(captureId: string): { topicMemberships: Array<{ topicId: string; topicTitle: string }>; workflowInputs: Array<{ workflowRunId: string; workflowType: string }>; citationCount: number; hasNoImpact: boolean };
   close?(): void;
+  clearAllData(): Promise<void>;
 }
 
 interface StoreData {
@@ -204,8 +206,8 @@ export class SqliteStore implements CollectorStore {
   }
 
   getDeleteImpact(captureId: string): { topicMemberships: Array<{ topicId: string; topicTitle: string }>; workflowInputs: Array<{ workflowRunId: string; workflowType: string }>; citationCount: number; hasNoImpact: boolean } {
-    const memberships = (this.db().prepare("SELECT tm.topic_id AS topicId, COALESCE(json_extract(t.record_json, \"$.title\"), \"(unnamed)\") AS topicTitle FROM topic_memberships tm LEFT JOIN topics t ON tm.topic_id = t.id WHERE tm.capture_id = ?").all(captureId) as any[]);
-    const citationCount = (this.db().prepare("SELECT COUNT(*) AS cnt FROM relations WHERE (source_capture_id = ? OR target_capture_id = ?) AND json_extract(record_json, \"$.status\") = \"active\"").get(captureId, captureId) as { cnt: number }).cnt;
+    const memberships = (this.db().prepare("SELECT tm.topic_id AS topicId, COALESCE(json_extract(t.record_json, '$.title'), '(unnamed)') AS topicTitle FROM topic_memberships tm LEFT JOIN topics t ON tm.topic_id = t.id WHERE tm.capture_id = ?").all(captureId) as any[]);
+    const citationCount = (this.db().prepare("SELECT COUNT(*) AS cnt FROM relations WHERE (source_capture_id = ? OR target_capture_id = ?) AND json_extract(record_json, '$.status') = 'active'").get(captureId, captureId) as { cnt: number }).cnt;
     const hasNoImpact = memberships.length === 0 && citationCount === 0;
     return { topicMemberships: memberships, workflowInputs: [], citationCount, hasNoImpact };
   }
@@ -213,6 +215,36 @@ export class SqliteStore implements CollectorStore {
     close(): void {
     this.database?.close();
     this.database = undefined;
+  }
+
+  async clearAllData(): Promise<void> {
+    this.transaction(() => {
+      this.db().exec("DELETE FROM verification_claims");
+      this.db().exec("DELETE FROM verification_policy");
+      this.db().exec("DELETE FROM update_previews");
+      this.db().exec("DELETE FROM topic_document_versions");
+      this.db().exec("DELETE FROM model_calls");
+      this.db().exec("DELETE FROM ai_budget_settings");
+      this.db().exec("DELETE FROM recent_cluster_snapshots");
+      this.db().exec("DELETE FROM workflow_steps");
+      this.db().exec("DELETE FROM workflow_runs");
+      this.db().exec("DELETE FROM material_revisions");
+      this.db().exec("DELETE FROM backup_records");
+      this.db().exec("DELETE FROM topic_memberships");
+      this.db().exec("DELETE FROM topics");
+      this.db().exec("DELETE FROM user_decisions");
+      this.db().exec("DELETE FROM relations");
+      this.db().exec("DELETE FROM agent_runs");
+      this.db().exec("DELETE FROM review_proposals");
+      this.db().exec("DELETE FROM knowledge_items");
+      this.db().exec("DELETE FROM fragments");
+      this.db().exec("DELETE FROM artifacts");
+      this.db().exec("DELETE FROM captures");
+      // 保留 AI 配置设置（ai_consent, deepseek_configured），
+      // 因为 DeepSeek API Key 文件存储在 Electron safeStorage 中，不会被清除。
+      // 两者必须保持一致，否则清除数据后会出现“有 Key 但 consent 被清除”的矛盾状态。
+      this.db().exec("DELETE FROM settings WHERE key NOT IN ('ai_consent', 'deepseek_configured')");
+    });
   }
 
   getCapture(id: string): CaptureRecord | undefined {
@@ -405,6 +437,11 @@ export class SqliteStore implements CollectorStore {
 
   listRecoverableWorkflowRuns(): WorkflowRunRecord[] {
     return this.listRecords<WorkflowRunRecord>("SELECT record_json FROM workflow_runs WHERE status IN ('queued', 'processing') ORDER BY created_at");
+  }
+
+  listWorkflowRuns(workflowType?: string): WorkflowRunRecord[] {
+    if (workflowType) return this.listRecords<WorkflowRunRecord>("SELECT record_json FROM workflow_runs WHERE workflow_type = ? ORDER BY created_at DESC", workflowType);
+    return this.listRecords<WorkflowRunRecord>("SELECT record_json FROM workflow_runs ORDER BY created_at DESC");
   }
 
   async createWorkflowRun(run: WorkflowRunRecord, steps: WorkflowStepRecord[]): Promise<void> {
@@ -843,6 +880,15 @@ export class SqliteStore implements CollectorStore {
   }
 }
 
+export class MemoryStore extends SqliteStore implements CollectorStore {
+  constructor() {
+    super(":memory:");
+  }
+}
+
+// ── JsonStore (deprecated — use MemoryStore or SqliteStore) ──
+
+/** @deprecated Use SqliteStore or MemoryStore for full feature coverage. JsonStore throws on workflow/document/verification calls. */
 export class JsonStore implements CollectorStore {
   private data: StoreData = structuredClone(EMPTY_DATA);
   private writeQueue = Promise.resolve();
@@ -897,6 +943,7 @@ export class JsonStore implements CollectorStore {
   async publishRecentClusterSnapshot(_run: WorkflowRunRecord, _steps: WorkflowStepRecord[], _snapshot: RecentClusterSnapshotRecord): Promise<void> { throw new Error("Recent organization requires SQLite persistence"); }
   getWorkflowSteps(_runId: string): WorkflowStepRecord[] { return []; }
   listRecoverableWorkflowRuns(): WorkflowRunRecord[] { return []; }
+    listWorkflowRuns(_workflowType?: string): WorkflowRunRecord[] { return []; }
   async createWorkflowRun(_run: WorkflowRunRecord, _steps: WorkflowStepRecord[]): Promise<void> { throw new Error("Recent organization requires SQLite persistence"); }
   claimWorkflowStep(_runId: string, _owner: string, _now: string, _leaseExpiresAt: string): WorkflowStepRecord | undefined { return undefined; }
   completeWorkflowStep(_step: WorkflowStepRecord, _run: WorkflowRunRecord, _snapshot?: RecentClusterSnapshotRecord): boolean { return false; }
@@ -927,6 +974,7 @@ export class JsonStore implements CollectorStore {
   async restoreCapture(id: string) { const record = this.data.captures[id]; if (!record || !(record as any).trashedAt) return false; delete (record as any).trashedAt; await this.flush(); return true; }
   async deleteCapture(id: string) { const record = this.data.captures[id]; if (!record) return false; delete this.data.captures[id]; delete this.data.captureByClientId[record.clientCaptureId]; delete this.data.captureByChecksum[record.checksum]; for (const key of Object.keys(this.data.fragments)) { if (this.data.fragments[key].captureId === id) delete this.data.fragments[key]; } for (const key of Object.keys(this.data.knowledgeItems)) { if (this.data.knowledgeItems[key].captureId === id) delete this.data.knowledgeItems[key]; } for (const key of Object.keys(this.data.reviewProposals)) { if (this.data.reviewProposals[key].captureId === id) delete this.data.reviewProposals[key]; } for (const key of Object.keys(this.data.agentRuns ?? {})) { if (this.data.agentRuns![key].captureId === id) delete this.data.agentRuns![key]; } for (const key of Object.keys(this.data.relations ?? {})) { const r = this.data.relations![key]; if (r.sourceCaptureId === id || r.targetCaptureId === id) delete this.data.relations![key]; } for (const key of Object.keys(this.data.topicMemberships ?? {})) { if (this.data.topicMemberships![key].captureId === id) delete this.data.topicMemberships![key]; } if (this.data.materialRevisions) { for (const key of Object.keys(this.data.materialRevisions)) { if (this.data.materialRevisions[key].captureId === id) delete this.data.materialRevisions[key]; } } await this.flush(); return true; }
   getDeleteImpact(captureId: string) { const memberships = Object.values(this.data.topicMemberships ?? {}).filter(m => m.captureId === captureId).map(m => { const topic = this.data.topics?.[m.topicId]; return { topicId: m.topicId, topicTitle: topic?.title ?? "(unnamed)" }; }); const workflowInputs: Array<{ workflowRunId: string; workflowType: string }> = []; const citationCount = Object.values(this.data.relations ?? {}).filter(r => (r.sourceCaptureId === captureId || r.targetCaptureId === captureId) && r.status === "active").length; const hasNoImpact = memberships.length === 0 && workflowInputs.length === 0 && citationCount === 0; return { topicMemberships: memberships, workflowInputs, citationCount, hasNoImpact }; }
+  async clearAllData(): Promise<void> { const savedTokens = this.data.clientTokens; const savedSettings: Record<string, string> = {}; if (this.data.settings) { for (const key of ['ai_consent', 'deepseek_configured']) { if (this.data.settings[key]) savedSettings[key] = this.data.settings[key]; } } this.data = { ...structuredClone(EMPTY_DATA), clientTokens: savedTokens, settings: savedSettings }; await this.flush(); }
     private flush() { this.writeQueue = this.writeQueue.then(async () => { const temporaryPath = `${this.filePath}.tmp`; await writeFile(temporaryPath, JSON.stringify(this.data, null, 2), "utf8"); await rename(temporaryPath, this.filePath); }); return this.writeQueue; }
 }
 

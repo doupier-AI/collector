@@ -48,6 +48,9 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (request.method === "POST" && url.pathname === "/v1/recent-organization/runs") {
         return json(response, 202, await service.organizeRecent(header(request, "idempotency-key")));
       }
+      if (request.method === "GET" && url.pathname === "/v1/recent-organization/runs") {
+        return json(response, 200, service.listRecentOrganizationRuns());
+      }
       if (request.method === "GET" && url.pathname === "/v1/recent-organization/snapshots/latest") {
         return json(response, 200, service.getLatestRecentClusterSnapshot());
       }
@@ -129,8 +132,9 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       // ── Topic Documents ──────────────────────────────────────
       const docGenerateMatch = url.pathname.match(/^\/v1\/topics\/([^/]+)\/documents$/);
       if (request.method === "POST" && docGenerateMatch) {
-        const docBody = await readJson(request) as { idempotencyKey?: string };
-        const docRun = await service.generateTopicDocument(decodeURIComponent(docGenerateMatch[1]), docBody.idempotencyKey);
+        const docBody = await readJsonOptional(request) as { idempotencyKey?: string };
+        const idempotencyKey = docBody?.idempotencyKey ?? header(request, "idempotency-key");
+        const docRun = await service.generateTopicDocument(decodeURIComponent(docGenerateMatch[1]), idempotencyKey);
         return json(response, 202, docRun);
       }
       if (request.method === "GET" && docGenerateMatch) {
@@ -143,6 +147,9 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         return json(response, 200, docVersion);
       }
       const topicMatch = url.pathname.match(/^\/v1\/topics\/([^/]+)$/);
+      if (request.method === "GET" && topicMatch) {
+        return json(response, 200, service.getTopicDetail(decodeURIComponent(topicMatch[1])));
+      }
       if (request.method === "POST" && topicMatch) {
         const body = await readJson(request) as { title?: string; status?: "active" | "archived" };
         return json(response, 200, await service.updateTopic(decodeURIComponent(topicMatch[1]), body));
@@ -223,6 +230,13 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
 async function readJson(request: IncomingMessage): Promise<unknown> {
   const bytes = await readBytes(request, JSON_LIMIT);
   return JSON.parse(Buffer.from(bytes).toString("utf8"));
+}
+
+async function readJsonOptional(request: IncomingMessage): Promise<unknown> {
+  const bytes = await readBytes(request, JSON_LIMIT);
+  const text = Buffer.from(bytes).toString("utf8").trim();
+  if (!text) return {};
+  return JSON.parse(text);
 }
 
 async function readBytes(request: IncomingMessage, limit: number): Promise<Uint8Array> {

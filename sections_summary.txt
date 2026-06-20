@@ -1,0 +1,12 @@
+=== section-capture (866 chars) ===
+  Tags: main, collection-pane, header, input, detail-pane
+=== section-workspace (1611 chars) ===
+  Tags: main, collection-pane, header, input, detail-pane
+=== section-recent (418 chars) ===
+  Tags: main, collection-pane, header, input, detail-pane
+=== section-topics (414 chars) ===
+  Tags: main, collection-pane, header, input, detail-pane
+=== section-materials (436 chars) ===
+  Tags: main, collection-pane, header, input, detail-pane
+=== section-settings (2918 chars) ===
+  Tags: main, collection-pane, header, input, detail-pane

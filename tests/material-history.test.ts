@@ -1,17 +1,16 @@
 ﻿import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import test from "node:test";
-import { CaptureService, JsonStore, LocalAuth, createApiServer } from "@collector/api";
+import { CaptureService, MemoryStore, LocalAuth, createApiServer } from "@collector/api";
 
 function setupTest() {
   return { root: "", store: undefined as any, auth: undefined as any, server: undefined as any, base: "", headers: {} as Record<string, string> };
 }
 
 async function createTestEnv(t: any) {
-  const root = await mkdtemp(join(tmpdir(), "collector-history-"));
-  const store = new JsonStore(join(root, "store.json"));
+  const root = `${tmpdir()}/collector-history-${crypto.randomUUID()}`;
+  const store = new MemoryStore();
   await store.init();
   const auth = new LocalAuth(store);
   const token = "test-token-history";
@@ -19,7 +18,7 @@ async function createTestEnv(t: any) {
 
   const server = createApiServer(new CaptureService(store, join(root, "artifacts")), auth);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(async () => { await new Promise<void>((r) => server.close(() => r())); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { await new Promise<void>((r) => server.close(() => r())); store.close?.(); });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");
   const base = `http://127.0.0.1:${address.port}`;

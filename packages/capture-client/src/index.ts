@@ -51,6 +51,19 @@ export class CaptureClient {
   addTopicMember(topicId: string, captureId: string): Promise<{ added: true }> { return this.request(`/v1/topics/${encodeURIComponent(topicId)}/members/${encodeURIComponent(captureId)}`, { method: "POST" }); }
   removeTopicMember(topicId: string, captureId: string): Promise<{ removed: true }> { return this.request(`/v1/topics/${encodeURIComponent(topicId)}/members/${encodeURIComponent(captureId)}`, { method: "DELETE" }); }
   requestDeepAnalysis(captureId: string): Promise<import("@collector/capture-contracts").AgentRunRecord> { return this.request(`/v1/captures/${encodeURIComponent(captureId)}/deep-analysis`, { method: "POST" }); }
+  generateTopicDocument(topicId: string, idempotencyKey?: string): Promise<import("@collector/capture-contracts").WorkflowRunRecord> {
+    return this.request(`/v1/topics/${encodeURIComponent(topicId)}/documents`, {
+      method: "POST",
+      headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
+      body: JSON.stringify(idempotencyKey ? { idempotencyKey } : {}),
+    });
+  }
+  listTopicDocumentVersions(topicId: string): Promise<Array<import("@collector/capture-contracts").TopicDocumentVersionRecord>> {
+    return this.request(`/v1/topics/${encodeURIComponent(topicId)}/documents`, { method: "GET" });
+  }
+  getLatestTopicDocument(topicId: string): Promise<import("@collector/capture-contracts").TopicDocumentVersionRecord | null> {
+    return this.request(`/v1/topics/${encodeURIComponent(topicId)}/documents/latest`, { method: "GET" }).catch(() => null) as Promise<import("@collector/capture-contracts").TopicDocumentVersionRecord | null>;
+  }
 
   
   organizeRecent(idempotencyKey?: string): Promise<import("@collector/capture-contracts").WorkflowRunRecord> {

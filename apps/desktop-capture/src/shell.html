@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'">
 <title>Collector</title>
 <link rel="stylesheet" href="styles.css">
 <link rel="stylesheet" href="workspace.css">
@@ -17,6 +17,7 @@
       <button id="nav-recent" class="nav-tab" data-tab="recent">近期收集</button>
       <button id="nav-topics" class="nav-tab" data-tab="topics">专题</button>
       <button id="nav-materials" class="nav-tab" data-tab="materials">全部材料</button>
+      <button id="nav-trash" class="nav-tab" data-tab="trash">回收站</button>
       <button id="nav-settings" class="nav-tab" data-tab="settings">设置</button>
     </div>
     <div class="nav-actions"><span id="compact-hint" class="compact-hint">Esc 退出采集模式</span></div>
@@ -82,15 +83,23 @@
         <section id="materials-detail" class="detail-pane"><div class="empty-state"><span class="empty-glyph">⌃</span><h2>选择一条材料</h2><p>查看原文和来源信息。</p></div></section>
       </main>
     </section>
+    <section id="section-trash" class="shell-section">
+      <main class="app-shell no-sidebar">
+        <section class="collection-pane full-width">
+          <header><div><span class="eyebrow">TRASH</span><h1 id="trash-title">回收站</h1></div><button id="trash-refresh" class="icon-button" title="刷新">↻</button></header>
+          <input id="trash-search" class="search" placeholder="搜索已删除材料…">
+          <div id="trash-list" class="collection-list"></div>
+        </section>
+        <section id="trash-detail" class="detail-pane"><div class="empty-state"><span class="empty-glyph">⌃</span><h2>选择一条已删除材料</h2><p>可以恢复或永久删除。</p></div></section>
+      </main>
+    </section>
     <section id="section-settings" class="shell-section">
       <main class="settings-shell">
-        <aside><div class="app-name"><span class="brand-mark">C</span><strong>Collector</strong></div><nav><button class="nav-item active" data-section="general">通用</button><button class="nav-item" data-section="ai">AI 服务</button><button class="nav-item" data-section="data">数据</button><button class="nav-item" data-section="future">后续能力</button></nav></aside>
+        <aside><div class="app-name"><span class="brand-mark">C</span><strong>Collector</strong></div><nav><button class="nav-item active" data-section="general">通用</button><button class="nav-item" data-section="ai">AI 服务</button></nav></aside>
         <section class="settings-content">
           <header><span class="eyebrow">SETTINGS</span><h1 id="page-title">通用</h1><p id="page-copy">控制 Collector 的桌面行为。</p></header>
-          <div id="general" class="settings-section active"><article class="setting-card"><div><h2>快速采集快捷键</h2><p>从任意应用唤起极简采集窗。</p></div><div class="control-row"><input id="shortcut" value="CommandOrControl+Shift+Space"><button id="save-shortcut" class="button primary">保存</button></div><span id="shortcut-status" class="status"></span></article></div>
-          <div id="ai" class="settings-section"><article class="setting-card"><div><h2>DeepSeek</h2><p>Key 只交给 Electron Main Process，并通过系统安全存储保存。</p></div><label class="toggle-row"><input id="ai-consent" type="checkbox"><span>允许将未禁用的 Fragment 发送到 DeepSeek</span></label><label class="field"><span>API Key</span><span class="key-row"><input id="deepseek-key" type="password" autocomplete="off" placeholder="sk-..."><button id="toggle-key-vis" class="icon-button toggle-eye" type="button" title="显示/隐藏 Key"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button></span><button id="test-connection" class="button test-conn-btn" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg> 测试连接</button></label><div class="control-row"><button id="save-ai" class="button primary">保存 AI 设置</button><span id="ai-status" class="status"></span></div></article><article class="setting-card muted-card"><div><h2>模型与预算策略</h2><p>自定义默认模型、月度预算和 L3 审批规则。</p></div><span class="coming">后续提供</span></article></div>
-          <div id="data" class="settings-section"><article class="setting-card muted-card"><div><h2>导入与导出</h2><p>导出 Markdown、JSON 备份，以及从其他知识工具导入。</p></div><span class="coming">后续提供</span></article><article class="setting-card muted-card"><div><h2>数据位置</h2><p>查看数据库和 Artifact 目录，并管理备份。</p></div><span class="coming">后续提供</span></article></div>
-          <div id="future" class="settings-section"><article class="setting-card muted-card"><div><h2>同步与移动端</h2><p>多设备同步、移动分享入口和冲突处理。</p></div><span class="coming">未启用</span></article><article class="setting-card muted-card"><div><h2>学习计划</h2><p>目标、任务、反馈和动态重排将在知识闭环稳定后实施。</p></div><span class="coming">后续阶段</span></article></div>
+          <div id="general" class="settings-section active"><article class="setting-card"><div><h2>快速采集快捷键</h2><p>从任意应用唤起极简采集窗。聚焦输入框并按下组合键即可自动记录。</p></div><div class="control-row"><input id="shortcut" value="CommandOrControl+Shift+Space" readonly><span id="shortcut-status" class="status"></span></div></article><article class="setting-card clear-data-card"><div><h2>清除所有数据</h2><p>删除所有已收集的材料、专题、工作流记录和生成的文档。配对凭证、API Key 和快捷键设置将被保留。</p></div><div class="control-row"><button id="clear-all-data" class="button danger" type="button">清除所有数据...</button><span id="clear-status" class="status"></span></div></article></div>
+          <div id="ai" class="settings-section"><article class="setting-card"><div><h2>DeepSeek</h2><p>Key 只交给 Electron Main Process，并通过系统安全存储保存。</p></div><label class="toggle-row"><input id="ai-consent" type="checkbox"><span>允许将采集内容的文本片段发送至 DeepSeek AI 进行智能整理和知识提取<span class="help-text">（内容将离开本机，用于 AI 分析）</span></span><span class="help-icon" title="Fragment 是从采集内容中自动分割的文本段落（每段最多 2000 字符），用于细粒度的 AI 分析和引用追踪。禁用后，AI 将无法提取知识点和生成专题文档。">ℹ️</span></label><label class="field"><span>API Key</span><span class="key-row"><input id="deepseek-key" type="password" autocomplete="off" placeholder="sk-..."><button id="toggle-key-vis" class="icon-button toggle-eye" type="button" title="显示/隐藏 Key"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button></span><button id="test-connection" class="button test-conn-btn" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg> 测试连接</button></label><div class="control-row"><button id="save-ai" class="button primary">保存 AI 设置</button><span id="ai-status" class="status"></span></div></article></div>
         </section>
       </main>
     </section>

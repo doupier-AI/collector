@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   ACCEPTED_MIME_TYPES,
@@ -33,11 +33,15 @@ export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
 
 export class CaptureService {
-  private standardTasks: Promise<void> = Promise.resolve();
-  private deepTasks: Promise<void> = Promise.resolve();
+  // Bounded concurrency pools: each queue runs at most `maxConcurrency` tasks
+  // concurrently. A failed task does not block the queue.
+  private readonly standardPool = new TaskPool(2);
+  private readonly deepPool = new TaskPool(1);
   private recentOrganizationTasks: Promise<void> = Promise.resolve();
+  private topicDocumentTasks: Promise<void> = Promise.resolve();
   private readonly scheduledRunIds = new Set<string>();
   private readonly recentWorkerId = randomUUID();
+  private readonly topicDocWorkerId = randomUUID();
 
   constructor(
     private readonly store: CollectorStore,
@@ -46,7 +50,10 @@ export class CaptureService {
     private modelGateway?: ModelGateway,
     private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number } = {},
   ) {
-    if (this.options.autoRunRecentOrganization !== false) this.scheduleRecentOrganization();
+    if (this.options.autoRunRecentOrganization !== false) {
+      this.scheduleRecentOrganization();
+      this.scheduleTopicDocumentRuns();
+    }
   }
 
   setModelGateway(gateway: ModelGateway | undefined): void {
@@ -64,7 +71,15 @@ export class CaptureService {
     }
   }
 
-  async drainBackgroundTasks(): Promise<void> { await Promise.all([this.standardTasks, this.deepTasks, this.recentOrganizationTasks]); }
+  async drainBackgroundTasks(): Promise<void> { await Promise.all([this.standardPool.drain(), this.deepPool.drain(), this.recentOrganizationTasks]); }
+
+  async clearAllData(): Promise<void> {
+    await this.drainBackgroundTasks();
+    await this.store.clearAllData();
+    await rm(this.artifactRoot, { recursive: true, force: true });
+    await mkdir(this.artifactRoot, { recursive: true });
+  }
+
   getAiConfiguration(): { consent: boolean; configured: boolean; provider?: string; model?: string } {
     return { consent: this.store.getSetting("ai_consent") === "true", configured: this.store.getSetting("deepseek_configured") === "true", provider: this.modelGateway?.providerName, model: this.modelGateway?.modelName };
   }
@@ -187,6 +202,14 @@ export class CaptureService {
     });
   }
 
+  private scheduleTopicDocumentRuns(): void {
+    if (this.options.autoRunRecentOrganization === false) return;
+    this.topicDocumentTasks = this.topicDocumentTasks.catch(() => undefined).then(async () => {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await this.resumeTopicDocumentRuns();
+    });
+  }
+
   async resumeRecentOrganizationRuns(maxSteps = Number.POSITIVE_INFINITY): Promise<number> {
     let completedCount = 0;
     while (completedCount < maxSteps) {
@@ -230,7 +253,22 @@ export class CaptureService {
     } else if (claimed.stepType === "cluster_materials") {
       const dedup = this.store.getWorkflowSteps(run.id).find((s) => s.stepType === "exact_deduplication");
       const repIds = (dedup?.output as { representativeMaterialIds?: string[] } | undefined)?.representativeMaterialIds ?? [];
-      output = { clusters: [], unclusteredMaterialIds: repIds };
+      const materials = repIds
+        .map((id) => this.store.getCapture(id))
+        .filter(Boolean)
+        .map((c) => ({ id: c!.id, content: c!.content ?? c!.sourceUrl ?? "" }));
+      if (this.modelGateway && materials.length > 0) {
+        try {
+          const result = await this.modelGateway.clusterMaterials(materials);
+          output = { clusters: result.clusters, unclusteredMaterialIds: result.unclusteredMaterialIds };
+        } catch (err) {
+          console.error("cluster_materials failed:", err instanceof Error ? err.message : err);
+          output = { clusters: [], unclusteredMaterialIds: repIds };
+        }
+      } else {
+        if (!this.modelGateway) console.warn("cluster_materials: model gateway unavailable, skipping clustering");
+        output = { clusters: [], unclusteredMaterialIds: repIds };
+      }
     } else {
       const dedup = this.store.getWorkflowSteps(run.id).find((s) => s.stepType === "exact_deduplication");
       const repIds = (dedup?.output as { representativeMaterialIds?: string[] } | undefined)?.representativeMaterialIds ?? [];
@@ -246,6 +284,10 @@ export class CaptureService {
     const run = this.store.getWorkflowRun(id);
     if (!run) throw new NotFoundError("Workflow run not found");
     return run;
+  }
+
+  listRecentOrganizationRuns(): WorkflowRunRecord[] {
+    return this.store.listWorkflowRuns("recent_organization");
   }
 
   getLatestRecentClusterSnapshot(): RecentClusterSnapshotRecord {
@@ -311,6 +353,14 @@ export class CaptureService {
   }
 
   listTopics(): TopicRecord[] { return this.store.listTopics(); }
+  
+    getTopicDetail(id: string) {
+      const topic = this.store.getTopic(id);
+      if (!topic) throw new NotFoundError("Topic not found");
+      const memberIds = this.store.listTopicCaptureIds(id);
+      const latestDoc = this.store.getLatestTopicDocumentVersion(id);
+      return { ...topic, memberIds, documentVersion: latestDoc?.documentVersion ?? null };
+    }
 
   async updateTopic(id: string, patch: { title?: string; status?: "active" | "archived" }): Promise<TopicRecord> {
     const existing = this.store.getTopic(id);
@@ -401,15 +451,15 @@ export class CaptureService {
   private scheduleModelRun(record: CaptureRecord, fragments: Array<{ id: string; captureId: string; ordinal: number; text: string; locator?: CaptureRecord["locator"]; createdAt: string }>, run: AgentRunRecord): void {
     if (this.scheduledRunIds.has(run.id)) return;
     this.scheduledRunIds.add(run.id);
-    const queue = run.processingLevel === "L3" ? this.deepTasks : this.standardTasks;
-    const scheduled = queue.catch(() => undefined).then(async () => {
+    const task = async () => {
       try { await this.executeModelRun(record, fragments, run); }
       catch {
         await this.store.saveAgentRun({ ...run, status: "failed", errorCode: "provider_error", errorMessage: "Unexpected model processing failure", completedAt: new Date().toISOString() });
       }
-    }).finally(() => { this.scheduledRunIds.delete(run.id); });
-    if (run.processingLevel === "L3") this.deepTasks = scheduled;
-    else this.standardTasks = scheduled;
+    };
+    const cleanup = () => { this.scheduledRunIds.delete(run.id); };
+    if (run.processingLevel === "L3") this.deepPool.enqueue(task, cleanup);
+    else this.standardPool.enqueue(task, cleanup);
   }
 
   private async executeModelRun(record: CaptureRecord, fragments: Array<{ id: string; captureId: string; ordinal: number; text: string; locator?: CaptureRecord["locator"]; createdAt: string }>, run: AgentRunRecord): Promise<void> {
@@ -491,6 +541,7 @@ export class CaptureService {
     return {
       id: record.id,
       title: materialTitle(record),
+      sourceTitle: record.sourceTitle ?? undefined,
       sourceType: record.captureType,
       capturedAt: record.capturedAt,
       content,
@@ -593,6 +644,7 @@ export class CaptureService {
     const run: WorkflowRunRecord = { id: (randomUUID as any)(), workflowType: "topic_document", idempotencyKey: idempotencyKey ?? "", materialIds: memberIds, materialSetVersion, status: "queued", createdAt: now };
     const steps = ["freeze_material_set","check_citations","build_outline","draft_sections","merge_sections","publish_version"].map((st,i) => ({ id: (randomUUID as any)(), workflowRunId: run.id, stepType: st, status: "queued", createdAt: now, ordinal: i }));
     await this.store.createWorkflowRun(run, steps as any);
+    this.scheduleTopicDocumentRuns();
     return run;
   }
 
@@ -613,7 +665,7 @@ export class CaptureService {
     for (const run of this.store.listRecoverableWorkflowRuns()) {
       if (run.workflowType !== "topic_document") continue;
       const now = new Date();
-      const claimed = this.store.claimWorkflowStep(run.id, "topic-doc-worker", now.toISOString(), new Date(now.getTime() + 60000).toISOString());
+      const claimed = this.store.claimWorkflowStep(run.id, this.topicDocWorkerId, now.toISOString(), new Date(now.getTime() + 60000).toISOString());
       if (!claimed) continue;
       const processing: WorkflowRunRecord = { ...run, status: "processing", startedAt: run.startedAt ?? now.toISOString() };
       try {
@@ -670,6 +722,7 @@ export class CaptureService {
           }
         } catch (e) { console.error("Outline generation failed:", e instanceof Error ? e.message : e); }
       }
+      console.warn("build_outline: model gateway unavailable or call failed, using raw material fallback — document will lack AI-generated outline");
       return { step: { ...out, output: { title: "Combined Materials", sections: mats.slice(0,6).map((m: any,i: number) => ({ heading: (m?.content??"").slice(0,80)||("Section "+(i+1)), keyPoints: [(m?.content??"").slice(0,100)] })) } } };
     }
     if (step.stepType === "draft_sections") {
@@ -684,26 +737,55 @@ export class CaptureService {
             if (!("errorCode" in result)) {
               const sections: DocumentSection[] = result.sections.map((s) => {
                 const citedFragIds = s.citationIds.flatMap((mid) => this.store.listFragments(mid).map((f: any) => f.id));
-                return { id: randomUUID(), heading: s.heading, markdown: s.markdown, citationIds: citedFragIds, protectedByUser: false };
+                return { id: randomUUID(), heading: s.heading, markdown: s.markdown, citationIds: [...new Set(citedFragIds)], protectedByUser: false };
               });
-              return { step: { ...out, output: { sectionCount: sections.length } } };
+              return { step: { ...out, output: { sections } } };
             }
           }
         } catch (e) { console.error("Section drafting failed:", e instanceof Error ? e.message : e); }
       }
+      console.warn("draft_sections: model gateway unavailable or outline missing, using raw material fallback — document will lack AI-generated sections");
       const sections: DocumentSection[] = mats.slice(0,10).map((m: any) => ({ id: randomUUID(), heading: (m?.content??"").slice(0,80)||"Untitled", markdown: (m?.content??"").slice(0,500), citationIds: this.store.listFragments(m!.id).map((f: any) => f.id), protectedByUser: false }));
-      return { step: { ...out, output: { sectionCount: sections.length } } };
+      return { step: { ...out, output: { sections } } };
     }
     if (step.stepType === "merge_sections") {
+      const draftStep = this.store.getWorkflowSteps(run.id).find((s) => s.stepType === "draft_sections");
+      const draftOutput = draftStep?.output as { sections?: DocumentSection[] } | undefined;
+      if (draftOutput?.sections?.length) {
+        // Merge duplicate sections by heading similarity
+        const seen = new Set<string>();
+        const merged: DocumentSection[] = [];
+        for (const s of draftOutput.sections) {
+          const key = s.heading.toLowerCase().trim();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          merged.push(s);
+        }
+        return { step: { ...out, output: { sections: merged } } };
+      }
+      console.warn("merge_sections: no drafted sections found, falling back to raw materials");
       const mats = run.materialIds.map((id: string) => this.store.getCapture(id)).filter(Boolean);
       const seen = new Set<string>(); const sections: DocumentSection[] = [];
       for (const m of mats.slice(0,10)) { const h = ((m as any)?.content??"").slice(0,80).toLowerCase(); if (seen.has(h)) continue; seen.add(h); sections.push({ id: (randomUUID as any)(), heading: ((m as any)?.content??"").slice(0,80)||"Untitled", markdown: ((m as any)?.content??"").slice(0,500), citationIds: this.store.listFragments((m as any).id).map((f: any) => f.id), protectedByUser: false }); }
-      return { step: { ...out, output: { mergedSectionCount: sections.length } } };
+      return { step: { ...out, output: { sections } } };
     }
     if (step.stepType === "publish_version") {
-      const mats = run.materialIds.map((id: string) => this.store.getCapture(id)).filter(Boolean);
-      const seen = new Set<string>(); const sections: DocumentSection[] = [];
-      for (const m of mats.slice(0,10)) { const h = ((m as any)?.content??"").slice(0,80).toLowerCase(); if (seen.has(h)) continue; seen.add(h); sections.push({ id: (randomUUID as any)(), heading: ((m as any)?.content??"").slice(0,80)||"Untitled", markdown: ((m as any)?.content??"").slice(0,500), citationIds: this.store.listFragments((m as any).id).map((f: any) => f.id), protectedByUser: false }); }
+      // Use merged sections from prior step, falling back to draft or raw materials
+      const mergeStep = this.store.getWorkflowSteps(run.id).find((s) => s.stepType === "merge_sections");
+      const draftStep = this.store.getWorkflowSteps(run.id).find((s) => s.stepType === "draft_sections");
+      const mergeOutput = mergeStep?.output as { sections?: DocumentSection[] } | undefined;
+      const draftOutput = draftStep?.output as { sections?: DocumentSection[] } | undefined;
+      let sections: DocumentSection[];
+      if (mergeOutput?.sections?.length) {
+        sections = mergeOutput.sections;
+      } else if (draftOutput?.sections?.length) {
+        sections = draftOutput.sections;
+      } else {
+        console.warn("publish_version: no merged or drafted sections found, falling back to raw materials");
+        const mats = run.materialIds.map((id: string) => this.store.getCapture(id)).filter(Boolean);
+        const seen = new Set<string>(); sections = [];
+        for (const m of mats.slice(0,10)) { const h = ((m as any)?.content??"").slice(0,80).toLowerCase(); if (seen.has(h)) continue; seen.add(h); sections.push({ id: (randomUUID as any)(), heading: ((m as any)?.content??"").slice(0,80)||"Untitled", markdown: ((m as any)?.content??"").slice(0,500), citationIds: this.store.listFragments((m as any).id).map((f: any) => f.id), protectedByUser: false }); }
+      }
       const allTopics = this.store.listTopics();
       const topic = allTopics.find((t: any) => this.store.listTopicCaptureIds(t.id).some((mid: string) => run.materialIds.includes(mid)));
       const existingVersions = topic ? this.store.listTopicDocumentVersions(topic.id) : [];
@@ -931,6 +1013,61 @@ export class CaptureService {
     return budget.currentMonthCostUsd < budget.monthlyLimitUsd;
   }
 
+  // ── Trash Cleanup (Issue 11) ──────────────────────────────────
+  async cleanupTrash(retentionDays = 30): Promise<number> {
+    const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+    const trashed = this.store.listCaptures().filter((c: any) => c.trashedAt && c.trashedAt < cutoff);
+    let count = 0;
+    for (const item of trashed) {
+      await this.store.deleteCapture(item.id);
+      count++;
+    }
+    console.log(`[Cleanup] Permanently deleted ${count} items older than ${retentionDays} days`);
+    return count;
+  }
+
+}
+
+// ── Bounded Concurrency Task Pool ──────────────────────────────
+
+class TaskPool {
+  private running = 0;
+  private queue: Array<{ task: () => Promise<void>; cleanup: () => void }> = [];
+  private completion: Promise<void> = Promise.resolve();
+  private resolveCompletion: (() => void) | undefined;
+
+  constructor(private readonly maxConcurrency: number) {}
+
+  enqueue(task: () => Promise<void>, cleanup: () => void): void {
+    if (this.maxConcurrency <= 0) { cleanup(); return; }
+    this.queue.push({ task, cleanup });
+    this.tick();
+  }
+
+  drain(): Promise<void> {
+    return this.completion;
+  }
+
+  private tick(): void {
+    if (this.running >= this.maxConcurrency || !this.queue.length) {
+      if (!this.running && !this.queue.length && this.resolveCompletion) {
+        this.resolveCompletion();
+        this.resolveCompletion = undefined;
+      }
+      return;
+    }
+    const entry = this.queue.shift()!;
+    this.running += 1;
+    if (!this.resolveCompletion) {
+      this.completion = new Promise<void>((resolve) => { this.resolveCompletion = resolve; });
+    }
+    entry.task().finally(() => {
+      entry.cleanup();
+      this.running -= 1;
+      // Yield to the event loop so other microtasks can run before the next tick.
+      setImmediate(() => this.tick());
+    });
+  }
 }
 
 function materialTitle(record: CaptureRecord): string {

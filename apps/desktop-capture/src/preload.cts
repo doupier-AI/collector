@@ -1,4 +1,4 @@
-﻿import { contextBridge, ipcRenderer, webUtils } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { ArtifactRecord, CaptureInput, CaptureRecord } from "@collector/capture-contracts";
 
 contextBridge.exposeInMainWorld("collector", {
@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld("collector", {
     onFocus: (callback: () => void) => ipcRenderer.on("capture:focus", callback),
     onShortcutError: (callback: (shortcut: string) => void) => ipcRenderer.on("capture:shortcut-error", (_event, shortcut) => callback(shortcut)),
     onModeChange: (callback: (mode: string) => void) => ipcRenderer.on("shell:mode", (_event, mode) => callback(mode)),
+    onNavigate: (callback: (tab: string) => void) => ipcRenderer.on("shell:navigate", (_event, tab) => callback(tab)),
+    onDataCleared: (callback: () => void) => ipcRenderer.on("data:cleared", callback),
   },
   workspace: {
     load: () => ipcRenderer.invoke("workspace:load"),
@@ -22,6 +24,9 @@ contextBridge.exposeInMainWorld("collector", {
     addTopicMember: (topicId: string, captureId: string) => ipcRenderer.invoke("workspace:add-topic-member", topicId, captureId),
     removeTopicMember: (topicId: string, captureId: string) => ipcRenderer.invoke("workspace:remove-topic-member", topicId, captureId),
     deepAnalysis: (captureId: string) => ipcRenderer.invoke("workspace:deep-analysis", captureId),
+    generateDocument: (topicId: string, idempotencyKey?: string) => ipcRenderer.invoke("workspace:generate-document", topicId, idempotencyKey),
+    listDocuments: (topicId: string) => ipcRenderer.invoke("workspace:list-documents", topicId),
+    getLatestDocument: (topicId: string) => ipcRenderer.invoke("workspace:get-latest-document", topicId),
   },
   recent: {
     organize: (idempotencyKey?: string) => ipcRenderer.invoke("recent:organize", idempotencyKey),
@@ -44,5 +49,6 @@ contextBridge.exposeInMainWorld("collector", {
     testConnection: (key?: string) => ipcRenderer.invoke("settings:test-connection", key),
     saveAi: (value: { consent: boolean; apiKey?: string }) => ipcRenderer.invoke("settings:save-ai", value),
     saveShortcut: (value: string) => ipcRenderer.invoke("settings:save-shortcut", value),
+    clearAllData: () => ipcRenderer.invoke("settings:clear-all-data"),
   },
 });
