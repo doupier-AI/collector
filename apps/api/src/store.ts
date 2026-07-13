@@ -529,9 +529,16 @@ export class SqliteStore implements CollectorStore {
   claimWorkflowStep(runId: string, owner: string, now: string, leaseExpiresAt: string): WorkflowStepRecord | undefined {
     let claimed: WorkflowStepRecord | undefined;
     this.transaction(() => {
-      const row = this.db().prepare(`SELECT record_json FROM workflow_steps
-        WHERE workflow_run_id = ? AND (status IN ('queued', 'waiting_for_budget') OR (status = 'processing' AND lease_expires_at <= ?))
-        ORDER BY ordinal LIMIT 1`).get(runId, now) as { record_json: string } | undefined;
+      const row = this.db().prepare(`SELECT current.record_json FROM workflow_steps AS current
+        WHERE current.workflow_run_id = ?
+          AND (current.status IN ('queued', 'waiting_for_budget') OR (current.status = 'processing' AND current.lease_expires_at <= ?))
+          AND NOT EXISTS (
+            SELECT 1 FROM workflow_steps AS earlier
+            WHERE earlier.workflow_run_id = current.workflow_run_id
+              AND earlier.ordinal < current.ordinal
+              AND earlier.status != 'completed'
+          )
+        ORDER BY current.ordinal LIMIT 1`).get(runId, now) as { record_json: string } | undefined;
       if (!row) return;
       const step = JSON.parse(row.record_json) as WorkflowStepRecord;
       claimed = { ...step, status: "processing", attempt: (step.attempt ?? 0) + 1, leaseOwner: owner, leaseExpiresAt, startedAt: step.startedAt ?? now };

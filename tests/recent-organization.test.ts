@@ -83,7 +83,7 @@ test("recent organization resumes across restarts without skipping steps", async
   assert.equal(await reopenedService.resumeRecentOrganizationRuns(), 0);
 });
 
-test("two instances claim distinct steps and cannot re-claim an active lease", async (t) => {
+test("an active workflow step blocks later dependent steps", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-recent-race-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
@@ -97,32 +97,21 @@ test("two instances claim distinct steps and cannot re-claim an active lease", a
   assert.equal(step1.status, "processing");
   assert.equal(step1.leaseOwner, "worker-a");
 
-  // Worker-b claims the NEXT queued step (not the same one)
+  // Worker-b cannot skip over the active first step.
   const step2 = store.claimWorkflowStep(run.id, "worker-b", new Date().toISOString(), new Date(Date.now() + 60_000).toISOString());
-  assert.ok(step2);
-  assert.notEqual(step2.id, step1.id);
-  assert.equal(step2.leaseOwner, "worker-b");
+  assert.equal(step2, undefined);
 
-  // Worker-c claims the third
-  const step3 = store.claimWorkflowStep(run.id, "worker-c", new Date().toISOString(), new Date(Date.now() + 60_000).toISOString());
-  assert.ok(step3);
-  assert.notEqual(step3.id, step1.id);
-  assert.notEqual(step3.id, step2.id);
+  const completedAt = new Date().toISOString();
+  assert.equal(store.completeWorkflowStep(
+    { ...step1, status: "completed", completedAt },
+    { ...run, status: "processing", startedAt: step1.startedAt },
+  ), true);
 
-  // Claim the 4th step
-  const step4 = store.claimWorkflowStep(run.id, "worker-d", new Date().toISOString(), new Date(Date.now() + 60_000).toISOString());
-  assert.ok(step4);
-  assert.notEqual(step4.id, step1.id);
-  assert.notEqual(step4.id, step2.id);
-  assert.notEqual(step4.id, step3.id);
-
-  // Claim the remaining steps in the seven-checkpoint workflow.
-  const step5 = store.claimWorkflowStep(run.id, "worker-e", new Date().toISOString(), new Date(Date.now() + 60_000).toISOString());
-  const step6 = store.claimWorkflowStep(run.id, "worker-f", new Date().toISOString(), new Date(Date.now() + 60_000).toISOString());
-  const step7 = store.claimWorkflowStep(run.id, "worker-g", new Date().toISOString(), new Date(Date.now() + 60_000).toISOString());
-  assert.ok(step5 && step6 && step7);
-  const step8 = store.claimWorkflowStep(run.id, "worker-h", new Date().toISOString(), new Date(Date.now() + 60_000).toISOString());
-  assert.equal(step8, undefined);
+  // Once the dependency completes, the next worker can claim step two.
+  const next = store.claimWorkflowStep(run.id, "worker-b", new Date().toISOString(), new Date(Date.now() + 60_000).toISOString());
+  assert.ok(next);
+  assert.equal(next.stepType, "exact_deduplication");
+  assert.equal(next.leaseOwner, "worker-b");
 });
 
 test("expired lease can be reclaimed", async (t) => {

@@ -144,6 +144,21 @@ test("topic document completes all checkpoints and stays on the requested topic"
   assert.ok(claims.every((claim) => claim.status === "unverified" && claim.sources.length === 0));
 });
 
+test("recent organization workers never claim topic document steps", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "collector-mvp-workflow-isolation-"));
+  const store = new SqliteStore(join(root, "collector.sqlite"));
+  await store.init();
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
+  const material = await service.createCapture(captureInput("A citable source for workflow isolation.", "mvp-isolation-1"), "mvp-isolation-1");
+  const topic = await service.createTopic("Workflow isolation", [material.id]);
+  const run = await service.generateTopicDocument(topic.id, "mvp-isolation-run");
+
+  assert.equal(await service.resumeRecentOrganizationRuns(), 0);
+  assert.equal(service.getWorkflowRun(run.id).status, "queued");
+  assert.ok(store.getWorkflowSteps(run.id).every((step) => step.status === "queued"));
+});
+
 test("failed model generation publishes no document version", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-mvp-model-failure-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));

@@ -269,6 +269,25 @@
   flex-shrink: 0;
 }
 
+.topic-title-modal {
+  width: min(420px, 92vw);
+}
+
+.topic-title-input {
+  width: 100%;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  padding: 10px 12px;
+  outline: 0;
+}
+
+.topic-title-input:focus {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.12);
+}
+
 /* ── EasyMDE Overrides (Light Theme) ─────────────────────────── */
 .EasyMDEContainer {
   flex: 1;

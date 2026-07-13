@@ -356,6 +356,7 @@ export class CaptureService {
       let progressed = false;
       for (const run of this.store.listRecoverableWorkflowRuns()) {
         if (completedCount >= maxSteps) break;
+        if (run.workflowType !== "recent_organization") continue;
         if (run.status === "waiting_for_budget" && !this.checkAiBudget()) continue;
         const now = new Date();
         const claimed = this.store.claimWorkflowStep(run.id, this.recentWorkerId, now.toISOString(), new Date(now.getTime() + (this.options.recentLeaseMs ?? 30_000)).toISOString());
@@ -455,6 +456,8 @@ export class CaptureService {
       const clusters = (clusterOut?.clusters ?? []).map((cluster) => ({ id: cluster.id ?? randomUUID(), name: cluster.name, summary: cluster.summary, materialIds: cluster.materialIds }));
       const localOnlyMaterialIds = (steps.find((step) => step.stepType === "retrieve_candidates")?.output as { localOnlyMaterialIds?: string[] } | undefined)?.localOnlyMaterialIds ?? [];
       snapshot = { id: randomUUID(), workflowRunId: run.id, materialSetVersion: run.materialSetVersion, clusters, unclusteredMaterialIds: [...new Set([...(clusterOut?.unclusteredMaterialIds ?? dedup?.representativeMaterialIds ?? []), ...localOnlyMaterialIds])], createdAt: completedAt };
+    } else {
+      throw new Error(`Unsupported recent organization step: ${claimed.stepType}`);
     }
     return { step: { ...claimed, status: "completed", output, completedAt }, snapshot };
   }
@@ -989,7 +992,7 @@ export class CaptureService {
       if (verifiedClaims.length) await this.store.saveVerificationClaims(verifiedClaims.map((claim) => ({ ...claim, documentVersionId: version.id })));
       return { step: out, version };
     }
-    return { step: out };
+    throw new Error(`Unsupported topic document step: ${step.stepType}`);
   }
 
   

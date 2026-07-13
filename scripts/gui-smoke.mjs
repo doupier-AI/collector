@@ -95,6 +95,23 @@ try {
   console.log("GUI smoke: topics section active:", topicsActive);
   if (!topicsActive) throw new Error("Topics tab navigation failed");
 
+  // Stage 3a: Create a topic through the real renderer controls. Electron does
+  // not support the browser-native prompt(), so this also guards the custom
+  // in-app title dialog used by topic creation and cluster promotion.
+  console.log("GUI smoke: creating topic through title dialog...");
+  await evaluate(cdp, "document.querySelector('#topics-create')?.click()");
+  await waitFor(async () => await evaluate(cdp, "document.querySelector('#topic-title-input') !== null"), "topic title dialog");
+  const topicTitle = "GUI Smoke Topic";
+  await evaluate(cdp, `(() => {
+    const input = document.querySelector('#topic-title-input');
+    if (!(input instanceof HTMLInputElement)) throw new Error('Topic title input missing');
+    input.value = ${JSON.stringify(topicTitle)};
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('#topic-title-submit')?.click();
+  })()`);
+  await waitFor(async () => await evaluate(cdp, `document.querySelector('#topics-list')?.textContent?.includes(${JSON.stringify(topicTitle)}) === true`), "created topic in list");
+  console.log("GUI smoke: topic creation passed");
+
   // Stage 4: Navigate to materials tab
   console.log("GUI smoke: navigating to materials tab...");
   await evaluate(cdp, "window.collectorShell.navigateTo('materials')");

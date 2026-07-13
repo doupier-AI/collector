@@ -77,7 +77,7 @@ export function initWorkspace(root: HTMLElement, view: ViewMode): void {
   const createAnchor = root.querySelector<HTMLButtonElement>(`#${prefix}-refresh`)!;
   if (view === "topics" && !root.querySelector("#topics-create")) {
     const createButton = buttonEl("\u65b0\u5efa\u4e13\u9898", "button primary", async () => {
-      const title = prompt("\u4e13\u9898\u540d\u79f0")?.trim();
+      const title = await requestTopicTitle();
       if (!title) return;
       await bridge.workspace.createTopic(title);
       await load();
@@ -437,7 +437,7 @@ export function initWorkspace(root: HTMLElement, view: ViewMode): void {
     const topicDetail = await bridge.workspace.getTopic(topic.id);
     const topicActions = div("actions");
     const renameButton = buttonEl("\u91cd\u547d\u540d", "button", async () => {
-      const title = prompt("\u4e13\u9898\u540d\u79f0", topic.title)?.trim();
+      const title = await requestTopicTitle(topic.title);
       if (!title || title === topic.title) return;
       const updated = await bridge.workspace.updateTopic(topic.id, { title });
       invalidateWorkspace();
@@ -639,12 +639,11 @@ export function initWorkspace(root: HTMLElement, view: ViewMode): void {
   }
 
   async function waitForWorkflow(runId: string): Promise<WorkflowRunRecord> {
-    for (let attempt = 0; attempt < 90; attempt += 1) {
+    while (true) {
       const run = await bridge!.workspace.workflowRun(runId);
       if (["completed", "failed", "cancelled", "waiting_for_budget"].includes(run.status)) return run;
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
-    throw new Error("Document workflow timed out");
   }
 
   // Recent organization (only for "recent" view)
@@ -731,7 +730,7 @@ function setupRecentOrg(root: HTMLElement, bridge: typeof window.collector): voi
       }));
       for (const name of materialNames) members.append(el("span", name, "cluster-member"));
       const promote = buttonEl("\u4fdd\u5b58\u4e3a\u4e13\u9898", "button primary", async () => {
-        const title = prompt("\u4e13\u9898\u540d\u79f0", cluster.name)?.trim();
+        const title = await requestTopicTitle(cluster.name);
         if (!title) return;
         await bridge!.workspace.promoteCluster(snapshot.id, clusterIndex, title);
         invalidateWorkspace();
@@ -945,6 +944,77 @@ function buttonEl(label: string, className: string, action: () => Promise<void>)
   node.textContent = label;
   node.addEventListener("click", () => void action());
   return node;
+}
+
+function requestTopicTitle(initialValue = ""): Promise<string | null> {
+  return new Promise((resolve) => {
+    const overlay = div("modal-overlay topic-title-overlay");
+    const modal = div("modal topic-title-modal");
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    modal.setAttribute("aria-labelledby", "topic-title-heading");
+
+    const heading = el("h3", initialValue ? "重命名专题" : "专题名称");
+    heading.id = "topic-title-heading";
+
+    const form = document.createElement("form");
+    const input = document.createElement("input");
+    input.id = "topic-title-input";
+    input.className = "topic-title-input";
+    input.type = "text";
+    input.required = true;
+    input.maxLength = 200;
+    input.autocomplete = "off";
+    input.placeholder = "输入专题名称";
+    input.value = initialValue;
+    input.setAttribute("aria-label", "专题名称");
+
+    const actions = div("modal-actions");
+    const cancelButton = document.createElement("button");
+    cancelButton.type = "button";
+    cancelButton.className = "button";
+    cancelButton.textContent = "取消";
+    const submitButton = document.createElement("button");
+    submitButton.id = "topic-title-submit";
+    submitButton.type = "submit";
+    submitButton.className = "button primary";
+    submitButton.textContent = "确认";
+    actions.append(cancelButton, submitButton);
+    form.append(input, actions);
+    modal.append(heading, form);
+    overlay.append(modal);
+
+    let settled = false;
+    const finish = (value: string | null): void => {
+      if (settled) return;
+      settled = true;
+      overlay.remove();
+      resolve(value);
+    };
+
+    cancelButton.addEventListener("click", () => finish(null));
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) finish(null);
+    });
+    overlay.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") finish(null);
+    });
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const title = input.value.trim();
+      if (!title) {
+        input.setCustomValidity("请输入专题名称");
+        input.reportValidity();
+        return;
+      }
+      finish(title);
+    });
+    input.addEventListener("input", () => input.setCustomValidity(""));
+
+    document.body.append(overlay);
+    input.focus();
+    input.select();
+  });
 }
 
 function escapeHtml(value: string): string {
