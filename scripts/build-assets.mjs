@@ -17,4 +17,10 @@ await cp(new URL("../apps/desktop-capture/src/shell.html", import.meta.url), new
 await cp(new URL("../apps/desktop-capture/src/styles.css", import.meta.url), new URL("styles.css", desktopDist));
 await cp(new URL("../apps/desktop-capture/src/workspace.css", import.meta.url), new URL("workspace.css", desktopDist));
 await cp(new URL("../apps/desktop-capture/src/settings.css", import.meta.url), new URL("settings.css", desktopDist));
+await cp(new URL("../node_modules/marked/lib/marked.umd.js", import.meta.url), new URL("marked.min.js", desktopDist));
+await cp(new URL("../node_modules/dompurify/dist/purify.min.js", import.meta.url), new URL("purify.min.js", desktopDist));
+await cp(new URL("../node_modules/easymde/dist/easymde.min.js", import.meta.url), new URL("easymde.min.js", desktopDist));
+await cp(new URL("../node_modules/easymde/dist/easymde.min.css", import.meta.url), new URL("easymde.min.css", desktopDist));
+await cp(new URL("../apps/desktop-capture/src/fontawesome.min.css", import.meta.url), new URL("fontawesome.min.css", desktopDist));
+await cp(new URL("../apps/desktop-capture/src/webfonts", import.meta.url), new URL("webfonts", desktopDist), { recursive: true });
 console.log("Static assets built.");

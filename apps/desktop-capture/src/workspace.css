@@ -1,10 +1,10 @@
-﻿:root{color-scheme:dark;font:14px/1.5 "Segoe UI Variable Text","Segoe UI",sans-serif;color:#e9e9e9;background:#0d0d0d;--base:#0d0d0d;--sidebar:#111;--panel:#151515;--panel-2:#1b1b1b;--line:#2a2a2a;--muted:#909090;--text:#e9e9e9;--soft:#bababa;--active:#242424;--green:#78d89b;--red:#ff7b72;--blue:#8ab4f8}*{box-sizing:border-box}body{margin:0;background:var(--base);color:var(--text);overflow:hidden}button,input,select{font:inherit}.app-shell{height:100vh;display:grid;grid-template-columns:190px 330px minmax(0,1fr)}.sidebar{display:flex;flex-direction:column;padding:14px 10px;border-right:1px solid var(--line);background:var(--sidebar)}.app-name{display:flex;align-items:center;gap:9px;padding:4px 8px 18px}.brand-mark{display:grid;place-items:center;width:24px;height:24px;border:1px solid #444;border-radius:7px;font:600 12px/1 "Cascadia Mono",monospace}.sidebar nav{display:grid;gap:3px}.nav-item,.quiet-action{display:flex;justify-content:space-between;align-items:center;width:100%;border:0;border-radius:7px;background:transparent;color:#aaa;padding:8px 10px;text-align:left;cursor:pointer}.nav-item:hover,.nav-item.active,.quiet-action:hover{background:var(--active);color:#fff}.nav-item b{font-size:11px;color:#777}.sidebar-spacer{flex:1}.collection-pane{min-width:0;display:grid;grid-template-rows:auto auto auto 1fr;border-right:1px solid var(--line);background:#121212}.collection-pane header{display:flex;justify-content:space-between;align-items:center;padding:20px 16px 12px}.eyebrow{font:10px/1 "Cascadia Mono",monospace;letter-spacing:.14em;color:#686868}.collection-pane h1{font-size:20px;margin:4px 0 0}.icon-button{border:0;border-radius:7px;background:transparent;color:#999;padding:7px 10px;cursor:pointer}.icon-button:hover{background:#242424;color:#fff}.search{margin:0 12px 10px;border:1px solid #292929;border-radius:8px;background:#191919;color:#ddd;padding:9px 10px;outline:0;width:100%;max-width:100%;min-width:200px}.search:focus{border-color:#515151}.collection-list{min-height:0;overflow:auto;padding:0 8px 14px}.list-item{width:100%;border:0;border-radius:8px;background:transparent;color:inherit;text-align:left;padding:11px 10px;cursor:pointer}.list-item:hover,.list-item.active{background:#202020}.list-item strong{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.list-item p{display:-webkit-box;margin:4px 0 6px;color:#999;font-size:12px;overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical}.list-meta{display:flex;gap:7px;color:#666;font:10px/1.3 "Cascadia Mono",monospace}.detail-pane{min-width:0;overflow:auto;background:var(--panel);padding:30px clamp(24px,4vw,58px) 70px}.empty-state{height:100%;display:grid;place-content:center;text-align:center;color:#777}.empty-state h2{margin:12px 0 2px;color:#bdbdbd;font-size:17px}.empty-state p{margin:0}.empty-glyph{font:30px/1 "Cascadia Mono",monospace}.detail-header{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;padding-bottom:24px;border-bottom:1px solid var(--line)}.detail-header h2{margin:7px 0 0;font-size:24px;line-height:1.3}.badges,.actions{display:flex;gap:7px;flex-wrap:wrap}.badge{padding:3px 7px;border-radius:5px;background:#242424;color:#aaa;font:10px/1.4 "Cascadia Mono",monospace}.body-copy{white-space:pre-wrap;font-size:15px;line-height:1.75;color:#ddd;margin:24px 0}.section{padding:20px 0;border-top:1px solid var(--line)}.section-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}.section h3{margin:0;font-size:13px;color:#aaa}.card{margin-top:8px;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2)}.card p{margin:5px 0;color:#c8c8c8}.card pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0 0;font:12px/1.6 "Cascadia Mono",monospace;color:#aaa}.card-meta{color:#747474;font:10px/1.5 "Cascadia Mono",monospace}.proposal{border-left:2px solid #777}.run-success{border-left:2px solid var(--green)}.run-failed{border-left:2px solid var(--red)}.run-active{border-left:2px solid var(--blue)}.button{border:1px solid #383838;border-radius:7px;background:#222;color:#ddd;padding:7px 10px;cursor:pointer}.button:hover{background:#2d2d2d}.button.primary{border-color:#e6e6e6;background:#e6e6e6;color:#111}.button.danger{color:var(--red)}.button:disabled{opacity:.45;cursor:default}.topic-hero{display:flex;justify-content:space-between;align-items:center}.member{display:flex;justify-content:space-between;gap:15px;align-items:center}.member-copy{min-width:0}.member-copy strong{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.empty-list{padding:24px 10px;color:#707070;text-align:center}@media(max-width:900px){.app-shell{grid-template-columns:160px 280px minmax(0,1fr)}.detail-pane{padding-left:24px;padding-right:24px}}
+﻿:root{color-scheme:light;font:14px/1.5 "Segoe UI Variable Text","Segoe UI",sans-serif;color:#333;background:#fff;--base:#fff;--sidebar:#f5f5f5;--panel:#fafafa;--panel-2:#f0f0f0;--line:#e0e0e0;--muted:#888;--text:#333;--soft:#555;--active:#e8e8e8;--green:#28a745;--red:#dc3545;--blue:#007bff}*{box-sizing:border-box}body{margin:0;background:var(--base);color:var(--text);overflow:hidden}button,input,select{font:inherit}.app-shell{height:100vh;display:grid;grid-template-columns:190px 330px minmax(0,1fr)}.sidebar{display:flex;flex-direction:column;padding:14px 10px;border-right:1px solid var(--line);background:var(--sidebar)}.app-name{display:flex;align-items:center;gap:9px;padding:4px 8px 18px}.brand-mark{display:grid;place-items:center;width:24px;height:24px;border:1px solid #444;border-radius:7px;font:600 12px/1 "Cascadia Mono",monospace}.sidebar nav{display:grid;gap:3px}.nav-item,.quiet-action{display:flex;justify-content:space-between;align-items:center;width:100%;border:0;border-radius:7px;background:transparent;color:#555;padding:8px 10px;text-align:left;cursor:pointer}.nav-item:hover,.nav-item.active,.quiet-action:hover{background:var(--active);color:var(--text)}.nav-item b{font-size:11px;color:#777}.sidebar-spacer{flex:1}.collection-pane{min-width:0;display:grid;grid-template-rows:auto auto auto 1fr;border-right:1px solid var(--line);background:#fff}.collection-pane header{display:flex;justify-content:space-between;align-items:center;padding:20px 16px 12px}.eyebrow{font:10px/1 "Cascadia Mono",monospace;letter-spacing:.14em;color:#686868}.collection-pane h1{font-size:20px;margin:4px 0 0}.icon-button{border:0;border-radius:7px;background:transparent;color:#666;padding:7px 10px;cursor:pointer}.icon-button:hover{background:var(--active);color:var(--text)}.search{margin:0 12px 10px;border:1px solid #ddd;border-radius:8px;background:#fff;color:#333;padding:9px 10px;outline:0;width:100%;max-width:100%;min-width:200px}.search:focus{border-color:var(--blue)}.collection-list{min-height:0;overflow:auto;padding:0 8px 14px}.list-item{width:100%;border:0;border-radius:8px;background:transparent;color:inherit;text-align:left;padding:11px 10px;cursor:pointer}.list-item:hover,.list-item.active{background:var(--active)}.list-item strong{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.list-item p{display:-webkit-box;margin:4px 0 6px;color:#666;font-size:12px;overflow:hidden;-webkit-line-clamp:2;-webkit-box-orient:vertical}.list-meta{display:flex;gap:7px;color:#666;font:10px/1.3 "Cascadia Mono",monospace}.detail-pane{min-width:0;overflow:auto;background:var(--panel);padding:30px clamp(24px,4vw,58px) 70px}.empty-state{height:100%;display:grid;place-content:center;text-align:center;color:#777}.empty-state h2{margin:12px 0 2px;color:#555;font-size:17px}.empty-state p{margin:0}.empty-glyph{font:30px/1 "Cascadia Mono",monospace}.detail-header{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;padding-bottom:24px;border-bottom:1px solid var(--line)}.detail-header h2{margin:7px 0 0;font-size:24px;line-height:1.3}.badges,.actions{display:flex;gap:7px;flex-wrap:wrap}.badge{padding:3px 7px;border-radius:5px;background:#eee;color:#666;font:10px/1.4 "Cascadia Mono",monospace}.body-copy{white-space:pre-wrap;font-size:15px;line-height:1.75;color:var(--text);margin:24px 0}.section{padding:20px 0;border-top:1px solid var(--line)}.section-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}.section h3{margin:0;font-size:13px;color:#666}.card{margin-top:8px;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2)}.card p{margin:5px 0;color:var(--text)}.card pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0 0;font:12px/1.6 "Cascadia Mono",monospace;color:#666}.card-meta{color:#777;font:10px/1.5 "Cascadia Mono",monospace}.proposal{border-left:2px solid #777}.run-success{border-left:2px solid var(--green)}.run-failed{border-left:2px solid var(--red)}.run-active{border-left:2px solid var(--blue)}.button{border:1px solid #ccc;border-radius:7px;background:#fff;color:#333;padding:7px 10px;cursor:pointer}.button:hover{background:#f0f0f0}.button.primary{border-color:var(--blue);background:var(--blue);color:#fff}.button.danger{color:var(--red);border-color:#f5c2c7}.button:disabled{opacity:.45;cursor:default}.topic-hero{display:flex;justify-content:space-between;align-items:center}.member{display:flex;justify-content:space-between;gap:15px;align-items:center}.member-copy{min-width:0}.member-copy strong{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.empty-list{padding:24px 10px;color:#777;text-align:center}@media(max-width:900px){.app-shell{grid-template-columns:160px 280px minmax(0,1fr)}.detail-pane{padding-left:24px;padding-right:24px}}
 
 /* 鈹€鈹€ Recent Organization 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 .recent-section {
   padding: 12px 16px;
-  border-bottom: 1px solid #1e1e1e;
-  background: #0a0a0a;
+  border-bottom: 1px solid var(--line);
+  background: var(--sidebar);
 }
 .recent-header {
   display: flex;
@@ -23,13 +23,13 @@
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 10px;
-  background: #1a1a1a;
-  color: #666;
+  background: #eee;
+  color: #888;
 }
-.recent-badge[data-status="queued"] { background: #1a2744; color: #60a5fa; }
-.recent-badge[data-status="processing"] { background: #2a1f0a; color: #fbbf24; }
-.recent-badge[data-status="completed"] { background: #0a2a1a; color: #4ade80; }
-.recent-badge[data-status="failed"] { background: #2a0a0a; color: #f87171; }
+.recent-badge[data-status="queued"] { background: #e7f0ff; color: #0066cc; }
+.recent-badge[data-status="processing"] { background: #fff8e1; color: #b8860b; }
+.recent-badge[data-status="completed"] { background: #e8f5e9; color: #2e7d32; }
+.recent-badge[data-status="failed"] { background: #fce4ec; color: #c62828; }
 .recent-summary {
   font-size: 12px;
   color: #777;
@@ -47,7 +47,7 @@
 .recent-result {
   margin-top: 8px;
   font-size: 12px;
-  color: #999;
+  color: #777;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -85,10 +85,10 @@
   margin: 8px 0 0;
   padding: 10px 12px;
   border-radius: 6px;
-  background: var(--panel, #151515);
-  border: 1px solid var(--line, #2a2a2a);
+  background: var(--panel, #fafafa);
+  border: 1px solid var(--line, #e0e0e0);
   font: 12px/1.6 "Cascadia Mono", monospace;
-  color: var(--muted, #909090);
+  color: var(--muted, #888);
   white-space: pre-wrap;
   overflow-wrap: break-word;
 }
@@ -97,7 +97,7 @@
 .markdown-body {
   font-size: 15px;
   line-height: 1.75;
-  color: var(--text, #e9e9e9);
+  color: var(--text, #333);
   word-wrap: break-word;
 }
 .markdown-body > *:first-child { margin-top: 0; }
@@ -115,19 +115,19 @@
   margin: 24px 0 12px;
   font-weight: 600;
   line-height: 1.3;
-  color: var(--text, #e9e9e9);
+  color: var(--text, #333);
 }
-.markdown-body h1 { font-size: 1.6em; border-bottom: 1px solid var(--line, #2a2a2a); padding-bottom: 8px; }
-.markdown-body h2 { font-size: 1.35em; border-bottom: 1px solid var(--line, #2a2a2a); padding-bottom: 6px; }
+.markdown-body h1 { font-size: 1.6em; border-bottom: 1px solid var(--line, #e0e0e0); padding-bottom: 8px; }
+.markdown-body h2 { font-size: 1.35em; border-bottom: 1px solid var(--line, #e0e0e0); padding-bottom: 6px; }
 .markdown-body h3 { font-size: 1.15em; }
 .markdown-body h4 { font-size: 1em; }
 .markdown-body h5 { font-size: 0.92em; }
-.markdown-body h6 { font-size: 0.85em; color: var(--muted, #909090); }
+.markdown-body h6 { font-size: 0.85em; color: var(--muted, #888); }
 .markdown-body h1:first-child, .markdown-body h2:first-child { margin-top: 0; }
 
 /* 链接 */
 .markdown-body a {
-  color: var(--blue, #8ab4f8);
+  color: var(--blue, #007bff);
   text-decoration: none;
 }
 .markdown-body a:hover {
@@ -137,15 +137,15 @@
 /* 加粗 / 斜体 / 删除线 */
 .markdown-body strong { font-weight: 600; }
 .markdown-body em     { font-style: italic; }
-.markdown-body del    { color: var(--muted, #909090); }
+.markdown-body del    { color: var(--muted, #888); }
 
 /* 内联代码 */
 .markdown-body code:not(pre code) {
   padding: 2px 6px;
   border-radius: 4px;
-  background: var(--panel-2, #1b1b1b);
+  background: var(--panel-2, #f0f0f0);
   font: 13px/1.4 "Cascadia Mono", monospace;
-  color: var(--soft, #bababa);
+  color: var(--soft, #555);
 }
 
 /* 代码块 */
@@ -153,13 +153,13 @@
   margin: 0 0 16px;
   padding: 14px 16px;
   border-radius: 8px;
-  background: var(--panel-2, #1b1b1b);
-  border: 1px solid var(--line, #2a2a2a);
+  background: var(--panel-2, #f0f0f0);
+  border: 1px solid var(--line, #e0e0e0);
   overflow-x: auto;
 }
 .markdown-body pre code {
   font: 13px/1.6 "Cascadia Mono", monospace;
-  color: var(--soft, #bababa);
+  color: var(--soft, #555);
   background: none;
   padding: 0;
   border-radius: 0;
@@ -169,8 +169,8 @@
 .markdown-body blockquote {
   margin: 0 0 16px;
   padding: 4px 16px;
-  border-left: 3px solid var(--line, #2a2a2a);
-  color: var(--muted, #909090);
+  border-left: 3px solid var(--line, #e0e0e0);
+  color: var(--muted, #888);
   font-style: italic;
 }
 .markdown-body blockquote p:last-child { margin-bottom: 0; }
@@ -190,28 +190,28 @@
   width: 100%;
   margin: 0 0 16px;
   border-collapse: collapse;
-  border: 1px solid var(--line, #2a2a2a);
+  border: 1px solid var(--line, #e0e0e0);
   border-radius: 8px;
   overflow: hidden;
 }
 .markdown-body th, .markdown-body td {
   padding: 8px 12px;
-  border: 1px solid var(--line, #2a2a2a);
+  border: 1px solid var(--line, #e0e0e0);
   text-align: left;
 }
 .markdown-body th {
-  background: var(--panel-2, #1b1b1b);
+  background: var(--panel-2, #f0f0f0);
   font-weight: 600;
-  color: var(--text, #e9e9e9);
+  color: var(--text, #333);
 }
 .markdown-body tr:nth-child(even) {
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(0, 0, 0, 0.03);
 }
 
 /* 水平线 */
 .markdown-body hr {
   border: 0;
-  border-top: 1px solid var(--line, #2a2a2a);
+  border-top: 1px solid var(--line, #e0e0e0);
   margin: 24px 0;
 }
 
@@ -226,7 +226,7 @@
 .modal-overlay {
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: rgba(0, 0, 0, 0.4);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -234,27 +234,30 @@
 }
 
 .modal {
-  background: #1a1a1a;
+  background: #fff;
+  border: 1px solid #ddd;
   border-radius: 8px;
   padding: 24px;
-  width: 600px;
-  max-width: 90%;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  width: min(1000px, 92vw);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.15);
 }
 
 .modal h3 {
   margin: 0 0 16px 0;
-  color: #ddd;
+  color: #333;
 }
 
 .modal textarea {
   width: 100%;
-  background: #2a2a2a;
-  border: 1px solid #3a3a3a;
+  background: #f9f9f9;
+  border: 1px solid #ddd;
   border-radius: 4px;
   padding: 12px;
-  color: #ddd;
-  font-family: monospace;
+  color: #333;
+  font-family: "Cascadia Mono", monospace;
   resize: vertical;
 }
 
@@ -263,14 +266,165 @@
   gap: 8px;
   justify-content: flex-end;
   margin-top: 16px;
+  flex-shrink: 0;
 }
 
-/* ── Fragment Expand Hint ───────────────────────────────── */
+/* ── EasyMDE Overrides (Light Theme) ─────────────────────────── */
+.EasyMDEContainer {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.EasyMDEContainer .editor-toolbar {
+  border: 1px solid #ccc;
+  border-radius: 4px 4px 0 0;
+  background: #f5f5f5;
+}
+.EasyMDEContainer .editor-toolbar button {
+  color: #555;
+}
+.EasyMDEContainer .editor-toolbar button:hover {
+  background: #e0e0e0;
+  color: #333;
+}
+.EasyMDEContainer .editor-toolbar button.active {
+  background: #e0e0e0;
+  color: var(--blue);
+}
+.EasyMDEContainer .CodeMirror {
+  border: 1px solid #ccc;
+  border-top: none;
+  border-radius: 0 0 4px 4px;
+  min-height: 300px;
+  max-height: 55vh;
+}
+.EasyMDEContainer .CodeMirror-scroll {
+  max-height: 55vh;
+}
+.EasyMDEContainer .editor-preview,
+.EasyMDEContainer .editor-preview-side {
+  border: 1px solid #ccc;
+  border-top: none;
+  padding: 16px;
+  overflow-y: auto;
+}
+.EasyMDEContainer .editor-preview-side pre {
+  background: #f0f0f0;
+  padding: 12px;
+  border-radius: 4px;
+}
+.EasyMDEContainer .editor-preview-side code {
+  background: #f0f0f0;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+.EasyMDEContainer .CodeMirror-cursor {
+  border-left-color: #333;
+}
+.EasyMDEContainer .CodeMirror-selected {
+  background: #d0e4ff;
+}
+.EasyMDEContainer .CodeMirror .CodeMirror-placeholder {
+  color: #aaa;
+}
+
+/* ── Side-by-side WITHOUT fullscreen: contained in modal ── */
+/* When sideBySideFullscreen:false, override EasyMDE's position:fixed */
+.EasyMDEContainer.sided--no-fullscreen {
+  position: relative;
+  overflow: hidden;
+}
+.EasyMDEContainer.sided--no-fullscreen .editor-preview-side {
+  position: absolute !important;
+  top: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  left: auto !important;
+  width: 50% !important;
+  height: 100% !important;
+  z-index: 1 !important;
+  background: #fff !important;
+  border-left: 1px solid #ccc !important;
+  overflow-y: auto !important;
+}
+
+/* ── Fullscreen: cover entire app viewport (IDE-like experience) ── */
+/* Rules placed AFTER sided--no-fullscreen so they win on equal specificity.
+   Key fix: must override max-height:55vh from the modal-constrained
+   .EasyMDEContainer .CodeMirror rule, otherwise the editor is capped at
+   55vh even in fullscreen, leaving a blank gap below. */
+.EasyMDEContainer .CodeMirror-fullscreen {
+  position: fixed !important;
+  top: 50px !important;          /* sit below the 50px toolbar */
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  height: auto !important;       /* top+bottom stretch the box to full height */
+  max-height: none !important;   /* ← override modal max-height: 55vh */
+  min-height: 0 !important;      /* ← override modal min-height: 300px */
+  z-index: 9999 !important;
+  background: #fff !important;
+  border: none !important;
+  border-radius: 0 !important;
+}
+/* The inner scroll element also inherits the 55vh cap — clear it too */
+.EasyMDEContainer .CodeMirror-fullscreen .CodeMirror-scroll {
+  max-height: none !important;
+}
+.EasyMDEContainer .editor-toolbar.fullscreen {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  width: 100% !important;
+  height: 50px !important;
+  z-index: 10000 !important;
+  background: #f5f5f5 !important;
+  border-bottom: 1px solid #ccc !important;
+  border-radius: 0 !important;
+}
+/* Fullscreen + side-by-side: shrink editor to left 50%, release right
+   anchor so width:50% is honoured instead of being over-constrained
+   by the simultaneous left:0 + right:0 from the fullscreen rule. */
+.EasyMDEContainer .CodeMirror-fullscreen.CodeMirror-sided {
+  width: 50% !important;
+  right: auto !important;
+}
+/* Side-by-side preview in fullscreen: fixed, right half of viewport */
+.EasyMDEContainer .CodeMirror-fullscreen ~ .editor-preview-side {
+  position: fixed !important;
+  top: 50px !important;          /* below the 50px toolbar */
+  right: 0 !important;
+  bottom: 0 !important;
+  left: auto !important;
+  width: 50% !important;
+  height: auto !important;       /* top+bottom stretch to full height */
+  z-index: 9999 !important;
+  background: #fff !important;
+  border-left: 1px solid #ccc !important;
+  overflow-y: auto !important;
+}
+/* Preview-only mode in fullscreen: covers entire viewport below toolbar */
+.EasyMDEContainer .CodeMirror-fullscreen ~ .editor-preview-full {
+  position: fixed !important;
+  top: 50px !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: 100% !important;
+  height: auto !important;
+  z-index: 9999 !important;
+  background: #fff !important;
+  overflow-y: auto !important;
+}
+
+/* ── Fragment Expand Hint ──────────────────────────────── */
 .expand-hint {
   display: block;
   margin-top: 8px;
   font-size: 11px;
-  color: var(--blue, #8ab4f8);
+  color: var(--blue, #007bff);
   cursor: pointer;
 }
 
@@ -285,11 +439,11 @@
   gap: 10px;
   padding: 10px 14px;
   margin-bottom: 12px;
-  background: #2a1f0a;
+  background: #fffbe6;
   border: 1px solid #fbbf24;
   border-radius: 6px;
   font-size: 12px;
-  color: #fbbf24;
+  color: #9c6f00;
 }
 
 .warning-icon {
@@ -297,7 +451,7 @@
 }
 
 .warning-banner a {
-  color: #60a5fa;
+  color: var(--blue);
   text-decoration: none;
   margin-left: auto;
 }

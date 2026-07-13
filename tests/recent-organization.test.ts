@@ -32,7 +32,7 @@ test("authenticated clients can publish and read an empty recent snapshot", asyn
   assert.deepEqual(run.materialIds, []);
   assert.match(run.materialSetVersion, /^[a-f0-9]{64}$/);
 
-  assert.equal(await service.resumeRecentOrganizationRuns(), 4);
+  assert.equal(await service.resumeRecentOrganizationRuns(), 7);
 
   const status = await fetch(`${base}/v1/recent-organization/runs/${run.id}`, { headers });
   assert.equal(status.status, 200);
@@ -66,7 +66,7 @@ test("recent organization resumes across restarts without skipping steps", async
   assert.equal(await firstService.resumeRecentOrganizationRuns(1), 1);
   assert.equal(firstService.getWorkflowRun(run.id).status, "processing");
   const steps = firstStore.getWorkflowSteps(run.id);
-  assert.equal(steps.length, 4);
+  assert.equal(steps.length, 7);
   assert.equal(steps[0].status, "completed");
   assert.equal(steps[1].status, "queued");
   firstStore.close();
@@ -76,7 +76,7 @@ test("recent organization resumes across restarts without skipping steps", async
   await reopenedStore.init();
   t.after(async () => { reopenedStore.close(); await rm(root, { recursive: true, force: true }); });
   const reopenedService = new CaptureService(reopenedStore, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
-  assert.equal(await reopenedService.resumeRecentOrganizationRuns(), 3);
+  assert.equal(await reopenedService.resumeRecentOrganizationRuns(), 6);
   assert.equal(reopenedService.getWorkflowRun(run.id).status, "completed");
   const snapshot = reopenedService.getLatestRecentClusterSnapshot();
   assert.equal(snapshot.workflowRunId, run.id);
@@ -116,9 +116,13 @@ test("two instances claim distinct steps and cannot re-claim an active lease", a
   assert.notEqual(step4.id, step2.id);
   assert.notEqual(step4.id, step3.id);
 
-  // All 4 steps claimed: no more available
+  // Claim the remaining steps in the seven-checkpoint workflow.
   const step5 = store.claimWorkflowStep(run.id, "worker-e", new Date().toISOString(), new Date(Date.now() + 60_000).toISOString());
-  assert.equal(step5, undefined);
+  const step6 = store.claimWorkflowStep(run.id, "worker-f", new Date().toISOString(), new Date(Date.now() + 60_000).toISOString());
+  const step7 = store.claimWorkflowStep(run.id, "worker-g", new Date().toISOString(), new Date(Date.now() + 60_000).toISOString());
+  assert.ok(step5 && step6 && step7);
+  const step8 = store.claimWorkflowStep(run.id, "worker-h", new Date().toISOString(), new Date(Date.now() + 60_000).toISOString());
+  assert.equal(step8, undefined);
 });
 
 test("expired lease can be reclaimed", async (t) => {
@@ -149,7 +153,7 @@ test("failure preserves the last successful snapshot", async (t) => {
   t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
   const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
   const run = await service.organizeRecent("fail-preserve-key");
-  assert.equal(await service.resumeRecentOrganizationRuns(), 4);
+  assert.equal(await service.resumeRecentOrganizationRuns(), 7);
   assert.equal(service.getWorkflowRun(run.id).status, "completed");
   const goodSnapshot = service.getLatestRecentClusterSnapshot();
   assert.ok(goodSnapshot);
@@ -187,7 +191,7 @@ test("fresh run succeeds after a previous failure", async (t) => {
 
   // New run succeeds
   const run2 = await service.organizeRecent("retrigger-key-2");
-  assert.equal(await service.resumeRecentOrganizationRuns(), 4);
+  assert.equal(await service.resumeRecentOrganizationRuns(), 7);
   assert.equal(service.getWorkflowRun(run2.id).status, "completed");
   const snapshot = service.getLatestRecentClusterSnapshot();
   assert.equal(snapshot.workflowRunId, run2.id);
@@ -252,7 +256,7 @@ test("recent organization freezes materials and keeps one stable representative 
   assert.equal(trigger.status, 202);
   const run = await trigger.json() as { materialIds: string[] };
   assert.deepEqual(run.materialIds, [first.id, duplicate.id, unique.id]);
-  assert.equal(await service.resumeRecentOrganizationRuns(), 4);
+  assert.equal(await service.resumeRecentOrganizationRuns(), 7);
   const snapshot = await (await fetch(`${base}/v1/recent-organization/snapshots/latest`, { headers: authHeaders })).json() as { clusters: unknown[]; unclusteredMaterialIds: string[] };
   assert.deepEqual(snapshot.clusters, []);
   assert.deepEqual(snapshot.unclusteredMaterialIds, [first.id, unique.id]);
@@ -271,7 +275,7 @@ test("recent organization is idempotent for one key and material set version", a
   const retry = await service.organizeRecent("stable-key");
   assert.equal(retry.id, first.id);
   assert.equal(retry.materialSetVersion, first.materialSetVersion);
-  assert.equal(await service.resumeRecentOrganizationRuns(), 4);
+  assert.equal(await service.resumeRecentOrganizationRuns(), 7);
 
   await service.createCapture({
     captureType: "pasted_text",
@@ -283,7 +287,7 @@ test("recent organization is idempotent for one key and material set version", a
   const changed = await service.organizeRecent("stable-key");
   assert.notEqual(changed.id, first.id);
   assert.notEqual(changed.materialSetVersion, first.materialSetVersion);
-  assert.equal(await service.resumeRecentOrganizationRuns(), 4);
+  assert.equal(await service.resumeRecentOrganizationRuns(), 7);
 });
 
 test("completed recent runs and snapshots survive reopening SQLite", async (t) => {
@@ -293,7 +297,7 @@ test("completed recent runs and snapshots survive reopening SQLite", async (t) =
   await firstStore.init();
   const firstService = new CaptureService(firstStore, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
   const run = await firstService.organizeRecent("reopen-key");
-  assert.equal(await firstService.resumeRecentOrganizationRuns(), 4);
+  assert.equal(await firstService.resumeRecentOrganizationRuns(), 7);
   const completedRun = firstService.getWorkflowRun(run.id);
   const snapshot = firstService.getLatestRecentClusterSnapshot();
   firstStore.close();
@@ -342,7 +346,7 @@ test("recent organization exposes processing and persists a failed run", async (
   assert.equal(processing.status, 200);
   assert.equal((await processing.json()).status, "processing");
 
-  assert.equal(await service.resumeRecentOrganizationRuns(), 3);
+  assert.equal(await service.resumeRecentOrganizationRuns(), 6);
   const failedResponse = await fetch(base + "/v1/recent-organization/runs/" + queued.id, { headers });
   assert.equal(failedResponse.status, 200);
   const failed = await failedResponse.json();
@@ -383,7 +387,7 @@ test("cancelling a processing run stops further steps and preserves completed wo
   assert.ok(cancelledCount >= 1);
 });
 
-test("workspace:load returns inbox, topics, and relations", async (t) => {
+test("workspace:load returns topics", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-wsload-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
@@ -403,19 +407,9 @@ test("workspace:load returns inbox, topics, and relations", async (t) => {
   const base = `http://127.0.0.1:${addr.port}`;
   const headers = { Authorization: `Bearer ${token}` };
 
-  // Verify all three workspace:load endpoints respond (even if empty)
-  const inboxRes = await fetch(`${base}/v1/inbox`, { headers });
+  // Verify topics endpoint responds (even if empty)
+  const inboxRes = await fetch(`${base}/v1/topics`, { headers });
   assert.equal(inboxRes.status, 200);
   const inbox = await inboxRes.json();
   assert.ok(Array.isArray(inbox));
-
-  const topicsRes = await fetch(`${base}/v1/topics`, { headers });
-  assert.equal(topicsRes.status, 200);
-  const topics = await topicsRes.json();
-  assert.ok(Array.isArray(topics));
-
-  const relationsRes = await fetch(`${base}/v1/relations`, { headers });
-  assert.equal(relationsRes.status, 200);
-  const relations = await relationsRes.json();
-  assert.ok(Array.isArray(relations));
 });

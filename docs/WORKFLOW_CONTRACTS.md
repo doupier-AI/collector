@@ -4,6 +4,8 @@
 
 状态：实现前契约。字段名可以在编码时微调，语义和不变量不得静默改变。
 
+实现映射（2026-07-13）：持久化状态使用 `queued | processing | waiting_for_budget | completed | failed | cancelled`；文档中的 `running`/`succeeded` 分别对应 `processing`/`completed`。近期整理的实现步骤名为 `freeze_materials`、`exact_deduplication`、`retrieve_candidates`、`propose_clusters`、`validate_clusters`、`stabilize_clusters`、`publish_snapshot`。旧 `cluster_materials` 仅用于恢复迁移前已排队的任务。
+
 ## 1. 通用运行模型
 
 ```ts

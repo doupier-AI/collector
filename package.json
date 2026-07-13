@@ -60,5 +60,10 @@
       "artifactName": "Collector-${version}-portable.${ext}"
     },
     "asar": true
+  },
+  "dependencies": {
+    "dompurify": "^3.4.11",
+    "easymde": "^2.21.0",
+    "marked": "^18.0.5"
   }
 }

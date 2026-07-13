@@ -43,6 +43,7 @@ export interface CollectorStore {
   getWorkflowRun(id: string): WorkflowRunRecord | undefined;
   findWorkflowRun(workflowType: WorkflowRunRecord["workflowType"], idempotencyKey: string, materialSetVersion: string): WorkflowRunRecord | undefined;
   getLatestRecentClusterSnapshot(): RecentClusterSnapshotRecord | undefined;
+  getRecentClusterSnapshot(id: string): RecentClusterSnapshotRecord | undefined;
   saveWorkflowRun(run: WorkflowRunRecord): Promise<void>;
   publishRecentClusterSnapshot(run: WorkflowRunRecord, steps: WorkflowStepRecord[], snapshot: RecentClusterSnapshotRecord): Promise<void>;
   getWorkflowSteps(runId: string): WorkflowStepRecord[];
@@ -51,6 +52,7 @@ export interface CollectorStore {
   createWorkflowRun(run: WorkflowRunRecord, steps: WorkflowStepRecord[]): Promise<void>;
   claimWorkflowStep(runId: string, owner: string, now: string, leaseExpiresAt: string): WorkflowStepRecord | undefined;
   completeWorkflowStep(step: WorkflowStepRecord, run: WorkflowRunRecord, snapshot?: RecentClusterSnapshotRecord): boolean;
+  waitWorkflowStep(step: WorkflowStepRecord, run: WorkflowRunRecord): boolean;
   failWorkflowStep(step: WorkflowStepRecord, run: WorkflowRunRecord): boolean;
   cancelWorkflowRun(run: WorkflowRunRecord): boolean;
   saveTopicDocumentVersion(record: import("@collector/capture-contracts").TopicDocumentVersionRecord): Promise<void>;
@@ -72,8 +74,12 @@ export interface CollectorStore {
   getLatestUpdatePreview(topicId: string): import("@collector/capture-contracts").UpdatePreview | undefined;
   saveBackupRecord(record: import("@collector/capture-contracts").BackupRecord): Promise<void>;
   listBackupRecords(): import("@collector/capture-contracts").BackupRecord[];
+  getDataFilePath(): string | undefined;
+  createDatabaseSnapshot(destination: string): Promise<void>;
+  verifyDatabaseSnapshot(path: string): Promise<void>;
   listRevisions(captureId: string): Array<{ id: string; captureId: string; content: string; ordinal: number; createdAt: string }>;
   saveRevision(record: { id: string; captureId: string; content: string; ordinal: number; createdAt: string }): Promise<void>;
+  saveMaterialRevision(record: { id: string; captureId: string; content: string; ordinal: number; createdAt: string }, capture: CaptureRecord, fragments: FragmentRecord[]): Promise<void>;
   trashCapture(id: string, trashedAt: string): Promise<boolean>;
   restoreCapture(id: string): Promise<boolean>;
   deleteCapture(id: string): Promise<boolean>;
@@ -109,6 +115,25 @@ export class SqliteStore implements CollectorStore {
 
   constructor(private readonly filePath: string, private readonly legacyJsonPath?: string) {}
 
+  getDataFilePath(): string { return this.filePath; }
+
+  async createDatabaseSnapshot(destination: string): Promise<void> {
+    await mkdir(dirname(destination), { recursive: true });
+    const escaped = destination.replaceAll("'", "''");
+    this.db().exec(`VACUUM INTO '${escaped}'`);
+    await this.verifyDatabaseSnapshot(destination);
+  }
+
+  async verifyDatabaseSnapshot(path: string): Promise<void> {
+    const snapshot = new DatabaseSync(path, { readOnly: true });
+    try {
+      const result = snapshot.prepare("PRAGMA quick_check").get() as { quick_check?: string } | undefined;
+      if (result?.quick_check !== "ok") throw new Error(`SQLite quick_check failed: ${result?.quick_check ?? "unknown"}`);
+    } finally {
+      snapshot.close();
+    }
+  }
+
   async init(): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
     this.database = new DatabaseSync(this.filePath);
@@ -134,17 +159,31 @@ export class SqliteStore implements CollectorStore {
   getMonthModelCallCostUsd(year: number, month: number): number { const start = new Date(Date.UTC(year, month - 1, 1)).toISOString(); const end = new Date(Date.UTC(year, month, 1)).toISOString(); return (this.db().prepare("SELECT COALESCE(SUM(estimated_cost_usd), 0) AS total FROM model_calls WHERE created_at >= ? AND created_at < ? AND status = 'completed'").get(start, end) as { total: number }).total; }
   getMonthModelCalls(year: number, month: number): ModelCallRecord[] { const start = new Date(Date.UTC(year, month - 1, 1)).toISOString(); const end = new Date(Date.UTC(year, month, 1)).toISOString(); return this.listRecords<ModelCallRecord>("SELECT record_json FROM model_calls WHERE created_at >= ? AND created_at < ? ORDER BY created_at", start, end); }
   async saveVerificationClaims(claims: VerificationClaim[]): Promise<void> { const stmt = this.db().prepare("INSERT OR REPLACE INTO verification_claims (id, document_version_id, section_id, statement, fragment_ids, status, sources, confidence, summary, cost_usd, created_at, verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"); for (const cl of claims) { stmt.run(cl.id, cl.documentVersionId, cl.sectionId, cl.statement, JSON.stringify(cl.fragmentIds), cl.status, JSON.stringify(cl.sources), cl.confidence, cl.summary, cl.costUsd, cl.createdAt, cl.verifiedAt ?? null); } }
-  listVerificationClaims(documentVersionId: string): VerificationClaim[] { const rows = this.db().prepare("SELECT * FROM verification_claims WHERE document_version_id = ? ORDER BY created_at").all(documentVersionId) as any[]; return rows.map((r: any) => ({ ...r, fragmentIds: JSON.parse(r.fragment_ids), sources: JSON.parse(r.sources) })); }
+  listVerificationClaims(documentVersionId: string): VerificationClaim[] {
+    const rows = this.db().prepare("SELECT * FROM verification_claims WHERE document_version_id = ? ORDER BY created_at").all(documentVersionId) as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      id: row.id as string,
+      documentVersionId: row.document_version_id as string,
+      sectionId: row.section_id as string,
+      statement: row.statement as string,
+      fragmentIds: JSON.parse(row.fragment_ids as string),
+      status: row.status as VerificationClaim["status"],
+      sources: JSON.parse(row.sources as string),
+      confidence: row.confidence as number,
+      summary: row.summary as string,
+      costUsd: row.cost_usd as number,
+      createdAt: row.created_at as string,
+      verifiedAt: row.verified_at as string | undefined,
+    }));
+  }
   getVerificationPolicy(): VerificationPolicyConfig { const gv = (k: string) => (this.db().prepare("SELECT value FROM verification_policy WHERE key = ?").get(k) as any)?.value; return { policy: (gv("policy") || "offline") as VerificationPolicyConfig["policy"], maxQueries: Number(gv("max_queries") ?? 5), maxPages: Number(gv("max_pages") ?? 3), timeoutMs: Number(gv("timeout_ms") ?? 30000), maxResponseBytes: Number(gv("max_response_bytes") ?? 1048576) }; }
   async saveVerificationPolicy(config: VerificationPolicyConfig): Promise<void> { const stmt = this.db().prepare("INSERT OR REPLACE INTO verification_policy (key, value) VALUES (?, ?)"); stmt.run("policy", config.policy); if (config.maxQueries !== undefined) stmt.run("max_queries", String(config.maxQueries)); if (config.maxPages !== undefined) stmt.run("max_pages", String(config.maxPages)); if (config.timeoutMs !== undefined) stmt.run("timeout_ms", String(config.timeoutMs)); if (config.maxResponseBytes !== undefined) stmt.run("max_response_bytes", String(config.maxResponseBytes)); }
 
     detectMaterialChanges(topicId: string): { added: string[]; removed: string[] } {
     const current = this.listTopicCaptureIds(topicId);
-    const prevDoc = this.getLatestTopicDocumentVersion(topicId);
-    const prev = prevDoc ? (this.db().prepare("SELECT materialIds FROM workflow_runs WHERE materialSetVersion = ?").get(prevDoc.materialSetVersion) as any) : null;
-    const prevIds: string[] = prev ? JSON.parse(prev.materialIds || "[]") : [];
-    const added = current.filter((id: string) => !prevIds.includes(id));
-    const removed = prevIds.filter((id: string) => !current.includes(id));
+    const previous = this.getLatestTopicDocumentVersion(topicId)?.materialIds ?? [];
+    const added = current.filter((id) => !previous.includes(id));
+    const removed = previous.filter((id) => !current.includes(id));
     return { added, removed };
   }
   async saveUpdatePreview(record: import("@collector/capture-contracts").UpdatePreview): Promise<void> {
@@ -154,7 +193,19 @@ export class SqliteStore implements CollectorStore {
   getLatestUpdatePreview(topicId: string): import("@collector/capture-contracts").UpdatePreview | undefined {
     const row = this.db().prepare("SELECT * FROM update_previews WHERE topic_id = ? ORDER BY created_at DESC LIMIT 1").get(topicId) as any;
     if (!row) return undefined;
-    return { ...row, affectedSectionIds: JSON.parse(row.affected_section_ids_json), proposedAdditions: JSON.parse(row.proposed_additions_json), proposedModifications: JSON.parse(row.proposed_modifications_json), keptSections: JSON.parse(row.kept_sections_json), conflicts: JSON.parse(row.conflicts_json) };
+    return {
+      id: row.id,
+      topicId: row.topic_id,
+      previousDocumentVersionId: row.previous_document_version_id,
+      nextDocumentVersion: row.next_document_version,
+      affectedSectionIds: JSON.parse(row.affected_section_ids_json),
+      proposedAdditions: JSON.parse(row.proposed_additions_json),
+      proposedModifications: JSON.parse(row.proposed_modifications_json),
+      keptSections: JSON.parse(row.kept_sections_json),
+      conflicts: JSON.parse(row.conflicts_json),
+      status: row.status,
+      createdAt: row.created_at,
+    };
   }
 
     async saveBackupRecord(record: import("@collector/capture-contracts").BackupRecord): Promise<void> {
@@ -171,6 +222,18 @@ export class SqliteStore implements CollectorStore {
 
   async saveRevision(record: { id: string; captureId: string; content: string; ordinal: number; createdAt: string }): Promise<void> {
     this.db().prepare("INSERT INTO material_revisions (id, capture_id, content, ordinal, created_at) VALUES (?, ?, ?, ?, ?)").run(record.id, record.captureId, record.content, record.ordinal, record.createdAt);
+  }
+
+  async saveMaterialRevision(record: { id: string; captureId: string; content: string; ordinal: number; createdAt: string }, capture: CaptureRecord, fragments: FragmentRecord[]): Promise<void> {
+    this.transaction(() => {
+      this.db().prepare("INSERT INTO material_revisions (id, capture_id, content, ordinal, created_at) VALUES (?, ?, ?, ?, ?)").run(record.id, record.captureId, record.content, record.ordinal, record.createdAt);
+      this.db().prepare("DELETE FROM knowledge_items WHERE capture_id = ?").run(capture.id);
+      this.db().prepare("DELETE FROM review_proposals WHERE capture_id = ?").run(capture.id);
+      this.db().prepare("DELETE FROM agent_runs WHERE capture_id = ?").run(capture.id);
+      this.db().prepare("DELETE FROM fragments WHERE capture_id = ?").run(capture.id);
+      this.upsertCapture(capture);
+      for (const fragment of fragments) this.insertFragment(fragment);
+    });
   }
 
   async trashCapture(id: string, trashedAt: string): Promise<boolean> {
@@ -207,9 +270,15 @@ export class SqliteStore implements CollectorStore {
 
   getDeleteImpact(captureId: string): { topicMemberships: Array<{ topicId: string; topicTitle: string }>; workflowInputs: Array<{ workflowRunId: string; workflowType: string }>; citationCount: number; hasNoImpact: boolean } {
     const memberships = (this.db().prepare("SELECT tm.topic_id AS topicId, COALESCE(json_extract(t.record_json, '$.title'), '(unnamed)') AS topicTitle FROM topic_memberships tm LEFT JOIN topics t ON tm.topic_id = t.id WHERE tm.capture_id = ?").all(captureId) as any[]);
-    const citationCount = (this.db().prepare("SELECT COUNT(*) AS cnt FROM relations WHERE (source_capture_id = ? OR target_capture_id = ?) AND json_extract(record_json, '$.status') = 'active'").get(captureId, captureId) as { cnt: number }).cnt;
-    const hasNoImpact = memberships.length === 0 && citationCount === 0;
-    return { topicMemberships: memberships, workflowInputs: [], citationCount, hasNoImpact };
+    const fragmentIds = new Set(this.listFragments(captureId).map((fragment) => fragment.id));
+    const citationCount = this.listTopics().flatMap((topic) => this.listTopicDocumentVersions(topic.id))
+      .flatMap((version) => version.sections)
+      .reduce((count, section) => count + section.citationIds.filter((id) => fragmentIds.has(id)).length, 0);
+    const workflowInputs = this.listRecoverableWorkflowRuns()
+      .filter((run) => run.materialIds.includes(captureId))
+      .map((run) => ({ workflowRunId: run.id, workflowType: run.workflowType }));
+    const hasNoImpact = memberships.length === 0 && workflowInputs.length === 0 && citationCount === 0;
+    return { topicMemberships: memberships, workflowInputs, citationCount, hasNoImpact };
   }
 
     close(): void {
@@ -375,9 +444,9 @@ export class SqliteStore implements CollectorStore {
   }
 
   async saveTopicDocumentVersion(record: import("@collector/capture-contracts").TopicDocumentVersionRecord): Promise<void> {
-    this.db().prepare(`INSERT INTO topic_document_versions (id, topic_id, title, material_set_version, document_version, status, sections_json, gap_items_json, verification_summary_json, created_at, published_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(record.id, record.topicId, record.title, record.materialSetVersion, record.documentVersion, record.status,
+    this.db().prepare(`INSERT INTO topic_document_versions (id, topic_id, title, material_set_version, material_ids_json, document_version, status, sections_json, gap_items_json, verification_summary_json, created_at, published_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(record.id, record.topicId, record.title, record.materialSetVersion, JSON.stringify(record.materialIds), record.documentVersion, record.status,
         JSON.stringify(record.sections), JSON.stringify(record.gapItems),
         record.verificationSummary ? JSON.stringify(record.verificationSummary) : null,
         record.createdAt, record.publishedAt ?? null);
@@ -402,6 +471,7 @@ export class SqliteStore implements CollectorStore {
       topicId: row.topic_id as string,
       title: row.title as string,
       materialSetVersion: row.material_set_version as string,
+      materialIds: JSON.parse((row.material_ids_json as string | undefined) ?? "[]"),
       documentVersion: row.document_version as number,
       sections: JSON.parse(row.sections_json as string),
       gapItems: JSON.parse(row.gap_items_json as string),
@@ -414,6 +484,10 @@ export class SqliteStore implements CollectorStore {
 
   getLatestRecentClusterSnapshot(): RecentClusterSnapshotRecord | undefined {
     return this.getRecord<RecentClusterSnapshotRecord>("SELECT record_json FROM recent_cluster_snapshots ORDER BY publication_sequence DESC LIMIT 1");
+  }
+
+  getRecentClusterSnapshot(id: string): RecentClusterSnapshotRecord | undefined {
+    return this.getRecord<RecentClusterSnapshotRecord>("SELECT record_json FROM recent_cluster_snapshots WHERE id = ?", id);
   }
 
   async saveWorkflowRun(run: WorkflowRunRecord): Promise<void> {
@@ -436,7 +510,7 @@ export class SqliteStore implements CollectorStore {
   }
 
   listRecoverableWorkflowRuns(): WorkflowRunRecord[] {
-    return this.listRecords<WorkflowRunRecord>("SELECT record_json FROM workflow_runs WHERE status IN ('queued', 'processing') ORDER BY created_at");
+    return this.listRecords<WorkflowRunRecord>("SELECT record_json FROM workflow_runs WHERE status IN ('queued', 'processing', 'waiting_for_budget') ORDER BY created_at");
   }
 
   listWorkflowRuns(workflowType?: string): WorkflowRunRecord[] {
@@ -456,7 +530,7 @@ export class SqliteStore implements CollectorStore {
     let claimed: WorkflowStepRecord | undefined;
     this.transaction(() => {
       const row = this.db().prepare(`SELECT record_json FROM workflow_steps
-        WHERE workflow_run_id = ? AND (status = 'queued' OR (status = 'processing' AND lease_expires_at <= ?))
+        WHERE workflow_run_id = ? AND (status IN ('queued', 'waiting_for_budget') OR (status = 'processing' AND lease_expires_at <= ?))
         ORDER BY ordinal LIMIT 1`).get(runId, now) as { record_json: string } | undefined;
       if (!row) return;
       const step = JSON.parse(row.record_json) as WorkflowStepRecord;
@@ -496,17 +570,30 @@ export class SqliteStore implements CollectorStore {
     return failed;
   }
 
+  waitWorkflowStep(step: WorkflowStepRecord, run: WorkflowRunRecord): boolean {
+    let waiting = false;
+    this.transaction(() => {
+      const waitingStep: WorkflowStepRecord = { ...step, status: "waiting_for_budget", leaseOwner: undefined, leaseExpiresAt: undefined };
+      const result = this.db().prepare("UPDATE workflow_steps SET status = 'waiting_for_budget', lease_owner = NULL, lease_expires_at = NULL, record_json = ? WHERE id = ? AND status = 'processing' AND lease_owner = ?")
+        .run(JSON.stringify(waitingStep), step.id, step.leaseOwner ?? "");
+      if (result.changes !== 1) return;
+      this.upsertWorkflowRun({ ...run, status: "waiting_for_budget" });
+      waiting = true;
+    });
+    return waiting;
+  }
+
   cancelWorkflowRun(run: WorkflowRunRecord): boolean {
     let cancelled = false;
     this.transaction(() => {
       const now = new Date().toISOString();
-      const queuedSteps = this.db().prepare("SELECT id, record_json FROM workflow_steps WHERE workflow_run_id = ? AND status = 'queued'").all(run.id) as { id: string; record_json: string }[];
+      const queuedSteps = this.db().prepare("SELECT id, record_json FROM workflow_steps WHERE workflow_run_id = ? AND status IN ('queued', 'waiting_for_budget')").all(run.id) as { id: string; record_json: string }[];
       for (const row of queuedSteps) {
         const step = JSON.parse(row.record_json);
         this.db().prepare("UPDATE workflow_steps SET status = 'cancelled', record_json = ? WHERE id = ?").run(JSON.stringify({ ...step, status: "cancelled", completedAt: now }), row.id);
       }
       const cancelledRun = { ...run, status: "cancelled", completedAt: now };
-      const result = this.db().prepare("UPDATE workflow_runs SET status = 'cancelled', record_json = ? WHERE id = ? AND status IN ('queued','processing')").run(JSON.stringify(cancelledRun), run.id);
+      const result = this.db().prepare("UPDATE workflow_runs SET status = 'cancelled', record_json = ? WHERE id = ? AND status IN ('queued','processing','waiting_for_budget')").run(JSON.stringify(cancelledRun), run.id);
       cancelled = result.changes === 1;
     });
     return cancelled;
@@ -756,6 +843,14 @@ export class SqliteStore implements CollectorStore {
       });
       version = 11;
     }
+    if (version < 12) {
+      this.transaction(() => {
+        this.db().exec("ALTER TABLE topic_document_versions ADD COLUMN material_ids_json TEXT NOT NULL DEFAULT '[]'");
+        this.db().exec("INSERT INTO schema_migrations(version, applied_at) VALUES (12, datetime('now'))");
+      });
+      version = 12;
+    }
+
   }
 
 
@@ -895,6 +990,10 @@ export class JsonStore implements CollectorStore {
 
   constructor(private readonly filePath: string) {}
 
+  getDataFilePath(): string { return this.filePath; }
+  async createDatabaseSnapshot(destination: string): Promise<void> { await mkdir(dirname(destination), { recursive: true }); await copyFile(this.filePath, destination); }
+  async verifyDatabaseSnapshot(path: string): Promise<void> { JSON.parse(await readFile(path, "utf8")); }
+
   async init(): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
     try { this.data = { ...structuredClone(EMPTY_DATA), ...JSON.parse(await readFile(this.filePath, "utf8")) as StoreData }; }
@@ -940,6 +1039,7 @@ export class JsonStore implements CollectorStore {
   findWorkflowRun(_workflowType: WorkflowRunRecord["workflowType"], _idempotencyKey: string, _materialSetVersion: string): WorkflowRunRecord | undefined { return undefined; }
   getLatestRecentClusterSnapshot(): RecentClusterSnapshotRecord | undefined { return undefined; }
   async saveWorkflowRun(_run: WorkflowRunRecord): Promise<void> { throw new Error("Recent organization requires SQLite persistence"); }
+  getRecentClusterSnapshot(_id: string): RecentClusterSnapshotRecord | undefined { return undefined; }
   async publishRecentClusterSnapshot(_run: WorkflowRunRecord, _steps: WorkflowStepRecord[], _snapshot: RecentClusterSnapshotRecord): Promise<void> { throw new Error("Recent organization requires SQLite persistence"); }
   getWorkflowSteps(_runId: string): WorkflowStepRecord[] { return []; }
   listRecoverableWorkflowRuns(): WorkflowRunRecord[] { return []; }
@@ -947,6 +1047,7 @@ export class JsonStore implements CollectorStore {
   async createWorkflowRun(_run: WorkflowRunRecord, _steps: WorkflowStepRecord[]): Promise<void> { throw new Error("Recent organization requires SQLite persistence"); }
   claimWorkflowStep(_runId: string, _owner: string, _now: string, _leaseExpiresAt: string): WorkflowStepRecord | undefined { return undefined; }
   completeWorkflowStep(_step: WorkflowStepRecord, _run: WorkflowRunRecord, _snapshot?: RecentClusterSnapshotRecord): boolean { return false; }
+  waitWorkflowStep(_step: WorkflowStepRecord, _run: WorkflowRunRecord): boolean { return false; }
   failWorkflowStep(_step: WorkflowStepRecord, _run: WorkflowRunRecord): boolean { return false; }
   cancelWorkflowRun(_run: WorkflowRunRecord): boolean { return false; }
   async saveTopicDocumentVersion(_record: any): Promise<void> { throw new Error("Topic documents require SQLite persistence"); }
@@ -970,6 +1071,7 @@ export class JsonStore implements CollectorStore {
   listBackupRecords(): any[] { return []; }
   listRevisions(captureId: string) { return Object.values(this.data.materialRevisions ?? {}).filter((r: any) => r.captureId === captureId).sort((a: any, b: any) => b.ordinal - a.ordinal); }
   async saveRevision(record: { id: string; captureId: string; content: string; ordinal: number; createdAt: string }) { this.data.materialRevisions ??= {}; this.data.materialRevisions[record.id] = record; await this.flush(); }
+  async saveMaterialRevision(record: { id: string; captureId: string; content: string; ordinal: number; createdAt: string }, capture: CaptureRecord, fragments: FragmentRecord[]) { this.data.materialRevisions ??= {}; this.data.materialRevisions[record.id] = record; this.data.captures[capture.id] = capture; for (const key of Object.keys(this.data.fragments)) { if (this.data.fragments[key].captureId === capture.id) delete this.data.fragments[key]; } for (const fragment of fragments) this.data.fragments[fragment.id] = fragment; await this.flush(); }
   async trashCapture(id: string, trashedAt: string) { const record = this.data.captures[id]; if (!record || (record as any).trashedAt) return false; (record as any).trashedAt = trashedAt; await this.flush(); return true; }
   async restoreCapture(id: string) { const record = this.data.captures[id]; if (!record || !(record as any).trashedAt) return false; delete (record as any).trashedAt; await this.flush(); return true; }
   async deleteCapture(id: string) { const record = this.data.captures[id]; if (!record) return false; delete this.data.captures[id]; delete this.data.captureByClientId[record.clientCaptureId]; delete this.data.captureByChecksum[record.checksum]; for (const key of Object.keys(this.data.fragments)) { if (this.data.fragments[key].captureId === id) delete this.data.fragments[key]; } for (const key of Object.keys(this.data.knowledgeItems)) { if (this.data.knowledgeItems[key].captureId === id) delete this.data.knowledgeItems[key]; } for (const key of Object.keys(this.data.reviewProposals)) { if (this.data.reviewProposals[key].captureId === id) delete this.data.reviewProposals[key]; } for (const key of Object.keys(this.data.agentRuns ?? {})) { if (this.data.agentRuns![key].captureId === id) delete this.data.agentRuns![key]; } for (const key of Object.keys(this.data.relations ?? {})) { const r = this.data.relations![key]; if (r.sourceCaptureId === id || r.targetCaptureId === id) delete this.data.relations![key]; } for (const key of Object.keys(this.data.topicMemberships ?? {})) { if (this.data.topicMemberships![key].captureId === id) delete this.data.topicMemberships![key]; } if (this.data.materialRevisions) { for (const key of Object.keys(this.data.materialRevisions)) { if (this.data.materialRevisions[key].captureId === id) delete this.data.materialRevisions[key]; } } await this.flush(); return true; }

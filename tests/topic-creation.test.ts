@@ -42,7 +42,7 @@ test("create topic from cluster promotes with materials as members", async (t) =
 
   // Run recent organization to get a cluster
   const run = await service.organizeRecent("topic-cluster-run");
-  assert.equal(await service.resumeRecentOrganizationRuns(), 4);
+  assert.equal(await service.resumeRecentOrganizationRuns(), 7);
   assert.equal(service.getWorkflowRun(run.id).status, "completed");
   const snapshot = service.getLatestRecentClusterSnapshot();
   assert.ok(snapshot);
@@ -62,10 +62,10 @@ test("create topic from cluster promotes with materials as members", async (t) =
     assert.equal(topic.origin, "from_recent_cluster");
 
     // Verify topic members
-    const wsResp = await fetch(`${base}/v1/topics/${topic.id}/workspace`, { headers });
+    const wsResp = await fetch(`${base}/v1/topics/${topic.id}`, { headers });
     assert.equal(wsResp.status, 200);
-    const ws = await wsResp.json() as { topic: Record<string, unknown>; captures: Array<{ capture: { id: string } }> };
-    assert.ok(ws.captures.length > 0);
+    const ws = await wsResp.json() as { memberIds: string[] };
+    assert.ok(ws.memberIds.length > 0);
   }
 });
 
@@ -113,12 +113,12 @@ test("create topic manually with materialIds", async (t) => {
   assert.equal(topic.origin, "user");
 
   // Verify workspace includes both captures
-  const wsResp = await fetch(`${base}/v1/topics/${topic.id}/workspace`, { headers });
+  const wsResp = await fetch(`${base}/v1/topics/${topic.id}`, { headers });
   assert.equal(wsResp.status, 200);
-  const ws = await wsResp.json() as { captures: Array<{ id: string }> };
-  assert.equal(ws.captures.length, 2);
-  assert.ok(ws.captures.some((c) => c.id === cap1.id));
-  assert.ok(ws.captures.some((c) => c.id === cap2.id));
+  const ws = await wsResp.json() as { memberIds: string[] };
+  assert.equal(ws.memberIds.length, 2);
+  assert.ok(ws.memberIds.includes(cap1.id));
+  assert.ok(ws.memberIds.includes(cap2.id));
 });
 
 test("same material can belong to multiple topics", async (t) => {
@@ -162,13 +162,13 @@ test("same material can belong to multiple topics", async (t) => {
   const topic2 = await t2Resp.json() as { id: string };
 
   // Both topics contain the same capture
-  const ws1 = await fetch(`${base}/v1/topics/${topic1.id}/workspace`, { headers });
-  const data1 = await ws1.json() as { captures: Array<{ capture: { id: string } }> };
-  assert.equal(data1.captures.length, 1);
+  const ws1 = await fetch(`${base}/v1/topics/${topic1.id}`, { headers });
+  const data1 = await ws1.json() as { memberIds: string[] };
+  assert.equal(data1.memberIds.length, 1);
 
-  const ws2 = await fetch(`${base}/v1/topics/${topic2.id}/workspace`, { headers });
-  const data2 = await ws2.json() as { captures: Array<{ capture: { id: string } }> };
-  assert.equal(data2.captures.length, 1);
+  const ws2 = await fetch(`${base}/v1/topics/${topic2.id}`, { headers });
+  const data2 = await ws2.json() as { memberIds: string[] };
+  assert.equal(data2.memberIds.length, 1);
 });
 
 test("add and remove topic members", async (t) => {
@@ -206,16 +206,16 @@ test("add and remove topic members", async (t) => {
   // Add member
   const addResp = await fetch(`${base}/v1/topics/${topic.id}/members/${cap.id}`, { method: "POST", headers });
   assert.equal(addResp.status, 200);
-  let ws = await fetch(`${base}/v1/topics/${topic.id}/workspace`, { headers });
-  let data = await ws.json() as { captures: Array<{ capture: { id: string } }> };
-  assert.equal(data.captures.length, 1);
+  let ws = await fetch(`${base}/v1/topics/${topic.id}`, { headers });
+  let data = await ws.json() as { memberIds: string[] };
+  assert.equal(data.memberIds.length, 1);
 
   // Remove member
   const removeResp = await fetch(`${base}/v1/topics/${topic.id}/members/${cap.id}`, { method: "DELETE", headers });
   assert.equal(removeResp.status, 200);
-  ws = await fetch(`${base}/v1/topics/${topic.id}/workspace`, { headers });
-  const removedData = await ws.json() as { captures: Array<unknown> };
-  assert.equal(removedData.captures.length, 0);
+  ws = await fetch(`${base}/v1/topics/${topic.id}`, { headers });
+  const removedData = await ws.json() as { memberIds: string[] };
+  assert.equal(removedData.memberIds.length, 0);
 });
 
 test("topic suggestions return related captures", async (t) => {
@@ -328,7 +328,7 @@ test("promote cluster preserves all materials", async (t) => {
   const cap1 = await c1.json() as { id: string };
 
   const run = await service.organizeRecent("preserve-run");
-  assert.equal(await service.resumeRecentOrganizationRuns(), 4);
+  assert.equal(await service.resumeRecentOrganizationRuns(), 7);
   const snapshot = service.getLatestRecentClusterSnapshot();
 
   const clusterIndex = snapshot.clusters.findIndex((c) => c.materialIds.includes(cap1.id));
@@ -340,7 +340,7 @@ test("promote cluster preserves all materials", async (t) => {
     });
     assert.equal(promoteResp.status, 201);
     const topic = await promoteResp.json() as { id: string };
-    const ws = await fetch(`${base}/v1/topics/${topic.id}/workspace`, { headers });
+    const ws = await fetch(`${base}/v1/topics/${topic.id}`, { headers });
     const data = await ws.json() as { captures: Array<{ capture: { id: string } }> };
     assert.ok(data.captures.length > 0, "Topic should have members from cluster");
   }

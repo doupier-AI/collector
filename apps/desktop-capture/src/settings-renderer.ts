@@ -5,6 +5,7 @@ export function initSettings() {
   const titles = {
     general: ["通用", "控制 Collector 的桌面行为。"],
     ai: ["AI 服务", "管理云模型授权与凭证。"],
+    data: ["数据与用量", "查看 AI 成本并管理本地备份与便携导出。"],
   } as const;
 
   const shortcut = document.querySelector<HTMLInputElement>("#shortcut")!;
@@ -75,14 +76,18 @@ export function initSettings() {
     
     saveAi.disabled = true;
     try {
-      console.log('[Settings] saveAi called, rawKey:', JSON.stringify(rawKey), 'length:', rawKey.length);
-      const result = await bridge.saveAi({ consent: aiConsent.checked, apiKey: rawKey });
+      // 只有当用户真的修改了输入框时才发送 apiKey，否则不传该字段以保留已有配置
+      const payload: { consent: boolean; apiKey?: string } = { consent: aiConsent.checked };
+      if (apiKeyModified) {
+        payload.apiKey = rawKey; // 用户修改了：空字符串表示清除，非空表示设置新 key
+      }
+      const result = await bridge.saveAi(payload);
       // 更新 UI 状态
-      if (result.apiKey) { 
-        // 保持输入框中的 key（密码形式显示）
-        deepSeekKey.value = result.apiKey;
+      if (result.configured) {
+        deepSeekKey.value = "";
         deepSeekKey.type = "password"; 
         toggleEye.classList.remove("showing");
+        deepSeekKey.placeholder = "Key 已保存 · 输入新 Key 以更换";
         setStatus(aiStatus, "AI 设置已保存", "success");
       } else {
         // 没有返回 key，说明已清除
@@ -91,6 +96,8 @@ export function initSettings() {
         setStatus(aiStatus, "API Key 已清除", "warning");
       }
       renderAiStatus(result);
+      // 重置修改标记，下次保存前必须再次修改才会生效
+      apiKeyModified = false;
     } catch (error) { setStatus(aiStatus, message(error), "error"); }
     finally { saveAi.disabled = false; }
   });
@@ -114,6 +121,58 @@ export function initSettings() {
     });
   }
 
+  const usageSummary = document.querySelector<HTMLElement>("#ai-usage-summary");
+  const usageBreakdown = document.querySelector<HTMLElement>("#ai-usage-breakdown");
+  const budgetEnabled = document.querySelector<HTMLInputElement>("#ai-budget-enabled");
+  const budgetLimit = document.querySelector<HTMLInputElement>("#ai-budget-limit");
+  const budgetWarning = document.querySelector<HTMLInputElement>("#ai-budget-warning");
+  const saveBudget = document.querySelector<HTMLButtonElement>("#save-ai-budget");
+  const budgetStatus = document.querySelector<HTMLElement>("#ai-budget-status");
+  const dataPaths = document.querySelector<HTMLElement>("#data-paths");
+  const createBackup = document.querySelector<HTMLButtonElement>("#create-backup");
+  const exportPortable = document.querySelector<HTMLButtonElement>("#export-portable");
+  const dataStatus = document.querySelector<HTMLElement>("#data-control-status");
+  const backupHistory = document.querySelector<HTMLElement>("#backup-history");
+
+  saveBudget?.addEventListener("click", async () => {
+    if (!budgetEnabled || !budgetLimit || !budgetWarning || !budgetStatus) return;
+    saveBudget.disabled = true;
+    try {
+      const limit = Number(budgetLimit.value || 0);
+      const warning = Number(budgetWarning.value || 0);
+      if (limit < 0 || warning < 0 || (limit > 0 && warning > limit)) throw new Error("提醒阈值不能超过月度上限");
+      await bridge.saveAiBudget({ enabled: budgetEnabled.checked, monthlyLimitUsd: limit, warningThresholdUsd: warning });
+      setStatus(budgetStatus, "预算已保存", "success");
+      await loadDataControl();
+    } catch (error) { setStatus(budgetStatus, message(error), "error"); }
+    finally { saveBudget.disabled = false; }
+  });
+
+  createBackup?.addEventListener("click", async () => {
+    if (!dataStatus) return;
+    createBackup.disabled = true;
+    try {
+      const result = await bridge.createBackup();
+      setStatus(dataStatus, `备份完成：${result.path}`, "success");
+      await loadDataControl();
+    } catch (error) { setStatus(dataStatus, message(error), "error"); }
+    finally { createBackup.disabled = false; }
+  });
+
+  exportPortable?.addEventListener("click", async () => {
+    if (!dataStatus) return;
+    exportPortable.disabled = true;
+    try {
+      const result = await bridge.exportPortable({ includeArtifacts: true, format: "both" });
+      setStatus(dataStatus, `导出完成：${result.path}`, "success");
+    } catch (error) { setStatus(dataStatus, message(error), "error"); }
+    finally { exportPortable.disabled = false; }
+  });
+
+  // 跟踪 API Key 输入框是否被用户修改过
+  let apiKeyModified = false;
+  deepSeekKey.addEventListener("input", () => { apiKeyModified = true; });
+
   void load();
 
   async function load() {
@@ -122,12 +181,11 @@ export function initSettings() {
       currentShortcutValue = value.shortcut;
       shortcut.value = value.shortcut;
       aiConsent.checked = value.ai.consent;
-      // 页面加载时显示已保存的 key（以密码形式，保护隐私）
-      if (value.ai.apiKey) {
-        deepSeekKey.value = value.ai.apiKey;
-        deepSeekKey.type = "password"; // 密码类型，显示为圆点
+      if (value.ai.configured) {
+        deepSeekKey.value = "";
+        deepSeekKey.type = "password";
         toggleEye.classList.remove("showing"); // 默认隐藏
-        deepSeekKey.placeholder = "";
+        deepSeekKey.placeholder = "Key 已保存 · 输入新 Key 以更换";
       } else {
         // 没有 key 时清空输入框并确保是密码类型
         deepSeekKey.value = "";
@@ -140,7 +198,50 @@ export function initSettings() {
         renderAiStatus(value.ai);
         if (value.ai.configured) { deepSeekKey.placeholder = "Key 已保存 · 输入新 Key 以更换"; }
       }
+      await loadDataControl();
     } catch (error) { setStatus(aiStatus, message(error), "error"); }
+  }
+
+  async function loadDataControl(): Promise<void> {
+    if (!usageSummary || !usageBreakdown || !budgetEnabled || !budgetLimit || !budgetWarning || !dataPaths || !backupHistory) return;
+    try {
+      const value = await bridge.dataControl();
+      usageSummary.textContent = `${value.usage.totalCalls} 次调用 · ${value.usage.totalInputTokens + value.usage.totalOutputTokens} tokens · $${value.usage.totalCostUsd.toFixed(4)} · 成功率 ${(value.usage.successRate * 100).toFixed(1)}%`;
+      usageBreakdown.replaceChildren();
+      for (const [model, stats] of Object.entries(value.usage.byModel)) {
+        const row = document.createElement("p");
+        row.textContent = `${model}: ${stats.calls} 次 / ${stats.tokens} tokens / $${stats.costUsd.toFixed(4)}`;
+        usageBreakdown.append(row);
+      }
+      budgetEnabled.checked = value.budget.enabled;
+      budgetLimit.value = String(value.budget.monthlyLimitUsd);
+      budgetWarning.value = String(value.budget.warningThresholdUsd);
+      if (budgetStatus) setStatus(budgetStatus, `本月 $${value.budget.currentMonthCostUsd.toFixed(4)} · ${value.budget.status}`, value.budget.status === "exceeded" ? "error" : value.budget.status === "warning" ? "warning" : "ready");
+      dataPaths.textContent = value.paths ? `数据库：${value.paths.database} · 附件：${value.paths.artifacts}` : "数据位置由外部 API 宿主管理";
+      backupHistory.replaceChildren();
+      for (const backup of value.backups) {
+        const row = document.createElement("div");
+        row.className = "backup-row";
+        const label = document.createElement("span");
+        label.textContent = `${new Date(backup.createdAt).toLocaleString()} · ${(backup.sizeBytes / 1024 / 1024).toFixed(2)} MB · ${backup.status}`;
+        row.append(label);
+        if (backup.status === "completed") {
+          const verify = document.createElement("button");
+          verify.className = "button";
+          verify.type = "button";
+          verify.textContent = "校验";
+          verify.addEventListener("click", async () => {
+            if (!dataStatus) return;
+            const result = await bridge.verifyBackup(backup.id);
+            setStatus(dataStatus, result.valid ? "备份校验通过" : `备份校验失败：${result.errors.join("；")}`, result.valid ? "success" : "error");
+          });
+          row.append(verify);
+        }
+        backupHistory.append(row);
+      }
+    } catch (error) {
+      if (dataStatus) setStatus(dataStatus, message(error), "error");
+    }
   }
   
   /**
@@ -184,7 +285,7 @@ export function initSettings() {
       
       // 添加修饰键（跨平台兼容）
       if (e.ctrlKey || e.metaKey) {
-        parts.push(process.platform === "darwin" ? "Cmd" : "Ctrl");
+        parts.push(/Mac|iPhone|iPad/.test(navigator.platform) ? "Cmd" : "Ctrl");
       }
       if (e.altKey) parts.push("Alt");
       if (e.shiftKey) parts.push("Shift");
@@ -268,6 +369,7 @@ export function initSettings() {
     document.querySelectorAll(".settings-section").forEach((node) => node.classList.toggle("active", node.id === id));
     document.querySelectorAll<HTMLButtonElement>("[data-section]").forEach((node) => node.classList.toggle("active", node.dataset.section === id));
     document.querySelector("#page-title")!.textContent = titles[id][0]; document.querySelector("#page-copy")!.textContent = titles[id][1];
+    if (id === "data") void loadDataControl();
   }
   function renderAiStatus(value: { consent: boolean; configured: boolean; provider?: string; model?: string }) {
     const text = value.consent && value.configured ? (value.provider ?? "DeepSeek") + " 已配置并授权" : value.configured ? "Key 已保存，云端处理未授权" : "尚未配置 API Key";

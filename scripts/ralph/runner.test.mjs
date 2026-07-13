@@ -166,7 +166,11 @@ test("Windows command resolution passes metacharacters as an argument, not shell
   }
 });
 
-test("timed out child processes cannot continue running", async (t) => {
+test("timed out child processes cannot continue running", {
+  skip: process.platform === "win32" && process.env.CODEX_SHELL === "1"
+    ? "Codex Windows sandbox denies process-tree inspection and termination"
+    : false,
+}, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-ralph-timeout-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const marker = join(root, "orphan.txt");

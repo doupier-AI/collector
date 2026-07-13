@@ -1,32 +1,3 @@
-import type { FragmentRecord, RelationType } from "@collector/capture-contracts";
-
-export interface EvidenceText {
-  text: string;
-  fragmentIds: string[];
-}
-
-export interface ConceptExtraction extends EvidenceText { name: string }
-export interface ClaimExtraction extends EvidenceText { statement: string }
-export interface QuestionExtraction extends EvidenceText { question: string }
-export interface TopicSuggestion extends EvidenceText { title: string }
-
-export interface ModelRelationSuggestion {
-  relationType: RelationType;
-  targetCaptureId?: string;
-  rationale: string;
-  confidence: number;
-  fragmentIds: string[];
-}
-
-export interface KnowledgeExtraction {
-  summary: string;
-  concepts: ConceptExtraction[];
-  claims: ClaimExtraction[];
-  questions: QuestionExtraction[];
-  topicSuggestions: TopicSuggestion[];
-  relationSuggestions: ModelRelationSuggestion[];
-}
-
 export interface ProviderUsage {
   inputTokens?: number;
   outputTokens?: number;
@@ -66,70 +37,57 @@ export interface ModelProvider {
   complete(request: ModelProviderRequest): Promise<ModelProviderResponse>;
 }
 
-export interface GatewayResult {
-  extraction?: KnowledgeExtraction;
+export interface ModelCallContext { workflowRunId?: string; workflowStepId?: string; purpose?: string; }
+export interface ModelCallEvent {
+  context: ModelCallContext;
   provider: string;
   model: string;
+  promptVersion: string;
+  status: "completed" | "failed";
   usage?: ProviderUsage;
-  retryCount: number;
-  latencyMs: number;
   estimatedCostUsd?: number;
-  errorCode?: "empty_response" | "invalid_json" | "invalid_schema" | "provider_error";
+  latencyMs: number;
   errorMessage?: string;
+  createdAt: string;
+  completedAt: string;
 }
 
 export class ModelGateway {
-  constructor(private readonly provider: ModelProvider, private readonly options: { model?: string; promptVersion?: string; thinking?: boolean; pricing?: Record<string, ModelPricing> } = {}) {}
+  private callListener?: (event: ModelCallEvent) => void | Promise<void>;
+  constructor(private readonly provider: ModelProvider, private readonly options: { model?: string; promptVersion?: string; thinking?: boolean; pricing?: Record<string, ModelPricing>; onCall?: (event: ModelCallEvent) => void | Promise<void> } = {}) { this.callListener = options.onCall; }
 
   get providerName(): string { return this.provider.name; }
   get modelName(): string { return this.options.model ?? "deepseek-v4-flash"; }
-  get promptVersion(): string { return this.options.promptVersion ?? "knowledge-extraction-v1"; }
+  setCallListener(listener: ((event: ModelCallEvent) => void | Promise<void>) | undefined): void { this.callListener = listener; }
 
-  async extract(fragments: FragmentRecord[], relatedCaptures: Array<{ id: string; content: string }> = [], requestOptions: { model?: string; thinking?: boolean } = {}): Promise<GatewayResult> {
-    const startedAt = performance.now();
-    const requestedModel = requestOptions.model ?? this.modelName;
-    const thinking = requestOptions.thinking ?? this.options.thinking ?? false;
-    const basePrompt = buildPrompt(fragments, relatedCaptures);
-    let lastError: { code: GatewayResult["errorCode"]; message: string } | undefined;
-    let totalUsage: ProviderUsage | undefined;
-    let lastModel = requestedModel;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        const request: ModelProviderRequest = {
-          model: requestedModel,
-          responseFormat: { type: "json_object" } as const,
-          thinking,
-          maxTokens: thinking ? 3_000 : 1_400,
-          timeoutMs: thinking ? 180_000 : 75_000,
-          prompt: attempt === 0 || !lastError ? basePrompt : `${basePrompt}\n\nCORRECTION REQUIRED: The previous response was rejected: ${lastError.message}. Return a corrected full JSON object. Copy fragmentIds only from this exact list: ${JSON.stringify(fragments.map((fragment) => fragment.id))}.`,
-        };
-        const response = await this.provider.complete(request);
-        totalUsage = addUsage(totalUsage, response.usage);
-        lastModel = response.model;
-        if (!response.content.trim()) {
-          lastError = { code: "empty_response", message: "Model returned empty content" };
-          continue;
-        }
-        let value: unknown;
-        try { value = JSON.parse(response.content); }
-        catch { lastError = { code: "invalid_json", message: "Model returned invalid JSON" }; continue; }
-        try {
-          const extraction = validateExtraction(value, new Set(fragments.map((fragment) => fragment.id)));
-          return { extraction, provider: this.provider.name, model: response.model, usage: totalUsage, estimatedCostUsd: estimateCost(response.model, totalUsage, this.options.pricing), retryCount: attempt, latencyMs: Math.round(performance.now() - startedAt) };
-        } catch (error) {
-          lastError = { code: "invalid_schema", message: error instanceof Error ? error.message : "Invalid model output" };
-        }
-      } catch (error) {
-        lastError = { code: "provider_error", message: redactError(error) };
-      }
-    }
-    return {
-      provider: this.provider.name, model: lastModel, usage: totalUsage, estimatedCostUsd: estimateCost(lastModel, totalUsage, this.options.pricing), retryCount: 1,
-      latencyMs: Math.round(performance.now() - startedAt), errorCode: lastError?.code, errorMessage: lastError?.message,
-    };
+  private async emitCall(event: ModelCallEvent): Promise<void> {
+    try { await this.callListener?.(event); }
+    catch (error) { console.error("Model call listener failed", error); }
   }
 
-  async clusterMaterials(materials: Array<{ id: string; content: string }>, options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number } = {}): Promise<{ clusters: Array<{ name: string; summary: string; materialIds: string[] }>; unclusteredMaterialIds: string[] }> {
+  private async complete(request: ModelProviderRequest, context: ModelCallContext): Promise<ModelProviderResponse> {
+    const createdAt = new Date().toISOString();
+    const startedAt = Date.now();
+    try {
+      const response = await this.provider.complete(request);
+      await this.emitCall({
+        context, provider: this.providerName, model: response.model ?? request.model, promptVersion: this.promptVersion, status: "completed",
+        usage: response.usage, estimatedCostUsd: estimateCost(response.model ?? request.model, response.usage, this.options.pricing),
+        latencyMs: Date.now() - startedAt, createdAt, completedAt: new Date().toISOString(),
+      });
+      return response;
+    } catch (error) {
+      await this.emitCall({
+        context, provider: this.providerName, model: request.model, promptVersion: this.promptVersion, status: "failed",
+        latencyMs: Date.now() - startedAt, errorMessage: redactError(error), createdAt, completedAt: new Date().toISOString(),
+      });
+      throw error;
+    }
+  }
+
+  get promptVersion(): string { return this.options.promptVersion ?? "knowledge-extraction-v1"; }
+
+  async clusterMaterials(materials: Array<{ id: string; content: string }>, options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): Promise<{ clusters: Array<{ name: string; summary: string; materialIds: string[] }>; unclusteredMaterialIds: string[] }> {
     if (materials.length <= 1) return { clusters: [], unclusteredMaterialIds: materials.map((m) => m.id) };
     const requestedModel = options.model ?? this.modelName;
     const validIds = new Set(materials.map((m) => m.id));
@@ -140,7 +98,7 @@ export class ModelGateway {
       thinking: options.thinking ?? false, maxTokens: options.maxTokens ?? 4000, timeoutMs: options.timeoutMs ?? 30000,
     };
     try {
-      const response = await this.provider.complete(request);
+      const response = await this.complete(request, options.context ?? { purpose: "cluster_materials" });
       if (!response.content?.trim()) return { clusters: [], unclusteredMaterialIds: materials.map((m) => m.id) };
       const parsed: Record<string, unknown> = JSON.parse(response.content.trim());
       const clusters: Array<{ name: string; summary: string; materialIds: string[] }> = [];
@@ -162,29 +120,34 @@ export class ModelGateway {
       return { clusters: [], unclusteredMaterialIds: materials.map((m) => m.id) };
     }
   }
-  async generateDocumentOutline(materials: Array<{ id: string; content: string }>, topicTitle: string, options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number } = {}): Promise<{ title: string; sections: Array<{ heading: string; keyPoints: string[] }> } | { errorCode: string; errorMessage: string }> {
+  async generateDocumentOutline(materials: Array<{ id: string; content: string }>, topicTitle: string, options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): Promise<{ title: string; sections: Array<{ heading: string; keyPoints: string[] }> } | { errorCode: string; errorMessage: string }> {
     if (!materials.length) return { errorCode: "empty_response", errorMessage: "No materials for outline generation" };
     const requestedModel = options.model ?? this.modelName;
-    const materialText = materials.map((m) => "[MATERIAL " + m.id + "]\n" + m.content.slice(0, 1500)).join("\n\n---\n\n");
-    const prompt = "You are a technical writer. Create a document outline based on the provided materials about \"" + topicTitle + "\". Return valid JSON only.\n\nMaterials:\n" + materialText + "\n\nReturn JSON:\n{\n  \"title\": string (descriptive document title),\n  \"sections\": [\n    { \"heading\": string, \"keyPoints\": string[] (2-4 key points per section) }\n  ]\n}\n\nRULES:\n- Create 3-6 coherent sections that organize the materials logically.\n- Each keyPoint must be a complete sentence.\n- Do not invent content not present in the materials.";
-    const request = {
-      prompt, model: requestedModel, responseFormat: { type: "json_object" } as const,
-      thinking: options.thinking ?? false, maxTokens: options.maxTokens ?? 3000, timeoutMs: options.timeoutMs ?? 60000,
-    };
     try {
-      const response = await this.provider.complete(request);
-      if (!response.content?.trim()) return { errorCode: "empty_response", errorMessage: "Empty outline response" };
-      const parsed = JSON.parse(response.content.trim());
-      const title = typeof parsed.title === "string" && parsed.title.trim() ? parsed.title.trim() : topicTitle;
-      const sections: Array<{ heading: string; keyPoints: string[] }> = [];
-      if (Array.isArray(parsed.sections)) {
+      let title = topicTitle;
+      const sectionsByHeading = new Map<string, { heading: string; keyPoints: string[] }>();
+      for (const batch of buildMaterialBatches(materials)) {
+        const materialText = batch.map((material) => `[MATERIAL ${material.id}]\n${material.content}`).join("\n\n---\n\n");
+        const prompt = "You are a technical writer. Create a document outline based on the provided materials about \"" + topicTitle + "\". Return valid JSON only.\n\nMaterials:\n" + materialText + "\n\nReturn JSON:\n{\n  \"title\": string (descriptive document title),\n  \"sections\": [\n    { \"heading\": string, \"keyPoints\": string[] (2-4 key points per section) }\n  ]\n}\n\nRULES:\n- Create coherent sections that organize only this material batch.\n- Each keyPoint must be a complete sentence.\n- Do not invent content not present in the materials.";
+        const response = await this.complete({
+          prompt, model: requestedModel, responseFormat: { type: "json_object" } as const,
+          thinking: options.thinking ?? false, maxTokens: options.maxTokens ?? 3000, timeoutMs: options.timeoutMs ?? 60000,
+        }, options.context ?? { purpose: "document_outline" });
+        if (!response.content?.trim()) return { errorCode: "empty_response", errorMessage: "Empty outline response" };
+        const parsed = JSON.parse(response.content.trim());
+        if (title === topicTitle && typeof parsed.title === "string" && parsed.title.trim()) title = parsed.title.trim();
+        if (!Array.isArray(parsed.sections)) continue;
         for (const s of parsed.sections) {
           if (typeof s?.heading !== "string" || !s.heading.trim()) continue;
           const keyPoints = Array.isArray(s.keyPoints) ? s.keyPoints.filter((kp: unknown) => typeof kp === "string" && kp.trim()).map((kp: string) => kp.trim()).slice(0, 6) : [];
           if (!keyPoints.length) continue;
-          sections.push({ heading: s.heading.trim(), keyPoints });
+          const key = s.heading.trim().toLocaleLowerCase();
+          const existing = sectionsByHeading.get(key);
+          if (existing) existing.keyPoints = [...new Set([...existing.keyPoints, ...keyPoints])].slice(0, 12);
+          else sectionsByHeading.set(key, { heading: s.heading.trim(), keyPoints });
         }
       }
+      const sections = [...sectionsByHeading.values()];
       if (!sections.length) return { errorCode: "invalid_schema", errorMessage: "No valid sections in outline" };
       return { title, sections };
     } catch (err) {
@@ -192,23 +155,23 @@ export class ModelGateway {
     }
   }
 
-  async generateDocumentSections(outline: { title: string; sections: Array<{ heading: string; keyPoints: string[] }> }, materials: Array<{ id: string; content: string; fragmentIds: string[] }>, options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number } = {}): Promise<{ sections: Array<{ heading: string; markdown: string; citationIds: string[] }> } | { errorCode: string; errorMessage: string }> {
+  async generateDocumentSections(outline: { title: string; sections: Array<{ heading: string; keyPoints: string[] }> }, materials: Array<{ id: string; content: string; fragmentIds: string[] }>, options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): Promise<{ sections: Array<{ heading: string; markdown: string; citationIds: string[] }> } | { errorCode: string; errorMessage: string }> {
     if (!outline.sections.length || !materials.length) return { errorCode: "empty_response", errorMessage: "No sections or materials" };
     const requestedModel = options.model ?? this.modelName;
-    const materialText = materials.map((m) => "[MATERIAL " + m.id + "]\n" + m.content.slice(0, 2000)).join("\n\n---\n\n");
     const sectionSpecs = outline.sections.map((s, i) => "SECTION " + (i + 1) + ": \"" + s.heading + "\"\nKey Points: " + s.keyPoints.join("; ")).join("\n\n");
-    const prompt = "You are a technical writer. Draft full sections for a learning document titled \"" + outline.title + "\". Return valid JSON only.\n\nOutline:\n" + sectionSpecs + "\n\nSource Materials:\n" + materialText + "\n\nReturn JSON:\n{\n  \"sections\": [\n    {\n      \"heading\": string (matches outline heading),\n      \"markdown\": string (2-4 paragraph markdown section),\n      \"citationMaterialIds\": string[] (MATERIAL ids you cited)\n    }\n  ]\n}\n\nRULES:\n- Draft one section per outline entry.\n- Write in clear, educational prose.\n- Cite materials by their MATERIAL id when you use specific information.\n- Only use material IDs from the provided list.\n- Do not invent content beyond what the materials contain.";
-    const request = {
-      prompt, model: requestedModel, responseFormat: { type: "json_object" } as const,
-      thinking: options.thinking ?? true, maxTokens: options.maxTokens ?? 8000, timeoutMs: options.timeoutMs ?? 120000,
-    };
     try {
-      const response = await this.provider.complete(request);
-      if (!response.content?.trim()) return { errorCode: "empty_response", errorMessage: "Empty sections response" };
-      const parsed = JSON.parse(response.content.trim());
-      const sections: Array<{ heading: string; markdown: string; citationIds: string[] }> = [];
-      const validMaterialIds = new Set(materials.map((m) => m.id));
-      if (Array.isArray(parsed.sections)) {
+      const sectionsByHeading = new Map<string, { heading: string; markdown: string; citationIds: string[] }>();
+      for (const batch of buildMaterialBatches(materials)) {
+        const materialText = batch.map((material) => `[MATERIAL ${material.id}]\n${material.content}`).join("\n\n---\n\n");
+        const prompt = "You are a technical writer. Draft full sections for a learning document titled \"" + outline.title + "\". Return valid JSON only.\n\nOutline:\n" + sectionSpecs + "\n\nSource Materials:\n" + materialText + "\n\nReturn JSON:\n{\n  \"sections\": [\n    {\n      \"heading\": string (matches outline heading),\n      \"markdown\": string (2-4 paragraph markdown section),\n      \"citationMaterialIds\": string[] (MATERIAL ids you cited)\n    }\n  ]\n}\n\nRULES:\n- Draft only claims supported by this source batch.\n- Cite materials by their MATERIAL id when you use specific information.\n- Only use material IDs from the provided list.\n- Do not invent content beyond what the materials contain.";
+        const response = await this.complete({
+          prompt, model: requestedModel, responseFormat: { type: "json_object" } as const,
+          thinking: options.thinking ?? true, maxTokens: options.maxTokens ?? 8000, timeoutMs: options.timeoutMs ?? 120000,
+        }, options.context ?? { purpose: "document_sections" });
+        if (!response.content?.trim()) return { errorCode: "empty_response", errorMessage: "Empty sections response" };
+        const parsed = JSON.parse(response.content.trim());
+        const validMaterialIds = new Set(batch.map((material) => material.id));
+        if (!Array.isArray(parsed.sections)) continue;
         for (const s of parsed.sections) {
           if (typeof s?.heading !== "string" || !s.heading.trim()) continue;
           if (typeof s?.markdown !== "string" || !s.markdown.trim()) continue;
@@ -219,9 +182,17 @@ export class ModelGateway {
             if (mat) citationIds.push(...mat.fragmentIds);
           }
           const uniqueCitations = [...new Set(citationIds)];
-          sections.push({ heading: s.heading.trim(), markdown: s.markdown.trim(), citationIds: uniqueCitations });
+          const key = s.heading.trim().toLocaleLowerCase();
+          const existing = sectionsByHeading.get(key);
+          if (existing) {
+            existing.markdown = `${existing.markdown}\n\n${s.markdown.trim()}`;
+            existing.citationIds = [...new Set([...existing.citationIds, ...uniqueCitations])];
+          } else {
+            sectionsByHeading.set(key, { heading: s.heading.trim(), markdown: s.markdown.trim(), citationIds: uniqueCitations });
+          }
         }
       }
+      const sections = [...sectionsByHeading.values()];
       if (!sections.length) return { errorCode: "invalid_schema", errorMessage: "No valid sections generated" };
       return { sections };
     } catch (err) {
@@ -229,17 +200,54 @@ export class ModelGateway {
     }
   }
 
-
-  async testConnection(options: { model?: string; timeoutMs?: number } = {}): Promise<{ ok: true; model: string } | { ok: false; error: string }> {
+  async generateDocumentUpdateAdditions(materials: Array<{ id: string; content: string; fragmentIds: string[] }>, options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): Promise<{ additions: Array<{ heading: string; markdown: string; citationIds: string[] }> } | { errorCode: string; errorMessage: string }> {
+    if (!materials.length) return { additions: [] };
+    const additions: Array<{ heading: string; markdown: string; citationIds: string[] }> = [];
     try {
-      const response = await this.provider.complete({
+      for (const batch of buildMaterialBatches(materials)) {
+        const materialText = batch.map((material) => `[MATERIAL ${material.id}]\n${material.content}`).join("\n\n---\n\n");
+        const prompt = `You are updating an existing topic document with newly confirmed materials. Organize only the new material into readable additions. Return valid JSON only.\n\nNew materials:\n${materialText}\n\nReturn JSON:\n{\n  "additions": [{ "heading": string, "markdown": string, "citationMaterialIds": string[] }]\n}\n\nRULES:\n- Every factual addition must cite one or more provided MATERIAL ids.\n- Do not copy raw source text as a substitute for synthesis.\n- Do not invent facts or material IDs.`;
+        const response = await this.complete({
+          prompt,
+          model: options.model ?? this.modelName,
+          responseFormat: { type: "json_object" } as const,
+          thinking: options.thinking ?? true,
+          maxTokens: options.maxTokens ?? 5000,
+          timeoutMs: options.timeoutMs ?? 120000,
+        }, options.context ?? { purpose: "incremental_document_update" });
+        if (!response.content?.trim()) return { errorCode: "empty_response", errorMessage: "Empty document update response" };
+        const parsed = JSON.parse(response.content.trim());
+        if (!Array.isArray(parsed.additions)) continue;
+        const validIds = new Set(batch.map((material) => material.id));
+        for (const addition of parsed.additions) {
+          if (typeof addition?.heading !== "string" || !addition.heading.trim()) continue;
+          if (typeof addition?.markdown !== "string" || !addition.markdown.trim()) continue;
+          const materialIds: string[] = Array.isArray(addition.citationMaterialIds)
+            ? (addition.citationMaterialIds as unknown[]).filter((id): id is string => typeof id === "string" && validIds.has(id))
+            : [];
+          const citationIds: string[] = [...new Set(materialIds.flatMap((id) => materials.find((material) => material.id === id)?.fragmentIds ?? []))];
+          if (!citationIds.length) continue;
+          additions.push({ heading: addition.heading.trim(), markdown: addition.markdown.trim(), citationIds });
+        }
+      }
+      if (!additions.length) return { errorCode: "invalid_schema", errorMessage: "No cited additions in document update" };
+      return { additions };
+    } catch (error) {
+      return { errorCode: "provider_error", errorMessage: error instanceof Error ? error.message : "Document update failed" };
+    }
+  }
+
+
+  async testConnection(options: { model?: string; timeoutMs?: number; context?: ModelCallContext } = {}): Promise<{ ok: true; model: string } | { ok: false; error: string }> {
+    try {
+      const response = await this.complete({
         prompt: "Say 'ok'",
         model: options.model ?? this.modelName,
         maxTokens: 10,
         timeoutMs: options.timeoutMs ?? 15000,
         responseFormat: { type: "json_object" } as const,
         thinking: false,
-      });
+      }, options.context ?? { purpose: "connection_test" });
       return { ok: true, model: response.model ?? (options.model ?? this.modelName) };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : "Connection test failed" };
@@ -309,64 +317,30 @@ export class DeepSeekProvider implements ModelProvider {
   }
 }
 
-export function validateExtraction(value: unknown, fragmentIds: Set<string>): KnowledgeExtraction {
-  const object = requiredObject(value, "root");
-  const extraction: KnowledgeExtraction = {
-    summary: requiredString(object.summary, "summary"),
-    concepts: evidenceArray(object.concepts, "concepts", "name") as ConceptExtraction[],
-    claims: evidenceArray(object.claims, "claims", "statement") as ClaimExtraction[],
-    questions: evidenceArray(object.questions, "questions", "question") as QuestionExtraction[],
-    topicSuggestions: evidenceArray(object.topicSuggestions, "topicSuggestions", "title") as TopicSuggestion[],
-    relationSuggestions: relationArray(object.relationSuggestions),
-  };
-  for (const item of [...extraction.concepts, ...extraction.claims, ...extraction.questions, ...extraction.topicSuggestions]) validateReferences(item.fragmentIds, fragmentIds);
-  for (const relation of extraction.relationSuggestions) validateReferences(relation.fragmentIds, fragmentIds);
-  return extraction;
+function buildMaterialBatches<T extends { id: string; content: string }>(materials: T[], maxBatchChars = 24_000): T[][] {
+  const segments: T[] = [];
+  for (const material of materials) {
+    const content = material.content || " ";
+    for (let offset = 0; offset < content.length; offset += maxBatchChars) {
+      segments.push({ ...material, content: content.slice(offset, offset + maxBatchChars) });
+    }
+  }
+  const batches: T[][] = [];
+  let batch: T[] = [];
+  let size = 0;
+  for (const segment of segments) {
+    if (batch.length && size + segment.content.length > maxBatchChars) {
+      batches.push(batch);
+      batch = [];
+      size = 0;
+    }
+    batch.push(segment);
+    size += segment.content.length;
+  }
+  if (batch.length) batches.push(batch);
+  return batches;
 }
 
-function buildPrompt(fragments: FragmentRecord[], relatedCaptures: Array<{ id: string; content: string }>): string {
-  const firstFragmentId = fragments[0]?.id ?? "";
-  const firstCaptureId = relatedCaptures[0]?.id;
-  return `Produce json matching this exact structure:\n${JSON.stringify({
-    summary: "short grounded summary",
-    concepts: [{ name: "concept", text: "grounded explanation", fragmentIds: [firstFragmentId] }],
-    claims: [{ statement: "claim", text: "claim", fragmentIds: [firstFragmentId] }],
-    questions: [{ question: "question", text: "question", fragmentIds: [firstFragmentId] }],
-    topicSuggestions: [{ title: "topic", text: "reason", fragmentIds: [firstFragmentId] }],
-    relationSuggestions: [{ relationType: firstCaptureId ? "related" : "independent", ...(firstCaptureId ? { targetCaptureId: firstCaptureId } : {}), rationale: "reason", confidence: 0.7, fragmentIds: [firstFragmentId] }],
-  })}\nRules:\n- fragmentIds may contain ONLY values from ALLOWED_FRAGMENT_IDS. Never put a Capture ID in fragmentIds.\n- targetCaptureId may contain ONLY a value from ALLOWED_TARGET_CAPTURE_IDS. For independent relations, omit targetCaptureId.\n- every concept, claim, question, topic suggestion, and relation must cite at least one fragment ID. Omit unsupported items.\n- relationType must be related, extends, supports, contradicts, duplicate, or independent.\nALLOWED_FRAGMENT_IDS: ${JSON.stringify(fragments.map((fragment) => fragment.id))}\nALLOWED_TARGET_CAPTURE_IDS: ${JSON.stringify(relatedCaptures.map((capture) => capture.id))}\nFragments:\n${fragments.map((fragment) => `[FRAGMENT ${fragment.id}] ${fragment.text}`).join("\n\n")}\nExisting candidates:\n${relatedCaptures.map((capture) => `[CAPTURE ${capture.id}] ${capture.content}`).join("\n\n") || "none"}`;
-}
-
-function evidenceArray(value: unknown, path: string, key: string): EvidenceText[] {
-  if (!Array.isArray(value)) throw new Error(`${path} must be an array`);
-  return value.map((entry, index) => {
-    const object = requiredObject(entry, `${path}[${index}]`);
-    return { [key]: requiredString(object[key], `${path}[${index}].${key}`), text: requiredString(object.text, `${path}[${index}].text`), fragmentIds: stringArray(object.fragmentIds, `${path}[${index}].fragmentIds`) } as unknown as EvidenceText;
-  });
-}
-
-function relationArray(value: unknown): ModelRelationSuggestion[] {
-  if (!Array.isArray(value)) throw new Error("relationSuggestions must be an array");
-  const types = new Set<RelationType>(["related", "extends", "supports", "contradicts", "duplicate", "independent"]);
-  return value.map((entry, index) => {
-    const object = requiredObject(entry, `relationSuggestions[${index}]`);
-    const relationType = requiredString(object.relationType, `relationSuggestions[${index}].relationType`) as RelationType;
-    if (!types.has(relationType)) throw new Error(`relationSuggestions[${index}].relationType is invalid`);
-    const confidence = Number(object.confidence);
-    if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) throw new Error(`relationSuggestions[${index}].confidence is invalid`);
-    const targetCaptureId = object.targetCaptureId === undefined ? undefined : requiredString(object.targetCaptureId, `relationSuggestions[${index}].targetCaptureId`);
-    if (relationType !== "independent" && !targetCaptureId) throw new Error(`relationSuggestions[${index}].targetCaptureId is required`);
-    return { relationType, targetCaptureId, rationale: requiredString(object.rationale, `relationSuggestions[${index}].rationale`), confidence, fragmentIds: stringArray(object.fragmentIds, `relationSuggestions[${index}].fragmentIds`) };
-  });
-}
-
-function validateReferences(values: string[], allowed: Set<string>): void {
-  if (!values.length) throw new Error("Evidence fragmentIds must not be empty");
-  for (const id of values) if (!allowed.has(id)) throw new Error(`Unknown evidence fragmentId: ${id}`);
-}
-function requiredObject(value: unknown, path: string): Record<string, unknown> { if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${path} must be an object`); return value as Record<string, unknown>; }
-function requiredString(value: unknown, path: string): string { if (typeof value !== "string" || !value.trim()) throw new Error(`${path} must be a non-empty string`); return value.trim(); }
-function stringArray(value: unknown, path: string): string[] { if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim())) throw new Error(`${path} must be a string array`); return value.map((item) => item.trim()); }
 function redactError(error: unknown): string { return (error instanceof Error ? error.message : "Model provider failed").replace(/sk-[a-z0-9_-]+/gi, "[REDACTED]").slice(0, 500); }
 
 function addUsage(left: ProviderUsage | undefined, right: ProviderUsage | undefined): ProviderUsage | undefined {

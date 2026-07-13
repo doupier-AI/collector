@@ -1,4 +1,11 @@
-﻿import type { ArtifactRecord, CaptureInput, CaptureRecord, InboxItem, PreflightEvaluation, RelationRecord, ReviewDecision, ReviewProposalRecord, TopicRecord, TopicWorkspace } from "@collector/capture-contracts";
+﻿import type { ArtifactRecord, CaptureInput, CaptureRecord, PreflightEvaluation, TopicRecord } from "@collector/capture-contracts";
+export class CaptureClientError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "CaptureClientError";
+  }
+}
+
 
 export interface CaptureClientOptions {
   baseUrl: string;
@@ -28,29 +35,24 @@ export class CaptureClient {
     return this.request(`/v1/captures/${encodeURIComponent(id)}`, { method: "GET" });
   }
 
-  listInbox(): Promise<InboxItem[]> {
-    return this.request("/v1/inbox", { method: "GET" });
-  }
-
-  decideReviewProposal(id: string, decision: ReviewDecision): Promise<ReviewProposalRecord> {
-    return this.request(`/v1/review-proposals/${encodeURIComponent(id)}/decision`, {
-      method: "POST", body: JSON.stringify({ decision }),
-    });
-  }
-
   createPairingCode(name: string): Promise<{ code: string; expiresAt: string }> {
     return this.request("/v1/pairings", { method: "POST", body: JSON.stringify({ name }) });
   }
-  listRelations(captureId?: string): Promise<RelationRecord[]> { return this.request(`/v1/relations${captureId ? `?captureId=${encodeURIComponent(captureId)}` : ""}`, { method: "GET" }); }
-  revokeRelation(id: string): Promise<RelationRecord> { return this.request(`/v1/relations/${encodeURIComponent(id)}/revoke`, { method: "POST" }); }
-  createTopic(title: string): Promise<TopicRecord> { return this.request("/v1/topics", { method: "POST", body: JSON.stringify({ title }) }); }
-  createSuggestedTopic(input: { title: string; sourceCaptureId: string; sourceAgentRunId: string; evidenceFragmentIds: string[] }): Promise<TopicRecord> { return this.request("/v1/topics", { method: "POST", body: JSON.stringify(input) }); }
+  createTopic(title: string, materialIds?: string[]): Promise<TopicRecord> { return this.request("/v1/topics", { method: "POST", body: JSON.stringify({ title, materialIds }) }); }
   listTopics(): Promise<TopicRecord[]> { return this.request("/v1/topics", { method: "GET" }); }
+  getTopic(id: string): Promise<TopicRecord & { memberIds: string[]; documentVersion: number | null }> { return this.request(`/v1/topics/${encodeURIComponent(id)}`, { method: "GET" }); }
+  promoteCluster(clusterSnapshotId: string, clusterIndex: number, title: string): Promise<TopicRecord> {
+    return this.request("/v1/topics/from-cluster", { method: "POST", body: JSON.stringify({ clusterSnapshotId, clusterIndex, title }) });
+  }
+  getTopicSuggestions(topicId: string): Promise<Array<{ id: string; title: string; snippet: string }>> {
+    return this.request(`/v1/topics/${encodeURIComponent(topicId)}/suggestions`, { method: "GET" });
+  }
+  getWorkflowRun(id: string): Promise<import("@collector/capture-contracts").WorkflowRunRecord> {
+    return this.request(`/v1/workflow-runs/${encodeURIComponent(id)}`, { method: "GET" });
+  }
   updateTopic(id: string, patch: { title?: string; status?: "active" | "archived" }): Promise<TopicRecord> { return this.request(`/v1/topics/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify(patch) }); }
-  getTopicWorkspace(id: string): Promise<TopicWorkspace> { return this.request(`/v1/topics/${encodeURIComponent(id)}/workspace`, { method: "GET" }); }
   addTopicMember(topicId: string, captureId: string): Promise<{ added: true }> { return this.request(`/v1/topics/${encodeURIComponent(topicId)}/members/${encodeURIComponent(captureId)}`, { method: "POST" }); }
   removeTopicMember(topicId: string, captureId: string): Promise<{ removed: true }> { return this.request(`/v1/topics/${encodeURIComponent(topicId)}/members/${encodeURIComponent(captureId)}`, { method: "DELETE" }); }
-  requestDeepAnalysis(captureId: string): Promise<import("@collector/capture-contracts").AgentRunRecord> { return this.request(`/v1/captures/${encodeURIComponent(captureId)}/deep-analysis`, { method: "POST" }); }
   generateTopicDocument(topicId: string, idempotencyKey?: string): Promise<import("@collector/capture-contracts").WorkflowRunRecord> {
     return this.request(`/v1/topics/${encodeURIComponent(topicId)}/documents`, {
       method: "POST",
@@ -62,8 +64,35 @@ export class CaptureClient {
     return this.request(`/v1/topics/${encodeURIComponent(topicId)}/documents`, { method: "GET" });
   }
   getLatestTopicDocument(topicId: string): Promise<import("@collector/capture-contracts").TopicDocumentVersionRecord | null> {
-    return this.request(`/v1/topics/${encodeURIComponent(topicId)}/documents/latest`, { method: "GET" }).catch(() => null) as Promise<import("@collector/capture-contracts").TopicDocumentVersionRecord | null>;
+    return this.request(`/v1/topics/${encodeURIComponent(topicId)}/documents/latest`, { method: "GET" }).catch((error) => { if (error instanceof CaptureClientError && error.status === 404) return null; throw error; }) as Promise<import("@collector/capture-contracts").TopicDocumentVersionRecord | null>;
   }
+  getTopicDocumentVersion(documentId: string): Promise<import("@collector/capture-contracts").TopicDocumentVersionRecord> {
+    return this.request(`/v1/documents/${encodeURIComponent(documentId)}`, { method: "GET" });
+  }
+  rollbackTopicDocument(topicId: string, documentId: string): Promise<import("@collector/capture-contracts").TopicDocumentVersionRecord> {
+    return this.request(`/v1/topics/${encodeURIComponent(topicId)}/documents/${encodeURIComponent(documentId)}/rollback`, { method: "POST" });
+  }
+  previewDocumentUpdate(topicId: string): Promise<import("@collector/capture-contracts").UpdatePreview | null> {
+    return this.request<import("@collector/capture-contracts").UpdatePreview | null>(`/v1/topics/${encodeURIComponent(topicId)}/document-update-preview`, { method: "POST" }).then((value) => value ?? null);
+  }
+  confirmDocumentUpdate(topicId: string, previewId: string, accepted: boolean): Promise<import("@collector/capture-contracts").UpdatePreview> {
+    return this.request(`/v1/topics/${encodeURIComponent(topicId)}/document-update-confirm`, { method: "POST", body: JSON.stringify({ previewId, accepted }) });
+  }
+  getVerificationClaims(documentId: string): Promise<import("@collector/capture-contracts").VerificationClaim[]> {
+    return this.request(`/v1/documents/${encodeURIComponent(documentId)}/verification-claims`, { method: "GET" });
+  }
+  getAiUsage(): Promise<import("@collector/capture-contracts").AiUsageSummary> { return this.request("/v1/ai-usage", { method: "GET" }); }
+  getAiBudget(): Promise<import("@collector/capture-contracts").AiBudgetSettings> { return this.request("/v1/settings/ai-budget", { method: "GET" }); }
+  updateAiBudget(settings: { monthlyLimitUsd?: number; warningThresholdUsd?: number; enabled?: boolean }): Promise<import("@collector/capture-contracts").AiBudgetSettings> {
+    return this.request("/v1/settings/ai-budget", { method: "PUT", body: JSON.stringify(settings) });
+  }
+  createBackup(): Promise<import("@collector/capture-contracts").ExportResult> { return this.request("/v1/backups", { method: "POST" }); }
+  listBackups(): Promise<import("@collector/capture-contracts").BackupRecord[]> { return this.request("/v1/backups", { method: "GET" }); }
+  verifyBackup(id: string): Promise<import("@collector/capture-contracts").BackupVerificationResult> { return this.request(`/v1/backups/${encodeURIComponent(id)}/verify`, { method: "POST" }); }
+  exportPortable(request: import("@collector/capture-contracts").ExportRequest): Promise<import("@collector/capture-contracts").ExportResult> {
+    return this.request("/v1/exports", { method: "POST", body: JSON.stringify(request) });
+  }
+
 
   
   organizeRecent(idempotencyKey?: string): Promise<import("@collector/capture-contracts").WorkflowRunRecord> {
@@ -93,7 +122,7 @@ export class CaptureClient {
     const qs = sp.toString();
     return this.request(`/v1/materials${qs ? `?${qs}` : ""}`, {});
   }
-  getMaterial(id: string): Promise<{ id: string; title: string; sourceType: string; content: string; evidenceGrade: string; fragments: unknown[]; revisionCount: number; trashed: boolean; createdAt: string }> {
+  getMaterial(id: string): Promise<{ id: string; title: string; sourceType: string; content: string; evidenceGrade: string; fragments: unknown[]; revisionCount: number; trashed: boolean; aiProcessingDisabled: boolean; createdAt: string }> {
     return this.request(`/v1/materials/${encodeURIComponent(id)}`, {});
   }
   listRevisions(materialId: string): Promise<Array<{ id: string; captureId: string; content: string; ordinal: number; createdAt: string }>> {
@@ -101,6 +130,12 @@ export class CaptureClient {
   }
   editRevision(materialId: string, content: string): Promise<{ id: string; captureId: string; content: string; ordinal: number; createdAt: string }> {
     return this.request(`/v1/materials/${encodeURIComponent(materialId)}/revisions`, { method: "POST", body: JSON.stringify({ content }) });
+  }
+  setMaterialAiProcessing(materialId: string, disabled: boolean): Promise<{ aiProcessingDisabled: boolean }> {
+    return this.request(`/v1/materials/${encodeURIComponent(materialId)}/ai-processing`, { method: "PUT", body: JSON.stringify({ disabled }) });
+  }
+  extractMaterialText(id: string): Promise<{ text: string; pageCount: number }> {
+    return this.request(`/v1/materials/${encodeURIComponent(id)}/extract-text`, { method: "POST" });
   }
   trashMaterial(id: string): Promise<{ trashed: boolean }> {
     return this.request(`/v1/materials/${encodeURIComponent(id)}/trash`, { method: "PUT" });
@@ -131,7 +166,7 @@ export class CaptureClient {
     const payload = await response.json().catch(() => undefined);
     if (!response.ok) {
       const message = payload?.error?.message ?? `Request failed with status ${response.status}`;
-      throw new Error(message);
+      throw new CaptureClientError(message, response.status);
     }
     return payload as T;
   }

@@ -35,12 +35,32 @@ export class FakeVerifier implements Verifier {
   }
 }
 
+
+export class UnavailableVerifier implements Verifier {
+  async verify(
+    claims: Omit<VerificationClaim, "id" | "status" | "sources" | "confidence" | "summary" | "costUsd" | "verifiedAt">[],
+    _config: VerificationPolicyConfig,
+  ): Promise<VerificationClaim[]> {
+    const now = new Date().toISOString();
+    return claims.map((claim) => ({
+      ...claim,
+      id: randomUUID(),
+      status: "unverified" as const,
+      sources: [],
+      confidence: 0,
+      summary: "Verification unavailable: no external verifier is configured",
+      costUsd: 0,
+      verifiedAt: now,
+    }));
+  }
+}
 export class VerificationWorkflow {
   constructor(private verifier: Verifier, private policyConfig: VerificationPolicyConfig) {}
 
   async verifyClaims(sections: DocumentSection[]): Promise<VerificationClaim[]> {
     // Extract factual claims from document sections
     const claims = this.extractClaims(sections);
+
     if (!claims.length) return [];
 
     // Check policy
@@ -62,7 +82,7 @@ export class VerificationWorkflow {
     return this.verifier.verify(claims, this.policyConfig);
   }
 
-  private extractClaims(sections: DocumentSection[]): Omit<VerificationClaim, "id" | "status" | "sources" | "confidence" | "summary" | "costUsd" | "verifiedAt">[] {
+  extractClaims(sections: DocumentSection[]): Omit<VerificationClaim, "id" | "status" | "sources" | "confidence" | "summary" | "costUsd" | "verifiedAt">[] {
     const claims: Omit<VerificationClaim, "id" | "status" | "sources" | "confidence" | "summary" | "costUsd" | "verifiedAt">[] = [];
     const now = new Date().toISOString();
 
@@ -101,6 +121,5 @@ export class VerificationWorkflow {
 }
 
 export function createVerificationWorkflow(policyConfig: VerificationPolicyConfig): VerificationWorkflow {
-  const verifier = new FakeVerifier();
-  return new VerificationWorkflow(verifier, policyConfig);
+  return new VerificationWorkflow(new UnavailableVerifier(), policyConfig);
 }

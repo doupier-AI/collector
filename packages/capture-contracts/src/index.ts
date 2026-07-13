@@ -140,7 +140,8 @@ export interface TopicRecord {
   id: string;
   title: string;
   status: "active" | "archived";
-  origin?: "user" | "ai_suggestion";
+  origin?: "user" | "ai_suggestion" | "from_recent_cluster";
+  originRef?: string;
   sourceCaptureId?: string;
   sourceAgentRunId?: string;
   evidenceFragmentIds?: string[];
@@ -193,11 +194,12 @@ export interface ArtifactRecord {
   createdAt: string;
 }
 
-export type WorkflowRunStatus = "queued" | "processing" | "completed" | "failed" | "cancelled";
+export type WorkflowRunStatus = "queued" | "processing" | "waiting_for_budget" | "completed" | "failed" | "cancelled";
 
 export interface WorkflowRunRecord {
   id: string;
   workflowType: "recent_organization" | "topic_document";
+  topicId?: string;
   idempotencyKey: string;
   materialIds: string[];
   materialSetVersion: string;
@@ -211,8 +213,8 @@ export interface WorkflowRunRecord {
 export interface WorkflowStepRecord {
   id: string;
   workflowRunId: string;
-  stepType: "freeze_materials" | "exact_deduplication" | "cluster_materials" | "publish_snapshot" | "freeze_material_set" | "check_citations" | "build_outline" | "draft_sections" | "merge_sections" | "publish_version";
-  status: "queued" | "processing" | "completed" | "failed" | "cancelled";
+  stepType: "freeze_materials" | "exact_deduplication" | "retrieve_candidates" | "propose_clusters" | "validate_clusters" | "stabilize_clusters" | "cluster_materials" | "publish_snapshot" | "freeze_material_set" | "check_citations" | "build_outline" | "draft_sections" | "merge_sections" | "extract_key_claims" | "run_verification" | "apply_verification" | "validate_document" | "publish_version";
+  status: "queued" | "processing" | "waiting_for_budget" | "completed" | "failed" | "cancelled";
   attempt?: number;
   leaseOwner?: string;
   leaseExpiresAt?: string;
@@ -230,7 +232,7 @@ export interface ModelCallRecord {
   model: string;
   purpose: string;
   promptVersion: string;
-  status: "queued" | "processing" | "completed" | "failed" | "cancelled";
+  status: "completed" | "failed";
   inputTokens: number;
   outputTokens: number;
   cacheHitTokens: number;
@@ -286,6 +288,7 @@ export interface TopicDocumentVersionRecord {
   id: string;
   topicId: string;
   title: string;
+  materialIds: string[];
   materialSetVersion: string;
   documentVersion: number;
   sections: DocumentSection[];
@@ -364,7 +367,7 @@ export interface PendingMaterialChange {
 export interface BackupManifest {
   manifestVersion: 1;
   createdAt: string;
-  checksums: { sqlite: string; artifacts: Record<string, string> };
+  checksums: { sqlite?: string; export?: string; artifacts: Record<string, string> };
   exportedTopicIds: string[];
   exportedMaterialCount: number;
   collectionVersion: string;
@@ -392,6 +395,12 @@ export interface ExportResult {
   sizeBytes: number;
   manifest: BackupManifest;
   createdAt: string;
+}
+
+export interface BackupVerificationResult {
+  valid: boolean;
+  errors: string[];
+  manifest?: BackupManifest;
 }
 
 export const MAX_ARTIFACT_BYTES = 20 * 1024 * 1024;

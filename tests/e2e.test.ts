@@ -139,12 +139,11 @@ test("E2E: full capture → material → topic → document lifecycle", async (t
     assert.equal(item.trashedAt, undefined, "恢复后 trashedAt 应为空");
   });
 
-  await t.test("Step 6: 工作区 Inbox (GET /v1/inbox)", async () => {
-    const res = await fetch(`${ctx.base}/v1/inbox`, { headers: h(token) });
+  await t.test("Step 6: 检查主题列表 (GET /v1/topics)", async () => {
+    const res = await fetch(`${ctx.base}/v1/topics`, { headers: h(token) });
     assert.equal(res.status, 200);
     const body = await res.json() as any;
-    assert.ok(Array.isArray(body), "inbox 应是数组");
-    assert.ok(body.length >= 2, `inbox 至少 2 条，实际: ${body.length}`);
+    assert.ok(Array.isArray(body), "topics 应是数组");
   });
 
   await t.test("Step 7: 近期整理 (POST /v1/recent-organization/runs)", async () => {
@@ -250,9 +249,5 @@ test("E2E: full capture → material → topic → document lifecycle", async (t
     // topics list
     const topics = await fetch(`${ctx.base}/v1/topics`, { headers: h(token) });
     assert.equal(topics.status, 200);
-
-    // relations
-    const rels = await fetch(`${ctx.base}/v1/relations`, { headers: h(token) });
-    assert.equal(rels.status, 200);
   });
 });

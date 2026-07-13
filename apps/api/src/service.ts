@@ -1,16 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
 import {
   ACCEPTED_MIME_TYPES,
   MAX_ARTIFACT_BYTES,
   evidenceGradeFor,
   validateCaptureInput,
   type ArtifactRecord,
-  type AgentRunRecord,
   type CaptureInput,
   type CaptureRecord,
+  type FragmentRecord,
   type PreflightEvaluation,
   type RecentClusterSnapshotRecord,
   type AiBudgetSettings,
@@ -19,27 +19,27 @@ import {
   type TopicDocumentVersionRecord,
   type DocumentSection,
   type TopicRecord,
-  type TopicWorkspace,
   type WorkflowRunRecord,
   type WorkflowStepRecord,
+  type BackupManifest,
+  type BackupRecord,
+  type BackupVerificationResult,
+  type ExportRequest,
+  type ExportResult,
 } from "@collector/capture-contracts";
 import type { CollectorStore } from "./store.js";
 import { defaultDataPaths } from "./store.js";
-import { SourceParser } from "./parsers.js";
+import { SourceParser, parsePdf } from "./parsers.js";
 import { ModelGateway } from "@collector/model-gateway";
-import { type Verifier, FakeVerifier, VerificationWorkflow } from "./verification.js";
+import { createVerificationWorkflow } from "./verification.js";
 
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
+class BudgetExceededError extends Error {}
 
 export class CaptureService {
-  // Bounded concurrency pools: each queue runs at most `maxConcurrency` tasks
-  // concurrently. A failed task does not block the queue.
-  private readonly standardPool = new TaskPool(2);
-  private readonly deepPool = new TaskPool(1);
   private recentOrganizationTasks: Promise<void> = Promise.resolve();
   private topicDocumentTasks: Promise<void> = Promise.resolve();
-  private readonly scheduledRunIds = new Set<string>();
   private readonly recentWorkerId = randomUUID();
   private readonly topicDocWorkerId = randomUUID();
 
@@ -50,6 +50,7 @@ export class CaptureService {
     private modelGateway?: ModelGateway,
     private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number } = {},
   ) {
+    this.attachModelGateway(this.modelGateway);
     if (this.options.autoRunRecentOrganization !== false) {
       this.scheduleRecentOrganization();
       this.scheduleTopicDocumentRuns();
@@ -58,20 +59,36 @@ export class CaptureService {
 
   setModelGateway(gateway: ModelGateway | undefined): void {
     this.modelGateway = gateway;
-    if (gateway) void this.resumePendingModelRuns();
+    this.attachModelGateway(gateway);
   }
 
-  async resumePendingModelRuns(): Promise<void> {
-    if (!this.modelGateway) return;
-    for (const capture of this.store.listCaptures()) {
-      const fragments = this.store.listFragments(capture.id);
-      for (const run of this.store.listAgentRuns(capture.id).filter((item) => item.status === "queued" || item.status === "running")) {
-        this.scheduleModelRun(capture, fragments, run);
-      }
-    }
+  private attachModelGateway(gateway: ModelGateway | undefined): void {
+    gateway?.setCallListener(async (event) => {
+      const usage = event.usage;
+      const record: ModelCallRecord = {
+        id: randomUUID(),
+        workflowRunId: event.context.workflowRunId,
+        workflowStepId: event.context.workflowStepId,
+        provider: event.provider,
+        model: event.model,
+        purpose: event.context.purpose ?? "unknown",
+        promptVersion: event.promptVersion,
+        status: event.status,
+        inputTokens: usage?.inputTokens ?? 0,
+        outputTokens: usage?.outputTokens ?? 0,
+        cacheHitTokens: usage?.inputCacheHitTokens ?? 0,
+        estimatedCostUsd: event.estimatedCostUsd ?? 0,
+        latencyMs: event.latencyMs,
+        retryCount: 0,
+        errorMessage: event.errorMessage,
+        createdAt: event.createdAt,
+        completedAt: event.completedAt,
+      };
+      await this.store.saveModelCall(record);
+    });
   }
 
-  async drainBackgroundTasks(): Promise<void> { await Promise.all([this.standardPool.drain(), this.deepPool.drain(), this.recentOrganizationTasks]); }
+  async drainBackgroundTasks(): Promise<void> { await Promise.all([this.recentOrganizationTasks, this.topicDocumentTasks]); }
 
   async clearAllData(): Promise<void> {
     await this.drainBackgroundTasks();
@@ -89,9 +106,128 @@ export class CaptureService {
   }
 
   getDataPaths(): { database: string; artifacts: string; databaseExists: boolean } {
-    const root = process.env.COLLECTOR_DATA_DIR ?? join(process.cwd(), ".collector-data");
-    const database = join(root, "collector.sqlite");
-    return { database, artifacts: join(root, "artifacts"), databaseExists: existsSync(database) };
+    const database = this.store.getDataFilePath() ?? defaultDataPaths(process.env.COLLECTOR_DATA_DIR).database;
+    return { database, artifacts: this.artifactRoot, databaseExists: database === ":memory:" || existsSync(database) };
+  }
+
+  async createBackup(): Promise<ExportResult> {
+    await this.drainBackgroundTasks();
+    const database = this.store.getDataFilePath();
+    if (!database) throw new ValidationError("This store cannot create backups");
+    const id = randomUUID();
+    const createdAt = new Date().toISOString();
+    const backupRoot = join(this.dataControlRoot(), "backups", `${createdAt.replace(/[:.]/g, "-")}-${id}`);
+    const databasePath = join(backupRoot, database.endsWith(".json") ? "collector.json" : "collector.sqlite");
+    const recordBase = { id, path: backupRoot, manifestVersion: 1, createdAt } as const;
+    try {
+      await mkdir(backupRoot, { recursive: true });
+      await this.store.createDatabaseSnapshot(databasePath);
+      const artifactTarget = join(backupRoot, "artifacts");
+      await copyDirectory(this.artifactRoot, artifactTarget);
+      const artifacts = await checksumsForDirectory(artifactTarget);
+      const manifest: BackupManifest = {
+        manifestVersion: 1,
+        createdAt,
+        checksums: { sqlite: await checksumFile(databasePath), artifacts },
+        exportedTopicIds: this.store.listTopics().map((topic) => topic.id),
+        exportedMaterialCount: this.store.listCaptures().length,
+        collectionVersion: collectionVersion(this.store.listCaptures()),
+      };
+      await writeFile(join(backupRoot, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
+      const sizeBytes = await directorySize(backupRoot);
+      await this.store.saveBackupRecord({ ...recordBase, sizeBytes, status: "completed" });
+      return { id, path: backupRoot, sizeBytes, manifest, createdAt };
+    } catch (error) {
+      await this.store.saveBackupRecord({ ...recordBase, sizeBytes: 0, status: "failed", errorMessage: error instanceof Error ? error.message : "Backup failed" });
+      throw error;
+    }
+  }
+
+  listBackups(): BackupRecord[] { return this.store.listBackupRecords(); }
+
+  async verifyBackup(id: string): Promise<BackupVerificationResult> {
+    const record = this.store.listBackupRecords().find((candidate) => candidate.id === id);
+    if (!record || record.status !== "completed") throw new NotFoundError("Backup not found");
+    const errors: string[] = [];
+    let manifest: BackupManifest | undefined;
+    try { manifest = JSON.parse(await readFile(join(record.path, "manifest.json"), "utf8")) as BackupManifest; }
+    catch (error) { return { valid: false, errors: [`Manifest unavailable: ${error instanceof Error ? error.message : "unknown"}`] }; }
+    const databasePath = join(record.path, existsSync(join(record.path, "collector.sqlite")) ? "collector.sqlite" : "collector.json");
+    try { await this.store.verifyDatabaseSnapshot(databasePath); }
+    catch (error) { errors.push(error instanceof Error ? error.message : "Database verification failed"); }
+    if (manifest.checksums.sqlite) {
+      try { if (await checksumFile(databasePath) !== manifest.checksums.sqlite) errors.push("Database checksum mismatch"); }
+      catch (error) { errors.push(error instanceof Error ? error.message : "Database checksum failed"); }
+    }
+    const artifactsRoot = join(record.path, "artifacts");
+    for (const [artifactPath, expected] of Object.entries(manifest.checksums.artifacts)) {
+      try { if (await checksumFile(join(artifactsRoot, artifactPath)) !== expected) errors.push(`Artifact checksum mismatch: ${artifactPath}`); }
+      catch { errors.push(`Artifact missing: ${artifactPath}`); }
+    }
+    return { valid: errors.length === 0, errors, manifest };
+  }
+
+  async exportPortable(request: ExportRequest): Promise<ExportResult> {
+    if (!request || !["markdown", "json", "both"].includes(request.format)) throw new ValidationError("format must be markdown, json, or both");
+    const requestedTopicIds = request.topicIds ? new Set(request.topicIds) : undefined;
+    const topics = this.store.listTopics().filter((topic) => !requestedTopicIds || requestedTopicIds.has(topic.id));
+    if (requestedTopicIds && topics.length !== requestedTopicIds.size) throw new ValidationError("One or more topics do not exist");
+    const materialIds = requestedTopicIds
+      ? new Set(topics.flatMap((topic) => this.store.listTopicCaptureIds(topic.id)))
+      : new Set(this.store.listCaptures().filter((capture) => !(capture as CaptureRecord & { trashedAt?: string }).trashedAt).map((capture) => capture.id));
+    const materials = this.store.listCaptures().filter((capture) => materialIds.has(capture.id));
+    const documents = topics.flatMap((topic) => this.store.listTopicDocumentVersions(topic.id));
+    const id = randomUUID();
+    const createdAt = new Date().toISOString();
+    const exportRoot = join(this.dataControlRoot(), "exports", `${createdAt.replace(/[:.]/g, "-")}-${id}`);
+    await mkdir(exportRoot, { recursive: true });
+    const portable = {
+      exportVersion: 1,
+      createdAt,
+      materials: materials.map((capture) => ({ capture, fragments: this.store.listFragments(capture.id), revisions: this.store.listRevisions(capture.id) })),
+      topics: topics.map((topic) => ({ topic, materialIds: this.store.listTopicCaptureIds(topic.id) })),
+      documents,
+    };
+    let exportChecksum: string | undefined;
+    if (request.format === "json" || request.format === "both") {
+      const jsonPath = join(exportRoot, "collector-export.json");
+      await writeFile(jsonPath, JSON.stringify(portable, null, 2), "utf8");
+      exportChecksum = await checksumFile(jsonPath);
+    }
+    if (request.format === "markdown" || request.format === "both") {
+      await writePortableMarkdown(exportRoot, topics, materials, documents);
+    }
+    const artifactChecksums: Record<string, string> = {};
+    if (request.includeArtifacts) {
+      const artifactRoot = join(exportRoot, "artifacts");
+      await mkdir(artifactRoot, { recursive: true });
+      for (const material of materials) {
+        for (const artifactId of material.artifactIds ?? []) {
+          const artifact = this.store.getArtifact(artifactId);
+          if (!artifact || !existsSync(artifact.objectPath)) continue;
+          const targetName = `${artifact.id}-${sanitizeFileName(artifact.fileName)}`;
+          const target = join(artifactRoot, targetName);
+          await copyFile(artifact.objectPath, target);
+          artifactChecksums[targetName] = await checksumFile(target);
+        }
+      }
+    }
+    const manifest: BackupManifest = {
+      manifestVersion: 1,
+      createdAt,
+      checksums: { export: exportChecksum, artifacts: artifactChecksums },
+      exportedTopicIds: topics.map((topic) => topic.id),
+      exportedMaterialCount: materials.length,
+      collectionVersion: collectionVersion(materials),
+    };
+    await writeFile(join(exportRoot, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
+    const sizeBytes = await directorySize(exportRoot);
+    return { id, path: exportRoot, sizeBytes, manifest, createdAt };
+  }
+
+  private dataControlRoot(): string {
+    const database = this.store.getDataFilePath();
+    return database && database !== ":memory:" ? dirname(database) : dirname(this.artifactRoot);
   }
 
   preflight(value: unknown): PreflightEvaluation {
@@ -154,10 +290,6 @@ export class CaptureService {
     return record;
   }
 
-  listInbox(): import("@collector/capture-contracts").InboxItem[] { return this.store.listCaptures().map((capture) => ({ capture, fragments: this.store.listFragments(capture.id), knowledgeItems: this.store.listKnowledgeItems(capture.id), reviewProposals: this.store.listReviewProposals(capture.id), agentRuns: this.store.listAgentRuns(capture.id), })); }
-  listRelations(captureId?: string): import("@collector/capture-contracts").RelationRecord[] { return this.store.listRelations(captureId); }
-
-
   async testAiConnection(): Promise<{ ok: true; model: string } | { ok: false; error: string }> {
     if (!this.modelGateway) return { ok: false, error: "Model gateway is not configured" };
     return this.modelGateway.testConnection();
@@ -186,7 +318,15 @@ export class CaptureService {
       id: randomUUID(), workflowType: "recent_organization", idempotencyKey,
       materialIds, materialSetVersion, status: "queued", createdAt: now,
     };
-    const steps: WorkflowStepRecord[] = (["freeze_materials", "exact_deduplication", "cluster_materials", "publish_snapshot"] as const).map((stepType) => ({
+    const steps: WorkflowStepRecord[] = ([
+      "freeze_materials",
+      "exact_deduplication",
+      "retrieve_candidates",
+      "propose_clusters",
+      "validate_clusters",
+      "stabilize_clusters",
+      "publish_snapshot",
+    ] as const).map((stepType) => ({
       id: randomUUID(), workflowRunId: run.id, stepType, status: "queued", createdAt: now,
     }));
     await this.store.createWorkflowRun(run, steps);
@@ -216,19 +356,24 @@ export class CaptureService {
       let progressed = false;
       for (const run of this.store.listRecoverableWorkflowRuns()) {
         if (completedCount >= maxSteps) break;
+        if (run.status === "waiting_for_budget" && !this.checkAiBudget()) continue;
         const now = new Date();
         const claimed = this.store.claimWorkflowStep(run.id, this.recentWorkerId, now.toISOString(), new Date(now.getTime() + (this.options.recentLeaseMs ?? 30_000)).toISOString());
         if (!claimed) continue;
         progressed = true;
-        const processing: WorkflowRunRecord = { ...run, status: "processing", startedAt: run.startedAt ?? now.toISOString() };
+        const processing: WorkflowRunRecord = { ...run, status: "processing", startedAt: run.startedAt ?? now.toISOString(), errorMessage: undefined };
         try {
           const { step, snapshot } = await this.executeRecentOrganizationStep(processing, claimed);
           if (this.store.completeWorkflowStep(step, snapshot ? { ...processing, status: "completed", completedAt: step.completedAt! } : processing, snapshot)) {
             completedCount += 1;
           }
-        } catch {
+        } catch (error) {
           const completedAt = new Date().toISOString();
-          this.store.failWorkflowStep({ ...claimed, status: "failed", completedAt }, { ...processing, status: "failed", errorMessage: "Recent organization step failed", completedAt });
+          if (error instanceof BudgetExceededError) {
+            this.store.waitWorkflowStep(claimed, { ...processing, status: "waiting_for_budget", errorMessage: error.message });
+          } else {
+            this.store.failWorkflowStep({ ...claimed, status: "failed", completedAt }, { ...processing, status: "failed", errorMessage: error instanceof Error ? error.message : "Recent organization step failed", completedAt });
+          }
           completedCount += 1;
         }
       }
@@ -250,32 +395,66 @@ export class CaptureService {
         if (material && !representativeByChecksum.has(material.checksum)) representativeByChecksum.set(material.checksum, material.id);
       }
       output = { representativeMaterialIds: [...representativeByChecksum.values()] };
-    } else if (claimed.stepType === "cluster_materials") {
+    } else if (claimed.stepType === "retrieve_candidates") {
       const dedup = this.store.getWorkflowSteps(run.id).find((s) => s.stepType === "exact_deduplication");
       const repIds = (dedup?.output as { representativeMaterialIds?: string[] } | undefined)?.representativeMaterialIds ?? [];
-      const materials = repIds
+      const localOnlyMaterialIds = repIds.filter((id) => this.store.getCapture(id)?.aiProcessingDisabled);
+      output = { candidateMaterialIds: repIds.filter((id) => !localOnlyMaterialIds.includes(id)), localOnlyMaterialIds };
+    } else if (claimed.stepType === "propose_clusters" || claimed.stepType === "cluster_materials") {
+      const steps = this.store.getWorkflowSteps(run.id);
+      const candidates = steps.find((step) => step.stepType === "retrieve_candidates")?.output as { candidateMaterialIds?: string[] } | undefined;
+      const dedup = steps.find((step) => step.stepType === "exact_deduplication")?.output as { representativeMaterialIds?: string[] } | undefined;
+      const candidateIds = candidates?.candidateMaterialIds ?? dedup?.representativeMaterialIds ?? [];
+      const materials = candidateIds
         .map((id) => this.store.getCapture(id))
         .filter(Boolean)
         .map((c) => ({ id: c!.id, content: c!.content ?? c!.sourceUrl ?? "" }));
       if (this.modelGateway && materials.length > 0) {
+        if (!this.checkAiBudget()) throw new BudgetExceededError("AI monthly budget exceeded");
         try {
-          const result = await this.modelGateway.clusterMaterials(materials);
+          const result = await this.modelGateway.clusterMaterials(materials, { context: { workflowRunId: run.id, workflowStepId: claimed.id, purpose: "recent_cluster_proposal" } });
           output = { clusters: result.clusters, unclusteredMaterialIds: result.unclusteredMaterialIds };
         } catch (err) {
-          console.error("cluster_materials failed:", err instanceof Error ? err.message : err);
-          output = { clusters: [], unclusteredMaterialIds: repIds };
+          console.error("Recent cluster proposal failed:", err instanceof Error ? err.message : err);
+          output = { clusters: [], unclusteredMaterialIds: candidateIds };
         }
       } else {
-        if (!this.modelGateway) console.warn("cluster_materials: model gateway unavailable, skipping clustering");
-        output = { clusters: [], unclusteredMaterialIds: repIds };
+        if (!this.modelGateway) console.warn("Recent cluster proposal skipped: model gateway unavailable");
+        output = { clusters: [], unclusteredMaterialIds: candidateIds };
       }
-    } else {
-      const dedup = this.store.getWorkflowSteps(run.id).find((s) => s.stepType === "exact_deduplication");
-      const repIds = (dedup?.output as { representativeMaterialIds?: string[] } | undefined)?.representativeMaterialIds ?? [];
-      const clusterStep = this.store.getWorkflowSteps(run.id).find((s) => s.stepType === "cluster_materials");
-      const clusterOut = clusterStep?.output as { clusters?: Array<{ name: string; summary: string; materialIds: string[] }>; unclusteredMaterialIds?: string[] } | undefined;
-      const clusters = (clusterOut?.clusters ?? []).map((c, i) => ({ id: randomUUID(), name: c.name, summary: c.summary, materialIds: c.materialIds }));
-      snapshot = { id: randomUUID(), workflowRunId: run.id, materialSetVersion: run.materialSetVersion, clusters, unclusteredMaterialIds: clusterOut?.unclusteredMaterialIds ?? repIds, createdAt: completedAt };
+    } else if (claimed.stepType === "validate_clusters") {
+      const steps = this.store.getWorkflowSteps(run.id);
+      const candidateIds = ((steps.find((step) => step.stepType === "retrieve_candidates")?.output as { candidateMaterialIds?: string[] } | undefined)?.candidateMaterialIds ?? []);
+      const proposal = steps.find((step) => step.stepType === "propose_clusters" || step.stepType === "cluster_materials")?.output as { clusters?: Array<{ name: string; summary: string; materialIds: string[] }>; unclusteredMaterialIds?: string[] } | undefined;
+      const allowed = new Set(candidateIds);
+      const clustered = new Set<string>();
+      const clusters: Array<{ name: string; summary: string; materialIds: string[] }> = [];
+      for (const proposed of proposal?.clusters ?? []) {
+        const materialIds = [...new Set(proposed.materialIds)].filter((id) => allowed.has(id) && !clustered.has(id));
+        if (!proposed.name?.trim() || materialIds.length < 2) continue;
+        materialIds.forEach((id) => clustered.add(id));
+        clusters.push({ name: proposed.name.trim(), summary: proposed.summary?.trim() ?? "", materialIds });
+      }
+      output = { clusters, unclusteredMaterialIds: candidateIds.filter((id) => !clustered.has(id)) };
+    } else if (claimed.stepType === "stabilize_clusters") {
+      const validated = this.store.getWorkflowSteps(run.id).find((step) => step.stepType === "validate_clusters")?.output as { clusters?: Array<{ name: string; summary: string; materialIds: string[] }>; unclusteredMaterialIds?: string[] } | undefined;
+      const previous = this.store.getLatestRecentClusterSnapshot();
+      const clusters = (validated?.clusters ?? []).map((cluster) => {
+        const memberKey = [...cluster.materialIds].sort().join("\u0000");
+        const prior = previous?.clusters.find((candidate) => [...candidate.materialIds].sort().join("\u0000") === memberKey);
+        return { id: prior?.id ?? randomUUID(), ...cluster };
+      });
+      output = { clusters, unclusteredMaterialIds: validated?.unclusteredMaterialIds ?? [] };
+    } else if (claimed.stepType === "publish_snapshot") {
+      const steps = this.store.getWorkflowSteps(run.id);
+      const dedup = steps.find((step) => step.stepType === "exact_deduplication")?.output as { representativeMaterialIds?: string[] } | undefined;
+      const source = steps.find((step) => step.stepType === "stabilize_clusters")?.output
+        ?? steps.find((step) => step.stepType === "validate_clusters")?.output
+        ?? steps.find((step) => step.stepType === "cluster_materials")?.output;
+      const clusterOut = source as { clusters?: Array<{ id?: string; name: string; summary: string; materialIds: string[] }>; unclusteredMaterialIds?: string[] } | undefined;
+      const clusters = (clusterOut?.clusters ?? []).map((cluster) => ({ id: cluster.id ?? randomUUID(), name: cluster.name, summary: cluster.summary, materialIds: cluster.materialIds }));
+      const localOnlyMaterialIds = (steps.find((step) => step.stepType === "retrieve_candidates")?.output as { localOnlyMaterialIds?: string[] } | undefined)?.localOnlyMaterialIds ?? [];
+      snapshot = { id: randomUUID(), workflowRunId: run.id, materialSetVersion: run.materialSetVersion, clusters, unclusteredMaterialIds: [...new Set([...(clusterOut?.unclusteredMaterialIds ?? dedup?.representativeMaterialIds ?? []), ...localOnlyMaterialIds])], createdAt: completedAt };
     }
     return { step: { ...claimed, status: "completed", output, completedAt }, snapshot };
   }
@@ -303,52 +482,21 @@ export class CaptureService {
   }
 
 
-  async requestDeepAnalysis(captureId: string): Promise<AgentRunRecord> {
-    const capture = this.getCapture(captureId);
-    if (capture.aiProcessingDisabled) throw new ValidationError("AI processing is disabled for this capture");
-    if (!this.modelGateway) throw new ValidationError("DeepSeek is not configured and authorized");
-    const fragments = this.store.listFragments(captureId);
-    if (!fragments.length) throw new ValidationError("Capture has no parsed fragments for deep analysis");
-    const existing = this.store.listAgentRuns(captureId).find((run) => run.processingLevel === "L3" && (run.status === "queued" || run.status === "running"));
-    if (existing) return existing;
-    const run: AgentRunRecord = {
-      id: randomUUID(), captureId, provider: this.modelGateway.providerName, model: "deepseek-v4-pro",
-      promptVersion: this.modelGateway.promptVersion, processingLevel: "L3", status: "queued",
-      retryCount: 0, createdAt: new Date().toISOString(),
-    };
-    await this.store.saveAgentRun(run);
-    this.scheduleModelRun(capture, fragments, run);
-    return run;
-  }
-
-
-  async createTopic(title: string, secondArg?: { captureId: string; agentRunId: string; evidenceFragmentIds: string[] } | string[]): Promise<TopicRecord> {
+  async createTopic(title: string, materialIds?: string[]): Promise<TopicRecord> {
     if (!title.trim()) throw new ValidationError("title is required");
-    const source = Array.isArray(secondArg) ? undefined : secondArg;
-    const materialIds = Array.isArray(secondArg) ? secondArg : undefined;
-    const existingSuggestion = source && this.store.listTopics().find((topic) => topic.sourceAgentRunId === source.agentRunId && topic.title === title.trim());
-    if (existingSuggestion) return existingSuggestion;
-    if (source && !this.store.getCapture(source.captureId)) throw new ValidationError("Unknown source capture");
-    if (source) {
-      const allowedFragments = new Set(this.store.listFragments(source.captureId).map((fragment) => fragment.id));
-      if (!source.evidenceFragmentIds.length || source.evidenceFragmentIds.some((id) => !allowedFragments.has(id))) throw new ValidationError("Topic suggestion must cite valid source fragments");
-      if (!this.store.listAgentRuns(source.captureId).some((run) => run.id === source.agentRunId && run.status === "succeeded")) throw new ValidationError("Unknown successful source AgentRun");
-    }
     const now = new Date().toISOString();
     const topic: TopicRecord = {
-      id: randomUUID(), title: title.trim(), status: "active", origin: source ? "ai_suggestion" : "user",
-      ...(source ? { sourceCaptureId: source.captureId, sourceAgentRunId: source.agentRunId, evidenceFragmentIds: source.evidenceFragmentIds } : {}),
-      createdAt: now, updatedAt: now,
+      id: randomUUID(), title: title.trim(), status: "active", origin: "user", createdAt: now, updatedAt: now,
     };
-    if (source) await this.store.saveTopicWithMembership(topic, source.captureId);
-    else if (materialIds) {
+    if (materialIds && materialIds.length) {
       await this.store.saveTopic(topic);
       for (const captureId of materialIds) {
         if (!this.store.getCapture(captureId)) continue;
         await this.store.saveTopicMembership(topic.id, captureId, now);
       }
+    } else {
+      await this.store.saveTopic(topic);
     }
-    else await this.store.saveTopic(topic);
     return topic;
   }
 
@@ -380,14 +528,6 @@ export class CaptureService {
   async removeTopicMember(topicId: string, captureId: string): Promise<void> {
     if (!this.store.getTopic(topicId)) throw new NotFoundError("Topic not found");
     await this.store.removeTopicMembership(topicId, captureId);
-  }
-
-  getTopicWorkspace(topicId: string): TopicWorkspace {
-    const topic = this.store.getTopic(topicId);
-    if (!topic) throw new NotFoundError("Topic not found");
-    const ids = new Set(this.store.listTopicCaptureIds(topicId));
-    const captures = this.store.listCaptures().filter((c) => ids.has(c.id));
-    return { topic, captures, relations: [] };
   }
 
   async createArtifact(fileName: string, mimeType: string, bytes: Uint8Array): Promise<ArtifactRecord> {
@@ -434,74 +574,6 @@ export class CaptureService {
       id: randomUUID(), captureId: record.id, ordinal, text: fragment.text, locator: fragment.locator, createdAt,
     }));
     await this.store.saveFragments(fragments);
-    await this.enqueueModelRun(record, fragments);
-  }
-
-  private async enqueueModelRun(record: CaptureRecord, fragments: Array<{ id: string; captureId: string; ordinal: number; text: string; locator?: CaptureRecord["locator"]; createdAt: string }>): Promise<void> {
-    if (!this.modelGateway || record.aiProcessingDisabled || record.preflight.processingLevel === "L0") return;
-    const run: AgentRunRecord = {
-      id: randomUUID(), captureId: record.id, provider: this.modelGateway.providerName, model: this.modelGateway.modelName,
-      promptVersion: this.modelGateway.promptVersion, processingLevel: record.preflight.processingLevel,
-      status: "queued", retryCount: 0, createdAt: new Date().toISOString(),
-    };
-    await this.store.saveAgentRun(run);
-    this.scheduleModelRun(record, fragments, run);
-  }
-
-  private scheduleModelRun(record: CaptureRecord, fragments: Array<{ id: string; captureId: string; ordinal: number; text: string; locator?: CaptureRecord["locator"]; createdAt: string }>, run: AgentRunRecord): void {
-    if (this.scheduledRunIds.has(run.id)) return;
-    this.scheduledRunIds.add(run.id);
-    const task = async () => {
-      try { await this.executeModelRun(record, fragments, run); }
-      catch {
-        await this.store.saveAgentRun({ ...run, status: "failed", errorCode: "provider_error", errorMessage: "Unexpected model processing failure", completedAt: new Date().toISOString() });
-      }
-    };
-    const cleanup = () => { this.scheduledRunIds.delete(run.id); };
-    if (run.processingLevel === "L3") this.deepPool.enqueue(task, cleanup);
-    else this.standardPool.enqueue(task, cleanup);
-  }
-
-  private async executeModelRun(record: CaptureRecord, fragments: Array<{ id: string; captureId: string; ordinal: number; text: string; locator?: CaptureRecord["locator"]; createdAt: string }>, run: AgentRunRecord): Promise<void> {
-    const gateway = this.modelGateway;
-    if (!gateway) return;
-    const requestedModel = run.processingLevel === "L3" ? "deepseek-v4-pro" : gateway.modelName;
-    const running = { ...run, provider: gateway.providerName, model: requestedModel, promptVersion: gateway.promptVersion, status: "running" as const };
-    await this.store.saveAgentRun(running);
-    const candidates = this.store.listCaptures()
-      .filter((candidate) => candidate.id !== record.id && candidate.content?.trim())
-      .slice(0, 20)
-      .map((candidate) => ({ id: candidate.id, content: candidate.content!.slice(0, 4_000) }));
-    const result = await gateway.extract(fragments, candidates, { model: requestedModel, thinking: run.processingLevel === "L3" });
-    const completedAt = new Date().toISOString();
-    if (!result.extraction) {
-      await this.store.saveAgentRun({
-        ...running, status: "failed", retryCount: result.retryCount, latencyMs: result.latencyMs,
-        inputTokens: result.usage?.inputTokens, outputTokens: result.usage?.outputTokens,
-        estimatedCostUsd: result.estimatedCostUsd,
-        errorCode: result.errorCode, errorMessage: result.errorMessage, completedAt,
-      });
-      return;
-    }
-    const knownCaptureIds = new Set(this.store.listCaptures().map((capture) => capture.id));
-    const invalidTarget = result.extraction.relationSuggestions.find((relation) => relation.targetCaptureId && !knownCaptureIds.has(relation.targetCaptureId));
-    if (invalidTarget) {
-      await this.store.saveAgentRun({
-        ...running, status: "failed", retryCount: result.retryCount, latencyMs: result.latencyMs,
-        inputTokens: result.usage?.inputTokens, outputTokens: result.usage?.outputTokens,
-        estimatedCostUsd: result.estimatedCostUsd, errorCode: "invalid_schema",
-        errorMessage: "Model referenced an unknown target capture", completedAt,
-      });
-      return;
-    }
-    const fragmentById = new Map(fragments.map((fragment) => [fragment.id, fragment]));
-    const createdAt = completedAt;
-    await this.store.saveAgentRun({
-      ...running, status: "succeeded", retryCount: result.retryCount, latencyMs: result.latencyMs,
-      inputTokens: result.usage?.inputTokens, outputTokens: result.usage?.outputTokens,
-      estimatedCostUsd: result.estimatedCostUsd,
-      output: { summary: result.extraction.summary, topicSuggestions: result.extraction.topicSuggestions }, completedAt,
-    });
   }
 
   // ── Materials (Issue 03) ──────────────────────────────────────────
@@ -522,7 +594,12 @@ export class CaptureService {
       sourceType: c.captureType,
       capturedAt: c.capturedAt,
       snippet: (c.content ?? c.sourceUrl ?? "").slice(0, 200),
+      content: (c.content ?? c.sourceUrl ?? "").slice(0, 200),
+      createdAt: c.createdAt,
+      evidenceGrade: c.evidenceGrade,
+      revisionCount: this.store.listRevisions(c.id).length,
       hasSource: Boolean(c.sourceUrl || c.locator?.kind === "file" || c.locator?.kind === "browser"),
+      aiProcessingDisabled: Boolean(c.aiProcessingDisabled),
       trashedAt: c.trashedAt,
       trashed: Boolean(c.trashedAt),
     }));
@@ -533,7 +610,7 @@ export class CaptureService {
     const record = this.store.getCapture(id);
     if (!record) throw new NotFoundError("Material not found");
     const fragments = this.store.listFragments(id);
-    const revisions = (this.store as any).listRevisions(id);
+    const revisions = this.store.listRevisions(id);
     const revisionCount = revisions.length;
     const trashed = Boolean((record as any).trashedAt);
     const latestRevision = revisions[0];
@@ -550,10 +627,11 @@ export class CaptureService {
       pageNumber: record.locator?.kind === "file" ? (record.locator as any).pageNumber : undefined,
       evidenceGrade: record.evidenceGrade,
       processingStatus: record.status,
+      aiProcessingDisabled: Boolean(record.aiProcessingDisabled),
       trashedAt: (record as any).trashedAt,
       trashed,
       revisionCount,
-      fragments: fragments.map(f => ({ text: f.text, locator: (f.locator ?? {}) as Record<string, unknown> })),
+      fragments: fragments.map((fragment) => ({ id: fragment.id, ordinal: fragment.ordinal, text: fragment.text, locator: (fragment.locator ?? {}) as Record<string, unknown> })),
     };
   }
 
@@ -566,11 +644,46 @@ export class CaptureService {
   async editRevision(materialId: string, content: string) {
     const record = this.store.getCapture(materialId);
     if (!record) throw new NotFoundError("Material not found");
-    const existing = (this.store as any).listRevisions(materialId);
+    const existing = this.store.listRevisions(materialId);
     const ordinal = (existing[0]?.ordinal ?? 0) + 1;
-    const revision = { id: randomUUID(), captureId: materialId, content, ordinal, createdAt: new Date().toISOString() };
-    await (this.store as any).saveRevision(revision);
+    const createdAt = new Date().toISOString();
+    const revision = { id: randomUUID(), captureId: materialId, content, ordinal, createdAt };
+    const updated: CaptureRecord = { ...record, content, checksum: checksumCapture({ ...record, content }), status: "inbox" };
+    const parsed = await this.parser.parse({ ...updated, captureType: "pasted_text" }, []);
+    const fragments: FragmentRecord[] = parsed.fragments.map((fragment, index) => ({
+      id: randomUUID(), captureId: materialId, ordinal: index, text: fragment.text, locator: fragment.locator, createdAt,
+    }));
+    await this.store.saveMaterialRevision(revision, updated, fragments);
     return revision;
+  }
+
+  async setMaterialAiProcessing(materialId: string, disabled: boolean): Promise<{ aiProcessingDisabled: boolean }> {
+    const record = this.store.getCapture(materialId);
+    if (!record) throw new NotFoundError("Material not found");
+    await this.store.saveCapture({ ...record, aiProcessingDisabled: disabled });
+    return { aiProcessingDisabled: disabled };
+  }
+
+  // ── PDF text extraction ───────────────────────────────────────────
+  async extractMaterialText(materialId: string): Promise<{ text: string; pageCount: number }> {
+    const record = this.store.getCapture(materialId);
+    if (!record) throw new NotFoundError("Material not found");
+    if (record.captureType !== "local_file") throw new ValidationError("Only local_file materials support text extraction");
+    const artifacts = (record.artifactIds ?? [])
+      .map((id) => this.store.getArtifact(id))
+      .filter((item): item is ArtifactRecord => Boolean(item));
+    const pdfArtifacts = artifacts.filter((a) => a.mimeType === "application/pdf");
+    if (!pdfArtifacts.length) throw new ValidationError("No PDF artifact found for this material");
+    const allFragments: Awaited<ReturnType<typeof parsePdf>> = [];
+    for (const artifact of pdfArtifacts) {
+      const bytes = await readFile(artifact.objectPath);
+      const fragments = await parsePdf(new Uint8Array(bytes), artifact);
+      allFragments.push(...fragments);
+    }
+    const text = allFragments.map((f) => f.text).join("\n\n");
+    const pageCount = allFragments.length;
+    await this.editRevision(materialId, text);
+    return { text, pageCount };
   }
 
   async trashMaterial(id: string) {
@@ -595,27 +708,61 @@ export class CaptureService {
   }
 
   async permanentDelete(id: string, acknowledge?: boolean) {
-    if (!this.store.getCapture(id)) throw new NotFoundError("Material not found");
+    const material = this.store.getCapture(id);
+    if (!material) throw new NotFoundError("Material not found");
     if (!acknowledge) {
-      const impact = (this.store as any).getDeleteImpact(id);
+      const impact = this.store.getDeleteImpact(id);
       if (!impact.hasNoImpact) return { impactBlocked: true };
     }
-    await (this.store as any).deleteCapture(id);
+    const removedFragmentIds = new Set(this.store.listFragments(id).map((fragment) => fragment.id));
+    for (const run of this.store.listRecoverableWorkflowRuns().filter((candidate) => candidate.materialIds.includes(id))) {
+      this.store.cancelWorkflowRun(run);
+    }
+    for (const topic of this.store.listTopics()) {
+      const latest = this.store.getLatestTopicDocumentVersion(topic.id);
+      if (!latest || !latest.sections.some((section) => section.citationIds.some((citationId) => removedFragmentIds.has(citationId)))) continue;
+      const remainingMaterials = latest.materialIds
+        .filter((materialId) => materialId !== id)
+        .map((materialId) => this.store.getCapture(materialId))
+        .filter((candidate): candidate is CaptureRecord => Boolean(candidate));
+      const createdAt = new Date().toISOString();
+      await this.store.saveTopicDocumentVersion({
+        ...latest,
+        id: randomUUID(),
+        documentVersion: latest.documentVersion + 1,
+        materialIds: remainingMaterials.map((candidate) => candidate.id),
+        materialSetVersion: collectionVersion(remainingMaterials),
+        gapItems: [
+          ...latest.gapItems,
+          { kind: "missing_context", text: `A cited material was permanently deleted: ${materialTitle(material)}` },
+        ],
+        createdAt,
+        publishedAt: createdAt,
+      });
+    }
+    await this.store.deleteCapture(id);
     return { deleted: true };
   }
 
   // ── Topic Promotion (Issue 06) ────────────────────────────────────
-  async promoteClusterToTopic(clusterSnapshotId: string, clusterIndex: number, title: string, materialIds: string[] | undefined) {
+  async promoteClusterToTopic(clusterSnapshotId: string, clusterIndex: number, title: string) {
     if (!title?.trim()) throw new ValidationError("title is required");
-    const ids = materialIds ?? [];
-    if (!ids.length) throw new ValidationError("At least one material is required");
+    const snapshot = this.store.getRecentClusterSnapshot(clusterSnapshotId);
+    if (!snapshot) throw new NotFoundError("Recent cluster snapshot not found");
+    if (!Number.isInteger(clusterIndex) || clusterIndex < 0 || clusterIndex >= snapshot.clusters.length) {
+      throw new ValidationError("clusterIndex is outside the snapshot");
+    }
+    const cluster = snapshot.clusters[clusterIndex];
+    if (!cluster.materialIds.length) throw new ValidationError("Cluster has no materials");
+    for (const captureId of cluster.materialIds) {
+      if (!this.store.getCapture(captureId)) throw new ValidationError("Cluster references a missing material");
+    }
     const now = new Date().toISOString();
     const topic: TopicRecord = {
-      id: randomUUID(), title: title.trim(), status: "active", createdAt: now, updatedAt: now,
+      id: randomUUID(), title: title.trim(), status: "active", origin: "from_recent_cluster", originRef: clusterSnapshotId, createdAt: now, updatedAt: now,
     };
     await this.store.saveTopic(topic);
-    for (const captureId of ids) {
-      if (!this.store.getCapture(captureId)) throw new NotFoundError("Material not found: " + captureId);
+    for (const captureId of cluster.materialIds) {
       await this.store.saveTopicMembership(topic.id, captureId, now);
     }
     return topic;
@@ -637,12 +784,14 @@ export class CaptureService {
     if (!topic) throw new NotFoundError("Topic not found");
     const memberIds = this.store.listTopicCaptureIds(topicId);
     if (!memberIds.length) throw new ValidationError("Topic has no materials");
+    const localOnly = memberIds.filter((id) => this.store.getCapture(id)?.aiProcessingDisabled);
+    if (localOnly.length) throw new ValidationError("Topic contains materials with cloud AI processing disabled");
     const materialSetVersion = createHash("sha256").update(JSON.stringify(memberIds.sort())).digest("hex");
     const existing = this.store.findWorkflowRun("topic_document", idempotencyKey ?? "", materialSetVersion);
     if (existing) return existing;
     const now = new Date().toISOString();
-    const run: WorkflowRunRecord = { id: (randomUUID as any)(), workflowType: "topic_document", idempotencyKey: idempotencyKey ?? "", materialIds: memberIds, materialSetVersion, status: "queued", createdAt: now };
-    const steps = ["freeze_material_set","check_citations","build_outline","draft_sections","merge_sections","publish_version"].map((st,i) => ({ id: (randomUUID as any)(), workflowRunId: run.id, stepType: st, status: "queued", createdAt: now, ordinal: i }));
+    const run: WorkflowRunRecord = { id: randomUUID(), workflowType: "topic_document", topicId, idempotencyKey: idempotencyKey ?? "", materialIds: memberIds, materialSetVersion, status: "queued", createdAt: now };
+    const steps = ["freeze_material_set", "check_citations", "build_outline", "draft_sections", "merge_sections", "extract_key_claims", "run_verification", "apply_verification", "validate_document", "publish_version"].map((st, i) => ({ id: randomUUID(), workflowRunId: run.id, stepType: st, status: "queued", createdAt: now, ordinal: i }));
     await this.store.createWorkflowRun(run, steps as any);
     this.scheduleTopicDocumentRuns();
     return run;
@@ -656,46 +805,73 @@ export class CaptureService {
     return this.store.listTopicDocumentVersions(topicId);
   }
 
+  async rollbackTopicDocument(topicId: string, documentVersionId: string): Promise<TopicDocumentVersionRecord> {
+    const topic = this.store.getTopic(topicId);
+    if (!topic) throw new NotFoundError("Topic not found");
+    const source = this.store.getTopicDocumentVersion(documentVersionId);
+    if (!source || source.topicId !== topicId) throw new NotFoundError("Document version not found for topic");
+    const versions = this.store.listTopicDocumentVersions(topicId);
+    const createdAt = new Date().toISOString();
+    const restored: TopicDocumentVersionRecord = {
+      ...source,
+      id: randomUUID(),
+      documentVersion: Math.max(...versions.map((version) => version.documentVersion), 0) + 1,
+      title: topic.title,
+      sections: source.sections.map((section) => ({ ...section, citationIds: [...section.citationIds] })),
+      gapItems: source.gapItems.map((item) => ({ ...item })),
+      verificationSummary: { ...source.verificationSummary },
+      status: "published",
+      createdAt,
+      publishedAt: createdAt,
+    };
+    await this.store.saveTopicDocumentVersion(restored);
+    const claims = this.store.listVerificationClaims(source.id);
+    if (claims.length) {
+      await this.store.saveVerificationClaims(claims.map((claim) => ({
+        ...claim,
+        id: randomUUID(),
+        documentVersionId: restored.id,
+        createdAt,
+      })));
+    }
+    return restored;
+  }
+
   getTopicDocumentVersion(documentId: string): TopicDocumentVersionRecord | undefined {
     return this.store.getTopicDocumentVersion(documentId);
   }
 
-  async resumeTopicDocumentRuns(): Promise<number> {
+  async resumeTopicDocumentRuns(maxSteps = Number.POSITIVE_INFINITY): Promise<number> {
     let completed = 0;
-    for (const run of this.store.listRecoverableWorkflowRuns()) {
-      if (run.workflowType !== "topic_document") continue;
-      const now = new Date();
-      const claimed = this.store.claimWorkflowStep(run.id, this.topicDocWorkerId, now.toISOString(), new Date(now.getTime() + 60000).toISOString());
-      if (!claimed) continue;
-      const processing: WorkflowRunRecord = { ...run, status: "processing", startedAt: run.startedAt ?? now.toISOString() };
-      try {
-        const { step, version } = await this.executeTopicDocumentStep(processing, claimed);
-        if (this.store.completeWorkflowStep(step, version ? { ...processing, status: "completed", completedAt: step.completedAt! } : processing)) completed++;
-      } catch {
-        this.store.failWorkflowStep({ ...claimed, status: "failed", completedAt: new Date().toISOString() }, { ...processing, status: "failed", errorMessage: "Topic document step failed", completedAt: new Date().toISOString() });
-        completed++;
+    while (completed < maxSteps) {
+      let progressed = false;
+      for (const run of this.store.listRecoverableWorkflowRuns()) {
+        if (completed >= maxSteps || run.workflowType !== "topic_document") continue;
+        if (run.status === "waiting_for_budget" && !this.checkAiBudget()) continue;
+        const now = new Date();
+        const claimed = this.store.claimWorkflowStep(run.id, this.topicDocWorkerId, now.toISOString(), new Date(now.getTime() + 60000).toISOString());
+        if (!claimed) continue;
+        progressed = true;
+        const processing: WorkflowRunRecord = { ...run, status: "processing", startedAt: run.startedAt ?? now.toISOString(), errorMessage: undefined };
+        try {
+          const { step, version } = await this.executeTopicDocumentStep(processing, claimed);
+          this.store.completeWorkflowStep(step, version ? { ...processing, status: "completed", completedAt: step.completedAt! } : processing);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : "Topic document step failed";
+          if (error instanceof BudgetExceededError) {
+            this.store.waitWorkflowStep(claimed, { ...processing, status: "waiting_for_budget", errorMessage });
+          } else {
+            this.store.failWorkflowStep({ ...claimed, status: "failed", completedAt: new Date().toISOString() }, { ...processing, status: "failed", errorMessage, completedAt: new Date().toISOString() });
+          }
+        }
+        completed += 1;
       }
+      if (!progressed) break;
     }
     return completed;
   }
 
   
-  private scheduleVerification(version: import("@collector/capture-contracts").TopicDocumentVersionRecord): void {
-    const store = this.store;
-    void (async () => {
-      try {
-        const policyConfig = store.getVerificationPolicy();
-        const workflow = new VerificationWorkflow(new FakeVerifier(), policyConfig);
-        const claims = await workflow.verifyClaims(version.sections);
-        if (claims.length > 0) {
-          const verifiedClaims = claims.map((c) => ({ ...c, documentVersionId: version.id }));
-          await store.saveVerificationClaims(verifiedClaims);
-        }
-      } catch (err) {
-        console.error("Verification failed for document " + version.id, err);
-      }
-    })();
-  }
   private async executeTopicDocumentStep(run: WorkflowRunRecord, step: WorkflowStepRecord): Promise<{ step: WorkflowStepRecord; version?: TopicDocumentVersionRecord }> {
     const completedAt = new Date().toISOString();
     const out: WorkflowStepRecord = { ...step, status: "completed", completedAt };
@@ -710,42 +886,30 @@ export class CaptureService {
       return { step: { ...out, output: { citedMaterialCount: run.materialIds.length } } };
     }
     if (step.stepType === "build_outline") {
+      if (!this.modelGateway) throw new Error("AI model is not configured");
       const mats = run.materialIds.map((id: string) => this.store.getCapture(id)).filter(Boolean);
-      if (this.modelGateway) {
-        try {
-          const allTopics = this.store.listTopics();
-          const topic = allTopics.find((t: any) => this.store.listTopicCaptureIds(t.id).some((mid: string) => run.materialIds.includes(mid)));
-          const materialInputs = mats.map((m: any) => ({ id: m.id, content: m.content ?? "" }));
-          const result = await this.modelGateway.generateDocumentOutline(materialInputs, topic?.title ?? "Untitled Document");
-          if (!("errorCode" in result)) {
-            return { step: { ...out, output: result } };
-          }
-        } catch (e) { console.error("Outline generation failed:", e instanceof Error ? e.message : e); }
-      }
-      console.warn("build_outline: model gateway unavailable or call failed, using raw material fallback — document will lack AI-generated outline");
-      return { step: { ...out, output: { title: "Combined Materials", sections: mats.slice(0,6).map((m: any,i: number) => ({ heading: (m?.content??"").slice(0,80)||("Section "+(i+1)), keyPoints: [(m?.content??"").slice(0,100)] })) } } };
+      const topic = run.topicId ? this.store.getTopic(run.topicId) : undefined;
+      const materialInputs = mats.map((m: any) => ({ id: m.id, content: m.content ?? "" }));
+      if (!this.checkAiBudget()) throw new BudgetExceededError("AI monthly budget exceeded");
+      const result = await this.modelGateway.generateDocumentOutline(materialInputs, topic?.title ?? "Untitled Document", { context: { workflowRunId: run.id, workflowStepId: step.id, purpose: "document_outline" } });
+      if ("errorCode" in result) throw new Error(result.errorMessage);
+      return { step: { ...out, output: result } };
     }
     if (step.stepType === "draft_sections") {
+      if (!this.modelGateway) throw new Error("AI model is not configured");
       const mats = run.materialIds.map((id: string) => this.store.getCapture(id)).filter(Boolean);
-      if (this.modelGateway) {
-        try {
-          const outlineStep = this.store.getWorkflowSteps(run.id).find((s) => s.stepType === "build_outline");
-          const outline = outlineStep?.output as { title: string; sections: Array<{ heading: string; keyPoints: string[] }> } | undefined;
-          if (outline?.sections?.length) {
-            const materialInputs = mats.map((m: any) => ({ id: m.id, content: m.content ?? "", fragmentIds: this.store.listFragments(m.id).map((f: any) => f.id) }));
-            const result = await this.modelGateway.generateDocumentSections(outline, materialInputs);
-            if (!("errorCode" in result)) {
-              const sections: DocumentSection[] = result.sections.map((s) => {
-                const citedFragIds = s.citationIds.flatMap((mid) => this.store.listFragments(mid).map((f: any) => f.id));
-                return { id: randomUUID(), heading: s.heading, markdown: s.markdown, citationIds: [...new Set(citedFragIds)], protectedByUser: false };
-              });
-              return { step: { ...out, output: { sections } } };
-            }
-          }
-        } catch (e) { console.error("Section drafting failed:", e instanceof Error ? e.message : e); }
-      }
-      console.warn("draft_sections: model gateway unavailable or outline missing, using raw material fallback — document will lack AI-generated sections");
-      const sections: DocumentSection[] = mats.slice(0,10).map((m: any) => ({ id: randomUUID(), heading: (m?.content??"").slice(0,80)||"Untitled", markdown: (m?.content??"").slice(0,500), citationIds: this.store.listFragments(m!.id).map((f: any) => f.id), protectedByUser: false }));
+      const outlineStep = this.store.getWorkflowSteps(run.id).find((s) => s.stepType === "build_outline");
+      const outline = outlineStep?.output as { title: string; sections: Array<{ heading: string; keyPoints: string[] }> } | undefined;
+      if (!outline?.sections?.length) throw new Error("Document outline is missing");
+      const materialInputs = mats.map((m: any) => ({ id: m.id, content: m.content ?? "", fragmentIds: this.store.listFragments(m.id).map((f: any) => f.id) }));
+      if (!this.checkAiBudget()) throw new BudgetExceededError("AI monthly budget exceeded");
+      const result = await this.modelGateway.generateDocumentSections(outline, materialInputs, { context: { workflowRunId: run.id, workflowStepId: step.id, purpose: "document_sections" } });
+      if ("errorCode" in result) throw new Error(result.errorMessage);
+      const validFragmentIds = new Set(run.materialIds.flatMap((id) => this.store.listFragments(id).map((fragment) => fragment.id)));
+      const sections: DocumentSection[] = result.sections.map((section) => ({
+        id: randomUUID(), heading: section.heading, markdown: section.markdown,
+        citationIds: [...new Set(section.citationIds.filter((id) => validFragmentIds.has(id)))], protectedByUser: false,
+      }));
       return { step: { ...out, output: { sections } } };
     }
     if (step.stepType === "merge_sections") {
@@ -763,38 +927,66 @@ export class CaptureService {
         }
         return { step: { ...out, output: { sections: merged } } };
       }
-      console.warn("merge_sections: no drafted sections found, falling back to raw materials");
-      const mats = run.materialIds.map((id: string) => this.store.getCapture(id)).filter(Boolean);
-      const seen = new Set<string>(); const sections: DocumentSection[] = [];
-      for (const m of mats.slice(0,10)) { const h = ((m as any)?.content??"").slice(0,80).toLowerCase(); if (seen.has(h)) continue; seen.add(h); sections.push({ id: (randomUUID as any)(), heading: ((m as any)?.content??"").slice(0,80)||"Untitled", markdown: ((m as any)?.content??"").slice(0,500), citationIds: this.store.listFragments((m as any).id).map((f: any) => f.id), protectedByUser: false }); }
-      return { step: { ...out, output: { sections } } };
+      throw new Error("No drafted document sections were produced");
+    }
+    if (step.stepType === "extract_key_claims") {
+      const mergeStep = this.store.getWorkflowSteps(run.id).find((candidate) => candidate.stepType === "merge_sections");
+      const sections = (mergeStep?.output as { sections?: DocumentSection[] } | undefined)?.sections;
+      if (!sections?.length) throw new Error("Merged document sections are missing");
+      const workflow = createVerificationWorkflow(this.store.getVerificationPolicy());
+      return { step: { ...out, output: { claims: workflow.extractClaims(sections) } } };
+    }
+    if (step.stepType === "run_verification") {
+      const mergeStep = this.store.getWorkflowSteps(run.id).find((candidate) => candidate.stepType === "merge_sections");
+      const sections = (mergeStep?.output as { sections?: DocumentSection[] } | undefined)?.sections;
+      if (!sections?.length) throw new Error("Merged document sections are missing");
+      const workflow = createVerificationWorkflow(this.store.getVerificationPolicy());
+      const claims = await workflow.verifyClaims(sections);
+      return { step: { ...out, output: { claims } } };
+    }
+    if (step.stepType === "apply_verification") {
+      const verificationStep = this.store.getWorkflowSteps(run.id).find((candidate) => candidate.stepType === "run_verification");
+      const claims = (verificationStep?.output as { claims?: Array<{ status: string }> } | undefined)?.claims ?? [];
+      const verificationSummary = {
+        supported: claims.filter((claim) => claim.status === "supported").length,
+        disputed: claims.filter((claim) => claim.status === "disputed").length,
+        outdated: claims.filter((claim) => claim.status === "outdated").length,
+        insufficient: claims.filter((claim) => claim.status === "insufficient" || claim.status === "unverified").length,
+      };
+      return { step: { ...out, output: { verificationSummary } } };
+    }
+    if (step.stepType === "validate_document") {
+      const mergeStep = this.store.getWorkflowSteps(run.id).find((candidate) => candidate.stepType === "merge_sections");
+      const sections = (mergeStep?.output as { sections?: DocumentSection[] } | undefined)?.sections;
+      if (!sections?.length) throw new Error("Document has no sections");
+      const validFragmentIds = new Set(run.materialIds.flatMap((materialId) => this.store.listFragments(materialId).map((fragment) => fragment.id)));
+      for (const section of sections) {
+        if (!section.heading.trim() || !section.markdown.trim()) throw new Error("Document contains an empty section");
+        if (!section.citationIds.length) throw new Error(`Document section has no citations: ${section.heading}`);
+        if (section.citationIds.some((citationId) => !validFragmentIds.has(citationId))) throw new Error(`Document section has an invalid citation: ${section.heading}`);
+      }
+      return { step: { ...out, output: { sectionCount: sections.length, citationCount: sections.reduce((sum, section) => sum + section.citationIds.length, 0) } } };
     }
     if (step.stepType === "publish_version") {
-      // Use merged sections from prior step, falling back to draft or raw materials
-      const mergeStep = this.store.getWorkflowSteps(run.id).find((s) => s.stepType === "merge_sections");
-      const draftStep = this.store.getWorkflowSteps(run.id).find((s) => s.stepType === "draft_sections");
-      const mergeOutput = mergeStep?.output as { sections?: DocumentSection[] } | undefined;
-      const draftOutput = draftStep?.output as { sections?: DocumentSection[] } | undefined;
-      let sections: DocumentSection[];
-      if (mergeOutput?.sections?.length) {
-        sections = mergeOutput.sections;
-      } else if (draftOutput?.sections?.length) {
-        sections = draftOutput.sections;
-      } else {
-        console.warn("publish_version: no merged or drafted sections found, falling back to raw materials");
-        const mats = run.materialIds.map((id: string) => this.store.getCapture(id)).filter(Boolean);
-        const seen = new Set<string>(); sections = [];
-        for (const m of mats.slice(0,10)) { const h = ((m as any)?.content??"").slice(0,80).toLowerCase(); if (seen.has(h)) continue; seen.add(h); sections.push({ id: (randomUUID as any)(), heading: ((m as any)?.content??"").slice(0,80)||"Untitled", markdown: ((m as any)?.content??"").slice(0,500), citationIds: this.store.listFragments((m as any).id).map((f: any) => f.id), protectedByUser: false }); }
-      }
-      const allTopics = this.store.listTopics();
-      const topic = allTopics.find((t: any) => this.store.listTopicCaptureIds(t.id).some((mid: string) => run.materialIds.includes(mid)));
-      const existingVersions = topic ? this.store.listTopicDocumentVersions(topic.id) : [];
-      const nextVersion = existingVersions.length > 0 ? Math.max(...existingVersions.map((v: any) => v.documentVersion)) + 1 : 1;
-      const now2 = new Date().toISOString();
-      const version: TopicDocumentVersionRecord = { id: (randomUUID as any)(), topicId: topic?.id ?? run.materialIds[0], title: topic?.title ?? "Untitled Document", materialSetVersion: run.materialSetVersion, documentVersion: nextVersion, sections, gapItems: [], verificationSummary: {}, status: "published", createdAt: now2, publishedAt: now2 };
-      this.store.saveTopicDocumentVersion(version);
-      // Schedule async verification after document publish
-      this.scheduleVerification(version);
+      const steps = this.store.getWorkflowSteps(run.id);
+      const mergeOutput = steps.find((candidate) => candidate.stepType === "merge_sections")?.output as { sections?: DocumentSection[] } | undefined;
+      const sections = mergeOutput?.sections;
+      if (!sections?.length) throw new Error("Validated document sections are missing");
+      const verificationOutput = steps.find((candidate) => candidate.stepType === "apply_verification")?.output as { verificationSummary?: TopicDocumentVersionRecord["verificationSummary"] } | undefined;
+      const verifiedClaims = (steps.find((candidate) => candidate.stepType === "run_verification")?.output as { claims?: import("@collector/capture-contracts").VerificationClaim[] } | undefined)?.claims ?? [];
+      if (!run.topicId) throw new Error("Topic document run is missing topicId");
+      const topic = this.store.getTopic(run.topicId);
+      if (!topic) throw new Error("Topic not found for document run");
+      const existingVersions = this.store.listTopicDocumentVersions(topic.id);
+      const nextVersion = existingVersions.length > 0 ? Math.max(...existingVersions.map((version) => version.documentVersion)) + 1 : 1;
+      const publishedAt = new Date().toISOString();
+      const version: TopicDocumentVersionRecord = {
+        id: randomUUID(), topicId: topic.id, title: topic.title, materialSetVersion: run.materialSetVersion, materialIds: [...run.materialIds],
+        documentVersion: nextVersion, sections, gapItems: [], verificationSummary: verificationOutput?.verificationSummary ?? {},
+        status: "published", createdAt: publishedAt, publishedAt,
+      };
+      await this.store.saveTopicDocumentVersion(version);
+      if (verifiedClaims.length) await this.store.saveVerificationClaims(verifiedClaims.map((claim) => ({ ...claim, documentVersionId: version.id })));
       return { step: out, version };
     }
     return { step: out };
@@ -804,7 +996,7 @@ export class CaptureService {
   
   // ── Incremental Document Update (Issue 09) ─────────────────
 
-  previewDocumentUpdate(topicId: string): import("@collector/capture-contracts").UpdatePreview | null {
+  async previewDocumentUpdate(topicId: string): Promise<import("@collector/capture-contracts").UpdatePreview | null> {
     const topic = this.store.getTopic(topicId);
     if (!topic) throw new NotFoundError("Topic not found");
 
@@ -830,26 +1022,31 @@ export class CaptureService {
       createdAt: now,
     };
 
-    // New materials -> proposed additions
-    for (const matId of added) {
-      const mat = this.store.getCapture(matId);
-      if (!mat) continue;
-      const frags = this.store.listFragments(matId);
-      preview.affectedSectionIds.push(matId);
-      preview.proposedAdditions.push({
-        heading: (mat.content ?? mat.sourceUrl ?? "New material").slice(0, 80),
-        markdown: (mat.content ?? "").slice(0, 500),
-        citationIds: frags.map((f) => f.id),
-      });
+    // New materials are synthesized through a dedicated update schema; raw text is never published as a stand-in.
+    if (added.length) {
+      if (added.some((materialId) => this.store.getCapture(materialId)?.aiProcessingDisabled)) {
+        throw new ValidationError("New materials include content with cloud AI processing disabled");
+      }
+      if (!this.modelGateway) throw new ValidationError("AI model is not configured for document updates");
+      if (!this.checkAiBudget()) throw new ValidationError("AI monthly budget exceeded");
+      const materials = added
+        .map((materialId) => this.store.getCapture(materialId))
+        .filter((material): material is CaptureRecord => Boolean(material))
+        .map((material) => ({
+          id: material.id,
+          content: material.content ?? material.sourceUrl ?? "",
+          fragmentIds: this.store.listFragments(material.id).map((fragment) => fragment.id),
+        }));
+      const update = await this.modelGateway.generateDocumentUpdateAdditions(materials, { context: { purpose: "incremental_document_update" } });
+      if ("errorCode" in update) throw new Error(update.errorMessage);
+      preview.proposedAdditions.push(...update.additions);
     }
 
     // Removed materials -> check if they have citations in document
     for (const matId of removed) {
-      const affectedSections = prevDoc.sections.filter((s) =>
-        s.citationIds.some((cid) => {
-          const frags = this.store.listFragments(matId);
-          return frags.some((f) => f.id === cid);
-        })
+      const removedFragmentIds = new Set(this.store.listFragments(matId).map((fragment) => fragment.id));
+      const affectedSections = prevDoc.sections.filter((section) =>
+        section.citationIds.some((citationId) => removedFragmentIds.has(citationId))
       );
       for (const section of affectedSections) {
         if (section.protectedByUser) {
@@ -859,18 +1056,18 @@ export class CaptureService {
             sectionId: section.id,
             heading: section.heading + " [citation missing]",
             markdown: section.markdown,
-            citationIds: section.citationIds.filter((cid) => !preview.affectedSectionIds.includes(cid)),
+            citationIds: section.citationIds.filter((citationId) => !removedFragmentIds.has(citationId)),
           });
         }
         preview.affectedSectionIds.push(section.id);
       }
     }
 
-    // Protected sections are kept as-is
     preview.keptSections = prevDoc.sections
-      .filter((s) => s.protectedByUser && !preview.affectedSectionIds.includes(s.id))
-      .map((s) => s.id);
+      .filter((section) => !preview.affectedSectionIds.includes(section.id))
+      .map((section) => section.id);
 
+    await this.store.saveUpdatePreview(preview);
     return preview;
   }
 
@@ -889,25 +1086,17 @@ export class CaptureService {
     if (!prevDoc) throw new NotFoundError("Previous document version not found");
 
     const now = new Date().toISOString();
-    const newSections: import("@collector/capture-contracts").DocumentSection[] = [];
-
-    // Keep unmodified sections
-    for (const section of prevDoc.sections) {
-      if (preview.keptSections.includes(section.id)) {
-        newSections.push(section);
-      }
-    }
-
-    // Apply modifications
-    for (const mod of preview.proposedModifications) {
-      newSections.push({
-        id: crypto.randomUUID(),
-        heading: mod.heading,
-        markdown: mod.markdown,
-        citationIds: mod.citationIds,
-        protectedByUser: false,
-      });
-    }
+    const modifications = new Map(preview.proposedModifications.map((modification) => [modification.sectionId, modification]));
+    const newSections: import("@collector/capture-contracts").DocumentSection[] = prevDoc.sections.map((section) => {
+      const modification = modifications.get(section.id);
+      if (!modification) return section;
+      return {
+        ...section,
+        heading: modification.heading,
+        markdown: modification.markdown,
+        citationIds: modification.citationIds,
+      };
+    });
 
     // Add new sections
     for (const add of preview.proposedAdditions) {
@@ -920,11 +1109,13 @@ export class CaptureService {
       });
     }
 
+    const materialIds = this.store.listTopicCaptureIds(topicId).sort();
     const version: import("@collector/capture-contracts").TopicDocumentVersionRecord = {
       id: crypto.randomUUID(),
       topicId,
       title: prevDoc.title,
-      materialSetVersion: crypto.randomUUID(),
+      materialSetVersion: createHash("sha256").update(JSON.stringify(materialIds)).digest("hex"),
+      materialIds,
       documentVersion: preview.nextDocumentVersion,
       sections: newSections,
       gapItems: preview.conflicts.map((c) => ({ kind: "unsupported_claim" as const, text: `Removed material affected section ${c.sectionId}` })),
@@ -1001,10 +1192,20 @@ export class CaptureService {
   }
 
   async updateAiBudgetSettings(settings: { monthlyLimitUsd?: number; warningThresholdUsd?: number; enabled?: boolean }): Promise<AiBudgetSettings> {
+    if (settings.monthlyLimitUsd !== undefined && (!Number.isFinite(settings.monthlyLimitUsd) || settings.monthlyLimitUsd < 0)) throw new ValidationError("monthlyLimitUsd must be a non-negative number");
+    if (settings.warningThresholdUsd !== undefined && (!Number.isFinite(settings.warningThresholdUsd) || settings.warningThresholdUsd < 0)) throw new ValidationError("warningThresholdUsd must be a non-negative number");
+    const nextLimit = settings.monthlyLimitUsd ?? this.getAiBudgetSettings().monthlyLimitUsd;
+    const nextWarning = settings.warningThresholdUsd ?? this.getAiBudgetSettings().warningThresholdUsd;
+    if (nextLimit > 0 && nextWarning > nextLimit) throw new ValidationError("warningThresholdUsd cannot exceed monthlyLimitUsd");
     if (settings.monthlyLimitUsd !== undefined) await this.store.saveAiBudgetSetting('monthly_limit_usd', String(settings.monthlyLimitUsd));
     if (settings.warningThresholdUsd !== undefined) await this.store.saveAiBudgetSetting('warning_threshold_usd', String(settings.warningThresholdUsd));
     if (settings.enabled !== undefined) await this.store.saveAiBudgetSetting('enabled', String(settings.enabled));
-    return this.getAiBudgetSettings();
+    const updated = this.getAiBudgetSettings();
+    if (this.checkAiBudget()) {
+      this.scheduleRecentOrganization();
+      this.scheduleTopicDocumentRuns();
+    }
+    return updated;
   }
 
   checkAiBudget(): boolean {
@@ -1026,48 +1227,6 @@ export class CaptureService {
     return count;
   }
 
-}
-
-// ── Bounded Concurrency Task Pool ──────────────────────────────
-
-class TaskPool {
-  private running = 0;
-  private queue: Array<{ task: () => Promise<void>; cleanup: () => void }> = [];
-  private completion: Promise<void> = Promise.resolve();
-  private resolveCompletion: (() => void) | undefined;
-
-  constructor(private readonly maxConcurrency: number) {}
-
-  enqueue(task: () => Promise<void>, cleanup: () => void): void {
-    if (this.maxConcurrency <= 0) { cleanup(); return; }
-    this.queue.push({ task, cleanup });
-    this.tick();
-  }
-
-  drain(): Promise<void> {
-    return this.completion;
-  }
-
-  private tick(): void {
-    if (this.running >= this.maxConcurrency || !this.queue.length) {
-      if (!this.running && !this.queue.length && this.resolveCompletion) {
-        this.resolveCompletion();
-        this.resolveCompletion = undefined;
-      }
-      return;
-    }
-    const entry = this.queue.shift()!;
-    this.running += 1;
-    if (!this.resolveCompletion) {
-      this.completion = new Promise<void>((resolve) => { this.resolveCompletion = resolve; });
-    }
-    entry.task().finally(() => {
-      entry.cleanup();
-      this.running -= 1;
-      // Yield to the event loop so other microtasks can run before the next tick.
-      setImmediate(() => this.tick());
-    });
-  }
 }
 
 function materialTitle(record: CaptureRecord): string {
@@ -1092,15 +1251,75 @@ function sanitizeFileName(value: string): string {
   return value.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").slice(0, 120) || "artifact";
 }
 
-function tokenOverlap(left: string, right: string): number {
-  const a = tokens(left);
-  const b = tokens(right);
-  if (!a.size || !b.size) return 0;
-  let shared = 0;
-  for (const token of a) if (b.has(token)) shared += 1;
-  return shared / Math.min(a.size, b.size);
+async function checksumFile(path: string): Promise<string> {
+  return createHash("sha256").update(await readFile(path)).digest("hex");
 }
 
-function tokens(value: string): Set<string> {
-  return new Set((value.toLowerCase().match(/[\p{L}\p{N}]{2,}/gu) ?? []).filter((token) => token.length > 1));
+async function copyDirectory(source: string, destination: string): Promise<void> {
+  await mkdir(destination, { recursive: true });
+  if (!existsSync(source)) return;
+  for (const entry of await readdir(source, { withFileTypes: true })) {
+    const sourcePath = join(source, entry.name);
+    const destinationPath = join(destination, entry.name);
+    if (entry.isDirectory()) await copyDirectory(sourcePath, destinationPath);
+    else if (entry.isFile()) await copyFile(sourcePath, destinationPath);
+  }
+}
+
+async function checksumsForDirectory(root: string, current = root): Promise<Record<string, string>> {
+  const checksums: Record<string, string> = {};
+  if (!existsSync(current)) return checksums;
+  for (const entry of await readdir(current, { withFileTypes: true })) {
+    const path = join(current, entry.name);
+    if (entry.isDirectory()) Object.assign(checksums, await checksumsForDirectory(root, path));
+    else if (entry.isFile()) checksums[relative(root, path).replaceAll("\\", "/")] = await checksumFile(path);
+  }
+  return checksums;
+}
+
+async function directorySize(root: string): Promise<number> {
+  if (!existsSync(root)) return 0;
+  let size = 0;
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    size += entry.isDirectory() ? await directorySize(path) : entry.isFile() ? (await stat(path)).size : 0;
+  }
+  return size;
+}
+
+function collectionVersion(materials: CaptureRecord[]): string {
+  const inputs = materials.map((material) => `${material.id}:${material.checksum}`).sort();
+  return createHash("sha256").update(JSON.stringify(inputs)).digest("hex");
+}
+
+async function writePortableMarkdown(
+  root: string,
+  topics: TopicRecord[],
+  materials: CaptureRecord[],
+  documents: TopicDocumentVersionRecord[],
+): Promise<void> {
+  const markdownRoot = join(root, "markdown");
+  await mkdir(markdownRoot, { recursive: true });
+  const materialById = new Map(materials.map((material) => [material.id, material]));
+  for (const topic of topics) {
+    const latest = documents.filter((document) => document.topicId === topic.id).sort((left, right) => right.documentVersion - left.documentVersion)[0];
+    const lines = [`# ${topic.title}`, ""];
+    if (latest) {
+      for (const section of latest.sections) lines.push(`## ${section.heading}`, "", section.markdown, "");
+    } else {
+      lines.push("_No published topic document._", "");
+    }
+    lines.push("## Materials", "");
+    for (const materialId of latest?.materialIds ?? []) {
+      const material = materialById.get(materialId);
+      if (material) lines.push(`- ${materialTitle(material)} (${material.id})`);
+    }
+    await writeFile(join(markdownRoot, `${sanitizeFileName(topic.title)}-${topic.id}.md`), lines.join("\n"), "utf8");
+  }
+  const unassigned = materials.filter((material) => !topics.some((topic) => documents.some((document) => document.topicId === topic.id && document.materialIds.includes(material.id))));
+  if (unassigned.length) {
+    const lines = ["# Unassigned materials", ""];
+    for (const material of unassigned) lines.push(`## ${materialTitle(material)}`, "", material.content ?? material.sourceUrl ?? "", "");
+    await writeFile(join(markdownRoot, "unassigned-materials.md"), lines.join("\n"), "utf8");
+  }
 }

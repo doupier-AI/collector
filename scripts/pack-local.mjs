@@ -17,7 +17,7 @@ copyRecursive(electronDist, release);
 const appDir = join(release, "resources", "app");
 mkdirSync(appDir, { recursive: true });
 
-const items: Array<{ src: string; isFile?: boolean }> = [
+const items = [
   { src: "package.json", isFile: true },
   { src: "apps/api/dist" },
   { src: "apps/desktop-capture/dist" },
@@ -53,7 +53,7 @@ renameSync(join(release, "electron.exe"), join(release, exe));
 console.log("\nPacked:", release);
 console.log("Launch:", join(release, exe));
 
-function copyRecursive(src: string, dst: string): void {
+function copyRecursive(src, dst) {
   const stat = statSync(src);
   if (stat.isFile()) { mkdirSync(dirname(dst), { recursive: true }); copyFileSync(src, dst); return; }
   mkdirSync(dst, { recursive: true });

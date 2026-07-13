@@ -165,14 +165,14 @@ if (request.method === "GET" && match) return json(response, 200, service.getMat
 
 遗漏任何一步 = 前端调用静默失败。修改后必须**完全退出 Electron 再重启**（`npm run dev:desktop`），热重载不会加载新的 preload / main 代码。
 
-### 规则 3：禁止静默 catch
+### 规则 3：禁止静默 catch + 验证空对象
 
 ```typescript
-// ❌ 禁止：catch { /* 注释 */ } — 这是 bug 温床
+// ❌ 禁止：catch { /* 注释 */ } — bug 温床
 try {
   const data = await fetchData();
   if (data) render(data);
-} catch { /* no data yet */ }  // ← 真正的"无数据"走这里，但什么都没做
+} catch { /* no data yet */ }  // ← 真正的“无数据”走这里，但什么都没做
 
 // ✅ catch 块必须有明确的降级处理
 try {
@@ -183,7 +183,18 @@ try {
 }
 ```
 
-**为什么**：本项目后端 API（如 `getLatestRecentClusterSnapshot`）在"无数据"时抛 `NotFoundError`（HTTP 404），而不是返回 `null`。所以 `if/else` 的 `else` 分支是死代码，真正的无数据路径在 `catch` 里。静默 catch = UI 保留旧状态。
+**为什么**：后端 API 在"无数据"时可能抛 `NotFoundError`（HTTP 404）或返回空对象 `{ clusters: [] }`。必须同时处理两种情况：
+
+```typescript
+// ✅ 检查内容而非仅判断存在性
+if (snapshot && (snapshot.clusters.length > 0 || snapshot.unclusteredMaterialIds.length > 0)) {
+  renderCompleted(snapshot);
+} else {
+  renderEmptyState();  // 包括 catch 和空快照两种情况
+}
+```
+
+**调试技巧**：不确定后端返回什么时，读源码或加 `console.log`，不要凭经验猜测。
 
 ### 规则 4：条件 UI 元素必须幂等 + 每次进入时重检
 
@@ -205,20 +216,22 @@ try {
 
 ### 规则 6：代码变更生效验证协议
 
-当"改了和没改一样"时，按顺序逐层排查：
+当"改了和没改一样"时，按顺序逐层排查（80% 问题出在第 5 步）：
 
 1. **源码确认**：`grep` 搜索修改内容，确认源文件确实改了
-2. **产物确认**：`grep` 搜索 `dist/` 目录，确认构建产物包含修改
+2. **产物确认**：`grep dist/` 确认构建产物包含修改
 3. **路径确认**：检查 Electron `loadFile` 指向的目录是否是 `dist/`
 4. **编译缓存**：若 `dist/` 仍是旧代码 → `Remove-Item tsconfig.tsbuildinfo` 后重新 `npm run build`
 5. **执行确认**：修改的代码路径是否真的会执行？（重点检查 catch/throw 路径、初始化标记、条件分支）
 6. **后端确认**：被调用的后端 API 在边界情况下实际返回什么？（读后端源码，不要猜）
+7. **运行时日志**：在前两步都失败时，添加 `console.log` 追踪运行时行为
 
-> 80% 的"改了没效果"问题出在第 5 步——代码改了但运行时根本没走到那个分支。
+> **关键教训**：代码改了但运行时根本没走到那个分支是最常见的原因。先确认哪个分支会被执行，再动手修改。
 
 ### 规则 7：Electron Renderer 约束
 
 - **CSP**：禁止内联事件处理器（`onclick="..."`），必须用 `addEventListener`
 - **DOM 空值**：`querySelector` 结果可能为 `null`，必须先判空再操作
 - **表单三态语义**：保存接口必须区分 `undefined`（保留旧值）、`""`（清除）、有值（保存新值）。前端用 `.trim()` 而非 `|| undefined` 传值
+- **密码输入框值丢失**：浏览器渲染的密码圆点不是真实值。用户未修改直接保存时，`input.value` 是空字符串 `""` 而非原始 key。解决方案：添加 `modified` 标志跟踪用户是否真的修改过输入框，只有修改后才发送该字段
 

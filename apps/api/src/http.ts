@@ -58,6 +58,8 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (request.method === "GET" && workflowRunMatch) return json(response, 200, service.getWorkflowRun(decodeURIComponent(workflowRunMatch[1])));
       const cancelMatch = url.pathname.match(/^\/v1\/recent-organization\/runs\/([^/]+)\/cancel$/);
       if (request.method === "POST" && cancelMatch) return json(response, 200, service.cancelWorkflowRun(decodeURIComponent(cancelMatch[1])));
+      const anyWorkflowRunMatch = url.pathname.match(/^\/v1\/workflow-runs\/([^/]+)$/);
+      if (request.method === "GET" && anyWorkflowRunMatch) return json(response, 200, service.getWorkflowRun(decodeURIComponent(anyWorkflowRunMatch[1])));
       // ── Materials ────────────────────────────────────────────────
       if (request.method === "GET" && url.pathname === "/v1/materials") {
         const page = Number(url.searchParams.get("page") ?? "1");
@@ -74,6 +76,15 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         if (!body.content) throw new ValidationError("content is required");
         return json(response, 201, await service.editRevision(decodeURIComponent(revisionMatch[1]), body.content));
       }
+      const aiProcessingMatch = url.pathname.match(/^\/v1\/materials\/([^/]+)\/ai-processing$/);
+      if (request.method === "PUT" && aiProcessingMatch) {
+        const body = await readJson(request) as { disabled?: boolean };
+        if (typeof body.disabled !== "boolean") throw new ValidationError("disabled must be boolean");
+        return json(response, 200, await service.setMaterialAiProcessing(decodeURIComponent(aiProcessingMatch[1]), body.disabled));
+      }
+      // Material text extraction (PDF)
+      const extractMatch = url.pathname.match(/^\/v1\/materials\/([^/]+)\/extract-text$/);
+      if (request.method === "POST" && extractMatch) return json(response, 200, await service.extractMaterialText(decodeURIComponent(extractMatch[1])));
       // Material trash & restore
       const trashMatch = url.pathname.match(/^\/v1\/materials\/([^/]+)\/trash$/);
       if (request.method === "PUT" && trashMatch) return json(response, 200, await service.trashMaterial(decodeURIComponent(trashMatch[1])));
@@ -89,18 +100,10 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         return json(response, 200, result);
       }
 
-      if (request.method === "GET" && url.pathname === "/v1/inbox") return json(response, 200, service.listInbox());
-      if (request.method === "GET" && url.pathname === "/v1/relations") { const relCaptureId = url.searchParams.get("captureId") ?? undefined; return json(response, 200, service.listRelations(relCaptureId)); }
       if (request.method === "GET" && url.pathname === "/v1/topics") return json(response, 200, service.listTopics());
       if (request.method === "POST" && url.pathname === "/v1/topics") {
-        const body = await readJson(request) as { title?: string; sourceCaptureId?: string; sourceAgentRunId?: string; evidenceFragmentIds?: string[]; materialIds?: string[] };
-        const hasSourceField = body.sourceCaptureId !== undefined || body.sourceAgentRunId !== undefined || body.evidenceFragmentIds !== undefined;
-        if (hasSourceField && (!body.sourceCaptureId || !body.sourceAgentRunId || !body.evidenceFragmentIds)) throw new ValidationError("Topic suggestion source is incomplete");
-        const source = body.sourceCaptureId && body.sourceAgentRunId && body.evidenceFragmentIds
-          ? { captureId: body.sourceCaptureId, agentRunId: body.sourceAgentRunId, evidenceFragmentIds: body.evidenceFragmentIds }
-          : undefined;
-        const secondArg = source ?? body.materialIds;
-        return json(response, 201, await service.createTopic(body.title ?? "", secondArg as any));
+        const body = await readJson(request) as { title?: string; materialIds?: string[] };
+        return json(response, 201, await service.createTopic(body.title ?? "", body.materialIds));
       }
       if (request.method === "POST" && url.pathname === "/v1/captures/preflight") {
         return json(response, 200, service.preflight(await readJson(request)));
@@ -115,8 +118,6 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         const record = await service.createArtifact(fileName, mimeType, await readBytes(request, 21 * 1024 * 1024));
         return json(response, 201, record);
       }
-      const deepAnalysisMatch = url.pathname.match(/^\/v1\/captures\/([^/]+)\/deep-analysis$/);
-      if (request.method === "POST" && deepAnalysisMatch) return json(response, 202, await service.requestDeepAnalysis(decodeURIComponent(deepAnalysisMatch[1])));
       const match = url.pathname.match(/^\/v1\/captures\/([^/]+)$/);
       if (request.method === "GET" && match) return json(response, 200, service.getCapture(decodeURIComponent(match[1])));
       if (request.method === "POST" && url.pathname === "/v1/topics/from-cluster") {
@@ -124,7 +125,7 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         if (!body.clusterSnapshotId) throw new ValidationError("clusterSnapshotId is required");
         if (body.clusterIndex === undefined || body.clusterIndex < 0) throw new ValidationError("clusterIndex is required");
         if (!body.title) throw new ValidationError("title is required");
-        return json(response, 201, await service.promoteClusterToTopic(body.clusterSnapshotId, body.clusterIndex, body.title, body.materialIds));
+        return json(response, 201, await service.promoteClusterToTopic(body.clusterSnapshotId, body.clusterIndex, body.title));
       }
       const topicSuggestionsMatch = url.pathname.match(/^\/v1\/topics\/([^/]+)\/suggestions$/);
       if (request.method === "GET" && topicSuggestionsMatch) return json(response, 200, service.getTopicSuggestions(decodeURIComponent(topicSuggestionsMatch[1])));
@@ -146,6 +147,13 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         if (!docVersion) return json(response, 404, { error: { code: "not_found", message: "No document version found" } });
         return json(response, 200, docVersion);
       }
+      const docRollbackMatch = url.pathname.match(/^\/v1\/topics\/([^/]+)\/documents\/([^/]+)\/rollback$/);
+      if (request.method === "POST" && docRollbackMatch) {
+        return json(response, 201, await service.rollbackTopicDocument(
+          decodeURIComponent(docRollbackMatch[1]),
+          decodeURIComponent(docRollbackMatch[2]),
+        ));
+      }
       const topicMatch = url.pathname.match(/^\/v1\/topics\/([^/]+)$/);
       if (request.method === "GET" && topicMatch) {
         return json(response, 200, service.getTopicDetail(decodeURIComponent(topicMatch[1])));
@@ -163,15 +171,14 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         await service.removeTopicMember(decodeURIComponent(topicMemberMatch[1]), decodeURIComponent(topicMemberMatch[2]));
         return json(response, 200, { removed: true });
       }
-      const topicWorkspaceMatch = url.pathname.match(/^\/v1\/topics\/([^/]+)\/workspace$/);
-      if (request.method === "GET" && topicWorkspaceMatch) return json(response, 200, service.getTopicWorkspace(decodeURIComponent(topicWorkspaceMatch[1])));
+
 
       
       
       // ── Incremental Document Update ──────────────────────
       if (request.method === "POST" && (url.pathname.match(/^\/v1\/topics\/([^/]+)\/document-update-preview$/))) {
         const previewTopicId = decodeURIComponent(url.pathname.match(/^\/v1\/topics\/([^/]+)\/document-update-preview$/)![1]);
-        const preview = service.previewDocumentUpdate(previewTopicId);
+        const preview = await service.previewDocumentUpdate(previewTopicId);
         return json(response, preview ? 200 : 204, preview ?? { message: "No changes detected" });
       }
       if (request.method === "POST" && (url.pathname.match(/^\/v1\/topics\/([^/]+)\/document-update-confirm$/))) {
@@ -209,6 +216,20 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (request.method === "PUT" && url.pathname === "/v1/settings/ai-budget") {
         const budgetBody = await readJson(request) as { monthlyLimitUsd?: number; warningThresholdUsd?: number; enabled?: boolean };
         return json(response, 200, await service.updateAiBudgetSettings(budgetBody));
+      }
+      if (request.method === "GET" && url.pathname === "/v1/backups") {
+        return json(response, 200, service.listBackups());
+      }
+      if (request.method === "POST" && url.pathname === "/v1/backups") {
+        return json(response, 201, await service.createBackup());
+      }
+      const verifyBackupMatch = url.pathname.match(/^\/v1\/backups\/([^/]+)\/verify$/);
+      if (request.method === "POST" && verifyBackupMatch) {
+        return json(response, 200, await service.verifyBackup(decodeURIComponent(verifyBackupMatch[1])));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/exports") {
+        const exportRequest = await readJson(request) as import("@collector/capture-contracts").ExportRequest;
+        return json(response, 201, await service.exportPortable(exportRequest));
       }
 
       return json(response, 404, { error: { code: "not_found", message: "Route not found" } });

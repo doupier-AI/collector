@@ -1,5 +1,5 @@
 // e2e-live.test.ts — 对运行中 Electron 应用做端到端测试
-// 用法: npx tsx --test tests/e2e-live.test.ts
+// 用法: $env:RUN_LIVE_E2E='1'; npx tsx --test tests/e2e-live.test.ts
 //
 // 前提: Electron 应用正在运行
 // 工作方式: 通过 pairing 机制获取 token，然后调用真实 API
@@ -11,12 +11,13 @@
 // 无 PAIRING_CODE 时跳过认证测试，只跑 health/root 等公开端点
 
 import assert from "node:assert/strict";
-import test from "node:test";
+import nodeTest from "node:test";
 import { randomUUID } from "node:crypto";
 
 const BASE = process.env.COLLECTOR_API_URL ?? "http://127.0.0.1:43110";
 const PAIRING_CODE = process.env.PAIRING_CODE ?? "";
 const TIMEOUT = 30_000;
+const test = process.env.RUN_LIVE_E2E === "1" ? nodeTest : nodeTest.skip;
 
 let TOKEN = "";
 

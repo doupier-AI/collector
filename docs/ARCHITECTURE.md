@@ -27,6 +27,14 @@ Collector 是单用户、本地优先的 Windows 桌面应用。架构优先保�
 | 模型接入 | 可替换 Model Provider，首个 Provider 为 DeepSeek | 业务层不绑定供应商，Fake Provider 支持离线测试 |
 | 检索 | 全文、确定性候选和轻量向量逐步组合 | 数据规模尚不需要外部向量数据库 |
 
+### 2.1 MVP 实现补充（2026-07-13）
+
+- `recent_organization` 固化为 7 个 SQLite 检查点：freeze → exact deduplication → candidate retrieval → cluster proposal → validation → stabilization → publish。
+- `topic_document` 固化为 10 个 SQLite 检查点；`WorkflowRun.topicId` 和文档版本的 `materialIds` 是发布归属与引用范围的唯一依据。
+- 长材料按字符预算分批发送到模型，并在网关层合并结构化结果；不允许用固定前 N 字符生成正式文档或增量版本。
+- AI 预算超限使用 `waiting_for_budget`，保存预算后由进程内调度器继续；材料级 `aiProcessingDisabled` 在候选召回和专题文档入口强制执行。
+- 数据控制使用 SQLite `VACUUM INTO` 一致快照、Artifact 校验和和显式版本 Manifest；便携导出排除设置、Token、模型凭证和 ModelCall 诊断记录。
+
 ## 3. 运行结构
 
 ```mermaid

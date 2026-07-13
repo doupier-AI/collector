@@ -23,7 +23,6 @@ await store.saveSetting("ai_consent", String(consent));
 await store.saveSetting("deepseek_configured", String(Boolean(apiKey)));
 const gateway = consent && apiKey ? new ModelGateway(new DeepSeekProvider({ apiKey: () => apiKey })) : undefined;
 const service = new CaptureService(store, paths.artifacts, undefined, gateway);
-await service.resumePendingModelRuns();
 const server = createApiServer(service, auth, { instanceId: process.env.COLLECTOR_INSTANCE_ID });
 
 // 启动工作流调度器守护进程

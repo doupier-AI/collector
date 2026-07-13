@@ -72,7 +72,7 @@ app.on("will-quit", () => {
 
 function createShellWindow(): BrowserWindow {
   const browserWindow = new BrowserWindow({
-    width: 1240, height: 820, show: false, backgroundColor: "#0d0d0d", autoHideMenuBar: true,
+    width: 1240, height: 820, minWidth: 900, minHeight: 600, show: false, backgroundColor: "#0d0d0d", autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, "preload.cjs"), contextIsolation: true, nodeIntegration: false,
       sandbox: process.env.COLLECTOR_GUI_NO_SANDBOX !== "1",
@@ -147,34 +147,35 @@ ipcMain.on("shell:navigate", (_event, tab: string) => { showShellNormal(tab); })
 
 ipcMain.handle("workspace:load", async (event) => {
   assertTrustedRenderer(event.sender.id);
-  const [inboxResult, topicsResult, relationsResult] = await Promise.allSettled([
-    client.listInbox(), client.listTopics(), client.listRelations(),
-  ]);
-  const topics = topicsResult.status === "fulfilled" ? topicsResult.value : [];
-  const relations = relationsResult.status === "fulfilled" ? relationsResult.value : [];
-  const rawInbox = inboxResult.status === "fulfilled" ? inboxResult.value : [];
-  if (inboxResult.status === "rejected") console.error("workspace:load inbox failed:", inboxResult.reason);
-  if (topicsResult.status === "rejected") console.error("workspace:load topics failed:", topicsResult.reason);
-  if (relationsResult.status === "rejected") console.error("workspace:load relations failed:", relationsResult.reason);
-  const inbox = rawInbox.map((item: any) => ({ ...item.capture, fragments: item.fragments, knowledgeItems: item.knowledgeItems, reviewProposals: item.reviewProposals, agentRuns: item.agentRuns }));
-  return { inbox, topics, relations };
+  const topicsResult = await Promise.allSettled([client.listTopics()]);
+  const topics = topicsResult[0].status === "fulfilled" ? topicsResult[0].value : [];
+  if (topicsResult[0].status === "rejected") console.error("workspace:load topics failed:", topicsResult[0].reason);
+  return { topics };
 });
-ipcMain.handle("workspace:create-topic", async (event, title: string) => { assertTrustedRenderer(event.sender.id); return client.createTopic(title); });
-ipcMain.handle("workspace:create-suggested-topic", async (event, input: Parameters<CaptureClient["createSuggestedTopic"]>[0]) => { assertTrustedRenderer(event.sender.id); return client.createSuggestedTopic(input); });
+ipcMain.handle("workspace:create-topic", async (event, title: string, materialIds?: string[]) => { assertTrustedRenderer(event.sender.id); return client.createTopic(title, materialIds); });
 ipcMain.handle("workspace:update-topic", async (event, id: string, patch: Parameters<CaptureClient["updateTopic"]>[1]) => { assertTrustedRenderer(event.sender.id); return client.updateTopic(id, patch); });
-ipcMain.handle("workspace:get-topic", async (event, id: string) => { assertTrustedRenderer(event.sender.id); return client.getTopicWorkspace(id); });
 ipcMain.handle("workspace:add-topic-member", async (event, topicId: string, captureId: string) => { assertTrustedRenderer(event.sender.id); return client.addTopicMember(topicId, captureId); });
 ipcMain.handle("workspace:remove-topic-member", async (event, topicId: string, captureId: string) => { assertTrustedRenderer(event.sender.id); return client.removeTopicMember(topicId, captureId); });
-ipcMain.handle("workspace:deep-analysis", async (event, captureId: string) => { assertTrustedRenderer(event.sender.id); return client.requestDeepAnalysis(captureId); });
 ipcMain.handle("workspace:generate-document", async (event, topicId: string, idempotencyKey?: string) => { assertTrustedRenderer(event.sender.id); return client.generateTopicDocument(topicId, idempotencyKey); });
 ipcMain.handle("workspace:list-documents", async (event, topicId: string) => { assertTrustedRenderer(event.sender.id); return client.listTopicDocumentVersions(topicId); });
 ipcMain.handle("workspace:get-latest-document", async (event, topicId: string) => { assertTrustedRenderer(event.sender.id); return client.getLatestTopicDocument(topicId); });
+ipcMain.handle("workspace:get-document-version", async (event, documentId: string) => { assertTrustedRenderer(event.sender.id); return client.getTopicDocumentVersion(documentId); });
+ipcMain.handle("workspace:rollback-document", async (event, topicId: string, documentId: string) => { assertTrustedRenderer(event.sender.id); return client.rollbackTopicDocument(topicId, documentId); });
+ipcMain.handle("workspace:get-topic", async (event, topicId: string) => { assertTrustedRenderer(event.sender.id); return client.getTopic(topicId); });
+ipcMain.handle("workspace:promote-cluster", async (event, snapshotId: string, clusterIndex: number, title: string) => { assertTrustedRenderer(event.sender.id); return client.promoteCluster(snapshotId, clusterIndex, title); });
+ipcMain.handle("workspace:topic-suggestions", async (event, topicId: string) => { assertTrustedRenderer(event.sender.id); return client.getTopicSuggestions(topicId); });
+ipcMain.handle("workspace:workflow-run", async (event, runId: string) => { assertTrustedRenderer(event.sender.id); return client.getWorkflowRun(runId); });
+ipcMain.handle("workspace:preview-document-update", async (event, topicId: string) => { assertTrustedRenderer(event.sender.id); return client.previewDocumentUpdate(topicId); });
+ipcMain.handle("workspace:confirm-document-update", async (event, topicId: string, previewId: string, accepted: boolean) => { assertTrustedRenderer(event.sender.id); return client.confirmDocumentUpdate(topicId, previewId, accepted); });
+ipcMain.handle("workspace:verification-claims", async (event, documentId: string) => { assertTrustedRenderer(event.sender.id); return client.getVerificationClaims(documentId); });
 
   // ── Materials CRUD ──
   ipcMain.handle("material:list", async (event, params?: { q?: string; page?: number; limit?: number; trash?: boolean }) => { assertTrustedRenderer(event.sender.id); return client.listMaterials(params); });
   ipcMain.handle("material:get", async (event, id: string) => { assertTrustedRenderer(event.sender.id); return client.getMaterial(id); });
   ipcMain.handle("material:revisions", async (event, id: string) => { assertTrustedRenderer(event.sender.id); return client.listRevisions(id); });
   ipcMain.handle("material:edit", async (event, id: string, content: string) => { assertTrustedRenderer(event.sender.id); return client.editRevision(id, content); });
+  ipcMain.handle("material:set-ai-processing", async (event, id: string, disabled: boolean) => { assertTrustedRenderer(event.sender.id); return client.setMaterialAiProcessing(id, disabled); });
+  ipcMain.handle("material:extract-text", async (event, id: string) => { assertTrustedRenderer(event.sender.id); return client.extractMaterialText(id); });
   ipcMain.handle("material:trash", async (event, id: string) => { assertTrustedRenderer(event.sender.id); return client.trashMaterial(id); });
   ipcMain.handle("material:restore", async (event, id: string) => { assertTrustedRenderer(event.sender.id); return client.restoreMaterial(id); });
   ipcMain.handle("material:delete-impact", async (event, id: string) => { assertTrustedRenderer(event.sender.id); return client.getDeleteImpact(id); });
@@ -186,11 +187,8 @@ ipcMain.handle("recent:cancel", async (event, id: string) => { assertTrustedRend
 
 ipcMain.handle("settings:get", async (event) => {
   assertTrustedRenderer(event.sender.id);
-  console.log('[Main] settings:get called');
-  const savedKey = await loadDeepSeekKey();
-  console.log('[Main] settings:get loaded key:', savedKey ? 'present (length: ' + savedKey.length + ')' : 'not found');
   const ai = embeddedService?.getAiConfiguration() ?? { consent: false, configured: false, unavailable: true };
-  return { shortcut, ai: { ...ai, apiKey: savedKey } };
+  return { shortcut, ai };
 });
 ipcMain.handle("settings:save-shortcut", async (event, value: string) => {
   assertTrustedRenderer(event.sender.id);
@@ -215,7 +213,6 @@ ipcMain.handle("settings:test-connection", async (event, key?: string) => {
 
 ipcMain.handle("settings:save-ai", async (event, value: { consent: boolean; apiKey?: string }) => {
   assertTrustedRenderer(event.sender.id);
-  console.log('[Main] settings:save-ai called, consent:', value.consent, 'apiKey provided:', value.apiKey !== undefined, 'value:', JSON.stringify(value.apiKey));
   if (!embeddedService || !embeddedStore) throw new Error("AI 设置仅在 Collector 内置服务中可用");
   
   // 区分三种情况：
@@ -255,11 +252,10 @@ ipcMain.handle("settings:save-ai", async (event, value: { consent: boolean; apiK
     }
   }
   
-  console.log('[Main] settings:save-ai final key:', finalKey ? 'present' : 'cleared');
   if (value.consent && !finalKey) throw new Error("启用云端 AI 前必须提供 DeepSeek API Key");
   await embeddedService.setAiConfiguration(value.consent, Boolean(finalKey));
   embeddedService.setModelGateway(value.consent && finalKey ? new ModelGateway(new DeepSeekProvider({ apiKey: () => finalKey })) : undefined);
-  return { ...embeddedService.getAiConfiguration(), apiKey: finalKey };
+  return embeddedService.getAiConfiguration();
 });
 
 ipcMain.handle("settings:clear-all-data", async (event) => {
@@ -288,6 +284,28 @@ ipcMain.handle("settings:clear-all-data", async (event) => {
   }
 });
 
+ipcMain.handle("settings:data-control", async (event) => {
+  assertTrustedRenderer(event.sender.id);
+  const [usage, budget, backups] = await Promise.all([client.getAiUsage(), client.getAiBudget(), client.listBackups()]);
+  return { usage, budget, backups, paths: embeddedService?.getDataPaths() };
+});
+ipcMain.handle("settings:save-ai-budget", async (event, value: { monthlyLimitUsd?: number; warningThresholdUsd?: number; enabled?: boolean }) => {
+  assertTrustedRenderer(event.sender.id);
+  return client.updateAiBudget(value);
+});
+ipcMain.handle("settings:create-backup", async (event) => {
+  assertTrustedRenderer(event.sender.id);
+  return client.createBackup();
+});
+ipcMain.handle("settings:verify-backup", async (event, id: string) => {
+  assertTrustedRenderer(event.sender.id);
+  return client.verifyBackup(id);
+});
+ipcMain.handle("settings:export-portable", async (event, value: import("@collector/capture-contracts").ExportRequest) => {
+  assertTrustedRenderer(event.sender.id);
+  return client.exportPortable(value);
+});
+
 async function ensureLocalApi(masterToken: string, deepSeekKey?: string): Promise<Server | undefined> {
   try {
     const response = await fetch(`${apiBaseUrl}/health`, { signal: AbortSignal.timeout(800) });
@@ -303,7 +321,6 @@ async function ensureLocalApi(masterToken: string, deepSeekKey?: string): Promis
   const consent = store.getSetting("ai_consent") === "true";
   embeddedService = new CaptureService(store, paths.artifacts, undefined, consent && deepSeekKey ? new ModelGateway(new DeepSeekProvider({ apiKey: () => deepSeekKey })) : undefined);
   await embeddedService.setAiConfiguration(consent, Boolean(deepSeekKey));
-  await embeddedService.resumePendingModelRuns();
   
   // 启动工作流调度器守护进程
   embeddedScheduler = new WorkflowScheduler(embeddedService);

@@ -3,8 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; object-src 'none'; base-uri 'none'">
 <title>Collector</title>
+<!-- Third-party CSS first, so our overrides take precedence -->
+<link rel="stylesheet" href="easymde.min.css">
+<link rel="stylesheet" href="fontawesome.min.css">
+<!-- Our CSS last, overriding defaults -->
 <link rel="stylesheet" href="styles.css">
 <link rel="stylesheet" href="workspace.css">
 <link rel="stylesheet" href="settings.css">
@@ -95,14 +99,22 @@
     </section>
     <section id="section-settings" class="shell-section">
       <main class="settings-shell">
-        <aside><div class="app-name"><span class="brand-mark">C</span><strong>Collector</strong></div><nav><button class="nav-item active" data-section="general">通用</button><button class="nav-item" data-section="ai">AI 服务</button></nav></aside>
+        <aside><div class="app-name"><span class="brand-mark">C</span><strong>Collector</strong></div><nav><button class="nav-item active" data-section="general">通用</button><button class="nav-item" data-section="ai">AI 服务</button><button class="nav-item" data-section="data">数据与用量</button></nav></aside>
         <section class="settings-content">
           <header><span class="eyebrow">SETTINGS</span><h1 id="page-title">通用</h1><p id="page-copy">控制 Collector 的桌面行为。</p></header>
           <div id="general" class="settings-section active"><article class="setting-card"><div><h2>快速采集快捷键</h2><p>从任意应用唤起极简采集窗。聚焦输入框并按下组合键即可自动记录。</p></div><div class="control-row"><input id="shortcut" value="CommandOrControl+Shift+Space" readonly><span id="shortcut-status" class="status"></span></div></article><article class="setting-card clear-data-card"><div><h2>清除所有数据</h2><p>删除所有已收集的材料、专题、工作流记录和生成的文档。配对凭证、API Key 和快捷键设置将被保留。</p></div><div class="control-row"><button id="clear-all-data" class="button danger" type="button">清除所有数据...</button><span id="clear-status" class="status"></span></div></article></div>
           <div id="ai" class="settings-section"><article class="setting-card"><div><h2>DeepSeek</h2><p>Key 只交给 Electron Main Process，并通过系统安全存储保存。</p></div><label class="toggle-row"><input id="ai-consent" type="checkbox"><span>允许将采集内容的文本片段发送至 DeepSeek AI 进行智能整理和知识提取<span class="help-text">（内容将离开本机，用于 AI 分析）</span></span><span class="help-icon" title="Fragment 是从采集内容中自动分割的文本段落（每段最多 2000 字符），用于细粒度的 AI 分析和引用追踪。禁用后，AI 将无法提取知识点和生成专题文档。">ℹ️</span></label><label class="field"><span>API Key</span><span class="key-row"><input id="deepseek-key" type="password" autocomplete="off" placeholder="sk-..."><button id="toggle-key-vis" class="icon-button toggle-eye" type="button" title="显示/隐藏 Key"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button></span><button id="test-connection" class="button test-conn-btn" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg> 测试连接</button></label><div class="control-row"><button id="save-ai" class="button primary">保存 AI 设置</button><span id="ai-status" class="status"></span></div></article></div>
+          <div id="data" class="settings-section">
+            <article class="setting-card"><div><h2>本月 AI 用量</h2><p id="ai-usage-summary">正在读取调用记录…</p><div id="ai-usage-breakdown" class="data-summary"></div></div></article>
+            <article class="setting-card"><div><h2>AI 预算</h2><p>达到月度上限后，新的 AI 整理任务将停止，离线采集与材料管理不受影响。</p></div><label class="toggle-row"><input id="ai-budget-enabled" type="checkbox"><span>启用月度预算</span></label><label class="field"><span>月度上限（USD）</span><input id="ai-budget-limit" type="number" min="0" step="0.01"></label><label class="field"><span>提醒阈值（USD）</span><input id="ai-budget-warning" type="number" min="0" step="0.01"></label><div class="control-row"><button id="save-ai-budget" class="button primary" type="button">保存预算</button><span id="ai-budget-status" class="status"></span></div></article>
+            <article class="setting-card"><div><h2>本地数据</h2><p id="data-paths">正在读取数据位置…</p></div><div class="control-row"><button id="create-backup" class="button primary" type="button">创建完整备份</button><button id="export-portable" class="button" type="button">导出便携副本</button><span id="data-control-status" class="status"></span></div><div id="backup-history" class="backup-history"></div></article>
+          </div>
         </section>
       </main>
     </section>
   </div>
+  <script src="marked.min.js"></script>
+  <script src="purify.min.js"></script>
+  <script src="easymde.min.js"></script>
   <script type="module" src="shell-renderer.js"></script>
 </body></html>
