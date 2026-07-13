@@ -11,12 +11,25 @@ export function initSettings() {
   const shortcut = document.querySelector<HTMLInputElement>("#shortcut")!;
   const shortcutStatus = document.querySelector<HTMLElement>("#shortcut-status")!;
   const aiConsent = document.querySelector<HTMLInputElement>("#ai-consent")!;
-  const deepSeekKey = document.querySelector<HTMLInputElement>("#deepseek-key")!;
   const aiStatus = document.querySelector<HTMLElement>("#ai-status")!;
-  const saveAi = document.querySelector<HTMLButtonElement>("#save-ai")!;
+  const providerList = document.querySelector<HTMLElement>("#provider-list")!;
+  const profileId = document.querySelector<HTMLInputElement>("#provider-profile-id")!;
+  const providerId = document.querySelector<HTMLSelectElement>("#provider-id")!;
+  const providerDisplayName = document.querySelector<HTMLInputElement>("#provider-display-name")!;
+  const providerBaseUrlField = document.querySelector<HTMLElement>("#provider-base-url-field")!;
+  const providerBaseUrl = document.querySelector<HTMLInputElement>("#provider-base-url")!;
+  const providerModel = document.querySelector<HTMLInputElement>("#provider-model")!;
+  const providerModelOptions = document.querySelector<HTMLDataListElement>("#provider-model-options")!;
+  const providerApiKey = document.querySelector<HTMLInputElement>("#provider-api-key")!;
+  const providerEditorTitle = document.querySelector<HTMLElement>("#provider-editor-title")!;
+  const saveProvider = document.querySelector<HTMLButtonElement>("#save-provider")!;
+  const testProvider = document.querySelector<HTMLButtonElement>("#test-provider")!;
+  const resetProvider = document.querySelector<HTMLButtonElement>("#reset-provider")!;
   const toggleEye = document.querySelector<HTMLButtonElement>("#toggle-key-vis")!;
-  const testConn = document.querySelector<HTMLButtonElement>("#test-connection")!;
-  const testConnSvg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>';
+  let catalog: import("@collector/capture-contracts").ProviderDefinition[] = [];
+  let profiles: import("@collector/capture-contracts").ProviderProfile[] = [];
+  let activeProviderProfileId: string | undefined;
+  let apiKeyModified = false;
 
   // 初始化快捷键录制器
   let currentShortcutValue = "CommandOrControl+Shift+Space";
@@ -39,68 +52,100 @@ export function initSettings() {
   }
 
   toggleEye.addEventListener("click", () => {
-    const isPassword = deepSeekKey.type === "password";
-    deepSeekKey.type = isPassword ? "text" : "password";
+    const isPassword = providerApiKey.type === "password";
+    providerApiKey.type = isPassword ? "text" : "password";
     toggleEye.classList.toggle("showing", !isPassword);
   });
 
-  testConn.addEventListener("click", async () => {
-    testConn.disabled = true;
-    testConn.classList.remove("success", "error");
-    testConn.innerHTML = testConnSvg + " 测试中…";
+  providerId.addEventListener("change", () => applyProviderDefinition(true));
+  providerApiKey.addEventListener("input", () => { apiKeyModified = true; });
+  resetProvider.addEventListener("click", () => resetProviderEditor());
+  aiConsent.addEventListener("change", async () => {
     try {
-      // 如果输入框为空，传递 undefined，让后端使用已保存的 key
-      const key = deepSeekKey.value.trim() || undefined;
-      const result = await bridge.testConnection(key);
-      if (result.ok) {
-        testConn.classList.add("success");
-        testConn.innerHTML = testConnSvg + " " + result.model + " 连接正常";
-        setStatus(aiStatus, "连接成功 - 模型: " + result.model, "success");
-      } else {
-        testConn.classList.add("error");
-        testConn.innerHTML = testConnSvg + " 连接失败";
-        setStatus(aiStatus, result.error, "error");
-      }
-    } catch (error) {
-      testConn.classList.add("error");
-      testConn.innerHTML = testConnSvg + " 连接失败";
-      setStatus(aiStatus, message(error), "error");
-    } finally {
-      testConn.disabled = false;
-      setTimeout(() => { testConn.classList.remove("success", "error"); testConn.innerHTML = testConnSvg + " 测试连接"; }, 5000);
-    }
+      const ai = await bridge.setAiConsent(aiConsent.checked);
+      renderAiStatus(ai);
+    } catch (error) { aiConsent.checked = !aiConsent.checked; setStatus(aiStatus, message(error), "error"); }
   });
 
-  saveAi.addEventListener("click", async () => {
-    const rawKey = deepSeekKey.value.trim();
-    
-    saveAi.disabled = true;
+  testProvider.addEventListener("click", async () => {
+    testProvider.disabled = true;
     try {
-      // 只有当用户真的修改了输入框时才发送 apiKey，否则不传该字段以保留已有配置
-      const payload: { consent: boolean; apiKey?: string } = { consent: aiConsent.checked };
-      if (apiKeyModified) {
-        payload.apiKey = rawKey; // 用户修改了：空字符串表示清除，非空表示设置新 key
-      }
-      const result = await bridge.saveAi(payload);
-      // 更新 UI 状态
-      if (result.configured) {
-        deepSeekKey.value = "";
-        deepSeekKey.type = "password"; 
-        toggleEye.classList.remove("showing");
-        deepSeekKey.placeholder = "Key 已保存 · 输入新 Key 以更换";
-        setStatus(aiStatus, "AI 设置已保存", "success");
-      } else {
-        // 没有返回 key，说明已清除
-        deepSeekKey.value = "";
-        deepSeekKey.placeholder = "请输入 DeepSeek API Key";
-        setStatus(aiStatus, "API Key 已清除", "warning");
-      }
-      renderAiStatus(result);
-      // 重置修改标记，下次保存前必须再次修改才会生效
-      apiKeyModified = false;
+      const result = await bridge.testProvider({ profile: providerInput(), apiKey: apiKeyModified ? providerApiKey.value.trim() : undefined });
+      setStatus(aiStatus, result.ok ? `连接成功 · ${result.model}` : result.error, result.ok ? "success" : "error");
     } catch (error) { setStatus(aiStatus, message(error), "error"); }
-    finally { saveAi.disabled = false; }
+    finally { testProvider.disabled = false; }
   });
+
+  saveProvider.addEventListener("click", async () => {
+    saveProvider.disabled = true;
+    try {
+      const result = await bridge.saveProvider({
+        profile: providerInput(),
+        apiKey: apiKeyModified ? providerApiKey.value.trim() : undefined,
+        consent: aiConsent.checked,
+        activate: true,
+      });
+      providerApiKey.value = "";
+      providerApiKey.type = "password";
+      providerApiKey.placeholder = result.profile.credentialConfigured ? "Key 已保存 · 输入新 Key 以更换" : "输入 API Key";
+      apiKeyModified = false;
+      setStatus(aiStatus, `${result.profile.displayName} 已保存并启用`, "success");
+      await load();
+    } catch (error) { setStatus(aiStatus, message(error), "error"); }
+    finally { saveProvider.disabled = false; }
+  });
+
+  function providerInput(): import("@collector/capture-contracts").ProviderProfileInput {
+    return {
+      id: profileId.value || undefined,
+      providerId: providerId.value,
+      displayName: providerDisplayName.value.trim(),
+      baseUrl: providerBaseUrl.value.trim() || undefined,
+      model: providerModel.value.trim(),
+      enabled: true,
+    };
+  }
+
+  function applyProviderDefinition(resetValues: boolean): void {
+    const definition = catalog.find((candidate) => candidate.id === providerId.value);
+    if (!definition) return;
+    providerBaseUrlField.hidden = !definition.id.startsWith("custom");
+    providerModelOptions.replaceChildren(...definition.models.map((model) => {
+      const option = document.createElement("option"); option.value = model; return option;
+    }));
+    if (resetValues) {
+      providerDisplayName.value = definition.label;
+      const isCustom = definition.id.startsWith("custom");
+      providerBaseUrl.value = isCustom ? "" : definition.defaultBaseUrl;
+      providerModel.value = isCustom ? "" : definition.defaultModel;
+    }
+  }
+
+  function resetProviderEditor(): void {
+    profileId.value = "";
+    providerId.disabled = false;
+    providerEditorTitle.textContent = "添加供应商";
+    providerApiKey.value = "";
+    providerApiKey.placeholder = "输入 API Key";
+    providerApiKey.type = "password";
+    apiKeyModified = false;
+    if (catalog[0]) { providerId.value = catalog[0].id; applyProviderDefinition(true); }
+  }
+
+  function editProvider(profile: import("@collector/capture-contracts").ProviderProfile): void {
+    profileId.value = profile.id;
+    providerId.value = profile.providerId;
+    providerId.disabled = true;
+    providerEditorTitle.textContent = `编辑 ${profile.displayName}`;
+    providerDisplayName.value = profile.displayName;
+    providerBaseUrl.value = profile.baseUrl;
+    providerModel.value = profile.model;
+    providerApiKey.value = "";
+    providerApiKey.placeholder = profile.credentialConfigured ? "Key 已保存 · 输入新 Key 以更换" : "输入 API Key";
+    providerApiKey.type = "password";
+    apiKeyModified = false;
+    applyProviderDefinition(false);
+  }
 
   const clearBtn = document.querySelector<HTMLButtonElement>("#clear-all-data");
   const clearStatus = document.querySelector<HTMLElement>("#clear-status");
@@ -169,10 +214,6 @@ export function initSettings() {
     finally { exportPortable.disabled = false; }
   });
 
-  // 跟踪 API Key 输入框是否被用户修改过
-  let apiKeyModified = false;
-  deepSeekKey.addEventListener("input", () => { apiKeyModified = true; });
-
   void load();
 
   async function load() {
@@ -181,42 +222,64 @@ export function initSettings() {
       currentShortcutValue = value.shortcut;
       shortcut.value = value.shortcut;
       aiConsent.checked = value.ai.consent;
-      if (value.ai.configured) {
-        deepSeekKey.value = "";
-        deepSeekKey.type = "password";
-        toggleEye.classList.remove("showing"); // 默认隐藏
-        deepSeekKey.placeholder = "Key 已保存 · 输入新 Key 以更换";
-      } else {
-        // 没有 key 时清空输入框并确保是密码类型
-        deepSeekKey.value = "";
-        deepSeekKey.type = "password";
-        toggleEye.classList.remove("showing");
-        deepSeekKey.placeholder = "请输入 DeepSeek API Key";
-      }
-      if (value.ai.unavailable) { saveAi.disabled = true; setStatus(aiStatus, "当前连接外部 API，AI 设置只能在服务宿主中修改", "error"); }
+      catalog = value.providerCatalog;
+      profiles = value.providerProfiles;
+      activeProviderProfileId = value.activeProviderProfileId;
+      providerId.replaceChildren(...catalog.map((definition) => {
+        const option = document.createElement("option"); option.value = definition.id; option.textContent = definition.label; return option;
+      }));
+      renderProviderProfiles();
+      const selected = profiles.find((profile) => profile.id === activeProviderProfileId) ?? profiles[0];
+      if (selected) editProvider(selected); else resetProviderEditor();
+      if (value.ai.unavailable) { saveProvider.disabled = true; testProvider.disabled = true; setStatus(aiStatus, "当前连接外部 API，供应商设置只能在服务宿主中修改", "error"); }
       else {
         renderAiStatus(value.ai);
-        if (value.ai.configured) { deepSeekKey.placeholder = "Key 已保存 · 输入新 Key 以更换"; }
       }
       await loadDataControl();
     } catch (error) { setStatus(aiStatus, message(error), "error"); }
+  }
+
+  function renderProviderProfiles(): void {
+    providerList.replaceChildren();
+    if (!profiles.length) {
+      const empty = document.createElement("p"); empty.className = "help-text"; empty.textContent = "尚未配置供应商。"; providerList.append(empty); return;
+    }
+    for (const profile of profiles) {
+      const row = document.createElement("div"); row.className = "provider-row";
+      if (profile.id === activeProviderProfileId) row.classList.add("provider-active");
+      const summary = document.createElement("div");
+      const title = document.createElement("strong"); title.textContent = profile.displayName;
+      const meta = document.createElement("small"); meta.textContent = `${profile.providerId} · ${profile.model} · ${profile.credentialConfigured ? "Key 已配置" : "缺少 Key"}`;
+      summary.append(title, meta);
+      const actions = document.createElement("div"); actions.className = "provider-actions";
+      const edit = document.createElement("button"); edit.type = "button"; edit.className = "button"; edit.textContent = "编辑"; edit.addEventListener("click", () => editProvider(profile)); actions.append(edit);
+      if (profile.id === activeProviderProfileId) {
+        const active = document.createElement("span"); active.className = "provider-active-badge"; active.textContent = "当前"; actions.append(active);
+      } else {
+        const activate = document.createElement("button"); activate.type = "button"; activate.className = "button"; activate.textContent = "启用";
+        activate.addEventListener("click", async () => { try { await bridge.activateProvider(profile.id); await load(); } catch (error) { setStatus(aiStatus, message(error), "error"); } }); actions.append(activate);
+      }
+      const remove = document.createElement("button"); remove.type = "button"; remove.className = "button danger"; remove.textContent = "删除";
+      remove.addEventListener("click", async () => { if (!window.confirm(`删除供应商配置“${profile.displayName}”？`)) return; try { await bridge.deleteProvider(profile.id); await load(); } catch (error) { setStatus(aiStatus, message(error), "error"); } }); actions.append(remove);
+      row.append(summary, actions); providerList.append(row);
+    }
   }
 
   async function loadDataControl(): Promise<void> {
     if (!usageSummary || !usageBreakdown || !budgetEnabled || !budgetLimit || !budgetWarning || !dataPaths || !backupHistory) return;
     try {
       const value = await bridge.dataControl();
-      usageSummary.textContent = `${value.usage.totalCalls} 次调用 · ${value.usage.totalInputTokens + value.usage.totalOutputTokens} tokens · $${value.usage.totalCostUsd.toFixed(4)} · 成功率 ${(value.usage.successRate * 100).toFixed(1)}%`;
+      usageSummary.textContent = `${value.usage.totalCalls} 次调用 · ${value.usage.totalInputTokens + value.usage.totalOutputTokens} tokens · $${value.usage.totalCostUsd.toFixed(4)}${value.usage.unknownCostCalls ? ` · ${value.usage.unknownCostCalls} 次费用未知` : ""} · 成功率 ${(value.usage.successRate * 100).toFixed(1)}%`;
       usageBreakdown.replaceChildren();
-      for (const [model, stats] of Object.entries(value.usage.byModel)) {
+      for (const [model, stats] of Object.entries(value.usage.byProviderModel)) {
         const row = document.createElement("p");
-        row.textContent = `${model}: ${stats.calls} 次 / ${stats.tokens} tokens / $${stats.costUsd.toFixed(4)}`;
+        row.textContent = `${model}: ${stats.calls} 次 / ${stats.tokens} tokens / $${stats.costUsd.toFixed(4)}${stats.unknownCostCalls ? ` / ${stats.unknownCostCalls} 次费用未知` : ""}`;
         usageBreakdown.append(row);
       }
       budgetEnabled.checked = value.budget.enabled;
       budgetLimit.value = String(value.budget.monthlyLimitUsd);
       budgetWarning.value = String(value.budget.warningThresholdUsd);
-      if (budgetStatus) setStatus(budgetStatus, `本月 $${value.budget.currentMonthCostUsd.toFixed(4)} · ${value.budget.status}`, value.budget.status === "exceeded" ? "error" : value.budget.status === "warning" ? "warning" : "ready");
+      if (budgetStatus) setStatus(budgetStatus, `本月 $${value.budget.currentMonthCostUsd.toFixed(4)} · ${value.budget.status}`, value.budget.status === "exceeded" || value.budget.status === "unknown" ? "error" : value.budget.status === "warning" ? "warning" : "ready");
       dataPaths.textContent = value.paths ? `数据库：${value.paths.database} · 附件：${value.paths.artifacts}` : "数据位置由外部 API 宿主管理";
       backupHistory.replaceChildren();
       for (const backup of value.backups) {
@@ -372,7 +435,7 @@ export function initSettings() {
     if (id === "data") void loadDataControl();
   }
   function renderAiStatus(value: { consent: boolean; configured: boolean; provider?: string; model?: string }) {
-    const text = value.consent && value.configured ? (value.provider ?? "DeepSeek") + " 已配置并授权" : value.configured ? "Key 已保存，云端处理未授权" : "尚未配置 API Key";
+    const text = value.consent && value.configured ? `${value.provider ?? "外部供应商"} / ${value.model ?? "默认模型"} 已配置并授权` : value.configured ? "Key 已保存，云端处理未授权" : "尚未配置外部供应商 API Key";
     setStatus(aiStatus, text, value.configured ? "success" : "ready");
   }
   function setStatus(node: HTMLElement, text: string, kind: string) { node.textContent = text; node.dataset.kind = kind; }

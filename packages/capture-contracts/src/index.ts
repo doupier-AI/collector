@@ -13,6 +13,67 @@ export type CaptureStatus = "inbox" | "needs_processing" | "failed";
 export type RelationType = "related" | "extends" | "supports" | "contradicts" | "duplicate" | "independent";
 export type ReviewDecision = "accepted" | "rejected" | "deferred";
 
+export type ProviderApiMode = "openai_chat_completions" | "anthropic_messages";
+export type ProviderAuthMode = "bearer" | "api_key_header";
+export type ProviderThinkingMode = "none" | "deepseek";
+
+export interface ProviderCapabilities {
+  structuredJson: boolean;
+  thinkingMode: ProviderThinkingMode;
+  modelDiscovery: boolean;
+}
+
+export interface ProviderModelPricing {
+  inputCacheHitPerMillion: number;
+  inputCacheMissPerMillion: number;
+  outputPerMillion: number;
+}
+
+export interface ProviderDefinition {
+  id: string;
+  label: string;
+  apiMode: ProviderApiMode;
+  authMode: ProviderAuthMode;
+  defaultBaseUrl: string;
+  defaultModel: string;
+  models: string[];
+  capabilities: ProviderCapabilities;
+  pricing?: Record<string, ProviderModelPricing>;
+}
+
+export interface ProviderProfile {
+  id: string;
+  providerId: string;
+  displayName: string;
+  baseUrl: string;
+  model: string;
+  credentialConfigured: boolean;
+  enabled: boolean;
+  configurationVersion: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProviderProfileInput {
+  id?: string;
+  providerId: string;
+  displayName: string;
+  baseUrl?: string;
+  model: string;
+  enabled?: boolean;
+}
+
+export interface ActiveModelRoute {
+  providerProfileId: string;
+  providerId: string;
+  apiMode: ProviderApiMode;
+  baseUrlFingerprint: string;
+  model: string;
+  configurationVersion: number;
+}
+
+export const LEGACY_DEEPSEEK_PROFILE_ID = "provider-deepseek-default";
+
 export interface BrowserLocator {
   kind: "browser";
   pageUrl: string;
@@ -203,6 +264,7 @@ export interface WorkflowRunRecord {
   idempotencyKey: string;
   materialIds: string[];
   materialSetVersion: string;
+  modelRoute?: ActiveModelRoute;
   status: WorkflowRunStatus;
   createdAt: string;
   startedAt?: string;
@@ -237,6 +299,7 @@ export interface ModelCallRecord {
   outputTokens: number;
   cacheHitTokens: number;
   estimatedCostUsd: number;
+  costStatus?: "estimated" | "unknown";
   latencyMs: number;
   retryCount: number;
   errorMessage?: string;
@@ -253,7 +316,9 @@ export interface AiUsageSummary {
   totalInputTokens: number;
   totalOutputTokens: number;
   totalCostUsd: number;
+  unknownCostCalls: number;
   byModel: Record<string, { calls: number; tokens: number; costUsd: number }>;
+  byProviderModel: Record<string, { calls: number; tokens: number; costUsd: number; unknownCostCalls: number }>;
   byPurpose: Record<string, { calls: number; tokens: number; costUsd: number }>;
   successRate: number;
 }
@@ -263,7 +328,7 @@ export interface AiBudgetSettings {
   warningThresholdUsd: number;
   enabled: boolean;
   currentMonthCostUsd: number;
-  status: "ok" | "warning" | "exceeded";
+  status: "ok" | "warning" | "exceeded" | "unknown";
 }
 
 export interface RecentClusterSnapshotRecord {
@@ -430,4 +495,25 @@ export function validateCaptureInput(value: unknown): asserts value is CaptureIn
   if (!input.capturedAt || Number.isNaN(Date.parse(input.capturedAt))) throw new Error("capturedAt must be ISO-8601");
   const hasPayload = Boolean(input.content?.trim() || input.sourceUrl || input.artifactIds?.length);
   if (!hasPayload) throw new Error("Capture requires content, sourceUrl, or artifactIds");
+}
+
+export function validateProviderDefinition(value: unknown): asserts value is ProviderDefinition {
+  if (!value || typeof value !== "object") throw new Error("Provider definition must be an object");
+  const definition = value as Partial<ProviderDefinition>;
+  if (!definition.id?.match(/^[a-z0-9][a-z0-9_-]{1,63}$/)) throw new Error("Invalid provider id");
+  if (!definition.label?.trim()) throw new Error("Provider label is required");
+  if (!(["openai_chat_completions", "anthropic_messages"] as ProviderApiMode[]).includes(definition.apiMode as ProviderApiMode)) throw new Error("Invalid provider apiMode");
+  if (!(["bearer", "api_key_header"] as ProviderAuthMode[]).includes(definition.authMode as ProviderAuthMode)) throw new Error("Invalid provider authMode");
+  const baseUrl = parseProviderBaseUrl(definition.defaultBaseUrl);
+  if (baseUrl.protocol !== "https:") throw new Error("Provider base URL must use HTTPS");
+  if (!definition.defaultModel?.trim()) throw new Error("Provider defaultModel is required");
+  if (!Array.isArray(definition.models) || definition.models.some((model) => typeof model !== "string" || !model.trim())) throw new Error("Provider models must be non-empty strings");
+  if (!definition.capabilities || typeof definition.capabilities.structuredJson !== "boolean" || typeof definition.capabilities.modelDiscovery !== "boolean") throw new Error("Provider capabilities are required");
+  if (!(["none", "deepseek"] as ProviderThinkingMode[]).includes(definition.capabilities.thinkingMode)) throw new Error("Invalid provider thinkingMode");
+}
+
+function parseProviderBaseUrl(value: unknown): URL {
+  if (typeof value !== "string" || !value.trim()) throw new Error("Provider base URL is required");
+  try { return new URL(value); }
+  catch { throw new Error("Provider base URL must be an absolute URL"); }
 }

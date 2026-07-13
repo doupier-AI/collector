@@ -54,8 +54,11 @@ contextBridge.exposeInMainWorld("collector", {
   },
   settings: {
     get: () => ipcRenderer.invoke("settings:get"),
-    testConnection: (key?: string) => ipcRenderer.invoke("settings:test-connection", key),
-    saveAi: (value: { consent: boolean; apiKey?: string }) => ipcRenderer.invoke("settings:save-ai", value),
+    saveProvider: (value: { profile: import("@collector/capture-contracts").ProviderProfileInput; apiKey?: string; consent?: boolean; activate?: boolean }) => ipcRenderer.invoke("settings:save-provider", value),
+    testProvider: (value: { profile: import("@collector/capture-contracts").ProviderProfileInput; apiKey?: string }) => ipcRenderer.invoke("settings:test-provider", value),
+    activateProvider: (id: string) => ipcRenderer.invoke("settings:activate-provider", id),
+    deleteProvider: (id: string) => ipcRenderer.invoke("settings:delete-provider", id),
+    setAiConsent: (consent: boolean) => ipcRenderer.invoke("settings:set-ai-consent", consent),
     saveShortcut: (value: string) => ipcRenderer.invoke("settings:save-shortcut", value),
     clearAllData: () => ipcRenderer.invoke("settings:clear-all-data"),
     dataControl: () => ipcRenderer.invoke("settings:data-control"),

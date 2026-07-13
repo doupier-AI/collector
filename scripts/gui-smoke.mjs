@@ -111,6 +111,38 @@ try {
   console.log("GUI smoke: settings section active:", settingsActive);
   if (!settingsActive) throw new Error("Settings tab navigation failed");
 
+  // Stage 6: Configure a provider through the renderer form without making a real model request.
+  console.log("GUI smoke: configuring an isolated external provider profile...");
+  await waitFor(async () => await evaluate(cdp, "document.documentElement.dataset.collectorSettings === 'ready'"), "settings renderer init");
+  const providerUiReady = await evaluate(cdp, `(() => {
+    document.querySelector('[data-section="ai"]')?.click();
+    const provider = document.querySelector('#provider-id');
+    return provider instanceof HTMLSelectElement && ['deepseek', 'openai', 'anthropic', 'openrouter', 'dashscope', 'custom', 'custom-anthropic'].every((id) => [...provider.options].some((option) => option.value === id));
+  })()`);
+  if (!providerUiReady) throw new Error("Provider catalog was not rendered in settings");
+  await evaluate(cdp, `(() => {
+    const provider = document.querySelector('#provider-id');
+    const name = document.querySelector('#provider-display-name');
+    const model = document.querySelector('#provider-model');
+    const key = document.querySelector('#provider-api-key');
+    if (!(provider instanceof HTMLSelectElement) || !(name instanceof HTMLInputElement) || !(model instanceof HTMLInputElement) || !(key instanceof HTMLInputElement)) throw new Error('Provider editor is incomplete');
+    provider.value = 'openai'; provider.dispatchEvent(new Event('change', { bubbles: true }));
+    name.value = 'GUI Smoke OpenAI';
+    model.value = 'gpt-4.1-mini';
+    key.value = 'gui-smoke-secret-value'; key.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('#save-provider')?.click();
+  })()`);
+  await waitFor(async () => await evaluate(cdp, "document.querySelector('#provider-list')?.textContent?.includes('GUI Smoke OpenAI') === true"), "provider profile save");
+  const providerState = await evaluate(cdp, `(async () => {
+    const settings = await window.collector.settings.get();
+    const profile = settings.providerProfiles.find((item) => item.displayName === 'GUI Smoke OpenAI');
+    const serialized = JSON.stringify({ settings, dom: document.querySelector('#section-settings')?.textContent });
+    return { id: profile?.id, active: settings.activeProviderProfileId === profile?.id, configured: profile?.credentialConfigured, leaked: serialized.includes('gui-smoke-secret-value') };
+  })()`);
+  console.log("GUI smoke: provider state:", JSON.stringify(providerState));
+  if (!providerState.id || !providerState.active || !providerState.configured || providerState.leaked) throw new Error("Provider settings round trip failed or exposed a credential");
+  await evaluate(cdp, `(async () => { await window.collector.settings.deleteProvider(${JSON.stringify(providerState.id)}); })()`);
+
   cdp.close();
   console.log("GUI smoke: ALL STAGES PASSED");
 } catch (error) {

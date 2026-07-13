@@ -48,9 +48,12 @@ interface RecentBridge {
 }
 
 interface SettingsBridge {
-  get(): Promise<{ shortcut: string; ai: { consent: boolean; configured: boolean; provider?: string; model?: string; unavailable?: boolean } }>;
-  saveAi(value: { consent: boolean; apiKey?: string }): Promise<{ consent: boolean; configured: boolean; provider?: string; model?: string }>;
-    testConnection(key?: string): Promise<{ ok: true; model: string } | { ok: false; error: string }>;
+  get(): Promise<{ shortcut: string; ai: { consent: boolean; configured: boolean; provider?: string; model?: string; unavailable?: boolean }; providerCatalog: import("@collector/capture-contracts").ProviderDefinition[]; providerProfiles: import("@collector/capture-contracts").ProviderProfile[]; activeProviderProfileId?: string }>;
+  saveProvider(value: { profile: import("@collector/capture-contracts").ProviderProfileInput; apiKey?: string; consent?: boolean; activate?: boolean }): Promise<{ profile: import("@collector/capture-contracts").ProviderProfile; ai: { consent: boolean; configured: boolean; provider?: string; model?: string }; activeProviderProfileId?: string }>;
+  testProvider(value: { profile: import("@collector/capture-contracts").ProviderProfileInput; apiKey?: string }): Promise<{ ok: true; model: string } | { ok: false; error: string }>;
+  activateProvider(id: string): Promise<{ profile?: import("@collector/capture-contracts").ProviderProfile; ai: { consent: boolean; configured: boolean; provider?: string; model?: string } }>;
+  deleteProvider(id: string): Promise<{ deleted: boolean; ai: { consent: boolean; configured: boolean; provider?: string; model?: string } }>;
+  setAiConsent(consent: boolean): Promise<{ consent: boolean; configured: boolean; provider?: string; model?: string }>;
   saveShortcut(value: string): Promise<{ shortcut: string }>;
   clearAllData(): Promise<{ cleared: boolean }>;
   dataControl(): Promise<{

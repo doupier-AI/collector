@@ -8,10 +8,14 @@ import {
   evidenceGradeFor,
   validateCaptureInput,
   type ArtifactRecord,
+  type ActiveModelRoute,
   type CaptureInput,
   type CaptureRecord,
   type FragmentRecord,
   type PreflightEvaluation,
+  type ProviderDefinition,
+  type ProviderProfile,
+  type ProviderProfileInput,
   type RecentClusterSnapshotRecord,
   type AiBudgetSettings,
   type AiUsageSummary,
@@ -30,7 +34,7 @@ import {
 import type { CollectorStore } from "./store.js";
 import { defaultDataPaths } from "./store.js";
 import { SourceParser, parsePdf } from "./parsers.js";
-import { ModelGateway } from "@collector/model-gateway";
+import { DEFAULT_PROVIDER_REGISTRY, ModelGateway, validateExternalProviderBaseUrl } from "@collector/model-gateway";
 import { createVerificationWorkflow } from "./verification.js";
 
 export class ValidationError extends Error {}
@@ -42,13 +46,15 @@ export class CaptureService {
   private topicDocumentTasks: Promise<void> = Promise.resolve();
   private readonly recentWorkerId = randomUUID();
   private readonly topicDocWorkerId = randomUUID();
+  private currentModelRoute?: ActiveModelRoute;
+  private modelGatewayResolver?: (route: ActiveModelRoute) => Promise<ModelGateway | undefined>;
 
   constructor(
     private readonly store: CollectorStore,
     private readonly artifactRoot: string,
     private readonly parser = new SourceParser(),
     private modelGateway?: ModelGateway,
-    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number } = {},
+    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string> } = {},
   ) {
     this.attachModelGateway(this.modelGateway);
     if (this.options.autoRunRecentOrganization !== false) {
@@ -57,9 +63,14 @@ export class CaptureService {
     }
   }
 
-  setModelGateway(gateway: ModelGateway | undefined): void {
+  setModelGateway(gateway: ModelGateway | undefined, route?: ActiveModelRoute): void {
     this.modelGateway = gateway;
+    this.currentModelRoute = route ? structuredClone(route) : undefined;
     this.attachModelGateway(gateway);
+  }
+
+  setModelGatewayResolver(resolver: ((route: ActiveModelRoute) => Promise<ModelGateway | undefined>) | undefined): void {
+    this.modelGatewayResolver = resolver;
   }
 
   private attachModelGateway(gateway: ModelGateway | undefined): void {
@@ -78,6 +89,7 @@ export class CaptureService {
         outputTokens: usage?.outputTokens ?? 0,
         cacheHitTokens: usage?.inputCacheHitTokens ?? 0,
         estimatedCostUsd: event.estimatedCostUsd ?? 0,
+        costStatus: event.estimatedCostUsd === undefined ? "unknown" : "estimated",
         latencyMs: event.latencyMs,
         retryCount: 0,
         errorMessage: event.errorMessage,
@@ -86,6 +98,15 @@ export class CaptureService {
       };
       await this.store.saveModelCall(record);
     });
+  }
+
+  private async gatewayForRun(run: WorkflowRunRecord): Promise<ModelGateway | undefined> {
+    if (run.modelRoute && this.modelGatewayResolver) {
+      const gateway = await this.modelGatewayResolver(run.modelRoute);
+      this.attachModelGateway(gateway);
+      return gateway;
+    }
+    return this.modelGateway;
   }
 
   async drainBackgroundTasks(): Promise<void> { await Promise.all([this.recentOrganizationTasks, this.topicDocumentTasks]); }
@@ -98,11 +119,62 @@ export class CaptureService {
   }
 
   getAiConfiguration(): { consent: boolean; configured: boolean; provider?: string; model?: string } {
-    return { consent: this.store.getSetting("ai_consent") === "true", configured: this.store.getSetting("deepseek_configured") === "true", provider: this.modelGateway?.providerName, model: this.modelGateway?.modelName };
+    const profile = this.store.getActiveProviderProfile();
+    return { consent: this.store.getSetting("ai_consent") === "true", configured: profile ? profile.credentialConfigured : this.store.getSetting("ai_configured") === "true", provider: profile?.providerId ?? this.modelGateway?.providerName, model: profile?.model ?? this.modelGateway?.modelName };
   }
   async setAiConfiguration(consent: boolean, configured: boolean): Promise<void> {
     await this.store.saveSetting("ai_consent", String(consent));
-    await this.store.saveSetting("deepseek_configured", String(configured));
+    await this.store.saveSetting("ai_configured", String(configured));
+  }
+
+  getProviderCatalog(): ProviderDefinition[] { return DEFAULT_PROVIDER_REGISTRY.list(); }
+  listProviderProfiles(): ProviderProfile[] { return this.store.listProviderProfiles(); }
+  getActiveProviderProfile(): ProviderProfile | undefined { return this.store.getActiveProviderProfile(); }
+
+  async saveProviderProfile(input: ProviderProfileInput, credentialConfigured: boolean): Promise<ProviderProfile> {
+    const definition = DEFAULT_PROVIDER_REGISTRY.get(input.providerId);
+    const existing = input.id ? this.store.getProviderProfile(input.id) : undefined;
+    if (input.id && !existing) throw new NotFoundError("Provider profile not found");
+    if (existing && existing.providerId !== input.providerId) throw new ValidationError("Provider type cannot be changed");
+    const displayName = input.displayName.trim();
+    const model = input.model.trim();
+    if (!displayName || displayName.length > 80) throw new ValidationError("Provider display name must be 1-80 characters");
+    if (!model || model.length > 200) throw new ValidationError("Provider model must be 1-200 characters");
+    let baseUrl = definition.defaultBaseUrl;
+    if (definition.id.startsWith("custom")) {
+      const requested = input.baseUrl?.trim();
+      if (!requested) throw new ValidationError("Custom provider base URL is required");
+      baseUrl = await (this.options.providerBaseUrlValidator ?? validateExternalProviderBaseUrl)(requested);
+    }
+    const changed = !existing || existing.baseUrl !== baseUrl || existing.model !== model || existing.providerId !== input.providerId;
+    const now = new Date().toISOString();
+    const profile: ProviderProfile = {
+      id: existing?.id ?? randomUUID(),
+      providerId: definition.id,
+      displayName,
+      baseUrl,
+      model,
+      credentialConfigured,
+      enabled: input.enabled ?? existing?.enabled ?? true,
+      configurationVersion: existing ? existing.configurationVersion + (changed ? 1 : 0) : 1,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    await this.store.saveProviderProfile(profile);
+    return profile;
+  }
+
+  async activateProviderProfile(id: string): Promise<ProviderProfile> {
+    const profile = this.store.getProviderProfile(id);
+    if (!profile) throw new NotFoundError("Provider profile not found");
+    if (!profile.credentialConfigured) throw new ValidationError("Provider credential is not configured");
+    await this.store.setActiveProviderProfile(id);
+    return profile;
+  }
+
+  async deleteProviderProfile(id: string): Promise<boolean> {
+    if (this.store.listRecoverableWorkflowRuns().some((run) => run.modelRoute?.providerProfileId === id)) throw new ValidationError("Provider profile is referenced by an unfinished workflow");
+    return this.store.deleteProviderProfile(id);
   }
 
   getDataPaths(): { database: string; artifacts: string; databaseExists: boolean } {
@@ -316,7 +388,7 @@ export class CaptureService {
     const now = new Date().toISOString();
     const run: WorkflowRunRecord = {
       id: randomUUID(), workflowType: "recent_organization", idempotencyKey,
-      materialIds, materialSetVersion, status: "queued", createdAt: now,
+      materialIds, materialSetVersion, modelRoute: this.currentModelRoute ? structuredClone(this.currentModelRoute) : undefined, status: "queued", createdAt: now,
     };
     const steps: WorkflowStepRecord[] = ([
       "freeze_materials",
@@ -409,17 +481,18 @@ export class CaptureService {
         .map((id) => this.store.getCapture(id))
         .filter(Boolean)
         .map((c) => ({ id: c!.id, content: c!.content ?? c!.sourceUrl ?? "" }));
-      if (this.modelGateway && materials.length > 0) {
+      const gateway = await this.gatewayForRun(run);
+      if (gateway && materials.length > 0) {
         if (!this.checkAiBudget()) throw new BudgetExceededError("AI monthly budget exceeded");
         try {
-          const result = await this.modelGateway.clusterMaterials(materials, { context: { workflowRunId: run.id, workflowStepId: claimed.id, purpose: "recent_cluster_proposal" } });
+          const result = await gateway.clusterMaterials(materials, { context: { workflowRunId: run.id, workflowStepId: claimed.id, purpose: "recent_cluster_proposal" } });
           output = { clusters: result.clusters, unclusteredMaterialIds: result.unclusteredMaterialIds };
         } catch (err) {
           console.error("Recent cluster proposal failed:", err instanceof Error ? err.message : err);
           output = { clusters: [], unclusteredMaterialIds: candidateIds };
         }
       } else {
-        if (!this.modelGateway) console.warn("Recent cluster proposal skipped: model gateway unavailable");
+        if (!gateway) console.warn("Recent cluster proposal skipped: model gateway unavailable");
         output = { clusters: [], unclusteredMaterialIds: candidateIds };
       }
     } else if (claimed.stepType === "validate_clusters") {
@@ -790,7 +863,7 @@ export class CaptureService {
     const existing = this.store.findWorkflowRun("topic_document", idempotencyKey ?? "", materialSetVersion);
     if (existing) return existing;
     const now = new Date().toISOString();
-    const run: WorkflowRunRecord = { id: randomUUID(), workflowType: "topic_document", topicId, idempotencyKey: idempotencyKey ?? "", materialIds: memberIds, materialSetVersion, status: "queued", createdAt: now };
+    const run: WorkflowRunRecord = { id: randomUUID(), workflowType: "topic_document", topicId, idempotencyKey: idempotencyKey ?? "", materialIds: memberIds, materialSetVersion, modelRoute: this.currentModelRoute ? structuredClone(this.currentModelRoute) : undefined, status: "queued", createdAt: now };
     const steps = ["freeze_material_set", "check_citations", "build_outline", "draft_sections", "merge_sections", "extract_key_claims", "run_verification", "apply_verification", "validate_document", "publish_version"].map((st, i) => ({ id: randomUUID(), workflowRunId: run.id, stepType: st, status: "queued", createdAt: now, ordinal: i }));
     await this.store.createWorkflowRun(run, steps as any);
     this.scheduleTopicDocumentRuns();
@@ -886,24 +959,26 @@ export class CaptureService {
       return { step: { ...out, output: { citedMaterialCount: run.materialIds.length } } };
     }
     if (step.stepType === "build_outline") {
-      if (!this.modelGateway) throw new Error("AI model is not configured");
+      const gateway = await this.gatewayForRun(run);
+      if (!gateway) throw new Error("AI model is not configured");
       const mats = run.materialIds.map((id: string) => this.store.getCapture(id)).filter(Boolean);
       const topic = run.topicId ? this.store.getTopic(run.topicId) : undefined;
       const materialInputs = mats.map((m: any) => ({ id: m.id, content: m.content ?? "" }));
       if (!this.checkAiBudget()) throw new BudgetExceededError("AI monthly budget exceeded");
-      const result = await this.modelGateway.generateDocumentOutline(materialInputs, topic?.title ?? "Untitled Document", { context: { workflowRunId: run.id, workflowStepId: step.id, purpose: "document_outline" } });
+      const result = await gateway.generateDocumentOutline(materialInputs, topic?.title ?? "Untitled Document", { context: { workflowRunId: run.id, workflowStepId: step.id, purpose: "document_outline" } });
       if ("errorCode" in result) throw new Error(result.errorMessage);
       return { step: { ...out, output: result } };
     }
     if (step.stepType === "draft_sections") {
-      if (!this.modelGateway) throw new Error("AI model is not configured");
+      const gateway = await this.gatewayForRun(run);
+      if (!gateway) throw new Error("AI model is not configured");
       const mats = run.materialIds.map((id: string) => this.store.getCapture(id)).filter(Boolean);
       const outlineStep = this.store.getWorkflowSteps(run.id).find((s) => s.stepType === "build_outline");
       const outline = outlineStep?.output as { title: string; sections: Array<{ heading: string; keyPoints: string[] }> } | undefined;
       if (!outline?.sections?.length) throw new Error("Document outline is missing");
       const materialInputs = mats.map((m: any) => ({ id: m.id, content: m.content ?? "", fragmentIds: this.store.listFragments(m.id).map((f: any) => f.id) }));
       if (!this.checkAiBudget()) throw new BudgetExceededError("AI monthly budget exceeded");
-      const result = await this.modelGateway.generateDocumentSections(outline, materialInputs, { context: { workflowRunId: run.id, workflowStepId: step.id, purpose: "document_sections" } });
+      const result = await gateway.generateDocumentSections(outline, materialInputs, { context: { workflowRunId: run.id, workflowStepId: step.id, purpose: "document_sections" } });
       if ("errorCode" in result) throw new Error(result.errorMessage);
       const validFragmentIds = new Set(run.materialIds.flatMap((id) => this.store.listFragments(id).map((fragment) => fragment.id)));
       const sections: DocumentSection[] = result.sections.map((section) => ({
@@ -1157,7 +1232,9 @@ export class CaptureService {
     const totalInput = completed.reduce((s: number, c: any) => s + (c.inputTokens || 0), 0);
     const totalOutput = completed.reduce((s: number, c: any) => s + (c.outputTokens || 0), 0);
     const totalCost = completed.reduce((s: number, c: any) => s + (c.estimatedCostUsd || 0), 0);
+    const unknownCostCalls = completed.filter((c: any) => c.costStatus === "unknown").length;
     const byModel: Record<string, any> = {};
+    const byProviderModel: Record<string, any> = {};
     const byPurpose: Record<string, any> = {};
     for (const c of completed) {
       const mc = c as any;
@@ -1165,6 +1242,12 @@ export class CaptureService {
       byModel[mc.model].calls++;
       byModel[mc.model].tokens += (mc.inputTokens || 0) + (mc.outputTokens || 0);
       byModel[mc.model].costUsd += mc.estimatedCostUsd || 0;
+      const providerModel = `${mc.provider}/${mc.model}`;
+      byProviderModel[providerModel] = byProviderModel[providerModel] || { calls: 0, tokens: 0, costUsd: 0, unknownCostCalls: 0 };
+      byProviderModel[providerModel].calls++;
+      byProviderModel[providerModel].tokens += (mc.inputTokens || 0) + (mc.outputTokens || 0);
+      byProviderModel[providerModel].costUsd += mc.estimatedCostUsd || 0;
+      if (mc.costStatus === "unknown") byProviderModel[providerModel].unknownCostCalls++;
       byPurpose[mc.purpose] = byPurpose[mc.purpose] || { calls: 0, tokens: 0, costUsd: 0 };
       byPurpose[mc.purpose].calls++;
       byPurpose[mc.purpose].tokens += (mc.inputTokens || 0) + (mc.outputTokens || 0);
@@ -1174,7 +1257,7 @@ export class CaptureService {
       periodStart: start, periodEnd: end,
       totalCalls: calls.length, completedCalls: completed.length, failedCalls: failed.length,
       totalInputTokens: totalInput, totalOutputTokens: totalOutput, totalCostUsd: Math.round(totalCost * 10000) / 10000,
-      byModel, byPurpose,
+      unknownCostCalls, byModel, byProviderModel, byPurpose,
       successRate: calls.length > 0 ? Math.round((completed.length / calls.length) * 10000) / 10000 : 1,
     };
   }
@@ -1186,7 +1269,9 @@ export class CaptureService {
     const now = new Date();
     const currentCost = this.store.getMonthModelCallCostUsd(now.getUTCFullYear(), now.getUTCMonth() + 1);
     let status: AiBudgetSettings['status'] = 'ok';
-    if (enabled && limit > 0 && currentCost >= limit) status = 'exceeded';
+    const hasUnknownCost = this.store.getMonthModelCalls(now.getUTCFullYear(), now.getUTCMonth() + 1).some((call) => call.status === "completed" && call.costStatus === "unknown");
+    if (enabled && hasUnknownCost) status = 'unknown';
+    else if (enabled && limit > 0 && currentCost >= limit) status = 'exceeded';
     else if (enabled && warning > 0 && currentCost >= warning) status = 'warning';
     return { monthlyLimitUsd: limit, warningThresholdUsd: warning, enabled, currentMonthCostUsd: currentCost, status };
   }
@@ -1211,7 +1296,7 @@ export class CaptureService {
   checkAiBudget(): boolean {
     const budget = this.getAiBudgetSettings();
     if (!budget.enabled || budget.monthlyLimitUsd <= 0) return true;
-    return budget.currentMonthCostUsd < budget.monthlyLimitUsd;
+    return budget.status !== "unknown" && budget.currentMonthCostUsd < budget.monthlyLimitUsd;
   }
 
   // ── Trash Cleanup (Issue 11) ──────────────────────────────────

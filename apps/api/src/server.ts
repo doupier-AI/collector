@@ -3,7 +3,8 @@ import { CaptureService } from "./service.js";
 import { SqliteStore, defaultDataPaths } from "./store.js";
 import { LocalAuth } from "./auth.js";
 import { randomBytes } from "node:crypto";
-import { DeepSeekProvider, ModelGateway } from "@collector/model-gateway";
+import { DEFAULT_PROVIDER_REGISTRY, fingerprintBaseUrl, ProviderRuntimeResolver, validateExternalProviderBaseUrl } from "@collector/model-gateway";
+import type { ProviderProfile } from "@collector/capture-contracts";
 import { WorkflowScheduler } from "./scheduler.js";
 
 const port = Number(process.env.COLLECTOR_PORT ?? 43110);
@@ -18,11 +19,45 @@ if (!process.env.COLLECTOR_MASTER_TOKEN) {
   console.log(`Collector development pairing code: ${pairing.code}`);
 }
 const consent = process.env.COLLECTOR_AI_CONSENT === "1";
-const apiKey = process.env.DEEPSEEK_API_KEY;
+const legacyApiKey = process.env.DEEPSEEK_API_KEY;
+const apiKey = process.env.COLLECTOR_AI_API_KEY ?? legacyApiKey;
+const providerId = process.env.COLLECTOR_AI_PROVIDER ?? (legacyApiKey ? "deepseek" : undefined);
 await store.saveSetting("ai_consent", String(consent));
-await store.saveSetting("deepseek_configured", String(Boolean(apiKey)));
-const gateway = consent && apiKey ? new ModelGateway(new DeepSeekProvider({ apiKey: () => apiKey })) : undefined;
-const service = new CaptureService(store, paths.artifacts, undefined, gateway);
+if (apiKey && !providerId) throw new Error("COLLECTOR_AI_PROVIDER is required when COLLECTOR_AI_API_KEY is configured");
+let environmentProfile: ProviderProfile | undefined;
+if (providerId) {
+  const definition = DEFAULT_PROVIDER_REGISTRY.get(providerId);
+  const configuredBaseUrl = process.env.COLLECTOR_AI_BASE_URL;
+  const baseUrl = definition.id.startsWith("custom")
+    ? await validateExternalProviderBaseUrl(configuredBaseUrl ?? "")
+    : definition.defaultBaseUrl;
+  const now = new Date().toISOString();
+  environmentProfile = {
+    id: `environment-${definition.id}`,
+    providerId: definition.id,
+    displayName: `${definition.label} (environment)`,
+    baseUrl,
+    model: process.env.COLLECTOR_AI_MODEL?.trim() || definition.defaultModel,
+    credentialConfigured: Boolean(apiKey),
+    enabled: true,
+    configurationVersion: 1,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await store.saveProviderProfile(environmentProfile);
+  if (apiKey) await store.setActiveProviderProfile(environmentProfile.id);
+}
+await store.saveSetting("ai_configured", String(Boolean(apiKey && environmentProfile)));
+const resolver = new ProviderRuntimeResolver(DEFAULT_PROVIDER_REGISTRY, async (profileId) => profileId === environmentProfile?.id ? apiKey : undefined);
+const runtime = consent && apiKey && environmentProfile ? await resolver.resolve(environmentProfile) : undefined;
+const service = new CaptureService(store, paths.artifacts, undefined, runtime?.gateway);
+service.setModelGateway(runtime?.gateway, runtime?.route);
+service.setModelGatewayResolver(async (route) => {
+  if (!environmentProfile || route.providerProfileId !== environmentProfile.id || route.providerId !== environmentProfile.providerId || route.model !== environmentProfile.model || route.configurationVersion !== environmentProfile.configurationVersion || route.baseUrlFingerprint !== fingerprintBaseUrl(environmentProfile.baseUrl)) {
+    throw new Error("Workflow environment provider configuration is unavailable or has changed");
+  }
+  return (await resolver.resolve(environmentProfile)).gateway;
+});
 const server = createApiServer(service, auth, { instanceId: process.env.COLLECTOR_INSTANCE_ID });
 
 // 启动工作流调度器守护进程

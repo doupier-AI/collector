@@ -28,7 +28,7 @@
 - SQLite、Artifact、Capture、Fragment、鉴权和迁移框架可继续使用。
 - URL 安全边界、文件大小限制和解析器已有一定测试基础。
 - WorkflowRun、WorkflowStep、RecentClusterSnapshot、TopicDocumentVersion 等表结构已经出现。
-- DeepSeek Provider、Fake Provider 和基础 token/cost 字段可以复用。
+- 通用 Provider Registry、OpenAI-compatible / Anthropic Messages Adapter、Fake Provider 和 token/cost 字段已经建立；DeepSeek 只是注册表中的普通定义。
 
 ### 2.2 不可视为完成的能力
 

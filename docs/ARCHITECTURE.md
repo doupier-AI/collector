@@ -24,7 +24,7 @@ Collector 是单用户、本地优先的 Windows 桌面应用。架构优先保�
 | 文件存储 | 本地 Artifact 目录 | 原文件不可变保存，无需对象存储服务 |
 | 后台执行 | SQLite 持久化工作流 + 进程内执行器 | 满足本地恢复需求，避免 Redis |
 | AI 编排 | 显式领域工作流，暂不引入 LangGraph | 当前流程以确定性步骤和人工边界为主 |
-| 模型接入 | 可替换 Model Provider，首个 Provider 为 DeepSeek | 业务层不绑定供应商，Fake Provider 支持离线测试 |
+| 模型接入 | 外部 Provider 注册表 + Provider Profile | 业务层不绑定供应商；DeepSeek 与其他供应商使用同一配置和运行路径 |
 | 检索 | 全文、确定性候选和轻量向量逐步组合 | 数据规模尚不需要外部向量数据库 |
 
 ### 2.1 MVP 实现补充（2026-07-13）
@@ -34,6 +34,8 @@ Collector 是单用户、本地优先的 Windows 桌面应用。架构优先保�
 - 长材料按字符预算分批发送到模型，并在网关层合并结构化结果；不允许用固定前 N 字符生成正式文档或增量版本。
 - AI 预算超限使用 `waiting_for_budget`，保存预算后由进程内调度器继续；材料级 `aiProcessingDisabled` 在候选召回和专题文档入口强制执行。
 - 数据控制使用 SQLite `VACUUM INTO` 一致快照、Artifact 校验和和显式版本 Manifest；便携导出排除设置、Token、模型凭证和 ModelCall 诊断记录。
+- AI 推理完全依赖外部供应商，不提供本地模型运行时、模型下载或硬件探测；内置 OpenAI-compatible 与 Anthropic Messages 适配器，自定义端点仅允许公网 HTTPS。
+- 每个工作流在创建时冻结不含凭证的 `ActiveModelRoute`；切换活动供应商不会改变排队任务的 provider、model、Base URL 指纹和配置版本。
 
 ## 3. 运行结构
 
@@ -52,7 +54,10 @@ flowchart LR
   WORKFLOW --> DB
   WORKFLOW --> MODEL["Model Gateway"]
   WORKFLOW --> SEARCH["Verification Adapter"]
-  MODEL --> DEEPSEEK["DeepSeek / Fake Provider"]
+  MODEL --> PROVIDERS["External Provider Registry"]
+  PROVIDERS --> OPENAI["OpenAI-compatible"]
+  PROVIDERS --> ANTHROPIC["Anthropic Messages"]
+  MODEL --> FAKE["Fake Provider (tests only)"]
 ```
 
 Renderer 保持 `contextIsolation: true`、`nodeIntegration: false` 和 `sandbox: true`。解析、持久化、AI 编排、核验和文档版本写入属于领域/API 层，不进入 Renderer。
@@ -254,7 +259,9 @@ Model Gateway 保持供应商无关，只承担一次受约束调用：
 
 不同工作流使用独立的输入输出 Schema，废止“一套 KnowledgeExtraction 覆盖所有任务”的做法。例如分组、提纲、章节整理、关键结论和核验判断应分别定义契约。
 
-DeepSeek 是首个 Provider，不是领域层依赖。真实云调用和离线 Fake Provider 验收必须分开。
+供应商能力由注册表声明，当前协议适配包括 OpenAI Chat Completions 与 Anthropic Messages。DeepSeek、OpenAI、OpenRouter、Anthropic 和阿里云百炼都是普通内置定义；自定义 OpenAI-compatible / Anthropic-compatible 端点经过公网 HTTPS 校验后使用同一 Profile 流程。Fake Provider 只用于离线自动化测试，不是产品中的本地模型。
+
+Provider Profile 只保存显示名、供应商、Base URL、模型、凭证存在标志和配置版本；API Key 单独保存在 Electron Main Process 管理的凭证文件中。活动 Profile 只影响新工作流，已排队工作流按冻结路由恢复。无可验证定价的模型将费用标记为“未知”，启用严格预算时停止新的 AI 工作流，避免把未知费用当作零费用。
 
 ## 9. 本地 API 与安全
 
@@ -262,8 +269,9 @@ DeepSeek 是首个 Provider，不是领域层依赖。真实云调用和离线 F
 - 仅 `/health` 和一次性配对交换匿名；
 - 扩展通过五分钟有效、仅可使用一次的配对码获得独立 Token；
 - CORS 只允许明确的应用和扩展来源；
-- Token hash 存 SQLite，DeepSeek Key 使用 `safeStorage`；
+- Token hash 存 SQLite；所有供应商 API Key 由 Electron Main Process 使用 `safeStorage`，不可用时采用显式可识别的降级格式；
 - Key 不得进入 Renderer、SQLite、日志、导出、源码或 `.env`；
+- 自定义供应商 Base URL 必须是公网 HTTPS，禁止内嵌凭证、localhost、私有 IP 和重定向；
 - URL 抓取限制超时、响应大小和重定向，并阻止私有地址和本机地址；
 - 首次云处理需要授权，单条材料可禁用云端处理。
 
@@ -305,7 +313,7 @@ npm.cmd run test:gui
 powershell -ExecutionPolicy Bypass -File .agents\skills\collector-engineering\scripts\check-project.ps1
 ```
 
-真实 DeepSeek 与真实联网核验属于显式人工验收，不应成为离线 CI 的前置条件。
+真实外部供应商调用与真实联网核验属于显式人工验收，不应成为离线 CI 的前置条件。
 
 ## 12. 升级触发条件
 

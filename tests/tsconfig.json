@@ -8,7 +8,8 @@
   "references": [
     { "path": "../packages/capture-contracts" },
     { "path": "../packages/model-gateway" },
-    { "path": "../apps/api" }
+    { "path": "../apps/api" },
+    { "path": "../apps/desktop-capture" }
   ],
   "include": ["**/*.ts"]
 }

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ModelCallRecord, WorkflowRunRecord } from "@collector/capture-contracts";
-import { SqliteStore } from "@collector/api";
+import { CaptureService, SqliteStore } from "@collector/api";
 
 function dummyRun(id: string): WorkflowRunRecord {
   const ts = new Date().toISOString();
@@ -157,4 +157,21 @@ test("saveAiBudgetSetting overwrites existing values", async (t) => {
   await store.saveAiBudgetSetting("monthly_limit_usd", "10.00");
   await store.saveAiBudgetSetting("monthly_limit_usd", "20.00");
   assert.equal(store.getAiBudgetSetting("monthly_limit_usd"), "20.00");
+});
+
+test("usage separates provider/model routes and strict budgets block unknown costs", async (t) => {
+  const { root, store } = await fixture();
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  const runId = crypto.randomUUID();
+  await store.saveWorkflowRun(dummyRun(runId));
+  await store.saveModelCall(modelCall({ workflowRunId: runId, provider: "openai", model: "gpt-4.1-mini", costStatus: "unknown", estimatedCostUsd: 0 }));
+  await store.saveModelCall(modelCall({ workflowRunId: runId, provider: "deepseek", model: "deepseek-v4-flash", costStatus: "estimated", estimatedCostUsd: 0.01 }));
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
+  const usage = service.getAiUsage();
+  assert.equal(usage.unknownCostCalls, 1);
+  assert.equal(usage.byProviderModel["openai/gpt-4.1-mini"].unknownCostCalls, 1);
+  assert.equal(usage.byProviderModel["deepseek/deepseek-v4-flash"].costUsd, 0.01);
+  await service.updateAiBudgetSettings({ enabled: true, monthlyLimitUsd: 10 });
+  assert.equal(service.getAiBudgetSettings().status, "unknown");
+  assert.equal(service.checkAiBudget(), false);
 });
