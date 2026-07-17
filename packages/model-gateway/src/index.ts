@@ -1,3 +1,8 @@
+import { createHash } from "node:crypto";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
+import { validateProviderDefinition, type ActiveModelRoute, type ProviderDefinition, type ProviderProfile } from "@collector/capture-contracts";
+
 export interface ProviderUsage {
   inputTokens?: number;
   outputTokens?: number;
@@ -10,12 +15,6 @@ export interface ModelPricing {
   inputCacheMissPerMillion: number;
   outputPerMillion: number;
 }
-
-// Verified against the official DeepSeek pricing page on 2026-06-12.
-export const DEFAULT_MODEL_PRICING: Record<string, ModelPricing> = {
-  "deepseek-v4-flash": { inputCacheHitPerMillion: 0.0028, inputCacheMissPerMillion: 0.14, outputPerMillion: 0.28 },
-  "deepseek-v4-pro": { inputCacheHitPerMillion: 0.003625, inputCacheMissPerMillion: 0.435, outputPerMillion: 0.87 },
-};
 
 export interface ModelProviderResponse {
   content: string;
@@ -34,7 +33,139 @@ export interface ModelProviderRequest {
 
 export interface ModelProvider {
   readonly name: string;
+  readonly defaultModel?: string;
+  readonly pricing?: Record<string, ModelPricing>;
   complete(request: ModelProviderRequest): Promise<ModelProviderResponse>;
+}
+
+export class ProviderRegistry {
+  private readonly definitions = new Map<string, ProviderDefinition>();
+
+  constructor(definitions: ProviderDefinition[] = []) {
+    for (const definition of definitions) this.register(definition);
+  }
+
+  register(definition: ProviderDefinition): void {
+    validateProviderDefinition(definition);
+    if (this.definitions.has(definition.id)) throw new Error(`Provider already registered: ${definition.id}`);
+    this.definitions.set(definition.id, structuredClone(definition));
+  }
+
+  get(id: string): ProviderDefinition {
+    const definition = this.definitions.get(id);
+    if (!definition) throw new Error(`Unknown provider: ${id}`);
+    return structuredClone(definition);
+  }
+
+  list(): ProviderDefinition[] {
+    return [...this.definitions.values()].map((definition) => structuredClone(definition));
+  }
+}
+
+export const BUILTIN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [{
+  id: "deepseek",
+  label: "DeepSeek",
+  apiMode: "openai_chat_completions",
+  authMode: "bearer",
+  defaultBaseUrl: "https://api.deepseek.com",
+  defaultModel: "deepseek-v4-flash",
+  models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+  capabilities: { structuredJson: true, thinkingMode: "deepseek", modelDiscovery: true },
+  pricing: {
+    "deepseek-v4-flash": { inputCacheHitPerMillion: 0.0028, inputCacheMissPerMillion: 0.14, outputPerMillion: 0.28 },
+    "deepseek-v4-pro": { inputCacheHitPerMillion: 0.003625, inputCacheMissPerMillion: 0.435, outputPerMillion: 0.87 },
+  },
+}, {
+  id: "openai",
+  label: "OpenAI",
+  apiMode: "openai_chat_completions",
+  authMode: "bearer",
+  defaultBaseUrl: "https://api.openai.com/v1",
+  defaultModel: "gpt-4.1-mini",
+  models: ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"],
+  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true },
+}, {
+  id: "anthropic",
+  label: "Anthropic",
+  apiMode: "anthropic_messages",
+  authMode: "api_key_header",
+  defaultBaseUrl: "https://api.anthropic.com/v1",
+  defaultModel: "claude-sonnet-5",
+  models: ["claude-sonnet-5", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
+  capabilities: { structuredJson: false, thinkingMode: "none", modelDiscovery: true },
+}, {
+  id: "openrouter",
+  label: "OpenRouter",
+  apiMode: "openai_chat_completions",
+  authMode: "bearer",
+  defaultBaseUrl: "https://openrouter.ai/api/v1",
+  defaultModel: "openai/gpt-4.1-mini",
+  models: ["openai/gpt-4.1-mini", "anthropic/claude-sonnet-4", "google/gemini-2.5-flash"],
+  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true },
+}, {
+  id: "dashscope",
+  label: "Alibaba Cloud Model Studio",
+  apiMode: "openai_chat_completions",
+  authMode: "bearer",
+  defaultBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  defaultModel: "qwen-plus",
+  models: ["qwen-plus", "qwen-max", "qwen-turbo"],
+  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true },
+}, {
+  id: "custom",
+  label: "Custom OpenAI-Compatible",
+  apiMode: "openai_chat_completions",
+  authMode: "bearer",
+  defaultBaseUrl: "https://example.invalid/v1",
+  defaultModel: "custom-model",
+  models: [],
+  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true },
+}, {
+  id: "custom-anthropic",
+  label: "Custom Anthropic-Compatible",
+  apiMode: "anthropic_messages",
+  authMode: "api_key_header",
+  defaultBaseUrl: "https://example.invalid/v1",
+  defaultModel: "custom-model",
+  models: [],
+  capabilities: { structuredJson: false, thinkingMode: "none", modelDiscovery: true },
+}];
+
+export const DEFAULT_PROVIDER_REGISTRY = new ProviderRegistry(BUILTIN_PROVIDER_DEFINITIONS);
+
+export interface ResolvedProviderRuntime {
+  gateway: ModelGateway;
+  route: ActiveModelRoute;
+}
+
+export class ProviderRuntimeResolver {
+  constructor(
+    private readonly registry: ProviderRegistry,
+    private readonly credential: (profileId: string) => Promise<string | undefined>,
+    private readonly pricing?: Record<string, ModelPricing>,
+  ) {}
+
+  async resolve(profile: ProviderProfile): Promise<ResolvedProviderRuntime> {
+    if (!profile.enabled) throw new Error("Provider profile is disabled");
+    const definition = this.registry.get(profile.providerId);
+    const apiKey = await this.credential(profile.id);
+    if (!apiKey) throw new Error(`Credential is unavailable for provider profile: ${profile.id}`);
+    const gateway = new ModelGateway(createProvider(definition, { apiKey: () => apiKey, baseUrl: profile.baseUrl }), {
+      model: profile.model,
+      pricing: this.pricing,
+    });
+    return {
+      gateway,
+      route: {
+        providerProfileId: profile.id,
+        providerId: profile.providerId,
+        apiMode: definition.apiMode,
+        baseUrlFingerprint: fingerprintBaseUrl(profile.baseUrl),
+        model: profile.model,
+        configurationVersion: profile.configurationVersion,
+      },
+    };
+  }
 }
 
 export interface ModelCallContext { workflowRunId?: string; workflowStepId?: string; purpose?: string; }
@@ -57,7 +188,7 @@ export class ModelGateway {
   constructor(private readonly provider: ModelProvider, private readonly options: { model?: string; promptVersion?: string; thinking?: boolean; pricing?: Record<string, ModelPricing>; onCall?: (event: ModelCallEvent) => void | Promise<void> } = {}) { this.callListener = options.onCall; }
 
   get providerName(): string { return this.provider.name; }
-  get modelName(): string { return this.options.model ?? "deepseek-v4-flash"; }
+  get modelName(): string { return this.options.model ?? this.provider.defaultModel ?? "default"; }
   setCallListener(listener: ((event: ModelCallEvent) => void | Promise<void>) | undefined): void { this.callListener = listener; }
 
   private async emitCall(event: ModelCallEvent): Promise<void> {
@@ -72,7 +203,7 @@ export class ModelGateway {
       const response = await this.provider.complete(request);
       await this.emitCall({
         context, provider: this.providerName, model: response.model ?? request.model, promptVersion: this.promptVersion, status: "completed",
-        usage: response.usage, estimatedCostUsd: estimateCost(response.model ?? request.model, response.usage, this.options.pricing),
+        usage: response.usage, estimatedCostUsd: estimateCost(response.model ?? request.model, response.usage, this.options.pricing ?? this.provider.pricing),
         latencyMs: Date.now() - startedAt, createdAt, completedAt: new Date().toISOString(),
       });
       return response;
@@ -257,6 +388,8 @@ export class ModelGateway {
 
 export class FakeProvider implements ModelProvider {
   readonly name = "fake";
+  readonly defaultModel = "fake-model";
+  readonly pricing = { "fake-model": { inputCacheHitPerMillion: 0, inputCacheMissPerMillion: 0, outputPerMillion: 0 } };
   calls: ModelProviderRequest[] = [];
   constructor(private readonly responses: Array<string | Error | ModelProviderResponse>) {}
   async complete(request: ModelProviderRequest): Promise<ModelProviderResponse> {
@@ -268,42 +401,54 @@ export class FakeProvider implements ModelProvider {
   }
 }
 
-export interface DeepSeekProviderOptions {
+export interface OpenAiCompatibleProviderOptions {
+  definition: ProviderDefinition;
   apiKey: () => Promise<string | undefined> | string | undefined;
   baseUrl?: string;
   fetchImpl?: typeof fetch;
 }
 
-export class DeepSeekProvider implements ModelProvider {
-  readonly name = "deepseek";
+export class OpenAiCompatibleProvider implements ModelProvider {
+  readonly name: string;
+  readonly defaultModel: string;
+  readonly pricing?: Record<string, ModelPricing>;
   private readonly fetchImpl: typeof fetch;
-  constructor(private readonly options: DeepSeekProviderOptions) { this.fetchImpl = options.fetchImpl ?? fetch; }
+  constructor(private readonly options: OpenAiCompatibleProviderOptions) {
+    validateProviderDefinition(options.definition);
+    if (options.definition.apiMode !== "openai_chat_completions") throw new Error(`Provider ${options.definition.id} does not use the OpenAI chat completions protocol`);
+    this.name = options.definition.id;
+    this.defaultModel = options.definition.defaultModel;
+    this.pricing = options.definition.pricing;
+    this.fetchImpl = options.fetchImpl ?? fetch;
+  }
 
   async complete(request: ModelProviderRequest): Promise<ModelProviderResponse> {
     const apiKey = await this.options.apiKey();
-    if (!apiKey) throw new Error("DeepSeek API key is not configured");
+    if (!apiKey) throw new Error(`${this.options.definition.label} API key is not configured`);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new Error("DeepSeek request timed out")), request.timeoutMs ?? 75_000);
+    const timer = setTimeout(() => controller.abort(new Error(`${this.options.definition.label} request timed out`)), request.timeoutMs ?? 75_000);
     let response: Response;
     let payload: any;
     try {
-      response = await this.fetchImpl(`${this.options.baseUrl ?? "https://api.deepseek.com"}/chat/completions`, {
+      const body: Record<string, unknown> = {
+        model: request.model,
+        messages: [{ role: "system", content: "Return valid json only. Fragment IDs and capture IDs are different identifier types and must never be interchanged." }, { role: "user", content: request.prompt }],
+        response_format: request.responseFormat,
+        max_tokens: request.maxTokens,
+      };
+      if (this.options.definition.capabilities.thinkingMode === "deepseek") body.thinking = { type: request.thinking ? "enabled" : "disabled" };
+      response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/chat/completions`, {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
         signal: controller.signal,
-        body: JSON.stringify({
-          model: request.model,
-          messages: [{ role: "system", content: "Return valid json only. Fragment IDs and capture IDs are different identifier types and must never be interchanged." }, { role: "user", content: request.prompt }],
-          response_format: request.responseFormat,
-          thinking: { type: request.thinking ? "enabled" : "disabled" },
-          max_tokens: request.maxTokens,
-        }),
+        redirect: "error",
+        body: JSON.stringify(body),
       });
       payload = await response.json().catch(() => undefined);
     } finally {
       clearTimeout(timer);
     }
-    if (!response.ok) throw new Error(`DeepSeek request failed (${response.status}): ${String(payload?.error?.message ?? "unknown error").slice(0, 300)}`);
+    if (!response.ok) throw new Error(`${this.options.definition.label} request failed (${response.status}): ${String(payload?.error?.message ?? "unknown error").slice(0, 300)}`);
     return {
       content: payload?.choices?.[0]?.message?.content ?? "",
       model: payload?.model ?? request.model,
@@ -315,6 +460,67 @@ export class DeepSeekProvider implements ModelProvider {
       },
     };
   }
+}
+
+export class AnthropicMessagesProvider implements ModelProvider {
+  readonly name: string;
+  readonly defaultModel: string;
+  readonly pricing?: Record<string, ModelPricing>;
+  private readonly fetchImpl: typeof fetch;
+  constructor(private readonly options: OpenAiCompatibleProviderOptions) {
+    validateProviderDefinition(options.definition);
+    if (options.definition.apiMode !== "anthropic_messages") throw new Error(`Provider ${options.definition.id} does not use the Anthropic Messages protocol`);
+    this.name = options.definition.id;
+    this.defaultModel = options.definition.defaultModel;
+    this.pricing = options.definition.pricing;
+    this.fetchImpl = options.fetchImpl ?? fetch;
+  }
+
+  async complete(request: ModelProviderRequest): Promise<ModelProviderResponse> {
+    const apiKey = await this.options.apiKey();
+    if (!apiKey) throw new Error(`${this.options.definition.label} API key is not configured`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error(`${this.options.definition.label} request timed out`)), request.timeoutMs ?? 75_000);
+    let response: Response;
+    let payload: any;
+    try {
+      response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/messages`, {
+        method: "POST",
+        headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "Content-Type": "application/json" },
+        signal: controller.signal,
+        redirect: "error",
+        body: JSON.stringify({
+          model: request.model,
+          max_tokens: request.maxTokens ?? 4000,
+          system: "Return valid JSON only. Fragment IDs and capture IDs are different identifier types and must never be interchanged.",
+          messages: [{ role: "user", content: request.prompt }],
+        }),
+      });
+      payload = await response.json().catch(() => undefined);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!response.ok) throw new Error(`${this.options.definition.label} request failed (${response.status}): ${String(payload?.error?.message ?? "unknown error").slice(0, 300)}`);
+    const cacheHitTokens = Number(payload?.usage?.cache_read_input_tokens ?? 0);
+    const cacheCreationTokens = Number(payload?.usage?.cache_creation_input_tokens ?? 0);
+    const uncachedInputTokens = Number(payload?.usage?.input_tokens ?? 0);
+    return {
+      content: Array.isArray(payload?.content) ? payload.content.filter((block: any) => block?.type === "text" && typeof block.text === "string").map((block: any) => block.text).join("") : "",
+      model: payload?.model ?? request.model,
+      usage: {
+        inputTokens: uncachedInputTokens + cacheHitTokens + cacheCreationTokens,
+        outputTokens: payload?.usage?.output_tokens,
+        inputCacheHitTokens: cacheHitTokens,
+        inputCacheMissTokens: uncachedInputTokens + cacheCreationTokens,
+      },
+    };
+  }
+}
+
+export function createProvider(definition: ProviderDefinition, options: Omit<OpenAiCompatibleProviderOptions, "definition">): ModelProvider {
+  if (definition.apiMode === "openai_chat_completions") return new OpenAiCompatibleProvider({ ...options, definition });
+  if (definition.apiMode === "anthropic_messages") return new AnthropicMessagesProvider({ ...options, definition });
+  throw new Error(`Unsupported provider API mode: ${definition.apiMode}`);
 }
 
 function buildMaterialBatches<T extends { id: string; content: string }>(materials: T[], maxBatchChars = 24_000): T[][] {
@@ -343,6 +549,41 @@ function buildMaterialBatches<T extends { id: string; content: string }>(materia
 
 function redactError(error: unknown): string { return (error instanceof Error ? error.message : "Model provider failed").replace(/sk-[a-z0-9_-]+/gi, "[REDACTED]").slice(0, 500); }
 
+function normalizeBaseUrl(value: string): string { return value.replace(/\/+$/, ""); }
+
+export function fingerprintBaseUrl(value: string): string {
+  return createHash("sha256").update(normalizeBaseUrl(value).toLocaleLowerCase()).digest("hex");
+}
+
+export async function validateExternalProviderBaseUrl(
+  value: string,
+  lookupImpl: typeof lookup = lookup,
+): Promise<string> {
+  let url: URL;
+  try { url = new URL(value); }
+  catch { throw new Error("Provider base URL must be an absolute URL"); }
+  if (url.protocol !== "https:") throw new Error("Provider base URL must use HTTPS");
+  if (url.username || url.password) throw new Error("Provider base URL cannot contain credentials");
+  const hostname = url.hostname.toLocaleLowerCase().replace(/^\[|\]$/g, "");
+  if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local") || hostname.endsWith(".internal")) throw new Error("Provider base URL must use a public host");
+  const addresses = isIP(hostname) ? [{ address: hostname, family: isIP(hostname) }] : await lookupImpl(hostname, { all: true, verbatim: true });
+  if (!addresses.length || addresses.some(({ address }) => !isPublicIpAddress(address))) throw new Error("Provider base URL resolved to a non-public address");
+  url.hash = "";
+  url.search = "";
+  return normalizeBaseUrl(url.toString());
+}
+
+function isPublicIpAddress(address: string): boolean {
+  const normalized = address.toLocaleLowerCase();
+  if (normalized === "::" || normalized === "::1" || normalized.startsWith("fc") || normalized.startsWith("fd") || /^fe[89ab]/.test(normalized)) return false;
+  if (normalized.startsWith("::ffff:")) return isPublicIpAddress(normalized.slice(7));
+  if (isIP(normalized) === 6) return true;
+  const parts = normalized.split(".").map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  const [a, b] = parts;
+  return !(a === 0 || a === 10 || a === 127 || a >= 224 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 198 && (b === 18 || b === 19)));
+}
+
 function addUsage(left: ProviderUsage | undefined, right: ProviderUsage | undefined): ProviderUsage | undefined {
   if (!left && !right) return undefined;
   return {
@@ -359,7 +600,7 @@ function sumOptional(left: number | undefined, right: number | undefined): numbe
 
 function estimateCost(model: string, usage: ProviderUsage | undefined, pricingOverride: Record<string, ModelPricing> | undefined): number | undefined {
   if (!usage) return undefined;
-  const pricing = pricingOverride?.[model] ?? DEFAULT_MODEL_PRICING[model];
+  const pricing = pricingOverride?.[model];
   if (!pricing) return undefined;
   const input = usage.inputTokens ?? 0;
   const cacheHit = usage.inputCacheHitTokens ?? 0;

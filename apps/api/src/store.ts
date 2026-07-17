@@ -1,7 +1,7 @@
 import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import type { AgentRunRecord, ArtifactRecord, CaptureRecord, FragmentRecord, KnowledgeItemRecord, RecentClusterSnapshotRecord, RelationRecord, ReviewProposalRecord, TopicRecord, UserDecisionRecord, WorkflowRunRecord, WorkflowStepRecord, TopicDocumentVersionRecord, ModelCallRecord, AiBudgetSettings, VerificationClaim, VerificationPolicyConfig } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type FragmentRecord, type KnowledgeItemRecord, type RecentClusterSnapshotRecord, type RelationRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile } from "@collector/capture-contracts";
 
 export interface CollectorStore {
   init(): Promise<void>;
@@ -38,6 +38,12 @@ export interface CollectorStore {
   removeTopicMembership(topicId: string, captureId: string): Promise<void>;
   getSetting(key: string): string | undefined;
   saveSetting(key: string, value: string): Promise<void>;
+  getProviderProfile(id: string): ProviderProfile | undefined;
+  listProviderProfiles(): ProviderProfile[];
+  saveProviderProfile(profile: ProviderProfile): Promise<void>;
+  deleteProviderProfile(id: string): Promise<boolean>;
+  getActiveProviderProfile(): ProviderProfile | undefined;
+  setActiveProviderProfile(id: string): Promise<void>;
   saveClientToken(id: string, name: string, tokenHash: string, createdAt: string): Promise<void>;
   hasClientToken(tokenHash: string): boolean;
   getWorkflowRun(id: string): WorkflowRunRecord | undefined;
@@ -104,10 +110,11 @@ interface StoreData {
   topicMemberships?: Record<string, { topicId: string; captureId: string; createdAt: string }>;
   settings?: Record<string, string>;
   materialRevisions?: Record<string, { id: string; captureId: string; content: string; ordinal: number; createdAt: string }>;
+  providerProfiles?: Record<string, ProviderProfile>;
 }
 
 const EMPTY_DATA: StoreData = {
-  captures: {}, captureByClientId: {}, captureByChecksum: {}, artifacts: {}, fragments: {}, knowledgeItems: {}, reviewProposals: {}, clientTokens: {}, agentRuns: {}, relations: {}, userDecisions: {}, topics: {}, topicMemberships: {}, settings: {},
+  captures: {}, captureByClientId: {}, captureByChecksum: {}, artifacts: {}, fragments: {}, knowledgeItems: {}, reviewProposals: {}, clientTokens: {}, agentRuns: {}, relations: {}, userDecisions: {}, topics: {}, topicMemberships: {}, settings: {}, providerProfiles: {},
 };
 
 export class SqliteStore implements CollectorStore {
@@ -140,6 +147,7 @@ export class SqliteStore implements CollectorStore {
     this.database.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
     this.createSchema();
     this.migrateSchema();
+    await this.migrateLegacyProviderProfile();
     await this.migrateLegacyJson();
   }
 
@@ -309,10 +317,9 @@ export class SqliteStore implements CollectorStore {
       this.db().exec("DELETE FROM fragments");
       this.db().exec("DELETE FROM artifacts");
       this.db().exec("DELETE FROM captures");
-      // 保留 AI 配置设置（ai_consent, deepseek_configured），
-      // 因为 DeepSeek API Key 文件存储在 Electron safeStorage 中，不会被清除。
-      // 两者必须保持一致，否则清除数据后会出现“有 Key 但 consent 被清除”的矛盾状态。
-      this.db().exec("DELETE FROM settings WHERE key NOT IN ('ai_consent', 'deepseek_configured')");
+      // 供应商凭证由 Electron 安全存储保留，因此 Profile、活动路由和 AI 授权也必须保持一致。
+      // deepseek_configured 仅用于一次旧配置迁移，在兼容期内保留。
+      this.db().exec("DELETE FROM settings WHERE key NOT IN ('ai_consent', 'ai_configured', 'active_provider_profile_id', 'deepseek_configured')");
     });
   }
 
@@ -358,6 +365,30 @@ export class SqliteStore implements CollectorStore {
   listTopics() { return this.listRecords<TopicRecord>("SELECT record_json FROM topics ORDER BY updated_at DESC"); }
   listTopicCaptureIds(topicId: string) { return (this.db().prepare("SELECT capture_id FROM topic_memberships WHERE topic_id = ? ORDER BY created_at").all(topicId) as Array<{ capture_id: string }>).map((row) => row.capture_id); }
   getSetting(key: string) { return (this.db().prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined)?.value; }
+  getProviderProfile(id: string) { return this.getRecord<ProviderProfile>("SELECT record_json FROM provider_profiles WHERE id = ?", id); }
+  listProviderProfiles() { return this.listRecords<ProviderProfile>("SELECT record_json FROM provider_profiles ORDER BY updated_at DESC"); }
+  async saveProviderProfile(profile: ProviderProfile) {
+    this.db().prepare("INSERT INTO provider_profiles (id, provider_id, enabled, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET provider_id=excluded.provider_id, enabled=excluded.enabled, updated_at=excluded.updated_at, record_json=excluded.record_json")
+      .run(profile.id, profile.providerId, profile.enabled ? 1 : 0, profile.createdAt, profile.updatedAt, JSON.stringify(profile));
+  }
+  async deleteProviderProfile(id: string): Promise<boolean> {
+    let deleted = false;
+    this.transaction(() => {
+      const result = this.db().prepare("DELETE FROM provider_profiles WHERE id = ?").run(id);
+      deleted = result.changes === 1;
+      if (this.getSetting("active_provider_profile_id") === id) this.db().prepare("DELETE FROM settings WHERE key = 'active_provider_profile_id'").run();
+    });
+    return deleted;
+  }
+  getActiveProviderProfile(): ProviderProfile | undefined {
+    const id = this.getSetting("active_provider_profile_id");
+    return id ? this.getProviderProfile(id) : undefined;
+  }
+  async setActiveProviderProfile(id: string): Promise<void> {
+    const profile = this.getProviderProfile(id);
+    if (!profile || !profile.enabled) throw new Error("Provider profile is unavailable");
+    await this.saveSetting("active_provider_profile_id", id);
+  }
 
   listAgentRuns(captureId: string): AgentRunRecord[] {
     return this.listRecords<AgentRunRecord>("SELECT record_json FROM agent_runs WHERE capture_id = ? ORDER BY created_at DESC", captureId);
@@ -857,7 +888,33 @@ export class SqliteStore implements CollectorStore {
       });
       version = 12;
     }
+    if (version < 13) {
+      this.transaction(() => {
+        this.db().exec("CREATE TABLE IF NOT EXISTS provider_profiles (id TEXT PRIMARY KEY, provider_id TEXT NOT NULL, enabled INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, record_json TEXT NOT NULL)");
+        this.db().exec("CREATE INDEX IF NOT EXISTS provider_profiles_provider_idx ON provider_profiles(provider_id, updated_at)");
+        this.db().exec("INSERT INTO schema_migrations(version, applied_at) VALUES (13, datetime('now'))");
+      });
+      version = 13;
+    }
 
+  }
+
+  private async migrateLegacyProviderProfile(): Promise<void> {
+    if (this.listProviderProfiles().length > 0 || this.getSetting("deepseek_configured") !== "true") return;
+    const now = new Date().toISOString();
+    await this.saveProviderProfile({
+      id: LEGACY_DEEPSEEK_PROFILE_ID,
+      providerId: "deepseek",
+      displayName: "DeepSeek",
+      baseUrl: "https://api.deepseek.com",
+      model: "deepseek-v4-flash",
+      credentialConfigured: true,
+      enabled: true,
+      configurationVersion: 1,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await this.setActiveProviderProfile(LEGACY_DEEPSEEK_PROFILE_ID);
   }
 
 
@@ -1024,6 +1081,12 @@ export class JsonStore implements CollectorStore {
   listTopics() { return Object.values(this.data.topics ?? {}).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)); }
   listTopicCaptureIds(topicId: string) { return Object.values(this.data.topicMemberships ?? {}).filter((item) => item.topicId === topicId).map((item) => item.captureId); }
   getSetting(key: string) { return this.data.settings?.[key]; }
+  getProviderProfile(id: string) { return this.data.providerProfiles?.[id]; }
+  listProviderProfiles() { return Object.values(this.data.providerProfiles ?? {}).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)); }
+  async saveProviderProfile(profile: ProviderProfile) { this.data.providerProfiles ??= {}; this.data.providerProfiles[profile.id] = profile; await this.flush(); }
+  async deleteProviderProfile(id: string) { if (!this.data.providerProfiles?.[id]) return false; delete this.data.providerProfiles[id]; if (this.data.settings?.active_provider_profile_id === id) delete this.data.settings.active_provider_profile_id; await this.flush(); return true; }
+  getActiveProviderProfile() { const id = this.data.settings?.active_provider_profile_id; return id ? this.data.providerProfiles?.[id] : undefined; }
+  async setActiveProviderProfile(id: string) { const profile = this.data.providerProfiles?.[id]; if (!profile?.enabled) throw new Error("Provider profile is unavailable"); this.data.settings ??= {}; this.data.settings.active_provider_profile_id = id; await this.flush(); }
   async saveCapture(record: CaptureRecord) { this.data.captures[record.id] = record; this.data.captureByClientId[record.clientCaptureId] = record.id; this.data.captureByChecksum[record.checksum] = record.id; await this.flush(); }
   async saveCaptureWithTopicMembership(record: CaptureRecord, topicId: string) { this.data.captures[record.id] = record; this.data.captureByClientId[record.clientCaptureId] = record.id; this.data.captureByChecksum[record.checksum] = record.id; this.data.topicMemberships ??= {}; this.data.topicMemberships[`${topicId}:${record.id}`] = { topicId, captureId: record.id, createdAt: record.createdAt }; await this.flush(); }
   async saveArtifact(record: ArtifactRecord) { this.data.artifacts[record.id] = record; await this.flush(); }
@@ -1083,7 +1146,7 @@ export class JsonStore implements CollectorStore {
   async restoreCapture(id: string) { const record = this.data.captures[id]; if (!record || !(record as any).trashedAt) return false; delete (record as any).trashedAt; await this.flush(); return true; }
   async deleteCapture(id: string) { const record = this.data.captures[id]; if (!record) return false; delete this.data.captures[id]; delete this.data.captureByClientId[record.clientCaptureId]; delete this.data.captureByChecksum[record.checksum]; for (const key of Object.keys(this.data.fragments)) { if (this.data.fragments[key].captureId === id) delete this.data.fragments[key]; } for (const key of Object.keys(this.data.knowledgeItems)) { if (this.data.knowledgeItems[key].captureId === id) delete this.data.knowledgeItems[key]; } for (const key of Object.keys(this.data.reviewProposals)) { if (this.data.reviewProposals[key].captureId === id) delete this.data.reviewProposals[key]; } for (const key of Object.keys(this.data.agentRuns ?? {})) { if (this.data.agentRuns![key].captureId === id) delete this.data.agentRuns![key]; } for (const key of Object.keys(this.data.relations ?? {})) { const r = this.data.relations![key]; if (r.sourceCaptureId === id || r.targetCaptureId === id) delete this.data.relations![key]; } for (const key of Object.keys(this.data.topicMemberships ?? {})) { if (this.data.topicMemberships![key].captureId === id) delete this.data.topicMemberships![key]; } if (this.data.materialRevisions) { for (const key of Object.keys(this.data.materialRevisions)) { if (this.data.materialRevisions[key].captureId === id) delete this.data.materialRevisions[key]; } } await this.flush(); return true; }
   getDeleteImpact(captureId: string) { const memberships = Object.values(this.data.topicMemberships ?? {}).filter(m => m.captureId === captureId).map(m => { const topic = this.data.topics?.[m.topicId]; return { topicId: m.topicId, topicTitle: topic?.title ?? "(unnamed)" }; }); const workflowInputs: Array<{ workflowRunId: string; workflowType: string }> = []; const citationCount = Object.values(this.data.relations ?? {}).filter(r => (r.sourceCaptureId === captureId || r.targetCaptureId === captureId) && r.status === "active").length; const hasNoImpact = memberships.length === 0 && workflowInputs.length === 0 && citationCount === 0; return { topicMemberships: memberships, workflowInputs, citationCount, hasNoImpact }; }
-  async clearAllData(): Promise<void> { const savedTokens = this.data.clientTokens; const savedSettings: Record<string, string> = {}; if (this.data.settings) { for (const key of ['ai_consent', 'deepseek_configured']) { if (this.data.settings[key]) savedSettings[key] = this.data.settings[key]; } } this.data = { ...structuredClone(EMPTY_DATA), clientTokens: savedTokens, settings: savedSettings }; await this.flush(); }
+  async clearAllData(): Promise<void> { const savedTokens = this.data.clientTokens; const savedProfiles = this.data.providerProfiles; const savedSettings: Record<string, string> = {}; if (this.data.settings) { for (const key of ['ai_consent', 'ai_configured', 'active_provider_profile_id', 'deepseek_configured']) { if (this.data.settings[key]) savedSettings[key] = this.data.settings[key]; } } this.data = { ...structuredClone(EMPTY_DATA), clientTokens: savedTokens, settings: savedSettings, providerProfiles: savedProfiles }; await this.flush(); }
     private flush() { this.writeQueue = this.writeQueue.then(async () => { const temporaryPath = `${this.filePath}.tmp`; await writeFile(temporaryPath, JSON.stringify(this.data, null, 2), "utf8"); await rename(temporaryPath, this.filePath); }); return this.writeQueue; }
 }
 

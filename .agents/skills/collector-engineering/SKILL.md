@@ -1,85 +1,107 @@
 ---
 name: collector-engineering
-description: Implement, debug, review, or release the Collector local-first TypeScript, Electron, Chromium extension, and Node API project. Use for changes involving desktop lifecycle, global shortcuts, preload/IPC, browser capture, embedded API, persistence or migrations, parsers, model gateways, authentication, GUI smoke tests, or knowledge-review workflows.
+description: Implement, debug, review, or release the Collector single-user local WebUI, Node API, SQLite persistence, document readers, model gateway, research sessions, selection popovers, later learning, and source return. Existing Electron and browser-extension code is handled as a migration or maintenance scope.
 ---
 
 # Collector Engineering
 
-Apply this workflow to every Collector change. Preserve the local-first trust boundary and verify user-visible data flow, not only compilation.
+Apply this workflow to every Collector change. Verify the user-visible WebUI flow and the persisted local-service result.
 
 ## Start With Reality
 
-1. Read the relevant source, tests, package scripts, and current `git status`.
-2. Run `scripts/check-project.ps1` from this skill before designing substantial changes.
-3. Separate confirmed behavior from planned behavior. Do not describe compiled code as a working GUI feature.
-4. Keep user changes. Never repair an unrelated dirty file by reverting it.
-5. Define the acceptance path before editing: input, persistence, processing, API, UI, and recovery.
+1. Read `AGENTS.md`, the relevant current product documents, source, tests, `package.json`, and `git status`.
+2. Run `scripts/check-project.ps1` from this skill before substantial changes.
+3. Separate product consensus, current code behavior, prototype behavior, and verified WebUI behavior.
+4. Preserve user changes and keep unrelated files untouched.
+5. Define the acceptance path: browser input → HTTP/SSE → persistence → processing → WebUI result → refresh/restart recovery.
+
+## Current Runtime Shape
+
+Collector MVP is a single-user local Web application:
+
+```text
+Double-click Collector launcher
+        ↓
+Start or reuse loopback local service
+        ↓
+Open default browser at 127.0.0.1:<dynamic-port>
+        ↓
+WebUI ↔ HTTP/SSE ↔ Node service ↔ SQLite/files/model providers
+```
+
+Prefer serving WebUI and API from the same origin. The local service owns data, imported files, content snapshots, parsing, model calls, background tasks, search, credentials, and recovery.
 
 ## Preserve Boundaries
 
-- Keep browser extension and Electron renderer as capture adapters. Put parsing, deduplication, AI orchestration, and knowledge mutation behind the API/service layer.
-- Treat `Artifact` and source snapshots as immutable. Add derived `Fragment`, `KnowledgeItem`, proposal, decision, and relation records without overwriting evidence.
-- Require user review before creating formal knowledge relations. Revoke records instead of deleting audit history.
-- Keep model credentials out of renderer state, SQLite, logs, exports, source, and `.env` files. Use Electron `safeStorage` or a runtime environment variable.
-- Never use a credential pasted into chat or committed history. Require rotation.
-- Make AI failure non-destructive. Invalid, empty, uncited, or schema-invalid output may create a failed run, but must not update the knowledge layer.
+- Keep WebUI as a browser adapter. Put domain behavior, parsing, AI orchestration, and persistence behind the API/service layer.
+- Preserve imported files, stable content snapshots, selected text, and source anchors for research branches, later learning, citations, and source return.
+- Send provider credentials directly to the backend credential boundary. WebUI stores and displays configured state only.
+- Bind to loopback, validate request origin, use a local session token, and avoid wildcard CORS.
+- Persist submitted inputs and task state before model work so page refresh and browser close remain recoverable.
+- Validate model output and citations locally before publishing formal results.
+- Make AI recovery explicit while manual selection, saved sources, later learning, and navigation remain available.
 
-## Implement In Vertical Slices
+## Implement Vertical Slices
 
 For each feature, complete the smallest real path:
 
 1. Extend shared contracts and validation.
-2. Add storage schema and migration with rollback behavior.
-3. Implement domain/service behavior independently of HTTP and Electron.
-4. Expose the API with authorization and bounded inputs.
-5. Connect one client adapter.
-6. Add unit, API, and user-path verification proportional to risk.
-7. Update architecture and operations documentation in the same change.
+2. Add transactional storage and migration behavior.
+3. Implement service behavior independently of the frontend.
+4. Expose bounded, authenticated HTTP and streaming endpoints.
+5. Connect one WebUI user path.
+6. Verify loading, success, empty, recovery, refresh, and restart states.
+7. Update current product, architecture, and human-acceptance documents.
 
-Do not build UI controls over placeholder persistence or simulated service results unless the UI explicitly labels them as unavailable.
+Every visible control connects to real persistence and service state. Disposable prototypes use isolated files and state their data limitations.
 
-## Electron Rules
+## WebUI Rules
 
-- Keep the renderer sandboxed with `contextIsolation: true` and `nodeIntegration: false`.
-- Compile preload as CommonJS (`.cts` to `.cjs`) when the package is ESM. Verify the exact built preload path before GUI testing.
-- Access local file paths through `webUtils.getPathForFile` in preload; do not depend on removed renderer `File.path` behavior.
-- Register IPC channels once in the main process and expose the smallest typed bridge.
-- Handle global shortcut registration failure explicitly and keep a tray/menu fallback.
-- Preserve drafts on hide or submission failure. Clear them only after the API confirms persistence.
-- Treat `requestSingleInstanceLock` as a test boundary. GUI tests need isolated user data, instance identity, ports, and database paths.
-- Confirm that the embedded API belongs to the current app instance. A generic `/health` response is insufficient when another Collector process may own the port.
-
-Read [failure-modes.md](references/failure-modes.md) before changing Electron startup, IPC, file upload, shortcuts, embedded API startup, or GUI tests.
+- Use semantic HTML, visible keyboard focus, accessible names, and predictable focus movement for popovers and drawers.
+- Keep current content readable while the selection window opens near the selected range; use a bottom drawer when space is limited.
+- Render fixed selection fields and stable loading placeholders immediately. Stream or progressively reveal AI fields without layout instability.
+- Preserve drafts and submitted task identity across route changes and refreshes.
+- Upload files through bounded browser file selection or drag-and-drop endpoints; show progress, cancellation, parsing state, and recovery actions.
+- Render imported and generated content through safe sanitization. Treat source text and AI content as untrusted input.
+- Use explicit empty, error, offline, expired-session, and task-recovery states.
+- Test real browser selection, range positioning, routing, streaming, refresh recovery, keyboard access, and responsive layouts.
 
 ## Local API And Data Rules
 
-- Bind to loopback, but do not treat loopback as authentication.
-- Leave only health and one-time pairing exchange anonymous. Require a bearer token or HttpOnly local session elsewhere.
-- Never send `Access-Control-Allow-Origin: *`. Validate explicit origins and still require authentication.
-- Hash stored tokens, expire pairing codes, and consume each code once.
-- Bound body size, redirect count, response size, parser work, and network timeout.
-- Block loopback, link-local, private, multicast, and other non-public destinations before and after URL redirects.
-- Run migrations transactionally. Keep the old JSON data until SQLite commit succeeds, then create a backup.
-- Make client request IDs unique and idempotent. A retry must return the original resource.
+- Bind only to loopback and select or announce the active dynamic port safely.
+- Reuse the active service on repeated launch and expose a user-visible shutdown flow.
+- Use same-origin delivery where possible. Otherwise validate exact origins and keep authentication mandatory.
+- Bound request bodies, uploads, responses, redirects, parser work, model work, and network timeouts.
+- Validate public network targets before requests and after redirects.
+- Hash tokens, expire one-time values, and keep request IDs unique and idempotent.
+- Run migrations transactionally and retain recoverable backups.
+- Keep provider secrets outside ordinary business tables, logs, exports, browser storage, and source.
+- Persist provider, model, prompt version, usage, latency, status, and redacted errors for model runs.
+- Use deterministic fake providers in automated tests. Real-provider acceptance requires explicit cloud-data consent and isolated credentials.
 
-## Evidence And Model Rules
+## Existing Electron And Extension Code
 
-- Parse locally before calling a model. Do not call a deep model when extraction failed or the capture disabled AI.
-- Preserve stable fragment locators: URL and DOM offsets, file checksum and page, or explicit `user_supplied` provenance.
-- Require every generated claim and relation suggestion to reference existing fragment IDs.
-- Validate structured model output locally and retry malformed output at most once.
-- Persist provider, model, prompt version, processing level, token usage, latency, status, and redacted error details in `AgentRun`.
-- Use a deterministic fake provider for tests. Real-provider acceptance is a separate, explicit test with a rotated key and cloud-data consent.
+`apps/desktop-capture` and `apps/browser-extension` are current repository code, not the target product frontend.
+
+When a task explicitly maintains or removes these areas:
+
+- Keep Electron renderer isolation and preload/IPC type synchronization intact during the migration step.
+- Handle `safeStorage` availability and existing encrypted/plaintext compatibility.
+- Use isolated ports, profiles, instance IDs, and data directories for Electron tests.
+- Read `references/failure-modes.md` before Electron startup, IPC, shortcuts, embedded API, or GUI-test work.
+
+Place new product UI behavior in the WebUI path and communicate with the local service through HTTP/SSE.
 
 ## Verification Gate
 
-Run the checks in [verification-matrix.md](references/verification-matrix.md). At minimum:
+At minimum run:
 
 ```powershell
+npm.cmd run build
 npm.cmd test
 powershell -ExecutionPolicy Bypass -File .agents\skills\collector-engineering\scripts\check-project.ps1
 ```
 
-For Electron behavior, also run `npm.cmd run test:gui` in an isolated profile. Validate persisted/API-visible records after UI actions; a success toast alone is not proof.
+For WebUI behavior, run the project browser test command and verify persisted/API-visible state after real browser actions. For existing Electron maintenance, run its isolated GUI check.
 
-Before reporting completion, state exactly which checks ran, which did not, and whether a real cloud-model call was performed.
+Before reporting completion, state exactly which checks ran, which checks were skipped, and whether a real cloud-model call occurred.

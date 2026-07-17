@@ -1,13 +1,14 @@
 import { app, BrowserWindow, dialog, globalShortcut, ipcMain, Menu, Tray, nativeImage, safeStorage } from "electron";
 import type { Server } from "node:http";
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer, defaultDataPaths, type CollectorStore, WorkflowScheduler } from "@collector/api";
 import { CaptureClient } from "@collector/capture-client";
-import { MAX_ARTIFACT_BYTES, type CaptureInput} from "@collector/capture-contracts";
-import { DeepSeekProvider, ModelGateway } from "@collector/model-gateway";
+import { LEGACY_DEEPSEEK_PROFILE_ID, MAX_ARTIFACT_BYTES, type CaptureInput, type ProviderProfile, type ProviderProfileInput } from "@collector/capture-contracts";
+import { createProvider, DEFAULT_PROVIDER_REGISTRY, fingerprintBaseUrl, ModelGateway, ProviderRuntimeResolver, validateExternalProviderBaseUrl, type ResolvedProviderRuntime } from "@collector/model-gateway";
+import { FileCredentialStore } from "./credential-store.js";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const apiBaseUrl = process.env.COLLECTOR_API_URL ?? "http://127.0.0.1:43110";
@@ -23,6 +24,7 @@ let embeddedApi: Server | undefined;
 let embeddedService: CaptureService | undefined;
 let embeddedStore: CollectorStore | undefined;
 let embeddedScheduler: WorkflowScheduler | undefined;
+let embeddedProviderResolver: ProviderRuntimeResolver | undefined;
 let shortcut = defaultShortcut;
 let compactMode = false;
 let quitting = false;
@@ -37,7 +39,7 @@ app.whenReady().then(async () => {
   const preferences = await loadDesktopPreferences();
   shortcut = preferences.shortcut || defaultShortcut;
   const masterToken = await loadMasterToken();
-  embeddedApi = await ensureLocalApi(masterToken, await loadDeepSeekKey());
+  embeddedApi = await ensureLocalApi(masterToken, await loadLegacyProviderCredential());
   client = new CaptureClient({ baseUrl: apiBaseUrl, token: masterToken });
   shellWindow = createShellWindow();
   const shortcutRegistered = registerShortcut(shortcut);
@@ -188,7 +190,66 @@ ipcMain.handle("recent:cancel", async (event, id: string) => { assertTrustedRend
 ipcMain.handle("settings:get", async (event) => {
   assertTrustedRenderer(event.sender.id);
   const ai = embeddedService?.getAiConfiguration() ?? { consent: false, configured: false, unavailable: true };
-  return { shortcut, ai };
+  return { shortcut, ai, providerCatalog: embeddedService?.getProviderCatalog() ?? [], providerProfiles: embeddedService?.listProviderProfiles() ?? [], activeProviderProfileId: embeddedService?.getActiveProviderProfile()?.id };
+});
+ipcMain.handle("settings:save-provider", async (event, value: { profile: ProviderProfileInput; apiKey?: string; consent?: boolean; activate?: boolean }) => {
+  assertTrustedRenderer(event.sender.id);
+  if (!embeddedService || !embeddedProviderResolver) throw new Error("Provider settings are only available in the embedded Collector service");
+  const existing = value.profile.id ? embeddedService.listProviderProfiles().find((profile) => profile.id === value.profile.id) : undefined;
+  const nextCredentialConfigured = value.apiKey === undefined ? (existing?.credentialConfigured ?? false) : Boolean(value.apiKey.trim());
+  if (value.activate && !nextCredentialConfigured) throw new Error("Please provide an API key before activating the provider");
+  let credentialConfigured = existing?.credentialConfigured ?? false;
+  const validated = await embeddedService.saveProviderProfile(value.profile, credentialConfigured);
+  const id = validated.id;
+  if (value.apiKey !== undefined) {
+    if (value.apiKey.trim()) {
+      await providerCredentialStore().set(id, value.apiKey.trim());
+      credentialConfigured = true;
+    } else {
+      await providerCredentialStore().delete(id);
+      credentialConfigured = false;
+    }
+  }
+  const profile = await embeddedService.saveProviderProfile({ ...value.profile, id: validated.id }, credentialConfigured);
+  if (value.consent !== undefined) await embeddedService.setAiConfiguration(value.consent, credentialConfigured);
+  if (value.activate) await embeddedService.activateProviderProfile(profile.id);
+  if (embeddedService.getActiveProviderProfile()?.id === profile.id) await refreshEmbeddedProviderRuntime();
+  return { profile, ai: embeddedService.getAiConfiguration(), activeProviderProfileId: embeddedService.getActiveProviderProfile()?.id };
+});
+ipcMain.handle("settings:test-provider", async (event, value: { profile: ProviderProfileInput; apiKey?: string }) => {
+  assertTrustedRenderer(event.sender.id);
+  const definition = DEFAULT_PROVIDER_REGISTRY.get(value.profile.providerId);
+  const baseUrl = definition.id.startsWith("custom") ? await validateExternalProviderBaseUrl(value.profile.baseUrl ?? "") : definition.defaultBaseUrl;
+  const apiKey = value.apiKey?.trim() || (value.profile.id ? await providerCredentialStore().get(value.profile.id) : undefined);
+  if (!apiKey) throw new Error("Please provide an API key before testing the provider");
+  const gateway = new ModelGateway(createProvider(definition, { apiKey: () => apiKey, baseUrl }), { model: value.profile.model.trim() || definition.defaultModel });
+  return gateway.testConnection({ timeoutMs: 15000 });
+});
+ipcMain.handle("settings:activate-provider", async (event, id: string) => {
+  assertTrustedRenderer(event.sender.id);
+  if (!embeddedService) throw new Error("Provider settings are unavailable");
+  await embeddedService.activateProviderProfile(id);
+  await refreshEmbeddedProviderRuntime();
+  return { profile: embeddedService.getActiveProviderProfile(), ai: embeddedService.getAiConfiguration() };
+});
+ipcMain.handle("settings:delete-provider", async (event, id: string) => {
+  assertTrustedRenderer(event.sender.id);
+  if (!embeddedService) throw new Error("Provider settings are unavailable");
+  const wasActive = embeddedService.getActiveProviderProfile()?.id === id;
+  const deleted = await embeddedService.deleteProviderProfile(id);
+  if (deleted) await providerCredentialStore().delete(id);
+  if (wasActive) {
+    await embeddedService.setAiConfiguration(embeddedService.getAiConfiguration().consent, false);
+    embeddedService.setModelGateway(undefined);
+  }
+  return { deleted, ai: embeddedService.getAiConfiguration() };
+});
+ipcMain.handle("settings:set-ai-consent", async (event, consent: boolean) => {
+  assertTrustedRenderer(event.sender.id);
+  if (!embeddedService) throw new Error("Provider settings are unavailable");
+  await embeddedService.setAiConfiguration(consent, Boolean(embeddedService.getActiveProviderProfile()?.credentialConfigured));
+  await refreshEmbeddedProviderRuntime();
+  return embeddedService.getAiConfiguration();
 });
 ipcMain.handle("settings:save-shortcut", async (event, value: string) => {
   assertTrustedRenderer(event.sender.id);
@@ -198,73 +259,13 @@ ipcMain.handle("settings:save-shortcut", async (event, value: string) => {
   await saveDesktopPreferences({ shortcut });
   return { shortcut };
 });
-ipcMain.handle("settings:test-connection", async (event, key?: string) => {
-  assertTrustedRenderer(event.sender.id);
-  console.log('[Main] settings:test-connection called, provided key:', key ? 'yes' : 'no');
-  // 如果前端没有提供 key，尝试使用已保存的 key
-  const apiKey = key?.trim() || await loadDeepSeekKey();
-  console.log('[Main] settings:test-connection using key:', apiKey ? 'present' : 'missing');
-  if (!apiKey) throw new Error("请先配置 DeepSeek API Key");
-  const tempGateway = new ModelGateway(new DeepSeekProvider({ apiKey: () => apiKey }));
-  const result = await tempGateway.testConnection({ timeoutMs: 15000 });
-  console.log('[Main] settings:test-connection result:', result.ok ? 'success' : 'failed');
-  return result;
-});
-
-ipcMain.handle("settings:save-ai", async (event, value: { consent: boolean; apiKey?: string }) => {
-  assertTrustedRenderer(event.sender.id);
-  if (!embeddedService || !embeddedStore) throw new Error("AI 设置仅在 Collector 内置服务中可用");
-  
-  // 区分三种情况：
-  // 1. value.apiKey === undefined → 不修改 key，使用已保存的
-  // 2. value.apiKey === "" → 清除已保存的 key
-  // 3. value.apiKey === "sk-..." → 保存新的 key
-  let finalKey: string | undefined;
-  if (value.apiKey === undefined) {
-    // 不修改，使用已保存的
-    finalKey = await loadDeepSeekKey();
-    console.log('[Main] settings:save-ai keeping existing key');
-  } else if (value.apiKey === '') {
-    // 清除 key
-    finalKey = undefined;
-    console.log('[Main] settings:save-ai clearing key');
-    // 删除文件
-    try {
-      const fs = require('fs');
-      const path = require('path');
-      const keyPath = path.join(app.getPath("userData"), "deepseek-key.bin");
-      if (fs.existsSync(keyPath)) {
-        fs.unlinkSync(keyPath);
-        console.log('[Main] Deleted deepseek-key.bin');
-      }
-    } catch (error) {
-      console.error('[Main] Failed to delete key file:', error);
-    }
-  } else {
-    // 保存新 key
-    finalKey = value.apiKey.trim();
-    try {
-      await saveDeepSeekKey(finalKey);
-      console.log('[Main] settings:save-ai new key saved');
-    } catch (error) {
-      console.error("Failed to save API key:", error);
-      throw new Error("保存 API Key 失败，请重试");
-    }
-  }
-  
-  if (value.consent && !finalKey) throw new Error("启用云端 AI 前必须提供 DeepSeek API Key");
-  await embeddedService.setAiConfiguration(value.consent, Boolean(finalKey));
-  embeddedService.setModelGateway(value.consent && finalKey ? new ModelGateway(new DeepSeekProvider({ apiKey: () => finalKey })) : undefined);
-  return embeddedService.getAiConfiguration();
-});
-
 ipcMain.handle("settings:clear-all-data", async (event) => {
   assertTrustedRenderer(event.sender.id);
   const result = await dialog.showMessageBox({
     type: "warning",
     title: "清除所有数据",
     message: "此操作将永久删除所有已收集的材料、专题、工作流记录和生成的文档。",
-    detail: "以下内容将被保留：\n• 浏览器扩展配对凭证\n• DeepSeek API Key 及 AI 配置\n• 快捷键设置\n\n此操作不可撤销。",
+    detail: "以下内容将被保留：\n• 浏览器扩展配对凭证\n• 外部供应商凭证及 AI 配置\n• 快捷键设置\n\n此操作不可撤销。",
     buttons: ["取消", "确认清除"],
     defaultId: 0,
     cancelId: 0,
@@ -306,7 +307,7 @@ ipcMain.handle("settings:export-portable", async (event, value: import("@collect
   return client.exportPortable(value);
 });
 
-async function ensureLocalApi(masterToken: string, deepSeekKey?: string): Promise<Server | undefined> {
+async function ensureLocalApi(masterToken: string, legacyProviderCredential?: string): Promise<Server | undefined> {
   try {
     const response = await fetch(`${apiBaseUrl}/health`, { signal: AbortSignal.timeout(800) });
     if (response.ok && (await response.json() as { instanceId?: string }).instanceId === instanceId) return undefined;
@@ -316,11 +317,26 @@ async function ensureLocalApi(masterToken: string, deepSeekKey?: string): Promis
   const paths = defaultDataPaths(process.env.COLLECTOR_DATA_DIR);
   const store = new SqliteStore(paths.database, paths.legacyJson);
   await store.init(); embeddedStore = store;
+  if (legacyProviderCredential || store.getProviderProfile(LEGACY_DEEPSEEK_PROFILE_ID)) {
+    await ensureLegacyProviderProfile(store, Boolean(legacyProviderCredential));
+  }
+  embeddedProviderResolver = new ProviderRuntimeResolver(DEFAULT_PROVIDER_REGISTRY, (profileId) => providerCredentialStore().get(profileId));
   const auth = new LocalAuth(store);
   await auth.registerTrustedToken(masterToken);
   const consent = store.getSetting("ai_consent") === "true";
-  embeddedService = new CaptureService(store, paths.artifacts, undefined, consent && deepSeekKey ? new ModelGateway(new DeepSeekProvider({ apiKey: () => deepSeekKey })) : undefined);
-  await embeddedService.setAiConfiguration(consent, Boolean(deepSeekKey));
+  const activeProfile = store.getActiveProviderProfile();
+  const runtime = consent && activeProfile?.credentialConfigured ? await resolveProviderRuntime(embeddedProviderResolver, activeProfile) : undefined;
+  embeddedService = new CaptureService(store, paths.artifacts, undefined, runtime?.gateway);
+  embeddedService.setModelGateway(runtime?.gateway, runtime?.route);
+  embeddedService.setModelGatewayResolver(async (route) => {
+    const storedProfile = store.getProviderProfile(route.providerProfileId);
+    if (!storedProfile) throw new Error("Workflow provider profile no longer exists");
+    if (storedProfile.providerId !== route.providerId || storedProfile.model !== route.model || storedProfile.configurationVersion !== route.configurationVersion || fingerprintBaseUrl(storedProfile.baseUrl) !== route.baseUrlFingerprint) {
+      throw new Error("Workflow provider configuration has changed");
+    }
+    return (await embeddedProviderResolver!.resolve(storedProfile)).gateway;
+  });
+  await embeddedService.setAiConfiguration(consent, Boolean(activeProfile?.credentialConfigured));
   
   // 启动工作流调度器守护进程
   embeddedScheduler = new WorkflowScheduler(embeddedService);
@@ -359,11 +375,67 @@ async function loadMasterToken(): Promise<string> {
     return token;
   }
 }
-async function loadDeepSeekKey(): Promise<string | undefined> {
+function providerCredentialStore(): FileCredentialStore {
+  return new FileCredentialStore(join(app.getPath("userData"), "provider-credentials"), safeStorage);
+}
+
+async function loadLegacyProviderCredential(): Promise<string | undefined> {
+  const store = providerCredentialStore();
+  const current = await store.get(LEGACY_DEEPSEEK_PROFILE_ID);
+  if (current) return current;
+  const legacy = await loadLegacyDeepSeekKey();
+  if (!legacy) return undefined;
+  await store.set(LEGACY_DEEPSEEK_PROFILE_ID, legacy);
+  const verified = await store.get(LEGACY_DEEPSEEK_PROFILE_ID);
+  if (verified !== legacy) throw new Error("Provider credential migration could not be verified");
+  await rm(join(app.getPath("userData"), "deepseek-key.bin"), { force: true });
+  return verified;
+}
+
+async function ensureLegacyProviderProfile(store: CollectorStore, credentialConfigured: boolean): Promise<ProviderProfile> {
+  const existing = store.getProviderProfile(LEGACY_DEEPSEEK_PROFILE_ID);
+  const definition = DEFAULT_PROVIDER_REGISTRY.get("deepseek");
+  const now = new Date().toISOString();
+  const profile: ProviderProfile = {
+    id: LEGACY_DEEPSEEK_PROFILE_ID,
+    providerId: definition.id,
+    displayName: existing?.displayName ?? definition.label,
+    baseUrl: existing?.baseUrl ?? definition.defaultBaseUrl,
+    model: existing?.model ?? definition.defaultModel,
+    credentialConfigured,
+    enabled: existing?.enabled ?? true,
+    configurationVersion: existing && existing.credentialConfigured === credentialConfigured ? existing.configurationVersion : (existing?.configurationVersion ?? 0) + 1,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+  await store.saveProviderProfile(profile);
+  if (credentialConfigured && profile.enabled && !store.getActiveProviderProfile()) await store.setActiveProviderProfile(profile.id);
+  return profile;
+}
+
+async function resolveProviderRuntime(resolver: ProviderRuntimeResolver, profile: ProviderProfile): Promise<ResolvedProviderRuntime | undefined> {
+  try { return await resolver.resolve(profile); }
+  catch (error) {
+    console.error("Provider runtime is unavailable", error instanceof Error ? error.message : "unknown provider error");
+    return undefined;
+  }
+}
+
+async function refreshEmbeddedProviderRuntime(): Promise<void> {
+  if (!embeddedService || !embeddedProviderResolver) return;
+  const profile = embeddedService.getActiveProviderProfile();
+  const consent = embeddedService.getAiConfiguration().consent;
+  const runtime = consent && profile?.credentialConfigured ? await resolveProviderRuntime(embeddedProviderResolver, profile) : undefined;
+  embeddedService.setModelGateway(runtime?.gateway, runtime?.route);
+}
+
+async function loadLegacyDeepSeekKey(): Promise<string | undefined> {
   const path = join(app.getPath("userData"), "deepseek-key.bin");
   try {
     const fileData = await readFile(path);
-    const isEncryptionAvailable = safeStorage.isEncryptionAvailable();
+    let isEncryptionAvailable = false;
+    try { isEncryptionAvailable = safeStorage.isEncryptionAvailable(); }
+    catch (error) { console.warn("[Main] safeStorage availability check failed during legacy credential migration", error instanceof Error ? error.message : "unknown error"); }
     
     // Detect file format: encrypted files are binary, plaintext is UTF-8 text
     let isEncryptedFile = false;
@@ -381,13 +453,9 @@ async function loadDeepSeekKey(): Promise<string | undefined> {
       isEncryptedFile = true;
     }
     
-    console.log('[Main] loadDeepSeekKey: encryption available:', isEncryptionAvailable, 'file appears encrypted:', isEncryptedFile);
-    
     // Case 1: File is encrypted and safeStorage is available - normal decryption
     if (isEncryptedFile && isEncryptionAvailable) {
-      const decrypted = safeStorage.decryptString(fileData);
-      console.log('[Main] Successfully decrypted key, length:', decrypted.length);
-      return decrypted;
+      return safeStorage.decryptString(fileData);
     }
     
     // Case 2: File is plaintext and safeStorage is unavailable - read directly
@@ -405,10 +473,8 @@ async function loadDeepSeekKey(): Promise<string | undefined> {
     
     // Case 4: File is plaintext but safeStorage is available - migrate to encrypted
     if (!isEncryptedFile && isEncryptionAvailable) {
-      console.log('[Main] Migrating plaintext key to encrypted format');
       const plaintext = fileData.toString('utf8');
       await writeFile(path, safeStorage.encryptString(plaintext));
-      console.log('[Main] Migration complete');
       return plaintext;
     }
     
@@ -416,27 +482,10 @@ async function loadDeepSeekKey(): Promise<string | undefined> {
   } catch (error) {
     const err = error as NodeJS.ErrnoException;
     if (err.code === 'ENOENT') {
-      console.log('[Main] deepseek-key.bin not found');
       return undefined;
     }
-    console.error('[Main] Failed to load DeepSeek key:', err.message);
+    console.error('[Main] Failed to migrate the legacy provider credential:', err.message);
     return undefined;
-  }
-}
-async function saveDeepSeekKey(value: string): Promise<void> {
-  const path = join(app.getPath("userData"), "deepseek-key.bin");
-  try {
-    await mkdir(app.getPath("userData"), { recursive: true }); 
-    if (safeStorage.isEncryptionAvailable()) {
-      await writeFile(path, safeStorage.encryptString(value));
-    } else {
-      console.warn("[Main] safeStorage unavailable, saving DeepSeek key as plaintext");
-      await writeFile(path, value, "utf8");
-    }
-  } catch (error) {
-    const err = error as NodeJS.ErrnoException;
-    console.error("Failed to save DeepSeek key:", err.message);
-    throw new Error("保存 API Key 失败：" + err.message);
   }
 }
 async function loadDesktopPreferences(): Promise<{ shortcut?: string }> {
