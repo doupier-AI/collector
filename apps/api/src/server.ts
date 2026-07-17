@@ -6,6 +6,9 @@ import { randomBytes } from "node:crypto";
 import { DEFAULT_PROVIDER_REGISTRY, fingerprintBaseUrl, ProviderRuntimeResolver, validateExternalProviderBaseUrl } from "@collector/model-gateway";
 import type { ProviderProfile } from "@collector/capture-contracts";
 import { WorkflowScheduler } from "./scheduler.js";
+import { stat } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const port = Number(process.env.COLLECTOR_PORT ?? 43110);
 const paths = defaultDataPaths(process.env.COLLECTOR_DATA_DIR);
@@ -58,13 +61,20 @@ service.setModelGatewayResolver(async (route) => {
   }
   return (await resolver.resolve(environmentProfile)).gateway;
 });
-const server = createApiServer(service, auth, { instanceId: process.env.COLLECTOR_INSTANCE_ID });
+const defaultWebRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../web/dist");
+const webRoot = resolve(process.env.COLLECTOR_WEB_ROOT?.trim() || defaultWebRoot);
+const webIndex = join(webRoot, "index.html");
+const webIndexStat = await stat(webIndex).catch(() => undefined);
+if (!webIndexStat?.isFile()) {
+  throw new Error(`Collector WebUI production build not found at ${webIndex}. Run npm.cmd run build before starting the service.`);
+}
+const server = createApiServer(service, auth, { instanceId: process.env.COLLECTOR_INSTANCE_ID, webRoot });
 
 // 启动工作流调度器守护进程
 const scheduler = new WorkflowScheduler(service);
 scheduler.start();
 
-server.listen(port, "127.0.0.1", () => console.log(`Collector API listening on http://127.0.0.1:${port}`));
+server.listen(port, "127.0.0.1", () => console.log(`Collector WebUI and API listening on http://127.0.0.1:${port}`));
 
 // 优雅关闭：监听 SIGTERM/SIGINT 信号
 function gracefulShutdown(signal: string): void {

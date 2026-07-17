@@ -48,11 +48,14 @@ npm.cmd test
 powershell -ExecutionPolicy Bypass -File .agents\skills\collector-engineering\scripts\check-project.ps1
 ```
 
-现有 API 基线可通过以下命令启动：
+构建后，Collector WebUI 与本机 API 由同一个 loopback 地址提供，只需启动一个服务：
 
 ```powershell
-npm.cmd run dev:api
+npm.cmd run build
+npm.cmd start
 ```
+
+默认地址是 `http://127.0.0.1:43110`。`COLLECTOR_PORT` 可以覆盖端口；打包或隔离测试时可以用 `COLLECTOR_WEB_ROOT` 指向另一份 WebUI 生产构建目录。缺少 `index.html` 时服务会在启动阶段明确报错，不会退回到不完整的 API-only 产品形态。
 
 WebUI（`apps/web`）开发与测试命令：
 
@@ -61,7 +64,7 @@ npm.cmd run dev:web    # 启动 WebUI 开发服务器（默认 http://localhost:
 npm.cmd run test:web   # 运行 WebUI 客户端单元测试
 ```
 
-`npm.cmd run build` 会一并完成 `apps/web` 的类型检查与生产构建。开发期间请先运行 `npm.cmd run dev:api` 启动本机 API，再运行 `npm.cmd run dev:web`；代理目标可用 `COLLECTOR_API_ORIGIN` 覆盖（默认 `http://127.0.0.1:43110`）。WebUI 生产资源与本机 API 的同源服务由后端后续接入。
+`npm.cmd run build` 会一并完成 `apps/web` 的类型检查与生产构建。`npm.cmd run dev:api` 会先构建，再以单进程同源方式启动 WebUI 与 API。只有修改前端并需要热更新时，才额外运行 `npm.cmd run dev:web`；开发代理目标可用 `COLLECTOR_API_ORIGIN` 覆盖（默认 `http://127.0.0.1:43110`）。
 
 端到端验证（真实 Chromium + 确定性假模型，不调用真实云模型）：
 

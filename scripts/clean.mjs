@@ -3,6 +3,7 @@ import { rm } from "node:fs/promises";
 const paths = [
   "dist-tests",
   "apps/api/dist",
+  "apps/web/dist",
   "apps/browser-extension/dist",
   "apps/browser-extension/build",
   "packages/capture-client/dist",

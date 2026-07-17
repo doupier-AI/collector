@@ -3,18 +3,27 @@ import { ValidationError, NotFoundError, CaptureService } from "./service.js";
 import { LocalAuth, PairingRateLimitError } from "./auth.js";
 import { validateResearchMessageInput, validateResearchSessionInput } from "@collector/capture-contracts";
 import { ResearchNotFoundError, ResearchValidationError } from "./research.js";
+import { createStaticWebHandler } from "./static-web.js";
 
 const JSON_LIMIT = 2 * 1024 * 1024;
 
-export function createApiServer(service: CaptureService, auth: LocalAuth, options: { instanceId?: string } = {}) {
+export interface ApiServerOptions {
+  instanceId?: string;
+  /** Dedicated Vite production directory. Omit for API-only embedded/test servers. */
+  webRoot?: string;
+}
+
+export function createApiServer(service: CaptureService, auth: LocalAuth, options: ApiServerOptions = {}) {
+  const staticWeb = options.webRoot ? createStaticWebHandler(options.webRoot) : undefined;
   return createServer(async (request, response) => {
     try {
       validateLocalRequest(request);
       setCors(request, response);
       if (request.method === "OPTIONS") return send(response, 204);
       const url = new URL(request.url ?? "/", "http://localhost");
-      if (request.method === "GET" && url.pathname === "/") return json(response, 200, { name: "Collector Local API", ui: "web" });
       if (request.method === "GET" && url.pathname === "/health") return json(response, 200, { status: "ok", instanceId: options.instanceId ?? "default" });
+      if (staticWeb && await staticWeb.tryServe(request, response, url)) return;
+      if (request.method === "GET" && url.pathname === "/") return json(response, 200, { name: "Collector Local API", ui: "web" });
       if (request.method === "POST" && url.pathname === "/v1/pairings/exchange") {
         const body = await readJson(request) as { code?: string; session?: boolean };
         const token = body.code ? await auth.exchangePairingCode(body.code) : undefined;
