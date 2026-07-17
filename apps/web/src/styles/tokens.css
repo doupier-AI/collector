@@ -1,0 +1,32 @@
+/* Collector WebUI 视觉令牌：安静的研究画布，不使用大面积渐变 */
+:root {
+  --color-canvas: #F5F6F3;
+  --color-surface: #FCFCFA;
+  --color-ink: #20231F;
+  --color-muted: #6B7168;
+  --color-line: #D8DDD5;
+  --color-ai: #435A73;
+  --color-later: #9A6A24;
+  --color-danger: #A33B36;
+
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+
+  /* 正文行宽约 68 个中文字符；开始页输入区使用较窄行宽 */
+  --measure: 68rem;
+  --measure-start: 42rem;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+
+  --radius-small: 0.375rem;
+  --radius-medium: 0.5rem;
+  --radius-large: 0.75rem;
+
+  --drawer-width: 17.5rem;
+}

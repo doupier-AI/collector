@@ -8,9 +8,12 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "tsc -b && node scripts/build-assets.mjs",
+    "build": "tsc -b && npm run build -w @collector/web && node scripts/build-assets.mjs",
     "test": "npm run build && node --test dist-tests/**/*.test.js scripts/ralph/*.test.mjs",
     "dev:api": "npm run build && node apps/api/dist/server.js",
+    "dev:web": "npm run dev -w @collector/web",
+    "test:web": "npm run test -w @collector/web",
+    "test:e2e": "npm run build && npm run test:e2e -w @collector/web",
     "clean": "node scripts/clean.mjs",
     "ralph:dry": "powershell -ExecutionPolicy Bypass -File scripts/ralph/once.ps1 -DryRun",
     "ralph:once": "powershell -ExecutionPolicy Bypass -File scripts/ralph/once.ps1",

@@ -54,7 +54,20 @@ powershell -ExecutionPolicy Bypass -File .agents\skills\collector-engineering\sc
 npm.cmd run dev:api
 ```
 
-WebUI 开发命令随 `apps/web` 首个切片一并加入。
+WebUI（`apps/web`）开发与测试命令：
+
+```powershell
+npm.cmd run dev:web    # 启动 WebUI 开发服务器（默认 http://localhost:5173，/v1 代理到本机 API）
+npm.cmd run test:web   # 运行 WebUI 客户端单元测试
+```
+
+`npm.cmd run build` 会一并完成 `apps/web` 的类型检查与生产构建。开发期间请先运行 `npm.cmd run dev:api` 启动本机 API，再运行 `npm.cmd run dev:web`；代理目标可用 `COLLECTOR_API_ORIGIN` 覆盖（默认 `http://127.0.0.1:43110`）。WebUI 生产资源与本机 API 的同源服务由后端后续接入。
+
+端到端验证（真实 Chromium + 确定性假模型，不调用真实云模型）：
+
+```powershell
+npm.cmd run test:e2e    # 先完整构建，再运行 apps/web 的 Playwright 用例
+```
 
 ## 数据、模型与联网边界
 
