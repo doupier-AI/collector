@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import { act } from "react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
@@ -7,6 +8,7 @@ import { ApiRequestError } from "../../api/errors";
 import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
 import { makeSession } from "../../test/fakes";
+import { PAIRED_EVENT } from "../auth/paired-event";
 import { SessionListPanel } from "./SessionListPanel";
 
 function renderPanel(api: Partial<ApiClient>) {
@@ -53,6 +55,22 @@ describe("SessionListPanel 会话列表", () => {
 
     await user.click(screen.getByRole("button", { name: "重试" }));
     expect(await screen.findByRole("link", { name: /恢复后的会话/ })).toBeInTheDocument();
+    expect(listResearchSessions).toHaveBeenCalledTimes(2);
+  });
+
+  it("面板先于配对挂载失败时，配对完成后自动刷新", async () => {
+    const listResearchSessions = vi
+      .fn<() => ReturnType<ApiClient["listResearchSessions"]>>()
+      .mockRejectedValueOnce(new ApiRequestError(401, "unauthorized", "unauthorized"))
+      .mockResolvedValueOnce([makeSession({ id: "s-7", title: "配对后的会话" })]);
+    renderPanel({ listResearchSessions });
+
+    expect(await screen.findByText("暂时无法读取最近研究。")).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(new Event(PAIRED_EVENT));
+    });
+    expect(await screen.findByRole("link", { name: /配对后的会话/ })).toBeInTheDocument();
     expect(listResearchSessions).toHaveBeenCalledTimes(2);
   });
 });

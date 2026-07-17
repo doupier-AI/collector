@@ -49,7 +49,14 @@ export function StartPage() {
 
   return (
     <div className="page page--start">
-      <p className="page__brand">Collector</p>
+      <div className="page__logo" aria-hidden="true">
+        <svg width="88" height="88" viewBox="0 0 88 88" focusable="false">
+          <rect x="4" y="4" width="80" height="80" rx="21" fill="var(--color-ai)" />
+          <rect x="26" y="30" width="36" height="5.5" rx="2.75" fill="#fff" opacity="0.95" />
+          <rect x="26" y="42.5" width="27" height="5.5" rx="2.75" fill="#fff" opacity="0.75" />
+          <rect x="26" y="55" width="18" height="5.5" rx="2.75" fill="#fff" opacity="0.55" />
+        </svg>
+      </div>
       <h1 className="page__title">从一个问题开始</h1>
       <p className="page__lead">写下你正在理解的内容，Collector 会保存这次研究，并让你随时回来继续。</p>
       <ChatComposer

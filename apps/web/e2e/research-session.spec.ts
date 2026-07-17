@@ -22,16 +22,26 @@ async function submitFirstQuestion(page: Page, question = QUESTION): Promise<str
 test("首次打开显示开始页与空状态邀请", async ({ page }) => {
   await pairAndOpen(page);
 
+  // 开始页：占位 logo、居中标题与说明、精简输入区（占位提示 + 圆形按钮）
+  await expect(page.locator(".page__logo")).toBeVisible();
   await expect(page.getByRole("heading", { name: "从一个问题开始" })).toBeVisible();
   await expect(page.getByText("写下你正在理解的内容，Collector 会保存这次研究，并让你随时回来继续。")).toBeVisible();
   await expect(page.getByLabel("你的问题")).toBeVisible();
   await expect(page.getByRole("button", { name: "开始研究" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "稍后再学" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "添加附件（后续版本提供）" })).toBeVisible();
 
-  await page.getByRole("button", { name: "内容" }).click();
-  await expect(page.getByRole("navigation", { name: "内容导航" })).toBeVisible();
+  // 宽屏（默认 1280px）左右固定侧栏初始展开：左侧内容导航空状态、右侧稍后再学空态
+  const nav = page.getByRole("navigation", { name: "内容导航" });
+  await expect(nav).toBeVisible();
   await expect(page.getByText(/还没有研究会话/)).toBeVisible();
-  await page.keyboard.press("Escape");
+  await expect(page.getByRole("complementary", { name: "稍后再学" })).toBeVisible();
+  await expect(page.getByText("暂无内容")).toBeVisible();
+
+  // 顶栏图标按钮收起再展开
+  await page.getByRole("button", { name: "内容" }).click();
+  await expect(nav).toBeHidden();
+  await page.getByRole("button", { name: "内容" }).click();
+  await expect(nav).toBeVisible();
 });
 
 test("提交后渐进内容进入同一条 AI 消息并完成，控制台无错误，网络符合契约", async ({ page }) => {
@@ -143,19 +153,22 @@ test("快速双击发送只创建一个任务", async ({ page }) => {
   expect(messagePosts, "提交消息请求只应发出一次").toHaveLength(1);
 });
 
-test("键盘完成打开导航、关闭抽屉、输入与发送", async ({ page }) => {
-  // 窄视口使用覆盖抽屉，验证焦点进入、Escape 关闭与焦点返回
-  await page.setViewportSize({ width: 800, height: 800 });
+test("键盘完成侧栏收起与展开、输入与发送", async ({ page }) => {
+  // 宽屏固定侧栏默认展开：键盘收起后焦点留在触发按钮，再按一次重新展开
+  await page.setViewportSize({ width: 1024, height: 800 });
   await pairAndOpen(page, "/research/new");
+
+  const nav = page.getByRole("navigation", { name: "内容导航" });
+  await expect(nav).toBeVisible();
 
   const trigger = page.getByRole("button", { name: "内容" });
   await trigger.focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("navigation", { name: "内容导航" })).toBeVisible();
-
-  await page.keyboard.press("Escape");
-  await expect(page.getByRole("navigation", { name: "内容导航" })).toBeHidden();
+  await expect(nav).toBeHidden();
   await expect(trigger).toBeFocused();
+
+  await page.keyboard.press("Enter");
+  await expect(nav).toBeVisible();
 
   const textarea = page.getByLabel("你的问题");
   await textarea.focus();
@@ -178,8 +191,33 @@ test("320/768/1024/1440 视口无横向溢出并留截图", async ({ page }) => 
       clientWidth: document.documentElement.clientWidth,
     }));
     expect(metrics.scrollWidth, `视口 ${width}px 不应横向溢出`).toBeLessThanOrEqual(metrics.clientWidth + 1);
+    if (width < 900) {
+      // 窄屏：侧栏为覆盖抽屉，默认收起
+      await expect(page.getByRole("navigation", { name: "内容导航" })).toBeHidden();
+      await expect(page.getByRole("complementary", { name: "稍后再学" })).toBeHidden();
+    } else {
+      // 宽屏：左右固定侧栏默认展开
+      await expect(page.getByRole("navigation", { name: "内容导航" })).toBeVisible();
+      await expect(page.getByRole("complementary", { name: "稍后再学" })).toBeVisible();
+    }
     await page.screenshot({ path: `e2e-artifacts/viewport-${width}.png`, fullPage: true });
   }
+});
+
+test("开始页显示占位 logo 与居中输入区并留截图", async ({ page }) => {
+  await pairAndOpen(page, "/research/new");
+
+  await expect(page.locator(".page__logo")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "从一个问题开始" })).toBeVisible();
+  await expect(page.getByLabel("你的问题")).toBeVisible();
+  await expect(page.getByRole("button", { name: "添加附件（后续版本提供）" })).toBeVisible();
+  // 标题、说明与输入区整体水平居中
+  const center = await page.locator(".page--start").evaluate((element) => getComputedStyle(element).textAlign);
+  expect(center).toBe("center");
+
+  await page.setViewportSize({ width: 1440, height: 800 });
+  mkdirSync("e2e-artifacts", { recursive: true });
+  await page.screenshot({ path: "e2e-artifacts/start-page-1440.png", fullPage: true });
 });
 
 test("界面、API 与 SQLite 记录一致", async ({ page }) => {

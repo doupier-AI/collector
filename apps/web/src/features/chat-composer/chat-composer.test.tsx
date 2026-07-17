@@ -89,4 +89,25 @@ describe("ChatComposer", () => {
     await user.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() => expect(loadDraft("draft-scope")).toBe(""));
   });
+
+  it("附件按钮功能未就绪，点击显示克制提示，再次点击收起", async () => {
+    const user = userEvent.setup();
+    renderComposer(async () => true);
+
+    const attach = screen.getByRole("button", { name: "添加附件（后续版本提供）" });
+    await user.click(attach);
+    expect(await screen.findByText("附件等功能将在后续版本提供")).toBeInTheDocument();
+
+    await user.click(attach);
+    expect(screen.queryByText("附件等功能将在后续版本提供")).not.toBeInTheDocument();
+  });
+
+  it("键盘提示在输入框外并保持与输入框的无障碍关联", () => {
+    renderComposer(async () => true);
+
+    const hint = screen.getByText("Enter 发送，Shift+Enter 换行");
+    const textarea = screen.getByLabelText("你的问题");
+    expect(hint).not.toBeNull();
+    expect(textarea.getAttribute("aria-describedby")).toContain(hint.id);
+  });
 });

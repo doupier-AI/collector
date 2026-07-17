@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import type { ResearchSessionRecord } from "@collector/capture-contracts";
 import { useServices } from "../../app/services";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
+import { PAIRED_EVENT } from "../auth/paired-event";
 import { formatSessionTime } from "../research-session/format";
 
 type ListState =
@@ -30,6 +31,13 @@ export function SessionListPanel({ onNavigate }: { onNavigate?: () => void }) {
       stale = true;
     };
   }, [api, reloadNonce]);
+
+  // 面板常驻时可能先于配对挂载（初始 401 失败）；配对完成后自动重试
+  useEffect(() => {
+    const onPaired = () => setReloadNonce((nonce) => nonce + 1);
+    window.addEventListener(PAIRED_EVENT, onPaired);
+    return () => window.removeEventListener(PAIRED_EVENT, onPaired);
+  }, []);
 
   if (state.kind === "loading") {
     return (

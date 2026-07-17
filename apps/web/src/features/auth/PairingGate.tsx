@@ -2,6 +2,7 @@ import { useId, useState } from "react";
 import type { FormEvent } from "react";
 import { apiErrorCopy } from "../../api/errors";
 import { useServices } from "../../app/services";
+import { notifyPaired } from "./paired-event";
 
 export interface PairingGateProps {
   /** 配对成功后调用，通常用于重新发起被 401 中断的加载。 */
@@ -29,6 +30,8 @@ export function PairingGate({ onPaired }: PairingGateProps) {
     setError(null);
     try {
       await api.exchangePairingCode(code.trim());
+      // 通知常驻区域（如默认展开的侧栏）配对已完成，触发自我刷新
+      notifyPaired();
       onPaired();
     } catch (cause) {
       setError(apiErrorCopy(cause).body);

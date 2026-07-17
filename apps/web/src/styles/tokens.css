@@ -24,9 +24,14 @@
   --space-5: 1.5rem;
   --space-6: 2rem;
 
-  --radius-small: 0.375rem;
-  --radius-medium: 0.5rem;
-  --radius-large: 0.75rem;
+  /* iOS 风格圆角体系：小控件 10px、普通按钮 12px、输入框 18px、卡片/面板 20px、圆形按钮 50% */
+  --radius-control: 0.625rem;
+  --radius-button: 0.75rem;
+  --radius-input: 1.125rem;
+  --radius-panel: 1.25rem;
+  --radius-circle: 50%;
 
+  /* 固定侧栏宽度由 React state 管理；这里是覆盖式抽屉（窄屏）宽度 */
   --drawer-width: 17.5rem;
+  --app-bar-height: 3.5rem;
 }

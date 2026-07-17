@@ -16,8 +16,9 @@ export interface ChatComposerProps {
 }
 
 /**
- * Chat 输入区：可见标签、Enter 发送 / Shift+Enter 换行、空输入禁用发送、
- * 后端确认前保留文字、确认后清空并清除草稿。
+ * Chat 输入区：placeholder 引导、Enter 发送 / Shift+Enter 换行（提示在输入框外下方）、
+ * 右下角圆形发送按钮、左下角预留附件按钮（功能未就绪，点击给出来源提示）、
+ * 空输入禁用发送、后端确认前保留文字、确认后清空并清除草稿。
  */
 export function ChatComposer({
   draftScope,
@@ -34,6 +35,7 @@ export function ChatComposer({
   const [draft, setDraft] = useState(() => ({ scope: draftScope, value: loadDraft(draftScope) }));
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [attachNoticeVisible, setAttachNoticeVisible] = useState(false);
   const submittingRef = useRef(false);
 
   // 会话切换导致作用域变化时，加载对应草稿（调整状态的安全渲染期模式）
@@ -84,28 +86,55 @@ export function ChatComposer({
 
   return (
     <form className="composer" onSubmit={handleSubmit}>
-      <label className="composer__label" htmlFor={textareaId}>
+      <label className="sr-only" htmlFor={textareaId}>
         你的问题
       </label>
-      <textarea
-        id={textareaId}
-        value={draft.value}
-        onChange={(event) => setDraft({ scope: draftScope, value: event.target.value })}
-        onKeyDown={handleKeyDown}
-        placeholder={placeholder}
-        rows={3}
-        disabled={disabled}
-        autoFocus={autoFocus}
-        aria-describedby={errorText ? `${hintId} ${errorId}` : hintId}
-      />
-      <div className="composer__footer">
-        <p className="composer__hint" id={hintId}>
-          Enter 发送，Shift+Enter 换行
-        </p>
-        <button type="submit" className="button button--primary" disabled={!canSubmit}>
-          {submitting ? "发送中……" : submitLabel}
-        </button>
+      <div className="composer__frame">
+        <textarea
+          id={textareaId}
+          value={draft.value}
+          onChange={(event) => setDraft({ scope: draftScope, value: event.target.value })}
+          onKeyDown={handleKeyDown}
+          placeholder={placeholder}
+          rows={3}
+          disabled={disabled}
+          autoFocus={autoFocus}
+          aria-describedby={errorText ? `${hintId} ${errorId}` : hintId}
+        />
+        <div className="composer__bar">
+          <button
+            type="button"
+            className="composer__attach"
+            aria-label="添加附件（后续版本提供）"
+            aria-expanded={attachNoticeVisible}
+            onClick={() => setAttachNoticeVisible((visible) => !visible)}
+          >
+            <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <path d="M10 4.75v10.5M4.75 10h10.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+          </button>
+          <button type="submit" className="composer__send" aria-label={submitLabel} disabled={!canSubmit}>
+            <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <path
+                d="M10 15.25v-10.5M5 9.5l5-5 5 5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        </div>
       </div>
+      <p className="composer__hint" id={hintId}>
+        Enter 发送，Shift+Enter 换行
+      </p>
+      {attachNoticeVisible ? (
+        <p className="composer__notice" role="status">
+          附件等功能将在后续版本提供
+        </p>
+      ) : null}
       {errorText ? (
         <p className="form-error" id={errorId} role="alert">
           {errorText}
