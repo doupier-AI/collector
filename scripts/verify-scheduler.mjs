@@ -1,44 +1,16 @@
 // 验证调度器自动执行工作流的脚本
-import { randomUUID } from "node:crypto";
-
 const API_URL = process.env.COLLECTOR_API_URL ?? "http://127.0.0.1:43110";
 
-async function getMasterToken() {
-  // 优先使用 COLLECTOR_MASTER_TOKEN 环境变量
-  if (process.env.COLLECTOR_MASTER_TOKEN) {
-    return process.env.COLLECTOR_MASTER_TOKEN;
-  }
-  
-  // 从环境变量或默认路径读取 master token
-  const fs = await import("node:fs/promises");
-  const path = await import("node:path");
-  const os = await import("node:os");
-  
-  try {
-    const userDataPath = process.env.COLLECTOR_DATA_DIR 
-      ? path.join(process.env.COLLECTOR_DATA_DIR, "..", "userData")
-      : path.join(os.homedir(), "AppData", "Roaming", "collector", "default");
-    
-    const tokenPath = path.join(userDataPath, "master-token.bin");
-    const safeStorage = await import("electron").catch(() => null);
-    
-    if (!safeStorage) {
-      console.log("⚠️  无法读取 Electron safeStorage，使用默认测试 token");
-      return "test-token-" + randomUUID();
-    }
-    
-    const encrypted = await fs.readFile(tokenPath);
-    return safeStorage.safeStorage.decryptString(encrypted);
-  } catch (err) {
-    console.log("⚠️  读取 master token 失败:", err.message);
-    return "test-token-" + randomUUID();
-  }
+function getMasterToken() {
+  const token = process.env.COLLECTOR_MASTER_TOKEN?.trim();
+  if (!token) throw new Error("COLLECTOR_MASTER_TOKEN is required");
+  return token;
 }
 
 async function testScheduler() {
   console.log("🧪 开始测试工作流调度器...\n");
   
-  const token = await getMasterToken();
+  const token = getMasterToken();
   const headers = { Authorization: `Bearer ${token}` };
   
   // 1. 采集一些材料

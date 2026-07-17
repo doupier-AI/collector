@@ -317,7 +317,7 @@ export class SqliteStore implements CollectorStore {
       this.db().exec("DELETE FROM fragments");
       this.db().exec("DELETE FROM artifacts");
       this.db().exec("DELETE FROM captures");
-      // 供应商凭证由 Electron 安全存储保留，因此 Profile、活动路由和 AI 授权也必须保持一致。
+      // 供应商凭证由独立凭证边界保留，因此 Profile、活动路由和 AI 授权保持一致。
       // deepseek_configured 仅用于一次旧配置迁移，在兼容期内保留。
       this.db().exec("DELETE FROM settings WHERE key NOT IN ('ai_consent', 'ai_configured', 'active_provider_profile_id', 'deepseek_configured')");
     });

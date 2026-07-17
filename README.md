@@ -31,7 +31,7 @@ WebUI ↔ HTTP / 流式连接 ↔ Node 服务 ↔ SQLite / 文件 / 模型 / 搜
 
 产品定义、交互、架构和人工验收基线已经形成，可以直接开始 WebUI 开发。
 
-当前源码提供 Node API、SQLite 持久化、文件解析、模型供应商注册与调用、工作流和测试基础。`apps/desktop-capture` 与 `apps/browser-extension` 是迁移期间可复用的代码基线；新的产品界面进入 `apps/web`，并通过 HTTP 与流式接口连接本机服务。
+当前源码提供 Node API、SQLite 持久化、文件解析、模型供应商注册与调用、工作流、浏览器扩展和测试基础。新的产品界面进入 `apps/web`，并通过 HTTP 与流式接口连接本机服务。
 
 开发入口与首个纵向切片见 [开发起点](docs/DEVELOPMENT_START.md)。
 

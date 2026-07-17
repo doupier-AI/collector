@@ -183,7 +183,7 @@ WebUI 使用自适应研究画布：中央显示当前内容，左侧内容导�
 
 WebUI、同源资源服务、流式接口、本地启动器、Web 凭证边界和浏览器自动化测试属于当前实施工作。
 
-`apps/desktop-capture` 与 `apps/browser-extension` 作为迁移期间的代码基线，由明确的迁移或清理任务处理。新的产品界面行为进入 WebUI 与 HTTP/SSE 路径。
+`apps/browser-extension` 提供浏览器来源采集基础。新的产品界面行为进入 WebUI 与 HTTP/SSE 路径。
 
 ## 技术原型与验证
 

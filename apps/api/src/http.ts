@@ -10,7 +10,7 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
     if (request.method === "OPTIONS") return send(response, 204);
     try {
       const url = new URL(request.url ?? "/", "http://localhost");
-      if (request.method === "GET" && url.pathname === "/") return json(response, 200, { name: "Collector Local API", ui: "electron" });
+      if (request.method === "GET" && url.pathname === "/") return json(response, 200, { name: "Collector Local API", ui: "web" });
       if (request.method === "GET" && url.pathname === "/health") return json(response, 200, { status: "ok", instanceId: options.instanceId ?? "default" });
       if (request.method === "POST" && url.pathname === "/v1/pairings/exchange") {
         const body = await readJson(request) as { code?: string; session?: boolean };

@@ -44,7 +44,6 @@
 | `packages/capture-contracts` | 跨边界数据契约与运行时校验基础 |
 | `packages/model-gateway` | 外部模型供应商注册、协议适配、用量与错误语义 |
 | 文件解析与来源定位代码 | 文档导入、内容快照、引用和来源返回基础 |
-| `apps/desktop-capture` | 凭证、启动、窗口交互和现有功能的迁移参考 |
 | `apps/browser-extension` | 浏览器来源采集的迁移参考 |
 
 复用以当前产品流程和 API 边界为准。新的界面行为进入 WebUI。

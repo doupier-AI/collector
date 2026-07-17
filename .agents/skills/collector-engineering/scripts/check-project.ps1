@@ -22,7 +22,10 @@ if (-not $packageJson) {
 } else {
   $package = $packageJson | ConvertFrom-Json
   if (-not $package.scripts.test) { Add-Issue "error" "missing-tests" "package.json has no test script" }
-  if (-not $package.scripts.'test:gui') { Add-Issue "warning" "missing-gui-smoke" "package.json has no test:gui script" }
+  if ($package.scripts.'dev:desktop' -or $package.scripts.'test:gui') { Add-Issue "error" "retired-desktop-script" "Electron scripts remain in package.json" }
+  if ($package.devDependencies.electron -or $package.devDependencies.'electron-builder' -or $package.devDependencies.'@electron/packager') {
+    Add-Issue "error" "retired-electron-dependency" "Electron dependencies remain in package.json"
+  }
 }
 
 try {
@@ -32,35 +35,13 @@ try {
   Add-Issue "error" "node-missing" "Node.js is unavailable"
 }
 
-$electron = Join-Path $Root "node_modules\electron\dist\electron.exe"
-if (-not (Test-Path -LiteralPath $electron)) {
-  Add-Issue "warning" "electron-binary" "Electron package may compile, but the Windows runtime binary is missing"
+if (Test-Path -LiteralPath (Join-Path $Root "apps\desktop-capture")) {
+  Add-Issue "error" "retired-desktop-source" "apps/desktop-capture must stay removed"
 }
-
-$main = Read-ProjectFile "apps\desktop-capture\src\main.ts"
-$preload = Join-Path $Root "apps\desktop-capture\src\preload.cts"
-if ($main) {
-  if ($main -notmatch 'preload\.cjs') { Add-Issue "error" "preload-format" "Electron main must load the CommonJS preload artifact" }
-  if ($main -match 'nodeIntegration\s*:\s*true') { Add-Issue "error" "renderer-node" "Renderer Node integration must remain disabled" }
-  if ($main -notmatch 'contextIsolation\s*:\s*true') { Add-Issue "error" "context-isolation" "Renderer context isolation is not explicitly enabled" }
-  if ($main -match 'requestSingleInstanceLock' -and $main -notmatch 'COLLECTOR_INSTANCE_ID') {
-    Add-Issue "warning" "instance-isolation" "Single-instance behavior has no explicit test instance ID"
-  }
-}
-if (-not (Test-Path -LiteralPath $preload)) { Add-Issue "error" "preload-source" "Expected preload.cts is missing" }
 
 $http = Read-ProjectFile "apps\api\src\http.ts"
 if ($http -match 'Access-Control-Allow-Origin[^\r\n]*\*') {
   Add-Issue "error" "wildcard-cors" "Local API still permits wildcard CORS"
-}
-
-$guiSmoke = Read-ProjectFile "scripts\gui-smoke.mjs"
-if ($guiSmoke) {
-  foreach ($required in @('COLLECTOR_PORT', 'COLLECTOR_DATA_DIR', '--user-data-dir')) {
-    if ($guiSmoke -notmatch [regex]::Escape($required)) {
-      Add-Issue "error" "gui-isolation" "GUI smoke is missing isolation setting: $required"
-    }
-  }
 }
 
 $trackedCandidates = Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction SilentlyContinue |

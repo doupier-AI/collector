@@ -1,6 +1,6 @@
 ---
 name: collector-engineering
-description: Implement, debug, review, or release the Collector single-user local WebUI, Node API, SQLite persistence, document readers, model gateway, research sessions, selection popovers, later learning, and source return. Existing Electron and browser-extension code is handled as a migration or maintenance scope.
+description: Implement, debug, review, or release the Collector single-user local WebUI, Node API, SQLite persistence, document readers, model gateway, research sessions, selection popovers, later learning, source return, and browser capture extension.
 ---
 
 # Collector Engineering
@@ -79,18 +79,9 @@ Every visible control connects to real persistence and service state. Disposable
 - Persist provider, model, prompt version, usage, latency, status, and redacted errors for model runs.
 - Use deterministic fake providers in automated tests. Real-provider acceptance requires explicit cloud-data consent and isolated credentials.
 
-## Existing Electron And Extension Code
+## Browser Extension
 
-`apps/desktop-capture` and `apps/browser-extension` are current repository code, not the target product frontend.
-
-When a task explicitly maintains or removes these areas:
-
-- Keep Electron renderer isolation and preload/IPC type synchronization intact during the migration step.
-- Handle `safeStorage` availability and existing encrypted/plaintext compatibility.
-- Use isolated ports, profiles, instance IDs, and data directories for Electron tests.
-- Read `references/failure-modes.md` before Electron startup, IPC, shortcuts, embedded API, or GUI-test work.
-
-Place new product UI behavior in the WebUI path and communicate with the local service through HTTP/SSE.
+`apps/browser-extension` is a capture adapter. It submits bounded source content through authenticated HTTP and keeps retry identity stable across offline replay. Product reading, research, settings, and navigation behavior belongs to the WebUI.
 
 ## Verification Gate
 
@@ -102,6 +93,6 @@ npm.cmd test
 powershell -ExecutionPolicy Bypass -File .agents\skills\collector-engineering\scripts\check-project.ps1
 ```
 
-For WebUI behavior, run the project browser test command and verify persisted/API-visible state after real browser actions. For existing Electron maintenance, run its isolated GUI check.
+For WebUI behavior, run the project browser test command and verify persisted/API-visible state after real browser actions.
 
 Before reporting completion, state exactly which checks ran, which checks were skipped, and whether a real cloud-model call occurred.

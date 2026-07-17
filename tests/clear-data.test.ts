@@ -53,7 +53,7 @@ test("clearAllData removes all user data but preserves auth tokens", async () =>
   // Non-AI settings should be cleared
   assert.equal(store.getSetting("some_other_setting"), undefined, "non-AI settings should be cleared");
 
-  // AI settings should be preserved (consistent with API key file in safeStorage)
+  // AI settings remain consistent with the separate credential boundary.
   assert.equal(store.getSetting("ai_consent"), "true", "ai_consent should be preserved after clear");
   assert.equal(store.getSetting("deepseek_configured"), "true", "deepseek_configured should be preserved after clear");
 

@@ -6,7 +6,6 @@
     { "path": "packages/model-gateway" },
     { "path": "apps/api" },
     { "path": "apps/browser-extension" },
-    { "path": "apps/desktop-capture" },
     { "path": "tests" }
   ]
 }

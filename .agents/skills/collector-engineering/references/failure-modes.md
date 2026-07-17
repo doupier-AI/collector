@@ -1,89 +1,49 @@
 # Collector Failure Modes
 
-## Electron Binary And Startup
+## WebUI Connects To The Wrong Service
 
-**Symptom:** TypeScript builds, but Electron cannot open a window.
+**Symptom:** The page opens, but saved data appears in another instance or disappears after refresh.
 
-**Cause:** `ELECTRON_SKIP_BINARY_DOWNLOAD=1` installs package metadata without the runtime binary, or GitHub download is unavailable.
+**Prevention:** Isolate ports, database directories, session state and instance IDs in tests. Include the instance ID in health responses and verify it before submitting data.
 
-**Prevention:** Distinguish compile verification from runtime verification. Check `node_modules/electron/dist/electron.exe`. Use an approved mirror only for dependency installation; never claim GUI completion until the executable starts.
+## Stream Ends Before The Task
 
-## Preload Bridge Missing
+**Symptom:** Generated text stops when the page refreshes or the network connection closes.
 
-**Symptom:** Paste may render, but submit, file selection, drag/drop, or shortcut settings do nothing; `window.collector` is undefined.
-
-**Cause:** An ESM build emitted preload in an incompatible format or `BrowserWindow` points at the wrong artifact.
-
-**Prevention:** Keep preload in `.cts`, emit `.cjs`, verify the output exists, log `preload-error`, and make renderer readiness observable for smoke tests.
-
-## Renderer Initialized Too Early Or Partially
-
-**Symptom:** Controls appear enabled but listeners are absent, or a top-level exception disables all later behavior.
-
-**Cause:** Missing bridge/DOM nodes or an exception during module initialization.
-
-**Prevention:** Fail visibly, set a renderer-ready marker only after listeners are installed, and assert that marker in GUI smoke tests.
-
-## Global Shortcut Stops Working
-
-**Symptom:** `Ctrl+Shift+Space` no longer opens the window.
-
-**Cause:** Another process owns the shortcut, registration failed, an older Collector instance owns the single-instance lock, or the process exited.
-
-**Prevention:** Check `globalShortcut.register` result, expose a configurable fallback, retain tray activation, unregister on quit, and verify the exact running binary/profile.
-
-## GUI Test Talks To The Wrong Instance
-
-**Symptom:** Test sees a healthy API or an existing window but new data is absent from the test database.
-
-**Cause:** Fixed ports, shared user data, single-instance lock, or an already-running embedded API.
-
-**Prevention:** Isolate API port, debug port, Electron user-data directory, database directory, and app instance ID. Add an instance identifier to health responses and assert it.
+**Prevention:** Persist input and task identity before model work. Treat the stream as delivery, query durable task state after reconnect, and render already saved output.
 
 ## File Drop Or Selection Does Nothing
 
-**Symptom:** Files appear in the UI but are not uploaded, or file selection never reaches main.
+**Symptom:** A document appears selected but no import result is created.
 
-**Cause:** Renderer attempted filesystem access, relied on deprecated `File.path`, preload bridge failed, unsupported MIME inference, or form submission skipped queued files.
+**Prevention:** Validate size and type in the browser and service, upload through bounded HTTP endpoints, expose progress and cancellation, and verify both the stored file and content snapshot.
 
-**Prevention:** Convert `File` to a path only in preload via `webUtils`, validate size/type both client and server side, upload artifacts before capture creation, and verify both artifact and capture records.
+## Retry Creates Duplicate Content
 
-## Success UI But Inbox Is Empty
+**Symptom:** Network recovery or extension replay creates multiple records.
 
-**Symptom:** Capture window reports success; the inbox shows no content.
-
-**Cause:** UI accepted an unresolved request, submitted to another API instance, failed to persist, or inbox rendering omitted the record.
-
-**Prevention:** Await the API response, keep the draft on error, verify by capture ID through `GET /v1/captures/{id}`, and make smoke tests assert persisted/API-visible state.
-
-## Retry Creates Duplicate Captures
-
-**Symptom:** Network recovery or extension retry creates multiple records.
-
-**Cause:** A new client ID was generated per retry or idempotency was enforced only in memory.
-
-**Prevention:** Generate `clientCaptureId` once, persist it with queued work, enforce a unique database constraint, and return the existing record on replay.
+**Prevention:** Generate the client request ID once, persist it with queued work, enforce a unique database constraint, and return the existing result on replay.
 
 ## Encoding Corruption
 
-**Symptom:** Chinese labels display as mojibake in source inspection, tray menus, or UI.
+**Symptom:** Chinese text becomes unreadable in source or the rendered WebUI.
 
-**Cause:** PowerShell/default code page decoded UTF-8 as a legacy encoding or a script rewrote files without explicit UTF-8.
-
-**Prevention:** Keep source UTF-8, avoid shell-based file rewrites, use patch-based edits, and set explicit UTF-8 when inspection tools require it. Verify rendered text, not terminal output alone.
+**Prevention:** Keep source UTF-8, use patch-based edits, set explicit UTF-8 for inspection commands, and verify rendered text.
 
 ## Localhost Data Exposure
 
-**Symptom:** Any local web page or extension can read/write Collector data.
+**Symptom:** Another local web page can read or change Collector data.
 
-**Cause:** Loopback binding was treated as sufficient security and wildcard CORS was enabled.
+**Prevention:** Bind to loopback, require local sessions, validate Host and Origin, restrict CORS, hash tokens, and keep anonymous routes in an explicit allowlist.
 
-**Prevention:** Pair clients, require tokens/sessions, restrict origins, hash tokens, and make anonymous routes an explicit allowlist.
+## Model Or Search Output Pollutes Research
 
-## Model Output Pollutes Knowledge
+**Symptom:** Unsupported claims, malformed model output or unverifiable search results become formal content.
 
-**Symptom:** Unsupported claims or malformed model output becomes formal knowledge.
+**Prevention:** Validate schemas and source references locally, preserve provenance, keep intermediate results reviewable, and publish formal results only after validation.
 
-**Cause:** Output was trusted before schema/evidence validation or proposals bypassed review.
+## Credentials Enter Browser State Or Logs
 
-**Prevention:** Require JSON schema validation and valid fragment references, persist only proposals, and create formal revocable relations solely from recorded user decisions.
+**Symptom:** Provider credentials appear in browser storage, API responses, logs or exports.
+
+**Prevention:** Send credentials directly to the local service credential boundary, expose configured state only, and redact authentication fields before observation and export.

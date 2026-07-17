@@ -1,6 +1,6 @@
 // e2e.test.ts — 端到端功能验证脚本
 // 用法: npx tsx --test tests/e2e.test.ts
-// 前提: 不需要启动 Electron，脚本自己起 API server
+// 前提：测试脚本自行启动隔离的本机 API 服务。
 //
 // 覆盖:
 //  1. 采集 (capture) — 创建、去重、获取
