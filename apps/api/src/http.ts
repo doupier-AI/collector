@@ -1,14 +1,17 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { ValidationError, NotFoundError, CaptureService } from "./service.js";
 import { LocalAuth, PairingRateLimitError } from "./auth.js";
+import { validateResearchMessageInput, validateResearchSessionInput } from "@collector/capture-contracts";
+import { ResearchNotFoundError, ResearchValidationError } from "./research.js";
 
 const JSON_LIMIT = 2 * 1024 * 1024;
 
 export function createApiServer(service: CaptureService, auth: LocalAuth, options: { instanceId?: string } = {}) {
   return createServer(async (request, response) => {
-    setCors(request, response);
-    if (request.method === "OPTIONS") return send(response, 204);
     try {
+      validateLocalRequest(request);
+      setCors(request, response);
+      if (request.method === "OPTIONS") return send(response, 204);
       const url = new URL(request.url ?? "/", "http://localhost");
       if (request.method === "GET" && url.pathname === "/") return json(response, 200, { name: "Collector Local API", ui: "web" });
       if (request.method === "GET" && url.pathname === "/health") return json(response, 200, { status: "ok", instanceId: options.instanceId ?? "default" });
@@ -44,6 +47,43 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (request.method === "POST" && url.pathname === "/v1/pairings") {
         const body = await readJson(request) as { name?: string };
         return json(response, 201, auth.createPairingCode(body.name?.trim() || "Collector Client"));
+      }
+      if (request.method === "GET" && url.pathname === "/v1/research-sessions") {
+        return json(response, 200, service.research.listSessions());
+      }
+      if (request.method === "POST" && url.pathname === "/v1/research-sessions") {
+        const body = await readJsonOptional(request);
+        try { validateResearchSessionInput(body); }
+        catch (error) { throw new ResearchValidationError((error as Error).message); }
+        return json(response, 201, await service.research.createSession(body.title));
+      }
+      const researchMessagesMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)\/messages$/);
+      if (request.method === "POST" && researchMessagesMatch) {
+        const body = await readJson(request);
+        try { validateResearchMessageInput(body); }
+        catch (error) { throw new ResearchValidationError((error as Error).message); }
+        const accepted = await service.research.submitMessage(
+          decodeURIComponent(researchMessagesMatch[1]), body.content, header(request, "idempotency-key") ?? "",
+        );
+        return json(response, 202, accepted);
+      }
+      const researchSessionMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)$/);
+      if (request.method === "GET" && researchSessionMatch) {
+        return json(response, 200, service.research.getSession(decodeURIComponent(researchSessionMatch[1])));
+      }
+      const researchTaskEventsMatch = url.pathname.match(/^\/v1\/research-tasks\/([^/]+)\/events$/);
+      if (request.method === "GET" && researchTaskEventsMatch) {
+        const afterId = Number(header(request, "last-event-id") ?? url.searchParams.get("after") ?? "0");
+        if (!Number.isSafeInteger(afterId) || afterId < 0) throw new ResearchValidationError("Last-Event-ID must be a non-negative integer");
+        return streamResearchTaskEvents(request, response, service, decodeURIComponent(researchTaskEventsMatch[1]), afterId);
+      }
+      const researchTaskRetryMatch = url.pathname.match(/^\/v1\/research-tasks\/([^/]+)\/retry$/);
+      if (request.method === "POST" && researchTaskRetryMatch) {
+        return json(response, 202, await service.research.retryTask(decodeURIComponent(researchTaskRetryMatch[1])));
+      }
+      const researchTaskMatch = url.pathname.match(/^\/v1\/research-tasks\/([^/]+)$/);
+      if (request.method === "GET" && researchTaskMatch) {
+        return json(response, 200, service.research.getTask(decodeURIComponent(researchTaskMatch[1])));
       }
       if (request.method === "POST" && url.pathname === "/v1/recent-organization/runs") {
         return json(response, 202, await service.organizeRecent(header(request, "idempotency-key")));
@@ -238,10 +278,17 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         response.setHeader("Retry-After", "60");
         return json(response, 429, { error: { code: "pairing_rate_limited", message: error.message } });
       }
-      if (error instanceof ValidationError || error instanceof SyntaxError) {
+      if (response.headersSent) {
+        response.end();
+        return;
+      }
+      if (error instanceof LocalAccessError) {
+        return json(response, 403, { error: { code: "local_access_denied", message: error.message } });
+      }
+      if (error instanceof ValidationError || error instanceof ResearchValidationError || error instanceof SyntaxError) {
         return json(response, 400, { error: { code: "invalid_request", message: error.message } });
       }
-      if (error instanceof NotFoundError) return json(response, 404, { error: { code: "not_found", message: error.message } });
+      if (error instanceof NotFoundError || error instanceof ResearchNotFoundError) return json(response, 404, { error: { code: "not_found", message: error.message } });
       console.error(error);
       return json(response, 500, { error: { code: "internal_error", message: "Internal server error" } });
     }
@@ -304,4 +351,54 @@ function setCors(request: IncomingMessage, response: ServerResponse) {
   }
   response.setHeader("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key, X-File-Name, Authorization");
   response.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+}
+
+class LocalAccessError extends Error {}
+
+function validateLocalRequest(request: IncomingMessage): void {
+  const host = header(request, "host")?.toLowerCase();
+  if (!host || !/^(127\.0\.0\.1|localhost)(:\d{1,5})?$/.test(host)) {
+    throw new LocalAccessError("Collector only accepts loopback Host headers");
+  }
+  const origin = header(request, "origin");
+  if (!origin) return;
+  if (/^chrome-extension:\/\/[a-p]{32}$/.test(origin)) return;
+  let parsed: URL;
+  try { parsed = new URL(origin); }
+  catch { throw new LocalAccessError("Request Origin is invalid"); }
+  if (parsed.protocol !== "http:" || parsed.host.toLowerCase() !== host || !["127.0.0.1", "localhost"].includes(parsed.hostname)) {
+    throw new LocalAccessError("Request Origin does not match the Collector service");
+  }
+}
+
+async function streamResearchTaskEvents(request: IncomingMessage, response: ServerResponse, service: CaptureService, taskId: string, afterId: number): Promise<void> {
+  const snapshot = service.research.getTaskSnapshot(taskId);
+  response.statusCode = 200;
+  response.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  response.setHeader("Cache-Control", "no-cache, no-transform");
+  response.setHeader("Connection", "keep-alive");
+  response.setHeader("X-Accel-Buffering", "no");
+  response.flushHeaders();
+  writeSse(response, snapshot);
+
+  let cursor = afterId;
+  const deadline = Date.now() + 25_000;
+  while (!request.destroyed && Date.now() < deadline) {
+    const events = service.research.getTaskEvents(taskId, cursor);
+    for (const event of events) {
+      writeSse(response, event);
+      cursor = event.id ?? cursor;
+    }
+    const task = service.research.getTask(taskId);
+    if (task.status === "completed" || task.status === "failed") break;
+    response.write(": keep-alive\n\n");
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  }
+  response.end();
+}
+
+function writeSse(response: ServerResponse, event: import("@collector/capture-contracts").ResearchTaskEvent): void {
+  if (event.id !== undefined) response.write(`id: ${event.id}\n`);
+  response.write(`event: ${event.type}\n`);
+  response.write(`data: ${JSON.stringify(event)}\n\n`);
 }

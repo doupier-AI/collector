@@ -168,7 +168,7 @@ export class ProviderRuntimeResolver {
   }
 }
 
-export interface ModelCallContext { workflowRunId?: string; workflowStepId?: string; purpose?: string; }
+export interface ModelCallContext { workflowRunId?: string; workflowStepId?: string; purpose?: string; promptVersion?: string; }
 export interface ModelCallEvent {
   context: ModelCallContext;
   provider: string;
@@ -202,14 +202,14 @@ export class ModelGateway {
     try {
       const response = await this.provider.complete(request);
       await this.emitCall({
-        context, provider: this.providerName, model: response.model ?? request.model, promptVersion: this.promptVersion, status: "completed",
+        context, provider: this.providerName, model: response.model ?? request.model, promptVersion: context.promptVersion ?? this.promptVersion, status: "completed",
         usage: response.usage, estimatedCostUsd: estimateCost(response.model ?? request.model, response.usage, this.options.pricing ?? this.provider.pricing),
         latencyMs: Date.now() - startedAt, createdAt, completedAt: new Date().toISOString(),
       });
       return response;
     } catch (error) {
       await this.emitCall({
-        context, provider: this.providerName, model: request.model, promptVersion: this.promptVersion, status: "failed",
+        context, provider: this.providerName, model: request.model, promptVersion: context.promptVersion ?? this.promptVersion, status: "failed",
         latencyMs: Date.now() - startedAt, errorMessage: redactError(error), createdAt, completedAt: new Date().toISOString(),
       });
       throw error;
@@ -217,6 +217,25 @@ export class ModelGateway {
   }
 
   get promptVersion(): string { return this.options.promptVersion ?? "knowledge-extraction-v1"; }
+
+  async answerResearchConversation(
+    messages: Array<{ role: "user" | "assistant"; content: string }>,
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<string> {
+    if (!messages.length) throw new Error("Research conversation requires at least one message");
+    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Return valid JSON only in the form {"answer":"..."}. Preserve uncertainty and never invent sources.\n\nConversation:\n${JSON.stringify(messages)}`;
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      responseFormat: { type: "json_object" },
+      thinking: this.options.thinking ?? true,
+      maxTokens: options.maxTokens ?? 8_000,
+      timeoutMs: options.timeoutMs ?? 120_000,
+    }, options.context ?? { purpose: "research_chat" });
+    const parsed = JSON.parse(response.content) as { answer?: unknown };
+    if (typeof parsed.answer !== "string" || !parsed.answer.trim()) throw new Error("Research provider returned an invalid answer");
+    return parsed.answer;
+  }
 
   async clusterMaterials(materials: Array<{ id: string; content: string }>, options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): Promise<{ clusters: Array<{ name: string; summary: string; materialIds: string[] }>; unclusteredMaterialIds: string[] }> {
     if (materials.length <= 1) return { clusters: [], unclusteredMaterialIds: materials.map((m) => m.id) };

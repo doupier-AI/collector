@@ -36,6 +36,7 @@ import { defaultDataPaths } from "./store.js";
 import { SourceParser, parsePdf } from "./parsers.js";
 import { DEFAULT_PROVIDER_REGISTRY, ModelGateway, validateExternalProviderBaseUrl } from "@collector/model-gateway";
 import { createVerificationWorkflow } from "./verification.js";
+import { ResearchSessionService, type ResearchGenerationProvider } from "./research.js";
 
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
@@ -48,15 +49,20 @@ export class CaptureService {
   private readonly topicDocWorkerId = randomUUID();
   private currentModelRoute?: ActiveModelRoute;
   private modelGatewayResolver?: (route: ActiveModelRoute) => Promise<ModelGateway | undefined>;
+  readonly research: ResearchSessionService;
 
   constructor(
     private readonly store: CollectorStore,
     private readonly artifactRoot: string,
     private readonly parser = new SourceParser(),
     private modelGateway?: ModelGateway,
-    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string> } = {},
+    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; researchProvider?: ResearchGenerationProvider; autoRunResearchTasks?: boolean } = {},
   ) {
     this.attachModelGateway(this.modelGateway);
+    this.research = new ResearchSessionService(this.store, {
+      provider: this.options.researchProvider ?? this.researchProviderFor(this.modelGateway),
+      autoRunTasks: this.options.autoRunResearchTasks,
+    });
     if (this.options.autoRunRecentOrganization !== false) {
       this.scheduleRecentOrganization();
       this.scheduleTopicDocumentRuns();
@@ -67,6 +73,7 @@ export class CaptureService {
     this.modelGateway = gateway;
     this.currentModelRoute = route ? structuredClone(route) : undefined;
     this.attachModelGateway(gateway);
+    if (!this.options.researchProvider) this.research.setProvider(this.researchProviderFor(gateway));
   }
 
   setModelGatewayResolver(resolver: ((route: ActiveModelRoute) => Promise<ModelGateway | undefined>) | undefined): void {
@@ -98,6 +105,21 @@ export class CaptureService {
       };
       await this.store.saveModelCall(record);
     });
+  }
+
+  private researchProviderFor(gateway: ModelGateway | undefined): ResearchGenerationProvider | undefined {
+    if (!gateway) return undefined;
+    return {
+      provider: gateway.providerName,
+      model: gateway.modelName,
+      promptVersion: "research-chat-v1",
+      async *generate(request) {
+        const answer = await gateway.answerResearchConversation(request.messages, {
+          context: { workflowRunId: request.taskId, purpose: "research_chat", promptVersion: "research-chat-v1" },
+        });
+        for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);
+      },
+    };
   }
 
   private async gatewayForRun(run: WorkflowRunRecord): Promise<ModelGateway | undefined> {

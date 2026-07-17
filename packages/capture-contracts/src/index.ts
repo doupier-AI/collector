@@ -369,6 +369,86 @@ export interface DocumentOutline {
   sections: Array<{ heading: string; keyPoints: string[] }>;
 }
 
+export type ResearchMessageRole = "user" | "assistant";
+export type ResearchMessageStatus = "pending" | "streaming" | "completed" | "failed";
+export type ResearchTaskStatus = "queued" | "running" | "completed" | "failed";
+
+export interface ResearchSessionRecord {
+  id: string;
+  title: string;
+  status: "active" | "archived";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ResearchMessageRecord {
+  id: string;
+  sessionId: string;
+  role: ResearchMessageRole;
+  content: string;
+  status: ResearchMessageStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ResearchTaskError {
+  code: "model_not_configured" | "provider_error" | "service_restarted";
+  message: string;
+}
+
+export interface ResearchTaskRecord {
+  id: string;
+  sessionId: string;
+  inputMessageId: string;
+  outputMessageId: string;
+  idempotencyKey: string;
+  status: ResearchTaskStatus;
+  retryable: boolean;
+  provider?: string;
+  model?: string;
+  promptVersion: string;
+  error?: ResearchTaskError;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface ResearchSessionView {
+  session: ResearchSessionRecord;
+  messages: ResearchMessageRecord[];
+  tasks: ResearchTaskRecord[];
+}
+
+export interface ResearchTurnAccepted {
+  session: ResearchSessionRecord;
+  inputMessage: ResearchMessageRecord;
+  outputMessage: ResearchMessageRecord;
+  task: ResearchTaskRecord;
+}
+
+export type ResearchTaskEvent =
+  | { id?: number; type: "snapshot"; task: ResearchTaskRecord; message: ResearchMessageRecord; createdAt: string }
+  | { id: number; type: "delta"; delta: string; message: ResearchMessageRecord; createdAt: string }
+  | { id: number; type: "completed"; task: ResearchTaskRecord; message: ResearchMessageRecord; createdAt: string }
+  | { id: number; type: "failed"; task: ResearchTaskRecord; message: ResearchMessageRecord; createdAt: string };
+
+export function validateResearchSessionInput(value: unknown): asserts value is { title?: string } {
+  if (value === undefined || value === null) return;
+  if (typeof value !== "object" || Array.isArray(value)) throw new Error("Research session input must be an object");
+  const title = (value as { title?: unknown }).title;
+  if (title !== undefined && (typeof title !== "string" || !title.trim() || title.trim().length > 200)) {
+    throw new Error("title must contain 1 to 200 characters");
+  }
+}
+
+export function validateResearchMessageInput(value: unknown): asserts value is { content: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Research message input must be an object");
+  const content = (value as { content?: unknown }).content;
+  if (typeof content !== "string" || !content.trim()) throw new Error("content is required");
+  if (content.length > 200_000) throw new Error("content must not exceed 200000 characters");
+}
+
 export interface ApiError {
   error: { code: string; message: string; details?: unknown };
 }
