@@ -1,8 +1,18 @@
 # Collector WebUI 前端实施交接
 
-日期：2026-07-17
+基线 ID：`FRONTEND-BASELINE`
+
+基线版本：`1.0.0`
+
+最后更新：2026-07-17
+
+适用角色：KIMI 3 前端
 
 状态：KIMI 3 前端实施基线
+
+当前状态入口：`docs/handoffs/CURRENT.md`
+
+阅读规则：首次接手、基线版本变化或当前状态明确要求时阅读本文；日常交接只读取当前状态和本轮增量文件。
 
 ## 1. 交接目标
 
@@ -51,20 +61,28 @@
 - 不把 API Key、本地会话令牌或认证头写入浏览器存储、界面日志或截图；
 - 自动化测试使用隔离数据目录和确定性假模型，不调用真实云模型。
 
-## 3. 必读资料与优先级
+## 3. 分层阅读与优先级
 
-开始编码前按以下顺序阅读：
+每次实施先读取：
 
 1. 根目录 `AGENTS.md`；
-2. 根目录 `CONTEXT.md`；
-3. `docs/DEVELOPMENT_START.md`；
-4. `docs/PRODUCT_REFOUNDATION.md`；
-5. `docs/PRODUCT_FUNCTION_FLOW.md`；
-6. `docs/INTERACTION_DESIGN.md`；
-7. `docs/INTERFACE_DIRECTIONS.md`；
-8. `docs/ARCHITECTURE.md`；
-9. `docs/HUMAN_ACCEPTANCE_STANDARD.md`；
-10. 本文和最新共享契约、API 测试。
+2. `docs/handoffs/CURRENT.md`；
+3. 当前状态指定的单次增量交接；
+4. 本轮相关源码、共享契约和测试。
+
+首次接手前端角色、本文 Major 版本变化或当前状态明确要求时，再完整读取：
+
+1. 根目录 `CONTEXT.md`；
+2. `docs/DEVELOPMENT_START.md`；
+3. `docs/PRODUCT_REFOUNDATION.md`；
+4. `docs/PRODUCT_FUNCTION_FLOW.md`；
+5. `docs/INTERACTION_DESIGN.md`；
+6. `docs/INTERFACE_DIRECTIONS.md`；
+7. `docs/ARCHITECTURE.md`；
+8. `docs/HUMAN_ACCEPTANCE_STANDARD.md`；
+9. 本文。
+
+相同角色连续工作且基线版本未变化时，不重复读取上述长文档。Minor 或 Patch 版本变化时只读取增量交接列出的变化章节。
 
 冲突处理顺序：用户最新明确要求 > `AGENTS.md` > 当前产品文档 > 本文 > 旧源码行为。
 
@@ -716,6 +734,9 @@ KIMI 3 提交前逐项确认：
 - [ ] Playwright 验证 WebUI、API 和 SQLite 同一结果；
 - [ ] 没有真实云模型调用；
 - [ ] README、架构和人工验收文档只更新当前有效事实；
+- [ ] 已创建 KIMI 3 到 GPT-5.6 的增量交接文件；
+- [ ] 已更新 `docs/handoffs/CURRENT.md` 和 `docs/handoffs/INDEX.md`；
+- [ ] 已说明基线版本是否变化和下一轮最小必读列表；
 - [ ] Git 提交只包含本次相关改动。
 
 ## 19. 后端交付记录与联调前阻塞项
@@ -753,3 +774,29 @@ KIMI 3 提交前逐项确认：
 7. 供应商原生流式输出，降低真实模型首片延迟。
 
 以上阻塞项未完成前，KIMI 3 不自行引入 token URL 参数、浏览器持久化密钥、跨域绕过、假上传成功或前端伪流式输出。
+
+## 20. KIMI 3 完成后的回交约定
+
+KIMI 3 的工作完成不等于协作轮次完成。只有完成以下回交，GPT-5.6 才接回后端和产品框架责任：
+
+1. 从 `docs/handoffs/TEMPLATE.md` 创建下一份递增编号的 `KIMI3-TO-GPT56` 文件；
+2. 把本轮接收的 GPT-5.6 交接标记为 `accepted` 或 `superseded`；
+3. 更新 `docs/handoffs/CURRENT.md`，将当前责任改为 GPT-5.6，并列出 GPT-5.6 的本轮必读；
+4. 更新 `docs/handoffs/INDEX.md`；
+5. 将交接文档与前端代码、测试一起提交，报告提交哈希；
+6. 按 `docs/IMPLEMENTATION_COLLABORATION_PROTOCOL.md` 第 9 节提供完整回交证据。
+
+回交至少回答：
+
+- 用户现在能完成什么，哪些状态仍未完成；
+- 修改了哪些文件、依赖、路由、组件和客户端行为；
+- 实际调用的接口、SSE、错误和恢复行为是否与共享契约一致；
+- 真实浏览器、多视口、键盘、焦点、可访问性、控制台和网络结果；
+- 刷新、关闭页面和重新打开后的恢复结果；
+- WebUI 操作对应的 API 与 SQLite 结果；
+- 发现了哪些后端缺口，如何复现，期望 GPT-5.6 提供什么契约；
+- 运行了哪些命令，哪些通过、失败、跳过，是否调用真实云模型；
+- 哪些实现是临时兼容、假数据、技术债或不能进入正式交付；
+- 长期基线是否变化，下一轮 GPT-5.6 只需要读取哪些文件和章节。
+
+缺少真实浏览器证据、接口核对或刷新恢复验证时，交接状态只能是部分完成或阻塞，不能写成前端完成。
