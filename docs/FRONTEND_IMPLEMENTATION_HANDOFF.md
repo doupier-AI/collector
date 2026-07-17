@@ -2,9 +2,9 @@
 
 基线 ID：`FRONTEND-BASELINE`
 
-基线版本：`1.1.0`
+基线版本：`1.2.0`
 
-最后更新：2026-07-17
+最后更新：2026-07-18
 
 适用角色：KIMI 3 前端
 
@@ -88,26 +88,26 @@
 
 ## 4. 仓库当前真实状态
 
-截至本文创建时，已验证状态如下：
+当前已验证状态如下：
 
 | 区域 | 当前状态 |
 | --- | --- |
-| `apps/web` | 不存在，需要新建 |
-| React、React DOM、Vite、React Router | 根依赖和 lockfile 中尚未安装 |
-| Playwright | 尚未接入项目脚本 |
+| `apps/web` | 已实现 React 19、TypeScript、Vite 8 和 React Router 7 WebUI |
+| React、React DOM、Vite、React Router | 已按 npm workspace 安装在 `apps/web`，lockfile 已更新 |
+| Playwright | 已接入 `test:e2e`，12 项 Chromium 场景断言成立；当前 Windows 环境存在 WebServer 收尾不退出问题，见 `CURRENT.md` |
 | `apps/api` | 已有 Node HTTP 服务、认证、SQLite、文件和模型网关基础 |
-| API 根路径 `/` | 当前返回 API JSON，不提供 WebUI |
+| API 根路径 `/` | 当前返回 API JSON，不提供生产 WebUI |
 | WebUI 静态资源同源服务 | 尚未实现或尚未完成验证 |
 | 研究会话、消息、生成任务契约 | 已在 `packages/capture-contracts` 实现 |
 | 研究会话后端 | 已实现会话增查、恢复视图、幂等消息提交、任务查询和失败重试 |
 | Chat 渐进事件 | 已实现可续传 SSE：`snapshot`、`delta`、`completed`、`failed` |
 | SQLite | migration v14 已加入会话、消息、任务和任务事件表 |
-| WebUI 首次认证引导 | 尚未实现；现有配对码交换可以设置 HttpOnly Cookie |
+| WebUI 首次认证引导 | 配对页已实现；启动器仍未把一次性配对码安全交给首次 WebUI，当前由用户手动输入控制台配对码 |
 | 真实模型流式能力 | 模型完整返回 JSON 后按 80 字符分片写入 SSE，不是供应商原生 token stream |
 | 当前默认服务端口 | `43110`，可通过 `COLLECTOR_PORT` 覆盖 |
 | 当前认证 | Bearer token 或 `collector_session` HttpOnly Cookie |
-| 当前构建 | TypeScript project references + `scripts/build-assets.mjs` |
-| 当前测试 | Node 单元与集成测试；没有 WebUI 浏览器测试 |
+| 当前构建 | TypeScript project references + WebUI 类型检查与 Vite 构建 + `scripts/build-assets.mjs` |
+| 当前测试 | Node 单元与集成测试、61 项 WebUI 测试、12 项 Chromium 端到端场景 |
 
 不要把“文档定义了”写成“代码已经实现”。合并前以源码、自动化测试和实际界面验证为依据。
 
@@ -225,22 +225,26 @@
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
-│ 内容                                             稍后再学    │
-│                                                              │
-│              当前研究会话标题                                │
-│              最近更新时间                                    │
-│                                                              │
-│              用户问题                                        │
-│              │                                               │
-│              ● AI 回答或稳定加载占位                         │
-│                                                              │
-│              [ 输入当前问题……………………………… ] [发送]     │
-└──────────────────────────────────────────────────────────────┘
+│ [内容图标]                                       [稍后图标]  │
+├──────────────┬──────────────────────────────┬────────────────┤
+│ 内容         │ 当前研究会话标题             │ 稍后再学       │
+│ 开始 Chat    │ 最近更新时间                 │ 暂无内容       │
+│ 最近研究     │                              │                │
+│              │ 用户问题                     │                │
+│              │ │                            │                │
+│              │ ● AI 回答或稳定加载占位      │                │
+│              │                              │                │
+│              │ [＋ 输入当前问题……  ↑发送]  │                │
+└──────────────┴──────────────────────────────┴────────────────┘
 ```
+
+宽屏（至少 900px）默认展开左右固定侧栏，主内容保持居中阅读宽度。左右侧栏默认宽度为 264px，可通过内边缘拖拽或方向键在 208px 至 400px 范围内调整；宽度当前只保存在页面内存中，刷新后恢复默认值。
+
+开始页在主内容区居中显示占位 logo、标题、说明和输入区。占位 logo 在正式品牌资产确定前使用本地内联 SVG，不引入远程资源。
 
 ### 7.2 内容导航
 
-点击“内容”打开左侧抽屉：
+左上“内容”图标控制左侧导航：
 
 ```text
 内容
@@ -251,7 +255,11 @@
    └─ 会话 B
 ```
 
-宽屏允许固定导航，窄窗口使用覆盖抽屉。关闭抽屉后焦点返回触发按钮。
+右上“稍后再学”图标控制右侧栏；当前右侧栏只显示“暂无内容”，不伪造尚未实现的保存能力。
+
+窄窗口使用覆盖抽屉并默认收起，同一时间只展开一侧；遮罩点击或 Escape 关闭后，焦点返回对应图标按钮。图标按钮保留可访问名称、`aria-expanded` 和 `aria-controls`。
+
+输入框内左下角保留“+”圆形按钮，点击明确提示附件能力将在后续版本提供；右下角为圆形发送按钮。输入框外显示 Enter 发送、Shift+Enter 换行提示，输入框仍通过无障碍标签和说明建立关联。
 
 ### 7.3 视觉令牌建议
 
@@ -267,6 +275,8 @@
 | `--color-ai` | `#435A73` | AI 状态和来源节点 |
 | `--color-later` | `#9A6A24` | 稍后再学语义 |
 | `--color-danger` | `#A33B36` | 错误与危险操作 |
+
+圆角使用统一层级：`--radius-control: 10px`、`--radius-button: 12px`、`--radius-input: 18px`、`--radius-panel: 20px`、`--radius-circle: 50%`。固定侧栏贴边，不使用面板圆角。
 
 字体优先使用本机可用字体，不为首个切片引入远程字体请求。中文正文使用系统无衬线字体栈；较长阅读内容可在后续原型验证本地衬线字体。正文行宽控制在约 68 至 76 个中文字符的舒适范围。
 
@@ -296,13 +306,17 @@ apps/web/
 │  ├─ main.tsx
 │  ├─ app/
 │  │  ├─ App.tsx
-│  │  └─ router.tsx
+│  │  ├─ router.tsx
+│  │  ├─ services.tsx
+│  │  ├─ useMediaQuery.ts
+│  │  └─ usePrefersReducedMotion.ts
 │  ├─ api/
 │  │  ├─ client.ts
 │  │  ├─ research.ts
 │  │  ├─ task-events.ts
 │  │  └─ errors.ts
 │  ├─ features/
+│  │  ├─ auth/
 │  │  ├─ navigation/
 │  │  ├─ research-session/
 │  │  └─ chat-composer/
