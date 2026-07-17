@@ -1,6 +1,6 @@
 # Domain Docs
 
-Collector 采用 single-context 领域文档布局。桌面端、浏览器扩展、本地 API、存储和模型网关共享同一套产品语言。
+Collector 采用 single-context 领域文档布局。WebUI、API、存储和模型网关共享同一套产品语言。
 
 ## 开始工程任务前
 
