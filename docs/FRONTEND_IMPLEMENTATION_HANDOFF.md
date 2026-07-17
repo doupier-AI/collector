@@ -2,7 +2,7 @@
 
 基线 ID：`FRONTEND-BASELINE`
 
-基线版本：`1.2.0`
+基线版本：`1.3.0`
 
 最后更新：2026-07-18
 
@@ -96,8 +96,8 @@
 | React、React DOM、Vite、React Router | 已按 npm workspace 安装在 `apps/web`，lockfile 已更新 |
 | Playwright | 已接入 `test:e2e`，12 项 Chromium 场景断言成立；当前 Windows 环境存在 WebServer 收尾不退出问题，见 `CURRENT.md` |
 | `apps/api` | 已有 Node HTTP 服务、认证、SQLite、文件和模型网关基础 |
-| API 根路径 `/` | 当前返回 API JSON，不提供生产 WebUI |
-| WebUI 静态资源同源服务 | 尚未实现或尚未完成验证 |
+| API 根路径 `/` | 正式服务返回 WebUI 生产入口；未配置 Web 根目录的嵌入式测试服务保持 API JSON 响应 |
+| WebUI 静态资源同源服务 | 提交 `709246b` 已实现并通过真实 Chromium 验证；页面、资源、HTTP 与 SSE 使用同一 loopback 来源 |
 | 研究会话、消息、生成任务契约 | 已在 `packages/capture-contracts` 实现 |
 | 研究会话后端 | 已实现会话增查、恢复视图、幂等消息提交、任务查询和失败重试 |
 | Chat 渐进事件 | 已实现可续传 SSE：`snapshot`、`delta`、`completed`、`failed` |
@@ -107,7 +107,7 @@
 | 当前默认服务端口 | `43110`，可通过 `COLLECTOR_PORT` 覆盖 |
 | 当前认证 | Bearer token 或 `collector_session` HttpOnly Cookie |
 | 当前构建 | TypeScript project references + WebUI 类型检查与 Vite 构建 + `scripts/build-assets.mjs` |
-| 当前测试 | Node 单元与集成测试、61 项 WebUI 测试、12 项 Chromium 端到端场景 |
+| 当前测试 | 122 项 Node 单元与集成测试（121 通过、1 项 Windows 沙箱能力跳过）、61 项 WebUI 测试、12 项 Chromium 端到端场景 |
 
 不要把“文档定义了”写成“代码已经实现”。合并前以源码、自动化测试和实际界面验证为依据。
 
@@ -778,21 +778,20 @@ KIMI 3 提交前逐项确认：
 
 ### KIMI 3 可以立即进行
 
-- 创建 `apps/web` 工程、设计令牌、AppShell 和路由；
-- 直接使用共享 Research 类型构建 API 客户端；
-- 使用隔离的请求替身完成客户端单元测试；需要连接当前 API 时，由测试准备步骤先用一次性配对码换取 HttpOnly Cookie，不把 Bearer token 处理写进产品前端；
-- 编写客户端状态测试和 Playwright 用例骨架；
-- 完成空、加载、失败、键盘和响应式展示。
+- 让 `apps/web/e2e/api-harness.mjs` 把已构建的 `apps/web/dist` 作为 `webRoot` 传给 `createApiServer`；
+- 将 Playwright 的两个项目分别直接连接有模型和无模型的 API 同源地址，不再启动两套 Vite preview 静态服务；
+- 为 API 测试进程加入 SIGTERM/SIGINT 清理，关闭 HTTP server 与 store，修复 12 项场景完成后 WebServer 收尾不退出的问题；
+- 保持一次性配对码换取 HttpOnly Cookie 的现有浏览器流程，不在 URL、storage 或日志中加入令牌；
+- 复跑 12 项 Chromium 场景，确认命令自然退出，并记录页面资源、`/v1` 请求和 SSE 都来自同一 origin。
 
-### 完整浏览器联调前由 GPT-5.6 补齐
+### 后续仍由 GPT-5.6 补齐
 
-1. WebUI 生产构建目录和 API 同源静态资源服务；
-2. 启动器到首次 WebUI 的安全配对码或会话 Cookie 引导；
-3. WebUI 开发代理、隔离数据目录、测试端口和确定性假模型的统一启动命令；
-4. 会话创建幂等，避免首次创建请求结果不确定时出现重复空会话；
-5. 文件导入进入研究会话的正式契约；
-6. 需要时增加会话列表分页和自动标题更新；
-7. 供应商原生流式输出，降低真实模型首片延迟。
+1. 启动器到首次 WebUI 的安全配对码或会话 Cookie 引导；
+2. 动态端口、重复启动复用与默认浏览器打开的统一启动器流程；
+3. 会话创建幂等，避免首次创建请求结果不确定时出现重复空会话；
+4. 文件导入进入研究会话的正式契约；
+5. 需要时增加会话列表分页和自动标题更新；
+6. 供应商原生流式输出，降低真实模型首片延迟。
 
 以上阻塞项未完成前，KIMI 3 不自行引入 token URL 参数、浏览器持久化密钥、跨域绕过、假上传成功或前端伪流式输出。
 
