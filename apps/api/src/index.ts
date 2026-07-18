@@ -5,3 +5,18 @@ export { LocalAuth, PairingRateLimitError, hashToken } from "./auth.js";
 export { SourceParser, assertPublicUrl, extractReadableText, parseMarkdown, parsePdf, splitPlainText } from "./parsers.js";
 export { WorkflowScheduler, type WorkflowSchedulerOptions } from "./scheduler.js";
 export { ResearchSessionService, ResearchNotFoundError, ResearchValidationError, type ResearchGenerationProvider, type ResearchGenerationRequest, type ResearchServiceOptions } from "./research.js";
+export {
+  ensureInstanceControlToken,
+  instanceControlPath,
+  instanceStatePath,
+  probeCollectorInstance,
+  readInstanceControlToken,
+  readInstanceState,
+  removeInstanceState,
+  requestBrowserBootstrap,
+  startBrowserBootstrap,
+  writeInstanceState,
+  type BrowserBootstrap,
+  type CollectorInstanceState,
+} from "./instance.js";
+export { launchCollector, openDefaultBrowser, type LaunchCollectorOptions, type LaunchCollectorResult } from "./launcher.js";

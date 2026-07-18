@@ -48,14 +48,15 @@ npm.cmd test
 powershell -ExecutionPolicy Bypass -File .agents\skills\collector-engineering\scripts\check-project.ps1
 ```
 
-构建后，Collector WebUI 与本机 API 由同一个 loopback 地址提供，只需启动一个服务：
+构建后，可以直接双击根目录的 `Collector.cmd`。它会启动或复用本机服务，安全完成首次浏览器配对，并打开默认浏览器。命令行等价入口是：
 
 ```powershell
-npm.cmd run build
-npm.cmd start
+npm.cmd run launch
 ```
 
-默认地址是 `http://127.0.0.1:43110`。`COLLECTOR_PORT` 可以覆盖端口；打包或隔离测试时可以用 `COLLECTOR_WEB_ROOT` 指向另一份 WebUI 生产构建目录。缺少 `index.html` 时服务会在启动阶段明确报错，不会退回到不完整的 API-only 产品形态。
+启动器由系统选择可用端口，地址形如 `http://127.0.0.1:<本次端口>`。重复启动时会核对实例身份和健康状态，然后复用同一进程与端口。一次性浏览器入口只通过 HttpOnly Cookie 交付会话，令牌不进入 URL、浏览器存储或日志。已构建时也可使用 `npm.cmd start`。
+
+开发时直接运行 `npm.cmd run dev:api` 保留 `http://127.0.0.1:43110`，便于 Vite 代理和浏览器扩展调试；`COLLECTOR_PORT` 可以覆盖端口。正式启动时，已配对扩展继续通过 `43110` 本机适配入口访问同一服务；可用 `COLLECTOR_EXTENSION_PORT` 覆盖，设为 `0` 则停用。打包或隔离测试时可以用 `COLLECTOR_WEB_ROOT` 指向另一份 WebUI 生产构建目录。缺少 `index.html` 时服务会在启动阶段明确报错。
 
 WebUI（`apps/web`）开发与测试命令：
 

@@ -10,7 +10,9 @@
   "scripts": {
     "build": "tsc -b && npm run build -w @collector/web && node scripts/build-assets.mjs",
     "test": "npm run build && node --test dist-tests/**/*.test.js scripts/ralph/*.test.mjs",
-    "start": "node apps/api/dist/server.js",
+    "start": "node apps/api/dist/launcher-main.js",
+    "launch": "npm run build && node apps/api/dist/launcher-main.js",
+    "start:service": "node apps/api/dist/server.js",
     "dev:api": "npm run build && node apps/api/dist/server.js",
     "dev:web": "npm run dev -w @collector/web",
     "test:web": "npm run test -w @collector/web",

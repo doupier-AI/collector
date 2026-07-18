@@ -2,7 +2,7 @@
 
 基线 ID：`FRONTEND-BASELINE`
 
-基线版本：`1.3.0`
+基线版本：`1.4.0`
 
 最后更新：2026-07-18
 
@@ -94,7 +94,7 @@
 | --- | --- |
 | `apps/web` | 已实现 React 19、TypeScript、Vite 8 和 React Router 7 WebUI |
 | React、React DOM、Vite、React Router | 已按 npm workspace 安装在 `apps/web`，lockfile 已更新 |
-| Playwright | 已接入 `test:e2e`，12 项 Chromium 场景断言成立；当前 Windows 环境存在 WebServer 收尾不退出问题，见 `CURRENT.md` |
+| Playwright | 已接入 `test:e2e`，13 项 Chromium 场景通过并自然退出，包含启动器自动配对场景 |
 | `apps/api` | 已有 Node HTTP 服务、认证、SQLite、文件和模型网关基础 |
 | API 根路径 `/` | 正式服务返回 WebUI 生产入口；未配置 Web 根目录的嵌入式测试服务保持 API JSON 响应 |
 | WebUI 静态资源同源服务 | 提交 `709246b` 已实现并通过真实 Chromium 验证；页面、资源、HTTP 与 SSE 使用同一 loopback 来源 |
@@ -102,12 +102,12 @@
 | 研究会话后端 | 已实现会话增查、恢复视图、幂等消息提交、任务查询和失败重试 |
 | Chat 渐进事件 | 已实现可续传 SSE：`snapshot`、`delta`、`completed`、`failed` |
 | SQLite | migration v14 已加入会话、消息、任务和任务事件表 |
-| WebUI 首次认证引导 | 配对页已实现；启动器仍未把一次性配对码安全交给首次 WebUI，当前由用户手动输入控制台配对码 |
+| WebUI 首次认证引导 | 启动器通过短时一次性回环入口下发 HttpOnly Cookie；URL、storage 和日志不包含令牌，手动 6 位码页作为开发回退 |
 | 真实模型流式能力 | 模型完整返回 JSON 后按 80 字符分片写入 SSE，不是供应商原生 token stream |
-| 当前默认服务端口 | `43110`，可通过 `COLLECTOR_PORT` 覆盖 |
+| 当前服务端口 | 正式启动器由系统选择动态端口；直接开发服务保留 `43110`，已配对浏览器扩展使用 `43110` 适配入口 |
 | 当前认证 | Bearer token 或 `collector_session` HttpOnly Cookie |
 | 当前构建 | TypeScript project references + WebUI 类型检查与 Vite 构建 + `scripts/build-assets.mjs` |
-| 当前测试 | 122 项 Node 单元与集成测试（121 通过、1 项 Windows 沙箱能力跳过）、61 项 WebUI 测试、12 项 Chromium 端到端场景 |
+| 当前测试 | 126 项 Node 单元与集成测试（125 通过、1 项 Windows 沙箱能力跳过）、61 项 WebUI 测试、13 项 Chromium 端到端场景 |
 
 不要把“文档定义了”写成“代码已经实现”。合并前以源码、自动化测试和实际界面验证为依据。
 
@@ -776,22 +776,21 @@ KIMI 3 提交前逐项确认：
 - 测试使用确定性假模型，没有真实云模型调用；
 - 当前切片没有实现真实文件导入入口。
 
-### KIMI 3 可以立即进行
+### 启动器切片已完成
 
-- 让 `apps/web/e2e/api-harness.mjs` 把已构建的 `apps/web/dist` 作为 `webRoot` 传给 `createApiServer`；
-- 将 Playwright 的两个项目分别直接连接有模型和无模型的 API 同源地址，不再启动两套 Vite preview 静态服务；
-- 为 API 测试进程加入 SIGTERM/SIGINT 清理，关闭 HTTP server 与 store，修复 12 项场景完成后 WebServer 收尾不退出的问题；
-- 保持一次性配对码换取 HttpOnly Cookie 的现有浏览器流程，不在 URL、storage 或日志中加入令牌；
-- 复跑 12 项 Chromium 场景，确认命令自然退出，并记录页面资源、`/v1` 请求和 SSE 都来自同一 origin。
+- `Collector.cmd` 和 `npm.cmd run launch` 启动或复用同一本地服务，并打开默认浏览器；
+- 正式启动器让系统选择可用端口，实例文件记录进程、端口和实例 ID，健康检查核对身份后才复用；
+- 启动器专用控制凭据在独立私有文件中保存，普通已配对客户端不能申请浏览器启动入口；
+- 一次性回环入口下发 HttpOnly、SameSite=Strict Cookie 后立即关闭，URL、storage、实例文件和日志不包含会话令牌；
+- 已配对浏览器扩展通过 `43110` 本机适配入口访问同一领域服务，未配对请求仍返回 401；
+- 13 项 Chromium 场景通过并自然退出；新增场景验证自动配对、URL 无令牌、Cookie 不可被页面读取、控制台无错误与产品请求同源。
 
 ### 后续仍由 GPT-5.6 补齐
 
-1. 启动器到首次 WebUI 的安全配对码或会话 Cookie 引导；
-2. 动态端口、重复启动复用与默认浏览器打开的统一启动器流程；
-3. 会话创建幂等，避免首次创建请求结果不确定时出现重复空会话；
-4. 文件导入进入研究会话的正式契约；
-5. 需要时增加会话列表分页和自动标题更新；
-6. 供应商原生流式输出，降低真实模型首片延迟。
+1. 会话创建幂等，避免首次创建请求结果不确定时出现重复空会话；
+2. 文件导入进入研究会话的正式契约；
+3. 需要时增加会话列表分页和自动标题更新；
+4. 供应商原生流式输出，降低真实模型首片延迟。
 
 以上阻塞项未完成前，KIMI 3 不自行引入 token URL 参数、浏览器持久化密钥、跨域绕过、假上传成功或前端伪流式输出。
 

@@ -9,11 +9,12 @@
  * SIGTERM/SIGINT 时关闭 HTTP server 与 store 后退出，保证 Playwright webServer 收尾自然结束。
  */
 import { existsSync, mkdirSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CaptureService, LocalAuth, SqliteStore, createApiServer } from "@collector/api";
+import { CaptureService, LocalAuth, SqliteStore, createApiServer, startBrowserBootstrap } from "@collector/api";
 
 const port = Number(process.env.E2E_API_PORT ?? "43211");
 const modelMode = process.env.E2E_MODEL ?? "fake";
@@ -33,6 +34,8 @@ const dataDir = process.env.E2E_DATA_DIR ?? (await mkdtemp(join(tmpdir(), "colle
 const store = new SqliteStore(join(dataDir, "collector.sqlite"));
 await store.init();
 const auth = new LocalAuth(store);
+const launcherToken = randomBytes(32).toString("base64url");
+await auth.registerTrustedToken(launcherToken, "E2E launcher control");
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -58,7 +61,17 @@ const service = new CaptureService(store, join(dataDir, "artifacts"), undefined,
   researchProvider: modelMode === "fake" ? fakeProvider : undefined,
 });
 
-const server = createApiServer(service, auth, { webRoot });
+const browserBootstraps = new Set();
+const server = createApiServer(service, auth, {
+  webRoot,
+  launcherToken,
+  async createLaunchBootstrap() {
+    const bootstrap = await startBrowserBootstrap(auth, port);
+    browserBootstraps.add(bootstrap);
+    void bootstrap.closed.finally(() => browserBootstraps.delete(bootstrap));
+    return { url: bootstrap.url };
+  },
+});
 
 // 配对码池：浏览器每个测试使用一个一次性配对码；池按 90 秒补充，避免 5 分钟过期
 // 每次启动重写码池并删除消费游标，避免跨运行残留游标导致"池耗尽"误报
@@ -72,6 +85,7 @@ function mintCodes(count) {
 writeFileSync(join(runtimeDir, `pairing-${port}.txt`), mintCodes(40), "utf8");
 rmSync(join(runtimeDir, `pairing-${port}.cursor`), { force: true });
 writeFileSync(join(runtimeDir, `datadir-${port}.txt`), dataDir, "utf8");
+writeFileSync(join(runtimeDir, `launcher-${port}.token`), launcherToken, { encoding: "utf8", mode: 0o600 });
 const refill = setInterval(() => {
   try {
     appendFileSync(join(runtimeDir, `pairing-${port}.txt`), mintCodes(16), "utf8");
@@ -87,11 +101,12 @@ console.log(`[e2e-api] listening on 127.0.0.1:${port} model=${modelMode} data=${
 // Playwright webServer 收尾依赖进程响应 SIGTERM/SIGINT：关闭 HTTP server 与 store 后退出，
 // 避免 Windows 下测试全部完成后命令停在终止阶段不能自然退出
 let shuttingDown = false;
-function gracefulShutdown(signal) {
+async function gracefulShutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`[e2e-api] received ${signal}, closing server and store`);
   clearInterval(refill);
+  await Promise.all([...browserBootstraps].map((bootstrap) => bootstrap.close().catch(() => undefined)));
   server.closeAllConnections?.();
   server.close(() => {
     try {
@@ -103,5 +118,5 @@ function gracefulShutdown(signal) {
   });
   setTimeout(() => process.exit(1), 5_000).unref();
 }
-process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
-process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => { void gracefulShutdown("SIGTERM"); });
+process.on("SIGINT", () => { void gracefulShutdown("SIGINT"); });

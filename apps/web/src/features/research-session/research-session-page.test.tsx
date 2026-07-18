@@ -68,7 +68,7 @@ describe("ResearchSessionPage 错误文案映射", () => {
     });
 
     expect(await screen.findByRole("heading", { name: "配对 Collector" })).toBeInTheDocument();
-    expect(screen.getByText(/请输入 Collector 启动器上显示的 6 位配对码/)).toBeInTheDocument();
+    expect(screen.getByText(/启动器通常会自动完成/)).toBeInTheDocument();
 
     await user.type(screen.getByLabelText("配对码"), "123456");
     await user.click(screen.getByRole("button", { name: "配对并继续" }));

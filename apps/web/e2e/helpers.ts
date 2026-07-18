@@ -65,6 +65,11 @@ export async function readDataDir(apiPort: number): Promise<string> {
   return waitForFileValue(`datadir-${apiPort}.txt`);
 }
 
+/** 只由 Playwright 的 Node 测试侧读取，不传入页面、URL 或浏览器存储。 */
+export async function readLauncherControlToken(apiPort: number): Promise<string> {
+  return waitForFileValue(`launcher-${apiPort}.token`);
+}
+
 export interface ResearchMessageRow {
   id: string;
   sessionId: string;

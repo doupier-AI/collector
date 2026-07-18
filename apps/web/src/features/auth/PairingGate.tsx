@@ -10,7 +10,7 @@ export interface PairingGateProps {
 }
 
 /**
- * 配对引导：输入 Collector 启动器显示的 6 位配对码换取 HttpOnly 会话 Cookie。
+ * 配对引导：启动器通常自动下发 HttpOnly 会话 Cookie；本页保留开发配对码入口。
  * 前端不读取、不存储 Cookie；配对失败不循环请求。
  */
 export function PairingGate({ onPaired }: PairingGateProps) {
@@ -43,7 +43,7 @@ export function PairingGate({ onPaired }: PairingGateProps) {
   return (
     <div className="page page--pairing">
       <h1 className="page__title">配对 Collector</h1>
-      <p className="page__lead">Collector 需要配对后才能继续使用。请输入 Collector 启动器上显示的 6 位配对码。</p>
+      <p className="page__lead">Collector 需要完成本机配对后才能继续。启动器通常会自动完成；如果未自动继续，请重新打开 Collector。</p>
       <form className="pairing-form" onSubmit={handleSubmit}>
         <label className="pairing-form__label" htmlFor={inputId}>
           配对码
@@ -70,7 +70,7 @@ export function PairingGate({ onPaired }: PairingGateProps) {
           {error}
         </p>
       ) : null}
-      <p className="page__note">认证过期时需要重新配对；配对码只在你的本机有效。</p>
+      <p className="page__note">开发模式也可输入 6 位配对码；配对码只在你的本机有效。</p>
     </div>
   );
 }

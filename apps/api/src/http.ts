@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import { ValidationError, NotFoundError, CaptureService } from "./service.js";
 import { LocalAuth, PairingRateLimitError } from "./auth.js";
 import { validateResearchMessageInput, validateResearchSessionInput } from "@collector/capture-contracts";
@@ -11,6 +12,10 @@ export interface ApiServerOptions {
   instanceId?: string;
   /** Dedicated Vite production directory. Omit for API-only embedded/test servers. */
   webRoot?: string;
+  /** Private launcher credential; never expose it through HTTP responses or logs. */
+  launcherToken?: string;
+  /** Mint a short-lived loopback handoff that sets the browser's HttpOnly session cookie. */
+  createLaunchBootstrap?: () => Promise<{ url: string }>;
 }
 
 export function createApiServer(service: CaptureService, auth: LocalAuth, options: ApiServerOptions = {}) {
@@ -36,6 +41,17 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       }
       if (!auth.isAuthorized(requestToken(request))) {
         return json(response, 401, { error: { code: "unauthorized", message: "Collector client is not paired" } });
+      }
+
+      if (request.method === "POST" && url.pathname === "/v1/launcher/bootstrap") {
+        const token = requestToken(request);
+        if (!options.launcherToken || !token || !tokensEqual(token, options.launcherToken)) {
+          throw new LocalAccessError("Collector launcher control authentication is required");
+        }
+        if (!options.createLaunchBootstrap) {
+          return json(response, 404, { error: { code: "not_found", message: "Launcher bootstrap is unavailable" } });
+        }
+        return json(response, 201, await options.createLaunchBootstrap());
       }
 
       if (request.method === "GET" && url.pathname === "/v1/data-paths") {
@@ -360,6 +376,12 @@ function setCors(request: IncomingMessage, response: ServerResponse) {
   }
   response.setHeader("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key, X-File-Name, Authorization");
   response.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+}
+
+function tokensEqual(left: string, right: string): boolean {
+  const leftBytes = Buffer.from(left);
+  const rightBytes = Buffer.from(right);
+  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
 }
 
 class LocalAccessError extends Error {}
