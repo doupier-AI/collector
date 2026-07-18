@@ -11,6 +11,7 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   webServer: [
+    // 页面、静态资源、/v1 与 SSE 均由 API 测试进程同源提供，不再启动 Vite preview
     {
       command: "node e2e/api-harness.mjs",
       url: "http://127.0.0.1:43211/health",
@@ -27,32 +28,16 @@ export default defineConfig({
       stdout: "ignore",
       stderr: "pipe",
     },
-    {
-      command: "npx vite preview --port 4173 --strictPort",
-      url: "http://127.0.0.1:4173/",
-      reuseExistingServer: false,
-      env: { COLLECTOR_API_ORIGIN: "http://127.0.0.1:43211" },
-      stdout: "ignore",
-      stderr: "pipe",
-    },
-    {
-      command: "npx vite preview --port 4174 --strictPort",
-      url: "http://127.0.0.1:4174/",
-      reuseExistingServer: false,
-      env: { COLLECTOR_API_ORIGIN: "http://127.0.0.1:43212" },
-      stdout: "ignore",
-      stderr: "pipe",
-    },
   ],
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"], baseURL: "http://127.0.0.1:4173" },
+      use: { ...devices["Desktop Chrome"], baseURL: "http://127.0.0.1:43211" },
       testIgnore: /no-model\.spec\.ts/,
     },
     {
       name: "chromium-nomodel",
-      use: { ...devices["Desktop Chrome"], baseURL: "http://127.0.0.1:4174" },
+      use: { ...devices["Desktop Chrome"], baseURL: "http://127.0.0.1:43212" },
       testMatch: /no-model\.spec\.ts/,
     },
   ],

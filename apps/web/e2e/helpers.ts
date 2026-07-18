@@ -6,10 +6,10 @@ import { expect, type Page } from "@playwright/test";
 
 const runtimeDir = join(dirname(fileURLToPath(import.meta.url)), ".runtime");
 
-/** 由页面端口推断对应的 API harness 端口（4173→43211 fake，4174→43212 nomodel）。 */
+/** 由页面端口推断对应的 API harness 端口（页面由 API 同源提供：43211 fake，43212 nomodel）。 */
 export function apiPortForPage(page: Page): number {
-  const port = Number(new URL(page.url()).port || "4173");
-  return port === 4174 ? 43212 : 43211;
+  const port = Number(new URL(page.url()).port || "43211");
+  return port === 43212 ? 43212 : 43211;
 }
 
 async function waitForFileValue(name: string): Promise<string> {
