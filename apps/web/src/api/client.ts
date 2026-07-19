@@ -1,4 +1,7 @@
 import type {
+  ResearchContentSnapshotRecord,
+  ResearchImportAccepted,
+  ResearchImportTaskRecord,
   ResearchSessionRecord,
   ResearchSessionView,
   ResearchTaskRecord,
@@ -15,6 +18,12 @@ export interface ApiClient {
   submitResearchMessage(sessionId: string, content: string, idempotencyKey: string): Promise<ResearchTurnAccepted>;
   getResearchTask(taskId: string): Promise<ResearchTaskRecord>;
   retryResearchTask(taskId: string): Promise<ResearchTaskRecord>;
+  /** 上传原始文件字节；mimeType 为浏览器 MIME 或按扩展名回退的稳定 MIME。 */
+  createResearchImport(sessionId: string, file: Blob, fileName: string, mimeType: string, idempotencyKey: string): Promise<ResearchImportAccepted>;
+  getResearchImportTask(taskId: string): Promise<ResearchImportTaskRecord>;
+  cancelResearchImport(taskId: string): Promise<ResearchImportTaskRecord>;
+  retryResearchImport(taskId: string): Promise<ResearchImportTaskRecord>;
+  getResearchContent(contentSnapshotId: string): Promise<ResearchContentSnapshotRecord>;
   exchangePairingCode(code: string): Promise<{ paired: true }>;
 }
 
@@ -80,6 +89,44 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
     },
     getResearchTask(taskId: string) {
       return requestJson<ResearchTaskRecord>(fetchFn, `/v1/research-tasks/${encodeURIComponent(taskId)}`);
+    },
+    createResearchImport(sessionId: string, file: Blob, fileName: string, mimeType: string, idempotencyKey: string) {
+      return requestJson<ResearchImportAccepted>(
+        fetchFn,
+        `/v1/research-sessions/${encodeURIComponent(sessionId)}/imports`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": mimeType,
+            "X-File-Name": encodeURIComponent(fileName),
+            "Idempotency-Key": idempotencyKey,
+          },
+          body: file,
+        },
+      );
+    },
+    getResearchImportTask(taskId: string) {
+      return requestJson<ResearchImportTaskRecord>(fetchFn, `/v1/research-imports/${encodeURIComponent(taskId)}`);
+    },
+    cancelResearchImport(taskId: string) {
+      return requestJson<ResearchImportTaskRecord>(fetchFn, `/v1/research-imports/${encodeURIComponent(taskId)}/cancel`, {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: "{}",
+      });
+    },
+    retryResearchImport(taskId: string) {
+      return requestJson<ResearchImportTaskRecord>(fetchFn, `/v1/research-imports/${encodeURIComponent(taskId)}/retry`, {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: "{}",
+      });
+    },
+    getResearchContent(contentSnapshotId: string) {
+      return requestJson<ResearchContentSnapshotRecord>(
+        fetchFn,
+        `/v1/research-content/${encodeURIComponent(contentSnapshotId)}`,
+      );
     },
     retryResearchTask(taskId: string) {
       return requestJson<ResearchTaskRecord>(fetchFn, `/v1/research-tasks/${encodeURIComponent(taskId)}/retry`, {

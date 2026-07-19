@@ -20,7 +20,8 @@ async function submitFirstQuestion(page: Page, question = QUESTION): Promise<str
 }
 
 test("首次打开显示开始页与空状态邀请", async ({ page }) => {
-  await pairAndOpen(page);
+  // 直接进入开始页：/ 在已有会话时会按产品逻辑恢复最近会话（由另一场景覆盖）
+  await pairAndOpen(page, "/research/new");
 
   // 开始页：占位 logo、居中标题与说明、精简输入区（占位提示 + 圆形按钮）
   await expect(page.locator(".page__logo")).toBeVisible();

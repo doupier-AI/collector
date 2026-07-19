@@ -1,4 +1,6 @@
 import type {
+  ResearchAttachmentRecord,
+  ResearchImportTaskRecord,
   ResearchMessageRecord,
   ResearchSessionRecord,
   ResearchTaskRecord,
@@ -100,6 +102,39 @@ export function makeTask(overrides: Partial<ResearchTaskRecord> = {}): ResearchT
     status: "queued",
     retryable: false,
     promptVersion: "test-prompt-v1",
+    createdAt: "2026-07-17T08:00:00.000Z",
+    updatedAt: "2026-07-17T08:00:00.000Z",
+    ...overrides,
+  };
+}
+
+export function makeAttachment(overrides: Partial<ResearchAttachmentRecord> = {}): ResearchAttachmentRecord {
+  sequence += 1;
+  return {
+    id: `attachment-${sequence}`,
+    sessionId: "session-1",
+    fileName: "笔记.txt",
+    mimeType: "text/plain",
+    size: 128,
+    checksum: `checksum-${sequence}`,
+    status: "processing",
+    importTaskId: `import-task-${sequence}`,
+    createdAt: "2026-07-17T08:00:00.000Z",
+    updatedAt: "2026-07-17T08:00:00.000Z",
+    ...overrides,
+  };
+}
+
+export function makeImportTask(overrides: Partial<ResearchImportTaskRecord> = {}): ResearchImportTaskRecord {
+  sequence += 1;
+  return {
+    id: `import-task-${sequence}`,
+    sessionId: "session-1",
+    attachmentId: `attachment-${sequence}`,
+    idempotencyKey: `import-key-${sequence}`,
+    status: "queued",
+    progress: { phase: "queued", completedUnits: 0, totalUnits: 0 },
+    retryable: false,
     createdAt: "2026-07-17T08:00:00.000Z",
     updatedAt: "2026-07-17T08:00:00.000Z",
     ...overrides,

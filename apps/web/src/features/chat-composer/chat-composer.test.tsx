@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ChatComposer } from "./ChatComposer";
@@ -100,6 +101,35 @@ describe("ChatComposer", () => {
 
     await user.click(attach);
     expect(screen.queryByText("附件等功能将在后续版本提供")).not.toBeInTheDocument();
+  });
+
+  it("提供 onImportFile 时附件按钮打开文件选择，选中后回传文件", async () => {
+    const user = userEvent.setup();
+    const onImportFile = vi.fn();
+    const { container } = render(
+      <ChatComposer
+        draftScope="import-scope"
+        submitLabel="发送"
+        onSubmit={async () => true}
+        onImportFile={onImportFile}
+        importAccept=".txt,.md,.markdown,.docx,.pdf"
+      />,
+    );
+
+    const attach = screen.getByRole("button", { name: /添加附件/ });
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]');
+    expect(input).not.toBeNull();
+    expect(input!.accept).toBe(".txt,.md,.markdown,.docx,.pdf");
+
+    const clickSpy = vi.spyOn(input!, "click").mockImplementation(() => {});
+    await user.click(attach);
+    expect(clickSpy).toHaveBeenCalled();
+
+    const file = new File(["你好"], "笔记.txt", { type: "text/plain" });
+    fireEvent.change(input!, { target: { files: [file] } });
+    expect(onImportFile).toHaveBeenCalledWith(file);
+    // 同一文件可再次选择（input 值已清空）
+    expect(input!.value).toBe("");
   });
 
   it("键盘提示在输入框外并保持与输入框的无障碍关联", () => {

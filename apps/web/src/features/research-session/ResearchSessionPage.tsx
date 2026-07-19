@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { DragEvent } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import type { ResearchTaskRecord } from "@collector/capture-contracts";
 import { isApiErrorCode, isUnauthorized } from "../../api/errors";
@@ -6,6 +7,9 @@ import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { StatusMessage } from "../../components/StatusMessage/StatusMessage";
 import { PairingGate } from "../auth/PairingGate";
 import { ChatComposer } from "../chat-composer/ChatComposer";
+import { AttachmentList } from "../imports/AttachmentList";
+import { IMPORT_ACCEPT } from "../imports/import-file";
+import { useResearchImports } from "../imports/useResearchImports";
 import { formatSessionTime } from "./format";
 import { MessageItem } from "./MessageItem";
 import { taskForMessage } from "./session-view";
@@ -28,6 +32,10 @@ export function ResearchSessionPage() {
   );
   const session = useResearchSession(sessionId, { initialTurn: initialTurnRef.current });
   const [retryingTaskId, setRetryingTaskId] = useState<string | null>(null);
+  const readyView = session.state.kind === "ready" ? session.state.view : undefined;
+  const imports = useResearchImports(sessionId, readyView, session.updateView, session.announce, session.escalateError);
+  const [dragActive, setDragActive] = useState(false);
+  const dragDepthRef = useRef(0);
 
   // 路由 state 只作为一次性传递，挂载后立即清掉，避免刷新后重复提交
   useEffect(() => {
@@ -44,6 +52,38 @@ export function ResearchSessionPage() {
     } finally {
       setRetryingTaskId(null);
     }
+  }
+
+  function dragHasFiles(event: DragEvent): boolean {
+    return Array.from(event.dataTransfer?.types ?? []).includes("Files");
+  }
+
+  function handleDragEnter(event: DragEvent) {
+    if (!dragHasFiles(event)) return;
+    event.preventDefault();
+    dragDepthRef.current += 1;
+    setDragActive(true);
+  }
+
+  function handleDragOver(event: DragEvent) {
+    if (!dragHasFiles(event)) return;
+    // 必须阻止默认行为才允许放置
+    event.preventDefault();
+  }
+
+  function handleDragLeave(event: DragEvent) {
+    if (!dragHasFiles(event)) return;
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setDragActive(false);
+  }
+
+  function handleDrop(event: DragEvent) {
+    if (!dragHasFiles(event)) return;
+    event.preventDefault();
+    dragDepthRef.current = 0;
+    setDragActive(false);
+    const file = event.dataTransfer?.files?.[0];
+    if (file) void imports.upload(file);
   }
 
   const { state } = session;
@@ -109,7 +149,13 @@ export function ResearchSessionPage() {
   const notice = session.streamNotice !== "idle" ? STREAM_NOTICE[session.streamNotice] : undefined;
 
   return (
-    <div className="page">
+    <div
+      className="page"
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       <header className="session-header">
         <h1 className="page__title">{view.session.title}</h1>
         <p className="session-header__meta">更新于 {formatSessionTime(view.session.updatedAt)}</p>
@@ -140,13 +186,57 @@ export function ResearchSessionPage() {
         </ol>
       )}
 
+      <AttachmentList
+        items={imports.items}
+        actingTaskIds={imports.actingTaskIds}
+        onCancel={(taskId) => void imports.cancel(taskId)}
+        onRetry={(taskId) => void imports.retry(taskId)}
+        onRead={(contentSnapshotId) => navigate(`/research/${encodeURIComponent(sessionId)}/reading/${encodeURIComponent(contentSnapshotId)}`)}
+      />
+
+      {imports.actionError ? (
+        <p className="form-error" role="alert">
+          {imports.actionError}
+        </p>
+      ) : null}
+
+      {imports.pendingUpload ? (
+        <StatusMessage variant="info" role="status" title="上传结果不确定">
+          <p>
+            {imports.pendingUpload.fileName} 的上传结果不确定。重试使用同一条上传记录，不会产生重复附件。
+          </p>
+          <p className="attachment__pending-actions">
+            <button type="button" className="button button--secondary" onClick={() => void imports.retryPendingUpload()}>
+              重试上传
+            </button>{" "}
+            <button type="button" className="button button--ghost" onClick={imports.dismissPendingUpload}>
+              放弃
+            </button>
+          </p>
+        </StatusMessage>
+      ) : null}
+
       {session.actionError ? (
         <p className="form-error" role="alert">
           {session.actionError}
         </p>
       ) : null}
 
-      <ChatComposer draftScope={sessionId} submitLabel="发送" onSubmit={session.submit} />
+      <ChatComposer
+        draftScope={sessionId}
+        submitLabel="发送"
+        onSubmit={session.submit}
+        onImportFile={(file) => void imports.upload(file)}
+        importAccept={IMPORT_ACCEPT}
+        externalError={imports.uploadError}
+      />
+
+      {dragActive ? (
+        <div className="drop-overlay" aria-hidden="true">
+          <p className="drop-overlay__title">松开鼠标，把文件导入这场研究</p>
+          <p className="drop-overlay__meta">支持 TXT、Markdown、DOCX、PDF，单个不超过 20 MB</p>
+        </div>
+      ) : null}
 
       <p className="sr-only" role="status" aria-live="polite">
         {session.liveMessage}

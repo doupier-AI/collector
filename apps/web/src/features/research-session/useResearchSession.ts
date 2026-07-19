@@ -30,6 +30,12 @@ export interface ResearchSessionController {
   /** 提交一条消息；返回 true 表示后端已确认保存（202）。 */
   submit(content: string): Promise<boolean>;
   retryTask(task: ResearchTaskRecord): Promise<void>;
+  /** 在 ready 状态下合并视图更新（附件、导入任务等）；非 ready 时忽略。 */
+  updateView(updater: (view: ResearchSessionView) => ResearchSessionView): void;
+  /** 通过会话页 aria-live 区播报一条状态变化。 */
+  announce(message: string): void;
+  /** 把无法局部恢复的错误（如 401）升级为页面级错误状态。 */
+  escalateError(error: unknown): void;
 }
 
 /**
@@ -244,5 +250,19 @@ export function useResearchSession(sessionId: string, options?: { initialTurn?: 
 
   const reload = useCallback(() => setReloadNonce((nonce) => nonce + 1), []);
 
-  return { state, streamNotice, liveMessage, actionError, reload, submit, retryTask };
+  const updateView = useCallback((updater: (view: ResearchSessionView) => ResearchSessionView) => {
+    setState((previous) => (previous.kind === "ready" ? { kind: "ready", view: updater(previous.view) } : previous));
+  }, []);
+
+  const announce = useCallback((message: string) => setLiveMessage(message), []);
+
+  const escalateError = useCallback(
+    (error: unknown) => {
+      closeAllStreams();
+      setState({ kind: "error", error });
+    },
+    [closeAllStreams],
+  );
+
+  return { state, streamNotice, liveMessage, actionError, reload, submit, retryTask, updateView, announce, escalateError };
 }

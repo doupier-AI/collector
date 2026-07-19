@@ -126,3 +126,62 @@ export function readResearchTables(dbPath: string): {
     db.close();
   }
 }
+
+export interface ResearchAttachmentRow {
+  id: string;
+  sessionId: string;
+  status: string;
+  recordJson: string;
+}
+
+export interface ResearchImportTaskRow {
+  id: string;
+  sessionId: string;
+  attachmentId: string;
+  status: string;
+  retryable: number;
+  idempotencyKey: string;
+}
+
+export interface ResearchContentSnapshotRow {
+  id: string;
+  sessionId: string;
+  attachmentId: string;
+  recordJson: string;
+}
+
+export interface ResearchImportEventRow {
+  taskId: string;
+  eventType: string;
+}
+
+/** 只读打开 harness 的 SQLite，核对研究附件 / 导入任务 / 内容快照 / 导入事件记录。 */
+export function readResearchImportTables(dbPath: string): {
+  attachments: ResearchAttachmentRow[];
+  importTasks: ResearchImportTaskRow[];
+  snapshots: ResearchContentSnapshotRow[];
+  importEvents: ResearchImportEventRow[];
+} {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    const attachments = db
+      .prepare("SELECT id, session_id AS sessionId, status, record_json AS recordJson FROM research_attachments ORDER BY created_at, rowid")
+      .all() as unknown as ResearchAttachmentRow[];
+    const importTasks = db
+      .prepare(
+        "SELECT id, session_id AS sessionId, attachment_id AS attachmentId, status, retryable, idempotency_key AS idempotencyKey FROM research_import_tasks ORDER BY created_at, rowid",
+      )
+      .all() as unknown as ResearchImportTaskRow[];
+    const snapshots = db
+      .prepare(
+        "SELECT id, session_id AS sessionId, attachment_id AS attachmentId, record_json AS recordJson FROM research_content_snapshots ORDER BY created_at, rowid",
+      )
+      .all() as unknown as ResearchContentSnapshotRow[];
+    const importEvents = db
+      .prepare("SELECT task_id AS taskId, event_type AS eventType FROM research_import_task_events ORDER BY sequence")
+      .all() as unknown as ResearchImportEventRow[];
+    return { attachments, importTasks, snapshots, importEvents };
+  } finally {
+    db.close();
+  }
+}
