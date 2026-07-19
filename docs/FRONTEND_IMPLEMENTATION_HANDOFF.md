@@ -2,7 +2,7 @@
 
 基线 ID：`FRONTEND-BASELINE`
 
-基线版本：`1.4.1`
+基线版本：`1.4.2`
 
 最后更新：2026-07-19
 
@@ -637,7 +637,7 @@ Content-Type: application/json
 
 ### 14.3 分级验证命令
 
-KIMI 3 按 `COLLAB-PROTOCOL 1.1.0` 第 7.3 节选择验证范围：
+KIMI 3 按 `COLLAB-PROTOCOL 1.2.0` 第 7.3 节选择验证范围：
 
 - 只改文档、文案、交接状态或元数据时，检查格式、链接、版本和提交范围，不运行前端构建、测试或浏览器验证；
 - 修改前端组件、样式、客户端状态或逻辑时，运行前端构建或类型检查以及受影响的测试；
@@ -759,7 +759,8 @@ KIMI 3 提交前逐项确认：
 - [ ] 已创建 KIMI 3 到 GPT-5.6 的增量交接文件；
 - [ ] 已更新 `docs/handoffs/CURRENT.md` 和 `docs/handoffs/INDEX.md`；
 - [ ] 已说明基线版本是否变化和下一轮最小必读列表；
-- [ ] Git 提交只包含本次相关改动。
+- [ ] Git 提交按实现边界和交接边界组织，只包含本次相关改动；
+- [ ] 新交接文件、`CURRENT.md`、`INDEX.md` 和相关接收状态没有拆成多个小提交。
 
 ## 19. 后端交付记录与联调前阻塞项
 
@@ -810,8 +811,9 @@ KIMI 3 的工作完成不等于协作轮次完成。只有完成以下回交，G
 2. 把本轮接收的 GPT-5.6 交接标记为 `accepted` 或 `superseded`；
 3. 更新 `docs/handoffs/CURRENT.md`，将当前责任改为 GPT-5.6，并列出 GPT-5.6 的本轮必读；
 4. 更新 `docs/handoffs/INDEX.md`；
-5. 将交接文档与前端代码、测试一起提交，报告提交哈希；
-6. 按 `docs/IMPLEMENTATION_COLLABORATION_PROTOCOL.md` 第 9 节提供完整回交证据。
+5. 按 `COLLAB-PROTOCOL 1.2.0` 的任务边界提交：前端代码、测试和直接相关的长期文档形成实现提交；只有交接需要引用已生成的实现提交哈希时，才增加一笔交接提交；
+6. 新交接文件、`CURRENT.md`、`INDEX.md` 和相关接收状态合并到同一交接边界，不分别提交，并报告相关提交哈希；
+7. 按 `docs/IMPLEMENTATION_COLLABORATION_PROTOCOL.md` 第 9 节提供完整回交证据。
 
 回交至少回答：
 

@@ -1,6 +1,6 @@
 # Collector 当前实施交接状态
 
-状态版本：`14`
+状态版本：`15`
 
 最后更新：2026-07-19
 
@@ -19,8 +19,8 @@
 
 | 基线 | 版本 | 本轮是否变化 |
 | --- | --- | --- |
-| 多模型协作协议 | `COLLAB-PROTOCOL 1.1.0` | 无变化 |
-| WebUI 前端实施基线 | `FRONTEND-BASELINE 1.4.1` | 无变化 |
+| 多模型协作协议 | `COLLAB-PROTOCOL 1.2.0` | 已变化：提交按实现边界和交接边界合并，不按操作步骤拆分 |
+| WebUI 前端实施基线 | `FRONTEND-BASELINE 1.4.2` | 已变化：回交提交边界与 `COLLAB-PROTOCOL 1.2.0` 对齐 |
 | 后端研究会话契约 | SQLite migration v15 | 无变化 |
 | WebUI 首个切片 | commit `5db1a85` + 界面调整 `9a3ad62` | 无变化 |
 | WebUI 同源生产服务 | commit `709246b` | 无变化 |
@@ -35,9 +35,10 @@ GPT-5.6 接收开发责任时，按顺序读取：
 2. 本文件；
 3. `docs/handoffs/H-20260719-009-KIMI3-TO-GPT56.md`；
 4. `docs/handoffs/H-20260719-008-GPT56-TO-KIMI3.md` 第 6、7 节；
-5. `docs/FRONTEND_IMPLEMENTATION_HANDOFF.md` 第 16、19 节。
+5. `docs/IMPLEMENTATION_COLLABORATION_PROTOCOL.md` 第 3 节“共同规则”、第 4 节“状态”、第 7.1 与 7.4 节、第 10 节（协议已升级至 `1.2.0`）；
+6. `docs/FRONTEND_IMPLEMENTATION_HANDOFF.md` 第 16、19 节。
 
-不要求重读 `H-001` 至 `H-007`、全部长期文档或前端基线其他章节；协作协议仍为 `COLLAB-PROTOCOL 1.1.0`。
+不要求重读 `H-001` 至 `H-007`、全部长期文档或前端基线其他章节。
 
 ## GPT-5.6 接收后可以立即开始
 
@@ -74,4 +75,6 @@ GPT-5.6 接收开发责任时，按顺序读取：
 - 更新 `INDEX.md`；
 - 说明基线变化是 `none` 还是具体版本升级；
 - 列出真实运行的命令、通过、失败和跳过项；
-- 将本次代码、测试和相关交接文档一起提交，并报告提交哈希。
+- 按 `COLLAB-PROTOCOL 1.2.0` 的提交边界执行：代码、测试和直接相关的长期文档形成一笔实现提交；只有 H-010 需要引用已生成的实现提交哈希时，才增加一笔交接提交；
+- H-010、`CURRENT.md`、`INDEX.md` 和 H-009 的接收状态必须合并到同一交接边界，不分别提交；
+- 报告相关实现提交和交接提交哈希。
