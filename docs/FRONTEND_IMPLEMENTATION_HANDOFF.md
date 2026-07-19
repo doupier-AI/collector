@@ -2,7 +2,7 @@
 
 基线 ID：`FRONTEND-BASELINE`
 
-基线版本：`1.5.0`
+基线版本：`1.6.0`
 
 最后更新：2026-07-19
 
@@ -410,13 +410,57 @@ GET /v1/research-sessions/:sessionId
 {
   "session": {},
   "messages": [],
-  "tasks": []
+  "tasks": [],
+  "attachments": [],
+  "importTasks": []
 }
 ```
 
-消息和任务按创建时间稳定排序。`ResearchTaskRecord` 包含输入/输出消息 ID、幂等键、状态、是否可重试、模型路由、提示版本、错误和时间。
+消息、任务、附件和导入任务按创建时间稳定排序。`ResearchTaskRecord` 包含输入/输出消息 ID、幂等键、状态、是否可重试、模型路由、提示版本、错误和时间。附件和导入任务用于刷新、关闭页面和服务重启后恢复文件处理状态。
 
-### 10.4 提交消息
+### 10.4 文件导入与阅读恢复
+
+```http
+POST /v1/research-sessions/:sessionId/imports
+Content-Type: text/plain | text/markdown | application/vnd.openxmlformats-officedocument.wordprocessingml.document | application/pdf
+X-File-Name: <encodeURIComponent(file.name)>
+Idempotency-Key: <uuid>
+
+<原始文件字节>
+```
+
+当前 MVP 接受 TXT、Markdown、DOCX 和文本型 PDF，单文件上限为 20 MiB。文件名必填且不超过 255 个字符；上传幂等键必填且不超过 200 个字符。响应为 `202` 和 `{ attachment, task }`。上传键只在同一会话内生效，与创建会话键和消息键相互独立；网络结果不确定时重用原键和同一文件。若同一会话的同一键改传另一文件，返回 `409 idempotency_conflict`。
+
+公开的 `ResearchAttachmentRecord` 只包含稳定 ID、会话 ID、文件名、MIME、大小、SHA-256、状态、任务 ID、可选内容快照 ID和时间，不包含本地路径。`ResearchImportTaskRecord.status` 为 `queued | running | completed | failed | cancelled`，进度阶段为 `queued | parsing | persisting | completed`。
+
+状态与阅读接口：
+
+```http
+GET  /v1/research-imports/:taskId
+GET  /v1/research-imports/:taskId/events
+POST /v1/research-imports/:taskId/cancel
+POST /v1/research-imports/:taskId/retry
+GET  /v1/research-content/:contentSnapshotId
+```
+
+导入 SSE 与研究消息 SSE 分离，支持 `Last-Event-ID` 或 `?after=<sequence>`，事件为 `snapshot | progress | completed | failed | cancelled`。终态后关闭连接并查询最终任务；断线时按现有研究任务策略退避重连和回退查询。
+
+取消只接受 `queued` 或 `running`，其他状态返回 `409 import_not_cancellable`。重试只接受 `failed && retryable`，保留同一任务、附件、原文件和稳定 ID，清除旧事件并重新排队；其他状态返回 `409 import_not_retryable`。服务重启时 queued 继续处理，running 转为 `failed/service_restarted` 并可重试；completed 的内容快照和结构锚点保持不变。
+
+`ResearchContentSnapshotRecord` 包含稳定 block ID、顺序、文本和结构锚点。TXT 保留行号；Markdown 保留行号、标题和 heading/paragraph/list/code；DOCX 保留段落序号、标题和 heading/paragraph/list/table；PDF 保留页码。前端依据 `contentSnapshotId` 和 block ID 进入同一会话阅读视图，不保存 DOM 路径，也不猜 MIME。
+
+稳定上传错误：
+
+| HTTP | 错误码 | 前端动作 |
+| --- | --- | --- |
+| 400 | `idempotency_key_required` / `invalid_file_name` / `empty_file` | 修正请求或提示重新选择 |
+| 413 | `file_too_large` | 提示 20 MiB 上限 |
+| 415 | `unsupported_file_type` | 提示仅支持 TXT、Markdown、DOCX、PDF |
+| 422 | `invalid_file_content` | 提示文件内容与声明格式不符 |
+| 409 | `idempotency_conflict` / `import_not_cancellable` / `import_not_retryable` | 刷新任务状态或生成新上传意图 |
+| 404 | `not_found` | 会话、任务或快照不存在 |
+
+### 10.5 提交消息
 
 ```http
 POST /v1/research-sessions/:sessionId/messages
@@ -443,7 +487,7 @@ Idempotency-Key: <uuid>
 
 后端在一次 SQLite 事务中保存用户消息、AI 占位消息、任务和会话更新时间。同一会话内使用同一个幂等键重复提交会返回同一组记录。前端重试网络请求时必须复用原幂等键；用户明确再次发送才生成新键。
 
-### 10.5 查询任务
+### 10.6 查询任务
 
 ```http
 GET /v1/research-tasks/:taskId
@@ -453,7 +497,7 @@ GET /v1/research-tasks/:taskId
 
 `ResearchTaskRecord.status` 是 `queued | running | completed | failed`。AI 占位消息的状态是 `pending | streaming | completed | failed`。
 
-### 10.6 渐进事件
+### 10.7 渐进事件
 
 ```http
 GET /v1/research-tasks/:taskId/events
@@ -493,7 +537,7 @@ data: {"id":43,"type":"failed","task":{},"message":{},"createdAt":"..."}
 - 同源 Cookie 由浏览器自动携带；
 - 页面隐藏时降低轮询频率，页面恢复时立即同步一次。
 
-### 10.7 失败重试
+### 10.8 失败重试
 
 ```http
 POST /v1/research-tasks/:taskId/retry
@@ -512,7 +556,7 @@ Content-Type: application/json
 | `provider_error` | 模型调用、格式或本地输出边界失败 | 输入和已有内容保留；可以稍后重试 |
 | `service_restarted` | 服务在任务运行中重启 | 部分输出保留；任务标记为可重试 |
 
-### 10.8 HTTP 错误格式
+### 10.9 HTTP 错误格式
 
 沿用后端统一结构：
 
@@ -529,7 +573,7 @@ Content-Type: application/json
 
 当前接口尚未返回 `requestId`。前端按 `code` 映射用户文案，不依赖英文 `message` 做逻辑判断。
 
-### 10.9 认证和来源校验
+### 10.10 认证和来源校验
 
 除 `/`、`/health` 和配对码交换外，数据路由需要以下一种凭据：
 
@@ -554,7 +598,7 @@ Content-Type: application/json
 
 启动器如何把一次性配对码安全交给首次 WebUI、以及静态 WebUI 如何由同一服务提供，目前尚未实现，是开始完整浏览器联调前的后端阻塞项。
 
-### 10.10 当前模型流限制
+### 10.11 当前模型流限制
 
 确定性假模型可以真正逐段产生 `delta`。当前真实模型网关等待供应商返回完整 JSON 回答，再按最多 80 字符拆分写入 SSE。因此持久化、续传和前端渐进契约已成立，但首片延迟仍等于完整云模型响应时间。KIMI 3 不要用前端定时器伪造更早的模型输出。
 

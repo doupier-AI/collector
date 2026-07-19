@@ -2,8 +2,9 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { timingSafeEqual } from "node:crypto";
 import { ValidationError, NotFoundError, CaptureService } from "./service.js";
 import { LocalAuth, PairingRateLimitError } from "./auth.js";
-import { validateResearchMessageInput, validateResearchSessionInput } from "@collector/capture-contracts";
+import { RESEARCH_IMPORT_MAX_BYTES, validateResearchImportHeaders, validateResearchMessageInput, validateResearchSessionInput } from "@collector/capture-contracts";
 import { ResearchNotFoundError, ResearchValidationError } from "./research.js";
+import { ResearchImportConflictError, ResearchImportNotFoundError, ResearchImportValidationError } from "./research-import.js";
 import { createStaticWebHandler } from "./static-web.js";
 
 const JSON_LIMIT = 2 * 1024 * 1024;
@@ -81,6 +82,51 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         try { validateResearchSessionInput(body); }
         catch (error) { throw new ResearchValidationError((error as Error).message); }
         return json(response, 201, await service.research.createSession(body.title, header(request, "idempotency-key") ?? ""));
+      }
+      const researchImportsMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)\/imports$/);
+      if (request.method === "POST" && researchImportsMatch) {
+        const fileName = decodeURIComponent(header(request, "x-file-name") ?? "");
+        const mimeType = header(request, "content-type")?.split(";", 1)[0] ?? "application/octet-stream";
+        try { validateResearchImportHeaders(fileName, mimeType); }
+        catch (error) {
+          const message = (error as Error).message;
+          throw new ResearchImportValidationError(message, message.startsWith("Unsupported file type") ? "unsupported_file_type" : "invalid_file_name");
+        }
+        let bytes: Uint8Array;
+        try { bytes = await readBytes(request, RESEARCH_IMPORT_MAX_BYTES); }
+        catch (error) {
+          if (error instanceof ValidationError && error.message === "Request body too large") {
+            throw new ResearchImportValidationError("File exceeds the 20 MiB limit", "file_too_large");
+          }
+          throw error;
+        }
+        const accepted = await service.researchImports.createImport(
+          decodeURIComponent(researchImportsMatch[1]), fileName, mimeType,
+          bytes, header(request, "idempotency-key") ?? "",
+        );
+        return json(response, 202, accepted);
+      }
+      const researchContentMatch = url.pathname.match(/^\/v1\/research-content\/([^/]+)$/);
+      if (request.method === "GET" && researchContentMatch) {
+        return json(response, 200, service.researchImports.getContent(decodeURIComponent(researchContentMatch[1])));
+      }
+      const researchImportEventsMatch = url.pathname.match(/^\/v1\/research-imports\/([^/]+)\/events$/);
+      if (request.method === "GET" && researchImportEventsMatch) {
+        const afterId = Number(header(request, "last-event-id") ?? url.searchParams.get("after") ?? "0");
+        if (!Number.isSafeInteger(afterId) || afterId < 0) throw new ResearchImportValidationError("Last-Event-ID must be a non-negative integer");
+        return streamResearchImportTaskEvents(request, response, service, decodeURIComponent(researchImportEventsMatch[1]), afterId);
+      }
+      const researchImportRetryMatch = url.pathname.match(/^\/v1\/research-imports\/([^/]+)\/retry$/);
+      if (request.method === "POST" && researchImportRetryMatch) {
+        return json(response, 202, await service.researchImports.retryTask(decodeURIComponent(researchImportRetryMatch[1])));
+      }
+      const researchImportCancelMatch = url.pathname.match(/^\/v1\/research-imports\/([^/]+)\/cancel$/);
+      if (request.method === "POST" && researchImportCancelMatch) {
+        return json(response, 200, await service.researchImports.cancelTask(decodeURIComponent(researchImportCancelMatch[1])));
+      }
+      const researchImportMatch = url.pathname.match(/^\/v1\/research-imports\/([^/]+)$/);
+      if (request.method === "GET" && researchImportMatch) {
+        return json(response, 200, service.researchImports.getTask(decodeURIComponent(researchImportMatch[1])));
       }
       const researchMessagesMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)\/messages$/);
       if (request.method === "POST" && researchMessagesMatch) {
@@ -310,10 +356,15 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (error instanceof LocalAccessError) {
         return json(response, 403, { error: { code: "local_access_denied", message: error.message } });
       }
-      if (error instanceof ValidationError || error instanceof ResearchValidationError || error instanceof SyntaxError) {
-        return json(response, 400, { error: { code: "invalid_request", message: error.message } });
+      if (error instanceof ResearchImportConflictError) {
+        return json(response, 409, { error: { code: error.code, message: error.message } });
       }
-      if (error instanceof NotFoundError || error instanceof ResearchNotFoundError) return json(response, 404, { error: { code: "not_found", message: error.message } });
+      if (error instanceof ValidationError || error instanceof ResearchValidationError || error instanceof ResearchImportValidationError || error instanceof SyntaxError) {
+        const code = error instanceof ResearchImportValidationError ? error.code : "invalid_request";
+        const status = code === "file_too_large" ? 413 : code === "unsupported_file_type" ? 415 : code === "invalid_file_content" ? 422 : 400;
+        return json(response, status, { error: { code, message: error.message } });
+      }
+      if (error instanceof NotFoundError || error instanceof ResearchNotFoundError || error instanceof ResearchImportNotFoundError) return json(response, 404, { error: { code: "not_found", message: error.message } });
       console.error(error);
       return json(response, 500, { error: { code: "internal_error", message: "Internal server error" } });
     }
@@ -333,6 +384,8 @@ async function readJsonOptional(request: IncomingMessage): Promise<unknown> {
 }
 
 async function readBytes(request: IncomingMessage, limit: number): Promise<Uint8Array> {
+  const declaredLength = Number(header(request, "content-length") ?? 0);
+  if (Number.isFinite(declaredLength) && declaredLength > limit) throw new ValidationError("Request body too large");
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
@@ -374,7 +427,7 @@ function setCors(request: IncomingMessage, response: ServerResponse) {
     response.setHeader("Access-Control-Allow-Origin", origin);
     response.setHeader("Vary", "Origin");
   }
-  response.setHeader("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key, X-File-Name, Authorization");
+  response.setHeader("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key, X-File-Name, Authorization, Last-Event-ID");
   response.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
 }
 
@@ -400,6 +453,38 @@ function validateLocalRequest(request: IncomingMessage): void {
   if (parsed.protocol !== "http:" || parsed.host.toLowerCase() !== host || !["127.0.0.1", "localhost"].includes(parsed.hostname)) {
     throw new LocalAccessError("Request Origin does not match the Collector service");
   }
+}
+
+async function streamResearchImportTaskEvents(request: IncomingMessage, response: ServerResponse, service: CaptureService, taskId: string, afterId: number): Promise<void> {
+  const snapshot = service.researchImports.getTaskSnapshot(taskId);
+  response.statusCode = 200;
+  response.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  response.setHeader("Cache-Control", "no-cache, no-transform");
+  response.setHeader("Connection", "keep-alive");
+  response.setHeader("X-Accel-Buffering", "no");
+  response.flushHeaders();
+  writeImportSse(response, snapshot);
+
+  let cursor = afterId;
+  const deadline = Date.now() + 25_000;
+  while (!request.destroyed && Date.now() < deadline) {
+    const events = service.researchImports.getTaskEvents(taskId, cursor);
+    for (const event of events) {
+      writeImportSse(response, event);
+      cursor = event.id ?? cursor;
+    }
+    const task = service.researchImports.getTask(taskId);
+    if (["completed", "failed", "cancelled"].includes(task.status)) break;
+    response.write(": keep-alive\n\n");
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  }
+  response.end();
+}
+
+function writeImportSse(response: ServerResponse, event: import("@collector/capture-contracts").ResearchImportTaskEvent): void {
+  if (event.id !== undefined) response.write(`id: ${event.id}\n`);
+  response.write(`event: ${event.type}\n`);
+  response.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
 async function streamResearchTaskEvents(request: IncomingMessage, response: ServerResponse, service: CaptureService, taskId: string, afterId: number): Promise<void> {

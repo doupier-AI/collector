@@ -92,8 +92,8 @@ test("workflow migration creates formal versioned tables", async (t) => {
   store.close();
   const database = new DatabaseSync(databasePath, { readOnly: true });
   const tables = (database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name);
-  for (const table of ["workflow_runs", "workflow_steps", "model_calls", "recent_cluster_snapshots", "material_revisions", "research_sessions", "research_messages", "research_tasks", "research_task_events"]) assert.ok(tables.includes(table));
-  assert.equal((database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 15);
+  for (const table of ["workflow_runs", "workflow_steps", "model_calls", "recent_cluster_snapshots", "material_revisions", "research_sessions", "research_messages", "research_tasks", "research_task_events", "research_attachments", "research_import_tasks", "research_content_snapshots", "research_import_task_events"]) assert.ok(tables.includes(table));
+  assert.equal((database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 16);
   const sessionColumns = (database.prepare("PRAGMA table_info(research_sessions)").all() as Array<{ name: string }>).map((column) => column.name);
   assert.ok(sessionColumns.includes("creation_idempotency_key"));
   const sessionIndexes = (database.prepare("PRAGMA index_list(research_sessions)").all() as Array<{ name: string; unique: number }>);
@@ -119,9 +119,13 @@ test("migration 15 preserves existing version 14 research sessions", async (t) =
 
   const version14 = new DatabaseSync(databasePath);
   version14.exec(`
+    DROP TABLE research_import_task_events;
+    DROP TABLE research_content_snapshots;
+    DROP TABLE research_import_tasks;
+    DROP TABLE research_attachments;
     DROP INDEX research_sessions_creation_idempotency_idx;
     ALTER TABLE research_sessions DROP COLUMN creation_idempotency_key;
-    DELETE FROM schema_migrations WHERE version = 15;
+    DELETE FROM schema_migrations WHERE version IN (15, 16);
   `);
   version14.close();
 

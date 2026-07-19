@@ -70,6 +70,8 @@ export class ResearchSessionService {
       session,
       messages: this.store.listResearchMessages(id),
       tasks: this.store.listResearchTasks(id),
+      attachments: this.store.listResearchAttachments(id),
+      importTasks: this.store.listResearchImportTasks(id),
     };
   }
 

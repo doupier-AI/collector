@@ -37,6 +37,7 @@ import { SourceParser, parsePdf } from "./parsers.js";
 import { DEFAULT_PROVIDER_REGISTRY, ModelGateway, validateExternalProviderBaseUrl } from "@collector/model-gateway";
 import { createVerificationWorkflow } from "./verification.js";
 import { ResearchSessionService, type ResearchGenerationProvider } from "./research.js";
+import { ResearchImportService } from "./research-import.js";
 
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
@@ -50,18 +51,22 @@ export class CaptureService {
   private currentModelRoute?: ActiveModelRoute;
   private modelGatewayResolver?: (route: ActiveModelRoute) => Promise<ModelGateway | undefined>;
   readonly research: ResearchSessionService;
+  readonly researchImports: ResearchImportService;
 
   constructor(
     private readonly store: CollectorStore,
     private readonly artifactRoot: string,
     private readonly parser = new SourceParser(),
     private modelGateway?: ModelGateway,
-    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; researchProvider?: ResearchGenerationProvider; autoRunResearchTasks?: boolean } = {},
+    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; researchProvider?: ResearchGenerationProvider; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean } = {},
   ) {
     this.attachModelGateway(this.modelGateway);
     this.research = new ResearchSessionService(this.store, {
       provider: this.options.researchProvider ?? this.researchProviderFor(this.modelGateway),
       autoRunTasks: this.options.autoRunResearchTasks,
+    });
+    this.researchImports = new ResearchImportService(this.store, join(this.artifactRoot, "research-imports"), {
+      autoRunTasks: this.options.autoRunResearchImports,
     });
     if (this.options.autoRunRecentOrganization !== false) {
       this.scheduleRecentOrganization();

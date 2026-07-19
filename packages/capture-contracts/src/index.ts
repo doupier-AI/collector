@@ -373,6 +373,100 @@ export type ResearchMessageRole = "user" | "assistant";
 export type ResearchMessageStatus = "pending" | "streaming" | "completed" | "failed";
 export type ResearchTaskStatus = "queued" | "running" | "completed" | "failed";
 
+export const RESEARCH_IMPORT_MAX_BYTES = 20 * 1024 * 1024;
+export const RESEARCH_IMPORT_MIME_TYPES = [
+  "text/plain",
+  "text/markdown",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/pdf",
+] as const;
+
+export type ResearchImportMimeType = typeof RESEARCH_IMPORT_MIME_TYPES[number];
+export type ResearchAttachmentStatus = "processing" | "ready" | "failed" | "cancelled";
+export type ResearchImportTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type ResearchImportPhase = "queued" | "parsing" | "persisting" | "completed";
+export type ResearchImportErrorCode =
+  | "unsupported_file_type"
+  | "file_too_large"
+  | "empty_file"
+  | "parse_failed"
+  | "service_restarted";
+
+export interface ResearchAttachmentRecord {
+  id: string;
+  sessionId: string;
+  fileName: string;
+  mimeType: ResearchImportMimeType;
+  size: number;
+  checksum: string;
+  status: ResearchAttachmentStatus;
+  importTaskId: string;
+  contentSnapshotId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ResearchImportProgress {
+  phase: ResearchImportPhase;
+  completedUnits: number;
+  totalUnits: number;
+}
+
+export interface ResearchImportError {
+  code: ResearchImportErrorCode;
+  message: string;
+}
+
+export interface ResearchImportTaskRecord {
+  id: string;
+  sessionId: string;
+  attachmentId: string;
+  idempotencyKey: string;
+  status: ResearchImportTaskStatus;
+  progress: ResearchImportProgress;
+  retryable: boolean;
+  error?: ResearchImportError;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export type ResearchContentAnchor =
+  | { kind: "text"; startLine: number; endLine: number; exact: string; prefix?: string; suffix?: string }
+  | { kind: "markdown"; startLine: number; endLine: number; blockType: "heading" | "paragraph" | "list" | "code"; heading?: string; exact: string; prefix?: string; suffix?: string }
+  | { kind: "docx"; paragraphIndex: number; blockType: "heading" | "paragraph" | "list" | "table"; heading?: string; exact: string; prefix?: string; suffix?: string }
+  | { kind: "pdf"; pageNumber: number; exact: string; prefix?: string; suffix?: string };
+
+export interface ResearchContentBlock {
+  id: string;
+  ordinal: number;
+  text: string;
+  anchor: ResearchContentAnchor;
+}
+
+export interface ResearchContentSnapshotRecord {
+  id: string;
+  sessionId: string;
+  attachmentId: string;
+  mimeType: ResearchImportMimeType;
+  title: string;
+  blocks: ResearchContentBlock[];
+  createdAt: string;
+}
+
+export interface ResearchImportAccepted {
+  attachment: ResearchAttachmentRecord;
+  task: ResearchImportTaskRecord;
+}
+
+export type ResearchImportTaskEvent =
+  | { id?: number; type: "snapshot"; task: ResearchImportTaskRecord; attachment: ResearchAttachmentRecord; createdAt: string }
+  | { id: number; type: "progress"; task: ResearchImportTaskRecord; attachment: ResearchAttachmentRecord; createdAt: string }
+  | { id: number; type: "completed"; task: ResearchImportTaskRecord; attachment: ResearchAttachmentRecord; createdAt: string }
+  | { id: number; type: "failed"; task: ResearchImportTaskRecord; attachment: ResearchAttachmentRecord; createdAt: string }
+  | { id: number; type: "cancelled"; task: ResearchImportTaskRecord; attachment: ResearchAttachmentRecord; createdAt: string };
+
 export interface ResearchSessionRecord {
   id: string;
   title: string;
@@ -418,6 +512,8 @@ export interface ResearchSessionView {
   session: ResearchSessionRecord;
   messages: ResearchMessageRecord[];
   tasks: ResearchTaskRecord[];
+  attachments?: ResearchAttachmentRecord[];
+  importTasks?: ResearchImportTaskRecord[];
 }
 
 export interface ResearchTurnAccepted {
@@ -439,6 +535,15 @@ export function validateResearchSessionInput(value: unknown): asserts value is {
   const title = (value as { title?: unknown }).title;
   if (title !== undefined && (typeof title !== "string" || !title.trim() || title.trim().length > 200)) {
     throw new Error("title must contain 1 to 200 characters");
+  }
+}
+
+export function validateResearchImportHeaders(fileName: unknown, mimeType: unknown): asserts mimeType is ResearchImportMimeType {
+  if (typeof fileName !== "string" || !fileName.trim()) throw new Error("X-File-Name is required");
+  if (fileName.trim().length > 255) throw new Error("File name must not exceed 255 characters");
+  if (/[\0-\x1f\x7f]/.test(fileName)) throw new Error("File name contains unsupported control characters");
+  if (typeof mimeType !== "string" || !RESEARCH_IMPORT_MIME_TYPES.includes(mimeType as ResearchImportMimeType)) {
+    throw new Error("Unsupported file type. Use TXT, Markdown, DOCX, or PDF");
   }
 }
 
