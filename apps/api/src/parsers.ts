@@ -103,7 +103,10 @@ export function parseMarkdown(value: string, artifact?: ArtifactRecord): ParsedF
       if (index < lines.length) index += 1;
     } else if (/^\s*(?:[-*+] |\d+\. )/.test(lines[index])) {
       blockType = "list"; index += 1;
-      while (index < lines.length && /^\s*(?:[-*+] |\d+\. )/.test(lines[index])) index += 1;
+      while (
+        index < lines.length
+        && (/^\s*(?:[-*+] |\d+\. )/.test(lines[index]) || /^\s{2,}\S/.test(lines[index]))
+      ) index += 1;
     } else {
       index += 1;
       while (

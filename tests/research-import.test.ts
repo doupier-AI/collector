@@ -107,7 +107,7 @@ test("research import persists TXT and Markdown snapshots without exposing local
   assertNoPrivatePath(textAccepted, harness.root);
   await waitForImport(harness.base, harness.token, textAccepted.task.id, "completed");
 
-  const markdownResponse = await upload(harness.base, harness.token, session.id, "md-key", "guide.md", "text/markdown", Buffer.from("# Heading\n\nIntro paragraph\n- one\n- two\n\n```ts\nconst ready = true;\n```"));
+  const markdownResponse = await upload(harness.base, harness.token, session.id, "md-key", "guide.md", "text/markdown", Buffer.from("# Heading\n\nIntro paragraph\n- one\n  continuation\n- two\n\n```ts\nconst ready = true;\n```"));
   assert.equal(markdownResponse.status, 202);
   const markdownAccepted = await markdownResponse.json() as typeof textAccepted;
   await waitForImport(harness.base, harness.token, markdownAccepted.task.id, "completed");
@@ -127,8 +127,9 @@ test("research import persists TXT and Markdown snapshots without exposing local
   assertNoPrivatePath(content, harness.root);
 
   const mdAttachment = view.attachments.find((item) => item.id === markdownAccepted.attachment.id)!;
-  const mdContent = await (await fetch(`${harness.base}/v1/research-content/${mdAttachment.contentSnapshotId}`, { headers: headers(harness.token) })).json() as { blocks: Array<{ anchor: { kind: string; blockType: string; heading?: string } }> };
+  const mdContent = await (await fetch(`${harness.base}/v1/research-content/${mdAttachment.contentSnapshotId}`, { headers: headers(harness.token) })).json() as { blocks: Array<{ text: string; anchor: { kind: string; blockType: string; heading?: string } }> };
   assert.deepEqual(mdContent.blocks.map((block) => block.anchor.blockType), ["heading", "paragraph", "list", "code"]);
+  assert.match(mdContent.blocks[2].text, /continuation/);
   assert.equal(mdContent.blocks[0].anchor.heading, "Heading");
 });
 
