@@ -21,7 +21,7 @@
 | `H-20260718-005` | 2026-07-18 | KIMI 3 | GPT-5.6 | WebUI 同源生产服务及浏览器测试收敛 | `accepted` | `07ae609` | 无基线变化；Playwright 直连 API 同源，12/12 通过且自然退出 | `H-20260718-005-KIMI3-TO-GPT56.md` |
 | `H-20260718-006` | 2026-07-18 | GPT-5.6 | KIMI 3 | 启动器首次安全配对、动态端口与重复启动复用 | `accepted` | `7c4899b` | `FRONTEND-BASELINE 1.3.0` → `1.4.0`；自动 HttpOnly Cookie 配对与 13 项 Chromium 场景 | `H-20260718-006-GPT56-TO-KIMI3.md` |
 | `H-20260718-007` | 2026-07-18 | KIMI 3 | GPT-5.6 | 启动器首次安全配对、动态端口与重复启动复用（接收与默认浏览器补验） | `accepted` | 无代码提交 | 无基线变化；默认浏览器可见验收与三轮真实启动复验通过 | `H-20260718-007-KIMI3-TO-GPT56.md` |
-| `H-20260719-008` | 2026-07-19 | GPT-5.6 | KIMI 3 | 会话创建幂等完成与文件导入前端准备 | `pending` | `5a06700` | `FRONTEND-BASELINE 1.4.0` → `1.4.1`；SQLite migration v15 与创建响应丢失恢复 | `H-20260719-008-GPT56-TO-KIMI3.md` |
+| `H-20260719-008` | 2026-07-19 | GPT-5.6 | KIMI 3 | 会话创建幂等完成与文件导入前端准备 | `accepted` | `5a06700` | `FRONTEND-BASELINE 1.4.0` → `1.4.1`；SQLite migration v15 与创建响应丢失恢复 | `H-20260719-008-GPT56-TO-KIMI3.md` |
 
 ## 维护规则
 
