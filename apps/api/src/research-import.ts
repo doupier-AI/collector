@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { inflateRawSync } from "node:zlib";
 import {
   RESEARCH_IMPORT_MAX_BYTES,
   type ResearchAttachmentRecord,
@@ -14,6 +15,11 @@ import {
 } from "@collector/capture-contracts";
 import type { CollectorStore } from "./store.js";
 import { parseMarkdown, parsePdf, splitPlainText } from "./parsers.js";
+
+const DOCX_MAX_ENTRY_BYTES = RESEARCH_IMPORT_MAX_BYTES;
+const DOCX_MAX_TOTAL_BYTES = RESEARCH_IMPORT_MAX_BYTES;
+const DOCX_MAX_COMPRESSION_RATIO = 100;
+const DOCX_MAX_ENTRIES = 2_000;
 
 export interface ResearchImportServiceOptions {
   autoRunTasks?: boolean;
@@ -288,6 +294,7 @@ function anchorFor(
 }
 
 async function parseDocx(bytes: Uint8Array): Promise<ResearchContentBlock[]> {
+  validateDocxArchive(bytes);
   const mammoth = await import("mammoth");
   const result = await mammoth.convertToHtml({ buffer: Buffer.from(bytes) });
   const blocks: ResearchContentBlock[] = [];
@@ -307,6 +314,77 @@ async function parseDocx(bytes: Uint8Array): Promise<ResearchContentBlock[]> {
     });
   }
   return blocks;
+}
+
+function validateDocxArchive(bytes: Uint8Array): void {
+  const buffer = Buffer.from(bytes);
+  const minimumEocdOffset = Math.max(0, buffer.length - 65_557);
+  let eocdOffset = -1;
+  for (let offset = buffer.length - 22; offset >= minimumEocdOffset; offset -= 1) {
+    if (buffer.readUInt32LE(offset) === 0x06054b50) {
+      eocdOffset = offset;
+      break;
+    }
+  }
+  if (eocdOffset < 0) throw new Error("DOCX central directory is missing");
+
+  const diskNumber = buffer.readUInt16LE(eocdOffset + 4);
+  const centralDisk = buffer.readUInt16LE(eocdOffset + 6);
+  const entriesOnDisk = buffer.readUInt16LE(eocdOffset + 8);
+  const entryCount = buffer.readUInt16LE(eocdOffset + 10);
+  const centralSize = buffer.readUInt32LE(eocdOffset + 12);
+  const centralOffset = buffer.readUInt32LE(eocdOffset + 16);
+  if (diskNumber || centralDisk || entriesOnDisk !== entryCount) throw new Error("Multi-disk DOCX archives are not supported");
+  if (entryCount > DOCX_MAX_ENTRIES) throw new Error("DOCX contains too many archive entries");
+  if (centralOffset + centralSize > eocdOffset) throw new Error("DOCX central directory is invalid");
+
+  let offset = centralOffset;
+  let totalOutputBytes = 0;
+  let hasContentTypes = false;
+  let hasDocument = false;
+  for (let index = 0; index < entryCount; index += 1) {
+    if (offset + 46 > eocdOffset || buffer.readUInt32LE(offset) !== 0x02014b50) throw new Error("DOCX central directory entry is invalid");
+    const flags = buffer.readUInt16LE(offset + 8);
+    const method = buffer.readUInt16LE(offset + 10);
+    const compressedSize = buffer.readUInt32LE(offset + 20);
+    const uncompressedSize = buffer.readUInt32LE(offset + 24);
+    const fileNameLength = buffer.readUInt16LE(offset + 28);
+    const extraLength = buffer.readUInt16LE(offset + 30);
+    const commentLength = buffer.readUInt16LE(offset + 32);
+    const localOffset = buffer.readUInt32LE(offset + 42);
+    const nextOffset = offset + 46 + fileNameLength + extraLength + commentLength;
+    if (nextOffset > eocdOffset) throw new Error("DOCX central directory entry is truncated");
+    if (compressedSize === 0xffffffff || uncompressedSize === 0xffffffff || localOffset === 0xffffffff) throw new Error("ZIP64 DOCX archives are not supported");
+    if (flags & 1) throw new Error("Encrypted DOCX archives are not supported");
+    if (method !== 0 && method !== 8) throw new Error("DOCX uses an unsupported compression method");
+
+    const fileName = buffer.subarray(offset + 46, offset + 46 + fileNameLength).toString("utf8").replace(/\\/g, "/");
+    if (fileName === "[Content_Types].xml") hasContentTypes = true;
+    if (fileName === "word/document.xml") hasDocument = true;
+    if (localOffset + 30 > centralOffset || buffer.readUInt32LE(localOffset) !== 0x04034b50) throw new Error("DOCX local file entry is invalid");
+    const localFileNameLength = buffer.readUInt16LE(localOffset + 26);
+    const localExtraLength = buffer.readUInt16LE(localOffset + 28);
+    const dataOffset = localOffset + 30 + localFileNameLength + localExtraLength;
+    const dataEnd = dataOffset + compressedSize;
+    if (dataEnd > centralOffset) throw new Error("DOCX compressed entry is truncated");
+
+    if (!fileName.endsWith("/")) {
+      if (uncompressedSize > DOCX_MAX_ENTRY_BYTES) throw new Error("DOCX archive entry exceeds the extraction limit");
+      if (totalOutputBytes + uncompressedSize > DOCX_MAX_TOTAL_BYTES) throw new Error("DOCX extracted content exceeds the 20 MiB limit");
+      const compressed = buffer.subarray(dataOffset, dataEnd);
+      const output = method === 0
+        ? compressed
+        : inflateRawSync(compressed, { maxOutputLength: DOCX_MAX_ENTRY_BYTES });
+      if (output.byteLength !== uncompressedSize) throw new Error("DOCX archive entry size does not match its directory record");
+      if (compressedSize === 0 ? output.byteLength !== 0 : output.byteLength / compressedSize > DOCX_MAX_COMPRESSION_RATIO) {
+        throw new Error("DOCX archive compression ratio exceeds the safety limit");
+      }
+      totalOutputBytes += output.byteLength;
+      if (totalOutputBytes > DOCX_MAX_TOTAL_BYTES) throw new Error("DOCX extracted content exceeds the 20 MiB limit");
+    }
+    offset = nextOffset;
+  }
+  if (offset !== centralOffset + centralSize || !hasContentTypes || !hasDocument) throw new Error("DOCX package structure is invalid");
 }
 
 function decodeHtmlText(value: string): string {

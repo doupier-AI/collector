@@ -107,7 +107,7 @@ test("research import persists TXT and Markdown snapshots without exposing local
   assertNoPrivatePath(textAccepted, harness.root);
   await waitForImport(harness.base, harness.token, textAccepted.task.id, "completed");
 
-  const markdownResponse = await upload(harness.base, harness.token, session.id, "md-key", "guide.md", "text/markdown", Buffer.from("# Heading\n\n- one\n- two\n\n```ts\nconst ready = true;\n```"));
+  const markdownResponse = await upload(harness.base, harness.token, session.id, "md-key", "guide.md", "text/markdown", Buffer.from("# Heading\n\nIntro paragraph\n- one\n- two\n\n```ts\nconst ready = true;\n```"));
   assert.equal(markdownResponse.status, 202);
   const markdownAccepted = await markdownResponse.json() as typeof textAccepted;
   await waitForImport(harness.base, harness.token, markdownAccepted.task.id, "completed");
@@ -128,7 +128,7 @@ test("research import persists TXT and Markdown snapshots without exposing local
 
   const mdAttachment = view.attachments.find((item) => item.id === markdownAccepted.attachment.id)!;
   const mdContent = await (await fetch(`${harness.base}/v1/research-content/${mdAttachment.contentSnapshotId}`, { headers: headers(harness.token) })).json() as { blocks: Array<{ anchor: { kind: string; blockType: string; heading?: string } }> };
-  assert.deepEqual(mdContent.blocks.map((block) => block.anchor.blockType), ["heading", "list", "code"]);
+  assert.deepEqual(mdContent.blocks.map((block) => block.anchor.blockType), ["heading", "paragraph", "list", "code"]);
   assert.equal(mdContent.blocks[0].anchor.heading, "Heading");
 });
 
@@ -194,6 +194,37 @@ test("research import validates authorization, formats, content, empty body, and
   assert.equal((await empty.json() as { error: { code: string } }).error.code, "empty_file");
   const missingKey = await upload(harness.base, harness.token, session.id, "", "a.txt", "text/plain", Buffer.from("text"));
   assert.equal(missingKey.status, 400);
+
+  const malformedFileName = await fetch(`${harness.base}/v1/research-sessions/${session.id}/imports`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${harness.token}`,
+      "Content-Type": "text/plain",
+      "Idempotency-Key": "malformed-file-name",
+      "X-File-Name": "%",
+    },
+    body: "text",
+  });
+  assert.equal(malformedFileName.status, 400);
+  assert.equal((await malformedFileName.json() as { error: { code: string } }).error.code, "invalid_file_name");
+
+  const bomb = new JSZip();
+  bomb.file("[Content_Types].xml", "x");
+  bomb.folder("word")!.file("document.xml", "a".repeat(21 * 1024 * 1024));
+  const bombResponse = await upload(
+    harness.base,
+    harness.token,
+    session.id,
+    "docx-bomb",
+    "bomb.docx",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    await bomb.generateAsync({ type: "uint8array", compression: "DEFLATE", compressionOptions: { level: 9 } }),
+  );
+  assert.equal(bombResponse.status, 202);
+  const bombAccepted = await bombResponse.json() as { task: { id: string } };
+  await harness.service.researchImports.processTask(bombAccepted.task.id);
+  const bombTask = await waitForImport(harness.base, harness.token, bombAccepted.task.id, "failed");
+  assert.equal((bombTask.error as { code: string }).code, "parse_failed");
 });
 
 test("research import exposes persisted progress events, cancellation, retry, and restart recovery", async (t) => {
@@ -208,6 +239,7 @@ test("research import exposes persisted progress events, cancellation, retry, an
   const events = await (await fetch(`${harness.base}/v1/research-imports/${accepted.task.id}/events`, { headers: headers(harness.token) })).text();
   assert.match(events, /event: snapshot/);
   assert.match(events, /event: cancelled/);
+  assert.ok(events.lastIndexOf("event: snapshot") > events.lastIndexOf("event: cancelled"));
 
   const failedResponse = await upload(harness.base, harness.token, session.id, "retry-key", "broken.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", Buffer.from("PKbroken"));
   const failedAccepted = await failedResponse.json() as { task: { id: string } };

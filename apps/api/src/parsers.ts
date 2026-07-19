@@ -106,7 +106,13 @@ export function parseMarkdown(value: string, artifact?: ArtifactRecord): ParsedF
       while (index < lines.length && /^\s*(?:[-*+] |\d+\. )/.test(lines[index])) index += 1;
     } else {
       index += 1;
-      while (index < lines.length && lines[index].trim() && !/^#{1,6}\s+/.test(lines[index]) && !/^\s*```/.test(lines[index])) index += 1;
+      while (
+        index < lines.length
+        && lines[index].trim()
+        && !/^#{1,6}\s+/.test(lines[index])
+        && !/^\s*```/.test(lines[index])
+        && !/^\s*(?:[-*+] |\d+\. )/.test(lines[index])
+      ) index += 1;
     }
     const text = lines.slice(start, index).join("\n").trim();
     if (!text) continue;

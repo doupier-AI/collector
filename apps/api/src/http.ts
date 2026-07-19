@@ -85,7 +85,7 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       }
       const researchImportsMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)\/imports$/);
       if (request.method === "POST" && researchImportsMatch) {
-        const fileName = decodeURIComponent(header(request, "x-file-name") ?? "");
+        const fileName = decodeImportComponent(header(request, "x-file-name") ?? "", "invalid_file_name", "File name");
         const mimeType = header(request, "content-type")?.split(";", 1)[0] ?? "application/octet-stream";
         try { validateResearchImportHeaders(fileName, mimeType); }
         catch (error) {
@@ -101,7 +101,7 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
           throw error;
         }
         const accepted = await service.researchImports.createImport(
-          decodeURIComponent(researchImportsMatch[1]), fileName, mimeType,
+          decodeImportComponent(researchImportsMatch[1], "invalid_request", "Research session ID"), fileName, mimeType,
           bytes, header(request, "idempotency-key") ?? "",
         );
         return json(response, 202, accepted);
@@ -371,6 +371,14 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
   });
 }
 
+function decodeImportComponent(value: string, code: string, label: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new ResearchImportValidationError(`${label} is not valid URL encoding`, code);
+  }
+}
+
 async function readJson(request: IncomingMessage): Promise<unknown> {
   const bytes = await readBytes(request, JSON_LIMIT);
   return JSON.parse(Buffer.from(bytes).toString("utf8"));
@@ -456,16 +464,22 @@ function validateLocalRequest(request: IncomingMessage): void {
 }
 
 async function streamResearchImportTaskEvents(request: IncomingMessage, response: ServerResponse, service: CaptureService, taskId: string, afterId: number): Promise<void> {
-  const snapshot = service.researchImports.getTaskSnapshot(taskId);
+  service.researchImports.getTask(taskId);
   response.statusCode = 200;
   response.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   response.setHeader("Cache-Control", "no-cache, no-transform");
   response.setHeader("Connection", "keep-alive");
   response.setHeader("X-Accel-Buffering", "no");
   response.flushHeaders();
-  writeImportSse(response, snapshot);
 
   let cursor = afterId;
+  const initialEvents = service.researchImports.getTaskEvents(taskId, cursor);
+  for (const event of initialEvents) {
+    writeImportSse(response, event);
+    cursor = event.id ?? cursor;
+  }
+  writeImportSse(response, service.researchImports.getTaskSnapshot(taskId));
+
   const deadline = Date.now() + 25_000;
   while (!request.destroyed && Date.now() < deadline) {
     const events = service.researchImports.getTaskEvents(taskId, cursor);
