@@ -80,7 +80,7 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         const body = await readJsonOptional(request);
         try { validateResearchSessionInput(body); }
         catch (error) { throw new ResearchValidationError((error as Error).message); }
-        return json(response, 201, await service.research.createSession(body.title));
+        return json(response, 201, await service.research.createSession(body.title, header(request, "idempotency-key") ?? ""));
       }
       const researchMessagesMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)\/messages$/);
       if (request.method === "POST" && researchMessagesMatch) {

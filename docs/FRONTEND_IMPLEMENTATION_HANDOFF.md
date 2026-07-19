@@ -2,9 +2,9 @@
 
 基线 ID：`FRONTEND-BASELINE`
 
-基线版本：`1.4.0`
+基线版本：`1.4.1`
 
-最后更新：2026-07-18
+最后更新：2026-07-19
 
 适用角色：KIMI 3 前端
 
@@ -94,20 +94,20 @@
 | --- | --- |
 | `apps/web` | 已实现 React 19、TypeScript、Vite 8 和 React Router 7 WebUI |
 | React、React DOM、Vite、React Router | 已按 npm workspace 安装在 `apps/web`，lockfile 已更新 |
-| Playwright | 已接入 `test:e2e`，13 项 Chromium 场景通过并自然退出，包含启动器自动配对场景 |
+| Playwright | 已接入 `test:e2e`，14 项 Chromium 场景通过并自然退出，包含启动器自动配对和创建响应丢失恢复场景 |
 | `apps/api` | 已有 Node HTTP 服务、认证、SQLite、文件和模型网关基础 |
 | API 根路径 `/` | 正式服务返回 WebUI 生产入口；未配置 Web 根目录的嵌入式测试服务保持 API JSON 响应 |
 | WebUI 静态资源同源服务 | 提交 `709246b` 已实现并通过真实 Chromium 验证；页面、资源、HTTP 与 SSE 使用同一 loopback 来源 |
 | 研究会话、消息、生成任务契约 | 已在 `packages/capture-contracts` 实现 |
-| 研究会话后端 | 已实现会话增查、恢复视图、幂等消息提交、任务查询和失败重试 |
+| 研究会话后端 | 已实现幂等会话创建、会话增查、恢复视图、幂等消息提交、任务查询和失败重试 |
 | Chat 渐进事件 | 已实现可续传 SSE：`snapshot`、`delta`、`completed`、`failed` |
-| SQLite | migration v14 已加入会话、消息、任务和任务事件表 |
+| SQLite | migration v15 已加入会话创建幂等键；会话、消息、任务和任务事件表保持可恢复 |
 | WebUI 首次认证引导 | 启动器通过短时一次性回环入口下发 HttpOnly Cookie；URL、storage 和日志不包含令牌，手动 6 位码页作为开发回退 |
 | 真实模型流式能力 | 模型完整返回 JSON 后按 80 字符分片写入 SSE，不是供应商原生 token stream |
 | 当前服务端口 | 正式启动器由系统选择动态端口；直接开发服务保留 `43110`，已配对浏览器扩展使用 `43110` 适配入口 |
 | 当前认证 | Bearer token 或 `collector_session` HttpOnly Cookie |
 | 当前构建 | TypeScript project references + WebUI 类型检查与 Vite 构建 + `scripts/build-assets.mjs` |
-| 当前测试 | 126 项 Node 单元与集成测试（125 通过、1 项 Windows 沙箱能力跳过）、61 项 WebUI 测试、13 项 Chromium 端到端场景 |
+| 当前测试 | 128 项 Node 单元与集成测试、62 项 WebUI 测试、14 项 Chromium 端到端场景全部通过 |
 
 不要把“文档定义了”写成“代码已经实现”。合并前以源码、自动化测试和实际界面验证为依据。
 
@@ -347,7 +347,7 @@ apps/web/
 
 ## 10. 已实现后端契约
 
-以下契约已经由后端提交 `e4ce72ebb9ba1df18a72481b8e83ef67988357c1` 实现，并由 `tests/research-session.test.ts` 验证。
+以下契约的研究会话基础由后端提交 `e4ce72ebb9ba1df18a72481b8e83ef67988357c1` 实现；会话创建幂等由当前 migration v15 切片补充。接口行为由 `tests/research-session.test.ts` 和 `tests/sqlite-store.test.ts` 验证。
 
 共享类型位于 `packages/capture-contracts/src/index.ts`：
 
@@ -387,15 +387,16 @@ GET /v1/research-sessions
 ```http
 POST /v1/research-sessions
 Content-Type: application/json
+Idempotency-Key: <uuid>
 
 {
   "title": "理解注意力机制"
 }
 ```
 
-响应为 `201` 和 `ResearchSessionRecord`。`title` 可省略，省略时使用“新研究会话”；标题长度为 1 至 200 个字符。
+响应为 `201` 和 `ResearchSessionRecord`。`title` 可省略，省略时使用“新研究会话”；标题长度为 1 至 200 个字符。`Idempotency-Key` 必填且不超过 200 个字符。
 
-当前创建会话接口没有幂等键。前端在用户第一次提交时创建会话，收到 `201` 后立即把会话 ID 写入路由，再提交消息。网络结果不确定时不要盲目重复创建，应重新读取会话列表并提示用户确认。会话创建幂等是后端待补项。
+前端为一次创建意图生成稳定的幂等键。请求失败且结果不确定时，重试复用原键；后端在 SQLite 事务中返回首次创建的同一会话，不新增空会话，也不使用重试请求中的标题覆盖首次标题。用户成功进入会话后，再次明确开始新研究时生成新键。
 
 ### 10.3 获取恢复视图
 
@@ -766,12 +767,13 @@ KIMI 3 提交前逐项确认：
 
 - 后端提交：`e4ce72ebb9ba1df18a72481b8e83ef67988357c1`；
 - 契约、HTTP 路径、响应结构和 SSE 事件以本文第 10 节为准；
-- SQLite 使用 migration v14；
-- 消息提交具有事务和幂等保证；
+- SQLite 使用 migration v15；
+- 会话创建和消息提交均具有事务与幂等保证；
 - 模型未配置、供应商失败和服务重启具有可重试任务语义；
 - Host、Origin 和本地令牌校验已经加入并由集成测试验证；
-- `npm.cmd run build` 通过；
-- `npm.cmd test` 共 118 项：117 项通过、0 项失败、1 项原有 Windows 沙箱检查跳过；
+- `npm.cmd test` 共 128 项，全部通过；
+- `npm.cmd run test:web` 共 62 项，全部通过；
+- `npm.cmd run test:e2e` 共 14 项 Chromium 场景，全部通过并自然退出；
 - Collector 项目检查通过；
 - 测试使用确定性假模型，没有真实云模型调用；
 - 当前切片没有实现真实文件导入入口。
@@ -783,14 +785,20 @@ KIMI 3 提交前逐项确认：
 - 启动器专用控制凭据在独立私有文件中保存，普通已配对客户端不能申请浏览器启动入口；
 - 一次性回环入口下发 HttpOnly、SameSite=Strict Cookie 后立即关闭，URL、storage、实例文件和日志不包含会话令牌；
 - 已配对浏览器扩展通过 `43110` 本机适配入口访问同一领域服务，未配对请求仍返回 401；
-- 13 项 Chromium 场景通过并自然退出；新增场景验证自动配对、URL 无令牌、Cookie 不可被页面读取、控制台无错误与产品请求同源。
+- 14 项 Chromium 场景通过并自然退出；场景验证自动配对、URL 无令牌、Cookie 不可被页面读取、创建响应丢失后恢复同一会话、控制台无错误与产品请求同源。
 
-### 后续仍由 GPT-5.6 补齐
+### 会话创建幂等已完成
 
-1. 会话创建幂等，避免首次创建请求结果不确定时出现重复空会话；
-2. 文件导入进入研究会话的正式契约；
-3. 需要时增加会话列表分页和自动标题更新；
-4. 供应商原生流式输出，降低真实模型首片延迟。
+- 创建接口要求 `Idempotency-Key`，同一键的并发请求和服务重启后重试返回同一会话；
+- WebUI 在创建响应丢失后保留原键，用户点击重试会恢复已经落库的会话；
+- SQLite migration v15 为新会话保存创建幂等键，既有会话保持兼容；
+- 单元、API、重启恢复和真实 Chromium 场景覆盖了结果不确定时不产生重复空会话。
+
+### 后续实现顺序
+
+1. 文件导入进入研究会话的正式契约；
+2. 需要时增加会话列表分页和自动标题更新；
+3. 供应商原生流式输出，降低真实模型首片延迟。
 
 以上阻塞项未完成前，KIMI 3 不自行引入 token URL 参数、浏览器持久化密钥、跨域绕过、假上传成功或前端伪流式输出。
 

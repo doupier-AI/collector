@@ -85,12 +85,19 @@ test("research API persists an idempotent turn, streams fake-provider events, an
     ...authHeaders(harness.token), Host: "example.com",
   }), 403);
 
-  const createdResponse = await fetch(`${harness.base}/v1/research-sessions`, {
-    method: "POST", headers: authHeaders(harness.token), body: JSON.stringify({ title: "本地优先研究" }),
+  const creationKey = randomUUID();
+  const createSession = () => fetch(`${harness.base}/v1/research-sessions`, {
+    method: "POST", headers: { ...authHeaders(harness.token), "Idempotency-Key": creationKey }, body: JSON.stringify({ title: "本地优先研究" }),
   });
+  const createdResponse = await createSession();
   assert.equal(createdResponse.status, 201);
   const session = await createdResponse.json() as { id: string; title: string };
   assert.equal(session.title, "本地优先研究");
+  const repeatedCreateResponse = await createSession();
+  assert.equal(repeatedCreateResponse.status, 201);
+  const repeatedSession = await repeatedCreateResponse.json() as typeof session;
+  assert.equal(repeatedSession.id, session.id);
+  assert.equal(harness.service.research.listSessions().length, 1);
 
   const idempotencyKey = randomUUID();
   const submit = () => fetch(`${harness.base}/v1/research-sessions/${session.id}/messages`, {
@@ -141,11 +148,45 @@ test("research API persists an idempotent turn, streams fake-provider events, an
   reopened.close();
 });
 
+test("concurrent session creation and restart reuse one idempotency key", async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.close());
+  const creationKey = randomUUID();
+  const create = () => fetch(`${harness.base}/v1/research-sessions`, {
+    method: "POST",
+    headers: { ...authHeaders(harness.token), "Idempotency-Key": creationKey },
+    body: JSON.stringify({ title: "并发创建" }),
+  });
+  const responses = await Promise.all([create(), create()]);
+  assert.deepEqual(responses.map((response) => response.status), [201, 201]);
+  const sessions = await Promise.all(responses.map((response) => response.json() as Promise<{ id: string }>));
+  assert.equal(sessions[0].id, sessions[1].id);
+  assert.equal(harness.service.research.listSessions().length, 1);
+
+  const databasePath = harness.store.getDataFilePath()!;
+  harness.store.close();
+  const reopened = new SqliteStore(databasePath);
+  await reopened.init();
+  const service = new CaptureService(reopened, join(harness.root, "artifacts-reopened"), undefined, undefined, {
+    autoRunRecentOrganization: false,
+    autoRunResearchTasks: false,
+  });
+  const restored = await service.research.createSession("不会覆盖首次标题", creationKey);
+  assert.equal(restored.id, sessions[0].id);
+  assert.equal(restored.title, "并发创建");
+  assert.equal(service.research.listSessions().length, 1);
+  reopened.close();
+});
+
 test("missing model preserves input and exposes a retryable failed task", async (t) => {
   const harness = await createHarness();
   t.after(() => harness.close());
-  const sessionResponse = await fetch(`${harness.base}/v1/research-sessions`, {
+  const missingCreationKey = await fetch(`${harness.base}/v1/research-sessions`, {
     method: "POST", headers: authHeaders(harness.token), body: "{}",
+  });
+  assert.equal(missingCreationKey.status, 400);
+  const sessionResponse = await fetch(`${harness.base}/v1/research-sessions`, {
+    method: "POST", headers: { ...authHeaders(harness.token), "Idempotency-Key": "missing-model-session" }, body: "{}",
   });
   const session = await sessionResponse.json() as { id: string };
   const missingKey = await fetch(`${harness.base}/v1/research-sessions/${session.id}/messages`, {
@@ -189,7 +230,7 @@ test("restart recovery marks an interrupted generation retryable without losing 
   const firstService = new CaptureService(firstStore, join(root, "artifacts"), undefined, undefined, {
     autoRunRecentOrganization: false, autoRunResearchTasks: false, researchProvider: deterministicProvider,
   });
-  const session = await firstService.research.createSession("重启恢复");
+  const session = await firstService.research.createSession("重启恢复", "restart-session");
   const accepted = await firstService.research.submitMessage(session.id, "解释本地优先研究的价值", "restart-turn");
   const claimed = firstStore.claimResearchTask(accepted.task.id, "deterministic-fake", "fake-research-1", "test-research-v1");
   assert.equal(claimed?.status, "running");

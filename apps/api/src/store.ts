@@ -91,6 +91,7 @@ export interface CollectorStore {
   deleteCapture(id: string): Promise<boolean>;
   getDeleteImpact(captureId: string): { topicMemberships: Array<{ topicId: string; topicTitle: string }>; workflowInputs: Array<{ workflowRunId: string; workflowType: string }>; citationCount: number; hasNoImpact: boolean };
   saveResearchSession(record: ResearchSessionRecord): Promise<void>;
+  createResearchSession(record: ResearchSessionRecord, idempotencyKey: string): Promise<ResearchSessionRecord>;
   getResearchSession(id: string): ResearchSessionRecord | undefined;
   listResearchSessions(): ResearchSessionRecord[];
   getResearchMessage(id: string): ResearchMessageRecord | undefined;
@@ -665,6 +666,26 @@ export class SqliteStore implements CollectorStore {
       .run(record.id, record.status, record.createdAt, record.updatedAt, JSON.stringify(record));
   }
 
+  async createResearchSession(record: ResearchSessionRecord, idempotencyKey: string): Promise<ResearchSessionRecord> {
+    let created: ResearchSessionRecord | undefined;
+    this.transaction(() => {
+      const existing = this.getRecord<ResearchSessionRecord>(
+        "SELECT record_json FROM research_sessions WHERE creation_idempotency_key = ?",
+        idempotencyKey,
+      );
+      if (existing) {
+        created = existing;
+        return;
+      }
+      this.db().prepare(`INSERT INTO research_sessions (id, status, created_at, updated_at, creation_idempotency_key, record_json)
+        VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(record.id, record.status, record.createdAt, record.updatedAt, idempotencyKey, JSON.stringify(record));
+      created = record;
+    });
+    if (!created) throw new Error("Research session was not persisted");
+    return created;
+  }
+
   getResearchSession(id: string): ResearchSessionRecord | undefined {
     return this.getRecord<ResearchSessionRecord>("SELECT record_json FROM research_sessions WHERE id = ?", id);
   }
@@ -1166,6 +1187,18 @@ export class SqliteStore implements CollectorStore {
       });
       version = 14;
     }
+    if (version < 15) {
+      this.transaction(() => {
+        this.db().exec(`
+          ALTER TABLE research_sessions ADD COLUMN creation_idempotency_key TEXT;
+          CREATE UNIQUE INDEX research_sessions_creation_idempotency_idx
+            ON research_sessions(creation_idempotency_key)
+            WHERE creation_idempotency_key IS NOT NULL;
+          INSERT INTO schema_migrations(version, applied_at) VALUES (15, datetime('now'));
+        `);
+      });
+      version = 15;
+    }
 
   }
 
@@ -1417,6 +1450,7 @@ export class JsonStore implements CollectorStore {
   async deleteCapture(id: string) { const record = this.data.captures[id]; if (!record) return false; delete this.data.captures[id]; delete this.data.captureByClientId[record.clientCaptureId]; delete this.data.captureByChecksum[record.checksum]; for (const key of Object.keys(this.data.fragments)) { if (this.data.fragments[key].captureId === id) delete this.data.fragments[key]; } for (const key of Object.keys(this.data.knowledgeItems)) { if (this.data.knowledgeItems[key].captureId === id) delete this.data.knowledgeItems[key]; } for (const key of Object.keys(this.data.reviewProposals)) { if (this.data.reviewProposals[key].captureId === id) delete this.data.reviewProposals[key]; } for (const key of Object.keys(this.data.agentRuns ?? {})) { if (this.data.agentRuns![key].captureId === id) delete this.data.agentRuns![key]; } for (const key of Object.keys(this.data.relations ?? {})) { const r = this.data.relations![key]; if (r.sourceCaptureId === id || r.targetCaptureId === id) delete this.data.relations![key]; } for (const key of Object.keys(this.data.topicMemberships ?? {})) { if (this.data.topicMemberships![key].captureId === id) delete this.data.topicMemberships![key]; } if (this.data.materialRevisions) { for (const key of Object.keys(this.data.materialRevisions)) { if (this.data.materialRevisions[key].captureId === id) delete this.data.materialRevisions[key]; } } await this.flush(); return true; }
   getDeleteImpact(captureId: string) { const memberships = Object.values(this.data.topicMemberships ?? {}).filter(m => m.captureId === captureId).map(m => { const topic = this.data.topics?.[m.topicId]; return { topicId: m.topicId, topicTitle: topic?.title ?? "(unnamed)" }; }); const workflowInputs: Array<{ workflowRunId: string; workflowType: string }> = []; const citationCount = Object.values(this.data.relations ?? {}).filter(r => (r.sourceCaptureId === captureId || r.targetCaptureId === captureId) && r.status === "active").length; const hasNoImpact = memberships.length === 0 && workflowInputs.length === 0 && citationCount === 0; return { topicMemberships: memberships, workflowInputs, citationCount, hasNoImpact }; }
   async saveResearchSession(_record: ResearchSessionRecord): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
+  async createResearchSession(_record: ResearchSessionRecord, _idempotencyKey: string): Promise<ResearchSessionRecord> { throw new Error("Research sessions require SQLite persistence"); }
   getResearchSession(_id: string): ResearchSessionRecord | undefined { return undefined; }
   listResearchSessions(): ResearchSessionRecord[] { return []; }
   getResearchMessage(_id: string): ResearchMessageRecord | undefined { return undefined; }

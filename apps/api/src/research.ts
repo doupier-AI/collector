@@ -45,7 +45,9 @@ export class ResearchSessionService {
     if (this.options.autoRunTasks !== false) this.scheduleRecovery();
   }
 
-  async createSession(title?: string): Promise<ResearchSessionRecord> {
+  async createSession(title: string | undefined, idempotencyKey: string): Promise<ResearchSessionRecord> {
+    if (!idempotencyKey.trim()) throw new ResearchValidationError("Idempotency-Key is required");
+    if (idempotencyKey.length > 200) throw new ResearchValidationError("Idempotency-Key must not exceed 200 characters");
     const now = new Date().toISOString();
     const session: ResearchSessionRecord = {
       id: randomUUID(),
@@ -54,8 +56,7 @@ export class ResearchSessionService {
       createdAt: now,
       updatedAt: now,
     };
-    await this.store.saveResearchSession(session);
-    return session;
+    return this.store.createResearchSession(session, idempotencyKey);
   }
 
   listSessions(): ResearchSessionRecord[] {

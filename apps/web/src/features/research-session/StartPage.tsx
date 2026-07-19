@@ -16,6 +16,7 @@ export function StartPage() {
   const [createError, setCreateError] = useState<string | null>(null);
   const [authError, setAuthError] = useState<unknown>(null);
   const creatingRef = useRef(false);
+  const creationKeyRef = useRef<string | null>(null);
 
   if (authError) {
     return <PairingGate onPaired={() => setAuthError(null)} />;
@@ -27,8 +28,10 @@ export function StartPage() {
     setCreating(true);
     setCreateError(null);
     try {
+      const creationKey = creationKeyRef.current ?? globalThis.crypto.randomUUID();
+      creationKeyRef.current = creationKey;
       const idempotencyKey = globalThis.crypto.randomUUID();
-      const created = await api.createResearchSession();
+      const created = await api.createResearchSession(creationKey);
       navigate(`/research/${encodeURIComponent(created.id)}`, {
         state: { firstTurn: { content, idempotencyKey } },
       });

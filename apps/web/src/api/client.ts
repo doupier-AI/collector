@@ -10,7 +10,7 @@ export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>
 
 export interface ApiClient {
   listResearchSessions(): Promise<ResearchSessionRecord[]>;
-  createResearchSession(title?: string): Promise<ResearchSessionRecord>;
+  createResearchSession(idempotencyKey: string, title?: string): Promise<ResearchSessionRecord>;
   getResearchSessionView(sessionId: string): Promise<ResearchSessionView>;
   submitResearchMessage(sessionId: string, content: string, idempotencyKey: string): Promise<ResearchTurnAccepted>;
   getResearchTask(taskId: string): Promise<ResearchTaskRecord>;
@@ -56,11 +56,11 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
     listResearchSessions() {
       return requestJson<ResearchSessionRecord[]>(fetchFn, "/v1/research-sessions");
     },
-    createResearchSession(title?: string) {
+    createResearchSession(idempotencyKey: string, title?: string) {
       const body = title === undefined ? "{}" : JSON.stringify({ title });
       return requestJson<ResearchSessionRecord>(fetchFn, "/v1/research-sessions", {
         method: "POST",
-        headers: JSON_HEADERS,
+        headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
         body,
       });
     },

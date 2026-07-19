@@ -70,6 +70,11 @@ export async function readLauncherControlToken(apiPort: number): Promise<string>
   return waitForFileValue(`launcher-${apiPort}.token`);
 }
 
+export interface ResearchSessionRow {
+  id: string;
+  creationIdempotencyKey: string | null;
+}
+
 export interface ResearchMessageRow {
   id: string;
   sessionId: string;
@@ -93,12 +98,16 @@ export interface ResearchEventRow {
 
 /** 只读打开 harness 的 SQLite，核对研究消息 / 任务 / 事件记录。 */
 export function readResearchTables(dbPath: string): {
+  sessions: ResearchSessionRow[];
   messages: ResearchMessageRow[];
   tasks: ResearchTaskRow[];
   events: ResearchEventRow[];
 } {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
+    const sessions = db
+      .prepare("SELECT id, creation_idempotency_key AS creationIdempotencyKey FROM research_sessions ORDER BY created_at, rowid")
+      .all() as unknown as ResearchSessionRow[];
     const messages = db
       .prepare(
         "SELECT id, session_id AS sessionId, role, status, record_json AS recordJson FROM research_messages ORDER BY created_at, rowid",
@@ -112,7 +121,7 @@ export function readResearchTables(dbPath: string): {
     const events = db
       .prepare("SELECT task_id AS taskId, event_type AS eventType FROM research_task_events ORDER BY sequence")
       .all() as unknown as ResearchEventRow[];
-    return { messages, tasks, events };
+    return { sessions, messages, tasks, events };
   } finally {
     db.close();
   }

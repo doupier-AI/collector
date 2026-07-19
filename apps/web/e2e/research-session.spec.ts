@@ -129,6 +129,42 @@ test("关闭页面后重新打开自动恢复最近会话", async ({ page, conte
   await reopened.close();
 });
 
+test("创建响应丢失后重试恢复同一会话", async ({ page }) => {
+  await pairAndOpen(page, "/research/new");
+  const creationKeys: string[] = [];
+  let dropFirstResponse = true;
+  await page.route("**/v1/research-sessions", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    creationKeys.push(route.request().headers()["idempotency-key"] ?? "");
+    if (!dropFirstResponse) {
+      await route.continue();
+      return;
+    }
+    dropFirstResponse = false;
+    const response = await route.fetch();
+    expect(response.status()).toBe(201);
+    await route.abort("failed");
+  });
+
+  await page.getByLabel("你的问题").fill(QUESTION);
+  await page.getByRole("button", { name: "开始研究" }).click();
+  await expect(page.getByText("连接失败，请重试。")).toBeVisible();
+  await page.getByRole("button", { name: "开始研究" }).click();
+  await page.waitForURL(/\/research\/(?!new$)[^/]+$/, { timeout: 10_000 });
+
+  expect(creationKeys).toHaveLength(2);
+  expect(creationKeys[0]).toBeTruthy();
+  expect(creationKeys[1]).toBe(creationKeys[0]);
+  const sessionId = page.url().split("/research/")[1];
+  const dataDir = await readDataDir(apiPortForPage(page));
+  const sessions = readResearchTables(join(dataDir, "collector.sqlite")).sessions
+    .filter((session) => session.creationIdempotencyKey === creationKeys[0]);
+  expect(sessions).toEqual([{ id: sessionId, creationIdempotencyKey: creationKeys[0] }]);
+});
+
 test("快速双击发送只创建一个任务", async ({ page }) => {
   const sessionCreates: string[] = [];
   const messagePosts: string[] = [];
