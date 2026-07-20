@@ -18,6 +18,7 @@ import {
 } from "./instance.js";
 import { acquireServiceLock } from "./service-lock.js";
 import { calculateRuntimeVersion, isRuntimeVersion } from "./runtime-version.js";
+import { createMvpDemoResearchProvider } from "./mvp-demo-research.js";
 
 // 直接运行服务时保留 43110 便于前端/扩展开发；正式启动器显式传入 0 由系统选择端口。
 const port = Number(process.env.COLLECTOR_PORT ?? "43110");
@@ -30,8 +31,9 @@ const suppliedRuntimeVersion = process.env.COLLECTOR_RUNTIME_VERSION?.trim();
 if (suppliedRuntimeVersion && !isRuntimeVersion(suppliedRuntimeVersion)) {
   throw new Error("COLLECTOR_RUNTIME_VERSION must be a Collector runtime SHA-256 fingerprint");
 }
+const mvpDemoMode = process.env.COLLECTOR_MVP_DEMO === "1";
 const runtimeVersion = suppliedRuntimeVersion
-  || await calculateRuntimeVersion(dirname(fileURLToPath(import.meta.url)), webRoot);
+  || await calculateRuntimeVersion(dirname(fileURLToPath(import.meta.url)), webRoot, mvpDemoMode ? "mvp-demo" : "standard");
 const serviceLock = await acquireServiceLock(paths.root, { instanceId, pid: process.pid, runtimeVersion });
 const store = new SqliteStore(paths.database, paths.legacyJson);
 try {
@@ -81,10 +83,14 @@ if (providerId) {
 }
 await store.saveSetting("ai_configured", String(Boolean(apiKey && environmentProfile)));
 const resolver = new ProviderRuntimeResolver(DEFAULT_PROVIDER_REGISTRY, async (profileId) => profileId === environmentProfile?.id ? apiKey : undefined);
-const runtime = consent && apiKey && environmentProfile ? await resolver.resolve(environmentProfile) : undefined;
-const service = new CaptureService(store, paths.artifacts, undefined, runtime?.gateway);
+// MVP 演示模式必须保持离线，即使环境中已配置真实模型凭据也不构造云模型运行时。
+const runtime = !mvpDemoMode && consent && apiKey && environmentProfile ? await resolver.resolve(environmentProfile) : undefined;
+const service = new CaptureService(store, paths.artifacts, undefined, runtime?.gateway, {
+  researchProvider: mvpDemoMode ? createMvpDemoResearchProvider() : undefined,
+});
 service.setModelGateway(runtime?.gateway, runtime?.route);
 service.setModelGatewayResolver(async (route) => {
+  if (mvpDemoMode) throw new Error("Cloud model workflows are disabled in Collector MVP demo mode");
   if (!environmentProfile || route.providerProfileId !== environmentProfile.id || route.providerId !== environmentProfile.providerId || route.model !== environmentProfile.model || route.configurationVersion !== environmentProfile.configurationVersion || route.baseUrlFingerprint !== fingerprintBaseUrl(environmentProfile.baseUrl)) {
     throw new Error("Workflow environment provider configuration is unavailable or has changed");
   }
@@ -162,6 +168,7 @@ if (extensionPort > 0 && extensionPort !== activePort) {
 }
 scheduler.start();
 console.log(`Collector WebUI and API listening on http://127.0.0.1:${activePort}`);
+if (mvpDemoMode) console.log("Collector MVP demo mode enabled: research answers are deterministic local simulations without network access.");
 
 // 优雅关闭：监听 SIGTERM/SIGINT 信号
 let shuttingDown = false;

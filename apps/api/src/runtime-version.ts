@@ -5,7 +5,7 @@ import { basename, join, relative, resolve } from "node:path";
 const RUNTIME_VERSION_PREFIX = "collector-runtime-v1";
 const RUNTIME_VERSION_PATTERN = /^collector-runtime-v1-[a-f0-9]{64}$/;
 
-export async function calculateRuntimeVersion(apiRoot: string, webRoot: string): Promise<string> {
+export async function calculateRuntimeVersion(apiRoot: string, webRoot: string, runtimeMode = "standard"): Promise<string> {
   const workspaceRoot = resolve(apiRoot, "../../..");
   const roots = [
     resolve(apiRoot),
@@ -18,7 +18,7 @@ export async function calculateRuntimeVersion(apiRoot: string, webRoot: string):
     await Promise.all(roots.map((root) => listRuntimeFiles(root)))
   ).flat().sort((left, right) => left.localeCompare(right));
   const hash = createHash("sha256");
-  hash.update(`${RUNTIME_VERSION_PREFIX}\0`);
+  hash.update(`${RUNTIME_VERSION_PREFIX}\0${runtimeMode}\0`);
   for (const file of files) {
     const rootIndex = roots.findIndex((root) => file === root || file.startsWith(`${root}\\`) || file.startsWith(`${root}/`));
     if (rootIndex < 0) continue;

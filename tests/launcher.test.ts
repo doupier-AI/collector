@@ -59,6 +59,8 @@ test("runtime version changes when a shared runtime package changes", async (t) 
   ]);
 
   const first = await calculateRuntimeVersion(apiRoot, webRoot);
+  const demo = await calculateRuntimeVersion(apiRoot, webRoot, "mvp-demo");
+  assert.notEqual(demo, first);
   await writeFile(join(gatewayRoot, "index.js"), "gateway-v2");
   const second = await calculateRuntimeVersion(apiRoot, webRoot);
   assert.match(first, /^collector-runtime-v1-[a-f0-9]{64}$/);

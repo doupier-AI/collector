@@ -12,6 +12,7 @@
     "test": "npm run build && node --test dist-tests/**/*.test.js scripts/ralph/*.test.mjs",
     "start": "node apps/api/dist/launcher-main.js",
     "launch": "npm run build && node apps/api/dist/launcher-main.js",
+    "launch:mvp": "npm run build && node scripts/launch-mvp.mjs",
     "start:service": "node apps/api/dist/server.js",
     "dev:api": "npm run build && node apps/api/dist/server.js",
     "dev:web": "npm run dev -w @collector/web",
