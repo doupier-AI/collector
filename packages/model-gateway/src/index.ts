@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { validateProviderDefinition, type ActiveModelRoute, type ProviderDefinition, type ProviderProfile } from "@collector/capture-contracts";
+import { parseResearchSelectionInsight, validateProviderDefinition, type ActiveModelRoute, type ProviderDefinition, type ProviderProfile, type ResearchSelectionInsight } from "@collector/capture-contracts";
 
 export interface ProviderUsage {
   inputTokens?: number;
@@ -235,6 +235,56 @@ export class ModelGateway {
     const parsed = JSON.parse(response.content) as { answer?: unknown };
     if (typeof parsed.answer !== "string" || !parsed.answer.trim()) throw new Error("Research provider returned an invalid answer");
     return parsed.answer;
+  }
+
+  async analyzeSelection(
+    input: {
+      text: string;
+      contextBefore?: string;
+      contextAfter?: string;
+      contentTitle?: string;
+      recentUserMessages?: string[];
+    },
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<ResearchSelectionInsight> {
+    if (!input.text.trim()) throw new Error("Selection analysis requires selected text");
+    const prompt = `你是 Collector 的选区分析助手。用户在本地研究应用中手动选中了一段内容，需要你给出一段忠实、克制、不编造来源的分析。只返回合法 JSON，不要使用 Markdown 代码围栏。
+
+选区原文：
+${JSON.stringify(input.text)}
+${input.contextBefore ? `\n选区前文（仅供上下文）：\n${JSON.stringify(input.contextBefore)}` : ""}
+${input.contextAfter ? `\n选区后文（仅供上下文）：\n${JSON.stringify(input.contextAfter)}` : ""}
+${input.contentTitle ? `\n所在内容标题：${JSON.stringify(input.contentTitle)}` : ""}
+${input.recentUserMessages?.length ? `\n用户最近关注的问题：\n${input.recentUserMessages.map((message) => `- ${message}`).join("\n")}` : ""}
+
+返回一个 JSON 对象，字段如下：
+- "summary": 用一两句话说明这段在说什么（中文）
+- "difficulty": "低" | "中" | "高"，表示理解难度
+- "quickReadMinutes": 快速了解大约需要的分钟数（整数）
+- "deepStudyMinutes": 深入研究大约需要的分钟数（整数）
+- "prerequisites": 可能需要的前置知识，字符串数组，最多 6 条，没有则为 []
+- "relationToContent": 这段与当前内容的关系（中文，一两句话）
+- "relationToFocus": 这段与用户当前关注方向的关系（中文，一两句话；无法判断时省略该字段）
+- "rationale": 判断依据与不确定性（中文，如实说明哪些判断不确定）
+
+规则：
+- 只依据提供的选区与上下文，不编造外部事实、链接或来源；
+- 不确定时在 rationale 中如实说明，而不是给出肯定结论。`;
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      responseFormat: { type: "json_object" },
+      thinking: this.options.thinking ?? false,
+      maxTokens: options.maxTokens ?? 2_000,
+      timeoutMs: options.timeoutMs ?? 60_000,
+    }, options.context ?? { purpose: "selection_analysis" });
+    let raw: unknown;
+    try {
+      raw = JSON.parse(response.content);
+    } catch {
+      throw new Error("Selection analysis provider returned invalid JSON");
+    }
+    return parseResearchSelectionInsight(raw);
   }
 
   async clusterMaterials(materials: Array<{ id: string; content: string }>, options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): Promise<{ clusters: Array<{ name: string; summary: string; materialIds: string[] }>; unclusteredMaterialIds: string[] }> {

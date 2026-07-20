@@ -532,6 +532,220 @@ export interface AiConfigurationView {
   model?: string;
 }
 
+// ── Research Selection & Insight (MVP 阶段 B) ──────────────────────
+
+/**
+ * 选区锚点统一两种内容来源。offsets 是相对该锚定块文本的字符偏移
+ * （UTF-16 code unit，与浏览器 Selection / String.prototype.slice 一致）。
+ * exact 是创建时刻的选区原文；prefix / suffix 是块内上下文摘录，用于
+ * 内容变化后的自愈重定位。
+ */
+export type ResearchSelectionAnchor =
+  | {
+      kind: "message";
+      messageId: string;
+      blockOrdinal: number;
+      startOffset: number;
+      endOffset: number;
+      exact: string;
+      prefix?: string;
+      suffix?: string;
+    }
+  | {
+      kind: "snapshot";
+      contentSnapshotId: string;
+      blockId: string;
+      startOffset: number;
+      endOffset: number;
+      exact: string;
+      prefix?: string;
+      suffix?: string;
+    };
+
+/** 选区智能窗口的分析结果。除 relationToFocus 外全部为必需字段。 */
+export interface ResearchSelectionInsight {
+  summary: string;
+  difficulty: "低" | "中" | "高";
+  quickReadMinutes: number;
+  deepStudyMinutes: number;
+  prerequisites: string[];
+  relationToContent: string;
+  relationToFocus?: string;
+  rationale: string;
+}
+
+export type ResearchSelectionStatus = "active" | "stale";
+
+/**
+ * 选区记录。text 是创建时刻的原文副本，永远不因内容变化或 AI 失败而删除；
+ * anchor 保存服务端校验（必要时自愈重定位）后的位置；stale 表示原文已变化，
+ * 选区与分析仍保留，按粗粒度位置降级展示。
+ */
+export interface ResearchSelectionRecord {
+  id: string;
+  sessionId: string;
+  anchor: ResearchSelectionAnchor;
+  text: string;
+  contextBefore?: string;
+  contextAfter?: string;
+  status: ResearchSelectionStatus;
+  insight?: ResearchSelectionInsight;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ResearchSelectionTaskStatus = "queued" | "running" | "completed" | "failed";
+
+export interface ResearchSelectionTaskError {
+  code: "model_not_configured" | "provider_error" | "invalid_analysis" | "service_restarted";
+  message: string;
+}
+
+export interface ResearchSelectionTaskRecord {
+  id: string;
+  sessionId: string;
+  selectionId: string;
+  idempotencyKey: string;
+  status: ResearchSelectionTaskStatus;
+  retryable: boolean;
+  provider?: string;
+  model?: string;
+  promptVersion: string;
+  error?: ResearchSelectionTaskError;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface ResearchSelectionAccepted {
+  selection: ResearchSelectionRecord;
+  task: ResearchSelectionTaskRecord;
+}
+
+export type ResearchSelectionTaskEvent =
+  | { id?: number; type: "snapshot"; task: ResearchSelectionTaskRecord; selection: ResearchSelectionRecord; createdAt: string }
+  | { id: number; type: "completed"; task: ResearchSelectionTaskRecord; selection: ResearchSelectionRecord; createdAt: string }
+  | { id: number; type: "failed"; task: ResearchSelectionTaskRecord; selection: ResearchSelectionRecord; createdAt: string };
+
+export interface ResearchSelectionInput {
+  anchor: ResearchSelectionAnchor;
+  contextBefore?: string;
+  contextAfter?: string;
+}
+
+/** 选区质量阈值。前后端同源，只允许引用本常量，不得另写数值。 */
+export const RESEARCH_SELECTION_MIN_CHARACTERS = 4;
+export const RESEARCH_SELECTION_MAX_CHARACTERS = 4000;
+/** 选区上下文摘录的最大长度（锚点 prefix/suffix 与 record contextBefore/After 共用）。 */
+export const RESEARCH_SELECTION_CONTEXT_CHARACTERS = 120;
+
+const RESEARCH_SELECTION_ANCHOR_CONTEXT_FIELDS = ["prefix", "suffix"] as const;
+
+export function validateResearchSelectionInput(value: unknown): asserts value is ResearchSelectionInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Research selection input must be an object");
+  const input = value as { anchor?: unknown; contextBefore?: unknown; contextAfter?: unknown };
+  const anchor = input.anchor;
+  if (!anchor || typeof anchor !== "object" || Array.isArray(anchor)) throw new Error("anchor is required");
+  const candidate = anchor as Record<string, unknown>;
+  if (candidate.kind === "message") {
+    if (typeof candidate.messageId !== "string" || !candidate.messageId.trim()) throw new Error("anchor.messageId is required");
+    if (!Number.isSafeInteger(candidate.blockOrdinal) || (candidate.blockOrdinal as number) < 0) {
+      throw new Error("anchor.blockOrdinal must be a non-negative integer");
+    }
+  } else if (candidate.kind === "snapshot") {
+    if (typeof candidate.contentSnapshotId !== "string" || !candidate.contentSnapshotId.trim()) throw new Error("anchor.contentSnapshotId is required");
+    if (typeof candidate.blockId !== "string" || !candidate.blockId.trim()) throw new Error("anchor.blockId is required");
+  } else {
+    throw new Error("anchor.kind must be message or snapshot");
+  }
+  if (!Number.isSafeInteger(candidate.startOffset) || (candidate.startOffset as number) < 0) {
+    throw new Error("anchor.startOffset must be a non-negative integer");
+  }
+  if (!Number.isSafeInteger(candidate.endOffset) || (candidate.endOffset as number) <= (candidate.startOffset as number)) {
+    throw new Error("anchor.endOffset must be greater than anchor.startOffset");
+  }
+  if (typeof candidate.exact !== "string" || candidate.exact !== (candidate.exact as string).trim() || !candidate.exact) {
+    throw new Error("anchor.exact must be the trimmed selection text");
+  }
+  if (candidate.exact.length > RESEARCH_SELECTION_MAX_CHARACTERS) {
+    throw new Error(`Selection must not exceed ${RESEARCH_SELECTION_MAX_CHARACTERS} characters`);
+  }
+  for (const field of RESEARCH_SELECTION_ANCHOR_CONTEXT_FIELDS) {
+    const excerpt = candidate[field];
+    if (excerpt === undefined) continue;
+    if (typeof excerpt !== "string" || excerpt.length > RESEARCH_SELECTION_CONTEXT_CHARACTERS) {
+      throw new Error(`anchor.${field} must not exceed ${RESEARCH_SELECTION_CONTEXT_CHARACTERS} characters`);
+    }
+  }
+  for (const field of ["contextBefore", "contextAfter"] as const) {
+    const context = input[field];
+    if (context === undefined) continue;
+    if (typeof context !== "string" || context.length > RESEARCH_SELECTION_CONTEXT_CHARACTERS) {
+      throw new Error(`${field} must not exceed ${RESEARCH_SELECTION_CONTEXT_CHARACTERS} characters`);
+    }
+  }
+}
+
+export type ResearchSelectionQuality =
+  | { level: "ok" }
+  | { level: "too_short"; minCharacters: number }
+  | { level: "too_long"; maxCharacters: number }
+  | { level: "cross_block" };
+
+/**
+ * 选区质量评估（纯函数，前后端同一实现）。返回调整建议而不阻止创建；
+ * 服务端仍按 validateResearchSelectionInput 拒绝结构不合法的请求。
+ */
+export function evaluateSelectionQuality(input: { text: string; blockCount: number }): ResearchSelectionQuality {
+  if (input.blockCount > 1) return { level: "cross_block" };
+  const length = input.text.trim().length;
+  if (length < RESEARCH_SELECTION_MIN_CHARACTERS) return { level: "too_short", minCharacters: RESEARCH_SELECTION_MIN_CHARACTERS };
+  if (length > RESEARCH_SELECTION_MAX_CHARACTERS) return { level: "too_long", maxCharacters: RESEARCH_SELECTION_MAX_CHARACTERS };
+  return { level: "ok" };
+}
+
+/**
+ * 校验 AI 返回的选区分析 JSON。必需字段缺失或类型不合法时抛错
+ * （对应任务失败 invalid_analysis）；可选字段 relationToFocus 缺失合法。
+ */
+export function parseResearchSelectionInsight(value: unknown): ResearchSelectionInsight {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Selection analysis must be a JSON object");
+  const candidate = value as Record<string, unknown>;
+  for (const field of ["summary", "relationToContent", "rationale"] as const) {
+    if (typeof candidate[field] !== "string" || !(candidate[field] as string).trim()) {
+      throw new Error(`Selection analysis field ${field} must be a non-empty string`);
+    }
+  }
+  if (!["低", "中", "高"].includes(candidate.difficulty as string)) {
+    throw new Error("Selection analysis field difficulty must be 低, 中, or 高");
+  }
+  for (const field of ["quickReadMinutes", "deepStudyMinutes"] as const) {
+    const minutes = candidate[field];
+    if (typeof minutes !== "number" || !Number.isFinite(minutes) || minutes < 1 || minutes > 24 * 60) {
+      throw new Error(`Selection analysis field ${field} must be a plausible number of minutes`);
+    }
+  }
+  if (!Array.isArray(candidate.prerequisites) || candidate.prerequisites.length > 6 || candidate.prerequisites.some((item) => typeof item !== "string" || !item.trim())) {
+    throw new Error("Selection analysis field prerequisites must be an array of up to 6 non-empty strings");
+  }
+  if (candidate.relationToFocus !== undefined && typeof candidate.relationToFocus !== "string") {
+    throw new Error("Selection analysis field relationToFocus must be a string when present");
+  }
+  return {
+    summary: (candidate.summary as string).trim(),
+    difficulty: candidate.difficulty as ResearchSelectionInsight["difficulty"],
+    quickReadMinutes: Math.round(candidate.quickReadMinutes as number),
+    deepStudyMinutes: Math.round(candidate.deepStudyMinutes as number),
+    prerequisites: (candidate.prerequisites as string[]).map((item) => item.trim()),
+    relationToContent: (candidate.relationToContent as string).trim(),
+    ...(typeof candidate.relationToFocus === "string" && candidate.relationToFocus.trim()
+      ? { relationToFocus: candidate.relationToFocus.trim() }
+      : {}),
+    rationale: (candidate.rationale as string).trim(),
+  };
+}
+
 export interface ResearchTaskError {
   code: "model_not_configured" | "provider_error" | "service_restarted";
   message: string;

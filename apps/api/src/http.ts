@@ -2,9 +2,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { timingSafeEqual } from "node:crypto";
 import { ValidationError, NotFoundError, CaptureService } from "./service.js";
 import { LocalAuth, PairingRateLimitError } from "./auth.js";
-import { RESEARCH_IMPORT_MAX_BYTES, validateResearchImportHeaders, validateResearchMessageInput, validateResearchSessionInput } from "@collector/capture-contracts";
+import { RESEARCH_IMPORT_MAX_BYTES, validateResearchImportHeaders, validateResearchMessageInput, validateResearchSelectionInput, validateResearchSessionInput } from "@collector/capture-contracts";
 import { ResearchNotFoundError, ResearchValidationError } from "./research.js";
 import { ResearchImportConflictError, ResearchImportNotFoundError, ResearchImportValidationError } from "./research-import.js";
+import { ResearchSelectionConflictError, ResearchSelectionNotFoundError, ResearchSelectionValidationError } from "./selection.js";
 import { createStaticWebHandler } from "./static-web.js";
 
 const JSON_LIMIT = 2 * 1024 * 1024;
@@ -172,6 +173,37 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       const researchTaskMatch = url.pathname.match(/^\/v1\/research-tasks\/([^/]+)$/);
       if (request.method === "GET" && researchTaskMatch) {
         return json(response, 200, service.research.getTask(decodeURIComponent(researchTaskMatch[1])));
+      }
+      const researchSelectionsMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)\/selections$/);
+      if (request.method === "POST" && researchSelectionsMatch) {
+        const body = await readJson(request);
+        try { validateResearchSelectionInput(body); }
+        catch (error) { throw new ResearchSelectionValidationError((error as Error).message); }
+        const accepted = await service.researchSelections.createSelection(
+          decodeURIComponent(researchSelectionsMatch[1]), body, header(request, "idempotency-key") ?? "",
+        );
+        return json(response, 201, accepted);
+      }
+      if (request.method === "GET" && researchSelectionsMatch) {
+        return json(response, 200, service.researchSelections.listSelections(decodeURIComponent(researchSelectionsMatch[1])));
+      }
+      const researchSelectionTaskEventsMatch = url.pathname.match(/^\/v1\/research-selection-tasks\/([^/]+)\/events$/);
+      if (request.method === "GET" && researchSelectionTaskEventsMatch) {
+        const afterId = Number(header(request, "last-event-id") ?? url.searchParams.get("after") ?? "0");
+        if (!Number.isSafeInteger(afterId) || afterId < 0) throw new ResearchSelectionValidationError("Last-Event-ID must be a non-negative integer");
+        return streamResearchSelectionTaskEvents(request, response, service, decodeURIComponent(researchSelectionTaskEventsMatch[1]), afterId);
+      }
+      const researchSelectionTaskRetryMatch = url.pathname.match(/^\/v1\/research-selection-tasks\/([^/]+)\/retry$/);
+      if (request.method === "POST" && researchSelectionTaskRetryMatch) {
+        return json(response, 202, await service.researchSelections.retryTask(decodeURIComponent(researchSelectionTaskRetryMatch[1])));
+      }
+      const researchSelectionTaskMatch = url.pathname.match(/^\/v1\/research-selection-tasks\/([^/]+)$/);
+      if (request.method === "GET" && researchSelectionTaskMatch) {
+        return json(response, 200, service.researchSelections.getTask(decodeURIComponent(researchSelectionTaskMatch[1])));
+      }
+      const researchSelectionMatch = url.pathname.match(/^\/v1\/research-selections\/([^/]+)$/);
+      if (request.method === "GET" && researchSelectionMatch) {
+        return json(response, 200, service.researchSelections.getSelection(decodeURIComponent(researchSelectionMatch[1])));
       }
       if (request.method === "POST" && url.pathname === "/v1/recent-organization/runs") {
         return json(response, 202, await service.organizeRecent(header(request, "idempotency-key")));
@@ -373,15 +405,15 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (error instanceof LocalAccessError) {
         return json(response, 403, { error: { code: "local_access_denied", message: error.message } });
       }
-      if (error instanceof ResearchImportConflictError) {
+      if (error instanceof ResearchImportConflictError || error instanceof ResearchSelectionConflictError) {
         return json(response, 409, { error: { code: error.code, message: error.message } });
       }
-      if (error instanceof ValidationError || error instanceof ResearchValidationError || error instanceof ResearchImportValidationError || error instanceof SyntaxError) {
+      if (error instanceof ValidationError || error instanceof ResearchValidationError || error instanceof ResearchImportValidationError || error instanceof ResearchSelectionValidationError || error instanceof SyntaxError) {
         const code = error instanceof ResearchImportValidationError ? error.code : "invalid_request";
         const status = code === "file_too_large" ? 413 : code === "unsupported_file_type" ? 415 : code === "invalid_file_content" ? 422 : 400;
         return json(response, status, { error: { code, message: error.message } });
       }
-      if (error instanceof NotFoundError || error instanceof ResearchNotFoundError || error instanceof ResearchImportNotFoundError) return json(response, 404, { error: { code: "not_found", message: error.message } });
+      if (error instanceof NotFoundError || error instanceof ResearchNotFoundError || error instanceof ResearchImportNotFoundError || error instanceof ResearchSelectionNotFoundError) return json(response, 404, { error: { code: "not_found", message: error.message } });
       console.error(error);
       return json(response, 500, { error: { code: "internal_error", message: "Internal server error" } });
     }
@@ -552,6 +584,44 @@ async function streamResearchTaskEvents(request: IncomingMessage, response: Serv
 }
 
 function writeSse(response: ServerResponse, event: import("@collector/capture-contracts").ResearchTaskEvent): void {
+  if (event.id !== undefined) response.write(`id: ${event.id}\n`);
+  response.write(`event: ${event.type}\n`);
+  response.write(`data: ${JSON.stringify(event)}\n\n`);
+}
+
+async function streamResearchSelectionTaskEvents(request: IncomingMessage, response: ServerResponse, service: CaptureService, taskId: string, afterId: number): Promise<void> {
+  service.researchSelections.getTask(taskId);
+  response.statusCode = 200;
+  response.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  response.setHeader("Cache-Control", "no-cache, no-transform");
+  response.setHeader("Connection", "keep-alive");
+  response.setHeader("X-Accel-Buffering", "no");
+  response.flushHeaders();
+
+  let cursor = afterId;
+  const initialEvents = service.researchSelections.getTaskEvents(taskId, cursor);
+  for (const event of initialEvents) {
+    writeSelectionSse(response, event);
+    cursor = event.id ?? cursor;
+  }
+  writeSelectionSse(response, service.researchSelections.getTaskSnapshot(taskId));
+
+  const deadline = Date.now() + 25_000;
+  while (!request.destroyed && Date.now() < deadline) {
+    const events = service.researchSelections.getTaskEvents(taskId, cursor);
+    for (const event of events) {
+      writeSelectionSse(response, event);
+      cursor = event.id ?? cursor;
+    }
+    const task = service.researchSelections.getTask(taskId);
+    if (task.status === "completed" || task.status === "failed") break;
+    response.write(": keep-alive\n\n");
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  }
+  response.end();
+}
+
+function writeSelectionSse(response: ServerResponse, event: import("@collector/capture-contracts").ResearchSelectionTaskEvent): void {
   if (event.id !== undefined) response.write(`id: ${event.id}\n`);
   response.write(`event: ${event.type}\n`);
   response.write(`data: ${JSON.stringify(event)}\n\n`);

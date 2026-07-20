@@ -6,6 +6,7 @@ export { SourceParser, assertPublicUrl, extractReadableText, parseMarkdown, pars
 export { WorkflowScheduler, type WorkflowSchedulerOptions } from "./scheduler.js";
 export { ResearchSessionService, ResearchNotFoundError, ResearchValidationError, type ResearchGenerationProvider, type ResearchGenerationRequest, type ResearchServiceOptions } from "./research.js";
 export { ResearchImportService, ResearchImportConflictError, ResearchImportNotFoundError, ResearchImportValidationError, type ResearchImportServiceOptions } from "./research-import.js";
+export { ResearchSelectionAnalysisError, ResearchSelectionConflictError, ResearchSelectionNotFoundError, ResearchSelectionService, ResearchSelectionValidationError, type ResearchSelectionProvider, type ResearchSelectionAnalysisRequest, type ResearchSelectionServiceOptions } from "./selection.js";
 export {
   ensureInstanceControlToken,
   instanceControlPath,
@@ -25,5 +26,5 @@ export {
 } from "./instance.js";
 export { acquireServiceLock, isProcessRunning, isServiceLockHeld, type ServiceLock } from "./service-lock.js";
 export { calculateRuntimeVersion, isRuntimeVersion } from "./runtime-version.js";
-export { createMvpDemoResearchProvider, DEMO_NOTICE } from "./mvp-demo-research.js";
+export { createMvpDemoResearchProvider, createMvpDemoSelectionProvider, DEMO_NOTICE, DEMO_SELECTION_NOTICE } from "./mvp-demo-research.js";
 export { launchCollector, openDefaultBrowser, type LaunchCollectorOptions, type LaunchCollectorResult } from "./launcher.js";

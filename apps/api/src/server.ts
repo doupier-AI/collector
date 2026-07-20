@@ -18,7 +18,7 @@ import {
 } from "./instance.js";
 import { acquireServiceLock } from "./service-lock.js";
 import { calculateRuntimeVersion, isRuntimeVersion } from "./runtime-version.js";
-import { createMvpDemoResearchProvider } from "./mvp-demo-research.js";
+import { createMvpDemoResearchProvider, createMvpDemoSelectionProvider } from "./mvp-demo-research.js";
 
 // 直接运行服务时保留 43110 便于前端/扩展开发；正式启动器显式传入 0 由系统选择端口。
 const port = Number(process.env.COLLECTOR_PORT ?? "43110");
@@ -87,6 +87,7 @@ const resolver = new ProviderRuntimeResolver(DEFAULT_PROVIDER_REGISTRY, async (p
 const runtime = !mvpDemoMode && consent && apiKey && environmentProfile ? await resolver.resolve(environmentProfile) : undefined;
 const service = new CaptureService(store, paths.artifacts, undefined, runtime?.gateway, {
   researchProvider: mvpDemoMode ? createMvpDemoResearchProvider() : undefined,
+  selectionProvider: mvpDemoMode ? createMvpDemoSelectionProvider() : undefined,
   mvpDemoMode,
 });
 service.setModelGateway(runtime?.gateway, runtime?.route);

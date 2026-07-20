@@ -39,6 +39,7 @@ import { DEFAULT_PROVIDER_REGISTRY, ModelGateway, validateExternalProviderBaseUr
 import { createVerificationWorkflow } from "./verification.js";
 import { ResearchSessionService, type ResearchGenerationProvider } from "./research.js";
 import { ResearchImportService } from "./research-import.js";
+import { ResearchSelectionAnalysisError, ResearchSelectionService, type ResearchSelectionProvider } from "./selection.js";
 
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
@@ -53,13 +54,14 @@ export class CaptureService {
   private modelGatewayResolver?: (route: ActiveModelRoute) => Promise<ModelGateway | undefined>;
   readonly research: ResearchSessionService;
   readonly researchImports: ResearchImportService;
+  readonly researchSelections: ResearchSelectionService;
 
   constructor(
     private readonly store: CollectorStore,
     private readonly artifactRoot: string,
     private readonly parser = new SourceParser(),
     private modelGateway?: ModelGateway,
-    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; researchProvider?: ResearchGenerationProvider; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; mvpDemoMode?: boolean } = {},
+    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; researchProvider?: ResearchGenerationProvider; selectionProvider?: ResearchSelectionProvider; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunSelectionTasks?: boolean; mvpDemoMode?: boolean } = {},
   ) {
     this.attachModelGateway(this.modelGateway);
     this.research = new ResearchSessionService(this.store, {
@@ -68,6 +70,10 @@ export class CaptureService {
     });
     this.researchImports = new ResearchImportService(this.store, join(this.artifactRoot, "research-imports"), {
       autoRunTasks: this.options.autoRunResearchImports,
+    });
+    this.researchSelections = new ResearchSelectionService(this.store, {
+      provider: this.options.selectionProvider ?? this.selectionProviderFor(this.modelGateway),
+      autoRunTasks: this.options.autoRunSelectionTasks,
     });
     if (this.options.autoRunRecentOrganization !== false) {
       this.scheduleRecentOrganization();
@@ -80,6 +86,7 @@ export class CaptureService {
     this.currentModelRoute = route ? structuredClone(route) : undefined;
     this.attachModelGateway(gateway);
     if (!this.options.researchProvider) this.research.setProvider(this.researchProviderFor(gateway));
+    if (!this.options.selectionProvider) this.researchSelections.setProvider(this.selectionProviderFor(gateway));
   }
 
   setModelGatewayResolver(resolver: ((route: ActiveModelRoute) => Promise<ModelGateway | undefined>) | undefined): void {
@@ -124,6 +131,35 @@ export class CaptureService {
           context: { workflowRunId: request.taskId, purpose: "research_chat", promptVersion: "research-chat-v1" },
         });
         for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);
+      },
+    };
+  }
+
+  private selectionProviderFor(gateway: ModelGateway | undefined): ResearchSelectionProvider | undefined {
+    if (!gateway) return undefined;
+    return {
+      provider: gateway.providerName,
+      model: gateway.modelName,
+      promptVersion: "selection-analysis-v1",
+      async analyze(request) {
+        try {
+          return await gateway.analyzeSelection(
+            {
+              text: request.text,
+              contextBefore: request.contextBefore,
+              contextAfter: request.contextAfter,
+              contentTitle: request.contentTitle,
+              recentUserMessages: request.recentUserMessages,
+            },
+            { context: { workflowRunId: request.taskId, purpose: "selection_analysis", promptVersion: "selection-analysis-v1" } },
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "";
+          if (/invalid JSON|Selection analysis/.test(message)) {
+            throw new ResearchSelectionAnalysisError(message || "Selection analysis failed contract validation");
+          }
+          throw error;
+        }
       },
     };
   }

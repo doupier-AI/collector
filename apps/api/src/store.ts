@@ -1,7 +1,7 @@
 import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type FragmentRecord, type KnowledgeItemRecord, type RecentClusterSnapshotRecord, type RelationRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchMessageRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTurnAccepted } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type FragmentRecord, type KnowledgeItemRecord, type RecentClusterSnapshotRecord, type RelationRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTurnAccepted } from "@collector/capture-contracts";
 
 export interface CollectorStore {
   init(): Promise<void>;
@@ -126,6 +126,19 @@ export interface CollectorStore {
   listResearchImportTaskEvents(taskId: string, afterId?: number): ResearchImportTaskEvent[];
   listRecoverableResearchImportTasks(): ResearchImportTaskRecord[];
   failInterruptedResearchImportTasks(): number;
+  getResearchSelection(id: string): ResearchSelectionRecord | undefined;
+  listResearchSelections(sessionId: string): ResearchSelectionRecord[];
+  getResearchSelectionTask(id: string): ResearchSelectionTaskRecord | undefined;
+  findResearchSelectionTaskByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchSelectionTaskRecord | undefined;
+  createResearchSelection(selection: ResearchSelectionRecord, task: ResearchSelectionTaskRecord): Promise<ResearchSelectionAccepted>;
+  saveResearchSelection(record: ResearchSelectionRecord): Promise<void>;
+  claimResearchSelectionTask(id: string, provider?: string, model?: string, promptVersion?: string): ResearchSelectionTaskRecord | undefined;
+  completeResearchSelectionTask(id: string, insight: ResearchSelectionInsight): Promise<void>;
+  failResearchSelectionTask(task: ResearchSelectionTaskRecord, error: ResearchSelectionTaskError): Promise<void>;
+  retryResearchSelectionTask(task: ResearchSelectionTaskRecord, provider?: string, model?: string, promptVersion?: string): Promise<ResearchSelectionTaskRecord>;
+  listResearchSelectionTaskEvents(taskId: string, afterId?: number): ResearchSelectionTaskEvent[];
+  listRecoverableResearchSelectionTasks(): ResearchSelectionTaskRecord[];
+  failInterruptedResearchSelectionTasks(): number;
   close?(): void;
   clearAllData(): Promise<void>;
 }
@@ -1094,6 +1107,156 @@ export class SqliteStore implements CollectorStore {
       .run(taskId, type, createdAt, JSON.stringify(data));
   }
 
+  getResearchSelection(id: string): ResearchSelectionRecord | undefined {
+    return this.getRecord<ResearchSelectionRecord>("SELECT record_json FROM research_selections WHERE id = ?", id);
+  }
+
+  listResearchSelections(sessionId: string): ResearchSelectionRecord[] {
+    return this.listRecords<ResearchSelectionRecord>("SELECT record_json FROM research_selections WHERE session_id = ? ORDER BY created_at, rowid", sessionId);
+  }
+
+  getResearchSelectionTask(id: string): ResearchSelectionTaskRecord | undefined {
+    return this.getRecord<ResearchSelectionTaskRecord>("SELECT record_json FROM research_selection_tasks WHERE id = ?", id);
+  }
+
+  findResearchSelectionTaskByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchSelectionTaskRecord | undefined {
+    return this.getRecord<ResearchSelectionTaskRecord>("SELECT record_json FROM research_selection_tasks WHERE session_id = ? AND idempotency_key = ?", sessionId, idempotencyKey);
+  }
+
+  async createResearchSelection(selection: ResearchSelectionRecord, task: ResearchSelectionTaskRecord): Promise<ResearchSelectionAccepted> {
+    let accepted: ResearchSelectionAccepted | undefined;
+    this.transaction(() => {
+      const existing = this.findResearchSelectionTaskByIdempotencyKey(selection.sessionId, task.idempotencyKey);
+      if (existing) {
+        const existingSelection = this.getResearchSelection(existing.selectionId);
+        if (!existingSelection) throw new Error("Research selection task references a missing selection");
+        accepted = { selection: existingSelection, task: existing };
+        return;
+      }
+      this.db().prepare("INSERT INTO research_selections (id, session_id, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(selection.id, selection.sessionId, selection.status, selection.createdAt, selection.updatedAt, JSON.stringify(selection));
+      this.db().prepare("INSERT INTO research_selection_tasks (id, session_id, selection_id, idempotency_key, status, retryable, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(task.id, task.sessionId, task.selectionId, task.idempotencyKey, task.status, 0, task.createdAt, task.updatedAt, JSON.stringify(task));
+      accepted = { selection, task };
+    });
+    if (!accepted) throw new Error("Research selection was not persisted");
+    return accepted;
+  }
+
+  async saveResearchSelection(record: ResearchSelectionRecord): Promise<void> {
+    this.db().prepare(`INSERT INTO research_selections (id, session_id, status, created_at, updated_at, record_json)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at, record_json=excluded.record_json`)
+      .run(record.id, record.sessionId, record.status, record.createdAt, record.updatedAt, JSON.stringify(record));
+  }
+
+  claimResearchSelectionTask(id: string, provider?: string, model?: string, promptVersion = "selection-analysis-v1"): ResearchSelectionTaskRecord | undefined {
+    let claimed: ResearchSelectionTaskRecord | undefined;
+    this.transaction(() => {
+      const current = this.getResearchSelectionTask(id);
+      if (!current || current.status !== "queued") return;
+      const now = new Date().toISOString();
+      const next: ResearchSelectionTaskRecord = {
+        ...current, status: "running", retryable: false, provider, model, promptVersion,
+        error: undefined, updatedAt: now, startedAt: now, completedAt: undefined,
+      };
+      const result = this.db().prepare("UPDATE research_selection_tasks SET status = ?, retryable = 0, updated_at = ?, record_json = ? WHERE id = ? AND status = 'queued'")
+        .run(next.status, now, JSON.stringify(next), id);
+      if (result.changes !== 1) return;
+      claimed = next;
+    });
+    return claimed;
+  }
+
+  async completeResearchSelectionTask(id: string, insight: ResearchSelectionInsight): Promise<void> {
+    this.transaction(() => {
+      const task = this.getResearchSelectionTask(id);
+      if (!task || task.status !== "running") throw new Error("Research selection task is not running");
+      const selection = this.getResearchSelection(task.selectionId);
+      if (!selection) throw new Error("Research selection not found");
+      const now = new Date().toISOString();
+      const analyzed: ResearchSelectionRecord = { ...selection, insight, updatedAt: now };
+      const completed: ResearchSelectionTaskRecord = { ...task, status: "completed", retryable: false, updatedAt: now, completedAt: now };
+      this.updateResearchSelectionRow(analyzed);
+      this.updateResearchSelectionTask(completed);
+      this.insertResearchSelectionEvent(id, "completed", now, { task: completed, selection: analyzed });
+    });
+  }
+
+  async failResearchSelectionTask(task: ResearchSelectionTaskRecord, error: ResearchSelectionTaskError): Promise<void> {
+    this.transaction(() => {
+      const current = this.getResearchSelectionTask(task.id);
+      if (!current || (current.status !== "running" && current.status !== "queued")) return;
+      const selection = this.getResearchSelection(current.selectionId);
+      if (!selection) throw new Error("Research selection not found");
+      const now = new Date().toISOString();
+      const failed: ResearchSelectionTaskRecord = { ...current, status: "failed", retryable: true, error, updatedAt: now, completedAt: now };
+      this.updateResearchSelectionTask(failed);
+      this.insertResearchSelectionEvent(task.id, "failed", now, { task: failed, selection });
+    });
+  }
+
+  async retryResearchSelectionTask(task: ResearchSelectionTaskRecord, provider?: string, model?: string, promptVersion = "selection-analysis-v1"): Promise<ResearchSelectionTaskRecord> {
+    let retried: ResearchSelectionTaskRecord | undefined;
+    this.transaction(() => {
+      const current = this.getResearchSelectionTask(task.id);
+      if (!current || current.status !== "failed" || !current.retryable) throw new Error("Research selection task is not retryable");
+      const now = new Date().toISOString();
+      retried = {
+        ...current, status: "queued", retryable: false, provider, model, promptVersion,
+        error: undefined, updatedAt: now, startedAt: undefined, completedAt: undefined,
+      };
+      this.updateResearchSelectionTask(retried);
+      this.db().prepare("DELETE FROM research_selection_task_events WHERE task_id = ?").run(task.id);
+    });
+    if (!retried) throw new Error("Research selection task retry was not persisted");
+    return retried;
+  }
+
+  listResearchSelectionTaskEvents(taskId: string, afterId = 0): ResearchSelectionTaskEvent[] {
+    const rows = this.db().prepare("SELECT sequence, event_type, created_at, data_json FROM research_selection_task_events WHERE task_id = ? AND sequence > ? ORDER BY sequence")
+      .all(taskId, afterId) as Array<{ sequence: number; event_type: "completed" | "failed"; created_at: string; data_json: string }>;
+    return rows.map((row) => ({ id: row.sequence, type: row.event_type, createdAt: row.created_at, ...JSON.parse(row.data_json) }) as ResearchSelectionTaskEvent);
+  }
+
+  listRecoverableResearchSelectionTasks(): ResearchSelectionTaskRecord[] {
+    return this.listRecords<ResearchSelectionTaskRecord>("SELECT record_json FROM research_selection_tasks WHERE status = 'queued' ORDER BY created_at");
+  }
+
+  failInterruptedResearchSelectionTasks(): number {
+    const interrupted = this.listRecords<ResearchSelectionTaskRecord>("SELECT record_json FROM research_selection_tasks WHERE status = 'running' ORDER BY created_at");
+    if (!interrupted.length) return 0;
+    this.transaction(() => {
+      for (const task of interrupted) {
+        const selection = this.getResearchSelection(task.selectionId);
+        if (!selection) continue;
+        const now = new Date().toISOString();
+        const failed: ResearchSelectionTaskRecord = {
+          ...task, status: "failed", retryable: true, updatedAt: now, completedAt: now,
+          error: { code: "service_restarted", message: "服务在分析过程中重启。选区已保存，可以重试。" },
+        };
+        this.updateResearchSelectionTask(failed);
+        this.insertResearchSelectionEvent(task.id, "failed", now, { task: failed, selection });
+      }
+    });
+    return interrupted.length;
+  }
+
+  private updateResearchSelectionRow(selection: ResearchSelectionRecord): void {
+    this.db().prepare("UPDATE research_selections SET status = ?, updated_at = ?, record_json = ? WHERE id = ?")
+      .run(selection.status, selection.updatedAt, JSON.stringify(selection), selection.id);
+  }
+
+  private updateResearchSelectionTask(task: ResearchSelectionTaskRecord): void {
+    this.db().prepare("UPDATE research_selection_tasks SET status = ?, retryable = ?, updated_at = ?, record_json = ? WHERE id = ?")
+      .run(task.status, task.retryable ? 1 : 0, task.updatedAt, JSON.stringify(task), task.id);
+  }
+
+  private insertResearchSelectionEvent(taskId: string, type: "completed" | "failed", createdAt: string, data: unknown): void {
+    this.db().prepare("INSERT INTO research_selection_task_events (task_id, event_type, created_at, data_json) VALUES (?, ?, ?, ?)")
+      .run(taskId, type, createdAt, JSON.stringify(data));
+  }
+
   private updateResearchMessage(message: ResearchMessageRecord): void {
     this.db().prepare("UPDATE research_messages SET status = ?, updated_at = ?, record_json = ? WHERE id = ?")
       .run(message.status, message.updatedAt, JSON.stringify(message), message.id);
@@ -1485,6 +1648,48 @@ export class SqliteStore implements CollectorStore {
       });
       version = 16;
     }
+    if (version < 17) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE research_selections (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES research_sessions(id)
+          );
+          CREATE INDEX research_selections_session_idx ON research_selections(session_id, created_at);
+          CREATE TABLE research_selection_tasks (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            selection_id TEXT NOT NULL UNIQUE,
+            idempotency_key TEXT NOT NULL,
+            status TEXT NOT NULL,
+            retryable INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES research_sessions(id),
+            FOREIGN KEY(selection_id) REFERENCES research_selections(id),
+            UNIQUE(session_id, idempotency_key)
+          );
+          CREATE INDEX research_selection_tasks_status_idx ON research_selection_tasks(status, created_at);
+          CREATE TABLE research_selection_task_events (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            data_json TEXT NOT NULL,
+            FOREIGN KEY(task_id) REFERENCES research_selection_tasks(id)
+          );
+          CREATE INDEX research_selection_task_events_task_idx ON research_selection_task_events(task_id, sequence);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (17, datetime('now'));
+        `);
+      });
+      version = 17;
+    }
 
   }
 
@@ -1771,6 +1976,19 @@ export class JsonStore implements CollectorStore {
   listResearchImportTaskEvents(_taskId: string, _afterId?: number): ResearchImportTaskEvent[] { return []; }
   listRecoverableResearchImportTasks(): ResearchImportTaskRecord[] { return []; }
   failInterruptedResearchImportTasks(): number { return 0; }
+  getResearchSelection(_id: string): ResearchSelectionRecord | undefined { return undefined; }
+  listResearchSelections(_sessionId: string): ResearchSelectionRecord[] { return []; }
+  getResearchSelectionTask(_id: string): ResearchSelectionTaskRecord | undefined { return undefined; }
+  findResearchSelectionTaskByIdempotencyKey(_sessionId: string, _idempotencyKey: string): ResearchSelectionTaskRecord | undefined { return undefined; }
+  async createResearchSelection(_selection: ResearchSelectionRecord, _task: ResearchSelectionTaskRecord): Promise<ResearchSelectionAccepted> { throw new Error("Research selections require SQLite persistence"); }
+  async saveResearchSelection(_record: ResearchSelectionRecord): Promise<void> { throw new Error("Research selections require SQLite persistence"); }
+  claimResearchSelectionTask(_id: string): ResearchSelectionTaskRecord | undefined { return undefined; }
+  async completeResearchSelectionTask(_id: string, _insight: ResearchSelectionInsight): Promise<void> { throw new Error("Research selections require SQLite persistence"); }
+  async failResearchSelectionTask(_task: ResearchSelectionTaskRecord, _error: ResearchSelectionTaskError): Promise<void> { throw new Error("Research selections require SQLite persistence"); }
+  async retryResearchSelectionTask(_task: ResearchSelectionTaskRecord): Promise<ResearchSelectionTaskRecord> { throw new Error("Research selections require SQLite persistence"); }
+  listResearchSelectionTaskEvents(_taskId: string, _afterId?: number): ResearchSelectionTaskEvent[] { return []; }
+  listRecoverableResearchSelectionTasks(): ResearchSelectionTaskRecord[] { return []; }
+  failInterruptedResearchSelectionTasks(): number { return 0; }
   async clearAllData(): Promise<void> { const savedTokens = this.data.clientTokens; const savedProfiles = this.data.providerProfiles; const savedSettings: Record<string, string> = {}; if (this.data.settings) { for (const key of ['ai_consent', 'ai_configured', 'active_provider_profile_id', 'deepseek_configured']) { if (this.data.settings[key]) savedSettings[key] = this.data.settings[key]; } } this.data = { ...structuredClone(EMPTY_DATA), clientTokens: savedTokens, settings: savedSettings, providerProfiles: savedProfiles }; await this.flush(); }
     private flush() { this.writeQueue = this.writeQueue.then(async () => { const temporaryPath = `${this.filePath}.tmp`; await writeFile(temporaryPath, JSON.stringify(this.data, null, 2), "utf8"); await rename(temporaryPath, this.filePath); }); return this.writeQueue; }
 }
