@@ -7,6 +7,7 @@ import {
   MAX_ARTIFACT_BYTES,
   evidenceGradeFor,
   validateCaptureInput,
+  type AiConfigurationView,
   type ArtifactRecord,
   type ActiveModelRoute,
   type CaptureInput,
@@ -58,7 +59,7 @@ export class CaptureService {
     private readonly artifactRoot: string,
     private readonly parser = new SourceParser(),
     private modelGateway?: ModelGateway,
-    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; researchProvider?: ResearchGenerationProvider; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean } = {},
+    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; researchProvider?: ResearchGenerationProvider; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; mvpDemoMode?: boolean } = {},
   ) {
     this.attachModelGateway(this.modelGateway);
     this.research = new ResearchSessionService(this.store, {
@@ -145,9 +146,16 @@ export class CaptureService {
     await mkdir(this.artifactRoot, { recursive: true });
   }
 
-  getAiConfiguration(): { consent: boolean; configured: boolean; provider?: string; model?: string } {
+  getAiConfiguration(): AiConfigurationView {
     const profile = this.store.getActiveProviderProfile();
-    return { consent: this.store.getSetting("ai_consent") === "true", configured: profile ? profile.credentialConfigured : this.store.getSetting("ai_configured") === "true", provider: profile?.providerId ?? this.modelGateway?.providerName, model: profile?.model ?? this.modelGateway?.modelName };
+    const configured = profile ? profile.credentialConfigured : this.store.getSetting("ai_configured") === "true";
+    return {
+      consent: this.store.getSetting("ai_consent") === "true",
+      configured,
+      mode: this.options.mvpDemoMode ? "demo" : configured ? "real" : "unconfigured",
+      provider: profile?.providerId ?? this.modelGateway?.providerName,
+      model: profile?.model ?? this.modelGateway?.modelName,
+    };
   }
   async setAiConfiguration(consent: boolean, configured: boolean): Promise<void> {
     await this.store.saveSetting("ai_consent", String(consent));

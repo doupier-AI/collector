@@ -485,6 +485,53 @@ export interface ResearchMessageRecord {
   updatedAt: string;
 }
 
+/**
+ * 消息内容的确定性段落块。块是派生值，不持久化；
+ * 稳定块 ID 由消费方用 `messageContentBlockId(messageId, ordinal)` 派生。
+ * 选区锚点以后端可重新派生的块结构为准，不使用浏览器 DOM 路径。
+ */
+export interface MessageContentBlock {
+  ordinal: number;
+  text: string;
+  startOffset: number;
+}
+
+/**
+ * 把消息纯文本确定性切分为段落块。规则（前后端必须只使用本实现，禁止另写切分逻辑）：
+ * 1. 先把 CRLF / CR 归一为 LF；
+ * 2. 按一个或多个空行（只含空白字符的行）切分段落；
+ * 3. 每段 trim 首尾空白，空段丢弃；
+ * 4. ordinal 从 0 连续编号；startOffset 是该段文本在归一化后全文中的字符偏移。
+ */
+export function deriveMessageBlocks(content: string): MessageContentBlock[] {
+  const normalized = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const blocks: MessageContentBlock[] = [];
+  const segmentPattern = /\S(?:[^\n]|\n(?!\s*\n))*/g;
+  for (const match of normalized.matchAll(segmentPattern)) {
+    const raw = match[0];
+    const text = raw.trim();
+    if (!text) continue;
+    const startOffset = match.index + raw.indexOf(text);
+    blocks.push({ ordinal: blocks.length, text, startOffset });
+  }
+  return blocks;
+}
+
+/** 消息内容块的稳定派生 ID，用于 DOM 锚点与选区记录，不入库。 */
+export function messageContentBlockId(messageId: string, ordinal: number): string {
+  return `${messageId}#p${ordinal}`;
+}
+
+export type AiConfigurationMode = "real" | "demo" | "unconfigured";
+
+export interface AiConfigurationView {
+  consent: boolean;
+  configured: boolean;
+  mode: AiConfigurationMode;
+  provider?: string;
+  model?: string;
+}
+
 export interface ResearchTaskError {
   code: "model_not_configured" | "provider_error" | "service_restarted";
   message: string;

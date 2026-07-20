@@ -87,6 +87,7 @@ const resolver = new ProviderRuntimeResolver(DEFAULT_PROVIDER_REGISTRY, async (p
 const runtime = !mvpDemoMode && consent && apiKey && environmentProfile ? await resolver.resolve(environmentProfile) : undefined;
 const service = new CaptureService(store, paths.artifacts, undefined, runtime?.gateway, {
   researchProvider: mvpDemoMode ? createMvpDemoResearchProvider() : undefined,
+  mvpDemoMode,
 });
 service.setModelGateway(runtime?.gateway, runtime?.route);
 service.setModelGatewayResolver(async (route) => {
