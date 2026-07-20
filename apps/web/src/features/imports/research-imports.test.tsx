@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResearchSessionView } from "@collector/capture-contracts";
 import type { ApiClient } from "../../api/client";
@@ -18,6 +18,21 @@ function noopTaskEventStream(): TaskEventStream {
   return { close: () => {}, syncNow: () => {}, mode: "closed", lastEventId: 0 };
 }
 
+function SessionRoutes() {
+  const navigate = useNavigate();
+  return (
+    <>
+      <button type="button" onClick={() => navigate("/research/session-2")}>
+        切换会话
+      </button>
+      <Routes>
+        <Route path="/research/:sessionId" element={<ResearchSessionPage />} />
+        <Route path="/research/:sessionId/reading/:contentSnapshotId" element={<ReadingPage />} />
+      </Routes>
+    </>
+  );
+}
+
 function renderSessionPage(api: Partial<ApiClient>) {
   const services = {
     api: api as ApiClient,
@@ -28,10 +43,7 @@ function renderSessionPage(api: Partial<ApiClient>) {
   return render(
     <ServicesProvider services={services}>
       <MemoryRouter initialEntries={["/research/session-1"]}>
-        <Routes>
-          <Route path="/research/:sessionId" element={<ResearchSessionPage />} />
-          <Route path="/research/:sessionId/reading/:contentSnapshotId" element={<ReadingPage />} />
-        </Routes>
+        <SessionRoutes />
       </MemoryRouter>
     </ServicesProvider>,
   );
@@ -139,6 +151,75 @@ describe("研究文件导入", () => {
     expect(screen.getByRole("link", { name: "返回研究会话" })).toHaveAttribute("href", "/research/session-1");
   });
 
+  it("切换会话后忽略旧会话延迟返回的上传结果", async () => {
+    const user = userEvent.setup();
+    let resolveUpload!: (value: Awaited<ReturnType<ApiClient["createResearchImport"]>>) => void;
+    const createResearchImport = vi.fn<ApiClient["createResearchImport"]>(
+      () => new Promise((resolve) => {
+        resolveUpload = resolve;
+      }),
+    );
+    const getResearchSessionView = vi.fn(async (sessionId: string) => ({
+      ...emptyView(),
+      session: makeSession({ id: sessionId, title: sessionId === "session-1" ? "会话一" : "会话二" }),
+    }));
+    const { container } = renderSessionPage(baseApi({ createResearchImport, getResearchSessionView }));
+
+    await screen.findByRole("heading", { name: "会话一" });
+    await selectFile(container, new File(["内容"], "旧会话.txt", { type: "text/plain" }));
+    await waitFor(() => expect(createResearchImport).toHaveBeenCalledWith(
+      "session-1",
+      expect.any(File),
+      "旧会话.txt",
+      "text/plain",
+      expect.any(String),
+    ));
+
+    await user.click(screen.getByRole("button", { name: "切换会话" }));
+    await screen.findByRole("heading", { name: "会话二" });
+    resolveUpload({
+      attachment: makeAttachment({ id: "att-old", sessionId: "session-1", fileName: "旧会话.txt", importTaskId: "task-old" }),
+      task: makeImportTask({ id: "task-old", sessionId: "session-1", attachmentId: "att-old", status: "queued" }),
+    });
+
+    await waitFor(() => expect(createResearchImport).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText("旧会话.txt")).not.toBeInTheDocument();
+  });
+
+  it("切换会话后不保留旧会话的待重试上传", async () => {
+    const user = userEvent.setup();
+    let resolveRecovery!: (view: ResearchSessionView) => void;
+    let sessionOneLoads = 0;
+    const getResearchSessionView = vi.fn(async (sessionId: string) => {
+      if (sessionId === "session-2") {
+        return { ...emptyView(), session: makeSession({ id: "session-2", title: "会话二" }) };
+      }
+      sessionOneLoads += 1;
+      if (sessionOneLoads === 1) {
+        return { ...emptyView(), session: makeSession({ id: "session-1", title: "会话一" }) };
+      }
+      return new Promise<ResearchSessionView>((resolve) => {
+        resolveRecovery = resolve;
+      });
+    });
+    const createResearchImport = vi.fn(async () => {
+      throw new NetworkError();
+    });
+    const { container } = renderSessionPage(baseApi({ createResearchImport, getResearchSessionView }));
+
+    await screen.findByRole("heading", { name: "会话一" });
+    await selectFile(container, new File(["内容"], "断线旧会话.txt", { type: "text/plain" }));
+    await waitFor(() => expect(getResearchSessionView).toHaveBeenCalledTimes(2));
+
+    await user.click(screen.getByRole("button", { name: "切换会话" }));
+    await screen.findByRole("heading", { name: "会话二" });
+    resolveRecovery({ ...emptyView(), session: makeSession({ id: "session-1", title: "会话一" }) });
+    await act(async () => {});
+
+    expect(screen.queryByRole("button", { name: "重试上传" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "会话二" })).toBeInTheDocument();
+  });
+
   it("前端白名单与大小预检拒绝时不发起请求", async () => {
     const createResearchImport = vi.fn();
     const { container } = renderSessionPage(baseApi({ createResearchImport }));
@@ -172,6 +253,73 @@ describe("研究文件导入", () => {
     await user.click(await screen.findByRole("button", { name: "取消" }));
     await waitFor(() => expect(cancelResearchImport).toHaveBeenCalledWith("import-task-1"));
     expect(await screen.findByText("已取消")).toBeInTheDocument();
+  });
+
+  it("切换会话后忽略旧会话延迟返回的取消结果", async () => {
+    const user = userEvent.setup();
+    let resolveCancel!: (task: Awaited<ReturnType<ApiClient["cancelResearchImport"]>>) => void;
+    const runningView: ResearchSessionView = {
+      ...emptyView(),
+      session: makeSession({ id: "session-1", title: "会话一" }),
+      attachments: [makeAttachment({ id: "att-1", sessionId: "session-1", fileName: "处理中.txt", importTaskId: "import-task-1" })],
+      importTasks: [makeImportTask({ id: "import-task-1", sessionId: "session-1", attachmentId: "att-1", status: "running" })],
+    };
+    const getResearchSessionView = vi.fn(async (sessionId: string) =>
+      sessionId === "session-1"
+        ? runningView
+        : { ...emptyView(), session: makeSession({ id: "session-2", title: "会话二" }) },
+    );
+    const cancelResearchImport = vi.fn<ApiClient["cancelResearchImport"]>(
+      () => new Promise((resolve) => {
+        resolveCancel = resolve;
+      }),
+    );
+    renderSessionPage(baseApi({ getResearchSessionView, cancelResearchImport }));
+
+    await user.click(await screen.findByRole("button", { name: "取消" }));
+    await waitFor(() => expect(cancelResearchImport).toHaveBeenCalledWith("import-task-1"));
+    await user.click(screen.getByRole("button", { name: "切换会话" }));
+    await screen.findByRole("heading", { name: "会话二" });
+
+    resolveCancel(makeImportTask({ id: "import-task-1", sessionId: "session-1", attachmentId: "att-1", status: "cancelled" }));
+    await act(async () => {});
+
+    expect(screen.queryByText("已取消")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "会话二" })).toBeInTheDocument();
+  });
+
+  it("切换会话后忽略旧会话延迟返回的重试结果", async () => {
+    const user = userEvent.setup();
+    let resolveRetry!: (task: Awaited<ReturnType<ApiClient["retryResearchImport"]>>) => void;
+    const failedView: ResearchSessionView = {
+      ...emptyView(),
+      session: makeSession({ id: "session-1", title: "会话一" }),
+      attachments: [makeAttachment({ id: "att-1", sessionId: "session-1", fileName: "失败.txt", importTaskId: "import-task-1", status: "failed" })],
+      importTasks: [makeImportTask({ id: "import-task-1", sessionId: "session-1", attachmentId: "att-1", status: "failed", retryable: true })],
+    };
+    const getResearchSessionView = vi.fn(async (sessionId: string) =>
+      sessionId === "session-1"
+        ? failedView
+        : { ...emptyView(), session: makeSession({ id: "session-2", title: "会话二" }) },
+    );
+    const retryResearchImport = vi.fn<ApiClient["retryResearchImport"]>(
+      () => new Promise((resolve) => {
+        resolveRetry = resolve;
+      }),
+    );
+    renderSessionPage(baseApi({ getResearchSessionView, retryResearchImport }));
+
+    await user.click(await screen.findByRole("button", { name: "重试" }));
+    await waitFor(() => expect(retryResearchImport).toHaveBeenCalledWith("import-task-1"));
+    await user.click(screen.getByRole("button", { name: "切换会话" }));
+    await screen.findByRole("heading", { name: "会话二" });
+
+    resolveRetry(makeImportTask({ id: "import-task-1", sessionId: "session-1", attachmentId: "att-1", status: "queued" }));
+    await act(async () => {});
+
+    expect(screen.queryByText("排队中")).not.toBeInTheDocument();
+    expect(screen.queryByText("失败.txt")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "会话二" })).toBeInTheDocument();
   });
 
   it("失败任务显示稳定原因并可重试，重试后重新排队", async () => {

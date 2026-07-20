@@ -109,7 +109,7 @@ describe("connectTaskEvents", () => {
     const running = makeTask({ id: "task-1", status: "running" });
     const completed = makeTask({ id: "task-1", status: "completed" });
     const { events, tasks, notices, getTask, source, stream } = createHarness({ pollIntervalMs: 1000 });
-    getTask.mockResolvedValueOnce(running).mockResolvedValueOnce(completed);
+    getTask.mockResolvedValueOnce(running).mockResolvedValueOnce(running).mockResolvedValueOnce(completed);
 
     source.emitOpen();
     source.emit("delta", {
@@ -130,22 +130,90 @@ describe("connectTaskEvents", () => {
     expect(events).toHaveLength(1);
 
     await vi.advanceTimersByTimeAsync(0);
-    expect(getTask).toHaveBeenCalledTimes(1);
+    expect(getTask).toHaveBeenCalledTimes(2);
     expect(tasks).toEqual([running]);
 
     await vi.advanceTimersByTimeAsync(1000);
-    expect(getTask).toHaveBeenCalledTimes(2);
+    expect(getTask).toHaveBeenCalledTimes(3);
     expect(tasks.at(-1)?.status).toBe("completed");
 
     await vi.advanceTimersByTimeAsync(5000);
-    expect(getTask).toHaveBeenCalledTimes(2);
+    expect(getTask).toHaveBeenCalledTimes(3);
     stream.close();
+  });
+
+  it("认证确认未返回时达到重连上限，晚到的 401 仍立即停止", async () => {
+    let rejectAuthorizationCheck!: (error: unknown) => void;
+    const pollingRequest = new Promise<ResearchTaskRecord>(() => undefined);
+    const { errors, getTask, source, stream } = createHarness();
+    getTask
+      .mockImplementationOnce(() => new Promise((_, reject) => {
+        rejectAuthorizationCheck = reject;
+      }))
+      .mockImplementationOnce(() => pollingRequest);
+
+    for (let index = 0; index < 4; index += 1) source.emitError();
+    expect(stream.mode).toBe("polling");
+    expect(getTask).toHaveBeenCalledTimes(2);
+    rejectAuthorizationCheck(new ApiRequestError(401, "unauthorized", "unauthorized"));
+
+    await vi.waitFor(() => expect(stream.mode).toBe("closed"));
+    expect(errors).toHaveLength(1);
+  });
+
+  it("认证确认未返回时达到重连上限，晚到的终态仍立即收口", async () => {
+    let resolveAuthorizationCheck!: (task: ResearchTaskRecord) => void;
+    const pollingRequest = new Promise<ResearchTaskRecord>(() => undefined);
+    const completed = makeTask({ id: "task-1", status: "completed" });
+    const { tasks, getTask, source, stream } = createHarness();
+    getTask
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveAuthorizationCheck = resolve;
+      }))
+      .mockImplementationOnce(() => pollingRequest);
+
+    for (let index = 0; index < 4; index += 1) source.emitError();
+    expect(stream.mode).toBe("polling");
+    expect(getTask).toHaveBeenCalledTimes(2);
+    resolveAuthorizationCheck(completed);
+
+    await vi.waitFor(() => expect(tasks).toEqual([completed]));
+    expect(stream.mode).toBe("closed");
+  });
+
+  it("首次流错误查询到终态时立即收口，不继续重连", async () => {
+    const completed = makeTask({ id: "task-1", status: "completed" });
+    const { tasks, notices, getTask, source, stream } = createHarness();
+    getTask.mockResolvedValue(completed);
+
+    source.emitError(2);
+
+    await vi.waitFor(() => expect(tasks).toEqual([completed]));
+    expect(stream.mode).toBe("closed");
+    expect(source.closed).toBe(true);
+    expect(notices).not.toContain("polling");
+    expect(FakeEventSource.instances).toHaveLength(1);
+  });
+
+  it("首次流错误确认 401 后立即停止，不等待重连耗尽", async () => {
+    const { errors, notices, getTask, source, stream } = createHarness();
+    getTask.mockRejectedValue(new ApiRequestError(401, "unauthorized", "unauthorized"));
+
+    source.emitError();
+
+    await vi.waitFor(() => expect(stream.mode).toBe("closed"));
+    expect(getTask).toHaveBeenCalledTimes(1);
+    expect(errors).toHaveLength(1);
+    expect(notices).not.toContain("polling");
+    expect(source.closed).toBe(true);
   });
 
   it("轮询遇到 401 时停止并上抛错误，不循环请求", async () => {
     vi.useFakeTimers();
     const { errors, getTask, source, stream } = createHarness({ pollIntervalMs: 1000 });
-    getTask.mockRejectedValue(new ApiRequestError(401, "unauthorized", "unauthorized"));
+    getTask
+      .mockResolvedValueOnce(makeTask({ id: "task-1", status: "running" }))
+      .mockRejectedValue(new ApiRequestError(401, "unauthorized", "unauthorized"));
 
     for (let index = 0; index < 4; index += 1) source.emitError();
     await vi.advanceTimersByTimeAsync(0);
@@ -153,7 +221,7 @@ describe("connectTaskEvents", () => {
     expect(stream.mode).toBe("closed");
 
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(getTask).toHaveBeenCalledTimes(1);
+    expect(getTask).toHaveBeenCalledTimes(2);
   });
 
   it("syncNow 在流式模式下按事件游标立即重连", () => {
@@ -183,11 +251,11 @@ describe("connectTaskEvents", () => {
 
     for (let index = 0; index < 4; index += 1) source.emitError();
     await vi.advanceTimersByTimeAsync(0);
-    expect(getTask).toHaveBeenCalledTimes(1);
+    expect(getTask).toHaveBeenCalledTimes(2);
 
     stream.syncNow();
     await vi.advanceTimersByTimeAsync(0);
-    expect(getTask).toHaveBeenCalledTimes(2);
+    expect(getTask).toHaveBeenCalledTimes(3);
     stream.close();
   });
 

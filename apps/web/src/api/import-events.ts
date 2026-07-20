@@ -82,6 +82,7 @@ export function connectImportEvents(options: ImportEventStreamOptions): ImportEv
   let terminal = false;
   let failures = 0;
   let pollInFlight = false;
+  let authCheckInFlight = false;
 
   function eventsUrl(after: number): string {
     const base = `/v1/research-imports/${encodeURIComponent(options.taskId)}/events`;
@@ -136,6 +137,7 @@ export function connectImportEvents(options: ImportEventStreamOptions): ImportEv
 
   function handleSourceError(): void {
     if (closed || terminal || mode !== "streaming") return;
+    if (!authCheckInFlight) void confirmAuthorization();
     failures += 1;
     if (failures >= maxReconnectAttempts) {
       startPolling();
@@ -147,6 +149,29 @@ export function connectImportEvents(options: ImportEventStreamOptions): ImportEv
     if (source && source.readyState === 2) {
       teardownSource();
       timer = setTimer(() => connect(lastEventId), reconnectDelayMs(failures));
+    }
+  }
+
+  async function confirmAuthorization(): Promise<void> {
+    authCheckInFlight = true;
+    try {
+      const task = await options.getTask(options.taskId);
+      if (closed || terminal) return;
+      if (TERMINAL_STATUSES.includes(task.status)) {
+        terminal = true;
+        teardownSource();
+        clearScheduled();
+        options.onTask(task);
+        close();
+      }
+    } catch (error) {
+      if (closed || terminal) return;
+      if (error instanceof ApiRequestError && error.status === 401) {
+        options.onError?.(error);
+        close();
+      }
+    } finally {
+      authCheckInFlight = false;
     }
   }
 

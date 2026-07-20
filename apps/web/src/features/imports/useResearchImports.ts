@@ -12,6 +12,7 @@ export interface PendingUpload {
   file: File;
   key: string;
   fileName: string;
+  sessionId: string;
 }
 
 export interface ResearchImportsController {
@@ -49,20 +50,29 @@ export function useResearchImports(
   const [pendingUpload, setPendingUpload] = useState<PendingUpload | null>(null);
   const [actingTaskIds, setActingTaskIds] = useState<ReadonlySet<string>>(new Set());
   const streamsRef = useRef(new Map<string, ImportEventStream>());
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
 
   const closeAllStreams = useCallback(() => {
     for (const stream of streamsRef.current.values()) stream.close();
     streamsRef.current.clear();
   }, []);
 
-  // 会话切换或卸载时关闭全部导入事件连接
-  useEffect(() => closeAllStreams, [sessionId, closeAllStreams]);
+  // 会话切换或卸载时关闭全部导入事件连接，并清除只属于旧会话的瞬时状态
+  useEffect(() => {
+    setPendingUpload(null);
+    setUploadError(null);
+    setActionError(null);
+    setActingTaskIds(new Set());
+    return closeAllStreams;
+  }, [sessionId, closeAllStreams]);
 
   /** 以服务端会话视图对齐；matchKey 存在时报告该幂等键是否已被受理。 */
   const alignFromServer = useCallback(
     async (matchKey?: string): Promise<boolean> => {
       try {
         const fresh = await api.getResearchSessionView(sessionId);
+        if (sessionIdRef.current !== sessionId) return false;
         updateView(() => fresh);
         if (!matchKey) return true;
         return (fresh.importTasks ?? []).some((task) => task.idempotencyKey === matchKey);
@@ -75,14 +85,16 @@ export function useResearchImports(
 
   const alignTask = useCallback(
     async (taskId: string) => {
+      const requestSessionId = sessionId;
       try {
         const task = await api.getResearchImportTask(taskId);
+        if (sessionIdRef.current !== requestSessionId) return;
         updateView((current) => ({ ...current, importTasks: upsertImportTask(current.importTasks, task) }));
       } catch {
         // 对齐失败时保留已显示内容
       }
     },
-    [api, updateView],
+    [api, sessionId, updateView],
   );
 
   // 为进行中（queued / running）的导入任务维持渐进事件连接
@@ -136,13 +148,16 @@ export function useResearchImports(
 
   const sendFile = useCallback(
     async (file: File, key: string) => {
+      const requestSessionId = sessionId;
+      const isCurrentSession = () => sessionIdRef.current === requestSessionId;
       const mimeType = resolveImportMimeType(file.name, file.type);
       if (!mimeType) {
         setUploadError("仅支持 TXT、Markdown、DOCX、PDF 文件。");
         return;
       }
       try {
-        const accepted = await api.createResearchImport(sessionId, file, file.name, mimeType, key);
+        const accepted = await api.createResearchImport(requestSessionId, file, file.name, mimeType, key);
+        if (!isCurrentSession()) return;
         setPendingUpload(null);
         setUploadError(null);
         updateView((current) => ({
@@ -152,6 +167,7 @@ export function useResearchImports(
         }));
         announce(`已收到 ${file.name}，正在解析`);
       } catch (error) {
+        if (!isCurrentSession()) return;
         if (isUnauthorized(error)) {
           closeAllStreams();
           escalateError(error);
@@ -166,12 +182,13 @@ export function useResearchImports(
         if (error instanceof NetworkError) {
           // 结果不确定：先查服务端是否已受理（同键恢复），未受理则保留同一文件与键
           const recovered = await alignFromServer(key);
+          if (!isCurrentSession()) return;
           if (recovered) {
             setPendingUpload(null);
             setUploadError(null);
             announce("已恢复上传，正在解析");
           } else {
-            setPendingUpload({ file, key, fileName: file.name });
+            setPendingUpload({ file, key, fileName: file.name, sessionId: requestSessionId });
             setUploadError("上传结果不确定：连接中断。可重试，重试不会产生重复附件。");
           }
           return;
@@ -199,10 +216,10 @@ export function useResearchImports(
 
   const retryPendingUpload = useCallback(async () => {
     const pending = pendingUpload;
-    if (!pending) return;
+    if (!pending || pending.sessionId !== sessionId) return;
     setUploadError(null);
     await sendFile(pending.file, pending.key);
-  }, [pendingUpload, sendFile]);
+  }, [pendingUpload, sessionId, sendFile]);
 
   const dismissPendingUpload = useCallback(() => {
     setPendingUpload(null);
@@ -220,13 +237,17 @@ export function useResearchImports(
 
   const cancel = useCallback(
     async (taskId: string) => {
+      const requestSessionId = sessionId;
+      const isCurrentSession = () => sessionIdRef.current === requestSessionId;
       setActionError(null);
       markActing(taskId, true);
       try {
         const task = await api.cancelResearchImport(taskId);
+        if (!isCurrentSession()) return;
         updateView((current) => ({ ...current, importTasks: upsertImportTask(current.importTasks, task) }));
         announce("已取消导入");
       } catch (error) {
+        if (!isCurrentSession()) return;
         if (isUnauthorized(error)) {
           closeAllStreams();
           escalateError(error);
@@ -239,22 +260,26 @@ export function useResearchImports(
         }
         setActionError("取消没有成功，请稍后再试。");
       } finally {
-        markActing(taskId, false);
+        if (isCurrentSession()) markActing(taskId, false);
       }
     },
-    [api, updateView, announce, escalateError, closeAllStreams, alignTask, markActing],
+    [api, sessionId, updateView, announce, escalateError, closeAllStreams, alignTask, markActing],
   );
 
   const retry = useCallback(
     async (taskId: string) => {
+      const requestSessionId = sessionId;
+      const isCurrentSession = () => sessionIdRef.current === requestSessionId;
       setActionError(null);
       markActing(taskId, true);
       try {
         // 重试保留同一任务、附件与稳定 ID，任务回到 queued 后由事件连接接管
         const task = await api.retryResearchImport(taskId);
+        if (!isCurrentSession()) return;
         updateView((current) => ({ ...current, importTasks: upsertImportTask(current.importTasks, task) }));
         announce("已重新排队，正在解析");
       } catch (error) {
+        if (!isCurrentSession()) return;
         if (isUnauthorized(error)) {
           closeAllStreams();
           escalateError(error);
@@ -266,10 +291,10 @@ export function useResearchImports(
         }
         setActionError("重试没有成功，请稍后再试。");
       } finally {
-        markActing(taskId, false);
+        if (isCurrentSession()) markActing(taskId, false);
       }
     },
-    [api, updateView, announce, escalateError, closeAllStreams, alignTask, markActing],
+    [api, sessionId, updateView, announce, escalateError, closeAllStreams, alignTask, markActing],
   );
 
   return {
