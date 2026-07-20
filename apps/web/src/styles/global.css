@@ -236,6 +236,44 @@ button {
   overflow-wrap: anywhere;
 }
 
+.message__blocks {
+  display: grid;
+  gap: var(--space-3);
+}
+
+/* 模型状态点：真实模型 / 本地演示 / 未配置，颜色不是唯一表达 */
+.model-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-1) 0 0;
+  font-size: 0.8125rem;
+  color: var(--color-muted);
+}
+
+.model-status__dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: var(--radius-circle);
+  background: var(--color-muted);
+}
+
+.model-status--real .model-status__dot {
+  background: var(--color-ai);
+}
+
+.model-status--demo .model-status__dot {
+  background: var(--color-later);
+}
+
+.model-status--unconfigured {
+  color: var(--color-danger);
+}
+
+.model-status--unconfigured .model-status__dot {
+  background: var(--color-danger);
+}
+
 .message__status {
   margin: var(--space-2) 0 0;
   color: var(--color-ai);

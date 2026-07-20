@@ -1,4 +1,5 @@
 import type { ResearchMessageRecord, ResearchTaskRecord } from "@collector/capture-contracts";
+import { deriveMessageBlocks, messageContentBlockId } from "@collector/capture-contracts";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { taskErrorReason } from "./format";
 
@@ -21,16 +22,34 @@ export function MessageItem({ message, task, retrying = false, onRetry }: Messag
   }
 
   return (
-    <li className="message message--assistant">
+    <li className="message message--assistant" data-message-id={message.id}>
       <p className="message__role">Collector</p>
       {message.status === "completed" ? (
-        <p className="message__content">{message.content}</p>
+        <AssistantBlocks message={message} />
       ) : message.status === "failed" ? (
         <FailedBody message={message} task={task} retrying={retrying} onRetry={onRetry} />
       ) : (
         <GeneratingBody message={message} />
       )}
     </li>
+  );
+}
+
+/**
+ * 完成的 AI 回答按契约包的确定性段落块渲染。
+ * 块 ID 与后端选区锚点使用同一派生规则，前端不自行切分段落。
+ */
+function AssistantBlocks({ message }: { message: ResearchMessageRecord }) {
+  const blocks = deriveMessageBlocks(message.content);
+  if (blocks.length === 0) return <p className="message__content">{message.content}</p>;
+  return (
+    <div className="message__blocks" data-content-kind="message" data-message-id={message.id}>
+      {blocks.map((block) => (
+        <p className="message__content" key={block.ordinal} data-block-id={messageContentBlockId(message.id, block.ordinal)}>
+          {block.text}
+        </p>
+      ))}
+    </div>
   );
 }
 

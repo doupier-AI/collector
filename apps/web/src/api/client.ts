@@ -1,4 +1,5 @@
 import type {
+  AiConfigurationView,
   ResearchContentSnapshotRecord,
   ResearchImportAccepted,
   ResearchImportTaskRecord,
@@ -24,6 +25,7 @@ export interface ApiClient {
   cancelResearchImport(taskId: string): Promise<ResearchImportTaskRecord>;
   retryResearchImport(taskId: string): Promise<ResearchImportTaskRecord>;
   getResearchContent(contentSnapshotId: string): Promise<ResearchContentSnapshotRecord>;
+  getAiConfiguration(): Promise<AiConfigurationView>;
   exchangePairingCode(code: string): Promise<{ paired: true }>;
 }
 
@@ -134,6 +136,9 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
         headers: JSON_HEADERS,
         body: "{}",
       });
+    },
+    getAiConfiguration() {
+      return requestJson<AiConfigurationView>(fetchFn, "/v1/ai-configuration");
     },
     exchangePairingCode(code: string) {
       return requestJson<{ paired: true }>(fetchFn, "/v1/pairings/exchange", {

@@ -92,6 +92,14 @@ test("提交后渐进内容进入同一条 AI 消息并完成，控制台无错�
   // 完成状态：aria-live 播报，不弹成功提示
   await expect(page.locator("[aria-live=polite]")).toHaveText("已完成", { timeout: 15_000 });
 
+  // 完成的回答按确定性段落块渲染，块 ID 与选区锚点同源
+  const blocks = page.locator(".message--assistant [data-block-id]");
+  expect(await blocks.count()).toBeGreaterThan(0);
+  await expect(blocks.first()).toHaveAttribute("data-block-id", /#p0$/);
+
+  // 模型状态点已加载并明确标识当前模式（e2e 假模型按未配置外的状态显示，具体文案由接口决定）
+  await expect(page.locator(".model-status")).toBeVisible();
+
   // 网络契约：POST messages 携带幂等键；events 响应为 text/event-stream
   const postMessage = apiRequests.find(
     (request) => request.method === "POST" && /\/v1\/research-sessions\/[^/]+\/messages/.test(request.url),

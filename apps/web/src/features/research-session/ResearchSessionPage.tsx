@@ -12,6 +12,7 @@ import { IMPORT_ACCEPT } from "../imports/import-file";
 import { useResearchImports } from "../imports/useResearchImports";
 import { formatSessionTime } from "./format";
 import { MessageItem } from "./MessageItem";
+import { ModelStatusIndicator } from "./ModelStatusIndicator";
 import { taskForMessage } from "./session-view";
 import { useResearchSession } from "./useResearchSession";
 import type { PendingFirstTurn } from "./useResearchSession";
@@ -159,6 +160,7 @@ export function ResearchSessionPage() {
       <header className="session-header">
         <h1 className="page__title">{view.session.title}</h1>
         <p className="session-header__meta">更新于 {formatSessionTime(view.session.updatedAt)}</p>
+        <ModelStatusIndicator />
       </header>
 
       {notice ? (
