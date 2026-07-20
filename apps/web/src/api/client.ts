@@ -3,6 +3,10 @@ import type {
   ResearchContentSnapshotRecord,
   ResearchImportAccepted,
   ResearchImportTaskRecord,
+  ResearchSelectionAccepted,
+  ResearchSelectionInput,
+  ResearchSelectionRecord,
+  ResearchSelectionTaskRecord,
   ResearchSessionRecord,
   ResearchSessionView,
   ResearchTaskRecord,
@@ -25,6 +29,10 @@ export interface ApiClient {
   cancelResearchImport(taskId: string): Promise<ResearchImportTaskRecord>;
   retryResearchImport(taskId: string): Promise<ResearchImportTaskRecord>;
   getResearchContent(contentSnapshotId: string): Promise<ResearchContentSnapshotRecord>;
+  createResearchSelection(sessionId: string, input: ResearchSelectionInput, idempotencyKey: string): Promise<ResearchSelectionAccepted>;
+  getResearchSelection(selectionId: string): Promise<ResearchSelectionRecord>;
+  getResearchSelectionTask(taskId: string): Promise<ResearchSelectionTaskRecord>;
+  retryResearchSelectionTask(taskId: string): Promise<ResearchSelectionTaskRecord>;
   getAiConfiguration(): Promise<AiConfigurationView>;
   exchangePairingCode(code: string): Promise<{ paired: true }>;
 }
@@ -128,6 +136,34 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
       return requestJson<ResearchContentSnapshotRecord>(
         fetchFn,
         `/v1/research-content/${encodeURIComponent(contentSnapshotId)}`,
+      );
+    },
+    createResearchSelection(sessionId: string, input: ResearchSelectionInput, idempotencyKey: string) {
+      return requestJson<ResearchSelectionAccepted>(
+        fetchFn,
+        `/v1/research-sessions/${encodeURIComponent(sessionId)}/selections`,
+        {
+          method: "POST",
+          headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
+          body: JSON.stringify(input),
+        },
+      );
+    },
+    getResearchSelection(selectionId: string) {
+      return requestJson<ResearchSelectionRecord>(fetchFn, `/v1/research-selections/${encodeURIComponent(selectionId)}`);
+    },
+    getResearchSelectionTask(taskId: string) {
+      return requestJson<ResearchSelectionTaskRecord>(fetchFn, `/v1/research-selection-tasks/${encodeURIComponent(taskId)}`);
+    },
+    retryResearchSelectionTask(taskId: string) {
+      return requestJson<ResearchSelectionTaskRecord>(
+        fetchFn,
+        `/v1/research-selection-tasks/${encodeURIComponent(taskId)}/retry`,
+        {
+          method: "POST",
+          headers: JSON_HEADERS,
+          body: "{}",
+        },
       );
     },
     retryResearchTask(taskId: string) {

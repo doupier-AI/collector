@@ -1,6 +1,6 @@
 # Collector MVP 开发指导
 
-日期：2026-07-20
+日期：2026-07-21
 
 状态：当前 MVP 实施指导。本文把产品共识转化为开发范围、推进顺序和验收边界，不替代产品定义与交互文档。
 
@@ -20,13 +20,14 @@ Collector 围绕 AI 对话和内容阅读展开。Chat 与导入文档是并列�
 
 1. 根目录 `AGENTS.md`：长期沟通、文档、提交和验证规则；
 2. `docs/PROJECT_DEVELOPMENT_RECORD.md`：当前实现状态、已完成里程碑、验证证据和遗留限制；
-3. `docs/PRODUCT_REFOUNDATION.md`：产品定义、完整 MVP 范围和产品边界；
-4. `docs/PRODUCT_FUNCTION_FLOW.md`：完整用户主链路、AI 依赖和恢复路径；
-5. 本文：当前阶段的范围分层、实施优先级和整体验收门槛；
-6. `docs/FRONTEND_IMPLEMENTATION_GUIDE.md`：WebUI 当前契约、客户端状态、安全和前端验证要求；
-7. `docs/INTERACTION_DESIGN.md` 与 `docs/INTERFACE_DIRECTIONS.md`：交互细节和空间布局；
-8. `docs/ARCHITECTURE.md`：技术边界；
-9. `docs/HUMAN_ACCEPTANCE_STANDARD.md`：人工验收要求。
+3. `docs/MVP_IMPLEMENTATION_PLAN.md`：核心闭环当前实施计划、切片状态与下一步交接；
+4. `docs/PRODUCT_REFOUNDATION.md`：产品定义、完整 MVP 范围和产品边界；
+5. `docs/PRODUCT_FUNCTION_FLOW.md`：完整用户主链路、AI 依赖和恢复路径；
+6. 本文：当前阶段的范围分层、实施优先级和整体验收门槛；
+7. `docs/FRONTEND_IMPLEMENTATION_GUIDE.md`：WebUI 当前契约、客户端状态、安全和前端验证要求；
+8. `docs/INTERACTION_DESIGN.md` 与 `docs/INTERFACE_DIRECTIONS.md`：交互细节和空间布局；
+9. `docs/ARCHITECTURE.md`：技术边界；
+10. `docs/HUMAN_ACCEPTANCE_STANDARD.md`：人工验收要求。
 
 产品目标、当前 MVP 范围和当前已实现状态分别描述。“产品文档定义了”不等于“程序已经实现”；源码、自动化测试和实际界面共同证明实现状态。
 

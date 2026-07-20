@@ -34,4 +34,17 @@
   /* 固定侧栏宽度由 React state 管理；这里是覆盖式抽屉（窄屏）宽度 */
   --drawer-width: 17.5rem;
   --app-bar-height: 3.5rem;
+
+  /* 选区与选区智能窗口 */
+  --color-selection: #E7D8A6;
+  --color-selection-line: #C9B26A;
+  --color-difficulty-low: #3E6B4F;
+  --color-difficulty-mid: #9A6A24;
+  --color-difficulty-high: #A33B36;
+  --selection-panel-width: 22.5rem;
+  --shadow-panel: 0 0.75rem 2rem rgba(32, 35, 31, 0.16);
+}
+
+::selection {
+  background: var(--color-selection);
 }

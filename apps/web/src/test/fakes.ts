@@ -2,6 +2,8 @@ import type {
   ResearchAttachmentRecord,
   ResearchImportTaskRecord,
   ResearchMessageRecord,
+  ResearchSelectionRecord,
+  ResearchSelectionTaskRecord,
   ResearchSessionRecord,
   ResearchTaskRecord,
 } from "@collector/capture-contracts";
@@ -137,6 +139,36 @@ export function makeImportTask(overrides: Partial<ResearchImportTaskRecord> = {}
     retryable: false,
     createdAt: "2026-07-17T08:00:00.000Z",
     updatedAt: "2026-07-17T08:00:00.000Z",
+    ...overrides,
+  };
+}
+
+export function makeSelection(overrides: Partial<ResearchSelectionRecord> = {}): ResearchSelectionRecord {
+  sequence += 1;
+  return {
+    id: `selection-${sequence}`,
+    sessionId: "session-1",
+    anchor: { kind: "message", messageId: "m-out", blockOrdinal: 0, startOffset: 0, endOffset: 6, exact: "一段选区文字" },
+    text: "一段选区文字",
+    status: "active",
+    createdAt: "2026-07-20T08:00:00.000Z",
+    updatedAt: "2026-07-20T08:00:00.000Z",
+    ...overrides,
+  };
+}
+
+export function makeSelectionTask(overrides: Partial<ResearchSelectionTaskRecord> = {}): ResearchSelectionTaskRecord {
+  sequence += 1;
+  return {
+    id: `selection-task-${sequence}`,
+    sessionId: "session-1",
+    selectionId: "selection-1",
+    idempotencyKey: `sel-key-${sequence}`,
+    status: "queued",
+    retryable: false,
+    promptVersion: "selection-analysis-v1",
+    createdAt: "2026-07-20T08:00:00.000Z",
+    updatedAt: "2026-07-20T08:00:00.000Z",
     ...overrides,
   };
 }

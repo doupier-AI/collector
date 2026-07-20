@@ -45,7 +45,12 @@ function AssistantBlocks({ message }: { message: ResearchMessageRecord }) {
   return (
     <div className="message__blocks" data-content-kind="message" data-message-id={message.id}>
       {blocks.map((block) => (
-        <p className="message__content" key={block.ordinal} data-block-id={messageContentBlockId(message.id, block.ordinal)}>
+        <p
+          className="message__content"
+          key={block.ordinal}
+          data-block-id={messageContentBlockId(message.id, block.ordinal)}
+          data-block-text
+        >
           {block.text}
         </p>
       ))}

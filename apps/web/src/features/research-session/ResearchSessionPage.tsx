@@ -10,6 +10,7 @@ import { ChatComposer } from "../chat-composer/ChatComposer";
 import { AttachmentList } from "../imports/AttachmentList";
 import { IMPORT_ACCEPT } from "../imports/import-file";
 import { useResearchImports } from "../imports/useResearchImports";
+import { SelectionSurface } from "../selection/SelectionSurface";
 import { formatSessionTime } from "./format";
 import { MessageItem } from "./MessageItem";
 import { ModelStatusIndicator } from "./ModelStatusIndicator";
@@ -239,6 +240,8 @@ export function ResearchSessionPage() {
           <p className="drop-overlay__meta">支持 TXT、Markdown、DOCX、PDF，单个不超过 20 MB</p>
         </div>
       ) : null}
+
+      <SelectionSurface sessionId={sessionId} />
 
       <p className="sr-only" role="status" aria-live="polite">
         {session.liveMessage}

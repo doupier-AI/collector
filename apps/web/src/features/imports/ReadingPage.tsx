@@ -2,27 +2,16 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import type { ResearchContentBlock, ResearchContentSnapshotRecord } from "@collector/capture-contracts";
 import { isApiErrorCode, isUnauthorized } from "../../api/errors";
+import { anchorCaption } from "../../app/anchorCaption";
 import { useServices } from "../../app/services";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
+import { SelectionSurface } from "../selection/SelectionSurface";
 import { PairingGate } from "../auth/PairingGate";
 
 type ReaderState =
   | { kind: "loading" }
   | { kind: "error"; error: unknown }
   | { kind: "ready"; snapshot: ResearchContentSnapshotRecord };
-
-function anchorCaption(block: ResearchContentBlock): string {
-  const anchor = block.anchor;
-  switch (anchor.kind) {
-    case "text":
-    case "markdown":
-      return anchor.startLine === anchor.endLine ? `第 ${anchor.startLine} 行` : `第 ${anchor.startLine}–${anchor.endLine} 行`;
-    case "docx":
-      return `段落 ${anchor.paragraphIndex + 1}`;
-    case "pdf":
-      return `第 ${anchor.pageNumber} 页`;
-  }
-}
 
 function isHeading(block: ResearchContentBlock): boolean {
   const anchor = block.anchor;
@@ -120,22 +109,32 @@ export function ReadingPage() {
         <h1 className="page__title">{snapshot.title}</h1>
         <p className="session-header__meta">共 {snapshot.blocks.length} 个内容块</p>
       </header>
-      <article className="reading" aria-label={`${snapshot.title} 正文`}>
+      <article
+        className="reading"
+        aria-label={`${snapshot.title} 正文`}
+        data-content-kind="snapshot"
+        data-content-snapshot-id={snapshot.id}
+      >
         {snapshot.blocks.map((block) => (
           <section className="reading__block" key={block.id} data-block-id={block.id}>
             <p className="reading__anchor">{anchorCaption(block)}</p>
             {isHeading(block) ? (
-              <h2 className="reading__heading">{block.text}</h2>
+              <h2 className="reading__heading" data-block-text>
+                {block.text}
+              </h2>
             ) : isCode(block) ? (
-              <pre className="reading__code">
+              <pre className="reading__code" data-block-text>
                 <code>{block.text}</code>
               </pre>
             ) : (
-              <p className="reading__text">{block.text}</p>
+              <p className="reading__text" data-block-text>
+                {block.text}
+              </p>
             )}
           </section>
         ))}
       </article>
+      <SelectionSurface sessionId={sessionId} />
     </div>
   );
 }

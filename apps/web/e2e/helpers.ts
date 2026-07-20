@@ -185,3 +185,50 @@ export function readResearchImportTables(dbPath: string): {
     db.close();
   }
 }
+
+export interface ResearchSelectionRow {
+  id: string;
+  sessionId: string;
+  status: string;
+  recordJson: string;
+}
+
+export interface ResearchSelectionTaskRow {
+  id: string;
+  sessionId: string;
+  selectionId: string;
+  status: string;
+  retryable: number;
+  idempotencyKey: string;
+  recordJson: string;
+}
+
+export interface ResearchSelectionEventRow {
+  taskId: string;
+  eventType: string;
+}
+
+/** 只读打开 harness 的 SQLite，核对研究选区 / 选区分析任务 / 选区事件记录。 */
+export function readResearchSelectionTables(dbPath: string): {
+  selections: ResearchSelectionRow[];
+  selectionTasks: ResearchSelectionTaskRow[];
+  selectionEvents: ResearchSelectionEventRow[];
+} {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    const selections = db
+      .prepare("SELECT id, session_id AS sessionId, status, record_json AS recordJson FROM research_selections ORDER BY created_at, rowid")
+      .all() as unknown as ResearchSelectionRow[];
+    const selectionTasks = db
+      .prepare(
+        "SELECT id, session_id AS sessionId, selection_id AS selectionId, status, retryable, idempotency_key AS idempotencyKey, record_json AS recordJson FROM research_selection_tasks ORDER BY created_at, rowid",
+      )
+      .all() as unknown as ResearchSelectionTaskRow[];
+    const selectionEvents = db
+      .prepare("SELECT task_id AS taskId, event_type AS eventType FROM research_selection_task_events ORDER BY sequence")
+      .all() as unknown as ResearchSelectionEventRow[];
+    return { selections, selectionTasks, selectionEvents };
+  } finally {
+    db.close();
+  }
+}

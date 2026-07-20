@@ -56,9 +56,32 @@ const fakeProvider = {
   },
 };
 
+// 选区分析的确定性假模型：字段齐全（可选的 relationToFocus 缺省），不调用真实云模型
+const fakeSelectionProvider = {
+  provider: "e2e-fake",
+  model: "fake-research-e2e",
+  promptVersion: "e2e-v1",
+  async analyze(request) {
+    await sleep(300);
+    const short = request.text.length > 12 ? `${request.text.slice(0, 12)}…` : request.text;
+    return {
+      summary: `这段选区在说「${short}」。`,
+      difficulty: "中",
+      quickReadMinutes: 2,
+      deepStudyMinutes: 12,
+      prerequisites: ["基础阅读能力"],
+      relationToContent: request.contentTitle
+        ? `选区属于《${request.contentTitle}》的一部分。`
+        : "选区是当前回答中的一段内容。",
+      rationale: "本地假模型基于选区原文生成确定性分析，未联网检索。",
+    };
+  },
+};
+
 const service = new CaptureService(store, join(dataDir, "artifacts"), undefined, undefined, {
   autoRunRecentOrganization: false,
   researchProvider: modelMode === "fake" ? fakeProvider : undefined,
+  selectionProvider: modelMode === "fake" ? fakeSelectionProvider : undefined,
 });
 
 const browserBootstraps = new Set();
