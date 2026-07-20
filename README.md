@@ -29,9 +29,8 @@ WebUI ↔ HTTP / 流式连接 ↔ Node 服务 ↔ SQLite / 文件 / 模型 / 搜
 
 ## 仓库状态
 
-当前源码已经提供本地 WebUI、Node API、SQLite 持久化、研究会话与恢复、会话内文件导入和阅读视图、模型供应商注册与调用、工作流、浏览器扩展及自动化测试。当前文件导入切片已完成接收，后续产品切片与待确认事项见 [当前实施状态](docs/handoffs/CURRENT.md)。
+当前源码已经提供本地 WebUI、Node API、SQLite 持久化、研究会话与恢复、会话内文件导入和阅读视图、模型供应商注册与调用、工作流、浏览器扩展及自动化测试。当前实现状态、已完成里程碑、验证证据和遗留限制见 [项目开发记录](docs/PROJECT_DEVELOPMENT_RECORD.md)；下一阶段的产品核心闭环和实施顺序见 [MVP 开发指导](docs/DEVELOPMENT_START.md)。
 
-开发入口与首个纵向切片见 [开发起点](docs/DEVELOPMENT_START.md)。
 
 ## 环境与验证
 
@@ -91,6 +90,8 @@ npm.cmd run test:e2e    # 先完整构建，再运行 apps/web 的 Playwright �
 - [输入来源可行性](docs/INPUT_SOURCE_FEASIBILITY.md)
 - [技术架构](docs/ARCHITECTURE.md)
 - [人工验收标准](docs/HUMAN_ACCEPTANCE_STANDARD.md)
-- [开发起点](docs/DEVELOPMENT_START.md)
+- [MVP 开发指导](docs/DEVELOPMENT_START.md)
+- [前端实施指导](docs/FRONTEND_IMPLEMENTATION_GUIDE.md)
+- [项目开发记录](docs/PROJECT_DEVELOPMENT_RECORD.md)
 
 当前待确认事项集中记录在 [产品定义与范围](docs/PRODUCT_REFOUNDATION.md) 的“尚待确认”章节。
