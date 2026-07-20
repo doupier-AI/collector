@@ -18,3 +18,5 @@ apps/web/e2e/.runtime/
 !.agents/skills/collector-engineering/
 !.agents/skills/tdd/
 skills-lock.json
+.claude/skills/
+.claude/worktrees/
