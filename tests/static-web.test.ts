@@ -77,7 +77,11 @@ test("browser routes fall back to the SPA shell without weakening API authentica
 
   const health = await fetch(`${baseUrl}/health`);
   assert.equal(health.status, 200);
-  assert.deepEqual(await health.json(), { status: "ok", instanceId: "default" });
+  assert.deepEqual(await health.json(), {
+    status: "ok",
+    instanceId: "default",
+    runtimeVersion: "development",
+  });
 });
 
 test("static delivery rejects missing files and paths outside the configured Web root", async (t) => {

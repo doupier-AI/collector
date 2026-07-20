@@ -11,12 +11,15 @@ const JSON_LIMIT = 2 * 1024 * 1024;
 
 export interface ApiServerOptions {
   instanceId?: string;
+  runtimeVersion?: string;
   /** Dedicated Vite production directory. Omit for API-only embedded/test servers. */
   webRoot?: string;
   /** Private launcher credential; never expose it through HTTP responses or logs. */
   launcherToken?: string;
   /** Mint a short-lived loopback handoff that sets the browser's HttpOnly session cookie. */
   createLaunchBootstrap?: () => Promise<{ url: string }>;
+  /** Gracefully stop this exact service after authenticating the dedicated launcher token. */
+  requestShutdown?: () => void;
 }
 
 export function createApiServer(service: CaptureService, auth: LocalAuth, options: ApiServerOptions = {}) {
@@ -27,7 +30,11 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       setCors(request, response);
       if (request.method === "OPTIONS") return send(response, 204);
       const url = new URL(request.url ?? "/", "http://localhost");
-      if (request.method === "GET" && url.pathname === "/health") return json(response, 200, { status: "ok", instanceId: options.instanceId ?? "default" });
+      if (request.method === "GET" && url.pathname === "/health") return json(response, 200, {
+        status: "ok",
+        instanceId: options.instanceId ?? "default",
+        runtimeVersion: options.runtimeVersion ?? "development",
+      });
       if (staticWeb && await staticWeb.tryServe(request, response, url)) return;
       if (request.method === "GET" && url.pathname === "/") return json(response, 200, { name: "Collector Local API", ui: "web" });
       if (request.method === "POST" && url.pathname === "/v1/pairings/exchange") {
@@ -45,14 +52,24 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       }
 
       if (request.method === "POST" && url.pathname === "/v1/launcher/bootstrap") {
-        const token = requestToken(request);
-        if (!options.launcherToken || !token || !tokensEqual(token, options.launcherToken)) {
-          throw new LocalAccessError("Collector launcher control authentication is required");
-        }
+        requireLauncherControl(request, options);
         if (!options.createLaunchBootstrap) {
           return json(response, 404, { error: { code: "not_found", message: "Launcher bootstrap is unavailable" } });
         }
         return json(response, 201, await options.createLaunchBootstrap());
+      }
+      if (request.method === "POST" && url.pathname === "/v1/launcher/shutdown") {
+        requireLauncherControl(request, options);
+        if (!options.requestShutdown) {
+          return json(response, 404, { error: { code: "not_found", message: "Launcher shutdown is unavailable" } });
+        }
+        const body = await readJson(request) as { instanceId?: unknown };
+        if (body.instanceId !== options.instanceId) {
+          return json(response, 409, { error: { code: "instance_changed", message: "Collector instance changed before shutdown" } });
+        }
+        send(response, 202);
+        setImmediate(options.requestShutdown);
+        return;
       }
 
       if (request.method === "GET" && url.pathname === "/v1/data-paths") {
@@ -437,6 +454,13 @@ function setCors(request: IncomingMessage, response: ServerResponse) {
   }
   response.setHeader("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key, X-File-Name, Authorization, Last-Event-ID");
   response.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+}
+
+function requireLauncherControl(request: IncomingMessage, options: ApiServerOptions): void {
+  const token = requestToken(request);
+  if (!options.launcherToken || !token || !tokensEqual(token, options.launcherToken)) {
+    throw new LocalAccessError("Collector launcher control authentication is required");
+  }
 }
 
 function tokensEqual(left: string, right: string): boolean {

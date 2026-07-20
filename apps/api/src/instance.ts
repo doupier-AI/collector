@@ -14,7 +14,13 @@ export interface CollectorInstanceState {
   pid: number;
   port: number;
   startedAt: string;
+  runtimeVersion?: string;
 }
+
+export type CollectorInstanceProbe =
+  | { kind: "compatible" }
+  | { kind: "incompatible"; actualRuntimeVersion?: string }
+  | { kind: "unreachable" };
 
 export interface BrowserBootstrap {
   url: string;
@@ -78,6 +84,7 @@ export async function readInstanceState(dataRoot: string): Promise<CollectorInst
       || (state.port ?? 0) > 65_535
       || typeof state.startedAt !== "string"
       || !Number.isFinite(Date.parse(state.startedAt))
+      || (state.runtimeVersion !== undefined && (typeof state.runtimeVersion !== "string" || state.runtimeVersion.length < 8 || state.runtimeVersion.length > 200))
     ) return undefined;
     return state as CollectorInstanceState;
   } catch {
@@ -107,11 +114,12 @@ export async function removeInstanceState(dataRoot: string, expectedInstanceId?:
   return true;
 }
 
-export async function probeCollectorInstance(
+export async function inspectCollectorInstance(
   state: CollectorInstanceState,
+  expectedRuntimeVersion: string,
   fetchImpl: typeof fetch = fetch,
   timeoutMs = 1_500,
-): Promise<boolean> {
+): Promise<CollectorInstanceProbe> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   timer.unref();
@@ -120,9 +128,50 @@ export async function probeCollectorInstance(
       cache: "no-store",
       signal: controller.signal,
     });
-    if (!response.ok) return false;
-    const payload = await response.json() as { status?: unknown; instanceId?: unknown };
-    return payload.status === "ok" && payload.instanceId === state.instanceId;
+    if (!response.ok) return { kind: "unreachable" };
+    const payload = await response.json() as { status?: unknown; instanceId?: unknown; runtimeVersion?: unknown };
+    if (payload.status !== "ok" || payload.instanceId !== state.instanceId) return { kind: "unreachable" };
+    if (payload.runtimeVersion !== expectedRuntimeVersion || state.runtimeVersion !== expectedRuntimeVersion) {
+      return {
+        kind: "incompatible",
+        actualRuntimeVersion: typeof payload.runtimeVersion === "string" ? payload.runtimeVersion : undefined,
+      };
+    }
+    return { kind: "compatible" };
+  } catch {
+    return { kind: "unreachable" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function probeCollectorInstance(
+  state: CollectorInstanceState,
+  expectedRuntimeVersion = state.runtimeVersion,
+  fetchImpl: typeof fetch = fetch,
+  timeoutMs = 1_500,
+): Promise<boolean> {
+  if (!expectedRuntimeVersion) return false;
+  return (await inspectCollectorInstance(state, expectedRuntimeVersion, fetchImpl, timeoutMs)).kind === "compatible";
+}
+
+export async function requestInstanceShutdown(
+  state: CollectorInstanceState,
+  controlToken: string,
+  fetchImpl: typeof fetch = fetch,
+  timeoutMs = 1_500,
+): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  timer.unref();
+  try {
+    const response = await fetchImpl(`http://127.0.0.1:${state.port}/v1/launcher/shutdown`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${controlToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ instanceId: state.instanceId }),
+      signal: controller.signal,
+    });
+    return response.status === 202;
   } catch {
     return false;
   } finally {
@@ -134,27 +183,36 @@ export async function requestBrowserBootstrap(
   state: CollectorInstanceState,
   controlToken: string,
   fetchImpl: typeof fetch = fetch,
+  timeoutMs = 1_500,
 ): Promise<string> {
-  const response = await fetchImpl(`http://127.0.0.1:${state.port}/v1/launcher/bootstrap`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${controlToken}`, "Content-Type": "application/json" },
-    body: "{}",
-  });
-  if (!response.ok) throw new Error(`Collector launcher bootstrap failed with HTTP ${response.status}`);
-  const payload = await response.json() as { url?: unknown };
-  if (typeof payload.url !== "string") throw new Error("Collector launcher bootstrap returned an invalid response");
-  const url = new URL(payload.url);
-  if (
-    url.protocol !== "http:"
-    || url.hostname !== "127.0.0.1"
-    || !url.port
-    || url.username
-    || url.password
-    || url.search
-    || url.hash
-    || url.pathname !== "/"
-  ) throw new Error("Collector launcher bootstrap returned an unsafe URL");
-  return url.toString();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  timer.unref();
+  try {
+    const response = await fetchImpl(`http://127.0.0.1:${state.port}/v1/launcher/bootstrap`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${controlToken}`, "Content-Type": "application/json" },
+      body: "{}",
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`Collector launcher bootstrap failed with HTTP ${response.status}`);
+    const payload = await response.json() as { url?: unknown };
+    if (typeof payload.url !== "string") throw new Error("Collector launcher bootstrap returned an invalid response");
+    const url = new URL(payload.url);
+    if (
+      url.protocol !== "http:"
+      || url.hostname !== "127.0.0.1"
+      || !url.port
+      || url.username
+      || url.password
+      || url.search
+      || url.hash
+      || url.pathname !== "/"
+    ) throw new Error("Collector launcher bootstrap returned an unsafe URL");
+    return url.toString();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function startBrowserBootstrap(

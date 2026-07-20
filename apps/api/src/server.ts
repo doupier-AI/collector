@@ -16,15 +16,31 @@ import {
   writeInstanceState,
   type BrowserBootstrap,
 } from "./instance.js";
+import { acquireServiceLock } from "./service-lock.js";
+import { calculateRuntimeVersion, isRuntimeVersion } from "./runtime-version.js";
 
 // 直接运行服务时保留 43110 便于前端/扩展开发；正式启动器显式传入 0 由系统选择端口。
 const port = Number(process.env.COLLECTOR_PORT ?? "43110");
 if (!Number.isSafeInteger(port) || port < 0 || port > 65_535) throw new Error("COLLECTOR_PORT must be an integer from 0 to 65535");
 const paths = defaultDataPaths(process.env.COLLECTOR_DATA_DIR);
-const store = new SqliteStore(paths.database, paths.legacyJson);
-await store.init();
-const auth = new LocalAuth(store);
 const instanceId = process.env.COLLECTOR_INSTANCE_ID?.trim() || randomUUID();
+const defaultWebRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../web/dist");
+const webRoot = resolve(process.env.COLLECTOR_WEB_ROOT?.trim() || defaultWebRoot);
+const suppliedRuntimeVersion = process.env.COLLECTOR_RUNTIME_VERSION?.trim();
+if (suppliedRuntimeVersion && !isRuntimeVersion(suppliedRuntimeVersion)) {
+  throw new Error("COLLECTOR_RUNTIME_VERSION must be a Collector runtime SHA-256 fingerprint");
+}
+const runtimeVersion = suppliedRuntimeVersion
+  || await calculateRuntimeVersion(dirname(fileURLToPath(import.meta.url)), webRoot);
+const serviceLock = await acquireServiceLock(paths.root, { instanceId, pid: process.pid, runtimeVersion });
+const store = new SqliteStore(paths.database, paths.legacyJson);
+try {
+  await store.init();
+} catch (error) {
+  await serviceLock.release();
+  throw error;
+}
+const auth = new LocalAuth(store);
 const launcherToken = await ensureInstanceControlToken(paths.root);
 await auth.registerTrustedToken(launcherToken, "Collector launcher control");
 if (process.env.COLLECTOR_MASTER_TOKEN) {
@@ -74,8 +90,6 @@ service.setModelGatewayResolver(async (route) => {
   }
   return (await resolver.resolve(environmentProfile)).gateway;
 });
-const defaultWebRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../web/dist");
-const webRoot = resolve(process.env.COLLECTOR_WEB_ROOT?.trim() || defaultWebRoot);
 const webIndex = join(webRoot, "index.html");
 const webIndexStat = await stat(webIndex).catch(() => undefined);
 if (!webIndexStat?.isFile()) {
@@ -86,6 +100,7 @@ let extensionServer: ReturnType<typeof createApiServer> | undefined;
 const browserBootstraps = new Set<BrowserBootstrap>();
 const server = createApiServer(service, auth, {
   instanceId,
+  runtimeVersion,
   webRoot,
   launcherToken,
   async createLaunchBootstrap() {
@@ -94,6 +109,9 @@ const server = createApiServer(service, auth, {
     browserBootstraps.add(bootstrap);
     void bootstrap.closed.finally(() => browserBootstraps.delete(bootstrap));
     return { url: bootstrap.url };
+  },
+  requestShutdown() {
+    void gracefulShutdown("launcher upgrade");
   },
 });
 const extensionPort = Number(process.env.COLLECTOR_EXTENSION_PORT ?? "43110");
@@ -118,6 +136,7 @@ await new Promise<void>((resolveListen, reject) => {
         pid: process.pid,
         port: activePort,
         startedAt: new Date().toISOString(),
+        runtimeVersion,
       });
       resolveListen();
     } catch (error) {
@@ -128,7 +147,7 @@ await new Promise<void>((resolveListen, reject) => {
 });
 
 if (extensionPort > 0 && extensionPort !== activePort) {
-  const candidate = createApiServer(service, auth, { instanceId });
+  const candidate = createApiServer(service, auth, { instanceId, runtimeVersion });
   try {
     await new Promise<void>((resolveListen, reject) => {
       candidate.once("error", reject);
@@ -168,6 +187,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
     ]);
     store.close();
     await removeInstanceState(paths.root, instanceId);
+    await serviceLock.release();
     console.log("Collector service closed");
     clearTimeout(forcedExit);
     process.exit(0);

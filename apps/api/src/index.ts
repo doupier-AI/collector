@@ -10,14 +10,19 @@ export {
   ensureInstanceControlToken,
   instanceControlPath,
   instanceStatePath,
+  inspectCollectorInstance,
   probeCollectorInstance,
   readInstanceControlToken,
   readInstanceState,
   removeInstanceState,
+  requestInstanceShutdown,
   requestBrowserBootstrap,
   startBrowserBootstrap,
   writeInstanceState,
   type BrowserBootstrap,
+  type CollectorInstanceProbe,
   type CollectorInstanceState,
 } from "./instance.js";
+export { acquireServiceLock, isProcessRunning, isServiceLockHeld, type ServiceLock } from "./service-lock.js";
+export { calculateRuntimeVersion, isRuntimeVersion } from "./runtime-version.js";
 export { launchCollector, openDefaultBrowser, type LaunchCollectorOptions, type LaunchCollectorResult } from "./launcher.js";
