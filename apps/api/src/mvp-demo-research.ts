@@ -10,6 +10,15 @@ export function createMvpDemoResearchProvider(): ResearchGenerationProvider {
     model: "deterministic-local-demo",
     promptVersion: "mvp-demo-v1",
     async *generate(request: ResearchGenerationRequest) {
+      if (request.deepResearch) {
+        const selectionText = request.deepResearch.selectionText;
+        const excerpt = selectionText.length > 24 ? `${selectionText.slice(0, 24)}…` : selectionText;
+        const destination = request.deepResearch.mode === "branch" ? "沿当前内容建立的研究分支" : "独立研究会话";
+        const direction = [...request.messages].reverse().find((message) => message.role === "user")?.content.trim() || "这段选区";
+        const answer = `${DEMO_NOTICE}\n\n你从选区“${excerpt}”发起了深入研究，进入${destination}。研究方向：“${direction.slice(0, 80)}”。\n\n这是用于验证深入研究流程的确定性本地内容，只基于当前已有材料，未联网检索，也不代表真实 AI 研究结果。\n\nTODO（正式版本）：接入用户配置的真实模型后，由模型基于来源内容、选区上下文和研究方向生成第一轮研究内容，并如实说明材料范围。`;
+        for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);
+        return;
+      }
       const latestQuestion = [...request.messages].reverse().find((message) => message.role === "user")?.content.trim();
       const topic = latestQuestion || "这个问题";
       const answer = `${DEMO_NOTICE}\n\n你正在研究：“${topic}”\n\n这是用于验证 Collector 核心流程的确定性本地内容。建议先明确关键概念，再列出需要比较的观点与证据，最后记录仍待验证的问题。文件导入和阅读内容可作为后续研究材料。\n\nTODO（正式版本）：接入用户配置的真实模型与来源检索后，由模型基于会话和已导入材料生成回答，并为事实性结论提供可返回的来源。`;

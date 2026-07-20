@@ -92,17 +92,21 @@ test("workflow migration creates formal versioned tables", async (t) => {
   store.close();
   const database = new DatabaseSync(databasePath, { readOnly: true });
   const tables = (database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name);
-  for (const table of ["workflow_runs", "workflow_steps", "model_calls", "recent_cluster_snapshots", "material_revisions", "research_sessions", "research_messages", "research_tasks", "research_task_events", "research_attachments", "research_import_tasks", "research_content_snapshots", "research_import_task_events", "research_selections", "research_selection_tasks", "research_selection_task_events"]) assert.ok(tables.includes(table));
-  assert.equal((database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 17);
+  for (const table of ["workflow_runs", "workflow_steps", "model_calls", "recent_cluster_snapshots", "material_revisions", "research_sessions", "research_messages", "research_tasks", "research_task_events", "research_attachments", "research_import_tasks", "research_content_snapshots", "research_import_task_events", "research_selections", "research_selection_tasks", "research_selection_task_events", "research_branches"]) assert.ok(tables.includes(table));
+  assert.equal((database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 18);
   const sessionColumns = (database.prepare("PRAGMA table_info(research_sessions)").all() as Array<{ name: string }>).map((column) => column.name);
   assert.ok(sessionColumns.includes("creation_idempotency_key"));
+  assert.ok(sessionColumns.includes("origin_selection_id"));
+  assert.ok(sessionColumns.includes("origin_session_id"));
+  const messageColumns = (database.prepare("PRAGMA table_info(research_messages)").all() as Array<{ name: string }>).map((column) => column.name);
+  assert.ok(messageColumns.includes("branch_id"));
   const sessionIndexes = (database.prepare("PRAGMA index_list(research_sessions)").all() as Array<{ name: string; unique: number }>);
   assert.ok(sessionIndexes.some((index) => index.name === "research_sessions_creation_idempotency_idx" && index.unique === 1));
   database.close();
   t.after(() => rm(root, { recursive: true, force: true }));
 });
 
-test("migration 15 preserves existing version 14 research sessions", async (t) => {
+test("migrations 15 to 18 preserve existing version 14 research sessions", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-research-v14-"));
   const databasePath = join(root, "collector.sqlite");
   const legacySession: ResearchSessionRecord = {
@@ -119,6 +123,7 @@ test("migration 15 preserves existing version 14 research sessions", async (t) =
 
   const version14 = new DatabaseSync(databasePath);
   version14.exec(`
+    DROP TABLE research_branches;
     DROP TABLE research_selection_task_events;
     DROP TABLE research_selection_tasks;
     DROP TABLE research_selections;
@@ -127,8 +132,12 @@ test("migration 15 preserves existing version 14 research sessions", async (t) =
     DROP TABLE research_import_tasks;
     DROP TABLE research_attachments;
     DROP INDEX research_sessions_creation_idempotency_idx;
+    DROP INDEX research_messages_branch_idx;
     ALTER TABLE research_sessions DROP COLUMN creation_idempotency_key;
-    DELETE FROM schema_migrations WHERE version IN (15, 16, 17);
+    ALTER TABLE research_sessions DROP COLUMN origin_selection_id;
+    ALTER TABLE research_sessions DROP COLUMN origin_session_id;
+    ALTER TABLE research_messages DROP COLUMN branch_id;
+    DELETE FROM schema_migrations WHERE version IN (15, 16, 17, 18);
   `);
   version14.close();
 
@@ -147,12 +156,18 @@ test("migration 15 preserves existing version 14 research sessions", async (t) =
 
   const database = new DatabaseSync(databasePath, { readOnly: true });
   const keys = (database.prepare(
-    "SELECT id, creation_idempotency_key AS key FROM research_sessions ORDER BY id",
-  ).all() as Array<{ id: string; key: string | null }>).map((row) => ({ ...row }));
+    "SELECT id, creation_idempotency_key AS key, origin_selection_id AS originSelection, origin_session_id AS originSession FROM research_sessions ORDER BY id",
+  ).all() as Array<{ id: string; key: string | null; originSelection: string | null; originSession: string | null }>).map((row) => ({ ...row }));
   assert.deepEqual(keys, [
-    { id: "legacy-session", key: null },
-    { id: "new-session", key: "creation-after-upgrade" },
+    { id: "legacy-session", key: null, originSelection: null, originSession: null },
+    { id: "new-session", key: "creation-after-upgrade", originSelection: null, originSession: null },
   ]);
+  // v18 结构在升级后对既有消息与新建分支可用
+  assert.deepEqual(database.prepare("SELECT branch_id FROM research_messages").all(), []);
+  assert.equal(
+    (database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'research_branches'").get() as { name: string } | undefined)?.name,
+    "research_branches",
+  );
   database.close();
   t.after(() => rm(root, { recursive: true, force: true }));
 });

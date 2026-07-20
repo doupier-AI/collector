@@ -471,6 +471,9 @@ export interface ResearchSessionRecord {
   id: string;
   title: string;
   status: "active" | "archived";
+  /** 由选区开启的独立研究会话保留来源选区与来源会话，用于来源返回。 */
+  originSelectionId?: string;
+  originSessionId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -478,6 +481,8 @@ export interface ResearchSessionRecord {
 export interface ResearchMessageRecord {
   id: string;
   sessionId: string;
+  /** 研究分支消息带分支 ID；普通会话主线消息不带。 */
+  branchId?: string;
   role: ResearchMessageRole;
   content: string;
   status: ResearchMessageStatus;
@@ -771,10 +776,12 @@ export interface ResearchTaskRecord {
 
 export interface ResearchSessionView {
   session: ResearchSessionRecord;
+  /** 只包含会话主线消息；研究分支消息通过研究分支视图获取。 */
   messages: ResearchMessageRecord[];
   tasks: ResearchTaskRecord[];
   attachments?: ResearchAttachmentRecord[];
   importTasks?: ResearchImportTaskRecord[];
+  branches?: ResearchBranchRecord[];
 }
 
 export interface ResearchTurnAccepted {
@@ -813,6 +820,107 @@ export function validateResearchMessageInput(value: unknown): asserts value is {
   const content = (value as { content?: unknown }).content;
   if (typeof content !== "string" || !content.trim()) throw new Error("content is required");
   if (content.length > 200_000) throw new Error("content must not exceed 200000 characters");
+}
+
+// ── Deep Research (MVP 阶段 C) ─────────────────────────────
+
+/** 深入研究去向：沿当前内容建立研究分支，或以当前选区开启独立研究会话。 */
+export type DeepResearchMode = "branch" | "session";
+
+/**
+ * 研究分支记录。分支挂在选区所属会话内，分支消息通过
+ * `ResearchMessageRecord.branchId` 与会话主线消息区分。
+ * `selectionId` 是来源关系的唯一依据：先于第一轮生成任务保存，
+ * 生成失败、重试或服务重启都不删除。
+ */
+export interface ResearchBranchRecord {
+  id: string;
+  sessionId: string;
+  selectionId: string;
+  status: "active";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DeepResearchInput {
+  mode: DeepResearchMode;
+  /** 用户的研究方向；独立会话由界面提供输入框，分支模式可省略。 */
+  direction?: string;
+  /** 独立研究会话标题；省略时按选区原文确定性派生，不依赖 AI。 */
+  title?: string;
+}
+
+export const RESEARCH_DIRECTION_MAX_CHARACTERS = 2000;
+
+export function validateDeepResearchInput(value: unknown): asserts value is DeepResearchInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Deep research input must be an object");
+  const input = value as { mode?: unknown; direction?: unknown; title?: unknown };
+  if (input.mode !== "branch" && input.mode !== "session") throw new Error("mode must be branch or session");
+  if (input.direction !== undefined) {
+    if (typeof input.direction !== "string" || !input.direction.trim()) {
+      throw new Error("direction must be a non-empty string when provided");
+    }
+    if (input.direction.length > RESEARCH_DIRECTION_MAX_CHARACTERS) {
+      throw new Error(`direction must not exceed ${RESEARCH_DIRECTION_MAX_CHARACTERS} characters`);
+    }
+  }
+  if (input.title !== undefined && (typeof input.title !== "string" || !input.title.trim() || input.title.trim().length > 200)) {
+    throw new Error("title must contain 1 to 200 characters when provided");
+  }
+}
+
+export const RESEARCH_TITLE_MAX_CHARACTERS = 40;
+
+/**
+ * 深入研究标题的确定性默认值：取选区原文第一句（到首个句末标点或换行为止）；
+ * 没有句末标点时截取前 40 个字符。不依赖 AI，前后端可复用。
+ */
+export function deriveDefaultResearchTitle(selectionText: string): string {
+  const text = selectionText.trim();
+  if (!text) return "深入研究";
+  let end = -1;
+  for (const terminator of ["。", "！", "？", "!", "?", "．", ".", "\n"]) {
+    const index = text.indexOf(terminator);
+    if (index > 0 && (end < 0 || index < end)) end = index;
+  }
+  const base = (end > 0 ? text.slice(0, end) : text).trim() || text;
+  return base.length > RESEARCH_TITLE_MAX_CHARACTERS ? `${base.slice(0, RESEARCH_TITLE_MAX_CHARACTERS)}…` : base;
+}
+
+/**
+ * 深入研究第一轮生成上下文：只包含当前已有材料（来源内容 + 选区上下文），
+ * 不包含联网检索结果。界面按固定文案如实说明材料范围。
+ */
+export interface DeepResearchContext {
+  mode: DeepResearchMode;
+  selectionText: string;
+  contentTitle?: string;
+  contextBefore?: string;
+  contextAfter?: string;
+}
+
+/**
+ * 深入研究创建结果。分支或带来源的新会话与第一轮任务在同一事务中创建；
+ * `session` 始终是研究去向会话，`branch` 仅在分支模式出现。
+ */
+export interface DeepResearchAccepted {
+  mode: DeepResearchMode;
+  session: ResearchSessionRecord;
+  branch?: ResearchBranchRecord;
+  selection: ResearchSelectionRecord;
+  inputMessage: ResearchMessageRecord;
+  outputMessage: ResearchMessageRecord;
+  task: ResearchTaskRecord;
+}
+
+export interface ResearchBranchView {
+  branch: ResearchBranchRecord;
+  session: ResearchSessionRecord;
+  selection: ResearchSelectionRecord;
+  /** 分支内消息，按创建顺序。 */
+  messages: ResearchMessageRecord[];
+  /** 输入消息属于该分支的任务。 */
+  tasks: ResearchTaskRecord[];
 }
 
 export interface ApiError {

@@ -1,7 +1,7 @@
 import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type FragmentRecord, type KnowledgeItemRecord, type RecentClusterSnapshotRecord, type RelationRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTurnAccepted } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTurnAccepted } from "@collector/capture-contracts";
 
 export interface CollectorStore {
   init(): Promise<void>;
@@ -139,6 +139,11 @@ export interface CollectorStore {
   listResearchSelectionTaskEvents(taskId: string, afterId?: number): ResearchSelectionTaskEvent[];
   listRecoverableResearchSelectionTasks(): ResearchSelectionTaskRecord[];
   failInterruptedResearchSelectionTasks(): number;
+  getResearchBranch(id: string): ResearchBranchRecord | undefined;
+  listResearchBranches(sessionId: string): ResearchBranchRecord[];
+  findResearchBranchByCreationKey(sessionId: string, idempotencyKey: string): ResearchBranchRecord | undefined;
+  createResearchBranch(session: ResearchSessionRecord, branch: ResearchBranchRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<DeepResearchAccepted>;
+  createOriginResearchSession(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<DeepResearchAccepted>;
   close?(): void;
   clearAllData(): Promise<void>;
 }
@@ -349,6 +354,10 @@ export class SqliteStore implements CollectorStore {
       this.db().exec("DELETE FROM research_content_snapshots");
       this.db().exec("DELETE FROM research_import_tasks");
       this.db().exec("DELETE FROM research_attachments");
+      this.db().exec("DELETE FROM research_selection_task_events");
+      this.db().exec("DELETE FROM research_selection_tasks");
+      this.db().exec("DELETE FROM research_branches");
+      this.db().exec("DELETE FROM research_selections");
       this.db().exec("DELETE FROM research_task_events");
       this.db().exec("DELETE FROM research_tasks");
       this.db().exec("DELETE FROM research_messages");
@@ -764,11 +773,9 @@ export class SqliteStore implements CollectorStore {
       const updatedSession: ResearchSessionRecord = { ...session, updatedAt: task.createdAt };
       this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
         .run(updatedSession.updatedAt, JSON.stringify(updatedSession), updatedSession.id);
-      const insertMessage = this.db().prepare("INSERT INTO research_messages (id, session_id, role, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)");
-      insertMessage.run(inputMessage.id, inputMessage.sessionId, inputMessage.role, inputMessage.status, inputMessage.createdAt, inputMessage.updatedAt, JSON.stringify(inputMessage));
-      insertMessage.run(outputMessage.id, outputMessage.sessionId, outputMessage.role, outputMessage.status, outputMessage.createdAt, outputMessage.updatedAt, JSON.stringify(outputMessage));
-      this.db().prepare("INSERT INTO research_tasks (id, session_id, input_message_id, output_message_id, idempotency_key, status, retryable, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(task.id, task.sessionId, task.inputMessageId, task.outputMessageId, task.idempotencyKey, task.status, 0, task.createdAt, task.updatedAt, JSON.stringify(task));
+      this.insertResearchMessage(inputMessage);
+      this.insertResearchMessage(outputMessage);
+      this.insertResearchTask(task);
       accepted = { session: updatedSession, inputMessage, outputMessage, task };
     });
     if (!accepted) throw new Error("Research turn was not persisted");
@@ -1257,6 +1264,101 @@ export class SqliteStore implements CollectorStore {
       .run(taskId, type, createdAt, JSON.stringify(data));
   }
 
+  private insertResearchMessage(message: ResearchMessageRecord): void {
+    this.db().prepare("INSERT INTO research_messages (id, session_id, branch_id, role, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(message.id, message.sessionId, message.branchId ?? null, message.role, message.status, message.createdAt, message.updatedAt, JSON.stringify(message));
+  }
+
+  private insertResearchTask(task: ResearchTaskRecord): void {
+    this.db().prepare("INSERT INTO research_tasks (id, session_id, input_message_id, output_message_id, idempotency_key, status, retryable, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(task.id, task.sessionId, task.inputMessageId, task.outputMessageId, task.idempotencyKey, task.status, 0, task.createdAt, task.updatedAt, JSON.stringify(task));
+  }
+
+  getResearchBranch(id: string): ResearchBranchRecord | undefined {
+    return this.getRecord<ResearchBranchRecord>("SELECT record_json FROM research_branches WHERE id = ?", id);
+  }
+
+  listResearchBranches(sessionId: string): ResearchBranchRecord[] {
+    return this.listRecords<ResearchBranchRecord>("SELECT record_json FROM research_branches WHERE session_id = ? ORDER BY created_at, rowid", sessionId);
+  }
+
+  findResearchBranchByCreationKey(sessionId: string, idempotencyKey: string): ResearchBranchRecord | undefined {
+    return this.getRecord<ResearchBranchRecord>("SELECT record_json FROM research_branches WHERE session_id = ? AND creation_idempotency_key = ?", sessionId, idempotencyKey);
+  }
+
+  /**
+   * 深入研究分支创建：在同一事务中保存分支（来源关系）与第一轮消息、任务，
+   * 再返回给服务层排队生成。幂等键命中时返回首次创建的分支与任务。
+   */
+  async createResearchBranch(session: ResearchSessionRecord, branch: ResearchBranchRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<DeepResearchAccepted> {
+    let accepted: DeepResearchAccepted | undefined;
+    this.transaction(() => {
+      const existingBranch = this.findResearchBranchByCreationKey(branch.sessionId, task.idempotencyKey);
+      if (existingBranch) {
+        accepted = this.deepResearchAcceptedFor("branch", existingBranch, task.idempotencyKey);
+        return;
+      }
+      const selection = this.getResearchSelection(branch.selectionId);
+      if (!selection) throw new Error("Research selection not found");
+      this.db().prepare("INSERT INTO research_branches (id, session_id, selection_id, status, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(branch.id, branch.sessionId, branch.selectionId, branch.status, branch.createdAt, branch.updatedAt, task.idempotencyKey, JSON.stringify(branch));
+      const updatedSession: ResearchSessionRecord = { ...session, updatedAt: task.createdAt };
+      this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
+        .run(updatedSession.updatedAt, JSON.stringify(updatedSession), updatedSession.id);
+      this.insertResearchMessage(inputMessage);
+      this.insertResearchMessage(outputMessage);
+      this.insertResearchTask(task);
+      accepted = { mode: "branch", session: updatedSession, branch, selection, inputMessage, outputMessage, task };
+    });
+    if (!accepted) throw new Error("Research branch was not persisted");
+    return accepted;
+  }
+
+  /**
+   * 带来源的独立研究会话创建：会话 origin 列、第一轮消息与任务在同一事务中保存。
+   * 幂等键复用 research_sessions.creation_idempotency_key（全局唯一）。
+   */
+  async createOriginResearchSession(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<DeepResearchAccepted> {
+    let accepted: DeepResearchAccepted | undefined;
+    this.transaction(() => {
+      const existing = this.getRecord<ResearchSessionRecord>("SELECT record_json FROM research_sessions WHERE creation_idempotency_key = ?", task.idempotencyKey);
+      if (existing) {
+        const existingTask = this.findResearchTaskByIdempotencyKey(existing.id, task.idempotencyKey);
+        if (!existingTask) throw new Error("Research session references a missing first task");
+        const selectionId = existing.originSelectionId;
+        const selection = selectionId ? this.getResearchSelection(selectionId) : undefined;
+        const existingInput = this.getResearchMessage(existingTask.inputMessageId);
+        const existingOutput = this.getResearchMessage(existingTask.outputMessageId);
+        if (!selection || !existingInput || !existingOutput) throw new Error("Research session references incomplete persisted state");
+        accepted = { mode: "session", session: existing, selection, inputMessage: existingInput, outputMessage: existingOutput, task: existingTask };
+        return;
+      }
+      if (!session.originSelectionId) throw new Error("Origin research session requires a source selection");
+      const selection = this.getResearchSelection(session.originSelectionId);
+      if (!selection) throw new Error("Research selection not found");
+      this.db().prepare("INSERT INTO research_sessions (id, status, created_at, updated_at, creation_idempotency_key, origin_selection_id, origin_session_id, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(session.id, session.status, session.createdAt, session.updatedAt, task.idempotencyKey, session.originSelectionId, session.originSessionId ?? null, JSON.stringify(session));
+      this.insertResearchMessage(inputMessage);
+      this.insertResearchMessage(outputMessage);
+      this.insertResearchTask(task);
+      accepted = { mode: "session", session, selection, inputMessage, outputMessage, task };
+    });
+    if (!accepted) throw new Error("Origin research session was not persisted");
+    return accepted;
+  }
+
+  private deepResearchAcceptedFor(mode: "branch", branch: ResearchBranchRecord, idempotencyKey: string): DeepResearchAccepted {
+    const existingTask = this.findResearchTaskByIdempotencyKey(branch.sessionId, idempotencyKey);
+    const session = this.getResearchSession(branch.sessionId);
+    const selection = this.getResearchSelection(branch.selectionId);
+    const inputMessage = existingTask ? this.getResearchMessage(existingTask.inputMessageId) : undefined;
+    const outputMessage = existingTask ? this.getResearchMessage(existingTask.outputMessageId) : undefined;
+    if (!existingTask || !session || !selection || !inputMessage || !outputMessage) {
+      throw new Error("Research branch references incomplete persisted state");
+    }
+    return { mode, session, branch, selection, inputMessage, outputMessage, task: existingTask };
+  }
+
   private updateResearchMessage(message: ResearchMessageRecord): void {
     this.db().prepare("UPDATE research_messages SET status = ?, updated_at = ?, record_json = ? WHERE id = ?")
       .run(message.status, message.updatedAt, JSON.stringify(message), message.id);
@@ -1690,6 +1792,34 @@ export class SqliteStore implements CollectorStore {
       });
       version = 17;
     }
+    if (version < 18) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE research_branches (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            selection_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            creation_idempotency_key TEXT,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES research_sessions(id),
+            FOREIGN KEY(selection_id) REFERENCES research_selections(id)
+          );
+          CREATE UNIQUE INDEX research_branches_creation_idempotency_idx
+            ON research_branches(session_id, creation_idempotency_key)
+            WHERE creation_idempotency_key IS NOT NULL;
+          CREATE INDEX research_branches_session_idx ON research_branches(session_id, created_at);
+          ALTER TABLE research_messages ADD COLUMN branch_id TEXT;
+          CREATE INDEX research_messages_branch_idx ON research_messages(session_id, branch_id);
+          ALTER TABLE research_sessions ADD COLUMN origin_selection_id TEXT;
+          ALTER TABLE research_sessions ADD COLUMN origin_session_id TEXT;
+          INSERT INTO schema_migrations(version, applied_at) VALUES (18, datetime('now'));
+        `);
+      });
+      version = 18;
+    }
 
   }
 
@@ -1989,6 +2119,11 @@ export class JsonStore implements CollectorStore {
   listResearchSelectionTaskEvents(_taskId: string, _afterId?: number): ResearchSelectionTaskEvent[] { return []; }
   listRecoverableResearchSelectionTasks(): ResearchSelectionTaskRecord[] { return []; }
   failInterruptedResearchSelectionTasks(): number { return 0; }
+  getResearchBranch(_id: string): ResearchBranchRecord | undefined { return undefined; }
+  listResearchBranches(_sessionId: string): ResearchBranchRecord[] { return []; }
+  findResearchBranchByCreationKey(_sessionId: string, _idempotencyKey: string): ResearchBranchRecord | undefined { return undefined; }
+  async createResearchBranch(_session: ResearchSessionRecord, _branch: ResearchBranchRecord, _inputMessage: ResearchMessageRecord, _outputMessage: ResearchMessageRecord, _task: ResearchTaskRecord): Promise<DeepResearchAccepted> { throw new Error("Research branches require SQLite persistence"); }
+  async createOriginResearchSession(_session: ResearchSessionRecord, _inputMessage: ResearchMessageRecord, _outputMessage: ResearchMessageRecord, _task: ResearchTaskRecord): Promise<DeepResearchAccepted> { throw new Error("Research branches require SQLite persistence"); }
   async clearAllData(): Promise<void> { const savedTokens = this.data.clientTokens; const savedProfiles = this.data.providerProfiles; const savedSettings: Record<string, string> = {}; if (this.data.settings) { for (const key of ['ai_consent', 'ai_configured', 'active_provider_profile_id', 'deepseek_configured']) { if (this.data.settings[key]) savedSettings[key] = this.data.settings[key]; } } this.data = { ...structuredClone(EMPTY_DATA), clientTokens: savedTokens, settings: savedSettings, providerProfiles: savedProfiles }; await this.flush(); }
     private flush() { this.writeQueue = this.writeQueue.then(async () => { const temporaryPath = `${this.filePath}.tmp`; await writeFile(temporaryPath, JSON.stringify(this.data, null, 2), "utf8"); await rename(temporaryPath, this.filePath); }); return this.writeQueue; }
 }

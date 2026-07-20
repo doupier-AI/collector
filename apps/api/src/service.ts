@@ -40,6 +40,7 @@ import { createVerificationWorkflow } from "./verification.js";
 import { ResearchSessionService, type ResearchGenerationProvider } from "./research.js";
 import { ResearchImportService } from "./research-import.js";
 import { ResearchSelectionAnalysisError, ResearchSelectionService, type ResearchSelectionProvider } from "./selection.js";
+import { DeepResearchService } from "./deep-research.js";
 
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
@@ -55,6 +56,7 @@ export class CaptureService {
   readonly research: ResearchSessionService;
   readonly researchImports: ResearchImportService;
   readonly researchSelections: ResearchSelectionService;
+  readonly deepResearch: DeepResearchService;
 
   constructor(
     private readonly store: CollectorStore,
@@ -74,6 +76,10 @@ export class CaptureService {
     this.researchSelections = new ResearchSelectionService(this.store, {
       provider: this.options.selectionProvider ?? this.selectionProviderFor(this.modelGateway),
       autoRunTasks: this.options.autoRunSelectionTasks,
+    });
+    this.deepResearch = new DeepResearchService(this.store, {
+      research: this.research,
+      autoRunTasks: this.options.autoRunResearchTasks,
     });
     if (this.options.autoRunRecentOrganization !== false) {
       this.scheduleRecentOrganization();
@@ -127,6 +133,22 @@ export class CaptureService {
       model: gateway.modelName,
       promptVersion: "research-chat-v1",
       async *generate(request) {
+        if (request.deepResearch) {
+          const direction = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
+          const answer = await gateway.generateDeepResearchRound(
+            {
+              mode: request.deepResearch.mode,
+              selectionText: request.deepResearch.selectionText,
+              direction,
+              contentTitle: request.deepResearch.contentTitle,
+              contextBefore: request.deepResearch.contextBefore,
+              contextAfter: request.deepResearch.contextAfter,
+            },
+            { context: { workflowRunId: request.taskId, purpose: "deep_research", promptVersion: "deep-research-v1" } },
+          );
+          for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);
+          return;
+        }
         const answer = await gateway.answerResearchConversation(request.messages, {
           context: { workflowRunId: request.taskId, purpose: "research_chat", promptVersion: "research-chat-v1" },
         });

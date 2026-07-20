@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
+  DeepResearchContext,
+  DeepResearchMode,
   ResearchMessageRecord,
   ResearchSessionRecord,
   ResearchSessionView,
@@ -9,13 +11,17 @@ import type {
 } from "@collector/capture-contracts";
 import type { CollectorStore } from "./store.js";
 
-const PROMPT_VERSION = "research-chat-v1";
+export const RESEARCH_CHAT_PROMPT_VERSION = "research-chat-v1";
+export const DEEP_RESEARCH_PROMPT_VERSION = "deep-research-v1";
+const PROMPT_VERSION = RESEARCH_CHAT_PROMPT_VERSION;
 const MAX_GENERATED_CHARACTERS = 1_000_000;
 
 export interface ResearchGenerationRequest {
   session: ResearchSessionRecord;
   messages: Array<Pick<ResearchMessageRecord, "role" | "content">>;
   taskId: string;
+  /** 深入研究第一轮：只携带当前已有材料，不含联网检索结果。 */
+  deepResearch?: DeepResearchContext;
 }
 
 export interface ResearchGenerationProvider {
@@ -66,12 +72,17 @@ export class ResearchSessionService {
   getSession(id: string): ResearchSessionView {
     const session = this.store.getResearchSession(id);
     if (!session) throw new ResearchNotFoundError("Research session not found");
+    // 会话视图只呈现主线消息与主线任务；研究分支消息通过研究分支视图获取，
+    // branchId 不侵入会话主视图。
+    const messages = this.store.listResearchMessages(id).filter((message) => message.branchId === undefined);
+    const messageIds = new Set(messages.map((message) => message.id));
     return {
       session,
-      messages: this.store.listResearchMessages(id),
-      tasks: this.store.listResearchTasks(id),
+      messages,
+      tasks: this.store.listResearchTasks(id).filter((task) => messageIds.has(task.inputMessageId)),
       attachments: this.store.listResearchAttachments(id),
       importTasks: this.store.listResearchImportTasks(id),
+      branches: this.store.listResearchBranches(id),
     };
   }
 
@@ -140,7 +151,15 @@ export class ResearchSessionService {
     if (this.running.has(id)) return;
     this.running.add(id);
     try {
-      const task = this.store.claimResearchTask(id, this.provider?.provider, this.provider?.model, this.provider?.promptVersion ?? PROMPT_VERSION);
+      const current = this.store.getResearchTask(id);
+      if (!current || current.status !== "queued") return;
+      const session = this.store.getResearchSession(current.sessionId);
+      if (!session) throw new Error("Research session not found");
+      const generation = this.buildGenerationRequest(current);
+      const task = this.store.claimResearchTask(
+        id, this.provider?.provider, this.provider?.model,
+        generation.deepResearch ? DEEP_RESEARCH_PROMPT_VERSION : this.provider?.promptVersion ?? PROMPT_VERSION,
+      );
       if (!task) return;
       const provider = this.provider;
       if (!provider) {
@@ -151,14 +170,11 @@ export class ResearchSessionService {
         return;
       }
 
-      const view = this.getSession(task.sessionId);
-      const messages = view.messages
-        .filter((message) => message.id !== task.outputMessageId)
-        .map(({ role, content }) => ({ role, content }));
+      const messages = generation.messages;
       let generatedCharacters = 0;
       let producedContent = false;
       try {
-        for await (const delta of provider.generate({ session: view.session, messages, taskId: task.id })) {
+        for await (const delta of provider.generate({ session, messages, taskId: task.id, deepResearch: generation.deepResearch })) {
           if (!delta) continue;
           generatedCharacters += delta.length;
           if (generatedCharacters > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
@@ -176,6 +192,55 @@ export class ResearchSessionService {
     } finally {
       this.running.delete(id);
     }
+  }
+
+  /**
+   * 生成上下文按任务所属线索构建：分支任务只使用分支内消息，主线任务只使用
+   * 主线消息。第一轮深入研究（分支或来源会话的首个用户消息对应的任务）额外
+   * 携带来源选区材料；分支内追问与后续对话不重复注入。
+   */
+  private buildGenerationRequest(task: ResearchTaskRecord): { messages: Array<Pick<ResearchMessageRecord, "role" | "content">>; deepResearch?: DeepResearchContext } {
+    const all = this.store.listResearchMessages(task.sessionId);
+    const output = all.find((message) => message.id === task.outputMessageId);
+    const branchId = output?.branchId;
+    const thread = branchId
+      ? all.filter((message) => message.branchId === branchId)
+      : all.filter((message) => message.branchId === undefined);
+    const messages = thread
+      .filter((message) => message.id !== task.outputMessageId)
+      .map(({ role, content }) => ({ role, content }));
+    const deepResearch = this.deepResearchContextFor(task, branchId, thread);
+    return { messages, ...(deepResearch ? { deepResearch } : {}) };
+  }
+
+  private deepResearchContextFor(task: ResearchTaskRecord, branchId: string | undefined, thread: ResearchMessageRecord[]): DeepResearchContext | undefined {
+    const firstUserMessage = thread.find((message) => message.role === "user");
+    if (!firstUserMessage || firstUserMessage.id !== task.inputMessageId) return undefined;
+    let selectionId: string | undefined;
+    let mode: DeepResearchMode;
+    if (branchId) {
+      const branch = this.store.getResearchBranch(branchId);
+      if (!branch) return undefined;
+      selectionId = branch.selectionId;
+      mode = "branch";
+    } else {
+      const session = this.store.getResearchSession(task.sessionId);
+      if (!session?.originSelectionId) return undefined;
+      selectionId = session.originSelectionId;
+      mode = "session";
+    }
+    const selection = this.store.getResearchSelection(selectionId);
+    if (!selection) return undefined;
+    const contentTitle = selection.anchor.kind === "snapshot"
+      ? this.store.getResearchContentSnapshot(selection.anchor.contentSnapshotId)?.title
+      : this.store.getResearchSession(selection.sessionId)?.title;
+    return {
+      mode,
+      selectionText: selection.text,
+      ...(contentTitle ? { contentTitle } : {}),
+      ...(selection.contextBefore ? { contextBefore: selection.contextBefore } : {}),
+      ...(selection.contextAfter ? { contextAfter: selection.contextAfter } : {}),
+    };
   }
 
   private turnForTask(task: ResearchTaskRecord): ResearchTurnAccepted {

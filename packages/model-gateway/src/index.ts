@@ -237,6 +237,53 @@ export class ModelGateway {
     return parsed.answer;
   }
 
+  /**
+   * 深入研究第一轮：只使用提供的当前已有材料（来源内容 + 选区上下文 + 用户方向），
+   * 不联网检索，不编造来源。返回模型回答文本。
+   */
+  async generateDeepResearchRound(
+    input: {
+      mode: "branch" | "session";
+      selectionText: string;
+      direction: string;
+      contentTitle?: string;
+      contextBefore?: string;
+      contextAfter?: string;
+    },
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<string> {
+    if (!input.selectionText.trim()) throw new Error("Deep research requires the source selection text");
+    if (!input.direction.trim()) throw new Error("Deep research requires a research direction");
+    const prompt = `你是 Collector 的深入研究助手。用户从一段选区发起了深入研究第一轮。只使用下面提供的当前已有材料生成研究内容，不要联网检索，不要编造来源、链接或引用。只返回合法 JSON，形式为 {"answer":"..."}，不要使用 Markdown 代码围栏。
+
+用户选区原文：
+${JSON.stringify(input.selectionText)}
+${input.contentTitle ? `\n来源内容标题：${JSON.stringify(input.contentTitle)}` : ""}
+${input.contextBefore ? `\n选区前文（仅供上下文）：\n${JSON.stringify(input.contextBefore)}` : ""}
+${input.contextAfter ? `\n选区后文（仅供上下文）：\n${JSON.stringify(input.contextAfter)}` : ""}
+${input.mode === "branch" ? "\n研究沿当前内容展开。" : "\n研究在新的独立会话中展开。"}
+
+用户的研究方向：
+${JSON.stringify(input.direction)}
+
+要求：
+- 围绕用户方向，基于选区与上下文展开解释、拆解或延伸；
+- 只依据提供的材料，不编造外部事实、链接或来源；
+- 材料不足以支撑时在回答中如实说明不确定性；
+- answer 使用中文。`;
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      responseFormat: { type: "json_object" },
+      thinking: this.options.thinking ?? true,
+      maxTokens: options.maxTokens ?? 8_000,
+      timeoutMs: options.timeoutMs ?? 120_000,
+    }, options.context ?? { purpose: "deep_research" });
+    const parsed = JSON.parse(response.content) as { answer?: unknown };
+    if (typeof parsed.answer !== "string" || !parsed.answer.trim()) throw new Error("Deep research provider returned an invalid answer");
+    return parsed.answer;
+  }
+
   async analyzeSelection(
     input: {
       text: string;

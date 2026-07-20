@@ -2,10 +2,11 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { timingSafeEqual } from "node:crypto";
 import { ValidationError, NotFoundError, CaptureService } from "./service.js";
 import { LocalAuth, PairingRateLimitError } from "./auth.js";
-import { RESEARCH_IMPORT_MAX_BYTES, validateResearchImportHeaders, validateResearchMessageInput, validateResearchSelectionInput, validateResearchSessionInput } from "@collector/capture-contracts";
+import { RESEARCH_IMPORT_MAX_BYTES, validateDeepResearchInput, validateResearchImportHeaders, validateResearchMessageInput, validateResearchSelectionInput, validateResearchSessionInput } from "@collector/capture-contracts";
 import { ResearchNotFoundError, ResearchValidationError } from "./research.js";
 import { ResearchImportConflictError, ResearchImportNotFoundError, ResearchImportValidationError } from "./research-import.js";
 import { ResearchSelectionConflictError, ResearchSelectionNotFoundError, ResearchSelectionValidationError } from "./selection.js";
+import { DeepResearchNotFoundError, DeepResearchValidationError } from "./deep-research.js";
 import { createStaticWebHandler } from "./static-web.js";
 
 const JSON_LIMIT = 2 * 1024 * 1024;
@@ -204,6 +205,30 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       const researchSelectionMatch = url.pathname.match(/^\/v1\/research-selections\/([^/]+)$/);
       if (request.method === "GET" && researchSelectionMatch) {
         return json(response, 200, service.researchSelections.getSelection(decodeURIComponent(researchSelectionMatch[1])));
+      }
+      const deepResearchMatch = url.pathname.match(/^\/v1\/research-selections\/([^/]+)\/deep-research$/);
+      if (request.method === "POST" && deepResearchMatch) {
+        const body = await readJson(request);
+        try { validateDeepResearchInput(body); }
+        catch (error) { throw new DeepResearchValidationError((error as Error).message); }
+        const accepted = await service.deepResearch.startDeepResearch(
+          decodeURIComponent(deepResearchMatch[1]), body, header(request, "idempotency-key") ?? "",
+        );
+        return json(response, 202, accepted);
+      }
+      const researchBranchMessagesMatch = url.pathname.match(/^\/v1\/research-branches\/([^/]+)\/messages$/);
+      if (request.method === "POST" && researchBranchMessagesMatch) {
+        const body = await readJson(request);
+        try { validateResearchMessageInput(body); }
+        catch (error) { throw new DeepResearchValidationError((error as Error).message); }
+        const accepted = await service.deepResearch.submitBranchMessage(
+          decodeURIComponent(researchBranchMessagesMatch[1]), body.content, header(request, "idempotency-key") ?? "",
+        );
+        return json(response, 202, accepted);
+      }
+      const researchBranchMatch = url.pathname.match(/^\/v1\/research-branches\/([^/]+)$/);
+      if (request.method === "GET" && researchBranchMatch) {
+        return json(response, 200, service.deepResearch.getBranchView(decodeURIComponent(researchBranchMatch[1])));
       }
       if (request.method === "POST" && url.pathname === "/v1/recent-organization/runs") {
         return json(response, 202, await service.organizeRecent(header(request, "idempotency-key")));
@@ -408,12 +433,12 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (error instanceof ResearchImportConflictError || error instanceof ResearchSelectionConflictError) {
         return json(response, 409, { error: { code: error.code, message: error.message } });
       }
-      if (error instanceof ValidationError || error instanceof ResearchValidationError || error instanceof ResearchImportValidationError || error instanceof ResearchSelectionValidationError || error instanceof SyntaxError) {
+      if (error instanceof ValidationError || error instanceof ResearchValidationError || error instanceof ResearchImportValidationError || error instanceof ResearchSelectionValidationError || error instanceof DeepResearchValidationError || error instanceof SyntaxError) {
         const code = error instanceof ResearchImportValidationError ? error.code : "invalid_request";
         const status = code === "file_too_large" ? 413 : code === "unsupported_file_type" ? 415 : code === "invalid_file_content" ? 422 : 400;
         return json(response, status, { error: { code, message: error.message } });
       }
-      if (error instanceof NotFoundError || error instanceof ResearchNotFoundError || error instanceof ResearchImportNotFoundError || error instanceof ResearchSelectionNotFoundError) return json(response, 404, { error: { code: "not_found", message: error.message } });
+      if (error instanceof NotFoundError || error instanceof ResearchNotFoundError || error instanceof ResearchImportNotFoundError || error instanceof ResearchSelectionNotFoundError || error instanceof DeepResearchNotFoundError) return json(response, 404, { error: { code: "not_found", message: error.message } });
       console.error(error);
       return json(response, 500, { error: { code: "internal_error", message: "Internal server error" } });
     }

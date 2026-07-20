@@ -20,8 +20,8 @@
 | A1 | 消息块派生契约 + 模型状态 mode | 已完成 | `1004329` | 四级 |
 | A2 | AI 回答分块渲染与模型状态显示 | 已完成 | `a637c60` | 二级 + 真实浏览器 |
 | B1 | 选区记录与分析后端（迁移 v17） | 已完成 | `16108bf` | 四级 |
-| B2 | 选区捕获与选区智能窗口 WebUI | 已完成 | 提交后回填 | 二级 + 真实浏览器 + e2e |
-| C1 | 深入研究分支与独立会话后端（迁移 v18） | 未开始 | — | 四级 |
+| B2 | 选区捕获与选区智能窗口 WebUI | 已完成 | `ab79a26` | 二级 + 真实浏览器 + e2e |
+| C1 | 深入研究分支与独立会话后端（迁移 v18） | 已完成 | 提交后回填 | 四级 |
 | C2 | 深入研究二选一、分支视图与来源返回 | 未开始 | — | 二级 + 真实浏览器 + e2e |
 | D1 | 稍后再学保存与列表后端（迁移 v19） | 未开始 | — | 四级 |
 | D2 | 稍后再学栏目与来源返回 | 未开始 | — | 二级 + 真实浏览器 + e2e |
@@ -57,7 +57,7 @@ A1 在契约包建立消息块派生与模型状态三种 mode；A2 把完成的
 
 ### 阶段 C：深入研究与来源返回
 
-**C1（契约 + 迁移 v18 + 后端，四级）**：`ResearchBranchRecord`、消息 `branchId`、会话 `origin`、`DeepResearchAccepted`；迁移 v18（`research_branches`，消息表加 `branch_id`，会话表加来源选区 / 来源会话列）；`startDeepResearch` 先事务创建分支（或带 origin 的新会话）与来源关系、再排队第一轮任务，幂等键防重复建分支；端点 `POST /v1/research-selections/:id/deep-research`、`GET /v1/research-branches/:id`、`POST /v1/research-branches/:id/messages`；测试覆盖两路径、生成失败后来源关系仍在、重启恢复、幂等。
+**C1（已完成）**：`ResearchBranchRecord`、消息 `branchId`、会话 `origin`、`DeepResearchAccepted`；迁移 v18（`research_branches`，消息表加 `branch_id`，会话表加来源选区 / 来源会话列）；`startDeepResearch` 先事务创建分支（或带 origin 的新会话）与来源关系、再排队第一轮任务，幂等键防重复建分支；端点 `POST /v1/research-selections/:id/deep-research`、`GET /v1/research-branches/:id`、`POST /v1/research-branches/:id/messages`；测试覆盖两路径、生成失败后来源关系仍在、重启恢复、幂等。详见开发记录 3.15。
 
 **C2（WebUI，二级 + 真实浏览器 + e2e）**：窗口“深入研究”→ 轻量二选一（两去向 + 适用场景说明；独立会话提供方向输入框；AI 推荐方向属可延后增强）；分支路由视图 + 顶部来源条（来源内容名、选区摘要、返回原文）；`SelectionHighlight` 按锚点导航回会话页或阅读页，exact + prefix/suffix 重定位、`<mark>` 高亮并滚动到位，失败降级展示保存原文与块说明。
 
