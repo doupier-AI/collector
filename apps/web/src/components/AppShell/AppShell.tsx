@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { Outlet } from "react-router-dom";
 import { useMediaQuery } from "../../app/useMediaQuery";
+import { useServices } from "../../app/services";
 import { ContentDrawer } from "../../features/navigation/ContentDrawer";
 import { LaterPanel } from "../../features/navigation/LaterPanel";
 import { SIDEBAR_DEFAULT_WIDTH } from "./sidebar-width";
@@ -11,6 +12,7 @@ import { SIDEBAR_DEFAULT_WIDTH } from "./sidebar-width";
  * 窄屏为覆盖抽屉、初始收起，遮罩点击或 Escape 关闭后焦点回到触发按钮。
  */
 export function AppShell() {
+  const { api } = useServices();
   const wide = useMediaQuery("(min-width: 900px)");
   const mode = wide ? "fixed" : "overlay";
   // null 表示用户尚未显式选择：跟随布局默认值（宽屏展开、窄屏收起）
@@ -20,6 +22,19 @@ export function AppShell() {
   const [rightWidth, setRightWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
   const leftTriggerRef = useRef<HTMLButtonElement>(null);
   const rightTriggerRef = useRef<HTMLButtonElement>(null);
+  const [shuttingDown, setShuttingDown] = useState(false);
+  const [shutdownError, setShutdownError] = useState<string | null>(null);
+
+  const handleShutdown = useCallback(async () => {
+    setShuttingDown(true);
+    setShutdownError(null);
+    try {
+      await api.requestShutdown();
+    } catch {
+      setShutdownError("关闭失败。如果旧服务仍在运行，请关闭命令行窗口或从系统进程管理中结束。");
+      setShuttingDown(false);
+    }
+  }, [api]);
 
   const leftVisible = leftOpenPref ?? wide;
   const rightVisible = rightOpenPref ?? wide;
@@ -84,7 +99,19 @@ export function AppShell() {
             />
           </svg>
         </button>
+        <div className="app-bar__spacer" />
+        <button
+          type="button"
+          className="app-bar__action-button"
+          disabled={shuttingDown}
+          onClick={handleShutdown}
+        >
+          {shuttingDown ? "正在关闭……" : "关闭 Collector"}
+        </button>
       </header>
+      {shutdownError ? (
+        <p className="app-bar__shutdown-error" role="alert">{shutdownError}</p>
+      ) : null}
       <div className="app-body">
         {leftVisible ? (
           <ContentDrawer mode={mode} width={leftWidth} onWidthChange={setLeftWidth} onClose={closeLeft} />
