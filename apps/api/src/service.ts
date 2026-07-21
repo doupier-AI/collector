@@ -41,6 +41,7 @@ import { ResearchSessionService, type ResearchGenerationProvider } from "./resea
 import { ResearchImportService } from "./research-import.js";
 import { ResearchSelectionAnalysisError, ResearchSelectionService, type ResearchSelectionProvider } from "./selection.js";
 import { DeepResearchService } from "./deep-research.js";
+import { ResearchLaterService } from "./research-later.js";
 
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
@@ -57,6 +58,7 @@ export class CaptureService {
   readonly researchImports: ResearchImportService;
   readonly researchSelections: ResearchSelectionService;
   readonly deepResearch: DeepResearchService;
+  readonly researchLater: ResearchLaterService;
 
   constructor(
     private readonly store: CollectorStore,
@@ -81,6 +83,7 @@ export class CaptureService {
       research: this.research,
       autoRunTasks: this.options.autoRunResearchTasks,
     });
+    this.researchLater = new ResearchLaterService(this.store);
     if (this.options.autoRunRecentOrganization !== false) {
       this.scheduleRecentOrganization();
       this.scheduleTopicDocumentRuns();

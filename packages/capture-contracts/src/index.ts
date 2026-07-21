@@ -923,6 +923,114 @@ export interface ResearchBranchView {
   tasks: ResearchTaskRecord[];
 }
 
+// ── Research Later (MVP 阶段 D) ─────────────────────────────
+
+/** 稍后再学项目状态。当前 MVP 只有待学与完成两种；自动弱重现属后续阶段。 */
+export type ResearchLaterItemStatus = "pending" | "done";
+
+/** 用户优先级为一至五星；省略时默认三星。 */
+export const RESEARCH_LATER_PRIORITY_MIN = 1;
+export const RESEARCH_LATER_PRIORITY_MAX = 5;
+export const RESEARCH_LATER_DEFAULT_PRIORITY = 3;
+/** 用户概括的最大长度；默认值由确定性派生函数生成，不超过 80 字符。 */
+export const RESEARCH_LATER_SUMMARY_MAX_CHARACTERS = 200;
+export const RESEARCH_LATER_DEFAULT_SUMMARY_CHARACTERS = 80;
+
+/**
+ * 稍后再学项目。保存、展示和返回来源不依赖 AI：
+ * `selectionId` 是来源关系的唯一依据，选区原文与位置由选区记录保留；
+ * `summary` 默认值确定性派生，`priority` 由用户设置的一至五星表达。
+ */
+export interface ResearchLaterItemRecord {
+  id: string;
+  sessionId: string;
+  selectionId: string;
+  summary: string;
+  priority: number;
+  status: ResearchLaterItemStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * 稍后再学列表视图：联接来源选区原文与来源内容标题，
+ * 前端可直接呈现摘要、星级、来源与时间，无需再次查询选区。
+ */
+export interface ResearchLaterItemView {
+  item: ResearchLaterItemRecord;
+  selection: ResearchSelectionRecord;
+  /** 消息选区为所属会话标题，快照选区为内容快照标题。 */
+  sourceTitle: string;
+}
+
+export interface ResearchLaterItemInput {
+  selectionId: string;
+  /** 一至五星；省略时默认三星。 */
+  priority?: number;
+  /** 用户概括；省略时使用确定性默认值（选区首句 / 前 80 字符）。 */
+  summary?: string;
+}
+
+export interface ResearchLaterItemUpdate {
+  priority?: number;
+  summary?: string;
+  status?: ResearchLaterItemStatus;
+}
+
+export function validateResearchLaterItemInput(value: unknown): asserts value is ResearchLaterItemInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Research later item input must be an object");
+  const input = value as { selectionId?: unknown; priority?: unknown; summary?: unknown };
+  if (typeof input.selectionId !== "string" || !input.selectionId.trim()) throw new Error("selectionId is required");
+  validateResearchLaterPriority(input.priority);
+  validateResearchLaterSummary(input.summary);
+}
+
+export function validateResearchLaterItemUpdate(value: unknown): asserts value is ResearchLaterItemUpdate {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Research later item update must be an object");
+  const update = value as { priority?: unknown; summary?: unknown; status?: unknown };
+  if (update.priority === undefined && update.summary === undefined && update.status === undefined) {
+    throw new Error("Update requires at least one of priority, summary, or status");
+  }
+  validateResearchLaterPriority(update.priority);
+  validateResearchLaterSummary(update.summary);
+  if (update.status !== undefined && update.status !== "pending" && update.status !== "done") {
+    throw new Error("status must be pending or done");
+  }
+}
+
+function validateResearchLaterPriority(value: unknown): void {
+  if (value === undefined) return;
+  if (!Number.isSafeInteger(value) || (value as number) < RESEARCH_LATER_PRIORITY_MIN || (value as number) > RESEARCH_LATER_PRIORITY_MAX) {
+    throw new Error(`priority must be an integer between ${RESEARCH_LATER_PRIORITY_MIN} and ${RESEARCH_LATER_PRIORITY_MAX}`);
+  }
+}
+
+function validateResearchLaterSummary(value: unknown): void {
+  if (value === undefined) return;
+  if (typeof value !== "string" || !value.trim()) throw new Error("summary must be a non-empty string when provided");
+  if (value.length > RESEARCH_LATER_SUMMARY_MAX_CHARACTERS) {
+    throw new Error(`summary must not exceed ${RESEARCH_LATER_SUMMARY_MAX_CHARACTERS} characters`);
+  }
+}
+
+/**
+ * 稍后再学概括的确定性默认值：取选区原文第一句（到首个句末标点或换行为止）；
+ * 首句过长或没有句末标点时截取前 80 个字符。不依赖 AI，前后端可复用。
+ */
+export function deriveDefaultLaterSummary(selectionText: string): string {
+  const text = selectionText.trim();
+  if (!text) return "稍后再学";
+  let end = -1;
+  for (const terminator of ["。", "！", "？", "!", "?", "．", ".", "\n"]) {
+    const index = text.indexOf(terminator);
+    if (index > 0 && (end < 0 || index < end)) end = index;
+  }
+  const base = (end > 0 ? text.slice(0, end) : text).trim() || text;
+  return base.length > RESEARCH_LATER_DEFAULT_SUMMARY_CHARACTERS
+    ? `${base.slice(0, RESEARCH_LATER_DEFAULT_SUMMARY_CHARACTERS)}…`
+    : base;
+}
+
 export interface ApiError {
   error: { code: string; message: string; details?: unknown };
 }

@@ -1,7 +1,7 @@
 import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTurnAccepted } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTurnAccepted } from "@collector/capture-contracts";
 
 export interface CollectorStore {
   init(): Promise<void>;
@@ -144,6 +144,11 @@ export interface CollectorStore {
   findResearchBranchByCreationKey(sessionId: string, idempotencyKey: string): ResearchBranchRecord | undefined;
   createResearchBranch(session: ResearchSessionRecord, branch: ResearchBranchRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<DeepResearchAccepted>;
   createOriginResearchSession(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<DeepResearchAccepted>;
+  getResearchLaterItem(id: string): ResearchLaterItemRecord | undefined;
+  findResearchLaterItemByCreationKey(idempotencyKey: string): ResearchLaterItemRecord | undefined;
+  listResearchLaterItems(status?: ResearchLaterItemStatus): ResearchLaterItemRecord[];
+  createResearchLaterItem(item: ResearchLaterItemRecord, idempotencyKey: string): Promise<ResearchLaterItemRecord>;
+  saveResearchLaterItem(record: ResearchLaterItemRecord): Promise<void>;
   close?(): void;
   clearAllData(): Promise<void>;
 }
@@ -357,6 +362,7 @@ export class SqliteStore implements CollectorStore {
       this.db().exec("DELETE FROM research_selection_task_events");
       this.db().exec("DELETE FROM research_selection_tasks");
       this.db().exec("DELETE FROM research_branches");
+      this.db().exec("DELETE FROM research_later_items");
       this.db().exec("DELETE FROM research_selections");
       this.db().exec("DELETE FROM research_task_events");
       this.db().exec("DELETE FROM research_tasks");
@@ -1359,6 +1365,46 @@ export class SqliteStore implements CollectorStore {
     return { mode, session, branch, selection, inputMessage, outputMessage, task: existingTask };
   }
 
+  getResearchLaterItem(id: string): ResearchLaterItemRecord | undefined {
+    return this.getRecord<ResearchLaterItemRecord>("SELECT record_json FROM research_later_items WHERE id = ?", id);
+  }
+
+  findResearchLaterItemByCreationKey(idempotencyKey: string): ResearchLaterItemRecord | undefined {
+    return this.getRecord<ResearchLaterItemRecord>("SELECT record_json FROM research_later_items WHERE creation_idempotency_key = ?", idempotencyKey);
+  }
+
+  listResearchLaterItems(status?: ResearchLaterItemStatus): ResearchLaterItemRecord[] {
+    if (status) {
+      return this.listRecords<ResearchLaterItemRecord>("SELECT record_json FROM research_later_items WHERE status = ? ORDER BY created_at DESC, rowid DESC", status);
+    }
+    return this.listRecords<ResearchLaterItemRecord>("SELECT record_json FROM research_later_items ORDER BY created_at DESC, rowid DESC");
+  }
+
+  /**
+   * 稍后再学项目创建：基础能力，不依赖 AI。
+   * 幂等键命中时返回首次创建的项目，网络重试不重复创建。
+   */
+  async createResearchLaterItem(item: ResearchLaterItemRecord, idempotencyKey: string): Promise<ResearchLaterItemRecord> {
+    let persisted: ResearchLaterItemRecord | undefined;
+    this.transaction(() => {
+      const existing = this.findResearchLaterItemByCreationKey(idempotencyKey);
+      if (existing) {
+        persisted = existing;
+        return;
+      }
+      this.db().prepare("INSERT INTO research_later_items (id, session_id, selection_id, status, priority, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(item.id, item.sessionId, item.selectionId, item.status, item.priority, item.createdAt, item.updatedAt, idempotencyKey, JSON.stringify(item));
+      persisted = item;
+    });
+    if (!persisted) throw new Error("Research later item was not persisted");
+    return persisted;
+  }
+
+  async saveResearchLaterItem(record: ResearchLaterItemRecord): Promise<void> {
+    this.db().prepare("UPDATE research_later_items SET status = ?, priority = ?, updated_at = ?, record_json = ? WHERE id = ?")
+      .run(record.status, record.priority, record.updatedAt, JSON.stringify(record), record.id);
+  }
+
   private updateResearchMessage(message: ResearchMessageRecord): void {
     this.db().prepare("UPDATE research_messages SET status = ?, updated_at = ?, record_json = ? WHERE id = ?")
       .run(message.status, message.updatedAt, JSON.stringify(message), message.id);
@@ -1820,6 +1866,32 @@ export class SqliteStore implements CollectorStore {
       });
       version = 18;
     }
+    if (version < 19) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE research_later_items (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            selection_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            priority INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            creation_idempotency_key TEXT,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES research_sessions(id),
+            FOREIGN KEY(selection_id) REFERENCES research_selections(id)
+          );
+          CREATE UNIQUE INDEX research_later_items_creation_idempotency_idx
+            ON research_later_items(creation_idempotency_key)
+            WHERE creation_idempotency_key IS NOT NULL;
+          CREATE INDEX research_later_items_selection_idx ON research_later_items(selection_id);
+          CREATE INDEX research_later_items_status_idx ON research_later_items(status, created_at);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (19, datetime('now'));
+        `);
+      });
+      version = 19;
+    }
 
   }
 
@@ -2124,6 +2196,11 @@ export class JsonStore implements CollectorStore {
   findResearchBranchByCreationKey(_sessionId: string, _idempotencyKey: string): ResearchBranchRecord | undefined { return undefined; }
   async createResearchBranch(_session: ResearchSessionRecord, _branch: ResearchBranchRecord, _inputMessage: ResearchMessageRecord, _outputMessage: ResearchMessageRecord, _task: ResearchTaskRecord): Promise<DeepResearchAccepted> { throw new Error("Research branches require SQLite persistence"); }
   async createOriginResearchSession(_session: ResearchSessionRecord, _inputMessage: ResearchMessageRecord, _outputMessage: ResearchMessageRecord, _task: ResearchTaskRecord): Promise<DeepResearchAccepted> { throw new Error("Research branches require SQLite persistence"); }
+  getResearchLaterItem(_id: string): ResearchLaterItemRecord | undefined { return undefined; }
+  findResearchLaterItemByCreationKey(_idempotencyKey: string): ResearchLaterItemRecord | undefined { return undefined; }
+  listResearchLaterItems(_status?: ResearchLaterItemStatus): ResearchLaterItemRecord[] { return []; }
+  async createResearchLaterItem(_item: ResearchLaterItemRecord, _idempotencyKey: string): Promise<ResearchLaterItemRecord> { throw new Error("Research later items require SQLite persistence"); }
+  async saveResearchLaterItem(_record: ResearchLaterItemRecord): Promise<void> { throw new Error("Research later items require SQLite persistence"); }
   async clearAllData(): Promise<void> { const savedTokens = this.data.clientTokens; const savedProfiles = this.data.providerProfiles; const savedSettings: Record<string, string> = {}; if (this.data.settings) { for (const key of ['ai_consent', 'ai_configured', 'active_provider_profile_id', 'deepseek_configured']) { if (this.data.settings[key]) savedSettings[key] = this.data.settings[key]; } } this.data = { ...structuredClone(EMPTY_DATA), clientTokens: savedTokens, settings: savedSettings, providerProfiles: savedProfiles }; await this.flush(); }
     private flush() { this.writeQueue = this.writeQueue.then(async () => { const temporaryPath = `${this.filePath}.tmp`; await writeFile(temporaryPath, JSON.stringify(this.data, null, 2), "utf8"); await rename(temporaryPath, this.filePath); }); return this.writeQueue; }
 }

@@ -22,8 +22,8 @@
 | B1 | 选区记录与分析后端（迁移 v17） | 已完成 | `16108bf` | 四级 |
 | B2 | 选区捕获与选区智能窗口 WebUI | 已完成 | `ab79a26` | 二级 + 真实浏览器 + e2e |
 | C1 | 深入研究分支与独立会话后端（迁移 v18） | 已完成 | `e0741f3` | 四级 |
-| C2 | 深入研究二选一、分支视图与来源返回 | 已完成 | 提交后回填 | 二级 + 真实浏览器 + e2e |
-| D1 | 稍后再学保存与列表后端（迁移 v19） | 未开始 | — | 四级 |
+| C2 | 深入研究二选一、分支视图与来源返回 | 已完成 | `8ffc671` | 二级 + 真实浏览器 + e2e |
+| D1 | 稍后再学保存与列表后端（迁移 v19） | 已完成 | 提交后回填 | 四级 |
 | D2 | 稍后再学栏目与来源返回 | 未开始 | — | 二级 + 真实浏览器 + e2e |
 | 收尾 | 四场景端到端验收与文档同步 | 未开始 | — | 真实模型 + 真实浏览器 |
 
@@ -63,7 +63,7 @@ A1 在契约包建立消息块派生与模型状态三种 mode；A2 把完成的
 
 ### 阶段 D：稍后再学基础闭环
 
-**D1（契约 + 迁移 v19 + 后端，四级）**：`ResearchLaterItemRecord`（priority 1–5、summary、status pending / done）；summary 默认值确定性生成（选区首句 / 前 80 字符），不依赖 AI；迁移 v19 `research_later_items`；创建幂等、列表联接选区文本与来源说明、更新 priority / summary / status 及对应端点。
+**D1（已完成）**：契约新增 `ResearchLaterItemRecord`（priority 1–5、summary、status pending / done）、列表视图 `ResearchLaterItemView`（联接选区原文与来源标题）、创建 / 更新输入校验与确定性默认概括 `deriveDefaultLaterSummary`（选区首句 / 前 80 字符，不依赖 AI）；迁移 v19 创建 `research_later_items`（外键指向会话与选区、创建幂等键部分唯一索引、选区与状态索引）；`ResearchLaterService` 提供创建幂等、列表联接选区文本与来源说明、priority / summary / status 更新；端点 `POST / GET /v1/research-later-items`（列表支持 `?status=` 过滤）、`GET / PUT /v1/research-later-items/:id`。详见开发记录 3.17。
 
 **D2（WebUI，二级 + 真实浏览器 + e2e）**：窗口“稍后再学”→ 星级 + 可编辑概括（预填确定性默认值）→ 保存即入栏目；稍后再学面板呈现真实列表（摘要、星级、来源、时间、数量徽标）；点击项目返回原内容原选区并自动重开选区窗口；标记完成 / 恢复待学；位置失效按降级展示。
 
