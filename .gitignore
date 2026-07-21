@@ -13,6 +13,11 @@ apps/web/playwright-report/
 apps/web/e2e-artifacts/
 apps/web/e2e/.runtime/
 
+# 收尾验收本地产物：含凭证的启动入口与本次人工验收手册仅本机使用，不入库
+Collector-真实模型.cmd
+核心功能人工验收手册.md
+apps/web/test-results-acceptance/
+
 # Agent skills are installed per machine. Keep only the project-owned skills.
 .agents/skills/*/
 !.agents/skills/collector-engineering/

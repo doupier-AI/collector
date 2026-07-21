@@ -1515,6 +1515,12 @@ button {
   gap: var(--space-2);
 }
 
+/* grid 项默认 min-width:auto 会被 nowrap 的分支名撑宽，窄屏横向溢出；
+   置 0 后既有的省略号截断才能在窄屏生效。 */
+.branch-list__items > li {
+  min-width: 0;
+}
+
 .branch-list__link {
   display: flex;
   align-items: baseline;
