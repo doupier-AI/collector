@@ -180,7 +180,16 @@ export function ReadingPage() {
           );
         })}
       </article>
-      <SelectionSurface sessionId={sessionId} />
+      <SelectionSurface
+        sessionId={sessionId}
+        restoreSelection={
+          restoredSelection &&
+          restoredSelection.anchor.kind === "snapshot" &&
+          restoredSelection.anchor.contentSnapshotId === snapshot.id
+            ? restoredSelection
+            : null
+        }
+      />
     </div>
   );
 }

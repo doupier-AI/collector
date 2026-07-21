@@ -5,6 +5,8 @@ import { describe, expect, it, vi } from "vitest";
 import type {
   DeepResearchAccepted,
   DeepResearchInput,
+  ResearchLaterItemInput,
+  ResearchLaterItemView,
   ResearchSelectionAccepted,
   ResearchSelectionInput,
   ResearchSelectionInsight,
@@ -15,7 +17,8 @@ import { ApiRequestError } from "../../api/errors";
 import type { SelectionEventStreamOptions } from "../../api/selection-events";
 import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
-import { makeMessage, makeSelection, makeSelectionTask, makeSession, makeTask } from "../../test/fakes";
+import { LATER_CHANGED_EVENT } from "../navigation/later-event";
+import { makeLaterItemView, makeMessage, makeSelection, makeSelectionTask, makeSession, makeTask } from "../../test/fakes";
 import { SelectionInsightPanel, selectionIdempotencyKey } from "./SelectionInsightPanel";
 import type { ActiveCapture } from "./useSelection";
 
@@ -348,5 +351,112 @@ describe("选区智能窗口", () => {
     // 等待一轮副作用稳定，确认没有第二次创建请求
     await screen.findByText("一段选区文字");
     expect(createResearchSelection).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("选区智能窗口 稍后再学", () => {
+  function completedSelection() {
+    return {
+      selection: makeSelection({ id: "selection-1", insight }),
+      task: makeSelectionTask({ id: "selection-task-1", status: "completed" }),
+    };
+  }
+
+  it("预填确定性概括与默认三星，保存使用纯 ASCII 幂等键并通知栏目刷新", async () => {
+    const user = userEvent.setup();
+    const createResearchLaterItem = vi.fn(
+      async (_input: ResearchLaterItemInput, _key: string) =>
+        makeLaterItemView({ item: { ...makeLaterItemView().item, priority: 5 } }),
+    );
+    renderPanel({
+      createResearchSelection: vi.fn(async () => completedSelection()),
+      createResearchLaterItem,
+    });
+
+    const laterEvents: Event[] = [];
+    const listener = (event: Event) => laterEvents.push(event);
+    window.addEventListener(LATER_CHANGED_EVENT, listener);
+
+    await user.click(await screen.findByRole("button", { name: "稍后再学" }));
+
+    // 预填确定性默认概括（选区首句 / 前 80 字符），默认三星
+    expect(await screen.findByTestId("later-form")).toBeInTheDocument();
+    expect(screen.getByRole("radiogroup", { name: "优先级" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "3 星" })).toBeChecked();
+    expect(screen.getByLabelText("概括")).toHaveValue("一段选区文字");
+
+    // 调整为五星后保存
+    await user.click(screen.getByRole("radio", { name: "5 星" }));
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(createResearchLaterItem).toHaveBeenCalledTimes(1);
+    const [input, key] = createResearchLaterItem.mock.calls[0];
+    expect(input).toEqual({ selectionId: "selection-1", priority: 5, summary: "一段选区文字" });
+    expect(key).toBe("later:selection-1");
+    expect(key).toMatch(/^later:[!-~]+$/);
+    expect(key.length).toBeLessThanOrEqual(200);
+
+    // 成功确认态并通知右侧栏目刷新
+    expect(await screen.findByTestId("later-saved")).toBeInTheDocument();
+    await waitFor(() => expect(laterEvents.length).toBeGreaterThan(0));
+    window.removeEventListener(LATER_CHANGED_EVENT, listener);
+  });
+
+  it("概括被清空时省略 summary 字段，交由后端套用确定性默认值", async () => {
+    const user = userEvent.setup();
+    const createResearchLaterItem = vi.fn(async (_input: ResearchLaterItemInput, _key: string) => makeLaterItemView());
+    renderPanel({
+      createResearchSelection: vi.fn(async () => completedSelection()),
+      createResearchLaterItem,
+    });
+
+    await user.click(await screen.findByRole("button", { name: "稍后再学" }));
+    const summaryInput = screen.getByLabelText("概括");
+    await user.clear(summaryInput);
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    const [input] = createResearchLaterItem.mock.calls[0];
+    expect(input).toEqual({ selectionId: "selection-1", priority: 3 });
+  });
+
+  it("分析失败时仍可以保存稍后再学", async () => {
+    const user = userEvent.setup();
+    const createResearchLaterItem = vi.fn(async () => makeLaterItemView());
+    renderPanel({
+      createResearchSelection: vi.fn(async () => ({
+        selection: makeSelection({ id: "selection-1" }),
+        task: makeSelectionTask({ id: "selection-task-1", status: "failed", retryable: true }),
+      })),
+      createResearchLaterItem,
+    });
+
+    const laterButton = await screen.findByRole("button", { name: "稍后再学" });
+    expect(laterButton).toBeEnabled();
+    await user.click(laterButton);
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(createResearchLaterItem).toHaveBeenCalledTimes(1);
+    expect(await screen.findByTestId("later-saved")).toBeInTheDocument();
+  });
+
+  it("保存失败时保留表单并给出错误，重试后成功", async () => {
+    const user = userEvent.setup();
+    const createResearchLaterItem = vi
+      .fn<() => Promise<ResearchLaterItemView>>()
+      .mockRejectedValueOnce(new ApiRequestError(500, "internal_error", "boom"))
+      .mockResolvedValueOnce(makeLaterItemView());
+    renderPanel({
+      createResearchSelection: vi.fn(async () => completedSelection()),
+      createResearchLaterItem,
+    });
+
+    await user.click(await screen.findByRole("button", { name: "稍后再学" }));
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(await screen.findByText("Collector 服务暂时出现错误，请稍后重试。")).toBeInTheDocument();
+    expect(screen.getByTestId("later-form")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    expect(await screen.findByTestId("later-saved")).toBeInTheDocument();
   });
 });

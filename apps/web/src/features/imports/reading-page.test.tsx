@@ -6,6 +6,7 @@ import type { ApiClient } from "../../api/client";
 import { ApiRequestError } from "../../api/errors";
 import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
+import { makeSelectionTask } from "../../test/fakes";
 import { ReadingPage } from "./ReadingPage";
 
 function renderReadingPage(api: Partial<ApiClient>, entry = "/research/session-1/reading/snap-1") {
@@ -103,6 +104,10 @@ describe("阅读视图来源返回", () => {
       {
         getResearchContent: async () => snapshotWithAllAnchors(),
         getResearchSelection: async () => snapshotSelection(),
+        createResearchSelection: async () => ({
+          selection: snapshotSelection(),
+          task: makeSelectionTask({ id: "sel-task-1", status: "completed" }),
+        }),
       },
       "/research/session-1/reading/snap-1?sel=sel-1",
     );
@@ -111,6 +116,8 @@ describe("阅读视图来源返回", () => {
     expect(mark.tagName).toBe("MARK");
     // 高亮只包住选区范围，块内其余文字仍在
     expect(container.querySelector('[data-block-id="b-2"] [data-block-text]')?.textContent).toBe("正文段落");
+    // 来源返回同时自动重开选区智能窗口
+    expect(await screen.findByTestId("selection-insight-panel")).toBeInTheDocument();
   });
 
   it("块内原文已变化时用原文在块内重新定位", async () => {
@@ -123,6 +130,10 @@ describe("阅读视图来源返回", () => {
       {
         getResearchContent: async () => snapshot,
         getResearchSelection: async () => snapshotSelection(),
+        createResearchSelection: async () => ({
+          selection: snapshotSelection(),
+          task: makeSelectionTask({ id: "sel-task-1", status: "completed" }),
+        }),
       },
       "/research/session-1/reading/snap-1?sel=sel-1",
     );
@@ -137,6 +148,10 @@ describe("阅读视图来源返回", () => {
       {
         getResearchContent: async () => snapshot,
         getResearchSelection: async () => snapshotSelection(),
+        createResearchSelection: async () => ({
+          selection: snapshotSelection(),
+          task: makeSelectionTask({ id: "sel-task-1", status: "completed" }),
+        }),
       },
       "/research/session-1/reading/snap-1?sel=sel-1",
     );

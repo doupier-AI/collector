@@ -292,7 +292,10 @@ export function ResearchSessionPage() {
         </div>
       ) : null}
 
-      <SelectionSurface sessionId={sessionId} />
+      <SelectionSurface
+        sessionId={sessionId}
+        restoreSelection={restoredSelection?.anchor.kind === "message" ? restoredSelection : null}
+      />
 
       <p className="sr-only" role="status" aria-live="polite">
         {session.liveMessage}

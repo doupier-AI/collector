@@ -4,16 +4,20 @@ import { useNavigate } from "react-router-dom";
 import type {
   DeepResearchInput,
   DeepResearchMode,
+  ResearchLaterItemInput,
+  ResearchLaterItemView,
   ResearchSelectionAnchor,
   ResearchSelectionRecord,
   ResearchSelectionTaskRecord,
 } from "@collector/capture-contracts";
+import { RESEARCH_LATER_DEFAULT_PRIORITY, deriveDefaultLaterSummary } from "@collector/capture-contracts";
 import { anchorCaption, messageBlockCaption } from "../../app/anchorCaption";
 import { apiErrorCopy } from "../../api/errors";
 import { useServices } from "../../app/services";
 import { useMediaQuery } from "../../app/useMediaQuery";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
-import { deepResearchIdempotencyKey } from "./selection-highlight";
+import { notifyLaterChanged } from "../navigation/later-event";
+import { deepResearchIdempotencyKey, laterIdempotencyKey } from "./selection-highlight";
 import type { ActiveCapture } from "./useSelection";
 
 /**
@@ -87,12 +91,20 @@ export function SelectionInsightPanel({
   const [showDetails, setShowDetails] = useState(false);
   const [sourceCaption, setSourceCaption] = useState<string | undefined>(undefined);
   // 深入研究二选一：轻量去向选择；分析失败或未配置模型时同样可以发起
-  const [stage, setStage] = useState<"actions" | "choose">("actions");
+  const [stage, setStage] = useState<"actions" | "choose" | "later">("actions");
   const [mode, setMode] = useState<DeepResearchMode>("branch");
   const [direction, setDirection] = useState("");
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const directionId = useId();
+  // 稍后再学：星级 + 可编辑概括（预填确定性默认值）；保存与展示不依赖 AI
+  const [priority, setPriority] = useState<number>(RESEARCH_LATER_DEFAULT_PRIORITY);
+  const [summary, setSummary] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [savedView, setSavedView] = useState<ResearchLaterItemView | null>(null);
+  const priorityId = useId();
+  const summaryId = useId();
 
   async function submit(): Promise<void> {
     setSubmitError(null);
@@ -192,6 +204,42 @@ export function SelectionInsightPanel({
       setStartError(apiErrorCopy(error).body);
     } finally {
       setStarting(false);
+    }
+  }
+
+  /** 进入稍后再学：概括预填确定性默认值（选区首句 / 前 80 字符，不依赖 AI），默认三星。 */
+  function enterLater(): void {
+    if (!selection) return;
+    setStartError(null);
+    setSaveError(null);
+    setSavedView(null);
+    setPriority(RESEARCH_LATER_DEFAULT_PRIORITY);
+    setSummary(deriveDefaultLaterSummary(selection.text));
+    setStage("later");
+  }
+
+  /**
+   * 保存稍后再学：幂等键 `later:<选区id>` 保证同一次保存重放不重复创建。
+   * 概括被清空时省略该字段，由后端套用同一确定性默认值；保存成功后通知右侧栏目刷新。
+   */
+  async function handleSaveLater(): Promise<void> {
+    if (!selection || saving) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const trimmed = summary.trim();
+      const input: ResearchLaterItemInput = {
+        selectionId: selection.id,
+        priority,
+        ...(trimmed ? { summary: trimmed } : {}),
+      };
+      const view = await api.createResearchLaterItem(input, laterIdempotencyKey(selection.id));
+      setSavedView(view);
+      notifyLaterChanged();
+    } catch (error) {
+      setSaveError(apiErrorCopy(error).body);
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -404,6 +452,57 @@ export function SelectionInsightPanel({
             ) : null}
           </div>
         ) : null}
+
+        {stage === "later" ? (
+          savedView ? (
+            <div className="selection-panel__later-saved" data-testid="later-saved">
+              <h3 className="selection-panel__label">已保存到稍后再学</h3>
+              <p className="selection-panel__text">{savedView.item.summary}</p>
+              <p className="selection-panel__muted">
+                优先级 {savedView.item.priority} 星 · 可在右侧「稍后再学」查看与返回
+              </p>
+            </div>
+          ) : (
+            <div className="selection-panel__chooser" data-testid="later-form">
+              <h3 className="selection-panel__label">保存为稍后再学</h3>
+              <div role="radiogroup" aria-label="优先级" className="later-stars">
+                {[1, 2, 3, 4, 5].map((stars) => (
+                  <label key={stars} className={`later-star${stars <= priority ? " later-star--filled" : ""}`}>
+                    <input
+                      type="radio"
+                      name={`later-priority-${priorityId}`}
+                      value={stars}
+                      checked={priority === stars}
+                      onChange={() => setPriority(stars)}
+                    />
+                    <span className="later-star__glyph" aria-hidden="true">
+                      ★
+                    </span>
+                    <span className="sr-only">{`${stars} 星`}</span>
+                  </label>
+                ))}
+              </div>
+              <div className="selection-panel__field">
+                <label className="selection-panel__label" htmlFor={summaryId}>
+                  概括
+                </label>
+                <textarea
+                  id={summaryId}
+                  className="dr-direction"
+                  rows={2}
+                  maxLength={200}
+                  value={summary}
+                  onChange={(event) => setSummary(event.target.value)}
+                />
+              </div>
+              {saveError ? (
+                <p className="form-error" role="alert">
+                  {saveError}
+                </p>
+              ) : null}
+            </div>
+          )
+        ) : null}
       </div>
 
       <footer className="selection-panel__actions">
@@ -411,18 +510,23 @@ export function SelectionInsightPanel({
           结束
         </button>
         {stage === "actions" ? (
-          <button
-            type="button"
-            className="button button--primary"
-            onClick={() => {
-              setStartError(null);
-              setStage("choose");
-            }}
-            disabled={!selection || starting}
-          >
-            深入研究
-          </button>
-        ) : (
+          <>
+            <button type="button" className="button button--secondary" onClick={enterLater} disabled={!selection || starting}>
+              稍后再学
+            </button>
+            <button
+              type="button"
+              className="button button--primary"
+              onClick={() => {
+                setStartError(null);
+                setStage("choose");
+              }}
+              disabled={!selection || starting}
+            >
+              深入研究
+            </button>
+          </>
+        ) : stage === "choose" ? (
           <>
             <button
               type="button"
@@ -439,6 +543,25 @@ export function SelectionInsightPanel({
               disabled={!selection || starting}
             >
               {starting ? "正在建立研究……" : "开始深入研究"}
+            </button>
+          </>
+        ) : savedView ? null : (
+          <>
+            <button
+              type="button"
+              className="button button--ghost"
+              onClick={() => setStage("actions")}
+              disabled={saving}
+            >
+              返回
+            </button>
+            <button
+              type="button"
+              className="button button--primary"
+              onClick={() => void handleSaveLater()}
+              disabled={!selection || saving}
+            >
+              {saving ? "正在保存……" : "保存"}
             </button>
           </>
         )}

@@ -590,6 +590,178 @@ button {
   font-size: 0.9375rem;
 }
 
+.later-panel__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  margin-left: 0.5rem;
+  padding: 0 0.375rem;
+  border-radius: var(--radius-circle);
+  background: var(--color-later);
+  color: var(--color-surface);
+  font-size: 0.75rem;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+.later-panel__error {
+  margin-top: var(--space-3);
+}
+
+.later-panel__section {
+  margin: var(--space-4) 0 var(--space-2);
+  color: var(--color-muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.later-panel__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.later-item {
+  display: flex;
+  align-items: stretch;
+  gap: 0.375rem;
+  padding: 0.5rem;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-canvas);
+}
+
+.later-item--done {
+  opacity: 0.72;
+}
+
+.later-item--done .later-item__summary {
+  text-decoration: line-through;
+  text-decoration-color: var(--color-muted);
+}
+
+.later-item__open {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+  padding: 0.125rem 0.25rem;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.later-item__open:hover {
+  background: var(--color-surface);
+}
+
+.later-item__summary {
+  color: var(--color-ink);
+  font-size: 0.9375rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.later-item__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--color-muted);
+  font-size: 0.75rem;
+}
+
+.later-item__stars {
+  color: var(--color-later);
+  letter-spacing: 0.06em;
+}
+
+.later-item__source {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.later-item__toggle {
+  align-self: center;
+  flex: none;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-muted);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.later-item__toggle:hover:not(:disabled) {
+  border-color: var(--color-later);
+  color: var(--color-later);
+}
+
+.later-item__toggle:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* 选区窗口内的稍后再学星级选择 */
+.later-stars {
+  display: flex;
+  gap: 0.25rem;
+  margin: var(--space-2) 0;
+}
+
+.later-star {
+  position: relative;
+  display: inline-flex;
+  cursor: pointer;
+}
+
+/* radio 透明铺满星标，成为真实点击目标：既被窗口 mousedown 拦截豁免为表单控件，
+   又受 isFormFieldFocused 保护，点击时不会误关选区窗口 */
+.later-star input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.later-star__glyph {
+  color: var(--color-line);
+  font-size: 1.375rem;
+  line-height: 1;
+}
+
+.later-star--filled .later-star__glyph {
+  color: var(--color-later);
+}
+
+.later-star input:focus-visible + .later-star__glyph {
+  outline: 2px solid var(--color-ai);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.selection-panel__later-saved {
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--color-later);
+  border-radius: var(--radius-control);
+  background: var(--color-canvas);
+}
+
 /* 固定侧栏内边缘的拖拽手柄：拖拽/聚焦时显示可感知手柄态 */
 .sidebar-resize-handle {
   position: absolute;

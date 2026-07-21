@@ -23,7 +23,10 @@ function stubMatchMedia(wide: boolean) {
 
 function renderShell() {
   const services = {
-    api: { listResearchSessions: async () => [] } as Partial<ApiClient> as ApiClient,
+    api: {
+      listResearchSessions: async () => [],
+      listResearchLaterItems: async () => [],
+    } as Partial<ApiClient> as ApiClient,
     connectTaskEvents: vi.fn(),
   } as unknown as AppServices;
   return render(
@@ -53,7 +56,7 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
     expect(screen.getByRole("button", { name: "稍后再学" })).toHaveAttribute("aria-expanded", "true");
     expect(await screen.findByRole("navigation", { name: "内容导航" })).toBeInTheDocument();
     expect(screen.getByRole("complementary", { name: "稍后再学" })).toBeInTheDocument();
-    expect(screen.getByText("暂无内容")).toBeInTheDocument();
+    expect(await screen.findByTestId("later-empty")).toBeInTheDocument();
     // 不再出现旧的弹层提示
     expect(screen.queryByText(/将在后续版本提供/)).not.toBeInTheDocument();
   });

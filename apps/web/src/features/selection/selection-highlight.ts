@@ -6,6 +6,7 @@ import type {
 } from "@collector/capture-contracts";
 import { deriveMessageBlocks, messageContentBlockId } from "@collector/capture-contracts";
 import { messageBlockCaption } from "../../app/anchorCaption";
+import type { ActiveCapture, SelectionRect } from "./useSelection";
 
 /** 选区原文在来源条等窄空间中的最大展示长度。 */
 export const SELECTION_EXCERPT_CHARACTERS = 48;
@@ -86,4 +87,36 @@ export function deepResearchIdempotencyKey(
 ): string {
   const directionKey = direction.trim() ? digest(direction.trim()) : "auto";
   return `dr:${selectionId}:${mode}:${directionKey}`;
+}
+
+/**
+ * 稍后再学幂等键：同一选区重复保存只创建一条项目。
+ * 选区 id 为数据库 id（纯 ASCII），可直接进入 HTTP 请求头，短于 200 字符上限。
+ */
+export function laterIdempotencyKey(selectionId: string): string {
+  return `later:${selectionId}`;
+}
+
+/**
+ * 从已存选区记录合成一次捕获，供来源返回时重开选区智能窗口：
+ * 锚点、原文与质量（ok）来自记录，屏幕位置由调用方按高亮标记或默认值给出。
+ * 窗口随后以锚点幂等键复用创建接口，取回已保存的选区与任务，不重复创建。
+ */
+export function captureFromSelection(selection: ResearchSelectionRecord, rect: SelectionRect): ActiveCapture {
+  const anchor = selection.anchor;
+  const blockId =
+    anchor.kind === "message" ? messageContentBlockId(anchor.messageId, anchor.blockOrdinal) : anchor.blockId;
+  return {
+    range: {
+      startBlockId: blockId,
+      endBlockId: blockId,
+      startOffset: anchor.startOffset,
+      endOffset: anchor.endOffset,
+      text: selection.text,
+      blockCount: 1,
+    },
+    anchor,
+    quality: { level: "ok" },
+    rect,
+  };
 }

@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
-import { apiJson, apiPortForPage, pairAndOpen, readDataDir, readResearchBranchTables, readResearchSelectionTables } from "./helpers";
+import { apiJson, apiPortForPage, pairAndOpen, readDataDir, readResearchBranchTables, readResearchLaterTables, readResearchSelectionTables } from "./helpers";
 
 const QUESTION = "没有模型时也要保存这句话";
 
@@ -200,4 +200,71 @@ test("未配置模型：分析失败仍可发起深入研究，分支与来源�
   await expect(page.locator("[data-selection-mark]")).toHaveText("无模型也要能发起深入研究并保留来源", {
     timeout: 10_000,
   });
+});
+
+test("未配置模型：分析失败仍可保存稍后再学，栏目呈现并能返回原选区", async ({ page }) => {
+  test.setTimeout(60_000);
+  await pairAndOpen(page, "/research/new");
+
+  // 无模型下走导入阅读内容建立选区（导入与保存均不依赖模型）
+  const createResponse = await page.request.post("/v1/research-sessions", {
+    headers: { "Idempotency-Key": crypto.randomUUID() },
+    data: {},
+  });
+  const created = (await createResponse.json()) as { id: string };
+  await page.goto(`/research/${created.id}`);
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "无模型稍后再学.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("无模型也要能保存稍后再学", "utf8"),
+  });
+  await expect(page.getByText("已导入")).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "阅读" }).click();
+  await expect(page).toHaveURL(new RegExp(`/research/${created.id}/reading/[^/]+$`));
+  await expect(page.getByText("第 1 行")).toBeVisible({ timeout: 15_000 });
+
+  await page.evaluate(() => {
+    const textElement = document.querySelector(".reading__block [data-block-text]");
+    if (!textElement?.firstChild) throw new Error("未找到阅读块");
+    const node = textElement.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(node, 0);
+    range.setEnd(node, node.data.length);
+    const selection = window.getSelection();
+    if (!selection) throw new Error("浏览器不支持 Selection");
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  });
+
+  // 分析失败，但稍后再学操作持续可用
+  const panel = page.getByTestId("selection-insight-panel");
+  await expect(panel).toBeVisible();
+  await expect(panel.getByText("选区已保存，分析暂时没有完成")).toBeVisible({ timeout: 15_000 });
+  await panel.getByRole("button", { name: "稍后再学" }).click();
+  const form = page.getByTestId("later-form");
+  await expect(form).toBeVisible();
+  // 预填确定性默认概括（不依赖 AI）
+  await expect(panel.getByLabel("概括")).toHaveValue("无模型也要能保存稍后再学");
+  await panel.locator("label.later-star").filter({ hasText: "4 星" }).click();
+  await panel.getByRole("button", { name: "保存" }).click();
+  await expect(page.getByTestId("later-saved")).toBeVisible();
+
+  // 右栏即时呈现该项目，稍后再学落库一致
+  const summary = "无模型也要能保存稍后再学";
+  await expect(page.locator(".later-item", { hasText: summary })).toBeVisible();
+  const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
+  const laterItems = readResearchLaterTables(dbPath).laterItems.filter((row) => row.sessionId === created.id);
+  expect(laterItems).toHaveLength(1);
+  expect(laterItems[0]?.status).toBe("pending");
+  expect(laterItems[0]?.priority).toBe(4);
+  const selectionTables = readResearchSelectionTables(dbPath);
+  const sessionSelections = selectionTables.selections.filter((row) => row.sessionId === created.id);
+  expect(laterItems[0]?.selectionId).toBe(sessionSelections[0]?.id);
+
+  // 点击项目返回阅读页原选区并自动重开窗口
+  await page.locator(".later-item", { hasText: summary }).locator(".later-item__open").click();
+  await expect(page).toHaveURL(new RegExp(`/research/${created.id}/reading/[^/]+\\?sel=`), { timeout: 10_000 });
+  await expect(page.locator("[data-selection-mark]")).toHaveText(summary, { timeout: 10_000 });
+  await expect(page.getByTestId("selection-insight-panel")).toBeVisible();
 });

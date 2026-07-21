@@ -36,7 +36,7 @@ test("首次打开显示开始页与空状态邀请", async ({ page }) => {
   await expect(nav).toBeVisible();
   await expect(page.getByText(/还没有研究会话/)).toBeVisible();
   await expect(page.getByRole("complementary", { name: "稍后再学" })).toBeVisible();
-  await expect(page.getByText("暂无内容")).toBeVisible();
+  await expect(page.getByTestId("later-empty")).toBeVisible();
 
   // 顶栏图标按钮收起再展开
   await page.getByRole("button", { name: "内容" }).click();

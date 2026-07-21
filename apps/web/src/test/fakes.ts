@@ -3,6 +3,8 @@ import type {
   ResearchBranchRecord,
   ResearchBranchView,
   ResearchImportTaskRecord,
+  ResearchLaterItemRecord,
+  ResearchLaterItemView,
   ResearchMessageRecord,
   ResearchSelectionRecord,
   ResearchSelectionTaskRecord,
@@ -198,4 +200,29 @@ export function makeBranchView(overrides: Partial<ResearchBranchView> = {}): Res
     messages: overrides.messages ?? [],
     tasks: overrides.tasks ?? [],
   };
+}
+
+export function makeLaterItem(overrides: Partial<ResearchLaterItemRecord> = {}): ResearchLaterItemRecord {
+  sequence += 1;
+  return {
+    id: `later-${sequence}`,
+    sessionId: "session-1",
+    selectionId: "selection-1",
+    summary: "本地优先会先把输入保存在本机",
+    priority: 3,
+    status: "pending",
+    createdAt: "2026-07-21T08:00:00.000Z",
+    updatedAt: "2026-07-21T08:00:00.000Z",
+    ...overrides,
+  };
+}
+
+export function makeLaterItemView(overrides: {
+  item?: ResearchLaterItemRecord;
+  selection?: ResearchSelectionRecord;
+  sourceTitle?: string;
+} = {}): ResearchLaterItemView {
+  const item = overrides.item ?? makeLaterItem();
+  const selection = overrides.selection ?? makeSelection({ id: item.selectionId, sessionId: item.sessionId });
+  return { item, selection, sourceTitle: overrides.sourceTitle ?? "理解注意力机制" };
 }

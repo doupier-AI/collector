@@ -7,7 +7,7 @@ import { ApiRequestError, NetworkError } from "../../api/errors";
 import type { TaskEventStream } from "../../api/task-events";
 import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
-import { makeBranch, makeMessage, makeSelection, makeSession, makeTask } from "../../test/fakes";
+import { makeBranch, makeMessage, makeSelection, makeSelectionTask, makeSession, makeTask } from "../../test/fakes";
 import { ResearchSessionPage } from "./ResearchSessionPage";
 import type { ResearchSessionView } from "@collector/capture-contracts";
 
@@ -261,13 +261,22 @@ describe("ResearchSessionPage 来源会话与来源返回", () => {
       },
     });
     renderSessionPage(
-      { getResearchSessionView: async () => readyView(), getResearchSelection: async () => selection },
+      {
+        getResearchSessionView: async () => readyView(),
+        getResearchSelection: async () => selection,
+        createResearchSelection: async () => ({
+          selection,
+          task: makeSelectionTask({ id: "sel-task-1", status: "completed" }),
+        }),
+      },
       "/research/session-1?sel=sel-1",
     );
 
     const mark = await screen.findByText("不同头可", { selector: "[data-selection-mark]" });
     expect(mark.tagName).toBe("MARK");
     expect(screen.queryByTestId("selection-restore-fallback")).not.toBeInTheDocument();
+    // 来源返回同时自动重开选区智能窗口（以锚点幂等键取回已保存选区）
+    expect(await screen.findByTestId("selection-insight-panel")).toBeInTheDocument();
   });
 
   it("来源返回：原消息不存在时降级展示保存原文与段落说明", async () => {
@@ -285,7 +294,14 @@ describe("ResearchSessionPage 来源会话与来源返回", () => {
       },
     });
     renderSessionPage(
-      { getResearchSessionView: async () => readyView(), getResearchSelection: async () => selection },
+      {
+        getResearchSessionView: async () => readyView(),
+        getResearchSelection: async () => selection,
+        createResearchSelection: async () => ({
+          selection,
+          task: makeSelectionTask({ id: "sel-task-1", status: "completed" }),
+        }),
+      },
       "/research/session-1?sel=sel-1",
     );
 
@@ -307,10 +323,9 @@ describe("ResearchSessionPage 来源会话与来源返回", () => {
     });
 
     const list = await screen.findByTestId("branch-list");
-    expect(list).toHaveTextContent("深入研究：本地优先会先把输入保存在本机");
-    expect(screen.getByRole("link", { name: /深入研究：本地优先/ })).toHaveAttribute(
-      "href",
-      "/research/session-1/branch/branch-1",
-    );
+    expect(list).toBeInTheDocument();
+    // 分支名来自异步读取的选区原文：等待具名链接出现，避免对兜底名做非等待断言（该用例此前因此偶发）
+    const link = await screen.findByRole("link", { name: /深入研究：本地优先会先把输入保存在本机/ });
+    expect(link).toHaveAttribute("href", "/research/session-1/branch/branch-1");
   });
 });

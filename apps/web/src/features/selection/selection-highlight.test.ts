@@ -3,8 +3,10 @@ import type { ResearchSelectionRecord } from "@collector/capture-contracts";
 import { makeMessage, makeSelection } from "../../test/fakes";
 import {
   backRouteForSelection,
+  captureFromSelection,
   deepResearchIdempotencyKey,
   highlightForMessages,
+  laterIdempotencyKey,
   resolveHighlight,
   selectionExcerpt,
 } from "./selection-highlight";
@@ -137,5 +139,49 @@ describe("deepResearchIdempotencyKey", () => {
   it("方向为空时使用固定占位，不同去向键不同", () => {
     expect(deepResearchIdempotencyKey("sel-1", "branch", "", digest)).toBe("dr:sel-1:branch:auto");
     expect(deepResearchIdempotencyKey("sel-1", "session", "", digest)).toBe("dr:sel-1:session:auto");
+  });
+});
+
+describe("laterIdempotencyKey", () => {
+  it("同一选区得到同一个纯 ASCII 键，短于请求头上限", () => {
+    const key = laterIdempotencyKey("sel-1");
+    expect(key).toBe("later:sel-1");
+    expect(key).toMatch(/^later:[!-~]+$/);
+    expect(key.length).toBeLessThanOrEqual(200);
+  });
+});
+
+describe("captureFromSelection", () => {
+  const rect = { top: 72, bottom: 96, left: 16, right: 376 };
+
+  it("消息选区：用锚点与原文合成捕获，块 id 取消息块", () => {
+    const selection = makeSelection({ id: "sel-1", text: "一段选区文字" });
+    const capture = captureFromSelection(selection, rect);
+    expect(capture.anchor).toEqual(selection.anchor);
+    expect(capture.range.text).toBe("一段选区文字");
+    expect(capture.range.blockCount).toBe(1);
+    expect(capture.range.startBlockId).toBe("m-out#p0");
+    expect(capture.range.endBlockId).toBe("m-out#p0");
+    expect(capture.quality).toEqual({ level: "ok" });
+    expect(capture.rect).toEqual(rect);
+  });
+
+  it("快照选区：块 id 取锚点 blockId", () => {
+    const selection: ResearchSelectionRecord = makeSelection({
+      id: "sel-2",
+      text: "快照原文",
+      anchor: {
+        kind: "snapshot",
+        contentSnapshotId: "snap-1",
+        blockId: "block-7",
+        startOffset: 0,
+        endOffset: 4,
+        exact: "快照原文",
+      },
+    });
+    const capture = captureFromSelection(selection, rect);
+    expect(capture.range.startBlockId).toBe("block-7");
+    expect(capture.range.endBlockId).toBe("block-7");
+    expect(capture.range.text).toBe("快照原文");
   });
 });

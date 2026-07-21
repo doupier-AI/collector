@@ -6,6 +6,10 @@ import type {
   ResearchContentSnapshotRecord,
   ResearchImportAccepted,
   ResearchImportTaskRecord,
+  ResearchLaterItemInput,
+  ResearchLaterItemStatus,
+  ResearchLaterItemUpdate,
+  ResearchLaterItemView,
   ResearchSelectionAccepted,
   ResearchSelectionInput,
   ResearchSelectionRecord,
@@ -41,6 +45,12 @@ export interface ApiClient {
   startDeepResearch(selectionId: string, input: DeepResearchInput, idempotencyKey: string): Promise<DeepResearchAccepted>;
   getResearchBranch(branchId: string): Promise<ResearchBranchView>;
   submitBranchMessage(branchId: string, content: string, idempotencyKey: string): Promise<ResearchTurnAccepted>;
+  /** 保存稍后再学项目：幂等键命中返回首次保存的项目，保存不依赖 AI。 */
+  createResearchLaterItem(input: ResearchLaterItemInput, idempotencyKey: string): Promise<ResearchLaterItemView>;
+  /** 稍后再学列表：联接选区原文与来源标题；可选按 pending / done 过滤。 */
+  listResearchLaterItems(status?: ResearchLaterItemStatus): Promise<ResearchLaterItemView[]>;
+  getResearchLaterItem(itemId: string): Promise<ResearchLaterItemView>;
+  updateResearchLaterItem(itemId: string, update: ResearchLaterItemUpdate): Promise<ResearchLaterItemView>;
   getAiConfiguration(): Promise<AiConfigurationView>;
   exchangePairingCode(code: string): Promise<{ paired: true }>;
 }
@@ -204,6 +214,27 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
           body: JSON.stringify({ content }),
         },
       );
+    },
+    createResearchLaterItem(input: ResearchLaterItemInput, idempotencyKey: string) {
+      return requestJson<ResearchLaterItemView>(fetchFn, "/v1/research-later-items", {
+        method: "POST",
+        headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
+        body: JSON.stringify(input),
+      });
+    },
+    listResearchLaterItems(status?: ResearchLaterItemStatus) {
+      const query = status ? `?status=${encodeURIComponent(status)}` : "";
+      return requestJson<ResearchLaterItemView[]>(fetchFn, `/v1/research-later-items${query}`);
+    },
+    getResearchLaterItem(itemId: string) {
+      return requestJson<ResearchLaterItemView>(fetchFn, `/v1/research-later-items/${encodeURIComponent(itemId)}`);
+    },
+    updateResearchLaterItem(itemId: string, update: ResearchLaterItemUpdate) {
+      return requestJson<ResearchLaterItemView>(fetchFn, `/v1/research-later-items/${encodeURIComponent(itemId)}`, {
+        method: "PUT",
+        headers: JSON_HEADERS,
+        body: JSON.stringify(update),
+      });
     },
     retryResearchTask(taskId: string) {
       return requestJson<ResearchTaskRecord>(fetchFn, `/v1/research-tasks/${encodeURIComponent(taskId)}/retry`, {

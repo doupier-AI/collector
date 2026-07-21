@@ -253,6 +253,31 @@ export interface ResearchOriginSessionRow {
   originSessionId: string | null;
 }
 
+export interface ResearchLaterItemRow {
+  id: string;
+  sessionId: string;
+  selectionId: string;
+  status: string;
+  priority: number;
+  creationIdempotencyKey: string | null;
+  recordJson: string;
+}
+
+/** 只读打开 harness 的 SQLite，核对稍后再学项目记录（summary 在 record_json 内）。 */
+export function readResearchLaterTables(dbPath: string): { laterItems: ResearchLaterItemRow[] } {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    const laterItems = db
+      .prepare(
+        "SELECT id, session_id AS sessionId, selection_id AS selectionId, status, priority, creation_idempotency_key AS creationIdempotencyKey, record_json AS recordJson FROM research_later_items ORDER BY created_at, rowid",
+      )
+      .all() as unknown as ResearchLaterItemRow[];
+    return { laterItems };
+  } finally {
+    db.close();
+  }
+}
+
 /** 只读打开 harness 的 SQLite，核对研究分支 / 分支消息 / 带来源会话记录。 */
 export function readResearchBranchTables(dbPath: string): {
   branches: ResearchBranchRow[];
