@@ -29,7 +29,7 @@ test("首次打开显示开始页与空状态邀请", async ({ page }) => {
   await expect(page.getByText("写下你正在理解的内容，Collector 会保存这次研究，并让你随时回来继续。")).toBeVisible();
   await expect(page.getByLabel("你的问题")).toBeVisible();
   await expect(page.getByRole("button", { name: "开始研究" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "添加附件（后续版本提供）" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /添加附件（TXT、Markdown、DOCX、PDF/ })).toBeVisible();
 
   // 宽屏（默认 1280px）左右固定侧栏初始展开：左侧内容导航空状态、右侧稍后再学空态
   const nav = page.getByRole("navigation", { name: "内容导航" });
@@ -255,7 +255,7 @@ test("开始页显示占位 logo 与居中输入区并留截图", async ({ page 
   await expect(page.locator(".page__logo")).toBeVisible();
   await expect(page.getByRole("heading", { name: "从一个问题开始" })).toBeVisible();
   await expect(page.getByLabel("你的问题")).toBeVisible();
-  await expect(page.getByRole("button", { name: "添加附件（后续版本提供）" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /添加附件（TXT、Markdown、DOCX、PDF/ })).toBeVisible();
   // 标题、说明与输入区整体水平居中
   const center = await page.locator(".page--start").evaluate((element) => getComputedStyle(element).textAlign);
   expect(center).toBe("center");

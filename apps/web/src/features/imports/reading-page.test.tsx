@@ -1,12 +1,13 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
-import type { ResearchContentSnapshotRecord, ResearchSelectionRecord } from "@collector/capture-contracts";
+import type { ResearchContentSnapshotRecord, ResearchSelectionRecord, ResearchTurnAccepted } from "@collector/capture-contracts";
 import type { ApiClient } from "../../api/client";
 import { ApiRequestError } from "../../api/errors";
 import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
-import { makeSelectionTask } from "../../test/fakes";
+import { makeSelectionTask, makeSession } from "../../test/fakes";
 import { ReadingPage } from "./ReadingPage";
 
 function renderReadingPage(api: Partial<ApiClient>, entry = "/research/session-1/reading/snap-1") {
@@ -185,5 +186,66 @@ describe("阅读视图来源返回", () => {
     expect(await screen.findByRole("heading", { name: "混合文档.md", level: 1 })).toBeInTheDocument();
     expect(screen.queryByTestId("selection-restore-fallback")).not.toBeInTheDocument();
     expect(screen.queryByText("正文", { selector: "[data-selection-mark]" })).not.toBeInTheDocument();
+  });
+});
+
+describe("阅读视图 ChatComposer", () => {
+  const turnAccepted: ResearchTurnAccepted = {
+    session: makeSession({ id: "session-1" }),
+    inputMessage: { id: "msg-in", sessionId: "session-1", role: "user" as const, status: "completed" as const, content: "总结这篇文章", createdAt: "2026-07-21T00:00:00Z", updatedAt: "2026-07-21T00:00:00Z" },
+    outputMessage: { id: "msg-out", sessionId: "session-1", role: "assistant" as const, status: "pending" as const, content: "", createdAt: "2026-07-21T00:00:00Z", updatedAt: "2026-07-21T00:00:00Z" },
+    task: { id: "task-1", sessionId: "session-1", inputMessageId: "msg-in", outputMessageId: "msg-out", idempotencyKey: "msg-key", status: "queued" as const, retryable: false, promptVersion: "", createdAt: "2026-07-21T00:00:00Z", updatedAt: "2026-07-21T00:00:00Z" },
+  };
+
+  it("阅读页渲染 ChatComposer 输入框，可发送消息", async () => {
+    const user = userEvent.setup();
+    const submitResearchMessage = vi.fn<ApiClient["submitResearchMessage"]>().mockResolvedValue(turnAccepted);
+    renderReadingPage({
+      getResearchContent: async () => snapshotWithAllAnchors(),
+      submitResearchMessage,
+    });
+
+    expect(await screen.findByRole("heading", { name: "混合文档.md", level: 1 })).toBeInTheDocument();
+
+    const textarea = screen.getByLabelText("你的问题");
+    await user.type(textarea, "总结这篇文章");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(submitResearchMessage).toHaveBeenCalledTimes(1);
+    expect(submitResearchMessage).toHaveBeenCalledWith("session-1", "总结这篇文章", expect.any(String));
+  });
+
+  it("提交失败时保留草稿不清理", async () => {
+    const user = userEvent.setup();
+    const submitResearchMessage = vi.fn<ApiClient["submitResearchMessage"]>().mockRejectedValue(new Error("network"));
+    renderReadingPage({
+      getResearchContent: async () => snapshotWithAllAnchors(),
+      submitResearchMessage,
+    });
+
+    expect(await screen.findByRole("heading", { name: "混合文档.md", level: 1 })).toBeInTheDocument();
+
+    const textarea = screen.getByLabelText("你的问题");
+    await user.type(textarea, "保留我");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(textarea).toHaveValue("保留我");
+  });
+
+  it("未配对时显示 PairingGate", async () => {
+    const user = userEvent.setup();
+    const submitResearchMessage = vi.fn<ApiClient["submitResearchMessage"]>().mockRejectedValue(new ApiRequestError(401, "unauthorized", "unauthorized"));
+    renderReadingPage({
+      getResearchContent: async () => snapshotWithAllAnchors(),
+      submitResearchMessage,
+    });
+
+    expect(await screen.findByRole("heading", { name: "混合文档.md", level: 1 })).toBeInTheDocument();
+
+    const textarea = screen.getByLabelText("你的问题");
+    await user.type(textarea, "hi");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(await screen.findByRole("heading", { name: "配对 Collector" })).toBeInTheDocument();
   });
 });

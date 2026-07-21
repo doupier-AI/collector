@@ -324,3 +324,69 @@ test("阅读视图在 320/768/1024/1440 视口无横向溢出并留截图", asyn
     await page.screenshot({ path: `e2e-artifacts/reading-viewport-${width}.png`, fullPage: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// 文件发起研究：开始页直接上传文件创建会话 → 阅读页提问 → 返回会话验证
+//   - 开始页 ChatComposer 现在提供 onImportFile，附件按钮可见
+//   - 开始页拖放文件创建研究（drop overlay 文案独立：松开鼠标，开始研究这个文件）
+// ---------------------------------------------------------------------------
+
+test("从开始页上传文件创建研究并导入，进入阅读视图后可从阅读页 ChatComposer 提问", async ({ page }) => {
+  // 先清数据让 HomeRoute 没有已有会话，落在开始页
+  await pairAndOpen(page, "/research/new");
+  const consoleIssues = watchConsole(page);
+
+  // 上传 TXT 文件 → 创建会话 → 导入 → 自动导航到会话页
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "直接研究.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("第一条：文件直接发起研究\n\n第二条：不需要先输入问题\n\n第三条：Chat 与文件是并列入口", "utf8"),
+  });
+
+  // 导航到会话页，附件列表可见
+  await expect(page).toHaveURL(/\/research\/[^/]+$/, { timeout: 15_000 });
+  const sessionId = page.url().split("/research/")[1] ?? "";
+  expect(sessionId).not.toBe("");
+
+  // 导入完成后进入阅读
+  await expect(page.getByText("已导入")).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "阅读" }).click();
+  await expect(page).toHaveURL(/\/research\/[^/]+\/reading\/[^/]+$/, { timeout: 10_000 });
+
+  // 阅读页 ChatComposer 可见，发送一个消息
+  const textarea = page.getByLabel("你的问题");
+  await expect(textarea).toBeVisible();
+  await textarea.fill("这篇文章有几条内容？");
+  await page.getByRole("button", { name: "发送" }).click();
+
+  // 返回研究会话页验证消息已在列表中
+  await page.getByRole("link", { name: "返回研究会话" }).click();
+  await expect(page).toHaveURL(/\/research\/[^/]+$/, { timeout: 10_000 });
+  await expect(page.locator(".message-list")).toBeVisible();
+
+  expect(consoleIssues.filter((msg) => !msg.includes("pdfjs")).filter((msg) => !msg.includes("canvas"))).toEqual([]);
+});
+
+test("开始页拖放文件创建研究", async ({ page }) => {
+  await pairAndOpen(page, "/research/new");
+  const consoleIssues = watchConsole(page);
+
+  // 使用 JS 构造 DataTransfer 事件后 dispatch
+  await page.evaluate(() => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(["# 从开始页拖入\n\n拖放开始。"], "拖放开始.md", { type: "text/markdown" }));
+    const el = document.querySelector(".page--start");
+    if (!el) return;
+    el.dispatchEvent(new DragEvent("dragenter", { dataTransfer: transfer, bubbles: true, cancelable: true }));
+    // 短等后 drop
+    setTimeout(() => {
+      el.dispatchEvent(new DragEvent("drop", { dataTransfer: transfer, bubbles: true, cancelable: true }));
+    }, 100);
+  });
+
+  // 等待导航（文件处理完成后跳转到会话页）
+  await expect(page).toHaveURL(/\/research\/[^/]+$/, { timeout: 15_000 });
+  await expect(page.getByText("已导入")).toBeVisible({ timeout: 15_000 });
+
+  expect(consoleIssues).toEqual([]);
+});

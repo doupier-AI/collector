@@ -1107,6 +1107,13 @@ button {
   text-decoration: underline;
 }
 
+/* 阅读页底部 ChatComposer：分隔线与间距，与正文和选区窗口隔开 */
+.reading-page__composer {
+  margin-top: var(--space-7);
+  border-top: 1px solid var(--color-line);
+  padding-top: var(--space-5);
+}
+
 .reading {
   display: grid;
   gap: var(--space-4);

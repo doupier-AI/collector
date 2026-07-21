@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import type { ResearchContentBlock, ResearchContentSnapshotRecord } from "@collector/capture-contracts";
 import { isApiErrorCode, isUnauthorized } from "../../api/errors";
@@ -11,6 +11,8 @@ import { SelectionSurface } from "../selection/SelectionSurface";
 import { resolveHighlight } from "../selection/selection-highlight";
 import { PairingGate } from "../auth/PairingGate";
 import { SelectionRestoreFallback, useSelectionRestore } from "../research-session/SelectionSourceBar";
+import { ChatComposer } from "../chat-composer/ChatComposer";
+import { TurnSubmitter } from "../chat-composer/turn-submitter";
 
 type ReaderState =
   | { kind: "loading" }
@@ -29,12 +31,24 @@ function isCode(block: ResearchContentBlock): boolean {
 /**
  * 研究阅读视图：以稳定 contentSnapshotId 读取内容块，按锚点联合类型渲染。
  * 文本一律按不可信内容以纯文本渲染，不保存 DOM 路径，不猜 MIME 字段。
+ * 页面底部提供 ChatComposer，可对当前文档直接提问，消息回到所属会话。
  */
 export function ReadingPage() {
   const { sessionId = "", contentSnapshotId = "" } = useParams();
   const { api } = useServices();
   const [state, setState] = useState<ReaderState>({ kind: "loading" });
   const [reloadNonce, setReloadNonce] = useState(0);
+  const [authError, setAuthError] = useState<unknown>(null);
+
+  // 消息提交幂等管理；sessionId 变化时重建 TurnSubmitter
+  const submitterRef = useRef<TurnSubmitter | null>(null);
+  const submitterSessionRef = useRef<string | null>(null);
+  if (submitterSessionRef.current !== sessionId) {
+    submitterSessionRef.current = sessionId;
+    submitterRef.current = new TurnSubmitter({
+      submit: (content, key) => api.submitResearchMessage(sessionId, content, key),
+    });
+  }
 
   useEffect(() => {
     let stale = false;
@@ -82,6 +96,27 @@ export function ReadingPage() {
       mark.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "center" });
     }
   }, [restoreKey, reducedMotion]);
+
+  const handleSubmitMessage = useCallback(
+    async (content: string): Promise<boolean> => {
+      const submitter = submitterRef.current;
+      if (!submitter) return false;
+      try {
+        await submitter.send(content);
+        return true;
+      } catch (error) {
+        if (isUnauthorized(error)) {
+          setAuthError(error);
+        }
+        return false;
+      }
+    },
+    [],
+  );
+
+  if (authError) {
+    return <PairingGate onPaired={() => setAuthError(null)} />;
+  }
 
   if (state.kind === "error") {
     if (isUnauthorized(state.error)) {
@@ -180,6 +215,14 @@ export function ReadingPage() {
           );
         })}
       </article>
+      <div className="reading-page__composer">
+        <ChatComposer
+          draftScope={sessionId}
+          submitLabel="发送"
+          placeholder="输入关于这篇文档的问题……"
+          onSubmit={handleSubmitMessage}
+        />
+      </div>
       <SelectionSurface
         sessionId={sessionId}
         restoreSelection={
