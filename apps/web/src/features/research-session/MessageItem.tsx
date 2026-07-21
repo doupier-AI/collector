@@ -1,17 +1,26 @@
 import type { ResearchMessageRecord, ResearchTaskRecord } from "@collector/capture-contracts";
 import { deriveMessageBlocks, messageContentBlockId } from "@collector/capture-contracts";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
+import { HighlightedText } from "../selection/HighlightedText";
 import { taskErrorReason } from "./format";
+
+/** 来源返回高亮：在指定段落块的 [start, end) 范围渲染 <mark>。 */
+export interface MessageHighlight {
+  blockOrdinal: number;
+  start: number;
+  end: number;
+}
 
 export interface MessageItemProps {
   message: ResearchMessageRecord;
   task?: ResearchTaskRecord;
   retrying?: boolean;
   onRetry?: (task: ResearchTaskRecord) => void;
+  highlight?: MessageHighlight;
 }
 
 /** 单条消息。AI 消息与对应用户消息之间由 CSS 绘制克制的来源线与节点。 */
-export function MessageItem({ message, task, retrying = false, onRetry }: MessageItemProps) {
+export function MessageItem({ message, task, retrying = false, onRetry, highlight }: MessageItemProps) {
   if (message.role === "user") {
     return (
       <li className="message message--user">
@@ -25,7 +34,7 @@ export function MessageItem({ message, task, retrying = false, onRetry }: Messag
     <li className="message message--assistant" data-message-id={message.id}>
       <p className="message__role">Collector</p>
       {message.status === "completed" ? (
-        <AssistantBlocks message={message} />
+        <AssistantBlocks message={message} highlight={highlight} />
       ) : message.status === "failed" ? (
         <FailedBody message={message} task={task} retrying={retrying} onRetry={onRetry} />
       ) : (
@@ -39,19 +48,18 @@ export function MessageItem({ message, task, retrying = false, onRetry }: Messag
  * 完成的 AI 回答按契约包的确定性段落块渲染。
  * 块 ID 与后端选区锚点使用同一派生规则，前端不自行切分段落。
  */
-function AssistantBlocks({ message }: { message: ResearchMessageRecord }) {
+function AssistantBlocks({ message, highlight }: { message: ResearchMessageRecord; highlight?: MessageHighlight }) {
   const blocks = deriveMessageBlocks(message.content);
   if (blocks.length === 0) return <p className="message__content">{message.content}</p>;
   return (
     <div className="message__blocks" data-content-kind="message" data-message-id={message.id}>
       {blocks.map((block) => (
-        <p
-          className="message__content"
-          key={block.ordinal}
-          data-block-id={messageContentBlockId(message.id, block.ordinal)}
-          data-block-text
-        >
-          {block.text}
+        <p className="message__content" key={block.ordinal} data-block-id={messageContentBlockId(message.id, block.ordinal)} data-block-text>
+          {highlight && highlight.blockOrdinal === block.ordinal ? (
+            <HighlightedText text={block.text} start={highlight.start} end={highlight.end} />
+          ) : (
+            block.text
+          )}
         </p>
       ))}
     </div>

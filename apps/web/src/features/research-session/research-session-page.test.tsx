@@ -7,7 +7,7 @@ import { ApiRequestError, NetworkError } from "../../api/errors";
 import type { TaskEventStream } from "../../api/task-events";
 import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
-import { makeMessage, makeSession, makeTask } from "../../test/fakes";
+import { makeBranch, makeMessage, makeSelection, makeSession, makeTask } from "../../test/fakes";
 import { ResearchSessionPage } from "./ResearchSessionPage";
 import type { ResearchSessionView } from "@collector/capture-contracts";
 
@@ -15,14 +15,14 @@ function noopTaskEventStream(): TaskEventStream {
   return { close: () => {}, syncNow: () => {}, mode: "closed", lastEventId: 0 };
 }
 
-function renderSessionPage(api: Partial<ApiClient>) {
+function renderSessionPage(api: Partial<ApiClient>, entry = "/research/session-1") {
   const services = {
     api: api as ApiClient,
     connectTaskEvents: vi.fn(noopTaskEventStream),
   } as unknown as AppServices;
   return render(
     <ServicesProvider services={services}>
-      <MemoryRouter initialEntries={["/research/session-1"]}>
+      <MemoryRouter initialEntries={[entry]}>
         <Routes>
           <Route path="/research/:sessionId" element={<ResearchSessionPage />} />
           <Route path="/research/new" element={<p>开始页</p>} />
@@ -185,5 +185,132 @@ describe("ResearchSessionPage 就绪与失败恢复", () => {
     expect(await screen.findByText("解释本地优先研究的价值")).toBeInTheDocument();
     expect(screen.getByTestId("ai-placeholder")).toBeInTheDocument();
     expect(screen.getByText("已保存，正在生成")).toBeInTheDocument();
+  });
+});
+
+describe("ResearchSessionPage 来源会话与来源返回", () => {
+  function originView(): ResearchSessionView {
+    return {
+      session: makeSession({
+        id: "session-2",
+        title: "把本地优先的边界讲透",
+        originSelectionId: "sel-1",
+        originSessionId: "session-1",
+      }),
+      messages: [
+        makeMessage({ id: "m-in", sessionId: "session-2", role: "user", content: "把本地优先的边界讲透" }),
+        makeMessage({
+          id: "m-out",
+          sessionId: "session-2",
+          role: "assistant",
+          status: "completed",
+          content: "本地优先意味着数据先落在本机。",
+        }),
+      ],
+      tasks: [makeTask({ id: "task-1", sessionId: "session-2", status: "completed", inputMessageId: "m-in", outputMessageId: "m-out" })],
+    };
+  }
+
+  function originSelection() {
+    return makeSelection({
+      id: "sel-1",
+      sessionId: "session-1",
+      text: "本地优先会先把输入保存在本机",
+      anchor: {
+        kind: "message",
+        messageId: "m-origin",
+        blockOrdinal: 0,
+        startOffset: 0,
+        endOffset: 4,
+        exact: "本地优先",
+      },
+    });
+  }
+
+  it("带来源的独立会话显示来源条与材料范围说明，返回原文携带选区参数", async () => {
+    const getResearchSessionView = vi.fn(async (sessionId: string) =>
+      sessionId === "session-2"
+        ? originView()
+        : { ...originView(), session: makeSession({ id: "session-1", title: "理解注意力机制" }), messages: [], tasks: [] },
+    );
+    renderSessionPage(
+      { getResearchSessionView, getResearchSelection: async () => originSelection() },
+      "/research/session-2",
+    );
+
+    const sourceBar = await screen.findByTestId("selection-source-bar");
+    expect(sourceBar).toHaveTextContent("来自《理解注意力机制》的选区");
+    expect(sourceBar).toHaveTextContent("本地优先会先把输入保存在本机");
+    expect(screen.getByRole("link", { name: "← 返回原文" })).toHaveAttribute("href", "/research/session-1?sel=sel-1");
+    expect(screen.getByTestId("research-scope-note")).toHaveTextContent("未联网检索");
+  });
+
+  it("来源返回：消息选区在回答中重定位并高亮", async () => {
+    // 选区锚点指向本页消息块内偏移 2–6 的“不同头可”——与块文本切片一致
+    const selection = makeSelection({
+      id: "sel-1",
+      sessionId: "session-1",
+      text: "不同头可",
+      anchor: {
+        kind: "message",
+        messageId: "m-out",
+        blockOrdinal: 0,
+        startOffset: 2,
+        endOffset: 6,
+        exact: "不同头可",
+      },
+    });
+    renderSessionPage(
+      { getResearchSessionView: async () => readyView(), getResearchSelection: async () => selection },
+      "/research/session-1?sel=sel-1",
+    );
+
+    const mark = await screen.findByText("不同头可", { selector: "[data-selection-mark]" });
+    expect(mark.tagName).toBe("MARK");
+    expect(screen.queryByTestId("selection-restore-fallback")).not.toBeInTheDocument();
+  });
+
+  it("来源返回：原消息不存在时降级展示保存原文与段落说明", async () => {
+    const selection = makeSelection({
+      id: "sel-1",
+      sessionId: "session-1",
+      text: "已被重写的内容",
+      anchor: {
+        kind: "message",
+        messageId: "m-gone",
+        blockOrdinal: 1,
+        startOffset: 0,
+        endOffset: 8,
+        exact: "已被重写的内容",
+      },
+    });
+    renderSessionPage(
+      { getResearchSessionView: async () => readyView(), getResearchSelection: async () => selection },
+      "/research/session-1?sel=sel-1",
+    );
+
+    const fallback = await screen.findByTestId("selection-restore-fallback");
+    expect(fallback).toHaveTextContent("原选区位置未能精确恢复");
+    expect(fallback).toHaveTextContent("段落 2");
+    expect(fallback).toHaveTextContent("已被重写的内容");
+    expect(screen.queryByText("已被重写的内容", { selector: "[data-selection-mark]" })).not.toBeInTheDocument();
+  });
+
+  it("会话分支列表按来源选区原文命名并可进入分支", async () => {
+    const view: ResearchSessionView = {
+      ...readyView(),
+      branches: [makeBranch({ id: "branch-1", sessionId: "session-1", selectionId: "sel-1" })],
+    };
+    renderSessionPage({
+      getResearchSessionView: async () => view,
+      listResearchSelections: async () => [makeSelection({ id: "sel-1", sessionId: "session-1", text: "本地优先会先把输入保存在本机" })],
+    });
+
+    const list = await screen.findByTestId("branch-list");
+    expect(list).toHaveTextContent("深入研究：本地优先会先把输入保存在本机");
+    expect(screen.getByRole("link", { name: /深入研究：本地优先/ })).toHaveAttribute(
+      "href",
+      "/research/session-1/branch/branch-1",
+    );
   });
 });

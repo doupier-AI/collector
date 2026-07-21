@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { CSSProperties, MouseEvent } from "react";
+import { useNavigate } from "react-router-dom";
 import type {
+  DeepResearchInput,
+  DeepResearchMode,
   ResearchSelectionAnchor,
   ResearchSelectionRecord,
   ResearchSelectionTaskRecord,
@@ -10,6 +13,7 @@ import { apiErrorCopy } from "../../api/errors";
 import { useServices } from "../../app/services";
 import { useMediaQuery } from "../../app/useMediaQuery";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
+import { deepResearchIdempotencyKey } from "./selection-highlight";
 import type { ActiveCapture } from "./useSelection";
 
 /**
@@ -35,7 +39,10 @@ export function selectionIdempotencyKey(anchor: ResearchSelectionAnchor): string
 }
 
 function preventSelectionClear(event: MouseEvent): void {
-  // 点击窗口本身不应清除用户刚做出的选区
+  // 点击窗口本身不应清除用户刚做出的选区；
+  // 窗口内的输入控件（如研究方向输入框）需要正常获得焦点，不参与拦截
+  const target = event.target instanceof Element ? event.target : null;
+  if (target?.closest?.("input, textarea, select, [contenteditable]")) return;
   event.preventDefault();
 }
 
@@ -70,6 +77,7 @@ export function SelectionInsightPanel({
 }) {
   const anchor = capture.anchor!;
   const { api, connectSelectionEvents } = useServices();
+  const navigate = useNavigate();
   const isNarrow = useMediaQuery("(max-width: 45rem)");
   const [selection, setSelection] = useState<ResearchSelectionRecord | null>(null);
   const [task, setTask] = useState<ResearchSelectionTaskRecord | null>(null);
@@ -78,6 +86,13 @@ export function SelectionInsightPanel({
   const [streamNonce, setStreamNonce] = useState(0);
   const [showDetails, setShowDetails] = useState(false);
   const [sourceCaption, setSourceCaption] = useState<string | undefined>(undefined);
+  // 深入研究二选一：轻量去向选择；分析失败或未配置模型时同样可以发起
+  const [stage, setStage] = useState<"actions" | "choose">("actions");
+  const [mode, setMode] = useState<DeepResearchMode>("branch");
+  const [direction, setDirection] = useState("");
+  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
+  const directionId = useId();
 
   async function submit(): Promise<void> {
     setSubmitError(null);
@@ -90,7 +105,11 @@ export function SelectionInsightPanel({
     }
   }
 
+  // 窗口只在创建时会话中保存选区：同路由切换会话（如深入研究开启独立会话）
+  // 导致 sessionId 变化时不重新提交，旧选区锚点不属于新会话
+  const createdForSessionRef = useRef(sessionId);
   useEffect(() => {
+    if (createdForSessionRef.current !== sessionId) return;
     void submit();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, sessionId]);
@@ -145,6 +164,34 @@ export function SelectionInsightPanel({
       setSubmitError(apiErrorCopy(error).body);
     } finally {
       setRetrying(false);
+    }
+  }
+
+  /**
+   * 发起深入研究：来源关系与第一轮任务由后端先保存再生成，
+   * 幂等键保证同一次发起在连接重试时不重复建分支 / 会话。
+   * 成功后按去向导航到分支视图或独立会话页。
+   */
+  async function handleStartDeepResearch(): Promise<void> {
+    if (!selection || starting) return;
+    setStarting(true);
+    setStartError(null);
+    try {
+      const input: DeepResearchInput =
+        mode === "session" && direction.trim() ? { mode, direction: direction.trim() } : { mode };
+      const idempotencyKey = deepResearchIdempotencyKey(selection.id, mode, direction, selectionExactDigest);
+      const accepted = await api.startDeepResearch(selection.id, input, idempotencyKey);
+      // 先关闭窗口与捕获状态，再导航；同路由切换会话时避免旧选区状态被带进新会话
+      onClose();
+      if (accepted.mode === "branch" && accepted.branch) {
+        navigate(`/research/${encodeURIComponent(sessionId)}/branch/${encodeURIComponent(accepted.branch.id)}`);
+      } else {
+        navigate(`/research/${encodeURIComponent(accepted.session.id)}`);
+      }
+    } catch (error) {
+      setStartError(apiErrorCopy(error).body);
+    } finally {
+      setStarting(false);
     }
   }
 
@@ -302,12 +349,99 @@ export function SelectionInsightPanel({
             </section>
           </div>
         ) : null}
+
+        {stage === "choose" ? (
+          <div className="selection-panel__chooser" data-testid="deep-research-chooser">
+            <h3 className="selection-panel__label">深入研究去向</h3>
+            <div role="radiogroup" aria-label="深入研究去向" className="selection-panel__options">
+              <label className={mode === "branch" ? "dr-option dr-option--selected" : "dr-option"}>
+                <input
+                  type="radio"
+                  name={`deep-research-mode-${directionId}`}
+                  value="branch"
+                  checked={mode === "branch"}
+                  onChange={() => setMode("branch")}
+                />
+                <span className="dr-option__body">
+                  <span className="dr-option__title">沿当前内容建立研究分支</span>
+                  <span className="dr-option__desc">适合围绕这段选区继续深挖，分支保留当前研究的上下文。</span>
+                </span>
+              </label>
+              <label className={mode === "session" ? "dr-option dr-option--selected" : "dr-option"}>
+                <input
+                  type="radio"
+                  name={`deep-research-mode-${directionId}`}
+                  value="session"
+                  checked={mode === "session"}
+                  onChange={() => setMode("session")}
+                />
+                <span className="dr-option__body">
+                  <span className="dr-option__title">以选区开启独立研究会话</span>
+                  <span className="dr-option__desc">适合把这段选区作为全新研究的起点，来源选区会保留。</span>
+                </span>
+              </label>
+            </div>
+            {mode === "session" ? (
+              <div className="selection-panel__field">
+                <label className="selection-panel__label" htmlFor={directionId}>
+                  研究方向（可选）
+                </label>
+                <textarea
+                  id={directionId}
+                  className="dr-direction"
+                  rows={2}
+                  maxLength={2000}
+                  value={direction}
+                  placeholder="例如：把这段内容背后的机制讲透"
+                  onChange={(event) => setDirection(event.target.value)}
+                />
+              </div>
+            ) : null}
+            {startError ? (
+              <p className="form-error" role="alert">
+                {startError}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       <footer className="selection-panel__actions">
-        <button type="button" className="button button--primary" onClick={onClose}>
+        <button type="button" className="button button--secondary" onClick={onClose}>
           结束
         </button>
+        {stage === "actions" ? (
+          <button
+            type="button"
+            className="button button--primary"
+            onClick={() => {
+              setStartError(null);
+              setStage("choose");
+            }}
+            disabled={!selection || starting}
+          >
+            深入研究
+          </button>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="button button--ghost"
+              onClick={() => setStage("actions")}
+              disabled={starting}
+            >
+              返回
+            </button>
+            <button
+              type="button"
+              className="button button--primary"
+              onClick={() => void handleStartDeepResearch()}
+              disabled={!selection || starting}
+            >
+              {starting ? "正在建立研究……" : "开始深入研究"}
+            </button>
+          </>
+        )}
       </footer>
     </section>
   );

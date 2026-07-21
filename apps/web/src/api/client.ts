@@ -1,5 +1,8 @@
 import type {
   AiConfigurationView,
+  DeepResearchAccepted,
+  DeepResearchInput,
+  ResearchBranchView,
   ResearchContentSnapshotRecord,
   ResearchImportAccepted,
   ResearchImportTaskRecord,
@@ -30,9 +33,14 @@ export interface ApiClient {
   retryResearchImport(taskId: string): Promise<ResearchImportTaskRecord>;
   getResearchContent(contentSnapshotId: string): Promise<ResearchContentSnapshotRecord>;
   createResearchSelection(sessionId: string, input: ResearchSelectionInput, idempotencyKey: string): Promise<ResearchSelectionAccepted>;
+  listResearchSelections(sessionId: string): Promise<ResearchSelectionRecord[]>;
   getResearchSelection(selectionId: string): Promise<ResearchSelectionRecord>;
   getResearchSelectionTask(taskId: string): Promise<ResearchSelectionTaskRecord>;
   retryResearchSelectionTask(taskId: string): Promise<ResearchSelectionTaskRecord>;
+  /** 从选区发起深入研究：分支或带来源的独立会话与第一轮任务先保存再生成。 */
+  startDeepResearch(selectionId: string, input: DeepResearchInput, idempotencyKey: string): Promise<DeepResearchAccepted>;
+  getResearchBranch(branchId: string): Promise<ResearchBranchView>;
+  submitBranchMessage(branchId: string, content: string, idempotencyKey: string): Promise<ResearchTurnAccepted>;
   getAiConfiguration(): Promise<AiConfigurationView>;
   exchangePairingCode(code: string): Promise<{ paired: true }>;
 }
@@ -152,6 +160,12 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
     getResearchSelection(selectionId: string) {
       return requestJson<ResearchSelectionRecord>(fetchFn, `/v1/research-selections/${encodeURIComponent(selectionId)}`);
     },
+    listResearchSelections(sessionId: string) {
+      return requestJson<ResearchSelectionRecord[]>(
+        fetchFn,
+        `/v1/research-sessions/${encodeURIComponent(sessionId)}/selections`,
+      );
+    },
     getResearchSelectionTask(taskId: string) {
       return requestJson<ResearchSelectionTaskRecord>(fetchFn, `/v1/research-selection-tasks/${encodeURIComponent(taskId)}`);
     },
@@ -163,6 +177,31 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
           method: "POST",
           headers: JSON_HEADERS,
           body: "{}",
+        },
+      );
+    },
+    startDeepResearch(selectionId: string, input: DeepResearchInput, idempotencyKey: string) {
+      return requestJson<DeepResearchAccepted>(
+        fetchFn,
+        `/v1/research-selections/${encodeURIComponent(selectionId)}/deep-research`,
+        {
+          method: "POST",
+          headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
+          body: JSON.stringify(input),
+        },
+      );
+    },
+    getResearchBranch(branchId: string) {
+      return requestJson<ResearchBranchView>(fetchFn, `/v1/research-branches/${encodeURIComponent(branchId)}`);
+    },
+    submitBranchMessage(branchId: string, content: string, idempotencyKey: string) {
+      return requestJson<ResearchTurnAccepted>(
+        fetchFn,
+        `/v1/research-branches/${encodeURIComponent(branchId)}/messages`,
+        {
+          method: "POST",
+          headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
+          body: JSON.stringify({ content }),
         },
       );
     },

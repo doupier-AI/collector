@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
-import type { ResearchContentSnapshotRecord } from "@collector/capture-contracts";
+import type { ResearchContentSnapshotRecord, ResearchSelectionRecord } from "@collector/capture-contracts";
 import type { ApiClient } from "../../api/client";
 import { ApiRequestError } from "../../api/errors";
 import { ServicesProvider } from "../../app/services";
@@ -74,5 +74,101 @@ describe("阅读视图", () => {
 
     expect(await screen.findByText("这份内容不存在或已经清理")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "返回研究" })).toHaveAttribute("href", "/research/session-1");
+  });
+});
+
+function snapshotSelection(overrides: Partial<ResearchSelectionRecord> = {}): ResearchSelectionRecord {
+  return {
+    id: "sel-1",
+    sessionId: "session-1",
+    anchor: {
+      kind: "snapshot",
+      contentSnapshotId: "snap-1",
+      blockId: "b-2",
+      startOffset: 0,
+      endOffset: 2,
+      exact: "正文",
+    },
+    text: "正文",
+    status: "active",
+    createdAt,
+    updatedAt: createdAt,
+    ...overrides,
+  };
+}
+
+describe("阅读视图来源返回", () => {
+  it("携带选区参数时按锚点重定位并高亮原选区", async () => {
+    const { container } = renderReadingPage(
+      {
+        getResearchContent: async () => snapshotWithAllAnchors(),
+        getResearchSelection: async () => snapshotSelection(),
+      },
+      "/research/session-1/reading/snap-1?sel=sel-1",
+    );
+
+    const mark = await screen.findByText("正文", { selector: "[data-selection-mark]" });
+    expect(mark.tagName).toBe("MARK");
+    // 高亮只包住选区范围，块内其余文字仍在
+    expect(container.querySelector('[data-block-id="b-2"] [data-block-text]')?.textContent).toBe("正文段落");
+  });
+
+  it("块内原文已变化时用原文在块内重新定位", async () => {
+    const snapshot = snapshotWithAllAnchors();
+    snapshot.blocks[1] = {
+      ...snapshot.blocks[1],
+      text: "前缀变化后的正文段落",
+    };
+    renderReadingPage(
+      {
+        getResearchContent: async () => snapshot,
+        getResearchSelection: async () => snapshotSelection(),
+      },
+      "/research/session-1/reading/snap-1?sel=sel-1",
+    );
+
+    expect(await screen.findByText("正文", { selector: "[data-selection-mark]" })).toBeInTheDocument();
+  });
+
+  it("原文无法匹配时降级展示保存原文与位置说明", async () => {
+    const snapshot = snapshotWithAllAnchors();
+    snapshot.blocks[1] = { ...snapshot.blocks[1], text: "整块内容已被替换" };
+    renderReadingPage(
+      {
+        getResearchContent: async () => snapshot,
+        getResearchSelection: async () => snapshotSelection(),
+      },
+      "/research/session-1/reading/snap-1?sel=sel-1",
+    );
+
+    const fallback = await screen.findByTestId("selection-restore-fallback");
+    expect(fallback).toHaveTextContent("原选区位置未能精确恢复");
+    expect(fallback).toHaveTextContent("第 3–5 行");
+    expect(fallback).toHaveTextContent("正文");
+    expect(screen.queryByText("正文", { selector: "[data-selection-mark]" })).not.toBeInTheDocument();
+  });
+
+  it("选区属于其他内容时不呈现恢复内容", async () => {
+    renderReadingPage(
+      {
+        getResearchContent: async () => snapshotWithAllAnchors(),
+        getResearchSelection: async () =>
+          snapshotSelection({
+            anchor: {
+              kind: "snapshot",
+              contentSnapshotId: "other-snap",
+              blockId: "b-2",
+              startOffset: 0,
+              endOffset: 2,
+              exact: "正文",
+            },
+          }),
+      },
+      "/research/session-1/reading/snap-1?sel=sel-1",
+    );
+
+    expect(await screen.findByRole("heading", { name: "混合文档.md", level: 1 })).toBeInTheDocument();
+    expect(screen.queryByTestId("selection-restore-fallback")).not.toBeInTheDocument();
+    expect(screen.queryByText("正文", { selector: "[data-selection-mark]" })).not.toBeInTheDocument();
   });
 });

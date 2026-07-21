@@ -1,5 +1,7 @@
 import type {
   ResearchAttachmentRecord,
+  ResearchBranchRecord,
+  ResearchBranchView,
   ResearchImportTaskRecord,
   ResearchMessageRecord,
   ResearchSelectionRecord,
@@ -170,5 +172,30 @@ export function makeSelectionTask(overrides: Partial<ResearchSelectionTaskRecord
     createdAt: "2026-07-20T08:00:00.000Z",
     updatedAt: "2026-07-20T08:00:00.000Z",
     ...overrides,
+  };
+}
+
+export function makeBranch(overrides: Partial<ResearchBranchRecord> = {}): ResearchBranchRecord {
+  sequence += 1;
+  return {
+    id: `branch-${sequence}`,
+    sessionId: "session-1",
+    selectionId: "selection-1",
+    status: "active",
+    createdAt: "2026-07-21T08:00:00.000Z",
+    updatedAt: "2026-07-21T08:00:00.000Z",
+    ...overrides,
+  };
+}
+
+export function makeBranchView(overrides: Partial<ResearchBranchView> = {}): ResearchBranchView {
+  const branch = overrides.branch ?? makeBranch();
+  const selection = overrides.selection ?? makeSelection({ id: branch.selectionId, sessionId: branch.sessionId });
+  return {
+    branch,
+    session: overrides.session ?? makeSession({ id: branch.sessionId, title: "来源研究会话" }),
+    selection,
+    messages: overrides.messages ?? [],
+    tasks: overrides.tasks ?? [],
   };
 }

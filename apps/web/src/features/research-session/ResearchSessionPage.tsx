@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent } from "react";
-import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import type { ResearchTaskRecord } from "@collector/capture-contracts";
 import { isApiErrorCode, isUnauthorized } from "../../api/errors";
+import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { StatusMessage } from "../../components/StatusMessage/StatusMessage";
 import { PairingGate } from "../auth/PairingGate";
@@ -11,9 +12,12 @@ import { AttachmentList } from "../imports/AttachmentList";
 import { IMPORT_ACCEPT } from "../imports/import-file";
 import { useResearchImports } from "../imports/useResearchImports";
 import { SelectionSurface } from "../selection/SelectionSurface";
+import { highlightForMessages } from "../selection/selection-highlight";
+import { BranchList } from "./BranchList";
 import { formatSessionTime } from "./format";
 import { MessageItem } from "./MessageItem";
 import { ModelStatusIndicator } from "./ModelStatusIndicator";
+import { ResearchScopeNote, SelectionRestoreFallback, SelectionSourceBar, useSelectionRestore, useSelectionSource } from "./SelectionSourceBar";
 import { taskForMessage } from "./session-view";
 import { useResearchSession } from "./useResearchSession";
 import type { PendingFirstTurn } from "./useResearchSession";
@@ -38,6 +42,29 @@ export function ResearchSessionPage() {
   const imports = useResearchImports(sessionId, readyView, session.updateView, session.announce, session.escalateError);
   const [dragActive, setDragActive] = useState(false);
   const dragDepthRef = useRef(0);
+
+  // 带来源的独立研究会话：顶部来源条如实呈现来源选区与材料范围
+  const originSource = useSelectionSource(readyView?.session.originSelectionId);
+  // 来源返回：按路由查询参数读取选区，在回答中重定位并高亮，失败降级
+  const [searchParams] = useSearchParams();
+  const restoredSelection = useSelectionRestore(searchParams.get("sel"));
+  const reducedMotion = usePrefersReducedMotion();
+  const messageHighlight = useMemo(() => {
+    if (!restoredSelection || !readyView) return null;
+    return highlightForMessages(readyView.messages, restoredSelection.anchor, restoredSelection.text);
+  }, [restoredSelection, readyView]);
+  const highlightKey =
+    messageHighlight?.kind === "found"
+      ? `${messageHighlight.blockId}:${messageHighlight.start}:${messageHighlight.end}`
+      : null;
+  useEffect(() => {
+    if (!highlightKey) return;
+    const mark = document.querySelector("[data-selection-mark]");
+    // scrollIntoView 在个别运行环境不可用；滚动只是便利，不影响高亮本身
+    if (typeof mark?.scrollIntoView === "function") {
+      mark.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "center" });
+    }
+  }, [highlightKey, reducedMotion]);
 
   // 路由 state 只作为一次性传递，挂载后立即清掉，避免刷新后重复提交
   useEffect(() => {
@@ -158,6 +185,13 @@ export function ResearchSessionPage() {
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {originSource.selection ? (
+        <>
+          <SelectionSourceBar sourceName={originSource.sourceName} selection={originSource.selection} />
+          <ResearchScopeNote />
+        </>
+      ) : null}
+
       <header className="session-header">
         <h1 className="page__title">{view.session.title}</h1>
         <p className="session-header__meta">更新于 {formatSessionTime(view.session.updatedAt)}</p>
@@ -168,6 +202,10 @@ export function ResearchSessionPage() {
         <StatusMessage variant="info" role="status" title={notice.title}>
           <p>{notice.body}</p>
         </StatusMessage>
+      ) : null}
+
+      {messageHighlight?.kind === "fallback" && restoredSelection ? (
+        <SelectionRestoreFallback selection={restoredSelection} caption={messageHighlight.caption} />
       ) : null}
 
       {view.messages.length === 0 ? (
@@ -183,11 +221,24 @@ export function ResearchSessionPage() {
                 task={task}
                 retrying={task ? retryingTaskId === task.id : false}
                 onRetry={handleRetry}
+                highlight={
+                  messageHighlight?.kind === "found" && messageHighlight.messageId === message.id
+                    ? {
+                        blockOrdinal: messageHighlight.blockOrdinal,
+                        start: messageHighlight.start,
+                        end: messageHighlight.end,
+                      }
+                    : undefined
+                }
               />
             );
           })}
         </ol>
       )}
+
+      {view.branches && view.branches.length > 0 ? (
+        <BranchList sessionId={sessionId} branches={view.branches} />
+      ) : null}
 
       <AttachmentList
         items={imports.items}

@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
-import { apiJson, apiPortForPage, pairAndOpen, readDataDir, readResearchSelectionTables } from "./helpers";
+import { apiJson, apiPortForPage, pairAndOpen, readDataDir, readResearchBranchTables, readResearchSelectionTables } from "./helpers";
 
 const QUESTION = "没有模型时也要保存这句话";
 
@@ -124,4 +124,80 @@ test("未配置模型：选区仍然保存，分析失败给出原因与可重�
 
   await page.getByRole("button", { name: "结束", exact: true }).click();
   await expect(panel).toBeHidden();
+});
+
+test("未配置模型：分析失败仍可发起深入研究，分支与来源关系保留、第一轮失败可重试", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await pairAndOpen(page, "/research/new");
+
+  // 无模型下走导入阅读内容建立选区（复用上一条测试的路径）
+  const createResponse = await page.request.post("/v1/research-sessions", {
+    headers: { "Idempotency-Key": crypto.randomUUID() },
+    data: {},
+  });
+  const created = (await createResponse.json()) as { id: string };
+  await page.goto(`/research/${created.id}`);
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "无模型深入研究.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("无模型也要能发起深入研究并保留来源", "utf8"),
+  });
+  await expect(page.getByText("已导入")).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "阅读" }).click();
+  await expect(page).toHaveURL(new RegExp(`/research/${created.id}/reading/[^/]+$`));
+  await expect(page.getByText("第 1 行")).toBeVisible({ timeout: 15_000 });
+
+  await page.evaluate(() => {
+    const textElement = document.querySelector(".reading__block [data-block-text]");
+    if (!textElement?.firstChild) throw new Error("未找到阅读块");
+    const node = textElement.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(node, 0);
+    range.setEnd(node, node.data.length);
+    const selection = window.getSelection();
+    if (!selection) throw new Error("浏览器不支持 Selection");
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  });
+
+  // 分析失败，但深入研究操作持续可用
+  const panel = page.getByTestId("selection-insight-panel");
+  await expect(panel).toBeVisible();
+  await expect(panel.getByText("选区已保存，分析暂时没有完成")).toBeVisible({ timeout: 15_000 });
+  await panel.getByRole("button", { name: "深入研究" }).click();
+  const chooser = page.getByTestId("deep-research-chooser");
+  await expect(chooser).toBeVisible();
+  await panel.getByRole("button", { name: "开始深入研究" }).click();
+
+  // 分支视图：来源关系先于生成保存，第一轮失败给出原因与重试
+  await page.waitForURL(new RegExp(`/research/${created.id}/branch/[^/]+$`), { timeout: 10_000 });
+  const sourceBar = page.getByTestId("selection-source-bar");
+  await expect(sourceBar).toContainText("无模型也要能发起深入研究并保留来源");
+  await expect(page.getByText("内容已保存，暂时无法生成回答")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/还没有配置可用模型/)).toBeVisible();
+
+  // 分支与来源选区不因生成失败而丢失
+  const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
+  const branchTables = readResearchBranchTables(dbPath);
+  expect(branchTables.branches).toHaveLength(1);
+  expect(branchTables.branches[0]?.sessionId).toBe(created.id);
+  const selectionTables = readResearchSelectionTables(dbPath);
+  expect(selectionTables.selections.filter((row) => row.sessionId === created.id)).toHaveLength(1);
+
+  // 重试第一轮：无模型下仍失败，但来源条与失败卡保持可用，不新增分支
+  await page.getByRole("button", { name: "重试" }).click();
+  await expect(page.getByText("内容已保存，暂时无法生成回答")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("selection-source-bar")).toBeVisible();
+  const afterRetry = readResearchBranchTables(dbPath);
+  expect(afterRetry.branches).toHaveLength(1);
+
+  // 返回原文：阅读页按锚点高亮原选区
+  await sourceBar.getByRole("link", { name: "← 返回原文" }).click();
+  await expect(page).toHaveURL(new RegExp(`/research/${created.id}/reading/[^/]+\\?sel=`));
+  await expect(page.locator("[data-selection-mark]")).toHaveText("无模型也要能发起深入研究并保留来源", {
+    timeout: 10_000,
+  });
 });

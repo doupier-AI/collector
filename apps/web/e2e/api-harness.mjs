@@ -46,6 +46,14 @@ const fakeProvider = {
   async *generate(request) {
     const question = request.messages.at(-1)?.content ?? "";
     const short = question.length > 24 ? `${question.slice(0, 24)}…` : question;
+    // 深入研究第一轮：确定性假模型只使用提供的材料生成，标记未联网检索
+    if (request.deepResearch) {
+      await sleep(400);
+      yield `这是深入研究第一轮，围绕「${short}」展开。`;
+      await sleep(250);
+      yield "本轮只使用来源选区与当前已有材料生成，未联网检索，回答完毕。";
+      return;
+    }
     // 首段前留出短暂窗口，让界面占位状态可断言；之后按约 250ms 分段
     await sleep(400);
     yield `你问的是「${short}」。`;

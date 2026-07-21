@@ -1,12 +1,16 @@
-import { useCallback, useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import type { ResearchContentBlock, ResearchContentSnapshotRecord } from "@collector/capture-contracts";
 import { isApiErrorCode, isUnauthorized } from "../../api/errors";
 import { anchorCaption } from "../../app/anchorCaption";
+import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { useServices } from "../../app/services";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
+import { HighlightedText } from "../selection/HighlightedText";
 import { SelectionSurface } from "../selection/SelectionSurface";
+import { resolveHighlight } from "../selection/selection-highlight";
 import { PairingGate } from "../auth/PairingGate";
+import { SelectionRestoreFallback, useSelectionRestore } from "../research-session/SelectionSourceBar";
 
 type ReaderState =
   | { kind: "loading" }
@@ -49,6 +53,35 @@ export function ReadingPage() {
   }, [api, contentSnapshotId, reloadNonce]);
 
   const reload = useCallback(() => setReloadNonce((nonce) => nonce + 1), []);
+
+  // 来源返回：快照选区按块 id 与原文重定位，失败降级为原文与位置说明
+  const [searchParams] = useSearchParams();
+  const restoredSelection = useSelectionRestore(searchParams.get("sel"));
+  const reducedMotion = usePrefersReducedMotion();
+  const snapshotRestore = useMemo(() => {
+    if (state.kind !== "ready" || !restoredSelection) return null;
+    const anchor = restoredSelection.anchor;
+    if (anchor.kind !== "snapshot" || anchor.contentSnapshotId !== state.snapshot.id) return null;
+    const block = state.snapshot.blocks.find((candidate) => candidate.id === anchor.blockId);
+    if (!block) {
+      return { kind: "fallback" as const, caption: `《${state.snapshot.title}》内` };
+    }
+    const resolved = resolveHighlight(block.text, {
+      startOffset: anchor.startOffset,
+      endOffset: anchor.endOffset,
+      exact: restoredSelection.text,
+    });
+    if (!resolved) return { kind: "fallback" as const, caption: anchorCaption(block) };
+    return { kind: "found" as const, blockId: block.id, start: resolved.start, end: resolved.end };
+  }, [state, restoredSelection]);
+  const restoreKey = snapshotRestore?.kind === "found" ? `${snapshotRestore.blockId}:${snapshotRestore.start}` : null;
+  useEffect(() => {
+    if (!restoreKey) return;
+    const mark = document.querySelector("[data-selection-mark]");
+    if (typeof mark?.scrollIntoView === "function") {
+      mark.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "center" });
+    }
+  }, [restoreKey, reducedMotion]);
 
   if (state.kind === "error") {
     if (isUnauthorized(state.error)) {
@@ -98,6 +131,7 @@ export function ReadingPage() {
   }
 
   const { snapshot } = state;
+  const foundBlockId = snapshotRestore?.kind === "found" ? snapshotRestore.blockId : null;
   return (
     <div className="page reading-page">
       <header className="session-header">
@@ -109,30 +143,42 @@ export function ReadingPage() {
         <h1 className="page__title">{snapshot.title}</h1>
         <p className="session-header__meta">共 {snapshot.blocks.length} 个内容块</p>
       </header>
+      {snapshotRestore?.kind === "fallback" && restoredSelection ? (
+        <SelectionRestoreFallback selection={restoredSelection} caption={snapshotRestore.caption} />
+      ) : null}
       <article
         className="reading"
         aria-label={`${snapshot.title} 正文`}
         data-content-kind="snapshot"
         data-content-snapshot-id={snapshot.id}
       >
-        {snapshot.blocks.map((block) => (
-          <section className="reading__block" key={block.id} data-block-id={block.id}>
-            <p className="reading__anchor">{anchorCaption(block)}</p>
-            {isHeading(block) ? (
-              <h2 className="reading__heading" data-block-text>
-                {block.text}
-              </h2>
-            ) : isCode(block) ? (
-              <pre className="reading__code" data-block-text>
-                <code>{block.text}</code>
-              </pre>
-            ) : (
-              <p className="reading__text" data-block-text>
-                {block.text}
-              </p>
-            )}
-          </section>
-        ))}
+        {snapshot.blocks.map((block) => {
+          const highlight =
+            foundBlockId === block.id && snapshotRestore?.kind === "found" ? snapshotRestore : null;
+          const text = highlight ? (
+            <HighlightedText text={block.text} start={highlight.start} end={highlight.end} />
+          ) : (
+            block.text
+          );
+          return (
+            <section className="reading__block" key={block.id} data-block-id={block.id}>
+              <p className="reading__anchor">{anchorCaption(block)}</p>
+              {isHeading(block) ? (
+                <h2 className="reading__heading" data-block-text>
+                  {text}
+                </h2>
+              ) : isCode(block) ? (
+                <pre className="reading__code" data-block-text>
+                  <code>{text}</code>
+                </pre>
+              ) : (
+                <p className="reading__text" data-block-text>
+                  {text}
+                </p>
+              )}
+            </section>
+          );
+        })}
       </article>
       <SelectionSurface sessionId={sessionId} />
     </div>

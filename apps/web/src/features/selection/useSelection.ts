@@ -35,6 +35,12 @@ function isInsideSelectionUi(target: EventTarget | null): boolean {
   return Boolean(element?.closest?.("[data-selection-ui]"));
 }
 
+/** 焦点在表单控件内（如选区窗口里的方向输入框）时，光标变化不属于正文选区。 */
+function isFormFieldFocused(): boolean {
+  const active = document.activeElement;
+  return active instanceof Element && Boolean(active.closest?.("input, textarea, select, [contenteditable]"));
+}
+
 function readActiveCapture(): ActiveCapture | null {
   if (typeof window.getSelection !== "function") return null;
   const domSelection = window.getSelection();
@@ -91,6 +97,7 @@ export function useSelectionCapture(): SelectionCaptureState {
       commit();
     }
     function handleSelectionChange() {
+      if (isFormFieldFocused()) return;
       const domSelection = typeof window.getSelection === "function" ? window.getSelection() : null;
       if (!domSelection || domSelection.rangeCount === 0 || domSelection.isCollapsed) setActive(null);
     }

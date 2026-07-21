@@ -1,7 +1,10 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import type {
+  DeepResearchAccepted,
+  DeepResearchInput,
   ResearchSelectionAccepted,
   ResearchSelectionInput,
   ResearchSelectionInsight,
@@ -12,7 +15,7 @@ import { ApiRequestError } from "../../api/errors";
 import type { SelectionEventStreamOptions } from "../../api/selection-events";
 import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
-import { makeSelection, makeSelectionTask } from "../../test/fakes";
+import { makeMessage, makeSelection, makeSelectionTask, makeSession, makeTask } from "../../test/fakes";
 import { SelectionInsightPanel, selectionIdempotencyKey } from "./SelectionInsightPanel";
 import type { ActiveCapture } from "./useSelection";
 
@@ -81,10 +84,19 @@ function renderPanel(api: Partial<ApiClient>) {
   } as unknown as AppServices;
   const view = render(
     <ServicesProvider services={services}>
-      <SelectionInsightPanel sessionId="session-1" capture={makeCapture()} onClose={() => {}} />
+      <MemoryRouter initialEntries={["/research/session-1"]}>
+        <SelectionInsightPanel sessionId="session-1" capture={makeCapture()} onClose={() => {}} />
+        <LocationProbe />
+      </MemoryRouter>
     </ServicesProvider>,
   );
-  return { ...view, streams, connectSelectionEvents };
+  return { ...view, streams, connectSelectionEvents, services };
+}
+
+/** 暴露当前路由，用于断言深入研究发起成功后的导航去向。 */
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location-probe">{location.pathname}</div>;
 }
 
 function acceptedWith(status: ResearchSelectionAccepted["task"]["status"]): ResearchSelectionAccepted {
@@ -206,5 +218,135 @@ describe("选区智能窗口", () => {
 
     expect(await screen.findByText("原文位置已发生变化，原始文字已保留。")).toBeInTheDocument();
     expect(screen.getByText("一段选区文字")).toBeInTheDocument();
+  });
+
+  function deepAccepted(mode: DeepResearchAccepted["mode"]): DeepResearchAccepted {
+    return {
+      mode,
+      session: makeSession({ id: mode === "branch" ? "session-1" : "session-2" }),
+      ...(mode === "branch"
+        ? { branch: { id: "branch-1", sessionId: "session-1", selectionId: "selection-1", status: "active" as const, createdAt: "2026-07-21T08:00:00.000Z", updatedAt: "2026-07-21T08:00:00.000Z" } }
+        : {}),
+      selection: makeSelection({ id: "selection-1" }),
+      inputMessage: makeMessage({ id: "m-in", role: "user", content: "深入研究这段内容" }),
+      outputMessage: makeMessage({ id: "m-out", role: "assistant", status: "pending" }),
+      task: makeTask({ id: "task-1", status: "queued", inputMessageId: "m-in", outputMessageId: "m-out" }),
+    };
+  }
+
+  it("深入研究默认分支去向：先保存再生成，导航到分支视图，幂等键稳定且纯 ASCII", async () => {
+    const user = userEvent.setup();
+    const startDeepResearch = vi.fn(
+      async (_selectionId: string, _input: DeepResearchInput, _key: string) => deepAccepted("branch"),
+    );
+    renderPanel({ createResearchSelection: vi.fn(async () => acceptedWith("queued")), startDeepResearch });
+
+    const openButton = await screen.findByRole("button", { name: "深入研究" });
+    await user.click(openButton);
+
+    expect(await screen.findByTestId("deep-research-chooser")).toBeInTheDocument();
+    expect(screen.getByRole("radiogroup", { name: "深入研究去向" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /沿当前内容建立研究分支/ })).toBeChecked();
+    // 分支去向不显示方向输入框
+    expect(screen.queryByLabelText("研究方向（可选）")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "开始深入研究" }));
+
+    expect(startDeepResearch).toHaveBeenCalledTimes(1);
+    const [selectionId, input, key] = startDeepResearch.mock.calls[0];
+    expect(selectionId).toBe("selection-1");
+    expect(input).toEqual({ mode: "branch" });
+    expect(key).toMatch(/^dr:selection-1:branch:auto$/);
+    expect(key).toMatch(/^dr:[!-~]+$/);
+    expect(key.length).toBeLessThanOrEqual(200);
+
+    expect(await screen.findByTestId("location-probe")).toHaveTextContent("/research/session-1/branch/branch-1");
+  });
+
+  it("独立会话去向提供方向输入框：方向进入请求并导航到新会话", async () => {
+    const user = userEvent.setup();
+    const startDeepResearch = vi.fn(
+      async (_selectionId: string, _input: DeepResearchInput, _key: string) => deepAccepted("session"),
+    );
+    renderPanel({ createResearchSelection: vi.fn(async () => acceptedWith("queued")), startDeepResearch });
+
+    await user.click(await screen.findByRole("button", { name: "深入研究" }));
+    await user.click(screen.getByRole("radio", { name: /以选区开启独立研究会话/ }));
+
+    const directionInput = screen.getByLabelText("研究方向（可选）");
+    await user.type(directionInput, "把本地优先的边界讲透");
+    await user.click(screen.getByRole("button", { name: "开始深入研究" }));
+
+    const [, input, key] = startDeepResearch.mock.calls[0];
+    expect(input).toEqual({ mode: "session", direction: "把本地优先的边界讲透" });
+    expect(key).toMatch(/^dr:selection-1:session:[!-~]+$/);
+    expect(await screen.findByTestId("location-probe")).toHaveTextContent("/research/session-2");
+  });
+
+  it("分析失败时仍可以发起深入研究", async () => {
+    const user = userEvent.setup();
+    const startDeepResearch = vi.fn(
+      async (_selectionId: string, _input: DeepResearchInput, _key: string) => deepAccepted("branch"),
+    );
+    renderPanel({
+      createResearchSelection: vi.fn(async () => acceptedWith("failed")),
+      startDeepResearch,
+    });
+
+    const openButton = await screen.findByRole("button", { name: "深入研究" });
+    expect(openButton).toBeEnabled();
+    await user.click(openButton);
+    await user.click(screen.getByRole("button", { name: "开始深入研究" }));
+
+    expect(startDeepResearch).toHaveBeenCalledTimes(1);
+    expect(await screen.findByTestId("location-probe")).toHaveTextContent("/research/session-1/branch/branch-1");
+  });
+
+  it("发起失败时保留去向选择并给出错误，重试后成功导航", async () => {
+    const user = userEvent.setup();
+    const startDeepResearch = vi
+      .fn<(selectionId: string, input: DeepResearchInput, idempotencyKey: string) => Promise<DeepResearchAccepted>>()
+      .mockRejectedValueOnce(new ApiRequestError(500, "internal_error", "boom"))
+      .mockResolvedValueOnce(deepAccepted("branch"));
+    renderPanel({ createResearchSelection: vi.fn(async () => acceptedWith("queued")), startDeepResearch });
+
+    await user.click(await screen.findByRole("button", { name: "深入研究" }));
+    await user.click(screen.getByRole("button", { name: "开始深入研究" }));
+
+    expect(await screen.findByText("Collector 服务暂时出现错误，请稍后重试。")).toBeInTheDocument();
+    expect(screen.getByTestId("deep-research-chooser")).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /沿当前内容建立研究分支/ })).toBeChecked();
+
+    await user.click(screen.getByRole("button", { name: "开始深入研究" }));
+    expect(await screen.findByTestId("location-probe")).toHaveTextContent("/research/session-1/branch/branch-1");
+  });
+
+  it("选区尚未保存完成时不能打开去向选择", async () => {
+    renderPanel({ createResearchSelection: vi.fn(() => new Promise<ResearchSelectionAccepted>(() => {})) });
+    const openButton = await screen.findByRole("button", { name: "深入研究" });
+    expect(openButton).toBeDisabled();
+  });
+
+  it("同路由切换会话后不重新创建选区（旧锚点不属于新会话）", async () => {
+    const createResearchSelection = vi.fn(
+      async (_sessionId: string, _input: ResearchSelectionInput, _idempotencyKey: string) => acceptedWith("queued"),
+    );
+    const { services, rerender } = renderPanel({ createResearchSelection });
+    expect(await screen.findByText("一段选区文字")).toBeInTheDocument();
+    expect(createResearchSelection).toHaveBeenCalledTimes(1);
+
+    // 模拟深入研究开启独立会话：同一组件实例收到新的 sessionId
+    rerender(
+      <ServicesProvider services={services}>
+        <MemoryRouter initialEntries={["/research/session-1"]}>
+          <SelectionInsightPanel sessionId="session-2" capture={makeCapture()} onClose={() => {}} />
+          <LocationProbe />
+        </MemoryRouter>
+      </ServicesProvider>,
+    );
+
+    // 等待一轮副作用稳定，确认没有第二次创建请求
+    await screen.findByText("一段选区文字");
+    expect(createResearchSelection).toHaveBeenCalledTimes(1);
   });
 });

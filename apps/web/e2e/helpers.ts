@@ -232,3 +232,52 @@ export function readResearchSelectionTables(dbPath: string): {
     db.close();
   }
 }
+
+export interface ResearchBranchRow {
+  id: string;
+  sessionId: string;
+  selectionId: string;
+  creationIdempotencyKey: string | null;
+}
+
+export interface ResearchBranchMessageRow {
+  id: string;
+  sessionId: string;
+  branchId: string;
+  role: string;
+}
+
+export interface ResearchOriginSessionRow {
+  id: string;
+  originSelectionId: string;
+  originSessionId: string | null;
+}
+
+/** 只读打开 harness 的 SQLite，核对研究分支 / 分支消息 / 带来源会话记录。 */
+export function readResearchBranchTables(dbPath: string): {
+  branches: ResearchBranchRow[];
+  branchMessages: ResearchBranchMessageRow[];
+  originSessions: ResearchOriginSessionRow[];
+} {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    const branches = db
+      .prepare(
+        "SELECT id, session_id AS sessionId, selection_id AS selectionId, creation_idempotency_key AS creationIdempotencyKey FROM research_branches ORDER BY created_at, rowid",
+      )
+      .all() as unknown as ResearchBranchRow[];
+    const branchMessages = db
+      .prepare(
+        "SELECT id, session_id AS sessionId, branch_id AS branchId, role FROM research_messages WHERE branch_id IS NOT NULL ORDER BY created_at, rowid",
+      )
+      .all() as unknown as ResearchBranchMessageRow[];
+    const originSessions = db
+      .prepare(
+        "SELECT id, origin_selection_id AS originSelectionId, origin_session_id AS originSessionId FROM research_sessions WHERE origin_selection_id IS NOT NULL ORDER BY created_at, rowid",
+      )
+      .all() as unknown as ResearchOriginSessionRow[];
+    return { branches, branchMessages, originSessions };
+  } finally {
+    db.close();
+  }
+}

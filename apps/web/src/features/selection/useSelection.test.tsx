@@ -166,4 +166,23 @@ describe("useSelectionCapture", () => {
 
     expect(screen.getByTestId("probe").textContent).toBe("idle");
   });
+
+  it("表单控件获得焦点时的 selectionchange 不清空已捕获选区", () => {
+    const { first } = buildSessionDom();
+    document.body.insertAdjacentHTML("beforeend", '<textarea id="direction" aria-label="研究方向"></textarea>');
+    render(<CaptureProbe />);
+    mockSelection(makeRange(first, 6, first, 12));
+    act(() => {
+      document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    });
+    expect(screen.getByTestId("probe").textContent).toBe("ok:anchor:段落一的内容");
+
+    // 点击窗口内输入框：浏览器触发 selectionchange 且文档选区已折叠，捕获应保留
+    document.getElementById("direction")!.focus();
+    mockSelection(makeRange(first, 6, first, 6));
+    act(() => {
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    expect(screen.getByTestId("probe").textContent).toBe("ok:anchor:段落一的内容");
+  });
 });
