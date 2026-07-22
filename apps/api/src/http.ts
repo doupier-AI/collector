@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { timingSafeEqual } from "node:crypto";
 import { ValidationError, NotFoundError, CaptureService } from "./service.js";
 import { LocalAuth, PairingRateLimitError } from "./auth.js";
-import { RESEARCH_IMPORT_MAX_BYTES, validateDeepResearchInput, validateResearchImportHeaders, validateResearchLaterItemInput, validateResearchLaterItemUpdate, validateResearchMessageInput, validateResearchSelectionInput, validateResearchSessionInput } from "@collector/capture-contracts";
+import { RESEARCH_IMPORT_MAX_BYTES, validateDeepResearchInput, validateResearchImportHeaders, validateResearchLaterItemInput, validateResearchLaterItemUpdate, validateResearchMessageInput, validateResearchSelectionInput, validateResearchSessionInput, type ProviderProfileWithCredential } from "@collector/capture-contracts";
 import { ResearchNotFoundError, ResearchValidationError } from "./research.js";
 import { ResearchImportConflictError, ResearchImportNotFoundError, ResearchImportValidationError } from "./research-import.js";
 import { ResearchSelectionConflictError, ResearchSelectionNotFoundError, ResearchSelectionValidationError } from "./selection.js";
@@ -89,6 +89,38 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         const aiBody = await readJson(request) as { consent?: boolean; configured?: boolean };
         await service.setAiConfiguration(aiBody.consent ?? false, aiBody.configured ?? false);
         return json(response, 200, service.getAiConfiguration());
+      }
+// ── Provider Profiles ──────────────────────────────────
+      if (request.method === "GET" && url.pathname === "/v1/provider-catalog") {
+        return json(response, 200, service.getProviderCatalogEntries());
+      }
+      if (request.method === "GET" && url.pathname === "/v1/provider-profiles") {
+        return json(response, 200, { profiles: service.listProviderProfiles(), activeId: service.getActiveProviderProfile()?.id ?? null });
+      }
+      if (request.method === "POST" && url.pathname === "/v1/provider-profiles") {
+        const profileBody = await readJson(request) as ProviderProfileWithCredential;
+        const profile = await service.saveProviderProfile(profileBody, Boolean(profileBody.credential?.trim()), profileBody.credential);
+        return json(response, profileBody.id ? 200 : 201, profile);
+      }
+      const providerProfileMatch = url.pathname.match(/^\/v1\/provider-profiles\/([^/]+)$/);
+      if (request.method === "GET" && providerProfileMatch) {
+        const profile = service.listProviderProfiles().find((p) => p.id === decodeURIComponent(providerProfileMatch[1]));
+        if (!profile) return json(response, 404, { error: { code: "not_found", message: "Provider profile not found" } });
+        return json(response, 200, profile);
+      }
+      if (request.method === "DELETE" && providerProfileMatch) {
+        const deleted = await service.deleteProviderProfile(decodeURIComponent(providerProfileMatch[1]));
+        return json(response, 200, { deleted });
+      }
+      const providerProfileActivateMatch = url.pathname.match(/^\/v1\/provider-profiles\/([^/]+)\/activate$/);
+      if (request.method === "POST" && providerProfileActivateMatch) {
+        const profile = await service.activateProviderProfile(decodeURIComponent(providerProfileActivateMatch[1]));
+        return json(response, 200, profile);
+      }
+      const providerProfileTestMatch = url.pathname.match(/^\/v1\/provider-profiles\/([^/]+)\/test$/);
+      if (request.method === "POST" && providerProfileTestMatch) {
+        const result = await service.testProviderConnection(decodeURIComponent(providerProfileTestMatch[1]));
+        return json(response, result.ok ? 200 : 502, result);
       }
       if (request.method === "POST" && url.pathname === "/v1/pairings") {
         const body = await readJson(request) as { name?: string };

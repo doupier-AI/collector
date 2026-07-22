@@ -44,6 +44,9 @@ export interface CollectorStore {
   deleteProviderProfile(id: string): Promise<boolean>;
   getActiveProviderProfile(): ProviderProfile | undefined;
   setActiveProviderProfile(id: string): Promise<void>;
+  saveProviderCredential(profileId: string, encryptedCredential: string): Promise<void>;
+  getProviderCredential(profileId: string): string | undefined;
+  deleteProviderCredential(profileId: string): Promise<boolean>;
   saveClientToken(id: string, name: string, tokenHash: string, createdAt: string): Promise<void>;
   hasClientToken(tokenHash: string): boolean;
   getWorkflowRun(id: string): WorkflowRunRecord | undefined;
@@ -456,6 +459,7 @@ export class SqliteStore implements CollectorStore {
   async deleteProviderProfile(id: string): Promise<boolean> {
     let deleted = false;
     this.transaction(() => {
+      this.db().prepare("DELETE FROM provider_credentials WHERE profile_id = ?").run(id);
       const result = this.db().prepare("DELETE FROM provider_profiles WHERE id = ?").run(id);
       deleted = result.changes === 1;
       if (this.getSetting("active_provider_profile_id") === id) this.db().prepare("DELETE FROM settings WHERE key = 'active_provider_profile_id'").run();
@@ -470,6 +474,19 @@ export class SqliteStore implements CollectorStore {
     const profile = this.getProviderProfile(id);
     if (!profile || !profile.enabled) throw new Error("Provider profile is unavailable");
     await this.saveSetting("active_provider_profile_id", id);
+  }
+
+  async saveProviderCredential(profileId: string, encryptedCredential: string): Promise<void> {
+    this.db().prepare("INSERT INTO provider_credentials (profile_id, encrypted_credential) VALUES (?, ?) ON CONFLICT(profile_id) DO UPDATE SET encrypted_credential=excluded.encrypted_credential")
+      .run(profileId, encryptedCredential);
+  }
+  getProviderCredential(profileId: string): string | undefined {
+    const row = this.db().prepare("SELECT encrypted_credential FROM provider_credentials WHERE profile_id = ?").get(profileId) as { encrypted_credential: string } | undefined;
+    return row?.encrypted_credential;
+  }
+  async deleteProviderCredential(profileId: string): Promise<boolean> {
+    const result = this.db().prepare("DELETE FROM provider_credentials WHERE profile_id = ?").run(profileId);
+    return result.changes === 1;
   }
 
   listAgentRuns(captureId: string): AgentRunRecord[] {
@@ -1989,6 +2006,13 @@ export class SqliteStore implements CollectorStore {
       });
       version = 20;
     }
+    if (version < 21) {
+      this.transaction(() => {
+        this.db().exec("CREATE TABLE IF NOT EXISTS provider_credentials (profile_id TEXT PRIMARY KEY, encrypted_credential TEXT NOT NULL, FOREIGN KEY(profile_id) REFERENCES provider_profiles(id) ON DELETE CASCADE)");
+        this.db().exec("INSERT INTO schema_migrations(version, applied_at) VALUES (21, datetime('now'))");
+      });
+      version = 21;
+    }
 
   }
 
@@ -2180,6 +2204,9 @@ export class JsonStore implements CollectorStore {
   async deleteProviderProfile(id: string) { if (!this.data.providerProfiles?.[id]) return false; delete this.data.providerProfiles[id]; if (this.data.settings?.active_provider_profile_id === id) delete this.data.settings.active_provider_profile_id; await this.flush(); return true; }
   getActiveProviderProfile() { const id = this.data.settings?.active_provider_profile_id; return id ? this.data.providerProfiles?.[id] : undefined; }
   async setActiveProviderProfile(id: string) { const profile = this.data.providerProfiles?.[id]; if (!profile?.enabled) throw new Error("Provider profile is unavailable"); this.data.settings ??= {}; this.data.settings.active_provider_profile_id = id; await this.flush(); }
+  async saveProviderCredential(_profileId: string, _encryptedCredential: string): Promise<void> { throw new Error("Provider credentials require SQLite persistence"); }
+  getProviderCredential(_profileId: string): string | undefined { return undefined; }
+  async deleteProviderCredential(_profileId: string): Promise<boolean> { return false; }
   async saveCapture(record: CaptureRecord) { this.data.captures[record.id] = record; this.data.captureByClientId[record.clientCaptureId] = record.id; this.data.captureByChecksum[record.checksum] = record.id; await this.flush(); }
   async saveCaptureWithTopicMembership(record: CaptureRecord, topicId: string) { this.data.captures[record.id] = record; this.data.captureByClientId[record.clientCaptureId] = record.id; this.data.captureByChecksum[record.checksum] = record.id; this.data.topicMemberships ??= {}; this.data.topicMemberships[`${topicId}:${record.id}`] = { topicId, captureId: record.id, createdAt: record.createdAt }; await this.flush(); }
   async saveArtifact(record: ArtifactRecord) { this.data.artifacts[record.id] = record; await this.flush(); }

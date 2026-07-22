@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { Outlet } from "react-router-dom";
+import { Link, Outlet } from "react-router-dom";
 import { useMediaQuery } from "../../app/useMediaQuery";
 import { ContentDrawer } from "../../features/navigation/ContentDrawer";
 import { LaterPanel } from "../../features/navigation/LaterPanel";
@@ -51,20 +51,28 @@ export function AppShell() {
         跳到主要内容
       </a>
       <header className="app-bar">
-        <button
-          type="button"
-          ref={leftTriggerRef}
-          className="app-bar__icon-button"
-          aria-label="内容"
-          aria-expanded={leftVisible}
-          aria-controls="content-drawer"
-          onClick={toggleLeft}
-        >
-          <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-            <rect x="2.75" y="3.75" width="14.5" height="12.5" rx="2.75" fill="none" stroke="currentColor" strokeWidth="1.5" />
-            <line x1="7.75" y1="4.5" x2="7.75" y2="15.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
-        </button>
+        <div className="app-bar__left">
+          <button
+            type="button"
+            ref={leftTriggerRef}
+            className="app-bar__icon-button"
+            aria-label="内容"
+            aria-expanded={leftVisible}
+            aria-controls="content-drawer"
+            onClick={toggleLeft}
+          >
+            <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <rect x="2.75" y="3.75" width="14.5" height="12.5" rx="2.75" fill="none" stroke="currentColor" strokeWidth="1.5" />
+              <line x1="7.75" y1="4.5" x2="7.75" y2="15.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </button>
+          <Link to="/settings/models" className="app-bar__icon-button" aria-label="设置">
+            <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <circle cx="10" cy="10" r="3" fill="none" stroke="currentColor" strokeWidth="1.5" />
+              <path d="M10 2.5v1.5M10 16v1.5M4.7 4.7l1.06 1.06M14.24 14.24l1.06 1.06M2.5 10h1.5M16 10h1.5M4.7 15.3l1.06-1.06M14.24 5.76l1.06-1.06" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </Link>
+        </div>
         <button
           type="button"
           ref={rightTriggerRef}

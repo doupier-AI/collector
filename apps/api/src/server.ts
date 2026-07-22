@@ -82,13 +82,20 @@ if (providerId) {
   if (apiKey) await store.setActiveProviderProfile(environmentProfile.id);
 }
 await store.saveSetting("ai_configured", String(Boolean(apiKey && environmentProfile)));
-const resolver = new ProviderRuntimeResolver(DEFAULT_PROVIDER_REGISTRY, async (profileId) => profileId === environmentProfile?.id ? apiKey : undefined);
+const resolver = new ProviderRuntimeResolver(DEFAULT_PROVIDER_REGISTRY, async (profileId) => {
+  if (profileId === environmentProfile?.id) return apiKey;
+  const encrypted = store.getProviderCredential(profileId);
+  if (!encrypted) return undefined;
+  const { decryptCredential } = await import("./credential-crypto.js");
+  return decryptCredential(encrypted, instanceId);
+});
 // MVP 演示模式必须保持离线，即使环境中已配置真实模型凭据也不构造云模型运行时。
 const runtime = !mvpDemoMode && consent && apiKey && environmentProfile ? await resolver.resolve(environmentProfile) : undefined;
 const service = new CaptureService(store, paths.artifacts, undefined, runtime?.gateway, {
   researchProvider: mvpDemoMode ? createMvpDemoResearchProvider() : undefined,
   selectionProvider: mvpDemoMode ? createMvpDemoSelectionProvider() : undefined,
   mvpDemoMode,
+  instanceId,
 });
 service.setModelGateway(runtime?.gateway, runtime?.route);
 service.setModelGatewayResolver(async (route) => {

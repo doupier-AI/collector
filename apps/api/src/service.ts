@@ -15,8 +15,11 @@ import {
   type FragmentRecord,
   type PreflightEvaluation,
   type ProviderDefinition,
+  type ProviderCatalogEntry,
+  type ProviderConnectionTestResult,
   type ProviderProfile,
   type ProviderProfileInput,
+  type ProviderProfileWithCredential,
   type RecentClusterSnapshotRecord,
   type AiBudgetSettings,
   type AiUsageSummary,
@@ -35,7 +38,8 @@ import {
 import type { CollectorStore } from "./store.js";
 import { defaultDataPaths } from "./store.js";
 import { SourceParser, parsePdf } from "./parsers.js";
-import { DEFAULT_PROVIDER_REGISTRY, ModelGateway, validateExternalProviderBaseUrl } from "@collector/model-gateway";
+import { DEFAULT_PROVIDER_REGISTRY, ModelGateway, createProvider, validateExternalProviderBaseUrl } from "@collector/model-gateway";
+import { encryptCredential, decryptCredential } from "./credential-crypto.js";
 import { createVerificationWorkflow } from "./verification.js";
 import { ResearchSessionService, type ResearchGenerationProvider } from "./research.js";
 import { ResearchImportService } from "./research-import.js";
@@ -46,6 +50,15 @@ import { ResearchLaterService } from "./research-later.js";
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
 class BudgetExceededError extends Error {}
+
+function groundingDescription(webGrounding: string): string {
+  switch (webGrounding) {
+    case "openai_web_search": return "支持联网搜索（OpenAI）";
+    case "gemini_google_search": return "支持联网搜索（Google）";
+    case "anthropic_web_search": return "支持联网搜索（Anthropic）";
+    default: return "不提供联网能力";
+  }
+}
 
 export class CaptureService {
   private recentOrganizationTasks: Promise<void> = Promise.resolve();
@@ -65,7 +78,7 @@ export class CaptureService {
     private readonly artifactRoot: string,
     private readonly parser = new SourceParser(),
     private modelGateway?: ModelGateway,
-    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; researchProvider?: ResearchGenerationProvider; selectionProvider?: ResearchSelectionProvider; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunSelectionTasks?: boolean; mvpDemoMode?: boolean } = {},
+    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; researchProvider?: ResearchGenerationProvider; selectionProvider?: ResearchSelectionProvider; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunSelectionTasks?: boolean; mvpDemoMode?: boolean; instanceId?: string } = {},
   ) {
     this.attachModelGateway(this.modelGateway);
     this.research = new ResearchSessionService(this.store, {
@@ -227,7 +240,7 @@ export class CaptureService {
   listProviderProfiles(): ProviderProfile[] { return this.store.listProviderProfiles(); }
   getActiveProviderProfile(): ProviderProfile | undefined { return this.store.getActiveProviderProfile(); }
 
-  async saveProviderProfile(input: ProviderProfileInput, credentialConfigured: boolean): Promise<ProviderProfile> {
+  async saveProviderProfile(input: ProviderProfileInput, credentialConfigured: boolean, credential?: string): Promise<ProviderProfile> {
     const definition = DEFAULT_PROVIDER_REGISTRY.get(input.providerId);
     const existing = input.id ? this.store.getProviderProfile(input.id) : undefined;
     if (input.id && !existing) throw new NotFoundError("Provider profile not found");
@@ -257,6 +270,24 @@ export class CaptureService {
       updatedAt: now,
     };
     await this.store.saveProviderProfile(profile);
+    if (credential !== undefined) {
+      if (credential.trim()) {
+        const instanceId = this.options.instanceId;
+        if (!instanceId) throw new ValidationError("Instance ID is required for credential encryption");
+        const encrypted = encryptCredential(credential.trim(), instanceId);
+        await this.store.saveProviderCredential(profile.id, encrypted);
+        if (!credentialConfigured) {
+          profile.credentialConfigured = true;
+          await this.store.saveProviderProfile(profile);
+        }
+      } else {
+        await this.store.deleteProviderCredential(profile.id);
+        if (credentialConfigured) {
+          profile.credentialConfigured = false;
+          await this.store.saveProviderProfile(profile);
+        }
+      }
+    }
     return profile;
   }
 
@@ -264,6 +295,7 @@ export class CaptureService {
     const profile = this.store.getProviderProfile(id);
     if (!profile) throw new NotFoundError("Provider profile not found");
     if (!profile.credentialConfigured) throw new ValidationError("Provider credential is not configured");
+    if (!this.store.getProviderCredential(id)) throw new ValidationError("Provider credential is not configured");
     await this.store.setActiveProviderProfile(id);
     return profile;
   }
@@ -271,6 +303,43 @@ export class CaptureService {
   async deleteProviderProfile(id: string): Promise<boolean> {
     if (this.store.listRecoverableWorkflowRuns().some((run) => run.modelRoute?.providerProfileId === id)) throw new ValidationError("Provider profile is referenced by an unfinished workflow");
     return this.store.deleteProviderProfile(id);
+  }
+
+  getProviderCredential(profileId: string): string | undefined {
+    const instanceId = this.options.instanceId;
+    if (!instanceId) return undefined;
+    const encrypted = this.store.getProviderCredential(profileId);
+    if (!encrypted) return undefined;
+    return decryptCredential(encrypted, instanceId);
+  }
+
+  async testProviderConnection(profileId: string): Promise<ProviderConnectionTestResult> {
+    const profile = this.store.getProviderProfile(profileId);
+    if (!profile) return { ok: false, error: "Provider profile not found" };
+    const credential = this.getProviderCredential(profileId);
+    if (!credential) return { ok: false, error: "API key is not configured" };
+    const definition = DEFAULT_PROVIDER_REGISTRY.get(profile.providerId);
+    try {
+      const provider = createProvider(definition, { apiKey: () => credential, baseUrl: profile.baseUrl });
+      const gateway = new ModelGateway(provider, { model: profile.model });
+      return await gateway.testConnection();
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "Connection test failed" };
+    }
+  }
+
+  getProviderCatalogEntries(): ProviderCatalogEntry[] {
+    return DEFAULT_PROVIDER_REGISTRY.list().map((def) => ({
+      id: def.id,
+      label: def.label,
+      apiMode: def.apiMode,
+      authMode: def.authMode,
+      defaultBaseUrl: def.defaultBaseUrl,
+      defaultModel: def.defaultModel,
+      models: def.models,
+      capabilities: def.capabilities,
+      groundingDescription: groundingDescription(def.capabilities.webGrounding),
+    }));
   }
 
   getDataPaths(): { database: string; artifacts: string; databaseExists: boolean } {

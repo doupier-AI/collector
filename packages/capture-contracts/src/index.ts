@@ -16,11 +16,14 @@ export type ReviewDecision = "accepted" | "rejected" | "deferred";
 export type ProviderApiMode = "openai_chat_completions" | "anthropic_messages";
 export type ProviderAuthMode = "bearer" | "api_key_header";
 export type ProviderThinkingMode = "none" | "deepseek";
+export type ProviderWebGrounding = "unsupported" | "openai_web_search" | "gemini_google_search" | "anthropic_web_search";
 
 export interface ProviderCapabilities {
   structuredJson: boolean;
   thinkingMode: ProviderThinkingMode;
   modelDiscovery: boolean;
+  /** 当前供应商协议已验证的联网能力；自定义兼容端点必须显式保持 unsupported。 */
+  webGrounding: ProviderWebGrounding;
 }
 
 export interface ProviderModelPricing {
@@ -70,6 +73,31 @@ export interface ActiveModelRoute {
   baseUrlFingerprint: string;
   model: string;
   configurationVersion: number;
+}
+
+/** 用于创建或更新 Provider Profile 时传入 API Key */
+export interface ProviderProfileWithCredential extends ProviderProfileInput {
+  credential?: string;
+}
+
+/** 连接测试结果 */
+export interface ProviderConnectionTestResult {
+  ok: boolean;
+  model?: string;
+  error?: string;
+}
+
+/** 前端友好的供应商目录条目，包含中文联网能力描述 */
+export interface ProviderCatalogEntry {
+  id: string;
+  label: string;
+  apiMode: ProviderApiMode;
+  authMode: ProviderAuthMode;
+  defaultBaseUrl: string;
+  defaultModel: string;
+  models: string[];
+  capabilities: ProviderCapabilities;
+  groundingDescription: string;
 }
 
 export const LEGACY_DEEPSEEK_PROFILE_ID = "provider-deepseek-default";

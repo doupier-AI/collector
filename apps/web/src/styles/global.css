@@ -1627,3 +1627,313 @@ button {
   outline: 2px solid var(--color-ai);
   outline-offset: 1px;
 }
+
+/* ── 设置页面 ── */
+
+.settings-layout {
+  display: flex;
+  gap: var(--space-6);
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: var(--space-5) var(--space-4);
+  min-height: 100%;
+}
+
+.settings-layout__nav {
+  width: 200px;
+  flex-shrink: 0;
+}
+
+.settings-layout__content {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-nav__title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 0 0 var(--space-2);
+  padding: 0 var(--space-2);
+}
+
+.settings-nav__link {
+  display: block;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
+  color: var(--color-ink);
+  text-decoration: none;
+  font-size: 0.9375rem;
+  transition: background 0.12s;
+}
+
+.settings-nav__link:hover {
+  background: var(--color-line);
+}
+
+.settings-nav__link--active {
+  background: var(--color-ai);
+  color: #fff;
+}
+
+.settings-nav__link--pending {
+  color: var(--color-muted);
+  cursor: not-allowed;
+}
+
+.settings-nav__link--pending:hover {
+  background: transparent;
+}
+
+.settings-nav__divider {
+  border: none;
+  border-top: 1px solid var(--color-line);
+  margin: var(--space-3) 0;
+}
+
+.settings-nav__pending-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 0 0 var(--space-1);
+  padding: 0 var(--space-2);
+}
+
+/* ── 模型设置页 ── */
+
+.model-settings {
+  max-width: 48rem;
+}
+
+.model-settings__title {
+  font-size: 1.375rem;
+  font-weight: 700;
+  margin: 0 0 var(--space-2);
+}
+
+.model-settings__lead {
+  color: var(--color-muted);
+  margin: 0 0 var(--space-5);
+  font-size: 0.9375rem;
+}
+
+.model-settings__empty {
+  color: var(--color-muted);
+  padding: var(--space-4);
+  border: 2px dashed var(--color-line);
+  border-radius: var(--radius-panel);
+  text-align: center;
+}
+
+.model-settings__list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.model-settings__add-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-4);
+  border: 2px dashed var(--color-line);
+  border-radius: var(--radius-panel);
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+  font-size: 0.9375rem;
+  font-family: var(--font-sans);
+  transition: border-color 0.12s, color 0.12s;
+}
+
+.model-settings__add-button:hover {
+  border-color: var(--color-ai);
+  color: var(--color-ai);
+}
+
+/* ── 配置卡片 ── */
+
+.profile-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  padding: var(--space-4);
+}
+
+.profile-card--active {
+  border-color: var(--color-ai);
+}
+
+.profile-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-2);
+}
+
+.profile-card__name {
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.profile-card__provider {
+  font-size: 0.8125rem;
+  color: var(--color-muted);
+}
+
+.profile-card__badge {
+  display: inline-block;
+  padding: 0.0625rem 0.5rem;
+  font-size: 0.75rem;
+  border-radius: var(--radius-control);
+  margin-left: var(--space-2);
+  vertical-align: middle;
+}
+
+.profile-card__badge--active {
+  background: var(--color-ai);
+  color: #fff;
+}
+
+.profile-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  font-size: 0.875rem;
+  color: var(--color-muted);
+  margin-bottom: var(--space-3);
+}
+
+.profile-card__model {
+  font-family: ui-monospace, monospace;
+}
+
+.profile-card__grounding {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.profile-card__grounding--supported {
+  color: #3E6B4F;
+}
+
+.profile-card__credential {
+  font-size: 0.8125rem;
+}
+
+.profile-card__actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* ── 配置表单 ── */
+
+.profile-form {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  padding: var(--space-5);
+  margin-top: var(--space-4);
+}
+
+.profile-form__title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  margin: 0 0 var(--space-4);
+}
+
+.profile-form__field {
+  margin-bottom: var(--space-4);
+}
+
+.profile-form__label {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 500;
+  margin-bottom: var(--space-1);
+}
+
+.profile-form__input,
+.profile-form__select {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-input);
+  font-size: 0.9375rem;
+  font-family: var(--font-sans);
+  background: var(--color-canvas);
+  box-sizing: border-box;
+}
+
+.profile-form__input:focus,
+.profile-form__select:focus {
+  outline: none;
+  border-color: var(--color-ai);
+}
+
+.profile-form__hint {
+  margin-top: var(--space-1);
+  font-size: 0.8125rem;
+  color: var(--color-muted);
+}
+
+.profile-form__actions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+  margin-top: var(--space-5);
+}
+
+.profile-form__key-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-bottom: var(--space-2);
+}
+
+.profile-form__radio {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+/* ── 连接测试结果 ── */
+
+.connection-test {
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
+  font-size: 0.875rem;
+}
+
+.connection-test--ok {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.connection-test--fail {
+  background: #fce4ec;
+  color: #c62828;
+}
+
+/* ── 顶栏设置按钮 ── */
+
+.app-bar__left {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}

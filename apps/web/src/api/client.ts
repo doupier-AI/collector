@@ -2,6 +2,10 @@ import type {
   AiConfigurationView,
   DeepResearchAccepted,
   DeepResearchInput,
+  ProviderCatalogEntry,
+  ProviderConnectionTestResult,
+  ProviderProfile,
+  ProviderProfileWithCredential,
   ResearchBranchView,
   ResearchContentSnapshotRecord,
   ResearchImportAccepted,
@@ -53,6 +57,12 @@ export interface ApiClient {
   updateResearchLaterItem(itemId: string, update: ResearchLaterItemUpdate): Promise<ResearchLaterItemView>;
   getAiConfiguration(): Promise<AiConfigurationView>;
   exchangePairingCode(code: string): Promise<{ paired: true }>;
+  getProviderCatalog(): Promise<ProviderCatalogEntry[]>;
+  listProviderProfiles(): Promise<{ profiles: ProviderProfile[]; activeId: string | null }>;
+  saveProviderProfile(input: ProviderProfileWithCredential): Promise<ProviderProfile>;
+  deleteProviderProfile(id: string): Promise<{ deleted: boolean }>;
+  activateProviderProfile(id: string): Promise<ProviderProfile>;
+  testProviderConnection(id: string): Promise<ProviderConnectionTestResult>;
 }
 
 const JSON_HEADERS = { "Content-Type": "application/json" } as const;
@@ -251,6 +261,40 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
         method: "POST",
         headers: JSON_HEADERS,
         body: JSON.stringify({ code, session: true }),
+      });
+    },
+    getProviderCatalog() {
+      return requestJson<ProviderCatalogEntry[]>(fetchFn, "/v1/provider-catalog");
+    },
+    listProviderProfiles() {
+      return requestJson<{ profiles: ProviderProfile[]; activeId: string | null }>(fetchFn, "/v1/provider-profiles");
+    },
+    saveProviderProfile(input: ProviderProfileWithCredential) {
+      return requestJson<ProviderProfile>(fetchFn, "/v1/provider-profiles", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify(input),
+      });
+    },
+    deleteProviderProfile(id: string) {
+      return requestJson<{ deleted: boolean }>(fetchFn, `/v1/provider-profiles/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: JSON_HEADERS,
+        body: "{}",
+      });
+    },
+    activateProviderProfile(id: string) {
+      return requestJson<ProviderProfile>(fetchFn, `/v1/provider-profiles/${encodeURIComponent(id)}/activate`, {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: "{}",
+      });
+    },
+    testProviderConnection(id: string) {
+      return requestJson<ProviderConnectionTestResult>(fetchFn, `/v1/provider-profiles/${encodeURIComponent(id)}/test`, {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: "{}",
       });
     },
   };
