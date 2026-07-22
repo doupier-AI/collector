@@ -1,7 +1,7 @@
 import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTurnAccepted } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTurnAccepted, type WebCitationRecord, type WebPageReadRecord, type WebSearchRecord } from "@collector/capture-contracts";
 
 export interface CollectorStore {
   init(): Promise<void>;
@@ -149,6 +149,13 @@ export interface CollectorStore {
   listResearchLaterItems(status?: ResearchLaterItemStatus): ResearchLaterItemRecord[];
   createResearchLaterItem(item: ResearchLaterItemRecord, idempotencyKey: string): Promise<ResearchLaterItemRecord>;
   saveResearchLaterItem(record: ResearchLaterItemRecord): Promise<void>;
+  createWebSearch(record: WebSearchRecord): Promise<void>;
+  getWebSearch(id: string): WebSearchRecord | undefined;
+  listWebSearchesForTask(taskId: string): WebSearchRecord[];
+  saveWebPageReads(records: WebPageReadRecord[]): Promise<void>;
+  listWebPageReads(searchId: string): WebPageReadRecord[];
+  saveWebCitations(records: WebCitationRecord[]): Promise<void>;
+  listWebCitationsForMessages(messageIds: string[]): WebCitationRecord[];
   close?(): void;
   clearAllData(): Promise<void>;
 }
@@ -364,6 +371,9 @@ export class SqliteStore implements CollectorStore {
       this.db().exec("DELETE FROM research_branches");
       this.db().exec("DELETE FROM research_later_items");
       this.db().exec("DELETE FROM research_selections");
+      this.db().exec("DELETE FROM web_citations");
+      this.db().exec("DELETE FROM web_page_reads");
+      this.db().exec("DELETE FROM web_searches");
       this.db().exec("DELETE FROM research_task_events");
       this.db().exec("DELETE FROM research_tasks");
       this.db().exec("DELETE FROM research_messages");
@@ -1405,6 +1415,52 @@ export class SqliteStore implements CollectorStore {
       .run(record.status, record.priority, record.updatedAt, JSON.stringify(record), record.id);
   }
 
+  async createWebSearch(record: WebSearchRecord): Promise<void> {
+    this.db().prepare("INSERT INTO web_searches (id, task_id, session_id, status, result_count, created_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(record.id, record.taskId, record.sessionId, record.status, record.resultCount, record.createdAt, JSON.stringify(record));
+  }
+
+  getWebSearch(id: string): WebSearchRecord | undefined {
+    return this.getRecord<WebSearchRecord>("SELECT record_json FROM web_searches WHERE id = ?", id);
+  }
+
+  listWebSearchesForTask(taskId: string): WebSearchRecord[] {
+    return this.listRecords<WebSearchRecord>("SELECT record_json FROM web_searches WHERE task_id = ? ORDER BY created_at, rowid", taskId);
+  }
+
+  async saveWebPageReads(records: WebPageReadRecord[]): Promise<void> {
+    if (!records.length) return;
+    const statement = this.db().prepare("INSERT INTO web_page_reads (id, search_id, source_ordinal, status, created_at, record_json) VALUES (?, ?, ?, ?, ?, ?)");
+    this.transaction(() => {
+      for (const record of records) {
+        statement.run(record.id, record.searchId, record.sourceOrdinal, record.status, record.createdAt, JSON.stringify(record));
+      }
+    });
+  }
+
+  listWebPageReads(searchId: string): WebPageReadRecord[] {
+    return this.listRecords<WebPageReadRecord>("SELECT record_json FROM web_page_reads WHERE search_id = ? ORDER BY created_at, rowid", searchId);
+  }
+
+  async saveWebCitations(records: WebCitationRecord[]): Promise<void> {
+    if (!records.length) return;
+    const statement = this.db().prepare("INSERT INTO web_citations (id, message_id, block_ordinal, marker_offset, created_at, record_json) VALUES (?, ?, ?, ?, ?, ?)");
+    this.transaction(() => {
+      for (const record of records) {
+        statement.run(record.id, record.messageId, record.blockOrdinal, record.markerOffset, record.createdAt, JSON.stringify(record));
+      }
+    });
+  }
+
+  listWebCitationsForMessages(messageIds: string[]): WebCitationRecord[] {
+    if (!messageIds.length) return [];
+    const placeholders = messageIds.map(() => "?").join(", ");
+    return this.listRecords<WebCitationRecord>(
+      `SELECT record_json FROM web_citations WHERE message_id IN (${placeholders}) ORDER BY message_id, block_ordinal, marker_offset, rowid`,
+      ...messageIds,
+    );
+  }
+
   private updateResearchMessage(message: ResearchMessageRecord): void {
     this.db().prepare("UPDATE research_messages SET status = ?, updated_at = ?, record_json = ? WHERE id = ?")
       .run(message.status, message.updatedAt, JSON.stringify(message), message.id);
@@ -1892,6 +1948,47 @@ export class SqliteStore implements CollectorStore {
       });
       version = 19;
     }
+    if (version < 20) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE web_searches (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            result_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(task_id) REFERENCES research_tasks(id),
+            FOREIGN KEY(session_id) REFERENCES research_sessions(id)
+          );
+          CREATE INDEX web_searches_task_idx ON web_searches(task_id, created_at);
+          CREATE INDEX web_searches_session_idx ON web_searches(session_id, created_at);
+          CREATE TABLE web_page_reads (
+            id TEXT PRIMARY KEY,
+            search_id TEXT NOT NULL,
+            source_ordinal INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(search_id) REFERENCES web_searches(id)
+          );
+          CREATE INDEX web_page_reads_search_idx ON web_page_reads(search_id, created_at);
+          CREATE TABLE web_citations (
+            id TEXT PRIMARY KEY,
+            message_id TEXT NOT NULL,
+            block_ordinal INTEGER NOT NULL,
+            marker_offset INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(message_id) REFERENCES research_messages(id)
+          );
+          CREATE INDEX web_citations_message_idx ON web_citations(message_id, block_ordinal, marker_offset);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (20, datetime('now'));
+        `);
+      });
+      version = 20;
+    }
 
   }
 
@@ -2201,6 +2298,13 @@ export class JsonStore implements CollectorStore {
   listResearchLaterItems(_status?: ResearchLaterItemStatus): ResearchLaterItemRecord[] { return []; }
   async createResearchLaterItem(_item: ResearchLaterItemRecord, _idempotencyKey: string): Promise<ResearchLaterItemRecord> { throw new Error("Research later items require SQLite persistence"); }
   async saveResearchLaterItem(_record: ResearchLaterItemRecord): Promise<void> { throw new Error("Research later items require SQLite persistence"); }
+  async createWebSearch(_record: WebSearchRecord): Promise<void> { throw new Error("Web search requires SQLite persistence"); }
+  getWebSearch(_id: string): WebSearchRecord | undefined { return undefined; }
+  listWebSearchesForTask(_taskId: string): WebSearchRecord[] { return []; }
+  async saveWebPageReads(_records: WebPageReadRecord[]): Promise<void> { throw new Error("Web search requires SQLite persistence"); }
+  listWebPageReads(_searchId: string): WebPageReadRecord[] { return []; }
+  async saveWebCitations(_records: WebCitationRecord[]): Promise<void> { throw new Error("Web search requires SQLite persistence"); }
+  listWebCitationsForMessages(_messageIds: string[]): WebCitationRecord[] { return []; }
   async clearAllData(): Promise<void> { const savedTokens = this.data.clientTokens; const savedProfiles = this.data.providerProfiles; const savedSettings: Record<string, string> = {}; if (this.data.settings) { for (const key of ['ai_consent', 'ai_configured', 'active_provider_profile_id', 'deepseek_configured']) { if (this.data.settings[key]) savedSettings[key] = this.data.settings[key]; } } this.data = { ...structuredClone(EMPTY_DATA), clientTokens: savedTokens, settings: savedSettings, providerProfiles: savedProfiles }; await this.flush(); }
     private flush() { this.writeQueue = this.writeQueue.then(async () => { const temporaryPath = `${this.filePath}.tmp`; await writeFile(temporaryPath, JSON.stringify(this.data, null, 2), "utf8"); await rename(temporaryPath, this.filePath); }); return this.writeQueue; }
 }

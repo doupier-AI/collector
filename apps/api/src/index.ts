@@ -2,13 +2,30 @@ export { createApiServer, type ApiServerOptions } from "./http.js";
 export { CaptureService, NotFoundError, ValidationError, checksumCapture } from "./service.js";
 export { MemoryStore, JsonStore, SqliteStore, defaultDataPaths, type CollectorStore } from "./store.js";
 export { LocalAuth, PairingRateLimitError, hashToken } from "./auth.js";
-export { SourceParser, assertPublicUrl, extractReadableText, parseMarkdown, parsePdf, splitPlainText } from "./parsers.js";
+export { SourceParser, assertPublicUrl, extractReadableText, fetchPublicResource, parseMarkdown, parsePdf, splitPlainText } from "./parsers.js";
 export { WorkflowScheduler, type WorkflowSchedulerOptions } from "./scheduler.js";
 export { ResearchSessionService, ResearchNotFoundError, ResearchValidationError, DEEP_RESEARCH_PROMPT_VERSION, RESEARCH_CHAT_PROMPT_VERSION, type ResearchGenerationProvider, type ResearchGenerationRequest, type ResearchServiceOptions } from "./research.js";
 export { ResearchImportService, ResearchImportConflictError, ResearchImportNotFoundError, ResearchImportValidationError, type ResearchImportServiceOptions } from "./research-import.js";
 export { ResearchSelectionAnalysisError, ResearchSelectionConflictError, ResearchSelectionNotFoundError, ResearchSelectionService, ResearchSelectionValidationError, type ResearchSelectionProvider, type ResearchSelectionAnalysisRequest, type ResearchSelectionServiceOptions } from "./selection.js";
 export { DeepResearchNotFoundError, DeepResearchService, DeepResearchValidationError, type DeepResearchServiceOptions } from "./deep-research.js";
 export { ResearchLaterNotFoundError, ResearchLaterService, ResearchLaterValidationError } from "./research-later.js";
+export {
+  DEFAULT_SEARXNG_INSTANCES,
+  FakeSearchProvider,
+  SearchUnavailableError,
+  SearxngSearchProvider,
+  WebSearchService,
+  parseSearxngResults,
+  resolveSearxngInstances,
+  type PageText,
+  type SearchHit,
+  type SearchInstance,
+  type SearchProvider,
+  type SearxngSearchProviderOptions,
+  type WebSearchMaterial,
+  type WebSearchOutcome,
+  type WebSearchServiceOptions,
+} from "./web-search.js";
 export {
   ensureInstanceControlToken,
   instanceControlPath,
