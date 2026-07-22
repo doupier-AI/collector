@@ -53,8 +53,6 @@ export interface ApiClient {
   updateResearchLaterItem(itemId: string, update: ResearchLaterItemUpdate): Promise<ResearchLaterItemView>;
   getAiConfiguration(): Promise<AiConfigurationView>;
   exchangePairingCode(code: string): Promise<{ paired: true }>;
-  /** 通过启动器控制通道请求关闭 Collector 服务。需要启动器颁发的控制凭据，普通配对无权调用。 */
-  requestShutdown(): Promise<void>;
 }
 
 const JSON_HEADERS = { "Content-Type": "application/json" } as const;
@@ -254,21 +252,6 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
         headers: JSON_HEADERS,
         body: JSON.stringify({ code, session: true }),
       });
-    },
-    async requestShutdown() {
-      const response = await fetchFn("/v1/launcher/shutdown", {
-        method: "POST",
-        headers: JSON_HEADERS,
-        body: "{}",
-      });
-      if (!response.ok) {
-        let message = "关闭失败，请检查连接后再试。";
-        try {
-          const body = (await response.json()) as { error?: { code?: string; message?: string } };
-          message = body.error?.message ?? message;
-        } catch { /* ignore */ }
-        throw new ApiRequestError(response.status, response.status >= 500 ? "internal_error" : "request_failed", message);
-      }
     },
   };
 }

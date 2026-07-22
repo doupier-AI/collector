@@ -138,41 +138,6 @@ button {
   border-color: var(--color-muted);
 }
 
-/* 顶栏右侧操作按钮（关闭 Collector 等） */
-.app-bar__spacer {
-  flex: 1;
-}
-
-.app-bar__action-button {
-  font-size: 0.8125rem;
-  padding: 0.35rem 0.75rem;
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-button);
-  background: var(--color-surface);
-  color: var(--color-muted);
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.app-bar__action-button:hover {
-  border-color: var(--color-error);
-  color: var(--color-error);
-}
-
-.app-bar__action-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.app-bar__shutdown-error {
-  margin: 0;
-  padding: var(--space-1) var(--space-3);
-  font-size: 0.8125rem;
-  color: var(--color-error);
-  background: var(--color-canvas);
-  border-bottom: 1px solid var(--color-line);
-}
-
 .app-body {
   flex: 1;
   display: flex;
