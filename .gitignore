@@ -20,7 +20,6 @@ apps/web/test-results-acceptance/
 
 # Agent skills are installed per machine. Keep only the project-owned skills.
 .agents/skills/*/
-!.agents/skills/collector-engineering/
 !.agents/skills/tdd/
 skills-lock.json
 .claude/skills/

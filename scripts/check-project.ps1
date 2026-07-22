@@ -1,5 +1,5 @@
 param(
-  [string]$Root = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..\..")),
+  [string]$Root = (Resolve-Path (Join-Path $PSScriptRoot "..")),
   [switch]$Strict
 )
 
@@ -44,15 +44,13 @@ if ($http -match 'Access-Control-Allow-Origin[^\r\n]*\*') {
   Add-Issue "error" "wildcard-cors" "Local API still permits wildcard CORS"
 }
 
-$trackedCandidates = Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction SilentlyContinue |
-  Where-Object {
-    $_.FullName -notmatch '\\(node_modules|\.git|dist|dist-tests|build|release|\.collector-data|\.npm-cache)\\' -and
-    $_.Length -lt 2MB
-  }
-foreach ($file in $trackedCandidates) {
+$candidatePaths = & git -C $Root ls-files --cached --others --exclude-standard
+foreach ($relativePath in $candidatePaths) {
+  $file = Get-Item -LiteralPath (Join-Path $Root $relativePath) -ErrorAction SilentlyContinue
+  if (-not $file -or $file.PSIsContainer -or $file.Length -ge 2MB) { continue }
   $content = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
   if ($content -match '(?i)(sk-[a-z0-9]{20,}|DEEPSEEK_API_KEY\s*=\s*[^\s"'']+)') {
-    Add-Issue "error" "possible-secret" "Possible API credential in $($file.FullName.Substring($Root.Length + 1))"
+    Add-Issue "error" "possible-secret" "Possible API credential in $relativePath"
   }
 }
 

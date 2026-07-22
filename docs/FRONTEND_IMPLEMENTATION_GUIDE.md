@@ -678,7 +678,7 @@ npm.cmd run build
 npm.cmd test
 npm.cmd run test:web
 npm.cmd run test:e2e
-powershell -ExecutionPolicy Bypass -File .agents\skills\collector-engineering\scripts\check-project.ps1
+powershell -ExecutionPolicy Bypass -File scripts\check-project.ps1
 ```
 
 命令名称可以根据最终 `package.json` 调整，但根目录必须提供单一、清楚的完整验证入口。阶段 D 的跨端集成执行完整验证；日常局部改动不默认重复无关检查。
