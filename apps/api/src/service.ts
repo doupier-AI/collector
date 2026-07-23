@@ -44,7 +44,7 @@ import { ResearchImportService } from "./research-import.js";
 import { ResearchSelectionAnalysisError, ResearchSelectionService, type ResearchSelectionProvider } from "./selection.js";
 import { DeepResearchService } from "./deep-research.js";
 import { ResearchLaterService } from "./research-later.js";
-import { runWebSearch } from "./web-search-agent.js";
+import { runWebSearch, webSearch, webFetch } from "./web-search-agent.js";
 import { parseAgentCitations } from "./web-search-agent.js";
 
 export class ValidationError extends Error {}
@@ -144,63 +144,73 @@ export class CaptureService {
       async generateAgentGrounded(request) {
         const direction = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
 
-        // 查询改写：将用户自然语言问题转为搜索引擎关键词
-        const reformulatedQuery = await gateway.reformulateSearchQuery(direction, {
-          context: { workflowRunId: request.taskId, purpose: "query_reformulation" },
-        });
-        const searchQuery = reformulatedQuery || direction;
-
-        const search = await runWebSearch(searchQuery, 5);
-        const queries = search.status === "completed" ? [search.query] : [];
-        if (searchQuery !== direction) {
-          queries.unshift(direction); // 保留原始问题作为第一条查询记录
-        }
-        const sources = search.sources;
-
-        // Build prompt with search materials
-        let prompt = "";
-        if (sources.length) {
-          prompt += "请基于以下联网检索材料回答用户问题。引用来源时在陈述后标注 [来源n]（n 为来源编号），只能在确实有依据的陈述后标注。没有依据时如实说明。\n\n";
-          prompt += "══════ 联网检索材料 ══════\n";
-          for (const source of sources) {
-            prompt += `\n[来源${source.ordinal}] ${source.title}\n`;
-            if (source.url) prompt += `URL: ${source.url}\n`;
-            if (source.snippet) prompt += `${source.snippet}\n`;
-          }
-          prompt += "\n══════ 用户问题 ══════\n";
-        }
-
+        // F2: Agent 式多轮工具调用搜索——模型通过 web_search/web_fetch 工具自主完成搜索过程
+        let userMessage = direction;
         if (request.deepResearch) {
-          prompt += `用户选区原文：${request.deepResearch.selectionText}\n\n研究方向：${direction}\n\n${request.deepResearch.contextBefore ? `选区前文：${request.deepResearch.contextBefore}\n` : ""}${request.deepResearch.contextAfter ? `选区后文：${request.deepResearch.contextAfter}\n` : ""}`;
-        } else {
-          prompt += `${direction}`;
+          userMessage = [
+            `用户选区原文：${request.deepResearch.selectionText}`,
+            `研究方向：${direction}`,
+            request.deepResearch.contextBefore ? `选区前文：${request.deepResearch.contextBefore}` : "",
+            request.deepResearch.contextAfter ? `选区后文：${request.deepResearch.contextAfter}` : "",
+            "请基于这些材料并联网搜索最新信息后回答。",
+          ].filter(Boolean).join("\n\n");
         }
 
-        const content = await gateway.answerResearchConversation([{ role: "user" as const, content: prompt }], {
-          context: { workflowRunId: request.taskId, purpose: "research", promptVersion: "agent-search-v1" },
-        });
-        if (!content) throw new Error("Provider returned an empty response");
+        const result = await gateway.runAgentSearchLoop(
+          userMessage,
+          {
+            webSearch: async (query, maxResults) => {
+              const r = await webSearch(query, maxResults);
+              return { query: r.query, total_results: r.total_results, results: r.results, errorMessage: r.errorMessage };
+            },
+            webFetch: async (url) => {
+              const r = await webFetch(url);
+              return { url: r.url, content: r.content, errorMessage: r.errorMessage };
+            },
+          },
+          {
+            maxTurns: 10,
+            context: { workflowRunId: request.taskId, purpose: "research", promptVersion: "agent-search-v2" },
+          },
+        );
 
-        // Parse [来源n] citations from the content
-        const { citations } = parseAgentCitations(content, sources);
-        const scopeStatus: ResearchGroundingScopeStatus = sources.length ? "grounded" : (search.status === "error" ? "grounding_failed" : "no_verifiable_sources");
+        if (!result.content) throw new Error("Provider returned an empty response");
+
+        // 构造来源记录供 parseAgentCitations 使用
+        const sourceRecords = result.sources.map((source, i) => ({
+          id: "",
+          runId: "",
+          ordinal: i + 1,
+          title: source.title ?? `来源 ${i + 1}`,
+          url: source.url ?? "",
+          snippet: source.snippet ?? "",
+          createdAt: new Date().toISOString(),
+        }));
+
+        const { citations } = parseAgentCitations(result.content, sourceRecords);
+        const scopeStatus: ResearchGroundingScopeStatus = result.sources.length ? "grounded" : "no_verifiable_sources";
         return {
-          content,
+          content: result.content,
           status: scopeStatus,
-          queries,
-          sources: sources.map((source, i) => ({
-            providerSourceId: source.id,
-            title: source.title,
-            url: source.url,
-            snippet: source.snippet,
+          queries: result.queries,
+          sources: result.sources.map((source, i) => ({
+            providerSourceId: source.providerSourceId,
+            title: source.title ?? `来源 ${i + 1}`,
+            url: source.url ?? "",
+            snippet: source.snippet ?? "",
           })),
           citations: citations.map((citation) => ({
             sourceOrdinal: citation.sourceOrdinal,
             startOffset: citation.markerOffset,
             endOffset: citation.markerOffset,
           })),
-          responseSummary: { searchStatus: search.status, sourceCount: sources.length, citationCount: citations.length },
-          ...(search.status === "error" ? { errorMessage: search.errorMessage ?? "搜索失败" } : {}),
+          responseSummary: {
+            searchStatus: "completed",
+            sourceCount: result.sources.length,
+            citationCount: citations.length,
+            queryCount: result.queries.length,
+            method: "agent-loop-v2",
+          },
         };
       },
       async generateGrounded(request) {

@@ -1,7 +1,7 @@
 # 联网搜索策略改进
 
 日期：2026-07-23
-状态：第一阶段（D+A2）已实现，待提交；第二、三阶段待启动
+状态：第二阶段（A1+B）已实现，待提交；第三阶段待启动
 
 ## 1. 本文定位
 
@@ -13,28 +13,32 @@
 
 Collector 的联网搜索分两条路径：
 
-**路径一：自建 Bing 抓取（`web-search-agent.ts`）**
+**路径一：Agent 式多轮搜索（`web-search-agent.ts` + `model-gateway/src/index.ts`）**
 
-当前 Chat 和深入研究第一轮使用的搜索路径。完整链路：
+当前 Chat 和深入研究第一轮使用的搜索路径。F2 改造后的完整链路：
 
 ```
-用户消息 → 提取最后一条 user message 作为 direction
-  → runWebSearch(direction, 5)
-    → searchBing(query)          ← 用户原始消息直接当 Bing query
-      → fetch("https://www.bing.com/search?q=...")
-      → parseBingHtml(html)       ← 正则解析 li.b_algo 块
-    → fetchPageContent(url) × 5  ← 固定抓取全部 Top 5 全文
-      → Readability 提取可读文本，截断到 6000 字符
-  → 拼入 prompt "请基于以下联网检索材料回答..."
-  → gateway.answerResearchConversation([{ role: "user", content: prompt }])
-  → parseAgentCitations(content)   ← 解析 [来源n] 引用标记
+用户消息 → 提取最后一条 user message 作为用户输入
+  → gateway.runAgentSearchLoop(userMessage, { webSearch, webFetch })
+    → 循环（最多 10 轮）：
+      → provider.agentChat(messages, AGENT_SEARCH_TOOLS)
+        → 模型返回 tool_calls → 执行 web_search(query) 或 web_fetch(url)
+        → 工具结果追入 messages → 继续循环
+        → 模型返回 stop → 退出循环
+    → 跨多轮搜索的 URL 去重全局序号
+    → 返回 { content, queries, sources }
+  → parseAgentCitations(content, sourceRecords)  ← 解析 [来源n] 引用标记
+  → 写入 SQLite（research_grounding_runs / sources / citations）
 ```
 
 关键特征：
-- 搜索是前置一次性步骤，不是 Agent 工具
-- 用户消息原封不动作为 Bing query，不经过改写
-- 固定抓取全部 Top 5 的全文，Agent 无法跳过不相关结果
-- 无日志、无可观测性
+- 搜索是 Agent 可调用的工具，不再是前置一次性步骤
+- 模型通过 Agent tool-use 循环自主决定搜索/抓取策略（对标 DeerFlow）
+- web_search 只搜不抓，web_fetch 只抓不搜（独立工具）
+- 多轮换词重搜、信息不足再次搜索均由模型自主控制
+- 来源按 URL 去重全局编号，跨多轮搜索一致
+- 日志完整：`[web-search] agentLoop` 每轮记录 turn/finishReason/query/resultCount
+- 搜索上限：5 次 web_search 调用后阻止继续搜索（防无限循环）
 - 数据写入 SQLite（三张表：`research_grounding_runs`、`research_grounding_sources`、`research_citations`）但无 HTTP API 查询
 
 **路径二：供应商原生 Grounding（`model-gateway/src/index.ts`）**
@@ -51,17 +55,16 @@ Collector 的联网搜索分两条路径：
 
 根本原因：Bing 对中英混合查询优先匹配中文词，没有查询预处理或改写步骤。
 
-### 3.2 零可观测性
+### 3.2 零可观测性（F1 已修复）
 
-- `web-search-agent.ts` 中没有任何 `console.log`
-- 搜索过程的 query、结果数、抓取成功/失败率完全不可见
-- 唯一检查方式：手动查询 SQLite 的三张表
+- `web-search-agent.ts` 中所有关键节点已有 `[web-search]` 日志
+- Agent 循环中每轮记录 `turn/finishReason/query/resultCount/latency`
 
-### 3.3 架构僵化
+### 3.3 架构僵化（F2 已修复）
 
-- 搜索仅支持 Bing HTML 抓取，Bing 页面结构变化或反爬升级后搜索功能全瘫
-- web_search 和 web_fetch 耦合在同一个函数中，Agent 无法自主决策
-- 单轮搜索，结果不好也没有重新搜索的机制
+- web_search 和 web_fetch 已拆分为独立工具
+- Agent 可通过多轮 tool-use 循环换词重搜、按需抓取
+- 仍仅支持 Bing HTML 抓取（F3 多后端补充）
 
 ## 4. DeerFlow 参考分析
 

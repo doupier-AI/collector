@@ -38,6 +38,44 @@ export interface ModelProvider {
   complete(request: ModelProviderRequest): Promise<ModelProviderResponse>;
 }
 
+/** Agent 工具调用循环中的单条消息。对齐 OpenAI Chat Completions messages 数组。 */
+export interface AgentChatMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string | null;
+  tool_call_id?: string;
+  tool_calls?: Array<{
+    id: string;
+    type: "function";
+    function: { name: string; arguments: string };
+  }>;
+}
+
+/** 可被 Agent 调用的工具定义。对齐 OpenAI function tool 格式。 */
+export interface ToolDefinition {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+/** Agent 聊天调用的结构化返回。区分 stop（模型直接回答）与 tool_calls（模型请求调用工具）。 */
+export interface AgentChatResponse {
+  finishReason: "stop" | "tool_calls" | "length" | "content_filter";
+  message: {
+    role: "assistant";
+    content: string | null;
+    toolCalls?: Array<{
+      id: string;
+      type: "function";
+      function: { name: string; arguments: string };
+    }>;
+  };
+  model: string;
+  usage?: ProviderUsage;
+}
+
 /** 网关归一的供应商联网结果；研究服务不读取供应商 HTTP 响应。 */
 export interface GroundingSource {
   providerSourceId?: string;
@@ -222,6 +260,83 @@ export interface ModelCallEvent {
   createdAt: string;
   completedAt: string;
 }
+
+/** Agent 搜索循环所需的工具实现（由调用方注入，保持 model-gateway 与 Bing/Readability 解耦）。 */
+export interface AgentSearchToolContext {
+  webSearch: (query: string, maxResults: number) => Promise<{
+    query: string;
+    total_results: number;
+    results: Array<{ title: string; url: string; snippet: string }>;
+    errorMessage?: string;
+  }>;
+  webFetch: (url: string) => Promise<{
+    url: string;
+    content: string;
+    errorMessage?: string;
+  }>;
+}
+
+/** Agent 搜索循环的最终输出。 */
+export interface AgentSearchResult {
+  content: string;
+  queries: string[];
+  sources: GroundingSource[];
+}
+
+/** Agent 搜索循环的默认系统提示。 */
+const AGENT_SEARCH_SYSTEM_PROMPT = `你是 Collector 的研究助手。你可以使用以下工具完成联网研究任务。
+
+工作流程：
+1. 根据用户问题，先调用 web_search 进行搜索
+2. 分析搜索结果，选择最相关的页面调用 web_fetch 抓取详细内容
+3. 如果信息不够充足，可以换关键词重新搜索
+4. 信息收集充分后，给出完整回答
+
+引用规则：
+- 回答中引用来源时在陈述后标注 [来源n]（n 为搜索结果列表中该项的序号）
+- 只在确实有依据的陈述后标注
+- 没有依据时如实说明不确定性
+
+约束：
+- 必须经过搜索再回答，不能凭记忆编造
+- 中文优先，使用中文关键词搜索；英文术语保留原样
+- 最多进行 5 轮搜索（web_search 调用次数），达到后请基于已有信息给出最佳回答`;
+
+/** web_search 和 web_fetch 工具的 OpenAI function tool 定义。 */
+const AGENT_SEARCH_TOOLS: ToolDefinition[] = [
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description: "搜索互联网获取当前信息。返回标题、URL 和摘要。中文关键词搜索效果更好。",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "搜索查询关键词。中文关键词在前，英文术语原样保留。" },
+          maxResults: { type: "integer", description: "期望返回的最大结果数（默认 5）" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "web_fetch",
+      description: "抓取指定 URL 的网页正文内容。用于获取搜索结果中某个页面的完整详情。使用 web_search 返回的 URL。",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "要抓取的网页 URL（来自 web_search 结果）" },
+        },
+        required: ["url"],
+      },
+    },
+  },
+];
+
+const MAX_SEARCH_CALLS = 5;
+const MAX_AGENT_TURNS = 10;
 
 export class ModelGateway {
   private callListener?: (event: ModelCallEvent) => void | Promise<void>;
@@ -449,6 +564,155 @@ ${input.recentUserMessages?.length ? `\n用户最近关注的问题：\n${input.
     }
     // 失败时返回原文，不阻塞搜索
     return userMessage.trim();
+  }
+
+  /**
+   * Agent 式多轮搜索：让模型通过 web_search/web_fetch 工具自主完成搜索过程。
+   * 模型可以搜索 → 看结果 → 决定抓取哪些页面 → 信息不够则换词重搜 → 循环直到满意。
+   * 工具实现由调用方注入（model-gateway 不依赖 Bing/Readability）。
+   */
+  async runAgentSearchLoop(
+    userMessage: string,
+    tools: AgentSearchToolContext,
+    options: {
+      maxTurns?: number;
+      systemPrompt?: string;
+      context?: ModelCallContext;
+    } = {},
+  ): Promise<AgentSearchResult> {
+    if (typeof (this.provider as any).agentChat !== "function") {
+      throw new Error("Agent search loop requires a provider that supports agentChat (tool calling)");
+    }
+    const maxTurns = options.maxTurns ?? MAX_AGENT_TURNS;
+    const loopStartedAt = Date.now();
+    console.log(`[web-search] agentLoop start userMessage="${userMessage.slice(0, 80)}" maxTurns=${maxTurns}`);
+
+    const provider = this.provider as ModelProvider & { agentChat?: OpenAiCompatibleProvider["agentChat"] };
+    if (typeof provider.agentChat !== "function") {
+      throw new Error("Agent search loop requires a provider that supports agentChat (tool calling)");
+    }
+
+    const messages: AgentChatMessage[] = [
+      { role: "system", content: options.systemPrompt ?? AGENT_SEARCH_SYSTEM_PROMPT },
+      { role: "user", content: userMessage },
+    ];
+
+    const queries: string[] = [];
+    const sources: GroundingSource[] = [];
+    const sourceUrlSet = new Set<string>();
+    let searchCallCount = 0;
+    let fetchCallCount = 0;
+
+    for (let turn = 1; turn <= maxTurns; turn += 1) {
+      console.log(`[web-search] agentLoop turn=${turn} messagesLen=${messages.length} searchCalls=${searchCallCount} fetchCalls=${fetchCallCount}`);
+      const startedAt = Date.now();
+      const response = await provider.agentChat(messages, AGENT_SEARCH_TOOLS, {
+        model: this.modelName,
+        maxTokens: 4096,
+        thinking: this.options.thinking ?? true,
+      });
+      console.log(`[web-search] agentLoop turn=${turn} finishReason=${response.finishReason} latency=${Date.now() - startedAt}ms`);
+
+      if (response.finishReason === "stop") {
+        const content = response.message.content ?? "";
+        console.log(`[web-search] agentLoop completed turns=${turn} queries=${queries.length} fetchCount=${fetchCallCount} sourceCount=${sources.length} contentLen=${content.length} latency=${Date.now() - loopStartedAt}ms`);
+        return { content, queries, sources };
+      }
+
+      if (response.finishReason === "tool_calls" && response.message.toolCalls?.length) {
+        // Append assistant message with tool_calls to conversation history
+        messages.push({
+          role: "assistant",
+          content: response.message.content,
+          tool_calls: response.message.toolCalls.map((tc) => ({
+            id: tc.id,
+            type: tc.type,
+            function: { name: tc.function.name, arguments: tc.function.arguments },
+          })),
+        });
+
+        for (const tc of response.message.toolCalls) {
+          let args: Record<string, unknown>;
+          try {
+            args = JSON.parse(tc.function.arguments || "{}") as Record<string, unknown>;
+          } catch {
+            args = {};
+          }
+
+          if (tc.function.name === "web_search") {
+            searchCallCount += 1;
+            if (searchCallCount > MAX_SEARCH_CALLS) {
+              console.log(`[web-search] agentLoop searchCapReached searchCalls=${searchCallCount}`);
+              messages.push({
+                role: "tool" as const,
+                tool_call_id: tc.id,
+                content: "已达到搜索轮次上限(5次)。请基于已有信息给出回答，不要继续搜索。",
+              });
+              continue;
+            }
+
+            const query = typeof args.query === "string" ? args.query.trim() : "";
+            if (!query) {
+              messages.push({ role: "tool" as const, tool_call_id: tc.id, content: JSON.stringify({ error: "query is required" }) });
+              continue;
+            }
+            const maxResults = typeof args.maxResults === "number" ? Math.max(1, Math.min(args.maxResults, 10)) : 5;
+            const result = await tools.webSearch(query, maxResults);
+            queries.push(query);
+
+            // Format results with global ordinals, dedup by URL
+            const formatted: Array<{ ordinal: number; title: string; url: string; snippet: string }> = [];
+            for (const r of result.results) {
+              if (!sourceUrlSet.has(r.url)) {
+                sourceUrlSet.add(r.url);
+                sources.push({ title: r.title, url: r.url, snippet: r.snippet });
+              }
+              const ordinal = sources.findIndex((s) => s.url === r.url) + 1;
+              formatted.push({ ordinal, title: r.title, url: r.url, snippet: r.snippet });
+            }
+
+            messages.push({
+              role: "tool" as const,
+              tool_call_id: tc.id,
+              content: JSON.stringify({ query: result.query, total_results: result.total_results, results: formatted }),
+            });
+
+            console.log(`[web-search] agentLoop webSearch query="${query}" resultCount=${formatted.length} totalSources=${sources.length}`);
+          } else if (tc.function.name === "web_fetch") {
+            fetchCallCount += 1;
+            const url = typeof args.url === "string" ? args.url.trim() : "";
+            if (!url) {
+              messages.push({ role: "tool" as const, tool_call_id: tc.id, content: JSON.stringify({ error: "url is required" }) });
+              continue;
+            }
+            const result = await tools.webFetch(url);
+
+            // Try to find existing source by URL to include its ordinal
+            const existingOrdinal = sources.findIndex((s) => s.url === url) + 1;
+            const contentText = result.errorMessage
+              ? `抓取失败: ${result.errorMessage}`
+              : `[来源${existingOrdinal || "?"} 完整内容]\n${result.content}`;
+
+            messages.push({ role: "tool" as const, tool_call_id: tc.id, content: contentText });
+
+            console.log(`[web-search] agentLoop webFetch url="${url}" contentLen=${result.content.length}${result.errorMessage ? ` error="${result.errorMessage}"` : ""}`);
+          } else {
+            messages.push({
+              role: "tool" as const,
+              tool_call_id: tc.id,
+              content: JSON.stringify({ error: `Unknown tool: ${tc.function.name}` }),
+            });
+            console.log(`[web-search] agentLoop unknownTool name="${tc.function.name}"`);
+          }
+        }
+        continue;
+      }
+
+      // finishReason was "length" or "content_filter" — push the model to wrap up
+      messages.push({ role: "user", content: "请基于已有信息给出简要回答（标注[来源n]引用），不要继续搜索。" });
+    }
+
+    throw new Error(`Agent search loop exceeded ${maxTurns} turns without producing a response`);
   }
 
   async clusterMaterials(materials: Array<{ id: string; content: string }>, options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): Promise<{ clusters: Array<{ name: string; summary: string; materialIds: string[] }>; unclusteredMaterialIds: string[] }> {
@@ -685,6 +949,93 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     return {
       content: payload?.choices?.[0]?.message?.content ?? "",
       model: payload?.model ?? request.model,
+      usage: {
+        inputTokens: payload?.usage?.prompt_tokens,
+        outputTokens: payload?.usage?.completion_tokens,
+        inputCacheHitTokens: payload?.usage?.prompt_cache_hit_tokens,
+        inputCacheMissTokens: payload?.usage?.prompt_cache_miss_tokens,
+      },
+    };
+  }
+
+  /**
+   * Agent 工具调用聊天（OpenAI Chat Completions 协议的 tools 扩展）。
+   * 与 complete() 的关键区别：发送完整 messages[] 数组、附带 tools 定义、
+   * 不发送 response_format（tool calls 与 JSON mode 互斥）、解析 finish_reason 与 tool_calls。
+   * 此方法不在 ModelProvider 接口上，只在 OpenAiCompatibleProvider 类上。
+   */
+  async agentChat(
+    messages: AgentChatMessage[],
+    tools: ToolDefinition[],
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; thinking?: boolean } = {},
+  ): Promise<AgentChatResponse> {
+    const apiKey = await this.options.apiKey();
+    if (!apiKey) throw new Error(`${this.options.definition.label} API key is not configured`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error(`${this.options.definition.label} request timed out`)), options.timeoutMs ?? 120_000);
+    let response: Response;
+    let payload: any;
+    try {
+      const body: Record<string, unknown> = {
+        model: options.model ?? this.defaultModel,
+        messages: messages.map((m) => {
+          const entry: Record<string, unknown> = { role: m.role };
+          if (m.content !== null) entry.content = m.content;
+          if (m.tool_calls) entry.tool_calls = m.tool_calls;
+          if (m.tool_call_id) entry.tool_call_id = m.tool_call_id;
+          return entry;
+        }),
+        tools: tools.map((t) => ({
+          type: t.type,
+          function: {
+            name: t.function.name,
+            description: t.function.description,
+            parameters: t.function.parameters,
+          },
+        })),
+        tool_choice: "auto",
+        max_tokens: options.maxTokens ?? 4096,
+      };
+      if (this.options.definition.capabilities.thinkingMode === "deepseek") {
+        body.thinking = { type: options.thinking ?? true ? "enabled" : "disabled" };
+      }
+      response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        signal: controller.signal,
+        redirect: "error",
+        body: JSON.stringify(body),
+      });
+      payload = await response.json().catch(() => undefined);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!response.ok) throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+    const choice = payload?.choices?.[0];
+    const finishReason: AgentChatResponse["finishReason"] = choice?.finish_reason ?? "stop";
+    const message = choice?.message;
+    const rawCalls = Array.isArray(message?.tool_calls) ? message.tool_calls : [];
+    const toolCalls: AgentChatResponse["message"]["toolCalls"] = [];
+    for (const tc of rawCalls) {
+      if (tc?.type === "function" && tc?.function?.name) {
+        toolCalls.push({
+          id: tc.id ?? "",
+          type: "function" as const,
+          function: {
+            name: tc.function.name,
+            arguments: typeof tc.function.arguments === "string" ? tc.function.arguments : JSON.stringify(tc.function.arguments ?? {}),
+          },
+        });
+      }
+    }
+    return {
+      finishReason,
+      message: {
+        role: "assistant",
+        content: message?.content ?? null,
+        ...(toolCalls.length ? { toolCalls } : {}),
+      },
+      model: payload?.model ?? (options.model ?? this.defaultModel),
       usage: {
         inputTokens: payload?.usage?.prompt_tokens,
         outputTokens: payload?.usage?.completion_tokens,

@@ -20,6 +20,28 @@ export interface WebSearchOutcome {
 }
 
 /**
+ * web_search 工具的标准返回格式。
+ * 只搜不抓——只返回标题、URL 和摘要，不抓取页面正文。
+ * 格式对齐 DeerFlow 的标准化工具输出：{ query, total_results, results: [{title, url, content/snippet}] }。
+ */
+export interface WebSearchResultSet {
+  query: string;
+  total_results: number;
+  results: Array<{ title: string; url: string; snippet: string }>;
+  errorMessage?: string;
+}
+
+/**
+ * web_fetch 工具的标准返回格式。
+ * 只抓不搜——抓取单个 URL 的页面正文，不触发搜索。
+ */
+export interface WebFetchResult {
+  url: string;
+  content: string;
+  errorMessage?: string;
+}
+
+/**
  * Bing 网页搜索（无需 API Key）。
  * 请求 Bing 搜索结果页 HTML，解析其中的 li.b_algo 结果块。
  */
@@ -62,6 +84,24 @@ export async function searchBing(query: string): Promise<WebSearchOutcome> {
     console.log(`[web-search] searchBing error query="${query.trim()}" message="${message}" latency=${Date.now() - searchStartedAt}ms`);
     return { status: "error", query: query.trim(), results: [], errorMessage: message };
   }
+}
+
+/**
+ * 搜索互联网并返回标准化的结果集。
+ * 只搜不抓——内部调用 searchBing 获取搜索结果，只返回标题、URL 和摘要，
+ * 不抓取页面正文。供 Agent 工具循环中的 web_search 工具调用。
+ */
+export async function webSearch(query: string, maxResults = 5): Promise<WebSearchResultSet> {
+  const searchStartedAt = Date.now();
+  console.log(`[web-search] webSearch query="${query.trim()}" maxResults=${maxResults}`);
+  const outcome = await searchBing(query.trim());
+  if (outcome.status === "error" || outcome.status === "no_results") {
+    console.log(`[web-search] webSearch ${outcome.status} query="${outcome.query}" latency=${Date.now() - searchStartedAt}ms`);
+    return { query: outcome.query, total_results: 0, results: [], errorMessage: outcome.errorMessage };
+  }
+  const trimmed = outcome.results.slice(0, maxResults);
+  console.log(`[web-search] webSearch completed query="${outcome.query}" resultCount=${trimmed.length} latency=${Date.now() - searchStartedAt}ms`);
+  return { query: outcome.query, total_results: outcome.results.length, results: trimmed.map((r) => ({ title: r.title, url: r.url, snippet: r.snippet })) };
 }
 
 /**
@@ -163,6 +203,20 @@ export async function fetchPageContent(url: string): Promise<{
     console.log(`[web-search] fetchPageContent error url="${url}" message="${message}" latency=${Date.now() - fetchStartedAt}ms`);
     return { url, text: "", errorMessage: message };
   }
+}
+
+/**
+ * 抓取指定 URL 的网页正文。
+ * 只抓不搜——薄封装 fetchPageContent，返回标准化的 WebFetchResult。
+ * 供 Agent 工具循环中的 web_fetch 工具调用。
+ */
+export async function webFetch(url: string): Promise<WebFetchResult> {
+  const fetchStartedAt = Date.now();
+  console.log(`[web-search] webFetch url="${url}"`);
+  const page = await fetchPageContent(url);
+  const status = page.errorMessage ? "error" : "completed";
+  console.log(`[web-search] webFetch ${status} url="${url}" contentLen=${page.text.length} latency=${Date.now() - fetchStartedAt}ms${page.errorMessage ? ` error="${page.errorMessage}"` : ""}`);
+  return { url: page.url, content: page.text, errorMessage: page.errorMessage };
 }
 
 /**
