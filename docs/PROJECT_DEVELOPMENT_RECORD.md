@@ -6,6 +6,8 @@
 
 进行中：阶段 E（可信研究能力）已于 2026-07-22 完成并提交（`0343c56`），真实供应商联网验收受限于 API 凭证——当前唯一已配置供应商 DeepSeek（`deepseek-v4-flash`）不支持原生联网（`webGrounding: "unsupported"`），未来配置 OpenAI、Gemini 或 Anthropic 凭证后即可激活对应联网能力。阶段 F（联网搜索策略改进）已全部完成：F1 日志+查询改写（`68b39be`）、F2 工具拆分+Agent 多轮循环（`9952a02`）、F3 多搜索后端（`efe0d73`）。当前验证基线：Node 测试 235/235，WebUI 测试 197/197。
 
+批次①（Markdown 渲染 + 悬停来源卡片，2026-07-23）已交付：`b814d95`（引用角标悬停来源卡片）+ `3b1f124`（AI 文本统一 Markdown 渲染管线）——见 §3.25。
+
 ## 1. 记录原则
 
 - 按用户可见结果、可独立验证的工程阶段、关键提交、验证证据和遗留限制记录；
@@ -855,7 +857,7 @@ F3 提交后（2026-07-23）当前四级基线：
 
 ### AI、搜索和产品核心
 
-- 已在收尾阶段完成一次真实模型四场景验收（DeepSeek deepseek-v4-flash，四场景全通过）；自动化测试套件（`test:e2e`）按项目约定只用确定性假模型；联网搜索、行内引用、自动弱重现等仍属后续阶段；
+- 已在收尾阶段完成一次真实模型四场景验收（DeepSeek deepseek-v4-flash，四场景全通过）；自动化测试套件（`test:e2e`）按项目约定只用确定性假模型；自动弱重现等仍属后续阶段；
 - 离线演示回答不是产品能力证据；
 - 真实模型当前等待供应商返回完整 JSON 后再按最多 80 字符写入渐进事件，不是供应商原生 token 流，首片延迟仍等于完整模型响应时间；
 - 本地观测、模型设置和搜索轨迹还未形成完整的用户可见产品界面。
@@ -870,7 +872,7 @@ F3 提交后（2026-07-23）当前四级基线：
 
 - 联网搜索由当前 AI 模型供应商的原生联网能力提供（OpenAI `web_search` / Gemini Google Search grounding / Anthropic server-side web search/web fetch），迁移 v21 三表（`research_grounding_runs` / `research_grounding_sources` / `research_citations`）保存净化后的轨迹与引用；
 - 历史 SearXNG 独立适配层方案（迁移 v20）已清除，相关代码从未合入 master；
-- 行内引用胶囊、来源预览与动态范围说明已实现，引用标记使用零文本 `<sup>` + CSS `::after` 渲染，不扰动选区锚定偏移；
+- 行内引用胶囊、来源预览与定位高亮已在提交 `b814d95`（悬停来源卡片）和 `3b1f124`（Markdown 渲染）中升级：引用角标在 Markdown 排版内通过 remark 插件渲染为可悬停来源卡片；返回高亮改为在渲染后 DOM 上直接圈 `<mark>`，偏移失败时 exact 文本兜底；旧 AI 选区可能退化为粗粒度说明（产品已允许）。
 - 外部来源链接使用 `noopener noreferrer` 安全开窗，写入 SQLite 前二次脱敏；
 - 联网开始状态由任务记录呈现，尚未新增独立 SSE 联网阶段事件；
 - **真实验收状态**：当前已配置的 DeepSeek 不支持原生联网（`webGrounding: "unsupported"`）；用户确认 Mimo 和 Qwen 支持联网搜索，Kimi 待验证；Longcat 状态未确认。Mimo / Qwen / Kimi 的联网协议待确认并接入模型网关后，即可执行真实联网验收。
@@ -885,6 +887,43 @@ F3 提交后（2026-07-23）当前四级基线：
 3. **F3（多后端）**：已完成（`efe0d73`）。增加 DDG / Tavily / SearXNG 三个可选后端，统一 SearchBackend 接口 + Registry 模式 + 自动故障回退。Bing 单点依赖已解除。
 
 完整调研结论、设计决策和切片详情见 `docs/agents/search-optimization.md` 和 `docs/MVP_IMPLEMENTATION_PLAN.md` 阶段 F。
+
+### 3.25 批次①：Markdown 渲染 + 悬停来源卡片（2026-07-23）
+
+**用户可见结果**
+
+- AI 回答、研究内容、研究分支均按 Markdown 排版（标题、表格、加粗、代码块、列表等），选区分析散文同步渲染 Markdown；
+- 引用角标 `[n]` 在桌面端悬停/聚焦时弹出来源预览卡片（站点名、标题、摘要、发布时间），卡片内可点击"打开原文"跳转原网址；
+- 返回高亮改为在渲染后 DOM 上直接圈 `<mark>`，偏移失败时 exact 文本兜底搜索；旧 AI 选区可能退化为粗粒度说明（产品允许）。
+
+**改动**
+
+- 新增 `react-markdown` / `remark-gfm` / `remark-breaks` / `rehype-sanitize` 依赖（`apps/web/package.json`）；
+- 新增 `MarkdownContent` 组件（白名单 sanitize、`cite-marker` 自定义节点支持、`insight`/`message` 变体）、`remarkCitationMarkers` 插件（`[来源n]`→hast 节点）、`SourceCard` 悬停卡片组件、`useHoverCard` 定位/显隐钩子（`createPortal` 到 body、z-index 55）、`CitationMarker` 共享引用角标组件；
+- 抽取 `citation-utils.ts`（`buildSourceMap` / `buildCitationIndex`），编号逻辑从 `MessageItem` 提出共用；
+- `MessageItem` 三表面（`AssistantBlocks`/`GeneratingBody`/`FailedBody`）全换 `MarkdownContent`，旧 `BlockTextWithCitations`/`TextRange` 已移除；
+- `highlightForMessages` 不再交叉比对原始 `block.text`，直传可见空间偏移；`MessageBlock` 用 `useLayoutEffect` + `setRangeFromOffsets` 圈 `<mark>`；
+- `SelectionInsightPanel` 散文字段接 `MarkdownContent`（`variant="insight"`）；
+- `global.css` 增 `.markdown-content*` 体系与 `.source-card*` 样式。
+
+**关键提交**
+
+- `b814d95`：来源引用角标升级为可悬停来源卡片（子步 1）
+- `3b1f124`：AI 文本表面统一 Markdown 渲染管线（子步 2）
+
+**验证**
+
+- TypeScript `tsc --noEmit` 两次零错误；
+- `apps/web` vitest run：25 文件 197 测试全通过，子步 1 零回归、子步 2 适配新语义（消息块夹具改用 `[来源n]` token + remark 路径；高亮测试改用新语义）。
+
+**未完成 / 风险**
+
+- 旧 AI 选区可能降级为粗粒度高亮（产品已允许的精确位置降级）；
+- 模型混写 `[1]` 与 `[来源n]` 不处理（留到"收紧引用指令"批次）；
+- 知乎等 JS/反爬站深层抓取仍未解决（留到批次②"联网抓取质量"）；
+- 设置页面 WebUI 未做（后端 API 就绪，前段按计划排在未来阶段）。
+
+
 
 其余后续方向：
 1. 真实供应商联网验收：配置支持原生联网的模型（OpenAI / Gemini / Anthropic）后，完成真实搜索、真实引用、无引用/失败/不支持降级、SQLite 与日志脱敏、主线与分支刷新恢复、以及宽/窄屏、键盘、可访问性、控制台和网络检查；
