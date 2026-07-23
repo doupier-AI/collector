@@ -4,7 +4,7 @@
 
 状态：截至当前源码的项目阶段记录。本文记录已经发生的产品与工程里程碑、关键提交、验证证据和遗留限制；当前产品定义以 `PRODUCT_REFOUNDATION.md` 为准，下一阶段实施范围以 `DEVELOPMENT_START.md` 为准，切片计划与状态见 `MVP_IMPLEMENTATION_PLAN.md`，源码与测试是实现状态的最终依据。
 
-进行中：阶段 E（可信研究能力）已于 2026-07-22 完成供应商原生联网全栈实现并提交（`0343c56`）。真实供应商联网验收受限于 API 凭证——当前唯一已配置供应商 DeepSeek（`deepseek-v4-flash`）不支持原生联网（`webGrounding: "unsupported"`），未来配置 OpenAI、Gemini 或 Anthropic 凭证后即可激活对应联网能力。阶段 F（联网搜索策略改进）已于 2026-07-23 完成 DeerFlow 源码调研和自建搜索链路诊断。F1（日志+查询改写）已于 2026-07-23 完成并待提交。当前验证基线：Node 测试 205/205，WebUI 测试 197/197，Playwright Chromium 39/43（3 项失败为真实模型验收 spec 需真实密钥 + 1 项 e2e 数据库隔离干扰，均为已知限制）。
+进行中：阶段 E（可信研究能力）已于 2026-07-22 完成并提交（`0343c56`），真实供应商联网验收受限于 API 凭证——当前唯一已配置供应商 DeepSeek（`deepseek-v4-flash`）不支持原生联网（`webGrounding: "unsupported"`），未来配置 OpenAI、Gemini 或 Anthropic 凭证后即可激活对应联网能力。阶段 F（联网搜索策略改进）已完成 DeerFlow 源码调研（2026-07-23）及两阶段实施：F1 日志+查询改写（`68b39be`）、F2 工具拆分+Agent 多轮循环（`9952a02`）。当前验证基线：Node 测试 214/214，WebUI 测试 197/197，Playwright Chromium 39/43（3 项失败为真实模型验收 spec 需真实密钥 + 1 项 e2e 数据库隔离干扰，均为已知限制）。
 
 ## 1. 记录原则
 
@@ -728,6 +728,37 @@ F1（日志+查询改写）优先级已确认，待启动。实施时读取 `doc
 - TypeScript 构建：零错误
 - Node 全量测试：205/205 通过
 - 验证级别：二级（无浏览器变更，仅 API + model-gateway）
+- 提交：`68b39be`
+
+### 3.26 F2：工具拆分 + Agent 多轮工具调用循环（2026-07-23）
+
+**目标**
+
+将搜索从"前置一次性步骤"升级为"Agent 可调用的工具"，对标 DeerFlow 的自主搜索体验。拆分 web_search/web_fetch 两个独立工具，引入 Agent tool-use 循环让模型自主决定搜索/抓取/重搜策略。
+
+**改动内容**
+
+| 文件 | 改动 |
+|------|------|
+| `apps/api/src/web-search-agent.ts` | 新增 `webSearch(query, maxResults)` 只搜不抓（内部复用 `searchBing`）和 `webFetch(url)` 只抓不搜（薄封装 `fetchPageContent`）；新增 `WebSearchResultSet`、`WebFetchResult` 返回类型；现有 `searchBing`/`fetchPageContent`/`runWebSearch`/`parseAgentCitations` 全部保留向后兼容 |
+| `packages/model-gateway/src/index.ts` | 新增类型：`AgentChatMessage`、`ToolDefinition`、`AgentChatResponse`、`AgentSearchToolContext`、`AgentSearchResult`；`OpenAiCompatibleProvider` 类上新增 `agentChat(messages, tools)` 方法（发送 tools + tool_choice: "auto"，不发送 response_format）；`ModelGateway` 类上新增 `runAgentSearchLoop(userMessage, tools, options)` 方法（多轮 ReAct 循环：search → fetch → re-search → answer；5 次搜索硬上限、10 轮总轮次、URL 去重全局编号）；模块级常量 `AGENT_SEARCH_SYSTEM_PROMPT`（中文 system prompt）和 `AGENT_SEARCH_TOOLS`（两个 tool definition） |
+| `apps/api/src/service.ts` | `generateAgentGrounded` 从 F1 单轮搜索替换为 F2 Agent 循环：调用 `gateway.runAgentSearchLoop()` 替代 F1 的 `reformulateSearchQuery()` + `runWebSearch()` + `answerResearchConversation()`；工具实现从 `web-search-agent.ts` 注入；`promptVersion: "agent-search-v2"`；`responseSummary` 增加 `method: "agent-loop-v2"` 和 `queryCount` |
+| `tests/agent-loop.test.ts`（新） | 9 个 Agent 循环专项测试：单轮搜索、搜索→抓取→回答、换词重搜、搜索上限阻止、直接回答无工具调用、并行工具调用、URL 去重、length finish reason 兜底、搜索上限后 web_fetch 仍可用。使用可编程的 `ProgrammableAgentProvider` 进行确定性测试 |
+
+**架构决策**
+
+1. **零新依赖**：不引入 Vercel AI SDK 或任何框架，利用 DeepSeek 已有的 OpenAI 兼容 tool calling API（`/chat/completions` + `tools` 参数），手写轻量 ReAct 循环
+2. **不改 `ModelProvider` 接口**：`agentChat` 方法只加到 `OpenAiCompatibleProvider` 类上，`runAgentSearchLoop` 通过鸭子类型检查 `agentChat` 方法存在性，所有现有 Provider 零改动
+3. **工具注入模式**：`runAgentSearchLoop` 接收可注入的 `webSearch`/`webFetch` 函数，`model-gateway` 不依赖 Bing/Readability，测试可注入确定性 mock
+4. **来源序数全局分配 + URL 去重**：跨多轮搜索统一编号，同一 URL 只分配一次序数
+5. **硬上限兜底**：最多 5 次 `web_search` 调用 + 10 轮总轮次，防止模型无限循环
+
+**验证**
+
+- TypeScript 构建：零错误
+- Node 全量测试：214/214 通过（含 9 个新增 Agent 循环测试）
+- 验证级别：三级（局部后端：model-gateway + API + 研究会话集成测试）
+- 提交：`9952a02`
 
 ## 4. 当前数据与接口里程碑
 
@@ -753,16 +784,17 @@ F1（日志+查询改写）优先级已确认，待启动。实施时读取 `doc
 
 ## 5. 当前验证基线
 
-阶段 E 提交后（2026-07-22）当前四级基线：
+F2 提交后（2026-07-23）当前四级基线：
 
 | 范围 | 结果 |
 | --- | --- |
-| Node 单元与集成测试 | 205/205 通过 |
+| Node 单元与集成测试 | 214/214 通过 |
 | WebUI 客户端测试 | 197/197 通过 |
 | Chromium 端到端场景 | 39/43（3 项需真实密钥、1 项 e2e 数据库隔离）|
 | Collector 项目检查 | 通过（0 errors, 0 warnings） |
 | 真实云模型调用 | 已通过（DeepSeek deepseek-v4-flash，四场景验收 4/4） |
 | 真实供应商联网验收 | 未完成（当前已配置供应商 DeepSeek 不支持原生联网，待 OpenAI / Gemini / Anthropic 凭证配置后验收） |
+| Agent 搜索循环 | 自动化测试通过（9 个测试），真实模型 Agent 搜索待人工验收 |
 
 ## 6. 已知限制与待验证事项
 
@@ -808,9 +840,9 @@ F1（日志+查询改写）优先级已确认，待启动。实施时读取 `doc
 
 阶段 E（可信研究能力）全栈实现已提交（`0343c56`）。真实供应商联网验收受限于 API 凭证：当前 DeepSeek 不支持原生联网，未来配置 OpenAI / Gemini / Anthropic 凭证后即可执行一次性收尾验收。
 
-阶段 F（联网搜索策略改进）调研已完成（2026-07-23），三阶段计划已确认：
-1. **F1（日志+查询改写）**：在 `web-search-agent.ts` 关键节点加 console.log，前置 LLM query reformulation 修复中文分词问题。已完成（2026-07-23）。改动量小，不改架构；
-2. **F2（工具化+Agent循环）**：拆分 web_search/web_fetch 为独立工具，引入 Agent tool-use loop，让模型自主控制搜索节奏。对标 DeerFlow 搜索体验的核心改造。待启动；
+阶段 F（联网搜索策略改进）调研已完成（2026-07-23），F1、F2 已实施并提交：
+1. **F1（日志+查询改写）**：已完成（`68b39be`）。在 `web-search-agent.ts` 关键节点加 console.log，前置 LLM query reformulation 修复中文分词问题；
+2. **F2（工具化+Agent 循环）**：已完成（`9952a02`）。拆分 web_search/web_fetch 为独立工具，引入 Agent tool-use loop，让模型自主控制搜索节奏。对标 DeerFlow 搜索体验的核心改造；
 3. **F3（多后端）**：增加 DDG / Tavily 等可选后端，解除 Bing 单点依赖。待启动。
 
 完整调研结论、设计决策和切片详情见 `docs/agents/search-optimization.md` 和 `docs/MVP_IMPLEMENTATION_PLAN.md` 阶段 F。
