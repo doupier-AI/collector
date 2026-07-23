@@ -4,7 +4,7 @@
 
 状态：截至当前源码的项目阶段记录。本文记录已经发生的产品与工程里程碑、关键提交、验证证据和遗留限制；当前产品定义以 `PRODUCT_REFOUNDATION.md` 为准，下一阶段实施范围以 `DEVELOPMENT_START.md` 为准，切片计划与状态见 `MVP_IMPLEMENTATION_PLAN.md`，源码与测试是实现状态的最终依据。
 
-进行中：阶段 E（可信研究能力）已于 2026-07-22 完成供应商原生联网全栈实现并提交（`0343c56`）。真实供应商联网验收受限于 API 凭证——当前唯一已配置供应商 DeepSeek（`deepseek-v4-flash`）不支持原生联网（`webGrounding: "unsupported"`），未来配置 OpenAI、Gemini 或 Anthropic 凭证后即可激活对应联网能力。阶段 F（联网搜索策略改进）已于 2026-07-23 完成 DeerFlow 源码调研和自建搜索链路诊断，F1（日志+查询改写）待启动。当前验证基线：Node 测试 205/205，WebUI 测试 197/197，Playwright Chromium 39/43（3 项失败为真实模型验收 spec 需真实密钥 + 1 项 e2e 数据库隔离干扰，均为已知限制）。
+进行中：阶段 E（可信研究能力）已于 2026-07-22 完成供应商原生联网全栈实现并提交（`0343c56`）。真实供应商联网验收受限于 API 凭证——当前唯一已配置供应商 DeepSeek（`deepseek-v4-flash`）不支持原生联网（`webGrounding: "unsupported"`），未来配置 OpenAI、Gemini 或 Anthropic 凭证后即可激活对应联网能力。阶段 F（联网搜索策略改进）已于 2026-07-23 完成 DeerFlow 源码调研和自建搜索链路诊断。F1（日志+查询改写）已于 2026-07-23 完成并待提交。当前验证基线：Node 测试 205/205，WebUI 测试 197/197，Playwright Chromium 39/43（3 项失败为真实模型验收 spec 需真实密钥 + 1 项 e2e 数据库隔离干扰，均为已知限制）。
 
 ## 1. 记录原则
 
@@ -704,6 +704,31 @@ AI 回答的段落结构有了前后端共用的唯一确定性规则；模型�
 
 F1（日志+查询改写）优先级已确认，待启动。实施时读取 `docs/agents/search-optimization.md` 和 `docs/MVP_IMPLEMENTATION_PLAN.md` 阶段 F 获取完整上下文。改动集中在 `apps/api/src/web-search-agent.ts`，验证级别二至三级。
 
+### 3.25 F1：搜索链路日志与查询改写（2026-07-23）
+
+**目标**
+
+为自建搜索（Bing HTML 抓取）添加可观测性，并通过前置 LLM 查询改写修复中英混合查询的中文分词偏差问题。
+
+**改动内容**
+
+| 文件 | 改动 |
+|------|------|
+| `apps/api/src/web-search-agent.ts` | 在 `searchBing`、`fetchPageContent`、`runWebSearch` 关键节点添加 `console.log`（`[web-search]` 前缀），输出 query、结果数、抓取成功/失败、总耗时 |
+| `packages/model-gateway/src/index.ts` | 新增 `ModelGateway.reformulateSearchQuery()` 方法：轻量调用当前模型，将自然语言问题改写为搜索引擎关键词（10s 超时、200 token 上限、失败时返回原文不阻塞搜索） |
+| `apps/api/src/service.ts` | 在 `generateAgentGrounded` 中搜索前调用 `reformulateSearchQuery`，改写后的 query 传给 `runWebSearch`；`queries` 数组同时保留改写前后两个查询词 |
+
+**效果**
+
+- 日志示例：`[web-search] searchBing query="loop engineering 定义 概念"` → `[web-search] searchBing completed resultCount=8 latency=1234ms` → `[web-search] runWebSearch completed fetchOk=4 fetchFail=1 sourceCount=5 latency=5678ms`
+- 改写示例：用户输入「什么是 loop engineering」→ 改写为「loop engineering 定义 概念 原理」，避开 Bing 对中文语气词的分词偏好
+
+**验证**
+
+- TypeScript 构建：零错误
+- Node 全量测试：205/205 通过
+- 验证级别：二级（无浏览器变更，仅 API + model-gateway）
+
 ## 4. 当前数据与接口里程碑
 
 | 版本 | 主要变化 |
@@ -784,9 +809,9 @@ F1（日志+查询改写）优先级已确认，待启动。实施时读取 `doc
 阶段 E（可信研究能力）全栈实现已提交（`0343c56`）。真实供应商联网验收受限于 API 凭证：当前 DeepSeek 不支持原生联网，未来配置 OpenAI / Gemini / Anthropic 凭证后即可执行一次性收尾验收。
 
 阶段 F（联网搜索策略改进）调研已完成（2026-07-23），三阶段计划已确认：
-1. **F1（日志+查询改写）**：在 `web-search-agent.ts` 关键节点加 console.log，前置 LLM query reformulation 修复中文分词问题。改动量小，不改架构。待启动；
-2. **F2（工具化+Agent循环）**：拆分 web_search/web_fetch 为独立工具，引入 Agent tool-use loop，让模型自主控制搜索节奏。对标 DeerFlow 搜索体验的核心改造；
-3. **F3（多后端）**：增加 DDG / Tavily 等可选后端，解除 Bing 单点依赖。
+1. **F1（日志+查询改写）**：在 `web-search-agent.ts` 关键节点加 console.log，前置 LLM query reformulation 修复中文分词问题。已完成（2026-07-23）。改动量小，不改架构；
+2. **F2（工具化+Agent循环）**：拆分 web_search/web_fetch 为独立工具，引入 Agent tool-use loop，让模型自主控制搜索节奏。对标 DeerFlow 搜索体验的核心改造。待启动；
+3. **F3（多后端）**：增加 DDG / Tavily 等可选后端，解除 Bing 单点依赖。待启动。
 
 完整调研结论、设计决策和切片详情见 `docs/agents/search-optimization.md` 和 `docs/MVP_IMPLEMENTATION_PLAN.md` 阶段 F。
 

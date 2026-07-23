@@ -412,6 +412,45 @@ ${input.recentUserMessages?.length ? `\n用户最近关注的问题：\n${input.
     return parseResearchSelectionInsight(raw);
   }
 
+  /**
+   * 将用户自然语言问题改写为适合搜索引擎的查询关键词。
+   * 轻量调用，不做深层语义理解，只做中英文分词优化。
+   */
+  async reformulateSearchQuery(
+    userMessage: string,
+    options: { model?: string; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<string> {
+    if (!userMessage.trim()) return userMessage;
+    const prompt = `将以下用户问题改写为适合搜索引擎的查询关键词。规则：
+- 中文关键词在前，英文术语原样保留（仅词级，不要整句翻译）
+- 提取核心实体和概念，去掉疑问词、语气词（如"什么是""怎么""吗""呢"）
+- 返回空格分隔的关键词，不要句子，不要解释
+
+用户问题：${userMessage}
+
+关键词：`;
+    try {
+      const response = await this.complete({
+        prompt,
+        model: options.model ?? this.modelName,
+        responseFormat: { type: "json_object" },
+        thinking: false,
+        maxTokens: 200,
+        timeoutMs: options.timeoutMs ?? 10_000,
+      }, options.context ?? { purpose: "query_reformulation" });
+      const parsed = JSON.parse(response.content) as { keywords?: unknown };
+      if (typeof parsed.keywords === "string" && parsed.keywords.trim()) {
+        const reformulated = parsed.keywords.trim();
+        console.log(`[search-query] reformulated "${userMessage.slice(0, 80)}" → "${reformulated}"`);
+        return reformulated;
+      }
+    } catch (error) {
+      console.log(`[search-query] reformulation failed, using original query: ${error instanceof Error ? error.message : "unknown"}`);
+    }
+    // 失败时返回原文，不阻塞搜索
+    return userMessage.trim();
+  }
+
   async clusterMaterials(materials: Array<{ id: string; content: string }>, options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): Promise<{ clusters: Array<{ name: string; summary: string; materialIds: string[] }>; unclusteredMaterialIds: string[] }> {
     if (materials.length <= 1) return { clusters: [], unclusteredMaterialIds: materials.map((m) => m.id) };
     const requestedModel = options.model ?? this.modelName;

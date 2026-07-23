@@ -143,8 +143,18 @@ export class CaptureService {
       groundingCapability,
       async generateAgentGrounded(request) {
         const direction = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
-        const search = await runWebSearch(direction, 5);
+
+        // 查询改写：将用户自然语言问题转为搜索引擎关键词
+        const reformulatedQuery = await gateway.reformulateSearchQuery(direction, {
+          context: { workflowRunId: request.taskId, purpose: "query_reformulation" },
+        });
+        const searchQuery = reformulatedQuery || direction;
+
+        const search = await runWebSearch(searchQuery, 5);
         const queries = search.status === "completed" ? [search.query] : [];
+        if (searchQuery !== direction) {
+          queries.unshift(direction); // 保留原始问题作为第一条查询记录
+        }
         const sources = search.sources;
 
         // Build prompt with search materials

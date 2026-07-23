@@ -24,6 +24,8 @@ export interface WebSearchOutcome {
  * 请求 Bing 搜索结果页 HTML，解析其中的 li.b_algo 结果块。
  */
 export async function searchBing(query: string): Promise<WebSearchOutcome> {
+  const searchStartedAt = Date.now();
+  console.log(`[web-search] searchBing query="${query}"`);
   try {
     const params = new URLSearchParams({ q: query.trim(), count: "10" });
     const controller = new AbortController();
@@ -44,16 +46,20 @@ export async function searchBing(query: string): Promise<WebSearchOutcome> {
       clearTimeout(timer);
     }
     if (!response.ok) {
+      console.log(`[web-search] searchBing error query="${query.trim()}" httpStatus=${response.status} latency=${Date.now() - searchStartedAt}ms`);
       return { status: "error", query: query.trim(), results: [], errorMessage: `Bing returned HTTP ${response.status}` };
     }
     const html = await response.text();
     const results = parseBingHtml(html);
     if (!results.length) {
+      console.log(`[web-search] searchBing no_results query="${query.trim()}" latency=${Date.now() - searchStartedAt}ms`);
       return { status: "no_results", query: query.trim(), results: [] };
     }
+    console.log(`[web-search] searchBing completed query="${query.trim()}" resultCount=${results.length} latency=${Date.now() - searchStartedAt}ms`);
     return { status: "completed", query: query.trim(), results };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown search error";
+    console.log(`[web-search] searchBing error query="${query.trim()}" message="${message}" latency=${Date.now() - searchStartedAt}ms`);
     return { status: "error", query: query.trim(), results: [], errorMessage: message };
   }
 }
@@ -117,6 +123,7 @@ export async function fetchPageContent(url: string): Promise<{
   text: string;
   errorMessage?: string;
 }> {
+  const fetchStartedAt = Date.now();
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new Error("Page fetch timed out")), PAGE_FETCH_TIMEOUT_MS);
@@ -132,6 +139,7 @@ export async function fetchPageContent(url: string): Promise<{
       clearTimeout(timer);
     }
     if (!response.ok) {
+      console.log(`[web-search] fetchPageContent error url="${url}" httpStatus=${response.status} latency=${Date.now() - fetchStartedAt}ms`);
       return { url, text: "", errorMessage: `HTTP ${response.status}` };
     }
     const contentType = (response.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
@@ -147,9 +155,12 @@ export async function fetchPageContent(url: string): Promise<{
       text = (await response.text()).slice(0, MAX_PAGE_BYTES);
     }
     const trimmed = text.trim();
-    return { url, text: trimmed.slice(0, 6000), errorMessage: trimmed ? undefined : "No readable text" };
+    const result = { url, text: trimmed.slice(0, 6000), errorMessage: trimmed ? undefined : "No readable text" };
+    console.log(`[web-search] fetchPageContent ${result.errorMessage ? "error" : "completed"} url="${url}" textLen=${result.text.length} latency=${Date.now() - fetchStartedAt}ms${result.errorMessage ? ` error="${result.errorMessage}"` : ""}`);
+    return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown fetch error";
+    console.log(`[web-search] fetchPageContent error url="${url}" message="${message}" latency=${Date.now() - fetchStartedAt}ms`);
     return { url, text: "", errorMessage: message };
   }
 }
@@ -167,21 +178,29 @@ export async function runWebSearch(
   searchResults: WebSearchResult[];
   errorMessage?: string;
 }> {
+  const runStartedAt = Date.now();
   if (!query.trim() || query.trim().length < 2) {
+    console.log(`[web-search] runWebSearch error query="${query.trim()}" message="Query too short"`);
     return { status: "error", query: query.trim(), sources: [], searchResults: [], errorMessage: "Query too short" };
   }
   const outcome = await searchBing(query.trim());
   if (outcome.status !== "completed" || !outcome.results.length) {
+    console.log(`[web-search] runWebSearch ${outcome.status} query="${outcome.query}" latency=${Date.now() - runStartedAt}ms`);
     return { status: outcome.status, query: outcome.query, sources: [], searchResults: [], errorMessage: outcome.errorMessage };
   }
 
   const top = outcome.results.slice(0, maxSources);
+  console.log(`[web-search] runWebSearch fetching ${top.length} pages...`);
   const pages = await Promise.all(top.map((result) => fetchPageContent(result.url)));
 
   const sources: ResearchGroundingSourceRecord[] = [];
+  let fetchSuccessCount = 0;
+  let fetchFailCount = 0;
   for (let i = 0; i < top.length; i += 1) {
     const result = top[i];
     const page = pages[i];
+    if (page.text) fetchSuccessCount += 1;
+    else fetchFailCount += 1;
     sources.push({
       id: "", // assigned by caller
       runId: "", // assigned by caller
@@ -193,6 +212,7 @@ export async function runWebSearch(
     });
   }
 
+  console.log(`[web-search] runWebSearch completed query="${outcome.query}" searchResults=${top.length} fetchOk=${fetchSuccessCount} fetchFail=${fetchFailCount} sourceCount=${sources.length} latency=${Date.now() - runStartedAt}ms`);
   return { status: "completed", query: outcome.query, sources, searchResults: top };
 }
 
