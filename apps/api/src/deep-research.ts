@@ -111,6 +111,8 @@ export class DeepResearchService {
     const task: ResearchTaskRecord = {
       id: randomUUID(), sessionId: branch.sessionId, inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
       idempotencyKey, status: "queued", retryable: false,
+      provider: this.options.research.providerId,
+      model: this.options.research.modelId,
       promptVersion: RESEARCH_CHAT_PROMPT_VERSION,
       createdAt: now, updatedAt: now,
     };

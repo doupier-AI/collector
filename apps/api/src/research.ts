@@ -65,6 +65,11 @@ export class ResearchSessionService {
     if (this.options.autoRunTasks !== false) this.scheduleRecovery();
   }
 
+  /** 当前 provider 标识（供 DeepResearchService 等下游写入 task 元数据）。 */
+  get providerId(): string | undefined { return this.provider?.provider; }
+  /** 当前 provider 模型（供 DeepResearchService 等下游写入 task 元数据）。 */
+  get modelId(): string | undefined { return this.provider?.model; }
+
   async createSession(title: string | undefined, idempotencyKey: string): Promise<ResearchSessionRecord> {
     if (!idempotencyKey.trim()) throw new ResearchValidationError("Idempotency-Key is required");
     if (idempotencyKey.length > 200) throw new ResearchValidationError("Idempotency-Key must not exceed 200 characters");
