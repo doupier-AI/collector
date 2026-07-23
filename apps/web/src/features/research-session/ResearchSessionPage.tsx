@@ -230,6 +230,8 @@ export function ResearchSessionPage() {
                       }
                     : undefined
                 }
+                citations={view.citations}
+                groundingSources={view.groundingSources}
               />
             );
           })}

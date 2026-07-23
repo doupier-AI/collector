@@ -92,9 +92,9 @@ test.describe("深入研究与来源返回", () => {
     await expect(sourceBar).toBeVisible();
     await expect(sourceBar).toContainText("来自《新研究会话》的选区");
     await expect(sourceBar).toContainText(SELECTED);
-    await expect(page.getByTestId("research-scope-note")).toContainText("未联网检索");
+    await expect(page.getByTestId("research-scope-note")).toContainText("自动使用当前模型供应商的联网能力");
     await expect(page.getByText(/这是深入研究第一轮/)).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByText(/未联网检索，回答完毕/)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(/这是深入研究第一轮/)).toBeVisible({ timeout: 15_000 });
 
     // 网络契约：深入研究请求带稳定幂等键；分支视图走分支端点
     const drPost = apiRequests.find(
@@ -188,7 +188,7 @@ test.describe("深入研究与来源返回", () => {
     const sourceBar = page.getByTestId("selection-source-bar");
     await expect(sourceBar).toContainText("来自《新研究会话》的选区");
     await expect(sourceBar).toContainText(SELECTED);
-    await expect(page.getByTestId("research-scope-note")).toContainText("未联网检索");
+    await expect(page.getByTestId("research-scope-note")).toContainText("自动使用当前模型供应商的联网能力");
     await expect(page.getByText("把本地优先的存储边界讲透", { exact: true })).toBeVisible();
     await expect(page.getByText(/这是深入研究第一轮/)).toBeVisible({ timeout: 15_000 });
 

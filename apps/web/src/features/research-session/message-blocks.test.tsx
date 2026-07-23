@@ -55,6 +55,37 @@ describe("AI 回答分块渲染", () => {
 
     expect(await screen.findByText("只有一段。")).toHaveAttribute("data-block-id", "m-out#p0");
   });
+
+  it("在持久化偏移处绘制零文本引用标记，并保留消息级编号", async () => {
+    const view = viewWithAssistant("第一段文字。\n\n第二段文字。");
+    view.tasks[0] = makeTask({
+      id: "task-1",
+      status: "completed",
+      inputMessageId: "m-in",
+      outputMessageId: "m-out",
+      groundingScope: { status: "grounded", sourceCount: 2, citationCount: 2, runId: "run-1" },
+    });
+    view.groundingSources = [
+      { id: "source-1", runId: "run-1", ordinal: 1, title: "第一个来源", url: "https://example.com/one", createdAt: "2026-01-01T00:00:00.000Z" },
+      { id: "source-2", runId: "run-1", ordinal: 2, title: "第二个来源", url: "https://example.com/two", createdAt: "2026-01-01T00:00:00.000Z" },
+    ];
+    view.citations = [
+      { id: "citation-1", messageId: "m-out", runId: "run-1", sourceId: "source-1", blockOrdinal: 0, markerOffset: 2, createdAt: "2026-01-01T00:00:00.000Z" },
+      { id: "citation-2", messageId: "m-out", runId: "run-1", sourceId: "source-2", blockOrdinal: 1, markerOffset: 2, createdAt: "2026-01-01T00:00:00.000Z" },
+    ];
+    renderSessionPage({ getResearchSessionView: async () => view });
+
+    const firstMarker = await screen.findByLabelText("打开来源 1：第一个来源");
+    const secondMarker = screen.getByLabelText("打开来源 2：第二个来源");
+    expect(firstMarker).toHaveAttribute("href", "https://example.com/one");
+    expect(firstMarker).toHaveAttribute("rel", "noopener noreferrer");
+    expect(firstMarker.querySelector("sup")).toHaveTextContent("");
+    expect(firstMarker.querySelector("sup")).toHaveAttribute("data-citation-index", "1");
+    expect(secondMarker.querySelector("sup")).toHaveAttribute("data-citation-index", "2");
+    expect(firstMarker.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p0");
+    expect(secondMarker.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p1");
+    expect(screen.getByText("本轮可核验来源")).toBeInTheDocument();
+  });
 });
 
 describe("模型状态显示", () => {

@@ -71,7 +71,7 @@ describe("ResearchBranchPage", () => {
       "href",
       "/research/session-1?sel=selection-1",
     );
-    expect(screen.getByTestId("research-scope-note")).toHaveTextContent("未联网检索");
+    expect(screen.getByTestId("research-scope-note")).toHaveTextContent("自动使用当前模型供应商的联网能力");
 
     expect(await screen.findByText("把这段讲透")).toBeInTheDocument();
     expect(screen.getByText("多头注意力让每个位置看到不同信息。")).toBeInTheDocument();

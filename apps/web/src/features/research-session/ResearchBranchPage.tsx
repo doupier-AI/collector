@@ -138,6 +138,8 @@ export function ResearchBranchPage() {
                 task={task}
                 retrying={task ? retryingTaskId === task.id : false}
                 onRetry={handleRetry}
+                citations={view.citations}
+                groundingSources={view.groundingSources}
               />
             );
           })}

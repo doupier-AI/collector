@@ -249,7 +249,7 @@ test("场景一：Chat 真实回答 → 选区真实分析 → 深入研究分�
   const sourceBar = page.getByTestId("selection-source-bar");
   await expect(sourceBar).toBeVisible();
   await expect(sourceBar).toContainText(selected);
-  await expect(page.getByTestId("research-scope-note")).toContainText("未联网检索");
+  await expect(page.getByTestId("research-scope-note")).toContainText("自动使用当前模型供应商的联网能力");
   const firstRound = await waitCompletedAnswerText(page, 1);
   expect(firstRound, "第一轮研究应是真实生成").not.toContain("本地演示");
 
@@ -363,7 +363,7 @@ test("场景二：文档导入 → 选区真实分析 → 独立研究会话真�
   const sourceBar = page.getByTestId("selection-source-bar");
   await expect(sourceBar).toContainText(DOC_FILE);
   await expect(sourceBar).toContainText(DOC_SELECTED);
-  await expect(page.getByTestId("research-scope-note")).toContainText("未联网检索");
+  await expect(page.getByTestId("research-scope-note")).toContainText("自动使用当前模型供应商的联网能力");
   await waitCompletedAnswerText(page, 1);
 
   // 返回原文：回到来源内容并高亮原选区
@@ -538,7 +538,7 @@ test("场景四：刷新不重复创建分支与稍后再学项目，材料范�
 
   // 材料范围如实：分支视图固定说明未联网检索，不暗示已核验
   await page.goto(`/research/${sessionId}/branch/${branchId}`);
-  await expect(page.getByTestId("research-scope-note")).toContainText("未联网检索");
+  await expect(page.getByTestId("research-scope-note")).toContainText("自动使用当前模型供应商的联网能力");
 
   // 全程无演示标记
   const bodyText = await page.locator("body").innerText();

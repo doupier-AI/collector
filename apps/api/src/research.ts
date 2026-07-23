@@ -1,7 +1,16 @@
 import { randomUUID } from "node:crypto";
-import type {
-  DeepResearchContext,
-  DeepResearchMode,
+import {
+  deriveMessageBlocks,
+  redactGroundingValue,
+  sanitizeGroundingQueries,
+  sanitizeGroundingUrl,
+  validateResearchGroundingResult,
+  type DeepResearchContext,
+  type DeepResearchMode,
+  ResearchGroundingResult,
+  ResearchGroundingScenario,
+  ResearchGroundingScopeStatus,
+  ResearchGroundingSourceRecord,
   ResearchMessageRecord,
   ResearchSessionRecord,
   ResearchSessionView,
@@ -28,7 +37,9 @@ export interface ResearchGenerationProvider {
   readonly provider: string;
   readonly model: string;
   readonly promptVersion?: string;
+  readonly groundingCapability?: import("@collector/capture-contracts").ProviderWebGrounding;
   generate(request: ResearchGenerationRequest): AsyncIterable<string>;
+  generateGrounded?(request: ResearchGenerationRequest & { scenario: ResearchGroundingScenario }): Promise<{ content: string; status: ResearchGroundingScopeStatus; queries: string[]; sources: Array<{ providerSourceId?: string; title: string; url?: string; snippet?: string; publishedAt?: string; locator?: string }>; citations: Array<{ sourceOrdinal: number; startOffset: number; endOffset: number; providerCitationId?: string }>; responseSummary?: Record<string, unknown>; errorMessage?: string }>;
 }
 
 export interface ResearchServiceOptions {
@@ -76,10 +87,15 @@ export class ResearchSessionService {
     // branchId 不侵入会话主视图。
     const messages = this.store.listResearchMessages(id).filter((message) => message.branchId === undefined);
     const messageIds = new Set(messages.map((message) => message.id));
+    const tasks = this.store.listResearchTasks(id).filter((task) => messageIds.has(task.inputMessageId));
+    const runIds = tasks.flatMap((task) => task.groundingScope?.runId ? [task.groundingScope.runId] : []);
+    const groundingSources = runIds.flatMap((runId) => this.store.listResearchGroundingSources(runId));
     return {
       session,
       messages,
-      tasks: this.store.listResearchTasks(id).filter((task) => messageIds.has(task.inputMessageId)),
+      tasks,
+      ...(groundingSources.length ? { groundingSources } : {}),
+      ...(messages.length ? { citations: this.store.listResearchCitationsForMessages(messages.map((message) => message.id)) } : {}),
       attachments: this.store.listResearchAttachments(id),
       importTasks: this.store.listResearchImportTasks(id),
       branches: this.store.listResearchBranches(id),
@@ -174,12 +190,26 @@ export class ResearchSessionService {
       let generatedCharacters = 0;
       let producedContent = false;
       try {
-        for await (const delta of provider.generate({ session, messages, taskId: task.id, deepResearch: generation.deepResearch })) {
-          if (!delta) continue;
-          generatedCharacters += delta.length;
+        const scenario: ResearchGroundingScenario = generation.deepResearch
+          ? "deep_research_first_round"
+          : this.isBranchFollowUp(task.id) ? "branch_follow_up" : "chat";
+        if (provider.generateGrounded) {
+          const grounded = await provider.generateGrounded({ session, messages, taskId: task.id, deepResearch: generation.deepResearch, scenario });
+          const result = this.groundingResultFor(task, grounded, scenario);
+          await this.store.saveResearchGroundingResult(result);
+          generatedCharacters = grounded.content.length;
           if (generatedCharacters > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
+          if (!grounded.content) throw new Error("Provider returned an empty response");
           producedContent = true;
-          await this.store.appendResearchTaskDelta(task.id, delta);
+          await this.store.appendResearchTaskDelta(task.id, grounded.content);
+        } else {
+          for await (const delta of provider.generate({ session, messages, taskId: task.id, deepResearch: generation.deepResearch })) {
+            if (!delta) continue;
+            generatedCharacters += delta.length;
+            if (generatedCharacters > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
+            producedContent = true;
+            await this.store.appendResearchTaskDelta(task.id, delta);
+          }
         }
         if (!producedContent) throw new Error("Provider returned an empty response");
         await this.store.completeResearchTask(task.id);
@@ -192,6 +222,76 @@ export class ResearchSessionService {
     } finally {
       this.running.delete(id);
     }
+  }
+
+  private isBranchFollowUp(taskId: string): boolean {
+    const task = this.store.getResearchTask(taskId);
+    if (!task) return false;
+    const output = this.store.getResearchMessage(task.outputMessageId);
+    if (!output?.branchId) return false;
+    const thread = this.store.listResearchMessages(task.sessionId).filter((message) => message.branchId === output.branchId && message.role === "user");
+    return thread.length > 1;
+  }
+
+  private groundingResultFor(
+    task: ResearchTaskRecord,
+    grounded: NonNullable<ResearchGenerationProvider["generateGrounded"]> extends (request: any) => Promise<infer Result> ? Result : never,
+    scenario: ResearchGroundingScenario,
+  ): ResearchGroundingResult {
+    const createdAt = new Date().toISOString();
+    const runId = randomUUID();
+    const sourceByOrdinal = new Map<number, ResearchGroundingSourceRecord>();
+    const sources = grounded.sources.map((source, index) => {
+      const title = groundingText(source.title, "来源元数据不足");
+      const snippet = groundingText(source.snippet);
+      const locator = groundingText(source.locator);
+      const record: ResearchGroundingSourceRecord = {
+        id: randomUUID(),
+        runId,
+        ordinal: index + 1,
+        title,
+        ...(source.providerSourceId ? { providerSourceId: groundingText(source.providerSourceId) } : {}),
+        ...(sanitizeGroundingUrl(source.url) ? { url: sanitizeGroundingUrl(source.url) } : {}),
+        ...(snippet ? { snippet } : {}),
+        ...(source.publishedAt ? { publishedAt: groundingText(source.publishedAt) } : {}),
+        ...(locator ? { locator } : {}),
+        createdAt,
+      };
+      sourceByOrdinal.set(index + 1, record);
+      return record;
+    });
+    const blocks = deriveMessageBlocks(grounded.content);
+    const citations = grounded.citations.flatMap((citation) => {
+      const source = sourceByOrdinal.get(citation.sourceOrdinal);
+      const block = blocks.find((candidate) => citation.startOffset >= candidate.startOffset && citation.startOffset <= candidate.startOffset + candidate.text.length);
+      if (!source || !block) return [];
+      return [{ id: randomUUID(), messageId: task.outputMessageId, runId, sourceId: source.id, blockOrdinal: block.ordinal, markerOffset: Math.max(0, Math.min(citation.startOffset - block.startOffset, block.text.length)), ...(citation.providerCitationId ? { providerCitationId: citation.providerCitationId } : {}), createdAt }];
+    });
+    const scope = { status: grounded.status, sourceCount: sources.length, citationCount: citations.length, runId };
+    const result: ResearchGroundingResult = {
+      content: grounded.content,
+      scope,
+      run: {
+        id: runId,
+        taskId: task.id,
+        sessionId: task.sessionId,
+        provider: this.provider?.provider ?? "unknown",
+        model: this.provider?.model ?? "unknown",
+        capability: this.provider?.groundingCapability ?? "unsupported",
+        scenario,
+        status: grounded.status,
+        queries: sanitizeGroundingQueries(grounded.queries),
+        ...(grounded.responseSummary ? { responseSummary: groundingRecord(grounded.responseSummary) } : {}),
+        ...(grounded.errorMessage ? { errorMessage: groundingText(grounded.errorMessage) } : {}),
+        attempt: this.store.listResearchGroundingRuns(task.id).length + 1,
+        createdAt,
+        completedAt: createdAt,
+      },
+      sources,
+      citations,
+    };
+    validateResearchGroundingResult(result);
+    return result;
   }
 
   /**
@@ -263,6 +363,19 @@ export class ResearchSessionService {
   private scheduleTask(id: string): void {
     setImmediate(() => void this.processTask(id).catch(() => undefined));
   }
+}
+
+/** 所有供应商可控文本在进入 SQLite 前再做一次递归脱敏与长度限制。 */
+function groundingText(value: unknown, fallback?: string): string {
+  const redacted = redactGroundingValue(value);
+  return typeof redacted === "string" && redacted.trim() ? redacted : fallback ?? "";
+}
+
+function groundingRecord(value: Record<string, unknown>): Record<string, unknown> {
+  const redacted = redactGroundingValue(value);
+  return redacted && typeof redacted === "object" && !Array.isArray(redacted)
+    ? redacted as Record<string, unknown>
+    : {};
 }
 
 export class ResearchNotFoundError extends Error {}

@@ -135,6 +135,19 @@ export class CaptureService {
       provider: gateway.providerName,
       model: gateway.modelName,
       promptVersion: "research-chat-v1",
+      groundingCapability: gateway.providerGroundingCapability,
+      async generateGrounded(request) {
+        const direction = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
+        const messages = request.deepResearch
+          ? [{ role: "user" as const, content: `用户选区原文：${request.deepResearch.selectionText}\n\n研究方向：${direction}\n\n${request.deepResearch.contextBefore ? `选区前文：${request.deepResearch.contextBefore}\n` : ""}${request.deepResearch.contextAfter ? `选区后文：${request.deepResearch.contextAfter}\n` : ""}请基于这些材料并联网研究后回答。` }]
+          : request.messages;
+        return gateway.generateGroundedResearch(messages, {
+          taskId: request.taskId,
+          scenario: request.scenario,
+          requireGrounding: true,
+          promptVersion: request.deepResearch ? "deep-research-grounding-v1" : "research-grounding-v1",
+        }, { context: { workflowRunId: request.taskId, purpose: "research_grounding", promptVersion: request.deepResearch ? "deep-research-grounding-v1" : "research-grounding-v1" } });
+      },
       async *generate(request) {
         if (request.deepResearch) {
           const direction = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
@@ -216,6 +229,7 @@ export class CaptureService {
       mode: this.options.mvpDemoMode ? "demo" : configured ? "real" : "unconfigured",
       provider: profile?.providerId ?? this.modelGateway?.providerName,
       model: profile?.model ?? this.modelGateway?.modelName,
+      webGrounding: this.modelGateway?.providerGroundingCapability,
     };
   }
   async setAiConfiguration(consent: boolean, configured: boolean): Promise<void> {

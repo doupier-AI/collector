@@ -1,6 +1,6 @@
 # Domain Docs
 
-Collector 采用单一领域上下文。WebUI、API、存储、模型网关与搜索适配层共享 `CONTEXT.md` 中的产品语言。
+Collector 采用单一领域上下文。WebUI、API、存储与模型网关共享 `CONTEXT.md` 中的产品语言；联网搜索由模型供应商能力提供，归一后同样进入该上下文。
 
 ## 开始工程任务前
 

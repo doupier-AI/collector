@@ -13,14 +13,17 @@ export type CaptureStatus = "inbox" | "needs_processing" | "failed";
 export type RelationType = "related" | "extends" | "supports" | "contradicts" | "duplicate" | "independent";
 export type ReviewDecision = "accepted" | "rejected" | "deferred";
 
-export type ProviderApiMode = "openai_chat_completions" | "anthropic_messages";
+export type ProviderApiMode = "openai_chat_completions" | "openai_responses" | "gemini_generate_content" | "anthropic_messages";
 export type ProviderAuthMode = "bearer" | "api_key_header";
 export type ProviderThinkingMode = "none" | "deepseek";
+export type ProviderWebGrounding = "unsupported" | "openai_web_search" | "gemini_google_search" | "anthropic_web_search";
 
 export interface ProviderCapabilities {
   structuredJson: boolean;
   thinkingMode: ProviderThinkingMode;
   modelDiscovery: boolean;
+  /** 当前供应商协议已验证的联网能力；自定义兼容端点必须显式保持 unsupported。 */
+  webGrounding: ProviderWebGrounding;
 }
 
 export interface ProviderModelPricing {
@@ -535,6 +538,8 @@ export interface AiConfigurationView {
   mode: AiConfigurationMode;
   provider?: string;
   model?: string;
+  /** 当前模型供应商的联网搜索能力；unsupported 时界面不显示联网状态。 */
+  webGrounding?: ProviderWebGrounding;
 }
 
 // ── Research Selection & Insight (MVP 阶段 B) ──────────────────────
@@ -756,6 +761,16 @@ export interface ResearchTaskError {
   message: string;
 }
 
+export type ResearchGroundingScopeStatus = "grounded" | "grounding_failed" | "grounding_unsupported" | "no_verifiable_sources" | "not_requested";
+
+/** 提供给任务视图和界面的联网结果摘要；不包含任何供应商原始响应或凭证。 */
+export interface ResearchGroundingScope {
+  status: ResearchGroundingScopeStatus;
+  sourceCount: number;
+  citationCount: number;
+  runId?: string;
+}
+
 export interface ResearchTaskRecord {
   id: string;
   sessionId: string;
@@ -767,6 +782,7 @@ export interface ResearchTaskRecord {
   provider?: string;
   model?: string;
   promptVersion: string;
+  groundingScope?: ResearchGroundingScope;
   error?: ResearchTaskError;
   createdAt: string;
   updatedAt: string;
@@ -779,6 +795,8 @@ export interface ResearchSessionView {
   /** 只包含会话主线消息；研究分支消息通过研究分支视图获取。 */
   messages: ResearchMessageRecord[];
   tasks: ResearchTaskRecord[];
+  groundingSources?: ResearchGroundingSourceRecord[];
+  citations?: ResearchCitationRecord[];
   attachments?: ResearchAttachmentRecord[];
   importTasks?: ResearchImportTaskRecord[];
   branches?: ResearchBranchRecord[];
@@ -921,6 +939,8 @@ export interface ResearchBranchView {
   messages: ResearchMessageRecord[];
   /** 输入消息属于该分支的任务。 */
   tasks: ResearchTaskRecord[];
+  groundingSources?: ResearchGroundingSourceRecord[];
+  citations?: ResearchCitationRecord[];
 }
 
 // ── Research Later (MVP 阶段 D) ─────────────────────────────
@@ -1031,179 +1051,125 @@ export function deriveDefaultLaterSummary(selectionText: string): string {
     : base;
 }
 
-// ── Web Search & Citations (MVP 阶段 E) ─────────────────────────────
+// ── Provider Grounding & Citations (MVP 阶段 E) ──────────────────────
 
-/** 实质性搜索查询的最小字符数；短于此视为无实质查询，本次生成不联网（scope skipped）。 */
-export const WEB_SEARCH_QUERY_MIN_CHARACTERS = 8;
-/** 搜索查询的最大字符数（超出截断后进入轨迹与搜索请求）。 */
-export const WEB_SEARCH_QUERY_MAX_CHARACTERS = 400;
-/** 单次搜索实际读取为来源材料的候选结果上限。 */
-export const WEB_SEARCH_MAX_SOURCES = 5;
-/** 页面正文摘录进入轨迹与生成材料的最大字符数。 */
-export const WEB_SEARCH_EXCERPT_MAX_CHARACTERS = 1200;
-/** 搜索结果摘要的最大字符数。 */
-export const WEB_SEARCH_SNIPPET_MAX_CHARACTERS = 400;
+export const RESEARCH_GROUNDING_MAX_SOURCES = 20;
+export const RESEARCH_GROUNDING_TEXT_MAX_CHARACTERS = 2_000;
+export const RESEARCH_GROUNDING_QUERY_MAX_CHARACTERS = 400;
 
-/**
- * 搜索来源材料。ordinal 是生成提示与行内引用中使用的来源编号（从 1 开始），
- * 同时是本次搜索轨迹内的稳定序号；snippet 是搜索结果摘要，用于界面来源预览，
- * 页面正文摘录记录在 WebPageReadRecord。
- */
-export interface WebSearchSource {
-  ordinal: number;
-  url: string;
-  title: string;
-  snippet: string;
+export type ResearchGroundingScenario = "chat" | "deep_research_first_round" | "branch_follow_up";
+
+/** 研究层只表达联网意图，不接触供应商工具协议或原始响应。 */
+export interface ResearchGroundingRequest {
+  taskId: string;
+  scenario: ResearchGroundingScenario;
+  requireGrounding: true;
+  promptVersion: string;
 }
 
-/**
- * 联网搜索记录：每个研究生成任务至多对应一条成功或失败的搜索记录，全部进入本地轨迹。
- * resultCount 是搜索后端返回的候选结果总数；实际来源材料数量以成功读取的 sources 为准。
- */
-export interface WebSearchRecord {
+/** 一次供应商联网尝试的净化本地轨迹。responseSummary 只能包含白名单摘要。 */
+export interface ResearchGroundingRunRecord {
   id: string;
   taskId: string;
   sessionId: string;
-  query: string;
-  backend: string;
-  status: "completed" | "failed";
-  resultCount: number;
-  /** 成功读取的来源材料（密集编号）；失败时为空。 */
-  sources: WebSearchSource[];
+  provider: string;
+  model: string;
+  capability: ProviderWebGrounding;
+  scenario: ResearchGroundingScenario;
+  status: ResearchGroundingScopeStatus;
+  queries: string[];
+  responseSummary?: Record<string, unknown>;
   errorMessage?: string;
+  attempt: number;
   createdAt: string;
   completedAt?: string;
 }
 
-/**
- * 页面读取记录：对候选搜索结果读取正文的记录，进入本地轨迹。
- * 成功读取的 sourceOrdinal 与 WebSearchSource.ordinal 一致；失败读取为 0（不进入材料）。
- */
-export interface WebPageReadRecord {
+/** 不保存供应商 HTTP 响应、认证头、Cookie 或带敏感查询参数的 URL。 */
+export interface ResearchGroundingSourceRecord {
   id: string;
-  searchId: string;
-  sourceOrdinal: number;
-  url: string;
+  runId: string;
+  providerSourceId?: string;
+  ordinal: number;
   title: string;
-  snippet: string;
-  status: "completed" | "failed";
-  fetchedBytes: number;
-  /** 页面正文摘录（按最大字符数截断）；失败读取为空。 */
-  excerpt: string;
-  errorMessage?: string;
+  url?: string;
+  snippet?: string;
+  publishedAt?: string;
+  locator?: string;
   createdAt: string;
 }
 
-/**
- * 行内引用记录。位置以剥离引用标记后的干净消息文本为准：
- * blockOrdinal 是段落块序号（与 deriveMessageBlocks 同一派生规则），
- * markerOffset 是标记原位置在该段落块文本内的字符偏移。
- * sourceOrdinals 是引用的搜索来源编号（对应 WebSearchSource.ordinal）；
- * 引用越界编号的标记在解析时丢弃，不形成记录。
- */
-export interface WebCitationRecord {
+/** 引用偏移基于最终保存的干净消息文本，与 deriveMessageBlocks 使用同一派生规则。 */
+export interface ResearchCitationRecord {
   id: string;
   messageId: string;
+  runId: string;
+  sourceId: string;
   blockOrdinal: number;
   markerOffset: number;
-  sourceOrdinals: number[];
+  providerCitationId?: string;
   createdAt: string;
 }
 
-/**
- * 生成任务的联网搜索范围：如实说明本轮生成的材料范围。
- * searched = 基于联网来源生成；degraded = 联网搜索不可用，仅用当前材料生成；
- * skipped = 无实质搜索查询或未启用搜索。
- */
-export interface WebSearchScope {
-  status: "searched" | "degraded" | "skipped";
-  sourceCount: number;
-  citationCount?: number;
-}
-
-/** 一条有效行内引用：标记在干净文本中的位置与引用的来源编号。 */
-export interface ParsedWebCitation {
-  blockOrdinal: number;
-  markerOffset: number;
-  sourceOrdinals: number[];
-}
-
-export interface ParseWebCitationsResult {
-  /** 剥离全部引用标记后的消息文本。 */
-  cleanContent: string;
-  citations: ParsedWebCitation[];
-  /** 被丢弃的标记：来源编号越界，或干净文本无段落可定位。只用于轨迹与诊断。 */
-  dropped: Array<{ marker: string; reason: "invalid_source" | "unpositioned" }>;
+export interface ResearchGroundingResult {
+  content: string;
+  scope: ResearchGroundingScope;
+  run: ResearchGroundingRunRecord;
+  sources: ResearchGroundingSourceRecord[];
+  citations: ResearchCitationRecord[];
 }
 
 /**
- * 解析并校验生成内容中的引用标记 `[n]`（n 为一至三位来源编号；纯函数，前后端共用）：
- * 1. 全部标记从内容中剥离，得到干净消息文本；
- * 2. 来源编号越出 [1, sourceCount] 的标记丢弃并记入 dropped；
- * 3. 有效标记按干净文本偏移定位到 deriveMessageBlocks 段落块：
- *    段内或段尾标记归入该段，段落间空白处标记归入上一段段尾，
- *    首段之前的标记归入首段段首。
- * 干净文本为空或无段落块时，有效标记按 unpositioned 丢弃。
+ * 删除 URL 用户信息和常见凭证参数。无法解析或非 http(s) URL 时返回 undefined，
+ * 防止来源预览将供应商内部标识或敏感链接暴露给用户。
  */
-export function parseWebCitations(content: string, sourceCount: number): ParseWebCitationsResult {
-  const markerPattern = /\[(\d{1,3})\]/g;
-  let cleanContent = "";
-  const markers: Array<{ n: number; cleanOffset: number; marker: string }> = [];
-  let last = 0;
-  for (const match of content.matchAll(markerPattern)) {
-    const index = match.index ?? 0;
-    cleanContent += content.slice(last, index);
-    markers.push({ n: Number.parseInt(match[1], 10), cleanOffset: cleanContent.length, marker: match[0] });
-    last = index + match[0].length;
-  }
-  cleanContent += content.slice(last);
-
-  const blocks = deriveMessageBlocks(cleanContent);
-  const citations: ParsedWebCitation[] = [];
-  const dropped: ParseWebCitationsResult["dropped"] = [];
-  for (const item of markers) {
-    if (item.n < 1 || item.n > sourceCount) {
-      dropped.push({ marker: item.marker, reason: "invalid_source" });
-      continue;
+export function sanitizeGroundingUrl(value: string | undefined): string | undefined {
+  if (!value?.trim()) return undefined;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return undefined;
+    url.username = "";
+    url.password = "";
+    for (const key of [...url.searchParams.keys()]) {
+      if (/(?:api[-_]?key|key|token|secret|signature|credential|authorization|session)/i.test(key)) url.searchParams.delete(key);
     }
-    const position = positionCitationMarker(item.cleanOffset, blocks);
-    if (!position) {
-      dropped.push({ marker: item.marker, reason: "unpositioned" });
-      continue;
-    }
-    citations.push({ ...position, sourceOrdinals: [item.n] });
-  }
-  return { cleanContent, citations, dropped };
+    return url.toString();
+  } catch { return undefined; }
 }
 
-/** 把干净文本的全局偏移换算为段落块内位置；段落块为空时返回 undefined。 */
-function positionCitationMarker(cleanOffset: number, blocks: MessageContentBlock[]): { blockOrdinal: number; markerOffset: number } | undefined {
-  if (blocks.length === 0) return undefined;
-  let candidate: MessageContentBlock | undefined;
-  for (const block of blocks) {
-    if (block.startOffset <= cleanOffset) candidate = block;
-    else break;
+/** 递归净化可保存的供应商摘要和错误；未知对象必须先经此函数。 */
+export function redactGroundingValue(value: unknown, maxCharacters = RESEARCH_GROUNDING_TEXT_MAX_CHARACTERS): unknown {
+  if (typeof value === "string") {
+    const redacted = value
+      .replace(/(authorization|api[-_]?key|token|secret|cookie|signature|credential)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]")
+      .replace(/\b(?:sk|AIza)[-_A-Za-z0-9]{12,}\b/g, "[REDACTED]");
+    return redacted.length > maxCharacters ? `${redacted.slice(0, maxCharacters)}…` : redacted;
   }
-  const block = candidate ?? blocks[0];
-  const markerOffset = Math.max(0, Math.min(cleanOffset - block.startOffset, block.text.length));
-  return { blockOrdinal: block.ordinal, markerOffset };
+  if (Array.isArray(value)) return value.slice(0, RESEARCH_GROUNDING_MAX_SOURCES).map((item) => redactGroundingValue(item, maxCharacters));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+      key,
+      /(?:api[-_]?key|token|secret|authorization|cookie|credential)/i.test(key) ? "[REDACTED]" : redactGroundingValue(item, maxCharacters),
+    ]));
+  }
+  return value;
 }
 
-/**
- * 派生搜索查询（纯函数）：优先使用用户最新消息的实质内容；
- * 消息无实质内容时（如深入研究第一轮未输入方向）使用来源选区文本。
- * 两者都无实质内容时返回 undefined，本次生成不联网（scope skipped）。
- */
-export function deriveSearchQuery(input: { userMessage?: string; selectionText?: string }): string | undefined {
-  const message = input.userMessage?.trim();
-  if (message && message.length >= WEB_SEARCH_QUERY_MIN_CHARACTERS) {
-    return message.slice(0, WEB_SEARCH_QUERY_MAX_CHARACTERS);
+/** 统一限制可记录查询；供应商未披露查询时保存空数组而不是猜测。 */
+export function sanitizeGroundingQueries(queries: readonly string[]): string[] {
+  return [...new Set(queries.map((query) => query.trim()).filter(Boolean).map((query) => query.slice(0, RESEARCH_GROUNDING_QUERY_MAX_CHARACTERS)))];
+}
+
+/** 验证引用只能关联同一次联网运行的来源，且锚点可映射到最终回答块。 */
+export function validateResearchGroundingResult(result: ResearchGroundingResult): void {
+  const sourceIds = new Set(result.sources.map((source) => source.id));
+  if (result.sources.some((source, index) => source.runId !== result.run.id || source.ordinal !== index + 1)) throw new Error("Grounding sources must be densely ordered for their run");
+  const blocks = deriveMessageBlocks(result.content);
+  for (const citation of result.citations) {
+    if (citation.runId !== result.run.id || !sourceIds.has(citation.sourceId)) throw new Error("Citation must reference a source from the same grounding run");
+    const block = blocks[citation.blockOrdinal];
+    if (!block || citation.markerOffset < 0 || citation.markerOffset > block.text.length) throw new Error("Citation marker must be positioned in the final message text");
   }
-  const selection = input.selectionText?.trim();
-  if (selection && selection.length >= WEB_SEARCH_QUERY_MIN_CHARACTERS) {
-    return selection.slice(0, WEB_SEARCH_QUERY_MAX_CHARACTERS);
-  }
-  return undefined;
 }
 
 export interface ApiError {
@@ -1339,7 +1305,7 @@ export function validateProviderDefinition(value: unknown): asserts value is Pro
   const definition = value as Partial<ProviderDefinition>;
   if (!definition.id?.match(/^[a-z0-9][a-z0-9_-]{1,63}$/)) throw new Error("Invalid provider id");
   if (!definition.label?.trim()) throw new Error("Provider label is required");
-  if (!(["openai_chat_completions", "anthropic_messages"] as ProviderApiMode[]).includes(definition.apiMode as ProviderApiMode)) throw new Error("Invalid provider apiMode");
+  if (!("openai_chat_completions" === definition.apiMode || "openai_responses" === definition.apiMode || "gemini_generate_content" === definition.apiMode || "anthropic_messages" === definition.apiMode)) throw new Error("Invalid provider apiMode");
   if (!(["bearer", "api_key_header"] as ProviderAuthMode[]).includes(definition.authMode as ProviderAuthMode)) throw new Error("Invalid provider authMode");
   const baseUrl = parseProviderBaseUrl(definition.defaultBaseUrl);
   if (baseUrl.protocol !== "https:") throw new Error("Provider base URL must use HTTPS");
@@ -1347,6 +1313,7 @@ export function validateProviderDefinition(value: unknown): asserts value is Pro
   if (!Array.isArray(definition.models) || definition.models.some((model) => typeof model !== "string" || !model.trim())) throw new Error("Provider models must be non-empty strings");
   if (!definition.capabilities || typeof definition.capabilities.structuredJson !== "boolean" || typeof definition.capabilities.modelDiscovery !== "boolean") throw new Error("Provider capabilities are required");
   if (!(["none", "deepseek"] as ProviderThinkingMode[]).includes(definition.capabilities.thinkingMode)) throw new Error("Invalid provider thinkingMode");
+  if (!(["unsupported", "openai_web_search", "gemini_google_search", "anthropic_web_search"] as ProviderWebGrounding[]).includes(definition.capabilities.webGrounding)) throw new Error("Invalid provider webGrounding");
 }
 
 function parseProviderBaseUrl(value: unknown): URL {

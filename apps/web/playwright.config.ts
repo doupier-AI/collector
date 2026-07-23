@@ -33,7 +33,7 @@ export default defineConfig({
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"], baseURL: "http://127.0.0.1:43211" },
-      testIgnore: /no-model\.spec\.ts/,
+      testIgnore: /(?:no-model|z-acceptance-real)\.spec\.ts/,
     },
     {
       name: "chromium-nomodel",

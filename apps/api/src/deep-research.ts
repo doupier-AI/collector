@@ -76,7 +76,9 @@ export class DeepResearchService {
     const messages = this.store.listResearchMessages(branch.sessionId).filter((message) => message.branchId === branch.id);
     const messageIds = new Set(messages.map((message) => message.id));
     const tasks = this.store.listResearchTasks(branch.sessionId).filter((task) => messageIds.has(task.inputMessageId));
-    return { branch, session, selection, messages, tasks };
+    const runIds = tasks.flatMap((task) => task.groundingScope?.runId ? [task.groundingScope.runId] : []);
+    const groundingSources = runIds.flatMap((runId) => this.store.listResearchGroundingSources(runId));
+    return { branch, session, selection, messages, tasks, ...(groundingSources.length ? { groundingSources } : {}), ...(messages.length ? { citations: this.store.listResearchCitationsForMessages(messages.map((message) => message.id)) } : {}) };
   }
 
   /** 分支内继续追问：消息带 branchId，复用会话任务管线与幂等规则。 */

@@ -241,6 +241,104 @@ button {
   gap: var(--space-3);
 }
 
+/* 引用标记的编号只由伪元素绘制，不能混入消息纯文本，避免改变选区锚点偏移。 */
+.citation-marker {
+  display: inline;
+  color: var(--color-ai);
+  text-decoration: none;
+}
+
+.citation-marker:hover {
+  text-decoration: underline;
+}
+
+.citation-marker:focus-visible {
+  border-radius: var(--radius-control);
+}
+
+sup[data-citation-marker] {
+  display: inline;
+  margin-inline: 0.125rem;
+  font-size: 0.6875rem;
+  font-weight: 650;
+  line-height: 0;
+  vertical-align: super;
+}
+
+sup[data-citation-marker]::after {
+  content: "[" attr(data-citation-index) "]";
+}
+
+.grounding-sources {
+  margin-top: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+}
+
+.grounding-sources__title {
+  margin: 0 0 var(--space-2);
+  color: var(--color-muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.grounding-sources__list {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.grounding-source {
+  min-width: 0;
+  border-top: 1px solid var(--color-line);
+}
+
+.grounding-source:first-child {
+  border-top: 0;
+}
+
+.grounding-source summary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  cursor: pointer;
+}
+
+.grounding-source__ordinal {
+  flex: none;
+  color: var(--color-muted);
+  font-size: 0.75rem;
+}
+
+.grounding-source__title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.grounding-source__preview {
+  display: grid;
+  gap: var(--space-2);
+  padding: 0 0 var(--space-3);
+}
+
+.grounding-source__preview p {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+
+.grounding-source__link {
+  width: fit-content;
+  font-size: 0.875rem;
+}
+
+
 /* 模型状态点：真实模型 / 本地演示 / 未配置，颜色不是唯一表达 */
 .model-status {
   display: flex;

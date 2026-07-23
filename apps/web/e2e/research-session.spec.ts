@@ -75,7 +75,7 @@ test("提交后渐进内容进入同一条 AI 消息并完成，控制台无错�
   await expect(page.getByText(QUESTION, { exact: true })).toBeVisible();
   await expect(page.getByTestId("ai-placeholder")).toBeVisible();
   // 状态文字同时存在于消息状态与 sr-only aria-live 区，用 class 限定避免 strict 冲突
-  await expect(page.locator(".message__status")).toHaveText("已保存，正在生成");
+  await expect(page.locator(".message__status")).toHaveText("已保存，正在请求联网");
 
   // 渐进内容进入同一条 AI 消息
   const assistantMessages = page.locator(".message--assistant");

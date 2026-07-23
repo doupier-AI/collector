@@ -10,23 +10,6 @@ export { ResearchSelectionAnalysisError, ResearchSelectionConflictError, Researc
 export { DeepResearchNotFoundError, DeepResearchService, DeepResearchValidationError, type DeepResearchServiceOptions } from "./deep-research.js";
 export { ResearchLaterNotFoundError, ResearchLaterService, ResearchLaterValidationError } from "./research-later.js";
 export {
-  DEFAULT_SEARXNG_INSTANCES,
-  FakeSearchProvider,
-  SearchUnavailableError,
-  SearxngSearchProvider,
-  WebSearchService,
-  parseSearxngResults,
-  resolveSearxngInstances,
-  type PageText,
-  type SearchHit,
-  type SearchInstance,
-  type SearchProvider,
-  type SearxngSearchProviderOptions,
-  type WebSearchMaterial,
-  type WebSearchOutcome,
-  type WebSearchServiceOptions,
-} from "./web-search.js";
-export {
   ensureInstanceControlToken,
   instanceControlPath,
   instanceStatePath,

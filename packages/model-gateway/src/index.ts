@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { parseResearchSelectionInsight, validateProviderDefinition, type ActiveModelRoute, type ProviderDefinition, type ProviderProfile, type ResearchSelectionInsight } from "@collector/capture-contracts";
+import { parseResearchSelectionInsight, validateProviderDefinition, type ActiveModelRoute, type ProviderDefinition, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight } from "@collector/capture-contracts";
 
 export interface ProviderUsage {
   inputTokens?: number;
@@ -38,6 +38,37 @@ export interface ModelProvider {
   complete(request: ModelProviderRequest): Promise<ModelProviderResponse>;
 }
 
+/** 网关归一的供应商联网结果；研究服务不读取供应商 HTTP 响应。 */
+export interface GroundingSource {
+  providerSourceId?: string;
+  title: string;
+  url?: string;
+  snippet?: string;
+  publishedAt?: string;
+  locator?: string;
+}
+
+export interface GroundingCitation {
+  sourceOrdinal: number;
+  startOffset: number;
+  endOffset: number;
+  providerCitationId?: string;
+}
+
+export interface GroundedResearchResponse {
+  content: string;
+  status: ResearchGroundingScopeStatus;
+  queries: string[];
+  sources: GroundingSource[];
+  citations: GroundingCitation[];
+  responseSummary?: Record<string, unknown>;
+  errorMessage?: string;
+}
+
+export interface GroundingModelProvider extends ModelProvider {
+  generateGroundedResearch(request: { prompt: string; model: string; grounding: ResearchGroundingRequest; maxTokens?: number; timeoutMs?: number }): Promise<GroundedResearchResponse>;
+}
+
 export class ProviderRegistry {
   private readonly definitions = new Map<string, ProviderDefinition>();
 
@@ -70,7 +101,7 @@ export const BUILTIN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [{
   defaultBaseUrl: "https://api.deepseek.com",
   defaultModel: "deepseek-v4-flash",
   models: ["deepseek-v4-flash", "deepseek-v4-pro"],
-  capabilities: { structuredJson: true, thinkingMode: "deepseek", modelDiscovery: true },
+  capabilities: { structuredJson: true, thinkingMode: "deepseek", modelDiscovery: true, webGrounding: "unsupported" },
   pricing: {
     "deepseek-v4-flash": { inputCacheHitPerMillion: 0.0028, inputCacheMissPerMillion: 0.14, outputPerMillion: 0.28 },
     "deepseek-v4-pro": { inputCacheHitPerMillion: 0.003625, inputCacheMissPerMillion: 0.435, outputPerMillion: 0.87 },
@@ -78,12 +109,21 @@ export const BUILTIN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [{
 }, {
   id: "openai",
   label: "OpenAI",
-  apiMode: "openai_chat_completions",
+  apiMode: "openai_responses",
   authMode: "bearer",
   defaultBaseUrl: "https://api.openai.com/v1",
   defaultModel: "gpt-4.1-mini",
   models: ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"],
-  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true },
+  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true, webGrounding: "openai_web_search" },
+}, {
+  id: "gemini",
+  label: "Google Gemini",
+  apiMode: "gemini_generate_content",
+  authMode: "api_key_header",
+  defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta",
+  defaultModel: "gemini-2.5-flash",
+  models: ["gemini-2.5-flash", "gemini-2.5-pro"],
+  capabilities: { structuredJson: false, thinkingMode: "none", modelDiscovery: true, webGrounding: "gemini_google_search" },
 }, {
   id: "anthropic",
   label: "Anthropic",
@@ -92,7 +132,7 @@ export const BUILTIN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [{
   defaultBaseUrl: "https://api.anthropic.com/v1",
   defaultModel: "claude-sonnet-5",
   models: ["claude-sonnet-5", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
-  capabilities: { structuredJson: false, thinkingMode: "none", modelDiscovery: true },
+  capabilities: { structuredJson: false, thinkingMode: "none", modelDiscovery: true, webGrounding: "anthropic_web_search" },
 }, {
   id: "openrouter",
   label: "OpenRouter",
@@ -101,7 +141,7 @@ export const BUILTIN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [{
   defaultBaseUrl: "https://openrouter.ai/api/v1",
   defaultModel: "openai/gpt-4.1-mini",
   models: ["openai/gpt-4.1-mini", "anthropic/claude-sonnet-4", "google/gemini-2.5-flash"],
-  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true },
+  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
 }, {
   id: "dashscope",
   label: "Alibaba Cloud Model Studio",
@@ -110,7 +150,7 @@ export const BUILTIN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [{
   defaultBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
   defaultModel: "qwen-plus",
   models: ["qwen-plus", "qwen-max", "qwen-turbo"],
-  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true },
+  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
 }, {
   id: "custom",
   label: "Custom OpenAI-Compatible",
@@ -119,7 +159,7 @@ export const BUILTIN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [{
   defaultBaseUrl: "https://example.invalid/v1",
   defaultModel: "custom-model",
   models: [],
-  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true },
+  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
 }, {
   id: "custom-anthropic",
   label: "Custom Anthropic-Compatible",
@@ -128,7 +168,7 @@ export const BUILTIN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [{
   defaultBaseUrl: "https://example.invalid/v1",
   defaultModel: "custom-model",
   models: [],
-  capabilities: { structuredJson: false, thinkingMode: "none", modelDiscovery: true },
+  capabilities: { structuredJson: false, thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
 }];
 
 export const DEFAULT_PROVIDER_REGISTRY = new ProviderRegistry(BUILTIN_PROVIDER_DEFINITIONS);
@@ -189,6 +229,11 @@ export class ModelGateway {
 
   get providerName(): string { return this.provider.name; }
   get modelName(): string { return this.options.model ?? this.provider.defaultModel ?? "default"; }
+  get providerGroundingCapability(): import("@collector/capture-contracts").ProviderWebGrounding {
+    return this.provider instanceof OpenAiResponsesProvider ? "openai_web_search"
+      : this.provider instanceof GeminiGroundingProvider ? "gemini_google_search"
+        : this.provider instanceof AnthropicMessagesProvider ? "anthropic_web_search" : "unsupported";
+  }
   setCallListener(listener: ((event: ModelCallEvent) => void | Promise<void>) | undefined): void { this.callListener = listener; }
 
   private async emitCall(event: ModelCallEvent): Promise<void> {
@@ -217,6 +262,39 @@ export class ModelGateway {
   }
 
   get promptVersion(): string { return this.options.promptVersion ?? "knowledge-extraction-v1"; }
+
+  async generateGroundedResearch(
+    messages: Array<{ role: "user" | "assistant"; content: string }>,
+    grounding: ResearchGroundingRequest,
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<GroundedResearchResponse> {
+    if (!messages.length) throw new Error("Research conversation requires at least one message");
+    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Use web research when available, preserve uncertainty, and only cite sources returned by the provider.\n\nConversation:\n${JSON.stringify(messages)}`;
+    const request = { prompt, model: options.model ?? this.modelName, grounding, maxTokens: options.maxTokens ?? 8_000, timeoutMs: options.timeoutMs ?? 120_000 };
+    if (!("generateGroundedResearch" in this.provider)) {
+      const content = await this.answerResearchConversation(messages, options);
+      return { content, status: "grounding_unsupported", queries: [], sources: [], citations: [] };
+    }
+    const startedAt = Date.now();
+    const createdAt = new Date().toISOString();
+    try {
+      const response = await (this.provider as GroundingModelProvider).generateGroundedResearch(request);
+      await this.emitCall({
+        context: options.context ?? { purpose: "research_grounding" }, provider: this.providerName, model: request.model,
+        promptVersion: grounding.promptVersion, status: "completed", latencyMs: Date.now() - startedAt, createdAt, completedAt: new Date().toISOString(),
+      });
+      return response;
+    } catch (error) {
+      await this.emitCall({
+        context: options.context ?? { purpose: "research_grounding" }, provider: this.providerName, model: request.model,
+        promptVersion: grounding.promptVersion, status: "failed", latencyMs: Date.now() - startedAt, errorMessage: redactError(error), createdAt, completedAt: new Date().toISOString(),
+      });
+      try {
+        const content = await this.answerResearchConversation(messages, options);
+        return { content, status: "grounding_failed", queries: [], sources: [], citations: [], errorMessage: redactError(error) };
+      } catch { throw error; }
+    }
+  }
 
   async answerResearchConversation(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
@@ -398,7 +476,7 @@ ${input.recentUserMessages?.length ? `\n用户最近关注的问题：\n${input.
       if (!sections.length) return { errorCode: "invalid_schema", errorMessage: "No valid sections in outline" };
       return { title, sections };
     } catch (err) {
-      return { errorCode: "provider_error", errorMessage: err instanceof Error ? err.message : "Outline generation failed" };
+      return { errorCode: "provider_error", errorMessage: safeProviderErrorSummary(err) };
     }
   }
 
@@ -443,7 +521,7 @@ ${input.recentUserMessages?.length ? `\n用户最近关注的问题：\n${input.
       if (!sections.length) return { errorCode: "invalid_schema", errorMessage: "No valid sections generated" };
       return { sections };
     } catch (err) {
-      return { errorCode: "provider_error", errorMessage: err instanceof Error ? err.message : "Section generation failed" };
+      return { errorCode: "provider_error", errorMessage: safeProviderErrorSummary(err) };
     }
   }
 
@@ -480,7 +558,7 @@ ${input.recentUserMessages?.length ? `\n用户最近关注的问题：\n${input.
       if (!additions.length) return { errorCode: "invalid_schema", errorMessage: "No cited additions in document update" };
       return { additions };
     } catch (error) {
-      return { errorCode: "provider_error", errorMessage: error instanceof Error ? error.message : "Document update failed" };
+      return { errorCode: "provider_error", errorMessage: safeProviderErrorSummary(error) };
     }
   }
 
@@ -497,7 +575,7 @@ ${input.recentUserMessages?.length ? `\n用户最近关注的问题：\n${input.
       }, options.context ?? { purpose: "connection_test" });
       return { ok: true, model: response.model ?? (options.model ?? this.modelName) };
     } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : "Connection test failed" };
+      return { ok: false, error: safeProviderErrorSummary(e) };
     }
   }
 }
@@ -564,7 +642,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     } finally {
       clearTimeout(timer);
     }
-    if (!response.ok) throw new Error(`${this.options.definition.label} request failed (${response.status}): ${String(payload?.error?.message ?? "unknown error").slice(0, 300)}`);
+    if (!response.ok) throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
     return {
       content: payload?.choices?.[0]?.message?.content ?? "",
       model: payload?.model ?? request.model,
@@ -578,7 +656,118 @@ export class OpenAiCompatibleProvider implements ModelProvider {
   }
 }
 
-export class AnthropicMessagesProvider implements ModelProvider {
+export class OpenAiResponsesProvider implements GroundingModelProvider {
+  readonly name: string;
+  readonly defaultModel: string;
+  readonly pricing?: Record<string, ModelPricing>;
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(private readonly options: OpenAiCompatibleProviderOptions) {
+    validateProviderDefinition(options.definition);
+    if (options.definition.apiMode !== "openai_responses") throw new Error(`Provider ${options.definition.id} does not use the OpenAI Responses protocol`);
+    this.name = options.definition.id;
+    this.defaultModel = options.definition.defaultModel;
+    this.pricing = options.definition.pricing;
+    this.fetchImpl = options.fetchImpl ?? fetch;
+  }
+
+  async complete(request: ModelProviderRequest): Promise<ModelProviderResponse> {
+    const response = await this.request({ model: request.model, input: request.prompt, max_output_tokens: request.maxTokens });
+    const content = openAiOutputText(response);
+    return { content, model: response?.model ?? request.model, usage: openAiUsage(response?.usage) };
+  }
+
+  async generateGroundedResearch(request: { prompt: string; model: string; grounding: ResearchGroundingRequest; maxTokens?: number; timeoutMs?: number }): Promise<GroundedResearchResponse> {
+    const payload = await this.request({
+      model: request.model,
+      input: request.prompt,
+      max_output_tokens: request.maxTokens,
+      tools: [{ type: "web_search" }],
+      tool_choice: "required",
+    }, request.timeoutMs);
+    const content = openAiOutputText(payload);
+    const annotations = openAiAnnotations(payload);
+    const sources = uniqueSources(annotations.map((citation) => ({ title: citation.title || citation.url || "OpenAI 联网来源", url: citation.url })));
+    const citations = annotations.flatMap((citation) => {
+      const sourceOrdinal = sources.findIndex((source) => source.url === citation.url) + 1;
+      return sourceOrdinal > 0 ? [{ sourceOrdinal, startOffset: citation.start_index ?? 0, endOffset: citation.end_index ?? citation.start_index ?? 0 }] : [];
+    });
+    const queries = extractOpenAiQueries(payload);
+    return {
+      content,
+      status: sources.length ? "grounded" : "no_verifiable_sources",
+      queries,
+      sources,
+      citations,
+      responseSummary: { outputItemCount: Array.isArray(payload?.output) ? payload.output.length : 0 },
+    };
+  }
+
+  private async request(body: Record<string, unknown>, timeoutMs = 75_000): Promise<any> {
+    const apiKey = await this.options.apiKey();
+    if (!apiKey) throw new Error(`${this.options.definition.label} API key is not configured`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error(`${this.options.definition.label} request timed out`)), timeoutMs);
+    try {
+      const response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/responses`, {
+        method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, signal: controller.signal, redirect: "error", body: JSON.stringify(body),
+      });
+      const payload = await response.json().catch(() => undefined);
+      if (!response.ok) throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+      return payload;
+    } finally { clearTimeout(timer); }
+  }
+}
+
+export class GeminiGroundingProvider implements GroundingModelProvider {
+  readonly name: string;
+  readonly defaultModel: string;
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(private readonly options: OpenAiCompatibleProviderOptions) {
+    validateProviderDefinition(options.definition);
+    if (options.definition.apiMode !== "gemini_generate_content") throw new Error(`Provider ${options.definition.id} does not use the Gemini GenerateContent protocol`);
+    this.name = options.definition.id;
+    this.defaultModel = options.definition.defaultModel;
+    this.fetchImpl = options.fetchImpl ?? fetch;
+  }
+
+  async complete(request: ModelProviderRequest): Promise<ModelProviderResponse> {
+    const payload = await this.request(request.model, { contents: [{ role: "user", parts: [{ text: request.prompt }] }], generationConfig: { responseMimeType: "application/json", maxOutputTokens: request.maxTokens } }, request.timeoutMs);
+    return { content: geminiText(payload), model: request.model, usage: geminiUsage(payload?.usageMetadata) };
+  }
+
+  async generateGroundedResearch(request: { prompt: string; model: string; grounding: ResearchGroundingRequest; maxTokens?: number; timeoutMs?: number }): Promise<GroundedResearchResponse> {
+    const payload = await this.request(request.model, {
+      contents: [{ role: "user", parts: [{ text: request.prompt }] }],
+      tools: [{ google_search: {} }],
+      generationConfig: { maxOutputTokens: request.maxTokens },
+    }, request.timeoutMs);
+    const candidate = payload?.candidates?.[0];
+    const metadata = candidate?.groundingMetadata ?? {};
+    const sources = uniqueSources((metadata.groundingChunks ?? []).map((chunk: any) => ({ title: chunk?.web?.title || chunk?.web?.uri || "Google 联网来源", url: chunk?.web?.uri, snippet: chunk?.web?.snippet })));
+    const citations = (metadata.groundingSupports ?? []).flatMap((support: any) => (support?.groundingChunkIndices ?? []).map((index: number) => ({ sourceOrdinal: index + 1, startOffset: support?.segment?.startIndex ?? 0, endOffset: support?.segment?.endIndex ?? support?.segment?.startIndex ?? 0 })));
+    return {
+      content: geminiText(payload), status: sources.length ? "grounded" : "no_verifiable_sources", queries: stringArray(metadata.webSearchQueries), sources, citations,
+      responseSummary: { groundingChunkCount: Array.isArray(metadata.groundingChunks) ? metadata.groundingChunks.length : 0 },
+    };
+  }
+
+  private async request(model: string, body: Record<string, unknown>, timeoutMs = 75_000): Promise<any> {
+    const apiKey = await this.options.apiKey();
+    if (!apiKey) throw new Error(`${this.options.definition.label} API key is not configured`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error(`${this.options.definition.label} request timed out`)), timeoutMs);
+    try {
+      const response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/models/${encodeURIComponent(model)}:generateContent`, { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey }, signal: controller.signal, redirect: "error", body: JSON.stringify(body) });
+      const payload = await response.json().catch(() => undefined);
+      if (!response.ok) throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+      return payload;
+    } finally { clearTimeout(timer); }
+  }
+}
+
+export class AnthropicMessagesProvider implements GroundingModelProvider {
   readonly name: string;
   readonly defaultModel: string;
   readonly pricing?: Record<string, ModelPricing>;
@@ -590,6 +779,72 @@ export class AnthropicMessagesProvider implements ModelProvider {
     this.defaultModel = options.definition.defaultModel;
     this.pricing = options.definition.pricing;
     this.fetchImpl = options.fetchImpl ?? fetch;
+  }
+
+  async generateGroundedResearch(request: { prompt: string; model: string; grounding: ResearchGroundingRequest; maxTokens?: number; timeoutMs?: number }): Promise<GroundedResearchResponse> {
+    const apiKey = await this.options.apiKey();
+    if (!apiKey) throw new Error(`${this.options.definition.label} API key is not configured`);
+    const deadline = Date.now() + (request.timeoutMs ?? 120_000);
+    const messages: Array<Record<string, unknown>> = [{ role: "user", content: request.prompt }];
+    let payload: any;
+    for (let continuation = 0; continuation <= MAX_ANTHROPIC_SERVER_TOOL_CONTINUATIONS; continuation += 1) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) throw new Error(`${this.options.definition.label} request timed out`);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(new Error(`${this.options.definition.label} request timed out`)), remainingMs);
+      try {
+        const response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/messages`, {
+          method: "POST",
+          headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "Content-Type": "application/json" },
+          signal: controller.signal,
+          redirect: "error",
+          body: JSON.stringify({
+            model: request.model,
+            max_tokens: request.maxTokens ?? 8_000,
+            system: "Answer the research request. Use the web search tool before answering and cite only its returned sources.",
+            messages,
+            tools: [{ type: "web_search_20260209", name: "web_search" }, { type: "web_fetch_20260209", name: "web_fetch" }],
+          }),
+        });
+        payload = await response.json().catch(() => undefined);
+        if (!response.ok) throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+      } finally {
+        clearTimeout(timer);
+      }
+      if (payload?.stop_reason !== "pause_turn") break;
+      if (continuation === MAX_ANTHROPIC_SERVER_TOOL_CONTINUATIONS) {
+        throw new Error("Anthropic server-tool continuation limit exceeded");
+      }
+      // server-side tool blocks must stay verbatim in the history for the platform to resume them.
+      messages.push({ role: "assistant", content: Array.isArray(payload?.content) ? payload.content : [] });
+    }
+    const textBlocks = Array.isArray(payload?.content)
+      ? payload.content.filter((block: any) => block?.type === "text" && typeof block.text === "string")
+      : [];
+    const content = textBlocks.map((block: any) => block.text).join("");
+    const candidates = textBlocks.flatMap((block: any) => (Array.isArray(block.citations) ? block.citations : []));
+    const sources = uniqueSources(candidates.flatMap((citation: any) => {
+      const url = safeHttpUrl(citation?.url);
+      return url ? [{ title: typeof citation?.title === "string" ? citation.title : url, url, snippet: typeof citation?.cited_text === "string" ? citation.cited_text : undefined }] : [];
+    }));
+    let offset = 0;
+    const citations = textBlocks.flatMap((block: any) => {
+      const startOffset = offset;
+      offset += block.text.length;
+      return (Array.isArray(block.citations) ? block.citations : []).flatMap((citation: any) => {
+        const url = safeHttpUrl(citation?.url);
+        const sourceOrdinal = sources.findIndex((source) => source.url === url) + 1;
+        return sourceOrdinal > 0 ? [{ sourceOrdinal, startOffset, endOffset: offset, ...(typeof citation?.id === "string" ? { providerCitationId: citation.id } : {}) }] : [];
+      });
+    });
+    return {
+      content,
+      status: sources.length ? "grounded" : "no_verifiable_sources",
+      queries: [],
+      sources,
+      citations,
+      responseSummary: { contentBlockCount: Array.isArray(payload?.content) ? payload.content.length : 0, continuationCount: messages.length - 1 },
+    };
   }
 
   async complete(request: ModelProviderRequest): Promise<ModelProviderResponse> {
@@ -616,7 +871,7 @@ export class AnthropicMessagesProvider implements ModelProvider {
     } finally {
       clearTimeout(timer);
     }
-    if (!response.ok) throw new Error(`${this.options.definition.label} request failed (${response.status}): ${String(payload?.error?.message ?? "unknown error").slice(0, 300)}`);
+    if (!response.ok) throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
     const cacheHitTokens = Number(payload?.usage?.cache_read_input_tokens ?? 0);
     const cacheCreationTokens = Number(payload?.usage?.cache_creation_input_tokens ?? 0);
     const uncachedInputTokens = Number(payload?.usage?.input_tokens ?? 0);
@@ -635,9 +890,60 @@ export class AnthropicMessagesProvider implements ModelProvider {
 
 export function createProvider(definition: ProviderDefinition, options: Omit<OpenAiCompatibleProviderOptions, "definition">): ModelProvider {
   if (definition.apiMode === "openai_chat_completions") return new OpenAiCompatibleProvider({ ...options, definition });
+  if (definition.apiMode === "openai_responses") return new OpenAiResponsesProvider({ ...options, definition });
+  if (definition.apiMode === "gemini_generate_content") return new GeminiGroundingProvider({ ...options, definition });
   if (definition.apiMode === "anthropic_messages") return new AnthropicMessagesProvider({ ...options, definition });
   throw new Error(`Unsupported provider API mode: ${definition.apiMode}`);
 }
+
+function openAiOutputText(payload: any): string {
+  if (typeof payload?.output_text === "string") return payload.output_text;
+  return (payload?.output ?? []).flatMap((item: any) => item?.content ?? []).filter((part: any) => part?.type === "output_text" && typeof part.text === "string").map((part: any) => part.text).join("");
+}
+
+function openAiAnnotations(payload: any): Array<{ url?: string; title?: string; start_index?: number; end_index?: number }> {
+  return (payload?.output ?? []).flatMap((item: any) => item?.content ?? []).flatMap((part: any) => part?.annotations ?? []).filter((annotation: any) => annotation?.type === "url_citation" && typeof annotation.url === "string");
+}
+
+function extractOpenAiQueries(payload: any): string[] {
+  return (payload?.output ?? []).filter((item: any) => item?.type === "web_search_call").map((item: any) => item?.action?.query ?? item?.query).filter((query: unknown): query is string => typeof query === "string");
+}
+
+function openAiUsage(usage: any): ProviderUsage | undefined {
+  if (!usage) return undefined;
+  return { inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, inputCacheHitTokens: usage.input_tokens_details?.cached_tokens, inputCacheMissTokens: usage.input_tokens };
+}
+
+function geminiText(payload: any): string {
+  return (payload?.candidates?.[0]?.content?.parts ?? []).map((part: any) => typeof part?.text === "string" ? part.text : "").join("");
+}
+
+function geminiUsage(usage: any): ProviderUsage | undefined {
+  if (!usage) return undefined;
+  return { inputTokens: usage.promptTokenCount, outputTokens: usage.candidatesTokenCount };
+}
+
+function stringArray(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []; }
+
+function uniqueSources(sources: GroundingSource[]): GroundingSource[] {
+  const seen = new Set<string>();
+  return sources.filter((source) => {
+    const key = source.url ?? `${source.title}:${source.providerSourceId ?? ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function safeHttpUrl(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : undefined;
+  } catch { return undefined; }
+}
+
+const MAX_ANTHROPIC_SERVER_TOOL_CONTINUATIONS = 5;
 
 function buildMaterialBatches<T extends { id: string; content: string }>(materials: T[], maxBatchChars = 24_000): T[][] {
   const segments: T[] = [];
@@ -663,7 +969,19 @@ function buildMaterialBatches<T extends { id: string; content: string }>(materia
   return batches;
 }
 
-function redactError(error: unknown): string { return (error instanceof Error ? error.message : "Model provider failed").replace(/sk-[a-z0-9_-]+/gi, "[REDACTED]").slice(0, 500); }
+function safeProviderErrorSummary(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  if (/timed out|timeout|aborted/i.test(message)) return "模型供应商请求超时";
+  const status = message.match(/HTTP\s+(\d{3})/i)?.[1];
+  return status ? `模型供应商请求失败（HTTP ${status}）` : "模型供应商请求失败";
+}
+
+function redactError(error: unknown): string {
+  return (error instanceof Error ? error.message : "Model provider failed")
+    .replace(/(authorization|api[-_]?key|token|secret|cookie|signature|credential)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]")
+    .replace(/\b(?:sk|AIza)[-_A-Za-z0-9]{12,}\b/g, "[REDACTED]")
+    .slice(0, 500);
+}
 
 function normalizeBaseUrl(value: string): string { return value.replace(/\/+$/, ""); }
 

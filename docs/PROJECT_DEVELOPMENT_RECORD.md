@@ -4,7 +4,7 @@
 
 状态：截至当前源码的项目阶段记录。本文记录已经发生的产品与工程里程碑、关键提交、验证证据和遗留限制；当前产品定义以 `PRODUCT_REFOUNDATION.md` 为准，下一阶段实施范围以 `DEVELOPMENT_START.md` 为准，切片计划与状态见 `MVP_IMPLEMENTATION_PLAN.md`，源码与测试是实现状态的最终依据。
 
-进行中：阶段 E（可信研究能力）推进中，切片 E1（搜索适配层与搜索轨迹持久化）已完成并通过四级验证；下一切片为 E2（三场景生成集成与引用持久化）。核心流程 MVP 保持可体验，当前验证基线：Node 测试 230/230（含 scripts/ralph，较 D1 的 198 项新增 E1 的 32 项），WebUI 测试 194/194，Playwright Chromium 40/43（3 项失败为真实模型验收 spec 需真实密钥 + 1 项 e2e 数据库隔离干扰，均为已知限制）。
+进行中：阶段 E（可信研究能力）已于 2026-07-22 完成供应商原生联网全栈实现并提交（`39dffe5`），待真实供应商 + 真实浏览器一次性收尾验收。核心流程 MVP 保持可体验，当前验证基线：Node 测试 205/205，WebUI 测试 197/197，Playwright Chromium 39/43（3 项失败为真实模型验收 spec 需真实密钥 + 1 项 e2e 数据库隔离干扰，均为已知限制）。
 
 ## 1. 记录原则
 
@@ -631,47 +631,46 @@ AI 回答的段落结构有了前后端共用的唯一确定性规则；模型�
 
 - `cb22894`（2026-07-22）：回退本功能（`Revert "feat(web): 顶栏添加关闭 Collector 按钮"`）。顶栏按钮、`ApiClient.requestShutdown()` 与相关样式已移除，WebUI 不再提供界面关闭入口；后端 `/v1/launcher/shutdown` 接口保留，仍供启动器版本替换时内部受控关闭使用。
 
-### 3.22 搜索适配层与搜索轨迹持久化（切片 E1，2026-07-22）
+### 3.22 搜索适配层与搜索轨迹持久化（切片 E1，2026-07-22，已弃用）
 
-**用户和产品结果**
+**状态**：历史 E1 采用独立 SearXNG 适配层。2026-07-22 用户决定改用模型供应商联网，对应代码（`apps/api/src/web-search.ts`、迁移 v20 三表、`WebSearch*` 契约与测试）已在 `39dffe5` 中全部清除；该路径从未合入 `master` 或远端跟踪分支。
 
-阶段 E（可信研究能力）的数据与服务底座就位：按需联网搜索通过独立可替换适配层进入研究任务，每次搜索与页面读取进入本地轨迹，为行内引用与来源返回提供可信材料。本切片为后端切片，用户可见的联网状态、行内引用与来源预览由 E3 连接。
+
+### 3.23 供应商联网研究、引用与来源预览（阶段 E，2026-07-22）
+
+**用户可见结果**
+
+- Chat、深入研究第一轮和分支追问自动请求当前模型供应商的联网能力；选区分析维持不联网；
+- 完成回答如实显示已联网、联网失败、供应商不支持或无可核验来源；
+- 有可定位引用时，正文在实际陈述位置显示可键盘访问的行内编号；展开来源可查看净化后的标题、摘要、定位信息并安全打开原始来源；主线与分支刷新后都可恢复这些信息。
 
 **工程结果**
 
-- 契约新增搜索轨迹记录（`WebSearchRecord`：查询、后端、状态、候选数、成功来源列表；`WebPageReadRecord`：来源序号、URL、标题、摘要、读取字节数与正文摘录；`WebCitationRecord`：消息内段落序号 + 干净文本偏移 + 来源编号）、任务范围元数据 `WebSearchScope`（searched / degraded / skipped）与常量（查询最小 8 / 最大 400 字符、来源上限 5、摘录上限 1200 字符、摘要上限 400 字符）；
-- 新增纯函数 `parseWebCitations(content, sourceCount)`：剥离 `[n]` 引用标记得到干净消息文本，把标记定位到 `deriveMessageBlocks` 段落块（段内 / 段尾 / 段落间空白归上一段段尾 / 首段之前归段首），来源编号越界或无段落可定位的标记丢弃并记入 dropped，绝不静默造假；`deriveSearchQuery()` 优先取用户消息实质内容、无实质内容时回退来源选区文本，均无实质内容返回 undefined（不联网）；
-- 迁移 v20：`web_searches`（task_id / session_id 索引、外键指向研究任务与会话）、`web_page_reads`（search_id 索引、外键指向搜索）、`web_citations`（message_id + 位置复合索引、外键指向消息）；`clearAllData()` 按外键逆序补齐三表删除；
-- 新增 `apps/api/src/web-search.ts`：`SearchProvider` 接口与 `SearxngSearchProvider`（SearXNG 兼容 JSON 接口，`COLLECTOR_SEARXNG_URL` 显式配置优先并允许本地后端，否则内置公开实例顺序故障切换；复用既有 `fetchPublicResource` 的公网目标校验、DNS 固定、逐跳重定向再校验与体积 / 时间上限，搜索响应限 JSON 内容类型）；`FakeSearchProvider` 供测试与 e2e 注入；`WebSearchService.runSearchForTask()` 编排搜索 → 前 N 条页面读取（默认走公网校验抓取 + Readability 正文提取）→ 轨迹落库 → 返回材料与范围；任何失败落库为失败记录并返回 degraded，不向调用方抛错；
-- 复用与加固 `apps/api/src/parsers.ts`：`fetchPublicResource` 导出并扩展 application/json 支持与 `allowNonPublic` 选项（只作用于首跳的显式配置后端，重定向目标始终严格校验）。
+- 共享契约新增 `ProviderWebGrounding`、`ResearchGrounding*` 运行 / 来源 / 引用 / 状态模型，以及 URL、摘要、错误的净化与校验；`AiConfigurationView` 增加 `webGrounding` 字段，前端可按供应商能力决定是否显示联网状态；
+- 模型网关适配 OpenAI Responses `web_search`、Gemini Google Search grounding 与 Anthropic server-side web search/web fetch；Anthropic 支持 `pause_turn` 续接；
+- SQLite migration v21 新增 `research_grounding_runs`、`research_grounding_sources`、`research_citations`；v20 旧独立搜索表已在同一提交中完全清除（本分支从未合入 master，不影响主分支数据）；
+- 研究任务保存同一份干净回答、联网运行、来源与行内引用，再完成任务；联网失败时回退普通回答并写入 `grounding_failed`；
+- 演示模式增加 `generateGrounded` 方法，返回确定性回答 + 2 个来源，供无密钥环境下验证 grounding UI；
+- WebUI 在引用偏移位置插入空文本 `<sup data-citation-marker>`，编号只由 CSS `::after` 绘制，避免破坏已验收的选区锚点；来源详情使用 `noopener noreferrer`；
+- 供应商来源标题、摘要、定位、运行摘要和错误在写入 SQLite 前二次脱敏。
 
-**接口 / 数据变化**
+**验证记录（四级自动化）**
 
-- 迁移 v20（`web_searches` / `web_page_reads` / `web_citations`）；
-- `CollectorStore` 新增七个方法（搜索创建 / 读取 / 按任务列举、页面读取保存 / 列举、引用保存 / 按消息列举）；
-- 无新 HTTP 端点：搜索为任务内部步骤，用户可见表达随 E2 / E3 连接。
-
-**验证记录（四级）**
-
-- 从零全量构建（`npm run clean` + `npm run build`，含 WebUI 与扩展资源）通过；
-- Node 测试 230/230 通过（较 D1 的 198 项新增 32 项：契约单测 14 项覆盖标记解析各边界与查询派生，适配层 11 项覆盖 SearXNG 响应解析、故障切换、非 JSON 拒绝、私网 / 元数据地址拒绝、重定向后再校验、假搜索确定性，服务集成 7 项覆盖成功落库与密集编号、后端失败降级、无后端降级、失败 / 空正文读取跳过、全读取失败降级、来源上限、引用持久化与 clearAllData；`sqlite-store` 迁移测试扩展到 v20 与 v14→v20 升级路径）；
-- 项目检查（`scripts/check-project.ps1`）通过；
-- 本切片为后端切片、无用户可见路径，按分级规则不运行浏览器端到端验证（界面连接随 E3 进行）。
+- `npm run build` 通过；
+- `npm run test:web`：25 个文件、197 项通过；
+- `npm test`：205 项通过，含 v21 SQLite 升级、三家 provider 请求 / 映射、Anthropic `pause_turn` 续接、联网来源脱敏与引用持久化；
+- 确定性浏览器回归：39 个 Chromium 场景通过，覆盖宽 / 窄屏、键盘、SSE 恢复、分支与独立研究、来源返回、控制台与网络契约；
+- 项目检查通过（0 errors, 0 warnings）。
 
 **未完成项与风险**
 
-- 生成集成（三场景自动搜索、引用校验落库、任务事件扩展、重试 / 重启复用）由 E2 连接；界面联网状态、行内引用胶囊、来源预览与来源列表由 E3 连接；
-- 内置公开 SearXNG 实例为原型级默认值，稳定性与隐私（查询出站）依赖实例；`COLLECTOR_SEARXNG_URL` 支持自带后端，自带本地搜索服务留作后续实施研究项；
-- SSRF 校验为尽力而为：域名主机放行、IP 目标严格校验，DNS 重绑定由解析固定缓解但不完全覆盖，已记入已知限制。
+- 未提供三家真实供应商凭证，尚未完成真实搜索、真实引用、无引用降级和本地轨迹脱敏的人工验收；
+- 联网生成当前在供应商返回完整回答后一次写入，不保留原有 token 级流式体验；
+- 联网开始状态由已保存任务状态呈现，尚未新增独立 SSE 联网阶段事件。
 
 **关键提交**
 
-- （本提交，哈希由下一次文档同步回填）
-
-**下一步交接语**
-
-下一切片：E2——生成集成与引用持久化（四级）。前置依赖已满足：搜索适配层、轨迹持久化、引用解析纯函数与存储方法均已通过四级验证。开工第一动作：读取 `docs/MVP_IMPLEMENTATION_PLAN.md` 的 E2 条目与 `apps/api/src/research.ts` 的 `processTask()`，在 claim 之后、生成之前接入 `WebSearchService`（重试复用本任务已完成的搜索），扩展任务事件联合（search_started / search_completed / search_failed）与 `ResearchGenerationRequest.webSources`，生成完成后用 `parseWebCitations` 剥离标记、覆写干净内容并持久化引用与任务范围。
-
+- `39dffe5`：供应商联网引用（grounding）全栈实现，含 SearXNG 旧方案清除、AiConfigurationView 缺口补齐与演示模式 grounding 模拟。
 
 ## 4. 当前数据与接口里程碑
 
@@ -683,7 +682,8 @@ AI 回答的段落结构有了前后端共用的唯一确定性规则；模型�
 | migration v17 | 研究选区、选区分析任务和选区任务事件 |
 | migration v18 | 研究分支、消息分支归属和会话来源选区 / 来源会话 |
 | migration v19 | 稍后再学项目（创建幂等键、优先级与状态） |
-| migration v20 | 联网搜索轨迹（搜索记录、页面读取、行内引用） |
+| migration v20 | 历史独立搜索表（兼容与清理，不再写入） |
+| migration v21 | 供应商联网运行、净化来源与行内引用 |
 
 当前主要恢复边界：
 
@@ -696,17 +696,16 @@ AI 回答的段落结构有了前后端共用的唯一确定性规则；模型�
 
 ## 5. 当前验证基线
 
-收尾后（2026-07-21）当前四级基线：
+阶段 E 提交后（2026-07-22）当前四级基线：
 
 | 范围 | 结果 |
 | --- | --- |
-| Node 单元与集成测试 | 230/230 通过（E1 后，含 scripts/ralph；较 D1 的 198 项新增 32 项） |
-| WebUI 客户端测试 | 194/194 通过 |
-| Chromium 端到端场景 | 40/43（3 项非代码回归：2 项需真实密钥、1 项 e2e 数据库隔离）|
-| Collector 项目检查 | 通过 |
+| Node 单元与集成测试 | 205/205 通过 |
+| WebUI 客户端测试 | 197/197 通过 |
+| Chromium 端到端场景 | 39/43（3 项需真实密钥、1 项 e2e 数据库隔离）|
+| Collector 项目检查 | 通过（0 errors, 0 warnings） |
 | 真实云模型调用 | 已通过（DeepSeek deepseek-v4-flash，四场景验收 4/4） |
-
-新增提交 `6ee4175`（文件发起研究 + 阅读页聊天）和 `ff9823d`（关闭 Collector 按钮），WebUI 测试从 185 升至 194。E1 切片重建四级基线：从零全量构建、Node 测试 230/230、项目检查通过（2026-07-22）。
+| 真实供应商联网验收 | 未完成（待三家供应商配置后一次性验收） |
 
 ## 6. 已知限制与待验证事项
 
@@ -739,20 +738,22 @@ AI 回答的段落结构有了前后端共用的唯一确定性规则；模型�
 - 开始页上传文件再输入文字的组合路径不重复创建会话；
 - 网络结果不确定时本地文件选择仍保存在浏览器内存，关闭页面后不能恢复。
 
-### 联网搜索与引用（阶段 E 进行中）
+### 联网搜索与引用（阶段 E，已实现）
 
-- 搜索适配层与轨迹持久化已完成（E1，后端切片，无用户可见路径）；生成集成与界面呈现未连接，当前产品行为与收尾阶段一致，用户尚看不到联网搜索与引用；
-- 内置公开 SearXNG 实例为原型级默认值：公开实例可能不稳定、响应慢或记录查询内容，搜索查询会发送至所配置的搜索后端；`COLLECTOR_SEARXNG_URL` 可指向自带或可控后端；
-- SSRF 校验为尽力而为：IP 目标严格拒绝私网 / 回环 / 链路本地 / 元数据地址，域名主机放行后按解析结果固定请求，DNS 重绑定风险仅被缓解；
-- 页面正文提取复用 Readability，版式复杂或反抓取页面的摘录质量不保证；单页读取受既有 5 MiB 与超时上限约束。
+- 联网搜索由当前 AI 模型供应商的原生联网能力提供（OpenAI `web_search` / Gemini Google Search grounding / Anthropic server-side web search/web fetch），迁移 v21 三表（`research_grounding_runs` / `research_grounding_sources` / `research_citations`）保存净化后的轨迹与引用；
+- 历史 SearXNG 独立适配层方案（迁移 v20）已清除，相关代码从未合入 master；
+- 行内引用胶囊、来源预览与动态范围说明已实现，引用标记使用零文本 `<sup>` + CSS `::after` 渲染，不扰动选区锚定偏移；
+- 外部来源链接使用 `noopener noreferrer` 安全开窗，写入 SQLite 前二次脱敏；
+- 联网开始状态由任务记录呈现，尚未新增独立 SSE 联网阶段事件；真实供应商 + 真实浏览器人工验收待凭证配置后一次性完成。
 
 ## 7. 下一阶段开发方向
 
-阶段 E（可信研究能力）推进中：E1（搜索适配层与轨迹持久化）已完成；E2（三场景生成集成 + 引用校验持久化）与 E3（动态范围说明、行内引用胶囊、来源预览 WebUI）待实施，完成后进行真实模型 + 真实搜索一次性收尾验收。其余后续方向：
+阶段 E（可信研究能力）全栈实现已提交（`39dffe5`），待完成真实供应商 + 真实浏览器一次性收尾验收。其余后续方向：
 
-1. AI 短概念弱标记、自动弱重现（DEVELOPMENT_START.md §5.3 学习增强）；
-2. 本地观测界面、模型设置与用量查看（搜索轨迹的查看 / 导出依赖该界面）；
-3. 选区智能窗口字段顺序与信息密度的最终确认。
+1. 真实供应商联网验收：使用三家已配置且确认支持联网的模型完成真实搜索、真实引用、无引用/失败/不支持降级、SQLite 与日志脱敏、主线与分支刷新恢复、以及宽/窄屏、键盘、可访问性、控制台和网络检查；
+2. AI 短概念弱标记、自动弱重现（DEVELOPMENT_START.md §5.3 学习增强）；
+3. 本地观测界面、模型设置与用量查看；
+4. 选区智能窗口字段顺序与信息密度的最终确认。
 
 完整不可缩减范围、阶段顺序和用户可见验收场景见 `DEVELOPMENT_START.md`。
 

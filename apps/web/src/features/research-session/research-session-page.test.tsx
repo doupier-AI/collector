@@ -184,7 +184,7 @@ describe("ResearchSessionPage 就绪与失败恢复", () => {
 
     expect(await screen.findByText("解释本地优先研究的价值")).toBeInTheDocument();
     expect(screen.getByTestId("ai-placeholder")).toBeInTheDocument();
-    expect(screen.getByText("已保存，正在生成")).toBeInTheDocument();
+    expect(screen.getByText("已保存，正在请求联网")).toBeInTheDocument();
   });
 });
 
@@ -242,7 +242,7 @@ describe("ResearchSessionPage 来源会话与来源返回", () => {
     expect(sourceBar).toHaveTextContent("来自《理解注意力机制》的选区");
     expect(sourceBar).toHaveTextContent("本地优先会先把输入保存在本机");
     expect(screen.getByRole("link", { name: "← 返回原文" })).toHaveAttribute("href", "/research/session-1?sel=sel-1");
-    expect(screen.getByTestId("research-scope-note")).toHaveTextContent("未联网检索");
+    expect(screen.getByTestId("research-scope-note")).toHaveTextContent("自动使用当前模型供应商的联网能力");
   });
 
   it("来源返回：消息选区在回答中重定位并高亮", async () => {

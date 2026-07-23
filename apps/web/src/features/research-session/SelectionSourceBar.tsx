@@ -28,11 +28,11 @@ export function SelectionSourceBar({
   );
 }
 
-/** 深入研究第一轮材料范围的固定说明：如实标注未联网检索。 */
+/** 深入研究第一轮的初始材料范围说明；完成后由消息级联网状态替代。 */
 export function ResearchScopeNote() {
   return (
     <p className="research-scope-note" data-testid="research-scope-note">
-      本轮研究只使用来源选区与当前已有材料生成，未联网检索。
+      本轮研究会自动使用当前模型供应商的联网能力；如失败或不可用，系统会如实说明并保留当前材料。
     </p>
   );
 }
