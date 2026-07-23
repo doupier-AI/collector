@@ -1,10 +1,10 @@
 # Collector 项目开发记录
 
-最后更新：2026-07-22
+最后更新：2026-07-23
 
 状态：截至当前源码的项目阶段记录。本文记录已经发生的产品与工程里程碑、关键提交、验证证据和遗留限制；当前产品定义以 `PRODUCT_REFOUNDATION.md` 为准，下一阶段实施范围以 `DEVELOPMENT_START.md` 为准，切片计划与状态见 `MVP_IMPLEMENTATION_PLAN.md`，源码与测试是实现状态的最终依据。
 
-进行中：阶段 E（可信研究能力）已于 2026-07-22 完成供应商原生联网全栈实现并提交（`0343c56`）。真实供应商联网验收受限于 API 凭证——当前唯一已配置供应商 DeepSeek（`deepseek-v4-flash`）不支持原生联网（`webGrounding: "unsupported"`），未来配置 OpenAI、Gemini 或 Anthropic 凭证后即可激活对应联网能力。grounding 实现已覆盖全部降级路径：供应商不支持时如实标注"当前供应商不支持联网"，不伪造引用。核心流程 MVP 保持可体验，当前验证基线：Node 测试 205/205，WebUI 测试 197/197，Playwright Chromium 39/43（3 项失败为真实模型验收 spec 需真实密钥 + 1 项 e2e 数据库隔离干扰，均为已知限制）。
+进行中：阶段 E（可信研究能力）已于 2026-07-22 完成供应商原生联网全栈实现并提交（`0343c56`）。真实供应商联网验收受限于 API 凭证——当前唯一已配置供应商 DeepSeek（`deepseek-v4-flash`）不支持原生联网（`webGrounding: "unsupported"`），未来配置 OpenAI、Gemini 或 Anthropic 凭证后即可激活对应联网能力。阶段 F（联网搜索策略改进）已于 2026-07-23 完成 DeerFlow 源码调研和自建搜索链路诊断，F1（日志+查询改写）待启动。当前验证基线：Node 测试 205/205，WebUI 测试 197/197，Playwright Chromium 39/43（3 项失败为真实模型验收 spec 需真实密钥 + 1 项 e2e 数据库隔离干扰，均为已知限制）。
 
 ## 1. 记录原则
 
@@ -672,6 +672,38 @@ AI 回答的段落结构有了前后端共用的唯一确定性规则；模型�
 
 - `39dffe5`：供应商联网引用（grounding）全栈实现，含 SearXNG 旧方案清除、AiConfigurationView 缺口补齐与演示模式 grounding 模拟。
 
+### 3.24 搜索链路诊断与 DeerFlow 源码调研（2026-07-23）
+
+**目标**
+
+诊断用户报告的搜索失真问题（"什么是loop engineering" → 全部返回"什么"的词典解释），分析 DeerFlow 开源项目的搜索实现寻找参考，并形成联网搜索策略改进计划。
+
+**调研结果**
+
+- 确认根因：Bing 对中英混合查询优先匹配中文词，"什么"作为高频词主导了 query 信号，导致搜索结果完全不相关；
+- 确认搜索链路零可观测性：`web-search-agent.ts` 中无任何 console.log，搜索数据虽写入 SQLite 三张表但无 HTTP API 查询；
+- 确认架构缺陷：`runWebSearch` 将搜索+抓取耦合在单一函数中，固定抓取 Top 5 全文，Agent 无自主决策权；
+- 完成 DeerFlow v2.0（`C:\Users\Administrator\deer-flow`）完整源码分析：确认其核心优势是"搜索作为 Agent 可多轮调用的独立工具"而非特定搜索引擎；
+- 形成三阶段改进计划（F1 日志+查询改写 → F2 工具化+Agent循环 → F3 多后端），详见 `docs/agents/search-optimization.md`。
+
+**已确认的设计方向**
+
+- 优先级：D（日志）> A2（查询改写）> A1+B（工具化+Agent循环）> C（多后端）；
+- F1 不改架构，在 `web-search-agent.ts` 加日志并前置 LLM query reformulation，直接修复中文分词问题；
+- F2 为对标 DeerFlow 的核心改造，需要引入 Agent tool-use loop，实现框架待调研项目现有依赖后确认。
+
+**交付文件**
+
+- `docs/agents/search-optimization.md`：专题实施基线（调研结论、设计决策、实施路线）；
+- `docs/MVP_IMPLEMENTATION_PLAN.md`：更新切片状态表、关键设计决策、待确认事项，新增阶段 F 详细内容；
+- `docs/PROJECT_DEVELOPMENT_RECORD.md`：本次更新（§3.24、§7）。
+
+**无代码提交**：本次为纯调研与计划阶段，不涉及代码改动。
+
+**下一步交接语**
+
+F1（日志+查询改写）优先级已确认，待启动。实施时读取 `docs/agents/search-optimization.md` 和 `docs/MVP_IMPLEMENTATION_PLAN.md` 阶段 F 获取完整上下文。改动集中在 `apps/api/src/web-search-agent.ts`，验证级别二至三级。
+
 ## 4. 当前数据与接口里程碑
 
 | 版本 | 主要变化 |
@@ -749,8 +781,16 @@ AI 回答的段落结构有了前后端共用的唯一确定性规则；模型�
 
 ## 7. 下一阶段开发方向
 
-阶段 E（可信研究能力）全栈实现已提交（`0343c56`）。真实供应商联网验收受限于 API 凭证：当前 DeepSeek 不支持原生联网，未来配置 OpenAI / Gemini / Anthropic 凭证后即可执行一次性收尾验收。其余后续方向：
+阶段 E（可信研究能力）全栈实现已提交（`0343c56`）。真实供应商联网验收受限于 API 凭证：当前 DeepSeek 不支持原生联网，未来配置 OpenAI / Gemini / Anthropic 凭证后即可执行一次性收尾验收。
 
+阶段 F（联网搜索策略改进）调研已完成（2026-07-23），三阶段计划已确认：
+1. **F1（日志+查询改写）**：在 `web-search-agent.ts` 关键节点加 console.log，前置 LLM query reformulation 修复中文分词问题。改动量小，不改架构。待启动；
+2. **F2（工具化+Agent循环）**：拆分 web_search/web_fetch 为独立工具，引入 Agent tool-use loop，让模型自主控制搜索节奏。对标 DeerFlow 搜索体验的核心改造；
+3. **F3（多后端）**：增加 DDG / Tavily 等可选后端，解除 Bing 单点依赖。
+
+完整调研结论、设计决策和切片详情见 `docs/agents/search-optimization.md` 和 `docs/MVP_IMPLEMENTATION_PLAN.md` 阶段 F。
+
+其余后续方向：
 1. 真实供应商联网验收：配置支持原生联网的模型（OpenAI / Gemini / Anthropic）后，完成真实搜索、真实引用、无引用/失败/不支持降级、SQLite 与日志脱敏、主线与分支刷新恢复、以及宽/窄屏、键盘、可访问性、控制台和网络检查；
 2. AI 短概念弱标记、自动弱重现（DEVELOPMENT_START.md §5.3 学习增强）；
 3. 本地观测界面、模型设置与用量查看；
