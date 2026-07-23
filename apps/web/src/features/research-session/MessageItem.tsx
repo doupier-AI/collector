@@ -96,7 +96,19 @@ function MessageBlock({ blockText, blockId, highlight, sources, citations }: { b
   const containerRef = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
-    if (!highlight || !containerRef.current) return;
+    if (!containerRef.current) return;
+    // 先清除上一次高亮遗留的 <mark>——否则残留会把文本节点切碎，
+    // 导致后续 setRangeFromOffsets 的偏移算错（漂移），以及
+    // 多个不同选区在同一个文本容器里同时高亮（"稍后再学"经典场景）
+    containerRef.current.querySelectorAll("[data-selection-mark]").forEach((el) => {
+      const parent = el.parentNode;
+      if (!parent) return;
+      while (el.firstChild) {
+        parent.insertBefore(el.firstChild, el);
+      }
+      parent.removeChild(el);
+    });
+    if (!highlight) return;
     const applied = setRangeFromOffsets(containerRef.current, highlight.start, highlight.end);
     if (!applied && highlight.exact) {
       markExactInRendered(containerRef.current, highlight.exact);

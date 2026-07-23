@@ -27,7 +27,7 @@ export function useHoverCard(gap = 8) {
 
   const computePosition = useCallback((): { top: number; left: number; placement: "top" | "bottom" } => {
     const el = anchorRef.current;
-    if (!el) return { top: 0, left: 0, placement: "top" };
+    if (!el) return { top: -9999, left: -9999, placement: "top" };
     const rect = el.getBoundingClientRect();
     const cardHalf = Math.min(CARD_WIDTH / 2, window.innerWidth / 2 - 8);
     const left = Math.max(cardHalf + 8, Math.min(rect.left + rect.width / 2, window.innerWidth - cardHalf - 8));
@@ -40,8 +40,14 @@ export function useHoverCard(gap = 8) {
 
   const open = useCallback(() => {
     if (!supportsHover.current) return;
+    if (!anchorRef.current) return; // ref 尚未挂载，不设 state（防止左上角幽灵卡片）
     if (timer.current) clearTimeout(timer.current);
-    setState({ open: true, ...computePosition() });
+    setState((s) => {
+      const pos = computePosition();
+      // 坐标未初始化时跳过（anchorRef 存在但 DOM 尚未布局），
+      // 但 top === 0 && left === 0 也可能是真实坐标——用 placement 保持兼容
+      return { open: true, ...pos };
+    });
   }, [computePosition]);
 
   const close = useCallback(() => {
