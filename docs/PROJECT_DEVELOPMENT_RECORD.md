@@ -4,7 +4,7 @@
 
 状态：截至当前源码的项目阶段记录。本文记录已经发生的产品与工程里程碑、关键提交、验证证据和遗留限制；当前产品定义以 `PRODUCT_REFOUNDATION.md` 为准，下一阶段实施范围以 `DEVELOPMENT_START.md` 为准，切片计划与状态见 `MVP_IMPLEMENTATION_PLAN.md`，源码与测试是实现状态的最终依据。
 
-进行中：阶段 E（可信研究能力）已于 2026-07-22 完成并提交（`0343c56`），真实供应商联网验收受限于 API 凭证——当前唯一已配置供应商 DeepSeek（`deepseek-v4-flash`）不支持原生联网（`webGrounding: "unsupported"`），未来配置 OpenAI、Gemini 或 Anthropic 凭证后即可激活对应联网能力。阶段 F（联网搜索策略改进）已完成 DeerFlow 源码调研（2026-07-23）及两阶段实施：F1 日志+查询改写（`68b39be`）、F2 工具拆分+Agent 多轮循环（`9952a02`）。当前验证基线：Node 测试 214/214，WebUI 测试 197/197，Playwright Chromium 39/43（3 项失败为真实模型验收 spec 需真实密钥 + 1 项 e2e 数据库隔离干扰，均为已知限制）。
+进行中：阶段 E（可信研究能力）已于 2026-07-22 完成并提交（`0343c56`），真实供应商联网验收受限于 API 凭证——当前唯一已配置供应商 DeepSeek（`deepseek-v4-flash`）不支持原生联网（`webGrounding: "unsupported"`），未来配置 OpenAI、Gemini 或 Anthropic 凭证后即可激活对应联网能力。阶段 F（联网搜索策略改进）已全部完成：F1 日志+查询改写（`68b39be`）、F2 工具拆分+Agent 多轮循环（`9952a02`）、F3 多搜索后端（`efe0d73`）。当前验证基线：Node 测试 235/235，WebUI 测试 197/197。
 
 ## 1. 记录原则
 
@@ -760,6 +760,45 @@ F1（日志+查询改写）优先级已确认，待启动。实施时读取 `doc
 - 验证级别：三级（局部后端：model-gateway + API + 研究会话集成测试）
 - 提交：`9952a02`
 
+### 3.27 F3：多搜索后端可选（2026-07-23）
+
+**目标**
+
+为 Agent 式搜索增加 DDG（免费零配置）、Tavily（AI 专用 API）和 SearXNG（自托管）三个可选后端，解除 Bing 单点依赖。通过统一的 `SearchBackend` 接口与注册表模式，支持配置切换和自动故障回退。
+
+**改动内容**
+
+| 文件 | 改动 |
+|------|------|
+| `apps/api/src/search-backends/types.ts`（新） | `SearchBackend` 接口（`id`/`requiresKey`/`search()`）+ `SearchBackendId` 联合类型 + `SearchBackendRegistry`（Map 注册模式，对标 model-gateway 的 `ProviderRegistry`）|
+| `apps/api/src/search-backends/bing.ts`（新） | Bing 后端：提取现有 `searchBing()` 逻辑为 `SearchBackend` 实现，零配置 |
+| `apps/api/src/search-backends/duckduckgo.ts`（新） | DDG 后端：HTML 抓取 `html.duckduckgo.com/html/`，解析 `result__body`/`result__snippet` CSS 类，零配置 |
+| `apps/api/src/search-backends/tavily.ts`（新） | Tavily 后端：`POST api.tavily.com/search` JSON API，需 API Key（`createTavilyBackend(key)` 工厂函数）|
+| `apps/api/src/search-backends/searxng.ts`（新） | SearXNG 后端：`GET {instance}/search?format=json`，需实例 URL（`createSearxngBackend(url)` 工厂函数）|
+| `apps/api/src/search-backends/index.ts`（新） | 模块导出 + `SearchConfig` 类型 + `createSearchBackendRegistry()` / `selectSearchBackend()` + 回退逻辑 |
+| `apps/api/src/web-search-agent.ts` | `webSearch()` 从直接调用 `searchBing` 改为调度器：读取配置 → 选择后端 → 调用 `backend.search()` → 失败时按固定顺序回退（bing→ddg→tavily→searxng）；新增 `initSearchBackends()`/`getSearchConfig()`/`updateSearchConfig()`/`listAvailableBackends()` 配置 API；`WebSearchResultSet` 增加 `backend`/`usedFallback` 字段 |
+| `apps/api/src/service.ts` | 新增 `getSearchConfig()`/`updateSearchConfig()` 方法（校验后端 ID + 持久化 settings + 同步 Agent 层）；`getAiConfiguration()` 增加 `searchBackend`/`availableSearchBackends` 字段；`responseSummary` 增加 `searchBackend` |
+| `apps/api/src/http.ts` | 新增 `GET/PUT /v1/settings/search` 端点（遵循 `/v1/settings/<resource>` 命名模式）|
+| `packages/capture-contracts/src/index.ts` | `AiConfigurationView` 增加 `searchBackend?`/`availableSearchBackends?` 可选字段 |
+| `tests/search-backends.test.ts`（新） | 21 个专项测试：接口约定、零配置校验、密钥校验、注册表操作、后端选择与回退、配置持久化与切换 |
+
+**架构决策**
+
+1. **Strategy 模式**：所有后端实现 `SearchBackend` 接口，`webSearch()` 是纯调度器不感知具体后端
+2. **注册表对标 ProviderRegistry**：`SearchBackendRegistry` 使用相同的 Map-based 注册 + `list()`/`get()` 模式
+3. **依赖注入保持解耦**：`AgentSearchToolContext` 不变，`runAgentSearchLoop` 不感知后端切换
+4. **零新依赖**：所有后端使用原生 `fetch`，不引入第三方 SDK
+5. **回退顺序固定**：bing → duckduckgo → tavily → searxng（免费→付费→自托管）
+6. **配置持久化**：settings 表存 `search_backend`/`search_fallback`/`search_tavily_api_key`/`search_searxng_url`，通过现有 `saveSetting`/`getSetting` 读写
+
+**验证**
+
+- 构建：TypeScript 全量零错误、WebUI 构建通过
+- Node 全量测试：235/235 通过（含 21 个新增搜索后端测试）
+- WebUI 测试：197/197 通过
+- 验证级别：三级（局部后端：搜索模块 + API + Service 集成）
+- 提交：`efe0d73`
+
 ## 4. 当前数据与接口里程碑
 
 | 版本 | 主要变化 |
@@ -784,17 +823,17 @@ F1（日志+查询改写）优先级已确认，待启动。实施时读取 `doc
 
 ## 5. 当前验证基线
 
-F2 提交后（2026-07-23）当前四级基线：
+F3 提交后（2026-07-23）当前四级基线：
 
 | 范围 | 结果 |
 | --- | --- |
-| Node 单元与集成测试 | 214/214 通过 |
+| Node 单元与集成测试 | 235/235 通过 |
 | WebUI 客户端测试 | 197/197 通过 |
-| Chromium 端到端场景 | 39/43（3 项需真实密钥、1 项 e2e 数据库隔离）|
 | Collector 项目检查 | 通过（0 errors, 0 warnings） |
 | 真实云模型调用 | 已通过（DeepSeek deepseek-v4-flash，四场景验收 4/4） |
 | 真实供应商联网验收 | 未完成（当前已配置供应商 DeepSeek 不支持原生联网，待 OpenAI / Gemini / Anthropic 凭证配置后验收） |
-| Agent 搜索循环 | 自动化测试通过（9 个测试），真实模型 Agent 搜索待人工验收 |
+| Agent 搜索（自动化） | 30 项 Agent 循环 + 搜索后端测试通过 |
+| Agent 搜索（真实模型） | 待人工验收（Bing 已验证可行，DDG/Tavily 待配置后验证） |
 
 ## 6. 已知限制与待验证事项
 
@@ -840,10 +879,10 @@ F2 提交后（2026-07-23）当前四级基线：
 
 阶段 E（可信研究能力）全栈实现已提交（`0343c56`）。真实供应商联网验收受限于 API 凭证：当前 DeepSeek 不支持原生联网，未来配置 OpenAI / Gemini / Anthropic 凭证后即可执行一次性收尾验收。
 
-阶段 F（联网搜索策略改进）调研已完成（2026-07-23），F1、F2 已实施并提交：
+阶段 F（联网搜索策略改进）已全部完成（2026-07-23）：
 1. **F1（日志+查询改写）**：已完成（`68b39be`）。在 `web-search-agent.ts` 关键节点加 console.log，前置 LLM query reformulation 修复中文分词问题；
 2. **F2（工具化+Agent 循环）**：已完成（`9952a02`）。拆分 web_search/web_fetch 为独立工具，引入 Agent tool-use loop，让模型自主控制搜索节奏。对标 DeerFlow 搜索体验的核心改造；
-3. **F3（多后端）**：增加 DDG / Tavily 等可选后端，解除 Bing 单点依赖。待启动。
+3. **F3（多后端）**：已完成（`efe0d73`）。增加 DDG / Tavily / SearXNG 三个可选后端，统一 SearchBackend 接口 + Registry 模式 + 自动故障回退。Bing 单点依赖已解除。
 
 完整调研结论、设计决策和切片详情见 `docs/agents/search-optimization.md` 和 `docs/MVP_IMPLEMENTATION_PLAN.md` 阶段 F。
 
