@@ -1,7 +1,11 @@
-import type { ReactNode } from "react";
+import { type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import type { ResearchCitationRecord, ResearchGroundingSourceRecord, ResearchMessageRecord, ResearchTaskRecord } from "@collector/capture-contracts";
 import { deriveMessageBlocks, messageContentBlockId } from "@collector/capture-contracts";
+import { SourceCard } from "../../components/SourceCard";
+import { useHoverCard } from "../../hooks/useHoverCard";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
+import { buildCitationIndex, buildSourceMap } from "./citation-utils";
 import { taskErrorReason } from "./format";
 
 /** 来源返回高亮：在指定段落块的 [start, end) 范围渲染 <mark>。 */
@@ -63,12 +67,8 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
  */
 function AssistantBlocks({ message, highlight, citations, groundingSources }: { message: ResearchMessageRecord; highlight?: MessageHighlight; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[] }) {
   const blocks = deriveMessageBlocks(message.content);
-  const sourceById = new Map(groundingSources.map((source) => [source.id, source]));
-  const citationIndexById = new Map(
-    [...citations]
-      .sort((left, right) => left.blockOrdinal - right.blockOrdinal || left.markerOffset - right.markerOffset || left.id.localeCompare(right.id))
-      .map((citation, index) => [citation.id, index + 1]),
-  );
+  const sourceById = buildSourceMap(groundingSources);
+  const citationIndexById = buildCitationIndex(citations);
   if (blocks.length === 0) return <p className="message__content">{message.content}</p>;
   return (
     <div className="message__blocks" data-content-kind="message" data-message-id={message.id}>
@@ -142,15 +142,49 @@ function TextRange({ text, start, end, highlight }: { text: string; start: numbe
 function CitationMarker({ index, citation, source }: { index: number; citation: ResearchCitationRecord; source?: ResearchGroundingSourceRecord }) {
   const title = source?.title || "来源元数据不足";
   const label = source?.url ? `打开来源 ${index}：${title}` : `查看来源 ${index}：${title}`;
+  const { state, anchorRef, open: showCard, close: hideCard } = useHoverCard();
   const marker = <sup data-citation-marker aria-hidden="true" data-citation-index={index} />;
-  return source?.url ? (
-    <a href={source.url} target="_blank" rel="noopener noreferrer" className="citation-marker" aria-label={label} title={label}>
+  const anchor = source?.url ? (
+    <a
+      ref={anchorRef as React.Ref<HTMLAnchorElement>}
+      href={source.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="citation-marker"
+      aria-label={label}
+      title={label}
+      onMouseEnter={showCard}
+      onMouseLeave={hideCard}
+      onFocus={showCard}
+      onBlur={hideCard}
+    >
       {marker}
     </a>
   ) : (
-    <a href={`#grounding-source-${citation.sourceId}`} className="citation-marker" aria-label={label} title={label}>
+    <a
+      ref={anchorRef as React.Ref<HTMLAnchorElement>}
+      href={`#grounding-source-${citation.sourceId}`}
+      className="citation-marker"
+      aria-label={label}
+      title={label}
+      onMouseEnter={showCard}
+      onMouseLeave={hideCard}
+      onFocus={showCard}
+      onBlur={hideCard}
+    >
       {marker}
     </a>
+  );
+  return (
+    <>
+      {anchor}
+      {state.open && source
+        ? createPortal(
+            <SourceCard source={source} index={index} top={state.top} left={state.left} placement={state.placement} onClose={hideCard} onEnter={open} onLeave={close} />,
+            document.body,
+          )
+        : null}
+    </>
   );
 }
 
