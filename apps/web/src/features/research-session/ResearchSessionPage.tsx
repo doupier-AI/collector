@@ -227,6 +227,7 @@ export function ResearchSessionPage() {
                         blockOrdinal: messageHighlight.blockOrdinal,
                         start: messageHighlight.start,
                         end: messageHighlight.end,
+                        exact: restoredSelection?.anchor?.exact ?? restoredSelection?.text ?? "",
                       }
                     : undefined
                 }

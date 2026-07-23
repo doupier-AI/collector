@@ -43,8 +43,8 @@ describe("AI 回答分块渲染", () => {
 
     const first = await screen.findByText("第一段。");
     const second = screen.getByText("第二段。");
-    expect(first).toHaveAttribute("data-block-id", "m-out#p0");
-    expect(second).toHaveAttribute("data-block-id", "m-out#p1");
+    expect(first.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p0");
+    expect(second.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p1");
     expect(first.closest("[data-content-kind]")).toHaveAttribute("data-content-kind", "message");
   });
 
@@ -53,11 +53,12 @@ describe("AI 回答分块渲染", () => {
       getResearchSessionView: async () => viewWithAssistant("只有一段。"),
     });
 
-    expect(await screen.findByText("只有一段。")).toHaveAttribute("data-block-id", "m-out#p0");
+    const el = await screen.findByText("只有一段。");
+    expect(el.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p0");
   });
 
-  it("在持久化偏移处绘制零文本引用标记，并保留消息级编号", async () => {
-    const view = viewWithAssistant("第一段文字。\n\n第二段文字。");
+  it("引用标记由 remark 插件从 [来源n] token 渲染为可悬停角标，编号与文末列表一致", async () => {
+    const view = viewWithAssistant("[来源1]第一段文字。[来源2]\n\n第二段文字。");
     view.tasks[0] = makeTask({
       id: "task-1",
       status: "completed",
@@ -71,7 +72,7 @@ describe("AI 回答分块渲染", () => {
     ];
     view.citations = [
       { id: "citation-1", messageId: "m-out", runId: "run-1", sourceId: "source-1", blockOrdinal: 0, markerOffset: 2, createdAt: "2026-01-01T00:00:00.000Z" },
-      { id: "citation-2", messageId: "m-out", runId: "run-1", sourceId: "source-2", blockOrdinal: 1, markerOffset: 2, createdAt: "2026-01-01T00:00:00.000Z" },
+      { id: "citation-2", messageId: "m-out", runId: "run-1", sourceId: "source-2", blockOrdinal: 0, markerOffset: 12, createdAt: "2026-01-01T00:00:00.000Z" },
     ];
     renderSessionPage({ getResearchSessionView: async () => view });
 
@@ -83,7 +84,6 @@ describe("AI 回答分块渲染", () => {
     expect(firstMarker.querySelector("sup")).toHaveAttribute("data-citation-index", "1");
     expect(secondMarker.querySelector("sup")).toHaveAttribute("data-citation-index", "2");
     expect(firstMarker.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p0");
-    expect(secondMarker.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p1");
     expect(screen.getByText("本轮可核验来源")).toBeInTheDocument();
   });
 });

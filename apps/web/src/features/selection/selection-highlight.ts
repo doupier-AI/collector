@@ -49,8 +49,13 @@ export type MessageHighlightResult =
   | { kind: "fallback"; caption: string };
 
 /**
- * 在会话页消息列表中定位消息选区：消息或段落块不存在、原文无法匹配时
- * 返回降级结果（保留段落序号说明），锚点不是消息类型返回 null。
+ * 在会话页消息列表中定位消息选区。
+ *
+ * 从子步 2（Markdown 渲染）起，消息锚点的偏移落在"渲染后可见文本空间"而不再是原始 block.text 空间，
+ * 因此不再用 resolveHighlight(block.text, ...) 交叉校验原始文本。
+ * 偏移由渲染层在 DOM 上直接圈出 <mark>（setRangeFromOffsets）；若越界则按 anchor.exact
+ * 在 DOM 文本中搜索（markExactInRendered）；再失败降级为段落说明。
+ * 锚点不是消息类型返回 null。
  */
 export function highlightForMessages(
   messages: ResearchMessageRecord[],
@@ -63,15 +68,13 @@ export function highlightForMessages(
   if (!message) return { kind: "fallback", caption };
   const block = deriveMessageBlocks(message.content)[anchor.blockOrdinal];
   if (!block) return { kind: "fallback", caption };
-  const resolved = resolveHighlight(block.text, { startOffset: anchor.startOffset, endOffset: anchor.endOffset, exact });
-  if (!resolved) return { kind: "fallback", caption };
   return {
     kind: "found",
     messageId: message.id,
     blockId: messageContentBlockId(message.id, block.ordinal),
     blockOrdinal: block.ordinal,
-    start: resolved.start,
-    end: resolved.end,
+    start: anchor.startOffset,
+    end: anchor.endOffset,
   };
 }
 
@@ -95,6 +98,81 @@ export function deepResearchIdempotencyKey(
  */
 export function laterIdempotencyKey(selectionId: string): string {
   return `later:${selectionId}`;
+}
+
+/**
+ * 在渲染后 DOM 的文本节点序列里按 [start, end) 偏移圈出 <mark class="selection-mark" data-selection-mark>。
+ * 反向等价于 textOffsetWithin：从 root 的所有可见 Text 子节点构建纯文本，定位偏移后创建 Range，
+ * 用 surroundContents 包裹 <mark>。
+ * 失败（偏移越界/文本节点边界不干净）返回 false，调用方应降级为 exact 文本搜索或兜底说明。
+ */
+export function setRangeFromOffsets(root: Element, start: number, end: number): boolean {
+  if (start >= end || start < 0) return false;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  let textContent = "";
+  let node: Text | null;
+  while ((node = walker.nextNode() as Text | null)) {
+    const parent = node.parentElement;
+    if (parent && (parent.tagName === "CITE-MARKER" || parent.closest("cite-marker"))) continue;
+    nodes.push(node);
+    textContent += node.textContent ?? "";
+  }
+  if (start >= textContent.length || end > textContent.length) return false;
+
+  let offset = 0;
+  let startNode: Text | null = null;
+  let startNodeOffset = 0;
+  let endNode: Text | null = null;
+  let endNodeOffset = 0;
+  for (const n of nodes) {
+    const len = (n.textContent ?? "").length;
+    if (!startNode && offset + len > start) {
+      startNode = n;
+      startNodeOffset = start - offset;
+    }
+    if (!endNode && offset + len >= end) {
+      endNode = n;
+      endNodeOffset = end - offset;
+      break;
+    }
+    offset += len;
+  }
+  if (!startNode || !endNode) return false;
+
+  try {
+    const range = document.createRange();
+    range.setStart(startNode, startNodeOffset);
+    range.setEnd(endNode, endNodeOffset);
+    const mark = document.createElement("mark");
+    mark.className = "selection-mark";
+    mark.setAttribute("data-selection-mark", "");
+    range.surroundContents(mark);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 在渲染后 DOM 文本中搜索 exact 首次出现并圈出 <mark>。
+ * 成功返回 true，未找到返回 false（调用方应降级兜底说明）。
+ */
+export function markExactInRendered(root: Element, exact: string): boolean {
+  if (!exact) return false;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let textContent = "";
+  const nodes: Text[] = [];
+  let node: Text | null;
+  while ((node = walker.nextNode() as Text | null)) {
+    const parent = node.parentElement;
+    if (parent && (parent.tagName === "CITE-MARKER" || parent.closest("cite-marker"))) continue;
+    nodes.push(node);
+    textContent += node.textContent ?? "";
+  }
+  const idx = textContent.indexOf(exact);
+  if (idx < 0) return false;
+  return setRangeFromOffsets(root, idx, idx + exact.length);
 }
 
 /**

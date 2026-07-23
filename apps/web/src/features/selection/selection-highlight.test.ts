@@ -101,7 +101,7 @@ describe("highlightForMessages", () => {
     expect(result).toEqual({ kind: "fallback", caption: "段落 3" });
   });
 
-  it("原文无法在块内匹配时返回降级结果", () => {
+  it("块存在即返回 found；原文已不在块中匹配改为由渲染层 DOM 校验", () => {
     const result = highlightForMessages([message], {
       kind: "message",
       messageId: "m-out",
@@ -110,7 +110,14 @@ describe("highlightForMessages", () => {
       endOffset: 5,
       exact: "已被改写的内容",
     }, "已被改写的内容");
-    expect(result).toEqual({ kind: "fallback", caption: "段落 1" });
+    expect(result).toEqual({
+      kind: "found",
+      messageId: "m-out",
+      blockId: "m-out#p0",
+      blockOrdinal: 0,
+      start: 0,
+      end: 5,
+    });
   });
 
   it("快照锚点不属于会话页，返回 null", () => {

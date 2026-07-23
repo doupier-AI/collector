@@ -1,18 +1,17 @@
-import { type ReactNode } from "react";
-import { createPortal } from "react-dom";
+import { useLayoutEffect, useRef } from "react";
 import type { ResearchCitationRecord, ResearchGroundingSourceRecord, ResearchMessageRecord, ResearchTaskRecord } from "@collector/capture-contracts";
 import { deriveMessageBlocks, messageContentBlockId } from "@collector/capture-contracts";
-import { SourceCard } from "../../components/SourceCard";
-import { useHoverCard } from "../../hooks/useHoverCard";
+import { MarkdownContent } from "../../components/MarkdownContent";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
-import { buildCitationIndex, buildSourceMap } from "./citation-utils";
+import { markExactInRendered, setRangeFromOffsets } from "../selection/selection-highlight";
 import { taskErrorReason } from "./format";
 
-/** 来源返回高亮：在指定段落块的 [start, end) 范围渲染 <mark>。 */
+/** 来源返回高亮：消息层定位结果。start/end 为可见文本空间偏移，exact 供 DOM 兜底搜索。 */
 export interface MessageHighlight {
   blockOrdinal: number;
   start: number;
   end: number;
+  exact: string;
 }
 
 export interface MessageItemProps {
@@ -62,129 +61,52 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
 }
 
 /**
- * 完成的 AI 回答按契约包的确定性段落块渲染。
- * 块 ID 与后端选区锚点使用同一派生规则，前端不自行切分段落。
+ * 完成的 AI 回答按确定性段落块渲染。
+ * 块 ID 与后端选区锚点使用同一派生规则。
+ * Markdown 由 MarkdownContent 安全渲染；[来源n] 由 remark 插件转可悬停角标。
+ * 返回高亮在渲染后 DOM 上用可见文本空间偏移圈 <mark>，偏移失败时兜底 exact 搜索。
  */
 function AssistantBlocks({ message, highlight, citations, groundingSources }: { message: ResearchMessageRecord; highlight?: MessageHighlight; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[] }) {
   const blocks = deriveMessageBlocks(message.content);
-  const sourceById = buildSourceMap(groundingSources);
-  const citationIndexById = buildCitationIndex(citations);
-  if (blocks.length === 0) return <p className="message__content">{message.content}</p>;
+  if (blocks.length === 0) return <MarkdownContent text={message.content} sources={groundingSources} citations={citations} variant="message" />;
+  const activeHighlight = highlight ?? undefined;
+  const matchHighlight = activeHighlight?.blockOrdinal;
   return (
     <div className="message__blocks" data-content-kind="message" data-message-id={message.id}>
       {blocks.map((block) => {
-        const blockCitations = citations
-          .filter((citation) => citation.blockOrdinal === block.ordinal)
-          .sort((left, right) => left.markerOffset - right.markerOffset || left.id.localeCompare(right.id));
+        const blockId = messageContentBlockId(message.id, block.ordinal);
+        const thisHighlight = activeHighlight && activeHighlight.blockOrdinal === block.ordinal ? activeHighlight : undefined;
         return (
-          <p className="message__content" key={block.ordinal} data-block-id={messageContentBlockId(message.id, block.ordinal)} data-block-text>
-            <BlockTextWithCitations
-              text={block.text}
-              citations={blockCitations}
-              highlight={highlight?.blockOrdinal === block.ordinal ? highlight : undefined}
-              sourceById={sourceById}
-              citationIndexById={citationIndexById}
-            />
-          </p>
+          <MessageBlock
+            key={block.ordinal}
+            blockText={block.text}
+            blockId={blockId}
+            highlight={thisHighlight}
+            sources={groundingSources}
+            citations={citations}
+          />
         );
       })}
     </div>
   );
 }
 
-/** 将引用标记插入已保存文本的精确块内偏移，不向块文本本身写入任何字符。 */
-function BlockTextWithCitations({
-  text,
-  citations,
-  highlight,
-  sourceById,
-  citationIndexById,
-}: {
-  text: string;
-  citations: ResearchCitationRecord[];
-  highlight?: MessageHighlight;
-  sourceById: Map<string, ResearchGroundingSourceRecord>;
-  citationIndexById: Map<string, number>;
-}) {
-  const nodes: ReactNode[] = [];
-  let cursor = 0;
-  for (const citation of citations) {
-    const offset = Math.max(cursor, Math.min(citation.markerOffset, text.length));
-    if (offset > cursor) nodes.push(<TextRange key={`text-${cursor}-${offset}`} text={text} start={cursor} end={offset} highlight={highlight} />);
-    nodes.push(
-      <CitationMarker
-        key={citation.id}
-        index={citationIndexById.get(citation.id) ?? 1}
-        citation={citation}
-        source={sourceById.get(citation.sourceId)}
-      />,
-    );
-    cursor = offset;
-  }
-  if (cursor < text.length) nodes.push(<TextRange key={`text-${cursor}-${text.length}`} text={text} start={cursor} end={text.length} highlight={highlight} />);
-  return <>{nodes}</>;
-}
+/** 单个消息块：Markdown 渲染 + 渲染后 DOM 高亮（useLayoutEffect）。 */
+function MessageBlock({ blockText, blockId, highlight, sources, citations }: { blockText: string; blockId: string; highlight?: MessageHighlight; sources: ResearchGroundingSourceRecord[]; citations: ResearchCitationRecord[] }) {
+  const containerRef = useRef<HTMLDivElement>(null);
 
-/** 在引用切分后的一个纯文本片段中保持既有选区高亮偏移。 */
-function TextRange({ text, start, end, highlight }: { text: string; start: number; end: number; highlight?: MessageHighlight }) {
-  if (!highlight || highlight.end <= start || highlight.start >= end) return <>{text.slice(start, end)}</>;
-  const markStart = Math.max(start, highlight.start);
-  const markEnd = Math.min(end, highlight.end);
-  return (
-    <>
-      {text.slice(start, markStart)}
-      <mark className="selection-mark" data-selection-mark>{text.slice(markStart, markEnd)}</mark>
-      {text.slice(markEnd, end)}
-    </>
-  );
-}
+  useLayoutEffect(() => {
+    if (!highlight || !containerRef.current) return;
+    const applied = setRangeFromOffsets(containerRef.current, highlight.start, highlight.end);
+    if (!applied && highlight.exact) {
+      markExactInRendered(containerRef.current, highlight.exact);
+    }
+  }, [highlight]);
 
-function CitationMarker({ index, citation, source }: { index: number; citation: ResearchCitationRecord; source?: ResearchGroundingSourceRecord }) {
-  const title = source?.title || "来源元数据不足";
-  const label = source?.url ? `打开来源 ${index}：${title}` : `查看来源 ${index}：${title}`;
-  const { state, anchorRef, open: showCard, close: hideCard } = useHoverCard();
-  const marker = <sup data-citation-marker aria-hidden="true" data-citation-index={index} />;
-  const anchor = source?.url ? (
-    <a
-      ref={anchorRef as React.Ref<HTMLAnchorElement>}
-      href={source.url}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="citation-marker"
-      aria-label={label}
-      title={label}
-      onMouseEnter={showCard}
-      onMouseLeave={hideCard}
-      onFocus={showCard}
-      onBlur={hideCard}
-    >
-      {marker}
-    </a>
-  ) : (
-    <a
-      ref={anchorRef as React.Ref<HTMLAnchorElement>}
-      href={`#grounding-source-${citation.sourceId}`}
-      className="citation-marker"
-      aria-label={label}
-      title={label}
-      onMouseEnter={showCard}
-      onMouseLeave={hideCard}
-      onFocus={showCard}
-      onBlur={hideCard}
-    >
-      {marker}
-    </a>
-  );
   return (
-    <>
-      {anchor}
-      {state.open && source
-        ? createPortal(
-            <SourceCard source={source} index={index} top={state.top} left={state.left} placement={state.placement} onClose={hideCard} onEnter={open} onLeave={close} />,
-            document.body,
-          )
-        : null}
-    </>
+    <div className="message__content" data-block-id={blockId} data-block-text ref={containerRef}>
+      <MarkdownContent text={blockText} sources={sources} citations={citations} variant="message" />
+    </div>
   );
 }
 
@@ -242,12 +164,15 @@ function GeneratingBody({ message, task }: { message: ResearchMessageRecord; tas
     : "已保存，正在请求联网";
   return (
     <>
-      {hasContent ? <p className="message__content">{message.content}</p> : <AiPlaceholder />}
+      {hasContent ? (
+        <div className="message__content">
+          <MarkdownContent text={message.content} variant="message" />
+        </div>
+      ) : <AiPlaceholder />}
       <p className="message__status">{hasContent ? "正在生成" : status}</p>
     </>
   );
 }
-
 /** AI 固定占位：低对比度呼吸骨架；系统开启减少动态效果时退化为静态骨架。 */
 export function AiPlaceholder() {
   const reducedMotion = usePrefersReducedMotion();
@@ -276,7 +201,11 @@ function FailedBody({
 }) {
   return (
     <>
-      {message.content.trim().length > 0 ? <p className="message__content">{message.content}</p> : null}
+      {message.content.trim().length > 0 ? (
+        <div className="message__content">
+          <MarkdownContent text={message.content} variant="message" />
+        </div>
+      ) : null}
       <div className="failure-card">
         <p className="failure-card__title">内容已保存，暂时无法生成回答</p>
         <p className="failure-card__reason">{task ? taskErrorReason(task) : "生成没有完成。已保存的内容不会丢失。"}</p>

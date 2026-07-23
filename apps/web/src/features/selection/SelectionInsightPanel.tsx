@@ -15,6 +15,7 @@ import { anchorCaption, messageBlockCaption } from "../../app/anchorCaption";
 import { apiErrorCopy } from "../../api/errors";
 import { useServices } from "../../app/services";
 import { useMediaQuery } from "../../app/useMediaQuery";
+import { MarkdownContent } from "../../components/MarkdownContent";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { notifyLaterChanged } from "../navigation/later-event";
 import { deepResearchIdempotencyKey, laterIdempotencyKey } from "./selection-highlight";
@@ -298,7 +299,7 @@ export function SelectionInsightPanel({
         <section className="selection-panel__field">
           <h3 className="selection-panel__label">这段在说什么</h3>
           {insight ? (
-            <p className="selection-panel__text">{insight.summary}</p>
+            <MarkdownContent text={insight.summary} variant="insight" />
           ) : (
             <Skeleton variant="text" lines={2} width="100%" />
           )}
@@ -353,7 +354,7 @@ export function SelectionInsightPanel({
                 insight.prerequisites.length > 0 ? (
                   <ul className="selection-panel__list">
                     {insight.prerequisites.map((item) => (
-                      <li key={item}>{item}</li>
+                      <li key={item}><MarkdownContent text={item} variant="insight" /></li>
                     ))}
                   </ul>
                 ) : (
@@ -366,7 +367,7 @@ export function SelectionInsightPanel({
             <section className="selection-panel__field">
               <h3 className="selection-panel__label">与当前内容的关系</h3>
               {insight ? (
-                <p className="selection-panel__text">{insight.relationToContent}</p>
+                <MarkdownContent text={insight.relationToContent} variant="insight" />
               ) : (
                 <Skeleton variant="text" lines={2} width="100%" />
               )}
@@ -375,7 +376,7 @@ export function SelectionInsightPanel({
               <h3 className="selection-panel__label">与当前关注方向的关系</h3>
               {insight ? (
                 insight.relationToFocus ? (
-                  <p className="selection-panel__text">{insight.relationToFocus}</p>
+                  <MarkdownContent text={insight.relationToFocus} variant="insight" />
                 ) : (
                   <p className="selection-panel__muted">本次分析未包含与当前关注方向的关系。</p>
                 )
@@ -386,7 +387,7 @@ export function SelectionInsightPanel({
             <section className="selection-panel__field">
               <h3 className="selection-panel__label">判断依据与不确定性</h3>
               {insight ? (
-                <p className="selection-panel__text">{insight.rationale}</p>
+                <MarkdownContent text={insight.rationale} variant="insight" />
               ) : (
                 <Skeleton variant="text" lines={2} width="100%" />
               )}
