@@ -19,6 +19,7 @@ import {
   ResearchTurnAccepted,
 } from "@collector/capture-contracts";
 import type { CollectorStore } from "./store.js";
+import { runWebSearch } from "./web-search-agent.js";
 
 export const RESEARCH_CHAT_PROMPT_VERSION = "research-chat-v1";
 export const DEEP_RESEARCH_PROMPT_VERSION = "deep-research-v1";
@@ -40,6 +41,8 @@ export interface ResearchGenerationProvider {
   readonly groundingCapability?: import("@collector/capture-contracts").ProviderWebGrounding;
   generate(request: ResearchGenerationRequest): AsyncIterable<string>;
   generateGrounded?(request: ResearchGenerationRequest & { scenario: ResearchGroundingScenario }): Promise<{ content: string; status: ResearchGroundingScopeStatus; queries: string[]; sources: Array<{ providerSourceId?: string; title: string; url?: string; snippet?: string; publishedAt?: string; locator?: string }>; citations: Array<{ sourceOrdinal: number; startOffset: number; endOffset: number; providerCitationId?: string }>; responseSummary?: Record<string, unknown>; errorMessage?: string }>;
+  /** Agent 式搜索：Collector 自行完成搜索，不依赖供应商原生联网。 */
+  generateAgentGrounded?(request: ResearchGenerationRequest & { scenario: ResearchGroundingScenario }): Promise<{ content: string; status: ResearchGroundingScopeStatus; queries: string[]; sources: Array<{ providerSourceId?: string; title: string; url?: string; snippet?: string; publishedAt?: string; locator?: string }>; citations: Array<{ sourceOrdinal: number; startOffset: number; endOffset: number; providerCitationId?: string }>; responseSummary?: Record<string, unknown>; errorMessage?: string }>;
 }
 
 export interface ResearchServiceOptions {
@@ -193,8 +196,8 @@ export class ResearchSessionService {
         const scenario: ResearchGroundingScenario = generation.deepResearch
           ? "deep_research_first_round"
           : this.isBranchFollowUp(task.id) ? "branch_follow_up" : "chat";
-        if (provider.generateGrounded) {
-          const grounded = await provider.generateGrounded({ session, messages, taskId: task.id, deepResearch: generation.deepResearch, scenario });
+        if (provider.generateAgentGrounded) {
+          const grounded = await provider.generateAgentGrounded({ session, messages, taskId: task.id, deepResearch: generation.deepResearch, scenario });
           const result = this.groundingResultFor(task, grounded, scenario);
           await this.store.saveResearchGroundingResult(result);
           generatedCharacters = grounded.content.length;

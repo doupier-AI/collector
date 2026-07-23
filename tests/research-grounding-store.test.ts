@@ -18,7 +18,7 @@ test("grounded research persists a v21 run, sources, citations, and task scope",
   const provider: ResearchGenerationProvider = {
     provider: "grounding-fake", model: "grounding-model", promptVersion: "grounding-test-v1",
     async *generate() { yield "ordinary fallback"; },
-    async generateGrounded() {
+    async generateAgentGrounded() {
       return {
         content: "联网回答内容。", status: "grounded", queries: ["collector web search"],
         sources: [{

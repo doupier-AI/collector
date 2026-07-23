@@ -18,6 +18,8 @@ import {
   type ProviderProfile,
   type ProviderProfileInput,
   type RecentClusterSnapshotRecord,
+  type ResearchGroundingScopeStatus,
+  type ResearchGroundingSourceRecord,
   type AiBudgetSettings,
   type AiUsageSummary,
   type ModelCallRecord,
@@ -42,6 +44,8 @@ import { ResearchImportService } from "./research-import.js";
 import { ResearchSelectionAnalysisError, ResearchSelectionService, type ResearchSelectionProvider } from "./selection.js";
 import { DeepResearchService } from "./deep-research.js";
 import { ResearchLaterService } from "./research-later.js";
+import { runWebSearch } from "./web-search-agent.js";
+import { parseAgentCitations } from "./web-search-agent.js";
 
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
@@ -131,11 +135,64 @@ export class CaptureService {
 
   private researchProviderFor(gateway: ModelGateway | undefined): ResearchGenerationProvider | undefined {
     if (!gateway) return undefined;
+    const groundingCapability = gateway.providerGroundingCapability;
     return {
       provider: gateway.providerName,
       model: gateway.modelName,
       promptVersion: "research-chat-v1",
-      groundingCapability: gateway.providerGroundingCapability,
+      groundingCapability,
+      async generateAgentGrounded(request) {
+        const direction = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
+        const search = await runWebSearch(direction, 5);
+        const queries = search.status === "completed" ? [search.query] : [];
+        const sources = search.sources;
+
+        // Build prompt with search materials
+        let prompt = "";
+        if (sources.length) {
+          prompt += "请基于以下联网检索材料回答用户问题。引用来源时在陈述后标注 [来源n]（n 为来源编号），只能在确实有依据的陈述后标注。没有依据时如实说明。\n\n";
+          prompt += "══════ 联网检索材料 ══════\n";
+          for (const source of sources) {
+            prompt += `\n[来源${source.ordinal}] ${source.title}\n`;
+            if (source.url) prompt += `URL: ${source.url}\n`;
+            if (source.snippet) prompt += `${source.snippet}\n`;
+          }
+          prompt += "\n══════ 用户问题 ══════\n";
+        }
+
+        if (request.deepResearch) {
+          prompt += `用户选区原文：${request.deepResearch.selectionText}\n\n研究方向：${direction}\n\n${request.deepResearch.contextBefore ? `选区前文：${request.deepResearch.contextBefore}\n` : ""}${request.deepResearch.contextAfter ? `选区后文：${request.deepResearch.contextAfter}\n` : ""}`;
+        } else {
+          prompt += `${direction}`;
+        }
+
+        const content = await gateway.answerResearchConversation([{ role: "user" as const, content: prompt }], {
+          context: { workflowRunId: request.taskId, purpose: "research", promptVersion: "agent-search-v1" },
+        });
+        if (!content) throw new Error("Provider returned an empty response");
+
+        // Parse [来源n] citations from the content
+        const { citations } = parseAgentCitations(content, sources);
+        const scopeStatus: ResearchGroundingScopeStatus = sources.length ? "grounded" : (search.status === "error" ? "grounding_failed" : "no_verifiable_sources");
+        return {
+          content,
+          status: scopeStatus,
+          queries,
+          sources: sources.map((source, i) => ({
+            providerSourceId: source.id,
+            title: source.title,
+            url: source.url,
+            snippet: source.snippet,
+          })),
+          citations: citations.map((citation) => ({
+            sourceOrdinal: citation.sourceOrdinal,
+            startOffset: citation.markerOffset,
+            endOffset: citation.markerOffset,
+          })),
+          responseSummary: { searchStatus: search.status, sourceCount: sources.length, citationCount: citations.length },
+          ...(search.status === "error" ? { errorMessage: search.errorMessage ?? "搜索失败" } : {}),
+        };
+      },
       async generateGrounded(request) {
         const direction = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
         const messages = request.deepResearch

@@ -39,6 +39,18 @@ export function createMvpDemoResearchProvider(): ResearchGenerationProvider {
         citations: [],
       };
     },
+    async generateAgentGrounded(request: ResearchGenerationRequest & { scenario: ResearchGroundingScenario }) {
+      const direction = [...request.messages].reverse().find((m) => m.role === "user")?.content ?? "";
+      return {
+        content: `\n\n${DEMO_NOTICE}\n\n这是一条演示级别的 Agent 式联网搜索回答，基于问题"${direction.slice(0, 60)}"。\n\n演示模式下不执行真实搜索，本回答仅用于验证 Agent 搜索数据流。`,
+        status: "grounded" as ResearchGroundingScopeStatus,
+        queries: ["演示搜索查询"],
+        sources: [
+          { title: "Agent 搜索示例来源", url: "https://example.com/agent-search-demo", snippet: "演示：Agent 搜索模式的来源摘录。" },
+        ],
+        citations: [],
+      };
+    },
   };
   return demoProvider;
 }
