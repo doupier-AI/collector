@@ -540,6 +540,10 @@ export interface AiConfigurationView {
   model?: string;
   /** 当前模型供应商的联网搜索能力；unsupported 时界面不显示联网状态。 */
   webGrounding?: ProviderWebGrounding;
+  /** 当前活跃的搜索后端 */
+  searchBackend?: string;
+  /** 可用搜索后端列表 */
+  availableSearchBackends?: string[];
 }
 
 // ── Research Selection & Insight (MVP 阶段 B) ──────────────────────

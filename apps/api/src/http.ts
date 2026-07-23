@@ -403,6 +403,19 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         const policyBody = await readJson(request) as import("@collector/capture-contracts").VerificationPolicyConfig;
         return json(response, 200, await service.updateVerificationPolicy(policyBody));
       }
+// ── Search Backend ───────────────────────────────────
+      if (request.method === "GET" && url.pathname === "/v1/settings/search") {
+        return json(response, 200, service.getSearchConfig());
+      }
+      if (request.method === "PUT" && url.pathname === "/v1/settings/search") {
+        const searchBody = await readJson(request) as {
+          backend?: string;
+          fallback?: boolean;
+          tavilyApiKey?: string;
+          searxngUrl?: string;
+        };
+        return json(response, 200, await service.updateSearchConfig(searchBody));
+      }
       const docByIdMatch = url.pathname.match(/^\/v1\/documents\/([^/]+)$/);
       if (request.method === "GET" && docByIdMatch) {
         const doc = service.getTopicDocumentVersion(decodeURIComponent(docByIdMatch[1]));

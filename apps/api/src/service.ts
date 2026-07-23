@@ -46,6 +46,7 @@ import { DeepResearchService } from "./deep-research.js";
 import { ResearchLaterService } from "./research-later.js";
 import { runWebSearch, webSearch, webFetch } from "./web-search-agent.js";
 import { parseAgentCitations } from "./web-search-agent.js";
+import { getSearchConfig as getSearchConfigFromAgent, updateSearchConfig as updateSearchConfigInAgent, listAvailableBackends, initSearchBackends, type SearchBackendId } from "./web-search-agent.js";
 
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
@@ -210,6 +211,7 @@ export class CaptureService {
             citationCount: citations.length,
             queryCount: result.queries.length,
             method: "agent-loop-v2",
+            searchBackend: getSearchConfigFromAgent().backend,
           },
         };
       },
@@ -300,6 +302,7 @@ export class CaptureService {
   getAiConfiguration(): AiConfigurationView {
     const profile = this.store.getActiveProviderProfile();
     const configured = profile ? profile.credentialConfigured : this.store.getSetting("ai_configured") === "true";
+    const searchCfg = getSearchConfigFromAgent();
     return {
       consent: this.store.getSetting("ai_consent") === "true",
       configured,
@@ -307,11 +310,61 @@ export class CaptureService {
       provider: profile?.providerId ?? this.modelGateway?.providerName,
       model: profile?.model ?? this.modelGateway?.modelName,
       webGrounding: this.modelGateway?.providerGroundingCapability,
+      searchBackend: searchCfg.backend,
+      availableSearchBackends: listAvailableBackends(),
     };
   }
   async setAiConfiguration(consent: boolean, configured: boolean): Promise<void> {
     await this.store.saveSetting("ai_consent", String(consent));
     await this.store.saveSetting("ai_configured", String(configured));
+  }
+
+  // ── 搜索后端配置 ──────────────────────────────────────────
+
+  getSearchConfig(): ReturnType<typeof getSearchConfigFromAgent> {
+    return getSearchConfigFromAgent();
+  }
+
+  async updateSearchConfig(partial: {
+    backend?: string;
+    fallback?: boolean;
+    tavilyApiKey?: string;
+    searxngUrl?: string;
+  }): Promise<ReturnType<typeof getSearchConfigFromAgent>> {
+    const update: Record<string, string> = {};
+    if (partial.backend !== undefined) {
+      const validBackends: SearchBackendId[] = ["bing", "duckduckgo", "tavily", "searxng"];
+      if (!validBackends.includes(partial.backend as SearchBackendId)) {
+        throw new ValidationError(`Invalid search backend: ${partial.backend}. Valid: ${validBackends.join(", ")}`);
+      }
+      update.search_backend = partial.backend;
+    }
+    if (partial.fallback !== undefined) {
+      update.search_fallback = String(partial.fallback);
+    }
+    if (partial.tavilyApiKey !== undefined) {
+      await this.store.saveSetting("search_tavily_api_key", partial.tavilyApiKey.trim());
+    }
+    if (partial.searxngUrl !== undefined) {
+      await this.store.saveSetting("search_searxng_url", partial.searxngUrl.trim());
+    }
+
+    // 持久化搜索后端设置
+    for (const [key, value] of Object.entries(update)) {
+      await this.store.saveSetting(key, value);
+    }
+
+    // 同步到 Agent 搜索层
+    const backend = (update.search_backend ?? this.store.getSetting("search_backend") ?? "bing") as SearchBackendId;
+    const fallback = (update.search_fallback ?? this.store.getSetting("search_fallback") ?? "true") === "true";
+    updateSearchConfigInAgent({
+      backend,
+      fallback,
+      tavilyApiKey: partial.tavilyApiKey ?? this.store.getSetting("search_tavily_api_key"),
+      searxngUrl: partial.searxngUrl ?? this.store.getSetting("search_searxng_url"),
+    });
+
+    return getSearchConfigFromAgent();
   }
 
   getProviderCatalog(): ProviderDefinition[] { return DEFAULT_PROVIDER_REGISTRY.list(); }

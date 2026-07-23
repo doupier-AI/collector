@@ -1,5 +1,10 @@
 import type { ResearchGroundingSourceRecord } from "@collector/capture-contracts";
 import { extractReadableText } from "./parsers.js";
+import { createSearchBackendRegistry, defaultSearchConfig, selectSearchBackend } from "./search-backends/index.js";
+import type { SearchBackend, SearchBackendId, SearchConfig } from "./search-backends/index.js";
+import { SearchBackendRegistry } from "./search-backends/index.js";
+
+export type { SearchBackendId, SearchConfig };
 
 const SEARCH_TIMEOUT_MS = 10_000;
 const PAGE_FETCH_TIMEOUT_MS = 8_000;
@@ -29,6 +34,10 @@ export interface WebSearchResultSet {
   total_results: number;
   results: Array<{ title: string; url: string; snippet: string }>;
   errorMessage?: string;
+  /** 实际使用的搜索后端 */
+  backend?: SearchBackendId;
+  /** 是否为回退后端 */
+  usedFallback?: boolean;
 }
 
 /**
@@ -86,22 +95,101 @@ export async function searchBing(query: string): Promise<WebSearchOutcome> {
   }
 }
 
+// ── 搜索后端调度器 ──────────────────────────────────────────────
+
+let _searchRegistry: SearchBackendRegistry | undefined;
+let _searchConfig: SearchConfig = defaultSearchConfig();
+
+/**
+ * 初始化搜索后端注册表。
+ * 在服务启动时调用一次，根据当前搜索配置注册所有可用后端。
+ */
+export function initSearchBackends(config?: Partial<SearchConfig>): void {
+  _searchConfig = { ...defaultSearchConfig(), ...config };
+  _searchRegistry = createSearchBackendRegistry(_searchConfig);
+  console.log(`[search-backend] initialized backend="${_searchConfig.backend}" fallback=${_searchConfig.fallback} available=${_searchRegistry.list().join(",")}`);
+}
+
+/**
+ * 获取当前搜索配置（只读副本）。
+ */
+export function getSearchConfig(): SearchConfig {
+  return { ..._searchConfig };
+}
+
+/**
+ * 动态更新搜索配置并重新创建注册表。
+ * 例如用户通过 API 切换后端或更新 Tavily API Key。
+ */
+export function updateSearchConfig(partial: Partial<SearchConfig>): void {
+  _searchConfig = { ..._searchConfig, ...partial };
+  _searchRegistry = createSearchBackendRegistry(_searchConfig);
+  const available = _searchRegistry.list().join(",");
+  console.log(`[search-backend] updated backend="${_searchConfig.backend}" fallback=${_searchConfig.fallback} available=${available}`);
+}
+
+/**
+ * 获取当前活跃的搜索后端注册表。
+ * 如果未初始化（例如早期代码路径），惰性创建默认注册表。
+ */
+function ensureRegistry(): SearchBackendRegistry {
+  if (!_searchRegistry) {
+    _searchRegistry = createSearchBackendRegistry(_searchConfig);
+  }
+  return _searchRegistry;
+}
+
 /**
  * 搜索互联网并返回标准化的结果集。
- * 只搜不抓——内部调用 searchBing 获取搜索结果，只返回标题、URL 和摘要，
- * 不抓取页面正文。供 Agent 工具循环中的 web_search 工具调用。
+ * 只搜不抓——根据当前搜索配置选择后端，支持故障回退。
+ * 供 Agent 工具循环中的 web_search 工具调用。
  */
 export async function webSearch(query: string, maxResults = 5): Promise<WebSearchResultSet> {
   const searchStartedAt = Date.now();
-  console.log(`[web-search] webSearch query="${query.trim()}" maxResults=${maxResults}`);
-  const outcome = await searchBing(query.trim());
-  if (outcome.status === "error" || outcome.status === "no_results") {
-    console.log(`[web-search] webSearch ${outcome.status} query="${outcome.query}" latency=${Date.now() - searchStartedAt}ms`);
-    return { query: outcome.query, total_results: 0, results: [], errorMessage: outcome.errorMessage };
+  const registry = ensureRegistry();
+  const { backend, usedFallback } = selectSearchBackend(registry, _searchConfig.backend, _searchConfig.fallback);
+
+  console.log(`[web-search] webSearch backend="${backend.id}"${usedFallback ? " (fallback)" : ""} query="${query.trim()}" maxResults=${maxResults}`);
+
+  try {
+    const result = await backend.search(query.trim(), maxResults);
+    console.log(`[web-search] webSearch ${result.errorMessage ? "error" : "completed"} backend="${backend.id}" query="${result.query}" resultCount=${result.results.length} latency=${Date.now() - searchStartedAt}ms`);
+    return { ...result, backend: backend.id, usedFallback };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown search error";
+    console.log(`[web-search] webSearch error backend="${backend.id}" query="${query.trim()}" message="${message}" latency=${Date.now() - searchStartedAt}ms`);
+
+    // 如果启用了回退且当前后端不是回退选择，尝试用首选后端重试
+    if (_searchConfig.fallback && usedFallback) {
+      // 已经是回退后端了还失败，返回错误
+      return { query: query.trim(), total_results: 0, results: [], errorMessage: message, backend: backend.id, usedFallback };
+    }
+    if (_searchConfig.fallback) {
+      // 首选后端失败，尝试回退
+      const FALLBACK_ORDER: SearchBackendId[] = ["bing", "duckduckgo", "tavily", "searxng"];
+      for (const fallbackId of FALLBACK_ORDER) {
+        if (fallbackId === backend.id) continue;
+        const fallbackBackend = registry.get(fallbackId);
+        if (!fallbackBackend) continue;
+        try {
+          console.log(`[web-search] webSearch falling back to "${fallbackId}" after "${backend.id}" failed`);
+          const fallbackResult = await fallbackBackend.search(query.trim(), maxResults);
+          return { ...fallbackResult, backend: fallbackId, usedFallback: true };
+        } catch {
+          // 继续尝试下一个
+        }
+      }
+    }
+
+    return { query: query.trim(), total_results: 0, results: [], errorMessage: message, backend: backend.id, usedFallback };
   }
-  const trimmed = outcome.results.slice(0, maxResults);
-  console.log(`[web-search] webSearch completed query="${outcome.query}" resultCount=${trimmed.length} latency=${Date.now() - searchStartedAt}ms`);
-  return { query: outcome.query, total_results: outcome.results.length, results: trimmed.map((r) => ({ title: r.title, url: r.url, snippet: r.snippet })) };
+}
+
+/**
+ * 返回当前可用的搜索后端 ID 列表。
+ */
+export function listAvailableBackends(): SearchBackendId[] {
+  return ensureRegistry().list();
 }
 
 /**
