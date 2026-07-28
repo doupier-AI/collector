@@ -26,7 +26,7 @@ export function createMvpDemoResearchProvider(): ResearchGenerationProvider {
       const answer = `${DEMO_NOTICE}\n\n你正在研究："${topic}"\n\n这是用于验证 Collector 核心流程的确定性本地内容。建议先明确关键概念，再列出需要比较的观点与证据，最后记录仍待验证的问题。文件导入和阅读内容可作为后续研究材料。\n\nTODO（正式版本）：接入用户配置的真实模型与来源检索后，由模型基于会话和已导入材料生成回答，并为事实性结论提供可返回的来源。`;
       for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);
     },
-    async generateGrounded(_request: ResearchGenerationRequest & { scenario: ResearchGroundingScenario }) {
+    async generateAgentGrounded(_request: ResearchGenerationRequest & { scenario: ResearchGroundingScenario }) {
       const content = `\n\n${DEMO_NOTICE}\n\n量子计算是一种利用量子力学原理进行信息处理的计算范式。与传统计算不同，量子比特可以同时处于 0 和 1 的叠加态，从而在特定问题上实现指数级加速。\n\n目前最著名的量子算法是 Shor 算法和 Grover 算法，它们分别在整数分解和无序搜索上展示了量子优势。\n\n在硬件实现方面，超导量子比特和离子阱是目前最成熟的两条技术路线。`;
       return {
         content,
@@ -35,18 +35,6 @@ export function createMvpDemoResearchProvider(): ResearchGenerationProvider {
         sources: [
           { title: "量子计算基本概念与原理", url: "https://example.com/quantum-intro", snippet: "量子计算利用量子叠加和纠缠实现并行计算。" },
           { title: "量子算法综述", url: "https://example.com/quantum-algorithms", snippet: "Shor 算法实现了整数分解的指数加速。" },
-        ],
-        citations: [],
-      };
-    },
-    async generateAgentGrounded(request: ResearchGenerationRequest & { scenario: ResearchGroundingScenario }) {
-      const direction = [...request.messages].reverse().find((m) => m.role === "user")?.content ?? "";
-      return {
-        content: `\n\n${DEMO_NOTICE}\n\n这是一条演示级别的 Agent 式联网搜索回答，基于问题"${direction.slice(0, 60)}"。\n\n演示模式下不执行真实搜索，本回答仅用于验证 Agent 搜索数据流。`,
-        status: "grounded" as ResearchGroundingScopeStatus,
-        queries: ["演示搜索查询"],
-        sources: [
-          { title: "Agent 搜索示例来源", url: "https://example.com/agent-search-demo", snippet: "演示：Agent 搜索模式的来源摘录。" },
         ],
         citations: [],
       };

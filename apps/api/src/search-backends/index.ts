@@ -15,12 +15,13 @@
 
 import { SearchBackendRegistry } from "./types.js";
 import type { SearchBackend, SearchBackendId } from "./types.js";
+import { ALL_SEARCH_BACKEND_IDS } from "./types.js";
 import { bingBackend } from "./bing.js";
 import { duckduckgoBackend } from "./duckduckgo.js";
 import { createTavilyBackend } from "./tavily.js";
 import { createSearxngBackend } from "./searxng.js";
 
-export { SearchBackendRegistry } from "./types.js";
+export { SearchBackendRegistry, ALL_SEARCH_BACKEND_IDS } from "./types.js";
 export type { SearchBackend, SearchBackendId } from "./types.js";
 export { bingBackend } from "./bing.js";
 export { duckduckgoBackend } from "./duckduckgo.js";
@@ -96,7 +97,7 @@ export function selectSearchBackend(
   }
 
   // 固定回退顺序
-  const FALLBACK_ORDER: SearchBackendId[] = ["bing", "duckduckgo", "tavily", "searxng"];
+  const FALLBACK_ORDER = ALL_SEARCH_BACKEND_IDS;
   for (const id of FALLBACK_ORDER) {
     const backend = registry.get(id);
     if (backend) {

@@ -9,14 +9,14 @@ import {
   type ResearchLaterItemView,
   type ResearchSelectionRecord,
 } from "@collector/capture-contracts";
-import type { CollectorStore } from "./store.js";
+import type { ResearchLaterStore } from "./store.js";
 
 /**
  * 稍后再学服务：基础能力，保存、列表、更新与来源联接均不依赖 AI。
  * 来源关系以选区记录为唯一依据，选区原文与位置锚点由选区服务保留。
  */
 export class ResearchLaterService {
-  constructor(private readonly store: CollectorStore) {}
+  constructor(private readonly store: ResearchLaterStore) {}
 
   /**
    * 保存稍后再学项目：summary 省略时使用确定性默认值（选区首句 / 前 80 字符），

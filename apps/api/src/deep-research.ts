@@ -11,7 +11,7 @@ import {
   type ResearchTaskRecord,
   type ResearchTurnAccepted,
 } from "@collector/capture-contracts";
-import type { CollectorStore } from "./store.js";
+import type { DeepResearchStore } from "./store.js";
 import { DEEP_RESEARCH_PROMPT_VERSION, RESEARCH_CHAT_PROMPT_VERSION, type ResearchSessionService } from "./research.js";
 
 /** 分支模式首轮用户消息中选区原文的摘录长度。 */
@@ -24,7 +24,7 @@ export interface DeepResearchServiceOptions {
 }
 
 export class DeepResearchService {
-  constructor(private readonly store: CollectorStore, private readonly options: DeepResearchServiceOptions) {}
+  constructor(private readonly store: DeepResearchStore, private readonly options: DeepResearchServiceOptions) {}
 
   /**
    * 从选区发起深入研究：先在同一事务保存来源关系（分支或带 origin 的新会话）

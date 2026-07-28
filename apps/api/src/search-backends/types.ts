@@ -1,4 +1,4 @@
-import type { WebSearchOutcome, WebSearchResultSet } from "../web-search-agent.js";
+import type { WebSearchResultSet } from "../web-search-agent.js";
 
 /**
  * 搜索后端统一接口。
@@ -15,6 +15,14 @@ export interface SearchBackend {
 
 /** 已注册的搜索后端标识符 */
 export type SearchBackendId = "bing" | "duckduckgo" | "tavily" | "searxng";
+
+/** 所有搜索后端的规范有序列表，用于回退链和校验。 */
+export const ALL_SEARCH_BACKEND_IDS: readonly SearchBackendId[] = [
+  "bing",
+  "duckduckgo",
+  "tavily",
+  "searxng",
+] as const;
 
 /**
  * 搜索后端注册表。

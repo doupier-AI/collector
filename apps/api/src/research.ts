@@ -18,8 +18,7 @@ import {
   ResearchTaskRecord,
   ResearchTurnAccepted,
 } from "@collector/capture-contracts";
-import type { CollectorStore } from "./store.js";
-import { runWebSearch } from "./web-search-agent.js";
+import type { ResearchStore } from "./store.js";
 
 export const RESEARCH_CHAT_PROMPT_VERSION = "research-chat-v1";
 export const DEEP_RESEARCH_PROMPT_VERSION = "deep-research-v1";
@@ -40,7 +39,6 @@ export interface ResearchGenerationProvider {
   readonly promptVersion?: string;
   readonly groundingCapability?: import("@collector/capture-contracts").ProviderWebGrounding;
   generate(request: ResearchGenerationRequest): AsyncIterable<string>;
-  generateGrounded?(request: ResearchGenerationRequest & { scenario: ResearchGroundingScenario }): Promise<{ content: string; status: ResearchGroundingScopeStatus; queries: string[]; sources: Array<{ providerSourceId?: string; title: string; url?: string; snippet?: string; publishedAt?: string; locator?: string }>; citations: Array<{ sourceOrdinal: number; startOffset: number; endOffset: number; providerCitationId?: string }>; responseSummary?: Record<string, unknown>; errorMessage?: string }>;
   /** Agent 式搜索：Collector 自行完成搜索，不依赖供应商原生联网。 */
   generateAgentGrounded?(request: ResearchGenerationRequest & { scenario: ResearchGroundingScenario }): Promise<{ content: string; status: ResearchGroundingScopeStatus; queries: string[]; sources: Array<{ providerSourceId?: string; title: string; url?: string; snippet?: string; publishedAt?: string; locator?: string }>; citations: Array<{ sourceOrdinal: number; startOffset: number; endOffset: number; providerCitationId?: string }>; responseSummary?: Record<string, unknown>; errorMessage?: string }>;
 }
@@ -55,7 +53,7 @@ export class ResearchSessionService {
   private readonly running = new Set<string>();
   private recoveryScheduled = false;
 
-  constructor(private readonly store: CollectorStore, private readonly options: ResearchServiceOptions = {}) {
+  constructor(private readonly store: ResearchStore, private readonly options: ResearchServiceOptions = {}) {
     this.provider = options.provider;
     if (options.autoRunTasks !== false) this.scheduleRecovery();
   }
@@ -243,7 +241,7 @@ export class ResearchSessionService {
 
   private groundingResultFor(
     task: ResearchTaskRecord,
-    grounded: NonNullable<ResearchGenerationProvider["generateGrounded"]> extends (request: any) => Promise<infer Result> ? Result : never,
+    grounded: NonNullable<ResearchGenerationProvider["generateAgentGrounded"]> extends (request: any) => Promise<infer Result> ? Result : never,
     scenario: ResearchGroundingScenario,
   ): ResearchGroundingResult {
     const createdAt = new Date().toISOString();

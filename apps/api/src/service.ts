@@ -44,9 +44,10 @@ import { ResearchImportService } from "./research-import.js";
 import { ResearchSelectionAnalysisError, ResearchSelectionService, type ResearchSelectionProvider } from "./selection.js";
 import { DeepResearchService } from "./deep-research.js";
 import { ResearchLaterService } from "./research-later.js";
-import { runWebSearch, webSearch, webFetch } from "./web-search-agent.js";
+import { webSearch, webFetch } from "./web-search-agent.js";
 import { parseAgentCitations } from "./web-search-agent.js";
 import { getSearchConfig as getSearchConfigFromAgent, updateSearchConfig as updateSearchConfigInAgent, listAvailableBackends, initSearchBackends, type SearchBackendId } from "./web-search-agent.js";
+import { ALL_SEARCH_BACKEND_IDS } from "./search-backends/index.js";
 
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
@@ -215,18 +216,6 @@ export class CaptureService {
           },
         };
       },
-      async generateGrounded(request) {
-        const direction = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
-        const messages = request.deepResearch
-          ? [{ role: "user" as const, content: `用户选区原文：${request.deepResearch.selectionText}\n\n研究方向：${direction}\n\n${request.deepResearch.contextBefore ? `选区前文：${request.deepResearch.contextBefore}\n` : ""}${request.deepResearch.contextAfter ? `选区后文：${request.deepResearch.contextAfter}\n` : ""}请基于这些材料并联网研究后回答。` }]
-          : request.messages;
-        return gateway.generateGroundedResearch(messages, {
-          taskId: request.taskId,
-          scenario: request.scenario,
-          requireGrounding: true,
-          promptVersion: request.deepResearch ? "deep-research-grounding-v1" : "research-grounding-v1",
-        }, { context: { workflowRunId: request.taskId, purpose: "research_grounding", promptVersion: request.deepResearch ? "deep-research-grounding-v1" : "research-grounding-v1" } });
-      },
       async *generate(request) {
         if (request.deepResearch) {
           const direction = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
@@ -333,7 +322,7 @@ export class CaptureService {
   }): Promise<ReturnType<typeof getSearchConfigFromAgent>> {
     const update: Record<string, string> = {};
     if (partial.backend !== undefined) {
-      const validBackends: SearchBackendId[] = ["bing", "duckduckgo", "tavily", "searxng"];
+      const validBackends = ALL_SEARCH_BACKEND_IDS;
       if (!validBackends.includes(partial.backend as SearchBackendId)) {
         throw new ValidationError(`Invalid search backend: ${partial.backend}. Valid: ${validBackends.join(", ")}`);
       }

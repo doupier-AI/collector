@@ -10,7 +10,7 @@ import {
   type ResearchSelectionTaskEvent,
   type ResearchSelectionTaskRecord,
 } from "@collector/capture-contracts";
-import type { CollectorStore } from "./store.js";
+import type { ResearchSelectionStore } from "./store.js";
 
 const PROMPT_VERSION = "selection-analysis-v1";
 
@@ -48,7 +48,7 @@ export class ResearchSelectionService {
   private readonly running = new Set<string>();
   private recoveryScheduled = false;
 
-  constructor(private readonly store: CollectorStore, private readonly options: ResearchSelectionServiceOptions = {}) {
+  constructor(private readonly store: ResearchSelectionStore, private readonly options: ResearchSelectionServiceOptions = {}) {
     this.provider = options.provider;
     if (options.autoRunTasks !== false) this.scheduleRecovery();
   }

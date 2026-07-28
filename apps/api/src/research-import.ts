@@ -13,7 +13,7 @@ import {
   type ResearchImportTaskEvent,
   type ResearchImportTaskRecord,
 } from "@collector/capture-contracts";
-import type { CollectorStore } from "./store.js";
+import type { ResearchImportStore } from "./store.js";
 import { parseMarkdown, parsePdf, splitPlainText } from "./parsers.js";
 
 const DOCX_MAX_ENTRY_BYTES = RESEARCH_IMPORT_MAX_BYTES;
@@ -32,7 +32,7 @@ export class ResearchImportService {
   private recoveryScheduled = false;
 
   constructor(
-    private readonly store: CollectorStore,
+    private readonly store: ResearchImportStore,
     private readonly objectRoot: string,
     private readonly options: ResearchImportServiceOptions = {},
   ) {

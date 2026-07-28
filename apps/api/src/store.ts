@@ -3,7 +3,115 @@ import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTurnAccepted } from "@collector/capture-contracts";
 
-export interface CollectorStore {
+/** 稍后再学所需的持久化能力：5 个专属方法 + 3 个只读跨域查询。 */
+export interface ResearchLaterStore {
+  getResearchLaterItem(id: string): ResearchLaterItemRecord | undefined;
+  findResearchLaterItemByCreationKey(idempotencyKey: string): ResearchLaterItemRecord | undefined;
+  listResearchLaterItems(status?: ResearchLaterItemStatus): ResearchLaterItemRecord[];
+  createResearchLaterItem(item: ResearchLaterItemRecord, idempotencyKey: string): Promise<ResearchLaterItemRecord>;
+  saveResearchLaterItem(record: ResearchLaterItemRecord): Promise<void>;
+  getResearchSelection(id: string): ResearchSelectionRecord | undefined;
+  getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined;
+  getResearchSession(id: string): ResearchSessionRecord | undefined;
+}
+
+/** 选区分析所需的持久化能力：16 个专属方法。 */
+export interface ResearchSelectionStore {
+  getResearchSelection(id: string): ResearchSelectionRecord | undefined;
+  listResearchSelections(sessionId: string): ResearchSelectionRecord[];
+  getResearchSelectionTask(id: string): ResearchSelectionTaskRecord | undefined;
+  findResearchSelectionTaskByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchSelectionTaskRecord | undefined;
+  createResearchSelection(selection: ResearchSelectionRecord, task: ResearchSelectionTaskRecord): Promise<ResearchSelectionAccepted>;
+  saveResearchSelection(record: ResearchSelectionRecord): Promise<void>;
+  claimResearchSelectionTask(id: string, provider?: string, model?: string, promptVersion?: string): ResearchSelectionTaskRecord | undefined;
+  completeResearchSelectionTask(id: string, insight: ResearchSelectionInsight): Promise<void>;
+  failResearchSelectionTask(task: ResearchSelectionTaskRecord, error: ResearchSelectionTaskError): Promise<void>;
+  retryResearchSelectionTask(task: ResearchSelectionTaskRecord, provider?: string, model?: string, promptVersion?: string): Promise<ResearchSelectionTaskRecord>;
+  listResearchSelectionTaskEvents(taskId: string, afterId?: number): ResearchSelectionTaskEvent[];
+  listRecoverableResearchSelectionTasks(): ResearchSelectionTaskRecord[];
+  failInterruptedResearchSelectionTasks(): number;
+  getResearchSession(id: string): ResearchSessionRecord | undefined;
+  getResearchMessage(id: string): ResearchMessageRecord | undefined;
+  getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined;
+  listResearchMessages(sessionId: string): ResearchMessageRecord[];
+}
+
+/** 文件导入所需的持久化能力：17 个方法。 */
+export interface ResearchImportStore {
+  getResearchAttachment(id: string): ResearchAttachmentRecord | undefined;
+  findResearchImportTaskByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchImportTaskRecord | undefined;
+  listResearchAttachments(sessionId: string): ResearchAttachmentRecord[];
+  getResearchImportTask(id: string): ResearchImportTaskRecord | undefined;
+  listResearchImportTasks(sessionId: string): ResearchImportTaskRecord[];
+  createResearchImport(attachment: ResearchAttachmentRecord, task: ResearchImportTaskRecord, objectKey: string): Promise<ResearchImportAccepted>;
+  getResearchAttachmentObjectKey(id: string): string | undefined;
+  listResearchAttachmentObjectKeys(): string[];
+  claimResearchImportTask(id: string): ResearchImportTaskRecord | undefined;
+  updateResearchImportProgress(id: string, phase: ResearchImportTaskRecord["progress"]["phase"], completedUnits: number, totalUnits: number): Promise<void>;
+  completeResearchImport(id: string, snapshot: ResearchContentSnapshotRecord): Promise<void>;
+  failResearchImport(task: ResearchImportTaskRecord, error: ResearchImportError): Promise<void>;
+  cancelResearchImport(id: string): Promise<ResearchImportTaskRecord | undefined>;
+  retryResearchImport(id: string): Promise<ResearchImportTaskRecord>;
+  getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined;
+  listResearchImportTaskEvents(taskId: string, afterId?: number): ResearchImportTaskEvent[];
+  listRecoverableResearchImportTasks(): ResearchImportTaskRecord[];
+  failInterruptedResearchImportTasks(): number;
+  getResearchSession(id: string): ResearchSessionRecord | undefined;
+}
+
+/** 研究会话生命周期所需的持久化能力：27 个方法。 */
+export interface ResearchStore {
+  saveResearchSession(record: ResearchSessionRecord): Promise<void>;
+  createResearchSession(record: ResearchSessionRecord, idempotencyKey: string): Promise<ResearchSessionRecord>;
+  getResearchSession(id: string): ResearchSessionRecord | undefined;
+  listResearchSessions(): ResearchSessionRecord[];
+  getResearchMessage(id: string): ResearchMessageRecord | undefined;
+  listResearchMessages(sessionId: string): ResearchMessageRecord[];
+  getResearchTask(id: string): ResearchTaskRecord | undefined;
+  findResearchTaskByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchTaskRecord | undefined;
+  listResearchTasks(sessionId: string): ResearchTaskRecord[];
+  createResearchTurn(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<ResearchTurnAccepted>;
+  claimResearchTask(id: string, provider?: string, model?: string, promptVersion?: string): ResearchTaskRecord | undefined;
+  appendResearchTaskDelta(id: string, delta: string): Promise<void>;
+  completeResearchTask(id: string): Promise<void>;
+  failResearchTask(task: ResearchTaskRecord, error: ResearchTaskError): Promise<void>;
+  retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string): Promise<ResearchTaskRecord>;
+  listResearchTaskEvents(taskId: string, afterId?: number): ResearchTaskEvent[];
+  listRecoverableResearchTasks(): ResearchTaskRecord[];
+  failInterruptedResearchTasks(): number;
+  getResearchAttachment(id: string): ResearchAttachmentRecord | undefined;
+  listResearchAttachments(sessionId: string): ResearchAttachmentRecord[];
+  listResearchImportTasks(sessionId: string): ResearchImportTaskRecord[];
+  getResearchBranch(id: string): ResearchBranchRecord | undefined;
+  listResearchBranches(sessionId: string): ResearchBranchRecord[];
+  getResearchSelection(id: string): ResearchSelectionRecord | undefined;
+  getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined;
+  listResearchCitationsForMessages(messageIds: string[]): ResearchCitationRecord[];
+  listResearchGroundingRuns(taskId: string): ResearchGroundingRunRecord[];
+  listResearchGroundingSources(runId: string): ResearchGroundingSourceRecord[];
+  saveResearchGroundingResult(result: ResearchGroundingResult): Promise<void>;
+}
+
+/** 深入研究所需的持久化能力：12 个方法。 */
+export interface DeepResearchStore {
+  getResearchBranch(id: string): ResearchBranchRecord | undefined;
+  listResearchBranches(sessionId: string): ResearchBranchRecord[];
+  findResearchBranchByCreationKey(sessionId: string, idempotencyKey: string): ResearchBranchRecord | undefined;
+  createResearchBranch(session: ResearchSessionRecord, branch: ResearchBranchRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<DeepResearchAccepted>;
+  createOriginResearchSession(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<DeepResearchAccepted>;
+  getResearchSession(id: string): ResearchSessionRecord | undefined;
+  getResearchMessage(id: string): ResearchMessageRecord | undefined;
+  getResearchSelection(id: string): ResearchSelectionRecord | undefined;
+  listResearchMessages(sessionId: string): ResearchMessageRecord[];
+  listResearchTasks(sessionId: string): ResearchTaskRecord[];
+  findResearchTaskByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchTaskRecord | undefined;
+  createResearchTurn(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<ResearchTurnAccepted>;
+  listResearchCitationsForMessages(messageIds: string[]): ResearchCitationRecord[];
+  listResearchGroundingSources(runId: string): ResearchGroundingSourceRecord[];
+}
+
+export interface CollectorStore
+  extends ResearchLaterStore, ResearchSelectionStore, ResearchImportStore, ResearchStore, DeepResearchStore {
   init(): Promise<void>;
   getCapture(id: string): CaptureRecord | undefined;
   getCaptureByClientId(clientId: string): CaptureRecord | undefined;
