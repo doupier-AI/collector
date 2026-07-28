@@ -9,6 +9,28 @@ type State =
   | { kind: "ready"; catalog: ProviderDefinition[]; activeProfile?: ProviderProfile; profiles: ProviderProfile[]; routing: ModelRoutingView };
 
 /**
+ * 把模型 ID 按家族分组（借鉴 CC Switch 的分组下拉）：
+ * 含 "/" 的按前缀分组（如 deepseek-ai/DeepSeek-V3.2 → deepseek-ai），
+ * 否则按 "-" 首段分组（如 gpt-4.1-mini → gpt）。保持首次出现顺序。
+ */
+export function groupModelsByFamily(models: string[]): Array<{ family: string; models: string[] }> {
+  const groups: Array<{ family: string; models: string[] }> = [];
+  const index = new Map<string, number>();
+  for (const model of models) {
+    const slash = model.indexOf("/");
+    const family = slash > 0 ? model.slice(0, slash) : (model.split("-")[0] || model);
+    let slot = index.get(family);
+    if (slot === undefined) {
+      slot = groups.length;
+      index.set(family, slot);
+      groups.push({ family, models: [] });
+    }
+    groups[slot].models.push(model);
+  }
+  return groups;
+}
+
+/**
  * 已保存的模型配置列表：展示全部 ProviderProfile，支持编辑、激活与删除。
  */
 export function ProviderProfileList({
@@ -155,6 +177,7 @@ export function AiModelSettingsPage() {
         key={editingProfile?.id ?? "new"}
         catalog={state.catalog}
         activeProfile={state.activeProfile}
+        profiles={state.profiles}
         editingProfile={editingProfile}
         onSaved={handleSaved}
         onCancelEdit={() => setEditingProfile(undefined)}
@@ -251,6 +274,8 @@ export function ModelRoutingSection({
 interface ProviderProfileFormProps {
   catalog: ProviderDefinition[];
   activeProfile?: ProviderProfile;
+  /** 已保存配置：用于在批量勾选列表中标记已存在的模型，防止重复添加。 */
+  profiles: ProviderProfile[];
   /** 提供时表单进入编辑模式；API Key 留空表示保持已保存的 Key。 */
   editingProfile?: ProviderProfile;
   onSaved: () => void;
@@ -268,8 +293,10 @@ type FormStatus =
 /**
  * 模型配置表单：供应商、配置名称、模型（可一键获取可调用列表）、API Key、自定义 Base URL。
  * 新建模式保存新配置；编辑模式更新已有配置。支持「测试连接」「仅保存」「保存并启用」。
+ * 新建模式下「获取模型」成功后展示可勾选列表：勾选多个模型后保存，
+ * 会为每个勾选模型各生成一套配置（共用同一个 Key，借鉴 CC Switch 一次配置多个模型）。
  */
-function ProviderProfileForm({ catalog, activeProfile, editingProfile, onSaved, onCancelEdit }: ProviderProfileFormProps) {
+function ProviderProfileForm({ catalog, activeProfile, profiles, editingProfile, onSaved, onCancelEdit }: ProviderProfileFormProps) {
   const { api } = useServices();
   const [providerId, setProviderId] = useState(editingProfile?.providerId ?? activeProfile?.providerId ?? catalog[0]?.id ?? "");
   const [model, setModel] = useState(editingProfile?.model ?? activeProfile?.model ?? "");
@@ -277,6 +304,7 @@ function ProviderProfileForm({ catalog, activeProfile, editingProfile, onSaved, 
   const [baseUrl, setBaseUrl] = useState(editingProfile?.baseUrl ?? activeProfile?.baseUrl ?? "");
   const [displayName, setDisplayName] = useState(editingProfile?.displayName ?? activeProfile?.displayName ?? "");
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
+  const [checkedModels, setCheckedModels] = useState<string[]>([]);
   const [status, setStatus] = useState<FormStatus>({ kind: "idle" });
 
   const definition = catalog.find((item) => item.id === providerId);
@@ -286,6 +314,10 @@ function ProviderProfileForm({ catalog, activeProfile, editingProfile, onSaved, 
   const effectiveDisplayName = displayName.trim() || definition?.label || "";
   const modelOptions = [...new Set([...discoveredModels, ...(definition?.models ?? [])])];
   const busy = status.kind === "testing" || status.kind === "saving" || status.kind === "discovering";
+  // 同厂商已保存的模型：勾选列表中标记"已保存"，防止批量添加产生重复配置
+  const existingModels = new Set(profiles.filter((profile) => profile.providerId === providerId).map((profile) => profile.model));
+  // 批量目标保持获取列表的顺序，"保存并启用"只启用其中第一个
+  const batchTargets = editing ? [] : discoveredModels.filter((item) => checkedModels.includes(item) && !existingModels.has(item));
 
   const handleProviderChange = (nextProviderId: string) => {
     setProviderId(nextProviderId);
@@ -296,6 +328,11 @@ function ProviderProfileForm({ catalog, activeProfile, editingProfile, onSaved, 
       setDisplayName(nextDefinition.label);
     }
     setDiscoveredModels([]);
+    setCheckedModels([]);
+  };
+
+  const toggleCheckedModel = (item: string) => {
+    setCheckedModels((current) => (current.includes(item) ? current.filter((value) => value !== item) : [...current, item]));
   };
 
   const buildPayload = () => ({
@@ -339,7 +376,14 @@ function ProviderProfileForm({ catalog, activeProfile, editingProfile, onSaved, 
       const result = await api.discoverProviderModels(buildDiscoveryPayload());
       if (result.ok) {
         setDiscoveredModels(result.models);
-        setStatus({ kind: "success", message: `已获取 ${result.models.length} 个可调用模型，可在模型输入框中下拉选择` });
+        // 默认勾选当前模型（如果在获取结果中且尚未保存过），其余由用户自行勾选
+        setCheckedModels(!editing && result.models.includes(effectiveModel) && !existingModels.has(effectiveModel) ? [effectiveModel] : []);
+        setStatus({
+          kind: "success",
+          message: editing
+            ? `已获取 ${result.models.length} 个可调用模型，可在模型输入框中下拉选择`
+            : `已获取 ${result.models.length} 个可调用模型：勾选多个模型后保存，将为每个模型各生成一套配置（共用同一个 Key）`,
+        });
       } else {
         setStatus({ kind: "error", message: result.error });
       }
@@ -355,6 +399,10 @@ function ProviderProfileForm({ catalog, activeProfile, editingProfile, onSaved, 
     }
     setStatus({ kind: "saving" });
     try {
+      if (batchTargets.length > 0) {
+        await saveBatch(activate);
+        return;
+      }
       await api.saveProviderProfile({
         ...(editing ? { id: editingProfile.id } : {}),
         ...buildPayload(),
@@ -367,6 +415,41 @@ function ProviderProfileForm({ catalog, activeProfile, editingProfile, onSaved, 
     } catch (error) {
       setStatus({ kind: "error", message: error instanceof Error ? error.message : "保存失败" });
     }
+  };
+
+  /**
+   * 批量保存：为每个勾选模型各创建一套配置，共用同一个 Key。
+   * 串行执行保证「保存并启用」只激活第一个勾选项；失败的模型保持勾选与 Key，可直接重试。
+   */
+  const saveBatch = async (activate: boolean) => {
+    const saved: string[] = [];
+    const failed: string[] = [];
+    for (const [index, item] of batchTargets.entries()) {
+      try {
+        await api.saveProviderProfile({
+          providerId,
+          displayName: `${effectiveDisplayName} · ${item}`,
+          model: item,
+          baseUrl: isCustom ? baseUrl : undefined,
+          apiKey: apiKey.trim(),
+          activate: activate && index === 0,
+        });
+        saved.push(item);
+      } catch {
+        failed.push(item);
+      }
+    }
+    setCheckedModels((current) => current.filter((item) => !saved.includes(item)));
+    if (!failed.length) {
+      setApiKey("");
+      setStatus({ kind: "success", message: activate ? `已保存 ${saved.length} 个配置并启用第一个` : `已保存 ${saved.length} 个配置` });
+    } else {
+      setStatus({
+        kind: "error",
+        message: `已保存 ${saved.length} 个，${failed.length} 个失败（${failed.join("、")}），可直接重试`,
+      });
+    }
+    onSaved();
   };
 
   return (
@@ -431,6 +514,36 @@ function ProviderProfileForm({ catalog, activeProfile, editingProfile, onSaved, 
           ))}
         </datalist>
         <p className="settings-form__hint">可直接输入，或点击「获取模型」从供应商拉取可调用模型后下拉选择。</p>
+        {!editing && discoveredModels.length > 0 ? (
+          <div className="settings-model-picker" role="group" aria-label="可调用模型列表">
+            {groupModelsByFamily(discoveredModels).map((group) => (
+              <div key={group.family} className="settings-model-picker__group">
+                <p className="settings-model-picker__family">{group.family}</p>
+                {group.models.map((item) => {
+                  const exists = existingModels.has(item);
+                  const checked = checkedModels.includes(item);
+                  return (
+                    <label key={item} className={`settings-model-picker__item${exists ? " settings-model-picker__item--exists" : ""}`}>
+                      <input
+                        type="checkbox"
+                        checked={exists || checked}
+                        disabled={exists || busy}
+                        onChange={() => toggleCheckedModel(item)}
+                      />
+                      <span className="settings-model-picker__model">{item}</span>
+                      {exists ? <span className="settings-model-picker__badge">已保存</span> : null}
+                    </label>
+                  );
+                })}
+              </div>
+            ))}
+            <p className="settings-form__hint">
+              {batchTargets.length > 0
+                ? `已勾选 ${batchTargets.length} 个模型：保存时将为每个勾选模型各生成一套配置，共用上方 Key。`
+                : "勾选多个模型后保存，可为每个模型各生成一套配置，共用上方 Key。"}
+            </p>
+          </div>
+        ) : null}
       </div>
 
       {isCustom ? (
@@ -476,14 +589,14 @@ function ProviderProfileForm({ catalog, activeProfile, editingProfile, onSaved, 
           disabled={busy}
           onClick={() => void handleSave(false)}
         >
-          仅保存
+          {batchTargets.length > 0 ? `仅保存（${batchTargets.length}）` : "仅保存"}
         </button>
         <button
           type="submit"
           className="button button--primary"
           disabled={busy}
         >
-          {status.kind === "saving" ? "保存中…" : "保存并启用"}
+          {status.kind === "saving" ? "保存中…" : batchTargets.length > 0 ? `保存并启用（${batchTargets.length}）` : "保存并启用"}
         </button>
       </div>
 

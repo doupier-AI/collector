@@ -5,7 +5,7 @@ import type { ProviderDefinition, ProviderProfile } from "@collector/capture-con
 import type { ApiClient } from "../../api/client";
 import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
-import { AiModelSettingsPage } from "./AiModelSettingsPage";
+import { AiModelSettingsPage, groupModelsByFamily } from "./AiModelSettingsPage";
 
 const catalog: ProviderDefinition[] = [
   {
@@ -66,6 +66,23 @@ function baseApi(overrides: Partial<ApiClient> = {}): Partial<ApiClient> {
     ...overrides,
   };
 }
+
+describe("groupModelsByFamily", () => {
+  it("按 / 前缀与 - 首段分组并保持顺序", () => {
+    const groups = groupModelsByFamily([
+      "deepseek-ai/DeepSeek-V3.2",
+      "gpt-4.1-mini",
+      "deepseek-ai/DeepSeek-R1",
+      "gpt-4.1",
+      "llama",
+    ]);
+    expect(groups).toEqual([
+      { family: "deepseek-ai", models: ["deepseek-ai/DeepSeek-V3.2", "deepseek-ai/DeepSeek-R1"] },
+      { family: "gpt", models: ["gpt-4.1-mini", "gpt-4.1"] },
+      { family: "llama", models: ["llama"] },
+    ]);
+  });
+});
 
 describe("AiModelSettingsPage", () => {
   it("保存并启用时提交 apiKey 且提交后清空输入框", async () => {
@@ -220,5 +237,119 @@ describe("AiModelSettingsPage", () => {
     await user.selectOptions(screen.getByLabelText("选区分析"), "profile-1");
     await waitFor(() => expect(setModelRouting).toHaveBeenCalledWith("selection", "profile-1"));
     await waitFor(() => expect(screen.getByLabelText("选区分析")).toHaveValue("profile-1"));
+  });
+
+  it("获取模型后展示分组勾选列表，默认勾选当前默认模型", async () => {
+    const user = userEvent.setup();
+    const discoverProviderModels = vi.fn<ApiClient["discoverProviderModels"]>()
+      .mockResolvedValue({ ok: true, models: ["gpt-4.1-mini", "gpt-4.1", "o4-mini"] });
+    renderSettings(baseApi({ discoverProviderModels }));
+
+    await screen.findByRole("heading", { name: "AI 模型设置" });
+    await user.type(screen.getByLabelText("API Key"), "sk-fetch");
+    await user.click(screen.getByRole("button", { name: "获取模型" }));
+
+    expect(await screen.findByText(/已获取 3 个可调用模型/)).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "可调用模型列表" })).toBeInTheDocument();
+    expect(screen.getByText("gpt")).toBeInTheDocument();
+    expect(screen.getByText("o4")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "gpt-4.1-mini" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "gpt-4.1" })).not.toBeChecked();
+  });
+
+  it("勾选多个模型后保存并启用：每个模型各生成一套配置且只启用第一个", async () => {
+    const user = userEvent.setup();
+    const discoverProviderModels = vi.fn<ApiClient["discoverProviderModels"]>()
+      .mockResolvedValue({ ok: true, models: ["gpt-4.1-mini", "gpt-4.1", "o4-mini"] });
+    const saveProviderProfile = vi.fn<ApiClient["saveProviderProfile"]>().mockResolvedValue(makeProfile());
+    renderSettings(baseApi({ discoverProviderModels, saveProviderProfile }));
+
+    await screen.findByRole("heading", { name: "AI 模型设置" });
+    await user.type(screen.getByLabelText("API Key"), "sk-batch");
+    await user.click(screen.getByRole("button", { name: "获取模型" }));
+    await screen.findByRole("checkbox", { name: "gpt-4.1" });
+    await user.click(screen.getByRole("checkbox", { name: "gpt-4.1" }));
+
+    await user.click(screen.getByRole("button", { name: "保存并启用（2）" }));
+
+    await waitFor(() => expect(saveProviderProfile).toHaveBeenCalledTimes(2));
+    expect(saveProviderProfile.mock.calls[0][0]).toMatchObject({
+      providerId: "openai",
+      displayName: "OpenAI · gpt-4.1-mini",
+      model: "gpt-4.1-mini",
+      apiKey: "sk-batch",
+      activate: true,
+    });
+    expect(saveProviderProfile.mock.calls[1][0]).toMatchObject({
+      displayName: "OpenAI · gpt-4.1",
+      model: "gpt-4.1",
+      apiKey: "sk-batch",
+      activate: false,
+    });
+    expect(await screen.findByText("已保存 2 个配置并启用第一个")).toBeInTheDocument();
+    expect(screen.getByLabelText("API Key")).toHaveValue("");
+  });
+
+  it("勾选多个模型后仅保存：全部不启用", async () => {
+    const user = userEvent.setup();
+    const discoverProviderModels = vi.fn<ApiClient["discoverProviderModels"]>()
+      .mockResolvedValue({ ok: true, models: ["gpt-4.1-mini", "gpt-4.1"] });
+    const saveProviderProfile = vi.fn<ApiClient["saveProviderProfile"]>().mockResolvedValue(makeProfile());
+    renderSettings(baseApi({ discoverProviderModels, saveProviderProfile }));
+
+    await screen.findByRole("heading", { name: "AI 模型设置" });
+    await user.type(screen.getByLabelText("API Key"), "sk-batch");
+    await user.click(screen.getByRole("button", { name: "获取模型" }));
+    await screen.findByRole("checkbox", { name: "gpt-4.1" });
+    await user.click(screen.getByRole("checkbox", { name: "gpt-4.1" }));
+
+    await user.click(screen.getByRole("button", { name: "仅保存（2）" }));
+
+    await waitFor(() => expect(saveProviderProfile).toHaveBeenCalledTimes(2));
+    expect(saveProviderProfile.mock.calls[0][0]).toMatchObject({ activate: false });
+    expect(saveProviderProfile.mock.calls[1][0]).toMatchObject({ activate: false });
+    expect(await screen.findByText("已保存 2 个配置")).toBeInTheDocument();
+  });
+
+  it("批量保存部分失败：失败的模型保持勾选与 Key 可直接重试", async () => {
+    const user = userEvent.setup();
+    const discoverProviderModels = vi.fn<ApiClient["discoverProviderModels"]>()
+      .mockResolvedValue({ ok: true, models: ["gpt-4.1-mini", "gpt-4.1"] });
+    const saveProviderProfile = vi.fn<ApiClient["saveProviderProfile"]>()
+      .mockResolvedValueOnce(makeProfile())
+      .mockRejectedValueOnce(new Error("网络错误"));
+    renderSettings(baseApi({ discoverProviderModels, saveProviderProfile }));
+
+    await screen.findByRole("heading", { name: "AI 模型设置" });
+    await user.type(screen.getByLabelText("API Key"), "sk-batch");
+    await user.click(screen.getByRole("button", { name: "获取模型" }));
+    await screen.findByRole("checkbox", { name: "gpt-4.1" });
+    await user.click(screen.getByRole("checkbox", { name: "gpt-4.1" }));
+
+    await user.click(screen.getByRole("button", { name: "保存并启用（2）" }));
+
+    expect(await screen.findByText(/已保存 1 个，1 个失败（gpt-4.1），可直接重试/)).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "gpt-4.1" })).toBeChecked();
+    expect(screen.getByLabelText("API Key")).toHaveValue("sk-batch");
+  });
+
+  it("已保存过的同厂商模型在勾选列表中标记已保存并禁用", async () => {
+    const user = userEvent.setup();
+    const existing = makeProfile({ id: "profile-1", model: "gpt-4.1-mini" });
+    const discoverProviderModels = vi.fn<ApiClient["discoverProviderModels"]>()
+      .mockResolvedValue({ ok: true, models: ["gpt-4.1-mini", "gpt-4.1"] });
+    renderSettings(baseApi({
+      discoverProviderModels,
+      listProviderProfiles: vi.fn<ApiClient["listProviderProfiles"]>().mockResolvedValue([existing]),
+    }));
+
+    await screen.findByRole("heading", { name: "AI 模型设置" });
+    await user.type(screen.getByLabelText("API Key"), "sk-fetch");
+    await user.click(screen.getByRole("button", { name: "获取模型" }));
+
+    const existingCheckbox = await screen.findByRole("checkbox", { name: /gpt-4\.1-mini/ });
+    expect(existingCheckbox).toBeDisabled();
+    expect(screen.getByText("已保存")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "gpt-4.1" })).toBeEnabled();
   });
 });
