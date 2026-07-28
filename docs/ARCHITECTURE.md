@@ -1,6 +1,6 @@
 # Collector 技术架构
 
-状态：2026-07-21 本地 WebUI 当前架构。研究会话核心闭环、选区、深入研究、稍后再学、文件导入与阅读、动态端口启动器、安全配对、启动器版本替换与数据目录独占、受控关闭等已实现。
+状态：2026-07-24 本地 WebUI 当前架构。研究会话核心闭环、选区、深入研究、稍后再学、文件导入与阅读、动态端口启动器、安全配对、启动器版本替换与数据目录独占、受控关闭、供应商联网引用、Agent 自主搜索循环（Bing/DDG/Tavily/SearXNG）等已实现。
 
 ## 架构目标
 
@@ -117,9 +117,14 @@ Collector 在 WebUI 事件入口、领域任务和模型网关生成统一轨迹
 
 ## 联网搜索
 
-联网能力由当前 AI 模型供应商提供，Collector 不引入独立的搜索凭证或适配层。Chat、深入研究第一轮和分支追问自动请求联网；选区分析始终不联网，v1 不提供联网开关。不同供应商的联网形式和引用格式各异（工具调用、原生 grounding、结构化来源字段等），Collector 在模型网关层完成归一：对外呈现统一的来源记录与行内引用结构，对内按供应商协议解析响应。供应商切换与 AI 供应商切换一致，复用现有模型凭证边界。
+联网能力通过两条路径提供：
 
-每次联网运行及引用都进入本地 SQLite v21 轨迹：`research_grounding_runs`、`research_grounding_sources` 与 `research_citations`。历史 SearXNG 方案的 v20 表已在 `39dffe5` 中随代码一同清除。供应商未返回来源时，界面如实说明本轮未获得可核验引用，不呈现虚构来源。
+1. **供应商原生联网**（阶段 E2/E3）：OpenAI Responses `web_search`、Gemini Google Search grounding 与 Anthropic Messages server-side web search/web fetch 由模型网关归一为统一的来源记录与行内引用结构。
+2. **Agent 自主搜索循环**（阶段 F1-F3）：Collector 自建搜索链路，支持 Bing（默认，零配置）、DuckDuckGo（免费回退）、Tavily（AI 专用搜索 API，需 Key）和 SearXNG（自托管聚合引擎）四个后端。后端通过统一 `SearchBackend` 接口适配，支持运行时配置切换和故障回退链。
+
+Chat、深入研究第一轮和分支追问自动请求联网；选区分析始终不联网；v1 不提供联网开关。
+
+每次联网运行及引用都进入本地 SQLite v21 轨迹。供应商未返回来源时，界面如实说明本轮未获得可核验引用，不呈现虚构来源。
 
 ## 本地服务安全
 
@@ -188,7 +193,7 @@ MVP 文件范围为 TXT、Markdown、DOCX 和文本型 PDF，单文件上限为 
 
 WebUI 使用自适应研究画布：中央显示当前内容，左侧内容导航按需展开并可在宽屏固定，右侧提供 AI 伴读和稍后再学。研究分支通过来源线展示来路，宽屏可以临时并排显示来源与研究内容。
 
-完整布局记录在 `docs/INTERFACE_DIRECTIONS.md`，具体交互记录在 `docs/INTERACTION_DESIGN.md`。
+完整布局记录在 `docs/ARCHITECTURE.md`，产品交互原则见 `docs/PRODUCT.md`。
 
 ## 当前代码实施边界
 

@@ -7,12 +7,11 @@ Collector 采用单一领域上下文。WebUI、API、存储与模型网关共�
 按任务相关性读取：
 
 1. 根目录 `CONTEXT.md`：统一领域术语与不变量；
-2. `docs/PRODUCT_REFOUNDATION.md`：产品范围与用户承诺；
-3. `docs/PRODUCT_FUNCTION_FLOW.md`：完整功能流程；
-4. `docs/INTERACTION_DESIGN.md` 与 `docs/INTERFACE_DIRECTIONS.md`：交互和布局；
-5. `docs/ARCHITECTURE.md`：目标技术架构；
-6. `docs/DEVELOPMENT_START.md`：当前开发起点；
-7. `docs/HUMAN_ACCEPTANCE_STANDARD.md`：人工验收要求。
+2. `docs/PRODUCT.md`：产品指南针——定义、能力、方向、设计原则；
+3. `docs/MVP_IMPLEMENTATION_PLAN.md`：切片计划与当前状态；
+4. `docs/ARCHITECTURE.md`：目标技术架构；
+5. `docs/PROJECT_DEVELOPMENT_RECORD.md`：已完成阶段事实与验证证据；
+6. `docs/HUMAN_ACCEPTANCE_STANDARD.md`：人工验收要求。
 
 ## 目录布局
 
@@ -22,14 +21,11 @@ Collector 采用单一领域上下文。WebUI、API、存储与模型网关共�
 ├── CONTEXT.md
 └── docs/
     ├── agents/
+    ├── PRODUCT.md
     ├── ARCHITECTURE.md
-    ├── DEVELOPMENT_START.md
-    ├── HUMAN_ACCEPTANCE_STANDARD.md
-    ├── INPUT_SOURCE_FEASIBILITY.md
-    ├── INTERACTION_DESIGN.md
-    ├── INTERFACE_DIRECTIONS.md
-    ├── PRODUCT_FUNCTION_FLOW.md
-    └── PRODUCT_REFOUNDATION.md
+    ├── MVP_IMPLEMENTATION_PLAN.md
+    ├── PROJECT_DEVELOPMENT_RECORD.md
+    └── HUMAN_ACCEPTANCE_STANDARD.md
 ```
 
 ## 使用领域术语
@@ -41,4 +37,4 @@ Collector 采用单一领域上下文。WebUI、API、存储与模型网关共�
 
 ## 架构决策
 
-稳定的架构决策进入 `docs/ARCHITECTURE.md`。需要保留决策背景和取舍时，在 `docs/adr/` 建立独立记录，并在架构正文保留当前结论。
+稳定的架构决策进入 `docs/ARCHITECTURE.md`。需要保留决策背景和取舍时，在 `docs/ARCHITECTURE.md` 中记录理由。

@@ -29,7 +29,7 @@ WebUI ↔ HTTP / 流式连接 ↔ Node 服务 ↔ SQLite / 文件 / 模型 / 搜
 
 ## 仓库状态
 
-当前源码已经提供本地 WebUI、Node API、SQLite 持久化、研究会话与恢复、会话内文件导入和阅读视图、模型供应商注册与调用、工作流、浏览器扩展及自动化测试。当前实现状态、已完成里程碑、验证证据和遗留限制见 [项目开发记录](docs/PROJECT_DEVELOPMENT_RECORD.md)；下一阶段的产品核心闭环和实施顺序见 [MVP 开发指导](docs/DEVELOPMENT_START.md)。
+当前源码已经提供本地 WebUI、Node API、SQLite 持久化、研究会话与恢复、会话内文件导入和阅读视图、模型供应商注册与调用、工作流、浏览器扩展及自动化测试。当前实现状态、已完成里程碑、验证证据和遗留限制见 [项目开发记录](docs/PROJECT_DEVELOPMENT_RECORD.md)；产品核心闭环和实施计划见 [MVP 实施计划](docs/MVP_IMPLEMENTATION_PLAN.md)。
 
 
 ## 环境与验证
@@ -78,20 +78,15 @@ npm.cmd run test:e2e    # 先完整构建，再运行 apps/web 的 Playwright �
 - 新 WebUI 首次切换使用全新的数据空间，并执行一次性现有用户数据清理；
 - 模型供应商凭证保存在专用凭证边界，业务数据、普通日志、浏览器存储和导出内容只保存配置状态；
 - 模型会话轨迹记录实际提示、上下文、回复、流式片段、工具调用、耗时、用量、费用、重试和错误，并清除凭证、认证头与本地会话令牌；
-- 联网搜索通过可替换适配层接入，SearXNG 兼容接口是首选工程候选。
+- 联网搜索同时支持两条路径：（1）模型供应商原生联网能力（OpenAI/Gemini/Anthropic），（2）Agent 自主搜索循环（Bing/DuckDuckGo/Tavily/SearXNG），支持运行时切换和故障回退。
 
 ## 当前文档
 
 - [领域语言](CONTEXT.md)
-- [产品定义与范围](docs/PRODUCT_REFOUNDATION.md)
-- [产品功能流程](docs/PRODUCT_FUNCTION_FLOW.md)
-- [交互设计](docs/INTERACTION_DESIGN.md)
-- [界面布局方向](docs/INTERFACE_DIRECTIONS.md)
-- [输入来源可行性](docs/INPUT_SOURCE_FEASIBILITY.md)
+- [产品指南](docs/PRODUCT.md)
 - [技术架构](docs/ARCHITECTURE.md)
 - [人工验收标准](docs/HUMAN_ACCEPTANCE_STANDARD.md)
-- [MVP 开发指导](docs/DEVELOPMENT_START.md)
-- [前端实施指导](docs/FRONTEND_IMPLEMENTATION_GUIDE.md)
+- [MVP 实施计划](docs/MVP_IMPLEMENTATION_PLAN.md)
 - [项目开发记录](docs/PROJECT_DEVELOPMENT_RECORD.md)
 
-当前待确认事项集中记录在 [产品定义与范围](docs/PRODUCT_REFOUNDATION.md) 的“尚待确认”章节。
+当前待确认事项集中记录在 [MVP 实施计划](docs/MVP_IMPLEMENTATION_PLAN.md) 的”待确认事项”章节。

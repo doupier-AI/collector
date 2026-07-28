@@ -1,16 +1,16 @@
-# Collector WebUI 契约、实现与验证说明
+# apps/web 实施基线
 
-最后更新：2026-07-21
+最后更新：2026-07-25
 
-状态：当前 WebUI 实施基线
+本文件是 `apps/web` 前端目录的实施基线，面向前端开发者。产品级指南见 `docs/PRODUCT.md`。
 
-阅读规则：首次阅读、本文发生重要变化或当前任务涉及对应章节时完整读取；日常任务只加载相关产品、契约、源码和测试。
+阅读规则：首次阅读或本文发生重要变化时完整读取；日常任务按需查阅相关章节。
 
 ## 1. 指导目标
 
-本文定义 `apps/web` 的当前实现边界、共享契约、客户端状态和验证要求，使 WebUI 开发可以依据当前事实继续推进，而不必重新整理全部产品讨论。
+本文定义 `apps/web` 的当前实现边界、共享契约、客户端状态和验证要求。
 
-当前 WebUI 已经实现核心闭环 MVP（研究会话、Chat、选区、深入研究、稍后再学、来源返回、文件导入与阅读、开始页文件入口），并通过 185 项客户端测试与 37+ 项真实 Chromium 端到端测试验证。本文作为下一阶段前端工作的实施基线。
+当前 WebUI 已经实现核心闭环 MVP（研究会话、Chat、选区、深入研究、稍后再学、来源返回、文件导入与阅读），并通过 235 项全量测试通过（含 Node 后端、WebUI 单元）与 37+ 项真实 Chromium 端到端测试验证。
 
 ## 2. 系统边界与实现范围
 
@@ -49,21 +49,18 @@
 每次实施先读取：
 
 1. 根目录 `AGENTS.md`；
-2. `docs/DEVELOPMENT_START.md`；
+2. `docs/MVP_IMPLEMENTATION_PLAN.md`；
 3. `docs/PROJECT_DEVELOPMENT_RECORD.md` 中与当前任务相关的状态和限制；
-4. 本轮相关产品文档、源码、共享契约和测试。
+4. 本轮相关源码、共享契约和测试。
 
 首次完整阅读或本文发生重要变化时，再读取：
 
 1. 根目录 `CONTEXT.md`；
-2. `docs/DEVELOPMENT_START.md`；
-3. `docs/PRODUCT_REFOUNDATION.md`；
-4. `docs/PRODUCT_FUNCTION_FLOW.md`；
-5. `docs/INTERACTION_DESIGN.md`；
-6. `docs/INTERFACE_DIRECTIONS.md`；
-7. `docs/ARCHITECTURE.md`；
-8. `docs/HUMAN_ACCEPTANCE_STANDARD.md`；
-9. 本文。
+2. `docs/PRODUCT.md`；
+3. `docs/MVP_IMPLEMENTATION_PLAN.md`；
+4. `docs/ARCHITECTURE.md`；
+5. `docs/HUMAN_ACCEPTANCE_STANDARD.md`；
+6. 本文。
 
 本文及相关基线未发生变化时，不重复读取上述长文档，只读取当前任务涉及的章节。
 
@@ -91,7 +88,7 @@
 | 当前认证 | Bearer token 或 `collector_session` HttpOnly Cookie |
 | 当前构建 | TypeScript project references + WebUI 类型检查与 Vite 构建 + `scripts/build-assets.mjs` |
 | 研究会话文件导入与阅读 | 会话内支持 TXT、Markdown、DOCX、文本型 PDF 的真实上传、状态、取消、重试、刷新恢复和同画布阅读；开始页附件按钮因没有会话上下文继续保持占位 |
-| 当前测试 | 137 项 Node 单元与集成测试、99 项 WebUI 测试、22 项 Chromium 端到端场景通过 |
+| 当前测试 | 235 项全量测试通过（含 Node 后端、WebUI 单元） |
 
 不要把“文档定义了”写成“代码已经实现”。合并前以源码、自动化测试和实际界面验证为依据。
 
@@ -767,23 +764,23 @@ powershell -ExecutionPolicy Bypass -File scripts\check-project.ps1
 
 WebUI 实现完成前逐项确认：
 
-- [ ] `apps/web` 构建成功；
-- [ ] WebUI 和 API 同源运行；
-- [ ] 最近会话来自真实 API；
-- [ ] 提交操作使用真实事务和幂等任务；
-- [ ] AI 加载占位立即出现且布局稳定；
-- [ ] 渐进事件不会重复或覆盖已有内容；
-- [ ] 页面刷新和服务重启恢复一致；
-- [ ] 模型未配置时输入仍然存在；
-- [ ] 空、加载、离线、失败、401、404 状态完整；
-- [ ] 键盘、焦点、语义结构和减少动态效果通过；
-- [ ] 320、768、1024、1440 像素验证通过；
-- [ ] 控制台无错误和警告；
-- [ ] Playwright 验证 WebUI、API 和 SQLite 同一结果；
-- [ ] 没有真实云模型调用；
-- [ ] README、架构、项目开发记录和人工验收文档只更新当前有效事实；
-- [ ] 已说明当前阶段的用户可见结果、实际改动、验证证据、未完成项和风险；
-- [ ] Git 提交按可验证实现边界组织，只包含本次相关改动。
+- [x] `apps/web` 构建成功；
+- [x] WebUI 和 API 同源运行；
+- [x] 最近会话来自真实 API；
+- [x] 提交操作使用真实事务和幂等任务；
+- [x] AI 加载占位立即出现且布局稳定；
+- [x] 渐进事件不会重复或覆盖已有内容；
+- [x] 页面刷新和服务重启恢复一致；
+- [x] 模型未配置时输入仍然存在；
+- [x] 空、加载、离线、失败、401、404 状态完整；
+- [x] 键盘、焦点、语义结构和减少动态效果通过；
+- [x] 320、768、1024、1440 像素验证通过；
+- [x] 控制台无错误和警告；
+- [x] Playwright 验证 WebUI、API 和 SQLite 同一结果；
+- [x] 没有真实云模型调用；
+- [x] README、架构、项目开发记录和人工验收文档只更新当前有效事实；
+- [x] 已说明当前阶段的用户可见结果、实际改动、验证证据、未完成项和风险；
+- [x] Git 提交按可验证实现边界组织，只包含本次相关改动。
 
 ## 19. 当前实现状态与跨端依赖
 
