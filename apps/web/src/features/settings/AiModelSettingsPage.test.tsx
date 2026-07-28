@@ -16,7 +16,7 @@ const catalog: ProviderDefinition[] = [
     defaultBaseUrl: "https://api.openai.com/v1",
     defaultModel: "gpt-4.1-mini",
     models: ["gpt-4.1-mini"],
-    capabilities: { streaming: true, tools: false, jsonMode: false, vision: false, webSearch: false },
+    capabilities: { structuredJson: false, thinkingMode: "none", modelDiscovery: false, webGrounding: "unsupported" },
   },
   {
     id: "custom",
@@ -26,7 +26,7 @@ const catalog: ProviderDefinition[] = [
     defaultBaseUrl: "",
     defaultModel: "",
     models: [],
-    capabilities: { streaming: true, tools: false, jsonMode: false, vision: false, webSearch: false },
+    capabilities: { structuredJson: false, thinkingMode: "none", modelDiscovery: false, webGrounding: "unsupported" },
   },
 ];
 
