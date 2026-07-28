@@ -302,6 +302,7 @@ export class CaptureService {
       mode: this.options.mvpDemoMode ? "demo" : configured ? "real" : "unconfigured",
       provider: profile?.providerId ?? this.modelGateway?.providerName,
       model: profile?.model ?? this.modelGateway?.modelName,
+      providerProfileId: profile?.id,
       webGrounding: this.modelGateway?.providerGroundingCapability,
       searchBackend: searchCfg.backend,
       availableSearchBackends: listAvailableBackends(),

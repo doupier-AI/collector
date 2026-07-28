@@ -560,6 +560,8 @@ export interface AiConfigurationView {
   mode: AiConfigurationMode;
   provider?: string;
   model?: string;
+  /** 当前激活的 ProviderProfile ID；未使用持久化配置时缺省。 */
+  providerProfileId?: string;
   /** 当前模型供应商的联网搜索能力；unsupported 时界面不显示联网状态。 */
   webGrounding?: ProviderWebGrounding;
   /** 当前活跃的搜索后端 */
