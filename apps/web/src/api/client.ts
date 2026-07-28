@@ -2,6 +2,8 @@ import type {
   AiConfigurationView,
   DeepResearchAccepted,
   DeepResearchInput,
+  ModelPurpose,
+  ModelRoutingView,
   ProviderDefinition,
   ProviderModelDiscoveryInput,
   ProviderModelDiscoveryResult,
@@ -68,6 +70,9 @@ export interface ApiClient {
   testProviderProfile(id: string): Promise<ProviderTestResult>;
   testProviderProfileConfig(input: ProviderProfileTestInput): Promise<ProviderTestResult>;
   discoverProviderModels(input: ProviderModelDiscoveryInput): Promise<ProviderModelDiscoveryResult>;
+  getModelRouting(): Promise<ModelRoutingView>;
+  /** profileId 为 null 时清除该任务类型的分配，恢复跟随当前激活配置。 */
+  setModelRouting(purpose: ModelPurpose, profileId: string | null): Promise<ModelRoutingView>;
   exchangePairingCode(code: string): Promise<{ paired: true }>;
 }
 
@@ -342,6 +347,16 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
         method: "POST",
         headers: JSON_HEADERS,
         body: JSON.stringify(input),
+      });
+    },
+    getModelRouting() {
+      return requestJson<ModelRoutingView>(fetchFn, "/v1/model-routing");
+    },
+    setModelRouting(purpose: ModelPurpose, profileId: string | null) {
+      return requestJson<ModelRoutingView>(fetchFn, "/v1/model-routing", {
+        method: "PUT",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ purpose, profileId }),
       });
     },
     exchangePairingCode(code: string) {

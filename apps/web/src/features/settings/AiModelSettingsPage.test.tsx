@@ -62,6 +62,7 @@ function baseApi(overrides: Partial<ApiClient> = {}): Partial<ApiClient> {
     listProviderProfiles: vi.fn<ApiClient["listProviderProfiles"]>().mockResolvedValue([]),
     getActiveProviderProfile: vi.fn<ApiClient["getActiveProviderProfile"]>().mockResolvedValue(undefined),
     discoverProviderModels: vi.fn<ApiClient["discoverProviderModels"]>().mockResolvedValue({ ok: false, error: "未 mock" }),
+    getModelRouting: vi.fn<ApiClient["getModelRouting"]>().mockResolvedValue({ routes: [] }),
     ...overrides,
   };
 }
@@ -194,5 +195,30 @@ describe("AiModelSettingsPage", () => {
     await user.click(screen.getByRole("button", { name: "测试连接" }));
 
     expect(await screen.findByText("连接成功：gpt-4.1-mini · 1.2s")).toBeInTheDocument();
+  });
+
+  it("任务模型分配：展示当前分配并保存变更", async () => {
+    const user = userEvent.setup();
+    const primary = makeProfile({ id: "profile-1", displayName: "主配置" });
+    const backup = makeProfile({ id: "profile-2", displayName: "备用配置" });
+    const setModelRouting = vi.fn<ApiClient["setModelRouting"]>().mockResolvedValue({
+      routes: [
+        { purpose: "research", profileId: "profile-2" },
+        { purpose: "selection", profileId: "profile-1" },
+      ],
+    });
+    renderSettings(baseApi({
+      listProviderProfiles: vi.fn<ApiClient["listProviderProfiles"]>().mockResolvedValue([primary, backup]),
+      getModelRouting: vi.fn<ApiClient["getModelRouting"]>().mockResolvedValue({ routes: [{ purpose: "research", profileId: "profile-2" }] }),
+      setModelRouting,
+    }));
+
+    expect(await screen.findByText("任务模型分配")).toBeInTheDocument();
+    expect(screen.getByLabelText("深入研究")).toHaveValue("profile-2");
+    expect(screen.getByLabelText("对话与问答")).toHaveValue("");
+
+    await user.selectOptions(screen.getByLabelText("选区分析"), "profile-1");
+    await waitFor(() => expect(setModelRouting).toHaveBeenCalledWith("selection", "profile-1"));
+    await waitFor(() => expect(screen.getByLabelText("选区分析")).toHaveValue("profile-1"));
   });
 });

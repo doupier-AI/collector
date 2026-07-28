@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import type { ProviderDefinition, ProviderProfile } from "@collector/capture-contracts";
+import type { ModelPurpose, ModelRoutingView, ProviderDefinition, ProviderProfile } from "@collector/capture-contracts";
 import { useServices } from "../../app/services";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 
 type State =
   | { kind: "loading" }
   | { kind: "error"; message: string }
-  | { kind: "ready"; catalog: ProviderDefinition[]; activeProfile?: ProviderProfile; profiles: ProviderProfile[] };
+  | { kind: "ready"; catalog: ProviderDefinition[]; activeProfile?: ProviderProfile; profiles: ProviderProfile[]; routing: ModelRoutingView };
 
 /**
  * 已保存的模型配置列表：展示全部 ProviderProfile，支持编辑、激活与删除。
@@ -73,12 +73,14 @@ export function AiModelSettingsPage() {
   const load = useCallback(async () => {
     setState({ kind: "loading" });
     try {
-      const [catalog, profiles, activeProfile] = await Promise.all([
+      const [catalog, profiles, activeProfile, routing] = await Promise.all([
         api.getProviderCatalog(),
         api.listProviderProfiles(),
         api.getActiveProviderProfile().catch(() => undefined),
+        // 旧客户端或测试替身可能不提供该接口；分配区块按全部跟随当前配置展示
+        api.getModelRouting?.().catch(() => ({ routes: [] })) ?? Promise.resolve({ routes: [] }),
       ]);
-      setState({ kind: "ready", catalog, profiles, activeProfile });
+      setState({ kind: "ready", catalog, profiles, activeProfile, routing });
     } catch (error) {
       setState({ kind: "error", message: error instanceof Error ? error.message : "加载模型设置失败" });
     }
@@ -110,6 +112,15 @@ export function AiModelSettingsPage() {
       await api.deleteProviderProfile(id);
       setEditingProfile((current) => (current?.id === id ? undefined : current));
       setReloadNonce((nonce) => nonce + 1);
+    },
+    [api],
+  );
+
+  const handleRoutingChange = useCallback(
+    async (purpose: ModelPurpose, profileId: string | null) => {
+      if (!api.setModelRouting) throw new Error("当前客户端不支持任务模型分配");
+      const next = await api.setModelRouting(purpose, profileId);
+      setState((current) => (current.kind === "ready" ? { ...current, routing: next } : current));
     },
     [api],
   );
@@ -155,7 +166,85 @@ export function AiModelSettingsPage() {
         onEdit={handleEdit}
         onDelete={handleDelete}
       />
+      <ModelRoutingSection
+        profiles={state.profiles}
+        routing={state.routing}
+        onChange={handleRoutingChange}
+      />
     </div>
+  );
+}
+
+const PURPOSE_LABELS: Record<ModelPurpose, string> = {
+  chat: "对话与问答",
+  selection: "选区分析",
+  research: "深入研究",
+  search: "联网搜索",
+  document: "文档生成与整理",
+};
+
+const PURPOSE_ORDER: ModelPurpose[] = ["chat", "selection", "research", "search", "document"];
+
+/**
+ * 任务模型分配：按任务类型指定使用哪套已保存配置；
+ * 默认「跟随当前配置」，即全部任务使用上方激活的配置。
+ */
+export function ModelRoutingSection({
+  profiles,
+  routing,
+  onChange,
+}: {
+  profiles: ProviderProfile[];
+  routing: ModelRoutingView;
+  onChange: (purpose: ModelPurpose, profileId: string | null) => Promise<void>;
+}) {
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [pendingPurpose, setPendingPurpose] = useState<ModelPurpose | undefined>(undefined);
+  const assignable = profiles.filter((profile) => profile.credentialConfigured);
+  if (!assignable.length) return null;
+
+  const handleSelect = async (purpose: ModelPurpose, value: string) => {
+    setError(undefined);
+    setPendingPurpose(purpose);
+    try {
+      await onChange(purpose, value || null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "保存任务模型分配失败");
+    } finally {
+      setPendingPurpose(undefined);
+    }
+  };
+
+  return (
+    <section className="settings-profile-list" aria-label="任务模型分配">
+      <h2 className="settings-profile-list__title">任务模型分配</h2>
+      <p className="settings-form__hint">
+        不同任务可以使用不同配置，例如用更快的模型做选区分析、用更强的模型做深入研究。不指定时全部跟随当前配置。
+      </p>
+      {PURPOSE_ORDER.map((purpose) => {
+        const assigned = routing.routes.find((route) => route.purpose === purpose)?.profileId ?? "";
+        return (
+          <div key={purpose} className="settings-form__field settings-routing__row">
+            <label className="settings-form__label" htmlFor={`routing-${purpose}`}>{PURPOSE_LABELS[purpose]}</label>
+            <select
+              id={`routing-${purpose}`}
+              className="settings-form__select"
+              value={assigned}
+              disabled={pendingPurpose !== undefined}
+              onChange={(event) => void handleSelect(purpose, event.target.value)}
+            >
+              <option value="">跟随当前配置</option>
+              {assignable.map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {profile.displayName}（{profile.providerId} · {profile.model}）
+                </option>
+              ))}
+            </select>
+          </div>
+        );
+      })}
+      {error ? <p className="settings-status settings-status--error" role="alert">{error}</p> : null}
+    </section>
   );
 }
 

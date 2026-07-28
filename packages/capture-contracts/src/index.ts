@@ -88,6 +88,19 @@ export interface ProviderModelDiscoveryInput {
 
 export type ProviderModelDiscoveryResult = { ok: true; models: string[] } | { ok: false; error: string };
 
+/** 可按任务类型分配模型的用途；未分配时跟随当前激活配置。 */
+export const MODEL_PURPOSES = ["chat", "selection", "research", "search", "document"] as const;
+export type ModelPurpose = (typeof MODEL_PURPOSES)[number];
+
+export interface ModelPurposeRoute {
+  purpose: ModelPurpose;
+  profileId: string;
+}
+
+export interface ModelRoutingView {
+  routes: ModelPurposeRoute[];
+}
+
 export interface ActiveModelRoute {
   providerProfileId: string;
   providerId: string;

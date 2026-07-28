@@ -111,6 +111,14 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         const result = await service.discoverProviderModels(body);
         return json(response, result.ok ? 200 : 502, result);
       }
+      if (request.method === "GET" && url.pathname === "/v1/model-routing") {
+        return json(response, 200, service.getModelRouting());
+      }
+      if (request.method === "PUT" && url.pathname === "/v1/model-routing") {
+        const body = await readJson(request) as { purpose?: import("@collector/capture-contracts").ModelPurpose; profileId?: string | null };
+        if (!body.purpose) return json(response, 400, { error: { code: "invalid_request", message: "purpose is required" } });
+        return json(response, 200, await service.setModelRouting(body.purpose, body.profileId ?? null));
+      }
       if (request.method === "POST" && url.pathname === "/v1/provider-profiles") {
         const body = await readJson(request) as import("@collector/capture-contracts").ProviderProfileInput & { activate?: boolean };
         const { activate, ...input } = body;

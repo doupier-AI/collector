@@ -1220,6 +1220,10 @@ button.model-status {
   flex: 1;
 }
 
+.settings-routing__row {
+  max-width: 32rem;
+}
+
 .settings-profile-list {
   margin: var(--space-6) 0 0;
 }

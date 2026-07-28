@@ -1,7 +1,7 @@
 import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTurnAccepted } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTurnAccepted } from "@collector/capture-contracts";
 
 /** 稍后再学所需的持久化能力：5 个专属方法 + 3 个只读跨域查询。 */
 export interface ResearchLaterStore {
@@ -156,6 +156,10 @@ export interface CollectorStore
   getProviderCredential(id: string): string | undefined;
   saveProviderCredential(id: string, apiKey: string): Promise<void>;
   deleteProviderCredential(id: string): Promise<void>;
+  /** 按任务类型的模型分配；删除 profile 时联动清理。 */
+  listModelPurposeRoutes(): ModelPurposeRoute[];
+  setModelPurposeRoute(purpose: ModelPurpose, profileId: string): Promise<void>;
+  clearModelPurposeRoute(purpose: ModelPurpose): Promise<void>;
   saveClientToken(id: string, name: string, tokenHash: string, createdAt: string): Promise<void>;
   hasClientToken(tokenHash: string): boolean;
   getWorkflowRun(id: string): WorkflowRunRecord | undefined;
@@ -288,10 +292,11 @@ interface StoreData {
   materialRevisions?: Record<string, { id: string; captureId: string; content: string; ordinal: number; createdAt: string }>;
   providerProfiles?: Record<string, ProviderProfile>;
   providerCredentials?: Record<string, string>;
+  modelPurposeRoutes?: Record<string, string>;
 }
 
 const EMPTY_DATA: StoreData = {
-  captures: {}, captureByClientId: {}, captureByChecksum: {}, artifacts: {}, fragments: {}, knowledgeItems: {}, reviewProposals: {}, clientTokens: {}, agentRuns: {}, relations: {}, userDecisions: {}, topics: {}, topicMemberships: {}, settings: {}, providerProfiles: {}, providerCredentials: {},
+  captures: {}, captureByClientId: {}, captureByChecksum: {}, artifacts: {}, fragments: {}, knowledgeItems: {}, reviewProposals: {}, clientTokens: {}, agentRuns: {}, relations: {}, userDecisions: {}, topics: {}, topicMemberships: {}, settings: {}, providerProfiles: {}, providerCredentials: {}, modelPurposeRoutes: {},
 };
 
 export class SqliteStore implements CollectorStore {
@@ -513,7 +518,7 @@ export class SqliteStore implements CollectorStore {
       // 供应商凭证由独立凭证边界保留，因此 Profile、活动路由和 AI 授权保持一致。
       // deepseek_configured 仅用于一次旧配置迁移，在兼容期内保留。
       this.db().exec("DELETE FROM settings WHERE key NOT IN ('ai_consent', 'ai_configured', 'active_provider_profile_id', 'deepseek_configured')");
-      // provider_credentials 与 provider_profiles 一起保留，确保清空数据后 AI 配置仍可用。
+      // provider_credentials、provider_profiles 与 model_purpose_routes 一起保留，确保清空数据后 AI 配置仍可用。
     });
   }
 
@@ -569,6 +574,7 @@ export class SqliteStore implements CollectorStore {
     let deleted = false;
     this.transaction(() => {
       this.db().prepare("DELETE FROM provider_credentials WHERE id = ?").run(id);
+      this.db().prepare("DELETE FROM model_purpose_routes WHERE profile_id = ?").run(id);
       const result = this.db().prepare("DELETE FROM provider_profiles WHERE id = ?").run(id);
       deleted = result.changes === 1;
       if (this.getSetting("active_provider_profile_id") === id) this.db().prepare("DELETE FROM settings WHERE key = 'active_provider_profile_id'").run();
@@ -593,6 +599,17 @@ export class SqliteStore implements CollectorStore {
   }
   async deleteProviderCredential(id: string): Promise<void> {
     this.db().prepare("DELETE FROM provider_credentials WHERE id = ?").run(id);
+  }
+  listModelPurposeRoutes(): ModelPurposeRoute[] {
+    return (this.db().prepare("SELECT purpose, profile_id FROM model_purpose_routes ORDER BY purpose").all() as Array<{ purpose: string; profile_id: string }>)
+      .map((row) => ({ purpose: row.purpose as ModelPurpose, profileId: row.profile_id }));
+  }
+  async setModelPurposeRoute(purpose: ModelPurpose, profileId: string): Promise<void> {
+    this.db().prepare("INSERT INTO model_purpose_routes (purpose, profile_id, updated_at) VALUES (?, ?, ?) ON CONFLICT(purpose) DO UPDATE SET profile_id=excluded.profile_id, updated_at=excluded.updated_at")
+      .run(purpose, profileId, new Date().toISOString());
+  }
+  async clearModelPurposeRoute(purpose: ModelPurpose): Promise<void> {
+    this.db().prepare("DELETE FROM model_purpose_routes WHERE purpose = ?").run(purpose);
   }
 
   listAgentRuns(captureId: string): AgentRunRecord[] {
@@ -2085,6 +2102,20 @@ export class SqliteStore implements CollectorStore {
       });
       version = 22;
     }
+    if (version < 23) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE model_purpose_routes (
+            purpose TEXT PRIMARY KEY,
+            profile_id TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(profile_id) REFERENCES provider_profiles(id) ON DELETE CASCADE
+          );
+          INSERT INTO schema_migrations(version, applied_at) VALUES (23, datetime('now'));
+        `);
+      });
+      version = 23;
+    }
 
   }
 
@@ -2277,12 +2308,15 @@ export class JsonStore implements CollectorStore {
   getProviderProfile(id: string) { return this.data.providerProfiles?.[id]; }
   listProviderProfiles() { return Object.values(this.data.providerProfiles ?? {}).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)); }
   async saveProviderProfile(profile: ProviderProfile) { this.data.providerProfiles ??= {}; this.data.providerProfiles[profile.id] = profile; await this.flush(); }
-  async deleteProviderProfile(id: string) { if (!this.data.providerProfiles?.[id]) return false; delete this.data.providerProfiles[id]; delete this.data.providerCredentials?.[id]; if (this.data.settings?.active_provider_profile_id === id) delete this.data.settings.active_provider_profile_id; await this.flush(); return true; }
+  async deleteProviderProfile(id: string) { if (!this.data.providerProfiles?.[id]) return false; delete this.data.providerProfiles[id]; delete this.data.providerCredentials?.[id]; if (this.data.modelPurposeRoutes) for (const [purpose, profileId] of Object.entries(this.data.modelPurposeRoutes)) { if (profileId === id) delete this.data.modelPurposeRoutes[purpose]; } if (this.data.settings?.active_provider_profile_id === id) delete this.data.settings.active_provider_profile_id; await this.flush(); return true; }
   getActiveProviderProfile() { const id = this.data.settings?.active_provider_profile_id; return id ? this.data.providerProfiles?.[id] : undefined; }
   async setActiveProviderProfile(id: string) { const profile = this.data.providerProfiles?.[id]; if (!profile?.enabled) throw new Error("Provider profile is unavailable"); this.data.settings ??= {}; this.data.settings.active_provider_profile_id = id; await this.flush(); }
   getProviderCredential(id: string) { return this.data.providerCredentials?.[id]; }
   async saveProviderCredential(id: string, apiKey: string) { this.data.providerCredentials ??= {}; this.data.providerCredentials[id] = apiKey; await this.flush(); }
   async deleteProviderCredential(id: string) { delete this.data.providerCredentials?.[id]; await this.flush(); }
+  listModelPurposeRoutes(): ModelPurposeRoute[] { return Object.entries(this.data.modelPurposeRoutes ?? {}).map(([purpose, profileId]) => ({ purpose: purpose as ModelPurpose, profileId })).sort((a, b) => a.purpose.localeCompare(b.purpose)); }
+  async setModelPurposeRoute(purpose: ModelPurpose, profileId: string) { this.data.modelPurposeRoutes ??= {}; this.data.modelPurposeRoutes[purpose] = profileId; await this.flush(); }
+  async clearModelPurposeRoute(purpose: ModelPurpose) { delete this.data.modelPurposeRoutes?.[purpose]; await this.flush(); }
   async saveCapture(record: CaptureRecord) { this.data.captures[record.id] = record; this.data.captureByClientId[record.clientCaptureId] = record.id; this.data.captureByChecksum[record.checksum] = record.id; await this.flush(); }
   async saveCaptureWithTopicMembership(record: CaptureRecord, topicId: string) { this.data.captures[record.id] = record; this.data.captureByClientId[record.clientCaptureId] = record.id; this.data.captureByChecksum[record.checksum] = record.id; this.data.topicMemberships ??= {}; this.data.topicMemberships[`${topicId}:${record.id}`] = { topicId, captureId: record.id, createdAt: record.createdAt }; await this.flush(); }
   async saveArtifact(record: ArtifactRecord) { this.data.artifacts[record.id] = record; await this.flush(); }
@@ -2406,7 +2440,7 @@ export class JsonStore implements CollectorStore {
   listResearchGroundingRuns(_taskId: string): ResearchGroundingRunRecord[] { return []; }
   listResearchGroundingSources(_runId: string): ResearchGroundingSourceRecord[] { return []; }
   listResearchCitationsForMessages(_messageIds: string[]): ResearchCitationRecord[] { return []; }
-  async clearAllData(): Promise<void> { const savedTokens = this.data.clientTokens; const savedProfiles = this.data.providerProfiles; const savedCredentials = this.data.providerCredentials; const savedSettings: Record<string, string> = {}; if (this.data.settings) { for (const key of ['ai_consent', 'ai_configured', 'active_provider_profile_id', 'deepseek_configured']) { if (this.data.settings[key]) savedSettings[key] = this.data.settings[key]; } } this.data = { ...structuredClone(EMPTY_DATA), clientTokens: savedTokens, settings: savedSettings, providerProfiles: savedProfiles, providerCredentials: savedCredentials }; await this.flush(); }
+  async clearAllData(): Promise<void> { const savedTokens = this.data.clientTokens; const savedProfiles = this.data.providerProfiles; const savedCredentials = this.data.providerCredentials; const savedPurposeRoutes = this.data.modelPurposeRoutes; const savedSettings: Record<string, string> = {}; if (this.data.settings) { for (const key of ['ai_consent', 'ai_configured', 'active_provider_profile_id', 'deepseek_configured']) { if (this.data.settings[key]) savedSettings[key] = this.data.settings[key]; } } this.data = { ...structuredClone(EMPTY_DATA), clientTokens: savedTokens, settings: savedSettings, providerProfiles: savedProfiles, providerCredentials: savedCredentials, modelPurposeRoutes: savedPurposeRoutes }; await this.flush(); }
     private flush() { this.writeQueue = this.writeQueue.then(async () => { const temporaryPath = `${this.filePath}.tmp`; await writeFile(temporaryPath, JSON.stringify(this.data, null, 2), "utf8"); await rename(temporaryPath, this.filePath); }); return this.writeQueue; }
 }
 

@@ -150,3 +150,42 @@ test("provider model discovery endpoint returns models without leaking credentia
   const failure = await failureResponse.json() as { ok: false; error: string };
   assert.equal(failure.error, "请先填写 API Key 后再获取模型列表");
 });
+
+test("model routing endpoint round-trips purpose assignments", async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.close());
+
+  const initial = await fetch(`${harness.base}/v1/model-routing`, { headers: { Authorization: `Bearer ${harness.token}` } });
+  assert.equal(initial.status, 200);
+  assert.deepEqual(await initial.json(), { routes: [] });
+
+  const createResponse = await fetch(`${harness.base}/v1/provider-profiles`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${harness.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ providerId: "openai", displayName: "Research Model", model: "gpt-4.1", apiKey: "sk-routing" }),
+  });
+  const created = await createResponse.json() as { id: string };
+
+  const putResponse = await fetch(`${harness.base}/v1/model-routing`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${harness.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ purpose: "research", profileId: created.id }),
+  });
+  assert.equal(putResponse.status, 200);
+  assert.deepEqual(await putResponse.json(), { routes: [{ purpose: "research", profileId: created.id }] });
+
+  const missingPurpose = await fetch(`${harness.base}/v1/model-routing`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${harness.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ profileId: created.id }),
+  });
+  assert.equal(missingPurpose.status, 400);
+
+  const clearResponse = await fetch(`${harness.base}/v1/model-routing`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${harness.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ purpose: "research", profileId: null }),
+  });
+  assert.equal(clearResponse.status, 200);
+  assert.deepEqual(await clearResponse.json(), { routes: [] });
+});

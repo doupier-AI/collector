@@ -5,6 +5,7 @@ import { dirname, join, relative } from "node:path";
 import {
   ACCEPTED_MIME_TYPES,
   MAX_ARTIFACT_BYTES,
+  MODEL_PURPOSES,
   evidenceGradeFor,
   validateCaptureInput,
   type AiConfigurationView,
@@ -13,6 +14,8 @@ import {
   type CaptureInput,
   type CaptureRecord,
   type FragmentRecord,
+  type ModelPurpose,
+  type ModelRoutingView,
   type PreflightEvaluation,
   type ProviderDefinition,
   type ProviderModelDiscoveryInput,
@@ -64,6 +67,9 @@ export class CaptureService {
   private readonly topicDocWorkerId = randomUUID();
   private currentModelRoute?: ActiveModelRoute;
   private modelGatewayResolver?: (route: ActiveModelRoute) => Promise<ModelGateway | undefined>;
+  /** 按任务类型解析出的网关快照；配置或路由变化后标记 stale，下次使用时重建。 */
+  private purposeGateways = new Map<ModelPurpose, ModelGateway>();
+  private purposeGatewaysStale = true;
   readonly research: ResearchSessionService;
   readonly researchImports: ResearchImportService;
   readonly researchSelections: ResearchSelectionService;
@@ -103,6 +109,7 @@ export class CaptureService {
   setModelGateway(gateway: ModelGateway | undefined, route?: ActiveModelRoute): void {
     this.modelGateway = gateway;
     this.currentModelRoute = route ? structuredClone(route) : undefined;
+    this.purposeGatewaysStale = true;
     this.attachModelGateway(gateway);
     if (!this.options.researchProvider) this.research.setProvider(this.researchProviderFor(gateway));
     if (!this.options.selectionProvider) this.researchSelections.setProvider(this.selectionProviderFor(gateway));
@@ -141,6 +148,7 @@ export class CaptureService {
 
   private researchProviderFor(gateway: ModelGateway | undefined): ResearchGenerationProvider | undefined {
     if (!gateway) return undefined;
+    const service = this;
     const groundingCapability = gateway.providerGroundingCapability;
     return {
       provider: gateway.providerName,
@@ -148,6 +156,8 @@ export class CaptureService {
       promptVersion: "research-chat-v1",
       groundingCapability,
       async generateAgentGrounded(request) {
+        const purposeGateway = await service.gatewayForPurpose("search");
+        if (!purposeGateway) throw new Error("AI model is not configured");
         const direction = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
 
         // F2: Agent 式多轮工具调用搜索——模型通过 web_search/web_fetch 工具自主完成搜索过程
@@ -162,7 +172,7 @@ export class CaptureService {
           ].filter(Boolean).join("\n\n");
         }
 
-        const result = await gateway.runAgentSearchLoop(
+        const result = await purposeGateway.runAgentSearchLoop(
           userMessage,
           {
             webSearch: async (query, maxResults) => {
@@ -221,9 +231,11 @@ export class CaptureService {
         };
       },
       async *generate(request) {
+        const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
+        if (!purposeGateway) throw new Error("AI model is not configured");
         if (request.deepResearch) {
           const direction = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
-          const answer = await gateway.generateDeepResearchRound(
+          const answer = await purposeGateway.generateDeepResearchRound(
             {
               mode: request.deepResearch.mode,
               selectionText: request.deepResearch.selectionText,
@@ -237,7 +249,7 @@ export class CaptureService {
           for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);
           return;
         }
-        const answer = await gateway.answerResearchConversation(request.messages, {
+        const answer = await purposeGateway.answerResearchConversation(request.messages, {
           context: { workflowRunId: request.taskId, purpose: "research_chat", promptVersion: "research-chat-v1" },
         });
         for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);
@@ -247,13 +259,16 @@ export class CaptureService {
 
   private selectionProviderFor(gateway: ModelGateway | undefined): ResearchSelectionProvider | undefined {
     if (!gateway) return undefined;
+    const service = this;
     return {
       provider: gateway.providerName,
       model: gateway.modelName,
       promptVersion: "selection-analysis-v1",
       async analyze(request) {
+        const purposeGateway = await service.gatewayForPurpose("selection");
+        if (!purposeGateway) throw new Error("AI model is not configured");
         try {
-          return await gateway.analyzeSelection(
+          return await purposeGateway.analyzeSelection(
             {
               text: request.text,
               contextBefore: request.contextBefore,
@@ -388,6 +403,8 @@ export class CaptureService {
         await this.store.deleteProviderCredential(profile.id);
       }
     }
+    // 配置内容或凭证变化可能使按任务类型的网关快照失效
+    this.purposeGatewaysStale = true;
     return profile;
   }
 
@@ -461,6 +478,59 @@ export class CaptureService {
     } catch {
       this.setModelGateway(undefined);
     }
+  }
+
+  /** 读取按任务类型的模型分配；未分配的用途在使用时跟随当前激活配置。 */
+  getModelRouting(): ModelRoutingView {
+    return { routes: this.store.listModelPurposeRoutes() };
+  }
+
+  /** 设置或清除某个任务类型的模型分配；profileId 为 null 表示恢复跟随激活配置。 */
+  async setModelRouting(purpose: ModelPurpose, profileId: string | null): Promise<ModelRoutingView> {
+    if (!MODEL_PURPOSES.includes(purpose)) throw new ValidationError(`Unknown model purpose: ${purpose}`);
+    if (profileId) {
+      const profile = this.store.getProviderProfile(profileId);
+      if (!profile) throw new NotFoundError("Provider profile not found");
+      if (!profile.credentialConfigured) throw new ValidationError("Provider credential is not configured");
+      await this.store.setModelPurposeRoute(purpose, profileId);
+    } else {
+      await this.store.clearModelPurposeRoute(purpose);
+    }
+    this.purposeGatewaysStale = true;
+    return this.getModelRouting();
+  }
+
+  /** 重建按任务类型的网关快照；失效的分配（配置被删、Key 缺失、解析失败）静默回退激活配置。 */
+  private async refreshPurposeGateways(): Promise<void> {
+    const next = new Map<ModelPurpose, ModelGateway>();
+    if (!this.options.mvpDemoMode) {
+      const resolver = new ProviderRuntimeResolver(
+        DEFAULT_PROVIDER_REGISTRY,
+        async (profileId) => this.store.getProviderCredential(profileId),
+      );
+      for (const route of this.store.listModelPurposeRoutes()) {
+        const profile = this.store.getProviderProfile(route.profileId);
+        if (!profile?.enabled || !profile.credentialConfigured) continue;
+        try {
+          const runtime = await resolver.resolve(profile);
+          this.attachModelGateway(runtime.gateway);
+          next.set(route.purpose, runtime.gateway);
+        } catch {
+          // 分配引用的配置不可用时回退激活配置，不阻断其他用途
+        }
+      }
+    }
+    this.purposeGateways = next;
+    this.purposeGatewaysStale = false;
+  }
+
+  /**
+   * 按任务类型解析当前应使用的网关（内部方法，测试可直接断言）。
+   * 无分配或分配失效时回退当前激活配置的网关。
+   */
+  async gatewayForPurpose(purpose: ModelPurpose): Promise<ModelGateway | undefined> {
+    if (this.purposeGatewaysStale) await this.refreshPurposeGateways();
+    return this.purposeGateways.get(purpose) ?? this.modelGateway;
   }
 
   async testProviderProfile(id: string): Promise<ProviderTestResult> {
@@ -1463,7 +1533,8 @@ export class CaptureService {
       if (added.some((materialId) => this.store.getCapture(materialId)?.aiProcessingDisabled)) {
         throw new ValidationError("New materials include content with cloud AI processing disabled");
       }
-      if (!this.modelGateway) throw new ValidationError("AI model is not configured for document updates");
+      const documentGateway = await this.gatewayForPurpose("document");
+      if (!documentGateway) throw new ValidationError("AI model is not configured for document updates");
       if (!this.checkAiBudget()) throw new ValidationError("AI monthly budget exceeded");
       const materials = added
         .map((materialId) => this.store.getCapture(materialId))
@@ -1473,7 +1544,7 @@ export class CaptureService {
           content: material.content ?? material.sourceUrl ?? "",
           fragmentIds: this.store.listFragments(material.id).map((fragment) => fragment.id),
         }));
-      const update = await this.modelGateway.generateDocumentUpdateAdditions(materials, { context: { purpose: "incremental_document_update" } });
+      const update = await documentGateway.generateDocumentUpdateAdditions(materials, { context: { purpose: "incremental_document_update" } });
       if ("errorCode" in update) throw new Error(update.errorMessage);
       preview.proposedAdditions.push(...update.additions);
     }
