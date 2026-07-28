@@ -102,3 +102,51 @@ test("provider profile test endpoint validates custom baseUrl", async (t) => {
   const body = await response.json() as { error: { code: string; message: string } };
   assert.equal(body.error.code, "invalid_request");
 });
+
+test("provider model discovery endpoint returns models without leaking credentials", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "collector-discovery-http-"));
+  const store = new SqliteStore(join(root, "collector.sqlite"));
+  await store.init();
+  const auth = new LocalAuth(store);
+  const token = `discovery-http-${randomUUID()}`;
+  await auth.registerTrustedToken(token, "discovery-http-test");
+  let upstreamAuthorization: string | null = null;
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, {
+    autoRunRecentOrganization: false,
+    modelDiscoveryFetch: async (_input, init) => {
+      upstreamAuthorization = new Headers(init?.headers).get("authorization");
+      return new Response(JSON.stringify({ data: [{ id: "company-model" }, { id: "company-model-pro" }] }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+    providerBaseUrlValidator: async (value) => value.replace(/\/+$/, ""),
+  });
+  const server = createApiServer(service, auth);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Server did not bind");
+  const base = `http://127.0.0.1:${address.port}`;
+  t.after(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    store.close();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const response = await fetch(`${base}/v1/provider-models/discover`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ providerId: "custom", baseUrl: "https://models.example.com/v1", apiKey: "sk-http-discovery" }),
+  });
+  assert.equal(response.status, 200);
+  const body = await response.json() as { ok: true; models: string[]; apiKey?: string };
+  assert.deepEqual(body.models, ["company-model", "company-model-pro"]);
+  assert.equal(body.apiKey, undefined, "响应不应回传 API Key");
+  assert.equal(upstreamAuthorization, "Bearer sk-http-discovery");
+
+  const failureResponse = await fetch(`${base}/v1/provider-models/discover`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ providerId: "openai" }),
+  });
+  assert.equal(failureResponse.status, 502);
+  const failure = await failureResponse.json() as { ok: false; error: string };
+  assert.equal(failure.error, "请先填写 API Key 后再获取模型列表");
+});

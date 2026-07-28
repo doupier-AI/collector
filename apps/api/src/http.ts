@@ -106,6 +106,11 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         const result = await service.testProviderProfileInput(body);
         return json(response, result.ok ? 200 : 502, result);
       }
+      if (request.method === "POST" && url.pathname === "/v1/provider-models/discover") {
+        const body = await readJson(request) as import("@collector/capture-contracts").ProviderModelDiscoveryInput;
+        const result = await service.discoverProviderModels(body);
+        return json(response, result.ok ? 200 : 502, result);
+      }
       if (request.method === "POST" && url.pathname === "/v1/provider-profiles") {
         const body = await readJson(request) as import("@collector/capture-contracts").ProviderProfileInput & { activate?: boolean };
         const { activate, ...input } = body;

@@ -3,9 +3,12 @@ import type {
   DeepResearchAccepted,
   DeepResearchInput,
   ProviderDefinition,
+  ProviderModelDiscoveryInput,
+  ProviderModelDiscoveryResult,
   ProviderProfile,
   ProviderProfileInput,
   ProviderProfileTestInput,
+  ProviderTestResult,
   ResearchBranchView,
   ResearchContentSnapshotRecord,
   ResearchImportAccepted,
@@ -62,8 +65,9 @@ export interface ApiClient {
   saveProviderProfile(input: ProviderProfileInput & { activate?: boolean }): Promise<ProviderProfile>;
   activateProviderProfile(id: string): Promise<ProviderProfile>;
   deleteProviderProfile(id: string): Promise<void>;
-  testProviderProfile(id: string): Promise<{ ok: true; model: string } | { ok: false; error: string }>;
-  testProviderProfileConfig(input: ProviderProfileTestInput): Promise<{ ok: true; model: string } | { ok: false; error: string }>;
+  testProviderProfile(id: string): Promise<ProviderTestResult>;
+  testProviderProfileConfig(input: ProviderProfileTestInput): Promise<ProviderTestResult>;
+  discoverProviderModels(input: ProviderModelDiscoveryInput): Promise<ProviderModelDiscoveryResult>;
   exchangePairingCode(code: string): Promise<{ paired: true }>;
 }
 
@@ -91,6 +95,22 @@ async function requestJson<T>(fetchImpl: FetchLike, path: string, init?: Request
     throw new ApiRequestError(response.status, code, message);
   }
   return (await response.json()) as T;
+}
+
+/**
+ * 结果型接口（{ ok: true, ... } | { ok: false, error }）：成功与业务失败分别用 200 / 502 返回，
+ * 失败原因编码在响应体里，因此两种状态都解析 body，不把 502 当作传输错误。
+ */
+async function requestResult<T extends { ok: boolean }>(fetchImpl: FetchLike, path: string, init?: RequestInit): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetchImpl(path, init);
+  } catch {
+    throw new NetworkError();
+  }
+  const body = await response.json().catch(() => undefined) as T | undefined;
+  if (body && typeof body.ok === "boolean") return body;
+  throw new ApiRequestError(response.status, response.ok ? "invalid_response" : "request_failed", "");
 }
 
 /**
@@ -304,14 +324,21 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
       });
     },
     testProviderProfile(id: string) {
-      return requestJson<{ ok: true; model: string } | { ok: false; error: string }>(fetchFn, `/v1/provider-profiles/${encodeURIComponent(id)}/test`, {
+      return requestResult<ProviderTestResult>(fetchFn, `/v1/provider-profiles/${encodeURIComponent(id)}/test`, {
         method: "POST",
         headers: JSON_HEADERS,
         body: "{}",
       });
     },
     testProviderProfileConfig(input: ProviderProfileTestInput) {
-      return requestJson<{ ok: true; model: string } | { ok: false; error: string }>(fetchFn, "/v1/provider-profiles/test", {
+      return requestResult<ProviderTestResult>(fetchFn, "/v1/provider-profiles/test", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify(input),
+      });
+    },
+    discoverProviderModels(input: ProviderModelDiscoveryInput) {
+      return requestResult<ProviderModelDiscoveryResult>(fetchFn, "/v1/provider-models/discover", {
         method: "POST",
         headers: JSON_HEADERS,
         body: JSON.stringify(input),

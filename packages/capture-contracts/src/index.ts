@@ -75,6 +75,19 @@ export interface ProviderProfileTestInput {
   apiKey: string;
 }
 
+export type ProviderTestResult = { ok: true; model: string; durationMs?: number } | { ok: false; error: string };
+
+/** 从供应商端点发现可调用模型列表的输入。apiKey 仅用于本次请求，响应永不回传。 */
+export interface ProviderModelDiscoveryInput {
+  providerId: string;
+  baseUrl?: string;
+  /** 省略且提供 profileId 时使用该配置已保存的凭证。 */
+  apiKey?: string;
+  profileId?: string;
+}
+
+export type ProviderModelDiscoveryResult = { ok: true; models: string[] } | { ok: false; error: string };
+
 export interface ActiveModelRoute {
   providerProfileId: string;
   providerId: string;

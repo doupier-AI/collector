@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { parseResearchSelectionInsight, validateProviderDefinition, type ActiveModelRoute, type ProviderDefinition, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight } from "@collector/capture-contracts";
+import { parseResearchSelectionInsight, validateProviderDefinition, type ActiveModelRoute, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight } from "@collector/capture-contracts";
 
 export interface ProviderUsage {
   inputTokens?: number;
@@ -188,6 +188,33 @@ export const BUILTIN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [{
   defaultBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
   defaultModel: "qwen-plus",
   models: ["qwen-plus", "qwen-max", "qwen-turbo"],
+  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
+}, {
+  id: "moonshot",
+  label: "Kimi (Moonshot AI)",
+  apiMode: "openai_chat_completions",
+  authMode: "bearer",
+  defaultBaseUrl: "https://api.moonshot.cn/v1",
+  defaultModel: "kimi-k2.5",
+  models: ["kimi-k2.5", "kimi-k2-0711-preview", "moonshot-v1-32k"],
+  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
+}, {
+  id: "zhipu",
+  label: "Zhipu GLM",
+  apiMode: "openai_chat_completions",
+  authMode: "bearer",
+  defaultBaseUrl: "https://open.bigmodel.cn/api/paas/v4",
+  defaultModel: "glm-4.6",
+  models: ["glm-4.6", "glm-4.5", "glm-4.5-flash"],
+  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
+}, {
+  id: "siliconflow",
+  label: "SiliconFlow",
+  apiMode: "openai_chat_completions",
+  authMode: "bearer",
+  defaultBaseUrl: "https://api.siliconflow.cn/v1",
+  defaultModel: "deepseek-ai/DeepSeek-V3.2",
+  models: ["deepseek-ai/DeepSeek-V3.2", "Qwen/Qwen3-235B-A22B", "Pro/deepseek-ai/DeepSeek-V3.2"],
   capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
 }, {
   id: "custom",
@@ -1284,6 +1311,53 @@ export function createProvider(definition: ProviderDefinition, options: Omit<Ope
   if (definition.apiMode === "gemini_generate_content") return new GeminiGroundingProvider({ ...options, definition });
   if (definition.apiMode === "anthropic_messages") return new AnthropicMessagesProvider({ ...options, definition });
   throw new Error(`Unsupported provider API mode: ${definition.apiMode}`);
+}
+
+export interface DiscoverProviderModelsOptions {
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}
+
+/**
+ * 从供应商端点发现可调用模型列表（对齐 CC Switch「获取模型」）。
+ * 按 apiMode 选择协议：OpenAI 兼容与 Anthropic 均为 GET {baseUrl}/models 解析 data[].id；
+ * Gemini 为 GET {baseUrl}/models 解析 models[].name 并去掉 models/ 前缀。
+ * 错误按认证失败 / 端点不支持 / 解析失败 / 超时分类，文案面向用户，不包含凭证。
+ */
+export async function discoverProviderModels(
+  definition: ProviderDefinition,
+  baseUrl: string,
+  apiKey: string,
+  options: DiscoverProviderModelsOptions = {},
+): Promise<ProviderModelDiscoveryResult> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error("model discovery timed out")), options.timeoutMs ?? 10_000);
+  try {
+    const root = normalizeBaseUrl(baseUrl);
+    const headers: Record<string, string> = definition.apiMode === "anthropic_messages"
+      ? { "x-api-key": apiKey, "anthropic-version": "2023-06-01" }
+      : definition.apiMode === "gemini_generate_content"
+        ? { "x-goog-api-key": apiKey }
+        : { Authorization: `Bearer ${apiKey}` };
+    const response = await fetchImpl(`${root}/models`, { method: "GET", headers, signal: controller.signal, redirect: "error" });
+    if (response.status === 401 || response.status === 403) return { ok: false, error: "认证失败：请检查 API Key 是否正确" };
+    if (response.status === 404 || response.status === 405) return { ok: false, error: "该供应商未提供模型列表端点，请手动填写模型名称" };
+    if (!response.ok) return { ok: false, error: `模型列表请求失败（HTTP ${response.status}）` };
+    const payload = await response.json().catch(() => undefined);
+    const raw: unknown[] | undefined = definition.apiMode === "gemini_generate_content"
+      ? (Array.isArray(payload?.models) ? payload.models.map((entry: any) => typeof entry?.name === "string" ? entry.name.replace(/^models\//, "") : undefined) : undefined)
+      : (Array.isArray(payload?.data) ? payload.data.map((entry: any) => typeof entry?.id === "string" ? entry.id : undefined) : undefined);
+    const models = raw ? [...new Set(raw.filter((entry): entry is string => typeof entry === "string" && entry.length > 0))] : [];
+    if (!models.length) return { ok: false, error: "模型列表解析失败：返回内容不符合预期格式，请手动填写模型名称" };
+    return { ok: true, models };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (/timed out|timeout|abort/i.test(message)) return { ok: false, error: "模型列表请求超时，请稍后重试或检查网络" };
+    return { ok: false, error: "模型列表请求失败，请检查网络后重试" };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function openAiOutputText(payload: any): string {

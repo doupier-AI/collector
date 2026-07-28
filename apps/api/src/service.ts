@@ -15,9 +15,12 @@ import {
   type FragmentRecord,
   type PreflightEvaluation,
   type ProviderDefinition,
+  type ProviderModelDiscoveryInput,
+  type ProviderModelDiscoveryResult,
   type ProviderProfile,
   type ProviderProfileInput,
   type ProviderProfileTestInput,
+  type ProviderTestResult,
   type RecentClusterSnapshotRecord,
   type ResearchGroundingScopeStatus,
   type ResearchGroundingSourceRecord,
@@ -38,7 +41,7 @@ import {
 import type { CollectorStore } from "./store.js";
 import { defaultDataPaths } from "./store.js";
 import { SourceParser, parsePdf } from "./parsers.js";
-import { DEFAULT_PROVIDER_REGISTRY, ModelGateway, ProviderRuntimeResolver, validateExternalProviderBaseUrl } from "@collector/model-gateway";
+import { DEFAULT_PROVIDER_REGISTRY, ModelGateway, ProviderRuntimeResolver, discoverProviderModels as discoverProviderModelsViaGateway, validateExternalProviderBaseUrl } from "@collector/model-gateway";
 import { createVerificationWorkflow } from "./verification.js";
 import { ResearchSessionService, type ResearchGenerationProvider } from "./research.js";
 import { ResearchImportService } from "./research-import.js";
@@ -53,8 +56,6 @@ import { ALL_SEARCH_BACKEND_IDS } from "./search-backends/index.js";
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
 class BudgetExceededError extends Error {}
-
-type ProviderTestResult = { ok: true; model: string } | { ok: false; error: string };
 
 export class CaptureService {
   private recentOrganizationTasks: Promise<void> = Promise.resolve();
@@ -74,7 +75,7 @@ export class CaptureService {
     private readonly artifactRoot: string,
     private readonly parser = new SourceParser(),
     private modelGateway?: ModelGateway,
-    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; researchProvider?: ResearchGenerationProvider; selectionProvider?: ResearchSelectionProvider; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunSelectionTasks?: boolean; mvpDemoMode?: boolean } = {},
+    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; selectionProvider?: ResearchSelectionProvider; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunSelectionTasks?: boolean; mvpDemoMode?: boolean } = {},
   ) {
     this.attachModelGateway(this.modelGateway);
     this.research = new ResearchSessionService(this.store, {
@@ -471,7 +472,9 @@ export class CaptureService {
     );
     try {
       const runtime = await resolver.resolve(profile);
-      return await runtime.gateway.testConnection();
+      const startedAt = performance.now();
+      const result = await runtime.gateway.testConnection();
+      return result.ok ? { ...result, durationMs: Math.round(performance.now() - startedAt) } : result;
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : "模型连接测试失败" };
     }
@@ -503,10 +506,32 @@ export class CaptureService {
     );
     try {
       const runtime = await resolver.resolve(profile);
-      return await runtime.gateway.testConnection();
+      const startedAt = performance.now();
+      const result = await runtime.gateway.testConnection();
+      return result.ok ? { ...result, durationMs: Math.round(performance.now() - startedAt) } : result;
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : "模型连接测试失败" };
     }
+  }
+
+  /**
+   * 从供应商端点发现可调用模型列表（CC Switch「获取模型」对应能力）。
+   * apiKey 省略且提供 profileId 时使用该配置已保存的凭证；响应只含模型名与错误文案。
+   */
+  async discoverProviderModels(input: ProviderModelDiscoveryInput): Promise<ProviderModelDiscoveryResult> {
+    const definition = DEFAULT_PROVIDER_REGISTRY.get(input.providerId);
+    let baseUrl = definition.defaultBaseUrl;
+    if (definition.id.startsWith("custom")) {
+      const requested = input.baseUrl?.trim();
+      if (!requested) throw new ValidationError("Custom provider base URL is required");
+      baseUrl = await (this.options.providerBaseUrlValidator ?? validateExternalProviderBaseUrl)(requested);
+    }
+    let apiKey = input.apiKey?.trim();
+    if (!apiKey && input.profileId) {
+      apiKey = this.store.getProviderCredential(input.profileId)?.trim() || undefined;
+    }
+    if (!apiKey) return { ok: false, error: "请先填写 API Key 后再获取模型列表" };
+    return discoverProviderModelsViaGateway(definition, baseUrl, apiKey, { fetchImpl: this.options.modelDiscoveryFetch });
   }
 
   getDataPaths(): { database: string; artifacts: string; databaseExists: boolean } {

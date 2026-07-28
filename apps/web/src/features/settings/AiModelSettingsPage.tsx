@@ -9,17 +9,19 @@ type State =
   | { kind: "ready"; catalog: ProviderDefinition[]; activeProfile?: ProviderProfile; profiles: ProviderProfile[] };
 
 /**
- * 已保存的模型配置列表：展示全部 ProviderProfile，支持激活与删除。
+ * 已保存的模型配置列表：展示全部 ProviderProfile，支持编辑、激活与删除。
  */
 export function ProviderProfileList({
   profiles,
   activeProfile,
   onActivate,
+  onEdit,
   onDelete,
 }: {
   profiles: ProviderProfile[];
   activeProfile?: ProviderProfile;
   onActivate: (id: string) => void;
+  onEdit: (profile: ProviderProfile) => void;
   onDelete: (id: string) => void;
 }) {
   if (!profiles.length) return null;
@@ -44,6 +46,9 @@ export function ProviderProfileList({
                   设为当前
                 </button>
               ) : null}
+              <button type="button" className="button button--secondary" onClick={() => onEdit(profile)}>
+                编辑
+              </button>
               <button type="button" className="button button--ghost" onClick={() => onDelete(profile.id)}>
                 删除
               </button>
@@ -56,13 +61,14 @@ export function ProviderProfileList({
 }
 
 /**
- * AI 模型设置页：加载供应商目录与当前配置，提供保存、测试、激活、删除能力。
+ * AI 模型设置页：加载供应商目录与当前配置，提供新建、编辑、测试、激活、删除能力。
  * API Key 只在组件内存中，提交后立即清空，不写入 localStorage/URL/日志。
  */
 export function AiModelSettingsPage() {
   const { api } = useServices();
   const [state, setState] = useState<State>({ kind: "loading" });
   const [reloadNonce, setReloadNonce] = useState(0);
+  const [editingProfile, setEditingProfile] = useState<ProviderProfile | undefined>(undefined);
 
   const load = useCallback(async () => {
     setState({ kind: "loading" });
@@ -83,6 +89,7 @@ export function AiModelSettingsPage() {
   }, [load, reloadNonce]);
 
   const handleSaved = useCallback(() => {
+    setEditingProfile(undefined);
     setReloadNonce((nonce) => nonce + 1);
   }, []);
 
@@ -94,9 +101,14 @@ export function AiModelSettingsPage() {
     [api],
   );
 
+  const handleEdit = useCallback((profile: ProviderProfile) => {
+    setEditingProfile(profile);
+  }, []);
+
   const handleDelete = useCallback(
     async (id: string) => {
       await api.deleteProviderProfile(id);
+      setEditingProfile((current) => (current?.id === id ? undefined : current));
       setReloadNonce((nonce) => nonce + 1);
     },
     [api],
@@ -126,13 +138,21 @@ export function AiModelSettingsPage() {
     <div className="page">
       <h1 className="page__title">AI 模型设置</h1>
       <p className="page__lead">
-        选择模型供应商并输入 API Key。配置保存在本机，下次启动 Collector 时自动恢复。
+        选择模型供应商并输入 API Key。可保存多套配置并随时切换，配置保存在本机，下次启动 Collector 时自动恢复。
       </p>
-      <ProviderProfileForm catalog={state.catalog} activeProfile={state.activeProfile} onSaved={handleSaved} />
+      <ProviderProfileForm
+        key={editingProfile?.id ?? "new"}
+        catalog={state.catalog}
+        activeProfile={state.activeProfile}
+        editingProfile={editingProfile}
+        onSaved={handleSaved}
+        onCancelEdit={() => setEditingProfile(undefined)}
+      />
       <ProviderProfileList
         profiles={state.profiles}
         activeProfile={state.activeProfile}
         onActivate={handleActivate}
+        onEdit={handleEdit}
         onDelete={handleDelete}
       />
     </div>
@@ -142,26 +162,41 @@ export function AiModelSettingsPage() {
 interface ProviderProfileFormProps {
   catalog: ProviderDefinition[];
   activeProfile?: ProviderProfile;
+  /** 提供时表单进入编辑模式；API Key 留空表示保持已保存的 Key。 */
+  editingProfile?: ProviderProfile;
   onSaved: () => void;
+  onCancelEdit: () => void;
 }
 
+type FormStatus =
+  | { kind: "idle" }
+  | { kind: "testing" }
+  | { kind: "saving" }
+  | { kind: "discovering" }
+  | { kind: "success"; message: string }
+  | { kind: "error"; message: string };
+
 /**
- * 模型配置表单：供应商、模型、API Key、自定义 Base URL。
- * 支持“测试连接”与“保存并启用”。
+ * 模型配置表单：供应商、配置名称、模型（可一键获取可调用列表）、API Key、自定义 Base URL。
+ * 新建模式保存新配置；编辑模式更新已有配置。支持「测试连接」「仅保存」「保存并启用」。
  */
-function ProviderProfileForm({ catalog, activeProfile, onSaved }: ProviderProfileFormProps) {
+function ProviderProfileForm({ catalog, activeProfile, editingProfile, onSaved, onCancelEdit }: ProviderProfileFormProps) {
   const { api } = useServices();
-  const [providerId, setProviderId] = useState(activeProfile?.providerId ?? catalog[0]?.id ?? "");
-  const [model, setModel] = useState(activeProfile?.model ?? "");
+  const [providerId, setProviderId] = useState(editingProfile?.providerId ?? activeProfile?.providerId ?? catalog[0]?.id ?? "");
+  const [model, setModel] = useState(editingProfile?.model ?? activeProfile?.model ?? "");
   const [apiKey, setApiKey] = useState("");
-  const [baseUrl, setBaseUrl] = useState(activeProfile?.baseUrl ?? "");
-  const [displayName, setDisplayName] = useState(activeProfile?.displayName ?? "");
-  const [status, setStatus] = useState<{ kind: "idle" } | { kind: "testing" } | { kind: "saving" } | { kind: "success"; message: string } | { kind: "error"; message: string }>({ kind: "idle" });
+  const [baseUrl, setBaseUrl] = useState(editingProfile?.baseUrl ?? activeProfile?.baseUrl ?? "");
+  const [displayName, setDisplayName] = useState(editingProfile?.displayName ?? activeProfile?.displayName ?? "");
+  const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
+  const [status, setStatus] = useState<FormStatus>({ kind: "idle" });
 
   const definition = catalog.find((item) => item.id === providerId);
   const isCustom = definition?.id.startsWith("custom") ?? false;
+  const editing = editingProfile !== undefined;
   const effectiveModel = model.trim() || definition?.defaultModel || "";
   const effectiveDisplayName = displayName.trim() || definition?.label || "";
+  const modelOptions = [...new Set([...discoveredModels, ...(definition?.models ?? [])])];
+  const busy = status.kind === "testing" || status.kind === "saving" || status.kind === "discovering";
 
   const handleProviderChange = (nextProviderId: string) => {
     setProviderId(nextProviderId);
@@ -171,6 +206,7 @@ function ProviderProfileForm({ catalog, activeProfile, onSaved }: ProviderProfil
       setBaseUrl(nextDefinition.defaultBaseUrl);
       setDisplayName(nextDefinition.label);
     }
+    setDiscoveredModels([]);
   };
 
   const buildPayload = () => ({
@@ -181,6 +217,13 @@ function ProviderProfileForm({ catalog, activeProfile, onSaved }: ProviderProfil
     apiKey: apiKey.trim(),
   });
 
+  const buildDiscoveryPayload = () => ({
+    providerId,
+    baseUrl: isCustom ? baseUrl : undefined,
+    apiKey: apiKey.trim() || undefined,
+    profileId: !apiKey.trim() && editingProfile?.credentialConfigured ? editingProfile.id : undefined,
+  });
+
   const handleTest = async () => {
     if (!apiKey.trim()) {
       setStatus({ kind: "error", message: "请先输入 API Key" });
@@ -189,18 +232,48 @@ function ProviderProfileForm({ catalog, activeProfile, onSaved }: ProviderProfil
     setStatus({ kind: "testing" });
     try {
       const result = await api.testProviderProfileConfig(buildPayload());
-      setStatus(result.ok ? { kind: "success", message: `连接成功：${result.model}` } : { kind: "error", message: result.error });
+      setStatus(result.ok
+        ? { kind: "success", message: `连接成功：${result.model}${result.durationMs != null ? ` · ${(result.durationMs / 1000).toFixed(1)}s` : ""}` }
+        : { kind: "error", message: result.error });
     } catch (error) {
       setStatus({ kind: "error", message: error instanceof Error ? error.message : "连接测试失败" });
     }
   };
 
-  const handleSave = async () => {
+  const handleDiscover = async () => {
+    if (!apiKey.trim() && !editingProfile?.credentialConfigured) {
+      setStatus({ kind: "error", message: "请先输入 API Key 后再获取模型列表" });
+      return;
+    }
+    setStatus({ kind: "discovering" });
+    try {
+      const result = await api.discoverProviderModels(buildDiscoveryPayload());
+      if (result.ok) {
+        setDiscoveredModels(result.models);
+        setStatus({ kind: "success", message: `已获取 ${result.models.length} 个可调用模型，可在模型输入框中下拉选择` });
+      } else {
+        setStatus({ kind: "error", message: result.error });
+      }
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : "获取模型列表失败" });
+    }
+  };
+
+  const handleSave = async (activate: boolean) => {
+    if (!editing && !apiKey.trim()) {
+      setStatus({ kind: "error", message: "新配置需要输入 API Key" });
+      return;
+    }
     setStatus({ kind: "saving" });
     try {
-      await api.saveProviderProfile({ ...buildPayload(), activate: true });
+      await api.saveProviderProfile({
+        ...(editing ? { id: editingProfile.id } : {}),
+        ...buildPayload(),
+        ...(apiKey.trim() ? {} : { apiKey: undefined }),
+        activate,
+      });
       setApiKey("");
-      setStatus({ kind: "success", message: "已保存并启用" });
+      setStatus({ kind: "success", message: activate ? "已保存并启用" : "已保存" });
       onSaved();
     } catch (error) {
       setStatus({ kind: "error", message: error instanceof Error ? error.message : "保存失败" });
@@ -208,19 +281,28 @@ function ProviderProfileForm({ catalog, activeProfile, onSaved }: ProviderProfil
   };
 
   return (
-    <form className="settings-form" onSubmit={(event) => { event.preventDefault(); void handleSave(); }}>
+    <form className="settings-form" onSubmit={(event) => { event.preventDefault(); void handleSave(true); }}>
+      {editing ? (
+        <p className="settings-form__hint" role="status">
+          正在编辑配置「{editingProfile.displayName}」
+          <button type="button" className="button button--ghost" onClick={onCancelEdit}>取消编辑</button>
+        </p>
+      ) : null}
+
       <div className="settings-form__field">
         <label className="settings-form__label" htmlFor="provider-select">模型供应商</label>
         <select
           id="provider-select"
           className="settings-form__select"
           value={providerId}
+          disabled={editing}
           onChange={(event) => handleProviderChange(event.target.value)}
         >
           {catalog.map((item) => (
             <option key={item.id} value={item.id}>{item.label}</option>
           ))}
         </select>
+        {editing ? <p className="settings-form__hint">已有配置的供应商类型不可修改；如需更换请新建配置。</p> : null}
       </div>
 
       <div className="settings-form__field">
@@ -236,14 +318,30 @@ function ProviderProfileForm({ catalog, activeProfile, onSaved }: ProviderProfil
 
       <div className="settings-form__field">
         <label className="settings-form__label" htmlFor="model-input">模型</label>
-        <input
-          id="model-input"
-          className="settings-form__input"
-          value={model}
-          onChange={(event) => setModel(event.target.value)}
-          placeholder={definition?.defaultModel ?? "模型名称"}
-        />
-        <p className="settings-form__hint">留空则使用供应商默认模型：{definition?.defaultModel}</p>
+        <div className="settings-form__inline">
+          <input
+            id="model-input"
+            className="settings-form__input"
+            value={model}
+            onChange={(event) => setModel(event.target.value)}
+            placeholder={definition?.defaultModel ?? "模型名称"}
+            list="model-options"
+          />
+          <button
+            type="button"
+            className="button button--secondary"
+            disabled={busy}
+            onClick={() => void handleDiscover()}
+          >
+            {status.kind === "discovering" ? "获取中…" : "获取模型"}
+          </button>
+        </div>
+        <datalist id="model-options">
+          {modelOptions.map((option) => (
+            <option key={option} value={option} />
+          ))}
+        </datalist>
+        <p className="settings-form__hint">可直接输入，或点击「获取模型」从供应商拉取可调用模型后下拉选择。</p>
       </div>
 
       {isCustom ? (
@@ -268,7 +366,7 @@ function ProviderProfileForm({ catalog, activeProfile, onSaved }: ProviderProfil
           type="password"
           value={apiKey}
           onChange={(event) => setApiKey(event.target.value)}
-          placeholder={activeProfile?.credentialConfigured ? "已配置（输入新 Key 可覆盖）" : "输入 API Key"}
+          placeholder={editing && editingProfile.credentialConfigured ? "已保存，留空则保持不变" : "输入 API Key"}
           autoComplete="off"
         />
         <p className="settings-form__hint">Key 只保存在本机服务中，不会上传到 Collector 服务器。</p>
@@ -278,15 +376,23 @@ function ProviderProfileForm({ catalog, activeProfile, onSaved }: ProviderProfil
         <button
           type="button"
           className="button button--secondary"
-          disabled={status.kind === "testing" || status.kind === "saving"}
+          disabled={busy}
           onClick={() => void handleTest()}
         >
           {status.kind === "testing" ? "测试中…" : "测试连接"}
         </button>
         <button
+          type="button"
+          className="button button--secondary"
+          disabled={busy}
+          onClick={() => void handleSave(false)}
+        >
+          仅保存
+        </button>
+        <button
           type="submit"
           className="button button--primary"
-          disabled={status.kind === "testing" || status.kind === "saving"}
+          disabled={busy}
         >
           {status.kind === "saving" ? "保存中…" : "保存并启用"}
         </button>

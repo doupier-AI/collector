@@ -61,6 +61,7 @@ function baseApi(overrides: Partial<ApiClient> = {}): Partial<ApiClient> {
     getProviderCatalog: vi.fn<ApiClient["getProviderCatalog"]>().mockResolvedValue(catalog),
     listProviderProfiles: vi.fn<ApiClient["listProviderProfiles"]>().mockResolvedValue([]),
     getActiveProviderProfile: vi.fn<ApiClient["getActiveProviderProfile"]>().mockResolvedValue(undefined),
+    discoverProviderModels: vi.fn<ApiClient["discoverProviderModels"]>().mockResolvedValue({ ok: false, error: "未 mock" }),
     ...overrides,
   };
 }
@@ -123,5 +124,75 @@ describe("AiModelSettingsPage", () => {
     const deleteButtons = screen.getAllByRole("button", { name: "删除" });
     await user.click(deleteButtons[0]);
     await waitFor(() => expect(deleteProviderProfile).toHaveBeenCalledWith("profile-1"));
+  });
+
+  it("仅保存不启用当前配置", async () => {
+    const user = userEvent.setup();
+    const saveProviderProfile = vi.fn<ApiClient["saveProviderProfile"]>().mockResolvedValue(makeProfile());
+    renderSettings(baseApi({ saveProviderProfile }));
+
+    await screen.findByRole("heading", { name: "AI 模型设置" });
+    await user.type(screen.getByLabelText("API Key"), "sk-keep");
+    await user.click(screen.getByRole("button", { name: "仅保存" }));
+
+    await waitFor(() => expect(saveProviderProfile).toHaveBeenCalledTimes(1));
+    expect(saveProviderProfile.mock.calls[0][0]).toMatchObject({ apiKey: "sk-keep", activate: false });
+    expect(await screen.findByText("已保存")).toBeInTheDocument();
+  });
+
+  it("编辑模式载入已有配置且留空 Key 时保持原凭证", async () => {
+    const user = userEvent.setup();
+    const existing = makeProfile({ id: "profile-1", displayName: "主配置" });
+    const saveProviderProfile = vi.fn<ApiClient["saveProviderProfile"]>().mockResolvedValue(existing);
+    renderSettings(baseApi({
+      listProviderProfiles: vi.fn<ApiClient["listProviderProfiles"]>().mockResolvedValue([existing]),
+      saveProviderProfile,
+    }));
+
+    await screen.findByText("主配置");
+    await user.click(screen.getByRole("button", { name: "编辑" }));
+
+    expect(await screen.findByText(/正在编辑配置/)).toBeInTheDocument();
+    expect(screen.getByLabelText("模型供应商")).toBeDisabled();
+    expect(screen.getByLabelText("配置名称")).toHaveValue("主配置");
+    expect(screen.getByLabelText("API Key")).toHaveAttribute("placeholder", "已保存，留空则保持不变");
+
+    await user.click(screen.getByRole("button", { name: "仅保存" }));
+    await waitFor(() => expect(saveProviderProfile).toHaveBeenCalledTimes(1));
+    expect(saveProviderProfile.mock.calls[0][0]).toMatchObject({ id: "profile-1", apiKey: undefined, activate: false });
+  });
+
+  it("获取模型成功后填充下拉候选，失败时展示原因", async () => {
+    const user = userEvent.setup();
+    const discoverProviderModels = vi.fn<ApiClient["discoverProviderModels"]>()
+      .mockResolvedValueOnce({ ok: true, models: ["fetched-a", "fetched-b"] })
+      .mockResolvedValueOnce({ ok: false, error: "认证失败：请检查 API Key 是否正确" });
+    const { container } = renderSettings(baseApi({ discoverProviderModels }));
+
+    await screen.findByRole("heading", { name: "AI 模型设置" });
+    await user.type(screen.getByLabelText("API Key"), "sk-fetch");
+    await user.click(screen.getByRole("button", { name: "获取模型" }));
+
+    await waitFor(() => expect(discoverProviderModels).toHaveBeenCalledTimes(1));
+    expect(discoverProviderModels.mock.calls[0][0]).toMatchObject({ providerId: "openai", apiKey: "sk-fetch" });
+    expect(await screen.findByText(/已获取 2 个可调用模型/)).toBeInTheDocument();
+    const options = [...container.querySelectorAll("#model-options option")].map((option) => option.getAttribute("value"));
+    expect(options).toContain("fetched-a");
+    expect(options).toContain("fetched-b");
+
+    await user.click(screen.getByRole("button", { name: "获取模型" }));
+    expect(await screen.findByText("认证失败：请检查 API Key 是否正确")).toBeInTheDocument();
+  });
+
+  it("测试连接成功时显示延迟", async () => {
+    const user = userEvent.setup();
+    const testProviderProfileConfig = vi.fn<ApiClient["testProviderProfileConfig"]>().mockResolvedValue({ ok: true, model: "gpt-4.1-mini", durationMs: 1200 });
+    renderSettings(baseApi({ testProviderProfileConfig }));
+
+    await screen.findByRole("heading", { name: "AI 模型设置" });
+    await user.type(screen.getByLabelText("API Key"), "sk-test");
+    await user.click(screen.getByRole("button", { name: "测试连接" }));
+
+    expect(await screen.findByText("连接成功：gpt-4.1-mini · 1.2s")).toBeInTheDocument();
   });
 });
