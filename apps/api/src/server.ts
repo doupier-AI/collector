@@ -58,7 +58,7 @@ const apiKey = process.env.COLLECTOR_AI_API_KEY ?? legacyApiKey;
 const providerId = process.env.COLLECTOR_AI_PROVIDER ?? (legacyApiKey ? "deepseek" : undefined);
 await store.saveSetting("ai_consent", String(consent));
 if (apiKey && !providerId) throw new Error("COLLECTOR_AI_PROVIDER is required when COLLECTOR_AI_API_KEY is configured");
-let environmentProfile: ProviderProfile | undefined;
+let activeProfile: ProviderProfile | undefined;
 if (providerId) {
   const definition = DEFAULT_PROVIDER_REGISTRY.get(providerId);
   const configuredBaseUrl = process.env.COLLECTOR_AI_BASE_URL;
@@ -66,7 +66,7 @@ if (providerId) {
     ? await validateExternalProviderBaseUrl(configuredBaseUrl ?? "")
     : definition.defaultBaseUrl;
   const now = new Date().toISOString();
-  environmentProfile = {
+  activeProfile = {
     id: `environment-${definition.id}`,
     providerId: definition.id,
     displayName: `${definition.label} (environment)`,
@@ -78,13 +78,18 @@ if (providerId) {
     createdAt: now,
     updatedAt: now,
   };
-  await store.saveProviderProfile(environmentProfile);
-  if (apiKey) await store.setActiveProviderProfile(environmentProfile.id);
+  await store.saveProviderProfile(activeProfile);
+  if (apiKey) {
+    await store.saveProviderCredential(activeProfile.id, apiKey);
+    await store.setActiveProviderProfile(activeProfile.id);
+  }
+} else {
+  activeProfile = store.getActiveProviderProfile();
 }
-await store.saveSetting("ai_configured", String(Boolean(apiKey && environmentProfile)));
-const resolver = new ProviderRuntimeResolver(DEFAULT_PROVIDER_REGISTRY, async (profileId) => profileId === environmentProfile?.id ? apiKey : undefined);
+await store.saveSetting("ai_configured", String(Boolean(activeProfile?.credentialConfigured)));
+const resolver = new ProviderRuntimeResolver(DEFAULT_PROVIDER_REGISTRY, async (profileId) => store.getProviderCredential(profileId));
 // MVP 演示模式必须保持离线，即使环境中已配置真实模型凭据也不构造云模型运行时。
-const runtime = !mvpDemoMode && consent && apiKey && environmentProfile ? await resolver.resolve(environmentProfile) : undefined;
+const runtime = !mvpDemoMode && consent && activeProfile?.credentialConfigured ? await resolver.resolve(activeProfile) : undefined;
 const service = new CaptureService(store, paths.artifacts, undefined, runtime?.gateway, {
   researchProvider: mvpDemoMode ? createMvpDemoResearchProvider() : undefined,
   selectionProvider: mvpDemoMode ? createMvpDemoSelectionProvider() : undefined,
@@ -93,10 +98,11 @@ const service = new CaptureService(store, paths.artifacts, undefined, runtime?.g
 service.setModelGateway(runtime?.gateway, runtime?.route);
 service.setModelGatewayResolver(async (route) => {
   if (mvpDemoMode) throw new Error("Cloud model workflows are disabled in Collector MVP demo mode");
-  if (!environmentProfile || route.providerProfileId !== environmentProfile.id || route.providerId !== environmentProfile.providerId || route.model !== environmentProfile.model || route.configurationVersion !== environmentProfile.configurationVersion || route.baseUrlFingerprint !== fingerprintBaseUrl(environmentProfile.baseUrl)) {
-    throw new Error("Workflow environment provider configuration is unavailable or has changed");
+  const profile = store.getProviderProfile(route.providerProfileId);
+  if (!profile || profile.providerId !== route.providerId || profile.model !== route.model || profile.configurationVersion !== route.configurationVersion || fingerprintBaseUrl(profile.baseUrl) !== route.baseUrlFingerprint) {
+    throw new Error("Workflow provider configuration is unavailable or has changed");
   }
-  return (await resolver.resolve(environmentProfile)).gateway;
+  return (await resolver.resolve(profile)).gateway;
 });
 const webIndex = join(webRoot, "index.html");
 const webIndexStat = await stat(webIndex).catch(() => undefined);

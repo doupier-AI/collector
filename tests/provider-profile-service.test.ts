@@ -85,3 +85,78 @@ test("unfinished workflows protect their frozen provider profile from deletion",
   });
   await assert.rejects(() => service.deleteProviderProfile(profile.id), /unfinished workflow/);
 });
+
+test("saveProviderProfileWithCredential stores key and toggles credentialConfigured", async () => {
+  const { store, service } = await fixture();
+  const profile = await service.saveProviderProfileWithCredential({
+    providerId: "openai",
+    displayName: "OpenAI",
+    model: "gpt-4.1-mini",
+    apiKey: "sk-test",
+  });
+  assert.equal(profile.credentialConfigured, true);
+  assert.equal(store.getProviderCredential(profile.id), "sk-test");
+
+  const cleared = await service.saveProviderProfileWithCredential({
+    id: profile.id,
+    providerId: "openai",
+    displayName: profile.displayName,
+    model: profile.model,
+    apiKey: "",
+  });
+  assert.equal(cleared.credentialConfigured, false);
+  assert.equal(store.getProviderCredential(profile.id), undefined);
+
+  const restored = await service.saveProviderProfileWithCredential({
+    id: profile.id,
+    providerId: "openai",
+    displayName: profile.displayName,
+    model: profile.model,
+    apiKey: "sk-new",
+  });
+  assert.equal(restored.credentialConfigured, true);
+  assert.equal(store.getProviderCredential(profile.id), "sk-new");
+});
+
+test("saveProviderProfileWithCredential keeps existing credential when apiKey omitted", async () => {
+  const { store, service } = await fixture();
+  const profile = await service.saveProviderProfileWithCredential({
+    providerId: "openai",
+    displayName: "OpenAI",
+    model: "gpt-4.1-mini",
+    apiKey: "sk-keep",
+  });
+  const updated = await service.saveProviderProfileWithCredential({
+    id: profile.id,
+    providerId: "openai",
+    displayName: "OpenAI Renamed",
+    model: "gpt-4.1",
+  });
+  assert.equal(updated.credentialConfigured, true);
+  assert.equal(store.getProviderCredential(profile.id), "sk-keep");
+});
+
+test("activateProviderProfile rebuilds model gateway from persisted credential", async () => {
+  const { store, service } = await fixture();
+  const profile = await service.saveProviderProfileWithCredential({
+    providerId: "openai",
+    displayName: "OpenAI",
+    model: "gpt-4.1-mini",
+    apiKey: "sk-active",
+  });
+  await service.activateProviderProfile(profile.id);
+  assert.equal(service.getActiveProviderProfile()?.id, profile.id);
+  assert.equal(store.getProviderCredential(profile.id), "sk-active");
+});
+
+test("testProviderProfileInput rejects custom profile without baseUrl", async () => {
+  const { service } = await fixture();
+  await assert.rejects(
+    () => service.testProviderProfileInput({
+      providerId: "custom",
+      model: "custom-model",
+      apiKey: "sk-test",
+    }),
+    /base URL/,
+  );
+});

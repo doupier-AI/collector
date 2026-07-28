@@ -17,6 +17,7 @@ import {
   type ProviderDefinition,
   type ProviderProfile,
   type ProviderProfileInput,
+  type ProviderProfileTestInput,
   type RecentClusterSnapshotRecord,
   type ResearchGroundingScopeStatus,
   type ResearchGroundingSourceRecord,
@@ -37,7 +38,7 @@ import {
 import type { CollectorStore } from "./store.js";
 import { defaultDataPaths } from "./store.js";
 import { SourceParser, parsePdf } from "./parsers.js";
-import { DEFAULT_PROVIDER_REGISTRY, ModelGateway, validateExternalProviderBaseUrl } from "@collector/model-gateway";
+import { DEFAULT_PROVIDER_REGISTRY, ModelGateway, ProviderRuntimeResolver, validateExternalProviderBaseUrl } from "@collector/model-gateway";
 import { createVerificationWorkflow } from "./verification.js";
 import { ResearchSessionService, type ResearchGenerationProvider } from "./research.js";
 import { ResearchImportService } from "./research-import.js";
@@ -52,6 +53,8 @@ import { ALL_SEARCH_BACKEND_IDS } from "./search-backends/index.js";
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
 class BudgetExceededError extends Error {}
+
+type ProviderTestResult = { ok: true; model: string } | { ok: false; error: string };
 
 export class CaptureService {
   private recentOrganizationTasks: Promise<void> = Promise.resolve();
@@ -360,6 +363,32 @@ export class CaptureService {
   listProviderProfiles(): ProviderProfile[] { return this.store.listProviderProfiles(); }
   getActiveProviderProfile(): ProviderProfile | undefined { return this.store.getActiveProviderProfile(); }
 
+  /**
+   * 保存 ProviderProfile 并处理真实 API Key：
+   * - apiKey 为非空字符串 → 写入独立凭证表，credentialConfigured = true
+   * - apiKey 为空字符串   → 删除凭证，credentialConfigured = false
+   * - apiKey 未提供       → 保留原凭证状态
+   * 响应中永不包含明文 key。
+   */
+  async saveProviderProfileWithCredential(input: ProviderProfileInput): Promise<ProviderProfile> {
+    const hasApiKey = typeof input.apiKey === "string";
+    let credentialConfigured: boolean;
+    if (hasApiKey) {
+      credentialConfigured = input.apiKey!.trim().length > 0;
+    } else {
+      credentialConfigured = input.id ? (this.store.getProviderProfile(input.id)?.credentialConfigured ?? false) : false;
+    }
+    const profile = await this.saveProviderProfile(input, credentialConfigured);
+    if (hasApiKey) {
+      if (credentialConfigured) {
+        await this.store.saveProviderCredential(profile.id, input.apiKey!.trim());
+      } else {
+        await this.store.deleteProviderCredential(profile.id);
+      }
+    }
+    return profile;
+  }
+
   async saveProviderProfile(input: ProviderProfileInput, credentialConfigured: boolean): Promise<ProviderProfile> {
     const definition = DEFAULT_PROVIDER_REGISTRY.get(input.providerId);
     const existing = input.id ? this.store.getProviderProfile(input.id) : undefined;
@@ -398,12 +427,86 @@ export class CaptureService {
     if (!profile) throw new NotFoundError("Provider profile not found");
     if (!profile.credentialConfigured) throw new ValidationError("Provider credential is not configured");
     await this.store.setActiveProviderProfile(id);
+    await this.rebuildActiveGateway();
     return profile;
   }
 
   async deleteProviderProfile(id: string): Promise<boolean> {
     if (this.store.listRecoverableWorkflowRuns().some((run) => run.modelRoute?.providerProfileId === id)) throw new ValidationError("Provider profile is referenced by an unfinished workflow");
-    return this.store.deleteProviderProfile(id);
+    const deleted = await this.store.deleteProviderProfile(id);
+    if (deleted) await this.rebuildActiveGateway();
+    return deleted;
+  }
+
+  /**
+   * 使用当前 active profile 与持久化凭证重建 ModelGateway。
+   * 服务启动、profile 激活/删除后调用，确保内存中的网关与持久化配置一致。
+   */
+  private async rebuildActiveGateway(): Promise<void> {
+    if (this.options.mvpDemoMode) return;
+    const profile = this.store.getActiveProviderProfile();
+    if (!profile?.credentialConfigured) {
+      this.setModelGateway(undefined);
+      return;
+    }
+    const resolver = new ProviderRuntimeResolver(
+      DEFAULT_PROVIDER_REGISTRY,
+      async (profileId) => this.store.getProviderCredential(profileId),
+    );
+    try {
+      const runtime = await resolver.resolve(profile);
+      this.setModelGateway(runtime.gateway, runtime.route);
+    } catch {
+      this.setModelGateway(undefined);
+    }
+  }
+
+  async testProviderProfile(id: string): Promise<ProviderTestResult> {
+    const profile = this.store.getProviderProfile(id);
+    if (!profile) throw new NotFoundError("Provider profile not found");
+    if (!profile.credentialConfigured) return { ok: false, error: "模型凭证未配置" };
+    const resolver = new ProviderRuntimeResolver(
+      DEFAULT_PROVIDER_REGISTRY,
+      async (profileId) => this.store.getProviderCredential(profileId),
+    );
+    try {
+      const runtime = await resolver.resolve(profile);
+      return await runtime.gateway.testConnection();
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "模型连接测试失败" };
+    }
+  }
+
+  async testProviderProfileInput(input: ProviderProfileTestInput): Promise<ProviderTestResult> {
+    const definition = DEFAULT_PROVIDER_REGISTRY.get(input.providerId);
+    let baseUrl = definition.defaultBaseUrl;
+    if (definition.id.startsWith("custom")) {
+      const requested = input.baseUrl?.trim();
+      if (!requested) throw new ValidationError("Custom provider base URL is required");
+      baseUrl = await (this.options.providerBaseUrlValidator ?? validateExternalProviderBaseUrl)(requested);
+    }
+    const profile: ProviderProfile = {
+      id: "test-temp",
+      providerId: definition.id,
+      displayName: definition.label,
+      baseUrl,
+      model: input.model.trim() || definition.defaultModel,
+      credentialConfigured: true,
+      enabled: true,
+      configurationVersion: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const resolver = new ProviderRuntimeResolver(
+      DEFAULT_PROVIDER_REGISTRY,
+      async () => input.apiKey,
+    );
+    try {
+      const runtime = await resolver.resolve(profile);
+      return await runtime.gateway.testConnection();
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "模型连接测试失败" };
+    }
   }
 
   getDataPaths(): { database: string; artifacts: string; databaseExists: boolean } {

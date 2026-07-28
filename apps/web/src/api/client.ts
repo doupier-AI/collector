@@ -2,6 +2,10 @@ import type {
   AiConfigurationView,
   DeepResearchAccepted,
   DeepResearchInput,
+  ProviderDefinition,
+  ProviderProfile,
+  ProviderProfileInput,
+  ProviderProfileTestInput,
   ResearchBranchView,
   ResearchContentSnapshotRecord,
   ResearchImportAccepted,
@@ -52,6 +56,14 @@ export interface ApiClient {
   getResearchLaterItem(itemId: string): Promise<ResearchLaterItemView>;
   updateResearchLaterItem(itemId: string, update: ResearchLaterItemUpdate): Promise<ResearchLaterItemView>;
   getAiConfiguration(): Promise<AiConfigurationView>;
+  getProviderCatalog(): Promise<ProviderDefinition[]>;
+  listProviderProfiles(): Promise<ProviderProfile[]>;
+  getActiveProviderProfile(): Promise<ProviderProfile | undefined>;
+  saveProviderProfile(input: ProviderProfileInput & { activate?: boolean }): Promise<ProviderProfile>;
+  activateProviderProfile(id: string): Promise<ProviderProfile>;
+  deleteProviderProfile(id: string): Promise<void>;
+  testProviderProfile(id: string): Promise<{ ok: true; model: string } | { ok: false; error: string }>;
+  testProviderProfileConfig(input: ProviderProfileTestInput): Promise<{ ok: true; model: string } | { ok: false; error: string }>;
   exchangePairingCode(code: string): Promise<{ paired: true }>;
 }
 
@@ -245,6 +257,65 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
     },
     getAiConfiguration() {
       return requestJson<AiConfigurationView>(fetchFn, "/v1/ai-configuration");
+    },
+    getProviderCatalog() {
+      return requestJson<ProviderDefinition[]>(fetchFn, "/v1/provider-catalog");
+    },
+    listProviderProfiles() {
+      return requestJson<ProviderProfile[]>(fetchFn, "/v1/provider-profiles");
+    },
+    async getActiveProviderProfile() {
+      const response = await fetchFn("/v1/provider-profiles/active");
+      if (response.status === 204) return undefined;
+      if (!response.ok) {
+        let code = response.status >= 500 ? "internal_error" : "request_failed";
+        let message = "";
+        try {
+          const parsed = parseApiErrorBody(await response.json());
+          if (parsed) {
+            code = parsed.code;
+            message = parsed.message;
+          }
+        } catch {
+          // 错误体不是 JSON 时保留按状态码推断的 code
+        }
+        throw new ApiRequestError(response.status, code, message);
+      }
+      return (await response.json()) as ProviderProfile;
+    },
+    saveProviderProfile(input: ProviderProfileInput & { activate?: boolean }) {
+      return requestJson<ProviderProfile>(fetchFn, "/v1/provider-profiles", {
+        method: "POST",
+        headers: { ...JSON_HEADERS },
+        body: JSON.stringify(input),
+      });
+    },
+    activateProviderProfile(id: string) {
+      return requestJson<ProviderProfile>(fetchFn, `/v1/provider-profiles/${encodeURIComponent(id)}/activate`, {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: "{}",
+      });
+    },
+    deleteProviderProfile(id: string) {
+      return requestJson<void>(fetchFn, `/v1/provider-profiles/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: JSON_HEADERS,
+      });
+    },
+    testProviderProfile(id: string) {
+      return requestJson<{ ok: true; model: string } | { ok: false; error: string }>(fetchFn, `/v1/provider-profiles/${encodeURIComponent(id)}/test`, {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: "{}",
+      });
+    },
+    testProviderProfileConfig(input: ProviderProfileTestInput) {
+      return requestJson<{ ok: true; model: string } | { ok: false; error: string }>(fetchFn, "/v1/provider-profiles/test", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify(input),
+      });
     },
     exchangePairingCode(code: string) {
       return requestJson<{ paired: true }>(fetchFn, "/v1/pairings/exchange", {

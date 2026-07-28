@@ -1,6 +1,6 @@
 # Collector 项目开发记录
 
-最后更新：2026-07-23
+最后更新：2026-07-29
 
 状态：截至当前源码的项目阶段记录。本文记录已经发生的产品与工程里程碑、关键提交、验证证据和遗留限制；当前产品定义以 `PRODUCT.md` 为准，切片计划与状态见 `MVP_IMPLEMENTATION_PLAN.md`，源码与测试是实现状态的最终依据。
 
@@ -813,6 +813,7 @@ F1（日志+查询改写）优先级已确认，待启动。实施时读取 `doc
 | migration v19 | 稍后再学项目（创建幂等键、优先级与状态） |
 | migration v20 | 历史独立搜索表（兼容与清理，不再写入） |
 | migration v21 | 供应商联网运行、净化来源与行内引用 |
+| migration v22 | 供应商凭证独立表 `provider_credentials`（与 Profile 外键级联），支持 WebUI 配置 API Key 并持久化 |
 
 当前主要恢复边界：
 
@@ -825,12 +826,12 @@ F1（日志+查询改写）优先级已确认，待启动。实施时读取 `doc
 
 ## 5. 当前验证基线
 
-F3 提交后（2026-07-23）当前四级基线：
+阶段 G 提交后（2026-07-29）当前四级基线：
 
 | 范围 | 结果 |
 | --- | --- |
-| Node 单元与集成测试 | 235/235 通过 |
-| WebUI 客户端测试 | 197/197 通过 |
+| Node 单元与集成测试 | 244/244 通过 |
+| WebUI 客户端测试 | 200/200 通过 |
 | Collector 项目检查 | 通过（0 errors, 0 warnings） |
 | 真实云模型调用 | 已通过（DeepSeek deepseek-v4-flash，四场景验收 4/4） |
 | 真实供应商联网验收 | 未完成（当前已配置供应商 DeepSeek 不支持原生联网，待 OpenAI / Gemini / Anthropic 凭证配置后验收） |
@@ -922,6 +923,40 @@ F3 提交后（2026-07-23）当前四级基线：
 - 模型混写 `[1]` 与 `[来源n]` 不处理（留到"收紧引用指令"批次）；
 - 知乎等 JS/反爬站深层抓取仍未解决（留到批次②"联网抓取质量"）；
 - 设置页面 WebUI 未做（后端 API 就绪，前段按计划排在未来阶段）。
+
+### 3.29 阶段 G：WebUI AI 模型配置与凭证持久化（2026-07-29）
+
+**用户可见结果**
+
+- 左侧导航新增“AI 模型设置”入口，会话页模型状态点可点击直达设置页；
+- 用户在设置页选择供应商（含自定义兼容端点）、输入模型与 API Key，可先“测试连接”再“保存并启用”；
+- 配置保存在本机 SQLite，服务重启后用普通 `Collector.cmd` 启动即可恢复真实模型，不再依赖带硬编码密钥的启动器；
+- 已保存配置列表支持“设为当前”与“删除”；未配置 Key 的配置明确标注；
+- 界面与响应永不回显完整 API Key，Key 只在提交瞬间存在于页面内存，保存后立即清空。
+
+**改动**
+
+- 契约：`ProviderProfileInput` 新增 `apiKey?`（仅提交用），新增 `ProviderProfileTestInput`；
+- 存储：SQLite 迁移 v22 新建 `provider_credentials` 表（外键级联删除），`CollectorStore` 新增凭证三个 CRUD；清空全部数据保留 AI 配置；
+- 服务层：`saveProviderProfileWithCredential`（Key 三态：非空写入 / 空串删除 / 未提供保留）、`activateProviderProfile` 与删除后重建当前模型网关、`testProviderProfile(Input)` 连接测试；
+- 启动流程：环境变量存在时强制覆盖激活 `environment-<providerId>` 配置；否则从持久化激活配置 + 凭证重建网关；`setModelGatewayResolver` 按路由的 `providerProfileId` 校验并解析任意已存配置，支持重启后任务恢复；
+- HTTP：新增 `/v1/provider-catalog`、`/v1/provider-profiles`（列表 / 创建 / 激活 / 删除 / 测试）与 `/v1/provider-profiles/active`（无配置返回 204）；
+- WebUI：新增 `AiModelSettingsPage`（表单 + 已保存列表）、路由 `/settings/ai-model`、导航入口与状态点引导；API 客户端新增对应 8 个方法；
+- 安全约束：API Key 不写入 localStorage / sessionStorage / URL / 日志；响应不含 `apiKey` 字段；`clearAllData` 保留凭证。
+
+**验证**
+
+- 验证级别：四级（共享契约 + SQLite 迁移 + 跨端集成）；
+- Node 全量测试 244/244 通过（新增凭证存储、服务层、HTTP、激活恢复共 10 个测试；`sqlite-store.test.ts` 迁移断言适配 v22）；
+- WebUI 测试 200/200 通过（新增设置页 3 个测试：保存清空 Key、测试连接、列表激活删除）；
+- 项目检查 `check-project.ps1` 通过（0 errors, 0 warnings）；
+- 未执行项及理由：真实浏览器人工验收待用户在真实环境完成（本切片交付后首次使用需人工配置一次真实 Key）；Playwright e2e 未新增——设置页无流式 / 选区等复杂交互，组件级测试已覆盖提交与错误路径。
+
+**未完成 / 风险**
+
+- 明文凭钥存储符合当前本机单用户威胁模型；未来接入 Windows DPAPI / 系统钥匙串只需替换凭证 CRUD 层；
+- 升级前已存在且 `credentialConfigured=true` 的旧配置没有真实密钥，首次启动会显示为已配置但调用失败，需在设置页重新输入 Key；
+- 真实模型 + 真实浏览器端到端验收（保存 → 重启 → 直接可用）待人工执行。
 
 
 

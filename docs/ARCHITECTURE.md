@@ -154,7 +154,7 @@ Chat、深入研究第一轮和分支追问自动请求联网；选区分析始�
 - 存储能力不可用时展示明确恢复路径；
 - 自动化测试使用隔离的假凭证存储。
 
-具体系统凭据实现通过独立技术原型确定。
+当前实现：真实 API Key 与 ProviderProfile 分离存储在 SQLite 独立表 `provider_credentials`（migration v22），主键与 `provider_profiles(id)` 外键关联并级联删除；Profile 的 `record_json`、列表与激活响应只携带 `credentialConfigured` 布尔标志，HTTP 响应永不回传密钥。清空全部数据（`clearAllData`）保留 `provider_profiles` 与 `provider_credentials`，确保清理研究数据后 AI 配置仍可用。启动时若存在 `COLLECTOR_AI_*` 环境变量，强制覆盖并激活 `environment-<providerId>` 配置；否则读取持久化的激活配置与对应凭证重建模型网关。明文凭钥存储符合当前本机单用户威胁模型；未来接入系统级加密只需替换凭证 CRUD 层，无需改动表结构。
 
 ## 文件导入与内容快照
 

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import type { AiConfigurationView } from "@collector/capture-contracts";
 import { useServices } from "../../app/services";
 
@@ -13,12 +14,12 @@ function statusText(config: AiConfigurationView): string {
     const label = [config.provider, config.model].filter(Boolean).join(" · ");
     return label ? `模型：${label}` : "模型：已配置";
   }
-  return "未配置模型｜回答暂时无法生成";
+  return "未配置模型｜点击配置";
 }
 
 /**
  * 会话页头的克制模型状态点。明确区分真实模型、本地演示与未配置，
- * 避免把演示回答或缺失模型当作真实 AI 能力。
+ * 避免把演示回答或缺失模型当作真实 AI 能力；点击可进入模型设置。
  */
 export function ModelStatusIndicator() {
   const { api } = useServices();
@@ -47,9 +48,9 @@ export function ModelStatusIndicator() {
   if (state.kind !== "ready") return null;
   const mode = state.config.mode;
   return (
-    <p className={`model-status model-status--${mode}`}>
+    <Link className={`model-status model-status--${mode}`} to="/settings/ai-model">
       <span className="model-status__dot" aria-hidden="true" />
       {statusText(state.config)}
-    </p>
+    </Link>
   );
 }

@@ -34,6 +34,7 @@
 | F1 | 搜索链路日志与查询改写 | 已完成 | `68b39be` | 二级 |
 | F2 | web_search/web_fetch 工具拆分 + Agent 多轮搜索循环 | 已完成 | `9952a02` | 三级 |
 | F3 | 多搜索后端（DDG / Tavily / SearXNG） | 已完成 | `efe0d73` | 三级 |
+| G1 | WebUI AI 模型配置与凭证持久化（迁移 v22） | 已完成 | `742cee4` | 四级 |
 
 每个切片一笔提交：后端切片四级验证（全量构建、全量 Node 测试、项目检查）；WebUI 切片二级（前端构建 / 类型检查 + 受影响测试）+ 真实浏览器（视口、键盘、可访问性、控制台、网络）+ Playwright e2e（只用确定性假模型与假搜索，自动化永不访问真实云模型或真实搜索后端）。提交信息带验证级别与执行证据；阶段报告与“下一步交接语”写入 `PROJECT_DEVELOPMENT_RECORD.md`。
 
@@ -115,6 +116,10 @@ A1 在契约包建立消息块派生与模型状态三种 mode；A2 把完成的
 **F3（已完成，`efe0d73`）**：多搜索后端可选。Bing（默认，零配置）、DuckDuckGo（免费回退）、Tavily（AI 专用搜索 API，需 Key）、SearXNG（自托管聚合引擎）。后端通过统一 `SearchBackend` 接口适配，通过单一规范后端列表管理，支持运行时配置切换和故障回退链。
 
 详细分析见 `docs/ARCHITECTURE.md` 联网搜索一节。
+
+### 阶段 G：WebUI AI 模型配置与凭证持久化（已完成）
+
+**G1（已完成）**：用户在 WebUI 的“AI 模型设置”页直接选择供应商、输入模型与 API Key（custom 类型可填自定义 Base URL），支持测试连接与保存并启用。真实密钥与 ProviderProfile 分离存储在 SQLite `provider_credentials` 表（迁移 v22，外键级联删除），服务重启后无环境变量也能从持久化配置重建模型网关；`COLLECTOR_AI_*` 环境变量启动仍强制覆盖激活，旧启动器向后兼容。凭证细节见 `docs/ARCHITECTURE.md` 模型凭证一节。
 
 ## 阶段完成标准
 

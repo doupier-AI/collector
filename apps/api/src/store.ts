@@ -152,6 +152,10 @@ export interface CollectorStore
   deleteProviderProfile(id: string): Promise<boolean>;
   getActiveProviderProfile(): ProviderProfile | undefined;
   setActiveProviderProfile(id: string): Promise<void>;
+  /** 供应商真实 API Key 的独立凭证边界；与 provider_profiles 分离，避免 record_json/备份泄漏。 */
+  getProviderCredential(id: string): string | undefined;
+  saveProviderCredential(id: string, apiKey: string): Promise<void>;
+  deleteProviderCredential(id: string): Promise<void>;
   saveClientToken(id: string, name: string, tokenHash: string, createdAt: string): Promise<void>;
   hasClientToken(tokenHash: string): boolean;
   getWorkflowRun(id: string): WorkflowRunRecord | undefined;
@@ -283,10 +287,11 @@ interface StoreData {
   settings?: Record<string, string>;
   materialRevisions?: Record<string, { id: string; captureId: string; content: string; ordinal: number; createdAt: string }>;
   providerProfiles?: Record<string, ProviderProfile>;
+  providerCredentials?: Record<string, string>;
 }
 
 const EMPTY_DATA: StoreData = {
-  captures: {}, captureByClientId: {}, captureByChecksum: {}, artifacts: {}, fragments: {}, knowledgeItems: {}, reviewProposals: {}, clientTokens: {}, agentRuns: {}, relations: {}, userDecisions: {}, topics: {}, topicMemberships: {}, settings: {}, providerProfiles: {},
+  captures: {}, captureByClientId: {}, captureByChecksum: {}, artifacts: {}, fragments: {}, knowledgeItems: {}, reviewProposals: {}, clientTokens: {}, agentRuns: {}, relations: {}, userDecisions: {}, topics: {}, topicMemberships: {}, settings: {}, providerProfiles: {}, providerCredentials: {},
 };
 
 export class SqliteStore implements CollectorStore {
@@ -508,6 +513,7 @@ export class SqliteStore implements CollectorStore {
       // 供应商凭证由独立凭证边界保留，因此 Profile、活动路由和 AI 授权保持一致。
       // deepseek_configured 仅用于一次旧配置迁移，在兼容期内保留。
       this.db().exec("DELETE FROM settings WHERE key NOT IN ('ai_consent', 'ai_configured', 'active_provider_profile_id', 'deepseek_configured')");
+      // provider_credentials 与 provider_profiles 一起保留，确保清空数据后 AI 配置仍可用。
     });
   }
 
@@ -562,6 +568,7 @@ export class SqliteStore implements CollectorStore {
   async deleteProviderProfile(id: string): Promise<boolean> {
     let deleted = false;
     this.transaction(() => {
+      this.db().prepare("DELETE FROM provider_credentials WHERE id = ?").run(id);
       const result = this.db().prepare("DELETE FROM provider_profiles WHERE id = ?").run(id);
       deleted = result.changes === 1;
       if (this.getSetting("active_provider_profile_id") === id) this.db().prepare("DELETE FROM settings WHERE key = 'active_provider_profile_id'").run();
@@ -576,6 +583,16 @@ export class SqliteStore implements CollectorStore {
     const profile = this.getProviderProfile(id);
     if (!profile || !profile.enabled) throw new Error("Provider profile is unavailable");
     await this.saveSetting("active_provider_profile_id", id);
+  }
+  getProviderCredential(id: string): string | undefined {
+    return (this.db().prepare("SELECT api_key FROM provider_credentials WHERE id = ?").get(id) as { api_key: string } | undefined)?.api_key;
+  }
+  async saveProviderCredential(id: string, apiKey: string): Promise<void> {
+    this.db().prepare("INSERT INTO provider_credentials (id, api_key, updated_at) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET api_key=excluded.api_key, updated_at=excluded.updated_at")
+      .run(id, apiKey, new Date().toISOString());
+  }
+  async deleteProviderCredential(id: string): Promise<void> {
+    this.db().prepare("DELETE FROM provider_credentials WHERE id = ?").run(id);
   }
 
   listAgentRuns(captureId: string): AgentRunRecord[] {
@@ -2053,6 +2070,21 @@ export class SqliteStore implements CollectorStore {
       });
       version = 21;
     }
+    if (version < 22) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE provider_credentials (
+            id TEXT PRIMARY KEY,
+            api_key TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(id) REFERENCES provider_profiles(id) ON DELETE CASCADE
+          );
+          CREATE INDEX provider_credentials_updated_idx ON provider_credentials(updated_at);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (22, datetime('now'));
+        `);
+      });
+      version = 22;
+    }
 
   }
 
@@ -2105,6 +2137,10 @@ export class SqliteStore implements CollectorStore {
         for (const token of Object.values(data.clientTokens ?? {})) {
           this.db().prepare("INSERT OR IGNORE INTO paired_clients (id, name, token_hash, created_at) VALUES (?, ?, ?, ?)")
             .run(token.id, token.name, token.tokenHash, token.createdAt);
+        }
+        for (const [id, apiKey] of Object.entries(data.providerCredentials ?? {})) {
+          this.db().prepare("INSERT OR REPLACE INTO provider_credentials (id, api_key, updated_at) VALUES (?, ?, ?)")
+            .run(id, apiKey, new Date().toISOString());
         }
         this.db().prepare("INSERT INTO legacy_migrations (source_path, status, backup_path, migrated_at) VALUES (?, 'imported', ?, ?)")
           .run(this.legacyJsonPath!, backup!, new Date().toISOString());
@@ -2241,9 +2277,12 @@ export class JsonStore implements CollectorStore {
   getProviderProfile(id: string) { return this.data.providerProfiles?.[id]; }
   listProviderProfiles() { return Object.values(this.data.providerProfiles ?? {}).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)); }
   async saveProviderProfile(profile: ProviderProfile) { this.data.providerProfiles ??= {}; this.data.providerProfiles[profile.id] = profile; await this.flush(); }
-  async deleteProviderProfile(id: string) { if (!this.data.providerProfiles?.[id]) return false; delete this.data.providerProfiles[id]; if (this.data.settings?.active_provider_profile_id === id) delete this.data.settings.active_provider_profile_id; await this.flush(); return true; }
+  async deleteProviderProfile(id: string) { if (!this.data.providerProfiles?.[id]) return false; delete this.data.providerProfiles[id]; delete this.data.providerCredentials?.[id]; if (this.data.settings?.active_provider_profile_id === id) delete this.data.settings.active_provider_profile_id; await this.flush(); return true; }
   getActiveProviderProfile() { const id = this.data.settings?.active_provider_profile_id; return id ? this.data.providerProfiles?.[id] : undefined; }
   async setActiveProviderProfile(id: string) { const profile = this.data.providerProfiles?.[id]; if (!profile?.enabled) throw new Error("Provider profile is unavailable"); this.data.settings ??= {}; this.data.settings.active_provider_profile_id = id; await this.flush(); }
+  getProviderCredential(id: string) { return this.data.providerCredentials?.[id]; }
+  async saveProviderCredential(id: string, apiKey: string) { this.data.providerCredentials ??= {}; this.data.providerCredentials[id] = apiKey; await this.flush(); }
+  async deleteProviderCredential(id: string) { delete this.data.providerCredentials?.[id]; await this.flush(); }
   async saveCapture(record: CaptureRecord) { this.data.captures[record.id] = record; this.data.captureByClientId[record.clientCaptureId] = record.id; this.data.captureByChecksum[record.checksum] = record.id; await this.flush(); }
   async saveCaptureWithTopicMembership(record: CaptureRecord, topicId: string) { this.data.captures[record.id] = record; this.data.captureByClientId[record.clientCaptureId] = record.id; this.data.captureByChecksum[record.checksum] = record.id; this.data.topicMemberships ??= {}; this.data.topicMemberships[`${topicId}:${record.id}`] = { topicId, captureId: record.id, createdAt: record.createdAt }; await this.flush(); }
   async saveArtifact(record: ArtifactRecord) { this.data.artifacts[record.id] = record; await this.flush(); }
@@ -2367,7 +2406,7 @@ export class JsonStore implements CollectorStore {
   listResearchGroundingRuns(_taskId: string): ResearchGroundingRunRecord[] { return []; }
   listResearchGroundingSources(_runId: string): ResearchGroundingSourceRecord[] { return []; }
   listResearchCitationsForMessages(_messageIds: string[]): ResearchCitationRecord[] { return []; }
-  async clearAllData(): Promise<void> { const savedTokens = this.data.clientTokens; const savedProfiles = this.data.providerProfiles; const savedSettings: Record<string, string> = {}; if (this.data.settings) { for (const key of ['ai_consent', 'ai_configured', 'active_provider_profile_id', 'deepseek_configured']) { if (this.data.settings[key]) savedSettings[key] = this.data.settings[key]; } } this.data = { ...structuredClone(EMPTY_DATA), clientTokens: savedTokens, settings: savedSettings, providerProfiles: savedProfiles }; await this.flush(); }
+  async clearAllData(): Promise<void> { const savedTokens = this.data.clientTokens; const savedProfiles = this.data.providerProfiles; const savedCredentials = this.data.providerCredentials; const savedSettings: Record<string, string> = {}; if (this.data.settings) { for (const key of ['ai_consent', 'ai_configured', 'active_provider_profile_id', 'deepseek_configured']) { if (this.data.settings[key]) savedSettings[key] = this.data.settings[key]; } } this.data = { ...structuredClone(EMPTY_DATA), clientTokens: savedTokens, settings: savedSettings, providerProfiles: savedProfiles, providerCredentials: savedCredentials }; await this.flush(); }
     private flush() { this.writeQueue = this.writeQueue.then(async () => { const temporaryPath = `${this.filePath}.tmp`; await writeFile(temporaryPath, JSON.stringify(this.data, null, 2), "utf8"); await rename(temporaryPath, this.filePath); }); return this.writeQueue; }
 }
 

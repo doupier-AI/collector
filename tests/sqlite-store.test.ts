@@ -92,8 +92,8 @@ test("workflow migration creates formal versioned tables", async (t) => {
   store.close();
   const database = new DatabaseSync(databasePath, { readOnly: true });
   const tables = (database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name);
-  for (const table of ["workflow_runs", "workflow_steps", "model_calls", "recent_cluster_snapshots", "material_revisions", "research_sessions", "research_messages", "research_tasks", "research_task_events", "research_attachments", "research_import_tasks", "research_content_snapshots", "research_import_task_events", "research_selections", "research_selection_tasks", "research_selection_task_events", "research_branches", "research_later_items", "research_grounding_runs", "research_grounding_sources", "research_citations"]) assert.ok(tables.includes(table));
-  assert.equal((database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 21);
+  for (const table of ["workflow_runs", "workflow_steps", "model_calls", "recent_cluster_snapshots", "material_revisions", "research_sessions", "research_messages", "research_tasks", "research_task_events", "research_attachments", "research_import_tasks", "research_content_snapshots", "research_import_task_events", "research_selections", "research_selection_tasks", "research_selection_task_events", "research_branches", "research_later_items", "research_grounding_runs", "research_grounding_sources", "research_citations", "provider_credentials"]) assert.ok(tables.includes(table));
+  assert.equal((database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 22);
   const sessionColumns = (database.prepare("PRAGMA table_info(research_sessions)").all() as Array<{ name: string }>).map((column) => column.name);
   assert.ok(sessionColumns.includes("creation_idempotency_key"));
   assert.ok(sessionColumns.includes("origin_selection_id"));
@@ -127,6 +127,7 @@ test("migrations 15 to 21 preserve existing version 14 research sessions", async
 
   const version14 = new DatabaseSync(databasePath);
   version14.exec(`
+    DROP TABLE provider_credentials;
     DROP TABLE research_citations;
     DROP TABLE research_grounding_sources;
     DROP TABLE research_grounding_runs;
@@ -145,7 +146,7 @@ test("migrations 15 to 21 preserve existing version 14 research sessions", async
     ALTER TABLE research_sessions DROP COLUMN origin_selection_id;
     ALTER TABLE research_sessions DROP COLUMN origin_session_id;
     ALTER TABLE research_messages DROP COLUMN branch_id;
-    DELETE FROM schema_migrations WHERE version IN (15, 16, 17, 18, 19, 21);
+    DELETE FROM schema_migrations WHERE version IN (15, 16, 17, 18, 19, 21, 22);
   `);
   version14.close();
 

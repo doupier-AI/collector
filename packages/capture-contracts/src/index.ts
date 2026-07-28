@@ -64,6 +64,15 @@ export interface ProviderProfileInput {
   baseUrl?: string;
   model: string;
   enabled?: boolean;
+  /** 真实 API Key：仅创建/更新时提交，读取响应中永不回传。 */
+  apiKey?: string;
+}
+
+export interface ProviderProfileTestInput {
+  providerId: string;
+  model: string;
+  baseUrl?: string;
+  apiKey: string;
 }
 
 export interface ActiveModelRoute {

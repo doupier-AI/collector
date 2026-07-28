@@ -62,3 +62,29 @@ test("ai-configuration reports demo mode in the MVP demo runtime even when confi
   assert.equal(config.mode, "demo");
   assert.equal(config.configured, true);
 });
+
+test("ai-configuration reports real mode when active profile has credential", async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.close());
+  const { store } = harness;
+  const now = new Date().toISOString();
+  await store.saveProviderProfile({
+    id: "test-profile",
+    providerId: "openai",
+    displayName: "OpenAI",
+    baseUrl: "https://api.openai.com/v1",
+    model: "gpt-4.1-mini",
+    credentialConfigured: true,
+    enabled: true,
+    configurationVersion: 1,
+    createdAt: now,
+    updatedAt: now,
+  });
+  await store.saveProviderCredential("test-profile", "sk-test");
+  await store.setActiveProviderProfile("test-profile");
+  const config = await getConfiguration(harness.base, harness.token);
+  assert.equal(config.mode, "real");
+  assert.equal(config.configured, true);
+  assert.equal(config.provider, "openai");
+  assert.equal(config.model, "gpt-4.1-mini");
+});

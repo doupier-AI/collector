@@ -90,6 +90,43 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         await service.setAiConfiguration(aiBody.consent ?? false, aiBody.configured ?? false);
         return json(response, 200, service.getAiConfiguration());
       }
+      // ── Provider Catalog & Profiles ──────────────────────────────
+      if (request.method === "GET" && url.pathname === "/v1/provider-catalog") {
+        return json(response, 200, service.getProviderCatalog());
+      }
+      if (request.method === "GET" && url.pathname === "/v1/provider-profiles") {
+        return json(response, 200, service.listProviderProfiles());
+      }
+      if (request.method === "GET" && url.pathname === "/v1/provider-profiles/active") {
+        const active = service.getActiveProviderProfile();
+        return active ? json(response, 200, active) : send(response, 204);
+      }
+      if (request.method === "POST" && url.pathname === "/v1/provider-profiles/test") {
+        const body = await readJson(request) as import("@collector/capture-contracts").ProviderProfileTestInput;
+        const result = await service.testProviderProfileInput(body);
+        return json(response, result.ok ? 200 : 502, result);
+      }
+      if (request.method === "POST" && url.pathname === "/v1/provider-profiles") {
+        const body = await readJson(request) as import("@collector/capture-contracts").ProviderProfileInput & { activate?: boolean };
+        const { activate, ...input } = body;
+        const profile = await service.saveProviderProfileWithCredential(input);
+        if (activate) await service.activateProviderProfile(profile.id);
+        return json(response, 201, profile);
+      }
+      const providerProfileActivateMatch = url.pathname.match(/^\/v1\/provider-profiles\/([^/]+)\/activate$/);
+      if (request.method === "POST" && providerProfileActivateMatch) {
+        return json(response, 200, await service.activateProviderProfile(decodeURIComponent(providerProfileActivateMatch[1])));
+      }
+      const providerProfileTestMatch = url.pathname.match(/^\/v1\/provider-profiles\/([^/]+)\/test$/);
+      if (request.method === "POST" && providerProfileTestMatch) {
+        const result = await service.testProviderProfile(decodeURIComponent(providerProfileTestMatch[1]));
+        return json(response, result.ok ? 200 : 502, result);
+      }
+      const providerProfileMatch = url.pathname.match(/^\/v1\/provider-profiles\/([^/]+)$/);
+      if (request.method === "DELETE" && providerProfileMatch) {
+        const deleted = await service.deleteProviderProfile(decodeURIComponent(providerProfileMatch[1]));
+        return deleted ? json(response, 200, { deleted: true }) : json(response, 404, { error: { code: "not_found", message: "Provider profile not found" } });
+      }
       if (request.method === "POST" && url.pathname === "/v1/pairings") {
         const body = await readJson(request) as { name?: string };
         return json(response, 201, auth.createPairingCode(body.name?.trim() || "Collector Client"));
