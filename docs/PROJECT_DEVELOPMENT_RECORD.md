@@ -4,7 +4,7 @@
 
 状态：截至当前源码的项目阶段记录。本文记录已经发生的产品与工程里程碑、关键提交、验证证据和遗留限制；当前产品定义以 `PRODUCT.md` 为准，切片计划与状态见 `MVP_IMPLEMENTATION_PLAN.md`，源码与测试是实现状态的最终依据。
 
-进行中：阶段 E（可信研究能力）已于 2026-07-22 完成并提交（`0343c56`），真实供应商联网验收受限于 API 凭证——当前唯一已配置供应商 DeepSeek（`deepseek-v4-flash`）不支持原生联网（`webGrounding: "unsupported"`），未来配置 OpenAI、Gemini 或 Anthropic 凭证后即可激活对应联网能力。阶段 F（联网搜索策略改进）已全部完成：F1 日志+查询改写（`68b39be`）、F2 工具拆分+Agent 多轮循环（`9952a02`）、F3 多搜索后端（`efe0d73`）。当前验证基线：Node 测试 235/235，WebUI 测试 197/197。
+进行中：阶段 E（可信研究能力）已于 2026-07-22 完成并提交（`0343c56`），真实供应商联网验收受限于 API 凭证——当前唯一已配置供应商 DeepSeek（`deepseek-v4-flash`）不支持原生联网（`webGrounding: "unsupported"`），未来配置 OpenAI、Gemini 或 Anthropic 凭证后即可激活对应联网能力。阶段 F（联网搜索策略改进）已全部完成：F1 日志+查询改写（`68b39be`）、F2 工具拆分+Agent 多轮循环（`9952a02`）、F3 多搜索后端（`efe0d73`）。阶段 G（WebUI 模型配置）已完成：G1 配置与凭证持久化（`0bf2781`）、G2 配置管理增强与按任务类型分配（`3581c46` / `d198a7e` / `50f7007`）。当前验证基线：Node 测试 256/256，WebUI 测试 208/208。
 
 批次①（Markdown 渲染 + 悬停来源卡片，2026-07-23）已交付：`b814d95`（引用角标悬停来源卡片）+ `3b1f124`（AI 文本统一 Markdown 渲染管线）——见 §3.25。
 
@@ -814,6 +814,7 @@ F1（日志+查询改写）优先级已确认，待启动。实施时读取 `doc
 | migration v20 | 历史独立搜索表（兼容与清理，不再写入） |
 | migration v21 | 供应商联网运行、净化来源与行内引用 |
 | migration v22 | 供应商凭证独立表 `provider_credentials`（与 Profile 外键级联），支持 WebUI 配置 API Key 并持久化 |
+| migration v23 | 按任务类型的模型分配表 `model_purpose_routes`（外键级联），支持不同任务使用不同模型配置 |
 
 当前主要恢复边界：
 
@@ -826,12 +827,12 @@ F1（日志+查询改写）优先级已确认，待启动。实施时读取 `doc
 
 ## 5. 当前验证基线
 
-阶段 G 提交后（2026-07-29）当前四级基线：
+阶段 G2 提交后（2026-07-29）当前四级基线：
 
 | 范围 | 结果 |
 | --- | --- |
-| Node 单元与集成测试 | 244/244 通过 |
-| WebUI 客户端测试 | 200/200 通过 |
+| Node 单元与集成测试 | 256/256 通过 |
+| WebUI 客户端测试 | 208/208 通过 |
 | Collector 项目检查 | 通过（0 errors, 0 warnings） |
 | 真实云模型调用 | 已通过（DeepSeek deepseek-v4-flash，四场景验收 4/4） |
 | 真实供应商联网验收 | 未完成（当前已配置供应商 DeepSeek 不支持原生联网，待 OpenAI / Gemini / Anthropic 凭证配置后验收） |
@@ -957,6 +958,36 @@ F1（日志+查询改写）优先级已确认，待启动。实施时读取 `doc
 - 明文凭钥存储符合当前本机单用户威胁模型；未来接入 Windows DPAPI / 系统钥匙串只需替换凭证 CRUD 层；
 - 升级前已存在且 `credentialConfigured=true` 的旧配置没有真实密钥，首次启动会显示为已配置但调用失败，需在设置页重新输入 Key；
 - 真实模型 + 真实浏览器端到端验收（保存 → 重启 → 直接可用）待人工执行。
+
+### 3.30 阶段 G2：模型配置管理增强与按任务类型分配（2026-07-29）
+
+**用户可见结果**
+
+- 设置页可编辑已有配置（供应商类型锁定、Key 留空保持不变），并可「仅保存」不启用，多套配置自由添加与切换；
+- 模型输入框旁「获取模型」按钮一键拉取当前供应商的可调用模型列表并下拉选择，失败时给出中文原因（认证失败 / 端点不支持 / 解析失败 / 超时）；
+- 测试连接显示耗时（如「连接成功：gpt-4.1-mini · 1.2s」）；
+- 供应商目录新增 Kimi (Moonshot)、智谱 GLM、SiliconFlow 预设（通义百炼此前已在目录）；
+- 会话页模型状态点展开即可在已保存配置间一键切换，无需进入设置页；
+- 设置页新增「任务模型分配」：对话、选区分析、深入研究、联网搜索、文档生成可分别指定使用哪套配置，默认全部跟随当前配置。
+
+**改动**
+
+- G2a（`3581c46`，三级）：契约新增 `ProviderModelDiscoveryInput/Result` 与 `ProviderTestResult.durationMs`；模型网关新增 `discoverProviderModels`（OpenAI 兼容 Bearer / Anthropic x-api-key / Gemini x-goog-api-key 三种认证，统一 GET `{baseUrl}/models` 解析）；HTTP 新增 `POST /v1/provider-models/discover`（可复用已保存凭证）；设置页表单双模式 + datalist 候选；前端结果型接口修复——502 业务失败解析响应体，友好错误不再被吞；
+- G2b（`d198a7e`，二级）：`ModelStatusIndicator` 从链接改为可展开菜单，直接激活切换；`AiConfigurationView` 增量补充 `providerProfileId`；
+- G2c（`50f7007`，四级）：契约 `ModelPurpose`（chat/selection/research/search/document）；SQLite 迁移 v23 `model_purpose_routes`（外键级联、删配置联动清理、`clearAllData` 保留）；service 按用途的网关快照懒重建，生成调用按用途解析（Agent 搜索→search、深入研究→research、对话→chat、选区分析→selection、文档增量更新→document），失效分配静默回退激活配置；HTTP `GET/PUT /v1/model-routing`；设置页分配区块。
+
+**验证**
+
+- G2a 三级：Node 251/251、WebUI 204/204、前端构建通过；
+- G2b 二级：WebUI 207/207、类型检查与构建通过；
+- G2c 四级：Node 256/256（连续两轮；新增 service 3 项、store 1 项、HTTP 1 项）、WebUI 208/208、`check-project.ps1` 通过；
+- 未执行项及理由：真实浏览器与真实供应商验收（获取真实模型列表、真实切换与分工生效）随阶段 G 收尾人工进行；自动化永不访问真实云模型。
+
+**未完成 / 风险**
+
+- 任务记录上的 provider/model 元数据仍按激活配置盖章；实际每次调用的真实供应商与模型以模型调用轨迹（model_calls）为准，任务详情展示口径待后续统一；
+- 工作流（整理、文档生成）的冻结路由恢复语义未接入任务分配，沿用既有行为；
+- 课题级 Deep Research（从自由课题发起、多轮研究报告）为待确认方向，见 `MVP_IMPLEMENTATION_PLAN.md` 待确认事项。
 
 
 

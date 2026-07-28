@@ -1,6 +1,6 @@
 # Collector 技术架构
 
-状态：2026-07-24 本地 WebUI 当前架构。研究会话核心闭环、选区、深入研究、稍后再学、文件导入与阅读、动态端口启动器、安全配对、启动器版本替换与数据目录独占、受控关闭、供应商联网引用、Agent 自主搜索循环（Bing/DDG/Tavily/SearXNG）等已实现。
+状态：2026-07-29 本地 WebUI 当前架构。研究会话核心闭环、选区、深入研究、稍后再学、文件导入与阅读、动态端口启动器、安全配对、启动器版本替换与数据目录独占、受控关闭、供应商联网引用、Agent 自主搜索循环（Bing/DDG/Tavily/SearXNG）、WebUI 模型配置与凭证持久化、模型发现与按任务类型路由等已实现。
 
 ## 架构目标
 
@@ -155,6 +155,10 @@ Chat、深入研究第一轮和分支追问自动请求联网；选区分析始�
 - 自动化测试使用隔离的假凭证存储。
 
 当前实现：真实 API Key 与 ProviderProfile 分离存储在 SQLite 独立表 `provider_credentials`（migration v22），主键与 `provider_profiles(id)` 外键关联并级联删除；Profile 的 `record_json`、列表与激活响应只携带 `credentialConfigured` 布尔标志，HTTP 响应永不回传密钥。清空全部数据（`clearAllData`）保留 `provider_profiles` 与 `provider_credentials`，确保清理研究数据后 AI 配置仍可用。启动时若存在 `COLLECTOR_AI_*` 环境变量，强制覆盖并激活 `environment-<providerId>` 配置；否则读取持久化的激活配置与对应凭证重建模型网关。明文凭钥存储符合当前本机单用户威胁模型；未来接入系统级加密只需替换凭证 CRUD 层，无需改动表结构。
+
+模型发现：设置页的“获取模型”通过 `POST /v1/provider-models/discover` 调用供应商端点 `GET {baseUrl}/models` 拉取可调用模型列表（OpenAI 兼容 Bearer、Anthropic `x-api-key`、Gemini `x-goog-api-key` 三种认证；Gemini 响应解析 `models[].name` 并去掉 `models/` 前缀）。请求可复用已保存凭证，响应只含模型名与分类错误文案（认证失败 / 端点不支持 / 解析失败 / 超时），自定义 baseUrl 一律经过公网地址校验。
+
+按任务类型路由：`model_purpose_routes` 表（migration v23）保存“任务类型 → ProviderProfile”分配，任务类型为 chat（对话）、selection（选区分析）、research（深入研究）、search（联网搜索）、document（文档生成）。未分配的用途跟随当前激活配置。服务层在配置、凭证、路由或激活变化后懒重建按用途的网关快照，生成调用按用途解析；失效分配（配置删除、Key 缺失、解析失败）静默回退激活配置。工作流的冻结路由恢复语义不经过任务分配。每次调用的真实供应商与模型以模型调用轨迹为准。
 
 ## 文件导入与内容快照
 
