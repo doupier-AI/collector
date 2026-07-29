@@ -54,6 +54,38 @@ export async function pairAndOpen(page: Page, path = "/"): Promise<void> {
   if (path !== "/") await page.goto(path);
 }
 
+/** 在最后一个 AI 回答块内选中指定文字并触发 mouseup，供选区/深入研究/稍后再学测试复用。
+ * 实现改为在 data-block-text 容器内查找包含目标文字的最深层文本节点，兼容 Markdown 渲染后
+ * 的嵌套结构（例如 .markdown-content > p）。
+ */
+export async function selectAnswerText(page: Page, text: string): Promise<void> {
+  await page.evaluate((target) => {
+    const block = document.querySelector(".message--assistant [data-block-text]");
+    if (!block) throw new Error("未找到 AI 回答块");
+    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, null);
+    let foundNode: Text | null = null;
+    let foundOffset = -1;
+    while (walker.nextNode()) {
+      const node = walker.currentNode as Text;
+      const offset = node.data.indexOf(target);
+      if (offset >= 0) {
+        foundNode = node;
+        foundOffset = offset;
+        break;
+      }
+    }
+    if (!foundNode || foundOffset < 0) throw new Error(`回答中未找到「${target}」`);
+    const range = document.createRange();
+    range.setStart(foundNode, foundOffset);
+    range.setEnd(foundNode, foundOffset + target.length);
+    const selection = window.getSelection();
+    if (!selection) throw new Error("浏览器不支持 Selection");
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  }, text);
+}
+
 /** 通过浏览器上下文（自动携带会话 Cookie）读取 API JSON。 */
 export async function apiJson<T>(page: Page, path: string): Promise<T> {
   const response = await page.request.get(path);

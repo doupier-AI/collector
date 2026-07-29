@@ -6,7 +6,14 @@
  */
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
-import { apiJson, apiPortForPage, pairAndOpen, readDataDir, readResearchSelectionTables } from "./helpers";
+import {
+  apiJson,
+  apiPortForPage,
+  pairAndOpen,
+  readDataDir,
+  readResearchSelectionTables,
+  selectAnswerText,
+} from "./helpers";
 
 const QUESTION = "什么是本地优先研究？";
 
@@ -15,25 +22,6 @@ async function submitFirstQuestion(page: Page, question = QUESTION): Promise<str
   await page.getByRole("button", { name: "开始研究" }).click();
   await page.waitForURL(/\/research\/(?!new$)[^/]+$/, { timeout: 10_000 });
   return page.url().split("/research/")[1] ?? "";
-}
-
-/** 在回答块内选中指定文字并模拟鼠标抬起，触发文档级选区捕获。 */
-async function selectAnswerText(page: Page, text: string): Promise<void> {
-  await page.evaluate((target) => {
-    const block = document.querySelector(".message--assistant [data-block-text]");
-    if (!block?.firstChild) throw new Error("未找到 AI 回答块");
-    const node = block.firstChild as Text;
-    const start = node.data.indexOf(target);
-    if (start < 0) throw new Error(`回答中未找到「${target}」`);
-    const range = document.createRange();
-    range.setStart(node, start);
-    range.setEnd(node, start + target.length);
-    const selection = window.getSelection();
-    if (!selection) throw new Error("浏览器不支持 Selection");
-    selection.removeAllRanges();
-    selection.addRange(range);
-    document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
-  }, text);
 }
 
 /** 在阅读页第 index 个正文块的文本内选中 [from, from+length)。 */
@@ -224,8 +212,17 @@ test.describe("选区捕获与选区智能窗口", () => {
     // 验证键盘路径的 keyup 捕获与窗口开关（与 jsdom 单测同一策略）。
     await page.evaluate(() => {
       const block = document.querySelector(".message--assistant [data-block-text]");
-      if (!block?.firstChild) throw new Error("未找到 AI 回答块");
-      const node = block.firstChild as Text;
+      if (!block) throw new Error("未找到 AI 回答块");
+      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, null);
+      let node: Text | null = null;
+      while (walker.nextNode()) {
+        const n = walker.currentNode as Text;
+        if (n.data.length >= 12) {
+          node = n;
+          break;
+        }
+      }
+      if (!node) throw new Error("未找到足够长度的回答文本节点");
       const range = document.createRange();
       range.setStart(node, 0);
       range.setEnd(node, 12);

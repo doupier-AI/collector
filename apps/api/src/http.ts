@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { timingSafeEqual } from "node:crypto";
 import { ValidationError, NotFoundError, CaptureService } from "./service.js";
 import { LocalAuth, PairingRateLimitError } from "./auth.js";
-import { RESEARCH_IMPORT_MAX_BYTES, validateDeepResearchInput, validateResearchImportHeaders, validateResearchLaterItemInput, validateResearchLaterItemUpdate, validateResearchMessageInput, validateResearchSelectionInput, validateResearchSessionInput } from "@collector/capture-contracts";
+import { RESEARCH_IMPORT_MAX_BYTES, validateCreateChildNodeInput, validateDeepResearchInput, validateResearchImportHeaders, validateResearchLaterItemInput, validateResearchLaterItemUpdate, validateResearchMessageInput, validateResearchSelectionInput, validateResearchSessionInput } from "@collector/capture-contracts";
 import { ResearchNotFoundError, ResearchValidationError } from "./research.js";
 import { ResearchImportConflictError, ResearchImportNotFoundError, ResearchImportValidationError } from "./research-import.js";
 import { ResearchSelectionConflictError, ResearchSelectionNotFoundError, ResearchSelectionValidationError } from "./selection.js";
@@ -290,6 +290,34 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       const researchBranchMatch = url.pathname.match(/^\/v1\/research-branches\/([^/]+)$/);
       if (request.method === "GET" && researchBranchMatch) {
         return json(response, 200, service.deepResearch.getBranchView(decodeURIComponent(researchBranchMatch[1])));
+      }
+      const nodeChildMatch = url.pathname.match(/^\/v1\/research-selections\/([^/]+)\/nodes$/);
+      if (request.method === "POST" && nodeChildMatch) {
+        const body = await readJson(request);
+        try { validateCreateChildNodeInput(body); }
+        catch (error) { throw new DeepResearchValidationError((error as Error).message); }
+        const accepted = await service.nodeGrowth.startChildNode(
+          decodeURIComponent(nodeChildMatch[1]), body, header(request, "idempotency-key") ?? "",
+        );
+        return json(response, 202, accepted);
+      }
+      const researchNodeMessagesMatch = url.pathname.match(/^\/v1\/research-nodes\/([^/]+)\/messages$/);
+      if (request.method === "POST" && researchNodeMessagesMatch) {
+        const body = await readJson(request);
+        try { validateResearchMessageInput(body); }
+        catch (error) { throw new ResearchValidationError((error as Error).message); }
+        const accepted = await service.research.submitMessageToNode(
+          decodeURIComponent(researchNodeMessagesMatch[1]), body.content, header(request, "idempotency-key") ?? "",
+        );
+        return json(response, 202, accepted);
+      }
+      const researchNodeMatch = url.pathname.match(/^\/v1\/research-nodes\/([^/]+)$/);
+      if (request.method === "GET" && researchNodeMatch) {
+        return json(response, 200, service.nodeGrowth.getNodeView(decodeURIComponent(researchNodeMatch[1])));
+      }
+      const researchNodeChildrenMatch = url.pathname.match(/^\/v1\/research-nodes\/([^/]+)\/children$/);
+      if (request.method === "GET" && researchNodeChildrenMatch) {
+        return json(response, 200, service.nodeGrowth.listChildNodes(decodeURIComponent(researchNodeChildrenMatch[1])));
       }
       if (request.method === "POST" && url.pathname === "/v1/research-later-items") {
         const body = await readJson(request);

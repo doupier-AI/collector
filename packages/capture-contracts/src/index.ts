@@ -521,9 +521,26 @@ export interface ResearchSessionRecord {
   updatedAt: string;
 }
 
+/**
+ * 研究节点（阶段 H 统一节点树）。
+ * 一次对话或一篇导入文档成为根节点；每个节点可包含多轮消息，也可通过 parentNodeId 生长子节点。
+ * sessionId 仍作为顶层物理容器（附件/导入/最近列表），树关系由 parentNodeId 表达。
+ */
+export interface ResearchNodeRecord {
+  id: string;
+  sessionId: string;
+  parentNodeId?: string;
+  originSelectionId?: string;
+  status: "active";
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ResearchMessageRecord {
   id: string;
   sessionId: string;
+  /** 研究节点 ID（阶段 H）。根节点与会话 ID 相同，子节点为独立 ID。 */
+  nodeId?: string;
   /** 研究分支消息带分支 ID；普通会话主线消息不带。 */
   branchId?: string;
   role: ResearchMessageRole;
@@ -640,6 +657,8 @@ export type ResearchSelectionStatus = "active" | "stale";
 export interface ResearchSelectionRecord {
   id: string;
   sessionId: string;
+  /** 研究节点 ID（阶段 H）。选区所属的节点。 */
+  nodeId?: string;
   anchor: ResearchSelectionAnchor;
   text: string;
   contextBefore?: string;
@@ -820,6 +839,8 @@ export interface ResearchGroundingScope {
 export interface ResearchTaskRecord {
   id: string;
   sessionId: string;
+  /** 研究节点 ID（阶段 H）。任务归属的节点。 */
+  nodeId?: string;
   inputMessageId: string;
   outputMessageId: string;
   idempotencyKey: string;
@@ -846,6 +867,19 @@ export interface ResearchSessionView {
   attachments?: ResearchAttachmentRecord[];
   importTasks?: ResearchImportTaskRecord[];
   branches?: ResearchBranchRecord[];
+}
+
+/** 节点视图（阶段 H）：一个节点内的完整消息、任务与来源。 */
+export interface ResearchNodeView {
+  node: ResearchNodeRecord;
+  session: ResearchSessionRecord;
+  messages: ResearchMessageRecord[];
+  tasks: ResearchTaskRecord[];
+  childNodes?: ResearchNodeRecord[];
+  groundingSources?: ResearchGroundingSourceRecord[];
+  citations?: ResearchCitationRecord[];
+  attachments?: ResearchAttachmentRecord[];
+  importTasks?: ResearchImportTaskRecord[];
 }
 
 export interface ResearchTurnAccepted {
@@ -914,6 +948,27 @@ export interface DeepResearchInput {
   title?: string;
 }
 
+/** 从选区/弱标记生长子节点的输入（阶段 H）。 */
+export interface CreateChildNodeInput {
+  /** 用户补充的研究问题；省略时由系统根据选区原文生成默认追问。 */
+  query?: string;
+}
+
+export const CHILD_NODE_QUERY_MAX_CHARACTERS = 2000;
+
+export function validateCreateChildNodeInput(value: unknown): asserts value is CreateChildNodeInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Child node input must be an object");
+  const input = value as { query?: unknown };
+  if (input.query !== undefined) {
+    if (typeof input.query !== "string" || !input.query.trim()) {
+      throw new Error("query must be a non-empty string when provided");
+    }
+    if (input.query.length > CHILD_NODE_QUERY_MAX_CHARACTERS) {
+      throw new Error(`query must not exceed ${CHILD_NODE_QUERY_MAX_CHARACTERS} characters`);
+    }
+  }
+}
+
 export const RESEARCH_DIRECTION_MAX_CHARACTERS = 2000;
 
 export function validateDeepResearchInput(value: unknown): asserts value is DeepResearchInput {
@@ -977,6 +1032,19 @@ export interface DeepResearchAccepted {
   task: ResearchTaskRecord;
 }
 
+/**
+ * 子节点创建结果（阶段 H）。
+ * 新节点与第一轮任务在同一事务中创建；生成失败不删除节点与来源关系。
+ */
+export interface NodeGrowthAccepted {
+  node: ResearchNodeRecord;
+  session: ResearchSessionRecord;
+  selection: ResearchSelectionRecord;
+  inputMessage: ResearchMessageRecord;
+  outputMessage: ResearchMessageRecord;
+  task: ResearchTaskRecord;
+}
+
 export interface ResearchBranchView {
   branch: ResearchBranchRecord;
   session: ResearchSessionRecord;
@@ -1010,6 +1078,8 @@ export const RESEARCH_LATER_DEFAULT_SUMMARY_CHARACTERS = 80;
 export interface ResearchLaterItemRecord {
   id: string;
   sessionId: string;
+  /** 研究节点 ID（阶段 H）。稍后再学项目所属的节点。 */
+  nodeId?: string;
   selectionId: string;
   summary: string;
   priority: number;

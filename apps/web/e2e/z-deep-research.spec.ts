@@ -13,6 +13,7 @@ import {
   readDataDir,
   readResearchBranchTables,
   readResearchTables,
+  selectAnswerText,
 } from "./helpers";
 
 const QUESTION = "什么是本地优先研究？";
@@ -23,25 +24,6 @@ async function submitFirstQuestion(page: Page, question = QUESTION): Promise<str
   await page.getByRole("button", { name: "开始研究" }).click();
   await page.waitForURL(/\/research\/(?!new$)[^/]+$/, { timeout: 10_000 });
   return page.url().split("/research/")[1] ?? "";
-}
-
-/** 在回答块内选中指定文字并模拟鼠标抬起，触发文档级选区捕获。 */
-async function selectAnswerText(page: Page, text: string): Promise<void> {
-  await page.evaluate((target) => {
-    const block = document.querySelector(".message--assistant [data-block-text]");
-    if (!block?.firstChild) throw new Error("未找到 AI 回答块");
-    const node = block.firstChild as Text;
-    const start = node.data.indexOf(target);
-    if (start < 0) throw new Error(`回答中未找到「${target}」`);
-    const range = document.createRange();
-    range.setStart(node, start);
-    range.setEnd(node, start + target.length);
-    const selection = window.getSelection();
-    if (!selection) throw new Error("浏览器不支持 Selection");
-    selection.removeAllRanges();
-    selection.addRange(range);
-    document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
-  }, text);
 }
 
 /** 打开选区窗口并等待假模型分析完成，返回窗口定位器。 */

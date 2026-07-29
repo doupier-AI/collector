@@ -75,6 +75,8 @@ export class ResearchSelectionService {
     const selection: ResearchSelectionRecord = {
       id: randomUUID(),
       sessionId,
+      // H1：选区先归属到会话根节点；H4 支持归属到当前节点。
+      nodeId: sessionId,
       anchor: resolved.anchor,
       text: input.anchor.exact,
       contextBefore: input.contextBefore,

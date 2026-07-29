@@ -1,11 +1,15 @@
 import { randomUUID } from "node:crypto";
 import {
   deriveDefaultResearchTitle,
+  type CreateChildNodeInput,
   type DeepResearchAccepted,
   type DeepResearchInput,
+  type NodeGrowthAccepted,
   type ResearchBranchRecord,
   type ResearchBranchView,
   type ResearchMessageRecord,
+  type ResearchNodeRecord,
+  type ResearchNodeView,
   type ResearchSelectionRecord,
   type ResearchSessionRecord,
   type ResearchTaskRecord,
@@ -81,7 +85,7 @@ export class DeepResearchService {
     return { branch, session, selection, messages, tasks, ...(groundingSources.length ? { groundingSources } : {}), ...(messages.length ? { citations: this.store.listResearchCitationsForMessages(messages.map((message) => message.id)) } : {}) };
   }
 
-  /** 分支内继续追问：消息带 branchId，复用会话任务管线与幂等规则。 */
+  /** 分支内继续追问：消息带 branchId 与 nodeId，复用节点任务管线与幂等规则。 */
   async submitBranchMessage(branchId: string, content: string, idempotencyKey: string): Promise<ResearchTurnAccepted> {
     const branch = this.store.getResearchBranch(branchId);
     if (!branch) throw new DeepResearchNotFoundError("Research branch not found");
@@ -99,24 +103,26 @@ export class DeepResearchService {
 
     const session = this.store.getResearchSession(branch.sessionId);
     if (!session) throw new Error("Research branch references a missing session");
+    const node = this.store.getResearchNode(branchId);
+    if (!node) throw new Error("Research branch references a missing node");
     const now = new Date().toISOString();
     const inputMessage: ResearchMessageRecord = {
-      id: randomUUID(), sessionId: branch.sessionId, branchId: branch.id, role: "user",
+      id: randomUUID(), sessionId: branch.sessionId, nodeId: branch.id, branchId: branch.id, role: "user",
       content: content.trim(), status: "completed", createdAt: now, updatedAt: now,
     };
     const outputMessage: ResearchMessageRecord = {
-      id: randomUUID(), sessionId: branch.sessionId, branchId: branch.id, role: "assistant",
+      id: randomUUID(), sessionId: branch.sessionId, nodeId: branch.id, branchId: branch.id, role: "assistant",
       content: "", status: "pending", createdAt: now, updatedAt: now,
     };
     const task: ResearchTaskRecord = {
-      id: randomUUID(), sessionId: branch.sessionId, inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
+      id: randomUUID(), sessionId: branch.sessionId, nodeId: branch.id, inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
       idempotencyKey, status: "queued", retryable: false,
       provider: this.options.research.providerId,
       model: this.options.research.modelId,
       promptVersion: RESEARCH_CHAT_PROMPT_VERSION,
       createdAt: now, updatedAt: now,
     };
-    const accepted = await this.store.createResearchTurn(session, inputMessage, outputMessage, task);
+    const accepted = await this.store.createResearchTurnForNode(node, inputMessage, outputMessage, task);
     this.scheduleTask(accepted.task.id);
     return accepted;
   }
@@ -143,6 +149,92 @@ export class DeepResearchService {
       createdAt: now, updatedAt: now,
     };
     return { inputMessage, outputMessage, task };
+  }
+
+  private scheduleTask(id: string): void {
+    if (this.options.autoRunTasks === false) return;
+    setImmediate(() => void this.options.research.processTask(id).catch(() => undefined));
+  }
+}
+
+/**
+ * 节点生长服务（阶段 H）。
+ * 从选区/弱标记生长子节点，并在同一事务中创建第一轮消息与任务；
+ * 生成失败不删除节点与来源关系。
+ */
+export class NodeGrowthService {
+  constructor(private readonly store: DeepResearchStore, private readonly options: DeepResearchServiceOptions) {}
+
+  async startChildNode(selectionId: string, input: CreateChildNodeInput, idempotencyKey: string): Promise<NodeGrowthAccepted> {
+    if (!idempotencyKey.trim()) throw new DeepResearchValidationError("Idempotency-Key is required");
+    if (idempotencyKey.length > 200) throw new DeepResearchValidationError("Idempotency-Key must not exceed 200 characters");
+    const selection = this.store.getResearchSelection(selectionId);
+    if (!selection) throw new DeepResearchNotFoundError("Research selection not found");
+
+    const parentNodeId = selection.nodeId ?? selection.sessionId;
+    const parentNode = this.store.getResearchNode(parentNodeId);
+    const session = this.store.getResearchSession(selection.sessionId);
+    if (!parentNode) throw new Error("Research selection references a missing node");
+    if (!session) throw new Error("Research selection references a missing session");
+
+    const now = new Date().toISOString();
+    const firstTurnContent = input.query?.trim() || defaultFirstTurnContent(selection);
+    const node: ResearchNodeRecord = {
+      id: randomUUID(),
+      sessionId: selection.sessionId,
+      parentNodeId: parentNode.id,
+      originSelectionId: selection.id,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    };
+    const inputMessage: ResearchMessageRecord = {
+      id: randomUUID(), sessionId: selection.sessionId, nodeId: node.id, role: "user",
+      content: firstTurnContent, status: "completed", createdAt: now, updatedAt: now,
+    };
+    const outputMessage: ResearchMessageRecord = {
+      id: randomUUID(), sessionId: selection.sessionId, nodeId: node.id, role: "assistant",
+      content: "", status: "pending", createdAt: now, updatedAt: now,
+    };
+    const task: ResearchTaskRecord = {
+      id: randomUUID(), sessionId: selection.sessionId, nodeId: node.id,
+      inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
+      idempotencyKey, status: "queued", retryable: false,
+      provider: this.options.research.providerId,
+      model: this.options.research.modelId,
+      promptVersion: DEEP_RESEARCH_PROMPT_VERSION,
+      createdAt: now, updatedAt: now,
+    };
+    const accepted = await this.store.createResearchChildNode(parentNode, node, selection, inputMessage, outputMessage, task);
+    this.scheduleTask(accepted.task.id);
+    return accepted;
+  }
+
+  getNodeView(id: string): ResearchNodeView {
+    const node = this.store.getResearchNode(id);
+    if (!node) throw new DeepResearchNotFoundError("Research node not found");
+    const session = this.store.getResearchSession(node.sessionId);
+    if (!session) throw new Error("Research node references a missing session");
+    const messages = this.store.listResearchMessagesByNode(id);
+    const tasks = this.store.listResearchTasksByNode(id);
+    const childNodes = this.store.listChildNodes(id);
+    const runIds = tasks.flatMap((task) => task.groundingScope?.runId ? [task.groundingScope.runId] : []);
+    const groundingSources = runIds.flatMap((runId) => this.store.listResearchGroundingSources(runId));
+    return {
+      node,
+      session,
+      messages,
+      tasks,
+      childNodes,
+      ...(groundingSources.length ? { groundingSources } : {}),
+      ...(messages.length ? { citations: this.store.listResearchCitationsForMessages(messages.map((message) => message.id)) } : {}),
+      attachments: this.store.listResearchAttachments(node.sessionId),
+      importTasks: this.store.listResearchImportTasks(node.sessionId),
+    };
+  }
+
+  listChildNodes(parentNodeId: string): ResearchNodeRecord[] {
+    return this.store.listChildNodes(parentNodeId);
   }
 
   private scheduleTask(id: string): void {
