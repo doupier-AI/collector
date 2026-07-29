@@ -23,6 +23,7 @@ import {
   type ProviderProfile,
   type ProviderProfileInput,
   type ProviderProfileTestInput,
+  type ProviderCredentialView,
   type ProviderTestResult,
   type RecentClusterSnapshotRecord,
   type ResearchGroundingScopeStatus,
@@ -381,6 +382,33 @@ export class CaptureService {
   getActiveProviderProfile(): ProviderProfile | undefined { return this.store.getActiveProviderProfile(); }
 
   /**
+   * 读取指定配置已保存的 API Key。只服务本地设置页回填暗文显示，
+   * 由专用凭证端点向已认证客户端返回，不进入日志或其他响应。
+   */
+  getProviderCredentialView(id: string): ProviderCredentialView {
+    const profile = this.store.getProviderProfile(id);
+    if (!profile) throw new NotFoundError("Provider profile not found");
+    const apiKey = this.store.getProviderCredential(id);
+    if (!apiKey) throw new NotFoundError("Provider credential is not configured");
+    return { apiKey };
+  }
+
+  /**
+   * 启用/停用一套配置。停用后运行时不再解析该配置（快速切换、任务分配均跳过），
+   * 当前使用中的配置不能停用，需先切换到其他配置。
+   */
+  async setProviderProfileEnabled(id: string, enabled: boolean): Promise<ProviderProfile> {
+    const profile = this.store.getProviderProfile(id);
+    if (!profile) throw new NotFoundError("Provider profile not found");
+    if (!enabled && this.store.getActiveProviderProfile()?.id === id) throw new ValidationError("Cannot disable the active provider profile");
+    const next: ProviderProfile = { ...profile, enabled, updatedAt: new Date().toISOString() };
+    await this.store.saveProviderProfile(next);
+    // 停用/启用可能使按任务类型的网关快照失效
+    this.purposeGatewaysStale = true;
+    return next;
+  }
+
+  /**
    * 保存 ProviderProfile 并处理真实 API Key：
    * - apiKey 为非空字符串 → 写入独立凭证表，credentialConfigured = true
    * - apiKey 为空字符串   → 删除凭证，credentialConfigured = false
@@ -444,6 +472,7 @@ export class CaptureService {
   async activateProviderProfile(id: string): Promise<ProviderProfile> {
     const profile = this.store.getProviderProfile(id);
     if (!profile) throw new NotFoundError("Provider profile not found");
+    if (!profile.enabled) throw new ValidationError("Provider profile is disabled");
     if (!profile.credentialConfigured) throw new ValidationError("Provider credential is not configured");
     await this.store.setActiveProviderProfile(id);
     await this.rebuildActiveGateway();

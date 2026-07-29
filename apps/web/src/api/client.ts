@@ -4,6 +4,7 @@ import type {
   DeepResearchInput,
   ModelPurpose,
   ModelRoutingView,
+  ProviderCredentialView,
   ProviderDefinition,
   ProviderModelDiscoveryInput,
   ProviderModelDiscoveryResult,
@@ -67,6 +68,10 @@ export interface ApiClient {
   saveProviderProfile(input: ProviderProfileInput & { activate?: boolean }): Promise<ProviderProfile>;
   activateProviderProfile(id: string): Promise<ProviderProfile>;
   deleteProviderProfile(id: string): Promise<void>;
+  /** 读取配置已保存的 API Key，仅供设置页回填暗文显示；未配置时返回 undefined。 */
+  getProviderCredential(id: string): Promise<string | undefined>;
+  /** 启用/停用一套配置；当前使用中的配置不能停用（服务端校验）。 */
+  setProviderProfileEnabled(id: string, enabled: boolean): Promise<ProviderProfile>;
   testProviderProfile(id: string): Promise<ProviderTestResult>;
   testProviderProfileConfig(input: ProviderProfileTestInput): Promise<ProviderTestResult>;
   discoverProviderModels(input: ProviderModelDiscoveryInput): Promise<ProviderModelDiscoveryResult>;
@@ -326,6 +331,19 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
       return requestJson<void>(fetchFn, `/v1/provider-profiles/${encodeURIComponent(id)}`, {
         method: "DELETE",
         headers: JSON_HEADERS,
+      });
+    },
+    async getProviderCredential(id: string) {
+      const response = await fetchFn(`/v1/provider-profiles/${encodeURIComponent(id)}/credential`);
+      if (response.status === 404) return undefined;
+      if (!response.ok) throw new ApiRequestError(response.status, "request_failed", "");
+      return ((await response.json()) as ProviderCredentialView).apiKey;
+    },
+    setProviderProfileEnabled(id: string, enabled: boolean) {
+      return requestJson<ProviderProfile>(fetchFn, `/v1/provider-profiles/${encodeURIComponent(id)}/enabled`, {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ enabled }),
       });
     },
     testProviderProfile(id: string) {

@@ -156,9 +156,13 @@ Chat、深入研究第一轮和分支追问自动请求联网；选区分析始�
 
 当前实现：真实 API Key 与 ProviderProfile 分离存储在 SQLite 独立表 `provider_credentials`（migration v22），主键与 `provider_profiles(id)` 外键关联并级联删除；Profile 的 `record_json`、列表与激活响应只携带 `credentialConfigured` 布尔标志，HTTP 响应永不回传密钥。清空全部数据（`clearAllData`）保留 `provider_profiles` 与 `provider_credentials`，确保清理研究数据后 AI 配置仍可用。启动时若存在 `COLLECTOR_AI_*` 环境变量，强制覆盖并激活 `environment-<providerId>` 配置；否则读取持久化的激活配置与对应凭证重建模型网关。明文凭钥存储符合当前本机单用户威胁模型；未来接入系统级加密只需替换凭证 CRUD 层，无需改动表结构。
 
-模型发现：设置页的“获取模型”通过 `POST /v1/provider-models/discover` 调用供应商端点 `GET {baseUrl}/models` 拉取可调用模型列表（OpenAI 兼容 Bearer、Anthropic `x-api-key`、Gemini `x-goog-api-key` 三种认证；Gemini 响应解析 `models[].name` 并去掉 `models/` 前缀）。请求可复用已保存凭证，响应只含模型名与分类错误文案（认证失败 / 端点不支持 / 解析失败 / 超时），自定义 baseUrl 一律经过公网地址校验。
+WebUI 回填：编辑配置时，客户端通过专用认证端点 `GET /v1/provider-profiles/:id/credential` 读取已保存的原始 Key，以 `password` 输入框暗文填入；输入框右侧提供眼睛按钮切换明文/暗文显示。Key 仅在组件内存中使用，不写入浏览器存储、URL、日志或错误上报；保存后输入框继续保留暗文 Key（不清空），服务重启后再次编辑仍可回填。
 
-按任务类型路由：`model_purpose_routes` 表（migration v23）保存“任务类型 → ProviderProfile”分配，任务类型为 chat（对话）、selection（选区分析）、research（深入研究）、search（联网搜索）、document（文档生成）。未分配的用途跟随当前激活配置。服务层在配置、凭证、路由或激活变化后懒重建按用途的网关快照，生成调用按用途解析；失效分配（配置删除、Key 缺失、解析失败）静默回退激活配置。工作流的冻结路由恢复语义不经过任务分配。每次调用的真实供应商与模型以模型调用轨迹为准。
+启用/停用：每套 ProviderProfile 有 `enabled` 字段。通过 `POST /v1/provider-profiles/:id/enabled` 切换；当前使用中的配置不能停用（服务端校验）。停用的配置在会话页快速切换和任务模型分配中不可见，但保留在持久化列表中，可随时重新启用。
+
+模型发现：设置页的“获取模型”通过 `POST /v1/provider-models/discover` 调用供应商端点 `GET {baseUrl}/models` 拉取可调用模型列表（OpenAI 兼容 Bearer、Anthropic `x-api-key`、Gemini `x-goog-api-key` 三种认证；Gemini 响应解析 `models[].name` 并去掉 `models/` 前缀）。请求可复用已保存凭证，响应只含模型名与分类错误文案（认证失败 / 端点不支持 / 解析失败 / 超时），自定义 baseUrl 一律经过公网地址校验。获取成功后，WebUI 在同页面内以按家族分组的复选框列表展示模型；新建模式可勾选多个模型批量保存（共用同一 Key，一个 Key 配多模型），编辑模式同样可勾选批量补充模型。已保存的同厂商模型自动禁用，避免重复。
+
+按任务类型路由：`model_purpose_routes` 表（migration v23）保存“任务类型 → ProviderProfile”分配，任务类型为 chat（对话）、selection（选区分析）、research（深入研究）、search（联网搜索）、document（文档生成）。未分配的用途跟随当前激活配置。服务层在配置、凭证、路由或激活变化后懒重建按用途的网关快照，生成调用按用途解析；失效分配（配置删除、Key 缺失、解析失败、已停用）静默回退激活配置。工作流的冻结路由恢复语义不经过任务分配。每次调用的真实供应商与模型以模型调用轨迹为准。
 
 ## 文件导入与内容快照
 

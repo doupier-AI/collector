@@ -4,7 +4,7 @@
 
 状态：截至当前源码的项目阶段记录。本文记录已经发生的产品与工程里程碑、关键提交、验证证据和遗留限制；当前产品定义以 `PRODUCT.md` 为准，切片计划与状态见 `MVP_IMPLEMENTATION_PLAN.md`，源码与测试是实现状态的最终依据。
 
-进行中：阶段 E（可信研究能力）已于 2026-07-22 完成并提交（`0343c56`），真实供应商联网验收受限于 API 凭证——当前唯一已配置供应商 DeepSeek（`deepseek-v4-flash`）不支持原生联网（`webGrounding: "unsupported"`），未来配置 OpenAI、Gemini 或 Anthropic 凭证后即可激活对应联网能力。阶段 F（联网搜索策略改进）已全部完成：F1 日志+查询改写（`68b39be`）、F2 工具拆分+Agent 多轮循环（`9952a02`）、F3 多搜索后端（`efe0d73`）。阶段 G（WebUI 模型配置）已完成：G1 配置与凭证持久化（`0bf2781`）、G2 配置管理增强与按任务类型分配（`3581c46` / `d198a7e` / `50f7007`）。当前验证基线：Node 测试 256/256，WebUI 测试 208/208。
+进行中：阶段 E（可信研究能力）已于 2026-07-22 完成并提交（`0343c56`），真实供应商联网验收受限于 API 凭证——当前唯一已配置供应商 DeepSeek（`deepseek-v4-flash`）不支持原生联网（`webGrounding: "unsupported"`），未来配置 OpenAI、Gemini 或 Anthropic 凭证后即可激活对应联网能力。阶段 F（联网搜索策略改进）已全部完成：F1 日志+查询改写（`68b39be`）、F2 工具拆分+Agent 多轮循环（`9952a02`）、F3 多搜索后端（`efe0d73`）。阶段 G（WebUI 模型配置）已完成：G1 配置与凭证持久化（`0bf2781`）、G2 配置管理增强与按任务类型分配（`3581c46` / `d198a7e` / `50f7007`）、G3 模型设置页交互优化（当前切片）。当前验证基线：Node 测试 258/258，WebUI 测试 219/219，Playwright e2e Chromium 33/33。
 
 批次①（Markdown 渲染 + 悬停来源卡片，2026-07-23）已交付：`b814d95`（引用角标悬停来源卡片）+ `3b1f124`（AI 文本统一 Markdown 渲染管线）——见 §3.25。
 
@@ -1016,7 +1016,45 @@ F1（日志+查询改写）优先级已确认，待启动。实施时读取 `doc
 
 
 
-其余后续方向：
+### 3.32 阶段 G3：模型设置页交互优化（2026-07-29）
+
+**用户可见结果**
+
+- 设置页默认显示「已保存的模型配置」列表，并通过「新建模型供应商」按钮给出明确的新建入口；编辑时表单展开，取消后回到列表；首次使用无配置时自动展开新建表单；
+- API Key 输入框旁新增眼睛按钮，可在明文与暗文间切换；
+- 编辑已有配置时，已保存的 Key 自动从本机凭证读取并暗文回填，因此服务重启后再次编辑仍能看到暗文 Key，无需重新输入；保存后 Key 继续以暗文停留在输入框中（新建/编辑均不清空，降低误触丢失风险）；
+- 模型输入框不再使用下拉候选，点击「获取模型」后在同页面内以按家族分组的复选框列表展示可调用模型；新建模式可勾选多个模型批量保存，编辑模式同样可勾选批量补充模型；
+- 已保存配置列表按供应商分组，每行一个启用/停用复选框；停用的配置不再出现在会话页快速切换和任务模型分配中；当前使用中的配置不能停用。
+
+**改动**
+
+- 后端：
+  - 契约 `packages/capture-contracts/src/index.ts`：新增 `ProviderCredentialView` 读取视图；修正 `ProviderProfileInput.apiKey` 注释，说明专用凭证端点用于设置页回填；
+  - 服务层 `apps/api/src/service.ts`：新增 `getProviderCredentialView(id)` 与 `setProviderProfileEnabled(id, enabled)`；激活配置时校验 `enabled`，已停用配置不能设为当前；
+  - HTTP `apps/api/src/http.ts`：新增 `GET /v1/provider-profiles/:id/credential` 与 `POST /v1/provider-profiles/:id/enabled`；
+  - 测试 `tests/provider-profile-http.test.ts`：新增凭证读取（认证、未配置 404、响应不含完整 Key 之外）与启停用边界（当前配置不能停用、已停用不能激活、boolean 校验）测试；
+- WebUI：
+  - `apps/web/src/api/client.ts`：新增 `getProviderCredential(id)` 与 `setProviderProfileEnabled(id, enabled)`；
+  - `apps/web/src/features/settings/AiModelSettingsPage.tsx`：重构页面结构，默认收起表单；新增 `ProviderProfileList` 按供应商分组与启用复选框；`ProviderProfileForm` 移除 datalist，编辑模式自动读取并回填 Key，眼睛按钮切换 Key 明文/暗文，批量保存支持编辑模式补充模型，保存后不清空 Key；
+  - `apps/web/src/features/research-session/ModelStatusIndicator.tsx`：快速切换菜单过滤已停用配置；
+  - `apps/web/src/styles/global.css`：新增 Key 输入框包裹、眼睛按钮、新建入口与已保存列表分组样式；
+  - 测试 `apps/web/src/features/settings/AiModelSettingsPage.test.tsx`：适配新交互并新增 5 项（眼睛切换、Key 回填、读取失败时保持原凭证、新建入口流程、启停用复选框、编辑模式批量补充模型）；
+  - e2e `apps/web/e2e/settings-ai-model.spec.ts`：新增真实浏览器验收（新建入口、Key 暗文持久、眼睛切换、编辑回填、启停）。
+
+**验证**
+
+- 验证级别：四级（新增后端端点 + 契约 + WebUI 行为 + 浏览器 e2e）；
+- Node 全量测试 258/258 通过（新增 2 个 HTTP 端点测试）；
+- WebUI 测试 219/219 通过（新增/适配 10 项）；
+- 真实浏览器 Playwright e2e `settings-ai-model.spec.ts` 1/1 通过（Chromium，验证 Key 暗文持久、眼睛切换、新建入口、编辑回填、启停边界、控制台无错误）；
+- `check-project.ps1` 通过（0 errors, 0 warnings）；
+- 未执行项及理由：e2e 仅新增设置页专项，未重新跑全量 e2e 套件；其余 e2e 在前序阶段已通过且本次改动未涉及对应用户路径。
+
+**未完成 / 风险**
+
+- 凭证明文仍按当前本机单用户威胁模型存储于 SQLite；未来接入系统钥匙串仅替换凭证 CRUD 层；
+- 眼睛按钮显示明文时，截图/录屏可能短暂暴露 Key，与密码输入框标准行为一致，用户需自行注意；
+- 已停用配置在会话页快速切换和任务模型分配中已过滤，但工作流/整理等未接入任务分配的路径仍使用当前激活配置，不受影响。
 1. 真实供应商联网验收：配置支持原生联网的模型（OpenAI / Gemini / Anthropic）后，完成真实搜索、真实引用、无引用/失败/不支持降级、SQLite 与日志脱敏、主线与分支刷新恢复、以及宽/窄屏、键盘、可访问性、控制台和网络检查；
 2. AI 短概念弱标记、自动弱重现（学习增强）；
 3. 本地观测界面、模型设置与用量查看；

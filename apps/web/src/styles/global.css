@@ -1220,6 +1220,77 @@ button.model-status {
   flex: 1;
 }
 
+.settings-form__key-wrap {
+  position: relative;
+  max-width: 32rem;
+}
+
+.settings-form__key-wrap .settings-form__input {
+  padding-right: 2.5rem;
+}
+
+.settings-form__key-toggle {
+  position: absolute;
+  right: 0.25rem;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+  border-radius: var(--radius-input);
+}
+
+.settings-form__key-toggle:hover:not(:disabled) {
+  color: var(--color-text);
+}
+
+.settings-form__key-toggle:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.settings-new-provider {
+  margin: 0 0 var(--space-4);
+}
+
+.settings-form-section {
+  max-width: 32rem;
+}
+
+.settings-profile-group {
+  margin-bottom: var(--space-4);
+}
+
+.settings-profile-group__title {
+  margin: 0 0 var(--space-2);
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-muted);
+}
+
+.settings-profile-item--disabled {
+  opacity: 0.6;
+}
+
+.settings-profile-item__toggle {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.settings-profile-item__body {
+  flex: 1;
+  min-width: 0;
+}
+
 .settings-routing__row {
   max-width: 32rem;
 }

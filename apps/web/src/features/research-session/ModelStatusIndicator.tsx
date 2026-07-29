@@ -77,7 +77,7 @@ export function ModelStatusIndicator() {
   if (state.kind !== "ready") return null;
   const mode = state.config.mode;
   const activeProfileId = state.config.providerProfileId;
-  const switchable = (profiles ?? []).filter((profile) => profile.credentialConfigured);
+  const switchable = (profiles ?? []).filter((profile) => profile.credentialConfigured && profile.enabled);
 
   return (
     <div className="model-status-wrap">

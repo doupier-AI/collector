@@ -10,7 +10,7 @@
 
 本文定义 `apps/web` 的当前实现边界、共享契约、客户端状态和验证要求。
 
-当前 WebUI 已经实现核心闭环 MVP（研究会话、Chat、选区、深入研究、稍后再学、来源返回、文件导入与阅读），并通过 235 项全量测试通过（含 Node 后端、WebUI 单元）与 37+ 项真实 Chromium 端到端测试验证。
+当前 WebUI 已经实现核心闭环 MVP（研究会话、Chat、选区、深入研究、稍后再学、来源返回、文件导入与阅读），并通过 258 项全量测试通过（含 Node 后端、WebUI 单元）与 38+ 项真实 Chromium 端到端测试验证。
 
 ## 2. 系统边界与实现范围
 
@@ -88,7 +88,7 @@
 | 当前认证 | Bearer token 或 `collector_session` HttpOnly Cookie |
 | 当前构建 | TypeScript project references + WebUI 类型检查与 Vite 构建 + `scripts/build-assets.mjs` |
 | 研究会话文件导入与阅读 | 会话内支持 TXT、Markdown、DOCX、文本型 PDF 的真实上传、状态、取消、重试、刷新恢复和同画布阅读；开始页附件按钮因没有会话上下文继续保持占位 |
-| 当前测试 | 235 项全量测试通过（含 Node 后端、WebUI 单元） |
+| 当前测试 | 258 项全量测试通过（含 Node 后端、WebUI 单元） |
 
 不要把“文档定义了”写成“代码已经实现”。合并前以源码、自动化测试和实际界面验证为依据。
 
@@ -599,6 +599,7 @@ Content-Type: application/json
 - 不接受用户输入的 API base URL；
 - 不读取或展示 `collector_session` Cookie；
 - 不把 Bearer token、Cookie、API Key 写入 localStorage、sessionStorage、URL、日志或错误上报；
+- API Key 在 WebUI 中只在组件内存存在，保存后不以明文展示；编辑配置时通过专用认证端点回填暗文 Key，眼睛按钮可切换明文/暗文，切换后不在任何持久化或日志中保留明文；
 - 所有 AI 内容和来源内容视为不可信文本；首个切片默认按纯文本渲染；
 - 后续 Markdown 渲染必须使用严格白名单清理；
 - 禁止 `dangerouslySetInnerHTML`，除非有专门的安全封装和测试；

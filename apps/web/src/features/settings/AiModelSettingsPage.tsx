@@ -8,8 +8,11 @@ type State =
   | { kind: "error"; message: string }
   | { kind: "ready"; catalog: ProviderDefinition[]; activeProfile?: ProviderProfile; profiles: ProviderProfile[]; routing: ModelRoutingView };
 
+/** 表单入口：closed = 只显示「新建模型供应商」按钮；new / edit 时表单展开。 */
+type FormState = { kind: "closed" } | { kind: "new" } | { kind: "edit"; profile: ProviderProfile };
+
 /**
- * 把模型 ID 按家族分组（借鉴 CC Switch 的分组下拉）：
+ * 把模型 ID 按家族分组（借鉴 CC Switch 的分组展示）：
  * 含 "/" 的按前缀分组（如 deepseek-ai/DeepSeek-V3.2 → deepseek-ai），
  * 否则按 "-" 首段分组（如 gpt-4.1-mini → gpt）。保持首次出现顺序。
  */
@@ -30,70 +33,127 @@ export function groupModelsByFamily(models: string[]): Array<{ family: string; m
   return groups;
 }
 
+/** 按供应商分组已保存配置，保持供应商目录顺序，未知名录的排在最后。 */
+export function groupProfilesByProvider(
+  profiles: ProviderProfile[],
+  catalog: ProviderDefinition[],
+): Array<{ providerId: string; label: string; profiles: ProviderProfile[] }> {
+  const groups: Array<{ providerId: string; label: string; profiles: ProviderProfile[] }> = [];
+  const index = new Map<string, number>();
+  const labelOf = (providerId: string) => catalog.find((item) => item.id === providerId)?.label ?? providerId;
+  for (const profile of profiles) {
+    let slot = index.get(profile.providerId);
+    if (slot === undefined) {
+      slot = groups.length;
+      index.set(profile.providerId, slot);
+      groups.push({ providerId: profile.providerId, label: labelOf(profile.providerId), profiles: [] });
+    }
+    groups[slot].profiles.push(profile);
+  }
+  return groups;
+}
+
 /**
- * 已保存的模型配置列表：展示全部 ProviderProfile，支持编辑、激活与删除。
+ * 已保存的模型配置列表：按供应商分组展示全部 ProviderProfile，
+ * 每行一个启用复选框（停用后不再参与快速切换与任务分配），并支持设为当前、编辑与删除。
+ * 当前使用中的配置不能停用。
  */
 export function ProviderProfileList({
   profiles,
+  catalog,
   activeProfile,
+  pendingId,
+  error,
   onActivate,
   onEdit,
   onDelete,
+  onToggleEnabled,
 }: {
   profiles: ProviderProfile[];
+  catalog: ProviderDefinition[];
   activeProfile?: ProviderProfile;
+  pendingId?: string;
+  error?: string;
   onActivate: (id: string) => void;
   onEdit: (profile: ProviderProfile) => void;
   onDelete: (id: string) => void;
+  onToggleEnabled: (profile: ProviderProfile) => void;
 }) {
   if (!profiles.length) return null;
   return (
     <section className="settings-profile-list" aria-label="已保存的模型配置">
       <h2 className="settings-profile-list__title">已保存的模型配置</h2>
-      {profiles.map((profile) => {
-        const isActive = activeProfile?.id === profile.id;
-        return (
-          <div key={profile.id} className={`settings-profile-item${isActive ? " settings-profile-item--active" : ""}`}>
-            <div>
-              <p className="settings-profile-item__name">{profile.displayName}</p>
-              <p className="settings-profile-item__meta">
-                {profile.providerId} · {profile.model}
-                {isActive ? " · 当前使用" : ""}
-                {profile.credentialConfigured ? "" : " · 未配置 Key"}
-              </p>
-            </div>
-            <div className="settings-profile-item__actions">
-              {!isActive && profile.credentialConfigured ? (
-                <button type="button" className="button button--secondary" onClick={() => onActivate(profile.id)}>
-                  设为当前
-                </button>
-              ) : null}
-              <button type="button" className="button button--secondary" onClick={() => onEdit(profile)}>
-                编辑
-              </button>
-              <button type="button" className="button button--ghost" onClick={() => onDelete(profile.id)}>
-                删除
-              </button>
-            </div>
-          </div>
-        );
-      })}
+      <p className="settings-form__hint">
+        勾选启用、取消勾选停用对应模型；停用的配置不会出现在会话页快速切换和任务模型分配中。
+      </p>
+      {error ? <p className="settings-status settings-status--error" role="alert">{error}</p> : null}
+      {groupProfilesByProvider(profiles, catalog).map((group) => (
+        <div key={group.providerId} className="settings-profile-group">
+          <h3 className="settings-profile-group__title">{group.label}</h3>
+          {group.profiles.map((profile) => {
+            const isActive = activeProfile?.id === profile.id;
+            const toggleLabel = profile.enabled ? `停用 ${profile.displayName}` : `启用 ${profile.displayName}`;
+            return (
+              <div
+                key={profile.id}
+                className={`settings-profile-item${isActive ? " settings-profile-item--active" : ""}${profile.enabled ? "" : " settings-profile-item--disabled"}`}
+              >
+                <label className="settings-profile-item__toggle">
+                  <input
+                    type="checkbox"
+                    aria-label={toggleLabel}
+                    checked={profile.enabled}
+                    disabled={isActive || pendingId === profile.id}
+                    onChange={() => onToggleEnabled(profile)}
+                  />
+                </label>
+                <div className="settings-profile-item__body">
+                  <p className="settings-profile-item__name">{profile.displayName}</p>
+                  <p className="settings-profile-item__meta">
+                    {profile.providerId} · {profile.model}
+                    {isActive ? " · 当前使用" : ""}
+                    {profile.credentialConfigured ? "" : " · 未配置 Key"}
+                    {profile.enabled ? "" : " · 已停用"}
+                  </p>
+                </div>
+                <div className="settings-profile-item__actions">
+                  {!isActive && profile.enabled && profile.credentialConfigured ? (
+                    <button type="button" className="button button--secondary" disabled={pendingId === profile.id} onClick={() => onActivate(profile.id)}>
+                      设为当前
+                    </button>
+                  ) : null}
+                  <button type="button" className="button button--secondary" onClick={() => onEdit(profile)}>
+                    编辑
+                  </button>
+                  <button type="button" className="button button--ghost" disabled={pendingId === profile.id} onClick={() => onDelete(profile.id)}>
+                    删除
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ))}
     </section>
   );
 }
 
 /**
- * AI 模型设置页：加载供应商目录与当前配置，提供新建、编辑、测试、激活、删除能力。
- * API Key 只在组件内存中，提交后立即清空，不写入 localStorage/URL/日志。
+ * AI 模型设置页：默认只显示已保存配置与「新建模型供应商」入口；
+ * 点击新建或某条配置的「编辑」后展开表单。配置保存在本机，下次启动 Collector 时自动恢复。
  */
 export function AiModelSettingsPage() {
   const { api } = useServices();
   const [state, setState] = useState<State>({ kind: "loading" });
   const [reloadNonce, setReloadNonce] = useState(0);
-  const [editingProfile, setEditingProfile] = useState<ProviderProfile | undefined>(undefined);
+  const [form, setForm] = useState<FormState>({ kind: "closed" });
+  const [listPendingId, setListPendingId] = useState<string | undefined>(undefined);
+  const [listError, setListError] = useState<string | undefined>(undefined);
 
   const load = useCallback(async () => {
-    setState({ kind: "loading" });
+    // 仅首次进入显示骨架屏；保存/启停等操作后的刷新静默进行，
+    // 避免表单在 loading 期间卸载导致已填的 Key 与状态文案丢失
+    setState((current) => (current.kind === "ready" ? current : { kind: "loading" }));
     try {
       const [catalog, profiles, activeProfile, routing] = await Promise.all([
         api.getProviderCatalog(),
@@ -103,6 +163,8 @@ export function AiModelSettingsPage() {
         api.getModelRouting?.().catch(() => ({ routes: [] })) ?? Promise.resolve({ routes: [] }),
       ]);
       setState({ kind: "ready", catalog, profiles, activeProfile, routing });
+      // 首次使用（还没有任何配置）时直接展开新建表单，给出明确起点
+      setForm((current) => (current.kind === "closed" && profiles.length === 0 ? { kind: "new" } : current));
     } catch (error) {
       setState({ kind: "error", message: error instanceof Error ? error.message : "加载模型设置失败" });
     }
@@ -112,30 +174,55 @@ export function AiModelSettingsPage() {
     void load();
   }, [load, reloadNonce]);
 
+  const reload = useCallback(() => setReloadNonce((nonce) => nonce + 1), []);
+
+  /** 保存后刷新列表；表单保持展开，Key 以暗文留在输入框中（无论新建还是编辑）。 */
   const handleSaved = useCallback(() => {
-    setEditingProfile(undefined);
-    setReloadNonce((nonce) => nonce + 1);
-  }, []);
+    reload();
+  }, [reload]);
+
+  const runListAction = useCallback(
+    async (id: string, action: () => Promise<unknown>) => {
+      setListError(undefined);
+      setListPendingId(id);
+      try {
+        await action();
+        reload();
+      } catch (cause) {
+        setListError(cause instanceof Error ? cause.message : "操作失败，请重试");
+      } finally {
+        setListPendingId(undefined);
+      }
+    },
+    [reload],
+  );
 
   const handleActivate = useCallback(
-    async (id: string) => {
-      await api.activateProviderProfile(id);
-      setReloadNonce((nonce) => nonce + 1);
+    (id: string) => runListAction(id, () => api.activateProviderProfile(id)),
+    [api, runListAction],
+  );
+
+  const handleToggleEnabled = useCallback(
+    (profile: ProviderProfile) => {
+      if (!api.setProviderProfileEnabled) {
+        setListError("当前客户端不支持启用/停用配置");
+        return;
+      }
+      return runListAction(profile.id, () => api.setProviderProfileEnabled(profile.id, !profile.enabled));
     },
-    [api],
+    [api, runListAction],
   );
 
   const handleEdit = useCallback((profile: ProviderProfile) => {
-    setEditingProfile(profile);
+    setForm({ kind: "edit", profile });
   }, []);
 
   const handleDelete = useCallback(
-    async (id: string) => {
+    (id: string) => runListAction(id, async () => {
       await api.deleteProviderProfile(id);
-      setEditingProfile((current) => (current?.id === id ? undefined : current));
-      setReloadNonce((nonce) => nonce + 1);
-    },
-    [api],
+      setForm((current) => (current.kind === "edit" && current.profile.id === id ? { kind: "closed" } : current));
+    }),
+    [api, runListAction],
   );
 
   const handleRoutingChange = useCallback(
@@ -160,34 +247,53 @@ export function AiModelSettingsPage() {
     return (
       <div className="page">
         <p className="form-error" role="alert">{state.message}</p>
-        <button type="button" className="button button--secondary" onClick={() => setReloadNonce((nonce) => nonce + 1)}>
+        <button type="button" className="button button--secondary" onClick={reload}>
           重新加载
         </button>
       </div>
     );
   }
 
+  const editingProfile = form.kind === "edit" ? form.profile : undefined;
+
   return (
     <div className="page">
       <h1 className="page__title">AI 模型设置</h1>
       <p className="page__lead">
-        选择模型供应商并输入 API Key。可保存多套配置并随时切换，配置保存在本机，下次启动 Collector 时自动恢复。
+        每套配置对应一个模型。点击「新建模型供应商」添加配置，或在下方列表中编辑、启停、切换已保存的配置。配置保存在本机，下次启动 Collector 时自动恢复。
       </p>
-      <ProviderProfileForm
-        key={editingProfile?.id ?? "new"}
-        catalog={state.catalog}
-        activeProfile={state.activeProfile}
-        profiles={state.profiles}
-        editingProfile={editingProfile}
-        onSaved={handleSaved}
-        onCancelEdit={() => setEditingProfile(undefined)}
-      />
+      {form.kind === "closed" ? (
+        <p className="settings-new-provider">
+          <button type="button" className="button button--primary" onClick={() => setForm({ kind: "new" })}>
+            新建模型供应商
+          </button>
+        </p>
+      ) : (
+        <section className="settings-form-section" aria-label={editingProfile ? "编辑模型供应商" : "新建模型供应商"}>
+          <h2 className="settings-profile-list__title">
+            {editingProfile ? `编辑模型供应商「${editingProfile.displayName}」` : "新建模型供应商"}
+          </h2>
+          <ProviderProfileForm
+            key={editingProfile?.id ?? "new"}
+            catalog={state.catalog}
+            activeProfile={state.activeProfile}
+            profiles={state.profiles}
+            editingProfile={editingProfile}
+            onSaved={handleSaved}
+            onCancel={() => setForm({ kind: "closed" })}
+          />
+        </section>
+      )}
       <ProviderProfileList
         profiles={state.profiles}
+        catalog={state.catalog}
         activeProfile={state.activeProfile}
+        pendingId={listPendingId}
+        error={listError}
         onActivate={handleActivate}
         onEdit={handleEdit}
         onDelete={handleDelete}
+        onToggleEnabled={handleToggleEnabled}
       />
       <ModelRoutingSection
         profiles={state.profiles}
@@ -210,7 +316,7 @@ const PURPOSE_ORDER: ModelPurpose[] = ["chat", "selection", "research", "search"
 
 /**
  * 任务模型分配：按任务类型指定使用哪套已保存配置；
- * 默认「跟随当前配置」，即全部任务使用上方激活的配置。
+ * 默认「跟随当前配置」，即全部任务使用上方激活的配置。已停用的配置不可分配。
  */
 export function ModelRoutingSection({
   profiles,
@@ -223,7 +329,7 @@ export function ModelRoutingSection({
 }) {
   const [error, setError] = useState<string | undefined>(undefined);
   const [pendingPurpose, setPendingPurpose] = useState<ModelPurpose | undefined>(undefined);
-  const assignable = profiles.filter((profile) => profile.credentialConfigured);
+  const assignable = profiles.filter((profile) => profile.credentialConfigured && profile.enabled);
   if (!assignable.length) return null;
 
   const handleSelect = async (purpose: ModelPurpose, value: string) => {
@@ -276,10 +382,11 @@ interface ProviderProfileFormProps {
   activeProfile?: ProviderProfile;
   /** 已保存配置：用于在批量勾选列表中标记已存在的模型，防止重复添加。 */
   profiles: ProviderProfile[];
-  /** 提供时表单进入编辑模式；API Key 留空表示保持已保存的 Key。 */
+  /** 提供时表单进入编辑模式；API Key 会自动回填已保存值（暗文显示）。 */
   editingProfile?: ProviderProfile;
+  /** 保存（含部分成功）后调用：父组件刷新列表；表单保持展开，Key 暗文留在输入框中。 */
   onSaved: () => void;
-  onCancelEdit: () => void;
+  onCancel: () => void;
 }
 
 type FormStatus =
@@ -290,17 +397,23 @@ type FormStatus =
   | { kind: "success"; message: string }
   | { kind: "error"; message: string };
 
+/** 已保存 Key 的回填状态：编辑模式下从本机服务读取真实 Key 填入输入框（暗文显示）。 */
+type KeyLoadState = "none" | "loading" | "loaded" | "failed";
+
 /**
- * 模型配置表单：供应商、配置名称、模型（可一键获取可调用列表）、API Key、自定义 Base URL。
- * 新建模式保存新配置；编辑模式更新已有配置。支持「测试连接」「仅保存」「保存并启用」。
- * 新建模式下「获取模型」成功后展示可勾选列表：勾选多个模型后保存，
- * 会为每个勾选模型各生成一套配置（共用同一个 Key，借鉴 CC Switch 一次配置多个模型）。
+ * 模型配置表单：供应商、配置名称、模型（可一键获取可调用列表后勾选）、API Key、自定义 Base URL。
+ * API Key 以暗文显示，右侧眼睛按钮可切换明文；编辑模式下自动回填本机已保存的 Key，
+ * 因此重启服务后再次打开编辑仍能看到暗文 Key。Key 只在组件内存中，不写入浏览器存储。
+ * 「获取模型」成功后展示可勾选列表：勾选多个模型后保存，会为每个勾选模型各生成一套配置
+ * （共用同一个 Key，借鉴 CC Switch 一次配置多个模型）；编辑模式同样可用，用于给同一供应商补充模型。
  */
-function ProviderProfileForm({ catalog, activeProfile, profiles, editingProfile, onSaved, onCancelEdit }: ProviderProfileFormProps) {
+function ProviderProfileForm({ catalog, activeProfile, profiles, editingProfile, onSaved, onCancel }: ProviderProfileFormProps) {
   const { api } = useServices();
   const [providerId, setProviderId] = useState(editingProfile?.providerId ?? activeProfile?.providerId ?? catalog[0]?.id ?? "");
   const [model, setModel] = useState(editingProfile?.model ?? activeProfile?.model ?? "");
   const [apiKey, setApiKey] = useState("");
+  const [keyVisible, setKeyVisible] = useState(false);
+  const [keyLoad, setKeyLoad] = useState<KeyLoadState>("none");
   const [baseUrl, setBaseUrl] = useState(editingProfile?.baseUrl ?? activeProfile?.baseUrl ?? "");
   const [displayName, setDisplayName] = useState(editingProfile?.displayName ?? activeProfile?.displayName ?? "");
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
@@ -312,12 +425,34 @@ function ProviderProfileForm({ catalog, activeProfile, profiles, editingProfile,
   const editing = editingProfile !== undefined;
   const effectiveModel = model.trim() || definition?.defaultModel || "";
   const effectiveDisplayName = displayName.trim() || definition?.label || "";
-  const modelOptions = [...new Set([...discoveredModels, ...(definition?.models ?? [])])];
   const busy = status.kind === "testing" || status.kind === "saving" || status.kind === "discovering";
   // 同厂商已保存的模型：勾选列表中标记"已保存"，防止批量添加产生重复配置
   const existingModels = new Set(profiles.filter((profile) => profile.providerId === providerId).map((profile) => profile.model));
-  // 批量目标保持获取列表的顺序，"保存并启用"只启用其中第一个
-  const batchTargets = editing ? [] : discoveredModels.filter((item) => checkedModels.includes(item) && !existingModels.has(item));
+  // 批量目标保持获取列表的顺序：已保存的模型（含编辑模式下的当前模型）自动排除
+  const batchTargets = discoveredModels.filter((item) => checkedModels.includes(item) && !existingModels.has(item));
+
+  // 编辑模式：从本机服务读取已保存的 Key 回填输入框（暗文显示），重启服务后依然可见
+  useEffect(() => {
+    if (!editingProfile?.credentialConfigured || !api.getProviderCredential) return;
+    let cancelled = false;
+    setKeyLoad("loading");
+    api.getProviderCredential(editingProfile.id)
+      .then((key) => {
+        if (cancelled) return;
+        if (key) {
+          setApiKey(key);
+          setKeyLoad("loaded");
+        } else {
+          setKeyLoad("failed");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setKeyLoad("failed");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [editingProfile, api]);
 
   const handleProviderChange = (nextProviderId: string) => {
     setProviderId(nextProviderId);
@@ -376,12 +511,12 @@ function ProviderProfileForm({ catalog, activeProfile, profiles, editingProfile,
       const result = await api.discoverProviderModels(buildDiscoveryPayload());
       if (result.ok) {
         setDiscoveredModels(result.models);
-        // 默认勾选当前模型（如果在获取结果中且尚未保存过），其余由用户自行勾选
+        // 新建模式默认勾选当前模型（如果在获取结果中且尚未保存过），其余由用户自行勾选
         setCheckedModels(!editing && result.models.includes(effectiveModel) && !existingModels.has(effectiveModel) ? [effectiveModel] : []);
         setStatus({
           kind: "success",
           message: editing
-            ? `已获取 ${result.models.length} 个可调用模型，可在模型输入框中下拉选择`
+            ? `已获取 ${result.models.length} 个可调用模型：勾选后随本次保存批量添加，共用同一个 Key`
             : `已获取 ${result.models.length} 个可调用模型：勾选多个模型后保存，将为每个模型各生成一套配置（共用同一个 Key）`,
         });
       } else {
@@ -392,39 +527,15 @@ function ProviderProfileForm({ catalog, activeProfile, profiles, editingProfile,
     }
   };
 
-  const handleSave = async (activate: boolean) => {
-    if (!editing && !apiKey.trim()) {
-      setStatus({ kind: "error", message: "新配置需要输入 API Key" });
-      return;
-    }
-    setStatus({ kind: "saving" });
-    try {
-      if (batchTargets.length > 0) {
-        await saveBatch(activate);
-        return;
-      }
-      await api.saveProviderProfile({
-        ...(editing ? { id: editingProfile.id } : {}),
-        ...buildPayload(),
-        ...(apiKey.trim() ? {} : { apiKey: undefined }),
-        activate,
-      });
-      setApiKey("");
-      setStatus({ kind: "success", message: activate ? "已保存并启用" : "已保存" });
-      onSaved();
-    } catch (error) {
-      setStatus({ kind: "error", message: error instanceof Error ? error.message : "保存失败" });
-    }
-  };
-
   /**
-   * 批量保存：为每个勾选模型各创建一套配置，共用同一个 Key。
-   * 串行执行保证「保存并启用」只激活第一个勾选项；失败的模型保持勾选与 Key，可直接重试。
+   * 批量创建：为每个勾选模型各保存一套配置，共用输入框中的 Key。
+   * 串行执行保证「保存并启用」只激活第一个勾选项。
+   * 返回已保存与失败的模型列表，由调用方决定状态文案与表单去留。
    */
-  const saveBatch = async (activate: boolean) => {
+  const saveBatchTargets = async (targets: string[], activateFirst: boolean) => {
     const saved: string[] = [];
     const failed: string[] = [];
-    for (const [index, item] of batchTargets.entries()) {
+    for (const [index, item] of targets.entries()) {
       try {
         await api.saveProviderProfile({
           providerId,
@@ -432,35 +543,91 @@ function ProviderProfileForm({ catalog, activeProfile, profiles, editingProfile,
           model: item,
           baseUrl: isCustom ? baseUrl : undefined,
           apiKey: apiKey.trim(),
-          activate: activate && index === 0,
+          activate: activateFirst && index === 0,
         });
         saved.push(item);
       } catch {
         failed.push(item);
       }
     }
-    setCheckedModels((current) => current.filter((item) => !saved.includes(item)));
-    if (!failed.length) {
-      setApiKey("");
-      setStatus({ kind: "success", message: activate ? `已保存 ${saved.length} 个配置并启用第一个` : `已保存 ${saved.length} 个配置` });
-    } else {
-      setStatus({
-        kind: "error",
-        message: `已保存 ${saved.length} 个，${failed.length} 个失败（${failed.join("、")}），可直接重试`,
-      });
-    }
-    onSaved();
+    return { saved, failed };
   };
+
+  const handleSave = async (activate: boolean) => {
+    if (!editing && !apiKey.trim()) {
+      setStatus({ kind: "error", message: "新配置需要输入 API Key" });
+      return;
+    }
+    if (editing && batchTargets.length > 0 && !apiKey.trim()) {
+      setStatus({ kind: "error", message: "批量添加模型需要 API Key；已保存的 Key 读取失败时请重新输入" });
+      return;
+    }
+    setStatus({ kind: "saving" });
+    try {
+      if (editing) {
+        // 编辑模式：先保存当前配置本身，再批量补充勾选的额外模型
+        await api.saveProviderProfile({
+          id: editingProfile.id,
+          ...buildPayload(),
+          ...(apiKey.trim() ? {} : { apiKey: undefined }),
+          activate,
+        });
+        if (batchTargets.length === 0) {
+          setStatus({ kind: "success", message: activate ? "已保存并启用" : "已保存" });
+          onSaved();
+          return;
+        }
+        const { saved, failed } = await saveBatchTargets(batchTargets, false);
+        setCheckedModels((current) => current.filter((item) => !saved.includes(item)));
+        if (!failed.length) {
+          setStatus({ kind: "success", message: `已保存当前配置，并新增 ${saved.length} 个模型配置` });
+        } else {
+          // 失败的模型保持勾选，可直接重试
+          setStatus({
+            kind: "error",
+            message: `当前配置已保存；新增模型已保存 ${saved.length} 个，${failed.length} 个失败（${failed.join("、")}），可直接重试`,
+          });
+        }
+        onSaved();
+        return;
+      }
+      if (batchTargets.length > 0) {
+        // 新建模式 + 勾选列表：每个勾选模型各生成一套配置
+        const { saved, failed } = await saveBatchTargets(batchTargets, activate);
+        setCheckedModels((current) => current.filter((item) => !saved.includes(item)));
+        if (!failed.length) {
+          setStatus({ kind: "success", message: activate ? `已保存 ${saved.length} 个配置并启用第一个` : `已保存 ${saved.length} 个配置` });
+        } else {
+          // 失败的模型保持勾选与 Key，可直接重试
+          setStatus({
+            kind: "error",
+            message: `已保存 ${saved.length} 个，${failed.length} 个失败（${failed.join("、")}），可直接重试`,
+          });
+        }
+        onSaved();
+        return;
+      }
+      await api.saveProviderProfile({
+        ...buildPayload(),
+        activate,
+      });
+      setStatus({ kind: "success", message: activate ? "已保存并启用" : "已保存" });
+      onSaved();
+    } catch (error) {
+      setStatus({ kind: "error", message: error instanceof Error ? error.message : "保存失败" });
+    }
+  };
+
+  const keyHint = (() => {
+    if (!editing) return "Key 只保存在本机服务中，不会上传到 Collector 服务器。";
+    if (!editingProfile.credentialConfigured) return "该配置还没有 Key，请输入后保存。";
+    if (keyLoad === "loaded") return "已自动填入本机保存的 Key（暗文显示），点右侧眼睛可查看明文；如需更换请直接修改。";
+    if (keyLoad === "failed") return "已保存的 Key 读取失败；留空保存将保持原 Key 不变。";
+    return "正在读取已保存的 Key…";
+  })();
 
   return (
     <form className="settings-form" onSubmit={(event) => { event.preventDefault(); void handleSave(true); }}>
-      {editing ? (
-        <p className="settings-form__hint" role="status">
-          正在编辑配置「{editingProfile.displayName}」
-          <button type="button" className="button button--ghost" onClick={onCancelEdit}>取消编辑</button>
-        </p>
-      ) : null}
-
       <div className="settings-form__field">
         <label className="settings-form__label" htmlFor="provider-select">模型供应商</label>
         <select
@@ -497,7 +664,6 @@ function ProviderProfileForm({ catalog, activeProfile, profiles, editingProfile,
             value={model}
             onChange={(event) => setModel(event.target.value)}
             placeholder={definition?.defaultModel ?? "模型名称"}
-            list="model-options"
           />
           <button
             type="button"
@@ -508,13 +674,8 @@ function ProviderProfileForm({ catalog, activeProfile, profiles, editingProfile,
             {status.kind === "discovering" ? "获取中…" : "获取模型"}
           </button>
         </div>
-        <datalist id="model-options">
-          {modelOptions.map((option) => (
-            <option key={option} value={option} />
-          ))}
-        </datalist>
-        <p className="settings-form__hint">可直接输入，或点击「获取模型」从供应商拉取可调用模型后下拉选择。</p>
-        {!editing && discoveredModels.length > 0 ? (
+        <p className="settings-form__hint">可直接输入，或点击「获取模型」从供应商拉取可调用模型后在下方勾选。</p>
+        {discoveredModels.length > 0 ? (
           <div className="settings-model-picker" role="group" aria-label="可调用模型列表">
             {groupModelsByFamily(discoveredModels).map((group) => (
               <div key={group.family} className="settings-model-picker__group">
@@ -539,8 +700,12 @@ function ProviderProfileForm({ catalog, activeProfile, profiles, editingProfile,
             ))}
             <p className="settings-form__hint">
               {batchTargets.length > 0
-                ? `已勾选 ${batchTargets.length} 个模型：保存时将为每个勾选模型各生成一套配置，共用上方 Key。`
-                : "勾选多个模型后保存，可为每个模型各生成一套配置，共用上方 Key。"}
+                ? editing
+                  ? `已勾选 ${batchTargets.length} 个新模型：保存时将各生成一套配置，共用上方 Key。`
+                  : `已勾选 ${batchTargets.length} 个模型：保存时将为每个勾选模型各生成一套配置，共用上方 Key。`
+                : editing
+                  ? "勾选尚未保存的模型后保存，可为每个模型各生成一套配置，共用上方 Key。"
+                  : "勾选多个模型后保存，可为每个模型各生成一套配置，共用上方 Key。"}
             </p>
           </div>
         ) : null}
@@ -562,16 +727,40 @@ function ProviderProfileForm({ catalog, activeProfile, profiles, editingProfile,
 
       <div className="settings-form__field">
         <label className="settings-form__label" htmlFor="api-key-input">API Key</label>
-        <input
-          id="api-key-input"
-          className="settings-form__input"
-          type="password"
-          value={apiKey}
-          onChange={(event) => setApiKey(event.target.value)}
-          placeholder={editing && editingProfile.credentialConfigured ? "已保存，留空则保持不变" : "输入 API Key"}
-          autoComplete="off"
-        />
-        <p className="settings-form__hint">Key 只保存在本机服务中，不会上传到 Collector 服务器。</p>
+        <div className="settings-form__key-wrap">
+          <input
+            id="api-key-input"
+            className="settings-form__input"
+            type={keyVisible ? "text" : "password"}
+            value={apiKey}
+            onChange={(event) => setApiKey(event.target.value)}
+            placeholder={editing && editingProfile.credentialConfigured && keyLoad !== "loaded" ? "已保存，留空则保持不变" : "输入 API Key"}
+            autoComplete="off"
+          />
+          <button
+            type="button"
+            className="settings-form__key-toggle"
+            aria-label={keyVisible ? "隐藏 API Key" : "显示 API Key"}
+            aria-pressed={keyVisible}
+            disabled={!apiKey}
+            onClick={() => setKeyVisible((visible) => !visible)}
+          >
+            {keyVisible ? (
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
+                <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+                <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" />
+                <line x1="1" y1="1" x2="23" y2="23" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+            )}
+          </button>
+        </div>
+        <p className="settings-form__hint">{keyHint}</p>
       </div>
 
       <div className="settings-form__actions">
@@ -597,6 +786,14 @@ function ProviderProfileForm({ catalog, activeProfile, profiles, editingProfile,
           disabled={busy}
         >
           {status.kind === "saving" ? "保存中…" : batchTargets.length > 0 ? `保存并启用（${batchTargets.length}）` : "保存并启用"}
+        </button>
+        <button
+          type="button"
+          className="button button--ghost"
+          disabled={busy}
+          onClick={onCancel}
+        >
+          取消
         </button>
       </div>
 

@@ -64,8 +64,13 @@ export interface ProviderProfileInput {
   baseUrl?: string;
   model: string;
   enabled?: boolean;
-  /** 真实 API Key：仅创建/更新时提交，读取响应中永不回传。 */
+  /** 真实 API Key：仅创建/更新时提交。列表与详情读取响应不含 Key；只有专用凭证读取端点向已认证的本地客户端回传，用于设置页回填暗文显示。 */
   apiKey?: string;
+}
+
+/** 已保存凭证的读取视图：只由专用凭证端点返回给已认证的本地客户端，永不写入日志或其他响应。 */
+export interface ProviderCredentialView {
+  apiKey: string;
 }
 
 export interface ProviderProfileTestInput {

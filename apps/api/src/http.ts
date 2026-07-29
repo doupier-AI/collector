@@ -130,6 +130,16 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (request.method === "POST" && providerProfileActivateMatch) {
         return json(response, 200, await service.activateProviderProfile(decodeURIComponent(providerProfileActivateMatch[1])));
       }
+      const providerProfileCredentialMatch = url.pathname.match(/^\/v1\/provider-profiles\/([^/]+)\/credential$/);
+      if (request.method === "GET" && providerProfileCredentialMatch) {
+        return json(response, 200, service.getProviderCredentialView(decodeURIComponent(providerProfileCredentialMatch[1])));
+      }
+      const providerProfileEnabledMatch = url.pathname.match(/^\/v1\/provider-profiles\/([^/]+)\/enabled$/);
+      if (request.method === "POST" && providerProfileEnabledMatch) {
+        const enabledBody = await readJson(request) as { enabled?: unknown };
+        if (typeof enabledBody.enabled !== "boolean") return json(response, 400, { error: { code: "invalid_request", message: "enabled must be a boolean" } });
+        return json(response, 200, await service.setProviderProfileEnabled(decodeURIComponent(providerProfileEnabledMatch[1]), enabledBody.enabled));
+      }
       const providerProfileTestMatch = url.pathname.match(/^\/v1\/provider-profiles\/([^/]+)\/test$/);
       if (request.method === "POST" && providerProfileTestMatch) {
         const result = await service.testProviderProfile(decodeURIComponent(providerProfileTestMatch[1]));
