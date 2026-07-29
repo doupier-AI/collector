@@ -122,7 +122,7 @@ Collector 在 WebUI 事件入口、领域任务和模型网关生成统一轨迹
 1. **供应商原生联网**（阶段 E2/E3）：OpenAI Responses `web_search`、Gemini Google Search grounding 与 Anthropic Messages server-side web search/web fetch 由模型网关归一为统一的来源记录与行内引用结构。
 2. **Agent 自主搜索循环**（阶段 F1-F3）：Collector 自建搜索链路，支持 Bing（默认，零配置）、DuckDuckGo（免费回退）、Tavily（AI 专用搜索 API，需 Key）和 SearXNG（自托管聚合引擎）四个后端。后端通过统一 `SearchBackend` 接口适配，支持运行时配置切换和故障回退链。
 
-Chat、深入研究第一轮和分支追问自动请求联网；选区分析始终不联网；v1 不提供联网开关。
+用户主动发起的 Chat、研究会话和分支追问默认不请求联网，输入框提供联网开关；开关开启时才请求供应商联网能力。选区分析始终不联网。其他 AI 生成场景（如文档生成、整理、节点命名等）由任务类型自行判断是否需要联网。v1 不提供独立搜索凭证。
 
 每次联网运行及引用都进入本地 SQLite v21 轨迹。供应商未返回来源时，界面如实说明本轮未获得可核验引用，不呈现虚构来源。
 
