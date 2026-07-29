@@ -64,7 +64,7 @@ AI 对当前内容中的术语、专有名词、缩写和其他短概念提供�
 用户导入受支持文件后，在 Collector 内直接阅读和选取内容的只读界面。阅读器聚焦正文完整性、常见结构、可选取性和稳定来源返回。
 
 **按需搜索**：
-Collector 通过两条路径提供联网搜索能力：（1）模型供应商原生联网（OpenAI web_search、Gemini Google Search grounding、Anthropic server-side web search），（2）Agent 自主搜索循环（Bing/DuckDuckGo/Tavily/SearXNG，支持运行时切换和故障回退）。Chat、深入研究第一轮和分支追问自动请求联网；选区分析不联网。
+Collector 通过两条路径提供联网搜索能力：（1）模型供应商原生联网（OpenAI web_search、Gemini Google Search grounding、Anthropic server-side web search），（2）Agent 自主搜索循环（Bing/DuckDuckGo/Tavily/SearXNG，支持运行时切换和故障回退）。用户主动发起的 Chat、研究会话和分支追问在输入框提供联网开关，默认关闭；开启时才请求联网。选区分析不联网；其他 AI 生成场景由任务类型自行判断是否需要联网。
 
 **Agent 搜索循环**：
 Collector 自建的自主搜索机制。AI 模型可以发起搜索请求、查看搜索结果、决定抓取哪些页面、信息不足时换关键词再搜——形成一个"搜→看→判断→再搜"的循环，直到信息充足或达到上限。零新增依赖，通过手写 ReAct 循环实现。
