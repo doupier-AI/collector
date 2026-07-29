@@ -50,7 +50,7 @@ import { createVerificationWorkflow } from "./verification.js";
 import { ResearchSessionService, type ResearchGenerationProvider } from "./research.js";
 import { ResearchImportService } from "./research-import.js";
 import { ResearchSelectionAnalysisError, ResearchSelectionService, type ResearchSelectionProvider } from "./selection.js";
-import { DeepResearchService } from "./deep-research.js";
+import { DeepResearchService, NodeGrowthService } from "./deep-research.js";
 import { ResearchLaterService } from "./research-later.js";
 import { webSearch, webFetch } from "./web-search-agent.js";
 import { parseAgentCitations } from "./web-search-agent.js";
@@ -75,6 +75,7 @@ export class CaptureService {
   readonly researchImports: ResearchImportService;
   readonly researchSelections: ResearchSelectionService;
   readonly deepResearch: DeepResearchService;
+  readonly nodeGrowth: NodeGrowthService;
   readonly researchLater: ResearchLaterService;
 
   constructor(
@@ -97,6 +98,10 @@ export class CaptureService {
       autoRunTasks: this.options.autoRunSelectionTasks,
     });
     this.deepResearch = new DeepResearchService(this.store, {
+      research: this.research,
+      autoRunTasks: this.options.autoRunResearchTasks,
+    });
+    this.nodeGrowth = new NodeGrowthService(this.store, {
       research: this.research,
       autoRunTasks: this.options.autoRunResearchTasks,
     });

@@ -6,6 +6,7 @@ import type {
   ResearchLaterItemRecord,
   ResearchLaterItemView,
   ResearchMessageRecord,
+  ResearchNodeRecord,
   ResearchSelectionRecord,
   ResearchSelectionTaskRecord,
   ResearchSessionRecord,
@@ -76,6 +77,18 @@ export function makeSession(overrides: Partial<ResearchSessionRecord> = {}): Res
   return {
     id: `session-${sequence}`,
     title: `研究会话 ${sequence}`,
+    status: "active",
+    createdAt: "2026-07-17T08:00:00.000Z",
+    updatedAt: "2026-07-17T08:01:00.000Z",
+    ...overrides,
+  };
+}
+
+export function makeNode(overrides: Partial<ResearchNodeRecord> = {}): ResearchNodeRecord {
+  sequence += 1;
+  return {
+    id: `node-${sequence}`,
+    sessionId: "session-1",
     status: "active",
     createdAt: "2026-07-17T08:00:00.000Z",
     updatedAt: "2026-07-17T08:01:00.000Z",

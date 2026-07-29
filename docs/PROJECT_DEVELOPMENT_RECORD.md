@@ -1,10 +1,10 @@
 # Collector 项目开发记录
 
-最后更新：2026-07-29
+最后更新：2026-07-30
 
 状态：截至当前源码的项目阶段记录。本文记录已经发生的产品与工程里程碑、关键提交、验证证据和遗留限制；当前产品定义以 `PRODUCT.md` 为准，切片计划与状态见 `MVP_IMPLEMENTATION_PLAN.md`，源码与测试是实现状态的最终依据。
 
-进行中：阶段 E（可信研究能力）已于 2026-07-22 完成并提交（`0343c56`），真实供应商联网验收受限于 API 凭证——当前唯一已配置供应商 DeepSeek（`deepseek-v4-flash`）不支持原生联网（`webGrounding: "unsupported"`），未来配置 OpenAI、Gemini 或 Anthropic 凭证后即可激活对应联网能力。阶段 F（联网搜索策略改进）已全部完成：F1 日志+查询改写（`68b39be`）、F2 工具拆分+Agent 多轮循环（`9952a02`）、F3 多搜索后端（`efe0d73`）。阶段 G（WebUI 模型配置）已完成：G1 配置与凭证持久化（`0bf2781`）、G2 配置管理增强与按任务类型分配（`3581c46` / `d198a7e` / `50f7007`）、G3 模型设置页交互优化（当前切片）。当前验证基线：Node 测试 258/258，WebUI 测试 219/219，Playwright e2e Chromium 33/33。
+进行中：阶段 H（统一研究节点树与弱标记生长）已于 2026-07-30 启动，H1（节点数据模型归并与迁移）已完成。阶段 E（可信研究能力）已于 2026-07-22 完成并提交（`0343c56`），真实供应商联网验收受限于 API 凭证——当前唯一已配置供应商 DeepSeek（`deepseek-v4-flash`）不支持原生联网（`webGrounding: "unsupported"`），未来配置 OpenAI、Gemini 或 Anthropic 凭证后即可激活对应联网能力。阶段 F（联网搜索策略改进）已全部完成：F1 日志+查询改写（`68b39be`）、F2 工具拆分+Agent 多轮循环（`9952a02`）、F3 多搜索后端（`efe0d73`）。阶段 G（WebUI 模型配置）已完成：G1 配置与凭证持久化（`0bf2781`）、G2 配置管理增强与按任务类型分配（`3581c46` / `d198a7e` / `50f7007`）、G3 模型设置页交互优化（`7b0adfc`）。当前验证基线：Node 测试 259/259，WebUI 测试 219/219，Playwright e2e Chromium 40/40。
 
 批次①（Markdown 渲染 + 悬停来源卡片，2026-07-23）已交付：`b814d95`（引用角标悬停来源卡片）+ `3b1f124`（AI 文本统一 Markdown 渲染管线）——见 §3.25。
 
@@ -1100,6 +1100,62 @@ F1（日志+查询改写）优先级已确认，待启动。实施时读取 `doc
 - `docs/PRODUCT.md` 与 `docs/MVP_IMPLEMENTATION_PLAN.md` 已同步更新；
 - 阶段 E 收尾从"待真实验收"调整为"真实验收已停止，以自动化测试与代码实现作为完成边界"；
 - 用户可控联网开关作为后续增强，不阻塞阶段 H（统一研究节点树）启动；阶段 H 中的"就地追问"和"节点生长"输入框如实现联网开关，需继承同一语义。
+
+### 3.34 阶段 H1：节点数据模型归并与迁移（2026-07-30）
+
+**背景**
+
+Collector 此前用 `ResearchSessionRecord` + `ResearchBranchRecord` 两套结构分别表达研究会话与深入研究分支，导致同一个"可追问、可生长、可返回"的语义被割裂。阶段 H 的方向已确认：把会话和分支归并为同构递归节点树，根节点对应一次 Chat 或一篇导入文档，子节点由选区/弱标记生长而来。H1 先落地风险最高的数据层改造与迁移，保持旧 API 兼容，避免 WebUI 一次性大改。
+
+**用户可见结果**
+
+- H1 为纯后端数据层改造，用户可见行为保持不变：Chat、分支视图、选区窗口、稍后再学、来源返回的既有路径继续工作；
+- 旧 `/research/:sid/branch/:branchId` 路由与旧 HTTP 端点仍可用，已有数据和最近会话列表不受影响；
+- 新增节点端点已就绪但尚未接入 WebUI，H2 将统一为 `/research/:sessionId/node/:nodeId` 页面。
+
+**工程结果**
+
+- 共享契约（`packages/capture-contracts/src/index.ts`）：
+  - 新增 `ResearchNodeRecord`、`ResearchNodeView`、`CreateChildNodeInput`、`NodeGrowthAccepted`；
+  - `ResearchMessageRecord`、`ResearchTaskRecord`、`ResearchSelectionRecord`、`ResearchLaterItemRecord` 增加 `nodeId?: string`；
+  - `ResearchBranchRecord` 与 `DeepResearchMode` 标记为弃用但保留，避免 H1 同时改 WebUI 路由。
+- SQLite 存储（`apps/api/src/store.ts`）：
+  - 迁移 v24 新建 `research_nodes` 自引用表（`parent_node_id`、`origin_selection_id`、`session_id`），并恢复此前被意外覆盖的 v23 `model_purpose_routes` 迁移；
+  - 根节点复用 `research_sessions.id`，子节点复用 `research_branches.id`，保证 URL 与 FK 稳定；
+  - 迁移对每行会话/分支生成节点，回填 `research_messages`、`research_tasks`、`research_selections`、`research_later_items` 的 `node_id` 与 `record_json`；
+  - 新增 `createResearchNode`、`getResearchNode`、`listResearchNodes`、`listChildNodes`、`listResearchMessagesByNode`、`listResearchTasksByNode`、`createResearchTurnForNode`、`createResearchChildNode`；
+  - 旧 `createResearchSession`、`createResearchTurn`、`createResearchBranch` 等路径继续双写 `sessionId` / `branchId` 与 `nodeId`，避免漂移；
+  - `clearAllData` 调整删除顺序，先删子节点再删根节点，满足外键约束。
+- 服务层：
+  - `apps/api/src/research.ts`：`submitMessageToNode`、按 `nodeId` 组装生成上下文；区分根节点 origin 会话（无 `parentNodeId`）与分支子节点；
+  - `apps/api/src/deep-research.ts`：新增 `NodeGrowthService`（`startChildNode`、`getNodeView`、`listChildNodes`），旧 `submitBranchMessage` 改走 `createResearchTurnForNode`；
+  - `apps/api/src/selection.ts`：新建选区默认归属当前会话的根节点；
+  - `apps/api/src/service.ts`：实例化 `nodeGrowth` 服务。
+- HTTP 层（`apps/api/src/http.ts`）：保留旧端点；新增 `POST /v1/research-selections/:id/nodes`、`POST /v1/research-nodes/:id/messages`、`GET /v1/research-nodes/:id`、`GET /v1/research-nodes/:id/children`。
+- WebUI 测试与 e2e：
+  - `apps/web/src/test/fakes.ts` 新增 `makeNode` 辅助，消息/任务夹具支持 `nodeId`；
+  - `apps/web/e2e/helpers.ts` 新增共享 `selectAnswerText`，改为在 `data-block-text` 容器内查找目标文本的最深层文本节点，兼容 Markdown 渲染后的嵌套 `<p>`；
+  - 三个用到该助手的 e2e 文件（`selection-window.spec.ts`、`z-deep-research.spec.ts`、`z-research-later.spec.ts`）改为从 helpers 导入，并修复键盘 Shift 选区测试的文本节点查找。
+
+**关键提交**
+
+- 当前切片：阶段 H1 节点数据模型归并与迁移。
+
+**验证**
+
+- 验证级别：四级（共享契约 + SQLite 迁移 + 跨端集成 + 旧 API 兼容）；
+- `npm run build` 通过（TypeScript project references + WebUI 生产构建 + asset 构建）；
+- Node 全量测试 259/259 通过（新增 `migration v24 maps sessions and branches to nodes and backfills node_id` 等迁移断言）；
+- WebUI 测试 219/219 通过；
+- Playwright e2e 40/40 通过（含 `selection-window`、`z-deep-research`、`z-research-later`、无模型路径）；
+- 未执行项及理由：真实浏览器人工验收在 H1 不需要（无用户可见行为变化），H2 统一节点页后再补真实浏览器验收。
+
+**未完成 / 风险**
+
+- H2 将退役 `/research/:sid/branch/:branchId`，需添加重定向保留旧书签；
+- `branchId` 与旧 `DeepResearchMode` 二选一将在 H2 或 H3 彻底移除；
+- 子节点稍后再学（H4）、父链上下文编排（H5）、节点命名（H6）尚未实施；
+- 迁移回滚：v24 未提供 down-migration，若生产环境需要回滚应依赖部署前备份。
 
 ## 8. 文档整理记录
 

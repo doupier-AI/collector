@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import type { ArtifactRecord, CaptureRecord, FragmentRecord, KnowledgeItemRecord, RecentClusterSnapshotRecord, ResearchSessionRecord, ReviewProposalRecord, WorkflowRunRecord, WorkflowStepRecord } from "@collector/capture-contracts";
+import type { ArtifactRecord, CaptureRecord, FragmentRecord, KnowledgeItemRecord, RecentClusterSnapshotRecord, ResearchBranchRecord, ResearchMessageRecord, ResearchSelectionRecord, ResearchSessionRecord, ReviewProposalRecord, WorkflowRunRecord, WorkflowStepRecord } from "@collector/capture-contracts";
 import { SqliteStore } from "@collector/api";
 
 function records() {
@@ -92,8 +92,8 @@ test("workflow migration creates formal versioned tables", async (t) => {
   store.close();
   const database = new DatabaseSync(databasePath, { readOnly: true });
   const tables = (database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name);
-  for (const table of ["workflow_runs", "workflow_steps", "model_calls", "recent_cluster_snapshots", "material_revisions", "research_sessions", "research_messages", "research_tasks", "research_task_events", "research_attachments", "research_import_tasks", "research_content_snapshots", "research_import_task_events", "research_selections", "research_selection_tasks", "research_selection_task_events", "research_branches", "research_later_items", "research_grounding_runs", "research_grounding_sources", "research_citations", "provider_credentials", "model_purpose_routes"]) assert.ok(tables.includes(table));
-  assert.equal((database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 23);
+  for (const table of ["workflow_runs", "workflow_steps", "model_calls", "recent_cluster_snapshots", "material_revisions", "research_sessions", "research_messages", "research_tasks", "research_task_events", "research_attachments", "research_import_tasks", "research_content_snapshots", "research_import_task_events", "research_selections", "research_selection_tasks", "research_selection_task_events", "research_branches", "research_later_items", "research_grounding_runs", "research_grounding_sources", "research_citations", "provider_credentials", "model_purpose_routes", "research_nodes"]) assert.ok(tables.includes(table));
+  assert.equal((database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 24);
   const sessionColumns = (database.prepare("PRAGMA table_info(research_sessions)").all() as Array<{ name: string }>).map((column) => column.name);
   assert.ok(sessionColumns.includes("creation_idempotency_key"));
   assert.ok(sessionColumns.includes("origin_selection_id"));
@@ -127,6 +127,20 @@ test("migrations 15 to 21 preserve existing version 14 research sessions", async
 
   const version14 = new DatabaseSync(databasePath);
   version14.exec(`
+    DROP INDEX research_nodes_creation_idempotency_idx;
+    DROP INDEX research_nodes_parent_idx;
+    DROP INDEX research_nodes_session_idx;
+    DROP INDEX research_sessions_creation_idempotency_idx;
+    DROP INDEX research_messages_branch_idx;
+    ALTER TABLE research_messages DROP COLUMN node_id;
+    ALTER TABLE research_tasks DROP COLUMN node_id;
+    ALTER TABLE research_selections DROP COLUMN node_id;
+    ALTER TABLE research_later_items DROP COLUMN node_id;
+    ALTER TABLE research_sessions DROP COLUMN creation_idempotency_key;
+    ALTER TABLE research_sessions DROP COLUMN origin_selection_id;
+    ALTER TABLE research_sessions DROP COLUMN origin_session_id;
+    ALTER TABLE research_messages DROP COLUMN branch_id;
+    DROP TABLE research_nodes;
     DROP TABLE model_purpose_routes;
     DROP TABLE provider_credentials;
     DROP TABLE research_citations;
@@ -141,13 +155,7 @@ test("migrations 15 to 21 preserve existing version 14 research sessions", async
     DROP TABLE research_content_snapshots;
     DROP TABLE research_import_tasks;
     DROP TABLE research_attachments;
-    DROP INDEX research_sessions_creation_idempotency_idx;
-    DROP INDEX research_messages_branch_idx;
-    ALTER TABLE research_sessions DROP COLUMN creation_idempotency_key;
-    ALTER TABLE research_sessions DROP COLUMN origin_selection_id;
-    ALTER TABLE research_sessions DROP COLUMN origin_session_id;
-    ALTER TABLE research_messages DROP COLUMN branch_id;
-    DELETE FROM schema_migrations WHERE version IN (15, 16, 17, 18, 19, 21, 22, 23);
+    DELETE FROM schema_migrations WHERE version IN (15, 16, 17, 18, 19, 21, 22, 23, 24);
   `);
   version14.close();
 
@@ -197,6 +205,103 @@ test("migrations 15 to 21 preserve existing version 14 research sessions", async
   );
   database.close();
   t.after(() => rm(root, { recursive: true, force: true }));
+});
+
+test("migration v24 maps sessions and branches to nodes and backfills node_id", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "collector-research-v24-"));
+  const databasePath = join(root, "collector.sqlite");
+  const seed = new SqliteStore(databasePath);
+  await seed.init();
+  seed.close();
+
+  const raw = new DatabaseSync(databasePath);
+  raw.exec(`
+    DROP INDEX research_nodes_creation_idempotency_idx;
+    DROP INDEX research_nodes_parent_idx;
+    DROP INDEX research_nodes_session_idx;
+    DROP TABLE research_nodes;
+    ALTER TABLE research_messages DROP COLUMN node_id;
+    ALTER TABLE research_tasks DROP COLUMN node_id;
+    ALTER TABLE research_selections DROP COLUMN node_id;
+    ALTER TABLE research_later_items DROP COLUMN node_id;
+    DELETE FROM schema_migrations WHERE version = 24;
+  `);
+
+  const session: ResearchSessionRecord = {
+    id: "legacy-session", title: "升级前会话", status: "active",
+    createdAt: "2026-07-18T00:00:00.000Z", updatedAt: "2026-07-18T00:00:00.000Z",
+  };
+  const branch: ResearchBranchRecord = {
+    id: "legacy-branch", sessionId: session.id, selectionId: "legacy-selection",
+    status: "active", createdAt: "2026-07-18T01:00:00.000Z", updatedAt: "2026-07-18T01:00:00.000Z",
+  };
+  const selection: ResearchSelectionRecord = {
+    id: "legacy-selection", sessionId: session.id,
+    anchor: { kind: "message", messageId: "root-user", blockOrdinal: 0, startOffset: 0, endOffset: 4, exact: "选区" },
+    text: "选区", status: "active", createdAt: "2026-07-18T00:30:00.000Z", updatedAt: "2026-07-18T00:30:00.000Z",
+  };
+  const rootMessage: ResearchMessageRecord = {
+    id: "root-user", sessionId: session.id, role: "user", content: "选区",
+    status: "completed", createdAt: "2026-07-18T00:00:00.000Z", updatedAt: "2026-07-18T00:00:00.000Z",
+  };
+  const branchMessage: ResearchMessageRecord = {
+    id: "branch-user", sessionId: session.id, branchId: branch.id, role: "user", content: "分支",
+    status: "completed", createdAt: "2026-07-18T01:00:00.000Z", updatedAt: "2026-07-18T01:00:00.000Z",
+  };
+  const outputMessage: ResearchMessageRecord = {
+    id: "out-1", sessionId: session.id, branchId: branch.id, role: "assistant", content: "",
+    status: "pending", createdAt: "2026-07-18T01:00:00.000Z", updatedAt: "2026-07-18T01:00:00.000Z",
+  };
+
+  raw.prepare("INSERT INTO research_sessions (id, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?)")
+    .run(session.id, session.status, session.createdAt, session.updatedAt, JSON.stringify(session));
+  raw.prepare("INSERT INTO research_selections (id, session_id, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(selection.id, selection.sessionId, selection.status, selection.createdAt, selection.updatedAt, JSON.stringify(selection));
+  raw.prepare("INSERT INTO research_branches (id, session_id, selection_id, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run(branch.id, branch.sessionId, branch.selectionId, branch.status, branch.createdAt, branch.updatedAt, JSON.stringify(branch));
+  raw.prepare("INSERT INTO research_messages (id, session_id, branch_id, role, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(rootMessage.id, rootMessage.sessionId, rootMessage.branchId ?? null, rootMessage.role, rootMessage.status, rootMessage.createdAt, rootMessage.updatedAt, JSON.stringify(rootMessage));
+  raw.prepare("INSERT INTO research_messages (id, session_id, branch_id, role, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(branchMessage.id, branchMessage.sessionId, branchMessage.branchId ?? null, branchMessage.role, branchMessage.status, branchMessage.createdAt, branchMessage.updatedAt, JSON.stringify(branchMessage));
+  raw.prepare("INSERT INTO research_messages (id, session_id, branch_id, role, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(outputMessage.id, outputMessage.sessionId, outputMessage.branchId ?? null, outputMessage.role, outputMessage.status, outputMessage.createdAt, outputMessage.updatedAt, JSON.stringify(outputMessage));
+  raw.prepare(`INSERT INTO research_tasks
+    (id, session_id, input_message_id, output_message_id, idempotency_key, status, retryable, created_at, updated_at, record_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run("task-1", session.id, branchMessage.id, outputMessage.id, "key-1", "queued", 0, branchMessage.createdAt, branchMessage.updatedAt, JSON.stringify({ id: "task-1", sessionId: session.id, inputMessageId: branchMessage.id, outputMessageId: outputMessage.id, idempotencyKey: "key-1", status: "queued", retryable: false, promptVersion: "v1", createdAt: branchMessage.createdAt, updatedAt: branchMessage.updatedAt }));
+  raw.prepare("INSERT INTO research_later_items (id, session_id, selection_id, status, priority, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run("later-1", session.id, selection.id, "pending", 3, session.createdAt, session.createdAt, JSON.stringify({ id: "later-1", sessionId: session.id, selectionId: selection.id, summary: "稍后", priority: 3, status: "pending", createdAt: session.createdAt, updatedAt: session.createdAt }));
+  raw.close();
+
+  const upgraded = new SqliteStore(databasePath);
+  await upgraded.init();
+  t.after(async () => { upgraded.close(); await rm(root, { recursive: true, force: true }); });
+
+  const rootNode = upgraded.getResearchNode(session.id);
+  assert.ok(rootNode);
+  assert.equal(rootNode?.sessionId, session.id);
+  assert.equal(rootNode?.parentNodeId, undefined);
+
+  const childNode = upgraded.getResearchNode(branch.id);
+  assert.ok(childNode);
+  assert.equal(childNode?.sessionId, session.id);
+  assert.equal(childNode?.parentNodeId, session.id);
+  assert.equal(childNode?.originSelectionId, selection.id);
+
+  assert.deepEqual(upgraded.listChildNodes(session.id).map((n) => n.id), [branch.id]);
+
+  const messages = upgraded.listResearchMessages(session.id);
+  assert.equal(messages.find((m) => m.id === rootMessage.id)?.nodeId, session.id);
+  assert.equal(messages.find((m) => m.id === branchMessage.id)?.nodeId, branch.id);
+
+  const tasks = upgraded.listResearchTasks(session.id);
+  assert.equal(tasks[0]?.nodeId, branch.id);
+
+  const selections = upgraded.listResearchSelections(session.id);
+  assert.equal(selections[0]?.nodeId, session.id);
+
+  const laterItems = upgraded.listResearchLaterItems();
+  assert.equal(laterItems.find((i) => i.id === "later-1")?.nodeId, session.id);
 });
 
 test("snapshot publication rolls back the completed run when the snapshot cannot be inserted", async (t) => {
