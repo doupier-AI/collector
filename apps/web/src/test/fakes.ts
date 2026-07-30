@@ -7,6 +7,7 @@ import type {
   ResearchLaterItemView,
   ResearchMessageRecord,
   ResearchNodeRecord,
+  ResearchNodeView,
   ResearchSelectionRecord,
   ResearchSelectionTaskRecord,
   ResearchSessionRecord,
@@ -93,6 +94,17 @@ export function makeNode(overrides: Partial<ResearchNodeRecord> = {}): ResearchN
     createdAt: "2026-07-17T08:00:00.000Z",
     updatedAt: "2026-07-17T08:01:00.000Z",
     ...overrides,
+  };
+}
+
+export function makeNodeView(overrides: Partial<ResearchNodeView> = {}): ResearchNodeView {
+  const node = overrides.node ?? makeNode();
+  return {
+    node,
+    session: overrides.session ?? makeSession({ id: node.sessionId }),
+    messages: overrides.messages ?? [],
+    tasks: overrides.tasks ?? [],
+    childNodes: overrides.childNodes ?? [],
   };
 }
 

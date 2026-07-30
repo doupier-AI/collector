@@ -505,6 +505,41 @@ test("validation rejects malformed deep research requests and unknown references
   assert.equal((await postJson(harness.base, harness.token, `/v1/research-branches/${accepted.branch!.id}/messages`, { content: "追问" })).status, 400);
 });
 
+test("node tree endpoint returns flat items with deterministic labels for root and child nodes", async (t) => {
+  const harness = await createHarness({ researchProvider: recordingProvider().provider });
+  t.after(() => harness.close());
+  const { session, assistantMessage } = await createSessionWithAnswer(harness);
+  const exact = "选区如何连接阅读与研究";
+  const created = await createSelectionOn(harness, session.id, anchorForSelection(assistantMessage.id, 1, exact));
+
+  // 从选区生长一个子节点
+  const growth = await postJson(harness.base, harness.token, `/v1/research-selections/${created.selection.id}/nodes`, {}, randomUUID());
+  assert.equal(growth.status, 202);
+  const accepted = await growth.json() as { node: { id: string; parentNodeId?: string; originSelectionId?: string } };
+  assert.equal(accepted.node.parentNodeId, session.id);
+  assert.equal(accepted.node.originSelectionId, created.selection.id);
+
+  const treeResponse = await fetch(`${harness.base}/v1/research-sessions/${session.id}/nodes`, { headers: headers(harness.token) });
+  assert.equal(treeResponse.status, 200);
+  const tree = await treeResponse.json() as Array<{
+    node: { id: string; parentNodeId?: string };
+    label: string;
+    originText?: string;
+  }>;
+  assert.equal(tree.length, 2);
+  const root = tree.find((item) => !item.node.parentNodeId);
+  const child = tree.find((item) => item.node.parentNodeId === session.id);
+  assert.ok(root && child);
+  assert.equal(root.node.id, session.id);
+  assert.equal(root.label, SESSION_TITLE);
+  assert.equal(child.node.id, accepted.node.id);
+  assert.equal(child.label, exact);
+  assert.equal(child.originText, exact);
+
+  // 未知会话返回 404
+  assert.equal((await fetch(`${harness.base}/v1/research-sessions/${randomUUID()}/nodes`, { headers: headers(harness.token) })).status, 404);
+});
+
 test("clearAllData removes branches, sessions and selections without foreign key errors", async (t) => {
   const harness = await createHarness({ researchProvider: recordingProvider().provider });
   t.after(() => harness.close());

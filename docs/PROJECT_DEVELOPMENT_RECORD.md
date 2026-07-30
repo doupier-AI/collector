@@ -827,14 +827,15 @@ F1（日志+查询改写）优先级已确认，待启动。实施时读取 `doc
 
 ## 5. 当前验证基线
 
-阶段 G2d 提交后（2026-07-29）当前四级基线：
+阶段 H2 提交后（2026-07-30）当前四级基线：
 
 | 范围 | 结果 |
 | --- | --- |
-| Node 单元与集成测试 | 256/256 通过 |
-| WebUI 客户端测试 | 214/214 通过 |
+| Node 单元与集成测试 | 260/260 通过 |
+| WebUI 客户端测试 | 229/229 通过 |
+| Playwright e2e（假模型，真实 Chromium） | 45/45 通过（chromium 41 + chromium-nomodel 4） |
 | Collector 项目检查 | 通过（0 errors, 0 warnings） |
-| 真实云模型调用 | 已通过（DeepSeek deepseek-v4-flash，四场景验收 4/4） |
+| 真实云模型调用 | 已通过（DeepSeek deepseek-v4-flash，四场景验收 4/4；H2 后验收套件已改造为节点生长流程，未在本阶段重跑） |
 | 真实供应商联网验收 | 已停止（当前已配置供应商均不支持原生联网；阶段 E 以代码实现 + 自动化测试作为完成边界） |
 | Agent 搜索（自动化） | 30 项 Agent 循环 + 搜索后端测试通过 |
 | Agent 搜索（真实模型） | 待人工验收（Bing 已验证可行，DDG/Tavily 待配置后验证） |
@@ -860,6 +861,7 @@ F1（日志+查询改写）优先级已确认，待启动。实施时读取 `doc
 ### AI、搜索和产品核心
 
 - 已在收尾阶段完成一次真实模型四场景验收（DeepSeek deepseek-v4-flash，四场景全通过）；自动化测试套件（`test:e2e`）按项目约定只用确定性假模型；自动弱重现等仍属后续阶段；
+- H2 起 WebUI 统一为节点页与全屏树导航；已知限制：在子节点页面创建的选区仍归属根节点（H4 处理），旧"独立会话"数据作为带来源选区的根节点呈现；
 - 离线演示回答不是产品能力证据；
 - 真实模型当前等待供应商返回完整 JSON 后再按最多 80 字符写入渐进事件，不是供应商原生 token 流，首片延迟仍等于完整模型响应时间；
 - 本地观测、模型设置和搜索轨迹还未形成完整的用户可见产品界面。
@@ -1156,6 +1158,46 @@ Collector 此前用 `ResearchSessionRecord` + `ResearchBranchRecord` 两套结�
 - `branchId` 与旧 `DeepResearchMode` 二选一将在 H2 或 H3 彻底移除；
 - 子节点稍后再学（H4）、父链上下文编排（H5）、节点命名（H6）尚未实施；
 - 迁移回滚：v24 未提供 down-migration，若生产环境需要回滚应依赖部署前备份。
+
+### 3.35 阶段 H2：节点页统一与全屏树导航（2026-07-30）
+
+**背景**
+
+H1 完成了节点数据层（`research_nodes` 自引用表与迁移），但 WebUI 仍按旧"会话页 + 分支页"两套呈现，选区"深入研究"仍是"沿当前内容 / 独立会话"二选一。H2 把界面收敛到同构节点模型：一个页面呈现所有节点，一个动作生长子节点，一个全屏树视图完成节点间导航。
+
+**用户可见结果**
+
+- 研究界面统一为一个节点页：对话是根节点，从选区长出的深入研究是子节点，页面结构、追问、来源条、子节点入口完全一致；旧的会话页地址和分支页地址自动跳转到新地址（选区高亮参数保留）；
+- 选区窗口的"深入研究"不再弹二选一：直接打开"开枝散叶"面板，可选填写重点问题后开始研究，进入新子节点；旧"独立会话"数据继续正常显示来源条；
+- 新增全屏树导航：顶栏"节点树"按钮或快捷键 `t` 唤出，顶部面包屑显示从根到当前节点的路径（每级可点击），树中方向键移动 / 展开折叠、Enter 进入、兄弟节点并列点击即跳，Esc 关闭后焦点回到按钮；
+- 修复：Esc 关闭树视图时不再连带收起两侧栏目并抢走焦点（侧栏 Escape 处理让位于已处理的覆盖层）。
+
+**工程结果**
+
+- 后端：共享契约新增 `ResearchSessionNodeTreeItem`；`NodeGrowthService.getNodeTree(sessionId)` 输出扁平树条目（根=会话标题、子=来源选区摘要的确定性标签）；新增 `GET /v1/research-sessions/:id/nodes`；旧端点全部保留作兼容层。
+- WebUI 节点页：`ResearchNodePage` + `useResearchNode`（数据走 `/v1/research-nodes/:id`，提交走 `/v1/research-nodes/:id/messages`）；`NodeChildList` 取代 `BranchList`；附件与拖放导入仅根节点显示；删除 `ResearchSessionPage`、`ResearchBranchPage`、`useResearchSession`、`useResearchBranch`、`BranchList` 及对应测试。
+- 路由：`/research/:sessionId` 与 `/research/:sessionId/branch/:branchId` 经 `<Navigate replace>` 重定向到 `/research/:sessionId/node/:nodeId` 并保留 `?sel=`；`backRouteForSelection`、阅读页返回链接直接指向节点路由。
+- 选区窗口：二选一退役，`stage` 收敛为 actions/grow/later；`POST /v1/research-selections/:id/nodes` + `ng:<选区id>:<query摘要|auto>` 幂等键（FNV-1a 摘要，中文不进请求头）。
+- 树导航：`NodeTreeOverlay`（role="dialog" + role="tree"/"treeitem"、roving tabindex、aria-expanded/selected/level）+ `useNodeTree` 纯函数（建树、可见行展开、祖先链、默认展开集合）；AppShell 顶栏入口与全局快捷键 `t`（输入控件聚焦时不触发）。
+- e2e 基础设施：`readResearchNodeTables` 取代 `readResearchBranchTables`（按 `research_nodes` 与 `node_id` 核对）；修复 `recent-organization.test.ts` 在 Windows 上的拆卸竞态（`rm` 加 `maxRetries`）。
+
+**关键提交**
+
+- 本阶段实现提交见 Git 历史（阶段 H2 节点页统一与全屏树导航）。
+
+**验证**
+
+- 验证级别：四级（共享契约新增 + HTTP 新端点 + 跨端路由集成 + 旧路由重定向）；
+- `npm run build` 通过；Node 全量测试 260/260；WebUI 测试 229/229；Playwright e2e 45/45（chromium 41 + chromium-nomodel 4，含新增 `z-node-tree.spec.ts` 树导航三场景与 `z-old-route-redirect.spec.ts` 旧路由重定向两场景）；`scripts/check-project.ps1` 通过；
+- 真实 Chromium 浏览器证据（`z-node-tree.spec.ts` 自动取证）：节点页 320/768/1024/1440 视口无横向溢出并留截图（`e2e-artifacts/node-page-viewport-*.png`）、320px 树视图全屏覆盖截图、键盘全流程（按钮/快捷键唤出、方向键、Enter 跳转、Esc 焦点返回）、单一 h1、`role="tree"` aria 属性齐全、网络契约（节点页只调 `/v1/research-nodes/:id`，打开树时整树一次拉取）、控制台无错误；
+- 未执行项及理由：真实模型验收套件（`z-acceptance-real.spec.ts`）已同步改造为节点生长流程，但按既有约定真实模型验收不由本阶段自动执行；如需复验真实模型路径，单独运行 acceptance 配置。
+
+**未完成 / 风险**
+
+- 在子节点页面上创建的选区仍归属根节点（选区归属当前节点属 H4），在子节点页面发起的生长因此挂在根节点下；
+- 弱标记（H3）、就地追问与选区窗口字段简化（H4）、父链上下文编排（H5）、节点命名（H6）尚未实施；HUD 导航为独立实验切片；
+- 旧 HTTP 端点与 `branchId` 双写字段作为兼容层保留，移除时机随 H3–H6 另行确认；
+- 真实浏览器人工体验（手感、动画、朗读）建议用户在正式使用时补充确认，自动化已覆盖结构、键盘与网络契约。
 
 ## 8. 文档整理记录
 

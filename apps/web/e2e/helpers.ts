@@ -265,26 +265,6 @@ export function readResearchSelectionTables(dbPath: string): {
   }
 }
 
-export interface ResearchBranchRow {
-  id: string;
-  sessionId: string;
-  selectionId: string;
-  creationIdempotencyKey: string | null;
-}
-
-export interface ResearchBranchMessageRow {
-  id: string;
-  sessionId: string;
-  branchId: string;
-  role: string;
-}
-
-export interface ResearchOriginSessionRow {
-  id: string;
-  originSelectionId: string;
-  originSessionId: string | null;
-}
-
 export interface ResearchLaterItemRow {
   id: string;
   sessionId: string;
@@ -310,30 +290,39 @@ export function readResearchLaterTables(dbPath: string): { laterItems: ResearchL
   }
 }
 
-/** 只读打开 harness 的 SQLite，核对研究分支 / 分支消息 / 带来源会话记录。 */
-export function readResearchBranchTables(dbPath: string): {
-  branches: ResearchBranchRow[];
-  branchMessages: ResearchBranchMessageRow[];
-  originSessions: ResearchOriginSessionRow[];
+export interface ResearchNodeRow {
+  id: string;
+  sessionId: string;
+  parentNodeId: string | null;
+  originSelectionId: string | null;
+  creationIdempotencyKey: string | null;
+}
+
+export interface ResearchNodeMessageRow {
+  id: string;
+  sessionId: string;
+  nodeId: string | null;
+  role: string;
+}
+
+/** 只读打开 harness 的 SQLite，核对研究节点 / 节点消息记录（H1 起消息归属 node_id）。 */
+export function readResearchNodeTables(dbPath: string): {
+  nodes: ResearchNodeRow[];
+  nodeMessages: ResearchNodeMessageRow[];
 } {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
-    const branches = db
+    const nodes = db
       .prepare(
-        "SELECT id, session_id AS sessionId, selection_id AS selectionId, creation_idempotency_key AS creationIdempotencyKey FROM research_branches ORDER BY created_at, rowid",
+        "SELECT id, session_id AS sessionId, parent_node_id AS parentNodeId, origin_selection_id AS originSelectionId, creation_idempotency_key AS creationIdempotencyKey FROM research_nodes ORDER BY created_at, rowid",
       )
-      .all() as unknown as ResearchBranchRow[];
-    const branchMessages = db
+      .all() as unknown as ResearchNodeRow[];
+    const nodeMessages = db
       .prepare(
-        "SELECT id, session_id AS sessionId, branch_id AS branchId, role FROM research_messages WHERE branch_id IS NOT NULL ORDER BY created_at, rowid",
+        "SELECT id, session_id AS sessionId, node_id AS nodeId, role FROM research_messages ORDER BY created_at, rowid",
       )
-      .all() as unknown as ResearchBranchMessageRow[];
-    const originSessions = db
-      .prepare(
-        "SELECT id, origin_selection_id AS originSelectionId, origin_session_id AS originSessionId FROM research_sessions WHERE origin_selection_id IS NOT NULL ORDER BY created_at, rowid",
-      )
-      .all() as unknown as ResearchOriginSessionRow[];
-    return { branches, branchMessages, originSessions };
+      .all() as unknown as ResearchNodeMessageRow[];
+    return { nodes, nodeMessages };
   } finally {
     db.close();
   }

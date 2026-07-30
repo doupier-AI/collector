@@ -18,7 +18,7 @@ test("authenticated clients can publish and read an empty recent snapshot", asyn
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");
@@ -74,7 +74,7 @@ test("recent organization resumes across restarts without skipping steps", async
   // Reopen and resume remaining steps
   const reopenedStore = new SqliteStore(databasePath);
   await reopenedStore.init();
-  t.after(async () => { reopenedStore.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { reopenedStore.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const reopenedService = new CaptureService(reopenedStore, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
   assert.equal(await reopenedService.resumeRecentOrganizationRuns(), 6);
   assert.equal(reopenedService.getWorkflowRun(run.id).status, "completed");
@@ -87,7 +87,7 @@ test("an active workflow step blocks later dependent steps", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-recent-race-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false, recentLeaseMs: 60_000 });
   const run = await service.organizeRecent("race-key");
 
@@ -118,7 +118,7 @@ test("expired lease can be reclaimed", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-recent-expired-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false, recentLeaseMs: 1 });
   const run = await service.organizeRecent("expired-key");
 
@@ -139,7 +139,7 @@ test("failure preserves the last successful snapshot", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-recent-fail-preserve-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
   const run = await service.organizeRecent("fail-preserve-key");
   assert.equal(await service.resumeRecentOrganizationRuns(), 7);
@@ -168,7 +168,7 @@ test("fresh run succeeds after a previous failure", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-recent-retrigger-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
 
   // First run fails
@@ -195,7 +195,7 @@ test("recent organization endpoints reject unpaired clients", async (t) => {
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");
@@ -219,7 +219,7 @@ test("recent organization freezes materials and keeps one stable representative 
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");
@@ -258,7 +258,7 @@ test("recent organization is idempotent for one key and material set version", a
   const root = await mkdtemp(join(tmpdir(), "collector-recent-idempotent-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
   const first = await service.organizeRecent("stable-key");
   const retry = await service.organizeRecent("stable-key");
@@ -293,7 +293,7 @@ test("completed recent runs and snapshots survive reopening SQLite", async (t) =
 
   const reopenedStore = new SqliteStore(databasePath);
   await reopenedStore.init();
-  t.after(async () => { reopenedStore.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { reopenedStore.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const reopenedService = new CaptureService(reopenedStore, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
   assert.deepEqual(reopenedService.getWorkflowRun(run.id), completedRun);
   assert.deepEqual(reopenedService.getLatestRecentClusterSnapshot(), snapshot);
@@ -318,7 +318,7 @@ test("recent organization exposes processing and persists a failed run", async (
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");
@@ -348,7 +348,7 @@ test("cancelling a processing run stops further steps and preserves completed wo
   const root = await mkdtemp(join(tmpdir(), "collector-recent-cancel-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
 
   await service.createCapture({
@@ -389,7 +389,7 @@ test("workspace:load returns topics", async (t) => {
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const addr = server.address();
   if (!addr || typeof addr === "string") throw new Error("Server did not bind");

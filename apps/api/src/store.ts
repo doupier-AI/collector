@@ -108,6 +108,7 @@ export interface DeepResearchStore {
   createOriginResearchSession(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<DeepResearchAccepted>;
   createResearchChildNode(parentNode: ResearchNodeRecord, node: ResearchNodeRecord, selection: ResearchSelectionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<NodeGrowthAccepted>;
   getResearchNode(id: string): ResearchNodeRecord | undefined;
+  listResearchNodes(sessionId: string): ResearchNodeRecord[];
   listChildNodes(parentNodeId: string): ResearchNodeRecord[];
   getResearchSession(id: string): ResearchSessionRecord | undefined;
   getResearchMessage(id: string): ResearchMessageRecord | undefined;

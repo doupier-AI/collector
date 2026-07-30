@@ -128,7 +128,7 @@ export function ReadingPage() {
           <h1 className="page__title">这份内容不存在或已经清理</h1>
           <p className="page__lead">它可能已被删除，或者链接中的编号不正确。</p>
           <p>
-            <Link className="button button--primary" to={`/research/${encodeURIComponent(sessionId)}`}>
+            <Link className="button button--primary" to={`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(sessionId)}`}>
               返回研究
             </Link>
           </p>
@@ -171,7 +171,7 @@ export function ReadingPage() {
     <div className="page reading-page">
       <header className="session-header">
         <p className="reading-page__back">
-          <Link to={`/research/${encodeURIComponent(sessionId)}`} aria-label="返回研究会话">
+          <Link to={`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(sessionId)}`} aria-label="返回研究会话">
             ← 返回研究
           </Link>
         </p>

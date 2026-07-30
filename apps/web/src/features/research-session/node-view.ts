@@ -1,16 +1,15 @@
 import type {
-  ResearchBranchView,
+  ResearchNodeView,
   ResearchTaskEvent,
-  ResearchTaskRecord,
   ResearchTurnAccepted,
 } from "@collector/capture-contracts";
 import { upsertMessage, upsertTask } from "./session-view";
 
 /**
- * 把渐进事件合并进分支视图。分支视图与会话视图共用消息 / 任务结构，
- * 事件语义与 session-view.applyTaskEvent 一致：分支页只显示分支内消息。
+ * 节点视图合并助手（阶段 H2）：与会话视图共用消息 / 任务结构，
+ * 事件语义与 session-view.applyTaskEvent 一致，但保留节点视图的 node / childNodes 字段。
  */
-export function applyBranchEvent(view: ResearchBranchView, event: ResearchTaskEvent): ResearchBranchView {
+export function applyNodeEvent(view: ResearchNodeView, event: ResearchTaskEvent): ResearchNodeView {
   switch (event.type) {
     case "snapshot":
     case "completed":
@@ -25,15 +24,11 @@ export function applyBranchEvent(view: ResearchBranchView, event: ResearchTaskEv
   }
 }
 
-export function mergeBranchTurn(view: ResearchBranchView, turn: ResearchTurnAccepted): ResearchBranchView {
+export function mergeNodeTurn(view: ResearchNodeView, turn: ResearchTurnAccepted): ResearchNodeView {
   return {
     ...view,
     session: turn.session,
     messages: upsertMessage(upsertMessage(view.messages, turn.inputMessage), turn.outputMessage),
     tasks: upsertTask(view.tasks, turn.task),
   };
-}
-
-export function taskForBranchMessage(view: ResearchBranchView, messageId: string): ResearchTaskRecord | undefined {
-  return view.tasks.find((task) => task.outputMessageId === messageId);
 }

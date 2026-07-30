@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import type { ResearchTaskRecord } from "@collector/capture-contracts";
+import type { ResearchSessionView, ResearchTaskRecord } from "@collector/capture-contracts";
 import { isApiErrorCode, isUnauthorized } from "../../api/errors";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
@@ -12,15 +12,15 @@ import { AttachmentList } from "../imports/AttachmentList";
 import { IMPORT_ACCEPT } from "../imports/import-file";
 import { useResearchImports } from "../imports/useResearchImports";
 import { SelectionSurface } from "../selection/SelectionSurface";
-import { highlightForMessages } from "../selection/selection-highlight";
-import { BranchList } from "./BranchList";
+import { highlightForMessages, selectionExcerpt } from "../selection/selection-highlight";
 import { formatSessionTime } from "./format";
 import { MessageItem } from "./MessageItem";
 import { ModelStatusIndicator } from "./ModelStatusIndicator";
+import { NodeChildList } from "./NodeChildList";
 import { ResearchScopeNote, SelectionRestoreFallback, SelectionSourceBar, useSelectionRestore, useSelectionSource } from "./SelectionSourceBar";
 import { taskForMessage } from "./session-view";
-import { useResearchSession } from "./useResearchSession";
-import type { PendingFirstTurn } from "./useResearchSession";
+import { useResearchNode } from "./useResearchNode";
+import type { PendingFirstTurn } from "./useResearchNode";
 
 const STREAM_NOTICE: Record<string, { title: string; body: string }> = {
   reconnecting: { title: "连接中断", body: "正在重新连接，已显示的内容不会丢失。" },
@@ -28,23 +28,39 @@ const STREAM_NOTICE: Record<string, { title: string; body: string }> = {
   offline: { title: "无法连接 Collector 服务", body: "页面内容已保留，恢复连接后会继续更新。" },
 };
 
-export function ResearchSessionPage() {
-  const { sessionId = "" } = useParams();
+/**
+ * 统一节点页（阶段 H2）：根节点（旧会话页）与子节点（旧分支页）同一页面。
+ * - 数据统一走 GET /v1/research-nodes/:id；提交统一走节点消息端点；
+ * - 子节点与带来源的根节点显示顶部来源条与材料范围说明；
+ * - 附件与拖放导入只在根节点呈现，子节点没有独立文件空间；
+ * - ?sel= 来源返回高亮、选区捕获层、流式事件在所有节点一致。
+ */
+export function ResearchNodePage() {
+  const { sessionId = "", nodeId = "" } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
   // 开始页首问通过路由 state 传入，只在挂载时读取一次；成功前由 hook 保留
   const initialTurnRef = useRef<PendingFirstTurn | undefined>(
     (location.state as { firstTurn?: PendingFirstTurn } | null)?.firstTurn,
   );
-  const session = useResearchSession(sessionId, { initialTurn: initialTurnRef.current });
+  const node = useResearchNode(nodeId, { initialTurn: initialTurnRef.current });
   const [retryingTaskId, setRetryingTaskId] = useState<string | null>(null);
-  const readyView = session.state.kind === "ready" ? session.state.view : undefined;
-  const imports = useResearchImports(sessionId, readyView, session.updateView, session.announce, session.escalateError);
+  const readyView = node.state.kind === "ready" ? node.state.view : undefined;
+  // 导入控制器以会话视图形状工作：节点视图结构兼容，合并时保留 node / childNodes
+  const importsUpdateView = useRef(
+    (updater: (view: ResearchSessionView) => ResearchSessionView) =>
+      node.updateView((view) => ({ ...view, ...updater(view) })),
+  ).current;
+  const imports = useResearchImports(sessionId, readyView, importsUpdateView, node.announce, node.escalateError);
   const [dragActive, setDragActive] = useState(false);
   const dragDepthRef = useRef(0);
 
-  // 带来源的独立研究会话：顶部来源条如实呈现来源选区与材料范围
-  const originSource = useSelectionSource(readyView?.session.originSelectionId);
+  const isRoot = readyView ? !readyView.node.parentNodeId : true;
+  // 来源条：子节点取 node.originSelectionId；带来源的旧独立会话根节点取 session.originSelectionId
+  const originSelectionId = readyView
+    ? readyView.node.originSelectionId ?? (!readyView.node.parentNodeId ? readyView.session.originSelectionId : undefined)
+    : undefined;
+  const originSource = useSelectionSource(originSelectionId);
   // 来源返回：按路由查询参数读取选区，在回答中重定位并高亮，失败降级
   const [searchParams] = useSearchParams();
   const restoredSelection = useSelectionRestore(searchParams.get("sel"));
@@ -77,7 +93,7 @@ export function ResearchSessionPage() {
   async function handleRetry(task: ResearchTaskRecord) {
     setRetryingTaskId(task.id);
     try {
-      await session.retryTask(task);
+      await node.retryTask(task);
     } finally {
       setRetryingTaskId(null);
     }
@@ -115,11 +131,11 @@ export function ResearchSessionPage() {
     if (file) void imports.upload(file);
   }
 
-  const { state } = session;
+  const { state } = node;
 
   if (state.kind === "error") {
     if (isUnauthorized(state.error)) {
-      return <PairingGate onPaired={session.reload} />;
+      return <PairingGate onPaired={node.reload} />;
     }
     if (isApiErrorCode(state.error, "not_found")) {
       return (
@@ -127,8 +143,8 @@ export function ResearchSessionPage() {
           <h1 className="page__title">这场研究不存在或已经清理</h1>
           <p className="page__lead">它可能已被删除，或者链接中的编号不正确。</p>
           <p>
-            <Link className="button button--primary" to="/research/new">
-              返回开始页
+            <Link className="button button--primary" to={`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(sessionId)}`}>
+              返回研究
             </Link>
           </p>
         </div>
@@ -147,7 +163,7 @@ export function ResearchSessionPage() {
         <h1 className="page__title">暂时无法打开这场研究</h1>
         <p className="page__lead">Collector 服务暂时出现错误或无法连接，已保存的内容不会丢失。</p>
         <p>
-          <button type="button" className="button button--primary" onClick={session.reload}>
+          <button type="button" className="button button--primary" onClick={node.reload}>
             重试
           </button>
         </p>
@@ -158,7 +174,7 @@ export function ResearchSessionPage() {
   if (state.kind === "loading") {
     return (
       <div className="page">
-        <h1 className="sr-only">正在打开研究会话</h1>
+        <h1 className="sr-only">正在打开研究</h1>
         <div className="session-header" aria-hidden="true">
           <Skeleton variant="title" width="40%" />
           <Skeleton variant="text" width="10rem" />
@@ -175,15 +191,35 @@ export function ResearchSessionPage() {
   }
 
   const { view } = state;
-  const notice = session.streamNotice !== "idle" ? STREAM_NOTICE[session.streamNotice] : undefined;
+  // 路由中的会话编号与节点所属会话不一致时按不存在处理，避免误导性链接
+  if (view.node.sessionId !== sessionId) {
+    return (
+      <div className="page">
+        <h1 className="page__title">这场研究不存在或已经清理</h1>
+        <p className="page__lead">它可能已被删除，或者链接中的编号不正确。</p>
+        <p>
+          <Link className="button button--primary" to={`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(sessionId)}`}>
+            返回研究
+          </Link>
+        </p>
+      </div>
+    );
+  }
+
+  const notice = node.streamNotice !== "idle" ? STREAM_NOTICE[node.streamNotice] : undefined;
+  const title = view.node.parentNodeId
+    ? originSource.selection
+      ? `深入研究：${selectionExcerpt(originSource.selection.text, 32)}`
+      : "子节点"
+    : view.session.title;
 
   return (
     <div
       className="page"
-      onDragEnter={handleDragEnter}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
+      onDragEnter={isRoot ? handleDragEnter : undefined}
+      onDragOver={isRoot ? handleDragOver : undefined}
+      onDragLeave={isRoot ? handleDragLeave : undefined}
+      onDrop={isRoot ? handleDrop : undefined}
     >
       {originSource.selection ? (
         <>
@@ -193,7 +229,7 @@ export function ResearchSessionPage() {
       ) : null}
 
       <header className="session-header">
-        <h1 className="page__title">{view.session.title}</h1>
+        <h1 className="page__title">{title}</h1>
         <p className="session-header__meta">更新于 {formatSessionTime(view.session.updatedAt)}</p>
         <ModelStatusIndicator />
       </header>
@@ -209,7 +245,11 @@ export function ResearchSessionPage() {
       ) : null}
 
       {view.messages.length === 0 ? (
-        <p className="page__empty">这场研究还没有内容。在下方输入第一个问题，Collector 会先保存再生成回答。</p>
+        <p className="page__empty">
+          {view.node.parentNodeId
+            ? "这个节点还没有内容。"
+            : "这场研究还没有内容。在下方输入第一个问题，Collector 会先保存再生成回答。"}
+        </p>
       ) : (
         <ol className="message-list">
           {view.messages.map((message) => {
@@ -239,56 +279,61 @@ export function ResearchSessionPage() {
         </ol>
       )}
 
-      {view.branches && view.branches.length > 0 ? (
-        <BranchList sessionId={sessionId} branches={view.branches} />
+      {view.childNodes && view.childNodes.length > 0 ? (
+        <NodeChildList sessionId={sessionId} childNodes={view.childNodes} />
       ) : null}
 
-      <AttachmentList
-        items={imports.items}
-        actingTaskIds={imports.actingTaskIds}
-        onCancel={(taskId) => void imports.cancel(taskId)}
-        onRetry={(taskId) => void imports.retry(taskId)}
-        onRead={(contentSnapshotId) => navigate(`/research/${encodeURIComponent(sessionId)}/reading/${encodeURIComponent(contentSnapshotId)}`)}
-      />
+      {isRoot ? (
+        <>
+          <AttachmentList
+            items={imports.items}
+            actingTaskIds={imports.actingTaskIds}
+            onCancel={(taskId) => void imports.cancel(taskId)}
+            onRetry={(taskId) => void imports.retry(taskId)}
+            onRead={(contentSnapshotId) => navigate(`/research/${encodeURIComponent(sessionId)}/reading/${encodeURIComponent(contentSnapshotId)}`)}
+          />
 
-      {imports.actionError ? (
+          {imports.actionError ? (
+            <p className="form-error" role="alert">
+              {imports.actionError}
+            </p>
+          ) : null}
+
+          {imports.pendingUpload ? (
+            <StatusMessage variant="info" role="status" title="上传结果不确定">
+              <p>
+                {imports.pendingUpload.fileName} 的上传结果不确定。重试使用同一条上传记录，不会产生重复附件。
+              </p>
+              <p className="attachment__pending-actions">
+                <button type="button" className="button button--secondary" onClick={() => void imports.retryPendingUpload()}>
+                  重试上传
+                </button>{" "}
+                <button type="button" className="button button--ghost" onClick={imports.dismissPendingUpload}>
+                  放弃
+                </button>
+              </p>
+            </StatusMessage>
+          ) : null}
+        </>
+      ) : null}
+
+      {node.actionError ? (
         <p className="form-error" role="alert">
-          {imports.actionError}
-        </p>
-      ) : null}
-
-      {imports.pendingUpload ? (
-        <StatusMessage variant="info" role="status" title="上传结果不确定">
-          <p>
-            {imports.pendingUpload.fileName} 的上传结果不确定。重试使用同一条上传记录，不会产生重复附件。
-          </p>
-          <p className="attachment__pending-actions">
-            <button type="button" className="button button--secondary" onClick={() => void imports.retryPendingUpload()}>
-              重试上传
-            </button>{" "}
-            <button type="button" className="button button--ghost" onClick={imports.dismissPendingUpload}>
-              放弃
-            </button>
-          </p>
-        </StatusMessage>
-      ) : null}
-
-      {session.actionError ? (
-        <p className="form-error" role="alert">
-          {session.actionError}
+          {node.actionError}
         </p>
       ) : null}
 
       <ChatComposer
-        draftScope={sessionId}
+        draftScope={view.node.parentNodeId ? `node:${nodeId}` : sessionId}
         submitLabel="发送"
-        onSubmit={session.submit}
-        onImportFile={(file) => void imports.upload(file)}
-        importAccept={IMPORT_ACCEPT}
-        externalError={imports.uploadError}
+        placeholder={view.node.parentNodeId ? "在这个节点里继续追问……" : undefined}
+        onSubmit={node.submit}
+        onImportFile={isRoot ? (file) => void imports.upload(file) : undefined}
+        importAccept={isRoot ? IMPORT_ACCEPT : undefined}
+        externalError={isRoot ? imports.uploadError : null}
       />
 
-      {dragActive ? (
+      {isRoot && dragActive ? (
         <div className="drop-overlay" aria-hidden="true">
           <p className="drop-overlay__title">松开鼠标，把文件导入这场研究</p>
           <p className="drop-overlay__meta">支持 TXT、Markdown、DOCX、PDF，单个不超过 20 MB</p>
@@ -301,7 +346,7 @@ export function ResearchSessionPage() {
       />
 
       <p className="sr-only" role="status" aria-live="polite">
-        {session.liveMessage}
+        {node.liveMessage}
       </p>
     </div>
   );

@@ -218,6 +218,10 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         );
         return json(response, 202, accepted);
       }
+      const researchSessionNodesMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)\/nodes$/);
+      if (request.method === "GET" && researchSessionNodesMatch) {
+        return json(response, 200, service.nodeGrowth.getNodeTree(decodeURIComponent(researchSessionNodesMatch[1])));
+      }
       const researchSessionMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)$/);
       if (request.method === "GET" && researchSessionMatch) {
         return json(response, 200, service.research.getSession(decodeURIComponent(researchSessionMatch[1])));

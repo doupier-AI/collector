@@ -20,9 +20,9 @@ import {
   apiPortForPage,
   pairAndOpen,
   readDataDir,
-  readResearchBranchTables,
   readResearchImportTables,
   readResearchLaterTables,
+  readResearchNodeTables,
   readResearchSelectionTables,
   readResearchTables,
 } from "./helpers";
@@ -127,8 +127,21 @@ async function assertRealMode(page: Page): Promise<void> {
 async function submitQuestion(page: Page, question: string): Promise<string> {
   await page.getByLabel("你的问题").fill(question);
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+$/, { timeout: 15_000 });
-  return page.url().split("/research/")[1] ?? "";
+  // 开始页先落到旧会话路由，再由重定向进入统一节点页（根节点 id = 会话 id）
+  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 15_000 });
+  return page.url().split("/research/")[1]?.split("/")[0] ?? "";
+}
+
+/** 等待跳转到子节点页并返回新节点 id（排除根节点：根节点 id 与会话 id 相同）。 */
+async function waitChildNodeUrl(page: Page, sessionId: string, timeoutMs = 20_000): Promise<string> {
+  await page.waitForURL(
+    (url) => {
+      const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
+      return Boolean(match && match[1] === sessionId && match[2] && match[2] !== sessionId);
+    },
+    { timeout: timeoutMs },
+  );
+  return page.url().split("/node/")[1] ?? "";
 }
 
 /** 等待至少 minCount 条 AI 消息完成（渲染出 data-content-kind 块），返回最新一条纯文本。 */
@@ -210,9 +223,9 @@ async function openInsightPanelReal(page: Page, selected: string): Promise<Locat
 }
 
 // ---------------------------------------------------------------------------
-// 场景一：从 Chat 进入深入研究（沿当前内容分支）→ 返回原文 → 刷新保持
+// 场景一：从 Chat 进入深入研究（节点生长）→ 返回原文 → 刷新保持
 // ---------------------------------------------------------------------------
-test("场景一：Chat 真实回答 → 选区真实分析 → 深入研究分支真实第一轮 → 返回原选区 → 刷新保持", async ({
+test("场景一：Chat 真实回答 → 选区真实分析 → 节点生长真实第一轮 → 返回原选区 → 刷新保持", async ({
   page,
 }) => {
   const apiRequests: Array<{ method: string; url: string; headers: Record<string, string> }> = [];
@@ -235,17 +248,15 @@ test("场景一：Chat 真实回答 → 选区真实分析 → 深入研究分�
   const selected = await selectRealAnswerText(page);
   const panel = await openInsightPanelReal(page, selected);
 
-  // 深入研究二选一 → 沿当前内容建立研究分支
+  // 深入研究 → 生长面板（二选一已退役，收敛为单一节点生长动作）
   await panel.getByRole("button", { name: "深入研究" }).click();
-  const chooser = page.getByTestId("deep-research-chooser");
-  await expect(chooser).toBeVisible();
-  await expect(chooser.getByRole("radio", { name: /沿当前内容建立研究分支/ })).toBeChecked();
-  await panel.getByRole("button", { name: "开始深入研究" }).click();
+  const grow = page.getByTestId("node-growth-panel");
+  await expect(grow).toBeVisible();
+  await panel.getByRole("button", { name: "开始研究" }).click();
 
-  // 分支视图：来源条、材料范围如实说明、真实第一轮
-  await page.waitForURL(/\/research\/[^/]+\/branch\/[^/]+$/, { timeout: 20_000 });
-  const branchId = page.url().split("/branch/")[1] ?? "";
-  expect(branchId).not.toBe("");
+  // 子节点视图：来源条、材料范围如实说明、真实第一轮
+  const nodeId = await waitChildNodeUrl(page, sessionId);
+  expect(nodeId).not.toBe("");
   const sourceBar = page.getByTestId("selection-source-bar");
   await expect(sourceBar).toBeVisible();
   await expect(sourceBar).toContainText(selected);
@@ -253,42 +264,43 @@ test("场景一：Chat 真实回答 → 选区真实分析 → 深入研究分�
   const firstRound = await waitCompletedAnswerText(page, 1);
   expect(firstRound, "第一轮研究应是真实生成").not.toContain("本地演示");
 
-  // 网络契约：深入研究请求带稳定幂等键 dr:
-  const drPost = apiRequests.find(
-    (request) => request.method === "POST" && /\/v1\/research-selections\/[^/]+\/deep-research$/.test(request.url),
+  // 网络契约：节点生长请求带稳定幂等键 ng:
+  const growPost = apiRequests.find(
+    (request) => request.method === "POST" && /\/v1\/research-selections\/[^/]+\/nodes$/.test(request.url),
   );
-  expect(drPost, "应有 POST /v1/research-selections/:id/deep-research").toBeTruthy();
-  expect(drPost?.headers["idempotency-key"]).toMatch(/^dr:/);
+  expect(growPost, "应有 POST /v1/research-selections/:id/nodes").toBeTruthy();
+  expect(growPost?.headers["idempotency-key"]).toMatch(/^ng:/);
 
-  // 幂等重放：真实条件下同一键不重复建分支
+  // 幂等重放：真实条件下同一键不重复建节点
   const selections = await apiJson<Array<{ id: string }>>(page, `/v1/research-sessions/${sessionId}/selections`);
   expect(selections.length).toBeGreaterThanOrEqual(1);
-  const replay = await page.request.post(`/v1/research-selections/${selections[0].id}/deep-research`, {
-    headers: { "Idempotency-Key": drPost!.headers["idempotency-key"], "Content-Type": "application/json" },
-    data: { mode: "branch" },
+  const replay = await page.request.post(`/v1/research-selections/${selections[0].id}/nodes`, {
+    headers: { "Idempotency-Key": growPost!.headers["idempotency-key"], "Content-Type": "application/json" },
+    data: {},
   });
   expect(replay.ok()).toBe(true);
-  expect(((await replay.json()) as { branch: { id: string } }).branch.id).toBe(branchId);
+  expect(((await replay.json()) as { node: { id: string } }).node.id).toBe(nodeId);
 
-  // SQLite：一条分支、分支消息落库、第一轮任务完成
+  // SQLite：一条子节点、节点消息落库、第一轮任务完成
   const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
-  const branchTables = readResearchBranchTables(dbPath);
-  const sessionBranches = branchTables.branches.filter((row) => row.sessionId === sessionId);
-  expect(sessionBranches).toHaveLength(1);
-  expect(branchTables.branchMessages.filter((row) => row.branchId === branchId).length).toBeGreaterThanOrEqual(2);
+  const nodeTables = readResearchNodeTables(dbPath);
+  const childNodes = nodeTables.nodes.filter((row) => row.sessionId === sessionId && row.parentNodeId !== null);
+  expect(childNodes).toHaveLength(1);
+  expect(childNodes[0]?.id).toBe(nodeId);
+  expect(nodeTables.nodeMessages.filter((row) => row.nodeId === nodeId).length).toBeGreaterThanOrEqual(2);
   expect(readResearchTables(dbPath).tasks.some((row) => row.sessionId === sessionId && row.status === "completed")).toBe(true);
 
-  // 返回原文：高亮原选区
+  // 返回原文：高亮原选区（消息选区回到根节点页）
   await sourceBar.getByRole("link", { name: "← 返回原文" }).click();
-  await page.waitForURL(new RegExp(`/research/${sessionId}\\?sel=`));
+  await page.waitForURL(new RegExp(`/research/${sessionId}/node/${sessionId}\\?sel=`));
   await expect(page.locator("[data-selection-mark]")).toHaveText(selected, { timeout: 20_000 });
 
-  // 刷新后高亮与分支入口仍在
+  // 刷新后高亮与子节点入口仍在
   await page.reload();
   await expect(page.locator("[data-selection-mark]")).toHaveText(selected, { timeout: 20_000 });
-  await expect(page.getByTestId("branch-list")).toBeVisible();
+  await expect(page.getByTestId("node-child-list")).toBeVisible();
 
-  // 390 窄屏：来源返回与分支视图不溢出（真实模型内容下的响应式取证）
+  // 390 窄屏：来源返回与节点视图不溢出（真实模型内容下的响应式取证）
   await page.setViewportSize({ width: 390, height: 780 });
   await expect(page.locator("[data-selection-mark]")).toHaveText(selected);
   const metrics = await page.evaluate(() => ({
@@ -302,7 +314,7 @@ test("场景一：Chat 真实回答 → 选区真实分析 → 深入研究分�
 });
 
 // ---------------------------------------------------------------------------
-// 场景二：从文档进入深入研究（独立会话）→ 返回原文 → 服务重启后恢复
+// 场景二：从文档进入深入研究（带方向的节点生长）→ 返回原文 → 服务重启后恢复
 // ---------------------------------------------------------------------------
 const DOC_CONTENT = [
   "第一段：分布式系统的一致性指多个副本对同一份数据达成相同的视图。",
@@ -314,7 +326,7 @@ const DOC_CONTENT = [
 const DOC_FILE = "一致性笔记.txt";
 const DOC_SELECTED = "副本之间会在没有新写入时逐步收敛";
 
-test("场景二：文档导入 → 选区真实分析 → 独立研究会话真实第一轮 → 返回原文 → 服务重启后恢复", async ({
+test("场景二：文档导入 → 选区真实分析 → 带方向的节点生长真实第一轮 → 返回原文 → 服务重启后恢复", async ({
   page,
   browser,
 }) => {
@@ -343,52 +355,47 @@ test("场景二：文档导入 → 选区真实分析 → 独立研究会话真�
   await selectReadingTextByTarget(page, DOC_SELECTED);
   const panel = await openInsightPanelReal(page, DOC_SELECTED);
 
-  // 深入研究二选一 → 以选区开启独立研究会话（含方向输入）
+  // 深入研究 → 生长面板，可选方向成为第一轮输入
   await panel.getByRole("button", { name: "深入研究" }).click();
-  const chooser = page.getByTestId("deep-research-chooser");
-  await chooser.getByRole("radio", { name: /以选区开启独立研究会话/ }).click();
-  await chooser.getByLabel("研究方向（可选）").fill("把最终一致性的收敛机制讲透");
-  await panel.getByRole("button", { name: "开始深入研究" }).click();
+  const grow = page.getByTestId("node-growth-panel");
+  await grow.getByLabel("你想重点问什么（可选）").fill("把最终一致性的收敛机制讲透");
+  await panel.getByRole("button", { name: "开始研究" }).click();
 
-  // 进入新的独立会话：来源条带来源内容名、材料范围说明、真实第一轮
-  await page.waitForURL(
-    (url) => {
-      const match = url.pathname.match(/^\/research\/([^/]+)$/);
-      return Boolean(match && match[1] && match[1] !== originSessionId);
-    },
-    { timeout: 30_000 },
-  );
-  const newSessionId = page.url().split("/research/")[1] ?? "";
-  expect(newSessionId).not.toBe(originSessionId);
+  // 进入新子节点：来源条带来源内容名、材料范围说明、真实第一轮
+  const nodeId = await waitChildNodeUrl(page, originSessionId, 30_000);
+  expect(nodeId).not.toBe(originSessionId);
   const sourceBar = page.getByTestId("selection-source-bar");
   await expect(sourceBar).toContainText(DOC_FILE);
   await expect(sourceBar).toContainText(DOC_SELECTED);
   await expect(page.getByTestId("research-scope-note")).toContainText("自动使用当前模型供应商的联网能力");
   await waitCompletedAnswerText(page, 1);
 
-  // 返回原文：回到来源内容并高亮原选区
+  // 返回原文：回到来源内容并高亮原选区（快照选区回到阅读页）
   await sourceBar.getByRole("link", { name: "← 返回原文" }).click();
   await page.waitForURL((url) => url.href.includes(`?sel=`) && url.href.includes(originSessionId), {
     timeout: 20_000,
   });
   await expect(page.locator("[data-selection-mark]")).toHaveText(DOC_SELECTED, { timeout: 20_000 });
 
-  // SQLite：带来源会话落库、导入快照仍在
+  // SQLite：子节点挂在根节点下并记录来源选区、导入快照仍在
   const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
-  const branchTables = readResearchBranchTables(dbPath);
-  const originSessions = branchTables.originSessions.filter((row) => row.id === newSessionId);
-  expect(originSessions).toHaveLength(1);
-  expect(originSessions[0]?.originSessionId).toBe(originSessionId);
+  const childNodes = readResearchNodeTables(dbPath).nodes.filter(
+    (row) => row.sessionId === originSessionId && row.parentNodeId !== null,
+  );
+  expect(childNodes).toHaveLength(1);
+  expect(childNodes[0]?.id).toBe(nodeId);
+  expect(childNodes[0]?.parentNodeId).toBe(originSessionId);
+  expect(childNodes[0]?.originSelectionId).not.toBeNull();
   expect(readResearchImportTables(dbPath).snapshots.filter((row) => row.sessionId === originSessionId).length).toBeGreaterThanOrEqual(1);
 
-  // 服务重启（同一数据目录）：研究会话、来源快照与返回路径可恢复
+  // 服务重启（同一数据目录）：节点、来源快照与返回路径可恢复
   await restartServer();
   // 全新浏览器上下文重新配对（模拟重启后重新打开产品），验证持久化数据可恢复
   const freshContext = await browser.newContext({ baseURL: BASE });
   const recovered = await freshContext.newPage();
   await pairAndOpen(recovered, "/");
-  await recovered.goto(`/research/${newSessionId}`);
-  // 恢复后的独立会话仍带来源条与第一轮真实内容
+  await recovered.goto(`/research/${originSessionId}/node/${nodeId}`);
+  // 恢复后的子节点仍带来源条与第一轮真实内容
   await expect(recovered.getByTestId("selection-source-bar")).toBeVisible({ timeout: 30_000 });
   await expect(recovered.getByTestId("selection-source-bar")).toContainText(DOC_SELECTED);
   await expect(recovered.locator('.message--assistant [data-content-kind="message"]').first()).toBeVisible({
@@ -474,7 +481,7 @@ test("场景三：真实回答选区 → 保存稍后再学（星级 / 概括）
   await page.waitForURL(/\/research\/new$/, { timeout: 15_000 });
 
   await page.locator(".later-item", { hasText: summary }).locator(".later-item__open").click();
-  await page.waitForURL(new RegExp(`/research/${sessionId}\\?sel=`), { timeout: 20_000 });
+  await page.waitForURL(new RegExp(`/research/${sessionId}/node/${sessionId}\\?sel=`), { timeout: 20_000 });
   await expect(page.locator("[data-selection-mark]")).toHaveText(selected, { timeout: 20_000 });
   await expect(page.getByTestId("selection-insight-panel")).toBeVisible();
   await expect(page.getByTestId("selection-insight-panel").locator(".selection-panel__quote")).toHaveText(selected);
@@ -491,7 +498,7 @@ test("场景三：真实回答选区 → 保存稍后再学（星级 / 概括）
 // 场景四：真实条件下的失败与恢复——刷新不重复创建、材料范围如实、全程无演示标记
 // （更广的失败 / 重试 / 无模型矩阵由默认套件 no-model.spec.ts 等确定性覆盖）
 // ---------------------------------------------------------------------------
-test("场景四：刷新不重复创建分支与稍后再学项目，材料范围如实说明，全程无演示标记", async ({ page }) => {
+test("场景四：刷新不重复创建子节点与稍后再学项目，材料范围如实说明，全程无演示标记", async ({ page }) => {
   await pairAndOpen(page, "/research/new");
   const consoleIssues = watchConsole(page);
   const sessionId = await submitQuestion(page, "请用一句话解释什么是哈希函数。");
@@ -501,22 +508,23 @@ test("场景四：刷新不重复创建分支与稍后再学项目，材料范�
   const selected = await selectRealAnswerText(page);
   const panel = await openInsightPanelReal(page, selected);
 
-  // 建分支
+  // 生长子节点
   await panel.getByRole("button", { name: "深入研究" }).click();
-  await panel.getByRole("button", { name: "开始深入研究" }).click();
-  await page.waitForURL(/\/research\/[^/]+\/branch\/[^/]+$/, { timeout: 20_000 });
-  const branchId = page.url().split("/branch/")[1] ?? "";
+  await panel.getByRole("button", { name: "开始研究" }).click();
+  const nodeId = await waitChildNodeUrl(page, sessionId);
   await waitCompletedAnswerText(page, 1);
 
   const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
-  const branchesBefore = readResearchBranchTables(dbPath).branches.filter((row) => row.sessionId === sessionId).length;
+  const childrenBefore = readResearchNodeTables(dbPath).nodes.filter(
+    (row) => row.sessionId === sessionId && row.parentNodeId !== null,
+  ).length;
 
-  // 刷新分支视图：不重复创建分支
+  // 刷新子节点视图：不重复创建节点
   await page.reload();
   await expect(page.getByTestId("selection-source-bar")).toBeVisible({ timeout: 20_000 });
-  expect(readResearchBranchTables(dbPath).branches.filter((row) => row.sessionId === sessionId)).toHaveLength(
-    branchesBefore,
-  );
+  expect(
+    readResearchNodeTables(dbPath).nodes.filter((row) => row.sessionId === sessionId && row.parentNodeId !== null),
+  ).toHaveLength(childrenBefore);
 
   // 回到原会话保存一个稍后再学项目，再刷新：不重复创建
   await page.goto(`/research/${sessionId}`);
@@ -536,8 +544,8 @@ test("场景四：刷新不重复创建分支与稍后再学项目，材料范�
     laterBefore,
   );
 
-  // 材料范围如实：分支视图固定说明未联网检索，不暗示已核验
-  await page.goto(`/research/${sessionId}/branch/${branchId}`);
+  // 材料范围如实：子节点视图固定说明材料范围，不暗示已核验
+  await page.goto(`/research/${sessionId}/node/${nodeId}`);
   await expect(page.getByTestId("research-scope-note")).toContainText("自动使用当前模型供应商的联网能力");
 
   // 全程无演示标记

@@ -14,9 +14,10 @@ interface SessionView {
 async function submitFirstQuestion(page: Page, question = QUESTION): Promise<string> {
   await page.getByLabel("你的问题").fill(question);
   await page.getByRole("button", { name: "开始研究" }).click();
-  // 不能匹配当前所在的 /research/new（Playwright 对当前 URL 会立即放行）
-  await page.waitForURL(/\/research\/(?!new$)[^/]+$/, { timeout: 10_000 });
-  return page.url().split("/research/")[1];
+  // 不能匹配当前所在的 /research/new（Playwright 对当前 URL 会立即放行）；
+  // 开始页先落到旧会话路由，再由重定向进入统一节点页（根节点 id = 会话 id）
+  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
+  return page.url().split("/research/")[1]?.split("/")[0] ?? "";
 }
 
 test("首次打开显示开始页与空状态邀请", async ({ page }) => {
@@ -100,9 +101,9 @@ test("提交后渐进内容进入同一条 AI 消息并完成，控制台无错�
   // 模型状态点已加载并明确标识当前模式（e2e 假模型按未配置外的状态显示，具体文案由接口决定）
   await expect(page.locator(".model-status")).toBeVisible();
 
-  // 网络契约：POST messages 携带幂等键；events 响应为 text/event-stream
+  // 网络契约：统一节点页 POST /v1/research-nodes/:id/messages 携带幂等键；events 响应为 text/event-stream
   const postMessage = apiRequests.find(
-    (request) => request.method === "POST" && /\/v1\/research-sessions\/[^/]+\/messages/.test(request.url),
+    (request) => request.method === "POST" && /\/v1\/research-nodes\/[^/]+\/messages/.test(request.url),
   );
   expect(postMessage?.headers["idempotency-key"]).toBeTruthy();
   const eventsResponse = apiResponses.find((response) => /\/v1\/research-tasks\/[^/]+\/events/.test(response.url));
@@ -167,7 +168,7 @@ test("创建响应丢失后重试恢复同一会话", async ({ page }) => {
   expect(creationKeys).toHaveLength(2);
   expect(creationKeys[0]).toBeTruthy();
   expect(creationKeys[1]).toBe(creationKeys[0]);
-  const sessionId = page.url().split("/research/")[1];
+  const sessionId = page.url().split("/research/")[1]?.split("/")[0] ?? "";
   const dataDir = await readDataDir(apiPortForPage(page));
   const sessions = readResearchTables(join(dataDir, "collector.sqlite")).sessions
     .filter((session) => session.creationIdempotencyKey === creationKeys[0]);
@@ -180,7 +181,7 @@ test("快速双击发送只创建一个任务", async ({ page }) => {
   page.on("request", (request) => {
     if (request.method() !== "POST") return;
     if (/\/v1\/research-sessions$/.test(request.url())) sessionCreates.push(request.url());
-    if (/\/v1\/research-sessions\/[^/]+\/messages$/.test(request.url())) messagePosts.push(request.url());
+    if (/\/v1\/research-nodes\/[^/]+\/messages$/.test(request.url())) messagePosts.push(request.url());
   });
 
   await pairAndOpen(page, "/research/new");
@@ -191,7 +192,7 @@ test("快速双击发送只创建一个任务", async ({ page }) => {
   await expect(page.getByText(QUESTION, { exact: true })).toBeVisible();
   await expect(page.locator(".message--assistant")).toHaveCount(1);
 
-  const sessionId = page.url().split("/research/")[1];
+  const sessionId = page.url().split("/research/")[1]?.split("/")[0] ?? "";
   const view = await apiJson<SessionView>(page, `/v1/research-sessions/${sessionId}`);
   expect(view.tasks).toHaveLength(1);
   expect(sessionCreates, "创建会话请求只应发出一次").toHaveLength(1);

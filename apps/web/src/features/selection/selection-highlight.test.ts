@@ -4,7 +4,7 @@ import { makeMessage, makeSelection } from "../../test/fakes";
 import {
   backRouteForSelection,
   captureFromSelection,
-  deepResearchIdempotencyKey,
+  childNodeIdempotencyKey,
   highlightForMessages,
   laterIdempotencyKey,
   resolveHighlight,
@@ -30,9 +30,9 @@ describe("resolveHighlight", () => {
 });
 
 describe("backRouteForSelection", () => {
-  it("消息选区回到会话页并携带选区参数", () => {
+  it("消息选区回到根节点页并携带选区参数", () => {
     const selection = makeSelection({ id: "sel-1", sessionId: "session-1" });
-    expect(backRouteForSelection(selection)).toBe("/research/session-1?sel=sel-1");
+    expect(backRouteForSelection(selection)).toBe("/research/session-1/node/session-1?sel=sel-1");
   });
 
   it("快照选区回到阅读页并携带选区参数", () => {
@@ -133,19 +133,19 @@ describe("highlightForMessages", () => {
   });
 });
 
-describe("deepResearchIdempotencyKey", () => {
+describe("childNodeIdempotencyKey", () => {
   const digest = (text: string) => `h${text.length}`;
 
-  it("同一选区、去向与方向得到同一个键", () => {
-    const first = deepResearchIdempotencyKey("sel-1", "branch", "  同一方向 ", digest);
-    const second = deepResearchIdempotencyKey("sel-1", "branch", "同一方向", digest);
+  it("同一选区与同一追问得到同一个键", () => {
+    const first = childNodeIdempotencyKey("sel-1", "  同一追问 ", digest);
+    const second = childNodeIdempotencyKey("sel-1", "同一追问", digest);
     expect(first).toBe(second);
-    expect(first).toBe("dr:sel-1:branch:h4");
+    expect(first).toBe("ng:sel-1:h4");
   });
 
-  it("方向为空时使用固定占位，不同去向键不同", () => {
-    expect(deepResearchIdempotencyKey("sel-1", "branch", "", digest)).toBe("dr:sel-1:branch:auto");
-    expect(deepResearchIdempotencyKey("sel-1", "session", "", digest)).toBe("dr:sel-1:session:auto");
+  it("追问为空时使用固定占位", () => {
+    expect(childNodeIdempotencyKey("sel-1", "", digest)).toBe("ng:sel-1:auto");
+    expect(childNodeIdempotencyKey("sel-1", "   ", digest)).toBe("ng:sel-1:auto");
   });
 });
 

@@ -11,6 +11,7 @@ import {
   type ResearchNodeRecord,
   type ResearchNodeView,
   type ResearchSelectionRecord,
+  type ResearchSessionNodeTreeItem,
   type ResearchSessionRecord,
   type ResearchTaskRecord,
   type ResearchTurnAccepted,
@@ -20,6 +21,9 @@ import { DEEP_RESEARCH_PROMPT_VERSION, RESEARCH_CHAT_PROMPT_VERSION, type Resear
 
 /** 分支模式首轮用户消息中选区原文的摘录长度。 */
 const SELECTION_EXCERPT_CHARACTERS = 120;
+
+/** 树导航节点标签的摘录长度（H2，H6 节点命名落地前的确定性标签）。 */
+const TREE_LABEL_CHARACTERS = 48;
 
 export interface DeepResearchServiceOptions {
   /** 深入研究任务复用研究会话任务管线（claim / 事件 / 重试 / 重启恢复）。 */
@@ -237,6 +241,24 @@ export class NodeGrowthService {
     return this.store.listChildNodes(parentNodeId);
   }
 
+  /**
+   * 会话节点树（H2 全屏树导航）：一次性返回整个会话的全部节点与确定性标签。
+   * 返回扁平数组，客户端按 parentNodeId 自行构建树；label 不依赖 AI。
+   */
+  getNodeTree(sessionId: string): ResearchSessionNodeTreeItem[] {
+    const session = this.store.getResearchSession(sessionId);
+    if (!session) throw new DeepResearchNotFoundError("Research session not found");
+    return this.store.listResearchNodes(sessionId).map((node) => {
+      if (!node.parentNodeId) return { node, label: session.title };
+      const selection = node.originSelectionId ? this.store.getResearchSelection(node.originSelectionId) : undefined;
+      const originText = selection ? excerptText(selection.text, TREE_LABEL_CHARACTERS) : undefined;
+      if (originText) return { node, label: originText, originText };
+      const firstUser = this.store.listResearchMessagesByNode(node.id).find((message) => message.role === "user");
+      const firstMessage = firstUser ? excerptText(firstUser.content, TREE_LABEL_CHARACTERS) : undefined;
+      return { node, label: firstMessage ?? "子节点", ...(firstMessage ? { firstMessage } : {}) };
+    });
+  }
+
   private scheduleTask(id: string): void {
     if (this.options.autoRunTasks === false) return;
     setImmediate(() => void this.options.research.processTask(id).catch(() => undefined));
@@ -247,6 +269,11 @@ function defaultFirstTurnContent(selection: ResearchSelectionRecord): string {
   const text = selection.text.trim();
   const excerpt = text.length > SELECTION_EXCERPT_CHARACTERS ? `${text.slice(0, SELECTION_EXCERPT_CHARACTERS)}…` : text;
   return `深入研究这段内容：“${excerpt}”`;
+}
+
+function excerptText(text: string, maxCharacters: number): string {
+  const trimmed = text.trim().replace(/\s+/g, " ");
+  return trimmed.length > maxCharacters ? `${trimmed.slice(0, maxCharacters)}…` : trimmed;
 }
 
 export class DeepResearchNotFoundError extends Error {}

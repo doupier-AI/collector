@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
-import { apiJson, apiPortForPage, pairAndOpen, readDataDir, readResearchBranchTables, readResearchLaterTables, readResearchSelectionTables } from "./helpers";
+import { apiJson, apiPortForPage, pairAndOpen, readDataDir, readResearchLaterTables, readResearchNodeTables, readResearchSelectionTables } from "./helpers";
 
 const QUESTION = "没有模型时也要保存这句话";
 
@@ -18,8 +18,8 @@ test("未配置模型：输入保留、显示失败原因与重试，重试不�
 
   await page.getByLabel("你的问题").fill(QUESTION);
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+$/, { timeout: 10_000 });
-  const sessionId = page.url().split("/research/")[1];
+  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
+  const sessionId = page.url().split("/research/")[1]?.split("/")[0] ?? "";
 
   // 用户输入仍在会话中，AI 区域显示失败卡与可理解原因
   await expect(page.getByText(QUESTION, { exact: true })).toBeVisible();
@@ -168,31 +168,40 @@ test("未配置模型：分析失败仍可发起深入研究，分支与来源�
   await expect(panel).toBeVisible();
   await expect(panel.getByText("选区已保存，分析暂时没有完成")).toBeVisible({ timeout: 15_000 });
   await panel.getByRole("button", { name: "深入研究" }).click();
-  const chooser = page.getByTestId("deep-research-chooser");
-  await expect(chooser).toBeVisible();
-  await panel.getByRole("button", { name: "开始深入研究" }).click();
+  const grow = page.getByTestId("node-growth-panel");
+  await expect(grow).toBeVisible();
+  await panel.getByRole("button", { name: "开始研究" }).click();
 
-  // 分支视图：来源关系先于生成保存，第一轮失败给出原因与重试
-  await page.waitForURL(new RegExp(`/research/${created.id}/branch/[^/]+$`), { timeout: 10_000 });
+  // 子节点视图：来源关系先于生成保存，第一轮失败给出原因与重试
+  // waitForURL 必须排除根节点——当前页面 URL 同样匹配节点路由（根节点 id = 会话 id）
+  await page.waitForURL(
+    (url) => {
+      const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
+      return Boolean(match && match[1] === created.id && match[2] && match[2] !== created.id);
+    },
+    { timeout: 10_000 },
+  );
   const sourceBar = page.getByTestId("selection-source-bar");
   await expect(sourceBar).toContainText("无模型也要能发起深入研究并保留来源");
   await expect(page.getByText("内容已保存，暂时无法生成回答")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText(/还没有配置可用模型/)).toBeVisible();
 
-  // 分支与来源选区不因生成失败而丢失
+  // 子节点与来源选区不因生成失败而丢失（harness 全套件共享一个库，按会话过滤）
   const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
-  const branchTables = readResearchBranchTables(dbPath);
-  expect(branchTables.branches).toHaveLength(1);
-  expect(branchTables.branches[0]?.sessionId).toBe(created.id);
+  const nodeTables = readResearchNodeTables(dbPath);
+  const childNodes = nodeTables.nodes.filter((row) => row.sessionId === created.id && row.parentNodeId !== null);
+  expect(childNodes).toHaveLength(1);
+  expect(childNodes[0]?.sessionId).toBe(created.id);
+  expect(childNodes[0]?.parentNodeId).toBe(created.id);
   const selectionTables = readResearchSelectionTables(dbPath);
   expect(selectionTables.selections.filter((row) => row.sessionId === created.id)).toHaveLength(1);
 
-  // 重试第一轮：无模型下仍失败，但来源条与失败卡保持可用，不新增分支
+  // 重试第一轮：无模型下仍失败，但来源条与失败卡保持可用，不新增节点
   await page.getByRole("button", { name: "重试" }).click();
   await expect(page.getByText("内容已保存，暂时无法生成回答")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId("selection-source-bar")).toBeVisible();
-  const afterRetry = readResearchBranchTables(dbPath);
-  expect(afterRetry.branches).toHaveLength(1);
+  const afterRetry = readResearchNodeTables(dbPath);
+  expect(afterRetry.nodes.filter((row) => row.sessionId === created.id && row.parentNodeId !== null)).toHaveLength(1);
 
   // 返回原文：阅读页按锚点高亮原选区
   await sourceBar.getByRole("link", { name: "← 返回原文" }).click();

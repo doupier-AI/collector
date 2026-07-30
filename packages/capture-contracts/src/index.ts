@@ -1045,6 +1045,21 @@ export interface NodeGrowthAccepted {
   task: ResearchTaskRecord;
 }
 
+/**
+ * 会话节点树的扁平条目（阶段 H2 全屏树导航）。
+ * 一次性返回整个会话的全部节点，客户端按 parentNodeId 自行构建树。
+ * label 是 H6 节点命名落地前的确定性临时标签，不依赖 AI。
+ */
+export interface ResearchSessionNodeTreeItem {
+  node: ResearchNodeRecord;
+  /** 根节点为会话标题；子节点优先来源选区摘要，其次首条用户消息摘要。 */
+  label: string;
+  /** 来源选区原文摘要（存在来源选区时）。 */
+  originText?: string;
+  /** 首条用户消息摘要（无来源选区时作为标签回退）。 */
+  firstMessage?: string;
+}
+
 export interface ResearchBranchView {
   branch: ResearchBranchRecord;
   session: ResearchSessionRecord;
