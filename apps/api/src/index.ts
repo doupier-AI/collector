@@ -11,6 +11,17 @@ export { DeepResearchNotFoundError, DeepResearchService, DeepResearchValidationE
 export { ResearchLaterNotFoundError, ResearchLaterService, ResearchLaterValidationError } from "./research-later.js";
 export { TermDetectionService, detectTermMarkers, validateTermMarkers, TERM_DETECTION_MIN_CONTENT_LENGTH } from "./term-detection.js";
 export {
+  ParentChainContextService,
+  DEFAULT_PARENT_CHAIN_BOUNDS,
+  PARENT_CHAIN_MAX_ANCESTORS,
+  PARENT_CHAIN_PER_ANCESTOR_CHARACTERS,
+  PARENT_CHAIN_TOTAL_CHARACTERS,
+  type AncestorContext,
+  type ParentChainContextBounds,
+  type ParentChainContextResult,
+  type ParentChainContextStore,
+} from "./parent-chain-context.js";
+export {
   ensureInstanceControlToken,
   instanceControlPath,
   instanceStatePath,
