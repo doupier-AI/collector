@@ -149,26 +149,29 @@ test.describe("选区捕获与浮动胶囊", () => {
     expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
   });
 
-  test("选区太短只给调整提示，不创建选区记录，不出现任何胶囊", async ({ page }) => {
+  test("单字选区也有效（修订一 #10：非空即有效）：浮动胶囊出现，引用后落库，无太短提示", async ({ page }) => {
     await pairAndOpen(page, "/research/new");
     const sessionId = await submitFirstQuestion(page);
     await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
       timeout: 15_000,
     });
 
-    await selectAnswerText(page, "本地");
-    const hint = page.getByTestId("selection-quality-hint");
-    await expect(hint).toBeVisible();
-    await expect(hint).toContainText("至少选择");
-    await expect(page.getByTestId("floating-selection-capsule")).toHaveCount(0);
-    await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
+    await selectAnswerText(page, "本");
+    // 不再有任何"选区太短"提示
+    await expect(page.getByTestId("selection-quality-hint")).toHaveCount(0);
+    // 浮动胶囊直接出现
+    await expect(page.getByTestId("floating-selection-capsule")).toBeVisible();
     await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
 
-    const selections = await apiJson<unknown[]>(page, `/v1/research-sessions/${sessionId}/selections`);
-    expect(selections).toHaveLength(0);
-
-    await hint.getByRole("button", { name: "关闭提示" }).click();
-    await expect(hint).toBeHidden();
+    // 引用后选区记录落库
+    await page.getByTestId("floating-capsule-cite").click();
+    await expect(page.getByTestId("selection-capsule")).toContainText("本");
+    const selections = await apiJson<Array<{ text: string }>>(
+      page,
+      `/v1/research-sessions/${sessionId}/selections`,
+    );
+    expect(selections).toHaveLength(1);
+    expect(selections[0]?.text).toBe("本");
   });
 
   test("键盘 Shift+方向键选择同样出现浮动胶囊；Escape 不关闭，选区坍缩才关闭", async ({ page }) => {

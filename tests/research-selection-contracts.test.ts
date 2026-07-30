@@ -4,7 +4,6 @@ import {
   evaluateSelectionQuality,
   parseResearchSelectionInsight,
   RESEARCH_SELECTION_MAX_CHARACTERS,
-  RESEARCH_SELECTION_MIN_CHARACTERS,
   validateResearchSelectionInput,
 } from "@collector/capture-contracts";
 
@@ -60,8 +59,10 @@ test("validateResearchSelectionInput rejects malformed anchors", () => {
 });
 
 test("evaluateSelectionQuality enforces shared thresholds", () => {
-  assert.deepEqual(evaluateSelectionQuality({ text: "   ", blockCount: 1 }), { level: "too_short", minCharacters: RESEARCH_SELECTION_MIN_CHARACTERS });
-  assert.deepEqual(evaluateSelectionQuality({ text: "三个字", blockCount: 1 }), { level: "too_short", minCharacters: RESEARCH_SELECTION_MIN_CHARACTERS });
+  // 修订一·B（issue #10）：非空即有效——最短字符限制退役，单字选区同样 ok；
+  // "非空"由 validateResearchSelectionInput 的 exact 校验承担（纯空白 exact 被拒绝）
+  assert.deepEqual(evaluateSelectionQuality({ text: "字", blockCount: 1 }), { level: "ok" });
+  assert.deepEqual(evaluateSelectionQuality({ text: "三个字", blockCount: 1 }), { level: "ok" });
   assert.deepEqual(evaluateSelectionQuality({ text: "够长的选区", blockCount: 2 }), { level: "cross_block" });
   assert.deepEqual(
     evaluateSelectionQuality({ text: "x".repeat(RESEARCH_SELECTION_MAX_CHARACTERS + 1), blockCount: 1 }),

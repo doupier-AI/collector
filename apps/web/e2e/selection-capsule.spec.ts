@@ -272,27 +272,38 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     await expect(capsule).toBeHidden();
   });
 
-  test("选区太短只给质量提示，不出现任何胶囊", async ({ page }) => {
+  test("单字选区也有效：浮动胶囊 → 引用 → 在此追问完整走通（修订一 #10）", async ({ page }) => {
     await pairAndOpen(page, "/research/new");
     const sessionId = await submitFirstQuestion(page);
     await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
       timeout: 15_000,
     });
 
-    // 选中太短的文字
-    await selectAnswerText(page, "本地");
-    const hint = page.getByTestId("selection-quality-hint");
-    await expect(hint).toBeVisible();
-    await expect(hint).toContainText("至少选择");
+    // 选中单个字：不再有任何"选区太短"提示，浮动胶囊直接出现
+    await selectAnswerText(page, "本");
+    await expect(page.getByTestId("selection-quality-hint")).toHaveCount(0);
+    await expect(page.getByTestId("floating-selection-capsule")).toBeVisible();
 
-    // 浮动胶囊与引用态胶囊都不出现
-    await expect(page.getByTestId("floating-selection-capsule")).toHaveCount(0);
-    await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
-    // 旧面板也不出现
-    await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
+    // 引用单字选区
+    await page.getByTestId("floating-capsule-cite").click();
+    const capsule = page.getByTestId("selection-capsule");
+    await expect(capsule).toBeVisible();
+    await expect(capsule).toContainText("本");
 
-    // 不创建选区记录
-    const selections = await apiJson<unknown[]>(page, `/v1/research-sessions/${sessionId}/selections`);
-    expect(selections).toHaveLength(0);
+    // 双模发送：在此追问完整走通
+    await page.getByLabel("你的问题").fill("这个字指什么？");
+    await page.getByRole("button", { name: "在此追问" }).click();
+    await expect(page.locator(".message--user").last()).toContainText("这个字指什么？", {
+      timeout: 10_000,
+    });
+    // 选区原文以引用格式嵌入（Markdown 块引用渲染后仍含原文）
+    await expect(page.locator(".message--user").last()).toContainText("本");
+    // 发送后引用态胶囊消失
+    await expect(capsule).toBeHidden();
+
+    // 选区记录落库
+    const selections = await apiJson<Array<{ text: string }>>(page, `/v1/research-sessions/${sessionId}/selections`);
+    expect(selections).toHaveLength(1);
+    expect(selections[0]?.text).toBe("本");
   });
 });

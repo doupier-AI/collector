@@ -3,14 +3,16 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SelectionSurface } from "./SelectionSurface";
 
-function buildDom(): { first: Node } {
+function buildDom(): { first: Node; second: Node } {
   document.body.innerHTML = `
     <div data-content-kind="message" data-message-id="m-out">
       <p data-block-id="m-out#p0" data-block-text="true">Alpha 段落一的内容。</p>
+      <p data-block-id="m-out#p1" data-block-text="true">Beta 段落二的内容。</p>
     </div>
   `;
   const first = document.querySelector("[data-block-id='m-out#p0']")!.firstChild!;
-  return { first };
+  const second = document.querySelector("[data-block-id='m-out#p1']")!.firstChild!;
+  return { first, second };
 }
 
 function mockSelection(range: Range): void {
@@ -26,6 +28,13 @@ function makeRange(node: Node, start: number, end: number): Range {
   const range = document.createRange();
   range.setStart(node, start);
   range.setEnd(node, end);
+  return range;
+}
+
+function makeCrossBlockRange(startNode: Node, start: number, endNode: Node, end: number): Range {
+  const range = document.createRange();
+  range.setStart(startNode, start);
+  range.setEnd(endNode, end);
   return range;
 }
 
@@ -140,12 +149,25 @@ describe("SelectionSurface（修订一 #9）", () => {
     expect(onCite).toHaveBeenCalledTimes(2);
   });
 
-  it("不达标选区（太短）只给质量提示，不出现浮动胶囊", () => {
+  it("单字选区同样呈现浮动胶囊（修订一 #10：非空即有效）", () => {
     const { first } = buildDom();
     const onCite = vi.fn();
     render(<SelectionSurface sessionId="session-1" onCite={onCite} />);
 
-    mockSelection(makeRange(first, 6, 8));
+    mockSelection(makeRange(first, 6, 7));
+    mouseup();
+
+    expect(screen.getByTestId("floating-selection-capsule")).toBeInTheDocument();
+    expect(screen.queryByTestId("selection-quality-hint")).not.toBeInTheDocument();
+    expect(onCite).not.toHaveBeenCalled();
+  });
+
+  it("跨块选区只给质量提示，不出现浮动胶囊", () => {
+    const { first, second } = buildDom();
+    const onCite = vi.fn();
+    render(<SelectionSurface sessionId="session-1" onCite={onCite} />);
+
+    mockSelection(makeCrossBlockRange(first, 6, second, 6));
     mouseup();
 
     expect(screen.getByTestId("selection-quality-hint")).toBeInTheDocument();

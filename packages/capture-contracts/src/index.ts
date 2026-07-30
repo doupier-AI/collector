@@ -716,7 +716,6 @@ export interface ResearchSelectionInput {
 }
 
 /** 选区质量阈值。前后端同源，只允许引用本常量，不得另写数值。 */
-export const RESEARCH_SELECTION_MIN_CHARACTERS = 4;
 export const RESEARCH_SELECTION_MAX_CHARACTERS = 4000;
 /** 选区上下文摘录的最大长度（锚点 prefix/suffix 与 record contextBefore/After 共用）。 */
 export const RESEARCH_SELECTION_CONTEXT_CHARACTERS = 120;
@@ -773,18 +772,20 @@ export function validateResearchSelectionInput(value: unknown): asserts value is
 
 export type ResearchSelectionQuality =
   | { level: "ok" }
-  | { level: "too_short"; minCharacters: number }
   | { level: "too_long"; maxCharacters: number }
   | { level: "cross_block" };
 
 /**
  * 选区质量评估（纯函数，前后端同一实现）。返回调整建议而不阻止创建；
  * 服务端仍按 validateResearchSelectionInput 拒绝结构不合法的请求。
+ *
+ * 修订一·B（issue #10）：非空即有效——最短字符限制全层退役，单字选区同样 ok；
+ * "非空"的结构保证由 validateResearchSelectionInput 的 exact 校验承担
+ * （exact 必须为非空的修剪后文本），本函数不再检查字数下限，字数上限不变。
  */
 export function evaluateSelectionQuality(input: { text: string; blockCount: number }): ResearchSelectionQuality {
   if (input.blockCount > 1) return { level: "cross_block" };
   const length = input.text.trim().length;
-  if (length < RESEARCH_SELECTION_MIN_CHARACTERS) return { level: "too_short", minCharacters: RESEARCH_SELECTION_MIN_CHARACTERS };
   if (length > RESEARCH_SELECTION_MAX_CHARACTERS) return { level: "too_long", maxCharacters: RESEARCH_SELECTION_MAX_CHARACTERS };
   return { level: "ok" };
 }
