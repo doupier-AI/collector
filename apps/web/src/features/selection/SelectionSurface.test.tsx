@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SelectionSurface } from "./SelectionSurface";
@@ -83,7 +83,7 @@ describe("SelectionSurface（修订一 #9）", () => {
     expect(onCite).not.toHaveBeenCalled();
   });
 
-  it("点击【引用】上报锚点与原文，浮动胶囊随即关闭", async () => {
+  it("点击【引用】上报锚点与原文，胶囊淡出后卸载（修订一 #11 过渡）", async () => {
     const user = userEvent.setup();
     const { first } = buildDom();
     const onCite = vi.fn();
@@ -103,6 +103,11 @@ describe("SelectionSurface（修订一 #9）", () => {
       startOffset: 6,
       endOffset: 12,
     });
+
+    // 引用后胶囊进入 closing 淡出（不再交互），动画结束后卸载
+    const closing = screen.getByTestId("floating-selection-capsule");
+    expect(closing).toHaveAttribute("aria-hidden", "true");
+    fireEvent.animationEnd(closing);
     expect(screen.queryByTestId("floating-selection-capsule")).not.toBeInTheDocument();
   });
 
@@ -117,6 +122,8 @@ describe("SelectionSurface（修订一 #9）", () => {
 
     // 点击别处：浏览器坍缩选区，selectionchange 触发
     collapseSelection();
+    // 淡出结束后卸载
+    fireEvent.animationEnd(screen.getByTestId("floating-selection-capsule"));
     expect(screen.queryByTestId("floating-selection-capsule")).not.toBeInTheDocument();
     expect(onCite).not.toHaveBeenCalled();
 
@@ -137,6 +144,9 @@ describe("SelectionSurface（修订一 #9）", () => {
     await user.click(screen.getByTestId("floating-capsule-cite"));
     expect(onCite).toHaveBeenCalledTimes(1);
 
+    // 淡出结束卸载
+    fireEvent.animationEnd(screen.getByTestId("floating-selection-capsule"));
+
     // 选区仍存活：胶囊不重新出现
     mouseup();
     expect(screen.queryByTestId("floating-selection-capsule")).not.toBeInTheDocument();
@@ -147,6 +157,32 @@ describe("SelectionSurface（修订一 #9）", () => {
     mouseup();
     await user.click(screen.getByTestId("floating-capsule-cite"));
     expect(onCite).toHaveBeenCalledTimes(2);
+  });
+
+  it("选区坍缩时胶囊同样淡出后卸载", () => {
+    const { first } = buildDom();
+    render(<SelectionSurface sessionId="session-1" onCite={vi.fn()} />);
+
+    mockSelection(makeRange(first, 6, 12));
+    mouseup();
+    expect(screen.getByTestId("floating-selection-capsule")).toBeInTheDocument();
+
+    collapseSelection();
+    // 进入 closing 而非立即消失
+    const closing = screen.getByTestId("floating-selection-capsule");
+    expect(closing).toHaveAttribute("aria-hidden", "true");
+    fireEvent.animationEnd(closing);
+    expect(screen.queryByTestId("floating-selection-capsule")).not.toBeInTheDocument();
+  });
+
+  it("新的有效选区出现时通过 onSelectionActivity 通知页面", () => {
+    const { first } = buildDom();
+    const onSelectionActivity = vi.fn();
+    render(<SelectionSurface sessionId="session-1" onCite={vi.fn()} onSelectionActivity={onSelectionActivity} />);
+
+    mockSelection(makeRange(first, 6, 12));
+    mouseup();
+    expect(onSelectionActivity).toHaveBeenCalledTimes(1);
   });
 
   it("单字选区同样呈现浮动胶囊（修订一 #10：非空即有效）", () => {

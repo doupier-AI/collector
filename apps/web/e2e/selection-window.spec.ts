@@ -4,6 +4,7 @@
  * （不再弹旧分析面板）→ 选区记录落库 → 网络契约（幂等键）→ SQLite 落库；
  * 太短只提示不落库；键盘 Shift 选择同样触发浮动胶囊、Escape 不关闭；
  * 阅读页快照选区与跨段落只提示；控制台与网络无异常。
+ * 修订一 #11 补充：阅读页 ?sel= 恢复与节点页一致（高亮上方浮动胶囊、引用后引用态保持）。
  */
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
@@ -275,5 +276,55 @@ test.describe("选区捕获与浮动胶囊", () => {
     expect(selections).toHaveLength(1); // 只有之前的选区
 
     expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
+  });
+
+  test("阅读页 ?sel= 恢复与节点页一致：高亮标记上方呈现浮动胶囊，引用后输入框引用态保持（修订一 #11）", async ({
+    page,
+  }) => {
+    await pairAndOpen(page, "/research/new");
+    const createResponse = await page.request.post("/v1/research-sessions", {
+      headers: { "Idempotency-Key": crypto.randomUUID() },
+      data: {},
+    });
+    const created = (await createResponse.json()) as { id: string };
+    await page.goto(`/research/${created.id}`);
+
+    const txt = ["第一行：本地优先研究", "", "第二段：导入后保留行号", "", "第三段：可以在同一画布阅读"].join("\n");
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "恢复笔记.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from(txt, "utf8"),
+    });
+    await expect(page.getByText("已导入")).toBeVisible({ timeout: 15_000 });
+    await page.getByRole("button", { name: "阅读" }).click();
+    await expect(page).toHaveURL(new RegExp(`/research/${created.id}/reading/[^/]+$`));
+    await expect(page.getByText("第 1 行")).toBeVisible();
+    const readingUrl = page.url();
+
+    // 引用首块文字使选区持久化
+    const firstText = "第一行：本地优先研究";
+    await selectReadingText(page, 0, firstText.indexOf("本地优先研究"), "本地优先研究".length);
+    await citeCurrentSelection(page);
+    const selections = await apiJson<Array<{ id: string }>>(page, `/v1/research-sessions/${created.id}/selections`);
+    expect(selections).toHaveLength(1);
+    const selId = selections[0]!.id;
+
+    // 携带 ?sel= 重新进入阅读页：高亮标记 + 浮动胶囊呈现在高亮上方（与节点页一致）
+    await page.goto(`${readingUrl}?sel=${selId}`);
+    const mark = page.locator("[data-selection-mark]");
+    await expect(mark).toBeVisible({ timeout: 10_000 });
+    const floating = page.getByTestId("floating-selection-capsule");
+    await expect(floating).toBeVisible();
+    const markBox = await mark.boundingBox();
+    const floatBox = await floating.boundingBox();
+    expect(markBox).toBeTruthy();
+    expect(floatBox).toBeTruthy();
+    expect(floatBox!.y + floatBox!.height).toBeLessThanOrEqual(markBox!.y + 16);
+
+    // 点击【引用】：恢复胶囊关闭，输入框引用态保持
+    await page.getByTestId("floating-capsule-cite").click();
+    await expect(floating).toBeHidden();
+    await expect(page.getByTestId("selection-capsule")).toBeVisible();
+    await expect(page.getByTestId("selection-capsule")).toContainText("本地优先研究");
   });
 });

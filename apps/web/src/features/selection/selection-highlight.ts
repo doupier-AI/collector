@@ -79,6 +79,16 @@ export function selectionExcerpt(text: string, max = SELECTION_EXCERPT_CHARACTER
   return trimmed.length > max ? `${trimmed.slice(0, max)}…` : trimmed;
 }
 
+/**
+ * 键盘焦点回归（修订一 #11）：引用动作完成后把焦点交给输入框——
+ * 引用的下一步就是输入问题，焦点落在这里最合理；鼠标用户不受打扰
+ * （焦点环只在键盘导航时呈现）。preventScroll 避免页面跳动。
+ */
+export function focusComposerTextarea(): void {
+  if (typeof document === "undefined") return;
+  document.querySelector<HTMLElement>(".composer textarea")?.focus({ preventScroll: true });
+}
+
 export type MessageHighlightResult =
   | { kind: "found"; messageId: string; blockId: string; blockOrdinal: number; start: number; end: number }
   | { kind: "fallback"; caption: string };

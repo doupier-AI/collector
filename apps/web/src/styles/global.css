@@ -719,6 +719,43 @@ button.model-status {
   outline-offset: 1px;
 }
 
+/* 修订一 #11：出现 / 消失轻过渡（减弱动效环境关闭） */
+.floating-capsule {
+  animation: floating-capsule-in 120ms ease-out;
+}
+
+.floating-capsule--closing {
+  animation: floating-capsule-out 120ms ease-in forwards;
+  pointer-events: none;
+}
+
+@keyframes floating-capsule-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes floating-capsule-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .floating-capsule,
+  .floating-capsule--closing {
+    animation: none;
+  }
+}
+
 .composer__dual-actions {
   display: flex;
   align-items: center;

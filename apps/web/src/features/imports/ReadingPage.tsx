@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import type { ResearchContentBlock, ResearchContentSnapshotRecord } from "@collector/capture-contracts";
+import type { ResearchContentBlock, ResearchContentSnapshotRecord, ResearchSelectionAnchor } from "@collector/capture-contracts";
 import { isApiErrorCode, isUnauthorized, apiErrorCopy } from "../../api/errors";
 import { anchorCaption } from "../../app/anchorCaption";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
@@ -8,11 +8,14 @@ import { useServices } from "../../app/services";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { HighlightedText } from "../selection/HighlightedText";
 import { SelectionSurface } from "../selection/SelectionSurface";
+import { FloatingSelectionCapsule } from "../selection/FloatingSelectionCapsule";
 import {
   childNodeIdempotencyKey,
+  focusComposerTextarea,
   resolveHighlight,
   selectionExactDigest,
 } from "../selection/selection-highlight";
+import type { SelectionRect } from "../selection/useSelection";
 import { useSelectionCitation } from "../selection/useSelectionCitation";
 import { PairingGate } from "../auth/PairingGate";
 import { SelectionRestoreFallback, useSelectionRestore } from "../research-session/SelectionSourceBar";
@@ -61,6 +64,15 @@ export function ReadingPage() {
   const { citation: citedSelection, capture: captureCitation, remove: removeCitation } =
     useSelectionCitation({ sessionId });
 
+  // 引用完成后的键盘焦点回归（修订一 #11）：下一步是输入问题，焦点交给输入框
+  const handleSurfaceCite = useCallback(
+    (anchor: ResearchSelectionAnchor, text: string) => {
+      captureCitation(anchor, text);
+      focusComposerTextarea();
+    },
+    [captureCitation],
+  );
+
   useEffect(() => {
     let stale = false;
     setState({ kind: "loading" });
@@ -103,6 +115,11 @@ export function ReadingPage() {
   useEffect(() => {
     if (!restoreKey) return;
     const mark = document.querySelector("[data-selection-mark]");
+    if (mark) {
+      // 高亮标记位置（视口坐标）→ 恢复浮动胶囊的页面绝对定位（修订一 #11）
+      const box = mark.getBoundingClientRect();
+      setRestoredCapsuleRect({ top: box.top, bottom: box.bottom, left: box.left, right: box.right });
+    }
     if (typeof mark?.scrollIntoView === "function") {
       mark.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "center" });
     }
@@ -119,6 +136,17 @@ export function ReadingPage() {
     restoredCitedRef.current = restoredSelection.id;
     captureCitation(anchor, restoredSelection.text);
   }, [restoredSelection, captureCitation, currentSnapshotId]);
+
+  // 修订一 #11：?sel= 恢复高亮后，浮动胶囊呈现在高亮标记上方（与节点页一致）
+  const [restoredCapsuleRect, setRestoredCapsuleRect] = useState<SelectionRect | null>(null);
+  const [restoreCapsuleDismissedId, setRestoreCapsuleDismissedId] = useState<string | null>(null);
+  const handleRestoreCite = useCallback(() => {
+    if (restoredSelection) setRestoreCapsuleDismissedId(restoredSelection.id);
+    focusComposerTextarea();
+  }, [restoredSelection]);
+  const dismissRestoreCapsule = useCallback(() => {
+    if (restoredSelection) setRestoreCapsuleDismissedId(restoredSelection.id);
+  }, [restoredSelection]);
 
   const handleSubmitMessage = useCallback(
     async (content: string): Promise<boolean> => {
@@ -271,8 +299,13 @@ export function ReadingPage() {
       </div>
       <SelectionSurface
         sessionId={sessionId}
-        onCite={captureCitation}
+        onCite={handleSurfaceCite}
+        onSelectionActivity={dismissRestoreCapsule}
       />
+
+      {restoredSelection && restoredCapsuleRect && restoreCapsuleDismissedId !== restoredSelection.id ? (
+        <FloatingSelectionCapsule rect={restoredCapsuleRect} onCite={handleRestoreCite} />
+      ) : null}
     </div>
   );
 }

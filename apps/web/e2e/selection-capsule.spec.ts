@@ -1,9 +1,12 @@
 /**
- * 浮动胶囊与引用闭环端到端（修订一 #9）：假模型（E2E_MODEL=fake）确定性分析。
+ * 浮动胶囊与引用闭环端到端（修订一 #9，#11 收口边界场景）：假模型（E2E_MODEL=fake）确定性分析。
  * 覆盖：AI 回答选区 → 浮动胶囊出现在选区上方 → 点击【引用】完成引用（输入框呈现引用态）
  * → 死循环回归：聚焦输入框 / 输入文字 / 原生选区坍缩均不影响引用 → 模式一就地追问
  * → 模式二创建子节点并导航 → 点击选取以外区域关闭选区与胶囊、Escape 无关闭效果
  * → 刷新后 ?sel= 恢复引用态 → 键盘操作 → SQLite 一致 → 控制台与网络无异常。
+ * 修订一 #11 补充：?sel= 恢复后浮动胶囊呈现在高亮标记上方、引用后焦点回归输入框、
+ * 新选区切换胶囊；浮动胶囊键盘可达（聚焦【引用】、Enter 引用、Escape 无效）；
+ * 窄屏（320×568）胶囊钳制视口、上方空间不足翻转至选区下方。
  */
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
@@ -247,6 +250,51 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     await expect(page.locator("[data-selection-mark]")).toBeVisible();
   });
 
+  test("刷新后 ?sel= 恢复：浮动胶囊呈现在高亮标记上方，引用后焦点回到输入框；新选区切换胶囊（修订一 #11）", async ({
+    page,
+  }) => {
+    await pairAndOpen(page, "/research/new");
+    const sessionId = await submitFirstQuestion(page);
+    await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
+      timeout: 15_000,
+    });
+
+    // 引用一次使选区持久化（引用即落库，无需创建子节点）
+    await selectAnswerText(page, "本地优先会先把输入保存在本机");
+    await page.getByTestId("floating-capsule-cite").click();
+    await expect(page.getByTestId("selection-capsule")).toBeVisible();
+
+    const selections = await apiJson<Array<{ id: string }>>(page, `/v1/research-sessions/${sessionId}/selections`);
+    expect(selections.length).toBeGreaterThan(0);
+    const selId = selections[0]!.id;
+
+    // 携带 ?sel= 刷新：高亮标记呈现，浮动胶囊出现在高亮标记上方
+    await page.goto(`/research/${sessionId}/node/${sessionId}?sel=${selId}`);
+    const mark = page.locator("[data-selection-mark]");
+    await expect(mark).toBeVisible({ timeout: 10_000 });
+    const floating = page.getByTestId("floating-selection-capsule");
+    await expect(floating).toBeVisible();
+    const markBox = await mark.boundingBox();
+    const floatBox = await floating.boundingBox();
+    expect(markBox).toBeTruthy();
+    expect(floatBox).toBeTruthy();
+    // 胶囊底边在高亮顶边之上（8px 间隙 + 定位量测容差）
+    expect(floatBox!.y + floatBox!.height).toBeLessThanOrEqual(markBox!.y + 16);
+
+    // 点击【引用】：恢复胶囊关闭，输入框引用态保持，焦点回归输入框
+    await page.getByTestId("floating-capsule-cite").click();
+    await expect(floating).toBeHidden();
+    await expect(page.getByTestId("selection-capsule")).toBeVisible();
+    await expect(page.getByLabel("你的问题")).toBeFocused();
+
+    // 出现新的有效选区：新选区的浮动胶囊照常呈现（仅一个），引用后更新输入框内容
+    await selectAnswerText(page, "渐进事件把后续内容写进同一条消息");
+    await expect(page.getByTestId("floating-selection-capsule")).toBeVisible();
+    await expect(page.getByTestId("floating-selection-capsule")).toHaveCount(1);
+    await page.getByTestId("floating-capsule-cite").click();
+    await expect(page.getByTestId("selection-capsule")).toContainText("渐进事件把后续内容写进同一条消息");
+  });
+
   test("引用态胶囊键盘操作：Escape 不移除，移除按钮可移除", async ({ page }) => {
     await pairAndOpen(page, "/research/new");
     await submitFirstQuestion(page);
@@ -270,6 +318,36 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     // 显式移除：点击移除按钮
     await capsule.getByRole("button", { name: "移除引用" }).click();
     await expect(capsule).toBeHidden();
+  });
+
+  test("浮动胶囊键盘可达：聚焦【引用】、Enter 完成引用且焦点回归输入框；Escape 无效（修订一 #11）", async ({
+    page,
+  }) => {
+    await pairAndOpen(page, "/research/new");
+    await submitFirstQuestion(page);
+    await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
+      timeout: 15_000,
+    });
+
+    await selectAnswerText(page, "本地优先会先把输入保存在本机");
+    const floating = page.getByTestId("floating-selection-capsule");
+    await expect(floating).toBeVisible();
+
+    // Escape 对浮动胶囊无效（复验修订一 #9 约束）
+    await page.keyboard.press("Escape");
+    await expect(floating).toBeVisible();
+
+    // 【引用】是原生 button（处于 Tab 序列），聚焦后 Enter 触发引用
+    const citeButton = page.getByTestId("floating-capsule-cite");
+    await citeButton.focus();
+    await expect(citeButton).toBeFocused();
+    await page.keyboard.press("Enter");
+
+    // 引用完成：输入框呈现引用态，焦点回归输入框（下一步即输入问题）
+    const capsule = page.getByTestId("selection-capsule");
+    await expect(capsule).toBeVisible();
+    await expect(capsule).toContainText("本地优先会先把输入保存在本机");
+    await expect(page.getByLabel("你的问题")).toBeFocused();
   });
 
   test("单字选区也有效：浮动胶囊 → 引用 → 在此追问完整走通（修订一 #10）", async ({ page }) => {
@@ -305,5 +383,86 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     const selections = await apiJson<Array<{ text: string }>>(page, `/v1/research-sessions/${sessionId}/selections`);
     expect(selections).toHaveLength(1);
     expect(selections[0]?.text).toBe("本");
+  });
+});
+
+test.describe("窄屏钳制（修订一 #11）", () => {
+  test.use({ viewport: { width: 320, height: 568 } });
+
+  test("胶囊横向钳制在视口内，引用流程照常可用", async ({ page }) => {
+    await pairAndOpen(page, "/research/new");
+    await submitFirstQuestion(page);
+    await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
+      timeout: 15_000,
+    });
+
+    await selectAnswerText(page, "本地优先会先把输入保存在本机");
+    const floating = page.getByTestId("floating-selection-capsule");
+    await expect(floating).toBeVisible();
+
+    // 任何情况下不溢出 320×568 视口
+    const box = await floating.boundingBox();
+    expect(box).toBeTruthy();
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.y).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(320);
+    expect(box!.y + box!.height).toBeLessThanOrEqual(568);
+
+    await page.getByTestId("floating-capsule-cite").click();
+    await expect(page.getByTestId("selection-capsule")).toBeVisible();
+  });
+});
+
+test.describe("上方空间不足翻转（修订一 #11）", () => {
+  // 极矮视口使整页内容高于视口：选区可被滚到顶端，上方空间不足 → 胶囊翻转至下方
+  test.use({ viewport: { width: 320, height: 240 } });
+
+  test("选区贴近视口顶部、上方空间不足时胶囊翻转至选区下方", async ({ page }) => {
+    await pairAndOpen(page, "/research/new");
+    await submitFirstQuestion(page);
+    await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
+      timeout: 15_000,
+    });
+
+    // 先把目标文字滚到视口顶端附近（留 4px），再建立选区触发捕获——
+    // 定位计算在 mouseup 时进行，上方空间不足 → 翻转至选区下方
+    const selectionRect = await page.evaluate((target) => {
+      const block = document.querySelector(".message--assistant [data-block-text]");
+      if (!block) throw new Error("未找到 AI 回答块");
+      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, null);
+      let foundNode: Text | null = null;
+      let foundOffset = -1;
+      while (walker.nextNode()) {
+        const node = walker.currentNode as Text;
+        const offset = node.data.indexOf(target);
+        if (offset >= 0) {
+          foundNode = node;
+          foundOffset = offset;
+          break;
+        }
+      }
+      if (!foundNode || foundOffset < 0) throw new Error(`回答中未找到「${target}」`);
+      const probe = document.createRange();
+      probe.setStart(foundNode, foundOffset);
+      probe.setEnd(foundNode, foundOffset + target.length);
+      const before = probe.getBoundingClientRect();
+      window.scrollBy({ top: before.top - 4, behavior: "instant" });
+      const selection = window.getSelection();
+      if (!selection) throw new Error("浏览器不支持 Selection");
+      selection.removeAllRanges();
+      selection.addRange(probe);
+      document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      return probe.getBoundingClientRect();
+    }, "本地优先会先把输入保存在本机");
+
+    const floating = page.getByTestId("floating-selection-capsule");
+    await expect(floating).toBeVisible();
+    const box = await floating.boundingBox();
+    expect(box).toBeTruthy();
+    // 顶边在选区底边之下（翻转到下方），且仍不溢出视口
+    expect(box!.y).toBeGreaterThanOrEqual(selectionRect.bottom - 4);
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(320);
+    expect(box!.y + box!.height).toBeLessThanOrEqual(568);
   });
 });

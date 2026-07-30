@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import type { ResearchSessionView, ResearchTaskRecord } from "@collector/capture-contracts";
+import type { ResearchSelectionAnchor, ResearchSessionView, ResearchTaskRecord } from "@collector/capture-contracts";
 import { isApiErrorCode, isUnauthorized, apiErrorCopy } from "../../api/errors";
 import { useServices } from "../../app/services";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
@@ -13,12 +13,15 @@ import { AttachmentList } from "../imports/AttachmentList";
 import { IMPORT_ACCEPT } from "../imports/import-file";
 import { useResearchImports } from "../imports/useResearchImports";
 import { SelectionSurface } from "../selection/SelectionSurface";
+import { FloatingSelectionCapsule } from "../selection/FloatingSelectionCapsule";
 import {
   childNodeIdempotencyKey,
+  focusComposerTextarea,
   highlightForMessages,
   selectionExactDigest,
   selectionExcerpt,
 } from "../selection/selection-highlight";
+import type { SelectionRect } from "../selection/useSelection";
 import type { CitedSelection } from "../selection/useSelectionCitation";
 import { useSelectionCitation } from "../selection/useSelectionCitation";
 import { formatSessionTime } from "./format";
@@ -69,6 +72,15 @@ export function ResearchNodePage() {
   const { citation: citedSelection, capture: captureCitation, remove: removeCitation } =
     useSelectionCitation({ sessionId, nodeId });
 
+  // 引用完成后的键盘焦点回归（修订一 #11）：下一步是输入问题，焦点交给输入框
+  const handleSurfaceCite = useCallback(
+    (anchor: ResearchSelectionAnchor, text: string) => {
+      captureCitation(anchor, text);
+      focusComposerTextarea();
+    },
+    [captureCitation],
+  );
+
   // 来源返回：?sel= 查询参数恢复选区，直接显示引用胶囊（不弹旧面板）
   const [searchParams] = useSearchParams();
   const restoredSelection = useSelectionRestore(searchParams.get("sel"));
@@ -79,6 +91,18 @@ export function ResearchNodePage() {
     // 从已存选区记录直接构造引用，不需要再创建选区记录
     captureCitation(restoredSelection.anchor, restoredSelection.text);
   }, [restoredSelection, captureCitation]);
+
+  // 修订一 #11：?sel= 恢复高亮后，浮动胶囊呈现在高亮标记上方；
+  // 点击【引用】只收起胶囊并回归焦点（引用态已由恢复流程创建）
+  const [restoredCapsuleRect, setRestoredCapsuleRect] = useState<SelectionRect | null>(null);
+  const [restoreCapsuleDismissedId, setRestoreCapsuleDismissedId] = useState<string | null>(null);
+  const handleRestoreCite = useCallback(() => {
+    if (restoredSelection) setRestoreCapsuleDismissedId(restoredSelection.id);
+    focusComposerTextarea();
+  }, [restoredSelection]);
+  const dismissRestoreCapsule = useCallback(() => {
+    if (restoredSelection) setRestoreCapsuleDismissedId(restoredSelection.id);
+  }, [restoredSelection]);
 
   const isRoot = readyView ? !readyView.node.parentNodeId : true;
   // 来源条：子节点取 node.originSelectionId；带来源的旧独立会话根节点取 session.originSelectionId
@@ -98,6 +122,11 @@ export function ResearchNodePage() {
   useEffect(() => {
     if (!highlightKey) return;
     const mark = document.querySelector("[data-selection-mark]");
+    if (mark) {
+      // 高亮标记位置（视口坐标）→ 浮动胶囊的页面绝对定位；滚动后绝对位置不变
+      const box = mark.getBoundingClientRect();
+      setRestoredCapsuleRect({ top: box.top, bottom: box.bottom, left: box.left, right: box.right });
+    }
     // scrollIntoView 在个别运行环境不可用；滚动只是便利，不影响高亮本身
     if (typeof mark?.scrollIntoView === "function") {
       mark.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "center" });
@@ -390,8 +419,13 @@ export function ResearchNodePage() {
 
       <SelectionSurface
         sessionId={sessionId}
-        onCite={captureCitation}
+        onCite={handleSurfaceCite}
+        onSelectionActivity={dismissRestoreCapsule}
       />
+
+      {restoredSelection && restoredCapsuleRect && restoreCapsuleDismissedId !== restoredSelection.id ? (
+        <FloatingSelectionCapsule rect={restoredCapsuleRect} onCite={handleRestoreCite} />
+      ) : null}
 
       <p className="sr-only" role="status" aria-live="polite">
         {node.liveMessage}

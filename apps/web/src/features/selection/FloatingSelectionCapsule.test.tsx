@@ -46,4 +46,22 @@ describe("浮动选区胶囊", () => {
     await user.keyboard("{Enter}");
     expect(onCite).toHaveBeenCalledTimes(1);
   });
+
+  it("closing 状态播放淡出：动画结束回调 onExited，按钮退出 Tab 序列", () => {
+    const onExited = vi.fn();
+    render(<FloatingSelectionCapsule rect={RECT} onCite={() => {}} state="closing" onExited={onExited} />);
+    const capsule = screen.getByTestId("floating-selection-capsule");
+    expect(capsule.className).toContain("floating-capsule--closing");
+    expect(capsule).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByTestId("floating-capsule-cite")).toHaveAttribute("tabindex", "-1");
+    fireEvent.animationEnd(capsule);
+    expect(onExited).toHaveBeenCalledTimes(1);
+  });
+
+  it("open 状态不触发 onExited（只有 closing 淡出结束才退出）", () => {
+    const onExited = vi.fn();
+    render(<FloatingSelectionCapsule rect={RECT} onCite={() => {}} onExited={onExited} />);
+    fireEvent.animationEnd(screen.getByTestId("floating-selection-capsule"));
+    expect(onExited).not.toHaveBeenCalled();
+  });
 });
