@@ -24,3 +24,6 @@ apps/web/test-results-acceptance/
 skills-lock.json
 .claude/skills/
 .claude/worktrees/
+
+# 本地分析笔记，不进入版本库
+Explore_APK_拆解报告.md
