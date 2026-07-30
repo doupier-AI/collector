@@ -57,6 +57,7 @@
 - 三级（局部后端）：运行后端构建或类型检查及受影响的单元、集成、API、持久化或重启恢复测试；只有影响用户完整路径或跨端契约时才增加浏览器验证。
 - 四级（共享契约、迁移、构建配置、跨端集成或发布）：运行全量构建、全量测试和项目检查；存在用户可见路径时同时运行浏览器端到端验证。
 - 涉及认证、安全、数据丢失、数据库迁移、影响范围不确定，或本级验证失败时，至少提升一级；必要时直接执行四级验证。
+- 自动化测试证明契约正确，不代替体验验收。涉及用户可见交互的切片完成后，按 `docs/agents/browser-acceptance.md` 用 Chrome DevTools MCP 在真实可见浏览器中走一遍探索式体验验收；自动化全部通过仍须执行，发现的问题转为票据或 issue。
 - 每个完成的开发阶段必须记录所选级别、选择原因、实际执行项及未执行项理由。按规则跳过无关检查是有效验证结果，不记为遗漏。
 
 ## Agent skills
@@ -68,3 +69,7 @@ GitHub Issues（`gh` CLI），仓库 `rappingzhuge/collector`。参见 `docs/age
 ### Domain docs
 
 单上下文：根目录 `CONTEXT.md`。参见 `docs/agents/domain.md`。
+
+### Browser acceptance
+
+Chrome DevTools MCP 真实可见浏览器探索式体验验收：当前产品形态全功能流程、两条启动轨道（确定性演示 / 真实模型）、问题清单输出格式。参见 `docs/agents/browser-acceptance.md`。
