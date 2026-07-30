@@ -3,7 +3,7 @@
  * `?sel=` 选区参数原样传递，重定向后页面内容与高亮恢复正常。
  */
 import { expect, test, type Page } from "@playwright/test";
-import { pairAndOpen, selectAnswerText } from "./helpers";
+import { citeAnswerText, pairAndOpen } from "./helpers";
 
 const QUESTION = "什么是本地优先研究？";
 const SELECTED = "本地优先会先把输入保存在本机";
@@ -19,9 +19,8 @@ async function openSessionWithChild(page: Page): Promise<{ sessionId: string; no
     timeout: 15_000,
   });
 
-  await selectAnswerText(page, SELECTED);
-  // 阶段 H4a：引用胶囊 → 一键"深入研究这段"
-  await expect(page.getByTestId("selection-capsule")).toBeVisible();
+  await citeAnswerText(page, SELECTED);
+  // 修订一 #9：引用态胶囊 → 一键"深入研究这段"
   await page.getByRole("button", { name: "深入研究这段" }).click();
   await page.waitForURL(
     (url) => {

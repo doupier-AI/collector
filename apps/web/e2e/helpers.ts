@@ -86,6 +86,23 @@ export async function selectAnswerText(page: Page, text: string): Promise<void> 
   }, text);
 }
 
+/**
+ * 修订一 #9：点击当前选区上方浮动胶囊的【引用】，等待输入框引用态胶囊出现并返回其定位器。
+ * 选区由调用方以任意方式建立（selectAnswerText / 阅读页 evaluate / 真实拖选）。
+ */
+export async function citeCurrentSelection(page: Page): Promise<ReturnType<Page["getByTestId"]>> {
+  await page.getByTestId("floating-capsule-cite").click();
+  const capsule = page.getByTestId("selection-capsule");
+  await expect(capsule).toBeVisible();
+  return capsule;
+}
+
+/** 修订一 #9：选中最后一条回答中的指定文字并显式引用，返回输入框引用态胶囊定位器。 */
+export async function citeAnswerText(page: Page, text: string): Promise<ReturnType<Page["getByTestId"]>> {
+  await selectAnswerText(page, text);
+  return citeCurrentSelection(page);
+}
+
 /** 通过浏览器上下文（自动携带会话 Cookie）读取 API JSON。 */
 export async function apiJson<T>(page: Page, path: string): Promise<T> {
   const response = await page.request.get(path);

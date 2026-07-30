@@ -1,58 +1,65 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ResearchSelectionAnchor } from "@collector/capture-contracts";
+import { FloatingSelectionCapsule } from "./FloatingSelectionCapsule";
 import { SelectionQualityHint } from "./SelectionQualityHint";
+import { selectionAnchorKey } from "./selection-highlight";
 import { useSelectionCapture } from "./useSelection";
 
 /**
- * 选区捕获层（阶段 H4a）：挂在会话页与阅读页根部，负责选区捕获与质量提示。
- * 有效选区不再弹出分析面板，改为通过 `onCapture` 回调报告给页面。
- * 页面配合 `useSelectionCitation` 管理引用生命周期，在输入框区域渲染胶囊与双模发送按钮。
+ * 选区捕获层（修订一 #9）：挂在会话页与阅读页根部。
  *
- * 来源返回 `?sel=` 恢复选区由页面自行处理（直接从已存记录构造引用），本组件不参与。
+ * - 有效选区（质量达标、有锚点）出现时，在选区上方呈现浮动胶囊；点击【引用】
+ *   才通过 `onCite` 报告给页面创建引用——选区本身不再自动引用；
+ * - 引用后浮动胶囊关闭（consumed），原生选区随后可自由坍缩，引用态不受影响；
+ *   原生选区坍缩只关闭浮动胶囊，页面引用态由引用生命周期自行管理（本组件
+ *   不再上报"选区清除"——那是"点击输入框引用即消失"死循环的根源）；
+ * - 重新选取（选区先坍缩再出现）后浮动胶囊再次呈现，可引用新选区；
+ * - 不达标选区（太短、跨块、无锚点）暂维持质量提示，退役见修订一·B（#10）；
+ * - 来源返回 `?sel=` 恢复选区由页面自行处理（直接从已存记录构造引用），本组件不参与。
  */
 export function SelectionSurface({
   sessionId,
-  onCapture,
-  onSelectionClear,
+  onCite,
 }: {
   sessionId: string;
-  /** 有效选区（质量达标、有锚点）捕获时触发。页面据此创建选区记录并渲染引用胶囊。 */
-  onCapture: (anchor: ResearchSelectionAnchor, text: string) => void;
-  /** DOM 选区折叠或清除时触发。页面据此清理引用状态。 */
-  onSelectionClear: () => void;
+  /** 用户点击浮动胶囊【引用】时触发。页面据此创建选区记录并渲染引用胶囊。 */
+  onCite: (anchor: ResearchSelectionAnchor, text: string) => void;
 }) {
   const { active, dismiss } = useSelectionCapture();
   const previousSessionRef = useRef(sessionId);
+  // 已点击【引用】的锚点键：隐藏浮动胶囊；选区坍缩后复位，再次选取可再引用
+  const [consumedKey, setConsumedKey] = useState<string | null>(null);
 
   useEffect(() => {
     if (previousSessionRef.current !== sessionId) {
       previousSessionRef.current = sessionId;
       dismiss();
-      onSelectionClear();
     }
-  }, [sessionId, dismiss, onSelectionClear]);
+  }, [sessionId, dismiss]);
 
-  // 选区折叠或清除时通知页面
-  const wasActiveRef = useRef(false);
   useEffect(() => {
-    if (active) {
-      wasActiveRef.current = true;
-    } else if (wasActiveRef.current) {
-      wasActiveRef.current = false;
-      onSelectionClear();
-    }
-  }, [active, onSelectionClear]);
-
-  // 有效选区报告给页面
-  useEffect(() => {
-    if (!active || !active.anchor || active.quality.level !== "ok") return;
-    onCapture(active.anchor, active.range.text);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!active) setConsumedKey(null);
   }, [active]);
 
-  // 渲染：仅质量提示（不达标选区）
+  const activeKey = active?.anchor ? selectionAnchorKey(active.anchor) : null;
+  const floating =
+    active && active.anchor && activeKey !== consumedKey && active.quality.level === "ok"
+      ? active
+      : null;
+
+  function handleCite() {
+    if (!floating?.anchor) return;
+    setConsumedKey(selectionAnchorKey(floating.anchor));
+    onCite(floating.anchor, floating.range.text);
+  }
+
+  // 不达标选区：仅质量提示（修订一·B 退役后该分支一并移除）
   if (active && (!active.anchor || active.quality.level !== "ok")) {
     return <SelectionQualityHint capture={active} onDismiss={dismiss} />;
+  }
+
+  if (floating) {
+    return <FloatingSelectionCapsule rect={floating.rect} onCite={handleCite} />;
   }
 
   return null;

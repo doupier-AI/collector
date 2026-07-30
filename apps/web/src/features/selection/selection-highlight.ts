@@ -36,6 +36,16 @@ export function selectionIdempotencyKey(anchor: ResearchSelectionAnchor): string
 }
 
 /**
+ * 锚点唯一键：同一锚点在捕获层、引用生命周期与浮动胶囊得到同一个键，
+ * 用于判断"是否同一次选择"。纯位置信息，不含原文摘要，不作为幂等键使用。
+ */
+export function selectionAnchorKey(anchor: ResearchSelectionAnchor): string {
+  return anchor.kind === "message"
+    ? `m:${anchor.messageId}:${anchor.blockOrdinal}:${anchor.startOffset}:${anchor.endOffset}`
+    : `s:${anchor.contentSnapshotId}:${anchor.blockId}:${anchor.startOffset}:${anchor.endOffset}`;
+}
+
+/**
  * 在块文本中解析高亮范围：优先校验锚点偏移切片与保存原文一致；
  * 内容发生细微变化时用原文在块内重新定位；两者都失败返回 null，
  * 由调用方降级为保存原文与粗粒度位置说明。

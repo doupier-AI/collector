@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
-import { apiJson, apiPortForPage, pairAndOpen, readDataDir, readResearchLaterTables, readResearchNodeTables, readResearchSelectionTables } from "./helpers";
+import { apiJson, apiPortForPage, citeCurrentSelection, pairAndOpen, readDataDir, readResearchLaterTables, readResearchNodeTables, readResearchSelectionTables } from "./helpers";
 
 const QUESTION = "没有模型时也要保存这句话";
 
@@ -94,9 +94,8 @@ test("未配置模型：选区仍然保存并出现胶囊，分析在后台失�
     document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
   });
 
-  // 胶囊出现（阶段 H4a：不再弹旧分析面板，分析在后台静默进行）
-  const capsule = page.getByTestId("selection-capsule");
-  await expect(capsule).toBeVisible();
+  // 浮动胶囊【引用】后引用态胶囊出现（修订一 #9：不再弹旧分析面板，分析在后台静默进行）
+  const capsule = await citeCurrentSelection(page);
   await expect(capsule).toContainText("无模型也要保留选区原文");
   await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
 
@@ -169,8 +168,8 @@ test("未配置模型：分析失败仍可通过胶囊发起深入研究，来�
     document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
   });
 
-  // 胶囊出现，一键深入研究
-  await expect(page.getByTestId("selection-capsule")).toBeVisible();
+  // 浮动胶囊【引用】后（修订一 #9），一键深入研究
+  await citeCurrentSelection(page);
   await page.getByRole("button", { name: "深入研究这段" }).click();
 
   // 子节点视图：来源关系先于生成保存，第一轮失败给出原因与重试

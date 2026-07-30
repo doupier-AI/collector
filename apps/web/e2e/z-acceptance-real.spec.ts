@@ -208,8 +208,9 @@ async function selectReadingTextByTarget(page: Page, target: string): Promise<vo
   }, target);
 }
 
-/** 阶段 H4a：选区后等待引用胶囊出现（分析在后台静默进行，不再展示难度/摘要等字段），返回胶囊定位器。 */
+/** 修订一 #9：选区后点击浮动胶囊【引用】并等待引用态胶囊出现（分析在后台静默进行），返回胶囊定位器。 */
 async function waitForCapsuleReal(page: Page, selected: string): Promise<Locator> {
+  await page.getByTestId("floating-capsule-cite").click({ timeout: 20_000 });
   const capsule = page.getByTestId("selection-capsule");
   await expect(capsule).toBeVisible({ timeout: 20_000 });
   await expect(capsule).toContainText(selected.slice(0, 36));

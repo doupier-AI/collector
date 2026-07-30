@@ -9,11 +9,11 @@ import { expect, test, type Page } from "@playwright/test";
 import {
   apiJson,
   apiPortForPage,
+  citeAnswerText,
   pairAndOpen,
   readDataDir,
   readResearchNodeTables,
   readResearchTables,
-  selectAnswerText,
 } from "./helpers";
 
 const QUESTION = "什么是本地优先研究？";
@@ -26,12 +26,9 @@ async function submitFirstQuestion(page: Page, question = QUESTION): Promise<str
   return page.url().split("/research/")[1]?.split("/")[0] ?? "";
 }
 
-/** 选区后等待引用胶囊出现，返回胶囊定位器。 */
+/** 选区并显式引用（修订一 #9：浮动胶囊【引用】），返回输入框引用态胶囊定位器。 */
 async function waitForCapsule(page: Page): Promise<ReturnType<Page["getByTestId"]>> {
-  await selectAnswerText(page, SELECTED);
-  const capsule = page.getByTestId("selection-capsule");
-  await expect(capsule).toBeVisible();
-  return capsule;
+  return citeAnswerText(page, SELECTED);
 }
 
 /** 等待跳转到子节点页并返回新节点 id。 */

@@ -21,7 +21,7 @@ export interface ChatComposerProps {
   importAccept?: string;
   /** 引用选区（阶段 H4a）：提供后在输入框上方显示引用胶囊与双模发送按钮。 */
   citedSelection?: CitedSelection | null;
-  /** 移除引用：用户在胶囊上点击移除或按 Escape 时触发。 */
+  /** 移除引用：用户在胶囊上点击移除按钮时触发（修订一 #9 起 Escape 不再移除）。 */
   onRemoveCitation?: () => void;
   /**
    * 创建子节点（"深入研究这段"）：以引用选区为来源创建子节点。

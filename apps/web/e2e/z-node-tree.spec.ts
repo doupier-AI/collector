@@ -5,7 +5,7 @@
  */
 import { mkdirSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
-import { pairAndOpen, selectAnswerText } from "./helpers";
+import { citeAnswerText, pairAndOpen } from "./helpers";
 
 const QUESTION = "什么是本地优先研究？";
 const SELECTED_A = "本地优先会先把输入保存在本机";
@@ -25,12 +25,9 @@ async function openSession(page: Page): Promise<string> {
   return page.url().split("/research/")[1]?.split("/")[0] ?? "";
 }
 
-/** 从最后一条回答选中文字并通过引用胶囊长出一个子节点，返回子节点 id。 */
+/** 从最后一条回答选中文字并显式引用（修订一 #9），再长出一个子节点，返回子节点 id。 */
 async function growChildNode(page: Page, sessionId: string, text: string): Promise<string> {
-  await selectAnswerText(page, text);
-  // 引用胶囊出现（阶段 H4a：不再弹旧分析面板）
-  const capsule = page.getByTestId("selection-capsule");
-  await expect(capsule).toBeVisible();
+  await citeAnswerText(page, text);
   // 一键"深入研究这段"直接创建子节点
   await page.getByRole("button", { name: "深入研究这段" }).click();
   await page.waitForURL(
@@ -148,9 +145,8 @@ test.describe("全屏树导航", () => {
     // 进入 C 后在 C 的内容里选区生长 D（选区归属 C，D 挂在 C 下）。
     // 不复用 growChildNode：它的 waitForURL 只排除根节点，而此刻已停在子节点 C 上，
     // 会立即命中当前 URL；这里改为等待跳转到既非根节点也非 C 的新节点 D。
-    await selectAnswerText(page, SELECTED_IN_C);
-    // 阶段 H4a：引用胶囊 → 一键"深入研究这段"
-    await expect(page.getByTestId("selection-capsule")).toBeVisible();
+    await citeAnswerText(page, SELECTED_IN_C);
+    // 修订一 #9：引用态胶囊 → 一键"深入研究这段"
     await page.getByRole("button", { name: "深入研究这段" }).click();
     await page.waitForURL(
       (url) => {

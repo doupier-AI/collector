@@ -77,7 +77,7 @@ describe("useSelectionCitation", () => {
     expect(createResearchSelection).toHaveBeenCalledTimes(1);
   });
 
-  it("remove 清除引用，同一锚点不再重报", async () => {
+  it("remove 清除引用；显式再次 capture 同一锚点可重新引用（修订一 #9）", async () => {
     const createResearchSelection = vi.fn(async () => ({
       selection: makeSelection({ id: "sel-1" }),
       task: { id: "task-1", status: "queued" } as any,
@@ -94,12 +94,13 @@ describe("useSelectionCitation", () => {
     });
     expect(result.current.citation).toBeNull();
 
-    // 再次 capture 同一锚点：不应重新创建（已被 dismiss）
+    // 捕获改为显式后，移除后再次点击【引用】即是用户意图：允许重新创建
+    // （幂等键不变，服务端返回既有记录）
     act(() => {
       result.current.capture(makeAnchor(), "一段选区文字");
     });
-    expect(result.current.citation).toBeNull();
-    expect(createResearchSelection).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(result.current.citation).not.toBeNull());
+    expect(createResearchSelection).toHaveBeenCalledTimes(2);
   });
 
   it("clear 重置所有状态，允许同一锚点重新创建", async () => {

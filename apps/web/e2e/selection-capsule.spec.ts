@@ -1,7 +1,9 @@
 /**
- * 选区引用胶囊与双模发送端到端（阶段 H4a）：假模型（E2E_MODEL=fake）确定性分析。
- * 覆盖：AI 回答选区 → 胶囊出现在输入框区域 → 模式一就地追问（消息进入当前节点对话流）
- * → 模式二创建子节点并导航 → 刷新后 ?sel= 恢复胶囊 → 键盘操作 → 控制台与网络无异常。
+ * 浮动胶囊与引用闭环端到端（修订一 #9）：假模型（E2E_MODEL=fake）确定性分析。
+ * 覆盖：AI 回答选区 → 浮动胶囊出现在选区上方 → 点击【引用】完成引用（输入框呈现引用态）
+ * → 死循环回归：聚焦输入框 / 输入文字 / 原生选区坍缩均不影响引用 → 模式一就地追问
+ * → 模式二创建子节点并导航 → 点击选取以外区域关闭选区与胶囊、Escape 无关闭效果
+ * → 刷新后 ?sel= 恢复引用态 → 键盘操作 → SQLite 一致 → 控制台与网络无异常。
  */
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
@@ -24,51 +26,65 @@ async function submitFirstQuestion(page: Page, question = QUESTION): Promise<str
   return page.url().split("/research/")[1]?.split("/")[0] ?? "";
 }
 
-test.describe("选区引用胶囊与双模发送", () => {
-  test("选区 → 胶囊出现 → 在此追问（消息进入当前节点对话流）→ SQLite 一致", async ({ page }) => {
+function watchConsole(page: Page): string[] {
+  const issues: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") issues.push(message.text());
+  });
+  page.on("pageerror", (error) => issues.push(error.message));
+  return issues;
+}
+
+test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
+  test("选区 → 浮动胶囊 → 引用 → 聚焦输入框引用不消失（死循环回归）→ 在此追问 → SQLite 一致", async ({
+    page,
+  }) => {
     await pairAndOpen(page, "/research/new");
     // 配对前未带凭证的探测请求会返回 401 并被 Chromium 记为资源加载错误，属于预期流程
-    const consoleIssues: string[] = [];
-    page.on("console", (message) => {
-      if (message.type() === "error" || message.type() === "warning") consoleIssues.push(message.text());
-    });
-    page.on("pageerror", (error) => consoleIssues.push(error.message));
+    const consoleIssues = watchConsole(page);
     const sessionId = await submitFirstQuestion(page);
     await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
       timeout: 15_000,
     });
 
-    // 选中一段回答文字
+    // 选中一段回答文字：浮动胶囊出现在选区上方，此时还没有引用态胶囊
     const selected = "本地优先会先把输入保存在本机";
     await selectAnswerText(page, selected);
-
-    // 胶囊出现在输入框区域（不再弹旧面板）
-    const capsule = page.getByTestId("selection-capsule");
-    await expect(capsule).toBeVisible();
-    await expect(capsule).toContainText("本地优先会先把输入保存在本机");
+    const floating = page.getByTestId("floating-selection-capsule");
+    await expect(floating).toBeVisible();
+    await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
     // 旧面板不再出现
     await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
 
-    // 双模按钮可见
+    // 点击【引用】：浮动胶囊关闭，输入框区域呈现引用态（文本截取 + 移除按钮）
+    await page.getByTestId("floating-capsule-cite").click();
+    await expect(floating).toBeHidden();
+    const capsule = page.getByTestId("selection-capsule");
+    await expect(capsule).toBeVisible();
+    await expect(capsule).toContainText(selected);
+
+    // 死循环回归：聚焦输入框并输入文字——原生选区坍缩不影响引用
+    const textarea = page.getByLabel("你的问题");
+    await textarea.click();
+    await textarea.fill("这段机制怎么工作？");
+    await expect(capsule).toBeVisible();
+    await expect(capsule).toContainText(selected);
+
+    // 双模按钮可见；模式一：在此追问
     const askButton = page.getByRole("button", { name: "在此追问" });
     const growButton = page.getByRole("button", { name: "深入研究这段" });
     await expect(askButton).toBeVisible();
     await expect(growButton).toBeVisible();
-
-    // 模式一：在此追问
-    await page.getByLabel("你的问题").fill("这段机制怎么工作？");
     await askButton.click();
 
-    // 消息进入当前节点对话流：用户消息出现在消息列表中
+    // 消息进入当前节点对话流：用户消息出现在消息列表中，选区原文以引用格式嵌入
     await expect(page.locator(".message--user").last()).toContainText("这段机制怎么工作？", {
       timeout: 10_000,
     });
-    // 选区原文以引用格式嵌入
     await expect(page.locator(".message--user").last()).toContainText(selected);
     // AI 回答开始生成
     await expect(page.locator(".message--assistant").last()).toBeVisible({ timeout: 15_000 });
-
-    // 胶囊消失（发送后自动移除引用）
+    // 引用态胶囊消失（发送后自动移除引用）
     await expect(capsule).toBeHidden();
 
     // SQLite：选区记录与节点消息一致
@@ -83,13 +99,35 @@ test.describe("选区引用胶囊与双模发送", () => {
     expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
   });
 
-  test("选区 → 深入研究这段 → 创建子节点并导航 → 节点页呈现", async ({ page }) => {
+  test("点击选取文字以外的屏幕区域关闭选区与浮动胶囊；Escape 无关闭效果", async ({ page }) => {
     await pairAndOpen(page, "/research/new");
-    const consoleIssues: string[] = [];
-    page.on("console", (message) => {
-      if (message.type() === "error" || message.type() === "warning") consoleIssues.push(message.text());
+    await submitFirstQuestion(page);
+    await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
+      timeout: 15_000,
     });
-    page.on("pageerror", (error) => consoleIssues.push(error.message));
+
+    await selectAnswerText(page, "本地优先会先把输入保存在本机");
+    const floating = page.getByTestId("floating-selection-capsule");
+    await expect(floating).toBeVisible();
+
+    // Escape 无任何关闭效果
+    await page.keyboard.press("Escape");
+    await expect(floating).toBeVisible();
+
+    // 点击选取文字以外的区域：原生选区坍缩，浮动胶囊关闭，且从未产生引用
+    await page.locator(".session-header").click();
+    await expect(floating).toBeHidden();
+    await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
+    const collapsed = await page.evaluate(() => {
+      const selection = window.getSelection();
+      return !selection || selection.rangeCount === 0 || selection.isCollapsed;
+    });
+    expect(collapsed).toBe(true);
+  });
+
+  test("选区 → 引用 → 深入研究这段 → 创建子节点并导航 → 节点页呈现", async ({ page }) => {
+    await pairAndOpen(page, "/research/new");
+    const consoleIssues = watchConsole(page);
     const sessionId = await submitFirstQuestion(page);
     await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
       timeout: 15_000,
@@ -97,9 +135,8 @@ test.describe("选区引用胶囊与双模发送", () => {
 
     const selected = "本地优先会先把输入保存在本机";
     await selectAnswerText(page, selected);
-
-    const capsule = page.getByTestId("selection-capsule");
-    await expect(capsule).toBeVisible();
+    await page.getByTestId("floating-capsule-cite").click();
+    await expect(page.getByTestId("selection-capsule")).toBeVisible();
 
     // 模式二：深入研究这段（不输入 query）
     await page.getByRole("button", { name: "深入研究这段" }).click();
@@ -127,7 +164,7 @@ test.describe("选区引用胶囊与双模发送", () => {
     expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
   });
 
-  test("选区 → 深入研究这段（带 query）→ query 进入子节点请求", async ({ page }) => {
+  test("选区 → 引用 → 深入研究这段（带 query）→ query 进入子节点请求", async ({ page }) => {
     await pairAndOpen(page, "/research/new");
     const sessionId = await submitFirstQuestion(page);
     await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
@@ -135,6 +172,7 @@ test.describe("选区引用胶囊与双模发送", () => {
     });
 
     await selectAnswerText(page, "本地优先会先把输入保存在本机");
+    await page.getByTestId("floating-capsule-cite").click();
     await expect(page.getByTestId("selection-capsule")).toBeVisible();
 
     // 输入追问方向后再点击"深入研究这段"
@@ -151,15 +189,37 @@ test.describe("选区引用胶囊与双模发送", () => {
     await expect(page.getByText(/这是深入研究第一轮/)).toBeVisible({ timeout: 15_000 });
   });
 
-  test("刷新后 ?sel= 恢复胶囊（不弹旧面板）", async ({ page }) => {
+  test("重新选取另一段文字时引用更新为新选区", async ({ page }) => {
+    await pairAndOpen(page, "/research/new");
+    await submitFirstQuestion(page);
+    await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
+      timeout: 15_000,
+    });
+
+    await selectAnswerText(page, "本地优先会先把输入保存在本机");
+    await page.getByTestId("floating-capsule-cite").click();
+    const capsule = page.getByTestId("selection-capsule");
+    await expect(capsule).toBeVisible();
+    await expect(capsule).toContainText("本地优先会先把输入保存在本机");
+
+    // 重新选取另一段文字（另一段落）：浮动胶囊再次出现，引用后输入框胶囊更新为新选区
+    const second = "渐进事件把后续内容写进同一条消息";
+    await selectAnswerText(page, second);
+    await expect(page.getByTestId("floating-selection-capsule")).toBeVisible();
+    await page.getByTestId("floating-capsule-cite").click();
+    await expect(capsule).toContainText(second);
+  });
+
+  test("刷新后 ?sel= 恢复引用态胶囊（不弹旧面板）", async ({ page }) => {
     await pairAndOpen(page, "/research/new");
     const sessionId = await submitFirstQuestion(page);
     await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
       timeout: 15_000,
     });
 
-    // 创建选区
+    // 创建选区并引用
     await selectAnswerText(page, "本地优先会先把输入保存在本机");
+    await page.getByTestId("floating-capsule-cite").click();
     await expect(page.getByTestId("selection-capsule")).toBeVisible();
 
     // 通过深入研究创建子节点（这样选区记录会在数据库中，来源返回可以恢复）
@@ -180,14 +240,14 @@ test.describe("选区引用胶囊与双模发送", () => {
     // 返回根节点并携带 ?sel= 参数
     await page.goto(`/research/${sessionId}/node/${sessionId}?sel=${selId}`);
 
-    // 胶囊出现（不弹旧面板）
+    // 引用态胶囊出现（不弹旧面板）
     await expect(page.getByTestId("selection-capsule")).toBeVisible({ timeout: 10_000 });
     await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
     // 高亮标记也在
     await expect(page.locator("[data-selection-mark]")).toBeVisible();
   });
 
-  test("胶囊键盘操作：Tab 聚焦、Escape 移除引用", async ({ page }) => {
+  test("引用态胶囊键盘操作：Escape 不移除，移除按钮可移除", async ({ page }) => {
     await pairAndOpen(page, "/research/new");
     await submitFirstQuestion(page);
     await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
@@ -195,22 +255,24 @@ test.describe("选区引用胶囊与双模发送", () => {
     });
 
     await selectAnswerText(page, "本地优先会先把输入保存在本机");
+    await page.getByTestId("floating-capsule-cite").click();
     const capsule = page.getByTestId("selection-capsule");
     await expect(capsule).toBeVisible();
 
-    // Tab 聚焦胶囊（可能需要多次 Tab 跳过其他可聚焦元素）
-    // 直接聚焦胶囊元素更可靠
+    // 聚焦引用态胶囊后按 Escape：无任何关闭效果（修订一 #9）
     await capsule.focus();
     await expect(capsule).toBeFocused();
-
-    // Escape 移除引用
     await page.keyboard.press("Escape");
-    await expect(capsule).toBeHidden();
+    await expect(capsule).toBeVisible();
     // 旧面板也不出现
     await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
+
+    // 显式移除：点击移除按钮
+    await capsule.getByRole("button", { name: "移除引用" }).click();
+    await expect(capsule).toBeHidden();
   });
 
-  test("选区太短只给质量提示，不出现胶囊", async ({ page }) => {
+  test("选区太短只给质量提示，不出现任何胶囊", async ({ page }) => {
     await pairAndOpen(page, "/research/new");
     const sessionId = await submitFirstQuestion(page);
     await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
@@ -223,7 +285,8 @@ test.describe("选区引用胶囊与双模发送", () => {
     await expect(hint).toBeVisible();
     await expect(hint).toContainText("至少选择");
 
-    // 胶囊不出现
+    // 浮动胶囊与引用态胶囊都不出现
+    await expect(page.getByTestId("floating-selection-capsule")).toHaveCount(0);
     await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
     // 旧面板也不出现
     await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);

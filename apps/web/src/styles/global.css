@@ -682,6 +682,43 @@ button.model-status {
   color: var(--color-danger);
 }
 
+/* 修订一 #9：选区上方浮动操作胶囊（Portal 挂 body，绝对定位随内容滚动） */
+.floating-capsule {
+  z-index: 50;
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0.125rem;
+  padding: 0.125rem;
+  background: var(--color-canvas);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  box-shadow: 0 2px 10px rgb(0 0 0 / 14%);
+}
+
+.floating-capsule__cite {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: none;
+  border-radius: calc(var(--radius-control) - 2px);
+  padding: 0.25rem 0.625rem;
+  background: transparent;
+  color: var(--color-ink);
+  font-size: 0.8125rem;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.floating-capsule__cite:hover {
+  background: var(--color-line);
+}
+
+.floating-capsule__cite:focus-visible {
+  outline: 2px solid var(--color-ai);
+  outline-offset: 1px;
+}
+
 .composer__dual-actions {
   display: flex;
   align-items: center;

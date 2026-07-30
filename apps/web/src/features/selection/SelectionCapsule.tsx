@@ -1,9 +1,11 @@
-import type { KeyboardEvent } from "react";
 import { selectionExcerpt, CITATION_CAPSULE_CHARACTERS } from "./selection-highlight";
 
 /**
- * 引用胶囊：轻量展示"已引用这段内容"，嵌入输入框区域。
- * 显示选区文本截取 + 移除按钮；键盘可达（Tab 聚焦、Escape 移除）。
+ * 引用态胶囊：轻量展示"已引用这段内容"，嵌入输入框区域。
+ * 显示选区文本截取 + 移除按钮；键盘可达（Tab 聚焦、Enter 触发移除按钮）。
+ *
+ * 修订一 #9：Escape 不再移除引用——选区与胶囊的取消方式唯一为
+ * "点击选取文字以外的屏幕区域"，引用的显式移除只经移除按钮。
  * 不渲染 AI 分析字段（difficulty / quickReadMinutes / deepStudyMinutes / prerequisites / relationToFocus）。
  */
 export function SelectionCapsule({
@@ -13,13 +15,6 @@ export function SelectionCapsule({
   text: string;
   onRemove: () => void;
 }) {
-  function handleKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      onRemove();
-    }
-  }
-
   return (
     <div
       className="selection-capsule"
@@ -27,7 +22,6 @@ export function SelectionCapsule({
       role="status"
       aria-label="已引用选区"
       tabIndex={0}
-      onKeyDown={handleKeyDown}
     >
       <span className="selection-capsule__icon" aria-hidden="true">
         ❝

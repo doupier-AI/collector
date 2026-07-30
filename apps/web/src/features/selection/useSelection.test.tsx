@@ -131,7 +131,7 @@ describe("useSelectionCapture", () => {
     expect(screen.getByTestId("probe").textContent).toBe("idle");
   });
 
-  it("Escape 键关闭捕获并清除选区", () => {
+  it("Escape 键不关闭捕获（修订一 #9：取消方式唯一为点击选取以外区域）", () => {
     const { first } = buildSessionDom();
     render(<CaptureProbe />);
     const removeAllRanges = mockSelection(makeRange(first, 6, first, 12));
@@ -143,8 +143,8 @@ describe("useSelectionCapture", () => {
     act(() => {
       document.dispatchEvent(new KeyboardEvent("keyup", { key: "Escape", bubbles: true }));
     });
-    expect(screen.getByTestId("probe").textContent).toBe("idle");
-    expect(removeAllRanges).toHaveBeenCalled();
+    expect(screen.getByTestId("probe").textContent).toBe("ok:anchor:段落一的内容");
+    expect(removeAllRanges).not.toHaveBeenCalled();
   });
 
   it("点击选区窗口内部不重新捕获", () => {

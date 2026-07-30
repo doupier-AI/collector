@@ -42,7 +42,7 @@ const STREAM_NOTICE: Record<string, { title: string; body: string }> = {
  * - 子节点与带来源的根节点显示顶部来源条与材料范围说明；
  * - 附件与拖放导入只在根节点呈现，子节点没有独立文件空间；
  * - ?sel= 来源返回高亮、选区捕获层、流式事件在所有节点一致；
- * - 选区引用胶囊在输入框区域显示，支持"在此追问"与"深入研究这段"双模发送。
+ * - 选区上方浮动胶囊显式引用（修订一 #9），引用胶囊在输入框区域显示，支持"在此追问"与"深入研究这段"双模发送。
  */
 export function ResearchNodePage() {
   const { sessionId = "", nodeId = "" } = useParams();
@@ -65,8 +65,8 @@ export function ResearchNodePage() {
   const [dragActive, setDragActive] = useState(false);
   const dragDepthRef = useRef(0);
 
-  // 引用选区管理（阶段 H4a）
-  const { citation: citedSelection, capture: captureCitation, remove: removeCitation, clear: clearCitation } =
+  // 引用选区管理（修订一 #9：浮动胶囊【引用】显式触发；原生选区坍缩不影响引用态）
+  const { citation: citedSelection, capture: captureCitation, remove: removeCitation } =
     useSelectionCitation({ sessionId, nodeId });
 
   // 来源返回：?sel= 查询参数恢复选区，直接显示引用胶囊（不弹旧面板）
@@ -390,8 +390,7 @@ export function ResearchNodePage() {
 
       <SelectionSurface
         sessionId={sessionId}
-        onCapture={captureCitation}
-        onSelectionClear={clearCitation}
+        onCite={captureCitation}
       />
 
       <p className="sr-only" role="status" aria-live="polite">

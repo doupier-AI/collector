@@ -1,14 +1,16 @@
 /**
- * 选区捕获与引用胶囊端到端（阶段 H4a 改造）：假模型（E2E_MODEL=fake）确定性分析。
- * 覆盖：AI 回答选区 → 胶囊出现（不再弹旧分析面板）→ 选区记录落库 → 网络契约（幂等键）
- * → SQLite 落库；太短只提示不落库；阅读页快照选区与跨段落只提示；
- * 键盘 Shift 选择同样触发；控制台与网络无异常。
+ * 选区捕获与浮动胶囊端到端（修订一 #9 改造）：假模型（E2E_MODEL=fake）确定性分析。
+ * 覆盖：AI 回答选区 → 浮动胶囊出现在选区上方 → 显式【引用】后引用态胶囊进入输入框区域
+ * （不再弹旧分析面板）→ 选区记录落库 → 网络契约（幂等键）→ SQLite 落库；
+ * 太短只提示不落库；键盘 Shift 选择同样触发浮动胶囊、Escape 不关闭；
+ * 阅读页快照选区与跨段落只提示；控制台与网络无异常。
  */
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import {
   apiJson,
   apiPortForPage,
+  citeCurrentSelection,
   pairAndOpen,
   readDataDir,
   readResearchSelectionTables,
@@ -68,8 +70,8 @@ async function selectAcrossReadingBlocks(page: Page): Promise<void> {
   });
 }
 
-test.describe("选区捕获与引用胶囊", () => {
-  test("选中 AI 回答片段：胶囊出现在输入框区域，旧分析面板不再弹出，选区记录落库", async ({
+test.describe("选区捕获与浮动胶囊", () => {
+  test("选中 AI 回答片段：浮动胶囊出现，显式引用后引用态胶囊进入输入框区域，选区记录落库", async ({
     page,
   }) => {
     const consoleIssues: string[] = [];
@@ -93,15 +95,22 @@ test.describe("选区捕获与引用胶囊", () => {
     const selected = "本地优先会先把输入保存在本机";
     await selectAnswerText(page, selected);
 
-    // 胶囊出现：截取选区文本 + 移除按钮
+    // 浮动胶囊出现在选区上方：含【引用】按钮；此刻尚未创建选区记录
+    const floating = page.getByTestId("floating-selection-capsule");
+    await expect(floating).toBeVisible();
+    await expect(floating.getByTestId("floating-capsule-cite")).toHaveText("引用");
+    await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
+
+    // 显式点击【引用】：浮动胶囊关闭，引用态胶囊出现在输入框区域
+    await page.getByTestId("floating-capsule-cite").click();
+    await expect(floating).toBeHidden();
     const capsule = page.getByTestId("selection-capsule");
     await expect(capsule).toBeVisible();
     await expect(capsule).toContainText(selected);
     await expect(capsule.getByRole("button", { name: "移除引用" })).toBeVisible();
 
-    // 旧分析面板不再出现
+    // 旧分析面板不再出现；不再展示 AI 分析字段
     await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
-    // 不再展示 AI 分析字段
     await expect(page.getByText("理解难度")).toHaveCount(0);
     await expect(page.getByText("快速了解")).toHaveCount(0);
 
@@ -109,7 +118,7 @@ test.describe("选区捕获与引用胶囊", () => {
     await expect(page.getByRole("button", { name: "在此追问" })).toBeVisible();
     await expect(page.getByRole("button", { name: "深入研究这段" })).toBeVisible();
 
-    // 网络契约：创建请求带稳定幂等键
+    // 网络契约：引用后才发起创建请求，带稳定幂等键
     const post = apiRequests.find(
       (request) =>
         request.method === "POST" && /\/v1\/research-sessions\/[^/]+\/selections$/.test(request.url),
@@ -129,7 +138,7 @@ test.describe("选区捕获与引用胶囊", () => {
     const tables = readResearchSelectionTables(dbPath);
     expect(tables.selections.filter((row) => row.sessionId === sessionId)).toHaveLength(1);
 
-    // 移除引用：点击胶囊移除按钮
+    // 移除引用：点击引用态胶囊移除按钮
     await capsule.getByRole("button", { name: "移除引用" }).click();
     await expect(capsule).toBeHidden();
 
@@ -140,7 +149,7 @@ test.describe("选区捕获与引用胶囊", () => {
     expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
   });
 
-  test("选区太短只给调整提示，不创建选区记录，不出现胶囊", async ({ page }) => {
+  test("选区太短只给调整提示，不创建选区记录，不出现任何胶囊", async ({ page }) => {
     await pairAndOpen(page, "/research/new");
     const sessionId = await submitFirstQuestion(page);
     await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
@@ -151,6 +160,7 @@ test.describe("选区捕获与引用胶囊", () => {
     const hint = page.getByTestId("selection-quality-hint");
     await expect(hint).toBeVisible();
     await expect(hint).toContainText("至少选择");
+    await expect(page.getByTestId("floating-selection-capsule")).toHaveCount(0);
     await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
     await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
 
@@ -161,7 +171,7 @@ test.describe("选区捕获与引用胶囊", () => {
     await expect(hint).toBeHidden();
   });
 
-  test("键盘 Shift+方向键选择同样出现胶囊，Escape 关闭并清除选区", async ({ page }) => {
+  test("键盘 Shift+方向键选择同样出现浮动胶囊；Escape 不关闭，选区坍缩才关闭", async ({ page }) => {
     await pairAndOpen(page, "/research/new");
     await submitFirstQuestion(page);
     await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
@@ -192,17 +202,24 @@ test.describe("选区捕获与引用胶囊", () => {
     });
     await page.keyboard.down("Shift");
     await page.keyboard.up("ArrowRight");
-
-    const capsule = page.getByTestId("selection-capsule");
-    await expect(capsule).toBeVisible();
     await page.keyboard.up("Shift");
 
-    // Escape 清除选区与胶囊
+    const floating = page.getByTestId("floating-selection-capsule");
+    await expect(floating).toBeVisible();
+
+    // Escape 无任何关闭效果（修订一 #9）
     await page.keyboard.press("Escape");
-    await expect(capsule).toBeHidden();
+    await expect(floating).toBeVisible();
+
+    // 选区坍缩（点击别处的等价行为）后浮动胶囊关闭
+    await page.evaluate(() => {
+      window.getSelection()?.removeAllRanges();
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await expect(floating).toBeHidden();
   });
 
-  test("阅读页选区：胶囊出现并包含选区文字；跨段落选择只给提示", async ({ page }) => {
+  test("阅读页选区：浮动胶囊引用后引用态胶囊包含选区文字；跨段落选择只给提示", async ({ page }) => {
     const consoleIssues: string[] = [];
     await pairAndOpen(page, "/research/new");
     page.on("console", (message) => {
@@ -232,22 +249,23 @@ test.describe("选区捕获与引用胶囊", () => {
     const firstText = "第一行：本地优先研究";
     await selectReadingText(page, 0, firstText.indexOf("本地优先研究"), "本地优先研究".length);
 
-    // 胶囊出现
-    const capsule = page.getByTestId("selection-capsule");
-    await expect(capsule).toBeVisible();
+    // 浮动胶囊出现，显式引用后引用态胶囊包含选区文字
+    await expect(page.getByTestId("floating-selection-capsule")).toBeVisible();
+    const capsule = await citeCurrentSelection(page);
     await expect(capsule).toContainText("本地优先研究");
     // 旧面板不出现
     await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
 
-    // 移除胶囊
+    // 移除引用态胶囊
     await capsule.getByRole("button", { name: "移除引用" }).click();
     await expect(capsule).toBeHidden();
 
-    // 跨两个块的选择只给调整建议，不出现胶囊，不落库新增
+    // 跨两个块的选择只给调整建议，不出现任何胶囊，不落库新增
     await selectAcrossReadingBlocks(page);
     const hint = page.getByTestId("selection-quality-hint");
     await expect(hint).toBeVisible();
     await expect(hint).toContainText("跨了多个段落");
+    await expect(page.getByTestId("floating-selection-capsule")).toHaveCount(0);
     await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
 
     const selections = await apiJson<unknown[]>(page, `/v1/research-sessions/${created.id}/selections`);

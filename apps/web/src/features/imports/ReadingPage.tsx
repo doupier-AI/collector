@@ -57,8 +57,8 @@ export function ReadingPage() {
     });
   }
 
-  // 引用选区管理（阶段 H4a）：阅读页不传 nodeId，选区归属根节点
-  const { citation: citedSelection, capture: captureCitation, remove: removeCitation, clear: clearCitation } =
+  // 引用选区管理（修订一 #9：浮动胶囊【引用】显式触发）：阅读页不传 nodeId，选区归属根节点
+  const { citation: citedSelection, capture: captureCitation, remove: removeCitation } =
     useSelectionCitation({ sessionId });
 
   useEffect(() => {
@@ -271,8 +271,7 @@ export function ReadingPage() {
       </div>
       <SelectionSurface
         sessionId={sessionId}
-        onCapture={captureCitation}
-        onSelectionClear={clearCitation}
+        onCite={captureCitation}
       />
     </div>
   );

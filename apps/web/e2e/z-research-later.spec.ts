@@ -14,7 +14,7 @@ import {
   readDataDir,
   readResearchLaterTables,
   readResearchSelectionTables,
-  selectAnswerText,
+  citeAnswerText,
 } from "./helpers";
 
 const QUESTION = "什么是本地优先研究？";
@@ -42,9 +42,8 @@ test.describe("稍后再学 API 与持久化", () => {
       timeout: 15_000,
     });
 
-    // 选区 → 胶囊出现
-    await selectAnswerText(page, SELECTED);
-    await expect(page.getByTestId("selection-capsule")).toBeVisible();
+    // 选区 → 浮动胶囊【引用】→ 引用态胶囊出现（修订一 #9）
+    await citeAnswerText(page, SELECTED);
     await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
 
     // 选区已落库

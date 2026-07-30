@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ResearchSelectionAnchor } from "@collector/capture-contracts";
 import { useServices } from "../../app/services";
-import { selectionIdempotencyKey } from "./selection-highlight";
+import { selectionAnchorKey, selectionIdempotencyKey } from "./selection-highlight";
 
 /**
  * 引用胶囊数据：SelectionSurface 向页面报告的当前引用选区。
@@ -14,10 +14,14 @@ export interface CitedSelection {
 }
 
 /**
- * 选区引用控制器：管理"已引用选区"的生命周期。
- * - 同一锚点不重复创建选区记录；
- * - 用户手动移除后，同一锚点不再重报（直到 DOM 选区清除后重置）；
- * - 会话切换时清理所有状态。
+ * 选区引用控制器：管理"已引用选区"的生命周期（修订一 #9 起由浮动胶囊【引用】显式触发）。
+ *
+ * - 引用态与浏览器原生选区解耦：原生选区坍缩（如聚焦输入框）不影响已引用状态，
+ *   这是"选中 → 想提问 → 选区没了"死循环的根本修复；
+ * - 同一锚点不重复创建选区记录；移除引用后再次显式引用同一锚点可以重新引用
+ *   （幂等接口返回既有记录），不再设"已移除不再重报"守卫——捕获改为显式后，
+ *   显式点击【引用】即是用户意图；
+ * - 会话或节点切换时清理所有状态。
  */
 export function useSelectionCitation(options: {
   sessionId: string;
@@ -33,12 +37,10 @@ export function useSelectionCitation(options: {
   const { sessionId, nodeId, onClear } = options;
   const [citation, setCitation] = useState<CitedSelection | null>(null);
   const currentKeyRef = useRef<string | null>(null);
-  const dismissedKeysRef = useRef(new Set<string>());
 
   // 会话或节点切换时清理（同一会话内不同节点有不同的选区归属上下文）
   useEffect(() => {
     currentKeyRef.current = null;
-    dismissedKeysRef.current.clear();
     setCitation((prev) => {
       if (prev) onClear?.();
       return null;
@@ -47,13 +49,8 @@ export function useSelectionCitation(options: {
 
   const capture = useCallback(
     (anchor: ResearchSelectionAnchor, text: string) => {
-      const key =
-        anchor.kind === "message"
-          ? `m:${anchor.messageId}:${anchor.blockOrdinal}:${anchor.startOffset}:${anchor.endOffset}`
-          : `s:${anchor.contentSnapshotId}:${anchor.blockId}:${anchor.startOffset}:${anchor.endOffset}`;
-
+      const key = selectionAnchorKey(anchor);
       if (currentKeyRef.current === key) return;
-      if (dismissedKeysRef.current.has(key)) return;
       currentKeyRef.current = key;
 
       api
@@ -81,16 +78,12 @@ export function useSelectionCitation(options: {
   );
 
   const remove = useCallback(() => {
-    if (currentKeyRef.current) {
-      dismissedKeysRef.current.add(currentKeyRef.current);
-    }
     currentKeyRef.current = null;
     setCitation(null);
   }, []);
 
   const clear = useCallback(() => {
     currentKeyRef.current = null;
-    dismissedKeysRef.current.clear();
     setCitation((prev) => {
       if (prev) onClear?.();
       return null;

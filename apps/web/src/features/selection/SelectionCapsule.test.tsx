@@ -28,14 +28,14 @@ describe("引用胶囊", () => {
     expect(onRemove).toHaveBeenCalledTimes(1);
   });
 
-  it("Escape 键触发移除", async () => {
+  it("Escape 键不移除引用（修订一 #9：取消方式唯一为点击选取以外区域）", async () => {
     const user = userEvent.setup();
     const onRemove = vi.fn();
     render(<SelectionCapsule text="测试文本" onRemove={onRemove} />);
     const capsule = screen.getByTestId("selection-capsule");
     capsule.focus();
     await user.keyboard("{Escape}");
-    expect(onRemove).toHaveBeenCalledTimes(1);
+    expect(onRemove).not.toHaveBeenCalled();
   });
 
   it("键盘可达：Tab 聚焦胶囊", async () => {
