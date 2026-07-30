@@ -1,14 +1,35 @@
-import { useCallback, useRef, useState } from "react";
-import { Outlet } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Outlet, useLocation } from "react-router-dom";
 import { useMediaQuery } from "../../app/useMediaQuery";
 import { ContentDrawer } from "../../features/navigation/ContentDrawer";
 import { LaterPanel } from "../../features/navigation/LaterPanel";
+import { NodeTreeOverlay } from "../../features/navigation/NodeTreeOverlay";
 import { SIDEBAR_DEFAULT_WIDTH } from "./sidebar-width";
 
+/** 顶栏“节点树”按钮的目标：从当前路由解析会话与节点；不在研究页面时不提供入口。 */
+export function nodeTreeTargetForPath(pathname: string): { sessionId: string; nodeId: string } | null {
+  const nodeMatch = pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)/);
+  if (nodeMatch) {
+    return { sessionId: decodeURIComponent(nodeMatch[1]), nodeId: decodeURIComponent(nodeMatch[2]) };
+  }
+  const sessionMatch = pathname.match(/^\/research\/([^/]+)(?:\/reading\/[^/]+)?$/);
+  if (sessionMatch && sessionMatch[1] !== "new") {
+    const sessionId = decodeURIComponent(sessionMatch[1]);
+    return { sessionId, nodeId: sessionId };
+  }
+  return null;
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  return Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
+}
+
 /**
- * 顶栏（左“内容”、右“稍后再学”图标按钮）+ 左右侧栏 + 主内容区。
+ * 顶栏（左“内容”、中“节点树”、右“稍后再学”图标按钮）+ 左右侧栏 + 主内容区。
  * 宽屏（≥900px）两侧为固定侧栏、初始展开，可拖拽调宽；
  * 窄屏为覆盖抽屉、初始收起，遮罩点击或 Escape 关闭后焦点回到触发按钮。
+ * 节点树为全屏覆盖层：按钮或快捷键 t（焦点不在输入控件时）唤出。
  */
 export function AppShell() {
   const wide = useMediaQuery("(min-width: 900px)");
@@ -20,6 +41,10 @@ export function AppShell() {
   const [rightWidth, setRightWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
   const leftTriggerRef = useRef<HTMLButtonElement>(null);
   const rightTriggerRef = useRef<HTMLButtonElement>(null);
+  const treeTriggerRef = useRef<HTMLButtonElement>(null);
+  const location = useLocation();
+  const treeTarget = nodeTreeTargetForPath(location.pathname);
+  const [treeOpen, setTreeOpen] = useState(false);
 
   const leftVisible = leftOpenPref ?? wide;
   const rightVisible = rightOpenPref ?? wide;
@@ -34,6 +59,11 @@ export function AppShell() {
     rightTriggerRef.current?.focus();
   }, []);
 
+  const closeTree = useCallback(() => {
+    setTreeOpen(false);
+    treeTriggerRef.current?.focus();
+  }, []);
+
   const toggleLeft = useCallback(() => {
     setLeftOpenPref((pref) => !(pref ?? wide));
     // 窄屏下一次只展开一个覆盖抽屉
@@ -44,6 +74,24 @@ export function AppShell() {
     setRightOpenPref((pref) => !(pref ?? wide));
     if (!wide) setLeftOpenPref(false);
   }, [wide]);
+
+  // 路由变化时关闭树视图（例如从树中跳转到另一个节点后由组件自行关闭，此处兜底）
+  useEffect(() => {
+    setTreeOpen(false);
+  }, [location.pathname]);
+
+  // 快捷键 t 唤出节点树：焦点在输入控件时不拦截，避免影响正常输入
+  useEffect(() => {
+    if (!treeTarget) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "t" || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (isEditableTarget(event.target)) return;
+      event.preventDefault();
+      setTreeOpen(true);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [treeTarget]);
 
   return (
     <div className="app-shell">
@@ -65,6 +113,25 @@ export function AppShell() {
             <line x1="7.75" y1="4.5" x2="7.75" y2="15.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
           </svg>
         </button>
+        {treeTarget ? (
+          <button
+            type="button"
+            ref={treeTriggerRef}
+            className="app-bar__icon-button"
+            aria-label="节点树（快捷键 T）"
+            aria-expanded={treeOpen}
+            aria-controls="node-tree-overlay"
+            onClick={() => setTreeOpen(true)}
+          >
+            <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <circle cx="10" cy="4.5" r="2" fill="none" stroke="currentColor" strokeWidth="1.5" />
+              <circle cx="5" cy="15.5" r="2" fill="none" stroke="currentColor" strokeWidth="1.5" />
+              <circle cx="15" cy="15.5" r="2" fill="none" stroke="currentColor" strokeWidth="1.5" />
+              <line x1="8.5" y1="6" x2="6" y2="14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <line x1="11.5" y1="6" x2="14" y2="14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </button>
+        ) : null}
         <button
           type="button"
           ref={rightTriggerRef}
@@ -96,6 +163,9 @@ export function AppShell() {
           <LaterPanel mode={mode} width={rightWidth} onWidthChange={setRightWidth} onClose={closeRight} />
         ) : null}
       </div>
+      {treeOpen && treeTarget ? (
+        <NodeTreeOverlay sessionId={treeTarget.sessionId} currentNodeId={treeTarget.nodeId} onClose={closeTree} />
+      ) : null}
     </div>
   );
 }

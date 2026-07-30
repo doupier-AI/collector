@@ -288,7 +288,7 @@ test("键盘完成附件上传、进入阅读视图并返回会话", async ({ pa
   await backLink.focus();
   await expect(page.evaluate(() => document.activeElement?.textContent)).resolves.toContain("返回研究");
   await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(new RegExp(`/research/${sessionId}$`));
+  await expect(page).toHaveURL(new RegExp(`/research/${sessionId}/node/${sessionId}$`));
 
   expect(consoleIssues).toEqual([]);
 });
@@ -343,9 +343,9 @@ test("从开始页上传文件创建研究并导入，进入阅读视图后可�
     buffer: Buffer.from("第一条：文件直接发起研究\n\n第二条：不需要先输入问题\n\n第三条：Chat 与文件是并列入口", "utf8"),
   });
 
-  // 导航到会话页，附件列表可见
-  await expect(page).toHaveURL(/\/research\/[^/]+$/, { timeout: 15_000 });
-  const sessionId = page.url().split("/research/")[1] ?? "";
+  // 导航到统一节点页（根节点），附件列表可见
+  await expect(page).toHaveURL(/\/research\/[^/]+\/node\/[^/]+$/, { timeout: 15_000 });
+  const sessionId = new URL(page.url()).pathname.split("/")[2] ?? "";
   expect(sessionId).not.toBe("");
 
   // 导入完成后进入阅读
@@ -359,9 +359,9 @@ test("从开始页上传文件创建研究并导入，进入阅读视图后可�
   await textarea.fill("这篇文章有几条内容？");
   await page.getByRole("button", { name: "发送" }).click();
 
-  // 返回研究会话页验证消息已在列表中
+  // 返回研究节点页验证消息已在列表中
   await page.getByRole("link", { name: "返回研究会话" }).click();
-  await expect(page).toHaveURL(/\/research\/[^/]+$/, { timeout: 10_000 });
+  await expect(page).toHaveURL(/\/research\/[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
   await expect(page.locator(".message-list")).toBeVisible();
 
   expect(consoleIssues.filter((msg) => !msg.includes("pdfjs")).filter((msg) => !msg.includes("canvas"))).toEqual([]);
@@ -384,8 +384,8 @@ test("开始页拖放文件创建研究", async ({ page }) => {
     }, 100);
   });
 
-  // 等待导航（文件处理完成后跳转到会话页）
-  await expect(page).toHaveURL(/\/research\/[^/]+$/, { timeout: 15_000 });
+  // 等待导航（文件处理完成后跳转到研究节点页）
+  await expect(page).toHaveURL(/\/research\/[^/]+\/node\/[^/]+$/, { timeout: 15_000 });
   await expect(page.getByText("已导入")).toBeVisible({ timeout: 15_000 });
 
   expect(consoleIssues).toEqual([]);

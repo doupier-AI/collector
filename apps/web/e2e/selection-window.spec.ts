@@ -20,8 +20,8 @@ const QUESTION = "什么是本地优先研究？";
 async function submitFirstQuestion(page: Page, question = QUESTION): Promise<string> {
   await page.getByLabel("你的问题").fill(question);
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+$/, { timeout: 10_000 });
-  return page.url().split("/research/")[1] ?? "";
+  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
+  return page.url().split("/research/")[1]?.split("/")[0] ?? "";
 }
 
 /** 在阅读页第 index 个正文块的文本内选中 [from, from+length)。 */

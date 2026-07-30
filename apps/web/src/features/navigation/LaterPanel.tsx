@@ -55,7 +55,9 @@ export function LaterPanel({ mode, width, onWidthChange, onClose }: LaterPanelPr
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      // 树视图等更上层的覆盖层已通过 preventDefault 处理 Escape（react 处理器先于 document 监听器运行），
+      // 此时侧栏不再重复响应，避免一次 Escape 同时收起多个层并抢走焦点
+      if (event.key === "Escape" && !event.defaultPrevented) onClose();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);

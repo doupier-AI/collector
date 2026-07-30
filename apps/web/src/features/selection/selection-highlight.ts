@@ -1,5 +1,4 @@
 import type {
-  DeepResearchMode,
   ResearchMessageRecord,
   ResearchSelectionRecord,
   ResearchSelectionAnchor,
@@ -34,7 +33,8 @@ export function backRouteForSelection(selection: ResearchSelectionRecord): strin
   const base =
     anchor.kind === "snapshot"
       ? `/research/${encodeURIComponent(selection.sessionId)}/reading/${encodeURIComponent(anchor.contentSnapshotId)}`
-      : `/research/${encodeURIComponent(selection.sessionId)}`;
+      // 消息选区回到统一节点页（根节点 id = 会话 id，见阶段 H1/H2）
+      : `/research/${encodeURIComponent(selection.sessionId)}/node/${encodeURIComponent(selection.sessionId)}`;
   return `${base}?sel=${encodeURIComponent(selection.id)}`;
 }
 
@@ -79,25 +79,24 @@ export function highlightForMessages(
 }
 
 /**
- * 深入研究幂等键：同一选区、同一去向与同一方向重复发起只创建一次分支 / 会话。
- * 方向可能含中文，不能直接进 HTTP 请求头；原文摘要复用面板的确定性 FNV-1a 摘要。
- */
-export function deepResearchIdempotencyKey(
-  selectionId: string,
-  mode: DeepResearchMode,
-  direction: string,
-  digest: (text: string) => string,
-): string {
-  const directionKey = direction.trim() ? digest(direction.trim()) : "auto";
-  return `dr:${selectionId}:${mode}:${directionKey}`;
-}
-
-/**
  * 稍后再学幂等键：同一选区重复保存只创建一条项目。
  * 选区 id 为数据库 id（纯 ASCII），可直接进入 HTTP 请求头，短于 200 字符上限。
  */
 export function laterIdempotencyKey(selectionId: string): string {
   return `later:${selectionId}`;
+}
+
+/**
+ * 子节点生长幂等键（阶段 H2）：同一选区、同一追问重复发起只创建一次子节点。
+ * query 可能含中文，不能直接进 HTTP 请求头；摘要复用确定性 FNV-1a。
+ */
+export function childNodeIdempotencyKey(
+  selectionId: string,
+  query: string,
+  digest: (text: string) => string,
+): string {
+  const queryKey = query.trim() ? digest(query.trim()) : "auto";
+  return `ng:${selectionId}:${queryKey}`;
 }
 
 /**

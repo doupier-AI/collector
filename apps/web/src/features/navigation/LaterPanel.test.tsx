@@ -26,6 +26,7 @@ function renderPanel(api: Partial<ApiClient>) {
               </>
             }
           />
+          <Route path="/research/:sessionId/node/:nodeId" element={<LocationProbe />} />
         </Routes>
       </MemoryRouter>
     </ServicesProvider>,
@@ -82,7 +83,9 @@ describe("稍后再学栏目", () => {
     renderPanel({ listResearchLaterItems: vi.fn(async () => [view]) });
 
     await user.click(await screen.findByTestId("later-open-later-1"));
-    expect(await screen.findByTestId("location-probe")).toHaveTextContent("/research/session-1?sel=selection-9");
+    expect(await screen.findByTestId("location-probe")).toHaveTextContent(
+      "/research/session-1/node/session-1?sel=selection-9",
+    );
   });
 
   it("标记完成与恢复待学调用更新并通知刷新", async () => {

@@ -1,9 +1,11 @@
 import type {
   AiConfigurationView,
+  CreateChildNodeInput,
   DeepResearchAccepted,
   DeepResearchInput,
   ModelPurpose,
   ModelRoutingView,
+  NodeGrowthAccepted,
   ProviderCredentialView,
   ProviderDefinition,
   ProviderModelDiscoveryInput,
@@ -20,10 +22,12 @@ import type {
   ResearchLaterItemStatus,
   ResearchLaterItemUpdate,
   ResearchLaterItemView,
+  ResearchNodeView,
   ResearchSelectionAccepted,
   ResearchSelectionInput,
   ResearchSelectionRecord,
   ResearchSelectionTaskRecord,
+  ResearchSessionNodeTreeItem,
   ResearchSessionRecord,
   ResearchSessionView,
   ResearchTaskRecord,
@@ -55,6 +59,14 @@ export interface ApiClient {
   startDeepResearch(selectionId: string, input: DeepResearchInput, idempotencyKey: string): Promise<DeepResearchAccepted>;
   getResearchBranch(branchId: string): Promise<ResearchBranchView>;
   submitBranchMessage(branchId: string, content: string, idempotencyKey: string): Promise<ResearchTurnAccepted>;
+  /** 节点视图（阶段 H2）：根节点与子节点统一的数据入口。 */
+  getResearchNodeView(nodeId: string): Promise<ResearchNodeView>;
+  /** 节点内追问：根节点与子节点统一的提交入口。 */
+  submitResearchNodeMessage(nodeId: string, content: string, idempotencyKey: string): Promise<ResearchTurnAccepted>;
+  /** 会话节点树（全屏树导航）：一次性返回扁平条目，客户端按 parentNodeId 建树。 */
+  getResearchSessionNodeTree(sessionId: string): Promise<ResearchSessionNodeTreeItem[]>;
+  /** 从选区生长子节点：统一取代深入研究二选一。 */
+  startChildNode(selectionId: string, input: CreateChildNodeInput, idempotencyKey: string): Promise<NodeGrowthAccepted>;
   /** 保存稍后再学项目：幂等键命中返回首次保存的项目，保存不依赖 AI。 */
   createResearchLaterItem(input: ResearchLaterItemInput, idempotencyKey: string): Promise<ResearchLaterItemView>;
   /** 稍后再学列表：联接选区原文与来源标题；可选按 pending / done 过滤。 */
@@ -245,6 +257,37 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
     },
     getResearchBranch(branchId: string) {
       return requestJson<ResearchBranchView>(fetchFn, `/v1/research-branches/${encodeURIComponent(branchId)}`);
+    },
+    getResearchNodeView(nodeId: string) {
+      return requestJson<ResearchNodeView>(fetchFn, `/v1/research-nodes/${encodeURIComponent(nodeId)}`);
+    },
+    submitResearchNodeMessage(nodeId: string, content: string, idempotencyKey: string) {
+      return requestJson<ResearchTurnAccepted>(
+        fetchFn,
+        `/v1/research-nodes/${encodeURIComponent(nodeId)}/messages`,
+        {
+          method: "POST",
+          headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
+          body: JSON.stringify({ content }),
+        },
+      );
+    },
+    getResearchSessionNodeTree(sessionId: string) {
+      return requestJson<ResearchSessionNodeTreeItem[]>(
+        fetchFn,
+        `/v1/research-sessions/${encodeURIComponent(sessionId)}/nodes`,
+      );
+    },
+    startChildNode(selectionId: string, input: CreateChildNodeInput, idempotencyKey: string) {
+      return requestJson<NodeGrowthAccepted>(
+        fetchFn,
+        `/v1/research-selections/${encodeURIComponent(selectionId)}/nodes`,
+        {
+          method: "POST",
+          headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
+          body: JSON.stringify(input),
+        },
+      );
     },
     submitBranchMessage(branchId: string, content: string, idempotencyKey: string) {
       return requestJson<ResearchTurnAccepted>(

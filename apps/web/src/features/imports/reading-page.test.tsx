@@ -65,7 +65,7 @@ describe("阅读视图", () => {
     expect(screen.getByText("段落 3")).toBeInTheDocument();
     expect(screen.getByText("第 4 页")).toBeInTheDocument();
     expect(screen.getByText("共 6 个内容块")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "返回研究会话" })).toHaveAttribute("href", "/research/session-1");
+    expect(screen.getByRole("link", { name: "返回研究会话" })).toHaveAttribute("href", "/research/session-1/node/session-1");
   });
 
   it("快照不存在时显示可返回的 404 状态", async () => {
@@ -75,7 +75,7 @@ describe("阅读视图", () => {
     renderReadingPage({ getResearchContent });
 
     expect(await screen.findByText("这份内容不存在或已经清理")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "返回研究" })).toHaveAttribute("href", "/research/session-1");
+    expect(screen.getByRole("link", { name: "返回研究" })).toHaveAttribute("href", "/research/session-1/node/session-1");
   });
 });
 

@@ -317,9 +317,12 @@ apps/web/
 | --- | --- |
 | `/` | 自动恢复最近会话；没有会话时显示开始页 |
 | `/research/new` | 新研究开始状态，不提前创建空数据库记录 |
-| `/research/:sessionId` | 研究会话和恢复入口；`?sel=<选区id>` 返回并高亮原选区 |
-| `/research/:sessionId/branch/:branchId` | 研究分支视图：顶部来源条、分支消息与继续追问 |
+| `/research/:sessionId/node/:nodeId` | 统一研究节点页（根节点 id = 会话 id）：节点消息与追问、子节点入口、来源条；`?sel=<选区id>` 返回并高亮原选区 |
+| `/research/:sessionId` | 旧会话路由，重定向到 `/research/:sessionId/node/:sessionId`（保留 `?sel=`） |
+| `/research/:sessionId/branch/:branchId` | 旧分支路由，重定向到 `/research/:sessionId/node/:branchId`（保留 `?sel=`） |
 | `/research/:sessionId/reading/:contentSnapshotId` | 导入内容阅读视图；`?sel=<选区id>` 返回并高亮原选区 |
+
+节点页面上通过顶栏“节点树”按钮或快捷键 `t`（焦点不在输入控件时）唤出全屏树导航：面包屑路径、`role="tree"` 方向键导航、兄弟节点并列点击跳跃。
 
 无效会话 ID 显示“这场研究不存在或已经清理”，并提供返回开始页；不要自动创建同名会话掩盖错误。
 

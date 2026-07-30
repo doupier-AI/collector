@@ -3,8 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import type {
-  DeepResearchAccepted,
-  DeepResearchInput,
+  CreateChildNodeInput,
+  NodeGrowthAccepted,
   ResearchLaterItemInput,
   ResearchLaterItemView,
   ResearchSelectionAccepted,
@@ -18,7 +18,7 @@ import type { SelectionEventStreamOptions } from "../../api/selection-events";
 import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
 import { LATER_CHANGED_EVENT } from "../navigation/later-event";
-import { makeLaterItemView, makeMessage, makeSelection, makeSelectionTask, makeSession, makeTask } from "../../test/fakes";
+import { makeLaterItemView, makeMessage, makeNode, makeSelection, makeSelectionTask, makeSession, makeTask } from "../../test/fakes";
 import { SelectionInsightPanel, selectionIdempotencyKey } from "./SelectionInsightPanel";
 import type { ActiveCapture } from "./useSelection";
 
@@ -223,13 +223,10 @@ describe("选区智能窗口", () => {
     expect(screen.getByText("一段选区文字")).toBeInTheDocument();
   });
 
-  function deepAccepted(mode: DeepResearchAccepted["mode"]): DeepResearchAccepted {
+  function growthAccepted(): NodeGrowthAccepted {
     return {
-      mode,
-      session: makeSession({ id: mode === "branch" ? "session-1" : "session-2" }),
-      ...(mode === "branch"
-        ? { branch: { id: "branch-1", sessionId: "session-1", selectionId: "selection-1", status: "active" as const, createdAt: "2026-07-21T08:00:00.000Z", updatedAt: "2026-07-21T08:00:00.000Z" } }
-        : {}),
+      node: makeNode({ id: "node-child-1", sessionId: "session-1", parentNodeId: "session-1", originSelectionId: "selection-1" }),
+      session: makeSession({ id: "session-1" }),
       selection: makeSelection({ id: "selection-1" }),
       inputMessage: makeMessage({ id: "m-in", role: "user", content: "深入研究这段内容" }),
       outputMessage: makeMessage({ id: "m-out", role: "assistant", status: "pending" }),
@@ -237,94 +234,90 @@ describe("选区智能窗口", () => {
     };
   }
 
-  it("深入研究默认分支去向：先保存再生成，导航到分支视图，幂等键稳定且纯 ASCII", async () => {
+  it("开枝散叶：先保存再生成，导航到统一节点页，幂等键稳定且纯 ASCII", async () => {
     const user = userEvent.setup();
-    const startDeepResearch = vi.fn(
-      async (_selectionId: string, _input: DeepResearchInput, _key: string) => deepAccepted("branch"),
+    const startChildNode = vi.fn(
+      async (_selectionId: string, _input: CreateChildNodeInput, _key: string) => growthAccepted(),
     );
-    renderPanel({ createResearchSelection: vi.fn(async () => acceptedWith("queued")), startDeepResearch });
+    renderPanel({ createResearchSelection: vi.fn(async () => acceptedWith("queued")), startChildNode });
 
     const openButton = await screen.findByRole("button", { name: "深入研究" });
     await user.click(openButton);
 
-    expect(await screen.findByTestId("deep-research-chooser")).toBeInTheDocument();
-    expect(screen.getByRole("radiogroup", { name: "深入研究去向" })).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: /沿当前内容建立研究分支/ })).toBeChecked();
-    // 分支去向不显示方向输入框
-    expect(screen.queryByLabelText("研究方向（可选）")).not.toBeInTheDocument();
+    expect(await screen.findByTestId("node-growth-panel")).toBeInTheDocument();
+    expect(screen.getByText(/从这段选区长出一个新的研究节点/)).toBeInTheDocument();
+    // 单一去向：不再有分支 / 独立会话二选一
+    expect(screen.queryByRole("radiogroup")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "开始深入研究" }));
+    await user.click(screen.getByRole("button", { name: "开始研究" }));
 
-    expect(startDeepResearch).toHaveBeenCalledTimes(1);
-    const [selectionId, input, key] = startDeepResearch.mock.calls[0];
+    expect(startChildNode).toHaveBeenCalledTimes(1);
+    const [selectionId, input, key] = startChildNode.mock.calls[0];
     expect(selectionId).toBe("selection-1");
-    expect(input).toEqual({ mode: "branch" });
-    expect(key).toMatch(/^dr:selection-1:branch:auto$/);
-    expect(key).toMatch(/^dr:[!-~]+$/);
+    expect(input).toEqual({});
+    expect(key).toMatch(/^ng:selection-1:auto$/);
+    expect(key).toMatch(/^[!-~]+$/);
     expect(key.length).toBeLessThanOrEqual(200);
 
-    expect(await screen.findByTestId("location-probe")).toHaveTextContent("/research/session-1/branch/branch-1");
+    expect(await screen.findByTestId("location-probe")).toHaveTextContent("/research/session-1/node/node-child-1");
   });
 
-  it("独立会话去向提供方向输入框：方向进入请求并导航到新会话", async () => {
+  it("开枝散叶可填写重点问题：query 进入请求并影响幂等键", async () => {
     const user = userEvent.setup();
-    const startDeepResearch = vi.fn(
-      async (_selectionId: string, _input: DeepResearchInput, _key: string) => deepAccepted("session"),
+    const startChildNode = vi.fn(
+      async (_selectionId: string, _input: CreateChildNodeInput, _key: string) => growthAccepted(),
     );
-    renderPanel({ createResearchSelection: vi.fn(async () => acceptedWith("queued")), startDeepResearch });
+    renderPanel({ createResearchSelection: vi.fn(async () => acceptedWith("queued")), startChildNode });
 
     await user.click(await screen.findByRole("button", { name: "深入研究" }));
-    await user.click(screen.getByRole("radio", { name: /以选区开启独立研究会话/ }));
+    await user.type(screen.getByLabelText("你想重点问什么（可选）"), "把本地优先的边界讲透");
+    await user.click(screen.getByRole("button", { name: "开始研究" }));
 
-    const directionInput = screen.getByLabelText("研究方向（可选）");
-    await user.type(directionInput, "把本地优先的边界讲透");
-    await user.click(screen.getByRole("button", { name: "开始深入研究" }));
-
-    const [, input, key] = startDeepResearch.mock.calls[0];
-    expect(input).toEqual({ mode: "session", direction: "把本地优先的边界讲透" });
-    expect(key).toMatch(/^dr:selection-1:session:[!-~]+$/);
-    expect(await screen.findByTestId("location-probe")).toHaveTextContent("/research/session-2");
+    const [, input, key] = startChildNode.mock.calls[0];
+    expect(input).toEqual({ query: "把本地优先的边界讲透" });
+    expect(key).toMatch(/^ng:selection-1:[!-~]+$/);
+    expect(key).not.toBe("ng:selection-1:auto");
+    expect(await screen.findByTestId("location-probe")).toHaveTextContent("/research/session-1/node/node-child-1");
   });
 
-  it("分析失败时仍可以发起深入研究", async () => {
+  it("分析失败时仍可以发起节点生长", async () => {
     const user = userEvent.setup();
-    const startDeepResearch = vi.fn(
-      async (_selectionId: string, _input: DeepResearchInput, _key: string) => deepAccepted("branch"),
+    const startChildNode = vi.fn(
+      async (_selectionId: string, _input: CreateChildNodeInput, _key: string) => growthAccepted(),
     );
     renderPanel({
       createResearchSelection: vi.fn(async () => acceptedWith("failed")),
-      startDeepResearch,
+      startChildNode,
     });
 
     const openButton = await screen.findByRole("button", { name: "深入研究" });
     expect(openButton).toBeEnabled();
     await user.click(openButton);
-    await user.click(screen.getByRole("button", { name: "开始深入研究" }));
+    await user.click(screen.getByRole("button", { name: "开始研究" }));
 
-    expect(startDeepResearch).toHaveBeenCalledTimes(1);
-    expect(await screen.findByTestId("location-probe")).toHaveTextContent("/research/session-1/branch/branch-1");
+    expect(startChildNode).toHaveBeenCalledTimes(1);
+    expect(await screen.findByTestId("location-probe")).toHaveTextContent("/research/session-1/node/node-child-1");
   });
 
-  it("发起失败时保留去向选择并给出错误，重试后成功导航", async () => {
+  it("发起失败时保留生长面板并给出错误，重试后成功导航", async () => {
     const user = userEvent.setup();
-    const startDeepResearch = vi
-      .fn<(selectionId: string, input: DeepResearchInput, idempotencyKey: string) => Promise<DeepResearchAccepted>>()
+    const startChildNode = vi
+      .fn<(selectionId: string, input: CreateChildNodeInput, idempotencyKey: string) => Promise<NodeGrowthAccepted>>()
       .mockRejectedValueOnce(new ApiRequestError(500, "internal_error", "boom"))
-      .mockResolvedValueOnce(deepAccepted("branch"));
-    renderPanel({ createResearchSelection: vi.fn(async () => acceptedWith("queued")), startDeepResearch });
+      .mockResolvedValueOnce(growthAccepted());
+    renderPanel({ createResearchSelection: vi.fn(async () => acceptedWith("queued")), startChildNode });
 
     await user.click(await screen.findByRole("button", { name: "深入研究" }));
-    await user.click(screen.getByRole("button", { name: "开始深入研究" }));
+    await user.click(screen.getByRole("button", { name: "开始研究" }));
 
     expect(await screen.findByText("Collector 服务暂时出现错误，请稍后重试。")).toBeInTheDocument();
-    expect(screen.getByTestId("deep-research-chooser")).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: /沿当前内容建立研究分支/ })).toBeChecked();
+    expect(screen.getByTestId("node-growth-panel")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "开始深入研究" }));
-    expect(await screen.findByTestId("location-probe")).toHaveTextContent("/research/session-1/branch/branch-1");
+    await user.click(screen.getByRole("button", { name: "开始研究" }));
+    expect(await screen.findByTestId("location-probe")).toHaveTextContent("/research/session-1/node/node-child-1");
   });
 
-  it("选区尚未保存完成时不能打开去向选择", async () => {
+  it("选区尚未保存完成时不能打开发起面板", async () => {
     renderPanel({ createResearchSelection: vi.fn(() => new Promise<ResearchSelectionAccepted>(() => {})) });
     const openButton = await screen.findByRole("button", { name: "深入研究" });
     expect(openButton).toBeDisabled();

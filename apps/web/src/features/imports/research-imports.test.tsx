@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ResearchSessionView } from "@collector/capture-contracts";
+import type { ResearchNodeView, ResearchSessionView } from "@collector/capture-contracts";
 import type { ApiClient } from "../../api/client";
 import { ApiRequestError, NetworkError } from "../../api/errors";
 import { connectImportEvents } from "../../api/import-events";
@@ -10,9 +10,9 @@ import type { ImportEventStreamOptions } from "../../api/import-events";
 import type { TaskEventStream } from "../../api/task-events";
 import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
-import { FakeEventSource, makeAttachment, makeImportTask, makeMessage, makeSession, makeTask } from "../../test/fakes";
+import { FakeEventSource, makeAttachment, makeImportTask, makeMessage, makeNode, makeSession, makeTask } from "../../test/fakes";
 import { ReadingPage } from "./ReadingPage";
-import { ResearchSessionPage } from "../research-session/ResearchSessionPage";
+import { ResearchNodePage } from "../research-session/ResearchNodePage";
 
 function noopTaskEventStream(): TaskEventStream {
   return { close: () => {}, syncNow: () => {}, mode: "closed", lastEventId: 0 };
@@ -22,11 +22,11 @@ function SessionRoutes() {
   const navigate = useNavigate();
   return (
     <>
-      <button type="button" onClick={() => navigate("/research/session-2")}>
+      <button type="button" onClick={() => navigate("/research/session-2/node/session-2")}>
         切换会话
       </button>
       <Routes>
-        <Route path="/research/:sessionId" element={<ResearchSessionPage />} />
+        <Route path="/research/:sessionId/node/:nodeId" element={<ResearchNodePage />} />
         <Route path="/research/:sessionId/reading/:contentSnapshotId" element={<ReadingPage />} />
       </Routes>
     </>
@@ -42,7 +42,7 @@ function renderSessionPage(api: Partial<ApiClient>) {
   } as unknown as AppServices;
   return render(
     <ServicesProvider services={services}>
-      <MemoryRouter initialEntries={["/research/session-1"]}>
+      <MemoryRouter initialEntries={["/research/session-1/node/session-1"]}>
         <SessionRoutes />
       </MemoryRouter>
     </ServicesProvider>,
@@ -59,8 +59,19 @@ function emptyView(): ResearchSessionView {
   };
 }
 
+/** 会话视图 → 根节点视图：页面初始加载走节点端点，导入对齐仍走会话端点。 */
+function nodeViewOf(view: ResearchSessionView): ResearchNodeView {
+  return {
+    node: makeNode({ id: view.session.id, sessionId: view.session.id }),
+    ...view,
+  };
+}
+
 function baseApi(overrides: Partial<ApiClient>): Partial<ApiClient> {
   return {
+    getResearchNodeView: vi.fn(async (nodeId: string) =>
+      nodeViewOf({ ...emptyView(), session: makeSession({ id: nodeId, title: "本地研究" }) }),
+    ),
     getResearchSessionView: vi.fn(async () => emptyView()),
     getResearchImportTask: vi.fn(async () => makeImportTask({ id: "import-task-1", status: "completed" })),
     ...overrides,
@@ -87,10 +98,11 @@ describe("研究文件导入", () => {
     const readyAttachment = { ...attachment, status: "ready" as const, contentSnapshotId: "snap-1" };
     const completedTask = makeImportTask({ id: "import-task-1", attachmentId: "att-1", status: "completed" });
     const createResearchImport = vi.fn<ApiClient["createResearchImport"]>(async () => ({ attachment, task: queuedTask }));
-    const getResearchSessionView = vi
-      .fn<() => Promise<ResearchSessionView>>()
-      .mockResolvedValueOnce(emptyView())
-      .mockResolvedValue({ ...emptyView(), attachments: [readyAttachment], importTasks: [completedTask] });
+    const getResearchSessionView = vi.fn(async () => ({
+      ...emptyView(),
+      attachments: [readyAttachment],
+      importTasks: [completedTask],
+    }));
     const getResearchContent = vi.fn(async () => ({
       id: "snap-1",
       sessionId: "session-1",
@@ -142,13 +154,13 @@ describe("研究文件导入", () => {
     const readButton = await screen.findByRole("button", { name: "阅读" });
     expect(screen.getByText("已导入")).toBeInTheDocument();
 
-    // 同一 /research/:sessionId 画布内打开阅读视图
+    // 同一研究画布内打开阅读视图
     await user.click(readButton);
     expect(await screen.findByRole("heading", { name: "笔记.txt" })).toBeInTheDocument();
     expect(getResearchContent).toHaveBeenCalledWith("snap-1");
     expect(screen.getByText("第 1 行")).toBeInTheDocument();
     expect(screen.getByText("第一行内容")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "返回研究会话" })).toHaveAttribute("href", "/research/session-1");
+    expect(screen.getByRole("link", { name: "返回研究会话" })).toHaveAttribute("href", "/research/session-1/node/session-1");
   });
 
   it("切换会话后忽略旧会话延迟返回的上传结果", async () => {
@@ -159,11 +171,13 @@ describe("研究文件导入", () => {
         resolveUpload = resolve;
       }),
     );
-    const getResearchSessionView = vi.fn(async (sessionId: string) => ({
+    const viewFor = (sessionId: string) => ({
       ...emptyView(),
       session: makeSession({ id: sessionId, title: sessionId === "session-1" ? "会话一" : "会话二" }),
-    }));
-    const { container } = renderSessionPage(baseApi({ createResearchImport, getResearchSessionView }));
+    });
+    const getResearchNodeView = vi.fn(async (nodeId: string) => nodeViewOf(viewFor(nodeId)));
+    const getResearchSessionView = vi.fn(async (sessionId: string) => viewFor(sessionId));
+    const { container } = renderSessionPage(baseApi({ createResearchImport, getResearchNodeView, getResearchSessionView }));
 
     await screen.findByRole("heading", { name: "会话一" });
     await selectFile(container, new File(["内容"], "旧会话.txt", { type: "text/plain" }));
@@ -189,27 +203,26 @@ describe("研究文件导入", () => {
   it("切换会话后不保留旧会话的待重试上传", async () => {
     const user = userEvent.setup();
     let resolveRecovery!: (view: ResearchSessionView) => void;
-    let sessionOneLoads = 0;
+    // 页面初始加载走节点端点；会话端点只在失败上传后的对齐时调用，返回挂起承诺模拟慢响应
     const getResearchSessionView = vi.fn(async (sessionId: string) => {
       if (sessionId === "session-2") {
         return { ...emptyView(), session: makeSession({ id: "session-2", title: "会话二" }) };
-      }
-      sessionOneLoads += 1;
-      if (sessionOneLoads === 1) {
-        return { ...emptyView(), session: makeSession({ id: "session-1", title: "会话一" }) };
       }
       return new Promise<ResearchSessionView>((resolve) => {
         resolveRecovery = resolve;
       });
     });
+    const getResearchNodeView = vi.fn(async (nodeId: string) =>
+      nodeViewOf({ ...emptyView(), session: makeSession({ id: nodeId, title: nodeId === "session-1" ? "会话一" : "会话二" }) }),
+    );
     const createResearchImport = vi.fn(async () => {
       throw new NetworkError();
     });
-    const { container } = renderSessionPage(baseApi({ createResearchImport, getResearchSessionView }));
+    const { container } = renderSessionPage(baseApi({ createResearchImport, getResearchNodeView, getResearchSessionView }));
 
     await screen.findByRole("heading", { name: "会话一" });
     await selectFile(container, new File(["内容"], "断线旧会话.txt", { type: "text/plain" }));
-    await waitFor(() => expect(getResearchSessionView).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(getResearchSessionView).toHaveBeenCalledTimes(1));
 
     await user.click(screen.getByRole("button", { name: "切换会话" }));
     await screen.findByRole("heading", { name: "会话二" });
@@ -248,7 +261,11 @@ describe("研究文件导入", () => {
       importTasks: [runningTask],
     };
     const cancelResearchImport = vi.fn(async () => makeImportTask({ id: "import-task-1", attachmentId: "att-1", status: "cancelled" }));
-    renderSessionPage(baseApi({ getResearchSessionView: vi.fn(async () => view), cancelResearchImport }));
+    renderSessionPage(baseApi({
+      getResearchNodeView: vi.fn(async () => nodeViewOf(view)),
+      getResearchSessionView: vi.fn(async () => view),
+      cancelResearchImport,
+    }));
 
     await user.click(await screen.findByRole("button", { name: "取消" }));
     await waitFor(() => expect(cancelResearchImport).toHaveBeenCalledWith("import-task-1"));
@@ -258,23 +275,23 @@ describe("研究文件导入", () => {
   it("切换会话后忽略旧会话延迟返回的取消结果", async () => {
     const user = userEvent.setup();
     let resolveCancel!: (task: Awaited<ReturnType<ApiClient["cancelResearchImport"]>>) => void;
-    const runningView: ResearchSessionView = {
-      ...emptyView(),
-      session: makeSession({ id: "session-1", title: "会话一" }),
-      attachments: [makeAttachment({ id: "att-1", sessionId: "session-1", fileName: "处理中.txt", importTaskId: "import-task-1" })],
-      importTasks: [makeImportTask({ id: "import-task-1", sessionId: "session-1", attachmentId: "att-1", status: "running" })],
-    };
-    const getResearchSessionView = vi.fn(async (sessionId: string) =>
+    const viewFor = (sessionId: string): ResearchSessionView =>
       sessionId === "session-1"
-        ? runningView
-        : { ...emptyView(), session: makeSession({ id: "session-2", title: "会话二" }) },
-    );
+        ? {
+            ...emptyView(),
+            session: makeSession({ id: "session-1", title: "会话一" }),
+            attachments: [makeAttachment({ id: "att-1", sessionId: "session-1", fileName: "处理中.txt", importTaskId: "import-task-1" })],
+            importTasks: [makeImportTask({ id: "import-task-1", sessionId: "session-1", attachmentId: "att-1", status: "running" })],
+          }
+        : { ...emptyView(), session: makeSession({ id: "session-2", title: "会话二" }) };
+    const getResearchNodeView = vi.fn(async (nodeId: string) => nodeViewOf(viewFor(nodeId)));
+    const getResearchSessionView = vi.fn(async (sessionId: string) => viewFor(sessionId));
     const cancelResearchImport = vi.fn<ApiClient["cancelResearchImport"]>(
       () => new Promise((resolve) => {
         resolveCancel = resolve;
       }),
     );
-    renderSessionPage(baseApi({ getResearchSessionView, cancelResearchImport }));
+    renderSessionPage(baseApi({ getResearchNodeView, getResearchSessionView, cancelResearchImport }));
 
     await user.click(await screen.findByRole("button", { name: "取消" }));
     await waitFor(() => expect(cancelResearchImport).toHaveBeenCalledWith("import-task-1"));
@@ -291,23 +308,23 @@ describe("研究文件导入", () => {
   it("切换会话后忽略旧会话延迟返回的重试结果", async () => {
     const user = userEvent.setup();
     let resolveRetry!: (task: Awaited<ReturnType<ApiClient["retryResearchImport"]>>) => void;
-    const failedView: ResearchSessionView = {
-      ...emptyView(),
-      session: makeSession({ id: "session-1", title: "会话一" }),
-      attachments: [makeAttachment({ id: "att-1", sessionId: "session-1", fileName: "失败.txt", importTaskId: "import-task-1", status: "failed" })],
-      importTasks: [makeImportTask({ id: "import-task-1", sessionId: "session-1", attachmentId: "att-1", status: "failed", retryable: true })],
-    };
-    const getResearchSessionView = vi.fn(async (sessionId: string) =>
+    const viewFor = (sessionId: string): ResearchSessionView =>
       sessionId === "session-1"
-        ? failedView
-        : { ...emptyView(), session: makeSession({ id: "session-2", title: "会话二" }) },
-    );
+        ? {
+            ...emptyView(),
+            session: makeSession({ id: "session-1", title: "会话一" }),
+            attachments: [makeAttachment({ id: "att-1", sessionId: "session-1", fileName: "失败.txt", importTaskId: "import-task-1", status: "failed" })],
+            importTasks: [makeImportTask({ id: "import-task-1", sessionId: "session-1", attachmentId: "att-1", status: "failed", retryable: true })],
+          }
+        : { ...emptyView(), session: makeSession({ id: "session-2", title: "会话二" }) };
+    const getResearchNodeView = vi.fn(async (nodeId: string) => nodeViewOf(viewFor(nodeId)));
+    const getResearchSessionView = vi.fn(async (sessionId: string) => viewFor(sessionId));
     const retryResearchImport = vi.fn<ApiClient["retryResearchImport"]>(
       () => new Promise((resolve) => {
         resolveRetry = resolve;
       }),
     );
-    renderSessionPage(baseApi({ getResearchSessionView, retryResearchImport }));
+    renderSessionPage(baseApi({ getResearchNodeView, getResearchSessionView, retryResearchImport }));
 
     await user.click(await screen.findByRole("button", { name: "重试" }));
     await waitFor(() => expect(retryResearchImport).toHaveBeenCalledWith("import-task-1"));
@@ -337,7 +354,11 @@ describe("研究文件导入", () => {
       importTasks: [failedTask],
     };
     const retryResearchImport = vi.fn(async () => makeImportTask({ id: "import-task-1", attachmentId: "att-1", status: "queued" }));
-    renderSessionPage(baseApi({ getResearchSessionView: vi.fn(async () => view), retryResearchImport }));
+    renderSessionPage(baseApi({
+      getResearchNodeView: vi.fn(async () => nodeViewOf(view)),
+      getResearchSessionView: vi.fn(async () => view),
+      retryResearchImport,
+    }));
 
     expect(await screen.findByText(/无法解析这个文件/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "重试" }));
@@ -374,14 +395,11 @@ describe("研究文件导入", () => {
       usedKey = args[4] as string;
       return Promise.reject(new NetworkError());
     });
-    const getResearchSessionView = vi
-      .fn<() => Promise<ResearchSessionView>>()
-      .mockResolvedValueOnce(emptyView())
-      .mockImplementation(async () => ({
-        ...emptyView(),
-        attachments: [attachment],
-        importTasks: [{ ...queuedTask, idempotencyKey: usedKey }],
-      }));
+    const getResearchSessionView = vi.fn(async () => ({
+      ...emptyView(),
+      attachments: [attachment],
+      importTasks: [{ ...queuedTask, idempotencyKey: usedKey }],
+    }));
     const { container } = renderSessionPage(baseApi({ createResearchImport, getResearchSessionView }));
 
     await selectFile(container, new File(["内容"], "已受理.txt", { type: "text/plain" }));
@@ -400,7 +418,8 @@ describe("研究文件导入", () => {
 
     await selectFile(container, new File(["内容"], "冲突.txt", { type: "text/plain" }));
     expect(await screen.findByText(/与已有记录冲突/)).toBeInTheDocument();
-    await waitFor(() => expect(getResearchSessionView).toHaveBeenCalledTimes(2));
+    // 页面初始加载走节点端点；会话端点只在冲突后对齐时调用一次
+    await waitFor(() => expect(getResearchSessionView).toHaveBeenCalledTimes(1));
     expect(screen.queryByText("冲突.txt")).not.toBeInTheDocument();
   });
 
@@ -432,7 +451,10 @@ describe("研究文件导入", () => {
       ],
       importTasks: [makeImportTask({ id: "import-task-1", attachmentId: "att-1", status: "completed" })],
     };
-    renderSessionPage(baseApi({ getResearchSessionView: vi.fn(async () => view) }));
+    renderSessionPage(baseApi({
+      getResearchNodeView: vi.fn(async () => nodeViewOf(view)),
+      getResearchSessionView: vi.fn(async () => view),
+    }));
 
     expect(await screen.findByText("已完成.pdf")).toBeInTheDocument();
     expect(screen.getByText("已导入")).toBeInTheDocument();

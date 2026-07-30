@@ -21,8 +21,8 @@ const SELECTED = "本地优先会先把输入保存在本机";
 async function submitFirstQuestion(page: Page, question = QUESTION): Promise<string> {
   await page.getByLabel("你的问题").fill(question);
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+$/, { timeout: 10_000 });
-  return page.url().split("/research/")[1] ?? "";
+  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
+  return page.url().split("/research/")[1]?.split("/")[0] ?? "";
 }
 
 /** 打开选区窗口并等待假模型分析完成，返回窗口定位器。 */
@@ -141,7 +141,7 @@ test.describe("稍后再学栏目与来源返回", () => {
 
     // 从右栏点击项目，返回原内容原选区
     await page.locator(".later-item", { hasText: summary }).locator(".later-item__open").click();
-    await page.waitForURL(new RegExp(`/research/${sessionId}\\?sel=`), { timeout: 10_000 });
+    await page.waitForURL(new RegExp(`/research/${sessionId}/node/${sessionId}\\?sel=`), { timeout: 10_000 });
 
     // 高亮原选区并自动重开选区智能窗口
     await expect(page.locator("[data-selection-mark]")).toHaveText(SELECTED, { timeout: 10_000 });
@@ -226,7 +226,7 @@ test.describe("稍后再学栏目与来源返回", () => {
     const laterPanel = page.getByRole("complementary", { name: "稍后再学" });
     await expect(laterPanel).toBeVisible();
     await laterPanel.locator(".later-item", { hasText: summary }).locator(".later-item__open").click();
-    await page.waitForURL(new RegExp(`/research/${sessionId}\\?sel=`), { timeout: 10_000 });
+    await page.waitForURL(new RegExp(`/research/${sessionId}/node/${sessionId}\\?sel=`), { timeout: 10_000 });
     await expect(page.locator("[data-selection-mark]")).toHaveText(SELECTED, { timeout: 10_000 });
     // overlay 抽屉在导航后关闭
     await expect(page.getByRole("complementary", { name: "稍后再学" })).toBeHidden();
