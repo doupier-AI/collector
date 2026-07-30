@@ -1,14 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import type { ResearchContentBlock, ResearchContentSnapshotRecord } from "@collector/capture-contracts";
-import { isApiErrorCode, isUnauthorized } from "../../api/errors";
+import { isApiErrorCode, isUnauthorized, apiErrorCopy } from "../../api/errors";
 import { anchorCaption } from "../../app/anchorCaption";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { useServices } from "../../app/services";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { HighlightedText } from "../selection/HighlightedText";
 import { SelectionSurface } from "../selection/SelectionSurface";
-import { resolveHighlight } from "../selection/selection-highlight";
+import {
+  childNodeIdempotencyKey,
+  resolveHighlight,
+  selectionExactDigest,
+} from "../selection/selection-highlight";
+import { useSelectionCitation } from "../selection/useSelectionCitation";
 import { PairingGate } from "../auth/PairingGate";
 import { SelectionRestoreFallback, useSelectionRestore } from "../research-session/SelectionSourceBar";
 import { ChatComposer } from "../chat-composer/ChatComposer";
@@ -32,9 +37,11 @@ function isCode(block: ResearchContentBlock): boolean {
  * 研究阅读视图：以稳定 contentSnapshotId 读取内容块，按锚点联合类型渲染。
  * 文本一律按不可信内容以纯文本渲染，不保存 DOM 路径，不猜 MIME 字段。
  * 页面底部提供 ChatComposer，可对当前文档直接提问，消息回到所属会话。
+ * 阶段 H4a：选区引用胶囊在输入框区域显示，支持"在此追问"与"深入研究这段"双模发送。
  */
 export function ReadingPage() {
   const { sessionId = "", contentSnapshotId = "" } = useParams();
+  const navigate = useNavigate();
   const { api } = useServices();
   const [state, setState] = useState<ReaderState>({ kind: "loading" });
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -49,6 +56,10 @@ export function ReadingPage() {
       submit: (content, key) => api.submitResearchMessage(sessionId, content, key),
     });
   }
+
+  // 引用选区管理（阶段 H4a）：阅读页不传 nodeId，选区归属根节点
+  const { citation: citedSelection, capture: captureCitation, remove: removeCitation, clear: clearCitation } =
+    useSelectionCitation({ sessionId });
 
   useEffect(() => {
     let stale = false;
@@ -97,6 +108,18 @@ export function ReadingPage() {
     }
   }, [restoreKey, reducedMotion]);
 
+  // ?sel= 恢复选区时直接显示引用胶囊（仅当快照选区属于当前快照时）
+  const currentSnapshotId = state.kind === "ready" ? state.snapshot.id : null;
+  const restoredCitedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!restoredSelection || restoredCitedRef.current === restoredSelection.id) return;
+    if (!currentSnapshotId) return;
+    const anchor = restoredSelection.anchor;
+    if (anchor.kind === "snapshot" && anchor.contentSnapshotId !== currentSnapshotId) return;
+    restoredCitedRef.current = restoredSelection.id;
+    captureCitation(anchor, restoredSelection.text);
+  }, [restoredSelection, captureCitation, currentSnapshotId]);
+
   const handleSubmitMessage = useCallback(
     async (content: string): Promise<boolean> => {
       const submitter = submitterRef.current;
@@ -113,6 +136,26 @@ export function ReadingPage() {
     },
     [],
   );
+
+  /** "深入研究这段"：以引用选区为来源创建子节点，导航到节点页。 */
+  async function handleStartChildNode(query: string): Promise<boolean> {
+    if (!citedSelection) return false;
+    try {
+      const trimmed = query.trim();
+      const idempotencyKey = childNodeIdempotencyKey(citedSelection.selectionId, trimmed, selectionExactDigest);
+      const accepted = await api.startChildNode(
+        citedSelection.selectionId,
+        trimmed ? { query: trimmed } : {},
+        idempotencyKey,
+      );
+      removeCitation();
+      navigate(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(accepted.node.id)}`);
+      return true;
+    } catch (error) {
+      console.error("创建子节点失败:", apiErrorCopy(error).body);
+      return false;
+    }
+  }
 
   if (authError) {
     return <PairingGate onPaired={() => setAuthError(null)} />;
@@ -221,17 +264,15 @@ export function ReadingPage() {
           submitLabel="发送"
           placeholder="输入关于这篇文档的问题……"
           onSubmit={handleSubmitMessage}
+          citedSelection={citedSelection}
+          onRemoveCitation={removeCitation}
+          onStartChildNode={handleStartChildNode}
         />
       </div>
       <SelectionSurface
         sessionId={sessionId}
-        restoreSelection={
-          restoredSelection &&
-          restoredSelection.anchor.kind === "snapshot" &&
-          restoredSelection.anchor.contentSnapshotId === snapshot.id
-            ? restoredSelection
-            : null
-        }
+        onCapture={captureCitation}
+        onSelectionClear={clearCitation}
       />
     </div>
   );

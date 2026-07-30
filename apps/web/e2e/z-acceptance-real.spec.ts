@@ -208,18 +208,12 @@ async function selectReadingTextByTarget(page: Page, target: string): Promise<vo
   }, target);
 }
 
-/** 打开选区窗口并等待真实分析完成（难度 chip 出现、无失败卡片、摘要非演示），返回窗口定位器。 */
-async function openInsightPanelReal(page: Page, selected: string): Promise<Locator> {
-  const panel = page.getByTestId("selection-insight-panel");
-  await expect(panel).toBeVisible({ timeout: 20_000 });
-  await expect(panel.locator(".selection-panel__quote")).toHaveText(selected);
-  await expect(panel.locator(".selection-panel__chip[data-difficulty]")).toBeVisible({ timeout: REAL_TIMEOUT });
-  await expect(panel.locator(".failure-card")).toHaveCount(0);
-  const summary = panel.locator(".selection-panel__text").first();
-  await expect(summary).toBeVisible();
-  expect(((await summary.textContent()) ?? "").trim().length, "真实分析摘要应非空").toBeGreaterThan(0);
-  expect(await summary.textContent(), "真实分析不应带演示标记").not.toContain("本地演示");
-  return panel;
+/** 阶段 H4a：选区后等待引用胶囊出现（分析在后台静默进行，不再展示难度/摘要等字段），返回胶囊定位器。 */
+async function waitForCapsuleReal(page: Page, selected: string): Promise<Locator> {
+  const capsule = page.getByTestId("selection-capsule");
+  await expect(capsule).toBeVisible({ timeout: 20_000 });
+  await expect(capsule).toContainText(selected.slice(0, 36));
+  return capsule;
 }
 
 // ---------------------------------------------------------------------------
@@ -246,13 +240,10 @@ test("场景一：Chat 真实回答 → 选区真实分析 → 节点生长真�
 
   // 选区 + 真实分析
   const selected = await selectRealAnswerText(page);
-  const panel = await openInsightPanelReal(page, selected);
+  await waitForCapsuleReal(page, selected);
 
-  // 深入研究 → 生长面板（二选一已退役，收敛为单一节点生长动作）
-  await panel.getByRole("button", { name: "深入研究" }).click();
-  const grow = page.getByTestId("node-growth-panel");
-  await expect(grow).toBeVisible();
-  await panel.getByRole("button", { name: "开始研究" }).click();
+  // 阶段 H4a：胶囊"深入研究这段"直接创建子节点
+  await page.getByRole("button", { name: "深入研究这段" }).click();
 
   // 子节点视图：来源条、材料范围如实说明、真实第一轮
   const nodeId = await waitChildNodeUrl(page, sessionId);
@@ -351,15 +342,13 @@ test("场景二：文档导入 → 选区真实分析 → 带方向的节点生�
   await expect(page).toHaveURL(new RegExp(`/research/${originSessionId}/reading/[^/]+$`));
   await expect(page.getByText(DOC_SELECTED)).toBeVisible({ timeout: 20_000 });
 
-  // 选区 + 真实分析（来源为导入快照）
+  // 选区 + 胶囊（来源为导入快照，分析在后台静默进行）
   await selectReadingTextByTarget(page, DOC_SELECTED);
-  const panel = await openInsightPanelReal(page, DOC_SELECTED);
+  await waitForCapsuleReal(page, DOC_SELECTED);
 
-  // 深入研究 → 生长面板，可选方向成为第一轮输入
-  await panel.getByRole("button", { name: "深入研究" }).click();
-  const grow = page.getByTestId("node-growth-panel");
-  await grow.getByLabel("你想重点问什么（可选）").fill("把最终一致性的收敛机制讲透");
-  await panel.getByRole("button", { name: "开始研究" }).click();
+  // 阶段 H4a：先输入方向，再"深入研究这段"直接创建子节点
+  await page.getByLabel("你的问题").fill("把最终一致性的收敛机制讲透");
+  await page.getByRole("button", { name: "深入研究这段" }).click();
 
   // 进入新子节点：来源条带来源内容名、材料范围说明、真实第一轮
   const nodeId = await waitChildNodeUrl(page, originSessionId, 30_000);
@@ -415,84 +404,9 @@ test("场景二：文档导入 → 选区真实分析 → 带方向的节点生�
 
 // ---------------------------------------------------------------------------
 // 场景三：保存为稍后再学 → 栏目呈现 → 从栏目返回原选区并重开窗口 → 刷新保持
+// 阶段 H4a 暂停：旧窗口"稍后再学"入口已退役，新入口由票据 08 提供
 // ---------------------------------------------------------------------------
-test("场景三：真实回答选区 → 保存稍后再学（星级 / 概括）→ 栏目呈现 → 返回原选区重开窗口 → 刷新保持", async ({
-  page,
-}) => {
-  const laterPosts: Array<{ url: string; headers: Record<string, string> }> = [];
-  page.on("request", (request) => {
-    if (request.url().includes("/v1/research-later-items") && request.method() === "POST") {
-      laterPosts.push({ url: request.url(), headers: request.headers() });
-    }
-  });
-
-  await pairAndOpen(page, "/research/new");
-  const consoleIssues = watchConsole(page);
-  const sessionId = await submitQuestion(page, "请用一句话说明什么是间隔重复，以及它对记忆的作用。");
-  await waitCompletedAnswerText(page, 1);
-
-  const selected = await selectRealAnswerText(page);
-  const panel = await openInsightPanelReal(page, selected);
-
-  // 稍后再学：星级 + 可编辑概括（预填确定性默认值，非 AI）
-  await panel.getByRole("button", { name: "稍后再学" }).click();
-  const form = page.getByTestId("later-form");
-  await expect(form).toBeVisible();
-  const summaryInput = panel.getByLabel("概括");
-  expect(((await summaryInput.inputValue()) ?? "").trim().length, "概括应预填确定性默认值").toBeGreaterThan(0);
-  await panel.locator("label.later-star").filter({ hasText: "5 星" }).click();
-  const summary = `收尾真实验收：${selected.slice(0, 12)}`;
-  await summaryInput.fill(summary);
-  await panel.getByRole("button", { name: "保存" }).click();
-  await expect(page.getByTestId("later-saved")).toBeVisible({ timeout: 30_000 });
-
-  // 网络契约：创建请求带稳定幂等键 later:<选区id>
-  expect(laterPosts.length).toBeGreaterThanOrEqual(1);
-  expect(laterPosts[0].headers["idempotency-key"]).toMatch(/^later:/);
-
-  // 栏目即时呈现：概括、来源、数量徽标
-  const item = page.locator(".later-item", { hasText: summary });
-  await expect(item).toBeVisible();
-  await expect(page.getByTestId("later-count")).toBeVisible();
-
-  // SQLite：选区与稍后再学落库一致、幂等重放不重复
-  const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
-  const selections = readResearchSelectionTables(dbPath).selections.filter((row) => row.sessionId === sessionId);
-  expect(selections.length).toBeGreaterThanOrEqual(1);
-  const selectionId = selections[0]?.id ?? "";
-  const laterItems = readResearchLaterTables(dbPath).laterItems.filter((row) => row.sessionId === sessionId);
-  expect(laterItems).toHaveLength(1);
-  expect(laterItems[0]?.selectionId).toBe(selectionId);
-  expect(laterItems[0]?.status).toBe("pending");
-  expect(laterItems[0]?.priority).toBe(5);
-  expect(JSON.parse(laterItems[0]?.recordJson ?? "{}").summary).toBe(summary);
-
-  const replay = await page.request.post("/v1/research-later-items", {
-    headers: { "Idempotency-Key": `later:${selectionId}`, "Content-Type": "application/json" },
-    data: { selectionId, priority: 5, summary },
-  });
-  expect(replay.ok()).toBe(true);
-  expect(readResearchLaterTables(dbPath).laterItems.filter((row) => row.sessionId === sessionId)).toHaveLength(1);
-
-  // 离开原内容，从栏目重新打开：返回原选区并自动重开窗口
-  await panel.getByRole("button", { name: "结束", exact: true }).click();
-  await expect(page.getByTestId("selection-insight-panel")).toBeHidden();
-  await page.getByRole("link", { name: "开始 Chat" }).click();
-  await page.waitForURL(/\/research\/new$/, { timeout: 15_000 });
-
-  await page.locator(".later-item", { hasText: summary }).locator(".later-item__open").click();
-  await page.waitForURL(new RegExp(`/research/${sessionId}/node/${sessionId}\\?sel=`), { timeout: 20_000 });
-  await expect(page.locator("[data-selection-mark]")).toHaveText(selected, { timeout: 20_000 });
-  await expect(page.getByTestId("selection-insight-panel")).toBeVisible();
-  await expect(page.getByTestId("selection-insight-panel").locator(".selection-panel__quote")).toHaveText(selected);
-
-  // 刷新后高亮与重开窗口仍在
-  await page.reload();
-  await expect(page.locator("[data-selection-mark]")).toHaveText(selected, { timeout: 20_000 });
-  await expect(page.getByTestId("selection-insight-panel")).toBeVisible();
-
-  expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
-});
+test.skip("场景三：真实回答选区 → 保存稍后再学（H4a 后暂停，待票据 08 恢复入口）", async () => {});
 
 // ---------------------------------------------------------------------------
 // 场景四：真实条件下的失败与恢复——刷新不重复创建、材料范围如实、全程无演示标记
@@ -506,11 +420,10 @@ test("场景四：刷新不重复创建子节点与稍后再学项目，材料�
   await assertRealMode(page);
 
   const selected = await selectRealAnswerText(page);
-  const panel = await openInsightPanelReal(page, selected);
+  await waitForCapsuleReal(page, selected);
 
-  // 生长子节点
-  await panel.getByRole("button", { name: "深入研究" }).click();
-  await panel.getByRole("button", { name: "开始研究" }).click();
+  // 阶段 H4a：胶囊"深入研究这段"直接创建子节点
+  await page.getByRole("button", { name: "深入研究这段" }).click();
   const nodeId = await waitChildNodeUrl(page, sessionId);
   await waitCompletedAnswerText(page, 1);
 
@@ -526,23 +439,24 @@ test("场景四：刷新不重复创建子节点与稍后再学项目，材料�
     readResearchNodeTables(dbPath).nodes.filter((row) => row.sessionId === sessionId && row.parentNodeId !== null),
   ).toHaveLength(childrenBefore);
 
-  // 回到原会话保存一个稍后再学项目，再刷新：不重复创建
+  // 回到原会话做第二次选区并生长子节点，再刷新：不重复创建
   await page.goto(`/research/${sessionId}`);
   await expect(page.locator('.message--assistant [data-content-kind="message"]').first()).toBeVisible({
     timeout: 30_000,
   });
   const reselected = await selectRealAnswerText(page, 24, 8);
-  const repanel = await openInsightPanelReal(page, reselected);
-  await repanel.getByRole("button", { name: "稍后再学" }).click();
-  await repanel.getByLabel("概括").fill("场景四：刷新不重复");
-  await repanel.getByRole("button", { name: "保存" }).click();
-  await expect(page.getByTestId("later-saved")).toBeVisible({ timeout: 30_000 });
-  const laterBefore = readResearchLaterTables(dbPath).laterItems.filter((row) => row.sessionId === sessionId).length;
+  await waitForCapsuleReal(page, reselected);
+  await page.getByRole("button", { name: "深入研究这段" }).click();
+  const nodeId2 = await waitChildNodeUrl(page, sessionId);
+  expect(nodeId2).not.toBe(nodeId);
+  const childrenAfter = readResearchNodeTables(dbPath).nodes.filter(
+    (row) => row.sessionId === sessionId && row.parentNodeId !== null,
+  ).length;
+  expect(childrenAfter).toBe(childrenBefore + 1);
   await page.reload();
-  await expect(page.locator(".later-item", { hasText: "场景四：刷新不重复" })).toBeVisible();
-  expect(readResearchLaterTables(dbPath).laterItems.filter((row) => row.sessionId === sessionId)).toHaveLength(
-    laterBefore,
-  );
+  expect(
+    readResearchNodeTables(dbPath).nodes.filter((row) => row.sessionId === sessionId && row.parentNodeId !== null),
+  ).toHaveLength(childrenAfter);
 
   // 材料范围如实：子节点视图固定说明材料范围，不暗示已核验
   await page.goto(`/research/${sessionId}/node/${nodeId}`);

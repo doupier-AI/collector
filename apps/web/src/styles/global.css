@@ -626,6 +626,91 @@ button.model-status {
   font-size: 0.8125rem;
 }
 
+/* 阶段 H4a：引用胶囊与双模发送 */
+.selection-capsule {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.5rem;
+  margin-bottom: 0.375rem;
+  background: var(--color-canvas);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  font-size: 0.8125rem;
+  color: var(--color-ink);
+  line-height: 1.4;
+}
+
+.selection-capsule:focus-visible {
+  outline: 2px solid var(--color-ai);
+  outline-offset: 1px;
+}
+
+.selection-capsule__icon {
+  flex-shrink: 0;
+  color: var(--color-ai);
+  font-size: 0.875rem;
+}
+
+.selection-capsule__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-muted);
+}
+
+.selection-capsule__remove {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border: none;
+  border-radius: var(--radius-circle);
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+  font-size: 0.875rem;
+  line-height: 1;
+}
+
+.selection-capsule__remove:hover {
+  background: var(--color-line);
+  color: var(--color-danger);
+}
+
+.composer__dual-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.composer__send--secondary {
+  width: auto;
+  padding: 0 0.75rem;
+  height: 2.25rem;
+  border-radius: var(--radius-button);
+  background: transparent;
+  border: 1px solid var(--color-ai);
+  color: var(--color-ai);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.composer__send--secondary:hover:not(:disabled) {
+  background: var(--color-ai);
+  color: #fff;
+}
+
+.composer__send--secondary:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 .form-error {
   margin: var(--space-2) 0 0;
   color: var(--color-danger);

@@ -10,6 +10,31 @@ import type { ActiveCapture, SelectionRect } from "./useSelection";
 /** 选区原文在来源条等窄空间中的最大展示长度。 */
 export const SELECTION_EXCERPT_CHARACTERS = 48;
 
+/** 引用胶囊截取长度：比来源条更短，适合嵌入输入框区域。 */
+export const CITATION_CAPSULE_CHARACTERS = 36;
+
+/**
+ * 幂等键由锚点位置与原文摘要组成：同一次选择重复提交只产生一条选区记录。
+ * HTTP 请求头只允许 ISO-8859-1 字符，选区原文常含中文，不能直接进请求头；
+ * 原文部分改用确定性的 FNV-1a 摘要（ASCII、短于 200 字符上限），同一段选区仍得到同一个键。
+ */
+export function selectionExactDigest(exact: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < exact.length; index += 1) {
+    hash ^= exact.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+export function selectionIdempotencyKey(anchor: ResearchSelectionAnchor): string {
+  const blockKey =
+    anchor.kind === "message"
+      ? `m:${anchor.messageId}:p${anchor.blockOrdinal}`
+      : `s:${anchor.contentSnapshotId}:${anchor.blockId}`;
+  return `sel:${blockKey}:${anchor.startOffset}:${anchor.endOffset}:${selectionExactDigest(anchor.exact)}`;
+}
+
 /**
  * 在块文本中解析高亮范围：优先校验锚点偏移切片与保存原文一致；
  * 内容发生细微变化时用原文在块内重新定位；两者都失败返回 null，

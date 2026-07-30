@@ -25,15 +25,14 @@ async function openSession(page: Page): Promise<string> {
   return page.url().split("/research/")[1]?.split("/")[0] ?? "";
 }
 
-/** 从最后一条回答选中文字并通过选区窗口长出一个子节点，返回子节点 id。 */
+/** 从最后一条回答选中文字并通过引用胶囊长出一个子节点，返回子节点 id。 */
 async function growChildNode(page: Page, sessionId: string, text: string): Promise<string> {
   await selectAnswerText(page, text);
-  const panel = page.getByTestId("selection-insight-panel");
-  await expect(panel).toBeVisible();
-  await expect(panel.getByText(/这段选区在说/)).toBeVisible({ timeout: 15_000 });
-  await panel.getByRole("button", { name: "深入研究" }).click();
-  await expect(page.getByTestId("node-growth-panel")).toBeVisible();
-  await panel.getByRole("button", { name: "开始研究" }).click();
+  // 引用胶囊出现（阶段 H4a：不再弹旧分析面板）
+  const capsule = page.getByTestId("selection-capsule");
+  await expect(capsule).toBeVisible();
+  // 一键"深入研究这段"直接创建子节点
+  await page.getByRole("button", { name: "深入研究这段" }).click();
   await page.waitForURL(
     (url) => {
       const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
@@ -150,12 +149,9 @@ test.describe("全屏树导航", () => {
     // 不复用 growChildNode：它的 waitForURL 只排除根节点，而此刻已停在子节点 C 上，
     // 会立即命中当前 URL；这里改为等待跳转到既非根节点也非 C 的新节点 D。
     await selectAnswerText(page, SELECTED_IN_C);
-    const growPanel = page.getByTestId("selection-insight-panel");
-    await expect(growPanel).toBeVisible();
-    await expect(growPanel.getByText(/这段选区在说/)).toBeVisible({ timeout: 15_000 });
-    await growPanel.getByRole("button", { name: "深入研究" }).click();
-    await expect(page.getByTestId("node-growth-panel")).toBeVisible();
-    await growPanel.getByRole("button", { name: "开始研究" }).click();
+    // 阶段 H4a：引用胶囊 → 一键"深入研究这段"
+    await expect(page.getByTestId("selection-capsule")).toBeVisible();
+    await page.getByRole("button", { name: "深入研究这段" }).click();
     await page.waitForURL(
       (url) => {
         const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);

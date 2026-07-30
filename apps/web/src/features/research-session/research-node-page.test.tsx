@@ -300,8 +300,8 @@ describe("ResearchNodePage 带来源的根节点（旧独立会话）", () => {
     const mark = await screen.findByText("不同头可", { selector: "[data-selection-mark]" });
     expect(mark.tagName).toBe("MARK");
     expect(screen.queryByTestId("selection-restore-fallback")).not.toBeInTheDocument();
-    // 来源返回同时自动重开选区智能窗口（以锚点幂等键取回已保存选区）
-    expect(await screen.findByTestId("selection-insight-panel")).toBeInTheDocument();
+    // 来源返回时直接显示引用胶囊（不再弹旧面板）
+    expect(await screen.findByTestId("selection-capsule")).toBeInTheDocument();
   });
 
   it("来源返回：原消息不存在时降级展示保存原文与段落说明", async () => {
@@ -511,7 +511,8 @@ describe("ResearchNodePage 子节点", () => {
       "/research/session-1/node/node-child-1?sel=sel-1",
     );
 
-    await screen.findByTestId("selection-insight-panel");
+    // 来源返回时直接显示引用胶囊（不再弹旧面板），创建选区携带当前节点 id
+    await screen.findByTestId("selection-capsule");
     await waitFor(() => expect(createResearchSelection).toHaveBeenCalledTimes(1));
     const [sessionId, input] = createResearchSelection.mock.calls[0];
     expect(sessionId).toBe("session-1");

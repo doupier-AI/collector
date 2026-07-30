@@ -20,10 +20,9 @@ async function openSessionWithChild(page: Page): Promise<{ sessionId: string; no
   });
 
   await selectAnswerText(page, SELECTED);
-  const panel = page.getByTestId("selection-insight-panel");
-  await expect(panel.getByText(/这段选区在说/)).toBeVisible({ timeout: 15_000 });
-  await panel.getByRole("button", { name: "深入研究" }).click();
-  await panel.getByRole("button", { name: "开始研究" }).click();
+  // 阶段 H4a：引用胶囊 → 一键"深入研究这段"
+  await expect(page.getByTestId("selection-capsule")).toBeVisible();
+  await page.getByRole("button", { name: "深入研究这段" }).click();
   await page.waitForURL(
     (url) => {
       const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);

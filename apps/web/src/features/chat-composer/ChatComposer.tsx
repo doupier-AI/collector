@@ -1,5 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
+import { SelectionCapsule } from "../selection/SelectionCapsule";
+import type { CitedSelection } from "../selection/useSelectionCitation";
 import { clearDraft, loadDraft, saveDraft } from "./draft";
 
 export interface ChatComposerProps {
@@ -17,12 +19,25 @@ export interface ChatComposerProps {
   onImportFile?: (file: File) => void;
   /** 文件选择器的 accept 值，仅在 onImportFile 提供时生效。 */
   importAccept?: string;
+  /** 引用选区（阶段 H4a）：提供后在输入框上方显示引用胶囊与双模发送按钮。 */
+  citedSelection?: CitedSelection | null;
+  /** 移除引用：用户在胶囊上点击移除或按 Escape 时触发。 */
+  onRemoveCitation?: () => void;
+  /**
+   * 创建子节点（"深入研究这段"）：以引用选区为来源创建子节点。
+   * 入参是用户在输入框中可选填写的追问方向（可为空）。
+   * 返回 true 表示后端已确认，输入框清空。
+   */
+  onStartChildNode?: (query: string) => Promise<boolean>;
 }
 
 /**
  * Chat 输入区：placeholder 引导、Enter 发送 / Shift+Enter 换行（提示在输入框外下方）、
  * 右下角圆形发送按钮、左下角附件按钮（提供 onImportFile 时打开真实文件选择，否则给出来源提示）、
  * 空输入禁用发送、后端确认前保留文字、确认后清空并清除草稿。
+ *
+ * 阶段 H4a：提供 citedSelection 时，在输入框上方显示引用胶囊，发送区变为双模按钮——
+ * "在此追问"（携带引用选区作为上下文在当前对话流发送）与"深入研究这段"（创建子节点）。
  */
 export function ChatComposer({
   draftScope,
@@ -34,6 +49,9 @@ export function ChatComposer({
   onSubmit,
   onImportFile,
   importAccept,
+  citedSelection,
+  onRemoveCitation,
+  onStartChildNode,
 }: ChatComposerProps) {
   const textareaId = useId();
   const hintId = useId();
@@ -42,6 +60,8 @@ export function ChatComposer({
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [attachNoticeVisible, setAttachNoticeVisible] = useState(false);
+  const [growingNode, setGrowingNode] = useState(false);
+  const [growError, setGrowError] = useState<string | null>(null);
   const submittingRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -49,6 +69,7 @@ export function ChatComposer({
   if (draft.scope !== draftScope) {
     setDraft({ scope: draftScope, value: loadDraft(draftScope) });
     setSubmitError(null);
+    setGrowError(null);
   }
 
   useEffect(() => {
@@ -56,10 +77,70 @@ export function ChatComposer({
   }, [draft]);
 
   const trimmed = draft.value.trim();
+  const hasCitation = Boolean(citedSelection);
   const canSubmit = !disabled && !submitting && trimmed.length > 0;
-  const errorText = externalError ?? submitError;
+  // "在此追问"需要输入内容；"深入研究这段"可以不带输入（选区文本自动进入子节点第一轮）
+  const canAskInline = canSubmit;
+  const canGrowNode = !disabled && !growingNode && hasCitation && Boolean(onStartChildNode);
+  const errorText = externalError ?? submitError ?? growError;
 
-  async function submitCurrent() {
+  /** 在此追问：携带引用选区作为上下文，在当前节点对话流中发送。 */
+  async function submitInline() {
+    if (!canAskInline || submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    setSubmitError(null);
+    setGrowError(null);
+    try {
+      // 引用选区作为上下文嵌入消息内容：不改变后端接口，选区原文以引用格式进入对话
+      const content = citedSelection
+        ? `> ${citedSelection.text}\n\n${trimmed}`
+        : trimmed;
+      const accepted = await onSubmit(content);
+      if (accepted) {
+        setDraft({ scope: draftScope, value: "" });
+        clearDraft(draftScope);
+        onRemoveCitation?.();
+      } else {
+        setSubmitError("尚未确认保存，请检查连接后重试。");
+      }
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  }
+
+  /** 深入研究这段：以引用选区为来源创建子节点。 */
+  async function submitGrowNode() {
+    if (!canGrowNode || !onStartChildNode) return;
+    setGrowingNode(true);
+    setGrowError(null);
+    setSubmitError(null);
+    try {
+      const accepted = await onStartChildNode(trimmed);
+      if (accepted) {
+        setDraft({ scope: draftScope, value: "" });
+        clearDraft(draftScope);
+      } else {
+        setGrowError("尚未确认保存，请检查连接后重试。");
+      }
+    } finally {
+      setGrowingNode(false);
+    }
+  }
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    // 有引用时默认走"在此追问"；无引用走原有 onSubmit
+    if (hasCitation) {
+      void submitInline();
+    } else {
+      void submitCurrentLegacy();
+    }
+  }
+
+  /** 无引用时的原有提交逻辑。 */
+  async function submitCurrentLegacy() {
     if (!canSubmit || submittingRef.current) return;
     submittingRef.current = true;
     setSubmitting(true);
@@ -78,16 +159,15 @@ export function ChatComposer({
     }
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    void submitCurrent();
-  }
-
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     // Enter 发送，Shift+Enter 换行；中文输入法组词期间不触发发送
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault();
-      void submitCurrent();
+      if (hasCitation) {
+        void submitInline();
+      } else {
+        void submitCurrentLegacy();
+      }
     }
   }
 
@@ -97,12 +177,15 @@ export function ChatComposer({
         你的问题
       </label>
       <div className="composer__frame">
+        {citedSelection && onRemoveCitation ? (
+          <SelectionCapsule text={citedSelection.text} onRemove={onRemoveCitation} />
+        ) : null}
         <textarea
           id={textareaId}
           value={draft.value}
           onChange={(event) => setDraft({ scope: draftScope, value: event.target.value })}
           onKeyDown={handleKeyDown}
-          placeholder={placeholder}
+          placeholder={hasCitation ? "针对这段选区，你想问什么……" : placeholder}
           rows={3}
           disabled={disabled}
           autoFocus={autoFocus}
@@ -148,22 +231,44 @@ export function ChatComposer({
               </svg>
             </button>
           )}
-          <button type="submit" className="composer__send" aria-label={submitLabel} disabled={!canSubmit}>
-            <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-              <path
-                d="M10 15.25v-10.5M5 9.5l5-5 5 5"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
+          {hasCitation ? (
+            <div className="composer__dual-actions">
+              <button
+                type="button"
+                className="composer__send composer__send--secondary"
+                aria-label="深入研究这段"
+                disabled={!canGrowNode}
+                onClick={() => void submitGrowNode()}
+              >
+                深入研究这段
+              </button>
+              <button
+                type="submit"
+                className="composer__send"
+                aria-label="在此追问"
+                disabled={!canAskInline}
+              >
+                在此追问
+              </button>
+            </div>
+          ) : (
+            <button type="submit" className="composer__send" aria-label={submitLabel} disabled={!canSubmit}>
+              <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                <path
+                  d="M10 15.25v-10.5M5 9.5l5-5 5 5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+          )}
         </div>
       </div>
       <p className="composer__hint" id={hintId}>
-        Enter 发送，Shift+Enter 换行
+        {hasCitation ? "Enter 在此追问，Shift+Enter 换行" : "Enter 发送，Shift+Enter 换行"}
       </p>
       {attachNoticeVisible ? (
         <p className="composer__notice" role="status">

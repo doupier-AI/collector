@@ -117,8 +117,8 @@ describe("阅读视图来源返回", () => {
     expect(mark.tagName).toBe("MARK");
     // 高亮只包住选区范围，块内其余文字仍在
     expect(container.querySelector('[data-block-id="b-2"] [data-block-text]')?.textContent).toBe("正文段落");
-    // 来源返回同时自动重开选区智能窗口
-    expect(await screen.findByTestId("selection-insight-panel")).toBeInTheDocument();
+    // 来源返回时直接显示引用胶囊（不再弹旧面板）
+    expect(await screen.findByTestId("selection-capsule")).toBeInTheDocument();
   });
 
   it("块内原文已变化时用原文在块内重新定位", async () => {

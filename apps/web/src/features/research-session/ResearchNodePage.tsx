@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import type { ResearchSessionView, ResearchTaskRecord } from "@collector/capture-contracts";
-import { isApiErrorCode, isUnauthorized } from "../../api/errors";
+import { isApiErrorCode, isUnauthorized, apiErrorCopy } from "../../api/errors";
+import { useServices } from "../../app/services";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { StatusMessage } from "../../components/StatusMessage/StatusMessage";
@@ -12,7 +13,14 @@ import { AttachmentList } from "../imports/AttachmentList";
 import { IMPORT_ACCEPT } from "../imports/import-file";
 import { useResearchImports } from "../imports/useResearchImports";
 import { SelectionSurface } from "../selection/SelectionSurface";
-import { highlightForMessages, selectionExcerpt } from "../selection/selection-highlight";
+import {
+  childNodeIdempotencyKey,
+  highlightForMessages,
+  selectionExactDigest,
+  selectionExcerpt,
+} from "../selection/selection-highlight";
+import type { CitedSelection } from "../selection/useSelectionCitation";
+import { useSelectionCitation } from "../selection/useSelectionCitation";
 import { formatSessionTime } from "./format";
 import { MessageItem } from "./MessageItem";
 import { ModelStatusIndicator } from "./ModelStatusIndicator";
@@ -29,16 +37,18 @@ const STREAM_NOTICE: Record<string, { title: string; body: string }> = {
 };
 
 /**
- * 统一节点页（阶段 H2）：根节点（旧会话页）与子节点（旧分支页）同一页面。
+ * 统一节点页（阶段 H2/H4a）：根节点（旧会话页）与子节点（旧分支页）同一页面。
  * - 数据统一走 GET /v1/research-nodes/:id；提交统一走节点消息端点；
  * - 子节点与带来源的根节点显示顶部来源条与材料范围说明；
  * - 附件与拖放导入只在根节点呈现，子节点没有独立文件空间；
- * - ?sel= 来源返回高亮、选区捕获层、流式事件在所有节点一致。
+ * - ?sel= 来源返回高亮、选区捕获层、流式事件在所有节点一致；
+ * - 选区引用胶囊在输入框区域显示，支持"在此追问"与"深入研究这段"双模发送。
  */
 export function ResearchNodePage() {
   const { sessionId = "", nodeId = "" } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
+  const { api } = useServices();
   // 开始页首问通过路由 state 传入，只在挂载时读取一次；成功前由 hook 保留
   const initialTurnRef = useRef<PendingFirstTurn | undefined>(
     (location.state as { firstTurn?: PendingFirstTurn } | null)?.firstTurn,
@@ -55,15 +65,27 @@ export function ResearchNodePage() {
   const [dragActive, setDragActive] = useState(false);
   const dragDepthRef = useRef(0);
 
+  // 引用选区管理（阶段 H4a）
+  const { citation: citedSelection, capture: captureCitation, remove: removeCitation, clear: clearCitation } =
+    useSelectionCitation({ sessionId, nodeId });
+
+  // 来源返回：?sel= 查询参数恢复选区，直接显示引用胶囊（不弹旧面板）
+  const [searchParams] = useSearchParams();
+  const restoredSelection = useSelectionRestore(searchParams.get("sel"));
+  const restoredCitedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!restoredSelection || restoredCitedRef.current === restoredSelection.id) return;
+    restoredCitedRef.current = restoredSelection.id;
+    // 从已存选区记录直接构造引用，不需要再创建选区记录
+    captureCitation(restoredSelection.anchor, restoredSelection.text);
+  }, [restoredSelection, captureCitation]);
+
   const isRoot = readyView ? !readyView.node.parentNodeId : true;
   // 来源条：子节点取 node.originSelectionId；带来源的旧独立会话根节点取 session.originSelectionId
   const originSelectionId = readyView
     ? readyView.node.originSelectionId ?? (!readyView.node.parentNodeId ? readyView.session.originSelectionId : undefined)
     : undefined;
   const originSource = useSelectionSource(originSelectionId);
-  // 来源返回：按路由查询参数读取选区，在回答中重定位并高亮，失败降级
-  const [searchParams] = useSearchParams();
-  const restoredSelection = useSelectionRestore(searchParams.get("sel"));
   const reducedMotion = usePrefersReducedMotion();
   const messageHighlight = useMemo(() => {
     if (!restoredSelection || !readyView) return null;
@@ -96,6 +118,29 @@ export function ResearchNodePage() {
       await node.retryTask(task);
     } finally {
       setRetryingTaskId(null);
+    }
+  }
+
+  /**
+   * "深入研究这段"：以引用选区为来源创建子节点。
+   * 选区文本自动进入子节点第一轮上下文（由后端 NodeGrowthService 处理）。
+   */
+  async function handleStartChildNode(query: string): Promise<boolean> {
+    if (!citedSelection) return false;
+    try {
+      const trimmed = query.trim();
+      const idempotencyKey = childNodeIdempotencyKey(citedSelection.selectionId, trimmed, selectionExactDigest);
+      const accepted = await api.startChildNode(
+        citedSelection.selectionId,
+        trimmed ? { query: trimmed } : {},
+        idempotencyKey,
+      );
+      removeCitation();
+      navigate(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(accepted.node.id)}`);
+      return true;
+    } catch (error) {
+      node.announce(apiErrorCopy(error).body);
+      return false;
     }
   }
 
@@ -331,6 +376,9 @@ export function ResearchNodePage() {
         onImportFile={isRoot ? (file) => void imports.upload(file) : undefined}
         importAccept={isRoot ? IMPORT_ACCEPT : undefined}
         externalError={isRoot ? imports.uploadError : null}
+        citedSelection={citedSelection}
+        onRemoveCitation={removeCitation}
+        onStartChildNode={handleStartChildNode}
       />
 
       {isRoot && dragActive ? (
@@ -342,8 +390,8 @@ export function ResearchNodePage() {
 
       <SelectionSurface
         sessionId={sessionId}
-        nodeId={nodeId}
-        restoreSelection={restoredSelection?.anchor.kind === "message" ? restoredSelection : null}
+        onCapture={captureCitation}
+        onSelectionClear={clearCitation}
       />
 
       <p className="sr-only" role="status" aria-live="polite">
