@@ -106,6 +106,7 @@ const server = createApiServer(service, auth, {
 
 // 配对码池：浏览器每个测试使用一个一次性配对码；池按 90 秒补充，避免 5 分钟过期
 // 每次启动重写码池并删除消费游标，避免跨运行残留游标导致"池耗尽"误报
+// 初始数量需覆盖整套 chromium 用例，避免在 90 秒补充窗口内耗尽（用例增删时同步调整）
 function mintCodes(count) {
   const lines = [];
   for (let index = 0; index < count; index += 1) {
@@ -113,7 +114,7 @@ function mintCodes(count) {
   }
   return lines.join("\n") + "\n";
 }
-writeFileSync(join(runtimeDir, `pairing-${port}.txt`), mintCodes(40), "utf8");
+writeFileSync(join(runtimeDir, `pairing-${port}.txt`), mintCodes(64), "utf8");
 rmSync(join(runtimeDir, `pairing-${port}.cursor`), { force: true });
 writeFileSync(join(runtimeDir, `datadir-${port}.txt`), dataDir, "utf8");
 writeFileSync(join(runtimeDir, `launcher-${port}.token`), launcherToken, { encoding: "utf8", mode: 0o600 });

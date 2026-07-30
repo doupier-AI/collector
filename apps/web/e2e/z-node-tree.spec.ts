@@ -10,6 +10,8 @@ import { pairAndOpen, selectAnswerText } from "./helpers";
 const QUESTION = "什么是本地优先研究？";
 const SELECTED_A = "本地优先会先把输入保存在本机";
 const SELECTED_B = "渐进事件把后续内容写进同一条消息";
+/** 深入研究第一轮回答里的稳定片段：用于在子节点 C 的内容里选区并生长孙节点 D。 */
+const SELECTED_IN_C = "本轮只使用来源选区与当前已有材料生成";
 
 /** 建立会话并完成第一轮回答，返回会话 id（落在根节点页）。 */
 async function openSession(page: Page): Promise<string> {
@@ -122,6 +124,81 @@ test.describe("全屏树导航", () => {
     await tree.getByRole("button", { name: SELECTED_A }).click();
     await page.waitForURL(new RegExp(`/research/${sessionId}/node/${childA}$`), { timeout: 10_000 });
     await expect(page.getByTestId("selection-source-bar")).toContainText(SELECTED_A);
+  });
+
+  test("三级生长链：返回原文落在所属节点并精确高亮，刷新后保持", async ({ page }) => {
+    test.setTimeout(120_000);
+    const sessionId = await openSession(page);
+    const consoleIssues: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error" || message.type() === "warning") consoleIssues.push(message.text());
+    });
+    page.on("pageerror", (error) => consoleIssues.push(error.message));
+
+    // 根节点 A 生长 B
+    const childB = await growChildNode(page, sessionId, SELECTED_A);
+
+    // 回根节点，生长并列的 C
+    await page.goto(`/research/${sessionId}/node/${sessionId}`);
+    await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
+      timeout: 15_000,
+    });
+    const childC = await growChildNode(page, sessionId, SELECTED_B);
+    expect(childC).not.toBe(childB);
+
+    // 进入 C 后在 C 的内容里选区生长 D（选区归属 C，D 挂在 C 下）。
+    // 不复用 growChildNode：它的 waitForURL 只排除根节点，而此刻已停在子节点 C 上，
+    // 会立即命中当前 URL；这里改为等待跳转到既非根节点也非 C 的新节点 D。
+    await selectAnswerText(page, SELECTED_IN_C);
+    const growPanel = page.getByTestId("selection-insight-panel");
+    await expect(growPanel).toBeVisible();
+    await expect(growPanel.getByText(/这段选区在说/)).toBeVisible({ timeout: 15_000 });
+    await growPanel.getByRole("button", { name: "深入研究" }).click();
+    await expect(page.getByTestId("node-growth-panel")).toBeVisible();
+    await growPanel.getByRole("button", { name: "开始研究" }).click();
+    await page.waitForURL(
+      (url) => {
+        const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
+        return Boolean(match && match[1] === sessionId && match[2] && match[2] !== sessionId && match[2] !== childC);
+      },
+      { timeout: 10_000 },
+    );
+    await expect(page.getByText(/这是深入研究第一轮/)).toBeVisible({ timeout: 15_000 });
+    const grandchildD = page.url().split("/node/")[1] ?? "";
+    expect(grandchildD).not.toBe(childC);
+
+    // 全屏树呈现 A 下 B、C 并列，C 下 D 的三级链
+    await page.getByRole("button", { name: "节点树（快捷键 T）" }).click();
+    const tree = page.getByRole("tree", { name: "研究节点树" });
+    await expect(tree.getByRole("treeitem")).toHaveCount(4);
+    await expect(tree.getByRole("treeitem", { name: new RegExp(SELECTED_A) })).toHaveAttribute("aria-level", "2");
+    await expect(tree.getByRole("treeitem", { name: new RegExp(SELECTED_B) })).toHaveAttribute("aria-level", "2");
+    await expect(tree.getByRole("treeitem", { name: new RegExp(SELECTED_IN_C) })).toHaveAttribute("aria-level", "3");
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog", { name: "节点树" })).toBeHidden();
+
+    // D 页面点“返回原文”→ 落在 C 的节点页且原选区精确高亮（非降级文案）
+    await page.getByRole("link", { name: "← 返回原文" }).click();
+    await page.waitForURL(new RegExp(`/research/${sessionId}/node/${childC}\\?sel=`), { timeout: 10_000 });
+    const mark = page.locator("[data-selection-mark]");
+    await expect(mark).toBeVisible({ timeout: 15_000 });
+    await expect(mark).toContainText(SELECTED_IN_C);
+    await expect(page.getByTestId("selection-restore-fallback")).toHaveCount(0);
+
+    // 刷新后高亮与树结构保持
+    await page.reload();
+    await expect(page.locator("[data-selection-mark]")).toContainText(SELECTED_IN_C, { timeout: 15_000 });
+    await expect(page.getByTestId("selection-restore-fallback")).toHaveCount(0);
+    // C 页仍列出它长出的子节点 D：三级链结构在刷新后保持
+    await expect(page.getByTestId("node-child-list").getByRole("link", { name: new RegExp(SELECTED_IN_C) })).toHaveAttribute(
+      "href",
+      new RegExp(`/research/${sessionId}/node/${grandchildD}$`),
+    );
+    // 全屏树重新打开后仍呈现到当前节点 C 的层级
+    await page.getByRole("button", { name: "节点树（快捷键 T）" }).click();
+    await expect(page.getByRole("tree", { name: "研究节点树" }).getByRole("treeitem", { name: new RegExp(SELECTED_B) })).toHaveAttribute("aria-level", "2");
+
+    expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
   });
 
   test("节点页与树视图：四视口无横向溢出、单一 h1、树 aria 与网络契约", async ({ page }) => {
