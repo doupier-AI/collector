@@ -34,6 +34,7 @@ export interface ResearchSelectionStore {
   getResearchMessage(id: string): ResearchMessageRecord | undefined;
   getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined;
   listResearchMessages(sessionId: string): ResearchMessageRecord[];
+  getResearchNode(id: string): ResearchNodeRecord | undefined;
 }
 
 /** 文件导入所需的持久化能力：17 个方法。 */

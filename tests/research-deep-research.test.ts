@@ -540,6 +540,40 @@ test("node tree endpoint returns flat items with deterministic labels for root a
   assert.equal((await fetch(`${harness.base}/v1/research-sessions/${randomUUID()}/nodes`, { headers: headers(harness.token) })).status, 404);
 });
 
+test("selection attributed to a child node grows a grandchild, forming a multi-level A-C-D chain", async (t) => {
+  const harness = await createHarness({ researchProvider: recordingProvider().provider });
+  t.after(() => harness.close());
+  const { session, assistantMessage } = await createSessionWithAnswer(harness);
+
+  // 根节点上的选区（不带 nodeId）归属根节点，从中生长出子节点 C
+  const rootSelection = await createSelectionOn(harness, session.id, anchorForSelection(assistantMessage.id, 1, "选区如何连接阅读与研究"));
+  const rootGrowth = await postJson(harness.base, harness.token, `/v1/research-selections/${rootSelection.selection.id}/nodes`, {}, randomUUID());
+  assert.equal(rootGrowth.status, 202);
+  const childNode = (await rootGrowth.json() as { node: { id: string; parentNodeId?: string } }).node;
+  assert.equal(childNode.parentNodeId, session.id);
+
+  // 携带属于会话的子节点 id：选区归属到该子节点（非根节点）
+  const childSelectionResponse = await postJson(harness.base, harness.token, `/v1/research-sessions/${session.id}/selections`, { anchor: anchorForSelection(assistantMessage.id, 2, "尚未验证的问题"), nodeId: childNode.id }, randomUUID());
+  assert.equal(childSelectionResponse.status, 201);
+  const childSelection = await childSelectionResponse.json() as { selection: { id: string; nodeId: string } };
+  assert.equal(childSelection.selection.nodeId, childNode.id);
+
+  // 在子节点选区上生长：新节点 D 挂在子节点 C 下，形成 A-C-D 三级链
+  const grandGrowth = await postJson(harness.base, harness.token, `/v1/research-selections/${childSelection.selection.id}/nodes`, {}, randomUUID());
+  assert.equal(grandGrowth.status, 202);
+  const grandchild = (await grandGrowth.json() as { node: { id: string; parentNodeId?: string } }).node;
+  assert.equal(grandchild.parentNodeId, childNode.id);
+
+  // 全屏树呈现三级链：根 A 下挂 C，C 下挂 D
+  const treeResponse = await fetch(`${harness.base}/v1/research-sessions/${session.id}/nodes`, { headers: headers(harness.token) });
+  assert.equal(treeResponse.status, 200);
+  const tree = await treeResponse.json() as Array<{ node: { id: string; parentNodeId?: string } }>;
+  assert.equal(tree.length, 3);
+  assert.ok(tree.find((item) => !item.node.parentNodeId));
+  assert.ok(tree.find((item) => item.node.parentNodeId === session.id));
+  assert.ok(tree.find((item) => item.node.parentNodeId === childNode.id));
+});
+
 test("clearAllData removes branches, sessions and selections without foreign key errors", async (t) => {
   const harness = await createHarness({ researchProvider: recordingProvider().provider });
   t.after(() => harness.close());

@@ -71,10 +71,13 @@ function panelStyle(rect: ActiveCapture["rect"]): CSSProperties {
  */
 export function SelectionInsightPanel({
   sessionId,
+  nodeId,
   capture,
   onClose,
 }: {
   sessionId: string;
+  /** 选区归属的节点（用户当前所在节点）。节点页传入当前节点 id；阅读页不传，归属根节点。 */
+  nodeId?: string;
   capture: ActiveCapture;
   onClose: () => void;
 }) {
@@ -107,7 +110,11 @@ export function SelectionInsightPanel({
   async function submit(): Promise<void> {
     setSubmitError(null);
     try {
-      const accepted = await api.createResearchSelection(sessionId, { anchor }, selectionIdempotencyKey(anchor));
+      const accepted = await api.createResearchSelection(
+        sessionId,
+        { anchor, ...(nodeId ? { nodeId } : {}) },
+        selectionIdempotencyKey(anchor),
+      );
       setSelection(accepted.selection);
       setTask(accepted.task);
     } catch (error) {

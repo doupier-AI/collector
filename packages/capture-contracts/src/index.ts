@@ -705,6 +705,12 @@ export type ResearchSelectionTaskEvent =
 
 export interface ResearchSelectionInput {
   anchor: ResearchSelectionAnchor;
+  /**
+   * 选区归属的节点（用户创建选区时所在的节点）。可选：
+   * 提供时服务端校验该节点存在且属于当前会话，选区归属到它；
+   * 未提供时归属会话根节点（兼容旧客户端与阅读页路径）。
+   */
+  nodeId?: string;
   contextBefore?: string;
   contextAfter?: string;
 }
@@ -719,7 +725,10 @@ const RESEARCH_SELECTION_ANCHOR_CONTEXT_FIELDS = ["prefix", "suffix"] as const;
 
 export function validateResearchSelectionInput(value: unknown): asserts value is ResearchSelectionInput {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Research selection input must be an object");
-  const input = value as { anchor?: unknown; contextBefore?: unknown; contextAfter?: unknown };
+  const input = value as { anchor?: unknown; nodeId?: unknown; contextBefore?: unknown; contextAfter?: unknown };
+  if (input.nodeId !== undefined && (typeof input.nodeId !== "string" || !input.nodeId.trim())) {
+    throw new Error("nodeId must be a non-empty string when provided");
+  }
   const anchor = input.anchor;
   if (!anchor || typeof anchor !== "object" || Array.isArray(anchor)) throw new Error("anchor is required");
   const candidate = anchor as Record<string, unknown>;
