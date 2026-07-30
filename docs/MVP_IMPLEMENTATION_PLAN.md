@@ -145,7 +145,7 @@ A1 在契约包建立消息块派生与模型状态三种 mode；A2 把完成的
 - WebUI 统一为 `/research/:sessionId/node/:nodeId` 节点页（`ResearchNodePage` + `useResearchNode`，数据走 `/v1/research-nodes/:id`）；旧会话页与分支页两套呈现及其 hook 删除，旧路由 `/research/:sessionId` 与 `/research/:sessionId/branch/:branchId` 重定向到新地址并保留 `?sel=`；
 - 选区窗口「深入研究」二选一退役，收敛为单一节点生长动作（可选 query，`ng:<选区id>:<摘要|auto>` 幂等键，POST `/v1/research-selections/:id/nodes`）；旧「独立会话」数据作为带来源选区的根节点继续呈现；
 - 全屏树导航：顶栏按钮或快捷键 `t` 唤出，面包屑路径、`role="tree"` 方向键导航、兄弟节点并列跳跃；数据走新增的 `GET /v1/research-sessions/:id/nodes`（扁平条目 + 确定性标签）；
-- 已知限制：在子节点页面上创建的选区仍归属根节点（选区归属当前节点属 H4），在子节点页面发起的生长因此也挂在根节点下。
+- 已知限制（已提前修复）：在子节点页面上创建的选区曾归属根节点、返回原文曾一律回根节点；该缺陷（选区归属当前节点 + 返回原文节点路由，原定 H4）已提前修复，生长链与返回原文高亮随之正确，详见开发记录 §3.36。H4 范围因此不再包含“选区归属当前节点”。
 
 **H1 节点数据模型归并与迁移（已完成）**：
 
