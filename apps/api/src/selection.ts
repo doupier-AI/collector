@@ -71,12 +71,13 @@ export class ResearchSelectionService {
     }
 
     const resolved = this.resolveAnchor(sessionId, input.anchor);
+    const ownerNodeId = this.resolveOwnerNodeId(sessionId, input.nodeId);
     const now = new Date().toISOString();
     const selection: ResearchSelectionRecord = {
       id: randomUUID(),
       sessionId,
-      // H1：选区先归属到会话根节点；H4 支持归属到当前节点。
-      nodeId: sessionId,
+      // 选区归属到创建时所在的节点；未提供时归属会话根节点（向后兼容旧客户端与阅读页）。
+      nodeId: ownerNodeId,
       anchor: resolved.anchor,
       text: input.anchor.exact,
       contextBefore: input.contextBefore,
@@ -213,6 +214,17 @@ export class ResearchSelectionService {
       }
     }
     return request;
+  }
+
+  /**
+   * 解析选区归属节点：未提供 nodeId 时归属会话根节点（即会话 id，向后兼容）；
+   * 提供时校验该节点存在且属于当前会话，不合法按验证错误拒绝（不静默改写）。
+   */
+  private resolveOwnerNodeId(sessionId: string, nodeId: string | undefined): string {
+    if (nodeId === undefined) return sessionId;
+    const node = this.store.getResearchNode(nodeId);
+    if (!node || node.sessionId !== sessionId) throw new ResearchSelectionValidationError("nodeId must reference a node in this session");
+    return node.id;
   }
 
   /**

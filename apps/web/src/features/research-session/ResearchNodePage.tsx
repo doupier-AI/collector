@@ -342,6 +342,7 @@ export function ResearchNodePage() {
 
       <SelectionSurface
         sessionId={sessionId}
+        nodeId={nodeId}
         restoreSelection={restoredSelection?.anchor.kind === "message" ? restoredSelection : null}
       />
 

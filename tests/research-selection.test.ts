@@ -341,6 +341,33 @@ test("validation rejects malformed selections and cross-session anchors", async 
   assert.equal((await fetch(`${harness.base}/v1/research-selections/${randomUUID()}`, { headers: headers(harness.token) })).status, 404);
 });
 
+test("selection node ownership defaults to root and validates the provided node", async (t) => {
+  const harness = await createHarness({ selectionProvider: stubProvider });
+  t.after(() => harness.close());
+  const { session, assistantMessage } = await createSessionWithAnswer(harness);
+  const otherSessionResponse = await postJson(harness.base, harness.token, "/v1/research-sessions", {}, randomUUID());
+  const otherSession = await otherSessionResponse.json() as { id: string };
+
+  // 未携带 nodeId：归属会话根节点（根节点 id 即会话 id），兼容旧客户端
+  const defaultResponse = await postJson(harness.base, harness.token, `/v1/research-sessions/${session.id}/selections`, { anchor: anchorForSelection(assistantMessage.id, 0, "本地优先研究") }, randomUUID());
+  assert.equal(defaultResponse.status, 201);
+  const defaulted = await defaultResponse.json() as { selection: { nodeId: string } };
+  assert.equal(defaulted.selection.nodeId, session.id);
+
+  // 携带属于当前会话的节点 id（根节点）：校验通过并归属到该节点
+  const ownedResponse = await postJson(harness.base, harness.token, `/v1/research-sessions/${session.id}/selections`, { anchor: anchorForSelection(assistantMessage.id, 1, "选区如何连接阅读与研究"), nodeId: session.id }, randomUUID());
+  assert.equal(ownedResponse.status, 201);
+  const owned = await ownedResponse.json() as { selection: { nodeId: string } };
+  assert.equal(owned.selection.nodeId, session.id);
+
+  // 携带不存在的节点 id：400 验证错误（不静默改写为根节点）
+  assert.equal((await postJson(harness.base, harness.token, `/v1/research-sessions/${session.id}/selections`, { anchor: anchorForSelection(assistantMessage.id, 2, "尚未验证的问题"), nodeId: randomUUID() }, randomUUID())).status, 400);
+  // 携带其他会话的节点 id：400 验证错误
+  assert.equal((await postJson(harness.base, harness.token, `/v1/research-sessions/${session.id}/selections`, { anchor: anchorForSelection(assistantMessage.id, 2, "尚未验证的问题"), nodeId: otherSession.id }, randomUUID())).status, 400);
+  // 结构非法的 nodeId（空字符串）：400 验证错误
+  assert.equal((await postJson(harness.base, harness.token, `/v1/research-sessions/${session.id}/selections`, { anchor: anchorForSelection(assistantMessage.id, 2, "尚未验证的问题"), nodeId: "   " }, randomUUID())).status, 400);
+});
+
 test("queued selection task resumes and completes after service restart", async (t) => {
   const harness = await createHarness({ selectionProvider: stubProvider, autoRunSelectionTasks: false });
   t.after(() => harness.close());

@@ -61,7 +61,7 @@ interface StreamHandle {
   emit(event: ResearchSelectionTaskEvent): void;
 }
 
-function renderPanel(api: Partial<ApiClient>) {
+function renderPanel(api: Partial<ApiClient>, options: { nodeId?: string } = {}) {
   const streams: StreamHandle[] = [];
   const connectSelectionEvents = vi.fn((options: SelectionEventStreamOptions) => {
     const handle: StreamHandle = {
@@ -88,7 +88,7 @@ function renderPanel(api: Partial<ApiClient>) {
   const view = render(
     <ServicesProvider services={services}>
       <MemoryRouter initialEntries={["/research/session-1"]}>
-        <SelectionInsightPanel sessionId="session-1" capture={makeCapture()} onClose={() => {}} />
+        <SelectionInsightPanel sessionId="session-1" nodeId={options.nodeId} capture={makeCapture()} onClose={() => {}} />
         <LocationProbe />
       </MemoryRouter>
     </ServicesProvider>,
@@ -156,6 +156,18 @@ describe("选区智能窗口", () => {
     expect(screen.getByText(insight.relationToContent)).toBeInTheDocument();
     expect(screen.getByText(insight.rationale)).toBeInTheDocument();
     expect(screen.getByText("段落 1")).toBeInTheDocument();
+  });
+
+  it("节点页传入当前节点 id 时，创建选区携带该节点归属", async () => {
+    const createResearchSelection = vi.fn(
+      async (_sessionId: string, _input: ResearchSelectionInput, _idempotencyKey: string) => acceptedWith("queued"),
+    );
+    renderPanel({ createResearchSelection }, { nodeId: "node-child-1" });
+
+    await waitFor(() => expect(createResearchSelection).toHaveBeenCalledTimes(1));
+    const [sessionId, input] = createResearchSelection.mock.calls[0];
+    expect(sessionId).toBe("session-1");
+    expect(input).toEqual({ anchor: makeCapture().anchor, nodeId: "node-child-1" });
   });
 
   it("分析失败时保留原文并可重试，结束操作始终可用", async () => {

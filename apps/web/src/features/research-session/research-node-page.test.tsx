@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
-import type { ResearchNodeView, ResearchTurnAccepted } from "@collector/capture-contracts";
+import type { ResearchNodeView, ResearchSelectionInput, ResearchTurnAccepted } from "@collector/capture-contracts";
 import type { ApiClient } from "../../api/client";
 import { ApiRequestError, NetworkError } from "../../api/errors";
 import type { TaskEventStream } from "../../api/task-events";
@@ -464,5 +464,57 @@ describe("ResearchNodePage 子节点", () => {
     await user.click(screen.getByRole("button", { name: "重试" }));
     expect(await screen.findByTestId("selection-source-bar")).toBeInTheDocument();
     expect(getResearchNodeView).toHaveBeenCalledTimes(2);
+  });
+
+  it("子节点页呈现它自己长出的子节点（C 页显示 D）", async () => {
+    const viewWithGrandchild = makeNodeView({
+      ...readyChildView(),
+      childNodes: [makeNode({ id: "node-grandchild-1", sessionId: "session-1", parentNodeId: "node-child-1", originSelectionId: "sel-d" })],
+    });
+    renderNodePage(
+      {
+        ...childApi(),
+        getResearchNodeView: async () => viewWithGrandchild,
+        listResearchSelections: async () => [makeSelection({ id: "sel-d", sessionId: "session-1", text: "深入探讨位置信息" })],
+      },
+      "/research/session-1/node/node-child-1",
+    );
+
+    const list = await screen.findByTestId("node-child-list");
+    expect(list).toBeInTheDocument();
+    const link = await screen.findByRole("link", { name: /深入研究：深入探讨位置信息/ });
+    expect(link).toHaveAttribute("href", "/research/session-1/node/node-grandchild-1");
+  });
+
+  it("子节点页来源返回重开窗口时，创建选区携带当前节点 id", async () => {
+    const selection = makeSelection({
+      id: "sel-1",
+      sessionId: "session-1",
+      text: "不同信息",
+      anchor: {
+        kind: "message",
+        messageId: "m-out",
+        blockOrdinal: 0,
+        startOffset: 0,
+        endOffset: 4,
+        exact: "不同信息",
+      },
+    });
+    const createResearchSelection = vi.fn(
+      async (_sessionId: string, _input: ResearchSelectionInput, _idempotencyKey: string) => ({
+        selection,
+        task: makeSelectionTask({ id: "sel-task-1", status: "completed" }),
+      }),
+    );
+    renderNodePage(
+      { ...childApi(), getResearchSelection: async () => selection, createResearchSelection },
+      "/research/session-1/node/node-child-1?sel=sel-1",
+    );
+
+    await screen.findByTestId("selection-insight-panel");
+    await waitFor(() => expect(createResearchSelection).toHaveBeenCalledTimes(1));
+    const [sessionId, input] = createResearchSelection.mock.calls[0];
+    expect(sessionId).toBe("session-1");
+    expect(input.nodeId).toBe("node-child-1");
   });
 });

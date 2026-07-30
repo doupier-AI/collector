@@ -22,9 +22,12 @@ const RESTORE_PANEL_RECT: SelectionRect = { top: 72, bottom: 96, left: 16, right
  */
 export function SelectionSurface({
   sessionId,
+  nodeId,
   restoreSelection,
 }: {
   sessionId: string;
+  /** 选区归属的节点（用户当前所在节点）。节点页传入当前节点 id；阅读页不传，归属根节点。 */
+  nodeId?: string;
   restoreSelection?: ResearchSelectionRecord | null;
 }) {
   const { active, dismiss } = useSelectionCapture();
@@ -51,6 +54,7 @@ export function SelectionSurface({
       <SelectionInsightPanel
         key={`${key}:${active.anchor.startOffset}:${active.anchor.endOffset}`}
         sessionId={sessionId}
+        nodeId={nodeId}
         capture={active}
         onClose={dismiss}
       />
@@ -62,6 +66,7 @@ export function SelectionSurface({
       <SelectionInsightPanel
         key={`restore:${restoreSelection.id}`}
         sessionId={sessionId}
+        nodeId={nodeId}
         capture={captureFromSelection(restoreSelection, RESTORE_PANEL_RECT)}
         onClose={() => {
           setDismissedRestoreId(restoreSelection.id);
