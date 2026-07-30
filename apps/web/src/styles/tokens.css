@@ -1,0 +1,50 @@
+/* Collector WebUI 视觉令牌：安静的研究画布，不使用大面积渐变 */
+:root {
+  --color-canvas: #F5F6F3;
+  --color-surface: #FCFCFA;
+  --color-ink: #20231F;
+  --color-muted: #6B7168;
+  --color-line: #D8DDD5;
+  --color-ai: #435A73;
+  --color-later: #9A6A24;
+  --color-danger: #A33B36;
+
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+
+  /* 正文行宽约 68 个中文字符；开始页输入区使用较窄行宽 */
+  --measure: 68rem;
+  --measure-start: 42rem;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+
+  /* iOS 风格圆角体系：小控件 10px、普通按钮 12px、输入框 18px、卡片/面板 20px、圆形按钮 50% */
+  --radius-control: 0.625rem;
+  --radius-button: 0.75rem;
+  --radius-input: 1.125rem;
+  --radius-panel: 1.25rem;
+  --radius-circle: 50%;
+
+  /* 固定侧栏宽度由 React state 管理；这里是覆盖式抽屉（窄屏）宽度 */
+  --drawer-width: 17.5rem;
+  --app-bar-height: 3.5rem;
+
+  /* 选区与选区智能窗口 */
+  --color-selection: #E7D8A6;
+  --color-selection-line: #C9B26A;
+  --color-difficulty-low: #3E6B4F;
+  --color-difficulty-mid: #9A6A24;
+  --color-difficulty-high: #A33B36;
+  --selection-panel-width: 22.5rem;
+  --shadow-panel: 0 0.75rem 2rem rgba(32, 35, 31, 0.16);
+}
+
+::selection {
+  background: var(--color-selection);
+}

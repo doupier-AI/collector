@@ -8,62 +8,25 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "tsc -b && node scripts/build-assets.mjs",
+    "build": "tsc -b && npm run build -w @collector/web && node scripts/build-assets.mjs",
     "test": "npm run build && node --test dist-tests/**/*.test.js scripts/ralph/*.test.mjs",
-    "test:gui": "npm run build && node scripts/gui-smoke.mjs",
-    "prototype:shell": "electron scripts/open-single-shell-prototype.mjs",
+    "start": "node apps/api/dist/launcher-main.js",
+    "launch": "npm run build && node apps/api/dist/launcher-main.js",
+    "launch:mvp": "npm run build && node scripts/launch-mvp.mjs",
+    "start:service": "node apps/api/dist/server.js",
     "dev:api": "npm run build && node apps/api/dist/server.js",
-    "dev:desktop": "npm run build && electron apps/desktop-capture/dist/main.js",
+    "dev:web": "npm run dev -w @collector/web",
+    "test:web": "npm run test -w @collector/web",
+    "test:e2e": "npm run build && npm run test:e2e -w @collector/web",
     "clean": "node scripts/clean.mjs",
-    "pack": "npm run build && electron-builder --dir",
-    "dist": "npm run build && electron-builder",
-    "pack:local": "npm run build && node scripts/pack-local.mjs",
     "ralph:dry": "powershell -ExecutionPolicy Bypass -File scripts/ralph/once.ps1 -DryRun",
     "ralph:once": "powershell -ExecutionPolicy Bypass -File scripts/ralph/once.ps1",
     "ralph:afk": "powershell -ExecutionPolicy Bypass -File scripts/ralph/afk.ps1"
   },
   "devDependencies": {
-    "@electron/packager": "^20.0.1",
     "@types/chrome": "^0.0.322",
     "@types/node": "^24.0.0",
-    "electron": "^42.4.0",
-    "electron-builder": "^26.15.2",
+    "pdf-lib": "^1.17.1",
     "typescript": "^5.8.3"
-  },
-  "main": "apps/desktop-capture/dist/main.js",
-  "build": {
-    "appId": "com.collector.knowledge",
-    "productName": "Collector",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "apps/**/dist/**",
-      "apps/desktop-capture/src/*.html",
-      "apps/desktop-capture/src/*.css",
-      "packages/**/dist/**",
-      "node_modules/**",
-      "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "apps/browser-extension/build",
-        "to": "extension"
-      }
-    ],
-    "win": {
-      "target": [
-        "portable"
-      ]
-    },
-    "portable": {
-      "artifactName": "Collector-${version}-portable.${ext}"
-    },
-    "asar": true
-  },
-  "dependencies": {
-    "dompurify": "^3.4.11",
-    "easymde": "^2.21.0",
-    "marked": "^18.0.5"
   }
 }

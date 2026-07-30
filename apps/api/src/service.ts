@@ -5,18 +5,29 @@ import { dirname, join, relative } from "node:path";
 import {
   ACCEPTED_MIME_TYPES,
   MAX_ARTIFACT_BYTES,
+  MODEL_PURPOSES,
   evidenceGradeFor,
   validateCaptureInput,
+  type AiConfigurationView,
   type ArtifactRecord,
   type ActiveModelRoute,
   type CaptureInput,
   type CaptureRecord,
   type FragmentRecord,
+  type ModelPurpose,
+  type ModelRoutingView,
   type PreflightEvaluation,
   type ProviderDefinition,
+  type ProviderModelDiscoveryInput,
+  type ProviderModelDiscoveryResult,
   type ProviderProfile,
   type ProviderProfileInput,
+  type ProviderProfileTestInput,
+  type ProviderCredentialView,
+  type ProviderTestResult,
   type RecentClusterSnapshotRecord,
+  type ResearchGroundingScopeStatus,
+  type ResearchGroundingSourceRecord,
   type AiBudgetSettings,
   type AiUsageSummary,
   type ModelCallRecord,
@@ -34,8 +45,17 @@ import {
 import type { CollectorStore } from "./store.js";
 import { defaultDataPaths } from "./store.js";
 import { SourceParser, parsePdf } from "./parsers.js";
-import { DEFAULT_PROVIDER_REGISTRY, ModelGateway, validateExternalProviderBaseUrl } from "@collector/model-gateway";
+import { DEFAULT_PROVIDER_REGISTRY, ModelGateway, ProviderRuntimeResolver, discoverProviderModels as discoverProviderModelsViaGateway, validateExternalProviderBaseUrl } from "@collector/model-gateway";
 import { createVerificationWorkflow } from "./verification.js";
+import { ResearchSessionService, type ResearchGenerationProvider } from "./research.js";
+import { ResearchImportService } from "./research-import.js";
+import { ResearchSelectionAnalysisError, ResearchSelectionService, type ResearchSelectionProvider } from "./selection.js";
+import { DeepResearchService, NodeGrowthService } from "./deep-research.js";
+import { ResearchLaterService } from "./research-later.js";
+import { webSearch, webFetch } from "./web-search-agent.js";
+import { parseAgentCitations } from "./web-search-agent.js";
+import { getSearchConfig as getSearchConfigFromAgent, updateSearchConfig as updateSearchConfigInAgent, listAvailableBackends, initSearchBackends, type SearchBackendId } from "./web-search-agent.js";
+import { ALL_SEARCH_BACKEND_IDS } from "./search-backends/index.js";
 
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
@@ -48,15 +68,44 @@ export class CaptureService {
   private readonly topicDocWorkerId = randomUUID();
   private currentModelRoute?: ActiveModelRoute;
   private modelGatewayResolver?: (route: ActiveModelRoute) => Promise<ModelGateway | undefined>;
+  /** 按任务类型解析出的网关快照；配置或路由变化后标记 stale，下次使用时重建。 */
+  private purposeGateways = new Map<ModelPurpose, ModelGateway>();
+  private purposeGatewaysStale = true;
+  readonly research: ResearchSessionService;
+  readonly researchImports: ResearchImportService;
+  readonly researchSelections: ResearchSelectionService;
+  readonly deepResearch: DeepResearchService;
+  readonly nodeGrowth: NodeGrowthService;
+  readonly researchLater: ResearchLaterService;
 
   constructor(
     private readonly store: CollectorStore,
     private readonly artifactRoot: string,
     private readonly parser = new SourceParser(),
     private modelGateway?: ModelGateway,
-    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string> } = {},
+    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; selectionProvider?: ResearchSelectionProvider; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunSelectionTasks?: boolean; mvpDemoMode?: boolean } = {},
   ) {
     this.attachModelGateway(this.modelGateway);
+    this.research = new ResearchSessionService(this.store, {
+      provider: this.options.researchProvider ?? this.researchProviderFor(this.modelGateway),
+      autoRunTasks: this.options.autoRunResearchTasks,
+    });
+    this.researchImports = new ResearchImportService(this.store, join(this.artifactRoot, "research-imports"), {
+      autoRunTasks: this.options.autoRunResearchImports,
+    });
+    this.researchSelections = new ResearchSelectionService(this.store, {
+      provider: this.options.selectionProvider ?? this.selectionProviderFor(this.modelGateway),
+      autoRunTasks: this.options.autoRunSelectionTasks,
+    });
+    this.deepResearch = new DeepResearchService(this.store, {
+      research: this.research,
+      autoRunTasks: this.options.autoRunResearchTasks,
+    });
+    this.nodeGrowth = new NodeGrowthService(this.store, {
+      research: this.research,
+      autoRunTasks: this.options.autoRunResearchTasks,
+    });
+    this.researchLater = new ResearchLaterService(this.store);
     if (this.options.autoRunRecentOrganization !== false) {
       this.scheduleRecentOrganization();
       this.scheduleTopicDocumentRuns();
@@ -66,7 +115,10 @@ export class CaptureService {
   setModelGateway(gateway: ModelGateway | undefined, route?: ActiveModelRoute): void {
     this.modelGateway = gateway;
     this.currentModelRoute = route ? structuredClone(route) : undefined;
+    this.purposeGatewaysStale = true;
     this.attachModelGateway(gateway);
+    if (!this.options.researchProvider) this.research.setProvider(this.researchProviderFor(gateway));
+    if (!this.options.selectionProvider) this.researchSelections.setProvider(this.selectionProviderFor(gateway));
   }
 
   setModelGatewayResolver(resolver: ((route: ActiveModelRoute) => Promise<ModelGateway | undefined>) | undefined): void {
@@ -100,6 +152,149 @@ export class CaptureService {
     });
   }
 
+  private researchProviderFor(gateway: ModelGateway | undefined): ResearchGenerationProvider | undefined {
+    if (!gateway) return undefined;
+    const service = this;
+    const groundingCapability = gateway.providerGroundingCapability;
+    return {
+      provider: gateway.providerName,
+      model: gateway.modelName,
+      promptVersion: "research-chat-v1",
+      groundingCapability,
+      async generateAgentGrounded(request) {
+        const purposeGateway = await service.gatewayForPurpose("search");
+        if (!purposeGateway) throw new Error("AI model is not configured");
+        const direction = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
+
+        // F2: Agent 式多轮工具调用搜索——模型通过 web_search/web_fetch 工具自主完成搜索过程
+        let userMessage = direction;
+        if (request.deepResearch) {
+          userMessage = [
+            `用户选区原文：${request.deepResearch.selectionText}`,
+            `研究方向：${direction}`,
+            request.deepResearch.contextBefore ? `选区前文：${request.deepResearch.contextBefore}` : "",
+            request.deepResearch.contextAfter ? `选区后文：${request.deepResearch.contextAfter}` : "",
+            "请基于这些材料并联网搜索最新信息后回答。",
+          ].filter(Boolean).join("\n\n");
+        }
+
+        const result = await purposeGateway.runAgentSearchLoop(
+          userMessage,
+          {
+            webSearch: async (query, maxResults) => {
+              const r = await webSearch(query, maxResults);
+              return { query: r.query, total_results: r.total_results, results: r.results, errorMessage: r.errorMessage };
+            },
+            webFetch: async (url) => {
+              const r = await webFetch(url);
+              return { url: r.url, content: r.content, errorMessage: r.errorMessage };
+            },
+          },
+          {
+            maxTurns: 10,
+            context: { workflowRunId: request.taskId, purpose: "research", promptVersion: "agent-search-v2" },
+          },
+        );
+
+        if (!result.content) throw new Error("Provider returned an empty response");
+
+        // 构造来源记录供 parseAgentCitations 使用
+        const sourceRecords = result.sources.map((source, i) => ({
+          id: "",
+          runId: "",
+          ordinal: i + 1,
+          title: source.title ?? `来源 ${i + 1}`,
+          url: source.url ?? "",
+          snippet: source.snippet ?? "",
+          createdAt: new Date().toISOString(),
+        }));
+
+        const { citations } = parseAgentCitations(result.content, sourceRecords);
+        const scopeStatus: ResearchGroundingScopeStatus = result.sources.length ? "grounded" : "no_verifiable_sources";
+        return {
+          content: result.content,
+          status: scopeStatus,
+          queries: result.queries,
+          sources: result.sources.map((source, i) => ({
+            providerSourceId: source.providerSourceId,
+            title: source.title ?? `来源 ${i + 1}`,
+            url: source.url ?? "",
+            snippet: source.snippet ?? "",
+          })),
+          citations: citations.map((citation) => ({
+            sourceOrdinal: citation.sourceOrdinal,
+            startOffset: citation.markerOffset,
+            endOffset: citation.markerOffset,
+          })),
+          responseSummary: {
+            searchStatus: "completed",
+            sourceCount: result.sources.length,
+            citationCount: citations.length,
+            queryCount: result.queries.length,
+            method: "agent-loop-v2",
+            searchBackend: getSearchConfigFromAgent().backend,
+          },
+        };
+      },
+      async *generate(request) {
+        const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
+        if (!purposeGateway) throw new Error("AI model is not configured");
+        if (request.deepResearch) {
+          const direction = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
+          const answer = await purposeGateway.generateDeepResearchRound(
+            {
+              mode: request.deepResearch.mode,
+              selectionText: request.deepResearch.selectionText,
+              direction,
+              contentTitle: request.deepResearch.contentTitle,
+              contextBefore: request.deepResearch.contextBefore,
+              contextAfter: request.deepResearch.contextAfter,
+            },
+            { context: { workflowRunId: request.taskId, purpose: "deep_research", promptVersion: "deep-research-v1" } },
+          );
+          for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);
+          return;
+        }
+        const answer = await purposeGateway.answerResearchConversation(request.messages, {
+          context: { workflowRunId: request.taskId, purpose: "research_chat", promptVersion: "research-chat-v1" },
+        });
+        for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);
+      },
+    };
+  }
+
+  private selectionProviderFor(gateway: ModelGateway | undefined): ResearchSelectionProvider | undefined {
+    if (!gateway) return undefined;
+    const service = this;
+    return {
+      provider: gateway.providerName,
+      model: gateway.modelName,
+      promptVersion: "selection-analysis-v1",
+      async analyze(request) {
+        const purposeGateway = await service.gatewayForPurpose("selection");
+        if (!purposeGateway) throw new Error("AI model is not configured");
+        try {
+          return await purposeGateway.analyzeSelection(
+            {
+              text: request.text,
+              contextBefore: request.contextBefore,
+              contextAfter: request.contextAfter,
+              contentTitle: request.contentTitle,
+              recentUserMessages: request.recentUserMessages,
+            },
+            { context: { workflowRunId: request.taskId, purpose: "selection_analysis", promptVersion: "selection-analysis-v1" } },
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "";
+          if (/invalid JSON|Selection analysis/.test(message)) {
+            throw new ResearchSelectionAnalysisError(message || "Selection analysis failed contract validation");
+          }
+          throw error;
+        }
+      },
+    };
+  }
+
   private async gatewayForRun(run: WorkflowRunRecord): Promise<ModelGateway | undefined> {
     if (run.modelRoute && this.modelGatewayResolver) {
       const gateway = await this.modelGatewayResolver(run.modelRoute);
@@ -118,18 +313,133 @@ export class CaptureService {
     await mkdir(this.artifactRoot, { recursive: true });
   }
 
-  getAiConfiguration(): { consent: boolean; configured: boolean; provider?: string; model?: string } {
+  getAiConfiguration(): AiConfigurationView {
     const profile = this.store.getActiveProviderProfile();
-    return { consent: this.store.getSetting("ai_consent") === "true", configured: profile ? profile.credentialConfigured : this.store.getSetting("ai_configured") === "true", provider: profile?.providerId ?? this.modelGateway?.providerName, model: profile?.model ?? this.modelGateway?.modelName };
+    const configured = profile ? profile.credentialConfigured : this.store.getSetting("ai_configured") === "true";
+    const searchCfg = getSearchConfigFromAgent();
+    return {
+      consent: this.store.getSetting("ai_consent") === "true",
+      configured,
+      mode: this.options.mvpDemoMode ? "demo" : configured ? "real" : "unconfigured",
+      provider: profile?.providerId ?? this.modelGateway?.providerName,
+      model: profile?.model ?? this.modelGateway?.modelName,
+      providerProfileId: profile?.id,
+      webGrounding: this.modelGateway?.providerGroundingCapability,
+      searchBackend: searchCfg.backend,
+      availableSearchBackends: listAvailableBackends(),
+    };
   }
   async setAiConfiguration(consent: boolean, configured: boolean): Promise<void> {
     await this.store.saveSetting("ai_consent", String(consent));
     await this.store.saveSetting("ai_configured", String(configured));
   }
 
+  // ── 搜索后端配置 ──────────────────────────────────────────
+
+  getSearchConfig(): ReturnType<typeof getSearchConfigFromAgent> {
+    return getSearchConfigFromAgent();
+  }
+
+  async updateSearchConfig(partial: {
+    backend?: string;
+    fallback?: boolean;
+    tavilyApiKey?: string;
+    searxngUrl?: string;
+  }): Promise<ReturnType<typeof getSearchConfigFromAgent>> {
+    const update: Record<string, string> = {};
+    if (partial.backend !== undefined) {
+      const validBackends = ALL_SEARCH_BACKEND_IDS;
+      if (!validBackends.includes(partial.backend as SearchBackendId)) {
+        throw new ValidationError(`Invalid search backend: ${partial.backend}. Valid: ${validBackends.join(", ")}`);
+      }
+      update.search_backend = partial.backend;
+    }
+    if (partial.fallback !== undefined) {
+      update.search_fallback = String(partial.fallback);
+    }
+    if (partial.tavilyApiKey !== undefined) {
+      await this.store.saveSetting("search_tavily_api_key", partial.tavilyApiKey.trim());
+    }
+    if (partial.searxngUrl !== undefined) {
+      await this.store.saveSetting("search_searxng_url", partial.searxngUrl.trim());
+    }
+
+    // 持久化搜索后端设置
+    for (const [key, value] of Object.entries(update)) {
+      await this.store.saveSetting(key, value);
+    }
+
+    // 同步到 Agent 搜索层
+    const backend = (update.search_backend ?? this.store.getSetting("search_backend") ?? "bing") as SearchBackendId;
+    const fallback = (update.search_fallback ?? this.store.getSetting("search_fallback") ?? "true") === "true";
+    updateSearchConfigInAgent({
+      backend,
+      fallback,
+      tavilyApiKey: partial.tavilyApiKey ?? this.store.getSetting("search_tavily_api_key"),
+      searxngUrl: partial.searxngUrl ?? this.store.getSetting("search_searxng_url"),
+    });
+
+    return getSearchConfigFromAgent();
+  }
+
   getProviderCatalog(): ProviderDefinition[] { return DEFAULT_PROVIDER_REGISTRY.list(); }
   listProviderProfiles(): ProviderProfile[] { return this.store.listProviderProfiles(); }
   getActiveProviderProfile(): ProviderProfile | undefined { return this.store.getActiveProviderProfile(); }
+
+  /**
+   * 读取指定配置已保存的 API Key。只服务本地设置页回填暗文显示，
+   * 由专用凭证端点向已认证客户端返回，不进入日志或其他响应。
+   */
+  getProviderCredentialView(id: string): ProviderCredentialView {
+    const profile = this.store.getProviderProfile(id);
+    if (!profile) throw new NotFoundError("Provider profile not found");
+    const apiKey = this.store.getProviderCredential(id);
+    if (!apiKey) throw new NotFoundError("Provider credential is not configured");
+    return { apiKey };
+  }
+
+  /**
+   * 启用/停用一套配置。停用后运行时不再解析该配置（快速切换、任务分配均跳过），
+   * 当前使用中的配置不能停用，需先切换到其他配置。
+   */
+  async setProviderProfileEnabled(id: string, enabled: boolean): Promise<ProviderProfile> {
+    const profile = this.store.getProviderProfile(id);
+    if (!profile) throw new NotFoundError("Provider profile not found");
+    if (!enabled && this.store.getActiveProviderProfile()?.id === id) throw new ValidationError("Cannot disable the active provider profile");
+    const next: ProviderProfile = { ...profile, enabled, updatedAt: new Date().toISOString() };
+    await this.store.saveProviderProfile(next);
+    // 停用/启用可能使按任务类型的网关快照失效
+    this.purposeGatewaysStale = true;
+    return next;
+  }
+
+  /**
+   * 保存 ProviderProfile 并处理真实 API Key：
+   * - apiKey 为非空字符串 → 写入独立凭证表，credentialConfigured = true
+   * - apiKey 为空字符串   → 删除凭证，credentialConfigured = false
+   * - apiKey 未提供       → 保留原凭证状态
+   * 响应中永不包含明文 key。
+   */
+  async saveProviderProfileWithCredential(input: ProviderProfileInput): Promise<ProviderProfile> {
+    const hasApiKey = typeof input.apiKey === "string";
+    let credentialConfigured: boolean;
+    if (hasApiKey) {
+      credentialConfigured = input.apiKey!.trim().length > 0;
+    } else {
+      credentialConfigured = input.id ? (this.store.getProviderProfile(input.id)?.credentialConfigured ?? false) : false;
+    }
+    const profile = await this.saveProviderProfile(input, credentialConfigured);
+    if (hasApiKey) {
+      if (credentialConfigured) {
+        await this.store.saveProviderCredential(profile.id, input.apiKey!.trim());
+      } else {
+        await this.store.deleteProviderCredential(profile.id);
+      }
+    }
+    // 配置内容或凭证变化可能使按任务类型的网关快照失效
+    this.purposeGatewaysStale = true;
+    return profile;
+  }
 
   async saveProviderProfile(input: ProviderProfileInput, credentialConfigured: boolean): Promise<ProviderProfile> {
     const definition = DEFAULT_PROVIDER_REGISTRY.get(input.providerId);
@@ -167,14 +477,166 @@ export class CaptureService {
   async activateProviderProfile(id: string): Promise<ProviderProfile> {
     const profile = this.store.getProviderProfile(id);
     if (!profile) throw new NotFoundError("Provider profile not found");
+    if (!profile.enabled) throw new ValidationError("Provider profile is disabled");
     if (!profile.credentialConfigured) throw new ValidationError("Provider credential is not configured");
     await this.store.setActiveProviderProfile(id);
+    await this.rebuildActiveGateway();
     return profile;
   }
 
   async deleteProviderProfile(id: string): Promise<boolean> {
     if (this.store.listRecoverableWorkflowRuns().some((run) => run.modelRoute?.providerProfileId === id)) throw new ValidationError("Provider profile is referenced by an unfinished workflow");
-    return this.store.deleteProviderProfile(id);
+    const deleted = await this.store.deleteProviderProfile(id);
+    if (deleted) await this.rebuildActiveGateway();
+    return deleted;
+  }
+
+  /**
+   * 使用当前 active profile 与持久化凭证重建 ModelGateway。
+   * 服务启动、profile 激活/删除后调用，确保内存中的网关与持久化配置一致。
+   */
+  private async rebuildActiveGateway(): Promise<void> {
+    if (this.options.mvpDemoMode) return;
+    const profile = this.store.getActiveProviderProfile();
+    if (!profile?.credentialConfigured) {
+      this.setModelGateway(undefined);
+      return;
+    }
+    const resolver = new ProviderRuntimeResolver(
+      DEFAULT_PROVIDER_REGISTRY,
+      async (profileId) => this.store.getProviderCredential(profileId),
+    );
+    try {
+      const runtime = await resolver.resolve(profile);
+      this.setModelGateway(runtime.gateway, runtime.route);
+    } catch {
+      this.setModelGateway(undefined);
+    }
+  }
+
+  /** 读取按任务类型的模型分配；未分配的用途在使用时跟随当前激活配置。 */
+  getModelRouting(): ModelRoutingView {
+    return { routes: this.store.listModelPurposeRoutes() };
+  }
+
+  /** 设置或清除某个任务类型的模型分配；profileId 为 null 表示恢复跟随激活配置。 */
+  async setModelRouting(purpose: ModelPurpose, profileId: string | null): Promise<ModelRoutingView> {
+    if (!MODEL_PURPOSES.includes(purpose)) throw new ValidationError(`Unknown model purpose: ${purpose}`);
+    if (profileId) {
+      const profile = this.store.getProviderProfile(profileId);
+      if (!profile) throw new NotFoundError("Provider profile not found");
+      if (!profile.credentialConfigured) throw new ValidationError("Provider credential is not configured");
+      await this.store.setModelPurposeRoute(purpose, profileId);
+    } else {
+      await this.store.clearModelPurposeRoute(purpose);
+    }
+    this.purposeGatewaysStale = true;
+    return this.getModelRouting();
+  }
+
+  /** 重建按任务类型的网关快照；失效的分配（配置被删、Key 缺失、解析失败）静默回退激活配置。 */
+  private async refreshPurposeGateways(): Promise<void> {
+    const next = new Map<ModelPurpose, ModelGateway>();
+    if (!this.options.mvpDemoMode) {
+      const resolver = new ProviderRuntimeResolver(
+        DEFAULT_PROVIDER_REGISTRY,
+        async (profileId) => this.store.getProviderCredential(profileId),
+      );
+      for (const route of this.store.listModelPurposeRoutes()) {
+        const profile = this.store.getProviderProfile(route.profileId);
+        if (!profile?.enabled || !profile.credentialConfigured) continue;
+        try {
+          const runtime = await resolver.resolve(profile);
+          this.attachModelGateway(runtime.gateway);
+          next.set(route.purpose, runtime.gateway);
+        } catch {
+          // 分配引用的配置不可用时回退激活配置，不阻断其他用途
+        }
+      }
+    }
+    this.purposeGateways = next;
+    this.purposeGatewaysStale = false;
+  }
+
+  /**
+   * 按任务类型解析当前应使用的网关（内部方法，测试可直接断言）。
+   * 无分配或分配失效时回退当前激活配置的网关。
+   */
+  async gatewayForPurpose(purpose: ModelPurpose): Promise<ModelGateway | undefined> {
+    if (this.purposeGatewaysStale) await this.refreshPurposeGateways();
+    return this.purposeGateways.get(purpose) ?? this.modelGateway;
+  }
+
+  async testProviderProfile(id: string): Promise<ProviderTestResult> {
+    const profile = this.store.getProviderProfile(id);
+    if (!profile) throw new NotFoundError("Provider profile not found");
+    if (!profile.credentialConfigured) return { ok: false, error: "模型凭证未配置" };
+    const resolver = new ProviderRuntimeResolver(
+      DEFAULT_PROVIDER_REGISTRY,
+      async (profileId) => this.store.getProviderCredential(profileId),
+    );
+    try {
+      const runtime = await resolver.resolve(profile);
+      const startedAt = performance.now();
+      const result = await runtime.gateway.testConnection();
+      return result.ok ? { ...result, durationMs: Math.round(performance.now() - startedAt) } : result;
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "模型连接测试失败" };
+    }
+  }
+
+  async testProviderProfileInput(input: ProviderProfileTestInput): Promise<ProviderTestResult> {
+    const definition = DEFAULT_PROVIDER_REGISTRY.get(input.providerId);
+    let baseUrl = definition.defaultBaseUrl;
+    if (definition.id.startsWith("custom")) {
+      const requested = input.baseUrl?.trim();
+      if (!requested) throw new ValidationError("Custom provider base URL is required");
+      baseUrl = await (this.options.providerBaseUrlValidator ?? validateExternalProviderBaseUrl)(requested);
+    }
+    const profile: ProviderProfile = {
+      id: "test-temp",
+      providerId: definition.id,
+      displayName: definition.label,
+      baseUrl,
+      model: input.model.trim() || definition.defaultModel,
+      credentialConfigured: true,
+      enabled: true,
+      configurationVersion: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const resolver = new ProviderRuntimeResolver(
+      DEFAULT_PROVIDER_REGISTRY,
+      async () => input.apiKey,
+    );
+    try {
+      const runtime = await resolver.resolve(profile);
+      const startedAt = performance.now();
+      const result = await runtime.gateway.testConnection();
+      return result.ok ? { ...result, durationMs: Math.round(performance.now() - startedAt) } : result;
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : "模型连接测试失败" };
+    }
+  }
+
+  /**
+   * 从供应商端点发现可调用模型列表（CC Switch「获取模型」对应能力）。
+   * apiKey 省略且提供 profileId 时使用该配置已保存的凭证；响应只含模型名与错误文案。
+   */
+  async discoverProviderModels(input: ProviderModelDiscoveryInput): Promise<ProviderModelDiscoveryResult> {
+    const definition = DEFAULT_PROVIDER_REGISTRY.get(input.providerId);
+    let baseUrl = definition.defaultBaseUrl;
+    if (definition.id.startsWith("custom")) {
+      const requested = input.baseUrl?.trim();
+      if (!requested) throw new ValidationError("Custom provider base URL is required");
+      baseUrl = await (this.options.providerBaseUrlValidator ?? validateExternalProviderBaseUrl)(requested);
+    }
+    let apiKey = input.apiKey?.trim();
+    if (!apiKey && input.profileId) {
+      apiKey = this.store.getProviderCredential(input.profileId)?.trim() || undefined;
+    }
+    if (!apiKey) return { ok: false, error: "请先填写 API Key 后再获取模型列表" };
+    return discoverProviderModelsViaGateway(definition, baseUrl, apiKey, { fetchImpl: this.options.modelDiscoveryFetch });
   }
 
   getDataPaths(): { database: string; artifacts: string; databaseExists: boolean } {
@@ -1105,7 +1567,8 @@ export class CaptureService {
       if (added.some((materialId) => this.store.getCapture(materialId)?.aiProcessingDisabled)) {
         throw new ValidationError("New materials include content with cloud AI processing disabled");
       }
-      if (!this.modelGateway) throw new ValidationError("AI model is not configured for document updates");
+      const documentGateway = await this.gatewayForPurpose("document");
+      if (!documentGateway) throw new ValidationError("AI model is not configured for document updates");
       if (!this.checkAiBudget()) throw new ValidationError("AI monthly budget exceeded");
       const materials = added
         .map((materialId) => this.store.getCapture(materialId))
@@ -1115,7 +1578,7 @@ export class CaptureService {
           content: material.content ?? material.sourceUrl ?? "",
           fragmentIds: this.store.listFragments(material.id).map((fragment) => fragment.id),
         }));
-      const update = await this.modelGateway.generateDocumentUpdateAdditions(materials, { context: { purpose: "incremental_document_update" } });
+      const update = await documentGateway.generateDocumentUpdateAdditions(materials, { context: { purpose: "incremental_document_update" } });
       if ("errorCode" in update) throw new Error(update.errorMessage);
       preview.proposedAdditions.push(...update.additions);
     }

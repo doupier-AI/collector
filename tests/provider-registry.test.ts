@@ -20,7 +20,7 @@ const compatibleDefinition: ProviderDefinition = {
   defaultBaseUrl: "https://models.example.com/v1/",
   defaultModel: "example-model",
   models: ["example-model"],
-  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true },
+  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
 };
 
 test("provider registry validates, clones, and rejects duplicate definitions", () => {

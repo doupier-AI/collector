@@ -12,7 +12,7 @@ import { LocalAuth } from "../apps/api/dist/auth.js";
 import { createApiServer } from "../apps/api/dist/http.js";
 import { CaptureClient } from "../packages/capture-client/dist/index.js";
 
-// This test verifies the exact same path that Electron main process uses:
+// This test verifies the capture path used by local HTTP clients:
 // CaptureClient → HTTP → API → CaptureService → SQLite
 
 describe("Capture-to-persistence integration smoke", () => {

@@ -103,10 +103,19 @@ export function parseMarkdown(value: string, artifact?: ArtifactRecord): ParsedF
       if (index < lines.length) index += 1;
     } else if (/^\s*(?:[-*+] |\d+\. )/.test(lines[index])) {
       blockType = "list"; index += 1;
-      while (index < lines.length && /^\s*(?:[-*+] |\d+\. )/.test(lines[index])) index += 1;
+      while (
+        index < lines.length
+        && (/^\s*(?:[-*+] |\d+\. )/.test(lines[index]) || /^\s{2,}\S/.test(lines[index]))
+      ) index += 1;
     } else {
       index += 1;
-      while (index < lines.length && lines[index].trim() && !/^#{1,6}\s+/.test(lines[index]) && !/^\s*```/.test(lines[index])) index += 1;
+      while (
+        index < lines.length
+        && lines[index].trim()
+        && !/^#{1,6}\s+/.test(lines[index])
+        && !/^\s*```/.test(lines[index])
+        && !/^\s*(?:[-*+] |\d+\. )/.test(lines[index])
+      ) index += 1;
     }
     const text = lines.slice(start, index).join("\n").trim();
     if (!text) continue;
@@ -148,25 +157,36 @@ function ensureTextExtractionDomMatrix(): void {
   Object.defineProperty(globalThis, "DOMMatrix", { value: TextOnlyDomMatrix, configurable: true });
 }
 
-export async function assertPublicUrl(value: string): Promise<URL> {
-  return (await resolvePublicUrl(value)).url;
+/**
+ * 按公网目标校验 URL 并返回解析结果。
+ * allowNonPublic 只用于用户显式配置的本地后端（如 COLLECTOR_SEARXNG_URL 指向本机服务）；
+ * 不受信任的外部 URL（如搜索结果页）必须使用默认严格校验。
+ */
+export async function assertPublicUrl(value: string, options: { allowNonPublic?: boolean } = {}): Promise<URL> {
+  return (await resolvePublicUrl(value, options)).url;
 }
 
-async function resolvePublicUrl(value: string): Promise<{ url: URL; address: string; family: number }> {
+async function resolvePublicUrl(value: string, options: { allowNonPublic?: boolean } = {}): Promise<{ url: URL; address: string; family: number }> {
   const url = new URL(value);
   if (!["http:", "https:"].includes(url.protocol)) throw new Error("Only HTTP and HTTPS URLs are supported");
   if (url.username || url.password) throw new Error("URLs with embedded credentials are not supported");
   const addresses = isIP(url.hostname)
     ? [{ address: url.hostname, family: isIP(url.hostname) }]
     : await lookup(url.hostname, { all: true, verbatim: true });
-  if (!addresses.length || addresses.some((item) => !isPublicAddress(item.address))) throw new Error("URL resolves to a private or reserved address");
+  if (!addresses.length) throw new Error("URL does not resolve to any address");
+  if (!options.allowNonPublic && addresses.some((item) => !isPublicAddress(item.address))) throw new Error("URL resolves to a private or reserved address");
   return { url, address: addresses[0].address, family: addresses[0].family };
 }
 
-async function fetchPublicResource(value: string): Promise<{ url: string; contentType: string; bytes: Uint8Array }> {
+/**
+ * 抓取公网资源：请求前校验公网目标，重定向后对每一跳重新严格校验
+ * （allowNonPublic 只作用于第一跳的显式配置后端）。
+ * 支持 text/html、text/plain 与 application/json，响应体受 MAX_URL_BYTES 限制。
+ */
+export async function fetchPublicResource(value: string, options: { allowNonPublic?: boolean } = {}): Promise<{ url: string; contentType: "text/html" | "text/plain" | "application/json"; bytes: Uint8Array }> {
   let current = value;
   for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
-    const resolved = await resolvePublicUrl(current);
+    const resolved = await resolvePublicUrl(current, redirects === 0 ? options : {});
     const response = await requestResolvedUrl(resolved);
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.location;
@@ -176,8 +196,10 @@ async function fetchPublicResource(value: string): Promise<{ url: string; conten
     }
     if (response.status < 200 || response.status >= 300) throw new Error(`URL returned HTTP ${response.status}`);
     const contentType = String(response.headers["content-type"] ?? "").split(";", 1)[0].trim().toLowerCase();
-    if (!contentType.includes("text/html") && !contentType.includes("text/plain")) throw new Error(`Unsupported URL content type: ${contentType || "unknown"}`);
-    return { url: resolved.url.toString(), contentType: contentType.includes("text/plain") ? "text/plain" : "text/html", bytes: response.bytes };
+    if (contentType.includes("application/json")) return { url: resolved.url.toString(), contentType: "application/json", bytes: response.bytes };
+    if (contentType.includes("text/plain")) return { url: resolved.url.toString(), contentType: "text/plain", bytes: response.bytes };
+    if (contentType.includes("text/html")) return { url: resolved.url.toString(), contentType: "text/html", bytes: response.bytes };
+    throw new Error(`Unsupported URL content type: ${contentType || "unknown"}`);
   }
   throw new Error("URL redirect limit exceeded");
 }

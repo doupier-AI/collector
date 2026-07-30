@@ -365,8 +365,7 @@ async function runCodex({ root, prompt, schemaPath, outputPath, model, sandbox, 
 
 async function verify(root) {
   await runProcess("npm", ["test"], { cwd: root, timeoutMs: 20 * 60_000 });
-  await runProcess("powershell", ["-ExecutionPolicy", "Bypass", "-File", ".agents\\skills\\collector-engineering\\scripts\\check-project.ps1"], { cwd: root, timeoutMs: 5 * 60_000 });
-  await runProcess("npm", ["run", "test:gui"], { cwd: root, timeoutMs: 10 * 60_000 });
+  await runProcess("powershell", ["-ExecutionPolicy", "Bypass", "-File", "scripts\\check-project.ps1"], { cwd: root, timeoutMs: 5 * 60_000 });
 }
 
 function issueTitle(markdown, fileName) {

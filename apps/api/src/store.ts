@@ -1,9 +1,134 @@
 import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type FragmentRecord, type KnowledgeItemRecord, type RecentClusterSnapshotRecord, type RelationRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ResearchNodeRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTurnAccepted } from "@collector/capture-contracts";
 
-export interface CollectorStore {
+/** 稍后再学所需的持久化能力：5 个专属方法 + 3 个只读跨域查询。 */
+export interface ResearchLaterStore {
+  getResearchLaterItem(id: string): ResearchLaterItemRecord | undefined;
+  findResearchLaterItemByCreationKey(idempotencyKey: string): ResearchLaterItemRecord | undefined;
+  listResearchLaterItems(status?: ResearchLaterItemStatus): ResearchLaterItemRecord[];
+  createResearchLaterItem(item: ResearchLaterItemRecord, idempotencyKey: string): Promise<ResearchLaterItemRecord>;
+  saveResearchLaterItem(record: ResearchLaterItemRecord): Promise<void>;
+  getResearchSelection(id: string): ResearchSelectionRecord | undefined;
+  getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined;
+  getResearchSession(id: string): ResearchSessionRecord | undefined;
+}
+
+/** 选区分析所需的持久化能力：16 个专属方法。 */
+export interface ResearchSelectionStore {
+  getResearchSelection(id: string): ResearchSelectionRecord | undefined;
+  listResearchSelections(sessionId: string): ResearchSelectionRecord[];
+  getResearchSelectionTask(id: string): ResearchSelectionTaskRecord | undefined;
+  findResearchSelectionTaskByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchSelectionTaskRecord | undefined;
+  createResearchSelection(selection: ResearchSelectionRecord, task: ResearchSelectionTaskRecord): Promise<ResearchSelectionAccepted>;
+  saveResearchSelection(record: ResearchSelectionRecord): Promise<void>;
+  claimResearchSelectionTask(id: string, provider?: string, model?: string, promptVersion?: string): ResearchSelectionTaskRecord | undefined;
+  completeResearchSelectionTask(id: string, insight: ResearchSelectionInsight): Promise<void>;
+  failResearchSelectionTask(task: ResearchSelectionTaskRecord, error: ResearchSelectionTaskError): Promise<void>;
+  retryResearchSelectionTask(task: ResearchSelectionTaskRecord, provider?: string, model?: string, promptVersion?: string): Promise<ResearchSelectionTaskRecord>;
+  listResearchSelectionTaskEvents(taskId: string, afterId?: number): ResearchSelectionTaskEvent[];
+  listRecoverableResearchSelectionTasks(): ResearchSelectionTaskRecord[];
+  failInterruptedResearchSelectionTasks(): number;
+  getResearchSession(id: string): ResearchSessionRecord | undefined;
+  getResearchMessage(id: string): ResearchMessageRecord | undefined;
+  getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined;
+  listResearchMessages(sessionId: string): ResearchMessageRecord[];
+  getResearchNode(id: string): ResearchNodeRecord | undefined;
+}
+
+/** 文件导入所需的持久化能力：17 个方法。 */
+export interface ResearchImportStore {
+  getResearchAttachment(id: string): ResearchAttachmentRecord | undefined;
+  findResearchImportTaskByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchImportTaskRecord | undefined;
+  listResearchAttachments(sessionId: string): ResearchAttachmentRecord[];
+  getResearchImportTask(id: string): ResearchImportTaskRecord | undefined;
+  listResearchImportTasks(sessionId: string): ResearchImportTaskRecord[];
+  createResearchImport(attachment: ResearchAttachmentRecord, task: ResearchImportTaskRecord, objectKey: string): Promise<ResearchImportAccepted>;
+  getResearchAttachmentObjectKey(id: string): string | undefined;
+  listResearchAttachmentObjectKeys(): string[];
+  claimResearchImportTask(id: string): ResearchImportTaskRecord | undefined;
+  updateResearchImportProgress(id: string, phase: ResearchImportTaskRecord["progress"]["phase"], completedUnits: number, totalUnits: number): Promise<void>;
+  completeResearchImport(id: string, snapshot: ResearchContentSnapshotRecord): Promise<void>;
+  failResearchImport(task: ResearchImportTaskRecord, error: ResearchImportError): Promise<void>;
+  cancelResearchImport(id: string): Promise<ResearchImportTaskRecord | undefined>;
+  retryResearchImport(id: string): Promise<ResearchImportTaskRecord>;
+  getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined;
+  listResearchImportTaskEvents(taskId: string, afterId?: number): ResearchImportTaskEvent[];
+  listRecoverableResearchImportTasks(): ResearchImportTaskRecord[];
+  failInterruptedResearchImportTasks(): number;
+  getResearchSession(id: string): ResearchSessionRecord | undefined;
+}
+
+/** 研究会话生命周期所需的持久化能力：27 个方法。 */
+export interface ResearchStore {
+  saveResearchSession(record: ResearchSessionRecord): Promise<void>;
+  createResearchSession(record: ResearchSessionRecord, idempotencyKey: string): Promise<ResearchSessionRecord>;
+  getResearchSession(id: string): ResearchSessionRecord | undefined;
+  listResearchSessions(): ResearchSessionRecord[];
+  createResearchNode(node: ResearchNodeRecord, idempotencyKey: string): Promise<ResearchNodeRecord>;
+  getResearchNode(id: string): ResearchNodeRecord | undefined;
+  listResearchNodes(sessionId: string): ResearchNodeRecord[];
+  listChildNodes(parentNodeId: string): ResearchNodeRecord[];
+  getResearchMessage(id: string): ResearchMessageRecord | undefined;
+  listResearchMessages(sessionId: string): ResearchMessageRecord[];
+  listResearchMessagesByNode(nodeId: string): ResearchMessageRecord[];
+  getResearchTask(id: string): ResearchTaskRecord | undefined;
+  findResearchTaskByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchTaskRecord | undefined;
+  listResearchTasks(sessionId: string): ResearchTaskRecord[];
+  listResearchTasksByNode(nodeId: string): ResearchTaskRecord[];
+  createResearchTurn(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<ResearchTurnAccepted>;
+  createResearchTurnForNode(node: ResearchNodeRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<ResearchTurnAccepted>;
+  claimResearchTask(id: string, provider?: string, model?: string, promptVersion?: string): ResearchTaskRecord | undefined;
+  appendResearchTaskDelta(id: string, delta: string): Promise<void>;
+  completeResearchTask(id: string): Promise<void>;
+  failResearchTask(task: ResearchTaskRecord, error: ResearchTaskError): Promise<void>;
+  retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string): Promise<ResearchTaskRecord>;
+  listResearchTaskEvents(taskId: string, afterId?: number): ResearchTaskEvent[];
+  listRecoverableResearchTasks(): ResearchTaskRecord[];
+  failInterruptedResearchTasks(): number;
+  getResearchAttachment(id: string): ResearchAttachmentRecord | undefined;
+  listResearchAttachments(sessionId: string): ResearchAttachmentRecord[];
+  listResearchImportTasks(sessionId: string): ResearchImportTaskRecord[];
+  getResearchBranch(id: string): ResearchBranchRecord | undefined;
+  listResearchBranches(sessionId: string): ResearchBranchRecord[];
+  getResearchSelection(id: string): ResearchSelectionRecord | undefined;
+  getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined;
+  listResearchCitationsForMessages(messageIds: string[]): ResearchCitationRecord[];
+  listResearchGroundingRuns(taskId: string): ResearchGroundingRunRecord[];
+  listResearchGroundingSources(runId: string): ResearchGroundingSourceRecord[];
+  saveResearchGroundingResult(result: ResearchGroundingResult): Promise<void>;
+}
+
+/** 深入研究所需的持久化能力：12 个方法。 */
+export interface DeepResearchStore {
+  getResearchBranch(id: string): ResearchBranchRecord | undefined;
+  listResearchBranches(sessionId: string): ResearchBranchRecord[];
+  findResearchBranchByCreationKey(sessionId: string, idempotencyKey: string): ResearchBranchRecord | undefined;
+  createResearchBranch(session: ResearchSessionRecord, branch: ResearchBranchRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<DeepResearchAccepted>;
+  createOriginResearchSession(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<DeepResearchAccepted>;
+  createResearchChildNode(parentNode: ResearchNodeRecord, node: ResearchNodeRecord, selection: ResearchSelectionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<NodeGrowthAccepted>;
+  getResearchNode(id: string): ResearchNodeRecord | undefined;
+  listResearchNodes(sessionId: string): ResearchNodeRecord[];
+  listChildNodes(parentNodeId: string): ResearchNodeRecord[];
+  getResearchSession(id: string): ResearchSessionRecord | undefined;
+  getResearchMessage(id: string): ResearchMessageRecord | undefined;
+  getResearchSelection(id: string): ResearchSelectionRecord | undefined;
+  listResearchMessages(sessionId: string): ResearchMessageRecord[];
+  listResearchMessagesByNode(nodeId: string): ResearchMessageRecord[];
+  listResearchTasks(sessionId: string): ResearchTaskRecord[];
+  listResearchTasksByNode(nodeId: string): ResearchTaskRecord[];
+  findResearchTaskByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchTaskRecord | undefined;
+  createResearchTurn(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<ResearchTurnAccepted>;
+  createResearchTurnForNode(node: ResearchNodeRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<ResearchTurnAccepted>;
+  listResearchCitationsForMessages(messageIds: string[]): ResearchCitationRecord[];
+  listResearchGroundingSources(runId: string): ResearchGroundingSourceRecord[];
+  listResearchAttachments(sessionId: string): ResearchAttachmentRecord[];
+  listResearchImportTasks(sessionId: string): ResearchImportTaskRecord[];
+}
+
+export interface CollectorStore
+  extends ResearchLaterStore, ResearchSelectionStore, ResearchImportStore, ResearchStore, DeepResearchStore {
   init(): Promise<void>;
   getCapture(id: string): CaptureRecord | undefined;
   getCaptureByClientId(clientId: string): CaptureRecord | undefined;
@@ -44,6 +169,14 @@ export interface CollectorStore {
   deleteProviderProfile(id: string): Promise<boolean>;
   getActiveProviderProfile(): ProviderProfile | undefined;
   setActiveProviderProfile(id: string): Promise<void>;
+  /** 供应商真实 API Key 的独立凭证边界；与 provider_profiles 分离，避免 record_json/备份泄漏。 */
+  getProviderCredential(id: string): string | undefined;
+  saveProviderCredential(id: string, apiKey: string): Promise<void>;
+  deleteProviderCredential(id: string): Promise<void>;
+  /** 按任务类型的模型分配；删除 profile 时联动清理。 */
+  listModelPurposeRoutes(): ModelPurposeRoute[];
+  setModelPurposeRoute(purpose: ModelPurpose, profileId: string): Promise<void>;
+  clearModelPurposeRoute(purpose: ModelPurpose): Promise<void>;
   saveClientToken(id: string, name: string, tokenHash: string, createdAt: string): Promise<void>;
   hasClientToken(tokenHash: string): boolean;
   getWorkflowRun(id: string): WorkflowRunRecord | undefined;
@@ -90,6 +223,70 @@ export interface CollectorStore {
   restoreCapture(id: string): Promise<boolean>;
   deleteCapture(id: string): Promise<boolean>;
   getDeleteImpact(captureId: string): { topicMemberships: Array<{ topicId: string; topicTitle: string }>; workflowInputs: Array<{ workflowRunId: string; workflowType: string }>; citationCount: number; hasNoImpact: boolean };
+  saveResearchSession(record: ResearchSessionRecord): Promise<void>;
+  createResearchSession(record: ResearchSessionRecord, idempotencyKey: string): Promise<ResearchSessionRecord>;
+  getResearchSession(id: string): ResearchSessionRecord | undefined;
+  listResearchSessions(): ResearchSessionRecord[];
+  getResearchMessage(id: string): ResearchMessageRecord | undefined;
+  listResearchMessages(sessionId: string): ResearchMessageRecord[];
+  getResearchTask(id: string): ResearchTaskRecord | undefined;
+  findResearchTaskByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchTaskRecord | undefined;
+  listResearchTasks(sessionId: string): ResearchTaskRecord[];
+  createResearchTurn(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<ResearchTurnAccepted>;
+  claimResearchTask(id: string, provider?: string, model?: string, promptVersion?: string): ResearchTaskRecord | undefined;
+  appendResearchTaskDelta(id: string, delta: string): Promise<void>;
+  completeResearchTask(id: string): Promise<void>;
+  failResearchTask(task: ResearchTaskRecord, error: ResearchTaskError): Promise<void>;
+  retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string): Promise<ResearchTaskRecord>;
+  listResearchTaskEvents(taskId: string, afterId?: number): ResearchTaskEvent[];
+  listRecoverableResearchTasks(): ResearchTaskRecord[];
+  failInterruptedResearchTasks(): number;
+  getResearchAttachment(id: string): ResearchAttachmentRecord | undefined;
+  findResearchImportTaskByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchImportTaskRecord | undefined;
+  listResearchAttachments(sessionId: string): ResearchAttachmentRecord[];
+  getResearchImportTask(id: string): ResearchImportTaskRecord | undefined;
+  listResearchImportTasks(sessionId: string): ResearchImportTaskRecord[];
+  createResearchImport(attachment: ResearchAttachmentRecord, task: ResearchImportTaskRecord, objectKey: string): Promise<ResearchImportAccepted>;
+  getResearchAttachmentObjectKey(id: string): string | undefined;
+  listResearchAttachmentObjectKeys(): string[];
+  claimResearchImportTask(id: string): ResearchImportTaskRecord | undefined;
+  updateResearchImportProgress(id: string, phase: ResearchImportTaskRecord["progress"]["phase"], completedUnits: number, totalUnits: number): Promise<void>;
+  completeResearchImport(id: string, snapshot: ResearchContentSnapshotRecord): Promise<void>;
+  failResearchImport(task: ResearchImportTaskRecord, error: ResearchImportError): Promise<void>;
+  cancelResearchImport(id: string): Promise<ResearchImportTaskRecord | undefined>;
+  retryResearchImport(id: string): Promise<ResearchImportTaskRecord>;
+  getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined;
+  listResearchImportTaskEvents(taskId: string, afterId?: number): ResearchImportTaskEvent[];
+  listRecoverableResearchImportTasks(): ResearchImportTaskRecord[];
+  failInterruptedResearchImportTasks(): number;
+  getResearchSelection(id: string): ResearchSelectionRecord | undefined;
+  listResearchSelections(sessionId: string): ResearchSelectionRecord[];
+  getResearchSelectionTask(id: string): ResearchSelectionTaskRecord | undefined;
+  findResearchSelectionTaskByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchSelectionTaskRecord | undefined;
+  createResearchSelection(selection: ResearchSelectionRecord, task: ResearchSelectionTaskRecord): Promise<ResearchSelectionAccepted>;
+  saveResearchSelection(record: ResearchSelectionRecord): Promise<void>;
+  claimResearchSelectionTask(id: string, provider?: string, model?: string, promptVersion?: string): ResearchSelectionTaskRecord | undefined;
+  completeResearchSelectionTask(id: string, insight: ResearchSelectionInsight): Promise<void>;
+  failResearchSelectionTask(task: ResearchSelectionTaskRecord, error: ResearchSelectionTaskError): Promise<void>;
+  retryResearchSelectionTask(task: ResearchSelectionTaskRecord, provider?: string, model?: string, promptVersion?: string): Promise<ResearchSelectionTaskRecord>;
+  listResearchSelectionTaskEvents(taskId: string, afterId?: number): ResearchSelectionTaskEvent[];
+  listRecoverableResearchSelectionTasks(): ResearchSelectionTaskRecord[];
+  failInterruptedResearchSelectionTasks(): number;
+  getResearchBranch(id: string): ResearchBranchRecord | undefined;
+  listResearchBranches(sessionId: string): ResearchBranchRecord[];
+  findResearchBranchByCreationKey(sessionId: string, idempotencyKey: string): ResearchBranchRecord | undefined;
+  createResearchBranch(session: ResearchSessionRecord, branch: ResearchBranchRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<DeepResearchAccepted>;
+  createOriginResearchSession(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<DeepResearchAccepted>;
+  getResearchLaterItem(id: string): ResearchLaterItemRecord | undefined;
+  findResearchLaterItemByCreationKey(idempotencyKey: string): ResearchLaterItemRecord | undefined;
+  listResearchLaterItems(status?: ResearchLaterItemStatus): ResearchLaterItemRecord[];
+  createResearchLaterItem(item: ResearchLaterItemRecord, idempotencyKey: string): Promise<ResearchLaterItemRecord>;
+  saveResearchLaterItem(record: ResearchLaterItemRecord): Promise<void>;
+  saveResearchGroundingResult(result: ResearchGroundingResult): Promise<void>;
+  getResearchGroundingRun(id: string): ResearchGroundingRunRecord | undefined;
+  listResearchGroundingRuns(taskId: string): ResearchGroundingRunRecord[];
+  listResearchGroundingSources(runId: string): ResearchGroundingSourceRecord[];
+  listResearchCitationsForMessages(messageIds: string[]): ResearchCitationRecord[];
   close?(): void;
   clearAllData(): Promise<void>;
 }
@@ -111,10 +308,12 @@ interface StoreData {
   settings?: Record<string, string>;
   materialRevisions?: Record<string, { id: string; captureId: string; content: string; ordinal: number; createdAt: string }>;
   providerProfiles?: Record<string, ProviderProfile>;
+  providerCredentials?: Record<string, string>;
+  modelPurposeRoutes?: Record<string, string>;
 }
 
 const EMPTY_DATA: StoreData = {
-  captures: {}, captureByClientId: {}, captureByChecksum: {}, artifacts: {}, fragments: {}, knowledgeItems: {}, reviewProposals: {}, clientTokens: {}, agentRuns: {}, relations: {}, userDecisions: {}, topics: {}, topicMemberships: {}, settings: {}, providerProfiles: {},
+  captures: {}, captureByClientId: {}, captureByChecksum: {}, artifacts: {}, fragments: {}, knowledgeItems: {}, reviewProposals: {}, clientTokens: {}, agentRuns: {}, relations: {}, userDecisions: {}, topics: {}, topicMemberships: {}, settings: {}, providerProfiles: {}, providerCredentials: {}, modelPurposeRoutes: {},
 };
 
 export class SqliteStore implements CollectorStore {
@@ -296,6 +495,26 @@ export class SqliteStore implements CollectorStore {
 
   async clearAllData(): Promise<void> {
     this.transaction(() => {
+      this.db().exec("DELETE FROM research_import_task_events");
+      this.db().exec("DELETE FROM research_content_snapshots");
+      this.db().exec("DELETE FROM research_import_tasks");
+      this.db().exec("DELETE FROM research_attachments");
+      this.db().exec("DELETE FROM research_selection_task_events");
+      this.db().exec("DELETE FROM research_selection_tasks");
+      this.db().exec("DELETE FROM research_branches");
+      // research_nodes 自引用且外键指向 research_selections，先删子节点再删全部，
+      // 并在删除 research_selections 之前完成，避免外键约束失败。
+      this.db().exec("DELETE FROM research_nodes WHERE parent_node_id IS NOT NULL");
+      this.db().exec("DELETE FROM research_nodes");
+      this.db().exec("DELETE FROM research_later_items");
+      this.db().exec("DELETE FROM research_selections");
+      this.db().exec("DELETE FROM research_grounding_sources");
+      this.db().exec("DELETE FROM research_grounding_runs");
+      this.db().exec("DELETE FROM research_task_events");
+      this.db().exec("DELETE FROM research_tasks");
+      this.db().exec("DELETE FROM research_messages");
+      this.db().exec("DELETE FROM research_sessions");
+      this.db().exec("DELETE FROM research_nodes");
       this.db().exec("DELETE FROM verification_claims");
       this.db().exec("DELETE FROM verification_policy");
       this.db().exec("DELETE FROM update_previews");
@@ -317,9 +536,10 @@ export class SqliteStore implements CollectorStore {
       this.db().exec("DELETE FROM fragments");
       this.db().exec("DELETE FROM artifacts");
       this.db().exec("DELETE FROM captures");
-      // 供应商凭证由 Electron 安全存储保留，因此 Profile、活动路由和 AI 授权也必须保持一致。
+      // 供应商凭证由独立凭证边界保留，因此 Profile、活动路由和 AI 授权保持一致。
       // deepseek_configured 仅用于一次旧配置迁移，在兼容期内保留。
       this.db().exec("DELETE FROM settings WHERE key NOT IN ('ai_consent', 'ai_configured', 'active_provider_profile_id', 'deepseek_configured')");
+      // provider_credentials、provider_profiles 与 model_purpose_routes 一起保留，确保清空数据后 AI 配置仍可用。
     });
   }
 
@@ -374,6 +594,8 @@ export class SqliteStore implements CollectorStore {
   async deleteProviderProfile(id: string): Promise<boolean> {
     let deleted = false;
     this.transaction(() => {
+      this.db().prepare("DELETE FROM provider_credentials WHERE id = ?").run(id);
+      this.db().prepare("DELETE FROM model_purpose_routes WHERE profile_id = ?").run(id);
       const result = this.db().prepare("DELETE FROM provider_profiles WHERE id = ?").run(id);
       deleted = result.changes === 1;
       if (this.getSetting("active_provider_profile_id") === id) this.db().prepare("DELETE FROM settings WHERE key = 'active_provider_profile_id'").run();
@@ -388,6 +610,27 @@ export class SqliteStore implements CollectorStore {
     const profile = this.getProviderProfile(id);
     if (!profile || !profile.enabled) throw new Error("Provider profile is unavailable");
     await this.saveSetting("active_provider_profile_id", id);
+  }
+  getProviderCredential(id: string): string | undefined {
+    return (this.db().prepare("SELECT api_key FROM provider_credentials WHERE id = ?").get(id) as { api_key: string } | undefined)?.api_key;
+  }
+  async saveProviderCredential(id: string, apiKey: string): Promise<void> {
+    this.db().prepare("INSERT INTO provider_credentials (id, api_key, updated_at) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET api_key=excluded.api_key, updated_at=excluded.updated_at")
+      .run(id, apiKey, new Date().toISOString());
+  }
+  async deleteProviderCredential(id: string): Promise<void> {
+    this.db().prepare("DELETE FROM provider_credentials WHERE id = ?").run(id);
+  }
+  listModelPurposeRoutes(): ModelPurposeRoute[] {
+    return (this.db().prepare("SELECT purpose, profile_id FROM model_purpose_routes ORDER BY purpose").all() as Array<{ purpose: string; profile_id: string }>)
+      .map((row) => ({ purpose: row.purpose as ModelPurpose, profileId: row.profile_id }));
+  }
+  async setModelPurposeRoute(purpose: ModelPurpose, profileId: string): Promise<void> {
+    this.db().prepare("INSERT INTO model_purpose_routes (purpose, profile_id, updated_at) VALUES (?, ?, ?) ON CONFLICT(purpose) DO UPDATE SET profile_id=excluded.profile_id, updated_at=excluded.updated_at")
+      .run(purpose, profileId, new Date().toISOString());
+  }
+  async clearModelPurposeRoute(purpose: ModelPurpose): Promise<void> {
+    this.db().prepare("DELETE FROM model_purpose_routes WHERE purpose = ?").run(purpose);
   }
 
   listAgentRuns(captureId: string): AgentRunRecord[] {
@@ -635,6 +878,894 @@ export class SqliteStore implements CollectorStore {
       cancelled = result.changes === 1;
     });
     return cancelled;
+  }
+
+  async saveResearchSession(record: ResearchSessionRecord): Promise<void> {
+    this.db().prepare(`INSERT INTO research_sessions (id, status, created_at, updated_at, record_json)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at, record_json=excluded.record_json`)
+      .run(record.id, record.status, record.createdAt, record.updatedAt, JSON.stringify(record));
+  }
+
+  async createResearchSession(record: ResearchSessionRecord, idempotencyKey: string): Promise<ResearchSessionRecord> {
+    let created: ResearchSessionRecord | undefined;
+    this.transaction(() => {
+      const existing = this.getRecord<ResearchSessionRecord>(
+        "SELECT record_json FROM research_sessions WHERE creation_idempotency_key = ?",
+        idempotencyKey,
+      );
+      if (existing) {
+        created = existing;
+        return;
+      }
+      this.db().prepare(`INSERT INTO research_sessions (id, status, created_at, updated_at, creation_idempotency_key, record_json)
+        VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(record.id, record.status, record.createdAt, record.updatedAt, idempotencyKey, JSON.stringify(record));
+      const nodeRecord: ResearchNodeRecord = {
+        id: record.id,
+        sessionId: record.id,
+        status: "active",
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+      };
+      this.db().prepare("INSERT INTO research_nodes (id, session_id, parent_node_id, origin_selection_id, status, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(nodeRecord.id, nodeRecord.sessionId, nodeRecord.parentNodeId ?? null, nodeRecord.originSelectionId ?? null, nodeRecord.status, nodeRecord.createdAt, nodeRecord.updatedAt, idempotencyKey, JSON.stringify(nodeRecord));
+      created = record;
+    });
+    if (!created) throw new Error("Research session was not persisted");
+    return created;
+  }
+
+  getResearchSession(id: string): ResearchSessionRecord | undefined {
+    return this.getRecord<ResearchSessionRecord>("SELECT record_json FROM research_sessions WHERE id = ?", id);
+  }
+
+  listResearchSessions(): ResearchSessionRecord[] {
+    return this.listRecords<ResearchSessionRecord>("SELECT record_json FROM research_sessions ORDER BY updated_at DESC, created_at DESC");
+  }
+
+  async createResearchNode(node: ResearchNodeRecord, idempotencyKey: string): Promise<ResearchNodeRecord> {
+    let created: ResearchNodeRecord | undefined;
+    this.transaction(() => {
+      const existing = this.getRecord<ResearchNodeRecord>(
+        "SELECT record_json FROM research_nodes WHERE session_id = ? AND creation_idempotency_key = ?",
+        node.sessionId, idempotencyKey,
+      );
+      if (existing) {
+        created = existing;
+        return;
+      }
+      this.db().prepare(`INSERT INTO research_nodes (id, session_id, parent_node_id, origin_selection_id, status, created_at, updated_at, creation_idempotency_key, record_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(node.id, node.sessionId, node.parentNodeId ?? null, node.originSelectionId ?? null, node.status, node.createdAt, node.updatedAt, idempotencyKey, JSON.stringify(node));
+      created = node;
+    });
+    if (!created) throw new Error("Research node was not persisted");
+    return created;
+  }
+
+  getResearchNode(id: string): ResearchNodeRecord | undefined {
+    return this.getRecord<ResearchNodeRecord>("SELECT record_json FROM research_nodes WHERE id = ?", id);
+  }
+
+  listResearchNodes(sessionId: string): ResearchNodeRecord[] {
+    return this.listRecords<ResearchNodeRecord>("SELECT record_json FROM research_nodes WHERE session_id = ? ORDER BY updated_at DESC, created_at DESC", sessionId);
+  }
+
+  listChildNodes(parentNodeId: string): ResearchNodeRecord[] {
+    return this.listRecords<ResearchNodeRecord>("SELECT record_json FROM research_nodes WHERE parent_node_id = ? ORDER BY created_at, rowid", parentNodeId);
+  }
+
+  getResearchMessage(id: string): ResearchMessageRecord | undefined {
+    return this.getRecord<ResearchMessageRecord>("SELECT record_json FROM research_messages WHERE id = ?", id);
+  }
+
+  listResearchMessages(sessionId: string): ResearchMessageRecord[] {
+    return this.listRecords<ResearchMessageRecord>("SELECT record_json FROM research_messages WHERE session_id = ? ORDER BY created_at, rowid", sessionId);
+  }
+
+  listResearchMessagesByNode(nodeId: string): ResearchMessageRecord[] {
+    return this.listRecords<ResearchMessageRecord>("SELECT record_json FROM research_messages WHERE node_id = ? ORDER BY created_at, rowid", nodeId);
+  }
+
+  getResearchTask(id: string): ResearchTaskRecord | undefined {
+    return this.getRecord<ResearchTaskRecord>("SELECT record_json FROM research_tasks WHERE id = ?", id);
+  }
+
+  findResearchTaskByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchTaskRecord | undefined {
+    return this.getRecord<ResearchTaskRecord>("SELECT record_json FROM research_tasks WHERE session_id = ? AND idempotency_key = ?", sessionId, idempotencyKey);
+  }
+
+  listResearchTasks(sessionId: string): ResearchTaskRecord[] {
+    return this.listRecords<ResearchTaskRecord>("SELECT record_json FROM research_tasks WHERE session_id = ? ORDER BY created_at, rowid", sessionId);
+  }
+
+  listResearchTasksByNode(nodeId: string): ResearchTaskRecord[] {
+    return this.listRecords<ResearchTaskRecord>("SELECT record_json FROM research_tasks WHERE node_id = ? ORDER BY created_at, rowid", nodeId);
+  }
+
+  async createResearchTurn(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<ResearchTurnAccepted> {
+    let accepted: ResearchTurnAccepted | undefined;
+    this.transaction(() => {
+      const existing = this.findResearchTaskByIdempotencyKey(session.id, task.idempotencyKey);
+      if (existing) {
+        const existingInput = this.getResearchMessage(existing.inputMessageId);
+        const existingOutput = this.getResearchMessage(existing.outputMessageId);
+        const existingSession = this.getResearchSession(existing.sessionId);
+        if (!existingInput || !existingOutput || !existingSession) throw new Error("Research task references incomplete persisted state");
+        accepted = { session: existingSession, inputMessage: existingInput, outputMessage: existingOutput, task: existing };
+        return;
+      }
+      const updatedSession: ResearchSessionRecord = { ...session, updatedAt: task.createdAt };
+      this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
+        .run(updatedSession.updatedAt, JSON.stringify(updatedSession), updatedSession.id);
+      this.db().prepare("UPDATE research_nodes SET updated_at = ? WHERE id = ?")
+        .run(task.createdAt, session.id);
+      const nodeInput: ResearchMessageRecord = { ...inputMessage, nodeId: session.id };
+      const nodeOutput: ResearchMessageRecord = { ...outputMessage, nodeId: session.id };
+      const nodeTask: ResearchTaskRecord = { ...task, nodeId: session.id };
+      this.insertResearchMessage(nodeInput);
+      this.insertResearchMessage(nodeOutput);
+      this.insertResearchTask(nodeTask);
+      accepted = { session: updatedSession, inputMessage: nodeInput, outputMessage: nodeOutput, task: nodeTask };
+    });
+    if (!accepted) throw new Error("Research turn was not persisted");
+    return accepted;
+  }
+
+  async createResearchTurnForNode(node: ResearchNodeRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<ResearchTurnAccepted> {
+    let accepted: ResearchTurnAccepted | undefined;
+    this.transaction(() => {
+      const existing = this.findResearchTaskByIdempotencyKey(node.sessionId, task.idempotencyKey);
+      if (existing) {
+        const existingInput = this.getResearchMessage(existing.inputMessageId);
+        const existingOutput = this.getResearchMessage(existing.outputMessageId);
+        const existingSession = this.getResearchSession(existing.sessionId);
+        if (!existingInput || !existingOutput || !existingSession) throw new Error("Research task references incomplete persisted state");
+        accepted = { session: existingSession, inputMessage: existingInput, outputMessage: existingOutput, task: existing };
+        return;
+      }
+      const updatedSession = this.getResearchSession(node.sessionId);
+      if (!updatedSession) throw new Error("Research node references a missing session");
+      const session: ResearchSessionRecord = { ...updatedSession, updatedAt: task.createdAt };
+      this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
+        .run(session.updatedAt, JSON.stringify(session), session.id);
+      this.db().prepare("UPDATE research_nodes SET updated_at = ? WHERE id = ?")
+        .run(task.createdAt, node.id);
+      this.insertResearchMessage(inputMessage);
+      this.insertResearchMessage(outputMessage);
+      this.insertResearchTask(task);
+      accepted = { session, inputMessage, outputMessage, task };
+    });
+    if (!accepted) throw new Error("Research turn was not persisted");
+    return accepted;
+  }
+
+  claimResearchTask(id: string, provider?: string, model?: string, promptVersion = "research-chat-v1"): ResearchTaskRecord | undefined {
+    let claimed: ResearchTaskRecord | undefined;
+    this.transaction(() => {
+      const current = this.getResearchTask(id);
+      if (!current || current.status !== "queued") return;
+      const now = new Date().toISOString();
+      const next: ResearchTaskRecord = {
+        ...current, status: "running", retryable: false, provider, model, promptVersion,
+        error: undefined, updatedAt: now, startedAt: now, completedAt: undefined,
+      };
+      const result = this.db().prepare("UPDATE research_tasks SET status = ?, retryable = 0, updated_at = ?, record_json = ? WHERE id = ? AND status = 'queued'")
+        .run(next.status, now, JSON.stringify(next), id);
+      if (result.changes !== 1) return;
+      const message = this.getResearchMessage(next.outputMessageId);
+      if (!message) throw new Error("Research output message not found");
+      const streaming: ResearchMessageRecord = { ...message, status: "streaming", updatedAt: now };
+      this.updateResearchMessage(streaming);
+      claimed = next;
+    });
+    return claimed;
+  }
+
+  async appendResearchTaskDelta(id: string, delta: string): Promise<void> {
+    this.transaction(() => {
+      const task = this.getResearchTask(id);
+      if (!task || task.status !== "running") throw new Error("Research task is not running");
+      const current = this.getResearchMessage(task.outputMessageId);
+      if (!current) throw new Error("Research output message not found");
+      const now = new Date().toISOString();
+      const message: ResearchMessageRecord = { ...current, content: current.content + delta, status: "streaming", updatedAt: now };
+      this.updateResearchMessage(message);
+      const updatedTask: ResearchTaskRecord = { ...task, updatedAt: now };
+      this.updateResearchTask(updatedTask);
+      this.insertResearchEvent(id, "delta", now, { delta, message });
+    });
+  }
+
+  async completeResearchTask(id: string): Promise<void> {
+    this.transaction(() => {
+      const task = this.getResearchTask(id);
+      if (!task || task.status !== "running") throw new Error("Research task is not running");
+      const current = this.getResearchMessage(task.outputMessageId);
+      if (!current) throw new Error("Research output message not found");
+      const now = new Date().toISOString();
+      const message: ResearchMessageRecord = { ...current, status: "completed", updatedAt: now };
+      const completed: ResearchTaskRecord = { ...task, status: "completed", retryable: false, updatedAt: now, completedAt: now };
+      this.updateResearchMessage(message);
+      this.updateResearchTask(completed);
+      this.insertResearchEvent(id, "completed", now, { task: completed, message });
+    });
+  }
+
+  async failResearchTask(task: ResearchTaskRecord, error: ResearchTaskError): Promise<void> {
+    this.transaction(() => {
+      const currentTask = this.getResearchTask(task.id);
+      if (!currentTask || (currentTask.status !== "running" && currentTask.status !== "queued")) return;
+      const currentMessage = this.getResearchMessage(currentTask.outputMessageId);
+      if (!currentMessage) throw new Error("Research output message not found");
+      const now = new Date().toISOString();
+      const message: ResearchMessageRecord = { ...currentMessage, status: "failed", updatedAt: now };
+      const failed: ResearchTaskRecord = { ...currentTask, status: "failed", retryable: true, error, updatedAt: now, completedAt: now };
+      this.updateResearchMessage(message);
+      this.updateResearchTask(failed);
+      this.insertResearchEvent(task.id, "failed", now, { task: failed, message });
+    });
+  }
+
+  async retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion = "research-chat-v1"): Promise<ResearchTaskRecord> {
+    let retried: ResearchTaskRecord | undefined;
+    this.transaction(() => {
+      const current = this.getResearchTask(task.id);
+      if (!current || current.status !== "failed" || !current.retryable) throw new Error("Research task is not retryable");
+      const currentMessage = this.getResearchMessage(current.outputMessageId);
+      if (!currentMessage) throw new Error("Research output message not found");
+      const now = new Date().toISOString();
+      const queued: ResearchTaskRecord = {
+        ...current, status: "queued", retryable: false, provider, model, promptVersion,
+        error: undefined, updatedAt: now, startedAt: undefined, completedAt: undefined,
+      };
+      const message: ResearchMessageRecord = { ...currentMessage, content: "", status: "pending", updatedAt: now };
+      this.updateResearchMessage(message);
+      this.updateResearchTask(queued);
+      this.db().prepare("DELETE FROM research_task_events WHERE task_id = ?").run(task.id);
+      retried = queued;
+    });
+    if (!retried) throw new Error("Research task retry was not persisted");
+    return retried;
+  }
+
+  listResearchTaskEvents(taskId: string, afterId = 0): ResearchTaskEvent[] {
+    const rows = this.db().prepare("SELECT sequence, event_type, created_at, data_json FROM research_task_events WHERE task_id = ? AND sequence > ? ORDER BY sequence")
+      .all(taskId, afterId) as Array<{ sequence: number; event_type: "delta" | "completed" | "failed"; created_at: string; data_json: string }>;
+    return rows.map((row) => ({ id: row.sequence, type: row.event_type, createdAt: row.created_at, ...JSON.parse(row.data_json) }) as ResearchTaskEvent);
+  }
+
+  listRecoverableResearchTasks(): ResearchTaskRecord[] {
+    return this.listRecords<ResearchTaskRecord>("SELECT record_json FROM research_tasks WHERE status = 'queued' ORDER BY created_at");
+  }
+
+  failInterruptedResearchTasks(): number {
+    const interrupted = this.listRecords<ResearchTaskRecord>("SELECT record_json FROM research_tasks WHERE status = 'running' ORDER BY created_at");
+    if (!interrupted.length) return 0;
+    this.transaction(() => {
+      for (const task of interrupted) {
+        const message = this.getResearchMessage(task.outputMessageId);
+        if (!message) continue;
+        const now = new Date().toISOString();
+        const failedMessage: ResearchMessageRecord = { ...message, status: "failed", updatedAt: now };
+        const failedTask: ResearchTaskRecord = {
+          ...task, status: "failed", retryable: true, updatedAt: now, completedAt: now,
+          error: { code: "service_restarted", message: "服务在生成过程中重启。已保存输入和部分内容，可以重试。" },
+        };
+        this.updateResearchMessage(failedMessage);
+        this.updateResearchTask(failedTask);
+        this.insertResearchEvent(task.id, "failed", now, { task: failedTask, message: failedMessage });
+      }
+    });
+    return interrupted.length;
+  }
+
+  getResearchAttachment(id: string): ResearchAttachmentRecord | undefined {
+    return this.getRecord<ResearchAttachmentRecord>("SELECT record_json FROM research_attachments WHERE id = ?", id);
+  }
+
+  findResearchImportTaskByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchImportTaskRecord | undefined {
+    return this.getRecord<ResearchImportTaskRecord>("SELECT record_json FROM research_import_tasks WHERE session_id = ? AND idempotency_key = ?", sessionId, idempotencyKey);
+  }
+
+  listResearchAttachments(sessionId: string): ResearchAttachmentRecord[] {
+    return this.listRecords<ResearchAttachmentRecord>("SELECT record_json FROM research_attachments WHERE session_id = ? ORDER BY created_at, rowid", sessionId);
+  }
+
+  getResearchImportTask(id: string): ResearchImportTaskRecord | undefined {
+    return this.getRecord<ResearchImportTaskRecord>("SELECT record_json FROM research_import_tasks WHERE id = ?", id);
+  }
+
+  listResearchImportTasks(sessionId: string): ResearchImportTaskRecord[] {
+    return this.listRecords<ResearchImportTaskRecord>("SELECT record_json FROM research_import_tasks WHERE session_id = ? ORDER BY created_at, rowid", sessionId);
+  }
+
+  async createResearchImport(attachment: ResearchAttachmentRecord, task: ResearchImportTaskRecord, objectKey: string): Promise<ResearchImportAccepted> {
+    let accepted: ResearchImportAccepted | undefined;
+    this.transaction(() => {
+      const existingTask = this.findResearchImportTaskByIdempotencyKey(task.sessionId, task.idempotencyKey);
+      if (existingTask) {
+        const existingAttachment = this.getResearchAttachment(existingTask.attachmentId);
+        if (!existingAttachment) throw new Error("Research import task references a missing attachment");
+        accepted = { attachment: existingAttachment, task: existingTask };
+        return;
+      }
+      this.db().prepare(`INSERT INTO research_attachments
+        (id, session_id, status, object_key, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        .run(attachment.id, attachment.sessionId, attachment.status, objectKey, attachment.createdAt, attachment.updatedAt, JSON.stringify(attachment));
+      this.db().prepare(`INSERT INTO research_import_tasks
+        (id, session_id, attachment_id, idempotency_key, status, retryable, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(task.id, task.sessionId, task.attachmentId, task.idempotencyKey, task.status, 0, task.createdAt, task.updatedAt, JSON.stringify(task));
+      const session = this.getResearchSession(task.sessionId);
+      if (!session) throw new Error("Research session not found");
+      const updatedSession = { ...session, updatedAt: task.createdAt };
+      this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
+        .run(updatedSession.updatedAt, JSON.stringify(updatedSession), updatedSession.id);
+      accepted = { attachment, task };
+    });
+    if (!accepted) throw new Error("Research import was not persisted");
+    return accepted;
+  }
+
+  getResearchAttachmentObjectKey(id: string): string | undefined {
+    return (this.db().prepare("SELECT object_key FROM research_attachments WHERE id = ?").get(id) as { object_key: string } | undefined)?.object_key;
+  }
+
+  listResearchAttachmentObjectKeys(): string[] {
+    return (this.db().prepare("SELECT object_key FROM research_attachments").all() as Array<{ object_key: string }>).map((row) => row.object_key);
+  }
+
+  claimResearchImportTask(id: string): ResearchImportTaskRecord | undefined {
+    let claimed: ResearchImportTaskRecord | undefined;
+    this.transaction(() => {
+      const current = this.getResearchImportTask(id);
+      if (!current || current.status !== "queued") return;
+      const now = new Date().toISOString();
+      const next: ResearchImportTaskRecord = {
+        ...current, status: "running", retryable: false, error: undefined,
+        progress: { phase: "parsing", completedUnits: 0, totalUnits: 1 },
+        updatedAt: now, startedAt: now, completedAt: undefined,
+      };
+      const result = this.db().prepare("UPDATE research_import_tasks SET status = 'running', retryable = 0, updated_at = ?, record_json = ? WHERE id = ? AND status = 'queued'")
+        .run(now, JSON.stringify(next), id);
+      if (result.changes !== 1) return;
+      this.updateResearchAttachment({ ...this.getResearchAttachment(next.attachmentId)!, status: "processing", updatedAt: now });
+      claimed = next;
+    });
+    return claimed;
+  }
+
+  async updateResearchImportProgress(id: string, phase: ResearchImportTaskRecord["progress"]["phase"], completedUnits: number, totalUnits: number): Promise<void> {
+    this.transaction(() => {
+      const task = this.getResearchImportTask(id);
+      if (!task || task.status !== "running") return;
+      const attachment = this.getResearchAttachment(task.attachmentId);
+      if (!attachment) throw new Error("Research attachment not found");
+      const now = new Date().toISOString();
+      const updated: ResearchImportTaskRecord = { ...task, progress: { phase, completedUnits, totalUnits }, updatedAt: now };
+      this.updateResearchImportTask(updated);
+      this.insertResearchImportEvent(id, "progress", now, { task: updated, attachment });
+    });
+  }
+
+  async completeResearchImport(id: string, snapshot: ResearchContentSnapshotRecord): Promise<void> {
+    this.transaction(() => {
+      const task = this.getResearchImportTask(id);
+      if (!task || task.status !== "running") return;
+      const attachment = this.getResearchAttachment(task.attachmentId);
+      if (!attachment) throw new Error("Research attachment not found");
+      const now = new Date().toISOString();
+      this.db().prepare("INSERT INTO research_content_snapshots (id, session_id, attachment_id, created_at, record_json) VALUES (?, ?, ?, ?, ?)")
+        .run(snapshot.id, snapshot.sessionId, snapshot.attachmentId, snapshot.createdAt, JSON.stringify(snapshot));
+      const ready: ResearchAttachmentRecord = { ...attachment, status: "ready", contentSnapshotId: snapshot.id, updatedAt: now };
+      const completed: ResearchImportTaskRecord = {
+        ...task, status: "completed", retryable: false, error: undefined,
+        progress: { phase: "completed", completedUnits: task.progress.totalUnits, totalUnits: task.progress.totalUnits },
+        updatedAt: now, completedAt: now,
+      };
+      this.updateResearchAttachment(ready);
+      this.updateResearchImportTask(completed);
+      this.insertResearchImportEvent(id, "completed", now, { task: completed, attachment: ready });
+    });
+  }
+
+  async failResearchImport(task: ResearchImportTaskRecord, error: ResearchImportError): Promise<void> {
+    this.transaction(() => {
+      const current = this.getResearchImportTask(task.id);
+      if (!current || !["queued", "running"].includes(current.status)) return;
+      const attachment = this.getResearchAttachment(current.attachmentId);
+      if (!attachment) throw new Error("Research attachment not found");
+      const now = new Date().toISOString();
+      const failed: ResearchImportTaskRecord = { ...current, status: "failed", retryable: true, error, updatedAt: now, completedAt: now };
+      const failedAttachment: ResearchAttachmentRecord = { ...attachment, status: "failed", updatedAt: now };
+      this.updateResearchImportTask(failed);
+      this.updateResearchAttachment(failedAttachment);
+      this.insertResearchImportEvent(task.id, "failed", now, { task: failed, attachment: failedAttachment });
+    });
+  }
+
+  async cancelResearchImport(id: string): Promise<ResearchImportTaskRecord | undefined> {
+    let cancelled: ResearchImportTaskRecord | undefined;
+    this.transaction(() => {
+      const current = this.getResearchImportTask(id);
+      if (!current || !["queued", "running"].includes(current.status)) return;
+      const attachment = this.getResearchAttachment(current.attachmentId);
+      if (!attachment) throw new Error("Research attachment not found");
+      const now = new Date().toISOString();
+      cancelled = { ...current, status: "cancelled", retryable: false, updatedAt: now, completedAt: now };
+      const cancelledAttachment: ResearchAttachmentRecord = { ...attachment, status: "cancelled", updatedAt: now };
+      this.updateResearchImportTask(cancelled);
+      this.updateResearchAttachment(cancelledAttachment);
+      this.insertResearchImportEvent(id, "cancelled", now, { task: cancelled, attachment: cancelledAttachment });
+    });
+    return cancelled;
+  }
+
+  async retryResearchImport(id: string): Promise<ResearchImportTaskRecord> {
+    let retried: ResearchImportTaskRecord | undefined;
+    this.transaction(() => {
+      const current = this.getResearchImportTask(id);
+      if (!current || current.status !== "failed" || !current.retryable) throw new Error("Research import task is not retryable");
+      const attachment = this.getResearchAttachment(current.attachmentId);
+      if (!attachment) throw new Error("Research attachment not found");
+      const now = new Date().toISOString();
+      retried = {
+        ...current, status: "queued", retryable: false, error: undefined,
+        progress: { phase: "queued", completedUnits: 0, totalUnits: 1 },
+        updatedAt: now, startedAt: undefined, completedAt: undefined,
+      };
+      this.updateResearchImportTask(retried);
+      this.updateResearchAttachment({ ...attachment, status: "processing", updatedAt: now });
+      this.db().prepare("DELETE FROM research_import_task_events WHERE task_id = ?").run(id);
+    });
+    if (!retried) throw new Error("Research import retry was not persisted");
+    return retried;
+  }
+
+  getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined {
+    return this.getRecord<ResearchContentSnapshotRecord>("SELECT record_json FROM research_content_snapshots WHERE id = ?", id);
+  }
+
+  listResearchImportTaskEvents(taskId: string, afterId = 0): ResearchImportTaskEvent[] {
+    const rows = this.db().prepare("SELECT sequence, event_type, created_at, data_json FROM research_import_task_events WHERE task_id = ? AND sequence > ? ORDER BY sequence")
+      .all(taskId, afterId) as Array<{ sequence: number; event_type: "progress" | "completed" | "failed" | "cancelled"; created_at: string; data_json: string }>;
+    return rows.map((row) => ({ id: row.sequence, type: row.event_type, createdAt: row.created_at, ...JSON.parse(row.data_json) }) as ResearchImportTaskEvent);
+  }
+
+  listRecoverableResearchImportTasks(): ResearchImportTaskRecord[] {
+    return this.listRecords<ResearchImportTaskRecord>("SELECT record_json FROM research_import_tasks WHERE status = 'queued' ORDER BY created_at");
+  }
+
+  failInterruptedResearchImportTasks(): number {
+    const interrupted = this.listRecords<ResearchImportTaskRecord>("SELECT record_json FROM research_import_tasks WHERE status = 'running' ORDER BY created_at");
+    if (!interrupted.length) return 0;
+    this.transaction(() => {
+      for (const task of interrupted) {
+        const attachment = this.getResearchAttachment(task.attachmentId);
+        if (!attachment) continue;
+        const now = new Date().toISOString();
+        const failed: ResearchImportTaskRecord = {
+          ...task, status: "failed", retryable: true, updatedAt: now, completedAt: now,
+          error: { code: "service_restarted", message: "服务在解析文件时重启。原文件已保存，可以重试。" },
+        };
+        const failedAttachment: ResearchAttachmentRecord = { ...attachment, status: "failed", updatedAt: now };
+        this.updateResearchImportTask(failed);
+        this.updateResearchAttachment(failedAttachment);
+        this.insertResearchImportEvent(task.id, "failed", now, { task: failed, attachment: failedAttachment });
+      }
+    });
+    return interrupted.length;
+  }
+
+  private updateResearchAttachment(attachment: ResearchAttachmentRecord): void {
+    this.db().prepare("UPDATE research_attachments SET status = ?, updated_at = ?, record_json = ? WHERE id = ?")
+      .run(attachment.status, attachment.updatedAt, JSON.stringify(attachment), attachment.id);
+  }
+
+  private updateResearchImportTask(task: ResearchImportTaskRecord): void {
+    this.db().prepare("UPDATE research_import_tasks SET status = ?, retryable = ?, updated_at = ?, record_json = ? WHERE id = ?")
+      .run(task.status, task.retryable ? 1 : 0, task.updatedAt, JSON.stringify(task), task.id);
+  }
+
+  private insertResearchImportEvent(taskId: string, type: "progress" | "completed" | "failed" | "cancelled", createdAt: string, data: unknown): void {
+    this.db().prepare("INSERT INTO research_import_task_events (task_id, event_type, created_at, data_json) VALUES (?, ?, ?, ?)")
+      .run(taskId, type, createdAt, JSON.stringify(data));
+  }
+
+  getResearchSelection(id: string): ResearchSelectionRecord | undefined {
+    return this.getRecord<ResearchSelectionRecord>("SELECT record_json FROM research_selections WHERE id = ?", id);
+  }
+
+  listResearchSelections(sessionId: string): ResearchSelectionRecord[] {
+    return this.listRecords<ResearchSelectionRecord>("SELECT record_json FROM research_selections WHERE session_id = ? ORDER BY created_at, rowid", sessionId);
+  }
+
+  getResearchSelectionTask(id: string): ResearchSelectionTaskRecord | undefined {
+    return this.getRecord<ResearchSelectionTaskRecord>("SELECT record_json FROM research_selection_tasks WHERE id = ?", id);
+  }
+
+  findResearchSelectionTaskByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchSelectionTaskRecord | undefined {
+    return this.getRecord<ResearchSelectionTaskRecord>("SELECT record_json FROM research_selection_tasks WHERE session_id = ? AND idempotency_key = ?", sessionId, idempotencyKey);
+  }
+
+  async createResearchSelection(selection: ResearchSelectionRecord, task: ResearchSelectionTaskRecord): Promise<ResearchSelectionAccepted> {
+    let accepted: ResearchSelectionAccepted | undefined;
+    this.transaction(() => {
+      const existing = this.findResearchSelectionTaskByIdempotencyKey(selection.sessionId, task.idempotencyKey);
+      if (existing) {
+        const existingSelection = this.getResearchSelection(existing.selectionId);
+        if (!existingSelection) throw new Error("Research selection task references a missing selection");
+        accepted = { selection: existingSelection, task: existing };
+        return;
+      }
+      this.db().prepare("INSERT INTO research_selections (id, session_id, node_id, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .run(selection.id, selection.sessionId, selection.nodeId ?? null, selection.status, selection.createdAt, selection.updatedAt, JSON.stringify(selection));
+      this.db().prepare("INSERT INTO research_selection_tasks (id, session_id, selection_id, idempotency_key, status, retryable, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(task.id, task.sessionId, task.selectionId, task.idempotencyKey, task.status, 0, task.createdAt, task.updatedAt, JSON.stringify(task));
+      accepted = { selection, task };
+    });
+    if (!accepted) throw new Error("Research selection was not persisted");
+    return accepted;
+  }
+
+  async saveResearchSelection(record: ResearchSelectionRecord): Promise<void> {
+    this.db().prepare(`INSERT INTO research_selections (id, session_id, node_id, status, created_at, updated_at, record_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET session_id=excluded.session_id, node_id=excluded.node_id, status=excluded.status, updated_at=excluded.updated_at, record_json=excluded.record_json`)
+      .run(record.id, record.sessionId, record.nodeId ?? null, record.status, record.createdAt, record.updatedAt, JSON.stringify(record));
+  }
+
+  claimResearchSelectionTask(id: string, provider?: string, model?: string, promptVersion = "selection-analysis-v1"): ResearchSelectionTaskRecord | undefined {
+    let claimed: ResearchSelectionTaskRecord | undefined;
+    this.transaction(() => {
+      const current = this.getResearchSelectionTask(id);
+      if (!current || current.status !== "queued") return;
+      const now = new Date().toISOString();
+      const next: ResearchSelectionTaskRecord = {
+        ...current, status: "running", retryable: false, provider, model, promptVersion,
+        error: undefined, updatedAt: now, startedAt: now, completedAt: undefined,
+      };
+      const result = this.db().prepare("UPDATE research_selection_tasks SET status = ?, retryable = 0, updated_at = ?, record_json = ? WHERE id = ? AND status = 'queued'")
+        .run(next.status, now, JSON.stringify(next), id);
+      if (result.changes !== 1) return;
+      claimed = next;
+    });
+    return claimed;
+  }
+
+  async completeResearchSelectionTask(id: string, insight: ResearchSelectionInsight): Promise<void> {
+    this.transaction(() => {
+      const task = this.getResearchSelectionTask(id);
+      if (!task || task.status !== "running") throw new Error("Research selection task is not running");
+      const selection = this.getResearchSelection(task.selectionId);
+      if (!selection) throw new Error("Research selection not found");
+      const now = new Date().toISOString();
+      const analyzed: ResearchSelectionRecord = { ...selection, insight, updatedAt: now };
+      const completed: ResearchSelectionTaskRecord = { ...task, status: "completed", retryable: false, updatedAt: now, completedAt: now };
+      this.updateResearchSelectionRow(analyzed);
+      this.updateResearchSelectionTask(completed);
+      this.insertResearchSelectionEvent(id, "completed", now, { task: completed, selection: analyzed });
+    });
+  }
+
+  async failResearchSelectionTask(task: ResearchSelectionTaskRecord, error: ResearchSelectionTaskError): Promise<void> {
+    this.transaction(() => {
+      const current = this.getResearchSelectionTask(task.id);
+      if (!current || (current.status !== "running" && current.status !== "queued")) return;
+      const selection = this.getResearchSelection(current.selectionId);
+      if (!selection) throw new Error("Research selection not found");
+      const now = new Date().toISOString();
+      const failed: ResearchSelectionTaskRecord = { ...current, status: "failed", retryable: true, error, updatedAt: now, completedAt: now };
+      this.updateResearchSelectionTask(failed);
+      this.insertResearchSelectionEvent(task.id, "failed", now, { task: failed, selection });
+    });
+  }
+
+  async retryResearchSelectionTask(task: ResearchSelectionTaskRecord, provider?: string, model?: string, promptVersion = "selection-analysis-v1"): Promise<ResearchSelectionTaskRecord> {
+    let retried: ResearchSelectionTaskRecord | undefined;
+    this.transaction(() => {
+      const current = this.getResearchSelectionTask(task.id);
+      if (!current || current.status !== "failed" || !current.retryable) throw new Error("Research selection task is not retryable");
+      const now = new Date().toISOString();
+      retried = {
+        ...current, status: "queued", retryable: false, provider, model, promptVersion,
+        error: undefined, updatedAt: now, startedAt: undefined, completedAt: undefined,
+      };
+      this.updateResearchSelectionTask(retried);
+      this.db().prepare("DELETE FROM research_selection_task_events WHERE task_id = ?").run(task.id);
+    });
+    if (!retried) throw new Error("Research selection task retry was not persisted");
+    return retried;
+  }
+
+  listResearchSelectionTaskEvents(taskId: string, afterId = 0): ResearchSelectionTaskEvent[] {
+    const rows = this.db().prepare("SELECT sequence, event_type, created_at, data_json FROM research_selection_task_events WHERE task_id = ? AND sequence > ? ORDER BY sequence")
+      .all(taskId, afterId) as Array<{ sequence: number; event_type: "completed" | "failed"; created_at: string; data_json: string }>;
+    return rows.map((row) => ({ id: row.sequence, type: row.event_type, createdAt: row.created_at, ...JSON.parse(row.data_json) }) as ResearchSelectionTaskEvent);
+  }
+
+  listRecoverableResearchSelectionTasks(): ResearchSelectionTaskRecord[] {
+    return this.listRecords<ResearchSelectionTaskRecord>("SELECT record_json FROM research_selection_tasks WHERE status = 'queued' ORDER BY created_at");
+  }
+
+  failInterruptedResearchSelectionTasks(): number {
+    const interrupted = this.listRecords<ResearchSelectionTaskRecord>("SELECT record_json FROM research_selection_tasks WHERE status = 'running' ORDER BY created_at");
+    if (!interrupted.length) return 0;
+    this.transaction(() => {
+      for (const task of interrupted) {
+        const selection = this.getResearchSelection(task.selectionId);
+        if (!selection) continue;
+        const now = new Date().toISOString();
+        const failed: ResearchSelectionTaskRecord = {
+          ...task, status: "failed", retryable: true, updatedAt: now, completedAt: now,
+          error: { code: "service_restarted", message: "服务在分析过程中重启。选区已保存，可以重试。" },
+        };
+        this.updateResearchSelectionTask(failed);
+        this.insertResearchSelectionEvent(task.id, "failed", now, { task: failed, selection });
+      }
+    });
+    return interrupted.length;
+  }
+
+  private updateResearchSelectionRow(selection: ResearchSelectionRecord): void {
+    this.db().prepare("UPDATE research_selections SET status = ?, updated_at = ?, record_json = ? WHERE id = ?")
+      .run(selection.status, selection.updatedAt, JSON.stringify(selection), selection.id);
+  }
+
+  private updateResearchSelectionTask(task: ResearchSelectionTaskRecord): void {
+    this.db().prepare("UPDATE research_selection_tasks SET status = ?, retryable = ?, updated_at = ?, record_json = ? WHERE id = ?")
+      .run(task.status, task.retryable ? 1 : 0, task.updatedAt, JSON.stringify(task), task.id);
+  }
+
+  private insertResearchSelectionEvent(taskId: string, type: "completed" | "failed", createdAt: string, data: unknown): void {
+    this.db().prepare("INSERT INTO research_selection_task_events (task_id, event_type, created_at, data_json) VALUES (?, ?, ?, ?)")
+      .run(taskId, type, createdAt, JSON.stringify(data));
+  }
+
+  private insertResearchMessage(message: ResearchMessageRecord): void {
+    this.db().prepare("INSERT INTO research_messages (id, session_id, node_id, branch_id, role, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(message.id, message.sessionId, message.nodeId ?? null, message.branchId ?? null, message.role, message.status, message.createdAt, message.updatedAt, JSON.stringify(message));
+  }
+
+  private insertResearchTask(task: ResearchTaskRecord): void {
+    this.db().prepare("INSERT INTO research_tasks (id, session_id, node_id, input_message_id, output_message_id, idempotency_key, status, retryable, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(task.id, task.sessionId, task.nodeId ?? null, task.inputMessageId, task.outputMessageId, task.idempotencyKey, task.status, 0, task.createdAt, task.updatedAt, JSON.stringify(task));
+  }
+
+  getResearchBranch(id: string): ResearchBranchRecord | undefined {
+    return this.getRecord<ResearchBranchRecord>("SELECT record_json FROM research_branches WHERE id = ?", id);
+  }
+
+  listResearchBranches(sessionId: string): ResearchBranchRecord[] {
+    return this.listRecords<ResearchBranchRecord>("SELECT record_json FROM research_branches WHERE session_id = ? ORDER BY created_at, rowid", sessionId);
+  }
+
+  findResearchBranchByCreationKey(sessionId: string, idempotencyKey: string): ResearchBranchRecord | undefined {
+    return this.getRecord<ResearchBranchRecord>("SELECT record_json FROM research_branches WHERE session_id = ? AND creation_idempotency_key = ?", sessionId, idempotencyKey);
+  }
+
+  /**
+   * 深入研究分支创建：在同一事务中保存分支（来源关系）与第一轮消息、任务，
+   * 再返回给服务层排队生成。幂等键命中时返回首次创建的分支与任务。
+   */
+  async createResearchBranch(session: ResearchSessionRecord, branch: ResearchBranchRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<DeepResearchAccepted> {
+    let accepted: DeepResearchAccepted | undefined;
+    this.transaction(() => {
+      const existingBranch = this.findResearchBranchByCreationKey(branch.sessionId, task.idempotencyKey);
+      if (existingBranch) {
+        accepted = this.deepResearchAcceptedFor("branch", existingBranch, task.idempotencyKey);
+        return;
+      }
+      const selection = this.getResearchSelection(branch.selectionId);
+      if (!selection) throw new Error("Research selection not found");
+      this.db().prepare("INSERT INTO research_branches (id, session_id, selection_id, status, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(branch.id, branch.sessionId, branch.selectionId, branch.status, branch.createdAt, branch.updatedAt, task.idempotencyKey, JSON.stringify(branch));
+      const nodeRecord: ResearchNodeRecord = {
+        id: branch.id,
+        sessionId: branch.sessionId,
+        parentNodeId: branch.sessionId,
+        originSelectionId: branch.selectionId,
+        status: "active",
+        createdAt: branch.createdAt,
+        updatedAt: branch.updatedAt,
+      };
+      this.db().prepare("INSERT INTO research_nodes (id, session_id, parent_node_id, origin_selection_id, status, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(nodeRecord.id, nodeRecord.sessionId, nodeRecord.parentNodeId ?? null, nodeRecord.originSelectionId ?? null, nodeRecord.status, nodeRecord.createdAt, nodeRecord.updatedAt, task.idempotencyKey, JSON.stringify(nodeRecord));
+      const updatedSession: ResearchSessionRecord = { ...session, updatedAt: task.createdAt };
+      this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
+        .run(updatedSession.updatedAt, JSON.stringify(updatedSession), updatedSession.id);
+      const nodeInput: ResearchMessageRecord = { ...inputMessage, nodeId: branch.id };
+      const nodeOutput: ResearchMessageRecord = { ...outputMessage, nodeId: branch.id };
+      const nodeTask: ResearchTaskRecord = { ...task, nodeId: branch.id };
+      this.insertResearchMessage(nodeInput);
+      this.insertResearchMessage(nodeOutput);
+      this.insertResearchTask(nodeTask);
+      accepted = { mode: "branch", session: updatedSession, branch, selection, inputMessage: nodeInput, outputMessage: nodeOutput, task: nodeTask };
+    });
+    if (!accepted) throw new Error("Research branch was not persisted");
+    return accepted;
+  }
+
+  /**
+   * 带来源的独立研究会话创建：会话 origin 列、第一轮消息与任务在同一事务中保存。
+   * 幂等键复用 research_sessions.creation_idempotency_key（全局唯一）。
+   */
+  async createOriginResearchSession(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<DeepResearchAccepted> {
+    let accepted: DeepResearchAccepted | undefined;
+    this.transaction(() => {
+      const existing = this.getRecord<ResearchSessionRecord>("SELECT record_json FROM research_sessions WHERE creation_idempotency_key = ?", task.idempotencyKey);
+      if (existing) {
+        const existingTask = this.findResearchTaskByIdempotencyKey(existing.id, task.idempotencyKey);
+        if (!existingTask) throw new Error("Research session references a missing first task");
+        const selectionId = existing.originSelectionId;
+        const selection = selectionId ? this.getResearchSelection(selectionId) : undefined;
+        const existingInput = this.getResearchMessage(existingTask.inputMessageId);
+        const existingOutput = this.getResearchMessage(existingTask.outputMessageId);
+        if (!selection || !existingInput || !existingOutput) throw new Error("Research session references incomplete persisted state");
+        accepted = { mode: "session", session: existing, selection, inputMessage: existingInput, outputMessage: existingOutput, task: existingTask };
+        return;
+      }
+      if (!session.originSelectionId) throw new Error("Origin research session requires a source selection");
+      const selection = this.getResearchSelection(session.originSelectionId);
+      if (!selection) throw new Error("Research selection not found");
+      this.db().prepare("INSERT INTO research_sessions (id, status, created_at, updated_at, creation_idempotency_key, origin_selection_id, origin_session_id, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(session.id, session.status, session.createdAt, session.updatedAt, task.idempotencyKey, session.originSelectionId, session.originSessionId ?? null, JSON.stringify(session));
+      const nodeRecord: ResearchNodeRecord = {
+        id: session.id,
+        sessionId: session.id,
+        originSelectionId: session.originSelectionId,
+        status: "active",
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+      };
+      this.db().prepare("INSERT INTO research_nodes (id, session_id, parent_node_id, origin_selection_id, status, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(nodeRecord.id, nodeRecord.sessionId, nodeRecord.parentNodeId ?? null, nodeRecord.originSelectionId ?? null, nodeRecord.status, nodeRecord.createdAt, nodeRecord.updatedAt, task.idempotencyKey, JSON.stringify(nodeRecord));
+      const nodeInput: ResearchMessageRecord = { ...inputMessage, nodeId: session.id };
+      const nodeOutput: ResearchMessageRecord = { ...outputMessage, nodeId: session.id };
+      const nodeTask: ResearchTaskRecord = { ...task, nodeId: session.id };
+      this.insertResearchMessage(nodeInput);
+      this.insertResearchMessage(nodeOutput);
+      this.insertResearchTask(nodeTask);
+      accepted = { mode: "session", session, selection, inputMessage: nodeInput, outputMessage: nodeOutput, task: nodeTask };
+    });
+    if (!accepted) throw new Error("Origin research session was not persisted");
+    return accepted;
+  }
+
+  /**
+   * 子节点创建：在同一事务中保存节点（来源关系）与第一轮消息、任务，
+   * 再返回给服务层排队生成。幂等键命中时返回首次创建的节点与任务。
+   */
+  async createResearchChildNode(parentNode: ResearchNodeRecord, node: ResearchNodeRecord, selection: ResearchSelectionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<NodeGrowthAccepted> {
+    let accepted: NodeGrowthAccepted | undefined;
+    this.transaction(() => {
+      const existingNode = this.getRecord<ResearchNodeRecord>(
+        "SELECT record_json FROM research_nodes WHERE session_id = ? AND creation_idempotency_key = ?",
+        node.sessionId, task.idempotencyKey,
+      );
+      if (existingNode) {
+        const existingTask = this.findResearchTaskByIdempotencyKey(node.sessionId, task.idempotencyKey);
+        if (!existingTask) throw new Error("Research node references a missing first task");
+        const existingInput = this.getResearchMessage(existingTask.inputMessageId);
+        const existingOutput = this.getResearchMessage(existingTask.outputMessageId);
+        const session = this.getResearchSession(existingNode.sessionId);
+        if (!existingInput || !existingOutput || !session) throw new Error("Research node references incomplete persisted state");
+        accepted = { node: existingNode, session, selection, inputMessage: existingInput, outputMessage: existingOutput, task: existingTask };
+        return;
+      }
+      const session = this.getResearchSession(node.sessionId);
+      if (!session) throw new Error("Research node references a missing session");
+      const updatedSession: ResearchSessionRecord = { ...session, updatedAt: task.createdAt };
+      this.db().prepare("INSERT INTO research_nodes (id, session_id, parent_node_id, origin_selection_id, status, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(node.id, node.sessionId, node.parentNodeId ?? null, node.originSelectionId ?? null, node.status, node.createdAt, node.updatedAt, task.idempotencyKey, JSON.stringify(node));
+      this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
+        .run(updatedSession.updatedAt, JSON.stringify(updatedSession), updatedSession.id);
+      this.insertResearchMessage(inputMessage);
+      this.insertResearchMessage(outputMessage);
+      this.insertResearchTask(task);
+      accepted = { node, session: updatedSession, selection, inputMessage, outputMessage, task };
+    });
+    if (!accepted) throw new Error("Research child node was not persisted");
+    return accepted;
+  }
+
+  private deepResearchAcceptedFor(mode: "branch", branch: ResearchBranchRecord, idempotencyKey: string): DeepResearchAccepted {
+    const existingTask = this.findResearchTaskByIdempotencyKey(branch.sessionId, idempotencyKey);
+    const session = this.getResearchSession(branch.sessionId);
+    const selection = this.getResearchSelection(branch.selectionId);
+    const inputMessage = existingTask ? this.getResearchMessage(existingTask.inputMessageId) : undefined;
+    const outputMessage = existingTask ? this.getResearchMessage(existingTask.outputMessageId) : undefined;
+    if (!existingTask || !session || !selection || !inputMessage || !outputMessage) {
+      throw new Error("Research branch references incomplete persisted state");
+    }
+    return { mode, session, branch, selection, inputMessage, outputMessage, task: existingTask };
+  }
+
+  getResearchLaterItem(id: string): ResearchLaterItemRecord | undefined {
+    return this.getRecord<ResearchLaterItemRecord>("SELECT record_json FROM research_later_items WHERE id = ?", id);
+  }
+
+  findResearchLaterItemByCreationKey(idempotencyKey: string): ResearchLaterItemRecord | undefined {
+    return this.getRecord<ResearchLaterItemRecord>("SELECT record_json FROM research_later_items WHERE creation_idempotency_key = ?", idempotencyKey);
+  }
+
+  listResearchLaterItems(status?: ResearchLaterItemStatus): ResearchLaterItemRecord[] {
+    if (status) {
+      return this.listRecords<ResearchLaterItemRecord>("SELECT record_json FROM research_later_items WHERE status = ? ORDER BY created_at DESC, rowid DESC", status);
+    }
+    return this.listRecords<ResearchLaterItemRecord>("SELECT record_json FROM research_later_items ORDER BY created_at DESC, rowid DESC");
+  }
+
+  /**
+   * 稍后再学项目创建：基础能力，不依赖 AI。
+   * 幂等键命中时返回首次创建的项目，网络重试不重复创建。
+   */
+  async createResearchLaterItem(item: ResearchLaterItemRecord, idempotencyKey: string): Promise<ResearchLaterItemRecord> {
+    let persisted: ResearchLaterItemRecord | undefined;
+    this.transaction(() => {
+      const existing = this.findResearchLaterItemByCreationKey(idempotencyKey);
+      if (existing) {
+        persisted = existing;
+        return;
+      }
+      this.db().prepare("INSERT INTO research_later_items (id, session_id, node_id, selection_id, status, priority, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(item.id, item.sessionId, item.nodeId ?? null, item.selectionId, item.status, item.priority, item.createdAt, item.updatedAt, idempotencyKey, JSON.stringify(item));
+      persisted = item;
+    });
+    if (!persisted) throw new Error("Research later item was not persisted");
+    return persisted;
+  }
+
+  async saveResearchLaterItem(record: ResearchLaterItemRecord): Promise<void> {
+    this.db().prepare("UPDATE research_later_items SET status = ?, priority = ?, updated_at = ?, record_json = ? WHERE id = ?")
+      .run(record.status, record.priority, record.updatedAt, JSON.stringify(record), record.id);
+  }
+
+  async saveResearchGroundingResult(result: ResearchGroundingResult): Promise<void> {
+    this.transaction(() => {
+      this.db().prepare("INSERT INTO research_grounding_runs (id, task_id, session_id, status, created_at, record_json) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(result.run.id, result.run.taskId, result.run.sessionId, result.run.status, result.run.createdAt, JSON.stringify(result.run));
+      const sourceStatement = this.db().prepare("INSERT INTO research_grounding_sources (id, run_id, ordinal, created_at, record_json) VALUES (?, ?, ?, ?, ?)");
+      for (const source of result.sources) sourceStatement.run(source.id, source.runId, source.ordinal, source.createdAt, JSON.stringify(source));
+      const citationStatement = this.db().prepare("INSERT INTO research_citations (id, message_id, run_id, source_id, block_ordinal, marker_offset, created_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+      for (const citation of result.citations) citationStatement.run(citation.id, citation.messageId, citation.runId, citation.sourceId, citation.blockOrdinal, citation.markerOffset, citation.createdAt, JSON.stringify(citation));
+      const task = this.getResearchTask(result.run.taskId);
+      if (task) this.updateResearchTask({ ...task, groundingScope: result.scope, updatedAt: result.run.completedAt ?? new Date().toISOString() });
+    });
+  }
+
+  getResearchGroundingRun(id: string): ResearchGroundingRunRecord | undefined {
+    return this.getRecord<ResearchGroundingRunRecord>("SELECT record_json FROM research_grounding_runs WHERE id = ?", id);
+  }
+
+  listResearchGroundingRuns(taskId: string): ResearchGroundingRunRecord[] {
+    return this.listRecords<ResearchGroundingRunRecord>("SELECT record_json FROM research_grounding_runs WHERE task_id = ? ORDER BY created_at, rowid", taskId);
+  }
+
+  listResearchGroundingSources(runId: string): ResearchGroundingSourceRecord[] {
+    return this.listRecords<ResearchGroundingSourceRecord>("SELECT record_json FROM research_grounding_sources WHERE run_id = ? ORDER BY ordinal", runId);
+  }
+
+  listResearchCitationsForMessages(messageIds: string[]): ResearchCitationRecord[] {
+    if (!messageIds.length) return [];
+    const placeholders = messageIds.map(() => "?").join(", ");
+    return this.listRecords<ResearchCitationRecord>(`SELECT record_json FROM research_citations WHERE message_id IN (${placeholders}) ORDER BY message_id, block_ordinal, marker_offset, rowid`, ...messageIds);
+  }
+
+  private updateResearchMessage(message: ResearchMessageRecord): void {
+    this.db().prepare("UPDATE research_messages SET status = ?, updated_at = ?, record_json = ? WHERE id = ?")
+      .run(message.status, message.updatedAt, JSON.stringify(message), message.id);
+  }
+
+  private updateResearchTask(task: ResearchTaskRecord): void {
+    this.db().prepare("UPDATE research_tasks SET status = ?, retryable = ?, updated_at = ?, record_json = ? WHERE id = ?")
+      .run(task.status, task.retryable ? 1 : 0, task.updatedAt, JSON.stringify(task), task.id);
+  }
+
+  private insertResearchEvent(taskId: string, type: "delta" | "completed" | "failed", createdAt: string, data: unknown): void {
+    this.db().prepare("INSERT INTO research_task_events (task_id, event_type, created_at, data_json) VALUES (?, ?, ?, ?)")
+      .run(taskId, type, createdAt, JSON.stringify(data));
   }
 
   private createSchema(): void {
@@ -896,6 +2027,368 @@ export class SqliteStore implements CollectorStore {
       });
       version = 13;
     }
+    if (version < 14) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE IF NOT EXISTS research_sessions (
+            id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS research_sessions_updated_idx ON research_sessions(updated_at DESC);
+          CREATE TABLE IF NOT EXISTS research_messages (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES research_sessions(id)
+          );
+          CREATE INDEX IF NOT EXISTS research_messages_session_idx ON research_messages(session_id, created_at);
+          CREATE TABLE IF NOT EXISTS research_tasks (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            input_message_id TEXT NOT NULL,
+            output_message_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            status TEXT NOT NULL,
+            retryable INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES research_sessions(id),
+            FOREIGN KEY(input_message_id) REFERENCES research_messages(id),
+            FOREIGN KEY(output_message_id) REFERENCES research_messages(id),
+            UNIQUE(session_id, idempotency_key)
+          );
+          CREATE INDEX IF NOT EXISTS research_tasks_status_idx ON research_tasks(status, created_at);
+          CREATE TABLE IF NOT EXISTS research_task_events (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            data_json TEXT NOT NULL,
+            FOREIGN KEY(task_id) REFERENCES research_tasks(id)
+          );
+          CREATE INDEX IF NOT EXISTS research_task_events_task_idx ON research_task_events(task_id, sequence);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (14, datetime('now'));
+        `);
+      });
+      version = 14;
+    }
+    if (version < 15) {
+      this.transaction(() => {
+        this.db().exec(`
+          ALTER TABLE research_sessions ADD COLUMN creation_idempotency_key TEXT;
+          CREATE UNIQUE INDEX research_sessions_creation_idempotency_idx
+            ON research_sessions(creation_idempotency_key)
+            WHERE creation_idempotency_key IS NOT NULL;
+          INSERT INTO schema_migrations(version, applied_at) VALUES (15, datetime('now'));
+        `);
+      });
+      version = 15;
+    }
+    if (version < 16) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE research_attachments (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            object_key TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES research_sessions(id)
+          );
+          CREATE INDEX research_attachments_session_idx ON research_attachments(session_id, created_at);
+          CREATE TABLE research_import_tasks (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            attachment_id TEXT NOT NULL UNIQUE,
+            idempotency_key TEXT NOT NULL,
+            status TEXT NOT NULL,
+            retryable INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES research_sessions(id),
+            FOREIGN KEY(attachment_id) REFERENCES research_attachments(id),
+            UNIQUE(session_id, idempotency_key)
+          );
+          CREATE INDEX research_import_tasks_status_idx ON research_import_tasks(status, created_at);
+          CREATE TABLE research_content_snapshots (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            attachment_id TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES research_sessions(id),
+            FOREIGN KEY(attachment_id) REFERENCES research_attachments(id)
+          );
+          CREATE TABLE research_import_task_events (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            data_json TEXT NOT NULL,
+            FOREIGN KEY(task_id) REFERENCES research_import_tasks(id)
+          );
+          CREATE INDEX research_import_task_events_task_idx ON research_import_task_events(task_id, sequence);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (16, datetime('now'));
+        `);
+      });
+      version = 16;
+    }
+    if (version < 17) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE research_selections (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES research_sessions(id)
+          );
+          CREATE INDEX research_selections_session_idx ON research_selections(session_id, created_at);
+          CREATE TABLE research_selection_tasks (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            selection_id TEXT NOT NULL UNIQUE,
+            idempotency_key TEXT NOT NULL,
+            status TEXT NOT NULL,
+            retryable INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES research_sessions(id),
+            FOREIGN KEY(selection_id) REFERENCES research_selections(id),
+            UNIQUE(session_id, idempotency_key)
+          );
+          CREATE INDEX research_selection_tasks_status_idx ON research_selection_tasks(status, created_at);
+          CREATE TABLE research_selection_task_events (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            data_json TEXT NOT NULL,
+            FOREIGN KEY(task_id) REFERENCES research_selection_tasks(id)
+          );
+          CREATE INDEX research_selection_task_events_task_idx ON research_selection_task_events(task_id, sequence);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (17, datetime('now'));
+        `);
+      });
+      version = 17;
+    }
+    if (version < 18) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE research_branches (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            selection_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            creation_idempotency_key TEXT,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES research_sessions(id),
+            FOREIGN KEY(selection_id) REFERENCES research_selections(id)
+          );
+          CREATE UNIQUE INDEX research_branches_creation_idempotency_idx
+            ON research_branches(session_id, creation_idempotency_key)
+            WHERE creation_idempotency_key IS NOT NULL;
+          CREATE INDEX research_branches_session_idx ON research_branches(session_id, created_at);
+          ALTER TABLE research_messages ADD COLUMN branch_id TEXT;
+          CREATE INDEX research_messages_branch_idx ON research_messages(session_id, branch_id);
+          ALTER TABLE research_sessions ADD COLUMN origin_selection_id TEXT;
+          ALTER TABLE research_sessions ADD COLUMN origin_session_id TEXT;
+          INSERT INTO schema_migrations(version, applied_at) VALUES (18, datetime('now'));
+        `);
+      });
+      version = 18;
+    }
+    if (version < 19) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE research_later_items (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            selection_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            priority INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            creation_idempotency_key TEXT,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES research_sessions(id),
+            FOREIGN KEY(selection_id) REFERENCES research_selections(id)
+          );
+          CREATE UNIQUE INDEX research_later_items_creation_idempotency_idx
+            ON research_later_items(creation_idempotency_key)
+            WHERE creation_idempotency_key IS NOT NULL;
+          CREATE INDEX research_later_items_selection_idx ON research_later_items(selection_id);
+          CREATE INDEX research_later_items_status_idx ON research_later_items(status, created_at);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (19, datetime('now'));
+        `);
+      });
+      version = 19;
+    }
+    if (version < 21) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE research_grounding_runs (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, session_id TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, record_json TEXT NOT NULL, FOREIGN KEY(task_id) REFERENCES research_tasks(id), FOREIGN KEY(session_id) REFERENCES research_sessions(id));
+          CREATE INDEX research_grounding_runs_task_idx ON research_grounding_runs(task_id, created_at);
+          CREATE TABLE research_grounding_sources (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, ordinal INTEGER NOT NULL, created_at TEXT NOT NULL, record_json TEXT NOT NULL, FOREIGN KEY(run_id) REFERENCES research_grounding_runs(id));
+          CREATE INDEX research_grounding_sources_run_idx ON research_grounding_sources(run_id, ordinal);
+          CREATE TABLE research_citations (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, run_id TEXT NOT NULL, source_id TEXT NOT NULL, block_ordinal INTEGER NOT NULL, marker_offset INTEGER NOT NULL, created_at TEXT NOT NULL, record_json TEXT NOT NULL, FOREIGN KEY(message_id) REFERENCES research_messages(id), FOREIGN KEY(run_id) REFERENCES research_grounding_runs(id), FOREIGN KEY(source_id) REFERENCES research_grounding_sources(id));
+          CREATE INDEX research_citations_message_idx ON research_citations(message_id, block_ordinal, marker_offset);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (21, datetime('now'));
+        `);
+      });
+      version = 21;
+    }
+    if (version < 22) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE provider_credentials (
+            id TEXT PRIMARY KEY,
+            api_key TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(id) REFERENCES provider_profiles(id) ON DELETE CASCADE
+          );
+          CREATE INDEX provider_credentials_updated_idx ON provider_credentials(updated_at);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (22, datetime('now'));
+        `);
+      });
+      version = 22;
+    }
+    if (version < 23) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE model_purpose_routes (
+            purpose TEXT PRIMARY KEY,
+            profile_id TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(profile_id) REFERENCES provider_profiles(id) ON DELETE CASCADE
+          );
+          CREATE INDEX model_purpose_routes_profile_idx ON model_purpose_routes(profile_id);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (23, datetime('now'));
+        `);
+      });
+      version = 23;
+    }
+    if (version < 24) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE research_nodes (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            parent_node_id TEXT REFERENCES research_nodes(id),
+            origin_selection_id TEXT REFERENCES research_selections(id),
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            creation_idempotency_key TEXT,
+            record_json TEXT NOT NULL
+          );
+          CREATE INDEX research_nodes_session_idx ON research_nodes(session_id, updated_at DESC);
+          CREATE INDEX research_nodes_parent_idx ON research_nodes(parent_node_id, created_at);
+          CREATE UNIQUE INDEX research_nodes_creation_idempotency_idx
+            ON research_nodes(session_id, creation_idempotency_key)
+            WHERE creation_idempotency_key IS NOT NULL;
+
+          ALTER TABLE research_messages ADD COLUMN node_id TEXT;
+          ALTER TABLE research_tasks ADD COLUMN node_id TEXT;
+          ALTER TABLE research_selections ADD COLUMN node_id TEXT;
+          ALTER TABLE research_later_items ADD COLUMN node_id TEXT;
+        `);
+
+        const insertNode = this.db().prepare(
+          `INSERT OR IGNORE INTO research_nodes (id, session_id, parent_node_id, origin_selection_id, status, created_at, updated_at, creation_idempotency_key, record_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        );
+
+        const sessions = this.db().prepare("SELECT id, status, created_at, updated_at, creation_idempotency_key, record_json FROM research_sessions").all() as Array<{ id: string; status: string; created_at: string; updated_at: string; creation_idempotency_key: string | null; record_json: string }>;
+        for (const row of sessions) {
+          const nodeRecord: ResearchNodeRecord = {
+            id: row.id,
+            sessionId: row.id,
+            status: row.status as "active",
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+          };
+          insertNode.run(row.id, row.id, null, null, row.status, row.created_at, row.updated_at, row.creation_idempotency_key, JSON.stringify(nodeRecord));
+        }
+
+        const branches = this.db().prepare("SELECT id, session_id, selection_id, status, created_at, updated_at, creation_idempotency_key FROM research_branches").all() as Array<{ id: string; session_id: string; selection_id: string; status: string; created_at: string; updated_at: string; creation_idempotency_key: string | null }>;
+        for (const row of branches) {
+          const nodeRecord: ResearchNodeRecord = {
+            id: row.id,
+            sessionId: row.session_id,
+            parentNodeId: row.session_id,
+            originSelectionId: row.selection_id,
+            status: row.status as "active",
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+          };
+          insertNode.run(row.id, row.session_id, row.session_id, row.selection_id, row.status, row.created_at, row.updated_at, row.creation_idempotency_key, JSON.stringify(nodeRecord));
+        }
+
+        this.db().exec(`
+          UPDATE research_messages SET node_id = COALESCE(branch_id, session_id);
+
+          UPDATE research_tasks SET node_id = (
+            SELECT node_id FROM research_messages WHERE research_messages.id = research_tasks.input_message_id
+          );
+
+          UPDATE research_selections SET node_id = session_id;
+
+          UPDATE research_later_items SET node_id = session_id;
+        `);
+
+        const updateMessageJson = this.db().prepare("UPDATE research_messages SET record_json = ? WHERE id = ?");
+        const messages = this.db().prepare("SELECT id, node_id, record_json FROM research_messages").all() as Array<{ id: string; node_id: string | null; record_json: string }>;
+        for (const row of messages) {
+          const record = JSON.parse(row.record_json) as ResearchMessageRecord;
+          record.nodeId = row.node_id ?? undefined;
+          updateMessageJson.run(JSON.stringify(record), row.id);
+        }
+
+        const updateTaskJson = this.db().prepare("UPDATE research_tasks SET record_json = ? WHERE id = ?");
+        const tasks = this.db().prepare("SELECT id, node_id, record_json FROM research_tasks").all() as Array<{ id: string; node_id: string | null; record_json: string }>;
+        for (const row of tasks) {
+          const record = JSON.parse(row.record_json) as ResearchTaskRecord;
+          record.nodeId = row.node_id ?? undefined;
+          updateTaskJson.run(JSON.stringify(record), row.id);
+        }
+
+        const updateSelectionJson = this.db().prepare("UPDATE research_selections SET record_json = ? WHERE id = ?");
+        const selections = this.db().prepare("SELECT id, node_id, record_json FROM research_selections").all() as Array<{ id: string; node_id: string | null; record_json: string }>;
+        for (const row of selections) {
+          const record = JSON.parse(row.record_json) as ResearchSelectionRecord;
+          record.nodeId = row.node_id ?? undefined;
+          updateSelectionJson.run(JSON.stringify(record), row.id);
+        }
+
+        const updateLaterItemJson = this.db().prepare("UPDATE research_later_items SET record_json = ? WHERE id = ?");
+        const laterItems = this.db().prepare("SELECT id, node_id, record_json FROM research_later_items").all() as Array<{ id: string; node_id: string | null; record_json: string }>;
+        for (const row of laterItems) {
+          const record = JSON.parse(row.record_json) as ResearchLaterItemRecord;
+          record.nodeId = row.node_id ?? undefined;
+          updateLaterItemJson.run(JSON.stringify(record), row.id);
+        }
+
+        this.db().exec("INSERT INTO schema_migrations(version, applied_at) VALUES (24, datetime('now'));");
+      });
+      version = 24;
+    }
 
   }
 
@@ -948,6 +2441,10 @@ export class SqliteStore implements CollectorStore {
         for (const token of Object.values(data.clientTokens ?? {})) {
           this.db().prepare("INSERT OR IGNORE INTO paired_clients (id, name, token_hash, created_at) VALUES (?, ?, ?, ?)")
             .run(token.id, token.name, token.tokenHash, token.createdAt);
+        }
+        for (const [id, apiKey] of Object.entries(data.providerCredentials ?? {})) {
+          this.db().prepare("INSERT OR REPLACE INTO provider_credentials (id, api_key, updated_at) VALUES (?, ?, ?)")
+            .run(id, apiKey, new Date().toISOString());
         }
         this.db().prepare("INSERT INTO legacy_migrations (source_path, status, backup_path, migrated_at) VALUES (?, 'imported', ?, ?)")
           .run(this.legacyJsonPath!, backup!, new Date().toISOString());
@@ -1084,9 +2581,15 @@ export class JsonStore implements CollectorStore {
   getProviderProfile(id: string) { return this.data.providerProfiles?.[id]; }
   listProviderProfiles() { return Object.values(this.data.providerProfiles ?? {}).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)); }
   async saveProviderProfile(profile: ProviderProfile) { this.data.providerProfiles ??= {}; this.data.providerProfiles[profile.id] = profile; await this.flush(); }
-  async deleteProviderProfile(id: string) { if (!this.data.providerProfiles?.[id]) return false; delete this.data.providerProfiles[id]; if (this.data.settings?.active_provider_profile_id === id) delete this.data.settings.active_provider_profile_id; await this.flush(); return true; }
+  async deleteProviderProfile(id: string) { if (!this.data.providerProfiles?.[id]) return false; delete this.data.providerProfiles[id]; delete this.data.providerCredentials?.[id]; if (this.data.modelPurposeRoutes) for (const [purpose, profileId] of Object.entries(this.data.modelPurposeRoutes)) { if (profileId === id) delete this.data.modelPurposeRoutes[purpose]; } if (this.data.settings?.active_provider_profile_id === id) delete this.data.settings.active_provider_profile_id; await this.flush(); return true; }
   getActiveProviderProfile() { const id = this.data.settings?.active_provider_profile_id; return id ? this.data.providerProfiles?.[id] : undefined; }
   async setActiveProviderProfile(id: string) { const profile = this.data.providerProfiles?.[id]; if (!profile?.enabled) throw new Error("Provider profile is unavailable"); this.data.settings ??= {}; this.data.settings.active_provider_profile_id = id; await this.flush(); }
+  getProviderCredential(id: string) { return this.data.providerCredentials?.[id]; }
+  async saveProviderCredential(id: string, apiKey: string) { this.data.providerCredentials ??= {}; this.data.providerCredentials[id] = apiKey; await this.flush(); }
+  async deleteProviderCredential(id: string) { delete this.data.providerCredentials?.[id]; await this.flush(); }
+  listModelPurposeRoutes(): ModelPurposeRoute[] { return Object.entries(this.data.modelPurposeRoutes ?? {}).map(([purpose, profileId]) => ({ purpose: purpose as ModelPurpose, profileId })).sort((a, b) => a.purpose.localeCompare(b.purpose)); }
+  async setModelPurposeRoute(purpose: ModelPurpose, profileId: string) { this.data.modelPurposeRoutes ??= {}; this.data.modelPurposeRoutes[purpose] = profileId; await this.flush(); }
+  async clearModelPurposeRoute(purpose: ModelPurpose) { delete this.data.modelPurposeRoutes?.[purpose]; await this.flush(); }
   async saveCapture(record: CaptureRecord) { this.data.captures[record.id] = record; this.data.captureByClientId[record.clientCaptureId] = record.id; this.data.captureByChecksum[record.checksum] = record.id; await this.flush(); }
   async saveCaptureWithTopicMembership(record: CaptureRecord, topicId: string) { this.data.captures[record.id] = record; this.data.captureByClientId[record.clientCaptureId] = record.id; this.data.captureByChecksum[record.checksum] = record.id; this.data.topicMemberships ??= {}; this.data.topicMemberships[`${topicId}:${record.id}`] = { topicId, captureId: record.id, createdAt: record.createdAt }; await this.flush(); }
   async saveArtifact(record: ArtifactRecord) { this.data.artifacts[record.id] = record; await this.flush(); }
@@ -1146,7 +2649,79 @@ export class JsonStore implements CollectorStore {
   async restoreCapture(id: string) { const record = this.data.captures[id]; if (!record || !(record as any).trashedAt) return false; delete (record as any).trashedAt; await this.flush(); return true; }
   async deleteCapture(id: string) { const record = this.data.captures[id]; if (!record) return false; delete this.data.captures[id]; delete this.data.captureByClientId[record.clientCaptureId]; delete this.data.captureByChecksum[record.checksum]; for (const key of Object.keys(this.data.fragments)) { if (this.data.fragments[key].captureId === id) delete this.data.fragments[key]; } for (const key of Object.keys(this.data.knowledgeItems)) { if (this.data.knowledgeItems[key].captureId === id) delete this.data.knowledgeItems[key]; } for (const key of Object.keys(this.data.reviewProposals)) { if (this.data.reviewProposals[key].captureId === id) delete this.data.reviewProposals[key]; } for (const key of Object.keys(this.data.agentRuns ?? {})) { if (this.data.agentRuns![key].captureId === id) delete this.data.agentRuns![key]; } for (const key of Object.keys(this.data.relations ?? {})) { const r = this.data.relations![key]; if (r.sourceCaptureId === id || r.targetCaptureId === id) delete this.data.relations![key]; } for (const key of Object.keys(this.data.topicMemberships ?? {})) { if (this.data.topicMemberships![key].captureId === id) delete this.data.topicMemberships![key]; } if (this.data.materialRevisions) { for (const key of Object.keys(this.data.materialRevisions)) { if (this.data.materialRevisions[key].captureId === id) delete this.data.materialRevisions[key]; } } await this.flush(); return true; }
   getDeleteImpact(captureId: string) { const memberships = Object.values(this.data.topicMemberships ?? {}).filter(m => m.captureId === captureId).map(m => { const topic = this.data.topics?.[m.topicId]; return { topicId: m.topicId, topicTitle: topic?.title ?? "(unnamed)" }; }); const workflowInputs: Array<{ workflowRunId: string; workflowType: string }> = []; const citationCount = Object.values(this.data.relations ?? {}).filter(r => (r.sourceCaptureId === captureId || r.targetCaptureId === captureId) && r.status === "active").length; const hasNoImpact = memberships.length === 0 && workflowInputs.length === 0 && citationCount === 0; return { topicMemberships: memberships, workflowInputs, citationCount, hasNoImpact }; }
-  async clearAllData(): Promise<void> { const savedTokens = this.data.clientTokens; const savedProfiles = this.data.providerProfiles; const savedSettings: Record<string, string> = {}; if (this.data.settings) { for (const key of ['ai_consent', 'ai_configured', 'active_provider_profile_id', 'deepseek_configured']) { if (this.data.settings[key]) savedSettings[key] = this.data.settings[key]; } } this.data = { ...structuredClone(EMPTY_DATA), clientTokens: savedTokens, settings: savedSettings, providerProfiles: savedProfiles }; await this.flush(); }
+  async saveResearchSession(_record: ResearchSessionRecord): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
+  async createResearchSession(_record: ResearchSessionRecord, _idempotencyKey: string): Promise<ResearchSessionRecord> { throw new Error("Research sessions require SQLite persistence"); }
+  getResearchSession(_id: string): ResearchSessionRecord | undefined { return undefined; }
+  listResearchSessions(): ResearchSessionRecord[] { return []; }
+  async createResearchNode(_node: ResearchNodeRecord, _idempotencyKey: string): Promise<ResearchNodeRecord> { throw new Error("Research nodes require SQLite persistence"); }
+  getResearchNode(_id: string): ResearchNodeRecord | undefined { return undefined; }
+  listResearchNodes(_sessionId: string): ResearchNodeRecord[] { return []; }
+  listChildNodes(_parentNodeId: string): ResearchNodeRecord[] { return []; }
+  getResearchMessage(_id: string): ResearchMessageRecord | undefined { return undefined; }
+  listResearchMessages(_sessionId: string): ResearchMessageRecord[] { return []; }
+  listResearchMessagesByNode(_nodeId: string): ResearchMessageRecord[] { return []; }
+  getResearchTask(_id: string): ResearchTaskRecord | undefined { return undefined; }
+  findResearchTaskByIdempotencyKey(_sessionId: string, _idempotencyKey: string): ResearchTaskRecord | undefined { return undefined; }
+  listResearchTasks(_sessionId: string): ResearchTaskRecord[] { return []; }
+  listResearchTasksByNode(_nodeId: string): ResearchTaskRecord[] { return []; }
+  async createResearchTurn(_session: ResearchSessionRecord, _inputMessage: ResearchMessageRecord, _outputMessage: ResearchMessageRecord, _task: ResearchTaskRecord): Promise<ResearchTurnAccepted> { throw new Error("Research sessions require SQLite persistence"); }
+  async createResearchTurnForNode(_node: ResearchNodeRecord, _inputMessage: ResearchMessageRecord, _outputMessage: ResearchMessageRecord, _task: ResearchTaskRecord): Promise<ResearchTurnAccepted> { throw new Error("Research nodes require SQLite persistence"); }
+  claimResearchTask(_id: string, _provider?: string, _model?: string, _promptVersion?: string): ResearchTaskRecord | undefined { return undefined; }
+  async appendResearchTaskDelta(_id: string, _delta: string): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
+  async completeResearchTask(_id: string): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
+  async failResearchTask(_task: ResearchTaskRecord, _error: ResearchTaskError): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
+  async retryResearchTask(_task: ResearchTaskRecord, _provider?: string, _model?: string, _promptVersion?: string): Promise<ResearchTaskRecord> { throw new Error("Research sessions require SQLite persistence"); }
+  listResearchTaskEvents(_taskId: string, _afterId?: number): ResearchTaskEvent[] { return []; }
+  listRecoverableResearchTasks(): ResearchTaskRecord[] { return []; }
+  failInterruptedResearchTasks(): number { return 0; }
+  getResearchAttachment(_id: string): ResearchAttachmentRecord | undefined { return undefined; }
+  findResearchImportTaskByIdempotencyKey(_sessionId: string, _idempotencyKey: string): ResearchImportTaskRecord | undefined { return undefined; }
+  listResearchAttachments(_sessionId: string): ResearchAttachmentRecord[] { return []; }
+  getResearchImportTask(_id: string): ResearchImportTaskRecord | undefined { return undefined; }
+  listResearchImportTasks(_sessionId: string): ResearchImportTaskRecord[] { return []; }
+  async createResearchImport(_attachment: ResearchAttachmentRecord, _task: ResearchImportTaskRecord, _objectKey: string): Promise<ResearchImportAccepted> { throw new Error("Research imports require SQLite persistence"); }
+  getResearchAttachmentObjectKey(_id: string): string | undefined { return undefined; }
+  listResearchAttachmentObjectKeys(): string[] { return []; }
+  claimResearchImportTask(_id: string): ResearchImportTaskRecord | undefined { return undefined; }
+  async updateResearchImportProgress(_id: string, _phase: ResearchImportTaskRecord["progress"]["phase"], _completedUnits: number, _totalUnits: number): Promise<void> { throw new Error("Research imports require SQLite persistence"); }
+  async completeResearchImport(_id: string, _snapshot: ResearchContentSnapshotRecord): Promise<void> { throw new Error("Research imports require SQLite persistence"); }
+  async failResearchImport(_task: ResearchImportTaskRecord, _error: ResearchImportError): Promise<void> { throw new Error("Research imports require SQLite persistence"); }
+  async cancelResearchImport(_id: string): Promise<ResearchImportTaskRecord | undefined> { return undefined; }
+  async retryResearchImport(_id: string): Promise<ResearchImportTaskRecord> { throw new Error("Research imports require SQLite persistence"); }
+  getResearchContentSnapshot(_id: string): ResearchContentSnapshotRecord | undefined { return undefined; }
+  listResearchImportTaskEvents(_taskId: string, _afterId?: number): ResearchImportTaskEvent[] { return []; }
+  listRecoverableResearchImportTasks(): ResearchImportTaskRecord[] { return []; }
+  failInterruptedResearchImportTasks(): number { return 0; }
+  getResearchSelection(_id: string): ResearchSelectionRecord | undefined { return undefined; }
+  listResearchSelections(_sessionId: string): ResearchSelectionRecord[] { return []; }
+  getResearchSelectionTask(_id: string): ResearchSelectionTaskRecord | undefined { return undefined; }
+  findResearchSelectionTaskByIdempotencyKey(_sessionId: string, _idempotencyKey: string): ResearchSelectionTaskRecord | undefined { return undefined; }
+  async createResearchSelection(_selection: ResearchSelectionRecord, _task: ResearchSelectionTaskRecord): Promise<ResearchSelectionAccepted> { throw new Error("Research selections require SQLite persistence"); }
+  async saveResearchSelection(_record: ResearchSelectionRecord): Promise<void> { throw new Error("Research selections require SQLite persistence"); }
+  claimResearchSelectionTask(_id: string): ResearchSelectionTaskRecord | undefined { return undefined; }
+  async completeResearchSelectionTask(_id: string, _insight: ResearchSelectionInsight): Promise<void> { throw new Error("Research selections require SQLite persistence"); }
+  async failResearchSelectionTask(_task: ResearchSelectionTaskRecord, _error: ResearchSelectionTaskError): Promise<void> { throw new Error("Research selections require SQLite persistence"); }
+  async retryResearchSelectionTask(_task: ResearchSelectionTaskRecord): Promise<ResearchSelectionTaskRecord> { throw new Error("Research selections require SQLite persistence"); }
+  listResearchSelectionTaskEvents(_taskId: string, _afterId?: number): ResearchSelectionTaskEvent[] { return []; }
+  listRecoverableResearchSelectionTasks(): ResearchSelectionTaskRecord[] { return []; }
+  failInterruptedResearchSelectionTasks(): number { return 0; }
+  getResearchBranch(_id: string): ResearchBranchRecord | undefined { return undefined; }
+  listResearchBranches(_sessionId: string): ResearchBranchRecord[] { return []; }
+  findResearchBranchByCreationKey(_sessionId: string, _idempotencyKey: string): ResearchBranchRecord | undefined { return undefined; }
+  async createResearchBranch(_session: ResearchSessionRecord, _branch: ResearchBranchRecord, _inputMessage: ResearchMessageRecord, _outputMessage: ResearchMessageRecord, _task: ResearchTaskRecord): Promise<DeepResearchAccepted> { throw new Error("Research branches require SQLite persistence"); }
+  async createOriginResearchSession(_session: ResearchSessionRecord, _inputMessage: ResearchMessageRecord, _outputMessage: ResearchMessageRecord, _task: ResearchTaskRecord): Promise<DeepResearchAccepted> { throw new Error("Research branches require SQLite persistence"); }
+  async createResearchChildNode(_parentNode: ResearchNodeRecord, _node: ResearchNodeRecord, _selection: ResearchSelectionRecord, _inputMessage: ResearchMessageRecord, _outputMessage: ResearchMessageRecord, _task: ResearchTaskRecord): Promise<NodeGrowthAccepted> { throw new Error("Research nodes require SQLite persistence"); }
+  getResearchLaterItem(_id: string): ResearchLaterItemRecord | undefined { return undefined; }
+  findResearchLaterItemByCreationKey(_idempotencyKey: string): ResearchLaterItemRecord | undefined { return undefined; }
+  listResearchLaterItems(_status?: ResearchLaterItemStatus): ResearchLaterItemRecord[] { return []; }
+  async createResearchLaterItem(_item: ResearchLaterItemRecord, _idempotencyKey: string): Promise<ResearchLaterItemRecord> { throw new Error("Research later items require SQLite persistence"); }
+  async saveResearchLaterItem(_record: ResearchLaterItemRecord): Promise<void> { throw new Error("Research later items require SQLite persistence"); }
+  async saveResearchGroundingResult(_result: ResearchGroundingResult): Promise<void> { throw new Error("Research grounding requires SQLite persistence"); }
+  getResearchGroundingRun(_id: string): ResearchGroundingRunRecord | undefined { return undefined; }
+  listResearchGroundingRuns(_taskId: string): ResearchGroundingRunRecord[] { return []; }
+  listResearchGroundingSources(_runId: string): ResearchGroundingSourceRecord[] { return []; }
+  listResearchCitationsForMessages(_messageIds: string[]): ResearchCitationRecord[] { return []; }
+  async clearAllData(): Promise<void> { const savedTokens = this.data.clientTokens; const savedProfiles = this.data.providerProfiles; const savedCredentials = this.data.providerCredentials; const savedPurposeRoutes = this.data.modelPurposeRoutes; const savedSettings: Record<string, string> = {}; if (this.data.settings) { for (const key of ['ai_consent', 'ai_configured', 'active_provider_profile_id', 'deepseek_configured']) { if (this.data.settings[key]) savedSettings[key] = this.data.settings[key]; } } this.data = { ...structuredClone(EMPTY_DATA), clientTokens: savedTokens, settings: savedSettings, providerProfiles: savedProfiles, providerCredentials: savedCredentials, modelPurposeRoutes: savedPurposeRoutes }; await this.flush(); }
     private flush() { this.writeQueue = this.writeQueue.then(async () => { const temporaryPath = `${this.filePath}.tmp`; await writeFile(temporaryPath, JSON.stringify(this.data, null, 2), "utf8"); await rename(temporaryPath, this.filePath); }); return this.writeQueue; }
 }
 
