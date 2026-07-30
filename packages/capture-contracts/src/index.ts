@@ -1461,3 +1461,33 @@ function parseProviderBaseUrl(value: unknown): URL {
   try { return new URL(value); }
   catch { throw new Error("Provider base URL must be an absolute URL"); }
 }
+
+// ── Term Detection (H3a) ──────────────────────────────────────────
+
+/** 概念术语的分类。 */
+export type TermCategory = "term" | "abbreviation" | "proper_noun" | "concept";
+
+/**
+ * 单个检测到的术语及其在消息块内的精确位置。
+ * 偏移相对块文本（与 deriveMessageBlocks 产出的 MessageContentBlock.text 对齐），
+ * 消费方通过 blockOrdinal 定位块、用 startOffset/endOffset 切片块文本。
+ */
+export interface TermMarker {
+  /** 术语原文（来自消息块文本的切片）。 */
+  text: string;
+  /** 消息块序号（与 deriveMessageBlocks 对齐）。 */
+  blockOrdinal: number;
+  /** 术语在块文本中的起始偏移（UTF-16 code unit，与 String.prototype.slice 一致）。 */
+  startOffset: number;
+  /** 术语在块文本中的结束偏移（exclusive）。 */
+  endOffset: number;
+  /** 术语分类。 */
+  category: TermCategory;
+}
+
+/** 消息术语检测结果。检测失败或无需检测时 terms 为空数组。 */
+export interface TermDetectionResult {
+  messageId: string;
+  terms: TermMarker[];
+  detectedAt: string;
+}

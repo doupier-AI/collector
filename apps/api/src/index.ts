@@ -9,6 +9,7 @@ export { ResearchImportService, ResearchImportConflictError, ResearchImportNotFo
 export { ResearchSelectionAnalysisError, ResearchSelectionConflictError, ResearchSelectionNotFoundError, ResearchSelectionService, ResearchSelectionValidationError, type ResearchSelectionProvider, type ResearchSelectionAnalysisRequest, type ResearchSelectionServiceOptions } from "./selection.js";
 export { DeepResearchNotFoundError, DeepResearchService, DeepResearchValidationError, type DeepResearchServiceOptions } from "./deep-research.js";
 export { ResearchLaterNotFoundError, ResearchLaterService, ResearchLaterValidationError } from "./research-later.js";
+export { TermDetectionService, detectTermMarkers, validateTermMarkers, TERM_DETECTION_MIN_CONTENT_LENGTH } from "./term-detection.js";
 export {
   ensureInstanceControlToken,
   instanceControlPath,

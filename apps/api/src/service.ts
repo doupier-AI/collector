@@ -52,6 +52,7 @@ import { ResearchImportService } from "./research-import.js";
 import { ResearchSelectionAnalysisError, ResearchSelectionService, type ResearchSelectionProvider } from "./selection.js";
 import { DeepResearchService, NodeGrowthService } from "./deep-research.js";
 import { ResearchLaterService } from "./research-later.js";
+import { TermDetectionService } from "./term-detection.js";
 import { webSearch, webFetch } from "./web-search-agent.js";
 import { parseAgentCitations } from "./web-search-agent.js";
 import { getSearchConfig as getSearchConfigFromAgent, updateSearchConfig as updateSearchConfigInAgent, listAvailableBackends, initSearchBackends, type SearchBackendId } from "./web-search-agent.js";
@@ -77,6 +78,7 @@ export class CaptureService {
   readonly deepResearch: DeepResearchService;
   readonly nodeGrowth: NodeGrowthService;
   readonly researchLater: ResearchLaterService;
+  readonly termDetection: TermDetectionService;
 
   constructor(
     private readonly store: CollectorStore,
@@ -106,6 +108,7 @@ export class CaptureService {
       autoRunTasks: this.options.autoRunResearchTasks,
     });
     this.researchLater = new ResearchLaterService(this.store);
+    this.termDetection = new TermDetectionService();
     if (this.options.autoRunRecentOrganization !== false) {
       this.scheduleRecentOrganization();
       this.scheduleTopicDocumentRuns();
