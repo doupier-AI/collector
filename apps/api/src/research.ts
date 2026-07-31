@@ -31,6 +31,8 @@ export interface ResearchGenerationRequest {
   session: ResearchSessionRecord;
   messages: Array<Pick<ResearchMessageRecord, "role" | "content">>;
   taskId: string;
+  /** 本次请求是否获得用户明确授权使用联网搜索。 */
+  allowWebSearch?: boolean;
   /** 深入研究第一轮：只携带当前已有材料，不含联网检索结果。 */
   deepResearch?: DeepResearchContext;
   /** 当前节点的有界父链上下文；根节点或无效父链不注入。 */
@@ -53,6 +55,11 @@ export interface ResearchServiceOptions {
   parentChainContext?: ParentChainContextService;
   /** 生成成功后的非阻塞附加动作（例如 H6 节点命名）。 */
   onTaskCompleted?: (task: ResearchTaskRecord) => void | Promise<void>;
+}
+
+export interface ResearchTurnOptions {
+  /** 本次请求是否允许联网搜索；缺省即关闭。 */
+  allowWebSearch?: boolean;
 }
 
 export class ResearchSessionService {
@@ -116,7 +123,7 @@ export class ResearchSessionService {
     };
   }
 
-  async submitMessage(sessionId: string, content: string, idempotencyKey: string): Promise<ResearchTurnAccepted> {
+  async submitMessage(sessionId: string, content: string, idempotencyKey: string, options: ResearchTurnOptions = {}): Promise<ResearchTurnAccepted> {
     const session = this.store.getResearchSession(sessionId);
     if (!session) throw new ResearchNotFoundError("Research session not found");
     if (!idempotencyKey.trim()) throw new ResearchValidationError("Idempotency-Key is required");
@@ -132,11 +139,14 @@ export class ResearchSessionService {
     const outputMessage: ResearchMessageRecord = {
       id: randomUUID(), sessionId, role: "assistant", content: "", status: "pending", createdAt: now, updatedAt: now,
     };
+    const allowWebSearch = options.allowWebSearch === true;
     const task: ResearchTaskRecord = {
       id: randomUUID(), sessionId, inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
       idempotencyKey, status: "queued", retryable: false,
       provider: this.provider?.provider, model: this.provider?.model,
       promptVersion: this.provider?.promptVersion ?? PROMPT_VERSION,
+      allowWebSearch,
+      ...(allowWebSearch ? {} : { groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 } }),
       createdAt: now, updatedAt: now,
     };
     const accepted = await this.store.createResearchTurn(session, inputMessage, outputMessage, task);
@@ -144,7 +154,7 @@ export class ResearchSessionService {
     return accepted;
   }
 
-  async submitMessageToNode(nodeId: string, content: string, idempotencyKey: string): Promise<ResearchTurnAccepted> {
+  async submitMessageToNode(nodeId: string, content: string, idempotencyKey: string, options: ResearchTurnOptions = {}): Promise<ResearchTurnAccepted> {
     const node = this.store.getResearchNode(nodeId);
     if (!node) throw new ResearchNotFoundError("Research node not found");
     if (!idempotencyKey.trim()) throw new ResearchValidationError("Idempotency-Key is required");
@@ -160,11 +170,14 @@ export class ResearchSessionService {
     const outputMessage: ResearchMessageRecord = {
       id: randomUUID(), sessionId: node.sessionId, nodeId: node.id, role: "assistant", content: "", status: "pending", createdAt: now, updatedAt: now,
     };
+    const allowWebSearch = options.allowWebSearch === true;
     const task: ResearchTaskRecord = {
       id: randomUUID(), sessionId: node.sessionId, nodeId: node.id, inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
       idempotencyKey, status: "queued", retryable: false,
       provider: this.provider?.provider, model: this.provider?.model,
       promptVersion: this.provider?.promptVersion ?? PROMPT_VERSION,
+      allowWebSearch,
+      ...(allowWebSearch ? {} : { groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 } }),
       createdAt: now, updatedAt: now,
     };
     const accepted = await this.store.createResearchTurnForNode(node, inputMessage, outputMessage, task);
@@ -233,6 +246,7 @@ export class ResearchSessionService {
         session,
         messages,
         taskId: task.id,
+        allowWebSearch: task.allowWebSearch === true,
         ...(generation.deepResearch ? { deepResearch: generation.deepResearch } : {}),
         ...(generation.parentChainContext ? { parentChainContext: generation.parentChainContext } : {}),
       };
@@ -242,16 +256,22 @@ export class ResearchSessionService {
         const scenario: ResearchGroundingScenario = generation.deepResearch
           ? "deep_research_first_round"
           : this.isBranchFollowUp(task.id) ? "branch_follow_up" : "chat";
-        if (provider.generateAgentGrounded) {
-          const grounded = await provider.generateAgentGrounded({ ...generationRequest, scenario });
-          const result = this.groundingResultFor(task, grounded, scenario);
-          await this.store.saveResearchGroundingResult(result);
-          generatedCharacters = grounded.content.length;
-          if (generatedCharacters > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
-          if (!grounded.content) throw new Error("Provider returned an empty response");
-          producedContent = true;
-          await this.store.appendResearchTaskDelta(task.id, grounded.content);
+        if (generationRequest.allowWebSearch && provider.generateAgentGrounded) {
+          try {
+            const grounded = await provider.generateAgentGrounded({ ...generationRequest, scenario });
+            const result = this.groundingResultFor(task, grounded, scenario);
+            await this.store.saveResearchGroundingResult(result);
+            generatedCharacters = grounded.content.length;
+            if (generatedCharacters > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
+            if (!grounded.content) throw new Error("Provider returned an empty response");
+            producedContent = true;
+            await this.store.appendResearchTaskDelta(task.id, grounded.content);
+          } catch (error) {
+            await this.saveGroundingStatus(task, scenario, "grounding_failed", error instanceof Error ? error.message : undefined);
+            throw error;
+          }
         } else {
+          if (generationRequest.allowWebSearch) await this.saveGroundingStatus(task, scenario, "grounding_unsupported");
           for await (const delta of provider.generate(generationRequest)) {
             if (!delta) continue;
             generatedCharacters += delta.length;
@@ -380,6 +400,37 @@ export class ResearchSessionService {
       ...(deepResearch ? { deepResearch } : {}),
       ...(parentChainContext ? { parentChainContext } : {}),
     };
+  }
+
+  private async saveGroundingStatus(
+    task: ResearchTaskRecord,
+    scenario: ResearchGroundingScenario,
+    status: Extract<ResearchGroundingScopeStatus, "grounding_failed" | "grounding_unsupported">,
+    errorMessage?: string,
+  ): Promise<void> {
+    const createdAt = new Date().toISOString();
+    const runId = randomUUID();
+    await this.store.saveResearchGroundingResult({
+      content: "",
+      scope: { status, sourceCount: 0, citationCount: 0, runId },
+      run: {
+        id: runId,
+        taskId: task.id,
+        sessionId: task.sessionId,
+        provider: this.provider?.provider ?? "unknown",
+        model: this.provider?.model ?? "unknown",
+        capability: this.provider?.groundingCapability ?? "unsupported",
+        scenario,
+        status,
+        queries: [],
+        ...(errorMessage ? { errorMessage: groundingText(errorMessage) } : {}),
+        attempt: this.store.listResearchGroundingRuns(task.id).length + 1,
+        createdAt,
+        completedAt: createdAt,
+      },
+      sources: [],
+      citations: [],
+    });
   }
 
   private deepResearchContextFor(task: ResearchTaskRecord, nodeOrBranchId: string | undefined, thread: ResearchMessageRecord[]): DeepResearchContext | undefined {

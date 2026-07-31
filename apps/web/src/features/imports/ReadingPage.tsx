@@ -59,7 +59,7 @@ export function ReadingPage() {
   if (submitterSessionRef.current !== sessionId) {
     submitterSessionRef.current = sessionId;
     submitterRef.current = new TurnSubmitter({
-      submit: (content, key) => api.submitResearchMessage(sessionId, content, key),
+      submit: (content, key, allowWebSearch) => api.submitResearchMessage(sessionId, content, key, { allowWebSearch }),
     });
   }
 
@@ -179,11 +179,11 @@ export function ReadingPage() {
   }, [restoredSelection]);
 
   const handleSubmitMessage = useCallback(
-    async (content: string): Promise<boolean> => {
+    async (content: string, allowWebSearch = false): Promise<boolean> => {
       const submitter = submitterRef.current;
       if (!submitter) return false;
       try {
-        await submitter.send(content);
+        await submitter.send(content, { allowWebSearch });
         return true;
       } catch (error) {
         if (isUnauthorized(error)) {
@@ -196,14 +196,14 @@ export function ReadingPage() {
   );
 
   /** "深入研究这段"：以引用选区为来源创建子节点，导航到节点页。 */
-  async function handleStartChildNode(query: string): Promise<boolean> {
+  async function handleStartChildNode(query: string, allowWebSearch = false): Promise<boolean> {
     if (!citedSelection) return false;
     try {
       const trimmed = query.trim();
       const idempotencyKey = childNodeIdempotencyKey(citedSelection.selectionId, trimmed, selectionExactDigest);
       const accepted = await api.startChildNode(
         citedSelection.selectionId,
-        trimmed ? { query: trimmed } : {},
+        { ...(trimmed ? { query: trimmed } : {}), allowWebSearch },
         idempotencyKey,
       );
       removeCitation();

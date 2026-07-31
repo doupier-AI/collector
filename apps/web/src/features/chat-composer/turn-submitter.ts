@@ -1,6 +1,6 @@
 import type { ResearchTurnAccepted } from "@collector/capture-contracts";
 
-export type SubmitTurnFn = (content: string, idempotencyKey: string) => Promise<ResearchTurnAccepted>;
+export type SubmitTurnFn = (content: string, idempotencyKey: string, allowWebSearch: boolean) => Promise<ResearchTurnAccepted>;
 
 export interface TurnSubmitterOptions {
   submit: SubmitTurnFn;
@@ -20,6 +20,7 @@ function defaultGenerateKey(): string {
  */
 export class TurnSubmitter {
   private key: string | undefined;
+  private allowWebSearch: boolean | undefined;
   private pending: Promise<ResearchTurnAccepted> | undefined;
   private readonly submit: SubmitTurnFn;
   private readonly generateKey: () => string;
@@ -33,16 +34,21 @@ export class TurnSubmitter {
     return this.pending !== undefined;
   }
 
-  send(content: string, options?: { idempotencyKey?: string }): Promise<ResearchTurnAccepted> {
+  send(content: string, options?: { idempotencyKey?: string; allowWebSearch?: boolean }): Promise<ResearchTurnAccepted> {
     if (this.pending) return this.pending;
+    const isNewRequest = this.key === undefined;
     const key = options?.idempotencyKey ?? this.key ?? this.generateKey();
     this.key = key;
-    const request = this.submit(content, key);
+    if (isNewRequest) this.allowWebSearch = options?.allowWebSearch === true;
+    const request = this.submit(content, key, this.allowWebSearch === true);
     this.pending = request;
     const settle = (clearKey: boolean) => {
       if (this.pending === request) {
         this.pending = undefined;
-        if (clearKey) this.key = undefined;
+        if (clearKey) {
+          this.key = undefined;
+          this.allowWebSearch = undefined;
+        }
       }
     };
     request.then(

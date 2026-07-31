@@ -237,6 +237,7 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         catch (error) { throw new ResearchValidationError((error as Error).message); }
         const accepted = await service.research.submitMessage(
           decodeURIComponent(researchMessagesMatch[1]), body.content, header(request, "idempotency-key") ?? "",
+          { allowWebSearch: body.allowWebSearch === true },
         );
         return json(response, 202, accepted);
       }
@@ -310,6 +311,7 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         catch (error) { throw new DeepResearchValidationError((error as Error).message); }
         const accepted = await service.deepResearch.submitBranchMessage(
           decodeURIComponent(researchBranchMessagesMatch[1]), body.content, header(request, "idempotency-key") ?? "",
+          { allowWebSearch: body.allowWebSearch === true },
         );
         return json(response, 202, accepted);
       }
@@ -334,6 +336,7 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         catch (error) { throw new ResearchValidationError((error as Error).message); }
         const accepted = await service.research.submitMessageToNode(
           decodeURIComponent(researchNodeMessagesMatch[1]), body.content, header(request, "idempotency-key") ?? "",
+          { allowWebSearch: body.allowWebSearch === true },
         );
         return json(response, 202, accepted);
       }

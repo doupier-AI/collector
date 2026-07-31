@@ -191,14 +191,14 @@ export function ResearchNodePage() {
    * "深入研究这段"：以引用选区为来源创建子节点。
    * 选区文本自动进入子节点第一轮上下文（由后端 NodeGrowthService 处理）。
    */
-  async function handleStartChildNode(query: string): Promise<boolean> {
+  async function handleStartChildNode(query: string, allowWebSearch = false): Promise<boolean> {
     if (!citedSelection) return false;
     try {
       const trimmed = query.trim();
       const idempotencyKey = childNodeIdempotencyKey(citedSelection.selectionId, trimmed, selectionExactDigest);
       const accepted = await api.startChildNode(
         citedSelection.selectionId,
-        trimmed ? { query: trimmed } : {},
+        { ...(trimmed ? { query: trimmed } : {}), allowWebSearch },
         idempotencyKey,
       );
       removeCitation();

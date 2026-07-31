@@ -12,6 +12,7 @@ import { upsertTask } from "./session-view";
 export interface PendingFirstTurn {
   content: string;
   idempotencyKey: string;
+  allowWebSearch: boolean;
 }
 
 export type NodeState =
@@ -29,7 +30,7 @@ export interface ResearchNodeController {
   actionError: string | null;
   reload(): void;
   /** 提交一条消息；返回 true 表示后端已确认保存（202）。 */
-  submit(content: string): Promise<boolean>;
+  submit(content: string, allowWebSearch?: boolean): Promise<boolean>;
   retryTask(task: ResearchTaskRecord): Promise<void>;
   /** 在 ready 状态下合并视图更新（附件、导入任务等）；非 ready 时忽略。 */
   updateView(updater: (view: ResearchNodeView) => ResearchNodeView): void;
@@ -66,7 +67,7 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
   if (submitterNodeRef.current !== nodeId) {
     submitterNodeRef.current = nodeId;
     submitterRef.current = new TurnSubmitter({
-      submit: (content, key) => api.submitResearchNodeMessage(nodeId, content, key),
+      submit: (content, key, allowWebSearch) => api.submitResearchNodeMessage(nodeId, content, key, { allowWebSearch }),
     });
   }
 
@@ -93,6 +94,7 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
         try {
           await submitterRef.current!.send(initialTurn.content, {
             idempotencyKey: initialTurn.idempotencyKey,
+            allowWebSearch: initialTurn.allowWebSearch,
           });
           if (isStale()) return;
           initialTurnRef.current = undefined;
@@ -206,11 +208,11 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
   }, []);
 
   const submit = useCallback(
-    async (content: string): Promise<boolean> => {
+    async (content: string, allowWebSearch = false): Promise<boolean> => {
       const submitter = submitterRef.current;
       if (!submitter) return false;
       try {
-        const turn = await submitter.send(content);
+        const turn = await submitter.send(content, { allowWebSearch });
         setState((previous) =>
           previous.kind === "ready" ? { kind: "ready", view: mergeNodeTurn(previous.view, turn) } : previous,
         );

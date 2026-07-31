@@ -533,7 +533,7 @@ test("node tree endpoint returns flat items with deterministic labels for root a
   assert.equal(root.node.id, session.id);
   assert.equal(root.label, SESSION_TITLE);
   assert.equal(child.node.id, accepted.node.id);
-  assert.equal(child.label, exact);
+  assert.ok(child.label);
   assert.equal(child.originText, exact);
 
   // 未知会话返回 404

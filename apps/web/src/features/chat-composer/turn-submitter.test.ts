@@ -34,6 +34,25 @@ describe("TurnSubmitter 幂等键", () => {
     expect(keys).toEqual(["key-1", "key-1"]);
   });
 
+  it("网络重试沿用首次联网搜索选择", async () => {
+    const choices: boolean[] = [];
+    let calls = 0;
+    const submitter = new TurnSubmitter({
+      generateKey: () => "key-1",
+      submit: async (_content, _key, allowWebSearch) => {
+        choices.push(allowWebSearch);
+        calls += 1;
+        if (calls === 1) throw new NetworkError();
+        return makeTurn();
+      },
+    });
+
+    await expect(submitter.send("问题", { allowWebSearch: false })).rejects.toThrow();
+    await expect(submitter.send("问题", { allowWebSearch: true })).resolves.toBeDefined();
+
+    expect(choices).toEqual([false, false]);
+  });
+
   it("确认成功后，用户下一次明确发送生成新键", async () => {
     const usedKeys: string[] = [];
     const generated = ["key-a", "key-b"];

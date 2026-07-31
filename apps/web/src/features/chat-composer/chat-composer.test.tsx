@@ -25,7 +25,7 @@ describe("ChatComposer", () => {
     await user.type(textarea, "什么是本地优先");
     await user.click(screen.getByRole("button", { name: "发送" }));
 
-    expect(onSubmit).toHaveBeenCalledWith("什么是本地优先");
+    expect(onSubmit).toHaveBeenCalledWith("什么是本地优先", false);
     expect(textarea).toHaveValue("什么是本地优先");
 
     release(true);
@@ -140,6 +140,21 @@ describe("ChatComposer", () => {
     expect(hint).not.toBeNull();
     expect(textarea.getAttribute("aria-describedby")).toContain(hint.id);
   });
+
+  it("联网开关默认关闭，并把用户本次选择传给提交回调", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn(async () => true);
+    renderComposer(onSubmit, "web-search-toggle");
+
+    const toggle = screen.getByRole("checkbox", { name: "允许联网搜索" });
+    expect(toggle).not.toBeChecked();
+    await user.click(toggle);
+    expect(toggle).toBeChecked();
+    await user.type(screen.getByLabelText("你的问题"), "查一下最新资料");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(onSubmit).toHaveBeenCalledWith("查一下最新资料", true);
+  });
 });
 
 describe("ChatComposer 双模发送（阶段 H4a）", () => {
@@ -219,7 +234,7 @@ describe("ChatComposer 双模发送（阶段 H4a）", () => {
     await user.click(growButton);
 
     expect(onStartChildNode).toHaveBeenCalledTimes(1);
-    expect(onStartChildNode).toHaveBeenCalledWith("");
+    expect(onStartChildNode).toHaveBeenCalledWith("", false);
   });
 
   it("深入研究这段：输入框有内容时作为 query 传入", async () => {
@@ -239,7 +254,7 @@ describe("ChatComposer 双模发送（阶段 H4a）", () => {
     await user.type(screen.getByLabelText("你的问题"), "把背后的机制讲透");
     await user.click(screen.getByRole("button", { name: "深入研究这段" }));
 
-    expect(onStartChildNode).toHaveBeenCalledWith("把背后的机制讲透");
+    expect(onStartChildNode).toHaveBeenCalledWith("把背后的机制讲透", false);
   });
 
   it("胶囊移除按钮触发 onRemoveCitation", async () => {

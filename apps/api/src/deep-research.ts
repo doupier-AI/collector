@@ -17,7 +17,7 @@ import {
   type ResearchTurnAccepted,
 } from "@collector/capture-contracts";
 import type { DeepResearchStore } from "./store.js";
-import { DEEP_RESEARCH_PROMPT_VERSION, RESEARCH_CHAT_PROMPT_VERSION, type ResearchSessionService } from "./research.js";
+import { DEEP_RESEARCH_PROMPT_VERSION, RESEARCH_CHAT_PROMPT_VERSION, type ResearchSessionService, type ResearchTurnOptions } from "./research.js";
 
 /** 分支模式首轮用户消息中选区原文的摘录长度。 */
 const SELECTION_EXCERPT_CHARACTERS = 120;
@@ -56,7 +56,7 @@ export class DeepResearchService {
         id: randomUUID(), sessionId: selection.sessionId, selectionId: selection.id,
         status: "active", createdAt: now, updatedAt: now,
       };
-      const { inputMessage, outputMessage, task } = this.buildFirstTurn(selection.sessionId, branch.id, firstTurnContent, idempotencyKey, now);
+      const { inputMessage, outputMessage, task } = this.buildFirstTurn(selection.sessionId, branch.id, firstTurnContent, idempotencyKey, now, input);
       accepted = await this.store.createResearchBranch(originSession, branch, inputMessage, outputMessage, task);
     } else {
       const session: ResearchSessionRecord = {
@@ -68,7 +68,7 @@ export class DeepResearchService {
         createdAt: now,
         updatedAt: now,
       };
-      const { inputMessage, outputMessage, task } = this.buildFirstTurn(session.id, undefined, firstTurnContent, idempotencyKey, now);
+      const { inputMessage, outputMessage, task } = this.buildFirstTurn(session.id, undefined, firstTurnContent, idempotencyKey, now, input);
       accepted = await this.store.createOriginResearchSession(session, inputMessage, outputMessage, task);
     }
     this.scheduleTask(accepted.task.id);
@@ -90,7 +90,7 @@ export class DeepResearchService {
   }
 
   /** 分支内继续追问：消息带 branchId 与 nodeId，复用节点任务管线与幂等规则。 */
-  async submitBranchMessage(branchId: string, content: string, idempotencyKey: string): Promise<ResearchTurnAccepted> {
+  async submitBranchMessage(branchId: string, content: string, idempotencyKey: string, options: ResearchTurnOptions = {}): Promise<ResearchTurnAccepted> {
     const branch = this.store.getResearchBranch(branchId);
     if (!branch) throw new DeepResearchNotFoundError("Research branch not found");
     if (!idempotencyKey.trim()) throw new DeepResearchValidationError("Idempotency-Key is required");
@@ -118,12 +118,15 @@ export class DeepResearchService {
       id: randomUUID(), sessionId: branch.sessionId, nodeId: branch.id, branchId: branch.id, role: "assistant",
       content: "", status: "pending", createdAt: now, updatedAt: now,
     };
+    const allowWebSearch = options.allowWebSearch === true;
     const task: ResearchTaskRecord = {
       id: randomUUID(), sessionId: branch.sessionId, nodeId: branch.id, inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
       idempotencyKey, status: "queued", retryable: false,
       provider: this.options.research.providerId,
       model: this.options.research.modelId,
       promptVersion: RESEARCH_CHAT_PROMPT_VERSION,
+      allowWebSearch,
+      ...(allowWebSearch ? {} : { groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 } }),
       createdAt: now, updatedAt: now,
     };
     const accepted = await this.store.createResearchTurnForNode(node, inputMessage, outputMessage, task);
@@ -137,6 +140,7 @@ export class DeepResearchService {
     content: string,
     idempotencyKey: string,
     now: string,
+    options: ResearchTurnOptions,
   ): { inputMessage: ResearchMessageRecord; outputMessage: ResearchMessageRecord; task: ResearchTaskRecord } {
     const inputMessage: ResearchMessageRecord = {
       id: randomUUID(), sessionId, branchId, role: "user",
@@ -146,10 +150,13 @@ export class DeepResearchService {
       id: randomUUID(), sessionId, branchId, role: "assistant",
       content: "", status: "pending", createdAt: now, updatedAt: now,
     };
+    const allowWebSearch = options.allowWebSearch === true;
     const task: ResearchTaskRecord = {
       id: randomUUID(), sessionId, inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
       idempotencyKey, status: "queued", retryable: false,
       promptVersion: DEEP_RESEARCH_PROMPT_VERSION,
+      allowWebSearch,
+      ...(allowWebSearch ? {} : { groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 } }),
       createdAt: now, updatedAt: now,
     };
     return { inputMessage, outputMessage, task };
@@ -200,6 +207,7 @@ export class NodeGrowthService {
       id: randomUUID(), sessionId: selection.sessionId, nodeId: node.id, role: "assistant",
       content: "", status: "pending", createdAt: now, updatedAt: now,
     };
+    const allowWebSearch = input.allowWebSearch === true;
     const task: ResearchTaskRecord = {
       id: randomUUID(), sessionId: selection.sessionId, nodeId: node.id,
       inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
@@ -207,6 +215,8 @@ export class NodeGrowthService {
       provider: this.options.research.providerId,
       model: this.options.research.modelId,
       promptVersion: DEEP_RESEARCH_PROMPT_VERSION,
+      allowWebSearch,
+      ...(allowWebSearch ? {} : { groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 } }),
       createdAt: now, updatedAt: now,
     };
     const accepted = await this.store.createResearchChildNode(parentNode, node, selection, inputMessage, outputMessage, task);
@@ -249,10 +259,10 @@ export class NodeGrowthService {
     const session = this.store.getResearchSession(sessionId);
     if (!session) throw new DeepResearchNotFoundError("Research session not found");
     return this.store.listResearchNodes(sessionId).map((node) => {
-      if (node.displayName) return { node, label: node.displayName };
       if (!node.parentNodeId) return { node, label: session.title };
       const selection = node.originSelectionId ? this.store.getResearchSelection(node.originSelectionId) : undefined;
       const originText = selection ? excerptText(selection.text, TREE_LABEL_CHARACTERS) : undefined;
+      if (node.displayName) return { node, label: node.displayName, ...(originText ? { originText } : {}) };
       if (originText) return { node, label: originText, originText };
       const firstUser = this.store.listResearchMessagesByNode(node.id).find((message) => message.role === "user");
       const firstMessage = firstUser ? excerptText(firstUser.content, TREE_LABEL_CHARACTERS) : undefined;

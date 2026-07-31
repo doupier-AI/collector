@@ -14,7 +14,7 @@ export interface ChatComposerProps {
   disabled?: boolean;
   autoFocus?: boolean;
   /** 返回 true 表示后端已确认保存，输入框才会清空。 */
-  onSubmit: (content: string) => Promise<boolean>;
+  onSubmit: (content: string, allowWebSearch: boolean) => Promise<boolean>;
   /** 提供后附件按钮打开真实文件选择；缺省时保持占位提示（开始页）。 */
   onImportFile?: (file: File) => void;
   /** 文件选择器的 accept 值，仅在 onImportFile 提供时生效。 */
@@ -28,7 +28,7 @@ export interface ChatComposerProps {
    * 入参是用户在输入框中可选填写的追问方向（可为空）。
    * 返回 true 表示后端已确认，输入框清空。
    */
-  onStartChildNode?: (query: string) => Promise<boolean>;
+  onStartChildNode?: (query: string, allowWebSearch: boolean) => Promise<boolean>;
 }
 
 /**
@@ -62,6 +62,7 @@ export function ChatComposer({
   const [attachNoticeVisible, setAttachNoticeVisible] = useState(false);
   const [growingNode, setGrowingNode] = useState(false);
   const [growError, setGrowError] = useState<string | null>(null);
+  const [allowWebSearch, setAllowWebSearch] = useState(false);
   const submittingRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -70,6 +71,7 @@ export function ChatComposer({
     setDraft({ scope: draftScope, value: loadDraft(draftScope) });
     setSubmitError(null);
     setGrowError(null);
+    setAllowWebSearch(false);
   }
 
   useEffect(() => {
@@ -96,7 +98,7 @@ export function ChatComposer({
       const content = citedSelection
         ? `> ${citedSelection.text}\n\n${trimmed}`
         : trimmed;
-      const accepted = await onSubmit(content);
+      const accepted = await onSubmit(content, allowWebSearch);
       if (accepted) {
         setDraft({ scope: draftScope, value: "" });
         clearDraft(draftScope);
@@ -117,7 +119,7 @@ export function ChatComposer({
     setGrowError(null);
     setSubmitError(null);
     try {
-      const accepted = await onStartChildNode(trimmed);
+      const accepted = await onStartChildNode(trimmed, allowWebSearch);
       if (accepted) {
         setDraft({ scope: draftScope, value: "" });
         clearDraft(draftScope);
@@ -146,7 +148,7 @@ export function ChatComposer({
     setSubmitting(true);
     setSubmitError(null);
     try {
-      const accepted = await onSubmit(trimmed);
+      const accepted = await onSubmit(trimmed, allowWebSearch);
       if (accepted) {
         setDraft({ scope: draftScope, value: "" });
         clearDraft(draftScope);
@@ -192,45 +194,55 @@ export function ChatComposer({
           aria-describedby={errorText ? `${hintId} ${errorId}` : hintId}
         />
         <div className="composer__bar">
-          {onImportFile ? (
-            <>
+          <div className="composer__bar-left">
+            {onImportFile ? (
+              <>
+                <button
+                  type="button"
+                  className="composer__attach"
+                  aria-label="添加附件（TXT、Markdown、DOCX、PDF，单个不超过 20 MB）"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+                    <path d="M10 4.75v10.5M4.75 10h10.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                  </svg>
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  className="composer__file-input"
+                  accept={importAccept}
+                  tabIndex={-1}
+                  aria-hidden="true"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = "";
+                    if (file) onImportFile(file);
+                  }}
+                />
+              </>
+            ) : (
               <button
                 type="button"
                 className="composer__attach"
-                aria-label="添加附件（TXT、Markdown、DOCX、PDF，单个不超过 20 MB）"
-                onClick={() => fileInputRef.current?.click()}
+                aria-label="添加附件（后续版本提供）"
+                aria-expanded={attachNoticeVisible}
+                onClick={() => setAttachNoticeVisible((visible) => !visible)}
               >
                 <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
                   <path d="M10 4.75v10.5M4.75 10h10.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
                 </svg>
               </button>
+            )}
+            <label className="composer__web-search">
               <input
-                ref={fileInputRef}
-                type="file"
-                className="composer__file-input"
-                accept={importAccept}
-                tabIndex={-1}
-                aria-hidden="true"
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  event.target.value = "";
-                  if (file) onImportFile(file);
-                }}
+                type="checkbox"
+                checked={allowWebSearch}
+                onChange={(event) => setAllowWebSearch(event.target.checked)}
               />
-            </>
-          ) : (
-            <button
-              type="button"
-              className="composer__attach"
-              aria-label="添加附件（后续版本提供）"
-              aria-expanded={attachNoticeVisible}
-              onClick={() => setAttachNoticeVisible((visible) => !visible)}
-            >
-              <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-                <path d="M10 4.75v10.5M4.75 10h10.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-              </svg>
-            </button>
-          )}
+              <span>允许联网搜索</span>
+            </label>
+          </div>
           {hasCitation ? (
             <div className="composer__dual-actions">
               <button

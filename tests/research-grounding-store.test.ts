@@ -35,7 +35,7 @@ test("grounded research persists a v21 run, sources, citations, and task scope",
   };
   const service = new ResearchSessionService(harness.store, { provider, autoRunTasks: false });
   const session = await service.createSession("测试", "session-key");
-  const turn = await service.submitMessage(session.id, "解释联网研究", "turn-key");
+  const turn = await service.submitMessage(session.id, "解释联网研究", "turn-key", { allowWebSearch: true });
   await service.processTask(turn.task.id);
   const task = service.getTask(turn.task.id);
   assert.deepEqual(task.groundingScope && { status: task.groundingScope.status, sourceCount: task.groundingScope.sourceCount, citationCount: task.groundingScope.citationCount }, { status: "grounded", sourceCount: 1, citationCount: 1 });
@@ -51,4 +51,54 @@ test("grounded research persists a v21 run, sources, citations, and task scope",
   const output = harness.store.getResearchMessage(turn.task.outputMessageId);
   assert.ok(output);
   assert.equal(harness.store.listResearchCitationsForMessages([output.id]).length, 1);
+});
+
+test("关闭联网开关时跳过 Agent 搜索并把任务标记为未请求联网", async (t) => {
+  const harness = await createStore();
+  t.after(() => harness.close());
+  let groundedCalls = 0;
+  let normalCalls = 0;
+  const provider: ResearchGenerationProvider = {
+    provider: "toggle-fake", model: "toggle-model", promptVersion: "toggle-test-v1",
+    async *generate() {
+      normalCalls += 1;
+      yield "仅基于本地材料的回答";
+    },
+    async generateAgentGrounded() {
+      groundedCalls += 1;
+      throw new Error("联网搜索不应被调用");
+    },
+  };
+  const service = new ResearchSessionService(harness.store, { provider, autoRunTasks: false });
+  const session = await service.createSession("测试", "session-off-key");
+  const turn = await service.submitMessage(session.id, "只看当前材料", "turn-off-key");
+
+  assert.equal(turn.task.allowWebSearch, false);
+  assert.deepEqual(turn.task.groundingScope, { status: "not_requested", sourceCount: 0, citationCount: 0 });
+  await service.processTask(turn.task.id);
+
+  const task = service.getTask(turn.task.id);
+  assert.equal(task.status, "completed");
+  assert.equal(task.groundingScope?.status, "not_requested");
+  assert.equal(groundedCalls, 0);
+  assert.equal(normalCalls, 1);
+  assert.equal(harness.store.listResearchGroundingRuns(turn.task.id).length, 0);
+});
+
+test("用户开启联网但供应商没有联网实现时诚实标记为不支持", async (t) => {
+  const harness = await createStore();
+  t.after(() => harness.close());
+  const provider: ResearchGenerationProvider = {
+    provider: "unsupported-fake", model: "unsupported-model",
+    async *generate() { yield "本地回答"; },
+  };
+  const service = new ResearchSessionService(harness.store, { provider, autoRunTasks: false });
+  const session = await service.createSession("测试", "session-unsupported-key");
+  const turn = await service.submitMessage(session.id, "允许联网但当前模型不支持", "turn-unsupported-key", { allowWebSearch: true });
+  await service.processTask(turn.task.id);
+
+  const task = service.getTask(turn.task.id);
+  assert.equal(task.status, "completed");
+  assert.equal(task.groundingScope?.status, "grounding_unsupported");
+  assert.equal(harness.store.listResearchGroundingRuns(turn.task.id).length, 1);
 });

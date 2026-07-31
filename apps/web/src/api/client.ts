@@ -55,7 +55,7 @@ export interface ApiClient {
   getRunRecord(id: string): Promise<RunRecordDetail>;
   createResearchSession(idempotencyKey: string, title?: string): Promise<ResearchSessionRecord>;
   getResearchSessionView(sessionId: string): Promise<ResearchSessionView>;
-  submitResearchMessage(sessionId: string, content: string, idempotencyKey: string): Promise<ResearchTurnAccepted>;
+  submitResearchMessage(sessionId: string, content: string, idempotencyKey: string, options?: { allowWebSearch?: boolean }): Promise<ResearchTurnAccepted>;
   getResearchTask(taskId: string): Promise<ResearchTaskRecord>;
   retryResearchTask(taskId: string): Promise<ResearchTaskRecord>;
   /** 上传原始文件字节；mimeType 为浏览器 MIME 或按扩展名回退的稳定 MIME。 */
@@ -72,11 +72,11 @@ export interface ApiClient {
   /** 从选区发起深入研究：分支或带来源的独立会话与第一轮任务先保存再生成。 */
   startDeepResearch(selectionId: string, input: DeepResearchInput, idempotencyKey: string): Promise<DeepResearchAccepted>;
   getResearchBranch(branchId: string): Promise<ResearchBranchView>;
-  submitBranchMessage(branchId: string, content: string, idempotencyKey: string): Promise<ResearchTurnAccepted>;
+  submitBranchMessage(branchId: string, content: string, idempotencyKey: string, options?: { allowWebSearch?: boolean }): Promise<ResearchTurnAccepted>;
   /** 节点视图（阶段 H2）：根节点与子节点统一的数据入口。 */
   getResearchNodeView(nodeId: string): Promise<ResearchNodeView>;
   /** 节点内追问：根节点与子节点统一的提交入口。 */
-  submitResearchNodeMessage(nodeId: string, content: string, idempotencyKey: string): Promise<ResearchTurnAccepted>;
+  submitResearchNodeMessage(nodeId: string, content: string, idempotencyKey: string, options?: { allowWebSearch?: boolean }): Promise<ResearchTurnAccepted>;
   /** 会话节点树（全屏树导航）：一次性返回扁平条目，客户端按 parentNodeId 建树。 */
   getResearchSessionNodeTree(sessionId: string): Promise<ResearchSessionNodeTreeItem[]>;
   /** 从选区生长子节点：统一取代深入研究二选一。 */
@@ -183,14 +183,14 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
     getResearchSessionView(sessionId: string) {
       return requestJson<ResearchSessionView>(fetchFn, `/v1/research-sessions/${encodeURIComponent(sessionId)}`);
     },
-    submitResearchMessage(sessionId: string, content: string, idempotencyKey: string) {
+    submitResearchMessage(sessionId: string, content: string, idempotencyKey: string, options = {}) {
       return requestJson<ResearchTurnAccepted>(
         fetchFn,
         `/v1/research-sessions/${encodeURIComponent(sessionId)}/messages`,
         {
           method: "POST",
           headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
-          body: JSON.stringify({ content }),
+          body: JSON.stringify({ content, allowWebSearch: options.allowWebSearch === true }),
         },
       );
     },
@@ -286,14 +286,14 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
     getResearchNodeView(nodeId: string) {
       return requestJson<ResearchNodeView>(fetchFn, `/v1/research-nodes/${encodeURIComponent(nodeId)}`);
     },
-    submitResearchNodeMessage(nodeId: string, content: string, idempotencyKey: string) {
+    submitResearchNodeMessage(nodeId: string, content: string, idempotencyKey: string, options = {}) {
       return requestJson<ResearchTurnAccepted>(
         fetchFn,
         `/v1/research-nodes/${encodeURIComponent(nodeId)}/messages`,
         {
           method: "POST",
           headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
-          body: JSON.stringify({ content }),
+          body: JSON.stringify({ content, allowWebSearch: options.allowWebSearch === true }),
         },
       );
     },
@@ -314,14 +314,14 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
         },
       );
     },
-    submitBranchMessage(branchId: string, content: string, idempotencyKey: string) {
+    submitBranchMessage(branchId: string, content: string, idempotencyKey: string, options = {}) {
       return requestJson<ResearchTurnAccepted>(
         fetchFn,
         `/v1/research-branches/${encodeURIComponent(branchId)}/messages`,
         {
           method: "POST",
           headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
-          body: JSON.stringify({ content }),
+          body: JSON.stringify({ content, allowWebSearch: options.allowWebSearch === true }),
         },
       );
     },

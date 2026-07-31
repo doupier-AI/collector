@@ -946,6 +946,8 @@ export interface ResearchTaskRecord {
   provider?: string;
   model?: string;
   promptVersion: string;
+  /** 本次任务是否获得用户明确授权使用联网搜索；缺省值只兼容旧任务，服务端按 false 处理。 */
+  allowWebSearch?: boolean;
   groundingScope?: ResearchGroundingScope;
   error?: ResearchTaskError;
   createdAt: string;
@@ -1012,11 +1014,13 @@ export function validateResearchImportHeaders(fileName: unknown, mimeType: unkno
   }
 }
 
-export function validateResearchMessageInput(value: unknown): asserts value is { content: string } {
+export function validateResearchMessageInput(value: unknown): asserts value is { content: string; allowWebSearch?: boolean } {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Research message input must be an object");
-  const content = (value as { content?: unknown }).content;
+  const input = value as { content?: unknown; allowWebSearch?: unknown };
+  const content = input.content;
   if (typeof content !== "string" || !content.trim()) throw new Error("content is required");
   if (content.length > 200_000) throw new Error("content must not exceed 200000 characters");
+  if (input.allowWebSearch !== undefined && typeof input.allowWebSearch !== "boolean") throw new Error("allowWebSearch must be a boolean when provided");
 }
 
 // ── Deep Research (MVP 阶段 C) ─────────────────────────────
@@ -1045,19 +1049,23 @@ export interface DeepResearchInput {
   direction?: string;
   /** 独立研究会话标题；省略时按选区原文确定性派生，不依赖 AI。 */
   title?: string;
+  /** 本次第一轮是否允许联网搜索，默认关闭。 */
+  allowWebSearch?: boolean;
 }
 
 /** 从选区/弱标记生长子节点的输入（阶段 H）。 */
 export interface CreateChildNodeInput {
   /** 用户补充的研究问题；省略时由系统根据选区原文生成默认追问。 */
   query?: string;
+  /** 本次首轮是否允许联网搜索，默认关闭。 */
+  allowWebSearch?: boolean;
 }
 
 export const CHILD_NODE_QUERY_MAX_CHARACTERS = 2000;
 
 export function validateCreateChildNodeInput(value: unknown): asserts value is CreateChildNodeInput {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Child node input must be an object");
-  const input = value as { query?: unknown };
+  const input = value as { query?: unknown; allowWebSearch?: unknown };
   if (input.query !== undefined) {
     if (typeof input.query !== "string" || !input.query.trim()) {
       throw new Error("query must be a non-empty string when provided");
@@ -1066,13 +1074,14 @@ export function validateCreateChildNodeInput(value: unknown): asserts value is C
       throw new Error(`query must not exceed ${CHILD_NODE_QUERY_MAX_CHARACTERS} characters`);
     }
   }
+  if (input.allowWebSearch !== undefined && typeof input.allowWebSearch !== "boolean") throw new Error("allowWebSearch must be a boolean when provided");
 }
 
 export const RESEARCH_DIRECTION_MAX_CHARACTERS = 2000;
 
 export function validateDeepResearchInput(value: unknown): asserts value is DeepResearchInput {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Deep research input must be an object");
-  const input = value as { mode?: unknown; direction?: unknown; title?: unknown };
+  const input = value as { mode?: unknown; direction?: unknown; title?: unknown; allowWebSearch?: unknown };
   if (input.mode !== "branch" && input.mode !== "session") throw new Error("mode must be branch or session");
   if (input.direction !== undefined) {
     if (typeof input.direction !== "string" || !input.direction.trim()) {
@@ -1085,6 +1094,7 @@ export function validateDeepResearchInput(value: unknown): asserts value is Deep
   if (input.title !== undefined && (typeof input.title !== "string" || !input.title.trim() || input.title.trim().length > 200)) {
     throw new Error("title must contain 1 to 200 characters when provided");
   }
+  if (input.allowWebSearch !== undefined && typeof input.allowWebSearch !== "boolean") throw new Error("allowWebSearch must be a boolean when provided");
 }
 
 export const RESEARCH_TITLE_MAX_CHARACTERS = 40;

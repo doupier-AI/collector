@@ -219,7 +219,7 @@ describe("阅读视图 ChatComposer", () => {
     await user.click(screen.getByRole("button", { name: "发送" }));
 
     expect(submitResearchMessage).toHaveBeenCalledTimes(1);
-    expect(submitResearchMessage).toHaveBeenCalledWith("session-1", "总结这篇文章", expect.any(String));
+    expect(submitResearchMessage).toHaveBeenCalledWith("session-1", "总结这篇文章", expect.any(String), { allowWebSearch: false });
   });
 
   it("提交失败时保留草稿不清理", async () => {
