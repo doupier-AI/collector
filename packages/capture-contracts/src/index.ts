@@ -366,6 +366,91 @@ export interface AiUsageSummary {
   successRate: number;
 }
 
+// ── Local run records (issue #19) ────────────────────────────────
+
+export type RunRecordSource = "research" | "selection" | "import" | "workflow";
+export type RunRecordOperationType = "research" | "selection_analysis" | "document_import" | "recent_organization" | "topic_document";
+export type RunRecordStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "corrupt";
+export type RunRecordOutcome = "success" | "failure" | "active" | "cancelled" | "unavailable";
+
+export interface RunRecordSummary {
+  id: string;
+  source: RunRecordSource;
+  operationType: RunRecordOperationType;
+  title?: string;
+  status: RunRecordStatus;
+  outcome: RunRecordOutcome;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
+  modelCallCount: number;
+  searchCount: number;
+  retryCount: number;
+}
+
+export interface RunRecordModelCallView {
+  id: string;
+  provider: string;
+  model: string;
+  purpose: string;
+  promptVersion: string;
+  status: "completed" | "failed" | "corrupt";
+  inputTokens: number;
+  outputTokens: number;
+  cacheHitTokens: number;
+  estimatedCostUsd?: number;
+  costStatus?: "estimated" | "unknown";
+  latencyMs: number;
+  retryCount: number;
+  errorMessage?: string;
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface RunRecordSearchView {
+  id: string;
+  provider: string;
+  model: string;
+  scenario: string;
+  status: string;
+  attempt: number;
+  queries: string[];
+  sourceCount: number;
+  citationCount: number;
+  responseSummary?: Record<string, unknown>;
+  errorMessage?: string;
+  createdAt: string;
+  completedAt?: string;
+  sources: Array<{ title: string; url?: string; snippet?: string }>;
+}
+
+export interface RunRecordErrorView {
+  source: "task" | "model" | "search" | "record";
+  message: string;
+}
+
+export interface RunRecordTaskView {
+  id: string;
+  sessionId?: string;
+  provider?: string;
+  model?: string;
+  promptVersion?: string;
+  retryable?: boolean;
+}
+
+export interface RunRecordDetail extends RunRecordSummary {
+  task?: RunRecordTaskView;
+  modelCalls: RunRecordModelCallView[];
+  searches: RunRecordSearchView[];
+  errors: RunRecordErrorView[];
+}
+
+export interface RunRecordPage {
+  items: RunRecordSummary[];
+  nextCursor?: string;
+}
+
 export interface AiBudgetSettings {
   monthlyLimitUsd: number;
   warningThresholdUsd: number;

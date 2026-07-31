@@ -8,6 +8,7 @@ import { ResearchImportConflictError, ResearchImportNotFoundError, ResearchImpor
 import { ResearchSelectionConflictError, ResearchSelectionNotFoundError, ResearchSelectionValidationError } from "./selection.js";
 import { DeepResearchNotFoundError, DeepResearchValidationError } from "./deep-research.js";
 import { ResearchLaterNotFoundError, ResearchLaterValidationError } from "./research-later.js";
+import { RunRecordsValidationError } from "./observability.js";
 import { createStaticWebHandler } from "./static-web.js";
 
 const JSON_LIMIT = 2 * 1024 * 1024;
@@ -52,6 +53,27 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       }
       if (!auth.isAuthorized(requestToken(request))) {
         return json(response, 401, { error: { code: "unauthorized", message: "Collector client is not paired" } });
+      }
+
+      const runRecordDetailMatch = url.pathname.match(/^\/v1\/run-records\/([^/]+)$/);
+      if (request.method === "GET" && runRecordDetailMatch) {
+        const detail = service.runRecords.get(decodeURIComponent(runRecordDetailMatch[1]));
+        if (!detail) return json(response, 404, { error: { code: "not_found", message: "Run record not found" } });
+        return json(response, 200, detail);
+      }
+      if (request.method === "GET" && url.pathname === "/v1/run-records") {
+        const limit = url.searchParams.get("limit");
+        return json(response, 200, service.runRecords.list({
+          ...(limit === null ? {} : { limit: Number(limit) }),
+          ...(url.searchParams.get("cursor") ? { cursor: url.searchParams.get("cursor")! } : {}),
+          ...(url.searchParams.get("from") ? { from: url.searchParams.get("from")! } : {}),
+          ...(url.searchParams.get("to") ? { to: url.searchParams.get("to")! } : {}),
+          ...(url.searchParams.get("operationType") || url.searchParams.get("type")
+            ? { operationType: url.searchParams.get("operationType") ?? url.searchParams.get("type")! }
+            : {}),
+          ...(url.searchParams.get("outcome") ? { outcome: url.searchParams.get("outcome")! } : {}),
+          ...(url.searchParams.get("status") ? { status: url.searchParams.get("status")! } : {}),
+        }));
       }
 
       if (request.method === "POST" && url.pathname === "/v1/launcher/bootstrap") {
@@ -562,7 +584,7 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (error instanceof ResearchImportConflictError || error instanceof ResearchSelectionConflictError) {
         return json(response, 409, { error: { code: error.code, message: error.message } });
       }
-      if (error instanceof ValidationError || error instanceof ResearchValidationError || error instanceof ResearchImportValidationError || error instanceof ResearchSelectionValidationError || error instanceof DeepResearchValidationError || error instanceof ResearchLaterValidationError || error instanceof SyntaxError) {
+      if (error instanceof ValidationError || error instanceof ResearchValidationError || error instanceof ResearchImportValidationError || error instanceof ResearchSelectionValidationError || error instanceof DeepResearchValidationError || error instanceof ResearchLaterValidationError || error instanceof RunRecordsValidationError || error instanceof SyntaxError) {
         const code = error instanceof ResearchImportValidationError ? error.code : "invalid_request";
         const status = code === "file_too_large" ? 413 : code === "unsupported_file_type" ? 415 : code === "invalid_file_content" ? 422 : 400;
         return json(response, status, { error: { code, message: error.message } });

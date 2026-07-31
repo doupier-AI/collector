@@ -3,6 +3,33 @@ import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ResearchNodeRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTurnAccepted } from "@collector/capture-contracts";
 
+export type ObservabilityRecordSource = "research" | "selection" | "import" | "workflow";
+
+export interface ObservabilityRecordRow {
+  source: ObservabilityRecordSource;
+  operationType: string;
+  id: string;
+  status: string;
+  createdAt: string;
+  recordJson: string;
+}
+
+export interface ObservabilityRecordQuery {
+  source?: ObservabilityRecordSource;
+  operationType?: string;
+  statuses?: readonly string[];
+  createdAfter?: string;
+  createdBefore?: string;
+  before?: { createdAt: string; id: string };
+  limit: number;
+}
+
+export interface ObservabilityRelatedRow {
+  id: string;
+  createdAt: string;
+  recordJson: string;
+}
+
 /** 稍后再学所需的持久化能力：5 个专属方法 + 3 个只读跨域查询。 */
 export interface ResearchLaterStore {
   getResearchLaterItem(id: string): ResearchLaterItemRecord | undefined;
@@ -205,6 +232,11 @@ export interface CollectorStore
   getLatestTopicDocumentVersion(topicId: string): import("@collector/capture-contracts").TopicDocumentVersionRecord | undefined;
   saveModelCall(record: ModelCallRecord): Promise<void>;
   listModelCalls(workflowRunId?: string): ModelCallRecord[];
+  listRunRecordRows(query: ObservabilityRecordQuery): ObservabilityRecordRow[];
+  getRunRecordRow(source: ObservabilityRecordSource, id: string): ObservabilityRecordRow | undefined;
+  listRunModelCallRows(workflowRunId: string): ObservabilityRelatedRow[];
+  listRunGroundingRunRows(taskId: string): ObservabilityRelatedRow[];
+  listRunGroundingSourceRows(runId: string): ObservabilityRelatedRow[];
   getAiBudgetSetting(key: string): string | undefined;
   saveAiBudgetSetting(key: string, value: string): Promise<void>;
   getMonthModelCallCostUsd(year: number, month: number): number;
@@ -365,6 +397,67 @@ export class SqliteStore implements CollectorStore {
   listModelCalls(workflowRunId?: string): ModelCallRecord[] {
     const sql = workflowRunId ? "SELECT record_json FROM model_calls WHERE workflow_run_id = ? ORDER BY created_at" : "SELECT record_json FROM model_calls ORDER BY created_at DESC";
     return workflowRunId ? this.listRecords<ModelCallRecord>(sql, workflowRunId) : this.listRecords<ModelCallRecord>(sql);
+  }
+  listRunRecordRows(query: ObservabilityRecordQuery): ObservabilityRecordRow[] {
+    const sourceTables: Array<{ source: ObservabilityRecordSource; operationType: string; table: string; operationColumn?: string }> = [
+      { source: "research", operationType: "research", table: "research_tasks" },
+      { source: "selection", operationType: "selection_analysis", table: "research_selection_tasks" },
+      { source: "import", operationType: "document_import", table: "research_import_tasks" },
+      { source: "workflow", operationType: "workflow_type", table: "workflow_runs", operationColumn: "workflow_type" },
+    ];
+    const union = sourceTables.map(({ source, operationType, table, operationColumn }) =>
+      `SELECT '${source}' AS source, ${operationColumn ? operationColumn : `'${operationType}'`} AS operation_type, id, status, created_at, record_json FROM ${table}`,
+    ).join(" UNION ALL ");
+    const where: string[] = [];
+    const values: SQLInputValue[] = [];
+    if (query.source) { where.push("source = ?"); values.push(query.source); }
+    if (query.operationType) { where.push("operation_type = ?"); values.push(query.operationType); }
+    if (query.statuses?.length) {
+      where.push(`status IN (${query.statuses.map(() => "?").join(", ")})`);
+      values.push(...query.statuses);
+    }
+    if (query.createdAfter) { where.push("created_at >= ?"); values.push(query.createdAfter); }
+    if (query.createdBefore) { where.push("created_at < ?"); values.push(query.createdBefore); }
+    if (query.before) {
+      where.push("(created_at < ? OR (created_at = ? AND id < ?))");
+      values.push(query.before.createdAt, query.before.createdAt, query.before.id);
+    }
+    const limit = Math.max(1, Math.min(51, Math.trunc(query.limit)));
+    const rows = this.db().prepare(`SELECT source, operation_type, id, status, created_at, record_json FROM (${union})${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC, id DESC LIMIT ?`).all(...values, limit) as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      source: row.source as ObservabilityRecordSource,
+      operationType: row.operation_type as string,
+      id: row.id as string,
+      status: row.status as string,
+      createdAt: row.created_at as string,
+      recordJson: row.record_json as string,
+    }));
+  }
+  getRunRecordRow(source: ObservabilityRecordSource, id: string): ObservabilityRecordRow | undefined {
+    const table = { research: "research_tasks", selection: "research_selection_tasks", import: "research_import_tasks", workflow: "workflow_runs" }[source];
+    const row = this.db().prepare(`SELECT ${source === "workflow" ? "workflow_type" : `'${source === "selection" ? "selection_analysis" : source === "import" ? "document_import" : "research"}'`} AS operation_type, id, status, created_at, record_json FROM ${table} WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
+    return row ? { source, operationType: row.operation_type as string, id: row.id as string, status: row.status as string, createdAt: row.created_at as string, recordJson: row.record_json as string } : undefined;
+  }
+  listRunModelCallRows(workflowRunId: string): ObservabilityRelatedRow[] {
+    return this.db().prepare("SELECT id, created_at AS createdAt, record_json AS recordJson FROM model_calls WHERE workflow_run_id = ? ORDER BY created_at, id").all(workflowRunId).map((row) => ({
+      id: String(row.id ?? ""),
+      createdAt: String(row.createdAt ?? ""),
+      recordJson: String(row.recordJson ?? ""),
+    }));
+  }
+  listRunGroundingRunRows(taskId: string): ObservabilityRelatedRow[] {
+    return this.db().prepare("SELECT id, created_at AS createdAt, record_json AS recordJson FROM research_grounding_runs WHERE task_id = ? ORDER BY created_at, id").all(taskId).map((row) => ({
+      id: String(row.id ?? ""),
+      createdAt: String(row.createdAt ?? ""),
+      recordJson: String(row.recordJson ?? ""),
+    }));
+  }
+  listRunGroundingSourceRows(runId: string): ObservabilityRelatedRow[] {
+    return this.db().prepare("SELECT id, created_at AS createdAt, record_json AS recordJson FROM research_grounding_sources WHERE run_id = ? ORDER BY created_at, id").all(runId).map((row) => ({
+      id: String(row.id ?? ""),
+      createdAt: String(row.createdAt ?? ""),
+      recordJson: String(row.recordJson ?? ""),
+    }));
   }
   getAiBudgetSetting(key: string): string | undefined { return (this.db().prepare("SELECT value FROM ai_budget_settings WHERE key = ?").get(key) as { value: string } | undefined)?.value; }
   async saveAiBudgetSetting(key: string, value: string): Promise<void> { this.db().prepare("INSERT INTO ai_budget_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(key, value); }
@@ -2650,6 +2743,11 @@ export class JsonStore implements CollectorStore {
   getLatestTopicDocumentVersion(_topicId: string): any { return undefined; }
   async saveModelCall(_record: any): Promise<void> { throw new Error("AI budget requires SQLite persistence"); }
   listModelCalls(_workflowRunId?: string): any[] { return []; }
+  listRunRecordRows(_query: ObservabilityRecordQuery): ObservabilityRecordRow[] { return []; }
+  getRunRecordRow(_source: ObservabilityRecordSource, _id: string): ObservabilityRecordRow | undefined { return undefined; }
+  listRunModelCallRows(_workflowRunId: string): ObservabilityRelatedRow[] { return []; }
+  listRunGroundingRunRows(_taskId: string): ObservabilityRelatedRow[] { return []; }
+  listRunGroundingSourceRows(_runId: string): ObservabilityRelatedRow[] { return []; }
   getAiBudgetSetting(_key: string): string | undefined { return undefined; }
   async saveAiBudgetSetting(_key: string, _value: string): Promise<void> { throw new Error("AI budget requires SQLite persistence"); }
   getMonthModelCallCostUsd(_year: number, _month: number): number { return 0; }

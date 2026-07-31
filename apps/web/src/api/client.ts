@@ -32,13 +32,27 @@ import type {
   ResearchSessionView,
   ResearchTaskRecord,
   ResearchTurnAccepted,
+  RunRecordDetail,
+  RunRecordPage,
 } from "@collector/capture-contracts";
 import { ApiRequestError, NetworkError, parseApiErrorBody } from "./errors";
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
+export interface RunRecordListParams {
+  cursor?: string;
+  limit?: number;
+  from?: string;
+  to?: string;
+  operationType?: string;
+  outcome?: string;
+  status?: string;
+}
+
 export interface ApiClient {
   listResearchSessions(): Promise<ResearchSessionRecord[]>;
+  listRunRecords(params?: RunRecordListParams): Promise<RunRecordPage>;
+  getRunRecord(id: string): Promise<RunRecordDetail>;
   createResearchSession(idempotencyKey: string, title?: string): Promise<ResearchSessionRecord>;
   getResearchSessionView(sessionId: string): Promise<ResearchSessionView>;
   submitResearchMessage(sessionId: string, content: string, idempotencyKey: string): Promise<ResearchTurnAccepted>;
@@ -146,6 +160,17 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
   return {
     listResearchSessions() {
       return requestJson<ResearchSessionRecord[]>(fetchFn, "/v1/research-sessions");
+    },
+    listRunRecords(params: RunRecordListParams = {}) {
+      const query = new URLSearchParams();
+      for (const [key, value] of Object.entries(params)) {
+        if (value !== undefined && value !== "") query.set(key, String(value));
+      }
+      const path = query.toString() ? `/v1/run-records?${query.toString()}` : "/v1/run-records";
+      return requestJson<RunRecordPage>(fetchFn, path);
+    },
+    getRunRecord(id: string) {
+      return requestJson<RunRecordDetail>(fetchFn, `/v1/run-records/${encodeURIComponent(id)}`);
     },
     createResearchSession(idempotencyKey: string, title?: string) {
       const body = title === undefined ? "{}" : JSON.stringify({ title });

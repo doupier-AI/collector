@@ -58,6 +58,9 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
         <Link className="drawer__new-chat" to="/settings/ai-model" onClick={handleNavigate}>
           AI 模型设置
         </Link>
+        <Link className="drawer__new-chat" to="/run-records" onClick={handleNavigate}>
+          运行记录
+        </Link>
         <h2 className="drawer__section-title">最近研究</h2>
         <SessionListPanel onNavigate={handleNavigate} />
         {mode === "fixed" ? (

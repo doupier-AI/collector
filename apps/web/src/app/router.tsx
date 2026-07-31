@@ -6,6 +6,7 @@ import { NotFoundPage } from "../features/research-session/NotFoundPage";
 import { ResearchNodePage } from "../features/research-session/ResearchNodePage";
 import { StartPage } from "../features/research-session/StartPage";
 import { AiModelSettingsPage } from "../features/settings/AiModelSettingsPage";
+import { RunRecordsPage } from "../features/run-records/RunRecordsPage";
 
 /**
  * 旧会话路由重定向（阶段 H2）：根节点 ID 与会话 ID 相同，
@@ -49,6 +50,8 @@ export function AppRoutes() {
         <Route path="research/:sessionId/branch/:branchId" element={<BranchRedirect />} />
         <Route path="research/:sessionId/node/:nodeId" element={<ResearchNodePage />} />
         <Route path="research/:sessionId/reading/:contentSnapshotId" element={<ReadingPage />} />
+        <Route path="run-records" element={<RunRecordsPage />} />
+        <Route path="run-records/:runId" element={<RunRecordsPage />} />
         <Route path="settings/ai-model" element={<AiModelSettingsPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>

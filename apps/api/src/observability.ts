@@ -1,0 +1,468 @@
+import {
+  redactGroundingValue,
+  sanitizeGroundingUrl,
+  type ModelCallRecord,
+  type ResearchGroundingRunRecord,
+  type ResearchGroundingSourceRecord,
+  type ResearchImportTaskRecord,
+  type ResearchSelectionTaskRecord,
+  type ResearchTaskRecord,
+  type RunRecordDetail,
+  type RunRecordErrorView,
+  type RunRecordModelCallView,
+  type RunRecordOperationType,
+  type RunRecordOutcome,
+  type RunRecordPage,
+  type RunRecordSearchView,
+  type RunRecordSource,
+  type RunRecordStatus,
+  type RunRecordSummary,
+  type RunRecordTaskView,
+  type WorkflowRunRecord,
+} from "@collector/capture-contracts";
+import {
+  type CollectorStore,
+  type ObservabilityRecordQuery,
+  type ObservabilityRecordRow,
+  type ObservabilityRelatedRow,
+  type ObservabilityRecordSource,
+} from "./store.js";
+
+const DEFAULT_PAGE_SIZE = 20;
+const MAX_PAGE_SIZE = 50;
+const CURSOR_VERSION = 1;
+const SAFE_TEXT_LIMIT = 2_000;
+const SAFE_QUERY_LIMIT = 400;
+
+const OPERATION_TYPES: readonly RunRecordOperationType[] = [
+  "research",
+  "selection_analysis",
+  "document_import",
+  "recent_organization",
+  "topic_document",
+];
+const SOURCES: readonly RunRecordSource[] = ["research", "selection", "import", "workflow"];
+const STATUSES: readonly RunRecordStatus[] = ["queued", "running", "completed", "failed", "cancelled", "corrupt"];
+const OUTCOMES: readonly RunRecordOutcome[] = ["success", "failure", "active", "cancelled", "unavailable"];
+
+const SECRET_KEY = /(?:api[-_]?key|authorization|cookie|credential|idempotency[-_]?key|password|refresh[-_]?token|secret|set[-_]?cookie|token)/i;
+const SECRET_VALUE = /(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+|\b(?:sk|AIza|ghp|xox[baprs]-)[-_A-Za-z0-9]{8,}\b/gi;
+
+export interface RunRecordListInput {
+  limit?: number;
+  cursor?: string;
+  from?: string;
+  to?: string;
+  operationType?: string;
+  outcome?: string;
+  status?: string;
+}
+
+export class RunRecordsValidationError extends Error {}
+
+interface Cursor {
+  v: typeof CURSOR_VERSION;
+  createdAt: string;
+  id: string;
+}
+
+interface ParsedRecord {
+  value: Record<string, unknown>;
+  corrupt: boolean;
+}
+
+export class RunRecordsService {
+  constructor(private readonly store: CollectorStore) {}
+
+  list(input: RunRecordListInput = {}): RunRecordPage {
+    const limit = parseLimit(input.limit);
+    const operation = parseOperationType(input.operationType);
+    const outcome = parseOutcome(input.outcome);
+    const status = parseStatus(input.status);
+    const cursor = input.cursor ? decodeCursor(input.cursor) : undefined;
+    const dateRange = parseDateRange(input.from, input.to);
+    const query = this.queryFor({ limit: limit + 1, operation, outcome, status, cursor, dateRange });
+    const rows = this.store.listRunRecordRows(query);
+    const hasMore = rows.length > limit;
+    const pageRows = rows.slice(0, limit);
+    const items = pageRows.map((row) => this.summary(row));
+    return {
+      items,
+      ...(hasMore && pageRows.length > 0
+        ? { nextCursor: encodeCursor({ v: CURSOR_VERSION, createdAt: pageRows[pageRows.length - 1].createdAt, id: pageRows[pageRows.length - 1].id }) }
+        : {}),
+    };
+  }
+
+  get(publicId: string): RunRecordDetail | undefined {
+    const reference = parsePublicId(publicId);
+    const row = this.store.getRunRecordRow(reference.source, reference.id);
+    if (!row) return undefined;
+    return this.detail(row);
+  }
+
+  private queryFor(input: {
+    limit: number;
+    operation?: RunRecordOperationType;
+    outcome?: RunRecordOutcome;
+    status?: RunRecordStatus;
+    cursor?: Cursor;
+    dateRange: { from?: string; to?: string };
+  }): ObservabilityRecordQuery {
+    const source = input.operation ? sourceForOperation(input.operation) : undefined;
+    const statuses = input.status ? statusesForStatus(input.status) : input.outcome ? statusesForOutcome(input.outcome) : undefined;
+    return {
+      limit: input.limit,
+      ...(source ? { source } : {}),
+      ...(input.operation ? { operationType: input.operation } : {}),
+      ...(statuses ? { statuses } : {}),
+      ...(input.dateRange.from ? { createdAfter: input.dateRange.from } : {}),
+      ...(input.dateRange.to ? { createdBefore: input.dateRange.to } : {}),
+      ...(input.cursor ? { before: { createdAt: input.cursor.createdAt, id: input.cursor.id } } : {}),
+    };
+  }
+
+  private summary(row: ObservabilityRecordRow): RunRecordSummary {
+    const parsed = parseRecord(row.recordJson);
+    if (parsed.corrupt) {
+      return {
+        id: publicId(row.source, row.id),
+        source: row.source,
+        operationType: operationTypeForRow(row),
+        status: "corrupt",
+        outcome: "unavailable",
+        createdAt: row.createdAt,
+        modelCallCount: 0,
+        searchCount: 0,
+        retryCount: 0,
+      };
+    }
+    const status = statusForRow(row, parsed.value);
+    const times = timesFor(parsed.value, row.createdAt);
+    const related = this.relatedCounts(row, parsed.value);
+    return {
+      id: publicId(row.source, row.id),
+      source: row.source,
+      operationType: operationTypeForRow(row),
+      ...(titleFor(parsed.value) ? { title: titleFor(parsed.value) } : {}),
+      status,
+      outcome: outcomeForStatus(status),
+      createdAt: row.createdAt,
+      ...(times.startedAt ? { startedAt: times.startedAt } : {}),
+      ...(times.completedAt ? { completedAt: times.completedAt } : {}),
+      ...(times.durationMs !== undefined ? { durationMs: times.durationMs } : {}),
+      modelCallCount: related.modelCallCount,
+      searchCount: related.searchCount,
+      retryCount: related.retryCount,
+    };
+  }
+
+  private detail(row: ObservabilityRecordRow): RunRecordDetail {
+    const parsed = parseRecord(row.recordJson);
+    if (parsed.corrupt) {
+      return {
+        ...this.summary(row),
+        status: "corrupt",
+        outcome: "unavailable",
+        modelCalls: [],
+        searches: [],
+        errors: [{ source: "record", message: "这条运行记录无法读取，原始内容已隐藏。" }],
+      };
+    }
+    const summary = this.summary(row);
+    const task = taskView(row.source, parsed.value);
+    const modelCalls = this.modelCalls(row.id);
+    const searches = row.source === "research" || row.source === "selection" ? this.searches(row.id) : [];
+    const errors = errorsFor(row.source, parsed.value, modelCalls, searches);
+    return {
+      ...summary,
+      ...(task ? { task } : {}),
+      modelCalls,
+      searches,
+      errors,
+    };
+  }
+
+  private relatedCounts(row: ObservabilityRecordRow, record: Record<string, unknown>): { modelCallCount: number; searchCount: number; retryCount: number } {
+    const modelCalls = safeRows(() => this.store.listRunModelCallRows(row.id));
+    const searches = row.source === "research" || row.source === "selection" ? safeRows(() => this.store.listRunGroundingRunRows(row.id)) : [];
+    let searchCount = 0;
+    let retryCount = numberValue(record.retryCount);
+    for (const search of searches) {
+      const parsed = parseRecord(search.recordJson);
+      if (parsed.corrupt) continue;
+      const queries = arrayValue(parsed.value.queries);
+      searchCount += queries.length;
+      retryCount += Math.max(0, numberValue(parsed.value.attempt) - 1);
+    }
+    for (const model of modelCalls) {
+      const parsed = parseRecord(model.recordJson);
+      if (!parsed.corrupt) retryCount += Math.max(0, numberValue(parsed.value.retryCount));
+    }
+    return { modelCallCount: modelCalls.length, searchCount, retryCount };
+  }
+
+  private modelCalls(workflowRunId: string): RunRecordModelCallView[] {
+    return safeRows(() => this.store.listRunModelCallRows(workflowRunId)).map((row) => modelCallView(row));
+  }
+
+  private searches(taskId: string): RunRecordSearchView[] {
+    return safeRows(() => this.store.listRunGroundingRunRows(taskId)).map((row) => {
+      const parsed = parseRecord(row.recordJson);
+      if (parsed.corrupt) return corruptSearch(row);
+      const run = parsed.value;
+      const sources = safeRows(() => this.store.listRunGroundingSourceRows(stringValue(run.id) || row.id))
+        .map((source) => sourceView(source));
+      return {
+        id: safeId(run.id, row.id),
+        provider: safeText(run.provider),
+        model: safeText(run.model),
+        scenario: safeText(run.scenario),
+        status: safeText(run.status),
+        attempt: positiveNumber(run.attempt, 1),
+        queries: arrayValue(run.queries).map((query) => safeQuery(query)),
+        sourceCount: numberValue(run.sourceCount) || sources.length,
+        citationCount: numberValue(run.citationCount),
+        ...(run.responseSummary && typeof run.responseSummary === "object" ? { responseSummary: safeObject(run.responseSummary) } : {}),
+        ...(run.errorMessage ? { errorMessage: safeText(run.errorMessage) } : {}),
+        createdAt: safeText(run.createdAt, row.createdAt),
+        ...(stringValue(run.completedAt) ? { completedAt: safeText(run.completedAt) } : {}),
+        sources,
+      };
+    });
+  }
+}
+
+function sourceForOperation(operation: RunRecordOperationType): ObservabilityRecordSource {
+  if (operation === "research") return "research";
+  if (operation === "selection_analysis") return "selection";
+  if (operation === "document_import") return "import";
+  return "workflow";
+}
+
+function statusesForStatus(status: RunRecordStatus): string[] {
+  if (status === "running") return ["running", "processing", "waiting_for_budget"];
+  if (status === "corrupt") return [];
+  return [status];
+}
+
+function statusesForOutcome(outcome: RunRecordOutcome): string[] {
+  if (outcome === "active") return ["queued", "running", "processing", "waiting_for_budget"];
+  if (outcome === "success") return ["completed"];
+  if (outcome === "failure") return ["failed"];
+  if (outcome === "cancelled") return ["cancelled"];
+  return [];
+}
+
+function parseLimit(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_PAGE_SIZE;
+  if (!Number.isInteger(value) || value < 1 || value > MAX_PAGE_SIZE) throw new RunRecordsValidationError("limit must be between 1 and 50");
+  return value;
+}
+
+function parseDateRange(from: string | undefined, to: string | undefined): { from?: string; to?: string } {
+  const result: { from?: string; to?: string } = {};
+  if (from !== undefined) result.from = parseDate(from, "from");
+  if (to !== undefined) result.to = parseDate(to, "to");
+  if (result.from && result.to && result.from >= result.to) throw new RunRecordsValidationError("from must be earlier than to");
+  return result;
+}
+
+function parseDate(value: string, name: string): string {
+  const date = new Date(value);
+  if (!value.trim() || Number.isNaN(date.getTime())) throw new RunRecordsValidationError(`${name} must be a valid date`);
+  return date.toISOString();
+}
+
+function parseOperationType(value: string | undefined): RunRecordOperationType | undefined {
+  if (!value || value === "all") return undefined;
+  if ((OPERATION_TYPES as readonly string[]).includes(value)) return value as RunRecordOperationType;
+  throw new RunRecordsValidationError("operationType is not supported");
+}
+
+function parseOutcome(value: string | undefined): RunRecordOutcome | undefined {
+  if (!value || value === "all") return undefined;
+  if ((OUTCOMES as readonly string[]).includes(value)) return value as RunRecordOutcome;
+  throw new RunRecordsValidationError("outcome is not supported");
+}
+
+function parseStatus(value: string | undefined): RunRecordStatus | undefined {
+  if (!value || value === "all") return undefined;
+  if ((STATUSES as readonly string[]).includes(value)) return value as RunRecordStatus;
+  throw new RunRecordsValidationError("status is not supported");
+}
+
+function encodeCursor(cursor: Cursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+function decodeCursor(value: string): Cursor {
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Partial<Cursor>;
+    if (parsed.v !== CURSOR_VERSION || typeof parsed.createdAt !== "string" || typeof parsed.id !== "string" || !parsed.id) throw new Error();
+    if (Number.isNaN(new Date(parsed.createdAt).getTime())) throw new Error();
+    return { v: CURSOR_VERSION, createdAt: parsed.createdAt, id: parsed.id };
+  } catch {
+    throw new RunRecordsValidationError("cursor is invalid");
+  }
+}
+
+function parsePublicId(value: string): { source: ObservabilityRecordSource; id: string } {
+  const separator = value.indexOf(":");
+  if (separator <= 0 || separator === value.length - 1) throw new RunRecordsValidationError("run record id is invalid");
+  const source = value.slice(0, separator);
+  if (!(SOURCES as readonly string[]).includes(source)) throw new RunRecordsValidationError("run record id is invalid");
+  return { source: source as ObservabilityRecordSource, id: value.slice(separator + 1) };
+}
+
+function publicId(source: ObservabilityRecordSource, id: string): string { return `${source}:${id}`; }
+
+function parseRecord(recordJson: string): ParsedRecord {
+  try {
+    const parsed: unknown = JSON.parse(recordJson);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
+    return { value: parsed as Record<string, unknown>, corrupt: false };
+  } catch {
+    return { value: {}, corrupt: true };
+  }
+}
+
+function operationTypeForRow(row: ObservabilityRecordRow): RunRecordOperationType {
+  if (OPERATION_TYPES.includes(row.operationType as RunRecordOperationType)) return row.operationType as RunRecordOperationType;
+  if (row.source === "research") return "research";
+  if (row.source === "selection") return "selection_analysis";
+  if (row.source === "import") return "document_import";
+  return "topic_document";
+}
+
+function statusForRow(row: ObservabilityRecordRow, record: Record<string, unknown>): RunRecordStatus {
+  const status = stringValue(record.status) || row.status;
+  if (status === "processing" || status === "waiting_for_budget") return "running";
+  if (status === "queued" || status === "running" || status === "completed" || status === "failed" || status === "cancelled") return status;
+  return "corrupt";
+}
+
+function outcomeForStatus(status: RunRecordStatus): RunRecordOutcome {
+  if (status === "completed") return "success";
+  if (status === "failed") return "failure";
+  if (status === "cancelled") return "cancelled";
+  if (status === "queued" || status === "running") return "active";
+  return "unavailable";
+}
+
+function timesFor(record: Record<string, unknown>, createdAt: string): { startedAt?: string; completedAt?: string; durationMs?: number } {
+  const startedAt = validDate(record.startedAt);
+  const completedAt = validDate(record.completedAt);
+  if (!startedAt) return completedAt ? { completedAt } : {};
+  if (completedAt) return { startedAt, completedAt, durationMs: durationBetween(startedAt, completedAt) };
+  const updatedAt = validDate(record.updatedAt);
+  return { startedAt, ...(updatedAt ? { durationMs: durationBetween(startedAt, updatedAt) } : {}), ...(createdAt ? {} : {}) };
+}
+
+function durationBetween(startedAt: string, completedAt: string): number | undefined {
+  const duration = new Date(completedAt).getTime() - new Date(startedAt).getTime();
+  return Number.isFinite(duration) && duration >= 0 ? duration : undefined;
+}
+
+function titleFor(record: Record<string, unknown>): string | undefined {
+  const title = stringValue(record.title);
+  return title ? safeText(title, undefined, 160) : undefined;
+}
+
+function taskView(source: ObservabilityRecordSource, record: Record<string, unknown>): RunRecordTaskView | undefined {
+  if (source === "research") {
+    const task = record as Partial<ResearchTaskRecord>;
+    return { id: safeId(task.id), ...(safeText(task.sessionId) ? { sessionId: safeText(task.sessionId) } : {}), ...(safeText(task.provider) ? { provider: safeText(task.provider) } : {}), ...(safeText(task.model) ? { model: safeText(task.model) } : {}), ...(safeText(task.promptVersion) ? { promptVersion: safeText(task.promptVersion) } : {}), ...(typeof task.retryable === "boolean" ? { retryable: task.retryable } : {}) };
+  }
+  if (source === "selection") {
+    const task = record as Partial<ResearchSelectionTaskRecord>;
+    return { id: safeId(task.id), ...(safeText(task.sessionId) ? { sessionId: safeText(task.sessionId) } : {}), ...(safeText(task.provider) ? { provider: safeText(task.provider) } : {}), ...(safeText(task.model) ? { model: safeText(task.model) } : {}), ...(safeText(task.promptVersion) ? { promptVersion: safeText(task.promptVersion) } : {}), ...(typeof task.retryable === "boolean" ? { retryable: task.retryable } : {}) };
+  }
+  if (source === "import") {
+    const task = record as Partial<ResearchImportTaskRecord>;
+    return { id: safeId(task.id), ...(safeText(task.sessionId) ? { sessionId: safeText(task.sessionId) } : {}), ...(typeof task.retryable === "boolean" ? { retryable: task.retryable } : {}) };
+  }
+  const workflow = record as Partial<WorkflowRunRecord>;
+  return { id: safeId(workflow.id) };
+}
+
+function modelCallView(row: ObservabilityRelatedRow): RunRecordModelCallView {
+  const parsed = parseRecord(row.recordJson);
+  if (parsed.corrupt) return { id: publicRelatedId(row.id), provider: "unknown", model: "unknown", purpose: "unknown", promptVersion: "unknown", status: "corrupt", inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, latencyMs: 0, retryCount: 0, createdAt: row.createdAt, errorMessage: "这次模型调用无法读取，原始内容已隐藏。" };
+  const call = parsed.value as Partial<ModelCallRecord>;
+  const status = call.status === "completed" || call.status === "failed" ? call.status : "corrupt";
+  return {
+    id: publicRelatedId(safeId(call.id, row.id)),
+    provider: safeText(call.provider),
+    model: safeText(call.model),
+    purpose: safeText(call.purpose),
+    promptVersion: safeText(call.promptVersion),
+    status,
+    inputTokens: nonNegativeNumber(call.inputTokens),
+    outputTokens: nonNegativeNumber(call.outputTokens),
+    cacheHitTokens: nonNegativeNumber(call.cacheHitTokens),
+    ...(typeof call.estimatedCostUsd === "number" ? { estimatedCostUsd: nonNegativeNumber(call.estimatedCostUsd) } : {}),
+    ...(call.costStatus === "estimated" || call.costStatus === "unknown" ? { costStatus: call.costStatus } : {}),
+    latencyMs: nonNegativeNumber(call.latencyMs),
+    retryCount: nonNegativeNumber(call.retryCount),
+    ...(call.errorMessage ? { errorMessage: safeText(call.errorMessage) } : {}),
+    createdAt: safeText(call.createdAt, row.createdAt),
+    ...(validDate(call.completedAt) ? { completedAt: safeText(call.completedAt) } : {}),
+  };
+}
+
+function sourceView(row: ObservabilityRelatedRow): { title: string; url?: string; snippet?: string } {
+  const parsed = parseRecord(row.recordJson);
+  if (parsed.corrupt) return { title: "来源无法读取" };
+  const source = parsed.value as Partial<ResearchGroundingSourceRecord>;
+  const url = sanitizeGroundingUrl(stringValue(source.url));
+  return { title: safeText(source.title, "未命名来源"), ...(url ? { url } : {}), ...(safeText(source.snippet) ? { snippet: safeText(source.snippet) } : {}) };
+}
+
+function corruptSearch(row: ObservabilityRelatedRow): RunRecordSearchView {
+  return { id: publicRelatedId(row.id), provider: "unknown", model: "unknown", scenario: "unknown", status: "corrupt", attempt: 0, queries: [], sourceCount: 0, citationCount: 0, createdAt: row.createdAt, sources: [], errorMessage: "这次搜索无法读取，原始内容已隐藏。" };
+}
+
+function errorsFor(source: ObservabilityRecordSource, record: Record<string, unknown>, modelCalls: RunRecordModelCallView[], searches: RunRecordSearchView[]): RunRecordErrorView[] {
+  const errors: RunRecordErrorView[] = [];
+  const taskError = record.error && typeof record.error === "object" ? (record.error as Record<string, unknown>).message : record.errorMessage;
+  if (taskError) errors.push({ source: "task", message: safeText(taskError) });
+  for (const call of modelCalls) if (call.errorMessage) errors.push({ source: "model", message: call.errorMessage });
+  for (const search of searches) if (search.errorMessage) errors.push({ source: "search", message: search.errorMessage });
+  return errors;
+}
+
+function safeRows(read: () => ObservabilityRelatedRow[]): ObservabilityRelatedRow[] {
+  try { return read(); } catch { return []; }
+}
+
+function safeText(value: unknown, fallback = "未记录", maxCharacters = SAFE_TEXT_LIMIT): string {
+  if (typeof value !== "string" || !value.trim()) return fallback;
+  const redacted = String(redactGroundingValue(value, maxCharacters)).replace(SECRET_VALUE, "[REDACTED]");
+  return redacted.length > maxCharacters ? `${redacted.slice(0, maxCharacters)}…` : redacted;
+}
+
+function safeQuery(value: unknown): string {
+  return safeText(value, "未记录", SAFE_QUERY_LIMIT);
+}
+
+function safeObject(value: unknown): Record<string, unknown> {
+  const redacted = redactGroundingValue(value, SAFE_TEXT_LIMIT);
+  return redactSensitiveKeys(redacted) as Record<string, unknown>;
+}
+
+function redactSensitiveKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactSensitiveKeys);
+  if (!value || typeof value !== "object") return typeof value === "string" ? value.replace(SECRET_VALUE, "[REDACTED]") : value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, SECRET_KEY.test(key) ? "[REDACTED]" : redactSensitiveKeys(item)]));
+}
+
+function stringValue(value: unknown): string | undefined { return typeof value === "string" && value.trim() ? value : undefined; }
+function arrayValue(value: unknown): unknown[] { return Array.isArray(value) ? value : []; }
+function numberValue(value: unknown): number { return typeof value === "number" && Number.isFinite(value) ? value : 0; }
+function nonNegativeNumber(value: unknown): number { return Math.max(0, numberValue(value)); }
+function positiveNumber(value: unknown, fallback: number): number { const number = numberValue(value); return number > 0 ? number : fallback; }
+function validDate(value: unknown): string | undefined { const text = stringValue(value); return text && !Number.isNaN(new Date(text).getTime()) ? new Date(text).toISOString() : undefined; }
+function safeId(value: unknown, fallback = "unknown"): string { return safeText(value, fallback, 180).replace(/[^A-Za-z0-9._:-]/g, "_"); }
+function publicRelatedId(value: string): string { return `related:${safeId(value)}`; }
+

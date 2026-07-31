@@ -59,6 +59,7 @@ import { webSearch, webFetch } from "./web-search-agent.js";
 import { parseAgentCitations } from "./web-search-agent.js";
 import { getSearchConfig as getSearchConfigFromAgent, updateSearchConfig as updateSearchConfigInAgent, listAvailableBackends, initSearchBackends, type SearchBackendId } from "./web-search-agent.js";
 import { ALL_SEARCH_BACKEND_IDS } from "./search-backends/index.js";
+import { RunRecordsService } from "./observability.js";
 
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
@@ -82,6 +83,7 @@ export class CaptureService {
   readonly researchLater: ResearchLaterService;
   readonly termDetection: TermDetectionService;
   readonly parentChainContext: ParentChainContextService;
+  readonly runRecords: RunRecordsService;
 
   constructor(
     private readonly store: CollectorStore,
@@ -90,6 +92,7 @@ export class CaptureService {
     private modelGateway?: ModelGateway,
     private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; selectionProvider?: ResearchSelectionProvider; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunSelectionTasks?: boolean; mvpDemoMode?: boolean } = {},
   ) {
+    this.runRecords = new RunRecordsService(this.store);
     this.attachModelGateway(this.modelGateway);
     this.parentChainContext = new ParentChainContextService(this.store);
     this.research = new ResearchSessionService(this.store, {
