@@ -7,6 +7,7 @@ import type { AppServices } from "../../app/services";
 import { makeMessage, makeNode, makeNodeView, makeSession, makeTask } from "../../test/fakes";
 import { ResearchNodePage } from "./ResearchNodePage";
 import type { ResearchNodeView } from "@collector/capture-contracts";
+import { captureSelection, readContentContext, resolveBlockRange } from "../selection/selection-capture";
 
 function renderNodePage(api: Partial<ApiClient>) {
   const services = {
@@ -56,6 +57,69 @@ describe("AI 回答分块渲染", () => {
 
     const el = await screen.findByText("只有一段。");
     expect(el.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p0");
+  });
+
+  it("弱标记可见但不改变正文 textContent，选区捕获仍按可见文字偏移精确定位", async () => {
+    const content = "**REST API** 在中文中也可读，HTTP 继续出现。";
+    const terms = ["REST", "API", "HTTP"].map((text) => ({
+      text,
+      blockOrdinal: 0,
+      startOffset: content.indexOf(text),
+      endOffset: content.indexOf(text) + text.length,
+      category: "abbreviation" as const,
+    }));
+    const view = viewWithAssistant(content);
+    view.termDetections = {
+      "m-out": { messageId: "m-out", detectedAt: "2026-07-31T00:00:00.000Z", terms },
+    };
+
+    const { container } = renderNodePage({ getResearchNodeView: async () => view });
+    await screen.findByText("REST", { selector: "[data-term-marker]" });
+    const block = container.querySelector<HTMLElement>("[data-block-text]")!;
+    expect(block.textContent).toBe("REST API 在中文中也可读，HTTP 继续出现。");
+    expect(Array.from(block.querySelectorAll<HTMLElement>("[data-term-marker]"), (marker) => marker.textContent)).toEqual([
+      "REST",
+      "API",
+      "HTTP",
+    ]);
+
+    const contentRoot = container.querySelector<HTMLElement>('[data-content-kind="message"]');
+    expect(contentRoot).not.toBeNull();
+    const context = readContentContext(contentRoot!);
+    expect(context).toBeDefined();
+    const termText = block.querySelector<HTMLElement>("[data-term-marker]")!.firstChild!;
+    const range = document.createRange();
+    range.setStart(termText, 0);
+    range.setEnd(termText, 4);
+    const resolved = resolveBlockRange(
+      {
+        collapsed: false,
+        startContainer: range.startContainer,
+        startOffset: range.startOffset,
+        endContainer: range.endContainer,
+        endOffset: range.endOffset,
+        toString: () => range.toString(),
+      },
+      context!,
+    );
+    expect(resolved).toMatchObject({ startOffset: 0, endOffset: 4, text: "REST", blockCount: 1 });
+    expect(captureSelection(resolved!, context!).anchor).toMatchObject({ exact: "REST", startOffset: 0, endOffset: 4 });
+  });
+
+  it("没有术语数据或偏移失效时保留原文，不渲染弱标记", async () => {
+    const content = "REST API 在中文中也可读，HTTP 继续出现。";
+    const view = viewWithAssistant(content);
+    view.termDetections = {
+      "m-out": {
+        messageId: "m-out",
+        detectedAt: "2026-07-31T00:00:00.000Z",
+        terms: [{ text: "REST", blockOrdinal: 0, startOffset: 999, endOffset: 1003, category: "abbreviation" }],
+      },
+    };
+    const { container } = renderNodePage({ getResearchNodeView: async () => view });
+    const block = (await screen.findByText(content)).closest("[data-block-text]") as HTMLElement;
+    expect(block.textContent).toBe(content);
+    expect(block.querySelector("[data-term-marker]")).toBeNull();
   });
 
   it("引用标记由 remark 插件从 [来源n] token 渲染为可悬停角标，编号与文末列表一致", async () => {

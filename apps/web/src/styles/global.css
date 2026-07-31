@@ -236,6 +236,15 @@ button {
   overflow-wrap: anywhere;
 }
 
+/* H3b 术语弱标记：只改变视觉提示，不新增文字、间距或交互语义。 */
+.term-marker {
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.16em;
+  text-decoration-color: color-mix(in srgb, var(--color-ai) 46%, transparent);
+}
+
 .message__blocks {
   display: grid;
   gap: var(--space-3);

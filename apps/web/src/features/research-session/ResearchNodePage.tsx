@@ -384,6 +384,7 @@ export function ResearchNodePage() {
                 }
                 citations={view.citations}
                 groundingSources={view.groundingSources}
+                terms={view.termDetections?.[message.id]?.terms}
               />
             );
           })}

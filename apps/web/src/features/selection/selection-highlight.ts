@@ -156,7 +156,7 @@ export function childNodeIdempotencyKey(
 /**
  * 在渲染后 DOM 的文本节点序列里按 [start, end) 偏移圈出 <mark class="selection-mark" data-selection-mark>。
  * 反向等价于 textOffsetWithin：从 root 的所有可见 Text 子节点构建纯文本，定位偏移后创建 Range，
- * 用 surroundContents 包裹 <mark>。
+ * 用 extractContents/insertNode 包裹 <mark>，允许选区跨过弱标记等内联元素。
  * 失败（偏移越界/文本节点边界不干净）返回 false，调用方应降级为 exact 文本搜索或兜底说明。
  */
 export function setRangeFromOffsets(root: Element, start: number, end: number): boolean {
@@ -200,7 +200,8 @@ export function setRangeFromOffsets(root: Element, start: number, end: number): 
     const mark = document.createElement("mark");
     mark.className = "selection-mark";
     mark.setAttribute("data-selection-mark", "");
-    range.surroundContents(mark);
+    mark.appendChild(range.extractContents());
+    range.insertNode(mark);
     return true;
   } catch {
     return false;

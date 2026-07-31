@@ -885,6 +885,8 @@ export interface ResearchNodeView {
   session: ResearchSessionRecord;
   messages: ResearchMessageRecord[];
   tasks: ResearchTaskRecord[];
+  /** H3b：按消息 ID 返回已校验的术语位置；缺失时客户端按原文渲染。 */
+  termDetections?: Record<string, TermDetectionResult>;
   childNodes?: ResearchNodeRecord[];
   groundingSources?: ResearchGroundingSourceRecord[];
   citations?: ResearchCitationRecord[];

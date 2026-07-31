@@ -1,9 +1,9 @@
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useLayoutEffect, useMemo, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
-import type { ResearchCitationRecord, ResearchGroundingSourceRecord } from "@collector/capture-contracts";
+import type { ResearchCitationRecord, ResearchGroundingSourceRecord, TermMarker } from "@collector/capture-contracts";
 import { CitationMarker } from "./CitationMarker";
 import { remarkCitationMarkers } from "../features/research-session/remark-citation-markers";
 import { buildCitationIndex, buildSourceMap } from "../features/research-session/citation-utils";
@@ -32,6 +32,7 @@ export interface MarkdownContentProps {
   text: string;
   sources?: readonly ResearchGroundingSourceRecord[];
   citations?: readonly ResearchCitationRecord[];
+  terms?: readonly TermMarker[];
   variant?: "message" | "insight";
   className?: string;
 }
@@ -43,7 +44,8 @@ export interface MarkdownContentProps {
  * - variant="insight" 时适用较简洁排版
  * - 对极速流式更新做 useMemo 防止闪烁
  */
-export function MarkdownContent({ text, sources = [], citations = [], variant = "message", className }: MarkdownContentProps) {
+export function MarkdownContent({ text, sources = [], citations = [], terms = [], variant = "message", className }: MarkdownContentProps) {
+  const rootRef = useRef<HTMLDivElement>(null);
   const sourceById = useMemo(() => buildSourceMap(sources), [sources]);
   const citationIndexById = useMemo(() => buildCitationIndex(citations), [citations]);
 
@@ -62,8 +64,25 @@ export function MarkdownContent({ text, sources = [], citations = [], variant = 
 
   const rootClass = variant === "insight" ? "markdown-content markdown-content--insight" : "markdown-content";
 
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+
+    clearTermMarkers(root);
+    let searchFrom = 0;
+    const validTerms = terms
+      .filter((term) => isValidTermMarker(text, term))
+      .sort((left, right) => left.startOffset - right.startOffset || left.endOffset - right.endOffset);
+
+    for (const term of validTerms) {
+      const match = findRenderedTextRange(root, term.text, searchFrom);
+      if (!match || !wrapTermRange(root, match, term.category)) continue;
+      searchFrom = match.endOffset;
+    }
+  }, [text, terms]);
+
   return (
-    <div className={`${rootClass}${className ? ` ${className}` : ""}`}>
+    <div ref={rootRef} className={`${rootClass}${className ? ` ${className}` : ""}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkBreaks, remarkCitationMarkers]}
         rehypePlugins={[[rehypeSanitize, safeSchema]]}
@@ -82,4 +101,93 @@ export function MarkdownContent({ text, sources = [], citations = [], variant = 
       </ReactMarkdown>
     </div>
   );
+}
+
+interface TextPoint {
+  node: Text;
+  offset: number;
+}
+
+interface RenderedTextRange {
+  start: TextPoint;
+  end: TextPoint;
+  endOffset: number;
+}
+
+function isValidTermMarker(text: string, marker: TermMarker): boolean {
+  return (
+    marker.text.length > 0 &&
+    Number.isSafeInteger(marker.startOffset) &&
+    Number.isSafeInteger(marker.endOffset) &&
+    marker.startOffset >= 0 &&
+    marker.endOffset > marker.startOffset &&
+    marker.endOffset <= text.length &&
+    text.slice(marker.startOffset, marker.endOffset) === marker.text
+  );
+}
+
+/** 读取 Markdown 渲染后的可见文字节点；引用角标没有正文，不参与术语定位。 */
+function renderedTextNodes(root: Element): Text[] {
+  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const textNode = node as Text;
+    const parent = textNode.parentElement;
+    if (parent?.closest("cite-marker")) continue;
+    nodes.push(textNode);
+  }
+  return nodes;
+}
+
+function findRenderedTextRange(root: Element, needle: string, fromOffset: number): RenderedTextRange | undefined {
+  if (!needle) return undefined;
+  const nodes = renderedTextNodes(root);
+  const visibleText = nodes.map((node) => node.data).join("");
+  const startOffset = visibleText.indexOf(needle, fromOffset);
+  if (startOffset < 0) return undefined;
+  const endOffset = startOffset + needle.length;
+  return {
+    start: pointAtOffset(nodes, startOffset),
+    end: pointAtOffset(nodes, endOffset),
+    endOffset,
+  };
+}
+
+function pointAtOffset(nodes: Text[], target: number): TextPoint {
+  let offset = 0;
+  for (const node of nodes) {
+    const nextOffset = offset + node.data.length;
+    if (target <= nextOffset) return { node, offset: target - offset };
+    offset = nextOffset;
+  }
+  const last = nodes[nodes.length - 1];
+  return { node: last, offset: last.data.length };
+}
+
+/** 用无语义的 span 包裹术语，保留原文字节点内容与 DOM 选区字符偏移。 */
+function wrapTermRange(root: Element, rendered: RenderedTextRange, category: TermMarker["category"]): boolean {
+  try {
+    const range = root.ownerDocument.createRange();
+    range.setStart(rendered.start.node, rendered.start.offset);
+    range.setEnd(rendered.end.node, rendered.end.offset);
+    const marker = root.ownerDocument.createElement("span");
+    marker.className = "term-marker";
+    marker.setAttribute("data-term-marker", "");
+    marker.setAttribute("data-term-category", category);
+    marker.appendChild(range.extractContents());
+    range.insertNode(marker);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clearTermMarkers(root: Element): void {
+  root.querySelectorAll<HTMLElement>("[data-term-marker]").forEach((marker) => {
+    const parent = marker.parentNode;
+    if (!parent) return;
+    while (marker.firstChild) parent.insertBefore(marker.firstChild, marker);
+    marker.remove();
+  });
 }

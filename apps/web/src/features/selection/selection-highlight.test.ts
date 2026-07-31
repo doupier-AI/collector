@@ -9,6 +9,7 @@ import {
   laterIdempotencyKey,
   resolveHighlight,
   selectionExcerpt,
+  setRangeFromOffsets,
 } from "./selection-highlight";
 
 describe("resolveHighlight", () => {
@@ -26,6 +27,20 @@ describe("resolveHighlight", () => {
 
   it("原文在块中不存在时返回 null，交由调用方降级", () => {
     expect(resolveHighlight("完全不同的段落内容", target)).toBeNull();
+  });
+});
+
+describe("setRangeFromOffsets", () => {
+  it("选区跨过术语弱标记时仍能高亮且不改变正文文字", () => {
+    const root = document.createElement("p");
+    root.innerHTML = '前<span class="term-marker" data-term-marker data-term-category="abbreviation">REST</span>后';
+    document.body.appendChild(root);
+    const before = root.textContent;
+
+    expect(setRangeFromOffsets(root, 0, 5)).toBe(true);
+    expect(root.textContent).toBe(before);
+    expect(root.querySelector("[data-selection-mark]")?.textContent).toBe("前REST");
+    expect(root.querySelector("[data-term-marker]")).not.toBeNull();
   });
 });
 

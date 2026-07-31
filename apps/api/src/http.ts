@@ -317,7 +317,7 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       }
       const researchNodeMatch = url.pathname.match(/^\/v1\/research-nodes\/([^/]+)$/);
       if (request.method === "GET" && researchNodeMatch) {
-        return json(response, 200, service.nodeGrowth.getNodeView(decodeURIComponent(researchNodeMatch[1])));
+        return json(response, 200, service.getResearchNodeView(decodeURIComponent(researchNodeMatch[1])));
       }
       const researchNodeChildrenMatch = url.pathname.match(/^\/v1\/research-nodes\/([^/]+)\/children$/);
       if (request.method === "GET" && researchNodeChildrenMatch) {

@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef } from "react";
-import type { ResearchCitationRecord, ResearchGroundingSourceRecord, ResearchMessageRecord, ResearchTaskRecord } from "@collector/capture-contracts";
+import type { ResearchCitationRecord, ResearchGroundingSourceRecord, ResearchMessageRecord, ResearchTaskRecord, TermMarker } from "@collector/capture-contracts";
 import { deriveMessageBlocks, messageContentBlockId } from "@collector/capture-contracts";
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
@@ -22,10 +22,11 @@ export interface MessageItemProps {
   highlight?: MessageHighlight;
   citations?: ResearchCitationRecord[];
   groundingSources?: ResearchGroundingSourceRecord[];
+  terms?: TermMarker[];
 }
 
 /** 单条消息。AI 消息与对应用户消息之间由 CSS 绘制克制的来源线与节点。 */
-export function MessageItem({ message, task, retrying = false, onRetry, highlight, citations = [], groundingSources = [] }: MessageItemProps) {
+export function MessageItem({ message, task, retrying = false, onRetry, highlight, citations = [], groundingSources = [], terms = [] }: MessageItemProps) {
   if (message.role === "user") {
     return (
       <li className="message message--user">
@@ -47,7 +48,7 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
       <p className="message__role">Collector</p>
       {message.status === "completed" ? (
         <>
-          <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} />
+          <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} terms={terms} />
           <GroundingScopeNote task={task} />
           <GroundingSources sources={taskSources} />
         </>
@@ -66,7 +67,7 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
  * Markdown 由 MarkdownContent 安全渲染；[来源n] 由 remark 插件转可悬停角标。
  * 返回高亮在渲染后 DOM 上用可见文本空间偏移圈 <mark>，偏移失败时兜底 exact 搜索。
  */
-function AssistantBlocks({ message, highlight, citations, groundingSources }: { message: ResearchMessageRecord; highlight?: MessageHighlight; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[] }) {
+function AssistantBlocks({ message, highlight, citations, groundingSources, terms }: { message: ResearchMessageRecord; highlight?: MessageHighlight; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[]; terms: TermMarker[] }) {
   const blocks = deriveMessageBlocks(message.content);
   if (blocks.length === 0) return <MarkdownContent text={message.content} sources={groundingSources} citations={citations} variant="message" />;
   const activeHighlight = highlight ?? undefined;
@@ -84,6 +85,7 @@ function AssistantBlocks({ message, highlight, citations, groundingSources }: { 
             highlight={thisHighlight}
             sources={groundingSources}
             citations={citations}
+            terms={terms.filter((term) => term.blockOrdinal === block.ordinal)}
           />
         );
       })}
@@ -92,7 +94,7 @@ function AssistantBlocks({ message, highlight, citations, groundingSources }: { 
 }
 
 /** 单个消息块：Markdown 渲染 + 渲染后 DOM 高亮（useLayoutEffect）。 */
-function MessageBlock({ blockText, blockId, highlight, sources, citations }: { blockText: string; blockId: string; highlight?: MessageHighlight; sources: ResearchGroundingSourceRecord[]; citations: ResearchCitationRecord[] }) {
+function MessageBlock({ blockText, blockId, highlight, sources, citations, terms }: { blockText: string; blockId: string; highlight?: MessageHighlight; sources: ResearchGroundingSourceRecord[]; citations: ResearchCitationRecord[]; terms: TermMarker[] }) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
@@ -117,7 +119,7 @@ function MessageBlock({ blockText, blockId, highlight, sources, citations }: { b
 
   return (
     <div className="message__content" data-block-id={blockId} data-block-text ref={containerRef}>
-      <MarkdownContent text={blockText} sources={sources} citations={citations} variant="message" />
+      <MarkdownContent text={blockText} sources={sources} citations={citations} terms={terms} variant="message" />
     </div>
   );
 }

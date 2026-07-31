@@ -148,6 +148,56 @@ test("research API persists an idempotent turn, streams fake-provider events, an
   reopened.close();
 });
 
+test("research node view exposes validated H3b term positions without changing message text", async (t) => {
+  const content = "**REST API** 在中文中也可读，HTTP 继续出现。";
+  const provider: ResearchGenerationProvider = {
+    provider: "term-marker-fake",
+    model: "term-marker-1",
+    promptVersion: "test-research-v1",
+    async *generate() {
+      yield content;
+    },
+  };
+  const harness = await createHarness(provider);
+  t.after(() => harness.close());
+
+  const sessionResponse = await fetch(`${harness.base}/v1/research-sessions`, {
+    method: "POST",
+    headers: { ...authHeaders(harness.token), "Idempotency-Key": randomUUID() },
+    body: JSON.stringify({ title: "术语弱标记" }),
+  });
+  assert.equal(sessionResponse.status, 201);
+  const session = await sessionResponse.json() as { id: string };
+  const turnResponse = await fetch(`${harness.base}/v1/research-sessions/${session.id}/messages`, {
+    method: "POST",
+    headers: { ...authHeaders(harness.token), "Idempotency-Key": randomUUID() },
+    body: JSON.stringify({ content: "请解释 REST API 和 HTTP 在中文中的含义" }),
+  });
+  assert.equal(turnResponse.status, 202);
+  const turn = await turnResponse.json() as { task: { id: string } };
+  await waitForTask(harness.base, harness.token, turn.task.id, "completed");
+
+  const nodeResponse = await fetch(`${harness.base}/v1/research-nodes/${session.id}`, {
+    headers: authHeaders(harness.token),
+  });
+  assert.equal(nodeResponse.status, 200);
+  const view = await nodeResponse.json() as {
+    messages: Array<{ id: string; role: string; status: string; content: string }>;
+    termDetections?: Record<string, { messageId: string; terms: Array<{ text: string; blockOrdinal: number; startOffset: number; endOffset: number }> }>;
+  };
+  const assistant = view.messages.find((message) => message.role === "assistant");
+  assert.equal(assistant?.status, "completed");
+  assert.ok(assistant);
+  const detection = view.termDetections?.[assistant.id];
+  assert.ok(detection);
+  assert.equal(detection.messageId, assistant.id);
+  assert.deepEqual(detection.terms.map((term) => term.text), ["REST", "API", "HTTP"]);
+  for (const term of detection.terms) {
+    assert.equal(assistant.content.slice(term.startOffset, term.endOffset), term.text);
+  }
+  assert.equal(view.termDetections?.[view.messages[0]?.id ?? ""], undefined);
+});
+
 test("concurrent session creation and restart reuse one idempotency key", async (t) => {
   const harness = await createHarness();
   t.after(() => harness.close());
