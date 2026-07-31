@@ -210,8 +210,7 @@ test("未配置模型：分析失败仍可通过胶囊发起深入研究，来�
   });
 });
 
-// 阶段 H4a 暂停：旧窗口的"稍后再学"入口已退役，新入口由票据 08 提供
-test("未配置模型：选区仍可点击【标记】并保存笔记，不依赖 AI", async ({ page }) => {
+test("未配置模型：标记保存后可在列表查看并返回原选区，不依赖 AI", async ({ page }) => {
   test.setTimeout(45_000);
   await pairAndOpen(page, "/research/new");
 
@@ -256,9 +255,28 @@ test("未配置模型：选区仍可点击【标记】并保存笔记，不依�
   const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
   const items = readResearchLaterTables(dbPath).laterItems.filter((row) => row.sessionId === created.id);
   expect(items).toHaveLength(1);
-  const record = JSON.parse(items[0]?.recordJson ?? "{}") as { note?: string };
+  const item = items[0];
+  expect(item).toBeDefined();
+  const record = JSON.parse(item?.recordJson ?? "{}") as { note?: string };
   expect(record.note).toBe("无模型也要保存笔记");
-});
 
-// 阶段 H4a 暂停：旧窗口的"稍后再学"入口已退役，新入口由票据 08 提供
- test.skip("未配置模型：分析失败仍可保存稍后再学（H4a 后暂停）", async () => {});
+  // 标记列表展示原选区、笔记、来源节点与时间，并可返回原文
+  const marksPanel = page.getByRole("complementary", { name: "标记" });
+  await expect(marksPanel).toBeVisible();
+  await expect(marksPanel).toContainText("无模型下也要保存这条标记笔记");
+  await expect(marksPanel).toContainText("无模型也要保存笔记");
+  await expect(marksPanel).toContainText("来源节点：无模型标记.txt");
+  await page.getByTestId(`mark-open-${item!.id}`).click();
+  await expect(page).toHaveURL(new RegExp(`/research/${created.id}/reading/[^/]+\\?sel=`));
+  await expect(page.locator("[data-selection-mark]")).toHaveText("无模型下也要保存这条标记笔记", { timeout: 10_000 });
+  await expect(page.locator('[data-testid="floating-selection-capsule"]:not([aria-hidden="true"])')).toBeVisible();
+  await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
+  await page.locator('[data-testid="floating-selection-capsule"]:not([aria-hidden="true"])').getByTestId("floating-capsule-cite").click();
+  await expect(page.getByTestId("selection-capsule")).toBeVisible();
+
+  // 刷新后列表与高亮仍由持久化记录恢复，且不会自动进入引用态
+  await page.reload();
+  await expect(marksPanel).toContainText("无模型也要保存笔记");
+  await expect(page.locator('[data-testid="floating-selection-capsule"]:not([aria-hidden="true"])')).toBeVisible();
+  await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
+});

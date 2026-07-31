@@ -7,8 +7,8 @@ import { SidebarResizeHandle } from "../../components/AppShell/SidebarResizeHand
 import { apiErrorCopy } from "../../api/errors";
 import { formatSessionTime } from "../research-session/format";
 import { PAIRED_EVENT } from "../auth/paired-event";
-import { backRouteForSelection } from "../selection/selection-highlight";
-import { LATER_CHANGED_EVENT, notifyLaterChanged } from "./later-event";
+import { backRouteForSelection, selectionExcerpt } from "../selection/selection-highlight";
+import { LATER_CHANGED_EVENT } from "./later-event";
 
 export interface LaterPanelProps {
   /** fixed：宽屏固定侧栏（可拖拽调宽）；overlay：窄屏覆盖抽屉（遮罩 + Escape）。 */
@@ -23,22 +23,10 @@ type LaterState =
   | { kind: "error"; message: string }
   | { kind: "ready"; items: ResearchLaterItemView[] };
 
-function LaterStars({ priority }: { priority: number }) {
-  return (
-    <span className="later-item__stars">
-      <span aria-hidden="true">
-        {"★".repeat(priority)}
-        {"☆".repeat(Math.max(0, 5 - priority))}
-      </span>
-      <span className="sr-only">{`${priority} 星优先级`}</span>
-    </span>
-  );
-}
-
 /**
- * 右侧「稍后再学」侧栏：呈现真实列表（概括、星级、来源、时间、待学数量徽标）。
- * 保存、展示与返回不依赖 AI；点击项目返回原内容原选区并自动重开选区窗口。
- * 数据在面板内获取，配对完成与稍后再学变更（保存 / 更新）后刷新，与左侧会话列表同一模式。
+ * 右侧「标记」侧栏：呈现选区原文、用户笔记、来源节点与时间。
+ * 保存、展示与返回不依赖 AI；点击项目返回原内容原选区并恢复高亮与浮动胶囊。
+ * 数据在面板内获取，配对完成与标记变更后刷新，与左侧会话列表同一模式。
  */
 export function LaterPanel({ mode, width, onWidthChange, onClose }: LaterPanelProps) {
   const { api } = useServices();
@@ -46,8 +34,6 @@ export function LaterPanel({ mode, width, onWidthChange, onClose }: LaterPanelPr
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [state, setState] = useState<LaterState>({ kind: "loading" });
   const [reloadNonce, setReloadNonce] = useState(0);
-  const [actingItemId, setActingItemId] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
     if (mode === "overlay") closeButtonRef.current?.focus();
@@ -94,43 +80,18 @@ export function LaterPanel({ mode, width, onWidthChange, onClose }: LaterPanelPr
     if (mode === "overlay") onClose();
   }
 
-  async function toggleStatus(view: ResearchLaterItemView): Promise<void> {
-    const next = view.item.status === "pending" ? "done" : "pending";
-    setActingItemId(view.item.id);
-    setActionError(null);
-    try {
-      await api.updateResearchLaterItem(view.item.id, { status: next });
-      notifyLaterChanged();
-    } catch (error) {
-      setActionError(apiErrorCopy(error).body);
-    } finally {
-      setActingItemId(null);
-    }
-  }
-
   const items = state.kind === "ready" ? state.items : [];
-  const pending = items.filter((view) => view.item.status === "pending");
-  const done = items.filter((view) => view.item.status === "done");
 
   function renderItem(view: ResearchLaterItemView) {
-    const isDone = view.item.status === "done";
     return (
-      <li key={view.item.id} className={`later-item${isDone ? " later-item--done" : ""}`}>
-        <button type="button" className="later-item__open" onClick={() => openItem(view)} data-testid={`later-open-${view.item.id}`}>
-          <span className="later-item__summary">{view.item.summary}</span>
+      <li key={view.item.id} className="later-item">
+        <button type="button" className="later-item__open" onClick={() => openItem(view)} data-testid={`mark-open-${view.item.id}`}>
+          <span className="later-item__excerpt">{selectionExcerpt(view.selection.text, 72)}</span>
+          <span className="later-item__note">{view.item.note ?? "未添加笔记"}</span>
           <span className="later-item__meta">
-            <LaterStars priority={view.item.priority} />
-            <span className="later-item__source">《{view.sourceTitle}》</span>
-            <span className="later-item__time">{formatSessionTime(view.item.createdAt)}</span>
+            <span className="later-item__source">来源节点：{view.sourceNode.label}</span>
+            <time className="later-item__time" dateTime={view.item.createdAt}>{formatSessionTime(view.item.createdAt)}</time>
           </span>
-        </button>
-        <button
-          type="button"
-          className="later-item__toggle"
-          onClick={() => void toggleStatus(view)}
-          disabled={actingItemId === view.item.id}
-        >
-          {isDone ? "恢复待学" : "标记完成"}
         </button>
       </li>
     );
@@ -141,16 +102,16 @@ export function LaterPanel({ mode, width, onWidthChange, onClose }: LaterPanelPr
       {mode === "overlay" ? <div className="panel-backdrop" onClick={onClose} aria-hidden="true" /> : null}
       <aside
         className={`later-panel${mode === "fixed" ? " later-panel--fixed" : ""}`}
-        id="later-panel"
-        aria-label="稍后再学"
+        id="marks-panel"
+        aria-label="标记"
         style={mode === "fixed" ? { width } : undefined}
       >
         <div className="later-panel__header">
           <p className="later-panel__title">
-            稍后再学
-            {pending.length > 0 ? (
-              <span className="later-panel__badge" data-testid="later-count">
-                {pending.length}
+            标记
+            {items.length > 0 ? (
+              <span className="later-panel__badge" data-testid="mark-count">
+                {items.length}
               </span>
             ) : null}
           </p>
@@ -160,40 +121,26 @@ export function LaterPanel({ mode, width, onWidthChange, onClose }: LaterPanelPr
         </div>
 
         {state.kind === "loading" ? (
-          <div aria-label="正在读取稍后再学">
+          <div aria-label="正在读取标记">
             <Skeleton lines={3} />
           </div>
         ) : state.kind === "error" ? (
           <div className="later-panel__error">
-            <p className="later-panel__empty">暂时无法读取稍后再学。</p>
+            <p className="later-panel__empty">暂时无法读取标记。</p>
             <button type="button" className="button button--secondary" onClick={() => setReloadNonce((nonce) => nonce + 1)}>
               重试
             </button>
           </div>
         ) : items.length === 0 ? (
-          <p className="later-panel__empty" data-testid="later-empty">
-            还没有稍后再学项目。在阅读中选择一段文字，就可以保存到这里，稍后回来继续。
+          <p className="later-panel__empty" data-testid="mark-empty">
+            还没有标记。在阅读中选择一段文字，就可以保存到这里，之后随时回来查看。
           </p>
         ) : (
-          <>
-            <ul className="later-panel__list">{pending.map(renderItem)}</ul>
-            {done.length > 0 ? (
-              <>
-                <h3 className="later-panel__section">已完成（{done.length}）</h3>
-                <ul className="later-panel__list">{done.map(renderItem)}</ul>
-              </>
-            ) : null}
-          </>
+          <ul className="later-panel__list">{items.map(renderItem)}</ul>
         )}
 
-        {actionError ? (
-          <p className="form-error" role="alert">
-            {actionError}
-          </p>
-        ) : null}
-
         {mode === "fixed" ? (
-          <SidebarResizeHandle side="right" width={width} onResize={onWidthChange} label="调整稍后再学侧栏宽度" />
+          <SidebarResizeHandle side="right" width={width} onResize={onWidthChange} label="调整标记侧栏宽度" />
         ) : null}
       </aside>
     </>

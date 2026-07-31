@@ -155,25 +155,25 @@ export function ReadingPage() {
     }
   }, [restoreKey, reducedMotion]);
 
-  // ?sel= 恢复选区时直接显示引用胶囊（仅当快照选区属于当前快照时）
-  const currentSnapshotId = state.kind === "ready" ? state.snapshot.id : null;
-  const restoredCitedRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!restoredSelection || restoredCitedRef.current === restoredSelection.id) return;
-    if (!currentSnapshotId) return;
-    const anchor = restoredSelection.anchor;
-    if (anchor.kind === "snapshot" && anchor.contentSnapshotId !== currentSnapshotId) return;
-    restoredCitedRef.current = restoredSelection.id;
-    captureCitation(anchor, restoredSelection.text);
-  }, [restoredSelection, captureCitation, currentSnapshotId]);
-
   // 修订一 #11：?sel= 恢复高亮后，浮动胶囊呈现在高亮标记上方（与节点页一致）
   const [restoredCapsuleRect, setRestoredCapsuleRect] = useState<SelectionRect | null>(null);
   const [restoreCapsuleDismissedId, setRestoreCapsuleDismissedId] = useState<string | null>(null);
   const handleRestoreCite = useCallback(() => {
-    if (restoredSelection) setRestoreCapsuleDismissedId(restoredSelection.id);
+    if (restoredSelection) {
+      captureCitation(restoredSelection.anchor, restoredSelection.text);
+      setRestoreCapsuleDismissedId(restoredSelection.id);
+    }
     focusComposerTextarea();
-  }, [restoredSelection]);
+  }, [captureCitation, restoredSelection]);
+  const handleRestoreMark = useCallback(() => {
+    if (!restoredSelection || !restoredCapsuleRect) return;
+    setRestoreCapsuleDismissedId(restoredSelection.id);
+    setMarkEditor({
+      rect: restoredCapsuleRect,
+      text: restoredSelection.text,
+      pending: mark(restoredSelection.anchor, restoredSelection.text),
+    });
+  }, [mark, restoredCapsuleRect, restoredSelection]);
   const dismissRestoreCapsule = useCallback(() => {
     if (restoredSelection) setRestoreCapsuleDismissedId(restoredSelection.id);
   }, [restoredSelection]);
@@ -335,7 +335,7 @@ export function ReadingPage() {
       />
 
       {restoredSelection && restoredCapsuleRect && restoreCapsuleDismissedId !== restoredSelection.id ? (
-        <FloatingSelectionCapsule rect={restoredCapsuleRect} onCite={handleRestoreCite} />
+        <FloatingSelectionCapsule rect={restoredCapsuleRect} onCite={handleRestoreCite} onMark={handleRestoreMark} />
       ) : null}
 
       {markEditor ? (

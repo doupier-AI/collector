@@ -271,6 +271,7 @@ describe("ResearchNodePage 带来源的根节点（旧独立会话）", () => {
   });
 
   it("来源返回：消息选区在回答中重定位并高亮", async () => {
+    const user = userEvent.setup();
     // 选区锚点指向本页消息块内偏移 2–6 的“不同头可”——与块文本切片一致
     const selection = makeSelection({
       id: "sel-1",
@@ -285,14 +286,15 @@ describe("ResearchNodePage 带来源的根节点（旧独立会话）", () => {
         exact: "不同头可",
       },
     });
+    const createResearchSelection = vi.fn(async () => ({
+      selection,
+      task: makeSelectionTask({ id: "sel-task-1", status: "completed" }),
+    }));
     renderNodePage(
       {
         getResearchNodeView: async () => readyRootView(),
         getResearchSelection: async () => selection,
-        createResearchSelection: async () => ({
-          selection,
-          task: makeSelectionTask({ id: "sel-task-1", status: "completed" }),
-        }),
+        createResearchSelection,
       },
       "/research/session-1/node/session-1?sel=sel-1",
     );
@@ -300,8 +302,13 @@ describe("ResearchNodePage 带来源的根节点（旧独立会话）", () => {
     const mark = await screen.findByText("不同头可", { selector: "[data-selection-mark]" });
     expect(mark.tagName).toBe("MARK");
     expect(screen.queryByTestId("selection-restore-fallback")).not.toBeInTheDocument();
-    // 来源返回时直接显示引用胶囊（不再弹旧面板）
+    // 来源返回先显示浮动胶囊；明确点击引用后才进入引用态
+    expect(await screen.findByTestId("floating-selection-capsule")).toBeInTheDocument();
+    expect(screen.queryByTestId("selection-capsule")).not.toBeInTheDocument();
+    expect(createResearchSelection).not.toHaveBeenCalled();
+    await user.click(screen.getByTestId("floating-capsule-cite"));
     expect(await screen.findByTestId("selection-capsule")).toBeInTheDocument();
+    expect(createResearchSelection).toHaveBeenCalledTimes(1);
   });
 
   it("来源返回：原消息不存在时降级展示保存原文与段落说明", async () => {
@@ -487,6 +494,7 @@ describe("ResearchNodePage 子节点", () => {
   });
 
   it("子节点页来源返回重开窗口时，创建选区携带当前节点 id", async () => {
+    const user = userEvent.setup();
     const selection = makeSelection({
       id: "sel-1",
       sessionId: "session-1",
@@ -511,7 +519,11 @@ describe("ResearchNodePage 子节点", () => {
       "/research/session-1/node/node-child-1?sel=sel-1",
     );
 
-    // 来源返回时直接显示引用胶囊（不再弹旧面板），创建选区携带当前节点 id
+    // 来源返回先显示浮动胶囊，明确点击引用后创建选区并携带当前节点 id
+    await screen.findByTestId("floating-selection-capsule");
+    expect(screen.queryByTestId("selection-capsule")).not.toBeInTheDocument();
+    expect(createResearchSelection).not.toHaveBeenCalled();
+    await user.click(screen.getByTestId("floating-capsule-cite"));
     await screen.findByTestId("selection-capsule");
     await waitFor(() => expect(createResearchSelection).toHaveBeenCalledTimes(1));
     const [sessionId, input] = createResearchSelection.mock.calls[0];

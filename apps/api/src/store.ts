@@ -7,12 +7,17 @@ import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, t
 export interface ResearchLaterStore {
   getResearchLaterItem(id: string): ResearchLaterItemRecord | undefined;
   findResearchLaterItemByCreationKey(idempotencyKey: string): ResearchLaterItemRecord | undefined;
+  /** 兼容旧客户端幂等键：同一选区只能保留一条标记。 */
+  findResearchLaterItemBySelectionId?(selectionId: string): ResearchLaterItemRecord | undefined;
   listResearchLaterItems(status?: ResearchLaterItemStatus): ResearchLaterItemRecord[];
   createResearchLaterItem(item: ResearchLaterItemRecord, idempotencyKey: string): Promise<ResearchLaterItemRecord>;
   saveResearchLaterItem(record: ResearchLaterItemRecord): Promise<void>;
   getResearchSelection(id: string): ResearchSelectionRecord | undefined;
   getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined;
   getResearchSession(id: string): ResearchSessionRecord | undefined;
+  /** 节点投影由 CollectorStore 的节点能力提供；旧 JsonStore 返回空值。 */
+  getResearchNode(id: string): ResearchNodeRecord | undefined;
+  listResearchMessagesByNode(nodeId: string): ResearchMessageRecord[];
 }
 
 /** 选区分析所需的持久化能力：16 个专属方法。 */
@@ -1690,6 +1695,10 @@ export class SqliteStore implements CollectorStore {
     return this.getRecord<ResearchLaterItemRecord>("SELECT record_json FROM research_later_items WHERE creation_idempotency_key = ?", idempotencyKey);
   }
 
+  findResearchLaterItemBySelectionId(selectionId: string): ResearchLaterItemRecord | undefined {
+    return this.getRecord<ResearchLaterItemRecord>("SELECT record_json FROM research_later_items WHERE selection_id = ? ORDER BY created_at ASC, rowid ASC LIMIT 1", selectionId);
+  }
+
   listResearchLaterItems(status?: ResearchLaterItemStatus): ResearchLaterItemRecord[] {
     if (status) {
       return this.listRecords<ResearchLaterItemRecord>("SELECT record_json FROM research_later_items WHERE status = ? ORDER BY created_at DESC, rowid DESC", status);
@@ -2725,6 +2734,7 @@ export class JsonStore implements CollectorStore {
   async createResearchChildNode(_parentNode: ResearchNodeRecord, _node: ResearchNodeRecord, _selection: ResearchSelectionRecord, _inputMessage: ResearchMessageRecord, _outputMessage: ResearchMessageRecord, _task: ResearchTaskRecord): Promise<NodeGrowthAccepted> { throw new Error("Research nodes require SQLite persistence"); }
   getResearchLaterItem(_id: string): ResearchLaterItemRecord | undefined { return undefined; }
   findResearchLaterItemByCreationKey(_idempotencyKey: string): ResearchLaterItemRecord | undefined { return undefined; }
+  findResearchLaterItemBySelectionId(_selectionId: string): ResearchLaterItemRecord | undefined { return undefined; }
   listResearchLaterItems(_status?: ResearchLaterItemStatus): ResearchLaterItemRecord[] { return []; }
   async createResearchLaterItem(_item: ResearchLaterItemRecord, _idempotencyKey: string): Promise<ResearchLaterItemRecord> { throw new Error("Research later items require SQLite persistence"); }
   async saveResearchLaterItem(_record: ResearchLaterItemRecord): Promise<void> { throw new Error("Research later items require SQLite persistence"); }

@@ -107,9 +107,10 @@ async function createSelectionOn(
 }
 
 interface LaterView {
-  item: { id: string; sessionId: string; selectionId: string; summary: string; priority: number; status: string; note?: string; createdAt: string; updatedAt: string };
+  item: { id: string; sessionId: string; nodeId?: string; selectionId: string; summary: string; priority: number; status: string; note?: string; createdAt: string; updatedAt: string };
   selection: { id: string; text: string };
   sourceTitle: string;
+  sourceNode: { id: string; label: string };
 }
 
 test("creates a later item from a message selection without any AI dependency", async (t) => {
@@ -123,6 +124,7 @@ test("creates a later item from a message selection without any AI dependency", 
   assert.equal(response.status, 201);
   const view = await response.json() as LaterView;
   assert.equal(view.item.sessionId, session.id);
+  assert.equal(view.item.nodeId, session.id);
   assert.equal(view.item.selectionId, created.selection.id);
   assert.equal(view.item.status, "pending");
   assert.equal(view.item.priority, 3);
@@ -131,6 +133,7 @@ test("creates a later item from a message selection without any AI dependency", 
   assert.equal(view.item.summary, exact);
   assert.equal(view.selection.text, exact);
   assert.equal(view.sourceTitle, SESSION_TITLE);
+  assert.deepEqual(view.sourceNode, { id: session.id, label: SESSION_TITLE });
   assert.equal(harness.store.listResearchLaterItems().length, 1);
 });
 
@@ -171,6 +174,31 @@ test("idempotent replay returns the same item without duplicates", async (t) => 
   const first = await (await postJson(harness.base, harness.token, "/v1/research-later-items", { selectionId: created.selection.id }, key)).json() as LaterView;
   const second = await (await postJson(harness.base, harness.token, "/v1/research-later-items", { selectionId: created.selection.id }, key)).json() as LaterView;
   assert.equal(second.item.id, first.item.id);
+  assert.equal(harness.store.listResearchLaterItems().length, 1);
+});
+
+test("mark idempotency is compatible with a legacy later key", async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.close());
+  const { session, assistantMessage } = await createSessionWithAnswer(harness);
+  const created = await createSelectionOn(harness, session.id, anchorForSelection(assistantMessage.id, 1, "实践建议"));
+
+  const legacy = await (await postJson(
+    harness.base,
+    harness.token,
+    "/v1/research-later-items",
+    { selectionId: created.selection.id },
+    `later:${created.selection.id}`,
+  )).json() as LaterView;
+  const mark = await (await postJson(
+    harness.base,
+    harness.token,
+    "/v1/research-later-items",
+    { selectionId: created.selection.id },
+    `mark:${created.selection.id}`,
+  )).json() as LaterView;
+
+  assert.equal(mark.item.id, legacy.item.id);
   assert.equal(harness.store.listResearchLaterItems().length, 1);
 });
 

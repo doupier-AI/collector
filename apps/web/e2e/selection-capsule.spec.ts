@@ -213,7 +213,7 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     await expect(capsule).toContainText(second);
   });
 
-  test("刷新后 ?sel= 恢复引用态胶囊（不弹旧面板）", async ({ page }) => {
+  test("刷新后 ?sel= 恢复浮动胶囊，明确引用后才进入引用态", async ({ page }) => {
     await pairAndOpen(page, "/research/new");
     const sessionId = await submitFirstQuestion(page);
     await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
@@ -243,7 +243,10 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     // 返回根节点并携带 ?sel= 参数
     await page.goto(`/research/${sessionId}/node/${sessionId}?sel=${selId}`);
 
-    // 引用态胶囊出现（不弹旧面板）
+    // 先恢复浮动胶囊，不自动创建引用；明确点击后才进入引用态
+    await expect(page.getByTestId("floating-selection-capsule")).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
+    await page.getByTestId("floating-capsule-cite").click();
     await expect(page.getByTestId("selection-capsule")).toBeVisible({ timeout: 10_000 });
     await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
     // 高亮标记也在

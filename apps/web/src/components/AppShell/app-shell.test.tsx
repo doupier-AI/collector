@@ -53,10 +53,10 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
     renderShell();
 
     expect(screen.getByRole("button", { name: "内容" })).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("button", { name: "稍后再学" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "标记" })).toHaveAttribute("aria-expanded", "true");
     expect(await screen.findByRole("navigation", { name: "内容导航" })).toBeInTheDocument();
-    expect(screen.getByRole("complementary", { name: "稍后再学" })).toBeInTheDocument();
-    expect(await screen.findByTestId("later-empty")).toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "标记" })).toBeInTheDocument();
+    expect(await screen.findByTestId("mark-empty")).toBeInTheDocument();
     // 不再出现旧的弹层提示
     expect(screen.queryByText(/将在后续版本提供/)).not.toBeInTheDocument();
   });
@@ -80,7 +80,7 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
     expect(handle).toHaveAttribute("aria-valuenow", "400");
 
     // 右侧栏手柄方向相反：ArrowLeft 变宽
-    const rightHandle = screen.getByRole("separator", { name: "调整稍后再学侧栏宽度" });
+    const rightHandle = screen.getByRole("separator", { name: "调整标记侧栏宽度" });
     rightHandle.focus();
     await user.keyboard("{ArrowLeft}");
     expect(rightHandle).toHaveAttribute("aria-valuenow", "280");
@@ -99,8 +99,8 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
     await user.click(screen.getByRole("button", { name: "内容" }));
     expect(await screen.findByRole("navigation", { name: "内容导航" })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "稍后再学" }));
-    expect(screen.queryByRole("complementary", { name: "稍后再学" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "标记" }));
+    expect(screen.queryByRole("complementary", { name: "标记" })).not.toBeInTheDocument();
   });
 });
 
@@ -111,7 +111,7 @@ describe("AppShell 窄屏（<900px）覆盖抽屉", () => {
     renderShell();
 
     expect(screen.queryByRole("navigation", { name: "内容导航" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("complementary", { name: "稍后再学" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "标记" })).not.toBeInTheDocument();
 
     const trigger = screen.getByRole("button", { name: "内容" });
     expect(trigger).toHaveAttribute("aria-expanded", "false");
@@ -135,8 +135,8 @@ describe("AppShell 窄屏（<900px）覆盖抽屉", () => {
     await user.click(screen.getByRole("button", { name: "内容" }));
     expect(await screen.findByRole("navigation", { name: "内容导航" })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "稍后再学" }));
+    await user.click(screen.getByRole("button", { name: "标记" }));
     expect(screen.queryByRole("navigation", { name: "内容导航" })).not.toBeInTheDocument();
-    expect(await screen.findByRole("complementary", { name: "稍后再学" })).toBeInTheDocument();
+    expect(await screen.findByRole("complementary", { name: "标记" })).toBeInTheDocument();
   });
 });

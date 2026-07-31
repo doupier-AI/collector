@@ -26,7 +26,7 @@ function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 /**
- * 顶栏（左“内容”、中“节点树”、右“稍后再学”图标按钮）+ 左右侧栏 + 主内容区。
+ * 顶栏（左“内容”、中“节点树”、右“标记”图标按钮）+ 左右侧栏 + 主内容区。
  * 宽屏（≥900px）两侧为固定侧栏、初始展开，可拖拽调宽；
  * 窄屏为覆盖抽屉、初始收起，遮罩点击或 Escape 关闭后焦点回到触发按钮。
  * 节点树为全屏覆盖层：按钮或快捷键 t（焦点不在输入控件时）唤出。
@@ -136,9 +136,9 @@ export function AppShell() {
           type="button"
           ref={rightTriggerRef}
           className="app-bar__icon-button"
-          aria-label="稍后再学"
+          aria-label="标记"
           aria-expanded={rightVisible}
-          aria-controls="later-panel"
+          aria-controls="marks-panel"
           onClick={toggleRight}
         >
           <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">

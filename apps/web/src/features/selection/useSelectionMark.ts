@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import type { ResearchSelectionAnchor } from "@collector/capture-contracts";
 import { useServices } from "../../app/services";
+import { notifyLaterChanged } from "../navigation/later-event";
 import { markIdempotencyKey, selectionIdempotencyKey } from "./selection-highlight";
 
 export interface MarkResult {
@@ -38,6 +39,7 @@ export function useSelectionMark(options: { sessionId: string; nodeId?: string }
           { selectionId: accepted.selection.id },
           markIdempotencyKey(accepted.selection.id),
         );
+        notifyLaterChanged();
         return { itemId: view.item.id, note: view.item.note };
       } catch (error) {
         console.error("标记创建失败:", error);
@@ -51,6 +53,7 @@ export function useSelectionMark(options: { sessionId: string; nodeId?: string }
     async (itemId: string, note: string): Promise<boolean> => {
       try {
         await api.updateResearchLaterItem(itemId, { note });
+        notifyLaterChanged();
         return true;
       } catch (error) {
         console.error("笔记保存失败:", error);

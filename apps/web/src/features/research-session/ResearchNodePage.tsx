@@ -113,25 +113,30 @@ export function ResearchNodePage() {
     [markEditor, saveNote],
   );
 
-  // 来源返回：?sel= 查询参数恢复选区，直接显示引用胶囊（不弹旧面板）
+  // 来源返回：?sel= 查询参数恢复选区；引用与标记都必须由用户在浮动胶囊中明确触发
   const [searchParams] = useSearchParams();
   const restoredSelection = useSelectionRestore(searchParams.get("sel"));
-  const restoredCitedRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!restoredSelection || restoredCitedRef.current === restoredSelection.id) return;
-    restoredCitedRef.current = restoredSelection.id;
-    // 从已存选区记录直接构造引用，不需要再创建选区记录
-    captureCitation(restoredSelection.anchor, restoredSelection.text);
-  }, [restoredSelection, captureCitation]);
 
   // 修订一 #11：?sel= 恢复高亮后，浮动胶囊呈现在高亮标记上方；
-  // 点击【引用】只收起胶囊并回归焦点（引用态已由恢复流程创建）
+  // 点击【引用】才创建引用态；点击【标记】进入同一套标记笔记编辑器
   const [restoredCapsuleRect, setRestoredCapsuleRect] = useState<SelectionRect | null>(null);
   const [restoreCapsuleDismissedId, setRestoreCapsuleDismissedId] = useState<string | null>(null);
   const handleRestoreCite = useCallback(() => {
-    if (restoredSelection) setRestoreCapsuleDismissedId(restoredSelection.id);
+    if (restoredSelection) {
+      captureCitation(restoredSelection.anchor, restoredSelection.text);
+      setRestoreCapsuleDismissedId(restoredSelection.id);
+    }
     focusComposerTextarea();
-  }, [restoredSelection]);
+  }, [captureCitation, restoredSelection]);
+  const handleRestoreMark = useCallback(() => {
+    if (!restoredSelection || !restoredCapsuleRect) return;
+    setRestoreCapsuleDismissedId(restoredSelection.id);
+    setMarkEditor({
+      rect: restoredCapsuleRect,
+      text: restoredSelection.text,
+      pending: mark(restoredSelection.anchor, restoredSelection.text),
+    });
+  }, [mark, restoredCapsuleRect, restoredSelection]);
   const dismissRestoreCapsule = useCallback(() => {
     if (restoredSelection) setRestoreCapsuleDismissedId(restoredSelection.id);
   }, [restoredSelection]);
@@ -457,7 +462,7 @@ export function ResearchNodePage() {
       />
 
       {restoredSelection && restoredCapsuleRect && restoreCapsuleDismissedId !== restoredSelection.id ? (
-        <FloatingSelectionCapsule rect={restoredCapsuleRect} onCite={handleRestoreCite} />
+        <FloatingSelectionCapsule rect={restoredCapsuleRect} onCite={handleRestoreCite} onMark={handleRestoreMark} />
       ) : null}
 
       {markEditor ? (

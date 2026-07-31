@@ -54,7 +54,7 @@ export async function pairAndOpen(page: Page, path = "/"): Promise<void> {
   if (path !== "/") await page.goto(path);
 }
 
-/** 在最后一个 AI 回答块内选中指定文字并触发 mouseup，供选区/深入研究/稍后再学测试复用。
+/** 在最后一个 AI 回答块内选中指定文字并触发 mouseup，供选区/深入研究/标记测试复用。
  * 实现改为在 data-block-text 容器内查找包含目标文字的最深层文本节点，兼容 Markdown 渲染后
  * 的嵌套结构（例如 .markdown-content > p）。
  */
@@ -292,7 +292,7 @@ export interface ResearchLaterItemRow {
   recordJson: string;
 }
 
-/** 只读打开 harness 的 SQLite，核对稍后再学项目记录（summary 在 record_json 内）。 */
+/** 只读打开 harness 的 SQLite，核对标记记录（兼容旧 summary 字段，笔记在 record_json 内）。 */
 export function readResearchLaterTables(dbPath: string): { laterItems: ResearchLaterItemRow[] } {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {

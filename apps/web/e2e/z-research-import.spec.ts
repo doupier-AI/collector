@@ -311,10 +311,10 @@ test("阅读视图在 320/768/1024/1440 视口无横向溢出并留截图", asyn
     // 先等待外壳完成宽/窄布局切换，再测量，避免读取到过渡状态
     if (width < 900) {
       await expect(page.getByRole("navigation", { name: "内容导航" })).toBeHidden();
-      await expect(page.getByRole("complementary", { name: "稍后再学" })).toBeHidden();
+      await expect(page.getByRole("complementary", { name: "标记" })).toBeHidden();
     } else {
       await expect(page.getByRole("navigation", { name: "内容导航" })).toBeVisible();
-      await expect(page.getByRole("complementary", { name: "稍后再学" })).toBeVisible();
+      await expect(page.getByRole("complementary", { name: "标记" })).toBeVisible();
     }
     const metrics = await page.evaluate(() => ({
       scrollWidth: document.documentElement.scrollWidth,

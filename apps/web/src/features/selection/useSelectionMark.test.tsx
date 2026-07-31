@@ -36,7 +36,7 @@ function makeItemView(overrides: Partial<ResearchLaterItemRecord> = {}): Researc
     updatedAt: "",
     ...overrides,
   } as ResearchLaterItemRecord;
-  return { item, selection: makeSelection({ id: "sel-9" }), sourceTitle: "一场研究" };
+  return { item, selection: makeSelection({ id: "sel-9" }), sourceTitle: "一场研究", sourceNode: { id: item.nodeId ?? item.sessionId, label: "一场研究" } };
 }
 
 function renderMarkHook(api: Partial<ApiClient>, options: { sessionId?: string; nodeId?: string } = {}) {

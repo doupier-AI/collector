@@ -1084,7 +1084,7 @@ export interface ResearchBranchView {
 
 // ── Research Later (MVP 阶段 D) ─────────────────────────────
 
-/** 稍后再学项目状态。当前 MVP 只有待学与完成两种；自动弱重现属后续阶段。 */
+/** 兼容旧数据的项目状态；当前用户路径统一呈现为标记，不再展示状态切换。 */
 export type ResearchLaterItemStatus = "pending" | "done";
 
 /** 用户优先级为一至五星；省略时默认三星。 */
@@ -1098,7 +1098,7 @@ export const RESEARCH_LATER_DEFAULT_SUMMARY_CHARACTERS = 80;
 export const RESEARCH_LATER_NOTE_MAX_CHARACTERS = 2_000;
 
 /**
- * 稍后再学项目（修订二起同时承载用户标记与笔记）。保存、展示和返回来源不依赖 AI：
+ * 标记项目（沿用旧 research_later_items 存储名）。保存、展示和返回来源不依赖 AI：
  * `selectionId` 是来源关系的唯一依据，选区原文与位置由选区记录保留；
  * `summary` 默认值确定性派生，`priority` 由用户设置的一至五星表达；
  * 修订二的标记流程只用 `note`（用户笔记，缺省为纯标记），星级 / 概括 / 状态字段闲置保留。
@@ -1119,14 +1119,21 @@ export interface ResearchLaterItemRecord {
 }
 
 /**
- * 稍后再学列表视图：联接来源选区原文与来源内容标题，
- * 前端可直接呈现摘要、星级、来源与时间，无需再次查询选区。
+ * 标记列表视图：联接来源选区原文、节点和内容标题，
+ * 前端可直接呈现选区、笔记、来源节点与时间，无需再次查询来源。
  */
+export interface ResearchLaterSourceNode {
+  id: string;
+  label: string;
+}
+
 export interface ResearchLaterItemView {
   item: ResearchLaterItemRecord;
   selection: ResearchSelectionRecord;
   /** 消息选区为所属会话标题，快照选区为内容快照标题。 */
   sourceTitle: string;
+  /** 标记所在的研究节点；旧记录按选区节点或会话根节点补齐。 */
+  sourceNode: ResearchLaterSourceNode;
 }
 
 export interface ResearchLaterItemInput {

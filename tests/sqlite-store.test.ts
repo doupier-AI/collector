@@ -101,7 +101,7 @@ test("workflow migration creates formal versioned tables", async (t) => {
   const messageColumns = (database.prepare("PRAGMA table_info(research_messages)").all() as Array<{ name: string }>).map((column) => column.name);
   assert.ok(messageColumns.includes("branch_id"));
   const laterColumns = (database.prepare("PRAGMA table_info(research_later_items)").all() as Array<{ name: string }>).map((column) => column.name);
-  for (const column of ["id", "session_id", "selection_id", "status", "priority", "created_at", "updated_at", "creation_idempotency_key", "record_json"]) assert.ok(laterColumns.includes(column));
+  for (const column of ["id", "session_id", "node_id", "selection_id", "status", "priority", "note", "created_at", "updated_at", "creation_idempotency_key", "record_json"]) assert.ok(laterColumns.includes(column));
   const laterIndexes = (database.prepare("PRAGMA index_list(research_later_items)").all() as Array<{ name: string; unique: number }>);
   assert.ok(laterIndexes.some((index) => index.name === "research_later_items_creation_idempotency_idx" && index.unique === 1));
   const sessionIndexes = (database.prepare("PRAGMA index_list(research_sessions)").all() as Array<{ name: string; unique: number }>);

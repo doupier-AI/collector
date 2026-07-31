@@ -99,7 +99,7 @@ function MessageBlock({ blockText, blockId, highlight, sources, citations }: { b
     if (!containerRef.current) return;
     // 先清除上一次高亮遗留的 <mark>——否则残留会把文本节点切碎，
     // 导致后续 setRangeFromOffsets 的偏移算错（漂移），以及
-    // 多个不同选区在同一个文本容器里同时高亮（"稍后再学"经典场景）
+    // 多个不同选区在同一个文本容器里同时高亮（标记与引用共用选区记录）
     containerRef.current.querySelectorAll("[data-selection-mark]").forEach((el) => {
       const parent = el.parentNode;
       if (!parent) return;

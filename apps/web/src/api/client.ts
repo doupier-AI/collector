@@ -67,9 +67,9 @@ export interface ApiClient {
   getResearchSessionNodeTree(sessionId: string): Promise<ResearchSessionNodeTreeItem[]>;
   /** 从选区生长子节点：统一取代深入研究二选一。 */
   startChildNode(selectionId: string, input: CreateChildNodeInput, idempotencyKey: string): Promise<NodeGrowthAccepted>;
-  /** 保存稍后再学项目：幂等键命中返回首次保存的项目，保存不依赖 AI。 */
+    /** 保存标记：幂等键命中返回首次保存的项目，保存不依赖 AI。 */
   createResearchLaterItem(input: ResearchLaterItemInput, idempotencyKey: string): Promise<ResearchLaterItemView>;
-  /** 稍后再学列表：联接选区原文与来源标题；可选按 pending / done 过滤。 */
+    /** 标记列表：联接选区原文、笔记与来源节点；status 仅为旧接口兼容。 */
   listResearchLaterItems(status?: ResearchLaterItemStatus): Promise<ResearchLaterItemView[]>;
   getResearchLaterItem(itemId: string): Promise<ResearchLaterItemView>;
   updateResearchLaterItem(itemId: string, update: ResearchLaterItemUpdate): Promise<ResearchLaterItemView>;

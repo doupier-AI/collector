@@ -32,12 +32,12 @@ test("首次打开显示开始页与空状态邀请", async ({ page }) => {
   await expect(page.getByRole("button", { name: "开始研究" })).toBeVisible();
   await expect(page.getByRole("button", { name: /添加附件（TXT、Markdown、DOCX、PDF/ })).toBeVisible();
 
-  // 宽屏（默认 1280px）左右固定侧栏初始展开：左侧内容导航空状态、右侧稍后再学空态
+  // 宽屏（默认 1280px）左右固定侧栏初始展开：左侧内容导航空状态、右侧标记空态
   const nav = page.getByRole("navigation", { name: "内容导航" });
   await expect(nav).toBeVisible();
   await expect(page.getByText(/还没有研究会话/)).toBeVisible();
-  await expect(page.getByRole("complementary", { name: "稍后再学" })).toBeVisible();
-  await expect(page.getByTestId("later-empty")).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "标记" })).toBeVisible();
+  await expect(page.getByTestId("mark-empty")).toBeVisible();
 
   // 顶栏图标按钮收起再展开
   await page.getByRole("button", { name: "内容" }).click();
@@ -240,11 +240,11 @@ test("320/768/1024/1440 视口无横向溢出并留截图", async ({ page }) => 
     if (width < 900) {
       // 窄屏：侧栏为覆盖抽屉，默认收起
       await expect(page.getByRole("navigation", { name: "内容导航" })).toBeHidden();
-      await expect(page.getByRole("complementary", { name: "稍后再学" })).toBeHidden();
+      await expect(page.getByRole("complementary", { name: "标记" })).toBeHidden();
     } else {
       // 宽屏：左右固定侧栏默认展开
       await expect(page.getByRole("navigation", { name: "内容导航" })).toBeVisible();
-      await expect(page.getByRole("complementary", { name: "稍后再学" })).toBeVisible();
+      await expect(page.getByRole("complementary", { name: "标记" })).toBeVisible();
     }
     await page.screenshot({ path: `e2e-artifacts/viewport-${width}.png`, fullPage: true });
   }

@@ -404,16 +404,62 @@ test("场景二：文档导入 → 选区真实分析 → 带方向的节点生�
 });
 
 // ---------------------------------------------------------------------------
-// 场景三：保存为稍后再学 → 栏目呈现 → 从栏目返回原选区并重开窗口 → 刷新保持
-// 阶段 H4a 暂停：旧窗口"稍后再学"入口已退役，新入口由票据 08 提供
+// 场景三：保存标记 → 标记栏目呈现 → 返回原选区 → 明确引用 → 刷新保持
 // ---------------------------------------------------------------------------
-test.skip("场景三：真实回答选区 → 保存稍后再学（H4a 后暂停，待票据 08 恢复入口）", async () => {});
+test("场景三：真实回答选区 → 保存标记与笔记 → 从栏目返回原选区 → 刷新保持", async ({ page }) => {
+  await pairAndOpen(page, "/research/new");
+  const consoleIssues = watchConsole(page);
+  const sessionId = await submitQuestion(page, "请用两三句话解释什么是幂等操作。");
+  await waitCompletedAnswerText(page, 1);
+  await assertRealMode(page);
+
+  const selected = await selectRealAnswerText(page);
+  await expect(page.getByTestId("floating-capsule-mark")).toBeVisible({ timeout: 20_000 });
+  await page.getByTestId("floating-capsule-mark").click();
+  const editor = page.getByTestId("mark-note-editor");
+  const input = page.getByTestId("mark-note-input");
+  await expect(editor).toBeVisible();
+  await input.fill("真实回答中的关键定义");
+  await page.mouse.click(12, 12);
+  await expect(editor).toHaveCount(0);
+
+  const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
+  const items = readResearchLaterTables(dbPath).laterItems.filter((row) => row.sessionId === sessionId);
+  expect(items).toHaveLength(1);
+  const item = items[0];
+  expect(item).toBeDefined();
+  const record = JSON.parse(item?.recordJson ?? "{}") as { note?: string };
+  expect(record.note).toBe("真实回答中的关键定义");
+
+  const marksPanel = page.getByRole("complementary", { name: "标记" });
+  await expect(marksPanel).toBeVisible();
+  await expect(marksPanel).toContainText(selected.slice(0, 48));
+  await expect(marksPanel).toContainText("真实回答中的关键定义");
+  await expect(marksPanel).toContainText("来源节点：");
+
+  await page.getByTestId(`mark-open-${item!.id}`).click();
+  await page.waitForURL((url) => url.pathname.includes(`/research/${sessionId}/node/`) && url.searchParams.has("sel"), {
+    timeout: 20_000,
+  });
+  await expect(page.locator("[data-selection-mark]")).toHaveText(selected, { timeout: 20_000 });
+  await expect(page.locator('[data-testid="floating-selection-capsule"]:not([aria-hidden="true"])')).toBeVisible();
+  await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
+  await page.getByTestId("floating-capsule-cite").click();
+  await expect(page.getByTestId("selection-capsule")).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByRole("complementary", { name: "标记" })).toContainText("真实回答中的关键定义");
+  await expect(page.locator('[data-testid="floating-selection-capsule"]:not([aria-hidden="true"])')).toBeVisible();
+  await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
+
+  expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
+});
 
 // ---------------------------------------------------------------------------
 // 场景四：真实条件下的失败与恢复——刷新不重复创建、材料范围如实、全程无演示标记
 // （更广的失败 / 重试 / 无模型矩阵由默认套件 no-model.spec.ts 等确定性覆盖）
 // ---------------------------------------------------------------------------
-test("场景四：刷新不重复创建子节点与稍后再学项目，材料范围如实说明，全程无演示标记", async ({ page }) => {
+test("场景四：刷新不重复创建子节点与标记项目，材料范围如实说明，全程无演示标记", async ({ page }) => {
   await pairAndOpen(page, "/research/new");
   const consoleIssues = watchConsole(page);
   const sessionId = await submitQuestion(page, "请用一句话解释什么是哈希函数。");

@@ -124,7 +124,7 @@ export function highlightForMessages(
 }
 
 /**
- * 稍后再学幂等键：同一选区重复保存只创建一条项目。
+ * 旧稍后再学幂等键：同一选区重复保存只创建一条项目。
  * 选区 id 为数据库 id（纯 ASCII），可直接进入 HTTP 请求头，短于 200 字符上限。
  */
 export function laterIdempotencyKey(selectionId: string): string {
@@ -134,7 +134,7 @@ export function laterIdempotencyKey(selectionId: string): string {
 /**
  * 用户标记幂等键（修订二）：同一选区（同节点 + 同锚点经选区幂等归一）
  * 重复标记只对应同一条标记记录，重复标记走更新（笔记覆盖），不新增。
- * 与旧稍后再学键前缀区分，避免两类入口互相命中。
+ * 与旧键前缀区分；后端会按 selectionId 兼容两类入口，避免历史数据重复。
  */
 export function markIdempotencyKey(selectionId: string): string {
   return `mark:${selectionId}`;

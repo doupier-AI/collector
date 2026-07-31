@@ -246,8 +246,14 @@ export function makeLaterItemView(overrides: {
   item?: ResearchLaterItemRecord;
   selection?: ResearchSelectionRecord;
   sourceTitle?: string;
+  sourceNode?: { id: string; label: string };
 } = {}): ResearchLaterItemView {
   const item = overrides.item ?? makeLaterItem();
   const selection = overrides.selection ?? makeSelection({ id: item.selectionId, sessionId: item.sessionId });
-  return { item, selection, sourceTitle: overrides.sourceTitle ?? "理解注意力机制" };
+  return {
+    item,
+    selection,
+    sourceTitle: overrides.sourceTitle ?? "理解注意力机制",
+    sourceNode: overrides.sourceNode ?? { id: item.nodeId ?? item.sessionId, label: overrides.sourceTitle ?? "理解注意力机制" },
+  };
 }

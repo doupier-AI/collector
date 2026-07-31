@@ -1,10 +1,4 @@
-/**
- * 稍后再学栏目端到端（阶段 H4a 适配）：假模型确定性生成。
- *
- * 注意：阶段 H4a 退役了旧选区智能窗口（SelectionInsightPanel），"稍后再学"入口随之移除。
- * 后续票据（如票据 08：用户标记与笔记）将提供新的"稍后再学"入口。
- * 本文件保留已验证的 API 与 SQLite 层面的稍后再学能力测试，UI 流程测试暂停。
- */
+/** 标记列表、笔记与持久化端到端：假模型只负责提供确定性回答，标记本身不依赖模型。 */
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import {
@@ -28,8 +22,8 @@ async function submitFirstQuestion(page: Page, question = QUESTION): Promise<str
   return page.url().split("/research/")[1]?.split("/")[0] ?? "";
 }
 
-test.describe("稍后再学 API 与持久化", () => {
-  test("选区胶囊出现后可通过 API 直接保存稍后再学，SQLite 落库一致", async ({ page }) => {
+test.describe("标记列表 API 与持久化", () => {
+  test("旧稍后再学接口仍可保存标记，SQLite 落库一致", async ({ page }) => {
     test.setTimeout(60_000);
     const consoleIssues: string[] = [];
     await pairAndOpen(page, "/research/new");
@@ -51,15 +45,16 @@ test.describe("稍后再学 API 与持久化", () => {
     const selections = await apiJson<Array<{ id: string }>>(page, `/v1/research-sessions/${sessionId}/selections`);
     expect(selections).toHaveLength(1);
 
-    // 通过 API 直接保存稍后再学（UI 入口已在 H4a 退役，API 仍可用）
+    // 通过旧 API 形状保存一条标记，验证历史客户端数据仍可读取
     const laterResponse = await page.request.post("/v1/research-later-items", {
       headers: { "Content-Type": "application/json", "Idempotency-Key": `later:${selections[0].id}` },
       data: { selectionId: selections[0].id, priority: 4, summary: SELECTED },
     });
     expect(laterResponse.ok()).toBe(true);
-    const laterItem = (await laterResponse.json()) as { item: { id: string; priority: number; summary: string; status: string } };
+    const laterItem = (await laterResponse.json()) as { item: { id: string; nodeId?: string; priority: number; summary: string; status: string } };
     expect(laterItem.item.priority).toBe(4);
     expect(laterItem.item.summary).toBe(SELECTED);
+    expect(laterItem.item.nodeId).toBe(sessionId);
 
     // SQLite 落库
     const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
@@ -158,6 +153,34 @@ test.describe("稍后再学 API 与持久化", () => {
     expect(items).toHaveLength(1);
     const record = JSON.parse(items[0]?.recordJson ?? "{}") as { note?: string };
     expect(record.note).toBeUndefined();
+  });
+
+  test("标记列表展示选区与笔记，并返回原选区后只显示浮动胶囊", async ({ page }) => {
+    test.setTimeout(60_000);
+    await pairAndOpen(page, "/research/new");
+    const sessionId = await submitFirstQuestion(page);
+    await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
+
+    await selectAnswerText(page, SELECTED);
+    await page.getByTestId("floating-capsule-mark").click();
+    const input = page.getByTestId("mark-note-input");
+    await input.fill("从列表回来继续验证");
+    await page.mouse.click(12, 12);
+    await expect(page.getByTestId("mark-note-editor")).toHaveCount(0);
+
+    const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
+    const item = readResearchLaterTables(dbPath).laterItems.find((row) => row.sessionId === sessionId);
+    expect(item).toBeDefined();
+    const panel = page.getByRole("complementary", { name: "标记" });
+    await expect(panel).toContainText(SELECTED);
+    await expect(panel).toContainText("从列表回来继续验证");
+    await expect(panel).toContainText("来源节点：");
+
+    await page.getByTestId(`mark-open-${item!.id}`).click();
+    await expect(page).toHaveURL(new RegExp(`/research/${sessionId}/node/[^?]+\\?sel=`));
+    await expect(page.locator("[data-selection-mark]")).toHaveText(SELECTED, { timeout: 10_000 });
+    await expect(page.locator('[data-testid="floating-selection-capsule"]:not([aria-hidden="true"])')).toBeVisible();
+    await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
   });
 
 
