@@ -62,6 +62,13 @@
 
 ## Agent skills
 
+### 真实模型验收配置
+
+- 真实模型验收默认读取本机 `.collector-data/collector.sqlite` 中已保存且可用的模型配置；当前验收优先复用 DeepSeek `deepseek-v4-flash` 配置。
+- API Key 只保存在本机持久化配置中，不写入 `AGENTS.md`、源码、Git 提交或对话；`AGENTS.md` 只记录读取规则，不作为运行时配置来源。
+- `apps/web/e2e/acceptance-real-harness.mjs` 启动时会读取这份配置，并为每次验收创建独立临时数据库；环境变量仅作为明确的临时覆盖。
+- 若本机尚未保存模型配置，先在 WebUI 的“AI 模型设置”中保存并启用，再运行真实模型验收。
+
 ### Issue tracker
 
 GitHub Issues（`gh` CLI），仓库 `rappingzhuge/collector`。参见 `docs/agents/issue-tracker.md`。

@@ -12,6 +12,7 @@ import { defineConfig, devices } from "@playwright/test";
  *   COLLECTOR_AI_API_KEY=… npx playwright test --config playwright.acceptance.config.ts
  * （Windows PowerShell 用 $env:COLLECTOR_AI_API_KEY="…" 前置）。
  */
+// When no COLLECTOR_AI_* override is supplied, the real harness reuses the saved local model profile.
 export default defineConfig({
   testDir: "e2e",
   workers: 1,
