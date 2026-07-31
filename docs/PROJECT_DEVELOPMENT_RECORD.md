@@ -16,6 +16,13 @@
 - 未验证、部分验证和已知限制与完成项分开记录；
 - 详细文件变化可以通过所列 Git 提交审查。
 
+### 1.1 真实模型验收配置（2026-07-31）
+
+- 真实模型验收脚本 `apps/web/e2e/acceptance-real-harness.mjs` 在未提供 `COLLECTOR_AI_*` 环境变量时，读取本机 `.collector-data/collector.sqlite` 中已保存的模型配置与凭证；优先使用 DeepSeek `deepseek-v4-flash`，环境变量仍可作为明确覆盖。
+- 每次验收继续使用独立临时数据目录，持久化配置数据库只读访问，不把 API Key 写入源码、Git 或日志。
+- 验证证据：无环境变量启动验收 harness 成功，输出 `provider=deepseek model=deepseek-v4-flash`；`node --check apps/web/e2e/acceptance-real-harness.mjs` 通过；本次未发起真实云模型请求。
+- 关键提交：`cc3d6f7`（稳定复用本机真实模型配置）；`AGENTS.md` 已记录长期读取规则。
+
 ## 2. 当前用户可见状态
 
 当前程序已经形成以下本地使用路径：
