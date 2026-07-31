@@ -236,7 +236,9 @@ export class ParentChainContextService {
       firstUserMessage = this.excerpt(ctx.firstUserMessage, remaining);
     }
     return {
-      ...ctx,
+      nodeId: ctx.nodeId,
+      depth: ctx.depth,
+      isRoot: ctx.isRoot,
       label,
       ...(originText ? { originText } : {}),
       ...(firstUserMessage ? { firstUserMessage } : {}),
