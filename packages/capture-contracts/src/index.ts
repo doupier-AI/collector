@@ -1614,4 +1614,29 @@ export interface TermDetectionResult {
   messageId: string;
   terms: TermMarker[];
   detectedAt: string;
+  /** H5c：服务端确定性收敛决策，客户端不需要自行推断密度。 */
+  convergence: import("./research-convergence.js").ResearchConvergenceDecision;
+  /** 被收敛策略抑制的候选术语数量。 */
+  suppressedCount: number;
 }
+
+export {
+  DEFAULT_RESEARCH_CONVERGENCE_BOUNDS,
+  RESEARCH_CONVERGENCE_REDUCED_MARKER_MAX_COUNT,
+  RESEARCH_CONVERGENCE_REDUCED_MARKER_RATIO,
+  RESEARCH_CONVERGENCE_REDUCE_AT_CONTENT_CHARACTERS,
+  RESEARCH_CONVERGENCE_REDUCE_AT_DEPTH,
+  RESEARCH_CONVERGENCE_SHORT_CONTENT_MAX_CHARACTERS,
+  RESEARCH_CONVERGENCE_STOP_AT_CONTENT_CHARACTERS,
+  RESEARCH_CONVERGENCE_STOP_AT_DEPTH,
+  measureResearchContentLength,
+  normalizeResearchNodeDepth,
+  resolveResearchConvergence,
+  selectResearchTermMarkers,
+} from "./research-convergence.js";
+export type {
+  ResearchConvergenceBounds,
+  ResearchConvergenceDecision,
+  ResearchConvergenceReason,
+  ResearchTermDensity,
+} from "./research-convergence.js";

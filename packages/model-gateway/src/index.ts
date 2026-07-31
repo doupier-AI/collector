@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { parseResearchSelectionInsight, validateProviderDefinition, type ActiveModelRoute, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight } from "@collector/capture-contracts";
+import { parseResearchSelectionInsight, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight } from "@collector/capture-contracts";
 
 export interface ProviderUsage {
   inputTokens?: number;
@@ -137,8 +137,11 @@ export function formatResearchParentChainContext(context?: ResearchParentChainCo
   }
   if (context.truncated) lines.push("- 说明：父链已达到既有层数或总字符预算，只能使用以上内容，不要补全未提供的祖先信息。");
   if (context.cycleDetected) lines.push("- 说明：父链存在异常环路，已安全截断；不要根据缺失关系进行推断。");
-  if (context.currentNodeDepth >= 2) {
-    lines.push("回答引导：聚焦当前问题，优先基于以上已建立的知识，减少重复解释和无关新概念，保持简洁。");
+  const convergence = resolveResearchConvergence({ nodeDepth: context.currentNodeDepth });
+  if (convergence.termDensity === "reduced") {
+    lines.push("回答引导：聚焦当前问题，优先复用以上已建立的知识，减少重复解释和无关新概念；只解释当前回答确实需要的新术语，保持来源事实与不确定性。");
+  } else if (convergence.termDensity === "stopped") {
+    lines.push("回答引导：严格收敛到当前问题，只使用以上已建立的知识回答；不要主动引入新的术语、分支或延伸主题，保持来源事实与不确定性。");
   }
   return lines.join("\n");
 }

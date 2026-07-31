@@ -1,5 +1,9 @@
 import {
   deriveMessageBlocks,
+  measureResearchContentLength,
+  normalizeResearchNodeDepth,
+  resolveResearchConvergence,
+  selectResearchTermMarkers,
   type MessageContentBlock,
   type TermCategory,
   type TermDetectionResult,
@@ -209,6 +213,11 @@ export function validateTermMarkers(content: string, markers: TermMarker[]): Ter
   return valid;
 }
 
+export interface TermDetectionOptions {
+  /** Current node depth; root is 0 and direct children are 1. */
+  nodeDepth?: number;
+}
+
 // ── 服务层 ──────────────────────────────────────────
 
 /**
@@ -217,8 +226,8 @@ export function validateTermMarkers(content: string, markers: TermMarker[]): Ter
  * 检测失败静默降级为空术语列表，不影响消息正常渲染。
  */
 export class TermDetectionService {
-  /** 内存缓存：messageId → TermDetectionResult */
-  private readonly cache = new Map<string, TermDetectionResult>();
+  /** 内存缓存：messageId → input fingerprint + TermDetectionResult。 */
+  private readonly cache = new Map<string, { content: unknown; nodeDepth: number; result: TermDetectionResult }>();
 
   /**
    * 获取消息的术语检测结果。
@@ -229,14 +238,16 @@ export class TermDetectionService {
    *
    * @param messageId 消息唯一 ID
    * @param content 消息原始内容
+   * @param options H5c 收敛策略输入；缺省深度 0，保持 H3a/H3b 行为
    */
-  detect(messageId: string, content: string): TermDetectionResult {
+  detect(messageId: string, content: string, options: TermDetectionOptions = {}): TermDetectionResult {
+    const nodeDepth = normalizeResearchNodeDepth(options.nodeDepth);
     // 缓存命中
     const cached = this.cache.get(messageId);
-    if (cached) return cached;
+    if (cached && cached.content === content && cached.nodeDepth === nodeDepth) return cached.result;
 
-    const result = this.performDetection(messageId, content);
-    this.cache.set(messageId, result);
+    const result = this.performDetection(messageId, content, nodeDepth);
+    this.cache.set(messageId, { content, nodeDepth, result });
     return result;
   }
 
@@ -260,13 +271,20 @@ export class TermDetectionService {
     return this.cache.size;
   }
 
-  private performDetection(messageId: string, content: string): TermDetectionResult {
+  private performDetection(messageId: string, content: string, nodeDepth: number): TermDetectionResult {
+    const convergence = resolveResearchConvergence({
+      nodeDepth,
+      contentLength: measureResearchContentLength(content),
+    });
     try {
-      const markers = detectTermMarkers(content);
+      const candidates = detectTermMarkers(content);
+      const markers = selectResearchTermMarkers(candidates, convergence);
       return {
         messageId,
         terms: markers,
         detectedAt: new Date().toISOString(),
+        convergence,
+        suppressedCount: candidates.length - markers.length,
       };
     } catch {
       // 检测失败静默降级为空列表
@@ -274,6 +292,8 @@ export class TermDetectionService {
         messageId,
         terms: [],
         detectedAt: new Date().toISOString(),
+        convergence,
+        suppressedCount: 0,
       };
     }
   }

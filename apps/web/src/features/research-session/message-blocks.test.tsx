@@ -70,7 +70,13 @@ describe("AI 回答分块渲染", () => {
     }));
     const view = viewWithAssistant(content);
     view.termDetections = {
-      "m-out": { messageId: "m-out", detectedAt: "2026-07-31T00:00:00.000Z", terms },
+      "m-out": {
+        messageId: "m-out",
+        detectedAt: "2026-07-31T00:00:00.000Z",
+        terms,
+        convergence: { termDensity: "full", nodeDepth: 0, reason: "none" },
+        suppressedCount: 0,
+      },
     };
 
     const { container } = renderNodePage({ getResearchNodeView: async () => view });
@@ -114,6 +120,8 @@ describe("AI 回答分块渲染", () => {
         messageId: "m-out",
         detectedAt: "2026-07-31T00:00:00.000Z",
         terms: [{ text: "REST", blockOrdinal: 0, startOffset: 999, endOffset: 1003, category: "abbreviation" }],
+        convergence: { termDensity: "full", nodeDepth: 0, reason: "none" },
+        suppressedCount: 0,
       },
     };
     const { container } = renderNodePage({ getResearchNodeView: async () => view });

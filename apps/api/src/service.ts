@@ -146,10 +146,11 @@ export class CaptureService {
    */
   getResearchNodeView(nodeId: string): ResearchNodeView {
     const view = this.nodeGrowth.getNodeView(nodeId);
+    const nodeDepth = this.parentChainContext.buildParentChainContext(nodeId).currentNodeDepth;
     const termDetections: NonNullable<ResearchNodeView["termDetections"]> = {};
     for (const message of view.messages) {
       if (message.role !== "assistant" || message.status !== "completed") continue;
-      termDetections[message.id] = this.termDetection.detect(message.id, message.content);
+      termDetections[message.id] = this.termDetection.detect(message.id, message.content, { nodeDepth });
     }
     return { ...view, termDetections };
   }
