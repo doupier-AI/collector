@@ -5,18 +5,20 @@ import type { ApiClient } from "../api/client";
 import { connectImportEvents } from "../api/import-events";
 import { connectSelectionEvents } from "../api/selection-events";
 import { connectTaskEvents } from "../api/task-events";
+import { connectTermPreviewEvents } from "../api/term-preview-events";
 
 export interface AppServices {
   api: ApiClient;
   connectTaskEvents: typeof connectTaskEvents;
   connectImportEvents: typeof connectImportEvents;
   connectSelectionEvents: typeof connectSelectionEvents;
+  connectTermPreviewEvents: typeof connectTermPreviewEvents;
 }
 
 const ServicesContext = createContext<AppServices | null>(null);
 
 export function createDefaultServices(): AppServices {
-  return { api: createApiClient(), connectTaskEvents, connectImportEvents, connectSelectionEvents };
+  return { api: createApiClient(), connectTaskEvents, connectImportEvents, connectSelectionEvents, connectTermPreviewEvents };
 }
 
 export function ServicesProvider({ services, children }: { services: AppServices; children: ReactNode }) {

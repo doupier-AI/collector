@@ -35,6 +35,7 @@ import { ResearchScopeNote, SelectionRestoreFallback, SelectionSourceBar, useSel
 import { taskForMessage } from "./session-view";
 import { useResearchNode } from "./useResearchNode";
 import type { PendingFirstTurn } from "./useResearchNode";
+import { useTermPreviews } from "./useTermPreviews";
 
 const STREAM_NOTICE: Record<string, { title: string; body: string }> = {
   reconnecting: { title: "连接中断", body: "正在重新连接，已显示的内容不会丢失。" },
@@ -60,6 +61,7 @@ export function ResearchNodePage() {
     (location.state as { firstTurn?: PendingFirstTurn } | null)?.firstTurn,
   );
   const node = useResearchNode(nodeId, { initialTurn: initialTurnRef.current });
+  const termPreviews = useTermPreviews(nodeId, (error) => node.announce(apiErrorCopy(error).body));
   const [retryingTaskId, setRetryingTaskId] = useState<string | null>(null);
   const readyView = node.state.kind === "ready" ? node.state.view : undefined;
   // 导入控制器以会话视图形状工作：节点视图结构兼容，合并时保留 node / childNodes
@@ -202,6 +204,17 @@ export function ResearchNodePage() {
         idempotencyKey,
       );
       removeCitation();
+      navigate(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(accepted.node.id)}`);
+      return true;
+    } catch (error) {
+      node.announce(apiErrorCopy(error).body);
+      return false;
+    }
+  }
+
+  async function handleGrowTermPreview(preview: import("@collector/capture-contracts").ResearchTermPreviewRecord): Promise<boolean> {
+    try {
+      const accepted = await termPreviews.grow(preview);
       navigate(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(accepted.node.id)}`);
       return true;
     } catch (error) {
@@ -385,6 +398,10 @@ export function ResearchNodePage() {
                 citations={view.citations}
                 groundingSources={view.groundingSources}
                 terms={view.termDetections?.[message.id]?.terms}
+                termPreviews={termPreviews.previews}
+                onStartTermPreview={termPreviews.start}
+                onRetryTermPreview={termPreviews.retry}
+                onGrowTermPreview={handleGrowTermPreview}
               />
             );
           })}

@@ -84,6 +84,13 @@ export class ResearchSessionService {
   /** 当前 provider 模型（供 DeepResearchService 等下游写入 task 元数据）。 */
   get modelId(): string | undefined { return this.provider?.model; }
 
+  /** H3c 术语预览复用当前研究模型，但由独立预览任务负责持久化和事件流。 */
+  async *generateTermPreview(request: ResearchGenerationRequest): AsyncIterable<string> {
+    const provider = this.provider;
+    if (!provider) throw new Error("AI model is not configured");
+    yield* provider.generate(request);
+  }
+
   async createSession(title: string | undefined, idempotencyKey: string): Promise<ResearchSessionRecord> {
     if (!idempotencyKey.trim()) throw new ResearchValidationError("Idempotency-Key is required");
     if (idempotencyKey.length > 200) throw new ResearchValidationError("Idempotency-Key must not exceed 200 characters");

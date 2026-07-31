@@ -2,12 +2,13 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { timingSafeEqual } from "node:crypto";
 import { ValidationError, NotFoundError, CaptureService } from "./service.js";
 import { LocalAuth, PairingRateLimitError } from "./auth.js";
-import { RESEARCH_IMPORT_MAX_BYTES, validateCreateChildNodeInput, validateDeepResearchInput, validateResearchImportHeaders, validateResearchLaterItemInput, validateResearchLaterItemUpdate, validateResearchMessageInput, validateResearchSelectionInput, validateResearchSessionInput } from "@collector/capture-contracts";
+import { RESEARCH_IMPORT_MAX_BYTES, validateCreateChildNodeInput, validateDeepResearchInput, validateResearchImportHeaders, validateResearchLaterItemInput, validateResearchLaterItemUpdate, validateResearchMessageInput, validateResearchSelectionInput, validateResearchSessionInput, validateResearchTermPreviewInput } from "@collector/capture-contracts";
 import { ResearchNotFoundError, ResearchValidationError } from "./research.js";
 import { ResearchImportConflictError, ResearchImportNotFoundError, ResearchImportValidationError } from "./research-import.js";
 import { ResearchSelectionConflictError, ResearchSelectionNotFoundError, ResearchSelectionValidationError } from "./selection.js";
 import { DeepResearchNotFoundError, DeepResearchValidationError } from "./deep-research.js";
 import { ResearchLaterNotFoundError, ResearchLaterValidationError } from "./research-later.js";
+import { ResearchTermPreviewNotFoundError, ResearchTermPreviewValidationError } from "./term-preview.js";
 import { RunRecordsValidationError } from "./observability.js";
 import { streamRunRecordExport } from "./run-record-export.js";
 import { createStaticWebHandler } from "./static-web.js";
@@ -295,6 +296,26 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (request.method === "GET" && researchTaskMatch) {
         return json(response, 200, service.research.getTask(decodeURIComponent(researchTaskMatch[1])));
       }
+      const researchTermPreviewEventsMatch = url.pathname.match(/^\/v1\/research-term-preview-tasks\/([^/]+)\/events$/);
+      if (request.method === "GET" && researchTermPreviewEventsMatch) {
+        const afterId = Number(header(request, "last-event-id") ?? url.searchParams.get("after") ?? "0");
+        if (!Number.isSafeInteger(afterId) || afterId < 0) throw new ResearchTermPreviewValidationError("Last-Event-ID must be a non-negative integer");
+        return streamResearchTermPreviewEvents(request, response, service, decodeURIComponent(researchTermPreviewEventsMatch[1]), afterId);
+      }
+      const researchTermPreviewRetryMatch = url.pathname.match(/^\/v1\/research-term-preview-tasks\/([^/]+)\/retry$/);
+      if (request.method === "POST" && researchTermPreviewRetryMatch) {
+        return json(response, 202, await service.termPreviews.retryTask(decodeURIComponent(researchTermPreviewRetryMatch[1])));
+      }
+      const researchTermPreviewTaskMatch = url.pathname.match(/^\/v1\/research-term-preview-tasks\/([^/]+)$/);
+      if (request.method === "GET" && researchTermPreviewTaskMatch) {
+        return json(response, 200, service.termPreviews.getPreview(decodeURIComponent(researchTermPreviewTaskMatch[1])));
+      }
+      const researchTermPreviewGrowMatch = url.pathname.match(/^\/v1\/research-term-previews\/([^/]+)\/grow$/);
+      if (request.method === "POST" && researchTermPreviewGrowMatch) {
+        return json(response, 202, await service.nodeGrowth.startChildNodeFromTermPreview(
+          decodeURIComponent(researchTermPreviewGrowMatch[1]), header(request, "idempotency-key") ?? "",
+        ));
+      }
       const researchSelectionsMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)\/selections$/);
       if (request.method === "POST" && researchSelectionsMatch) {
         const body = await readJson(request);
@@ -371,6 +392,15 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
           { allowWebSearch: body.allowWebSearch === true },
         );
         return json(response, 202, accepted);
+      }
+      const researchNodeTermPreviewsMatch = url.pathname.match(/^\/v1\/research-nodes\/([^/]+)\/term-previews$/);
+      if (request.method === "POST" && researchNodeTermPreviewsMatch) {
+        const body = await readJson(request);
+        try { validateResearchTermPreviewInput(body); }
+        catch (error) { throw new ResearchTermPreviewValidationError((error as Error).message); }
+        return json(response, 202, await service.termPreviews.start(
+          decodeURIComponent(researchNodeTermPreviewsMatch[1]), body, header(request, "idempotency-key") ?? "",
+        ));
       }
       const researchNodeMatch = url.pathname.match(/^\/v1\/research-nodes\/([^/]+)$/);
       if (request.method === "GET" && researchNodeMatch) {
@@ -619,12 +649,12 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (error instanceof ResearchImportConflictError || error instanceof ResearchSelectionConflictError) {
         return json(response, 409, { error: { code: error.code, message: error.message } });
       }
-      if (error instanceof ValidationError || error instanceof ResearchValidationError || error instanceof ResearchImportValidationError || error instanceof ResearchSelectionValidationError || error instanceof DeepResearchValidationError || error instanceof ResearchLaterValidationError || error instanceof RunRecordsValidationError || error instanceof SyntaxError) {
+      if (error instanceof ValidationError || error instanceof ResearchValidationError || error instanceof ResearchImportValidationError || error instanceof ResearchSelectionValidationError || error instanceof DeepResearchValidationError || error instanceof ResearchLaterValidationError || error instanceof ResearchTermPreviewValidationError || error instanceof RunRecordsValidationError || error instanceof SyntaxError) {
         const code = error instanceof ResearchImportValidationError ? error.code : "invalid_request";
         const status = code === "file_too_large" ? 413 : code === "unsupported_file_type" ? 415 : code === "invalid_file_content" ? 422 : 400;
         return json(response, status, { error: { code, message: error.message } });
       }
-      if (error instanceof NotFoundError || error instanceof ResearchNotFoundError || error instanceof ResearchImportNotFoundError || error instanceof ResearchSelectionNotFoundError || error instanceof DeepResearchNotFoundError || error instanceof ResearchLaterNotFoundError) return json(response, 404, { error: { code: "not_found", message: error.message } });
+      if (error instanceof NotFoundError || error instanceof ResearchNotFoundError || error instanceof ResearchImportNotFoundError || error instanceof ResearchSelectionNotFoundError || error instanceof DeepResearchNotFoundError || error instanceof ResearchLaterNotFoundError || error instanceof ResearchTermPreviewNotFoundError) return json(response, 404, { error: { code: "not_found", message: error.message } });
       console.error(error);
       return json(response, 500, { error: { code: "internal_error", message: "Internal server error" } });
     }
@@ -806,6 +836,44 @@ async function streamResearchTaskEvents(request: IncomingMessage, response: Serv
 }
 
 function writeSse(response: ServerResponse, event: import("@collector/capture-contracts").ResearchTaskEvent): void {
+  if (event.id !== undefined) response.write(`id: ${event.id}\n`);
+  response.write(`event: ${event.type}\n`);
+  response.write(`data: ${JSON.stringify(event)}\n\n`);
+}
+
+async function streamResearchTermPreviewEvents(request: IncomingMessage, response: ServerResponse, service: CaptureService, previewId: string, afterId: number): Promise<void> {
+  service.termPreviews.getPreview(previewId);
+  response.statusCode = 200;
+  response.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  response.setHeader("Cache-Control", "no-cache, no-transform");
+  response.setHeader("Connection", "keep-alive");
+  response.setHeader("X-Accel-Buffering", "no");
+  response.flushHeaders();
+
+  let cursor = afterId;
+  const initialEvents = service.termPreviews.getTaskEvents(previewId, cursor);
+  for (const event of initialEvents) {
+    writeTermPreviewSse(response, event);
+    cursor = event.id ?? cursor;
+  }
+  writeTermPreviewSse(response, service.termPreviews.getTaskSnapshot(previewId));
+
+  const deadline = Date.now() + 25_000;
+  while (!request.destroyed && Date.now() < deadline) {
+    const events = service.termPreviews.getTaskEvents(previewId, cursor);
+    for (const event of events) {
+      writeTermPreviewSse(response, event);
+      cursor = event.id ?? cursor;
+    }
+    const preview = service.termPreviews.getPreview(previewId);
+    if (preview.status === "completed" || preview.status === "failed") break;
+    response.write(": keep-alive\n\n");
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  }
+  response.end();
+}
+
+function writeTermPreviewSse(response: ServerResponse, event: import("@collector/capture-contracts").ResearchTermPreviewEvent): void {
   if (event.id !== undefined) response.write(`id: ${event.id}\n`);
   response.write(`event: ${event.type}\n`);
   response.write(`data: ${JSON.stringify(event)}\n\n`);

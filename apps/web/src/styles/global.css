@@ -238,11 +238,75 @@ button {
 
 /* H3b 术语弱标记：只改变视觉提示，不新增文字、间距或交互语义。 */
 .term-marker {
+  cursor: help;
+  border-radius: 0.125rem;
   text-decoration-line: underline;
   text-decoration-style: dotted;
   text-decoration-thickness: 0.08em;
   text-underline-offset: 0.16em;
   text-decoration-color: color-mix(in srgb, var(--color-ai) 46%, transparent);
+}
+
+.term-marker:hover,
+.term-marker:focus-visible {
+  background: color-mix(in srgb, var(--color-ai) 10%, transparent);
+  text-decoration-color: var(--color-ai);
+}
+
+.term-preview-surface {
+  min-width: 0;
+}
+
+.term-preview-popover {
+  position: fixed;
+  z-index: 1000;
+  width: min(320px, calc(100vw - 24px));
+  max-height: min(420px, calc(100vh - 24px));
+  overflow: auto;
+  padding: var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: 0 12px 36px rgb(15 23 42 / 18%);
+}
+
+.term-preview-popover__title {
+  margin: 0 0 var(--space-2);
+  color: var(--color-ai);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.term-preview-popover__status,
+.term-preview-popover__error {
+  margin: 0 0 var(--space-3);
+  color: var(--color-muted);
+  font-size: 0.875rem;
+}
+
+.term-preview-popover__error {
+  color: var(--color-danger, #9f1239);
+}
+
+.term-preview-popover .markdown-content {
+  margin-bottom: var(--space-3);
+  font-size: 0.9375rem;
+  line-height: 1.6;
+}
+
+@media (max-width: 520px) {
+  .term-preview-popover {
+    width: calc(100vw - 24px);
+    max-height: min(360px, calc(100vh - 24px));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .term-preview-popover {
+    scroll-behavior: auto;
+    transition: none;
+    animation: none;
+  }
 }
 
 .message__blocks {

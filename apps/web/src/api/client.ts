@@ -31,6 +31,9 @@ import type {
   ResearchSessionRecord,
   ResearchSessionView,
   ResearchTaskRecord,
+  ResearchTermPreviewAccepted,
+  ResearchTermPreviewInput,
+  ResearchTermPreviewRecord,
   ResearchTurnAccepted,
   RunRecordDetail,
   RunRecordExportFilters,
@@ -84,6 +87,10 @@ export interface ApiClient {
   getResearchNodeView(nodeId: string): Promise<ResearchNodeView>;
   /** 节点内追问：根节点与子节点统一的提交入口。 */
   submitResearchNodeMessage(nodeId: string, content: string, idempotencyKey: string, options?: { allowWebSearch?: boolean }): Promise<ResearchTurnAccepted>;
+  startResearchTermPreview(nodeId: string, input: ResearchTermPreviewInput, idempotencyKey: string): Promise<ResearchTermPreviewAccepted>;
+  getResearchTermPreviewTask(taskId: string): Promise<ResearchTermPreviewRecord>;
+  retryResearchTermPreviewTask(taskId: string): Promise<ResearchTermPreviewRecord>;
+  growResearchTermPreview(previewId: string, idempotencyKey: string): Promise<NodeGrowthAccepted>;
   /** 会话节点树（全屏树导航）：一次性返回扁平条目，客户端按 parentNodeId 建树。 */
   getResearchSessionNodeTree(sessionId: string): Promise<ResearchSessionNodeTreeItem[]>;
   /** 从选区生长子节点：统一取代深入研究二选一。 */
@@ -347,6 +354,34 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
           body: JSON.stringify({ content, allowWebSearch: options.allowWebSearch === true }),
         },
       );
+    },
+    startResearchTermPreview(nodeId: string, input: ResearchTermPreviewInput, idempotencyKey: string) {
+      return requestJson<ResearchTermPreviewAccepted>(
+        fetchFn,
+        `/v1/research-nodes/${encodeURIComponent(nodeId)}/term-previews`,
+        {
+          method: "POST",
+          headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
+          body: JSON.stringify(input),
+        },
+      );
+    },
+    getResearchTermPreviewTask(taskId: string) {
+      return requestJson<ResearchTermPreviewRecord>(fetchFn, `/v1/research-term-preview-tasks/${encodeURIComponent(taskId)}`);
+    },
+    retryResearchTermPreviewTask(taskId: string) {
+      return requestJson<ResearchTermPreviewRecord>(fetchFn, `/v1/research-term-preview-tasks/${encodeURIComponent(taskId)}/retry`, {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: "{}",
+      });
+    },
+    growResearchTermPreview(previewId: string, idempotencyKey: string) {
+      return requestJson<NodeGrowthAccepted>(fetchFn, `/v1/research-term-previews/${encodeURIComponent(previewId)}/grow`, {
+        method: "POST",
+        headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
+        body: "{}",
+      });
     },
     getResearchSessionNodeTree(sessionId: string) {
       return requestJson<ResearchSessionNodeTreeItem[]>(

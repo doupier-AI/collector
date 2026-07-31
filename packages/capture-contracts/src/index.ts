@@ -536,6 +536,50 @@ export type ResearchMessageRole = "user" | "assistant";
 export type ResearchMessageStatus = "pending" | "streaming" | "completed" | "failed";
 export type ResearchTaskStatus = "queued" | "running" | "completed" | "failed";
 
+/** AI 弱标记预览任务状态（H3c）。预览独立于节点消息，点击后才会转成子节点。 */
+export type ResearchTermPreviewStatus = "queued" | "running" | "completed" | "failed";
+
+export interface ResearchTermPreviewError {
+  code: "model_not_configured" | "provider_error" | "service_restarted";
+  message: string;
+}
+
+/** 单个消息术语在当前节点中的一次正式解释生成。内容会持续写入，便于刷新后恢复。 */
+export interface ResearchTermPreviewRecord {
+  id: string;
+  sessionId: string;
+  nodeId: string;
+  messageId: string;
+  marker: TermMarker;
+  /** node + message + marker offsets 的确定性缓存键。 */
+  markerKey: string;
+  /** 用于网络重试与重复点击的幂等键。 */
+  idempotencyKey: string;
+  selectionId: string;
+  status: ResearchTermPreviewStatus;
+  content: string;
+  retryable: boolean;
+  provider?: string;
+  model?: string;
+  promptVersion: string;
+  error?: ResearchTermPreviewError;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface ResearchTermPreviewInput {
+  messageId: string;
+  marker: TermMarker;
+}
+
+export type ResearchTermPreviewEvent =
+  | { id?: number; type: "snapshot"; preview: ResearchTermPreviewRecord; createdAt: string }
+  | { id: number; type: "delta"; delta: string; preview: ResearchTermPreviewRecord; createdAt: string }
+  | { id: number; type: "completed"; preview: ResearchTermPreviewRecord; createdAt: string }
+  | { id: number; type: "failed"; preview: ResearchTermPreviewRecord; createdAt: string };
+
 export const RESEARCH_IMPORT_MAX_BYTES = 20 * 1024 * 1024;
 export const RESEARCH_IMPORT_MIME_TYPES = [
   "text/plain",
@@ -1112,6 +1156,26 @@ export function validateCreateChildNodeInput(value: unknown): asserts value is C
   if (input.allowWebSearch !== undefined && typeof input.allowWebSearch !== "boolean") throw new Error("allowWebSearch must be a boolean when provided");
 }
 
+export function validateResearchTermPreviewInput(value: unknown): asserts value is ResearchTermPreviewInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Term preview input must be an object");
+  const input = value as { messageId?: unknown; marker?: unknown };
+  if (typeof input.messageId !== "string" || !input.messageId.trim()) throw new Error("messageId is required");
+  if (!input.marker || typeof input.marker !== "object" || Array.isArray(input.marker)) throw new Error("marker is required");
+  const marker = input.marker as Partial<TermMarker>;
+  if (typeof marker.text !== "string" || !marker.text.trim()) throw new Error("marker.text is required");
+  const blockOrdinal = marker.blockOrdinal;
+  const startOffset = marker.startOffset;
+  const endOffset = marker.endOffset;
+  if (typeof blockOrdinal !== "number" || !Number.isSafeInteger(blockOrdinal) || blockOrdinal < 0) throw new Error("marker.blockOrdinal must be a non-negative integer");
+  if (typeof startOffset !== "number" || !Number.isSafeInteger(startOffset) || startOffset < 0) throw new Error("marker.startOffset must be a non-negative integer");
+  if (typeof endOffset !== "number" || !Number.isSafeInteger(endOffset) || endOffset <= startOffset) throw new Error("marker.endOffset must be greater than marker.startOffset");
+  if (endOffset - startOffset !== marker.text.length) throw new Error("marker offsets must match marker.text");
+  const categories: TermCategory[] = ["term", "abbreviation", "proper_noun", "concept"];
+  if (!categories.includes(marker.category as TermCategory)) {
+    throw new Error("marker.category is invalid");
+  }
+}
+
 export const RESEARCH_DIRECTION_MAX_CHARACTERS = 2000;
 
 export function validateDeepResearchInput(value: unknown): asserts value is DeepResearchInput {
@@ -1187,6 +1251,12 @@ export interface NodeGrowthAccepted {
   inputMessage: ResearchMessageRecord;
   outputMessage: ResearchMessageRecord;
   task: ResearchTaskRecord;
+}
+
+/** 术语预览创建结果；selection 保存原消息与术语位置，供点击生长时建立来源关系。 */
+export interface ResearchTermPreviewAccepted {
+  preview: ResearchTermPreviewRecord;
+  selection: ResearchSelectionRecord;
 }
 
 /**

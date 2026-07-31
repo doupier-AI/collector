@@ -11,6 +11,7 @@ export { ResearchSelectionAnalysisError, ResearchSelectionConflictError, Researc
 export { DeepResearchNotFoundError, DeepResearchService, DeepResearchValidationError, type DeepResearchServiceOptions } from "./deep-research.js";
 export { ResearchLaterNotFoundError, ResearchLaterService, ResearchLaterValidationError } from "./research-later.js";
 export { TermDetectionService, detectTermMarkers, validateTermMarkers, TERM_DETECTION_MIN_CONTENT_LENGTH, type TermDetectionOptions } from "./term-detection.js";
+export { ResearchTermPreviewNotFoundError, ResearchTermPreviewService, ResearchTermPreviewValidationError, TERM_PREVIEW_PROMPT_VERSION, termPreviewMarkerKey, type ResearchTermPreviewServiceOptions } from "./term-preview.js";
 export { NodeNamingService, deterministicNodeDisplayName, validateNodeDisplayName, NODE_DISPLAY_NAME_MAX_CHARACTERS, type NodeNamingStore, type NodeNamingGateway } from "./node-naming.js";
 export {
   ParentChainContextService,

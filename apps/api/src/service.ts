@@ -54,6 +54,7 @@ import { ResearchSelectionAnalysisError, ResearchSelectionService, type Research
 import { DeepResearchService, NodeGrowthService } from "./deep-research.js";
 import { ResearchLaterService } from "./research-later.js";
 import { TermDetectionService } from "./term-detection.js";
+import { ResearchTermPreviewService } from "./term-preview.js";
 import { ParentChainContextService } from "./parent-chain-context.js";
 import { NodeNamingService } from "./node-naming.js";
 import { webSearch, webFetch } from "./web-search-agent.js";
@@ -83,6 +84,7 @@ export class CaptureService {
   readonly nodeGrowth: NodeGrowthService;
   readonly researchLater: ResearchLaterService;
   readonly termDetection: TermDetectionService;
+  readonly termPreviews: ResearchTermPreviewService;
   readonly parentChainContext: ParentChainContextService;
   readonly nodeNaming: NodeNamingService;
   readonly runRecords: RunRecordsService;
@@ -121,6 +123,12 @@ export class CaptureService {
     });
     this.researchLater = new ResearchLaterService(this.store);
     this.termDetection = new TermDetectionService();
+    this.termPreviews = new ResearchTermPreviewService(this.store, {
+      research: this.research,
+      parentChainContext: this.parentChainContext,
+      termDetection: this.termDetection,
+      autoRunTasks: this.options.autoRunResearchTasks,
+    });
     if (this.options.autoRunRecentOrganization !== false) {
       this.scheduleRecentOrganization();
       this.scheduleTopicDocumentRuns();
@@ -134,6 +142,7 @@ export class CaptureService {
     this.attachModelGateway(gateway);
     if (!this.options.researchProvider) this.research.setProvider(this.researchProviderFor(gateway));
     if (!this.options.selectionProvider) this.researchSelections.setProvider(this.selectionProviderFor(gateway));
+    if (this.options.autoRunResearchTasks !== false) void this.termPreviews.resumeTasks().catch(() => undefined);
   }
 
   setModelGatewayResolver(resolver: ((route: ActiveModelRoute) => Promise<ModelGateway | undefined>) | undefined): void {

@@ -76,7 +76,7 @@ export function MarkdownContent({ text, sources = [], citations = [], terms = []
 
     for (const term of validTerms) {
       const match = findRenderedTextRange(root, term.text, searchFrom);
-      if (!match || !wrapTermRange(root, match, term.category)) continue;
+      if (!match || !wrapTermRange(root, match, term)) continue;
       searchFrom = match.endOffset;
     }
   }, [text, terms]);
@@ -166,7 +166,7 @@ function pointAtOffset(nodes: Text[], target: number): TextPoint {
 }
 
 /** 用无语义的 span 包裹术语，保留原文字节点内容与 DOM 选区字符偏移。 */
-function wrapTermRange(root: Element, rendered: RenderedTextRange, category: TermMarker["category"]): boolean {
+function wrapTermRange(root: Element, rendered: RenderedTextRange, term: TermMarker): boolean {
   try {
     const range = root.ownerDocument.createRange();
     range.setStart(rendered.start.node, rendered.start.offset);
@@ -174,7 +174,14 @@ function wrapTermRange(root: Element, rendered: RenderedTextRange, category: Ter
     const marker = root.ownerDocument.createElement("span");
     marker.className = "term-marker";
     marker.setAttribute("data-term-marker", "");
-    marker.setAttribute("data-term-category", category);
+    marker.setAttribute("data-term-category", term.category);
+    marker.setAttribute("data-term-text", term.text);
+    marker.setAttribute("data-term-block-ordinal", String(term.blockOrdinal));
+    marker.setAttribute("data-term-start-offset", String(term.startOffset));
+    marker.setAttribute("data-term-end-offset", String(term.endOffset));
+    marker.setAttribute("role", "button");
+    marker.setAttribute("tabindex", "0");
+    marker.setAttribute("aria-label", `解释术语 ${term.text}`);
     marker.appendChild(range.extractContents());
     range.insertNode(marker);
     return true;

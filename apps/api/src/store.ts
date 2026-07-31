@@ -1,7 +1,7 @@
 import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ResearchNodeRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTurnAccepted } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ResearchNodeRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewInput, type ResearchTermPreviewRecord, type ResearchTurnAccepted } from "@collector/capture-contracts";
 
 export type ObservabilityRecordSource = "research" | "selection" | "import" | "workflow";
 
@@ -159,6 +159,18 @@ export interface DeepResearchStore {
   listResearchGroundingSources(runId: string): ResearchGroundingSourceRecord[];
   listResearchAttachments(sessionId: string): ResearchAttachmentRecord[];
   listResearchImportTasks(sessionId: string): ResearchImportTaskRecord[];
+  getResearchTermPreview(id: string): ResearchTermPreviewRecord | undefined;
+  findResearchTermPreview(nodeId: string, markerKey: string): ResearchTermPreviewRecord | undefined;
+  createResearchTermPreview(preview: ResearchTermPreviewRecord, selection: ResearchSelectionRecord): Promise<ResearchTermPreviewAccepted>;
+  claimResearchTermPreview(id: string, provider?: string, model?: string, promptVersion?: string): ResearchTermPreviewRecord | undefined;
+  appendResearchTermPreviewDelta(id: string, delta: string): Promise<void>;
+  completeResearchTermPreview(id: string): Promise<void>;
+  failResearchTermPreview(preview: ResearchTermPreviewRecord, error: ResearchTermPreviewError): Promise<void>;
+  retryResearchTermPreview(preview: ResearchTermPreviewRecord, provider?: string, model?: string, promptVersion?: string): Promise<ResearchTermPreviewRecord>;
+  getResearchTermPreviewSnapshot(id: string): ResearchTermPreviewEvent;
+  listResearchTermPreviewEvents(id: string, afterId?: number): ResearchTermPreviewEvent[];
+  listRecoverableResearchTermPreviews(): ResearchTermPreviewRecord[];
+  failInterruptedResearchTermPreviews(): number;
 }
 
 export interface CollectorStore
@@ -599,6 +611,8 @@ export class SqliteStore implements CollectorStore {
       this.db().exec("DELETE FROM research_content_snapshots");
       this.db().exec("DELETE FROM research_import_tasks");
       this.db().exec("DELETE FROM research_attachments");
+      this.db().exec("DELETE FROM research_term_preview_events");
+      this.db().exec("DELETE FROM research_term_previews");
       this.db().exec("DELETE FROM research_selection_task_events");
       this.db().exec("DELETE FROM research_selection_tasks");
       this.db().exec("DELETE FROM research_branches");
@@ -1272,6 +1286,143 @@ export class SqliteStore implements CollectorStore {
     return interrupted.length;
   }
 
+  getResearchTermPreview(id: string): ResearchTermPreviewRecord | undefined {
+    return this.getRecord<ResearchTermPreviewRecord>("SELECT record_json FROM research_term_previews WHERE id = ?", id);
+  }
+
+  findResearchTermPreview(nodeId: string, markerKey: string): ResearchTermPreviewRecord | undefined {
+    return this.getRecord<ResearchTermPreviewRecord>("SELECT record_json FROM research_term_previews WHERE node_id = ? AND marker_key = ?", nodeId, markerKey);
+  }
+
+  async createResearchTermPreview(preview: ResearchTermPreviewRecord, selection: ResearchSelectionRecord): Promise<ResearchTermPreviewAccepted> {
+    let accepted: ResearchTermPreviewAccepted | undefined;
+    this.transaction(() => {
+      const existing = this.findResearchTermPreview(preview.nodeId, preview.markerKey);
+      if (existing) {
+        const existingSelection = this.getResearchSelection(existing.selectionId);
+        if (!existingSelection) throw new Error("Term preview references a missing selection");
+        accepted = { preview: existing, selection: existingSelection };
+        return;
+      }
+      this.db().prepare("INSERT INTO research_selections (id, session_id, node_id, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .run(selection.id, selection.sessionId, selection.nodeId ?? null, selection.status, selection.createdAt, selection.updatedAt, JSON.stringify(selection));
+      this.db().prepare(`INSERT INTO research_term_previews
+        (id, session_id, node_id, message_id, selection_id, marker_key, idempotency_key, status, content, retryable, provider, model, prompt_version, created_at, updated_at, started_at, completed_at, record_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(
+          preview.id, preview.sessionId, preview.nodeId, preview.messageId, preview.selectionId, preview.markerKey,
+          preview.idempotencyKey, preview.status, preview.content, preview.retryable ? 1 : 0,
+          preview.provider ?? null, preview.model ?? null, preview.promptVersion, preview.createdAt, preview.updatedAt,
+          preview.startedAt ?? null, preview.completedAt ?? null, JSON.stringify(preview),
+        );
+      accepted = { preview, selection };
+    });
+    if (!accepted) throw new Error("Term preview was not persisted");
+    return accepted;
+  }
+
+  claimResearchTermPreview(id: string, provider?: string, model?: string, promptVersion = "term-preview-v1"): ResearchTermPreviewRecord | undefined {
+    let claimed: ResearchTermPreviewRecord | undefined;
+    this.transaction(() => {
+      const current = this.getResearchTermPreview(id);
+      if (!current || current.status !== "queued") return;
+      const now = new Date().toISOString();
+      const next: ResearchTermPreviewRecord = {
+        ...current, status: "running", retryable: false, provider, model, promptVersion,
+        error: undefined, updatedAt: now, startedAt: now, completedAt: undefined,
+      };
+      const result = this.db().prepare("UPDATE research_term_previews SET status = ?, retryable = 0, provider = ?, model = ?, prompt_version = ?, updated_at = ?, started_at = ?, completed_at = NULL, record_json = ? WHERE id = ? AND status = 'queued'")
+        .run(next.status, provider ?? null, model ?? null, promptVersion, now, now, JSON.stringify(next), id);
+      if (result.changes !== 1) return;
+      claimed = next;
+      this.insertResearchTermPreviewEvent(id, "snapshot", now, { preview: next });
+    });
+    return claimed;
+  }
+
+  async appendResearchTermPreviewDelta(id: string, delta: string): Promise<void> {
+    this.transaction(() => {
+      const preview = this.getResearchTermPreview(id);
+      if (!preview || preview.status !== "running") throw new Error("Term preview is not running");
+      const now = new Date().toISOString();
+      const updated: ResearchTermPreviewRecord = { ...preview, content: preview.content + delta, updatedAt: now };
+      this.updateResearchTermPreview(updated);
+      this.insertResearchTermPreviewEvent(id, "delta", now, { delta, preview: updated });
+    });
+  }
+
+  async completeResearchTermPreview(id: string): Promise<void> {
+    this.transaction(() => {
+      const preview = this.getResearchTermPreview(id);
+      if (!preview || preview.status !== "running") throw new Error("Term preview is not running");
+      const now = new Date().toISOString();
+      const completed: ResearchTermPreviewRecord = { ...preview, status: "completed", retryable: false, updatedAt: now, completedAt: now };
+      this.updateResearchTermPreview(completed);
+      this.insertResearchTermPreviewEvent(id, "completed", now, { preview: completed });
+    });
+  }
+
+  async failResearchTermPreview(preview: ResearchTermPreviewRecord, error: ResearchTermPreviewError): Promise<void> {
+    this.transaction(() => {
+      const current = this.getResearchTermPreview(preview.id);
+      if (!current || (current.status !== "running" && current.status !== "queued")) return;
+      const now = new Date().toISOString();
+      const failed: ResearchTermPreviewRecord = { ...current, status: "failed", retryable: true, error, updatedAt: now, completedAt: now };
+      this.updateResearchTermPreview(failed);
+      this.insertResearchTermPreviewEvent(preview.id, "failed", now, { preview: failed });
+    });
+  }
+
+  async retryResearchTermPreview(preview: ResearchTermPreviewRecord, provider?: string, model?: string, promptVersion = "term-preview-v1"): Promise<ResearchTermPreviewRecord> {
+    let retried: ResearchTermPreviewRecord | undefined;
+    this.transaction(() => {
+      const current = this.getResearchTermPreview(preview.id);
+      if (!current || current.status !== "failed" || !current.retryable) throw new Error("Term preview is not retryable");
+      const now = new Date().toISOString();
+      retried = {
+        ...current, status: "queued", content: "", retryable: false, provider, model, promptVersion,
+        error: undefined, updatedAt: now, startedAt: undefined, completedAt: undefined,
+      };
+      this.updateResearchTermPreview(retried);
+      this.db().prepare("DELETE FROM research_term_preview_events WHERE preview_id = ?").run(preview.id);
+    });
+    if (!retried) throw new Error("Term preview retry was not persisted");
+    return retried;
+  }
+
+  getResearchTermPreviewSnapshot(id: string): ResearchTermPreviewEvent {
+    const preview = this.getResearchTermPreview(id);
+    if (!preview) throw new Error("Research term preview not found");
+    return { type: "snapshot", preview, createdAt: new Date().toISOString() };
+  }
+
+  listResearchTermPreviewEvents(id: string, afterId = 0): ResearchTermPreviewEvent[] {
+    const rows = this.db().prepare("SELECT sequence, event_type, created_at, data_json FROM research_term_preview_events WHERE preview_id = ? AND sequence > ? ORDER BY sequence")
+      .all(id, afterId) as Array<{ sequence: number; event_type: "snapshot" | "delta" | "completed" | "failed"; created_at: string; data_json: string }>;
+    return rows.map((row) => ({ id: row.sequence, type: row.event_type, createdAt: row.created_at, ...JSON.parse(row.data_json) }) as ResearchTermPreviewEvent);
+  }
+
+  listRecoverableResearchTermPreviews(): ResearchTermPreviewRecord[] {
+    return this.listRecords<ResearchTermPreviewRecord>("SELECT record_json FROM research_term_previews WHERE status = 'queued' ORDER BY created_at");
+  }
+
+  failInterruptedResearchTermPreviews(): number {
+    const interrupted = this.listRecords<ResearchTermPreviewRecord>("SELECT record_json FROM research_term_previews WHERE status = 'running' ORDER BY created_at");
+    if (!interrupted.length) return 0;
+    this.transaction(() => {
+      for (const preview of interrupted) {
+        const now = new Date().toISOString();
+        const failed: ResearchTermPreviewRecord = {
+          ...preview, status: "failed", retryable: true, updatedAt: now, completedAt: now,
+          error: { code: "service_restarted", message: "服务在术语解释生成过程中重启，已保留进度，可重试。" },
+        };
+        this.updateResearchTermPreview(failed);
+        this.insertResearchTermPreviewEvent(preview.id, "failed", now, { preview: failed });
+      }
+    });
+    return interrupted.length;
+  }
+
   getResearchAttachment(id: string): ResearchAttachmentRecord | undefined {
     return this.getRecord<ResearchAttachmentRecord>("SELECT record_json FROM research_attachments WHERE id = ?", id);
   }
@@ -1881,6 +2032,20 @@ export class SqliteStore implements CollectorStore {
   private insertResearchEvent(taskId: string, type: "delta" | "completed" | "failed", createdAt: string, data: unknown): void {
     this.db().prepare("INSERT INTO research_task_events (task_id, event_type, created_at, data_json) VALUES (?, ?, ?, ?)")
       .run(taskId, type, createdAt, JSON.stringify(data));
+  }
+
+  private updateResearchTermPreview(preview: ResearchTermPreviewRecord): void {
+    this.db().prepare("UPDATE research_term_previews SET status = ?, content = ?, retryable = ?, provider = ?, model = ?, prompt_version = ?, updated_at = ?, started_at = ?, completed_at = ?, record_json = ? WHERE id = ?")
+      .run(
+        preview.status, preview.content, preview.retryable ? 1 : 0, preview.provider ?? null, preview.model ?? null,
+        preview.promptVersion, preview.updatedAt, preview.startedAt ?? null, preview.completedAt ?? null,
+        JSON.stringify(preview), preview.id,
+      );
+  }
+
+  private insertResearchTermPreviewEvent(previewId: string, type: "snapshot" | "delta" | "completed" | "failed", createdAt: string, data: unknown): void {
+    this.db().prepare("INSERT INTO research_term_preview_events (preview_id, event_type, created_at, data_json) VALUES (?, ?, ?, ?)")
+      .run(previewId, type, createdAt, JSON.stringify(data));
   }
 
   private createSchema(): void {
@@ -2527,6 +2692,51 @@ export class SqliteStore implements CollectorStore {
       version = 26;
     }
 
+    if (version < 27) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE research_term_previews (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            selection_id TEXT NOT NULL UNIQUE,
+            marker_key TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            status TEXT NOT NULL,
+            content TEXT NOT NULL,
+            retryable INTEGER NOT NULL DEFAULT 0,
+            provider TEXT,
+            model TEXT,
+            prompt_version TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES research_sessions(id),
+            FOREIGN KEY(node_id) REFERENCES research_nodes(id),
+            FOREIGN KEY(message_id) REFERENCES research_messages(id),
+            FOREIGN KEY(selection_id) REFERENCES research_selections(id),
+            UNIQUE(node_id, marker_key),
+            UNIQUE(session_id, idempotency_key)
+          );
+          CREATE INDEX research_term_previews_status_idx ON research_term_previews(status, created_at);
+          CREATE TABLE research_term_preview_events (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            preview_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            data_json TEXT NOT NULL,
+            FOREIGN KEY(preview_id) REFERENCES research_term_previews(id) ON DELETE CASCADE
+          );
+          CREATE INDEX research_term_preview_events_preview_idx ON research_term_preview_events(preview_id, sequence);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (27, datetime('now'));
+        `);
+      });
+      version = 27;
+    }
+
   }
 
   private async migrateLegacyProviderProfile(): Promise<void> {
@@ -2854,6 +3064,18 @@ export class JsonStore implements CollectorStore {
   async createResearchBranch(_session: ResearchSessionRecord, _branch: ResearchBranchRecord, _inputMessage: ResearchMessageRecord, _outputMessage: ResearchMessageRecord, _task: ResearchTaskRecord): Promise<DeepResearchAccepted> { throw new Error("Research branches require SQLite persistence"); }
   async createOriginResearchSession(_session: ResearchSessionRecord, _inputMessage: ResearchMessageRecord, _outputMessage: ResearchMessageRecord, _task: ResearchTaskRecord): Promise<DeepResearchAccepted> { throw new Error("Research branches require SQLite persistence"); }
   async createResearchChildNode(_parentNode: ResearchNodeRecord, _node: ResearchNodeRecord, _selection: ResearchSelectionRecord, _inputMessage: ResearchMessageRecord, _outputMessage: ResearchMessageRecord, _task: ResearchTaskRecord): Promise<NodeGrowthAccepted> { throw new Error("Research nodes require SQLite persistence"); }
+  getResearchTermPreview(_id: string): ResearchTermPreviewRecord | undefined { return undefined; }
+  findResearchTermPreview(_nodeId: string, _markerKey: string): ResearchTermPreviewRecord | undefined { return undefined; }
+  async createResearchTermPreview(_preview: ResearchTermPreviewRecord, _selection: ResearchSelectionRecord): Promise<ResearchTermPreviewAccepted> { throw new Error("Term previews require SQLite persistence"); }
+  claimResearchTermPreview(_id: string, _provider?: string, _model?: string, _promptVersion?: string): ResearchTermPreviewRecord | undefined { return undefined; }
+  async appendResearchTermPreviewDelta(_id: string, _delta: string): Promise<void> { throw new Error("Term previews require SQLite persistence"); }
+  async completeResearchTermPreview(_id: string): Promise<void> { throw new Error("Term previews require SQLite persistence"); }
+  async failResearchTermPreview(_preview: ResearchTermPreviewRecord, _error: ResearchTermPreviewError): Promise<void> { throw new Error("Term previews require SQLite persistence"); }
+  async retryResearchTermPreview(_preview: ResearchTermPreviewRecord, _provider?: string, _model?: string, _promptVersion?: string): Promise<ResearchTermPreviewRecord> { throw new Error("Term previews require SQLite persistence"); }
+  getResearchTermPreviewSnapshot(_id: string): ResearchTermPreviewEvent { throw new Error("Term previews require SQLite persistence"); }
+  listResearchTermPreviewEvents(_id: string, _afterId?: number): ResearchTermPreviewEvent[] { return []; }
+  listRecoverableResearchTermPreviews(): ResearchTermPreviewRecord[] { return []; }
+  failInterruptedResearchTermPreviews(): number { return 0; }
   getResearchLaterItem(_id: string): ResearchLaterItemRecord | undefined { return undefined; }
   findResearchLaterItemByCreationKey(_idempotencyKey: string): ResearchLaterItemRecord | undefined { return undefined; }
   findResearchLaterItemBySelectionId(_selectionId: string): ResearchLaterItemRecord | undefined { return undefined; }

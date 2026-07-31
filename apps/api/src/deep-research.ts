@@ -224,6 +224,64 @@ export class NodeGrowthService {
     return accepted;
   }
 
+  /** 点击已完成的术语预览：复用同一份内容创建子节点，不再发起第二次模型调用。 */
+  async startChildNodeFromTermPreview(previewId: string, idempotencyKey: string): Promise<NodeGrowthAccepted> {
+    if (!idempotencyKey.trim()) throw new DeepResearchValidationError("Idempotency-Key is required");
+    if (idempotencyKey.length > 200) throw new DeepResearchValidationError("Idempotency-Key must not exceed 200 characters");
+    const preview = this.store.getResearchTermPreview(previewId);
+    if (!preview) throw new DeepResearchNotFoundError("Research term preview not found");
+    if (preview.status !== "completed" || !preview.content.trim()) {
+      throw new DeepResearchValidationError("Research term preview is not ready");
+    }
+    const selection = this.store.getResearchSelection(preview.selectionId);
+    if (!selection) throw new Error("Research term preview references a missing selection");
+    const parentNodeId = selection.nodeId ?? selection.sessionId;
+    const parentNode = this.store.getResearchNode(parentNodeId);
+    const session = this.store.getResearchSession(selection.sessionId);
+    if (!parentNode || !session) throw new Error("Research term preview references incomplete node state");
+
+    // 即使客户端丢失幂等键，也不允许同一术语来源重复生长多个子节点。
+    const existingNode = this.store.listChildNodes(parentNode.id).find((node) => node.originSelectionId === selection.id);
+    if (existingNode) {
+      const existingTask = this.store.listResearchTasksByNode(existingNode.id)[0];
+      const existingMessages = this.store.listResearchMessagesByNode(existingNode.id);
+      const inputMessage = existingTask ? this.store.getResearchMessage(existingTask.inputMessageId) : undefined;
+      const outputMessage = existingTask ? this.store.getResearchMessage(existingTask.outputMessageId) : undefined;
+      if (existingTask && inputMessage && outputMessage) return { node: existingNode, session, selection, inputMessage, outputMessage, task: existingTask };
+      if (!existingMessages.length) throw new Error("Existing term child node is incomplete");
+    }
+
+    const now = new Date().toISOString();
+    const node: ResearchNodeRecord = {
+      id: randomUUID(),
+      sessionId: selection.sessionId,
+      parentNodeId: parentNode.id,
+      originSelectionId: selection.id,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    };
+    const inputMessage: ResearchMessageRecord = {
+      id: randomUUID(), sessionId: selection.sessionId, nodeId: node.id, role: "user",
+      content: defaultFirstTurnContent(selection), status: "completed", createdAt: now, updatedAt: now,
+    };
+    const outputMessage: ResearchMessageRecord = {
+      id: randomUUID(), sessionId: selection.sessionId, nodeId: node.id, role: "assistant",
+      content: preview.content, status: "completed", createdAt: now, updatedAt: now,
+    };
+    const task: ResearchTaskRecord = {
+      id: randomUUID(), sessionId: selection.sessionId, nodeId: node.id,
+      inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
+      idempotencyKey, status: "completed", retryable: false,
+      provider: preview.provider, model: preview.model,
+      promptVersion: preview.promptVersion,
+      allowWebSearch: false,
+      groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 },
+      createdAt: now, updatedAt: now, startedAt: now, completedAt: now,
+    };
+    return this.store.createResearchChildNode(parentNode, node, selection, inputMessage, outputMessage, task);
+  }
+
   getNodeView(id: string): ResearchNodeView {
     const node = this.store.getResearchNode(id);
     if (!node) throw new DeepResearchNotFoundError("Research node not found");
