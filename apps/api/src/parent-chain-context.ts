@@ -48,6 +48,8 @@ export interface AncestorContext {
 export interface ParentChainContextResult {
   /** 起始节点 ID。 */
   startNodeId: string;
+  /** 当前节点距根节点的层级数（根节点为 0）；受父链遍历上限约束。 */
+  currentNodeDepth: number;
   /** 有序祖先上下文，从根节点到直接父节点。 */
   ancestors: AncestorContext[];
   /** 总链文本是否因预算耗尽被截断。 */
@@ -104,7 +106,7 @@ export class ParentChainContextService {
   buildParentChainContext(nodeId: string): ParentChainContextResult {
     const startNode = this.store.getResearchNode(nodeId);
     if (!startNode) {
-      return { startNodeId: nodeId, ancestors: [], truncated: false, cycleDetected: false };
+      return { startNodeId: nodeId, currentNodeDepth: 0, ancestors: [], truncated: false, cycleDetected: false };
     }
 
     // 第一阶段：沿 parentNodeId 上溯，收集原始祖先序列（近→远）。
@@ -130,10 +132,9 @@ export class ParentChainContextService {
       truncated = true;
     }
 
-    // 第二阶段：反转为根→近序，提取有界上下文，按总预算截断。
-    rawAncestors.reverse();
-
-    const ancestors: AncestorContext[] = [];
+    // 第二阶段：按最近祖先优先消耗总预算，再恢复根→近的稳定输出顺序。
+    // 这样深层节点在预算不足时仍优先保留直接父节点的主题与来源选区。
+    const included = new Map<string, AncestorContext>();
     let totalChars = 0;
 
     for (const { node, depth } of rawAncestors) {
@@ -146,11 +147,20 @@ export class ParentChainContextService {
         break;
       }
 
-      ancestors.push(remaining < entryChars ? this.truncateContext(ctx, remaining) : ctx);
+      included.set(node.id, remaining < entryChars ? this.truncateContext(ctx, remaining) : ctx);
       totalChars += Math.min(entryChars, remaining);
+      if (entryChars > remaining) {
+        truncated = true;
+        break;
+      }
     }
 
-    return { startNodeId: nodeId, ancestors, truncated, cycleDetected };
+    const ancestors = [...rawAncestors]
+      .reverse()
+      .map(({ node }) => included.get(node.id))
+      .filter((context): context is AncestorContext => Boolean(context));
+
+    return { startNodeId: nodeId, currentNodeDepth: rawAncestors.length, ancestors, truncated, cycleDetected };
   }
 
   // ── 内部：节点上下文提取 ──────────────────────────────────

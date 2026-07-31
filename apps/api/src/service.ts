@@ -41,11 +41,12 @@ import {
   type BackupVerificationResult,
   type ExportRequest,
   type ExportResult,
+  type ResearchNodeView,
 } from "@collector/capture-contracts";
 import type { CollectorStore } from "./store.js";
 import { defaultDataPaths } from "./store.js";
 import { SourceParser, parsePdf } from "./parsers.js";
-import { DEFAULT_PROVIDER_REGISTRY, ModelGateway, ProviderRuntimeResolver, discoverProviderModels as discoverProviderModelsViaGateway, validateExternalProviderBaseUrl } from "@collector/model-gateway";
+import { DEFAULT_PROVIDER_REGISTRY, formatResearchParentChainContext, ModelGateway, ProviderRuntimeResolver, discoverProviderModels as discoverProviderModelsViaGateway, validateExternalProviderBaseUrl } from "@collector/model-gateway";
 import { createVerificationWorkflow } from "./verification.js";
 import { ResearchSessionService, type ResearchGenerationProvider } from "./research.js";
 import { ResearchImportService } from "./research-import.js";
@@ -90,9 +91,11 @@ export class CaptureService {
     private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; selectionProvider?: ResearchSelectionProvider; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunSelectionTasks?: boolean; mvpDemoMode?: boolean } = {},
   ) {
     this.attachModelGateway(this.modelGateway);
+    this.parentChainContext = new ParentChainContextService(this.store);
     this.research = new ResearchSessionService(this.store, {
       provider: this.options.researchProvider ?? this.researchProviderFor(this.modelGateway),
       autoRunTasks: this.options.autoRunResearchTasks,
+      parentChainContext: this.parentChainContext,
     });
     this.researchImports = new ResearchImportService(this.store, join(this.artifactRoot, "research-imports"), {
       autoRunTasks: this.options.autoRunResearchImports,
@@ -111,7 +114,6 @@ export class CaptureService {
     });
     this.researchLater = new ResearchLaterService(this.store);
     this.termDetection = new TermDetectionService();
-    this.parentChainContext = new ParentChainContextService(this.store);
     if (this.options.autoRunRecentOrganization !== false) {
       this.scheduleRecentOrganization();
       this.scheduleTopicDocumentRuns();
@@ -129,6 +131,20 @@ export class CaptureService {
 
   setModelGatewayResolver(resolver: ((route: ActiveModelRoute) => Promise<ModelGateway | undefined>) | undefined): void {
     this.modelGatewayResolver = resolver;
+  }
+
+  /**
+   * 节点页 HTTP 视图：在已有节点消息数据上附加 H3b 术语检测结果。
+   * 检测失败由 TermDetectionService 降级为空数组，不影响原消息返回。
+   */
+  getResearchNodeView(nodeId: string): ResearchNodeView {
+    const view = this.nodeGrowth.getNodeView(nodeId);
+    const termDetections: NonNullable<ResearchNodeView["termDetections"]> = {};
+    for (const message of view.messages) {
+      if (message.role !== "assistant" || message.status !== "completed") continue;
+      termDetections[message.id] = this.termDetection.detect(message.id, message.content);
+    }
+    return { ...view, termDetections };
   }
 
   private attachModelGateway(gateway: ModelGateway | undefined): void {
@@ -171,15 +187,17 @@ export class CaptureService {
         const purposeGateway = await service.gatewayForPurpose("search");
         if (!purposeGateway) throw new Error("AI model is not configured");
         const direction = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
+        const parentContext = formatResearchParentChainContext(request.parentChainContext);
 
         // F2: Agent 式多轮工具调用搜索——模型通过 web_search/web_fetch 工具自主完成搜索过程
-        let userMessage = direction;
+        let userMessage = [direction, parentContext].filter(Boolean).join("\n\n");
         if (request.deepResearch) {
           userMessage = [
             `用户选区原文：${request.deepResearch.selectionText}`,
             `研究方向：${direction}`,
             request.deepResearch.contextBefore ? `选区前文：${request.deepResearch.contextBefore}` : "",
             request.deepResearch.contextAfter ? `选区后文：${request.deepResearch.contextAfter}` : "",
+            parentContext,
             "请基于这些材料并联网搜索最新信息后回答。",
           ].filter(Boolean).join("\n\n");
         }
@@ -255,6 +273,7 @@ export class CaptureService {
               contentTitle: request.deepResearch.contentTitle,
               contextBefore: request.deepResearch.contextBefore,
               contextAfter: request.deepResearch.contextAfter,
+              parentChainContext: request.parentChainContext,
             },
             { context: { workflowRunId: request.taskId, purpose: "deep_research", promptVersion: "deep-research-v1" } },
           );
@@ -262,6 +281,7 @@ export class CaptureService {
           return;
         }
         const answer = await purposeGateway.answerResearchConversation(request.messages, {
+          parentChainContext: request.parentChainContext,
           context: { workflowRunId: request.taskId, purpose: "research_chat", promptVersion: "research-chat-v1" },
         });
         for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);

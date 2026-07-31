@@ -20,6 +20,7 @@ import {
   ResearchTurnAccepted,
 } from "@collector/capture-contracts";
 import type { ResearchStore } from "./store.js";
+import { ParentChainContextService, type ParentChainContextResult } from "./parent-chain-context.js";
 
 export const RESEARCH_CHAT_PROMPT_VERSION = "research-chat-v1";
 export const DEEP_RESEARCH_PROMPT_VERSION = "deep-research-v1";
@@ -32,6 +33,8 @@ export interface ResearchGenerationRequest {
   taskId: string;
   /** 深入研究第一轮：只携带当前已有材料，不含联网检索结果。 */
   deepResearch?: DeepResearchContext;
+  /** 当前节点的有界父链上下文；根节点或无效父链不注入。 */
+  parentChainContext?: ParentChainContextResult;
 }
 
 export interface ResearchGenerationProvider {
@@ -47,15 +50,18 @@ export interface ResearchGenerationProvider {
 export interface ResearchServiceOptions {
   provider?: ResearchGenerationProvider;
   autoRunTasks?: boolean;
+  parentChainContext?: ParentChainContextService;
 }
 
 export class ResearchSessionService {
   private provider?: ResearchGenerationProvider;
   private readonly running = new Set<string>();
   private recoveryScheduled = false;
+  private readonly parentChainContext: ParentChainContextService;
 
   constructor(private readonly store: ResearchStore, private readonly options: ResearchServiceOptions = {}) {
     this.provider = options.provider;
+    this.parentChainContext = options.parentChainContext ?? new ParentChainContextService(store);
     if (options.autoRunTasks !== false) this.scheduleRecovery();
   }
 
@@ -221,6 +227,13 @@ export class ResearchSessionService {
       }
 
       const messages = generation.messages;
+      const generationRequest: ResearchGenerationRequest = {
+        session,
+        messages,
+        taskId: task.id,
+        ...(generation.deepResearch ? { deepResearch: generation.deepResearch } : {}),
+        ...(generation.parentChainContext ? { parentChainContext: generation.parentChainContext } : {}),
+      };
       let generatedCharacters = 0;
       let producedContent = false;
       try {
@@ -228,7 +241,7 @@ export class ResearchSessionService {
           ? "deep_research_first_round"
           : this.isBranchFollowUp(task.id) ? "branch_follow_up" : "chat";
         if (provider.generateAgentGrounded) {
-          const grounded = await provider.generateAgentGrounded({ session, messages, taskId: task.id, deepResearch: generation.deepResearch, scenario });
+          const grounded = await provider.generateAgentGrounded({ ...generationRequest, scenario });
           const result = this.groundingResultFor(task, grounded, scenario);
           await this.store.saveResearchGroundingResult(result);
           generatedCharacters = grounded.content.length;
@@ -237,7 +250,7 @@ export class ResearchSessionService {
           producedContent = true;
           await this.store.appendResearchTaskDelta(task.id, grounded.content);
         } else {
-          for await (const delta of provider.generate({ session, messages, taskId: task.id, deepResearch: generation.deepResearch })) {
+          for await (const delta of provider.generate(generationRequest)) {
             if (!delta) continue;
             generatedCharacters += delta.length;
             if (generatedCharacters > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
@@ -334,7 +347,11 @@ export class ResearchSessionService {
    * 第一轮深入研究（子节点首个用户消息对应的任务）额外携带来源选区材料；
    * 节点内追问与后续对话不重复注入。
    */
-  private buildGenerationRequest(task: ResearchTaskRecord): { messages: Array<Pick<ResearchMessageRecord, "role" | "content">>; deepResearch?: DeepResearchContext } {
+  private buildGenerationRequest(task: ResearchTaskRecord): {
+    messages: Array<Pick<ResearchMessageRecord, "role" | "content">>;
+    deepResearch?: DeepResearchContext;
+    parentChainContext?: ParentChainContextResult;
+  } {
     const all = this.store.listResearchMessages(task.sessionId);
     const output = all.find((message) => message.id === task.outputMessageId);
     const nodeId = task.nodeId;
@@ -347,7 +364,15 @@ export class ResearchSessionService {
       .filter((message) => message.id !== task.outputMessageId)
       .map(({ role, content }) => ({ role, content }));
     const deepResearch = this.deepResearchContextFor(task, nodeId ?? output?.branchId, thread);
-    return { messages, ...(deepResearch ? { deepResearch } : {}) };
+    const contextNodeId = nodeId ?? output?.branchId ?? task.sessionId;
+    const parentChain = this.parentChainContext.buildParentChainContext(contextNodeId);
+    // 根节点及失效父链保持现有提示词，避免注入空的“父链上下文”占位。
+    const parentChainContext = parentChain.ancestors.length > 0 ? parentChain : undefined;
+    return {
+      messages,
+      ...(deepResearch ? { deepResearch } : {}),
+      ...(parentChainContext ? { parentChainContext } : {}),
+    };
   }
 
   private deepResearchContextFor(task: ResearchTaskRecord, nodeOrBranchId: string | undefined, thread: ResearchMessageRecord[]): DeepResearchContext | undefined {

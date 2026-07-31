@@ -107,6 +107,42 @@ export interface GroundingModelProvider extends ModelProvider {
   generateGroundedResearch(request: { prompt: string; model: string; grounding: ResearchGroundingRequest; maxTokens?: number; timeoutMs?: number }): Promise<GroundedResearchResponse>;
 }
 
+/** 研究节点提示词可消费的有界父链结果。由 API 层的 ParentChainContextService 提供。 */
+export interface ResearchParentChainContext {
+  currentNodeDepth: number;
+  ancestors: Array<{
+    depth: number;
+    isRoot: boolean;
+    label: string;
+    originText?: string;
+    firstUserMessage?: string;
+  }>;
+  truncated: boolean;
+  cycleDetected: boolean;
+}
+
+/** 将父链结果渲染为研究提示词片段；空链不产生任何占位文本。 */
+export function formatResearchParentChainContext(context?: ResearchParentChainContext): string {
+  if (!context?.ancestors.length) return "";
+
+  const lines = [
+    "研究路径背景（来自已建立的父节点，仅作上下文，不是新的用户问题）：",
+    `当前节点深度：${context.currentNodeDepth}`,
+    "以下为有界父链摘要，最近祖先优先：",
+  ];
+  for (const ancestor of [...context.ancestors].sort((left, right) => left.depth - right.depth)) {
+    lines.push(`- 祖先（距当前 ${ancestor.depth} 层${ancestor.depth === 1 ? "，最近" : ""}）主题：${JSON.stringify(ancestor.label)}`);
+    if (ancestor.originText) lines.push(`  来源选区：${JSON.stringify(ancestor.originText)}`);
+    if (ancestor.firstUserMessage) lines.push(`  首条问题摘要：${JSON.stringify(ancestor.firstUserMessage)}`);
+  }
+  if (context.truncated) lines.push("- 说明：父链已达到既有层数或总字符预算，只能使用以上内容，不要补全未提供的祖先信息。");
+  if (context.cycleDetected) lines.push("- 说明：父链存在异常环路，已安全截断；不要根据缺失关系进行推断。");
+  if (context.currentNodeDepth >= 2) {
+    lines.push("回答引导：聚焦当前问题，优先基于以上已建立的知识，减少重复解释和无关新概念，保持简洁。");
+  }
+  return lines.join("\n");
+}
+
 export class ProviderRegistry {
   private readonly definitions = new Map<string, ProviderDefinition>();
 
@@ -408,10 +444,11 @@ export class ModelGateway {
   async generateGroundedResearch(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
     grounding: ResearchGroundingRequest,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext } = {},
   ): Promise<GroundedResearchResponse> {
     if (!messages.length) throw new Error("Research conversation requires at least one message");
-    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Use web research when available, preserve uncertainty, and only cite sources returned by the provider.\n\nConversation:\n${JSON.stringify(messages)}`;
+    const parentContext = formatResearchParentChainContext(options.parentChainContext);
+    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Use web research when available, preserve uncertainty, and only cite sources returned by the provider.\n\nConversation:\n${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}`;
     const request = { prompt, model: options.model ?? this.modelName, grounding, maxTokens: options.maxTokens ?? 8_000, timeoutMs: options.timeoutMs ?? 120_000 };
     if (!("generateGroundedResearch" in this.provider)) {
       const content = await this.answerResearchConversation(messages, options);
@@ -440,10 +477,11 @@ export class ModelGateway {
 
   async answerResearchConversation(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext } = {},
   ): Promise<string> {
     if (!messages.length) throw new Error("Research conversation requires at least one message");
-    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Return valid JSON only in the form {"answer":"..."}. Preserve uncertainty and never invent sources.\n\nConversation:\n${JSON.stringify(messages)}`;
+    const parentContext = formatResearchParentChainContext(options.parentChainContext);
+    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Return valid JSON only in the form {"answer":"..."}. Preserve uncertainty and never invent sources.\n\nConversation:\n${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
@@ -469,11 +507,13 @@ export class ModelGateway {
       contentTitle?: string;
       contextBefore?: string;
       contextAfter?: string;
+      parentChainContext?: ResearchParentChainContext;
     },
     options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
   ): Promise<string> {
     if (!input.selectionText.trim()) throw new Error("Deep research requires the source selection text");
     if (!input.direction.trim()) throw new Error("Deep research requires a research direction");
+    const parentContext = formatResearchParentChainContext(input.parentChainContext);
     const prompt = `你是 Collector 的深入研究助手。用户从一段选区发起了深入研究第一轮。只使用下面提供的当前已有材料生成研究内容，不要联网检索，不要编造来源、链接或引用。只返回合法 JSON，形式为 {"answer":"..."}，不要使用 Markdown 代码围栏。
 
 用户选区原文：
@@ -485,6 +525,7 @@ ${input.mode === "branch" ? "\n研究沿当前内容展开。" : "\n研究在新
 
 用户的研究方向：
 ${JSON.stringify(input.direction)}
+${parentContext ? `\n${parentContext}` : ""}
 
 要求：
 - 围绕用户方向，基于选区与上下文展开解释、拆解或延伸；
