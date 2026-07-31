@@ -1,5 +1,5 @@
 import type { RunRecordDetail as RunRecordDetailModel } from "@collector/capture-contracts";
-import { formatDateTime, formatDuration, formatTokens, operationLabels, outcomeLabels, statusLabels } from "./format";
+import { errorCategoryLabels, formatDateTime, formatDuration, formatTokens, operationLabels, outcomeLabels, statusLabels } from "./format";
 
 export function RunRecordDetail({ detail }: { detail: RunRecordDetailModel }) {
   const isCorrupt = detail.status === "corrupt";
@@ -96,11 +96,10 @@ export function RunRecordDetail({ detail }: { detail: RunRecordDetailModel }) {
         <h3 id="run-record-error-title">错误轨迹</h3>
         {detail.errors.length === 0 ? <p className="run-records__muted">没有记录到错误。</p> : (
           <ul className="run-records__error-list">
-            {detail.errors.map((error, index) => <li key={`${error.source}-${index}`}><strong>{error.source}</strong><span>{error.message}</span></li>)}
+            {detail.errors.map((error, index) => <li key={`${error.source}-${index}`}><strong>{errorCategoryLabels[error.category]} · {error.source}</strong><span>{error.message}</span></li>)}
           </ul>
         )}
       </section>
     </section>
   );
 }
-

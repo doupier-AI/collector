@@ -9,6 +9,7 @@ import { ResearchSelectionConflictError, ResearchSelectionNotFoundError, Researc
 import { DeepResearchNotFoundError, DeepResearchValidationError } from "./deep-research.js";
 import { ResearchLaterNotFoundError, ResearchLaterValidationError } from "./research-later.js";
 import { RunRecordsValidationError } from "./observability.js";
+import { streamRunRecordExport } from "./run-record-export.js";
 import { createStaticWebHandler } from "./static-web.js";
 
 const JSON_LIMIT = 2 * 1024 * 1024;
@@ -53,6 +54,37 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       }
       if (!auth.isAuthorized(requestToken(request))) {
         return json(response, 401, { error: { code: "unauthorized", message: "Collector client is not paired" } });
+      }
+
+      if (request.method === "GET" && url.pathname === "/v1/run-records/export") {
+        const input = runRecordExportInput(url);
+        // Validate before sending headers so invalid filters still receive the normal JSON error shape.
+        service.runRecords.normalizeExportFilters(input);
+        if (service.runRecords.exportPage({ ...input, limit: 1 }).items.length === 0) {
+          return json(response, 404, { error: { code: "no_export_records", message: "当前筛选没有可导出的运行记录" } });
+        }
+        const generatedAt = new Date().toISOString();
+        response.statusCode = 200;
+        response.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+        response.setHeader("Content-Disposition", `attachment; filename*=UTF-8''collector-run-records-${generatedAt.replace(/[:.]/g, "-")}.jsonl`);
+        response.setHeader("Cache-Control", "no-store");
+        response.setHeader("X-Content-Type-Options", "nosniff");
+        response.flushHeaders();
+        let closed = false;
+        request.once("aborted", () => { closed = true; });
+        response.once("close", () => { closed = true; });
+        try {
+          await streamRunRecordExport(service.runRecords, input, {
+            async write(chunk) {
+              if (closed || response.destroyed) throw new Error("Run record export client disconnected");
+              if (!response.write(chunk)) await new Promise<void>((resolve) => response.once("drain", resolve));
+            },
+          }, generatedAt);
+          if (!closed && !response.writableEnded) response.end();
+        } catch {
+          if (!response.writableEnded) response.destroy();
+        }
+        return;
       }
 
       const runRecordDetailMatch = url.pathname.match(/^\/v1\/run-records\/([^/]+)$/);
@@ -636,6 +668,17 @@ async function readBytes(request: IncomingMessage, limit: number): Promise<Uint8
 function header(request: IncomingMessage, name: string): string | undefined {
   const value = request.headers[name];
   return Array.isArray(value) ? value[0] : value;
+}
+
+function runRecordExportInput(url: URL): import("./observability.js").RunRecordListInput {
+  const operationType = url.searchParams.get("operationType") ?? url.searchParams.get("type");
+  return {
+    ...(url.searchParams.get("from") ? { from: url.searchParams.get("from")! } : {}),
+    ...(url.searchParams.get("to") ? { to: url.searchParams.get("to")! } : {}),
+    ...(operationType ? { operationType } : {}),
+    ...(url.searchParams.get("outcome") ? { outcome: url.searchParams.get("outcome")! } : {}),
+    ...(url.searchParams.get("status") ? { status: url.searchParams.get("status")! } : {}),
+  };
 }
 
 function json(response: ServerResponse, status: number, payload: unknown) {

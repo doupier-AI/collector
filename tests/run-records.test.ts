@@ -198,6 +198,29 @@ test("run record API paginates, filters, restores related traces, and redacts se
   assert.ok(detail.body.errors.some((error) => error.message.includes("[REDACTED]")));
   const serialized = JSON.stringify(detail.body);
   assert.doesNotMatch(serialized, /sk-model-secret|sk-search-secret|source-secret|Bearer/);
+
+  const unauthorizedExport = await fetch(`${harness.base}/v1/run-records/export`);
+  assert.equal(unauthorizedExport.status, 401);
+
+  const exported = await fetch(`${harness.base}/v1/run-records/export?operationType=research`, { headers: headers(harness.token) });
+  assert.equal(exported.status, 200);
+  assert.match(exported.headers.get("content-disposition") ?? "", /collector-run-records-/);
+  const exportLines = (await exported.text()).trim().split("\n").map((line) => JSON.parse(line) as { type: string; [key: string]: unknown });
+  assert.equal(exportLines[0].type, "header");
+  assert.deepEqual((exportLines[0].filters as { operationType?: string }).operationType, "research");
+  assert.equal(exportLines[1].type, "record");
+  const exportedRecord = exportLines[1].record as { id: string; searches: Array<{ queries: string[]; sources: Array<{ url?: string }> }>; errors: Array<{ message: string }> };
+  assert.equal(exportedRecord.id, `research:${task.id}`);
+  assert.equal(exportedRecord.searches[0].queries[0], "安全查询 api_key=[REDACTED]");
+  assert.equal(exportedRecord.searches[0].sources[0].url, "https://example.com/article?safe=1");
+  assert.ok(exportedRecord.errors.some((error) => error.message.includes("[REDACTED]")));
+  assert.doesNotMatch(JSON.stringify(exportLines), /sk-model-secret|sk-search-secret|source-secret|Bearer/);
+  assert.equal(exportLines[2].type, "summary");
+  assert.equal((exportLines[2] as unknown as { recordCount: number }).recordCount, 1);
+
+  const emptyExport = await fetch(`${harness.base}/v1/run-records/export?operationType=selection_analysis`, { headers: headers(harness.token) });
+  assert.equal(emptyExport.status, 404);
+  assert.equal((await emptyExport.json() as { error: { code: string } }).error.code, "no_export_records");
 });
 
 test("run record API exposes corrupt records safely and rejects invalid pagination", async (t) => {

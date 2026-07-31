@@ -1,4 +1,4 @@
-import type { RunRecordOperationType, RunRecordOutcome, RunRecordStatus } from "@collector/capture-contracts";
+import type { RunRecordErrorCategory, RunRecordOperationType, RunRecordOutcome, RunRecordStatus } from "@collector/capture-contracts";
 
 export const operationLabels: Record<RunRecordOperationType, string> = {
   research: "对话研究",
@@ -25,6 +25,16 @@ export const statusLabels: Record<RunRecordStatus, string> = {
   corrupt: "记录损坏",
 };
 
+export const errorCategoryLabels: Record<RunRecordErrorCategory, string> = {
+  authentication: "认证",
+  network: "网络",
+  validation: "输入校验",
+  provider: "模型服务",
+  search: "联网搜索",
+  storage: "本地存储",
+  unknown: "其他",
+};
+
 export function formatDateTime(value: string): string {
   const timestamp = new Date(value);
   if (Number.isNaN(timestamp.getTime())) return "时间不可用";
@@ -43,4 +53,3 @@ export function formatDuration(value: number | undefined): string {
 export function formatTokens(value: number): string {
   return new Intl.NumberFormat("zh-Hans").format(Math.max(0, Math.round(value)));
 }
-

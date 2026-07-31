@@ -372,6 +372,7 @@ export type RunRecordSource = "research" | "selection" | "import" | "workflow";
 export type RunRecordOperationType = "research" | "selection_analysis" | "document_import" | "recent_organization" | "topic_document";
 export type RunRecordStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "corrupt";
 export type RunRecordOutcome = "success" | "failure" | "active" | "cancelled" | "unavailable";
+export type RunRecordErrorCategory = "authentication" | "network" | "validation" | "provider" | "search" | "storage" | "unknown";
 
 export interface RunRecordSummary {
   id: string;
@@ -427,6 +428,7 @@ export interface RunRecordSearchView {
 
 export interface RunRecordErrorView {
   source: "task" | "model" | "search" | "record";
+  category: RunRecordErrorCategory;
   message: string;
 }
 
@@ -450,6 +452,39 @@ export interface RunRecordPage {
   items: RunRecordSummary[];
   nextCursor?: string;
 }
+
+/** 本地运行记录导出的筛选条件；导出只覆盖当前筛选结果，不隐式读取全量业务数据。 */
+export interface RunRecordExportFilters {
+  from?: string;
+  to?: string;
+  operationType?: RunRecordOperationType;
+  outcome?: RunRecordOutcome;
+  status?: RunRecordStatus;
+}
+
+/** NDJSON 导出格式版本；头尾行使大文件中断时可以识别是否完整。 */
+export const RUN_RECORD_EXPORT_FORMAT_VERSION = "collector.run-records.v1" as const;
+
+export interface RunRecordExportHeader {
+  type: "header";
+  formatVersion: typeof RUN_RECORD_EXPORT_FORMAT_VERSION;
+  generatedAt: string;
+  filters: RunRecordExportFilters;
+}
+
+export interface RunRecordExportRecord {
+  type: "record";
+  record: RunRecordDetail;
+}
+
+export interface RunRecordExportSummary {
+  type: "summary";
+  formatVersion: typeof RUN_RECORD_EXPORT_FORMAT_VERSION;
+  recordCount: number;
+  complete: true;
+}
+
+export type RunRecordExportLine = RunRecordExportHeader | RunRecordExportRecord | RunRecordExportSummary;
 
 export interface AiBudgetSettings {
   monthlyLimitUsd: number;

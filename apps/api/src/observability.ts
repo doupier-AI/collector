@@ -8,7 +8,9 @@ import {
   type ResearchSelectionTaskRecord,
   type ResearchTaskRecord,
   type RunRecordDetail,
+  type RunRecordErrorCategory,
   type RunRecordErrorView,
+  type RunRecordExportFilters,
   type RunRecordModelCallView,
   type RunRecordOperationType,
   type RunRecordOutcome,
@@ -58,6 +60,20 @@ export interface RunRecordListInput {
   status?: string;
 }
 
+export interface RunRecordExportPage {
+  items: RunRecordDetail[];
+  nextCursor?: string;
+}
+
+interface ParsedRunRecordListInput {
+  limit: number;
+  operation?: RunRecordOperationType;
+  outcome?: RunRecordOutcome;
+  status?: RunRecordStatus;
+  cursor?: Cursor;
+  dateRange: { from?: string; to?: string };
+}
+
 export class RunRecordsValidationError extends Error {}
 
 interface Cursor {
@@ -74,24 +90,26 @@ interface ParsedRecord {
 export class RunRecordsService {
   constructor(private readonly store: CollectorStore) {}
 
+  /** 把 HTTP 查询参数规范化为可写入导出头的筛选条件，并复用列表接口校验。 */
+  normalizeExportFilters(input: RunRecordListInput = {}): RunRecordExportFilters {
+    return normalizeRunRecordExportFilters(input);
+  }
+
   list(input: RunRecordListInput = {}): RunRecordPage {
-    const limit = parseLimit(input.limit);
-    const operation = parseOperationType(input.operationType);
-    const outcome = parseOutcome(input.outcome);
-    const status = parseStatus(input.status);
-    const cursor = input.cursor ? decodeCursor(input.cursor) : undefined;
-    const dateRange = parseDateRange(input.from, input.to);
-    const query = this.queryFor({ limit: limit + 1, operation, outcome, status, cursor, dateRange });
-    const rows = this.store.listRunRecordRows(query);
-    const hasMore = rows.length > limit;
-    const pageRows = rows.slice(0, limit);
+    const parsed = parseRunRecordListInput(input);
+    const { pageRows, nextCursor } = this.pageRows(parsed);
     const items = pageRows.map((row) => this.summary(row));
     return {
       items,
-      ...(hasMore && pageRows.length > 0
-        ? { nextCursor: encodeCursor({ v: CURSOR_VERSION, createdAt: pageRows[pageRows.length - 1].createdAt, id: pageRows[pageRows.length - 1].id }) }
-        : {}),
+      ...(nextCursor ? { nextCursor } : {}),
     };
+  }
+
+  /** 导出复用同一筛选查询，但返回详情页所需的脱敏记录；调用方按 nextCursor 分段消费。 */
+  exportPage(input: RunRecordListInput = {}): RunRecordExportPage {
+    const parsed = parseRunRecordListInput(input);
+    const { pageRows, nextCursor } = this.pageRows(parsed);
+    return { items: pageRows.map((row) => this.detail(row)), ...(nextCursor ? { nextCursor } : {}) };
   }
 
   get(publicId: string): RunRecordDetail | undefined {
@@ -119,6 +137,25 @@ export class RunRecordsService {
       ...(input.dateRange.from ? { createdAfter: input.dateRange.from } : {}),
       ...(input.dateRange.to ? { createdBefore: input.dateRange.to } : {}),
       ...(input.cursor ? { before: { createdAt: input.cursor.createdAt, id: input.cursor.id } } : {}),
+    };
+  }
+
+  private pageRows(input: ParsedRunRecordListInput): { pageRows: ObservabilityRecordRow[]; nextCursor?: string } {
+    const rows = this.store.listRunRecordRows(this.queryFor({
+      limit: input.limit + 1,
+      operation: input.operation,
+      outcome: input.outcome,
+      status: input.status,
+      cursor: input.cursor,
+      dateRange: input.dateRange,
+    }));
+    const pageRows = rows.slice(0, input.limit);
+    const hasMore = rows.length > input.limit;
+    return {
+      pageRows,
+      ...(hasMore && pageRows.length > 0
+        ? { nextCursor: encodeCursor({ v: CURSOR_VERSION, createdAt: pageRows[pageRows.length - 1].createdAt, id: pageRows[pageRows.length - 1].id }) }
+        : {}),
     };
   }
 
@@ -166,7 +203,7 @@ export class RunRecordsService {
         outcome: "unavailable",
         modelCalls: [],
         searches: [],
-        errors: [{ source: "record", message: "这条运行记录无法读取，原始内容已隐藏。" }],
+        errors: [{ source: "record", category: "storage", message: "这条运行记录无法读取，原始内容已隐藏。" }],
       };
     }
     const summary = this.summary(row);
@@ -258,6 +295,28 @@ function parseLimit(value: number | undefined): number {
   if (value === undefined) return DEFAULT_PAGE_SIZE;
   if (!Number.isInteger(value) || value < 1 || value > MAX_PAGE_SIZE) throw new RunRecordsValidationError("limit must be between 1 and 50");
   return value;
+}
+
+function parseRunRecordListInput(input: RunRecordListInput): ParsedRunRecordListInput {
+  return {
+    limit: parseLimit(input.limit),
+    operation: parseOperationType(input.operationType),
+    outcome: parseOutcome(input.outcome),
+    status: parseStatus(input.status),
+    ...(input.cursor ? { cursor: decodeCursor(input.cursor) } : {}),
+    dateRange: parseDateRange(input.from, input.to),
+  };
+}
+
+function normalizeRunRecordExportFilters(input: RunRecordListInput): RunRecordExportFilters {
+  const parsed = parseRunRecordListInput({ ...input, limit: 1, cursor: undefined });
+  return {
+    ...(parsed.dateRange.from ? { from: parsed.dateRange.from } : {}),
+    ...(parsed.dateRange.to ? { to: parsed.dateRange.to } : {}),
+    ...(parsed.operation ? { operationType: parsed.operation } : {}),
+    ...(parsed.outcome ? { outcome: parsed.outcome } : {}),
+    ...(parsed.status ? { status: parsed.status } : {}),
+  };
 }
 
 function parseDateRange(from: string | undefined, to: string | undefined): { from?: string; to?: string } {
@@ -426,10 +485,25 @@ function corruptSearch(row: ObservabilityRelatedRow): RunRecordSearchView {
 function errorsFor(source: ObservabilityRecordSource, record: Record<string, unknown>, modelCalls: RunRecordModelCallView[], searches: RunRecordSearchView[]): RunRecordErrorView[] {
   const errors: RunRecordErrorView[] = [];
   const taskError = record.error && typeof record.error === "object" ? (record.error as Record<string, unknown>).message : record.errorMessage;
-  if (taskError) errors.push({ source: "task", message: safeText(taskError) });
-  for (const call of modelCalls) if (call.errorMessage) errors.push({ source: "model", message: call.errorMessage });
-  for (const search of searches) if (search.errorMessage) errors.push({ source: "search", message: search.errorMessage });
+  if (taskError) errors.push(errorView("task", taskError));
+  for (const call of modelCalls) if (call.errorMessage) errors.push(errorView("model", call.errorMessage));
+  for (const search of searches) if (search.errorMessage) errors.push(errorView("search", search.errorMessage));
   return errors;
+}
+
+function errorView(source: RunRecordErrorView["source"], message: unknown): RunRecordErrorView {
+  const safeMessage = safeText(message);
+  return { source, category: classifyError(source, safeMessage), message: safeMessage };
+}
+
+function classifyError(source: RunRecordErrorView["source"], message: string): RunRecordErrorCategory {
+  if (source === "record") return "storage";
+  if (/(?:authorization|authenticate|credential|cookie|api[-_]?key|access[-_]?token|refresh[-_]?token|bearer|unauthorized|forbidden)/i.test(message)) return "authentication";
+  if (/(?:invalid|validation|required|missing|malformed|schema|input)/i.test(message)) return "validation";
+  if (/(?:timeout|timed out|network|connect|fetch|dns|econn|offline|unreachable)/i.test(message)) return "network";
+  if (source === "search") return "search";
+  if (source === "model" || /(?:provider|model|gateway|unsupported)/i.test(message)) return "provider";
+  return "unknown";
 }
 
 function safeRows(read: () => ObservabilityRelatedRow[]): ObservabilityRelatedRow[] {
@@ -465,4 +539,3 @@ function positiveNumber(value: unknown, fallback: number): number { const number
 function validDate(value: unknown): string | undefined { const text = stringValue(value); return text && !Number.isNaN(new Date(text).getTime()) ? new Date(text).toISOString() : undefined; }
 function safeId(value: unknown, fallback = "unknown"): string { return safeText(value, fallback, 180).replace(/[^A-Za-z0-9._:-]/g, "_"); }
 function publicRelatedId(value: string): string { return `related:${safeId(value)}`; }
-

@@ -33,6 +33,7 @@ import type {
   ResearchTaskRecord,
   ResearchTurnAccepted,
   RunRecordDetail,
+  RunRecordExportFilters,
   RunRecordPage,
 } from "@collector/capture-contracts";
 import { ApiRequestError, NetworkError, parseApiErrorBody } from "./errors";
@@ -49,9 +50,15 @@ export interface RunRecordListParams {
   status?: string;
 }
 
+export interface RunRecordExportDownload {
+  blob: Blob;
+  fileName: string;
+}
+
 export interface ApiClient {
   listResearchSessions(): Promise<ResearchSessionRecord[]>;
   listRunRecords(params?: RunRecordListParams): Promise<RunRecordPage>;
+  exportRunRecords(params?: RunRecordExportFilters): Promise<RunRecordExportDownload>;
   getRunRecord(id: string): Promise<RunRecordDetail>;
   createResearchSession(idempotencyKey: string, title?: string): Promise<ResearchSessionRecord>;
   getResearchSessionView(sessionId: string): Promise<ResearchSessionView>;
@@ -133,6 +140,42 @@ async function requestJson<T>(fetchImpl: FetchLike, path: string, init?: Request
   return (await response.json()) as T;
 }
 
+async function requestBlob(fetchImpl: FetchLike, path: string): Promise<RunRecordExportDownload> {
+  let response: Response;
+  try {
+    response = await fetchImpl(path);
+  } catch {
+    throw new NetworkError();
+  }
+  if (!response.ok) {
+    let code = response.status >= 500 ? "internal_error" : "request_failed";
+    let message = "";
+    try {
+      const parsed = parseApiErrorBody(await response.json());
+      if (parsed) {
+        code = parsed.code;
+        message = parsed.message;
+      }
+    } catch {
+      // 错误体不是 JSON 时保留按状态码推断的 code
+    }
+    throw new ApiRequestError(response.status, code, message);
+  }
+  return {
+    blob: await response.blob(),
+    fileName: fileNameFromDisposition(response.headers.get("Content-Disposition")) ?? "collector-run-records.jsonl",
+  };
+}
+
+function fileNameFromDisposition(value: string | null): string | undefined {
+  if (!value) return undefined;
+  const encoded = value.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if (encoded) {
+    try { return decodeURIComponent(encoded); } catch { /* fall through to the quoted filename */ }
+  }
+  return value.match(/filename="([^"]+)"/i)?.[1] ?? value.match(/filename=([^;]+)/i)?.[1]?.trim();
+}
+
 /**
  * 结果型接口（{ ok: true, ... } | { ok: false, error }）：成功与业务失败分别用 200 / 502 返回，
  * 失败原因编码在响应体里，因此两种状态都解析 body，不把 502 当作传输错误。
@@ -168,6 +211,14 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
       }
       const path = query.toString() ? `/v1/run-records?${query.toString()}` : "/v1/run-records";
       return requestJson<RunRecordPage>(fetchFn, path);
+    },
+    exportRunRecords(params: RunRecordExportFilters = {}) {
+      const query = new URLSearchParams();
+      for (const [key, value] of Object.entries(params)) {
+        if (value !== undefined && value !== "") query.set(key, String(value));
+      }
+      const path = query.toString() ? `/v1/run-records/export?${query.toString()}` : "/v1/run-records/export";
+      return requestBlob(fetchFn, path);
     },
     getRunRecord(id: string) {
       return requestJson<RunRecordDetail>(fetchFn, `/v1/run-records/${encodeURIComponent(id)}`);
