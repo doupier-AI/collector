@@ -21,6 +21,7 @@ import type { SelectionRect } from "./useSelection";
 export function FloatingSelectionCapsule({
   rect,
   onCite,
+  onMark,
   state = "open",
   onExited,
 }: {
@@ -28,6 +29,8 @@ export function FloatingSelectionCapsule({
   rect: SelectionRect;
   /** 点击【引用】：完成引用捕获，随后由捕获层隐藏本胶囊。 */
   onCite: () => void;
+  /** 点击【标记】（修订二）：创建用户标记并展开笔记输入框。省略时不渲染按钮。 */
+  onMark?: () => void;
   /** closing：播放淡出后回调 onExited；open（默认）：正常交互。 */
   state?: "open" | "closing";
   /** 淡出动画结束（或减弱动效环境）时触发，供调用方卸载组件。 */
@@ -103,6 +106,17 @@ export function FloatingSelectionCapsule({
       >
         引用
       </button>
+      {onMark ? (
+        <button
+          type="button"
+          className="floating-capsule__mark"
+          data-testid="floating-capsule-mark"
+          tabIndex={closing ? -1 : 0}
+          onClick={onMark}
+        >
+          标记
+        </button>
+      ) : null}
     </div>,
     document.body,
   );

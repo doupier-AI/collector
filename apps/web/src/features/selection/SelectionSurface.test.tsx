@@ -111,6 +111,40 @@ describe("SelectionSurface（修订一 #9）", () => {
     expect(screen.queryByTestId("floating-selection-capsule")).not.toBeInTheDocument();
   });
 
+  it("点击【标记】上报锚点、原文与选区矩形，胶囊淡出后卸载（修订二 #12）", async () => {
+    const user = userEvent.setup();
+    const { first } = buildDom();
+    const onMark = vi.fn();
+    render(<SelectionSurface sessionId="session-1" onCite={vi.fn()} onMark={onMark} />);
+
+    mockSelection(makeRange(first, 6, 12));
+    mouseup();
+    await user.click(screen.getByTestId("floating-capsule-mark"));
+
+    expect(onMark).toHaveBeenCalledTimes(1);
+    const [anchor, text, rect] = onMark.mock.calls[0]!;
+    expect(text).toBe("段落一的内容");
+    expect(anchor).toMatchObject({ kind: "message", messageId: "m-out", startOffset: 6, endOffset: 12 });
+    expect(rect).toMatchObject({ top: 0, bottom: 0, left: 0, right: 0 });
+
+    // 标记同样消费选区：胶囊 closing 淡出，动画结束后卸载
+    const closing = screen.getByTestId("floating-selection-capsule");
+    expect(closing).toHaveAttribute("aria-hidden", "true");
+    fireEvent.animationEnd(closing);
+    expect(screen.queryByTestId("floating-selection-capsule")).not.toBeInTheDocument();
+  });
+
+  it("未传 onMark 时浮动胶囊不渲染【标记】按钮（修订一引用路径不受影响）", () => {
+    const { first } = buildDom();
+    render(<SelectionSurface sessionId="session-1" onCite={vi.fn()} />);
+
+    mockSelection(makeRange(first, 6, 12));
+    mouseup();
+
+    expect(screen.getByTestId("floating-selection-capsule")).toBeInTheDocument();
+    expect(screen.queryByTestId("floating-capsule-mark")).not.toBeInTheDocument();
+  });
+
   it("原生选区坍缩只关闭浮动胶囊；重新选取后胶囊再次呈现", () => {
     const { first } = buildDom();
     const onCite = vi.fn();

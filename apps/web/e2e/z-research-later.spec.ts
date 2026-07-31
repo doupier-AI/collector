@@ -15,6 +15,7 @@ import {
   readResearchLaterTables,
   readResearchSelectionTables,
   citeAnswerText,
+  selectAnswerText,
 } from "./helpers";
 
 const QUESTION = "什么是本地优先研究？";
@@ -73,9 +74,91 @@ test.describe("稍后再学 API 与持久化", () => {
     expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
   });
 
-  // 阶段 H4a 暂停：旧窗口流程已退役，新的"稍后再学"UI 入口由票据 08 提供
-  test.skip("窗口稍后再学完整流程（H4a 后暂停，待票据 08 恢复入口）", async () => {
-    // 原测试覆盖：窗口"稍后再学"（星级 + 可编辑概括，预填确定性默认值）→ 保存即入栏目
-    // → 幂等重放不重复创建 → 点击项目返回原内容原选区 → 标记完成 / 恢复待学
+  test("选区胶囊【标记】可展开笔记、滚动锁定、点击外部保存，重复标记回填同一条记录", async ({ page }) => {
+    test.setTimeout(60_000);
+    const consoleIssues: string[] = [];
+    await pairAndOpen(page, "/research/new");
+    page.on("console", (message) => {
+      if (message.type() === "error" || message.type() === "warning") consoleIssues.push(message.text());
+    });
+    page.on("pageerror", (error) => consoleIssues.push(error.message));
+
+    const sessionId = await submitFirstQuestion(page);
+    await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
+      timeout: 15_000,
+    });
+
+    await selectAnswerText(page, SELECTED);
+    await expect(page.getByTestId("floating-capsule-mark")).toBeVisible();
+    await page.getByTestId("floating-capsule-mark").click();
+
+    const editor = page.getByTestId("mark-note-editor");
+    const input = page.getByTestId("mark-note-input");
+    await expect(editor).toBeVisible();
+    await expect(input).toHaveAttribute("placeholder", SELECTED);
+    await expect(input).toHaveValue("");
+
+    await input.focus();
+    await page.waitForTimeout(350);
+    await expect(editor).toHaveCSS("position", "fixed");
+    const beforeScroll = await editor.boundingBox();
+    expect(beforeScroll).not.toBeNull();
+    await page.mouse.wheel(0, 500);
+    await page.waitForTimeout(150);
+    const afterScroll = await editor.boundingBox();
+    expect(afterScroll).not.toBeNull();
+    expect(Math.abs((afterScroll?.x ?? 0) - (beforeScroll?.x ?? 0))).toBeLessThanOrEqual(1);
+    expect(Math.abs((afterScroll?.y ?? 0) - (beforeScroll?.y ?? 0))).toBeLessThanOrEqual(1);
+
+    await input.fill("这一段要反复验证");
+    await page.mouse.click(12, 12);
+    await expect(editor).toHaveCount(0);
+
+    const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
+    const firstTables = readResearchLaterTables(dbPath);
+    const firstItems = firstTables.laterItems.filter((row) => row.sessionId === sessionId);
+    expect(firstItems).toHaveLength(1);
+    const firstRecord = JSON.parse(firstItems[0]?.recordJson ?? "{}") as { note?: string };
+    expect(firstRecord.note).toBe("这一段要反复验证");
+
+    const listed = await apiJson<Array<{ item: { id: string; note?: string } }>>(page, "/v1/research-later-items");
+    expect(listed.filter((entry) => entry.item.note === "这一段要反复验证")).toHaveLength(1);
+    const firstItemId = firstItems[0]?.id;
+
+    // 同一选区再次标记：服务端幂等返回原记录，并回填既有笔记而不是新增一条。
+    await selectAnswerText(page, SELECTED);
+    await page.getByTestId("floating-capsule-mark").click();
+    await expect(input).toHaveValue("这一段要反复验证");
+    expect(await page.getByTestId("mark-note-editor").count()).toBe(1);
+    await page.mouse.click(12, 12);
+    await expect(editor).toHaveCount(0);
+
+    const secondTables = readResearchLaterTables(dbPath);
+    const secondItems = secondTables.laterItems.filter((row) => row.sessionId === sessionId);
+    expect(secondItems).toHaveLength(1);
+    expect(secondItems[0]?.id).toBe(firstItemId);
+    expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
   });
+
+  test("点击【标记】后 1 秒未输入笔记，自动收起为纯标记", async ({ page }) => {
+    test.setTimeout(60_000);
+    await pairAndOpen(page, "/research/new");
+    const sessionId = await submitFirstQuestion(page);
+    await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
+      timeout: 15_000,
+    });
+
+    await selectAnswerText(page, SELECTED);
+    await page.getByTestId("floating-capsule-mark").click();
+    await expect(page.getByTestId("mark-note-editor")).toBeVisible();
+    await expect(page.getByTestId("mark-note-editor")).toBeHidden({ timeout: 3_000 });
+
+    const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
+    const items = readResearchLaterTables(dbPath).laterItems.filter((row) => row.sessionId === sessionId);
+    expect(items).toHaveLength(1);
+    const record = JSON.parse(items[0]?.recordJson ?? "{}") as { note?: string };
+    expect(record.note).toBeUndefined();
+  });
+
+
 });

@@ -47,6 +47,19 @@ describe("浮动选区胶囊", () => {
     expect(onCite).toHaveBeenCalledTimes(1);
   });
 
+  it("传入 onMark 时【引用】旁呈现【标记】，点击触发 onMark（修订二 #12）", async () => {
+    const user = userEvent.setup();
+    const onMark = vi.fn();
+    render(<FloatingSelectionCapsule rect={RECT} onCite={() => {}} onMark={onMark} />);
+    await user.click(screen.getByTestId("floating-capsule-mark"));
+    expect(onMark).toHaveBeenCalledTimes(1);
+  });
+
+  it("未传 onMark 时不渲染【标记】按钮", () => {
+    render(<FloatingSelectionCapsule rect={RECT} onCite={() => {}} />);
+    expect(screen.queryByTestId("floating-capsule-mark")).not.toBeInTheDocument();
+  });
+
   it("closing 状态播放淡出：动画结束回调 onExited，按钮退出 Tab 序列", () => {
     const onExited = vi.fn();
     render(<FloatingSelectionCapsule rect={RECT} onCite={() => {}} state="closing" onExited={onExited} />);

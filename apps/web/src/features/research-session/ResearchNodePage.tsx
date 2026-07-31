@@ -14,6 +14,7 @@ import { IMPORT_ACCEPT } from "../imports/import-file";
 import { useResearchImports } from "../imports/useResearchImports";
 import { SelectionSurface } from "../selection/SelectionSurface";
 import { FloatingSelectionCapsule } from "../selection/FloatingSelectionCapsule";
+import { MarkNoteEditor } from "../selection/MarkNoteEditor";
 import {
   childNodeIdempotencyKey,
   focusComposerTextarea,
@@ -24,6 +25,8 @@ import {
 import type { SelectionRect } from "../selection/useSelection";
 import type { CitedSelection } from "../selection/useSelectionCitation";
 import { useSelectionCitation } from "../selection/useSelectionCitation";
+import type { MarkResult } from "../selection/useSelectionMark";
+import { useSelectionMark } from "../selection/useSelectionMark";
 import { formatSessionTime } from "./format";
 import { MessageItem } from "./MessageItem";
 import { ModelStatusIndicator } from "./ModelStatusIndicator";
@@ -79,6 +82,35 @@ export function ResearchNodePage() {
       focusComposerTextarea();
     },
     [captureCitation],
+  );
+
+  // 用户标记与笔记（修订二 #12）：点击【标记】立即持久化（幂等），输入框在原位展开；
+  // 1 秒未点击自动收起为纯标记；点击其他位置保存笔记关闭；全程不依赖 AI
+  const { mark, saveNote } = useSelectionMark({ sessionId, nodeId });
+  const [markEditor, setMarkEditor] = useState<{
+    rect: SelectionRect;
+    text: string;
+    pending: Promise<MarkResult | null>;
+  } | null>(null);
+  const handleSurfaceMark = useCallback(
+    (anchor: ResearchSelectionAnchor, text: string, rect: SelectionRect) => {
+      setMarkEditor({ rect, text, pending: mark(anchor, text) });
+    },
+    [mark],
+  );
+  const handleMarkAutoCollapse = useCallback(() => {
+    // 标记在点击时已落库：收起即纯标记
+    setMarkEditor(null);
+  }, []);
+  const handleMarkSaveNote = useCallback(
+    async (note: string) => {
+      const current = markEditor;
+      setMarkEditor(null);
+      if (!current) return;
+      const result = await current.pending;
+      if (result && note.trim()) await saveNote(result.itemId, note);
+    },
+    [markEditor, saveNote],
   );
 
   // 来源返回：?sel= 查询参数恢复选区，直接显示引用胶囊（不弹旧面板）
@@ -420,11 +452,22 @@ export function ResearchNodePage() {
       <SelectionSurface
         sessionId={sessionId}
         onCite={handleSurfaceCite}
+        onMark={handleSurfaceMark}
         onSelectionActivity={dismissRestoreCapsule}
       />
 
       {restoredSelection && restoredCapsuleRect && restoreCapsuleDismissedId !== restoredSelection.id ? (
         <FloatingSelectionCapsule rect={restoredCapsuleRect} onCite={handleRestoreCite} />
+      ) : null}
+
+      {markEditor ? (
+        <MarkNoteEditor
+          rect={markEditor.rect}
+          selectedText={markEditor.text}
+          existingNote={markEditor.pending}
+          onAutoCollapse={handleMarkAutoCollapse}
+          onSaveNote={handleMarkSaveNote}
+        />
       ) : null}
 
       <p className="sr-only" role="status" aria-live="polite">

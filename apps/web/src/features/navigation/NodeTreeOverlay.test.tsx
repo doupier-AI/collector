@@ -154,6 +154,7 @@ describe("NodeTreeOverlay", () => {
     renderOverlay({ getResearchSessionNodeTree: async () => sampleTree() }, "session-1");
 
     await screen.findByRole("tree", { name: "研究节点树" });
+    await waitFor(() => expect(screen.getByRole("treeitem", { name: /理解注意力机制/ })).toHaveFocus());
     await user.keyboard("{ArrowDown}");
     await user.keyboard("{Enter}");
     await waitFor(() =>

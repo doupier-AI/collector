@@ -25,11 +25,14 @@ import type { ActiveCapture, SelectionRect } from "./useSelection";
 export function SelectionSurface({
   sessionId,
   onCite,
+  onMark,
   onSelectionActivity,
 }: {
   sessionId: string;
   /** 用户点击浮动胶囊【引用】时触发。页面据此创建选区记录并渲染引用胶囊。 */
   onCite: (anchor: ResearchSelectionAnchor, text: string) => void;
+  /** 用户点击浮动胶囊【标记】时触发（修订二）。页面据此创建标记并展开笔记输入框。 */
+  onMark?: (anchor: ResearchSelectionAnchor, text: string, rect: SelectionRect) => void;
   /** 新的有效选区出现（浮动胶囊呈现）时触发。 */
   onSelectionActivity?: () => void;
 }) {
@@ -76,13 +79,20 @@ export function SelectionSurface({
     onCite(floating.anchor, floating.range.text);
   }
 
+  function handleMark() {
+    if (!floating?.anchor) return;
+    // 标记同样消费当前选区：胶囊隐藏，由页面展开笔记输入框
+    setConsumedKey(selectionAnchorKey(floating.anchor));
+    onMark?.(floating.anchor, floating.range.text, floating.rect);
+  }
+
   // 不达标选区：仅质量提示（太长 / 跨段落；"太短"已于修订一·B 退役）
   if (active && (!active.anchor || active.quality.level !== "ok")) {
     return <SelectionQualityHint capture={active} onDismiss={dismiss} />;
   }
 
   if (floating) {
-    return <FloatingSelectionCapsule rect={floating.rect} onCite={handleCite} />;
+    return <FloatingSelectionCapsule rect={floating.rect} onCite={handleCite} onMark={onMark ? handleMark : undefined} />;
   }
 
   if (closingRect) {

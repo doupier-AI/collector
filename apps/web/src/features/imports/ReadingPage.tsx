@@ -9,6 +9,7 @@ import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { HighlightedText } from "../selection/HighlightedText";
 import { SelectionSurface } from "../selection/SelectionSurface";
 import { FloatingSelectionCapsule } from "../selection/FloatingSelectionCapsule";
+import { MarkNoteEditor } from "../selection/MarkNoteEditor";
 import {
   childNodeIdempotencyKey,
   focusComposerTextarea,
@@ -17,6 +18,8 @@ import {
 } from "../selection/selection-highlight";
 import type { SelectionRect } from "../selection/useSelection";
 import { useSelectionCitation } from "../selection/useSelectionCitation";
+import type { MarkResult } from "../selection/useSelectionMark";
+import { useSelectionMark } from "../selection/useSelectionMark";
 import { PairingGate } from "../auth/PairingGate";
 import { SelectionRestoreFallback, useSelectionRestore } from "../research-session/SelectionSourceBar";
 import { ChatComposer } from "../chat-composer/ChatComposer";
@@ -71,6 +74,33 @@ export function ReadingPage() {
       focusComposerTextarea();
     },
     [captureCitation],
+  );
+
+  // 用户标记与笔记（修订二 #12）：阅读页不传 nodeId，标记归属会话根节点
+  const { mark, saveNote } = useSelectionMark({ sessionId });
+  const [markEditor, setMarkEditor] = useState<{
+    rect: SelectionRect;
+    text: string;
+    pending: Promise<MarkResult | null>;
+  } | null>(null);
+  const handleSurfaceMark = useCallback(
+    (anchor: ResearchSelectionAnchor, text: string, rect: SelectionRect) => {
+      setMarkEditor({ rect, text, pending: mark(anchor, text) });
+    },
+    [mark],
+  );
+  const handleMarkAutoCollapse = useCallback(() => {
+    setMarkEditor(null);
+  }, []);
+  const handleMarkSaveNote = useCallback(
+    async (note: string) => {
+      const current = markEditor;
+      setMarkEditor(null);
+      if (!current) return;
+      const result = await current.pending;
+      if (result && note.trim()) await saveNote(result.itemId, note);
+    },
+    [markEditor, saveNote],
   );
 
   useEffect(() => {
@@ -300,11 +330,22 @@ export function ReadingPage() {
       <SelectionSurface
         sessionId={sessionId}
         onCite={handleSurfaceCite}
+        onMark={handleSurfaceMark}
         onSelectionActivity={dismissRestoreCapsule}
       />
 
       {restoredSelection && restoredCapsuleRect && restoreCapsuleDismissedId !== restoredSelection.id ? (
         <FloatingSelectionCapsule rect={restoredCapsuleRect} onCite={handleRestoreCite} />
+      ) : null}
+
+      {markEditor ? (
+        <MarkNoteEditor
+          rect={markEditor.rect}
+          selectedText={markEditor.text}
+          existingNote={markEditor.pending}
+          onAutoCollapse={handleMarkAutoCollapse}
+          onSaveNote={handleMarkSaveNote}
+        />
       ) : null}
     </div>
   );

@@ -56,7 +56,7 @@ export class ResearchLaterService {
     return this.store.listResearchLaterItems(status).map((item) => this.viewFor(item));
   }
 
-  /** 更新用户优先级、概括或完成状态；未提供的字段保持原值。 */
+  /** 更新用户优先级、概括、完成状态或笔记；未提供的字段保持原值。笔记修剪后为空视为清除（纯标记）。 */
   async updateItem(id: string, update: ResearchLaterItemUpdate): Promise<ResearchLaterItemView> {
     const item = this.store.getResearchLaterItem(id);
     if (!item) throw new ResearchLaterNotFoundError("Research later item not found");
@@ -65,6 +65,7 @@ export class ResearchLaterService {
       priority: update.priority ?? item.priority,
       summary: update.summary !== undefined ? update.summary.trim() : item.summary,
       status: update.status ?? item.status,
+      note: update.note !== undefined ? update.note.trim() || undefined : item.note,
       updatedAt: new Date().toISOString(),
     };
     await this.store.saveResearchLaterItem(next);

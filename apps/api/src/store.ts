@@ -1709,8 +1709,8 @@ export class SqliteStore implements CollectorStore {
         persisted = existing;
         return;
       }
-      this.db().prepare("INSERT INTO research_later_items (id, session_id, node_id, selection_id, status, priority, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(item.id, item.sessionId, item.nodeId ?? null, item.selectionId, item.status, item.priority, item.createdAt, item.updatedAt, idempotencyKey, JSON.stringify(item));
+      this.db().prepare("INSERT INTO research_later_items (id, session_id, node_id, selection_id, status, priority, note, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(item.id, item.sessionId, item.nodeId ?? null, item.selectionId, item.status, item.priority, item.note ?? null, item.createdAt, item.updatedAt, idempotencyKey, JSON.stringify(item));
       persisted = item;
     });
     if (!persisted) throw new Error("Research later item was not persisted");
@@ -1718,8 +1718,8 @@ export class SqliteStore implements CollectorStore {
   }
 
   async saveResearchLaterItem(record: ResearchLaterItemRecord): Promise<void> {
-    this.db().prepare("UPDATE research_later_items SET status = ?, priority = ?, updated_at = ?, record_json = ? WHERE id = ?")
-      .run(record.status, record.priority, record.updatedAt, JSON.stringify(record), record.id);
+    this.db().prepare("UPDATE research_later_items SET status = ?, priority = ?, note = ?, updated_at = ?, record_json = ? WHERE id = ?")
+      .run(record.status, record.priority, record.note ?? null, record.updatedAt, JSON.stringify(record), record.id);
   }
 
   async saveResearchGroundingResult(result: ResearchGroundingResult): Promise<void> {
@@ -2388,6 +2388,18 @@ export class SqliteStore implements CollectorStore {
         this.db().exec("INSERT INTO schema_migrations(version, applied_at) VALUES (24, datetime('now'));");
       });
       version = 24;
+    }
+
+    if (version < 25) {
+      this.transaction(() => {
+        // 修订二（用户标记与笔记）：稍后再学表复用于标记，新增用户笔记列；
+        // 旧数据 note 为 NULL（纯标记语义），记录主体仍以 record_json 为准。
+        this.db().exec(`
+          ALTER TABLE research_later_items ADD COLUMN note TEXT;
+          INSERT INTO schema_migrations(version, applied_at) VALUES (25, datetime('now'));
+        `);
+      });
+      version = 25;
     }
 
   }

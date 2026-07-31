@@ -107,7 +107,7 @@ async function createSelectionOn(
 }
 
 interface LaterView {
-  item: { id: string; sessionId: string; selectionId: string; summary: string; priority: number; status: string; createdAt: string; updatedAt: string };
+  item: { id: string; sessionId: string; selectionId: string; summary: string; priority: number; status: string; note?: string; createdAt: string; updatedAt: string };
   selection: { id: string; text: string };
   sourceTitle: string;
 }
@@ -235,6 +235,36 @@ test("updates priority, summary and status independently", async (t) => {
   assert.equal(single.item.status, "pending");
 });
 
+test("mark flow: create without note, add a note, then clear it back to a pure mark (修订二)", async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.close());
+  const { session, assistantMessage } = await createSessionWithAnswer(harness);
+  const selection = await createSelectionOn(harness, session.id, anchorForSelection(assistantMessage.id, 1, "实践建议"));
+
+  // 点击【标记】即创建：无笔记（纯标记），不依赖 AI
+  const created = await (await postJson(harness.base, harness.token, "/v1/research-later-items", { selectionId: selection.selection.id }, randomUUID())).json() as LaterView;
+  assert.equal(created.item.note, undefined);
+
+  // 输入笔记后点击其他位置：保存笔记
+  const noted = await (await putJson(harness.base, harness.token, `/v1/research-later-items/${created.item.id}`, { note: "这一段要反复验证" })).json() as LaterView;
+  assert.equal(noted.item.note, "这一段要反复验证");
+  assert.equal(noted.item.summary, created.item.summary);
+
+  const single = await (await fetch(`${harness.base}/v1/research-later-items/${created.item.id}`, { headers: headers(harness.token) })).json() as LaterView;
+  assert.equal(single.item.note, "这一段要反复验证");
+  // 列表视图同样携带笔记
+  const listed = await (await fetch(`${harness.base}/v1/research-later-items`, { headers: headers(harness.token) })).json() as LaterView[];
+  assert.equal(listed.find((view) => view.item.id === created.item.id)?.item.note, "这一段要反复验证");
+
+  // 空笔记 / 纯空白视为清除，回到纯标记
+  const cleared = await (await putJson(harness.base, harness.token, `/v1/research-later-items/${created.item.id}`, { note: "   " })).json() as LaterView;
+  assert.equal(cleared.item.note, undefined);
+  assert.equal(harness.store.getResearchLaterItem(created.item.id)?.note, undefined);
+
+  // 超长笔记被拒绝
+  assert.equal((await putJson(harness.base, harness.token, `/v1/research-later-items/${created.item.id}`, { note: "x".repeat(2_001) })).status, 400);
+});
+
 test("validation rejects malformed requests and unknown references", async (t) => {
   const harness = await createHarness();
   t.after(() => harness.close());
@@ -295,6 +325,7 @@ test("later items persist across store reopen and survive service restart", asyn
   const { session, assistantMessage } = await createSessionWithAnswer(harness);
   const selection = await createSelectionOn(harness, session.id, anchorForSelection(assistantMessage.id, 1, "实践建议"));
   const created = await (await postJson(harness.base, harness.token, "/v1/research-later-items", { selectionId: selection.selection.id, priority: 4 }, randomUUID())).json() as LaterView;
+  await putJson(harness.base, harness.token, `/v1/research-later-items/${created.item.id}`, { note: "重启后仍在的笔记" });
 
   const reopened = new SqliteStore(join(harness.root, "collector.sqlite"));
   await reopened.init();
@@ -302,6 +333,7 @@ test("later items persist across store reopen and survive service restart", asyn
   assert.equal(item?.priority, 4);
   assert.equal(item?.status, "pending");
   assert.equal(item?.selectionId, selection.selection.id);
+  assert.equal(item?.note, "重启后仍在的笔记");
   reopened.close();
 });
 

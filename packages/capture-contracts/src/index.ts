@@ -1094,11 +1094,14 @@ export const RESEARCH_LATER_DEFAULT_PRIORITY = 3;
 /** 用户概括的最大长度；默认值由确定性派生函数生成，不超过 80 字符。 */
 export const RESEARCH_LATER_SUMMARY_MAX_CHARACTERS = 200;
 export const RESEARCH_LATER_DEFAULT_SUMMARY_CHARACTERS = 80;
+/** 用户笔记的最大长度（修订二：标记与笔记）。空笔记等价于无笔记（纯标记）。 */
+export const RESEARCH_LATER_NOTE_MAX_CHARACTERS = 2_000;
 
 /**
- * 稍后再学项目。保存、展示和返回来源不依赖 AI：
+ * 稍后再学项目（修订二起同时承载用户标记与笔记）。保存、展示和返回来源不依赖 AI：
  * `selectionId` 是来源关系的唯一依据，选区原文与位置由选区记录保留；
- * `summary` 默认值确定性派生，`priority` 由用户设置的一至五星表达。
+ * `summary` 默认值确定性派生，`priority` 由用户设置的一至五星表达；
+ * 修订二的标记流程只用 `note`（用户笔记，缺省为纯标记），星级 / 概括 / 状态字段闲置保留。
  */
 export interface ResearchLaterItemRecord {
   id: string;
@@ -1109,6 +1112,8 @@ export interface ResearchLaterItemRecord {
   summary: string;
   priority: number;
   status: ResearchLaterItemStatus;
+  /** 用户笔记（修订二）。undefined 或空表示纯标记、无笔记。 */
+  note?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -1136,6 +1141,8 @@ export interface ResearchLaterItemUpdate {
   priority?: number;
   summary?: string;
   status?: ResearchLaterItemStatus;
+  /** 用户笔记（修订二）；空字符串 / 纯空白视为清除笔记（纯标记）。 */
+  note?: string;
 }
 
 export function validateResearchLaterItemInput(value: unknown): asserts value is ResearchLaterItemInput {
@@ -1148,12 +1155,13 @@ export function validateResearchLaterItemInput(value: unknown): asserts value is
 
 export function validateResearchLaterItemUpdate(value: unknown): asserts value is ResearchLaterItemUpdate {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Research later item update must be an object");
-  const update = value as { priority?: unknown; summary?: unknown; status?: unknown };
-  if (update.priority === undefined && update.summary === undefined && update.status === undefined) {
-    throw new Error("Update requires at least one of priority, summary, or status");
+  const update = value as { priority?: unknown; summary?: unknown; status?: unknown; note?: unknown };
+  if (update.priority === undefined && update.summary === undefined && update.status === undefined && update.note === undefined) {
+    throw new Error("Update requires at least one of priority, summary, status, or note");
   }
   validateResearchLaterPriority(update.priority);
   validateResearchLaterSummary(update.summary);
+  validateResearchLaterNote(update.note);
   if (update.status !== undefined && update.status !== "pending" && update.status !== "done") {
     throw new Error("status must be pending or done");
   }
@@ -1171,6 +1179,15 @@ function validateResearchLaterSummary(value: unknown): void {
   if (typeof value !== "string" || !value.trim()) throw new Error("summary must be a non-empty string when provided");
   if (value.length > RESEARCH_LATER_SUMMARY_MAX_CHARACTERS) {
     throw new Error(`summary must not exceed ${RESEARCH_LATER_SUMMARY_MAX_CHARACTERS} characters`);
+  }
+}
+
+/** 笔记允许空字符串（语义为清除笔记、纯标记），只要求类型为字符串且不超过上限。 */
+function validateResearchLaterNote(value: unknown): void {
+  if (value === undefined) return;
+  if (typeof value !== "string") throw new Error("note must be a string when provided");
+  if (value.length > RESEARCH_LATER_NOTE_MAX_CHARACTERS) {
+    throw new Error(`note must not exceed ${RESEARCH_LATER_NOTE_MAX_CHARACTERS} characters`);
   }
 }
 

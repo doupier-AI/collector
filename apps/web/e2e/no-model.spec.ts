@@ -211,4 +211,54 @@ test("未配置模型：分析失败仍可通过胶囊发起深入研究，来�
 });
 
 // 阶段 H4a 暂停：旧窗口的"稍后再学"入口已退役，新入口由票据 08 提供
-test.skip("未配置模型：分析失败仍可保存稍后再学（H4a 后暂停）", async () => {});
+test("未配置模型：选区仍可点击【标记】并保存笔记，不依赖 AI", async ({ page }) => {
+  test.setTimeout(45_000);
+  await pairAndOpen(page, "/research/new");
+
+  const createResponse = await page.request.post("/v1/research-sessions", {
+    headers: { "Idempotency-Key": crypto.randomUUID() },
+    data: {},
+  });
+  const created = (await createResponse.json()) as { id: string };
+  await page.goto(`/research/${created.id}`);
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "无模型标记.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("无模型下也要保存这条标记笔记", "utf8"),
+  });
+  await expect(page.getByText("已导入")).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "阅读" }).click();
+  await expect(page).toHaveURL(new RegExp(`/research/${created.id}/reading/[^/]+$`));
+  await expect(page.getByText("第 1 行")).toBeVisible();
+
+  await page.evaluate(() => {
+    const textElement = document.querySelector(".reading__block [data-block-text]");
+    if (!textElement?.firstChild) throw new Error("未找到阅读块");
+    const node = textElement.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(node, 0);
+    range.setEnd(node, node.data.length);
+    const selection = window.getSelection();
+    if (!selection) throw new Error("浏览器不支持 Selection");
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  });
+
+  await page.getByTestId("floating-capsule-mark").click();
+  const input = page.getByTestId("mark-note-input");
+  await expect(input).toBeVisible();
+  await input.focus();
+  await input.fill("无模型也要保存笔记");
+  await page.mouse.click(12, 12);
+  await expect(page.getByTestId("mark-note-editor")).toHaveCount(0);
+
+  const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
+  const items = readResearchLaterTables(dbPath).laterItems.filter((row) => row.sessionId === created.id);
+  expect(items).toHaveLength(1);
+  const record = JSON.parse(items[0]?.recordJson ?? "{}") as { note?: string };
+  expect(record.note).toBe("无模型也要保存笔记");
+});
+
+// 阶段 H4a 暂停：旧窗口的"稍后再学"入口已退役，新入口由票据 08 提供
+ test.skip("未配置模型：分析失败仍可保存稍后再学（H4a 后暂停）", async () => {});
