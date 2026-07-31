@@ -51,6 +51,8 @@ export interface ResearchServiceOptions {
   provider?: ResearchGenerationProvider;
   autoRunTasks?: boolean;
   parentChainContext?: ParentChainContextService;
+  /** 生成成功后的非阻塞附加动作（例如 H6 节点命名）。 */
+  onTaskCompleted?: (task: ResearchTaskRecord) => void | Promise<void>;
 }
 
 export class ResearchSessionService {
@@ -260,6 +262,11 @@ export class ResearchSessionService {
         }
         if (!producedContent) throw new Error("Provider returned an empty response");
         await this.store.completeResearchTask(task.id);
+        try {
+          await this.options.onTaskCompleted?.(this.getTask(task.id));
+        } catch {
+          // 附加任务失败不能把已经完成的研究回答改判为失败。
+        }
       } catch {
         await this.store.failResearchTask(this.getTask(task.id), {
           code: "provider_error",

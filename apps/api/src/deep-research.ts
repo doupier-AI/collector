@@ -249,6 +249,7 @@ export class NodeGrowthService {
     const session = this.store.getResearchSession(sessionId);
     if (!session) throw new DeepResearchNotFoundError("Research session not found");
     return this.store.listResearchNodes(sessionId).map((node) => {
+      if (node.displayName) return { node, label: node.displayName };
       if (!node.parentNodeId) return { node, label: session.title };
       const selection = node.originSelectionId ? this.store.getResearchSelection(node.originSelectionId) : undefined;
       const originText = selection ? excerptText(selection.text, TREE_LABEL_CHARACTERS) : undefined;

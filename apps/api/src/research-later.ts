@@ -86,6 +86,7 @@ export class ResearchLaterService {
     const nodeId = selection.nodeId ?? item.nodeId ?? selection.sessionId;
     const node = this.store.getResearchNode?.(nodeId);
     if (!node || !node.parentNodeId) return { id: nodeId, label: sourceTitle };
+    if (node.displayName) return { id: nodeId, label: node.displayName };
 
     const originSelection = node.originSelectionId ? this.store.getResearchSelection(node.originSelectionId) : undefined;
     const originText = originSelection ? excerptText(originSelection.text) : undefined;

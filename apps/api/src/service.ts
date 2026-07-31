@@ -55,6 +55,7 @@ import { DeepResearchService, NodeGrowthService } from "./deep-research.js";
 import { ResearchLaterService } from "./research-later.js";
 import { TermDetectionService } from "./term-detection.js";
 import { ParentChainContextService } from "./parent-chain-context.js";
+import { NodeNamingService } from "./node-naming.js";
 import { webSearch, webFetch } from "./web-search-agent.js";
 import { parseAgentCitations } from "./web-search-agent.js";
 import { getSearchConfig as getSearchConfigFromAgent, updateSearchConfig as updateSearchConfigInAgent, listAvailableBackends, initSearchBackends, type SearchBackendId } from "./web-search-agent.js";
@@ -83,6 +84,7 @@ export class CaptureService {
   readonly researchLater: ResearchLaterService;
   readonly termDetection: TermDetectionService;
   readonly parentChainContext: ParentChainContextService;
+  readonly nodeNaming: NodeNamingService;
   readonly runRecords: RunRecordsService;
 
   constructor(
@@ -95,10 +97,12 @@ export class CaptureService {
     this.runRecords = new RunRecordsService(this.store);
     this.attachModelGateway(this.modelGateway);
     this.parentChainContext = new ParentChainContextService(this.store);
+    this.nodeNaming = new NodeNamingService(this.store, async () => this.gatewayForPurpose("research"), this.parentChainContext);
     this.research = new ResearchSessionService(this.store, {
       provider: this.options.researchProvider ?? this.researchProviderFor(this.modelGateway),
       autoRunTasks: this.options.autoRunResearchTasks,
       parentChainContext: this.parentChainContext,
+      onTaskCompleted: (task) => { void this.nodeNaming.nameNode(task.nodeId ?? task.sessionId); },
     });
     this.researchImports = new ResearchImportService(this.store, join(this.artifactRoot, "research-imports"), {
       autoRunTasks: this.options.autoRunResearchImports,

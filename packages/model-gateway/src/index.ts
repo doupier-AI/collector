@@ -495,6 +495,31 @@ export class ModelGateway {
     return parsed.answer;
   }
 
+  /** H6：为节点生成简洁显示名称；调用方负责做长度与空值校验和确定性回退。 */
+  async generateNodeDisplayName(
+    input: { content: string; parentChainContext?: ResearchParentChainContext },
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<string> {
+    const parentContext = formatResearchParentChainContext(input.parentChainContext);
+    const prompt = [
+      "你是 Collector 的节点命名助手。请为下面的研究节点生成一个简洁、准确的中文显示名称。",
+      "只返回合法 JSON：{\"name\":\"...\"}。名称不超过 20 个字符，不要添加引号、编号或解释。",
+      `节点内容：${JSON.stringify(input.content.slice(0, 2000))}`,
+      parentContext,
+    ].filter(Boolean).join("\n\n");
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      responseFormat: { type: "json_object" },
+      thinking: false,
+      maxTokens: options.maxTokens ?? 128,
+      timeoutMs: options.timeoutMs ?? 30_000,
+    }, options.context ?? { purpose: "research", promptVersion: "node-naming-v1" });
+    const parsed = JSON.parse(response.content) as { name?: unknown };
+    if (typeof parsed.name !== "string" || !parsed.name.trim()) throw new Error("Node naming provider returned an invalid name");
+    return parsed.name.trim();
+  }
+
   /**
    * 深入研究第一轮：只使用提供的当前已有材料（来源内容 + 选区上下文 + 用户方向），
    * 不联网检索，不编造来源。返回模型回答文本。

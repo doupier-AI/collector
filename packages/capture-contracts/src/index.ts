@@ -616,6 +616,8 @@ export interface ResearchNodeRecord {
   sessionId: string;
   parentNodeId?: string;
   originSelectionId?: string;
+  /** H6：模型生成的稳定显示名称；缺失时使用确定性回退。 */
+  displayName?: string;
   status: "active";
   createdAt: string;
   updatedAt: string;

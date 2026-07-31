@@ -100,6 +100,7 @@ export interface ResearchStore {
   listResearchSessions(): ResearchSessionRecord[];
   createResearchNode(node: ResearchNodeRecord, idempotencyKey: string): Promise<ResearchNodeRecord>;
   getResearchNode(id: string): ResearchNodeRecord | undefined;
+  updateResearchNodeDisplayName(nodeId: string, displayName: string): Promise<ResearchNodeRecord | undefined>;
   listResearchNodes(sessionId: string): ResearchNodeRecord[];
   listChildNodes(parentNodeId: string): ResearchNodeRecord[];
   getResearchMessage(id: string): ResearchMessageRecord | undefined;
@@ -141,6 +142,7 @@ export interface DeepResearchStore {
   createOriginResearchSession(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<DeepResearchAccepted>;
   createResearchChildNode(parentNode: ResearchNodeRecord, node: ResearchNodeRecord, selection: ResearchSelectionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<NodeGrowthAccepted>;
   getResearchNode(id: string): ResearchNodeRecord | undefined;
+  updateResearchNodeDisplayName(nodeId: string, displayName: string): Promise<ResearchNodeRecord | undefined>;
   listResearchNodes(sessionId: string): ResearchNodeRecord[];
   listChildNodes(parentNodeId: string): ResearchNodeRecord[];
   getResearchSession(id: string): ResearchSessionRecord | undefined;
@@ -1044,6 +1046,17 @@ export class SqliteStore implements CollectorStore {
 
   getResearchNode(id: string): ResearchNodeRecord | undefined {
     return this.getRecord<ResearchNodeRecord>("SELECT record_json FROM research_nodes WHERE id = ?", id);
+  }
+
+  async updateResearchNodeDisplayName(nodeId: string, displayName: string): Promise<ResearchNodeRecord | undefined> {
+    const node = this.getResearchNode(nodeId);
+    if (!node) return undefined;
+    const normalized = displayName.trim();
+    if (!normalized || normalized.length > 20) throw new Error("Research node display name must contain 1-20 characters");
+    const updated: ResearchNodeRecord = { ...node, displayName: normalized, updatedAt: new Date().toISOString() };
+    this.db().prepare("UPDATE research_nodes SET display_name = ?, updated_at = ?, record_json = ? WHERE id = ?")
+      .run(normalized, updated.updatedAt, JSON.stringify(updated), nodeId);
+    return updated;
   }
 
   listResearchNodes(sessionId: string): ResearchNodeRecord[] {
@@ -2504,6 +2517,16 @@ export class SqliteStore implements CollectorStore {
       version = 25;
     }
 
+    if (version < 26) {
+      this.transaction(() => {
+        this.db().exec(`
+          ALTER TABLE research_nodes ADD COLUMN display_name TEXT;
+          INSERT INTO schema_migrations(version, applied_at) VALUES (26, datetime('now'));
+        `);
+      });
+      version = 26;
+    }
+
   }
 
   private async migrateLegacyProviderProfile(): Promise<void> {
@@ -2774,6 +2797,7 @@ export class JsonStore implements CollectorStore {
   listResearchSessions(): ResearchSessionRecord[] { return []; }
   async createResearchNode(_node: ResearchNodeRecord, _idempotencyKey: string): Promise<ResearchNodeRecord> { throw new Error("Research nodes require SQLite persistence"); }
   getResearchNode(_id: string): ResearchNodeRecord | undefined { return undefined; }
+  async updateResearchNodeDisplayName(_nodeId: string, _displayName: string): Promise<ResearchNodeRecord | undefined> { throw new Error("Research nodes require SQLite persistence"); }
   listResearchNodes(_sessionId: string): ResearchNodeRecord[] { return []; }
   listChildNodes(_parentNodeId: string): ResearchNodeRecord[] { return []; }
   getResearchMessage(_id: string): ResearchMessageRecord | undefined { return undefined; }
