@@ -1550,6 +1550,40 @@ H4a（§3.37）的"输入框区域引用胶囊 + 选中即自动引用"设计在
 - Vite bundle 体积提示属于独立性能改进项，不阻断 Issue #20 功能交付。
 - 相关实现提交：本轮实现提交（见 Git 历史最新提交）。
 
+### 3.46 阶段 I 启动：类型化边图投影与语义切片（issues #24/#25，2026-08-02）
+
+**用户可见结果**
+
+- 全屏导航在既有节点树之外新增“关系列表”视图（顶栏按钮或快捷键 `g` 唤出）：当前会话的研究节点按关系类型分组呈现（父子关系、语义相关、融合来源），全部操作可纯键盘完成（↑↓/Home/End/Enter/Escape），屏幕阅读器获得等价语义；既有节点树（快捷键 `t`）保持不变。
+- 节点内容在底层获得切片结构，但用户读到的仍是一篇连续长文：旧节点在首次打开时按既有段落边界惰性补齐临时切片，不重写历史；切片之间仅以细微分隔线提示边界，不做卡片碎片化改版。
+- 选区与引用在切片化内容上保持可用：切片边界是装饰性元素，不进入可读文本投影，选区锚点与自愈未受扰动。
+
+**实际改动与接口 / 数据变化**
+
+- 共享契约新增类型化边模型（`ResearchEdgeKind`、`ResearchEdgeRecord`、`ResearchGraphProjection` / `ResearchGraphNodeSummary`）与纯函数 `deriveParentChildEdges` / `buildGraphProjection`（BFS 逐层外扩，成环 / 缺失节点 / 多根安全降级）、`researchEdgeId`；新增语义切片模型（`ResearchSliceRecord`）、`validateSliceSchema`、`deriveProvisionalSlices`（复用 `deriveMessageBlocks()` 段落边界，确定性幂等），`ResearchNodeView` 增加可选 `slices`。
+- SQLite 迁移 v28 新建 `research_edges`（record_json + `UNIQUE(kind, from_node_id, to_node_id)` 幂等 + 三个状态索引），并从既有 `research_nodes.parentNodeId` 确定性派生父子边；迁移 v29 新建 `research_slices`（record_json + `UNIQUE(node_id, ordinal)` + node/message 双索引）。
+- 后端：`CollectorStore` 新增边与切片 CRUD；创建子节点 / 分支事务内自动建立父子边，`clearAllData` 先删边再删节点；`NodeGrowthService.getGraphProjection` 提供单一图投影；新增 `GET /v1/research-sessions/:id/graph` 端点；`getResearchNodeView` 异步化并在首次访问惰性生成临时切片。
+- WebUI：新增 `RelationshipList` 覆盖层与 `useRelationships` 钩子并接入 AppShell（快捷键 `g` + 顶栏按钮）；`MessageItem` 将切片按序号合成为连续长文，保留 `data-block-id` / `data-block-text`，边界为装饰性 `<hr>`（aria-hidden + data-decorative + 空文本 + pointer-events/user-select: none）。
+
+**并行交付与历史整理**
+
+- D1（#24）与 E1（#25）两张无阻塞票据并行实施。因两个实现代理共用同一工作目录，D1 的提交一度连带扫入 E1 的契约与迁移地基。随后做受控历史整理：以已验证的合并状态为基准，将共享文件（契约、store、http、样式、迁移测试）按归属拆回，重建为两笔干净且可独立回滚的提交 `7119700`（D1，v28）与 `bca6605`（E1，v29）；最终代码树与并行完成态一致，仅多出下述测试维护修复。D1 独立通过全量构建后方可提交，确保两笔提交各自可独立回滚。
+- 测试维护：添加迁移 v28/v29 后，三个硬编码版本列表的旧迁移回滚测试（migrations 15–21、v24、v28 边迁移）暴露回归——删除版本未覆盖新最高版本，导致重迁移不触发、被删表不重建。已在两笔提交中分别纳入 v28 / v29：回滚时删除 `research_edges` / `research_slices` 并清除对应版本行。并行代理曾把这些失败误判为“预存”，实为添加迁移引入，本轮已修复。
+
+**验证证据**
+
+- 选择四级验证范围：共享契约、SQLite 迁移、跨端集成与用户可见 WebUI 同时变化。
+- D1 独立状态：全量构建通过；Node 测试 344/344；WebUI 测试 297/297（35 文件）。
+- D1+E1 合并状态：全量构建通过；Node 测试 366/366；WebUI 测试 301/301（35 文件）。
+- 确定性 Playwright Chromium e2e：合并状态 56/62 通过。6 个失败经基线对照（检出 `904bfb6` 以同规格复跑，基线为 7 失败）确认全部为预存测试债——在 D1/E1 之前即同样失败，本轮零回归；预存失败集中于节点标签 / 面包屑呈现相关的研究会话、节点树、深入研究、运行记录导出与导入规格，疑似更早 H 阶段节点命名调整后 e2e 断言未同步，另立票据跟踪。
+- 未执行 Chrome DevTools MCP 人类拟真测试；本轮未触发用户指定的“进行一次人类拟真测试”。
+
+**未完成项与风险**
+
+- 6 个预存 e2e 失败需单独排查（节点标签 / 面包屑截断与 e2e 断言不一致），不属于 D1/E1 范围。
+- D2（#26，网状画布视图，依赖 D1）、E2（#27，切片感知生成，依赖 E1）、F1（#29，相似性检测与弱提示，依赖 E1）随 D1/E1 完成解除阻塞，可进入下一轮并行；F 系列最终仍依赖 D 与 E 全部完成。
+- 相关实现提交：`7119700`（D1，迁移 v28）、`bca6605`（E1，迁移 v29）。
+
 ## 8. 文档整理记录
 
 2026-07-20，项目文档改按产品与工程里程碑、关键提交、验证证据和遗留限制组织；当前状态由本文、MVP 开发指导、产品与架构文档、源码和测试共同表达，详细变更可通过 Git 历史和本文列出的提交追溯。
