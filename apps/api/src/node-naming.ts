@@ -1,5 +1,6 @@
 import type { ResearchMessageRecord, ResearchNodeRecord } from "@collector/capture-contracts";
 import type { ModelGateway, ResearchParentChainContext } from "@collector/model-gateway";
+import { extractNodeGrowthSelectionText } from "./deep-research.js";
 import { ParentChainContextService } from "./parent-chain-context.js";
 
 export const NODE_DISPLAY_NAME_MAX_CHARACTERS = 20;
@@ -14,11 +15,14 @@ export interface NodeNamingStore {
 export function deterministicNodeDisplayName(messages: readonly Pick<ResearchMessageRecord, "role" | "content">[]): string {
   const source = messages.find((message) => message.role === "user" && message.content.trim())
     ?? messages.find((message) => message.role === "assistant" && message.content.trim());
-  const normalized = source?.content
+  let normalized = source?.content
     .replace(/^\s{0,3}(?:#+|[-*>])\s*/gm, "")
     .replace(/\s+/g, " ")
     .trim();
   if (!normalized) return "研究节点";
+  // 节点生长首轮用户消息是包装提示（深入研究这段内容：“选区摘录”）：
+  // 还原引用的选区正文再截断，避免包装前缀吃掉命名预算、导航出现无意义短名。
+  normalized = extractNodeGrowthSelectionText(normalized) ?? normalized;
   return normalized.slice(0, NODE_DISPLAY_NAME_MAX_CHARACTERS);
 }
 

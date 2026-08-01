@@ -27,6 +27,22 @@ const SELECTION_EXCERPT_CHARACTERS = 120;
 /** 树导航节点标签的摘录长度（H2，H6 节点命名落地前的确定性标签）。 */
 const TREE_LABEL_CHARACTERS = 48;
 
+/** 节点生长首轮用户消息的包装前缀（选区生长模板，见 defaultFirstTurnContent）。 */
+export const NODE_GROWTH_FIRST_TURN_PREFIX = "深入研究这段内容：";
+
+/**
+ * 若内容是节点生长首轮的包装提示（深入研究这段内容：“选区摘录”），返回其中引用的选区摘录正文；否则返回 undefined。
+ * 供确定性节点命名等场景还原用户真正引用的文本，避免把包装前缀当作节点名。
+ */
+export function extractNodeGrowthSelectionText(content: string): string | undefined {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith(NODE_GROWTH_FIRST_TURN_PREFIX)) return undefined;
+  const match = trimmed.slice(NODE_GROWTH_FIRST_TURN_PREFIX.length).trim().match(/^“([\s\S]+)”$/);
+  if (!match) return undefined;
+  const inner = match[1].trim();
+  return inner || undefined;
+}
+
 export interface DeepResearchServiceOptions {
   /** 深入研究任务复用研究会话任务管线（claim / 事件 / 重试 / 重启恢复）。 */
   research: ResearchSessionService;
@@ -366,7 +382,7 @@ export class NodeGrowthService {
 function defaultFirstTurnContent(selection: ResearchSelectionRecord): string {
   const text = selection.text.trim();
   const excerpt = text.length > SELECTION_EXCERPT_CHARACTERS ? `${text.slice(0, SELECTION_EXCERPT_CHARACTERS)}…` : text;
-  return `深入研究这段内容：“${excerpt}”`;
+  return `${NODE_GROWTH_FIRST_TURN_PREFIX}“${excerpt}”`;
 }
 
 function excerptText(text: string, maxCharacters: number): string {

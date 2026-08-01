@@ -113,17 +113,18 @@ test.describe("节点生长与来源返回", () => {
     await page.waitForURL(new RegExp(`/research/${sessionId}/node/${sessionId}\\?sel=`));
     await expect(page.locator("[data-selection-mark]")).toHaveText(SELECTED, { timeout: 10_000 });
 
-    // 根节点页子节点入口可见并可回到子节点
+    // 根节点页子节点入口可见并可回到子节点（H6 起子节点入口统一使用已保存名称，
+    // 无模型时为确定性选区正文；断言选区文本呈现，兼容命名完成前后的两种格式）。
     const childList = page.getByTestId("node-child-list");
-    await expect(childList).toContainText(`深入研究：${SELECTED}`);
+    await expect(childList).toContainText(SELECTED);
 
     // 刷新后高亮与子节点入口仍在
     await page.reload();
     await expect(page.locator("[data-selection-mark]")).toHaveText(SELECTED, { timeout: 10_000 });
-    await expect(page.getByTestId("node-child-list")).toContainText(`深入研究：${SELECTED}`);
+    await expect(page.getByTestId("node-child-list")).toContainText(SELECTED);
 
     // 从子节点入口回到子节点并继续追问
-    await page.getByRole("link", { name: /深入研究：/ }).click();
+    await page.getByRole("link", { name: new RegExp(SELECTED) }).click();
     await page.waitForURL(new RegExp(`/research/${sessionId}/node/${nodeId}$`));
     await expect(page.getByTestId("selection-source-bar")).toBeVisible();
     await page.getByLabel("你的问题").fill("继续追问节点内的下一个问题");

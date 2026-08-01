@@ -75,8 +75,10 @@ test("提交后渐进内容进入同一条 AI 消息并完成，控制台无错�
   // 用户消息与 AI 固定占位立即出现，状态“已保存，正在生成”
   await expect(page.getByText(QUESTION, { exact: true })).toBeVisible();
   await expect(page.getByTestId("ai-placeholder")).toBeVisible();
-  // 状态文字同时存在于消息状态与 sr-only aria-live 区，用 class 限定避免 strict 冲突
-  await expect(page.locator(".message__status")).toHaveText("已保存，正在请求联网");
+  // 状态文字同时存在于消息状态与 sr-only aria-live 区，用 class 限定避免 strict 冲突。
+  // “正在生成”同时匹配“已保存，正在生成”与“正在生成”两个生成期瞬态，
+  // 不能在此断言完成态的材料范围说明——那会阻塞到生成结束、让后续渐进断言失去中间态。
+  await expect(page.locator(".message__status")).toContainText("正在生成");
 
   // 渐进内容进入同一条 AI 消息
   const assistantMessages = page.locator(".message--assistant");
@@ -92,6 +94,9 @@ test("提交后渐进内容进入同一条 AI 消息并完成，控制台无错�
 
   // 完成状态：aria-live 播报，不弹成功提示
   await expect(page.locator("[aria-live=polite]")).toHaveText("已完成", { timeout: 15_000 });
+
+  // 阶段 E 决策（2026-07-30）后联网搜索默认关闭：完成后材料范围说明如实呈现未联网。
+  await expect(page.getByTestId("grounding-scope-note")).toHaveText("本轮未请求联网。");
 
   // 完成的回答按确定性段落块渲染，块 ID 与选区锚点同源
   const blocks = page.locator(".message--assistant [data-block-id]");
