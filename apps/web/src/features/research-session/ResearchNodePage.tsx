@@ -402,6 +402,7 @@ export function ResearchNodePage() {
                 onStartTermPreview={termPreviews.start}
                 onRetryTermPreview={termPreviews.retry}
                 onGrowTermPreview={handleGrowTermPreview}
+                slices={view.slices?.[message.id]}
               />
             );
           })}

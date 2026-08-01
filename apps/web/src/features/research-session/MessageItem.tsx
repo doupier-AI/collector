@@ -1,7 +1,7 @@
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { ResearchCitationRecord, ResearchGroundingSourceRecord, ResearchMessageRecord, ResearchTaskRecord, ResearchTermPreviewRecord, TermMarker } from "@collector/capture-contracts";
+import type { ResearchCitationRecord, ResearchGroundingSourceRecord, ResearchMessageRecord, ResearchSliceRecord, ResearchTaskRecord, ResearchTermPreviewRecord, TermMarker } from "@collector/capture-contracts";
 import { deriveMessageBlocks, messageContentBlockId } from "@collector/capture-contracts";
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
@@ -30,10 +30,12 @@ export interface MessageItemProps {
   onStartTermPreview?: (messageId: string, marker: TermMarker) => void;
   onRetryTermPreview?: (preview: ResearchTermPreviewRecord) => void;
   onGrowTermPreview?: (preview: ResearchTermPreviewRecord) => Promise<boolean>;
+  /** E1：切片列表；存在时按切片合成连续长文，边界装饰性。 */
+  slices?: ResearchSliceRecord[];
 }
 
 /** 单条消息。AI 消息与对应用户消息之间由 CSS 绘制克制的来源线与节点。 */
-export function MessageItem({ message, task, retrying = false, onRetry, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview }: MessageItemProps) {
+export function MessageItem({ message, task, retrying = false, onRetry, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, slices }: MessageItemProps) {
   if (message.role === "user") {
     return (
       <li className="message message--user">
@@ -63,7 +65,7 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
             onRetry={onRetryTermPreview}
             onGrow={onGrowTermPreview}
           >
-            <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} terms={terms} />
+            <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} />
           </TermPreviewInteraction>
           <GroundingScopeNote task={task} />
           <GroundingSources sources={taskSources} />
@@ -82,11 +84,43 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
  * 块 ID 与后端选区锚点使用同一派生规则。
  * Markdown 由 MarkdownContent 安全渲染；[来源n] 由 remark 插件转可悬停角标。
  * 返回高亮在渲染后 DOM 上用可见文本空间偏移圈 <mark>，偏移失败时兜底 exact 搜索。
+ * E1：有切片时按切片合成连续长文，切片边界为装饰性 DOM，不影响可读文本投影。
  */
-function AssistantBlocks({ message, highlight, citations, groundingSources, terms }: { message: ResearchMessageRecord; highlight?: MessageHighlight; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[]; terms: TermMarker[] }) {
+function AssistantBlocks({ message, highlight, citations, groundingSources, terms, slices }: { message: ResearchMessageRecord; highlight?: MessageHighlight; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[]; terms: TermMarker[]; slices?: ResearchSliceRecord[] }) {
   const blocks = deriveMessageBlocks(message.content);
   if (blocks.length === 0) return <MarkdownContent text={message.content} sources={groundingSources} citations={citations} variant="message" />;
   const activeHighlight = highlight ?? undefined;
+
+  // E1：有切片时按切片顺序渲染，切片边界装饰性；无切片时沿用块级渲染。
+  if (slices && slices.length > 0) {
+    const sortedSlices = [...slices].sort((a, b) => a.ordinal - b.ordinal);
+    // 切片按消息内索引映射到 deriveMessageBlocks 块序号（临时切片 1:1 对应）
+    const minSliceOrdinal = sortedSlices[0]?.ordinal ?? 0;
+    return (
+      <div className="message__blocks" data-content-kind="message" data-message-id={message.id}>
+        {sortedSlices.map((slice, index) => {
+          const blockOrdinal = slice.ordinal - minSliceOrdinal;
+          const block = blocks[blockOrdinal];
+          const blockId = block ? messageContentBlockId(message.id, block.ordinal) : messageContentBlockId(message.id, index);
+          const thisHighlight = activeHighlight && activeHighlight.blockOrdinal === (block?.ordinal ?? index) ? activeHighlight : undefined;
+          return (
+            <SliceBlock
+              key={slice.id}
+              slice={slice}
+              blockText={slice.content}
+              blockId={blockId}
+              highlight={thisHighlight}
+              sources={groundingSources}
+              citations={citations}
+              terms={terms.filter((term) => term.blockOrdinal === (block?.ordinal ?? index))}
+              showBoundary={index > 0}
+            />
+          );
+        })}
+      </div>
+    );
+  }
+
   const matchHighlight = activeHighlight?.blockOrdinal;
   return (
     <div className="message__blocks" data-content-kind="message" data-message-id={message.id}>
@@ -106,6 +140,38 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
         );
       })}
     </div>
+  );
+}
+
+/**
+ * E1 切片块：在消息块基础上增加装饰性切片边界提示。
+ * 边界元素标记为 aria-hidden="true" 且不含文本节点，不影响可读文本投影。
+ * data-block-id 与 data-block-text 保留在内容容器上，确保选区锚点正常工作。
+ */
+function SliceBlock({ slice, blockText, blockId, highlight, sources, citations, terms, showBoundary }: {
+  slice: ResearchSliceRecord;
+  blockText: string;
+  blockId: string;
+  highlight?: MessageHighlight;
+  sources: ResearchGroundingSourceRecord[];
+  citations: ResearchCitationRecord[];
+  terms: TermMarker[];
+  showBoundary: boolean;
+}) {
+  return (
+    <>
+      {showBoundary ? (
+        <hr className="message__slice-boundary" aria-hidden="true" data-decorative="true" data-slice-boundary={slice.id} />
+      ) : null}
+      <MessageBlock
+        blockText={blockText}
+        blockId={blockId}
+        highlight={highlight}
+        sources={sources}
+        citations={citations}
+        terms={terms}
+      />
+    </>
   );
 }
 

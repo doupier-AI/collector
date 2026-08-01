@@ -1,7 +1,7 @@
 import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchNodeRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewInput, type ResearchTermPreviewRecord, type ResearchTurnAccepted, researchEdgeId } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchNodeRecord, type ResearchSliceRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewInput, type ResearchTermPreviewRecord, type ResearchTurnAccepted, researchEdgeId } from "@collector/capture-contracts";
 
 export type ObservabilityRecordSource = "research" | "selection" | "import" | "workflow";
 
@@ -343,6 +343,11 @@ export interface CollectorStore
   listResearchGroundingRuns(taskId: string): ResearchGroundingRunRecord[];
   listResearchGroundingSources(runId: string): ResearchGroundingSourceRecord[];
   listResearchCitationsForMessages(messageIds: string[]): ResearchCitationRecord[];
+  /** E1：切片 CRUD。createSlices 批量插入（幂等，冲突忽略）；listSlicesByNode 按序号排序。 */
+  createSlices(slices: ResearchSliceRecord[]): Promise<void>;
+  listSlicesByNode(nodeId: string): ResearchSliceRecord[];
+  listSlicesByMessage(messageId: string): ResearchSliceRecord[];
+  getSliceById(id: string): ResearchSliceRecord | undefined;
   close?(): void;
   clearAllData(): Promise<void>;
   // ── Research Edge CRUD (D1) ──────────────────────────────────
@@ -2077,6 +2082,33 @@ export class SqliteStore implements CollectorStore {
     return this.listRecords<ResearchCitationRecord>(`SELECT record_json FROM research_citations WHERE message_id IN (${placeholders}) ORDER BY message_id, block_ordinal, marker_offset, rowid`, ...messageIds);
   }
 
+  // ── Semantic Slices (E1) ──────────────────────────────────────
+
+  async createSlices(slices: ResearchSliceRecord[]): Promise<void> {
+    if (!slices.length) return;
+    const stmt = this.db().prepare(`
+      INSERT OR IGNORE INTO research_slices (id, node_id, message_id, ordinal, is_provisional, created_at, record_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    this.transaction(() => {
+      for (const slice of slices) {
+        stmt.run(slice.id, slice.nodeId, slice.messageId, slice.ordinal, slice.isProvisional ? 1 : 0, slice.createdAt, JSON.stringify(slice));
+      }
+    });
+  }
+
+  listSlicesByNode(nodeId: string): ResearchSliceRecord[] {
+    return this.listRecords<ResearchSliceRecord>("SELECT record_json FROM research_slices WHERE node_id = ? ORDER BY ordinal", nodeId);
+  }
+
+  listSlicesByMessage(messageId: string): ResearchSliceRecord[] {
+    return this.listRecords<ResearchSliceRecord>("SELECT record_json FROM research_slices WHERE message_id = ? ORDER BY ordinal", messageId);
+  }
+
+  getSliceById(id: string): ResearchSliceRecord | undefined {
+    return this.getRecord<ResearchSliceRecord>("SELECT record_json FROM research_slices WHERE id = ?", id);
+  }
+
   private updateResearchMessage(message: ResearchMessageRecord): void {
     this.db().prepare("UPDATE research_messages SET status = ?, updated_at = ?, record_json = ? WHERE id = ?")
       .run(message.status, message.updatedAt, JSON.stringify(message), message.id);
@@ -2829,6 +2861,29 @@ export class SqliteStore implements CollectorStore {
       version = 28;
     }
 
+    if (version < 29) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE research_slices (
+            id TEXT PRIMARY KEY,
+            node_id TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL,
+            is_provisional INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(node_id) REFERENCES research_nodes(id),
+            FOREIGN KEY(message_id) REFERENCES research_messages(id),
+            UNIQUE(node_id, ordinal)
+          );
+          CREATE INDEX research_slices_node_idx ON research_slices(node_id);
+          CREATE INDEX research_slices_message_idx ON research_slices(message_id);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (29, datetime('now'));
+        `);
+      });
+      version = 29;
+    }
+
   }
 
   private async migrateLegacyProviderProfile(): Promise<void> {
@@ -3179,6 +3234,10 @@ export class JsonStore implements CollectorStore {
   listResearchGroundingRuns(_taskId: string): ResearchGroundingRunRecord[] { return []; }
   listResearchGroundingSources(_runId: string): ResearchGroundingSourceRecord[] { return []; }
   listResearchCitationsForMessages(_messageIds: string[]): ResearchCitationRecord[] { return []; }
+  async createSlices(_slices: ResearchSliceRecord[]): Promise<void> { throw new Error("Research slices require SQLite persistence"); }
+  listSlicesByNode(_nodeId: string): ResearchSliceRecord[] { return []; }
+  listSlicesByMessage(_messageId: string): ResearchSliceRecord[] { return []; }
+  getSliceById(_id: string): ResearchSliceRecord | undefined { return undefined; }
   async createResearchEdge(_edge: ResearchEdgeRecord): Promise<ResearchEdgeRecord> { throw new Error("Research edges require SQLite persistence"); }
   listResearchEdgesByNode(_nodeId: string): ResearchEdgeRecord[] { return []; }
   listAllResearchEdges(): ResearchEdgeRecord[] { return []; }

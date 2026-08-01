@@ -6,7 +6,7 @@ import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
 import { makeMessage, makeNode, makeNodeView, makeSession, makeTask } from "../../test/fakes";
 import { ResearchNodePage } from "./ResearchNodePage";
-import type { ResearchNodeView } from "@collector/capture-contracts";
+import type { ResearchNodeView, ResearchSliceRecord } from "@collector/capture-contracts";
 import { captureSelection, readContentContext, resolveBlockRange } from "../selection/selection-capture";
 
 function renderNodePage(api: Partial<ApiClient>) {
@@ -199,5 +199,98 @@ describe("模型状态显示", () => {
 
     expect(await screen.findByText("回答。")).toBeInTheDocument();
     expect(screen.queryByText(/模型：/)).not.toBeInTheDocument();
+  });
+});
+
+function makeSlice(overrides: Partial<ResearchSliceRecord> = {}): ResearchSliceRecord {
+  return {
+    id: "slice:node-1:msg-out:0",
+    nodeId: "session-1",
+    messageId: "m-out",
+    ordinal: 0,
+    title: "段落 1",
+    content: "第一段。",
+    normalizedConcepts: [],
+    sourceRefs: [],
+    isProvisional: true,
+    createdAt: "2026-08-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("E1 切片化呈现", () => {
+  function viewWithSlices(content: string, slices: ResearchSliceRecord[]): ResearchNodeView {
+    const view = viewWithAssistant(content);
+    view.slices = { "m-out": slices };
+    return view;
+  }
+
+  it("有切片时按序号合成连续长文，保留 data-block-id", async () => {
+    const content = "第一段。\n\n第二段。";
+    const slices = [
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, content: "第一段。" }),
+      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "段落 2", content: "第二段。" }),
+    ];
+    const { container } = renderNodePage({ getResearchNodeView: async () => viewWithSlices(content, slices) });
+
+    const first = await screen.findByText("第一段。");
+    const second = screen.getByText("第二段。");
+    expect(first.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p0");
+    expect(second.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p1");
+    // Both blocks are within the same message container
+    expect(first.closest('[data-content-kind="message"]')).not.toBeNull();
+    expect(second.closest('[data-content-kind="message"]')).not.toBeNull();
+  });
+
+  it("切片边界为装饰性 DOM：aria-hidden + data-decorative，不包含文本", async () => {
+    const content = "第一段。\n\n第二段。\n\n第三段。";
+    const slices = [
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, content: "第一段。" }),
+      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "段落 2", content: "第二段。" }),
+      makeSlice({ id: "slice:session-1:m-out:2", ordinal: 2, title: "段落 3", content: "第三段。" }),
+    ];
+    const { container } = renderNodePage({ getResearchNodeView: async () => viewWithSlices(content, slices) });
+
+    await screen.findByText("第一段。");
+    const boundaries = container.querySelectorAll("[data-slice-boundary]");
+    // First slice has no boundary, subsequent ones do
+    expect(boundaries.length).toBe(2);
+    for (const boundary of boundaries) {
+      expect(boundary).toHaveAttribute("aria-hidden", "true");
+      expect(boundary).toHaveAttribute("data-decorative", "true");
+      expect(boundary.textContent).toBe("");
+    }
+  });
+
+  it("切片边界不影响可读文本投影——选区锚点偏移不受干扰", async () => {
+    const content = "REST API 测试。\n\n第二段内容。";
+    const slices = [
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, content: "REST API 测试。" }),
+      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "段落 2", content: "第二段内容。" }),
+    ];
+    const { container } = renderNodePage({ getResearchNodeView: async () => viewWithSlices(content, slices) });
+
+    await screen.findByText("REST API 测试。");
+    const contentRoot = container.querySelector<HTMLElement>('[data-content-kind="message"]');
+    expect(contentRoot).not.toBeNull();
+    const block = container.querySelector<HTMLElement>("[data-block-text]")!;
+    // The block text is just the slice content, boundary elements don't add text
+    expect(block.textContent).toBe("REST API 测试。");
+
+    // Selection capture should still work
+    const context = readContentContext(contentRoot!);
+    expect(context).toBeDefined();
+  });
+
+  it("无切片时沿用原有块级渲染", async () => {
+    const content = "无切片的段落一。\n\n无切片的段落二。";
+    const { container } = renderNodePage({ getResearchNodeView: async () => viewWithAssistant(content) });
+
+    const first = await screen.findByText("无切片的段落一。");
+    const second = screen.getByText("无切片的段落二。");
+    expect(first.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p0");
+    expect(second.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p1");
+    // No slice boundaries
+    expect(container.querySelectorAll("[data-slice-boundary]").length).toBe(0);
   });
 });

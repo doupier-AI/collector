@@ -314,6 +314,15 @@ button {
   gap: var(--space-3);
 }
 
+/* E1：切片边界为装饰性分隔线——视觉细微、不参与可读文本投影。 */
+.message__slice-boundary {
+  border: none;
+  border-top: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.06));
+  margin: var(--space-2) 0;
+  pointer-events: none;
+  user-select: none;
+}
+
 /* 引用标记的编号只由伪元素绘制，不能混入消息纯文本，避免改变选区锚点偏移。 */
 .citation-marker {
   display: inline;

@@ -1060,6 +1060,8 @@ export interface ResearchNodeView {
   citations?: ResearchCitationRecord[];
   attachments?: ResearchAttachmentRecord[];
   importTasks?: ResearchImportTaskRecord[];
+  /** E1：按消息 ID 返回切片列表；缺失时客户端按原消息块渲染。 */
+  slices?: Record<string, ResearchSliceRecord[]>;
 }
 
 export interface ResearchTurnAccepted {
@@ -1735,6 +1737,97 @@ export function validateResearchGroundingResult(result: ResearchGroundingResult)
 
 export interface ApiError {
   error: { code: string; message: string; details?: unknown };
+}
+
+
+// ── Semantic Slices (E1) ──────────────────────────────────────────
+
+/**
+ * 语义切片记录。一条助手消息可被切分为多个语义切片，每个切片包含连贯正文、
+ * 归一化概念与片内来源引用。切片是消息的结构化视图，不替代消息原文。
+ *
+ * - id：稳定唯一标识，格式 `slice:{nodeId}:{messageId}:{ordinal}`；
+ * - ordinal：从 0 连续编号，同一消息内单调递增；
+ * - isProvisional：true 表示由确定性规则从消息块边界派生的临时切片，
+ *   false 表示由 AI 语义分析生成的正式切片。
+ */
+export interface ResearchSliceRecord {
+  id: string;
+  nodeId: string;
+  messageId: string;
+  ordinal: number;
+  title: string;
+  content: string;
+  normalizedConcepts: string[];
+  sourceRefs: ResearchCitationRecord[];
+  isProvisional: boolean;
+  createdAt: string;
+}
+
+/**
+ * 校验切片序列的结构合法性（纯函数，契约层）：
+ * 1. ID 稳定（符合 `slice:{nodeId}:{messageId}:{ordinal}` 格式）；
+ * 2. ordinal 严格递增（节点范围内，不一定从 0 起始）；
+ * 3. 标题与正文非空；
+ * 4. 归一化概念为非空字符串数组。
+ *
+ * 校验失败时抛错；通过时返回 void。
+ */
+export function validateSliceSchema(slices: ResearchSliceRecord[], nodeId: string, messageId: string): void {
+  if (!Array.isArray(slices)) throw new Error("Slices must be an array");
+  let previousOrdinal = -1;
+  for (const slice of slices) {
+    const expectedId = `slice:${nodeId}:${messageId}:${slice.ordinal}`;
+    if (slice.id !== expectedId) throw new Error(`Slice id must be ${expectedId}, got ${slice.id}`);
+    if (!Number.isSafeInteger(slice.ordinal) || slice.ordinal < 0) throw new Error(`Slice ordinal must be a non-negative integer, got ${slice.ordinal}`);
+    if (slice.ordinal <= previousOrdinal) throw new Error(`Slice ordinals must be strictly increasing; got ${slice.ordinal} after ${previousOrdinal}`);
+    previousOrdinal = slice.ordinal;
+    if (typeof slice.title !== "string" || !slice.title.trim()) throw new Error(`Slice ${slice.ordinal} title must be a non-empty string`);
+    if (typeof slice.content !== "string" || !slice.content.trim()) throw new Error(`Slice ${slice.ordinal} content must be a non-empty string`);
+    if (!Array.isArray(slice.normalizedConcepts) || slice.normalizedConcepts.some((concept) => typeof concept !== "string" || !concept.trim())) {
+      throw new Error(`Slice ${slice.ordinal} normalizedConcepts must be an array of non-empty strings`);
+    }
+  }
+}
+
+/**
+ * 确定性临时切片派生（纯函数）：复用 deriveMessageBlocks() 的段落边界，
+ * 每个段落块生成一个临时切片。两次调用结果完全一致（幂等），不修改源文本，
+ * 不依赖 AI，不入库（由服务层决定是否持久化）。
+ *
+ * ordinalOffset 为该节点已有切片的最大 ordinal + 1（无切片时为 0），
+ * 确保节点范围内 ordinal 连续且唯一。
+ *
+ * 切片标题由段落块序号确定性派生（"段落 1"、"段落 2"……）；
+ * 概念与引用均为空数组（临时切片不附加语义标注）。
+ */
+export function deriveProvisionalSlices(
+  nodeId: string,
+  messageId: string,
+  messageContent: string,
+  ordinalOffset: number = 0,
+  citations: ResearchCitationRecord[] = [],
+  createdAt?: string,
+): ResearchSliceRecord[] {
+  const blocks = deriveMessageBlocks(messageContent);
+  if (blocks.length === 0) return [];
+  const timestamp = createdAt ?? new Date().toISOString();
+  return blocks.map((block, index) => {
+    const ordinal = ordinalOffset + index;
+    const sliceCitations = citations.filter((citation) => citation.blockOrdinal === block.ordinal);
+    return {
+      id: `slice:${nodeId}:${messageId}:${ordinal}`,
+      nodeId,
+      messageId,
+      ordinal,
+      title: `段落 ${block.ordinal + 1}`,
+      content: block.text,
+      normalizedConcepts: [],
+      sourceRefs: sliceCitations,
+      isProvisional: true,
+      createdAt: timestamp,
+    };
+  });
 }
 
 
