@@ -79,7 +79,7 @@ WebUI 使用 HTTP API 和流式连接，不直接访问 SQLite、文件系统或
 
 ### 本机 API 与领域服务
 
-- 研究节点（`research_sessions` / `research_branches` 已于 H1 归并）、选区和标记数据底座（`research_later_items` 语义调整为标记 + 笔记）；
+- 研究节点（`research_sessions` / `research_branches` 已于 H1 归并）、类型化边（`research_edges`，迁移 v28：父子 / 语义相关 / 融合来源，父子边由节点血统派生）、语义切片（`research_slices`，迁移 v29：旧节点首次使用时按消息块边界惰性补齐临时切片）、选区和标记数据底座（`research_later_items` 语义调整为标记 + 笔记）；
 - 文件上传、内容快照、解析状态和来源锚点；
 - 模型配置状态、AI 调用和按需搜索；
 - 任务创建、幂等、取消、重试和恢复；
