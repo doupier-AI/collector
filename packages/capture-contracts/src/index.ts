@@ -1274,6 +1274,198 @@ export interface ResearchSessionNodeTreeItem {
   firstMessage?: string;
 }
 
+// ── Research Edge Model & Graph Projection (D1) ───────────────────
+
+/** 边的类型：父子（节点血统）、语义相关、融合来源。 */
+export const RESEARCH_EDGE_KINDS = ["parent-child", "semantic-related", "fused-from"] as const;
+export type ResearchEdgeKind = (typeof RESEARCH_EDGE_KINDS)[number];
+
+/** 边的状态。active 为正常可用，deleted 为软删除保留。 */
+export type ResearchEdgeStatus = "active" | "deleted";
+
+/**
+ * 类型化边记录（D1）。连接两个研究节点，携带类型、创建时间和状态。
+ * 边创建幂等：UNIQUE(kind, fromNodeId, toNodeId) 保证刷新与重试不重复建边。
+ */
+export interface ResearchEdgeRecord {
+  id: string;
+  kind: ResearchEdgeKind;
+  fromNodeId: string;
+  toNodeId: string;
+  createdAt: string;
+  status: ResearchEdgeStatus;
+}
+
+/**
+ * 图投影（D1）：以当前节点为中心的关系视图。
+ * 由契约层纯函数从节点集合与边集合确定性派生，
+ * 非血统边成环、缺失节点、多根情形均可复算且安全降级。
+ */
+export interface ResearchGraphProjection {
+  /** 投影包含的节点摘要。 */
+  nodes: ResearchGraphNodeSummary[];
+  /** 投影包含的类型化边。 */
+  edges: ResearchEdgeRecord[];
+  /** 当前焦点节点 ID。 */
+  focusNodeId: string;
+}
+
+/**
+ * 图投影中的节点摘要：节点记录 + 确定性标签 + 深度（相对焦点）。
+ * 标签规则与 ResearchSessionNodeTreeItem 一致：
+ * displayName > 来源选区摘要 > 首条用户消息摘要 > 节点 ID 前 8 字符。
+ */
+export interface ResearchGraphNodeSummary {
+  node: ResearchNodeRecord;
+  /** 节点在投影中的标签（导航呈现用）。 */
+  label: string;
+  /** 相对焦点节点的深度；焦点为 0，邻居为 ±1，逐层外扩。 */
+  depth: number;
+}
+
+/**
+ * 从节点血统确定性派生父子边。
+ * 遍历节点列表，对每个有 parentNodeId 的节点生成一条 parent-child 边。
+ * 边的 ID 由 kind + fromNodeId + toNodeId 确定性派生（FNV-1a），保证幂等。
+ * 缺失父节点（parentNodeId 指向不存在的节点）时跳过该边，不抛错。
+ */
+export function deriveParentChildEdges(
+  nodes: readonly ResearchNodeRecord[],
+): ResearchEdgeRecord[] {
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const edges: ResearchEdgeRecord[] = [];
+  for (const node of nodes) {
+    if (!node.parentNodeId) continue;
+    if (!nodeIds.has(node.parentNodeId)) continue;
+    const id = researchEdgeId("parent-child", node.parentNodeId, node.id);
+    edges.push({
+      id,
+      kind: "parent-child",
+      fromNodeId: node.parentNodeId,
+      toNodeId: node.id,
+      createdAt: node.createdAt,
+      status: "active",
+    });
+  }
+  return edges;
+}
+
+/**
+ * 边 ID 的确定性派生：FNV-1a(kind + ":" + fromNodeId + ":" + toNodeId)。
+ * 与选区幂等键同源规则，保证同一三元组始终生成同一 ID。
+ */
+export function researchEdgeId(kind: ResearchEdgeKind, fromNodeId: string, toNodeId: string): string {
+  const input = `${kind}:${fromNodeId}:${toNodeId}`;
+  return `edge:${fnv1a32(input)}`;
+}
+
+/**
+ * 构建图投影：以 focusNodeId 为中心，逐层邻居扩展。
+ * - 焦点节点 depth=0；
+ * - 父子边连接的直接邻居 depth=±1（父 -1、子 +1）；
+ * - 非血统边（semantic-related / fused-from）的邻居 depth 按最短路径；
+ * - 成环边安全跳过（visited 集合防无限循环）；
+ * - 缺失节点（边指向不在节点集合中的 ID）安全跳过；
+ * - 多根（多个无父节点）不影响投影：焦点可达的全部节点均进入投影。
+ *
+ * maxDepth 控制扩展层数，默认 2（焦点 ± 2 层）。
+ */
+export function buildGraphProjection(
+  allNodes: readonly ResearchNodeRecord[],
+  allEdges: readonly ResearchEdgeRecord[],
+  focusNodeId: string,
+  options: { maxDepth?: number; nodeLabel?: (node: ResearchNodeRecord) => string } = {},
+): ResearchGraphProjection {
+  const maxDepth = options.maxDepth ?? 2;
+  const nodeMap = new Map<string, ResearchNodeRecord>();
+  for (const node of allNodes) nodeMap.set(node.id, node);
+
+  const focusNode = nodeMap.get(focusNodeId);
+  if (!focusNode) {
+    return { nodes: [], edges: [], focusNodeId };
+  }
+
+  // 构建邻接表（无向图，边权重=1）
+  const adjacency = new Map<string, Array<{ neighborId: string; edge: ResearchEdgeRecord }>>();
+  const activeEdges = allEdges.filter((edge) => edge.status === "active");
+  for (const edge of activeEdges) {
+    if (!nodeMap.has(edge.fromNodeId) || !nodeMap.has(edge.toNodeId)) continue;
+    if (!adjacency.has(edge.fromNodeId)) adjacency.set(edge.fromNodeId, []);
+    if (!adjacency.has(edge.toNodeId)) adjacency.set(edge.toNodeId, []);
+    adjacency.get(edge.fromNodeId)!.push({ neighborId: edge.toNodeId, edge });
+    adjacency.get(edge.toNodeId)!.push({ neighborId: edge.fromNodeId, edge });
+  }
+
+  // BFS 从焦点扩展
+  const visited = new Map<string, number>(); // nodeId → depth
+  const queue: Array<{ nodeId: string; depth: number }> = [{ nodeId: focusNodeId, depth: 0 }];
+  visited.set(focusNodeId, 0);
+  const projectedNodeIds = new Set<string>();
+  const projectedEdgeIds = new Set<string>();
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (current.depth > maxDepth) continue;
+    projectedNodeIds.add(current.nodeId);
+    const neighbors = adjacency.get(current.nodeId) ?? [];
+    for (const { neighborId, edge } of neighbors) {
+      if (visited.has(neighborId)) {
+        // 成环：仍把边加入投影（如果两端都在投影中），但不重复入队
+        if (projectedNodeIds.has(neighborId)) projectedEdgeIds.add(edge.id);
+        continue;
+      }
+      visited.set(neighborId, current.depth + 1);
+      projectedEdgeIds.add(edge.id);
+      queue.push({ nodeId: neighborId, depth: current.depth + 1 });
+    }
+  }
+
+  // 第二轮：把投影节点之间的所有边都加入（包括 BFS 未走过的跨层边）
+  for (const edge of activeEdges) {
+    if (projectedNodeIds.has(edge.fromNodeId) && projectedNodeIds.has(edge.toNodeId)) {
+      projectedEdgeIds.add(edge.id);
+    }
+  }
+
+  const labelFn = options.nodeLabel ?? defaultGraphNodeLabel;
+  const nodes: ResearchGraphNodeSummary[] = [];
+  for (const nodeId of projectedNodeIds) {
+    const node = nodeMap.get(nodeId)!;
+    const depth = visited.get(nodeId) ?? 0;
+    nodes.push({
+      node,
+      label: labelFn(node),
+      depth,
+    });
+  }
+  // 按 depth 绝对值排序，同层按创建时间
+  nodes.sort((a, b) => {
+    const depthDiff = Math.abs(a.depth) - Math.abs(b.depth);
+    if (depthDiff !== 0) return depthDiff;
+    return a.node.createdAt.localeCompare(b.node.createdAt);
+  });
+
+  const edges = activeEdges.filter((edge) => projectedEdgeIds.has(edge.id));
+
+  return { nodes, edges, focusNodeId };
+}
+
+/** 图投影节点的默认标签：displayName > "node-" + id 前 8 字符。 */
+function defaultGraphNodeLabel(node: ResearchNodeRecord): string {
+  if (node.displayName) return node.displayName;
+  return `node-${node.id.slice(0, 8)}`;
+}
+
+/** FNV-1a 32-bit 确定性摘要（与选区幂等键同源）。 */
+function fnv1a32(input: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
 export interface ResearchBranchView {
   branch: ResearchBranchRecord;
   session: ResearchSessionRecord;
@@ -1546,7 +1738,7 @@ export interface ApiError {
 }
 
 
-// 閳光偓閳光偓 Verification (Issue 08) 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓
+// ── Verification (Issue 08) ──────────────────────────────────────────────
 
 export type VerificationPolicy = "offline" | "verify_only";
 

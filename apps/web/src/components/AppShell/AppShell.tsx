@@ -4,6 +4,7 @@ import { useMediaQuery } from "../../app/useMediaQuery";
 import { ContentDrawer } from "../../features/navigation/ContentDrawer";
 import { LaterPanel } from "../../features/navigation/LaterPanel";
 import { NodeTreeOverlay } from "../../features/navigation/NodeTreeOverlay";
+import { RelationshipList } from "../../features/navigation/RelationshipList";
 import { SIDEBAR_DEFAULT_WIDTH } from "./sidebar-width";
 
 /** 顶栏“节点树”按钮的目标：从当前路由解析会话与节点；不在研究页面时不提供入口。 */
@@ -42,9 +43,11 @@ export function AppShell() {
   const leftTriggerRef = useRef<HTMLButtonElement>(null);
   const rightTriggerRef = useRef<HTMLButtonElement>(null);
   const treeTriggerRef = useRef<HTMLButtonElement>(null);
+  const graphTriggerRef = useRef<HTMLButtonElement>(null);
   const location = useLocation();
   const treeTarget = nodeTreeTargetForPath(location.pathname);
   const [treeOpen, setTreeOpen] = useState(false);
+  const [graphOpen, setGraphOpen] = useState(false);
 
   const leftVisible = leftOpenPref ?? wide;
   const rightVisible = rightOpenPref ?? wide;
@@ -64,6 +67,11 @@ export function AppShell() {
     treeTriggerRef.current?.focus();
   }, []);
 
+  const closeGraph = useCallback(() => {
+    setGraphOpen(false);
+    graphTriggerRef.current?.focus();
+  }, []);
+
   const toggleLeft = useCallback(() => {
     setLeftOpenPref((pref) => !(pref ?? wide));
     // 窄屏下一次只展开一个覆盖抽屉
@@ -75,19 +83,25 @@ export function AppShell() {
     if (!wide) setLeftOpenPref(false);
   }, [wide]);
 
-  // 路由变化时关闭树视图（例如从树中跳转到另一个节点后由组件自行关闭，此处兜底）
+  // 路由变化时关闭树视图与关系列表（例如从树中跳转到另一个节点后由组件自行关闭，此处兜底）
   useEffect(() => {
     setTreeOpen(false);
+    setGraphOpen(false);
   }, [location.pathname]);
 
-  // 快捷键 t 唤出节点树：焦点在输入控件时不拦截，避免影响正常输入
+  // 快捷键 t 唤出节点树、g 唤出关系列表：焦点在输入控件时不拦截
   useEffect(() => {
     if (!treeTarget) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "t" || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
       if (isEditableTarget(event.target)) return;
-      event.preventDefault();
-      setTreeOpen(true);
+      if (event.key === "t") {
+        event.preventDefault();
+        setTreeOpen(true);
+      } else if (event.key === "g") {
+        event.preventDefault();
+        setGraphOpen(true);
+      }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
@@ -132,6 +146,29 @@ export function AppShell() {
             </svg>
           </button>
         ) : null}
+        {treeTarget ? (
+          <button
+            type="button"
+            ref={graphTriggerRef}
+            className="app-bar__icon-button"
+            aria-label="关系列表（快捷键 G）"
+            aria-expanded={graphOpen}
+            aria-controls="relationship-list-overlay"
+            onClick={() => setGraphOpen(true)}
+          >
+            <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+              <circle cx="10" cy="10" r="2" fill="none" stroke="currentColor" strokeWidth="1.5" />
+              <circle cx="4" cy="5" r="1.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+              <circle cx="16" cy="5" r="1.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+              <circle cx="4" cy="15" r="1.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+              <circle cx="16" cy="15" r="1.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+              <line x1="8.5" y1="8.5" x2="5.5" y2="6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <line x1="11.5" y1="8.5" x2="14.5" y2="6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <line x1="8.5" y1="11.5" x2="5.5" y2="13.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <line x1="11.5" y1="11.5" x2="14.5" y2="13.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </button>
+        ) : null}
         <button
           type="button"
           ref={rightTriggerRef}
@@ -165,6 +202,9 @@ export function AppShell() {
       </div>
       {treeOpen && treeTarget ? (
         <NodeTreeOverlay sessionId={treeTarget.sessionId} currentNodeId={treeTarget.nodeId} onClose={closeTree} />
+      ) : null}
+      {graphOpen && treeTarget ? (
+        <RelationshipList sessionId={treeTarget.sessionId} focusNodeId={treeTarget.nodeId} onClose={closeGraph} />
       ) : null}
     </div>
   );

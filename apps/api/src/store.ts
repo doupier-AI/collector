@@ -1,7 +1,7 @@
 import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ResearchNodeRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewInput, type ResearchTermPreviewRecord, type ResearchTurnAccepted } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchNodeRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewInput, type ResearchTermPreviewRecord, type ResearchTurnAccepted, researchEdgeId } from "@collector/capture-contracts";
 
 export type ObservabilityRecordSource = "research" | "selection" | "import" | "workflow";
 
@@ -171,6 +171,11 @@ export interface DeepResearchStore {
   listResearchTermPreviewEvents(id: string, afterId?: number): ResearchTermPreviewEvent[];
   listRecoverableResearchTermPreviews(): ResearchTermPreviewRecord[];
   failInterruptedResearchTermPreviews(): number;
+  // ── Research Edge (D1) ──────────────────────────────────────
+  /** 幂等创建边：同一 (kind, fromNodeId, toNodeId) 不重复创建，返回已存在或新创建的记录。 */
+  createResearchEdge(edge: ResearchEdgeRecord): Promise<ResearchEdgeRecord>;
+  /** 查询全部活跃边（调用方按会话节点集合过滤）。 */
+  listAllResearchEdges(): ResearchEdgeRecord[];
 }
 
 export interface CollectorStore
@@ -340,6 +345,15 @@ export interface CollectorStore
   listResearchCitationsForMessages(messageIds: string[]): ResearchCitationRecord[];
   close?(): void;
   clearAllData(): Promise<void>;
+  // ── Research Edge CRUD (D1) ──────────────────────────────────
+  /** 幂等创建边：同一 (kind, fromNodeId, toNodeId) 不重复创建，返回已存在或新创建的记录。 */
+  createResearchEdge(edge: ResearchEdgeRecord): Promise<ResearchEdgeRecord>;
+  /** 查询与指定节点相连的所有活跃边（出边 + 入边）。 */
+  listResearchEdgesByNode(nodeId: string): ResearchEdgeRecord[];
+  /** 查询会话内全部活跃边（通过 session 的节点集合过滤）。 */
+  listAllResearchEdges(): ResearchEdgeRecord[];
+  /** 按 ID 获取单条边。 */
+  getResearchEdge(id: string): ResearchEdgeRecord | undefined;
 }
 
 interface StoreData {
@@ -618,6 +632,8 @@ export class SqliteStore implements CollectorStore {
       this.db().exec("DELETE FROM research_branches");
       // research_nodes 自引用且外键指向 research_selections，先删子节点再删全部，
       // 并在删除 research_selections 之前完成，避免外键约束失败。
+      // research_edges 外键指向 research_nodes，必须在删节点前删边。
+      this.db().exec("DELETE FROM research_edges");
       this.db().exec("DELETE FROM research_nodes WHERE parent_node_id IS NOT NULL");
       this.db().exec("DELETE FROM research_nodes");
       this.db().exec("DELETE FROM research_later_items");
@@ -1079,6 +1095,34 @@ export class SqliteStore implements CollectorStore {
 
   listChildNodes(parentNodeId: string): ResearchNodeRecord[] {
     return this.listRecords<ResearchNodeRecord>("SELECT record_json FROM research_nodes WHERE parent_node_id = ? ORDER BY created_at, rowid", parentNodeId);
+  }
+
+  // ── Research Edge CRUD (D1) ──────────────────────────────────
+
+  async createResearchEdge(edge: ResearchEdgeRecord): Promise<ResearchEdgeRecord> {
+    const existing = this.getRecord<ResearchEdgeRecord>(
+      "SELECT record_json FROM research_edges WHERE kind = ? AND from_node_id = ? AND to_node_id = ?",
+      edge.kind, edge.fromNodeId, edge.toNodeId,
+    );
+    if (existing) return existing;
+    this.db().prepare("INSERT OR IGNORE INTO research_edges (id, kind, from_node_id, to_node_id, created_at, status, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(edge.id, edge.kind, edge.fromNodeId, edge.toNodeId, edge.createdAt, edge.status, JSON.stringify(edge));
+    return edge;
+  }
+
+  listResearchEdgesByNode(nodeId: string): ResearchEdgeRecord[] {
+    return this.listRecords<ResearchEdgeRecord>(
+      "SELECT record_json FROM research_edges WHERE status = 'active' AND (from_node_id = ? OR to_node_id = ?) ORDER BY created_at, rowid",
+      nodeId, nodeId,
+    );
+  }
+
+  listAllResearchEdges(): ResearchEdgeRecord[] {
+    return this.listRecords<ResearchEdgeRecord>("SELECT record_json FROM research_edges WHERE status = 'active' ORDER BY created_at, rowid");
+  }
+
+  getResearchEdge(id: string): ResearchEdgeRecord | undefined {
+    return this.getRecord<ResearchEdgeRecord>("SELECT record_json FROM research_edges WHERE id = ?", id);
   }
 
   getResearchMessage(id: string): ResearchMessageRecord | undefined {
@@ -1834,6 +1878,13 @@ export class SqliteStore implements CollectorStore {
       };
       this.db().prepare("INSERT INTO research_nodes (id, session_id, parent_node_id, origin_selection_id, status, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .run(nodeRecord.id, nodeRecord.sessionId, nodeRecord.parentNodeId ?? null, nodeRecord.originSelectionId ?? null, nodeRecord.status, nodeRecord.createdAt, nodeRecord.updatedAt, task.idempotencyKey, JSON.stringify(nodeRecord));
+      // D1：创建父子边，幂等（INSERT OR IGNORE + UNIQUE 约束）
+      if (nodeRecord.parentNodeId) {
+        const edgeId = researchEdgeId("parent-child", nodeRecord.parentNodeId, nodeRecord.id);
+        const edgeRecord: ResearchEdgeRecord = { id: edgeId, kind: "parent-child", fromNodeId: nodeRecord.parentNodeId, toNodeId: nodeRecord.id, createdAt: nodeRecord.createdAt, status: "active" };
+        this.db().prepare("INSERT OR IGNORE INTO research_edges (id, kind, from_node_id, to_node_id, created_at, status, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
+          .run(edgeId, edgeRecord.kind, edgeRecord.fromNodeId, edgeRecord.toNodeId, edgeRecord.createdAt, edgeRecord.status, JSON.stringify(edgeRecord));
+      }
       const updatedSession: ResearchSessionRecord = { ...session, updatedAt: task.createdAt };
       this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
         .run(updatedSession.updatedAt, JSON.stringify(updatedSession), updatedSession.id);
@@ -1921,6 +1972,13 @@ export class SqliteStore implements CollectorStore {
       const updatedSession: ResearchSessionRecord = { ...session, updatedAt: task.createdAt };
       this.db().prepare("INSERT INTO research_nodes (id, session_id, parent_node_id, origin_selection_id, status, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .run(node.id, node.sessionId, node.parentNodeId ?? null, node.originSelectionId ?? null, node.status, node.createdAt, node.updatedAt, task.idempotencyKey, JSON.stringify(node));
+      // D1：创建父子边，幂等（INSERT OR IGNORE + UNIQUE 约束）
+      if (node.parentNodeId) {
+        const edgeId = researchEdgeId("parent-child", node.parentNodeId, node.id);
+        const edgeRecord: ResearchEdgeRecord = { id: edgeId, kind: "parent-child", fromNodeId: node.parentNodeId, toNodeId: node.id, createdAt: node.createdAt, status: "active" };
+        this.db().prepare("INSERT OR IGNORE INTO research_edges (id, kind, from_node_id, to_node_id, created_at, status, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
+          .run(edgeId, edgeRecord.kind, edgeRecord.fromNodeId, edgeRecord.toNodeId, edgeRecord.createdAt, edgeRecord.status, JSON.stringify(edgeRecord));
+      }
       this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
         .run(updatedSession.updatedAt, JSON.stringify(updatedSession), updatedSession.id);
       this.insertResearchMessage(inputMessage);
@@ -2737,6 +2795,40 @@ export class SqliteStore implements CollectorStore {
       version = 27;
     }
 
+    if (version < 28) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE research_edges (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            from_node_id TEXT NOT NULL,
+            to_node_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            status TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(from_node_id) REFERENCES research_nodes(id),
+            FOREIGN KEY(to_node_id) REFERENCES research_nodes(id),
+            UNIQUE(kind, from_node_id, to_node_id)
+          );
+          CREATE INDEX research_edges_from_node_idx ON research_edges(from_node_id, status);
+          CREATE INDEX research_edges_to_node_idx ON research_edges(to_node_id, status);
+          CREATE INDEX research_edges_kind_idx ON research_edges(kind, status);
+        `);
+
+        // 从既有 research_nodes 的 parentNodeId 确定性派生父子边并插入
+        const nodes = this.db().prepare("SELECT id, parent_node_id, created_at FROM research_nodes WHERE parent_node_id IS NOT NULL").all() as Array<{ id: string; parent_node_id: string; created_at: string }>;
+        const insertEdge = this.db().prepare("INSERT OR IGNORE INTO research_edges (id, kind, from_node_id, to_node_id, created_at, status, record_json) VALUES (?, 'parent-child', ?, ?, ?, 'active', ?)");
+        for (const row of nodes) {
+          const edgeId = researchEdgeId("parent-child", row.parent_node_id, row.id);
+          const record: ResearchEdgeRecord = { id: edgeId, kind: "parent-child", fromNodeId: row.parent_node_id, toNodeId: row.id, createdAt: row.created_at, status: "active" };
+          insertEdge.run(edgeId, row.parent_node_id, row.id, row.created_at, JSON.stringify(record));
+        }
+
+        this.db().exec("INSERT INTO schema_migrations(version, applied_at) VALUES (28, datetime('now'));");
+      });
+      version = 28;
+    }
+
   }
 
   private async migrateLegacyProviderProfile(): Promise<void> {
@@ -3087,6 +3179,10 @@ export class JsonStore implements CollectorStore {
   listResearchGroundingRuns(_taskId: string): ResearchGroundingRunRecord[] { return []; }
   listResearchGroundingSources(_runId: string): ResearchGroundingSourceRecord[] { return []; }
   listResearchCitationsForMessages(_messageIds: string[]): ResearchCitationRecord[] { return []; }
+  async createResearchEdge(_edge: ResearchEdgeRecord): Promise<ResearchEdgeRecord> { throw new Error("Research edges require SQLite persistence"); }
+  listResearchEdgesByNode(_nodeId: string): ResearchEdgeRecord[] { return []; }
+  listAllResearchEdges(): ResearchEdgeRecord[] { return []; }
+  getResearchEdge(_id: string): ResearchEdgeRecord | undefined { return undefined; }
   async clearAllData(): Promise<void> { const savedTokens = this.data.clientTokens; const savedProfiles = this.data.providerProfiles; const savedCredentials = this.data.providerCredentials; const savedPurposeRoutes = this.data.modelPurposeRoutes; const savedSettings: Record<string, string> = {}; if (this.data.settings) { for (const key of ['ai_consent', 'ai_configured', 'active_provider_profile_id', 'deepseek_configured']) { if (this.data.settings[key]) savedSettings[key] = this.data.settings[key]; } } this.data = { ...structuredClone(EMPTY_DATA), clientTokens: savedTokens, settings: savedSettings, providerProfiles: savedProfiles, providerCredentials: savedCredentials, modelPurposeRoutes: savedPurposeRoutes }; await this.flush(); }
     private flush() { this.writeQueue = this.writeQueue.then(async () => { const temporaryPath = `${this.filePath}.tmp`; await writeFile(temporaryPath, JSON.stringify(this.data, null, 2), "utf8"); await rename(temporaryPath, this.filePath); }); return this.writeQueue; }
 }

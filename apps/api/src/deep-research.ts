@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  buildGraphProjection,
   deriveDefaultResearchTitle,
   type CreateChildNodeInput,
   type DeepResearchAccepted,
@@ -7,6 +8,7 @@ import {
   type NodeGrowthAccepted,
   type ResearchBranchRecord,
   type ResearchBranchView,
+  type ResearchGraphProjection,
   type ResearchMessageRecord,
   type ResearchNodeRecord,
   type ResearchNodeView,
@@ -325,6 +327,33 @@ export class NodeGrowthService {
       const firstUser = this.store.listResearchMessagesByNode(node.id).find((message) => message.role === "user");
       const firstMessage = firstUser ? excerptText(firstUser.content, TREE_LABEL_CHARACTERS) : undefined;
       return { node, label: firstMessage ?? "子节点", ...(firstMessage ? { firstMessage } : {}) };
+    });
+  }
+
+  /**
+   * 图投影（D1）：以 focusNodeId 为中心的关系视图。
+   * 缺省焦点为会话根节点（sessionId === 根节点 id）。
+   * 标签规则与节点树一致：displayName > 来源选区摘要 > 首条用户消息摘要 > 回退。
+   */
+  getGraphProjection(sessionId: string, focusNodeId?: string): ResearchGraphProjection {
+    const session = this.store.getResearchSession(sessionId);
+    if (!session) throw new DeepResearchNotFoundError("Research session not found");
+    const nodes = this.store.listResearchNodes(sessionId);
+    const nodeIds = new Set(nodes.map((node) => node.id));
+    const allEdges = this.store.listAllResearchEdges();
+    const sessionEdges = allEdges.filter((edge) => nodeIds.has(edge.fromNodeId) && nodeIds.has(edge.toNodeId));
+    const focus = focusNodeId ?? sessionId;
+    return buildGraphProjection(nodes, sessionEdges, focus, {
+      nodeLabel: (node) => {
+        if (!node.parentNodeId) return session.title;
+        if (node.displayName) return node.displayName;
+        const selection = node.originSelectionId ? this.store.getResearchSelection(node.originSelectionId) : undefined;
+        const originText = selection ? excerptText(selection.text, TREE_LABEL_CHARACTERS) : undefined;
+        if (originText) return originText;
+        const firstUser = this.store.listResearchMessagesByNode(node.id).find((message) => message.role === "user");
+        if (firstUser) return excerptText(firstUser.content, TREE_LABEL_CHARACTERS);
+        return "子节点";
+      },
     });
   }
 

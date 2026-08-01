@@ -22,6 +22,7 @@ import type {
   ResearchLaterItemStatus,
   ResearchLaterItemUpdate,
   ResearchLaterItemView,
+  ResearchGraphProjection,
   ResearchNodeView,
   ResearchSelectionAccepted,
   ResearchSelectionInput,
@@ -93,6 +94,8 @@ export interface ApiClient {
   growResearchTermPreview(previewId: string, idempotencyKey: string): Promise<NodeGrowthAccepted>;
   /** 会话节点树（全屏树导航）：一次性返回扁平条目，客户端按 parentNodeId 建树。 */
   getResearchSessionNodeTree(sessionId: string): Promise<ResearchSessionNodeTreeItem[]>;
+  /** 关系图投影：以指定节点为中心，返回邻居节点与类型化边。 */
+  getResearchGraph(sessionId: string, focusNodeId?: string): Promise<ResearchGraphProjection>;
   /** 从选区生长子节点：统一取代深入研究二选一。 */
   startChildNode(selectionId: string, input: CreateChildNodeInput, idempotencyKey: string): Promise<NodeGrowthAccepted>;
     /** 保存标记：幂等键命中返回首次保存的项目，保存不依赖 AI。 */
@@ -387,6 +390,13 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
       return requestJson<ResearchSessionNodeTreeItem[]>(
         fetchFn,
         `/v1/research-sessions/${encodeURIComponent(sessionId)}/nodes`,
+      );
+    },
+    getResearchGraph(sessionId: string, focusNodeId?: string) {
+      const query = focusNodeId ? `?focusNodeId=${encodeURIComponent(focusNodeId)}` : "";
+      return requestJson<ResearchGraphProjection>(
+        fetchFn,
+        `/v1/research-sessions/${encodeURIComponent(sessionId)}/graph${query}`,
       );
     },
     startChildNode(selectionId: string, input: CreateChildNodeInput, idempotencyKey: string) {

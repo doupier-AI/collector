@@ -99,8 +99,8 @@ async function createCompletedAssistant(harness: Awaited<ReturnType<typeof creat
     idempotencyKey: randomUUID(), status: "completed", retryable: false, promptVersion: "test", createdAt: now, updatedAt: now, completedAt: now,
   };
   await harness.store.createResearchTurnForNode(node, inputMessage, outputMessage, task);
-  const view = harness.service.getResearchNodeView(node.id);
-  const assistant = view.messages.find((message) => message.id === outputMessage.id);
+  const view = await harness.service.getResearchNodeView(node.id);
+  const assistant = view.messages.find((message: ResearchMessageRecord) => message.id === outputMessage.id);
   assert.ok(assistant);
   const markers = view.termDetections?.[assistant.id]?.terms ?? [];
   const marker = markers[0];
@@ -207,7 +207,7 @@ test("term preview failure keeps partial content, retries, and marks interrupted
   assert.equal(harness.service.termPreviews.getPreview(started.preview.id).content, "recovered preview");
 
   const databasePath = harness.store.getDataFilePath()!;
-  const restartMarker = fixture.markers.find((marker) => marker.text === "HTTP");
+  const restartMarker = fixture.markers.find((marker: TermMarker) => marker.text === "HTTP");
   assert.ok(restartMarker);
   const interrupted = await harness.service.termPreviews.start(fixture.node.id, { messageId: fixture.assistant.id, marker: restartMarker }, "restart-preview");
   const claimed = harness.store.claimResearchTermPreview(interrupted.preview.id, "term-preview-failing", "term-preview-failing-model", "term-preview-v1");

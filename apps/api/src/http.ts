@@ -278,6 +278,14 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (request.method === "GET" && researchSessionNodesMatch) {
         return json(response, 200, service.nodeGrowth.getNodeTree(decodeURIComponent(researchSessionNodesMatch[1])));
       }
+      const researchSessionGraphMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)\/graph$/);
+      if (request.method === "GET" && researchSessionGraphMatch) {
+        const focusNodeId = url.searchParams.get("focusNodeId") ?? undefined;
+        return json(response, 200, service.nodeGrowth.getGraphProjection(
+          decodeURIComponent(researchSessionGraphMatch[1]),
+          focusNodeId,
+        ));
+      }
       const researchSessionMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)$/);
       if (request.method === "GET" && researchSessionMatch) {
         return json(response, 200, service.research.getSession(decodeURIComponent(researchSessionMatch[1])));
