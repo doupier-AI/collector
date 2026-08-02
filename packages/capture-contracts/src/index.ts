@@ -1782,6 +1782,29 @@ export interface NativeResearchSliceGeneration {
   slices: ResearchSliceRecord[];
 }
 
+/** E3：送入下一轮生成的有界切片上下文；与父链上下文分别预算。 */
+export interface ResearchSliceContextItem {
+  sliceId: string;
+  nodeId: string;
+  messageId: string;
+  ordinal: number;
+  title: string;
+  content: string;
+  normalizedConcepts: string[];
+  sourceRefs: ResearchCitationRecord[];
+  isProvisional: boolean;
+  parentDistance: number;
+}
+
+export interface ResearchSliceContext {
+  items: ResearchSliceContextItem[];
+  tokenBudget: number;
+  estimatedTokens: number;
+  /** F2 接入融合语义的预留位置；E3 当前保持为空。 */
+  fusionSignals: string[];
+  originSelectionId?: string;
+}
+
 export const RESEARCH_NATIVE_SLICE_MAX_COUNT = 80;
 export const RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS = 200;
 export const RESEARCH_NATIVE_SLICE_MAX_CONCEPTS = 12;

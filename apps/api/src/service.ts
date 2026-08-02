@@ -49,7 +49,7 @@ import {
 import type { CollectorStore } from "./store.js";
 import { defaultDataPaths } from "./store.js";
 import { SourceParser, parsePdf } from "./parsers.js";
-import { DEFAULT_PROVIDER_REGISTRY, formatResearchParentChainContext, ModelGateway, ProviderRuntimeResolver, discoverProviderModels as discoverProviderModelsViaGateway, validateExternalProviderBaseUrl } from "@collector/model-gateway";
+import { DEFAULT_PROVIDER_REGISTRY, formatResearchParentChainContext, formatResearchSliceContext, ModelGateway, ProviderRuntimeResolver, discoverProviderModels as discoverProviderModelsViaGateway, validateExternalProviderBaseUrl } from "@collector/model-gateway";
 import { createVerificationWorkflow } from "./verification.js";
 import { ResearchSessionService, RESEARCH_SLICE_PROMPT_VERSION, type ResearchGenerationProvider } from "./research.js";
 import { ResearchImportService } from "./research-import.js";
@@ -257,6 +257,7 @@ export class CaptureService {
               contextBefore: request.deepResearch.contextBefore,
               contextAfter: request.deepResearch.contextAfter,
               parentChainContext: request.parentChainContext,
+              sliceContext: request.sliceContext,
             },
             identity,
             { context: { workflowRunId: request.taskId, purpose: "deep_research", promptVersion: RESEARCH_SLICE_PROMPT_VERSION } },
@@ -264,6 +265,7 @@ export class CaptureService {
         }
         return purposeGateway.generateNativeResearchConversation(request.messages, identity, {
           parentChainContext: request.parentChainContext,
+          sliceContext: request.sliceContext,
           context: { workflowRunId: request.taskId, purpose: "research_chat", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
         });
       },
@@ -274,7 +276,7 @@ export class CaptureService {
         const parentContext = formatResearchParentChainContext(request.parentChainContext);
 
         // F2: Agent 式多轮工具调用搜索——模型通过 web_search/web_fetch 工具自主完成搜索过程
-        let userMessage = [direction, parentContext].filter(Boolean).join("\n\n");
+        let userMessage = [direction, parentContext, formatResearchSliceContext(request.sliceContext)].filter(Boolean).join("\n\n");
         if (request.deepResearch) {
           userMessage = [
             `用户选区原文：${request.deepResearch.selectionText}`,
@@ -282,6 +284,7 @@ export class CaptureService {
             request.deepResearch.contextBefore ? `选区前文：${request.deepResearch.contextBefore}` : "",
             request.deepResearch.contextAfter ? `选区后文：${request.deepResearch.contextAfter}` : "",
             parentContext,
+            formatResearchSliceContext(request.sliceContext),
             "请基于这些材料并联网搜索最新信息后回答。",
           ].filter(Boolean).join("\n\n");
         }
@@ -367,6 +370,7 @@ export class CaptureService {
               contextBefore: request.deepResearch.contextBefore,
               contextAfter: request.deepResearch.contextAfter,
               parentChainContext: request.parentChainContext,
+              sliceContext: request.sliceContext,
             },
             { context: { workflowRunId: request.taskId, purpose: "deep_research", promptVersion: "deep-research-v1" } },
           );
@@ -375,6 +379,7 @@ export class CaptureService {
         }
         const answer = await purposeGateway.answerResearchConversation(request.messages, {
           parentChainContext: request.parentChainContext,
+          sliceContext: request.sliceContext,
           context: { workflowRunId: request.taskId, purpose: "research_chat", promptVersion: "research-chat-v1" },
         });
         for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);

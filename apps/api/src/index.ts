@@ -6,6 +6,7 @@ export { LocalAuth, PairingRateLimitError, hashToken } from "./auth.js";
 export { SourceParser, assertPublicUrl, extractReadableText, fetchPublicResource, parseMarkdown, parsePdf, splitPlainText } from "./parsers.js";
 export { WorkflowScheduler, type WorkflowSchedulerOptions } from "./scheduler.js";
 export { ResearchSessionService, ResearchNotFoundError, ResearchValidationError, DEEP_RESEARCH_PROMPT_VERSION, RESEARCH_CHAT_PROMPT_VERSION, type ResearchGenerationProvider, type ResearchGenerationRequest, type ResearchServiceOptions } from "./research.js";
+export { DEFAULT_RESEARCH_SLICE_CONTEXT_TOKEN_BUDGET, buildResearchSliceContext, estimateResearchSliceContextItemTokens, estimateResearchSliceTokens, type ResearchSliceContextCandidate } from "./slice-context.js";
 export { ResearchImportService, ResearchImportConflictError, ResearchImportNotFoundError, ResearchImportValidationError, type ResearchImportServiceOptions } from "./research-import.js";
 export { ResearchSelectionAnalysisError, ResearchSelectionConflictError, ResearchSelectionNotFoundError, ResearchSelectionService, ResearchSelectionValidationError, type ResearchSelectionProvider, type ResearchSelectionAnalysisRequest, type ResearchSelectionServiceOptions } from "./selection.js";
 export { DeepResearchNotFoundError, DeepResearchService, DeepResearchValidationError, type DeepResearchServiceOptions } from "./deep-research.js";

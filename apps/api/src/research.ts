@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   deriveMessageBlocks,
+  deriveProvisionalSlices,
   redactGroundingValue,
   sanitizeGroundingQueries,
   sanitizeGroundingUrl,
@@ -21,9 +22,11 @@ import {
   ResearchTaskEvent,
   ResearchTaskRecord,
   ResearchTurnAccepted,
+  type ResearchSliceContext,
 } from "@collector/capture-contracts";
 import type { ResearchStore } from "./store.js";
 import { ParentChainContextService, type ParentChainContextResult } from "./parent-chain-context.js";
+import { buildResearchSliceContext, DEFAULT_RESEARCH_SLICE_CONTEXT_TOKEN_BUDGET, type ResearchSliceContextCandidate } from "./slice-context.js";
 
 export const RESEARCH_CHAT_PROMPT_VERSION = "research-chat-v1";
 export const DEEP_RESEARCH_PROMPT_VERSION = "deep-research-v1";
@@ -46,6 +49,8 @@ export interface ResearchGenerationRequest {
   deepResearch?: DeepResearchContext;
   /** 当前节点的有界父链上下文；根节点或无效父链不注入。 */
   parentChainContext?: ParentChainContextResult;
+  /** 当前节点及其既有父链的有界语义切片上下文；与父链摘要独立预算。 */
+  sliceContext?: import("@collector/capture-contracts").ResearchSliceContext;
 }
 
 export interface ResearchGenerationProvider {
@@ -274,6 +279,7 @@ export class ResearchSessionService {
         allowWebSearch: task.allowWebSearch === true,
         ...(generation.deepResearch ? { deepResearch: generation.deepResearch } : {}),
         ...(generation.parentChainContext ? { parentChainContext: generation.parentChainContext } : {}),
+        ...(generation.sliceContext ? { sliceContext: generation.sliceContext } : {}),
       };
       let generatedCharacters = 0;
       try {
@@ -460,6 +466,7 @@ export class ResearchSessionService {
     messages: Array<Pick<ResearchMessageRecord, "role" | "content">>;
     deepResearch?: DeepResearchContext;
     parentChainContext?: ParentChainContextResult;
+    sliceContext?: ResearchSliceContext;
   } {
     const all = this.store.listResearchMessages(task.sessionId);
     const output = all.find((message) => message.id === task.outputMessageId);
@@ -477,11 +484,73 @@ export class ResearchSessionService {
     const parentChain = this.parentChainContext.buildParentChainContext(contextNodeId);
     // 根节点及失效父链保持现有提示词，避免注入空的“父链上下文”占位。
     const parentChainContext = parentChain.ancestors.length > 0 ? parentChain : undefined;
+    const latestUserMessage = [...messages].reverse().find((message) => message.role === "user");
+    const sliceContext = this.sliceContextFor(
+      task,
+      contextNodeId,
+      latestUserMessage?.content ?? "",
+      parentChain,
+      deepResearch,
+    );
     return {
-      messages,
+      messages: latestUserMessage ? [latestUserMessage] : messages,
       ...(deepResearch ? { deepResearch } : {}),
       ...(parentChainContext ? { parentChainContext } : {}),
+      ...(sliceContext.items.length ? { sliceContext } : {}),
     };
+  }
+
+  private sliceContextFor(
+    task: ResearchTaskRecord,
+    nodeId: string,
+    query: string,
+    parentChain: ParentChainContextResult,
+    deepResearch?: DeepResearchContext,
+  ): ResearchSliceContext {
+    const nodeIds = [
+      { id: nodeId, distance: 0 },
+      ...parentChain.ancestors.map((ancestor) => ({ id: ancestor.nodeId, distance: ancestor.depth })),
+    ];
+    const originSelectionId = this.originSelectionIdFor(task.sessionId, nodeId);
+    const candidates: ResearchSliceContextCandidate[] = [];
+    for (const node of nodeIds) {
+      const existingNodeSlices = this.store.listSlicesByNode(node.id);
+      let nextProvisionalOrdinal = existingNodeSlices.length > 0
+        ? Math.max(...existingNodeSlices.map((slice) => slice.ordinal)) + 1
+        : 0;
+      const messages = this.store.listResearchMessagesByNode(node.id)
+        .filter((message) => message.role === "assistant" && message.status === "completed");
+      const citations = messages.length > 0
+        ? this.store.listResearchCitationsForMessages(messages.map((message) => message.id))
+        : [];
+      for (const message of messages) {
+        let slices = this.store.listSlicesByMessage(message.id);
+        if (slices.length === 0) {
+          slices = deriveProvisionalSlices(node.id, message.id, message.content, nextProvisionalOrdinal, citations);
+          nextProvisionalOrdinal += slices.length;
+        }
+        const selectionId = this.originSelectionIdFor(task.sessionId, node.id);
+        for (const slice of slices) {
+          candidates.push({
+            slice,
+            parentDistance: node.distance,
+            isCurrentNode: node.distance === 0,
+            isFromOriginSelection: Boolean(selectionId && selectionId === originSelectionId),
+          });
+        }
+      }
+    }
+    const contextQuery = [query, deepResearch?.selectionText].filter(Boolean).join(" ");
+    return buildResearchSliceContext(candidates, contextQuery, {
+      tokenBudget: DEFAULT_RESEARCH_SLICE_CONTEXT_TOKEN_BUDGET,
+      ...(originSelectionId ? { originSelectionId } : {}),
+    });
+  }
+
+  private originSelectionIdFor(sessionId: string, nodeId: string): string | undefined {
+    const node = this.store.getResearchNode(nodeId);
+    if (node?.originSelectionId) return node.originSelectionId;
+    return this.store.getResearchSession(sessionId)?.originSelectionId;
   }
 
   private async saveGroundingStatus(

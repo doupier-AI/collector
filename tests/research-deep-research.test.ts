@@ -434,8 +434,9 @@ test("branch follow-up stays inside the branch and main chat is unaffected", asy
   assert.equal(followUpRequest.deepResearch, undefined);
   assert.deepEqual(
     followUpRequest.messages.map((message) => message.content),
-    [expectFirstTurnContent(), "分支内容。", "展开讲讲实践建议"],
+    ["展开讲讲实践建议"],
   );
+  assert.ok(followUpRequest.sliceContext?.items.some((item) => item.content === "分支内容。"));
 
   // 主线提交不包含分支消息
   const mainResponse = await postJson(harness.base, harness.token, `/v1/research-sessions/${session.id}/messages`, { content: "主线问题" }, randomUUID());
@@ -446,10 +447,6 @@ test("branch follow-up stays inside the branch and main chat is unaffected", asy
   const mainRequest = recording.requests[2];
   assert.equal(mainRequest.deepResearch, undefined);
   assert.ok(mainRequest.messages.every((message) => !message.content.includes("展开讲讲实践建议")));
-
-  function expectFirstTurnContent(): string {
-    return "深入研究这段内容：“选区如何连接阅读与研究”";
-  }
 });
 
 test("deep research works from an imported document snapshot selection with content title", async (t) => {

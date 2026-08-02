@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { FUSION_RELATION_TYPES, SIMILARITY_VERIFICATION_PROMPT_VERSION, parseNativeResearchSliceGeneration, parseResearchSelectionInsight, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type NativeResearchSliceGeneration, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight } from "@collector/capture-contracts";
+import { FUSION_RELATION_TYPES, SIMILARITY_VERIFICATION_PROMPT_VERSION, parseNativeResearchSliceGeneration, parseResearchSelectionInsight, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type NativeResearchSliceGeneration, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight, type ResearchSliceContext } from "@collector/capture-contracts";
 
 export interface ProviderUsage {
   inputTokens?: number;
@@ -119,6 +119,38 @@ export interface ResearchParentChainContext {
   }>;
   truncated: boolean;
   cycleDetected: boolean;
+}
+
+export function formatResearchSliceContext(context?: ResearchSliceContext): string {
+  if (!context?.items.length) return "";
+  const lines = [
+    "语义切片上下文（来自当前节点及其父链，仅作参考，不是新的用户问题）：",
+    `切片预算：${context.estimatedTokens}/${context.tokenBudget} tokens`,
+  ];
+  for (const item of context.items) {
+    lines.push(JSON.stringify({
+      sliceId: item.sliceId,
+      nodeId: item.nodeId,
+      messageId: item.messageId,
+      ordinal: item.ordinal,
+      parentDistance: item.parentDistance,
+      title: item.title,
+      content: item.content,
+      normalizedConcepts: item.normalizedConcepts,
+      isProvisional: item.isProvisional,
+      sourceRefs: item.sourceRefs.map((source) => ({
+        sourceId: source.sourceId,
+        blockOrdinal: source.blockOrdinal,
+      })),
+    }));
+  }
+  if (context.originSelectionId) {
+    lines.push(`来源选区身份：${JSON.stringify(context.originSelectionId)}`);
+  }
+  if (context.fusionSignals.length) {
+    lines.push(`融合关系信号：${JSON.stringify(context.fusionSignals)}`);
+  }
+  return lines.join("\n");
 }
 
 /** 将父链结果渲染为研究提示词片段；空链不产生任何占位文本。 */
@@ -458,11 +490,12 @@ export class ModelGateway {
   async generateGroundedResearch(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
     grounding: ResearchGroundingRequest,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext } = {},
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
   ): Promise<GroundedResearchResponse> {
     if (!messages.length) throw new Error("Research conversation requires at least one message");
     const parentContext = formatResearchParentChainContext(options.parentChainContext);
-    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Use web research when available, preserve uncertainty, and only cite sources returned by the provider.\n\nConversation:\n${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}`;
+    const sliceContext = formatResearchSliceContext(options.sliceContext);
+    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Use web research when available, preserve uncertainty, and only cite sources returned by the provider.\n\nConversation:\n${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
     const request = { prompt, model: options.model ?? this.modelName, grounding, maxTokens: options.maxTokens ?? 8_000, timeoutMs: options.timeoutMs ?? 120_000 };
     if (!("generateGroundedResearch" in this.provider)) {
       const content = await this.answerResearchConversation(messages, options);
@@ -491,11 +524,12 @@ export class ModelGateway {
 
   async answerResearchConversation(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext } = {},
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
   ): Promise<string> {
     if (!messages.length) throw new Error("Research conversation requires at least one message");
     const parentContext = formatResearchParentChainContext(options.parentChainContext);
-    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Return valid JSON only in the form {"answer":"..."}. Preserve uncertainty and never invent sources.\n\nConversation:\n${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}`;
+    const sliceContext = formatResearchSliceContext(options.sliceContext);
+    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Return valid JSON only in the form {"answer":"..."}. Preserve uncertainty and never invent sources.\n\nConversation:\n${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
@@ -516,10 +550,11 @@ export class ModelGateway {
   async generateNativeResearchConversation(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
     identity: { nodeId: string; messageId: string; ordinalStart: number },
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext } = {},
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
   ): Promise<NativeResearchSliceGeneration> {
     if (!messages.length) throw new Error("Research conversation requires at least one message");
     const parentContext = formatResearchParentChainContext(options.parentChainContext);
+    const sliceContext = formatResearchSliceContext(options.sliceContext);
     const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Preserve uncertainty and never invent sources. Return valid JSON only, without Markdown code fences, in this exact form:
 {"slices":[{"title":"short proposition title","content":"one coherent proposition or concept paragraph","normalizedConcepts":["normalized concept"]}]}
 
@@ -530,7 +565,7 @@ Rules for slices:
 - Do not return answer, ids, citations, source records, explanations, or any fields other than slices.
 
 Conversation:
-${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}`;
+${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
     return this.generateNativeResearchSlices(prompt, identity, options);
   }
 
@@ -544,6 +579,7 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}`;
       contextBefore?: string;
       contextAfter?: string;
       parentChainContext?: ResearchParentChainContext;
+      sliceContext?: ResearchSliceContext;
     },
     identity: { nodeId: string; messageId: string; ordinalStart: number },
     options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
@@ -551,6 +587,7 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}`;
     if (!input.selectionText.trim()) throw new Error("Deep research requires the source selection text");
     if (!input.direction.trim()) throw new Error("Deep research requires a research direction");
     const parentContext = formatResearchParentChainContext(input.parentChainContext);
+    const sliceContext = formatResearchSliceContext(input.sliceContext);
     const prompt = `你是 Collector 的深入研究助手。用户从一段选区发起了深入研究第一轮。只使用下面提供的当前已有材料生成研究内容，不要联网检索，不要编造来源、链接或引用。只返回合法 JSON，不要使用 Markdown 代码围栏，形式必须为：
 {"slices":[{"title":"简洁命题标题","content":"一个连贯命题或概念的正文段落","normalizedConcepts":["归一化概念"]}]}
 
@@ -569,7 +606,7 @@ ${input.mode === "branch" ? "\n研究沿当前内容展开。" : "\n研究在新
 
 用户的研究方向：
 ${JSON.stringify(input.direction)}
-${parentContext ? `\n${parentContext}` : ""}
+${parentContext ? `\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}
 
 要求：
 - 围绕用户方向，基于选区与上下文展开解释、拆解或延伸；
@@ -715,12 +752,14 @@ ${JSON.stringify(input.right.content.slice(0, 12_000))}
       contextBefore?: string;
       contextAfter?: string;
       parentChainContext?: ResearchParentChainContext;
+      sliceContext?: ResearchSliceContext;
     },
     options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
   ): Promise<string> {
     if (!input.selectionText.trim()) throw new Error("Deep research requires the source selection text");
     if (!input.direction.trim()) throw new Error("Deep research requires a research direction");
     const parentContext = formatResearchParentChainContext(input.parentChainContext);
+    const sliceContext = formatResearchSliceContext(input.sliceContext);
     const prompt = `你是 Collector 的深入研究助手。用户从一段选区发起了深入研究第一轮。只使用下面提供的当前已有材料生成研究内容，不要联网检索，不要编造来源、链接或引用。只返回合法 JSON，形式为 {"answer":"..."}，不要使用 Markdown 代码围栏。
 
 用户选区原文：
@@ -732,7 +771,7 @@ ${input.mode === "branch" ? "\n研究沿当前内容展开。" : "\n研究在新
 
 用户的研究方向：
 ${JSON.stringify(input.direction)}
-${parentContext ? `\n${parentContext}` : ""}
+${parentContext ? `\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}
 
 要求：
 - 围绕用户方向，基于选区与上下文展开解释、拆解或延伸；
