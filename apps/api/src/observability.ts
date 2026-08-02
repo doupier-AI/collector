@@ -431,11 +431,11 @@ function titleFor(record: Record<string, unknown>): string | undefined {
 function taskView(source: ObservabilityRecordSource, record: Record<string, unknown>): RunRecordTaskView | undefined {
   if (source === "research") {
     const task = record as Partial<ResearchTaskRecord>;
-    return { id: safeId(task.id), ...(safeText(task.sessionId) ? { sessionId: safeText(task.sessionId) } : {}), ...(safeText(task.provider) ? { provider: safeText(task.provider) } : {}), ...(safeText(task.model) ? { model: safeText(task.model) } : {}), ...(safeText(task.promptVersion) ? { promptVersion: safeText(task.promptVersion) } : {}), ...(typeof task.retryable === "boolean" ? { retryable: task.retryable } : {}) };
+    return { id: safeId(task.id), ...(safeText(task.sessionId) ? { sessionId: safeText(task.sessionId) } : {}), ...(safeText(task.provider) ? { provider: safeText(task.provider) } : {}), ...(safeText(task.model) ? { model: safeText(task.model) } : {}), ...(safeText(task.promptVersion) ? { promptVersion: safeText(task.promptVersion) } : {}), ...(Number.isSafeInteger(task.sliceCount) && (task.sliceCount ?? -1) >= 0 ? { sliceCount: task.sliceCount ?? 0 } : {}), ...(typeof task.retryable === "boolean" ? { retryable: task.retryable } : {}) };
   }
   if (source === "selection") {
-    const task = record as Partial<ResearchSelectionTaskRecord>;
-    return { id: safeId(task.id), ...(safeText(task.sessionId) ? { sessionId: safeText(task.sessionId) } : {}), ...(safeText(task.provider) ? { provider: safeText(task.provider) } : {}), ...(safeText(task.model) ? { model: safeText(task.model) } : {}), ...(safeText(task.promptVersion) ? { promptVersion: safeText(task.promptVersion) } : {}), ...(typeof task.retryable === "boolean" ? { retryable: task.retryable } : {}) };
+    const task = record as Partial<ResearchSelectionTaskRecord & { sliceCount?: number }>;
+    return { id: safeId(task.id), ...(safeText(task.sessionId) ? { sessionId: safeText(task.sessionId) } : {}), ...(safeText(task.provider) ? { provider: safeText(task.provider) } : {}), ...(safeText(task.model) ? { model: safeText(task.model) } : {}), ...(safeText(task.promptVersion) ? { promptVersion: safeText(task.promptVersion) } : {}), ...(Number.isSafeInteger(task.sliceCount) && (task.sliceCount ?? -1) >= 0 ? { sliceCount: task.sliceCount ?? 0 } : {}), ...(typeof task.retryable === "boolean" ? { retryable: task.retryable } : {}) };
   }
   if (source === "import") {
     const task = record as Partial<ResearchImportTaskRecord>;

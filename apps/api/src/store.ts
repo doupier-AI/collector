@@ -131,6 +131,10 @@ export interface ResearchStore {
   listResearchGroundingRuns(taskId: string): ResearchGroundingRunRecord[];
   listResearchGroundingSources(runId: string): ResearchGroundingSourceRecord[];
   saveResearchGroundingResult(result: ResearchGroundingResult): Promise<void>;
+  /** E2：研究任务完成前写入或替换该消息的完整正式切片。 */
+  replaceSlicesForMessage(messageId: string, slices: ResearchSliceRecord[], taskId?: string): Promise<void>;
+  listSlicesByNode(nodeId: string): ResearchSliceRecord[];
+  listSlicesByMessage(messageId: string): ResearchSliceRecord[];
 }
 
 /** 深入研究所需的持久化能力：12 个方法。 */
@@ -343,8 +347,9 @@ export interface CollectorStore
   listResearchGroundingRuns(taskId: string): ResearchGroundingRunRecord[];
   listResearchGroundingSources(runId: string): ResearchGroundingSourceRecord[];
   listResearchCitationsForMessages(messageIds: string[]): ResearchCitationRecord[];
-  /** E1：切片 CRUD。createSlices 批量插入（幂等，冲突忽略）；listSlicesByNode 按序号排序。 */
+  /** E1/E2：切片 CRUD。createSlices 批量插入（幂等，冲突忽略）；replaceSlicesForMessage 原子替换单条消息的临时或旧切片。 */
   createSlices(slices: ResearchSliceRecord[]): Promise<void>;
+  replaceSlicesForMessage(messageId: string, slices: ResearchSliceRecord[], taskId?: string): Promise<void>;
   listSlicesByNode(nodeId: string): ResearchSliceRecord[];
   listSlicesByMessage(messageId: string): ResearchSliceRecord[];
   getSliceById(id: string): ResearchSliceRecord | undefined;
@@ -2097,6 +2102,29 @@ export class SqliteStore implements CollectorStore {
     });
   }
 
+  /** E2：正式生成成功后原子删除同一消息的临时切片，再写入完整正式集合。 */
+  async replaceSlicesForMessage(messageId: string, slices: ResearchSliceRecord[], taskId?: string): Promise<void> {
+    if (!messageId.trim()) throw new Error("messageId is required to replace slices");
+    if (!slices.length || slices.some((slice) => slice.messageId !== messageId)) {
+      throw new Error("Replacement slices must be a non-empty set for one message");
+    }
+    const stmt = this.db().prepare(`
+      INSERT INTO research_slices (id, node_id, message_id, ordinal, is_provisional, created_at, record_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    this.transaction(() => {
+      this.db().prepare("DELETE FROM research_slices WHERE message_id = ?").run(messageId);
+      for (const slice of slices) {
+        stmt.run(slice.id, slice.nodeId, slice.messageId, slice.ordinal, slice.isProvisional ? 1 : 0, slice.createdAt, JSON.stringify(slice));
+      }
+      if (taskId) {
+        const task = this.getResearchTask(taskId);
+        if (!task || task.outputMessageId !== messageId) throw new Error("Slice replacement task does not match its output message");
+        this.updateResearchTask({ ...task, sliceCount: slices.length, updatedAt: new Date().toISOString() });
+      }
+    });
+  }
+
   listSlicesByNode(nodeId: string): ResearchSliceRecord[] {
     return this.listRecords<ResearchSliceRecord>("SELECT record_json FROM research_slices WHERE node_id = ? ORDER BY ordinal", nodeId);
   }
@@ -3235,6 +3263,7 @@ export class JsonStore implements CollectorStore {
   listResearchGroundingSources(_runId: string): ResearchGroundingSourceRecord[] { return []; }
   listResearchCitationsForMessages(_messageIds: string[]): ResearchCitationRecord[] { return []; }
   async createSlices(_slices: ResearchSliceRecord[]): Promise<void> { throw new Error("Research slices require SQLite persistence"); }
+  async replaceSlicesForMessage(_messageId: string, _slices: ResearchSliceRecord[], _taskId?: string): Promise<void> { throw new Error("Research slices require SQLite persistence"); }
   listSlicesByNode(_nodeId: string): ResearchSliceRecord[] { return []; }
   listSlicesByMessage(_messageId: string): ResearchSliceRecord[] { return []; }
   getSliceById(_id: string): ResearchSliceRecord | undefined { return undefined; }

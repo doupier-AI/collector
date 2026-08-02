@@ -2,10 +2,11 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
-import type { RunRecordSummary } from "@collector/capture-contracts";
+import type { RunRecordDetail as RunRecordDetailModel, RunRecordSummary } from "@collector/capture-contracts";
 import type { ApiClient } from "../../api/client";
 import { ServicesProvider, type AppServices } from "../../app/services";
 import { RunRecordsPage } from "./RunRecordsPage";
+import { RunRecordDetail } from "./RunRecordDetail";
 
 const summary: RunRecordSummary = {
   id: "research:task-1",
@@ -69,5 +70,21 @@ describe("RunRecordsPage 导出", () => {
 
     expect(exportRunRecords).not.toHaveBeenCalled();
     expect(await screen.findByText("当前筛选没有可导出的运行记录，请调整筛选条件。")).toBeInTheDocument();
+  });
+});
+
+describe("RunRecordDetail", () => {
+  it("shows the persisted native slice count for a research task", () => {
+    const detail: RunRecordDetailModel = {
+      ...summary,
+      task: { id: "task-1", promptVersion: "research-slices-v1", sliceCount: 3, retryable: false },
+      modelCalls: [],
+      searches: [],
+      errors: [],
+    };
+    render(<RunRecordDetail detail={detail} />);
+    expect(screen.getByText("切片数")).toBeInTheDocument();
+    expect(screen.getByText("3 个")).toBeInTheDocument();
+    expect(screen.getByText("research-slices-v1")).toBeInTheDocument();
   });
 });

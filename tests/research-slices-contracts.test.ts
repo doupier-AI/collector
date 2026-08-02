@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { deriveProvisionalSlices, validateSliceSchema, deriveMessageBlocks, type ResearchSliceRecord } from "@collector/capture-contracts";
+import { deriveProvisionalSlices, parseNativeResearchSliceGeneration, validateSliceSchema, deriveMessageBlocks, type ResearchSliceRecord } from "@collector/capture-contracts";
 
 describe("validateSliceSchema (E1)", () => {
   const nodeId = "node-1";
@@ -135,5 +135,34 @@ describe("deriveProvisionalSlices (E1)", () => {
     for (let i = 0; i < blocks.length; i++) {
       assert.strictEqual(slices[i].content, blocks[i].text);
     }
+  });
+});
+
+describe("parseNativeResearchSliceGeneration (E2)", () => {
+  const input = { nodeId: "node-native", messageId: "message-native", ordinalStart: 7, createdAt: "2026-08-02T00:00:00.000Z" };
+
+  it("assigns stable server identity and composes the visible article from formal slices", () => {
+    const result = parseNativeResearchSliceGeneration({
+      slices: [
+        { title: "第一命题", content: "第一段说明一个连贯命题。", normalizedConcepts: ["概念 A", "概念 A"] },
+        { title: "第二命题", content: "第二段说明另一个连贯命题。", normalizedConcepts: [] },
+      ],
+    }, {
+      ...input,
+      citations: [{ id: "citation-1", messageId: input.messageId, runId: "run-1", sourceId: "source-1", blockOrdinal: 1, markerOffset: 3, createdAt: input.createdAt }],
+    });
+    assert.equal(result.content, "第一段说明一个连贯命题。\n\n第二段说明另一个连贯命题。");
+    assert.deepEqual(result.slices.map((slice) => ({ id: slice.id, ordinal: slice.ordinal, isProvisional: slice.isProvisional, normalizedConcepts: slice.normalizedConcepts })), [
+      { id: "slice:node-native:message-native:7", ordinal: 7, isProvisional: false, normalizedConcepts: ["概念 A"] },
+      { id: "slice:node-native:message-native:8", ordinal: 8, isProvisional: false, normalizedConcepts: [] },
+    ]);
+    assert.equal(result.slices[1]?.sourceRefs[0]?.id, "citation-1");
+    assert.doesNotThrow(() => validateSliceSchema(result.slices, input.nodeId, input.messageId));
+  });
+
+  it("rejects malformed, empty, and anchor-unsafe model structures", () => {
+    assert.throws(() => parseNativeResearchSliceGeneration({ slices: [] }, input), /1 to/);
+    assert.throws(() => parseNativeResearchSliceGeneration({ slices: [{ title: "x", content: "正文", normalizedConcepts: [""] }] }, input), /normalized concept/);
+    assert.throws(() => parseNativeResearchSliceGeneration({ slices: [{ title: "x", content: "第一段\n\n第二段", normalizedConcepts: [] }] }, input), /stable message block/);
   });
 });

@@ -124,3 +124,25 @@ test("migration v29 creates research_slices table", async (t) => {
   assert.ok(columnNames.includes("created_at"));
   assert.ok(columnNames.includes("record_json"));
 });
+
+test("replaceSlicesForMessage replaces provisional slices with the complete native set", async (t) => {
+  const harness = await createStore();
+  t.after(() => harness.close());
+  const { node, message } = await seedNode(harness.store);
+  const provisional = deriveProvisionalSlices(node.id, message.id, message.content, 0, [], "2026-08-01T00:00:00.000Z");
+  await harness.store.createSlices(provisional);
+  const native = provisional.map((slice) => ({
+    ...slice,
+    title: `命题 ${slice.ordinal + 1}`,
+    normalizedConcepts: [`概念 ${slice.ordinal + 1}`],
+    isProvisional: false,
+    createdAt: "2026-08-02T00:00:00.000Z",
+  }));
+
+  await harness.store.replaceSlicesForMessage(message.id, native);
+  assert.deepEqual(harness.store.listSlicesByMessage(message.id).map((slice) => ({ title: slice.title, isProvisional: slice.isProvisional })), [
+    { title: "命题 1", isProvisional: false },
+    { title: "命题 2", isProvisional: false },
+    { title: "命题 3", isProvisional: false },
+  ]);
+});

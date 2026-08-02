@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ResearchGenerationProvider } from "@collector/api";
+import { parseNativeResearchSliceGeneration } from "@collector/capture-contracts";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer } from "@collector/api";
 
 const deterministicProvider: ResearchGenerationProvider = {
@@ -300,4 +301,52 @@ test("restart recovery marks an interrupted generation retryable without losing 
   assert.equal(reopenedService.research.getSession(session.id).messages[1].content, "已保存的部分内容");
   reopenedStore.close();
   t.after(() => rm(root, { recursive: true, force: true }));
+});
+
+test("native slice generation persists only validated non-provisional slices and records sliceCount", async (t) => {
+  let shouldFail = true;
+  const provider: ResearchGenerationProvider = {
+    provider: "native-slice-fake",
+    model: "native-slice-1",
+    promptVersion: "research-slices-v1",
+    async generateNative(request) {
+      if (shouldFail) throw new Error("invalid structured response after repair budget");
+      return parseNativeResearchSliceGeneration({
+        slices: [
+          { title: "本地控制", content: "本地优先把研究内容保留在用户可以检查和备份的环境中。", normalizedConcepts: ["本地优先"] },
+          { title: "可恢复任务", content: "持久化任务状态让失败后的研究可以从同一上下文重新开始。", normalizedConcepts: ["任务恢复"] },
+        ],
+      }, {
+        nodeId: request.nodeId ?? request.session.id,
+        messageId: request.outputMessageId ?? request.taskId,
+        ordinalStart: request.sliceOrdinalStart ?? 0,
+      });
+    },
+    async *generate() { yield "术语预览不使用原生切片"; },
+  };
+  const harness = await createHarness(provider);
+  t.after(() => harness.close());
+  const session = await harness.service.research.createSession("原生切片", "native-slice-session");
+  const accepted = await harness.service.research.submitMessage(session.id, "为什么本地优先重要", "native-slice-turn");
+
+  const failed = await waitForTask(harness.base, harness.token, accepted.task.id, "failed");
+  assert.equal(failed.retryable, true);
+  assert.equal(harness.store.getResearchMessage(accepted.outputMessage.id)?.content, "");
+  assert.deepEqual(harness.store.listSlicesByMessage(accepted.outputMessage.id), []);
+
+  shouldFail = false;
+  await harness.service.research.retryTask(accepted.task.id);
+  const completed = await waitForTask(harness.base, harness.token, accepted.task.id, "completed");
+  assert.equal(completed.sliceCount, 2);
+  const slices = harness.store.listSlicesByMessage(accepted.outputMessage.id);
+  assert.deepEqual(slices.map((slice) => ({ title: slice.title, isProvisional: slice.isProvisional })), [
+    { title: "本地控制", isProvisional: false },
+    { title: "可恢复任务", isProvisional: false },
+  ]);
+  assert.equal(harness.store.getResearchMessage(accepted.outputMessage.id)?.content, slices.map((slice) => slice.content).join("\n\n"));
+
+  const nodeResponse = await fetch(`${harness.base}/v1/research-nodes/${session.id}`, { headers: authHeaders(harness.token) });
+  assert.equal(nodeResponse.status, 200);
+  const view = await nodeResponse.json() as { slices?: Record<string, Array<{ isProvisional: boolean }>> };
+  assert.deepEqual(view.slices?.[accepted.outputMessage.id]?.map((slice) => slice.isProvisional), [false, false]);
 });

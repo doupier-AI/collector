@@ -35,6 +35,7 @@ export function RunRecordDetail({ detail }: { detail: RunRecordDetailModel }) {
             {detail.task.provider ? <div><dt>模型服务</dt><dd>{detail.task.provider}</dd></div> : null}
             {detail.task.model ? <div><dt>模型</dt><dd>{detail.task.model}</dd></div> : null}
             {detail.task.promptVersion ? <div><dt>提示版本</dt><dd>{detail.task.promptVersion}</dd></div> : null}
+            {detail.task.sliceCount !== undefined ? <div><dt>切片数</dt><dd>{detail.task.sliceCount} 个</dd></div> : null}
             {detail.task.retryable !== undefined ? <div><dt>可重试</dt><dd>{detail.task.retryable ? "可以" : "不可以"}</dd></div> : null}
           </dl>
         </section>

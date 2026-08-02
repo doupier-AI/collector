@@ -4,9 +4,12 @@ import {
   redactGroundingValue,
   sanitizeGroundingQueries,
   sanitizeGroundingUrl,
+  validateNativeResearchSliceGeneration,
   validateResearchGroundingResult,
   type DeepResearchContext,
   type DeepResearchMode,
+  type NativeResearchSliceGeneration,
+  type ResearchSliceRecord,
   ResearchGroundingResult,
   ResearchGroundingScenario,
   ResearchGroundingScopeStatus,
@@ -24,13 +27,19 @@ import { ParentChainContextService, type ParentChainContextResult } from "./pare
 
 export const RESEARCH_CHAT_PROMPT_VERSION = "research-chat-v1";
 export const DEEP_RESEARCH_PROMPT_VERSION = "deep-research-v1";
-const PROMPT_VERSION = RESEARCH_CHAT_PROMPT_VERSION;
+/** E2：回答与正式语义切片在同一次模型输出中生成。 */
+export const RESEARCH_SLICE_PROMPT_VERSION = "research-slices-v1";
+const PROMPT_VERSION = RESEARCH_SLICE_PROMPT_VERSION;
 const MAX_GENERATED_CHARACTERS = 1_000_000;
 
 export interface ResearchGenerationRequest {
   session: ResearchSessionRecord;
   messages: Array<Pick<ResearchMessageRecord, "role" | "content">>;
   taskId: string;
+  /** E2：正式切片的稳定归属与本节点中的起始序号；任务处理时始终提供，旧测试/术语预览可省略。 */
+  nodeId?: string;
+  outputMessageId?: string;
+  sliceOrdinalStart?: number;
   /** 本次请求是否获得用户明确授权使用联网搜索。 */
   allowWebSearch?: boolean;
   /** 深入研究第一轮：只携带当前已有材料，不含联网检索结果。 */
@@ -44,9 +53,12 @@ export interface ResearchGenerationProvider {
   readonly model: string;
   readonly promptVersion?: string;
   readonly groundingCapability?: import("@collector/capture-contracts").ProviderWebGrounding;
+  /** E2 主路径：同一次模型输出生成完整正文和正式切片；不得回退为临时切片。 */
+  generateNative?(request: ResearchGenerationRequest): Promise<NativeResearchSliceGeneration>;
+  /** H3c 术语预览仍复用文本流，不参与节点回答的正式切片生成。 */
   generate(request: ResearchGenerationRequest): AsyncIterable<string>;
   /** Agent 式搜索：Collector 自行完成搜索，不依赖供应商原生联网。 */
-  generateAgentGrounded?(request: ResearchGenerationRequest & { scenario: ResearchGroundingScenario }): Promise<{ content: string; status: ResearchGroundingScopeStatus; queries: string[]; sources: Array<{ providerSourceId?: string; title: string; url?: string; snippet?: string; publishedAt?: string; locator?: string }>; citations: Array<{ sourceOrdinal: number; startOffset: number; endOffset: number; providerCitationId?: string }>; responseSummary?: Record<string, unknown>; errorMessage?: string }>;
+  generateAgentGrounded?(request: ResearchGenerationRequest & { scenario: ResearchGroundingScenario }): Promise<{ content: string; slices?: ResearchSliceRecord[]; status: ResearchGroundingScopeStatus; queries: string[]; sources: Array<{ providerSourceId?: string; title: string; url?: string; snippet?: string; publishedAt?: string; locator?: string }>; citations: Array<{ sourceOrdinal: number; startOffset: number; endOffset: number; providerCitationId?: string }>; responseSummary?: Record<string, unknown>; errorMessage?: string }>;
 }
 
 export interface ResearchServiceOptions {
@@ -236,7 +248,7 @@ export class ResearchSessionService {
       const generation = this.buildGenerationRequest(current);
       const task = this.store.claimResearchTask(
         id, this.provider?.provider, this.provider?.model,
-        generation.deepResearch ? DEEP_RESEARCH_PROMPT_VERSION : this.provider?.promptVersion ?? PROMPT_VERSION,
+        this.provider?.promptVersion ?? PROMPT_VERSION,
       );
       if (!task) return;
       const provider = this.provider;
@@ -249,45 +261,57 @@ export class ResearchSessionService {
       }
 
       const messages = generation.messages;
+      const outputMessage = this.store.getResearchMessage(task.outputMessageId);
+      if (!outputMessage) throw new Error("Research output message not found");
+      const nodeId = task.nodeId ?? outputMessage.nodeId ?? outputMessage.branchId ?? task.sessionId;
       const generationRequest: ResearchGenerationRequest = {
         session,
         messages,
         taskId: task.id,
+        nodeId,
+        outputMessageId: task.outputMessageId,
+        sliceOrdinalStart: this.sliceOrdinalStartFor(nodeId, task.outputMessageId),
         allowWebSearch: task.allowWebSearch === true,
         ...(generation.deepResearch ? { deepResearch: generation.deepResearch } : {}),
         ...(generation.parentChainContext ? { parentChainContext: generation.parentChainContext } : {}),
       };
       let generatedCharacters = 0;
-      let producedContent = false;
       try {
         const scenario: ResearchGroundingScenario = generation.deepResearch
           ? "deep_research_first_round"
           : this.isBranchFollowUp(task.id) ? "branch_follow_up" : "chat";
+        let generated: NativeResearchSliceGeneration;
+        let citations: import("@collector/capture-contracts").ResearchCitationRecord[] = [];
         if (generationRequest.allowWebSearch && provider.generateAgentGrounded) {
           try {
             const grounded = await provider.generateAgentGrounded({ ...generationRequest, scenario });
             const result = this.groundingResultFor(task, grounded, scenario);
             await this.store.saveResearchGroundingResult(result);
-            generatedCharacters = grounded.content.length;
-            if (generatedCharacters > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
-            if (!grounded.content) throw new Error("Provider returned an empty response");
-            producedContent = true;
-            await this.store.appendResearchTaskDelta(task.id, grounded.content);
+            if (!grounded.slices?.length) {
+              await this.completeLegacyContent(task, grounded.content);
+              return;
+            }
+            generated = { content: grounded.content, slices: grounded.slices };
+            citations = result.citations;
           } catch (error) {
             await this.saveGroundingStatus(task, scenario, "grounding_failed", error instanceof Error ? error.message : undefined);
             throw error;
           }
         } else {
           if (generationRequest.allowWebSearch) await this.saveGroundingStatus(task, scenario, "grounding_unsupported");
-          for await (const delta of provider.generate(generationRequest)) {
-            if (!delta) continue;
-            generatedCharacters += delta.length;
-            if (generatedCharacters > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
-            producedContent = true;
-            await this.store.appendResearchTaskDelta(task.id, delta);
+          if (!provider.generateNative) {
+            await this.completeLegacyProviderGeneration(task, provider, generationRequest);
+            return;
           }
+          generated = await provider.generateNative(generationRequest);
         }
-        if (!producedContent) throw new Error("Provider returned an empty response");
+        generatedCharacters = generated.content.length;
+        if (generatedCharacters > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
+        const sourcedGeneration = this.withSliceSourceRefs(generated, citations);
+        // 只有正文与全部正式切片共同通过契约校验后，才开始写入用户可见消息。
+        validateNativeResearchSliceGeneration(sourcedGeneration, nodeId, task.outputMessageId);
+        await this.store.replaceSlicesForMessage(task.outputMessageId, sourcedGeneration.slices, task.id);
+        await this.store.appendResearchTaskDelta(task.id, sourcedGeneration.content);
         await this.store.completeResearchTask(task.id);
         try {
           await this.options.onTaskCompleted?.(this.getTask(task.id));
@@ -297,12 +321,63 @@ export class ResearchSessionService {
       } catch {
         await this.store.failResearchTask(this.getTask(task.id), {
           code: "provider_error",
-          message: "AI 生成失败。输入和已生成内容已保存，可以稍后重试。",
+          message: "AI 生成的回答或切片结构无效。输入已保存，可以稍后重试。",
         });
       }
     } finally {
       this.running.delete(id);
     }
+  }
+
+  /** 旧的测试/扩展 provider 未实现 E2 原生输出时保持既有流式兼容；真实 gateway 不走此分支。 */
+  private async completeLegacyProviderGeneration(
+    task: ResearchTaskRecord,
+    provider: ResearchGenerationProvider,
+    request: ResearchGenerationRequest,
+  ): Promise<void> {
+    let content = "";
+    for await (const delta of provider.generate(request)) {
+      if (!delta) continue;
+      content += delta;
+      if (content.length > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
+      await this.store.appendResearchTaskDelta(task.id, delta);
+    }
+    await this.completeLegacyContent(task, content, true);
+  }
+
+  private async completeLegacyContent(task: ResearchTaskRecord, content: string, alreadyAppended = false): Promise<void> {
+    if (!content) throw new Error("Provider returned an empty response");
+    if (content.length > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
+    if (!alreadyAppended) await this.store.appendResearchTaskDelta(task.id, content);
+    await this.store.completeResearchTask(task.id);
+    try {
+      await this.options.onTaskCompleted?.(this.getTask(task.id));
+    } catch {
+      // 保持历史流式任务与现有节点命名的失败隔离。
+    }
+  }
+
+  private sliceOrdinalStartFor(nodeId: string, messageId: string): number {
+    const existing = this.store.listSlicesByMessage(messageId);
+    if (existing.length > 0) return Math.min(...existing.map((slice) => slice.ordinal));
+    const nodeSlices = this.store.listSlicesByNode(nodeId);
+    return nodeSlices.length > 0 ? Math.max(...nodeSlices.map((slice) => slice.ordinal)) + 1 : 0;
+  }
+
+  /** 引用由本地已验证的联网结果生成；模型不能自行写入来源关联。 */
+  private withSliceSourceRefs(
+    generation: NativeResearchSliceGeneration,
+    citations: import("@collector/capture-contracts").ResearchCitationRecord[],
+  ): NativeResearchSliceGeneration {
+    if (!citations.length) return generation;
+    const firstOrdinal = generation.slices[0]?.ordinal ?? 0;
+    return {
+      content: generation.content,
+      slices: generation.slices.map((slice) => ({
+        ...slice,
+        sourceRefs: citations.filter((citation) => citation.blockOrdinal === slice.ordinal - firstOrdinal),
+      })),
+    };
   }
 
   private isBranchFollowUp(taskId: string): boolean {

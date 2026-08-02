@@ -438,6 +438,8 @@ export interface RunRecordTaskView {
   provider?: string;
   model?: string;
   promptVersion?: string;
+  /** E2：已完成研究任务实际持久化的正式切片数量。 */
+  sliceCount?: number;
   retryable?: boolean;
 }
 
@@ -1025,6 +1027,8 @@ export interface ResearchTaskRecord {
   provider?: string;
   model?: string;
   promptVersion: string;
+  /** E2：只有完整正式切片落库后才写入；存于既有 research_tasks.record_json。 */
+  sliceCount?: number;
   /** 本次任务是否获得用户明确授权使用联网搜索；缺省值只兼容旧任务，服务端按 false 处理。 */
   allowWebSearch?: boolean;
   groundingScope?: ResearchGroundingScope;
@@ -1740,7 +1744,7 @@ export interface ApiError {
 }
 
 
-// ── Semantic Slices (E1) ──────────────────────────────────────────
+// ── Semantic Slices (E1 / E2) ─────────────────────────────────────
 
 /**
  * 语义切片记录。一条助手消息可被切分为多个语义切片，每个切片包含连贯正文、
@@ -1749,7 +1753,7 @@ export interface ApiError {
  * - id：稳定唯一标识，格式 `slice:{nodeId}:{messageId}:{ordinal}`；
  * - ordinal：从 0 连续编号，同一消息内单调递增；
  * - isProvisional：true 表示由确定性规则从消息块边界派生的临时切片，
- *   false 表示由 AI 语义分析生成的正式切片。
+ *   false 表示由 AI 在回答生成阶段产生的正式切片。
  */
 export interface ResearchSliceRecord {
   id: string;
@@ -1764,12 +1768,23 @@ export interface ResearchSliceRecord {
   createdAt: string;
 }
 
+/** 模型生成阶段返回的完整回答和正式切片；正文由切片内容确定性合成。 */
+export interface NativeResearchSliceGeneration {
+  content: string;
+  slices: ResearchSliceRecord[];
+}
+
+export const RESEARCH_NATIVE_SLICE_MAX_COUNT = 80;
+export const RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS = 200;
+export const RESEARCH_NATIVE_SLICE_MAX_CONCEPTS = 12;
+export const RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS = 160;
+export const RESEARCH_NATIVE_SLICE_MAX_CONTENT_CHARACTERS = 100_000;
+
 /**
- * 校验切片序列的结构合法性（纯函数，契约层）：
- * 1. ID 稳定（符合 `slice:{nodeId}:{messageId}:{ordinal}` 格式）；
+ * 校验已持久化切片序列的结构合法性（纯函数，契约层）：
+ * 1. ID、节点和消息归属稳定；
  * 2. ordinal 严格递增（节点范围内，不一定从 0 起始）；
- * 3. 标题与正文非空；
- * 4. 归一化概念为非空字符串数组。
+ * 3. 标题、正文、概念和来源引用字段具备安全结构。
  *
  * 校验失败时抛错；通过时返回 void。
  */
@@ -1777,9 +1792,12 @@ export function validateSliceSchema(slices: ResearchSliceRecord[], nodeId: strin
   if (!Array.isArray(slices)) throw new Error("Slices must be an array");
   let previousOrdinal = -1;
   for (const slice of slices) {
+    if (!slice || typeof slice !== "object" || Array.isArray(slice)) throw new Error("Slice must be an object");
+    if (slice.nodeId !== nodeId) throw new Error(`Slice nodeId must be ${nodeId}`);
+    if (slice.messageId !== messageId) throw new Error(`Slice messageId must be ${messageId}`);
+    if (!Number.isSafeInteger(slice.ordinal) || slice.ordinal < 0) throw new Error(`Slice ordinal must be a non-negative integer, got ${slice.ordinal}`);
     const expectedId = `slice:${nodeId}:${messageId}:${slice.ordinal}`;
     if (slice.id !== expectedId) throw new Error(`Slice id must be ${expectedId}, got ${slice.id}`);
-    if (!Number.isSafeInteger(slice.ordinal) || slice.ordinal < 0) throw new Error(`Slice ordinal must be a non-negative integer, got ${slice.ordinal}`);
     if (slice.ordinal <= previousOrdinal) throw new Error(`Slice ordinals must be strictly increasing; got ${slice.ordinal} after ${previousOrdinal}`);
     previousOrdinal = slice.ordinal;
     if (typeof slice.title !== "string" || !slice.title.trim()) throw new Error(`Slice ${slice.ordinal} title must be a non-empty string`);
@@ -1787,7 +1805,103 @@ export function validateSliceSchema(slices: ResearchSliceRecord[], nodeId: strin
     if (!Array.isArray(slice.normalizedConcepts) || slice.normalizedConcepts.some((concept) => typeof concept !== "string" || !concept.trim())) {
       throw new Error(`Slice ${slice.ordinal} normalizedConcepts must be an array of non-empty strings`);
     }
+    if (!Array.isArray(slice.sourceRefs) || slice.sourceRefs.some((ref) => !ref || typeof ref !== "object" || ref.messageId !== messageId)) {
+      throw new Error(`Slice ${slice.ordinal} sourceRefs must reference this message`);
+    }
+    if (typeof slice.isProvisional !== "boolean") throw new Error(`Slice ${slice.ordinal} isProvisional must be a boolean`);
+    if (typeof slice.createdAt !== "string" || Number.isNaN(Date.parse(slice.createdAt))) throw new Error(`Slice ${slice.ordinal} createdAt must be an ISO date`);
   }
+}
+
+/**
+ * 从模型 JSON 安全构造正式切片。模型只可提供 `slices` 的标题、正文和概念；
+ * Collector 决定稳定 ID、顺序、来源引用与最终正文，避免模型伪造本地关联。
+ * 每片必须对应最终正文的一个确定性消息块，因此切片边界不会扰动既有选区锚点。
+ */
+export function parseNativeResearchSliceGeneration(
+  value: unknown,
+  input: {
+    nodeId: string;
+    messageId: string;
+    ordinalStart: number;
+    citations?: ResearchCitationRecord[];
+    createdAt?: string;
+  },
+): NativeResearchSliceGeneration {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Native slice response must be a JSON object");
+  const candidate = value as Record<string, unknown>;
+  if (!Array.isArray(candidate.slices) || candidate.slices.length === 0 || candidate.slices.length > RESEARCH_NATIVE_SLICE_MAX_COUNT) {
+    throw new Error(`Native slice response must contain 1 to ${RESEARCH_NATIVE_SLICE_MAX_COUNT} slices`);
+  }
+  if (!Number.isSafeInteger(input.ordinalStart) || input.ordinalStart < 0) throw new Error("Native slice ordinalStart must be a non-negative integer");
+
+  const createdAt = input.createdAt ?? new Date().toISOString();
+  const sourceCitations = input.citations ?? [];
+  const draft = candidate.slices.map((raw, index) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`Native slice ${index + 1} must be an object`);
+    const slice = raw as Record<string, unknown>;
+    if (typeof slice.title !== "string") throw new Error(`Native slice ${index + 1} title must be a string`);
+    if (typeof slice.content !== "string") throw new Error(`Native slice ${index + 1} content must be a string`);
+    if (!Array.isArray(slice.normalizedConcepts)) throw new Error(`Native slice ${index + 1} normalizedConcepts must be an array`);
+    const title = slice.title.trim();
+    const content = normalizeNativeSliceText(slice.content);
+    if (!title || title.length > RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS) throw new Error(`Native slice ${index + 1} title is invalid`);
+    if (!content || content.length > RESEARCH_NATIVE_SLICE_MAX_CONTENT_CHARACTERS) throw new Error(`Native slice ${index + 1} content is invalid`);
+    if (slice.normalizedConcepts.length > RESEARCH_NATIVE_SLICE_MAX_CONCEPTS) throw new Error(`Native slice ${index + 1} has too many normalized concepts`);
+    const normalizedConcepts = [...new Set(slice.normalizedConcepts.map((concept) => {
+      if (typeof concept !== "string") throw new Error(`Native slice ${index + 1} normalizedConcepts must contain strings`);
+      const normalized = concept.trim();
+      if (!normalized || normalized.length > RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS) throw new Error(`Native slice ${index + 1} normalized concept is invalid`);
+      return normalized;
+    }))];
+    return { title, content, normalizedConcepts };
+  });
+
+  const content = draft.map((slice) => slice.content).join("\n\n");
+  const blocks = deriveMessageBlocks(content);
+  if (blocks.length !== draft.length || blocks.some((block, index) => block.text !== draft[index]?.content)) {
+    throw new Error("Native slices must each map to one stable message block");
+  }
+  const slices: ResearchSliceRecord[] = draft.map((slice, index) => ({
+    id: `slice:${input.nodeId}:${input.messageId}:${input.ordinalStart + index}`,
+    nodeId: input.nodeId,
+    messageId: input.messageId,
+    ordinal: input.ordinalStart + index,
+    title: slice.title,
+    content: slice.content,
+    normalizedConcepts: slice.normalizedConcepts,
+    sourceRefs: sourceCitations.filter((citation) => citation.messageId === input.messageId && citation.blockOrdinal === index),
+    isProvisional: false,
+    createdAt,
+  }));
+  const result = { content, slices };
+  validateNativeResearchSliceGeneration(result, input.nodeId, input.messageId);
+  return result;
+}
+
+/** 正式切片与可见正文的双向不变量；服务端在落库前再次调用。 */
+export function validateNativeResearchSliceGeneration(
+  result: NativeResearchSliceGeneration,
+  nodeId: string,
+  messageId: string,
+): void {
+  if (!result || typeof result !== "object" || typeof result.content !== "string" || !result.content.trim()) {
+    throw new Error("Native slice generation must include non-empty content");
+  }
+  if (!Array.isArray(result.slices) || result.slices.length === 0) throw new Error("Native slice generation must include slices");
+  if (result.slices.some((slice) => slice.isProvisional)) throw new Error("Native slice generation cannot contain provisional slices");
+  if (result.content !== result.slices.map((slice) => slice.content).join("\n\n")) {
+    throw new Error("Native slice content must be composed from slices");
+  }
+  const blocks = deriveMessageBlocks(result.content);
+  if (blocks.length !== result.slices.length || blocks.some((block, index) => block.text !== result.slices[index]?.content)) {
+    throw new Error("Native slice content must preserve message block boundaries");
+  }
+  validateSliceSchema(result.slices, nodeId, messageId);
+}
+
+function normalizeNativeSliceText(value: string): string {
+  return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
 }
 
 /**

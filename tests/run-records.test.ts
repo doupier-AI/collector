@@ -95,7 +95,7 @@ async function seedResearchTask(
   const task: ResearchTaskRecord = {
     id, sessionId: session.id, inputMessageId: input.id, outputMessageId: output.id,
     idempotencyKey: `${id}-idempotency`, status: "queued", retryable: false,
-    promptVersion: "run-record-prompt-v1", createdAt, updatedAt: createdAt,
+    promptVersion: "run-record-prompt-v1", sliceCount: 2, createdAt, updatedAt: createdAt,
   };
   await store.createResearchTurn(session, input, output, task);
   const claimed = store.claimResearchTask(id, "test-provider", "test-model", "run-record-prompt-v2");
@@ -180,7 +180,7 @@ test("run record API paginates, filters, restores related traces, and redacts se
   assert.equal(filtered.body.items[0].outcome, "failure");
 
   const detail = await responseJson<{
-    task?: { provider?: string; model?: string; promptVersion?: string };
+    task?: { provider?: string; model?: string; promptVersion?: string; sliceCount?: number };
     modelCalls: Array<{ inputTokens: number; outputTokens: number }>;
     searches: Array<{ queries: string[]; responseSummary?: Record<string, unknown>; sources: Array<{ url?: string }> }>;
     errors: Array<{ message: string }>;
@@ -189,6 +189,7 @@ test("run record API paginates, filters, restores related traces, and redacts se
   assert.equal(detail.body.task?.provider, "test-provider");
   assert.equal(detail.body.task?.model, "test-model");
   assert.equal(detail.body.task?.promptVersion, "run-record-prompt-v2");
+  assert.equal(detail.body.task?.sliceCount, 2);
   assert.equal(detail.body.modelCalls[0].inputTokens, 120);
   assert.equal(detail.body.modelCalls[0].outputTokens, 80);
   assert.equal(detail.body.searches[0].queries[0], "安全查询 api_key=[REDACTED]");
