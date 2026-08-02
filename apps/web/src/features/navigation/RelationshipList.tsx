@@ -2,8 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
+import type { ResearchEdgeKind } from "@collector/capture-contracts";
 import type { RelationshipItem } from "./useRelationships";
-import { useRelationships } from "./useRelationships";
+import {
+  ALL_EDGE_KINDS,
+  EDGE_KIND_LABELS,
+  groupRelationships,
+  useRelationships,
+} from "./useRelationships";
 
 /**
  * 全屏关系列表覆盖层（阶段 D1）：快捷键 g 或顶栏按钮唤出，
@@ -21,7 +27,12 @@ export function RelationshipList({
   onClose: () => void;
 }) {
   const navigate = useNavigate();
-  const { state, groups, focusNode, reload } = useRelationships(sessionId, focusNodeId, true);
+  const { state, groups: allGroups, focusNode, reload } = useRelationships(sessionId, focusNodeId, true);
+  const [selectedEdgeKinds, setSelectedEdgeKinds] = useState(ALL_EDGE_KINDS);
+  const groups = useMemo(
+    () => (state.kind === "ready" ? groupRelationships(state.projection, selectedEdgeKinds) : allGroups),
+    [allGroups, selectedEdgeKinds, state],
+  );
   const [focusedItemId, setFocusedItemId] = useState<string | null>(null);
   const itemRefs = useRef(new Map<string, HTMLLIElement>());
 
@@ -59,6 +70,14 @@ export function RelationshipList({
     },
     [navigate, onClose, sessionId],
   );
+
+  const toggleEdgeKind = useCallback((kind: ResearchEdgeKind) => {
+    setSelectedEdgeKinds((current) =>
+      current.includes(kind) ? current.filter((candidate) => candidate !== kind) : [...current, kind],
+    );
+  }, []);
+
+  const resetEdgeKinds = useCallback(() => setSelectedEdgeKinds(ALL_EDGE_KINDS), []);
 
   function handleListKeyDown(event: KeyboardEvent<HTMLUListElement>): void {
     if (flatItems.length === 0) return;
@@ -130,6 +149,35 @@ export function RelationshipList({
             焦点：<strong>{focusNode.label}</strong>
           </p>
         ) : null}
+
+        <div className="relationship-list-overlay__filters" role="toolbar" aria-label="关系筛选">
+          <span className="relationship-list-overlay__filter-label">显示关系：</span>
+          {ALL_EDGE_KINDS.map((kind) => {
+            const selected = selectedEdgeKinds.includes(kind);
+            return (
+              <button
+                key={kind}
+                type="button"
+                className={`relationship-list__filter-button${selected ? " relationship-list__filter-button--selected" : ""}`}
+                aria-pressed={selected}
+                aria-label={`筛选${EDGE_KIND_LABELS[kind]}`}
+                onClick={() => toggleEdgeKind(kind)}
+                data-testid={`relationship-filter-${kind}`}
+              >
+                {kind === "parent-child" ? "父子" : kind === "semantic-related" ? "语义" : "融合"}
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            className="relationship-list__filter-button"
+            onClick={resetEdgeKinds}
+            disabled={selectedEdgeKinds.length === ALL_EDGE_KINDS.length}
+            data-testid="relationship-filter-all"
+          >
+            全部
+          </button>
+        </div>
 
         <div className="relationship-list-overlay__body">
           {state.kind === "loading" ? (

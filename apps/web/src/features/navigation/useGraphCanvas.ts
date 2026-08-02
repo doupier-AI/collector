@@ -15,7 +15,7 @@ export type GraphCanvasState =
 const INITIAL_DEPTH = 1;
 
 /**
- * 网状视图状态管理（阶段 D2）：
+ * 网状视图状态管理（阶段 I · D2/D3）：
  * - 始终消费 D1 的同一 getResearchGraph / buildGraphProjection 投影；
  * - 初始 maxDepth=1，仅呈现当前节点与直接邻居；每次展开将 maxDepth 加一并重新请求；
  * - 聚焦仅改变画布内焦点，打开节点由渲染层显式触发；

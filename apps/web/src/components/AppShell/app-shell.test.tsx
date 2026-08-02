@@ -110,7 +110,7 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
   });
 });
 
-describe("AppShell 网状导航入口（阶段 I · D2）", () => {
+describe("AppShell 网状导航入口（阶段 I · D2/D3）", () => {
   it("宽屏打开网状画布，窄屏回落到既有关系列表", async () => {
     const user = userEvent.setup();
     stubMatchMedia(true);

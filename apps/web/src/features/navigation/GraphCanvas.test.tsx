@@ -7,6 +7,11 @@ import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
 import { makeEdge, makeGraphNodeSummary, makeGraphProjection } from "../../test/fakes";
 import { computeNodePositions, GraphCanvas } from "./GraphCanvas";
+import {
+  filterEdgesByKind,
+  filterNodesByEdges,
+  navigationNodeIds,
+} from "./useRelationships";
 
 function projectionAtDepth(maxDepth = 1) {
   const focus = makeGraphNodeSummary("focus", "Transformer 架构", 0);
@@ -28,15 +33,18 @@ function projectionAtDepth(maxDepth = 1) {
   return makeGraphProjection({ nodes, edges, focusNodeId: "focus" });
 }
 
-function renderCanvas(getResearchGraph = vi.fn(async (_sessionId: string, _focusNodeId?: string, maxDepth?: number) => projectionAtDepth(maxDepth))) {
+function renderCanvas(
+  getResearchGraph = vi.fn(async (_sessionId: string, _focusNodeId?: string, maxDepth?: number) => projectionAtDepth(maxDepth)),
+  focusNodeId = "focus",
+) {
   const services = {
     api: { getResearchGraph } as Partial<ApiClient> as ApiClient,
   } as unknown as AppServices;
   const onClose = vi.fn();
   const rendered = render(
     <ServicesProvider services={services}>
-      <MemoryRouter initialEntries={["/research/session-1/node/focus"]}>
-        <GraphCanvas sessionId="session-1" focusNodeId="focus" onClose={onClose} />
+      <MemoryRouter initialEntries={[`/research/session-1/node/${focusNodeId}`]}>
+        <GraphCanvas sessionId="session-1" focusNodeId={focusNodeId} onClose={onClose} />
         <LocationProbe />
       </MemoryRouter>
     </ServicesProvider>,
@@ -74,6 +82,27 @@ describe("computeNodePositions", () => {
 
     expect(positions.get("focus")).toEqual({ x: 0, y: 0 });
     expect(positions.get("neighbor")).toEqual({ x: 0, y: -130 });
+  });
+});
+
+describe("图筛选纯函数", () => {
+  it("只返回选中的 active 边，并保留原始投影数据不变", () => {
+    const projection = projectionAtDepth();
+    const filtered = filterEdgesByKind(projection.edges, ["semantic-related"]);
+
+    expect(filtered.map((edge) => edge.kind)).toEqual(["semantic-related"]);
+    expect(projection.edges).toHaveLength(4);
+  });
+
+  it("过滤节点只保留当前节点和关系端点，空筛选仍保留当前节点", () => {
+    const projection = projectionAtDepth();
+    const semanticEdges = filterEdgesByKind(projection.edges, ["semantic-related"]);
+
+    expect(filterNodesByEdges(projection.nodes, semanticEdges, "focus").map((node) => node.node.id)).toEqual([
+      "focus",
+      "related",
+    ]);
+    expect(navigationNodeIds(projection.nodes, [], "focus")).toEqual(["focus"]);
   });
 });
 
@@ -139,6 +168,46 @@ describe("GraphCanvas", () => {
     await waitFor(() =>
       expect(screen.getByTestId("location-probe")).toHaveTextContent("/research/session-1/node/related"),
     );
+  });
+
+  it("按边类型筛选画布并将键盘焦点限制在筛选后的邻居", async () => {
+    const user = userEvent.setup();
+    renderCanvas();
+
+    await screen.findByTestId("graph-node-focus");
+    await user.click(screen.getByTestId("graph-filter-semantic-related"));
+    await user.click(screen.getByTestId("graph-filter-fused-from"));
+
+    expect(screen.queryByTestId("graph-node-related")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("graph-node-fused")).not.toBeInTheDocument();
+    expect(screen.getByTestId("graph-node-child")).toBeInTheDocument();
+    expect(screen.getByTestId("graph-filter-parent-child")).toHaveAttribute("aria-pressed", "true");
+
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByTestId("graph-node-parent")).toHaveFocus();
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByTestId("graph-node-child")).toHaveFocus();
+  });
+
+  it("提供父节点和返回当前页面安全出口", async () => {
+    const user = userEvent.setup();
+    const getResearchGraph = vi.fn(async () => ({
+      ...projectionAtDepth(),
+      focusNodeId: "child",
+    }));
+    const { onClose } = renderCanvas(getResearchGraph, "child");
+
+    await screen.findByTestId("graph-node-child");
+    expect(screen.getByTestId("graph-open-parent")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("graph-open-parent"));
+    await waitFor(() =>
+      expect(screen.getByTestId("location-probe")).toHaveTextContent("/research/session-1/node/focus"),
+    );
+    expect(onClose).toHaveBeenCalled();
+
+    await user.click(screen.getByTestId("graph-return-page"));
+    expect(onClose).toHaveBeenCalledTimes(2);
   });
 
   it("在减弱动效设置下禁用画布变换过渡", async () => {

@@ -1326,6 +1326,49 @@ button.model-status {
   font-size: 0.875rem;
 }
 
+.relationship-list-overlay__filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  margin-bottom: var(--space-3);
+}
+
+.relationship-list-overlay__filter-label {
+  color: var(--color-muted);
+  font-size: 0.8125rem;
+}
+
+.relationship-list__filter-button,
+.graph-canvas__filter-button {
+  min-height: 2rem;
+  padding: 0.25rem 0.625rem;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-ink);
+  cursor: pointer;
+  font: inherit;
+}
+
+.relationship-list__filter-button:hover:not(:disabled),
+.graph-canvas__filter-button:hover:not(:disabled) {
+  border-color: var(--color-ai);
+  color: var(--color-ai);
+}
+
+.relationship-list__filter-button--selected,
+.graph-canvas__filter-button--selected {
+  border-color: var(--color-ai);
+  background: color-mix(in srgb, var(--color-ai) 10%, var(--color-surface));
+}
+
+.relationship-list__filter-button:disabled,
+.graph-canvas__filter-button:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
 .relationship-list-overlay__body {
   flex: 1;
   overflow-y: auto;
@@ -1411,7 +1454,7 @@ button.model-status {
   font-size: 0.75rem;
 }
 
-/* ---------- 全屏网状导航（阶段 I · D2） ---------- */
+/* ---------- 全屏网状导航（阶段 I · D2/D3） ---------- */
 
 .graph-canvas-overlay {
   position: fixed;
@@ -1447,6 +1490,32 @@ button.model-status {
   margin: 0;
   color: var(--color-muted);
   font-size: 0.875rem;
+}
+
+.graph-canvas-overlay__focus-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.graph-canvas-overlay__safe-exits {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.graph-canvas-overlay__filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.graph-canvas-overlay__filter-label {
+  color: var(--color-muted);
+  font-size: 0.8125rem;
 }
 
 .graph-canvas-overlay__controls {

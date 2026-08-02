@@ -156,6 +156,27 @@ describe("RelationshipList 组件", () => {
     expect(screen.getByRole("button", { name: "编码器融合" })).toBeInTheDocument();
   });
 
+  it("按边类型筛选分组，并在全部关闭时保留清晰空态", async () => {
+    const user = userEvent.setup();
+    renderList({ getResearchGraph: async () => sampleProjection() });
+
+    await screen.findByRole("list", { name: "节点关系列表" });
+    await user.click(screen.getByTestId("relationship-filter-semantic-related"));
+    await user.click(screen.getByTestId("relationship-filter-fused-from"));
+
+    expect(screen.getByTestId("relationship-filter-parent-child")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "注意力头" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "深度学习基础" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "位置编码" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "编码器融合" })).not.toBeInTheDocument();
+    expect(screen.queryByText("语义相关")).not.toBeInTheDocument();
+    expect(screen.queryByText("融合来源")).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("relationship-filter-parent-child"));
+    expect(await screen.findByText("当前节点没有可见的关系。")).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "节点关系列表" })).not.toBeInTheDocument();
+  });
+
   it("键盘导航：↓ 在条目之间移动，Enter 跳转到节点", async () => {
     const user = userEvent.setup();
     renderList({ getResearchGraph: async () => sampleProjection() });
@@ -185,6 +206,7 @@ describe("RelationshipList 组件", () => {
       expect(screen.getByTestId("location-probe")).toHaveTextContent("/research/session-1/node/"),
     );
   });
+
 
   it("每个条目的 aria-label 包含边类型、方向和深度信息", async () => {
     renderList({ getResearchGraph: async () => sampleProjection() });

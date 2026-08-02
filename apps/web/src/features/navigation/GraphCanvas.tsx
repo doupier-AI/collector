@@ -7,7 +7,13 @@ import type {
 } from "@collector/capture-contracts";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
-import { EDGE_KIND_LABELS } from "./useRelationships";
+import {
+  ALL_EDGE_KINDS,
+  EDGE_KIND_LABELS,
+  filterEdgesByKind,
+  filterNodesByEdges,
+  navigationNodeIds,
+} from "./useRelationships";
 import { useGraphCanvas } from "./useGraphCanvas";
 
 /** 节点圆半径。 */
@@ -69,7 +75,7 @@ function depthLabel(depth: number): string {
 }
 
 /**
- * 全屏网状导航覆盖层（阶段 D2）：快捷键 G 或顶栏按钮唤出。
+ * 全屏网状导航覆盖层（阶段 I · D2/D3）：快捷键 G 或顶栏按钮唤出。
  * 当前节点居中，直接邻居先呈现，maxDepth 按层递增加载；三类边以线型/形状 +
  * 颜色冗余区分。单击节点只聚焦，Enter、双击或“打开已聚焦节点”才进入节点，避免
  * 无意离开当前研究位置。下方关系摘要提供与画布等价的可读、可点击内容。
@@ -103,22 +109,48 @@ export function GraphCanvas({
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
   const [isDragging, setIsDragging] = useState(false);
+  const [selectedEdgeKinds, setSelectedEdgeKinds] = useState(ALL_EDGE_KINDS);
   const dragRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
   const nodeRefs = useRef(new Map<string, SVGGElement>());
 
   const positions = useMemo(() => computeNodePositions(visibleNodes), [visibleNodes]);
+  const filteredEdges = useMemo(
+    () => filterEdgesByKind(visibleEdges, selectedEdgeKinds),
+    [selectedEdgeKinds, visibleEdges],
+  );
+  const filteredNodes = useMemo(
+    () => filterNodesByEdges(visibleNodes, filteredEdges, focusNodeId),
+    [filteredEdges, focusNodeId, visibleNodes],
+  );
+  const navigationIds = useMemo(
+    () => navigationNodeIds(visibleNodes, filteredEdges, focusNodeId),
+    [filteredEdges, focusNodeId, visibleNodes],
+  );
+  const filteredNodeIds = useMemo(() => new Set(filteredNodes.map((summary) => summary.node.id)), [filteredNodes]);
   const nodesById = useMemo(
+    () => new Map(filteredNodes.map((summary) => [summary.node.id, summary])),
+    [filteredNodes],
+  );
+  const visibleNodesById = useMemo(
     () => new Map(visibleNodes.map((summary) => [summary.node.id, summary])),
     [visibleNodes],
   );
-  const currentNode = nodesById.get(focusNodeId);
+  const currentNode = visibleNodesById.get(focusNodeId);
   const focusedNode = focusedNodeId ? nodesById.get(focusedNodeId) : null;
+  const parentNode = currentNode?.node.parentNodeId
+    ? visibleNodesById.get(currentNode.node.parentNodeId)
+    : undefined;
 
   // 焦点变化时把 DOM focus 同步到对应节点。
   useEffect(() => {
     if (!focusedNodeId) return;
     nodeRefs.current.get(focusedNodeId)?.focus();
-  }, [focusedNodeId, visibleNodes]);
+  }, [focusedNodeId, filteredNodes]);
+
+  useEffect(() => {
+    if (!focusedNodeId || filteredNodeIds.has(focusedNodeId)) return;
+    setFocusedNodeId(focusNodeId);
+  }, [filteredNodeIds, focusNodeId, focusedNodeId, setFocusedNodeId]);
 
   const selectNode = useCallback(
     (nodeId: string) => {
@@ -131,6 +163,18 @@ export function GraphCanvas({
   const openFocusedNode = useCallback(() => {
     if (focusedNodeId) selectNode(focusedNodeId);
   }, [focusedNodeId, selectNode]);
+
+  const toggleEdgeKind = useCallback((kind: (typeof ALL_EDGE_KINDS)[number]) => {
+    setSelectedEdgeKinds((current) =>
+      current.includes(kind) ? current.filter((candidate) => candidate !== kind) : [...current, kind],
+    );
+  }, []);
+
+  const resetEdgeKinds = useCallback(() => setSelectedEdgeKinds(ALL_EDGE_KINDS), []);
+
+  const openParentNode = useCallback(() => {
+    if (parentNode) selectNode(parentNode.node.id);
+  }, [parentNode, selectNode]);
 
   const zoomIn = useCallback(() => {
     setZoom((current) => Math.min(current + 0.2, 2.5));
@@ -192,33 +236,33 @@ export function GraphCanvas({
       if (event.target instanceof Element && event.target.closest("button, input, textarea, select")) return;
       if (visibleNodes.length === 0) return;
 
-      const currentIndex = visibleNodes.findIndex((node) => node.node.id === focusedNodeId);
+      const currentIndex = navigationIds.findIndex((nodeId) => nodeId === focusedNodeId);
       const index = currentIndex === -1 ? 0 : currentIndex;
 
       switch (event.key) {
         case "ArrowRight":
         case "ArrowDown": {
           event.preventDefault();
-          const next = visibleNodes[Math.min(index + 1, visibleNodes.length - 1)];
-          if (next) setFocusedNodeId(next.node.id);
+          const next = navigationIds[Math.min(index + 1, navigationIds.length - 1)];
+          if (next) setFocusedNodeId(next);
           return;
         }
         case "ArrowLeft":
         case "ArrowUp": {
           event.preventDefault();
-          const previous = visibleNodes[Math.max(index - 1, 0)];
-          if (previous) setFocusedNodeId(previous.node.id);
+          const previous = navigationIds[Math.max(index - 1, 0)];
+          if (previous) setFocusedNodeId(previous);
           return;
         }
         case "Home": {
           event.preventDefault();
-          if (visibleNodes[0]) setFocusedNodeId(visibleNodes[0].node.id);
+          if (navigationIds[0]) setFocusedNodeId(navigationIds[0]);
           return;
         }
         case "End": {
           event.preventDefault();
-          const last = visibleNodes[visibleNodes.length - 1];
-          if (last) setFocusedNodeId(last.node.id);
+          const last = navigationIds[navigationIds.length - 1];
+          if (last) setFocusedNodeId(last);
           return;
         }
         case "Enter":
@@ -241,7 +285,7 @@ export function GraphCanvas({
         default:
       }
     },
-    [focusedNodeId, onClose, openFocusedNode, setFocusedNodeId, visibleNodes, zoomIn, zoomOut],
+    [focusedNodeId, navigationIds, onClose, openFocusedNode, setFocusedNodeId, visibleNodes.length, zoomIn, zoomOut],
   );
 
   return (
@@ -268,13 +312,63 @@ export function GraphCanvas({
         </header>
 
         {currentNode ? (
-          <p className="graph-canvas-overlay__focus" aria-live="polite">
-            当前节点：<strong>{currentNode.label}</strong>
-            {focusedNode && focusedNode.node.id !== currentNode.node.id ? (
-              <> · 已聚焦：<strong>{focusedNode.label}</strong></>
-            ) : null}
-          </p>
+          <div className="graph-canvas-overlay__focus-row">
+            <p className="graph-canvas-overlay__focus" aria-live="polite">
+              当前节点：<strong>{currentNode.label}</strong>
+              {focusedNode && focusedNode.node.id !== currentNode.node.id ? (
+                <> · 已聚焦：<strong>{focusedNode.label}</strong></>
+              ) : null}
+            </p>
+            <div className="graph-canvas-overlay__safe-exits" aria-label="安全出口">
+              {parentNode ? (
+                <button
+                  type="button"
+                  className="graph-canvas__control-button"
+                  onClick={openParentNode}
+                  data-testid="graph-open-parent"
+                >
+                  打开父节点
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="graph-canvas__control-button"
+                onClick={onClose}
+                data-testid="graph-return-page"
+              >
+                返回当前页面
+              </button>
+            </div>
+          </div>
         ) : null}
+
+        <div className="graph-canvas-overlay__filters" role="toolbar" aria-label="关系筛选">
+          <span className="graph-canvas-overlay__filter-label">显示关系：</span>
+          {ALL_EDGE_KINDS.map((kind) => {
+            const selected = selectedEdgeKinds.includes(kind);
+            return (
+              <button
+                key={kind}
+                type="button"
+                className={`graph-canvas__filter-button${selected ? " graph-canvas__filter-button--selected" : ""}`}
+                aria-pressed={selected}
+                onClick={() => toggleEdgeKind(kind)}
+                data-testid={`graph-filter-${kind}`}
+              >
+                {EDGE_KIND_LABELS[kind]}
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            className="graph-canvas__filter-button"
+            onClick={resetEdgeKinds}
+            disabled={selectedEdgeKinds.length === ALL_EDGE_KINDS.length}
+            data-testid="graph-filter-all"
+          >
+            全部
+          </button>
+        </div>
 
         <div className="graph-canvas-overlay__controls" role="toolbar" aria-label="视图控制">
           <button
@@ -373,7 +467,7 @@ export function GraphCanvas({
                   transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}
                   style={reducedMotion ? { transition: "none" } : undefined}
                 >
-                  {visibleEdges.map((edge) => {
+                  {filteredEdges.map((edge) => {
                     const from = positions.get(edge.fromNodeId);
                     const to = positions.get(edge.toNodeId);
                     if (!from || !to) return null;
@@ -430,7 +524,7 @@ export function GraphCanvas({
                     );
                   })}
 
-                  {visibleNodes.map((summary) => {
+                  {filteredNodes.map((summary) => {
                     const position = positions.get(summary.node.id);
                     if (!position) return null;
                     const isCurrent = summary.node.id === focusNodeId;
@@ -478,11 +572,11 @@ export function GraphCanvas({
 
               <section className="graph-canvas__relationship-summary" aria-label="关系列表">
                 <h3>关系列表</h3>
-                {visibleEdges.length === 0 ? (
-                  <p>当前范围内没有可见关系。</p>
+                {filteredEdges.length === 0 ? (
+                  <p>当前筛选没有可见关系。</p>
                 ) : (
                   <ul>
-                    {visibleEdges.map((edge) => {
+                    {filteredEdges.map((edge) => {
                       const from = nodesById.get(edge.fromNodeId);
                       const to = nodesById.get(edge.toNodeId);
                       if (!from || !to) return null;
