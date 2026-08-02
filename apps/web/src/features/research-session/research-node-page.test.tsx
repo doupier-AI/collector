@@ -137,6 +137,39 @@ describe("ResearchNodePage 根节点", () => {
     expect(screen.getByLabelText("你的问题")).toBeInTheDocument();
   });
 
+  it("在流状态提示下方呈现可用键盘展开和决策的相似概念弱提示", async () => {
+    const user = userEvent.setup();
+    const proposal = {
+      id: "fusion:1",
+      loNodeId: "node-a",
+      hiNodeId: "node-b",
+      relationType: "contrast" as const,
+      reason: "两个同名角色来自不同作品。",
+      status: "pending" as const,
+      triggerSources: [],
+      verification: { promptVersion: "similarity-verify-v1" as const, sourceSliceIds: [], tokenBudget: 800 },
+      createdAt: "2026-08-02T00:00:00.000Z",
+      updatedAt: "2026-08-02T00:00:00.000Z",
+    };
+    const view: ResearchNodeView = { ...readyRootView(), fusionProposals: [proposal] };
+    const decideResearchFusionProposal = vi.fn(async () => ({ ...proposal, status: "rejected" as const, cooldownUntil: "2026-09-01T00:00:00.000Z" }));
+    const { container } = renderNodePage({ getResearchNodeView: async () => view, decideResearchFusionProposal });
+
+    const notice = await screen.findByTestId("fusion-proposal-notice");
+    expect(notice).toHaveTextContent("熟悉的概念再现，节点可融合");
+    const header = container.querySelector(".session-header");
+    expect(header?.compareDocumentPosition(notice) ?? 0).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+
+    const summary = screen.getByText("熟悉的概念再现，节点可融合");
+    summary.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByText("关系：对比")).toBeInTheDocument();
+    expect(screen.getByText("两个同名角色来自不同作品。")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "暂不处理" }));
+    await waitFor(() => expect(decideResearchFusionProposal).toHaveBeenCalledWith("fusion:1", "rejected"));
+    expect(screen.queryByTestId("fusion-proposal-notice")).not.toBeInTheDocument();
+  });
+
   it("model_not_configured 显示可重试失败卡，重试不新增第二条占位消息", async () => {
     const user = userEvent.setup();
     const failedTask = makeTask({

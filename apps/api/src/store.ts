@@ -1,9 +1,9 @@
 import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchNodeRecord, type ResearchSliceRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewInput, type ResearchTermPreviewRecord, type ResearchTurnAccepted, researchEdgeId } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchSliceRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewInput, type ResearchTermPreviewRecord, type ResearchTurnAccepted, researchEdgeId } from "@collector/capture-contracts";
 
-export type ObservabilityRecordSource = "research" | "selection" | "import" | "workflow";
+export type ObservabilityRecordSource = "research" | "selection" | "import" | "workflow" | "fusion";
 
 export interface ObservabilityRecordRow {
   source: ObservabilityRecordSource;
@@ -182,8 +182,17 @@ export interface DeepResearchStore {
   listAllResearchEdges(): ResearchEdgeRecord[];
 }
 
+export interface ResearchFusionProposalStore {
+  getResearchFusionProposal(id: string): ResearchFusionProposalRecord | undefined;
+  findResearchFusionProposalByNodePair(loNodeId: string, hiNodeId: string): ResearchFusionProposalRecord | undefined;
+  listResearchFusionProposalsByNode(nodeId: string, statuses?: readonly ResearchFusionProposalStatus[]): ResearchFusionProposalRecord[];
+  /** 同一规范化节点对幂等，已存在时返回既有记录。 */
+  createResearchFusionProposal(proposal: ResearchFusionProposalRecord): Promise<ResearchFusionProposalRecord>;
+  saveResearchFusionProposal(proposal: ResearchFusionProposalRecord): Promise<void>;
+}
+
 export interface CollectorStore
-  extends ResearchLaterStore, ResearchSelectionStore, ResearchImportStore, ResearchStore, DeepResearchStore {
+  extends ResearchLaterStore, ResearchSelectionStore, ResearchImportStore, ResearchStore, DeepResearchStore, ResearchFusionProposalStore {
   init(): Promise<void>;
   getCapture(id: string): CaptureRecord | undefined;
   getCaptureByClientId(clientId: string): CaptureRecord | undefined;
@@ -437,14 +446,16 @@ export class SqliteStore implements CollectorStore {
     return workflowRunId ? this.listRecords<ModelCallRecord>(sql, workflowRunId) : this.listRecords<ModelCallRecord>(sql);
   }
   listRunRecordRows(query: ObservabilityRecordQuery): ObservabilityRecordRow[] {
-    const sourceTables: Array<{ source: ObservabilityRecordSource; operationType: string; table: string; operationColumn?: string }> = [
+    const sourceTables: Array<{ source: ObservabilityRecordSource; operationType: string; table: string; operationColumn?: string; statusExpression?: string }> = [
       { source: "research", operationType: "research", table: "research_tasks" },
       { source: "selection", operationType: "selection_analysis", table: "research_selection_tasks" },
       { source: "import", operationType: "document_import", table: "research_import_tasks" },
       { source: "workflow", operationType: "workflow_type", table: "workflow_runs", operationColumn: "workflow_type" },
+      // 相似性核验在模型完成时已经结束；提议的 pending/accepted/rejected 是后续用户决定，不是运行状态。
+      { source: "fusion", operationType: "similarity_verification", table: "research_fusion_proposals", statusExpression: "'completed'" },
     ];
-    const union = sourceTables.map(({ source, operationType, table, operationColumn }) =>
-      `SELECT '${source}' AS source, ${operationColumn ? operationColumn : `'${operationType}'`} AS operation_type, id, status, created_at, record_json FROM ${table}`,
+    const union = sourceTables.map(({ source, operationType, table, operationColumn, statusExpression }) =>
+      `SELECT '${source}' AS source, ${operationColumn ? operationColumn : `'${operationType}'`} AS operation_type, id, ${statusExpression ?? "status"} AS status, created_at, record_json FROM ${table}`,
     ).join(" UNION ALL ");
     const where: string[] = [];
     const values: SQLInputValue[] = [];
@@ -472,8 +483,14 @@ export class SqliteStore implements CollectorStore {
     }));
   }
   getRunRecordRow(source: ObservabilityRecordSource, id: string): ObservabilityRecordRow | undefined {
-    const table = { research: "research_tasks", selection: "research_selection_tasks", import: "research_import_tasks", workflow: "workflow_runs" }[source];
-    const row = this.db().prepare(`SELECT ${source === "workflow" ? "workflow_type" : `'${source === "selection" ? "selection_analysis" : source === "import" ? "document_import" : "research"}'`} AS operation_type, id, status, created_at, record_json FROM ${table} WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
+    const sourceConfig = {
+      research: { table: "research_tasks", operation: "'research'", status: "status" },
+      selection: { table: "research_selection_tasks", operation: "'selection_analysis'", status: "status" },
+      import: { table: "research_import_tasks", operation: "'document_import'", status: "status" },
+      workflow: { table: "workflow_runs", operation: "workflow_type", status: "status" },
+      fusion: { table: "research_fusion_proposals", operation: "'similarity_verification'", status: "'completed'" },
+    }[source];
+    const row = this.db().prepare(`SELECT ${sourceConfig.operation} AS operation_type, id, ${sourceConfig.status} AS status, created_at, record_json FROM ${sourceConfig.table} WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
     return row ? { source, operationType: row.operation_type as string, id: row.id as string, status: row.status as string, createdAt: row.created_at as string, recordJson: row.record_json as string } : undefined;
   }
   listRunModelCallRows(workflowRunId: string): ObservabilityRelatedRow[] {
@@ -2137,6 +2154,83 @@ export class SqliteStore implements CollectorStore {
     return this.getRecord<ResearchSliceRecord>("SELECT record_json FROM research_slices WHERE id = ?", id);
   }
 
+  // ── Fusion proposals (F1) ──────────────────────────────────────
+
+  getResearchFusionProposal(id: string): ResearchFusionProposalRecord | undefined {
+    return this.getRecord<ResearchFusionProposalRecord>("SELECT record_json FROM research_fusion_proposals WHERE id = ?", id);
+  }
+
+  findResearchFusionProposalByNodePair(loNodeId: string, hiNodeId: string): ResearchFusionProposalRecord | undefined {
+    return this.getRecord<ResearchFusionProposalRecord>(
+      "SELECT record_json FROM research_fusion_proposals WHERE lo_node_id = ? AND hi_node_id = ?",
+      loNodeId,
+      hiNodeId,
+    );
+  }
+
+  listResearchFusionProposalsByNode(nodeId: string, statuses?: readonly ResearchFusionProposalStatus[]): ResearchFusionProposalRecord[] {
+    if (!statuses?.length) {
+      return this.listRecords<ResearchFusionProposalRecord>(
+        "SELECT record_json FROM research_fusion_proposals WHERE lo_node_id = ? OR hi_node_id = ? ORDER BY created_at DESC, rowid DESC",
+        nodeId,
+        nodeId,
+      );
+    }
+    const placeholders = statuses.map(() => "?").join(", ");
+    return this.listRecords<ResearchFusionProposalRecord>(
+      `SELECT record_json FROM research_fusion_proposals WHERE (lo_node_id = ? OR hi_node_id = ?) AND status IN (${placeholders}) ORDER BY created_at DESC, rowid DESC`,
+      nodeId,
+      nodeId,
+      ...statuses,
+    );
+  }
+
+  async createResearchFusionProposal(proposal: ResearchFusionProposalRecord): Promise<ResearchFusionProposalRecord> {
+    if (proposal.loNodeId >= proposal.hiNodeId) throw new Error("Fusion proposal node pair must be normalized");
+    let persisted: ResearchFusionProposalRecord | undefined;
+    this.transaction(() => {
+      const existing = this.findResearchFusionProposalByNodePair(proposal.loNodeId, proposal.hiNodeId);
+      if (existing) {
+        persisted = existing;
+        return;
+      }
+      this.db().prepare(`INSERT INTO research_fusion_proposals
+        (id, lo_node_id, hi_node_id, relation_type, reason, status, cooldown_until, created_at, updated_at, record_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(
+          proposal.id,
+          proposal.loNodeId,
+          proposal.hiNodeId,
+          proposal.relationType,
+          proposal.reason,
+          proposal.status,
+          proposal.cooldownUntil ?? null,
+          proposal.createdAt,
+          proposal.updatedAt,
+          JSON.stringify(proposal),
+        );
+      persisted = proposal;
+    });
+    if (!persisted) throw new Error("Research fusion proposal was not persisted");
+    return persisted;
+  }
+
+  async saveResearchFusionProposal(proposal: ResearchFusionProposalRecord): Promise<void> {
+    if (proposal.loNodeId >= proposal.hiNodeId) throw new Error("Fusion proposal node pair must be normalized");
+    this.db().prepare(`UPDATE research_fusion_proposals
+      SET relation_type = ?, reason = ?, status = ?, cooldown_until = ?, updated_at = ?, record_json = ?
+      WHERE id = ?`)
+      .run(
+        proposal.relationType,
+        proposal.reason,
+        proposal.status,
+        proposal.cooldownUntil ?? null,
+        proposal.updatedAt,
+        JSON.stringify(proposal),
+        proposal.id,
+      );
+  }
+
   private updateResearchMessage(message: ResearchMessageRecord): void {
     this.db().prepare("UPDATE research_messages SET status = ?, updated_at = ?, record_json = ? WHERE id = ?")
       .run(message.status, message.updatedAt, JSON.stringify(message), message.id);
@@ -2912,6 +3006,35 @@ export class SqliteStore implements CollectorStore {
       version = 29;
     }
 
+    if (version < 30) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE research_fusion_proposals (
+            id TEXT PRIMARY KEY,
+            lo_node_id TEXT NOT NULL,
+            hi_node_id TEXT NOT NULL,
+            relation_type TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            status TEXT NOT NULL,
+            cooldown_until TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(lo_node_id) REFERENCES research_nodes(id) ON DELETE CASCADE,
+            FOREIGN KEY(hi_node_id) REFERENCES research_nodes(id) ON DELETE CASCADE,
+            UNIQUE(lo_node_id, hi_node_id),
+            CHECK(lo_node_id < hi_node_id),
+            CHECK(relation_type IN ('identity', 'shared-concept', 'analogy', 'contrast', 'unrelated')),
+            CHECK(status IN ('pending', 'accepted', 'rejected'))
+          );
+          CREATE INDEX research_fusion_proposals_status_idx
+            ON research_fusion_proposals(status, cooldown_until, created_at);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (30, datetime('now'));
+        `);
+      });
+      version = 30;
+    }
+
   }
 
   private async migrateLegacyProviderProfile(): Promise<void> {
@@ -3267,6 +3390,11 @@ export class JsonStore implements CollectorStore {
   listSlicesByNode(_nodeId: string): ResearchSliceRecord[] { return []; }
   listSlicesByMessage(_messageId: string): ResearchSliceRecord[] { return []; }
   getSliceById(_id: string): ResearchSliceRecord | undefined { return undefined; }
+  getResearchFusionProposal(_id: string): ResearchFusionProposalRecord | undefined { return undefined; }
+  findResearchFusionProposalByNodePair(_loNodeId: string, _hiNodeId: string): ResearchFusionProposalRecord | undefined { return undefined; }
+  listResearchFusionProposalsByNode(_nodeId: string, _statuses?: readonly ResearchFusionProposalStatus[]): ResearchFusionProposalRecord[] { return []; }
+  async createResearchFusionProposal(_proposal: ResearchFusionProposalRecord): Promise<ResearchFusionProposalRecord> { throw new Error("Research fusion proposals require SQLite persistence"); }
+  async saveResearchFusionProposal(_proposal: ResearchFusionProposalRecord): Promise<void> { throw new Error("Research fusion proposals require SQLite persistence"); }
   async createResearchEdge(_edge: ResearchEdgeRecord): Promise<ResearchEdgeRecord> { throw new Error("Research edges require SQLite persistence"); }
   listResearchEdgesByNode(_nodeId: string): ResearchEdgeRecord[] { return []; }
   listAllResearchEdges(): ResearchEdgeRecord[] { return []; }

@@ -42,8 +42,9 @@ const OPERATION_TYPES: readonly RunRecordOperationType[] = [
   "document_import",
   "recent_organization",
   "topic_document",
+  "similarity_verification",
 ];
-const SOURCES: readonly RunRecordSource[] = ["research", "selection", "import", "workflow"];
+const SOURCES: readonly RunRecordSource[] = ["research", "selection", "import", "workflow", "fusion"];
 const STATUSES: readonly RunRecordStatus[] = ["queued", "running", "completed", "failed", "cancelled", "corrupt"];
 const OUTCOMES: readonly RunRecordOutcome[] = ["success", "failure", "active", "cancelled", "unavailable"];
 
@@ -181,7 +182,7 @@ export class RunRecordsService {
       id: publicId(row.source, row.id),
       source: row.source,
       operationType: operationTypeForRow(row),
-      ...(titleFor(parsed.value) ? { title: titleFor(parsed.value) } : {}),
+      ...(titleFor(parsed.value) ? { title: titleFor(parsed.value) } : row.source === "fusion" ? { title: "相似概念核验" } : {}),
       status,
       outcome: outcomeForStatus(status),
       createdAt: row.createdAt,
@@ -274,6 +275,7 @@ function sourceForOperation(operation: RunRecordOperationType): ObservabilityRec
   if (operation === "research") return "research";
   if (operation === "selection_analysis") return "selection";
   if (operation === "document_import") return "import";
+  if (operation === "similarity_verification") return "fusion";
   return "workflow";
 }
 
@@ -391,10 +393,13 @@ function operationTypeForRow(row: ObservabilityRecordRow): RunRecordOperationTyp
   if (row.source === "research") return "research";
   if (row.source === "selection") return "selection_analysis";
   if (row.source === "import") return "document_import";
+  if (row.source === "fusion") return "similarity_verification";
   return "topic_document";
 }
 
 function statusForRow(row: ObservabilityRecordRow, record: Record<string, unknown>): RunRecordStatus {
+  // pending/accepted/rejected 是用户对提议的生命周期；核验调用本身完成后才出现这条本地运行记录。
+  if (row.source === "fusion") return "completed";
   const status = stringValue(record.status) || row.status;
   if (status === "processing" || status === "waiting_for_budget") return "running";
   if (status === "queued" || status === "running" || status === "completed" || status === "failed" || status === "cancelled") return status;
@@ -456,6 +461,8 @@ function modelCallView(row: ObservabilityRelatedRow): RunRecordModelCallView {
     model: safeText(call.model),
     purpose: safeText(call.purpose),
     promptVersion: safeText(call.promptVersion),
+    ...(Array.isArray(call.sourceSliceIds) ? { sourceSliceIds: call.sourceSliceIds.map((id) => safeId(id)).filter((id) => id !== "unknown").slice(0, 200) } : {}),
+    ...(typeof call.tokenBudget === "number" && Number.isFinite(call.tokenBudget) && call.tokenBudget >= 0 ? { tokenBudget: Math.trunc(call.tokenBudget) } : {}),
     status,
     inputTokens: nonNegativeNumber(call.inputTokens),
     outputTokens: nonNegativeNumber(call.outputTokens),

@@ -337,6 +337,10 @@ export interface ModelCallRecord {
   model: string;
   purpose: string;
   promptVersion: string;
+  /** F1 等切片感知调用记录实际送入核验的本地切片，不保存提示词正文。 */
+  sourceSliceIds?: string[];
+  /** 调用时固定的输出令牌预算；缺省表示旧记录未提供此审计字段。 */
+  tokenBudget?: number;
   status: "completed" | "failed";
   inputTokens: number;
   outputTokens: number;
@@ -368,8 +372,8 @@ export interface AiUsageSummary {
 
 // ── Local run records (issue #19) ────────────────────────────────
 
-export type RunRecordSource = "research" | "selection" | "import" | "workflow";
-export type RunRecordOperationType = "research" | "selection_analysis" | "document_import" | "recent_organization" | "topic_document";
+export type RunRecordSource = "research" | "selection" | "import" | "workflow" | "fusion";
+export type RunRecordOperationType = "research" | "selection_analysis" | "document_import" | "recent_organization" | "topic_document" | "similarity_verification";
 export type RunRecordStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "corrupt";
 export type RunRecordOutcome = "success" | "failure" | "active" | "cancelled" | "unavailable";
 export type RunRecordErrorCategory = "authentication" | "network" | "validation" | "provider" | "search" | "storage" | "unknown";
@@ -396,6 +400,8 @@ export interface RunRecordModelCallView {
   model: string;
   purpose: string;
   promptVersion: string;
+  sourceSliceIds?: string[];
+  tokenBudget?: number;
   status: "completed" | "failed" | "corrupt";
   inputTokens: number;
   outputTokens: number;
@@ -1066,6 +1072,8 @@ export interface ResearchNodeView {
   importTasks?: ResearchImportTaskRecord[];
   /** E1：按消息 ID 返回切片列表；缺失时客户端按原消息块渲染。 */
   slices?: Record<string, ResearchSliceRecord[]>;
+  /** F1：该节点相关的融合提议列表；缺失时客户端不呈现弱提示。 */
+  fusionProposals?: ResearchFusionProposalRecord[];
 }
 
 export interface ResearchTurnAccepted {
@@ -2144,3 +2152,96 @@ export type {
   ResearchConvergenceReason,
   ResearchTermDensity,
 } from "./research-convergence.js";
+
+// ── Fusion Proposal (F1) ──────────────────────────────────────────
+
+/** 相似性核验提示词版本；模型调用与本地提议留痕都使用这一稳定版本。 */
+export const SIMILARITY_VERIFICATION_PROMPT_VERSION = "similarity-verify-v1";
+
+/** 融合关系类型；identity 为同一实体，unrelated 为无关。 */
+export const FUSION_RELATION_TYPES = ["identity", "shared-concept", "analogy", "contrast", "unrelated"] as const;
+export type FusionRelationType = (typeof FUSION_RELATION_TYPES)[number];
+
+/** 融合提议状态：pending 待决策，accepted 已确认，rejected 已拒绝。 */
+export type ResearchFusionProposalStatus = "pending" | "accepted" | "rejected";
+export type ResearchFusionProposalDecision = Exclude<ResearchFusionProposalStatus, "pending">;
+
+/** 触发来源：哪个切片或术语命中触发此提议。 */
+export interface FusionProposalTriggerSource {
+  /** 触发节点 ID。 */
+  nodeId: string;
+  /** 触发切片 ID（如有）。 */
+  sliceId?: string;
+  /** 触发术语文本（如有）。 */
+  termText?: string;
+}
+
+/**
+ * 相似性核验的可审计输入摘要。仅保留本机 slice ID、令牌预算和提示词版本，
+ * 不保存模型原始回答或额外的外部传输数据。
+ */
+export interface SimilarityVerificationAudit {
+  promptVersion: typeof SIMILARITY_VERIFICATION_PROMPT_VERSION;
+  sourceSliceIds: string[];
+  tokenBudget: number;
+}
+
+/**
+ * 融合提议记录（F1）。确定性候选索引产出宽候选，模型核验关系类型与简短理由。
+ * 节点对按 id 字典序规范化（loNodeId / hiNodeId），使方向无关。
+ * UNIQUE(loNodeId, hiNodeId) 保证刷新与重启不为同一对重复提议。
+ */
+export interface ResearchFusionProposalRecord {
+  id: string;
+  loNodeId: string;
+  hiNodeId: string;
+  relationType: FusionRelationType;
+  reason: string;
+  status: ResearchFusionProposalStatus;
+  /** 拒绝后的冷却截止时间（ISO 8601），冷却期内不重复提议。 */
+  cooldownUntil?: string;
+  /** 触发来源信息。 */
+  triggerSources: FusionProposalTriggerSource[];
+  /** 模型核验的版本、所选切片和固定令牌预算，供本地审计。 */
+  verification: SimilarityVerificationAudit;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ResearchFusionProposalDecisionInput {
+  decision: ResearchFusionProposalDecision;
+}
+
+/** 将节点对统一为无方向的字典序键。 */
+export function normalizeResearchFusionProposalPair(nodeAId: string, nodeBId: string): { loNodeId: string; hiNodeId: string } {
+  if (!nodeAId.trim() || !nodeBId.trim()) throw new Error("Fusion proposal node IDs are required");
+  if (nodeAId === nodeBId) throw new Error("Fusion proposal requires two distinct nodes");
+  return nodeAId < nodeBId
+    ? { loNodeId: nodeAId, hiNodeId: nodeBId }
+    : { loNodeId: nodeBId, hiNodeId: nodeAId };
+}
+
+export function validateResearchFusionProposalDecisionInput(value: unknown): asserts value is ResearchFusionProposalDecisionInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Fusion proposal decision input must be an object");
+  const decision = (value as { decision?: unknown }).decision;
+  if (decision !== "accepted" && decision !== "rejected") throw new Error("decision must be accepted or rejected");
+}
+
+/**
+ * 融合提议 ID 的确定性派生：FNV-1a(loNodeId + ":" + hiNodeId)。
+ * 节点对按字典序规范化，保证同一对无论输入顺序都生成同一 ID。
+ */
+export function researchFusionProposalId(nodeAId: string, nodeBId: string): string {
+  const { loNodeId, hiNodeId } = normalizeResearchFusionProposalPair(nodeAId, nodeBId);
+  return `fusion:${fusionFnv1a32(`${loNodeId}:${hiNodeId}`)}`;
+}
+
+/** FNV-1a 32-bit 确定性摘要（与选区幂等键同源）。 */
+function fusionFnv1a32(input: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}

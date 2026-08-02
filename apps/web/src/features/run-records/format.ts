@@ -6,6 +6,7 @@ export const operationLabels: Record<RunRecordOperationType, string> = {
   document_import: "文档导入",
   recent_organization: "近期内容整理",
   topic_document: "主题文档",
+  similarity_verification: "相似概念核验",
 };
 
 export const outcomeLabels: Record<RunRecordOutcome, string> = {

@@ -43,6 +43,14 @@ const STREAM_NOTICE: Record<string, { title: string; body: string }> = {
   offline: { title: "无法连接 Collector 服务", body: "页面内容已保留，恢复连接后会继续更新。" },
 };
 
+const FUSION_RELATION_LABEL: Record<import("@collector/capture-contracts").FusionRelationType, string> = {
+  identity: "同一实体",
+  "shared-concept": "共享概念",
+  analogy: "类比",
+  contrast: "对比",
+  unrelated: "无关",
+};
+
 /**
  * 统一节点页（阶段 H2/H4a）：根节点（旧会话页）与子节点（旧分支页）同一页面。
  * - 数据统一走 GET /v1/research-nodes/:id；提交统一走节点消息端点；
@@ -63,6 +71,7 @@ export function ResearchNodePage() {
   const node = useResearchNode(nodeId, { initialTurn: initialTurnRef.current });
   const termPreviews = useTermPreviews(nodeId, (error) => node.announce(apiErrorCopy(error).body));
   const [retryingTaskId, setRetryingTaskId] = useState<string | null>(null);
+  const [decidingFusionProposalId, setDecidingFusionProposalId] = useState<string | null>(null);
   const readyView = node.state.kind === "ready" ? node.state.view : undefined;
   // 导入控制器以会话视图形状工作：节点视图结构兼容，合并时保留 node / childNodes
   const importsUpdateView = useRef(
@@ -186,6 +195,22 @@ export function ResearchNodePage() {
       await node.retryTask(task);
     } finally {
       setRetryingTaskId(null);
+    }
+  }
+
+  async function handleFusionDecision(proposalId: string, decision: "accepted" | "rejected") {
+    setDecidingFusionProposalId(proposalId);
+    try {
+      await api.decideResearchFusionProposal(proposalId, decision);
+      node.updateView((current) => ({
+        ...current,
+        fusionProposals: (current.fusionProposals ?? []).filter((proposal) => proposal.id !== proposalId),
+      }));
+      node.announce(decision === "accepted" ? "已保留这条概念关系。" : "已忽略这条融合提示，近期不会再次显示。 ");
+    } catch (error) {
+      node.announce(apiErrorCopy(error).body);
+    } finally {
+      setDecidingFusionProposalId(null);
     }
   }
 
@@ -362,6 +387,39 @@ export function ResearchNodePage() {
         <StatusMessage variant="info" role="status" title={notice.title}>
           <p>{notice.body}</p>
         </StatusMessage>
+      ) : null}
+
+      {view.fusionProposals?.length ? (
+        <section className="fusion-proposal-notice" aria-label="相似概念提示" data-testid="fusion-proposal-notice">
+          {view.fusionProposals.map((proposal) => {
+            const deciding = decidingFusionProposalId === proposal.id;
+            return (
+              <details key={proposal.id} className="fusion-proposal-notice__item">
+                <summary>熟悉的概念再现，节点可融合</summary>
+                <p className="fusion-proposal-notice__relation">关系：{FUSION_RELATION_LABEL[proposal.relationType]}</p>
+                <p className="fusion-proposal-notice__reason">{proposal.reason}</p>
+                <div className="fusion-proposal-notice__actions">
+                  <button
+                    type="button"
+                    className="button button--secondary"
+                    onClick={() => void handleFusionDecision(proposal.id, "accepted")}
+                    disabled={deciding}
+                  >
+                    保留关系
+                  </button>
+                  <button
+                    type="button"
+                    className="button button--ghost"
+                    onClick={() => void handleFusionDecision(proposal.id, "rejected")}
+                    disabled={deciding}
+                  >
+                    暂不处理
+                  </button>
+                </div>
+              </details>
+            );
+          })}
+        </section>
       ) : null}
 
       {messageHighlight?.kind === "fallback" && restoredSelection ? (

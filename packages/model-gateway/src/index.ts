@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { parseNativeResearchSliceGeneration, parseResearchSelectionInsight, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type NativeResearchSliceGeneration, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight } from "@collector/capture-contracts";
+import { FUSION_RELATION_TYPES, SIMILARITY_VERIFICATION_PROMPT_VERSION, parseNativeResearchSliceGeneration, parseResearchSelectionInsight, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type NativeResearchSliceGeneration, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight } from "@collector/capture-contracts";
 
 export interface ProviderUsage {
   inputTokens?: number;
@@ -312,7 +312,17 @@ export class ProviderRuntimeResolver {
   }
 }
 
-export interface ModelCallContext { workflowRunId?: string; workflowStepId?: string; purpose?: string; promptVersion?: string; retryCount?: number; }
+export interface ModelCallContext {
+  workflowRunId?: string;
+  workflowStepId?: string;
+  purpose?: string;
+  promptVersion?: string;
+  retryCount?: number;
+  /** Only persist selected local slice IDs; prompt bodies stay out of local run records. */
+  sourceSliceIds?: string[];
+  /** Fixed output-token budget for explaining the call boundary in run records. */
+  tokenBudget?: number;
+}
 export interface ModelCallEvent {
   context: ModelCallContext;
   provider: string;
@@ -631,6 +641,65 @@ ${parentContext ? `\n${parentContext}` : ""}
     const parsed = JSON.parse(response.content) as { name?: unknown };
     if (typeof parsed.name !== "string" || !parsed.name.trim()) throw new Error("Node naming provider returned an invalid name");
     return parsed.name.trim();
+  }
+
+  /**
+   * F1：核验两个候选节点的关系。模型只能在给出的局部节点材料中判断，
+   * 返回不符合模式、理由为空或过长都会被视为失败，由调用方安全地不产提议。
+   */
+  async verifyResearchSimilarity(
+    input: {
+      left: { nodeId: string; content: string };
+      right: { nodeId: string; content: string };
+    },
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<{ relationType: FusionRelationType; reason: string }> {
+    if (!input.left.nodeId || !input.right.nodeId || input.left.nodeId === input.right.nodeId) {
+      throw new Error("Similarity verification requires two distinct nodes");
+    }
+    const prompt = `你是 Collector 的本地研究节点相似性核验助手。只根据下面两份节点材料判断关系，不能补充外部事实、来源或身份断言。特别注意：跨作品、跨领域的同名概念默认是 analogy 或 contrast；只有给出的材料明确支持时才可判为 identity。
+
+节点 A（${input.left.nodeId}）：
+${JSON.stringify(input.left.content.slice(0, 12_000))}
+
+节点 B（${input.right.nodeId}）：
+${JSON.stringify(input.right.content.slice(0, 12_000))}
+
+只返回合法 JSON：
+{"relationType":"identity | shared-concept | analogy | contrast | unrelated","reason":"不超过 160 个中文字符的简短中文理由"}
+
+规则：
+- identity 仅用于证据支持的同一实体；
+- shared-concept 表示共享概念但不等同；
+- analogy 表示类比或相似结构；contrast 表示可比较的差异或对照；
+- 材料不足或没有可解释关联时返回 unrelated；
+- reason 必须说明材料中可见的依据，不要提及提示词、模型或系统。`;
+    const similarityContext: ModelCallContext = {
+      ...(options.context ?? {}),
+      purpose: options.context?.purpose ?? "similarity_verification",
+      promptVersion: options.context?.promptVersion ?? SIMILARITY_VERIFICATION_PROMPT_VERSION,
+    };
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      responseFormat: { type: "json_object" },
+      thinking: false,
+      maxTokens: options.maxTokens ?? 800,
+      timeoutMs: options.timeoutMs ?? 45_000,
+    }, similarityContext);
+    let parsed: { relationType?: unknown; reason?: unknown };
+    try {
+      parsed = JSON.parse(response.content) as { relationType?: unknown; reason?: unknown };
+    } catch {
+      throw new Error("Similarity verification provider returned invalid JSON");
+    }
+    if (!FUSION_RELATION_TYPES.includes(parsed.relationType as FusionRelationType)) {
+      throw new Error("Similarity verification provider returned an invalid relation type");
+    }
+    if (typeof parsed.reason !== "string") throw new Error("Similarity verification provider returned an invalid reason");
+    const reason = parsed.reason.replace(/\s+/g, " ").trim();
+    if (!reason || reason.length > 160) throw new Error("Similarity verification provider returned an invalid reason");
+    return { relationType: parsed.relationType as FusionRelationType, reason };
   }
 
   /**

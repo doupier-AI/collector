@@ -23,6 +23,8 @@ import type {
   ResearchLaterItemUpdate,
   ResearchLaterItemView,
   ResearchGraphProjection,
+  ResearchFusionProposalDecision,
+  ResearchFusionProposalRecord,
   ResearchNodeView,
   ResearchSelectionAccepted,
   ResearchSelectionInput,
@@ -96,6 +98,10 @@ export interface ApiClient {
   getResearchSessionNodeTree(sessionId: string): Promise<ResearchSessionNodeTreeItem[]>;
   /** 关系图投影：以指定节点为中心，返回邻居节点与类型化边。 */
   getResearchGraph(sessionId: string, focusNodeId?: string): Promise<ResearchGraphProjection>;
+  /** 手动触发当前节点的确定性相似候选扫描；模型核验失败时返回空提议而不降级猜测。 */
+  scanResearchFusionProposals(nodeId: string): Promise<ResearchFusionProposalRecord[]>;
+  listResearchFusionProposals(nodeId: string, status?: ResearchFusionProposalRecord["status"]): Promise<ResearchFusionProposalRecord[]>;
+  decideResearchFusionProposal(proposalId: string, decision: ResearchFusionProposalDecision): Promise<ResearchFusionProposalRecord>;
   /** 从选区生长子节点：统一取代深入研究二选一。 */
   startChildNode(selectionId: string, input: CreateChildNodeInput, idempotencyKey: string): Promise<NodeGrowthAccepted>;
     /** 保存标记：幂等键命中返回首次保存的项目，保存不依赖 AI。 */
@@ -397,6 +403,27 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
       return requestJson<ResearchGraphProjection>(
         fetchFn,
         `/v1/research-sessions/${encodeURIComponent(sessionId)}/graph${query}`,
+      );
+    },
+    scanResearchFusionProposals(nodeId: string) {
+      return requestJson<ResearchFusionProposalRecord[]>(
+        fetchFn,
+        `/v1/research-nodes/${encodeURIComponent(nodeId)}/fusion-proposals/scan`,
+        { method: "POST", headers: JSON_HEADERS, body: "{}" },
+      );
+    },
+    listResearchFusionProposals(nodeId: string, status?: ResearchFusionProposalRecord["status"]) {
+      const query = status ? `?status=${encodeURIComponent(status)}` : "";
+      return requestJson<ResearchFusionProposalRecord[]>(
+        fetchFn,
+        `/v1/research-nodes/${encodeURIComponent(nodeId)}/fusion-proposals${query}`,
+      );
+    },
+    decideResearchFusionProposal(proposalId: string, decision: ResearchFusionProposalDecision) {
+      return requestJson<ResearchFusionProposalRecord>(
+        fetchFn,
+        `/v1/research-fusion-proposals/${encodeURIComponent(proposalId)}/decide`,
+        { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ decision }) },
       );
     },
     startChildNode(selectionId: string, input: CreateChildNodeInput, idempotencyKey: string) {

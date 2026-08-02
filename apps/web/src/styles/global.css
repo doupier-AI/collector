@@ -215,6 +215,56 @@ button {
   font-size: 0.875rem;
 }
 
+/* F1：相似性核验后的低注意力提示；操作不依赖动效或颜色。 */
+.fusion-proposal-notice {
+  margin: 0 0 var(--space-4);
+  border-inline-start: 3px solid color-mix(in srgb, var(--color-ai) 42%, var(--color-line));
+  color: var(--color-muted);
+  font-size: 0.875rem;
+  animation: fusion-proposal-notice-in 140ms ease-out;
+}
+
+.fusion-proposal-notice__item {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-line);
+  border-inline-start: 0;
+  border-radius: 0 var(--radius-control) var(--radius-control) 0;
+  background: color-mix(in srgb, var(--color-surface) 92%, var(--color-canvas));
+}
+
+.fusion-proposal-notice__item + .fusion-proposal-notice__item {
+  margin-top: var(--space-2);
+}
+
+.fusion-proposal-notice summary {
+  cursor: pointer;
+  color: var(--color-ink);
+  font-weight: 600;
+}
+
+.fusion-proposal-notice__relation,
+.fusion-proposal-notice__reason {
+  margin: var(--space-2) 0 0;
+}
+
+.fusion-proposal-notice__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+@keyframes fusion-proposal-notice-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fusion-proposal-notice {
+    animation: none;
+  }
+}
+
 .message-list {
   list-style: none;
   margin: 0 0 var(--space-5);

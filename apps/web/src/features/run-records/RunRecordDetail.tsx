@@ -50,7 +50,12 @@ export function RunRecordDetail({ detail }: { detail: RunRecordDetailModel }) {
               <tbody>
                 {detail.modelCalls.map((call) => (
                   <tr key={call.id}>
-                    <td><strong>{call.model}</strong><span>{call.provider} · {call.purpose}</span></td>
+                    <td>
+                      <strong>{call.model}</strong>
+                      <span>{call.provider} · {call.purpose}</span>
+                      {call.sourceSliceIds?.length ? <span>来源切片：{call.sourceSliceIds.join("、")}</span> : null}
+                      {call.tokenBudget !== undefined ? <span>令牌预算：{formatTokens(call.tokenBudget)}</span> : null}
+                    </td>
                     <td>{call.promptVersion}</td>
                     <td>{call.status === "corrupt" ? "记录损坏" : call.status === "completed" ? "已完成" : "失败"}</td>
                     <td>{formatTokens(call.inputTokens)} 输入 / {formatTokens(call.outputTokens)} 输出</td>

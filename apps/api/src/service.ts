@@ -65,6 +65,7 @@ import { parseAgentCitations } from "./web-search-agent.js";
 import { getSearchConfig as getSearchConfigFromAgent, updateSearchConfig as updateSearchConfigInAgent, listAvailableBackends, initSearchBackends, type SearchBackendId } from "./web-search-agent.js";
 import { ALL_SEARCH_BACKEND_IDS } from "./search-backends/index.js";
 import { RunRecordsService } from "./observability.js";
+import { ResearchFusionProposalService, type SimilarityVerificationGateway } from "./fusion-proposals.js";
 
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
@@ -87,6 +88,7 @@ export class CaptureService {
   readonly nodeGrowth: NodeGrowthService;
   readonly researchLater: ResearchLaterService;
   readonly termDetection: TermDetectionService;
+  readonly fusionProposals: ResearchFusionProposalService;
   readonly termPreviews: ResearchTermPreviewService;
   readonly parentChainContext: ParentChainContextService;
   readonly nodeNaming: NodeNamingService;
@@ -97,7 +99,7 @@ export class CaptureService {
     private readonly artifactRoot: string,
     private readonly parser = new SourceParser(),
     private modelGateway?: ModelGateway,
-    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; selectionProvider?: ResearchSelectionProvider; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunSelectionTasks?: boolean; mvpDemoMode?: boolean } = {},
+    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; selectionProvider?: ResearchSelectionProvider; similarityVerifier?: SimilarityVerificationGateway; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunSelectionTasks?: boolean; mvpDemoMode?: boolean } = {},
   ) {
     this.runRecords = new RunRecordsService(this.store);
     this.attachModelGateway(this.modelGateway);
@@ -126,6 +128,11 @@ export class CaptureService {
     });
     this.researchLater = new ResearchLaterService(this.store);
     this.termDetection = new TermDetectionService();
+    this.fusionProposals = new ResearchFusionProposalService(
+      this.store,
+      this.termDetection,
+      async () => this.options.similarityVerifier ?? this.gatewayForPurpose("research"),
+    );
     this.termPreviews = new ResearchTermPreviewService(this.store, {
       research: this.research,
       parentChainContext: this.parentChainContext,
@@ -167,7 +174,12 @@ export class CaptureService {
       termDetections[message.id] = this.termDetection.detect(message.id, message.content, { nodeDepth });
       slices[message.id] = await this.getOrCreateSlices(nodeId, message.id, message.content, view.citations ?? []);
     }
-    return { ...view, termDetections, slices };
+    return {
+      ...view,
+      termDetections,
+      slices,
+      fusionProposals: this.fusionProposals.listForNode(nodeId, ["pending"]),
+    };
   }
 
   /**
@@ -203,6 +215,8 @@ export class CaptureService {
         model: event.model,
         purpose: event.context.purpose ?? "unknown",
         promptVersion: event.promptVersion,
+        ...(event.context.sourceSliceIds ? { sourceSliceIds: [...new Set(event.context.sourceSliceIds)].sort() } : {}),
+        ...(event.context.tokenBudget !== undefined ? { tokenBudget: event.context.tokenBudget } : {}),
         status: event.status,
         inputTokens: usage?.inputTokens ?? 0,
         outputTokens: usage?.outputTokens ?? 0,

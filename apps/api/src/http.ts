@@ -2,13 +2,14 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { timingSafeEqual } from "node:crypto";
 import { ValidationError, NotFoundError, CaptureService } from "./service.js";
 import { LocalAuth, PairingRateLimitError } from "./auth.js";
-import { RESEARCH_IMPORT_MAX_BYTES, validateCreateChildNodeInput, validateDeepResearchInput, validateResearchImportHeaders, validateResearchLaterItemInput, validateResearchLaterItemUpdate, validateResearchMessageInput, validateResearchSelectionInput, validateResearchSessionInput, validateResearchTermPreviewInput } from "@collector/capture-contracts";
+import { RESEARCH_IMPORT_MAX_BYTES, validateCreateChildNodeInput, validateDeepResearchInput, validateResearchFusionProposalDecisionInput, validateResearchImportHeaders, validateResearchLaterItemInput, validateResearchLaterItemUpdate, validateResearchMessageInput, validateResearchSelectionInput, validateResearchSessionInput, validateResearchTermPreviewInput } from "@collector/capture-contracts";
 import { ResearchNotFoundError, ResearchValidationError } from "./research.js";
 import { ResearchImportConflictError, ResearchImportNotFoundError, ResearchImportValidationError } from "./research-import.js";
 import { ResearchSelectionConflictError, ResearchSelectionNotFoundError, ResearchSelectionValidationError } from "./selection.js";
 import { DeepResearchNotFoundError, DeepResearchValidationError } from "./deep-research.js";
 import { ResearchLaterNotFoundError, ResearchLaterValidationError } from "./research-later.js";
 import { ResearchTermPreviewNotFoundError, ResearchTermPreviewValidationError } from "./term-preview.js";
+import { ResearchFusionProposalConflictError, ResearchFusionProposalNotFoundError, ResearchFusionProposalValidationError } from "./fusion-proposals.js";
 import { RunRecordsValidationError } from "./observability.js";
 import { streamRunRecordExport } from "./run-record-export.js";
 import { createStaticWebHandler } from "./static-web.js";
@@ -410,6 +411,31 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
           decodeURIComponent(researchNodeTermPreviewsMatch[1]), body, header(request, "idempotency-key") ?? "",
         ));
       }
+      const researchNodeFusionScanMatch = url.pathname.match(/^\/v1\/research-nodes\/([^/]+)\/fusion-proposals\/scan$/);
+      if (request.method === "POST" && researchNodeFusionScanMatch) {
+        return json(response, 200, await service.fusionProposals.scan(decodeURIComponent(researchNodeFusionScanMatch[1])));
+      }
+      const researchNodeFusionProposalsMatch = url.pathname.match(/^\/v1\/research-nodes\/([^/]+)\/fusion-proposals$/);
+      if (request.method === "GET" && researchNodeFusionProposalsMatch) {
+        const status = url.searchParams.get("status");
+        if (status !== null && status !== "pending" && status !== "accepted" && status !== "rejected") {
+          throw new ResearchFusionProposalValidationError("status must be pending, accepted, or rejected");
+        }
+        return json(response, 200, service.fusionProposals.listForNode(
+          decodeURIComponent(researchNodeFusionProposalsMatch[1]),
+          status ? [status] : undefined,
+        ));
+      }
+      const researchFusionProposalDecisionMatch = url.pathname.match(/^\/v1\/research-fusion-proposals\/([^/]+)\/decide$/);
+      if (request.method === "POST" && researchFusionProposalDecisionMatch) {
+        const body = await readJson(request);
+        try { validateResearchFusionProposalDecisionInput(body); }
+        catch (error) { throw new ResearchFusionProposalValidationError((error as Error).message); }
+        return json(response, 200, await service.fusionProposals.decide(
+          decodeURIComponent(researchFusionProposalDecisionMatch[1]),
+          body.decision,
+        ));
+      }
       const researchNodeMatch = url.pathname.match(/^\/v1\/research-nodes\/([^/]+)$/);
       if (request.method === "GET" && researchNodeMatch) {
         return json(response, 200, await service.getResearchNodeView(decodeURIComponent(researchNodeMatch[1])));
@@ -654,15 +680,16 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (error instanceof LocalAccessError) {
         return json(response, 403, { error: { code: "local_access_denied", message: error.message } });
       }
-      if (error instanceof ResearchImportConflictError || error instanceof ResearchSelectionConflictError) {
-        return json(response, 409, { error: { code: error.code, message: error.message } });
+      if (error instanceof ResearchImportConflictError || error instanceof ResearchSelectionConflictError || error instanceof ResearchFusionProposalConflictError) {
+        const code = error instanceof ResearchFusionProposalConflictError ? "proposal_already_decided" : error.code;
+        return json(response, 409, { error: { code, message: error.message } });
       }
-      if (error instanceof ValidationError || error instanceof ResearchValidationError || error instanceof ResearchImportValidationError || error instanceof ResearchSelectionValidationError || error instanceof DeepResearchValidationError || error instanceof ResearchLaterValidationError || error instanceof ResearchTermPreviewValidationError || error instanceof RunRecordsValidationError || error instanceof SyntaxError) {
+      if (error instanceof ValidationError || error instanceof ResearchValidationError || error instanceof ResearchImportValidationError || error instanceof ResearchSelectionValidationError || error instanceof DeepResearchValidationError || error instanceof ResearchLaterValidationError || error instanceof ResearchTermPreviewValidationError || error instanceof ResearchFusionProposalValidationError || error instanceof RunRecordsValidationError || error instanceof SyntaxError) {
         const code = error instanceof ResearchImportValidationError ? error.code : "invalid_request";
         const status = code === "file_too_large" ? 413 : code === "unsupported_file_type" ? 415 : code === "invalid_file_content" ? 422 : 400;
         return json(response, status, { error: { code, message: error.message } });
       }
-      if (error instanceof NotFoundError || error instanceof ResearchNotFoundError || error instanceof ResearchImportNotFoundError || error instanceof ResearchSelectionNotFoundError || error instanceof DeepResearchNotFoundError || error instanceof ResearchLaterNotFoundError || error instanceof ResearchTermPreviewNotFoundError) return json(response, 404, { error: { code: "not_found", message: error.message } });
+      if (error instanceof NotFoundError || error instanceof ResearchNotFoundError || error instanceof ResearchImportNotFoundError || error instanceof ResearchSelectionNotFoundError || error instanceof DeepResearchNotFoundError || error instanceof ResearchLaterNotFoundError || error instanceof ResearchTermPreviewNotFoundError || error instanceof ResearchFusionProposalNotFoundError) return json(response, 404, { error: { code: "not_found", message: error.message } });
       console.error(error);
       return json(response, 500, { error: { code: "internal_error", message: "Internal server error" } });
     }
