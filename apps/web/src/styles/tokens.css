@@ -43,6 +43,16 @@
   --color-difficulty-high: #A33B36;
   --selection-panel-width: 22.5rem;
   --shadow-panel: 0 0.75rem 2rem rgba(32, 35, 31, 0.16);
+
+  /* 网状图边类型：形状/线型 + 颜色冗余编码，经过相邻对比验证 */
+  --color-edge-parent-child: #2A78D6;
+  --color-edge-semantic-related: #EB6834;
+  --color-edge-fused-from: #1BAF7A;
+
+  /* 网状图节点 */
+  --color-graph-focus: #20231F;
+  --color-graph-node: #FCFCFA;
+  --color-graph-node-stroke: #6B7168;
 }
 
 ::selection {

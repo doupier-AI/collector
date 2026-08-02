@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { useMediaQuery } from "../../app/useMediaQuery";
 import { ContentDrawer } from "../../features/navigation/ContentDrawer";
+import { GraphCanvas } from "../../features/navigation/GraphCanvas";
 import { LaterPanel } from "../../features/navigation/LaterPanel";
 import { NodeTreeOverlay } from "../../features/navigation/NodeTreeOverlay";
 import { RelationshipList } from "../../features/navigation/RelationshipList";
@@ -31,6 +32,7 @@ function isEditableTarget(target: EventTarget | null): boolean {
  * 宽屏（≥900px）两侧为固定侧栏、初始展开，可拖拽调宽；
  * 窄屏为覆盖抽屉、初始收起，遮罩点击或 Escape 关闭后焦点回到触发按钮。
  * 节点树为全屏覆盖层：按钮或快捷键 t（焦点不在输入控件时）唤出。
+ * 网状导航在桌面显示画布，在窄屏回落到同一投影的关系列表。
  */
 export function AppShell() {
   const wide = useMediaQuery("(min-width: 900px)");
@@ -89,7 +91,7 @@ export function AppShell() {
     setGraphOpen(false);
   }, [location.pathname]);
 
-  // 快捷键 t 唤出节点树、g 唤出关系列表：焦点在输入控件时不拦截
+  // 快捷键 t 唤出节点树、g 唤出网状导航；焦点在输入控件时不拦截
   useEffect(() => {
     if (!treeTarget) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -151,9 +153,9 @@ export function AppShell() {
             type="button"
             ref={graphTriggerRef}
             className="app-bar__icon-button"
-            aria-label="关系列表（快捷键 G）"
+            aria-label="网状导航（快捷键 G）"
             aria-expanded={graphOpen}
-            aria-controls="relationship-list-overlay"
+            aria-controls={wide ? "graph-canvas-overlay" : "relationship-list-overlay"}
             onClick={() => setGraphOpen(true)}
           >
             <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
@@ -204,7 +206,11 @@ export function AppShell() {
         <NodeTreeOverlay sessionId={treeTarget.sessionId} currentNodeId={treeTarget.nodeId} onClose={closeTree} />
       ) : null}
       {graphOpen && treeTarget ? (
-        <RelationshipList sessionId={treeTarget.sessionId} focusNodeId={treeTarget.nodeId} onClose={closeGraph} />
+        wide ? (
+          <GraphCanvas sessionId={treeTarget.sessionId} focusNodeId={treeTarget.nodeId} onClose={closeGraph} />
+        ) : (
+          <RelationshipList sessionId={treeTarget.sessionId} focusNodeId={treeTarget.nodeId} onClose={closeGraph} />
+        )
       ) : null}
     </div>
   );

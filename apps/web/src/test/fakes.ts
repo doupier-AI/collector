@@ -2,6 +2,10 @@ import type {
   ResearchAttachmentRecord,
   ResearchBranchRecord,
   ResearchBranchView,
+  ResearchEdgeKind,
+  ResearchEdgeRecord,
+  ResearchGraphProjection,
+  ResearchGraphNodeSummary,
   ResearchImportTaskRecord,
   ResearchLaterItemRecord,
   ResearchLaterItemView,
@@ -255,5 +259,58 @@ export function makeLaterItemView(overrides: {
     selection,
     sourceTitle: overrides.sourceTitle ?? "理解注意力机制",
     sourceNode: overrides.sourceNode ?? { id: item.nodeId ?? item.sessionId, label: overrides.sourceTitle ?? "理解注意力机制" },
+  };
+}
+
+/** 类型化边工厂：默认 active 状态，确定性 ID 由 kind + from + to 拼接。 */
+export function makeEdge(
+  kind: ResearchEdgeKind,
+  fromNodeId: string,
+  toNodeId: string,
+  overrides: Partial<ResearchEdgeRecord> = {},
+): ResearchEdgeRecord {
+  return {
+    id: overrides.id ?? `edge:${kind}:${fromNodeId}:${toNodeId}`,
+    kind,
+    fromNodeId,
+    toNodeId,
+    createdAt: "2026-08-01T08:00:00.000Z",
+    status: "active",
+    ...overrides,
+  };
+}
+
+/** 图投影工厂：接受节点摘要数组与边数组，焦点默认取第一个节点。 */
+export function makeGraphProjection(
+  overrides: {
+    nodes?: ResearchGraphNodeSummary[];
+    edges?: ResearchEdgeRecord[];
+    focusNodeId?: string;
+  } = {},
+): ResearchGraphProjection {
+  const nodes = overrides.nodes ?? [];
+  return {
+    focusNodeId: overrides.focusNodeId ?? (nodes[0]?.node.id ?? "focus"),
+    edges: overrides.edges ?? [],
+    nodes,
+  };
+}
+
+/** 图节点摘要工厂：配合 makeNode 使用。 */
+export function makeGraphNodeSummary(
+  id: string,
+  label: string,
+  depth: number,
+  options: { parentNodeId?: string; sessionId?: string; createdAt?: string } = {},
+): ResearchGraphNodeSummary {
+  return {
+    node: makeNode({
+      id,
+      sessionId: options.sessionId ?? "session-1",
+      parentNodeId: options.parentNodeId,
+      createdAt: options.createdAt ?? "2026-08-01T08:00:00.000Z",
+    }),
+    label,
+    depth,
   };
 }

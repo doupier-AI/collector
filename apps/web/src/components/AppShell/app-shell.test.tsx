@@ -21,20 +21,26 @@ function stubMatchMedia(wide: boolean) {
   })) as unknown as typeof window.matchMedia;
 }
 
-function renderShell() {
+function renderShell(initialEntry = "/") {
   const services = {
     api: {
       listResearchSessions: async () => [],
       listResearchLaterItems: async () => [],
+      getResearchGraph: async (_sessionId: string, focusNodeId?: string) => ({
+        focusNodeId: focusNodeId ?? "node-1",
+        nodes: [],
+        edges: [],
+      }),
     } as Partial<ApiClient> as ApiClient,
     connectTaskEvents: vi.fn(),
   } as unknown as AppServices;
   return render(
     <ServicesProvider services={services}>
-      <MemoryRouter initialEntries={["/"]}>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <Routes>
           <Route element={<AppShell />}>
             <Route index element={<p>主页内容</p>} />
+            <Route path="research/:sessionId/node/:nodeId" element={<p>节点内容</p>} />
           </Route>
         </Routes>
       </MemoryRouter>
@@ -101,6 +107,27 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
 
     await user.click(screen.getByRole("button", { name: "标记" }));
     expect(screen.queryByRole("complementary", { name: "标记" })).not.toBeInTheDocument();
+  });
+});
+
+describe("AppShell 网状导航入口（阶段 I · D2）", () => {
+  it("宽屏打开网状画布，窄屏回落到既有关系列表", async () => {
+    const user = userEvent.setup();
+    stubMatchMedia(true);
+    const wideRender = renderShell("/research/session-1/node/node-1");
+
+    const wideTrigger = screen.getByRole("button", { name: "网状导航（快捷键 G）" });
+    expect(wideTrigger).toHaveAttribute("aria-controls", "graph-canvas-overlay");
+    await user.click(wideTrigger);
+    expect(screen.getByRole("dialog", { name: "网状导航" })).toBeInTheDocument();
+    wideRender.unmount();
+
+    stubMatchMedia(false);
+    renderShell("/research/session-1/node/node-1");
+    const narrowTrigger = screen.getByRole("button", { name: "网状导航（快捷键 G）" });
+    expect(narrowTrigger).toHaveAttribute("aria-controls", "relationship-list-overlay");
+    await user.click(narrowTrigger);
+    expect(screen.getByRole("dialog", { name: "关系列表" })).toBeInTheDocument();
   });
 });
 

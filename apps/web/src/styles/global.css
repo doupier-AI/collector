@@ -1411,6 +1411,204 @@ button.model-status {
   font-size: 0.75rem;
 }
 
+/* ---------- 全屏网状导航（阶段 I · D2） ---------- */
+
+.graph-canvas-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  overflow: hidden;
+  background: var(--color-canvas);
+  animation: collector-panel-in 160ms ease-out;
+}
+
+.graph-canvas-overlay__header,
+.graph-canvas-overlay__controls {
+  display: flex;
+  align-items: center;
+}
+
+.graph-canvas-overlay__header {
+  justify-content: space-between;
+}
+
+.graph-canvas-overlay__title {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+.graph-canvas-overlay__focus,
+.graph-canvas-overlay__hint {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 0.875rem;
+}
+
+.graph-canvas-overlay__controls {
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.graph-canvas__control-button {
+  min-height: 2rem;
+  padding: 0.25rem 0.625rem;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-ink);
+  cursor: pointer;
+  font: inherit;
+}
+
+.graph-canvas__control-button:hover:not(:disabled) {
+  border-color: var(--color-ai);
+  color: var(--color-ai);
+}
+
+.graph-canvas__control-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.graph-canvas-overlay__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  gap: var(--space-3);
+  overflow: auto;
+}
+
+.graph-canvas__svg {
+  display: block;
+  flex: 1 0 18rem;
+  width: 100%;
+  min-height: 18rem;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  cursor: grab;
+  touch-action: none;
+}
+
+.graph-canvas__transform {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 120ms ease-out;
+}
+
+.graph-canvas__transform--dragging {
+  transition: none;
+}
+
+.graph-canvas__edge {
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.graph-canvas__node {
+  cursor: pointer;
+  outline: none;
+}
+
+.graph-canvas__node:focus-visible circle {
+  stroke: var(--color-ai);
+  stroke-width: 4;
+}
+
+.graph-canvas__node--current circle {
+  filter: drop-shadow(0 2px 4px rgb(32 35 31 / 0.2));
+}
+
+.graph-canvas__node-label {
+  paint-order: stroke;
+  stroke: var(--color-surface);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+.graph-canvas__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  color: var(--color-muted);
+  font-size: 0.8125rem;
+}
+
+.graph-canvas__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.graph-canvas__relationship-summary {
+  flex: 0 0 auto;
+  max-height: 8rem;
+  padding: var(--space-2) var(--space-3);
+  overflow: auto;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+}
+
+.graph-canvas__relationship-summary h3,
+.graph-canvas__relationship-summary p {
+  margin: 0;
+  font-size: 0.8125rem;
+}
+
+.graph-canvas__relationship-summary h3 {
+  color: var(--color-muted);
+}
+
+.graph-canvas__relationship-summary p {
+  margin-top: var(--space-1);
+  color: var(--color-muted);
+}
+
+.graph-canvas__relationship-summary ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.graph-canvas__relationship-summary li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.graph-canvas__relationship-summary button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-ai);
+  cursor: pointer;
+  font: inherit;
+  text-align: start;
+}
+
+.graph-canvas__relationship-summary button:hover {
+  text-decoration: underline;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .graph-canvas-overlay {
+    animation: none;
+  }
+
+  .graph-canvas__transform {
+    transition: none;
+  }
+}
+
 
 .later-panel__empty {
   margin: var(--space-4) 0 0;

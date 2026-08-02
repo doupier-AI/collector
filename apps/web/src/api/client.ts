@@ -97,7 +97,7 @@ export interface ApiClient {
   /** 会话节点树（全屏树导航）：一次性返回扁平条目，客户端按 parentNodeId 建树。 */
   getResearchSessionNodeTree(sessionId: string): Promise<ResearchSessionNodeTreeItem[]>;
   /** 关系图投影：以指定节点为中心，返回邻居节点与类型化边。 */
-  getResearchGraph(sessionId: string, focusNodeId?: string): Promise<ResearchGraphProjection>;
+  getResearchGraph(sessionId: string, focusNodeId?: string, maxDepth?: number): Promise<ResearchGraphProjection>;
   /** 手动触发当前节点的确定性相似候选扫描；模型核验失败时返回空提议而不降级猜测。 */
   scanResearchFusionProposals(nodeId: string): Promise<ResearchFusionProposalRecord[]>;
   listResearchFusionProposals(nodeId: string, status?: ResearchFusionProposalRecord["status"]): Promise<ResearchFusionProposalRecord[]>;
@@ -398,8 +398,11 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
         `/v1/research-sessions/${encodeURIComponent(sessionId)}/nodes`,
       );
     },
-    getResearchGraph(sessionId: string, focusNodeId?: string) {
-      const query = focusNodeId ? `?focusNodeId=${encodeURIComponent(focusNodeId)}` : "";
+    getResearchGraph(sessionId: string, focusNodeId?: string, maxDepth?: number) {
+      const params = new URLSearchParams();
+      if (focusNodeId) params.set("focusNodeId", focusNodeId);
+      if (maxDepth !== undefined) params.set("maxDepth", String(maxDepth));
+      const query = params.toString() ? `?${params.toString()}` : "";
       return requestJson<ResearchGraphProjection>(
         fetchFn,
         `/v1/research-sessions/${encodeURIComponent(sessionId)}/graph${query}`,
