@@ -42,6 +42,16 @@ export function RelationshipList({
     itemRefs.current.get(focusedItemId)?.focus();
   }, [focusedItemId, flatItems]);
 
+  useEffect(() => {
+    const handleDocumentKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      onClose();
+    };
+    document.addEventListener("keydown", handleDocumentKeyDown);
+    return () => document.removeEventListener("keydown", handleDocumentKeyDown);
+  }, [onClose]);
+
   const selectNode = useCallback(
     (nodeId: string) => {
       onClose();
@@ -102,12 +112,6 @@ export function RelationshipList({
         role="dialog"
         aria-modal="true"
         aria-label="关系列表"
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.preventDefault();
-            onClose();
-          }
-        }}
       >
         <header className="relationship-list-overlay__header">
           <h2 className="relationship-list-overlay__title">关系列表</h2>
