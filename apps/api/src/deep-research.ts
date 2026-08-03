@@ -351,7 +351,8 @@ export class NodeGrowthService {
    * 缺省焦点为会话根节点（sessionId === 根节点 id）。
    * 标签规则与节点树一致：displayName > 来源选区摘要 > 首条用户消息摘要 > 回退。
    */
-  getGraphProjection(sessionId: string, focusNodeId?: string): ResearchGraphProjection {
+  /** 图投影最大展开深度；省略时由共享投影使用默认深度。 */
+  getGraphProjection(sessionId: string, focusNodeId?: string, maxDepth?: number): ResearchGraphProjection {
     const session = this.store.getResearchSession(sessionId);
     if (!session) throw new DeepResearchNotFoundError("Research session not found");
     const nodes = this.store.listResearchNodes(sessionId);
@@ -360,6 +361,7 @@ export class NodeGrowthService {
     const sessionEdges = allEdges.filter((edge) => nodeIds.has(edge.fromNodeId) && nodeIds.has(edge.toNodeId));
     const focus = focusNodeId ?? sessionId;
     return buildGraphProjection(nodes, sessionEdges, focus, {
+      ...(maxDepth === undefined ? {} : { maxDepth }),
       nodeLabel: (node) => {
         if (!node.parentNodeId) return session.title;
         if (node.displayName) return node.displayName;

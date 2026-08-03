@@ -1429,7 +1429,6 @@ export function buildGraphProjection(
         continue;
       }
       visited.set(neighborId, current.depth + 1);
-      projectedEdgeIds.add(edge.id);
       queue.push({ nodeId: neighborId, depth: current.depth + 1 });
     }
   }
@@ -1459,7 +1458,12 @@ export function buildGraphProjection(
     return a.node.createdAt.localeCompare(b.node.createdAt);
   });
 
-  const edges = activeEdges.filter((edge) => projectedEdgeIds.has(edge.id));
+  // 只返回两个端点都在本次深度投影中的边，避免 maxDepth=0/1 泄漏层外关系。
+  const edges = activeEdges.filter(
+    (edge) => projectedEdgeIds.has(edge.id)
+      && projectedNodeIds.has(edge.fromNodeId)
+      && projectedNodeIds.has(edge.toNodeId),
+  );
 
   return { nodes, edges, focusNodeId };
 }

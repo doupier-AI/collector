@@ -15,6 +15,7 @@ import { streamRunRecordExport } from "./run-record-export.js";
 import { createStaticWebHandler } from "./static-web.js";
 
 const JSON_LIMIT = 2 * 1024 * 1024;
+const MAX_GRAPH_PROJECTION_DEPTH = 32;
 
 export interface ApiServerOptions {
   instanceId?: string;
@@ -282,9 +283,11 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       const researchSessionGraphMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)\/graph$/);
       if (request.method === "GET" && researchSessionGraphMatch) {
         const focusNodeId = url.searchParams.get("focusNodeId") ?? undefined;
+        const maxDepth = parseGraphProjectionDepth(url.searchParams.get("maxDepth"));
         return json(response, 200, service.nodeGrowth.getGraphProjection(
           decodeURIComponent(researchSessionGraphMatch[1]),
           focusNodeId,
+          maxDepth,
         ));
       }
       const researchSessionMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)$/);
@@ -694,6 +697,18 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       return json(response, 500, { error: { code: "internal_error", message: "Internal server error" } });
     }
   });
+}
+
+function parseGraphProjectionDepth(value: string | null): number | undefined {
+  if (value === null) return undefined;
+  if (!/^\d+$/.test(value)) {
+    throw new ResearchValidationError("maxDepth must be a non-negative safe integer");
+  }
+  const maxDepth = Number(value);
+  if (!Number.isSafeInteger(maxDepth) || maxDepth > MAX_GRAPH_PROJECTION_DEPTH) {
+    throw new ResearchValidationError(`maxDepth must be between 0 and ${MAX_GRAPH_PROJECTION_DEPTH}`);
+  }
+  return maxDepth;
 }
 
 function decodeImportComponent(value: string, code: string, label: string): string {

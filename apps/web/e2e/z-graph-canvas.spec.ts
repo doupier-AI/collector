@@ -111,6 +111,8 @@ test.describe("网状画布导航", () => {
     await expect(canvas.getByTestId("graph-node-e2e-semantic-" + childId)).toBeVisible();
     await expect(canvas.getByTestId("graph-node-e2e-fused-" + childId)).toBeVisible();
     expect(graphRequests.some((url) => /[?&]maxDepth=1(?:&|$)/.test(url))).toBe(true);
+    await canvas.getByTestId("graph-expand").click();
+    await expect.poll(() => graphRequests.some((url) => /[?&]maxDepth=2(?:&|$)/.test(url))).toBe(true);
 
     const transform = canvas.locator(".graph-canvas__transform");
     await expect(transform).toHaveAttribute("style", /transition:\s*none/);
