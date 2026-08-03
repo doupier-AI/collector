@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
+  deriveBodyVersion,
+  deriveFragmentsFromBlocks,
+  deriveFragmentsFromSlices,
   deriveMessageBlocks,
   deriveProvisionalSlices,
   redactGroundingValue,
@@ -317,6 +320,7 @@ export class ResearchSessionService {
         // 只有正文与全部正式切片共同通过契约校验后，才开始写入用户可见消息。
         validateNativeResearchSliceGeneration(sourcedGeneration, nodeId, task.outputMessageId);
         await this.store.replaceSlicesForMessage(task.outputMessageId, sourcedGeneration.slices, task.id);
+        await this.persistBodyArtifacts(task, nodeId, sourcedGeneration.content, citations, sourcedGeneration.slices);
         await this.store.appendResearchTaskDelta(task.id, sourcedGeneration.content);
         await this.store.completeResearchTask(task.id);
         try {
@@ -355,12 +359,42 @@ export class ResearchSessionService {
     if (!content) throw new Error("Provider returned an empty response");
     if (content.length > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
     if (!alreadyAppended) await this.store.appendResearchTaskDelta(task.id, content);
+    const nodeId = task.nodeId ?? this.store.getResearchMessage(task.outputMessageId)?.nodeId ?? task.sessionId;
+    await this.persistBodyArtifacts(task, nodeId, content, [], undefined);
     await this.store.completeResearchTask(task.id);
     try {
       await this.options.onTaskCompleted?.(this.getTask(task.id));
     } catch {
       // 保持历史流式任务与现有节点命名的失败隔离。
     }
+  }
+
+  /**
+   * #35：在生成完成时写入正文版本与语义片段（与切片并存）。
+   * 正式路径传入已校验切片 → 派生正式片段；旧式/无切片路径 → 派生临时片段。
+   * 幂等：同文同 id，重试/重复调用不重复写入。失败只中断本任务，不污染正文。
+   */
+  private async persistBodyArtifacts(
+    task: ResearchTaskRecord,
+    nodeId: string,
+    content: string,
+    citations: import("@collector/capture-contracts").ResearchCitationRecord[],
+    slices?: ResearchSliceRecord[],
+  ): Promise<void> {
+    const createdAt = new Date().toISOString();
+    const version = deriveBodyVersion({
+      messageId: task.outputMessageId,
+      nodeId,
+      content,
+      origin: "generation",
+      taskId: task.id,
+      createdAt,
+    });
+    const fragments = slices && slices.length > 0
+      ? deriveFragmentsFromSlices(version, slices, citations)
+      : deriveFragmentsFromBlocks(version, citations);
+    await this.store.createResearchBodyVersion(version);
+    await this.store.createSemanticFragments(fragments);
   }
 
   private sliceOrdinalStartFor(nodeId: string, messageId: string): number {

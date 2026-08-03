@@ -45,6 +45,13 @@ import {
   type ExportResult,
   type ResearchNodeView,
   type ResearchSliceRecord,
+  deriveBodyVersion,
+  deriveFragmentsFromBlocks,
+  deriveFragmentsFromSlices,
+  resolveFragmentExcerpt,
+  type ResearchBodyVersionRecord,
+  type ResearchBodyVersionView,
+  type ResearchMessageRecord,
 } from "@collector/capture-contracts";
 import type { CollectorStore } from "./store.js";
 import { defaultDataPaths } from "./store.js";
@@ -143,6 +150,9 @@ export class CaptureService {
       this.scheduleRecentOrganization();
       this.scheduleTopicDocumentRuns();
     }
+    // #35：启动时对历史研究正文做确定性、幂等的正文版本与语义片段回填。
+    // 不调用模型、不删除原文；同文同标识，重复执行无副作用。
+    setImmediate(() => { void this.backfillResearchBodyVersions().catch(() => undefined); });
   }
 
   setModelGateway(gateway: ModelGateway | undefined, route?: ActiveModelRoute): void {
@@ -169,15 +179,18 @@ export class CaptureService {
     const nodeDepth = this.parentChainContext.buildParentChainContext(nodeId).currentNodeDepth;
     const termDetections: NonNullable<ResearchNodeView["termDetections"]> = {};
     const slices: NonNullable<ResearchNodeView["slices"]> = {};
+    const bodyVersions: NonNullable<ResearchNodeView["bodyVersions"]> = {};
     for (const message of view.messages) {
       if (message.role !== "assistant" || message.status !== "completed") continue;
       termDetections[message.id] = this.termDetection.detect(message.id, message.content, { nodeDepth });
       slices[message.id] = await this.getOrCreateSlices(nodeId, message.id, message.content, view.citations ?? []);
+      bodyVersions[message.id] = await this.getOrCreateBodyArtifacts(nodeId, message, view.citations ?? []);
     }
     return {
       ...view,
       termDetections,
       slices,
+      bodyVersions,
       fusionProposals: this.fusionProposals.listForNode(nodeId, ["pending"]),
     };
   }
@@ -202,6 +215,77 @@ export class CaptureService {
       await this.store.createSlices(provisional);
     }
     return provisional;
+  }
+
+  /**
+   * #35：为一条已完成助手消息获取或确定性派生正文版本与语义片段（惰性兜底）。
+   * 已有版本直接返回；缺失时按正文确定性派生（有正式切片→正式片段，否则临时片段）。
+   * 幂等：同文同 id，重复调用/重启无副作用。不调用模型、不删除原文。
+   */
+  private async getOrCreateBodyArtifacts(
+    nodeId: string,
+    message: Pick<ResearchMessageRecord, "id" | "nodeId" | "branchId" | "sessionId" | "content" | "createdAt">,
+    citations: import("@collector/capture-contracts").ResearchCitationRecord[],
+  ): Promise<ResearchBodyVersionRecord> {
+    const existing = this.store.getBodyVersionForMessage(message.id);
+    if (existing) return existing;
+    const scopeNodeId = message.nodeId ?? message.branchId ?? nodeId;
+    const version = deriveBodyVersion({
+      messageId: message.id,
+      nodeId: scopeNodeId,
+      content: message.content,
+      origin: "backfill",
+      createdAt: message.createdAt ?? new Date().toISOString(),
+    });
+    const slices = this.store.listSlicesByMessage(message.id);
+    const hasFormal = slices.length > 0 && slices.every((s) => !s.isProvisional);
+    const fragments = hasFormal
+      ? deriveFragmentsFromSlices(version, slices, citations)
+      : deriveFragmentsFromBlocks(version, citations);
+    await this.store.createResearchBodyVersion(version);
+    await this.store.createSemanticFragments(fragments);
+    return version;
+  }
+
+  /**
+   * #35：服务启动时对历史研究正文做确定性回填。遍历所有已完成助手消息，
+   * 为缺失正文版本的消息补建版本与片段。确定、幂等、不调模型、不删数据。
+   * 按消息隔离失败，单条异常不阻断整体回填。
+   */
+  async backfillResearchBodyVersions(): Promise<{ processed: number; created: number }> {
+    let processed = 0;
+    let created = 0;
+    for (const session of this.store.listResearchSessions()) {
+      for (const message of this.store.listResearchMessages(session.id)) {
+        if (message.role !== "assistant" || message.status !== "completed" || !message.content.trim()) continue;
+        processed += 1;
+        if (this.store.getBodyVersionForMessage(message.id)) continue;
+        try {
+          const citations = this.store.listResearchCitationsForMessages([message.id]);
+          const scopeNodeId = message.nodeId ?? message.branchId ?? session.id;
+          await this.getOrCreateBodyArtifacts(scopeNodeId, message, citations);
+          created += 1;
+        } catch {
+          // 单条消息回填失败只跳过该条，不阻断其余；派生失败不污染正文（ADR-0004）。
+        }
+      }
+    }
+    return { processed, created };
+  }
+
+  /**
+   * #35：正文版本只读视图。片段附运行时派生摘录（不入库）。
+   * 版本缺失 → NotFoundError（404）；片段范围/校验和损坏 → 抛出明确一致性错误，
+   * 绝不静默关联到其他文本（验收 6）。
+   */
+  getResearchBodyVersionView(bodyVersionId: string): ResearchBodyVersionView {
+    const version = this.store.getBodyVersion(bodyVersionId);
+    if (!version) throw new NotFoundError(`Body version not found: ${bodyVersionId}`);
+    const fragments = this.store.listFragmentsByBodyVersion(bodyVersionId).map((fragment) => ({
+      ...fragment,
+      excerpt: resolveFragmentExcerpt(version, fragment),
+    }));
+    return { version, fragments };
   }
 
   private attachModelGateway(gateway: ModelGateway | undefined): void {

@@ -443,6 +443,10 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (request.method === "GET" && researchNodeMatch) {
         return json(response, 200, await service.getResearchNodeView(decodeURIComponent(researchNodeMatch[1])));
       }
+      const researchBodyVersionMatch = url.pathname.match(/^\/v1\/research-body-versions\/([^/]+)$/);
+      if (request.method === "GET" && researchBodyVersionMatch) {
+        return json(response, 200, service.getResearchBodyVersionView(decodeURIComponent(researchBodyVersionMatch[1])));
+      }
       const researchNodeChildrenMatch = url.pathname.match(/^\/v1\/research-nodes\/([^/]+)\/children$/);
       if (request.method === "GET" && researchNodeChildrenMatch) {
         return json(response, 200, service.nodeGrowth.listChildNodes(decodeURIComponent(researchNodeChildrenMatch[1])));

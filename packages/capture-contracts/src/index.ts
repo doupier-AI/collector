@@ -1074,6 +1074,8 @@ export interface ResearchNodeView {
   slices?: Record<string, ResearchSliceRecord[]>;
   /** F1：该节点相关的融合提议列表；缺失时客户端不呈现弱提示。 */
   fusionProposals?: ResearchFusionProposalRecord[];
+  /** #35：按消息 ID 返回正文版本；可选字段，缺失时前端按旧切片/消息渲染。 */
+  bodyVersions?: Record<string, ResearchBodyVersionRecord>;
 }
 
 export interface ResearchTurnAccepted {
@@ -1977,6 +1979,226 @@ export function deriveProvisionalSlices(
       createdAt: timestamp,
     };
   });
+}
+
+
+// ── Body Version & Semantic Fragment (Issue #35) ─────────────────────
+
+/**
+ * 正文版本记录。一份研究正文的不可变版本，由正文内容确定性派生。
+ *
+ * - id：`body:{messageId}:{hash16}`，由归一化正文的确定性摘要决定；
+ *   同一消息、同一正文反复派生得到同一 ID（幂等）。
+ * - content：归一化后的正文（CRLF/CR 已归一为 LF），是片段偏移的基准。
+ * - contentHash：归一化正文的确定性摘要，用于一致性校验。
+ * - version：当前恒为 1；保留字段，支持未来的多版本演进。
+ * - origin：`generation`=生成时由模型路径写入；`backfill`=历史回填写入。
+ *
+ * 正文是内容的唯一事实源；本记录不复制正文之外的新内容，仅为正文加稳定版本锚点。
+ */
+export interface ResearchBodyVersionRecord {
+  id: string;
+  messageId: string;
+  nodeId: string;
+  version: number;
+  content: string;
+  contentHash: string;
+  origin: "generation" | "backfill";
+  taskId?: string;
+  createdAt: string;
+}
+
+/**
+ * 语义片段记录。引用正文版本的一个连续范围，是上下文选择与融合引用的最小单位。
+ *
+ * - 片段**不存正文内容副本**，只存 `[startOffset, endOffset)` 范围；
+ *   摘录由 `resolveFragmentExcerpt` 从正文版本运行时派生（验收 3）。
+ * - 偏移单位是 UTF-16 code unit，与 `deriveMessageBlocks` 及选区锚点一致。
+ * - `excerptChecksum` 是该范围文本的确定性摘要，作为校验值，不替代正文。
+ * - `granularity`：当前恒为 `"paragraph"`（按段落/切片边界）。
+ * - `isProvisional`：true 表示按消息块边界确定性派生的临时片段；
+ *   false 表示按已校验的正式切片边界派生的正式片段。
+ */
+export interface ResearchSemanticFragmentRecord {
+  id: string;
+  bodyVersionId: string;
+  messageId: string;
+  nodeId: string;
+  ordinal: number;
+  startOffset: number;
+  endOffset: number;
+  granularity: "paragraph";
+  sourceRefs: ResearchCitationRecord[];
+  isProvisional: boolean;
+  excerptChecksum: string;
+  createdAt: string;
+}
+
+/** 片段 HTTP 视图：在记录上附运行时派生的摘录（不入库）。 */
+export interface ResearchSemanticFragmentView extends ResearchSemanticFragmentRecord {
+  excerpt: string;
+}
+
+/** 正文版本 HTTP 视图：版本 + 带摘录的片段。 */
+export interface ResearchBodyVersionView {
+  version: ResearchBodyVersionRecord;
+  fragments: ResearchSemanticFragmentView[];
+}
+
+/** 正文版本/片段一致性错误的稳定码（验收 6：明确错误，不静默关联）。 */
+export type BodyIntegrityErrorCode =
+  | "body_version_mismatch"
+  | "fragment_range_invalid"
+  | "fragment_checksum_mismatch";
+
+/** 带稳定 `code` 的一致性错误，供调用方分类处理。 */
+export class BodyIntegrityError extends Error {
+  readonly code: BodyIntegrityErrorCode;
+  constructor(code: BodyIntegrityErrorCode, message: string) {
+    super(message);
+    this.name = "BodyIntegrityError";
+    this.code = code;
+  }
+}
+
+/** 归一化正文：CRLF / CR 归一为 LF。与 deriveMessageBlocks 的基准一致。 */
+export function normalizeBodyContent(content: string): string {
+  return content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+/** 归一化正文的确定性摘要（FNV-1a 32，纯 JS，前后端共用，无 node:crypto）。 */
+export function hashBodyContent(content: string): string {
+  let hash = 0x811c9dc5;
+  const normalized = normalizeBodyContent(content);
+  for (let i = 0; i < normalized.length; i++) {
+    hash ^= normalized.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+/**
+ * 确定性派生正文版本（纯函数）。同一 messageId + 同一归一化正文恒得同一记录，
+ * 不依赖时钟之外的任何可变状态；createdAt 由调用方注入以保证可复现。
+ */
+export function deriveBodyVersion(input: {
+  messageId: string;
+  nodeId: string;
+  content: string;
+  origin: "generation" | "backfill";
+  taskId?: string;
+  createdAt: string;
+  version?: number;
+}): ResearchBodyVersionRecord {
+  const content = normalizeBodyContent(input.content);
+  const contentHash = hashBodyContent(content);
+  const version = input.version ?? 1;
+  return {
+    id: `body:${input.messageId}:${contentHash}`,
+    messageId: input.messageId,
+    nodeId: input.nodeId,
+    version,
+    content,
+    contentHash,
+    origin: input.origin,
+    ...(input.taskId ? { taskId: input.taskId } : {}),
+    createdAt: input.createdAt,
+  };
+}
+
+function fragmentExcerptChecksum(excerpt: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < excerpt.length; i++) {
+    hash ^= excerpt.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function makeFragment(
+  version: ResearchBodyVersionRecord,
+  ordinal: number,
+  startOffset: number,
+  endOffset: number,
+  sourceRefs: ResearchCitationRecord[],
+  isProvisional: boolean,
+): ResearchSemanticFragmentRecord {
+  const excerpt = version.content.slice(startOffset, endOffset);
+  return {
+    id: `fragment:${version.id}:${ordinal}`,
+    bodyVersionId: version.id,
+    messageId: version.messageId,
+    nodeId: version.nodeId,
+    ordinal,
+    startOffset,
+    endOffset,
+    granularity: "paragraph",
+    sourceRefs,
+    isProvisional,
+    excerptChecksum: fragmentExcerptChecksum(excerpt),
+    createdAt: version.createdAt,
+  };
+}
+
+/**
+ * 从已校验的正式切片派生正式片段。写库时已由 validateNativeResearchSliceGeneration
+ * 强制切片与消息块一一对应且铺满正文，故可直接映射。若切片未能铺满（防御性回退），
+ * 退化为按块派生的临时片段，绝不伪造范围。
+ */
+export function deriveFragmentsFromSlices(
+  version: ResearchBodyVersionRecord,
+  slices: ResearchSliceRecord[],
+  citations: ResearchCitationRecord[] = [],
+): ResearchSemanticFragmentRecord[] {
+  const blocks = deriveMessageBlocks(version.content);
+  const usable =
+    slices.length > 0 &&
+    slices.length === blocks.length &&
+    slices.every((s, i) => normalizeBodyContent(s.content) === blocks[i]?.text);
+  if (!usable) return deriveFragmentsFromBlocks(version, citations);
+  return slices.map((slice, index) => {
+    const block = blocks[index];
+    const sourceRefs = citations.filter((c) => c.blockOrdinal === index);
+    return makeFragment(version, index, block.startOffset, block.startOffset + block.text.length, sourceRefs, false);
+  });
+}
+
+/** 按消息块边界确定性派生临时片段（无正式切片或旧数据的兜底路径）。 */
+export function deriveFragmentsFromBlocks(
+  version: ResearchBodyVersionRecord,
+  citations: ResearchCitationRecord[] = [],
+): ResearchSemanticFragmentRecord[] {
+  return deriveMessageBlocks(version.content).map((block) => {
+    const sourceRefs = citations.filter((c) => c.blockOrdinal === block.ordinal);
+    return makeFragment(version, block.ordinal, block.startOffset, block.startOffset + block.text.length, sourceRefs, true);
+  });
+}
+
+/**
+ * 从正文版本派生片段摘录（运行时唯一入口）。任何版本/范围/校验和不一致都抛出
+ * 带稳定 code 的 BodyIntegrityError，绝不静默关联到其他文本（验收 6）。
+ */
+export function resolveFragmentExcerpt(
+  version: ResearchBodyVersionRecord,
+  fragment: ResearchSemanticFragmentRecord,
+): string {
+  if (fragment.bodyVersionId !== version.id) {
+    throw new BodyIntegrityError("body_version_mismatch", `Fragment ${fragment.id} does not belong to body version ${version.id}`);
+  }
+  if (
+    !Number.isSafeInteger(fragment.startOffset) ||
+    !Number.isSafeInteger(fragment.endOffset) ||
+    fragment.startOffset < 0 ||
+    fragment.endOffset > version.content.length ||
+    fragment.endOffset <= fragment.startOffset
+  ) {
+    throw new BodyIntegrityError("fragment_range_invalid", `Fragment ${fragment.id} has invalid range [${fragment.startOffset}, ${fragment.endOffset})`);
+  }
+  const excerpt = version.content.slice(fragment.startOffset, fragment.endOffset);
+  if (fragmentExcerptChecksum(excerpt) !== fragment.excerptChecksum) {
+    throw new BodyIntegrityError("fragment_checksum_mismatch", `Fragment ${fragment.id} excerpt checksum mismatch`);
+  }
+  return excerpt;
 }
 
 

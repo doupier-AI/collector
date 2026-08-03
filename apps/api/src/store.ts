@@ -1,7 +1,7 @@
 import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchSliceRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewInput, type ResearchTermPreviewRecord, type ResearchTurnAccepted, researchEdgeId } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewInput, type ResearchTermPreviewRecord, type ResearchTurnAccepted, researchEdgeId } from "@collector/capture-contracts";
 
 export type ObservabilityRecordSource = "research" | "selection" | "import" | "workflow" | "fusion";
 
@@ -135,6 +135,14 @@ export interface ResearchStore {
   replaceSlicesForMessage(messageId: string, slices: ResearchSliceRecord[], taskId?: string): Promise<void>;
   listSlicesByNode(nodeId: string): ResearchSliceRecord[];
   listSlicesByMessage(messageId: string): ResearchSliceRecord[];
+  /** #35：正文版本与语义片段 CRUD（幂等；片段只存范围，不存内容副本）。 */
+  createResearchBodyVersion(version: ResearchBodyVersionRecord): Promise<void>;
+  createSemanticFragments(fragments: ResearchSemanticFragmentRecord[]): Promise<void>;
+  getBodyVersion(id: string): ResearchBodyVersionRecord | undefined;
+  getBodyVersionForMessage(messageId: string): ResearchBodyVersionRecord | undefined;
+  listFragmentsByBodyVersion(bodyVersionId: string): ResearchSemanticFragmentRecord[];
+  listFragmentsByMessage(messageId: string): ResearchSemanticFragmentRecord[];
+  listFragmentsByNode(nodeId: string): ResearchSemanticFragmentRecord[];
 }
 
 /** 深入研究所需的持久化能力：12 个方法。 */
@@ -362,6 +370,14 @@ export interface CollectorStore
   listSlicesByNode(nodeId: string): ResearchSliceRecord[];
   listSlicesByMessage(messageId: string): ResearchSliceRecord[];
   getSliceById(id: string): ResearchSliceRecord | undefined;
+  /** #35：正文版本与语义片段 CRUD（幂等；片段只存范围，不存内容副本）。 */
+  createResearchBodyVersion(version: ResearchBodyVersionRecord): Promise<void>;
+  createSemanticFragments(fragments: ResearchSemanticFragmentRecord[]): Promise<void>;
+  getBodyVersion(id: string): ResearchBodyVersionRecord | undefined;
+  getBodyVersionForMessage(messageId: string): ResearchBodyVersionRecord | undefined;
+  listFragmentsByBodyVersion(bodyVersionId: string): ResearchSemanticFragmentRecord[];
+  listFragmentsByMessage(messageId: string): ResearchSemanticFragmentRecord[];
+  listFragmentsByNode(nodeId: string): ResearchSemanticFragmentRecord[];
   close?(): void;
   clearAllData(): Promise<void>;
   // ── Research Edge CRUD (D1) ──────────────────────────────────
@@ -2154,6 +2170,50 @@ export class SqliteStore implements CollectorStore {
     return this.getRecord<ResearchSliceRecord>("SELECT record_json FROM research_slices WHERE id = ?", id);
   }
 
+  // ── Body Version & Semantic Fragment (#35) ─────────────────────
+
+  /** 幂等写入正文版本：id 由 messageId+contentHash 决定，重复写入被忽略（同文同标识）。 */
+  async createResearchBodyVersion(version: ResearchBodyVersionRecord): Promise<void> {
+    this.db().prepare(`
+      INSERT OR IGNORE INTO research_body_versions (id, message_id, node_id, version, content_hash, origin, created_at, record_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(version.id, version.messageId, version.nodeId, version.version, version.contentHash, version.origin, version.createdAt, JSON.stringify(version));
+  }
+
+  /** 幂等批量写入语义片段（事务内，冲突忽略）。 */
+  async createSemanticFragments(fragments: ResearchSemanticFragmentRecord[]): Promise<void> {
+    if (!fragments.length) return;
+    const stmt = this.db().prepare(`
+      INSERT OR IGNORE INTO research_semantic_fragments (id, body_version_id, message_id, node_id, ordinal, start_offset, end_offset, is_provisional, created_at, record_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    this.transaction(() => {
+      for (const f of fragments) {
+        stmt.run(f.id, f.bodyVersionId, f.messageId, f.nodeId, f.ordinal, f.startOffset, f.endOffset, f.isProvisional ? 1 : 0, f.createdAt, JSON.stringify(f));
+      }
+    });
+  }
+
+  getBodyVersion(id: string): ResearchBodyVersionRecord | undefined {
+    return this.getRecord<ResearchBodyVersionRecord>("SELECT record_json FROM research_body_versions WHERE id = ?", id);
+  }
+
+  getBodyVersionForMessage(messageId: string): ResearchBodyVersionRecord | undefined {
+    return this.getRecord<ResearchBodyVersionRecord>("SELECT record_json FROM research_body_versions WHERE message_id = ? ORDER BY version DESC LIMIT 1", messageId);
+  }
+
+  listFragmentsByBodyVersion(bodyVersionId: string): ResearchSemanticFragmentRecord[] {
+    return this.listRecords<ResearchSemanticFragmentRecord>("SELECT record_json FROM research_semantic_fragments WHERE body_version_id = ? ORDER BY ordinal", bodyVersionId);
+  }
+
+  listFragmentsByMessage(messageId: string): ResearchSemanticFragmentRecord[] {
+    return this.listRecords<ResearchSemanticFragmentRecord>("SELECT record_json FROM research_semantic_fragments WHERE message_id = ? ORDER BY ordinal", messageId);
+  }
+
+  listFragmentsByNode(nodeId: string): ResearchSemanticFragmentRecord[] {
+    return this.listRecords<ResearchSemanticFragmentRecord>("SELECT record_json FROM research_semantic_fragments WHERE node_id = ? ORDER BY ordinal", nodeId);
+  }
+
   // ── Fusion proposals (F1) ──────────────────────────────────────
 
   getResearchFusionProposal(id: string): ResearchFusionProposalRecord | undefined {
@@ -3035,6 +3095,44 @@ export class SqliteStore implements CollectorStore {
       version = 30;
     }
 
+    if (version < 31) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE research_body_versions (
+            id TEXT PRIMARY KEY,
+            message_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            content_hash TEXT NOT NULL,
+            origin TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            UNIQUE(message_id, version)
+          );
+          CREATE INDEX research_body_versions_message_idx ON research_body_versions(message_id);
+          CREATE INDEX research_body_versions_node_idx ON research_body_versions(node_id);
+          CREATE TABLE research_semantic_fragments (
+            id TEXT PRIMARY KEY,
+            body_version_id TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL,
+            start_offset INTEGER NOT NULL,
+            end_offset INTEGER NOT NULL,
+            is_provisional INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            UNIQUE(body_version_id, ordinal)
+          );
+          CREATE INDEX research_semantic_fragments_version_idx ON research_semantic_fragments(body_version_id);
+          CREATE INDEX research_semantic_fragments_message_idx ON research_semantic_fragments(message_id);
+          CREATE INDEX research_semantic_fragments_node_idx ON research_semantic_fragments(node_id);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (31, datetime('now'));
+        `);
+      });
+      version = 31;
+    }
+
   }
 
   private async migrateLegacyProviderProfile(): Promise<void> {
@@ -3390,6 +3488,13 @@ export class JsonStore implements CollectorStore {
   listSlicesByNode(_nodeId: string): ResearchSliceRecord[] { return []; }
   listSlicesByMessage(_messageId: string): ResearchSliceRecord[] { return []; }
   getSliceById(_id: string): ResearchSliceRecord | undefined { return undefined; }
+  async createResearchBodyVersion(_version: ResearchBodyVersionRecord): Promise<void> { throw new Error("Body versions require SQLite persistence"); }
+  async createSemanticFragments(_fragments: ResearchSemanticFragmentRecord[]): Promise<void> { throw new Error("Semantic fragments require SQLite persistence"); }
+  getBodyVersion(_id: string): ResearchBodyVersionRecord | undefined { return undefined; }
+  getBodyVersionForMessage(_messageId: string): ResearchBodyVersionRecord | undefined { return undefined; }
+  listFragmentsByBodyVersion(_bodyVersionId: string): ResearchSemanticFragmentRecord[] { return []; }
+  listFragmentsByMessage(_messageId: string): ResearchSemanticFragmentRecord[] { return []; }
+  listFragmentsByNode(_nodeId: string): ResearchSemanticFragmentRecord[] { return []; }
   getResearchFusionProposal(_id: string): ResearchFusionProposalRecord | undefined { return undefined; }
   findResearchFusionProposalByNodePair(_loNodeId: string, _hiNodeId: string): ResearchFusionProposalRecord | undefined { return undefined; }
   listResearchFusionProposalsByNode(_nodeId: string, _statuses?: readonly ResearchFusionProposalStatus[]): ResearchFusionProposalRecord[] { return []; }
