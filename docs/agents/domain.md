@@ -6,12 +6,11 @@ Collector 采用单一领域上下文。WebUI、API、存储与模型网关共�
 
 按任务相关性读取：
 
-1. 根目录 `CONTEXT.md`：统一领域术语与不变量；
-2. `docs/PRODUCT.md`：产品指南针——定义、能力、方向、设计原则；
-3. `docs/MVP_IMPLEMENTATION_PLAN.md`：切片计划与当前状态；
+1. 根目录 `CONTEXT.md`：纯领域词汇表，统一定义术语，不描述实现状态；
+2. `docs/PROJECT.md`：唯一现行事实入口——产品定义、基线、四态能力表、活动父 Issue、当前限制与待产品决定；
+3. `docs/adr/`：关键、难逆转、有真实取舍的决策留痕；
 4. `docs/ARCHITECTURE.md`：目标技术架构；
-5. `docs/PROJECT_DEVELOPMENT_RECORD.md`：已完成阶段事实与验证证据；
-6. `docs/HUMAN_ACCEPTANCE_STANDARD.md`：人工验收要求。
+5. `docs/HUMAN_ACCEPTANCE_STANDARD.md`：人工验收要求。
 
 ## 目录布局
 
@@ -21,10 +20,10 @@ Collector 采用单一领域上下文。WebUI、API、存储与模型网关共�
 ├── CONTEXT.md
 └── docs/
     ├── agents/
-    ├── PRODUCT.md
+    ├── adr/
+    ├── archive/
+    ├── PROJECT.md
     ├── ARCHITECTURE.md
-    ├── MVP_IMPLEMENTATION_PLAN.md
-    ├── PROJECT_DEVELOPMENT_RECORD.md
     └── HUMAN_ACCEPTANCE_STANDARD.md
 ```
 
@@ -33,8 +32,8 @@ Collector 采用单一领域上下文。WebUI、API、存储与模型网关共�
 - Issue 标题、设计说明、测试名称和重构建议使用 `CONTEXT.md` 的规范术语；
 - 同一概念使用同一个名称；
 - 新概念先区分产品概念与实现细节；
-- 经过确认的产品概念同步进入领域语言与相关产品文档。
+- 经过确认的产品概念同步进入 `CONTEXT.md` 词汇表。
 
 ## 架构决策
 
-稳定的架构决策进入 `docs/ARCHITECTURE.md`。需要保留决策背景和取舍时，在 `docs/ARCHITECTURE.md` 中记录理由。
+稳定的架构决策进入 `docs/ARCHITECTURE.md`。难逆转、有真实取舍、需要保留决策背景的决策在 `docs/adr/` 记录 ADR。
