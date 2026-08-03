@@ -18,9 +18,10 @@ Collector-真实模型.cmd
 核心功能人工验收手册.md
 apps/web/test-results-acceptance/
 
-# Agent skills are installed per machine. Keep only the project-owned skills.
-.agents/skills/*/
-!.agents/skills/tdd/
+# Agent skills are installed per machine and are not versioned.
+.agents/
+agent/
+.scratch/
 skills-lock.json
 .claude/skills/
 .claude/worktrees/
