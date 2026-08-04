@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { FUSION_RELATION_TYPES, SIMILARITY_VERIFICATION_PROMPT_VERSION, parseNativeResearchSliceGeneration, parseResearchSelectionInsight, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type NativeResearchSliceGeneration, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight, type ResearchSliceContext } from "@collector/capture-contracts";
+import { FUSION_RELATION_TYPES, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, parseNativeResearchSliceGeneration, parseResearchSelectionInsight, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type NativeResearchSliceGeneration, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight, type ResearchSliceContext } from "@collector/capture-contracts";
 
 export interface ProviderUsage {
   inputTokens?: number;
@@ -25,8 +25,11 @@ export interface ModelProviderResponse {
 export interface ModelProviderRequest {
   prompt: string;
   model: string;
-  responseFormat: { type: "json_object" };
+  /** 要求 JSON 输出时传入；自由正文（生成自由化）缺省，传输层不再强制 JSON。 */
+  responseFormat?: { type: "json_object" };
   thinking?: boolean;
+  /** 采样温度；事后抽取等确定性场景传 0。缺省由供应商默认。 */
+  temperature?: number;
   maxTokens?: number;
   timeoutMs?: number;
 }
@@ -36,6 +39,55 @@ export interface ModelProvider {
   readonly defaultModel?: string;
   readonly pricing?: Record<string, ModelPricing>;
   complete(request: ModelProviderRequest): Promise<ModelProviderResponse>;
+}
+
+/** plan-then-write 大纲的节数边界，防止模型产出过多碎节。 */
+export const RESEARCH_BODY_OUTLINE_MIN_SECTIONS = 1;
+export const RESEARCH_BODY_OUTLINE_MAX_SECTIONS = 12;
+
+/** plan-then-write 大纲的一节。 */
+export interface ResearchBodyOutlineSection {
+  heading: string;
+  summary: string;
+  targetChars: number;
+}
+
+/** plan-then-write 第一阶段产出：有序大纲。 */
+export interface ResearchBodyOutline {
+  sections: ResearchBodyOutlineSection[];
+}
+
+/** 单个段落块的事后语义标注（标题/概念），由小模型抽取或大纲提供。 */
+export interface ResearchSliceAnnotation {
+  title: string;
+  concepts: string[];
+}
+
+/** 解析大纲 JSON 为有序、有界的节序列；非法结构抛错由调用方降级或重试。 */
+export function parseBodyOutline(raw: string): ResearchBodyOutline {
+  const parsed = JSON.parse(raw) as { sections?: unknown };
+  if (!Array.isArray(parsed.sections) || parsed.sections.length === 0) throw new Error("Body outline must contain a non-empty sections array");
+  const sections = parsed.sections.slice(0, RESEARCH_BODY_OUTLINE_MAX_SECTIONS).map((item, index) => {
+    const section = item as Partial<ResearchBodyOutlineSection>;
+    const heading = typeof section?.heading === "string" ? section.heading.trim() : "";
+    const summary = typeof section?.summary === "string" ? section.summary.trim() : "";
+    const targetChars = typeof section?.targetChars === "number" && Number.isFinite(section.targetChars) ? Math.max(0, Math.trunc(section.targetChars)) : 0;
+    if (!heading) throw new Error(`Body outline section ${index + 1} must have a non-empty heading`);
+    return { heading, summary, targetChars };
+  });
+  return { sections };
+}
+
+/** 解析单段语义标注 JSON；title 可空、concepts 可为空数组，非法结构抛错由调用方降级。 */
+export function parseSliceAnnotation(raw: string): ResearchSliceAnnotation {
+  const parsed = JSON.parse(raw) as { title?: unknown; concepts?: unknown };
+  const title = typeof parsed.title === "string" ? parsed.title.trim().slice(0, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS) : "";
+  const concepts = (Array.isArray(parsed.concepts) ? parsed.concepts : [])
+    .map((concept) => (typeof concept === "string" ? concept.trim() : ""))
+    .filter(Boolean)
+    .slice(0, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS)
+    .map((concept) => concept.slice(0, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS));
+  return { title, concepts };
 }
 
 /** Agent 工具调用循环中的单条消息。对齐 OpenAI Chat Completions messages 数组。 */
@@ -655,6 +707,152 @@ ${parentContext ? `\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext
     throw new Error(`Research slice output remained invalid after 2 repairs: ${lastError}`);
   }
 
+  /**
+   * 生成自由化：让模型自由写连续 markdown 正文，不返回任何 JSON 结构、不拆切片。
+   * 正文是唯一事实源；结构边界（卡片/锚点）由确定性 `deriveMessageBlocks` 事后派生。
+   * 提示词用正向格式指令（流畅段落、可用 ## 标题分节），不混入 JSON——参见调研：
+   * 结构化约束对"自由创作"有害，对"数据提取"有益，故正文走自由文本、大纲走 JSON。
+   */
+  async writeResearchBody(
+    messages: Array<{ role: "user" | "assistant"; content: string }>,
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
+  ): Promise<string> {
+    if (!messages.length) throw new Error("Research body requires at least one message");
+    const parentContext = formatResearchParentChainContext(options.parentChainContext);
+    const sliceContext = formatResearchSliceContext(options.sliceContext);
+    const prompt = `你是 Collector 的研究助手。请回答用户最新的问题，输出一篇连贯、完整的中文正文。
+
+要求：
+- 由流畅的自然段落组成，段落之间用一个空行分隔；需要分节时使用 Markdown 二级标题（## 标题）。
+- 内容详实、论述充分，长度服从内容需要，不要刻意压缩或拆成孤立的碎片要点。
+- 保持来源事实与不确定性，不编造来源、链接或引用。
+- 不要使用 Markdown 代码围栏包裹整篇回答，不要返回 JSON 或任何字段结构，只输出正文本身。
+
+对话：
+${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      thinking: this.options.thinking ?? true,
+      maxTokens: options.maxTokens ?? 8_000,
+      timeoutMs: options.timeoutMs ?? 120_000,
+    }, options.context ?? { purpose: "research_body" });
+    const content = response.content.trim();
+    if (!content) throw new Error("Research body provider returned an empty body");
+    return content;
+  }
+
+  /**
+   * plan-then-write 第一阶段：为长文生成有序大纲。大纲是给程序消费的结构数据，
+   * 故此处保留 JSON 输出（结构化对"数据提取"有益）。节数有界，避免模型产出过多碎节。
+   */
+  async generateBodyOutline(
+    messages: Array<{ role: "user" | "assistant"; content: string }>,
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
+  ): Promise<ResearchBodyOutline> {
+    if (!messages.length) throw new Error("Body outline requires at least one message");
+    const parentContext = formatResearchParentChainContext(options.parentChainContext);
+    const sliceContext = formatResearchSliceContext(options.sliceContext);
+    const prompt = `你是 Collector 的研究助手。用户的问题需要一篇较长的中文正文。请先只输出这份正文的写作大纲，不要写正文本身。
+
+只返回合法 JSON，不要使用 Markdown 代码围栏，形式必须为：
+{"sections":[{"heading":"节标题","summary":"该节要论述的主旨","targetChars":800}]}
+
+大纲规则：
+- 返回 ${RESEARCH_BODY_OUTLINE_MIN_SECTIONS} 至 ${RESEARCH_BODY_OUTLINE_MAX_SECTIONS} 节，按正文展开顺序排列；若内容只需一篇短文，可只返回 1 节。
+- heading 简洁准确，将作为该节的标题；summary 用一句话说明该节要展开的内容；targetChars 是该节的目标字数（数字）。
+- 不要返回正文字段、解释或 sections 以外的任何字段。
+
+对话：
+${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      responseFormat: { type: "json_object" },
+      thinking: this.options.thinking ?? true,
+      maxTokens: options.maxTokens ?? 4_000,
+      timeoutMs: options.timeoutMs ?? 120_000,
+    }, options.context ?? { purpose: "research_body_outline" });
+    return parseBodyOutline(response.content);
+  }
+
+  /**
+   * plan-then-write 第二阶段：在给定大纲与已生成前文的前提下，串行扩写某一节。
+   * 串行（每节条件于全部前文）保证长文连贯、避免主题漂移；输出自由正文片段。
+   */
+  async expandBodySection(
+    input: {
+      goal: string;
+      outline: ResearchBodyOutline;
+      sectionIndex: number;
+      writtenSoFar: string;
+    },
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<string> {
+    const section = input.outline.sections[input.sectionIndex];
+    if (!section) throw new Error(`Body section ${input.sectionIndex} is out of range`);
+    const outlineText = input.outline.sections
+      .map((item, index) => `${index + 1}. ${item.heading}（${item.summary}）`)
+      .join("\n");
+    const prompt = `你是 Collector 的研究助手。你正在按大纲逐节撰写一篇连贯的中文长文，现在请只扩写其中一节。
+
+写作目标：${input.goal}
+
+完整大纲：
+${outlineText}
+
+本次要扩写的是第 ${input.sectionIndex + 1} 节「${section.heading}」：${section.summary}（目标约 ${section.targetChars} 字）。
+
+${input.writtenSoFar.trim() ? `已生成的前文（仅供保持连贯，不要重复其内容）：\n${input.writtenSoFar}\n\n` : ""}要求：
+- 只输出第 ${input.sectionIndex + 1} 节的正文，由流畅段落组成，段落间用一个空行分隔；不要重复大纲或其它节。
+- 与前文自然衔接、保持同一主题与语气；内容详实，服从该节目标字数。
+- 保持来源事实与不确定性，不编造来源、链接或引用。
+- 不要使用 Markdown 代码围栏，不要返回 JSON 或大纲字段，只输出该节正文。`;
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      thinking: this.options.thinking ?? true,
+      maxTokens: options.maxTokens ?? 8_000,
+      timeoutMs: options.timeoutMs ?? 120_000,
+    }, options.context ?? { purpose: "research_body_section" });
+    const content = response.content.trim();
+    if (!content) throw new Error(`Body section ${input.sectionIndex + 1} expansion returned empty content`);
+    return content;
+  }
+
+  /**
+   * 生成自由化后的事后语义标注：从一段已落库的正文段落抽取标题与概念（temperature=0，
+   * 确定性、低成本、失败可重试）。绝不改写正文；失败或空结果由调用方降级（空标题/空概念）。
+   */
+  async deriveSliceAnnotations(
+    input: { content: string },
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<ResearchSliceAnnotation> {
+    if (!input.content.trim()) return { title: "", concepts: [] };
+    const prompt = `你是 Collector 的语义标注助手。下面是一段研究正文的段落。请为它抽取一个简洁标题和几个归一化概念，用于卡片导航与关联检索。
+
+只返回合法 JSON，不要使用 Markdown 代码围栏，形式必须为：
+{"title":"简洁标题","concepts":["归一化概念"]}
+
+规则：
+- title 一句话概括该段主旨，不要超过 ${RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS} 字；若该段不适合起标题，返回空字符串。
+- concepts 是该段涉及的核心概念/术语，最多 ${RESEARCH_NATIVE_SLICE_MAX_CONCEPTS} 个，每个不超过 ${RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS} 字；没有合适概念时返回空数组。
+- 只依据所给段落，不要补充外部事实；不要返回解释或其它字段。
+
+段落：
+${JSON.stringify(input.content)}`;
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      responseFormat: { type: "json_object" },
+      temperature: 0,
+      thinking: false,
+      maxTokens: options.maxTokens ?? 1_000,
+      timeoutMs: options.timeoutMs ?? 30_000,
+    }, options.context ?? { purpose: "research_slice_annotation" });
+    return parseSliceAnnotation(response.content);
+  }
+
   /** H6：为节点生成简洁显示名称；调用方负责做长度与空值校验和确定性回退。 */
   async generateNodeDisplayName(
     input: { content: string; parentChainContext?: ResearchParentChainContext },
@@ -1241,12 +1439,17 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     let response: Response;
     let payload: any;
     try {
+      const wantsJson = request.responseFormat?.type === "json_object";
+      const messages: Array<{ role: string; content: string }> = wantsJson
+        ? [{ role: "system", content: "Return valid json only. Fragment IDs and capture IDs are different identifier types and must never be interchanged." }, { role: "user", content: request.prompt }]
+        : [{ role: "user", content: request.prompt }];
       const body: Record<string, unknown> = {
         model: request.model,
-        messages: [{ role: "system", content: "Return valid json only. Fragment IDs and capture IDs are different identifier types and must never be interchanged." }, { role: "user", content: request.prompt }],
-        response_format: request.responseFormat,
+        messages,
         max_tokens: request.maxTokens,
       };
+      if (wantsJson) body.response_format = request.responseFormat;
+      if (typeof request.temperature === "number") body.temperature = request.temperature;
       if (this.options.definition.capabilities.thinkingMode === "deepseek") body.thinking = { type: request.thinking ? "enabled" : "disabled" };
       response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/chat/completions`, {
         method: "POST",
@@ -1376,7 +1579,9 @@ export class OpenAiResponsesProvider implements GroundingModelProvider {
   }
 
   async complete(request: ModelProviderRequest): Promise<ModelProviderResponse> {
-    const response = await this.request({ model: request.model, input: request.prompt, max_output_tokens: request.maxTokens });
+    const body: Record<string, unknown> = { model: request.model, input: request.prompt, max_output_tokens: request.maxTokens };
+    if (typeof request.temperature === "number") body.temperature = request.temperature;
+    const response = await this.request(body);
     const content = openAiOutputText(response);
     return { content, model: response?.model ?? request.model, usage: openAiUsage(response?.usage) };
   }
@@ -1437,7 +1642,11 @@ export class GeminiGroundingProvider implements GroundingModelProvider {
   }
 
   async complete(request: ModelProviderRequest): Promise<ModelProviderResponse> {
-    const payload = await this.request(request.model, { contents: [{ role: "user", parts: [{ text: request.prompt }] }], generationConfig: { responseMimeType: "application/json", maxOutputTokens: request.maxTokens } }, request.timeoutMs);
+    const wantsJson = request.responseFormat?.type === "json_object";
+    const generationConfig: Record<string, unknown> = { maxOutputTokens: request.maxTokens };
+    if (wantsJson) generationConfig.responseMimeType = "application/json";
+    if (typeof request.temperature === "number") generationConfig.temperature = request.temperature;
+    const payload = await this.request(request.model, { contents: [{ role: "user", parts: [{ text: request.prompt }] }], generationConfig }, request.timeoutMs);
     return { content: geminiText(payload), model: request.model, usage: geminiUsage(payload?.usageMetadata) };
   }
 
@@ -1558,18 +1767,21 @@ export class AnthropicMessagesProvider implements GroundingModelProvider {
     const timer = setTimeout(() => controller.abort(new Error(`${this.options.definition.label} request timed out`)), request.timeoutMs ?? 75_000);
     let response: Response;
     let payload: any;
+    const wantsJson = request.responseFormat?.type === "json_object";
+    const body: Record<string, unknown> = {
+      model: request.model,
+      max_tokens: request.maxTokens ?? 4000,
+      messages: [{ role: "user", content: request.prompt }],
+    };
+    if (wantsJson) body.system = "Return valid JSON only. Fragment IDs and capture IDs are different identifier types and must never be interchanged.";
+    if (typeof request.temperature === "number") body.temperature = request.temperature;
     try {
       response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/messages`, {
         method: "POST",
         headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "Content-Type": "application/json" },
         signal: controller.signal,
         redirect: "error",
-        body: JSON.stringify({
-          model: request.model,
-          max_tokens: request.maxTokens ?? 4000,
-          system: "Return valid JSON only. Fragment IDs and capture IDs are different identifier types and must never be interchanged.",
-          messages: [{ role: "user", content: request.prompt }],
-        }),
+        body: JSON.stringify(body),
       });
       payload = await response.json().catch(() => undefined);
     } finally {
