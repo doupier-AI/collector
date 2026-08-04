@@ -74,6 +74,8 @@ export interface ResearchGenerationProvider {
   generateAgentGrounded?(request: ResearchGenerationRequest & { scenario: ResearchGroundingScenario }): Promise<{ content: string; slices?: ResearchSliceRecord[]; status: ResearchGroundingScopeStatus; queries: string[]; sources: Array<{ providerSourceId?: string; title: string; url?: string; snippet?: string; publishedAt?: string; locator?: string }>; citations: Array<{ sourceOrdinal: number; startOffset: number; endOffset: number; providerCitationId?: string }>; responseSummary?: Record<string, unknown>; errorMessage?: string }>;
   /** 生成自由化：自由写连续正文，不返回 JSON 切片结构。 */
   writeBody?(request: ResearchGenerationRequest): Promise<string>;
+  /** 真实模型逐字流式正文（方案 B）；缺省时退回 writeBody 原子写或 legacy generate 流式。 */
+  writeBodyStream?(request: ResearchGenerationRequest): AsyncIterable<string>;
   /** plan-then-write 第一阶段：为长文生成有序大纲。 */
   generateOutline?(request: ResearchGenerationRequest): Promise<ResearchBodyOutline>;
   /** plan-then-write 第二阶段：在大纲与前文前提下串行扩写某节。 */
@@ -323,15 +325,29 @@ export class ResearchSessionService {
           if (generationRequest.allowWebSearch) await this.saveGroundingStatus(task, scenario, "grounding_unsupported");
           if (provider.writeBody) {
             // 生成自由化：按预期长度自动选择单轮自由写或 plan-then-write 逐节扩写。
-            const planned = this.shouldPlanLongForm(generationRequest, provider)
-              ? await this.writeLongFormBody(task, provider, generationRequest)
-              : undefined;
-            if (planned) {
-              content = planned.content;
-              titleHints = planned.titleHints;
+            // 真实逐字流式（方案 B）只用于单轮自由写；plan-then-write 仍按节增量落正文。
+            const useLongForm = this.shouldPlanLongForm(generationRequest, provider);
+            if (!useLongForm && provider.writeBodyStream) {
+              let streamed = "";
+              for await (const delta of provider.writeBodyStream(generationRequest)) {
+                if (!delta) continue;
+                streamed += delta;
+                if (streamed.length > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
+                await this.store.appendResearchTaskDelta(task.id, delta);
+              }
+              content = streamed;
+              if (!content.trim()) throw new Error("Provider returned an empty body");
             } else {
-              content = await provider.writeBody(generationRequest);
-              await this.store.appendResearchTaskDelta(task.id, content);
+              const planned = useLongForm
+                ? await this.writeLongFormBody(task, provider, generationRequest)
+                : undefined;
+              if (planned) {
+                content = planned.content;
+                titleHints = planned.titleHints;
+              } else {
+                content = await provider.writeBody(generationRequest);
+                await this.store.appendResearchTaskDelta(task.id, content);
+              }
             }
           } else {
             // 旧式/扩展 provider 未实现自由正文时保持既有流式兼容。

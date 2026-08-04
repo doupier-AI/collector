@@ -345,3 +345,70 @@ test("free body generation persists derived non-provisional slices and records s
   const view = await nodeResponse.json() as { slices?: Record<string, Array<{ isProvisional: boolean }>> };
   assert.deepEqual(view.slices?.[accepted.outputMessage.id]?.map((slice) => slice.isProvisional), [false, false]);
 });
+
+test("token-streamed body emits intermediate deltas and derives slices from joined content", async (t) => {
+  // 方案 B：writeBodyStream 逐字产出，服务层边收边落 delta，定稿后从拼接全文派生切片。
+  const provider: ResearchGenerationProvider = {
+    provider: "stream-fake",
+    model: "stream-1",
+    promptVersion: "research-body-v1",
+    async *writeBodyStream() {
+      yield "本地优先把研究内容保留在用户可以检查的环境中。";
+      yield "\n\n持久化任务状态让失败后的研究可以从同一上下文重新开始。";
+    },
+    async writeBody() {
+      // 不应走到原子回退：流式优先。
+      throw new Error("writeBody should not be called when writeBodyStream is present");
+    },
+    async deriveAnnotations({ content }) {
+      if (content.includes("本地优先")) return { title: "本地控制", concepts: ["本地优先"] };
+      return { title: "可恢复任务", concepts: ["任务恢复"] };
+    },
+    async *generate() { yield "术语预览不使用自由正文"; },
+  };
+  const harness = await createHarness(provider);
+  t.after(() => harness.close());
+  const session = await harness.service.research.createSession("流式正文", "stream-session");
+  const accepted = await harness.service.research.submitMessage(session.id, "为什么本地优先重要", "stream-turn");
+
+  const completed = await waitForTask(harness.base, harness.token, accepted.task.id, "completed");
+  assert.equal(completed.sliceCount, 2);
+  // 中间 delta：两个流式增量各落一条 delta 事件，最后 completed。
+  const events = harness.store.listResearchTaskEvents(accepted.task.id);
+  const deltaEvents = events.filter((event) => event.type === "delta");
+  assert.equal(deltaEvents.length, 2);
+  assert.ok(events.some((event) => event.type === "completed"));
+  // 拼接全文 = 两条增量；切片由其派生。
+  const content = harness.store.getResearchMessage(accepted.outputMessage.id)?.content ?? "";
+  const slices = harness.store.listSlicesByMessage(accepted.outputMessage.id);
+  assert.equal(content, "本地优先把研究内容保留在用户可以检查的环境中。\n\n持久化任务状态让失败后的研究可以从同一上下文重新开始。");
+  assert.deepEqual(slices.map((slice) => slice.title), ["本地控制", "可恢复任务"]);
+  assert.equal(slices.every((slice) => !slice.isProvisional), true);
+});
+
+test("writeBody-only provider still works via the atomic fallback branch", async (t) => {
+  // 缺 writeBodyStream 时退回 writeBody 原子写（单个 delta），保证非流式 provider 兼容。
+  const provider: ResearchGenerationProvider = {
+    provider: "atomic-fake",
+    model: "atomic-1",
+    promptVersion: "research-body-v1",
+    async writeBody() {
+      return "原子正文第一段。\n\n原子正文第二段。";
+    },
+    async deriveAnnotations() {
+      return { title: "", concepts: [] };
+    },
+    async *generate() { yield "unused"; },
+  };
+  const harness = await createHarness(provider);
+  t.after(() => harness.close());
+  const session = await harness.service.research.createSession("原子正文", "atomic-session");
+  const accepted = await harness.service.research.submitMessage(session.id, "原子问题", "atomic-turn");
+
+  const completed = await waitForTask(harness.base, harness.token, accepted.task.id, "completed");
+  assert.equal(completed.sliceCount, 2);
+  const events = harness.store.listResearchTaskEvents(accepted.task.id);
+  assert.equal(events.filter((event) => event.type === "delta").length, 1);
+  assert.equal(harness.store.getResearchMessage(accepted.outputMessage.id)?.content, "原子正文第一段。\n\n原子正文第二段。");
+});
+

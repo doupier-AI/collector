@@ -441,6 +441,16 @@ export class CaptureService {
           context: { workflowRunId: request.taskId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
         });
       },
+      // 真实逐字流式（方案 B）：委托网关 writeResearchBodyStream，逐字产出文本增量。
+      async *writeBodyStream(request) {
+        const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
+        if (!purposeGateway) throw new Error("AI model is not configured");
+        yield* purposeGateway.writeResearchBodyStream(request.messages, {
+          parentChainContext: request.parentChainContext,
+          sliceContext: request.sliceContext,
+          context: { workflowRunId: request.taskId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
+        });
+      },
       async generateOutline(request) {
         const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
         if (!purposeGateway) throw new Error("AI model is not configured");
