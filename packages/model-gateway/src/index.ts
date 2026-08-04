@@ -529,22 +529,32 @@ export class ModelGateway {
     catch (error) { console.error("Model call listener failed", error); }
   }
 
+  /** 成功记账：usage/成本/延迟，流式与非流式共用同一口径，恰好一次。 */
+  private async emitCompleted(context: ModelCallContext, request: ModelProviderRequest, startedAt: number, createdAt: string, response: ModelProviderResponse): Promise<void> {
+    await this.emitCall({
+      context, provider: this.providerName, model: response.model ?? request.model, promptVersion: context.promptVersion ?? this.promptVersion, status: "completed",
+      usage: response.usage, estimatedCostUsd: estimateCost(response.model ?? request.model, response.usage, this.options.pricing ?? this.provider.pricing),
+      latencyMs: Date.now() - startedAt, retryCount: context.retryCount ?? 0, createdAt, completedAt: new Date().toISOString(),
+    });
+  }
+
+  /** 失败记账：脱敏错误信息，流式与非流式共用同一口径。 */
+  private async emitFailed(context: ModelCallContext, request: ModelProviderRequest, startedAt: number, createdAt: string, error: unknown): Promise<void> {
+    await this.emitCall({
+      context, provider: this.providerName, model: request.model, promptVersion: context.promptVersion ?? this.promptVersion, status: "failed",
+      latencyMs: Date.now() - startedAt, retryCount: context.retryCount ?? 0, errorMessage: redactError(error), createdAt, completedAt: new Date().toISOString(),
+    });
+  }
+
   private async complete(request: ModelProviderRequest, context: ModelCallContext): Promise<ModelProviderResponse> {
     const createdAt = new Date().toISOString();
     const startedAt = Date.now();
     try {
       const response = await this.provider.complete(request);
-      await this.emitCall({
-        context, provider: this.providerName, model: response.model ?? request.model, promptVersion: context.promptVersion ?? this.promptVersion, status: "completed",
-        usage: response.usage, estimatedCostUsd: estimateCost(response.model ?? request.model, response.usage, this.options.pricing ?? this.provider.pricing),
-        latencyMs: Date.now() - startedAt, retryCount: context.retryCount ?? 0, createdAt, completedAt: new Date().toISOString(),
-      });
+      await this.emitCompleted(context, request, startedAt, createdAt, response);
       return response;
     } catch (error) {
-      await this.emitCall({
-        context, provider: this.providerName, model: request.model, promptVersion: context.promptVersion ?? this.promptVersion, status: "failed",
-        latencyMs: Date.now() - startedAt, retryCount: context.retryCount ?? 0, errorMessage: redactError(error), createdAt, completedAt: new Date().toISOString(),
-      });
+      await this.emitFailed(context, request, startedAt, createdAt, error);
       throw error;
     }
   }
@@ -583,18 +593,7 @@ export class ModelGateway {
     options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
   ): Promise<string> {
     if (!messages.length) throw new Error("Research body requires at least one message");
-    const parentContext = formatResearchParentChainContext(options.parentChainContext);
-    const sliceContext = formatResearchSliceContext(options.sliceContext);
-    const prompt = `你是 Collector 的研究助手。请回答用户最新的问题，输出一篇连贯、完整的中文正文。
-
-要求：
-- 由流畅的自然段落组成，段落之间用一个空行分隔；需要分节时使用 Markdown 二级标题（## 标题）。
-- 内容详实、论述充分，长度服从内容需要，不要刻意压缩或拆成孤立的碎片要点。
-- 保持来源事实与不确定性，不编造来源、链接或引用。
-- 不要使用 Markdown 代码围栏包裹整篇回答，不要返回 JSON 或任何字段结构，只输出正文本身。
-
-对话：
-${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
+    const prompt = this.researchBodyPrompt(messages, options.parentChainContext, options.sliceContext);
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
@@ -605,6 +604,72 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
     const content = response.content.trim();
     if (!content) throw new Error("Research body provider returned an empty body");
     return content;
+  }
+
+  /** 自由正文提示词：单轮 writeResearchBody 与流式 writeResearchBodyStream 共用同一来源。 */
+  private researchBodyPrompt(
+    messages: Array<{ role: "user" | "assistant"; content: string }>,
+    parentChainContext?: ResearchParentChainContext,
+    sliceContext?: ResearchSliceContext,
+  ): string {
+    const parentContext = formatResearchParentChainContext(parentChainContext);
+    const sliceContextText = formatResearchSliceContext(sliceContext);
+    return `你是 Collector 的研究助手。请回答用户最新的问题，输出一篇连贯、完整的中文正文。
+
+要求：
+- 由流畅的自然段落组成，段落之间用一个空行分隔；需要分节时使用 Markdown 二级标题（## 标题）。
+- 内容详实、论述充分，长度服从内容需要，不要刻意压缩或拆成孤立的碎片要点。
+- 保持来源事实与不确定性，不编造来源、链接或引用。
+- 不要使用 Markdown 代码围栏包裹整篇回答，不要返回 JSON 或任何字段结构，只输出正文本身。
+
+对话：
+${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContextText ? `\n\n${sliceContextText}` : ""}`;
+  }
+
+  /**
+   * 真实逐字流式正文（方案 B）：模型边生成边产出正文增量，对调用方只 yield 文本增量。
+   * 与 writeResearchBody 同一提示词、同一记账口径；usage/model 在终帧由 done 事件捕获，
+   * 循环结束后 emitCall 恰好一次。经 trimStream 过滤保证 concat(yielded) === 完整正文.trim()，
+   * 与 finalizeDerivedSlices 从 trimmed 文本派生块的偏移严格一致。
+   * provider 未实现 completeStream 时退回非流式 complete()，把 trimmed 正文作为单个增量产出。
+   */
+  async *writeResearchBodyStream(
+    messages: Array<{ role: "user" | "assistant"; content: string }>,
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
+  ): AsyncIterable<string> {
+    if (!messages.length) throw new Error("Research body requires at least one message");
+    const prompt = this.researchBodyPrompt(messages, options.parentChainContext, options.sliceContext);
+    const request: ModelProviderRequest = {
+      prompt,
+      model: options.model ?? this.modelName,
+      thinking: this.options.thinking ?? true,
+      maxTokens: options.maxTokens ?? 8_000,
+      timeoutMs: options.timeoutMs ?? 120_000,
+    };
+    const context = options.context ?? { purpose: "research_body" };
+    if (typeof this.provider.completeStream !== "function") {
+      // 非流式 provider 回退：complete() 自带记账，把 trimmed 正文作为单增量产出。
+      const content = (await this.complete(request, context)).content.trim();
+      if (!content) throw new Error("Research body provider returned an empty body");
+      yield content;
+      return;
+    }
+    const createdAt = new Date().toISOString();
+    const startedAt = Date.now();
+    // doneRef 由本调用局部持有（非实例字段），并发/交错调用互不干扰。
+    const doneRef: { model: string; usage?: ProviderUsage } = { model: request.model };
+    let assembled = "";
+    try {
+      for await (const trimmed of trimStream(extractStreamDeltas(this.provider.completeStream(request), doneRef))) {
+        assembled += trimmed;
+        yield trimmed;
+      }
+      await this.emitCompleted(context, request, startedAt, createdAt, { content: assembled, model: doneRef.model, usage: doneRef.usage });
+    } catch (error) {
+      await this.emitFailed(context, request, startedAt, createdAt, error);
+      throw error;
+    }
+    if (!assembled.trim()) throw new Error("Research body provider returned an empty body");
   }
 
   /**
@@ -2114,6 +2179,52 @@ export async function* iterateServerSentEvents(body: ReadableStream<Uint8Array>)
 
 export function fingerprintBaseUrl(value: string): string {
   return createHash("sha256").update(normalizeBaseUrl(value).toLocaleLowerCase()).digest("hex");
+}
+
+/**
+ * 取出 completeStream 事件的 delta 文本逐个产出；done 帧的 model/usage 写入调用方持有的 doneRef。
+ * 纯函数模块级（非实例方法），doneRef 由调用方按调用局部持有，交错调用互不干扰。
+ */
+export async function* extractStreamDeltas(
+  events: AsyncIterable<ModelProviderStreamEvent>,
+  doneRef: { model: string; usage?: ProviderUsage },
+): AsyncIterable<string> {
+  for await (const event of events) {
+    if (event.type === "delta") yield event.text;
+    else if (event.type === "done") { doneRef.model = event.model; doneRef.usage = event.usage; }
+  }
+}
+
+/**
+ * 把正文增量流整体 trim：抑制前导空白，暂存尾随空白串（仅在后续非空块到达时冲刷，流末丢弃）。
+ * 保证 concat(输出) === concat(输入).trim()，是流式正文与非流式 writeResearchBody 偏移一致的关键不变量。
+ * 内部空白（含段落间的 \n\n）原样保留。
+ */
+export async function* trimStream(chunks: AsyncIterable<string>): AsyncIterable<string> {
+  let pendingWhitespace = "";
+  let seenContent = false;
+  for await (const chunk of chunks) {
+    if (!chunk) continue;
+    let text = chunk;
+    if (!seenContent) {
+      text = text.replace(/^\s+/, "");
+      if (!text) continue; // 整块都是前导空白
+      seenContent = true;
+    }
+    // 拆出本块尾随的空白串，连同之前暂存的一起挂起，等下一个非空块到达再冲刷。
+    const trailingMatch = text.match(/\s+$/);
+    const trailing = trailingMatch?.[0] ?? "";
+    const core = trailing ? text.slice(0, text.length - trailing.length) : text;
+    if (core) {
+      const out = pendingWhitespace + core;
+      pendingWhitespace = trailing;
+      yield out;
+    } else {
+      // 整块都是尾随空白（例如段落分隔块），全部暂存。
+      pendingWhitespace += trailing;
+    }
+  }
+  // 流末丢弃暂存的尾随空白，等效于整体 .trim()。
 }
 
 export async function validateExternalProviderBaseUrl(

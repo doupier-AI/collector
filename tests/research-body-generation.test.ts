@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ModelGateway, parseBodyOutline, parseSliceAnnotation, type ModelProvider, type ModelProviderRequest } from "@collector/model-gateway";
+import { ModelGateway, parseBodyOutline, parseSliceAnnotation, trimStream, type ModelCallEvent, type ModelProvider, type ModelProviderRequest, type ModelProviderStreamEvent } from "@collector/model-gateway";
+
+async function* toAsync(chunks: string[]): AsyncIterable<string> {
+  for (const chunk of chunks) yield chunk;
+}
 
 /** 记录每次 complete 请求、按 prompt 内容返回可编程响应的假供应商。 */
 function makeProvider(respond: (request: ModelProviderRequest) => string): { provider: ModelProvider; requests: ModelProviderRequest[] } {
@@ -88,4 +92,81 @@ test("parseSliceAnnotation 截断超长标题与概念并过滤空概念", () =>
   const annotation = parseSliceAnnotation(JSON.stringify({ title: "x".repeat(300), concepts: ["有效", "", "  ", "也有效"] }));
   assert.equal(annotation.title.length, 200);
   assert.deepEqual(annotation.concepts, ["有效", "也有效"]);
+});
+
+/** 可编程的流式假供应商：completeStream 产出给定事件序列。 */
+function makeStreamProvider(events: ModelProviderStreamEvent[]): { provider: ModelProvider; requests: ModelProviderRequest[] } {
+  const requests: ModelProviderRequest[] = [];
+  const provider: ModelProvider = {
+    name: "fake-stream",
+    async complete() {
+      throw new Error("complete() should not be called on a streaming provider");
+    },
+    async *completeStream(request: ModelProviderRequest) {
+      requests.push(request);
+      yield* events;
+    },
+  };
+  return { provider, requests };
+}
+
+test("writeResearchBodyStream 逐字产出 delta、done 帧 usage 恰好一次记账", async () => {
+  const { provider } = makeStreamProvider([
+    { type: "delta", text: "第一段连贯正文。" },
+    { type: "delta", text: "\n\n第二段继续。" },
+    { type: "done", model: "stream-model", usage: { inputTokens: 12, outputTokens: 34 } },
+  ]);
+  const calls: ModelCallEvent[] = [];
+  const gateway = new ModelGateway(provider, { onCall: (event) => { calls.push(event); } });
+  const chunks: string[] = [];
+  for await (const delta of gateway.writeResearchBodyStream([{ role: "user", content: "介绍本地优先" }])) chunks.push(delta);
+  assert.equal(chunks.join(""), "第一段连贯正文。\n\n第二段继续。");
+  // 记账恰好一次，且带 done 帧的 usage/model。
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.status, "completed");
+  assert.equal(calls[0]?.model, "stream-model");
+  assert.deepEqual(calls[0]?.usage, { inputTokens: 12, outputTokens: 34 });
+});
+
+test("writeResearchBodyStream 对无 completeStream 的 provider 退回非流式单发", async () => {
+  const { provider, requests } = makeProvider(() => "原子正文。");
+  const calls: ModelCallEvent[] = [];
+  const gateway = new ModelGateway(provider, { onCall: (event) => { calls.push(event); } });
+  const chunks: string[] = [];
+  for await (const delta of gateway.writeResearchBodyStream([{ role: "user", content: "问题" }])) chunks.push(delta);
+  assert.deepEqual(chunks, ["原子正文。"]);
+  assert.equal(requests.length, 1);
+  // 回退路径走 complete() 自带记账，仍恰好一次。
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.status, "completed");
+});
+
+test("writeResearchBodyStream 流式产出空正文时抛错并记失败", async () => {
+  const { provider } = makeStreamProvider([{ type: "done", model: "m", usage: undefined }]);
+  const calls: ModelCallEvent[] = [];
+  const gateway = new ModelGateway(provider, { onCall: (event) => { calls.push(event); } });
+  await assert.rejects(async () => {
+    for await (const _ of gateway.writeResearchBodyStream([{ role: "user", content: "问题" }])) { /* drain */ }
+  }, /empty body/);
+});
+
+test("trimStream 保证 concat(输出) === concat(输入).trim()", async () => {
+  const cases: string[][] = [
+    ["  前导空白"],
+    ["尾随空白  "],
+    ["  两侧都有  "],
+    ["第一段", "\n\n", "第二段"],
+    ["  ", "中段内容", "  "],
+    ["跨块尾随：", "  更多", "  "],
+    ["无空白"],
+  ];
+  for (const chunks of cases) {
+    const out: string[] = [];
+    for await (const piece of trimStream(toAsync(chunks))) out.push(piece);
+    assert.equal(out.join(""), chunks.join("").trim(), `case ${JSON.stringify(chunks)}`);
+  }
+  // 内部段落分隔 \n\n 原样保留。
+  const inner: string[] = [];
+  for await (const piece of trimStream(toAsync(["甲", "\n\n", "乙"]))) inner.push(piece);
+  assert.equal(inner.join(""), "甲\n\n乙");
 });
