@@ -30,7 +30,7 @@ import {
 const e2eDir = dirname(fileURLToPath(import.meta.url));
 const PORT = 43211;
 const BASE = `http://127.0.0.1:${PORT}`;
-const REAL_TIMEOUT = 120_000; // 单次真实云模型生成的等待上限
+const REAL_TIMEOUT = 600_000; // 单次真实云模型生成的等待上限（深入走 plan-then-write 逐节扩写，12 节约分钟级）
 
 // ---------------------------------------------------------------------------
 // 验收服务生命周期（真实模型 harness，隔离数据目录；重启复用同一数据目录）
@@ -164,24 +164,47 @@ async function selectRealAnswerText(page: Page, length = 24, offset = 0): Promis
     const lastContainer = containers[containers.length - 1];
     if (!lastContainer) throw new Error("未找到已完成的 AI 回答");
     const lastBlocks = Array.from(lastContainer.querySelectorAll("[data-block-text]"));
+    // 逐块收集文本节点并拼出可见文本；Markdown 渲染后正文可能包在 <p> 里、
+    // 或跨多个文本节点，不能假设块的第一个子节点就是文本节点（TreeWalker 最稳妥）。
+    const textPoints: Array<{ node: Text; data: string }> = [];
     for (const block of lastBlocks) {
-      const node = block.firstChild as Text | null;
-      const text = node?.data ?? "";
-      let start = off;
-      while (start < text.length && /\s/.test(text[start])) start += 1;
-      if (text.length - start < len) continue;
-      const end = start + len;
-      const range = document.createRange();
-      range.setStart(node as Text, start);
-      range.setEnd(node as Text, end);
-      const selection = window.getSelection();
-      if (!selection) throw new Error("浏览器不支持 Selection");
-      selection.removeAllRanges();
-      selection.addRange(range);
-      document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
-      return text.slice(start, end);
+      const walker = block.ownerDocument.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+      let node: Node | null;
+      while ((node = walker.nextNode())) {
+        const textNode = node as Text;
+        const parent = textNode.parentElement;
+        if (parent?.closest("cite-marker")) continue;
+        textPoints.push({ node: textNode, data: textNode.data });
+      }
     }
-    throw new Error("AI 回答中找不到足够长的可选文字");
+    const joined = textPoints.map((point) => point.data).join("");
+    const trimmed = joined.trim();
+    const leading = joined.length - trimmed.length;
+    let start = leading + off;
+    if (start + len > trimmed.length + leading) start = Math.max(leading, trimmed.length + leading - len);
+    const end = start + len;
+    // 定位 start/end 各自所在的文本节点（可能跨节点，如一个段落被切成多个 text node）。
+    function pointAt(target: number): { node: Text; offset: number } {
+      let base = 0;
+      for (const point of textPoints) {
+        const next = base + point.data.length;
+        if (target <= next) return { node: point.node, offset: target - base };
+        base = next;
+      }
+      const last = textPoints[textPoints.length - 1];
+      return { node: last.node, offset: last.data.length };
+    }
+    const startPoint = pointAt(start);
+    const endPoint = pointAt(end);
+    const range = document.createRange();
+    range.setStart(startPoint.node, startPoint.offset);
+    range.setEnd(endPoint.node, endPoint.offset);
+    const selection = window.getSelection();
+    if (!selection) throw new Error("浏览器不支持 Selection");
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    return joined.slice(start, end);
   }, { len: length, off: offset });
 }
 
@@ -294,6 +317,10 @@ test("场景一：Chat 真实回答 → 选区真实分析 → 节点生长真�
 
   // 390 窄屏：来源返回与节点视图不溢出（真实模型内容下的响应式取证）
   await page.setViewportSize({ width: 390, height: 780 });
+  // 从宽屏切窄屏后 useMediaQuery 立即翻转，但 React 需一帧才把 fixed 侧栏换成 overlay；
+  // 等 fixed 侧栏确实消失再量宽，避免量到 reflow 前的瞬时溢出（假模型 320px 用例靠 toBeHidden 自动等待同一原因）。
+  await expect(page.locator(".later-panel--fixed")).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "内容导航" })).toBeHidden();
   await expect(page.locator("[data-selection-mark]")).toHaveText(selected);
   const metrics = await page.evaluate(() => ({
     scrollWidth: document.documentElement.scrollWidth,

@@ -16,8 +16,8 @@ import { defineConfig, devices } from "@playwright/test";
 export default defineConfig({
   testDir: "e2e",
   workers: 1,
-  // 真实云模型调用有网络延迟：单测整体放宽到 6 分钟
-  timeout: 360_000,
+  // 真实云模型调用有网络延迟，深入长文（plan-then-write 逐节扩写）分钟级：整体放宽到 20 分钟
+  timeout: 1_200_000,
   outputDir: "test-results-acceptance",
   reporter: [["list"]],
   use: {
