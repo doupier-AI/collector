@@ -564,3 +564,88 @@ describe("ResearchNodePage 子节点", () => {
     expect(input.nodeId).toBe("node-child-1");
   });
 });
+
+describe("#36 连续语义卡片与章节导航", () => {
+  function makeSlice(overrides: Partial<import("@collector/capture-contracts").ResearchSliceRecord> = {}): import("@collector/capture-contracts").ResearchSliceRecord {
+    return {
+      id: "slice:session-1:m-out:0",
+      nodeId: "session-1",
+      messageId: "m-out",
+      ordinal: 0,
+      title: "起点",
+      content: "第一段。",
+      normalizedConcepts: [],
+      sourceRefs: [],
+      isProvisional: false,
+      createdAt: "2026-08-01T00:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  function viewWithSlices(): ResearchNodeView {
+    const view = readyRootView();
+    const assistant = view.messages.find((m) => m.role === "assistant")!;
+    assistant.content = "第一段。\n\n第二段。\n\n第三段。";
+    view.slices = {
+      [assistant.id]: [
+        makeSlice({ id: `slice:session-1:${assistant.id}:0`, messageId: assistant.id, ordinal: 0, title: "起点", content: "第一段。" }),
+        makeSlice({ id: `slice:session-1:${assistant.id}:1`, messageId: assistant.id, ordinal: 1, title: "推进", content: "第二段。" }),
+        makeSlice({ id: `slice:session-1:${assistant.id}:2`, messageId: assistant.id, ordinal: 2, title: "收束", content: "第三段。" }),
+      ],
+    };
+    return view;
+  }
+
+  it("页面级：按卡片顺序输出全部切片标题", async () => {
+    renderNodePage({ getResearchNodeView: async () => viewWithSlices() });
+    await screen.findByText("第一段。");
+    const headings = screen.getAllByRole("heading", { level: 3 }).filter((h) => h.classList.contains("slice-card__title"));
+    expect(headings.map((h) => h.textContent)).toEqual(["起点", "推进", "收束"]);
+  });
+
+  it("章节导航挂载：有正式切片时渲染导航，线数=切片数，aria-label=切片标题", async () => {
+    const { container } = renderNodePage({ getResearchNodeView: async () => viewWithSlices() });
+    await screen.findByText("第一段。");
+    const nav = screen.getByRole("navigation", { name: "章节导航" });
+    expect(nav).toBeInTheDocument();
+    const ticks = container.querySelectorAll(".slice-rail__tick");
+    expect(ticks.length).toBe(3);
+    expect(ticks[0]).toHaveAttribute("aria-label", "起点");
+    expect(ticks[1]).toHaveAttribute("aria-label", "推进");
+    expect(ticks[2]).toHaveAttribute("aria-label", "收束");
+  });
+
+  it("导航降级：无正式切片时不渲染线列", async () => {
+    const { container } = renderNodePage({ getResearchNodeView: async () => readyRootView() });
+    await screen.findByText("因为不同头可以关注不同位置。");
+    expect(screen.queryByRole("navigation", { name: "章节导航" })).not.toBeInTheDocument();
+    expect(container.querySelectorAll(".slice-rail__tick").length).toBe(0);
+  });
+
+  it("导航降级：进行中任务不渲染线列", async () => {
+    const view = makeNodeView({
+      node: makeNode({ id: "session-1", sessionId: "session-1" }),
+      session: makeSession({ id: "session-1" }),
+      messages: [
+        makeMessage({ id: "m-in", role: "user", content: "解释" }),
+        makeMessage({ id: "m-out", role: "assistant", status: "pending", content: "" }),
+      ],
+      tasks: [makeTask({ id: "task-1", status: "running", inputMessageId: "m-in", outputMessageId: "m-out" })],
+    });
+    const { container } = renderNodePage({ getResearchNodeView: async () => view });
+    await screen.findByText("解释");
+    expect(container.querySelectorAll(".slice-rail__tick").length).toBe(0);
+  });
+
+  it("点击线跳转到对应卡片（更新当前线高亮）", async () => {
+    const user = userEvent.setup();
+    const { container } = renderNodePage({ getResearchNodeView: async () => viewWithSlices() });
+    await screen.findByText("第一段。");
+    const ticks = container.querySelectorAll<HTMLElement>(".slice-rail__tick");
+    await user.click(ticks[2]);
+    // 点击后立即更新当前线高亮
+    expect(ticks[2].className).toContain("slice-rail__tick--active");
+    expect(ticks[2]).toHaveAttribute("aria-current", "location");
+  });
+});
+

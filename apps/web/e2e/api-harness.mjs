@@ -64,6 +64,34 @@ const fakeProvider = {
     await sleep(250);
     yield "第二段：渐进事件把后续内容写进同一条消息，回答完毕。";
   },
+  // #36：原生正式切片输出。契约要求切片与消息块 1:1（content 由切片以 \n\n 拼接），
+  // 且 isProvisional=false、title 非空。确定性三卡片，供连续语义卡片与章节导航 e2e 使用。
+  async generateNative(request) {
+    const question = request.messages.at(-1)?.content ?? "";
+    const short = question.length > 24 ? `${question.slice(0, 24)}…` : question;
+    await sleep(400);
+    const nodeId = request.nodeId ?? "node";
+    const messageId = request.outputMessageId ?? "message";
+    const ordinalStart = request.sliceOrdinalStart ?? 0;
+    const makeSlice = (index, title, content) => ({
+      id: `slice:${nodeId}:${messageId}:${ordinalStart + index}`,
+      nodeId,
+      messageId,
+      ordinal: ordinalStart + index,
+      title,
+      content,
+      normalizedConcepts: [],
+      sourceRefs: [],
+      isProvisional: false,
+      createdAt: new Date().toISOString(),
+    });
+    const slices = [
+      makeSlice(0, "问题重述", `你问的是「${short}」。`),
+      makeSlice(1, "本地优先", "本地优先会先把输入保存在本机，再据此组织后续研究。"),
+      makeSlice(2, "渐进生成", "渐进事件把后续内容写进同一条消息，回答完毕。"),
+    ];
+    return { content: slices.map((slice) => slice.content).join("\n\n"), slices };
+  },
 };
 
 // 选区分析的确定性假模型：字段齐全（可选的 relationToFocus 缺省），不调用真实云模型

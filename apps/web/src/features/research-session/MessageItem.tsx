@@ -30,7 +30,7 @@ export interface MessageItemProps {
   onStartTermPreview?: (messageId: string, marker: TermMarker) => void;
   onRetryTermPreview?: (preview: ResearchTermPreviewRecord) => void;
   onGrowTermPreview?: (preview: ResearchTermPreviewRecord) => Promise<boolean>;
-  /** E1：切片列表；存在时按切片合成连续长文，边界装饰性。 */
+  /** #36：切片列表；存在正式切片时渲染为连续语义卡片序列。 */
   slices?: ResearchSliceRecord[];
 }
 
@@ -84,27 +84,27 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
  * 块 ID 与后端选区锚点使用同一派生规则。
  * Markdown 由 MarkdownContent 安全渲染；[来源n] 由 remark 插件转可悬停角标。
  * 返回高亮在渲染后 DOM 上用可见文本空间偏移圈 <mark>，偏移失败时兜底 exact 搜索。
- * E1：有切片时按切片合成连续长文，切片边界为装饰性 DOM，不影响可读文本投影。
+ * #36：存在正式切片（isProvisional=false）时渲染为连续语义卡片序列——一张卡片 = 一个完整论述单元（带标题）。
+ * completed 必带正式切片；切片缺失属异常，此时防御性降级为纯文本连续渲染（不造重试卡，那是 failed 的事）。
  */
 function AssistantBlocks({ message, highlight, citations, groundingSources, terms, slices }: { message: ResearchMessageRecord; highlight?: MessageHighlight; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[]; terms: TermMarker[]; slices?: ResearchSliceRecord[] }) {
   const blocks = deriveMessageBlocks(message.content);
   if (blocks.length === 0) return <MarkdownContent text={message.content} sources={groundingSources} citations={citations} variant="message" />;
   const activeHighlight = highlight ?? undefined;
 
-  // E1：有切片时按切片顺序渲染，切片边界装饰性；无切片时沿用块级渲染。
-  if (slices && slices.length > 0) {
-    const sortedSlices = [...slices].sort((a, b) => a.ordinal - b.ordinal);
-    // 切片按消息内索引映射到 deriveMessageBlocks 块序号（临时切片 1:1 对应）
-    const minSliceOrdinal = sortedSlices[0]?.ordinal ?? 0;
+  // #36：有正式切片时按卡片渲染；正式切片与块 1:1 对齐、ordinal 严格递增。
+  const formalSlices = (slices ?? []).filter((slice) => !slice.isProvisional).sort((a, b) => a.ordinal - b.ordinal);
+  if (formalSlices.length > 0) {
+    const minSliceOrdinal = formalSlices[0]?.ordinal ?? 0;
     return (
       <div className="message__blocks" data-content-kind="message" data-message-id={message.id}>
-        {sortedSlices.map((slice, index) => {
+        {formalSlices.map((slice, index) => {
           const blockOrdinal = slice.ordinal - minSliceOrdinal;
           const block = blocks[blockOrdinal];
           const blockId = block ? messageContentBlockId(message.id, block.ordinal) : messageContentBlockId(message.id, index);
           const thisHighlight = activeHighlight && activeHighlight.blockOrdinal === (block?.ordinal ?? index) ? activeHighlight : undefined;
           return (
-            <SliceBlock
+            <SliceCard
               key={slice.id}
               slice={slice}
               blockText={slice.content}
@@ -113,7 +113,6 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
               sources={groundingSources}
               citations={citations}
               terms={terms.filter((term) => term.blockOrdinal === (block?.ordinal ?? index))}
-              showBoundary={index > 0}
             />
           );
         })}
@@ -144,11 +143,13 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
 }
 
 /**
- * E1 切片块：在消息块基础上增加装饰性切片边界提示。
- * 边界元素标记为 aria-hidden="true" 且不含文本节点，不影响可读文本投影。
- * data-block-id 与 data-block-text 保留在内容容器上，确保选区锚点正常工作。
+ * #36 语义卡片：一张卡片 = 一个完整论述单元（正式切片）。
+ * 标题 <h3> 是 MessageBlock 的兄弟节点——绝不进入 data-block-text 容器，
+ * 否则 TreeWalker 的可见文本偏移会漂移（漂移量=标题长度），破坏选区锚点。
+ * data-block-id 与 data-block-text 保留在内容容器上；data-slice-id 留作未来融合追溯关联钩。
+ * aria-labelledby 让卡片 region 的可访问名 = 标题，{blockId}-title 的 id 为章节导航与未来 # 直达留锚点。
  */
-function SliceBlock({ slice, blockText, blockId, highlight, sources, citations, terms, showBoundary }: {
+function SliceCard({ slice, blockText, blockId, highlight, sources, citations, terms }: {
   slice: ResearchSliceRecord;
   blockText: string;
   blockId: string;
@@ -156,13 +157,12 @@ function SliceBlock({ slice, blockText, blockId, highlight, sources, citations, 
   sources: ResearchGroundingSourceRecord[];
   citations: ResearchCitationRecord[];
   terms: TermMarker[];
-  showBoundary: boolean;
 }) {
   return (
-    <>
-      {showBoundary ? (
-        <hr className="message__slice-boundary" aria-hidden="true" data-decorative="true" data-slice-boundary={slice.id} />
-      ) : null}
+    <section className="slice-card" data-slice-id={slice.id} aria-labelledby={`${blockId}-title`}>
+      <h3 id={`${blockId}-title`} className="slice-card__title">
+        {slice.title}
+      </h3>
       <MessageBlock
         blockText={blockText}
         blockId={blockId}
@@ -171,7 +171,7 @@ function SliceBlock({ slice, blockText, blockId, highlight, sources, citations, 
         citations={citations}
         terms={terms}
       />
-    </>
+    </section>
   );
 }
 

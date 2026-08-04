@@ -36,6 +36,9 @@ import { taskForMessage } from "./session-view";
 import { useResearchNode } from "./useResearchNode";
 import type { PendingFirstTurn } from "./useResearchNode";
 import { useTermPreviews } from "./useTermPreviews";
+import { deriveMessageBlocks, messageContentBlockId } from "@collector/capture-contracts";
+import { SliceRailNav } from "./SliceRailNav";
+import type { SliceRailItem } from "./SliceRailNav";
 
 const STREAM_NOTICE: Record<string, { title: string; body: string }> = {
   reconnecting: { title: "连接中断", body: "正在重新连接，已显示的内容不会丢失。" },
@@ -73,6 +76,32 @@ export function ResearchNodePage() {
   const [retryingTaskId, setRetryingTaskId] = useState<string | null>(null);
   const [decidingFusionProposalId, setDecidingFusionProposalId] = useState<string | null>(null);
   const readyView = node.state.kind === "ready" ? node.state.view : undefined;
+
+  // #36 章节导航：任一 completed 消息存在正式切片时渲染线列。
+  // 数据源 = 全部 completed 消息的正式切片（按消息顺序 + ordinal），每条线绑定卡片标题锚点。
+  // 必须在所有早退返回之前计算（Hooks 规则）；视图未就绪时为空。
+  // 依赖原始 messages/slices 引用而非整个 view，减少因 view 包装对象变化导致的重建。
+  const readyMessages = readyView?.messages;
+  const readySlices = readyView?.slices;
+  const railItems = useMemo<SliceRailItem[]>(() => {
+    const items: SliceRailItem[] = [];
+    if (!readyMessages) return items;
+    for (const message of readyMessages) {
+      if (message.role !== "assistant" || message.status !== "completed") continue;
+      const formal = (readySlices?.[message.id] ?? [])
+        .filter((slice) => !slice.isProvisional)
+        .sort((a, b) => a.ordinal - b.ordinal);
+      if (formal.length === 0) continue;
+      const blocks = deriveMessageBlocks(message.content);
+      const minSliceOrdinal = formal[0]?.ordinal ?? 0;
+      formal.forEach((slice, index) => {
+        const block = blocks[slice.ordinal - minSliceOrdinal];
+        const blockId = block ? messageContentBlockId(message.id, block.ordinal) : messageContentBlockId(message.id, index);
+        items.push({ anchorId: `${blockId}-title`, title: slice.title, excerpt: slice.content });
+      });
+    }
+    return items;
+  }, [readyMessages, readySlices]);
   // 导入控制器以会话视图形状工作：节点视图结构兼容，合并时保留 node / childNodes
   const importsUpdateView = useRef(
     (updater: (view: ResearchSessionView) => ResearchSessionView) =>
@@ -382,6 +411,8 @@ export function ResearchNodePage() {
         <p className="session-header__meta">更新于 {formatSessionTime(view.session.updatedAt)}</p>
         <ModelStatusIndicator />
       </header>
+
+      {railItems.length > 0 ? <SliceRailNav items={railItems} /> : null}
 
       {notice ? (
         <StatusMessage variant="info" role="status" title={notice.title}>

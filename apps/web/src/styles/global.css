@@ -364,13 +364,125 @@ button {
   gap: var(--space-3);
 }
 
-/* E1：切片边界为装饰性分隔线——视觉细微、不参与可读文本投影。 */
-.message__slice-boundary {
+/* #36 连续语义卡片：一张卡片 = 一个完整论述单元（带标题）。
+   扁平、低干扰——靠标题上间距建立节奏，像连续文章，不用编号/图标/强分隔线。 */
+.message__blocks:has(.slice-card) {
+  gap: var(--space-6);
+}
+
+.slice-card {
+  min-width: 0;
+}
+
+.slice-card__title {
+  margin: 0 0 var(--space-2);
+  color: var(--color-ink);
+  font-size: 1.125rem;
+  font-weight: 700;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* 卡片正文舒适行宽：--measure(68rem) 对长文偏宽，限定 42rem。 */
+.slice-card .message__content {
+  max-width: 42rem;
+}
+
+/* #36 章节导航线列：固定于正文左缘外侧留白，不进入文档流，不挤压正文行宽。 */
+.slice-rail {
+  position: fixed;
+  top: 50%;
+  left: max(0.25rem, calc((100vw - var(--measure)) / 2 - 2.25rem));
+  transform: translateY(-50%);
+  z-index: 40;
+}
+
+.slice-rail__track {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  /* 窄屏拖动滑轨：禁止原生滚动抢夺指针。 */
+  touch-action: none;
+}
+
+.slice-rail__tick {
+  display: block;
+  width: 1.25rem;
+  height: 0.1875rem;
+  padding: 0;
   border: none;
-  border-top: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.06));
-  margin: var(--space-2) 0;
-  pointer-events: none;
-  user-select: none;
+  border-radius: var(--radius-control);
+  background: var(--color-line);
+  cursor: pointer;
+  /* 扩大透明可点热区到最小触控目标，视觉线仍细。 */
+  background-clip: padding-box;
+}
+
+/* 透明热区：用伪元素扩大可点击/可触摸范围，不改变视觉。 */
+.slice-rail__tick {
+  position: relative;
+}
+
+.slice-rail__tick::after {
+  content: "";
+  position: absolute;
+  inset: -0.5rem -0.35rem;
+}
+
+.slice-rail__tick:hover,
+.slice-rail__tick:focus-visible {
+  background: var(--color-muted);
+}
+
+.slice-rail__tick--active {
+  width: 2rem;
+  background: var(--color-ai);
+}
+
+.slice-rail__preview {
+  position: fixed;
+  left: max(2.25rem, calc((100vw - var(--measure)) / 2 - 0.5rem));
+  z-index: 50;
+  width: min(18rem, calc(100vw - 4rem));
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-panel);
+}
+
+.slice-rail__preview-title {
+  margin: 0 0 var(--space-1);
+  color: var(--color-ink);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.slice-rail__preview-excerpt {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 720px) {
+  /* 窄屏：留白≈1rem，线列紧贴屏幕左缘。 */
+  .slice-rail {
+    left: 0.125rem;
+  }
+
+  .slice-rail__preview {
+    left: 2rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .slice-rail__preview {
+    transition: none;
+    animation: none;
+  }
 }
 
 /* 引用标记的编号只由伪元素绘制，不能混入消息纯文本，避免改变选区锚点偏移。 */

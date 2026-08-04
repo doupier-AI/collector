@@ -1,22 +1,22 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../../api/client";
 import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
-import { makeMessage, makeNode, makeNodeView, makeSession, makeTask } from "../../test/fakes";
+import { makeMessage, makeNode, makeNodeView, makeSelection, makeSession, makeTask } from "../../test/fakes";
 import { ResearchNodePage } from "./ResearchNodePage";
 import type { ResearchNodeView, ResearchSliceRecord } from "@collector/capture-contracts";
 import { captureSelection, readContentContext, resolveBlockRange } from "../selection/selection-capture";
 
-function renderNodePage(api: Partial<ApiClient>) {
+function renderNodePage(api: Partial<ApiClient>, entry = "/research/session-1/node/session-1") {
   const services = {
     api: api as ApiClient,
     connectTaskEvents: vi.fn(() => ({ close: () => {}, syncNow: () => {}, mode: "closed", lastEventId: 0 })),
   } as unknown as AppServices;
   return render(
     <ServicesProvider services={services}>
-      <MemoryRouter initialEntries={["/research/session-1/node/session-1"]}>
+      <MemoryRouter initialEntries={[entry]}>
         <Routes>
           <Route path="/research/:sessionId/node/:nodeId" element={<ResearchNodePage />} />
         </Routes>
@@ -212,85 +212,157 @@ function makeSlice(overrides: Partial<ResearchSliceRecord> = {}): ResearchSliceR
     content: "第一段。",
     normalizedConcepts: [],
     sourceRefs: [],
-    isProvisional: true,
+    isProvisional: false,
     createdAt: "2026-08-01T00:00:00.000Z",
     ...overrides,
   };
 }
 
-describe("E1 切片化呈现", () => {
+describe("#36 连续语义卡片", () => {
   function viewWithSlices(content: string, slices: ResearchSliceRecord[]): ResearchNodeView {
     const view = viewWithAssistant(content);
     view.slices = { "m-out": slices };
     return view;
   }
 
-  it("有切片时按序号合成连续长文，保留 data-block-id", async () => {
+  it("每个正式切片一张卡片：h3 标题按 ordinal 顺序输出切片标题", async () => {
+    const content = "第一段。\n\n第二段。\n\n第三段。";
+    const slices = [
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点", content: "第一段。" }),
+      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "推进", content: "第二段。" }),
+      makeSlice({ id: "slice:session-1:m-out:2", ordinal: 2, title: "收束", content: "第三段。" }),
+    ];
+    renderNodePage({ getResearchNodeView: async () => viewWithSlices(content, slices) });
+
+    await screen.findByText("第一段。");
+    const headings = screen.getAllByRole("heading", { level: 3 }).filter((h) => h.classList.contains("slice-card__title"));
+    expect(headings.map((h) => h.textContent)).toEqual(["起点", "推进", "收束"]);
+  });
+
+  it("卡片 region 的可访问名 = 标题（aria-labelledby）", async () => {
     const content = "第一段。\n\n第二段。";
     const slices = [
-      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, content: "第一段。" }),
-      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "段落 2", content: "第二段。" }),
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点", content: "第一段。" }),
+      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "推进", content: "第二段。" }),
+    ];
+    renderNodePage({ getResearchNodeView: async () => viewWithSlices(content, slices) });
+
+    const heading = await screen.findByRole("heading", { name: "起点", level: 3 });
+    const card = heading.closest("section");
+    expect(card).toHaveAttribute("aria-labelledby", heading.id);
+    expect(card).toHaveAttribute("data-slice-id", "slice:session-1:m-out:0");
+  });
+
+  it("防回归锁：标题是正文容器外的兄弟节点，data-block-text 的 textContent 不含标题", async () => {
+    const content = "第一段。\n\n第二段。";
+    const slices = [
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点", content: "第一段。" }),
+      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "推进", content: "第二段。" }),
     ];
     const { container } = renderNodePage({ getResearchNodeView: async () => viewWithSlices(content, slices) });
 
     const first = await screen.findByText("第一段。");
-    const second = screen.getByText("第二段。");
-    expect(first.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p0");
-    expect(second.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p1");
-    // Both blocks are within the same message container
-    expect(first.closest('[data-content-kind="message"]')).not.toBeNull();
-    expect(second.closest('[data-content-kind="message"]')).not.toBeNull();
+    const block = first.closest<HTMLElement>("[data-block-text]")!;
+    // 选区锚点偏移基准：块文本恰为切片正文，标题绝不混入
+    expect(block.textContent).toBe("第一段。");
+    expect(block).toHaveAttribute("data-block-id", "m-out#p0");
+    // 标题在块容器外、卡片内
+    const card = first.closest("section.slice-card")!;
+    const title = card.querySelector(".slice-card__title")!;
+    expect(block.contains(title)).toBe(false);
+    expect(card.contains(title)).toBe(true);
+    // 祖先仍带选区锚点定位所需标记
+    expect(first.closest("[data-content-kind]")).toHaveAttribute("data-content-kind", "message");
+    expect(first.closest("[data-message-id]")).toHaveAttribute("data-message-id", "m-out");
   });
 
-  it("切片边界为装饰性 DOM：aria-hidden + data-decorative，不包含文本", async () => {
-    const content = "第一段。\n\n第二段。\n\n第三段。";
+  it("术语标记按块 ordinal 落在对应卡片正文，且不混入标题", async () => {
+    const content = "REST 第一段。\n\nHTTP 第二段。";
+    const slices = [
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点", content: "REST 第一段。" }),
+      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "推进", content: "HTTP 第二段。" }),
+    ];
+    const view = viewWithSlices(content, slices);
+    view.termDetections = {
+      "m-out": {
+        messageId: "m-out",
+        detectedAt: "2026-08-01T00:00:00.000Z",
+        terms: [
+          { text: "REST", blockOrdinal: 0, startOffset: 0, endOffset: 4, category: "abbreviation" },
+          { text: "HTTP", blockOrdinal: 1, startOffset: 0, endOffset: 4, category: "abbreviation" },
+        ],
+        convergence: { termDensity: "full", nodeDepth: 0, reason: "none" },
+        suppressedCount: 0,
+      },
+    };
+    const { container } = renderNodePage({ getResearchNodeView: async () => view });
+
+    await screen.findByText("REST", { selector: "[data-term-marker]" });
+    const restMarker = container.querySelector<HTMLElement>('[data-term-block-ordinal="0"]')!;
+    const httpMarker = container.querySelector<HTMLElement>('[data-term-block-ordinal="1"]')!;
+    expect(restMarker).not.toBeNull();
+    expect(httpMarker).not.toBeNull();
+    // 术语标记在各自卡片正文块内
+    expect(restMarker.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p0");
+    expect(httpMarker.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p1");
+  });
+
+  it("传入 highlight 后 [data-selection-mark] 落在对应卡片正文内", async () => {
+    const content = "第一段。\n\n需要高亮的第二段。";
+    const slices = [
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点", content: "第一段。" }),
+      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "推进", content: "需要高亮的第二段。" }),
+    ];
+    const selection = makeSelection({
+      id: "sel-1",
+      sessionId: "session-1",
+      text: "高亮",
+      anchor: { kind: "message", messageId: "m-out", blockOrdinal: 1, startOffset: 2, endOffset: 4, exact: "高亮" },
+    });
+    const { container } = renderNodePage(
+      {
+        getResearchNodeView: async () => viewWithSlices(content, slices),
+        getResearchSelection: async () => selection,
+      },
+      "/research/session-1/node/session-1?sel=sel-1",
+    );
+
+    // 高亮在渲染后由 useLayoutEffect + rAF 重试圈 <mark>（?sel= 经 getResearchSelection 异步恢复）。
+    // 等待卡片容器出现，再留出高亮应用的帧窗口，随后断言 mark 落在正确卡片。
+    await waitFor(() => expect(container.querySelector("section.slice-card")).not.toBeNull());
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const mark = container.querySelector<HTMLElement>("[data-selection-mark]");
+    expect(mark).not.toBeNull();
+    expect(mark).toHaveTextContent("高亮");
+    expect(mark!.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p1");
+    expect(mark!.closest("section.slice-card")).not.toBeNull();
+  });
+
+  it("降级：切片为空或全是临时切片时纯文本连续渲染，不渲染标题卡", async () => {
+    const content = "无正式切片的段落一。\n\n无正式切片的段落二。";
+    const provisionalOnly = [
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, isProvisional: true, content: "无正式切片的段落一。" }),
+      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, isProvisional: true, content: "无正式切片的段落二。" }),
+    ];
+    const { container } = renderNodePage({ getResearchNodeView: async () => viewWithSlices(content, provisionalOnly) });
+
+    await screen.findByText("无正式切片的段落一。");
+    expect(container.querySelectorAll(".slice-card__title").length).toBe(0);
+    expect(screen.queryByRole("heading", { level: 3, name: "段落 1" })).not.toBeInTheDocument();
+    expect(container.querySelectorAll(".slice-card").length).toBe(0);
+  });
+
+  it("无装饰性边界元素", async () => {
+    const content = "第一段。\n\n第二段。";
     const slices = [
       makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, content: "第一段。" }),
-      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "段落 2", content: "第二段。" }),
-      makeSlice({ id: "slice:session-1:m-out:2", ordinal: 2, title: "段落 3", content: "第三段。" }),
+      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, content: "第二段。" }),
     ];
     const { container } = renderNodePage({ getResearchNodeView: async () => viewWithSlices(content, slices) });
 
     await screen.findByText("第一段。");
-    const boundaries = container.querySelectorAll("[data-slice-boundary]");
-    // First slice has no boundary, subsequent ones do
-    expect(boundaries.length).toBe(2);
-    for (const boundary of boundaries) {
-      expect(boundary).toHaveAttribute("aria-hidden", "true");
-      expect(boundary).toHaveAttribute("data-decorative", "true");
-      expect(boundary.textContent).toBe("");
-    }
-  });
-
-  it("切片边界不影响可读文本投影——选区锚点偏移不受干扰", async () => {
-    const content = "REST API 测试。\n\n第二段内容。";
-    const slices = [
-      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, content: "REST API 测试。" }),
-      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "段落 2", content: "第二段内容。" }),
-    ];
-    const { container } = renderNodePage({ getResearchNodeView: async () => viewWithSlices(content, slices) });
-
-    await screen.findByText("REST API 测试。");
-    const contentRoot = container.querySelector<HTMLElement>('[data-content-kind="message"]');
-    expect(contentRoot).not.toBeNull();
-    const block = container.querySelector<HTMLElement>("[data-block-text]")!;
-    // The block text is just the slice content, boundary elements don't add text
-    expect(block.textContent).toBe("REST API 测试。");
-
-    // Selection capture should still work
-    const context = readContentContext(contentRoot!);
-    expect(context).toBeDefined();
-  });
-
-  it("无切片时沿用原有块级渲染", async () => {
-    const content = "无切片的段落一。\n\n无切片的段落二。";
-    const { container } = renderNodePage({ getResearchNodeView: async () => viewWithAssistant(content) });
-
-    const first = await screen.findByText("无切片的段落一。");
-    const second = screen.getByText("无切片的段落二。");
-    expect(first.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p0");
-    expect(second.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p1");
-    // No slice boundaries
-    expect(container.querySelectorAll("[data-slice-boundary]").length).toBe(0);
+    expect(container.querySelector(".message__slice-boundary")).toBeNull();
+    expect(container.querySelector("[data-slice-boundary]")).toBeNull();
+    expect(container.querySelectorAll("hr").length).toBe(0);
   });
 });
