@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
+import { makeExcerpt } from "./slice-cards";
 
 /**
  * #36 章节导航：正文一侧的一列极简短线，每张语义卡片对应一条线。
@@ -25,13 +26,6 @@ export interface SliceRailItem {
 }
 
 const PREVIEW_DELAY_MS = 350;
-/** 正文摘要截取长度（字）。 */
-const EXCERPT_LENGTH = 80;
-
-function makeExcerpt(content: string): string {
-  const collapsed = content.replace(/\s+/g, " ").trim();
-  return collapsed.length > EXCERPT_LENGTH ? `${collapsed.slice(0, EXCERPT_LENGTH)}…` : collapsed;
-}
 
 function itemAccessibleName(item: SliceRailItem): string {
   return item.title.trim() ? item.title : makeExcerpt(item.excerpt);

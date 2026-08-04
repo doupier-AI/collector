@@ -253,6 +253,24 @@ describe("#36 连续语义卡片", () => {
     expect(card).toHaveAttribute("data-slice-id", "slice:session-1:m-out:0");
   });
 
+  it("生成自由化：空标题派生切片仍渲染卡片，改用 aria-label=正文摘要（无悬空 aria-labelledby）", async () => {
+    const content = "第一段没有标题的正文。\n\n第二段也没有标题的正文。";
+    const slices = [
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "", content: "第一段没有标题的正文。" }),
+      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "  ", content: "第二段也没有标题的正文。" }),
+    ];
+    const { container } = renderNodePage({ getResearchNodeView: async () => viewWithSlices(content, slices) });
+
+    await screen.findByText("第一段没有标题的正文。");
+    // 空标题卡片仍渲染（不消失），但不输出空 <h3>。
+    expect(container.querySelectorAll("section.slice-card").length).toBe(2);
+    expect(container.querySelectorAll(".slice-card__title").length).toBe(0);
+    // 无标题时不留悬空 aria-labelledby，改用 aria-label = 正文摘要作为可访问名。
+    const firstCard = container.querySelectorAll<HTMLElement>("section.slice-card")[0]!;
+    expect(firstCard).not.toHaveAttribute("aria-labelledby");
+    expect(firstCard).toHaveAttribute("aria-label", "第一段没有标题的正文。");
+  });
+
   it("防回归锁：标题是正文容器外的兄弟节点，data-block-text 的 textContent 不含标题", async () => {
     const content = "第一段。\n\n第二段。";
     const slices = [

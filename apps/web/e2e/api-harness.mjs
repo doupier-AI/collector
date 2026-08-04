@@ -64,33 +64,28 @@ const fakeProvider = {
     await sleep(250);
     yield "第二段：渐进事件把后续内容写进同一条消息，回答完毕。";
   },
-  // #36：原生正式切片输出。契约要求切片与消息块 1:1（content 由切片以 \n\n 拼接），
-  // 且 isProvisional=false、title 非空。确定性三卡片，供连续语义卡片与章节导航 e2e 使用。
-  async generateNative(request) {
+  // 生成自由化：模型只产出自由正文（\n\n 分段），切片由服务层按段落块确定性派生，
+  // 标题/概念由 deriveAnnotations 事后抽取。三段正文与三条标注一一对应，
+  // 供连续语义卡片与章节导航 e2e 使用。
+  async writeBody(request) {
     const question = request.messages.at(-1)?.content ?? "";
     const short = question.length > 24 ? `${question.slice(0, 24)}…` : question;
     await sleep(400);
-    const nodeId = request.nodeId ?? "node";
-    const messageId = request.outputMessageId ?? "message";
-    const ordinalStart = request.sliceOrdinalStart ?? 0;
-    const makeSlice = (index, title, content) => ({
-      id: `slice:${nodeId}:${messageId}:${ordinalStart + index}`,
-      nodeId,
-      messageId,
-      ordinal: ordinalStart + index,
-      title,
-      content,
-      normalizedConcepts: [],
-      sourceRefs: [],
-      isProvisional: false,
-      createdAt: new Date().toISOString(),
-    });
-    const slices = [
-      makeSlice(0, "问题重述", `你问的是「${short}」。`),
-      makeSlice(1, "本地优先", "本地优先会先把输入保存在本机，再据此组织后续研究。"),
-      makeSlice(2, "渐进生成", "渐进事件把后续内容写进同一条消息，回答完毕。"),
-    ];
-    return { content: slices.map((slice) => slice.content).join("\n\n"), slices };
+    if (request.deepResearch) {
+      return `这是深入研究第一轮，围绕「${short}」展开。\n\n本轮只使用来源选区与当前已有材料生成，未联网检索，回答完毕。`;
+    }
+    return [
+      `你问的是「${short}」。`,
+      "本地优先会先把输入保存在本机，再据此组织后续研究。",
+      "渐进事件把后续内容写进同一条消息，回答完毕。",
+    ].join("\n\n");
+  },
+  // 事后标注：按段落内容给出确定性标题，让派生切片带标题渲染成语义卡片。
+  async deriveAnnotations({ content }) {
+    if (content.includes("本地优先")) return { title: "本地优先", concepts: ["本地优先"] };
+    if (content.includes("渐进事件")) return { title: "渐进生成", concepts: ["渐进生成"] };
+    if (content.includes("深入研究第一轮")) return { title: "深入研究", concepts: [] };
+    return { title: "问题重述", concepts: [] };
   },
 };
 

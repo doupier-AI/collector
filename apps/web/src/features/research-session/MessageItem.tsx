@@ -7,6 +7,7 @@ import { MarkdownContent } from "../../components/MarkdownContent";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { markExactInRendered, setRangeFromOffsets } from "../selection/selection-highlight";
 import { taskErrorReason } from "./format";
+import { deriveSliceCardTargets, sliceCardAccessibleName } from "./slice-cards";
 import { termPreviewClientKey } from "./useTermPreviews";
 
 /** 来源返回高亮：消息层定位结果。start/end 为可见文本空间偏移，exact 供 DOM 兜底搜索。 */
@@ -84,35 +85,33 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
  * 块 ID 与后端选区锚点使用同一派生规则。
  * Markdown 由 MarkdownContent 安全渲染；[来源n] 由 remark 插件转可悬停角标。
  * 返回高亮在渲染后 DOM 上用可见文本空间偏移圈 <mark>，偏移失败时兜底 exact 搜索。
- * #36：存在正式切片（isProvisional=false）时渲染为连续语义卡片序列——一张卡片 = 一个完整论述单元（带标题）。
- * completed 必带正式切片；切片缺失属异常，此时防御性降级为纯文本连续渲染（不造重试卡，那是 failed 的事）。
+ * 生成自由化：卡片由派生切片渲染（deriveSliceCardTargets 与章节导航共用同一份对齐），
+ * 一张卡片 = 一个段落块；标题来自大纲节标题或小模型事后抽取，可为空（空标题卡片只显正文）。
+ * completed 必带派生切片；切片缺失属异常，此时防御性降级为纯文本连续渲染（不造重试卡，那是 failed 的事）。
  */
 function AssistantBlocks({ message, highlight, citations, groundingSources, terms, slices }: { message: ResearchMessageRecord; highlight?: MessageHighlight; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[]; terms: TermMarker[]; slices?: ResearchSliceRecord[] }) {
   const blocks = deriveMessageBlocks(message.content);
   if (blocks.length === 0) return <MarkdownContent text={message.content} sources={groundingSources} citations={citations} variant="message" />;
   const activeHighlight = highlight ?? undefined;
 
-  // #36：有正式切片时按卡片渲染；正式切片与块 1:1 对齐、ordinal 严格递增。
-  const formalSlices = (slices ?? []).filter((slice) => !slice.isProvisional).sort((a, b) => a.ordinal - b.ordinal);
-  if (formalSlices.length > 0) {
-    const minSliceOrdinal = formalSlices[0]?.ordinal ?? 0;
+  // 生成自由化：卡片目标与章节导航同源派生；块对齐与 blockId 计算不再各自手工进行。
+  const cardTargets = deriveSliceCardTargets(message, slices);
+  if (cardTargets.length > 0) {
     return (
       <div className="message__blocks" data-content-kind="message" data-message-id={message.id}>
-        {formalSlices.map((slice, index) => {
-          const blockOrdinal = slice.ordinal - minSliceOrdinal;
-          const block = blocks[blockOrdinal];
-          const blockId = block ? messageContentBlockId(message.id, block.ordinal) : messageContentBlockId(message.id, index);
-          const thisHighlight = activeHighlight && activeHighlight.blockOrdinal === (block?.ordinal ?? index) ? activeHighlight : undefined;
+        {cardTargets.map((target) => {
+          const thisHighlight = activeHighlight && activeHighlight.blockOrdinal === target.blockOrdinal ? activeHighlight : undefined;
           return (
             <SliceCard
-              key={slice.id}
-              slice={slice}
-              blockText={slice.content}
-              blockId={blockId}
+              key={target.slice.id}
+              slice={target.slice}
+              blockText={target.blockText}
+              blockId={target.blockId}
+              anchorId={target.anchorId}
               highlight={thisHighlight}
               sources={groundingSources}
               citations={citations}
-              terms={terms.filter((term) => term.blockOrdinal === (block?.ordinal ?? index))}
+              terms={terms.filter((term) => term.blockOrdinal === target.blockOrdinal)}
             />
           );
         })}
@@ -143,26 +142,35 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
 }
 
 /**
- * #36 语义卡片：一张卡片 = 一个完整论述单元（正式切片）。
+ * 语义卡片：一张卡片 = 一个完整论述单元（派生切片）。
  * 标题 <h3> 是 MessageBlock 的兄弟节点——绝不进入 data-block-text 容器，
  * 否则 TreeWalker 的可见文本偏移会漂移（漂移量=标题长度），破坏选区锚点。
  * data-block-id 与 data-block-text 保留在内容容器上；data-slice-id 留作未来融合追溯关联钩。
- * aria-labelledby 让卡片 region 的可访问名 = 标题，{blockId}-title 的 id 为章节导航与未来 # 直达留锚点。
+ * 标题可为空（小模型抽取不到时不造标题）：有标题用 aria-labelledby 指向 <h3>，
+ * 无标题改用 aria-label = 正文摘要，避免 aria-labelledby 悬空引用导致可访问名缺失。
  */
-function SliceCard({ slice, blockText, blockId, highlight, sources, citations, terms }: {
+function SliceCard({ slice, blockText, blockId, anchorId, highlight, sources, citations, terms }: {
   slice: ResearchSliceRecord;
   blockText: string;
   blockId: string;
+  anchorId: string;
   highlight?: MessageHighlight;
   sources: ResearchGroundingSourceRecord[];
   citations: ResearchCitationRecord[];
   terms: TermMarker[];
 }) {
+  const title = slice.title.trim();
   return (
-    <section className="slice-card" data-slice-id={slice.id} aria-labelledby={`${blockId}-title`}>
-      <h3 id={`${blockId}-title`} className="slice-card__title">
-        {slice.title}
-      </h3>
+    <section
+      className="slice-card"
+      data-slice-id={slice.id}
+      {...(title ? { "aria-labelledby": anchorId } : { "aria-label": sliceCardAccessibleName(slice) })}
+    >
+      {title ? (
+        <h3 id={anchorId} className="slice-card__title">
+          {slice.title}
+        </h3>
+      ) : null}
       <MessageBlock
         blockText={blockText}
         blockId={blockId}

@@ -74,7 +74,7 @@ describe("RunRecordsPage 导出", () => {
 });
 
 describe("RunRecordDetail", () => {
-  it("shows the persisted native slice count for a research task", () => {
+  it("shows the persisted derived slice count for a research task", () => {
     const detail: RunRecordDetailModel = {
       ...summary,
       task: { id: "task-1", promptVersion: "research-slices-v1", sliceCount: 3, retryable: false },
@@ -83,7 +83,7 @@ describe("RunRecordDetail", () => {
       errors: [],
     };
     render(<RunRecordDetail detail={detail} />);
-    expect(screen.getByText("切片数")).toBeInTheDocument();
+    expect(screen.getByText("派生片段数")).toBeInTheDocument();
     expect(screen.getByText("3 个")).toBeInTheDocument();
     expect(screen.getByText("research-slices-v1")).toBeInTheDocument();
   });

@@ -2,8 +2,9 @@ import { expect, test } from "@playwright/test";
 import { pairAndOpen } from "./helpers";
 
 /**
- * #36 连续语义卡片 + 章节导航 e2e。
- * e2e 假模型走 generateNative，产出 3 张正式切片卡片（标题：问题重述/本地优先/渐进生成）。
+ * 连续语义卡片 + 章节导航 e2e（生成自由化后）。
+ * e2e 假模型走 writeBody 产出三段自由正文，服务层按段落块确定性派生切片、
+ * deriveAnnotations 事后抽取标题（问题重述/本地优先/渐进生成），渲染为 3 张卡片。
  * 覆盖：连续阅读、响应式行宽、章节导航桌面悬停预览/点击跳转/当前线跟随、
  * 窄屏线列与拖动、键盘、可访问性、reduced-motion、控制台/网络、降级。
  */

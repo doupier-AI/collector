@@ -36,7 +36,7 @@ import { taskForMessage } from "./session-view";
 import { useResearchNode } from "./useResearchNode";
 import type { PendingFirstTurn } from "./useResearchNode";
 import { useTermPreviews } from "./useTermPreviews";
-import { deriveMessageBlocks, messageContentBlockId } from "@collector/capture-contracts";
+import { deriveSliceCardTargets } from "./slice-cards";
 import { SliceRailNav } from "./SliceRailNav";
 import type { SliceRailItem } from "./SliceRailNav";
 
@@ -77,8 +77,10 @@ export function ResearchNodePage() {
   const [decidingFusionProposalId, setDecidingFusionProposalId] = useState<string | null>(null);
   const readyView = node.state.kind === "ready" ? node.state.view : undefined;
 
-  // #36 章节导航：任一 completed 消息存在正式切片时渲染线列。
-  // 数据源 = 全部 completed 消息的正式切片（按消息顺序 + ordinal），每条线绑定卡片标题锚点。
+  // #36 章节导航：任一 completed 消息存在派生切片时渲染线列。
+  // 数据源 = 全部 completed 消息的派生切片（按消息顺序 + ordinal），每条线绑定卡片标题锚点。
+  // 卡片目标与 MessageItem 渲染共用 deriveSliceCardTargets——导航锚点与卡片 id 必然同源，
+  // 避免两份手工对齐计算不一致导致的点选漂移。
   // 必须在所有早退返回之前计算（Hooks 规则）；视图未就绪时为空。
   // 依赖原始 messages/slices 引用而非整个 view，减少因 view 包装对象变化导致的重建。
   const readyMessages = readyView?.messages;
@@ -88,17 +90,9 @@ export function ResearchNodePage() {
     if (!readyMessages) return items;
     for (const message of readyMessages) {
       if (message.role !== "assistant" || message.status !== "completed") continue;
-      const formal = (readySlices?.[message.id] ?? [])
-        .filter((slice) => !slice.isProvisional)
-        .sort((a, b) => a.ordinal - b.ordinal);
-      if (formal.length === 0) continue;
-      const blocks = deriveMessageBlocks(message.content);
-      const minSliceOrdinal = formal[0]?.ordinal ?? 0;
-      formal.forEach((slice, index) => {
-        const block = blocks[slice.ordinal - minSliceOrdinal];
-        const blockId = block ? messageContentBlockId(message.id, block.ordinal) : messageContentBlockId(message.id, index);
-        items.push({ anchorId: `${blockId}-title`, title: slice.title, excerpt: slice.content });
-      });
+      for (const target of deriveSliceCardTargets(message, readySlices?.[message.id])) {
+        items.push({ anchorId: target.anchorId, title: target.slice.title, excerpt: target.blockText });
+      }
     }
     return items;
   }, [readyMessages, readySlices]);
