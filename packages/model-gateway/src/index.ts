@@ -39,7 +39,19 @@ export interface ModelProvider {
   readonly defaultModel?: string;
   readonly pricing?: Record<string, ModelPricing>;
   complete(request: ModelProviderRequest): Promise<ModelProviderResponse>;
+  /**
+   * 真实模型逐字流式（方案 B）：能流式的 provider 在 complete() 之外另实现本方法。
+   * 逐字增量以 {type:"delta"} 事件产出；usage/model 只在终帧到达，由 {type:"done"} 事件带外承载，
+   * 供网关恰好一次记账。缺省本方法的 provider 由网关退回非流式 complete() 单发。
+   */
+  completeStream?(request: ModelProviderRequest): AsyncIterable<ModelProviderStreamEvent>;
 }
+
+/** 流式增量事件：正文逐字片段。 */
+export interface ModelProviderStreamDelta { type: "delta"; text: string }
+/** 流式终帧事件：模型名与 usage（token/成本记账依据，仅在流结束时可用）。 */
+export interface ModelProviderStreamDone { type: "done"; model: string; usage?: ProviderUsage }
+export type ModelProviderStreamEvent = ModelProviderStreamDelta | ModelProviderStreamDone;
 
 /** plan-then-write 大纲的节数边界，防止模型产出过多碎节。 */
 export const RESEARCH_BODY_OUTLINE_MIN_SECTIONS = 1;
@@ -1261,6 +1273,20 @@ export class FakeProvider implements ModelProvider {
     if (typeof response === "string") return { content: response, model: request.model, usage: { inputTokens: 10, outputTokens: 20 } };
     return response ?? { content: "", model: request.model };
   }
+
+  /** 测试用确定逐字流：把响应按 80 字切片逐段产出，终帧带 usage/model（对齐真实供应商的流式语义）。 */
+  async *completeStream(request: ModelProviderRequest): AsyncIterable<ModelProviderStreamEvent> {
+    this.calls.push(request);
+    const response = this.responses.shift();
+    if (response instanceof Error) throw response;
+    const resolved: ModelProviderResponse = typeof response === "string"
+      ? { content: response, model: request.model, usage: { inputTokens: 10, outputTokens: 20 } }
+      : response ?? { content: "", model: request.model };
+    for (let index = 0; index < resolved.content.length; index += 80) {
+      yield { type: "delta", text: resolved.content.slice(index, index + 80) };
+    }
+    yield { type: "done", model: resolved.model ?? request.model, usage: resolved.usage };
+  }
 }
 
 export interface OpenAiCompatibleProviderOptions {
@@ -1326,6 +1352,76 @@ export class OpenAiCompatibleProvider implements ModelProvider {
         inputCacheMissTokens: payload?.usage?.prompt_cache_miss_tokens,
       },
     };
+  }
+
+  /**
+   * 真实逐字流式（方案 B）：chat/completions + stream:true。
+   * choices[].delta.content 逐字产出；usage 仅在请求 stream_options.include_usage 后的终帧到达。
+   * deepseek 思考模式的 reasoning_content 不计入正文。
+   */
+  async *completeStream(request: ModelProviderRequest): AsyncIterable<ModelProviderStreamEvent> {
+    const apiKey = await this.options.apiKey();
+    if (!apiKey) throw new Error(`${this.options.definition.label} API key is not configured`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error(`${this.options.definition.label} request timed out`)), request.timeoutMs ?? 75_000);
+    let response: Response;
+    try {
+      const wantsJson = request.responseFormat?.type === "json_object";
+      const messages: Array<{ role: string; content: string }> = wantsJson
+        ? [{ role: "system", content: "Return valid json only. Fragment IDs and capture IDs are different identifier types and must never be interchanged." }, { role: "user", content: request.prompt }]
+        : [{ role: "user", content: request.prompt }];
+      const body: Record<string, unknown> = {
+        model: request.model,
+        messages,
+        max_tokens: request.maxTokens,
+        stream: true,
+        stream_options: { include_usage: true },
+      };
+      if (wantsJson) body.response_format = request.responseFormat;
+      if (typeof request.temperature === "number") body.temperature = request.temperature;
+      if (this.options.definition.capabilities.thinkingMode === "deepseek") body.thinking = { type: request.thinking ? "enabled" : "disabled" };
+      response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        signal: controller.signal,
+        redirect: "error",
+        body: JSON.stringify(body),
+      });
+    } catch (error) {
+      clearTimeout(timer);
+      throw error;
+    }
+    if (!response.ok) {
+      clearTimeout(timer);
+      throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+    }
+    if (!response.body) {
+      clearTimeout(timer);
+      throw new Error(`${this.options.definition.label} streaming response has no body`);
+    }
+    let model = request.model;
+    let usage: ProviderUsage | undefined;
+    try {
+      for await (const event of iterateServerSentEvents(response.body)) {
+        if (event.data === "[DONE]") break;
+        const payload = JSON.parse(event.data);
+        if (typeof payload?.model === "string") model = payload.model;
+        const choice = payload?.choices?.[0];
+        const text = choice?.delta?.content;
+        if (typeof text === "string" && text) yield { type: "delta", text };
+        if (payload?.usage) {
+          usage = {
+            inputTokens: payload.usage.prompt_tokens,
+            outputTokens: payload.usage.completion_tokens,
+            inputCacheHitTokens: payload.usage.prompt_cache_hit_tokens,
+            inputCacheMissTokens: payload.usage.prompt_cache_miss_tokens,
+          };
+        }
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+    yield { type: "done", model, usage };
   }
 
   /**
@@ -1439,6 +1535,56 @@ export class OpenAiResponsesProvider implements GroundingModelProvider {
     return { content, model: response?.model ?? request.model, usage: openAiUsage(response?.usage) };
   }
 
+  /**
+   * 真实逐字流式（方案 B）：responses + stream:true。
+   * response.output_text.delta 事件的 .delta 逐字产出；usage 在 response.completed 帧的 response.usage。
+   * response.failed / error 事件抛错。
+   */
+  async *completeStream(request: ModelProviderRequest): AsyncIterable<ModelProviderStreamEvent> {
+    const apiKey = await this.options.apiKey();
+    if (!apiKey) throw new Error(`${this.options.definition.label} API key is not configured`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error(`${this.options.definition.label} request timed out`)), request.timeoutMs ?? 75_000);
+    let response: Response;
+    try {
+      const body: Record<string, unknown> = { model: request.model, input: request.prompt, max_output_tokens: request.maxTokens, stream: true };
+      if (typeof request.temperature === "number") body.temperature = request.temperature;
+      response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/responses`, {
+        method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, signal: controller.signal, redirect: "error", body: JSON.stringify(body),
+      });
+    } catch (error) {
+      clearTimeout(timer);
+      throw error;
+    }
+    if (!response.ok) {
+      clearTimeout(timer);
+      throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+    }
+    if (!response.body) {
+      clearTimeout(timer);
+      throw new Error(`${this.options.definition.label} streaming response has no body`);
+    }
+    let model = request.model;
+    let usage: ProviderUsage | undefined;
+    try {
+      for await (const event of iterateServerSentEvents(response.body)) {
+        const payload = JSON.parse(event.data);
+        const type = payload?.type;
+        if (type === "response.output_text.delta") {
+          if (typeof payload.delta === "string" && payload.delta) yield { type: "delta", text: payload.delta };
+        } else if (type === "response.completed") {
+          model = payload?.response?.model ?? model;
+          usage = openAiUsage(payload?.response?.usage);
+        } else if (type === "response.failed" || type === "error") {
+          throw new Error(`${this.options.definition.label} streaming failed (${payload?.response?.error?.message ?? payload?.message ?? "unknown error"})`);
+        }
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+    yield { type: "done", model, usage };
+  }
+
   async generateGroundedResearch(request: { prompt: string; model: string; grounding: ResearchGroundingRequest; maxTokens?: number; timeoutMs?: number }): Promise<GroundedResearchResponse> {
     const payload = await this.request({
       model: request.model,
@@ -1501,6 +1647,51 @@ export class GeminiGroundingProvider implements GroundingModelProvider {
     if (typeof request.temperature === "number") generationConfig.temperature = request.temperature;
     const payload = await this.request(request.model, { contents: [{ role: "user", parts: [{ text: request.prompt }] }], generationConfig }, request.timeoutMs);
     return { content: geminiText(payload), model: request.model, usage: geminiUsage(payload?.usageMetadata) };
+  }
+
+  /**
+   * 真实逐字流式（方案 B）：:streamGenerateContent?alt=sse。
+   * 每个 data 帧的 candidates[0].content.parts[].text 逐字产出；usageMetadata 在终帧。
+   */
+  async *completeStream(request: ModelProviderRequest): AsyncIterable<ModelProviderStreamEvent> {
+    const apiKey = await this.options.apiKey();
+    if (!apiKey) throw new Error(`${this.options.definition.label} API key is not configured`);
+    const wantsJson = request.responseFormat?.type === "json_object";
+    const generationConfig: Record<string, unknown> = { maxOutputTokens: request.maxTokens };
+    if (wantsJson) generationConfig.responseMimeType = "application/json";
+    if (typeof request.temperature === "number") generationConfig.temperature = request.temperature;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error(`${this.options.definition.label} request timed out`)), request.timeoutMs ?? 75_000);
+    let response: Response;
+    try {
+      response = await this.fetchImpl(
+        `${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/models/${encodeURIComponent(request.model)}:streamGenerateContent?alt=sse`,
+        { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey }, signal: controller.signal, redirect: "error", body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: request.prompt }] }], generationConfig }) },
+      );
+    } catch (error) {
+      clearTimeout(timer);
+      throw error;
+    }
+    if (!response.ok) {
+      clearTimeout(timer);
+      throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+    }
+    if (!response.body) {
+      clearTimeout(timer);
+      throw new Error(`${this.options.definition.label} streaming response has no body`);
+    }
+    let usage: ProviderUsage | undefined;
+    try {
+      for await (const event of iterateServerSentEvents(response.body)) {
+        const payload = JSON.parse(event.data);
+        const text = geminiText(payload);
+        if (text) yield { type: "delta", text };
+        if (payload?.usageMetadata) usage = geminiUsage(payload.usageMetadata);
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+    yield { type: "done", model: request.model, usage };
   }
 
   async generateGroundedResearch(request: { prompt: string; model: string; grounding: ResearchGroundingRequest; maxTokens?: number; timeoutMs?: number }): Promise<GroundedResearchResponse> {
@@ -1655,6 +1846,83 @@ export class AnthropicMessagesProvider implements GroundingModelProvider {
       },
     };
   }
+
+  /**
+   * 真实逐字流式（方案 B）：messages + stream:true。
+   * content_block_delta（text_delta）事件的 delta.text 逐字产出；message_start 给输入/缓存 token，
+   * message_delta 给输出 token；message_stop 结束；error 事件抛错。
+   */
+  async *completeStream(request: ModelProviderRequest): AsyncIterable<ModelProviderStreamEvent> {
+    const apiKey = await this.options.apiKey();
+    if (!apiKey) throw new Error(`${this.options.definition.label} API key is not configured`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error(`${this.options.definition.label} request timed out`)), request.timeoutMs ?? 75_000);
+    const wantsJson = request.responseFormat?.type === "json_object";
+    const body: Record<string, unknown> = {
+      model: request.model,
+      max_tokens: request.maxTokens ?? 4000,
+      messages: [{ role: "user", content: request.prompt }],
+      stream: true,
+    };
+    if (wantsJson) body.system = "Return valid JSON only. Fragment IDs and capture IDs are different identifier types and must never be interchanged.";
+    if (typeof request.temperature === "number") body.temperature = request.temperature;
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/messages`, {
+        method: "POST",
+        headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "Content-Type": "application/json" },
+        signal: controller.signal,
+        redirect: "error",
+        body: JSON.stringify(body),
+      });
+    } catch (error) {
+      clearTimeout(timer);
+      throw error;
+    }
+    if (!response.ok) {
+      clearTimeout(timer);
+      throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+    }
+    if (!response.body) {
+      clearTimeout(timer);
+      throw new Error(`${this.options.definition.label} streaming response has no body`);
+    }
+    let model = request.model;
+    let cacheHitTokens = 0;
+    let cacheCreationTokens = 0;
+    let uncachedInputTokens = 0;
+    let outputTokens: number | undefined;
+    try {
+      for await (const event of iterateServerSentEvents(response.body)) {
+        const payload = JSON.parse(event.data);
+        const type = payload?.type;
+        if (type === "content_block_delta" && payload?.delta?.type === "text_delta" && typeof payload.delta.text === "string" && payload.delta.text) {
+          yield { type: "delta", text: payload.delta.text };
+        } else if (type === "message_start") {
+          model = payload?.message?.model ?? model;
+          cacheHitTokens = Number(payload?.message?.usage?.cache_read_input_tokens ?? 0);
+          cacheCreationTokens = Number(payload?.message?.usage?.cache_creation_input_tokens ?? 0);
+          uncachedInputTokens = Number(payload?.message?.usage?.input_tokens ?? 0);
+        } else if (type === "message_delta") {
+          outputTokens = payload?.usage?.output_tokens ?? outputTokens;
+        } else if (type === "error") {
+          throw new Error(`${this.options.definition.label} streaming failed (${payload?.error?.message ?? "unknown error"})`);
+        }
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+    yield {
+      type: "done",
+      model,
+      usage: {
+        inputTokens: uncachedInputTokens + cacheHitTokens + cacheCreationTokens,
+        outputTokens,
+        inputCacheHitTokens: cacheHitTokens,
+        inputCacheMissTokens: uncachedInputTokens + cacheCreationTokens,
+      },
+    };
+  }
 }
 
 export function createProvider(definition: ProviderDefinition, options: Omit<OpenAiCompatibleProviderOptions, "definition">): ModelProvider {
@@ -1800,6 +2068,49 @@ function redactError(error: unknown): string {
 }
 
 function normalizeBaseUrl(value: string): string { return value.replace(/\/+$/, ""); }
+
+/**
+ * 解析 SSE（Server-Sent Events）响应体为事件流，供四家真实供应商的流式 completeStream 复用。
+ * 只处理信封（空行分事件、多 data: 行 \n 拼接、捕获 event: 字段、忽略 : 注释），不解释 payload；
+ * data: [DONE] 这类终止哨兵由调用方判断。TextDecoder 流式缓冲保证跨块的多字节字符不被截断。
+ */
+export async function* iterateServerSentEvents(body: ReadableStream<Uint8Array>): AsyncIterable<{ event?: string; data: string }> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const flushEvent = function* (rawEvent: string): Generator<{ event?: string; data: string }> {
+    let event: string | undefined;
+    const dataLines: string[] = [];
+    for (const line of rawEvent.split(/\r?\n/)) {
+      if (!line || line.startsWith(":")) continue;
+      const colon = line.indexOf(":");
+      const field = colon < 0 ? line : line.slice(0, colon);
+      let value = colon < 0 ? "" : line.slice(colon + 1);
+      if (value.startsWith(" ")) value = value.slice(1);
+      if (field === "event") event = value;
+      else if (field === "data") dataLines.push(value);
+    }
+    if (dataLines.length) yield { event, data: dataLines.join("\n") };
+  };
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      let sepIndex: number;
+      // 事件以空行（\n\n 或 \r\n\r\n）分隔；逐段取出完整事件，残余留在缓冲。
+      while ((sepIndex = buffer.search(/\r?\n\r?\n/)) >= 0) {
+        const rawEvent = buffer.slice(0, sepIndex);
+        const sepMatch = buffer.slice(sepIndex).match(/^\r?\n\r?\n/);
+        buffer = buffer.slice(sepIndex + (sepMatch?.[0].length ?? 2));
+        yield* flushEvent(rawEvent);
+      }
+      if (done) break;
+    }
+    if (buffer.trim()) yield* flushEvent(buffer);
+  } finally {
+    reader.releaseLock();
+  }
+}
 
 export function fingerprintBaseUrl(value: string): string {
   return createHash("sha256").update(normalizeBaseUrl(value).toLocaleLowerCase()).digest("hex");
