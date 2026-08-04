@@ -30,6 +30,7 @@ import {
 import type { ResearchStore } from "./store.js";
 import { ParentChainContextService, type ParentChainContextResult } from "./parent-chain-context.js";
 import { buildResearchSliceContext, DEFAULT_RESEARCH_SLICE_CONTEXT_TOKEN_BUDGET, type ResearchSliceContextCandidate } from "./slice-context.js";
+import type { ResearchBodyOutline, ResearchSliceAnnotation } from "@collector/model-gateway";
 
 export const RESEARCH_CHAT_PROMPT_VERSION = "research-chat-v1";
 export const DEEP_RESEARCH_PROMPT_VERSION = "deep-research-v1";
@@ -67,6 +68,14 @@ export interface ResearchGenerationProvider {
   generate(request: ResearchGenerationRequest): AsyncIterable<string>;
   /** Agent 式搜索：Collector 自行完成搜索，不依赖供应商原生联网。 */
   generateAgentGrounded?(request: ResearchGenerationRequest & { scenario: ResearchGroundingScenario }): Promise<{ content: string; slices?: ResearchSliceRecord[]; status: ResearchGroundingScopeStatus; queries: string[]; sources: Array<{ providerSourceId?: string; title: string; url?: string; snippet?: string; publishedAt?: string; locator?: string }>; citations: Array<{ sourceOrdinal: number; startOffset: number; endOffset: number; providerCitationId?: string }>; responseSummary?: Record<string, unknown>; errorMessage?: string }>;
+  /** 生成自由化：自由写连续正文，不返回 JSON 切片结构。 */
+  writeBody?(request: ResearchGenerationRequest): Promise<string>;
+  /** plan-then-write 第一阶段：为长文生成有序大纲。 */
+  generateOutline?(request: ResearchGenerationRequest): Promise<ResearchBodyOutline>;
+  /** plan-then-write 第二阶段：在大纲与前文前提下串行扩写某节。 */
+  expandSection?(request: ResearchGenerationRequest & { outline: ResearchBodyOutline; sectionIndex: number; writtenSoFar: string }): Promise<string>;
+  /** 事后语义标注：从一段正文抽取标题/概念（独立抽取模型，temperature=0）。 */
+  deriveAnnotations?(input: { content: string }): Promise<ResearchSliceAnnotation>;
 }
 
 export interface ResearchServiceOptions {

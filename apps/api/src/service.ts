@@ -468,6 +468,44 @@ export class CaptureService {
         });
         for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);
       },
+      async writeBody(request) {
+        const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
+        if (!purposeGateway) throw new Error("AI model is not configured");
+        return purposeGateway.writeResearchBody(request.messages, {
+          parentChainContext: request.parentChainContext,
+          sliceContext: request.sliceContext,
+          context: { workflowRunId: request.taskId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
+        });
+      },
+      async generateOutline(request) {
+        const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
+        if (!purposeGateway) throw new Error("AI model is not configured");
+        return purposeGateway.generateBodyOutline(request.messages, {
+          parentChainContext: request.parentChainContext,
+          sliceContext: request.sliceContext,
+          context: { workflowRunId: request.taskId, purpose: "research_body_outline", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
+        });
+      },
+      async expandSection(request) {
+        const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
+        if (!purposeGateway) throw new Error("AI model is not configured");
+        return purposeGateway.expandBodySection(
+          {
+            goal: [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "",
+            outline: request.outline,
+            sectionIndex: request.sectionIndex,
+            writtenSoFar: request.writtenSoFar,
+          },
+          { context: { workflowRunId: request.taskId, purpose: "research_body_section", promptVersion: RESEARCH_SLICE_PROMPT_VERSION } },
+        );
+      },
+      async deriveAnnotations(input) {
+        const purposeGateway = await service.gatewayForPurpose("extraction");
+        if (!purposeGateway) throw new Error("AI model is not configured");
+        return purposeGateway.deriveSliceAnnotations(input, {
+          context: { workflowRunId: "", purpose: "research_slice_annotation", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
+        });
+      },
     };
   }
 
