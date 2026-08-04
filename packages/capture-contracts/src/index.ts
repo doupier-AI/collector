@@ -1020,6 +1020,27 @@ export interface ResearchGroundingScope {
   runId?: string;
 }
 
+/**
+ * plan-then-write 长文任务的单节计划与进度。
+ * content 仅在该节扩写完成后写入；恢复时已完成节直接重放、不重调模型。
+ */
+export interface ResearchBodyPlanSection {
+  /** 节标题；同时作为该节首个派生切片的卡片标题来源。 */
+  heading: string;
+  /** 该节主旨（扩写时的写作指引）。 */
+  summary: string;
+  /** 目标字数（提示用，非硬约束）。 */
+  targetChars: number;
+  status: "pending" | "completed";
+  /** 扩写完成的节正文；pending 时缺省。 */
+  content?: string;
+}
+
+/** plan-then-write 长文任务的大纲与逐节进度，持久化于任务 record_json 以支持断点续扩。 */
+export interface ResearchBodyPlan {
+  sections: ResearchBodyPlanSection[];
+}
+
 export interface ResearchTaskRecord {
   id: string;
   sessionId: string;
@@ -1038,6 +1059,8 @@ export interface ResearchTaskRecord {
   /** 本次任务是否获得用户明确授权使用联网搜索；缺省值只兼容旧任务，服务端按 false 处理。 */
   allowWebSearch?: boolean;
   groundingScope?: ResearchGroundingScope;
+  /** plan-then-write 长文任务的逐节计划与进度；仅存于 record_json，用于断点续扩。 */
+  bodyPlan?: ResearchBodyPlan;
   error?: ResearchTaskError;
   createdAt: string;
   updatedAt: string;
@@ -1818,6 +1841,39 @@ export const RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS = 160;
 export const RESEARCH_NATIVE_SLICE_MAX_CONTENT_CHARACTERS = 100_000;
 
 /**
+ * 校验确定性派生切片序列的结构合法性（生成自由化后的权威切片）。
+ * 与 `validateSliceSchema` 的唯一差异：标题允许为空串（抽取失败或该块无标题时，
+ * 前端按正文摘要降级）。其余不变量（稳定 ID、ordinal 严格递增、content 非空、
+ * 概念/来源引用结构）与正式切片一致。
+ *
+ * 校验失败时抛错；通过时返回 void。
+ */
+export function validateDerivedSlices(slices: ResearchSliceRecord[], nodeId: string, messageId: string): void {
+  if (!Array.isArray(slices)) throw new Error("Slices must be an array");
+  let previousOrdinal = -1;
+  for (const slice of slices) {
+    if (!slice || typeof slice !== "object" || Array.isArray(slice)) throw new Error("Slice must be an object");
+    if (slice.nodeId !== nodeId) throw new Error(`Slice nodeId must be ${nodeId}`);
+    if (slice.messageId !== messageId) throw new Error(`Slice messageId must be ${messageId}`);
+    if (!Number.isSafeInteger(slice.ordinal) || slice.ordinal < 0) throw new Error(`Slice ordinal must be a non-negative integer, got ${slice.ordinal}`);
+    const expectedId = `slice:${nodeId}:${messageId}:${slice.ordinal}`;
+    if (slice.id !== expectedId) throw new Error(`Slice id must be ${expectedId}, got ${slice.id}`);
+    if (slice.ordinal <= previousOrdinal) throw new Error(`Slice ordinals must be strictly increasing; got ${slice.ordinal} after ${previousOrdinal}`);
+    previousOrdinal = slice.ordinal;
+    if (typeof slice.title !== "string") throw new Error(`Slice ${slice.ordinal} title must be a string`);
+    if (typeof slice.content !== "string" || !slice.content.trim()) throw new Error(`Slice ${slice.ordinal} content must be a non-empty string`);
+    if (!Array.isArray(slice.normalizedConcepts) || slice.normalizedConcepts.some((concept) => typeof concept !== "string" || !concept.trim())) {
+      throw new Error(`Slice ${slice.ordinal} normalizedConcepts must be an array of non-empty strings`);
+    }
+    if (!Array.isArray(slice.sourceRefs) || slice.sourceRefs.some((ref) => !ref || typeof ref !== "object" || ref.messageId !== messageId)) {
+      throw new Error(`Slice ${slice.ordinal} sourceRefs must reference this message`);
+    }
+    if (typeof slice.isProvisional !== "boolean") throw new Error(`Slice ${slice.ordinal} isProvisional must be a boolean`);
+    if (typeof slice.createdAt !== "string" || Number.isNaN(Date.parse(slice.createdAt))) throw new Error(`Slice ${slice.ordinal} createdAt must be an ISO date`);
+  }
+}
+
+/**
  * 校验已持久化切片序列的结构合法性（纯函数，契约层）：
  * 1. ID、节点和消息归属稳定；
  * 2. ordinal 严格递增（节点范围内，不一定从 0 起始）；
@@ -1976,6 +2032,61 @@ export function deriveProvisionalSlices(
       normalizedConcepts: [],
       sourceRefs: sliceCitations,
       isProvisional: true,
+      createdAt: timestamp,
+    };
+  });
+}
+
+/**
+ * 单个段落块的外部语义标注（标题/概念），由小模型事后抽取或 plan-then-write 大纲提供。
+ * 缺省或字段为空时，对应切片标题给空串、概念给空数组，前端按正文摘要降级。
+ */
+export interface ResearchSliceAnnotation {
+  title?: string;
+  concepts?: string[];
+}
+
+/**
+ * 确定性派生切片（生成自由化后的唯一切片来源）。正文是唯一事实源：
+ * 按 `deriveMessageBlocks` 的段落边界逐块派生一个切片，content 恒等于块文本，
+ * 因此派生切片不复制正文之外的任何内容，也不扰动选区锚点偏移。
+ *
+ * - 两次调用结果完全一致（幂等），不修改源文本，不依赖 AI，不入库（由服务层决定持久化）。
+ * - ordinalOffset 为该节点已有切片的最大 ordinal + 1（无切片时为 0），保证节点范围内 ordinal 连续唯一。
+ * - 标题/概念来自 `annotations`（按块下标对齐）：plan-then-write 用大纲节标题，否则用小模型
+ *   事后抽取；缺省或抽取失败时标题为空串（前端退回正文摘要）、概念为空数组（融合退回术语/分词）。
+ * - isProvisional 恒为 false：在生成自由化契约下，派生切片即权威结构，不再是"临时兜底"。
+ */
+export function deriveMessageSlices(
+  nodeId: string,
+  messageId: string,
+  messageContent: string,
+  ordinalOffset: number = 0,
+  citations: ResearchCitationRecord[] = [],
+  annotations: readonly (ResearchSliceAnnotation | undefined)[] = [],
+  createdAt?: string,
+): ResearchSliceRecord[] {
+  const blocks = deriveMessageBlocks(messageContent);
+  if (blocks.length === 0) return [];
+  const timestamp = createdAt ?? new Date().toISOString();
+  return blocks.map((block, index) => {
+    const ordinal = ordinalOffset + index;
+    const annotation = annotations[index];
+    const title = (annotation?.title ?? "").trim();
+    const normalizedConcepts = (annotation?.concepts ?? [])
+      .map((concept) => (typeof concept === "string" ? concept.trim() : ""))
+      .filter(Boolean);
+    const sliceCitations = citations.filter((citation) => citation.blockOrdinal === block.ordinal);
+    return {
+      id: `slice:${nodeId}:${messageId}:${ordinal}`,
+      nodeId,
+      messageId,
+      ordinal,
+      title,
+      content: block.text,
+      normalizedConcepts,
+      sourceRefs: sliceCitations,
+      isProvisional: false,
       createdAt: timestamp,
     };
   });
