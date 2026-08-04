@@ -303,31 +303,27 @@ test("restart recovery marks an interrupted generation retryable without losing 
   t.after(() => rm(root, { recursive: true, force: true }));
 });
 
-test("native slice generation persists only validated non-provisional slices and records sliceCount", async (t) => {
+test("free body generation persists derived non-provisional slices and records sliceCount", async (t) => {
   let shouldFail = true;
   const provider: ResearchGenerationProvider = {
-    provider: "native-slice-fake",
-    model: "native-slice-1",
-    promptVersion: "research-slices-v1",
-    async generateNative(request) {
-      if (shouldFail) throw new Error("invalid structured response after repair budget");
-      return parseNativeResearchSliceGeneration({
-        slices: [
-          { title: "本地控制", content: "本地优先把研究内容保留在用户可以检查和备份的环境中。", normalizedConcepts: ["本地优先"] },
-          { title: "可恢复任务", content: "持久化任务状态让失败后的研究可以从同一上下文重新开始。", normalizedConcepts: ["任务恢复"] },
-        ],
-      }, {
-        nodeId: request.nodeId ?? request.session.id,
-        messageId: request.outputMessageId ?? request.taskId,
-        ordinalStart: request.sliceOrdinalStart ?? 0,
-      });
+    provider: "free-body-fake",
+    model: "free-body-1",
+    promptVersion: "research-body-v1",
+    // 生成自由化：模型只产出自由正文，切片由服务层按段落块确定性派生、标题由小模型事后抽取。
+    async writeBody() {
+      if (shouldFail) throw new Error("provider generation failed");
+      return "本地优先把研究内容保留在用户可以检查和备份的环境中。\n\n持久化任务状态让失败后的研究可以从同一上下文重新开始。";
     },
-    async *generate() { yield "术语预览不使用原生切片"; },
+    async deriveAnnotations({ content }) {
+      if (content.includes("本地优先")) return { title: "本地控制", concepts: ["本地优先"] };
+      return { title: "可恢复任务", concepts: ["任务恢复"] };
+    },
+    async *generate() { yield "术语预览不使用自由正文"; },
   };
   const harness = await createHarness(provider);
   t.after(() => harness.close());
-  const session = await harness.service.research.createSession("原生切片", "native-slice-session");
-  const accepted = await harness.service.research.submitMessage(session.id, "为什么本地优先重要", "native-slice-turn");
+  const session = await harness.service.research.createSession("自由正文", "free-body-session");
+  const accepted = await harness.service.research.submitMessage(session.id, "为什么本地优先重要", "free-body-turn");
 
   const failed = await waitForTask(harness.base, harness.token, accepted.task.id, "failed");
   assert.equal(failed.retryable, true);

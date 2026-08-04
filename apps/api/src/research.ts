@@ -4,15 +4,19 @@ import {
   deriveFragmentsFromBlocks,
   deriveFragmentsFromSlices,
   deriveMessageBlocks,
+  deriveMessageSlices,
   deriveProvisionalSlices,
   redactGroundingValue,
   sanitizeGroundingQueries,
   sanitizeGroundingUrl,
+  validateDerivedSlices,
   validateNativeResearchSliceGeneration,
   validateResearchGroundingResult,
   type DeepResearchContext,
   type DeepResearchMode,
   type NativeResearchSliceGeneration,
+  type ResearchBodyPlan,
+  type ResearchCitationRecord,
   type ResearchSliceRecord,
   ResearchGroundingResult,
   ResearchGroundingScenario,
@@ -38,6 +42,10 @@ export const DEEP_RESEARCH_PROMPT_VERSION = "deep-research-v1";
 export const RESEARCH_SLICE_PROMPT_VERSION = "research-slices-v1";
 const PROMPT_VERSION = RESEARCH_SLICE_PROMPT_VERSION;
 const MAX_GENERATED_CHARACTERS = 1_000_000;
+/** 预期长度达到该字数（或显式更高诉求）时启用 plan-then-write；阈值偏保守，避免短问题多一次大纲调用。 */
+const LONG_FORM_CHAR_THRESHOLD = 2_000;
+/** plan-then-write 单节扩写失败时的额外重试次数（首次失败后再试这么多次）。 */
+const BODY_SECTION_MAX_RETRIES = 1;
 
 export interface ResearchGenerationRequest {
   session: ResearchSessionRecord;
@@ -298,39 +306,47 @@ export class ResearchSessionService {
         const scenario: ResearchGroundingScenario = generation.deepResearch
           ? "deep_research_first_round"
           : this.isBranchFollowUp(task.id) ? "branch_follow_up" : "chat";
-        let generated: NativeResearchSliceGeneration;
-        let citations: import("@collector/capture-contracts").ResearchCitationRecord[] = [];
+        let content: string;
+        let citations: ResearchCitationRecord[] = [];
+        let titleHints: ReadonlyMap<number, string> = new Map();
         if (generationRequest.allowWebSearch && provider.generateAgentGrounded) {
+          // 联网研究：agent 自由检索后产出自由正文 + 引用，不再要求模型返回切片 JSON。
           try {
             const grounded = await provider.generateAgentGrounded({ ...generationRequest, scenario });
+            if (!grounded.content.trim()) throw new Error("Agent search provider returned an empty response");
             const result = this.groundingResultFor(task, grounded, scenario);
             await this.store.saveResearchGroundingResult(result);
-            if (!grounded.slices?.length) {
-              await this.completeLegacyContent(task, grounded.content);
-              return;
-            }
-            generated = { content: grounded.content, slices: grounded.slices };
+            content = grounded.content;
             citations = result.citations;
           } catch (error) {
             await this.saveGroundingStatus(task, scenario, "grounding_failed", error instanceof Error ? error.message : undefined);
             throw error;
           }
+          await this.store.appendResearchTaskDelta(task.id, content);
         } else {
           if (generationRequest.allowWebSearch) await this.saveGroundingStatus(task, scenario, "grounding_unsupported");
-          if (!provider.generateNative) {
+          if (provider.writeBody) {
+            // 生成自由化：按预期长度自动选择单轮自由写或 plan-then-write 逐节扩写。
+            const planned = this.shouldPlanLongForm(generationRequest, provider)
+              ? await this.writeLongFormBody(task, provider, generationRequest)
+              : undefined;
+            if (planned) {
+              content = planned.content;
+              titleHints = planned.titleHints;
+            } else {
+              content = await provider.writeBody(generationRequest);
+              await this.store.appendResearchTaskDelta(task.id, content);
+            }
+          } else {
+            // 旧式/扩展 provider 未实现自由正文时保持既有流式兼容。
             await this.completeLegacyProviderGeneration(task, provider, generationRequest);
             return;
           }
-          generated = await provider.generateNative(generationRequest);
         }
-        generatedCharacters = generated.content.length;
+        generatedCharacters = content.length;
         if (generatedCharacters > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
-        const sourcedGeneration = this.withSliceSourceRefs(generated, citations);
-        // 只有正文与全部正式切片共同通过契约校验后，才开始写入用户可见消息。
-        validateNativeResearchSliceGeneration(sourcedGeneration, nodeId, task.outputMessageId);
-        await this.store.replaceSlicesForMessage(task.outputMessageId, sourcedGeneration.slices, task.id);
-        await this.persistBodyArtifacts(task, nodeId, sourcedGeneration.content, citations, sourcedGeneration.slices);
-        await this.store.appendResearchTaskDelta(task.id, sourcedGeneration.content);
+        // 正文定稿后统一派生正式切片（确定性边界 + 小模型事后标注），再落库与完成。
+        await this.finalizeDerivedSlices(task, provider, nodeId, content, citations, titleHints);
         await this.store.completeResearchTask(task.id);
         try {
           await this.options.onTaskCompleted?.(this.getTask(task.id));
@@ -340,7 +356,7 @@ export class ResearchSessionService {
       } catch {
         await this.store.failResearchTask(this.getTask(task.id), {
           code: "provider_error",
-          message: "AI 生成的回答或切片结构无效。输入已保存，可以稍后重试。",
+          message: "AI 生成的回答无效。输入已保存，可以稍后重试。",
         });
       }
     } finally {
@@ -361,15 +377,19 @@ export class ResearchSessionService {
       if (content.length > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
       await this.store.appendResearchTaskDelta(task.id, delta);
     }
-    await this.completeLegacyContent(task, content, true);
+    await this.completeLegacyContent(task, provider, content, true);
   }
 
-  private async completeLegacyContent(task: ResearchTaskRecord, content: string, alreadyAppended = false): Promise<void> {
+  /**
+   * 旧式/流式路径的完成收尾。与主路径一致地在完成时派生正式切片落库——否则该路径
+   * 生成的内容卡片不可见。标注仍由小模型事后抽取（未配置时降级空标题/空概念）。
+   */
+  private async completeLegacyContent(task: ResearchTaskRecord, provider: ResearchGenerationProvider, content: string, alreadyAppended = false): Promise<void> {
     if (!content) throw new Error("Provider returned an empty response");
     if (content.length > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
     if (!alreadyAppended) await this.store.appendResearchTaskDelta(task.id, content);
     const nodeId = task.nodeId ?? this.store.getResearchMessage(task.outputMessageId)?.nodeId ?? task.sessionId;
-    await this.persistBodyArtifacts(task, nodeId, content, [], undefined);
+    await this.finalizeDerivedSlices(task, provider, nodeId, content, []);
     await this.store.completeResearchTask(task.id);
     try {
       await this.options.onTaskCompleted?.(this.getTask(task.id));
@@ -404,6 +424,182 @@ export class ResearchSessionService {
       : deriveFragmentsFromBlocks(version, citations);
     await this.store.createResearchBodyVersion(version);
     await this.store.createSemanticFragments(fragments);
+  }
+
+  /**
+   * 生成自由化的统一收尾：正文定稿后按段落块确定性派生正式切片并落库。
+   *
+   * 流程：deriveMessageBlocks 计数 → 逐块由小模型事后抽取标题/概念（temperature=0，
+   * 并发上限 4，单块失败降级为空标注，绝不影响正文）→ deriveMessageSlices 注入标注
+   * 与引用 → validateDerivedSlices 校验 → replaceSlicesForMessage 落库 → persistBodyArtifacts
+   * 写入正文版本与正式片段。单轮与 plan-then-write 共用本路径。
+   *
+   * titleHints 把指定块下标映射到大纲节标题（plan-then-write 给每节首块），优先级高于
+   * 小模型抽取；其余块仍由小模型抽取，抽不到则标题为空串（前端退回正文摘要）。
+   */
+  private async finalizeDerivedSlices(
+    task: ResearchTaskRecord,
+    provider: ResearchGenerationProvider,
+    nodeId: string,
+    content: string,
+    citations: ResearchCitationRecord[],
+    titleHints: ReadonlyMap<number, string> = new Map(),
+  ): Promise<ResearchSliceRecord[]> {
+    const blocks = deriveMessageBlocks(content);
+    if (blocks.length === 0) throw new Error("Provider returned an empty response");
+    const annotations = await this.deriveBlockAnnotations(provider, blocks.map((block) => block.text), titleHints);
+    const ordinalStart = this.sliceOrdinalStartFor(nodeId, task.outputMessageId);
+    const slices = deriveMessageSlices(nodeId, task.outputMessageId, content, ordinalStart, citations, annotations);
+    validateDerivedSlices(slices, nodeId, task.outputMessageId);
+    await this.store.replaceSlicesForMessage(task.outputMessageId, slices, task.id);
+    await this.persistBodyArtifacts(task, nodeId, content, citations, slices);
+    return slices;
+  }
+
+  /**
+   * 逐块事后抽取标题/概念。titleHints 命中的块直接用大纲节标题（仍由小模型抽概念），
+   * 其余块同时抽标题与概念。任何一块失败都降级为空标注，绝不抛出、绝不中断正文落库。
+   */
+  private async deriveBlockAnnotations(
+    provider: ResearchGenerationProvider,
+    blockTexts: readonly string[],
+    titleHints: ReadonlyMap<number, string>,
+  ): Promise<Array<ResearchSliceAnnotation | undefined>> {
+    const annotations: Array<ResearchSliceAnnotation | undefined> = new Array(blockTexts.length).fill(undefined);
+    if (!provider.deriveAnnotations) {
+      // 未配置抽取模型（如 e2e 假 provider）时：只落大纲节标题，概念为空，融合退回术语/分词。
+      for (let index = 0; index < blockTexts.length; index += 1) {
+        const hinted = titleHints.get(index);
+        if (hinted) annotations[index] = { title: hinted, concepts: [] };
+      }
+      return annotations;
+    }
+    const CONCURRENCY = 4;
+    for (let start = 0; start < blockTexts.length; start += CONCURRENCY) {
+      const batch = blockTexts.slice(start, start + CONCURRENCY);
+      await Promise.all(batch.map(async (text, offset) => {
+        const index = start + offset;
+        const hinted = titleHints.get(index);
+        try {
+          const extracted = await provider.deriveAnnotations!({ content: text });
+          annotations[index] = {
+            title: (hinted ?? extracted.title ?? "").trim(),
+            concepts: extracted.concepts ?? [],
+          };
+        } catch {
+          // 单块抽取失败：保留大纲节标题（若有），概念为空；正文与切片边界不受影响。
+          annotations[index] = hinted ? { title: hinted, concepts: [] } : { title: "", concepts: [] };
+        }
+      }));
+    }
+    return annotations;
+  }
+
+  /**
+   * 预期长度自动判断：默认单轮自由写，仅当明确的长文诉求才启动 plan-then-write。
+   * 误判代价不对称——误判为长文只多一次无害的大纲调用，误判为短文则长文被压短
+   * （默认短文墙），故启发式偏向触发。要求 provider 同时具备大纲与扩写能力。
+   */
+  private shouldPlanLongForm(request: ResearchGenerationRequest, provider: ResearchGenerationProvider): boolean {
+    if (!provider.generateOutline || !provider.expandSection) return false;
+    if (request.deepResearch) return true;
+    const latestUser = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
+    if (/(长文|长篇|详细论述|深入论述|完整论述|系统梳理|全面阐述|连载|小说|报告)/.test(latestUser)) return true;
+    const explicit = latestUser.match(/(\d+(?:\.\d+)?)\s*(万|千)?\s*字/);
+    if (explicit) {
+      const unit = explicit[2] === "万" ? 10_000 : explicit[2] === "千" ? 1_000 : 1;
+      if (Number.parseFloat(explicit[1] ?? "0") * unit >= LONG_FORM_CHAR_THRESHOLD) return true;
+    }
+    return false;
+  }
+
+  /**
+   * plan-then-write：先大纲、再逐节串行扩写，突破单轮默认短文墙。
+   *
+   * 断点续扩：task.bodyPlan 持久化逐节进度。重试时 message.content 已被清空，故
+   * 已完成节的 content 需重新 appendResearchTaskDelta 秒级重建（不调模型），再从第一个
+   * pending 节继续。单节失败重试 BODY_SECTION_MAX_RETRIES 次再判任务失败（已落部分保留）。
+   * 返回最终正文与每节首块的标题映射（供 finalizeDerivedSlices 注入卡片标题）。
+   */
+  private async writeLongFormBody(
+    task: ResearchTaskRecord,
+    provider: ResearchGenerationProvider,
+    request: ResearchGenerationRequest,
+  ): Promise<{ content: string; titleHints: Map<number, string> } | undefined> {
+    if (!provider.generateOutline || !provider.expandSection) return undefined;
+
+    let plan = this.store.getResearchTask(task.id)?.bodyPlan ?? task.bodyPlan;
+    if (!plan) {
+      const outline = await provider.generateOutline(request);
+      plan = { sections: outline.sections.map((section) => ({ ...section, status: "pending" as const })) };
+      await this.store.saveResearchTaskBodyPlan(task.id, plan);
+    }
+
+    const sections = plan.sections.map((section) => ({ ...section }));
+    // 重建已完成节：重试后正文已清空，已落节内容需重新 append 以恢复完整前文。
+    let writtenSoFar = "";
+    for (const section of sections) {
+      if (section.status === "completed" && section.content) {
+        writtenSoFar = writtenSoFar ? `${writtenSoFar}\n\n${section.content}` : section.content;
+      }
+    }
+    if (writtenSoFar) await this.store.appendResearchTaskDelta(task.id, writtenSoFar);
+
+    const outline: ResearchBodyOutline = { sections };
+    let hasPriorContent = writtenSoFar.length > 0;
+    for (let index = 0; index < sections.length; index += 1) {
+      const section = sections[index];
+      if (!section || section.status === "completed") continue;
+      const expanded = await this.expandSectionWithRetry(provider, request, outline, index, writtenSoFar);
+      section.content = expanded;
+      section.status = "completed";
+      // 增量 append 的分隔符与最终 join("\n\n") 严格一致，保证块边界不错位。
+      await this.store.appendResearchTaskDelta(task.id, hasPriorContent ? `\n\n${expanded}` : expanded);
+      writtenSoFar = writtenSoFar ? `${writtenSoFar}\n\n${expanded}` : expanded;
+      hasPriorContent = true;
+      await this.store.saveResearchTaskBodyPlan(task.id, { sections });
+    }
+
+    const content = sections.map((section) => section.content ?? "").filter(Boolean).join("\n\n");
+    if (!content.trim()) throw new Error("Long-form body expansion produced no content");
+    return { content, titleHints: this.sectionTitleHints(content, sections) };
+  }
+
+  /** 单节扩写，失败时重试；用尽预算后抛错（由 processTask 判任务失败，已落部分保留）。 */
+  private async expandSectionWithRetry(
+    provider: ResearchGenerationProvider,
+    request: ResearchGenerationRequest,
+    outline: ResearchBodyOutline,
+    sectionIndex: number,
+    writtenSoFar: string,
+  ): Promise<string> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= BODY_SECTION_MAX_RETRIES; attempt += 1) {
+      try {
+        return await provider.expandSection!({ ...request, outline, sectionIndex, writtenSoFar });
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("Body section expansion failed");
+  }
+
+  /**
+   * 计算每节首块在最终正文中的块下标 → 大纲节标题。节按 "\n\n" 拼接，记录每节起始字符偏移，
+   * 再用 deriveMessageBlocks 的块 startOffset 反查该节首块；标题只注入该节首块。
+   */
+  private sectionTitleHints(content: string, sections: ResearchBodyPlan["sections"]): Map<number, string> {
+    const hints = new Map<number, string>();
+    const blocks = deriveMessageBlocks(content);
+    let offset = 0;
+    for (const section of sections) {
+      const text = section.content ?? "";
+      if (!text) continue;
+      const firstBlock = blocks.find((block) => block.startOffset === offset);
+      if (firstBlock && section.heading.trim()) hints.set(firstBlock.ordinal, section.heading.trim());
+      offset += text.length + 2; // 2 = 节间 "\n\n" 连接符
+    }
+    return hints;
   }
 
   private sliceOrdinalStartFor(nodeId: string, messageId: string): number {

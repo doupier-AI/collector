@@ -22,17 +22,8 @@ test("restart recovery: persisted body versions/fragments survive, backfill stay
   await store.createResearchNode({ id: "node-1", sessionId: "session-1", status: "active", createdAt: NOW, updatedAt: NOW }, "k-n");
   const provider = {
     provider: "fake", model: "fake-1", promptVersion: "test",
-    async generateNative(request: { outputMessageId?: string; sliceOrdinalStart?: number; nodeId?: string }) {
-      const { parseNativeResearchSliceGeneration } = await import("@collector/capture-contracts");
-      return parseNativeResearchSliceGeneration(
-        { slices: [
-          { title: "一", content: "First paragraph.", normalizedConcepts: [] },
-          { title: "二", content: "Second paragraph.", normalizedConcepts: [] },
-          { title: "三", content: "Third paragraph.", normalizedConcepts: [] },
-        ] },
-        { nodeId: request.nodeId ?? "node-1", messageId: request.outputMessageId!, ordinalStart: request.sliceOrdinalStart ?? 0, createdAt: NOW },
-      );
-    },
+    // 生成自由化：产出三段自由正文，正式切片/版本/片段由服务层按段落块确定性派生。
+    async writeBody() { return CONTENT; },
     async *generate() { yield "unused"; },
   };
   let service = new CaptureService(store, artifacts, undefined, undefined, { autoRunRecentOrganization: false, researchProvider: provider as never });

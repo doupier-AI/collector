@@ -1,7 +1,7 @@
 import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewInput, type ResearchTermPreviewRecord, type ResearchTurnAccepted, researchEdgeId } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewInput, type ResearchTermPreviewRecord, type ResearchTurnAccepted, researchEdgeId } from "@collector/capture-contracts";
 
 export type ObservabilityRecordSource = "research" | "selection" | "import" | "workflow" | "fusion";
 
@@ -117,6 +117,8 @@ export interface ResearchStore {
   completeResearchTask(id: string): Promise<void>;
   failResearchTask(task: ResearchTaskRecord, error: ResearchTaskError): Promise<void>;
   retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string): Promise<ResearchTaskRecord>;
+  /** plan-then-write：持久化正文大纲与逐节进度，供断点续扩；record_json 整行覆盖。 */
+  saveResearchTaskBodyPlan(taskId: string, bodyPlan: ResearchBodyPlan): Promise<void>;
   listResearchTaskEvents(taskId: string, afterId?: number): ResearchTaskEvent[];
   listRecoverableResearchTasks(): ResearchTaskRecord[];
   failInterruptedResearchTasks(): number;
@@ -315,6 +317,7 @@ export interface CollectorStore
   completeResearchTask(id: string): Promise<void>;
   failResearchTask(task: ResearchTaskRecord, error: ResearchTaskError): Promise<void>;
   retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string): Promise<ResearchTaskRecord>;
+  saveResearchTaskBodyPlan(taskId: string, bodyPlan: ResearchBodyPlan): Promise<void>;
   listResearchTaskEvents(taskId: string, afterId?: number): ResearchTaskEvent[];
   listRecoverableResearchTasks(): ResearchTaskRecord[];
   failInterruptedResearchTasks(): number;
@@ -664,6 +667,11 @@ export class SqliteStore implements CollectorStore {
 
   async clearAllData(): Promise<void> {
     this.transaction(() => {
+      // 语义片段引用正文版本，正文版本与切片引用消息/节点：这些是最下游引用方（不被任何表
+      // 引用），必须在删除 nodes/messages/selections 之前先删，避免外键约束失败。
+      this.db().exec("DELETE FROM research_semantic_fragments");
+      this.db().exec("DELETE FROM research_body_versions");
+      this.db().exec("DELETE FROM research_slices");
       this.db().exec("DELETE FROM research_import_task_events");
       this.db().exec("DELETE FROM research_content_snapshots");
       this.db().exec("DELETE FROM research_import_tasks");
@@ -1340,6 +1348,14 @@ export class SqliteStore implements CollectorStore {
     });
     if (!retried) throw new Error("Research task retry was not persisted");
     return retried;
+  }
+
+  async saveResearchTaskBodyPlan(taskId: string, bodyPlan: ResearchBodyPlan): Promise<void> {
+    this.transaction(() => {
+      const task = this.getResearchTask(taskId);
+      if (!task) throw new Error("Research task not found");
+      this.updateResearchTask({ ...task, bodyPlan, updatedAt: new Date().toISOString() });
+    });
   }
 
   listResearchTaskEvents(taskId: string, afterId = 0): ResearchTaskEvent[] {
@@ -3420,6 +3436,7 @@ export class JsonStore implements CollectorStore {
   async completeResearchTask(_id: string): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
   async failResearchTask(_task: ResearchTaskRecord, _error: ResearchTaskError): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
   async retryResearchTask(_task: ResearchTaskRecord, _provider?: string, _model?: string, _promptVersion?: string): Promise<ResearchTaskRecord> { throw new Error("Research sessions require SQLite persistence"); }
+  async saveResearchTaskBodyPlan(_taskId: string, _bodyPlan: ResearchBodyPlan): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
   listResearchTaskEvents(_taskId: string, _afterId?: number): ResearchTaskEvent[] { return []; }
   listRecoverableResearchTasks(): ResearchTaskRecord[] { return []; }
   failInterruptedResearchTasks(): number { return 0; }

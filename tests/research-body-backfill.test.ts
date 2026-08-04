@@ -108,20 +108,10 @@ test("generation path persists body version + formal fragments on task completio
   await store.createResearchSession({ id: "session-1", title: "T", status: "active", createdAt: NOW, updatedAt: NOW }, "k-s");
   await store.createResearchNode({ id: "node-1", sessionId: "session-1", status: "active", createdAt: NOW, updatedAt: NOW }, "k-n");
 
-  // 确定性 provider：产出三段正文 + 三片正式切片。
+  // 确定性 provider：产出三段自由正文，正式切片/片段由服务层按段落块确定性派生。
   const provider = {
     provider: "fake", model: "fake-1", promptVersion: "test",
-    async generateNative(request: { outputMessageId?: string; sliceOrdinalStart?: number; nodeId?: string }) {
-      const { parseNativeResearchSliceGeneration } = await import("@collector/capture-contracts");
-      return parseNativeResearchSliceGeneration(
-        { slices: [
-          { title: "一", content: "First paragraph.", normalizedConcepts: [] },
-          { title: "二", content: "Second paragraph.", normalizedConcepts: [] },
-          { title: "三", content: "Third paragraph.", normalizedConcepts: [] },
-        ] },
-        { nodeId: request.nodeId ?? "node-1", messageId: request.outputMessageId!, ordinalStart: request.sliceOrdinalStart ?? 0, createdAt: NOW },
-      );
-    },
+    async writeBody() { return "First paragraph.\n\nSecond paragraph.\n\nThird paragraph."; },
     async *generate() { yield "unused"; },
   };
   const service = new CaptureService(store, join(await mkdtemp(join(tmpdir(), "collector-bodyver-art-")), "artifacts"), undefined, undefined, { autoRunRecentOrganization: false, researchProvider: provider as never });
