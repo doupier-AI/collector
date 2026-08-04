@@ -27,6 +27,7 @@ export function SelectionSurface({
   onCite,
   onMark,
   onSelectionActivity,
+  immediateDismiss = false,
 }: {
   sessionId: string;
   /** 用户点击浮动胶囊【引用】时触发。页面据此创建选区记录并渲染引用胶囊。 */
@@ -35,6 +36,9 @@ export function SelectionSurface({
   onMark?: (anchor: ResearchSelectionAnchor, text: string, rect: SelectionRect) => void;
   /** 新的有效选区出现（浮动胶囊呈现）时触发。 */
   onSelectionActivity?: () => void;
+  /** 页面已进入恢复选区模式（?sel= 恢复胶囊渲染中）：残留浮动胶囊跳过过渡立即卸载，
+   *  避免与页面级恢复胶囊并存（修订二 #12 标记跳回暴露）。 */
+  immediateDismiss?: boolean;
 }) {
   const { active, dismiss } = useSelectionCapture();
   const previousSessionRef = useRef(sessionId);
@@ -67,11 +71,16 @@ export function SelectionSurface({
       previousFloatingRef.current = floating;
       setClosingRect(null);
       onSelectionActivity?.();
+    } else if (immediateDismiss) {
+      // 恢复选区模式接管：跳过淡出，立即卸载，避免与页面级恢复胶囊并存
+      // （无条件清理：标记/引用消费后可能已在淡出中途才进入恢复模式）
+      previousFloatingRef.current = null;
+      setClosingRect(null);
     } else if (previousFloatingRef.current) {
       setClosingRect(previousFloatingRef.current.rect);
       previousFloatingRef.current = null;
     }
-  }, [floating, onSelectionActivity]);
+  }, [floating, onSelectionActivity, immediateDismiss]);
 
   function handleCite() {
     if (!floating?.anchor) return;

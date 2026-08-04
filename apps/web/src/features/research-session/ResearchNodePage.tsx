@@ -561,6 +561,7 @@ export function ResearchNodePage() {
         onCite={handleSurfaceCite}
         onMark={handleSurfaceMark}
         onSelectionActivity={dismissRestoreCapsule}
+        immediateDismiss={Boolean(restoredSelection && restoredCapsuleRect && restoreCapsuleDismissedId !== restoredSelection.id)}
       />
 
       {restoredSelection && restoredCapsuleRect && restoreCapsuleDismissedId !== restoredSelection.id ? (

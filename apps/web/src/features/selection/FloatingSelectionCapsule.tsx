@@ -44,20 +44,31 @@ export function FloatingSelectionCapsule({
   const onExitedRef = useRef(onExited);
   onExitedRef.current = onExited;
 
-  // 先量出胶囊自身尺寸再定位；jsdom 无布局，尺寸为 0 时按零尺寸确定性地落在选区上方
+  // 先量出胶囊自身尺寸再定位；jsdom 无布局，尺寸为 0 时按零尺寸确定性地落在选区上方。
+  // 视口变化（含窄屏切换、设备旋转）时选区 rect 是视口坐标，需按新视口重算位置，
+  // 否则胶囊会停留在缩小前的位置并横向溢出（390px 响应式验收暴露）。
+  const positionRef = useRef<{ rect: SelectionRect; size: { width: number; height: number } } | null>(null);
   useLayoutEffect(() => {
     const element = containerRef.current;
     const size = element
       ? { width: element.offsetWidth, height: element.offsetHeight }
       : { width: 0, height: 0 };
-    setPlacement(
-      computeFloatingCapsulePlacement(
-        rect,
-        size,
-        { width: window.innerWidth, height: window.innerHeight },
-        { x: window.scrollX, y: window.scrollY },
-      ),
-    );
+    positionRef.current = { rect, size };
+    const place = () => {
+      if (!positionRef.current) return;
+      const { rect: current, size: currentSize } = positionRef.current;
+      setPlacement(
+        computeFloatingCapsulePlacement(
+          current,
+          currentSize,
+          { width: window.innerWidth, height: window.innerHeight },
+          { x: window.scrollX, y: window.scrollY },
+        ),
+      );
+    };
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
   }, [rect]);
 
   // 减弱动效环境下 CSS 动画不会触发 animationend：closing 时直接完成退出

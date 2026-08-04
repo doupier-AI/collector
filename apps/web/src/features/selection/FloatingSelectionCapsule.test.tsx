@@ -1,9 +1,14 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { FloatingSelectionCapsule } from "./FloatingSelectionCapsule";
 
 const RECT = { top: 200, bottom: 220, left: 100, right: 300 };
+
+afterEach(() => {
+  Reflect.deleteProperty(window, "innerWidth");
+  Reflect.deleteProperty(window, "innerHeight");
+});
 
 describe("浮动选区胶囊", () => {
   it("渲染在 body 根部，绝对定位于选区上方（jsdom 零尺寸胶囊）", () => {
@@ -76,5 +81,24 @@ describe("浮动选区胶囊", () => {
     render(<FloatingSelectionCapsule rect={RECT} onCite={() => {}} onExited={onExited} />);
     fireEvent.animationEnd(screen.getByTestId("floating-selection-capsule"));
     expect(onExited).not.toHaveBeenCalled();
+  });
+
+  it("视口变化时按新视口重算位置，不横向溢出（390px 响应式）", () => {
+    // 选区贴近右侧：宽视口下胶囊中心对准选区中心，收窄后必须钳制回视口内。
+    const edgeRect = { top: 200, bottom: 220, left: 1200, right: 1260 };
+    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: 1280 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, writable: true, value: 800 });
+    render(<FloatingSelectionCapsule rect={edgeRect} onCite={() => {}} />);
+    const capsule = screen.getByTestId("floating-selection-capsule");
+    // 1280 宽：centerX=(1200+1260)/2=1230，maxLeft=1272 → left=1230（零尺寸胶囊）
+    expect(capsule.style.left).toBe("1230px");
+
+    // 收窄到 390：必须钳制到 [8, 390-0-8]，否则会横向溢出
+    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: 390 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, writable: true, value: 780 });
+    fireEvent(window, new Event("resize"));
+    const left = Number.parseInt(capsule.style.left, 10);
+    expect(left).toBeLessThanOrEqual(390 - 8);
+    expect(left).toBeGreaterThanOrEqual(8);
   });
 });
