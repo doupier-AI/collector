@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { FUSION_RELATION_TYPES, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, parseNativeResearchSliceGeneration, parseResearchSelectionInsight, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type NativeResearchSliceGeneration, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight, type ResearchSliceContext } from "@collector/capture-contracts";
+import { FUSION_RELATION_TYPES, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, parseResearchSelectionInsight, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight, type ResearchSliceContext } from "@collector/capture-contracts";
 
 export interface ProviderUsage {
   inputTokens?: number;
@@ -539,41 +539,6 @@ export class ModelGateway {
 
   get promptVersion(): string { return this.options.promptVersion ?? "knowledge-extraction-v1"; }
 
-  async generateGroundedResearch(
-    messages: Array<{ role: "user" | "assistant"; content: string }>,
-    grounding: ResearchGroundingRequest,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
-  ): Promise<GroundedResearchResponse> {
-    if (!messages.length) throw new Error("Research conversation requires at least one message");
-    const parentContext = formatResearchParentChainContext(options.parentChainContext);
-    const sliceContext = formatResearchSliceContext(options.sliceContext);
-    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Use web research when available, preserve uncertainty, and only cite sources returned by the provider.\n\nConversation:\n${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
-    const request = { prompt, model: options.model ?? this.modelName, grounding, maxTokens: options.maxTokens ?? 8_000, timeoutMs: options.timeoutMs ?? 120_000 };
-    if (!("generateGroundedResearch" in this.provider)) {
-      const content = await this.answerResearchConversation(messages, options);
-      return { content, status: "grounding_unsupported", queries: [], sources: [], citations: [] };
-    }
-    const startedAt = Date.now();
-    const createdAt = new Date().toISOString();
-    try {
-      const response = await (this.provider as GroundingModelProvider).generateGroundedResearch(request);
-      await this.emitCall({
-        context: options.context ?? { purpose: "research_grounding" }, provider: this.providerName, model: request.model,
-        promptVersion: grounding.promptVersion, status: "completed", latencyMs: Date.now() - startedAt, retryCount: options.context?.retryCount ?? 0, createdAt, completedAt: new Date().toISOString(),
-      });
-      return response;
-    } catch (error) {
-      await this.emitCall({
-        context: options.context ?? { purpose: "research_grounding" }, provider: this.providerName, model: request.model,
-        promptVersion: grounding.promptVersion, status: "failed", latencyMs: Date.now() - startedAt, retryCount: options.context?.retryCount ?? 0, errorMessage: redactError(error), createdAt, completedAt: new Date().toISOString(),
-      });
-      try {
-        const content = await this.answerResearchConversation(messages, options);
-        return { content, status: "grounding_failed", queries: [], sources: [], citations: [], errorMessage: redactError(error) };
-      } catch { throw error; }
-    }
-  }
-
   async answerResearchConversation(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
     options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
@@ -581,130 +546,18 @@ export class ModelGateway {
     if (!messages.length) throw new Error("Research conversation requires at least one message");
     const parentContext = formatResearchParentChainContext(options.parentChainContext);
     const sliceContext = formatResearchSliceContext(options.sliceContext);
-    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Return valid JSON only in the form {"answer":"..."}. Preserve uncertainty and never invent sources.\n\nConversation:\n${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
+    // 自由正文：术语预览与旧式流式复用此能力，输出连续文本而非 JSON 包装。
+    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Output a coherent passage of plain text only — no JSON, no field wrappers, no Markdown code fences. Preserve uncertainty and never invent sources.\n\nConversation:\n${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
-      responseFormat: { type: "json_object" },
       thinking: this.options.thinking ?? true,
       maxTokens: options.maxTokens ?? 8_000,
       timeoutMs: options.timeoutMs ?? 120_000,
     }, options.context ?? { purpose: "research_chat" });
-    const parsed = JSON.parse(response.content) as { answer?: unknown };
-    if (typeof parsed.answer !== "string" || !parsed.answer.trim()) throw new Error("Research provider returned an invalid answer");
-    return parsed.answer;
-  }
-
-  /**
-   * E2：普通研究回答一次返回有序语义切片。可见正文仅由通过校验的切片合成，
-   * 不把模型的半有效 JSON 或独立 answer 字段交给任务层。
-   */
-  async generateNativeResearchConversation(
-    messages: Array<{ role: "user" | "assistant"; content: string }>,
-    identity: { nodeId: string; messageId: string; ordinalStart: number },
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
-  ): Promise<NativeResearchSliceGeneration> {
-    if (!messages.length) throw new Error("Research conversation requires at least one message");
-    const parentContext = formatResearchParentChainContext(options.parentChainContext);
-    const sliceContext = formatResearchSliceContext(options.sliceContext);
-    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Preserve uncertainty and never invent sources. Return valid JSON only, without Markdown code fences, in this exact form:
-{"slices":[{"title":"short proposition title","content":"one coherent proposition or concept paragraph","normalizedConcepts":["normalized concept"]}]}
-
-Rules for slices:
-- Return 1 to 80 slices in answer order; each slice expresses one coherent proposition or concept.
-- content must be non-empty and must not contain blank lines. Collector will join slice contents with one blank line to form the user-visible article.
-- title is concise; normalizedConcepts is an array and may be empty.
-- Do not return answer, ids, citations, source records, explanations, or any fields other than slices.
-
-Conversation:
-${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
-    return this.generateNativeResearchSlices(prompt, identity, options);
-  }
-
-  /** E2：深入研究首轮沿用原有材料边界，但在同一次输出中固化正式切片。 */
-  async generateNativeDeepResearchRound(
-    input: {
-      mode: "branch" | "session";
-      selectionText: string;
-      direction: string;
-      contentTitle?: string;
-      contextBefore?: string;
-      contextAfter?: string;
-      parentChainContext?: ResearchParentChainContext;
-      sliceContext?: ResearchSliceContext;
-    },
-    identity: { nodeId: string; messageId: string; ordinalStart: number },
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
-  ): Promise<NativeResearchSliceGeneration> {
-    if (!input.selectionText.trim()) throw new Error("Deep research requires the source selection text");
-    if (!input.direction.trim()) throw new Error("Deep research requires a research direction");
-    const parentContext = formatResearchParentChainContext(input.parentChainContext);
-    const sliceContext = formatResearchSliceContext(input.sliceContext);
-    const prompt = `你是 Collector 的深入研究助手。用户从一段选区发起了深入研究第一轮。只使用下面提供的当前已有材料生成研究内容，不要联网检索，不要编造来源、链接或引用。只返回合法 JSON，不要使用 Markdown 代码围栏，形式必须为：
-{"slices":[{"title":"简洁命题标题","content":"一个连贯命题或概念的正文段落","normalizedConcepts":["归一化概念"]}]}
-
-切片规则：
-- 按回答顺序返回 1 至 80 个切片；每片只表达一个连贯命题或概念。
-- content 非空且不得包含空行；Collector 会按一个空行连接各片，形成用户读到的连续长文。
-- title 简洁；normalizedConcepts 是数组，可为空。
-- 不要返回 answer、ID、引用、来源记录、解释或 slices 以外字段。
-
-用户选区原文：
-${JSON.stringify(input.selectionText)}
-${input.contentTitle ? `\n来源内容标题：${JSON.stringify(input.contentTitle)}` : ""}
-${input.contextBefore ? `\n选区前文（仅供上下文）：\n${JSON.stringify(input.contextBefore)}` : ""}
-${input.contextAfter ? `\n选区后文（仅供上下文）：\n${JSON.stringify(input.contextAfter)}` : ""}
-${input.mode === "branch" ? "\n研究沿当前内容展开。" : "\n研究在新的独立会话中展开。"}
-
-用户的研究方向：
-${JSON.stringify(input.direction)}
-${parentContext ? `\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}
-
-要求：
-- 围绕用户方向，基于选区与上下文展开解释、拆解或延伸；
-- 只依据提供的材料，不编造外部事实、链接或来源；
-- 材料不足以支撑时在回答中如实说明不确定性；
-- 使用中文。`;
-    return this.generateNativeResearchSlices(prompt, identity, options);
-  }
-
-  /** E2：严格最多两次修复；三次响应均无效时不返回任何可持久化正文。 */
-  private async generateNativeResearchSlices(
-    prompt: string,
-    identity: { nodeId: string; messageId: string; ordinalStart: number },
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext },
-  ): Promise<NativeResearchSliceGeneration> {
-    let repairPrompt = prompt;
-    let lastError = "unknown schema error";
-    for (let repairAttempt = 0; repairAttempt <= 2; repairAttempt += 1) {
-      const context: ModelCallContext = {
-        ...(options.context ?? { purpose: "research_slice_generation" }),
-        purpose: options.context?.purpose ?? "research_slice_generation",
-        promptVersion: options.context?.promptVersion ?? "research-slices-v1",
-        retryCount: repairAttempt,
-      };
-      const response = await this.complete({
-        prompt: repairPrompt,
-        model: options.model ?? this.modelName,
-        responseFormat: { type: "json_object" },
-        thinking: this.options.thinking ?? true,
-        maxTokens: options.maxTokens ?? 8_000,
-        timeoutMs: options.timeoutMs ?? 120_000,
-      }, context);
-      try {
-        const parsed: unknown = JSON.parse(response.content);
-        return parseNativeResearchSliceGeneration(parsed, {
-          nodeId: identity.nodeId,
-          messageId: identity.messageId,
-          ordinalStart: identity.ordinalStart,
-        });
-      } catch (error) {
-        lastError = error instanceof Error ? error.message : "invalid native slice response";
-        if (repairAttempt === 2) break;
-        repairPrompt = `${prompt}\n\nYour previous response failed Collector's required slice schema: ${JSON.stringify(lastError.slice(0, 400))}. Return a corrected JSON object only. Do not add commentary or Markdown fences. Previous response (for correction only):\n${response.content.slice(0, 12_000)}`;
-      }
-    }
-    throw new Error(`Research slice output remained invalid after 2 repairs: ${lastError}`);
+    const content = response.content.trim();
+    if (!content) throw new Error("Research provider returned an empty answer");
+    return content;
   }
 
   /**
@@ -939,7 +792,7 @@ ${JSON.stringify(input.right.content.slice(0, 12_000))}
 
   /**
    * 深入研究第一轮：只使用提供的当前已有材料（来源内容 + 选区上下文 + 用户方向），
-   * 不联网检索，不编造来源。返回模型回答文本。
+   * 不联网检索，不编造来源。自由正文：返回模型回答的连续文本，不再包 JSON。
    */
   async generateDeepResearchRound(
     input: {
@@ -958,7 +811,8 @@ ${JSON.stringify(input.right.content.slice(0, 12_000))}
     if (!input.direction.trim()) throw new Error("Deep research requires a research direction");
     const parentContext = formatResearchParentChainContext(input.parentChainContext);
     const sliceContext = formatResearchSliceContext(input.sliceContext);
-    const prompt = `你是 Collector 的深入研究助手。用户从一段选区发起了深入研究第一轮。只使用下面提供的当前已有材料生成研究内容，不要联网检索，不要编造来源、链接或引用。只返回合法 JSON，形式为 {"answer":"..."}，不要使用 Markdown 代码围栏。
+    // 自由正文：旧式流式深入研究复用此能力，输出连续文本而非 {"answer":...} JSON 包装。
+    const prompt = `你是 Collector 的深入研究助手。用户从一段选区发起了深入研究第一轮。只使用下面提供的当前已有材料生成研究内容，不要联网检索，不要编造来源、链接或引用。只输出一段连贯的中文纯文本，不要返回 JSON、字段包装或 Markdown 代码围栏。
 
 用户选区原文：
 ${JSON.stringify(input.selectionText)}
@@ -975,18 +829,17 @@ ${parentContext ? `\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext
 - 围绕用户方向，基于选区与上下文展开解释、拆解或延伸；
 - 只依据提供的材料，不编造外部事实、链接或来源；
 - 材料不足以支撑时在回答中如实说明不确定性；
-- answer 使用中文。`;
+- 使用中文。`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
-      responseFormat: { type: "json_object" },
       thinking: this.options.thinking ?? true,
       maxTokens: options.maxTokens ?? 8_000,
       timeoutMs: options.timeoutMs ?? 120_000,
     }, options.context ?? { purpose: "deep_research" });
-    const parsed = JSON.parse(response.content) as { answer?: unknown };
-    if (typeof parsed.answer !== "string" || !parsed.answer.trim()) throw new Error("Deep research provider returned an invalid answer");
-    return parsed.answer;
+    const content = response.content.trim();
+    if (!content) throw new Error("Deep research provider returned an empty answer");
+    return content;
   }
 
   async analyzeSelection(

@@ -8,7 +8,6 @@ import {
   MODEL_PURPOSES,
   deriveProvisionalSlices,
   evidenceGradeFor,
-  parseNativeResearchSliceGeneration,
   validateCaptureInput,
   type AiConfigurationView,
   type ArtifactRecord,
@@ -326,33 +325,6 @@ export class CaptureService {
       model: gateway.modelName,
       promptVersion: RESEARCH_SLICE_PROMPT_VERSION,
       groundingCapability,
-      async generateNative(request) {
-        const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
-        if (!purposeGateway) throw new Error("AI model is not configured");
-        const identity = nativeSliceIdentity(request);
-        if (request.deepResearch) {
-          const direction = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
-          return purposeGateway.generateNativeDeepResearchRound(
-            {
-              mode: request.deepResearch.mode,
-              selectionText: request.deepResearch.selectionText,
-              direction,
-              contentTitle: request.deepResearch.contentTitle,
-              contextBefore: request.deepResearch.contextBefore,
-              contextAfter: request.deepResearch.contextAfter,
-              parentChainContext: request.parentChainContext,
-              sliceContext: request.sliceContext,
-            },
-            identity,
-            { context: { workflowRunId: request.taskId, purpose: "deep_research", promptVersion: RESEARCH_SLICE_PROMPT_VERSION } },
-          );
-        }
-        return purposeGateway.generateNativeResearchConversation(request.messages, identity, {
-          parentChainContext: request.parentChainContext,
-          sliceContext: request.sliceContext,
-          context: { workflowRunId: request.taskId, purpose: "research_chat", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
-        });
-      },
       async generateAgentGrounded(request) {
         const purposeGateway = await service.gatewayForPurpose("search");
         if (!purposeGateway) throw new Error("AI model is not configured");
@@ -387,19 +359,12 @@ export class CaptureService {
           },
           {
             maxTurns: 10,
-            systemPrompt: `你是 Collector 的研究助手。你可以使用 web_search 和 web_fetch 工具完成联网研究：先搜索，再按需抓取页面，信息不足时换关键词；最多 5 次搜索。\n\n最终回答必须只返回合法 JSON，不用 Markdown 代码围栏，形式为：{"slices":[{"title":"简洁命题标题","content":"一个连贯命题或概念的正文段落 [来源n]","normalizedConcepts":["归一化概念"]}]}。每片 content 非空且不能含空行；按顺序连接切片会形成连续回答。每片表达一个连贯命题或概念；normalizedConcepts 可为空。只能在确有依据的陈述后写 [来源n]，不得编造来源、answer、ID、引用记录或其他字段。`,
+            systemPrompt: `你是 Collector 的研究助手。你可以使用 web_search 和 web_fetch 工具完成联网研究：先搜索，再按需抓取页面，信息不足时换关键词；最多 5 次搜索。\n\n最终回答只输出一段连贯的中文纯文本，不要返回 JSON、字段包装或 Markdown 代码围栏。按自然段落组织回答，段落之间留一个空行。只能在确有依据的陈述后写 [来源n]，n 对应工具返回的来源序号；不得编造来源或引用记录。`,
             context: { workflowRunId: request.taskId, purpose: "research", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
           },
         );
 
         if (!result.content) throw new Error("Provider returned an empty response");
-        let parsedNative: unknown;
-        try {
-          parsedNative = JSON.parse(result.content);
-        } catch {
-          throw new Error("Agent search provider returned invalid native slice JSON");
-        }
-        const native = parseNativeResearchSliceGeneration(parsedNative, nativeSliceIdentity(request));
 
         // 构造来源记录供 parseAgentCitations 使用
         const sourceRecords = result.sources.map((source, i) => ({
@@ -412,11 +377,10 @@ export class CaptureService {
           createdAt: new Date().toISOString(),
         }));
 
-        const { citations } = parseAgentCitations(native.content, sourceRecords);
+        const { citations } = parseAgentCitations(result.content, sourceRecords);
         const scopeStatus: ResearchGroundingScopeStatus = result.sources.length ? "grounded" : "no_verifiable_sources";
         return {
-          content: native.content,
-          slices: native.slices,
+          content: result.content,
           status: scopeStatus,
           queries: result.queries,
           sources: result.sources.map((source, i) => ({
@@ -2024,14 +1988,6 @@ export class CaptureService {
     return count;
   }
 
-}
-
-function nativeSliceIdentity(request: import("./research.js").ResearchGenerationRequest): { nodeId: string; messageId: string; ordinalStart: number } {
-  const ordinalStart = request.sliceOrdinalStart;
-  if (!request.nodeId || !request.outputMessageId || !Number.isSafeInteger(ordinalStart) || ordinalStart === undefined || ordinalStart < 0) {
-    throw new Error("Native research generation requires a stable slice identity");
-  }
-  return { nodeId: request.nodeId, messageId: request.outputMessageId, ordinalStart };
 }
 
 function materialTitle(record: CaptureRecord): string {

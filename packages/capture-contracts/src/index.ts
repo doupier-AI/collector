@@ -1805,12 +1805,6 @@ export interface ResearchSliceRecord {
   createdAt: string;
 }
 
-/** 模型生成阶段返回的完整回答和正式切片；正文由切片内容确定性合成。 */
-export interface NativeResearchSliceGeneration {
-  content: string;
-  slices: ResearchSliceRecord[];
-}
-
 /** E3：送入下一轮生成的有界切片上下文；与父链上下文分别预算。 */
 export interface ResearchSliceContextItem {
   sliceId: string;
@@ -1834,11 +1828,9 @@ export interface ResearchSliceContext {
   originSelectionId?: string;
 }
 
-export const RESEARCH_NATIVE_SLICE_MAX_COUNT = 80;
 export const RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS = 200;
 export const RESEARCH_NATIVE_SLICE_MAX_CONCEPTS = 12;
 export const RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS = 160;
-export const RESEARCH_NATIVE_SLICE_MAX_CONTENT_CHARACTERS = 100_000;
 
 /**
  * 校验确定性派生切片序列的结构合法性（生成自由化后的权威切片）。
@@ -1904,97 +1896,6 @@ export function validateSliceSchema(slices: ResearchSliceRecord[], nodeId: strin
     if (typeof slice.isProvisional !== "boolean") throw new Error(`Slice ${slice.ordinal} isProvisional must be a boolean`);
     if (typeof slice.createdAt !== "string" || Number.isNaN(Date.parse(slice.createdAt))) throw new Error(`Slice ${slice.ordinal} createdAt must be an ISO date`);
   }
-}
-
-/**
- * 从模型 JSON 安全构造正式切片。模型只可提供 `slices` 的标题、正文和概念；
- * Collector 决定稳定 ID、顺序、来源引用与最终正文，避免模型伪造本地关联。
- * 每片必须对应最终正文的一个确定性消息块，因此切片边界不会扰动既有选区锚点。
- */
-export function parseNativeResearchSliceGeneration(
-  value: unknown,
-  input: {
-    nodeId: string;
-    messageId: string;
-    ordinalStart: number;
-    citations?: ResearchCitationRecord[];
-    createdAt?: string;
-  },
-): NativeResearchSliceGeneration {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Native slice response must be a JSON object");
-  const candidate = value as Record<string, unknown>;
-  if (!Array.isArray(candidate.slices) || candidate.slices.length === 0 || candidate.slices.length > RESEARCH_NATIVE_SLICE_MAX_COUNT) {
-    throw new Error(`Native slice response must contain 1 to ${RESEARCH_NATIVE_SLICE_MAX_COUNT} slices`);
-  }
-  if (!Number.isSafeInteger(input.ordinalStart) || input.ordinalStart < 0) throw new Error("Native slice ordinalStart must be a non-negative integer");
-
-  const createdAt = input.createdAt ?? new Date().toISOString();
-  const sourceCitations = input.citations ?? [];
-  const draft = candidate.slices.map((raw, index) => {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`Native slice ${index + 1} must be an object`);
-    const slice = raw as Record<string, unknown>;
-    if (typeof slice.title !== "string") throw new Error(`Native slice ${index + 1} title must be a string`);
-    if (typeof slice.content !== "string") throw new Error(`Native slice ${index + 1} content must be a string`);
-    if (!Array.isArray(slice.normalizedConcepts)) throw new Error(`Native slice ${index + 1} normalizedConcepts must be an array`);
-    const title = slice.title.trim();
-    const content = normalizeNativeSliceText(slice.content);
-    if (!title || title.length > RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS) throw new Error(`Native slice ${index + 1} title is invalid`);
-    if (!content || content.length > RESEARCH_NATIVE_SLICE_MAX_CONTENT_CHARACTERS) throw new Error(`Native slice ${index + 1} content is invalid`);
-    if (slice.normalizedConcepts.length > RESEARCH_NATIVE_SLICE_MAX_CONCEPTS) throw new Error(`Native slice ${index + 1} has too many normalized concepts`);
-    const normalizedConcepts = [...new Set(slice.normalizedConcepts.map((concept) => {
-      if (typeof concept !== "string") throw new Error(`Native slice ${index + 1} normalizedConcepts must contain strings`);
-      const normalized = concept.trim();
-      if (!normalized || normalized.length > RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS) throw new Error(`Native slice ${index + 1} normalized concept is invalid`);
-      return normalized;
-    }))];
-    return { title, content, normalizedConcepts };
-  });
-
-  const content = draft.map((slice) => slice.content).join("\n\n");
-  const blocks = deriveMessageBlocks(content);
-  if (blocks.length !== draft.length || blocks.some((block, index) => block.text !== draft[index]?.content)) {
-    throw new Error("Native slices must each map to one stable message block");
-  }
-  const slices: ResearchSliceRecord[] = draft.map((slice, index) => ({
-    id: `slice:${input.nodeId}:${input.messageId}:${input.ordinalStart + index}`,
-    nodeId: input.nodeId,
-    messageId: input.messageId,
-    ordinal: input.ordinalStart + index,
-    title: slice.title,
-    content: slice.content,
-    normalizedConcepts: slice.normalizedConcepts,
-    sourceRefs: sourceCitations.filter((citation) => citation.messageId === input.messageId && citation.blockOrdinal === index),
-    isProvisional: false,
-    createdAt,
-  }));
-  const result = { content, slices };
-  validateNativeResearchSliceGeneration(result, input.nodeId, input.messageId);
-  return result;
-}
-
-/** 正式切片与可见正文的双向不变量；服务端在落库前再次调用。 */
-export function validateNativeResearchSliceGeneration(
-  result: NativeResearchSliceGeneration,
-  nodeId: string,
-  messageId: string,
-): void {
-  if (!result || typeof result !== "object" || typeof result.content !== "string" || !result.content.trim()) {
-    throw new Error("Native slice generation must include non-empty content");
-  }
-  if (!Array.isArray(result.slices) || result.slices.length === 0) throw new Error("Native slice generation must include slices");
-  if (result.slices.some((slice) => slice.isProvisional)) throw new Error("Native slice generation cannot contain provisional slices");
-  if (result.content !== result.slices.map((slice) => slice.content).join("\n\n")) {
-    throw new Error("Native slice content must be composed from slices");
-  }
-  const blocks = deriveMessageBlocks(result.content);
-  if (blocks.length !== result.slices.length || blocks.some((block, index) => block.text !== result.slices[index]?.content)) {
-    throw new Error("Native slice content must preserve message block boundaries");
-  }
-  validateSliceSchema(result.slices, nodeId, messageId);
-}
-
-function normalizeNativeSliceText(value: string): string {
-  return value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
 }
 
 /**

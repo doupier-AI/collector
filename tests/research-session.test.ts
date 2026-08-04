@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ResearchGenerationProvider } from "@collector/api";
-import { parseNativeResearchSliceGeneration } from "@collector/capture-contracts";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer } from "@collector/api";
 
 const deterministicProvider: ResearchGenerationProvider = {

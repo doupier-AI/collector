@@ -10,11 +10,9 @@ import {
   sanitizeGroundingQueries,
   sanitizeGroundingUrl,
   validateDerivedSlices,
-  validateNativeResearchSliceGeneration,
   validateResearchGroundingResult,
   type DeepResearchContext,
   type DeepResearchMode,
-  type NativeResearchSliceGeneration,
   type ResearchBodyPlan,
   type ResearchCitationRecord,
   type ResearchSliceRecord,
@@ -70,8 +68,6 @@ export interface ResearchGenerationProvider {
   readonly model: string;
   readonly promptVersion?: string;
   readonly groundingCapability?: import("@collector/capture-contracts").ProviderWebGrounding;
-  /** E2 主路径：同一次模型输出生成完整正文和正式切片；不得回退为临时切片。 */
-  generateNative?(request: ResearchGenerationRequest): Promise<NativeResearchSliceGeneration>;
   /** H3c 术语预览仍复用文本流，不参与节点回答的正式切片生成。 */
   generate(request: ResearchGenerationRequest): AsyncIterable<string>;
   /** Agent 式搜索：Collector 自行完成搜索，不依赖供应商原生联网。 */
@@ -607,22 +603,6 @@ export class ResearchSessionService {
     if (existing.length > 0) return Math.min(...existing.map((slice) => slice.ordinal));
     const nodeSlices = this.store.listSlicesByNode(nodeId);
     return nodeSlices.length > 0 ? Math.max(...nodeSlices.map((slice) => slice.ordinal)) + 1 : 0;
-  }
-
-  /** 引用由本地已验证的联网结果生成；模型不能自行写入来源关联。 */
-  private withSliceSourceRefs(
-    generation: NativeResearchSliceGeneration,
-    citations: import("@collector/capture-contracts").ResearchCitationRecord[],
-  ): NativeResearchSliceGeneration {
-    if (!citations.length) return generation;
-    const firstOrdinal = generation.slices[0]?.ordinal ?? 0;
-    return {
-      content: generation.content,
-      slices: generation.slices.map((slice) => ({
-        ...slice,
-        sourceRefs: citations.filter((citation) => citation.blockOrdinal === slice.ordinal - firstOrdinal),
-      })),
-    };
   }
 
   private isBranchFollowUp(taskId: string): boolean {
