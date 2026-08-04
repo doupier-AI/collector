@@ -430,19 +430,23 @@ test.describe("上方空间不足翻转（修订一 #11）", () => {
     // 先把目标文字滚到视口顶端附近（留 4px），再建立选区触发捕获——
     // 定位计算在 mouseup 时进行，上方空间不足 → 翻转至选区下方
     const selectionRect = await page.evaluate((target) => {
-      const block = document.querySelector(".message--assistant [data-block-text]");
-      if (!block) throw new Error("未找到 AI 回答块");
-      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, null);
+      // 多张切片卡片各有一个 data-block-text 块，目标文字可能在任意一张，遍历所有块。
+      const blocks = Array.from(document.querySelectorAll(".message--assistant [data-block-text]"));
+      if (!blocks.length) throw new Error("未找到 AI 回答块");
       let foundNode: Text | null = null;
       let foundOffset = -1;
-      while (walker.nextNode()) {
-        const node = walker.currentNode as Text;
-        const offset = node.data.indexOf(target);
-        if (offset >= 0) {
-          foundNode = node;
-          foundOffset = offset;
-          break;
+      for (const block of blocks) {
+        const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, null);
+        while (walker.nextNode()) {
+          const node = walker.currentNode as Text;
+          const offset = node.data.indexOf(target);
+          if (offset >= 0) {
+            foundNode = node;
+            foundOffset = offset;
+            break;
+          }
         }
+        if (foundNode) break;
       }
       if (!foundNode || foundOffset < 0) throw new Error(`回答中未找到「${target}」`);
       const probe = document.createRange();

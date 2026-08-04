@@ -81,11 +81,13 @@ const fakeProvider = {
     ].join("\n\n");
   },
   // 事后标注：按段落内容给出确定性标题，让派生切片带标题渲染成语义卡片。
+  // 匹配按各段独有前缀/特征，避免关键词跨段泄漏（问题含"本地优先"会同时命中首段重述）。
   async deriveAnnotations({ content }) {
-    if (content.includes("本地优先")) return { title: "本地优先", concepts: ["本地优先"] };
+    if (content.startsWith("你问的是")) return { title: "问题重述", concepts: [] };
+    if (content.includes("本地优先会先把输入保存")) return { title: "本地优先", concepts: ["本地优先"] };
     if (content.includes("渐进事件")) return { title: "渐进生成", concepts: ["渐进生成"] };
     if (content.includes("深入研究第一轮")) return { title: "深入研究", concepts: [] };
-    return { title: "问题重述", concepts: [] };
+    return { title: "", concepts: [] };
   },
 };
 

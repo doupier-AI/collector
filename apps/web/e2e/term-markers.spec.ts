@@ -10,8 +10,11 @@ test("H3b 弱标记在窄屏可见且不改变选区锚点原文", async ({ page
   await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
   const sessionId = page.url().split("/research/")[1]?.split("/")[0] ?? "";
 
-  const block = page.locator(".message--assistant [data-block-text]").last();
-  await expect(block).toContainText("回答完毕", { timeout: 15_000 });
+  // 生成自由化后一条回答为多张切片卡片：术语标记（REST/API/HTTP）在首段问题重述卡，
+  // 「回答完毕」在末段卡。先在末块等待完成，再取首块断言标记。
+  const lastBlock = page.locator(".message--assistant [data-block-text]").last();
+  await expect(lastBlock).toContainText("回答完毕", { timeout: 15_000 });
+  const block = page.locator(".message--assistant [data-block-text]").first();
   await expect(block.locator("[data-term-marker]")).toHaveCount(3);
   await expect(block.locator("[data-term-marker]").nth(0)).toHaveText("REST");
   await expect(block.locator("[data-term-marker]").nth(1)).toHaveText("API");

@@ -54,25 +54,30 @@ export async function pairAndOpen(page: Page, path = "/"): Promise<void> {
   if (path !== "/") await page.goto(path);
 }
 
-/** 在最后一个 AI 回答块内选中指定文字并触发 mouseup，供选区/深入研究/标记测试复用。
+/** 在最后一个 AI 回答的所有块内选中指定文字并触发 mouseup，供选区/深入研究/标记测试复用。
  * 实现改为在 data-block-text 容器内查找包含目标文字的最深层文本节点，兼容 Markdown 渲染后
  * 的嵌套结构（例如 .markdown-content > p）。
+ * 生成自由化后一条回答由多张切片卡片组成（每张卡片各有一个 data-block-text 块），
+ * 目标文字可能落在任意一张卡片，故遍历所有块直到命中，而非只看第一个块。
  */
 export async function selectAnswerText(page: Page, text: string): Promise<void> {
   await page.evaluate((target) => {
-    const block = document.querySelector(".message--assistant [data-block-text]");
-    if (!block) throw new Error("未找到 AI 回答块");
-    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, null);
+    const blocks = Array.from(document.querySelectorAll(".message--assistant [data-block-text]"));
+    if (!blocks.length) throw new Error("未找到 AI 回答块");
     let foundNode: Text | null = null;
     let foundOffset = -1;
-    while (walker.nextNode()) {
-      const node = walker.currentNode as Text;
-      const offset = node.data.indexOf(target);
-      if (offset >= 0) {
-        foundNode = node;
-        foundOffset = offset;
-        break;
+    for (const block of blocks) {
+      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, null);
+      while (walker.nextNode()) {
+        const node = walker.currentNode as Text;
+        const offset = node.data.indexOf(target);
+        if (offset >= 0) {
+          foundNode = node;
+          foundOffset = offset;
+          break;
+        }
       }
+      if (foundNode) break;
     }
     if (!foundNode || foundOffset < 0) throw new Error(`回答中未找到「${target}」`);
     const range = document.createRange();

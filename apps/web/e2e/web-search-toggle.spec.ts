@@ -22,7 +22,7 @@ async function submitWithSearchChoice(page: Page, allowWebSearch: boolean) {
 
   await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
   const sessionId = page.url().split("/research/")[1]?.split("/")[0] ?? "";
-  await expect(page.locator(".message--assistant .message__content")).toContainText("回答完毕", { timeout: 15_000 });
+  await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
   const view = await apiJson<NodeView>(page, `/v1/research-nodes/${sessionId}`);
   return { view, toggle };
 }

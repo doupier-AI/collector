@@ -40,7 +40,7 @@ test("SSE 中断后回退任务查询轮询，内容完整恢复且不丢已显�
 
   // 重试耗尽后回退轮询，终态确认后与服务端对齐，内容完整
   const assistantContent = page.locator(".message--assistant .message__content");
-  await expect(assistantContent).toContainText("回答完毕", { timeout: 45_000 });
+  await expect(assistantContent.last()).toContainText("回答完毕", { timeout: 45_000 });
   await expect(page.locator("[aria-live=polite]")).toHaveText("已完成", { timeout: 15_000 });
   await expect(page.locator(".message--assistant")).toHaveCount(1);
 

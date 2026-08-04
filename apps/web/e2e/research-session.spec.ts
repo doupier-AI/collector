@@ -120,27 +120,27 @@ test("提交后渐进内容进入同一条 AI 消息并完成，控制台无错�
 test("刷新页面恢复同一会话与完整内容", async ({ page }) => {
   await pairAndOpen(page, "/research/new");
   const sessionId = await submitFirstQuestion(page);
-  await expect(page.locator(".message--assistant .message__content")).toContainText("回答完毕", { timeout: 15_000 });
+  await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
 
   await page.reload();
 
   expect(page.url()).toContain(`/research/${sessionId}`);
   await expect(page.getByRole("heading", { name: "新研究会话" })).toBeVisible();
   await expect(page.getByText(QUESTION, { exact: true })).toBeVisible();
-  await expect(page.locator(".message--assistant .message__content")).toContainText("回答完毕", { timeout: 15_000 });
+  await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
   await expect(page.locator(".message--assistant")).toHaveCount(1);
 });
 
 test("关闭页面后重新打开自动恢复最近会话", async ({ page, context }) => {
   await pairAndOpen(page, "/research/new");
   await submitFirstQuestion(page);
-  await expect(page.locator(".message--assistant .message__content")).toContainText("回答完毕", { timeout: 15_000 });
+  await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
 
   const reopened = await context.newPage();
   await reopened.goto("/");
   await reopened.waitForURL(/\/research\/(?!new$)[^/]+$/, { timeout: 10_000 });
   await expect(reopened.getByText(QUESTION, { exact: true })).toBeVisible();
-  await expect(reopened.locator(".message--assistant .message__content")).toContainText("回答完毕", { timeout: 15_000 });
+  await expect(reopened.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
   await reopened.close();
 });
 
@@ -232,7 +232,7 @@ test("键盘完成侧栏收起与展开、输入与发送", async ({ page }) => 
 test("320/768/1024/1440 视口无横向溢出并留截图", async ({ page }) => {
   await pairAndOpen(page, "/research/new");
   await submitFirstQuestion(page);
-  await expect(page.locator(".message--assistant .message__content")).toContainText("回答完毕", { timeout: 15_000 });
+  await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
 
   mkdirSync("e2e-artifacts", { recursive: true });
   for (const width of [320, 768, 1024, 1440]) {
@@ -275,13 +275,15 @@ test("界面、API 与 SQLite 记录一致", async ({ page }) => {
   await pairAndOpen(page, "/research/new");
   const sessionId = await submitFirstQuestion(page);
   const assistantContent = page.locator(".message--assistant .message__content");
-  await expect(assistantContent).toContainText("回答完毕", { timeout: 15_000 });
+  await expect(assistantContent.last()).toContainText("回答完毕", { timeout: 15_000 });
   await expect(page.locator("[aria-live=polite]")).toHaveText("已完成", { timeout: 15_000 });
-  const uiText = (await assistantContent.textContent()) ?? "";
+  // 生成自由化后一条回答渲染为多张切片卡片（各含一个 .message__content 块），
+  // 渲染丢弃段落间的 \n\n 分隔；拼接所有块文本并与去掉换行的持久化正文比对。
+  const uiText = (await assistantContent.allTextContents()).join("");
 
   const view = await apiJson<SessionView>(page, `/v1/research-sessions/${sessionId}`);
   expect(view.messages).toHaveLength(2);
-  expect(view.messages[1].content).toBe(uiText);
+  expect(view.messages[1].content.replace(/\n+/g, "")).toBe(uiText);
   expect(view.messages[1].status).toBe("completed");
   expect(view.tasks).toHaveLength(1);
   expect(view.tasks[0].status).toBe("completed");
@@ -293,7 +295,8 @@ test("界面、API 与 SQLite 记录一致", async ({ page }) => {
   const assistantRow = messageRows.find((row) => row.role === "assistant");
   expect(assistantRow?.status).toBe("completed");
   const record = JSON.parse(assistantRow?.recordJson ?? "{}") as { content?: string };
-  expect(record.content).toBe(uiText);
+  // 持久化正文含 \n\n 段落分隔，UI 渲染丢弃；统一去掉换行后与拼接的 UI 文本一致。
+  expect(record.content?.replace(/\n+/g, "")).toBe(uiText);
 
   const taskRows = tables.tasks.filter((row) => row.sessionId === sessionId);
   expect(taskRows).toHaveLength(1);
