@@ -80,6 +80,26 @@ const fakeProvider = {
       "渐进事件把后续内容写进同一条消息，回答完毕。",
     ].join("\n\n");
   },
+  // 真实逐字流式（方案 B）：与 writeBody 拼接结果逐字节一致，但分段产出驱动渐进 UI。
+  // 沿用旧 generate 验证过的节奏：1500ms 前导给客户端完成导航/视图加载/SSE 连接，
+  // 段间 250ms 大于事件轮询间隔，保证中间态可观测。processTask 优先走本方法。
+  async *writeBodyStream(request) {
+    const question = request.messages.at(-1)?.content ?? "";
+    const short = question.length > 24 ? `${question.slice(0, 24)}…` : question;
+    if (request.deepResearch) {
+      await sleep(400);
+      yield `这是深入研究第一轮，围绕「${short}」展开。`;
+      await sleep(250);
+      yield "\n\n本轮只使用来源选区与当前已有材料生成，未联网检索，回答完毕。";
+      return;
+    }
+    await sleep(1500);
+    yield `你问的是「${short}」。`;
+    await sleep(250);
+    yield "\n\n本地优先会先把输入保存在本机，再据此组织后续研究。";
+    await sleep(250);
+    yield "\n\n渐进事件把后续内容写进同一条消息，回答完毕。";
+  },
   // 事后标注：按段落内容给出确定性标题，让派生切片带标题渲染成语义卡片。
   // 匹配按各段独有前缀/特征，避免关键词跨段泄漏（问题含"本地优先"会同时命中首段重述）。
   async deriveAnnotations({ content }) {
