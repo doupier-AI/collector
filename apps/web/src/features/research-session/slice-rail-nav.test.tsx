@@ -6,14 +6,17 @@ import type { SliceRailItem } from "./SliceRailNav";
 /**
  * SliceRailNav 章节导航：scrollspy 几何决胜组件测试。
  *
- * 高亮规则（业界收敛做法）：
- * - 观察整张卡片 <section>，不是标题行；
- * - 注视带居中（rootMargin -35% 0px -55%），阅读线位于视口 35% 高度；
+ * 高亮规则：
+ * - 观察目标是整张卡片 <section>，不是标题行；
+ * - 阅读线固定在视口 35% 高度（读者自然注视区）；
  * - 同屏多卡只亮一条：取"卡片顶 ≤ 阅读线"中最靠下（最贴近当前阅读位置）者；
  * - 兜底：未滚到首节前亮首节、滚到底亮末节。
  *
- * jsdom 无真实布局/IntersectionObserver，这里 mock 之：捕获回调后手动喂
- * boundingClientRect，验证决胜逻辑与 aria-current 落点。
+ * 触发源：裁决挂在 window scroll/resize 上（整文档滚动），每次滚动对已登记卡片现场
+ * getBoundingClientRect() 重测并裁决；IntersectionObserver 仅负责"发现并登记卡片元素"。
+ *
+ * jsdom 无真实布局，getBoundingClientRect 恒回 0：这里 mock 各卡片该方法注入矩形，再派发
+ * scroll 事件触发裁决，验证决胜逻辑与 aria-current 落点。
  */
 
 const ITEMS: SliceRailItem[] = [
@@ -22,15 +25,10 @@ const ITEMS: SliceRailItem[] = [
   { anchorId: "m-out#p2-title", cardId: "m-out#p2-card", title: "第三节", excerpt: "三" },
 ];
 
-type IOCallback = (entries: Array<Pick<IntersectionObserverEntry, "target" | "boundingClientRect">>) => void;
-
-let ioCallback: IOCallback | null = null;
 let observedElements: Element[] = [];
 
 class MockIntersectionObserver {
-  constructor(cb: IntersectionObserverCallback) {
-    ioCallback = cb as unknown as IOCallback;
-  }
+  constructor(_cb: IntersectionObserverCallback) {}
   observe(el: Element) {
     observedElements.push(el);
   }
@@ -45,7 +43,6 @@ class MockIntersectionObserver {
 /** 渲染三张卡片 + 导航，返回各卡片元素（按 cardId）。 */
 function setup() {
   observedElements = [];
-  ioCallback = null;
   const { container } = render(
     <div>
       {ITEMS.map((item) => (
@@ -62,14 +59,14 @@ function setup() {
   return { container, cards };
 }
 
-/** 喂一组卡片矩形并触发一次 observer 回调 + rAF。 */
+/** 设定各卡片矩形（mock getBoundingClientRect），再派发 scroll 触发一次裁决 + rAF。 */
 function fireRects(rects: Array<{ index: number; top: number }>) {
-  const entries = rects.map(({ index, top }) => ({
-    target: observedElements[index],
-    boundingClientRect: { top } as DOMRect,
-  }));
+  for (const { index, top } of rects) {
+    const el = observedElements[index] as HTMLElement;
+    el.getBoundingClientRect = () => ({ top }) as DOMRect;
+  }
   act(() => {
-    ioCallback?.(entries);
+    window.dispatchEvent(new Event("scroll"));
     // 跑掉 rAF（jsdom 里 rAF 走 setTimeout ~16ms）
     vi.advanceTimersByTime(32);
   });

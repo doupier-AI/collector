@@ -154,6 +154,8 @@ button {
 /* ---------- 页面 ---------- */
 
 .page {
+  /* 建立定位上下文：让章节导航线列相对正文（而非 100vw）定位，随两侧边栏开合跟随正文左缘。 */
+  position: relative;
   width: min(100% - 2rem, var(--measure));
   margin: 0 auto;
   padding: var(--space-6) 0 5rem;
@@ -392,13 +394,19 @@ button {
   max-width: 42rem;
 }
 
-/* #36 章节导航线列：固定于正文左缘外侧留白，不进入文档流，不挤压正文行宽。 */
+/* #36 章节导航线列：悬停于正文左缘外侧留白，跟随滚动与边栏开合，不挤压正文行宽。 */
 .slice-rail {
-  position: fixed;
-  top: 50%;
-  left: max(0.25rem, calc((100vw - var(--measure)) / 2 - 2.25rem));
-  transform: translateY(-50%);
-  z-index: 40;
+  /* sticky：相对最近滚动祖先（整文档）在视口钉住，又随内容容器 .page 水平 reflow——
+     两侧边栏开合、正文重新居中时自动跟随，无需 JS 测量。top 取视口中线，translateY(-50%) 垂直居中。 */
+  position: sticky;
+  top: 50vh;
+  /* 落正文左缘，再向左翻出自身宽度悬停列外；负 margin 抵消文档流占位，不把正文往下推。 */
+  left: 0;
+  transform: translate(-100%, -50%);
+  width: 2rem;
+  margin-left: -2rem;
+  /* 低于节点树/网状导航/标记面板（z-index 30）与其遮罩（20）：覆盖层展开时不穿透显示导航。 */
+  z-index: 15;
 }
 
 .slice-rail__track {
@@ -445,9 +453,12 @@ button {
 }
 
 .slice-rail__preview {
-  position: fixed;
-  left: max(2.25rem, calc((100vw - var(--measure)) / 2 - 0.5rem));
-  z-index: 50;
+  /* 与线列同一参考系：相对正文（.page 已建立定位上下文）。left 落正文左缘再外推一点，
+     比线列更靠右、贴近正文；top 由 JS 按被预览线相对正文文档顶的偏移给定，随正文滚动。 */
+  position: absolute;
+  left: 1rem;
+  /* 低于覆盖层（z-index 30）与其遮罩（20）：覆盖层展开时预览不穿透显示。 */
+  z-index: 15;
   width: min(18rem, calc(100vw - 4rem));
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--color-line);
@@ -472,13 +483,14 @@ button {
 }
 
 @media (max-width: 720px) {
-  /* 窄屏：留白≈1rem，线列紧贴屏幕左缘。 */
+  /* 窄屏：留白≈1rem，线列与预览框贴正文左缘，翻出的列外宽度和左右偏移都收紧。 */
   .slice-rail {
-    left: 0.125rem;
+    width: 1.5rem;
+    margin-left: -1.5rem;
   }
 
   .slice-rail__preview {
-    left: 2rem;
+    left: 0.5rem;
   }
 }
 

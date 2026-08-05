@@ -1,5 +1,4 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { makeExcerpt } from "./slice-cards";
 
@@ -58,41 +57,46 @@ export const SliceRailNav = memo(function SliceRailNav({ items }: { items: Slice
 
   // 当前位置：视口注视带内的卡片对应线加粗高亮。
   //
-  // scrollspy 标准几何法（Bootstrap 5 / Maxime Heckel 收敛做法）：
+  // scrollspy 几何决胜（触发源已修正，见下）：
   // - 观察目标是整张卡片 <section>，不是标题行——标题滚出屏幕、正文仍在读时高亮仍跟随本节；
-  // - 激活带是视口居中的注视区（rootMargin 负值），只有进入读者自然注视区的卡片才算数；
-  // - 同屏多张卡片时只选一个赢家：取"卡片顶已滚到阅读线上方、且最靠下（最贴近当前阅读位置）"者，
-  //   即正在读的那节；标题滚出屏幕无所谓，只要正文压着注视区就持续高亮；
+  // - 阅读线固定在视口 35% 高度处（读者自然注视区）；同屏多张卡片只选一个赢家：取"卡片顶已滚到
+  //   阅读线上方、且最靠下（最贴近当前阅读位置）"者，即正在读的那节；
   // - 兜底：滚到首节之前亮首节、滚到底部亮末节，任何滚动位置都恰好亮一条；
   // - 点击 smooth-scroll 途中暂停决胜（suppressRef），防止途中经过的卡片把高亮拖走。
+  //
+  // 触发源（关键修正）：胜负裁决挂在 window scroll/resize 上，而非 IntersectionObserver 回调。
+  // 原实现只在 observer 翻转时刷新 rect，但页面用整文档滚动、注视带仅中间 10%——一屏多卡同时
+  // 可见时无跨带翻转，observer 不回调，rect 停滞，滚轮时高亮不跟随。observer 现仅用于"发现并
+  // 登记卡片元素"（解决流式/后到切片的挂空），不再承担裁决；每次滚动都对已登记卡片现场重测
+  // getBoundingClientRect 并裁决，rAF 合并密集滚动。
   useEffect(() => {
     if (items.length === 0 || typeof IntersectionObserver === "undefined") return;
+    // 卡片元素 → 导航索引；observer 只负责把卡片登记进来。
     const indexByElement = new Map<Element, number>();
-    // 每张卡片最近一次 boundingClientRect（按观察回调刷新；胜负在 rAF 内统一裁决）。
-    const rectByIndex = new Map<number, DOMRect>();
-    // rAF 去抖：observer 回调密集时合并，避免与选区高亮的渲染周期竞争导致 <mark> 被清除。
+    // rAF 去抖：把一次滚动/resize/翻转批里的多次裁决合并到下一帧执行一次。
     let raf = 0;
-    // 点击跳转 smooth-scroll 期间为 true：暂停 observer 决胜，避免高亮被途中卡片拖回。
+    // 点击跳转 smooth-scroll 期间为 true：暂停决胜，避免高亮被途中卡片拖回。
     const suppress = suppressRef;
 
     const viewportEl = document.scrollingElement ?? document.documentElement;
 
     const decide = () => {
       if (suppress.current) return;
-      // 阅读线：视口注视带的上缘（rootMargin 顶部 -35% → 阅读线位于视口 35% 高度处）。
+      // 阅读线：视口注视带的上缘，位于视口 35% 高度处。
       const readingLine = window.innerHeight * 0.35;
-      // 兜底：滚到接近底部时强制亮末节（最后一节可能短到永远进不了注视带）。
+      // 兜底：滚到接近底部时强制亮末节（最后一节可能短到永远压不到阅读线）。
       const nearBottom = viewportEl.scrollTop + window.innerHeight >= viewportEl.scrollHeight - 4;
       if (nearBottom) {
         setActiveIndex(items.length - 1);
         return;
       }
-      // 在已观测卡片里，取"卡片顶 ≤ 阅读线"中最靠下者；没有则取首张卡片（首节前兜底）。
+      // 现场重测每张已登记卡片的视口位置，取"卡片顶 ≤ 阅读线"中最靠下者；没有则取首张卡片。
       let best = -1;
       let bestTop = -Infinity;
-      for (const [index, rect] of rectByIndex) {
-        if (rect.top <= readingLine && rect.top > bestTop) {
-          bestTop = rect.top;
+      for (const [el, index] of indexByElement) {
+        const top = el.getBoundingClientRect().top;
+        if (top <= readingLine && top > bestTop) {
+          bestTop = top;
           best = index;
         }
       }
@@ -104,19 +108,13 @@ export const SliceRailNav = memo(function SliceRailNav({ items }: { items: Slice
       setActiveIndex(best);
     };
 
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          const index = indexByElement.get(entry.target);
-          if (index === undefined) continue;
-          rectByIndex.set(index, entry.boundingClientRect);
-        }
-        cancelAnimationFrame(raf);
-        raf = requestAnimationFrame(decide);
-      },
-      // 居中注视带：顶部收缩 35%、底部收缩 55%，只把进入注视区的卡片纳入裁决。
-      { rootMargin: "-35% 0px -55% 0px", threshold: 0 },
-    );
+    const schedule = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(decide);
+    };
+
+    // 登记卡片元素即可；observer 仅承担"卡片进入视口/出现后补一次裁决"，裁决主驱动是 scroll。
+    const observer = new IntersectionObserver(() => schedule());
 
     // 绑定观察目标；卡片可能尚未渲染（流式/后到的切片），缺失项延迟重试，消除"挂空"。
     let retry = 0;
@@ -138,15 +136,20 @@ export const SliceRailNav = memo(function SliceRailNav({ items }: { items: Slice
         retry = window.setTimeout(attach, 120);
       } else {
         // 全部就位后先裁决一次，保证初始高亮正确（而非默认 0）。
-        cancelAnimationFrame(raf);
-        raf = requestAnimationFrame(decide);
+        schedule();
       }
     };
     attach();
 
+    // 裁决的真正驱动：滚轮/拖动/键盘造成的每次视口位移，以及视口尺寸变化。
+    window.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule);
+
     return () => {
       cancelAnimationFrame(raf);
       window.clearTimeout(retry);
+      window.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
       observer.disconnect();
     };
   }, [items]);
@@ -225,19 +228,21 @@ export const SliceRailNav = memo(function SliceRailNav({ items }: { items: Slice
   const preview = previewIndex !== null ? items[previewIndex] : null;
   const previewExcerpt = useMemo(() => (preview ? makeExcerpt(preview.excerpt) : ""), [preview]);
 
-  // 预览框定位：相对被预览线垂直居中，钳制在视口内。
+  // 预览框与线列同一参考系（sticky，相对正文 .page 定位）。线列 sticky 钉在视口 top:50vh 处，
+  // 被预览线即在该高度附近；把这条视口高度换算成相对正文文档顶的偏移，预览框随正文滚动、与线列同列。
   const [previewTop, setPreviewTop] = useState(0);
   useEffect(() => {
     if (previewIndex === null) return;
     const rail = railRef.current;
-    if (!rail) return;
+    const page = rail?.closest<HTMLElement>(".page");
+    if (!rail || !page) return;
     const ticks = rail.querySelectorAll<HTMLElement>(".slice-rail__tick");
     const tick = ticks[previewIndex];
     if (!tick) return;
     const rect = tick.getBoundingClientRect();
     const estimatedHeight = 132;
-    const centered = rect.top + rect.height / 2 - estimatedHeight / 2;
-    setPreviewTop(Math.min(Math.max(12, centered), Math.max(12, window.innerHeight - estimatedHeight - 12)));
+    const centered = rect.top + rect.height / 2 - estimatedHeight / 2 - page.getBoundingClientRect().top;
+    setPreviewTop(Math.max(0, centered));
   }, [previewIndex]);
 
   if (items.length === 0) return null;
@@ -269,21 +274,18 @@ export const SliceRailNav = memo(function SliceRailNav({ items }: { items: Slice
           />
         ))}
       </div>
-      {preview && typeof document !== "undefined"
-        ? createPortal(
-            <div
-              className="slice-rail__preview"
-              role="tooltip"
-              style={{ top: `${previewTop}px` }}
-              onMouseEnter={clearPreviewTimer}
-              onMouseLeave={closePreview}
-            >
-              {preview.title.trim() ? <p className="slice-rail__preview-title">{preview.title}</p> : null}
-              <p className="slice-rail__preview-excerpt">{previewExcerpt}</p>
-            </div>,
-            document.body,
-          )
-        : null}
+      {preview ? (
+        <div
+          className="slice-rail__preview"
+          role="tooltip"
+          style={{ top: `${previewTop}px` }}
+          onMouseEnter={clearPreviewTimer}
+          onMouseLeave={closePreview}
+        >
+          {preview.title.trim() ? <p className="slice-rail__preview-title">{preview.title}</p> : null}
+          <p className="slice-rail__preview-excerpt">{previewExcerpt}</p>
+        </div>
+      ) : null}
     </nav>
   );
 });
