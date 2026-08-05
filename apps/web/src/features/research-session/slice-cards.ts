@@ -1,4 +1,4 @@
-import { deriveMessageBlocks, messageContentBlockId } from "@collector/capture-contracts";
+import { composeSectionUnits, deriveMessageBlocks, messageContentBlockId } from "@collector/capture-contracts";
 import type { ResearchMessageRecord, ResearchSliceRecord } from "@collector/capture-contracts";
 
 /**
@@ -42,11 +42,13 @@ export function deriveSliceCardTargets(
   if (formal.length === 0) return [];
   const blocks = deriveMessageBlocks(message.content);
   if (blocks.length === 0) return [];
-  const minSliceOrdinal = formal[0]?.ordinal ?? 0;
+  // 节切片与节单元按下标 1:1 对齐（deriveMessageSlices 同序同长）：第 i 个正式切片对应第 i 个节，
+  // 锚点取该节起始块，使多消息下导航目标与卡片锚点必然同源、不再随 minSliceOrdinal 漂移。
+  const units = composeSectionUnits(blocks);
   return formal.map((slice, index) => {
-    const block = blocks[slice.ordinal - minSliceOrdinal];
-    const blockOrdinal = block?.ordinal ?? index;
-    const blockId = block ? messageContentBlockId(message.id, block.ordinal) : messageContentBlockId(message.id, index);
+    const unit = units[index];
+    const blockOrdinal = unit?.firstBlockOrdinal ?? index;
+    const blockId = messageContentBlockId(message.id, blockOrdinal);
     return {
       slice,
       blockOrdinal,

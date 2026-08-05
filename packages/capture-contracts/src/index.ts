@@ -736,6 +736,26 @@ export interface MessageContentBlock {
 }
 
 /**
+ * 节级组合单元：把若干连续段落块合成一个"节切片"的骨架。
+ * 标题块（见 splitBlockHeading）并入下一正文块；标题提升为 title、其后正文为 content。
+ * 只描述组合关系，绝不复制/改写正文——content 恒等于被合并块文本用 "\n\n" 原样拼接，
+ * 选区锚点与片段偏移仍以未改动的 deriveMessageBlocks 段落块为基线。
+ */
+export interface MessageSectionUnit {
+  /** 该节第一个块（含标题块）的 ordinal，即节起始块下标。 */
+  firstBlockOrdinal: number;
+  /** 节标题；首块是标题行时为其文字，否则为空串。 */
+  title: string;
+  /**
+   * 节正文：被合并块文本按 "\n\n" 原样拼接（含标题块时含标题行），逐字等于对应正文片段。
+   * 选区锚点与片段偏移仍以未改动的 deriveMessageBlocks 段落块为基线，正文一字不改。
+   */
+  content: string;
+  /** 该节合并的块数（≥1）。 */
+  blockCount: number;
+}
+
+/**
  * 把消息纯文本确定性切分为段落块。规则（前后端必须只使用本实现，禁止另写切分逻辑）：
  * 1. 先把 CRLF / CR 归一为 LF；
  * 2. 按一个或多个空行（只含空白字符的行）切分段落；
@@ -759,6 +779,86 @@ export function deriveMessageBlocks(content: string): MessageContentBlock[] {
 /** 消息内容块的稳定派生 ID，用于 DOM 锚点与选区记录，不入库。 */
 export function messageContentBlockId(messageId: string, ordinal: number): string {
   return `${messageId}#p${ordinal}`;
+}
+
+/** 仅含一个加粗短行的整段标题（模型常用 `**标题**` 代替 ATX 标题）。 */
+const BOLD_HEADING_MAX_CHARS = 60;
+
+/**
+ * 把单个段落块拆成"节标题 + 节正文"。返回 null 表示该块不含可提取标题。
+ * 识别两类模型常用的标题形态（与正文唯一事实源一致，只在展示层提升标题，不改文本）：
+ * - ATX 标题行：`#{1,6} 标题`（块首行；该块可能紧跟正文行，取首行为标题、其余为正文）；
+ * - 整段加粗短行：`**标题**`（仅当整块只有一行且全部加粗、且足够短时才当作标题，
+ *   避免把正文里的加粗句误判成标题）。
+ */
+function splitBlockHeading(blockText: string): { title: string; body: string } | null {
+  const atx = blockText.match(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*(?:\n([\s\S]*))?$/);
+  if (atx) {
+    const title = (atx[1] ?? "").trim();
+    const body = (atx[2] ?? "").trim();
+    if (title) return { title, body };
+  }
+  const trimmed = blockText.trim();
+  if (!trimmed.includes("\n") && trimmed.length <= BOLD_HEADING_MAX_CHARS) {
+    const bold = trimmed.match(/^\*\*(.+?)\*\*$/);
+    if (bold && bold[1]?.trim()) return { title: bold[1].trim(), body: "" };
+  }
+  return null;
+}
+
+/**
+ * 把段落块序列组合成节级单元（生成自由化后切片/卡片/导航的粒度）。
+ * 规则：标题块并入紧随其后的正文块——标题提升为节 title，正文为节 content；
+ * 连续的裸标题（无正文）合并取最后一个标题；普通段落块各自成节（title 为空）。
+ * 输出节数 ≤ 输入块数；content 恒由被合并块文本按 "\n\n" 原样拼接，正文一字不改。
+ * 幂等、不依赖 AI、不修改源文本。
+ */
+export function composeSectionUnits(blocks: readonly MessageContentBlock[]): MessageSectionUnit[] {
+  const units: MessageSectionUnit[] = [];
+  // 节以标题为界：标题块开启一个新节，其后连续的普通正文块并入该节；一旦遇到无标题的普通
+  // 段落且当前节还没有标题，则每个普通段落各自成节（保持无标题正文"一段一卡"的现状）。
+  // content 是被合并块文本按 "\n\n" 原样拼接（标题块含标题行），逐字等于对应正文片段。
+  let title = "";
+  let firstOrdinal = -1;
+  let partTexts: string[] = [];
+  const flush = () => {
+    if (firstOrdinal < 0) return;
+    units.push({
+      firstBlockOrdinal: firstOrdinal,
+      title,
+      content: partTexts.join("\n\n"),
+      blockCount: partTexts.length,
+    });
+    title = "";
+    firstOrdinal = -1;
+    partTexts = [];
+  };
+  for (const block of blocks) {
+    const heading = splitBlockHeading(block.text);
+    if (heading && !heading.body) {
+      // 标题块：先收束上一节，再以它为标题开启新节（标题行作为节正文首段，逐字保留）。
+      flush();
+      title = heading.title;
+      firstOrdinal = block.ordinal;
+      partTexts = [block.text];
+      continue;
+    }
+    if (heading && heading.body) {
+      // 同块内"标题 + 正文"：收束上一节，本块独立成节（整块逐字保留）。
+      flush();
+      units.push({ firstBlockOrdinal: block.ordinal, title: heading.title, content: block.text, blockCount: 1 });
+      continue;
+    }
+    // 普通正文块：仅当正处于一个"有标题的节"里才并入；否则自成无标题节（一段一卡）。
+    if (firstOrdinal >= 0 && title) {
+      partTexts.push(block.text);
+    } else {
+      flush();
+      units.push({ firstBlockOrdinal: block.ordinal, title: "", content: block.text, blockCount: 1 });
+    }
+  }
+  flush();
+  return units;
 }
 
 export type AiConfigurationMode = "real" | "demo" | "unconfigured";
@@ -1970,21 +2070,28 @@ export function deriveMessageSlices(
   const blocks = deriveMessageBlocks(messageContent);
   if (blocks.length === 0) return [];
   const timestamp = createdAt ?? new Date().toISOString();
-  return blocks.map((block, index) => {
+  const units = composeSectionUnits(blocks);
+  // annotations 按块下标对齐：节的标注取自节起始块——有标题节该块即标题块（plan-then-write
+  // 的 hint 落此），无标题节该块即被抽取的正文段。
+  return units.map((unit, index) => {
     const ordinal = ordinalOffset + index;
-    const annotation = annotations[index];
-    const title = (annotation?.title ?? "").trim();
+    const annotation = annotations[unit.firstBlockOrdinal];
+    const extractedTitle = (annotation?.title ?? "").trim();
+    // 节标题（来自正文里的标题行）优先；抽取标题仅作无标题段的补充，且不与节标题重复。
+    const title = unit.title || (extractedTitle && extractedTitle !== unit.title ? extractedTitle : "");
     const normalizedConcepts = (annotation?.concepts ?? [])
       .map((concept) => (typeof concept === "string" ? concept.trim() : ""))
       .filter(Boolean);
-    const sliceCitations = citations.filter((citation) => citation.blockOrdinal === block.ordinal);
+    const sliceCitations = citations.filter(
+      (citation) => citation.blockOrdinal >= unit.firstBlockOrdinal && citation.blockOrdinal < unit.firstBlockOrdinal + unit.blockCount,
+    );
     return {
       id: `slice:${nodeId}:${messageId}:${ordinal}`,
       nodeId,
       messageId,
       ordinal,
       title,
-      content: block.text,
+      content: unit.content,
       normalizedConcepts,
       sourceRefs: sliceCitations,
       isProvisional: false,
@@ -2153,9 +2260,9 @@ function makeFragment(
 }
 
 /**
- * 从已校验的正式切片派生正式片段。写库时已由 validateNativeResearchSliceGeneration
- * 强制切片与消息块一一对应且铺满正文，故可直接映射。若切片未能铺满（防御性回退），
- * 退化为按块派生的临时片段，绝不伪造范围。
+ * 从已校验的正式切片派生正式片段。写库时 deriveMessageSlices 已按节派生（标题块并入正文），
+ * 故此处复用同一 composeSectionUnits 组合，逐节校验切片正文并映射到节范围。若切片与节
+ * 不一致（防御性回退，如旧数据），退化为按块派生的临时片段，绝不伪造范围。
  */
 export function deriveFragmentsFromSlices(
   version: ResearchBodyVersionRecord,
@@ -2163,15 +2270,22 @@ export function deriveFragmentsFromSlices(
   citations: ResearchCitationRecord[] = [],
 ): ResearchSemanticFragmentRecord[] {
   const blocks = deriveMessageBlocks(version.content);
+  const units = composeSectionUnits(blocks);
   const usable =
     slices.length > 0 &&
-    slices.length === blocks.length &&
-    slices.every((s, i) => normalizeBodyContent(s.content) === blocks[i]?.text);
+    slices.length === units.length &&
+    slices.every((s, i) => normalizeBodyContent(s.content) === units[i]?.content);
   if (!usable) return deriveFragmentsFromBlocks(version, citations);
   return slices.map((slice, index) => {
-    const block = blocks[index];
-    const sourceRefs = citations.filter((c) => c.blockOrdinal === index);
-    return makeFragment(version, index, block.startOffset, block.startOffset + block.text.length, sourceRefs, false);
+    const unit = units[index]!;
+    const firstBlock = blocks[unit.firstBlockOrdinal];
+    const lastBlock = blocks[unit.firstBlockOrdinal + unit.blockCount - 1] ?? firstBlock;
+    const startOffset = firstBlock?.startOffset ?? 0;
+    const endOffset = lastBlock ? lastBlock.startOffset + lastBlock.text.length : startOffset;
+    const sourceRefs = citations.filter(
+      (c) => c.blockOrdinal >= unit.firstBlockOrdinal && c.blockOrdinal < unit.firstBlockOrdinal + unit.blockCount,
+    );
+    return makeFragment(version, index, startOffset, endOffset, sourceRefs, false);
   });
 }
 

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { deriveProvisionalSlices, deriveMessageSlices, validateSliceSchema, validateDerivedSlices, deriveMessageBlocks, type ResearchSliceRecord, type ResearchTaskRecord } from "@collector/capture-contracts";
+import { deriveProvisionalSlices, deriveMessageSlices, validateSliceSchema, validateDerivedSlices, deriveMessageBlocks, composeSectionUnits, deriveFragmentsFromSlices, type ResearchSliceRecord, type ResearchTaskRecord } from "@collector/capture-contracts";
 
 describe("validateSliceSchema (E1)", () => {
   const nodeId = "node-1";
@@ -185,6 +185,132 @@ describe("deriveMessageSlices (生成自由化后的确定性派生切片)", () 
     const slices = deriveMessageSlices(nodeId, messageId, content, 0, citations, [], createdAt);
     assert.equal(slices[0]?.sourceRefs.length, 0);
     assert.equal(slices[1]?.sourceRefs[0]?.id, "c-1");
+  });
+});
+
+describe("composeSectionUnits (节级组合：标题块并入正文，正文逐字保留)", () => {
+  it("无标题正文保持一段一节的现状粒度", () => {
+    const units = composeSectionUnits(deriveMessageBlocks("甲段落。\n\n乙段落。\n\n丙段落。"));
+    assert.equal(units.length, 3);
+    assert.deepEqual(units.map((u) => u.title), ["", "", ""]);
+    assert.deepEqual(units.map((u) => u.content), ["甲段落。", "乙段落。", "丙段落。"]);
+  });
+
+  it("标题块并入随后正文，content 逐字等于原始正文片段（含标题行）", () => {
+    const content = "## 背景与起源\n\n第一段正文。\n\n第二段正文。";
+    const units = composeSectionUnits(deriveMessageBlocks(content));
+    assert.equal(units.length, 1);
+    assert.equal(units[0]?.title, "背景与起源");
+    assert.equal(units[0]?.content, content);
+    assert.equal(units[0]?.blockCount, 3);
+  });
+
+  it("连续标题各自开新节，后一个标题收束前一节", () => {
+    const content = "## 总标题\n\n## 第一节\n\n第一节正文。\n\n## 第二节\n\n第二节正文。";
+    const units = composeSectionUnits(deriveMessageBlocks(content));
+    assert.deepEqual(units.map((u) => u.title), ["总标题", "第一节", "第二节"]);
+    assert.equal(units[1]?.content, "## 第一节\n\n第一节正文。");
+  });
+
+  it("整段加粗短行识别为标题并并入正文", () => {
+    const content = "**自注意力机制的核心思想**\n\n自注意力机制是灵魂所在。";
+    const units = composeSectionUnits(deriveMessageBlocks(content));
+    assert.equal(units.length, 1);
+    assert.equal(units[0]?.title, "自注意力机制的核心思想");
+    assert.equal(units[0]?.content, content);
+  });
+
+  it("同块内标题+正文（无空行）整块成节、逐字保留", () => {
+    const content = "## 节标题\n正文紧跟标题同一行块。";
+    const units = composeSectionUnits(deriveMessageBlocks(content));
+    assert.equal(units.length, 1);
+    assert.equal(units[0]?.title, "节标题");
+    assert.equal(units[0]?.content, content);
+  });
+
+  it("正文里的加粗句（非整段短行）不误判为标题", () => {
+    const content = "这是一段包含 **强调** 的普通正文，长度足够长不会被当作标题处理。";
+    const units = composeSectionUnits(deriveMessageBlocks(content));
+    assert.equal(units.length, 1);
+    assert.equal(units[0]?.title, "");
+    assert.equal(units[0]?.content, content);
+  });
+});
+
+describe("deriveMessageSlices 节级派生（标题并入正文）", () => {
+  const nodeId = "node-s";
+  const messageId = "msg-s";
+  const createdAt = "2026-08-05T00:00:00.000Z";
+
+  it("标题不再自成切片，节标题提升为 title，content 逐字等于正文", () => {
+    const content = "## Transformer架构详解\n\n## 背景与起源\n\n背景正文一。\n\n背景正文二。";
+    const slices = deriveMessageSlices(nodeId, messageId, content, 0, [], [], createdAt);
+    assert.equal(slices.length, 2);
+    assert.equal(slices[0]?.title, "Transformer架构详解");
+    assert.equal(slices[0]?.content, "## Transformer架构详解");
+    assert.equal(slices[1]?.title, "背景与起源");
+    assert.equal(slices[1]?.content, "## 背景与起源\n\n背景正文一。\n\n背景正文二。");
+    // 全文拼接仍等于原始正文（节间以 \n\n 连接）。
+    assert.equal(slices.map((s) => s.content).join("\n\n"), content);
+  });
+
+  it("节标题优先于抽取标题；概念取自节起始块标注", () => {
+    // "## 已定标题" 开启一个节，其后所有正文（含无标题段落）都属该节，直到下一个标题。
+    const content = "## 已定标题\n\n该节正文。\n\n无标题段落。";
+    const blocks = deriveMessageBlocks(content);
+    const annotations: ({ title: string; concepts: string[] } | undefined)[] = blocks.map(() => undefined);
+    annotations[0] = { title: "被忽略的抽取标题", concepts: ["概念A"] };
+    const slices = deriveMessageSlices(nodeId, messageId, content, 0, [], annotations, createdAt);
+    assert.equal(slices.length, 1);
+    assert.equal(slices[0]?.title, "已定标题");
+    assert.deepEqual(slices[0]?.normalizedConcepts, ["概念A"]);
+    assert.equal(slices[0]?.content, content);
+  });
+
+  it("无标题段落用抽取标题补题（不与正文重复）", () => {
+    const content = "第一段无标题。\n\n第二段无标题。";
+    const blocks = deriveMessageBlocks(content);
+    const annotations: ({ title: string; concepts: string[] } | undefined)[] = blocks.map(() => undefined);
+    annotations[1] = { title: "补上的标题", concepts: [] };
+    const slices = deriveMessageSlices(nodeId, messageId, content, 0, [], annotations, createdAt);
+    assert.equal(slices.length, 2);
+    assert.equal(slices[0]?.title, "");
+    assert.equal(slices[1]?.title, "补上的标题");
+  });
+
+  it("引用按节覆盖的块范围聚合", () => {
+    const content = "## 节\n\n第一段。\n\n第二段。";
+    const citations = [
+      { id: "c-1", messageId, runId: "r", sourceId: "s", blockOrdinal: 1, markerOffset: 0, createdAt },
+      { id: "c-2", messageId, runId: "r", sourceId: "s", blockOrdinal: 2, markerOffset: 0, createdAt },
+    ];
+    const slices = deriveMessageSlices(nodeId, messageId, content, 0, citations, [], createdAt);
+    assert.equal(slices.length, 1);
+    assert.deepEqual(slices[0]?.sourceRefs.map((c) => c.id), ["c-1", "c-2"]);
+  });
+
+  it("派生结果通过 validateDerivedSlices", () => {
+    const content = "## 标题\n\n正文一。\n\n正文二。\n\n无标题段。";
+    const slices = deriveMessageSlices(nodeId, messageId, content, 0, [], [], createdAt);
+    assert.doesNotThrow(() => validateDerivedSlices(slices, nodeId, messageId));
+  });
+});
+
+describe("deriveFragmentsFromSlices 节级片段", () => {
+  const createdAt = "2026-08-05T00:00:00.000Z";
+  it("片段范围映射到节起始块到末块，摘录逐字对应正文", () => {
+    // 两个标题节 + 中间无标题段属前一节：验证多节片段范围互不重叠且铺满正文。
+    const content = "## 第一节\n\n第一节正文。\n\n续段。\n\n## 第二节\n\n第二节正文。";
+    const slices = deriveMessageSlices("n", "m", content, 0, [], [], createdAt);
+    const version = { id: "body:m:x", messageId: "m", nodeId: "n", version: 1, content, contentHash: "x", origin: "generation" as const, createdAt };
+    const fragments = deriveFragmentsFromSlices(version, slices, []);
+    assert.equal(fragments.length, 2);
+    for (const f of fragments) {
+      assert.equal(content.slice(f.startOffset, f.endOffset), slices[f.ordinal]?.content);
+      assert.equal(f.isProvisional, false);
+    }
+    // 节片段首尾相接铺满正文（前一节 end 到后一节 start 只差节间 "\n\n"）。
+    assert.equal(fragments[1]!.startOffset - fragments[0]!.endOffset, 2);
   });
 });
 

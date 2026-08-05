@@ -617,7 +617,8 @@ export class ModelGateway {
     return `你是 Collector 的研究助手。请回答用户最新的问题，输出一篇连贯、完整的中文正文。
 
 要求：
-- 由流畅的自然段落组成，段落之间用一个空行分隔；需要分节时使用 Markdown 二级标题（## 标题）。
+- 由流畅的自然段落组成，段落之间用一个空行分隔。
+- 需要分节时，每节用一个 Markdown 二级标题（## 标题）单独成行开头、标题后空行接正文；整节只出现这一次标题，正文内不要重复该标题，也不要为段落里的小论点再起标题。正文第一个标题应当是总起，不要一上来连用多个标题。
 - 内容详实、论述充分，长度服从内容需要，不要刻意压缩或拆成孤立的碎片要点。
 - 保持来源事实与不确定性，不编造来源、链接或引用。
 - 不要使用 Markdown 代码围栏包裹整篇回答，不要返回 JSON 或任何字段结构，只输出正文本身。
@@ -734,10 +735,11 @@ ${outlineText}
 本次要扩写的是第 ${input.sectionIndex + 1} 节「${section.heading}」：${section.summary}（目标约 ${section.targetChars} 字）。
 
 ${input.writtenSoFar.trim() ? `已生成的前文（仅供保持连贯，不要重复其内容）：\n${input.writtenSoFar}\n\n` : ""}要求：
-- 只输出第 ${input.sectionIndex + 1} 节的正文，由流畅段落组成，段落间用一个空行分隔；不要重复大纲或其它节。
+- 第一行输出该节标题，格式为 Markdown 二级标题：## ${section.heading}；标题后用一个空行接正文，正文由流畅段落组成、段落间用一个空行分隔。整节只出现这一次标题，正文内不要再重复该标题或另起同级标题。
+- 只输出第 ${input.sectionIndex + 1} 节，不要重复大纲或其它节，不要为正文内的小论点再起标题。
 - 与前文自然衔接、保持同一主题与语气；内容详实，服从该节目标字数。
 - 保持来源事实与不确定性，不编造来源、链接或引用。
-- 不要使用 Markdown 代码围栏，不要返回 JSON 或大纲字段，只输出该节正文。`;
+- 不要使用 Markdown 代码围栏，不要返回 JSON 或大纲字段，只输出该节标题与正文。`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
@@ -766,6 +768,7 @@ ${input.writtenSoFar.trim() ? `已生成的前文（仅供保持连贯，不要�
 
 规则：
 - title 一句话概括该段主旨，不要超过 ${RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS} 字；若该段不适合起标题，返回空字符串。
+- 该段若已含有自己的节标题（如以"## 标题"或整段加粗短行开头），title 返回空字符串——不要复述段内已有标题，由系统直接采用它。
 - concepts 是该段涉及的核心概念/术语，最多 ${RESEARCH_NATIVE_SLICE_MAX_CONCEPTS} 个，每个不超过 ${RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS} 字；没有合适概念时返回空数组。
 - 只依据所给段落，不要补充外部事实；不要返回解释或其它字段。
 
