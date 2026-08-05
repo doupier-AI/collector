@@ -1,5 +1,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
+
+/** 研究任务 SSE：无新事件时挂起等推送的封顶重读间隔。与旧 100ms 轮询同节拍——pub/sub 唤醒是
+    快速通道，此计时器是兜底，保证连接重建竞态里丢失的推送至多延迟一个节拍即被 DB 重读捕获。 */
+const RESEARCH_SSE_REDRAIN_MS = 100;
 import { ValidationError, NotFoundError, CaptureService } from "./service.js";
 import { LocalAuth, PairingRateLimitError } from "./auth.js";
 import { RESEARCH_IMPORT_MAX_BYTES, validateCreateChildNodeInput, validateDeepResearchInput, validateResearchFusionProposalDecisionInput, validateResearchImportHeaders, validateResearchLaterItemInput, validateResearchLaterItemUpdate, validateResearchMessageInput, validateResearchSelectionInput, validateResearchSessionInput, validateResearchTermPreviewInput } from "@collector/capture-contracts";
@@ -876,6 +880,11 @@ async function streamResearchTaskEvents(request: IncomingMessage, response: Serv
   let cursor = afterId;
   const deadline = Date.now() + 25_000;
   while (!request.destroyed && Date.now() < deadline) {
+    // 先注册 waiter 再 drain（消除 read 与 subscribe 间竞态）；有事件立即续循环，无事件挂起等推送/keep-alive。
+    // pub/sub 只发裸"唤醒"信号，事件本体仍按 sequence>cursor 从 DB 重读（DB 是恰好一次来源）。
+    // 唤醒与短计时竞速：推送是快速通道，RESEARCH_SSE_REDRAIN_MS 计时是兜底——若某次推送在
+    // 两次迭代之间（尚无 once 监听）发出而丢失，至多延迟一个节拍即被强制重读，不会滞留整段封顶。
+    const waiter = service.research.waitForTaskEvent(taskId, RESEARCH_SSE_REDRAIN_MS);
     const events = service.research.getTaskEvents(taskId, cursor);
     for (const event of events) {
       writeSse(response, event);
@@ -884,7 +893,8 @@ async function streamResearchTaskEvents(request: IncomingMessage, response: Serv
     const task = service.research.getTask(taskId);
     if (task.status === "completed" || task.status === "failed") break;
     response.write(": keep-alive\n\n");
-    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    // 本轮无新事件时才挂起等推送；有则立即续循环（已 drain 完会再注册 waiter）。
+    if (events.length === 0) await waiter;
   }
   response.end();
 }

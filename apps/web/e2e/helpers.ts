@@ -59,8 +59,22 @@ export async function pairAndOpen(page: Page, path = "/"): Promise<void> {
  * 的嵌套结构（例如 .markdown-content > p）。
  * 生成自由化后一条回答由多张切片卡片组成（每张卡片各有一个 data-block-text 块），
  * 目标文字可能落在任意一张卡片，故遍历所有块直到命中，而非只看第一个块。
+ *
+ * 可引用锚点（[data-block-text]）只在 AI 消息翻为"已完成"后渲染，而流式正文会更早出现——
+ * 生长链类用例常在完成态到达前就调用本函数。因此先等目标文字在某个可引用块内真的可选，
+ * 再执行圈选，消除"文字已显示、锚点未就绪"的采样竞态；超时仍按原有信息报错。
  */
 export async function selectAnswerText(page: Page, text: string): Promise<void> {
+  await page.waitForFunction((target) => {
+    const blocks = Array.from(document.querySelectorAll(".message--assistant [data-block-text]"));
+    for (const block of blocks) {
+      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, null);
+      while (walker.nextNode()) {
+        if ((walker.currentNode as Text).data.includes(target)) return true;
+      }
+    }
+    return false;
+  }, text, { timeout: 15_000 });
   await page.evaluate((target) => {
     const blocks = Array.from(document.querySelectorAll(".message--assistant [data-block-text]"));
     if (!blocks.length) throw new Error("未找到 AI 回答块");

@@ -116,9 +116,13 @@ export interface ResearchStore {
   appendResearchTaskDelta(id: string, delta: string): Promise<void>;
   completeResearchTask(id: string): Promise<void>;
   failResearchTask(task: ResearchTaskRecord, error: ResearchTaskError): Promise<void>;
-  retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string): Promise<ResearchTaskRecord>;
+  retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string, options?: { preserveContent?: boolean }): Promise<ResearchTaskRecord>;
   /** plan-then-write：持久化正文大纲与逐节进度，供断点续扩；record_json 整行覆盖。 */
   saveResearchTaskBodyPlan(taskId: string, bodyPlan: ResearchBodyPlan): Promise<void>;
+  /** 单轮流式：持久化已接收的部分正文断点，供切断续传；record_json 整行覆盖。 */
+  saveResearchTaskStreamCheckpoint(taskId: string, content: string): Promise<void>;
+  /** 单轮流式：任务完成后清除断点。 */
+  clearResearchTaskStreamCheckpoint(taskId: string): Promise<void>;
   listResearchTaskEvents(taskId: string, afterId?: number): ResearchTaskEvent[];
   listRecoverableResearchTasks(): ResearchTaskRecord[];
   failInterruptedResearchTasks(): number;
@@ -316,8 +320,10 @@ export interface CollectorStore
   appendResearchTaskDelta(id: string, delta: string): Promise<void>;
   completeResearchTask(id: string): Promise<void>;
   failResearchTask(task: ResearchTaskRecord, error: ResearchTaskError): Promise<void>;
-  retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string): Promise<ResearchTaskRecord>;
+  retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string, options?: { preserveContent?: boolean }): Promise<ResearchTaskRecord>;
   saveResearchTaskBodyPlan(taskId: string, bodyPlan: ResearchBodyPlan): Promise<void>;
+  saveResearchTaskStreamCheckpoint(taskId: string, content: string): Promise<void>;
+  clearResearchTaskStreamCheckpoint(taskId: string): Promise<void>;
   listResearchTaskEvents(taskId: string, afterId?: number): ResearchTaskEvent[];
   listRecoverableResearchTasks(): ResearchTaskRecord[];
   failInterruptedResearchTasks(): number;
@@ -1328,7 +1334,7 @@ export class SqliteStore implements CollectorStore {
     });
   }
 
-  async retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion = "research-chat-v1"): Promise<ResearchTaskRecord> {
+  async retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion = "research-chat-v1", options?: { preserveContent?: boolean }): Promise<ResearchTaskRecord> {
     let retried: ResearchTaskRecord | undefined;
     this.transaction(() => {
       const current = this.getResearchTask(task.id);
@@ -1340,14 +1346,35 @@ export class SqliteStore implements CollectorStore {
         ...current, status: "queued", retryable: false, provider, model, promptVersion,
         error: undefined, updatedAt: now, startedAt: undefined, completedAt: undefined,
       };
-      const message: ResearchMessageRecord = { ...currentMessage, content: "", status: "pending", updatedAt: now };
+      // preserveContent：保留已写部分正文与事件流，供断流续传/截断续写从断点继续；默认清空重来。
+      const message: ResearchMessageRecord = options?.preserveContent
+        ? { ...currentMessage, updatedAt: now }
+        : { ...currentMessage, content: "", status: "pending", updatedAt: now };
       this.updateResearchMessage(message);
       this.updateResearchTask(queued);
-      this.db().prepare("DELETE FROM research_task_events WHERE task_id = ?").run(task.id);
+      if (!options?.preserveContent) this.db().prepare("DELETE FROM research_task_events WHERE task_id = ?").run(task.id);
       retried = queued;
     });
     if (!retried) throw new Error("Research task retry was not persisted");
     return retried;
+  }
+
+  async saveResearchTaskStreamCheckpoint(taskId: string, content: string): Promise<void> {
+    this.transaction(() => {
+      const task = this.getResearchTask(taskId);
+      if (!task) throw new Error("Research task not found");
+      const updatedAt = new Date().toISOString();
+      this.updateResearchTask({ ...task, streamCheckpoint: { content, updatedAt }, updatedAt });
+    });
+  }
+
+  async clearResearchTaskStreamCheckpoint(taskId: string): Promise<void> {
+    this.transaction(() => {
+      const task = this.getResearchTask(taskId);
+      if (!task) throw new Error("Research task not found");
+      const { streamCheckpoint: _dropped, ...rest } = task;
+      this.updateResearchTask({ ...rest, updatedAt: new Date().toISOString() });
+    });
   }
 
   async saveResearchTaskBodyPlan(taskId: string, bodyPlan: ResearchBodyPlan): Promise<void> {
@@ -3435,8 +3462,10 @@ export class JsonStore implements CollectorStore {
   async appendResearchTaskDelta(_id: string, _delta: string): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
   async completeResearchTask(_id: string): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
   async failResearchTask(_task: ResearchTaskRecord, _error: ResearchTaskError): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
-  async retryResearchTask(_task: ResearchTaskRecord, _provider?: string, _model?: string, _promptVersion?: string): Promise<ResearchTaskRecord> { throw new Error("Research sessions require SQLite persistence"); }
+  async retryResearchTask(_task: ResearchTaskRecord, _provider?: string, _model?: string, _promptVersion?: string, _options?: { preserveContent?: boolean }): Promise<ResearchTaskRecord> { throw new Error("Research sessions require SQLite persistence"); }
   async saveResearchTaskBodyPlan(_taskId: string, _bodyPlan: ResearchBodyPlan): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
+  async saveResearchTaskStreamCheckpoint(_taskId: string, _content: string): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
+  async clearResearchTaskStreamCheckpoint(_taskId: string): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
   listResearchTaskEvents(_taskId: string, _afterId?: number): ResearchTaskEvent[] { return []; }
   listRecoverableResearchTasks(): ResearchTaskRecord[] { return []; }
   failInterruptedResearchTasks(): number { return 0; }

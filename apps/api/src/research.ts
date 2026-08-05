@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import {
   deriveBodyVersion,
   deriveFragmentsFromBlocks,
@@ -33,6 +34,8 @@ import type { ResearchStore } from "./store.js";
 import { ParentChainContextService, type ParentChainContextResult } from "./parent-chain-context.js";
 import { buildResearchSliceContext, DEFAULT_RESEARCH_SLICE_CONTEXT_TOKEN_BUDGET, type ResearchSliceContextCandidate } from "./slice-context.js";
 import type { ResearchBodyOutline, ResearchSliceAnnotation } from "@collector/model-gateway";
+import { ModelProviderHttpError, ModelProviderTimeoutError } from "@collector/model-gateway";
+import { joinContinuation } from "@collector/capture-contracts";
 
 export const RESEARCH_CHAT_PROMPT_VERSION = "research-chat-v1";
 export const DEEP_RESEARCH_PROMPT_VERSION = "deep-research-v1";
@@ -42,8 +45,17 @@ const PROMPT_VERSION = RESEARCH_SLICE_PROMPT_VERSION;
 const MAX_GENERATED_CHARACTERS = 1_000_000;
 /** 预期长度达到该字数（或显式更高诉求）时启用 plan-then-write；阈值偏保守，避免短问题多一次大纲调用。 */
 const LONG_FORM_CHAR_THRESHOLD = 2_000;
-/** plan-then-write 单节扩写失败时的额外重试次数（首次失败后再试这么多次）。 */
-const BODY_SECTION_MAX_RETRIES = 1;
+/** 有界修复：单节因截断/无果断信号触发的续写上限。 */
+const BODY_SECTION_MAX_CONTINUATIONS = 3;
+/** 有界修复：单节空输出的重问上限。 */
+const BODY_SECTION_MAX_EMPTY_REASKS = 2;
+/** 供应商错误分类重试：可重试类（超时/网络/429/5xx）的最大退避重试次数（首次之后）。 */
+const PROVIDER_RETRY_MAX_ATTEMPTS = 3;
+const PROVIDER_RETRY_BASE_DELAY_MS = 1_000;
+const PROVIDER_RETRY_MAX_DELAY_MS = 30_000;
+/** 单轮流式断点落盘节流：时间间隔与最小字符增量，避免逐 token 写放大。 */
+const STREAM_CHECKPOINT_MIN_INTERVAL_MS = 2_000;
+const STREAM_CHECKPOINT_MIN_CHARS = 2_000;
 
 export interface ResearchGenerationRequest {
   session: ResearchSessionRecord;
@@ -75,11 +87,11 @@ export interface ResearchGenerationProvider {
   /** 生成自由化：自由写连续正文，不返回 JSON 切片结构。 */
   writeBody?(request: ResearchGenerationRequest): Promise<string>;
   /** 真实模型逐字流式正文（方案 B）；缺省时退回 writeBody 原子写或 legacy generate 流式。 */
-  writeBodyStream?(request: ResearchGenerationRequest): AsyncIterable<string>;
+  writeBodyStream?(request: ResearchGenerationRequest & { resumeFrom?: string; onStreamDone?: (done: { finishReason?: string }) => void }): AsyncIterable<string>;
   /** plan-then-write 第一阶段：为长文生成有序大纲。 */
   generateOutline?(request: ResearchGenerationRequest): Promise<ResearchBodyOutline>;
-  /** plan-then-write 第二阶段：在大纲与前文前提下串行扩写某节。 */
-  expandSection?(request: ResearchGenerationRequest & { outline: ResearchBodyOutline; sectionIndex: number; writtenSoFar: string }): Promise<string>;
+  /** plan-then-write 第二阶段：在大纲与前文前提下串行扩写某节；支持断点续写/空节修复提示/降级目标字数。 */
+  expandSection?(request: ResearchGenerationRequest & { outline: ResearchBodyOutline; sectionIndex: number; writtenSoFar: string; continuation?: { priorSectionContent: string }; repairHint?: string; targetCharsOverride?: number }): Promise<{ content: string; finishReason?: string }>;
   /** 事后语义标注：从一段正文抽取标题/概念（独立抽取模型，temperature=0）。 */
   deriveAnnotations?(input: { content: string }): Promise<ResearchSliceAnnotation>;
 }
@@ -90,6 +102,8 @@ export interface ResearchServiceOptions {
   parentChainContext?: ParentChainContextService;
   /** 生成成功后的非阻塞附加动作（例如 H6 节点命名）。 */
   onTaskCompleted?: (task: ResearchTaskRecord) => void | Promise<void>;
+  /** 退避重试的等待实现；测试注入以确定性记录退避序列，默认真实 sleep。 */
+  retrySleep?: (ms: number) => Promise<void>;
 }
 
 export interface ResearchTurnOptions {
@@ -102,11 +116,62 @@ export class ResearchSessionService {
   private readonly running = new Set<string>();
   private recoveryScheduled = false;
   private readonly parentChainContext: ParentChainContextService;
+  /** 退避重试的等待实现；测试注入以确定性记录退避序列。 */
+  private readonly retrySleep: (ms: number) => Promise<void>;
+  /** 任务事件推送（#38）：每次落库插入研究事件后发裸"唤醒"信号；SSE 循环仍按 sequence>cursor 重读，DB 是恰好一次来源。 */
+  private readonly taskEvents = new EventEmitter();
 
   constructor(private readonly store: ResearchStore, private readonly options: ResearchServiceOptions = {}) {
     this.provider = options.provider;
     this.parentChainContext = options.parentChainContext ?? new ParentChainContextService(store);
+    this.retrySleep = options.retrySleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    this.taskEvents.setMaxListeners(0);
+    // 集中接线：所有落库插入研究事件的 store 方法都包一层发布"唤醒"信号（不再靠 100ms 轮询发现）。
+    // DB 仍是恰好一次来源；这里只通知 SSE 端"有新事件，按游标重读"。
+    const storeAny = store as unknown as Record<string, unknown>;
+    for (const method of ["appendResearchTaskDelta", "completeResearchTask", "failResearchTask"] as const) {
+      const original = storeAny[method] as ((...args: never[]) => Promise<unknown>) | undefined;
+      if (typeof original !== "function") continue;
+      storeAny[method] = async (...args: unknown[]) => {
+        const result = await original.apply(store, args as never[]);
+        const taskId = method === "failResearchTask" ? (args[0] as ResearchTaskRecord)?.id : (args[0] as string);
+        if (typeof taskId === "string") this.schedulePublish(taskId);
+        return result;
+      };
+    }
     if (options.autoRunTasks !== false) this.scheduleRecovery();
+  }
+
+  /** 发布"有事件"裸信号（不带载荷）；SSE 端收到后按游标重读，保证不丢、不重。 */
+  publishTaskEvents(taskId: string): void {
+    this.taskEvents.emit(taskId);
+  }
+
+  /**
+   * 在下一次微任务发布唤醒。store 的同步事务里直接 emit 时，SSE 循环往往还停在上一轮
+   * `await waiter` 的 resolve 处理中、尚未挂上下一轮 once 监听，推送会落在"两次迭代之间"丢失；
+   * 推迟一个微任务，让 SSE 循环先完成本轮并重新注册 waiter，再发信号，结构上消除丢唤醒。
+   */
+  private schedulePublish(taskId: string): void {
+    queueMicrotask(() => this.publishTaskEvents(taskId));
+  }
+
+  /**
+   * 等待某任务的下一次事件信号或超时（keep-alive）。用 once 语义防长任务监听泄漏。
+   * 与 SSE 循环"先注册 waiter 再 drain"配合，消除 read 与 subscribe 间的竞态。
+   */
+  waitForTaskEvent(taskId: string, timeoutMs: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        this.taskEvents.removeListener(taskId, onEvent);
+        resolve();
+      }, timeoutMs);
+      const onEvent = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      this.taskEvents.once(taskId, onEvent);
+    });
   }
 
   setProvider(provider: ResearchGenerationProvider | undefined): void {
@@ -248,7 +313,12 @@ export class ResearchSessionService {
   async retryTask(id: string): Promise<ResearchTaskRecord> {
     const current = this.getTask(id);
     if (current.status !== "failed" || !current.retryable) throw new ResearchValidationError("Research task is not retryable");
-    const task = await this.store.retryResearchTask(current, this.provider?.provider, this.provider?.model, this.provider?.promptVersion ?? PROMPT_VERSION);
+    // 保留式重试（#38）：plan-then-write 有已完成节、或单轮流式有非空断点时，保留部分正文与事件流，
+    // 让任务从断点续传而非清空重来。
+    const hasCompletedSection = (current.bodyPlan?.sections ?? []).some((section) => section.status === "completed");
+    const hasStreamCheckpoint = Boolean(current.streamCheckpoint?.content?.trim());
+    const preserveContent = hasCompletedSection || hasStreamCheckpoint;
+    const task = await this.store.retryResearchTask(current, this.provider?.provider, this.provider?.model, this.provider?.promptVersion ?? PROMPT_VERSION, { preserveContent });
     if (this.options.autoRunTasks !== false) this.scheduleTask(task.id);
     return task;
   }
@@ -328,15 +398,8 @@ export class ResearchSessionService {
             // 真实逐字流式（方案 B）只用于单轮自由写；plan-then-write 仍按节增量落正文。
             const useLongForm = this.shouldPlanLongForm(generationRequest, provider);
             if (!useLongForm && provider.writeBodyStream) {
-              let streamed = "";
-              for await (const delta of provider.writeBodyStream(generationRequest)) {
-                if (!delta) continue;
-                streamed += delta;
-                if (streamed.length > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
-                await this.store.appendResearchTaskDelta(task.id, delta);
-              }
-              content = streamed;
-              if (!content.trim()) throw new Error("Provider returned an empty body");
+              // 单轮流式的有界可靠（#38）：断流续传（seed 自 streamCheckpoint）+ 截断续写（finishReason==="length"）。
+              content = await this.writeSingleTurnBodyStream(task, provider, generationRequest);
             } else {
               const planned = useLongForm
                 ? await this.writeLongFormBody(task, provider, generationRequest)
@@ -526,11 +589,82 @@ export class ResearchSessionService {
   }
 
   /**
+   * 单轮流式正文的断流续传（#38）。seed 自 task.streamCheckpoint（preserveContent 重试时，
+   * message.content 也已是该前缀）；外层续写循环、内层 withProviderRetry 包整段流消费。
+   * 每个 delta 只把"新增后缀"经 joinContinuation 拼接后 appendResearchTaskDelta（防双写），
+   * 并按 2s/2000 字节节流落 streamCheckpoint 作续传边界。流被切断→落断点后抛错（failResearchTask
+   * 保留已写部分，可重试从断点续传）；finishReason==="length" 或无果断信号且非空且未超续写上限→
+   * 续写循环再入（resumeFrom 续写）。完成后清断点。返回最终正文（由调用方派生切片/版本）。
+   */
+  private async writeSingleTurnBodyStream(
+    task: ResearchTaskRecord,
+    provider: ResearchGenerationProvider,
+    generationRequest: ResearchGenerationRequest,
+  ): Promise<string> {
+    let streamed = this.store.getResearchTask(task.id)?.streamCheckpoint?.content ?? "";
+    const seedLength = streamed.length;
+    let continuations = 0;
+    let lastCheckpointAt = 0;
+    let checkpointedLength = seedLength;
+    for (;;) {
+      let doneFinish: string | undefined;
+      const resumeFrom = streamed || undefined;
+      try {
+        // 内层：整段流消费包一次分类退避重试；每次重入都是独立物理调用（emitCall 恰好一次）。
+        await this.withProviderRetry(async () => {
+          for await (const delta of provider.writeBodyStream!({
+            ...generationRequest,
+            ...(resumeFrom ? { resumeFrom } : {}),
+            onStreamDone: (done) => { doneFinish = done.finishReason; },
+          })) {
+            if (!delta) continue;
+            const next = joinContinuation(streamed, delta);
+            const suffix = next.slice(streamed.length);
+            if (suffix) {
+              streamed = next;
+              if (streamed.length > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
+              await this.store.appendResearchTaskDelta(task.id, suffix);
+              // 节流落断点：时间间隔或字符增量达标才写，避免逐 token 写放大。
+              const nowMs = Date.now();
+              if (nowMs - lastCheckpointAt >= STREAM_CHECKPOINT_MIN_INTERVAL_MS || streamed.length - checkpointedLength >= STREAM_CHECKPOINT_MIN_CHARS) {
+                await this.store.saveResearchTaskStreamCheckpoint(task.id, streamed);
+                lastCheckpointAt = nowMs;
+                checkpointedLength = streamed.length;
+              }
+            }
+          }
+        });
+      } catch (error) {
+        // 流被切断/重试耗尽：落断点保留已写部分后抛错（failResearchTask → 可重试从断点续传）。
+        if (streamed.trim()) await this.store.saveResearchTaskStreamCheckpoint(task.id, streamed);
+        console.warn(`[research] 单轮流式中断，已落断点 task=${task.id} chars=${streamed.length} detail=${error instanceof Error ? error.message : String(error)}`);
+        throw error;
+      }
+      // 完成判定：length 截断 / 无果断信号，且非空、未超续写上限 → 续写；否则完成。
+      const truncated = doneFinish === "length";
+      const noDecisiveSignal = !doneFinish;
+      if (!streamed.trim()) throw new Error("Provider returned an empty body");
+      if (!truncated && !noDecisiveSignal) break;
+      continuations += 1;
+      if (continuations > BODY_SECTION_MAX_CONTINUATIONS) {
+        console.warn(`[research] 单轮流式续写达上限，按现有正文完成 task=${task.id} chars=${streamed.length}`);
+        break;
+      }
+      if (truncated) console.warn(`[research] 单轮流式被截断触发续写 task=${task.id} chars=${streamed.length}`);
+    }
+    await this.store.clearResearchTaskStreamCheckpoint(task.id);
+    // seed 前缀已在库里，返回完整正文供 finalizeDerivedSlices 派生。
+    return streamed;
+  }
+
+  /**
    * plan-then-write：先大纲、再逐节串行扩写，突破单轮默认短文墙。
    *
-   * 断点续扩：task.bodyPlan 持久化逐节进度。重试时 message.content 已被清空，故
-   * 已完成节的 content 需重新 appendResearchTaskDelta 秒级重建（不调模型），再从第一个
-   * pending 节继续。单节失败重试 BODY_SECTION_MAX_RETRIES 次再判任务失败（已落部分保留）。
+   * 有界可靠（#38）：大纲失败降级回退单轮 writeBody（不阻断）；逐节经 expandSectionBounded 做
+   * 断点续写/空节重问/分类退避/降级，节最终失败也写入显式失败标记继续后续节（绝不静默丢节、
+   * 不整任务失败，仅当零节完成时整体失败）。断点续扩：preserveContent 重试时 message.content
+   * 非空则不调模型、不重 append；否则把已完成节重新 append 秒级重建前文，再从首个 pending/failed
+   * 节的 partialContent 续扩。
    * 返回最终正文与每节首块的标题映射（供 finalizeDerivedSlices 注入卡片标题）。
    */
   private async writeLongFormBody(
@@ -542,74 +676,227 @@ export class ResearchSessionService {
 
     let plan = this.store.getResearchTask(task.id)?.bodyPlan ?? task.bodyPlan;
     if (!plan) {
-      const outline = await provider.generateOutline(request);
-      plan = { sections: outline.sections.map((section) => ({ ...section, status: "pending" as const })) };
-      await this.store.saveResearchTaskBodyPlan(task.id, plan);
+      // 大纲失败降级：回退单轮 writeBody（由调用方在拿到 undefined 后走 writeBody），不阻断生成。
+      try {
+        const outline = await provider.generateOutline(request);
+        plan = { sections: outline.sections.map((section) => ({ ...section, status: "pending" as const })) };
+        await this.store.saveResearchTaskBodyPlan(task.id, plan);
+      } catch (error) {
+        console.warn(`[research] 大纲生成失败，降级单轮 task=${task.id} detail=${error instanceof Error ? error.message : String(error)}`);
+        return undefined;
+      }
     }
 
     const sections = plan.sections.map((section) => ({ ...section }));
-    // 重建已完成节：重试后正文已清空，已落节内容需重新 append 以恢复完整前文。
-    let writtenSoFar = "";
-    for (const section of sections) {
-      if (section.status === "completed" && section.content) {
-        writtenSoFar = writtenSoFar ? `${writtenSoFar}\n\n${section.content}` : section.content;
-      }
-    }
-    if (writtenSoFar) await this.store.appendResearchTaskDelta(task.id, writtenSoFar);
-
     const outline: ResearchBodyOutline = { sections };
-    let hasPriorContent = writtenSoFar.length > 0;
+
+    // 断点续扩：preserveContent 重试时正文已非空，直接以 plan 为准重建 writtenSoFar，不重 append。
+    const existing = this.store.getResearchMessage(task.outputMessageId)?.content ?? "";
+    let writtenSoFar = sections
+      .filter((section) => section.status === "completed" && section.content)
+      .map((section) => section.content as string)
+      .join("\n\n");
+    if (!existing && writtenSoFar) {
+      // 默认重试已清空正文：已完成节需重新 append 秒级重建（不调模型），保证前文完整。
+      await this.store.appendResearchTaskDelta(task.id, writtenSoFar);
+    }
+
+    let hasPriorContent = (existing || writtenSoFar).length > 0;
+    let completedCount = sections.filter((section) => section.status === "completed").length;
     for (let index = 0; index < sections.length; index += 1) {
       const section = sections[index];
       if (!section || section.status === "completed") continue;
-      const expanded = await this.expandSectionWithRetry(provider, request, outline, index, writtenSoFar);
-      section.content = expanded;
-      section.status = "completed";
-      // 增量 append 的分隔符与最终 join("\n\n") 严格一致，保证块边界不错位。
-      await this.store.appendResearchTaskDelta(task.id, hasPriorContent ? `\n\n${expanded}` : expanded);
-      writtenSoFar = writtenSoFar ? `${writtenSoFar}\n\n${expanded}` : expanded;
-      hasPriorContent = true;
+      const result = await this.expandSectionBounded(task, provider, request, outline, index, writtenSoFar, section, async (partial) => {
+        // onPartial：增量落节内断点 partialContent（append 新增后缀已由流式/收尾统一处理，此处只持久化断点）。
+        section.partialContent = partial;
+        await this.store.saveResearchTaskBodyPlan(task.id, { sections });
+      });
+      if ("content" in result) {
+        section.content = result.content;
+        section.status = "completed";
+        delete section.partialContent;
+        completedCount += 1;
+        // 增量 append 的分隔符与最终 join("\n\n") 严格一致，保证块边界不错位。
+        await this.store.appendResearchTaskDelta(task.id, hasPriorContent ? `\n\n${result.content}` : result.content);
+        writtenSoFar = writtenSoFar ? `${writtenSoFar}\n\n${result.content}` : result.content;
+        hasPriorContent = true;
+      } else {
+        // 节最终失败：写失败标记，继续后续节（绝不静默丢节、不整任务失败）。
+        section.status = "failed";
+        section.failureReason = result.failed;
+        const marker = `[本节生成失败：${section.heading}]`;
+        await this.store.appendResearchTaskDelta(task.id, hasPriorContent ? `\n\n${marker}` : marker);
+        writtenSoFar = writtenSoFar ? `${writtenSoFar}\n\n${marker}` : marker;
+        hasPriorContent = true;
+      }
       await this.store.saveResearchTaskBodyPlan(task.id, { sections });
     }
 
-    const content = sections.map((section) => section.content ?? "").filter(Boolean).join("\n\n");
+    if (completedCount === 0) throw new Error("Long-form body expansion produced no completed section");
+    const content = this.joinBodySections(sections);
     if (!content.trim()) throw new Error("Long-form body expansion produced no content");
     return { content, titleHints: this.sectionTitleHints(content, sections) };
   }
 
-  /** 单节扩写，失败时重试；用尽预算后抛错（由 processTask 判任务失败，已落部分保留）。 */
-  private async expandSectionWithRetry(
+  /**
+   * 供应商错误分类：决定可重试（退避后再试同一物理调用）还是致命（跳过重试、直接进降级）。
+   * 可重试：空闲超时、网络层 TypeError、HTTP 429 与 5xx；致命：HTTP 4xx（≠429，鉴权/参数类）。
+   * 未知错误按可重试兜底（有界：最多 PROVIDER_RETRY_MAX_ATTEMPTS 次退避后仍会放弃）。
+   * 只做错误类型分类，绝不做任何内容质量评估。
+   */
+  private classifyProviderError(error: unknown): "retryable" | "fatal" {
+    if (error instanceof ModelProviderTimeoutError) return "retryable";
+    if (error instanceof ModelProviderHttpError) {
+      if (error.status === 429 || error.status >= 500) return "retryable";
+      return "fatal";
+    }
+    if (error instanceof TypeError) return "retryable"; // fetch 网络层失败（连接拒绝/DNS/中断）
+    return "retryable";
+  }
+
+  /** 指数退避 + 抖动：min(MAX, BASE * 2^attempt) * (0.5 + random/2)。 */
+  private providerRetryDelayMs(attempt: number, random: number = Math.random()): number {
+    const exponential = Math.min(PROVIDER_RETRY_MAX_DELAY_MS, PROVIDER_RETRY_BASE_DELAY_MS * 2 ** attempt);
+    return Math.round(exponential * (0.5 + random / 2));
+  }
+
+  /**
+   * 对一次物理模型调用做分类退避重试。仅 retryable 类退避后重入；fatal 类立即抛出。
+   * 每次重入都是一次独立物理调用（emitCall 恰好一次记账），绝不在网关内部叠加隐式重试。
+   */
+  private async withProviderRetry<T>(fn: () => Promise<T>): Promise<T> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= PROVIDER_RETRY_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        return await fn();
+      } catch (error) {
+        lastError = error;
+        if (this.classifyProviderError(error) === "fatal") throw error;
+        if (attempt >= PROVIDER_RETRY_MAX_ATTEMPTS) break;
+        await this.retrySleep(this.providerRetryDelayMs(attempt));
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("Provider call failed");
+  }
+
+  /**
+   * 有界修复的单节扩写：断点续写 + 空节重问 + 分类退避重试 + 降级，全程只做契约安全判断。
+   *
+   * 流程（计数均有界）：
+   * 1. 种子 assembled = section.partialContent（断点续扩）或 ""；
+   * 2. 调 provider.expandSection（包 withProviderRetry），空输出→空重问计数（超 MAX_EMPTY_REASKS 进降级，带 repairHint）；
+   * 3. 有内容→续写时 joinContinuation 去重拼接、onPartial(assembled) 增量落 partialContent；
+   * 4. 判节未完成（finishReason==="length"、无果断信号、或触字符上限）→续写计数（超 MAX_CONTINUATIONS 进降级，续写带 continuation）；
+   * 5. 降级=目标字数减半单次再试，仍败→{failed}。截断只 console.warn 计数（非质量评估）。fatal 4xx 跳过重试直接进降级。
+   *
+   * 返回 {content}（节完成）或 {failed: reason}（节最终失败，由调用方写入失败标记，绝不静默丢节）。
+   */
+  private async expandSectionBounded(
+    task: ResearchTaskRecord,
     provider: ResearchGenerationProvider,
     request: ResearchGenerationRequest,
     outline: ResearchBodyOutline,
     sectionIndex: number,
     writtenSoFar: string,
-  ): Promise<string> {
-    let lastError: unknown;
-    for (let attempt = 0; attempt <= BODY_SECTION_MAX_RETRIES; attempt += 1) {
+    section: ResearchBodyPlan["sections"][number],
+    onPartial?: (partial: string) => Promise<void> | void,
+  ): Promise<{ content: string } | { failed: string }> {
+    const target = outline.sections[sectionIndex];
+    const targetChars = target?.targetChars ?? 0;
+    const expand = async (args: { continuation?: { priorSectionContent: string }; repairHint?: string; targetCharsOverride?: number }) =>
+      this.withProviderRetry(() => provider.expandSection!({
+        ...request, outline, sectionIndex, writtenSoFar,
+        ...(args.continuation ? { continuation: args.continuation } : {}),
+        ...(args.repairHint ? { repairHint: args.repairHint } : {}),
+        ...(args.targetCharsOverride !== undefined ? { targetCharsOverride: args.targetCharsOverride } : {}),
+      }));
+
+    let assembled = section.partialContent ?? "";
+    let continuations = 0;
+    let emptyReasks = 0;
+    for (;;) {
+      let result: { content: string; finishReason?: string };
       try {
-        return await provider.expandSection!({ ...request, outline, sectionIndex, writtenSoFar });
+        result = await expand({
+          ...(assembled ? { continuation: { priorSectionContent: assembled } } : {}),
+          ...(emptyReasks > 0 ? { repairHint: "上次输出为空" } : {}),
+        });
       } catch (error) {
-        lastError = error;
+        // 重试预算用尽（retryable）或致命错误（fatal 4xx）：进降级。
+        return this.degradeSection(task, expand, targetChars, error, "供应商错误");
       }
+      const chunk = result.content.trim();
+      if (!chunk) {
+        emptyReasks += 1;
+        if (emptyReasks > BODY_SECTION_MAX_EMPTY_REASKS) return this.degradeSection(task, expand, targetChars, undefined, "空输出重问耗尽");
+        continue;
+      }
+      assembled = assembled ? joinContinuation(assembled, chunk) : chunk;
+      await onPartial?.(assembled);
+      // 节完成判定：finishReason 为 length（截断）、无果断信号、或触字符上限 → 续写；否则节完成。
+      const truncated = result.finishReason === "length";
+      const noDecisiveSignal = !result.finishReason;
+      const hitCap = assembled.length >= Math.max(targetChars, MAX_GENERATED_CHARACTERS);
+      if (!truncated && !noDecisiveSignal && !hitCap) return { content: assembled };
+      if (truncated) console.warn(`[research] 节被截断触发续写 task=${task.id} section=${sectionIndex} chars=${assembled.length}`);
+      continuations += 1;
+      if (continuations > BODY_SECTION_MAX_CONTINUATIONS) return this.degradeSection(task, expand, targetChars, undefined, "截断续写耗尽", assembled);
     }
-    throw lastError instanceof Error ? lastError : new Error("Body section expansion failed");
+  }
+
+  /** 降级梯子：目标字数减半单次再试（不重问/不续写计数），仍败→节最终失败。 */
+  private async degradeSection(
+    task: ResearchTaskRecord,
+    expand: (args: { continuation?: { priorSectionContent: string }; repairHint?: string; targetCharsOverride?: number }) => Promise<{ content: string; finishReason?: string }>,
+    targetChars: number,
+    cause: unknown,
+    reason: string,
+    priorAssembled = "",
+  ): Promise<{ content: string } | { failed: string }> {
+    const reducedTarget = Math.max(1, Math.floor(targetChars / 2));
+    try {
+      const result = await expand({
+        ...(priorAssembled ? { continuation: { priorSectionContent: priorAssembled } } : {}),
+        targetCharsOverride: reducedTarget,
+        repairHint: reason,
+      });
+      const chunk = result.content.trim();
+      if (chunk) {
+        const content = priorAssembled ? joinContinuation(priorAssembled, chunk) : chunk;
+        return { content };
+      }
+    } catch {
+      // 降级再试也失败：落入下方节失败。
+    }
+    const detail = cause instanceof Error ? cause.message : reason;
+    console.warn(`[research] 节最终失败 task=${task.id} reason=${reason} detail=${detail}`);
+    return { failed: `${reason}（${detail}）` };
   }
 
   /**
-   * 计算每节首块在最终正文中的块下标 → 大纲节标题。节按 "\n\n" 拼接，记录每节起始字符偏移，
-   * 再用 deriveMessageBlocks 的块 startOffset 反查该节首块；标题只注入该节首块。
+   * 把各节拼成最终正文。失败节写入显式失败标记（绝不静默丢节导致缺章）。
+   * 与节间 "\n\n" 连接严格一致，供 sectionTitleHints 按同一偏移反查每节首块。
+   */
+  private joinBodySections(sections: ResearchBodyPlan["sections"]): string {
+    return sections
+      .map((section) => (section.status === "completed" && section.content ? section.content : `[本节生成失败：${section.heading}]`))
+      .join("\n\n");
+  }
+
+  /**
+   * 计算每节首块在最终正文中的块下标 → 大纲节标题。节按 "\n\n" 拼接（含失败标记节），
+   * 记录每节起始字符偏移，再用 deriveMessageBlocks 的块 startOffset 反查该节首块；标题只注入该节首块。
+   * 失败标记节也推进 offset（标记本身即一节正文），保证偏移严格不错位。
    */
   private sectionTitleHints(content: string, sections: ResearchBodyPlan["sections"]): Map<number, string> {
     const hints = new Map<number, string>();
     const blocks = deriveMessageBlocks(content);
     let offset = 0;
     for (const section of sections) {
-      const text = section.content ?? "";
-      if (!text) continue;
+      const part = section.status === "completed" && section.content ? section.content : `[本节生成失败：${section.heading}]`;
       const firstBlock = blocks.find((block) => block.startOffset === offset);
-      if (firstBlock && section.heading.trim()) hints.set(firstBlock.ordinal, section.heading.trim());
-      offset += text.length + 2; // 2 = 节间 "\n\n" 连接符
+      if (firstBlock && section.status === "completed" && section.content && section.heading.trim()) hints.set(firstBlock.ordinal, section.heading.trim());
+      offset += part.length + 2; // 2 = 节间 "\n\n" 连接符
     }
     return hints;
   }

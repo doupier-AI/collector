@@ -243,6 +243,14 @@ test("320/768/1024/1440 视口无横向溢出并留截图", async ({ page }) => 
   mkdirSync("e2e-artifacts", { recursive: true });
   for (const width of [320, 768, 1024, 1440]) {
     await page.setViewportSize({ width, height: 800 });
+    // 视口切换后等浏览器完成响应式重排再量：低负载时立即量通常已是终态，高负载下重排尚未
+    // 完成会捕到上一档布局的 scrollWidth（如 320px 下仍见宽屏三列的 528px）造成抖动失败。
+    // 等到 scrollWidth 收敛进视口（重排完成的可观测信号），再断最终值。
+    await page.waitForFunction(
+      () => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1,
+      undefined,
+      { timeout: 5_000 },
+    );
     const metrics = await page.evaluate(() => ({
       scrollWidth: document.documentElement.scrollWidth,
       clientWidth: document.documentElement.clientWidth,

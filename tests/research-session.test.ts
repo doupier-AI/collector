@@ -352,9 +352,11 @@ test("token-streamed body emits intermediate deltas and derives slices from join
     provider: "stream-fake",
     model: "stream-1",
     promptVersion: "research-body-v1",
-    async *writeBodyStream() {
+    async *writeBodyStream(request) {
       yield "本地优先把研究内容保留在用户可以检查的环境中。";
       yield "\n\n持久化任务状态让失败后的研究可以从同一上下文重新开始。";
+      // 方案 B 契约：干净结束须回执 finishReason，否则服务层按"无果断信号"续写（#38）。
+      request.onStreamDone?.({ finishReason: "stop" });
     },
     async writeBody() {
       // 不应走到原子回退：流式优先。

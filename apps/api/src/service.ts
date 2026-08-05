@@ -105,7 +105,7 @@ export class CaptureService {
     private readonly artifactRoot: string,
     private readonly parser = new SourceParser(),
     private modelGateway?: ModelGateway,
-    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; selectionProvider?: ResearchSelectionProvider; similarityVerifier?: SimilarityVerificationGateway; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunSelectionTasks?: boolean; mvpDemoMode?: boolean } = {},
+    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; selectionProvider?: ResearchSelectionProvider; similarityVerifier?: SimilarityVerificationGateway; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunSelectionTasks?: boolean; mvpDemoMode?: boolean; researchRetrySleep?: (ms: number) => Promise<void> } = {},
   ) {
     this.runRecords = new RunRecordsService(this.store);
     this.attachModelGateway(this.modelGateway);
@@ -116,6 +116,7 @@ export class CaptureService {
       autoRunTasks: this.options.autoRunResearchTasks,
       parentChainContext: this.parentChainContext,
       onTaskCompleted: (task) => { void this.nodeNaming.nameNode(task.nodeId ?? task.sessionId); },
+      ...(this.options.researchRetrySleep ? { retrySleep: this.options.researchRetrySleep } : {}),
     });
     this.researchImports = new ResearchImportService(this.store, join(this.artifactRoot, "research-imports"), {
       autoRunTasks: this.options.autoRunResearchImports,
@@ -448,6 +449,8 @@ export class CaptureService {
         yield* purposeGateway.writeResearchBodyStream(request.messages, {
           parentChainContext: request.parentChainContext,
           sliceContext: request.sliceContext,
+          ...(request.resumeFrom !== undefined ? { resumeFrom: request.resumeFrom } : {}),
+          ...(request.onStreamDone ? { onDone: request.onStreamDone } : {}),
           context: { workflowRunId: request.taskId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
         });
       },
@@ -469,6 +472,9 @@ export class CaptureService {
             outline: request.outline,
             sectionIndex: request.sectionIndex,
             writtenSoFar: request.writtenSoFar,
+            ...(request.continuation ? { continuation: request.continuation } : {}),
+            ...(request.repairHint !== undefined ? { repairHint: request.repairHint } : {}),
+            ...(request.targetCharsOverride !== undefined ? { targetCharsOverride: request.targetCharsOverride } : {}),
           },
           { context: { workflowRunId: request.taskId, purpose: "research_body_section", promptVersion: RESEARCH_SLICE_PROMPT_VERSION } },
         );

@@ -5,6 +5,7 @@
  * - E2E_API_PORT：监听端口（必填）
  * - E2E_MODEL：fake（分段生成）| none（不配置模型，任务失败）
  * - E2E_DATA_DIR：数据目录（缺省 mkdtemp）
+ * - E2E_STREAM_CUT_AFTER：<n> 时单轮流式在第 n 段后抛致命错，模拟断流供续传验收
  * 启动时在 listen 前把配对码池与数据目录写入 e2e/.runtime/。
  * SIGTERM/SIGINT 时关闭 HTTP server 与 store 后退出，保证 Playwright webServer 收尾自然结束。
  */
@@ -15,6 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer, startBrowserBootstrap } from "@collector/api";
+import { ModelProviderHttpError } from "@collector/model-gateway";
 
 const port = Number(process.env.E2E_API_PORT ?? "43211");
 const modelMode = process.env.E2E_MODEL ?? "fake";
@@ -86,20 +88,56 @@ const fakeProvider = {
   async *writeBodyStream(request) {
     const question = request.messages.at(-1)?.content ?? "";
     const short = question.length > 24 ? `${question.slice(0, 24)}…` : question;
-    if (request.deepResearch) {
-      await sleep(400);
-      yield `这是深入研究第一轮，围绕「${short}」展开。`;
+    const cutAfter = process.env.E2E_STREAM_CUT_AFTER ? Number(process.env.E2E_STREAM_CUT_AFTER) : undefined;
+    const segments = request.deepResearch
+      ? [`这是深入研究第一轮，围绕「${short}」展开。`, "\n\n本轮只使用来源选区与当前已有材料生成，未联网检索，回答完毕。"]
+      : [`你问的是「${short}」。`, "\n\n本地优先会先把输入保存在本机，再据此组织后续研究。", "\n\n渐进事件把后续内容写进同一条消息，回答完毕。"];
+    // 前导窗口分路径：深入研究子节点用旧 400ms（多级生长链测试在完成态到达前就会采样选区，
+    // 前导过长会把整个生成推后、让采样落进无可引用块的流式窗口）；首问用 1500ms 给导航/视图/
+    // SSE 连接留足余量，保证中间态可观测。
+    await sleep(request.deepResearch ? 400 : 1500);
+    let emitted = 0;
+    for (const segment of segments) {
+      // 断流脚本：推第 n 段后抛致命错，模拟切断（保留已写部分、由重试续传）。
+      // 用真实类型化错误而非 new Error()+name 伪装：分类重试按 instanceof 判定，
+      // 真 400 应归 fatal（立即进降级），而不是掉进"未知→可重试"的兜底分支。
+      if (cutAfter !== undefined && emitted >= cutAfter) {
+        throw new ModelProviderHttpError("e2e simulated stream cut (HTTP 400)", 400);
+      }
+      emitted += 1;
+      yield segment;
       await sleep(250);
-      yield "\n\n本轮只使用来源选区与当前已有材料生成，未联网检索，回答完毕。";
-      return;
     }
-    await sleep(1500);
-    yield `你问的是「${short}」。`;
-    await sleep(250);
-    yield "\n\n本地优先会先把输入保存在本机，再据此组织后续研究。";
-    await sleep(250);
-    yield "\n\n渐进事件把后续内容写进同一条消息，回答完毕。";
+    request.onStreamDone?.({ finishReason: "stop" });
   },
+  // plan-then-write 第一阶段：确定性两节大纲（供长文 e2e / 断流节级续扩验收）。
+  // 注意：shouldPlanLongForm 对 deepResearch 恒为 true，故仅在显式开启长文模式（E2E_LONGFORM=1）
+  // 时才提供大纲/扩写，避免劫持"深入研究这段"等子节点走单轮流式（须产出"这是深入研究第一轮"）。
+  ...(process.env.E2E_LONGFORM === "1" ? {
+    async generateOutline() {
+      await sleep(300);
+      return {
+        sections: [
+          { heading: "起源", summary: "概念起源", targetChars: 600 },
+          { heading: "实践", summary: "落地方式", targetChars: 800 },
+        ],
+      };
+    },
+    // plan-then-write 第二阶段：确定性节正文；SECTION_CUT=1 时首节返 length（截断）触发续写验收。
+    async expandSection(request) {
+      await sleep(300);
+      const heading = request.outline.sections[request.sectionIndex]?.heading ?? "节";
+      if (request.continuation) {
+        // 断点续写：不重复已写、不重发节标题。
+        return { content: `续写补全「${heading}」的后半部分。`, finishReason: "stop" };
+      }
+      const truncated = process.env.E2E_SECTION_CUT === "1" && request.sectionIndex === 0;
+      return {
+        content: `## ${heading}\n\n这是「${heading}」一节的确定性正文，论述其主旨。`,
+        finishReason: truncated ? "length" : "stop",
+      };
+    },
+  } : {}),
   // 事后标注：按段落内容给出确定性标题，让派生切片带标题渲染成语义卡片。
   // 匹配按各段独有前缀/特征，避免关键词跨段泄漏（问题含"本地优先"会同时命中首段重述）。
   async deriveAnnotations({ content }) {

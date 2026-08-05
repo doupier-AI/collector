@@ -50,10 +50,41 @@ test("expandBodySection 串行扩写指定节并携带前文以保持连贯", as
   const gateway = new ModelGateway(provider);
   const outline = parseBodyOutline(JSON.stringify({ sections: [{ heading: "起", summary: "开端", targetChars: 500 }, { heading: "承", summary: "发展", targetChars: 500 }] }));
   const section = await gateway.expandBodySection({ goal: "写长文", outline, sectionIndex: 1, writtenSoFar: "第一节已写内容。" });
-  assert.equal(section, "该节扩写的正文段落。");
+  assert.equal(section.content, "该节扩写的正文段落。");
   assert.match(requests[0]?.prompt ?? "", /第 2 节「承」/);
   assert.match(requests[0]?.prompt ?? "", /第一节已写内容。/);
   assert.equal(requests[0]?.responseFormat, undefined);
+});
+
+test("expandBodySection 续写模式携带断点前文尾部且不重发节标题", async () => {
+  const { provider, requests } = makeProvider(() => "续写补上的后半段。");
+  const gateway = new ModelGateway(provider);
+  const outline = parseBodyOutline(JSON.stringify({ sections: [{ heading: "起", summary: "开端", targetChars: 500 }] }));
+  const prior = "前半段正文。".repeat(60); // 长度 > 500，验证只取尾部
+  const result = await gateway.expandBodySection({ goal: "g", outline, sectionIndex: 0, writtenSoFar: "", continuation: { priorSectionContent: prior } });
+  assert.equal(result.content, "续写补上的后半段。");
+  const prompt = requests[0]?.prompt ?? "";
+  // 断点前文尾部（后 500 字）进入提示。
+  assert.ok(prompt.includes(prior.slice(-500)), "提示应携带断点前文尾部");
+  // 续写不再要求重发节标题（提示结构，非具体措辞）。
+  assert.ok(!prompt.includes("第一行输出该节标题"), "续写不应再要求输出节标题");
+});
+
+test("expandBodySection repairHint 写入上次失败原因并直接要求正文", async () => {
+  const { provider, requests } = makeProvider(() => "修复后的节正文。");
+  const gateway = new ModelGateway(provider);
+  const outline = parseBodyOutline(JSON.stringify({ sections: [{ heading: "起", summary: "开端", targetChars: 500 }] }));
+  await gateway.expandBodySection({ goal: "g", outline, sectionIndex: 0, writtenSoFar: "", repairHint: "上次输出为空" });
+  assert.ok((requests[0]?.prompt ?? "").includes("上次输出为空"), "提示应携带修复提示");
+});
+
+test("expandBodySection targetCharsOverride 下调目标字数用于降级重试", async () => {
+  const { provider, requests } = makeProvider(() => "降级后的节正文。");
+  const gateway = new ModelGateway(provider);
+  const outline = parseBodyOutline(JSON.stringify({ sections: [{ heading: "起", summary: "开端", targetChars: 800 }] }));
+  await gateway.expandBodySection({ goal: "g", outline, sectionIndex: 0, writtenSoFar: "", targetCharsOverride: 400 });
+  assert.ok((requests[0]?.prompt ?? "").includes("400"), "提示应使用下调后的目标字数");
+  assert.ok(!(requests[0]?.prompt ?? "").includes("800"), "提示不应再用原目标字数");
 });
 
 test("expandBodySection 对越界节抛错", async () => {
@@ -139,6 +170,24 @@ test("writeResearchBodyStream 对无 completeStream 的 provider 退回非流式
   // 回退路径走 complete() 自带记账，仍恰好一次。
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.status, "completed");
+});
+
+test("writeResearchBodyStream resumeFrom 追加续写提示且 onDone 回报 finishReason", async () => {
+  const { provider, requests } = makeStreamProvider([
+    { type: "delta", text: "续写的后半正文。" },
+    { type: "done", model: "m", usage: { inputTokens: 1, outputTokens: 2 }, finishReason: "length" },
+  ]);
+  const gateway = new ModelGateway(provider);
+  const doneReports: Array<{ finishReason?: string }> = [];
+  const chunks: string[] = [];
+  for await (const delta of gateway.writeResearchBodyStream(
+    [{ role: "user", content: "问题" }],
+    { resumeFrom: "已写正文尾部衔接。", onDone: (done) => { doneReports.push(done); } },
+  )) chunks.push(delta);
+  assert.equal(chunks.join(""), "续写的后半正文。");
+  // resumeFrom 尾部进入提示（结构，不断言具体措辞）。
+  assert.ok((requests[0]?.prompt ?? "").includes("已写正文尾部衔接。"), "提示应携带断点前文");
+  assert.deepEqual(doneReports, [{ finishReason: "length" }], "onDone 应回报终帧 finishReason");
 });
 
 test("writeResearchBodyStream 流式产出空正文时抛错并记失败", async () => {

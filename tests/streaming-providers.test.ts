@@ -4,6 +4,8 @@ import {
   AnthropicMessagesProvider,
   FakeProvider,
   GeminiGroundingProvider,
+  ModelProviderHttpError,
+  ModelProviderTimeoutError,
   OpenAiCompatibleProvider,
   OpenAiResponsesProvider,
   createProvider,
@@ -157,4 +159,154 @@ test("FakeProvider 流式：按 80 字切片逐段、终帧带 usage/model", asy
   const done = doneOf(events);
   assert.equal(done.model, "fake-model");
   assert.deepEqual(done.usage, { inputTokens: 10, outputTokens: 20 });
+});
+
+/** 推出若干帧后挂起（不关闭流），用于触发空闲超时。abort 时 reject 挂起读（真实 fetch 响应绑在 signal 上，中止即报错）。 */
+function sseHangResponse(frames: Array<{ event?: string; data: string }>, signal?: AbortSignal | null): Response {
+  const text = frames.map((frame) => `${frame.event ? `event: ${frame.event}\n` : ""}data: ${frame.data}\n\n`).join("");
+  const encoded = new TextEncoder().encode(text);
+  let index = 0;
+  const chunkSize = 7;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (index < encoded.length) {
+        controller.enqueue(encoded.slice(index, index + chunkSize));
+        index += chunkSize;
+        return;
+      }
+      // 数据推完后不再 enqueue、也不 close —— 流挂起。注册 abort：模拟网络层对中止的响应。
+      if (!signal?.aborted) {
+        signal?.addEventListener("abort", () => controller.error(signal.reason ?? new Error("aborted")), { once: true });
+      }
+    },
+  });
+  return new Response(stream, { status: 200 });
+}
+
+/** 按 intervalMs 间隔逐块推流（间隔 > timeoutMs 时总时长远超 timeoutMs，但单块间隔 < timeoutMs）。 */
+function sseDripResponse(frames: Array<{ event?: string; data: string }>, intervalMs: number): Response {
+  const text = frames.map((frame) => `${frame.event ? `event: ${frame.event}\n` : ""}data: ${frame.data}\n\n`).join("");
+  const encoded = new TextEncoder().encode(text);
+  let index = 0;
+  const chunkSize = 7;
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (index >= encoded.length) { controller.close(); return; }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      controller.enqueue(encoded.slice(index, index + chunkSize));
+      index += chunkSize;
+    },
+  });
+  return new Response(stream, { status: 200 });
+}
+
+test("流式空闲超时：推一帧后挂起，超时抛 ModelProviderTimeoutError", async () => {
+  const provider = createProvider(DEFAULT_PROVIDER_REGISTRY.get("deepseek"), {
+    apiKey: () => "deepseek-secret",
+    fetchImpl: async (_input, init) => sseHangResponse([{ data: JSON.stringify({ choices: [{ delta: { content: "只推一帧" } }] }) }], init?.signal),
+  });
+  await assert.rejects(
+    collect((provider as OpenAiCompatibleProvider).completeStream!({ prompt: "问题", model: "deepseek-v4-flash", timeoutMs: 60 })),
+    (error: unknown) => {
+      assert.ok(error instanceof ModelProviderTimeoutError, `应为空闲超时错误，实得 ${String(error)}`);
+      return true;
+    },
+  );
+});
+
+test("流式空闲重置：单块间隔 < 超时但总长 > 超时，流仍完整完成（证闲时非总超时）", async () => {
+  // 间隔 40ms、timeoutMs 100ms：全文数十块、总时长 > 100ms，但每块间隔 40ms < 100ms。
+  const provider = createProvider(DEFAULT_PROVIDER_REGISTRY.get("deepseek"), {
+    apiKey: () => "deepseek-secret",
+    fetchImpl: async () =>
+      sseDripResponse([
+        { data: JSON.stringify({ choices: [{ delta: { content: "第一段" } }] }) },
+        { data: JSON.stringify({ choices: [{ delta: { content: "第二段" } }] }) },
+        { data: JSON.stringify({ choices: [{ delta: { content: "第三段" } }] }) },
+        { data: "[DONE]" },
+      ], 40),
+  });
+  const events = await collect((provider as OpenAiCompatibleProvider).completeStream!({ prompt: "问题", model: "deepseek-v4-flash", timeoutMs: 100 }));
+  assert.equal(deltasOf(events), "第一段第二段第三段");
+});
+
+test("OpenAI 兼容流式 done 事件携带 finishReason（length = 被截断）", async () => {
+  const provider = createProvider(DEFAULT_PROVIDER_REGISTRY.get("deepseek"), {
+    apiKey: () => "deepseek-secret",
+    fetchImpl: async () =>
+      sseResponse([
+        { data: JSON.stringify({ choices: [{ delta: { content: "被截断的正文" } }] }) },
+        { data: JSON.stringify({ choices: [{ delta: {}, finish_reason: "length" }] }) },
+        { data: "[DONE]" },
+      ]),
+  });
+  const events = await collect((provider as OpenAiCompatibleProvider).completeStream!({ prompt: "问题", model: "deepseek-v4-flash" }));
+  assert.equal(doneOf(events).finishReason, "length");
+});
+
+test("Anthropic 流式 done 事件把 max_tokens 映射为 length", async () => {
+  const provider = createProvider(DEFAULT_PROVIDER_REGISTRY.get("anthropic"), {
+    apiKey: () => "anthropic-secret",
+    fetchImpl: async () =>
+      sseResponse([
+        { event: "message_start", data: JSON.stringify({ type: "message_start", message: { model: "claude-x", usage: { input_tokens: 3 } } }) },
+        { event: "content_block_delta", data: JSON.stringify({ type: "content_block_delta", delta: { type: "text_delta", text: "截断" } }) },
+        { event: "message_delta", data: JSON.stringify({ type: "message_delta", delta: { stop_reason: "max_tokens" }, usage: { output_tokens: 4 } }) },
+        { event: "message_stop", data: JSON.stringify({ type: "message_stop" }) },
+      ]),
+  });
+  const events = await collect(provider.completeStream!({ prompt: "问题", model: "claude-x" }));
+  assert.equal(doneOf(events).finishReason, "length");
+});
+
+test("Gemini 流式 done 事件把 MAX_TOKENS 映射为 length", async () => {
+  const provider = createProvider(DEFAULT_PROVIDER_REGISTRY.get("gemini"), {
+    apiKey: () => "AIza-test-key",
+    fetchImpl: async () =>
+      sseResponse([
+        { data: JSON.stringify({ candidates: [{ content: { parts: [{ text: "截断" }] }, finishReason: "MAX_TOKENS" }], usageMetadata: { promptTokenCount: 2, candidatesTokenCount: 3 } }) },
+      ]),
+  });
+  const events = await collect(provider.completeStream!({ prompt: "问题", model: "gemini-2.5-flash" }));
+  assert.equal(doneOf(events).finishReason, "length");
+});
+
+test("OpenAI Responses 流式 incomplete 帧映射 finishReason 为 length", async () => {
+  const provider = createProvider(DEFAULT_PROVIDER_REGISTRY.get("openai"), {
+    apiKey: () => "openai-secret",
+    fetchImpl: async () =>
+      sseResponse([
+        { event: "response.output_text.delta", data: JSON.stringify({ type: "response.output_text.delta", delta: "截断" }) },
+        { event: "response.incomplete", data: JSON.stringify({ type: "response.incomplete", response: { incomplete_details: { reason: "max_output_tokens" } } }) },
+      ]),
+  });
+  const events = await collect(provider.completeStream!({ prompt: "问题", model: "gpt-4.1" }));
+  assert.equal(doneOf(events).finishReason, "length");
+});
+
+test("非 2xx 响应抛出带 status 的 ModelProviderHttpError（429 与 400）", async () => {
+  const rateLimited = createProvider(DEFAULT_PROVIDER_REGISTRY.get("deepseek"), {
+    apiKey: () => "deepseek-secret",
+    fetchImpl: async () => new Response("rate limited", { status: 429 }),
+  });
+  await assert.rejects(
+    collect((rateLimited as OpenAiCompatibleProvider).completeStream!({ prompt: "问题", model: "deepseek-v4-flash" })),
+    (error: unknown) => {
+      assert.ok(error instanceof ModelProviderHttpError);
+      assert.equal(error.status, 429);
+      return true;
+    },
+  );
+  const badRequest = createProvider(DEFAULT_PROVIDER_REGISTRY.get("deepseek"), {
+    apiKey: () => "deepseek-secret",
+    fetchImpl: async () => new Response("bad request", { status: 400 }),
+  });
+  await assert.rejects(
+    collect((badRequest as OpenAiCompatibleProvider).completeStream!({ prompt: "问题", model: "deepseek-v4-flash" })),
+    (error: unknown) => {
+      assert.ok(error instanceof ModelProviderHttpError);
+      assert.equal(error.status, 400);
+      return true;
+    },
+  );
 });

@@ -20,6 +20,24 @@ export interface ModelProviderResponse {
   content: string;
   model: string;
   usage?: ProviderUsage;
+  /** 生成终止原因（stop/length/…）；length 表示被 max_tokens 截断，供有界续写判断。 */
+  finishReason?: string;
+}
+
+/** 供应商返回非 2xx：status 供分类重试（429/5xx 可退避重试，其余 4xx 立即失败）。 */
+export class ModelProviderHttpError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "ModelProviderHttpError";
+  }
+}
+
+/** 流式空闲超时（idle-reset 计时到点仍无新事件）；区别于固定总超时，长文不再因总时长被掐断。 */
+export class ModelProviderTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ModelProviderTimeoutError";
+  }
 }
 
 export interface ModelProviderRequest {
@@ -50,7 +68,7 @@ export interface ModelProvider {
 /** 流式增量事件：正文逐字片段。 */
 export interface ModelProviderStreamDelta { type: "delta"; text: string }
 /** 流式终帧事件：模型名与 usage（token/成本记账依据，仅在流结束时可用）。 */
-export interface ModelProviderStreamDone { type: "done"; model: string; usage?: ProviderUsage }
+export interface ModelProviderStreamDone { type: "done"; model: string; usage?: ProviderUsage; finishReason?: string }
 export type ModelProviderStreamEvent = ModelProviderStreamDelta | ModelProviderStreamDone;
 
 /** plan-then-write 大纲的节数边界，防止模型产出过多碎节。 */
@@ -636,10 +654,15 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
    */
   async *writeResearchBodyStream(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext; resumeFrom?: string; onDone?: (done: { finishReason?: string }) => void } = {},
   ): AsyncIterable<string> {
     if (!messages.length) throw new Error("Research body requires at least one message");
-    const prompt = this.researchBodyPrompt(messages, options.parentChainContext, options.sliceContext);
+    const basePrompt = this.researchBodyPrompt(messages, options.parentChainContext, options.sliceContext);
+    // 断点续写：把已写正文尾部作衔接，指令模型从断点继续、不要重复。
+    const resumeTail = options.resumeFrom ? options.resumeFrom.slice(-500) : "";
+    const prompt = options.resumeFrom
+      ? `${basePrompt}\n\n正文已写到断点，请从断点处继续，不要重复已写内容：\n……${resumeTail}`
+      : basePrompt;
     const request: ModelProviderRequest = {
       prompt,
       model: options.model ?? this.modelName,
@@ -658,7 +681,7 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
     const createdAt = new Date().toISOString();
     const startedAt = Date.now();
     // doneRef 由本调用局部持有（非实例字段），并发/交错调用互不干扰。
-    const doneRef: { model: string; usage?: ProviderUsage } = { model: request.model };
+    const doneRef: { model: string; usage?: ProviderUsage; finishReason?: string } = { model: request.model };
     let assembled = "";
     try {
       for await (const trimmed of trimStream(extractStreamDeltas(this.provider.completeStream(request), doneRef))) {
@@ -671,6 +694,8 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
       throw error;
     }
     if (!assembled.trim()) throw new Error("Research body provider returned an empty body");
+    // 回报终帧 finishReason，供调用方判断是否需要续写（length = 被 max_tokens 截断）。
+    options.onDone?.({ ...(doneRef.finishReason !== undefined ? { finishReason: doneRef.finishReason } : {}) });
   }
 
   /**
@@ -711,20 +736,37 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
    * plan-then-write 第二阶段：在给定大纲与已生成前文的前提下，串行扩写某一节。
    * 串行（每节条件于全部前文）保证长文连贯、避免主题漂移；输出自由正文片段。
    */
+  /**
+   * plan-then-write 第二阶段：在给定大纲与已生成前文的前提下，串行扩写某一节。
+   * 串行（每节条件于全部前文）保证长文连贯、避免主题漂移；输出自由正文片段。
+   * 返回 content 与 finishReason（length 表示被 max_tokens 截断），供调用方做有界续写/空节修复/降级。
+   * continuation：从断点续写本节，不重复已写内容、不重发节标题；repairHint：写入上次失败原因（如空输出）；
+   * targetCharsOverride：降级重试时下调的目标字数。措辞为有界修复指令，不做任何内容质量评估。
+   */
   async expandBodySection(
     input: {
       goal: string;
       outline: ResearchBodyOutline;
       sectionIndex: number;
       writtenSoFar: string;
+      /** 续写：从断点继续本节，不要重复已写内容、不要重发节标题。 */
+      continuation?: { priorSectionContent: string };
+      /** 修复提示：写入上次失败原因（如"上次输出为空"）。 */
+      repairHint?: string;
+      /** 降级重试时下调的目标字数。 */
+      targetCharsOverride?: number;
     },
     options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
-  ): Promise<string> {
+  ): Promise<{ content: string; finishReason?: string }> {
     const section = input.outline.sections[input.sectionIndex];
     if (!section) throw new Error(`Body section ${input.sectionIndex} is out of range`);
     const outlineText = input.outline.sections
       .map((item, index) => `${index + 1}. ${item.heading}（${item.summary}）`)
       .join("\n");
+    const targetChars = input.targetCharsOverride ?? section.targetChars;
+    const continuation = input.continuation;
+    // 断点前文只取尾部一段作衔接上下文，避免整节重复进入提示。
+    const continuationTail = continuation ? continuation.priorSectionContent.slice(-500) : "";
     const prompt = `你是 Collector 的研究助手。你正在按大纲逐节撰写一篇连贯的中文长文，现在请只扩写其中一节。
 
 写作目标：${input.goal}
@@ -732,11 +774,10 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
 完整大纲：
 ${outlineText}
 
-本次要扩写的是第 ${input.sectionIndex + 1} 节「${section.heading}」：${section.summary}（目标约 ${section.targetChars} 字）。
+本次要扩写的是第 ${input.sectionIndex + 1} 节「${section.heading}」：${section.summary}（目标约 ${targetChars} 字）。
 
-${input.writtenSoFar.trim() ? `已生成的前文（仅供保持连贯，不要重复其内容）：\n${input.writtenSoFar}\n\n` : ""}要求：
-- 第一行输出该节标题，格式为 Markdown 二级标题：## ${section.heading}；标题后用一个空行接正文，正文由流畅段落组成、段落间用一个空行分隔。整节只出现这一次标题，正文内不要再重复该标题或另起同级标题。
-- 只输出第 ${input.sectionIndex + 1} 节，不要重复大纲或其它节，不要为正文内的小论点再起标题。
+${input.writtenSoFar.trim() ? `已生成的前文（仅供保持连贯，不要重复其内容）：\n${input.writtenSoFar}\n\n` : ""}${continuation ? `本节已写到断点，请从断点处继续，不要重复已写内容、不要重发节标题：\n……${continuationTail}\n\n` : ""}${input.repairHint ? `上次输出有问题：${input.repairHint}。这次请直接输出本节正文。\n\n` : ""}要求：
+${continuation ? "- 直接从断点继续写正文，不要重复上面的内容，不要再输出节标题。\n" : `- 第一行输出该节标题，格式为 Markdown 二级标题：## ${section.heading}；标题后用一个空行接正文，正文由流畅段落组成、段落间用一个空行分隔。整节只出现这一次标题，正文内不要再重复该标题或另起同级标题。\n`}- 只输出第 ${input.sectionIndex + 1} 节，不要重复大纲或其它节，不要为正文内的小论点再起标题。
 - 与前文自然衔接、保持同一主题与语气；内容详实，服从该节目标字数。
 - 保持来源事实与不确定性，不编造来源、链接或引用。
 - 不要使用 Markdown 代码围栏，不要返回 JSON 或大纲字段，只输出该节标题与正文。`;
@@ -749,7 +790,7 @@ ${input.writtenSoFar.trim() ? `已生成的前文（仅供保持连贯，不要�
     }, options.context ?? { purpose: "research_body_section" });
     const content = response.content.trim();
     if (!content) throw new Error(`Body section ${input.sectionIndex + 1} expansion returned empty content`);
-    return content;
+    return { content, ...(response.finishReason !== undefined ? { finishReason: response.finishReason } : {}) };
   }
 
   /**
@@ -1409,10 +1450,11 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     } finally {
       clearTimeout(timer);
     }
-    if (!response.ok) throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+    if (!response.ok) throw new ModelProviderHttpError(`${this.options.definition.label} request failed (HTTP ${response.status})`, response.status);
     return {
       content: payload?.choices?.[0]?.message?.content ?? "",
       model: payload?.model ?? request.model,
+      finishReason: payload?.choices?.[0]?.finish_reason ?? undefined,
       usage: {
         inputTokens: payload?.usage?.prompt_tokens,
         outputTokens: payload?.usage?.completion_tokens,
@@ -1431,7 +1473,8 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     const apiKey = await this.options.apiKey();
     if (!apiKey) throw new Error(`${this.options.definition.label} API key is not configured`);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new Error(`${this.options.definition.label} request timed out`)), request.timeoutMs ?? 75_000);
+    // 空闲重置计时：每收到一个 SSE 事件重置，只在超过 timeoutMs 无新事件时 abort。
+    const idle = createIdleTimer(request.timeoutMs ?? 75_000, () => controller.abort(new ModelProviderTimeoutError(`${this.options.definition.label} stream idle timed out`)));
     let response: Response;
     try {
       const wantsJson = request.responseFormat?.type === "json_object";
@@ -1456,27 +1499,30 @@ export class OpenAiCompatibleProvider implements ModelProvider {
         body: JSON.stringify(body),
       });
     } catch (error) {
-      clearTimeout(timer);
-      throw error;
+      idle.clear();
+      rethrowStreamError(error);
     }
     if (!response.ok) {
-      clearTimeout(timer);
-      throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+      idle.clear();
+      throw new ModelProviderHttpError(`${this.options.definition.label} request failed (HTTP ${response.status})`, response.status);
     }
     if (!response.body) {
-      clearTimeout(timer);
+      idle.clear();
       throw new Error(`${this.options.definition.label} streaming response has no body`);
     }
     let model = request.model;
     let usage: ProviderUsage | undefined;
+    let finishReason: string | undefined;
     try {
       for await (const event of iterateServerSentEvents(response.body)) {
+        idle.reset();
         if (event.data === "[DONE]") break;
         const payload = JSON.parse(event.data);
         if (typeof payload?.model === "string") model = payload.model;
         const choice = payload?.choices?.[0];
         const text = choice?.delta?.content;
         if (typeof text === "string" && text) yield { type: "delta", text };
+        if (typeof choice?.finish_reason === "string" && choice.finish_reason) finishReason = choice.finish_reason;
         if (payload?.usage) {
           usage = {
             inputTokens: payload.usage.prompt_tokens,
@@ -1486,10 +1532,13 @@ export class OpenAiCompatibleProvider implements ModelProvider {
           };
         }
       }
+    } catch (error) {
+      idle.clear();
+      rethrowStreamError(error);
     } finally {
-      clearTimeout(timer);
+      idle.clear();
     }
-    yield { type: "done", model, usage };
+    yield { type: "done", model, usage, finishReason };
   }
 
   /**
@@ -1544,7 +1593,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     } finally {
       clearTimeout(timer);
     }
-    if (!response.ok) throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+    if (!response.ok) throw new ModelProviderHttpError(`${this.options.definition.label} request failed (HTTP ${response.status})`, response.status);
     const choice = payload?.choices?.[0];
     const finishReason: AgentChatResponse["finishReason"] = choice?.finish_reason ?? "stop";
     const message = choice?.message;
@@ -1612,7 +1661,7 @@ export class OpenAiResponsesProvider implements GroundingModelProvider {
     const apiKey = await this.options.apiKey();
     if (!apiKey) throw new Error(`${this.options.definition.label} API key is not configured`);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new Error(`${this.options.definition.label} request timed out`)), request.timeoutMs ?? 75_000);
+    const idle = createIdleTimer(request.timeoutMs ?? 75_000, () => controller.abort(new ModelProviderTimeoutError(`${this.options.definition.label} stream idle timed out`)));
     let response: Response;
     try {
       const body: Record<string, unknown> = { model: request.model, input: request.prompt, max_output_tokens: request.maxTokens, stream: true };
@@ -1621,21 +1670,23 @@ export class OpenAiResponsesProvider implements GroundingModelProvider {
         method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, signal: controller.signal, redirect: "error", body: JSON.stringify(body),
       });
     } catch (error) {
-      clearTimeout(timer);
-      throw error;
+      idle.clear();
+      rethrowStreamError(error);
     }
     if (!response.ok) {
-      clearTimeout(timer);
-      throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+      idle.clear();
+      throw new ModelProviderHttpError(`${this.options.definition.label} request failed (HTTP ${response.status})`, response.status);
     }
     if (!response.body) {
-      clearTimeout(timer);
+      idle.clear();
       throw new Error(`${this.options.definition.label} streaming response has no body`);
     }
     let model = request.model;
     let usage: ProviderUsage | undefined;
+    let finishReason: string | undefined;
     try {
       for await (const event of iterateServerSentEvents(response.body)) {
+        idle.reset();
         const payload = JSON.parse(event.data);
         const type = payload?.type;
         if (type === "response.output_text.delta") {
@@ -1643,14 +1694,20 @@ export class OpenAiResponsesProvider implements GroundingModelProvider {
         } else if (type === "response.completed") {
           model = payload?.response?.model ?? model;
           usage = openAiUsage(payload?.response?.usage);
+        } else if (type === "response.incomplete") {
+          // 达到 max_output_tokens 等原因未完整：reason 供有界续写判断。
+          finishReason = payload?.response?.incomplete_details?.reason === "max_output_tokens" ? "length" : (payload?.response?.incomplete_details?.reason ?? "length");
         } else if (type === "response.failed" || type === "error") {
           throw new Error(`${this.options.definition.label} streaming failed (${payload?.response?.error?.message ?? payload?.message ?? "unknown error"})`);
         }
       }
+    } catch (error) {
+      idle.clear();
+      rethrowStreamError(error);
     } finally {
-      clearTimeout(timer);
+      idle.clear();
     }
-    yield { type: "done", model, usage };
+    yield { type: "done", model, usage, finishReason };
   }
 
   async generateGroundedResearch(request: { prompt: string; model: string; grounding: ResearchGroundingRequest; maxTokens?: number; timeoutMs?: number }): Promise<GroundedResearchResponse> {
@@ -1689,7 +1746,7 @@ export class OpenAiResponsesProvider implements GroundingModelProvider {
         method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, signal: controller.signal, redirect: "error", body: JSON.stringify(body),
       });
       const payload = await response.json().catch(() => undefined);
-      if (!response.ok) throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+      if (!response.ok) throw new ModelProviderHttpError(`${this.options.definition.label} request failed (HTTP ${response.status})`, response.status);
       return payload;
     } finally { clearTimeout(timer); }
   }
@@ -1729,7 +1786,7 @@ export class GeminiGroundingProvider implements GroundingModelProvider {
     if (wantsJson) generationConfig.responseMimeType = "application/json";
     if (typeof request.temperature === "number") generationConfig.temperature = request.temperature;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new Error(`${this.options.definition.label} request timed out`)), request.timeoutMs ?? 75_000);
+    const idle = createIdleTimer(request.timeoutMs ?? 75_000, () => controller.abort(new ModelProviderTimeoutError(`${this.options.definition.label} stream idle timed out`)));
     let response: Response;
     try {
       response = await this.fetchImpl(
@@ -1737,29 +1794,36 @@ export class GeminiGroundingProvider implements GroundingModelProvider {
         { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey }, signal: controller.signal, redirect: "error", body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: request.prompt }] }], generationConfig }) },
       );
     } catch (error) {
-      clearTimeout(timer);
-      throw error;
+      idle.clear();
+      rethrowStreamError(error);
     }
     if (!response.ok) {
-      clearTimeout(timer);
-      throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+      idle.clear();
+      throw new ModelProviderHttpError(`${this.options.definition.label} request failed (HTTP ${response.status})`, response.status);
     }
     if (!response.body) {
-      clearTimeout(timer);
+      idle.clear();
       throw new Error(`${this.options.definition.label} streaming response has no body`);
     }
     let usage: ProviderUsage | undefined;
+    let finishReason: string | undefined;
     try {
       for await (const event of iterateServerSentEvents(response.body)) {
+        idle.reset();
         const payload = JSON.parse(event.data);
         const text = geminiText(payload);
         if (text) yield { type: "delta", text };
+        const candidateFinish = payload?.candidates?.[0]?.finishReason;
+        if (typeof candidateFinish === "string" && candidateFinish) finishReason = candidateFinish === "MAX_TOKENS" ? "length" : candidateFinish;
         if (payload?.usageMetadata) usage = geminiUsage(payload.usageMetadata);
       }
+    } catch (error) {
+      idle.clear();
+      rethrowStreamError(error);
     } finally {
-      clearTimeout(timer);
+      idle.clear();
     }
-    yield { type: "done", model: request.model, usage };
+    yield { type: "done", model: request.model, usage, finishReason };
   }
 
   async generateGroundedResearch(request: { prompt: string; model: string; grounding: ResearchGroundingRequest; maxTokens?: number; timeoutMs?: number }): Promise<GroundedResearchResponse> {
@@ -1786,7 +1850,7 @@ export class GeminiGroundingProvider implements GroundingModelProvider {
     try {
       const response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/models/${encodeURIComponent(model)}:generateContent`, { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey }, signal: controller.signal, redirect: "error", body: JSON.stringify(body) });
       const payload = await response.json().catch(() => undefined);
-      if (!response.ok) throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+      if (!response.ok) throw new ModelProviderHttpError(`${this.options.definition.label} request failed (HTTP ${response.status})`, response.status);
       return payload;
     } finally { clearTimeout(timer); }
   }
@@ -1832,7 +1896,7 @@ export class AnthropicMessagesProvider implements GroundingModelProvider {
           }),
         });
         payload = await response.json().catch(() => undefined);
-        if (!response.ok) throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+        if (!response.ok) throw new ModelProviderHttpError(`${this.options.definition.label} request failed (HTTP ${response.status})`, response.status);
       } finally {
         clearTimeout(timer);
       }
@@ -1899,7 +1963,7 @@ export class AnthropicMessagesProvider implements GroundingModelProvider {
     } finally {
       clearTimeout(timer);
     }
-    if (!response.ok) throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+    if (!response.ok) throw new ModelProviderHttpError(`${this.options.definition.label} request failed (HTTP ${response.status})`, response.status);
     const cacheHitTokens = Number(payload?.usage?.cache_read_input_tokens ?? 0);
     const cacheCreationTokens = Number(payload?.usage?.cache_creation_input_tokens ?? 0);
     const uncachedInputTokens = Number(payload?.usage?.input_tokens ?? 0);
@@ -1924,7 +1988,7 @@ export class AnthropicMessagesProvider implements GroundingModelProvider {
     const apiKey = await this.options.apiKey();
     if (!apiKey) throw new Error(`${this.options.definition.label} API key is not configured`);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new Error(`${this.options.definition.label} request timed out`)), request.timeoutMs ?? 75_000);
+    const idle = createIdleTimer(request.timeoutMs ?? 75_000, () => controller.abort(new ModelProviderTimeoutError(`${this.options.definition.label} stream idle timed out`)));
     const wantsJson = request.responseFormat?.type === "json_object";
     const body: Record<string, unknown> = {
       model: request.model,
@@ -1944,15 +2008,15 @@ export class AnthropicMessagesProvider implements GroundingModelProvider {
         body: JSON.stringify(body),
       });
     } catch (error) {
-      clearTimeout(timer);
-      throw error;
+      idle.clear();
+      rethrowStreamError(error);
     }
     if (!response.ok) {
-      clearTimeout(timer);
-      throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+      idle.clear();
+      throw new ModelProviderHttpError(`${this.options.definition.label} request failed (HTTP ${response.status})`, response.status);
     }
     if (!response.body) {
-      clearTimeout(timer);
+      idle.clear();
       throw new Error(`${this.options.definition.label} streaming response has no body`);
     }
     let model = request.model;
@@ -1960,8 +2024,10 @@ export class AnthropicMessagesProvider implements GroundingModelProvider {
     let cacheCreationTokens = 0;
     let uncachedInputTokens = 0;
     let outputTokens: number | undefined;
+    let finishReason: string | undefined;
     try {
       for await (const event of iterateServerSentEvents(response.body)) {
+        idle.reset();
         const payload = JSON.parse(event.data);
         const type = payload?.type;
         if (type === "content_block_delta" && payload?.delta?.type === "text_delta" && typeof payload.delta.text === "string" && payload.delta.text) {
@@ -1973,16 +2039,22 @@ export class AnthropicMessagesProvider implements GroundingModelProvider {
           uncachedInputTokens = Number(payload?.message?.usage?.input_tokens ?? 0);
         } else if (type === "message_delta") {
           outputTokens = payload?.usage?.output_tokens ?? outputTokens;
+          const stopReason = payload?.delta?.stop_reason;
+          if (typeof stopReason === "string" && stopReason) finishReason = stopReason === "max_tokens" ? "length" : stopReason;
         } else if (type === "error") {
           throw new Error(`${this.options.definition.label} streaming failed (${payload?.error?.message ?? "unknown error"})`);
         }
       }
+    } catch (error) {
+      idle.clear();
+      rethrowStreamError(error);
     } finally {
-      clearTimeout(timer);
+      idle.clear();
     }
     yield {
       type: "done",
       model,
+      finishReason,
       usage: {
         inputTokens: uncachedInputTokens + cacheHitTokens + cacheCreationTokens,
         outputTokens,
@@ -2142,6 +2214,40 @@ function normalizeBaseUrl(value: string): string { return value.replace(/\/+$/, 
  * 只处理信封（空行分事件、多 data: 行 \n 拼接、捕获 event: 字段、忽略 : 注释），不解释 payload；
  * data: [DONE] 这类终止哨兵由调用方判断。TextDecoder 流式缓冲保证跨块的多字节字符不被截断。
  */
+/**
+ * 空闲重置计时器：每次 reset() 重新计时，clear() 终止。
+ * 用于流式空闲超时——长文持续到达 token 时不断重置，只在「超过 ms 无新事件」时触发，
+ * 取代固定总超时，避免长文因总时长到点被掐断。onTimeout 由调用方决定（通常 abort）。
+ */
+export function createIdleTimer(ms: number, onTimeout: () => void): { reset(): void; clear(): void } {
+  let handle: ReturnType<typeof setTimeout> | undefined;
+  const reset = () => {
+    if (handle !== undefined) clearTimeout(handle);
+    handle = setTimeout(onTimeout, ms);
+    // 不阻止进程退出（测试/短生命周期进程）。
+    if (typeof handle === "object" && handle && typeof (handle as { unref?: () => void }).unref === "function") (handle as { unref: () => void }).unref();
+  };
+  reset();
+  return {
+    reset,
+    clear() {
+      if (handle !== undefined) clearTimeout(handle);
+      handle = undefined;
+    },
+  };
+}
+
+/**
+ * 从可能包裹的 abort 错误中还原流式空闲超时：Node fetch 在 for await 途中 abort 时，
+ * 常把 abort(reason) 的 reason 包成 AbortError.cause。若是空闲超时则原样抛出，否则抛原错误。
+ */
+function rethrowStreamError(error: unknown): never {
+  if (error instanceof ModelProviderTimeoutError) throw error;
+  const cause = (error as { cause?: unknown })?.cause;
+  if (cause instanceof ModelProviderTimeoutError) throw cause;
+  throw error;
+}
+
 export async function* iterateServerSentEvents(body: ReadableStream<Uint8Array>): AsyncIterable<{ event?: string; data: string }> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -2190,11 +2296,11 @@ export function fingerprintBaseUrl(value: string): string {
  */
 export async function* extractStreamDeltas(
   events: AsyncIterable<ModelProviderStreamEvent>,
-  doneRef: { model: string; usage?: ProviderUsage },
+  doneRef: { model: string; usage?: ProviderUsage; finishReason?: string },
 ): AsyncIterable<string> {
   for await (const event of events) {
     if (event.type === "delta") yield event.text;
-    else if (event.type === "done") { doneRef.model = event.model; doneRef.usage = event.usage; }
+    else if (event.type === "done") { doneRef.model = event.model; doneRef.usage = event.usage; doneRef.finishReason = event.finishReason; }
   }
 }
 

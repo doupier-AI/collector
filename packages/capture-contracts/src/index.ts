@@ -1131,9 +1131,28 @@ export interface ResearchBodyPlanSection {
   summary: string;
   /** 目标字数（提示用，非硬约束）。 */
   targetChars: number;
-  status: "pending" | "completed";
+  status: "pending" | "completed" | "failed";
   /** 扩写完成的节正文；pending 时缺省。 */
   content?: string;
+  /** 节内续写断点：本节已接受但尚未完成的部分正文（截断续写/空节修复中途落盘），恢复时从断点续写。 */
+  partialContent?: string;
+  /** 节最终失败原因（截断续写耗尽 / 空输出重问耗尽 / 供应商错误）；仅 status="failed" 时写入。 */
+  failureReason?: string;
+}
+
+/**
+ * 续写拼接去重：剔除 next 与 prior 尾部最长重叠前缀后拼接。
+ * 截断续写/断点续传时模型可能重述断点附近的文字；精确字符匹配（不做模糊/归一化），
+ * 仅当重叠长度 ≥ minOverlap 才认定为重复，避免短巧合重叠误删正文。契约安全、确定。
+ */
+export function joinContinuation(prior: string, next: string, maxOverlap = 2_000, minOverlap = 8): string {
+  if (!prior) return next;
+  if (!next) return prior;
+  const upper = Math.min(maxOverlap, prior.length, next.length);
+  for (let k = upper; k >= minOverlap; k -= 1) {
+    if (prior.endsWith(next.slice(0, k))) return prior + next.slice(k);
+  }
+  return prior + next;
 }
 
 /** plan-then-write 长文任务的大纲与逐节进度，持久化于任务 record_json 以支持断点续扩。 */
@@ -1161,6 +1180,8 @@ export interface ResearchTaskRecord {
   groundingScope?: ResearchGroundingScope;
   /** plan-then-write 长文任务的逐节计划与进度；仅存于 record_json，用于断点续扩。 */
   bodyPlan?: ResearchBodyPlan;
+  /** 单轮流式断点：周期性落盘的已接收正文前缀；流被切断/重启后从断点续传，不整篇重来。 */
+  streamCheckpoint?: { content: string; updatedAt: string };
   error?: ResearchTaskError;
   createdAt: string;
   updatedAt: string;
