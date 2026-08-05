@@ -381,6 +381,10 @@ button {
   font-weight: 700;
   line-height: 1.4;
   overflow-wrap: anywhere;
+  /* 章节导航 scrollIntoView 的锚点：预留 sticky 顶栏（.app-bar）高度 + 呼吸位，
+     跳转后标题停在顶栏下方，不被顶栏遮挡。两种标题形态（补题 <h3> 与提升的正文
+     标题）都带此类，一处生效。scroll-margin 只影响滚动定位，不改变布局与选区偏移。 */
+  scroll-margin-top: calc(var(--app-bar-height) + var(--space-4));
 }
 
 /* 卡片正文舒适行宽：--measure(68rem) 对长文偏宽，限定 42rem。 */

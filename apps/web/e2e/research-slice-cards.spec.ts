@@ -68,7 +68,11 @@ test.describe("#36 连续语义卡片", () => {
     await ticks.nth(2).click();
     await expect(ticks.nth(2)).toHaveAttribute("aria-current", "location");
     // 对应卡片滚入视口
-    await expect(page.locator(".slice-card__title", { hasText: "渐进生成" })).toBeInViewport();
+    const targetTitle = page.locator(".slice-card__title", { hasText: "渐进生成" });
+    await expect(targetTitle).toBeInViewport();
+    // 跳转后标题不被 sticky 顶栏遮挡：标题顶缘在顶栏（--app-bar-height 3.5rem=56px）之下。
+    const titleTop = await targetTitle.evaluate((el) => el.getBoundingClientRect().top);
+    expect(titleTop).toBeGreaterThan(56);
   });
 
   test("章节导航·当前线跟随滚动", async ({ page }) => {
