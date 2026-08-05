@@ -22,7 +22,9 @@ export interface SliceCardTarget {
   blockId: string;
   /** 卡片标题锚点 id（`${blockId}-title`），章节导航 scrollIntoView 目标。 */
   anchorId: string;
-  /** 卡片正文（恒等于切片 content，即块 text）。 */
+  /** 卡片正文（恒等于切片 content，逐字保留含节标题行的正文）。
+      渲染时正文首行节标题被提升为卡片标题样式并挂锚点 id，不再另起 <h3>，
+      因此同一标题只出现一次；选区/术语偏移按未改动的正文计算，零漂移。 */
   blockText: string;
 }
 

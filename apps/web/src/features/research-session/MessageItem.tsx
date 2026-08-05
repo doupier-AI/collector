@@ -2,7 +2,7 @@ import { createPortal } from "react-dom";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { ResearchCitationRecord, ResearchGroundingSourceRecord, ResearchMessageRecord, ResearchSliceRecord, ResearchTaskRecord, ResearchTermPreviewRecord, TermMarker } from "@collector/capture-contracts";
-import { deriveMessageBlocks, messageContentBlockId } from "@collector/capture-contracts";
+import { deriveMessageBlocks, messageContentBlockId, splitBlockHeading } from "@collector/capture-contracts";
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { markExactInRendered, setRangeFromOffsets } from "../selection/selection-highlight";
@@ -142,12 +142,14 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
 }
 
 /**
- * 语义卡片：一张卡片 = 一个完整论述单元（派生切片）。
- * 标题 <h3> 是 MessageBlock 的兄弟节点——绝不进入 data-block-text 容器，
- * 否则 TreeWalker 的可见文本偏移会漂移（漂移量=标题长度），破坏选区锚点。
+ * 语义卡片：一张卡片 = 一个完整论述单元（节级派生切片）。标题只渲染一次，两种形态：
+ * - 正文首行就是该节标题（plan-then-write / 含 ## 的正文）：把正文里那个标题元素提升为
+ *   卡片标题样式并挂导航锚点 id（titleAnchorId），不再另起 <h3>——标题字符仍在正文内，
+ *   选区/术语的可见文本偏移零漂移；
+ * - 正文无标题行、slice.title 是事后抽取的补题：另起一个独立 <h3> 显示补题。补题文字本就不在
+ *   正文文本里，故 <h3> 必须留在 data-block-text 容器外（兄弟节点），不污染选区偏移。
  * data-block-id 与 data-block-text 保留在内容容器上；data-slice-id 留作未来融合追溯关联钩。
- * 标题可为空（小模型抽取不到时不造标题）：有标题用 aria-labelledby 指向 <h3>，
- * 无标题改用 aria-label = 正文摘要，避免 aria-labelledby 悬空引用导致可访问名缺失。
+ * 无标题切片退化为 aria-label = 正文摘要。
  */
 function SliceCard({ slice, blockText, blockId, anchorId, highlight, sources, citations, terms }: {
   slice: ResearchSliceRecord;
@@ -160,13 +162,16 @@ function SliceCard({ slice, blockText, blockId, anchorId, highlight, sources, ci
   terms: TermMarker[];
 }) {
   const title = slice.title.trim();
+  // 正文首行节标题与切片标题一致 → 提升正文标题；否则补题需独立 <h3>。
+  const inBodyHeading = title ? splitBlockHeading(blockText) : null;
+  const promoteInBody = Boolean(inBodyHeading && inBodyHeading.title === title);
   return (
     <section
       className="slice-card"
       data-slice-id={slice.id}
       {...(title ? { "aria-labelledby": anchorId } : { "aria-label": sliceCardAccessibleName(slice) })}
     >
-      {title ? (
+      {title && !promoteInBody ? (
         <h3 id={anchorId} className="slice-card__title">
           {slice.title}
         </h3>
@@ -174,6 +179,7 @@ function SliceCard({ slice, blockText, blockId, anchorId, highlight, sources, ci
       <MessageBlock
         blockText={blockText}
         blockId={blockId}
+        titleAnchorId={promoteInBody ? anchorId : undefined}
         highlight={highlight}
         sources={sources}
         citations={citations}
@@ -183,8 +189,9 @@ function SliceCard({ slice, blockText, blockId, anchorId, highlight, sources, ci
   );
 }
 
-/** 单个消息块：Markdown 渲染 + 渲染后 DOM 高亮（useLayoutEffect）。 */
-function MessageBlock({ blockText, blockId, highlight, sources, citations, terms }: { blockText: string; blockId: string; highlight?: MessageHighlight; sources: ResearchGroundingSourceRecord[]; citations: ResearchCitationRecord[]; terms: TermMarker[] }) {
+/** 单个消息块：Markdown 渲染 + 渲染后 DOM 高亮（useLayoutEffect）。
+    titleAnchorId 存在时，把正文首个标题元素提升为卡片标题（挂该 id 供导航定位）。 */
+function MessageBlock({ blockText, blockId, titleAnchorId, highlight, sources, citations, terms }: { blockText: string; blockId: string; titleAnchorId?: string; highlight?: MessageHighlight; sources: ResearchGroundingSourceRecord[]; citations: ResearchCitationRecord[]; terms: TermMarker[] }) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
@@ -209,7 +216,7 @@ function MessageBlock({ blockText, blockId, highlight, sources, citations, terms
 
   return (
     <div className="message__content" data-block-id={blockId} data-block-text ref={containerRef}>
-      <MarkdownContent text={blockText} sources={sources} citations={citations} terms={terms} variant="message" />
+      <MarkdownContent text={blockText} sources={sources} citations={citations} terms={terms} variant="message" titleAnchorId={titleAnchorId} />
     </div>
   );
 }

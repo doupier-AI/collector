@@ -791,7 +791,7 @@ const BOLD_HEADING_MAX_CHARS = 60;
  * - 整段加粗短行：`**标题**`（仅当整块只有一行且全部加粗、且足够短时才当作标题，
  *   避免把正文里的加粗句误判成标题）。
  */
-function splitBlockHeading(blockText: string): { title: string; body: string } | null {
+export function splitBlockHeading(blockText: string): { title: string; body: string } | null {
   const atx = blockText.match(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*(?:\n([\s\S]*))?$/);
   if (atx) {
     const title = (atx[1] ?? "").trim();

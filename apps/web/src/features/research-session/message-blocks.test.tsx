@@ -294,6 +294,49 @@ describe("#36 连续语义卡片", () => {
     expect(first.closest("[data-message-id]")).toHaveAttribute("data-message-id", "m-out");
   });
 
+  it("正文含节标题时：标题只渲染一次（提升正文标题），锚点正确，正文 textContent 仍含标题行", async () => {
+    // plan-then-write 形态：切片 content 首行即节标题，title 与之同源。
+    const sectionContent = "## 背景与起源\n\n背景正文第一段。";
+    const content = `${sectionContent}\n\n## 核心创新\n\n创新正文第一段。`;
+    const slices = [
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "背景与起源", content: sectionContent }),
+      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "核心创新", content: "## 核心创新\n\n创新正文第一段。" }),
+    ];
+    const { container } = renderNodePage({ getResearchNodeView: async () => viewWithSlices(content, slices) });
+
+    await screen.findByText("背景正文第一段。");
+    // 同一标题只出现一次：没有独立补题 <h3>，标题由正文里的标题元素提升而来。
+    const titles = container.querySelectorAll(".slice-card__title");
+    expect(titles.length).toBe(2);
+    expect([...titles].map((t) => t.textContent)).toEqual(["背景与起源", "核心创新"]);
+    // 每个卡片里该标题只出现一次（不重复渲染）。
+    const firstCard = container.querySelectorAll<HTMLElement>("section.slice-card")[0]!;
+    expect(firstCard.querySelectorAll(".slice-card__title").length).toBe(1);
+    // 导航锚点挂在被提升的正文标题上。
+    expect(firstCard.querySelector(".slice-card__title")).toHaveAttribute("id", "m-out#p0-title");
+    // 选区偏移基准：正文 textContent 仍含标题行（标题字符留在 data-block-text 内）。
+    const block = firstCard.querySelector<HTMLElement>("[data-block-text]")!;
+    expect(block.textContent).toContain("背景与起源");
+    expect(block.textContent).toContain("背景正文第一段。");
+  });
+
+  it("正文无标题行、title 为事后补题时：独立 <h3> 在正文容器外，不重复、不混入偏移基准", async () => {
+    const content = "第一段。\n\n第二段。";
+    const slices = [
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点", content: "第一段。" }),
+    ];
+    const { container } = renderNodePage({ getResearchNodeView: async () => viewWithSlices(content, slices) });
+
+    const first = await screen.findByText("第一段。");
+    const block = first.closest<HTMLElement>("[data-block-text]")!;
+    const card = first.closest("section.slice-card")!;
+    const title = card.querySelector(".slice-card__title")!;
+    // 补题 <h3> 留在正文容器外；正文 textContent 不含补题文字。
+    expect(block.contains(title)).toBe(false);
+    expect(block.textContent).toBe("第一段。");
+    expect(title).toHaveAttribute("id", "m-out#p0-title");
+  });
+
   it("术语标记按块 ordinal 落在对应卡片正文，且不混入标题", async () => {
     const content = "REST 第一段。\n\nHTTP 第二段。";
     const slices = [

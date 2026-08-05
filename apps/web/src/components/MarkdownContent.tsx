@@ -35,6 +35,12 @@ export interface MarkdownContentProps {
   terms?: readonly TermMarker[];
   variant?: "message" | "insight";
   className?: string;
+  /**
+   * 语义卡片标题锚点 id。设置后，正文中第一个标题元素被提升为卡片标题
+   * （挂 slice-card__title 样式与该 id，供章节导航 scrollIntoView 定位），
+   * 其余标题保持默认样式。标题字符仍在正文文本内，选区/术语偏移不受影响。
+   */
+  titleAnchorId?: string;
 }
 
 /**
@@ -44,10 +50,13 @@ export interface MarkdownContentProps {
  * - variant="insight" 时适用较简洁排版
  * - 对极速流式更新做 useMemo 防止闪烁
  */
-export function MarkdownContent({ text, sources = [], citations = [], terms = [], variant = "message", className }: MarkdownContentProps) {
+export function MarkdownContent({ text, sources = [], citations = [], terms = [], variant = "message", className, titleAnchorId }: MarkdownContentProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const sourceById = useMemo(() => buildSourceMap(sources), [sources]);
   const citationIndexById = useMemo(() => buildCitationIndex(citations), [citations]);
+  // 仅提升"第一个"标题为卡片标题；用 ref 计数，ReactMarkdown 每次渲染重置。
+  const promotedTitleRef = useRef(false);
+  promotedTitleRef.current = false;
 
   // 按 source ordinal → 引用记录（用于 cite-marker 根据 data-source-ordinal 查找来源）
   const citationByOrdinal = useMemo(() => {
@@ -95,6 +104,8 @@ export function MarkdownContent({ text, sources = [], citations = [], terms = []
             const source = sourceById.get(citation.sourceId);
             return <CitationMarker index={index} citation={citation} source={source} />;
           },
+          // 卡片标题提升：正文首个标题（## / ###…）成为卡片大标题并挂导航锚点。
+          ...(titleAnchorId ? buildPromotedHeadingComponents(titleAnchorId, promotedTitleRef) : {}),
         } as Record<string, React.ComponentType<any>>}
       >
         {text}
@@ -106,6 +117,39 @@ export function MarkdownContent({ text, sources = [], citations = [], terms = []
 interface TextPoint {
   node: Text;
   offset: number;
+}
+
+/**
+ * 生成 h1–h6 的渲染器：正文里第一个标题被提升为卡片标题（挂 anchorId 与 slice-card__title
+ * 样式，但保留原 heading 标签层级，字符与文本节点不变）；其后的标题用默认渲染。
+ * 只在切片卡片正文（titleAnchorId 存在）时启用。
+ */
+function buildPromotedHeadingComponents(
+  anchorId: string,
+  promotedRef: { current: boolean },
+): Record<string, React.ComponentType<any>> {
+  const makeRenderer = (Tag: "h1" | "h2" | "h3" | "h4" | "h5" | "h6") => {
+    function PromotedHeading({ children, ...rest }: React.HTMLAttributes<HTMLHeadingElement> & { children?: ReactNode }) {
+      if (!promotedRef.current) {
+        promotedRef.current = true;
+        return (
+          <Tag id={anchorId} className="slice-card__title" {...rest}>
+            {children}
+          </Tag>
+        );
+      }
+      return <Tag {...rest}>{children}</Tag>;
+    }
+    return PromotedHeading;
+  };
+  return {
+    h1: makeRenderer("h1"),
+    h2: makeRenderer("h2"),
+    h3: makeRenderer("h3"),
+    h4: makeRenderer("h4"),
+    h5: makeRenderer("h5"),
+    h6: makeRenderer("h6"),
+  };
 }
 
 interface RenderedTextRange {
