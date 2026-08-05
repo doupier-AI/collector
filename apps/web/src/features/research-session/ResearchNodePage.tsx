@@ -91,7 +91,7 @@ export function ResearchNodePage() {
     for (const message of readyMessages) {
       if (message.role !== "assistant" || message.status !== "completed") continue;
       for (const target of deriveSliceCardTargets(message, readySlices?.[message.id])) {
-        items.push({ anchorId: target.anchorId, title: target.slice.title, excerpt: target.blockText });
+        items.push({ anchorId: target.anchorId, cardId: target.cardId, title: target.slice.title, excerpt: target.blockText });
       }
     }
     return items;

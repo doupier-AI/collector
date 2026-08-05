@@ -19,6 +19,8 @@ import { makeExcerpt } from "./slice-cards";
 export interface SliceRailItem {
   /** 卡片标题锚点 id（`${blockId}-title`），scrollIntoView 定位目标。 */
   anchorId: string;
+  /** 整张卡片容器 id（`${blockId}-card`），IntersectionObserver 的观察目标（整节而非标题行）。 */
+  cardId: string;
   /** 切片标题；可能为空（无标题卡片）。 */
   title: string;
   /** 正文开头摘要（用于无标题卡片的 aria-label 与预览）。 */
@@ -38,6 +40,9 @@ export const SliceRailNav = memo(function SliceRailNav({ items }: { items: Slice
   const railRef = useRef<HTMLDivElement>(null);
   const previewTimerRef = useRef<number | undefined>(undefined);
   const draggingRef = useRef(false);
+  // 点击/拖动跳转的 smooth-scroll 进行中为 true：暂停 observer 决胜，防高亮被途中卡片拖回。
+  const suppressRef = useRef(false);
+  const suppressTimerRef = useRef<number | undefined>(undefined);
 
   const clearPreviewTimer = useCallback(() => {
     if (previewTimerRef.current !== undefined) {
@@ -51,45 +56,97 @@ export const SliceRailNav = memo(function SliceRailNav({ items }: { items: Slice
     setPreviewIndex(null);
   }, [clearPreviewTimer]);
 
-  // 当前位置：视口内（最接近顶部）的卡片对应线加粗高亮。
+  // 当前位置：视口注视带内的卡片对应线加粗高亮。
+  //
+  // scrollspy 标准几何法（Bootstrap 5 / Maxime Heckel 收敛做法）：
+  // - 观察目标是整张卡片 <section>，不是标题行——标题滚出屏幕、正文仍在读时高亮仍跟随本节；
+  // - 激活带是视口居中的注视区（rootMargin 负值），只有进入读者自然注视区的卡片才算数；
+  // - 同屏多张卡片时只选一个赢家：取"卡片顶已滚到阅读线上方、且最靠下（最贴近当前阅读位置）"者，
+  //   即正在读的那节；标题滚出屏幕无所谓，只要正文压着注视区就持续高亮；
+  // - 兜底：滚到首节之前亮首节、滚到底部亮末节，任何滚动位置都恰好亮一条；
+  // - 点击 smooth-scroll 途中暂停决胜（suppressRef），防止途中经过的卡片把高亮拖走。
   useEffect(() => {
     if (items.length === 0 || typeof IntersectionObserver === "undefined") return;
-    // 元素→索引映射（不写 DOM，避免触碰卡片节点引发兄弟组件高亮重渲染被清除）。
     const indexByElement = new Map<Element, number>();
-    const visibility = new Map<number, number>();
+    // 每张卡片最近一次 boundingClientRect（按观察回调刷新；胜负在 rAF 内统一裁决）。
+    const rectByIndex = new Map<number, DOMRect>();
     // rAF 去抖：observer 回调密集时合并，避免与选区高亮的渲染周期竞争导致 <mark> 被清除。
     let raf = 0;
+    // 点击跳转 smooth-scroll 期间为 true：暂停 observer 决胜，避免高亮被途中卡片拖回。
+    const suppress = suppressRef;
+
+    const viewportEl = document.scrollingElement ?? document.documentElement;
+
+    const decide = () => {
+      if (suppress.current) return;
+      // 阅读线：视口注视带的上缘（rootMargin 顶部 -35% → 阅读线位于视口 35% 高度处）。
+      const readingLine = window.innerHeight * 0.35;
+      // 兜底：滚到接近底部时强制亮末节（最后一节可能短到永远进不了注视带）。
+      const nearBottom = viewportEl.scrollTop + window.innerHeight >= viewportEl.scrollHeight - 4;
+      if (nearBottom) {
+        setActiveIndex(items.length - 1);
+        return;
+      }
+      // 在已观测卡片里，取"卡片顶 ≤ 阅读线"中最靠下者；没有则取首张卡片（首节前兜底）。
+      let best = -1;
+      let bestTop = -Infinity;
+      for (const [index, rect] of rectByIndex) {
+        if (rect.top <= readingLine && rect.top > bestTop) {
+          bestTop = rect.top;
+          best = index;
+        }
+      }
+      if (best < 0) {
+        // 所有卡片顶都在阅读线下方（尚未滚到首节）→ 亮第一张。
+        setActiveIndex(0);
+        return;
+      }
+      setActiveIndex(best);
+    };
+
     const observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
           const index = indexByElement.get(entry.target);
           if (index === undefined) continue;
-          visibility.set(index, entry.isIntersecting ? entry.intersectionRatio : 0);
+          rectByIndex.set(index, entry.boundingClientRect);
         }
         cancelAnimationFrame(raf);
-        raf = requestAnimationFrame(() => {
-          let best = -1;
-          let bestRatio = 0;
-          for (const [index, ratio] of visibility) {
-            if (ratio > bestRatio) {
-              bestRatio = ratio;
-              best = index;
-            }
-          }
-          if (best >= 0) setActiveIndex(best);
-        });
+        raf = requestAnimationFrame(decide);
       },
-      // 顶部一条窄带：优先认定读到的卡片；threshold 0 保证任何进入都计入。
-      { rootMargin: "-10% 0px -55% 0px", threshold: 0 },
+      // 居中注视带：顶部收缩 35%、底部收缩 55%，只把进入注视区的卡片纳入裁决。
+      { rootMargin: "-35% 0px -55% 0px", threshold: 0 },
     );
-    items.forEach((item, index) => {
-      const el = document.getElementById(item.anchorId);
-      if (!el) return;
-      indexByElement.set(el, index);
-      observer.observe(el);
-    });
+
+    // 绑定观察目标；卡片可能尚未渲染（流式/后到的切片），缺失项延迟重试，消除"挂空"。
+    let retry = 0;
+    const observedIds = new Set<string>();
+    const attach = () => {
+      let missing = 0;
+      items.forEach((item, index) => {
+        if (observedIds.has(item.cardId)) return;
+        const el = document.getElementById(item.cardId);
+        if (!el) {
+          missing += 1;
+          return;
+        }
+        observedIds.add(item.cardId);
+        indexByElement.set(el, index);
+        observer.observe(el);
+      });
+      if (missing > 0) {
+        retry = window.setTimeout(attach, 120);
+      } else {
+        // 全部就位后先裁决一次，保证初始高亮正确（而非默认 0）。
+        cancelAnimationFrame(raf);
+        raf = requestAnimationFrame(decide);
+      }
+    };
+    attach();
+
     return () => {
       cancelAnimationFrame(raf);
+      window.clearTimeout(retry);
       observer.disconnect();
     };
   }, [items]);
@@ -102,6 +159,12 @@ export const SliceRailNav = memo(function SliceRailNav({ items }: { items: Slice
       if (!el) return;
       setActiveIndex(index);
       if (typeof el.scrollIntoView === "function") {
+        // 跳转期间暂停 observer 决胜；smooth-scroll 有滚动时长，给足缓冲再在到达后恢复裁决。
+        suppressRef.current = true;
+        window.clearTimeout(suppressTimerRef.current);
+        suppressTimerRef.current = window.setTimeout(() => {
+          suppressRef.current = false;
+        }, reducedMotion ? 60 : 700);
         el.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "start" });
       }
     },
@@ -151,7 +214,13 @@ export const SliceRailNav = memo(function SliceRailNav({ items }: { items: Slice
     event.currentTarget.releasePointerCapture?.(event.pointerId);
   }, []);
 
-  useEffect(() => () => clearPreviewTimer(), [clearPreviewTimer]);
+  useEffect(
+    () => () => {
+      clearPreviewTimer();
+      window.clearTimeout(suppressTimerRef.current);
+    },
+    [clearPreviewTimer],
+  );
 
   const preview = previewIndex !== null ? items[previewIndex] : null;
   const previewExcerpt = useMemo(() => (preview ? makeExcerpt(preview.excerpt) : ""), [preview]);

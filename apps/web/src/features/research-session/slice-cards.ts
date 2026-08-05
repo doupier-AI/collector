@@ -22,6 +22,9 @@ export interface SliceCardTarget {
   blockId: string;
   /** 卡片标题锚点 id（`${blockId}-title`），章节导航 scrollIntoView 目标。 */
   anchorId: string;
+  /** 整张卡片容器 id（`${blockId}-card`），章节导航 IntersectionObserver 的观察目标。
+      观察整节卡片而非标题行：标题滚出屏幕、正文仍在读时高亮仍跟随本节。 */
+  cardId: string;
   /** 卡片正文（恒等于切片 content，逐字保留含节标题行的正文）。
       渲染时正文首行节标题被提升为卡片标题样式并挂锚点 id，不再另起 <h3>，
       因此同一标题只出现一次；选区/术语偏移按未改动的正文计算，零漂移。 */
@@ -56,6 +59,7 @@ export function deriveSliceCardTargets(
       blockOrdinal,
       blockId,
       anchorId: `${blockId}-title`,
+      cardId: `${blockId}-card`,
       blockText: slice.content,
     };
   });

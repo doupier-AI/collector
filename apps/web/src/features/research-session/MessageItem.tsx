@@ -108,6 +108,7 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
               blockText={target.blockText}
               blockId={target.blockId}
               anchorId={target.anchorId}
+              cardId={target.cardId}
               highlight={thisHighlight}
               sources={groundingSources}
               citations={citations}
@@ -151,11 +152,12 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
  * data-block-id 与 data-block-text 保留在内容容器上；data-slice-id 留作未来融合追溯关联钩。
  * 无标题切片退化为 aria-label = 正文摘要。
  */
-function SliceCard({ slice, blockText, blockId, anchorId, highlight, sources, citations, terms }: {
+function SliceCard({ slice, blockText, blockId, anchorId, cardId, highlight, sources, citations, terms }: {
   slice: ResearchSliceRecord;
   blockText: string;
   blockId: string;
   anchorId: string;
+  cardId: string;
   highlight?: MessageHighlight;
   sources: ResearchGroundingSourceRecord[];
   citations: ResearchCitationRecord[];
@@ -167,6 +169,7 @@ function SliceCard({ slice, blockText, blockId, anchorId, highlight, sources, ci
   const promoteInBody = Boolean(inBodyHeading && inBodyHeading.title === title);
   return (
     <section
+      id={cardId}
       className="slice-card"
       data-slice-id={slice.id}
       {...(title ? { "aria-labelledby": anchorId } : { "aria-label": sliceCardAccessibleName(slice) })}
