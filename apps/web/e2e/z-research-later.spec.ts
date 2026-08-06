@@ -183,5 +183,25 @@ test.describe("标记列表 API 与持久化", () => {
     await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
   });
 
+  test("标记面板条目保留样式（回归保护：#40 曾误删 later-* 样式）", async ({ page }) => {
+    test.setTimeout(60_000);
+    await pairAndOpen(page, "/research/new");
+    await submitFirstQuestion(page);
+    await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
+
+    await selectAnswerText(page, SELECTED);
+    await page.getByTestId("floating-capsule-mark").click();
+    await page.mouse.click(12, 12);
+    await expect(page.getByTestId("mark-note-editor")).toHaveCount(0);
+
+    // 条目有卡片边框、标题单行省略、元信息弱化色
+    const item = page.locator(".later-item").first();
+    await expect(item).toBeVisible();
+    await expect(item).toHaveCSS("border-radius", "10px");
+    await expect(page.locator(".later-item__excerpt").first()).toHaveCSS("color", "rgb(32, 35, 31)");
+    const meta = page.locator(".later-item__meta").first();
+    await expect(meta).toHaveCSS("color", "rgb(107, 113, 104)");
+  });
+
 
 });
