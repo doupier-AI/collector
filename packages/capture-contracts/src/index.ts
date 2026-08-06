@@ -339,6 +339,8 @@ export interface ModelCallRecord {
   promptVersion: string;
   /** F1 等切片感知调用记录实际送入核验的本地切片，不保存提示词正文。 */
   sourceSliceIds?: string[];
+  /** #39 起片段感知调用同时记录语义片段 ID；与 sourceSliceIds 同为本地引用。 */
+  sourceFragmentIds?: string[];
   /** 调用时固定的输出令牌预算；缺省表示旧记录未提供此审计字段。 */
   tokenBudget?: number;
   status: "completed" | "failed";
@@ -1926,9 +1928,18 @@ export interface ResearchSliceRecord {
   createdAt: string;
 }
 
-/** E3：送入下一轮生成的有界切片上下文；与父链上下文分别预算。 */
+/**
+ * E3：送入下一轮生成的有界上下文条目；与父链上下文分别预算。
+ *
+ * #39 起条目经语义片段 Interface 选择：`bodyVersionId` + `fragmentId` 是稳定引用，
+ * `content` 是 `resolveFragmentExcerpt` 从正文版本范围运行时派生的摘录（正文是唯一
+ * 事实源，不再以独立切片内容副本为源）。正式片段可回指对应切片（`sliceId`）；
+ * 按块派生的临时片段没有对应切片，`sliceId` 缺省。
+ */
 export interface ResearchSliceContextItem {
-  sliceId: string;
+  fragmentId: string;
+  bodyVersionId: string;
+  sliceId?: string;
   nodeId: string;
   messageId: string;
   ordinal: number;
@@ -2562,10 +2573,21 @@ export type FusionRelationType = (typeof FUSION_RELATION_TYPES)[number];
 export type ResearchFusionProposalStatus = "pending" | "accepted" | "rejected";
 export type ResearchFusionProposalDecision = Exclude<ResearchFusionProposalStatus, "pending">;
 
-/** 触发来源：哪个切片或术语命中触发此提议。 */
+/**
+ * 触发来源：哪个语义片段命中触发此提议。
+ *
+ * #39 起每条来源至少携带原始节点（`nodeId`）、正文版本（`bodyVersionId`）与稳定片段
+ * 标识（`fragmentId`），摘录可经 `resolveFragmentExcerpt` 回读到正确原文；需要精确
+ * 说明时附带对应切片（`sliceId`）或触发术语（`termText`）。历史旧切片产生的来源可
+ * 由服务层兼容映射补齐正文版本与片段引用。
+ */
 export interface FusionProposalTriggerSource {
   /** 触发节点 ID。 */
   nodeId: string;
+  /** 触发正文版本 ID（如有；新扫描必带）。 */
+  bodyVersionId?: string;
+  /** 触发语义片段 ID（如有；新扫描必带）。 */
+  fragmentId?: string;
   /** 触发切片 ID（如有）。 */
   sliceId?: string;
   /** 触发术语文本（如有）。 */
@@ -2573,12 +2595,14 @@ export interface FusionProposalTriggerSource {
 }
 
 /**
- * 相似性核验的可审计输入摘要。仅保留本机 slice ID、令牌预算和提示词版本，
+ * 相似性核验的可审计输入摘要。仅保留本机 slice/fragment ID、令牌预算和提示词版本，
  * 不保存模型原始回答或额外的外部传输数据。
  */
 export interface SimilarityVerificationAudit {
   promptVersion: typeof SIMILARITY_VERIFICATION_PROMPT_VERSION;
   sourceSliceIds: string[];
+  /** 参与核验的语义片段 ID 并集（#39 起随扫描写入）。 */
+  sourceFragmentIds?: string[];
   tokenBudget: number;
 }
 

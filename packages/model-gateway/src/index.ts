@@ -211,7 +211,9 @@ export function formatResearchSliceContext(context?: ResearchSliceContext): stri
   ];
   for (const item of context.items) {
     lines.push(JSON.stringify({
-      sliceId: item.sliceId,
+      fragmentId: item.fragmentId,
+      bodyVersionId: item.bodyVersionId,
+      ...(item.sliceId ? { sliceId: item.sliceId } : {}),
       nodeId: item.nodeId,
       messageId: item.messageId,
       ordinal: item.ordinal,
@@ -434,6 +436,8 @@ export interface ModelCallContext {
   retryCount?: number;
   /** Only persist selected local slice IDs; prompt bodies stay out of local run records. */
   sourceSliceIds?: string[];
+  /** #39：参与调用的语义片段 ID（与 sourceSliceIds 同为本地引用，不含正文内容）。 */
+  sourceFragmentIds?: string[];
   /** Fixed output-token budget for explaining the call boundary in run records. */
   tokenBudget?: number;
 }

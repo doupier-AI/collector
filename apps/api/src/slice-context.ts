@@ -1,4 +1,6 @@
 import type {
+  ResearchBodyVersionRecord,
+  ResearchSemanticFragmentRecord,
   ResearchSliceContext,
   ResearchSliceContextItem,
   ResearchSliceRecord,
@@ -6,21 +8,29 @@ import type {
 
 export const DEFAULT_RESEARCH_SLICE_CONTEXT_TOKEN_BUDGET = 4_000;
 
-export interface ResearchSliceContextCandidate {
-  slice: ResearchSliceRecord;
+/**
+ * #39：上下文候选以语义片段为单位。`excerpt` 是经 `resolveFragmentExcerpt`
+ * 从正文版本范围解析出的摘录（正文是唯一事实源）；`slice` 携带事后标注
+ * （标题/概念）与切片引用，临时片段可缺省。
+ */
+export interface ResearchFragmentContextCandidate {
+  fragment: ResearchSemanticFragmentRecord;
+  version: ResearchBodyVersionRecord;
+  excerpt: string;
+  slice?: ResearchSliceRecord;
   parentDistance: number;
   isCurrentNode: boolean;
   isFromOriginSelection: boolean;
 }
 
 interface ScoredCandidate {
-  candidate: ResearchSliceContextCandidate;
+  candidate: ResearchFragmentContextCandidate;
   relevance: number;
   tokenCount: number;
 }
 
 /**
- * 估算上下文切片的 token 数。E3 只需要稳定的本地预算，不把供应商 tokenizer 引入持久化路径。
+ * 估算上下文条目的 token 数。E3 只需要稳定的本地预算，不把供应商 tokenizer 引入持久化路径。
  */
 export function estimateResearchSliceTokens(value: string): number {
   return Math.max(1, Math.ceil(value.length / 4));
@@ -28,6 +38,8 @@ export function estimateResearchSliceTokens(value: string): number {
 
 export function estimateResearchSliceContextItemTokens(item: ResearchSliceContextItem): number {
   return estimateResearchSliceTokens(JSON.stringify({
+    fragmentId: item.fragmentId,
+    bodyVersionId: item.bodyVersionId,
     sliceId: item.sliceId,
     nodeId: item.nodeId,
     messageId: item.messageId,
@@ -43,9 +55,9 @@ export function estimateResearchSliceContextItemTokens(item: ResearchSliceContex
   }));
 }
 
-/** 将候选切片按相关性排序并以完整切片为单位装入独立预算。 */
+/** 将候选片段按相关性排序并以完整片段为单位装入独立预算。 */
 export function buildResearchSliceContext(
-  candidates: readonly ResearchSliceContextCandidate[],
+  candidates: readonly ResearchFragmentContextCandidate[],
   query: string,
   options: {
     tokenBudget?: number;
@@ -55,12 +67,12 @@ export function buildResearchSliceContext(
   const tokenBudget = Math.max(0, Math.trunc(options.tokenBudget ?? DEFAULT_RESEARCH_SLICE_CONTEXT_TOKEN_BUDGET));
   const queryTerms = searchTerms(query);
   const scored: ScoredCandidate[] = candidates
-    .filter(({ slice }) => Boolean(slice.content.trim()))
+    .filter(({ excerpt }) => Boolean(excerpt.trim()))
     .map((candidate) => {
       const item = toContextItem(candidate);
       return {
         candidate,
-        relevance: relevanceFor(candidate.slice, queryTerms),
+        relevance: relevanceFor(candidate, queryTerms),
         tokenCount: estimateResearchSliceContextItemTokens(item),
       };
     })
@@ -83,18 +95,20 @@ export function buildResearchSliceContext(
   };
 }
 
-function toContextItem(candidate: ResearchSliceContextCandidate): ResearchSliceContextItem {
-  const { slice } = candidate;
+function toContextItem(candidate: ResearchFragmentContextCandidate): ResearchSliceContextItem {
+  const { fragment, slice } = candidate;
   return {
-    sliceId: slice.id,
-    nodeId: slice.nodeId,
-    messageId: slice.messageId,
-    ordinal: slice.ordinal,
-    title: slice.title,
-    content: slice.content,
-    normalizedConcepts: [...slice.normalizedConcepts],
-    sourceRefs: slice.sourceRefs.map((source) => ({ ...source })),
-    isProvisional: slice.isProvisional,
+    fragmentId: fragment.id,
+    bodyVersionId: fragment.bodyVersionId,
+    ...(slice ? { sliceId: slice.id } : {}),
+    nodeId: fragment.nodeId,
+    messageId: fragment.messageId,
+    ordinal: fragment.ordinal,
+    title: slice?.title ?? "",
+    content: candidate.excerpt,
+    normalizedConcepts: slice ? [...slice.normalizedConcepts] : [],
+    sourceRefs: fragment.sourceRefs.map((source) => ({ ...source })),
+    isProvisional: fragment.isProvisional,
     parentDistance: candidate.parentDistance,
   };
 }
@@ -104,15 +118,17 @@ function compareScoredCandidates(left: ScoredCandidate, right: ScoredCandidate):
     || Number(right.candidate.isCurrentNode) - Number(left.candidate.isCurrentNode)
     || Number(right.candidate.isFromOriginSelection) - Number(left.candidate.isFromOriginSelection)
     || left.candidate.parentDistance - right.candidate.parentDistance
-    || left.candidate.slice.nodeId.localeCompare(right.candidate.slice.nodeId)
-    || left.candidate.slice.messageId.localeCompare(right.candidate.slice.messageId)
-    || left.candidate.slice.ordinal - right.candidate.slice.ordinal
-    || left.candidate.slice.id.localeCompare(right.candidate.slice.id);
+    || left.candidate.fragment.nodeId.localeCompare(right.candidate.fragment.nodeId)
+    || left.candidate.fragment.messageId.localeCompare(right.candidate.fragment.messageId)
+    || left.candidate.fragment.ordinal - right.candidate.fragment.ordinal
+    || left.candidate.fragment.id.localeCompare(right.candidate.fragment.id);
 }
 
-function relevanceFor(slice: ResearchSliceRecord, queryTerms: readonly string[]): number {
+function relevanceFor(candidate: ResearchFragmentContextCandidate, queryTerms: readonly string[]): number {
   if (queryTerms.length === 0) return 0;
-  const haystack = [slice.title, slice.content, ...slice.normalizedConcepts].join(" ").toLocaleLowerCase();
+  const haystack = [candidate.slice?.title ?? "", candidate.excerpt, ...(candidate.slice?.normalizedConcepts ?? [])]
+    .join(" ")
+    .toLocaleLowerCase();
   return queryTerms.reduce((score, term) => score + (haystack.includes(term) ? 1 : 0), 0);
 }
 

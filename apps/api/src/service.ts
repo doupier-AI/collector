@@ -44,9 +44,6 @@ import {
   type ExportResult,
   type ResearchNodeView,
   type ResearchSliceRecord,
-  deriveBodyVersion,
-  deriveFragmentsFromBlocks,
-  deriveFragmentsFromSlices,
   resolveFragmentExcerpt,
   type ResearchBodyVersionRecord,
   type ResearchBodyVersionView,
@@ -54,6 +51,7 @@ import {
 } from "@collector/capture-contracts";
 import type { CollectorStore } from "./store.js";
 import { defaultDataPaths } from "./store.js";
+import { deriveMessageBodyArtifacts } from "./body-artifacts.js";
 import { SourceParser, parsePdf } from "./parsers.js";
 import { DEFAULT_PROVIDER_REGISTRY, formatResearchParentChainContext, formatResearchSliceContext, ModelGateway, ProviderRuntimeResolver, discoverProviderModels as discoverProviderModelsViaGateway, validateExternalProviderBaseUrl } from "@collector/model-gateway";
 import { createVerificationWorkflow } from "./verification.js";
@@ -230,18 +228,13 @@ export class CaptureService {
     const existing = this.store.getBodyVersionForMessage(message.id);
     if (existing) return existing;
     const scopeNodeId = message.nodeId ?? message.branchId ?? nodeId;
-    const version = deriveBodyVersion({
-      messageId: message.id,
-      nodeId: scopeNodeId,
-      content: message.content,
-      origin: "backfill",
-      createdAt: message.createdAt ?? new Date().toISOString(),
-    });
     const slices = this.store.listSlicesByMessage(message.id);
-    const hasFormal = slices.length > 0 && slices.every((s) => !s.isProvisional);
-    const fragments = hasFormal
-      ? deriveFragmentsFromSlices(version, slices, citations)
-      : deriveFragmentsFromBlocks(version, citations);
+    const { version, fragments } = deriveMessageBodyArtifacts({
+      nodeId: scopeNodeId,
+      message: { id: message.id, content: message.content, createdAt: message.createdAt ?? new Date().toISOString() },
+      slices,
+      citations,
+    });
     await this.store.createResearchBodyVersion(version);
     await this.store.createSemanticFragments(fragments);
     return version;
@@ -300,6 +293,7 @@ export class CaptureService {
         purpose: event.context.purpose ?? "unknown",
         promptVersion: event.promptVersion,
         ...(event.context.sourceSliceIds ? { sourceSliceIds: [...new Set(event.context.sourceSliceIds)].sort() } : {}),
+        ...(event.context.sourceFragmentIds ? { sourceFragmentIds: [...new Set(event.context.sourceFragmentIds)].sort() } : {}),
         ...(event.context.tokenBudget !== undefined ? { tokenBudget: event.context.tokenBudget } : {}),
         status: event.status,
         inputTokens: usage?.inputTokens ?? 0,

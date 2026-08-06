@@ -3,17 +3,30 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { ResearchMessageRecord, ResearchNodeRecord, ResearchSessionRecord, ResearchSliceRecord } from "@collector/capture-contracts";
+import type {
+  ResearchFusionProposalRecord,
+  ResearchMessageRecord,
+  ResearchNodeRecord,
+  ResearchSessionRecord,
+  ResearchSliceRecord,
+} from "@collector/capture-contracts";
 import {
   FUSION_PROPOSAL_COOLDOWN_DAYS,
+  MIN_SIMILARITY_FALLBACK_UNIT_CHARACTERS,
   ResearchFusionProposalService,
   SIMILARITY_VERIFICATION_TOKEN_BUDGET,
   buildSimilarityCandidates,
+  deriveMessageBodyArtifacts,
   indexNodeSimilaritySignals,
   type SimilarityVerificationGateway,
   TermDetectionService,
 } from "@collector/api";
-import { SIMILARITY_VERIFICATION_PROMPT_VERSION, researchFusionProposalId } from "@collector/capture-contracts";
+import {
+  SIMILARITY_VERIFICATION_PROMPT_VERSION,
+  deriveBodyVersion,
+  resolveFragmentExcerpt,
+  researchFusionProposalId,
+} from "@collector/capture-contracts";
 import { FakeProvider, ModelGateway } from "@collector/model-gateway";
 import { SqliteStore } from "@collector/api";
 
@@ -48,6 +61,7 @@ async function createHarness() {
   await store.createSlices(slices);
   return {
     store,
+    now,
     nodes,
     messages,
     slices,
@@ -55,7 +69,18 @@ async function createHarness() {
   };
 }
 
-test("deterministic candidate index prefers normalized slice concepts and is stable", async (t) => {
+/** 期望的正文版本 ID（与扫描内部同一确定性派生）。 */
+function expectedVersionId(nodeId: string, message: ResearchMessageRecord): string {
+  return deriveBodyVersion({
+    messageId: message.id,
+    nodeId,
+    content: message.content,
+    origin: "backfill",
+    createdAt: message.createdAt,
+  }).id;
+}
+
+test("deterministic candidate index prefers normalized concepts and carries stable fragment references", async (t) => {
   const harness = await createHarness();
   t.after(harness.close);
   const detection = new TermDetectionService();
@@ -68,9 +93,11 @@ test("deterministic candidate index prefers normalized slice concepts and is sta
   const candidates = buildSimilarityCandidates("node-a", indexed);
   assert.equal(candidates.length, 1);
   assert.deepEqual([candidates[0].lo.node.id, candidates[0].hi.node.id], ["node-a", "node-b"]);
+  const bodyA = expectedVersionId("node-a", harness.messages[0]);
+  const bodyB = expectedVersionId("node-b", harness.messages[1]);
   assert.deepEqual(candidates[0].triggerSources, [
-    { nodeId: "node-a", sliceId: "slice:node-a:message-a:0" },
-    { nodeId: "node-b", sliceId: "slice:node-b:message-b:0" },
+    { nodeId: "node-a", bodyVersionId: bodyA, fragmentId: `fragment:${bodyA}:0`, sliceId: "slice:node-a:message-a:0" },
+    { nodeId: "node-b", bodyVersionId: bodyB, fragmentId: `fragment:${bodyB}:0`, sliceId: "slice:node-b:message-b:0" },
   ]);
 });
 
@@ -92,32 +119,63 @@ test("empty normalized concepts deterministically fall back to term and content-
   const candidates = buildSimilarityCandidates("node-a", indexed);
   assert.equal(candidates.length, 1);
   assert.ok(candidates[0].triggerSources.some((source) => source.termText === "REST"));
+  for (const source of candidates[0].triggerSources) {
+    assert.ok(source.bodyVersionId, "fallback trigger sources still carry body version references");
+    assert.ok(source.fragmentId, "fallback trigger sources still carry fragment references");
+  }
 });
 
-test("slice-level concept priority still falls back for empty slices", () => {
+test("fragment-level concept priority still falls back for concept-less units", () => {
+  const now = "2026-08-02T00:00:00.000Z";
+  const secondA = "REST API 可以被用来访问本地研究材料。";
+  const secondB = "REST API 也可以被用来访问研究材料。";
+  const nodes: ResearchNodeRecord[] = [
+    { id: "node-a", sessionId: "session-1", status: "active", createdAt: now, updatedAt: now },
+    { id: "node-b", sessionId: "session-1", status: "active", createdAt: now, updatedAt: now },
+  ];
+  const messages: ResearchMessageRecord[] = [
+    { id: "message-a", sessionId: "session-1", nodeId: "node-a", role: "assistant", content: `Alpha 概念。\n\n${secondA}`, status: "completed", createdAt: now, updatedAt: now },
+    { id: "message-b", sessionId: "session-1", nodeId: "node-b", role: "assistant", content: `Beta 概念。\n\n${secondB}`, status: "completed", createdAt: now, updatedAt: now },
+  ];
+  const slicesByNode = [
+    [
+      { id: "slice:node-a:message-a:0", nodeId: "node-a", messageId: "message-a", ordinal: 0, title: "Alpha", content: "Alpha 概念。", normalizedConcepts: ["Alpha"], sourceRefs: [], isProvisional: false, createdAt: now },
+      { id: "slice:node-a:message-a:1", nodeId: "node-a", messageId: "message-a", ordinal: 1, title: "接口", content: secondA, normalizedConcepts: [], sourceRefs: [], isProvisional: false, createdAt: now },
+    ],
+    [
+      { id: "slice:node-b:message-b:0", nodeId: "node-b", messageId: "message-b", ordinal: 0, title: "Beta", content: "Beta 概念。", normalizedConcepts: ["Beta"], sourceRefs: [], isProvisional: false, createdAt: now },
+      { id: "slice:node-b:message-b:1", nodeId: "node-b", messageId: "message-b", ordinal: 1, title: "接口", content: secondB, normalizedConcepts: [], sourceRefs: [], isProvisional: false, createdAt: now },
+    ],
+  ] satisfies ResearchSliceRecord[][];
+  assert.ok(secondA.length >= MIN_SIMILARITY_FALLBACK_UNIT_CHARACTERS);
+  const indexed = nodes.map((node, index) => indexNodeSimilaritySignals(node, slicesByNode[index], [messages[index]], new TermDetectionService()));
+  const candidates = buildSimilarityCandidates("node-a", indexed);
+  assert.equal(candidates.length, 1);
+  assert.ok(candidates[0].triggerSources.some((source) => source.sliceId === "slice:node-a:message-a:1" && source.termText === "REST"));
+});
+
+test("isolated short units without concepts never seed fallback candidates", () => {
+  assert.ok("共享词。".length < MIN_SIMILARITY_FALLBACK_UNIT_CHARACTERS, "fixture unit must be below the gate");
   const now = "2026-08-02T00:00:00.000Z";
   const nodes: ResearchNodeRecord[] = [
     { id: "node-a", sessionId: "session-1", status: "active", createdAt: now, updatedAt: now },
     { id: "node-b", sessionId: "session-1", status: "active", createdAt: now, updatedAt: now },
   ];
   const messages: ResearchMessageRecord[] = [
-    { id: "message-a", sessionId: "session-1", nodeId: "node-a", role: "assistant", content: "Alpha 概念。REST API 可访问本地材料。", status: "completed", createdAt: now, updatedAt: now },
-    { id: "message-b", sessionId: "session-1", nodeId: "node-b", role: "assistant", content: "Beta 概念。REST API 也可访问研究材料。", status: "completed", createdAt: now, updatedAt: now },
+    { id: "message-a", sessionId: "session-1", nodeId: "node-a", role: "assistant", content: "共享词。", status: "completed", createdAt: now, updatedAt: now },
+    { id: "message-b", sessionId: "session-1", nodeId: "node-b", role: "assistant", content: "共享词。", status: "completed", createdAt: now, updatedAt: now },
   ];
-  const slicesByNode = [
-    [
-      { id: "slice:node-a:message-a:0", nodeId: "node-a", messageId: "message-a", ordinal: 0, title: "Alpha", content: "Alpha 概念。", normalizedConcepts: ["Alpha"], sourceRefs: [], isProvisional: false, createdAt: now },
-      { id: "slice:node-a:message-a:1", nodeId: "node-a", messageId: "message-a", ordinal: 1, title: "接口", content: "REST API 可访问本地材料。", normalizedConcepts: [], sourceRefs: [], isProvisional: false, createdAt: now },
-    ],
-    [
-      { id: "slice:node-b:message-b:0", nodeId: "node-b", messageId: "message-b", ordinal: 0, title: "Beta", content: "Beta 概念。", normalizedConcepts: ["Beta"], sourceRefs: [], isProvisional: false, createdAt: now },
-      { id: "slice:node-b:message-b:1", nodeId: "node-b", messageId: "message-b", ordinal: 1, title: "接口", content: "REST API 也可访问研究材料。", normalizedConcepts: [], sourceRefs: [], isProvisional: false, createdAt: now },
-    ],
-  ] satisfies ResearchSliceRecord[][];
-  const indexed = nodes.map((node, index) => indexNodeSimilaritySignals(node, slicesByNode[index], [messages[index]], new TermDetectionService()));
-  const candidates = buildSimilarityCandidates("node-a", indexed);
-  assert.equal(candidates.length, 1);
-  assert.ok(candidates[0].triggerSources.some((source) => source.sliceId === "slice:node-a:message-a:1" && source.termText === "REST"));
+  const indexed = nodes.map((node, index) => indexNodeSimilaritySignals(node, [], [messages[index]], new TermDetectionService()));
+  assert.deepEqual(buildSimilarityCandidates("node-a", indexed), [], "short orphan units must not become fusion evidence");
+
+  // 显式归一化概念是一级信号，不受孤立短句门槛限制。
+  const slicesWithConcepts: ResearchSliceRecord[] = [
+    { id: "slice:node-a:message-a:0", nodeId: "node-a", messageId: "message-a", ordinal: 0, title: "", content: "共享词。", normalizedConcepts: ["共享概念"], sourceRefs: [], isProvisional: false, createdAt: now },
+    { id: "slice:node-b:message-b:0", nodeId: "node-b", messageId: "message-b", ordinal: 0, title: "", content: "共享词。", normalizedConcepts: ["共享概念"], sourceRefs: [], isProvisional: false, createdAt: now },
+  ];
+  const conceptIndexed = nodes.map((node, index) =>
+    indexNodeSimilaritySignals(node, [slicesWithConcepts[index]], [messages[index]], new TermDetectionService()));
+  assert.equal(buildSimilarityCandidates("node-a", conceptIndexed).length, 1);
 });
 
 test("similarity verification uses the versioned structured model call and rejects malformed results", async () => {
@@ -152,6 +210,10 @@ test("similarity verification uses the versioned structured model call and rejec
 test("similarity verification persists one inspectable proposal and never duplicates it after restart", async (t) => {
   const harness = await createHarness();
   t.after(harness.close);
+  const bodyA = expectedVersionId("node-a", harness.messages[0]);
+  const bodyB = expectedVersionId("node-b", harness.messages[1]);
+  const fragmentA = `fragment:${bodyA}:0`;
+  const fragmentB = `fragment:${bodyB}:0`;
   let calls = 0;
   const verifier: SimilarityVerificationGateway = {
     async verifyResearchSimilarity(_input, options) {
@@ -162,6 +224,7 @@ test("similarity verification persists one inspectable proposal and never duplic
         purpose: "similarity_verification",
         promptVersion: SIMILARITY_VERIFICATION_PROMPT_VERSION,
         sourceSliceIds: ["slice:node-a:message-a:0", "slice:node-b:message-b:0"],
+        sourceFragmentIds: [fragmentA, fragmentB].sort(),
         tokenBudget: SIMILARITY_VERIFICATION_TOKEN_BUDGET,
       });
       return { relationType: "contrast", reason: "两者共享孙悟空名称，但材料分别指向不同作品和角色设定。" };
@@ -175,7 +238,22 @@ test("similarity verification persists one inspectable proposal and never duplic
   assert.equal(proposals[0].verification.promptVersion, SIMILARITY_VERIFICATION_PROMPT_VERSION);
   assert.equal(proposals[0].verification.tokenBudget, SIMILARITY_VERIFICATION_TOKEN_BUDGET);
   assert.deepEqual(proposals[0].verification.sourceSliceIds, ["slice:node-a:message-a:0", "slice:node-b:message-b:0"]);
+  assert.deepEqual(proposals[0].verification.sourceFragmentIds, [fragmentA, fragmentB].sort());
+  for (const source of proposals[0].triggerSources) {
+    assert.ok(source.bodyVersionId && source.fragmentId, "every trigger source carries node + body version + fragment");
+  }
   assert.equal(calls, 1);
+
+  // 引用回读：触发片段摘录必须逐字等于触发它的原文（验收 7）。
+  for (const source of proposals[0].triggerSources) {
+    const version = harness.store.getBodyVersion(source.bodyVersionId!);
+    const fragment = harness.store.listFragmentsByBodyVersion(source.bodyVersionId!)
+      .find((entry) => entry.id === source.fragmentId);
+    assert.ok(version && fragment, "trigger references resolve to persisted artifacts");
+    const excerpt = resolveFragmentExcerpt(version!, fragment!);
+    const original = harness.messages.find((message) => message.nodeId === source.nodeId)!;
+    assert.equal(excerpt, original.content);
+  }
 
   const refreshed = await first.scan("node-a");
   assert.equal(refreshed.length, 1);
@@ -187,6 +265,74 @@ test("similarity verification persists one inspectable proposal and never duplic
   assert.equal(afterRestart.length, 1);
   assert.equal(afterRestart[0].id, proposals[0].id);
   assert.equal(calls, 1, "restart must preserve unique normalized pairs");
+  // 重启恢复：持久化的触发引用经 record_json 往返后仍可回读原文。
+  const listed = restarted.listForNode("node-a");
+  assert.deepEqual(listed[0]?.triggerSources, proposals[0].triggerSources);
+});
+
+test("legacy slice-only trigger sources gain fragment references through compat mapping without rescanning", async (t) => {
+  const harness = await createHarness();
+  t.after(harness.close);
+  const legacyId = researchFusionProposalId("node-a", "node-b");
+  const legacy: ResearchFusionProposalRecord = {
+    id: legacyId,
+    loNodeId: "node-a",
+    hiNodeId: "node-b",
+    relationType: "contrast",
+    reason: "历史扫描遗留的提议。",
+    status: "pending",
+    triggerSources: [
+      { nodeId: "node-a", sliceId: "slice:node-a:message-a:0" },
+      { nodeId: "node-b", sliceId: "slice:node-b:message-b:0" },
+    ],
+    verification: {
+      promptVersion: SIMILARITY_VERIFICATION_PROMPT_VERSION,
+      sourceSliceIds: ["slice:node-a:message-a:0", "slice:node-b:message-b:0"],
+      tokenBudget: SIMILARITY_VERIFICATION_TOKEN_BUDGET,
+    },
+    createdAt: harness.now,
+    updatedAt: harness.now,
+  };
+  await harness.store.createResearchFusionProposal(legacy);
+
+  let calls = 0;
+  const service = new ResearchFusionProposalService(harness.store, new TermDetectionService(), async () => ({
+    async verifyResearchSimilarity() {
+      calls += 1;
+      return { relationType: "contrast", reason: "不应被重新核验。" };
+    },
+  }));
+
+  // 读取即获得稳定片段引用：不重新扫描、不改变状态。
+  const listed = service.listForNode("node-a", ["pending"]);
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].status, "pending");
+  assert.equal(calls, 0, "compat mapping must not rescan or call the model");
+  for (const source of listed[0].triggerSources) {
+    assert.ok(source.bodyVersionId && source.fragmentId, "legacy trigger sources are mapped to stable fragment references");
+    // 兼容映射读取路径不落库；用同一确定性派生验证引用可回读原文。
+    const slice = harness.slices.find((entry) => entry.id === source.sliceId)!;
+    const message = harness.messages.find((entry) => entry.id === slice.messageId)!;
+    const { version, fragments } = deriveMessageBodyArtifacts({
+      nodeId: source.nodeId,
+      message,
+      slices: harness.slices.filter((entry) => entry.messageId === message.id),
+    });
+    assert.equal(version.id, source.bodyVersionId);
+    const fragment = fragments.find((entry) => entry.id === source.fragmentId);
+    assert.ok(fragment, "mapped fragment id belongs to the deterministic derivation");
+    assert.equal(resolveFragmentExcerpt(version, fragment!), slice.content, "mapped reference reads back the original text");
+  }
+
+  // 决策路径同样返回带引用的记录，且既有状态与冷却语义不回退。
+  const accepted = await service.decide(legacyId, "accepted");
+  assert.equal(accepted.status, "accepted");
+  assert.ok(accepted.triggerSources.every((source) => source.fragmentId));
+  assert.equal(calls, 0);
+  const rescan = await service.scan("node-a");
+  assert.equal(rescan[0]?.id, legacyId);
+  assert.equal(rescan[0]?.status, "accepted", "rescan reuses the decided record instead of reproposing");
+  assert.equal(calls, 0);
 });
 
 test("verification failures and unrelated results do not create proposals", async (t) => {

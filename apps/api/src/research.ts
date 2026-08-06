@@ -6,7 +6,6 @@ import {
   deriveFragmentsFromSlices,
   deriveMessageBlocks,
   deriveMessageSlices,
-  deriveProvisionalSlices,
   redactGroundingValue,
   sanitizeGroundingQueries,
   sanitizeGroundingUrl,
@@ -32,7 +31,8 @@ import {
 } from "@collector/capture-contracts";
 import type { ResearchStore } from "./store.js";
 import { ParentChainContextService, type ParentChainContextResult } from "./parent-chain-context.js";
-import { buildResearchSliceContext, DEFAULT_RESEARCH_SLICE_CONTEXT_TOKEN_BUDGET, type ResearchSliceContextCandidate } from "./slice-context.js";
+import { buildResearchSliceContext, DEFAULT_RESEARCH_SLICE_CONTEXT_TOKEN_BUDGET, type ResearchFragmentContextCandidate } from "./slice-context.js";
+import { getOrDeriveMessageBodyArtifacts, matchSliceForFragment, tryResolveFragmentExcerpt } from "./body-artifacts.js";
 import type { ResearchBodyOutline, ResearchSliceAnnotation } from "@collector/model-gateway";
 import { ModelProviderHttpError, ModelProviderTimeoutError } from "@collector/model-gateway";
 import { joinContinuation } from "@collector/capture-contracts";
@@ -1022,6 +1022,13 @@ export class ResearchSessionService {
     };
   }
 
+  /**
+   * #39：上下文经语义片段 Interface 选择——以正文版本 + 片段范围为唯一引用路径，
+   * 摘录由正文运行时解析，不再把独立切片内容副本当作事实源。确定性排序、整片
+   * 装箱预算、来源选区范围与原有行为保持不变；完整性校验失败的片段被跳过，
+   * 绝不静默关联到其他文本。库内缺失版本/片段时按正文确定性内存派生（与持久
+   * 化路径同一 ID），不产生写库副作用。
+   */
   private sliceContextFor(
     task: ResearchTaskRecord,
     nodeId: string,
@@ -1034,27 +1041,29 @@ export class ResearchSessionService {
       ...parentChain.ancestors.map((ancestor) => ({ id: ancestor.nodeId, distance: ancestor.depth })),
     ];
     const originSelectionId = this.originSelectionIdFor(task.sessionId, nodeId);
-    const candidates: ResearchSliceContextCandidate[] = [];
+    const candidates: ResearchFragmentContextCandidate[] = [];
     for (const node of nodeIds) {
-      const existingNodeSlices = this.store.listSlicesByNode(node.id);
-      let nextProvisionalOrdinal = existingNodeSlices.length > 0
-        ? Math.max(...existingNodeSlices.map((slice) => slice.ordinal)) + 1
-        : 0;
       const messages = this.store.listResearchMessagesByNode(node.id)
         .filter((message) => message.role === "assistant" && message.status === "completed");
-      const citations = messages.length > 0
-        ? this.store.listResearchCitationsForMessages(messages.map((message) => message.id))
-        : [];
+      if (messages.length === 0) continue;
+      const citations = this.store.listResearchCitationsForMessages(messages.map((message) => message.id));
+      const selectionId = this.originSelectionIdFor(task.sessionId, node.id);
       for (const message of messages) {
-        let slices = this.store.listSlicesByMessage(message.id);
-        if (slices.length === 0) {
-          slices = deriveProvisionalSlices(node.id, message.id, message.content, nextProvisionalOrdinal, citations);
-          nextProvisionalOrdinal += slices.length;
-        }
-        const selectionId = this.originSelectionIdFor(task.sessionId, node.id);
-        for (const slice of slices) {
+        const slices = this.store.listSlicesByMessage(message.id);
+        const artifacts = getOrDeriveMessageBodyArtifacts(this.store, {
+          nodeId: node.id,
+          message,
+          slices,
+          citations: citations.filter((citation) => citation.messageId === message.id),
+        });
+        for (const fragment of artifacts.fragments) {
+          const excerpt = tryResolveFragmentExcerpt(artifacts.version, fragment);
+          if (excerpt === undefined) continue;
           candidates.push({
-            slice,
+            fragment,
+            version: artifacts.version,
+            excerpt,
+            slice: matchSliceForFragment(fragment, excerpt, slices),
             parentDistance: node.distance,
             isCurrentNode: node.distance === 0,
             isFromOriginSelection: Boolean(selectionId && selectionId === originSelectionId),

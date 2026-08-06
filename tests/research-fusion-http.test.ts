@@ -4,7 +4,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { ResearchMessageRecord, ResearchNodeRecord, ResearchSessionRecord, ResearchSliceRecord } from "@collector/capture-contracts";
+import type {
+  FusionProposalTriggerSource,
+  ResearchMessageRecord,
+  ResearchNodeRecord,
+  ResearchSessionRecord,
+  ResearchSliceRecord,
+} from "@collector/capture-contracts";
+import { deriveBodyVersion } from "@collector/capture-contracts";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer, type SimilarityVerificationGateway } from "@collector/api";
 import { FakeProvider, ModelGateway } from "@collector/model-gateway";
 
@@ -70,11 +77,24 @@ test("fusion proposal HTTP scans, lists, decides, and exposes pending weak hints
     method: "POST", headers: headers(harness.token), body: "{}",
   });
   assert.equal(scan.status, 200);
-  const proposals = await scan.json() as Array<{ id: string; status: string; relationType: string; reason: string }>;
+  const proposals = await scan.json() as Array<{
+    id: string;
+    status: string;
+    relationType: string;
+    reason: string;
+    triggerSources: FusionProposalTriggerSource[];
+  }>;
   assert.equal(proposals.length, 1);
   assert.equal(proposals[0].status, "pending");
   assert.equal(proposals[0].relationType, "contrast");
   assert.match(proposals[0].reason, /不同作品/);
+  // #39：每条触发来源至少含原始节点、正文版本与稳定片段标识。
+  assert.equal(proposals[0].triggerSources.length, 2);
+  for (const source of proposals[0].triggerSources) {
+    assert.ok(source.nodeId && source.bodyVersionId && source.fragmentId);
+  }
+  const now = "2026-08-02T00:00:00.000Z";
+  const bodyA = deriveBodyVersion({ messageId: "message-a", nodeId: "session-1", content: "西游记中的孙悟空。", origin: "backfill", createdAt: now }).id;
 
   const list = await fetch(`${harness.base}/v1/research-nodes/session-1/fusion-proposals?status=pending`, { headers: headers(harness.token) });
   assert.equal(list.status, 200);
@@ -82,15 +102,27 @@ test("fusion proposal HTTP scans, lists, decides, and exposes pending weak hints
 
   const node = await fetch(`${harness.base}/v1/research-nodes/session-1`, { headers: headers(harness.token) });
   assert.equal(node.status, 200);
-  const view = await node.json() as { fusionProposals?: Array<{ id: string; status: string; verification: { promptVersion: string; sourceSliceIds: string[]; tokenBudget: number } }> };
+  const view = await node.json() as { fusionProposals?: Array<{ id: string; status: string; verification: { promptVersion: string; sourceSliceIds: string[]; sourceFragmentIds?: string[]; tokenBudget: number } }> };
   assert.equal(view.fusionProposals?.length, 1);
   assert.equal(view.fusionProposals?.[0]?.id, proposals[0].id);
   assert.equal(view.fusionProposals?.[0]?.status, "pending");
+  const bodyB = deriveBodyVersion({ messageId: "message-b", nodeId: "node-b", content: "七龙珠中的孙悟空。", origin: "backfill", createdAt: now }).id;
   assert.deepEqual(view.fusionProposals?.[0]?.verification, {
     promptVersion: "similarity-verify-v1",
     sourceSliceIds: ["slice:node-b:message-b:0", "slice:session-1:message-a:0"],
+    sourceFragmentIds: [`fragment:${bodyA}:0`, `fragment:${bodyB}:0`].sort(),
     tokenBudget: 800,
   });
+
+  // 引用回读（验收 7）：节点视图已惰性持久化正文版本；经只读端点解析片段摘录，
+  // 必须逐字等于触发原文。
+  const sourceA = proposals[0].triggerSources.find((source) => source.nodeId === "session-1")!;
+  assert.equal(sourceA.bodyVersionId, bodyA);
+  const versionView = await fetch(`${harness.base}/v1/research-body-versions/${encodeURIComponent(bodyA)}`, { headers: headers(harness.token) });
+  assert.equal(versionView.status, 200);
+  const bodyView = await versionView.json() as { fragments: Array<{ id: string; excerpt: string }> };
+  const fragment = bodyView.fragments.find((entry) => entry.id === sourceA.fragmentId);
+  assert.equal(fragment?.excerpt, "西游记中的孙悟空。");
 
   const decide = await fetch(`${harness.base}/v1/research-fusion-proposals/${encodeURIComponent(proposals[0].id)}/decide`, {
     method: "POST", headers: headers(harness.token), body: JSON.stringify({ decision: "rejected" }),

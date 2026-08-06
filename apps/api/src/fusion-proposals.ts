@@ -1,5 +1,6 @@
 import {
   SIMILARITY_VERIFICATION_PROMPT_VERSION,
+  normalizeBodyContent,
   normalizeResearchFusionProposalPair,
   researchEdgeId,
   researchFusionProposalId,
@@ -16,10 +17,17 @@ import {
 import type { ModelCallContext } from "@collector/model-gateway";
 import type { CollectorStore } from "./store.js";
 import { TermDetectionService } from "./term-detection.js";
+import { deriveMessageBodyArtifacts, getOrDeriveMessageBodyArtifacts, tryResolveFragmentExcerpt } from "./body-artifacts.js";
 
 export const SIMILARITY_VERIFICATION_TOKEN_BUDGET = 800;
 export const FUSION_PROPOSAL_COOLDOWN_DAYS = 30;
 const MAX_VERIFICATION_CONTENT_CHARACTERS = 12_000;
+/**
+ * #39：没有归一化概念的片段，只有摘录长度达到该字符数才允许用术语/内容词
+ * 产生候选信号——孤立短句（标题行、致谢、极短段落）不作为融合依据。
+ * 显式归一化概念是事后抽取的一级信号，不受该门槛限制。
+ */
+export const MIN_SIMILARITY_FALLBACK_UNIT_CHARACTERS = 20;
 
 export class ResearchFusionProposalNotFoundError extends Error {}
 export class ResearchFusionProposalValidationError extends Error {}
@@ -45,6 +53,7 @@ export interface IndexedNode {
   node: ResearchNodeRecord;
   signals: SimilaritySignal[];
   sourceSliceIds: string[];
+  sourceFragmentIds: string[];
   verificationContent: string;
 }
 
@@ -55,9 +64,14 @@ export interface SimilarityCandidate {
 }
 
 /**
- * 从一个节点的已持久化材料建立稳定候选信号。
- * 首选 semantic slice 的 normalizedConcepts；全空时才回退术语弱标记与内容词，
- * 因此 E2 产出正式概念后不会被临时文字分词淹没。
+ * #39：从一个节点的已持久化材料建立稳定候选信号，扫描单位为完整论述单元
+ * （正文版本上的语义片段），不再以切片内容副本为源。
+ *
+ * 每条消息确定性派生正文版本与片段（与持久化路径同一契约函数，同 ID）；
+ * 片段摘录经正文范围解析后参与信号建立：首选对应切片的归一化概念（一级信号），
+ * 概念全空且片段摘录达到最小长度时才回退术语弱标记与内容词，因此孤立短句
+ * 不会成为融合依据。每条触发来源携带节点、正文版本与稳定片段标识，
+ * 可经 `resolveFragmentExcerpt` 回读到正确原文。
  */
 export function indexNodeSimilaritySignals(
   node: ResearchNodeRecord,
@@ -66,7 +80,6 @@ export function indexNodeSimilaritySignals(
   termDetection: TermDetectionService,
 ): IndexedNode {
   const completedAssistantMessages = messages.filter((message) => message.role === "assistant" && message.status === "completed");
-  const messagesById = new Map(completedAssistantMessages.map((message) => [message.id, message]));
   const slicesByMessageId = new Map<string, ResearchSliceRecord[]>();
   for (const slice of slices) {
     const related = slicesByMessageId.get(slice.messageId) ?? [];
@@ -75,47 +88,60 @@ export function indexNodeSimilaritySignals(
   }
   const fallbackSignals: SimilaritySignal[] = [];
   const conceptSignals: SimilaritySignal[] = [];
-  for (const slice of slices) {
-    const sliceConcepts = slice.normalizedConcepts
-      .map(normalizeSimilarityConcept)
-      .filter(Boolean);
-    if (sliceConcepts.length > 0) {
-      for (const concept of sliceConcepts) {
-        conceptSignals.push({ concept, trigger: { nodeId: node.id, sliceId: slice.id } satisfies FusionProposalTriggerSource });
-      }
-      continue;
-    }
-    const message = messagesById.get(slice.messageId);
-    if (message) {
-      for (const marker of termDetection.detect(message.id, message.content).terms) {
-        const concept = normalizeSimilarityConcept(marker.text);
-        if (concept) fallbackSignals.push({ concept, trigger: { nodeId: node.id, sliceId: slice.id, termText: marker.text } });
-      }
-    }
-    for (const token of contentWordSignals(slice.content || message?.content || "")) {
-      fallbackSignals.push({ concept: token, trigger: { nodeId: node.id, sliceId: slice.id, termText: token } });
-    }
-  }
+  const fragmentSections: string[] = [];
+  const fragmentIds = new Set<string>();
   for (const message of completedAssistantMessages) {
-    if (slicesByMessageId.has(message.id)) continue;
-    for (const marker of termDetection.detect(message.id, message.content).terms) {
-      const concept = normalizeSimilarityConcept(marker.text);
-      if (concept) fallbackSignals.push({ concept, trigger: { nodeId: node.id, termText: marker.text } });
-    }
-    for (const token of contentWordSignals(message.content)) {
-      fallbackSignals.push({ concept: token, trigger: { nodeId: node.id, termText: token } });
+    if (!message.content.trim()) continue;
+    const messageSlices = (slicesByMessageId.get(message.id) ?? [])
+      .slice()
+      .sort((left, right) => left.ordinal - right.ordinal);
+    const { version, fragments } = deriveMessageBodyArtifacts({ nodeId: node.id, message, slices: messageSlices });
+    for (const [index, fragment] of fragments.entries()) {
+      const excerpt = tryResolveFragmentExcerpt(version, fragment);
+      if (excerpt === undefined || !excerpt.trim()) continue;
+      fragmentIds.add(fragment.id);
+      const matchedSlice = fragment.isProvisional
+        ? messageSlices.find((slice) => normalizeBodyContent(slice.content) === excerpt)
+        : messageSlices[index] && normalizeBodyContent(messageSlices[index].content) === excerpt
+          ? messageSlices[index]
+          : messageSlices.find((slice) => normalizeBodyContent(slice.content) === excerpt);
+      const title = matchedSlice?.title ?? "";
+      fragmentSections.push(title ? `${title}\n${excerpt}` : excerpt);
+      const baseTrigger: FusionProposalTriggerSource = {
+        nodeId: node.id,
+        bodyVersionId: version.id,
+        fragmentId: fragment.id,
+        ...(matchedSlice ? { sliceId: matchedSlice.id } : {}),
+      };
+      const concepts = (matchedSlice?.normalizedConcepts ?? [])
+        .map(normalizeSimilarityConcept)
+        .filter(Boolean);
+      if (concepts.length > 0) {
+        for (const concept of concepts) {
+          conceptSignals.push({ concept, trigger: baseTrigger });
+        }
+        continue;
+      }
+      // 孤立短句门槛：过短且无概念的片段不参与术语/内容词回退信号。
+      if (excerpt.trim().length < MIN_SIMILARITY_FALLBACK_UNIT_CHARACTERS) continue;
+      for (const marker of termDetection.detect(message.id, excerpt).terms) {
+        const concept = normalizeSimilarityConcept(marker.text);
+        if (concept) fallbackSignals.push({ concept, trigger: { ...baseTrigger, termText: marker.text } });
+      }
+      for (const token of contentWordSignals(excerpt)) {
+        fallbackSignals.push({ concept: token, trigger: { ...baseTrigger, termText: token } });
+      }
     }
   }
 
   const signals = deduplicateSignals([...conceptSignals, ...fallbackSignals]);
   const sourceSliceIds = [...new Set(slices.map((slice) => slice.id))].sort();
-  const sliceContent = slices.map((slice) => `${slice.title}\n${slice.content}`).join("\n\n");
-  const fallbackContent = completedAssistantMessages.map((message) => message.content).join("\n\n");
   return {
     node,
     signals,
     sourceSliceIds,
-    verificationContent: (sliceContent || fallbackContent).slice(0, MAX_VERIFICATION_CONTENT_CHARACTERS),
+    sourceFragmentIds: [...fragmentIds].sort(),
+    verificationContent: fragmentSections.join("\n\n").slice(0, MAX_VERIFICATION_CONTENT_CHARACTERS),
   };
 }
 
@@ -173,7 +199,8 @@ export class ResearchFusionProposalService {
 
   listForNode(nodeId: string, statuses?: readonly ResearchFusionProposalStatus[]): ResearchFusionProposalRecord[] {
     if (!this.store.getResearchNode(nodeId)) throw new ResearchFusionProposalNotFoundError("Research node not found");
-    return this.store.listResearchFusionProposalsByNode(nodeId, statuses);
+    return this.store.listResearchFusionProposalsByNode(nodeId, statuses)
+      .map((proposal) => this.withResolvedFragmentRefs(proposal));
   }
 
   async scan(nodeId: string): Promise<ResearchFusionProposalRecord[]> {
@@ -187,6 +214,11 @@ export class ResearchFusionProposalService {
         this.store.listResearchMessagesByNode(node.id),
         this.termDetection,
       ));
+    // #39：提案保存的片段引用必须指向可回读的持久化正文版本与片段。
+    // 幂等写入（同文同标识，INSERT OR IGNORE）；单条失败只跳过，不阻断扫描。
+    for (const indexed of indexedNodes) {
+      await this.persistMissingBodyArtifacts(indexed.node.id);
+    }
     const candidates = buildSimilarityCandidates(focus.id, indexedNodes);
     if (!candidates.length) return [];
 
@@ -201,7 +233,7 @@ export class ResearchFusionProposalService {
     const proposals: ResearchFusionProposalRecord[] = [];
     for (const candidate of candidates) {
       const proposal = await this.verifyCandidate(candidate, gateway);
-      if (proposal) proposals.push(proposal);
+      if (proposal) proposals.push(this.withResolvedFragmentRefs(proposal));
     }
     return proposals;
   }
@@ -209,7 +241,7 @@ export class ResearchFusionProposalService {
   async decide(id: string, decision: ResearchFusionProposalDecision): Promise<ResearchFusionProposalRecord> {
     const current = this.store.getResearchFusionProposal(id);
     if (!current) throw new ResearchFusionProposalNotFoundError("Research fusion proposal not found");
-    if (current.status === decision) return current;
+    if (current.status === decision) return this.withResolvedFragmentRefs(current);
     if (current.status !== "pending") {
       throw new ResearchFusionProposalConflictError("Research fusion proposal has already been decided");
     }
@@ -233,7 +265,67 @@ export class ResearchFusionProposalService {
           return withoutCooldown;
         })();
     await this.store.saveResearchFusionProposal(next);
-    return next;
+    return this.withResolvedFragmentRefs(next);
+  }
+
+  /**
+   * 为节点内缺失正文版本/片段的已完成助手消息做确定性、幂等持久化。
+   * 与启动回填、节点视图惰性派生同一派生规则；按消息隔离失败。
+   */
+  private async persistMissingBodyArtifacts(nodeId: string): Promise<void> {
+    const messages = this.store.listResearchMessagesByNode(nodeId)
+      .filter((message) => message.role === "assistant" && message.status === "completed" && message.content.trim());
+    for (const message of messages) {
+      if (this.store.getBodyVersionForMessage(message.id)) continue;
+      try {
+        const slices = this.store.listSlicesByMessage(message.id);
+        const citations = this.store.listResearchCitationsForMessages([message.id]);
+        const { version, fragments } = deriveMessageBodyArtifacts({ nodeId, message, slices, citations });
+        await this.store.createResearchBodyVersion(version);
+        await this.store.createSemanticFragments(fragments);
+      } catch {
+        // 派生/写入失败只跳过该条消息：扫描引用退回内存派生路径，不阻断提案产出。
+      }
+    }
+  }
+
+  /**
+   * #39 兼容映射：历史旧切片产生的来源只有 sliceId 时，确定性补齐正文版本与片段引用。
+   * 读取时按需映射，不重新扫描、不改变提案状态；映射失败保留原来源（诚实降级）。
+   */
+  private withResolvedFragmentRefs(proposal: ResearchFusionProposalRecord): ResearchFusionProposalRecord {
+    let changed = false;
+    const triggerSources = proposal.triggerSources.map((source) => {
+      const resolved = this.resolveTriggerFragmentRef(source);
+      if (resolved !== source) changed = true;
+      return resolved;
+    });
+    return changed ? { ...proposal, triggerSources } : proposal;
+  }
+
+  private resolveTriggerFragmentRef(source: FusionProposalTriggerSource): FusionProposalTriggerSource {
+    if (source.fragmentId && source.bodyVersionId) return source;
+    if (!source.sliceId) return source;
+    const slice = this.store.listSlicesByNode(source.nodeId).find((entry) => entry.id === source.sliceId);
+    if (!slice) return source;
+    const message = this.store.getResearchMessage(slice.messageId);
+    if (!message || message.role !== "assistant" || message.status !== "completed") return source;
+    const messageSlices = this.store.listSlicesByMessage(message.id)
+      .slice()
+      .sort((left, right) => left.ordinal - right.ordinal);
+    const artifacts = getOrDeriveMessageBodyArtifacts(this.store, {
+      nodeId: source.nodeId,
+      message,
+      slices: messageSlices,
+    });
+    const normalizedTarget = normalizeBodyContent(slice.content);
+    for (const fragment of artifacts.fragments) {
+      const excerpt = tryResolveFragmentExcerpt(artifacts.version, fragment);
+      if (excerpt !== undefined && excerpt === normalizedTarget) {
+        return { ...source, bodyVersionId: artifacts.version.id, fragmentId: fragment.id };
+      }
+    }
+    return source;
   }
 
   private async verifyCandidate(candidate: SimilarityCandidate, gateway: SimilarityVerificationGateway): Promise<ResearchFusionProposalRecord | undefined> {
@@ -247,6 +339,7 @@ export class ResearchFusionProposalService {
     if (!candidate.lo.verificationContent || !candidate.hi.verificationContent) return undefined;
     const proposalId = researchFusionProposalId(loNodeId, hiNodeId);
     const sourceSliceIds = [...new Set([...candidate.lo.sourceSliceIds, ...candidate.hi.sourceSliceIds])].sort();
+    const sourceFragmentIds = [...new Set([...candidate.lo.sourceFragmentIds, ...candidate.hi.sourceFragmentIds])].sort();
 
     this.runningPairs.add(pairKey);
     try {
@@ -265,6 +358,7 @@ export class ResearchFusionProposalService {
               purpose: "similarity_verification",
               promptVersion: SIMILARITY_VERIFICATION_PROMPT_VERSION,
               sourceSliceIds,
+              sourceFragmentIds,
               tokenBudget: SIMILARITY_VERIFICATION_TOKEN_BUDGET,
             },
           },
@@ -287,6 +381,7 @@ export class ResearchFusionProposalService {
         verification: {
           promptVersion: SIMILARITY_VERIFICATION_PROMPT_VERSION,
           sourceSliceIds,
+          sourceFragmentIds,
           tokenBudget: SIMILARITY_VERIFICATION_TOKEN_BUDGET,
         },
         createdAt: existing?.createdAt ?? timestamp,
@@ -333,16 +428,28 @@ function contentWordSignals(content: string): string[] {
   return [...terms].map(normalizeSimilarityConcept).filter(Boolean).sort().slice(0, 120);
 }
 
+function triggerSourceKey(source: FusionProposalTriggerSource): string {
+  return [
+    source.nodeId,
+    source.bodyVersionId ?? "",
+    source.fragmentId ?? "",
+    source.sliceId ?? "",
+    source.termText ?? "",
+  ].join("\u0000");
+}
+
 function deduplicateSignals(signals: readonly SimilaritySignal[]): SimilaritySignal[] {
   const result = new Map<string, SimilaritySignal>();
   for (const signal of signals) {
     if (!signal.concept) continue;
-    const key = `${signal.concept}\u0000${signal.trigger.nodeId}\u0000${signal.trigger.sliceId ?? ""}\u0000${signal.trigger.termText ?? ""}`;
+    const key = `${signal.concept}\u0000${triggerSourceKey(signal.trigger)}`;
     if (!result.has(key)) result.set(key, signal);
   }
   return [...result.values()].sort((left, right) =>
     left.concept.localeCompare(right.concept)
     || left.trigger.nodeId.localeCompare(right.trigger.nodeId)
+    || (left.trigger.bodyVersionId ?? "").localeCompare(right.trigger.bodyVersionId ?? "")
+    || (left.trigger.fragmentId ?? "").localeCompare(right.trigger.fragmentId ?? "")
     || (left.trigger.sliceId ?? "").localeCompare(right.trigger.sliceId ?? "")
     || (left.trigger.termText ?? "").localeCompare(right.trigger.termText ?? ""));
 }
@@ -350,11 +457,13 @@ function deduplicateSignals(signals: readonly SimilaritySignal[]): SimilaritySig
 function deduplicateTriggerSources(sources: readonly FusionProposalTriggerSource[]): FusionProposalTriggerSource[] {
   const unique = new Map<string, FusionProposalTriggerSource>();
   for (const source of sources) {
-    const key = `${source.nodeId}\u0000${source.sliceId ?? ""}\u0000${source.termText ?? ""}`;
+    const key = triggerSourceKey(source);
     if (!unique.has(key)) unique.set(key, source);
   }
   return [...unique.values()].sort((left, right) =>
     left.nodeId.localeCompare(right.nodeId)
+    || (left.bodyVersionId ?? "").localeCompare(right.bodyVersionId ?? "")
+    || (left.fragmentId ?? "").localeCompare(right.fragmentId ?? "")
     || (left.sliceId ?? "").localeCompare(right.sliceId ?? "")
     || (left.termText ?? "").localeCompare(right.termText ?? ""));
 }

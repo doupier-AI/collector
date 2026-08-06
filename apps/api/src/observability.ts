@@ -462,6 +462,7 @@ function modelCallView(row: ObservabilityRelatedRow): RunRecordModelCallView {
     purpose: safeText(call.purpose),
     promptVersion: safeText(call.promptVersion),
     ...(Array.isArray(call.sourceSliceIds) ? { sourceSliceIds: call.sourceSliceIds.map((id) => safeId(id)).filter((id) => id !== "unknown").slice(0, 200) } : {}),
+    ...(Array.isArray(call.sourceFragmentIds) ? { sourceFragmentIds: call.sourceFragmentIds.map((id) => safeId(id)).filter((id) => id !== "unknown").slice(0, 200) } : {}),
     ...(typeof call.tokenBudget === "number" && Number.isFinite(call.tokenBudget) && call.tokenBudget >= 0 ? { tokenBudget: Math.trunc(call.tokenBudget) } : {}),
     status,
     inputTokens: nonNegativeNumber(call.inputTokens),
