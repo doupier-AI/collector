@@ -4,31 +4,27 @@ import { useNavigate } from "react-router-dom";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 import type { ResearchEdgeKind } from "@collector/capture-contracts";
 import type { RelationshipItem } from "./useRelationships";
-import {
-  ALL_EDGE_KINDS,
-  EDGE_KIND_LABELS,
-  groupRelationships,
-  useRelationships,
-} from "./useRelationships";
+import { ALL_EDGE_KINDS, groupRelationships, useRelationships } from "./useRelationships";
 
 /**
- * 全屏关系列表覆盖层（阶段 D1）：快捷键 g 或顶栏按钮唤出，
+ * 关联模式的窄屏关系列表（阶段 D1，#40 起为研究地图关联模式呈现器）：
  * 以焦点节点为中心，按边类型分组展示邻居节点。
- * - ↑↓ 在组内条目之间移动；Tab 在组之间跳转；
- * - Enter 跳转到焦点条目对应的节点；Escape 关闭。
+ * - ↑↓ 在组内条目之间移动；Tab 在组之间跳转；Enter 跳转到焦点条目对应的节点；
+ * - 筛选状态与关闭（Escape）由研究地图 Module 持有。
  */
 export function RelationshipList({
   sessionId,
   focusNodeId,
   onClose,
+  selectedEdgeKinds = ALL_EDGE_KINDS,
 }: {
   sessionId: string;
   focusNodeId: string;
   onClose: () => void;
+  selectedEdgeKinds?: readonly ResearchEdgeKind[];
 }) {
   const navigate = useNavigate();
   const { state, groups: allGroups, focusNode, reload } = useRelationships(sessionId, focusNodeId, true);
-  const [selectedEdgeKinds, setSelectedEdgeKinds] = useState(ALL_EDGE_KINDS);
   const groups = useMemo(
     () => (state.kind === "ready" ? groupRelationships(state.projection, selectedEdgeKinds) : allGroups),
     [allGroups, selectedEdgeKinds, state],
@@ -53,16 +49,6 @@ export function RelationshipList({
     itemRefs.current.get(focusedItemId)?.focus();
   }, [focusedItemId, flatItems]);
 
-  useEffect(() => {
-    const handleDocumentKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      onClose();
-    };
-    document.addEventListener("keydown", handleDocumentKeyDown);
-    return () => document.removeEventListener("keydown", handleDocumentKeyDown);
-  }, [onClose]);
-
   const selectNode = useCallback(
     (nodeId: string) => {
       onClose();
@@ -70,14 +56,6 @@ export function RelationshipList({
     },
     [navigate, onClose, sessionId],
   );
-
-  const toggleEdgeKind = useCallback((kind: ResearchEdgeKind) => {
-    setSelectedEdgeKinds((current) =>
-      current.includes(kind) ? current.filter((candidate) => candidate !== kind) : [...current, kind],
-    );
-  }, []);
-
-  const resetEdgeKinds = useCallback(() => setSelectedEdgeKinds(ALL_EDGE_KINDS), []);
 
   function handleListKeyDown(event: KeyboardEvent<HTMLUListElement>): void {
     if (flatItems.length === 0) return;
@@ -123,63 +101,14 @@ export function RelationshipList({
   };
 
   return (
-    <>
-      <div className="panel-backdrop" onClick={onClose} />
-      <div
-        className="relationship-list-overlay"
-        id="relationship-list-overlay"
-        role="dialog"
-        aria-modal="true"
-        aria-label="关系列表"
-      >
-        <header className="relationship-list-overlay__header">
-          <h2 className="relationship-list-overlay__title">关系列表</h2>
-          <button
-            type="button"
-            className="selection-panel__close"
-            aria-label="关闭关系列表"
-            onClick={onClose}
-          >
-            ×
-          </button>
-        </header>
+    <section className="relationship-list-panel" aria-label="关系列表" onKeyDown={handleListKeyDown}>
+      {focusNode ? (
+        <p className="relationship-list-overlay__focus" aria-live="polite">
+          焦点：<strong>{focusNode.label}</strong>
+        </p>
+      ) : null}
 
-        {focusNode ? (
-          <p className="relationship-list-overlay__focus" aria-live="polite">
-            焦点：<strong>{focusNode.label}</strong>
-          </p>
-        ) : null}
-
-        <div className="relationship-list-overlay__filters" role="toolbar" aria-label="关系筛选">
-          <span className="relationship-list-overlay__filter-label">显示关系：</span>
-          {ALL_EDGE_KINDS.map((kind) => {
-            const selected = selectedEdgeKinds.includes(kind);
-            return (
-              <button
-                key={kind}
-                type="button"
-                className={`relationship-list__filter-button${selected ? " relationship-list__filter-button--selected" : ""}`}
-                aria-pressed={selected}
-                aria-label={`筛选${EDGE_KIND_LABELS[kind]}`}
-                onClick={() => toggleEdgeKind(kind)}
-                data-testid={`relationship-filter-${kind}`}
-              >
-                {kind === "parent-child" ? "父子" : kind === "semantic-related" ? "语义" : "融合"}
-              </button>
-            );
-          })}
-          <button
-            type="button"
-            className="relationship-list__filter-button"
-            onClick={resetEdgeKinds}
-            disabled={selectedEdgeKinds.length === ALL_EDGE_KINDS.length}
-            data-testid="relationship-filter-all"
-          >
-            全部
-          </button>
-        </div>
-
-        <div className="relationship-list-overlay__body">
+      <div className="relationship-list-overlay__body">
           {state.kind === "loading" ? (
             <div className="skeleton-stack" aria-hidden="true">
               <Skeleton variant="block" />
@@ -254,9 +183,8 @@ export function RelationshipList({
         </div>
 
         <p className="relationship-list-overlay__hint">
-          ↑↓ 移动 · Enter 进入节点 · Esc 关闭
+          ↑↓ 移动 · Enter 进入节点
         </p>
-      </div>
-    </>
+    </section>
   );
 }

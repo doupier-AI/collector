@@ -2,14 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { useMediaQuery } from "../../app/useMediaQuery";
 import { ContentDrawer } from "../../features/navigation/ContentDrawer";
-import { GraphCanvas } from "../../features/navigation/GraphCanvas";
 import { LaterPanel } from "../../features/navigation/LaterPanel";
-import { NodeTreeOverlay } from "../../features/navigation/NodeTreeOverlay";
-import { RelationshipList } from "../../features/navigation/RelationshipList";
+import { ResearchMapModule } from "../../features/navigation/ResearchMapModule";
 import { SIDEBAR_DEFAULT_WIDTH } from "./sidebar-width";
+import type { ResearchMapMode } from "../../features/navigation/useResearchMap";
 
-/** 顶栏“节点树”按钮的目标：从当前路由解析会话与节点；不在研究页面时不提供入口。 */
-export function nodeTreeTargetForPath(pathname: string): { sessionId: string; nodeId: string } | null {
+/** 顶栏“研究地图”按钮的目标：从当前路由解析会话与节点；不在研究页面时不提供入口。 */
+export function researchMapTargetForPath(pathname: string): { sessionId: string; nodeId: string } | null {
   const nodeMatch = pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)/);
   if (nodeMatch) {
     return { sessionId: decodeURIComponent(nodeMatch[1]), nodeId: decodeURIComponent(nodeMatch[2]) };
@@ -28,11 +27,11 @@ function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 /**
- * 顶栏（左“内容”、中“节点树”、右“标记”图标按钮）+ 左右侧栏 + 主内容区。
+ * 顶栏（左“内容”、中“研究地图”、右“标记”图标按钮）+ 左右侧栏 + 主内容区。
  * 宽屏（≥900px）两侧为固定侧栏、初始展开，可拖拽调宽；
  * 窄屏为覆盖抽屉、初始收起，遮罩点击或 Escape 关闭后焦点回到触发按钮。
- * 节点树为全屏覆盖层：按钮或快捷键 t（焦点不在输入控件时）唤出。
- * 网状导航在桌面显示画布，在窄屏回落到同一投影的关系列表。
+ * 研究地图为全屏覆盖层：按钮或快捷键 t（专注）/ g（关联）唤出，
+ * 打开默认进入上次使用的模式；Escape 或遮罩点击关闭后焦点回到入口按钮。
  */
 export function AppShell() {
   const wide = useMediaQuery("(min-width: 900px)");
@@ -44,12 +43,11 @@ export function AppShell() {
   const [rightWidth, setRightWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
   const leftTriggerRef = useRef<HTMLButtonElement>(null);
   const rightTriggerRef = useRef<HTMLButtonElement>(null);
-  const treeTriggerRef = useRef<HTMLButtonElement>(null);
-  const graphTriggerRef = useRef<HTMLButtonElement>(null);
+  const mapTriggerRef = useRef<HTMLButtonElement>(null);
   const location = useLocation();
-  const treeTarget = nodeTreeTargetForPath(location.pathname);
-  const [treeOpen, setTreeOpen] = useState(false);
-  const [graphOpen, setGraphOpen] = useState(false);
+  const mapTarget = researchMapTargetForPath(location.pathname);
+  const [mapOpen, setMapOpen] = useState(false);
+  const [mapMode, setMapMode] = useState<ResearchMapMode>("focus");
 
   const leftVisible = leftOpenPref ?? wide;
   const rightVisible = rightOpenPref ?? wide;
@@ -64,14 +62,9 @@ export function AppShell() {
     rightTriggerRef.current?.focus();
   }, []);
 
-  const closeTree = useCallback(() => {
-    setTreeOpen(false);
-    treeTriggerRef.current?.focus();
-  }, []);
-
-  const closeGraph = useCallback(() => {
-    setGraphOpen(false);
-    graphTriggerRef.current?.focus();
+  const closeMap = useCallback(() => {
+    setMapOpen(false);
+    mapTriggerRef.current?.focus();
   }, []);
 
   const toggleLeft = useCallback(() => {
@@ -85,29 +78,30 @@ export function AppShell() {
     if (!wide) setLeftOpenPref(false);
   }, [wide]);
 
-  // 路由变化时关闭树视图与关系列表（例如从树中跳转到另一个节点后由组件自行关闭，此处兜底）
+  // 路由变化时关闭研究地图（例如从地图中跳转到另一个节点后由组件自行关闭，此处兜底）
   useEffect(() => {
-    setTreeOpen(false);
-    setGraphOpen(false);
+    setMapOpen(false);
   }, [location.pathname]);
 
-  // 快捷键 t 唤出节点树、g 唤出网状导航；焦点在输入控件时不拦截
+  // 快捷键 t 唤出专注模式、g 唤出关联模式；已打开时同键切换模式；焦点在输入控件时不拦截
   useEffect(() => {
-    if (!treeTarget) return;
+    if (!mapTarget) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       if (isEditableTarget(event.target)) return;
       if (event.key === "t") {
         event.preventDefault();
-        setTreeOpen(true);
+        setMapOpen(true);
+        setMapMode("focus");
       } else if (event.key === "g") {
         event.preventDefault();
-        setGraphOpen(true);
+        setMapOpen(true);
+        setMapMode("assoc");
       }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [treeTarget]);
+  }, [mapTarget]);
 
   return (
     <div className="app-shell">
@@ -129,15 +123,15 @@ export function AppShell() {
             <line x1="7.75" y1="4.5" x2="7.75" y2="15.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
           </svg>
         </button>
-        {treeTarget ? (
+        {mapTarget ? (
           <button
             type="button"
-            ref={treeTriggerRef}
+            ref={mapTriggerRef}
             className="app-bar__icon-button"
-            aria-label="节点树（快捷键 T）"
-            aria-expanded={treeOpen}
-            aria-controls="node-tree-overlay"
-            onClick={() => setTreeOpen(true)}
+            aria-label="研究地图"
+            aria-expanded={mapOpen}
+            aria-controls="research-map-overlay"
+            onClick={() => setMapOpen(true)}
           >
             <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
               <circle cx="10" cy="4.5" r="2" fill="none" stroke="currentColor" strokeWidth="1.5" />
@@ -145,29 +139,6 @@ export function AppShell() {
               <circle cx="15" cy="15.5" r="2" fill="none" stroke="currentColor" strokeWidth="1.5" />
               <line x1="8.5" y1="6" x2="6" y2="14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
               <line x1="11.5" y1="6" x2="14" y2="14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          </button>
-        ) : null}
-        {treeTarget ? (
-          <button
-            type="button"
-            ref={graphTriggerRef}
-            className="app-bar__icon-button"
-            aria-label="网状导航（快捷键 G）"
-            aria-expanded={graphOpen}
-            aria-controls={wide ? "graph-canvas-overlay" : "relationship-list-overlay"}
-            onClick={() => setGraphOpen(true)}
-          >
-            <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-              <circle cx="10" cy="10" r="2" fill="none" stroke="currentColor" strokeWidth="1.5" />
-              <circle cx="4" cy="5" r="1.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
-              <circle cx="16" cy="5" r="1.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
-              <circle cx="4" cy="15" r="1.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
-              <circle cx="16" cy="15" r="1.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
-              <line x1="8.5" y1="8.5" x2="5.5" y2="6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              <line x1="11.5" y1="8.5" x2="14.5" y2="6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              <line x1="8.5" y1="11.5" x2="5.5" y2="13.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              <line x1="11.5" y1="11.5" x2="14.5" y2="13.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
           </button>
         ) : null}
@@ -202,15 +173,15 @@ export function AppShell() {
           <LaterPanel mode={mode} width={rightWidth} onWidthChange={setRightWidth} onClose={closeRight} />
         ) : null}
       </div>
-      {treeOpen && treeTarget ? (
-        <NodeTreeOverlay sessionId={treeTarget.sessionId} currentNodeId={treeTarget.nodeId} onClose={closeTree} />
-      ) : null}
-      {graphOpen && treeTarget ? (
-        wide ? (
-          <GraphCanvas sessionId={treeTarget.sessionId} focusNodeId={treeTarget.nodeId} onClose={closeGraph} />
-        ) : (
-          <RelationshipList sessionId={treeTarget.sessionId} focusNodeId={treeTarget.nodeId} onClose={closeGraph} />
-        )
+      {mapOpen && mapTarget ? (
+        <ResearchMapModule
+          sessionId={mapTarget.sessionId}
+          focusNodeId={mapTarget.nodeId}
+          mode={mapMode}
+          wide={wide}
+          onModeChange={setMapMode}
+          onClose={closeMap}
+        />
       ) : null}
     </div>
   );

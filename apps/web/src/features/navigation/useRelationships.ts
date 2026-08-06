@@ -148,5 +148,5 @@ export function useRelationships(sessionId: string | null, focusNodeId: string |
 
   const reload = useCallback(() => setReloadNonce((nonce) => nonce + 1), []);
 
-  return { state, groups, focusNode, reload };
+  return { state, groups, focusNode, reload, projection: state.kind === "ready" ? state.projection : null };
 }

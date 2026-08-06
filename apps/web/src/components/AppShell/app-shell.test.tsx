@@ -1,11 +1,11 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../../api/client";
 import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
-import { AppShell } from "./AppShell";
+import { AppShell, researchMapTargetForPath } from "./AppShell";
 
 /** jsdom 没有 matchMedia，按宽/窄屏桩掉（useMediaQuery 只识别 900px 断点）。 */
 function stubMatchMedia(wide: boolean) {
@@ -110,24 +110,106 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
   });
 });
 
-describe("AppShell 网状导航入口（阶段 I · D2/D3）", () => {
-  it("宽屏打开网状画布，窄屏回落到既有关系列表", async () => {
+describe("AppShell 研究地图入口（#40）", () => {
+  it("宽屏与窄屏都从单一“研究地图”按钮打开统一覆盖层，默认专注模式", async () => {
     const user = userEvent.setup();
     stubMatchMedia(true);
     const wideRender = renderShell("/research/session-1/node/node-1");
 
-    const wideTrigger = screen.getByRole("button", { name: "网状导航（快捷键 G）" });
-    expect(wideTrigger).toHaveAttribute("aria-controls", "graph-canvas-overlay");
+    const wideTrigger = screen.getByRole("button", { name: "研究地图" });
+    expect(wideTrigger).toHaveAttribute("aria-controls", "research-map-overlay");
     await user.click(wideTrigger);
-    expect(screen.getByRole("dialog", { name: "网状导航" })).toBeInTheDocument();
+    const dialog = screen.getByRole("dialog", { name: "研究地图" });
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getByTestId("map-mode-focus")).toHaveAttribute("aria-pressed", "true");
     wideRender.unmount();
 
     stubMatchMedia(false);
     renderShell("/research/session-1/node/node-1");
-    const narrowTrigger = screen.getByRole("button", { name: "网状导航（快捷键 G）" });
-    expect(narrowTrigger).toHaveAttribute("aria-controls", "relationship-list-overlay");
+    const narrowTrigger = screen.getByRole("button", { name: "研究地图" });
     await user.click(narrowTrigger);
-    expect(screen.getByRole("dialog", { name: "关系列表" })).toBeInTheDocument();
+    const narrowDialog = screen.getByRole("dialog", { name: "研究地图" });
+    expect(narrowDialog).toBeInTheDocument();
+    expect(within(narrowDialog).getByTestId("map-mode-focus")).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("快捷键 t 打开专注模式、g 打开关联模式；打开中按键切换模式", async () => {
+    const user = userEvent.setup();
+    stubMatchMedia(true);
+    renderShell("/research/session-1/node/node-1");
+
+    await user.keyboard("t");
+    const dialog = screen.getByRole("dialog", { name: "研究地图" });
+    expect(within(dialog).getByTestId("map-mode-focus")).toHaveAttribute("aria-pressed", "true");
+
+    await user.keyboard("g");
+    expect(within(dialog).getByTestId("map-mode-assoc")).toHaveAttribute("aria-pressed", "true");
+
+    await user.keyboard("t");
+    expect(within(dialog).getByTestId("map-mode-focus")).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("Escape 关闭研究地图，焦点回到入口按钮", async () => {
+    const user = userEvent.setup();
+    stubMatchMedia(true);
+    renderShell("/research/session-1/node/node-1");
+
+    const trigger = screen.getByRole("button", { name: "研究地图" });
+    await user.click(trigger);
+    expect(screen.getByRole("dialog", { name: "研究地图" })).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "研究地图" })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it("输入框内按 t/g 不误触研究地图", async () => {
+    const user = userEvent.setup();
+    stubMatchMedia(true);
+    renderShell("/research/session-1/node/node-1");
+
+    await user.tab();
+    // 焦点落到某处后直接在 body 上按 t 应打开
+    await user.keyboard("t");
+    expect(screen.getByRole("dialog", { name: "研究地图" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+
+    // 在输入框内按 t 不应打开
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    input.focus();
+    await user.keyboard("t");
+    expect(screen.queryByRole("dialog", { name: "研究地图" })).not.toBeInTheDocument();
+    input.remove();
+  });
+
+  it("不在研究页面时不显示研究地图入口", () => {
+    stubMatchMedia(true);
+    renderShell("/");
+    expect(screen.queryByRole("button", { name: "研究地图" })).not.toBeInTheDocument();
+  });
+});
+
+describe("researchMapTargetForPath", () => {
+  it("节点页解析出会话与当前节点", () => {
+    expect(researchMapTargetForPath("/research/session-1/node/node-a")).toEqual({
+      sessionId: "session-1",
+      nodeId: "node-a",
+    });
+  });
+
+  it("会话旧路由与阅读页回退到根节点", () => {
+    expect(researchMapTargetForPath("/research/session-1")).toEqual({ sessionId: "session-1", nodeId: "session-1" });
+    expect(researchMapTargetForPath("/research/session-1/reading/snap-1")).toEqual({
+      sessionId: "session-1",
+      nodeId: "session-1",
+    });
+  });
+
+  it("开始页与设置页不提供研究地图入口", () => {
+    expect(researchMapTargetForPath("/research/new")).toBeNull();
+    expect(researchMapTargetForPath("/settings/ai-model")).toBeNull();
+    expect(researchMapTargetForPath("/")).toBeNull();
   });
 });
 

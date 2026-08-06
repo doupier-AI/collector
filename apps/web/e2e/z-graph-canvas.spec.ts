@@ -1,7 +1,7 @@
 /**
- * 网状画布导航端到端（阶段 I · D2/D3）：确定性假模型。
- * 覆盖桌面画布入口、直接邻居的 maxDepth=1 请求、三类边筛选、缩放/减弱动效及窄屏关系列表回落。
- * 三类非血统边通过浏览器路由注入确定性投影，不写入数据库，也不触发真实模型或联网检索。
+ * 关联模式（研究地图内画布）端到端（#40）：确定性假模型。
+ * 覆盖：研究地图入口进入关联模式、直接邻居的 maxDepth=1 请求、三类边筛选、
+ * 缩放/减弱动效及窄屏关系列表回落。语义/融合边通过浏览器路由注入确定性投影。
  */
 import { expect, test, type Page } from "@playwright/test";
 import { citeAnswerText, pairAndOpen } from "./helpers";
@@ -82,8 +82,8 @@ async function openNodeWithParent(page: Page): Promise<{ sessionId: string; chil
   return { sessionId, childId: page.url().split("/node/")[1] ?? "" };
 }
 
-test.describe("网状画布导航", () => {
-  test("桌面画布从直接邻居开始，Escape 返回入口；窄屏改用关系列表", async ({ page }) => {
+test.describe("研究地图关联模式画布", () => {
+  test("桌面画布从直接邻居开始，筛选同步画布与键盘候选；窄屏改用关系列表", async ({ page }) => {
     test.setTimeout(90_000);
     const graphRequests: string[] = [];
     const consoleIssues: string[] = [];
@@ -100,11 +100,14 @@ test.describe("网状画布导航", () => {
     });
     page.on("pageerror", (error) => consoleIssues.push(error.message));
 
-    const trigger = page.getByRole("button", { name: "网状导航（快捷键 G）" });
+    // 研究地图单入口 + 快捷键 g 直达关联模式
+    const trigger = page.getByRole("button", { name: "研究地图" });
     await page.emulateMedia({ reducedMotion: "reduce" });
-    await trigger.click();
-    const canvas = page.getByRole("dialog", { name: "网状导航" });
-    await expect(canvas).toBeVisible();
+    await page.keyboard.press("g");
+    const dialog = page.getByRole("dialog", { name: "研究地图" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByTestId("map-mode-assoc")).toHaveAttribute("aria-pressed", "true");
+    const canvas = dialog.getByRole("region", { name: "关系网状画布" });
     const svg = canvas.getByTestId("graph-canvas-svg");
     await expect(svg).toBeVisible();
     await expect(canvas.getByTestId(`graph-node-${childId}`)).toHaveAttribute("transform", "translate(0 0)");
@@ -116,15 +119,16 @@ test.describe("网状画布导航", () => {
 
     const transform = canvas.locator(".graph-canvas__transform");
     await expect(transform).toHaveAttribute("style", /transition:\s*none/);
-    await canvas.getByTestId("graph-filter-semantic-related").click();
-    await canvas.getByTestId("graph-filter-fused-from").click();
-    await expect(canvas.getByTestId("graph-filter-parent-child")).toHaveAttribute("aria-pressed", "true");
+    // 模块级筛选工具栏同时作用于画布渲染与键盘候选
+    await dialog.getByTestId("map-filter-semantic-related").click();
+    await dialog.getByTestId("map-filter-fused-from").click();
+    await expect(dialog.getByTestId("map-filter-parent-child")).toHaveAttribute("aria-pressed", "true");
     await expect(canvas.getByTestId("graph-node-e2e-semantic-" + childId)).toBeHidden();
     await expect(canvas.getByTestId("graph-node-e2e-fused-" + childId)).toBeHidden();
     await expect(canvas.locator('[data-edge-kind="semantic-related"]')).toHaveCount(0);
     await expect(canvas.locator('[data-edge-kind="fused-from"]')).toHaveCount(0);
 
-    await canvas.getByTestId("graph-filter-all").click();
+    await dialog.getByTestId("map-filter-all").click();
     const initialTransform = await transform.getAttribute("transform");
     await canvas.getByTestId("graph-zoom-in").click();
     await expect(transform).not.toHaveAttribute("transform", initialTransform ?? "");
@@ -147,17 +151,19 @@ test.describe("网状画布导航", () => {
     await expect(focusedGraphNode).not.toHaveAttribute("data-node-id", childId);
 
     await page.keyboard.press("Escape");
-    await expect(canvas).toBeHidden();
+    await expect(dialog).toBeHidden();
     await expect(trigger).toBeFocused();
 
+    // 窄屏：同一模块内的关系列表呈现器，筛选与血统分离
     await page.setViewportSize({ width: 768, height: 800 });
-    await trigger.click();
-    const relationshipList = page.getByRole("dialog", { name: "关系列表" });
-    await expect(relationshipList).toBeVisible();
+    await page.keyboard.press("g");
+    const narrowDialog = page.getByRole("dialog", { name: "研究地图" });
+    await expect(narrowDialog).toBeVisible();
+    const relationshipList = narrowDialog.getByRole("list", { name: "节点关系列表" });
     await expect(relationshipList.getByRole("button", { name: "语义关联节点" })).toBeVisible();
     await expect(relationshipList.getByRole("button", { name: "融合来源节点" })).toBeVisible();
-    await relationshipList.getByTestId("relationship-filter-semantic-related").click();
-    await relationshipList.getByTestId("relationship-filter-fused-from").click();
+    await narrowDialog.getByTestId("map-filter-semantic-related").click();
+    await narrowDialog.getByTestId("map-filter-fused-from").click();
     await expect(relationshipList.getByRole("button", { name: "语义关联节点" })).toBeHidden();
     await expect(relationshipList.getByRole("button", { name: "融合来源节点" })).toBeHidden();
     await page.keyboard.press("Escape");

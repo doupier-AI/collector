@@ -13,7 +13,7 @@ import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
 import { makeNode } from "../../test/fakes";
 import { RelationshipList } from "./RelationshipList";
-import { EDGE_KIND_LABELS, groupRelationships } from "./useRelationships";
+import { ALL_EDGE_KINDS, EDGE_KIND_LABELS, groupRelationships } from "./useRelationships";
 
 function graphNode(
   id: string,
@@ -117,12 +117,21 @@ describe("groupRelationships 纯函数", () => {
   });
 });
 
-function renderList(api: Partial<ApiClient>, focusNodeId = "focus-node") {
+function renderList(
+  api: Partial<ApiClient>,
+  focusNodeId = "focus-node",
+  selectedEdgeKinds: readonly ("parent-child" | "semantic-related" | "fused-from")[] = ALL_EDGE_KINDS,
+) {
   const services = { api: api as ApiClient } as unknown as AppServices;
   return render(
     <ServicesProvider services={services}>
       <MemoryRouter initialEntries={[`/research/session-1/node/${focusNodeId}`]}>
-        <RelationshipList sessionId="session-1" focusNodeId={focusNodeId} onClose={() => {}} />
+        <RelationshipList
+          sessionId="session-1"
+          focusNodeId={focusNodeId}
+          onClose={() => {}}
+          selectedEdgeKinds={selectedEdgeKinds}
+        />
         <LocationProbe />
       </MemoryRouter>
     </ServicesProvider>,
@@ -156,23 +165,21 @@ describe("RelationshipList 组件", () => {
     expect(screen.getByRole("button", { name: "编码器融合" })).toBeInTheDocument();
   });
 
-  it("按边类型筛选分组，并在全部关闭时保留清晰空态", async () => {
-    const user = userEvent.setup();
-    renderList({ getResearchGraph: async () => sampleProjection() });
+  it("按受控筛选 prop 分组，并在全部关闭时保留清晰空态", async () => {
+    renderList({ getResearchGraph: async () => sampleProjection() }, "focus-node", ["parent-child"]);
 
     await screen.findByRole("list", { name: "节点关系列表" });
-    await user.click(screen.getByTestId("relationship-filter-semantic-related"));
-    await user.click(screen.getByTestId("relationship-filter-fused-from"));
-
-    expect(screen.getByTestId("relationship-filter-parent-child")).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "注意力头" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "深度学习基础" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "位置编码" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "编码器融合" })).not.toBeInTheDocument();
     expect(screen.queryByText("语义相关")).not.toBeInTheDocument();
     expect(screen.queryByText("融合来源")).not.toBeInTheDocument();
+  });
 
-    await user.click(screen.getByTestId("relationship-filter-parent-child"));
+  it("筛选全部关闭时列表消失并显示空态", async () => {
+    renderList({ getResearchGraph: async () => sampleProjection() }, "focus-node", []);
+
     expect(await screen.findByText("当前节点没有可见的关系。")).toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "节点关系列表" })).not.toBeInTheDocument();
   });
@@ -250,7 +257,7 @@ describe("RelationshipList 组件", () => {
     );
   });
 
-  it("Escape 关闭覆盖层", async () => {
+  it("Escape 由研究地图 Module 持有（列表自身不监听）", async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
     const services = {
@@ -267,7 +274,7 @@ describe("RelationshipList 组件", () => {
     await screen.findByRole("list", { name: "节点关系列表" });
 
     await user.keyboard("{Escape}");
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("加载失败显示错误和重试按钮", async () => {

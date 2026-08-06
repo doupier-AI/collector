@@ -75,19 +75,26 @@ function depthLabel(depth: number): string {
 }
 
 /**
- * 全屏网状导航覆盖层（阶段 I · D2/D3）：快捷键 G 或顶栏按钮唤出。
+ * 全屏网状导航画布（阶段 I · D2/D3，#40 起为研究地图关联模式呈现器）：
  * 当前节点居中，直接邻居先呈现，maxDepth 按层递增加载；三类边以线型/形状 +
  * 颜色冗余区分。单击节点只聚焦，Enter、双击或“打开已聚焦节点”才进入节点，避免
  * 无意离开当前研究位置。下方关系摘要提供与画布等价的可读、可点击内容。
+ * 筛选状态由调用方（研究地图 Module）注入：一份筛选结果同时喂给渲染与键盘候选。
  */
 export function GraphCanvas({
   sessionId,
   focusNodeId,
   onClose,
+  selectedEdgeKinds = ALL_EDGE_KINDS,
+  onToggleEdgeKind,
+  onResetEdgeKinds,
 }: {
   sessionId: string;
   focusNodeId: string;
   onClose: () => void;
+  selectedEdgeKinds?: readonly ResearchEdgeKind[];
+  onToggleEdgeKind?: (kind: ResearchEdgeKind) => void;
+  onResetEdgeKinds?: () => void;
 }) {
   const navigate = useNavigate();
   const reducedMotion = usePrefersReducedMotion();
@@ -109,7 +116,6 @@ export function GraphCanvas({
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [zoom, setZoom] = useState(1);
   const [isDragging, setIsDragging] = useState(false);
-  const [selectedEdgeKinds, setSelectedEdgeKinds] = useState(ALL_EDGE_KINDS);
   const dragRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
   const nodeRefs = useRef(new Map<string, SVGGElement>());
 
@@ -163,14 +169,6 @@ export function GraphCanvas({
   const openFocusedNode = useCallback(() => {
     if (focusedNodeId) selectNode(focusedNodeId);
   }, [focusedNodeId, selectNode]);
-
-  const toggleEdgeKind = useCallback((kind: (typeof ALL_EDGE_KINDS)[number]) => {
-    setSelectedEdgeKinds((current) =>
-      current.includes(kind) ? current.filter((candidate) => candidate !== kind) : [...current, kind],
-    );
-  }, []);
-
-  const resetEdgeKinds = useCallback(() => setSelectedEdgeKinds(ALL_EDGE_KINDS), []);
 
   const openParentNode = useCallback(() => {
     if (parentNode) selectNode(parentNode.node.id);
@@ -227,11 +225,6 @@ export function GraphCanvas({
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-        return;
-      }
       // 工具栏和等价关系列表使用原生按钮行为；不要让其 Enter/Space 额外触发图导航。
       if (event.target instanceof Element && event.target.closest("button, input, textarea, select")) return;
       if (visibleNodes.length === 0) return;
@@ -285,90 +278,33 @@ export function GraphCanvas({
         default:
       }
     },
-    [focusedNodeId, navigationIds, onClose, openFocusedNode, setFocusedNodeId, visibleNodes.length, zoomIn, zoomOut],
+    [focusedNodeId, navigationIds, openFocusedNode, setFocusedNodeId, visibleNodes.length, zoomIn, zoomOut],
   );
 
   return (
-    <>
-      <div className="panel-backdrop" onClick={onClose} />
-      <div
-        className="graph-canvas-overlay"
-        id="graph-canvas-overlay"
-        role="dialog"
-        aria-modal="true"
-        aria-label="网状导航"
-        onKeyDown={handleKeyDown}
-      >
-        <header className="graph-canvas-overlay__header">
-          <h2 className="graph-canvas-overlay__title">网状导航</h2>
-          <button
-            type="button"
-            className="selection-panel__close"
-            aria-label="关闭网状导航"
-            onClick={onClose}
-          >
-            ×
-          </button>
-        </header>
-
-        {currentNode ? (
-          <div className="graph-canvas-overlay__focus-row">
-            <p className="graph-canvas-overlay__focus" aria-live="polite">
-              当前节点：<strong>{currentNode.label}</strong>
-              {focusedNode && focusedNode.node.id !== currentNode.node.id ? (
-                <> · 已聚焦：<strong>{focusedNode.label}</strong></>
-              ) : null}
-            </p>
-            <div className="graph-canvas-overlay__safe-exits" aria-label="安全出口">
-              {parentNode ? (
-                <button
-                  type="button"
-                  className="graph-canvas__control-button"
-                  onClick={openParentNode}
-                  data-testid="graph-open-parent"
-                >
-                  打开父节点
-                </button>
-              ) : null}
+    <section className="graph-canvas" aria-label="关系网状画布" onKeyDown={handleKeyDown}>
+      {currentNode ? (
+        <div className="graph-canvas-overlay__focus-row">
+          <p className="graph-canvas-overlay__focus" aria-live="polite">
+            当前节点：<strong>{currentNode.label}</strong>
+            {focusedNode && focusedNode.node.id !== currentNode.node.id ? (
+              <> · 已聚焦：<strong>{focusedNode.label}</strong></>
+            ) : null}
+          </p>
+          <div className="graph-canvas-overlay__safe-exits" aria-label="安全出口">
+            {parentNode ? (
               <button
                 type="button"
                 className="graph-canvas__control-button"
-                onClick={onClose}
-                data-testid="graph-return-page"
+                onClick={openParentNode}
+                data-testid="graph-open-parent"
               >
-                返回当前页面
+                打开父节点
               </button>
-            </div>
+            ) : null}
           </div>
-        ) : null}
-
-        <div className="graph-canvas-overlay__filters" role="toolbar" aria-label="关系筛选">
-          <span className="graph-canvas-overlay__filter-label">显示关系：</span>
-          {ALL_EDGE_KINDS.map((kind) => {
-            const selected = selectedEdgeKinds.includes(kind);
-            return (
-              <button
-                key={kind}
-                type="button"
-                className={`graph-canvas__filter-button${selected ? " graph-canvas__filter-button--selected" : ""}`}
-                aria-pressed={selected}
-                onClick={() => toggleEdgeKind(kind)}
-                data-testid={`graph-filter-${kind}`}
-              >
-                {EDGE_KIND_LABELS[kind]}
-              </button>
-            );
-          })}
-          <button
-            type="button"
-            className="graph-canvas__filter-button"
-            onClick={resetEdgeKinds}
-            disabled={selectedEdgeKinds.length === ALL_EDGE_KINDS.length}
-            data-testid="graph-filter-all"
-          >
-            全部
-          </button>
         </div>
+      ) : null}
 
         <div className="graph-canvas-overlay__controls" role="toolbar" aria-label="视图控制">
           <button
@@ -632,9 +568,8 @@ export function GraphCanvas({
         </div>
 
         <p className="graph-canvas-overlay__hint">
-          拖拽平移 · 滚轮或 +/− 缩放 · 方向键聚焦 · Enter 打开 · Esc 关闭
+          拖拽平移 · 滚轮或 +/− 缩放 · 方向键聚焦 · Enter 打开
         </p>
-      </div>
-    </>
+    </section>
   );
 }

@@ -8,6 +8,7 @@ import type { AppServices } from "../../app/services";
 import { makeEdge, makeGraphNodeSummary, makeGraphProjection } from "../../test/fakes";
 import { computeNodePositions, GraphCanvas } from "./GraphCanvas";
 import {
+  ALL_EDGE_KINDS,
   filterEdgesByKind,
   filterNodesByEdges,
   navigationNodeIds,
@@ -36,6 +37,7 @@ function projectionAtDepth(maxDepth = 1) {
 function renderCanvas(
   getResearchGraph = vi.fn(async (_sessionId: string, _focusNodeId?: string, maxDepth?: number) => projectionAtDepth(maxDepth)),
   focusNodeId = "focus",
+  selectedEdgeKinds: readonly ("parent-child" | "semantic-related" | "fused-from")[] = ALL_EDGE_KINDS,
 ) {
   const services = {
     api: { getResearchGraph } as Partial<ApiClient> as ApiClient,
@@ -44,7 +46,7 @@ function renderCanvas(
   const rendered = render(
     <ServicesProvider services={services}>
       <MemoryRouter initialEntries={[`/research/session-1/node/${focusNodeId}`]}>
-        <GraphCanvas sessionId="session-1" focusNodeId={focusNodeId} onClose={onClose} />
+        <GraphCanvas sessionId="session-1" focusNodeId={focusNodeId} onClose={onClose} selectedEdgeKinds={selectedEdgeKinds} />
         <LocationProbe />
       </MemoryRouter>
     </ServicesProvider>,
@@ -170,18 +172,16 @@ describe("GraphCanvas", () => {
     );
   });
 
-  it("按边类型筛选画布并将键盘焦点限制在筛选后的邻居", async () => {
+  it("按筛选后的边渲染画布，并将键盘焦点限制在筛选后的邻居（受控筛选）", async () => {
     const user = userEvent.setup();
-    renderCanvas();
+    renderCanvas(vi.fn(async () => projectionAtDepth()), "focus", ["parent-child"]);
 
     await screen.findByTestId("graph-node-focus");
-    await user.click(screen.getByTestId("graph-filter-semantic-related"));
-    await user.click(screen.getByTestId("graph-filter-fused-from"));
-
+    // 父子筛选下语义/融合节点不渲染，键盘候选只在父子关系内
     expect(screen.queryByTestId("graph-node-related")).not.toBeInTheDocument();
     expect(screen.queryByTestId("graph-node-fused")).not.toBeInTheDocument();
     expect(screen.getByTestId("graph-node-child")).toBeInTheDocument();
-    expect(screen.getByTestId("graph-filter-parent-child")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("graph-node-parent")).toBeInTheDocument();
 
     await user.keyboard("{ArrowDown}");
     expect(screen.getByTestId("graph-node-parent")).toHaveFocus();
@@ -189,7 +189,7 @@ describe("GraphCanvas", () => {
     expect(screen.getByTestId("graph-node-child")).toHaveFocus();
   });
 
-  it("提供父节点和返回当前页面安全出口", async () => {
+  it("提供父节点安全出口", async () => {
     const user = userEvent.setup();
     const getResearchGraph = vi.fn(async () => ({
       ...projectionAtDepth(),
@@ -205,9 +205,6 @@ describe("GraphCanvas", () => {
       expect(screen.getByTestId("location-probe")).toHaveTextContent("/research/session-1/node/focus"),
     );
     expect(onClose).toHaveBeenCalled();
-
-    await user.click(screen.getByTestId("graph-return-page"));
-    expect(onClose).toHaveBeenCalledTimes(2);
   });
 
   it("在减弱动效设置下禁用画布变换过渡", async () => {

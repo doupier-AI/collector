@@ -1,0 +1,293 @@
+/**
+ * 统一研究地图端到端（#40）：确定性假模型。
+ * 覆盖：单入口打开默认专注模式、t/g 快捷键与模式切换、模块级筛选共享
+ * （画布渲染/键盘候选/专注脉络同一份筛选结果）、三级血统链与面包屑、
+ * 四视口无横向溢出、网络契约（只发 /graph，不发 /nodes）。
+ * 语义/融合边通过浏览器路由注入确定性投影，不写入数据库。
+ */
+import { mkdirSync } from "node:fs";
+import { expect, test, type Page } from "@playwright/test";
+import { citeAnswerText, pairAndOpen } from "./helpers";
+
+const QUESTION = "什么是本地优先研究？";
+const SELECTED_A = "本地优先会先把输入保存在本机";
+const SELECTED_B = "渐进事件把后续内容写进同一条消息";
+/** 深入研究第一轮回答里的稳定片段：用于在子节点 C 的内容里选区并生长孙节点 D。 */
+const SELECTED_IN_C = "本轮只使用来源选区与当前已有材料生成";
+
+/** 建立会话并完成第一轮回答，返回会话 id（落在根节点页）。 */
+async function openSession(page: Page): Promise<string> {
+  await pairAndOpen(page, "/research/new");
+  await page.getByLabel("你的问题").fill(QUESTION);
+  await page.getByRole("button", { name: "开始研究" }).click();
+  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
+  await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
+    timeout: 15_000,
+  });
+  return page.url().split("/research/")[1]?.split("/")[0] ?? "";
+}
+
+/** 从最后一条回答选中文字并显式引用，再长出一个子节点，返回子节点 id。 */
+async function growChildNode(page: Page, sessionId: string, text: string): Promise<string> {
+  await citeAnswerText(page, text);
+  await page.getByRole("button", { name: "深入研究这段" }).click();
+  await page.waitForURL(
+    (url) => {
+      const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
+      return Boolean(match && match[1] === sessionId && match[2] && match[2] !== sessionId);
+    },
+    { timeout: 10_000 },
+  );
+  await expect(page.getByText(/这是深入研究第一轮/)).toBeVisible({ timeout: 15_000 });
+  return page.url().split("/node/")[1] ?? "";
+}
+
+/** 向 /graph 响应注入语义相关与融合来源节点（隔离血统，只通过非父子边到达）。 */
+async function installThreeEdgeGraphFixture(page: Page): Promise<void> {
+  await page.route("**/v1/research-sessions/*/graph**", async (route) => {
+    const response = await route.fetch();
+    const projection = await response.json();
+    const focus = projection.nodes.find(
+      (summary: { node: { id: string } }) => summary.node.id === projection.focusNodeId,
+    );
+    if (!focus) {
+      await route.fulfill({ response, json: projection });
+      return;
+    }
+    const makeNode = (id: string, label: string) => ({
+      ...focus,
+      node: {
+        ...focus.node,
+        id,
+        parentNodeId: null,
+        createdAt: "2026-08-02T08:00:00.000Z",
+      },
+      label,
+      depth: 1,
+    });
+    const semanticId = `e2e-semantic-${projection.focusNodeId}`;
+    const fusedId = `e2e-fused-${projection.focusNodeId}`;
+    projection.nodes = [...projection.nodes, makeNode(semanticId, "语义关联节点"), makeNode(fusedId, "融合来源节点")];
+    projection.edges = [
+      ...projection.edges,
+      {
+        id: `e2e-edge-semantic-${projection.focusNodeId}`,
+        kind: "semantic-related",
+        fromNodeId: projection.focusNodeId,
+        toNodeId: semanticId,
+        createdAt: "2026-08-02T08:00:00.000Z",
+        status: "active",
+      },
+      {
+        id: `e2e-edge-fused-${projection.focusNodeId}`,
+        kind: "fused-from",
+        fromNodeId: fusedId,
+        toNodeId: projection.focusNodeId,
+        createdAt: "2026-08-02T08:00:00.000Z",
+        status: "active",
+      },
+    ];
+    await route.fulfill({ response, json: projection });
+  });
+}
+
+test.describe("统一研究地图（#40）", () => {
+  test("单入口打开默认专注模式：当前节点锚点、面包屑、血统脉络；Escape 焦点返回", async ({ page }) => {
+    test.setTimeout(90_000);
+    const sessionId = await openSession(page);
+    const consoleIssues: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error" || message.type() === "warning") consoleIssues.push(message.text());
+    });
+    page.on("pageerror", (error) => consoleIssues.push(error.message));
+
+    const childA = await growChildNode(page, sessionId, SELECTED_A);
+
+    // 单一入口按钮打开，默认专注模式
+    const trigger = page.getByRole("button", { name: "研究地图" });
+    await trigger.click();
+    const dialog = page.getByRole("dialog", { name: "研究地图" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByTestId("map-mode-focus")).toHaveAttribute("aria-pressed", "true");
+
+    // 面包屑：根 › 当前子节点；血统脉络中当前节点有「当前」徽标与锚点类
+    const breadcrumb = dialog.getByRole("navigation", { name: "当前位置" });
+    await expect(breadcrumb).toContainText("新研究会话");
+    await expect(breadcrumb).toContainText(SELECTED_A);
+    const chain = dialog.getByRole("list", { name: "专注脉络" });
+    const currentRow = chain.locator(".focus-lineage__row--current");
+    await expect(currentRow).toContainText("当前");
+    await expect(chain.getByRole("button", { name: SELECTED_A })).toBeVisible();
+
+    // 快捷键 t 再唤出（关闭后）
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+    await expect(trigger).toBeFocused();
+    await page.keyboard.press("t");
+    await expect(dialog).toBeVisible();
+
+    // 输入框内按 t 不唤出
+    await page.keyboard.press("Escape");
+    await page.getByLabel("你的问题").click();
+    await page.keyboard.press("t");
+    await expect(page.getByRole("dialog", { name: "研究地图" })).toHaveCount(0);
+
+    expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
+  });
+
+  test("模式切换与筛选共享：语义/融合只出现在关联区与画布，筛选同步三处消费方", async ({ page }) => {
+    test.setTimeout(90_000);
+    const sessionId = await openSession(page);
+    const childId = await growChildNode(page, sessionId, SELECTED_A);
+    await installThreeEdgeGraphFixture(page);
+
+    // t 打开专注模式：注入的语义/融合节点不在血统脉络，只在关联区
+    await page.keyboard.press("t");
+    const dialog = page.getByRole("dialog", { name: "研究地图" });
+    await expect(dialog).toBeVisible();
+    const chain = dialog.getByRole("list", { name: "专注脉络" });
+    await expect(chain.getByRole("button", { name: "语义关联节点" })).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "语义关联节点" })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "融合来源节点" })).toBeVisible();
+
+    // g 切到关联模式：桌面画布显示注入节点；筛选关闭语义/融合后画布节点消失
+    await page.keyboard.press("g");
+    const canvas = dialog.getByRole("region", { name: "关系网状画布" });
+    await expect(canvas).toBeVisible();
+    await expect(canvas.getByTestId(`graph-node-e2e-semantic-${childId}`)).toBeVisible();
+    await dialog.getByTestId("map-filter-semantic-related").click();
+    await dialog.getByTestId("map-filter-fused-from").click();
+    await expect(canvas.getByTestId(`graph-node-e2e-semantic-${childId}`)).toBeHidden();
+    await expect(canvas.getByTestId(`graph-node-e2e-fused-${childId}`)).toBeHidden();
+    // 键盘候选同源：方向键遍历不到被筛掉的节点
+    await expect(canvas.getByTestId(`graph-node-${childId}`)).toHaveCount(1);
+
+    // 切回专注：筛选状态保持，关联区空态
+    await dialog.getByTestId("map-mode-focus").click();
+    await expect(dialog.getByText("当前筛选没有可见的关系。")).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "语义关联节点" })).toHaveCount(0);
+
+    // 全部复位后语义/融合回到关联区
+    await dialog.getByTestId("map-filter-all").click();
+    await expect(dialog.getByRole("button", { name: "语义关联节点" })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "融合来源节点" })).toBeVisible();
+  });
+
+  test("三级血统链：在孙节点上打开专注模式，祖先/同级/面包屑跳转与来源返回", async ({ page }) => {
+    test.setTimeout(120_000);
+    const sessionId = await openSession(page);
+    const consoleIssues: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error" || message.type() === "warning") consoleIssues.push(message.text());
+    });
+    page.on("pageerror", (error) => consoleIssues.push(error.message));
+
+    const childB = await growChildNode(page, sessionId, SELECTED_A);
+    await page.goto(`/research/${sessionId}/node/${sessionId}`);
+    await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
+      timeout: 15_000,
+    });
+    const childC = await growChildNode(page, sessionId, SELECTED_B);
+    expect(childC).not.toBe(childB);
+
+    // 在 C 内选区生长 D
+    await citeAnswerText(page, SELECTED_IN_C);
+    await page.getByRole("button", { name: "深入研究这段" }).click();
+    await page.waitForURL(
+      (url) => {
+        const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
+        return Boolean(match && match[1] === sessionId && match[2] && match[2] !== sessionId && match[2] !== childC);
+      },
+      { timeout: 10_000 },
+    );
+    await expect(page.getByText(/这是深入研究第一轮/)).toBeVisible({ timeout: 15_000 });
+    const grandchildD = page.url().split("/node/")[1] ?? "";
+    expect(grandchildD).not.toBe(childC);
+
+    // D 上打开专注模式：祖先链 根›C、面包屑可点击；D 为当前锚点。
+    // 注意：C 的标签是其选区摘录（SELECTED_B），D 的标签是 SELECTED_IN_C。
+    await page.getByRole("button", { name: "研究地图" }).click();
+    const dialog = page.getByRole("dialog", { name: "研究地图" });
+    const chain = dialog.getByRole("list", { name: "专注脉络" });
+    await expect(chain.getByRole("button", { name: SELECTED_IN_C })).toBeVisible(); // D（当前）
+    await expect(chain.getByRole("button", { name: SELECTED_B })).toBeVisible(); // C（父）
+    await expect(chain.getByRole("button", { name: "新研究会话" })).toBeVisible(); // 根
+    await expect(chain.locator(".focus-lineage__row--current")).toContainText("当前");
+    const breadcrumb = dialog.getByRole("navigation", { name: "当前位置" });
+    await expect(breadcrumb).toContainText("新研究会话");
+    await expect(breadcrumb).toContainText(SELECTED_B); // C 在面包屑中
+
+    // 面包屑点击 C 跳转（局部地图焦点不产生路由，进入节点才导航）
+    await breadcrumb.getByRole("link", { name: SELECTED_B }).click();
+    await page.waitForURL(new RegExp(`/research/${sessionId}/node/${childC}$`), { timeout: 10_000 });
+    await expect(page.getByRole("dialog", { name: "研究地图" })).toBeHidden();
+
+    // D 的返回原文 → 落在 C 页且原选区精确高亮
+    await page.goto(`/research/${sessionId}/node/${grandchildD}`);
+    await expect(page.getByText(/这是深入研究第一轮/)).toBeVisible({ timeout: 15_000 });
+    await page.getByRole("link", { name: "← 返回原文" }).click();
+    await page.waitForURL(new RegExp(`/research/${sessionId}/node/${childC}\\?sel=`), { timeout: 10_000 });
+    const mark = page.locator("[data-selection-mark]");
+    await expect(mark).toContainText(SELECTED_IN_C, { timeout: 15_000 });
+    await expect(page.getByTestId("selection-restore-fallback")).toHaveCount(0);
+
+    expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
+  });
+
+  test("四视口无横向溢出、单一 h1、320px 专注覆盖层不溢出、网络契约只发 /graph", async ({ page }) => {
+    test.setTimeout(90_000);
+    const consoleIssues: string[] = [];
+    const graphGets: string[] = [];
+    const treeGets: string[] = [];
+    page.on("request", (request) => {
+      if (request.method() !== "GET") return;
+      if (/\/v1\/research-sessions\/[^/]+\/graph/.test(request.url())) graphGets.push(request.url());
+      if (/\/v1\/research-sessions\/[^/]+\/nodes$/.test(request.url())) treeGets.push(request.url());
+    });
+
+    const sessionId = await openSession(page);
+    page.on("console", (message) => {
+      if (message.type() === "error" || message.type() === "warning") consoleIssues.push(message.text());
+    });
+    page.on("pageerror", (error) => consoleIssues.push(error.message));
+    const childA = await growChildNode(page, sessionId, SELECTED_A);
+
+    // 单一 h1（节点页标题）
+    await expect(page.locator("h1")).toHaveCount(1);
+
+    // 四视口：节点页无横向溢出并留截图
+    mkdirSync("e2e-artifacts", { recursive: true });
+    for (const width of [320, 768, 1024, 1440]) {
+      await page.setViewportSize({ width, height: 800 });
+      if (width < 900) {
+        await expect(page.getByRole("navigation", { name: "内容导航" })).toBeHidden();
+      } else {
+        await expect(page.getByRole("navigation", { name: "内容导航" })).toBeVisible();
+      }
+      const metrics = await page.evaluate(() => ({
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+      }));
+      expect(metrics.scrollWidth, `节点页视口 ${width}px 不应横向溢出`).toBeLessThanOrEqual(metrics.clientWidth + 1);
+      await page.screenshot({ path: `e2e-artifacts/node-page-viewport-${width}.png`, fullPage: true });
+    }
+
+    // 320px 专注覆盖层：打开只发 /graph（不整树拉取），不溢出并留截图
+    await page.setViewportSize({ width: 320, height: 800 });
+    await page.getByRole("button", { name: "研究地图" }).click();
+    const dialog = page.getByRole("dialog", { name: "研究地图" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toHaveCSS("opacity", "1");
+    expect(graphGets.length, "打开研究地图只发 /graph").toBeGreaterThanOrEqual(1);
+    expect(treeGets, "研究地图不再整树拉取 /nodes").toHaveLength(0);
+    await expect(dialog.getByTestId("map-mode-focus")).toHaveAttribute("aria-pressed", "true");
+    const metrics = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    expect(metrics.scrollWidth, "320px 专注覆盖层不应横向溢出").toBeLessThanOrEqual(metrics.clientWidth + 1);
+    await page.screenshot({ path: "e2e-artifacts/research-map-focus-320.png", fullPage: false });
+
+    expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
+  });
+});
