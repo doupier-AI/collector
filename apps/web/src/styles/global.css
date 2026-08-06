@@ -1247,6 +1247,135 @@ button.model-status {
   animation: none;
 }
 
+/* 侧栏拖拽调宽手柄（#40 清理误删，恢复自 cd5cada^） */
+.sidebar-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 9px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.sidebar-resize-handle--left {
+  right: -5px;
+}
+
+.sidebar-resize-handle--right {
+  left: -5px;
+}
+
+.sidebar-resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 3px;
+  transform: translateX(-50%);
+  border-radius: var(--radius-control);
+  background: transparent;
+}
+
+.sidebar-resize-handle:hover::after,
+.sidebar-resize-handle:focus-visible::after,
+.sidebar-resize-handle--active::after {
+  background: var(--color-ai);
+  opacity: 0.45;
+}
+
+.sidebar-resize-handle--active {
+  cursor: col-resize;
+}
+
+/* 内容抽屉（#40 清理误删，恢复自 cd5cada^） */
+.drawer__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+
+.drawer__title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.drawer__close {
+  padding: 0.25rem 0.625rem;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: transparent;
+  cursor: pointer;
+}
+
+.drawer__close:hover {
+  border-color: var(--color-muted);
+}
+
+.drawer__new-chat {
+  display: block;
+  margin-bottom: var(--space-4);
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-button);
+  color: var(--color-ink);
+  font-weight: 600;
+}
+
+.drawer__new-chat:hover {
+  border-color: var(--color-muted);
+  text-decoration: none;
+}
+
+.drawer__section-title {
+  margin: 0 0 var(--space-2);
+  color: var(--color-muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.drawer__sessions {
+  margin: 0;
+}
+
+.drawer__sessions--list {
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.drawer__session {
+  display: grid;
+  gap: 0.125rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-control);
+  color: var(--color-ink);
+}
+
+.drawer__session:hover {
+  background: var(--color-canvas);
+  text-decoration: none;
+}
+
+.drawer__session-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawer__session-time {
+  color: var(--color-muted);
+  font-size: 0.8125rem;
+}
+
+.drawer__empty {
+  margin: 0 0 var(--space-3);
+  color: var(--color-muted);
+  font-size: 0.9375rem;
+}
+
 .later-panel {
   position: fixed;
   inset-block: 0;

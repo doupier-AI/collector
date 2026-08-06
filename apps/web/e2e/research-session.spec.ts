@@ -137,6 +137,26 @@ test("刷新页面恢复同一会话与完整内容", async ({ page }) => {
   await expect(page.locator(".message--assistant")).toHaveCount(1);
 });
 
+test("侧栏会话条目保留样式（回归保护：#40 曾误删 drawer__* 样式）", async ({ page }) => {
+  await pairAndOpen(page, "/research/new");
+  await submitFirstQuestion(page);
+  await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
+
+  // 刷新让侧栏重新挂载，拉到新创建的会话
+  await page.reload();
+  await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
+
+  // 宽屏固定侧栏：会话条目有块级布局、标题单行省略、时间弱化颜色
+  const sessionItem = page.locator(".drawer__session").first();
+  await expect(sessionItem).toBeVisible();
+  await expect(sessionItem).toHaveCSS("display", "grid");
+  const title = page.locator(".drawer__session-title").first();
+  await expect(title).toHaveCSS("white-space", "nowrap");
+  await expect(title).toHaveCSS("text-overflow", "ellipsis");
+  const time = page.locator(".drawer__session-time").first();
+  await expect(time).toHaveCSS("color", "rgb(107, 113, 104)");
+});
+
 test("关闭页面后重新打开自动恢复最近会话", async ({ page, context }) => {
   await pairAndOpen(page, "/research/new");
   await submitFirstQuestion(page);
