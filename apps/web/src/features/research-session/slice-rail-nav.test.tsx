@@ -1,4 +1,4 @@
-import { render, screen, act, cleanup } from "@testing-library/react";
+import { render, screen, act, cleanup, fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SliceRailNav } from "./SliceRailNav";
 import type { SliceRailItem } from "./SliceRailNav";
@@ -143,5 +143,25 @@ describe("SliceRailNav 章节导航·几何决胜", () => {
     (scrollingEl as { scrollTop: number }).scrollTop = 4004;
     fireRects([{ index: 2, top: 800 }]);
     expect(activeTick()).toHaveAttribute("aria-label", "第三节");
+  });
+
+  it("预览框定位以线列自身为参考系：滚动后仍与被预览线中心对齐（不漂移）", () => {
+    // 无 .page 容器（旧逻辑 closest(".page") 返回 null 直接跳过，正是此前 bug 的验证盲区）。
+    const { container } = setup();
+    // rail 顶在视口 100 处；被预览线中心在视口 416 处（rail 内 316）。
+    // 预览框顶 = 416 − 66（预览框半高 132/2）− 100 = 250。
+    // 视口钳制上限 = 1000 − 100 − 132 − 12 = 756，250 未越界，公式不被钳制掩盖。
+    const rail = container.querySelector<HTMLElement>(".slice-rail")!;
+    const tick = rail.querySelectorAll<HTMLElement>(".slice-rail__tick")[1];
+    rail.getBoundingClientRect = () => ({ top: 100 }) as DOMRect;
+    tick.getBoundingClientRect = () => ({ top: 400, height: 32 }) as DOMRect;
+    const expected = 400 + 32 / 2 - 132 / 2 - 100; // = 250
+    act(() => {
+      fireEvent.mouseEnter(tick);
+      vi.advanceTimersByTime(400);
+    });
+    const preview = container.querySelector<HTMLElement>(".slice-rail__preview")!;
+    expect(preview).not.toBeNull();
+    expect(preview.style.top).toBe(`${expected}px`);
   });
 });

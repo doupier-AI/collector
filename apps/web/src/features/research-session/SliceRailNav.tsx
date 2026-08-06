@@ -228,21 +228,24 @@ export const SliceRailNav = memo(function SliceRailNav({ items }: { items: Slice
   const preview = previewIndex !== null ? items[previewIndex] : null;
   const previewExcerpt = useMemo(() => (preview ? makeExcerpt(preview.excerpt) : ""), [preview]);
 
-  // 预览框与线列同一参考系（sticky，相对正文 .page 定位）。线列 sticky 钉在视口 top:50vh 处，
-  // 被预览线即在该高度附近；把这条视口高度换算成相对正文文档顶的偏移，预览框随正文滚动、与线列同列。
+  // 预览框与线列同一参考系：rail 自身（position: sticky 天然是定位上下文，预览框 absolute 挂其下）。
+  // tick 与 preview 同在 rail 内，rail 被 sticky 钉住时两者一起平移，故偏移与滚动位置无关；
+  // 只需把被预览线中心换算成"相对 rail 顶部"的偏移。rail 可能比视口高，tick 在视口外时
+  // 钳制预览框不超出视口底部。
   const [previewTop, setPreviewTop] = useState(0);
   useEffect(() => {
     if (previewIndex === null) return;
     const rail = railRef.current;
-    const page = rail?.closest<HTMLElement>(".page");
-    if (!rail || !page) return;
+    if (!rail) return;
     const ticks = rail.querySelectorAll<HTMLElement>(".slice-rail__tick");
     const tick = ticks[previewIndex];
     if (!tick) return;
-    const rect = tick.getBoundingClientRect();
+    const tickRect = tick.getBoundingClientRect();
+    const railTop = rail.getBoundingClientRect().top;
     const estimatedHeight = 132;
-    const centered = rect.top + rect.height / 2 - estimatedHeight / 2 - page.getBoundingClientRect().top;
-    setPreviewTop(Math.max(0, centered));
+    const centered = tickRect.top + tickRect.height / 2 - estimatedHeight / 2 - railTop;
+    const maxTop = Math.max(0, window.innerHeight - railTop - estimatedHeight - 12);
+    setPreviewTop(Math.min(Math.max(0, centered), maxTop));
   }, [previewIndex]);
 
   if (items.length === 0) return null;

@@ -129,6 +129,45 @@ test.describe("#36 连续语义卡片", () => {
     expect(bodyVersionRequests).toEqual([]);
     expect(consoleErrors.filter((e) => !e.includes("favicon"))).toEqual([]);
   });
+
+  test("章节导航·预览框打开时滚动不漂移（参考系为线列自身）", async ({ page }) => {
+    await openSlicedAnswer(page);
+
+    // 注入高占位：让文档够高、线列真正被 sticky 钉住（滚动漂移只在钉住时暴露）。
+    await page.evaluate(() => {
+      const pageEl = document.querySelector<HTMLElement>(".page")!;
+      const spacer = document.createElement("div");
+      spacer.style.height = "3600px";
+      spacer.style.pointerEvents = "none";
+      pageEl.appendChild(spacer);
+    });
+
+    const ticks = page.locator(".slice-rail__tick");
+    const preview = page.locator(".slice-rail__preview");
+
+    const delta = () =>
+      page.evaluate(() => {
+        const rail = document.querySelector<HTMLElement>(".slice-rail")!;
+        const pv = document.querySelector<HTMLElement>(".slice-rail__preview")!;
+        const tick = rail.querySelectorAll<HTMLElement>(".slice-rail__tick")[1];
+        const tickRect = tick.getBoundingClientRect();
+        const pvRect = pv.getBoundingClientRect();
+        // 预览框中心 − 被预览线中心：旧实现（相对正文参考系）滚动后偏差随滚动线性增大。
+        return pvRect.top + pvRect.height / 2 - (tickRect.top + tickRect.height / 2);
+      });
+
+    // 打开预览（悬停第 2 条线），保持打开状态下滚动
+    await ticks.nth(1).hover();
+    await expect(preview).toBeVisible({ timeout: 2_000 });
+    const before = await delta();
+
+    await page.evaluate(() => window.scrollTo(0, 1500));
+    await page.waitForTimeout(300);
+    const after = await delta();
+
+    // 滚动前后偏差变化 < 4px（旧实现滚动 1500px 后偏差会线性增大到 ~200px+）
+    expect(Math.abs(after - before)).toBeLessThan(4);
+  });
 });
 
 test.describe("#36 窄屏", () => {
