@@ -163,4 +163,32 @@ describe("ResearchMapModule", () => {
     await user.keyboard("{ArrowDown}");
     expect(screen.getByTestId("location-probe")).toHaveTextContent("/research/session-1/node/focus");
   });
+
+  it("切到关联模式后键盘焦点锚定画布当前节点（不落在对话框容器）", async () => {
+    const user = userEvent.setup();
+    render(<ModuleHarness api={{ getResearchGraph: async () => moduleProjection() }} initialMode="focus" wide />);
+
+    const dialog = screen.getByRole("dialog", { name: "研究地图" });
+    await within(dialog).findByRole("list", { name: "专注脉络" });
+    await user.click(within(dialog).getByTestId("map-mode-assoc"));
+
+    const canvas = within(dialog).getByRole("region", { name: "关系网状画布" });
+    const currentNode = within(canvas).getByTestId("graph-node-focus");
+    await waitFor(() => expect(currentNode).toHaveFocus());
+    expect(dialog).not.toHaveFocus();
+  });
+
+  it("切回专注模式后焦点锚定当前节点行", async () => {
+    const user = userEvent.setup();
+    render(<ModuleHarness api={{ getResearchGraph: async () => moduleProjection() }} initialMode="assoc" wide />);
+
+    const dialog = screen.getByRole("dialog", { name: "研究地图" });
+    await within(dialog).findByRole("region", { name: "关系网状画布" });
+    await user.click(within(dialog).getByTestId("map-mode-focus"));
+
+    const chain = within(dialog).getByRole("list", { name: "专注脉络" });
+    const rows = within(chain).getAllByRole("listitem");
+    const currentRow = rows.find((row) => row.textContent?.includes("当前节点"));
+    await waitFor(() => expect(currentRow).toHaveFocus());
+  });
 });

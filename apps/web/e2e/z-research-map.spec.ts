@@ -290,4 +290,111 @@ test.describe("统一研究地图（#40）", () => {
 
     expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
   });
+
+  test("窄屏关联模式旅程：关系列表分组呈现、键盘进入节点、筛选跨模式保持、无溢出、只发 /graph", async ({ page }) => {
+    test.setTimeout(90_000);
+    const graphGets: string[] = [];
+    const treeGets: string[] = [];
+    page.on("request", (request) => {
+      if (request.method() !== "GET") return;
+      if (/\/v1\/research-sessions\/[^/]+\/graph/.test(request.url())) graphGets.push(request.url());
+      if (/\/v1\/research-sessions\/[^/]+\/nodes$/.test(request.url())) treeGets.push(request.url());
+    });
+
+    const sessionId = await openSession(page);
+    // 配对期后挂监听：只断言地图操作期间控制台干净（与既有用例同规范）
+    const consoleIssues: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error" || message.type() === "warning") consoleIssues.push(message.text());
+    });
+    page.on("pageerror", (error) => consoleIssues.push(error.message));
+    const childId = await growChildNode(page, sessionId, SELECTED_A);
+    await installThreeEdgeGraphFixture(page);
+
+    // 窄屏：t 打开专注模式 → g 切关联模式 → 关系列表呈现
+    await page.setViewportSize({ width: 320, height: 800 });
+    await page.keyboard.press("t");
+    const dialog = page.getByRole("dialog", { name: "研究地图" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("list", { name: "专注脉络" })).toBeVisible();
+
+    await page.keyboard.press("g");
+    const list = dialog.getByRole("list", { name: "节点关系列表" });
+    await expect(list).toBeVisible();
+    // 语义相关与融合来源分组清晰呈现，进入节点行为与画布一致
+    const semanticGroup = dialog.getByRole("group", { name: "语义相关" });
+    await expect(semanticGroup).toContainText("语义关联节点");
+    const fusedGroup = dialog.getByRole("group", { name: "融合来源" });
+    await expect(fusedGroup).toContainText("融合来源节点");
+    // 初始焦点落在第一条条目（父子组的根节点）
+    await expect(dialog.getByRole("listitem", { name: /新研究会话/ })).toBeFocused();
+
+    // 键盘进入节点：Enter 打开当前焦点条目并关闭地图
+    await page.keyboard.press("Enter");
+    await page.waitForURL(new RegExp(`/research/${sessionId}/node/${sessionId}$`), { timeout: 10_000 });
+    await expect(dialog).toBeHidden();
+    // 回到节点页再打开地图，筛选保持全量
+    await page.goto(`/research/${sessionId}/node/${childId}`);
+    await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
+    await page.keyboard.press("t");
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("list", { name: "专注脉络" })).toBeVisible();
+
+    // 关闭语义/融合筛选后切关联：父子关系保留为结构参照，语义/融合消失；切回专注一致
+    await dialog.getByTestId("map-filter-semantic-related").click();
+    await dialog.getByTestId("map-filter-fused-from").click();
+    await page.keyboard.press("g");
+    const listAfterFilter = dialog.getByRole("list", { name: "节点关系列表" });
+    await expect(listAfterFilter).toBeVisible();
+    await expect(listAfterFilter.getByRole("button", { name: "新研究会话" })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "语义关联节点" })).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "融合来源节点" })).toHaveCount(0);
+    await page.keyboard.press("t");
+    await expect(dialog.getByRole("button", { name: "语义关联节点" })).toHaveCount(0);
+    await expect(dialog.getByRole("button", { name: "融合来源节点" })).toHaveCount(0);
+    await dialog.getByTestId("map-filter-all").click();
+    await expect(dialog.getByRole("button", { name: "语义关联节点" })).toBeVisible();
+
+    // 窄屏关联覆盖层无横向溢出
+    const metrics = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    expect(metrics.scrollWidth, "320px 关联覆盖层不应横向溢出").toBeLessThanOrEqual(metrics.clientWidth + 1);
+
+    expect(treeGets, "窄屏关联模式仍不整树拉取 /nodes").toHaveLength(0);
+    expect(graphGets.length, "研究地图只发 /graph").toBeGreaterThanOrEqual(1);
+    expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
+  });
+
+  test("模式转场与锚点：切模式重放有界淡入，键盘焦点落回当前节点行", async ({ page }) => {
+    test.setTimeout(90_000);
+    const sessionId = await openSession(page);
+    // 配对期后挂监听：只断言地图操作期间控制台干净（与既有用例同规范）
+    const consoleIssues: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error" || message.type() === "warning") consoleIssues.push(message.text());
+    });
+    page.on("pageerror", (error) => consoleIssues.push(error.message));
+    const childId = await growChildNode(page, sessionId, SELECTED_A);
+
+    await page.keyboard.press("t");
+    const dialog = page.getByRole("dialog", { name: "研究地图" });
+    await expect(dialog).toBeVisible();
+    const view = dialog.getByTestId("map-view");
+    await expect(view).toHaveCSS("animation-name", "collector-panel-in");
+
+    // 切到关联（宽屏画布）：视图重放淡入转场，焦点锚定画布当前节点（子节点）
+    await page.keyboard.press("g");
+    await expect(view).toHaveCSS("animation-name", "collector-panel-in");
+    const canvas = dialog.getByRole("region", { name: "关系网状画布" });
+    await expect(canvas.getByTestId(`graph-node-${childId}`)).toBeFocused();
+
+    // 切回专注：焦点落回当前节点行
+    await page.keyboard.press("t");
+    const chain = dialog.getByRole("list", { name: "专注脉络" });
+    await expect(chain.locator(".focus-lineage__row--current")).toBeFocused();
+
+    expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
+  });
 });

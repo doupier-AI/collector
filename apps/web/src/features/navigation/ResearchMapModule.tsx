@@ -143,27 +143,30 @@ export function ResearchMapModule({
         </div>
 
         <div className="research-map-overlay__body">
-          {mode === "focus" ? (
-            <FocusLineage
-              sessionId={sessionId}
-              focusNodeId={focusNodeId}
-              selectedEdgeKinds={selectedEdgeKinds}
-            />
-          ) : wide ? (
-            <GraphCanvas
-              sessionId={sessionId}
-              focusNodeId={focusNodeId}
-              onClose={onClose}
-              {...filterProps}
-            />
-          ) : (
-            <RelationshipList
-              sessionId={sessionId}
-              focusNodeId={focusNodeId}
-              onClose={onClose}
-              {...filterProps}
-            />
-          )}
+          {/* key=模式：切模式重放有界淡入转场；内容组件随 key 重建，锚定逻辑在挂载时执行 */}
+          <div key={mode} className="research-map-overlay__view" data-testid="map-view">
+            {mode === "focus" ? (
+              <FocusLineage
+                sessionId={sessionId}
+                focusNodeId={focusNodeId}
+                selectedEdgeKinds={selectedEdgeKinds}
+              />
+            ) : wide ? (
+              <GraphCanvas
+                sessionId={sessionId}
+                focusNodeId={focusNodeId}
+                onClose={onClose}
+                {...filterProps}
+              />
+            ) : (
+              <RelationshipList
+                sessionId={sessionId}
+                focusNodeId={focusNodeId}
+                onClose={onClose}
+                {...filterProps}
+              />
+            )}
+          </div>
         </div>
 
         <p className="research-map-overlay__hint">t 专注 · g 关联 · Esc 关闭</p>

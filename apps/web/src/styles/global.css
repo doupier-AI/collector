@@ -1401,6 +1401,14 @@ button.model-status {
   overflow: auto;
 }
 
+/* 模式视图：切换时重放有界淡入转场（同一份图数据的不同投影，转场提示视图变化） */
+.research-map-overlay__view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  animation: collector-panel-in 160ms ease-out;
+}
+
 .research-map-overlay__hint {
   margin: 0;
   color: var(--color-muted);
@@ -1829,6 +1837,10 @@ button.model-status {
 
 @media (prefers-reduced-motion: reduce) {
   .research-map-overlay {
+    animation: none;
+  }
+
+  .research-map-overlay__view {
     animation: none;
   }
 
