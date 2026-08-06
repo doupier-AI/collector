@@ -483,14 +483,21 @@ button {
 }
 
 @media (max-width: 720px) {
-  /* 窄屏：留白≈1rem，线列与预览框贴正文左缘，翻出的列外宽度和左右偏移都收紧。 */
+  /* 窄屏：留白≈1rem，线列改贴屏幕左缘内侧（不再翻出列外——1rem 外边距不够宽，
+     translate(-100%) 会把整列推到视口外 x<0，可见性/拖动全部失效）。
+     sticky 的偏移参照是滚动祖先（文档）而非 .page，故 left 直接取视口内侧坐标；
+     translateY(-50%) 保留垂直居中。 */
   .slice-rail {
+    left: 0.125rem;
     width: 1.5rem;
     margin-left: -1.5rem;
+    transform: translateY(-50%);
   }
 
+  /* 预览框挂线列右侧（内容侧）：窄屏线列已贴屏左缘，右侧才是内容区，框必须翻进内容区
+     而不是继续向左翻出。 */
   .slice-rail__preview {
-    left: 0.5rem;
+    left: calc(100% + 0.5rem);
   }
 }
 
