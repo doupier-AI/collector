@@ -12,6 +12,10 @@ import type { ResearchMessageRecord, ResearchSliceRecord } from "@collector/capt
  *
  * 对齐规则与后端选区锚点一致：切片按 ordinal 排序后与 deriveMessageBlocks 的
  * 段落块按下标 1:1 对齐；块缺失时回退到下标占位，保证 id 仍然稳定可定位。
+ *
+ * #43 收缩：切片不再携带正文副本。卡片正文由消息正文经 composeSectionUnits
+ * 确定性派生（与后端 deriveMessageSlices 同构），切片只提供标题/概念/来源等
+ * 派生元数据。正文是唯一事实源。
  */
 export interface SliceCardTarget {
   /** 对应派生切片（含标题/概念/来源关系）。 */
@@ -25,7 +29,7 @@ export interface SliceCardTarget {
   /** 整张卡片容器 id（`${blockId}-card`），章节导航 IntersectionObserver 的观察目标。
       观察整节卡片而非标题行：标题滚出屏幕、正文仍在读时高亮仍跟随本节。 */
   cardId: string;
-  /** 卡片正文（恒等于切片 content，逐字保留含节标题行的正文）。
+  /** 卡片正文（#43 起由消息正文确定性派生，逐字保留含节标题行的正文；切片不再携带正文副本）。
       渲染时正文首行节标题被提升为卡片标题样式并挂锚点 id，不再另起 <h3>，
       因此同一标题只出现一次；选区/术语偏移按未改动的正文计算，零漂移。 */
   blockText: string;
@@ -60,7 +64,8 @@ export function deriveSliceCardTargets(
       blockId,
       anchorId: `${blockId}-title`,
       cardId: `${blockId}-card`,
-      blockText: slice.content,
+      // #43：正文从节单元确定性派生（与后端 deriveMessageSlices 同构），不依赖切片 content。
+      blockText: unit?.content ?? blocks[blockOrdinal]?.text ?? "",
     };
   });
 }
@@ -69,9 +74,9 @@ export function deriveSliceCardTargets(
  * 卡片可访问名：有标题用标题，无标题退回正文摘要。
  * 卡片 <section> 与导航线共用同一命名规则，保证读屏器对同一卡片播报一致。
  */
-export function sliceCardAccessibleName(slice: ResearchSliceRecord): string {
+export function sliceCardAccessibleName(slice: ResearchSliceRecord, blockText: string): string {
   const title = slice.title.trim();
-  return title || makeExcerpt(slice.content);
+  return title || makeExcerpt(blockText);
 }
 
 /** 正文摘要截取长度（字）；与章节导航预览一致。 */

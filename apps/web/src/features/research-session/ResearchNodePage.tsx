@@ -260,7 +260,7 @@ export function ResearchNodePage() {
         if (located.kind === "ok") {
           setFragmentFallback(null);
           setFocusedCard({ cardId: located.target.cardId, nonce: ++locateNonceRef.current });
-          node.announce(`已定位到「${sliceCardAccessibleName(located.slice)}」。`);
+          node.announce(`已定位到「${sliceCardAccessibleName(located.slice, located.target.blockText)}」。`);
         } else {
           setFocusedCard(null);
           setFragmentFallback(located.failure);

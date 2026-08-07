@@ -178,7 +178,7 @@ function SliceCard({ slice, blockText, blockId, anchorId, cardId, highlight, sou
       className={fragmentFocused ? "slice-card slice-card--focused" : "slice-card"}
       data-slice-id={slice.id}
       tabIndex={-1}
-      {...(title ? { "aria-labelledby": anchorId } : { "aria-label": sliceCardAccessibleName(slice) })}
+      {...(title ? { "aria-labelledby": anchorId } : { "aria-label": sliceCardAccessibleName(slice, blockText) })}
     >
       {title && !promoteInBody ? (
         <h3 id={anchorId} className="slice-card__title">

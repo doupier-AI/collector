@@ -1,5 +1,4 @@
 import {
-  normalizeBodyContent,
   resolveFragmentExcerpt,
   type ResearchBodyVersionRecord,
   type ResearchBodyVersionView,
@@ -15,9 +14,10 @@ import { deriveSliceCardTargets, type SliceCardTarget } from "./slice-cards";
  * 当前节点内可滚动的语义卡片目标。
  *
  * 定位规则与服务端 `matchSliceForFragment`（apps/api/src/body-artifacts.ts）逐条对齐：
- * 片段序号（= 派生切片数组下标）优先，正文内容相等回退。不直接拿 fragment 序号
- * 映射卡片 blockOrdinal——`##` 标题合并、provisional 片段等都会破坏直接映射。
- * 任何校验失败返回明确的 failure 分类，绝不静默定位到其他片段（验收 6）。
+ * #43 收缩后切片不再携带正文副本，片段↔切片一律按消息内数组下标（片段 ordinal）
+ * 序数对齐——切片与片段同源于正文的确定性派生，序数对齐即同源对齐，不再做
+ * 正文内容相等回退（内容相等匹配正是"两套事实来源"的载体）。任何校验失败返回
+ * 明确的 failure 分类，绝不静默定位到其他片段（验收 6）。
  */
 
 /** 解析 `fragment:{bodyVersionId}:{ordinal}`。bodyVersionId 含冒号，用贪婪前缀 + 最末段数字。 */
@@ -63,9 +63,10 @@ export function locateFragment(input: FragmentLocatorInput): FragmentLocatorResu
   const fragment = input.fragments.find((entry) => entry.id === input.fragmentId);
   if (!fragment) return { kind: "failure", failure: "fragment-missing" };
   if (input.version.nodeId !== input.currentNodeId) return { kind: "failure", failure: "node-mismatch" };
-  let excerpt: string;
+  // 完整性校验（验收 6）：版本/范围/校验和任一不一致都拒绝定位，绝不静默关联到其他文本。
+  // #43 后不再用摘录做内容相等匹配，校验的返回值只在失败时决定 integrity-failed 分类。
   try {
-    excerpt = resolveFragmentExcerpt(input.version, fragment);
+    resolveFragmentExcerpt(input.version, fragment);
   } catch {
     return { kind: "failure", failure: "integrity-failed" };
   }
@@ -75,12 +76,8 @@ export function locateFragment(input: FragmentLocatorInput): FragmentLocatorResu
     .slice()
     .sort((left, right) => left.ordinal - right.ordinal);
   if (messageSlices.length === 0) return { kind: "failure", failure: "slice-not-found" };
-  const normalizedExcerpt = normalizeBodyContent(excerpt);
-  const byIndex = messageSlices[fragment.ordinal];
-  const matched =
-    byIndex && normalizeBodyContent(byIndex.content) === normalizedExcerpt
-      ? byIndex
-      : messageSlices.find((slice) => normalizeBodyContent(slice.content) === normalizedExcerpt);
+  // #43：片段 ordinal 即消息内切片数组下标（切片与片段同源派生），序数对齐，不再做内容相等回退。
+  const matched = messageSlices[fragment.ordinal];
   if (!matched) return { kind: "failure", failure: "slice-not-found" };
   const target = deriveSliceCardTargets(message, messageSlices).find((entry) => entry.slice.id === matched.id);
   if (!target) return { kind: "failure", failure: "card-not-derived" };

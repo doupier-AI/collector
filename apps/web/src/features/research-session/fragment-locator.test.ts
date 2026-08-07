@@ -82,33 +82,38 @@ describe("locateFragment", () => {
     expect(result.kind).toBe("ok");
     if (result.kind !== "ok") return;
     expect(result.slice.id).toBe(slices[1].id);
+    // 卡片正文由消息正文确定性派生（#43 起切片不再携带正文副本）
+    expect(result.target.blockText).toBe("第二段。");
     // 无标题块合并：节起始块 ordinal = 切片下标 1
     expect(result.target.cardId).toBe(`${messageContentBlockId(message.id, 1)}-card`);
   });
 
-  it("序号对齐失效时按内容相等回退（对齐 matchSliceForFragment）", () => {
+  it("序数对齐：片段 ordinal 即切片数组下标（不再做内容相等回退）", () => {
     const message = makeAssistantMessage();
     const { version, fragments } = makeArtifacts(message);
-    // 构造错位：fragment ordinal=0，但消息切片顺序颠倒（内容仍匹配）
-    const swapped = [
+    // 构造错位：fragment 序号与切片内容不匹配——#43 后序数是唯一对齐依据，
+    // 内容相等回退已删除：即使 ordinal=0 切片正文不是对应摘录，仍按下标命中。
+    const mismatched = [
       { ...fragments[2], id: fragments[2].id, ordinal: 0 },
       { ...fragments[1], id: fragments[1].id, ordinal: 1 },
       { ...fragments[0], id: fragments[0].id, ordinal: 2 },
     ];
     const { slices } = makeArtifacts(message);
+    // 排序前传逆序数组：ordinal=0 的切片排在数组末位；locateFragment 与
+    // deriveSliceCardTargets 都按 ordinal 排序，序数 0 恒命中 ordinal=0 的切片。
     const reversedSlices = [slices[2], slices[1], slices[0]];
     const result = locateFragment({
       currentNodeId: "node-a",
-      fragmentId: swapped[0].id,
+      fragmentId: mismatched[0].id,
       version,
-      fragments: swapped,
+      fragments: mismatched,
       messages: [message],
       slicesByMessage: { [message.id]: reversedSlices },
     });
-    // 序号 0 的候选内容不是"第三段。"→ 内容相等回退命中（匹配到的切片内容是"第三段。"）
     expect(result.kind).toBe("ok");
     if (result.kind !== "ok") return;
-    expect(result.slice.content).toBe("第三段。");
+    expect(result.slice.id).toBe(slices[0].id);
+    expect(result.target.blockText).toBe("第一段。");
   });
 
   it("invalid-id：标识无法解析", () => {
