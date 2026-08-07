@@ -15,14 +15,14 @@ import { deriveBodyVersion } from "@collector/capture-contracts";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer, type SimilarityVerificationGateway } from "@collector/api";
 import { FakeProvider, ModelGateway } from "@collector/model-gateway";
 
-async function createHarness() {
+async function createHarness(options?: { similarityVerifier?: SimilarityVerificationGateway }) {
   const root = await mkdtemp(join(tmpdir(), "collector-fusion-http-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
   const auth = new LocalAuth(store);
   const token = `fusion-${randomUUID()}`;
   await auth.registerTrustedToken(token, "fusion-http-test");
-  const verifier: SimilarityVerificationGateway = {
+  const verifier: SimilarityVerificationGateway = options?.similarityVerifier ?? {
     async verifyResearchSimilarity() {
       return { relationType: "contrast", reason: "两处材料共享孙悟空名称，但来自不同作品。" };
     },
@@ -69,6 +69,7 @@ async function createHarness() {
   return {
     base: `http://127.0.0.1:${address.port}`,
     token,
+    store,
     close: async () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       store.close();
@@ -88,13 +89,13 @@ test("fusion proposal HTTP scans, lists, decides, and exposes pending weak hints
     method: "POST", headers: headers(harness.token), body: "{}",
   });
   assert.equal(scan.status, 200);
-  const proposals = await scan.json() as Array<{
+  const { proposals } = await scan.json() as { proposals: Array<{
     id: string;
     status: string;
     relationType: string;
     reason: string;
     triggerSources: FusionProposalTriggerSource[];
-  }>;
+  }>; autoFused: unknown[] };
   assert.equal(proposals.length, 1);
   assert.equal(proposals[0].status, "pending");
   assert.equal(proposals[0].relationType, "contrast");
@@ -157,7 +158,7 @@ test("fusion proposal HTTP keeps accepted proposals readable on the node view (#
     method: "POST", headers: headers(harness.token), body: "{}",
   });
   assert.equal(scan.status, 200);
-  const proposals = await scan.json() as Array<{ id: string; status: string }>;
+  const { proposals } = await scan.json() as { proposals: Array<{ id: string; status: string }> };
   assert.equal(proposals.length, 1);
 
   const accept = await fetch(`${harness.base}/v1/research-fusion-proposals/${encodeURIComponent(proposals[0].id)}/decide`, {
@@ -189,7 +190,7 @@ test("#31 fusion HTTP creates a parentless fusion node with fused-from edges and
     method: "POST", headers: headers(harness.token), body: "{}",
   });
   assert.equal(scan.status, 200);
-  const proposals = await scan.json() as Array<{ id: string; status: string }>;
+  const { proposals } = await scan.json() as { proposals: Array<{ id: string; status: string }> };
   assert.equal(proposals.length, 1);
 
   const fuse = await fetch(`${harness.base}/v1/research-fusion-proposals/${encodeURIComponent(proposals[0].id)}/fuse`, {
@@ -233,4 +234,86 @@ test("#31 fusion HTTP creates a parentless fusion node with fused-from edges and
     method: "POST", headers: headers(harness.token), body: JSON.stringify({ idempotencyKey: "fusion-http-key-3" }),
   });
   assert.equal(missing.status, 404);
+});
+
+// ── #32 自动融合 HTTP ─────────────────────────────────────────
+
+test("#32 fusion auto config defaults off, persists, and validates the body", async (t) => {
+  const harness = await createHarness();
+  t.after(harness.close);
+  const get = await fetch(`${harness.base}/v1/settings/fusion`, { headers: headers(harness.token) });
+  assert.equal(get.status, 200);
+  assert.deepEqual(await get.json(), { enabled: false }, "switch defaults to off");
+
+  const put = await fetch(`${harness.base}/v1/settings/fusion`, {
+    method: "PUT", headers: headers(harness.token), body: JSON.stringify({ enabled: true }),
+  });
+  assert.equal(put.status, 200);
+  assert.deepEqual(await put.json(), { enabled: true });
+
+  const again = await fetch(`${harness.base}/v1/settings/fusion`, { headers: headers(harness.token) });
+  assert.deepEqual(await again.json(), { enabled: true }, "switch persists across requests");
+
+  const invalid = await fetch(`${harness.base}/v1/settings/fusion`, {
+    method: "PUT", headers: headers(harness.token), body: JSON.stringify({ enabled: "yes" }),
+  });
+  assert.equal(invalid.status, 400, "non-boolean enabled is rejected");
+
+  // 模拟重启：开关落库（settings 表），同一 store 上的新服务实例仍读到 true。
+  assert.equal(harness.store.getSetting("research_fusion_auto"), "true");
+});
+
+test("#32 fusion auto HTTP fuses high-confidence proposals with auto marking and accepted trace", async (t) => {
+  const harness = await createHarness({
+    similarityVerifier: {
+      async verifyResearchSimilarity() {
+        return { relationType: "identity", reason: "两处材料为同一实体。" };
+      },
+    },
+  });
+  t.after(harness.close);
+  const put = await fetch(`${harness.base}/v1/settings/fusion`, {
+    method: "PUT", headers: headers(harness.token), body: JSON.stringify({ enabled: true }),
+  });
+  assert.equal(put.status, 200);
+
+  const scan = await fetch(`${harness.base}/v1/research-nodes/session-1/fusion-proposals/scan`, {
+    method: "POST", headers: headers(harness.token), body: "{}",
+  });
+  assert.equal(scan.status, 200);
+  const result = await scan.json() as { proposals: Array<{ id: string; status: string }>; autoFused: Array<{ proposalId: string; nodeId: string; sessionId: string }> };
+  assert.equal(result.autoFused.length, 1);
+  const fused = result.autoFused[0]!;
+  assert.equal(fused.sessionId, "session-1");
+  assert.equal(result.proposals[0]?.id, fused.proposalId, "accepted proposal still returned for traceability");
+  assert.equal(result.proposals[0]?.status, "accepted");
+
+  // 自动融合节点视图：isAutoFusionNode 标记 + 来源可回溯 + accepted 提案留痕。
+  const node = await fetch(`${harness.base}/v1/research-nodes/${encodeURIComponent(fused.nodeId)}`, { headers: headers(harness.token) });
+  assert.equal(node.status, 200);
+  const view = await node.json() as { node: { isFusionNode?: boolean; isAutoFusionNode?: boolean; triggerFusionProposalId?: string } };
+  assert.equal(view.node.isFusionNode, true);
+  assert.equal(view.node.isAutoFusionNode, true);
+  assert.equal(view.node.triggerFusionProposalId, fused.proposalId);
+
+  // 来源节点视图仍携带 accepted 提案（留痕路径）。
+  const source = await fetch(`${harness.base}/v1/research-nodes/session-1`, { headers: headers(harness.token) });
+  const sourceView = await source.json() as { fusionProposals?: Array<{ id: string; status: string }> };
+  assert.equal(sourceView.fusionProposals?.some((entry) => entry.id === fused.proposalId && entry.status === "accepted"), true);
+});
+
+test("#32 fusion auto HTTP keeps low-confidence proposals as weak hints when enabled", async (t) => {
+  const harness = await createHarness(); // 缺省 contrast 核验器
+  t.after(harness.close);
+  const put = await fetch(`${harness.base}/v1/settings/fusion`, {
+    method: "PUT", headers: headers(harness.token), body: JSON.stringify({ enabled: true }),
+  });
+  assert.equal(put.status, 200);
+
+  const scan = await fetch(`${harness.base}/v1/research-nodes/session-1/fusion-proposals/scan`, {
+    method: "POST", headers: headers(harness.token), body: "{}",
+  });
+  const result = await scan.json() as { proposals: Array<{ id: string; status: string }>; autoFused: unknown[] };
+  assert.deepEqual(result.autoFused, []);
+  assert.equal(result.proposals[0]?.status, "pending");
 });

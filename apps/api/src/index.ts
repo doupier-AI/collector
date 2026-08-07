@@ -14,7 +14,7 @@ export { DeepResearchNotFoundError, DeepResearchService, DeepResearchValidationE
 export { ResearchLaterNotFoundError, ResearchLaterService, ResearchLaterValidationError } from "./research-later.js";
 export { TermDetectionService, detectTermMarkers, validateTermMarkers, TERM_DETECTION_MIN_CONTENT_LENGTH, type TermDetectionOptions } from "./term-detection.js";
 export { ResearchTermPreviewNotFoundError, ResearchTermPreviewService, ResearchTermPreviewValidationError, TERM_PREVIEW_PROMPT_VERSION, termPreviewMarkerKey, type ResearchTermPreviewServiceOptions } from "./term-preview.js";
-export { FUSION_PROPOSAL_COOLDOWN_DAYS, MIN_SIMILARITY_FALLBACK_UNIT_CHARACTERS, ResearchFusionProposalConflictError, ResearchFusionProposalNotFoundError, ResearchFusionProposalService, ResearchFusionProposalValidationError, SIMILARITY_VERIFICATION_TOKEN_BUDGET, buildSimilarityCandidates, indexNodeSimilaritySignals, type SimilarityCandidate, type SimilarityVerificationGateway } from "./fusion-proposals.js";
+export { AUTO_FUSION_IDEMPOTENCY_PREFIX, AUTO_FUSION_SETTING_KEY, FUSION_PROPOSAL_COOLDOWN_DAYS, MIN_SIMILARITY_FALLBACK_UNIT_CHARACTERS, ResearchFusionProposalConflictError, ResearchFusionProposalNotFoundError, ResearchFusionProposalService, ResearchFusionProposalValidationError, SIMILARITY_VERIFICATION_TOKEN_BUDGET, buildSimilarityCandidates, indexNodeSimilaritySignals, isHighConfidenceFusion, type SimilarityCandidate, type SimilarityVerificationGateway } from "./fusion-proposals.js";
 export { NodeNamingService, deterministicNodeDisplayName, validateNodeDisplayName, NODE_DISPLAY_NAME_MAX_CHARACTERS, type NodeNamingStore, type NodeNamingGateway } from "./node-naming.js";
 export {
   ParentChainContextService,

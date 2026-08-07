@@ -10,9 +10,11 @@ import {
   type FusionRelationType,
   type NodeGrowthAccepted,
   type ResearchEdgeRecord,
+  type ResearchFusionAutoResult,
   type ResearchFusionProposalDecision,
   type ResearchFusionProposalRecord,
   type ResearchFusionProposalStatus,
+  type ResearchFusionScanResult,
   type ResearchFusionSource,
   type ResearchMessageRecord,
   type ResearchNodeRecord,
@@ -27,6 +29,10 @@ import type { ResearchSessionService } from "./research.js";
 
 export const SIMILARITY_VERIFICATION_TOKEN_BUDGET = 800;
 export const FUSION_PROPOSAL_COOLDOWN_DAYS = 30;
+/** #32：自动融合开关的 settings 键（"true"/"false"，缺省关闭）。 */
+export const AUTO_FUSION_SETTING_KEY = "research_fusion_auto";
+/** #32：自动融合的幂等键命名空间（与用户确认式 `fuse:` 隔离，跨重启稳定）。 */
+export const AUTO_FUSION_IDEMPOTENCY_PREFIX = "auto-fuse:";
 const MAX_VERIFICATION_CONTENT_CHARACTERS = 12_000;
 /**
  * #39：没有归一化概念的片段，只有摘录长度达到该字符数才允许用术语/内容词
@@ -208,7 +214,7 @@ export class ResearchFusionProposalService {
       .map((proposal) => this.withResolvedFragmentRefs(proposal));
   }
 
-  async scan(nodeId: string): Promise<ResearchFusionProposalRecord[]> {
+  async scan(nodeId: string): Promise<ResearchFusionScanResult> {
     const focus = this.store.getResearchNode(nodeId);
     if (!focus) throw new ResearchFusionProposalNotFoundError("Research node not found");
     const indexedNodes = this.store.listResearchNodes(focus.sessionId)
@@ -225,22 +231,60 @@ export class ResearchFusionProposalService {
       await this.persistMissingBodyArtifacts(indexed.node.id);
     }
     const candidates = buildSimilarityCandidates(focus.id, indexedNodes);
-    if (!candidates.length) return [];
+    const proposals: ResearchFusionProposalRecord[] = [];
+    const autoFused: ResearchFusionAutoResult[] = [];
+    if (!candidates.length) return { proposals, autoFused };
 
     let gateway: SimilarityVerificationGateway | undefined;
     try {
       gateway = await this.gatewayResolver();
     } catch {
-      return [];
+      // #32：模型不可用时仍返回既有提案（pending/accepted），不隐藏留痕；只是不产生新提议。
+      return { proposals: this.listExistingForScan(nodeId), autoFused };
     }
-    if (!gateway) return [];
+    if (!gateway) return { proposals: this.listExistingForScan(nodeId), autoFused };
 
-    const proposals: ResearchFusionProposalRecord[] = [];
+    // #32：每次扫描读一次开关（低频用户动作，点读即最新值）。
+    const autoEnabled = this.store.getSetting(AUTO_FUSION_SETTING_KEY) === "true";
+    // #32：只处理"开启后新出现的提议"——扫描前已存在（含开关开启前落库）的 pending 不自动融合。
+    const knownIds = new Set(this.store.listResearchFusionProposalsByNode(nodeId).map((proposal) => proposal.id));
     for (const candidate of candidates) {
       const proposal = await this.verifyCandidate(candidate, gateway);
-      if (proposal) proposals.push(this.withResolvedFragmentRefs(proposal));
+      if (!proposal) continue;
+      if (autoEnabled && proposal.status === "pending" && !knownIds.has(proposal.id)) {
+        const fused = await this.tryAutoFuse(proposal);
+        if (fused) autoFused.push(fused);
+      }
+      // 自动融合成功后提案在 store 中已 accepted——从 store 重读以返回最新状态（留痕可见）。
+      const current = this.store.getResearchFusionProposal(proposal.id) ?? proposal;
+      proposals.push(this.withResolvedFragmentRefs(current));
     }
-    return proposals;
+    return { proposals, autoFused };
+  }
+
+  /**
+   * #32：scan 在模型不可用时的降级——返回本节点既有提案（pending/accepted），不隐藏留痕。
+   */
+  private listExistingForScan(nodeId: string): ResearchFusionProposalRecord[] {
+    return this.store.listResearchFusionProposalsByNode(nodeId).map((proposal) => this.withResolvedFragmentRefs(proposal));
+  }
+
+  /**
+   * #32：自动融合。低置信（类比/对比）不自动，回退为弱提示逐条确认；
+   * 融合失败（可回溯来源不足、研究服务未接线等）诚实降级为逐条确认，不阻断整个扫描。
+   */
+  private async tryAutoFuse(proposal: ResearchFusionProposalRecord): Promise<ResearchFusionAutoResult | undefined> {
+    if (!isHighConfidenceFusion(proposal.relationType)) return undefined;
+    try {
+      const accepted = await this.confirmFusion(
+        proposal.id,
+        `${AUTO_FUSION_IDEMPOTENCY_PREFIX}${proposal.id}`,
+        { autoFused: true },
+      );
+      return { proposalId: proposal.id, nodeId: accepted.node.id, sessionId: accepted.node.sessionId };
+    } catch {
+      return undefined;
+    }
   }
 
   async decide(id: string, decision: ResearchFusionProposalDecision): Promise<ResearchFusionProposalRecord> {
@@ -284,7 +328,11 @@ export class ResearchFusionProposalService {
    * 同一提案按 idempotencyKey 幂等：重复 fuse 返回首次创建的节点与任务。
    * 融合纯增量：来源节点、原文与既有关系逐字节不变（ADR-0005）。
    */
-  async confirmFusion(proposalId: string, idempotencyKey: string): Promise<NodeGrowthAccepted> {
+  async confirmFusion(
+    proposalId: string,
+    idempotencyKey: string,
+    options?: { autoFused?: boolean },
+  ): Promise<NodeGrowthAccepted> {
     if (!idempotencyKey.trim()) throw new ResearchFusionProposalValidationError("Idempotency-Key is required");
     if (idempotencyKey.length > 200) throw new ResearchFusionProposalValidationError("Idempotency-Key must not exceed 200 characters");
     if (!this.research) throw new Error("Research service is not wired for fusion generation");
@@ -318,6 +366,10 @@ export class ResearchFusionProposalService {
         ?? this.store.getResearchNode(resolved.hiNodeId)?.sessionId
         ?? "",
       isFusionNode: true,
+      // #32：自动融合标记与触发提议回链（确认式不设；幂等键仍按调用方传入）。
+      ...(options?.autoFused
+        ? { isAutoFusionNode: true, triggerFusionProposalId: proposalId }
+        : {}),
       status: "active",
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
@@ -537,6 +589,14 @@ export class ResearchFusionProposalService {
       this.runningPairs.delete(pairKey);
     }
   }
+}
+
+/**
+ * #32：高置信关系类型 → 自动融合；类比/对比低置信 → 保持逐条确认弱提示。
+ * 与 #31 提示词语义同向：跨作品、跨领域的同名概念默认对比/联想，仅在证据支持时判为更强断言。
+ */
+export function isHighConfidenceFusion(relationType: FusionRelationType): boolean {
+  return relationType === "identity" || relationType === "shared-concept";
 }
 
 function isVerifiedRelationship(value: unknown): value is { relationType: Exclude<FusionRelationType, "unrelated">; reason: string } {

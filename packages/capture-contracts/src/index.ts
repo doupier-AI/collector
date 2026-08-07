@@ -709,6 +709,10 @@ export interface ResearchNodeRecord {
   displayName?: string;
   /** #31：确认式融合创建的融合节点标记（存 record_json，零迁移）；无父链，来源关系由 fused-from 边表达。 */
   isFusionNode?: boolean;
+  /** #32：自动融合创建的融合节点标记（存 record_json，零迁移）；确认式融合不设。不变量：为 true 时 isFusionNode 也为 true。 */
+  isAutoFusionNode?: boolean;
+  /** #32：自动融合节点回链触发它的融合提议 ID（全程留痕）。 */
+  triggerFusionProposalId?: string;
   status: "active";
   createdAt: string;
   updatedAt: string;
@@ -2576,6 +2580,28 @@ export interface ResearchFusionProposalRecord {
   verification: SimilarityVerificationAudit;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * #32：一次自动融合的产物摘要（scan 响应携带，供 WebUI 提示条跳转融合节点页）。
+ */
+export interface ResearchFusionAutoResult {
+  /** 触发自动融合的提议 ID。 */
+  proposalId: string;
+  /** 自动生成的融合节点 ID。 */
+  nodeId: string;
+  /** 融合节点所在会话 ID。 */
+  sessionId: string;
+}
+
+/**
+ * #32：scan 响应形态。proposals 为本次扫描后与本节点相关的全部提案
+ * （含自动融合成功后已 accepted 的留痕提案与维持弱提示的 pending 提案）；
+ * autoFused 为本次新自动生成的融合节点摘要。
+ */
+export interface ResearchFusionScanResult {
+  proposals: ResearchFusionProposalRecord[];
+  autoFused: ResearchFusionAutoResult[];
 }
 
 export interface ResearchFusionProposalDecisionInput {

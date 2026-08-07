@@ -72,7 +72,7 @@ import { parseAgentCitations } from "./web-search-agent.js";
 import { getSearchConfig as getSearchConfigFromAgent, updateSearchConfig as updateSearchConfigInAgent, listAvailableBackends, initSearchBackends, type SearchBackendId } from "./web-search-agent.js";
 import { ALL_SEARCH_BACKEND_IDS } from "./search-backends/index.js";
 import { RunRecordsService } from "./observability.js";
-import { ResearchFusionProposalService, type SimilarityVerificationGateway } from "./fusion-proposals.js";
+import { AUTO_FUSION_SETTING_KEY, ResearchFusionProposalService, type SimilarityVerificationGateway } from "./fusion-proposals.js";
 
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
@@ -646,6 +646,17 @@ export class CaptureService {
     });
 
     return getSearchConfigFromAgent();
+  }
+
+  // ── 自动融合设置（#32）──────────────────────────────────
+  getFusionAutoConfig(): { enabled: boolean } {
+    return { enabled: this.store.getSetting(AUTO_FUSION_SETTING_KEY) === "true" };
+  }
+
+  async updateFusionAutoConfig(input: { enabled?: unknown }): Promise<{ enabled: boolean }> {
+    if (typeof input?.enabled !== "boolean") throw new ValidationError("enabled must be a boolean");
+    await this.store.saveSetting(AUTO_FUSION_SETTING_KEY, String(input.enabled));
+    return { enabled: input.enabled };
   }
 
   getProviderCatalog(): ProviderDefinition[] { return DEFAULT_PROVIDER_REGISTRY.list(); }

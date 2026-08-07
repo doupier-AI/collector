@@ -9,10 +9,10 @@ const runtimeDir = join(dirname(fileURLToPath(import.meta.url)), ".runtime");
 /** 视觉/地图基线共用问题：假模型对前 24 字稳定产出固定三段正文与切片标题。 */
 export const QUESTION = "什么是本地优先研究？";
 
-/** 由页面端口推断对应的 API harness 端口（页面由 API 同源提供：43211 fake，43212 nomodel）。 */
+/** 由页面端口推断对应的 API harness 端口（页面由 API 同源提供：43211 fake，43212 nomodel，43213 fake+identity）。 */
 export function apiPortForPage(page: Page): number {
   const port = Number(new URL(page.url()).port || "43211");
-  return port === 43212 ? 43212 : 43211;
+  return port === 43212 ? 43212 : port === 43213 ? 43213 : 43211;
 }
 
 async function waitForFileValue(name: string): Promise<string> {
@@ -27,14 +27,29 @@ async function waitForFileValue(name: string): Promise<string> {
   throw new Error(`运行时文件未就绪: ${name}`);
 }
 
-/** 从配对码池取一个一次性配对码（workers=1，游标文件单调递增；harness 启动重写码池时同步删除游标）。 */
-export async function nextPairingCode(apiPort: number): Promise<string> {
+/**
+ * 从配对码池取一个一次性配对码（workers=1；harness 启动重写码池时同步删除游标）。
+ * fromEnd=true 时从池尾（最近 refill 追加的新鲜码）取，使用独立 endcursor 游标：
+ * 供套件末尾才运行的低消耗端口使用，避免与头部消费共享游标导致取到过期码。
+ */
+export async function nextPairingCode(apiPort: number, fromEnd = false): Promise<string> {
   const poolPath = join(runtimeDir, `pairing-${apiPort}.txt`);
   await waitForFileValue(`pairing-${apiPort}.txt`);
   const codes = readFileSync(poolPath, "utf8")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
+  if (fromEnd) {
+    const endCursorPath = join(runtimeDir, `pairing-${apiPort}.endcursor`);
+    let endCursor = 0;
+    if (existsSync(endCursorPath)) {
+      endCursor = Number(readFileSync(endCursorPath, "utf8").trim()) || 0;
+    }
+    const index = codes.length - 1 - endCursor;
+    if (index < 0) throw new Error(`配对码池已耗尽 (port=${apiPort}, end)`);
+    writeFileSync(endCursorPath, String(endCursor + 1), "utf8");
+    return codes[index]!;
+  }
   const cursorPath = join(runtimeDir, `pairing-${apiPort}.cursor`);
   let cursor = 0;
   if (existsSync(cursorPath)) {
@@ -42,18 +57,30 @@ export async function nextPairingCode(apiPort: number): Promise<string> {
   }
   if (cursor >= codes.length) throw new Error(`配对码池已耗尽 (port=${apiPort})`);
   writeFileSync(cursorPath, String(cursor + 1), "utf8");
-  return codes[cursor];
+  return codes[cursor]!;
 }
 
-/** 在配对页输入配对码完成配对，然后进入目标路径（默认 / 自动恢复最近会话）。 */
-export async function pairAndOpen(page: Page, path = "/"): Promise<void> {
-  await page.goto("/");
-  const code = await nextPairingCode(apiPortForPage(page));
-  const codeInput = page.getByLabel("配对码");
-  await codeInput.waitFor({ state: "visible", timeout: 15_000 });
-  await codeInput.fill(code);
-  await page.getByRole("button", { name: "配对并继续" }).click();
-  await expect(codeInput).toBeHidden({ timeout: 15_000 });
+/**
+ * 在配对页输入配对码完成配对，然后进入目标路径（默认 / 自动恢复最近会话）。fromEnd 见 nextPairingCode。
+ * 配对失败（配对码过期/被抢）时自动重试一次并改用池尾新鲜码：低消耗端口在套件末尾运行时
+ * 常取到 harness 启动时 mint、已过 5 分钟 TTL 的池头码，重试吸收这类基础设施抖动。
+ */
+export async function pairAndOpen(page: Page, path = "/", fromEnd = false): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    await page.goto("/");
+    const code = await nextPairingCode(apiPortForPage(page), attempt > 0 ? true : fromEnd);
+    const codeInput = page.getByLabel("配对码");
+    await codeInput.waitFor({ state: "visible", timeout: 15_000 });
+    await codeInput.fill(code);
+    await page.getByRole("button", { name: "配对并继续" }).click();
+    try {
+      await expect(codeInput).toBeHidden({ timeout: 15_000 });
+      break; // 配对成功
+    } catch (error) {
+      if (attempt >= 1) throw error;
+      // 首次失败：多半是配对码过期（池头码 5 分钟 TTL），重试改用池尾最新码。
+    }
+  }
   if (path !== "/") await page.goto(path);
 }
 

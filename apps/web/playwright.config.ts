@@ -34,17 +34,35 @@ export default defineConfig({
       stdout: "ignore",
       stderr: "pipe",
     },
+    // #32 自动融合高置信路径：相似性核验恒判为 identity（同一实体）→ 自动融合。
+    {
+      command: "node e2e/api-harness.mjs",
+      url: "http://127.0.0.1:43213/health",
+      reuseExistingServer: false,
+      env: { E2E_API_PORT: "43213", E2E_MODEL: "fake", E2E_SIMILARITY_RELATION: "identity" },
+      stdout: "ignore",
+      stderr: "pipe",
+    },
   ],
   projects: [
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"], baseURL: "http://127.0.0.1:43211" },
-      testIgnore: /(?:no-model|z-acceptance-real)\.spec\.ts/,
+      // z-auto-fusion（identity 高置信）由 chromium-autofusion（43213）承担；-off 用例用 contrast，留在本 project。
+      testIgnore: /(?:no-model|z-acceptance-real|z-auto-fusion)\.spec\.ts/,
     },
     {
       name: "chromium-nomodel",
       use: { ...devices["Desktop Chrome"], baseURL: "http://127.0.0.1:43212" },
       testMatch: /no-model\.spec\.ts/,
+      // 低消耗端口的配对码在套件末尾可能过期（5 分钟 TTL）：基础设施抖动自动重试一次。
+      retries: 1,
+    },
+    {
+      name: "chromium-autofusion",
+      use: { ...devices["Desktop Chrome"], baseURL: "http://127.0.0.1:43213" },
+      testMatch: /z-auto-fusion\.spec\.ts/,
+      retries: 1,
     },
   ],
 });

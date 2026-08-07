@@ -6,6 +6,7 @@ import { NotFoundPage } from "../features/research-session/NotFoundPage";
 import { ResearchNodePage } from "../features/research-session/ResearchNodePage";
 import { StartPage } from "../features/research-session/StartPage";
 import { AiModelSettingsPage } from "../features/settings/AiModelSettingsPage";
+import { FusionSettingsPage } from "../features/settings/FusionSettingsPage";
 import { RunRecordsPage } from "../features/run-records/RunRecordsPage";
 
 /**
@@ -53,6 +54,7 @@ export function AppRoutes() {
         <Route path="run-records" element={<RunRecordsPage />} />
         <Route path="run-records/:runId" element={<RunRecordsPage />} />
         <Route path="settings/ai-model" element={<AiModelSettingsPage />} />
+        <Route path="settings/fusion" element={<FusionSettingsPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

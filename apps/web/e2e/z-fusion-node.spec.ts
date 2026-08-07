@@ -74,9 +74,24 @@ function assistantMessageContents(dbPath: string, nodeId: string): string[] {
   }
 }
 
+/** 轮询等待节点内至少 n 条已完成助手消息落库（确定性：SSE 渲染完成 ≠ DB 提交完成）。 */
+async function waitForCompletedMessages(dbPath: string, nodeId: string, minCount: number, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (assistantMessageContents(dbPath, nodeId).length >= minCount) return;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  throw new Error(`等待节点 ${nodeId} 已完成消息落库超时（要求 ≥${minCount} 条）`);
+}
+
 test("#31 确认式融合：弱提示 → 确认 → 融合节点 → 章节与引用回溯 → 原节点不变", async ({ page }) => {
   const { sessionId, rootNodeId } = await openSession(page);
   const childNodeId = await growSharedConceptChild(page, sessionId);
+  const dbPath = joinDataDir(await readDataDir(apiPortForPage(page)));
+  // 确定性等待来源消息完成落库：SSE 渲染"回答完毕"后 DB 提交可能在下一事件才完成，
+  // scan 前保证两个来源节点都有已完成助手消息，否则候选为空、scan 返回空提议。
+  await waitForCompletedMessages(dbPath, rootNodeId, 1);
+  await waitForCompletedMessages(dbPath, childNodeId, 1);
 
   // 回根节点页触发真实 scan（确定性核验：共享概念判为对比）。
   await page.goto(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(rootNodeId)}`);
@@ -85,11 +100,10 @@ test("#31 确认式融合：弱提示 → 确认 → 融合节点 → 章节与�
     data: {},
   });
   expect(scan.ok()).toBeTruthy();
-  const proposals = (await scan.json()) as Array<{ id: string; status: string; relationType: string }>;
+  const { proposals } = (await scan.json()) as { proposals: Array<{ id: string; status: string; relationType: string }> };
   expect(proposals.length).toBeGreaterThanOrEqual(1);
   expect(proposals[0]!.relationType).toBe("contrast");
   const proposalId = proposals[0]!.id;
-  const dbPath = joinDataDir(await readDataDir(apiPortForPage(page)));
   expect(fusionProposalIds(dbPath)).toContain(proposalId);
 
   // 来源证据（真实正文版本 + 片段）：用于断言引用可回溯。

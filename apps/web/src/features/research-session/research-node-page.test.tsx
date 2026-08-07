@@ -908,3 +908,100 @@ describe("#42 融合依据定位", () => {
   });
 });
 
+
+describe("#32 自动融合挂载扫描", () => {
+  it("开关开启：挂载自动扫描，合并提案并显示可跳转的自动融合提示条", async () => {
+    const user = userEvent.setup();
+    const view = readyRootView();
+    const pendingProposal = makeFusionProposal({
+      id: "fusion:auto-1",
+      loNodeId: "session-1",
+      hiNodeId: "node-b",
+      status: "pending",
+    });
+    const scanResearchFusionProposals = vi.fn(async () => ({
+      proposals: [pendingProposal],
+      autoFused: [{ proposalId: "fusion:auto-1", nodeId: "fusion-node-1", sessionId: "session-1" }],
+    }));
+    const getFusionAutoConfig = vi.fn(async () => ({ enabled: true }));
+    renderNodePage({
+      getResearchNodeView: async () => view,
+      getFusionAutoConfig,
+      scanResearchFusionProposals,
+    });
+
+    await waitFor(() => expect(getFusionAutoConfig).toHaveBeenCalled());
+    await waitFor(() => expect(scanResearchFusionProposals).toHaveBeenCalledWith("session-1"));
+    // 自动融合提示条可见且链接指向融合节点页。
+    await screen.findByTestId("auto-fusion-notice");
+    expect(screen.getByText("已自动生成融合节点")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "查看融合节点" })).toHaveAttribute(
+      "href",
+      "/research/session-1/node/fusion-node-1",
+    );
+    // 扫描返回的 pending 提案合并进弱提示区（同一实体/共享概念才自动融合，这里 status 保持 pending）。
+    await waitFor(() => expect(screen.getByText("熟悉的概念再现，节点可融合")).toBeInTheDocument());
+  });
+
+  it("开关关闭：不调用扫描，不显示提示条", async () => {
+    const view = readyRootView();
+    const scanResearchFusionProposals = vi.fn(async () => ({ proposals: [], autoFused: [] }));
+    const getFusionAutoConfig = vi.fn(async () => ({ enabled: false }));
+    renderNodePage({ getResearchNodeView: async () => view, getFusionAutoConfig, scanResearchFusionProposals });
+
+    await screen.findByText("为什么需要多头注意力？");
+    await waitFor(() => expect(getFusionAutoConfig).toHaveBeenCalled());
+    expect(scanResearchFusionProposals).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("auto-fusion-notice")).not.toBeInTheDocument();
+  });
+
+  it("客户端方法缺失（旧替身）：静默跳过，不扫描不报错", async () => {
+    const view = readyRootView();
+    renderNodePage({ getResearchNodeView: async () => view });
+    await screen.findByText("为什么需要多头注意力？");
+    expect(screen.queryByTestId("auto-fusion-notice")).not.toBeInTheDocument();
+  });
+
+  it("扫描失败：页面正常，无提示条", async () => {
+    const view = readyRootView();
+    const getFusionAutoConfig = vi.fn(async () => ({ enabled: true }));
+    const scanResearchFusionProposals = vi.fn(async () => {
+      throw new NetworkError();
+    });
+    renderNodePage({ getResearchNodeView: async () => view, getFusionAutoConfig, scanResearchFusionProposals });
+    await screen.findByText("为什么需要多头注意力？");
+    await waitFor(() => expect(scanResearchFusionProposals).toHaveBeenCalled());
+    expect(screen.queryByTestId("auto-fusion-notice")).not.toBeInTheDocument();
+  });
+
+  it("自动融合节点页标题旁显示「自动生成」徽章；确认式融合节点不显示", async () => {
+    const autoView = makeNodeView({
+      node: makeNode({ id: "fusion-node-1", sessionId: "session-1", isFusionNode: true, isAutoFusionNode: true }),
+      session: makeSession({ id: "session-1", title: "融合节点" }),
+      messages: [makeMessage({ id: "m-in", role: "user", content: "请综合以下研究来源" })],
+      tasks: [],
+      fusionProposals: [],
+    });
+    const { unmount } = renderNodePage(
+      { getResearchNodeView: async () => autoView },
+      "/research/session-1/node/fusion-node-1",
+    );
+    await screen.findByRole("heading", { name: /融合节点/ });
+    expect(screen.getByTestId("auto-fusion-badge")).toHaveTextContent("自动生成");
+    unmount();
+
+    const manualView = makeNodeView({
+      node: makeNode({ id: "fusion-node-2", sessionId: "session-1", isFusionNode: true }),
+      session: makeSession({ id: "session-1", title: "融合节点" }),
+      messages: [makeMessage({ id: "m-in", role: "user", content: "请综合以下研究来源" })],
+      tasks: [],
+      fusionProposals: [],
+    });
+    renderNodePage(
+      { getResearchNodeView: async () => manualView },
+      "/research/session-1/node/fusion-node-2",
+    );
+    await screen.findByRole("heading", { name: "融合节点" });
+    expect(screen.queryByTestId("auto-fusion-badge")).not.toBeInTheDocument();
+  });
+});

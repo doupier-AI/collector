@@ -651,6 +651,14 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         };
         return json(response, 200, await service.updateSearchConfig(searchBody));
       }
+// ── Fusion Auto Settings (#32) ────────────────────────
+      if (request.method === "GET" && url.pathname === "/v1/settings/fusion") {
+        return json(response, 200, service.getFusionAutoConfig());
+      }
+      if (request.method === "PUT" && url.pathname === "/v1/settings/fusion") {
+        const fusionBody = await readJson(request) as { enabled?: unknown };
+        return json(response, 200, await service.updateFusionAutoConfig(fusionBody));
+      }
       const docByIdMatch = url.pathname.match(/^\/v1\/documents\/([^/]+)$/);
       if (request.method === "GET" && docByIdMatch) {
         const doc = service.getTopicDocumentVersion(decodeURIComponent(docByIdMatch[1]));

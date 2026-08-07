@@ -3,7 +3,7 @@ import { createApiClient } from "./client";
 
 describe("F1 fusion proposal API client", () => {
   it("calls scan, list, and decision endpoints with their stable paths and bodies", async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ proposals: [], autoFused: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
     const client = createApiClient(fetchMock);
 
     await client.scanResearchFusionProposals("node / one");
@@ -24,6 +24,23 @@ describe("F1 fusion proposal API client", () => {
       3,
       "/v1/research-fusion-proposals/fusion%3Aabc/decide",
       expect.objectContaining({ method: "POST", body: JSON.stringify({ decision: "rejected" }) }),
+    );
+  });
+});
+
+describe("#32 fusion auto config API client", () => {
+  it("reads and writes the auto fusion switch with stable paths and bodies", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ enabled: true }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const client = createApiClient(fetchMock);
+
+    await client.getFusionAutoConfig();
+    await client.updateFusionAutoConfig(true);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/v1/settings/fusion", undefined);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/v1/settings/fusion",
+      expect.objectContaining({ method: "PUT", body: JSON.stringify({ enabled: true }) }),
     );
   });
 });

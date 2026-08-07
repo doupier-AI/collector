@@ -49,7 +49,8 @@ import {
 } from "./fragment-locator";
 import { FusionProposalNotice } from "./FusionProposalNotice";
 import { FusionSourceBar } from "./FusionSourceBar";
-import type { ResearchFusionSource } from "@collector/capture-contracts";
+import { AutoFusionNotice } from "./AutoFusionNotice";
+import type { ResearchFusionAutoResult, ResearchFusionProposalRecord, ResearchFusionSource } from "@collector/capture-contracts";
 
 const STREAM_NOTICE: Record<string, { title: string; body: string }> = {
   reconnecting: { title: "连接中断", body: "正在重新连接，已显示的内容不会丢失。" },
@@ -79,6 +80,9 @@ export function ResearchNodePage() {
   const [retryingTaskId, setRetryingTaskId] = useState<string | null>(null);
   const [decidingFusionProposalId, setDecidingFusionProposalId] = useState<string | null>(null);
   const [fusingProposalId, setFusingProposalId] = useState<string | null>(null);
+  // #32：本次挂载自动融合成功的融合节点摘要（顶部提示条数据源）。
+  const [autoFusionResults, setAutoFusionResults] = useState<ResearchFusionAutoResult[] | null>(null);
+  const autoScanNodeRef = useRef("");
   const readyView = node.state.kind === "ready" ? node.state.view : undefined;
 
   // #36 章节导航：任一 completed 消息存在派生切片时渲染线列。
@@ -310,6 +314,37 @@ export function ResearchNodePage() {
     return () => window.clearTimeout(timer);
   }, [focusedCard, reducedMotion]);
 
+  // #32 自动融合：开关开启时，节点视图就绪后自动扫描一次相似候选（进入/刷新节点页触发）。
+  // 每节点只扫描一次（刷新=重挂载=重扫）；扫描与融合失败静默，不打断页面。
+  // 依赖 node.state.kind 而非 node 对象：node 控制器每次渲染重建，只有 kind 变化才真正
+  // 代表视图就绪；ref 只在 ready 且开始扫描时置位，避免加载期间提前置位挡住就绪后的扫描。
+  useEffect(() => {
+    if (node.state.kind !== "ready") return;
+    if (autoScanNodeRef.current === nodeId) return;
+    // 旧测试替身/客户端方法缺失时静默跳过。
+    if (!api.getFusionAutoConfig || !api.scanResearchFusionProposals) return;
+    autoScanNodeRef.current = nodeId; // 同步置位防 StrictMode 双跑
+    let cancelled = false;
+    void (async () => {
+      try {
+        const config = await api.getFusionAutoConfig();
+        if (cancelled || !config.enabled) return;
+        const result = await api.scanResearchFusionProposals(nodeId);
+        if (cancelled) return;
+        node.updateView((current) => ({
+          ...current,
+          fusionProposals: mergeFusionProposals(current.fusionProposals ?? [], result.proposals),
+        }));
+        if (result.autoFused.length > 0) setAutoFusionResults(result.autoFused);
+      } catch {
+        // 扫描失败静默：弱提示仍走既有路径（节点视图自带的提案）。
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [api, node.state.kind, nodeId]);
+
   async function handleRetry(task: ResearchTaskRecord) {
     setRetryingTaskId(task.id);
     try {
@@ -524,10 +559,19 @@ export function ResearchNodePage() {
       ) : null}
 
       <header className="session-header">
-        <h1 className="page__title">{title}</h1>
+        <h1 className="page__title">
+          {title}
+          {isFusionNode && view.node.isAutoFusionNode ? (
+            <span className="fusion-auto-badge" data-testid="auto-fusion-badge">自动生成</span>
+          ) : null}
+        </h1>
         <p className="session-header__meta">更新于 {formatSessionTime(view.session.updatedAt)}</p>
         <ModelStatusIndicator />
       </header>
+
+      {autoFusionResults && autoFusionResults.length > 0 ? (
+        <AutoFusionNotice results={autoFusionResults} sessionId={sessionId} />
+      ) : null}
 
       {fusionSourceEntries.length > 0 ? (
         <FusionSourceBar sources={fusionSourceEntries} sessionId={sessionId} />
@@ -698,4 +742,17 @@ export function ResearchNodePage() {
       </p>
     </div>
   );
+}
+
+/**
+ * #32：按 id 合并扫描返回的提案与视图既有提案，保留视图里未在扫描结果中的
+ * 旧提案（如历史 accepted 依据入口）。扫描结果优先覆盖同 id 提案（状态可能已变化）。
+ */
+function mergeFusionProposals(
+  view: ResearchFusionProposalRecord[],
+  scanned: ResearchFusionProposalRecord[],
+): ResearchFusionProposalRecord[] {
+  const byId = new Map(view.map((proposal) => [proposal.id, proposal]));
+  for (const proposal of scanned) byId.set(proposal.id, proposal);
+  return [...byId.values()];
 }

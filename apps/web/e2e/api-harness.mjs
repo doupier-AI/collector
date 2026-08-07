@@ -20,6 +20,9 @@ import { ModelProviderHttpError } from "@collector/model-gateway";
 
 const port = Number(process.env.E2E_API_PORT ?? "43211");
 const modelMode = process.env.E2E_MODEL ?? "fake";
+// #32：相似性核验的确定性关系类型（identity | shared-concept | analogy | contrast）。
+// 缺省 contrast 与 #31 行为一致；identity 用于自动融合高置信路径的 e2e。
+const similarityRelation = process.env.E2E_SIMILARITY_RELATION ?? "contrast";
 
 const e2eDir = dirname(fileURLToPath(import.meta.url));
 const runtimeDir = join(e2eDir, ".runtime");
@@ -29,6 +32,29 @@ mkdirSync(runtimeDir, { recursive: true });
 const webRoot = join(e2eDir, "..", "dist");
 if (!existsSync(join(webRoot, "index.html"))) {
   throw new Error(`E2E WebUI production build not found at ${webRoot}. Run npm.cmd run build before test:e2e.`);
+}
+
+// #32 构建自检：dist 必须包含自动融合代码（/v1/settings/fusion 端点消费）。
+// 旧构建不含该标记时 e2e 会在页面行为断言上超时失败，且失败信息与真实缺陷难以区分——
+// 启动期即失败并提示 rebuild，比运行期 20 秒超时后再排查高效得多。
+{
+  const fsPromises = await import("node:fs/promises");
+  const files = await fsPromises.readdir(join(webRoot, "assets")).catch(() => []);
+  let hasAutoFusion = false;
+  for (const file of files) {
+    if (!file.endsWith(".js")) continue;
+    const code = await fsPromises.readFile(join(webRoot, "assets", file), "utf8");
+    if (code.includes("/v1/settings/fusion")) {
+      hasAutoFusion = true;
+      break;
+    }
+  }
+  if (!hasAutoFusion) {
+    throw new Error(
+      `E2E WebUI build missing auto-fusion code (no /v1/settings/fusion in ${webRoot}/assets). ` +
+        "Run npm.cmd run build (tsc -b does NOT produce the vite dist) before test:e2e.",
+    );
+  }
 }
 
 const dataDir = process.env.E2E_DATA_DIR ?? (await mkdtemp(join(tmpdir(), "collector-e2e-")));
@@ -186,13 +212,18 @@ const service = new CaptureService(store, join(dataDir, "artifacts"), undefined,
   autoRunRecentOrganization: false,
   researchProvider: modelMode === "fake" ? fakeProvider : undefined,
   selectionProvider: modelMode === "fake" ? fakeSelectionProvider : undefined,
-  // #31：相似性核验的确定性假模型——共享概念即判为对比（孙悟空×2 场景），
-  // 使真实 scan 端点产出可确认的 pending 提案供融合 e2e 使用。
+  // #31/#32：相似性核验的确定性假模型——共享概念按环境变量判为对比或同一实体，
+  // 使真实 scan 端点产出可确认的 pending 提案（contrast）或自动融合（identity）。
   // 只在 fake 模式注入：no-model harness 保持无任何模型能力的纯负路径。
   ...(modelMode === "fake" ? {
     similarityVerifier: {
       async verifyResearchSimilarity() {
-        return { relationType: "contrast", reason: "同名概念来自不同作品或语境。" };
+        return {
+          relationType: similarityRelation,
+          reason: similarityRelation === "contrast"
+            ? "同名概念来自不同作品或语境。"
+            : "两处材料为同一实体或共享同一概念。",
+        };
       },
     },
   } : {}),
@@ -222,6 +253,7 @@ function mintCodes(count) {
 }
 writeFileSync(join(runtimeDir, `pairing-${port}.txt`), mintCodes(64), "utf8");
 rmSync(join(runtimeDir, `pairing-${port}.cursor`), { force: true });
+rmSync(join(runtimeDir, `pairing-${port}.endcursor`), { force: true });
 writeFileSync(join(runtimeDir, `datadir-${port}.txt`), dataDir, "utf8");
 writeFileSync(join(runtimeDir, `launcher-${port}.token`), launcherToken, { encoding: "utf8", mode: 0o600 });
 const refill = setInterval(() => {
