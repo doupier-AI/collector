@@ -16,12 +16,12 @@
   position: absolute;
   left: 1rem;
   top: -3.5rem;
-  z-index: 40;
+  z-index: var(--z-overlay);
   padding: 0.375rem 0.75rem;
   background: var(--color-surface);
   border: 1px solid var(--color-line);
   border-radius: var(--radius-control);
-  transition: top 120ms ease-out;
+  transition: top var(--duration-fast) ease-out;
 }
 
 .skip-link:focus-visible {
@@ -60,7 +60,7 @@
   }
 }
 
-/* 系统开启“减少动态效果”时关闭非必要动画 */
+/* 系统开启"减少动态效果"时关闭非必要动画 */
 @media (prefers-reduced-motion: reduce) {
   .ai-placeholder--animated .ai-placeholder__line {
     animation: none;
