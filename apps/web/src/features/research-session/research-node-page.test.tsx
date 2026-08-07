@@ -872,6 +872,33 @@ describe("#42 融合依据定位", () => {
     expect((await screen.findAllByRole("button", { name: /查看依据片段/ })).length).toBeGreaterThan(0);
   });
 
+  it("#31 点击「融合为节点」调用 fuse 并跳转到融合节点页", async () => {
+    const user = userEvent.setup();
+    const view = viewWithFusionEvidence();
+    const versionView = bodyVersionViewFor(view.messages.find((m) => m.id === "m-out")!, "session-1");
+    const fuseResearchFusionProposal = vi.fn(async () => ({
+      node: makeNode({ id: "fusion-node-1", sessionId: "session-1" }),
+      session: makeSession({ id: "session-1" }),
+      selection: undefined,
+      inputMessage: makeMessage({ id: "m-fuse-in", role: "user", content: "请综合以下研究来源" }),
+      outputMessage: makeMessage({ id: "m-fuse-out", role: "assistant", status: "pending", content: "" }),
+      task: makeTask({ id: "task-fuse", status: "queued", inputMessageId: "m-fuse-in", outputMessageId: "m-fuse-out" }),
+    }));
+    renderNodePage(
+      {
+        getResearchNodeView: async () => view,
+        getResearchBodyVersion: async () => versionView,
+        fuseResearchFusionProposal,
+      },
+      "/research/session-1/node/session-1",
+    );
+
+    await screen.findByText("第一段。");
+    await user.click(screen.getByText("熟悉的概念再现，节点可融合"));
+    await user.click(screen.getByRole("button", { name: "融合为节点" }));
+    await waitFor(() => expect(fuseResearchFusionProposal).toHaveBeenCalledWith("fusion:1", "fuse:fusion:1"));
+  });
+
   it("无 fragment 参数时不请求正文版本", async () => {
     const view = viewWithFusionEvidence();
     const getResearchBodyVersion = vi.fn(async () => bodyVersionViewFor(view.messages.find((m) => m.id === "m-out")!));

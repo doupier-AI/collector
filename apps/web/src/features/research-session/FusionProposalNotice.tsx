@@ -29,6 +29,10 @@ export interface FusionProposalNoticeProps {
   currentNodeId: string;
   decidingProposalId: string | null;
   onDecide: (proposalId: string, decision: "accepted" | "rejected") => void;
+  /** #31：确认式融合——用户确认后创建融合节点并跳转。 */
+  onFuse?: (proposalId: string) => void;
+  /** 融合请求进行中的提案 id。 */
+  fusingProposalId?: string | null;
   announce: (message: string) => void;
 }
 
@@ -44,6 +48,8 @@ export function FusionProposalNotice({
   currentNodeId,
   decidingProposalId,
   onDecide,
+  onFuse,
+  fusingProposalId,
   announce,
 }: FusionProposalNoticeProps): ReactElement | null {
   if (proposals.length === 0) return null;
@@ -58,9 +64,11 @@ export function FusionProposalNotice({
             proposal={proposal}
             accepted={accepted}
             deciding={deciding}
+            fusing={fusingProposalId === proposal.id}
             sessionId={sessionId}
             currentNodeId={currentNodeId}
             onDecide={onDecide}
+            onFuse={onFuse}
             announce={announce}
           />
         );
@@ -73,17 +81,21 @@ function FusionProposalItem({
   proposal,
   accepted,
   deciding,
+  fusing,
   sessionId,
   currentNodeId,
   onDecide,
+  onFuse,
   announce,
 }: {
   proposal: ResearchFusionProposalRecord;
   accepted: boolean;
   deciding: boolean;
+  fusing: boolean;
   sessionId: string;
   currentNodeId: string;
   onDecide: (proposalId: string, decision: "accepted" | "rejected") => void;
+  onFuse?: (proposalId: string) => void;
   announce: (message: string) => void;
 }): ReactElement {
   // 依据预览只在 details 展开后懒加载：未展开时条目仍在 DOM（details 原生行为），
@@ -106,11 +118,21 @@ function FusionProposalItem({
       />
       {!accepted ? (
         <div className="fusion-proposal-notice__actions">
+          {onFuse ? (
+            <button
+              type="button"
+              className="button button--primary"
+              onClick={() => onFuse(proposal.id)}
+              disabled={deciding || fusing}
+            >
+              {fusing ? "正在创建融合节点…" : "融合为节点"}
+            </button>
+          ) : null}
           <button
             type="button"
             className="button button--secondary"
             onClick={() => onDecide(proposal.id, "accepted")}
-            disabled={deciding}
+            disabled={deciding || fusing}
           >
             保留关系
           </button>
@@ -118,7 +140,7 @@ function FusionProposalItem({
             type="button"
             className="button button--ghost"
             onClick={() => onDecide(proposal.id, "rejected")}
-            disabled={deciding}
+            disabled={deciding || fusing}
           >
             暂不处理
           </button>

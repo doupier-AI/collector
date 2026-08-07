@@ -3,10 +3,11 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
-import type { ResearchCitationRecord, ResearchGroundingSourceRecord, TermMarker } from "@collector/capture-contracts";
+import type { ResearchCitationRecord, ResearchFusionSource, ResearchGroundingSourceRecord, TermMarker } from "@collector/capture-contracts";
 import { CitationMarker } from "./CitationMarker";
 import { remarkCitationMarkers } from "../features/research-session/remark-citation-markers";
 import { buildCitationIndex, buildSourceMap } from "../features/research-session/citation-utils";
+import { FusionCitationMarker } from "../features/research-session/FusionCitationMarker";
 
 declare global {
   namespace JSX {
@@ -33,6 +34,8 @@ export interface MarkdownContentProps {
   sources?: readonly ResearchGroundingSourceRecord[];
   citations?: readonly ResearchCitationRecord[];
   terms?: readonly TermMarker[];
+  /** #31：融合正文的来源列表；存在时 [来源n] 渲染为可点击的融合引用标记。 */
+  fusionSources?: readonly ResearchFusionSource[];
   variant?: "message" | "insight";
   className?: string;
   /**
@@ -50,7 +53,7 @@ export interface MarkdownContentProps {
  * - variant="insight" 时适用较简洁排版
  * - 对极速流式更新做 useMemo 防止闪烁
  */
-export function MarkdownContent({ text, sources = [], citations = [], terms = [], variant = "message", className, titleAnchorId }: MarkdownContentProps) {
+export function MarkdownContent({ text, sources = [], citations = [], terms = [], fusionSources, variant = "message", className, titleAnchorId }: MarkdownContentProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const sourceById = useMemo(() => buildSourceMap(sources), [sources]);
   const citationIndexById = useMemo(() => buildCitationIndex(citations), [citations]);
@@ -98,6 +101,12 @@ export function MarkdownContent({ text, sources = [], citations = [], terms = []
         components={{
           "cite-marker": ({ "data-source-ordinal": ordinalStr }: Record<string, unknown>): ReactNode => {
             const ordinal = Number(ordinalStr);
+            // #31 融合正文：优先按来源列表渲染为融合引用（[来源n] → 来源语义片段深链）。
+            if (fusionSources && fusionSources.length > 0) {
+              const source = fusionSources[ordinal - 1];
+              if (!source || Number.isNaN(ordinal)) return null;
+              return <FusionCitationMarker source={source} />;
+            }
             const citation = (citationByOrdinal.get(ordinal) ?? [])[0];
             if (!citation || Number.isNaN(ordinal)) return null;
             const index = citationIndexById.get(citation.id) ?? ordinal;

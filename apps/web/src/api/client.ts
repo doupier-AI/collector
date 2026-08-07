@@ -105,6 +105,8 @@ export interface ApiClient {
   scanResearchFusionProposals(nodeId: string): Promise<ResearchFusionProposalRecord[]>;
   listResearchFusionProposals(nodeId: string, status?: ResearchFusionProposalRecord["status"]): Promise<ResearchFusionProposalRecord[]>;
   decideResearchFusionProposal(proposalId: string, decision: ResearchFusionProposalDecision): Promise<ResearchFusionProposalRecord>;
+  /** #31：确认式融合——确认后创建融合节点并返回首轮结果，客户端跳转到融合节点页。 */
+  fuseResearchFusionProposal(proposalId: string, idempotencyKey: string): Promise<NodeGrowthAccepted>;
   /** 从选区生长子节点：统一取代深入研究二选一。 */
   startChildNode(selectionId: string, input: CreateChildNodeInput, idempotencyKey: string): Promise<NodeGrowthAccepted>;
     /** 保存标记：幂等键命中返回首次保存的项目，保存不依赖 AI。 */
@@ -436,6 +438,13 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
         fetchFn,
         `/v1/research-fusion-proposals/${encodeURIComponent(proposalId)}/decide`,
         { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ decision }) },
+      );
+    },
+    fuseResearchFusionProposal(proposalId: string, idempotencyKey: string) {
+      return requestJson<NodeGrowthAccepted>(
+        fetchFn,
+        `/v1/research-fusion-proposals/${encodeURIComponent(proposalId)}/fuse`,
+        { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ idempotencyKey }) },
       );
     },
     startChildNode(selectionId: string, input: CreateChildNodeInput, idempotencyKey: string) {

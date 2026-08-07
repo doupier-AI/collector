@@ -48,6 +48,8 @@ import {
   type FragmentLocatorFailureKind,
 } from "./fragment-locator";
 import { FusionProposalNotice } from "./FusionProposalNotice";
+import { FusionSourceBar } from "./FusionSourceBar";
+import type { ResearchFusionSource } from "@collector/capture-contracts";
 
 const STREAM_NOTICE: Record<string, { title: string; body: string }> = {
   reconnecting: { title: "连接中断", body: "正在重新连接，已显示的内容不会丢失。" },
@@ -76,6 +78,7 @@ export function ResearchNodePage() {
   const termPreviews = useTermPreviews(nodeId, (error) => node.announce(apiErrorCopy(error).body));
   const [retryingTaskId, setRetryingTaskId] = useState<string | null>(null);
   const [decidingFusionProposalId, setDecidingFusionProposalId] = useState<string | null>(null);
+  const [fusingProposalId, setFusingProposalId] = useState<string | null>(null);
   const readyView = node.state.kind === "ready" ? node.state.view : undefined;
 
   // #36 章节导航：任一 completed 消息存在派生切片时渲染线列。
@@ -86,6 +89,15 @@ export function ResearchNodePage() {
   // 依赖原始 messages/slices 引用而非整个 view，减少因 view 包装对象变化导致的重建。
   const readyMessages = readyView?.messages;
   const readySlices = readyView?.slices;
+  // #31：融合节点来源条（跨消息去重）。必须在所有早退返回之前计算（Hooks 规则）。
+  const fusionSourceEntries = useMemo<ResearchFusionSource[]>(() => {
+    if (!readyView?.fusionSources) return [];
+    const byNode = new Map<string, ResearchFusionSource>();
+    for (const sources of Object.values(readyView.fusionSources)) {
+      for (const source of sources) byNode.set(source.nodeId, source);
+    }
+    return [...byNode.values()];
+  }, [readyView]);
   const railItems = useMemo<SliceRailItem[]>(() => {
     const items: SliceRailItem[] = [];
     if (!readyMessages) return items;
@@ -330,6 +342,21 @@ export function ResearchNodePage() {
   }
 
   /**
+   * #31 确认式融合：用户确认后创建融合节点并跳转。幂等键按提案确定性派生，
+   * 刷新/重复点击不产生重复节点（服务端按幂等键去重）。
+   */
+  async function handleFuseProposal(proposalId: string) {
+    setFusingProposalId(proposalId);
+    try {
+      const accepted = await api.fuseResearchFusionProposal(proposalId, `fuse:${proposalId}`);
+      navigate(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(accepted.node.id)}`);
+    } catch (error) {
+      node.announce(apiErrorCopy(error).body);
+      setFusingProposalId(null);
+    }
+  }
+
+  /**
    * "深入研究这段"：以引用选区为来源创建子节点。
    * 选区文本自动进入子节点第一轮上下文（由后端 NodeGrowthService 处理）。
    */
@@ -471,11 +498,15 @@ export function ResearchNodePage() {
   }
 
   const notice = node.streamNotice !== "idle" ? STREAM_NOTICE[node.streamNotice] : undefined;
+  // #31：融合节点（标记在节点记录上，不依赖生成完成态）。
+  const isFusionNode = Boolean(view.node.isFusionNode);
   const title = view.node.parentNodeId
     ? originSource.selection
       ? `深入研究：${selectionExcerpt(originSource.selection.text, 32)}`
       : "子节点"
-    : view.session.title;
+    : isFusionNode
+      ? "融合节点"
+      : view.session.title;
 
   return (
     <div
@@ -498,6 +529,10 @@ export function ResearchNodePage() {
         <ModelStatusIndicator />
       </header>
 
+      {fusionSourceEntries.length > 0 ? (
+        <FusionSourceBar sources={fusionSourceEntries} sessionId={sessionId} />
+      ) : null}
+
       {railItems.length > 0 ? <SliceRailNav items={railItems} /> : null}
 
       {notice ? (
@@ -513,6 +548,8 @@ export function ResearchNodePage() {
           currentNodeId={nodeId}
           decidingProposalId={decidingFusionProposalId}
           onDecide={(proposalId, decision) => void handleFusionDecision(proposalId, decision)}
+          onFuse={(proposalId) => void handleFuseProposal(proposalId)}
+          fusingProposalId={fusingProposalId}
           announce={node.announce}
         />
       ) : null}
@@ -563,6 +600,7 @@ export function ResearchNodePage() {
                 onGrowTermPreview={handleGrowTermPreview}
                 slices={view.slices?.[message.id]}
                 fragmentCardId={focusedCard?.cardId}
+                fusionSources={view.fusionSources?.[message.id]}
               />
             );
           })}

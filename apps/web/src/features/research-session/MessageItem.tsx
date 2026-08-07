@@ -1,7 +1,7 @@
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { ResearchCitationRecord, ResearchGroundingSourceRecord, ResearchMessageRecord, ResearchSliceRecord, ResearchTaskRecord, ResearchTermPreviewRecord, TermMarker } from "@collector/capture-contracts";
+import type { ResearchCitationRecord, ResearchFusionSource, ResearchGroundingSourceRecord, ResearchMessageRecord, ResearchSliceRecord, ResearchTaskRecord, ResearchTermPreviewRecord, TermMarker } from "@collector/capture-contracts";
 import { deriveMessageBlocks, messageContentBlockId, splitBlockHeading } from "@collector/capture-contracts";
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
@@ -29,6 +29,8 @@ export interface MessageItemProps {
   terms?: TermMarker[];
   termPreviews?: Record<string, ResearchTermPreviewRecord>;
   onStartTermPreview?: (messageId: string, marker: TermMarker) => void;
+  /** #31：本条消息引用的融合来源（正文 [来源n] 渲染为可点击的融合引用）。 */
+  fusionSources?: ResearchFusionSource[];
   onRetryTermPreview?: (preview: ResearchTermPreviewRecord) => void;
   onGrowTermPreview?: (preview: ResearchTermPreviewRecord) => Promise<boolean>;
   /** #36：切片列表；存在正式切片时渲染为连续语义卡片序列。 */
@@ -38,7 +40,7 @@ export interface MessageItemProps {
 }
 
 /** 单条消息。AI 消息与对应用户消息之间由 CSS 绘制克制的来源线与节点。 */
-export function MessageItem({ message, task, retrying = false, onRetry, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, slices, fragmentCardId }: MessageItemProps) {
+export function MessageItem({ message, task, retrying = false, onRetry, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, slices, fragmentCardId, fusionSources }: MessageItemProps) {
   if (message.role === "user") {
     return (
       <li className="message message--user">
@@ -68,7 +70,7 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
             onRetry={onRetryTermPreview}
             onGrow={onGrowTermPreview}
           >
-            <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} fragmentCardId={fragmentCardId} />
+            <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} fragmentCardId={fragmentCardId} fusionSources={fusionSources} />
           </TermPreviewInteraction>
           <GroundingScopeNote task={task} />
           <GroundingSources sources={taskSources} />
@@ -91,9 +93,9 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
  * 一张卡片 = 一个段落块；标题来自大纲节标题或小模型事后抽取，可为空（空标题卡片只显正文）。
  * completed 必带派生切片；切片缺失属异常，此时防御性降级为纯文本连续渲染（不造重试卡，那是 failed 的事）。
  */
-function AssistantBlocks({ message, highlight, citations, groundingSources, terms, slices, fragmentCardId }: { message: ResearchMessageRecord; highlight?: MessageHighlight; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[]; terms: TermMarker[]; slices?: ResearchSliceRecord[]; fragmentCardId?: string }) {
+function AssistantBlocks({ message, highlight, citations, groundingSources, terms, slices, fragmentCardId, fusionSources }: { message: ResearchMessageRecord; highlight?: MessageHighlight; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[]; terms: TermMarker[]; slices?: ResearchSliceRecord[]; fragmentCardId?: string; fusionSources?: ResearchFusionSource[] }) {
   const blocks = deriveMessageBlocks(message.content);
-  if (blocks.length === 0) return <MarkdownContent text={message.content} sources={groundingSources} citations={citations} variant="message" />;
+  if (blocks.length === 0) return <MarkdownContent text={message.content} sources={groundingSources} citations={citations} variant="message" fusionSources={fusionSources} />;
   const activeHighlight = highlight ?? undefined;
 
   // 生成自由化：卡片目标与章节导航同源派生；块对齐与 blockId 计算不再各自手工进行。
@@ -116,6 +118,7 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
               citations={citations}
               terms={terms.filter((term) => term.blockOrdinal === target.blockOrdinal)}
               fragmentFocused={fragmentCardId === target.cardId}
+              fusionSources={fusionSources}
             />
           );
         })}
@@ -138,6 +141,7 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
             sources={groundingSources}
             citations={citations}
             terms={terms.filter((term) => term.blockOrdinal === block.ordinal)}
+            fusionSources={fusionSources}
           />
         );
       })}
@@ -155,7 +159,7 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
  * data-block-id 与 data-block-text 保留在内容容器上；data-slice-id 留作未来融合追溯关联钩。
  * 无标题切片退化为 aria-label = 正文摘要。
  */
-function SliceCard({ slice, blockText, blockId, anchorId, cardId, highlight, sources, citations, terms, fragmentFocused = false }: {
+function SliceCard({ slice, blockText, blockId, anchorId, cardId, highlight, sources, citations, terms, fragmentFocused = false, fusionSources }: {
   slice: ResearchSliceRecord;
   blockText: string;
   blockId: string;
@@ -167,6 +171,8 @@ function SliceCard({ slice, blockText, blockId, anchorId, cardId, highlight, sou
   terms: TermMarker[];
   /** #42：融合依据定位目标；短暂强调（边框/背景/投影），不引起布局位移。 */
   fragmentFocused?: boolean;
+  /** #31：融合正文引用来源（[来源n] 渲染为可点击的融合引用）。 */
+  fusionSources?: ResearchFusionSource[];
 }) {
   const title = slice.title.trim();
   // 正文首行节标题与切片标题一致 → 提升正文标题；否则补题需独立 <h3>。
@@ -193,6 +199,7 @@ function SliceCard({ slice, blockText, blockId, anchorId, cardId, highlight, sou
         sources={sources}
         citations={citations}
         terms={terms}
+        fusionSources={fusionSources}
       />
     </section>
   );
@@ -200,7 +207,7 @@ function SliceCard({ slice, blockText, blockId, anchorId, cardId, highlight, sou
 
 /** 单个消息块：Markdown 渲染 + 渲染后 DOM 高亮（useLayoutEffect）。
     titleAnchorId 存在时，把正文首个标题元素提升为卡片标题（挂该 id 供导航定位）。 */
-function MessageBlock({ blockText, blockId, titleAnchorId, highlight, sources, citations, terms }: { blockText: string; blockId: string; titleAnchorId?: string; highlight?: MessageHighlight; sources: ResearchGroundingSourceRecord[]; citations: ResearchCitationRecord[]; terms: TermMarker[] }) {
+function MessageBlock({ blockText, blockId, titleAnchorId, highlight, sources, citations, terms, fusionSources }: { blockText: string; blockId: string; titleAnchorId?: string; highlight?: MessageHighlight; sources: ResearchGroundingSourceRecord[]; citations: ResearchCitationRecord[]; terms: TermMarker[]; fusionSources?: ResearchFusionSource[] }) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
@@ -225,7 +232,7 @@ function MessageBlock({ blockText, blockId, titleAnchorId, highlight, sources, c
 
   return (
     <div className="message__content" data-block-id={blockId} data-block-text ref={containerRef}>
-      <MarkdownContent text={blockText} sources={sources} citations={citations} terms={terms} variant="message" titleAnchorId={titleAnchorId} />
+      <MarkdownContent text={blockText} sources={sources} citations={citations} terms={terms} variant="message" titleAnchorId={titleAnchorId} fusionSources={fusionSources} />
     </div>
   );
 }

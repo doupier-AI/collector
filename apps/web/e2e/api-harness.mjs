@@ -147,6 +147,17 @@ const fakeProvider = {
     if (content.includes("深入研究第一轮")) return { title: "深入研究", concepts: [] };
     return { title: "", concepts: [] };
   },
+  // #31 确认式融合：确定性融合正文——三节 + [来源n] 引用（验收 7 的章节断言与引用回溯）。
+  async composeFusion(request) {
+    const sources = request.fusion?.sources ?? [];
+    const labelA = sources[0]?.title ?? "来源一";
+    const labelB = sources[1]?.title ?? "来源二";
+    return [
+      `## 共同核心\n\n${labelA}与${labelB}共享同一主题。[来源1]`,
+      "## 差异\n\n两者来自不同作品。[来源2]",
+      "## 综合推导\n\n融合后的增量综合结论。",
+    ].join("\n\n");
+  },
 };
 
 // 选区分析的确定性假模型：字段齐全（可选的 relationToFocus 缺省），不调用真实云模型
@@ -175,6 +186,16 @@ const service = new CaptureService(store, join(dataDir, "artifacts"), undefined,
   autoRunRecentOrganization: false,
   researchProvider: modelMode === "fake" ? fakeProvider : undefined,
   selectionProvider: modelMode === "fake" ? fakeSelectionProvider : undefined,
+  // #31：相似性核验的确定性假模型——共享概念即判为对比（孙悟空×2 场景），
+  // 使真实 scan 端点产出可确认的 pending 提案供融合 e2e 使用。
+  // 只在 fake 模式注入：no-model harness 保持无任何模型能力的纯负路径。
+  ...(modelMode === "fake" ? {
+    similarityVerifier: {
+      async verifyResearchSimilarity() {
+        return { relationType: "contrast", reason: "同名概念来自不同作品或语境。" };
+      },
+    },
+  } : {}),
 });
 
 const browserBootstraps = new Set();
