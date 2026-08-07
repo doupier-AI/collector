@@ -2,7 +2,6 @@ import {
   deriveBodyVersion,
   deriveFragmentsFromBlocks,
   deriveFragmentsFromSlices,
-  normalizeBodyContent,
   resolveFragmentExcerpt,
   type ResearchBodyVersionRecord,
   type ResearchCitationRecord,
@@ -84,18 +83,16 @@ export function getOrDeriveMessageBodyArtifacts(
 }
 
 /**
- * 为一个片段找到对应切片：正式片段按序号对应消息切片序列；对不齐或临时片段时
- * 退回正文内容相等匹配。找不到返回 undefined（临时片段可能没有对应切片）。
+ * 为一个片段找到对应切片：#43 收缩后切片不再携带正文副本，片段↔切片一律按
+ * 消息内数组下标（片段 ordinal）序数对齐——切片与片段同源于正文的确定性派生，
+ * 序数对齐即同源对齐，不再做正文内容相等回退（内容相等匹配正是"两套事实来源"的载体）。
+ * 返回 undefined 表示该下标无切片（临时片段可能没有对应切片）。
  */
 export function matchSliceForFragment(
   fragment: ResearchSemanticFragmentRecord,
-  excerpt: string,
   messageSlices: readonly ResearchSliceRecord[],
 ): ResearchSliceRecord | undefined {
-  if (messageSlices.length === 0) return undefined;
-  const byIndex = messageSlices[fragment.ordinal];
-  if (byIndex && normalizeBodyContent(byIndex.content) === excerpt) return byIndex;
-  return messageSlices.find((slice) => normalizeBodyContent(slice.content) === excerpt);
+  return messageSlices[fragment.ordinal];
 }
 
 /** 安全解析片段摘录：任何一致性错误返回 undefined，绝不静默关联到其他文本。 */

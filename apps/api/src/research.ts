@@ -1063,7 +1063,7 @@ export class ResearchSessionService {
             fragment,
             version: artifacts.version,
             excerpt,
-            slice: matchSliceForFragment(fragment, excerpt, slices),
+            slice: matchSliceForFragment(fragment, slices),
             parentDistance: node.distance,
             isCurrentNode: node.distance === 0,
             isFromOriginSelection: Boolean(selectionId && selectionId === originSelectionId),

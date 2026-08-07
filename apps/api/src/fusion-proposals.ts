@@ -1,6 +1,5 @@
 import {
   SIMILARITY_VERIFICATION_PROMPT_VERSION,
-  normalizeBodyContent,
   normalizeResearchFusionProposalPair,
   researchEdgeId,
   researchFusionProposalId,
@@ -100,11 +99,9 @@ export function indexNodeSimilaritySignals(
       const excerpt = tryResolveFragmentExcerpt(version, fragment);
       if (excerpt === undefined || !excerpt.trim()) continue;
       fragmentIds.add(fragment.id);
-      const matchedSlice = fragment.isProvisional
-        ? messageSlices.find((slice) => normalizeBodyContent(slice.content) === excerpt)
-        : messageSlices[index] && normalizeBodyContent(messageSlices[index].content) === excerpt
-          ? messageSlices[index]
-          : messageSlices.find((slice) => normalizeBodyContent(slice.content) === excerpt);
+      // #43 收缩：切片不再携带正文副本，片段↔切片按消息内数组下标（片段 ordinal）序数对齐，
+      // 不再做正文内容相等匹配（内容相等匹配正是"两套事实来源"的载体）。
+      const matchedSlice = messageSlices[index];
       const title = matchedSlice?.title ?? "";
       fragmentSections.push(title ? `${title}\n${excerpt}` : excerpt);
       const baseTrigger: FusionProposalTriggerSource = {
@@ -303,6 +300,14 @@ export class ResearchFusionProposalService {
     return changed ? { ...proposal, triggerSources } : proposal;
   }
 
+  /**
+   * #39 兼容映射：历史旧切片产生的来源只有 sliceId 时，确定性补齐正文版本与片段引用。
+   * 读取时按需映射，不重新扫描、不改变提案状态；映射失败保留原来源（诚实降级）。
+   *
+   * #43 收缩后切片不再携带正文副本，映射改为序数对齐门：按 sliceId 在消息切片数组中的
+   * 下标取对应片段；切片与片段同源于正文的确定性派生，序数对齐即同源对齐。片段数与切片
+   * 数不一致时不可信（对齐门失败），诚实保留原来源，由 WebUI 显示回退文案。
+   */
   private resolveTriggerFragmentRef(source: FusionProposalTriggerSource): FusionProposalTriggerSource {
     if (source.fragmentId && source.bodyVersionId) return source;
     if (!source.sliceId) return source;
@@ -313,19 +318,18 @@ export class ResearchFusionProposalService {
     const messageSlices = this.store.listSlicesByMessage(message.id)
       .slice()
       .sort((left, right) => left.ordinal - right.ordinal);
+    const index = messageSlices.findIndex((entry) => entry.id === slice.id);
+    if (index < 0) return source;
     const artifacts = getOrDeriveMessageBodyArtifacts(this.store, {
       nodeId: source.nodeId,
       message,
       slices: messageSlices,
     });
-    const normalizedTarget = normalizeBodyContent(slice.content);
-    for (const fragment of artifacts.fragments) {
-      const excerpt = tryResolveFragmentExcerpt(artifacts.version, fragment);
-      if (excerpt !== undefined && excerpt === normalizedTarget) {
-        return { ...source, bodyVersionId: artifacts.version.id, fragmentId: fragment.id };
-      }
-    }
-    return source;
+    // 对齐门：切片与片段同源派生应同数；长度不一致即不可信，诚实保留原来源。
+    if (artifacts.fragments.length !== messageSlices.length) return source;
+    const fragment = artifacts.fragments[index];
+    if (!fragment) return source;
+    return { ...source, bodyVersionId: artifacts.version.id, fragmentId: fragment.id };
   }
 
   private async verifyCandidate(candidate: SimilarityCandidate, gateway: SimilarityVerificationGateway): Promise<ResearchFusionProposalRecord | undefined> {

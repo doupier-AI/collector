@@ -54,7 +54,7 @@ function candidatesFor(
       fragment,
       version,
       excerpt,
-      slice: matchSliceForFragment(fragment, excerpt, slices),
+      slice: matchSliceForFragment(fragment, slices),
       parentDistance: overrides.parentDistance ?? 0,
       isCurrentNode: overrides.isCurrentNode ?? true,
       isFromOriginSelection: overrides.isFromOriginSelection ?? false,
