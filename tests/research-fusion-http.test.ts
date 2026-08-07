@@ -138,3 +138,35 @@ test("fusion proposal HTTP scans, lists, decides, and exposes pending weak hints
   });
   assert.equal(invalid.status, 400);
 });
+
+test("fusion proposal HTTP keeps accepted proposals readable on the node view (#42)", async (t) => {
+  const harness = await createHarness();
+  t.after(harness.close);
+  const scan = await fetch(`${harness.base}/v1/research-nodes/session-1/fusion-proposals/scan`, {
+    method: "POST", headers: headers(harness.token), body: "{}",
+  });
+  assert.equal(scan.status, 200);
+  const proposals = await scan.json() as Array<{ id: string; status: string }>;
+  assert.equal(proposals.length, 1);
+
+  const accept = await fetch(`${harness.base}/v1/research-fusion-proposals/${encodeURIComponent(proposals[0].id)}/decide`, {
+    method: "POST", headers: headers(harness.token), body: JSON.stringify({ decision: "accepted" }),
+  });
+  assert.equal(accept.status, 200);
+  assert.equal((await accept.json() as { status: string }).status, "accepted");
+
+  // #42：accepted 提案仍出现在节点视图（只读依据入口的读取来源），
+  // 且触发来源经兼容映射携带可恢复定位的正文版本与片段标识。
+  const node = await fetch(`${harness.base}/v1/research-nodes/session-1`, { headers: headers(harness.token) });
+  assert.equal(node.status, 200);
+  const view = await node.json() as { fusionProposals?: Array<{
+    id: string; status: string;
+    triggerSources: FusionProposalTriggerSource[];
+  }> };
+  assert.equal(view.fusionProposals?.length, 1);
+  assert.equal(view.fusionProposals?.[0]?.id, proposals[0].id);
+  assert.equal(view.fusionProposals?.[0]?.status, "accepted");
+  for (const source of view.fusionProposals?.[0]?.triggerSources ?? []) {
+    assert.ok(source.nodeId && source.bodyVersionId && source.fragmentId);
+  }
+});

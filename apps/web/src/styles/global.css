@@ -267,6 +267,65 @@ button {
   }
 }
 
+/* #42 融合依据条目：整条可点击（跳回原始片段卡片），预览失败不阻塞跳转。 */
+.fusion-proposal-notice__sources {
+  list-style: none;
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.fusion-proposal-notice__source {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 0.875rem;
+  text-align: start;
+  cursor: pointer;
+}
+
+.fusion-proposal-notice__source:hover {
+  border-color: var(--color-ai);
+}
+
+.fusion-proposal-notice__source-label {
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+
+.fusion-proposal-notice__source-excerpt {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fusion-proposal-notice__source-excerpt--failed {
+  color: var(--color-muted);
+}
+
+.fusion-proposal-notice__source-arrow {
+  color: var(--color-ai);
+}
+
+/* #42 依据定位失败回退：明确说明、不静默定位到其他片段。 */
+.fragment-locator-fallback {
+  margin: 0 0 var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  border-inline-start: 3px solid var(--color-danger);
+  color: var(--color-muted);
+  font-size: 0.875rem;
+}
+
 .message-list {
   list-style: none;
   margin: 0 0 var(--space-5);
@@ -374,6 +433,26 @@ button {
 
 .slice-card {
   min-width: 0;
+}
+
+/* #42 片段定位强调：box-shadow 光环 + 浅背景，不引起布局位移；动画只放大光环，无位移。
+   reduced-motion 下取消动画，保留静态强调（验收 8）。 */
+.slice-card--focused {
+  border-radius: var(--radius-panel);
+  background: color-mix(in srgb, var(--color-surface) 97%, var(--color-ai) 4%);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-ai) 32%, transparent);
+  animation: slice-card-focus-pulse 200ms ease-out;
+}
+
+@keyframes slice-card-focus-pulse {
+  from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-ai) 32%, transparent); }
+  to { box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-ai) 32%, transparent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .slice-card--focused {
+    animation: none;
+  }
 }
 
 .slice-card__title {

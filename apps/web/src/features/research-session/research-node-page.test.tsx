@@ -1,15 +1,21 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
-import type { ResearchNodeView, ResearchSelectionInput, ResearchTurnAccepted } from "@collector/capture-contracts";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { deriveBodyVersion, deriveFragmentsFromSlices, deriveMessageSlices, messageContentBlockId } from "@collector/capture-contracts";
+import type { ResearchBodyVersionView, ResearchNodeView, ResearchSelectionInput, ResearchTurnAccepted } from "@collector/capture-contracts";
 import type { ApiClient } from "../../api/client";
 import { ApiRequestError, NetworkError } from "../../api/errors";
 import type { TaskEventStream } from "../../api/task-events";
 import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
-import { makeAttachment, makeMessage, makeNode, makeNodeView, makeSelection, makeSelectionTask, makeSession, makeTask } from "../../test/fakes";
+import { makeAttachment, makeBodyVersion, makeFragment, makeFusionProposal, makeMessage, makeNode, makeNodeView, makeSelection, makeSelectionTask, makeSession, makeTask } from "../../test/fakes";
 import { ResearchNodePage } from "./ResearchNodePage";
+import { __clearBodyVersionCache } from "./fragment-locator";
+
+beforeEach(() => {
+  __clearBodyVersionCache();
+});
 
 function noopTaskEventStream(): TaskEventStream {
   return { close: () => {}, syncNow: () => {}, mode: "closed", lastEventId: 0 };
@@ -646,6 +652,233 @@ describe("#36 连续语义卡片与章节导航", () => {
     // 点击后立即更新当前线高亮
     expect(ticks[2].className).toContain("slice-rail__tick--active");
     expect(ticks[2]).toHaveAttribute("aria-current", "location");
+  });
+});
+
+describe("#42 融合依据定位", () => {
+  /** 三段式正文 + 真实派生切片/片段/版本（与生产同规则）。
+      提案带两条同节点依据（同一版本、不同片段）——同版本缓存恰好一次请求。 */
+  function viewWithFusionEvidence(overrides: { nodeId?: string; sessionId?: string } = {}): ResearchNodeView {
+    const nodeId = overrides.nodeId ?? "session-1";
+    const sessionId = overrides.sessionId ?? "session-1";
+    const content = "第一段。\n\n第二段。\n\n第三段。";
+    const message = makeMessage({ id: "m-out", nodeId, role: "assistant", status: "completed", content });
+    const version = deriveBodyVersion({ messageId: message.id, nodeId, content, origin: "backfill", createdAt: "2026-08-02T00:00:00.000Z" });
+    const slices = deriveMessageSlices(nodeId, message.id, content, 0, []);
+    const fragments = deriveFragmentsFromSlices(version, slices, []);
+    const proposal = makeFusionProposal({
+      id: "fusion:1",
+      loNodeId: nodeId,
+      hiNodeId: "node-b",
+      triggerSources: [
+        { nodeId, bodyVersionId: version.id, fragmentId: fragments[1].id },
+        { nodeId, bodyVersionId: version.id, fragmentId: fragments[0].id },
+      ],
+    });
+    return makeNodeView({
+      node: makeNode({ id: nodeId, sessionId }),
+      session: makeSession({ id: sessionId, title: "理解注意力机制" }),
+      messages: [makeMessage({ id: "m-in", role: "user", content: "为什么需要多头注意力？" }), message],
+      tasks: [makeTask({ id: "task-1", status: "completed", inputMessageId: "m-in", outputMessageId: message.id })],
+      slices: { [message.id]: slices },
+      bodyVersions: { [message.id]: version },
+      fusionProposals: [proposal],
+    });
+  }
+
+  /** 卡片容器 id：与 deriveSliceCardTargets 同源派生（无标题合并时下标=节起始块 ordinal）。 */
+  function cardIdFor(messageId: string, ordinal: number): string {
+    return `${messageContentBlockId(messageId, ordinal)}-card`;
+  }
+
+  function bodyVersionViewFor(message: ReturnType<typeof makeMessage>, nodeId = "session-1"): ResearchBodyVersionView {
+    const version = deriveBodyVersion({ messageId: message.id, nodeId, content: message.content, origin: "backfill", createdAt: "2026-08-02T00:00:00.000Z" });
+    const slices = deriveMessageSlices(nodeId, message.id, message.content, 0, []);
+    const fragments = deriveFragmentsFromSlices(version, slices, []);
+    // 视图类型要求 excerpt；运行时预览经 resolveFragmentExcerpt 本地派生，不依赖该字段
+    return { version, fragments: fragments.map((fragment) => ({ ...fragment, excerpt: version.content.slice(fragment.startOffset, fragment.endOffset) })) };
+  }
+
+  it("展开依据后渲染可点击依据条目，预览懒加载且同一版本只请求一次", async () => {
+    const user = userEvent.setup();
+    const view = viewWithFusionEvidence();
+    const versionView = bodyVersionViewFor(view.messages.find((m) => m.id === "m-out")!, "session-1");
+    const getResearchBodyVersion = vi.fn(async () => versionView);
+    renderNodePage({ getResearchNodeView: async () => view, getResearchBodyVersion });
+
+    await screen.findByText("第一段。");
+    const summary = screen.getByText("熟悉的概念再现，节点可融合");
+    await user.click(summary);
+    await waitFor(() => expect(getResearchBodyVersion).toHaveBeenCalledTimes(1));
+    const sources = await screen.findAllByRole("button", { name: /查看依据片段/ });
+    expect(sources).toHaveLength(2);
+    // 依据预览显示对应片段摘录（第二段 / 第一段）
+    expect(sources[0]).toHaveTextContent("第二段。");
+    expect(sources[1]).toHaveTextContent("第一段。");
+  });
+
+  it("跨节点点击依据：跳转到目标节点并定位目标卡片（强调 + 播报）", async () => {
+    const user = userEvent.setup();
+    const view = viewWithFusionEvidence();
+    const childContent = "子节点第一段。\n\n子节点第二段。";
+    const childMessage = makeMessage({ id: "m-child-out", nodeId: "node-b", role: "assistant", status: "completed", content: childContent });
+    const childVersionView = bodyVersionViewFor(childMessage, "node-b");
+    const childView: ResearchNodeView = makeNodeView({
+      node: makeNode({ id: "node-b", sessionId: "session-1", parentNodeId: "session-1" }),
+      session: makeSession({ id: "session-1", title: "理解注意力机制" }),
+      messages: [makeMessage({ id: "m-child-in", role: "user", content: "追问" }), childMessage],
+      tasks: [makeTask({ id: "task-2", status: "completed", inputMessageId: "m-child-in", outputMessageId: childMessage.id })],
+      slices: { [childMessage.id]: deriveMessageSlices("node-b", childMessage.id, childContent, 0, []) },
+      bodyVersions: { [childMessage.id]: childVersionView.version },
+      fusionProposals: [],
+    });
+    // 根视图提案带一条指向子节点的依据（真实派生的版本与片段）
+    const crossView: ResearchNodeView = {
+      ...view,
+      fusionProposals: [
+        makeFusionProposal({
+          id: "fusion:1",
+          loNodeId: "session-1",
+          hiNodeId: "node-b",
+          triggerSources: [
+            { nodeId: "node-b", bodyVersionId: childVersionView.version.id, fragmentId: childVersionView.fragments[1].id },
+          ],
+        }),
+      ],
+    };
+    const getResearchNodeView = vi.fn(async (nodeId: string) => (nodeId === "node-b" ? childView : crossView));
+    const getResearchBodyVersion = vi.fn(async () => childVersionView);
+    renderNodePage(
+      { getResearchNodeView, getResearchBodyVersion },
+      "/research/session-1/node/session-1",
+    );
+
+    // 根页展开依据 → 点击指向子节点的依据
+    await screen.findByText("第一段。");
+    await user.click(screen.getByText("熟悉的概念再现，节点可融合"));
+    const source = await screen.findByRole("button", { name: /查看依据片段/ });
+    await user.click(source);
+
+    // 子节点页加载完成，目标卡片（子节点第二段）获得强调
+    await screen.findByText("子节点第二段。");
+    await waitFor(() => {
+      expect(document.getElementById(cardIdFor("m-child-out", 1))).toHaveClass("slice-card--focused");
+    });
+    // 播报（sr-only live region）
+    expect(screen.getByText(/已定位到/)).toBeInTheDocument();
+  });
+
+  it("同节点点击依据：留在本页仅追加 fragment 参数并定位", async () => {
+    const user = userEvent.setup();
+    const view = viewWithFusionEvidence();
+    const versionView = bodyVersionViewFor(view.messages.find((m) => m.id === "m-out")!, "session-1");
+    renderNodePage(
+      {
+        getResearchNodeView: async () => view,
+        getResearchBodyVersion: async () => versionView,
+        getResearchSelection: async () => makeSelection({ id: "sel-1", sessionId: "session-1", text: "不同头可以关注不同位置" }),
+      },
+      "/research/session-1/node/session-1?sel=sel-1",
+    );
+
+    await screen.findByText("第一段。");
+    await user.click(screen.getByText("熟悉的概念再现，节点可融合"));
+    const source = (await screen.findAllByRole("button", { name: /查看依据片段/ }))[0];
+    await user.click(source);
+
+    // 同节点：留在本页并定位（导航成功 → 目标卡片获得强调；?sel= 保留由 fragmentDeepLink 保证）
+    await waitFor(() => {
+      expect(document.getElementById(cardIdFor("m-out", 1))).toHaveClass("slice-card--focused");
+    });
+    expect(screen.getByText(/已定位到/)).toBeInTheDocument();
+  });
+
+  it("快速切换目标：旧卡片强调消失，只保留最新落点", async () => {
+    const user = userEvent.setup();
+    const view = viewWithFusionEvidence();
+    const versionView = bodyVersionViewFor(view.messages.find((m) => m.id === "m-out")!, "session-1");
+    renderNodePage({
+      getResearchNodeView: async () => view,
+      getResearchBodyVersion: async () => versionView,
+    });
+
+    await screen.findByText("第一段。");
+    await user.click(screen.getByText("熟悉的概念再现，节点可融合"));
+    const sources = await screen.findAllByRole("button", { name: /查看依据片段/ });
+    // 第一条依据（第二段）→ 第二段卡片强调
+    await user.click(sources[0]);
+    await waitFor(() => {
+      expect(document.getElementById(cardIdFor("m-out", 1))).toHaveClass("slice-card--focused");
+    });
+    // 第二条依据（第一段）→ 强调转移到第一段卡片
+    await user.click(sources[1]);
+    await waitFor(() => {
+      expect(document.getElementById(cardIdFor("m-out", 0))).toHaveClass("slice-card--focused");
+    });
+    expect(document.getElementById(cardIdFor("m-out", 1))).not.toHaveClass("slice-card--focused");
+  });
+
+  it("失效回退：版本获取失败时显示明确回退信息，不静默定位", async () => {
+    const user = userEvent.setup();
+    const view = viewWithFusionEvidence();
+    const getResearchBodyVersion = vi.fn(async () => {
+      throw new ApiRequestError(404, "not_found", "not found");
+    });
+    renderNodePage({ getResearchNodeView: async () => view, getResearchBodyVersion });
+
+    await screen.findByText("第一段。");
+    await user.click(screen.getByText("熟悉的概念再现，节点可融合"));
+    const source = (await screen.findAllByRole("button", { name: /查看依据片段/ }))[0];
+    await user.click(source);
+    const fallback = await screen.findByTestId("fragment-locator-fallback");
+    expect(fallback).toHaveTextContent("正文版本已不存在");
+    // 无卡片获得强调
+    expect(document.querySelector(".slice-card--focused")).toBeNull();
+  });
+
+  it("accepted 提案：无决策按钮，依据仍可点击", async () => {
+    const user = userEvent.setup();
+    const view = viewWithFusionEvidence();
+    const versionView = bodyVersionViewFor(view.messages.find((m) => m.id === "m-out")!, "session-1");
+    const accepted = { ...view.fusionProposals![0], status: "accepted" as const };
+    const viewAccepted = { ...view, fusionProposals: [accepted] };
+    renderNodePage({ getResearchNodeView: async () => viewAccepted, getResearchBodyVersion: async () => versionView });
+
+    await screen.findByText("第一段。");
+    await user.click(screen.getByText("已保留的概念关系"));
+    expect(screen.queryByRole("button", { name: "保留关系" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "暂不处理" })).not.toBeInTheDocument();
+    expect(await screen.findAllByRole("button", { name: /查看依据片段/ })).toHaveLength(2);
+  });
+
+  it("决策为 accepted 时提案转为只读依据入口，rejected 时移除", async () => {
+    const user = userEvent.setup();
+    const view = viewWithFusionEvidence();
+    const versionView = bodyVersionViewFor(view.messages.find((m) => m.id === "m-out")!, "session-1");
+    const proposal = view.fusionProposals![0];
+    const decideResearchFusionProposal = vi.fn(async () => ({ ...proposal, status: "accepted" as const }));
+    renderNodePage({
+      getResearchNodeView: async () => view,
+      getResearchBodyVersion: async () => versionView,
+      decideResearchFusionProposal,
+    });
+
+    await screen.findByText("第一段。");
+    await user.click(screen.getByText("熟悉的概念再现，节点可融合"));
+    await user.click(screen.getByRole("button", { name: "保留关系" }));
+    await waitFor(() => expect(decideResearchFusionProposal).toHaveBeenCalledWith("fusion:1", "accepted"));
+    // 提案保留为只读（无决策按钮，依据可点）——findBy 等待 async 决策后重渲染
+    await waitFor(() => expect(screen.queryByText("已保留的概念关系")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "保留关系" })).not.toBeInTheDocument();
+    expect((await screen.findAllByRole("button", { name: /查看依据片段/ })).length).toBeGreaterThan(0);
+  });
+
+  it("无 fragment 参数时不请求正文版本", async () => {
+    const view = viewWithFusionEvidence();
+    const getResearchBodyVersion = vi.fn(async () => bodyVersionViewFor(view.messages.find((m) => m.id === "m-out")!));
+    renderNodePage({ getResearchNodeView: async () => view, getResearchBodyVersion });
+    await screen.findByText("第一段。");
+    expect(getResearchBodyVersion).not.toHaveBeenCalled();
   });
 });
 

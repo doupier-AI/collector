@@ -189,7 +189,7 @@ export class CaptureService {
       termDetections,
       slices,
       bodyVersions,
-      fusionProposals: this.fusionProposals.listForNode(nodeId, ["pending"]),
+      fusionProposals: this.fusionProposals.listForNode(nodeId, ["pending", "accepted"]),
     };
   }
 

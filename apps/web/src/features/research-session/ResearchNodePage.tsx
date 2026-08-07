@@ -36,22 +36,23 @@ import { taskForMessage } from "./session-view";
 import { useResearchNode } from "./useResearchNode";
 import type { PendingFirstTurn } from "./useResearchNode";
 import { useTermPreviews } from "./useTermPreviews";
-import { deriveSliceCardTargets } from "./slice-cards";
+import { deriveSliceCardTargets, sliceCardAccessibleName } from "./slice-cards";
 import { SliceRailNav } from "./SliceRailNav";
 import type { SliceRailItem } from "./SliceRailNav";
+import {
+  FOCUS_DURATION_MS,
+  FRAGMENT_LOCATOR_FALLBACK_TEXT,
+  fetchBodyVersionCached,
+  locateFragment,
+  parseFragmentId,
+  type FragmentLocatorFailureKind,
+} from "./fragment-locator";
+import { FusionProposalNotice } from "./FusionProposalNotice";
 
 const STREAM_NOTICE: Record<string, { title: string; body: string }> = {
   reconnecting: { title: "连接中断", body: "正在重新连接，已显示的内容不会丢失。" },
   polling: { title: "已切换为自动刷新", body: "实时连接暂时不可用，内容会自动更新。" },
   offline: { title: "无法连接 Collector 服务", body: "页面内容已保留，恢复连接后会继续更新。" },
-};
-
-const FUSION_RELATION_LABEL: Record<import("@collector/capture-contracts").FusionRelationType, string> = {
-  identity: "同一实体",
-  "shared-concept": "共享概念",
-  analogy: "类比",
-  contrast: "对比",
-  unrelated: "无关",
 };
 
 /**
@@ -212,6 +213,91 @@ export function ResearchNodePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // #42 融合依据定位：?fragment=<fragmentId> 深链 → 目标语义卡片滚动 + 短暂强调 + 焦点 + 播报。
+  // 状态：focusedCard 携带 nonce——同目标重触发（nonce 递增）与快速切换（state 整体替换只留最新）都成立；
+  // locatedKeyRef 守卫防止视图刷新（流式对齐）重定位；reduced-motion 下即时定位。
+  const [focusedCard, setFocusedCard] = useState<{ cardId: string; nonce: number } | null>(null);
+  const locateNonceRef = useRef(0);
+  const [fragmentFallback, setFragmentFallback] = useState<FragmentLocatorFailureKind | "fetch-failed" | null>(null);
+  const locatedKeyRef = useRef("");
+
+  const fragmentId = searchParams.get("fragment");
+  useEffect(() => {
+    if (!fragmentId) {
+      setFocusedCard(null);
+      setFragmentFallback(null);
+      locatedKeyRef.current = "";
+      return;
+    }
+    if (!readyView) return;
+    // location.key 每次 push/back/forward 都变化：同参数重复跳转、返回后再点、前进恢复均可重触发；
+    // 视图刷新（readyView 引用变化）不重定位。
+    const key = `${nodeId}|${location.key}|${fragmentId}`;
+    if (locatedKeyRef.current === key) return;
+    let stale = false;
+    void (async () => {
+      const parsed = parseFragmentId(fragmentId);
+      if (!parsed) {
+        if (!stale) {
+          setFragmentFallback("invalid-id");
+          node.announce(FRAGMENT_LOCATOR_FALLBACK_TEXT["invalid-id"]);
+        }
+        locatedKeyRef.current = key;
+        return;
+      }
+      try {
+        const view = await fetchBodyVersionCached(api, parsed.bodyVersionId);
+        const located = locateFragment({
+          currentNodeId: nodeId,
+          fragmentId,
+          version: view.version,
+          fragments: view.fragments,
+          messages: readyView.messages,
+          slicesByMessage: readyView.slices,
+        });
+        if (stale) return;
+        locatedKeyRef.current = key;
+        if (located.kind === "ok") {
+          setFragmentFallback(null);
+          setFocusedCard({ cardId: located.target.cardId, nonce: ++locateNonceRef.current });
+          node.announce(`已定位到「${sliceCardAccessibleName(located.slice)}」。`);
+        } else {
+          setFocusedCard(null);
+          setFragmentFallback(located.failure);
+          node.announce(FRAGMENT_LOCATOR_FALLBACK_TEXT[located.failure]);
+        }
+      } catch (error) {
+        if (stale) return;
+        locatedKeyRef.current = key;
+        const kind: FragmentLocatorFailureKind | "fetch-failed" = isApiErrorCode(error, "not_found")
+          ? "version-missing"
+          : "fetch-failed";
+        setFocusedCard(null);
+        setFragmentFallback(kind);
+        node.announce(FRAGMENT_LOCATOR_FALLBACK_TEXT[kind]);
+      }
+    })();
+    return () => {
+      stale = true;
+    };
+    // node.announce 是稳定 useCallback（useResearchNode），readyView 引用变化才重跑
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodeId, fragmentId, location.key, readyView, api]);
+
+  // 目标卡片滚动 + 焦点 + 定时恢复。block:"center" 天然避开 sticky 页头（与 ?sel= 高亮同款）；
+  // 顺序：先滚动后聚焦（preventScroll 不产生二次滚动）；cleanup 清定时器（切换/卸载即清旧状态）。
+  useEffect(() => {
+    if (!focusedCard) return;
+    const element = document.getElementById(focusedCard.cardId);
+    if (!element) return;
+    if (typeof element.scrollIntoView === "function") {
+      element.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "center" });
+    }
+    element.focus({ preventScroll: true });
+    const timer = window.setTimeout(() => setFocusedCard(null), FOCUS_DURATION_MS);
+    return () => window.clearTimeout(timer);
+  }, [focusedCard, reducedMotion]);
+
   async function handleRetry(task: ResearchTaskRecord) {
     setRetryingTaskId(task.id);
     try {
@@ -224,12 +310,18 @@ export function ResearchNodePage() {
   async function handleFusionDecision(proposalId: string, decision: "accepted" | "rejected") {
     setDecidingFusionProposalId(proposalId);
     try {
-      await api.decideResearchFusionProposal(proposalId, decision);
+      const result = await api.decideResearchFusionProposal(proposalId, decision);
+      // #42：accepted 用返回值替换本地提案（转为只读依据入口），rejected 从视图移除
       node.updateView((current) => ({
         ...current,
-        fusionProposals: (current.fusionProposals ?? []).filter((proposal) => proposal.id !== proposalId),
+        fusionProposals:
+          decision === "accepted"
+            ? (current.fusionProposals ?? []).map((proposal) => (proposal.id === proposalId ? result : proposal))
+            : (current.fusionProposals ?? []).filter((proposal) => proposal.id !== proposalId),
       }));
-      node.announce(decision === "accepted" ? "已保留这条概念关系。" : "已忽略这条融合提示，近期不会再次显示。 ");
+      node.announce(
+        decision === "accepted" ? "已保留这条概念关系，依据入口已转为只读。" : "已忽略这条融合提示，近期不会再次显示。 ",
+      );
     } catch (error) {
       node.announce(apiErrorCopy(error).body);
     } finally {
@@ -415,40 +507,24 @@ export function ResearchNodePage() {
       ) : null}
 
       {view.fusionProposals?.length ? (
-        <section className="fusion-proposal-notice" aria-label="相似概念提示" data-testid="fusion-proposal-notice">
-          {view.fusionProposals.map((proposal) => {
-            const deciding = decidingFusionProposalId === proposal.id;
-            return (
-              <details key={proposal.id} className="fusion-proposal-notice__item">
-                <summary>熟悉的概念再现，节点可融合</summary>
-                <p className="fusion-proposal-notice__relation">关系：{FUSION_RELATION_LABEL[proposal.relationType]}</p>
-                <p className="fusion-proposal-notice__reason">{proposal.reason}</p>
-                <div className="fusion-proposal-notice__actions">
-                  <button
-                    type="button"
-                    className="button button--secondary"
-                    onClick={() => void handleFusionDecision(proposal.id, "accepted")}
-                    disabled={deciding}
-                  >
-                    保留关系
-                  </button>
-                  <button
-                    type="button"
-                    className="button button--ghost"
-                    onClick={() => void handleFusionDecision(proposal.id, "rejected")}
-                    disabled={deciding}
-                  >
-                    暂不处理
-                  </button>
-                </div>
-              </details>
-            );
-          })}
-        </section>
+        <FusionProposalNotice
+          proposals={view.fusionProposals}
+          sessionId={view.session.id}
+          currentNodeId={nodeId}
+          decidingProposalId={decidingFusionProposalId}
+          onDecide={(proposalId, decision) => void handleFusionDecision(proposalId, decision)}
+          announce={node.announce}
+        />
       ) : null}
 
       {messageHighlight?.kind === "fallback" && restoredSelection ? (
         <SelectionRestoreFallback selection={restoredSelection} caption={messageHighlight.caption} />
+      ) : null}
+
+      {fragmentFallback ? (
+        <p className="fragment-locator-fallback" role="status" data-testid="fragment-locator-fallback">
+          {FRAGMENT_LOCATOR_FALLBACK_TEXT[fragmentFallback]}
+        </p>
       ) : null}
 
       {view.messages.length === 0 ? (
@@ -486,6 +562,7 @@ export function ResearchNodePage() {
                 onRetryTermPreview={termPreviews.retry}
                 onGrowTermPreview={handleGrowTermPreview}
                 slices={view.slices?.[message.id]}
+                fragmentCardId={focusedCard?.cardId}
               />
             );
           })}

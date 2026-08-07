@@ -14,6 +14,7 @@ import type {
   ProviderProfileInput,
   ProviderProfileTestInput,
   ProviderTestResult,
+  ResearchBodyVersionView,
   ResearchBranchView,
   ResearchContentSnapshotRecord,
   ResearchImportAccepted,
@@ -88,6 +89,8 @@ export interface ApiClient {
   submitBranchMessage(branchId: string, content: string, idempotencyKey: string, options?: { allowWebSearch?: boolean }): Promise<ResearchTurnAccepted>;
   /** 节点视图（阶段 H2）：根节点与子节点统一的数据入口。 */
   getResearchNodeView(nodeId: string): Promise<ResearchNodeView>;
+  /** #35 正文版本视图：版本 + 运行时派生的语义片段（含 excerpt）；#42 起前端定位依据片段使用。 */
+  getResearchBodyVersion(bodyVersionId: string): Promise<ResearchBodyVersionView>;
   /** 节点内追问：根节点与子节点统一的提交入口。 */
   submitResearchNodeMessage(nodeId: string, content: string, idempotencyKey: string, options?: { allowWebSearch?: boolean }): Promise<ResearchTurnAccepted>;
   startResearchTermPreview(nodeId: string, input: ResearchTermPreviewInput, idempotencyKey: string): Promise<ResearchTermPreviewAccepted>;
@@ -352,6 +355,12 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
     },
     getResearchNodeView(nodeId: string) {
       return requestJson<ResearchNodeView>(fetchFn, `/v1/research-nodes/${encodeURIComponent(nodeId)}`);
+    },
+    getResearchBodyVersion(bodyVersionId: string) {
+      return requestJson<ResearchBodyVersionView>(
+        fetchFn,
+        `/v1/research-body-versions/${encodeURIComponent(bodyVersionId)}`,
+      );
     },
     submitResearchNodeMessage(nodeId: string, content: string, idempotencyKey: string, options = {}) {
       return requestJson<ResearchTurnAccepted>(

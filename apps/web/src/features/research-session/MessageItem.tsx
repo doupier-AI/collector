@@ -33,10 +33,12 @@ export interface MessageItemProps {
   onGrowTermPreview?: (preview: ResearchTermPreviewRecord) => Promise<boolean>;
   /** #36：切片列表；存在正式切片时渲染为连续语义卡片序列。 */
   slices?: ResearchSliceRecord[];
+  /** #42：融合依据定位的当前目标卡片 id（无定位时不传）；目标卡获得短暂强调。 */
+  fragmentCardId?: string;
 }
 
 /** 单条消息。AI 消息与对应用户消息之间由 CSS 绘制克制的来源线与节点。 */
-export function MessageItem({ message, task, retrying = false, onRetry, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, slices }: MessageItemProps) {
+export function MessageItem({ message, task, retrying = false, onRetry, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, slices, fragmentCardId }: MessageItemProps) {
   if (message.role === "user") {
     return (
       <li className="message message--user">
@@ -66,7 +68,7 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
             onRetry={onRetryTermPreview}
             onGrow={onGrowTermPreview}
           >
-            <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} />
+            <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} fragmentCardId={fragmentCardId} />
           </TermPreviewInteraction>
           <GroundingScopeNote task={task} />
           <GroundingSources sources={taskSources} />
@@ -89,7 +91,7 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
  * 一张卡片 = 一个段落块；标题来自大纲节标题或小模型事后抽取，可为空（空标题卡片只显正文）。
  * completed 必带派生切片；切片缺失属异常，此时防御性降级为纯文本连续渲染（不造重试卡，那是 failed 的事）。
  */
-function AssistantBlocks({ message, highlight, citations, groundingSources, terms, slices }: { message: ResearchMessageRecord; highlight?: MessageHighlight; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[]; terms: TermMarker[]; slices?: ResearchSliceRecord[] }) {
+function AssistantBlocks({ message, highlight, citations, groundingSources, terms, slices, fragmentCardId }: { message: ResearchMessageRecord; highlight?: MessageHighlight; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[]; terms: TermMarker[]; slices?: ResearchSliceRecord[]; fragmentCardId?: string }) {
   const blocks = deriveMessageBlocks(message.content);
   if (blocks.length === 0) return <MarkdownContent text={message.content} sources={groundingSources} citations={citations} variant="message" />;
   const activeHighlight = highlight ?? undefined;
@@ -113,6 +115,7 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
               sources={groundingSources}
               citations={citations}
               terms={terms.filter((term) => term.blockOrdinal === target.blockOrdinal)}
+              fragmentFocused={fragmentCardId === target.cardId}
             />
           );
         })}
@@ -152,7 +155,7 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
  * data-block-id 与 data-block-text 保留在内容容器上；data-slice-id 留作未来融合追溯关联钩。
  * 无标题切片退化为 aria-label = 正文摘要。
  */
-function SliceCard({ slice, blockText, blockId, anchorId, cardId, highlight, sources, citations, terms }: {
+function SliceCard({ slice, blockText, blockId, anchorId, cardId, highlight, sources, citations, terms, fragmentFocused = false }: {
   slice: ResearchSliceRecord;
   blockText: string;
   blockId: string;
@@ -162,6 +165,8 @@ function SliceCard({ slice, blockText, blockId, anchorId, cardId, highlight, sou
   sources: ResearchGroundingSourceRecord[];
   citations: ResearchCitationRecord[];
   terms: TermMarker[];
+  /** #42：融合依据定位目标；短暂强调（边框/背景/投影），不引起布局位移。 */
+  fragmentFocused?: boolean;
 }) {
   const title = slice.title.trim();
   // 正文首行节标题与切片标题一致 → 提升正文标题；否则补题需独立 <h3>。
@@ -170,8 +175,9 @@ function SliceCard({ slice, blockText, blockId, anchorId, cardId, highlight, sou
   return (
     <section
       id={cardId}
-      className="slice-card"
+      className={fragmentFocused ? "slice-card slice-card--focused" : "slice-card"}
       data-slice-id={slice.id}
+      tabIndex={-1}
       {...(title ? { "aria-labelledby": anchorId } : { "aria-label": sliceCardAccessibleName(slice) })}
     >
       {title && !promoteInBody ? (

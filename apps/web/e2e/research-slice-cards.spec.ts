@@ -108,7 +108,9 @@ test.describe("#36 连续语义卡片", () => {
     await expect(page.locator(".slice-card__title", { hasText: "渐进生成" })).toBeInViewport();
   });
 
-  test("控制台无错误，且本期不请求 body-versions", async ({ page }) => {
+  test("控制台无错误；无 fragment 参数、未展开融合依据时不请求 body-versions", async ({ page }) => {
+    // #42 起前端在深链定位（?fragment=）与依据预览展开时才请求正文版本；
+    // 本 spec 不走这些路径，body-versions 请求必须保持为零（由 z-fusion-evidence.spec.ts 覆盖请求场景）。
     const bodyVersionRequests: string[] = [];
     page.on("request", (request) => {
       if (request.url().includes("/v1/research-body-versions/")) bodyVersionRequests.push(request.url());

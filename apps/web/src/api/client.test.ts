@@ -27,3 +27,17 @@ describe("F1 fusion proposal API client", () => {
     );
   });
 });
+
+describe("#42 research body version API client", () => {
+  it("calls the body version view endpoint with a stable encoded path", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ version: {}, fragments: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const client = createApiClient(fetchMock);
+
+    await client.getResearchBodyVersion("body:m-out:b8d974e5");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/research-body-versions/body%3Am-out%3Ab8d974e5",
+      undefined,
+    );
+  });
+});
