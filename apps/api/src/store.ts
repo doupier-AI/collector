@@ -1,7 +1,7 @@
 import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewInput, type ResearchTermPreviewRecord, type ResearchTurnAccepted, researchEdgeId } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchFusionReference, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewInput, type ResearchTermPreviewRecord, type ResearchTurnAccepted, researchEdgeId } from "@collector/capture-contracts";
 
 export type ObservabilityRecordSource = "research" | "selection" | "import" | "workflow" | "fusion";
 
@@ -119,6 +119,8 @@ export interface ResearchStore {
   retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string, options?: { preserveContent?: boolean }): Promise<ResearchTaskRecord>;
   /** plan-then-write：持久化正文大纲与逐节进度，供断点续扩；record_json 整行覆盖。 */
   saveResearchTaskBodyPlan(taskId: string, bodyPlan: ResearchBodyPlan): Promise<void>;
+  /** #31：融合正文完成后写入解析出的 [来源n] 引用；record_json 整行覆盖。 */
+  saveResearchTaskFusionReferences(taskId: string, fusionReferences: ResearchFusionReference[]): Promise<void>;
   /** 单轮流式：持久化已接收的部分正文断点，供切断续传；record_json 整行覆盖。 */
   saveResearchTaskStreamCheckpoint(taskId: string, content: string): Promise<void>;
   /** 单轮流式：任务完成后清除断点。 */
@@ -203,6 +205,22 @@ export interface ResearchFusionProposalStore {
   /** 同一规范化节点对幂等，已存在时返回既有记录。 */
   createResearchFusionProposal(proposal: ResearchFusionProposalRecord): Promise<ResearchFusionProposalRecord>;
   saveResearchFusionProposal(proposal: ResearchFusionProposalRecord): Promise<void>;
+  /** #31：按幂等键查找已创建的融合节点首轮任务（重复确认时返回既有结果，不重复建）。 */
+  findResearchFusionTaskByIdempotencyKey(idempotencyKey: string): ResearchTaskRecord | undefined;
+  /** #31：按幂等键查找已创建的融合节点（重复确认时返回既有结果，不重复建）。 */
+  findResearchFusionNodeByIdempotencyKey(idempotencyKey: string): ResearchNodeRecord | undefined;
+  /**
+   * #31：确认式融合事务——同一事务内把提案置为 accepted、幂等创建语义相关边与
+   * 融合来源边、创建融合节点（无父节点）与首轮消息、任务。按 idempotencyKey 幂等。
+   */
+  createResearchFusionTurn(
+    proposal: ResearchFusionProposalRecord,
+    fusedFromEdges: ResearchEdgeRecord[],
+    fusionNode: ResearchNodeRecord,
+    inputMessage: ResearchMessageRecord,
+    outputMessage: ResearchMessageRecord,
+    task: ResearchTaskRecord,
+  ): Promise<NodeGrowthAccepted>;
 }
 
 export interface CollectorStore
@@ -1383,6 +1401,15 @@ export class SqliteStore implements CollectorStore {
     });
   }
 
+  /** #31：融合正文完成后写入解析出的 [来源n] 引用（record_json 整行覆盖）。 */
+  async saveResearchTaskFusionReferences(taskId: string, fusionReferences: ResearchFusionReference[]): Promise<void> {
+    this.transaction(() => {
+      const task = this.getResearchTask(taskId);
+      if (!task) throw new Error("Research task not found");
+      this.updateResearchTask({ ...task, fusionReferences, updatedAt: new Date().toISOString() });
+    });
+  }
+
   listResearchTaskEvents(taskId: string, afterId = 0): ResearchTaskEvent[] {
     const rows = this.db().prepare("SELECT sequence, event_type, created_at, data_json FROM research_task_events WHERE task_id = ? AND sequence > ? ORDER BY sequence")
       .all(taskId, afterId) as Array<{ sequence: number; event_type: "delta" | "completed" | "failed"; created_at: string; data_json: string }>;
@@ -2313,6 +2340,79 @@ export class SqliteStore implements CollectorStore {
         JSON.stringify(proposal),
         proposal.id,
       );
+  }
+
+  /** #31：按幂等键查找已创建的融合节点首轮任务（重复确认时返回既有结果，不重复建）。 */
+  findResearchFusionTaskByIdempotencyKey(idempotencyKey: string): ResearchTaskRecord | undefined {
+    return this.getRecord<ResearchTaskRecord>("SELECT record_json FROM research_tasks WHERE idempotency_key = ?", idempotencyKey);
+  }
+
+  /** #31：按幂等键查找已创建的融合节点（重复确认时返回既有结果，不重复建）。 */
+  findResearchFusionNodeByIdempotencyKey(idempotencyKey: string): ResearchNodeRecord | undefined {
+    return this.getRecord<ResearchNodeRecord>("SELECT record_json FROM research_nodes WHERE creation_idempotency_key = ?", idempotencyKey);
+  }
+
+  /**
+   * #31：确认式融合事务。同一事务内把提案置为 accepted、幂等创建语义相关边
+   * 与融合来源边、创建融合节点（无父节点，来源关系全由 fused-from 边表达）与
+   * 首轮消息、任务。按 idempotencyKey 幂等：重复 fuse 返回首次创建的节点与任务。
+   */
+  async createResearchFusionTurn(
+    proposal: ResearchFusionProposalRecord,
+    fusedFromEdges: ResearchEdgeRecord[],
+    fusionNode: ResearchNodeRecord,
+    inputMessage: ResearchMessageRecord,
+    outputMessage: ResearchMessageRecord,
+    task: ResearchTaskRecord,
+  ): Promise<NodeGrowthAccepted> {
+    let accepted: NodeGrowthAccepted | undefined;
+    this.transaction(() => {
+      const existingNode = this.getRecord<ResearchNodeRecord>(
+        "SELECT record_json FROM research_nodes WHERE session_id = ? AND creation_idempotency_key = ?",
+        fusionNode.sessionId, task.idempotencyKey,
+      );
+      if (existingNode) {
+        const existingTask = this.findResearchTaskByIdempotencyKey(fusionNode.sessionId, task.idempotencyKey);
+        if (!existingTask) throw new Error("Research fusion node references a missing first task");
+        const existingInput = this.getResearchMessage(existingTask.inputMessageId);
+        const existingOutput = this.getResearchMessage(existingTask.outputMessageId);
+        const session = this.getResearchSession(existingNode.sessionId);
+        if (!existingInput || !existingOutput || !session) throw new Error("Research fusion node references incomplete persisted state");
+        accepted = { node: existingNode, session, selection: undefined, inputMessage: existingInput, outputMessage: existingOutput, task: existingTask };
+        return;
+      }
+      const session = this.getResearchSession(fusionNode.sessionId);
+      if (!session) throw new Error("Research fusion node references a missing session");
+      const updatedSession: ResearchSessionRecord = { ...session, updatedAt: task.createdAt };
+      // 提案置为 accepted（与 decide 一致：无冷却字段）。
+      const acceptedProposal: ResearchFusionProposalRecord = { ...proposal, status: "accepted", updatedAt: task.createdAt };
+      this.db().prepare("UPDATE research_fusion_proposals SET status = ?, updated_at = ?, record_json = ? WHERE id = ?")
+        .run(acceptedProposal.status, acceptedProposal.updatedAt, JSON.stringify(acceptedProposal), proposal.id);
+      this.db().prepare("INSERT INTO research_nodes (id, session_id, parent_node_id, origin_selection_id, status, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(fusionNode.id, fusionNode.sessionId, null, null, fusionNode.status, fusionNode.createdAt, fusionNode.updatedAt, task.idempotencyKey, JSON.stringify(fusionNode));
+      // 语义相关边 + 融合来源边：均幂等（INSERT OR IGNORE + UNIQUE 约束）。
+      const semanticEdge: ResearchEdgeRecord = {
+        id: researchEdgeId("semantic-related", proposal.loNodeId, proposal.hiNodeId),
+        kind: "semantic-related",
+        fromNodeId: proposal.loNodeId,
+        toNodeId: proposal.hiNodeId,
+        createdAt: task.createdAt,
+        status: "active",
+      };
+      const edges = [semanticEdge, ...fusedFromEdges];
+      for (const edge of edges) {
+        this.db().prepare("INSERT OR IGNORE INTO research_edges (id, kind, from_node_id, to_node_id, created_at, status, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
+          .run(edge.id, edge.kind, edge.fromNodeId, edge.toNodeId, edge.createdAt, edge.status, JSON.stringify(edge));
+      }
+      this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
+        .run(updatedSession.updatedAt, JSON.stringify(updatedSession), updatedSession.id);
+      this.insertResearchMessage(inputMessage);
+      this.insertResearchMessage(outputMessage);
+      this.insertResearchTask(task);
+      accepted = { node: fusionNode, session: updatedSession, selection: undefined, inputMessage, outputMessage, task };
+    });
+    if (!accepted) throw new Error("Research fusion node was not persisted");
+    return accepted;
   }
 
   private updateResearchMessage(message: ResearchMessageRecord): void {
@@ -3476,6 +3576,7 @@ export class JsonStore implements CollectorStore {
   async failResearchTask(_task: ResearchTaskRecord, _error: ResearchTaskError): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
   async retryResearchTask(_task: ResearchTaskRecord, _provider?: string, _model?: string, _promptVersion?: string, _options?: { preserveContent?: boolean }): Promise<ResearchTaskRecord> { throw new Error("Research sessions require SQLite persistence"); }
   async saveResearchTaskBodyPlan(_taskId: string, _bodyPlan: ResearchBodyPlan): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
+  async saveResearchTaskFusionReferences(_taskId: string, _fusionReferences: ResearchFusionReference[]): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
   async saveResearchTaskStreamCheckpoint(_taskId: string, _content: string): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
   async clearResearchTaskStreamCheckpoint(_taskId: string): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
   listResearchTaskEvents(_taskId: string, _afterId?: number): ResearchTaskEvent[] { return []; }
@@ -3556,6 +3657,9 @@ export class JsonStore implements CollectorStore {
   listResearchFusionProposalsByNode(_nodeId: string, _statuses?: readonly ResearchFusionProposalStatus[]): ResearchFusionProposalRecord[] { return []; }
   async createResearchFusionProposal(_proposal: ResearchFusionProposalRecord): Promise<ResearchFusionProposalRecord> { throw new Error("Research fusion proposals require SQLite persistence"); }
   async saveResearchFusionProposal(_proposal: ResearchFusionProposalRecord): Promise<void> { throw new Error("Research fusion proposals require SQLite persistence"); }
+  findResearchFusionTaskByIdempotencyKey(_idempotencyKey: string): ResearchTaskRecord | undefined { return undefined; }
+  findResearchFusionNodeByIdempotencyKey(_idempotencyKey: string): ResearchNodeRecord | undefined { return undefined; }
+  async createResearchFusionTurn(_proposal: ResearchFusionProposalRecord, _fusedFromEdges: ResearchEdgeRecord[], _fusionNode: ResearchNodeRecord, _inputMessage: ResearchMessageRecord, _outputMessage: ResearchMessageRecord, _task: ResearchTaskRecord): Promise<NodeGrowthAccepted> { throw new Error("Research fusion turns require SQLite persistence"); }
   async createResearchEdge(_edge: ResearchEdgeRecord): Promise<ResearchEdgeRecord> { throw new Error("Research edges require SQLite persistence"); }
   listResearchEdgesByNode(_nodeId: string): ResearchEdgeRecord[] { return []; }
   listAllResearchEdges(): ResearchEdgeRecord[] { return []; }

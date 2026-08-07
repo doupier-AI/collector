@@ -1,22 +1,29 @@
+import { randomUUID } from "node:crypto";
 import {
+  FUSION_COMPOSE_PROMPT_VERSION,
   SIMILARITY_VERIFICATION_PROMPT_VERSION,
   normalizeResearchFusionProposalPair,
+  parseFusionReferences,
   researchEdgeId,
   researchFusionProposalId,
   type FusionProposalTriggerSource,
   type FusionRelationType,
+  type NodeGrowthAccepted,
   type ResearchEdgeRecord,
   type ResearchFusionProposalDecision,
   type ResearchFusionProposalRecord,
   type ResearchFusionProposalStatus,
+  type ResearchFusionSource,
   type ResearchMessageRecord,
   type ResearchNodeRecord,
   type ResearchSliceRecord,
+  type ResearchTaskRecord,
 } from "@collector/capture-contracts";
 import type { ModelCallContext } from "@collector/model-gateway";
 import type { CollectorStore } from "./store.js";
 import { TermDetectionService } from "./term-detection.js";
 import { deriveMessageBodyArtifacts, getOrDeriveMessageBodyArtifacts, tryResolveFragmentExcerpt } from "./body-artifacts.js";
+import type { ResearchSessionService } from "./research.js";
 
 export const SIMILARITY_VERIFICATION_TOKEN_BUDGET = 800;
 export const FUSION_PROPOSAL_COOLDOWN_DAYS = 30;
@@ -192,6 +199,7 @@ export class ResearchFusionProposalService {
     private readonly termDetection: TermDetectionService,
     private readonly gatewayResolver: () => Promise<SimilarityVerificationGateway | undefined>,
     private readonly now: () => Date = () => new Date(),
+    private readonly research?: ResearchSessionService,
   ) {}
 
   listForNode(nodeId: string, statuses?: readonly ResearchFusionProposalStatus[]): ResearchFusionProposalRecord[] {
@@ -265,6 +273,135 @@ export class ResearchFusionProposalService {
     return this.withResolvedFragmentRefs(next);
   }
 
+  /**
+   * #31 F2：确认式融合。用户明确确认后：
+   * - 提案置为 accepted；
+   * - 落语义相关边（lo↔hi，与「保留关系」一致）；
+   * - 对每个贡献来源节点落一条 fused-from 边（来源 → 融合节点），边记录携带
+   *   该来源贡献的片段 ID 并集；
+   * - 创建融合节点（无父节点，来源关系全由 fused-from 边表达）与首轮消息、任务，
+   *   由既有任务管线生成融合正文。
+   * 同一提案按 idempotencyKey 幂等：重复 fuse 返回首次创建的节点与任务。
+   * 融合纯增量：来源节点、原文与既有关系逐字节不变（ADR-0005）。
+   */
+  async confirmFusion(proposalId: string, idempotencyKey: string): Promise<NodeGrowthAccepted> {
+    if (!idempotencyKey.trim()) throw new ResearchFusionProposalValidationError("Idempotency-Key is required");
+    if (idempotencyKey.length > 200) throw new ResearchFusionProposalValidationError("Idempotency-Key must not exceed 200 characters");
+    if (!this.research) throw new Error("Research service is not wired for fusion generation");
+    // 幂等：同一幂等键已创建过融合节点时直接返回既有结果（不重复建、不重复改状态）。
+    const existingNode = this.store.findResearchFusionNodeByIdempotencyKey(idempotencyKey);
+    if (existingNode) {
+      const existingTask = this.store.findResearchFusionTaskByIdempotencyKey(idempotencyKey);
+      const existingInput = existingTask ? this.store.getResearchMessage(existingTask.inputMessageId) : undefined;
+      const existingOutput = existingTask ? this.store.getResearchMessage(existingTask.outputMessageId) : undefined;
+      const session = this.store.getResearchSession(existingNode.sessionId);
+      if (!existingTask || !existingInput || !existingOutput || !session) {
+        throw new Error("Research fusion node references incomplete persisted state");
+      }
+      return { node: existingNode, session, selection: undefined, inputMessage: existingInput, outputMessage: existingOutput, task: existingTask };
+    }
+    const current = this.store.getResearchFusionProposal(proposalId);
+    if (!current) throw new ResearchFusionProposalNotFoundError("Research fusion proposal not found");
+    if (current.status !== "pending") {
+      throw new ResearchFusionProposalConflictError("Research fusion proposal has already been decided");
+    }
+    const resolved = this.withResolvedFragmentRefs(current);
+    const sources = this.buildFusionSources(resolved);
+    // 验收 2：融合来源边必须指向每个可回溯的贡献来源切片；可回溯来源不足两个则不建。
+    if (sources.length < 2) {
+      throw new ResearchFusionProposalValidationError("Fusion requires at least two traceable source fragments");
+    }
+    const now = this.now();
+    const fusionNode: ResearchNodeRecord = {
+      id: randomUUID(),
+      sessionId: this.store.getResearchNode(resolved.loNodeId)?.sessionId
+        ?? this.store.getResearchNode(resolved.hiNodeId)?.sessionId
+        ?? "",
+      isFusionNode: true,
+      status: "active",
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    };
+    if (!fusionNode.sessionId) throw new ResearchFusionProposalValidationError("Fusion sources are missing their session");
+    const fusedFromEdges: ResearchEdgeRecord[] = sources.map((source) => ({
+      id: researchEdgeId("fused-from", source.nodeId, fusionNode.id),
+      kind: "fused-from",
+      fromNodeId: source.nodeId,
+      toNodeId: fusionNode.id,
+      createdAt: fusionNode.createdAt,
+      status: "active",
+      sourceFragmentIds: [...new Set(resolved.triggerSources
+        .filter((trigger) => trigger.nodeId === source.nodeId && trigger.fragmentId)
+        .map((trigger) => trigger.fragmentId as string))].sort(),
+    }));
+    const firstTurnContent = `请综合以下研究来源，生成融合节点：${sources.map((source) => source.label).join("、")}`;
+    const inputMessage: ResearchMessageRecord = {
+      id: randomUUID(), sessionId: fusionNode.sessionId, nodeId: fusionNode.id, role: "user",
+      content: firstTurnContent, status: "completed", createdAt: fusionNode.createdAt, updatedAt: fusionNode.createdAt,
+    };
+    const outputMessage: ResearchMessageRecord = {
+      id: randomUUID(), sessionId: fusionNode.sessionId, nodeId: fusionNode.id, role: "assistant",
+      content: "", status: "pending", createdAt: fusionNode.createdAt, updatedAt: fusionNode.createdAt,
+    };
+    const task: ResearchTaskRecord = {
+      id: randomUUID(), sessionId: fusionNode.sessionId, nodeId: fusionNode.id,
+      inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
+      idempotencyKey, status: "queued", retryable: false,
+      provider: this.research.providerId,
+      model: this.research.modelId,
+      promptVersion: FUSION_COMPOSE_PROMPT_VERSION,
+      allowWebSearch: false,
+      groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 },
+      fusionPlan: { sources, relationType: resolved.relationType },
+      createdAt: fusionNode.createdAt, updatedAt: fusionNode.createdAt,
+    };
+    const accepted = await this.store.createResearchFusionTurn(
+      resolved, fusedFromEdges, fusionNode, inputMessage, outputMessage, task,
+    );
+    this.scheduleFusionTask(accepted.task.id);
+    return accepted;
+  }
+
+  /** 从提案触发来源组装融合计划来源：按节点去重、补齐标签、跳过不可回溯的来源。 */
+  private buildFusionSources(proposal: ResearchFusionProposalRecord): ResearchFusionSource[] {
+    const byNode = new Map<string, FusionProposalTriggerSource[]>();
+    for (const trigger of proposal.triggerSources) {
+      if (!trigger.fragmentId || !trigger.bodyVersionId) continue;
+      const entries = byNode.get(trigger.nodeId) ?? [];
+      entries.push(trigger);
+      byNode.set(trigger.nodeId, entries);
+    }
+    const sources: ResearchFusionSource[] = [];
+    for (const [nodeId, triggers] of byNode) {
+      const first = triggers[0]!;
+      sources.push({
+        nodeId,
+        bodyVersionId: first.bodyVersionId!,
+        fragmentId: first.fragmentId!,
+        label: this.sourceLabelFor(nodeId),
+        ...(first.sliceId ? { sliceId: first.sliceId } : {}),
+      });
+    }
+    return sources.sort((left, right) => left.nodeId.localeCompare(right.nodeId));
+  }
+
+  /** 来源节点标签：displayName > 来源选区摘要 > 首条用户消息摘要 > 节点 ID 前缀。 */
+  private sourceLabelFor(nodeId: string): string {
+    const node = this.store.getResearchNode(nodeId);
+    if (!node) return `节点 ${nodeId.slice(0, 8)}`;
+    if (node.displayName?.trim()) return node.displayName.trim();
+    const selection = node.originSelectionId ? this.store.getResearchSelection(node.originSelectionId) : undefined;
+    if (selection?.text?.trim()) return excerptText(selection.text.trim(), 48);
+    const firstUser = this.store.listResearchMessagesByNode(nodeId).find((message) => message.role === "user");
+    if (firstUser?.content?.trim()) return excerptText(firstUser.content.trim(), 48);
+    return `节点 ${nodeId.slice(0, 8)}`;
+  }
+
+  private scheduleFusionTask(id: string): void {
+    const research = this.research;
+    if (!research) return;
+    setImmediate(() => void research.processTask(id).catch(() => undefined));
+  }
   /**
    * 为节点内缺失正文版本/片段的已完成助手消息做确定性、幂等持久化。
    * 与启动回填、节点视图惰性派生同一派生规则；按消息隔离失败。
@@ -476,4 +613,10 @@ function cooldownUntil(rejectedAt: string): string {
   const instant = new Date(rejectedAt).getTime();
   if (!Number.isFinite(instant)) throw new ResearchFusionProposalValidationError("Rejected proposal timestamp is invalid");
   return new Date(instant + FUSION_PROPOSAL_COOLDOWN_DAYS * 24 * 60 * 60 * 1000).toISOString();
+}
+
+/** 标签摘录：压缩空白并截断到最大字符数。 */
+function excerptText(text: string, maxCharacters: number): string {
+  const trimmed = text.replace(/\s+/g, " ").trim();
+  return trimmed.length > maxCharacters ? `${trimmed.slice(0, maxCharacters)}…` : trimmed;
 }

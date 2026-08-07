@@ -443,6 +443,17 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
           body.decision,
         ));
       }
+      const researchFusionProposalFuseMatch = url.pathname.match(/^\/v1\/research-fusion-proposals\/([^/]+)\/fuse$/);
+      if (request.method === "POST" && researchFusionProposalFuseMatch) {
+        const body = await readJson(request);
+        if (!body || typeof body !== "object" || typeof (body as { idempotencyKey?: unknown }).idempotencyKey !== "string") {
+          throw new ResearchFusionProposalValidationError("idempotencyKey is required");
+        }
+        return json(response, 200, await service.fusionProposals.confirmFusion(
+          decodeURIComponent(researchFusionProposalFuseMatch[1]),
+          (body as { idempotencyKey: string }).idempotencyKey,
+        ));
+      }
       const researchNodeMatch = url.pathname.match(/^\/v1\/research-nodes\/([^/]+)$/);
       if (request.method === "GET" && researchNodeMatch) {
         return json(response, 200, await service.getResearchNodeView(decodeURIComponent(researchNodeMatch[1])));

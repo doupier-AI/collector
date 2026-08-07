@@ -22,13 +22,14 @@ import {
   TermDetectionService,
 } from "@collector/api";
 import {
+  FUSION_COMPOSE_PROMPT_VERSION,
   SIMILARITY_VERIFICATION_PROMPT_VERSION,
   deriveBodyVersion,
   resolveFragmentExcerpt,
   researchFusionProposalId,
 } from "@collector/capture-contracts";
 import { FakeProvider, ModelGateway } from "@collector/model-gateway";
-import { SqliteStore } from "@collector/api";
+import { CaptureService, ResearchSessionService, SqliteStore } from "@collector/api";
 
 async function createHarness() {
   const root = await mkdtemp(join(tmpdir(), "collector-fusion-proposals-"));
@@ -392,4 +393,282 @@ test("accepting creates one semantic-related edge; rejecting writes a determinis
     new Date(now.getTime() + FUSION_PROPOSAL_COOLDOWN_DAYS * 24 * 60 * 60 * 1000).toISOString(),
   );
   assert.equal((await rejectedService.scan("node-a"))[0]?.status, "rejected");
+});
+
+// ── #31 F2 确认式融合 ─────────────────────────────────────────────
+
+/**
+ * 建立带真实 research 任务管线的融合 harness：
+ * - 两个来源节点（孙悟空×2 场景：西游记 / 七龙珠），各自带正式切片与正文版本；
+ * - CaptureService 注入确定性的 composeFusion provider，autoRunResearchTasks 关闭（手动驱动）。
+ */
+async function createFusionHarness() {
+  const root = await mkdtemp(join(tmpdir(), "collector-fusion-node-"));
+  const store = new SqliteStore(join(root, "collector.sqlite"));
+  await store.init();
+  const now = "2026-08-02T00:00:00.000Z";
+  const session: ResearchSessionRecord = { id: "session-1", title: "融合节点", status: "active", createdAt: now, updatedAt: now };
+  await store.createResearchSession(session, "session-key");
+  const nodes: ResearchNodeRecord[] = [
+    { id: "node-a", sessionId: session.id, status: "active", createdAt: now, updatedAt: now },
+    { id: "node-b", sessionId: session.id, status: "active", createdAt: now, updatedAt: now },
+  ];
+  for (const node of nodes) await store.createResearchNode(node, `node:${node.id}`);
+  const messages: ResearchMessageRecord[] = [
+    { id: "message-a", sessionId: session.id, nodeId: "node-a", role: "assistant", content: "西游记中的孙悟空以反抗精神推动故事。", status: "completed", createdAt: now, updatedAt: now },
+    { id: "message-b", sessionId: session.id, nodeId: "node-b", role: "assistant", content: "七龙珠中的孙悟空以赛亚人身份展开冒险。", status: "completed", createdAt: now, updatedAt: now },
+  ];
+  const db = (store as unknown as { db(): import("node:sqlite").DatabaseSync }).db();
+  const insertMessage = db.prepare("INSERT INTO research_messages (id, session_id, node_id, branch_id, role, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+  for (const message of messages) {
+    insertMessage.run(message.id, message.sessionId, message.nodeId!, null, message.role, message.status, message.createdAt, message.updatedAt, JSON.stringify(message));
+  }
+  const slices: ResearchSliceRecord[] = [
+    { id: "slice:node-a:message-a:0", nodeId: "node-a", messageId: "message-a", ordinal: 0, title: "西游记孙悟空", normalizedConcepts: ["孙悟空"], sourceRefs: [], isProvisional: false, createdAt: now },
+    { id: "slice:node-b:message-b:0", nodeId: "node-b", messageId: "message-b", ordinal: 0, title: "七龙珠孙悟空", normalizedConcepts: ["孙悟空"], sourceRefs: [], isProvisional: false, createdAt: now },
+  ];
+  await store.replaceSlicesForMessage("message-a", [slices[0]!]);
+  await store.replaceSlicesForMessage("message-b", [slices[1]!]);
+  // 正文版本 + 语义片段持久化（confirmFusion 生成时按 bodyVersionId+fragmentId 回读摘录）。
+  const bodyA = deriveBodyVersion({ messageId: "message-a", nodeId: "node-a", content: messages[0]!.content, origin: "backfill", createdAt: now });
+  const bodyB = deriveBodyVersion({ messageId: "message-b", nodeId: "node-b", content: messages[1]!.content, origin: "backfill", createdAt: now });
+  const { fragments: fragmentsA } = deriveMessageBodyArtifacts({ nodeId: "node-a", message: messages[0]!, slices: [slices[0]!] });
+  const { fragments: fragmentsB } = deriveMessageBodyArtifacts({ nodeId: "node-b", message: messages[1]!, slices: [slices[1]!] });
+  await store.createResearchBodyVersion(bodyA);
+  await store.createResearchBodyVersion(bodyB);
+  await store.createSemanticFragments(fragmentsA);
+  await store.createSemanticFragments(fragmentsB);
+
+  let composeCalls = 0;
+  const provider = {
+    provider: "fake",
+    model: "fake-fusion",
+    promptVersion: "test",
+    async *generate() { yield "unused"; },
+    async writeBody() { return "unused"; },
+    async composeFusion(request: { fusion: { sources: Array<{ title: string }> } }) {
+      composeCalls += 1;
+      return [
+        `## 共同核心\n\n${request.fusion.sources[0]?.title ?? ""}与${request.fusion.sources[1]?.title ?? ""}共享孙悟空概念。[来源1]`,
+        "## 差异\n\n两者来自不同作品。[来源2]",
+        "## 综合推导\n\n两个孙悟空是不同作品中的同名角色。",
+      ].join("\n\n");
+    },
+  } as never;
+
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, {
+    autoRunRecentOrganization: false,
+    autoRunResearchTasks: false,
+    researchProvider: provider,
+    similarityVerifier: {
+      async verifyResearchSimilarity() {
+        return { relationType: "contrast", reason: "同名角色来自不同作品。" };
+      },
+    },
+  });
+  return {
+    store,
+    service,
+    messages,
+    now,
+    composeCalls: () => composeCalls,
+    close: async () => { store.close(); await rm(root, { recursive: true, force: true }); },
+  };
+}
+
+test("#31 confirmFusion creates semantic edge, fused-from edges, and a parentless fusion node with a fusion task", async (t) => {
+  const harness = await createFusionHarness();
+  t.after(harness.close);
+  const { service, store } = harness;
+  const [proposal] = await service.fusionProposals.scan("node-a");
+  assert.equal(proposal?.status, "pending");
+  const proposalId = proposal!.id;
+
+  const accepted = await service.fusionProposals.confirmFusion(proposalId, "fusion-idempotency-1");
+  assert.equal(accepted.node.parentNodeId, undefined, "fusion node has no parent lineage");
+  assert.equal(accepted.node.sessionId, "session-1");
+  assert.equal(accepted.task.status, "queued");
+  assert.equal(accepted.task.promptVersion, FUSION_COMPOSE_PROMPT_VERSION);
+  assert.equal(accepted.task.fusionPlan?.relationType, "contrast");
+  assert.equal(accepted.task.fusionPlan?.sources.length, 2);
+  for (const source of accepted.task.fusionPlan!.sources) {
+    assert.ok(source.bodyVersionId && source.fragmentId && source.label);
+  }
+
+  // 提案已 accepted；边：语义相关 1 条 + fused-from 2 条（来源→融合节点）。
+  assert.equal(store.getResearchFusionProposal(proposalId)?.status, "accepted");
+  const semanticEdges = store.listAllResearchEdges().filter((edge) => edge.kind === "semantic-related");
+  assert.equal(semanticEdges.length, 1);
+  assert.deepEqual([semanticEdges[0]!.fromNodeId, semanticEdges[0]!.toNodeId].sort(), ["node-a", "node-b"]);
+  const fusedEdges = store.listResearchEdgesByNode(accepted.node.id).filter((edge) => edge.kind === "fused-from");
+  assert.equal(fusedEdges.length, 2);
+  for (const edge of fusedEdges) {
+    assert.equal(edge.toNodeId, accepted.node.id, "fused-from points at the fusion node");
+    assert.ok(edge.sourceFragmentIds?.length === 1, "fused-from carries the contributing fragment");
+  }
+
+  // 幂等：同一提案 + 同一幂等键返回同一节点，不重复建边。
+  const again = await service.fusionProposals.confirmFusion(proposalId, "fusion-idempotency-1");
+  assert.equal(again.node.id, accepted.node.id);
+  assert.equal(store.listAllResearchEdges().filter((edge) => edge.kind === "fused-from").length, 2);
+
+  // 非 pending 提案拒绝。
+  await assert.rejects(
+    () => service.fusionProposals.confirmFusion(proposalId, "fusion-idempotency-2"),
+    /already been decided/,
+  );
+});
+
+test("#31 confirmFusion runs the fusion task through the research pipeline and records references", async (t) => {
+  const harness = await createFusionHarness();
+  t.after(harness.close);
+  const { service, store } = harness;
+  const [proposal] = await service.fusionProposals.scan("node-a");
+  const accepted = await service.fusionProposals.confirmFusion(proposal!.id, "fusion-idempotency-3");
+  const taskId = accepted.task.id;
+
+  await service.research.processTask(taskId);
+  const task = store.getResearchTask(taskId);
+  assert.equal(task?.status, "completed");
+  assert.ok(task?.fusionReferences && task.fusionReferences.length >= 2, "fusion references parsed from body");
+  for (const reference of task!.fusionReferences!) {
+    assert.ok(reference.nodeId && reference.bodyVersionId && reference.fragmentId);
+  }
+  const message = store.getResearchMessage(accepted.outputMessage.id);
+  assert.match(message?.content ?? "", /## 共同核心/);
+  assert.match(message?.content ?? "", /## 差异/);
+  assert.match(message?.content ?? "", /## 综合推导/);
+
+  // 来源节点逐字节不变（验收 6）。
+  assert.equal(store.getResearchMessage("message-a")?.content, "西游记中的孙悟空以反抗精神推动故事。");
+  assert.equal(store.getResearchMessage("message-b")?.content, "七龙珠中的孙悟空以赛亚人身份展开冒险。");
+
+  // 节点视图组装 fusionSources（验收 3：来源可回溯）。
+  const view = await service.getResearchNodeView(accepted.node.id);
+  const sources = view.fusionSources?.[accepted.outputMessage.id];
+  assert.equal(sources?.length, 2);
+  for (const source of sources ?? []) {
+    const version = store.getBodyVersion(source.bodyVersionId);
+    const fragment = store.listFragmentsByBodyVersion(source.bodyVersionId).find((entry) => entry.id === source.fragmentId);
+    assert.ok(version && fragment, "fusion source resolves to persisted artifacts");
+    assert.ok(resolveFragmentExcerpt(version!, fragment!), "excerpt resolves verbatim");
+  }
+});
+
+test("#31 confirmFusion rejects when sources are not traceable", async (t) => {
+  const harness = await createFusionHarness();
+  t.after(harness.close);
+  const { store } = harness;
+  // 构造只有 sliceId、无 fragmentId 的旧形态来源（#43 兼容映射补不齐）。
+  const legacyProposal: ResearchFusionProposalRecord = {
+    id: researchFusionProposalId("node-a", "node-b"),
+    loNodeId: "node-a",
+    hiNodeId: "node-b",
+    relationType: "contrast",
+    reason: "历史扫描遗留。",
+    status: "pending",
+    triggerSources: [
+      { nodeId: "node-a", sliceId: "slice:node-a:message-a:0" },
+      { nodeId: "node-b", sliceId: "slice:node-b:message-b:0" },
+    ],
+    verification: {
+      promptVersion: SIMILARITY_VERIFICATION_PROMPT_VERSION,
+      sourceSliceIds: ["slice:node-a:message-a:0", "slice:node-b:message-b:0"],
+      tokenBudget: SIMILARITY_VERIFICATION_TOKEN_BUDGET,
+    },
+    createdAt: harness.now,
+    updatedAt: harness.now,
+  };
+  await store.createResearchFusionProposal(legacyProposal);
+  // 兼容映射能补齐这两个来源（切片序数对齐门通过）→ 正常可融合。
+  const service = new ResearchFusionProposalService(
+    store,
+    new TermDetectionService(),
+    async () => undefined,
+    () => new Date("2026-08-02T00:00:00.000Z"),
+    harness.service.research,
+  );
+  const accepted = await service.confirmFusion(legacyProposal.id, "fusion-legacy");
+  assert.equal(accepted.task.fusionPlan?.sources.length, 2);
+
+  // 不可回溯来源（缺 bodyVersionId/fragmentId 且映射失败）→ 拒绝建节点。
+  // 用独立节点对避免 UNIQUE(lo,hi) 与 legacy 提案冲突。
+  await store.createResearchNode({ id: "node-x", sessionId: "session-1", status: "active", createdAt: harness.now, updatedAt: harness.now }, "node:x");
+  const orphanProposal: ResearchFusionProposalRecord = {
+    ...legacyProposal,
+    id: researchFusionProposalId("node-a", "node-x"),
+    loNodeId: "node-a",
+    hiNodeId: "node-x",
+    triggerSources: [{ nodeId: "node-a", sliceId: "slice:missing:0" }],
+  };
+  await store.createResearchFusionProposal(orphanProposal);
+  await assert.rejects(
+    () => service.confirmFusion(orphanProposal.id, "fusion-orphan"),
+    /at least two traceable source fragments/,
+  );
+});
+
+test("#31 composeFusion gateway uses the versioned prompt with three sections and records the audit context", async () => {
+  const provider = new FakeProvider(["## 共同核心\n\n共同点。[来源1]\n\n## 差异\n\n差异。[来源2]\n\n## 综合推导\n\n结论。"]);
+  const gateway = new ModelGateway(provider, { model: "fake-fusion" });
+  const calls: Array<{ purpose?: string; promptVersion: string; sourceSliceIds?: string[]; sourceFragmentIds?: string[]; tokenBudget?: number }> = [];
+  gateway.setCallListener((event) => {
+    calls.push({
+      purpose: event.context.purpose,
+      promptVersion: event.promptVersion,
+      sourceSliceIds: event.context.sourceSliceIds,
+      sourceFragmentIds: event.context.sourceFragmentIds,
+      tokenBudget: event.context.tokenBudget,
+    });
+  });
+  const content = await gateway.composeFusion(
+    {
+      sources: [
+        { nodeId: "node-a", title: "西游记孙悟空", excerpt: "西游记中的孙悟空以反抗精神推动故事。" },
+        { nodeId: "node-b", title: "七龙珠孙悟空", excerpt: "七龙珠中的孙悟空以赛亚人身份展开冒险。" },
+      ],
+      relationType: "contrast",
+    },
+    {
+      context: {
+        workflowRunId: "fusion-run-1",
+        purpose: "fusion_compose",
+        promptVersion: FUSION_COMPOSE_PROMPT_VERSION,
+        sourceSliceIds: ["slice:a", "slice:b"],
+        sourceFragmentIds: ["frag:a", "frag:b"],
+        tokenBudget: 4_000,
+      },
+    },
+  );
+  assert.match(content, /## 共同核心/);
+  assert.match(content, /## 差异/);
+  assert.match(content, /## 综合推导/);
+  // 提示词显式区分关系类型：contrast 指导跨作品对比，仅在证据支持时让位更强断言（验收 5）。
+  assert.match(provider.calls[0]?.prompt ?? "", /## 共同核心、## 差异、## 综合推导/);
+  assert.match(provider.calls[0]?.prompt ?? "", /跨作品、跨领域的同名概念默认是对比或联想/);
+  assert.deepEqual(calls, [{
+    purpose: "fusion_compose",
+    promptVersion: FUSION_COMPOSE_PROMPT_VERSION,
+    sourceSliceIds: ["slice:a", "slice:b"],
+    sourceFragmentIds: ["frag:a", "frag:b"],
+    tokenBudget: 4_000,
+  }]);
+
+  // 少于两个来源拒绝。
+  await assert.rejects(
+    () => gateway.composeFusion({ sources: [{ nodeId: "node-a", title: "A", excerpt: "x" }], relationType: "contrast" }),
+    /at least two sources/,
+  );
+  // 空正文拒绝。
+  const emptyGateway = new ModelGateway(new FakeProvider([""]), { model: "fake-fusion" });
+  await assert.rejects(
+    () => emptyGateway.composeFusion({
+      sources: [
+        { nodeId: "node-a", title: "A", excerpt: "x" },
+        { nodeId: "node-b", title: "B", excerpt: "y" },
+      ],
+      relationType: "contrast",
+    }),
+    /empty body/,
+  );
 });

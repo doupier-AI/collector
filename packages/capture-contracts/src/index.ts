@@ -707,6 +707,8 @@ export interface ResearchNodeRecord {
   originSelectionId?: string;
   /** H6：模型生成的稳定显示名称；缺失时使用确定性回退。 */
   displayName?: string;
+  /** #31：确认式融合创建的融合节点标记（存 record_json，零迁移）；无父链，来源关系由 fused-from 边表达。 */
+  isFusionNode?: boolean;
   status: "active";
   createdAt: string;
   updatedAt: string;
@@ -1187,6 +1189,10 @@ export interface ResearchTaskRecord {
   bodyPlan?: ResearchBodyPlan;
   /** 单轮流式断点：周期性落盘的已接收正文前缀；流被切断/重启后从断点续传，不整篇重来。 */
   streamCheckpoint?: { content: string; updatedAt: string };
+  /** #31：融合节点生成的来源计划与关系类型；任务处理时消费，存于 record_json。 */
+  fusionPlan?: { sources: ResearchFusionSource[]; relationType: FusionRelationType };
+  /** #31：融合正文完成后解析出的 [来源n] 引用；存于 record_json，节点视图据此组装来源条。 */
+  fusionReferences?: ResearchFusionReference[];
   error?: ResearchTaskError;
   createdAt: string;
   updatedAt: string;
@@ -1225,6 +1231,8 @@ export interface ResearchNodeView {
   fusionProposals?: ResearchFusionProposalRecord[];
   /** #35：按消息 ID 返回正文版本；可选字段，缺失时前端按消息正文渲染。 */
   bodyVersions?: Record<string, ResearchBodyVersionRecord>;
+  /** #31：按消息 ID 返回该消息引用的融合来源；可选字段，缺失时前端不渲染来源条。 */
+  fusionSources?: Record<string, ResearchFusionSource[]>;
 }
 
 export interface ResearchTurnAccepted {
@@ -1412,7 +1420,8 @@ export interface DeepResearchAccepted {
 export interface NodeGrowthAccepted {
   node: ResearchNodeRecord;
   session: ResearchSessionRecord;
-  selection: ResearchSelectionRecord;
+  /** 来源选区；确认式融合节点无选区（#31），该字段可为空。 */
+  selection?: ResearchSelectionRecord;
   inputMessage: ResearchMessageRecord;
   outputMessage: ResearchMessageRecord;
   task: ResearchTaskRecord;
@@ -1459,6 +1468,8 @@ export interface ResearchEdgeRecord {
   toNodeId: string;
   createdAt: string;
   status: ResearchEdgeStatus;
+  /** #31：融合来源边携带该来源贡献的语义片段 ID 并集（存 record_json，画布读取不受影响）。 */
+  sourceFragmentIds?: string[];
 }
 
 /**
@@ -2497,6 +2508,12 @@ export type {
 /** 相似性核验提示词版本；模型调用与本地提议留痕都使用这一稳定版本。 */
 export const SIMILARITY_VERIFICATION_PROMPT_VERSION = "similarity-verify-v1";
 
+/** 融合正文生成的独立提示词版本（#31 F2）；模型调用与运行记录留痕都使用这一稳定版本。 */
+export const FUSION_COMPOSE_PROMPT_VERSION = "fusion-compose-v1";
+
+/** 融合正文生成的固定令牌预算；与提示词 maxTokens 一致，随运行记录留痕。 */
+export const FUSION_COMPOSE_TOKEN_BUDGET = 4_000;
+
 /** 融合关系类型；identity 为同一实体，unrelated 为无关。 */
 export const FUSION_RELATION_TYPES = ["identity", "shared-concept", "analogy", "contrast", "unrelated"] as const;
 export type FusionRelationType = (typeof FUSION_RELATION_TYPES)[number];
@@ -2597,4 +2614,74 @@ function fusionFnv1a32(input: string): string {
     hash = Math.imul(hash, 0x01000193);
   }
   return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+// ── Fusion Node Generation (F2) ───────────────────────────────────
+
+/**
+ * #31：融合正文的一个来源（贡献切片）。由确认时的提案触发来源派生，
+ * 携带正文版本与稳定片段标识——融合引用可经 `resolveFragmentExcerpt`
+ * 逐字回读到来源原文。
+ */
+export interface ResearchFusionSource {
+  /** 来源节点 ID。 */
+  nodeId: string;
+  /** 贡献片段的正文版本 ID。 */
+  bodyVersionId: string;
+  /** 贡献语义片段 ID。 */
+  fragmentId: string;
+  /** 来源节点标签（displayName/选区摘要回退），供融合提示词与 UI 展示。 */
+  label: string;
+  /** 对应切片 ID（如有）；供运行记录 sourceSliceIds 记账。 */
+  sliceId?: string;
+}
+
+/**
+ * #31：融合正文中的一条 [来源n] 引用。sourceOrdinal 为 1-based 序号，
+ * 指向融合计划的 sources[sourceOrdinal - 1]；blockOrdinal/markerOffset
+ * 与选区锚点同一派生规则（`deriveMessageBlocks`），可精确定位。
+ * nodeId/bodyVersionId/fragmentId 为冗余快照，保证来源信息不随计划变化漂移。
+ */
+export interface ResearchFusionReference {
+  sourceOrdinal: number;
+  blockOrdinal: number;
+  /** 标记在块文本内的字符偏移。 */
+  markerOffset: number;
+  nodeId: string;
+  bodyVersionId: string;
+  fragmentId: string;
+}
+
+/**
+ * #31：从融合正文确定性解析 [来源n] 引用标记。n 必须在来源数组范围内，
+ * 超界的标记静默丢弃（不产生引用，也不报错）。偏移按 `deriveMessageBlocks`
+ * 的段落块计算：先按全文找 [来源n]，再把标记偏移归入所属块并转为块内偏移。
+ */
+export function parseFusionReferences(
+  content: string,
+  sources: readonly ResearchFusionSource[],
+): ResearchFusionReference[] {
+  if (sources.length === 0) return [];
+  const blocks = deriveMessageBlocks(content);
+  const markerPattern = /\[来源(\d+)\]/g;
+  const references: ResearchFusionReference[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = markerPattern.exec(content)) !== null) {
+    const sourceOrdinal = Number(match[1]);
+    const source = sources[sourceOrdinal - 1];
+    if (!source) continue;
+    const markerStart = match.index;
+    const block = blocks.find((candidate) => markerStart >= candidate.startOffset
+      && markerStart < candidate.startOffset + candidate.text.length);
+    if (!block) continue;
+    references.push({
+      sourceOrdinal,
+      blockOrdinal: block.ordinal,
+      markerOffset: markerStart - block.startOffset,
+      nodeId: source.nodeId,
+      bodyVersionId: source.bodyVersionId,
+      fragmentId: source.fragmentId,
+    });
+  }
+  return references;
 }

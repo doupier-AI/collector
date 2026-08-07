@@ -4,6 +4,8 @@ import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs
 import { dirname, join, relative } from "node:path";
 import {
   ACCEPTED_MIME_TYPES,
+  FUSION_COMPOSE_PROMPT_VERSION,
+  FUSION_COMPOSE_TOKEN_BUDGET,
   MAX_ARTIFACT_BYTES,
   MODEL_PURPOSES,
   evidenceGradeFor,
@@ -28,6 +30,8 @@ import {
   type RecentClusterSnapshotRecord,
   type ResearchGroundingScopeStatus,
   type ResearchGroundingSourceRecord,
+  type ResearchFusionSource,
+  type ResearchNodeRecord,
   type AiBudgetSettings,
   type AiUsageSummary,
   type ModelCallRecord,
@@ -136,6 +140,8 @@ export class CaptureService {
       this.store,
       this.termDetection,
       async () => this.options.similarityVerifier ?? this.gatewayForPurpose("research"),
+      undefined,
+      this.research,
     );
     this.termPreviews = new ResearchTermPreviewService(this.store, {
       research: this.research,
@@ -177,19 +183,61 @@ export class CaptureService {
     const termDetections: NonNullable<ResearchNodeView["termDetections"]> = {};
     const slices: NonNullable<ResearchNodeView["slices"]> = {};
     const bodyVersions: NonNullable<ResearchNodeView["bodyVersions"]> = {};
+    const fusionSources: NonNullable<ResearchNodeView["fusionSources"]> = {};
     for (const message of view.messages) {
       if (message.role !== "assistant" || message.status !== "completed") continue;
       termDetections[message.id] = this.termDetection.detect(message.id, message.content, { nodeDepth });
       slices[message.id] = this.store.listSlicesByMessage(message.id);
       bodyVersions[message.id] = await this.getOrCreateBodyArtifacts(nodeId, message, view.citations ?? []);
+      // #31：融合正文的消息按任务 fusionReferences 组装来源（去重、补标签）。
+      const task = view.tasks.find((candidate) => candidate.outputMessageId === message.id);
+      const references = task?.fusionReferences ?? [];
+      if (references.length > 0) {
+        const byNode = new Map<string, ResearchFusionSource>();
+        for (const reference of references) {
+          if (byNode.has(reference.nodeId)) continue;
+          const node = this.store.getResearchNode(reference.nodeId);
+          const label = node?.displayName?.trim()
+            ?? this.selectionLabelFor(node)
+            ?? this.firstUserMessageFor(reference.nodeId)
+            ?? `节点 ${reference.nodeId.slice(0, 8)}`;
+          byNode.set(reference.nodeId, {
+            nodeId: reference.nodeId,
+            bodyVersionId: reference.bodyVersionId,
+            fragmentId: reference.fragmentId,
+            label,
+          });
+        }
+        fusionSources[message.id] = [...byNode.values()];
+      }
     }
     return {
       ...view,
       termDetections,
       slices,
       bodyVersions,
+      fusionSources: Object.keys(fusionSources).length > 0 ? fusionSources : undefined,
       fusionProposals: this.fusionProposals.listForNode(nodeId, ["pending", "accepted"]),
     };
+  }
+
+  /** 来源节点标签回退：来源选区摘要（与节点树标签规则一致）。 */
+  private selectionLabelFor(node: ResearchNodeRecord | undefined): string | undefined {
+    if (!node?.originSelectionId) return undefined;
+    const selection = this.store.getResearchSelection(node.originSelectionId);
+    const text = selection?.text?.trim();
+    if (!text) return undefined;
+    const compressed = text.replace(/\s+/g, " ");
+    return compressed.length > 48 ? `${compressed.slice(0, 48)}…` : compressed;
+  }
+
+  /** 来源节点标签回退：首条用户消息摘要。 */
+  private firstUserMessageFor(nodeId: string): string | undefined {
+    const first = this.store.listResearchMessagesByNode(nodeId).find((message) => message.role === "user");
+    const content = first?.content?.trim();
+    if (!content) return undefined;
+    const compressed = content.replace(/\s+/g, " ");
+    return compressed.length > 48 ? `${compressed.slice(0, 48)}…` : compressed;
   }
 
   /**
@@ -456,6 +504,27 @@ export class CaptureService {
         return purposeGateway.deriveSliceAnnotations(input, {
           context: { workflowRunId: "", purpose: "research_slice_annotation", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
         });
+      },
+      // #31：确认式融合正文生成。独立提示词版本；来源切片 ID、片段 ID 与令牌预算
+      // 随 context 落入模型会话轨迹（attachModelGateway 已记 ModelCallRecord，验收 4）。
+      // request.fusion.sources 由 research.ts 组装（含逐字可回读的片段摘录），这里只做网关适配。
+      async composeFusion(request) {
+        const purposeGateway = await service.gatewayForPurpose("research");
+        if (!purposeGateway) throw new Error("AI model is not configured");
+        const sources = request.fusion.sources;
+        const sourceSliceIds = [...new Set(sources.flatMap((source) => source.sliceId ? [source.sliceId] : []))].sort();
+        const sourceFragmentIds = [...new Set(sources.map((source) => source.fragmentId))].sort();
+        return purposeGateway.composeFusion(
+          { sources: sources.map((source) => ({ nodeId: source.nodeId, title: source.label, excerpt: source.excerpt })), relationType: request.fusion.relationType },
+          { context: {
+            workflowRunId: request.taskId,
+            purpose: "fusion_compose",
+            promptVersion: FUSION_COMPOSE_PROMPT_VERSION,
+            ...(sourceSliceIds.length ? { sourceSliceIds } : {}),
+            ...(sourceFragmentIds.length ? { sourceFragmentIds } : {}),
+            tokenBudget: FUSION_COMPOSE_TOKEN_BUDGET,
+          } },
+        );
       },
     };
   }

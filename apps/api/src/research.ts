@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
+  FUSION_COMPOSE_PROMPT_VERSION,
   deriveBodyVersion,
   deriveFragmentsFromBlocks,
   deriveFragmentsFromSlices,
   deriveMessageBlocks,
   deriveMessageSlices,
+  parseFusionReferences,
   redactGroundingValue,
   sanitizeGroundingQueries,
   sanitizeGroundingUrl,
@@ -15,6 +17,7 @@ import {
   type DeepResearchMode,
   type ResearchBodyPlan,
   type ResearchCitationRecord,
+  type ResearchFusionSource,
   type ResearchSliceRecord,
   ResearchGroundingResult,
   ResearchGroundingScenario,
@@ -73,6 +76,8 @@ export interface ResearchGenerationRequest {
   parentChainContext?: ParentChainContextResult;
   /** 当前节点及其既有父链的有界语义切片上下文；与父链摘要独立预算。 */
   sliceContext?: import("@collector/capture-contracts").ResearchSliceContext;
+  /** #31：确认式融合生成计划；任务带 fusionPlan 时 provider 走 composeFusion。 */
+  fusionPlan?: { sources: ResearchFusionSource[]; relationType: import("@collector/capture-contracts").FusionRelationType };
 }
 
 export interface ResearchGenerationProvider {
@@ -86,6 +91,8 @@ export interface ResearchGenerationProvider {
   generateAgentGrounded?(request: ResearchGenerationRequest & { scenario: ResearchGroundingScenario }): Promise<{ content: string; slices?: ResearchSliceRecord[]; status: ResearchGroundingScopeStatus; queries: string[]; sources: Array<{ providerSourceId?: string; title: string; url?: string; snippet?: string; publishedAt?: string; locator?: string }>; citations: Array<{ sourceOrdinal: number; startOffset: number; endOffset: number; providerCitationId?: string }>; responseSummary?: Record<string, unknown>; errorMessage?: string }>;
   /** 生成自由化：自由写连续正文，不返回 JSON 切片结构。 */
   writeBody?(request: ResearchGenerationRequest): Promise<string>;
+  /** #31：融合节点正文生成；任务带 fusionPlan 时优先走本方法。来源材料含可回读的片段摘录。 */
+  composeFusion?(request: ResearchGenerationRequest & { fusion: { sources: Array<ResearchFusionSource & { excerpt: string }>; relationType: import("@collector/capture-contracts").FusionRelationType } }): Promise<string>;
   /** 真实模型逐字流式正文（方案 B）；缺省时退回 writeBody 原子写或 legacy generate 流式。 */
   writeBodyStream?(request: ResearchGenerationRequest & { resumeFrom?: string; onStreamDone?: (done: { finishReason?: string }) => void }): AsyncIterable<string>;
   /** plan-then-write 第一阶段：为长文生成有序大纲。 */
@@ -368,6 +375,7 @@ export class ResearchSessionService {
         ...(generation.deepResearch ? { deepResearch: generation.deepResearch } : {}),
         ...(generation.parentChainContext ? { parentChainContext: generation.parentChainContext } : {}),
         ...(generation.sliceContext ? { sliceContext: generation.sliceContext } : {}),
+        ...(generation.fusionPlan ? { fusionPlan: generation.fusionPlan } : {}),
       };
       let generatedCharacters = 0;
       try {
@@ -393,7 +401,11 @@ export class ResearchSessionService {
           await this.store.appendResearchTaskDelta(task.id, content);
         } else {
           if (generationRequest.allowWebSearch) await this.saveGroundingStatus(task, scenario, "grounding_unsupported");
-          if (provider.writeBody) {
+          if (generationRequest.fusionPlan && provider.composeFusion) {
+            // #31：确认式融合——由融合计划生成融合正文（原子），收尾走同一派生切片路径。
+            content = await this.composeFusionBody(task, provider, generationRequest);
+            await this.store.appendResearchTaskDelta(task.id, content);
+          } else if (provider.writeBody) {
             // 生成自由化：按预期长度自动选择单轮自由写或 plan-then-write 逐节扩写。
             // 真实逐字流式（方案 B）只用于单轮自由写；plan-then-write 仍按节增量落正文。
             const useLongForm = this.shouldPlanLongForm(generationRequest, provider);
@@ -529,6 +541,60 @@ export class ResearchSessionService {
     await this.store.replaceSlicesForMessage(task.outputMessageId, slices, task.id);
     await this.persistBodyArtifacts(task, nodeId, content, citations, slices);
     return slices;
+  }
+
+  /**
+   * #31：确认式融合正文生成。按融合计划从各来源的正文版本 + 语义片段组装
+   * 摘录（复用与上下文/扫描同一取数路径，逐字可回溯），调用 provider.composeFusion，
+   * 完成后确定性解析 [来源n] 引用并落库。失败抛错由 processTask 统一转
+   * failResearchTask（来源关系已先保存，可重试）。
+   */
+  private async composeFusionBody(
+    task: ResearchTaskRecord,
+    provider: ResearchGenerationProvider,
+    generationRequest: ResearchGenerationRequest,
+  ): Promise<string> {
+    const fusion = generationRequest.fusionPlan;
+    if (!fusion || !provider.composeFusion) throw new Error("Fusion plan is required for fusion body generation");
+    const sourceMaterials: Array<ResearchFusionSource & { excerpt: string }> = [];
+    for (const source of fusion.sources) {
+      const messages = this.store.listResearchMessagesByNode(source.nodeId)
+        .filter((message) => message.role === "assistant" && message.status === "completed");
+      const citations = this.store.listResearchCitationsForMessages(messages.map((message) => message.id));
+      let excerpt: string | undefined;
+      for (const message of messages) {
+        const slices = this.store.listSlicesByMessage(message.id);
+        const artifacts = getOrDeriveMessageBodyArtifacts(this.store, {
+          nodeId: source.nodeId,
+          message,
+          slices,
+          citations: citations.filter((citation) => citation.messageId === message.id),
+        });
+        const fragment = artifacts.fragments.find((entry) => entry.id === source.fragmentId);
+        if (!fragment) continue;
+        excerpt = tryResolveFragmentExcerpt(artifacts.version, fragment);
+        if (excerpt !== undefined) break;
+      }
+      if (excerpt === undefined) {
+        // 来源片段不可回溯（#43 诚实降级）：跳过该来源，由调用方决定是否仍可融合。
+        continue;
+      }
+      sourceMaterials.push({ ...source, excerpt });
+    }
+    if (sourceMaterials.length < 2) {
+      throw new Error("Fusion sources are not traceable at generation time");
+    }
+    const content = await provider.composeFusion({
+      ...generationRequest,
+      fusion: { sources: sourceMaterials, relationType: fusion.relationType },
+    });
+    const trimmed = content.trim();
+    if (!trimmed) throw new Error("Fusion provider returned an empty body");
+    const references = parseFusionReferences(trimmed, fusion.sources);
+    if (references.length > 0) {
+      await this.store.saveResearchTaskFusionReferences(task.id, references);
+    }
+    return trimmed;
   }
 
   /**
@@ -989,6 +1055,7 @@ export class ResearchSessionService {
     deepResearch?: DeepResearchContext;
     parentChainContext?: ParentChainContextResult;
     sliceContext?: ResearchSliceContext;
+    fusionPlan?: { sources: ResearchFusionSource[]; relationType: import("@collector/capture-contracts").FusionRelationType };
   } {
     const all = this.store.listResearchMessages(task.sessionId);
     const output = all.find((message) => message.id === task.outputMessageId);
@@ -1007,18 +1074,23 @@ export class ResearchSessionService {
     // 根节点及失效父链保持现有提示词，避免注入空的“父链上下文”占位。
     const parentChainContext = parentChain.ancestors.length > 0 ? parentChain : undefined;
     const latestUserMessage = [...messages].reverse().find((message) => message.role === "user");
-    const sliceContext = this.sliceContextFor(
-      task,
-      contextNodeId,
-      latestUserMessage?.content ?? "",
-      parentChain,
-      deepResearch,
-    );
+    // #31：融合任务的计划直接透传（融合正文按计划组装来源摘录），不注入父链/切片上下文。
+    const fusionPlan = task.fusionPlan;
+    const sliceContext = fusionPlan
+      ? undefined
+      : this.sliceContextFor(
+          task,
+          contextNodeId,
+          latestUserMessage?.content ?? "",
+          parentChain,
+          deepResearch,
+        );
     return {
       messages: latestUserMessage ? [latestUserMessage] : messages,
       ...(deepResearch ? { deepResearch } : {}),
       ...(parentChainContext ? { parentChainContext } : {}),
-      ...(sliceContext.items.length ? { sliceContext } : {}),
+      ...(sliceContext && sliceContext.items.length ? { sliceContext } : {}),
+      ...(fusionPlan ? { fusionPlan } : {}),
     };
   }
 
