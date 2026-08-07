@@ -41,6 +41,21 @@ async function openResearchMap(page: import("@playwright/test").Page): Promise<i
   return dialog;
 }
 
+/**
+ * 收起宽屏默认展开的两侧固定侧栏：全量运行时同一 harness 数据库会累积其他测试
+ * 创建的会话，「内容」抽屉的会话列表会污染节点页视口截图（单独运行不显现）。
+ * 基线聚焦正文视觉秩序，不依赖侧栏内容。
+ */
+async function closeSidebars(page: import("@playwright/test").Page): Promise<void> {
+  for (const label of ["内容", "标记"]) {
+    const trigger = page.getByRole("button", { name: label, exact: true });
+    if ((await trigger.getAttribute("aria-expanded")) === "true") {
+      await trigger.click();
+      await expect(trigger).toHaveAttribute("aria-expanded", "false");
+    }
+  }
+}
+
 test.describe("#44 视觉回归基线", () => {
   // 会话建立 + 生长链 + 融合定位需要超过默认 30s 时限
   test.setTimeout(120_000);
@@ -95,6 +110,8 @@ test.describe("#44 视觉回归基线", () => {
     freezeClock(page);
     await openSession(page);
     await expect(page.locator(".slice-card")).toHaveCount(3);
+    // 全量运行时侧栏会话列表会污染视口截图：收起两侧固定侧栏
+    await closeSidebars(page);
 
     // 常态：节点页视口截图——连续卡片、章节导航、来源线、输入区的整体视觉秩序
     await expect(page).toHaveScreenshot("node-reading-default", {
@@ -132,6 +149,7 @@ test.describe("#44 视觉回归基线", () => {
     // 进入根页展开依据列表并点击指向子节点的依据 → 深链定位子节点卡片
     await page.goto(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(rootNodeId)}`);
     await expect(page.locator(".fusion-proposal-notice")).toBeVisible({ timeout: 15_000 });
+    await closeSidebars(page);
     await page.locator(".fusion-proposal-notice__item summary").first().click();
     await expect(page.locator(".fusion-proposal-notice__source").filter({ visible: true })).toHaveCount(2, {
       timeout: 10_000,

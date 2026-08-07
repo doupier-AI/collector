@@ -556,7 +556,10 @@ export function trackBrowserIssues(page: Page): { issues: string[] } {
   page.on("pageerror", (error) => issues.push(String(error)));
   page.on("requestfailed", (request) => {
     const errorText = request.failure()?.errorText ?? "";
+    // 配对探测 401 与页面导航导致的中止（ERR_ABORTED，如 NodeChildList 查询选区时
+    // 跳转子节点）均属预期，过滤掉；其余原样收集。
     if (/Unauthorized|401/.test(errorText)) return;
+    if (/ERR_ABORTED/.test(errorText)) return;
     issues.push(`requestfailed: ${request.url()} ${errorText}`);
   });
   return { issues };
