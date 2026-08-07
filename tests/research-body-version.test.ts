@@ -70,13 +70,12 @@ test("deriveFragmentsFromBlocks yields deterministic provisional fragments with 
 
 test("deriveFragmentsFromSlices maps to formal fragments when slices tile the body", () => {
   const version = makeVersion();
-  const slices: ResearchSliceRecord[] = ["First paragraph.", "Second paragraph.", "Third paragraph."].map((text, i) => ({
+  const slices: ResearchSliceRecord[] = [0, 1, 2].map((i) => ({
     id: `slice:node-1:msg-1:${i}`,
     nodeId: "node-1",
     messageId: "msg-1",
     ordinal: i,
     title: `t${i}`,
-    content: text,
     normalizedConcepts: [],
     sourceRefs: [],
     isProvisional: false,
@@ -88,11 +87,12 @@ test("deriveFragmentsFromSlices maps to formal fragments when slices tile the bo
   assert.strictEqual(version.content.slice(frags[1].startOffset, frags[1].endOffset), "Second paragraph.");
 });
 
-test("deriveFragmentsFromSlices falls back to provisional blocks when slices do not tile", () => {
+test("deriveFragmentsFromSlices falls back to provisional blocks when slices do not tile the body", () => {
   const version = makeVersion();
+  // #43：对齐门为结构性（数量一致 + 全正式），不匹配时退化为按块临时片段，绝不伪造范围。
   const badSlices: ResearchSliceRecord[] = [{
     id: "slice:node-1:msg-1:0", nodeId: "node-1", messageId: "msg-1", ordinal: 0,
-    title: "x", content: "not the body", normalizedConcepts: [], sourceRefs: [], isProvisional: false, createdAt: NOW,
+    title: "x", normalizedConcepts: [], sourceRefs: [], isProvisional: false, createdAt: NOW,
   }];
   const frags = deriveFragmentsFromSlices(version, badSlices);
   assert.ok(frags.every((f) => f.isProvisional === true));

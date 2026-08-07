@@ -579,7 +579,6 @@ describe("#36 连续语义卡片与章节导航", () => {
       messageId: "m-out",
       ordinal: 0,
       title: "起点",
-      content: "第一段。",
       normalizedConcepts: [],
       sourceRefs: [],
       isProvisional: false,
@@ -594,9 +593,9 @@ describe("#36 连续语义卡片与章节导航", () => {
     assistant.content = "第一段。\n\n第二段。\n\n第三段。";
     view.slices = {
       [assistant.id]: [
-        makeSlice({ id: `slice:session-1:${assistant.id}:0`, messageId: assistant.id, ordinal: 0, title: "起点", content: "第一段。" }),
-        makeSlice({ id: `slice:session-1:${assistant.id}:1`, messageId: assistant.id, ordinal: 1, title: "推进", content: "第二段。" }),
-        makeSlice({ id: `slice:session-1:${assistant.id}:2`, messageId: assistant.id, ordinal: 2, title: "收束", content: "第三段。" }),
+        makeSlice({ id: `slice:session-1:${assistant.id}:0`, messageId: assistant.id, ordinal: 0, title: "起点" }),
+        makeSlice({ id: `slice:session-1:${assistant.id}:1`, messageId: assistant.id, ordinal: 1, title: "推进" }),
+        makeSlice({ id: `slice:session-1:${assistant.id}:2`, messageId: assistant.id, ordinal: 2, title: "收束" }),
       ],
     };
     return view;

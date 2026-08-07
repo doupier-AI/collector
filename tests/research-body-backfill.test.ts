@@ -25,11 +25,11 @@ function seedMessage(store: SqliteStore, messageId: string, content = CONTENT, r
 }
 
 function formalSlices(store: SqliteStore, messageId: string): ResearchSliceRecord[] {
-  const slices: ResearchSliceRecord[] = ["First paragraph.", "Second paragraph.", "Third paragraph."].map((text, i) => ({
+  const slices: ResearchSliceRecord[] = [0, 1, 2].map((i) => ({
     id: `slice:node-1:${messageId}:${i}`, nodeId: "node-1", messageId, ordinal: i,
-    title: `t${i}`, content: text, normalizedConcepts: [], sourceRefs: [], isProvisional: false, createdAt: NOW,
+    title: `t${i}`, normalizedConcepts: [], sourceRefs: [], isProvisional: false, createdAt: NOW,
   }));
-  void store.createSlices(slices);
+  void store.replaceSlicesForMessage(messageId, slices);
   return slices;
 }
 

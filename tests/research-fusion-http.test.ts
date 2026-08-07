@@ -47,10 +47,11 @@ async function createHarness() {
   const insert = db.prepare("INSERT INTO research_messages (id, session_id, node_id, branch_id, role, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
   for (const message of messages) insert.run(message.id, message.sessionId, message.nodeId!, null, message.role, message.status, message.createdAt, message.updatedAt, JSON.stringify(message));
   const slices: ResearchSliceRecord[] = [
-    { id: "slice:session-1:message-a:0", nodeId: session.id, messageId: "message-a", ordinal: 0, title: "西游记", content: messages[0].content, normalizedConcepts: ["孙悟空"], sourceRefs: [], isProvisional: false, createdAt: now },
-    { id: "slice:node-b:message-b:0", nodeId: "node-b", messageId: "message-b", ordinal: 0, title: "七龙珠", content: messages[1].content, normalizedConcepts: ["孙悟空"], sourceRefs: [], isProvisional: false, createdAt: now },
+    { id: "slice:session-1:message-a:0", nodeId: session.id, messageId: "message-a", ordinal: 0, title: "西游记", normalizedConcepts: ["孙悟空"], sourceRefs: [], isProvisional: false, createdAt: now },
+    { id: "slice:node-b:message-b:0", nodeId: "node-b", messageId: "message-b", ordinal: 0, title: "七龙珠", normalizedConcepts: ["孙悟空"], sourceRefs: [], isProvisional: false, createdAt: now },
   ];
-  await store.createSlices(slices);
+  await store.replaceSlicesForMessage("message-a", [slices[0]!]);
+  await store.replaceSlicesForMessage("message-b", [slices[1]!]);
   const server = createApiServer(service, auth);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();

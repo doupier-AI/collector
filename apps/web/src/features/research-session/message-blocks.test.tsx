@@ -209,7 +209,6 @@ function makeSlice(overrides: Partial<ResearchSliceRecord> = {}): ResearchSliceR
     messageId: "m-out",
     ordinal: 0,
     title: "段落 1",
-    content: "第一段。",
     normalizedConcepts: [],
     sourceRefs: [],
     isProvisional: false,
@@ -228,9 +227,9 @@ describe("#36 连续语义卡片", () => {
   it("每个正式切片一张卡片：h3 标题按 ordinal 顺序输出切片标题", async () => {
     const content = "第一段。\n\n第二段。\n\n第三段。";
     const slices = [
-      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点", content: "第一段。" }),
-      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "推进", content: "第二段。" }),
-      makeSlice({ id: "slice:session-1:m-out:2", ordinal: 2, title: "收束", content: "第三段。" }),
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点" }),
+      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "推进" }),
+      makeSlice({ id: "slice:session-1:m-out:2", ordinal: 2, title: "收束" }),
     ];
     renderNodePage({ getResearchNodeView: async () => viewWithSlices(content, slices) });
 
@@ -242,8 +241,8 @@ describe("#36 连续语义卡片", () => {
   it("卡片 region 的可访问名 = 标题（aria-labelledby）", async () => {
     const content = "第一段。\n\n第二段。";
     const slices = [
-      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点", content: "第一段。" }),
-      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "推进", content: "第二段。" }),
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点" }),
+      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "推进" }),
     ];
     renderNodePage({ getResearchNodeView: async () => viewWithSlices(content, slices) });
 
@@ -256,8 +255,8 @@ describe("#36 连续语义卡片", () => {
   it("生成自由化：空标题派生切片仍渲染卡片，改用 aria-label=正文摘要（无悬空 aria-labelledby）", async () => {
     const content = "第一段没有标题的正文。\n\n第二段也没有标题的正文。";
     const slices = [
-      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "", content: "第一段没有标题的正文。" }),
-      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "  ", content: "第二段也没有标题的正文。" }),
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "" }),
+      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "  " }),
     ];
     const { container } = renderNodePage({ getResearchNodeView: async () => viewWithSlices(content, slices) });
 
@@ -274,8 +273,8 @@ describe("#36 连续语义卡片", () => {
   it("防回归锁：标题是正文容器外的兄弟节点，data-block-text 的 textContent 不含标题", async () => {
     const content = "第一段。\n\n第二段。";
     const slices = [
-      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点", content: "第一段。" }),
-      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "推进", content: "第二段。" }),
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点" }),
+      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "推进" }),
     ];
     const { container } = renderNodePage({ getResearchNodeView: async () => viewWithSlices(content, slices) });
 
@@ -295,12 +294,12 @@ describe("#36 连续语义卡片", () => {
   });
 
   it("正文含节标题时：标题只渲染一次（提升正文标题），锚点正确，正文 textContent 仍含标题行", async () => {
-    // plan-then-write 形态：切片 content 首行即节标题，title 与之同源。
+    // plan-then-write 形态：节单元 content 首行即节标题，title 与之同源。
     const sectionContent = "## 背景与起源\n\n背景正文第一段。";
     const content = `${sectionContent}\n\n## 核心创新\n\n创新正文第一段。`;
     const slices = [
-      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "背景与起源", content: sectionContent }),
-      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "核心创新", content: "## 核心创新\n\n创新正文第一段。" }),
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "背景与起源" }),
+      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "核心创新" }),
     ];
     const { container } = renderNodePage({ getResearchNodeView: async () => viewWithSlices(content, slices) });
 
@@ -323,7 +322,7 @@ describe("#36 连续语义卡片", () => {
   it("正文无标题行、title 为事后补题时：独立 <h3> 在正文容器外，不重复、不混入偏移基准", async () => {
     const content = "第一段。\n\n第二段。";
     const slices = [
-      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点", content: "第一段。" }),
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点" }),
     ];
     const { container } = renderNodePage({ getResearchNodeView: async () => viewWithSlices(content, slices) });
 
@@ -340,8 +339,8 @@ describe("#36 连续语义卡片", () => {
   it("术语标记按块 ordinal 落在对应卡片正文，且不混入标题", async () => {
     const content = "REST 第一段。\n\nHTTP 第二段。";
     const slices = [
-      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点", content: "REST 第一段。" }),
-      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "推进", content: "HTTP 第二段。" }),
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点" }),
+      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "推进" }),
     ];
     const view = viewWithSlices(content, slices);
     view.termDetections = {
@@ -371,8 +370,8 @@ describe("#36 连续语义卡片", () => {
   it("传入 highlight 后 [data-selection-mark] 落在对应卡片正文内", async () => {
     const content = "第一段。\n\n需要高亮的第二段。";
     const slices = [
-      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点", content: "第一段。" }),
-      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "推进", content: "需要高亮的第二段。" }),
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点" }),
+      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "推进" }),
     ];
     const selection = makeSelection({
       id: "sel-1",
@@ -402,8 +401,8 @@ describe("#36 连续语义卡片", () => {
   it("降级：切片为空或全是临时切片时纯文本连续渲染，不渲染标题卡", async () => {
     const content = "无正式切片的段落一。\n\n无正式切片的段落二。";
     const provisionalOnly = [
-      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, isProvisional: true, content: "无正式切片的段落一。" }),
-      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, isProvisional: true, content: "无正式切片的段落二。" }),
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, isProvisional: true }),
+      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, isProvisional: true }),
     ];
     const { container } = renderNodePage({ getResearchNodeView: async () => viewWithSlices(content, provisionalOnly) });
 
@@ -416,8 +415,8 @@ describe("#36 连续语义卡片", () => {
   it("无装饰性边界元素", async () => {
     const content = "第一段。\n\n第二段。";
     const slices = [
-      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, content: "第一段。" }),
-      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, content: "第二段。" }),
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0 }),
+      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1 }),
     ];
     const { container } = renderNodePage({ getResearchNodeView: async () => viewWithSlices(content, slices) });
 

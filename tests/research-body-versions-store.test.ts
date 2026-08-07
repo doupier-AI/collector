@@ -34,9 +34,9 @@ async function seedNode(store: SqliteStore, messageId = "msg-1") {
 }
 
 function makeSlices(): ResearchSliceRecord[] {
-  return ["First paragraph.", "Second paragraph.", "Third paragraph."].map((text, i) => ({
+  return [0, 1, 2].map((i) => ({
     id: `slice:node-1:msg-1:${i}`, nodeId: "node-1", messageId: "msg-1", ordinal: i,
-    title: `t${i}`, content: text, normalizedConcepts: [], sourceRefs: [], isProvisional: false, createdAt: NOW,
+    title: `t${i}`, normalizedConcepts: [], sourceRefs: [], isProvisional: false, createdAt: NOW,
   }));
 }
 
@@ -89,16 +89,54 @@ test("createResearchBodyVersion is idempotent — same content yields single row
   assert.strictEqual(harness.store.listFragmentsByBodyVersion(version.id).length, 3);
 });
 
-test("body versions and fragments coexist with legacy slices for the same message", async (t) => {
+test("body versions and fragments coexist with slice skeletons for the same message", async (t) => {
   const harness = await createStore();
   t.after(() => harness.close());
   const message = await seedNode(harness.store);
-  await harness.store.createSlices(makeSlices());
+  await harness.store.replaceSlicesForMessage(message.id, makeSlices());
   const version = deriveBodyVersion({ messageId: message.id, nodeId: "node-1", content: message.content, origin: "generation", taskId: "task-1", createdAt: NOW });
   await harness.store.createResearchBodyVersion(version);
   await harness.store.createSemanticFragments(deriveFragmentsFromSlices(version, makeSlices()));
   assert.strictEqual(harness.store.listSlicesByMessage(message.id).length, 3);
   assert.strictEqual(harness.store.listFragmentsByMessage(message.id).length, 3);
+});
+
+test("v32 migration strips legacy content from slice record_json (idempotent, verifiable)", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "collector-v32-strip-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dbPath = join(root, "collector.sqlite");
+  let store = new SqliteStore(dbPath);
+  await store.init();
+  const message = await seedNode(store);
+  // 构造 v31 形态：record_json 含 content 的旧切片行，回滚 schema_migrations 到 31 后重开触发 v32。
+  const db = (store as unknown as { db(): import("node:sqlite").DatabaseSync }).db();
+  const legacySlices: ResearchSliceRecord[] = [0, 1].map((i) => ({
+    id: `slice:node-1:${message.id}:${i}`, nodeId: "node-1", messageId: message.id, ordinal: i,
+    title: `t${i}`, content: "旧正文副本。", normalizedConcepts: [], sourceRefs: [], isProvisional: false, createdAt: NOW,
+  }));
+  const insert = db.prepare(
+    "INSERT INTO research_slices (id, node_id, message_id, ordinal, is_provisional, created_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  );
+  for (const slice of legacySlices) {
+    insert.run(slice.id, slice.nodeId, slice.messageId, slice.ordinal, slice.isProvisional ? 1 : 0, slice.createdAt, JSON.stringify(slice));
+  }
+  db.prepare("DELETE FROM schema_migrations WHERE version = 32").run();
+  store.close();
+
+  store = new SqliteStore(dbPath);
+  await store.init();
+  const rows = (store as unknown as { db(): import("node:sqlite").DatabaseSync }).db()
+    .prepare("SELECT record_json FROM research_slices ORDER BY ordinal").all() as Array<{ record_json: string }>;
+  assert.strictEqual(rows.length, 2);
+  for (const row of rows) {
+    const record = JSON.parse(row.record_json) as Record<string, unknown>;
+    assert.ok(!("content" in record), "v32 must strip content from slice record_json");
+    assert.strictEqual(typeof record.title, "string", "non-content metadata survives");
+  }
+  const version = (store as unknown as { db(): import("node:sqlite").DatabaseSync }).db()
+    .prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { v: number };
+  assert.ok(version.v >= 32);
+  store.close();
 });
 
 test("body version persists across close and reopen (restart)", async (t) => {

@@ -742,6 +742,9 @@ export interface MessageContentBlock {
  * 标题块（见 splitBlockHeading）并入下一正文块；标题提升为 title、其后正文为 content。
  * 只描述组合关系，绝不复制/改写正文——content 恒等于被合并块文本用 "\n\n" 原样拼接，
  * 选区锚点与片段偏移仍以未改动的 deriveMessageBlocks 段落块为基线。
+ *
+ * #43：本结构是**瞬态派生结构**（卡片正文与片段范围的确定性来源），不是持久化契约——
+ * 切片不再保存正文副本，正文唯一事实源是消息正文与正文版本。
  */
 export interface MessageSectionUnit {
   /** 该节第一个块（含标题块）的 ordinal，即节起始块下标。 */
@@ -1216,11 +1219,11 @@ export interface ResearchNodeView {
   citations?: ResearchCitationRecord[];
   attachments?: ResearchAttachmentRecord[];
   importTasks?: ResearchImportTaskRecord[];
-  /** E1：按消息 ID 返回切片列表；缺失时客户端按原消息块渲染。 */
+  /** E1：按消息 ID 返回切片列表（#43 起为卡片骨架，不含正文副本；正文由客户端从消息正文派生）；缺失时客户端按原消息块渲染。 */
   slices?: Record<string, ResearchSliceRecord[]>;
   /** F1：该节点相关的融合提议列表；缺失时客户端不呈现弱提示。 */
   fusionProposals?: ResearchFusionProposalRecord[];
-  /** #35：按消息 ID 返回正文版本；可选字段，缺失时前端按旧切片/消息渲染。 */
+  /** #35：按消息 ID 返回正文版本；可选字段，缺失时前端按消息正文渲染。 */
   bodyVersions?: Record<string, ResearchBodyVersionRecord>;
 }
 
@@ -1907,12 +1910,14 @@ export interface ApiError {
 // ── Semantic Slices (E1 / E2) ─────────────────────────────────────
 
 /**
- * 语义切片记录。一条助手消息可被切分为多个语义切片，每个切片包含连贯正文、
- * 归一化概念与片内来源引用。切片是消息的结构化视图，不替代消息原文。
+ * 语义切片记录（#43 收缩后为「卡片骨架 + 派生元数据」）。一条助手消息可被切分为
+ * 多个语义切片，每片携带标题、归一化概念与片内来源引用。切片**不保存正文副本**：
+ * 正文是唯一事实源，经正文版本（`ResearchBodyVersionRecord`）与语义片段
+ * （`ResearchSemanticFragmentRecord`）或消息正文确定性派生回读。
  *
  * - id：稳定唯一标识，格式 `slice:{nodeId}:{messageId}:{ordinal}`；
  * - ordinal：从 0 连续编号，同一消息内单调递增；
- * - isProvisional：true 表示由确定性规则从消息块边界派生的临时切片，
+ * - isProvisional：true 表示由确定性规则从消息块边界派生的临时切片（历史兼容读取），
  *   false 表示由 AI 在回答生成阶段产生的正式切片。
  */
 export interface ResearchSliceRecord {
@@ -1921,7 +1926,6 @@ export interface ResearchSliceRecord {
   messageId: string;
   ordinal: number;
   title: string;
-  content: string;
   normalizedConcepts: string[];
   sourceRefs: ResearchCitationRecord[];
   isProvisional: boolean;
@@ -1966,9 +1970,8 @@ export const RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS = 160;
 
 /**
  * 校验确定性派生切片序列的结构合法性（生成自由化后的权威切片）。
- * 与 `validateSliceSchema` 的唯一差异：标题允许为空串（抽取失败或该块无标题时，
- * 前端按正文摘要降级）。其余不变量（稳定 ID、ordinal 严格递增、content 非空、
- * 概念/来源引用结构）与正式切片一致。
+ * 其余不变量（稳定 ID、ordinal 严格递增、标题/概念/来源引用结构）与正式切片一致。
+ * #43 起切片不再携带 content 字段（正文经正文版本与片段派生回读）。
  *
  * 校验失败时抛错；通过时返回 void。
  */
@@ -1985,7 +1988,6 @@ export function validateDerivedSlices(slices: ResearchSliceRecord[], nodeId: str
     if (slice.ordinal <= previousOrdinal) throw new Error(`Slice ordinals must be strictly increasing; got ${slice.ordinal} after ${previousOrdinal}`);
     previousOrdinal = slice.ordinal;
     if (typeof slice.title !== "string") throw new Error(`Slice ${slice.ordinal} title must be a string`);
-    if (typeof slice.content !== "string" || !slice.content.trim()) throw new Error(`Slice ${slice.ordinal} content must be a non-empty string`);
     if (!Array.isArray(slice.normalizedConcepts) || slice.normalizedConcepts.some((concept) => typeof concept !== "string" || !concept.trim())) {
       throw new Error(`Slice ${slice.ordinal} normalizedConcepts must be an array of non-empty strings`);
     }
@@ -1995,79 +1997,6 @@ export function validateDerivedSlices(slices: ResearchSliceRecord[], nodeId: str
     if (typeof slice.isProvisional !== "boolean") throw new Error(`Slice ${slice.ordinal} isProvisional must be a boolean`);
     if (typeof slice.createdAt !== "string" || Number.isNaN(Date.parse(slice.createdAt))) throw new Error(`Slice ${slice.ordinal} createdAt must be an ISO date`);
   }
-}
-
-/**
- * 校验已持久化切片序列的结构合法性（纯函数，契约层）：
- * 1. ID、节点和消息归属稳定；
- * 2. ordinal 严格递增（节点范围内，不一定从 0 起始）；
- * 3. 标题、正文、概念和来源引用字段具备安全结构。
- *
- * 校验失败时抛错；通过时返回 void。
- */
-export function validateSliceSchema(slices: ResearchSliceRecord[], nodeId: string, messageId: string): void {
-  if (!Array.isArray(slices)) throw new Error("Slices must be an array");
-  let previousOrdinal = -1;
-  for (const slice of slices) {
-    if (!slice || typeof slice !== "object" || Array.isArray(slice)) throw new Error("Slice must be an object");
-    if (slice.nodeId !== nodeId) throw new Error(`Slice nodeId must be ${nodeId}`);
-    if (slice.messageId !== messageId) throw new Error(`Slice messageId must be ${messageId}`);
-    if (!Number.isSafeInteger(slice.ordinal) || slice.ordinal < 0) throw new Error(`Slice ordinal must be a non-negative integer, got ${slice.ordinal}`);
-    const expectedId = `slice:${nodeId}:${messageId}:${slice.ordinal}`;
-    if (slice.id !== expectedId) throw new Error(`Slice id must be ${expectedId}, got ${slice.id}`);
-    if (slice.ordinal <= previousOrdinal) throw new Error(`Slice ordinals must be strictly increasing; got ${slice.ordinal} after ${previousOrdinal}`);
-    previousOrdinal = slice.ordinal;
-    if (typeof slice.title !== "string" || !slice.title.trim()) throw new Error(`Slice ${slice.ordinal} title must be a non-empty string`);
-    if (typeof slice.content !== "string" || !slice.content.trim()) throw new Error(`Slice ${slice.ordinal} content must be a non-empty string`);
-    if (!Array.isArray(slice.normalizedConcepts) || slice.normalizedConcepts.some((concept) => typeof concept !== "string" || !concept.trim())) {
-      throw new Error(`Slice ${slice.ordinal} normalizedConcepts must be an array of non-empty strings`);
-    }
-    if (!Array.isArray(slice.sourceRefs) || slice.sourceRefs.some((ref) => !ref || typeof ref !== "object" || ref.messageId !== messageId)) {
-      throw new Error(`Slice ${slice.ordinal} sourceRefs must reference this message`);
-    }
-    if (typeof slice.isProvisional !== "boolean") throw new Error(`Slice ${slice.ordinal} isProvisional must be a boolean`);
-    if (typeof slice.createdAt !== "string" || Number.isNaN(Date.parse(slice.createdAt))) throw new Error(`Slice ${slice.ordinal} createdAt must be an ISO date`);
-  }
-}
-
-/**
- * 确定性临时切片派生（纯函数）：复用 deriveMessageBlocks() 的段落边界，
- * 每个段落块生成一个临时切片。两次调用结果完全一致（幂等），不修改源文本，
- * 不依赖 AI，不入库（由服务层决定是否持久化）。
- *
- * ordinalOffset 为该节点已有切片的最大 ordinal + 1（无切片时为 0），
- * 确保节点范围内 ordinal 连续且唯一。
- *
- * 切片标题由段落块序号确定性派生（"段落 1"、"段落 2"……）；
- * 概念与引用均为空数组（临时切片不附加语义标注）。
- */
-export function deriveProvisionalSlices(
-  nodeId: string,
-  messageId: string,
-  messageContent: string,
-  ordinalOffset: number = 0,
-  citations: ResearchCitationRecord[] = [],
-  createdAt?: string,
-): ResearchSliceRecord[] {
-  const blocks = deriveMessageBlocks(messageContent);
-  if (blocks.length === 0) return [];
-  const timestamp = createdAt ?? new Date().toISOString();
-  return blocks.map((block, index) => {
-    const ordinal = ordinalOffset + index;
-    const sliceCitations = citations.filter((citation) => citation.blockOrdinal === block.ordinal);
-    return {
-      id: `slice:${nodeId}:${messageId}:${ordinal}`,
-      nodeId,
-      messageId,
-      ordinal,
-      title: `段落 ${block.ordinal + 1}`,
-      content: block.text,
-      normalizedConcepts: [],
-      sourceRefs: sliceCitations,
-      isProvisional: true,
-      createdAt: timestamp,
-    };
-  });
 }
 
 /**
@@ -2081,8 +2010,8 @@ export interface ResearchSliceAnnotation {
 
 /**
  * 确定性派生切片（生成自由化后的唯一切片来源）。正文是唯一事实源：
- * 按 `deriveMessageBlocks` 的段落边界逐块派生一个切片，content 恒等于块文本，
- * 因此派生切片不复制正文之外的任何内容，也不扰动选区锚点偏移。
+ * 按 `deriveMessageBlocks` 的段落边界逐块派生一个切片，**不复制正文副本**——
+ * 正文经正文版本与语义片段派生回读（#43 收缩），切片只携带定位与派生元数据。
  *
  * - 两次调用结果完全一致（幂等），不修改源文本，不依赖 AI，不入库（由服务层决定持久化）。
  * - ordinalOffset 为该节点已有切片的最大 ordinal + 1（无切片时为 0），保证节点范围内 ordinal 连续唯一。
@@ -2123,7 +2052,6 @@ export function deriveMessageSlices(
       messageId,
       ordinal,
       title,
-      content: unit.content,
       normalizedConcepts,
       sourceRefs: sliceCitations,
       isProvisional: false,
@@ -2293,8 +2221,12 @@ function makeFragment(
 
 /**
  * 从已校验的正式切片派生正式片段。写库时 deriveMessageSlices 已按节派生（标题块并入正文），
- * 故此处复用同一 composeSectionUnits 组合，逐节校验切片正文并映射到节范围。若切片与节
- * 不一致（防御性回退，如旧数据），退化为按块派生的临时片段，绝不伪造范围。
+ * 故此处复用同一 composeSectionUnits 组合，按节单元映射到块范围。
+ *
+ * #43 收缩后切片不再携带正文副本，对齐门从"逐字内容相等"改为结构性门：
+ * 切片与节单元同源于正文的确定性派生，故数量一致（且无旧 provisional 行）即视为同源对齐；
+ * 片段范围始终来自正文版本的块/节派生，摘录永远是正文版本的精确子串，绝不伪造范围。
+ * 对齐门失败（旧数据或数量不一致）时退化为按块派生的临时片段。
  */
 export function deriveFragmentsFromSlices(
   version: ResearchBodyVersionRecord,
@@ -2305,8 +2237,8 @@ export function deriveFragmentsFromSlices(
   const units = composeSectionUnits(blocks);
   const usable =
     slices.length > 0 &&
-    slices.length === units.length &&
-    slices.every((s, i) => normalizeBodyContent(s.content) === units[i]?.content);
+    slices.every((s) => !s.isProvisional) &&
+    slices.length === units.length;
   if (!usable) return deriveFragmentsFromBlocks(version, citations);
   return slices.map((slice, index) => {
     const unit = units[index]!;
@@ -2579,7 +2511,8 @@ export type ResearchFusionProposalDecision = Exclude<ResearchFusionProposalStatu
  * #39 起每条来源至少携带原始节点（`nodeId`）、正文版本（`bodyVersionId`）与稳定片段
  * 标识（`fragmentId`），摘录可经 `resolveFragmentExcerpt` 回读到正确原文；需要精确
  * 说明时附带对应切片（`sliceId`）或触发术语（`termText`）。历史旧切片产生的来源可
- * 由服务层兼容映射补齐正文版本与片段引用。
+ * 由服务层兼容映射补齐正文版本与片段引用（#43 起为序数对齐映射：切片与片段同源于
+ * 正文的确定性派生，按消息内数组下标对齐，不再做正文内容相等匹配）。
  */
 export interface FusionProposalTriggerSource {
   /** 触发节点 ID。 */

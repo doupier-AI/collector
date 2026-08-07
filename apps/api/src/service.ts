@@ -6,7 +6,6 @@ import {
   ACCEPTED_MIME_TYPES,
   MAX_ARTIFACT_BYTES,
   MODEL_PURPOSES,
-  deriveProvisionalSlices,
   evidenceGradeFor,
   validateCaptureInput,
   type AiConfigurationView,
@@ -170,7 +169,7 @@ export class CaptureService {
   /**
    * 节点页 HTTP 视图：在已有节点消息数据上附加 H3b 术语检测结果与 E1 切片。
    * 检测失败由 TermDetectionService 降级为空数组，不影响原消息返回。
-   * 切片首次访问时惰性派生临时切片并持久化，幂等；已存在切片直接返回。
+   * #43 起切片只读（卡片骨架），不再惰性派生临时切片——正式生成路径已写入。
    */
   async getResearchNodeView(nodeId: string): Promise<ResearchNodeView> {
     const view = this.nodeGrowth.getNodeView(nodeId);
@@ -181,7 +180,7 @@ export class CaptureService {
     for (const message of view.messages) {
       if (message.role !== "assistant" || message.status !== "completed") continue;
       termDetections[message.id] = this.termDetection.detect(message.id, message.content, { nodeDepth });
-      slices[message.id] = await this.getOrCreateSlices(nodeId, message.id, message.content, view.citations ?? []);
+      slices[message.id] = this.store.listSlicesByMessage(message.id);
       bodyVersions[message.id] = await this.getOrCreateBodyArtifacts(nodeId, message, view.citations ?? []);
     }
     return {
@@ -191,28 +190,6 @@ export class CaptureService {
       bodyVersions,
       fusionProposals: this.fusionProposals.listForNode(nodeId, ["pending", "accepted"]),
     };
-  }
-
-  /**
-   * 惰性切片获取或创建（E1）：节点消息首次访问时若无切片，按 deriveMessageBlocks()
-   * 边界确定性派生临时切片并持久化；已存在切片直接返回。两次调用结果一致（幂等）。
-   */
-  private async getOrCreateSlices(
-    nodeId: string,
-    messageId: string,
-    messageContent: string,
-    citations: import("@collector/capture-contracts").ResearchCitationRecord[],
-  ): Promise<ResearchSliceRecord[]> {
-    const existing = this.store.listSlicesByMessage(messageId);
-    if (existing.length > 0) return existing;
-    // 查询节点已有切片的最大 ordinal，作为本次派生偏移量
-    const nodeSlices = this.store.listSlicesByNode(nodeId);
-    const maxOrdinal = nodeSlices.length > 0 ? Math.max(...nodeSlices.map((s) => s.ordinal)) : -1;
-    const provisional = deriveProvisionalSlices(nodeId, messageId, messageContent, maxOrdinal + 1, citations);
-    if (provisional.length > 0) {
-      await this.store.createSlices(provisional);
-    }
-    return provisional;
   }
 
   /**

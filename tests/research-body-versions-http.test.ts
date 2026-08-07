@@ -28,11 +28,11 @@ async function createHarness() {
   const message: ResearchMessageRecord = { id: "msg-1", sessionId: "session-1", nodeId: "node-1", role: "assistant", content: CONTENT, status: "completed", createdAt: NOW, updatedAt: NOW };
   db.prepare("INSERT INTO research_messages (id, session_id, node_id, branch_id, role, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
     .run(message.id, message.sessionId, message.nodeId!, null, message.role, message.status, message.createdAt, message.updatedAt, JSON.stringify(message));
-  const slices: ResearchSliceRecord[] = ["First paragraph.", "Second paragraph.", "Third paragraph."].map((text, i) => ({
+  const slices: ResearchSliceRecord[] = [0, 1, 2].map((i) => ({
     id: `slice:node-1:msg-1:${i}`, nodeId: "node-1", messageId: "msg-1", ordinal: i,
-    title: `t${i}`, content: text, normalizedConcepts: [], sourceRefs: [], isProvisional: false, createdAt: NOW,
+    title: `t${i}`, normalizedConcepts: [], sourceRefs: [], isProvisional: false, createdAt: NOW,
   }));
-  await store.createSlices(slices);
+  await store.replaceSlicesForMessage("msg-1", slices);
   const server = createApiServer(service, auth);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();

@@ -22,7 +22,6 @@ function slice(overrides: Partial<ResearchSliceRecord> = {}): ResearchSliceRecor
     messageId: "message-a",
     ordinal: 0,
     title: "本地上下文",
-    content: "这是与当前问题相关的本地研究材料。",
     normalizedConcepts: ["本地研究"],
     sourceRefs: [],
     isProvisional: false,
@@ -72,7 +71,6 @@ describe("E3 fragment-backed research context", () => {
         nodeId: "node-parent",
         messageId: "message-p",
         title: "父节点材料",
-        content: "与问题无关的历史内容。",
         normalizedConcepts: [],
       })],
       { parentDistance: 1, isCurrentNode: false },
@@ -102,7 +100,7 @@ describe("E3 fragment-backed research context", () => {
   });
 
   it("skips a complete fragment that does not fit instead of truncating it", () => {
-    const large = candidatesFor("完整正文".repeat(100), [slice({ content: "完整正文".repeat(100) })]);
+    const large = candidatesFor("完整正文".repeat(100), []);
     const complete = buildResearchSliceContext(large, "");
     const tokenBudget = estimateResearchSliceContextItemTokens(complete.items[0]!) - 1;
     const context = buildResearchSliceContext(large, "完整正文", { tokenBudget });
@@ -121,8 +119,8 @@ describe("E3 fragment-backed research context", () => {
   });
 
   it("assigns unique fragment identities across multiple messages", () => {
-    const first = candidatesFor("第一条旧回答。", [slice({ id: "slice:node-current:message-a:0", messageId: "message-a", content: "第一条旧回答。" })]);
-    const second = candidatesFor("第二条旧回答。", [slice({ id: "slice:node-current:message-b:0", messageId: "message-b", content: "第二条旧回答。" })]);
+    const first = candidatesFor("第一条旧回答。", [slice({ id: "slice:node-current:message-a:0", messageId: "message-a" })]);
+    const second = candidatesFor("第二条旧回答。", [slice({ id: "slice:node-current:message-b:0", messageId: "message-b" })]);
     const context = buildResearchSliceContext([...first, ...second], "旧回答");
     assert.equal(new Set(context.items.map((item) => item.fragmentId)).size, context.items.length);
   });

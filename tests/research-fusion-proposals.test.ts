@@ -54,11 +54,13 @@ async function createHarness() {
     insertMessage.run(message.id, message.sessionId, message.nodeId!, null, message.role, message.status, message.createdAt, message.updatedAt, JSON.stringify(message));
   }
   const slices: ResearchSliceRecord[] = [
-    { id: "slice:node-a:message-a:0", nodeId: "node-a", messageId: "message-a", ordinal: 0, title: "西游记孙悟空", content: messages[0].content, normalizedConcepts: ["孙悟空"], sourceRefs: [], isProvisional: false, createdAt: now },
-    { id: "slice:node-b:message-b:0", nodeId: "node-b", messageId: "message-b", ordinal: 0, title: "七龙珠孙悟空", content: messages[1].content, normalizedConcepts: ["孙悟空"], sourceRefs: [], isProvisional: false, createdAt: now },
-    { id: "slice:node-c:message-c:0", nodeId: "node-c", messageId: "message-c", ordinal: 0, title: "天文", content: messages[2].content, normalizedConcepts: ["天文观测"], sourceRefs: [], isProvisional: false, createdAt: now },
+    { id: "slice:node-a:message-a:0", nodeId: "node-a", messageId: "message-a", ordinal: 0, title: "西游记孙悟空", normalizedConcepts: ["孙悟空"], sourceRefs: [], isProvisional: false, createdAt: now },
+    { id: "slice:node-b:message-b:0", nodeId: "node-b", messageId: "message-b", ordinal: 0, title: "七龙珠孙悟空", normalizedConcepts: ["孙悟空"], sourceRefs: [], isProvisional: false, createdAt: now },
+    { id: "slice:node-c:message-c:0", nodeId: "node-c", messageId: "message-c", ordinal: 0, title: "天文", normalizedConcepts: ["天文观测"], sourceRefs: [], isProvisional: false, createdAt: now },
   ];
-  await store.createSlices(slices);
+  await store.replaceSlicesForMessage("message-a", [slices[0]!]);
+  await store.replaceSlicesForMessage("message-b", [slices[1]!]);
+  await store.replaceSlicesForMessage("message-c", [slices[2]!]);
   return {
     store,
     now,
@@ -112,8 +114,8 @@ test("empty normalized concepts deterministically fall back to term and content-
     { id: "message-b", sessionId: "session-1", nodeId: "node-b", role: "assistant", content: "REST API 也用于本地服务访问，并支持研究材料的稳定接口。", status: "completed", createdAt: now, updatedAt: now },
   ];
   const emptySlices: ResearchSliceRecord[] = [
-    { id: "slice:node-a:message-a:0", nodeId: "node-a", messageId: "message-a", ordinal: 0, title: "A", content: messages[0].content, normalizedConcepts: [], sourceRefs: [], isProvisional: true, createdAt: now },
-    { id: "slice:node-b:message-b:0", nodeId: "node-b", messageId: "message-b", ordinal: 0, title: "B", content: messages[1].content, normalizedConcepts: [], sourceRefs: [], isProvisional: true, createdAt: now },
+    { id: "slice:node-a:message-a:0", nodeId: "node-a", messageId: "message-a", ordinal: 0, title: "A", normalizedConcepts: [], sourceRefs: [], isProvisional: true, createdAt: now },
+    { id: "slice:node-b:message-b:0", nodeId: "node-b", messageId: "message-b", ordinal: 0, title: "B", normalizedConcepts: [], sourceRefs: [], isProvisional: true, createdAt: now },
   ];
   const indexed = nodes.map((node, index) => indexNodeSimilaritySignals(node, [emptySlices[index]], [messages[index]], new TermDetectionService()));
   const candidates = buildSimilarityCandidates("node-a", indexed);
@@ -139,12 +141,12 @@ test("fragment-level concept priority still falls back for concept-less units", 
   ];
   const slicesByNode = [
     [
-      { id: "slice:node-a:message-a:0", nodeId: "node-a", messageId: "message-a", ordinal: 0, title: "Alpha", content: "Alpha 概念。", normalizedConcepts: ["Alpha"], sourceRefs: [], isProvisional: false, createdAt: now },
-      { id: "slice:node-a:message-a:1", nodeId: "node-a", messageId: "message-a", ordinal: 1, title: "接口", content: secondA, normalizedConcepts: [], sourceRefs: [], isProvisional: false, createdAt: now },
+      { id: "slice:node-a:message-a:0", nodeId: "node-a", messageId: "message-a", ordinal: 0, title: "Alpha", normalizedConcepts: ["Alpha"], sourceRefs: [], isProvisional: false, createdAt: now },
+      { id: "slice:node-a:message-a:1", nodeId: "node-a", messageId: "message-a", ordinal: 1, title: "接口", normalizedConcepts: [], sourceRefs: [], isProvisional: false, createdAt: now },
     ],
     [
-      { id: "slice:node-b:message-b:0", nodeId: "node-b", messageId: "message-b", ordinal: 0, title: "Beta", content: "Beta 概念。", normalizedConcepts: ["Beta"], sourceRefs: [], isProvisional: false, createdAt: now },
-      { id: "slice:node-b:message-b:1", nodeId: "node-b", messageId: "message-b", ordinal: 1, title: "接口", content: secondB, normalizedConcepts: [], sourceRefs: [], isProvisional: false, createdAt: now },
+      { id: "slice:node-b:message-b:0", nodeId: "node-b", messageId: "message-b", ordinal: 0, title: "Beta", normalizedConcepts: ["Beta"], sourceRefs: [], isProvisional: false, createdAt: now },
+      { id: "slice:node-b:message-b:1", nodeId: "node-b", messageId: "message-b", ordinal: 1, title: "接口", normalizedConcepts: [], sourceRefs: [], isProvisional: false, createdAt: now },
     ],
   ] satisfies ResearchSliceRecord[][];
   assert.ok(secondA.length >= MIN_SIMILARITY_FALLBACK_UNIT_CHARACTERS);
@@ -170,8 +172,8 @@ test("isolated short units without concepts never seed fallback candidates", () 
 
   // 显式归一化概念是一级信号，不受孤立短句门槛限制。
   const slicesWithConcepts: ResearchSliceRecord[] = [
-    { id: "slice:node-a:message-a:0", nodeId: "node-a", messageId: "message-a", ordinal: 0, title: "", content: "共享词。", normalizedConcepts: ["共享概念"], sourceRefs: [], isProvisional: false, createdAt: now },
-    { id: "slice:node-b:message-b:0", nodeId: "node-b", messageId: "message-b", ordinal: 0, title: "", content: "共享词。", normalizedConcepts: ["共享概念"], sourceRefs: [], isProvisional: false, createdAt: now },
+    { id: "slice:node-a:message-a:0", nodeId: "node-a", messageId: "message-a", ordinal: 0, title: "", normalizedConcepts: ["共享概念"], sourceRefs: [], isProvisional: false, createdAt: now },
+    { id: "slice:node-b:message-b:0", nodeId: "node-b", messageId: "message-b", ordinal: 0, title: "", normalizedConcepts: ["共享概念"], sourceRefs: [], isProvisional: false, createdAt: now },
   ];
   const conceptIndexed = nodes.map((node, index) =>
     indexNodeSimilaritySignals(node, [slicesWithConcepts[index]], [messages[index]], new TermDetectionService()));
@@ -310,18 +312,19 @@ test("legacy slice-only trigger sources gain fragment references through compat 
   assert.equal(calls, 0, "compat mapping must not rescan or call the model");
   for (const source of listed[0].triggerSources) {
     assert.ok(source.bodyVersionId && source.fragmentId, "legacy trigger sources are mapped to stable fragment references");
-    // 兼容映射读取路径不落库；用同一确定性派生验证引用可回读原文。
+    // 兼容映射读取路径不落库；#43 后为序数对齐门：片段 ordinal 即切片在消息数组中的下标。
     const slice = harness.slices.find((entry) => entry.id === source.sliceId)!;
     const message = harness.messages.find((entry) => entry.id === slice.messageId)!;
+    const messageSlices = harness.slices.filter((entry) => entry.messageId === message.id);
     const { version, fragments } = deriveMessageBodyArtifacts({
       nodeId: source.nodeId,
       message,
-      slices: harness.slices.filter((entry) => entry.messageId === message.id),
+      slices: messageSlices,
     });
     assert.equal(version.id, source.bodyVersionId);
-    const fragment = fragments.find((entry) => entry.id === source.fragmentId);
-    assert.ok(fragment, "mapped fragment id belongs to the deterministic derivation");
-    assert.equal(resolveFragmentExcerpt(version, fragment!), slice.content, "mapped reference reads back the original text");
+    const index = messageSlices.findIndex((entry) => entry.id === slice.id);
+    assert.equal(fragments[index]?.id, source.fragmentId, "mapped fragment id aligns by ordinal");
+    assert.equal(fragments.length, messageSlices.length, "alignment gate holds (fragments and slices derive from the same body)");
   }
 
   // 决策路径同样返回带引用的记录，且既有状态与冷却语义不回退。

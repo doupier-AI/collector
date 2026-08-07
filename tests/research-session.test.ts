@@ -7,6 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ResearchGenerationProvider } from "@collector/api";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer } from "@collector/api";
+import { composeSectionUnits, deriveMessageBlocks } from "@collector/capture-contracts";
 
 const deterministicProvider: ResearchGenerationProvider = {
   provider: "deterministic-fake",
@@ -338,7 +339,11 @@ test("free body generation persists derived non-provisional slices and records s
     { title: "本地控制", isProvisional: false },
     { title: "可恢复任务", isProvisional: false },
   ]);
-  assert.equal(harness.store.getResearchMessage(accepted.outputMessage.id)?.content, slices.map((slice) => slice.content).join("\n\n"));
+  // #43：切片不再携带正文副本；"拼接等于正文"不变量移到派生层（composeSectionUnits）。
+  assert.equal(
+    harness.store.getResearchMessage(accepted.outputMessage.id)?.content,
+    composeSectionUnits(deriveMessageBlocks(harness.store.getResearchMessage(accepted.outputMessage.id)?.content ?? "")).map((unit) => unit.content).join("\n\n"),
+  );
 
   const nodeResponse = await fetch(`${harness.base}/v1/research-nodes/${session.id}`, { headers: authHeaders(harness.token) });
   assert.equal(nodeResponse.status, 200);

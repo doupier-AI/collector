@@ -373,12 +373,10 @@ export interface CollectorStore
   listResearchGroundingRuns(taskId: string): ResearchGroundingRunRecord[];
   listResearchGroundingSources(runId: string): ResearchGroundingSourceRecord[];
   listResearchCitationsForMessages(messageIds: string[]): ResearchCitationRecord[];
-  /** E1/E2：切片 CRUD。createSlices 批量插入（幂等，冲突忽略）；replaceSlicesForMessage 原子替换单条消息的临时或旧切片。 */
-  createSlices(slices: ResearchSliceRecord[]): Promise<void>;
+  /** E2：切片写入与读取。replaceSlicesForMessage 原子替换单条消息的切片（#43 起为卡片骨架，不含正文副本）。 */
   replaceSlicesForMessage(messageId: string, slices: ResearchSliceRecord[], taskId?: string): Promise<void>;
   listSlicesByNode(nodeId: string): ResearchSliceRecord[];
   listSlicesByMessage(messageId: string): ResearchSliceRecord[];
-  getSliceById(id: string): ResearchSliceRecord | undefined;
   /** #35：正文版本与语义片段 CRUD（幂等；片段只存范围，不存内容副本）。 */
   createResearchBodyVersion(version: ResearchBodyVersionRecord): Promise<void>;
   createSemanticFragments(fragments: ResearchSemanticFragmentRecord[]): Promise<void>;
@@ -2165,19 +2163,6 @@ export class SqliteStore implements CollectorStore {
 
   // ── Semantic Slices (E1) ──────────────────────────────────────
 
-  async createSlices(slices: ResearchSliceRecord[]): Promise<void> {
-    if (!slices.length) return;
-    const stmt = this.db().prepare(`
-      INSERT OR IGNORE INTO research_slices (id, node_id, message_id, ordinal, is_provisional, created_at, record_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
-    this.transaction(() => {
-      for (const slice of slices) {
-        stmt.run(slice.id, slice.nodeId, slice.messageId, slice.ordinal, slice.isProvisional ? 1 : 0, slice.createdAt, JSON.stringify(slice));
-      }
-    });
-  }
-
   /** E2：正式生成成功后原子删除同一消息的临时切片，再写入完整正式集合。 */
   async replaceSlicesForMessage(messageId: string, slices: ResearchSliceRecord[], taskId?: string): Promise<void> {
     if (!messageId.trim()) throw new Error("messageId is required to replace slices");
@@ -2207,10 +2192,6 @@ export class SqliteStore implements CollectorStore {
 
   listSlicesByMessage(messageId: string): ResearchSliceRecord[] {
     return this.listRecords<ResearchSliceRecord>("SELECT record_json FROM research_slices WHERE message_id = ? ORDER BY ordinal", messageId);
-  }
-
-  getSliceById(id: string): ResearchSliceRecord | undefined {
-    return this.getRecord<ResearchSliceRecord>("SELECT record_json FROM research_slices WHERE id = ?", id);
   }
 
   // ── Body Version & Semantic Fragment (#35) ─────────────────────
@@ -3176,6 +3157,37 @@ export class SqliteStore implements CollectorStore {
       version = 31;
     }
 
+    if (version < 32) {
+      // #43：事务性剥离 research_slices.record_json 中旧 content 字段（正文副本）。
+      // 幂等（无 content 的行跳过）；完成后用 json_extract 验证零残留，否则抛错回滚
+      // 保持原始数据；不调用模型。切片此后只保存定位与派生元数据。
+      this.transaction(() => {
+        const rows = this.db().prepare("SELECT id, record_json FROM research_slices").all() as Array<{ id: string; record_json: string }>;
+        const update = this.db().prepare("UPDATE research_slices SET record_json = ? WHERE id = ?");
+        let stripped = 0;
+        for (const row of rows) {
+          let record: Record<string, unknown>;
+          try {
+            record = JSON.parse(row.record_json) as Record<string, unknown>;
+          } catch {
+            throw new Error(`Cannot migrate research slice ${row.id}: record_json is not valid JSON`);
+          }
+          if (typeof record.content !== "string") continue;
+          delete record.content;
+          update.run(JSON.stringify(record), row.id);
+          stripped += 1;
+        }
+        const remaining = this.db().prepare(
+          "SELECT COUNT(*) AS n FROM research_slices WHERE json_extract(record_json, '$.content') IS NOT NULL",
+        ).get() as { n: number };
+        if (remaining.n !== 0) {
+          throw new Error(`research_slices content strip verification failed: ${remaining.n} rows remain`);
+        }
+        this.db().exec("INSERT INTO schema_migrations(version, applied_at) VALUES (32, datetime('now'))");
+      });
+      version = 32;
+    }
+
   }
 
   private async migrateLegacyProviderProfile(): Promise<void> {
@@ -3529,11 +3541,9 @@ export class JsonStore implements CollectorStore {
   listResearchGroundingRuns(_taskId: string): ResearchGroundingRunRecord[] { return []; }
   listResearchGroundingSources(_runId: string): ResearchGroundingSourceRecord[] { return []; }
   listResearchCitationsForMessages(_messageIds: string[]): ResearchCitationRecord[] { return []; }
-  async createSlices(_slices: ResearchSliceRecord[]): Promise<void> { throw new Error("Research slices require SQLite persistence"); }
   async replaceSlicesForMessage(_messageId: string, _slices: ResearchSliceRecord[], _taskId?: string): Promise<void> { throw new Error("Research slices require SQLite persistence"); }
   listSlicesByNode(_nodeId: string): ResearchSliceRecord[] { return []; }
   listSlicesByMessage(_messageId: string): ResearchSliceRecord[] { return []; }
-  getSliceById(_id: string): ResearchSliceRecord | undefined { return undefined; }
   async createResearchBodyVersion(_version: ResearchBodyVersionRecord): Promise<void> { throw new Error("Body versions require SQLite persistence"); }
   async createSemanticFragments(_fragments: ResearchSemanticFragmentRecord[]): Promise<void> { throw new Error("Semantic fragments require SQLite persistence"); }
   getBodyVersion(_id: string): ResearchBodyVersionRecord | undefined { return undefined; }

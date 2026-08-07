@@ -1,142 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { deriveProvisionalSlices, deriveMessageSlices, validateSliceSchema, validateDerivedSlices, deriveMessageBlocks, composeSectionUnits, deriveFragmentsFromSlices, type ResearchSliceRecord, type ResearchTaskRecord } from "@collector/capture-contracts";
-
-describe("validateSliceSchema (E1)", () => {
-  const nodeId = "node-1";
-  const messageId = "msg-1";
-
-  function makeSlice(overrides: Partial<ResearchSliceRecord> = {}): ResearchSliceRecord {
-    return {
-      id: "slice:node-1:msg-1:0",
-      nodeId: "node-1",
-      messageId: "msg-1",
-      ordinal: 0,
-      title: "段落 1",
-      content: "第一段内容",
-      normalizedConcepts: [],
-      sourceRefs: [],
-      isProvisional: true,
-      createdAt: "2026-08-01T00:00:00.000Z",
-      ...overrides,
-    };
-  }
-
-  it("passes for a single valid slice", () => {
-    assert.doesNotThrow(() => validateSliceSchema([makeSlice()], nodeId, messageId));
-  });
-
-  it("passes for multiple slices with strictly increasing ordinals", () => {
-    const slices = [
-      makeSlice({ id: "slice:node-1:msg-1:0", ordinal: 0 }),
-      makeSlice({ id: "slice:node-1:msg-1:3", ordinal: 3, title: "段落 2", content: "第二段内容" }),
-    ];
-    assert.doesNotThrow(() => validateSliceSchema(slices, nodeId, messageId));
-  });
-
-  it("rejects unstable ID", () => {
-    const slices = [makeSlice({ id: "wrong-id" })];
-    assert.throws(() => validateSliceSchema(slices, nodeId, messageId), /Slice id must be/);
-  });
-
-  it("rejects non-increasing ordinals", () => {
-    const slices = [
-      makeSlice({ id: "slice:node-1:msg-1:5", ordinal: 5 }),
-      makeSlice({ id: "slice:node-1:msg-1:5", ordinal: 5, title: "段落 2", content: "第二段内容" }),
-    ];
-    assert.throws(() => validateSliceSchema(slices, nodeId, messageId), /strictly increasing/);
-  });
-
-  it("rejects empty title", () => {
-    assert.throws(() => validateSliceSchema([makeSlice({ title: "" })], nodeId, messageId), /title must be a non-empty string/);
-  });
-
-  it("rejects empty content", () => {
-    assert.throws(() => validateSliceSchema([makeSlice({ content: "   " })], nodeId, messageId), /content must be a non-empty string/);
-  });
-
-  it("rejects empty string in normalizedConcepts", () => {
-    assert.throws(() => validateSliceSchema([makeSlice({ normalizedConcepts: [""] })], nodeId, messageId), /normalizedConcepts/);
-  });
-});
-
-describe("deriveProvisionalSlices (E1)", () => {
-  const nodeId = "node-1";
-  const messageId = "msg-1";
-  const timestamp = "2026-08-01T00:00:00.000Z";
-
-  it("returns empty array for empty content", () => {
-    assert.deepStrictEqual(deriveProvisionalSlices(nodeId, messageId, "", 0, [], timestamp), []);
-    assert.deepStrictEqual(deriveProvisionalSlices(nodeId, messageId, "   \n\n   ", 0, [], timestamp), []);
-  });
-
-  it("derives one slice per message block with stable IDs", () => {
-    const content = "第一段。\n\n第二段。\n\n第三段。";
-    const slices = deriveProvisionalSlices(nodeId, messageId, content, 0, [], timestamp);
-    assert.strictEqual(slices.length, 3);
-    assert.strictEqual(slices[0].id, "slice:node-1:msg-1:0");
-    assert.strictEqual(slices[1].id, "slice:node-1:msg-1:1");
-    assert.strictEqual(slices[2].id, "slice:node-1:msg-1:2");
-  });
-
-  it("uses ordinalOffset for per-node ordinal continuation", () => {
-    const content = "新消息第一段。\n\n新消息第二段。";
-    const slices = deriveProvisionalSlices(nodeId, messageId, content, 5, [], timestamp);
-    assert.strictEqual(slices[0].ordinal, 5);
-    assert.strictEqual(slices[1].ordinal, 6);
-    assert.strictEqual(slices[0].id, "slice:node-1:msg-1:5");
-    assert.strictEqual(slices[1].id, "slice:node-1:msg-1:6");
-  });
-
-  it("slice content matches deriveMessageBlocks text", () => {
-    const content = "Alpha paragraph.\n\nBeta paragraph.";
-    const blocks = deriveMessageBlocks(content);
-    const slices = deriveProvisionalSlices(nodeId, messageId, content, 0, [], timestamp);
-    assert.strictEqual(slices.length, blocks.length);
-    for (let i = 0; i < blocks.length; i++) {
-      assert.strictEqual(slices[i].content, blocks[i].text);
-    }
-  });
-
-  it("is idempotent — two calls produce identical results", () => {
-    const content = "First.\n\nSecond.\n\nThird.";
-    const a = deriveProvisionalSlices(nodeId, messageId, content, 0, [], timestamp);
-    const b = deriveProvisionalSlices(nodeId, messageId, content, 0, [], timestamp);
-    assert.deepStrictEqual(a, b);
-  });
-
-  it("does not modify source text", () => {
-    const content = "  Spaced out.  \n\n  Another.  ";
-    const original = content;
-    deriveProvisionalSlices(nodeId, messageId, content, 0, [], timestamp);
-    assert.strictEqual(content, original);
-  });
-
-  it("marks all slices as provisional with empty concepts", () => {
-    const content = "Para one.\n\nPara two.";
-    const slices = deriveProvisionalSlices(nodeId, messageId, content, 0, [], timestamp);
-    for (const slice of slices) {
-      assert.strictEqual(slice.isProvisional, true);
-      assert.deepStrictEqual(slice.normalizedConcepts, []);
-    }
-  });
-
-  it("passes validateSliceSchema", () => {
-    const content = "Valid first.\n\nValid second.";
-    const slices = deriveProvisionalSlices(nodeId, messageId, content, 0, [], timestamp);
-    assert.doesNotThrow(() => validateSliceSchema(slices, nodeId, messageId));
-  });
-
-  it("handles CRLF normalization in block derivation", () => {
-    const content = "Line1\r\n\r\nLine2\r\nLine2b";
-    const slices = deriveProvisionalSlices(nodeId, messageId, content, 0, [], timestamp);
-    const blocks = deriveMessageBlocks(content);
-    assert.strictEqual(slices.length, blocks.length);
-    for (let i = 0; i < blocks.length; i++) {
-      assert.strictEqual(slices[i].content, blocks[i].text);
-    }
-  });
-});
+import { deriveMessageSlices, validateDerivedSlices, deriveMessageBlocks, composeSectionUnits, deriveFragmentsFromSlices, resolveFragmentExcerpt, type ResearchSliceRecord, type ResearchTaskRecord } from "@collector/capture-contracts";
 
 describe("deriveMessageSlices (生成自由化后的确定性派生切片)", () => {
   const nodeId = "node-d";
@@ -144,10 +8,11 @@ describe("deriveMessageSlices (生成自由化后的确定性派生切片)", () 
   const createdAt = "2026-08-04T00:00:00.000Z";
   const content = "第一节完整论述，可跨多句。\n\n第二节继续展开。\n\n第三节收束。";
 
-  it("按空行段落逐块派生切片，content 恒等于块文本且 isProvisional 恒为 false", () => {
+  it("按空行段落逐块派生切片，isProvisional 恒为 false，切片不携带正文副本（#43）", () => {
     const slices = deriveMessageSlices(nodeId, messageId, content, 0, [], [], createdAt);
     assert.equal(slices.length, 3);
-    assert.deepEqual(slices.map((s) => s.content), ["第一节完整论述，可跨多句。", "第二节继续展开。", "第三节收束。"]);
+    // #43 收缩：切片不再保存 content 字段，正文唯一事实源是消息正文与正文版本。
+    assert.ok(slices.every((s) => !("content" in s)));
     assert.ok(slices.every((s) => s.isProvisional === false));
     assert.deepEqual(slices.map((s) => s.id), [
       "slice:node-d:msg-d:0",
@@ -242,16 +107,17 @@ describe("deriveMessageSlices 节级派生（标题并入正文）", () => {
   const messageId = "msg-s";
   const createdAt = "2026-08-05T00:00:00.000Z";
 
-  it("标题不再自成切片，节标题提升为 title，content 逐字等于正文", () => {
+  it("标题不再自成切片，节标题提升为 title；正文经派生层逐字保留", () => {
     const content = "## Transformer架构详解\n\n## 背景与起源\n\n背景正文一。\n\n背景正文二。";
     const slices = deriveMessageSlices(nodeId, messageId, content, 0, [], [], createdAt);
     assert.equal(slices.length, 2);
     assert.equal(slices[0]?.title, "Transformer架构详解");
-    assert.equal(slices[0]?.content, "## Transformer架构详解");
     assert.equal(slices[1]?.title, "背景与起源");
-    assert.equal(slices[1]?.content, "## 背景与起源\n\n背景正文一。\n\n背景正文二。");
-    // 全文拼接仍等于原始正文（节间以 \n\n 连接）。
-    assert.equal(slices.map((s) => s.content).join("\n\n"), content);
+    // #43：切片不再保存正文副本；拼接不变量移到派生层（composeSectionUnits）。
+    const units = composeSectionUnits(deriveMessageBlocks(content));
+    assert.equal(units[0]?.content, "## Transformer架构详解");
+    assert.equal(units[1]?.content, "## 背景与起源\n\n背景正文一。\n\n背景正文二。");
+    assert.equal(units.map((u) => u.content).join("\n\n"), content);
   });
 
   it("节标题优先于抽取标题；概念取自节起始块标注", () => {
@@ -264,7 +130,6 @@ describe("deriveMessageSlices 节级派生（标题并入正文）", () => {
     assert.equal(slices.length, 1);
     assert.equal(slices[0]?.title, "已定标题");
     assert.deepEqual(slices[0]?.normalizedConcepts, ["概念A"]);
-    assert.equal(slices[0]?.content, content);
   });
 
   it("无标题段落用抽取标题补题（不与正文重复）", () => {
@@ -298,19 +163,34 @@ describe("deriveMessageSlices 节级派生（标题并入正文）", () => {
 
 describe("deriveFragmentsFromSlices 节级片段", () => {
   const createdAt = "2026-08-05T00:00:00.000Z";
-  it("片段范围映射到节起始块到末块，摘录逐字对应正文", () => {
+  it("结构对齐门下片段范围映射到节起始块到末块，摘录经正文版本回读逐字对应", () => {
     // 两个标题节 + 中间无标题段属前一节：验证多节片段范围互不重叠且铺满正文。
     const content = "## 第一节\n\n第一节正文。\n\n续段。\n\n## 第二节\n\n第二节正文。";
     const slices = deriveMessageSlices("n", "m", content, 0, [], [], createdAt);
     const version = { id: "body:m:x", messageId: "m", nodeId: "n", version: 1, content, contentHash: "x", origin: "generation" as const, createdAt };
     const fragments = deriveFragmentsFromSlices(version, slices, []);
     assert.equal(fragments.length, 2);
+    // #43：切片不携带正文副本，摘录一律经 resolveFragmentExcerpt 从正文版本范围回读。
+    const units = composeSectionUnits(deriveMessageBlocks(content));
     for (const f of fragments) {
-      assert.equal(content.slice(f.startOffset, f.endOffset), slices[f.ordinal]?.content);
+      assert.equal(resolveFragmentExcerpt(version, f), units[f.ordinal]?.content);
       assert.equal(f.isProvisional, false);
     }
     // 节片段首尾相接铺满正文（前一节 end 到后一节 start 只差节间 "\n\n"）。
     assert.equal(fragments[1]!.startOffset - fragments[0]!.endOffset, 2);
+  });
+
+  it("对齐门失败（数量不一致）时退化为按块派生的临时片段，绝不伪造范围", () => {
+    const content = "一。\n\n二。\n\n三。";
+    // 派生切片 3 个，但手工构造 2 个切片（与节单元数量不一致）→ 结构对齐门失败。
+    const twoSlices: ResearchSliceRecord[] = [
+      { id: "slice:n:m:0", nodeId: "n", messageId: "m", ordinal: 0, title: "", normalizedConcepts: [], sourceRefs: [], isProvisional: false, createdAt },
+      { id: "slice:n:m:1", nodeId: "n", messageId: "m", ordinal: 1, title: "", normalizedConcepts: [], sourceRefs: [], isProvisional: false, createdAt },
+    ];
+    const version = { id: "body:m:x", messageId: "m", nodeId: "n", version: 1, content, contentHash: "x", origin: "generation" as const, createdAt };
+    const fragments = deriveFragmentsFromSlices(version, twoSlices, []);
+    assert.equal(fragments.length, 3);
+    assert.ok(fragments.every((f) => f.isProvisional === true));
   });
 });
 
@@ -319,14 +199,13 @@ describe("validateDerivedSlices (允许空标题的派生切片校验)", () => {
   const messageId = "msg-d";
   const createdAt = "2026-08-04T00:00:00.000Z";
 
-  it("接受空标题的派生切片（与 validateSliceSchema 的 title 非空硬约束区分）", () => {
+  it("接受空标题的派生切片", () => {
     const slices = deriveMessageSlices(nodeId, messageId, "唯一段。", 0, [], [], createdAt);
     assert.equal(slices[0]?.title, "");
     assert.doesNotThrow(() => validateDerivedSlices(slices, nodeId, messageId));
-    assert.throws(() => validateSliceSchema(slices, nodeId, messageId), /title must be a non-empty string/);
   });
 
-  it("仍强制稳定 ID、ordinal 严格递增与 content 非空", () => {
+  it("仍强制稳定 ID 与 ordinal 严格递增", () => {
     const good = deriveMessageSlices(nodeId, messageId, "一。\n\n二。", 0, [], [{ title: "甲" }, { title: "乙" }], createdAt);
     assert.doesNotThrow(() => validateDerivedSlices(good, nodeId, messageId));
     const badId = [{ ...good[0]!, id: "wrong" }];
