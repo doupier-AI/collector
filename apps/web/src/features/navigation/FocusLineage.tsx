@@ -202,6 +202,7 @@ export function FocusLineage({
                   }}
                   role="listitem"
                   aria-label={summary ? `${row.label}（${depthLabel(summary.depth)}）` : row.label}
+                  aria-current={isCurrent ? "location" : undefined}
                   tabIndex={isFocused ? 0 : -1}
                   className={`focus-lineage__row focus-lineage__row--${row.kind}${isFocused ? " focus-lineage__row--focused" : ""}`}
                   onFocus={() => setFocusedId(row.nodeId)}

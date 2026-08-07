@@ -6,6 +6,9 @@ import { expect, type Page } from "@playwright/test";
 
 const runtimeDir = join(dirname(fileURLToPath(import.meta.url)), ".runtime");
 
+/** 视觉/地图基线共用问题：假模型对前 24 字稳定产出固定三段正文与切片标题。 */
+export const QUESTION = "什么是本地优先研究？";
+
 /** 由页面端口推断对应的 API harness 端口（页面由 API 同源提供：43211 fake，43212 nomodel）。 */
 export function apiPortForPage(page: Page): number {
   const port = Number(new URL(page.url()).port || "43211");
@@ -362,4 +365,214 @@ export function readResearchNodeTables(dbPath: string): {
   } finally {
     db.close();
   }
+}
+
+/**
+ * 确定性研究节点页基座（#44 视觉基线共用）：提交固定问题并等待假模型完成，
+ * 返回会话 id 与根节点 id（根节点 id ≠ 会话 id）。
+ */
+export async function openSession(page: Page): Promise<{ sessionId: string; rootNodeId: string }> {
+  await pairAndOpen(page, "/research/new");
+  await page.getByLabel("你的问题").fill(QUESTION);
+  await page.getByRole("button", { name: "开始研究" }).click();
+  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
+  await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
+    timeout: 15_000,
+  });
+  const match = new URL(page.url()).pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
+  if (!match) throw new Error("unexpected root node url");
+  return { sessionId: match[1]!, rootNodeId: match[2]! };
+}
+
+/** 从最后一条回答选中文字并显式引用，再长出一个子节点，返回子节点 id。 */
+export async function growChildNode(page: Page, sessionId: string, text: string): Promise<string> {
+  await citeAnswerText(page, text);
+  await page.getByRole("button", { name: "深入研究这段" }).click();
+  await page.waitForURL(
+    (url) => {
+      const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
+      return Boolean(match && match[1] === sessionId && match[2] && match[2] !== sessionId);
+    },
+    { timeout: 10_000 },
+  );
+  await expect(page.getByText(/这是深入研究第一轮/)).toBeVisible({ timeout: 15_000 });
+  return page.url().split("/node/")[1] ?? "";
+}
+
+/** 向 /graph 响应注入语义相关与融合来源节点（隔离血统，只通过非父子边到达）。 */
+export async function installThreeEdgeGraphFixture(page: Page): Promise<void> {
+  await page.route("**/v1/research-sessions/*/graph**", async (route) => {
+    const response = await route.fetch();
+    const projection = await response.json();
+    const focus = projection.nodes.find(
+      (summary: { node: { id: string } }) => summary.node.id === projection.focusNodeId,
+    );
+    if (!focus) {
+      await route.fulfill({ response, json: projection });
+      return;
+    }
+    const makeNode = (id: string, label: string) => ({
+      ...focus,
+      node: {
+        ...focus.node,
+        id,
+        parentNodeId: null,
+        createdAt: "2026-08-02T08:00:00.000Z",
+      },
+      label,
+      depth: 1,
+    });
+    const semanticId = `e2e-semantic-${projection.focusNodeId}`;
+    const fusedId = `e2e-fused-${projection.focusNodeId}`;
+    projection.nodes = [...projection.nodes, makeNode(semanticId, "语义关联节点"), makeNode(fusedId, "融合来源节点")];
+    projection.edges = [
+      ...projection.edges,
+      {
+        id: `e2e-edge-semantic-${projection.focusNodeId}`,
+        kind: "semantic-related",
+        fromNodeId: projection.focusNodeId,
+        toNodeId: semanticId,
+        createdAt: "2026-08-02T08:00:00.000Z",
+        status: "active",
+      },
+      {
+        id: `e2e-edge-fused-${projection.focusNodeId}`,
+        kind: "fused-from",
+        fromNodeId: fusedId,
+        toNodeId: projection.focusNodeId,
+        createdAt: "2026-08-02T08:00:00.000Z",
+        status: "active",
+      },
+    ];
+    await route.fulfill({ response, json: projection });
+  });
+}
+
+/** 建立会话 + 长出子节点（画布基座：子节点有父边）。 */
+export async function openNodeWithParent(page: Page): Promise<{ sessionId: string; childId: string }> {
+  await pairAndOpen(page, "/research/new");
+  await page.getByLabel("你的问题").fill(QUESTION);
+  await page.getByRole("button", { name: "开始研究" }).click();
+  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
+  await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
+    timeout: 15_000,
+  });
+  const sessionId = page.url().split("/research/")[1]?.split("/")[0] ?? "";
+  const childId = await growChildNode(page, sessionId, "本地优先会先把输入保存在本机");
+  return { sessionId, childId };
+}
+
+export interface NodeEvidence {
+  nodeId: string;
+  messageId: string;
+  bodyVersionId: string;
+  fragmentId: string;
+}
+
+/** 从真实节点视图 + 正文版本端点提取一条可定位依据（片段 id 取自真实派生）。 */
+export async function readNodeEvidence(page: Page, nodeId: string, fragmentOrdinal: number): Promise<NodeEvidence> {
+  let view: {
+    messages: Array<{ id: string; role: string; status: string; content: string }>;
+    bodyVersions?: Record<string, { id: string }>;
+  } | undefined;
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    view = await apiJson(page, `/v1/research-nodes/${encodeURIComponent(nodeId)}`);
+    const assistant = view.messages.find((m) => m.role === "assistant" && m.status === "completed" && m.content.trim());
+    if (assistant && view.bodyVersions?.[assistant.id]) break;
+    await page.waitForTimeout(300);
+  }
+  if (!view) throw new Error("node view fetch failed");
+  const assistant = view.messages.find((m) => m.role === "assistant" && m.status === "completed" && m.content.trim());
+  if (!assistant || !view.bodyVersions?.[assistant.id]) throw new Error("node evidence missing body version");
+  const bodyVersionId = view.bodyVersions[assistant.id]!.id;
+  const bodyView = await apiJson<{ fragments: Array<{ id: string; ordinal: number; excerpt: string }> }>(
+    page,
+    `/v1/research-body-versions/${encodeURIComponent(bodyVersionId)}`,
+  );
+  const fragment = bodyView.fragments.find((f) => f.ordinal === fragmentOrdinal);
+  if (!fragment) throw new Error(`fragment ordinal ${fragmentOrdinal} missing`);
+  return { nodeId, messageId: assistant.id, bodyVersionId, fragmentId: fragment.id };
+}
+
+/** 在根节点视图响应中注入 pending + accepted 融合提案（依据指向真实提取的片段）。 */
+export async function installProposalFixture(
+  page: Page,
+  rootNodeId: string,
+  rootEvidence: NodeEvidence,
+  childEvidence: NodeEvidence,
+): Promise<void> {
+  await page.route(`**/v1/research-nodes/${encodeURIComponent(rootNodeId)}`, async (route) => {
+    const response = await route.fetch();
+    const view = await response.json();
+    const pendingProposal = {
+      id: "e2e-proposal-pending",
+      loNodeId: rootNodeId,
+      hiNodeId: childEvidence.nodeId,
+      relationType: "shared-concept",
+      reason: "根节点与子节点共享本地优先概念。",
+      status: "pending",
+      triggerSources: [
+        {
+          nodeId: childEvidence.nodeId,
+          bodyVersionId: childEvidence.bodyVersionId,
+          fragmentId: childEvidence.fragmentId,
+        },
+        {
+          nodeId: rootNodeId,
+          bodyVersionId: rootEvidence.bodyVersionId,
+          fragmentId: rootEvidence.fragmentId,
+        },
+      ],
+      verification: { promptVersion: "similarity-verify-v1", sourceSliceIds: [], sourceFragmentIds: [], tokenBudget: 800 },
+      createdAt: "2026-08-02T00:00:00.000Z",
+      updatedAt: "2026-08-02T00:00:00.000Z",
+    };
+    const acceptedProposal = {
+      ...pendingProposal,
+      id: "e2e-proposal-accepted",
+      status: "accepted",
+    };
+    view.fusionProposals = [pendingProposal, acceptedProposal];
+    await route.fulfill({ response, json: view });
+  });
+}
+
+/**
+ * 浏览器问题跟踪（#44 验收 7）：console error/warning + pageerror + requestfailed。
+ * 返回收集器，测试末尾断言为空数组。配对前的 401 探测属预期流程（研究页 API
+ * 未配对时返回 401），跟踪器自动过滤「status of 401」与配对请求失败的噪音。
+ * 只挂到新 spec——sse-recovery 等测试故意触发错误场景，retro 改造会误伤。
+ */
+export function trackBrowserIssues(page: Page): { issues: string[] } {
+  const issues: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() !== "error" && message.type() !== "warning") return;
+    const text = message.text();
+    // 配对探测的 401 属预期，过滤掉；其余原样收集
+    if (/status of 401|401 \(Unauthorized\)/.test(text)) return;
+    issues.push(text);
+  });
+  page.on("pageerror", (error) => issues.push(String(error)));
+  page.on("requestfailed", (request) => {
+    const errorText = request.failure()?.errorText ?? "";
+    if (/Unauthorized|401/.test(errorText)) return;
+    issues.push(`requestfailed: ${request.url()} ${errorText}`);
+  });
+  return { issues };
+}
+
+/** #44 视觉基线：节点页/地图覆盖层中会显示真实时钟的文本元素（冻结 clock 无法覆盖
+    harness 真实时间戳，截图时用 mask 盖掉）。 */
+export function dynamicTimeMasks(page: Page) {
+  return [
+    page.locator(".session-header__meta"),
+    page.locator(".branch-list__time"),
+    page.locator(".drawer__session-time"),
+  ];
+}
+
+/** #44 视觉基线：固定时钟（浏览器内 Date），保证「更新于」等文本与基线生成时一致。 */
+export function freezeClock(page: Page): void {
+  void page.clock.setFixedTime(new Date("2026-08-02T08:00:00.000Z"));
 }

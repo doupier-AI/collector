@@ -6,6 +6,12 @@ export default defineConfig({
   timeout: 30_000,
   outputDir: "test-results",
   reporter: [["list"]],
+  // #44 视觉基线：snapshot 去掉平台后缀（本仓库固定 win32+chromium），
+  // 像素比较 1% 容差（系统字体渲染小抖动）与 0.2 阈值（防噪声误报）。
+  snapshotPathTemplate: "{snapshotDir}/{testFilePath}-{arg}-{projectName}.png",
+  expect: {
+    toHaveScreenshot: { maxDiffPixelRatio: 0.01, threshold: 0.2 },
+  },
   use: {
     screenshot: "only-on-failure",
     trace: "retain-on-failure",
