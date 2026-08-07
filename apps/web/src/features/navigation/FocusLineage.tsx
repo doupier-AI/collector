@@ -140,19 +140,21 @@ export function FocusLineage({
   return (
     <div className="focus-lineage">
       {state.kind === "loading" ? (
-        <div className="skeleton-stack" aria-hidden="true">
-          <Skeleton variant="block" />
-          <Skeleton variant="block" />
+        <div className="research-map__state" aria-hidden="true">
+          <div className="skeleton-stack">
+            <Skeleton variant="block" />
+            <Skeleton variant="block" />
+          </div>
         </div>
       ) : state.kind === "error" ? (
-        <div>
+        <div className="research-map__state research-map__state--error">
           <p className="page__lead">暂时无法加载研究地图，已保存的内容不会丢失。</p>
           <button type="button" className="button button--secondary" onClick={reload}>
             重试
           </button>
         </div>
       ) : !projection || rows.length === 0 ? (
-        <p className="page__empty">当前节点没有可见的关系。</p>
+        <p className="research-map__state">当前节点没有可见的关系。</p>
       ) : (
         <>
           <FocusBreadcrumb sessionId={sessionId} lineage={lineage!} />

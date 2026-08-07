@@ -116,8 +116,14 @@ describe("GraphCanvas", () => {
     expect(getResearchGraph).toHaveBeenCalledWith("session-1", "focus", 1);
     expect(screen.getByTestId("graph-node-focus")).toHaveAttribute("transform", "translate(0 0)");
 
-    expect(document.querySelector('[data-edge-kind="parent-child"]')).toHaveAttribute("stroke-dasharray", "none");
-    expect(document.querySelector('[data-edge-kind="semantic-related"]')).toHaveAttribute("stroke-dasharray", "7 4");
+    expect(
+      document.querySelector('[data-edge-kind="parent-child"] line') ??
+        document.querySelector('[data-edge-kind="parent-child"]'),
+    ).toHaveAttribute("stroke-dasharray", "none");
+    expect(
+      document.querySelector('[data-edge-kind="semantic-related"] line') ??
+        document.querySelector('[data-edge-kind="semantic-related"]'),
+    ).toHaveAttribute("stroke-dasharray", "7 4");
     expect(document.querySelectorAll('[data-edge-kind="fused-from"] line')).toHaveLength(2);
     expect(screen.getByRole("group", { name: "边类型图例" })).toHaveTextContent("父子关系（实线）");
     expect(screen.getByRole("group", { name: "边类型图例" })).toHaveTextContent("语义相关（虚线）");

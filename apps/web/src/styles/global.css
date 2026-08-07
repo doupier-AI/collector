@@ -433,23 +433,39 @@ button {
 
 .slice-card {
   min-width: 0;
+  border-radius: var(--radius-panel);
+  /* 悬停/焦点强调只动背景与阴影，不改变 padding/margin——零布局位移、不污染选区偏移。 */
+  transition: background var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
+}
+
+/* #44 卡片常态：悬停给出低表面提升；键盘焦点给出光环（与定位强调区分：不染色背景）。 */
+.slice-card:hover {
+  background: var(--color-surface-hover);
+  box-shadow: var(--shadow-1);
+}
+
+.slice-card:focus-visible {
+  box-shadow: var(--ring-focus);
 }
 
 /* #42 片段定位强调：box-shadow 光环 + 浅背景，不引起布局位移；动画只放大光环，无位移。
    reduced-motion 下取消动画，保留静态强调（验收 8）。 */
 .slice-card--focused {
-  border-radius: var(--radius-panel);
   background: color-mix(in srgb, var(--color-surface) 97%, var(--color-ai) 4%);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-ai) 32%, transparent);
-  animation: slice-card-focus-pulse 200ms ease-out;
+  box-shadow: var(--ring-locate);
+  animation: slice-card-focus-pulse var(--duration-slow) ease-out;
 }
 
 @keyframes slice-card-focus-pulse {
   from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-ai) 32%, transparent); }
-  to { box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-ai) 32%, transparent); }
+  to { box-shadow: var(--ring-locate); }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .slice-card {
+    transition: none;
+  }
+
   .slice-card--focused {
     animation: none;
   }
@@ -600,6 +616,7 @@ button {
 
 .citation-marker:focus-visible {
   border-radius: var(--radius-control);
+  box-shadow: var(--ring-focus);
 }
 
 sup[data-citation-marker] {
@@ -652,7 +669,24 @@ sup[data-citation-marker]::after {
   align-items: baseline;
   gap: var(--space-2);
   padding: var(--space-2) 0;
+  border-radius: var(--radius-control);
   cursor: pointer;
+}
+
+/* #44 来源态：悬停/键盘焦点给出低表面提升；焦点环不改变布局 */
+.grounding-source summary:hover {
+  background: var(--color-surface-hover);
+}
+
+.grounding-source summary:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-focus);
+}
+
+.grounding-source__link:focus-visible {
+  outline: none;
+  border-radius: var(--radius-control);
+  box-shadow: var(--ring-focus);
 }
 
 .grounding-source__ordinal {
@@ -2029,6 +2063,30 @@ button.model-status {
   pointer-events: none;
 }
 
+/* #44 边标签与透明度通道：非焦点元素降低不透明度（焦点回归时提升）；
+   颜色不是唯一通道——线型/粗细/方向端点/标签共同编码关系类型。 */
+.graph-canvas__edge-label {
+  fill: var(--color-muted);
+  font-size: var(--font-size-xs);
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: var(--color-surface);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+.graph-canvas__edge {
+  opacity: 0.85;
+}
+
+.graph-canvas__node:not(.graph-canvas__node--current):not(:focus-visible) {
+  opacity: 0.92;
+}
+
+.graph-canvas__edge-label {
+  opacity: 0.9;
+}
+
 .graph-canvas__node {
   cursor: pointer;
   outline: none;
@@ -2683,6 +2741,30 @@ button.model-status {
 .run-records__muted,
 .run-records__section-heading > .run-records__muted {
   color: var(--color-muted);
+}
+
+/* #44 研究地图状态容器：加载/空/错误统一为虚线状态框（对齐 .run-records__state 先例）。
+   部分数据不可用沿用错误文案，与筛选关闭空态同容器表达。 */
+.research-map__state {
+  margin-top: var(--space-3);
+  padding: var(--space-6) var(--space-4);
+  border: 1px dashed var(--color-line);
+  border-radius: var(--radius-panel);
+  color: var(--color-muted);
+  text-align: center;
+}
+
+.research-map__state p {
+  margin-bottom: var(--space-3);
+}
+
+.research-map__state p:last-child {
+  margin-bottom: 0;
+}
+
+.research-map__state--error {
+  border-color: color-mix(in srgb, var(--color-danger) 45%, var(--color-line));
+  color: var(--color-danger);
 }
 
 .run-records__state {

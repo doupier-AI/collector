@@ -371,19 +371,21 @@ export function GraphCanvas({
 
         <div className="graph-canvas-overlay__body">
           {state.kind === "loading" ? (
-            <div className="skeleton-stack" aria-hidden="true">
-              <Skeleton variant="block" />
-              <Skeleton variant="block" />
+            <div className="research-map__state" aria-hidden="true">
+              <div className="skeleton-stack">
+                <Skeleton variant="block" />
+                <Skeleton variant="block" />
+              </div>
             </div>
           ) : state.kind === "error" ? (
-            <div>
+            <div className="research-map__state research-map__state--error">
               <p className="page__lead">暂时无法加载网状图，已保存的内容不会丢失。</p>
               <button type="button" className="button button--secondary" onClick={reload}>
                 重试
               </button>
             </div>
           ) : visibleNodes.length === 0 ? (
-            <p className="page__empty">当前节点没有可见的关系。</p>
+            <p className="research-map__state">当前节点没有可见的关系。</p>
           ) : (
             <>
               <svg
@@ -398,6 +400,31 @@ export function GraphCanvas({
                 onPointerCancel={finishDragging}
                 onWheel={handleWheel}
               >
+                <defs>
+                  {/* #44 关系方向端点：父子边 父→子、融合来源边 来源→当前；箭头颜色与边同源，尺寸固定不随缩放。 */}
+                  <marker
+                    id="arrow-parent-child"
+                    markerUnits="userSpaceOnUse"
+                    markerWidth="14"
+                    markerHeight="14"
+                    refX="13"
+                    refY="7"
+                    orient="auto"
+                  >
+                    <path d="M0,0 L14,7 L0,14 z" fill="var(--color-edge-parent-child)" />
+                  </marker>
+                  <marker
+                    id="arrow-fused-from"
+                    markerUnits="userSpaceOnUse"
+                    markerWidth="14"
+                    markerHeight="14"
+                    refX="13"
+                    refY="7"
+                    orient="auto"
+                  >
+                    <path d="M0,0 L14,7 L0,14 z" fill="var(--color-edge-fused-from)" />
+                  </marker>
+                </defs>
                 <g
                   className={`graph-canvas__transform${isDragging ? " graph-canvas__transform--dragging" : ""}`}
                   transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}
@@ -409,9 +436,32 @@ export function GraphCanvas({
                     if (!from || !to) return null;
                     const color = `var(--color-edge-${edge.kind})`;
                     const dash = EDGE_DASH[edge.kind];
+                    // #44 方向端点：父子边 父→子（toNodeId 为子）、融合来源边 来源→当前；
+                    // 语义相关无方向，不加箭头（方向不是其语义）。
+                    const marker =
+                      edge.kind === "parent-child"
+                        ? "url(#arrow-parent-child)"
+                        : edge.kind === "fused-from"
+                          ? "url(#arrow-fused-from)"
+                          : undefined;
+                    // 边中点：标签与箭头共享同一偏移点；融合边双线各偏 3px，标签置于两线之间。
+                    const midX = (from.x + to.x) / 2;
+                    const midY = (from.y + to.y) / 2;
+                    const edgeLabel =
+                      edge.kind === "semantic-related" ? (
+                        <text
+                          className="graph-canvas__edge-label"
+                          x={midX}
+                          y={midY - 6}
+                          textAnchor="middle"
+                          aria-hidden="true"
+                        >
+                          {EDGE_KIND_LABELS[edge.kind]}
+                        </text>
+                      ) : null;
 
                     if (edge.kind === "fused-from") {
-                      // 双线加点划线：即使没有颜色也能与其他两类边区分。
+                      // 双线加点划线：即使没有颜色也能与其他两类边区分；端点箭头落在收敛端（当前节点侧）。
                       const dx = to.x - from.x;
                       const dy = to.y - from.y;
                       const length = Math.sqrt(dx * dx + dy * dy) || 1;
@@ -428,6 +478,7 @@ export function GraphCanvas({
                             stroke={color}
                             strokeWidth={1.5}
                             strokeDasharray={dash}
+                            markerEnd={marker}
                           />
                           <line
                             className={`graph-canvas__edge graph-canvas__edge--${edge.kind}`}
@@ -439,24 +490,26 @@ export function GraphCanvas({
                             strokeWidth={1.5}
                             strokeDasharray={dash}
                           />
+                          {edgeLabel}
                         </g>
                       );
                     }
 
                     return (
-                      <line
-                        key={edge.id}
-                        className={`graph-canvas__edge graph-canvas__edge--${edge.kind}`}
-                        data-edge-kind={edge.kind}
-                        x1={from.x}
-                        y1={from.y}
-                        x2={to.x}
-                        y2={to.y}
-                        stroke={color}
-                        strokeWidth={1.5}
-                        strokeDasharray={dash}
-                        role="presentation"
-                      />
+                      <g key={edge.id} role="presentation" data-edge-kind={edge.kind}>
+                        <line
+                          className={`graph-canvas__edge graph-canvas__edge--${edge.kind}`}
+                          x1={from.x}
+                          y1={from.y}
+                          x2={to.x}
+                          y2={to.y}
+                          stroke={color}
+                          strokeWidth={1.5}
+                          strokeDasharray={dash}
+                          markerEnd={marker}
+                        />
+                        {edgeLabel}
+                      </g>
                     );
                   })}
 
