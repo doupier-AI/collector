@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   FUSION_COMPOSE_PROMPT_VERSION,
+  RESEARCH_GROUNDING_MAX_SOURCES,
   deriveBodyVersion,
   deriveFragmentsFromBlocks,
   deriveFragmentsFromSlices,
@@ -15,10 +16,12 @@ import {
   validateResearchGroundingResult,
   type DeepResearchContext,
   type DeepResearchMode,
+  type GroundingEvidenceStatus,
   type ResearchBodyPlan,
   type ResearchCitationRecord,
   type ResearchFusionSource,
   type ResearchSliceRecord,
+  type ResearchGroundingTraceEntry,
   ResearchGroundingResult,
   ResearchGroundingScenario,
   ResearchGroundingScopeStatus,
@@ -88,7 +91,7 @@ export interface ResearchGenerationProvider {
   /** H3c 术语预览仍复用文本流，不参与节点回答的正式切片生成。 */
   generate(request: ResearchGenerationRequest): AsyncIterable<string>;
   /** Agent 式搜索：Collector 自行完成搜索，不依赖供应商原生联网。 */
-  generateAgentGrounded?(request: ResearchGenerationRequest & { scenario: ResearchGroundingScenario }): Promise<{ content: string; slices?: ResearchSliceRecord[]; status: ResearchGroundingScopeStatus; queries: string[]; sources: Array<{ providerSourceId?: string; title: string; url?: string; snippet?: string; publishedAt?: string; locator?: string }>; citations: Array<{ sourceOrdinal: number; startOffset: number; endOffset: number; providerCitationId?: string }>; responseSummary?: Record<string, unknown>; errorMessage?: string }>;
+  generateAgentGrounded?(request: ResearchGenerationRequest & { scenario: ResearchGroundingScenario }): Promise<{ content: string; slices?: ResearchSliceRecord[]; status: ResearchGroundingScopeStatus; queries: string[]; sources: Array<{ providerSourceId?: string; title: string; url?: string; snippet?: string; publishedAt?: string; locator?: string; evidenceStatus?: GroundingEvidenceStatus }>; citations: Array<{ sourceOrdinal: number; startOffset: number; endOffset: number; providerCitationId?: string }>; responseSummary?: Record<string, unknown>; errorMessage?: string; trace?: ResearchGroundingTraceEntry[] }>;
   /** 生成自由化：自由写连续正文，不返回 JSON 切片结构。 */
   writeBody?(request: ResearchGenerationRequest): Promise<string>;
   /** #31：融合节点正文生成；任务带 fusionPlan 时优先走本方法。来源材料含可回读的片段摘录。 */
@@ -995,6 +998,7 @@ export class ResearchSessionService {
       const title = groundingText(source.title, "来源元数据不足");
       const snippet = groundingText(source.snippet);
       const locator = groundingText(source.locator);
+      const evidenceStatus = source.evidenceStatus === "full" || source.evidenceStatus === "partial" || source.evidenceStatus === "none" ? source.evidenceStatus : undefined;
       const record: ResearchGroundingSourceRecord = {
         id: randomUUID(),
         runId,
@@ -1005,6 +1009,7 @@ export class ResearchSessionService {
         ...(snippet ? { snippet } : {}),
         ...(source.publishedAt ? { publishedAt: groundingText(source.publishedAt) } : {}),
         ...(locator ? { locator } : {}),
+        ...(evidenceStatus ? { evidenceStatus } : {}),
         createdAt,
       };
       sourceByOrdinal.set(index + 1, record);
@@ -1031,6 +1036,7 @@ export class ResearchSessionService {
         scenario,
         status: grounded.status,
         queries: sanitizeGroundingQueries(grounded.queries),
+        ...(grounded.trace?.length ? { trace: sanitizeGroundingTrace(grounded.trace) } : {}),
         ...(grounded.responseSummary ? { responseSummary: groundingRecord(grounded.responseSummary) } : {}),
         ...(grounded.errorMessage ? { errorMessage: groundingText(grounded.errorMessage) } : {}),
         attempt: this.store.listResearchGroundingRuns(task.id).length + 1,
@@ -1257,6 +1263,16 @@ function groundingRecord(value: Record<string, unknown>): Record<string, unknown
   return redacted && typeof redacted === "object" && !Array.isArray(redacted)
     ? redacted as Record<string, unknown>
     : {};
+}
+
+/** #49 失败留痕脱敏：URL 经 sanitizeGroundingUrl，消息字段经 groundingText，整体再走一次 redactGroundingValue 保底。 */
+function sanitizeGroundingTrace(trace: readonly ResearchGroundingTraceEntry[]): ResearchGroundingTraceEntry[] {
+  return trace.slice(0, RESEARCH_GROUNDING_MAX_SOURCES).map((entry) => ({
+    ...entry,
+    ...(entry.url ? { url: sanitizeGroundingUrl(entry.url) ?? entry.domain } : {}),
+    ...(entry.retryReason ? { retryReason: groundingText(entry.retryReason) } : {}),
+    ...(entry.fallbackReason ? { fallbackReason: groundingText(entry.fallbackReason) } : {}),
+  })).map((entry) => redactGroundingValue(entry) as ResearchGroundingTraceEntry);
 }
 
 export class ResearchNotFoundError extends Error {}

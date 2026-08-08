@@ -4,6 +4,7 @@ import {
   type ModelCallRecord,
   type ResearchGroundingRunRecord,
   type ResearchGroundingSourceRecord,
+  type ResearchGroundingTraceEntry,
   type ResearchImportTaskRecord,
   type ResearchSelectionTaskRecord,
   type ResearchTaskRecord,
@@ -262,6 +263,7 @@ export class RunRecordsService {
         sourceCount: numberValue(run.sourceCount) || sources.length,
         citationCount: numberValue(run.citationCount),
         ...(run.responseSummary && typeof run.responseSummary === "object" ? { responseSummary: safeObject(run.responseSummary) } : {}),
+        ...(run.trace && Array.isArray(run.trace) ? { trace: safeSearchTrace(run.trace) } : {}),
         ...(run.errorMessage ? { errorMessage: safeText(run.errorMessage) } : {}),
         createdAt: safeText(run.createdAt, row.createdAt),
         ...(stringValue(run.completedAt) ? { completedAt: safeText(run.completedAt) } : {}),
@@ -478,12 +480,18 @@ function modelCallView(row: ObservabilityRelatedRow): RunRecordModelCallView {
   };
 }
 
-function sourceView(row: ObservabilityRelatedRow): { title: string; url?: string; snippet?: string } {
+function sourceView(row: ObservabilityRelatedRow): { title: string; url?: string; snippet?: string; evidenceStatus?: "full" | "partial" | "none" } {
   const parsed = parseRecord(row.recordJson);
   if (parsed.corrupt) return { title: "来源无法读取" };
   const source = parsed.value as Partial<ResearchGroundingSourceRecord>;
   const url = sanitizeGroundingUrl(stringValue(source.url));
-  return { title: safeText(source.title, "未命名来源"), ...(url ? { url } : {}), ...(safeText(source.snippet) ? { snippet: safeText(source.snippet) } : {}) };
+  const evidenceStatus = source.evidenceStatus === "full" || source.evidenceStatus === "partial" || source.evidenceStatus === "none" ? source.evidenceStatus : undefined;
+  return {
+    title: safeText(source.title, "未命名来源"),
+    ...(url ? { url } : {}),
+    ...(safeText(source.snippet) ? { snippet: safeText(source.snippet) } : {}),
+    ...(evidenceStatus ? { evidenceStatus } : {}),
+  };
 }
 
 function corruptSearch(row: ObservabilityRelatedRow): RunRecordSearchView {
@@ -526,6 +534,28 @@ function safeText(value: unknown, fallback = "未记录", maxCharacters = SAFE_T
 
 function safeQuery(value: unknown): string {
   return safeText(value, "未记录", SAFE_QUERY_LIMIT);
+}
+
+/** #49 失败留痕脱敏：每条 URL 经 sanitizeGroundingUrl，消息字段经 safeText，整体再走密钥键脱敏。 */
+function safeSearchTrace(trace: unknown): ResearchGroundingTraceEntry[] {
+  return arrayValue(trace).slice(0, 50).map((entry) => {
+    const item = (entry && typeof entry === "object" ? entry : {}) as Record<string, unknown>;
+    const url = stringValue(item.url);
+    const safeUrl = url ? sanitizeGroundingUrl(url) : undefined;
+    return redactSensitiveKeys({
+      stage: safeText(item.stage, "search", 20),
+      domain: safeText(item.domain, "unknown", 180),
+      ...(safeUrl ? { url: safeUrl } : {}),
+      status: safeText(item.status, "unknown", 40),
+      ...(numberValue(item.attempts) > 0 ? { attempts: numberValue(item.attempts) } : {}),
+      latencyMs: nonNegativeNumber(item.latencyMs),
+      ...(stringValue(item.errorCategory) ? { errorCategory: safeText(item.errorCategory, "", 40) } : {}),
+      ...(numberValue(item.httpStatus) > 0 ? { httpStatus: numberValue(item.httpStatus) } : {}),
+      ...(stringValue(item.retryReason) ? { retryReason: safeText(item.retryReason) } : {}),
+      ...(stringValue(item.fallbackReason) ? { fallbackReason: safeText(item.fallbackReason) } : {}),
+      ...(stringValue(item.evidenceStatus) ? { evidenceStatus: safeText(item.evidenceStatus, "", 20) } : {}),
+    }) as ResearchGroundingTraceEntry;
+  });
 }
 
 function safeObject(value: unknown): Record<string, unknown> {

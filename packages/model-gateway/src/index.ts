@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { FUSION_COMPOSE_PROMPT_VERSION, FUSION_COMPOSE_TOKEN_BUDGET, FUSION_RELATION_TYPES, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, parseResearchSelectionInsight, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight, type ResearchSliceContext } from "@collector/capture-contracts";
+import { FUSION_COMPOSE_PROMPT_VERSION, FUSION_COMPOSE_TOKEN_BUDGET, FUSION_RELATION_TYPES, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, parseResearchSelectionInsight, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight, type ResearchSliceContext } from "@collector/capture-contracts";
 
 export interface ProviderUsage {
   inputTokens?: number;
@@ -166,6 +166,8 @@ export interface GroundingSource {
   snippet?: string;
   publishedAt?: string;
   locator?: string;
+  /** #49：来源证据状态。full=抓取到全文；partial=仅搜索摘要；none=未取得内容。 */
+  evidenceStatus?: GroundingEvidenceStatus;
 }
 
 export interface GroundingCitation {
@@ -491,6 +493,9 @@ const AGENT_SEARCH_SYSTEM_PROMPT = `你是 Collector 的研究助手。你可以
 - 回答中引用来源时在陈述后标注 [来源n]（n 为搜索结果列表中该项的序号）
 - 只在确实有依据的陈述后标注
 - 没有依据时如实说明不确定性
+- 若某页抓取失败、只拿到搜索摘要（工具返回"[来源n 部分证据（搜索摘要）]"），仍可基于摘要陈述并标注 [来源n]，但需在文中说明"（依据搜索摘要）"，不得把摘要当作全文细节
+- 抓取失败且未提供摘要的页面不得作为依据，也不要标注引用
+- 当 web_fetch 返回"已被暂时熔断"提示时，本轮不要再抓取该域名的其他页面，改用其他来源
 
 约束：
 - 必须经过搜索再回答，不能凭记忆编造
@@ -1207,11 +1212,13 @@ ${input.recentUserMessages?.length ? `\n用户最近关注的问题：\n${input.
             queries.push(query);
 
             // Format results with global ordinals, dedup by URL
+            // #49：搜索摘要即部分证据（snippet 非空为 partial，空为 none），
+            // 后续 web_fetch 成功后置为 full。
             const formatted: Array<{ ordinal: number; title: string; url: string; snippet: string }> = [];
             for (const r of result.results) {
               if (!sourceUrlSet.has(r.url)) {
                 sourceUrlSet.add(r.url);
-                sources.push({ title: r.title, url: r.url, snippet: r.snippet });
+                sources.push({ title: r.title, url: r.url, snippet: r.snippet, evidenceStatus: r.snippet.trim() ? "partial" : "none" });
               }
               const ordinal = sources.findIndex((s) => s.url === r.url) + 1;
               formatted.push({ ordinal, title: r.title, url: r.url, snippet: r.snippet });
@@ -1235,9 +1242,22 @@ ${input.recentUserMessages?.length ? `\n用户最近关注的问题：\n${input.
 
             // Try to find existing source by URL to include its ordinal
             const existingOrdinal = sources.findIndex((s) => s.url === url) + 1;
-            const contentText = result.errorMessage
-              ? `抓取失败: ${result.errorMessage}`
-              : `[来源${existingOrdinal || "?"} 完整内容]\n${result.content}`;
+            let contentText: string;
+            if (result.errorMessage) {
+              // #49 部分证据兜底：抓取失败但来源列表中有该 URL 的搜索摘要时，
+              // 把摘要作为明确标注的部分证据喂给模型（引用完整性：可基于摘要陈述）。
+              const source = existingOrdinal > 0 ? sources[existingOrdinal - 1] : undefined;
+              const snippet = source?.snippet?.trim() ?? "";
+              if (source && snippet) {
+                source.evidenceStatus = "partial";
+                contentText = `抓取失败: ${result.errorMessage}\n\n[来源${existingOrdinal} 部分证据（搜索摘要）]\n${snippet}`;
+              } else {
+                contentText = `抓取失败: ${result.errorMessage}`;
+              }
+            } else {
+              if (existingOrdinal > 0) sources[existingOrdinal - 1].evidenceStatus = "full";
+              contentText = `[来源${existingOrdinal || "?"} 完整内容]\n${result.content}`;
+            }
 
             messages.push({ role: "tool" as const, tool_call_id: tc.id, content: contentText });
 

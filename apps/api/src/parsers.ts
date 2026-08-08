@@ -6,7 +6,7 @@ import { request as httpsRequest } from "node:https";
 import { readFile } from "node:fs/promises";
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
-import type { ArtifactRecord, CaptureLocator, CaptureRecord, FileLocator } from "@collector/capture-contracts";
+import type { ArtifactRecord, CaptureLocator, CaptureRecord, FileLocator, FetchErrorCategory } from "@collector/capture-contracts";
 
 const MAX_FRAGMENT_CHARS = 2_000;
 const MAX_URL_BYTES = 5 * 1024 * 1024;
@@ -15,6 +15,49 @@ const URL_TIMEOUT_MS = 8_000;
 
 /** DNS 解析注入签名：与 lookup(hostname, { all: true }) 等价。 */
 export type PublicUrlDnsLookup = (hostname: string, options: LookupOptions) => Promise<LookupAddress[]>;
+
+/**
+ * 结构化抓取失败（#49 证据管线）。
+ * 与既有 Error 完全兼容（message 文本不变，仍是 instanceof Error），
+ * 额外携带分类与"是否瞬时（可重试）"标志供抓取管线决策。
+ */
+export class PublicFetchError extends Error {
+  readonly category: FetchErrorCategory;
+  readonly transient: boolean;
+  readonly status?: number;
+  constructor(message: string, options: { category: FetchErrorCategory; transient: boolean; status?: number }) {
+    super(message);
+    this.name = "PublicFetchError";
+    this.category = options.category;
+    this.transient = options.transient;
+    if (options.status !== undefined) this.status = options.status;
+  }
+}
+
+/** HTTP 状态 → 失败分类：4xx 鉴权/不存在为永久，408/429/5xx 为瞬时可重试。 */
+function categoryForHttpStatus(status: number): { category: FetchErrorCategory; transient: boolean } {
+  if (status === 408 || status === 429 || status >= 500) return { category: "http_status", transient: true };
+  return { category: "http_status", transient: false };
+}
+
+/** DNS/网络层错误 message 兜底归类（未走结构化错误路径的底层异常）。 */
+function classifyNetworkMessage(message: string): { category: FetchErrorCategory; transient: boolean } | undefined {
+  if (/ENOTFOUND|EAI_AGAIN|URL does not resolve/i.test(message)) return { category: "dns", transient: true };
+  if (/ECONNREFUSED|ECONNRESET|ETIMEDOUT|socket hang up|network|connect/i.test(message)) return { category: "network", transient: true };
+  return undefined;
+}
+
+/**
+ * 对任意错误对象给出结构化分类。PublicFetchError 直读字段；
+ * 未知类型按 message 正则兜底，无法归类时归为永久 network 失败。
+ */
+export function classifyFetchError(error: unknown): { category: FetchErrorCategory; transient: boolean; status?: number } {
+  if (error instanceof PublicFetchError) return { category: error.category, transient: error.transient, ...(error.status !== undefined ? { status: error.status } : {}) };
+  const message = error instanceof Error ? error.message : String(error);
+  const network = classifyNetworkMessage(message);
+  if (network) return network;
+  return { category: "network", transient: false };
+}
 
 export interface ParsedFragment {
   text: string;
@@ -175,13 +218,13 @@ export async function resolvePublicUrl(
   options: { allowNonPublic?: boolean; dnsLookup?: PublicUrlDnsLookup } = {},
 ): Promise<{ url: URL; address: string; family: number }> {
   const url = new URL(value);
-  if (!["http:", "https:"].includes(url.protocol)) throw new Error("Only HTTP and HTTPS URLs are supported");
-  if (url.username || url.password) throw new Error("URLs with embedded credentials are not supported");
+  if (!["http:", "https:"].includes(url.protocol)) throw new PublicFetchError("Only HTTP and HTTPS URLs are supported", { category: "protocol", transient: false });
+  if (url.username || url.password) throw new PublicFetchError("URLs with embedded credentials are not supported", { category: "protocol", transient: false });
   const addresses = isIP(url.hostname)
     ? [{ address: url.hostname, family: isIP(url.hostname) }]
     : await resolveAddresses((options.dnsLookup ?? lookup), url.hostname);
-  if (!addresses.length) throw new Error("URL does not resolve to any address");
-  if (!options.allowNonPublic && addresses.some((item) => !isPublicAddress(item.address))) throw new Error("URL resolves to a private or reserved address");
+  if (!addresses.length) throw new PublicFetchError("URL does not resolve to any address", { category: "dns", transient: true });
+  if (!options.allowNonPublic && addresses.some((item) => !isPublicAddress(item.address))) throw new PublicFetchError("URL resolves to a private or reserved address", { category: "private_address", transient: false });
   return { url, address: addresses[0].address, family: addresses[0].family };
 }
 
@@ -199,32 +242,53 @@ async function resolveAddresses(
  * （allowNonPublic 只作用于第一跳的显式配置后端）。
  * 支持 text/html、text/plain 与 application/json，响应体受 MAX_URL_BYTES 限制。
  * dnsLookup 仅用于测试注入自定义 DNS 解析，默认使用系统解析。
+ * timeoutMs 仅供测试注入（缩短超时窗口），生产路径不传。
+ * 失败统一抛 PublicFetchError（message 与旧版一致，额外携带分类）。
  */
 export async function fetchPublicResource(
   value: string,
-  options: { allowNonPublic?: boolean; dnsLookup?: PublicUrlDnsLookup } = {},
+  options: { allowNonPublic?: boolean; dnsLookup?: PublicUrlDnsLookup; timeoutMs?: number } = {},
+): Promise<{ url: string; contentType: "text/html" | "text/plain" | "application/json"; bytes: Uint8Array }> {
+  try {
+    return await fetchPublicResourceInner(value, options);
+  } catch (error) {
+    if (error instanceof PublicFetchError) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    const network = classifyNetworkMessage(message);
+    if (network) throw new PublicFetchError(message, network);
+    // 兜底：无法归类的底层异常视为永久 network 失败（message 原样保留）。
+    throw new PublicFetchError(message, { category: "network", transient: false });
+  }
+}
+
+async function fetchPublicResourceInner(
+  value: string,
+  options: { allowNonPublic?: boolean; dnsLookup?: PublicUrlDnsLookup; timeoutMs?: number },
 ): Promise<{ url: string; contentType: "text/html" | "text/plain" | "application/json"; bytes: Uint8Array }> {
   let current = value;
   for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
     const resolved = await resolvePublicUrl(current, redirects === 0 ? { ...options } : { dnsLookup: options.dnsLookup });
-    const response = await requestResolvedUrl(resolved);
+    const response = await requestResolvedUrl(resolved, options.timeoutMs);
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.location;
-      if (!location || redirects === MAX_REDIRECTS) throw new Error("URL redirect limit exceeded");
+      if (!location || redirects === MAX_REDIRECTS) throw new PublicFetchError("URL redirect limit exceeded", { category: "redirect", transient: false });
       current = new URL(location, resolved.url).toString();
       continue;
     }
-    if (response.status < 200 || response.status >= 300) throw new Error(`URL returned HTTP ${response.status}`);
+    if (response.status < 200 || response.status >= 300) {
+      const { category, transient } = categoryForHttpStatus(response.status);
+      throw new PublicFetchError(`URL returned HTTP ${response.status}`, { category, transient, status: response.status });
+    }
     const contentType = String(response.headers["content-type"] ?? "").split(";", 1)[0].trim().toLowerCase();
     if (contentType.includes("application/json")) return { url: resolved.url.toString(), contentType: "application/json", bytes: response.bytes };
     if (contentType.includes("text/plain")) return { url: resolved.url.toString(), contentType: "text/plain", bytes: response.bytes };
     if (contentType.includes("text/html")) return { url: resolved.url.toString(), contentType: "text/html", bytes: response.bytes };
-    throw new Error(`Unsupported URL content type: ${contentType || "unknown"}`);
+    throw new PublicFetchError(`Unsupported URL content type: ${contentType || "unknown"}`, { category: "content_type", transient: false });
   }
-  throw new Error("URL redirect limit exceeded");
+  throw new PublicFetchError("URL redirect limit exceeded", { category: "redirect", transient: false });
 }
 
-async function requestResolvedUrl(resolved: { url: URL; address: string; family: number }): Promise<{ status: number; headers: IncomingMessage["headers"]; bytes: Uint8Array }> {
+async function requestResolvedUrl(resolved: { url: URL; address: string; family: number }, timeoutMs?: number): Promise<{ status: number; headers: IncomingMessage["headers"]; bytes: Uint8Array }> {
   return new Promise((resolve, reject) => {
     const url = resolved.url;
     const port = url.port || (url.protocol === "https:" ? 443 : 80);
@@ -234,23 +298,24 @@ async function requestResolvedUrl(resolved: { url: URL; address: string; family:
     const request = (url.protocol === "https:" ? httpsRequest : httpRequest)({
       hostname: resolved.address,
       port,
+      path: `${url.pathname}${url.search}`,
       method: "GET",
       headers: { Host: url.host, "User-Agent": "Collector/0.1", Accept: "text/html,text/plain;q=0.9" },
       lookup: (_hostname, _options, callback) => callback(null, resolved.address, resolved.family as 4 | 6),
     }, (response) => {
       const declaredLength = Number(response.headers["content-length"] ?? 0);
-      if (declaredLength > MAX_URL_BYTES) { response.destroy(); reject(new Error("URL response exceeds 5 MiB limit")); return; }
+      if (declaredLength > MAX_URL_BYTES) { response.destroy(); reject(new PublicFetchError("URL response exceeds 5 MiB limit", { category: "too_large", transient: false })); return; }
       const chunks: Buffer[] = [];
       let size = 0;
       response.on("data", (chunk: Buffer) => {
         size += chunk.length;
-        if (size > MAX_URL_BYTES) { response.destroy(new Error("URL response exceeds 5 MiB limit")); return; }
+        if (size > MAX_URL_BYTES) { response.destroy(new PublicFetchError("URL response exceeds 5 MiB limit", { category: "too_large", transient: false })); return; }
         chunks.push(Buffer.from(chunk));
       });
       response.on("end", () => resolve({ status: response.statusCode ?? 0, headers: response.headers, bytes: Buffer.concat(chunks) }));
       response.on("error", reject);
     });
-    request.setTimeout(URL_TIMEOUT_MS, () => request.destroy(new Error("URL request timed out")));
+    request.setTimeout(timeoutMs ?? URL_TIMEOUT_MS, () => request.destroy(new PublicFetchError("URL request timed out", { category: "timeout", transient: true })));
     request.on("error", reject);
     request.end();
   });

@@ -428,10 +428,12 @@ export interface RunRecordSearchView {
   sourceCount: number;
   citationCount: number;
   responseSummary?: Record<string, unknown>;
+  /** #49：搜索/抓取各阶段失败留痕（脱敏）。 */
+  trace?: ResearchGroundingTraceEntry[];
   errorMessage?: string;
   createdAt: string;
   completedAt?: string;
-  sources: Array<{ title: string; url?: string; snippet?: string }>;
+  sources: Array<{ title: string; url?: string; snippet?: string; evidenceStatus?: GroundingEvidenceStatus }>;
 }
 
 export interface RunRecordErrorView {
@@ -1806,6 +1808,35 @@ export const RESEARCH_GROUNDING_QUERY_MAX_CHARACTERS = 400;
 
 export type ResearchGroundingScenario = "chat" | "deep_research_first_round" | "branch_follow_up";
 
+/** 来源证据状态：full=抓取到全文，partial=仅搜索摘要等部分证据，none=无任何内容取得。 */
+export type GroundingEvidenceStatus = "full" | "partial" | "none";
+
+/** 抓取失败分类：#49 证据管线。瞬时失败可重试，永久失败不重试。 */
+export type FetchErrorCategory =
+  | "timeout" | "http_status" | "network" | "dns"
+  | "private_address" | "too_large" | "content_type" | "redirect"
+  | "protocol" | "content" | "blocked"
+  | "circuit_open" | "backend";
+
+/** 一次搜索/抓取阶段的失败留痕条目（#49 证据管线）。持久化前经脱敏。 */
+export interface ResearchGroundingTraceEntry {
+  stage: "search" | "fetch";
+  domain: string;
+  url?: string;
+  status:
+    | "completed" | "partial" | "permanent_failed" | "retry_exhausted"
+    | "circuit_open" | "no_results" | "backend_error";
+  /** 实际尝试次数（1 起；重试耗尽时 = 总尝试数）。 */
+  attempts?: number;
+  latencyMs: number;
+  errorCategory?: FetchErrorCategory;
+  httpStatus?: number;
+  /** 重试/回退触发原因（脱敏后）。 */
+  retryReason?: string;
+  fallbackReason?: string;
+  evidenceStatus?: GroundingEvidenceStatus;
+}
+
 /** 研究层只表达联网意图，不接触供应商工具协议或原始响应。 */
 export interface ResearchGroundingRequest {
   taskId: string;
@@ -1826,6 +1857,8 @@ export interface ResearchGroundingRunRecord {
   status: ResearchGroundingScopeStatus;
   queries: string[];
   responseSummary?: Record<string, unknown>;
+  /** #49：搜索/抓取各阶段失败留痕（脱敏）。 */
+  trace?: ResearchGroundingTraceEntry[];
   errorMessage?: string;
   attempt: number;
   createdAt: string;
@@ -1843,6 +1876,8 @@ export interface ResearchGroundingSourceRecord {
   snippet?: string;
   publishedAt?: string;
   locator?: string;
+  /** #49：full=抓取到全文；partial=仅搜索摘要；none=未取得内容。缺失视为未标记。 */
+  evidenceStatus?: GroundingEvidenceStatus;
   createdAt: string;
 }
 
@@ -1911,6 +1946,10 @@ export function sanitizeGroundingQueries(queries: readonly string[]): string[] {
 export function validateResearchGroundingResult(result: ResearchGroundingResult): void {
   const sourceIds = new Set(result.sources.map((source) => source.id));
   if (result.sources.some((source, index) => source.runId !== result.run.id || source.ordinal !== index + 1)) throw new Error("Grounding sources must be densely ordered for their run");
+  const validEvidence = new Set<GroundingEvidenceStatus>(["full", "partial", "none"]);
+  if (result.sources.some((source) => source.evidenceStatus !== undefined && !validEvidence.has(source.evidenceStatus))) {
+    throw new Error("Grounding source evidenceStatus must be one of full, partial, none");
+  }
   const blocks = deriveMessageBlocks(result.content);
   for (const citation of result.citations) {
     if (citation.runId !== result.run.id || !sourceIds.has(citation.sourceId)) throw new Error("Citation must reference a source from the same grounding run");

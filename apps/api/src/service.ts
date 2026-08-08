@@ -67,7 +67,7 @@ import { TermDetectionService } from "./term-detection.js";
 import { ResearchTermPreviewService } from "./term-preview.js";
 import { ParentChainContextService } from "./parent-chain-context.js";
 import { NodeNamingService } from "./node-naming.js";
-import { webSearch, webFetch } from "./web-search-agent.js";
+import { webSearch, webFetch, createSearchRunContext, filterCitationsByEvidence } from "./web-search-agent.js";
 import { parseAgentCitations } from "./web-search-agent.js";
 import { getSearchConfig as getSearchConfigFromAgent, updateSearchConfig as updateSearchConfigInAgent, listAvailableBackends, initSearchBackends, type SearchBackendId } from "./web-search-agent.js";
 import { ALL_SEARCH_BACKEND_IDS } from "./search-backends/index.js";
@@ -354,6 +354,9 @@ export class CaptureService {
         const direction = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
         const parentContext = formatResearchParentChainContext(request.parentChainContext);
 
+        // #49 证据管线上下文：一次研究调用一个实例，任务间隔离（并发任务互不污染）。
+        const searchCtx = createSearchRunContext();
+
         // F2: Agent 式多轮工具调用搜索——模型通过 web_search/web_fetch 工具自主完成搜索过程
         let userMessage = [direction, parentContext, formatResearchSliceContext(request.sliceContext)].filter(Boolean).join("\n\n");
         if (request.deepResearch) {
@@ -372,24 +375,38 @@ export class CaptureService {
           userMessage,
           {
             webSearch: async (query, maxResults) => {
+              const startedAt = Date.now();
               const r = await webSearch(query, maxResults);
+              // #49 失败留痕：搜索阶段不做重试（安全红线：不改变后端选择/回退行为），
+              // 只在出错时记录轨迹供运行记录查询。
+              if (r.errorMessage) {
+                searchCtx.recordEntry({
+                  stage: "search",
+                  domain: "search",
+                  status: r.usedFallback ? "backend_error" : "no_results",
+                  latencyMs: Date.now() - startedAt,
+                  errorCategory: "backend",
+                  retryReason: r.errorMessage,
+                  fallbackReason: r.usedFallback ? "backend_fallback" : undefined,
+                });
+              }
               return { query: r.query, total_results: r.total_results, results: r.results, errorMessage: r.errorMessage };
             },
             webFetch: async (url) => {
-              const r = await webFetch(url);
+              const r = await webFetch(url, { context: searchCtx });
               return { url: r.url, content: r.content, errorMessage: r.errorMessage };
             },
           },
           {
             maxTurns: 10,
-            systemPrompt: `你是 Collector 的研究助手。你可以使用 web_search 和 web_fetch 工具完成联网研究：先搜索，再按需抓取页面，信息不足时换关键词；最多 5 次搜索。\n\n最终回答只输出一段连贯的中文纯文本，不要返回 JSON、字段包装或 Markdown 代码围栏。按自然段落组织回答，段落之间留一个空行。只能在确有依据的陈述后写 [来源n]，n 对应工具返回的来源序号；不得编造来源或引用记录。`,
+            systemPrompt: `你是 Collector 的研究助手。你可以使用 web_search 和 web_fetch 工具完成联网研究：先搜索，再按需抓取页面，信息不足时换关键词；最多 5 次搜索。\n\n最终回答只输出一段连贯的中文纯文本，不要返回 JSON、字段包装或 Markdown 代码围栏。按自然段落组织回答，段落之间留一个空行。只能在确有依据的陈述后写 [来源n]，n 对应工具返回的来源序号；不得编造来源或引用记录。若某页抓取失败、只拿到搜索摘要（工具返回"[来源n 部分证据（搜索摘要）]"），仍可基于摘要陈述并标注 [来源n]，但需说明"（依据搜索摘要）"，不得把摘要当全文细节；抓取失败且未提供摘要的页面不得作为依据、不要标注引用。当 web_fetch 返回"已被暂时熔断"提示时，本轮不要再抓取该域名的其他页面，改用其他来源。`,
             context: { workflowRunId: request.taskId, purpose: "research", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
           },
         );
 
         if (!result.content) throw new Error("Provider returned an empty response");
 
-        // 构造来源记录供 parseAgentCitations 使用
+        // 构造来源记录供 parseAgentCitations 使用（序数范围检查）
         const sourceRecords = result.sources.map((source, i) => ({
           id: "",
           runId: "",
@@ -400,7 +417,12 @@ export class CaptureService {
           createdAt: new Date().toISOString(),
         }));
 
-        const { citations } = parseAgentCitations(result.content, sourceRecords);
+        // #49 引用完整性：只保留指向实际取得证据（full/partial）来源的引用；
+        // 全部来源仍保留入库（含 none），正文 [来源n] 不改写（序数稠密约束）。
+        const keptCitations = filterCitationsByEvidence(
+          parseAgentCitations(result.content, sourceRecords).citations,
+          result.sources,
+        );
         const scopeStatus: ResearchGroundingScopeStatus = result.sources.length ? "grounded" : "no_verifiable_sources";
         return {
           content: result.content,
@@ -411,8 +433,9 @@ export class CaptureService {
             title: source.title ?? `来源 ${i + 1}`,
             url: source.url ?? "",
             snippet: source.snippet ?? "",
+            ...(source.evidenceStatus ? { evidenceStatus: source.evidenceStatus } : {}),
           })),
-          citations: citations.map((citation) => ({
+          citations: keptCitations.map((citation) => ({
             sourceOrdinal: citation.sourceOrdinal,
             startOffset: citation.markerOffset,
             endOffset: citation.markerOffset,
@@ -420,11 +443,12 @@ export class CaptureService {
           responseSummary: {
             searchStatus: "completed",
             sourceCount: result.sources.length,
-            citationCount: citations.length,
+            citationCount: keptCitations.length,
             queryCount: result.queries.length,
             method: "agent-loop-v2",
             searchBackend: getSearchConfigFromAgent().backend,
           },
+          ...(searchCtx.toTrace().length ? { trace: searchCtx.toTrace() } : {}),
         };
       },
       async *generate(request) {

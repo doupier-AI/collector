@@ -62,9 +62,9 @@ function createTestTools() {
         ];
         return { query, total_results: results.length, results };
       },
-      webFetch: async (url: string) => {
+      webFetch: async (url: string): Promise<{ url: string; content: string; errorMessage?: string }> => {
         fetchCalls.push({ url });
-        return { url, content: `Full content of ${url}`, errorMessage: undefined };
+        return { url, content: `Full content of ${url}` };
       },
     },
   };
@@ -481,4 +481,175 @@ test("agent loop: web_fetch still works after search cap reached", async () => {
   assert.equal(fetchCalls.length, 1);
   assert.equal(result.queries.length, 5);
   assert.ok(result.content.length > 0);
+});
+
+// ── #49 部分证据：抓取失败但搜索摘要可作依据 ──
+
+test("agent loop: failed fetch with snippet injects marked partial evidence into tool message", async () => {
+  const provider = new ProgrammableAgentProvider();
+  const failedUrl = "https://example.com/blocked-page";
+  const toolMessagesSeen: string[] = [];
+  provider.setAgentChatSequence([
+    {
+      finishReason: "tool_calls",
+      message: {
+        role: "assistant",
+        content: null,
+        toolCalls: [{
+          id: "tc-s1",
+          type: "function" as const,
+          function: { name: "web_search", arguments: JSON.stringify({ query: "测试关键词" }) },
+        }],
+      },
+      model: "test-model",
+    },
+    {
+      finishReason: "tool_calls",
+      message: {
+        role: "assistant",
+        content: null,
+        toolCalls: [{
+          id: "tc-f1",
+          type: "function" as const,
+          function: { name: "web_fetch", arguments: JSON.stringify({ url: failedUrl }) },
+        }],
+      },
+      model: "test-model",
+    },
+    {
+      finishReason: "stop",
+      message: { role: "assistant", content: "结论基于摘要[来源1]。" },
+      model: "test-model",
+    },
+  ]);
+
+  const gateway = createTestGateway(provider);
+  const { tools, mockSearchResults } = createTestTools();
+  mockSearchResults.set("测试关键词", [
+    { title: "Blocked Page", url: failedUrl, snippet: "这是搜索摘要内容" },
+  ]);
+  tools.webFetch = async (url: string) => {
+    assert.equal(url, failedUrl);
+    return { url, content: "", errorMessage: "页面疑似验证码或付费墙（内容被拦截）" };
+  };
+  // 捕获每次 agentChat 收到的完整消息历史，用于断言工具返回内容
+  const originalAgentChat = provider.agentChat.bind(provider);
+  provider.agentChat = async (messages, _tools, _options) => {
+    for (const message of messages) {
+      if (message.role === "tool" && typeof message.content === "string") toolMessagesSeen.push(message.content);
+    }
+    return originalAgentChat(messages, _tools as ToolDefinition[], _options);
+  };
+
+  const result = await gateway.runAgentSearchLoop("测试", tools);
+
+  // 部分证据块被注入到 web_fetch 的工具返回中
+  const partialMessage = toolMessagesSeen.find((text) => text.includes("部分证据（搜索摘要）"));
+  assert.ok(partialMessage, "tool message contains partial evidence marker");
+  assert.ok(partialMessage?.includes("这是搜索摘要内容"), "snippet content included");
+  assert.ok(partialMessage?.includes("抓取失败"), "failure reason included");
+  // sources[0] 被标记为 partial（搜索摘要）
+  assert.equal(result.sources[0].evidenceStatus, "partial");
+});
+
+// ── #49 抓取成功：来源升级为 full ──
+
+test("agent loop: successful fetch upgrades source evidenceStatus to full", async () => {
+  const provider = new ProgrammableAgentProvider();
+  provider.setAgentChatSequence([
+    {
+      finishReason: "tool_calls",
+      message: {
+        role: "assistant",
+        content: null,
+        toolCalls: [{
+          id: "tc-s1",
+          type: "function" as const,
+          function: { name: "web_search", arguments: JSON.stringify({ query: "test" }) },
+        }],
+      },
+      model: "test-model",
+    },
+    {
+      finishReason: "tool_calls",
+      message: {
+        role: "assistant",
+        content: null,
+        toolCalls: [{
+          id: "tc-f1",
+          type: "function" as const,
+          function: { name: "web_fetch", arguments: JSON.stringify({ url: "https://example.com/test?q=test" }) },
+        }],
+      },
+      model: "test-model",
+    },
+    {
+      finishReason: "stop",
+      message: { role: "assistant", content: "回答[来源1]。" },
+      model: "test-model",
+    },
+  ]);
+
+  const gateway = createTestGateway(provider);
+  const { tools } = createTestTools();
+
+  const result = await gateway.runAgentSearchLoop("test", tools);
+
+  assert.equal(result.sources.length, 1);
+  assert.equal(result.sources[0].evidenceStatus, "full", "fetch success upgrades to full");
+});
+
+// ── #49 失败无摘要：保持 none，不注入部分证据块 ──
+
+test("agent loop: failed fetch without snippet keeps evidenceStatus none", async () => {
+  const provider = new ProgrammableAgentProvider();
+  const failedUrl = "https://example.com/no-snippet";
+  provider.setAgentChatSequence([
+    {
+      finishReason: "tool_calls",
+      message: {
+        role: "assistant",
+        content: null,
+        toolCalls: [{
+          id: "tc-s1",
+          type: "function" as const,
+          function: { name: "web_search", arguments: JSON.stringify({ query: "空摘要查询" }) },
+        }],
+      },
+      model: "test-model",
+    },
+    {
+      finishReason: "tool_calls",
+      message: {
+        role: "assistant",
+        content: null,
+        toolCalls: [{
+          id: "tc-f1",
+          type: "function" as const,
+          function: { name: "web_fetch", arguments: JSON.stringify({ url: failedUrl }) },
+        }],
+      },
+      model: "test-model",
+    },
+    {
+      finishReason: "stop",
+      message: { role: "assistant", content: "回答[来源1]。" },
+      model: "test-model",
+    },
+  ]);
+
+  const gateway = createTestGateway(provider);
+  const { tools, mockSearchResults } = createTestTools();
+  mockSearchResults.set("空摘要查询", [
+    { title: "No Snippet", url: failedUrl, snippet: "" },
+  ]);
+  tools.webFetch = async (url: string) => {
+    assert.equal(url, failedUrl);
+    return { url, content: "", errorMessage: "URL returned HTTP 403" };
+  };
+
+  const result = await gateway.runAgentSearchLoop("测试", tools);
+
+  // 无摘要来源保持 none（不注入部分证据块，模型不能基于它引用）
+  assert.equal(result.sources[0].evidenceStatus, "none");
 });
