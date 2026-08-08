@@ -484,9 +484,11 @@ button {
   scroll-margin-top: calc(var(--app-bar-height) + var(--space-4));
 }
 
-/* 卡片正文舒适行宽：--measure(68rem) 对长文偏宽，限定 42rem。 */
+/* 卡片正文随卡片宽度延伸：正文行宽上限交由页面容器（--measure 68rem）统一把关。
+   此前限定 42rem 会在宽视口下让正文与卡片脱节——卡片右侧出现大片空白，
+   且框选文字时选区在 672px 处戛然而止，与卡片版面不符。 */
 .slice-card .message__content {
-  max-width: 42rem;
+  max-width: none;
 }
 
 /* #36 章节导航线列：悬停于正文左缘外侧留白，跟随滚动与边栏开合，不挤压正文行宽。 */

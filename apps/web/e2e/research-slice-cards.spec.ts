@@ -181,11 +181,10 @@ test.describe("#36 窄屏", () => {
     const noHorizontal = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth);
     expect(noHorizontal).toBe(true);
 
-    // 卡片正文行宽受限（.slice-card .message__content max-width 42rem）
+    // 正文行宽随页面容器收缩（.page 宽度 min(100% - 2rem, --measure)）；窄屏下不超过视口宽
     const content = page.locator(".slice-card .message__content").first();
     const contentBox = await content.boundingBox();
     expect(contentBox).not.toBeNull();
-    // 42rem = 672px；窄屏下不应超过视口宽
     expect(contentBox!.width).toBeLessThanOrEqual(390);
 
     // 线列仍可见
