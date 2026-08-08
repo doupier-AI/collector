@@ -6,6 +6,8 @@ import type {
   ModelPurpose,
   ModelRoutingView,
   NodeGrowthAccepted,
+  ProjectInput,
+  ProjectRecord,
   ProviderCredentialView,
   ProviderDefinition,
   ProviderModelDiscoveryInput,
@@ -14,6 +16,7 @@ import type {
   ProviderProfileInput,
   ProviderProfileTestInput,
   ProviderTestResult,
+  ResearchSessionUpdateInput,
   ResearchBodyVersionView,
   ResearchBranchView,
   ResearchContentSnapshotRecord,
@@ -64,7 +67,19 @@ export interface RunRecordExportDownload {
 }
 
 export interface ApiClient {
-  listResearchSessions(): Promise<ResearchSessionRecord[]>;
+  listResearchSessions(trash?: boolean): Promise<ResearchSessionRecord[]>;
+  /** 会话管理：改名 / 移动项目 / 归档；title 变更后自动标题永久让位（服务端置 titleEdited）。 */
+  updateResearchSession(sessionId: string, update: ResearchSessionUpdateInput): Promise<ResearchSessionRecord>;
+  /** 软删除：会话进入回收站，30 天后自动彻底清理。 */
+  trashResearchSession(sessionId: string): Promise<ResearchSessionRecord>;
+  restoreResearchSession(sessionId: string): Promise<ResearchSessionRecord>;
+  /** 彻底删除：级联删除整棵节点树，不可恢复。 */
+  permanentDeleteResearchSession(sessionId: string): Promise<void>;
+  listProjects(): Promise<ProjectRecord[]>;
+  createProject(name: string, idempotencyKey: string): Promise<ProjectRecord>;
+  renameProject(projectId: string, name: string): Promise<ProjectRecord>;
+  /** 删除项目：其下会话回到未分类，不删除会话。 */
+  deleteProject(projectId: string): Promise<void>;
   listRunRecords(params?: RunRecordListParams): Promise<RunRecordPage>;
   exportRunRecords(params?: RunRecordExportFilters): Promise<RunRecordExportDownload>;
   getRunRecord(id: string): Promise<RunRecordDetail>;
@@ -231,8 +246,59 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
     fetchImpl ?? ((input, init) => window.fetch(input, { credentials: "same-origin", ...init }));
 
   return {
-    listResearchSessions() {
-      return requestJson<ResearchSessionRecord[]>(fetchFn, "/v1/research-sessions");
+    listResearchSessions(trash?: boolean) {
+      const path = trash ? "/v1/research-sessions?trash=true" : "/v1/research-sessions";
+      return requestJson<ResearchSessionRecord[]>(fetchFn, path);
+    },
+    updateResearchSession(sessionId: string, update: ResearchSessionUpdateInput) {
+      return requestJson<ResearchSessionRecord>(fetchFn, `/v1/research-sessions/${encodeURIComponent(sessionId)}`, {
+        method: "PATCH",
+        headers: JSON_HEADERS,
+        body: JSON.stringify(update),
+      });
+    },
+    trashResearchSession(sessionId: string) {
+      return requestJson<ResearchSessionRecord>(fetchFn, `/v1/research-sessions/${encodeURIComponent(sessionId)}/trash`, {
+        method: "PUT",
+        headers: JSON_HEADERS,
+        body: "{}",
+      });
+    },
+    restoreResearchSession(sessionId: string) {
+      return requestJson<ResearchSessionRecord>(fetchFn, `/v1/research-sessions/${encodeURIComponent(sessionId)}/restore`, {
+        method: "PUT",
+        headers: JSON_HEADERS,
+        body: "{}",
+      });
+    },
+    permanentDeleteResearchSession(sessionId: string) {
+      return requestJson<void>(fetchFn, `/v1/research-sessions/${encodeURIComponent(sessionId)}`, {
+        method: "DELETE",
+        headers: JSON_HEADERS,
+      });
+    },
+    listProjects() {
+      return requestJson<ProjectRecord[]>(fetchFn, "/v1/projects");
+    },
+    createProject(name: string, idempotencyKey: string) {
+      return requestJson<ProjectRecord>(fetchFn, "/v1/projects", {
+        method: "POST",
+        headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
+        body: JSON.stringify({ name }),
+      });
+    },
+    renameProject(projectId: string, name: string) {
+      return requestJson<ProjectRecord>(fetchFn, `/v1/projects/${encodeURIComponent(projectId)}`, {
+        method: "PATCH",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ name }),
+      });
+    },
+    deleteProject(projectId: string) {
+      return requestJson<void>(fetchFn, `/v1/projects/${encodeURIComponent(projectId)}`, {
+        method: "DELETE",
+        headers: JSON_HEADERS,
+      });
     },
     listRunRecords(params: RunRecordListParams = {}) {
       const query = new URLSearchParams();

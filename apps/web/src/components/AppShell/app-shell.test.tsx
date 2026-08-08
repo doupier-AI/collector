@@ -25,6 +25,7 @@ function renderShell(initialEntry = "/") {
   const services = {
     api: {
       listResearchSessions: async () => [],
+      listProjects: async () => [],
       listResearchLaterItems: async () => [],
       getResearchGraph: async (_sessionId: string, focusNodeId?: string) => ({
         focusNodeId: focusNodeId ?? "node-1",
