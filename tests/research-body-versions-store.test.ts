@@ -120,7 +120,7 @@ test("v32 migration strips legacy content from slice record_json (idempotent, ve
   for (const slice of legacySlices) {
     insert.run(slice.id, slice.nodeId, slice.messageId, slice.ordinal, slice.isProvisional ? 1 : 0, slice.createdAt, JSON.stringify(slice));
   }
-  db.prepare("DELETE FROM schema_migrations WHERE version = 32").run();
+  db.prepare("DELETE FROM schema_migrations WHERE version >= 32").run();
   store.close();
 
   store = new SqliteStore(dbPath);

@@ -128,6 +128,8 @@ test("migrations 15 to 21 preserve existing version 14 research sessions", async
 
   const version14 = new DatabaseSync(databasePath);
   version14.exec(`
+    DROP TABLE research_semantic_fragments;
+    DROP TABLE research_body_versions;
     DROP TABLE research_term_preview_events;
     DROP TABLE research_term_previews;
     DROP INDEX research_nodes_creation_idempotency_idx;
@@ -161,7 +163,8 @@ test("migrations 15 to 21 preserve existing version 14 research sessions", async
     DROP TABLE research_content_snapshots;
     DROP TABLE research_import_tasks;
     DROP TABLE research_attachments;
-    DELETE FROM schema_migrations WHERE version IN (15, 16, 17, 18, 19, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30);
+    -- 真实 v14 旧库不存在任何 >=15 的迁移记录；用 >= 截断，新增迁移后模拟仍然成立
+    DELETE FROM schema_migrations WHERE version >= 15;
   `);
   version14.close();
 
@@ -222,6 +225,8 @@ test("migration v24 maps sessions and branches to nodes and backfills node_id", 
 
   const raw = new DatabaseSync(databasePath);
   raw.exec(`
+    DROP TABLE research_semantic_fragments;
+    DROP TABLE research_body_versions;
     DROP TABLE research_term_preview_events;
     DROP TABLE research_term_previews;
     DROP INDEX research_nodes_creation_idempotency_idx;
@@ -236,7 +241,8 @@ test("migration v24 maps sessions and branches to nodes and backfills node_id", 
     ALTER TABLE research_selections DROP COLUMN node_id;
     ALTER TABLE research_later_items DROP COLUMN node_id;
     ALTER TABLE research_later_items DROP COLUMN note;
-    DELETE FROM schema_migrations WHERE version = 24 OR version = 25 OR version = 26 OR version = 27 OR version = 28 OR version = 29 OR version = 30;
+    -- 模拟 v23 旧库：不存在任何 >=24 的迁移记录（含后续新增版本）
+    DELETE FROM schema_migrations WHERE version >= 24;
   `);
 
   const session: ResearchSessionRecord = {
@@ -560,13 +566,15 @@ test("migration v28 creates research_edges table and derives parent-child edges 
   await seed.init();
   seed.close();
 
-  // Roll back to v27: drop v28-v30 tables and bump schema back
+  // 回滚到 v27：拆除所有 >=v28 迁移创建的结构并删除其迁移记录（>= 截断覆盖后续新增版本）
   const raw = new DatabaseSync(databasePath);
   raw.exec(`
+    DROP TABLE IF EXISTS research_semantic_fragments;
+    DROP TABLE IF EXISTS research_body_versions;
     DROP TABLE IF EXISTS research_fusion_proposals;
     DROP TABLE IF EXISTS research_slices;
     DROP TABLE IF EXISTS research_edges;
-    DELETE FROM schema_migrations WHERE version IN (28, 29, 30);
+    DELETE FROM schema_migrations WHERE version >= 28;
   `);
 
   // Insert nodes with parent-child relationships at v27
@@ -639,8 +647,10 @@ test("migration v30 recreates research_fusion_proposals after a v29 rollback", a
 
   const rollback = new DatabaseSync(databasePath);
   rollback.exec(`
+    DROP TABLE research_semantic_fragments;
+    DROP TABLE research_body_versions;
     DROP TABLE research_fusion_proposals;
-    DELETE FROM schema_migrations WHERE version = 30;
+    DELETE FROM schema_migrations WHERE version >= 30;
   `);
   rollback.close();
 
