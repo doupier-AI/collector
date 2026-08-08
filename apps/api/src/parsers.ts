@@ -1,4 +1,5 @@
 import { lookup } from "node:dns/promises";
+import type { LookupAddress, LookupOptions } from "node:dns";
 import { isIP } from "node:net";
 import { request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -11,6 +12,9 @@ const MAX_FRAGMENT_CHARS = 2_000;
 const MAX_URL_BYTES = 5 * 1024 * 1024;
 const MAX_REDIRECTS = 3;
 const URL_TIMEOUT_MS = 8_000;
+
+/** DNS 解析注入签名：与 lookup(hostname, { all: true }) 等价。 */
+export type PublicUrlDnsLookup = (hostname: string, options: LookupOptions) => Promise<LookupAddress[]>;
 
 export interface ParsedFragment {
   text: string;
@@ -166,27 +170,43 @@ export async function assertPublicUrl(value: string, options: { allowNonPublic?:
   return (await resolvePublicUrl(value, options)).url;
 }
 
-async function resolvePublicUrl(value: string, options: { allowNonPublic?: boolean } = {}): Promise<{ url: URL; address: string; family: number }> {
+export async function resolvePublicUrl(
+  value: string,
+  options: { allowNonPublic?: boolean; dnsLookup?: PublicUrlDnsLookup } = {},
+): Promise<{ url: URL; address: string; family: number }> {
   const url = new URL(value);
   if (!["http:", "https:"].includes(url.protocol)) throw new Error("Only HTTP and HTTPS URLs are supported");
   if (url.username || url.password) throw new Error("URLs with embedded credentials are not supported");
   const addresses = isIP(url.hostname)
     ? [{ address: url.hostname, family: isIP(url.hostname) }]
-    : await lookup(url.hostname, { all: true, verbatim: true });
+    : await resolveAddresses((options.dnsLookup ?? lookup), url.hostname);
   if (!addresses.length) throw new Error("URL does not resolve to any address");
   if (!options.allowNonPublic && addresses.some((item) => !isPublicAddress(item.address))) throw new Error("URL resolves to a private or reserved address");
   return { url, address: addresses[0].address, family: addresses[0].family };
+}
+
+/** 统一 DNS 解析返回形态：node:dns/promises 的 lookup 重载返回单值或数组，注入函数返回数组。 */
+async function resolveAddresses(
+  resolver: PublicUrlDnsLookup | typeof lookup,
+  hostname: string,
+): Promise<LookupAddress[]> {
+  const result = await resolver(hostname, { all: true, verbatim: true });
+  return Array.isArray(result) ? result : [result];
 }
 
 /**
  * 抓取公网资源：请求前校验公网目标，重定向后对每一跳重新严格校验
  * （allowNonPublic 只作用于第一跳的显式配置后端）。
  * 支持 text/html、text/plain 与 application/json，响应体受 MAX_URL_BYTES 限制。
+ * dnsLookup 仅用于测试注入自定义 DNS 解析，默认使用系统解析。
  */
-export async function fetchPublicResource(value: string, options: { allowNonPublic?: boolean } = {}): Promise<{ url: string; contentType: "text/html" | "text/plain" | "application/json"; bytes: Uint8Array }> {
+export async function fetchPublicResource(
+  value: string,
+  options: { allowNonPublic?: boolean; dnsLookup?: PublicUrlDnsLookup } = {},
+): Promise<{ url: string; contentType: "text/html" | "text/plain" | "application/json"; bytes: Uint8Array }> {
   let current = value;
   for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
-    const resolved = await resolvePublicUrl(current, redirects === 0 ? options : {});
+    const resolved = await resolvePublicUrl(current, redirects === 0 ? { ...options } : { dnsLookup: options.dnsLookup });
     const response = await requestResolvedUrl(resolved);
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.location;
@@ -206,9 +226,16 @@ export async function fetchPublicResource(value: string, options: { allowNonPubl
 
 async function requestResolvedUrl(resolved: { url: URL; address: string; family: number }): Promise<{ status: number; headers: IncomingMessage["headers"]; bytes: Uint8Array }> {
   return new Promise((resolve, reject) => {
-    const request = (resolved.url.protocol === "https:" ? httpsRequest : httpRequest)(resolved.url, {
+    const url = resolved.url;
+    const port = url.port || (url.protocol === "https:" ? 443 : 80);
+    // Node 的 http.request 若传入域名 hostname，会在连接前再做一次系统 DNS 解析
+    // （绕过 lookup 注入，域名为假名时产生 Invalid IP address）。此处以解析结果 IP
+    // 直连，并手动携带 Host 头保留虚拟主机路由语义（等价 curl --resolve）。
+    const request = (url.protocol === "https:" ? httpsRequest : httpRequest)({
+      hostname: resolved.address,
+      port,
       method: "GET",
-      headers: { "User-Agent": "Collector/0.1", Accept: "text/html,text/plain;q=0.9" },
+      headers: { Host: url.host, "User-Agent": "Collector/0.1", Accept: "text/html,text/plain;q=0.9" },
       lookup: (_hostname, _options, callback) => callback(null, resolved.address, resolved.family as 4 | 6),
     }, (response) => {
       const declaredLength = Number(response.headers["content-length"] ?? 0);

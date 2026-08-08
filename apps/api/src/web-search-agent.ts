@@ -1,5 +1,5 @@
 import type { ResearchGroundingSourceRecord } from "@collector/capture-contracts";
-import { extractReadableText } from "./parsers.js";
+import { extractReadableText, fetchPublicResource } from "./parsers.js";
 import { createSearchBackendRegistry, defaultSearchConfig, selectSearchBackend } from "./search-backends/index.js";
 import { ALL_SEARCH_BACKEND_IDS } from "./search-backends/index.js";
 import { SearchBackendRegistry } from "./search-backends/index.js";
@@ -7,7 +7,6 @@ import type { SearchBackend, SearchBackendId, SearchConfig } from "./search-back
 
 export type { SearchBackendId, SearchConfig };
 
-const PAGE_FETCH_TIMEOUT_MS = 8_000;
 const MAX_PAGE_BYTES = 256 * 1024;
 
 export interface WebSearchResult {
@@ -194,8 +193,8 @@ function stripHtml(value: string): string {
 
 /**
  * 抓取搜索结果页面的正文文本。
- * 校验公网目标（复用 parsers.ts 已有的 assertPublicUrl + extractReadableText），
- * 抓取 HTML 后使用 Readability 提取可读文本。
+ * 经 fetchPublicResource 走统一安全抓取路径（逐跳私网/保留地址重校验、
+ * DNS 结果钉死连接、重定向上限），抓取 HTML 后使用 Readability 提取可读文本。
  */
 export async function fetchPageContent(url: string): Promise<{
   url: string;
@@ -204,38 +203,17 @@ export async function fetchPageContent(url: string): Promise<{
 }> {
   const fetchStartedAt = Date.now();
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new Error("Page fetch timed out")), PAGE_FETCH_TIMEOUT_MS);
-    let response: Response;
-    try {
-      response = await fetch(url, {
-        method: "GET",
-        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
-        redirect: "follow",
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-    if (!response.ok) {
-      console.log(`[web-search] fetchPageContent error url="${url}" httpStatus=${response.status} latency=${Date.now() - fetchStartedAt}ms`);
-      return { url, text: "", errorMessage: `HTTP ${response.status}` };
-    }
-    const contentType = (response.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+    const fetched = await fetchPublicResource(url);
+    const raw = Buffer.from(fetched.bytes).toString("utf8");
     let text = "";
-    if (contentType.includes("text/html")) {
-      const html = await response.text();
-      if (html.length > MAX_PAGE_BYTES) {
-        text = stripHtml(html).slice(0, MAX_PAGE_BYTES);
-      } else {
-        text = extractReadableText(html, url);
-      }
-    } else if (contentType.includes("text/plain")) {
-      text = (await response.text()).slice(0, MAX_PAGE_BYTES);
+    if (fetched.contentType === "text/html") {
+      text = raw.length > MAX_PAGE_BYTES ? stripHtml(raw).slice(0, MAX_PAGE_BYTES) : extractReadableText(raw, fetched.url);
+    } else {
+      text = raw.slice(0, MAX_PAGE_BYTES);
     }
     const trimmed = text.trim();
-    const result = { url, text: trimmed.slice(0, 6000), errorMessage: trimmed ? undefined : "No readable text" };
-    console.log(`[web-search] fetchPageContent ${result.errorMessage ? "error" : "completed"} url="${url}" textLen=${result.text.length} latency=${Date.now() - fetchStartedAt}ms${result.errorMessage ? ` error="${result.errorMessage}"` : ""}`);
+    const result = { url: fetched.url, text: trimmed.slice(0, 6000), errorMessage: trimmed ? undefined : "No readable text" };
+    console.log(`[web-search] fetchPageContent ${result.errorMessage ? "error" : "completed"} url="${fetched.url}" textLen=${result.text.length} latency=${Date.now() - fetchStartedAt}ms${result.errorMessage ? ` error="${result.errorMessage}"` : ""}`);
     return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown fetch error";

@@ -3,7 +3,7 @@ export { CaptureService, NotFoundError, ValidationError, checksumCapture } from 
 export { RunRecordsService, RunRecordsValidationError, type RunRecordListInput } from "./observability.js";
 export { MemoryStore, JsonStore, SqliteStore, defaultDataPaths, type CollectorStore } from "./store.js";
 export { LocalAuth, PairingRateLimitError, hashToken } from "./auth.js";
-export { SourceParser, assertPublicUrl, extractReadableText, fetchPublicResource, parseMarkdown, parsePdf, splitPlainText } from "./parsers.js";
+export { SourceParser, assertPublicUrl, extractReadableText, fetchPublicResource, parseMarkdown, parsePdf, resolvePublicUrl, splitPlainText, type PublicUrlDnsLookup } from "./parsers.js";
 export { WorkflowScheduler, type WorkflowSchedulerOptions } from "./scheduler.js";
 export { ResearchSessionService, ResearchNotFoundError, ResearchValidationError, DEEP_RESEARCH_PROMPT_VERSION, RESEARCH_CHAT_PROMPT_VERSION, type ResearchGenerationProvider, type ResearchGenerationRequest, type ResearchServiceOptions } from "./research.js";
 export { DEFAULT_RESEARCH_SLICE_CONTEXT_TOKEN_BUDGET, buildResearchSliceContext, estimateResearchSliceContextItemTokens, estimateResearchSliceTokens, type ResearchFragmentContextCandidate } from "./slice-context.js";
