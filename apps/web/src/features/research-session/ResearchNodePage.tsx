@@ -27,6 +27,7 @@ import { useSelectionCitation } from "../selection/useSelectionCitation";
 import type { MarkResult } from "../selection/useSelectionMark";
 import { useSelectionMark } from "../selection/useSelectionMark";
 import { formatSessionTime } from "./format";
+import { notifySessionsChanged } from "../navigation/session-events";
 import { MessageItem } from "./MessageItem";
 import { ModelStatusIndicator } from "./ModelStatusIndicator";
 import { NodeChildList } from "./NodeChildList";
@@ -170,6 +171,29 @@ export function ResearchNodePage() {
   const restoredSelection = useSelectionRestore(searchParams.get("sel"));
 
   const isRoot = readyView ? !readyView.node.parentNodeId : true;
+  // 根节点改名：inline 编辑；改名后置 titleEdited，自动标题永久让位（服务端行为）。
+  const [renamingTitle, setRenamingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const [titleError, setTitleError] = useState(false);
+  const startRenameTitle = () => {
+    if (!readyView) return;
+    setTitleDraft(readyView.session.title);
+    setTitleError(false);
+    setRenamingTitle(true);
+  };
+  const commitRenameTitle = async () => {
+    if (!readyView) return;
+    const name = titleDraft.trim();
+    if (!name) return;
+    try {
+      const updated = await api.updateResearchSession(readyView.session.id, { title: name });
+      node.updateView((view) => ({ ...view, session: { ...view.session, ...updated } }));
+      setRenamingTitle(false);
+      notifySessionsChanged();
+    } catch {
+      setTitleError(true);
+    }
+  };
   // 来源条：子节点取 node.originSelectionId；带来源的旧独立会话根节点取 session.originSelectionId
   const originSelectionId = readyView
     ? readyView.node.originSelectionId ?? (!readyView.node.parentNodeId ? readyView.session.originSelectionId : undefined)
@@ -544,12 +568,53 @@ export function ResearchNodePage() {
       ) : null}
 
       <header className="session-header">
-        <h1 className="page__title">
-          {title}
-          {isFusionNode && view.node.isAutoFusionNode ? (
-            <span className="fusion-auto-badge" data-testid="auto-fusion-badge">自动生成</span>
-          ) : null}
-        </h1>
+        <div className="session-header__title-row">
+          {isRoot && renamingTitle ? (
+            <div className="session-header__rename">
+              <input
+                type="text"
+                className="input"
+                value={titleDraft}
+                maxLength={40}
+                aria-label="会话新标题"
+                autoFocus
+                onChange={(event) => {
+                  setTitleDraft(event.target.value);
+                  setTitleError(false);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void commitRenameTitle();
+                  if (event.key === "Escape") setRenamingTitle(false);
+                }}
+              />
+              <button type="button" className="button button--secondary" onClick={() => void commitRenameTitle()}>
+                保存
+              </button>
+              <button type="button" className="button button--ghost" onClick={() => setRenamingTitle(false)}>
+                取消
+              </button>
+              {titleError ? (
+                <p className="session-header__rename-error" role="alert">
+                  改名没有完成，请重试。
+                </p>
+              ) : null}
+            </div>
+          ) : (
+            <>
+              <h1 className="page__title">
+                {title}
+                {isFusionNode && view.node.isAutoFusionNode ? (
+                  <span className="fusion-auto-badge" data-testid="auto-fusion-badge">自动生成</span>
+                ) : null}
+              </h1>
+              {isRoot ? (
+                <button type="button" className="session-header__rename-button" aria-label={`重命名「${view.session.title}」`} onClick={startRenameTitle}>
+                  改名
+                </button>
+              ) : null}
+            </>
+          )}
+        </div>
         <p className="session-header__meta">更新于 {formatSessionTime(view.session.updatedAt)}</p>
         <ModelStatusIndicator />
       </header>

@@ -217,6 +217,48 @@ button {
   font-size: var(--font-size-caption);
 }
 
+/* 根节点改名：页头标题旁入口，inline 输入框 */
+.session-header__title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.session-header__rename {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.session-header__rename .input {
+  min-width: min(24rem, 60vw);
+}
+
+.session-header__rename-error {
+  margin: 0;
+  color: var(--color-danger);
+  font-size: var(--font-size-caption);
+}
+
+.session-header__rename-button {
+  margin-inline-start: var(--space-2);
+  padding: 0.125rem 0.5rem;
+  background: none;
+  border: 1px solid var(--color-line);
+  border-radius: 999px;
+  color: var(--color-muted);
+  font: inherit;
+  font-size: var(--font-size-caption);
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.session-header__rename-button:hover {
+  border-color: var(--color-muted);
+  color: var(--color-ink);
+}
+
 /* F1：相似性核验后的低注意力提示；操作不依赖动效或颜色。 */
 .fusion-proposal-notice {
   margin: 0 0 var(--space-4);
@@ -2525,6 +2567,97 @@ button.model-status {
 .button--ghost:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.button--danger {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
+.button--danger:hover:not(:disabled) {
+  background: var(--color-danger);
+  border-color: var(--color-danger);
+  color: var(--color-surface);
+}
+
+.button--danger:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ---------- 回收站页 ---------- */
+
+.trash-page__header,
+.trash-page__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.trash-page__header {
+  margin-block-end: var(--space-4);
+}
+
+.trash-page__header-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex: 0 0 auto;
+}
+
+.trash-page__list {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.trash-page__item {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+}
+
+.trash-page__item-main {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.trash-page__item-title {
+  color: var(--color-ink);
+  overflow-wrap: anywhere;
+}
+
+.trash-page__item-title:hover {
+  color: var(--color-ai);
+  text-decoration: underline;
+}
+
+.trash-page__item-time {
+  color: var(--color-muted);
+  font-size: 0.8125rem;
+}
+
+.trash-page__item-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex: 0 0 auto;
+}
+
+.trash-page__back {
+  margin: var(--space-4) 0 0;
+}
+
+.trash-page__back a {
+  color: var(--color-ai);
+  text-decoration: none;
+}
+
+.trash-page__back a:hover {
+  text-decoration: underline;
 }
 
 .composer__file-input {
