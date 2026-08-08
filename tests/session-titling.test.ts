@@ -197,3 +197,23 @@ test("root turn queueing auto-titles the session end-to-end", async (t) => {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 });
+
+test("user-edited titles are never overwritten by nameSession or refineSessionTitle", async (t) => {
+  const { store, close } = await createStore();
+  t.after(close);
+  const sid = randomUUID();
+  const sessionRecord = session(sid);
+  await store.createResearchSession(sessionRecord, randomUUID());
+  await seedRootTurn(store, sid);
+  // 用户显式改名（PATCH 路径置 titleEdited）
+  await store.updateResearchSession(sid, { title: "我的自定义命名" });
+  assert.equal(store.getResearchSession(sid)?.titleEdited, true);
+
+  const service = new SessionTitlingService(store, async () => ({ generateSessionTitle: async () => "模型提炼标题" }));
+  const named = await service.nameSession(sid);
+  assert.equal(named?.title, "我的自定义命名");
+  const refined = await service.refineSessionTitle(sid);
+  assert.equal(refined?.title, "我的自定义命名");
+  // 即便生成器可用也不会覆盖
+  assert.equal(store.getResearchSession(sid)?.title, "我的自定义命名");
+});

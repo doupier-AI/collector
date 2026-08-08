@@ -222,6 +222,11 @@ export class ResearchSessionService {
     return this.store.listResearchSessions();
   }
 
+  /** 会话管理：回收站列表（按 trashedAt 倒序）。 */
+  listTrashedSessions(): ResearchSessionRecord[] {
+    return this.store.listTrashedResearchSessions();
+  }
+
   getSession(id: string): ResearchSessionView {
     const session = this.store.getResearchSession(id);
     if (!session) throw new ResearchNotFoundError("Research session not found");
@@ -243,9 +248,43 @@ export class ResearchSessionService {
     };
   }
 
+  /** 会话管理：部分更新（title/projectId/status）。回收站会话仅允许恢复相关变更，其余 409。 */
+  async updateSession(
+    sessionId: string,
+    patch: { title?: string; projectId?: string | null; status?: "active" | "archived" },
+  ): Promise<ResearchSessionRecord> {
+    const session = this.store.getResearchSession(sessionId);
+    if (!session) throw new ResearchNotFoundError("Research session not found");
+    if (isTrashed(session)) throw new ResearchConflictError("Research session is in trash");
+    const updated = await this.store.updateResearchSession(sessionId, patch);
+    if (!updated) throw new ResearchNotFoundError("Research session not found");
+    return updated;
+  }
+
+  /** 会话管理：软删除进回收站；已在回收站或不存在时返回 false。 */
+  async trashSession(sessionId: string): Promise<boolean> {
+    if (!this.store.getResearchSession(sessionId)) throw new ResearchNotFoundError("Research session not found");
+    return this.store.trashResearchSession(sessionId, new Date().toISOString());
+  }
+
+  /** 会话管理：从回收站恢复；恢复后标题/项目/归档状态保留。 */
+  async restoreSession(sessionId: string): Promise<boolean> {
+    const restored = await this.store.restoreResearchSession(sessionId);
+    if (!restored) throw new ResearchNotFoundError("Research session not found or not in trash");
+    return restored;
+  }
+
+  /** 会话管理：彻底删除（级联整棵节点树）。 */
+  async deleteSession(sessionId: string): Promise<boolean> {
+    const deleted = await this.store.deleteResearchSession(sessionId);
+    if (!deleted) throw new ResearchNotFoundError("Research session not found");
+    return deleted;
+  }
+
   async submitMessage(sessionId: string, content: string, idempotencyKey: string, options: ResearchTurnOptions = {}): Promise<ResearchTurnAccepted> {
     const session = this.store.getResearchSession(sessionId);
     if (!session) throw new ResearchNotFoundError("Research session not found");
+    if (isTrashed(session)) throw new ResearchConflictError("Research session is in trash");
     if (!idempotencyKey.trim()) throw new ResearchValidationError("Idempotency-Key is required");
     if (idempotencyKey.length > 200) throw new ResearchValidationError("Idempotency-Key must not exceed 200 characters");
 
@@ -1291,3 +1330,10 @@ function sanitizeGroundingTrace(trace: readonly ResearchGroundingTraceEntry[]): 
 
 export class ResearchNotFoundError extends Error {}
 export class ResearchValidationError extends Error {}
+/** 会话处于回收站时仍可读，但变更类请求（消息/导入/改名/移动/归档）一律拒绝。 */
+export class ResearchConflictError extends Error {}
+
+/** 会话是否处于回收站（软删除置位 trashedAt）。 */
+export function isTrashed(session: ResearchSessionRecord): boolean {
+  return Boolean((session as ResearchSessionRecord & { trashedAt?: string }).trashedAt);
+}

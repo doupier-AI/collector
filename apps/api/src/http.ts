@@ -6,13 +6,13 @@ import { timingSafeEqual } from "node:crypto";
 const RESEARCH_SSE_REDRAIN_MS = 100;
 import { ValidationError, NotFoundError, CaptureService } from "./service.js";
 import { LocalAuth, PairingRateLimitError } from "./auth.js";
-import { RESEARCH_IMPORT_MAX_BYTES, validateCreateChildNodeInput, validateDeepResearchInput, validateResearchFusionProposalDecisionInput, validateResearchImportHeaders, validateResearchLaterItemInput, validateResearchLaterItemUpdate, validateResearchMessageInput, validateResearchSelectionInput, validateResearchSessionInput, validateResearchTermPreviewInput } from "@collector/capture-contracts";
-import { ResearchNotFoundError, ResearchValidationError } from "./research.js";
+import { RESEARCH_IMPORT_MAX_BYTES, validateCreateChildNodeInput, validateDeepResearchInput, validateProjectInput, validateResearchFusionProposalDecisionInput, validateResearchImportHeaders, validateResearchLaterItemInput, validateResearchLaterItemUpdate, validateResearchMessageInput, validateResearchSelectionInput, validateResearchSessionInput, validateResearchSessionUpdateInput, validateResearchTermPreviewInput } from "@collector/capture-contracts";
+import { ResearchNotFoundError, ResearchValidationError, ResearchConflictError } from "./research.js";
 import { ResearchImportConflictError, ResearchImportNotFoundError, ResearchImportValidationError } from "./research-import.js";
 import { ResearchSelectionConflictError, ResearchSelectionNotFoundError, ResearchSelectionValidationError } from "./selection.js";
-import { DeepResearchNotFoundError, DeepResearchValidationError } from "./deep-research.js";
+import { DeepResearchNotFoundError, DeepResearchValidationError, DeepResearchConflictError } from "./deep-research.js";
 import { ResearchLaterNotFoundError, ResearchLaterValidationError } from "./research-later.js";
-import { ResearchTermPreviewNotFoundError, ResearchTermPreviewValidationError } from "./term-preview.js";
+import { ResearchTermPreviewNotFoundError, ResearchTermPreviewValidationError, ResearchTermPreviewConflictError } from "./term-preview.js";
 import { ResearchFusionProposalConflictError, ResearchFusionProposalNotFoundError, ResearchFusionProposalValidationError } from "./fusion-proposals.js";
 import { RunRecordsValidationError } from "./observability.js";
 import { streamRunRecordExport } from "./run-record-export.js";
@@ -216,6 +216,7 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         return json(response, 201, auth.createPairingCode(body.name?.trim() || "Collector Client"));
       }
       if (request.method === "GET" && url.pathname === "/v1/research-sessions") {
+        if (url.searchParams.get("trash") === "true") return json(response, 200, service.research.listTrashedSessions());
         return json(response, 200, service.research.listSessions());
       }
       if (request.method === "POST" && url.pathname === "/v1/research-sessions") {
@@ -297,6 +298,46 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       const researchSessionMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)$/);
       if (request.method === "GET" && researchSessionMatch) {
         return json(response, 200, service.research.getSession(decodeURIComponent(researchSessionMatch[1])));
+      }
+      if (request.method === "PATCH" && researchSessionMatch) {
+        const body = await readJson(request);
+        try { validateResearchSessionUpdateInput(body); }
+        catch (error) { throw new ResearchValidationError((error as Error).message); }
+        return json(response, 200, await service.research.updateSession(decodeURIComponent(researchSessionMatch[1]), body));
+      }
+      const researchSessionTrashMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)\/trash$/);
+      if (request.method === "PUT" && researchSessionTrashMatch) {
+        await service.research.trashSession(decodeURIComponent(researchSessionTrashMatch[1]));
+        return json(response, 200, { trashed: true });
+      }
+      const researchSessionRestoreMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)\/restore$/);
+      if (request.method === "PUT" && researchSessionRestoreMatch) {
+        await service.research.restoreSession(decodeURIComponent(researchSessionRestoreMatch[1]));
+        return json(response, 200, { restored: true });
+      }
+      if (request.method === "DELETE" && researchSessionMatch) {
+        await service.research.deleteSession(decodeURIComponent(researchSessionMatch[1]));
+        return json(response, 200, { deleted: true });
+      }
+      if (request.method === "GET" && url.pathname === "/v1/projects") {
+        return json(response, 200, service.projects.listProjects());
+      }
+      if (request.method === "POST" && url.pathname === "/v1/projects") {
+        const body = await readJsonOptional(request);
+        try { validateProjectInput(body); }
+        catch (error) { throw new ResearchValidationError((error as Error).message); }
+        return json(response, 201, await service.projects.createProject(body, header(request, "idempotency-key") ?? ""));
+      }
+      const projectMatch = url.pathname.match(/^\/v1\/projects\/([^/]+)$/);
+      if (request.method === "PATCH" && projectMatch) {
+        const body = await readJson(request);
+        try { validateProjectInput(body); }
+        catch (error) { throw new ResearchValidationError((error as Error).message); }
+        return json(response, 200, await service.projects.renameProject(decodeURIComponent(projectMatch[1]), body.name));
+      }
+      if (request.method === "DELETE" && projectMatch) {
+        await service.projects.deleteProject(decodeURIComponent(projectMatch[1]));
+        return json(response, 200, { deleted: true });
       }
       const researchTaskEventsMatch = url.pathname.match(/^\/v1\/research-tasks\/([^/]+)\/events$/);
       if (request.method === "GET" && researchTaskEventsMatch) {
@@ -710,8 +751,8 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (error instanceof LocalAccessError) {
         return json(response, 403, { error: { code: "local_access_denied", message: error.message } });
       }
-      if (error instanceof ResearchImportConflictError || error instanceof ResearchSelectionConflictError || error instanceof ResearchFusionProposalConflictError) {
-        const code = error instanceof ResearchFusionProposalConflictError ? "proposal_already_decided" : error.code;
+      if (error instanceof ResearchImportConflictError || error instanceof ResearchSelectionConflictError || error instanceof ResearchFusionProposalConflictError || error instanceof ResearchConflictError || error instanceof ResearchTermPreviewConflictError || error instanceof DeepResearchConflictError) {
+        const code = error instanceof ResearchFusionProposalConflictError ? "proposal_already_decided" : error instanceof ResearchConflictError || error instanceof ResearchTermPreviewConflictError || error instanceof DeepResearchConflictError ? "session_in_trash" : error.code;
         return json(response, 409, { error: { code, message: error.message } });
       }
       if (error instanceof ValidationError || error instanceof ResearchValidationError || error instanceof ResearchImportValidationError || error instanceof ResearchSelectionValidationError || error instanceof DeepResearchValidationError || error instanceof ResearchLaterValidationError || error instanceof ResearchTermPreviewValidationError || error instanceof ResearchFusionProposalValidationError || error instanceof RunRecordsValidationError || error instanceof SyntaxError) {

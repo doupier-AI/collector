@@ -14,7 +14,7 @@ import {
 } from "@collector/capture-contracts";
 import type { DeepResearchStore } from "./store.js";
 import { ParentChainContextService } from "./parent-chain-context.js";
-import { ResearchSessionService, type ResearchGenerationRequest } from "./research.js";
+import { ResearchSessionService, isTrashed, type ResearchGenerationRequest } from "./research.js";
 import { TermDetectionService, validateTermMarkers } from "./term-detection.js";
 
 export const TERM_PREVIEW_PROMPT_VERSION = "term-preview-v1";
@@ -24,6 +24,8 @@ const MAX_CONTEXT_EXCERPT_CHARACTERS = 240;
 
 export class ResearchTermPreviewNotFoundError extends Error {}
 export class ResearchTermPreviewValidationError extends Error {}
+/** 会话处于回收站时术语预览等变更类请求拒绝。 */
+export class ResearchTermPreviewConflictError extends Error {}
 
 export interface ResearchTermPreviewServiceOptions {
   research: ResearchSessionService;
@@ -60,6 +62,7 @@ export class ResearchTermPreviewService {
     if (!node) throw new ResearchTermPreviewNotFoundError("Research node not found");
     const session = this.store.getResearchSession(node.sessionId);
     if (!session) throw new Error("Research node references a missing session");
+    if (isTrashed(session)) throw new ResearchTermPreviewConflictError("Research session is in trash");
     const message = this.store.listResearchMessagesByNode(nodeId).find((candidate) => candidate.id === input.messageId);
     if (!message || message.role !== "assistant" || message.status !== "completed") {
       throw new ResearchTermPreviewValidationError("Term preview requires a completed assistant message");

@@ -19,7 +19,7 @@ import {
   type ResearchTurnAccepted,
 } from "@collector/capture-contracts";
 import type { DeepResearchStore } from "./store.js";
-import { DEEP_RESEARCH_PROMPT_VERSION, RESEARCH_CHAT_PROMPT_VERSION, type ResearchSessionService, type ResearchTurnOptions } from "./research.js";
+import { DEEP_RESEARCH_PROMPT_VERSION, RESEARCH_CHAT_PROMPT_VERSION, isTrashed, type ResearchSessionService, type ResearchTurnOptions } from "./research.js";
 
 /** 分支模式首轮用户消息中选区原文的摘录长度。 */
 const SELECTION_EXCERPT_CHARACTERS = 120;
@@ -64,6 +64,7 @@ export class DeepResearchService {
     if (!selection) throw new DeepResearchNotFoundError("Research selection not found");
     const originSession = this.store.getResearchSession(selection.sessionId);
     if (!originSession) throw new Error("Research selection references a missing session");
+    if (isTrashed(originSession)) throw new DeepResearchConflictError("Research session is in trash");
 
     const now = new Date().toISOString();
     const firstTurnContent = input.direction?.trim() || defaultFirstTurnContent(selection);
@@ -394,3 +395,5 @@ function excerptText(text: string, maxCharacters: number): string {
 
 export class DeepResearchNotFoundError extends Error {}
 export class DeepResearchValidationError extends Error {}
+/** 会话处于回收站时研究生长/深入研究等变更类请求拒绝。 */
+export class DeepResearchConflictError extends Error {}

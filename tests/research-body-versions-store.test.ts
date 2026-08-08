@@ -120,6 +120,12 @@ test("v32 migration strips legacy content from slice record_json (idempotent, ve
   for (const slice of legacySlices) {
     insert.run(slice.id, slice.nodeId, slice.messageId, slice.ordinal, slice.isProvisional ? 1 : 0, slice.createdAt, JSON.stringify(slice));
   }
+  // 回滚 v33 结构（projects 表 / project_id 列），否则重开时 v33 迁移的 CREATE TABLE 会重复建表报错。
+  db.exec(`
+    DROP INDEX IF EXISTS research_sessions_project_idx;
+    ALTER TABLE research_sessions DROP COLUMN project_id;
+    DROP TABLE IF EXISTS projects;
+  `);
   db.prepare("DELETE FROM schema_migrations WHERE version >= 32").run();
   store.close();
 

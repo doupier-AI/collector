@@ -51,14 +51,18 @@ export class SessionTitlingService {
    */
   async nameSession(sessionId: string): Promise<ResearchSessionRecord | undefined> {
     const session = this.store.getResearchSession(sessionId);
-    if (!session || session.title !== DEFAULT_RESEARCH_SESSION_TITLE) return session;
+    if (!session || session.titleEdited) return session;
+    if (session.title !== DEFAULT_RESEARCH_SESSION_TITLE) return session;
     const messages = this.store.listResearchMessagesByNode(sessionId);
     return this.store.updateResearchSessionTitle(sessionId, deterministicSessionTitle(messages));
   }
 
-  /** 模型提炼覆盖确定性标题；失败或未配置模型时保留现状。幂等防重入。 */
+  /** 模型提炼覆盖确定性标题；失败或未配置模型时保留现状。幂等防重入。用户改名后永久让位。 */
   async refineSessionTitle(sessionId: string): Promise<ResearchSessionRecord | undefined> {
     if (this.refining.has(sessionId)) return this.store.getResearchSession(sessionId);
+    // 用户显式改过名（titleEdited）：不再提炼，避免覆盖用户命名。
+    const current = this.store.getResearchSession(sessionId);
+    if (!current || current.titleEdited) return current;
     this.refining.add(sessionId);
     try {
       const gateway = await this.gatewayResolver();
@@ -70,6 +74,9 @@ export class SessionTitlingService {
       );
       const title = validateSessionTitle(generated);
       if (!title) return this.store.getResearchSession(sessionId);
+      // 提炼落库前重读最新记录：提炼期间用户可能已改名，此时同样让位。
+      const latest = this.store.getResearchSession(sessionId);
+      if (!latest || latest.titleEdited) return latest;
       return this.store.updateResearchSessionTitle(sessionId, title);
     } catch {
       // 标题提炼失败不影响会话主流程，保留确定性标题。

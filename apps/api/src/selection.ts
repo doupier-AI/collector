@@ -11,6 +11,7 @@ import {
   type ResearchSelectionTaskRecord,
 } from "@collector/capture-contracts";
 import type { ResearchSelectionStore } from "./store.js";
+import { isTrashed } from "./research.js";
 
 const PROMPT_VERSION = "selection-analysis-v1";
 
@@ -59,7 +60,9 @@ export class ResearchSelectionService {
   }
 
   async createSelection(sessionId: string, input: ResearchSelectionInput, idempotencyKey: string): Promise<ResearchSelectionAccepted> {
-    if (!this.store.getResearchSession(sessionId)) throw new ResearchSelectionNotFoundError("Research session not found");
+    const session = this.store.getResearchSession(sessionId);
+    if (!session) throw new ResearchSelectionNotFoundError("Research session not found");
+    if (isTrashed(session)) throw new ResearchSelectionConflictError("Research session is in trash");
     if (!idempotencyKey.trim()) throw new ResearchSelectionValidationError("Idempotency-Key is required");
     if (idempotencyKey.length > 200) throw new ResearchSelectionValidationError("Idempotency-Key must not exceed 200 characters");
 

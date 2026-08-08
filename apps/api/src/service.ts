@@ -68,6 +68,7 @@ import { ResearchTermPreviewService } from "./term-preview.js";
 import { ParentChainContextService } from "./parent-chain-context.js";
 import { NodeNamingService } from "./node-naming.js";
 import { SessionTitlingService } from "./session-titling.js";
+import { ResearchProjectService } from "./projects.js";
 import { webSearch, webFetch, createSearchRunContext, filterCitationsByEvidence } from "./web-search-agent.js";
 import { parseAgentCitations } from "./web-search-agent.js";
 import { getSearchConfig as getSearchConfigFromAgent, updateSearchConfig as updateSearchConfigInAgent, listAvailableBackends, initSearchBackends, type SearchBackendId } from "./web-search-agent.js";
@@ -104,6 +105,7 @@ export class CaptureService {
   readonly nodeNaming: NodeNamingService;
   readonly sessionTitling: SessionTitlingService;
   readonly runRecords: RunRecordsService;
+  readonly projects: ResearchProjectService;
 
   constructor(
     private readonly store: CollectorStore,
@@ -115,6 +117,7 @@ export class CaptureService {
     this.runRecords = new RunRecordsService(this.store);
     this.attachModelGateway(this.modelGateway);
     this.parentChainContext = new ParentChainContextService(this.store);
+    this.projects = new ResearchProjectService(this.store);
     this.nodeNaming = new NodeNamingService(this.store, async () => this.gatewayForPurpose("research"), this.parentChainContext);
     this.sessionTitling = new SessionTitlingService(this.store, async () => this.gatewayForPurpose("research"));
     this.research = new ResearchSessionService(this.store, {
@@ -2120,6 +2123,12 @@ export class CaptureService {
     let count = 0;
     for (const item of trashed) {
       await this.store.deleteCapture(item.id);
+      count++;
+    }
+    // 会话回收站（会话管理系统）：超期软删除会话彻底清理（级联整棵节点树）。
+    const trashedSessions = this.store.listTrashedResearchSessions().filter((s) => s.trashedAt && s.trashedAt < cutoff);
+    for (const session of trashedSessions) {
+      await this.store.deleteResearchSession(session.id);
       count++;
     }
     console.log(`[Cleanup] Permanently deleted ${count} items older than ${retentionDays} days`);

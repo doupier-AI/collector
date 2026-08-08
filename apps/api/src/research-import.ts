@@ -14,6 +14,7 @@ import {
   type ResearchImportTaskRecord,
 } from "@collector/capture-contracts";
 import type { ResearchImportStore } from "./store.js";
+import { isTrashed } from "./research.js";
 import { parseMarkdown, parsePdf, splitPlainText } from "./parsers.js";
 
 const DOCX_MAX_ENTRY_BYTES = RESEARCH_IMPORT_MAX_BYTES;
@@ -46,7 +47,9 @@ export class ResearchImportService {
     bytes: Uint8Array,
     idempotencyKey: string,
   ): Promise<ResearchImportAccepted> {
-    if (!this.store.getResearchSession(sessionId)) throw new ResearchImportNotFoundError("Research session not found");
+    const session = this.store.getResearchSession(sessionId);
+    if (!session) throw new ResearchImportNotFoundError("Research session not found");
+    if (isTrashed(session)) throw new ResearchImportConflictError("Research session is in trash", "session_in_trash");
     if (!idempotencyKey.trim()) throw new ResearchImportValidationError("Idempotency-Key is required", "idempotency_key_required");
     if (idempotencyKey.length > 200) throw new ResearchImportValidationError("Idempotency-Key must not exceed 200 characters");
     if (!bytes.byteLength) throw new ResearchImportValidationError("File must not be empty", "empty_file");
