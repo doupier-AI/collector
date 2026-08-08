@@ -56,10 +56,11 @@ const consent = process.env.COLLECTOR_AI_CONSENT === "1";
 const legacyApiKey = process.env.DEEPSEEK_API_KEY;
 const apiKey = process.env.COLLECTOR_AI_API_KEY ?? legacyApiKey;
 const providerId = process.env.COLLECTOR_AI_PROVIDER ?? (legacyApiKey ? "deepseek" : undefined);
-await store.saveSetting("ai_consent", String(consent));
 if (apiKey && !providerId) throw new Error("COLLECTOR_AI_PROVIDER is required when COLLECTOR_AI_API_KEY is configured");
 let activeProfile: ProviderProfile | undefined;
-if (providerId) {
+// 环境变量只作为开发/测试的显式通道（真实模型验收 harness 依赖），常规启动器路径不传
+// COLLECTOR_AI_CONSENT，此时一律以持久化配置为准（#47 启动恢复）。
+if (providerId && consent) {
   const definition = DEFAULT_PROVIDER_REGISTRY.get(providerId);
   const configuredBaseUrl = process.env.COLLECTOR_AI_BASE_URL;
   const baseUrl = definition.id.startsWith("custom")
@@ -88,14 +89,15 @@ if (providerId) {
 }
 await store.saveSetting("ai_configured", String(Boolean(activeProfile?.credentialConfigured)));
 const resolver = new ProviderRuntimeResolver(DEFAULT_PROVIDER_REGISTRY, async (profileId) => store.getProviderCredential(profileId));
-// MVP 演示模式必须保持离线，即使环境中已配置真实模型凭据也不构造云模型运行时。
-const runtime = !mvpDemoMode && consent && activeProfile?.credentialConfigured ? await resolver.resolve(activeProfile) : undefined;
-const service = new CaptureService(store, paths.artifacts, undefined, runtime?.gateway, {
+const service = new CaptureService(store, paths.artifacts, undefined, undefined, {
   researchProvider: mvpDemoMode ? createMvpDemoResearchProvider() : undefined,
   selectionProvider: mvpDemoMode ? createMvpDemoSelectionProvider() : undefined,
   mvpDemoMode,
 });
-service.setModelGateway(runtime?.gateway, runtime?.route);
+// #47：启动即从持久化状态重建模型网关——已保存的活动配置、凭证与同意记录齐备
+// 即建立可用网关（双击启动器不传 COLLECTOR_AI_CONSENT，不依赖环境变量通道）。
+// 配置不存在或不可用时网关为空，具体原因经 getAiConfiguration 暴露；恢复失败不阻断启动。
+await service.restoreModelGateway();
 service.setModelGatewayResolver(async (route) => {
   if (mvpDemoMode) throw new Error("Cloud model workflows are disabled in Collector MVP demo mode");
   const profile = store.getProviderProfile(route.providerProfileId);

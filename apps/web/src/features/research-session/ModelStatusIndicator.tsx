@@ -10,6 +10,9 @@ type ModelStatusState =
 
 function statusText(config: AiConfigurationView): string {
   if (config.mode === "demo") return "本地演示模式｜非真实 AI｜未联网检索";
+  // 配置无效时显示具体原因（停用/缺 Key/解析失败），优先于"已配置"文案——
+  // 界面可能显示已配置（credentialConfigured 布尔）而网关实际不可用。
+  if (config.modelError) return `模型不可用：${config.modelError}`;
   if (config.mode === "real") {
     const label = [config.provider, config.model].filter(Boolean).join(" · ");
     return label ? `模型：${label}` : "模型：已配置";

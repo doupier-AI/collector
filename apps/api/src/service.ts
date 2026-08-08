@@ -88,6 +88,8 @@ export class CaptureService {
   /** 按任务类型解析出的网关快照；配置或路由变化后标记 stale，下次使用时重建。 */
   private purposeGateways = new Map<ModelPurpose, ModelGateway>();
   private purposeGatewaysStale = true;
+  /** 网关重建失败的具体原因（停用/缺 Key/解析失败），经 getAiConfiguration 暴露给界面。 */
+  private modelGatewayError?: string;
   readonly research: ResearchSessionService;
   readonly researchImports: ResearchImportService;
   readonly researchSelections: ResearchSelectionService;
@@ -161,6 +163,7 @@ export class CaptureService {
   setModelGateway(gateway: ModelGateway | undefined, route?: ActiveModelRoute): void {
     this.modelGateway = gateway;
     this.currentModelRoute = route ? structuredClone(route) : undefined;
+    if (gateway) this.modelGatewayError = undefined;
     this.purposeGatewaysStale = true;
     this.attachModelGateway(gateway);
     if (!this.options.researchProvider) this.research.setProvider(this.researchProviderFor(gateway));
@@ -583,6 +586,8 @@ export class CaptureService {
     const profile = this.store.getActiveProviderProfile();
     const configured = profile ? profile.credentialConfigured : this.store.getSetting("ai_configured") === "true";
     const searchCfg = getSearchConfigFromAgent();
+    // 网关为空且存在重建失败原因时，展示具体原因（停用/缺 Key/解析失败），不再一律"未配置"。
+    const modelError = !this.modelGateway ? this.modelGatewayError : undefined;
     return {
       consent: this.store.getSetting("ai_consent") === "true",
       configured,
@@ -593,6 +598,7 @@ export class CaptureService {
       webGrounding: this.modelGateway?.providerGroundingCapability,
       searchBackend: searchCfg.backend,
       availableSearchBackends: listAvailableBackends(),
+      modelError,
     };
   }
   async setAiConfiguration(consent: boolean, configured: boolean): Promise<void> {
@@ -771,13 +777,30 @@ export class CaptureService {
   /**
    * 使用当前 active profile 与持久化凭证重建 ModelGateway。
    * 服务启动、profile 激活/删除后调用，确保内存中的网关与持久化配置一致。
+   * 返回失败原因（profile 缺失 / 停用 / 凭证缺失 / 解析失败），成功返回 undefined。
+   * MVP 演示模式下保持离线，返回"演示模式不构造云网关"。
    */
-  private async rebuildActiveGateway(): Promise<void> {
-    if (this.options.mvpDemoMode) return;
-    const profile = this.store.getActiveProviderProfile();
-    if (!profile?.credentialConfigured) {
+  async rebuildActiveGateway(): Promise<{ code: "disabled_profile" | "missing_credential" | "resolve_failed" | "demo_mode" } | undefined> {
+    if (this.options.mvpDemoMode) {
       this.setModelGateway(undefined);
-      return;
+      this.modelGatewayError = undefined;
+      return { code: "demo_mode" };
+    }
+    const profile = this.store.getActiveProviderProfile();
+    if (!profile) {
+      this.setModelGateway(undefined);
+      this.modelGatewayError = "未配置可用的 AI 模型。请在模型设置中保存并启用一套模型配置。";
+      return { code: "disabled_profile" };
+    }
+    if (!profile.enabled) {
+      this.setModelGateway(undefined);
+      this.modelGatewayError = "当前模型配置已被停用。请在模型设置中重新启用。";
+      return { code: "disabled_profile" };
+    }
+    if (!profile.credentialConfigured) {
+      this.setModelGateway(undefined);
+      this.modelGatewayError = "当前模型配置缺少 API Key。请在模型设置中补充凭证。";
+      return { code: "missing_credential" };
     }
     const resolver = new ProviderRuntimeResolver(
       DEFAULT_PROVIDER_REGISTRY,
@@ -786,9 +809,22 @@ export class CaptureService {
     try {
       const runtime = await resolver.resolve(profile);
       this.setModelGateway(runtime.gateway, runtime.route);
-    } catch {
+      return undefined;
+    } catch (error) {
       this.setModelGateway(undefined);
+      this.modelGatewayError = error instanceof Error ? error.message : "模型配置解析失败";
+      return { code: "resolve_failed" };
     }
+  }
+
+  /**
+   * 服务启动恢复：从持久化状态重建模型网关。
+   * 已保存的活动配置、凭证齐备即建立可用网关；不存在或不可用时网关为空，
+   * 失败原因经 getAiConfiguration 暴露，供界面显示具体原因。恢复失败不阻断服务启动。
+   */
+  async restoreModelGateway(): Promise<void> {
+    await this.rebuildActiveGateway();
+    this.refreshPurposeGateways();
   }
 
   /** 读取按任务类型的模型分配；未分配的用途在使用时跟随当前激活配置。 */

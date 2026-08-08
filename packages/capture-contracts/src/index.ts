@@ -888,6 +888,8 @@ export interface AiConfigurationView {
   searchBackend?: string;
   /** 可用搜索后端列表 */
   availableSearchBackends?: string[];
+  /** 网关重建失败的具体原因（配置停用/凭证缺失/解析失败）；网关可用时缺省。 */
+  modelError?: string;
 }
 
 // ── Research Selection & Insight (MVP 阶段 B) ──────────────────────

@@ -82,6 +82,16 @@ describe("ModelStatusIndicator 快速切换", () => {
     expect(screen.getByRole("menuitem", { name: "模型设置…" })).toHaveAttribute("href", "/settings/ai-model");
   });
 
+  it("配置无效时展示具体失败原因而不是通用未配置文案", async () => {
+    renderIndicator({
+      getAiConfiguration: vi.fn<ApiClient["getAiConfiguration"]>()
+        .mockResolvedValue({ consent: true, configured: true, mode: "real", providerProfileId: "profile-1", modelError: "当前模型配置缺少 API Key。请在模型设置中补充凭证。" }),
+      listProviderProfiles: vi.fn<ApiClient["listProviderProfiles"]>().mockResolvedValue([]),
+    });
+
+    expect(await screen.findByRole("button", { name: /模型不可用：当前模型配置缺少 API Key/ })).toBeInTheDocument();
+  });
+
   it("点击遮罩或按 Escape 关闭菜单", async () => {
     const user = userEvent.setup();
     renderIndicator({
