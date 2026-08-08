@@ -272,8 +272,9 @@ test("未配置模型：标记保存后可在列表查看并返回原选区，�
   // #48：返回定位是只读临时提醒——不重开浮动胶囊、不进入引用态
   await expect(page.locator('[data-testid="floating-selection-capsule"]')).toHaveCount(0);
   await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
-  // #48：定位提醒短暂存在——高亮约 1.6 秒后自动消失
-  await expect(page.locator("[data-selection-mark]")).toBeHidden({ timeout: 5_000 });
+  // #50：定位提醒持续高亮——超过原 1.6s 自动消失时长仍保持可见
+  await page.waitForTimeout(2_000);
+  await expect(page.locator("[data-selection-mark]")).toBeVisible();
 
   // 刷新后列表与高亮仍由持久化记录恢复，且不会自动进入引用态
   await page.reload();

@@ -309,13 +309,14 @@ test.describe("选区捕获与浮动胶囊", () => {
     expect(selections).toHaveLength(1);
     const selId = selections[0]!.id;
 
-    // 携带 ?sel= 重新进入阅读页：#48 只读定位提醒——高亮短暂呈现、不重开浮动胶囊
+    // 携带 ?sel= 重新进入阅读页：#48 只读定位提醒——高亮呈现、不重开浮动胶囊
     await page.goto(`${readingUrl}?sel=${selId}`);
     const mark = page.locator("[data-selection-mark]");
     await expect(mark).toBeVisible({ timeout: 10_000 });
     await expect(page.getByTestId("floating-selection-capsule")).toHaveCount(0);
     await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
-    // 定位提醒短暂存在——高亮约 1.6 秒后自动消失
-    await expect(mark).toBeHidden({ timeout: 5_000 });
+    // #50：定位提醒持续高亮——超过原 1.6s 自动消失时长仍保持可见
+    await page.waitForTimeout(2_000);
+    await expect(mark).toBeVisible();
   });
 });

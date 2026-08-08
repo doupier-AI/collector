@@ -18,18 +18,23 @@ import type { ActiveCapture, SelectionRect } from "./useSelection";
  * - 胶囊出现 / 消失带轻过渡：隐藏时先以最后一次位置播放淡出，动画结束再卸载；
  * - 不达标选区（跨块、超长、无锚点）维持质量提示（修订一·B 起非空即有效）；
  * - #48：来源返回 `?sel=` 定位收敛为只读临时提醒，不再重开浮动胶囊——
- *   本组件的胶囊只由"用户新的手动选区"触发（restore 接管 prop 已移除）。
+ *   本组件的胶囊只由"用户新的手动选区"触发（restore 接管 prop 已移除）；
+ * - #50：新的有效选区出现（浮动胶囊呈现）时通过 `onSelectionActivity` 通知页面，
+ *   页面据此解除来源返回的持续定位高亮（高亮让位于新的框选操作）。
  */
 export function SelectionSurface({
   sessionId,
   onCite,
   onMark,
+  onSelectionActivity,
 }: {
   sessionId: string;
   /** 用户点击浮动胶囊【引用】时触发。页面据此创建选区记录并渲染引用胶囊。 */
   onCite: (anchor: ResearchSelectionAnchor, text: string) => void;
   /** 用户点击浮动胶囊【标记】时触发（修订二）。页面据此创建标记并展开笔记输入框。 */
   onMark?: (anchor: ResearchSelectionAnchor, text: string, rect: SelectionRect) => void;
+  /** 新的有效选区出现（浮动胶囊呈现）时触发。页面据此解除来源返回定位高亮（#50）。 */
+  onSelectionActivity?: () => void;
 }) {
   const { active, dismiss } = useSelectionCapture();
   const previousSessionRef = useRef(sessionId);
@@ -56,11 +61,17 @@ export function SelectionSurface({
       ? active
       : null;
 
-  // 浮动胶囊呈现 / 消失的过渡
+  // #50 通知以 ref 持有：effect 只依赖 floating，回调身份变化不重跑、不额外触发通知
+  // （页面侧的守卫保证无 restore 高亮时通知是无操作，不引起重渲染坍缩选区）。
+  const onSelectionActivityRef = useRef(onSelectionActivity);
+  onSelectionActivityRef.current = onSelectionActivity;
+
+  // 浮动胶囊呈现 / 消失的过渡与活动通知（#50：通知页面解除来源返回定位高亮）
   useEffect(() => {
     if (floating) {
       previousFloatingRef.current = floating;
       setClosingRect(null);
+      onSelectionActivityRef.current?.();
     } else if (previousFloatingRef.current) {
       setClosingRect(previousFloatingRef.current.rect);
       previousFloatingRef.current = null;

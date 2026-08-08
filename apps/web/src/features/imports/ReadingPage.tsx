@@ -16,7 +16,6 @@ import {
   selectionExactDigest,
 } from "../selection/selection-highlight";
 import type { SelectionRect } from "../selection/useSelection";
-import { FOCUS_DURATION_MS } from "../research-session/fragment-locator";
 import { useSelectionCitation } from "../selection/useSelectionCitation";
 import type { MarkResult } from "../selection/useSelectionMark";
 import { useSelectionMark } from "../selection/useSelectionMark";
@@ -150,23 +149,20 @@ export function ReadingPage() {
     }
   }, [restoreKey, reducedMotion]);
 
-  // #48：返回定位收敛为只读临时提醒——不重开浮动胶囊，found 高亮约 1.6 秒后自动消失。
+  // #50：定位提醒持续高亮——不设自动消失；用户下一次框选（SelectionSurface 通知）时解除。
   // fallback 是诚实降级说明（定位失败时的粗粒度位置），持续展示直至用户离开。
-  const [restoreExpired, setRestoreExpired] = useState(false);
-  useEffect(() => {
-    if (!restoreKey) {
-      setRestoreExpired(false);
-      return;
-    }
-    setRestoreExpired(false);
-    const timer = window.setTimeout(() => setRestoreExpired(true), FOCUS_DURATION_MS);
-    return () => window.clearTimeout(timer);
+  // restoreKey 变化（新 ?sel= 进入 / 重新恢复）时复位，再次定位提醒。
+  // 守卫：无 restore 高亮（restoreKey 为空）时通知是无操作——避免无谓重渲染坍缩手动选区。
+  const [restoreDismissed, setRestoreDismissed] = useState(false);
+  useEffect(() => setRestoreDismissed(false), [restoreKey]);
+  const dismissRestoreHighlight = useCallback(() => {
+    setRestoreDismissed((dismissed) => (dismissed ? dismissed : restoreKey !== null));
   }, [restoreKey]);
-  const activeSnapshotRestore = snapshotRestore?.kind === "fallback" || (restoreKey && !restoreExpired)
-    ? snapshotRestore
-    : null;
+  const activeSnapshotRestore =
+    snapshotRestore?.kind === "fallback" || (restoreKey && !restoreDismissed) ? snapshotRestore : null;
 
-  // 修订一 #11 决策已被 #48 推翻：?sel= 恢复后不再重开浮动胶囊（只读临时提醒）。
+  // 修订一 #11 决策已被 #48 推翻：?sel= 恢复后不再重开浮动胶囊（只读临时提醒）；
+  // #50 起提醒持续高亮，用户下一次框选时解除。
 
   const handleSubmitMessage = useCallback(
     async (content: string, allowWebSearch = false): Promise<boolean> => {
@@ -321,6 +317,7 @@ export function ReadingPage() {
         sessionId={sessionId}
         onCite={handleSurfaceCite}
         onMark={handleSurfaceMark}
+        onSelectionActivity={dismissRestoreHighlight}
       />
 
       {markEditor ? (

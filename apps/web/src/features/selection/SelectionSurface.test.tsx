@@ -209,6 +209,21 @@ describe("SelectionSurface（修订一 #9）", () => {
     expect(screen.queryByTestId("floating-selection-capsule")).not.toBeInTheDocument();
   });
 
+  it("新的有效选区出现时通过 onSelectionActivity 通知页面（#50：页面据此解除定位高亮）", () => {
+    const { first, second } = buildDom();
+    const onSelectionActivity = vi.fn();
+    render(<SelectionSurface sessionId="session-1" onCite={vi.fn()} onSelectionActivity={onSelectionActivity} />);
+
+    mockSelection(makeRange(first, 6, 12));
+    mouseup();
+    expect(onSelectionActivity).toHaveBeenCalledTimes(1);
+
+    // 不达标选区（跨块）不视为新框选操作：不通知
+    mockSelection(makeCrossBlockRange(first, 6, second, 6));
+    mouseup();
+    expect(onSelectionActivity).toHaveBeenCalledTimes(1);
+  });
+
   it("单字选区同样呈现浮动胶囊（修订一 #10：非空即有效）", () => {
     const { first } = buildDom();
     const onCite = vi.fn();

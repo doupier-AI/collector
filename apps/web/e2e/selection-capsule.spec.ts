@@ -213,7 +213,7 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     await expect(capsule).toContainText(second);
   });
 
-  test("刷新后 ?sel= 恢复：只读定位提醒——高亮呈现、不重开浮动胶囊（#48）", async ({ page }) => {
+  test("刷新后 ?sel= 恢复：只读定位提醒——高亮呈现、持续可见、不重开浮动胶囊（#48/#50）", async ({ page }) => {
     await pairAndOpen(page, "/research/new");
     const sessionId = await submitFirstQuestion(page);
     await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
@@ -243,14 +243,17 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     // 返回根节点并携带 ?sel= 参数
     await page.goto(`/research/${sessionId}/node/${sessionId}?sel=${selId}`);
 
-    // #48：只读定位提醒——高亮标记短暂呈现，不重开浮动胶囊、不自动创建引用
+    // #48：只读定位提醒——高亮标记呈现，不重开浮动胶囊、不自动创建引用
     await expect(page.locator("[data-selection-mark]")).toBeVisible({ timeout: 10_000 });
     await expect(page.getByTestId("floating-selection-capsule")).toHaveCount(0);
     await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
     await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
+    // #50：定位提醒持续高亮——超过原 1.6s 自动消失时长仍保持可见
+    await page.waitForTimeout(2_000);
+    await expect(page.locator("[data-selection-mark]")).toBeVisible();
   });
 
-  test("刷新后 ?sel= 恢复：高亮短暂呈现后自动消失；新手动选区照常弹胶囊（#48）", async ({ page }) => {
+  test("刷新后 ?sel= 恢复：高亮持续可见，下一次框选解除并照常弹胶囊（#50）", async ({ page }) => {
     await pairAndOpen(page, "/research/new");
     const sessionId = await submitFirstQuestion(page);
     await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
@@ -266,17 +269,19 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     expect(selections.length).toBeGreaterThan(0);
     const selId = selections[0]!.id;
 
-    // 携带 ?sel= 刷新：高亮标记短暂呈现（定位提醒），不出现恢复浮动胶囊
+    // 携带 ?sel= 刷新：高亮标记呈现（定位提醒），不出现恢复浮动胶囊
     await page.goto(`/research/${sessionId}/node/${sessionId}?sel=${selId}`);
     const mark = page.locator("[data-selection-mark]");
     await expect(mark).toBeVisible({ timeout: 10_000 });
     await expect(page.getByTestId("floating-selection-capsule")).toHaveCount(0);
 
-    // #48：定位提醒短暂存在——约 1.6 秒后高亮自动消失（不再永久残留干扰阅读）
-    await expect(mark).toBeHidden({ timeout: 5_000 });
+    // #50：定位提醒持续高亮——超过原 1.6s 自动消失时长仍保持可见，不自动让位
+    await page.waitForTimeout(2_000);
+    await expect(mark).toBeVisible();
 
-    // 用户重新手动选区：浮动胶囊照常出现（胶囊只由新的手动选区触发）
+    // 下一次框选：定位高亮解除，浮动胶囊照常出现（胶囊只由新的手动选区触发）
     await selectAnswerText(page, "渐进事件把后续内容写进同一条消息");
+    await expect(mark).toBeHidden();
     await expect(page.getByTestId("floating-selection-capsule")).toBeVisible();
     await expect(page.getByTestId("floating-selection-capsule")).toHaveCount(1);
     await page.getByTestId("floating-capsule-cite").click();

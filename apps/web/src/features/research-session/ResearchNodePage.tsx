@@ -164,7 +164,8 @@ export function ResearchNodePage() {
   );
 
   // 来源返回：?sel= 查询参数恢复选区。
-  // #48：返回定位收敛为只读临时提醒——不重开浮动胶囊、高亮约 1.6 秒后自动消失。
+  // #48：返回定位收敛为只读临时提醒——不重开浮动胶囊。
+  // #50：定位提醒持续高亮，直到用户下一次框选操作解除（onSelectionActivity）。
   const [searchParams] = useSearchParams();
   const restoredSelection = useSelectionRestore(searchParams.get("sel"));
 
@@ -193,22 +194,17 @@ export function ResearchNodePage() {
     }
   }, [highlightKey, reducedMotion]);
 
-  // #48：定位提醒短暂存在——FOCUS_DURATION_MS 后 found 高亮消失（reduced-motion 保留注意窗口但时长一致）。
-  // fallback 是诚实降级说明（定位失败时的粗粒度位置），持续展示直至用户离开。
-  // 高亮清除以"目标键不再生效"表达：清除状态后 MessageBlock 无 highlight 即卸载 <mark>。
-  const [restoreExpired, setRestoreExpired] = useState(false);
-  useEffect(() => {
-    if (!highlightKey) {
-      setRestoreExpired(false);
-      return;
-    }
-    setRestoreExpired(false);
-    const timer = window.setTimeout(() => setRestoreExpired(true), FOCUS_DURATION_MS);
-    return () => window.clearTimeout(timer);
+  // #50：定位提醒持续高亮——不设自动消失；用户下一次框选（SelectionSurface 通知）时解除。
+  // 高亮清除以"目标键不再生效"表达：restoredSelection 置空后 MessageBlock 无 highlight 即卸载 <mark>。
+  // highlightKey 变化（新 ?sel= 进入 / 重新恢复）时复位，再次定位提醒。
+  // 守卫：无 restore 高亮（highlightKey 为空）时通知是无操作——避免无谓重渲染坍缩手动选区。
+  const [restoreDismissed, setRestoreDismissed] = useState(false);
+  useEffect(() => setRestoreDismissed(false), [highlightKey]);
+  const dismissRestoreHighlight = useCallback(() => {
+    setRestoreDismissed((dismissed) => (dismissed ? dismissed : highlightKey !== null));
   }, [highlightKey]);
-  const activeHighlight = messageHighlight?.kind === "fallback" || (highlightKey && !restoreExpired)
-    ? messageHighlight
-    : null;
+  const activeHighlight =
+    messageHighlight?.kind === "fallback" || (highlightKey && !restoreDismissed) ? messageHighlight : null;
 
   // 路由 state 只作为一次性传递，挂载后立即清掉，避免刷新后重复提交
   useEffect(() => {
@@ -708,6 +704,7 @@ export function ResearchNodePage() {
         sessionId={sessionId}
         onCite={handleSurfaceCite}
         onMark={handleSurfaceMark}
+        onSelectionActivity={dismissRestoreHighlight}
       />
 
       {markEditor ? (
