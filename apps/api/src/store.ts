@@ -1,7 +1,7 @@
 import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchFusionReference, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewInput, type ResearchTermPreviewRecord, type ResearchTurnAccepted, researchEdgeId } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchFusionReference, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewInput, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId } from "@collector/capture-contracts";
 
 export type ObservabilityRecordSource = "research" | "selection" | "import" | "workflow" | "fusion";
 
@@ -100,6 +100,21 @@ export interface ResearchStore {
   /** 会话自动标题：更新会话标题；返回更新后的会话记录。 */
   updateResearchSessionTitle(sessionId: string, title: string): Promise<ResearchSessionRecord | undefined>;
   listResearchSessions(): ResearchSessionRecord[];
+  /** 会话管理：部分更新（title/projectId/status）；title 变更置 titleEdited。 */
+  updateResearchSession(sessionId: string, patch: { title?: string; projectId?: string | null; status?: "active" | "archived" }): Promise<ResearchSessionRecord | undefined>;
+  /** 会话管理：软删除（回收站），trashedAt 已置位时返回 false。 */
+  trashResearchSession(id: string, trashedAt: string): Promise<boolean>;
+  restoreResearchSession(id: string): Promise<boolean>;
+  /** 会话管理：彻底删除，级联清理整棵节点树；不存在返回 false。 */
+  deleteResearchSession(id: string): Promise<boolean>;
+  /** 会话管理：回收站会话列表（按 trashedAt 倒序）。 */
+  listTrashedResearchSessions(): ResearchSessionRecord[];
+  createProject(record: ProjectRecord, idempotencyKey: string): Promise<ProjectRecord>;
+  getProject(id: string): ProjectRecord | undefined;
+  listProjects(): ProjectRecord[];
+  renameProject(id: string, name: string): Promise<ProjectRecord | undefined>;
+  /** 会话管理：删除项目，其下会话移回未分类（事务内置 project_id 为空）。 */
+  deleteProject(id: string): Promise<boolean>;
   createResearchNode(node: ResearchNodeRecord, idempotencyKey: string): Promise<ResearchNodeRecord>;
   getResearchNode(id: string): ResearchNodeRecord | undefined;
   updateResearchNodeDisplayName(nodeId: string, displayName: string): Promise<ResearchNodeRecord | undefined>;
@@ -330,6 +345,16 @@ export interface CollectorStore
   createResearchSession(record: ResearchSessionRecord, idempotencyKey: string): Promise<ResearchSessionRecord>;
   getResearchSession(id: string): ResearchSessionRecord | undefined;
   listResearchSessions(): ResearchSessionRecord[];
+  updateResearchSession(sessionId: string, patch: { title?: string; projectId?: string | null; status?: "active" | "archived" }): Promise<ResearchSessionRecord | undefined>;
+  trashResearchSession(id: string, trashedAt: string): Promise<boolean>;
+  restoreResearchSession(id: string): Promise<boolean>;
+  deleteResearchSession(id: string): Promise<boolean>;
+  createProject(record: ProjectRecord, idempotencyKey: string): Promise<ProjectRecord>;
+  getProject(id: string): ProjectRecord | undefined;
+  listProjects(): ProjectRecord[];
+  renameProject(id: string, name: string): Promise<ProjectRecord | undefined>;
+  deleteProject(id: string): Promise<boolean>;
+  listTrashedResearchSessions(): ResearchSessionRecord[];
   getResearchMessage(id: string): ResearchMessageRecord | undefined;
   listResearchMessages(sessionId: string): ResearchMessageRecord[];
   getResearchTask(id: string): ResearchTaskRecord | undefined;
@@ -719,6 +744,7 @@ export class SqliteStore implements CollectorStore {
       this.db().exec("DELETE FROM research_tasks");
       this.db().exec("DELETE FROM research_messages");
       this.db().exec("DELETE FROM research_sessions");
+      this.db().exec("DELETE FROM projects");
       this.db().exec("DELETE FROM research_nodes");
       this.db().exec("DELETE FROM verification_claims");
       this.db().exec("DELETE FROM verification_policy");
@@ -1086,10 +1112,10 @@ export class SqliteStore implements CollectorStore {
   }
 
   async saveResearchSession(record: ResearchSessionRecord): Promise<void> {
-    this.db().prepare(`INSERT INTO research_sessions (id, status, created_at, updated_at, record_json)
-      VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at, record_json=excluded.record_json`)
-      .run(record.id, record.status, record.createdAt, record.updatedAt, JSON.stringify(record));
+    this.db().prepare(`INSERT INTO research_sessions (id, status, created_at, updated_at, project_id, record_json)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at, project_id=excluded.project_id, record_json=excluded.record_json`)
+      .run(record.id, record.status, record.createdAt, record.updatedAt, record.projectId ?? null, JSON.stringify(record));
   }
 
   async createResearchSession(record: ResearchSessionRecord, idempotencyKey: string): Promise<ResearchSessionRecord> {
@@ -1103,9 +1129,9 @@ export class SqliteStore implements CollectorStore {
         created = existing;
         return;
       }
-      this.db().prepare(`INSERT INTO research_sessions (id, status, created_at, updated_at, creation_idempotency_key, record_json)
-        VALUES (?, ?, ?, ?, ?, ?)`)
-        .run(record.id, record.status, record.createdAt, record.updatedAt, idempotencyKey, JSON.stringify(record));
+      this.db().prepare(`INSERT INTO research_sessions (id, status, created_at, updated_at, creation_idempotency_key, project_id, record_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        .run(record.id, record.status, record.createdAt, record.updatedAt, idempotencyKey, record.projectId ?? null, JSON.stringify(record));
       const nodeRecord: ResearchNodeRecord = {
         id: record.id,
         sessionId: record.id,
@@ -1137,7 +1163,147 @@ export class SqliteStore implements CollectorStore {
   }
 
   listResearchSessions(): ResearchSessionRecord[] {
-    return this.listRecords<ResearchSessionRecord>("SELECT record_json FROM research_sessions ORDER BY updated_at DESC, created_at DESC");
+    // 回收站（trashedAt 置位）会话不进入活跃列表；回收站查询走 listTrashedResearchSessions。
+    return this.listRecords<ResearchSessionRecord>(
+      "SELECT record_json FROM research_sessions WHERE json_extract(record_json, '$.trashedAt') IS NULL ORDER BY updated_at DESC, created_at DESC",
+    );
+  }
+
+  listTrashedResearchSessions(): ResearchSessionRecord[] {
+    return this.listRecords<ResearchSessionRecord>(
+      "SELECT record_json FROM research_sessions WHERE json_extract(record_json, '$.trashedAt') IS NOT NULL ORDER BY json_extract(record_json, '$.trashedAt') DESC",
+    );
+  }
+
+  async updateResearchSession(
+    sessionId: string,
+    patch: { title?: string; projectId?: string | null; status?: "active" | "archived" },
+  ): Promise<ResearchSessionRecord | undefined> {
+    const session = this.getResearchSession(sessionId);
+    if (!session) return undefined;
+    const updated: ResearchSessionRecord = { ...session, updatedAt: new Date().toISOString() };
+    if (patch.title !== undefined) {
+      const normalized = patch.title.trim();
+      if (!normalized || normalized.length > RESEARCH_TITLE_MAX_CHARACTERS) throw new Error("Research session title must contain 1-40 characters");
+      updated.title = normalized;
+      // 用户显式改名后自动标题（确定性派生与模型提炼）永久让位。
+      updated.titleEdited = true;
+    }
+    if (patch.projectId !== undefined) updated.projectId = patch.projectId ?? undefined;
+    if (patch.status !== undefined) updated.status = patch.status;
+    this.db().prepare("UPDATE research_sessions SET updated_at = ?, project_id = ?, record_json = ? WHERE id = ?")
+      .run(updated.updatedAt, updated.projectId ?? null, JSON.stringify(updated), sessionId);
+    return updated;
+  }
+
+  async trashResearchSession(id: string, trashedAt: string): Promise<boolean> {
+    const session = this.getResearchSession(id);
+    if (!session || (session as ResearchSessionRecord & { trashedAt?: string }).trashedAt) return false;
+    const record = { ...session, trashedAt };
+    this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
+      .run(trashedAt, JSON.stringify(record), id);
+    return true;
+  }
+
+  async restoreResearchSession(id: string): Promise<boolean> {
+    const session = this.getResearchSession(id);
+    if (!session || !(session as ResearchSessionRecord & { trashedAt?: string }).trashedAt) return false;
+    const record: ResearchSessionRecord = { ...session };
+    delete (record as ResearchSessionRecord & { trashedAt?: string }).trashedAt;
+    const now = new Date().toISOString();
+    record.updatedAt = now;
+    this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
+      .run(now, JSON.stringify(record), id);
+    return true;
+  }
+
+  async deleteResearchSession(id: string): Promise<boolean> {
+    if (!this.getResearchSession(id)) return false;
+    // 级联删除：单事务内按依赖顺序清理会话整棵节点树（改编自 clearAllData 权威顺序）。
+    // FK 无 ON DELETE CASCADE（除声明 CASCADE 的表），须先删最下游引用方。
+    this.transaction(() => {
+      const del = (sql: string, ...values: SQLInputValue[]) => {
+        this.db().prepare(sql).run(...values);
+      };
+      const NODE_SCOPE = "SELECT id FROM research_nodes WHERE session_id = ?";
+      const MESSAGE_SCOPE = "SELECT id FROM research_messages WHERE session_id = ?";
+      del(`DELETE FROM research_semantic_fragments WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
+      del(`DELETE FROM research_body_versions WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
+      del(`DELETE FROM research_slices WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
+      del(`DELETE FROM research_citations WHERE message_id IN (${MESSAGE_SCOPE})`, id);
+      del("DELETE FROM research_grounding_sources WHERE run_id IN (SELECT id FROM research_grounding_runs WHERE session_id = ?)", id);
+      del("DELETE FROM research_grounding_runs WHERE session_id = ?", id);
+      del("DELETE FROM research_task_events WHERE task_id IN (SELECT id FROM research_tasks WHERE session_id = ?)", id);
+      del("DELETE FROM research_import_task_events WHERE task_id IN (SELECT id FROM research_import_tasks WHERE session_id = ?)", id);
+      del("DELETE FROM research_selection_task_events WHERE task_id IN (SELECT id FROM research_selection_tasks WHERE session_id = ?)", id);
+      del("DELETE FROM research_term_preview_events WHERE preview_id IN (SELECT id FROM research_term_previews WHERE session_id = ?)", id);
+      del("DELETE FROM research_term_previews WHERE session_id = ?", id);
+      del(`DELETE FROM research_fusion_proposals WHERE lo_node_id IN (${NODE_SCOPE}) OR hi_node_id IN (${NODE_SCOPE})`, id, id);
+      del(`DELETE FROM research_edges WHERE from_node_id IN (${NODE_SCOPE}) OR to_node_id IN (${NODE_SCOPE})`, id, id);
+      del("DELETE FROM research_import_tasks WHERE session_id = ?", id);
+      del("DELETE FROM research_content_snapshots WHERE session_id = ?", id);
+      del("DELETE FROM research_attachments WHERE session_id = ?", id);
+      del("DELETE FROM research_selection_tasks WHERE session_id = ?", id);
+      del("DELETE FROM research_branches WHERE session_id = ?", id);
+      del("DELETE FROM research_later_items WHERE session_id = ?", id);
+      // 节点引用选区（origin_selection_id），须先删节点再删选区。
+      del("DELETE FROM research_nodes WHERE session_id = ?", id);
+      del("DELETE FROM research_selections WHERE session_id = ?", id);
+      // 任务引用消息（input/output_message_id），须先删任务再删消息。
+      del("DELETE FROM research_tasks WHERE session_id = ?", id);
+      del("DELETE FROM research_messages WHERE session_id = ?", id);
+      del("DELETE FROM research_sessions WHERE id = ?", id);
+    });
+    return true;
+  }
+
+  async createProject(record: ProjectRecord, idempotencyKey: string): Promise<ProjectRecord> {
+    let created: ProjectRecord | undefined;
+    this.transaction(() => {
+      const existing = this.getRecord<ProjectRecord>(
+        "SELECT record_json FROM projects WHERE creation_idempotency_key = ?",
+        idempotencyKey,
+      );
+      if (existing) {
+        created = existing;
+        return;
+      }
+      this.db().prepare("INSERT INTO projects (id, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?)")
+        .run(record.id, record.createdAt, record.updatedAt, idempotencyKey, JSON.stringify(record));
+      created = record;
+    });
+    if (!created) throw new Error("Project was not persisted");
+    return created;
+  }
+
+  getProject(id: string): ProjectRecord | undefined {
+    return this.getRecord<ProjectRecord>("SELECT record_json FROM projects WHERE id = ?", id);
+  }
+
+  listProjects(): ProjectRecord[] {
+    return this.listRecords<ProjectRecord>("SELECT record_json FROM projects ORDER BY updated_at DESC, created_at DESC");
+  }
+
+  async renameProject(id: string, name: string): Promise<ProjectRecord | undefined> {
+    const project = this.getProject(id);
+    if (!project) return undefined;
+    const normalized = name.trim();
+    if (!normalized || normalized.length > RESEARCH_TITLE_MAX_CHARACTERS) throw new Error("Project name must contain 1-40 characters");
+    const updated: ProjectRecord = { ...project, name: normalized, updatedAt: new Date().toISOString() };
+    this.db().prepare("UPDATE projects SET updated_at = ?, record_json = ? WHERE id = ?")
+      .run(updated.updatedAt, JSON.stringify(updated), id);
+    return updated;
+  }
+
+  async deleteProject(id: string): Promise<boolean> {
+    if (!this.getProject(id)) return false;
+    // 删除项目不删会话：同一事务内先将其下会话移回未分类，再删项目行。
+    // record_json 同步移除 projectId（getResearchSession 以 record_json 为事实来源）。
+    this.transaction(() => {
+      this.db().prepare("UPDATE research_sessions SET project_id = NULL, record_json = json_remove(record_json, '$.projectId') WHERE project_id = ?").run(id);
+      this.db().prepare("DELETE FROM projects WHERE id = ?").run(id);
+    });
+    return true;
   }
 
   async createResearchNode(node: ResearchNodeRecord, idempotencyKey: string): Promise<ResearchNodeRecord> {
@@ -3301,6 +3467,34 @@ export class SqliteStore implements CollectorStore {
       version = 32;
     }
 
+    if (version < 33) {
+      // 会话管理系统：项目分组（projects 表）+ research_sessions.project_id 列。
+      // 项目是会话的第一层分组容器，不嵌套；project_id 可空（未分类）。
+      // 独立列 + 外键（分组查询/过滤），存量行 ALTER 后为 NULL（未分类），
+      // 开发数据期无需存量迁移（ADR-0007）。
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE projects (
+            id TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            creation_idempotency_key TEXT,
+            record_json TEXT NOT NULL
+          );
+          CREATE UNIQUE INDEX projects_creation_idempotency_idx
+            ON projects(creation_idempotency_key)
+            WHERE creation_idempotency_key IS NOT NULL;
+          CREATE INDEX projects_updated_idx ON projects(updated_at DESC);
+
+          ALTER TABLE research_sessions ADD COLUMN project_id TEXT REFERENCES projects(id);
+          CREATE INDEX research_sessions_project_idx ON research_sessions(project_id, updated_at DESC);
+
+          INSERT INTO schema_migrations(version, applied_at) VALUES (33, datetime('now'));
+        `);
+      });
+      version = 33;
+    }
+
   }
 
   private async migrateLegacyProviderProfile(): Promise<void> {
@@ -3570,6 +3764,16 @@ export class JsonStore implements CollectorStore {
   getResearchSession(_id: string): ResearchSessionRecord | undefined { return undefined; }
   async updateResearchSessionTitle(_sessionId: string, _title: string): Promise<ResearchSessionRecord | undefined> { throw new Error("Research sessions require SQLite persistence"); }
   listResearchSessions(): ResearchSessionRecord[] { return []; }
+  async updateResearchSession(_sessionId: string, _patch: { title?: string; projectId?: string | null; status?: "active" | "archived" }): Promise<ResearchSessionRecord | undefined> { throw new Error("Research sessions require SQLite persistence"); }
+  async trashResearchSession(_id: string, _trashedAt: string): Promise<boolean> { throw new Error("Research sessions require SQLite persistence"); }
+  async restoreResearchSession(_id: string): Promise<boolean> { throw new Error("Research sessions require SQLite persistence"); }
+  async deleteResearchSession(_id: string): Promise<boolean> { throw new Error("Research sessions require SQLite persistence"); }
+  listTrashedResearchSessions(): ResearchSessionRecord[] { return []; }
+  async createProject(_record: ProjectRecord, _idempotencyKey: string): Promise<ProjectRecord> { throw new Error("Projects require SQLite persistence"); }
+  getProject(_id: string): ProjectRecord | undefined { return undefined; }
+  listProjects(): ProjectRecord[] { return []; }
+  async renameProject(_id: string, _name: string): Promise<ProjectRecord | undefined> { throw new Error("Projects require SQLite persistence"); }
+  async deleteProject(_id: string): Promise<boolean> { throw new Error("Projects require SQLite persistence"); }
   async createResearchNode(_node: ResearchNodeRecord, _idempotencyKey: string): Promise<ResearchNodeRecord> { throw new Error("Research nodes require SQLite persistence"); }
   getResearchNode(_id: string): ResearchNodeRecord | undefined { return undefined; }
   async updateResearchNodeDisplayName(_nodeId: string, _displayName: string): Promise<ResearchNodeRecord | undefined> { throw new Error("Research nodes require SQLite persistence"); }

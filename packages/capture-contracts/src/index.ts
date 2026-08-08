@@ -693,8 +693,33 @@ export interface ResearchSessionRecord {
   /** 由选区开启的独立研究会话保留来源选区与来源会话，用于来源返回。 */
   originSelectionId?: string;
   originSessionId?: string;
+  /** 所属项目 ID；缺失时会话处于"未分类"（存独立列，可索引过滤）。 */
+  projectId?: string;
+  /** 软删除时间（回收站）；存 record_json，对齐素材软删除先例。 */
+  trashedAt?: string;
+  /** 用户显式改过名；置位后自动标题（确定性派生与模型提炼）永久让位。 */
+  titleEdited?: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+/** 项目：会话的第一层分组容器。项目不嵌套；无归属会话处于"未分类"。 */
+export interface ProjectRecord {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectInput {
+  name: string;
+}
+
+export interface ResearchSessionUpdateInput {
+  title?: string;
+  /** null 表示移回未分类。 */
+  projectId?: string | null;
+  status?: "active" | "archived";
 }
 
 /**
@@ -1262,6 +1287,31 @@ export function validateResearchSessionInput(value: unknown): asserts value is {
   const title = (value as { title?: unknown }).title;
   if (title !== undefined && (typeof title !== "string" || !title.trim() || title.trim().length > 200)) {
     throw new Error("title must contain 1 to 200 characters");
+  }
+}
+
+export function validateProjectInput(value: unknown): asserts value is ProjectInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Project input must be an object");
+  const name = (value as { name?: unknown }).name;
+  if (typeof name !== "string" || !name.trim()) throw new Error("name is required");
+  if (name.trim().length > RESEARCH_TITLE_MAX_CHARACTERS) throw new Error(`name must not exceed ${RESEARCH_TITLE_MAX_CHARACTERS} characters`);
+}
+
+export function validateResearchSessionUpdateInput(value: unknown): asserts value is ResearchSessionUpdateInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Research session update must be an object");
+  const input = value as { title?: unknown; projectId?: unknown; status?: unknown };
+  if (input.title !== undefined) {
+    if (typeof input.title !== "string" || !input.title.trim()) throw new Error("title must contain 1 to 40 characters");
+    if (input.title.trim().length > RESEARCH_TITLE_MAX_CHARACTERS) throw new Error(`title must not exceed ${RESEARCH_TITLE_MAX_CHARACTERS} characters`);
+  }
+  if (input.projectId !== undefined && input.projectId !== null && typeof input.projectId !== "string") {
+    throw new Error("projectId must be a string or null");
+  }
+  if (input.status !== undefined && input.status !== "active" && input.status !== "archived") {
+    throw new Error('status must be "active" or "archived"');
+  }
+  if (input.title === undefined && input.projectId === undefined && input.status === undefined) {
+    throw new Error("At least one of title, projectId, or status is required");
   }
 }
 
