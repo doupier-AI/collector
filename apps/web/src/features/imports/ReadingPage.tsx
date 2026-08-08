@@ -8,7 +8,6 @@ import { useServices } from "../../app/services";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { HighlightedText } from "../selection/HighlightedText";
 import { SelectionSurface } from "../selection/SelectionSurface";
-import { FloatingSelectionCapsule } from "../selection/FloatingSelectionCapsule";
 import { MarkNoteEditor } from "../selection/MarkNoteEditor";
 import {
   childNodeIdempotencyKey,
@@ -17,6 +16,7 @@ import {
   selectionExactDigest,
 } from "../selection/selection-highlight";
 import type { SelectionRect } from "../selection/useSelection";
+import { FOCUS_DURATION_MS } from "../research-session/fragment-locator";
 import { useSelectionCitation } from "../selection/useSelectionCitation";
 import type { MarkResult } from "../selection/useSelectionMark";
 import { useSelectionMark } from "../selection/useSelectionMark";
@@ -145,38 +145,28 @@ export function ReadingPage() {
   useEffect(() => {
     if (!restoreKey) return;
     const mark = document.querySelector("[data-selection-mark]");
-    if (mark) {
-      // 高亮标记位置（视口坐标）→ 恢复浮动胶囊的页面绝对定位（修订一 #11）
-      const box = mark.getBoundingClientRect();
-      setRestoredCapsuleRect({ top: box.top, bottom: box.bottom, left: box.left, right: box.right });
-    }
     if (typeof mark?.scrollIntoView === "function") {
       mark.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "center" });
     }
   }, [restoreKey, reducedMotion]);
 
-  // 修订一 #11：?sel= 恢复高亮后，浮动胶囊呈现在高亮标记上方（与节点页一致）
-  const [restoredCapsuleRect, setRestoredCapsuleRect] = useState<SelectionRect | null>(null);
-  const [restoreCapsuleDismissedId, setRestoreCapsuleDismissedId] = useState<string | null>(null);
-  const handleRestoreCite = useCallback(() => {
-    if (restoredSelection) {
-      captureCitation(restoredSelection.anchor, restoredSelection.text);
-      setRestoreCapsuleDismissedId(restoredSelection.id);
+  // #48：返回定位收敛为只读临时提醒——不重开浮动胶囊，found 高亮约 1.6 秒后自动消失。
+  // fallback 是诚实降级说明（定位失败时的粗粒度位置），持续展示直至用户离开。
+  const [restoreExpired, setRestoreExpired] = useState(false);
+  useEffect(() => {
+    if (!restoreKey) {
+      setRestoreExpired(false);
+      return;
     }
-    focusComposerTextarea();
-  }, [captureCitation, restoredSelection]);
-  const handleRestoreMark = useCallback(() => {
-    if (!restoredSelection || !restoredCapsuleRect) return;
-    setRestoreCapsuleDismissedId(restoredSelection.id);
-    setMarkEditor({
-      rect: restoredCapsuleRect,
-      text: restoredSelection.text,
-      pending: mark(restoredSelection.anchor, restoredSelection.text),
-    });
-  }, [mark, restoredCapsuleRect, restoredSelection]);
-  const dismissRestoreCapsule = useCallback(() => {
-    if (restoredSelection) setRestoreCapsuleDismissedId(restoredSelection.id);
-  }, [restoredSelection]);
+    setRestoreExpired(false);
+    const timer = window.setTimeout(() => setRestoreExpired(true), FOCUS_DURATION_MS);
+    return () => window.clearTimeout(timer);
+  }, [restoreKey]);
+  const activeSnapshotRestore = snapshotRestore?.kind === "fallback" || (restoreKey && !restoreExpired)
+    ? snapshotRestore
+    : null;
+
+  // 修订一 #11 决策已被 #48 推翻：?sel= 恢复后不再重开浮动胶囊（只读临时提醒）。
 
   const handleSubmitMessage = useCallback(
     async (content: string, allowWebSearch = false): Promise<boolean> => {
@@ -267,7 +257,7 @@ export function ReadingPage() {
   }
 
   const { snapshot } = state;
-  const foundBlockId = snapshotRestore?.kind === "found" ? snapshotRestore.blockId : null;
+  const foundBlockId = activeSnapshotRestore?.kind === "found" ? activeSnapshotRestore.blockId : null;
   return (
     <div className="page reading-page">
       <header className="session-header">
@@ -279,8 +269,8 @@ export function ReadingPage() {
         <h1 className="page__title">{snapshot.title}</h1>
         <p className="session-header__meta">共 {snapshot.blocks.length} 个内容块</p>
       </header>
-      {snapshotRestore?.kind === "fallback" && restoredSelection ? (
-        <SelectionRestoreFallback selection={restoredSelection} caption={snapshotRestore.caption} />
+      {activeSnapshotRestore?.kind === "fallback" && restoredSelection ? (
+        <SelectionRestoreFallback selection={restoredSelection} caption={activeSnapshotRestore.caption} />
       ) : null}
       <article
         className="reading"
@@ -290,7 +280,7 @@ export function ReadingPage() {
       >
         {snapshot.blocks.map((block) => {
           const highlight =
-            foundBlockId === block.id && snapshotRestore?.kind === "found" ? snapshotRestore : null;
+            foundBlockId === block.id && activeSnapshotRestore?.kind === "found" ? activeSnapshotRestore : null;
           const text = highlight ? (
             <HighlightedText text={block.text} start={highlight.start} end={highlight.end} />
           ) : (
@@ -331,13 +321,7 @@ export function ReadingPage() {
         sessionId={sessionId}
         onCite={handleSurfaceCite}
         onMark={handleSurfaceMark}
-        onSelectionActivity={dismissRestoreCapsule}
-        immediateDismiss={Boolean(restoredSelection && restoredCapsuleRect && restoreCapsuleDismissedId !== restoredSelection.id)}
       />
-
-      {restoredSelection && restoredCapsuleRect && restoreCapsuleDismissedId !== restoredSelection.id ? (
-        <FloatingSelectionCapsule rect={restoredCapsuleRect} onCite={handleRestoreCite} onMark={handleRestoreMark} />
-      ) : null}
 
       {markEditor ? (
         <MarkNoteEditor

@@ -13,7 +13,6 @@ import { AttachmentList } from "../imports/AttachmentList";
 import { IMPORT_ACCEPT } from "../imports/import-file";
 import { useResearchImports } from "../imports/useResearchImports";
 import { SelectionSurface } from "../selection/SelectionSurface";
-import { FloatingSelectionCapsule } from "../selection/FloatingSelectionCapsule";
 import { MarkNoteEditor } from "../selection/MarkNoteEditor";
 import {
   childNodeIdempotencyKey,
@@ -164,33 +163,10 @@ export function ResearchNodePage() {
     [markEditor, saveNote],
   );
 
-  // 来源返回：?sel= 查询参数恢复选区；引用与标记都必须由用户在浮动胶囊中明确触发
+  // 来源返回：?sel= 查询参数恢复选区。
+  // #48：返回定位收敛为只读临时提醒——不重开浮动胶囊、高亮约 1.6 秒后自动消失。
   const [searchParams] = useSearchParams();
   const restoredSelection = useSelectionRestore(searchParams.get("sel"));
-
-  // 修订一 #11：?sel= 恢复高亮后，浮动胶囊呈现在高亮标记上方；
-  // 点击【引用】才创建引用态；点击【标记】进入同一套标记笔记编辑器
-  const [restoredCapsuleRect, setRestoredCapsuleRect] = useState<SelectionRect | null>(null);
-  const [restoreCapsuleDismissedId, setRestoreCapsuleDismissedId] = useState<string | null>(null);
-  const handleRestoreCite = useCallback(() => {
-    if (restoredSelection) {
-      captureCitation(restoredSelection.anchor, restoredSelection.text);
-      setRestoreCapsuleDismissedId(restoredSelection.id);
-    }
-    focusComposerTextarea();
-  }, [captureCitation, restoredSelection]);
-  const handleRestoreMark = useCallback(() => {
-    if (!restoredSelection || !restoredCapsuleRect) return;
-    setRestoreCapsuleDismissedId(restoredSelection.id);
-    setMarkEditor({
-      rect: restoredCapsuleRect,
-      text: restoredSelection.text,
-      pending: mark(restoredSelection.anchor, restoredSelection.text),
-    });
-  }, [mark, restoredCapsuleRect, restoredSelection]);
-  const dismissRestoreCapsule = useCallback(() => {
-    if (restoredSelection) setRestoreCapsuleDismissedId(restoredSelection.id);
-  }, [restoredSelection]);
 
   const isRoot = readyView ? !readyView.node.parentNodeId : true;
   // 来源条：子节点取 node.originSelectionId；带来源的旧独立会话根节点取 session.originSelectionId
@@ -207,19 +183,32 @@ export function ResearchNodePage() {
     messageHighlight?.kind === "found"
       ? `${messageHighlight.blockId}:${messageHighlight.start}:${messageHighlight.end}`
       : null;
+  // 目标先稳定定位（DOM 高亮由 MessageBlock 渲染后圈出），再滚动到视口。
   useEffect(() => {
     if (!highlightKey) return;
     const mark = document.querySelector("[data-selection-mark]");
-    if (mark) {
-      // 高亮标记位置（视口坐标）→ 浮动胶囊的页面绝对定位；滚动后绝对位置不变
-      const box = mark.getBoundingClientRect();
-      setRestoredCapsuleRect({ top: box.top, bottom: box.bottom, left: box.left, right: box.right });
-    }
     // scrollIntoView 在个别运行环境不可用；滚动只是便利，不影响高亮本身
     if (typeof mark?.scrollIntoView === "function") {
       mark.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "center" });
     }
   }, [highlightKey, reducedMotion]);
+
+  // #48：定位提醒短暂存在——FOCUS_DURATION_MS 后 found 高亮消失（reduced-motion 保留注意窗口但时长一致）。
+  // fallback 是诚实降级说明（定位失败时的粗粒度位置），持续展示直至用户离开。
+  // 高亮清除以"目标键不再生效"表达：清除状态后 MessageBlock 无 highlight 即卸载 <mark>。
+  const [restoreExpired, setRestoreExpired] = useState(false);
+  useEffect(() => {
+    if (!highlightKey) {
+      setRestoreExpired(false);
+      return;
+    }
+    setRestoreExpired(false);
+    const timer = window.setTimeout(() => setRestoreExpired(true), FOCUS_DURATION_MS);
+    return () => window.clearTimeout(timer);
+  }, [highlightKey]);
+  const activeHighlight = messageHighlight?.kind === "fallback" || (highlightKey && !restoreExpired)
+    ? messageHighlight
+    : null;
 
   // 路由 state 只作为一次性传递，挂载后立即清掉，避免刷新后重复提交
   useEffect(() => {
@@ -598,8 +587,8 @@ export function ResearchNodePage() {
         />
       ) : null}
 
-      {messageHighlight?.kind === "fallback" && restoredSelection ? (
-        <SelectionRestoreFallback selection={restoredSelection} caption={messageHighlight.caption} />
+      {activeHighlight?.kind === "fallback" && restoredSelection ? (
+        <SelectionRestoreFallback selection={restoredSelection} caption={activeHighlight.caption} />
       ) : null}
 
       {fragmentFallback ? (
@@ -626,11 +615,11 @@ export function ResearchNodePage() {
                 retrying={task ? retryingTaskId === task.id : false}
                 onRetry={handleRetry}
                 highlight={
-                  messageHighlight?.kind === "found" && messageHighlight.messageId === message.id
+                  activeHighlight?.kind === "found" && activeHighlight.messageId === message.id
                     ? {
-                        blockOrdinal: messageHighlight.blockOrdinal,
-                        start: messageHighlight.start,
-                        end: messageHighlight.end,
+                        blockOrdinal: activeHighlight.blockOrdinal,
+                        start: activeHighlight.start,
+                        end: activeHighlight.end,
                         exact: restoredSelection?.anchor?.exact ?? restoredSelection?.text ?? "",
                       }
                     : undefined
@@ -719,13 +708,7 @@ export function ResearchNodePage() {
         sessionId={sessionId}
         onCite={handleSurfaceCite}
         onMark={handleSurfaceMark}
-        onSelectionActivity={dismissRestoreCapsule}
-        immediateDismiss={Boolean(restoredSelection && restoredCapsuleRect && restoreCapsuleDismissedId !== restoredSelection.id)}
       />
-
-      {restoredSelection && restoredCapsuleRect && restoreCapsuleDismissedId !== restoredSelection.id ? (
-        <FloatingSelectionCapsule rect={restoredCapsuleRect} onCite={handleRestoreCite} onMark={handleRestoreMark} />
-      ) : null}
 
       {markEditor ? (
         <MarkNoteEditor

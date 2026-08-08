@@ -213,7 +213,7 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     await expect(capsule).toContainText(second);
   });
 
-  test("刷新后 ?sel= 恢复浮动胶囊，明确引用后才进入引用态", async ({ page }) => {
+  test("刷新后 ?sel= 恢复：只读定位提醒——高亮呈现、不重开浮动胶囊（#48）", async ({ page }) => {
     await pairAndOpen(page, "/research/new");
     const sessionId = await submitFirstQuestion(page);
     await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
@@ -243,19 +243,14 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     // 返回根节点并携带 ?sel= 参数
     await page.goto(`/research/${sessionId}/node/${sessionId}?sel=${selId}`);
 
-    // 先恢复浮动胶囊，不自动创建引用；明确点击后才进入引用态
-    await expect(page.getByTestId("floating-selection-capsule")).toBeVisible({ timeout: 10_000 });
+    // #48：只读定位提醒——高亮标记短暂呈现，不重开浮动胶囊、不自动创建引用
+    await expect(page.locator("[data-selection-mark]")).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByTestId("floating-selection-capsule")).toHaveCount(0);
     await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
-    await page.getByTestId("floating-capsule-cite").click();
-    await expect(page.getByTestId("selection-capsule")).toBeVisible({ timeout: 10_000 });
     await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
-    // 高亮标记也在
-    await expect(page.locator("[data-selection-mark]")).toBeVisible();
   });
 
-  test("刷新后 ?sel= 恢复：浮动胶囊呈现在高亮标记上方，引用后焦点回到输入框；新选区切换胶囊（修订一 #11）", async ({
-    page,
-  }) => {
+  test("刷新后 ?sel= 恢复：高亮短暂呈现后自动消失；新手动选区照常弹胶囊（#48）", async ({ page }) => {
     await pairAndOpen(page, "/research/new");
     const sessionId = await submitFirstQuestion(page);
     await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
@@ -271,26 +266,16 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     expect(selections.length).toBeGreaterThan(0);
     const selId = selections[0]!.id;
 
-    // 携带 ?sel= 刷新：高亮标记呈现，浮动胶囊出现在高亮标记上方
+    // 携带 ?sel= 刷新：高亮标记短暂呈现（定位提醒），不出现恢复浮动胶囊
     await page.goto(`/research/${sessionId}/node/${sessionId}?sel=${selId}`);
     const mark = page.locator("[data-selection-mark]");
     await expect(mark).toBeVisible({ timeout: 10_000 });
-    const floating = page.getByTestId("floating-selection-capsule");
-    await expect(floating).toBeVisible();
-    const markBox = await mark.boundingBox();
-    const floatBox = await floating.boundingBox();
-    expect(markBox).toBeTruthy();
-    expect(floatBox).toBeTruthy();
-    // 胶囊底边在高亮顶边之上（8px 间隙 + 定位量测容差）
-    expect(floatBox!.y + floatBox!.height).toBeLessThanOrEqual(markBox!.y + 16);
+    await expect(page.getByTestId("floating-selection-capsule")).toHaveCount(0);
 
-    // 点击【引用】：恢复胶囊关闭，输入框引用态保持，焦点回归输入框
-    await page.getByTestId("floating-capsule-cite").click();
-    await expect(floating).toBeHidden();
-    await expect(page.getByTestId("selection-capsule")).toBeVisible();
-    await expect(page.getByLabel("你的问题")).toBeFocused();
+    // #48：定位提醒短暂存在——约 1.6 秒后高亮自动消失（不再永久残留干扰阅读）
+    await expect(mark).toBeHidden({ timeout: 5_000 });
 
-    // 出现新的有效选区：新选区的浮动胶囊照常呈现（仅一个），引用后更新输入框内容
+    // 用户重新手动选区：浮动胶囊照常出现（胶囊只由新的手动选区触发）
     await selectAnswerText(page, "渐进事件把后续内容写进同一条消息");
     await expect(page.getByTestId("floating-selection-capsule")).toBeVisible();
     await expect(page.getByTestId("floating-selection-capsule")).toHaveCount(1);

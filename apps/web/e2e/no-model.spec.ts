@@ -269,16 +269,15 @@ test("未配置模型：标记保存后可在列表查看并返回原选区，�
   await page.getByTestId(`mark-open-${item!.id}`).click();
   await expect(page).toHaveURL(new RegExp(`/research/${created.id}/reading/[^/]+\\?sel=`));
   await expect(page.locator("[data-selection-mark]")).toHaveText("无模型下也要保存这条标记笔记", { timeout: 10_000 });
-  // 恢复选区模式下浮动胶囊恰好一个（恢复胶囊），SelectionSurface 的残留胶囊不并存（修订二 #12）
-  await expect(page.locator('[data-testid="floating-selection-capsule"]')).toHaveCount(1);
-  await expect(page.locator('[data-testid="floating-selection-capsule"]:not([aria-hidden="true"])')).toBeVisible();
+  // #48：返回定位是只读临时提醒——不重开浮动胶囊、不进入引用态
+  await expect(page.locator('[data-testid="floating-selection-capsule"]')).toHaveCount(0);
   await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
-  await page.locator('[data-testid="floating-selection-capsule"]:not([aria-hidden="true"])').getByTestId("floating-capsule-cite").click();
-  await expect(page.getByTestId("selection-capsule")).toBeVisible();
+  // #48：定位提醒短暂存在——高亮约 1.6 秒后自动消失
+  await expect(page.locator("[data-selection-mark]")).toBeHidden({ timeout: 5_000 });
 
   // 刷新后列表与高亮仍由持久化记录恢复，且不会自动进入引用态
   await page.reload();
   await expect(marksPanel).toContainText("无模型也要保存笔记");
-  await expect(page.locator('[data-testid="floating-selection-capsule"]:not([aria-hidden="true"])')).toBeVisible();
+  await expect(page.locator('[data-testid="floating-selection-capsule"]')).toHaveCount(0);
   await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
 });

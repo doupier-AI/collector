@@ -155,7 +155,7 @@ test.describe("标记列表 API 与持久化", () => {
     expect(record.note).toBeUndefined();
   });
 
-  test("标记列表展示选区与笔记，并返回原选区后只显示浮动胶囊", async ({ page }) => {
+  test("标记列表展示选区与笔记，返回原选区后为只读定位提醒（不重开胶囊）", async ({ page }) => {
     test.setTimeout(60_000);
     await pairAndOpen(page, "/research/new");
     const sessionId = await submitFirstQuestion(page);
@@ -178,9 +178,11 @@ test.describe("标记列表 API 与持久化", () => {
 
     await page.getByTestId(`mark-open-${item!.id}`).click();
     await expect(page).toHaveURL(new RegExp(`/research/${sessionId}/node/[^?]+\\?sel=`));
+    // #48：只读定位提醒——高亮短暂呈现、不重开浮动胶囊、不进入引用态
     await expect(page.locator("[data-selection-mark]")).toHaveText(SELECTED, { timeout: 10_000 });
-    await expect(page.locator('[data-testid="floating-selection-capsule"]:not([aria-hidden="true"])')).toBeVisible();
+    await expect(page.locator('[data-testid="floating-selection-capsule"]')).toHaveCount(0);
     await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
+    await expect(page.locator("[data-selection-mark]")).toBeHidden({ timeout: 5_000 });
   });
 
   test("标记面板条目保留样式（回归保护：#40 曾误删 later-* 样式）", async ({ page }) => {

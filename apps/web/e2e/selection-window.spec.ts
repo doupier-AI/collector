@@ -309,22 +309,13 @@ test.describe("选区捕获与浮动胶囊", () => {
     expect(selections).toHaveLength(1);
     const selId = selections[0]!.id;
 
-    // 携带 ?sel= 重新进入阅读页：高亮标记 + 浮动胶囊呈现在高亮上方（与节点页一致）
+    // 携带 ?sel= 重新进入阅读页：#48 只读定位提醒——高亮短暂呈现、不重开浮动胶囊
     await page.goto(`${readingUrl}?sel=${selId}`);
     const mark = page.locator("[data-selection-mark]");
     await expect(mark).toBeVisible({ timeout: 10_000 });
-    const floating = page.getByTestId("floating-selection-capsule");
-    await expect(floating).toBeVisible();
-    const markBox = await mark.boundingBox();
-    const floatBox = await floating.boundingBox();
-    expect(markBox).toBeTruthy();
-    expect(floatBox).toBeTruthy();
-    expect(floatBox!.y + floatBox!.height).toBeLessThanOrEqual(markBox!.y + 16);
-
-    // 点击【引用】：恢复胶囊关闭，输入框引用态保持
-    await page.getByTestId("floating-capsule-cite").click();
-    await expect(floating).toBeHidden();
-    await expect(page.getByTestId("selection-capsule")).toBeVisible();
-    await expect(page.getByTestId("selection-capsule")).toContainText("本地优先研究");
+    await expect(page.getByTestId("floating-selection-capsule")).toHaveCount(0);
+    await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
+    // 定位提醒短暂存在——高亮约 1.6 秒后自动消失
+    await expect(mark).toBeHidden({ timeout: 5_000 });
   });
 });

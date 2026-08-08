@@ -7,7 +7,7 @@ import { useSelectionCapture } from "./useSelection";
 import type { ActiveCapture, SelectionRect } from "./useSelection";
 
 /**
- * 选区捕获层（修订一 #9 引入，#10/#11 收口）：挂在会话页与阅读页根部。
+ * 选区捕获层（修订一 #9 引入，#10/#11 收口，#48 收敛）：挂在会话页与阅读页根部。
  *
  * - 有效选区（非空、单块、有锚点）出现时，在选区上方呈现浮动胶囊；点击【引用】
  *   才通过 `onCite` 报告给页面创建引用——选区本身不再自动引用；
@@ -17,28 +17,19 @@ import type { ActiveCapture, SelectionRect } from "./useSelection";
  * - 重新选取（选区先坍缩再出现）后浮动胶囊再次呈现，可引用新选区；
  * - 胶囊出现 / 消失带轻过渡：隐藏时先以最后一次位置播放淡出，动画结束再卸载；
  * - 不达标选区（跨块、超长、无锚点）维持质量提示（修订一·B 起非空即有效）；
- * - 出现新的有效选区时通过 `onSelectionActivity` 通知页面（页面据此收起
- *   `?sel=` 恢复胶囊，避免两个胶囊并存）；
- * - 来源返回 `?sel=` 恢复选区由页面自行处理（直接从已存记录构造引用并在
- *   高亮标记上方渲染浮动胶囊），本组件不参与。
+ * - #48：来源返回 `?sel=` 定位收敛为只读临时提醒，不再重开浮动胶囊——
+ *   本组件的胶囊只由"用户新的手动选区"触发（restore 接管 prop 已移除）。
  */
 export function SelectionSurface({
   sessionId,
   onCite,
   onMark,
-  onSelectionActivity,
-  immediateDismiss = false,
 }: {
   sessionId: string;
   /** 用户点击浮动胶囊【引用】时触发。页面据此创建选区记录并渲染引用胶囊。 */
   onCite: (anchor: ResearchSelectionAnchor, text: string) => void;
   /** 用户点击浮动胶囊【标记】时触发（修订二）。页面据此创建标记并展开笔记输入框。 */
   onMark?: (anchor: ResearchSelectionAnchor, text: string, rect: SelectionRect) => void;
-  /** 新的有效选区出现（浮动胶囊呈现）时触发。 */
-  onSelectionActivity?: () => void;
-  /** 页面已进入恢复选区模式（?sel= 恢复胶囊渲染中）：残留浮动胶囊跳过过渡立即卸载，
-   *  避免与页面级恢复胶囊并存（修订二 #12 标记跳回暴露）。 */
-  immediateDismiss?: boolean;
 }) {
   const { active, dismiss } = useSelectionCapture();
   const previousSessionRef = useRef(sessionId);
@@ -65,22 +56,16 @@ export function SelectionSurface({
       ? active
       : null;
 
-  // 浮动胶囊呈现 / 消失的过渡与活动通知
+  // 浮动胶囊呈现 / 消失的过渡
   useEffect(() => {
     if (floating) {
       previousFloatingRef.current = floating;
-      setClosingRect(null);
-      onSelectionActivity?.();
-    } else if (immediateDismiss) {
-      // 恢复选区模式接管：跳过淡出，立即卸载，避免与页面级恢复胶囊并存
-      // （无条件清理：标记/引用消费后可能已在淡出中途才进入恢复模式）
-      previousFloatingRef.current = null;
       setClosingRect(null);
     } else if (previousFloatingRef.current) {
       setClosingRect(previousFloatingRef.current.rect);
       previousFloatingRef.current = null;
     }
-  }, [floating, onSelectionActivity, immediateDismiss]);
+  }, [floating]);
 
   function handleCite() {
     if (!floating?.anchor) return;

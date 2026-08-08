@@ -3,9 +3,8 @@ import type {
   ResearchSelectionRecord,
   ResearchSelectionAnchor,
 } from "@collector/capture-contracts";
-import { deriveMessageBlocks, messageContentBlockId } from "@collector/capture-contracts";
+import { composeSectionUnits, deriveMessageBlocks, messageContentBlockId } from "@collector/capture-contracts";
 import { messageBlockCaption } from "../../app/anchorCaption";
-import type { ActiveCapture, SelectionRect } from "./useSelection";
 
 /** 选区原文在来源条等窄空间中的最大展示长度。 */
 export const SELECTION_EXCERPT_CHARACTERS = 48;
@@ -96,11 +95,14 @@ export type MessageHighlightResult =
 /**
  * 在会话页消息列表中定位消息选区。
  *
- * 从子步 2（Markdown 渲染）起，消息锚点的偏移落在"渲染后可见文本空间"而不再是原始 block.text 空间，
- * 因此不再用 resolveHighlight(block.text, ...) 交叉校验原始文本。
- * 偏移由渲染层在 DOM 上直接圈出 <mark>（setRangeFromOffsets）；若越界则按 anchor.exact
- * 在 DOM 文本中搜索（markExactInRendered）；再失败降级为段落说明。
- * 锚点不是消息类型返回 null。
+ * 捕获时的锚点 blockOrdinal 是"渲染后 DOM 块下标"，而生成自由化后卡片由节单元
+ * （composeSectionUnits：标题块并入随后的正文节）渲染——DOM 块 = 节单元，
+ * 不是 deriveMessageBlocks 的原始段落。返回定位必须与卡片渲染同源对齐：
+ * 按 anchor.blockOrdinal 取第 index 个节单元，blockId 用节首块原始段落 ordinal
+ * （与 deriveSliceCardTargets 一致），偏移直接透传节单元 content 文本空间
+ * （捕获时偏移正是相对卡片 DOM 文本 = 节单元 content）。
+ * 用原始段落下标索引会把标题块场景下（节数 < 段落数）的定位错位到错误块
+ * 甚至越界，导致高亮不出现、滚动不落位（#48 复验暴露）。
  */
 export function highlightForMessages(
   messages: ResearchMessageRecord[],
@@ -111,13 +113,16 @@ export function highlightForMessages(
   const caption = messageBlockCaption(anchor.blockOrdinal);
   const message = messages.find((candidate) => candidate.id === anchor.messageId);
   if (!message) return { kind: "fallback", caption };
-  const block = deriveMessageBlocks(message.content)[anchor.blockOrdinal];
-  if (!block) return { kind: "fallback", caption };
+  const blocks = deriveMessageBlocks(message.content);
+  if (blocks.length === 0) return { kind: "fallback", caption };
+  const units = composeSectionUnits(blocks);
+  const unit = units[anchor.blockOrdinal];
+  if (!unit) return { kind: "fallback", caption };
   return {
     kind: "found",
     messageId: message.id,
-    blockId: messageContentBlockId(message.id, block.ordinal),
-    blockOrdinal: block.ordinal,
+    blockId: messageContentBlockId(message.id, unit.firstBlockOrdinal),
+    blockOrdinal: unit.firstBlockOrdinal,
     start: anchor.startOffset,
     end: anchor.endOffset,
   };
@@ -227,28 +232,4 @@ export function markExactInRendered(root: Element, exact: string): boolean {
   const idx = textContent.indexOf(exact);
   if (idx < 0) return false;
   return setRangeFromOffsets(root, idx, idx + exact.length);
-}
-
-/**
- * 从已存选区记录合成一次捕获，供来源返回时重开选区智能窗口：
- * 锚点、原文与质量（ok）来自记录，屏幕位置由调用方按高亮标记或默认值给出。
- * 窗口随后以锚点幂等键复用创建接口，取回已保存的选区与任务，不重复创建。
- */
-export function captureFromSelection(selection: ResearchSelectionRecord, rect: SelectionRect): ActiveCapture {
-  const anchor = selection.anchor;
-  const blockId =
-    anchor.kind === "message" ? messageContentBlockId(anchor.messageId, anchor.blockOrdinal) : anchor.blockId;
-  return {
-    range: {
-      startBlockId: blockId,
-      endBlockId: blockId,
-      startOffset: anchor.startOffset,
-      endOffset: anchor.endOffset,
-      text: selection.text,
-      blockCount: 1,
-    },
-    anchor,
-    quality: { level: "ok" },
-    rect,
-  };
 }

@@ -209,30 +209,6 @@ describe("SelectionSurface（修订一 #9）", () => {
     expect(screen.queryByTestId("floating-selection-capsule")).not.toBeInTheDocument();
   });
 
-  it("immediateDismiss 时残留浮动胶囊跳过淡出立即卸载（恢复选区模式接管）", () => {
-    const { first } = buildDom();
-    render(<SelectionSurface sessionId="session-1" onCite={vi.fn()} immediateDismiss />);
-
-    // 已有有效选区（floating）→ 渲染 open 胶囊
-    mockSelection(makeRange(first, 6, 12));
-    mouseup();
-    expect(screen.getByTestId("floating-selection-capsule")).toBeInTheDocument();
-
-    // 原生选区坍缩：通常进入 closing 淡出；但 immediateDismiss 应立即卸载
-    collapseSelection();
-    expect(screen.queryByTestId("floating-selection-capsule")).not.toBeInTheDocument();
-  });
-
-  it("新的有效选区出现时通过 onSelectionActivity 通知页面", () => {
-    const { first } = buildDom();
-    const onSelectionActivity = vi.fn();
-    render(<SelectionSurface sessionId="session-1" onCite={vi.fn()} onSelectionActivity={onSelectionActivity} />);
-
-    mockSelection(makeRange(first, 6, 12));
-    mouseup();
-    expect(onSelectionActivity).toHaveBeenCalledTimes(1);
-  });
-
   it("单字选区同样呈现浮动胶囊（修订一 #10：非空即有效）", () => {
     const { first } = buildDom();
     const onCite = vi.fn();

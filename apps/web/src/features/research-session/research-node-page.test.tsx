@@ -309,8 +309,7 @@ describe("ResearchNodePage 带来源的根节点（旧独立会话）", () => {
     expect(screen.getByTestId("research-scope-note")).toHaveTextContent("自动使用当前模型供应商的联网能力");
   });
 
-  it("来源返回：消息选区在回答中重定位并高亮", async () => {
-    const user = userEvent.setup();
+  it("来源返回：消息选区在回答中重定位并高亮，只读提醒不重开胶囊", async () => {
     // 选区锚点指向本页消息块内偏移 2–6 的“不同头可”——与块文本切片一致
     const selection = makeSelection({
       id: "sel-1",
@@ -341,13 +340,10 @@ describe("ResearchNodePage 带来源的根节点（旧独立会话）", () => {
     const mark = await screen.findByText("不同头可", { selector: "[data-selection-mark]" });
     expect(mark.tagName).toBe("MARK");
     expect(screen.queryByTestId("selection-restore-fallback")).not.toBeInTheDocument();
-    // 来源返回先显示浮动胶囊；明确点击引用后才进入引用态
-    expect(await screen.findByTestId("floating-selection-capsule")).toBeInTheDocument();
+    // #48：返回定位是只读临时提醒——不重开浮动胶囊，不进入引用态
+    expect(screen.queryByTestId("floating-selection-capsule")).not.toBeInTheDocument();
     expect(screen.queryByTestId("selection-capsule")).not.toBeInTheDocument();
     expect(createResearchSelection).not.toHaveBeenCalled();
-    await user.click(screen.getByTestId("floating-capsule-cite"));
-    expect(await screen.findByTestId("selection-capsule")).toBeInTheDocument();
-    expect(createResearchSelection).toHaveBeenCalledTimes(1);
   });
 
   it("来源返回：原消息不存在时降级展示保存原文与段落说明", async () => {
@@ -381,6 +377,8 @@ describe("ResearchNodePage 带来源的根节点（旧独立会话）", () => {
     expect(fallback).toHaveTextContent("段落 2");
     expect(fallback).toHaveTextContent("已被重写的内容");
     expect(screen.queryByText("已被重写的内容", { selector: "[data-selection-mark]" })).not.toBeInTheDocument();
+    // #48：降级说明持续展示，不重开胶囊
+    expect(screen.queryByTestId("floating-selection-capsule")).not.toBeInTheDocument();
   });
 });
 
@@ -532,8 +530,7 @@ describe("ResearchNodePage 子节点", () => {
     expect(link).toHaveAttribute("href", "/research/session-1/node/node-grandchild-1");
   });
 
-  it("子节点页来源返回重开窗口时，创建选区携带当前节点 id", async () => {
-    const user = userEvent.setup();
+  it("子节点页来源返回只读提醒，不重开窗口不创建选区", async () => {
     const selection = makeSelection({
       id: "sel-1",
       sessionId: "session-1",
@@ -542,8 +539,8 @@ describe("ResearchNodePage 子节点", () => {
         kind: "message",
         messageId: "m-out",
         blockOrdinal: 0,
-        startOffset: 0,
-        endOffset: 4,
+        startOffset: 12,
+        endOffset: 16,
         exact: "不同信息",
       },
     });
@@ -558,16 +555,11 @@ describe("ResearchNodePage 子节点", () => {
       "/research/session-1/node/node-child-1?sel=sel-1",
     );
 
-    // 来源返回先显示浮动胶囊，明确点击引用后创建选区并携带当前节点 id
-    await screen.findByTestId("floating-selection-capsule");
+    // #48：返回定位是只读临时提醒——不重开浮动胶囊、不创建选区记录
+    await screen.findByText("不同信息", { selector: "[data-selection-mark]" });
+    expect(screen.queryByTestId("floating-selection-capsule")).not.toBeInTheDocument();
     expect(screen.queryByTestId("selection-capsule")).not.toBeInTheDocument();
     expect(createResearchSelection).not.toHaveBeenCalled();
-    await user.click(screen.getByTestId("floating-capsule-cite"));
-    await screen.findByTestId("selection-capsule");
-    await waitFor(() => expect(createResearchSelection).toHaveBeenCalledTimes(1));
-    const [sessionId, input] = createResearchSelection.mock.calls[0];
-    expect(sessionId).toBe("session-1");
-    expect(input.nodeId).toBe("node-child-1");
   });
 });
 

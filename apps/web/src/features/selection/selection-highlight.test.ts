@@ -3,7 +3,6 @@ import type { ResearchSelectionRecord } from "@collector/capture-contracts";
 import { makeMessage, makeSelection } from "../../test/fakes";
 import {
   backRouteForSelection,
-  captureFromSelection,
   childNodeIdempotencyKey,
   highlightForMessages,
   laterIdempotencyKey,
@@ -153,6 +152,69 @@ describe("highlightForMessages", () => {
   });
 });
 
+describe("highlightForMessages 节单元对齐（#48）", () => {
+  // plan-then-write 常态：正文含 ATX 标题块，标题块并入随后的正文节。
+  // 捕获时锚点 blockOrdinal 是渲染后 DOM 块下标 = 节单元下标（标题块并入节后节数 < 段落数）。
+  const titled = makeMessage({
+    id: "m-out",
+    role: "assistant",
+    status: "completed",
+    content: "## 第一节\n\n这是第一段正文。\n\n## 第二节\n\n这是第二段正文。",
+  });
+
+  it("标题块并入节后，锚点 blockOrdinal 按节单元解析（blockId 用节首块段落 ordinal）", () => {
+    // 节单元序列：0 = "## 第一节\n\n这是第一段正文。"，1 = "## 第二节\n\n这是第二段正文。"
+    const result = highlightForMessages([titled], {
+      kind: "message",
+      messageId: "m-out",
+      blockOrdinal: 1,
+      startOffset: 4,
+      endOffset: 8,
+      exact: "第二段正文",
+    }, "第二段正文");
+    expect(result).toEqual({
+      kind: "found",
+      messageId: "m-out",
+      // 第二节以第 3 个原始段落开头（## 第一节=0、正文=1、## 第二节=2）
+      blockId: "m-out#p2",
+      blockOrdinal: 2,
+      start: 4,
+      end: 8,
+    });
+  });
+
+  it("偏移落在并入节的标题块内时仍定位到该节", () => {
+    const result = highlightForMessages([titled], {
+      kind: "message",
+      messageId: "m-out",
+      blockOrdinal: 0,
+      startOffset: 0,
+      endOffset: 4,
+      exact: "## 第",
+    }, "## 第");
+    expect(result).toEqual({
+      kind: "found",
+      messageId: "m-out",
+      blockId: "m-out#p0",
+      blockOrdinal: 0,
+      start: 0,
+      end: 4,
+    });
+  });
+
+  it("节单元下标越界时降级（blockOrdinal 超过节数）", () => {
+    const result = highlightForMessages([titled], {
+      kind: "message",
+      messageId: "m-out",
+      blockOrdinal: 5,
+      startOffset: 0,
+      endOffset: 4,
+      exact: "不存在的节",
+    }, "不存在的节");
+    expect(result).toEqual({ kind: "fallback", caption: "段落 6" });
+  });
+});
+
 describe("childNodeIdempotencyKey", () => {
   const digest = (text: string) => `h${text.length}`;
 
@@ -175,40 +237,5 @@ describe("laterIdempotencyKey", () => {
     expect(key).toBe("later:sel-1");
     expect(key).toMatch(/^later:[!-~]+$/);
     expect(key.length).toBeLessThanOrEqual(200);
-  });
-});
-
-describe("captureFromSelection", () => {
-  const rect = { top: 72, bottom: 96, left: 16, right: 376 };
-
-  it("消息选区：用锚点与原文合成捕获，块 id 取消息块", () => {
-    const selection = makeSelection({ id: "sel-1", text: "一段选区文字" });
-    const capture = captureFromSelection(selection, rect);
-    expect(capture.anchor).toEqual(selection.anchor);
-    expect(capture.range.text).toBe("一段选区文字");
-    expect(capture.range.blockCount).toBe(1);
-    expect(capture.range.startBlockId).toBe("m-out#p0");
-    expect(capture.range.endBlockId).toBe("m-out#p0");
-    expect(capture.quality).toEqual({ level: "ok" });
-    expect(capture.rect).toEqual(rect);
-  });
-
-  it("快照选区：块 id 取锚点 blockId", () => {
-    const selection: ResearchSelectionRecord = makeSelection({
-      id: "sel-2",
-      text: "快照原文",
-      anchor: {
-        kind: "snapshot",
-        contentSnapshotId: "snap-1",
-        blockId: "block-7",
-        startOffset: 0,
-        endOffset: 4,
-        exact: "快照原文",
-      },
-    });
-    const capture = captureFromSelection(selection, rect);
-    expect(capture.range.startBlockId).toBe("block-7");
-    expect(capture.range.endBlockId).toBe("block-7");
-    expect(capture.range.text).toBe("快照原文");
   });
 });

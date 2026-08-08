@@ -468,15 +468,15 @@ test("场景三：真实回答选区 → 保存标记与笔记 → 从栏目返�
   await page.waitForURL((url) => url.pathname.includes(`/research/${sessionId}/node/`) && url.searchParams.has("sel"), {
     timeout: 20_000,
   });
+  // #48：只读定位提醒——高亮短暂呈现、不重开浮动胶囊、不进入引用态
   await expect(page.locator("[data-selection-mark]")).toHaveText(selected, { timeout: 20_000 });
-  await expect(page.locator('[data-testid="floating-selection-capsule"]:not([aria-hidden="true"])')).toBeVisible();
+  await expect(page.locator('[data-testid="floating-selection-capsule"]')).toHaveCount(0);
   await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
-  await page.getByTestId("floating-capsule-cite").click();
-  await expect(page.getByTestId("selection-capsule")).toBeVisible();
+  await expect(page.locator("[data-selection-mark]")).toBeHidden({ timeout: 5_000 });
 
   await page.reload();
   await expect(page.getByRole("complementary", { name: "标记" })).toContainText("真实回答中的关键定义");
-  await expect(page.locator('[data-testid="floating-selection-capsule"]:not([aria-hidden="true"])')).toBeVisible();
+  await expect(page.locator('[data-testid="floating-selection-capsule"]')).toHaveCount(0);
   await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
 
   expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);

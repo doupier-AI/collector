@@ -100,8 +100,7 @@ function snapshotSelection(overrides: Partial<ResearchSelectionRecord> = {}): Re
 }
 
 describe("阅读视图来源返回", () => {
-  it("携带选区参数时按锚点重定位并高亮原选区", async () => {
-    const user = userEvent.setup();
+  it("携带选区参数时按锚点重定位并高亮原选区，只读提醒不重开胶囊", async () => {
     const createResearchSelection = vi.fn(async () => ({
       selection: snapshotSelection(),
       task: makeSelectionTask({ id: "sel-task-1", status: "completed" }),
@@ -119,13 +118,10 @@ describe("阅读视图来源返回", () => {
     expect(mark.tagName).toBe("MARK");
     // 高亮只包住选区范围，块内其余文字仍在
     expect(container.querySelector('[data-block-id="b-2"] [data-block-text]')?.textContent).toBe("正文段落");
-    // 来源返回先显示浮动胶囊；明确点击引用后才进入引用态
-    expect(await screen.findByTestId("floating-selection-capsule")).toBeInTheDocument();
+    // #48：返回定位是只读临时提醒——不重开浮动胶囊，不进入引用态
+    expect(screen.queryByTestId("floating-selection-capsule")).not.toBeInTheDocument();
     expect(screen.queryByTestId("selection-capsule")).not.toBeInTheDocument();
     expect(createResearchSelection).not.toHaveBeenCalled();
-    await user.click(screen.getByTestId("floating-capsule-cite"));
-    expect(await screen.findByTestId("selection-capsule")).toBeInTheDocument();
-    expect(createResearchSelection).toHaveBeenCalledTimes(1);
   });
 
   it("块内原文已变化时用原文在块内重新定位", async () => {
