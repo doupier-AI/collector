@@ -22,7 +22,8 @@ test("未配置模型：输入保留、显示失败原因与重试，重试不�
   const sessionId = page.url().split("/research/")[1]?.split("/")[0] ?? "";
 
   // 用户输入仍在会话中，AI 区域显示失败卡与可理解原因
-  await expect(page.getByText(QUESTION, { exact: true })).toBeVisible();
+  // （会话标题已自动提炼为同一问题文本，须限定在消息列表内避免歧义）
+  await expect(page.locator(".message--user .message__content").getByText(QUESTION, { exact: true })).toBeVisible();
   await expect(page.getByText("内容已保存，暂时无法生成回答")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText(/还没有配置可用模型/)).toBeVisible();
   await expect(page.locator(".message--assistant")).toHaveCount(1);
@@ -48,7 +49,7 @@ test("未配置模型：输入保留、显示失败原因与重试，重试不�
 
   await expect(page.getByText("内容已保存，暂时无法生成回答")).toBeVisible();
   await expect(page.locator(".message--assistant")).toHaveCount(1);
-  await expect(page.getByText(QUESTION, { exact: true })).toBeVisible();
+  await expect(page.locator(".message--user .message__content").getByText(QUESTION, { exact: true })).toBeVisible();
 });
 
 interface SelectionView {

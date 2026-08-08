@@ -131,7 +131,7 @@ test("刷新页面恢复同一会话与完整内容", async ({ page }) => {
   await page.reload();
 
   expect(page.url()).toContain(`/research/${sessionId}`);
-  await expect(page.getByRole("heading", { name: "新研究会话" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "什么是本地优先研究" })).toBeVisible();
   await expect(page.getByText(QUESTION, { exact: true })).toBeVisible();
   await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
   await expect(page.locator(".message--assistant")).toHaveCount(1);
@@ -252,7 +252,8 @@ test("键盘完成侧栏收起与展开、输入与发送", async ({ page }) => 
   await page.keyboard.type("用键盘提交的问题");
   await page.keyboard.press("Enter");
   await page.waitForURL(/\/research\/(?!new$)[^/]+$/, { timeout: 10_000 });
-  await expect(page.getByText("用键盘提交的问题", { exact: true })).toBeVisible();
+  // 提交的消息出现在消息流中（会话标题已自动提炼为同一问题文本，须限定在消息列表内避免歧义）
+  await expect(page.locator(".message--user .message__content").getByText("用键盘提交的问题", { exact: true })).toBeVisible();
 });
 
 test("320/768/1024/1440 视口无横向溢出并留截图", async ({ page }) => {

@@ -112,7 +112,7 @@ test.describe("统一研究地图（#40）", () => {
 
     // 面包屑：根 › 当前子节点；血统脉络中当前节点有「当前」徽标与锚点类
     const breadcrumb = dialog.getByRole("navigation", { name: "当前位置" });
-    await expect(breadcrumb).toContainText("新研究会话");
+    await expect(breadcrumb).toContainText("什么是本地优先研究");
     await expect(breadcrumb).toContainText(SELECTED_A);
     const chain = dialog.getByRole("list", { name: "专注脉络" });
     const currentRow = chain.locator(".focus-lineage__row--current");
@@ -211,10 +211,10 @@ test.describe("统一研究地图（#40）", () => {
     const chain = dialog.getByRole("list", { name: "专注脉络" });
     await expect(chain.getByRole("button", { name: SELECTED_IN_C })).toBeVisible(); // D（当前）
     await expect(chain.getByRole("button", { name: SELECTED_B })).toBeVisible(); // C（父）
-    await expect(chain.getByRole("button", { name: "新研究会话" })).toBeVisible(); // 根
+    await expect(chain.getByRole("button", { name: "什么是本地优先研究" })).toBeVisible(); // 根
     await expect(chain.locator(".focus-lineage__row--current")).toContainText("当前");
     const breadcrumb = dialog.getByRole("navigation", { name: "当前位置" });
-    await expect(breadcrumb).toContainText("新研究会话");
+    await expect(breadcrumb).toContainText("什么是本地优先研究");
     await expect(breadcrumb).toContainText(SELECTED_B); // C 在面包屑中
 
     // 面包屑点击 C 跳转（局部地图焦点不产生路由，进入节点才导航）
@@ -327,7 +327,7 @@ test.describe("统一研究地图（#40）", () => {
     const fusedGroup = dialog.getByRole("group", { name: "融合来源" });
     await expect(fusedGroup).toContainText("融合来源节点");
     // 初始焦点落在第一条条目（父子组的根节点）
-    await expect(dialog.getByRole("listitem", { name: /新研究会话/ })).toBeFocused();
+    await expect(dialog.getByRole("listitem", { name: /什么是本地优先研究/ })).toBeFocused();
 
     // 键盘进入节点：Enter 打开当前焦点条目并关闭地图
     await page.keyboard.press("Enter");
@@ -346,7 +346,7 @@ test.describe("统一研究地图（#40）", () => {
     await page.keyboard.press("g");
     const listAfterFilter = dialog.getByRole("list", { name: "节点关系列表" });
     await expect(listAfterFilter).toBeVisible();
-    await expect(listAfterFilter.getByRole("button", { name: "新研究会话" })).toBeVisible();
+    await expect(listAfterFilter.getByRole("button", { name: "什么是本地优先研究" })).toBeVisible();
     await expect(dialog.getByRole("button", { name: "语义关联节点" })).toHaveCount(0);
     await expect(dialog.getByRole("button", { name: "融合来源节点" })).toHaveCount(0);
     await page.keyboard.press("t");

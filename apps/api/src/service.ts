@@ -67,6 +67,7 @@ import { TermDetectionService } from "./term-detection.js";
 import { ResearchTermPreviewService } from "./term-preview.js";
 import { ParentChainContextService } from "./parent-chain-context.js";
 import { NodeNamingService } from "./node-naming.js";
+import { SessionTitlingService } from "./session-titling.js";
 import { webSearch, webFetch, createSearchRunContext, filterCitationsByEvidence } from "./web-search-agent.js";
 import { parseAgentCitations } from "./web-search-agent.js";
 import { getSearchConfig as getSearchConfigFromAgent, updateSearchConfig as updateSearchConfigInAgent, listAvailableBackends, initSearchBackends, type SearchBackendId } from "./web-search-agent.js";
@@ -101,6 +102,7 @@ export class CaptureService {
   readonly termPreviews: ResearchTermPreviewService;
   readonly parentChainContext: ParentChainContextService;
   readonly nodeNaming: NodeNamingService;
+  readonly sessionTitling: SessionTitlingService;
   readonly runRecords: RunRecordsService;
 
   constructor(
@@ -114,10 +116,19 @@ export class CaptureService {
     this.attachModelGateway(this.modelGateway);
     this.parentChainContext = new ParentChainContextService(this.store);
     this.nodeNaming = new NodeNamingService(this.store, async () => this.gatewayForPurpose("research"), this.parentChainContext);
+    this.sessionTitling = new SessionTitlingService(this.store, async () => this.gatewayForPurpose("research"));
     this.research = new ResearchSessionService(this.store, {
       provider: this.options.researchProvider ?? this.researchProviderFor(this.modelGateway),
       autoRunTasks: this.options.autoRunResearchTasks,
       parentChainContext: this.parentChainContext,
+      onTaskQueued: async (task) => {
+        // 根节点任务入队即落库确定性标题（无模型 I/O，快）：回答完成事件后客户端重拉视图即为新标题。
+        if (task.nodeId === task.sessionId) {
+          await this.sessionTitling.nameSession(task.sessionId);
+          // 模型提炼异步覆盖（30s 超时），不阻塞入队返回。
+          void this.sessionTitling.refineSessionTitle(task.sessionId);
+        }
+      },
       onTaskCompleted: (task) => { void this.nodeNaming.nameNode(task.nodeId ?? task.sessionId); },
       ...(this.options.researchRetrySleep ? { retrySleep: this.options.researchRetrySleep } : {}),
     });

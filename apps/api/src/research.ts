@@ -37,6 +37,7 @@ import {
 } from "@collector/capture-contracts";
 import type { ResearchStore } from "./store.js";
 import { ParentChainContextService, type ParentChainContextResult } from "./parent-chain-context.js";
+import { DEFAULT_RESEARCH_SESSION_TITLE } from "./session-titling.js";
 import { buildResearchSliceContext, DEFAULT_RESEARCH_SLICE_CONTEXT_TOKEN_BUDGET, type ResearchFragmentContextCandidate } from "./slice-context.js";
 import { getOrDeriveMessageBodyArtifacts, matchSliceForFragment, tryResolveFragmentExcerpt } from "./body-artifacts.js";
 import type { ResearchBodyOutline, ResearchSliceAnnotation } from "@collector/model-gateway";
@@ -110,6 +111,8 @@ export interface ResearchServiceOptions {
   provider?: ResearchGenerationProvider;
   autoRunTasks?: boolean;
   parentChainContext?: ParentChainContextService;
+  /** 任务入队（提交成功、持久化完成）后的非阻塞附加动作（例如会话自动标题，与生成并行）。 */
+  onTaskQueued?: (task: ResearchTaskRecord) => void | Promise<void>;
   /** 生成成功后的非阻塞附加动作（例如 H6 节点命名）。 */
   onTaskCompleted?: (task: ResearchTaskRecord) => void | Promise<void>;
   /** 退避重试的等待实现；测试注入以确定性记录退避序列，默认真实 sleep。 */
@@ -207,7 +210,7 @@ export class ResearchSessionService {
     const now = new Date().toISOString();
     const session: ResearchSessionRecord = {
       id: randomUUID(),
-      title: title?.trim() || "新研究会话",
+      title: title?.trim() || DEFAULT_RESEARCH_SESSION_TITLE,
       status: "active",
       createdAt: now,
       updatedAt: now,
@@ -268,6 +271,12 @@ export class ResearchSessionService {
     };
     const accepted = await this.store.createResearchTurn(session, inputMessage, outputMessage, task);
     if (this.options.autoRunTasks !== false) this.scheduleTask(accepted.task.id);
+    try {
+      // 任务入队即触发（与生成并行）：自动标题在回答完成前就绪，完成事件后客户端重拉视图即为新标题。
+      await this.options.onTaskQueued?.(accepted.task);
+    } catch {
+      // 附加动作失败不影响主流程。
+    }
     return accepted;
   }
 
@@ -299,6 +308,11 @@ export class ResearchSessionService {
     };
     const accepted = await this.store.createResearchTurnForNode(node, inputMessage, outputMessage, task);
     if (this.options.autoRunTasks !== false) this.scheduleTask(accepted.task.id);
+    try {
+      await this.options.onTaskQueued?.(accepted.task);
+    } catch {
+      // 附加动作失败不影响主流程。
+    }
     return accepted;
   }
 

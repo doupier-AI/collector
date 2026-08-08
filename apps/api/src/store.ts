@@ -1,7 +1,7 @@
 import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchFusionReference, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewInput, type ResearchTermPreviewRecord, type ResearchTurnAccepted, researchEdgeId } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchFusionReference, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewInput, type ResearchTermPreviewRecord, type ResearchTurnAccepted, researchEdgeId } from "@collector/capture-contracts";
 
 export type ObservabilityRecordSource = "research" | "selection" | "import" | "workflow" | "fusion";
 
@@ -92,11 +92,13 @@ export interface ResearchImportStore {
   getResearchSession(id: string): ResearchSessionRecord | undefined;
 }
 
-/** 研究会话生命周期所需的持久化能力：27 个方法。 */
+/** 研究会话生命周期所需的持久化能力：28 个方法。 */
 export interface ResearchStore {
   saveResearchSession(record: ResearchSessionRecord): Promise<void>;
   createResearchSession(record: ResearchSessionRecord, idempotencyKey: string): Promise<ResearchSessionRecord>;
   getResearchSession(id: string): ResearchSessionRecord | undefined;
+  /** 会话自动标题：更新会话标题；返回更新后的会话记录。 */
+  updateResearchSessionTitle(sessionId: string, title: string): Promise<ResearchSessionRecord | undefined>;
   listResearchSessions(): ResearchSessionRecord[];
   createResearchNode(node: ResearchNodeRecord, idempotencyKey: string): Promise<ResearchNodeRecord>;
   getResearchNode(id: string): ResearchNodeRecord | undefined;
@@ -1121,6 +1123,17 @@ export class SqliteStore implements CollectorStore {
 
   getResearchSession(id: string): ResearchSessionRecord | undefined {
     return this.getRecord<ResearchSessionRecord>("SELECT record_json FROM research_sessions WHERE id = ?", id);
+  }
+
+  async updateResearchSessionTitle(sessionId: string, title: string): Promise<ResearchSessionRecord | undefined> {
+    const session = this.getResearchSession(sessionId);
+    if (!session) return undefined;
+    const normalized = title.trim();
+    if (!normalized || normalized.length > RESEARCH_TITLE_MAX_CHARACTERS) throw new Error("Research session title must contain 1-40 characters");
+    const updated: ResearchSessionRecord = { ...session, title: normalized, updatedAt: new Date().toISOString() };
+    this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
+      .run(updated.updatedAt, JSON.stringify(updated), sessionId);
+    return updated;
   }
 
   listResearchSessions(): ResearchSessionRecord[] {
@@ -3555,6 +3568,7 @@ export class JsonStore implements CollectorStore {
   async saveResearchSession(_record: ResearchSessionRecord): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
   async createResearchSession(_record: ResearchSessionRecord, _idempotencyKey: string): Promise<ResearchSessionRecord> { throw new Error("Research sessions require SQLite persistence"); }
   getResearchSession(_id: string): ResearchSessionRecord | undefined { return undefined; }
+  async updateResearchSessionTitle(_sessionId: string, _title: string): Promise<ResearchSessionRecord | undefined> { throw new Error("Research sessions require SQLite persistence"); }
   listResearchSessions(): ResearchSessionRecord[] { return []; }
   async createResearchNode(_node: ResearchNodeRecord, _idempotencyKey: string): Promise<ResearchNodeRecord> { throw new Error("Research nodes require SQLite persistence"); }
   getResearchNode(_id: string): ResearchNodeRecord | undefined { return undefined; }

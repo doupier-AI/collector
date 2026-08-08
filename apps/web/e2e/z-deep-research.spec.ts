@@ -73,7 +73,7 @@ test.describe("节点生长与来源返回", () => {
     const nodeId = await waitForChildNodeUrl(page, sessionId);
     const sourceBar = page.getByTestId("selection-source-bar");
     await expect(sourceBar).toBeVisible();
-    await expect(sourceBar).toContainText("来自《新研究会话》的选区");
+    await expect(sourceBar).toContainText("来自《什么是本地优先研究》的选区");
     await expect(sourceBar).toContainText(SELECTED);
     await expect(page.getByTestId("research-scope-note")).toContainText("自动使用当前模型供应商的联网能力");
     await expect(page.getByText(/这是深入研究第一轮/)).toBeVisible({ timeout: 15_000 });
@@ -168,7 +168,7 @@ test.describe("节点生长与来源返回", () => {
     const nodeId = await waitForChildNodeUrl(page, originSessionId);
     expect(nodeId).not.toBe(originSessionId);
     const sourceBar = page.getByTestId("selection-source-bar");
-    await expect(sourceBar).toContainText("来自《新研究会话》的选区");
+    await expect(sourceBar).toContainText("来自《什么是本地优先研究》的选区");
     await expect(sourceBar).toContainText(SELECTED);
     await expect(page.getByTestId("research-scope-note")).toContainText("自动使用当前模型供应商的联网能力");
     await expect(page.getByText("把本地优先的存储边界讲透", { exact: true })).toBeVisible();

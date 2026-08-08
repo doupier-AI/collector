@@ -836,6 +836,32 @@ ${JSON.stringify(input.content)}`;
     return parseSliceAnnotation(response.content);
   }
 
+  /**
+   * 会话标题提炼：为研究会话生成简洁中文标题。调用方负责长度/空值校验与确定性回退。
+   * 与节点命名同构但允许更长（上限 40 字符），供会话列表展示。
+   */
+  async generateSessionTitle(
+    input: { content: string },
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<string> {
+    const prompt = [
+      "你是 Collector 的会话标题助手。请为下面的研究会话生成一个简洁、准确的中文标题。",
+      "只返回合法 JSON：{\"name\":\"...\"}。标题不超过 40 个字符，不要添加引号、编号或解释。",
+      `会话内容：${JSON.stringify(input.content.slice(0, 2000))}`,
+    ].join("\n\n");
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      responseFormat: { type: "json_object" },
+      thinking: false,
+      maxTokens: options.maxTokens ?? 128,
+      timeoutMs: options.timeoutMs ?? 30_000,
+    }, options.context ?? { purpose: "research", promptVersion: "session-titling-v1" });
+    const parsed = JSON.parse(response.content) as { name?: unknown };
+    if (typeof parsed.name !== "string" || !parsed.name.trim()) throw new Error("Session titling provider returned an invalid title");
+    return parsed.name.trim();
+  }
+
   /** H6：为节点生成简洁显示名称；调用方负责做长度与空值校验和确定性回退。 */
   async generateNodeDisplayName(
     input: { content: string; parentChainContext?: ResearchParentChainContext },
