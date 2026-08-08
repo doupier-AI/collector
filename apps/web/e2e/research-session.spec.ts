@@ -32,12 +32,12 @@ test("首次打开显示开始页与空状态邀请", async ({ page }) => {
   await expect(page.getByRole("button", { name: "开始研究" })).toBeVisible();
   await expect(page.getByRole("button", { name: /添加附件（TXT、Markdown、DOCX、PDF/ })).toBeVisible();
 
-  // 宽屏（默认 1280px）左右固定侧栏初始展开：左侧内容导航空状态、右侧稍后再学空态
+  // 宽屏（默认 1280px）左右固定侧栏初始展开：左侧内容导航空状态、右侧标记空态
   const nav = page.getByRole("navigation", { name: "内容导航" });
   await expect(nav).toBeVisible();
   await expect(page.getByText(/还没有研究会话/)).toBeVisible();
-  await expect(page.getByRole("complementary", { name: "稍后再学" })).toBeVisible();
-  await expect(page.getByTestId("later-empty")).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "标记" })).toBeVisible();
+  await expect(page.getByTestId("mark-empty")).toBeVisible();
 
   // 顶栏图标按钮收起再展开
   await page.getByRole("button", { name: "内容" }).click();
@@ -75,23 +75,34 @@ test("提交后渐进内容进入同一条 AI 消息并完成，控制台无错�
   // 用户消息与 AI 固定占位立即出现，状态“已保存，正在生成”
   await expect(page.getByText(QUESTION, { exact: true })).toBeVisible();
   await expect(page.getByTestId("ai-placeholder")).toBeVisible();
-  // 状态文字同时存在于消息状态与 sr-only aria-live 区，用 class 限定避免 strict 冲突
-  await expect(page.locator(".message__status")).toHaveText("已保存，正在请求联网");
+  // 状态文字同时存在于消息状态与 sr-only aria-live 区，用 class 限定避免 strict 冲突。
+  // “正在生成”同时匹配“已保存，正在生成”与“正在生成”两个生成期瞬态，
+  // 不能在此断言完成态的材料范围说明——那会阻塞到生成结束、让后续渐进断言失去中间态。
+  await expect(page.locator(".message__status")).toContainText("正在生成");
 
   // 渐进内容进入同一条 AI 消息
   const assistantMessages = page.locator(".message--assistant");
   const assistantContent = page.locator(".message--assistant .message__content");
+  // 流式中段只有生成中的单一 .message__content（GeneratingBody），单匹配定位有效。
   await expect(assistantContent).toContainText("你问的是", { timeout: 15_000 });
   const earlyText = (await assistantContent.textContent()) ?? "";
   await expect(assistantMessages).toHaveCount(1);
-  await expect(assistantContent).toContainText("回答完毕", { timeout: 15_000 });
-  const fullText = (await assistantContent.textContent()) ?? "";
+  await expect(assistantContent.last()).toContainText("回答完毕", { timeout: 15_000 });
   await expect(assistantMessages).toHaveCount(1);
-  expect(fullText.length).toBeGreaterThan(earlyText.length);
-  expect(fullText.startsWith(earlyText)).toBe(true);
+  // 完成后渲染为多张切片卡片（各含一个 .message__content），渲染丢弃段落间 \n\n；
+  // 拼接所有块文本即完整正文（无 \n\n）。earlyText 是流式中段捕获的部分内容：
+  // 中段 GeneratingBody 是单一 Markdown 容器，段落间 \n\n 在 textContent 里保留为 \n，
+  // 而完成态各卡片拼接不含换行——两侧都归一化去掉换行后再比较。完整正文应更长且含该中间片段。
+  const fullText = (await assistantContent.allTextContents()).join("").replace(/\n+/g, "");
+  const earlyNorm = earlyText.replace(/\n+/g, "");
+  expect(fullText.length).toBeGreaterThan(earlyNorm.length);
+  expect(fullText).toContain(earlyNorm.trim());
 
   // 完成状态：aria-live 播报，不弹成功提示
   await expect(page.locator("[aria-live=polite]")).toHaveText("已完成", { timeout: 15_000 });
+
+  // 阶段 E 决策（2026-07-30）后联网搜索默认关闭：完成后材料范围说明如实呈现未联网。
+  await expect(page.getByTestId("grounding-scope-note")).toHaveText("本轮未请求联网。");
 
   // 完成的回答按确定性段落块渲染，块 ID 与选区锚点同源
   const blocks = page.locator(".message--assistant [data-block-id]");
@@ -115,27 +126,47 @@ test("提交后渐进内容进入同一条 AI 消息并完成，控制台无错�
 test("刷新页面恢复同一会话与完整内容", async ({ page }) => {
   await pairAndOpen(page, "/research/new");
   const sessionId = await submitFirstQuestion(page);
-  await expect(page.locator(".message--assistant .message__content")).toContainText("回答完毕", { timeout: 15_000 });
+  await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
 
   await page.reload();
 
   expect(page.url()).toContain(`/research/${sessionId}`);
   await expect(page.getByRole("heading", { name: "新研究会话" })).toBeVisible();
   await expect(page.getByText(QUESTION, { exact: true })).toBeVisible();
-  await expect(page.locator(".message--assistant .message__content")).toContainText("回答完毕", { timeout: 15_000 });
+  await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
   await expect(page.locator(".message--assistant")).toHaveCount(1);
+});
+
+test("侧栏会话条目保留样式（回归保护：#40 曾误删 drawer__* 样式）", async ({ page }) => {
+  await pairAndOpen(page, "/research/new");
+  await submitFirstQuestion(page);
+  await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
+
+  // 刷新让侧栏重新挂载，拉到新创建的会话
+  await page.reload();
+  await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
+
+  // 宽屏固定侧栏：会话条目有块级布局、标题单行省略、时间弱化颜色
+  const sessionItem = page.locator(".drawer__session").first();
+  await expect(sessionItem).toBeVisible();
+  await expect(sessionItem).toHaveCSS("display", "grid");
+  const title = page.locator(".drawer__session-title").first();
+  await expect(title).toHaveCSS("white-space", "nowrap");
+  await expect(title).toHaveCSS("text-overflow", "ellipsis");
+  const time = page.locator(".drawer__session-time").first();
+  await expect(time).toHaveCSS("color", "rgb(107, 113, 104)");
 });
 
 test("关闭页面后重新打开自动恢复最近会话", async ({ page, context }) => {
   await pairAndOpen(page, "/research/new");
   await submitFirstQuestion(page);
-  await expect(page.locator(".message--assistant .message__content")).toContainText("回答完毕", { timeout: 15_000 });
+  await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
 
   const reopened = await context.newPage();
   await reopened.goto("/");
   await reopened.waitForURL(/\/research\/(?!new$)[^/]+$/, { timeout: 10_000 });
   await expect(reopened.getByText(QUESTION, { exact: true })).toBeVisible();
-  await expect(reopened.locator(".message--assistant .message__content")).toContainText("回答完毕", { timeout: 15_000 });
+  await expect(reopened.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
   await reopened.close();
 });
 
@@ -227,11 +258,19 @@ test("键盘完成侧栏收起与展开、输入与发送", async ({ page }) => 
 test("320/768/1024/1440 视口无横向溢出并留截图", async ({ page }) => {
   await pairAndOpen(page, "/research/new");
   await submitFirstQuestion(page);
-  await expect(page.locator(".message--assistant .message__content")).toContainText("回答完毕", { timeout: 15_000 });
+  await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
 
   mkdirSync("e2e-artifacts", { recursive: true });
   for (const width of [320, 768, 1024, 1440]) {
     await page.setViewportSize({ width, height: 800 });
+    // 视口切换后等浏览器完成响应式重排再量：低负载时立即量通常已是终态，高负载下重排尚未
+    // 完成会捕到上一档布局的 scrollWidth（如 320px 下仍见宽屏三列的 528px）造成抖动失败。
+    // 等到 scrollWidth 收敛进视口（重排完成的可观测信号），再断最终值。
+    await page.waitForFunction(
+      () => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1,
+      undefined,
+      { timeout: 5_000 },
+    );
     const metrics = await page.evaluate(() => ({
       scrollWidth: document.documentElement.scrollWidth,
       clientWidth: document.documentElement.clientWidth,
@@ -240,11 +279,11 @@ test("320/768/1024/1440 视口无横向溢出并留截图", async ({ page }) => 
     if (width < 900) {
       // 窄屏：侧栏为覆盖抽屉，默认收起
       await expect(page.getByRole("navigation", { name: "内容导航" })).toBeHidden();
-      await expect(page.getByRole("complementary", { name: "稍后再学" })).toBeHidden();
+      await expect(page.getByRole("complementary", { name: "标记" })).toBeHidden();
     } else {
       // 宽屏：左右固定侧栏默认展开
       await expect(page.getByRole("navigation", { name: "内容导航" })).toBeVisible();
-      await expect(page.getByRole("complementary", { name: "稍后再学" })).toBeVisible();
+      await expect(page.getByRole("complementary", { name: "标记" })).toBeVisible();
     }
     await page.screenshot({ path: `e2e-artifacts/viewport-${width}.png`, fullPage: true });
   }
@@ -270,13 +309,15 @@ test("界面、API 与 SQLite 记录一致", async ({ page }) => {
   await pairAndOpen(page, "/research/new");
   const sessionId = await submitFirstQuestion(page);
   const assistantContent = page.locator(".message--assistant .message__content");
-  await expect(assistantContent).toContainText("回答完毕", { timeout: 15_000 });
+  await expect(assistantContent.last()).toContainText("回答完毕", { timeout: 15_000 });
   await expect(page.locator("[aria-live=polite]")).toHaveText("已完成", { timeout: 15_000 });
-  const uiText = (await assistantContent.textContent()) ?? "";
+  // 生成自由化后一条回答渲染为多张切片卡片（各含一个 .message__content 块），
+  // 渲染丢弃段落间的 \n\n 分隔；拼接所有块文本并与去掉换行的持久化正文比对。
+  const uiText = (await assistantContent.allTextContents()).join("");
 
   const view = await apiJson<SessionView>(page, `/v1/research-sessions/${sessionId}`);
   expect(view.messages).toHaveLength(2);
-  expect(view.messages[1].content).toBe(uiText);
+  expect(view.messages[1].content.replace(/\n+/g, "")).toBe(uiText);
   expect(view.messages[1].status).toBe("completed");
   expect(view.tasks).toHaveLength(1);
   expect(view.tasks[0].status).toBe("completed");
@@ -288,7 +329,8 @@ test("界面、API 与 SQLite 记录一致", async ({ page }) => {
   const assistantRow = messageRows.find((row) => row.role === "assistant");
   expect(assistantRow?.status).toBe("completed");
   const record = JSON.parse(assistantRow?.recordJson ?? "{}") as { content?: string };
-  expect(record.content).toBe(uiText);
+  // 持久化正文含 \n\n 段落分隔，UI 渲染丢弃；统一去掉换行后与拼接的 UI 文本一致。
+  expect(record.content?.replace(/\n+/g, "")).toBe(uiText);
 
   const taskRows = tables.tasks.filter((row) => row.sessionId === sessionId);
   expect(taskRows).toHaveLength(1);

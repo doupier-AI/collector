@@ -1,18 +1,50 @@
 import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ResearchNodeRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTurnAccepted } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchFusionReference, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewInput, type ResearchTermPreviewRecord, type ResearchTurnAccepted, researchEdgeId } from "@collector/capture-contracts";
+
+export type ObservabilityRecordSource = "research" | "selection" | "import" | "workflow" | "fusion";
+
+export interface ObservabilityRecordRow {
+  source: ObservabilityRecordSource;
+  operationType: string;
+  id: string;
+  status: string;
+  createdAt: string;
+  recordJson: string;
+}
+
+export interface ObservabilityRecordQuery {
+  source?: ObservabilityRecordSource;
+  operationType?: string;
+  statuses?: readonly string[];
+  createdAfter?: string;
+  createdBefore?: string;
+  before?: { createdAt: string; id: string };
+  limit: number;
+}
+
+export interface ObservabilityRelatedRow {
+  id: string;
+  createdAt: string;
+  recordJson: string;
+}
 
 /** 稍后再学所需的持久化能力：5 个专属方法 + 3 个只读跨域查询。 */
 export interface ResearchLaterStore {
   getResearchLaterItem(id: string): ResearchLaterItemRecord | undefined;
   findResearchLaterItemByCreationKey(idempotencyKey: string): ResearchLaterItemRecord | undefined;
+  /** 兼容旧客户端幂等键：同一选区只能保留一条标记。 */
+  findResearchLaterItemBySelectionId?(selectionId: string): ResearchLaterItemRecord | undefined;
   listResearchLaterItems(status?: ResearchLaterItemStatus): ResearchLaterItemRecord[];
   createResearchLaterItem(item: ResearchLaterItemRecord, idempotencyKey: string): Promise<ResearchLaterItemRecord>;
   saveResearchLaterItem(record: ResearchLaterItemRecord): Promise<void>;
   getResearchSelection(id: string): ResearchSelectionRecord | undefined;
   getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined;
   getResearchSession(id: string): ResearchSessionRecord | undefined;
+  /** 节点投影由 CollectorStore 的节点能力提供；旧 JsonStore 返回空值。 */
+  getResearchNode(id: string): ResearchNodeRecord | undefined;
+  listResearchMessagesByNode(nodeId: string): ResearchMessageRecord[];
 }
 
 /** 选区分析所需的持久化能力：16 个专属方法。 */
@@ -68,6 +100,7 @@ export interface ResearchStore {
   listResearchSessions(): ResearchSessionRecord[];
   createResearchNode(node: ResearchNodeRecord, idempotencyKey: string): Promise<ResearchNodeRecord>;
   getResearchNode(id: string): ResearchNodeRecord | undefined;
+  updateResearchNodeDisplayName(nodeId: string, displayName: string): Promise<ResearchNodeRecord | undefined>;
   listResearchNodes(sessionId: string): ResearchNodeRecord[];
   listChildNodes(parentNodeId: string): ResearchNodeRecord[];
   getResearchMessage(id: string): ResearchMessageRecord | undefined;
@@ -83,7 +116,15 @@ export interface ResearchStore {
   appendResearchTaskDelta(id: string, delta: string): Promise<void>;
   completeResearchTask(id: string): Promise<void>;
   failResearchTask(task: ResearchTaskRecord, error: ResearchTaskError): Promise<void>;
-  retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string): Promise<ResearchTaskRecord>;
+  retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string, options?: { preserveContent?: boolean }): Promise<ResearchTaskRecord>;
+  /** plan-then-write：持久化正文大纲与逐节进度，供断点续扩；record_json 整行覆盖。 */
+  saveResearchTaskBodyPlan(taskId: string, bodyPlan: ResearchBodyPlan): Promise<void>;
+  /** #31：融合正文完成后写入解析出的 [来源n] 引用；record_json 整行覆盖。 */
+  saveResearchTaskFusionReferences(taskId: string, fusionReferences: ResearchFusionReference[]): Promise<void>;
+  /** 单轮流式：持久化已接收的部分正文断点，供切断续传；record_json 整行覆盖。 */
+  saveResearchTaskStreamCheckpoint(taskId: string, content: string): Promise<void>;
+  /** 单轮流式：任务完成后清除断点。 */
+  clearResearchTaskStreamCheckpoint(taskId: string): Promise<void>;
   listResearchTaskEvents(taskId: string, afterId?: number): ResearchTaskEvent[];
   listRecoverableResearchTasks(): ResearchTaskRecord[];
   failInterruptedResearchTasks(): number;
@@ -98,6 +139,18 @@ export interface ResearchStore {
   listResearchGroundingRuns(taskId: string): ResearchGroundingRunRecord[];
   listResearchGroundingSources(runId: string): ResearchGroundingSourceRecord[];
   saveResearchGroundingResult(result: ResearchGroundingResult): Promise<void>;
+  /** E2：研究任务完成前写入或替换该消息的完整正式切片。 */
+  replaceSlicesForMessage(messageId: string, slices: ResearchSliceRecord[], taskId?: string): Promise<void>;
+  listSlicesByNode(nodeId: string): ResearchSliceRecord[];
+  listSlicesByMessage(messageId: string): ResearchSliceRecord[];
+  /** #35：正文版本与语义片段 CRUD（幂等；片段只存范围，不存内容副本）。 */
+  createResearchBodyVersion(version: ResearchBodyVersionRecord): Promise<void>;
+  createSemanticFragments(fragments: ResearchSemanticFragmentRecord[]): Promise<void>;
+  getBodyVersion(id: string): ResearchBodyVersionRecord | undefined;
+  getBodyVersionForMessage(messageId: string): ResearchBodyVersionRecord | undefined;
+  listFragmentsByBodyVersion(bodyVersionId: string): ResearchSemanticFragmentRecord[];
+  listFragmentsByMessage(messageId: string): ResearchSemanticFragmentRecord[];
+  listFragmentsByNode(nodeId: string): ResearchSemanticFragmentRecord[];
 }
 
 /** 深入研究所需的持久化能力：12 个方法。 */
@@ -109,6 +162,7 @@ export interface DeepResearchStore {
   createOriginResearchSession(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<DeepResearchAccepted>;
   createResearchChildNode(parentNode: ResearchNodeRecord, node: ResearchNodeRecord, selection: ResearchSelectionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<NodeGrowthAccepted>;
   getResearchNode(id: string): ResearchNodeRecord | undefined;
+  updateResearchNodeDisplayName(nodeId: string, displayName: string): Promise<ResearchNodeRecord | undefined>;
   listResearchNodes(sessionId: string): ResearchNodeRecord[];
   listChildNodes(parentNodeId: string): ResearchNodeRecord[];
   getResearchSession(id: string): ResearchSessionRecord | undefined;
@@ -125,10 +179,52 @@ export interface DeepResearchStore {
   listResearchGroundingSources(runId: string): ResearchGroundingSourceRecord[];
   listResearchAttachments(sessionId: string): ResearchAttachmentRecord[];
   listResearchImportTasks(sessionId: string): ResearchImportTaskRecord[];
+  getResearchTermPreview(id: string): ResearchTermPreviewRecord | undefined;
+  findResearchTermPreview(nodeId: string, markerKey: string): ResearchTermPreviewRecord | undefined;
+  createResearchTermPreview(preview: ResearchTermPreviewRecord, selection: ResearchSelectionRecord): Promise<ResearchTermPreviewAccepted>;
+  claimResearchTermPreview(id: string, provider?: string, model?: string, promptVersion?: string): ResearchTermPreviewRecord | undefined;
+  appendResearchTermPreviewDelta(id: string, delta: string): Promise<void>;
+  completeResearchTermPreview(id: string): Promise<void>;
+  failResearchTermPreview(preview: ResearchTermPreviewRecord, error: ResearchTermPreviewError): Promise<void>;
+  retryResearchTermPreview(preview: ResearchTermPreviewRecord, provider?: string, model?: string, promptVersion?: string): Promise<ResearchTermPreviewRecord>;
+  getResearchTermPreviewSnapshot(id: string): ResearchTermPreviewEvent;
+  listResearchTermPreviewEvents(id: string, afterId?: number): ResearchTermPreviewEvent[];
+  listRecoverableResearchTermPreviews(): ResearchTermPreviewRecord[];
+  failInterruptedResearchTermPreviews(): number;
+  // ── Research Edge (D1) ──────────────────────────────────────
+  /** 幂等创建边：同一 (kind, fromNodeId, toNodeId) 不重复创建，返回已存在或新创建的记录。 */
+  createResearchEdge(edge: ResearchEdgeRecord): Promise<ResearchEdgeRecord>;
+  /** 查询全部活跃边（调用方按会话节点集合过滤）。 */
+  listAllResearchEdges(): ResearchEdgeRecord[];
+}
+
+export interface ResearchFusionProposalStore {
+  getResearchFusionProposal(id: string): ResearchFusionProposalRecord | undefined;
+  findResearchFusionProposalByNodePair(loNodeId: string, hiNodeId: string): ResearchFusionProposalRecord | undefined;
+  listResearchFusionProposalsByNode(nodeId: string, statuses?: readonly ResearchFusionProposalStatus[]): ResearchFusionProposalRecord[];
+  /** 同一规范化节点对幂等，已存在时返回既有记录。 */
+  createResearchFusionProposal(proposal: ResearchFusionProposalRecord): Promise<ResearchFusionProposalRecord>;
+  saveResearchFusionProposal(proposal: ResearchFusionProposalRecord): Promise<void>;
+  /** #31：按幂等键查找已创建的融合节点首轮任务（重复确认时返回既有结果，不重复建）。 */
+  findResearchFusionTaskByIdempotencyKey(idempotencyKey: string): ResearchTaskRecord | undefined;
+  /** #31：按幂等键查找已创建的融合节点（重复确认时返回既有结果，不重复建）。 */
+  findResearchFusionNodeByIdempotencyKey(idempotencyKey: string): ResearchNodeRecord | undefined;
+  /**
+   * #31：确认式融合事务——同一事务内把提案置为 accepted、幂等创建语义相关边与
+   * 融合来源边、创建融合节点（无父节点）与首轮消息、任务。按 idempotencyKey 幂等。
+   */
+  createResearchFusionTurn(
+    proposal: ResearchFusionProposalRecord,
+    fusedFromEdges: ResearchEdgeRecord[],
+    fusionNode: ResearchNodeRecord,
+    inputMessage: ResearchMessageRecord,
+    outputMessage: ResearchMessageRecord,
+    task: ResearchTaskRecord,
+  ): Promise<NodeGrowthAccepted>;
 }
 
 export interface CollectorStore
-  extends ResearchLaterStore, ResearchSelectionStore, ResearchImportStore, ResearchStore, DeepResearchStore {
+  extends ResearchLaterStore, ResearchSelectionStore, ResearchImportStore, ResearchStore, DeepResearchStore, ResearchFusionProposalStore {
   init(): Promise<void>;
   getCapture(id: string): CaptureRecord | undefined;
   getCaptureByClientId(clientId: string): CaptureRecord | undefined;
@@ -200,6 +296,11 @@ export interface CollectorStore
   getLatestTopicDocumentVersion(topicId: string): import("@collector/capture-contracts").TopicDocumentVersionRecord | undefined;
   saveModelCall(record: ModelCallRecord): Promise<void>;
   listModelCalls(workflowRunId?: string): ModelCallRecord[];
+  listRunRecordRows(query: ObservabilityRecordQuery): ObservabilityRecordRow[];
+  getRunRecordRow(source: ObservabilityRecordSource, id: string): ObservabilityRecordRow | undefined;
+  listRunModelCallRows(workflowRunId: string): ObservabilityRelatedRow[];
+  listRunGroundingRunRows(taskId: string): ObservabilityRelatedRow[];
+  listRunGroundingSourceRows(runId: string): ObservabilityRelatedRow[];
   getAiBudgetSetting(key: string): string | undefined;
   saveAiBudgetSetting(key: string, value: string): Promise<void>;
   getMonthModelCallCostUsd(year: number, month: number): number;
@@ -237,7 +338,10 @@ export interface CollectorStore
   appendResearchTaskDelta(id: string, delta: string): Promise<void>;
   completeResearchTask(id: string): Promise<void>;
   failResearchTask(task: ResearchTaskRecord, error: ResearchTaskError): Promise<void>;
-  retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string): Promise<ResearchTaskRecord>;
+  retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string, options?: { preserveContent?: boolean }): Promise<ResearchTaskRecord>;
+  saveResearchTaskBodyPlan(taskId: string, bodyPlan: ResearchBodyPlan): Promise<void>;
+  saveResearchTaskStreamCheckpoint(taskId: string, content: string): Promise<void>;
+  clearResearchTaskStreamCheckpoint(taskId: string): Promise<void>;
   listResearchTaskEvents(taskId: string, afterId?: number): ResearchTaskEvent[];
   listRecoverableResearchTasks(): ResearchTaskRecord[];
   failInterruptedResearchTasks(): number;
@@ -287,8 +391,29 @@ export interface CollectorStore
   listResearchGroundingRuns(taskId: string): ResearchGroundingRunRecord[];
   listResearchGroundingSources(runId: string): ResearchGroundingSourceRecord[];
   listResearchCitationsForMessages(messageIds: string[]): ResearchCitationRecord[];
+  /** E2：切片写入与读取。replaceSlicesForMessage 原子替换单条消息的切片（#43 起为卡片骨架，不含正文副本）。 */
+  replaceSlicesForMessage(messageId: string, slices: ResearchSliceRecord[], taskId?: string): Promise<void>;
+  listSlicesByNode(nodeId: string): ResearchSliceRecord[];
+  listSlicesByMessage(messageId: string): ResearchSliceRecord[];
+  /** #35：正文版本与语义片段 CRUD（幂等；片段只存范围，不存内容副本）。 */
+  createResearchBodyVersion(version: ResearchBodyVersionRecord): Promise<void>;
+  createSemanticFragments(fragments: ResearchSemanticFragmentRecord[]): Promise<void>;
+  getBodyVersion(id: string): ResearchBodyVersionRecord | undefined;
+  getBodyVersionForMessage(messageId: string): ResearchBodyVersionRecord | undefined;
+  listFragmentsByBodyVersion(bodyVersionId: string): ResearchSemanticFragmentRecord[];
+  listFragmentsByMessage(messageId: string): ResearchSemanticFragmentRecord[];
+  listFragmentsByNode(nodeId: string): ResearchSemanticFragmentRecord[];
   close?(): void;
   clearAllData(): Promise<void>;
+  // ── Research Edge CRUD (D1) ──────────────────────────────────
+  /** 幂等创建边：同一 (kind, fromNodeId, toNodeId) 不重复创建，返回已存在或新创建的记录。 */
+  createResearchEdge(edge: ResearchEdgeRecord): Promise<ResearchEdgeRecord>;
+  /** 查询与指定节点相连的所有活跃边（出边 + 入边）。 */
+  listResearchEdgesByNode(nodeId: string): ResearchEdgeRecord[];
+  /** 查询会话内全部活跃边（通过 session 的节点集合过滤）。 */
+  listAllResearchEdges(): ResearchEdgeRecord[];
+  /** 按 ID 获取单条边。 */
+  getResearchEdge(id: string): ResearchEdgeRecord | undefined;
 }
 
 interface StoreData {
@@ -360,6 +485,75 @@ export class SqliteStore implements CollectorStore {
   listModelCalls(workflowRunId?: string): ModelCallRecord[] {
     const sql = workflowRunId ? "SELECT record_json FROM model_calls WHERE workflow_run_id = ? ORDER BY created_at" : "SELECT record_json FROM model_calls ORDER BY created_at DESC";
     return workflowRunId ? this.listRecords<ModelCallRecord>(sql, workflowRunId) : this.listRecords<ModelCallRecord>(sql);
+  }
+  listRunRecordRows(query: ObservabilityRecordQuery): ObservabilityRecordRow[] {
+    const sourceTables: Array<{ source: ObservabilityRecordSource; operationType: string; table: string; operationColumn?: string; statusExpression?: string }> = [
+      { source: "research", operationType: "research", table: "research_tasks" },
+      { source: "selection", operationType: "selection_analysis", table: "research_selection_tasks" },
+      { source: "import", operationType: "document_import", table: "research_import_tasks" },
+      { source: "workflow", operationType: "workflow_type", table: "workflow_runs", operationColumn: "workflow_type" },
+      // 相似性核验在模型完成时已经结束；提议的 pending/accepted/rejected 是后续用户决定，不是运行状态。
+      { source: "fusion", operationType: "similarity_verification", table: "research_fusion_proposals", statusExpression: "'completed'" },
+    ];
+    const union = sourceTables.map(({ source, operationType, table, operationColumn, statusExpression }) =>
+      `SELECT '${source}' AS source, ${operationColumn ? operationColumn : `'${operationType}'`} AS operation_type, id, ${statusExpression ?? "status"} AS status, created_at, record_json FROM ${table}`,
+    ).join(" UNION ALL ");
+    const where: string[] = [];
+    const values: SQLInputValue[] = [];
+    if (query.source) { where.push("source = ?"); values.push(query.source); }
+    if (query.operationType) { where.push("operation_type = ?"); values.push(query.operationType); }
+    if (query.statuses?.length) {
+      where.push(`status IN (${query.statuses.map(() => "?").join(", ")})`);
+      values.push(...query.statuses);
+    }
+    if (query.createdAfter) { where.push("created_at >= ?"); values.push(query.createdAfter); }
+    if (query.createdBefore) { where.push("created_at < ?"); values.push(query.createdBefore); }
+    if (query.before) {
+      where.push("(created_at < ? OR (created_at = ? AND id < ?))");
+      values.push(query.before.createdAt, query.before.createdAt, query.before.id);
+    }
+    const limit = Math.max(1, Math.min(51, Math.trunc(query.limit)));
+    const rows = this.db().prepare(`SELECT source, operation_type, id, status, created_at, record_json FROM (${union})${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC, id DESC LIMIT ?`).all(...values, limit) as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      source: row.source as ObservabilityRecordSource,
+      operationType: row.operation_type as string,
+      id: row.id as string,
+      status: row.status as string,
+      createdAt: row.created_at as string,
+      recordJson: row.record_json as string,
+    }));
+  }
+  getRunRecordRow(source: ObservabilityRecordSource, id: string): ObservabilityRecordRow | undefined {
+    const sourceConfig = {
+      research: { table: "research_tasks", operation: "'research'", status: "status" },
+      selection: { table: "research_selection_tasks", operation: "'selection_analysis'", status: "status" },
+      import: { table: "research_import_tasks", operation: "'document_import'", status: "status" },
+      workflow: { table: "workflow_runs", operation: "workflow_type", status: "status" },
+      fusion: { table: "research_fusion_proposals", operation: "'similarity_verification'", status: "'completed'" },
+    }[source];
+    const row = this.db().prepare(`SELECT ${sourceConfig.operation} AS operation_type, id, ${sourceConfig.status} AS status, created_at, record_json FROM ${sourceConfig.table} WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
+    return row ? { source, operationType: row.operation_type as string, id: row.id as string, status: row.status as string, createdAt: row.created_at as string, recordJson: row.record_json as string } : undefined;
+  }
+  listRunModelCallRows(workflowRunId: string): ObservabilityRelatedRow[] {
+    return this.db().prepare("SELECT id, created_at AS createdAt, record_json AS recordJson FROM model_calls WHERE workflow_run_id = ? ORDER BY created_at, id").all(workflowRunId).map((row) => ({
+      id: String(row.id ?? ""),
+      createdAt: String(row.createdAt ?? ""),
+      recordJson: String(row.recordJson ?? ""),
+    }));
+  }
+  listRunGroundingRunRows(taskId: string): ObservabilityRelatedRow[] {
+    return this.db().prepare("SELECT id, created_at AS createdAt, record_json AS recordJson FROM research_grounding_runs WHERE task_id = ? ORDER BY created_at, id").all(taskId).map((row) => ({
+      id: String(row.id ?? ""),
+      createdAt: String(row.createdAt ?? ""),
+      recordJson: String(row.recordJson ?? ""),
+    }));
+  }
+  listRunGroundingSourceRows(runId: string): ObservabilityRelatedRow[] {
+    return this.db().prepare("SELECT id, created_at AS createdAt, record_json AS recordJson FROM research_grounding_sources WHERE run_id = ? ORDER BY created_at, id").all(runId).map((row) => ({
+      id: String(row.id ?? ""),
+      createdAt: String(row.createdAt ?? ""),
+      recordJson: String(row.recordJson ?? ""),
+    }));
   }
   getAiBudgetSetting(key: string): string | undefined { return (this.db().prepare("SELECT value FROM ai_budget_settings WHERE key = ?").get(key) as { value: string } | undefined)?.value; }
   async saveAiBudgetSetting(key: string, value: string): Promise<void> { this.db().prepare("INSERT INTO ai_budget_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(key, value); }
@@ -495,15 +689,24 @@ export class SqliteStore implements CollectorStore {
 
   async clearAllData(): Promise<void> {
     this.transaction(() => {
+      // 语义片段引用正文版本，正文版本与切片引用消息/节点：这些是最下游引用方（不被任何表
+      // 引用），必须在删除 nodes/messages/selections 之前先删，避免外键约束失败。
+      this.db().exec("DELETE FROM research_semantic_fragments");
+      this.db().exec("DELETE FROM research_body_versions");
+      this.db().exec("DELETE FROM research_slices");
       this.db().exec("DELETE FROM research_import_task_events");
       this.db().exec("DELETE FROM research_content_snapshots");
       this.db().exec("DELETE FROM research_import_tasks");
       this.db().exec("DELETE FROM research_attachments");
+      this.db().exec("DELETE FROM research_term_preview_events");
+      this.db().exec("DELETE FROM research_term_previews");
       this.db().exec("DELETE FROM research_selection_task_events");
       this.db().exec("DELETE FROM research_selection_tasks");
       this.db().exec("DELETE FROM research_branches");
       // research_nodes 自引用且外键指向 research_selections，先删子节点再删全部，
       // 并在删除 research_selections 之前完成，避免外键约束失败。
+      // research_edges 外键指向 research_nodes，必须在删节点前删边。
+      this.db().exec("DELETE FROM research_edges");
       this.db().exec("DELETE FROM research_nodes WHERE parent_node_id IS NOT NULL");
       this.db().exec("DELETE FROM research_nodes");
       this.db().exec("DELETE FROM research_later_items");
@@ -948,12 +1151,51 @@ export class SqliteStore implements CollectorStore {
     return this.getRecord<ResearchNodeRecord>("SELECT record_json FROM research_nodes WHERE id = ?", id);
   }
 
+  async updateResearchNodeDisplayName(nodeId: string, displayName: string): Promise<ResearchNodeRecord | undefined> {
+    const node = this.getResearchNode(nodeId);
+    if (!node) return undefined;
+    const normalized = displayName.trim();
+    if (!normalized || normalized.length > 20) throw new Error("Research node display name must contain 1-20 characters");
+    const updated: ResearchNodeRecord = { ...node, displayName: normalized, updatedAt: new Date().toISOString() };
+    this.db().prepare("UPDATE research_nodes SET display_name = ?, updated_at = ?, record_json = ? WHERE id = ?")
+      .run(normalized, updated.updatedAt, JSON.stringify(updated), nodeId);
+    return updated;
+  }
+
   listResearchNodes(sessionId: string): ResearchNodeRecord[] {
     return this.listRecords<ResearchNodeRecord>("SELECT record_json FROM research_nodes WHERE session_id = ? ORDER BY updated_at DESC, created_at DESC", sessionId);
   }
 
   listChildNodes(parentNodeId: string): ResearchNodeRecord[] {
     return this.listRecords<ResearchNodeRecord>("SELECT record_json FROM research_nodes WHERE parent_node_id = ? ORDER BY created_at, rowid", parentNodeId);
+  }
+
+  // ── Research Edge CRUD (D1) ──────────────────────────────────
+
+  async createResearchEdge(edge: ResearchEdgeRecord): Promise<ResearchEdgeRecord> {
+    const existing = this.getRecord<ResearchEdgeRecord>(
+      "SELECT record_json FROM research_edges WHERE kind = ? AND from_node_id = ? AND to_node_id = ?",
+      edge.kind, edge.fromNodeId, edge.toNodeId,
+    );
+    if (existing) return existing;
+    this.db().prepare("INSERT OR IGNORE INTO research_edges (id, kind, from_node_id, to_node_id, created_at, status, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(edge.id, edge.kind, edge.fromNodeId, edge.toNodeId, edge.createdAt, edge.status, JSON.stringify(edge));
+    return edge;
+  }
+
+  listResearchEdgesByNode(nodeId: string): ResearchEdgeRecord[] {
+    return this.listRecords<ResearchEdgeRecord>(
+      "SELECT record_json FROM research_edges WHERE status = 'active' AND (from_node_id = ? OR to_node_id = ?) ORDER BY created_at, rowid",
+      nodeId, nodeId,
+    );
+  }
+
+  listAllResearchEdges(): ResearchEdgeRecord[] {
+    return this.listRecords<ResearchEdgeRecord>("SELECT record_json FROM research_edges WHERE status = 'active' ORDER BY created_at, rowid");
+  }
+
+  getResearchEdge(id: string): ResearchEdgeRecord | undefined {
+    return this.getRecord<ResearchEdgeRecord>("SELECT record_json FROM research_edges WHERE id = ?", id);
   }
 
   getResearchMessage(id: string): ResearchMessageRecord | undefined {
@@ -1108,7 +1350,7 @@ export class SqliteStore implements CollectorStore {
     });
   }
 
-  async retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion = "research-chat-v1"): Promise<ResearchTaskRecord> {
+  async retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion = "research-chat-v1", options?: { preserveContent?: boolean }): Promise<ResearchTaskRecord> {
     let retried: ResearchTaskRecord | undefined;
     this.transaction(() => {
       const current = this.getResearchTask(task.id);
@@ -1120,14 +1362,52 @@ export class SqliteStore implements CollectorStore {
         ...current, status: "queued", retryable: false, provider, model, promptVersion,
         error: undefined, updatedAt: now, startedAt: undefined, completedAt: undefined,
       };
-      const message: ResearchMessageRecord = { ...currentMessage, content: "", status: "pending", updatedAt: now };
+      // preserveContent：保留已写部分正文与事件流，供断流续传/截断续写从断点继续；默认清空重来。
+      const message: ResearchMessageRecord = options?.preserveContent
+        ? { ...currentMessage, updatedAt: now }
+        : { ...currentMessage, content: "", status: "pending", updatedAt: now };
       this.updateResearchMessage(message);
       this.updateResearchTask(queued);
-      this.db().prepare("DELETE FROM research_task_events WHERE task_id = ?").run(task.id);
+      if (!options?.preserveContent) this.db().prepare("DELETE FROM research_task_events WHERE task_id = ?").run(task.id);
       retried = queued;
     });
     if (!retried) throw new Error("Research task retry was not persisted");
     return retried;
+  }
+
+  async saveResearchTaskStreamCheckpoint(taskId: string, content: string): Promise<void> {
+    this.transaction(() => {
+      const task = this.getResearchTask(taskId);
+      if (!task) throw new Error("Research task not found");
+      const updatedAt = new Date().toISOString();
+      this.updateResearchTask({ ...task, streamCheckpoint: { content, updatedAt }, updatedAt });
+    });
+  }
+
+  async clearResearchTaskStreamCheckpoint(taskId: string): Promise<void> {
+    this.transaction(() => {
+      const task = this.getResearchTask(taskId);
+      if (!task) throw new Error("Research task not found");
+      const { streamCheckpoint: _dropped, ...rest } = task;
+      this.updateResearchTask({ ...rest, updatedAt: new Date().toISOString() });
+    });
+  }
+
+  async saveResearchTaskBodyPlan(taskId: string, bodyPlan: ResearchBodyPlan): Promise<void> {
+    this.transaction(() => {
+      const task = this.getResearchTask(taskId);
+      if (!task) throw new Error("Research task not found");
+      this.updateResearchTask({ ...task, bodyPlan, updatedAt: new Date().toISOString() });
+    });
+  }
+
+  /** #31：融合正文完成后写入解析出的 [来源n] 引用（record_json 整行覆盖）。 */
+  async saveResearchTaskFusionReferences(taskId: string, fusionReferences: ResearchFusionReference[]): Promise<void> {
+    this.transaction(() => {
+      const task = this.getResearchTask(taskId);
+      if (!task) throw new Error("Research task not found");
+      this.updateResearchTask({ ...task, fusionReferences, updatedAt: new Date().toISOString() });
+    });
   }
 
   listResearchTaskEvents(taskId: string, afterId = 0): ResearchTaskEvent[] {
@@ -1156,6 +1436,143 @@ export class SqliteStore implements CollectorStore {
         this.updateResearchMessage(failedMessage);
         this.updateResearchTask(failedTask);
         this.insertResearchEvent(task.id, "failed", now, { task: failedTask, message: failedMessage });
+      }
+    });
+    return interrupted.length;
+  }
+
+  getResearchTermPreview(id: string): ResearchTermPreviewRecord | undefined {
+    return this.getRecord<ResearchTermPreviewRecord>("SELECT record_json FROM research_term_previews WHERE id = ?", id);
+  }
+
+  findResearchTermPreview(nodeId: string, markerKey: string): ResearchTermPreviewRecord | undefined {
+    return this.getRecord<ResearchTermPreviewRecord>("SELECT record_json FROM research_term_previews WHERE node_id = ? AND marker_key = ?", nodeId, markerKey);
+  }
+
+  async createResearchTermPreview(preview: ResearchTermPreviewRecord, selection: ResearchSelectionRecord): Promise<ResearchTermPreviewAccepted> {
+    let accepted: ResearchTermPreviewAccepted | undefined;
+    this.transaction(() => {
+      const existing = this.findResearchTermPreview(preview.nodeId, preview.markerKey);
+      if (existing) {
+        const existingSelection = this.getResearchSelection(existing.selectionId);
+        if (!existingSelection) throw new Error("Term preview references a missing selection");
+        accepted = { preview: existing, selection: existingSelection };
+        return;
+      }
+      this.db().prepare("INSERT INTO research_selections (id, session_id, node_id, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .run(selection.id, selection.sessionId, selection.nodeId ?? null, selection.status, selection.createdAt, selection.updatedAt, JSON.stringify(selection));
+      this.db().prepare(`INSERT INTO research_term_previews
+        (id, session_id, node_id, message_id, selection_id, marker_key, idempotency_key, status, content, retryable, provider, model, prompt_version, created_at, updated_at, started_at, completed_at, record_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(
+          preview.id, preview.sessionId, preview.nodeId, preview.messageId, preview.selectionId, preview.markerKey,
+          preview.idempotencyKey, preview.status, preview.content, preview.retryable ? 1 : 0,
+          preview.provider ?? null, preview.model ?? null, preview.promptVersion, preview.createdAt, preview.updatedAt,
+          preview.startedAt ?? null, preview.completedAt ?? null, JSON.stringify(preview),
+        );
+      accepted = { preview, selection };
+    });
+    if (!accepted) throw new Error("Term preview was not persisted");
+    return accepted;
+  }
+
+  claimResearchTermPreview(id: string, provider?: string, model?: string, promptVersion = "term-preview-v1"): ResearchTermPreviewRecord | undefined {
+    let claimed: ResearchTermPreviewRecord | undefined;
+    this.transaction(() => {
+      const current = this.getResearchTermPreview(id);
+      if (!current || current.status !== "queued") return;
+      const now = new Date().toISOString();
+      const next: ResearchTermPreviewRecord = {
+        ...current, status: "running", retryable: false, provider, model, promptVersion,
+        error: undefined, updatedAt: now, startedAt: now, completedAt: undefined,
+      };
+      const result = this.db().prepare("UPDATE research_term_previews SET status = ?, retryable = 0, provider = ?, model = ?, prompt_version = ?, updated_at = ?, started_at = ?, completed_at = NULL, record_json = ? WHERE id = ? AND status = 'queued'")
+        .run(next.status, provider ?? null, model ?? null, promptVersion, now, now, JSON.stringify(next), id);
+      if (result.changes !== 1) return;
+      claimed = next;
+      this.insertResearchTermPreviewEvent(id, "snapshot", now, { preview: next });
+    });
+    return claimed;
+  }
+
+  async appendResearchTermPreviewDelta(id: string, delta: string): Promise<void> {
+    this.transaction(() => {
+      const preview = this.getResearchTermPreview(id);
+      if (!preview || preview.status !== "running") throw new Error("Term preview is not running");
+      const now = new Date().toISOString();
+      const updated: ResearchTermPreviewRecord = { ...preview, content: preview.content + delta, updatedAt: now };
+      this.updateResearchTermPreview(updated);
+      this.insertResearchTermPreviewEvent(id, "delta", now, { delta, preview: updated });
+    });
+  }
+
+  async completeResearchTermPreview(id: string): Promise<void> {
+    this.transaction(() => {
+      const preview = this.getResearchTermPreview(id);
+      if (!preview || preview.status !== "running") throw new Error("Term preview is not running");
+      const now = new Date().toISOString();
+      const completed: ResearchTermPreviewRecord = { ...preview, status: "completed", retryable: false, updatedAt: now, completedAt: now };
+      this.updateResearchTermPreview(completed);
+      this.insertResearchTermPreviewEvent(id, "completed", now, { preview: completed });
+    });
+  }
+
+  async failResearchTermPreview(preview: ResearchTermPreviewRecord, error: ResearchTermPreviewError): Promise<void> {
+    this.transaction(() => {
+      const current = this.getResearchTermPreview(preview.id);
+      if (!current || (current.status !== "running" && current.status !== "queued")) return;
+      const now = new Date().toISOString();
+      const failed: ResearchTermPreviewRecord = { ...current, status: "failed", retryable: true, error, updatedAt: now, completedAt: now };
+      this.updateResearchTermPreview(failed);
+      this.insertResearchTermPreviewEvent(preview.id, "failed", now, { preview: failed });
+    });
+  }
+
+  async retryResearchTermPreview(preview: ResearchTermPreviewRecord, provider?: string, model?: string, promptVersion = "term-preview-v1"): Promise<ResearchTermPreviewRecord> {
+    let retried: ResearchTermPreviewRecord | undefined;
+    this.transaction(() => {
+      const current = this.getResearchTermPreview(preview.id);
+      if (!current || current.status !== "failed" || !current.retryable) throw new Error("Term preview is not retryable");
+      const now = new Date().toISOString();
+      retried = {
+        ...current, status: "queued", content: "", retryable: false, provider, model, promptVersion,
+        error: undefined, updatedAt: now, startedAt: undefined, completedAt: undefined,
+      };
+      this.updateResearchTermPreview(retried);
+      this.db().prepare("DELETE FROM research_term_preview_events WHERE preview_id = ?").run(preview.id);
+    });
+    if (!retried) throw new Error("Term preview retry was not persisted");
+    return retried;
+  }
+
+  getResearchTermPreviewSnapshot(id: string): ResearchTermPreviewEvent {
+    const preview = this.getResearchTermPreview(id);
+    if (!preview) throw new Error("Research term preview not found");
+    return { type: "snapshot", preview, createdAt: new Date().toISOString() };
+  }
+
+  listResearchTermPreviewEvents(id: string, afterId = 0): ResearchTermPreviewEvent[] {
+    const rows = this.db().prepare("SELECT sequence, event_type, created_at, data_json FROM research_term_preview_events WHERE preview_id = ? AND sequence > ? ORDER BY sequence")
+      .all(id, afterId) as Array<{ sequence: number; event_type: "snapshot" | "delta" | "completed" | "failed"; created_at: string; data_json: string }>;
+    return rows.map((row) => ({ id: row.sequence, type: row.event_type, createdAt: row.created_at, ...JSON.parse(row.data_json) }) as ResearchTermPreviewEvent);
+  }
+
+  listRecoverableResearchTermPreviews(): ResearchTermPreviewRecord[] {
+    return this.listRecords<ResearchTermPreviewRecord>("SELECT record_json FROM research_term_previews WHERE status = 'queued' ORDER BY created_at");
+  }
+
+  failInterruptedResearchTermPreviews(): number {
+    const interrupted = this.listRecords<ResearchTermPreviewRecord>("SELECT record_json FROM research_term_previews WHERE status = 'running' ORDER BY created_at");
+    if (!interrupted.length) return 0;
+    this.transaction(() => {
+      for (const preview of interrupted) {
+        const now = new Date().toISOString();
+        const failed: ResearchTermPreviewRecord = {
+          ...preview, status: "failed", retryable: true, updatedAt: now, completedAt: now,
+          error: { code: "service_restarted", message: "服务在术语解释生成过程中重启，已保留进度，可重试。" },
+        };
+        this.updateResearchTermPreview(failed);
+        this.insertResearchTermPreviewEvent(preview.id, "failed", now, { preview: failed });
       }
     });
     return interrupted.length;
@@ -1572,6 +1989,13 @@ export class SqliteStore implements CollectorStore {
       };
       this.db().prepare("INSERT INTO research_nodes (id, session_id, parent_node_id, origin_selection_id, status, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .run(nodeRecord.id, nodeRecord.sessionId, nodeRecord.parentNodeId ?? null, nodeRecord.originSelectionId ?? null, nodeRecord.status, nodeRecord.createdAt, nodeRecord.updatedAt, task.idempotencyKey, JSON.stringify(nodeRecord));
+      // D1：创建父子边，幂等（INSERT OR IGNORE + UNIQUE 约束）
+      if (nodeRecord.parentNodeId) {
+        const edgeId = researchEdgeId("parent-child", nodeRecord.parentNodeId, nodeRecord.id);
+        const edgeRecord: ResearchEdgeRecord = { id: edgeId, kind: "parent-child", fromNodeId: nodeRecord.parentNodeId, toNodeId: nodeRecord.id, createdAt: nodeRecord.createdAt, status: "active" };
+        this.db().prepare("INSERT OR IGNORE INTO research_edges (id, kind, from_node_id, to_node_id, created_at, status, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
+          .run(edgeId, edgeRecord.kind, edgeRecord.fromNodeId, edgeRecord.toNodeId, edgeRecord.createdAt, edgeRecord.status, JSON.stringify(edgeRecord));
+      }
       const updatedSession: ResearchSessionRecord = { ...session, updatedAt: task.createdAt };
       this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
         .run(updatedSession.updatedAt, JSON.stringify(updatedSession), updatedSession.id);
@@ -1659,6 +2083,13 @@ export class SqliteStore implements CollectorStore {
       const updatedSession: ResearchSessionRecord = { ...session, updatedAt: task.createdAt };
       this.db().prepare("INSERT INTO research_nodes (id, session_id, parent_node_id, origin_selection_id, status, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .run(node.id, node.sessionId, node.parentNodeId ?? null, node.originSelectionId ?? null, node.status, node.createdAt, node.updatedAt, task.idempotencyKey, JSON.stringify(node));
+      // D1：创建父子边，幂等（INSERT OR IGNORE + UNIQUE 约束）
+      if (node.parentNodeId) {
+        const edgeId = researchEdgeId("parent-child", node.parentNodeId, node.id);
+        const edgeRecord: ResearchEdgeRecord = { id: edgeId, kind: "parent-child", fromNodeId: node.parentNodeId, toNodeId: node.id, createdAt: node.createdAt, status: "active" };
+        this.db().prepare("INSERT OR IGNORE INTO research_edges (id, kind, from_node_id, to_node_id, created_at, status, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
+          .run(edgeId, edgeRecord.kind, edgeRecord.fromNodeId, edgeRecord.toNodeId, edgeRecord.createdAt, edgeRecord.status, JSON.stringify(edgeRecord));
+      }
       this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
         .run(updatedSession.updatedAt, JSON.stringify(updatedSession), updatedSession.id);
       this.insertResearchMessage(inputMessage);
@@ -1690,6 +2121,10 @@ export class SqliteStore implements CollectorStore {
     return this.getRecord<ResearchLaterItemRecord>("SELECT record_json FROM research_later_items WHERE creation_idempotency_key = ?", idempotencyKey);
   }
 
+  findResearchLaterItemBySelectionId(selectionId: string): ResearchLaterItemRecord | undefined {
+    return this.getRecord<ResearchLaterItemRecord>("SELECT record_json FROM research_later_items WHERE selection_id = ? ORDER BY created_at ASC, rowid ASC LIMIT 1", selectionId);
+  }
+
   listResearchLaterItems(status?: ResearchLaterItemStatus): ResearchLaterItemRecord[] {
     if (status) {
       return this.listRecords<ResearchLaterItemRecord>("SELECT record_json FROM research_later_items WHERE status = ? ORDER BY created_at DESC, rowid DESC", status);
@@ -1709,8 +2144,8 @@ export class SqliteStore implements CollectorStore {
         persisted = existing;
         return;
       }
-      this.db().prepare("INSERT INTO research_later_items (id, session_id, node_id, selection_id, status, priority, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(item.id, item.sessionId, item.nodeId ?? null, item.selectionId, item.status, item.priority, item.createdAt, item.updatedAt, idempotencyKey, JSON.stringify(item));
+      this.db().prepare("INSERT INTO research_later_items (id, session_id, node_id, selection_id, status, priority, note, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(item.id, item.sessionId, item.nodeId ?? null, item.selectionId, item.status, item.priority, item.note ?? null, item.createdAt, item.updatedAt, idempotencyKey, JSON.stringify(item));
       persisted = item;
     });
     if (!persisted) throw new Error("Research later item was not persisted");
@@ -1718,8 +2153,8 @@ export class SqliteStore implements CollectorStore {
   }
 
   async saveResearchLaterItem(record: ResearchLaterItemRecord): Promise<void> {
-    this.db().prepare("UPDATE research_later_items SET status = ?, priority = ?, updated_at = ?, record_json = ? WHERE id = ?")
-      .run(record.status, record.priority, record.updatedAt, JSON.stringify(record), record.id);
+    this.db().prepare("UPDATE research_later_items SET status = ?, priority = ?, note = ?, updated_at = ?, record_json = ? WHERE id = ?")
+      .run(record.status, record.priority, record.note ?? null, record.updatedAt, JSON.stringify(record), record.id);
   }
 
   async saveResearchGroundingResult(result: ResearchGroundingResult): Promise<void> {
@@ -1753,6 +2188,233 @@ export class SqliteStore implements CollectorStore {
     return this.listRecords<ResearchCitationRecord>(`SELECT record_json FROM research_citations WHERE message_id IN (${placeholders}) ORDER BY message_id, block_ordinal, marker_offset, rowid`, ...messageIds);
   }
 
+  // ── Semantic Slices (E1) ──────────────────────────────────────
+
+  /** E2：正式生成成功后原子删除同一消息的临时切片，再写入完整正式集合。 */
+  async replaceSlicesForMessage(messageId: string, slices: ResearchSliceRecord[], taskId?: string): Promise<void> {
+    if (!messageId.trim()) throw new Error("messageId is required to replace slices");
+    if (!slices.length || slices.some((slice) => slice.messageId !== messageId)) {
+      throw new Error("Replacement slices must be a non-empty set for one message");
+    }
+    const stmt = this.db().prepare(`
+      INSERT INTO research_slices (id, node_id, message_id, ordinal, is_provisional, created_at, record_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    this.transaction(() => {
+      this.db().prepare("DELETE FROM research_slices WHERE message_id = ?").run(messageId);
+      for (const slice of slices) {
+        stmt.run(slice.id, slice.nodeId, slice.messageId, slice.ordinal, slice.isProvisional ? 1 : 0, slice.createdAt, JSON.stringify(slice));
+      }
+      if (taskId) {
+        const task = this.getResearchTask(taskId);
+        if (!task || task.outputMessageId !== messageId) throw new Error("Slice replacement task does not match its output message");
+        this.updateResearchTask({ ...task, sliceCount: slices.length, updatedAt: new Date().toISOString() });
+      }
+    });
+  }
+
+  listSlicesByNode(nodeId: string): ResearchSliceRecord[] {
+    return this.listRecords<ResearchSliceRecord>("SELECT record_json FROM research_slices WHERE node_id = ? ORDER BY ordinal", nodeId);
+  }
+
+  listSlicesByMessage(messageId: string): ResearchSliceRecord[] {
+    return this.listRecords<ResearchSliceRecord>("SELECT record_json FROM research_slices WHERE message_id = ? ORDER BY ordinal", messageId);
+  }
+
+  // ── Body Version & Semantic Fragment (#35) ─────────────────────
+
+  /** 幂等写入正文版本：id 由 messageId+contentHash 决定，重复写入被忽略（同文同标识）。 */
+  async createResearchBodyVersion(version: ResearchBodyVersionRecord): Promise<void> {
+    this.db().prepare(`
+      INSERT OR IGNORE INTO research_body_versions (id, message_id, node_id, version, content_hash, origin, created_at, record_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(version.id, version.messageId, version.nodeId, version.version, version.contentHash, version.origin, version.createdAt, JSON.stringify(version));
+  }
+
+  /** 幂等批量写入语义片段（事务内，冲突忽略）。 */
+  async createSemanticFragments(fragments: ResearchSemanticFragmentRecord[]): Promise<void> {
+    if (!fragments.length) return;
+    const stmt = this.db().prepare(`
+      INSERT OR IGNORE INTO research_semantic_fragments (id, body_version_id, message_id, node_id, ordinal, start_offset, end_offset, is_provisional, created_at, record_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    this.transaction(() => {
+      for (const f of fragments) {
+        stmt.run(f.id, f.bodyVersionId, f.messageId, f.nodeId, f.ordinal, f.startOffset, f.endOffset, f.isProvisional ? 1 : 0, f.createdAt, JSON.stringify(f));
+      }
+    });
+  }
+
+  getBodyVersion(id: string): ResearchBodyVersionRecord | undefined {
+    return this.getRecord<ResearchBodyVersionRecord>("SELECT record_json FROM research_body_versions WHERE id = ?", id);
+  }
+
+  getBodyVersionForMessage(messageId: string): ResearchBodyVersionRecord | undefined {
+    return this.getRecord<ResearchBodyVersionRecord>("SELECT record_json FROM research_body_versions WHERE message_id = ? ORDER BY version DESC LIMIT 1", messageId);
+  }
+
+  listFragmentsByBodyVersion(bodyVersionId: string): ResearchSemanticFragmentRecord[] {
+    return this.listRecords<ResearchSemanticFragmentRecord>("SELECT record_json FROM research_semantic_fragments WHERE body_version_id = ? ORDER BY ordinal", bodyVersionId);
+  }
+
+  listFragmentsByMessage(messageId: string): ResearchSemanticFragmentRecord[] {
+    return this.listRecords<ResearchSemanticFragmentRecord>("SELECT record_json FROM research_semantic_fragments WHERE message_id = ? ORDER BY ordinal", messageId);
+  }
+
+  listFragmentsByNode(nodeId: string): ResearchSemanticFragmentRecord[] {
+    return this.listRecords<ResearchSemanticFragmentRecord>("SELECT record_json FROM research_semantic_fragments WHERE node_id = ? ORDER BY ordinal", nodeId);
+  }
+
+  // ── Fusion proposals (F1) ──────────────────────────────────────
+
+  getResearchFusionProposal(id: string): ResearchFusionProposalRecord | undefined {
+    return this.getRecord<ResearchFusionProposalRecord>("SELECT record_json FROM research_fusion_proposals WHERE id = ?", id);
+  }
+
+  findResearchFusionProposalByNodePair(loNodeId: string, hiNodeId: string): ResearchFusionProposalRecord | undefined {
+    return this.getRecord<ResearchFusionProposalRecord>(
+      "SELECT record_json FROM research_fusion_proposals WHERE lo_node_id = ? AND hi_node_id = ?",
+      loNodeId,
+      hiNodeId,
+    );
+  }
+
+  listResearchFusionProposalsByNode(nodeId: string, statuses?: readonly ResearchFusionProposalStatus[]): ResearchFusionProposalRecord[] {
+    if (!statuses?.length) {
+      return this.listRecords<ResearchFusionProposalRecord>(
+        "SELECT record_json FROM research_fusion_proposals WHERE lo_node_id = ? OR hi_node_id = ? ORDER BY created_at DESC, rowid DESC",
+        nodeId,
+        nodeId,
+      );
+    }
+    const placeholders = statuses.map(() => "?").join(", ");
+    return this.listRecords<ResearchFusionProposalRecord>(
+      `SELECT record_json FROM research_fusion_proposals WHERE (lo_node_id = ? OR hi_node_id = ?) AND status IN (${placeholders}) ORDER BY created_at DESC, rowid DESC`,
+      nodeId,
+      nodeId,
+      ...statuses,
+    );
+  }
+
+  async createResearchFusionProposal(proposal: ResearchFusionProposalRecord): Promise<ResearchFusionProposalRecord> {
+    if (proposal.loNodeId >= proposal.hiNodeId) throw new Error("Fusion proposal node pair must be normalized");
+    let persisted: ResearchFusionProposalRecord | undefined;
+    this.transaction(() => {
+      const existing = this.findResearchFusionProposalByNodePair(proposal.loNodeId, proposal.hiNodeId);
+      if (existing) {
+        persisted = existing;
+        return;
+      }
+      this.db().prepare(`INSERT INTO research_fusion_proposals
+        (id, lo_node_id, hi_node_id, relation_type, reason, status, cooldown_until, created_at, updated_at, record_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(
+          proposal.id,
+          proposal.loNodeId,
+          proposal.hiNodeId,
+          proposal.relationType,
+          proposal.reason,
+          proposal.status,
+          proposal.cooldownUntil ?? null,
+          proposal.createdAt,
+          proposal.updatedAt,
+          JSON.stringify(proposal),
+        );
+      persisted = proposal;
+    });
+    if (!persisted) throw new Error("Research fusion proposal was not persisted");
+    return persisted;
+  }
+
+  async saveResearchFusionProposal(proposal: ResearchFusionProposalRecord): Promise<void> {
+    if (proposal.loNodeId >= proposal.hiNodeId) throw new Error("Fusion proposal node pair must be normalized");
+    this.db().prepare(`UPDATE research_fusion_proposals
+      SET relation_type = ?, reason = ?, status = ?, cooldown_until = ?, updated_at = ?, record_json = ?
+      WHERE id = ?`)
+      .run(
+        proposal.relationType,
+        proposal.reason,
+        proposal.status,
+        proposal.cooldownUntil ?? null,
+        proposal.updatedAt,
+        JSON.stringify(proposal),
+        proposal.id,
+      );
+  }
+
+  /** #31：按幂等键查找已创建的融合节点首轮任务（重复确认时返回既有结果，不重复建）。 */
+  findResearchFusionTaskByIdempotencyKey(idempotencyKey: string): ResearchTaskRecord | undefined {
+    return this.getRecord<ResearchTaskRecord>("SELECT record_json FROM research_tasks WHERE idempotency_key = ?", idempotencyKey);
+  }
+
+  /** #31：按幂等键查找已创建的融合节点（重复确认时返回既有结果，不重复建）。 */
+  findResearchFusionNodeByIdempotencyKey(idempotencyKey: string): ResearchNodeRecord | undefined {
+    return this.getRecord<ResearchNodeRecord>("SELECT record_json FROM research_nodes WHERE creation_idempotency_key = ?", idempotencyKey);
+  }
+
+  /**
+   * #31：确认式融合事务。同一事务内把提案置为 accepted、幂等创建语义相关边
+   * 与融合来源边、创建融合节点（无父节点，来源关系全由 fused-from 边表达）与
+   * 首轮消息、任务。按 idempotencyKey 幂等：重复 fuse 返回首次创建的节点与任务。
+   */
+  async createResearchFusionTurn(
+    proposal: ResearchFusionProposalRecord,
+    fusedFromEdges: ResearchEdgeRecord[],
+    fusionNode: ResearchNodeRecord,
+    inputMessage: ResearchMessageRecord,
+    outputMessage: ResearchMessageRecord,
+    task: ResearchTaskRecord,
+  ): Promise<NodeGrowthAccepted> {
+    let accepted: NodeGrowthAccepted | undefined;
+    this.transaction(() => {
+      const existingNode = this.getRecord<ResearchNodeRecord>(
+        "SELECT record_json FROM research_nodes WHERE session_id = ? AND creation_idempotency_key = ?",
+        fusionNode.sessionId, task.idempotencyKey,
+      );
+      if (existingNode) {
+        const existingTask = this.findResearchTaskByIdempotencyKey(fusionNode.sessionId, task.idempotencyKey);
+        if (!existingTask) throw new Error("Research fusion node references a missing first task");
+        const existingInput = this.getResearchMessage(existingTask.inputMessageId);
+        const existingOutput = this.getResearchMessage(existingTask.outputMessageId);
+        const session = this.getResearchSession(existingNode.sessionId);
+        if (!existingInput || !existingOutput || !session) throw new Error("Research fusion node references incomplete persisted state");
+        accepted = { node: existingNode, session, selection: undefined, inputMessage: existingInput, outputMessage: existingOutput, task: existingTask };
+        return;
+      }
+      const session = this.getResearchSession(fusionNode.sessionId);
+      if (!session) throw new Error("Research fusion node references a missing session");
+      const updatedSession: ResearchSessionRecord = { ...session, updatedAt: task.createdAt };
+      // 提案置为 accepted（与 decide 一致：无冷却字段）。
+      const acceptedProposal: ResearchFusionProposalRecord = { ...proposal, status: "accepted", updatedAt: task.createdAt };
+      this.db().prepare("UPDATE research_fusion_proposals SET status = ?, updated_at = ?, record_json = ? WHERE id = ?")
+        .run(acceptedProposal.status, acceptedProposal.updatedAt, JSON.stringify(acceptedProposal), proposal.id);
+      this.db().prepare("INSERT INTO research_nodes (id, session_id, parent_node_id, origin_selection_id, status, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(fusionNode.id, fusionNode.sessionId, null, null, fusionNode.status, fusionNode.createdAt, fusionNode.updatedAt, task.idempotencyKey, JSON.stringify(fusionNode));
+      // 语义相关边 + 融合来源边：均幂等（INSERT OR IGNORE + UNIQUE 约束）。
+      const semanticEdge: ResearchEdgeRecord = {
+        id: researchEdgeId("semantic-related", proposal.loNodeId, proposal.hiNodeId),
+        kind: "semantic-related",
+        fromNodeId: proposal.loNodeId,
+        toNodeId: proposal.hiNodeId,
+        createdAt: task.createdAt,
+        status: "active",
+      };
+      const edges = [semanticEdge, ...fusedFromEdges];
+      for (const edge of edges) {
+        this.db().prepare("INSERT OR IGNORE INTO research_edges (id, kind, from_node_id, to_node_id, created_at, status, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
+          .run(edge.id, edge.kind, edge.fromNodeId, edge.toNodeId, edge.createdAt, edge.status, JSON.stringify(edge));
+      }
+      this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
+        .run(updatedSession.updatedAt, JSON.stringify(updatedSession), updatedSession.id);
+      this.insertResearchMessage(inputMessage);
+      this.insertResearchMessage(outputMessage);
+      this.insertResearchTask(task);
+      accepted = { node: fusionNode, session: updatedSession, selection: undefined, inputMessage, outputMessage, task };
+    });
+    if (!accepted) throw new Error("Research fusion node was not persisted");
+    return accepted;
+  }
+
   private updateResearchMessage(message: ResearchMessageRecord): void {
     this.db().prepare("UPDATE research_messages SET status = ?, updated_at = ?, record_json = ? WHERE id = ?")
       .run(message.status, message.updatedAt, JSON.stringify(message), message.id);
@@ -1766,6 +2428,20 @@ export class SqliteStore implements CollectorStore {
   private insertResearchEvent(taskId: string, type: "delta" | "completed" | "failed", createdAt: string, data: unknown): void {
     this.db().prepare("INSERT INTO research_task_events (task_id, event_type, created_at, data_json) VALUES (?, ?, ?, ?)")
       .run(taskId, type, createdAt, JSON.stringify(data));
+  }
+
+  private updateResearchTermPreview(preview: ResearchTermPreviewRecord): void {
+    this.db().prepare("UPDATE research_term_previews SET status = ?, content = ?, retryable = ?, provider = ?, model = ?, prompt_version = ?, updated_at = ?, started_at = ?, completed_at = ?, record_json = ? WHERE id = ?")
+      .run(
+        preview.status, preview.content, preview.retryable ? 1 : 0, preview.provider ?? null, preview.model ?? null,
+        preview.promptVersion, preview.updatedAt, preview.startedAt ?? null, preview.completedAt ?? null,
+        JSON.stringify(preview), preview.id,
+      );
+  }
+
+  private insertResearchTermPreviewEvent(previewId: string, type: "snapshot" | "delta" | "completed" | "failed", createdAt: string, data: unknown): void {
+    this.db().prepare("INSERT INTO research_term_preview_events (preview_id, event_type, created_at, data_json) VALUES (?, ?, ?, ?)")
+      .run(previewId, type, createdAt, JSON.stringify(data));
   }
 
   private createSchema(): void {
@@ -2390,6 +3066,228 @@ export class SqliteStore implements CollectorStore {
       version = 24;
     }
 
+    if (version < 25) {
+      this.transaction(() => {
+        // 修订二（用户标记与笔记）：稍后再学表复用于标记，新增用户笔记列；
+        // 旧数据 note 为 NULL（纯标记语义），记录主体仍以 record_json 为准。
+        this.db().exec(`
+          ALTER TABLE research_later_items ADD COLUMN note TEXT;
+          INSERT INTO schema_migrations(version, applied_at) VALUES (25, datetime('now'));
+        `);
+      });
+      version = 25;
+    }
+
+    if (version < 26) {
+      this.transaction(() => {
+        this.db().exec(`
+          ALTER TABLE research_nodes ADD COLUMN display_name TEXT;
+          INSERT INTO schema_migrations(version, applied_at) VALUES (26, datetime('now'));
+        `);
+      });
+      version = 26;
+    }
+
+    if (version < 27) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE research_term_previews (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            selection_id TEXT NOT NULL UNIQUE,
+            marker_key TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            status TEXT NOT NULL,
+            content TEXT NOT NULL,
+            retryable INTEGER NOT NULL DEFAULT 0,
+            provider TEXT,
+            model TEXT,
+            prompt_version TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES research_sessions(id),
+            FOREIGN KEY(node_id) REFERENCES research_nodes(id),
+            FOREIGN KEY(message_id) REFERENCES research_messages(id),
+            FOREIGN KEY(selection_id) REFERENCES research_selections(id),
+            UNIQUE(node_id, marker_key),
+            UNIQUE(session_id, idempotency_key)
+          );
+          CREATE INDEX research_term_previews_status_idx ON research_term_previews(status, created_at);
+          CREATE TABLE research_term_preview_events (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            preview_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            data_json TEXT NOT NULL,
+            FOREIGN KEY(preview_id) REFERENCES research_term_previews(id) ON DELETE CASCADE
+          );
+          CREATE INDEX research_term_preview_events_preview_idx ON research_term_preview_events(preview_id, sequence);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (27, datetime('now'));
+        `);
+      });
+      version = 27;
+    }
+
+    if (version < 28) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE research_edges (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            from_node_id TEXT NOT NULL,
+            to_node_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            status TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(from_node_id) REFERENCES research_nodes(id),
+            FOREIGN KEY(to_node_id) REFERENCES research_nodes(id),
+            UNIQUE(kind, from_node_id, to_node_id)
+          );
+          CREATE INDEX research_edges_from_node_idx ON research_edges(from_node_id, status);
+          CREATE INDEX research_edges_to_node_idx ON research_edges(to_node_id, status);
+          CREATE INDEX research_edges_kind_idx ON research_edges(kind, status);
+        `);
+
+        // 从既有 research_nodes 的 parentNodeId 确定性派生父子边并插入
+        const nodes = this.db().prepare("SELECT id, parent_node_id, created_at FROM research_nodes WHERE parent_node_id IS NOT NULL").all() as Array<{ id: string; parent_node_id: string; created_at: string }>;
+        const insertEdge = this.db().prepare("INSERT OR IGNORE INTO research_edges (id, kind, from_node_id, to_node_id, created_at, status, record_json) VALUES (?, 'parent-child', ?, ?, ?, 'active', ?)");
+        for (const row of nodes) {
+          const edgeId = researchEdgeId("parent-child", row.parent_node_id, row.id);
+          const record: ResearchEdgeRecord = { id: edgeId, kind: "parent-child", fromNodeId: row.parent_node_id, toNodeId: row.id, createdAt: row.created_at, status: "active" };
+          insertEdge.run(edgeId, row.parent_node_id, row.id, row.created_at, JSON.stringify(record));
+        }
+
+        this.db().exec("INSERT INTO schema_migrations(version, applied_at) VALUES (28, datetime('now'));");
+      });
+      version = 28;
+    }
+
+    if (version < 29) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE research_slices (
+            id TEXT PRIMARY KEY,
+            node_id TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL,
+            is_provisional INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(node_id) REFERENCES research_nodes(id),
+            FOREIGN KEY(message_id) REFERENCES research_messages(id),
+            UNIQUE(node_id, ordinal)
+          );
+          CREATE INDEX research_slices_node_idx ON research_slices(node_id);
+          CREATE INDEX research_slices_message_idx ON research_slices(message_id);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (29, datetime('now'));
+        `);
+      });
+      version = 29;
+    }
+
+    if (version < 30) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE research_fusion_proposals (
+            id TEXT PRIMARY KEY,
+            lo_node_id TEXT NOT NULL,
+            hi_node_id TEXT NOT NULL,
+            relation_type TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            status TEXT NOT NULL,
+            cooldown_until TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(lo_node_id) REFERENCES research_nodes(id) ON DELETE CASCADE,
+            FOREIGN KEY(hi_node_id) REFERENCES research_nodes(id) ON DELETE CASCADE,
+            UNIQUE(lo_node_id, hi_node_id),
+            CHECK(lo_node_id < hi_node_id),
+            CHECK(relation_type IN ('identity', 'shared-concept', 'analogy', 'contrast', 'unrelated')),
+            CHECK(status IN ('pending', 'accepted', 'rejected'))
+          );
+          CREATE INDEX research_fusion_proposals_status_idx
+            ON research_fusion_proposals(status, cooldown_until, created_at);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (30, datetime('now'));
+        `);
+      });
+      version = 30;
+    }
+
+    if (version < 31) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE research_body_versions (
+            id TEXT PRIMARY KEY,
+            message_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            content_hash TEXT NOT NULL,
+            origin TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            UNIQUE(message_id, version)
+          );
+          CREATE INDEX research_body_versions_message_idx ON research_body_versions(message_id);
+          CREATE INDEX research_body_versions_node_idx ON research_body_versions(node_id);
+          CREATE TABLE research_semantic_fragments (
+            id TEXT PRIMARY KEY,
+            body_version_id TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL,
+            start_offset INTEGER NOT NULL,
+            end_offset INTEGER NOT NULL,
+            is_provisional INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            UNIQUE(body_version_id, ordinal)
+          );
+          CREATE INDEX research_semantic_fragments_version_idx ON research_semantic_fragments(body_version_id);
+          CREATE INDEX research_semantic_fragments_message_idx ON research_semantic_fragments(message_id);
+          CREATE INDEX research_semantic_fragments_node_idx ON research_semantic_fragments(node_id);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (31, datetime('now'));
+        `);
+      });
+      version = 31;
+    }
+
+    if (version < 32) {
+      // #43：事务性剥离 research_slices.record_json 中旧 content 字段（正文副本）。
+      // 幂等（无 content 的行跳过）；完成后用 json_extract 验证零残留，否则抛错回滚
+      // 保持原始数据；不调用模型。切片此后只保存定位与派生元数据。
+      this.transaction(() => {
+        const rows = this.db().prepare("SELECT id, record_json FROM research_slices").all() as Array<{ id: string; record_json: string }>;
+        const update = this.db().prepare("UPDATE research_slices SET record_json = ? WHERE id = ?");
+        let stripped = 0;
+        for (const row of rows) {
+          let record: Record<string, unknown>;
+          try {
+            record = JSON.parse(row.record_json) as Record<string, unknown>;
+          } catch {
+            throw new Error(`Cannot migrate research slice ${row.id}: record_json is not valid JSON`);
+          }
+          if (typeof record.content !== "string") continue;
+          delete record.content;
+          update.run(JSON.stringify(record), row.id);
+          stripped += 1;
+        }
+        const remaining = this.db().prepare(
+          "SELECT COUNT(*) AS n FROM research_slices WHERE json_extract(record_json, '$.content') IS NOT NULL",
+        ).get() as { n: number };
+        if (remaining.n !== 0) {
+          throw new Error(`research_slices content strip verification failed: ${remaining.n} rows remain`);
+        }
+        this.db().exec("INSERT INTO schema_migrations(version, applied_at) VALUES (32, datetime('now'))");
+      });
+      version = 32;
+    }
+
   }
 
   private async migrateLegacyProviderProfile(): Promise<void> {
@@ -2629,6 +3527,11 @@ export class JsonStore implements CollectorStore {
   getLatestTopicDocumentVersion(_topicId: string): any { return undefined; }
   async saveModelCall(_record: any): Promise<void> { throw new Error("AI budget requires SQLite persistence"); }
   listModelCalls(_workflowRunId?: string): any[] { return []; }
+  listRunRecordRows(_query: ObservabilityRecordQuery): ObservabilityRecordRow[] { return []; }
+  getRunRecordRow(_source: ObservabilityRecordSource, _id: string): ObservabilityRecordRow | undefined { return undefined; }
+  listRunModelCallRows(_workflowRunId: string): ObservabilityRelatedRow[] { return []; }
+  listRunGroundingRunRows(_taskId: string): ObservabilityRelatedRow[] { return []; }
+  listRunGroundingSourceRows(_runId: string): ObservabilityRelatedRow[] { return []; }
   getAiBudgetSetting(_key: string): string | undefined { return undefined; }
   async saveAiBudgetSetting(_key: string, _value: string): Promise<void> { throw new Error("AI budget requires SQLite persistence"); }
   getMonthModelCallCostUsd(_year: number, _month: number): number { return 0; }
@@ -2655,6 +3558,7 @@ export class JsonStore implements CollectorStore {
   listResearchSessions(): ResearchSessionRecord[] { return []; }
   async createResearchNode(_node: ResearchNodeRecord, _idempotencyKey: string): Promise<ResearchNodeRecord> { throw new Error("Research nodes require SQLite persistence"); }
   getResearchNode(_id: string): ResearchNodeRecord | undefined { return undefined; }
+  async updateResearchNodeDisplayName(_nodeId: string, _displayName: string): Promise<ResearchNodeRecord | undefined> { throw new Error("Research nodes require SQLite persistence"); }
   listResearchNodes(_sessionId: string): ResearchNodeRecord[] { return []; }
   listChildNodes(_parentNodeId: string): ResearchNodeRecord[] { return []; }
   getResearchMessage(_id: string): ResearchMessageRecord | undefined { return undefined; }
@@ -2670,7 +3574,11 @@ export class JsonStore implements CollectorStore {
   async appendResearchTaskDelta(_id: string, _delta: string): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
   async completeResearchTask(_id: string): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
   async failResearchTask(_task: ResearchTaskRecord, _error: ResearchTaskError): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
-  async retryResearchTask(_task: ResearchTaskRecord, _provider?: string, _model?: string, _promptVersion?: string): Promise<ResearchTaskRecord> { throw new Error("Research sessions require SQLite persistence"); }
+  async retryResearchTask(_task: ResearchTaskRecord, _provider?: string, _model?: string, _promptVersion?: string, _options?: { preserveContent?: boolean }): Promise<ResearchTaskRecord> { throw new Error("Research sessions require SQLite persistence"); }
+  async saveResearchTaskBodyPlan(_taskId: string, _bodyPlan: ResearchBodyPlan): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
+  async saveResearchTaskFusionReferences(_taskId: string, _fusionReferences: ResearchFusionReference[]): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
+  async saveResearchTaskStreamCheckpoint(_taskId: string, _content: string): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
+  async clearResearchTaskStreamCheckpoint(_taskId: string): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
   listResearchTaskEvents(_taskId: string, _afterId?: number): ResearchTaskEvent[] { return []; }
   listRecoverableResearchTasks(): ResearchTaskRecord[] { return []; }
   failInterruptedResearchTasks(): number { return 0; }
@@ -2711,8 +3619,21 @@ export class JsonStore implements CollectorStore {
   async createResearchBranch(_session: ResearchSessionRecord, _branch: ResearchBranchRecord, _inputMessage: ResearchMessageRecord, _outputMessage: ResearchMessageRecord, _task: ResearchTaskRecord): Promise<DeepResearchAccepted> { throw new Error("Research branches require SQLite persistence"); }
   async createOriginResearchSession(_session: ResearchSessionRecord, _inputMessage: ResearchMessageRecord, _outputMessage: ResearchMessageRecord, _task: ResearchTaskRecord): Promise<DeepResearchAccepted> { throw new Error("Research branches require SQLite persistence"); }
   async createResearchChildNode(_parentNode: ResearchNodeRecord, _node: ResearchNodeRecord, _selection: ResearchSelectionRecord, _inputMessage: ResearchMessageRecord, _outputMessage: ResearchMessageRecord, _task: ResearchTaskRecord): Promise<NodeGrowthAccepted> { throw new Error("Research nodes require SQLite persistence"); }
+  getResearchTermPreview(_id: string): ResearchTermPreviewRecord | undefined { return undefined; }
+  findResearchTermPreview(_nodeId: string, _markerKey: string): ResearchTermPreviewRecord | undefined { return undefined; }
+  async createResearchTermPreview(_preview: ResearchTermPreviewRecord, _selection: ResearchSelectionRecord): Promise<ResearchTermPreviewAccepted> { throw new Error("Term previews require SQLite persistence"); }
+  claimResearchTermPreview(_id: string, _provider?: string, _model?: string, _promptVersion?: string): ResearchTermPreviewRecord | undefined { return undefined; }
+  async appendResearchTermPreviewDelta(_id: string, _delta: string): Promise<void> { throw new Error("Term previews require SQLite persistence"); }
+  async completeResearchTermPreview(_id: string): Promise<void> { throw new Error("Term previews require SQLite persistence"); }
+  async failResearchTermPreview(_preview: ResearchTermPreviewRecord, _error: ResearchTermPreviewError): Promise<void> { throw new Error("Term previews require SQLite persistence"); }
+  async retryResearchTermPreview(_preview: ResearchTermPreviewRecord, _provider?: string, _model?: string, _promptVersion?: string): Promise<ResearchTermPreviewRecord> { throw new Error("Term previews require SQLite persistence"); }
+  getResearchTermPreviewSnapshot(_id: string): ResearchTermPreviewEvent { throw new Error("Term previews require SQLite persistence"); }
+  listResearchTermPreviewEvents(_id: string, _afterId?: number): ResearchTermPreviewEvent[] { return []; }
+  listRecoverableResearchTermPreviews(): ResearchTermPreviewRecord[] { return []; }
+  failInterruptedResearchTermPreviews(): number { return 0; }
   getResearchLaterItem(_id: string): ResearchLaterItemRecord | undefined { return undefined; }
   findResearchLaterItemByCreationKey(_idempotencyKey: string): ResearchLaterItemRecord | undefined { return undefined; }
+  findResearchLaterItemBySelectionId(_selectionId: string): ResearchLaterItemRecord | undefined { return undefined; }
   listResearchLaterItems(_status?: ResearchLaterItemStatus): ResearchLaterItemRecord[] { return []; }
   async createResearchLaterItem(_item: ResearchLaterItemRecord, _idempotencyKey: string): Promise<ResearchLaterItemRecord> { throw new Error("Research later items require SQLite persistence"); }
   async saveResearchLaterItem(_record: ResearchLaterItemRecord): Promise<void> { throw new Error("Research later items require SQLite persistence"); }
@@ -2721,6 +3642,28 @@ export class JsonStore implements CollectorStore {
   listResearchGroundingRuns(_taskId: string): ResearchGroundingRunRecord[] { return []; }
   listResearchGroundingSources(_runId: string): ResearchGroundingSourceRecord[] { return []; }
   listResearchCitationsForMessages(_messageIds: string[]): ResearchCitationRecord[] { return []; }
+  async replaceSlicesForMessage(_messageId: string, _slices: ResearchSliceRecord[], _taskId?: string): Promise<void> { throw new Error("Research slices require SQLite persistence"); }
+  listSlicesByNode(_nodeId: string): ResearchSliceRecord[] { return []; }
+  listSlicesByMessage(_messageId: string): ResearchSliceRecord[] { return []; }
+  async createResearchBodyVersion(_version: ResearchBodyVersionRecord): Promise<void> { throw new Error("Body versions require SQLite persistence"); }
+  async createSemanticFragments(_fragments: ResearchSemanticFragmentRecord[]): Promise<void> { throw new Error("Semantic fragments require SQLite persistence"); }
+  getBodyVersion(_id: string): ResearchBodyVersionRecord | undefined { return undefined; }
+  getBodyVersionForMessage(_messageId: string): ResearchBodyVersionRecord | undefined { return undefined; }
+  listFragmentsByBodyVersion(_bodyVersionId: string): ResearchSemanticFragmentRecord[] { return []; }
+  listFragmentsByMessage(_messageId: string): ResearchSemanticFragmentRecord[] { return []; }
+  listFragmentsByNode(_nodeId: string): ResearchSemanticFragmentRecord[] { return []; }
+  getResearchFusionProposal(_id: string): ResearchFusionProposalRecord | undefined { return undefined; }
+  findResearchFusionProposalByNodePair(_loNodeId: string, _hiNodeId: string): ResearchFusionProposalRecord | undefined { return undefined; }
+  listResearchFusionProposalsByNode(_nodeId: string, _statuses?: readonly ResearchFusionProposalStatus[]): ResearchFusionProposalRecord[] { return []; }
+  async createResearchFusionProposal(_proposal: ResearchFusionProposalRecord): Promise<ResearchFusionProposalRecord> { throw new Error("Research fusion proposals require SQLite persistence"); }
+  async saveResearchFusionProposal(_proposal: ResearchFusionProposalRecord): Promise<void> { throw new Error("Research fusion proposals require SQLite persistence"); }
+  findResearchFusionTaskByIdempotencyKey(_idempotencyKey: string): ResearchTaskRecord | undefined { return undefined; }
+  findResearchFusionNodeByIdempotencyKey(_idempotencyKey: string): ResearchNodeRecord | undefined { return undefined; }
+  async createResearchFusionTurn(_proposal: ResearchFusionProposalRecord, _fusedFromEdges: ResearchEdgeRecord[], _fusionNode: ResearchNodeRecord, _inputMessage: ResearchMessageRecord, _outputMessage: ResearchMessageRecord, _task: ResearchTaskRecord): Promise<NodeGrowthAccepted> { throw new Error("Research fusion turns require SQLite persistence"); }
+  async createResearchEdge(_edge: ResearchEdgeRecord): Promise<ResearchEdgeRecord> { throw new Error("Research edges require SQLite persistence"); }
+  listResearchEdgesByNode(_nodeId: string): ResearchEdgeRecord[] { return []; }
+  listAllResearchEdges(): ResearchEdgeRecord[] { return []; }
+  getResearchEdge(_id: string): ResearchEdgeRecord | undefined { return undefined; }
   async clearAllData(): Promise<void> { const savedTokens = this.data.clientTokens; const savedProfiles = this.data.providerProfiles; const savedCredentials = this.data.providerCredentials; const savedPurposeRoutes = this.data.modelPurposeRoutes; const savedSettings: Record<string, string> = {}; if (this.data.settings) { for (const key of ['ai_consent', 'ai_configured', 'active_provider_profile_id', 'deepseek_configured']) { if (this.data.settings[key]) savedSettings[key] = this.data.settings[key]; } } this.data = { ...structuredClone(EMPTY_DATA), clientTokens: savedTokens, settings: savedSettings, providerProfiles: savedProfiles, providerCredentials: savedCredentials, modelPurposeRoutes: savedPurposeRoutes }; await this.flush(); }
     private flush() { this.writeQueue = this.writeQueue.then(async () => { const temporaryPath = `${this.filePath}.tmp`; await writeFile(temporaryPath, JSON.stringify(this.data, null, 2), "utf8"); await rename(temporaryPath, this.filePath); }); return this.writeQueue; }
 }

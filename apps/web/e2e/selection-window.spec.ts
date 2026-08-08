@@ -1,14 +1,17 @@
 /**
- * 选区捕获与选区智能窗口端到端：假模型（E2E_MODEL=fake）确定性分析。
- * 覆盖：AI 回答选区 → 窗口打开（原文即时、骨架、完成字段）→ 详情展开 → 网络契约
- * （幂等键 / SSE）→ SQLite 落库；太短只提示不落库；阅读页快照选区（来源位置行号）
- * 与跨段落只提示；键盘 Shift 选择同样触发；控制台与网络无异常。
+ * 选区捕获与浮动胶囊端到端（修订一 #9 改造）：假模型（E2E_MODEL=fake）确定性分析。
+ * 覆盖：AI 回答选区 → 浮动胶囊出现在选区上方 → 显式【引用】后引用态胶囊进入输入框区域
+ * （不再弹旧分析面板）→ 选区记录落库 → 网络契约（幂等键）→ SQLite 落库；
+ * 太短只提示不落库；键盘 Shift 选择同样触发浮动胶囊、Escape 不关闭；
+ * 阅读页快照选区与跨段落只提示；控制台与网络无异常。
+ * 修订一 #11 补充：阅读页 ?sel= 恢复与节点页一致（高亮上方浮动胶囊、引用后引用态保持）。
  */
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import {
   apiJson,
   apiPortForPage,
+  citeCurrentSelection,
   pairAndOpen,
   readDataDir,
   readResearchSelectionTables,
@@ -68,21 +71,15 @@ async function selectAcrossReadingBlocks(page: Page): Promise<void> {
   });
 }
 
-test.describe("选区捕获与选区智能窗口", () => {
-  test("选中 AI 回答片段：窗口即时呈现原文，分析逐字段到达，UI / 网络 / SQLite 一致", async ({
+test.describe("选区捕获与浮动胶囊", () => {
+  test("选中 AI 回答片段：浮动胶囊出现，显式引用后引用态胶囊进入输入框区域，选区记录落库", async ({
     page,
   }) => {
     const consoleIssues: string[] = [];
     const apiRequests: Array<{ method: string; url: string; headers: Record<string, string> }> = [];
-    const apiResponses: Array<{ url: string; contentType: string }> = [];
     page.on("request", (request) => {
       if (request.url().includes("/v1/")) {
         apiRequests.push({ method: request.method(), url: request.url(), headers: request.headers() });
-      }
-    });
-    page.on("response", (response) => {
-      if (response.url().includes("/v1/")) {
-        apiResponses.push({ url: response.url(), contentType: response.headers()["content-type"] ?? "" });
       }
     });
     await pairAndOpen(page, "/research/new");
@@ -99,117 +96,93 @@ test.describe("选区捕获与选区智能窗口", () => {
     const selected = "本地优先会先把输入保存在本机";
     await selectAnswerText(page, selected);
 
-    // 窗口打开：原文立即可见，分析字段先为骨架
-    const panel = page.getByTestId("selection-insight-panel");
-    await expect(panel).toBeVisible();
-    await expect(panel.locator(".selection-panel__quote")).toHaveText(selected);
-    await expect(panel.getByText("正在分析，已保存的选区不会丢失。")).toBeVisible();
+    // 浮动胶囊出现在选区上方：含【引用】按钮；此刻尚未创建选区记录
+    const floating = page.getByTestId("floating-selection-capsule");
+    await expect(floating).toBeVisible();
+    await expect(floating.getByTestId("floating-capsule-cite")).toHaveText("引用");
+    await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
 
-    // 假模型分析完成（确定性文案）
-    await expect(panel.getByText(/这段选区在说/)).toBeVisible({ timeout: 15_000 });
-    await expect(panel.locator(".selection-panel__chip", { hasText: "中" })).toBeVisible();
-    await expect(panel.getByText("约 2 分钟")).toBeVisible();
-    await expect(panel.getByText("约 12 分钟")).toBeVisible();
-    await expect(panel.getByText("正在分析，已保存的选区不会丢失。")).toHaveCount(0);
+    // 显式点击【引用】：浮动胶囊关闭，引用态胶囊出现在输入框区域
+    await page.getByTestId("floating-capsule-cite").click();
+    await expect(floating).toBeHidden();
+    const capsule = page.getByTestId("selection-capsule");
+    await expect(capsule).toBeVisible();
+    await expect(capsule).toContainText(selected);
+    await expect(capsule.getByRole("button", { name: "移除引用" })).toBeVisible();
 
-    // 详情按需展开：前置知识 / 与内容的关系 / 关注方向缺省占位 / 依据 / 来源位置
-    await panel.getByRole("button", { name: "展开分析详情" }).click();
-    await expect(panel.getByText("基础阅读能力")).toBeVisible();
-    await expect(panel.getByText("选区是当前回答中的一段内容。")).toBeVisible();
-    await expect(panel.getByText("本次分析未包含与当前关注方向的关系。")).toBeVisible();
-    await expect(panel.getByText("本地假模型基于选区原文生成确定性分析，未联网检索。")).toBeVisible();
-    await expect(panel.locator(".selection-panel__details")).toContainText("段落 1");
+    // 旧分析面板不再出现；不再展示 AI 分析字段
+    await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
+    await expect(page.getByText("理解难度")).toHaveCount(0);
+    await expect(page.getByText("快速了解")).toHaveCount(0);
 
-    // 网络契约：创建请求带稳定幂等键；事件流是 SSE
+    // 双模发送按钮可见
+    await expect(page.getByRole("button", { name: "在此追问" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "深入研究这段" })).toBeVisible();
+
+    // 网络契约：引用后才发起创建请求，带稳定幂等键
     const post = apiRequests.find(
       (request) =>
         request.method === "POST" && /\/v1\/research-sessions\/[^/]+\/selections$/.test(request.url),
     );
     expect(post, "应有 POST /v1/research-sessions/:sid/selections").toBeTruthy();
     expect(post?.headers["idempotency-key"]).toMatch(/^sel:/);
-    const sse = apiResponses.find((response) =>
-      /\/v1\/research-selection-tasks\/[^/]+\/events/.test(response.url),
-    );
-    expect(sse, "应有选区任务事件流").toBeTruthy();
-    expect(sse?.contentType).toContain("text/event-stream");
 
     // API 列表与 SQLite 落库一致
     const selections = await apiJson<
-      Array<{ id: string; text: string; status: string; insight?: unknown }>
+      Array<{ id: string; text: string; status: string }>
     >(page, `/v1/research-sessions/${sessionId}/selections`);
     expect(selections).toHaveLength(1);
     expect(selections[0]?.text).toBe(selected);
     expect(selections[0]?.status).toBe("active");
-    expect(selections[0]?.insight).toBeTruthy();
 
     const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
     const tables = readResearchSelectionTables(dbPath);
     expect(tables.selections.filter((row) => row.sessionId === sessionId)).toHaveLength(1);
-    const taskRows = tables.selectionTasks.filter((row) => row.sessionId === sessionId);
-    expect(taskRows).toHaveLength(1);
-    expect(taskRows[0]?.status).toBe("completed");
-    expect(
-      tables.selectionEvents.some((row) => row.taskId === taskRows[0]?.id && row.eventType === "completed"),
-    ).toBe(true);
 
-    // 结束关闭窗口；已保存的选区仍在列表中
-    await panel.getByRole("button", { name: "结束", exact: true }).click();
-    await expect(panel).toBeHidden();
-    const afterClose = await apiJson<unknown[]>(page, `/v1/research-sessions/${sessionId}/selections`);
-    expect(afterClose).toHaveLength(1);
+    // 移除引用：点击引用态胶囊移除按钮
+    await capsule.getByRole("button", { name: "移除引用" }).click();
+    await expect(capsule).toBeHidden();
+
+    // 已保存的选区仍在列表中
+    const afterRemove = await apiJson<unknown[]>(page, `/v1/research-sessions/${sessionId}/selections`);
+    expect(afterRemove).toHaveLength(1);
 
     expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
   });
 
-  test("选区太短只给调整提示，不创建选区记录", async ({ page }) => {
+  test("单字选区也有效（修订一 #10：非空即有效）：浮动胶囊出现，引用后落库，无太短提示", async ({ page }) => {
     await pairAndOpen(page, "/research/new");
     const sessionId = await submitFirstQuestion(page);
     await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
       timeout: 15_000,
     });
 
-    await selectAnswerText(page, "本地");
-    const hint = page.getByTestId("selection-quality-hint");
-    await expect(hint).toBeVisible();
-    await expect(hint).toContainText("至少选择");
+    await selectAnswerText(page, "本");
+    // 不再有任何"选区太短"提示
+    await expect(page.getByTestId("selection-quality-hint")).toHaveCount(0);
+    // 浮动胶囊直接出现
+    await expect(page.getByTestId("floating-selection-capsule")).toBeVisible();
     await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
 
-    const selections = await apiJson<unknown[]>(page, `/v1/research-sessions/${sessionId}/selections`);
-    expect(selections).toHaveLength(0);
-
-    await hint.getByRole("button", { name: "关闭提示" }).click();
-    await expect(hint).toBeHidden();
+    // 引用后选区记录落库
+    await page.getByTestId("floating-capsule-cite").click();
+    await expect(page.getByTestId("selection-capsule")).toContainText("本");
+    const selections = await apiJson<Array<{ text: string }>>(
+      page,
+      `/v1/research-sessions/${sessionId}/selections`,
+    );
+    expect(selections).toHaveLength(1);
+    expect(selections[0]?.text).toBe("本");
   });
 
-  test("窄屏选区窗口以底部抽屉呈现，展开详情后结束操作仍在视口内", async ({ page }) => {
-    await page.setViewportSize({ width: 390, height: 780 });
+  test("键盘 Shift+方向键选择同样出现浮动胶囊；Escape 不关闭，选区坍缩才关闭", async ({ page }) => {
     await pairAndOpen(page, "/research/new");
     await submitFirstQuestion(page);
     await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
       timeout: 15_000,
     });
 
-    await selectAnswerText(page, "本地优先会先把输入保存在本机");
-    const panel = page.getByTestId("selection-insight-panel");
-    await expect(panel).toBeVisible();
-    await expect(panel).toHaveClass(/selection-panel--drawer/);
-    await expect(panel.getByRole("button", { name: "结束", exact: true })).toBeInViewport();
-
-    // 展开详情后抽屉内部滚动，结束操作不被挤出视口
-    await panel.getByRole("button", { name: "展开分析详情" }).click();
-    await expect(panel.getByRole("button", { name: "结束", exact: true })).toBeInViewport();
-  });
-
-  test("键盘 Shift+方向键选择同样打开窗口，Escape 关闭并清除选区", async ({ page }) => {
-    await pairAndOpen(page, "/research/new");
-    await submitFirstQuestion(page);
-    await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
-      timeout: 15_000,
-    });
-
-    // 无编辑焦点的正文上，无头 Chromium 不会用 Shift+方向键扩展选区；
-    // 这里按键盘扩展后的结果建立选区，再触发真实 Shift 键盘事件，
-    // 验证键盘路径的 keyup 捕获与窗口开关（与 jsdom 单测同一策略）。
+    // 建立选区后触发 Shift 键盘事件
     await page.evaluate(() => {
       const block = document.querySelector(".message--assistant [data-block-text]");
       if (!block) throw new Error("未找到 AI 回答块");
@@ -233,16 +206,24 @@ test.describe("选区捕获与选区智能窗口", () => {
     });
     await page.keyboard.down("Shift");
     await page.keyboard.up("ArrowRight");
-
-    const panel = page.getByTestId("selection-insight-panel");
-    await expect(panel).toBeVisible();
     await page.keyboard.up("Shift");
 
+    const floating = page.getByTestId("floating-selection-capsule");
+    await expect(floating).toBeVisible();
+
+    // Escape 无任何关闭效果（修订一 #9）
     await page.keyboard.press("Escape");
-    await expect(panel).toBeHidden();
+    await expect(floating).toBeVisible();
+
+    // 选区坍缩（点击别处的等价行为）后浮动胶囊关闭
+    await page.evaluate(() => {
+      window.getSelection()?.removeAllRanges();
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await expect(floating).toBeHidden();
   });
 
-  test("阅读页选区：来源位置按行号说明；跨段落选择只给提示", async ({ page }) => {
+  test("阅读页选区：浮动胶囊引用后引用态胶囊包含选区文字；跨段落选择只给提示", async ({ page }) => {
     const consoleIssues: string[] = [];
     await pairAndOpen(page, "/research/new");
     page.on("console", (message) => {
@@ -268,32 +249,82 @@ test.describe("选区捕获与选区智能窗口", () => {
     await expect(page).toHaveURL(new RegExp(`/research/${created.id}/reading/[^/]+$`));
     await expect(page.getByText("第 1 行")).toBeVisible();
 
-    // 选中首块中的“本地优先研究”（6 字，满足最小长度）
+    // 选中首块中的"本地优先研究"（6 字，满足最小长度）
     const firstText = "第一行：本地优先研究";
     await selectReadingText(page, 0, firstText.indexOf("本地优先研究"), "本地优先研究".length);
 
-    const panel = page.getByTestId("selection-insight-panel");
-    await expect(panel).toBeVisible();
-    await expect(panel.locator(".selection-panel__quote")).toHaveText("本地优先研究");
-    await expect(panel.getByText(/这段选区在说「本地优先研究」/)).toBeVisible({ timeout: 15_000 });
+    // 浮动胶囊出现，显式引用后引用态胶囊包含选区文字
+    await expect(page.getByTestId("floating-selection-capsule")).toBeVisible();
+    const capsule = await citeCurrentSelection(page);
+    await expect(capsule).toContainText("本地优先研究");
+    // 旧面板不出现
+    await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
 
-    await panel.getByRole("button", { name: "展开分析详情" }).click();
-    await expect(panel.locator(".selection-panel__details")).toContainText("选区属于《选区笔记.txt》的一部分。");
-    await expect(panel.locator(".selection-panel__details")).toContainText("第 1 行");
+    // 移除引用态胶囊
+    await capsule.getByRole("button", { name: "移除引用" }).click();
+    await expect(capsule).toBeHidden();
 
-    await panel.getByRole("button", { name: "结束", exact: true }).click();
-    await expect(panel).toBeHidden();
-
-    // 跨两个块的选择只给调整建议，不开窗口、不落库新增
+    // 跨两个块的选择只给调整建议，不出现任何胶囊，不落库新增
     await selectAcrossReadingBlocks(page);
     const hint = page.getByTestId("selection-quality-hint");
     await expect(hint).toBeVisible();
     await expect(hint).toContainText("跨了多个段落");
-    await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
+    await expect(page.getByTestId("floating-selection-capsule")).toHaveCount(0);
+    await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
 
     const selections = await apiJson<unknown[]>(page, `/v1/research-sessions/${created.id}/selections`);
-    expect(selections).toHaveLength(1);
+    expect(selections).toHaveLength(1); // 只有之前的选区
 
     expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
+  });
+
+  test("阅读页 ?sel= 恢复与节点页一致：高亮标记上方呈现浮动胶囊，引用后输入框引用态保持（修订一 #11）", async ({
+    page,
+  }) => {
+    await pairAndOpen(page, "/research/new");
+    const createResponse = await page.request.post("/v1/research-sessions", {
+      headers: { "Idempotency-Key": crypto.randomUUID() },
+      data: {},
+    });
+    const created = (await createResponse.json()) as { id: string };
+    await page.goto(`/research/${created.id}`);
+
+    const txt = ["第一行：本地优先研究", "", "第二段：导入后保留行号", "", "第三段：可以在同一画布阅读"].join("\n");
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "恢复笔记.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from(txt, "utf8"),
+    });
+    await expect(page.getByText("已导入")).toBeVisible({ timeout: 15_000 });
+    await page.getByRole("button", { name: "阅读" }).click();
+    await expect(page).toHaveURL(new RegExp(`/research/${created.id}/reading/[^/]+$`));
+    await expect(page.getByText("第 1 行")).toBeVisible();
+    const readingUrl = page.url();
+
+    // 引用首块文字使选区持久化
+    const firstText = "第一行：本地优先研究";
+    await selectReadingText(page, 0, firstText.indexOf("本地优先研究"), "本地优先研究".length);
+    await citeCurrentSelection(page);
+    const selections = await apiJson<Array<{ id: string }>>(page, `/v1/research-sessions/${created.id}/selections`);
+    expect(selections).toHaveLength(1);
+    const selId = selections[0]!.id;
+
+    // 携带 ?sel= 重新进入阅读页：高亮标记 + 浮动胶囊呈现在高亮上方（与节点页一致）
+    await page.goto(`${readingUrl}?sel=${selId}`);
+    const mark = page.locator("[data-selection-mark]");
+    await expect(mark).toBeVisible({ timeout: 10_000 });
+    const floating = page.getByTestId("floating-selection-capsule");
+    await expect(floating).toBeVisible();
+    const markBox = await mark.boundingBox();
+    const floatBox = await floating.boundingBox();
+    expect(markBox).toBeTruthy();
+    expect(floatBox).toBeTruthy();
+    expect(floatBox!.y + floatBox!.height).toBeLessThanOrEqual(markBox!.y + 16);
+
+    // 点击【引用】：恢复胶囊关闭，输入框引用态保持
+    await page.getByTestId("floating-capsule-cite").click();
+    await expect(floating).toBeHidden();
+    await expect(page.getByTestId("selection-capsule")).toBeVisible();
+    await expect(page.getByTestId("selection-capsule")).toContainText("本地优先研究");
   });
 });

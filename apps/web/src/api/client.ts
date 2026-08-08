@@ -14,6 +14,7 @@ import type {
   ProviderProfileInput,
   ProviderProfileTestInput,
   ProviderTestResult,
+  ResearchBodyVersionView,
   ResearchBranchView,
   ResearchContentSnapshotRecord,
   ResearchImportAccepted,
@@ -22,6 +23,10 @@ import type {
   ResearchLaterItemStatus,
   ResearchLaterItemUpdate,
   ResearchLaterItemView,
+  ResearchGraphProjection,
+  ResearchFusionProposalDecision,
+  ResearchFusionProposalRecord,
+  ResearchFusionScanResult,
   ResearchNodeView,
   ResearchSelectionAccepted,
   ResearchSelectionInput,
@@ -31,17 +36,41 @@ import type {
   ResearchSessionRecord,
   ResearchSessionView,
   ResearchTaskRecord,
+  ResearchTermPreviewAccepted,
+  ResearchTermPreviewInput,
+  ResearchTermPreviewRecord,
   ResearchTurnAccepted,
+  RunRecordDetail,
+  RunRecordExportFilters,
+  RunRecordPage,
 } from "@collector/capture-contracts";
 import { ApiRequestError, NetworkError, parseApiErrorBody } from "./errors";
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
+export interface RunRecordListParams {
+  cursor?: string;
+  limit?: number;
+  from?: string;
+  to?: string;
+  operationType?: string;
+  outcome?: string;
+  status?: string;
+}
+
+export interface RunRecordExportDownload {
+  blob: Blob;
+  fileName: string;
+}
+
 export interface ApiClient {
   listResearchSessions(): Promise<ResearchSessionRecord[]>;
+  listRunRecords(params?: RunRecordListParams): Promise<RunRecordPage>;
+  exportRunRecords(params?: RunRecordExportFilters): Promise<RunRecordExportDownload>;
+  getRunRecord(id: string): Promise<RunRecordDetail>;
   createResearchSession(idempotencyKey: string, title?: string): Promise<ResearchSessionRecord>;
   getResearchSessionView(sessionId: string): Promise<ResearchSessionView>;
-  submitResearchMessage(sessionId: string, content: string, idempotencyKey: string): Promise<ResearchTurnAccepted>;
+  submitResearchMessage(sessionId: string, content: string, idempotencyKey: string, options?: { allowWebSearch?: boolean }): Promise<ResearchTurnAccepted>;
   getResearchTask(taskId: string): Promise<ResearchTaskRecord>;
   retryResearchTask(taskId: string): Promise<ResearchTaskRecord>;
   /** 上传原始文件字节；mimeType 为浏览器 MIME 或按扩展名回退的稳定 MIME。 */
@@ -58,18 +87,40 @@ export interface ApiClient {
   /** 从选区发起深入研究：分支或带来源的独立会话与第一轮任务先保存再生成。 */
   startDeepResearch(selectionId: string, input: DeepResearchInput, idempotencyKey: string): Promise<DeepResearchAccepted>;
   getResearchBranch(branchId: string): Promise<ResearchBranchView>;
-  submitBranchMessage(branchId: string, content: string, idempotencyKey: string): Promise<ResearchTurnAccepted>;
+  submitBranchMessage(branchId: string, content: string, idempotencyKey: string, options?: { allowWebSearch?: boolean }): Promise<ResearchTurnAccepted>;
   /** 节点视图（阶段 H2）：根节点与子节点统一的数据入口。 */
   getResearchNodeView(nodeId: string): Promise<ResearchNodeView>;
+  /** #35 正文版本视图：版本 + 运行时派生的语义片段（含 excerpt）；#42 起前端定位依据片段使用。 */
+  getResearchBodyVersion(bodyVersionId: string): Promise<ResearchBodyVersionView>;
   /** 节点内追问：根节点与子节点统一的提交入口。 */
-  submitResearchNodeMessage(nodeId: string, content: string, idempotencyKey: string): Promise<ResearchTurnAccepted>;
+  submitResearchNodeMessage(nodeId: string, content: string, idempotencyKey: string, options?: { allowWebSearch?: boolean }): Promise<ResearchTurnAccepted>;
+  startResearchTermPreview(nodeId: string, input: ResearchTermPreviewInput, idempotencyKey: string): Promise<ResearchTermPreviewAccepted>;
+  getResearchTermPreviewTask(taskId: string): Promise<ResearchTermPreviewRecord>;
+  retryResearchTermPreviewTask(taskId: string): Promise<ResearchTermPreviewRecord>;
+  growResearchTermPreview(previewId: string, idempotencyKey: string): Promise<NodeGrowthAccepted>;
   /** 会话节点树（全屏树导航）：一次性返回扁平条目，客户端按 parentNodeId 建树。 */
   getResearchSessionNodeTree(sessionId: string): Promise<ResearchSessionNodeTreeItem[]>;
+  /** 关系图投影：以指定节点为中心，返回邻居节点与类型化边。 */
+  getResearchGraph(sessionId: string, focusNodeId?: string, maxDepth?: number): Promise<ResearchGraphProjection>;
+  /**
+   * #32：手动触发当前节点的确定性相似候选扫描。返回本次扫描后的全部提案
+   * （含自动融合成功后已 accepted 的留痕提案）与本次新自动生成的融合节点摘要。
+   * 模型核验失败时返回空提议而不降级猜测。
+   */
+  scanResearchFusionProposals(nodeId: string): Promise<ResearchFusionScanResult>;
+  listResearchFusionProposals(nodeId: string, status?: ResearchFusionProposalRecord["status"]): Promise<ResearchFusionProposalRecord[]>;
+  decideResearchFusionProposal(proposalId: string, decision: ResearchFusionProposalDecision): Promise<ResearchFusionProposalRecord>;
+  /** #31：确认式融合——确认后创建融合节点并返回首轮结果，客户端跳转到融合节点页。 */
+  fuseResearchFusionProposal(proposalId: string, idempotencyKey: string): Promise<NodeGrowthAccepted>;
+  /** #32：读取自动融合开关（默认关闭）。 */
+  getFusionAutoConfig(): Promise<{ enabled: boolean }>;
+  /** #32：写入自动融合开关，返回更新后的配置。 */
+  updateFusionAutoConfig(enabled: boolean): Promise<{ enabled: boolean }>;
   /** 从选区生长子节点：统一取代深入研究二选一。 */
   startChildNode(selectionId: string, input: CreateChildNodeInput, idempotencyKey: string): Promise<NodeGrowthAccepted>;
-  /** 保存稍后再学项目：幂等键命中返回首次保存的项目，保存不依赖 AI。 */
+    /** 保存标记：幂等键命中返回首次保存的项目，保存不依赖 AI。 */
   createResearchLaterItem(input: ResearchLaterItemInput, idempotencyKey: string): Promise<ResearchLaterItemView>;
-  /** 稍后再学列表：联接选区原文与来源标题；可选按 pending / done 过滤。 */
+    /** 标记列表：联接选区原文、笔记与来源节点；status 仅为旧接口兼容。 */
   listResearchLaterItems(status?: ResearchLaterItemStatus): Promise<ResearchLaterItemView[]>;
   getResearchLaterItem(itemId: string): Promise<ResearchLaterItemView>;
   updateResearchLaterItem(itemId: string, update: ResearchLaterItemUpdate): Promise<ResearchLaterItemView>;
@@ -119,6 +170,42 @@ async function requestJson<T>(fetchImpl: FetchLike, path: string, init?: Request
   return (await response.json()) as T;
 }
 
+async function requestBlob(fetchImpl: FetchLike, path: string): Promise<RunRecordExportDownload> {
+  let response: Response;
+  try {
+    response = await fetchImpl(path);
+  } catch {
+    throw new NetworkError();
+  }
+  if (!response.ok) {
+    let code = response.status >= 500 ? "internal_error" : "request_failed";
+    let message = "";
+    try {
+      const parsed = parseApiErrorBody(await response.json());
+      if (parsed) {
+        code = parsed.code;
+        message = parsed.message;
+      }
+    } catch {
+      // 错误体不是 JSON 时保留按状态码推断的 code
+    }
+    throw new ApiRequestError(response.status, code, message);
+  }
+  return {
+    blob: await response.blob(),
+    fileName: fileNameFromDisposition(response.headers.get("Content-Disposition")) ?? "collector-run-records.jsonl",
+  };
+}
+
+function fileNameFromDisposition(value: string | null): string | undefined {
+  if (!value) return undefined;
+  const encoded = value.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if (encoded) {
+    try { return decodeURIComponent(encoded); } catch { /* fall through to the quoted filename */ }
+  }
+  return value.match(/filename="([^"]+)"/i)?.[1] ?? value.match(/filename=([^;]+)/i)?.[1]?.trim();
+}
+
 /**
  * 结果型接口（{ ok: true, ... } | { ok: false, error }）：成功与业务失败分别用 200 / 502 返回，
  * 失败原因编码在响应体里，因此两种状态都解析 body，不把 502 当作传输错误。
@@ -147,6 +234,25 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
     listResearchSessions() {
       return requestJson<ResearchSessionRecord[]>(fetchFn, "/v1/research-sessions");
     },
+    listRunRecords(params: RunRecordListParams = {}) {
+      const query = new URLSearchParams();
+      for (const [key, value] of Object.entries(params)) {
+        if (value !== undefined && value !== "") query.set(key, String(value));
+      }
+      const path = query.toString() ? `/v1/run-records?${query.toString()}` : "/v1/run-records";
+      return requestJson<RunRecordPage>(fetchFn, path);
+    },
+    exportRunRecords(params: RunRecordExportFilters = {}) {
+      const query = new URLSearchParams();
+      for (const [key, value] of Object.entries(params)) {
+        if (value !== undefined && value !== "") query.set(key, String(value));
+      }
+      const path = query.toString() ? `/v1/run-records/export?${query.toString()}` : "/v1/run-records/export";
+      return requestBlob(fetchFn, path);
+    },
+    getRunRecord(id: string) {
+      return requestJson<RunRecordDetail>(fetchFn, `/v1/run-records/${encodeURIComponent(id)}`);
+    },
     createResearchSession(idempotencyKey: string, title?: string) {
       const body = title === undefined ? "{}" : JSON.stringify({ title });
       return requestJson<ResearchSessionRecord>(fetchFn, "/v1/research-sessions", {
@@ -158,14 +264,14 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
     getResearchSessionView(sessionId: string) {
       return requestJson<ResearchSessionView>(fetchFn, `/v1/research-sessions/${encodeURIComponent(sessionId)}`);
     },
-    submitResearchMessage(sessionId: string, content: string, idempotencyKey: string) {
+    submitResearchMessage(sessionId: string, content: string, idempotencyKey: string, options = {}) {
       return requestJson<ResearchTurnAccepted>(
         fetchFn,
         `/v1/research-sessions/${encodeURIComponent(sessionId)}/messages`,
         {
           method: "POST",
           headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
-          body: JSON.stringify({ content }),
+          body: JSON.stringify({ content, allowWebSearch: options.allowWebSearch === true }),
         },
       );
     },
@@ -261,21 +367,103 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
     getResearchNodeView(nodeId: string) {
       return requestJson<ResearchNodeView>(fetchFn, `/v1/research-nodes/${encodeURIComponent(nodeId)}`);
     },
-    submitResearchNodeMessage(nodeId: string, content: string, idempotencyKey: string) {
+    getResearchBodyVersion(bodyVersionId: string) {
+      return requestJson<ResearchBodyVersionView>(
+        fetchFn,
+        `/v1/research-body-versions/${encodeURIComponent(bodyVersionId)}`,
+      );
+    },
+    submitResearchNodeMessage(nodeId: string, content: string, idempotencyKey: string, options = {}) {
       return requestJson<ResearchTurnAccepted>(
         fetchFn,
         `/v1/research-nodes/${encodeURIComponent(nodeId)}/messages`,
         {
           method: "POST",
           headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
-          body: JSON.stringify({ content }),
+          body: JSON.stringify({ content, allowWebSearch: options.allowWebSearch === true }),
         },
       );
+    },
+    startResearchTermPreview(nodeId: string, input: ResearchTermPreviewInput, idempotencyKey: string) {
+      return requestJson<ResearchTermPreviewAccepted>(
+        fetchFn,
+        `/v1/research-nodes/${encodeURIComponent(nodeId)}/term-previews`,
+        {
+          method: "POST",
+          headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
+          body: JSON.stringify(input),
+        },
+      );
+    },
+    getResearchTermPreviewTask(taskId: string) {
+      return requestJson<ResearchTermPreviewRecord>(fetchFn, `/v1/research-term-preview-tasks/${encodeURIComponent(taskId)}`);
+    },
+    retryResearchTermPreviewTask(taskId: string) {
+      return requestJson<ResearchTermPreviewRecord>(fetchFn, `/v1/research-term-preview-tasks/${encodeURIComponent(taskId)}/retry`, {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: "{}",
+      });
+    },
+    growResearchTermPreview(previewId: string, idempotencyKey: string) {
+      return requestJson<NodeGrowthAccepted>(fetchFn, `/v1/research-term-previews/${encodeURIComponent(previewId)}/grow`, {
+        method: "POST",
+        headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
+        body: "{}",
+      });
     },
     getResearchSessionNodeTree(sessionId: string) {
       return requestJson<ResearchSessionNodeTreeItem[]>(
         fetchFn,
         `/v1/research-sessions/${encodeURIComponent(sessionId)}/nodes`,
+      );
+    },
+    getResearchGraph(sessionId: string, focusNodeId?: string, maxDepth?: number) {
+      const params = new URLSearchParams();
+      if (focusNodeId) params.set("focusNodeId", focusNodeId);
+      if (maxDepth !== undefined) params.set("maxDepth", String(maxDepth));
+      const query = params.toString() ? `?${params.toString()}` : "";
+      return requestJson<ResearchGraphProjection>(
+        fetchFn,
+        `/v1/research-sessions/${encodeURIComponent(sessionId)}/graph${query}`,
+      );
+    },
+    scanResearchFusionProposals(nodeId: string) {
+      return requestJson<ResearchFusionScanResult>(
+        fetchFn,
+        `/v1/research-nodes/${encodeURIComponent(nodeId)}/fusion-proposals/scan`,
+        { method: "POST", headers: JSON_HEADERS, body: "{}" },
+      );
+    },
+    getFusionAutoConfig() {
+      return requestJson<{ enabled: boolean }>(fetchFn, "/v1/settings/fusion");
+    },
+    updateFusionAutoConfig(enabled: boolean) {
+      return requestJson<{ enabled: boolean }>(fetchFn, "/v1/settings/fusion", {
+        method: "PUT",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ enabled }),
+      });
+    },
+    listResearchFusionProposals(nodeId: string, status?: ResearchFusionProposalRecord["status"]) {
+      const query = status ? `?status=${encodeURIComponent(status)}` : "";
+      return requestJson<ResearchFusionProposalRecord[]>(
+        fetchFn,
+        `/v1/research-nodes/${encodeURIComponent(nodeId)}/fusion-proposals${query}`,
+      );
+    },
+    decideResearchFusionProposal(proposalId: string, decision: ResearchFusionProposalDecision) {
+      return requestJson<ResearchFusionProposalRecord>(
+        fetchFn,
+        `/v1/research-fusion-proposals/${encodeURIComponent(proposalId)}/decide`,
+        { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ decision }) },
+      );
+    },
+    fuseResearchFusionProposal(proposalId: string, idempotencyKey: string) {
+      return requestJson<NodeGrowthAccepted>(
+        fetchFn,
+        `/v1/research-fusion-proposals/${encodeURIComponent(proposalId)}/fuse`,
+        { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ idempotencyKey }) },
       );
     },
     startChildNode(selectionId: string, input: CreateChildNodeInput, idempotencyKey: string) {
@@ -289,14 +477,14 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
         },
       );
     },
-    submitBranchMessage(branchId: string, content: string, idempotencyKey: string) {
+    submitBranchMessage(branchId: string, content: string, idempotencyKey: string, options = {}) {
       return requestJson<ResearchTurnAccepted>(
         fetchFn,
         `/v1/research-branches/${encodeURIComponent(branchId)}/messages`,
         {
           method: "POST",
           headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
-          body: JSON.stringify({ content }),
+          body: JSON.stringify({ content, allowWebSearch: options.allowWebSearch === true }),
         },
       );
     },

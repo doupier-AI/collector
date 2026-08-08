@@ -22,7 +22,8 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
-    setupFiles: "src/test/setup.ts",
+    // jsdom-shims 必须排在首位：先于 react-dom 首次求值补齐事件构造器
+    setupFiles: ["src/test/jsdom-shims.ts", "src/test/setup.ts"],
     css: false,
     // e2e/ 为 Playwright 用例，由 npm run test:e2e 执行，单测跳过
     exclude: ["e2e/**", "**/node_modules/**", "dist/**"],

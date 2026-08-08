@@ -88,10 +88,7 @@ export function useSelectionCapture(): SelectionCaptureState {
       commit();
     }
     function handleKeyUp(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        dismiss();
-        return;
-      }
+      // Escape 不关闭选区与浮动胶囊（修订一 #9）：取消方式唯一——点击选取文字以外的屏幕区域。
       if (!event.shiftKey) return;
       if (isInsideSelectionUi(event.target)) return;
       commit();
@@ -111,7 +108,7 @@ export function useSelectionCapture(): SelectionCaptureState {
       document.removeEventListener("keyup", handleKeyUp);
       document.removeEventListener("selectionchange", handleSelectionChange);
     };
-  }, [commit, dismiss]);
+  }, [commit]);
 
   return { active, dismiss };
 }

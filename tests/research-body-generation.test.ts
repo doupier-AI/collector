@@ -1,0 +1,221 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { ModelGateway, parseBodyOutline, parseSliceAnnotation, trimStream, type ModelCallEvent, type ModelProvider, type ModelProviderRequest, type ModelProviderStreamEvent } from "@collector/model-gateway";
+
+async function* toAsync(chunks: string[]): AsyncIterable<string> {
+  for (const chunk of chunks) yield chunk;
+}
+
+/** 记录每次 complete 请求、按 prompt 内容返回可编程响应的假供应商。 */
+function makeProvider(respond: (request: ModelProviderRequest) => string): { provider: ModelProvider; requests: ModelProviderRequest[] } {
+  const requests: ModelProviderRequest[] = [];
+  const provider: ModelProvider = {
+    name: "fake",
+    async complete(request: ModelProviderRequest) {
+      requests.push(request);
+      return { model: request.model, content: respond(request) };
+    },
+  };
+  return { provider, requests };
+}
+
+test("writeResearchBody 以自由文本请求正文，不强制 JSON 输出", async () => {
+  const { provider, requests } = makeProvider(() => "第一节连贯正文。\n\n第二节继续展开。");
+  const gateway = new ModelGateway(provider);
+  const body = await gateway.writeResearchBody([{ role: "user", content: "介绍本地优先软件" }]);
+  assert.equal(body, "第一节连贯正文。\n\n第二节继续展开。");
+  assert.equal(requests.length, 1);
+  // 自由正文不携带 responseFormat，传输层不再强制 JSON。
+  assert.equal(requests[0]?.responseFormat, undefined);
+  assert.match(requests[0]?.prompt ?? "", /连贯、完整/);
+});
+
+test("generateBodyOutline 用 JSON 输出有序有界大纲", async () => {
+  const { provider, requests } = makeProvider(() => JSON.stringify({
+    sections: [
+      { heading: "起源", summary: "概念起源", targetChars: 600 },
+      { heading: "实践", summary: "落地方式", targetChars: 800 },
+    ],
+  }));
+  const gateway = new ModelGateway(provider);
+  const outline = await gateway.generateBodyOutline([{ role: "user", content: "写一篇长文" }]);
+  assert.equal(outline.sections.length, 2);
+  assert.equal(outline.sections[0]?.heading, "起源");
+  // 大纲是程序消费的结构数据，保留 JSON 输出格式。
+  assert.deepEqual(requests[0]?.responseFormat, { type: "json_object" });
+});
+
+test("expandBodySection 串行扩写指定节并携带前文以保持连贯", async () => {
+  const { provider, requests } = makeProvider(() => "该节扩写的正文段落。");
+  const gateway = new ModelGateway(provider);
+  const outline = parseBodyOutline(JSON.stringify({ sections: [{ heading: "起", summary: "开端", targetChars: 500 }, { heading: "承", summary: "发展", targetChars: 500 }] }));
+  const section = await gateway.expandBodySection({ goal: "写长文", outline, sectionIndex: 1, writtenSoFar: "第一节已写内容。" });
+  assert.equal(section.content, "该节扩写的正文段落。");
+  assert.match(requests[0]?.prompt ?? "", /第 2 节「承」/);
+  assert.match(requests[0]?.prompt ?? "", /第一节已写内容。/);
+  assert.equal(requests[0]?.responseFormat, undefined);
+});
+
+test("expandBodySection 续写模式携带断点前文尾部且不重发节标题", async () => {
+  const { provider, requests } = makeProvider(() => "续写补上的后半段。");
+  const gateway = new ModelGateway(provider);
+  const outline = parseBodyOutline(JSON.stringify({ sections: [{ heading: "起", summary: "开端", targetChars: 500 }] }));
+  const prior = "前半段正文。".repeat(60); // 长度 > 500，验证只取尾部
+  const result = await gateway.expandBodySection({ goal: "g", outline, sectionIndex: 0, writtenSoFar: "", continuation: { priorSectionContent: prior } });
+  assert.equal(result.content, "续写补上的后半段。");
+  const prompt = requests[0]?.prompt ?? "";
+  // 断点前文尾部（后 500 字）进入提示。
+  assert.ok(prompt.includes(prior.slice(-500)), "提示应携带断点前文尾部");
+  // 续写不再要求重发节标题（提示结构，非具体措辞）。
+  assert.ok(!prompt.includes("第一行输出该节标题"), "续写不应再要求输出节标题");
+});
+
+test("expandBodySection repairHint 写入上次失败原因并直接要求正文", async () => {
+  const { provider, requests } = makeProvider(() => "修复后的节正文。");
+  const gateway = new ModelGateway(provider);
+  const outline = parseBodyOutline(JSON.stringify({ sections: [{ heading: "起", summary: "开端", targetChars: 500 }] }));
+  await gateway.expandBodySection({ goal: "g", outline, sectionIndex: 0, writtenSoFar: "", repairHint: "上次输出为空" });
+  assert.ok((requests[0]?.prompt ?? "").includes("上次输出为空"), "提示应携带修复提示");
+});
+
+test("expandBodySection targetCharsOverride 下调目标字数用于降级重试", async () => {
+  const { provider, requests } = makeProvider(() => "降级后的节正文。");
+  const gateway = new ModelGateway(provider);
+  const outline = parseBodyOutline(JSON.stringify({ sections: [{ heading: "起", summary: "开端", targetChars: 800 }] }));
+  await gateway.expandBodySection({ goal: "g", outline, sectionIndex: 0, writtenSoFar: "", targetCharsOverride: 400 });
+  assert.ok((requests[0]?.prompt ?? "").includes("400"), "提示应使用下调后的目标字数");
+  assert.ok(!(requests[0]?.prompt ?? "").includes("800"), "提示不应再用原目标字数");
+});
+
+test("expandBodySection 对越界节抛错", async () => {
+  const { provider } = makeProvider(() => "");
+  const gateway = new ModelGateway(provider);
+  const outline = parseBodyOutline(JSON.stringify({ sections: [{ heading: "起", summary: "开端", targetChars: 500 }] }));
+  await assert.rejects(() => gateway.expandBodySection({ goal: "g", outline, sectionIndex: 5, writtenSoFar: "" }), /out of range/);
+});
+
+test("deriveSliceAnnotations 以 temperature=0 抽取标题与概念", async () => {
+  const { provider, requests } = makeProvider(() => JSON.stringify({ title: "本地优先", concepts: ["本地优先", "数据主权"] }));
+  const gateway = new ModelGateway(provider);
+  const annotation = await gateway.deriveSliceAnnotations({ content: "本地优先让数据留在用户环境。" });
+  assert.deepEqual(annotation, { title: "本地优先", concepts: ["本地优先", "数据主权"] });
+  assert.equal(requests[0]?.temperature, 0);
+  assert.deepEqual(requests[0]?.responseFormat, { type: "json_object" });
+});
+
+test("deriveSliceAnnotations 对空内容直接返回空标注、不调模型", async () => {
+  const { provider, requests } = makeProvider(() => "unreachable");
+  const gateway = new ModelGateway(provider);
+  const annotation = await gateway.deriveSliceAnnotations({ content: "   " });
+  assert.deepEqual(annotation, { title: "", concepts: [] });
+  assert.equal(requests.length, 0);
+});
+
+test("parseBodyOutline 限制节数上限并拒绝空标题节", () => {
+  const many = Array.from({ length: 20 }, (_, i) => ({ heading: `节${i}`, summary: "s", targetChars: 100 }));
+  const outline = parseBodyOutline(JSON.stringify({ sections: many }));
+  assert.equal(outline.sections.length, 12);
+  assert.throws(() => parseBodyOutline(JSON.stringify({ sections: [{ heading: "  ", summary: "s", targetChars: 1 }] })), /non-empty heading/);
+  assert.throws(() => parseBodyOutline(JSON.stringify({ sections: [] })), /non-empty sections/);
+});
+
+test("parseSliceAnnotation 截断超长标题与概念并过滤空概念", () => {
+  const annotation = parseSliceAnnotation(JSON.stringify({ title: "x".repeat(300), concepts: ["有效", "", "  ", "也有效"] }));
+  assert.equal(annotation.title.length, 200);
+  assert.deepEqual(annotation.concepts, ["有效", "也有效"]);
+});
+
+/** 可编程的流式假供应商：completeStream 产出给定事件序列。 */
+function makeStreamProvider(events: ModelProviderStreamEvent[]): { provider: ModelProvider; requests: ModelProviderRequest[] } {
+  const requests: ModelProviderRequest[] = [];
+  const provider: ModelProvider = {
+    name: "fake-stream",
+    async complete() {
+      throw new Error("complete() should not be called on a streaming provider");
+    },
+    async *completeStream(request: ModelProviderRequest) {
+      requests.push(request);
+      yield* events;
+    },
+  };
+  return { provider, requests };
+}
+
+test("writeResearchBodyStream 逐字产出 delta、done 帧 usage 恰好一次记账", async () => {
+  const { provider } = makeStreamProvider([
+    { type: "delta", text: "第一段连贯正文。" },
+    { type: "delta", text: "\n\n第二段继续。" },
+    { type: "done", model: "stream-model", usage: { inputTokens: 12, outputTokens: 34 } },
+  ]);
+  const calls: ModelCallEvent[] = [];
+  const gateway = new ModelGateway(provider, { onCall: (event) => { calls.push(event); } });
+  const chunks: string[] = [];
+  for await (const delta of gateway.writeResearchBodyStream([{ role: "user", content: "介绍本地优先" }])) chunks.push(delta);
+  assert.equal(chunks.join(""), "第一段连贯正文。\n\n第二段继续。");
+  // 记账恰好一次，且带 done 帧的 usage/model。
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.status, "completed");
+  assert.equal(calls[0]?.model, "stream-model");
+  assert.deepEqual(calls[0]?.usage, { inputTokens: 12, outputTokens: 34 });
+});
+
+test("writeResearchBodyStream 对无 completeStream 的 provider 退回非流式单发", async () => {
+  const { provider, requests } = makeProvider(() => "原子正文。");
+  const calls: ModelCallEvent[] = [];
+  const gateway = new ModelGateway(provider, { onCall: (event) => { calls.push(event); } });
+  const chunks: string[] = [];
+  for await (const delta of gateway.writeResearchBodyStream([{ role: "user", content: "问题" }])) chunks.push(delta);
+  assert.deepEqual(chunks, ["原子正文。"]);
+  assert.equal(requests.length, 1);
+  // 回退路径走 complete() 自带记账，仍恰好一次。
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.status, "completed");
+});
+
+test("writeResearchBodyStream resumeFrom 追加续写提示且 onDone 回报 finishReason", async () => {
+  const { provider, requests } = makeStreamProvider([
+    { type: "delta", text: "续写的后半正文。" },
+    { type: "done", model: "m", usage: { inputTokens: 1, outputTokens: 2 }, finishReason: "length" },
+  ]);
+  const gateway = new ModelGateway(provider);
+  const doneReports: Array<{ finishReason?: string }> = [];
+  const chunks: string[] = [];
+  for await (const delta of gateway.writeResearchBodyStream(
+    [{ role: "user", content: "问题" }],
+    { resumeFrom: "已写正文尾部衔接。", onDone: (done) => { doneReports.push(done); } },
+  )) chunks.push(delta);
+  assert.equal(chunks.join(""), "续写的后半正文。");
+  // resumeFrom 尾部进入提示（结构，不断言具体措辞）。
+  assert.ok((requests[0]?.prompt ?? "").includes("已写正文尾部衔接。"), "提示应携带断点前文");
+  assert.deepEqual(doneReports, [{ finishReason: "length" }], "onDone 应回报终帧 finishReason");
+});
+
+test("writeResearchBodyStream 流式产出空正文时抛错并记失败", async () => {
+  const { provider } = makeStreamProvider([{ type: "done", model: "m", usage: undefined }]);
+  const calls: ModelCallEvent[] = [];
+  const gateway = new ModelGateway(provider, { onCall: (event) => { calls.push(event); } });
+  await assert.rejects(async () => {
+    for await (const _ of gateway.writeResearchBodyStream([{ role: "user", content: "问题" }])) { /* drain */ }
+  }, /empty body/);
+});
+
+test("trimStream 保证 concat(输出) === concat(输入).trim()", async () => {
+  const cases: string[][] = [
+    ["  前导空白"],
+    ["尾随空白  "],
+    ["  两侧都有  "],
+    ["第一段", "\n\n", "第二段"],
+    ["  ", "中段内容", "  "],
+    ["跨块尾随：", "  更多", "  "],
+    ["无空白"],
+  ];
+  for (const chunks of cases) {
+    const out: string[] = [];
+    for await (const piece of trimStream(toAsync(chunks))) out.push(piece);
+    assert.equal(out.join(""), chunks.join("").trim(), `case ${JSON.stringify(chunks)}`);
+  }
+  // 内部段落分隔 \n\n 原样保留。
+  const inner: string[] = [];
+  for await (const piece of trimStream(toAsync(["甲", "\n\n", "乙"]))) inner.push(piece);
+  assert.equal(inner.join(""), "甲\n\n乙");
+});

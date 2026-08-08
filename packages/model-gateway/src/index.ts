@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { parseResearchSelectionInsight, validateProviderDefinition, type ActiveModelRoute, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight } from "@collector/capture-contracts";
+import { FUSION_COMPOSE_PROMPT_VERSION, FUSION_COMPOSE_TOKEN_BUDGET, FUSION_RELATION_TYPES, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, parseResearchSelectionInsight, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight, type ResearchSliceContext } from "@collector/capture-contracts";
 
 export interface ProviderUsage {
   inputTokens?: number;
@@ -20,13 +20,34 @@ export interface ModelProviderResponse {
   content: string;
   model: string;
   usage?: ProviderUsage;
+  /** 生成终止原因（stop/length/…）；length 表示被 max_tokens 截断，供有界续写判断。 */
+  finishReason?: string;
+}
+
+/** 供应商返回非 2xx：status 供分类重试（429/5xx 可退避重试，其余 4xx 立即失败）。 */
+export class ModelProviderHttpError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "ModelProviderHttpError";
+  }
+}
+
+/** 流式空闲超时（idle-reset 计时到点仍无新事件）；区别于固定总超时，长文不再因总时长被掐断。 */
+export class ModelProviderTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ModelProviderTimeoutError";
+  }
 }
 
 export interface ModelProviderRequest {
   prompt: string;
   model: string;
-  responseFormat: { type: "json_object" };
+  /** 要求 JSON 输出时传入；自由正文（生成自由化）缺省，传输层不再强制 JSON。 */
+  responseFormat?: { type: "json_object" };
   thinking?: boolean;
+  /** 采样温度；事后抽取等确定性场景传 0。缺省由供应商默认。 */
+  temperature?: number;
   maxTokens?: number;
   timeoutMs?: number;
 }
@@ -36,6 +57,67 @@ export interface ModelProvider {
   readonly defaultModel?: string;
   readonly pricing?: Record<string, ModelPricing>;
   complete(request: ModelProviderRequest): Promise<ModelProviderResponse>;
+  /**
+   * 真实模型逐字流式（方案 B）：能流式的 provider 在 complete() 之外另实现本方法。
+   * 逐字增量以 {type:"delta"} 事件产出；usage/model 只在终帧到达，由 {type:"done"} 事件带外承载，
+   * 供网关恰好一次记账。缺省本方法的 provider 由网关退回非流式 complete() 单发。
+   */
+  completeStream?(request: ModelProviderRequest): AsyncIterable<ModelProviderStreamEvent>;
+}
+
+/** 流式增量事件：正文逐字片段。 */
+export interface ModelProviderStreamDelta { type: "delta"; text: string }
+/** 流式终帧事件：模型名与 usage（token/成本记账依据，仅在流结束时可用）。 */
+export interface ModelProviderStreamDone { type: "done"; model: string; usage?: ProviderUsage; finishReason?: string }
+export type ModelProviderStreamEvent = ModelProviderStreamDelta | ModelProviderStreamDone;
+
+/** plan-then-write 大纲的节数边界，防止模型产出过多碎节。 */
+export const RESEARCH_BODY_OUTLINE_MIN_SECTIONS = 1;
+export const RESEARCH_BODY_OUTLINE_MAX_SECTIONS = 12;
+
+/** plan-then-write 大纲的一节。 */
+export interface ResearchBodyOutlineSection {
+  heading: string;
+  summary: string;
+  targetChars: number;
+}
+
+/** plan-then-write 第一阶段产出：有序大纲。 */
+export interface ResearchBodyOutline {
+  sections: ResearchBodyOutlineSection[];
+}
+
+/** 单个段落块的事后语义标注（标题/概念），由小模型抽取或大纲提供。 */
+export interface ResearchSliceAnnotation {
+  title: string;
+  concepts: string[];
+}
+
+/** 解析大纲 JSON 为有序、有界的节序列；非法结构抛错由调用方降级或重试。 */
+export function parseBodyOutline(raw: string): ResearchBodyOutline {
+  const parsed = JSON.parse(raw) as { sections?: unknown };
+  if (!Array.isArray(parsed.sections) || parsed.sections.length === 0) throw new Error("Body outline must contain a non-empty sections array");
+  const sections = parsed.sections.slice(0, RESEARCH_BODY_OUTLINE_MAX_SECTIONS).map((item, index) => {
+    const section = item as Partial<ResearchBodyOutlineSection>;
+    const heading = typeof section?.heading === "string" ? section.heading.trim() : "";
+    const summary = typeof section?.summary === "string" ? section.summary.trim() : "";
+    const targetChars = typeof section?.targetChars === "number" && Number.isFinite(section.targetChars) ? Math.max(0, Math.trunc(section.targetChars)) : 0;
+    if (!heading) throw new Error(`Body outline section ${index + 1} must have a non-empty heading`);
+    return { heading, summary, targetChars };
+  });
+  return { sections };
+}
+
+/** 解析单段语义标注 JSON；title 可空、concepts 可为空数组，非法结构抛错由调用方降级。 */
+export function parseSliceAnnotation(raw: string): ResearchSliceAnnotation {
+  const parsed = JSON.parse(raw) as { title?: unknown; concepts?: unknown };
+  const title = typeof parsed.title === "string" ? parsed.title.trim().slice(0, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS) : "";
+  const concepts = (Array.isArray(parsed.concepts) ? parsed.concepts : [])
+    .map((concept) => (typeof concept === "string" ? concept.trim() : ""))
+    .filter(Boolean)
+    .slice(0, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS)
+    .map((concept) => concept.slice(0, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS));
+  return { title, concepts };
 }
 
 /** Agent 工具调用循环中的单条消息。对齐 OpenAI Chat Completions messages 数组。 */
@@ -105,6 +187,79 @@ export interface GroundedResearchResponse {
 
 export interface GroundingModelProvider extends ModelProvider {
   generateGroundedResearch(request: { prompt: string; model: string; grounding: ResearchGroundingRequest; maxTokens?: number; timeoutMs?: number }): Promise<GroundedResearchResponse>;
+}
+
+/** 研究节点提示词可消费的有界父链结果。由 API 层的 ParentChainContextService 提供。 */
+export interface ResearchParentChainContext {
+  currentNodeDepth: number;
+  ancestors: Array<{
+    depth: number;
+    isRoot: boolean;
+    label: string;
+    originText?: string;
+    firstUserMessage?: string;
+  }>;
+  truncated: boolean;
+  cycleDetected: boolean;
+}
+
+export function formatResearchSliceContext(context?: ResearchSliceContext): string {
+  if (!context?.items.length) return "";
+  const lines = [
+    "语义切片上下文（来自当前节点及其父链，仅作参考，不是新的用户问题）：",
+    `切片预算：${context.estimatedTokens}/${context.tokenBudget} tokens`,
+  ];
+  for (const item of context.items) {
+    lines.push(JSON.stringify({
+      fragmentId: item.fragmentId,
+      bodyVersionId: item.bodyVersionId,
+      ...(item.sliceId ? { sliceId: item.sliceId } : {}),
+      nodeId: item.nodeId,
+      messageId: item.messageId,
+      ordinal: item.ordinal,
+      parentDistance: item.parentDistance,
+      title: item.title,
+      content: item.content,
+      normalizedConcepts: item.normalizedConcepts,
+      isProvisional: item.isProvisional,
+      sourceRefs: item.sourceRefs.map((source) => ({
+        sourceId: source.sourceId,
+        blockOrdinal: source.blockOrdinal,
+      })),
+    }));
+  }
+  if (context.originSelectionId) {
+    lines.push(`来源选区身份：${JSON.stringify(context.originSelectionId)}`);
+  }
+  if (context.fusionSignals.length) {
+    lines.push(`融合关系信号：${JSON.stringify(context.fusionSignals)}`);
+  }
+  return lines.join("\n");
+}
+
+/** 将父链结果渲染为研究提示词片段；空链不产生任何占位文本。 */
+export function formatResearchParentChainContext(context?: ResearchParentChainContext): string {
+  if (!context?.ancestors.length) return "";
+
+  const lines = [
+    "研究路径背景（来自已建立的父节点，仅作上下文，不是新的用户问题）：",
+    `当前节点深度：${context.currentNodeDepth}`,
+    "以下为有界父链摘要，最近祖先优先：",
+  ];
+  for (const ancestor of [...context.ancestors].sort((left, right) => left.depth - right.depth)) {
+    lines.push(`- 祖先（距当前 ${ancestor.depth} 层${ancestor.depth === 1 ? "，最近" : ""}）主题：${JSON.stringify(ancestor.label)}`);
+    if (ancestor.originText) lines.push(`  来源选区：${JSON.stringify(ancestor.originText)}`);
+    if (ancestor.firstUserMessage) lines.push(`  首条问题摘要：${JSON.stringify(ancestor.firstUserMessage)}`);
+  }
+  if (context.truncated) lines.push("- 说明：父链已达到既有层数或总字符预算，只能使用以上内容，不要补全未提供的祖先信息。");
+  if (context.cycleDetected) lines.push("- 说明：父链存在异常环路，已安全截断；不要根据缺失关系进行推断。");
+  const convergence = resolveResearchConvergence({ nodeDepth: context.currentNodeDepth });
+  if (convergence.termDensity === "reduced") {
+    lines.push("回答引导：聚焦当前问题，优先复用以上已建立的知识，减少重复解释和无关新概念；只解释当前回答确实需要的新术语，保持来源事实与不确定性。");
+  } else if (convergence.termDensity === "stopped") {
+    lines.push("回答引导：严格收敛到当前问题，只使用以上已建立的知识回答；不要主动引入新的术语、分支或延伸主题，保持来源事实与不确定性。");
+  }
+  return lines.join("\n");
 }
 
 export class ProviderRegistry {
@@ -273,7 +428,19 @@ export class ProviderRuntimeResolver {
   }
 }
 
-export interface ModelCallContext { workflowRunId?: string; workflowStepId?: string; purpose?: string; promptVersion?: string; }
+export interface ModelCallContext {
+  workflowRunId?: string;
+  workflowStepId?: string;
+  purpose?: string;
+  promptVersion?: string;
+  retryCount?: number;
+  /** Only persist selected local slice IDs; prompt bodies stay out of local run records. */
+  sourceSliceIds?: string[];
+  /** #39：参与调用的语义片段 ID（与 sourceSliceIds 同为本地引用，不含正文内容）。 */
+  sourceFragmentIds?: string[];
+  /** Fixed output-token budget for explaining the call boundary in run records. */
+  tokenBudget?: number;
+}
 export interface ModelCallEvent {
   context: ModelCallContext;
   provider: string;
@@ -283,6 +450,7 @@ export interface ModelCallEvent {
   usage?: ProviderUsage;
   estimatedCostUsd?: number;
   latencyMs: number;
+  retryCount: number;
   errorMessage?: string;
   createdAt: string;
   completedAt: string;
@@ -383,83 +551,429 @@ export class ModelGateway {
     catch (error) { console.error("Model call listener failed", error); }
   }
 
+  /** 成功记账：usage/成本/延迟，流式与非流式共用同一口径，恰好一次。 */
+  private async emitCompleted(context: ModelCallContext, request: ModelProviderRequest, startedAt: number, createdAt: string, response: ModelProviderResponse): Promise<void> {
+    await this.emitCall({
+      context, provider: this.providerName, model: response.model ?? request.model, promptVersion: context.promptVersion ?? this.promptVersion, status: "completed",
+      usage: response.usage, estimatedCostUsd: estimateCost(response.model ?? request.model, response.usage, this.options.pricing ?? this.provider.pricing),
+      latencyMs: Date.now() - startedAt, retryCount: context.retryCount ?? 0, createdAt, completedAt: new Date().toISOString(),
+    });
+  }
+
+  /** 失败记账：脱敏错误信息，流式与非流式共用同一口径。 */
+  private async emitFailed(context: ModelCallContext, request: ModelProviderRequest, startedAt: number, createdAt: string, error: unknown): Promise<void> {
+    await this.emitCall({
+      context, provider: this.providerName, model: request.model, promptVersion: context.promptVersion ?? this.promptVersion, status: "failed",
+      latencyMs: Date.now() - startedAt, retryCount: context.retryCount ?? 0, errorMessage: redactError(error), createdAt, completedAt: new Date().toISOString(),
+    });
+  }
+
   private async complete(request: ModelProviderRequest, context: ModelCallContext): Promise<ModelProviderResponse> {
     const createdAt = new Date().toISOString();
     const startedAt = Date.now();
     try {
       const response = await this.provider.complete(request);
-      await this.emitCall({
-        context, provider: this.providerName, model: response.model ?? request.model, promptVersion: context.promptVersion ?? this.promptVersion, status: "completed",
-        usage: response.usage, estimatedCostUsd: estimateCost(response.model ?? request.model, response.usage, this.options.pricing ?? this.provider.pricing),
-        latencyMs: Date.now() - startedAt, createdAt, completedAt: new Date().toISOString(),
-      });
+      await this.emitCompleted(context, request, startedAt, createdAt, response);
       return response;
     } catch (error) {
-      await this.emitCall({
-        context, provider: this.providerName, model: request.model, promptVersion: context.promptVersion ?? this.promptVersion, status: "failed",
-        latencyMs: Date.now() - startedAt, errorMessage: redactError(error), createdAt, completedAt: new Date().toISOString(),
-      });
+      await this.emitFailed(context, request, startedAt, createdAt, error);
       throw error;
     }
   }
 
   get promptVersion(): string { return this.options.promptVersion ?? "knowledge-extraction-v1"; }
 
-  async generateGroundedResearch(
-    messages: Array<{ role: "user" | "assistant"; content: string }>,
-    grounding: ResearchGroundingRequest,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
-  ): Promise<GroundedResearchResponse> {
-    if (!messages.length) throw new Error("Research conversation requires at least one message");
-    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Use web research when available, preserve uncertainty, and only cite sources returned by the provider.\n\nConversation:\n${JSON.stringify(messages)}`;
-    const request = { prompt, model: options.model ?? this.modelName, grounding, maxTokens: options.maxTokens ?? 8_000, timeoutMs: options.timeoutMs ?? 120_000 };
-    if (!("generateGroundedResearch" in this.provider)) {
-      const content = await this.answerResearchConversation(messages, options);
-      return { content, status: "grounding_unsupported", queries: [], sources: [], citations: [] };
-    }
-    const startedAt = Date.now();
-    const createdAt = new Date().toISOString();
-    try {
-      const response = await (this.provider as GroundingModelProvider).generateGroundedResearch(request);
-      await this.emitCall({
-        context: options.context ?? { purpose: "research_grounding" }, provider: this.providerName, model: request.model,
-        promptVersion: grounding.promptVersion, status: "completed", latencyMs: Date.now() - startedAt, createdAt, completedAt: new Date().toISOString(),
-      });
-      return response;
-    } catch (error) {
-      await this.emitCall({
-        context: options.context ?? { purpose: "research_grounding" }, provider: this.providerName, model: request.model,
-        promptVersion: grounding.promptVersion, status: "failed", latencyMs: Date.now() - startedAt, errorMessage: redactError(error), createdAt, completedAt: new Date().toISOString(),
-      });
-      try {
-        const content = await this.answerResearchConversation(messages, options);
-        return { content, status: "grounding_failed", queries: [], sources: [], citations: [], errorMessage: redactError(error) };
-      } catch { throw error; }
-    }
-  }
-
   async answerResearchConversation(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
   ): Promise<string> {
     if (!messages.length) throw new Error("Research conversation requires at least one message");
-    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Return valid JSON only in the form {"answer":"..."}. Preserve uncertainty and never invent sources.\n\nConversation:\n${JSON.stringify(messages)}`;
+    const parentContext = formatResearchParentChainContext(options.parentChainContext);
+    const sliceContext = formatResearchSliceContext(options.sliceContext);
+    // 自由正文：术语预览与旧式流式复用此能力，输出连续文本而非 JSON 包装。
+    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Output a coherent passage of plain text only — no JSON, no field wrappers, no Markdown code fences. Preserve uncertainty and never invent sources.\n\nConversation:\n${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      thinking: this.options.thinking ?? true,
+      maxTokens: options.maxTokens ?? 8_000,
+      timeoutMs: options.timeoutMs ?? 120_000,
+    }, options.context ?? { purpose: "research_chat" });
+    const content = response.content.trim();
+    if (!content) throw new Error("Research provider returned an empty answer");
+    return content;
+  }
+
+  /**
+   * 生成自由化：让模型自由写连续 markdown 正文，不返回任何 JSON 结构、不拆切片。
+   * 正文是唯一事实源；结构边界（卡片/锚点）由确定性 `deriveMessageBlocks` 事后派生。
+   * 提示词用正向格式指令（流畅段落、可用 ## 标题分节），不混入 JSON——参见调研：
+   * 结构化约束对"自由创作"有害，对"数据提取"有益，故正文走自由文本、大纲走 JSON。
+   */
+  async writeResearchBody(
+    messages: Array<{ role: "user" | "assistant"; content: string }>,
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
+  ): Promise<string> {
+    if (!messages.length) throw new Error("Research body requires at least one message");
+    const prompt = this.researchBodyPrompt(messages, options.parentChainContext, options.sliceContext);
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      thinking: this.options.thinking ?? true,
+      maxTokens: options.maxTokens ?? 8_000,
+      timeoutMs: options.timeoutMs ?? 120_000,
+    }, options.context ?? { purpose: "research_body" });
+    const content = response.content.trim();
+    if (!content) throw new Error("Research body provider returned an empty body");
+    return content;
+  }
+
+  /** 自由正文提示词：单轮 writeResearchBody 与流式 writeResearchBodyStream 共用同一来源。 */
+  private researchBodyPrompt(
+    messages: Array<{ role: "user" | "assistant"; content: string }>,
+    parentChainContext?: ResearchParentChainContext,
+    sliceContext?: ResearchSliceContext,
+  ): string {
+    const parentContext = formatResearchParentChainContext(parentChainContext);
+    const sliceContextText = formatResearchSliceContext(sliceContext);
+    return `你是 Collector 的研究助手。请回答用户最新的问题，输出一篇连贯、完整的中文正文。
+
+要求：
+- 由流畅的自然段落组成，段落之间用一个空行分隔。
+- 需要分节时，每节用一个 Markdown 二级标题（## 标题）单独成行开头、标题后空行接正文；整节只出现这一次标题，正文内不要重复该标题，也不要为段落里的小论点再起标题。正文第一个标题应当是总起，不要一上来连用多个标题。
+- 内容详实、论述充分，长度服从内容需要，不要刻意压缩或拆成孤立的碎片要点。
+- 保持来源事实与不确定性，不编造来源、链接或引用。
+- 不要使用 Markdown 代码围栏包裹整篇回答，不要返回 JSON 或任何字段结构，只输出正文本身。
+
+对话：
+${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContextText ? `\n\n${sliceContextText}` : ""}`;
+  }
+
+  /**
+   * 真实逐字流式正文（方案 B）：模型边生成边产出正文增量，对调用方只 yield 文本增量。
+   * 与 writeResearchBody 同一提示词、同一记账口径；usage/model 在终帧由 done 事件捕获，
+   * 循环结束后 emitCall 恰好一次。经 trimStream 过滤保证 concat(yielded) === 完整正文.trim()，
+   * 与 finalizeDerivedSlices 从 trimmed 文本派生块的偏移严格一致。
+   * provider 未实现 completeStream 时退回非流式 complete()，把 trimmed 正文作为单个增量产出。
+   */
+  async *writeResearchBodyStream(
+    messages: Array<{ role: "user" | "assistant"; content: string }>,
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext; resumeFrom?: string; onDone?: (done: { finishReason?: string }) => void } = {},
+  ): AsyncIterable<string> {
+    if (!messages.length) throw new Error("Research body requires at least one message");
+    const basePrompt = this.researchBodyPrompt(messages, options.parentChainContext, options.sliceContext);
+    // 断点续写：把已写正文尾部作衔接，指令模型从断点继续、不要重复。
+    const resumeTail = options.resumeFrom ? options.resumeFrom.slice(-500) : "";
+    const prompt = options.resumeFrom
+      ? `${basePrompt}\n\n正文已写到断点，请从断点处继续，不要重复已写内容：\n……${resumeTail}`
+      : basePrompt;
+    const request: ModelProviderRequest = {
+      prompt,
+      model: options.model ?? this.modelName,
+      thinking: this.options.thinking ?? true,
+      maxTokens: options.maxTokens ?? 8_000,
+      timeoutMs: options.timeoutMs ?? 120_000,
+    };
+    const context = options.context ?? { purpose: "research_body" };
+    if (typeof this.provider.completeStream !== "function") {
+      // 非流式 provider 回退：complete() 自带记账，把 trimmed 正文作为单增量产出。
+      const content = (await this.complete(request, context)).content.trim();
+      if (!content) throw new Error("Research body provider returned an empty body");
+      yield content;
+      return;
+    }
+    const createdAt = new Date().toISOString();
+    const startedAt = Date.now();
+    // doneRef 由本调用局部持有（非实例字段），并发/交错调用互不干扰。
+    const doneRef: { model: string; usage?: ProviderUsage; finishReason?: string } = { model: request.model };
+    let assembled = "";
+    try {
+      for await (const trimmed of trimStream(extractStreamDeltas(this.provider.completeStream(request), doneRef))) {
+        assembled += trimmed;
+        yield trimmed;
+      }
+      await this.emitCompleted(context, request, startedAt, createdAt, { content: assembled, model: doneRef.model, usage: doneRef.usage });
+    } catch (error) {
+      await this.emitFailed(context, request, startedAt, createdAt, error);
+      throw error;
+    }
+    if (!assembled.trim()) throw new Error("Research body provider returned an empty body");
+    // 回报终帧 finishReason，供调用方判断是否需要续写（length = 被 max_tokens 截断）。
+    options.onDone?.({ ...(doneRef.finishReason !== undefined ? { finishReason: doneRef.finishReason } : {}) });
+  }
+
+  /**
+   * plan-then-write 第一阶段：为长文生成有序大纲。大纲是给程序消费的结构数据，
+   * 故此处保留 JSON 输出（结构化对"数据提取"有益）。节数有界，避免模型产出过多碎节。
+   */
+  async generateBodyOutline(
+    messages: Array<{ role: "user" | "assistant"; content: string }>,
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
+  ): Promise<ResearchBodyOutline> {
+    if (!messages.length) throw new Error("Body outline requires at least one message");
+    const parentContext = formatResearchParentChainContext(options.parentChainContext);
+    const sliceContext = formatResearchSliceContext(options.sliceContext);
+    const prompt = `你是 Collector 的研究助手。用户的问题需要一篇较长的中文正文。请先只输出这份正文的写作大纲，不要写正文本身。
+
+只返回合法 JSON，不要使用 Markdown 代码围栏，形式必须为：
+{"sections":[{"heading":"节标题","summary":"该节要论述的主旨","targetChars":800}]}
+
+大纲规则：
+- 返回 ${RESEARCH_BODY_OUTLINE_MIN_SECTIONS} 至 ${RESEARCH_BODY_OUTLINE_MAX_SECTIONS} 节，按正文展开顺序排列；若内容只需一篇短文，可只返回 1 节。
+- heading 简洁准确，将作为该节的标题；summary 用一句话说明该节要展开的内容；targetChars 是该节的目标字数（数字）。
+- 不要返回正文字段、解释或 sections 以外的任何字段。
+
+对话：
+${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
       responseFormat: { type: "json_object" },
       thinking: this.options.thinking ?? true,
+      maxTokens: options.maxTokens ?? 4_000,
+      timeoutMs: options.timeoutMs ?? 120_000,
+    }, options.context ?? { purpose: "research_body_outline" });
+    return parseBodyOutline(response.content);
+  }
+
+  /**
+   * plan-then-write 第二阶段：在给定大纲与已生成前文的前提下，串行扩写某一节。
+   * 串行（每节条件于全部前文）保证长文连贯、避免主题漂移；输出自由正文片段。
+   */
+  /**
+   * plan-then-write 第二阶段：在给定大纲与已生成前文的前提下，串行扩写某一节。
+   * 串行（每节条件于全部前文）保证长文连贯、避免主题漂移；输出自由正文片段。
+   * 返回 content 与 finishReason（length 表示被 max_tokens 截断），供调用方做有界续写/空节修复/降级。
+   * continuation：从断点续写本节，不重复已写内容、不重发节标题；repairHint：写入上次失败原因（如空输出）；
+   * targetCharsOverride：降级重试时下调的目标字数。措辞为有界修复指令，不做任何内容质量评估。
+   */
+  async expandBodySection(
+    input: {
+      goal: string;
+      outline: ResearchBodyOutline;
+      sectionIndex: number;
+      writtenSoFar: string;
+      /** 续写：从断点继续本节，不要重复已写内容、不要重发节标题。 */
+      continuation?: { priorSectionContent: string };
+      /** 修复提示：写入上次失败原因（如"上次输出为空"）。 */
+      repairHint?: string;
+      /** 降级重试时下调的目标字数。 */
+      targetCharsOverride?: number;
+    },
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<{ content: string; finishReason?: string }> {
+    const section = input.outline.sections[input.sectionIndex];
+    if (!section) throw new Error(`Body section ${input.sectionIndex} is out of range`);
+    const outlineText = input.outline.sections
+      .map((item, index) => `${index + 1}. ${item.heading}（${item.summary}）`)
+      .join("\n");
+    const targetChars = input.targetCharsOverride ?? section.targetChars;
+    const continuation = input.continuation;
+    // 断点前文只取尾部一段作衔接上下文，避免整节重复进入提示。
+    const continuationTail = continuation ? continuation.priorSectionContent.slice(-500) : "";
+    const prompt = `你是 Collector 的研究助手。你正在按大纲逐节撰写一篇连贯的中文长文，现在请只扩写其中一节。
+
+写作目标：${input.goal}
+
+完整大纲：
+${outlineText}
+
+本次要扩写的是第 ${input.sectionIndex + 1} 节「${section.heading}」：${section.summary}（目标约 ${targetChars} 字）。
+
+${input.writtenSoFar.trim() ? `已生成的前文（仅供保持连贯，不要重复其内容）：\n${input.writtenSoFar}\n\n` : ""}${continuation ? `本节已写到断点，请从断点处继续，不要重复已写内容、不要重发节标题：\n……${continuationTail}\n\n` : ""}${input.repairHint ? `上次输出有问题：${input.repairHint}。这次请直接输出本节正文。\n\n` : ""}要求：
+${continuation ? "- 直接从断点继续写正文，不要重复上面的内容，不要再输出节标题。\n" : `- 第一行输出该节标题，格式为 Markdown 二级标题：## ${section.heading}；标题后用一个空行接正文，正文由流畅段落组成、段落间用一个空行分隔。整节只出现这一次标题，正文内不要再重复该标题或另起同级标题。\n`}- 只输出第 ${input.sectionIndex + 1} 节，不要重复大纲或其它节，不要为正文内的小论点再起标题。
+- 与前文自然衔接、保持同一主题与语气；内容详实，服从该节目标字数。
+- 保持来源事实与不确定性，不编造来源、链接或引用。
+- 不要使用 Markdown 代码围栏，不要返回 JSON 或大纲字段，只输出该节标题与正文。`;
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      thinking: this.options.thinking ?? true,
       maxTokens: options.maxTokens ?? 8_000,
       timeoutMs: options.timeoutMs ?? 120_000,
-    }, options.context ?? { purpose: "research_chat" });
-    const parsed = JSON.parse(response.content) as { answer?: unknown };
-    if (typeof parsed.answer !== "string" || !parsed.answer.trim()) throw new Error("Research provider returned an invalid answer");
-    return parsed.answer;
+    }, options.context ?? { purpose: "research_body_section" });
+    const content = response.content.trim();
+    if (!content) throw new Error(`Body section ${input.sectionIndex + 1} expansion returned empty content`);
+    return { content, ...(response.finishReason !== undefined ? { finishReason: response.finishReason } : {}) };
+  }
+
+  /**
+   * 生成自由化后的事后语义标注：从一段已落库的正文段落抽取标题与概念（temperature=0，
+   * 确定性、低成本、失败可重试）。绝不改写正文；失败或空结果由调用方降级（空标题/空概念）。
+   */
+  async deriveSliceAnnotations(
+    input: { content: string },
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<ResearchSliceAnnotation> {
+    if (!input.content.trim()) return { title: "", concepts: [] };
+    const prompt = `你是 Collector 的语义标注助手。下面是一段研究正文的段落。请为它抽取一个简洁标题和几个归一化概念，用于卡片导航与关联检索。
+
+只返回合法 JSON，不要使用 Markdown 代码围栏，形式必须为：
+{"title":"简洁标题","concepts":["归一化概念"]}
+
+规则：
+- title 一句话概括该段主旨，不要超过 ${RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS} 字；若该段不适合起标题，返回空字符串。
+- 该段若已含有自己的节标题（如以"## 标题"或整段加粗短行开头），title 返回空字符串——不要复述段内已有标题，由系统直接采用它。
+- concepts 是该段涉及的核心概念/术语，最多 ${RESEARCH_NATIVE_SLICE_MAX_CONCEPTS} 个，每个不超过 ${RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS} 字；没有合适概念时返回空数组。
+- 只依据所给段落，不要补充外部事实；不要返回解释或其它字段。
+
+段落：
+${JSON.stringify(input.content)}`;
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      responseFormat: { type: "json_object" },
+      temperature: 0,
+      thinking: false,
+      maxTokens: options.maxTokens ?? 1_000,
+      timeoutMs: options.timeoutMs ?? 30_000,
+    }, options.context ?? { purpose: "research_slice_annotation" });
+    return parseSliceAnnotation(response.content);
+  }
+
+  /** H6：为节点生成简洁显示名称；调用方负责做长度与空值校验和确定性回退。 */
+  async generateNodeDisplayName(
+    input: { content: string; parentChainContext?: ResearchParentChainContext },
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<string> {
+    const parentContext = formatResearchParentChainContext(input.parentChainContext);
+    const prompt = [
+      "你是 Collector 的节点命名助手。请为下面的研究节点生成一个简洁、准确的中文显示名称。",
+      "只返回合法 JSON：{\"name\":\"...\"}。名称不超过 20 个字符，不要添加引号、编号或解释。",
+      `节点内容：${JSON.stringify(input.content.slice(0, 2000))}`,
+      parentContext,
+    ].filter(Boolean).join("\n\n");
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      responseFormat: { type: "json_object" },
+      thinking: false,
+      maxTokens: options.maxTokens ?? 128,
+      timeoutMs: options.timeoutMs ?? 30_000,
+    }, options.context ?? { purpose: "research", promptVersion: "node-naming-v1" });
+    const parsed = JSON.parse(response.content) as { name?: unknown };
+    if (typeof parsed.name !== "string" || !parsed.name.trim()) throw new Error("Node naming provider returned an invalid name");
+    return parsed.name.trim();
+  }
+
+  /**
+   * F1：核验两个候选节点的关系。模型只能在给出的局部节点材料中判断，
+   * 返回不符合模式、理由为空或过长都会被视为失败，由调用方安全地不产提议。
+   */
+  async verifyResearchSimilarity(
+    input: {
+      left: { nodeId: string; content: string };
+      right: { nodeId: string; content: string };
+    },
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<{ relationType: FusionRelationType; reason: string }> {
+    if (!input.left.nodeId || !input.right.nodeId || input.left.nodeId === input.right.nodeId) {
+      throw new Error("Similarity verification requires two distinct nodes");
+    }
+    const prompt = `你是 Collector 的本地研究节点相似性核验助手。只根据下面两份节点材料判断关系，不能补充外部事实、来源或身份断言。特别注意：跨作品、跨领域的同名概念默认是 analogy 或 contrast；只有给出的材料明确支持时才可判为 identity。
+
+节点 A（${input.left.nodeId}）：
+${JSON.stringify(input.left.content.slice(0, 12_000))}
+
+节点 B（${input.right.nodeId}）：
+${JSON.stringify(input.right.content.slice(0, 12_000))}
+
+只返回合法 JSON：
+{"relationType":"identity | shared-concept | analogy | contrast | unrelated","reason":"不超过 160 个中文字符的简短中文理由"}
+
+规则：
+- identity 仅用于证据支持的同一实体；
+- shared-concept 表示共享概念但不等同；
+- analogy 表示类比或相似结构；contrast 表示可比较的差异或对照；
+- 材料不足或没有可解释关联时返回 unrelated；
+- reason 必须说明材料中可见的依据，不要提及提示词、模型或系统。`;
+    const similarityContext: ModelCallContext = {
+      ...(options.context ?? {}),
+      purpose: options.context?.purpose ?? "similarity_verification",
+      promptVersion: options.context?.promptVersion ?? SIMILARITY_VERIFICATION_PROMPT_VERSION,
+    };
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      responseFormat: { type: "json_object" },
+      thinking: false,
+      maxTokens: options.maxTokens ?? 800,
+      timeoutMs: options.timeoutMs ?? 45_000,
+    }, similarityContext);
+    let parsed: { relationType?: unknown; reason?: unknown };
+    try {
+      parsed = JSON.parse(response.content) as { relationType?: unknown; reason?: unknown };
+    } catch {
+      throw new Error("Similarity verification provider returned invalid JSON");
+    }
+    if (!FUSION_RELATION_TYPES.includes(parsed.relationType as FusionRelationType)) {
+      throw new Error("Similarity verification provider returned an invalid relation type");
+    }
+    if (typeof parsed.reason !== "string") throw new Error("Similarity verification provider returned an invalid reason");
+    const reason = parsed.reason.replace(/\s+/g, " ").trim();
+    if (!reason || reason.length > 160) throw new Error("Similarity verification provider returned an invalid reason");
+    return { relationType: parsed.relationType as FusionRelationType, reason };
+  }
+
+  /**
+   * #31 F2：生成融合节点正文。输入各来源的片段摘录与关系类型，输出连贯中文
+   * Markdown 正文（自由正文，不返回 JSON）：必须含「共同核心 / 差异 / 综合推导」
+   * 三节，正文以 [来源n] 标记引用对应来源。关系类型指导显式区分同一实体/
+   * 同名异义/改编/类比/对比——跨作品、跨领域的同名概念默认对比或联想，
+   * 仅在证据支持时才让位更强断言（与相似性核验同一判断方向）。
+   */
+  async composeFusion(
+    input: {
+      sources: Array<{ nodeId: string; title: string; excerpt: string }>;
+      relationType: FusionRelationType;
+    },
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<string> {
+    if (input.sources.length < 2) throw new Error("Fusion requires at least two sources");
+    const relationGuidance: Record<FusionRelationType, string> = {
+      identity: "这些来源描述同一实体：以合并共同核心为主，差异节说明同一实体的不同侧面。",
+      "shared-concept": "这些来源共享概念但不等同：共同核心节说明共享概念，差异节说明各自边界与侧重。",
+      analogy: "这些来源是类比或相似结构：差异节显式说明来源分属不同作品/领域，跨作品、跨领域的同名概念默认是类比或联想，仅在证据支持时才可让位更强的断言。",
+      contrast: "这些来源是可比较的差异或对照：差异节显式说明来源分属不同作品/领域，跨作品、跨领域的同名概念默认是对比或联想，仅在证据支持时才可让位更强的断言。",
+      unrelated: "这些来源没有可解释的关联：共同核心只写证据可见的交集，差异节说明材料不足以支持更强关系。",
+    };
+    const sourceLines = input.sources.map((source, index) => {
+      const ordinal = index + 1;
+      return `来源${ordinal}（${source.title}，节点 ${source.nodeId}）：\n${JSON.stringify(source.excerpt.slice(0, 8_000))}`;
+    }).join("\n\n");
+    const prompt = `你是 Collector 的融合总结助手。用户确认了 ${input.relationType} 关系，请把下面多个来源综合为一篇融合节点正文。
+
+关系判断：${relationGuidance[input.relationType]}
+
+来源材料：
+${sourceLines}
+
+输出要求：
+- 输出一篇连贯的中文 Markdown 正文，不使用代码围栏，不返回 JSON。
+- 正文必须按顺序包含三个二级标题章节：## 共同核心、## 差异、## 综合推导。
+  ## 共同核心 写各来源共同点；## 差异 写各来源差异（对比/类比关系时重点展开）；## 综合推导 写融合后的增量综合与结论。
+- 正文以 [来源n] 标记引用对应来源（n 为来源序号），同一处可同时引用多个来源如 [来源1][来源2]；每条断言都应可追溯到来源材料。
+- 只使用提供的来源材料，不补充外部事实、不编造来源。`;
+    const context: ModelCallContext = {
+      ...(options.context ?? {}),
+      purpose: options.context?.purpose ?? "fusion_compose",
+      promptVersion: options.context?.promptVersion ?? FUSION_COMPOSE_PROMPT_VERSION,
+    };
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      thinking: this.options.thinking ?? true,
+      maxTokens: options.maxTokens ?? FUSION_COMPOSE_TOKEN_BUDGET,
+      timeoutMs: options.timeoutMs ?? 120_000,
+    }, context);
+    const content = response.content.trim();
+    if (!content) throw new Error("Fusion provider returned an empty body");
+    return content;
   }
 
   /**
    * 深入研究第一轮：只使用提供的当前已有材料（来源内容 + 选区上下文 + 用户方向），
-   * 不联网检索，不编造来源。返回模型回答文本。
+   * 不联网检索，不编造来源。自由正文：返回模型回答的连续文本，不再包 JSON。
    */
   async generateDeepResearchRound(
     input: {
@@ -469,12 +983,17 @@ export class ModelGateway {
       contentTitle?: string;
       contextBefore?: string;
       contextAfter?: string;
+      parentChainContext?: ResearchParentChainContext;
+      sliceContext?: ResearchSliceContext;
     },
     options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
   ): Promise<string> {
     if (!input.selectionText.trim()) throw new Error("Deep research requires the source selection text");
     if (!input.direction.trim()) throw new Error("Deep research requires a research direction");
-    const prompt = `你是 Collector 的深入研究助手。用户从一段选区发起了深入研究第一轮。只使用下面提供的当前已有材料生成研究内容，不要联网检索，不要编造来源、链接或引用。只返回合法 JSON，形式为 {"answer":"..."}，不要使用 Markdown 代码围栏。
+    const parentContext = formatResearchParentChainContext(input.parentChainContext);
+    const sliceContext = formatResearchSliceContext(input.sliceContext);
+    // 自由正文：旧式流式深入研究复用此能力，输出连续文本而非 {"answer":...} JSON 包装。
+    const prompt = `你是 Collector 的深入研究助手。用户从一段选区发起了深入研究第一轮。只使用下面提供的当前已有材料生成研究内容，不要联网检索，不要编造来源、链接或引用。只输出一段连贯的中文纯文本，不要返回 JSON、字段包装或 Markdown 代码围栏。
 
 用户选区原文：
 ${JSON.stringify(input.selectionText)}
@@ -485,23 +1004,23 @@ ${input.mode === "branch" ? "\n研究沿当前内容展开。" : "\n研究在新
 
 用户的研究方向：
 ${JSON.stringify(input.direction)}
+${parentContext ? `\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}
 
 要求：
 - 围绕用户方向，基于选区与上下文展开解释、拆解或延伸；
 - 只依据提供的材料，不编造外部事实、链接或来源；
 - 材料不足以支撑时在回答中如实说明不确定性；
-- answer 使用中文。`;
+- 使用中文。`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
-      responseFormat: { type: "json_object" },
       thinking: this.options.thinking ?? true,
       maxTokens: options.maxTokens ?? 8_000,
       timeoutMs: options.timeoutMs ?? 120_000,
     }, options.context ?? { purpose: "deep_research" });
-    const parsed = JSON.parse(response.content) as { answer?: unknown };
-    if (typeof parsed.answer !== "string" || !parsed.answer.trim()) throw new Error("Deep research provider returned an invalid answer");
-    return parsed.answer;
+    const content = response.content.trim();
+    if (!content) throw new Error("Deep research provider returned an empty answer");
+    return content;
   }
 
   async analyzeSelection(
@@ -923,6 +1442,20 @@ export class FakeProvider implements ModelProvider {
     if (typeof response === "string") return { content: response, model: request.model, usage: { inputTokens: 10, outputTokens: 20 } };
     return response ?? { content: "", model: request.model };
   }
+
+  /** 测试用确定逐字流：把响应按 80 字切片逐段产出，终帧带 usage/model（对齐真实供应商的流式语义）。 */
+  async *completeStream(request: ModelProviderRequest): AsyncIterable<ModelProviderStreamEvent> {
+    this.calls.push(request);
+    const response = this.responses.shift();
+    if (response instanceof Error) throw response;
+    const resolved: ModelProviderResponse = typeof response === "string"
+      ? { content: response, model: request.model, usage: { inputTokens: 10, outputTokens: 20 } }
+      : response ?? { content: "", model: request.model };
+    for (let index = 0; index < resolved.content.length; index += 80) {
+      yield { type: "delta", text: resolved.content.slice(index, index + 80) };
+    }
+    yield { type: "done", model: resolved.model ?? request.model, usage: resolved.usage };
+  }
 }
 
 export interface OpenAiCompatibleProviderOptions {
@@ -954,12 +1487,17 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     let response: Response;
     let payload: any;
     try {
+      const wantsJson = request.responseFormat?.type === "json_object";
+      const messages: Array<{ role: string; content: string }> = wantsJson
+        ? [{ role: "system", content: "Return valid json only. Fragment IDs and capture IDs are different identifier types and must never be interchanged." }, { role: "user", content: request.prompt }]
+        : [{ role: "user", content: request.prompt }];
       const body: Record<string, unknown> = {
         model: request.model,
-        messages: [{ role: "system", content: "Return valid json only. Fragment IDs and capture IDs are different identifier types and must never be interchanged." }, { role: "user", content: request.prompt }],
-        response_format: request.responseFormat,
+        messages,
         max_tokens: request.maxTokens,
       };
+      if (wantsJson) body.response_format = request.responseFormat;
+      if (typeof request.temperature === "number") body.temperature = request.temperature;
       if (this.options.definition.capabilities.thinkingMode === "deepseek") body.thinking = { type: request.thinking ? "enabled" : "disabled" };
       response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/chat/completions`, {
         method: "POST",
@@ -972,10 +1510,11 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     } finally {
       clearTimeout(timer);
     }
-    if (!response.ok) throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+    if (!response.ok) throw new ModelProviderHttpError(`${this.options.definition.label} request failed (HTTP ${response.status})`, response.status);
     return {
       content: payload?.choices?.[0]?.message?.content ?? "",
       model: payload?.model ?? request.model,
+      finishReason: payload?.choices?.[0]?.finish_reason ?? undefined,
       usage: {
         inputTokens: payload?.usage?.prompt_tokens,
         outputTokens: payload?.usage?.completion_tokens,
@@ -983,6 +1522,83 @@ export class OpenAiCompatibleProvider implements ModelProvider {
         inputCacheMissTokens: payload?.usage?.prompt_cache_miss_tokens,
       },
     };
+  }
+
+  /**
+   * 真实逐字流式（方案 B）：chat/completions + stream:true。
+   * choices[].delta.content 逐字产出；usage 仅在请求 stream_options.include_usage 后的终帧到达。
+   * deepseek 思考模式的 reasoning_content 不计入正文。
+   */
+  async *completeStream(request: ModelProviderRequest): AsyncIterable<ModelProviderStreamEvent> {
+    const apiKey = await this.options.apiKey();
+    if (!apiKey) throw new Error(`${this.options.definition.label} API key is not configured`);
+    const controller = new AbortController();
+    // 空闲重置计时：每收到一个 SSE 事件重置，只在超过 timeoutMs 无新事件时 abort。
+    const idle = createIdleTimer(request.timeoutMs ?? 75_000, () => controller.abort(new ModelProviderTimeoutError(`${this.options.definition.label} stream idle timed out`)));
+    let response: Response;
+    try {
+      const wantsJson = request.responseFormat?.type === "json_object";
+      const messages: Array<{ role: string; content: string }> = wantsJson
+        ? [{ role: "system", content: "Return valid json only. Fragment IDs and capture IDs are different identifier types and must never be interchanged." }, { role: "user", content: request.prompt }]
+        : [{ role: "user", content: request.prompt }];
+      const body: Record<string, unknown> = {
+        model: request.model,
+        messages,
+        max_tokens: request.maxTokens,
+        stream: true,
+        stream_options: { include_usage: true },
+      };
+      if (wantsJson) body.response_format = request.responseFormat;
+      if (typeof request.temperature === "number") body.temperature = request.temperature;
+      if (this.options.definition.capabilities.thinkingMode === "deepseek") body.thinking = { type: request.thinking ? "enabled" : "disabled" };
+      response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        signal: controller.signal,
+        redirect: "error",
+        body: JSON.stringify(body),
+      });
+    } catch (error) {
+      idle.clear();
+      rethrowStreamError(error);
+    }
+    if (!response.ok) {
+      idle.clear();
+      throw new ModelProviderHttpError(`${this.options.definition.label} request failed (HTTP ${response.status})`, response.status);
+    }
+    if (!response.body) {
+      idle.clear();
+      throw new Error(`${this.options.definition.label} streaming response has no body`);
+    }
+    let model = request.model;
+    let usage: ProviderUsage | undefined;
+    let finishReason: string | undefined;
+    try {
+      for await (const event of iterateServerSentEvents(response.body)) {
+        idle.reset();
+        if (event.data === "[DONE]") break;
+        const payload = JSON.parse(event.data);
+        if (typeof payload?.model === "string") model = payload.model;
+        const choice = payload?.choices?.[0];
+        const text = choice?.delta?.content;
+        if (typeof text === "string" && text) yield { type: "delta", text };
+        if (typeof choice?.finish_reason === "string" && choice.finish_reason) finishReason = choice.finish_reason;
+        if (payload?.usage) {
+          usage = {
+            inputTokens: payload.usage.prompt_tokens,
+            outputTokens: payload.usage.completion_tokens,
+            inputCacheHitTokens: payload.usage.prompt_cache_hit_tokens,
+            inputCacheMissTokens: payload.usage.prompt_cache_miss_tokens,
+          };
+        }
+      }
+    } catch (error) {
+      idle.clear();
+      rethrowStreamError(error);
+    } finally {
+      idle.clear();
+    }
+    yield { type: "done", model, usage, finishReason };
   }
 
   /**
@@ -1037,7 +1653,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     } finally {
       clearTimeout(timer);
     }
-    if (!response.ok) throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+    if (!response.ok) throw new ModelProviderHttpError(`${this.options.definition.label} request failed (HTTP ${response.status})`, response.status);
     const choice = payload?.choices?.[0];
     const finishReason: AgentChatResponse["finishReason"] = choice?.finish_reason ?? "stop";
     const message = choice?.message;
@@ -1089,9 +1705,69 @@ export class OpenAiResponsesProvider implements GroundingModelProvider {
   }
 
   async complete(request: ModelProviderRequest): Promise<ModelProviderResponse> {
-    const response = await this.request({ model: request.model, input: request.prompt, max_output_tokens: request.maxTokens });
+    const body: Record<string, unknown> = { model: request.model, input: request.prompt, max_output_tokens: request.maxTokens };
+    if (typeof request.temperature === "number") body.temperature = request.temperature;
+    const response = await this.request(body);
     const content = openAiOutputText(response);
     return { content, model: response?.model ?? request.model, usage: openAiUsage(response?.usage) };
+  }
+
+  /**
+   * 真实逐字流式（方案 B）：responses + stream:true。
+   * response.output_text.delta 事件的 .delta 逐字产出；usage 在 response.completed 帧的 response.usage。
+   * response.failed / error 事件抛错。
+   */
+  async *completeStream(request: ModelProviderRequest): AsyncIterable<ModelProviderStreamEvent> {
+    const apiKey = await this.options.apiKey();
+    if (!apiKey) throw new Error(`${this.options.definition.label} API key is not configured`);
+    const controller = new AbortController();
+    const idle = createIdleTimer(request.timeoutMs ?? 75_000, () => controller.abort(new ModelProviderTimeoutError(`${this.options.definition.label} stream idle timed out`)));
+    let response: Response;
+    try {
+      const body: Record<string, unknown> = { model: request.model, input: request.prompt, max_output_tokens: request.maxTokens, stream: true };
+      if (typeof request.temperature === "number") body.temperature = request.temperature;
+      response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/responses`, {
+        method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, signal: controller.signal, redirect: "error", body: JSON.stringify(body),
+      });
+    } catch (error) {
+      idle.clear();
+      rethrowStreamError(error);
+    }
+    if (!response.ok) {
+      idle.clear();
+      throw new ModelProviderHttpError(`${this.options.definition.label} request failed (HTTP ${response.status})`, response.status);
+    }
+    if (!response.body) {
+      idle.clear();
+      throw new Error(`${this.options.definition.label} streaming response has no body`);
+    }
+    let model = request.model;
+    let usage: ProviderUsage | undefined;
+    let finishReason: string | undefined;
+    try {
+      for await (const event of iterateServerSentEvents(response.body)) {
+        idle.reset();
+        const payload = JSON.parse(event.data);
+        const type = payload?.type;
+        if (type === "response.output_text.delta") {
+          if (typeof payload.delta === "string" && payload.delta) yield { type: "delta", text: payload.delta };
+        } else if (type === "response.completed") {
+          model = payload?.response?.model ?? model;
+          usage = openAiUsage(payload?.response?.usage);
+        } else if (type === "response.incomplete") {
+          // 达到 max_output_tokens 等原因未完整：reason 供有界续写判断。
+          finishReason = payload?.response?.incomplete_details?.reason === "max_output_tokens" ? "length" : (payload?.response?.incomplete_details?.reason ?? "length");
+        } else if (type === "response.failed" || type === "error") {
+          throw new Error(`${this.options.definition.label} streaming failed (${payload?.response?.error?.message ?? payload?.message ?? "unknown error"})`);
+        }
+      }
+    } catch (error) {
+      idle.clear();
+      rethrowStreamError(error);
+    } finally {
+      idle.clear();
+    }
+    yield { type: "done", model, usage, finishReason };
   }
 
   async generateGroundedResearch(request: { prompt: string; model: string; grounding: ResearchGroundingRequest; maxTokens?: number; timeoutMs?: number }): Promise<GroundedResearchResponse> {
@@ -1130,7 +1806,7 @@ export class OpenAiResponsesProvider implements GroundingModelProvider {
         method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, signal: controller.signal, redirect: "error", body: JSON.stringify(body),
       });
       const payload = await response.json().catch(() => undefined);
-      if (!response.ok) throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+      if (!response.ok) throw new ModelProviderHttpError(`${this.options.definition.label} request failed (HTTP ${response.status})`, response.status);
       return payload;
     } finally { clearTimeout(timer); }
   }
@@ -1150,8 +1826,64 @@ export class GeminiGroundingProvider implements GroundingModelProvider {
   }
 
   async complete(request: ModelProviderRequest): Promise<ModelProviderResponse> {
-    const payload = await this.request(request.model, { contents: [{ role: "user", parts: [{ text: request.prompt }] }], generationConfig: { responseMimeType: "application/json", maxOutputTokens: request.maxTokens } }, request.timeoutMs);
+    const wantsJson = request.responseFormat?.type === "json_object";
+    const generationConfig: Record<string, unknown> = { maxOutputTokens: request.maxTokens };
+    if (wantsJson) generationConfig.responseMimeType = "application/json";
+    if (typeof request.temperature === "number") generationConfig.temperature = request.temperature;
+    const payload = await this.request(request.model, { contents: [{ role: "user", parts: [{ text: request.prompt }] }], generationConfig }, request.timeoutMs);
     return { content: geminiText(payload), model: request.model, usage: geminiUsage(payload?.usageMetadata) };
+  }
+
+  /**
+   * 真实逐字流式（方案 B）：:streamGenerateContent?alt=sse。
+   * 每个 data 帧的 candidates[0].content.parts[].text 逐字产出；usageMetadata 在终帧。
+   */
+  async *completeStream(request: ModelProviderRequest): AsyncIterable<ModelProviderStreamEvent> {
+    const apiKey = await this.options.apiKey();
+    if (!apiKey) throw new Error(`${this.options.definition.label} API key is not configured`);
+    const wantsJson = request.responseFormat?.type === "json_object";
+    const generationConfig: Record<string, unknown> = { maxOutputTokens: request.maxTokens };
+    if (wantsJson) generationConfig.responseMimeType = "application/json";
+    if (typeof request.temperature === "number") generationConfig.temperature = request.temperature;
+    const controller = new AbortController();
+    const idle = createIdleTimer(request.timeoutMs ?? 75_000, () => controller.abort(new ModelProviderTimeoutError(`${this.options.definition.label} stream idle timed out`)));
+    let response: Response;
+    try {
+      response = await this.fetchImpl(
+        `${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/models/${encodeURIComponent(request.model)}:streamGenerateContent?alt=sse`,
+        { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey }, signal: controller.signal, redirect: "error", body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: request.prompt }] }], generationConfig }) },
+      );
+    } catch (error) {
+      idle.clear();
+      rethrowStreamError(error);
+    }
+    if (!response.ok) {
+      idle.clear();
+      throw new ModelProviderHttpError(`${this.options.definition.label} request failed (HTTP ${response.status})`, response.status);
+    }
+    if (!response.body) {
+      idle.clear();
+      throw new Error(`${this.options.definition.label} streaming response has no body`);
+    }
+    let usage: ProviderUsage | undefined;
+    let finishReason: string | undefined;
+    try {
+      for await (const event of iterateServerSentEvents(response.body)) {
+        idle.reset();
+        const payload = JSON.parse(event.data);
+        const text = geminiText(payload);
+        if (text) yield { type: "delta", text };
+        const candidateFinish = payload?.candidates?.[0]?.finishReason;
+        if (typeof candidateFinish === "string" && candidateFinish) finishReason = candidateFinish === "MAX_TOKENS" ? "length" : candidateFinish;
+        if (payload?.usageMetadata) usage = geminiUsage(payload.usageMetadata);
+      }
+    } catch (error) {
+      idle.clear();
+      rethrowStreamError(error);
+    } finally {
+      idle.clear();
+    }
+    yield { type: "done", model: request.model, usage, finishReason };
   }
 
   async generateGroundedResearch(request: { prompt: string; model: string; grounding: ResearchGroundingRequest; maxTokens?: number; timeoutMs?: number }): Promise<GroundedResearchResponse> {
@@ -1178,7 +1910,7 @@ export class GeminiGroundingProvider implements GroundingModelProvider {
     try {
       const response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/models/${encodeURIComponent(model)}:generateContent`, { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey }, signal: controller.signal, redirect: "error", body: JSON.stringify(body) });
       const payload = await response.json().catch(() => undefined);
-      if (!response.ok) throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+      if (!response.ok) throw new ModelProviderHttpError(`${this.options.definition.label} request failed (HTTP ${response.status})`, response.status);
       return payload;
     } finally { clearTimeout(timer); }
   }
@@ -1224,7 +1956,7 @@ export class AnthropicMessagesProvider implements GroundingModelProvider {
           }),
         });
         payload = await response.json().catch(() => undefined);
-        if (!response.ok) throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+        if (!response.ok) throw new ModelProviderHttpError(`${this.options.definition.label} request failed (HTTP ${response.status})`, response.status);
       } finally {
         clearTimeout(timer);
       }
@@ -1271,24 +2003,27 @@ export class AnthropicMessagesProvider implements GroundingModelProvider {
     const timer = setTimeout(() => controller.abort(new Error(`${this.options.definition.label} request timed out`)), request.timeoutMs ?? 75_000);
     let response: Response;
     let payload: any;
+    const wantsJson = request.responseFormat?.type === "json_object";
+    const body: Record<string, unknown> = {
+      model: request.model,
+      max_tokens: request.maxTokens ?? 4000,
+      messages: [{ role: "user", content: request.prompt }],
+    };
+    if (wantsJson) body.system = "Return valid JSON only. Fragment IDs and capture IDs are different identifier types and must never be interchanged.";
+    if (typeof request.temperature === "number") body.temperature = request.temperature;
     try {
       response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/messages`, {
         method: "POST",
         headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "Content-Type": "application/json" },
         signal: controller.signal,
         redirect: "error",
-        body: JSON.stringify({
-          model: request.model,
-          max_tokens: request.maxTokens ?? 4000,
-          system: "Return valid JSON only. Fragment IDs and capture IDs are different identifier types and must never be interchanged.",
-          messages: [{ role: "user", content: request.prompt }],
-        }),
+        body: JSON.stringify(body),
       });
       payload = await response.json().catch(() => undefined);
     } finally {
       clearTimeout(timer);
     }
-    if (!response.ok) throw new Error(`${this.options.definition.label} request failed (HTTP ${response.status})`);
+    if (!response.ok) throw new ModelProviderHttpError(`${this.options.definition.label} request failed (HTTP ${response.status})`, response.status);
     const cacheHitTokens = Number(payload?.usage?.cache_read_input_tokens ?? 0);
     const cacheCreationTokens = Number(payload?.usage?.cache_creation_input_tokens ?? 0);
     const uncachedInputTokens = Number(payload?.usage?.input_tokens ?? 0);
@@ -1298,6 +2033,91 @@ export class AnthropicMessagesProvider implements GroundingModelProvider {
       usage: {
         inputTokens: uncachedInputTokens + cacheHitTokens + cacheCreationTokens,
         outputTokens: payload?.usage?.output_tokens,
+        inputCacheHitTokens: cacheHitTokens,
+        inputCacheMissTokens: uncachedInputTokens + cacheCreationTokens,
+      },
+    };
+  }
+
+  /**
+   * 真实逐字流式（方案 B）：messages + stream:true。
+   * content_block_delta（text_delta）事件的 delta.text 逐字产出；message_start 给输入/缓存 token，
+   * message_delta 给输出 token；message_stop 结束；error 事件抛错。
+   */
+  async *completeStream(request: ModelProviderRequest): AsyncIterable<ModelProviderStreamEvent> {
+    const apiKey = await this.options.apiKey();
+    if (!apiKey) throw new Error(`${this.options.definition.label} API key is not configured`);
+    const controller = new AbortController();
+    const idle = createIdleTimer(request.timeoutMs ?? 75_000, () => controller.abort(new ModelProviderTimeoutError(`${this.options.definition.label} stream idle timed out`)));
+    const wantsJson = request.responseFormat?.type === "json_object";
+    const body: Record<string, unknown> = {
+      model: request.model,
+      max_tokens: request.maxTokens ?? 4000,
+      messages: [{ role: "user", content: request.prompt }],
+      stream: true,
+    };
+    if (wantsJson) body.system = "Return valid JSON only. Fragment IDs and capture IDs are different identifier types and must never be interchanged.";
+    if (typeof request.temperature === "number") body.temperature = request.temperature;
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/messages`, {
+        method: "POST",
+        headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "Content-Type": "application/json" },
+        signal: controller.signal,
+        redirect: "error",
+        body: JSON.stringify(body),
+      });
+    } catch (error) {
+      idle.clear();
+      rethrowStreamError(error);
+    }
+    if (!response.ok) {
+      idle.clear();
+      throw new ModelProviderHttpError(`${this.options.definition.label} request failed (HTTP ${response.status})`, response.status);
+    }
+    if (!response.body) {
+      idle.clear();
+      throw new Error(`${this.options.definition.label} streaming response has no body`);
+    }
+    let model = request.model;
+    let cacheHitTokens = 0;
+    let cacheCreationTokens = 0;
+    let uncachedInputTokens = 0;
+    let outputTokens: number | undefined;
+    let finishReason: string | undefined;
+    try {
+      for await (const event of iterateServerSentEvents(response.body)) {
+        idle.reset();
+        const payload = JSON.parse(event.data);
+        const type = payload?.type;
+        if (type === "content_block_delta" && payload?.delta?.type === "text_delta" && typeof payload.delta.text === "string" && payload.delta.text) {
+          yield { type: "delta", text: payload.delta.text };
+        } else if (type === "message_start") {
+          model = payload?.message?.model ?? model;
+          cacheHitTokens = Number(payload?.message?.usage?.cache_read_input_tokens ?? 0);
+          cacheCreationTokens = Number(payload?.message?.usage?.cache_creation_input_tokens ?? 0);
+          uncachedInputTokens = Number(payload?.message?.usage?.input_tokens ?? 0);
+        } else if (type === "message_delta") {
+          outputTokens = payload?.usage?.output_tokens ?? outputTokens;
+          const stopReason = payload?.delta?.stop_reason;
+          if (typeof stopReason === "string" && stopReason) finishReason = stopReason === "max_tokens" ? "length" : stopReason;
+        } else if (type === "error") {
+          throw new Error(`${this.options.definition.label} streaming failed (${payload?.error?.message ?? "unknown error"})`);
+        }
+      }
+    } catch (error) {
+      idle.clear();
+      rethrowStreamError(error);
+    } finally {
+      idle.clear();
+    }
+    yield {
+      type: "done",
+      model,
+      finishReason,
+      usage: {
+        inputTokens: uncachedInputTokens + cacheHitTokens + cacheCreationTokens,
+        outputTokens,
         inputCacheHitTokens: cacheHitTokens,
         inputCacheMissTokens: uncachedInputTokens + cacheCreationTokens,
       },
@@ -1449,8 +2269,131 @@ function redactError(error: unknown): string {
 
 function normalizeBaseUrl(value: string): string { return value.replace(/\/+$/, ""); }
 
+/**
+ * 解析 SSE（Server-Sent Events）响应体为事件流，供四家真实供应商的流式 completeStream 复用。
+ * 只处理信封（空行分事件、多 data: 行 \n 拼接、捕获 event: 字段、忽略 : 注释），不解释 payload；
+ * data: [DONE] 这类终止哨兵由调用方判断。TextDecoder 流式缓冲保证跨块的多字节字符不被截断。
+ */
+/**
+ * 空闲重置计时器：每次 reset() 重新计时，clear() 终止。
+ * 用于流式空闲超时——长文持续到达 token 时不断重置，只在「超过 ms 无新事件」时触发，
+ * 取代固定总超时，避免长文因总时长到点被掐断。onTimeout 由调用方决定（通常 abort）。
+ */
+export function createIdleTimer(ms: number, onTimeout: () => void): { reset(): void; clear(): void } {
+  let handle: ReturnType<typeof setTimeout> | undefined;
+  const reset = () => {
+    if (handle !== undefined) clearTimeout(handle);
+    handle = setTimeout(onTimeout, ms);
+    // 不阻止进程退出（测试/短生命周期进程）。
+    if (typeof handle === "object" && handle && typeof (handle as { unref?: () => void }).unref === "function") (handle as { unref: () => void }).unref();
+  };
+  reset();
+  return {
+    reset,
+    clear() {
+      if (handle !== undefined) clearTimeout(handle);
+      handle = undefined;
+    },
+  };
+}
+
+/**
+ * 从可能包裹的 abort 错误中还原流式空闲超时：Node fetch 在 for await 途中 abort 时，
+ * 常把 abort(reason) 的 reason 包成 AbortError.cause。若是空闲超时则原样抛出，否则抛原错误。
+ */
+function rethrowStreamError(error: unknown): never {
+  if (error instanceof ModelProviderTimeoutError) throw error;
+  const cause = (error as { cause?: unknown })?.cause;
+  if (cause instanceof ModelProviderTimeoutError) throw cause;
+  throw error;
+}
+
+export async function* iterateServerSentEvents(body: ReadableStream<Uint8Array>): AsyncIterable<{ event?: string; data: string }> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const flushEvent = function* (rawEvent: string): Generator<{ event?: string; data: string }> {
+    let event: string | undefined;
+    const dataLines: string[] = [];
+    for (const line of rawEvent.split(/\r?\n/)) {
+      if (!line || line.startsWith(":")) continue;
+      const colon = line.indexOf(":");
+      const field = colon < 0 ? line : line.slice(0, colon);
+      let value = colon < 0 ? "" : line.slice(colon + 1);
+      if (value.startsWith(" ")) value = value.slice(1);
+      if (field === "event") event = value;
+      else if (field === "data") dataLines.push(value);
+    }
+    if (dataLines.length) yield { event, data: dataLines.join("\n") };
+  };
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      let sepIndex: number;
+      // 事件以空行（\n\n 或 \r\n\r\n）分隔；逐段取出完整事件，残余留在缓冲。
+      while ((sepIndex = buffer.search(/\r?\n\r?\n/)) >= 0) {
+        const rawEvent = buffer.slice(0, sepIndex);
+        const sepMatch = buffer.slice(sepIndex).match(/^\r?\n\r?\n/);
+        buffer = buffer.slice(sepIndex + (sepMatch?.[0].length ?? 2));
+        yield* flushEvent(rawEvent);
+      }
+      if (done) break;
+    }
+    if (buffer.trim()) yield* flushEvent(buffer);
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export function fingerprintBaseUrl(value: string): string {
   return createHash("sha256").update(normalizeBaseUrl(value).toLocaleLowerCase()).digest("hex");
+}
+
+/**
+ * 取出 completeStream 事件的 delta 文本逐个产出；done 帧的 model/usage 写入调用方持有的 doneRef。
+ * 纯函数模块级（非实例方法），doneRef 由调用方按调用局部持有，交错调用互不干扰。
+ */
+export async function* extractStreamDeltas(
+  events: AsyncIterable<ModelProviderStreamEvent>,
+  doneRef: { model: string; usage?: ProviderUsage; finishReason?: string },
+): AsyncIterable<string> {
+  for await (const event of events) {
+    if (event.type === "delta") yield event.text;
+    else if (event.type === "done") { doneRef.model = event.model; doneRef.usage = event.usage; doneRef.finishReason = event.finishReason; }
+  }
+}
+
+/**
+ * 把正文增量流整体 trim：抑制前导空白，暂存尾随空白串（仅在后续非空块到达时冲刷，流末丢弃）。
+ * 保证 concat(输出) === concat(输入).trim()，是流式正文与非流式 writeResearchBody 偏移一致的关键不变量。
+ * 内部空白（含段落间的 \n\n）原样保留。
+ */
+export async function* trimStream(chunks: AsyncIterable<string>): AsyncIterable<string> {
+  let pendingWhitespace = "";
+  let seenContent = false;
+  for await (const chunk of chunks) {
+    if (!chunk) continue;
+    let text = chunk;
+    if (!seenContent) {
+      text = text.replace(/^\s+/, "");
+      if (!text) continue; // 整块都是前导空白
+      seenContent = true;
+    }
+    // 拆出本块尾随的空白串，连同之前暂存的一起挂起，等下一个非空块到达再冲刷。
+    const trailingMatch = text.match(/\s+$/);
+    const trailing = trailingMatch?.[0] ?? "";
+    const core = trailing ? text.slice(0, text.length - trailing.length) : text;
+    if (core) {
+      const out = pendingWhitespace + core;
+      pendingWhitespace = trailing;
+      yield out;
+    } else {
+      // 整块都是尾随空白（例如段落分隔块），全部暂存。
+      pendingWhitespace += trailing;
+    }
+  }
+  // 流末丢弃暂存的尾随空白，等效于整体 .trim()。
 }
 
 export async function validateExternalProviderBaseUrl(

@@ -4,6 +4,8 @@ import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs
 import { dirname, join, relative } from "node:path";
 import {
   ACCEPTED_MIME_TYPES,
+  FUSION_COMPOSE_PROMPT_VERSION,
+  FUSION_COMPOSE_TOKEN_BUDGET,
   MAX_ARTIFACT_BYTES,
   MODEL_PURPOSES,
   evidenceGradeFor,
@@ -28,6 +30,8 @@ import {
   type RecentClusterSnapshotRecord,
   type ResearchGroundingScopeStatus,
   type ResearchGroundingSourceRecord,
+  type ResearchFusionSource,
+  type ResearchNodeRecord,
   type AiBudgetSettings,
   type AiUsageSummary,
   type ModelCallRecord,
@@ -41,21 +45,34 @@ import {
   type BackupVerificationResult,
   type ExportRequest,
   type ExportResult,
+  type ResearchNodeView,
+  type ResearchSliceRecord,
+  resolveFragmentExcerpt,
+  type ResearchBodyVersionRecord,
+  type ResearchBodyVersionView,
+  type ResearchMessageRecord,
 } from "@collector/capture-contracts";
 import type { CollectorStore } from "./store.js";
 import { defaultDataPaths } from "./store.js";
+import { deriveMessageBodyArtifacts } from "./body-artifacts.js";
 import { SourceParser, parsePdf } from "./parsers.js";
-import { DEFAULT_PROVIDER_REGISTRY, ModelGateway, ProviderRuntimeResolver, discoverProviderModels as discoverProviderModelsViaGateway, validateExternalProviderBaseUrl } from "@collector/model-gateway";
+import { DEFAULT_PROVIDER_REGISTRY, formatResearchParentChainContext, formatResearchSliceContext, ModelGateway, ProviderRuntimeResolver, discoverProviderModels as discoverProviderModelsViaGateway, validateExternalProviderBaseUrl } from "@collector/model-gateway";
 import { createVerificationWorkflow } from "./verification.js";
-import { ResearchSessionService, type ResearchGenerationProvider } from "./research.js";
+import { ResearchSessionService, RESEARCH_SLICE_PROMPT_VERSION, type ResearchGenerationProvider } from "./research.js";
 import { ResearchImportService } from "./research-import.js";
 import { ResearchSelectionAnalysisError, ResearchSelectionService, type ResearchSelectionProvider } from "./selection.js";
 import { DeepResearchService, NodeGrowthService } from "./deep-research.js";
 import { ResearchLaterService } from "./research-later.js";
+import { TermDetectionService } from "./term-detection.js";
+import { ResearchTermPreviewService } from "./term-preview.js";
+import { ParentChainContextService } from "./parent-chain-context.js";
+import { NodeNamingService } from "./node-naming.js";
 import { webSearch, webFetch } from "./web-search-agent.js";
 import { parseAgentCitations } from "./web-search-agent.js";
 import { getSearchConfig as getSearchConfigFromAgent, updateSearchConfig as updateSearchConfigInAgent, listAvailableBackends, initSearchBackends, type SearchBackendId } from "./web-search-agent.js";
 import { ALL_SEARCH_BACKEND_IDS } from "./search-backends/index.js";
+import { RunRecordsService } from "./observability.js";
+import { AUTO_FUSION_SETTING_KEY, ResearchFusionProposalService, type SimilarityVerificationGateway } from "./fusion-proposals.js";
 
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
@@ -77,18 +94,30 @@ export class CaptureService {
   readonly deepResearch: DeepResearchService;
   readonly nodeGrowth: NodeGrowthService;
   readonly researchLater: ResearchLaterService;
+  readonly termDetection: TermDetectionService;
+  readonly fusionProposals: ResearchFusionProposalService;
+  readonly termPreviews: ResearchTermPreviewService;
+  readonly parentChainContext: ParentChainContextService;
+  readonly nodeNaming: NodeNamingService;
+  readonly runRecords: RunRecordsService;
 
   constructor(
     private readonly store: CollectorStore,
     private readonly artifactRoot: string,
     private readonly parser = new SourceParser(),
     private modelGateway?: ModelGateway,
-    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; selectionProvider?: ResearchSelectionProvider; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunSelectionTasks?: boolean; mvpDemoMode?: boolean } = {},
+    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; selectionProvider?: ResearchSelectionProvider; similarityVerifier?: SimilarityVerificationGateway; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunSelectionTasks?: boolean; mvpDemoMode?: boolean; researchRetrySleep?: (ms: number) => Promise<void> } = {},
   ) {
+    this.runRecords = new RunRecordsService(this.store);
     this.attachModelGateway(this.modelGateway);
+    this.parentChainContext = new ParentChainContextService(this.store);
+    this.nodeNaming = new NodeNamingService(this.store, async () => this.gatewayForPurpose("research"), this.parentChainContext);
     this.research = new ResearchSessionService(this.store, {
       provider: this.options.researchProvider ?? this.researchProviderFor(this.modelGateway),
       autoRunTasks: this.options.autoRunResearchTasks,
+      parentChainContext: this.parentChainContext,
+      onTaskCompleted: (task) => { void this.nodeNaming.nameNode(task.nodeId ?? task.sessionId); },
+      ...(this.options.researchRetrySleep ? { retrySleep: this.options.researchRetrySleep } : {}),
     });
     this.researchImports = new ResearchImportService(this.store, join(this.artifactRoot, "research-imports"), {
       autoRunTasks: this.options.autoRunResearchImports,
@@ -106,10 +135,27 @@ export class CaptureService {
       autoRunTasks: this.options.autoRunResearchTasks,
     });
     this.researchLater = new ResearchLaterService(this.store);
+    this.termDetection = new TermDetectionService();
+    this.fusionProposals = new ResearchFusionProposalService(
+      this.store,
+      this.termDetection,
+      async () => this.options.similarityVerifier ?? this.gatewayForPurpose("research"),
+      undefined,
+      this.research,
+    );
+    this.termPreviews = new ResearchTermPreviewService(this.store, {
+      research: this.research,
+      parentChainContext: this.parentChainContext,
+      termDetection: this.termDetection,
+      autoRunTasks: this.options.autoRunResearchTasks,
+    });
     if (this.options.autoRunRecentOrganization !== false) {
       this.scheduleRecentOrganization();
       this.scheduleTopicDocumentRuns();
     }
+    // #35：启动时对历史研究正文做确定性、幂等的正文版本与语义片段回填。
+    // 不调用模型、不删除原文；同文同标识，重复执行无副作用。
+    setImmediate(() => { void this.backfillResearchBodyVersions().catch(() => undefined); });
   }
 
   setModelGateway(gateway: ModelGateway | undefined, route?: ActiveModelRoute): void {
@@ -119,10 +165,145 @@ export class CaptureService {
     this.attachModelGateway(gateway);
     if (!this.options.researchProvider) this.research.setProvider(this.researchProviderFor(gateway));
     if (!this.options.selectionProvider) this.researchSelections.setProvider(this.selectionProviderFor(gateway));
+    if (this.options.autoRunResearchTasks !== false) void this.termPreviews.resumeTasks().catch(() => undefined);
   }
 
   setModelGatewayResolver(resolver: ((route: ActiveModelRoute) => Promise<ModelGateway | undefined>) | undefined): void {
     this.modelGatewayResolver = resolver;
+  }
+
+  /**
+   * 节点页 HTTP 视图：在已有节点消息数据上附加 H3b 术语检测结果与 E1 切片。
+   * 检测失败由 TermDetectionService 降级为空数组，不影响原消息返回。
+   * #43 起切片只读（卡片骨架），不再惰性派生临时切片——正式生成路径已写入。
+   */
+  async getResearchNodeView(nodeId: string): Promise<ResearchNodeView> {
+    const view = this.nodeGrowth.getNodeView(nodeId);
+    const nodeDepth = this.parentChainContext.buildParentChainContext(nodeId).currentNodeDepth;
+    const termDetections: NonNullable<ResearchNodeView["termDetections"]> = {};
+    const slices: NonNullable<ResearchNodeView["slices"]> = {};
+    const bodyVersions: NonNullable<ResearchNodeView["bodyVersions"]> = {};
+    const fusionSources: NonNullable<ResearchNodeView["fusionSources"]> = {};
+    for (const message of view.messages) {
+      if (message.role !== "assistant" || message.status !== "completed") continue;
+      termDetections[message.id] = this.termDetection.detect(message.id, message.content, { nodeDepth });
+      slices[message.id] = this.store.listSlicesByMessage(message.id);
+      bodyVersions[message.id] = await this.getOrCreateBodyArtifacts(nodeId, message, view.citations ?? []);
+      // #31：融合正文的消息按任务 fusionReferences 组装来源（去重、补标签）。
+      const task = view.tasks.find((candidate) => candidate.outputMessageId === message.id);
+      const references = task?.fusionReferences ?? [];
+      if (references.length > 0) {
+        const byNode = new Map<string, ResearchFusionSource>();
+        for (const reference of references) {
+          if (byNode.has(reference.nodeId)) continue;
+          const node = this.store.getResearchNode(reference.nodeId);
+          const label = node?.displayName?.trim()
+            ?? this.selectionLabelFor(node)
+            ?? this.firstUserMessageFor(reference.nodeId)
+            ?? `节点 ${reference.nodeId.slice(0, 8)}`;
+          byNode.set(reference.nodeId, {
+            nodeId: reference.nodeId,
+            bodyVersionId: reference.bodyVersionId,
+            fragmentId: reference.fragmentId,
+            label,
+          });
+        }
+        fusionSources[message.id] = [...byNode.values()];
+      }
+    }
+    return {
+      ...view,
+      termDetections,
+      slices,
+      bodyVersions,
+      fusionSources: Object.keys(fusionSources).length > 0 ? fusionSources : undefined,
+      fusionProposals: this.fusionProposals.listForNode(nodeId, ["pending", "accepted"]),
+    };
+  }
+
+  /** 来源节点标签回退：来源选区摘要（与节点树标签规则一致）。 */
+  private selectionLabelFor(node: ResearchNodeRecord | undefined): string | undefined {
+    if (!node?.originSelectionId) return undefined;
+    const selection = this.store.getResearchSelection(node.originSelectionId);
+    const text = selection?.text?.trim();
+    if (!text) return undefined;
+    const compressed = text.replace(/\s+/g, " ");
+    return compressed.length > 48 ? `${compressed.slice(0, 48)}…` : compressed;
+  }
+
+  /** 来源节点标签回退：首条用户消息摘要。 */
+  private firstUserMessageFor(nodeId: string): string | undefined {
+    const first = this.store.listResearchMessagesByNode(nodeId).find((message) => message.role === "user");
+    const content = first?.content?.trim();
+    if (!content) return undefined;
+    const compressed = content.replace(/\s+/g, " ");
+    return compressed.length > 48 ? `${compressed.slice(0, 48)}…` : compressed;
+  }
+
+  /**
+   * #35：为一条已完成助手消息获取或确定性派生正文版本与语义片段（惰性兜底）。
+   * 已有版本直接返回；缺失时按正文确定性派生（有正式切片→正式片段，否则临时片段）。
+   * 幂等：同文同 id，重复调用/重启无副作用。不调用模型、不删除原文。
+   */
+  private async getOrCreateBodyArtifacts(
+    nodeId: string,
+    message: Pick<ResearchMessageRecord, "id" | "nodeId" | "branchId" | "sessionId" | "content" | "createdAt">,
+    citations: import("@collector/capture-contracts").ResearchCitationRecord[],
+  ): Promise<ResearchBodyVersionRecord> {
+    const existing = this.store.getBodyVersionForMessage(message.id);
+    if (existing) return existing;
+    const scopeNodeId = message.nodeId ?? message.branchId ?? nodeId;
+    const slices = this.store.listSlicesByMessage(message.id);
+    const { version, fragments } = deriveMessageBodyArtifacts({
+      nodeId: scopeNodeId,
+      message: { id: message.id, content: message.content, createdAt: message.createdAt ?? new Date().toISOString() },
+      slices,
+      citations,
+    });
+    await this.store.createResearchBodyVersion(version);
+    await this.store.createSemanticFragments(fragments);
+    return version;
+  }
+
+  /**
+   * #35：服务启动时对历史研究正文做确定性回填。遍历所有已完成助手消息，
+   * 为缺失正文版本的消息补建版本与片段。确定、幂等、不调模型、不删数据。
+   * 按消息隔离失败，单条异常不阻断整体回填。
+   */
+  async backfillResearchBodyVersions(): Promise<{ processed: number; created: number }> {
+    let processed = 0;
+    let created = 0;
+    for (const session of this.store.listResearchSessions()) {
+      for (const message of this.store.listResearchMessages(session.id)) {
+        if (message.role !== "assistant" || message.status !== "completed" || !message.content.trim()) continue;
+        processed += 1;
+        if (this.store.getBodyVersionForMessage(message.id)) continue;
+        try {
+          const citations = this.store.listResearchCitationsForMessages([message.id]);
+          const scopeNodeId = message.nodeId ?? message.branchId ?? session.id;
+          await this.getOrCreateBodyArtifacts(scopeNodeId, message, citations);
+          created += 1;
+        } catch {
+          // 单条消息回填失败只跳过该条，不阻断其余；派生失败不污染正文（ADR-0004）。
+        }
+      }
+    }
+    return { processed, created };
+  }
+
+  /**
+   * #35：正文版本只读视图。片段附运行时派生摘录（不入库）。
+   * 版本缺失 → NotFoundError（404）；片段范围/校验和损坏 → 抛出明确一致性错误，
+   * 绝不静默关联到其他文本（验收 6）。
+   */
+  getResearchBodyVersionView(bodyVersionId: string): ResearchBodyVersionView {
+    const version = this.store.getBodyVersion(bodyVersionId);
+    if (!version) throw new NotFoundError(`Body version not found: ${bodyVersionId}`);
+    const fragments = this.store.listFragmentsByBodyVersion(bodyVersionId).map((fragment) => ({
+      ...fragment,
+      excerpt: resolveFragmentExcerpt(version, fragment),
+    }));
+    return { version, fragments };
   }
 
   private attachModelGateway(gateway: ModelGateway | undefined): void {
@@ -136,6 +317,9 @@ export class CaptureService {
         model: event.model,
         purpose: event.context.purpose ?? "unknown",
         promptVersion: event.promptVersion,
+        ...(event.context.sourceSliceIds ? { sourceSliceIds: [...new Set(event.context.sourceSliceIds)].sort() } : {}),
+        ...(event.context.sourceFragmentIds ? { sourceFragmentIds: [...new Set(event.context.sourceFragmentIds)].sort() } : {}),
+        ...(event.context.tokenBudget !== undefined ? { tokenBudget: event.context.tokenBudget } : {}),
         status: event.status,
         inputTokens: usage?.inputTokens ?? 0,
         outputTokens: usage?.outputTokens ?? 0,
@@ -143,7 +327,7 @@ export class CaptureService {
         estimatedCostUsd: event.estimatedCostUsd ?? 0,
         costStatus: event.estimatedCostUsd === undefined ? "unknown" : "estimated",
         latencyMs: event.latencyMs,
-        retryCount: 0,
+        retryCount: event.retryCount,
         errorMessage: event.errorMessage,
         createdAt: event.createdAt,
         completedAt: event.completedAt,
@@ -159,21 +343,24 @@ export class CaptureService {
     return {
       provider: gateway.providerName,
       model: gateway.modelName,
-      promptVersion: "research-chat-v1",
+      promptVersion: RESEARCH_SLICE_PROMPT_VERSION,
       groundingCapability,
       async generateAgentGrounded(request) {
         const purposeGateway = await service.gatewayForPurpose("search");
         if (!purposeGateway) throw new Error("AI model is not configured");
         const direction = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
+        const parentContext = formatResearchParentChainContext(request.parentChainContext);
 
         // F2: Agent 式多轮工具调用搜索——模型通过 web_search/web_fetch 工具自主完成搜索过程
-        let userMessage = direction;
+        let userMessage = [direction, parentContext, formatResearchSliceContext(request.sliceContext)].filter(Boolean).join("\n\n");
         if (request.deepResearch) {
           userMessage = [
             `用户选区原文：${request.deepResearch.selectionText}`,
             `研究方向：${direction}`,
             request.deepResearch.contextBefore ? `选区前文：${request.deepResearch.contextBefore}` : "",
             request.deepResearch.contextAfter ? `选区后文：${request.deepResearch.contextAfter}` : "",
+            parentContext,
+            formatResearchSliceContext(request.sliceContext),
             "请基于这些材料并联网搜索最新信息后回答。",
           ].filter(Boolean).join("\n\n");
         }
@@ -192,7 +379,8 @@ export class CaptureService {
           },
           {
             maxTurns: 10,
-            context: { workflowRunId: request.taskId, purpose: "research", promptVersion: "agent-search-v2" },
+            systemPrompt: `你是 Collector 的研究助手。你可以使用 web_search 和 web_fetch 工具完成联网研究：先搜索，再按需抓取页面，信息不足时换关键词；最多 5 次搜索。\n\n最终回答只输出一段连贯的中文纯文本，不要返回 JSON、字段包装或 Markdown 代码围栏。按自然段落组织回答，段落之间留一个空行。只能在确有依据的陈述后写 [来源n]，n 对应工具返回的来源序号；不得编造来源或引用记录。`,
+            context: { workflowRunId: request.taskId, purpose: "research", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
           },
         );
 
@@ -249,6 +437,8 @@ export class CaptureService {
               contentTitle: request.deepResearch.contentTitle,
               contextBefore: request.deepResearch.contextBefore,
               contextAfter: request.deepResearch.contextAfter,
+              parentChainContext: request.parentChainContext,
+              sliceContext: request.sliceContext,
             },
             { context: { workflowRunId: request.taskId, purpose: "deep_research", promptVersion: "deep-research-v1" } },
           );
@@ -256,9 +446,85 @@ export class CaptureService {
           return;
         }
         const answer = await purposeGateway.answerResearchConversation(request.messages, {
+          parentChainContext: request.parentChainContext,
+          sliceContext: request.sliceContext,
           context: { workflowRunId: request.taskId, purpose: "research_chat", promptVersion: "research-chat-v1" },
         });
         for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);
+      },
+      async writeBody(request) {
+        const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
+        if (!purposeGateway) throw new Error("AI model is not configured");
+        return purposeGateway.writeResearchBody(request.messages, {
+          parentChainContext: request.parentChainContext,
+          sliceContext: request.sliceContext,
+          context: { workflowRunId: request.taskId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
+        });
+      },
+      // 真实逐字流式（方案 B）：委托网关 writeResearchBodyStream，逐字产出文本增量。
+      async *writeBodyStream(request) {
+        const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
+        if (!purposeGateway) throw new Error("AI model is not configured");
+        yield* purposeGateway.writeResearchBodyStream(request.messages, {
+          parentChainContext: request.parentChainContext,
+          sliceContext: request.sliceContext,
+          ...(request.resumeFrom !== undefined ? { resumeFrom: request.resumeFrom } : {}),
+          ...(request.onStreamDone ? { onDone: request.onStreamDone } : {}),
+          context: { workflowRunId: request.taskId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
+        });
+      },
+      async generateOutline(request) {
+        const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
+        if (!purposeGateway) throw new Error("AI model is not configured");
+        return purposeGateway.generateBodyOutline(request.messages, {
+          parentChainContext: request.parentChainContext,
+          sliceContext: request.sliceContext,
+          context: { workflowRunId: request.taskId, purpose: "research_body_outline", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
+        });
+      },
+      async expandSection(request) {
+        const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
+        if (!purposeGateway) throw new Error("AI model is not configured");
+        return purposeGateway.expandBodySection(
+          {
+            goal: [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "",
+            outline: request.outline,
+            sectionIndex: request.sectionIndex,
+            writtenSoFar: request.writtenSoFar,
+            ...(request.continuation ? { continuation: request.continuation } : {}),
+            ...(request.repairHint !== undefined ? { repairHint: request.repairHint } : {}),
+            ...(request.targetCharsOverride !== undefined ? { targetCharsOverride: request.targetCharsOverride } : {}),
+          },
+          { context: { workflowRunId: request.taskId, purpose: "research_body_section", promptVersion: RESEARCH_SLICE_PROMPT_VERSION } },
+        );
+      },
+      async deriveAnnotations(input) {
+        const purposeGateway = await service.gatewayForPurpose("extraction");
+        if (!purposeGateway) throw new Error("AI model is not configured");
+        return purposeGateway.deriveSliceAnnotations(input, {
+          context: { workflowRunId: "", purpose: "research_slice_annotation", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
+        });
+      },
+      // #31：确认式融合正文生成。独立提示词版本；来源切片 ID、片段 ID 与令牌预算
+      // 随 context 落入模型会话轨迹（attachModelGateway 已记 ModelCallRecord，验收 4）。
+      // request.fusion.sources 由 research.ts 组装（含逐字可回读的片段摘录），这里只做网关适配。
+      async composeFusion(request) {
+        const purposeGateway = await service.gatewayForPurpose("research");
+        if (!purposeGateway) throw new Error("AI model is not configured");
+        const sources = request.fusion.sources;
+        const sourceSliceIds = [...new Set(sources.flatMap((source) => source.sliceId ? [source.sliceId] : []))].sort();
+        const sourceFragmentIds = [...new Set(sources.map((source) => source.fragmentId))].sort();
+        return purposeGateway.composeFusion(
+          { sources: sources.map((source) => ({ nodeId: source.nodeId, title: source.label, excerpt: source.excerpt })), relationType: request.fusion.relationType },
+          { context: {
+            workflowRunId: request.taskId,
+            purpose: "fusion_compose",
+            promptVersion: FUSION_COMPOSE_PROMPT_VERSION,
+            ...(sourceSliceIds.length ? { sourceSliceIds } : {}),
+            ...(sourceFragmentIds.length ? { sourceFragmentIds } : {}),
+            tokenBudget: FUSION_COMPOSE_TOKEN_BUDGET,
+          } },
+        );
       },
     };
   }
@@ -380,6 +646,17 @@ export class CaptureService {
     });
 
     return getSearchConfigFromAgent();
+  }
+
+  // ── 自动融合设置（#32）──────────────────────────────────
+  getFusionAutoConfig(): { enabled: boolean } {
+    return { enabled: this.store.getSetting(AUTO_FUSION_SETTING_KEY) === "true" };
+  }
+
+  async updateFusionAutoConfig(input: { enabled?: unknown }): Promise<{ enabled: boolean }> {
+    if (typeof input?.enabled !== "boolean") throw new ValidationError("enabled must be a boolean");
+    await this.store.saveSetting(AUTO_FUSION_SETTING_KEY, String(input.enabled));
+    return { enabled: input.enabled };
   }
 
   getProviderCatalog(): ProviderDefinition[] { return DEFAULT_PROVIDER_REGISTRY.list(); }

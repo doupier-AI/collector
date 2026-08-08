@@ -1,7 +1,13 @@
 import type {
   ResearchAttachmentRecord,
+  ResearchBodyVersionRecord,
   ResearchBranchRecord,
   ResearchBranchView,
+  ResearchEdgeKind,
+  ResearchEdgeRecord,
+  ResearchFusionProposalRecord,
+  ResearchGraphProjection,
+  ResearchGraphNodeSummary,
   ResearchImportTaskRecord,
   ResearchLaterItemRecord,
   ResearchLaterItemView,
@@ -10,6 +16,7 @@ import type {
   ResearchNodeView,
   ResearchSelectionRecord,
   ResearchSelectionTaskRecord,
+  ResearchSemanticFragmentRecord,
   ResearchSessionRecord,
   ResearchTaskRecord,
 } from "@collector/capture-contracts";
@@ -105,6 +112,8 @@ export function makeNodeView(overrides: Partial<ResearchNodeView> = {}): Researc
     messages: overrides.messages ?? [],
     tasks: overrides.tasks ?? [],
     childNodes: overrides.childNodes ?? [],
+    // 保留扩展字段（slices/bodyVersions/fusionProposals/termDetections 等）
+    ...overrides,
   };
 }
 
@@ -246,8 +255,147 @@ export function makeLaterItemView(overrides: {
   item?: ResearchLaterItemRecord;
   selection?: ResearchSelectionRecord;
   sourceTitle?: string;
+  sourceNode?: { id: string; label: string };
 } = {}): ResearchLaterItemView {
   const item = overrides.item ?? makeLaterItem();
   const selection = overrides.selection ?? makeSelection({ id: item.selectionId, sessionId: item.sessionId });
-  return { item, selection, sourceTitle: overrides.sourceTitle ?? "理解注意力机制" };
+  return {
+    item,
+    selection,
+    sourceTitle: overrides.sourceTitle ?? "理解注意力机制",
+    sourceNode: overrides.sourceNode ?? { id: item.nodeId ?? item.sessionId, label: overrides.sourceTitle ?? "理解注意力机制" },
+  };
+}
+
+/** 类型化边工厂：默认 active 状态，确定性 ID 由 kind + from + to 拼接。 */
+export function makeEdge(
+  kind: ResearchEdgeKind,
+  fromNodeId: string,
+  toNodeId: string,
+  overrides: Partial<ResearchEdgeRecord> = {},
+): ResearchEdgeRecord {
+  return {
+    id: overrides.id ?? `edge:${kind}:${fromNodeId}:${toNodeId}`,
+    kind,
+    fromNodeId,
+    toNodeId,
+    createdAt: "2026-08-01T08:00:00.000Z",
+    status: "active",
+    ...overrides,
+  };
+}
+
+/** 图投影工厂：接受节点摘要数组与边数组，焦点默认取第一个节点。 */
+export function makeGraphProjection(
+  overrides: {
+    nodes?: ResearchGraphNodeSummary[];
+    edges?: ResearchEdgeRecord[];
+    focusNodeId?: string;
+  } = {},
+): ResearchGraphProjection {
+  const nodes = overrides.nodes ?? [];
+  return {
+    focusNodeId: overrides.focusNodeId ?? (nodes[0]?.node.id ?? "focus"),
+    edges: overrides.edges ?? [],
+    nodes,
+  };
+}
+
+/** 图节点摘要工厂：配合 makeNode 使用。 */
+export function makeGraphNodeSummary(
+  id: string,
+  label: string,
+  depth: number,
+  options: { parentNodeId?: string; sessionId?: string; createdAt?: string } = {},
+): ResearchGraphNodeSummary {
+  return {
+    node: makeNode({
+      id,
+      sessionId: options.sessionId ?? "session-1",
+      parentNodeId: options.parentNodeId,
+      createdAt: options.createdAt ?? "2026-08-01T08:00:00.000Z",
+    }),
+    label,
+    depth,
+  };
+}
+
+/** 融合提案工厂：默认带完整可定位触发依据（nodeId + bodyVersionId + fragmentId）。 */
+export function makeFusionProposal(
+  overrides: Partial<ResearchFusionProposalRecord> = {},
+): ResearchFusionProposalRecord {
+  sequence += 1;
+  const loNodeId = overrides.loNodeId ?? "node-a";
+  const hiNodeId = overrides.hiNodeId ?? "node-b";
+  return {
+    id: `fusion:${sequence}`,
+    loNodeId,
+    hiNodeId,
+    relationType: "shared-concept",
+    reason: "两处内容共享同一概念。",
+    status: "pending",
+    triggerSources:
+      overrides.triggerSources ??
+      [
+        {
+          nodeId: loNodeId,
+          bodyVersionId: `body:message-${sequence}:abc`,
+          fragmentId: `fragment:body:message-${sequence}:abc:0`,
+        },
+        {
+          nodeId: hiNodeId,
+          bodyVersionId: `body:message-${sequence + 1}:def`,
+          fragmentId: `fragment:body:message-${sequence + 1}:def:0`,
+        },
+      ],
+    verification: { promptVersion: "similarity-verify-v1", sourceSliceIds: [], sourceFragmentIds: [], tokenBudget: 800 },
+    createdAt: "2026-08-02T00:00:00.000Z",
+    updatedAt: "2026-08-02T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+/** 正文版本工厂（#35）：messageId 与 content 必填，ID 由消息与序号确定性派生风格。 */
+export function makeBodyVersion(
+  messageId: string,
+  content: string,
+  overrides: Partial<ResearchBodyVersionRecord> = {},
+): ResearchBodyVersionRecord {
+  sequence += 1;
+  return {
+    id: `body:${messageId}:${sequence}`,
+    messageId,
+    nodeId: overrides.nodeId ?? "node-a",
+    version: 1,
+    content,
+    contentHash: `hash-${sequence}`,
+    origin: "backfill",
+    createdAt: "2026-08-02T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+/** 语义片段工厂（#35）：bodyVersionId/messageId/content 必填，默认 ordinal=0、范围覆盖整段正文、正式（非 provisional）。 */
+export function makeFragment(
+  bodyVersionId: string,
+  messageId: string,
+  content: string,
+  overrides: Partial<ResearchSemanticFragmentRecord> = {},
+): ResearchSemanticFragmentRecord {
+  sequence += 1;
+  return {
+    id: `fragment:${bodyVersionId}:${overrides.ordinal ?? 0}`,
+    bodyVersionId,
+    messageId,
+    nodeId: overrides.nodeId ?? "node-a",
+    ordinal: overrides.ordinal ?? 0,
+    startOffset: overrides.startOffset ?? 0,
+    endOffset: overrides.endOffset ?? content.length,
+    granularity: "paragraph",
+    sourceRefs: [],
+    isProvisional: false,
+    excerptChecksum: `checksum-${sequence}`,
+    createdAt: "2026-08-02T00:00:00.000Z",
+    ...overrides,
+  };
 }

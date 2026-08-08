@@ -94,7 +94,7 @@ export interface ProviderModelDiscoveryInput {
 export type ProviderModelDiscoveryResult = { ok: true; models: string[] } | { ok: false; error: string };
 
 /** 可按任务类型分配模型的用途；未分配时跟随当前激活配置。 */
-export const MODEL_PURPOSES = ["chat", "selection", "research", "search", "document"] as const;
+export const MODEL_PURPOSES = ["chat", "selection", "research", "search", "document", "extraction"] as const;
 export type ModelPurpose = (typeof MODEL_PURPOSES)[number];
 
 export interface ModelPurposeRoute {
@@ -337,6 +337,12 @@ export interface ModelCallRecord {
   model: string;
   purpose: string;
   promptVersion: string;
+  /** F1 等切片感知调用记录实际送入核验的本地切片，不保存提示词正文。 */
+  sourceSliceIds?: string[];
+  /** #39 起片段感知调用同时记录语义片段 ID；与 sourceSliceIds 同为本地引用。 */
+  sourceFragmentIds?: string[];
+  /** 调用时固定的输出令牌预算；缺省表示旧记录未提供此审计字段。 */
+  tokenBudget?: number;
   status: "completed" | "failed";
   inputTokens: number;
   outputTokens: number;
@@ -365,6 +371,130 @@ export interface AiUsageSummary {
   byPurpose: Record<string, { calls: number; tokens: number; costUsd: number }>;
   successRate: number;
 }
+
+// ── Local run records (issue #19) ────────────────────────────────
+
+export type RunRecordSource = "research" | "selection" | "import" | "workflow" | "fusion";
+export type RunRecordOperationType = "research" | "selection_analysis" | "document_import" | "recent_organization" | "topic_document" | "similarity_verification";
+export type RunRecordStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "corrupt";
+export type RunRecordOutcome = "success" | "failure" | "active" | "cancelled" | "unavailable";
+export type RunRecordErrorCategory = "authentication" | "network" | "validation" | "provider" | "search" | "storage" | "unknown";
+
+export interface RunRecordSummary {
+  id: string;
+  source: RunRecordSource;
+  operationType: RunRecordOperationType;
+  title?: string;
+  status: RunRecordStatus;
+  outcome: RunRecordOutcome;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
+  modelCallCount: number;
+  searchCount: number;
+  retryCount: number;
+}
+
+export interface RunRecordModelCallView {
+  id: string;
+  provider: string;
+  model: string;
+  purpose: string;
+  promptVersion: string;
+  sourceSliceIds?: string[];
+  tokenBudget?: number;
+  status: "completed" | "failed" | "corrupt";
+  inputTokens: number;
+  outputTokens: number;
+  cacheHitTokens: number;
+  estimatedCostUsd?: number;
+  costStatus?: "estimated" | "unknown";
+  latencyMs: number;
+  retryCount: number;
+  errorMessage?: string;
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface RunRecordSearchView {
+  id: string;
+  provider: string;
+  model: string;
+  scenario: string;
+  status: string;
+  attempt: number;
+  queries: string[];
+  sourceCount: number;
+  citationCount: number;
+  responseSummary?: Record<string, unknown>;
+  errorMessage?: string;
+  createdAt: string;
+  completedAt?: string;
+  sources: Array<{ title: string; url?: string; snippet?: string }>;
+}
+
+export interface RunRecordErrorView {
+  source: "task" | "model" | "search" | "record";
+  category: RunRecordErrorCategory;
+  message: string;
+}
+
+export interface RunRecordTaskView {
+  id: string;
+  sessionId?: string;
+  provider?: string;
+  model?: string;
+  promptVersion?: string;
+  /** E2：已完成研究任务实际持久化的正式切片数量。 */
+  sliceCount?: number;
+  retryable?: boolean;
+}
+
+export interface RunRecordDetail extends RunRecordSummary {
+  task?: RunRecordTaskView;
+  modelCalls: RunRecordModelCallView[];
+  searches: RunRecordSearchView[];
+  errors: RunRecordErrorView[];
+}
+
+export interface RunRecordPage {
+  items: RunRecordSummary[];
+  nextCursor?: string;
+}
+
+/** 本地运行记录导出的筛选条件；导出只覆盖当前筛选结果，不隐式读取全量业务数据。 */
+export interface RunRecordExportFilters {
+  from?: string;
+  to?: string;
+  operationType?: RunRecordOperationType;
+  outcome?: RunRecordOutcome;
+  status?: RunRecordStatus;
+}
+
+/** NDJSON 导出格式版本；头尾行使大文件中断时可以识别是否完整。 */
+export const RUN_RECORD_EXPORT_FORMAT_VERSION = "collector.run-records.v1" as const;
+
+export interface RunRecordExportHeader {
+  type: "header";
+  formatVersion: typeof RUN_RECORD_EXPORT_FORMAT_VERSION;
+  generatedAt: string;
+  filters: RunRecordExportFilters;
+}
+
+export interface RunRecordExportRecord {
+  type: "record";
+  record: RunRecordDetail;
+}
+
+export interface RunRecordExportSummary {
+  type: "summary";
+  formatVersion: typeof RUN_RECORD_EXPORT_FORMAT_VERSION;
+  recordCount: number;
+  complete: true;
+}
+
+export type RunRecordExportLine = RunRecordExportHeader | RunRecordExportRecord | RunRecordExportSummary;
 
 export interface AiBudgetSettings {
   monthlyLimitUsd: number;
@@ -415,6 +545,50 @@ export interface DocumentOutline {
 export type ResearchMessageRole = "user" | "assistant";
 export type ResearchMessageStatus = "pending" | "streaming" | "completed" | "failed";
 export type ResearchTaskStatus = "queued" | "running" | "completed" | "failed";
+
+/** AI 弱标记预览任务状态（H3c）。预览独立于节点消息，点击后才会转成子节点。 */
+export type ResearchTermPreviewStatus = "queued" | "running" | "completed" | "failed";
+
+export interface ResearchTermPreviewError {
+  code: "model_not_configured" | "provider_error" | "service_restarted";
+  message: string;
+}
+
+/** 单个消息术语在当前节点中的一次正式解释生成。内容会持续写入，便于刷新后恢复。 */
+export interface ResearchTermPreviewRecord {
+  id: string;
+  sessionId: string;
+  nodeId: string;
+  messageId: string;
+  marker: TermMarker;
+  /** node + message + marker offsets 的确定性缓存键。 */
+  markerKey: string;
+  /** 用于网络重试与重复点击的幂等键。 */
+  idempotencyKey: string;
+  selectionId: string;
+  status: ResearchTermPreviewStatus;
+  content: string;
+  retryable: boolean;
+  provider?: string;
+  model?: string;
+  promptVersion: string;
+  error?: ResearchTermPreviewError;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface ResearchTermPreviewInput {
+  messageId: string;
+  marker: TermMarker;
+}
+
+export type ResearchTermPreviewEvent =
+  | { id?: number; type: "snapshot"; preview: ResearchTermPreviewRecord; createdAt: string }
+  | { id: number; type: "delta"; delta: string; preview: ResearchTermPreviewRecord; createdAt: string }
+  | { id: number; type: "completed"; preview: ResearchTermPreviewRecord; createdAt: string }
+  | { id: number; type: "failed"; preview: ResearchTermPreviewRecord; createdAt: string };
 
 export const RESEARCH_IMPORT_MAX_BYTES = 20 * 1024 * 1024;
 export const RESEARCH_IMPORT_MIME_TYPES = [
@@ -531,6 +705,14 @@ export interface ResearchNodeRecord {
   sessionId: string;
   parentNodeId?: string;
   originSelectionId?: string;
+  /** H6：模型生成的稳定显示名称；缺失时使用确定性回退。 */
+  displayName?: string;
+  /** #31：确认式融合创建的融合节点标记（存 record_json，零迁移）；无父链，来源关系由 fused-from 边表达。 */
+  isFusionNode?: boolean;
+  /** #32：自动融合创建的融合节点标记（存 record_json，零迁移）；确认式融合不设。不变量：为 true 时 isFusionNode 也为 true。 */
+  isAutoFusionNode?: boolean;
+  /** #32：自动融合节点回链触发它的融合提议 ID（全程留痕）。 */
+  triggerFusionProposalId?: string;
   status: "active";
   createdAt: string;
   updatedAt: string;
@@ -562,6 +744,29 @@ export interface MessageContentBlock {
 }
 
 /**
+ * 节级组合单元：把若干连续段落块合成一个"节切片"的骨架。
+ * 标题块（见 splitBlockHeading）并入下一正文块；标题提升为 title、其后正文为 content。
+ * 只描述组合关系，绝不复制/改写正文——content 恒等于被合并块文本用 "\n\n" 原样拼接，
+ * 选区锚点与片段偏移仍以未改动的 deriveMessageBlocks 段落块为基线。
+ *
+ * #43：本结构是**瞬态派生结构**（卡片正文与片段范围的确定性来源），不是持久化契约——
+ * 切片不再保存正文副本，正文唯一事实源是消息正文与正文版本。
+ */
+export interface MessageSectionUnit {
+  /** 该节第一个块（含标题块）的 ordinal，即节起始块下标。 */
+  firstBlockOrdinal: number;
+  /** 节标题；首块是标题行时为其文字，否则为空串。 */
+  title: string;
+  /**
+   * 节正文：被合并块文本按 "\n\n" 原样拼接（含标题块时含标题行），逐字等于对应正文片段。
+   * 选区锚点与片段偏移仍以未改动的 deriveMessageBlocks 段落块为基线，正文一字不改。
+   */
+  content: string;
+  /** 该节合并的块数（≥1）。 */
+  blockCount: number;
+}
+
+/**
  * 把消息纯文本确定性切分为段落块。规则（前后端必须只使用本实现，禁止另写切分逻辑）：
  * 1. 先把 CRLF / CR 归一为 LF；
  * 2. 按一个或多个空行（只含空白字符的行）切分段落；
@@ -585,6 +790,86 @@ export function deriveMessageBlocks(content: string): MessageContentBlock[] {
 /** 消息内容块的稳定派生 ID，用于 DOM 锚点与选区记录，不入库。 */
 export function messageContentBlockId(messageId: string, ordinal: number): string {
   return `${messageId}#p${ordinal}`;
+}
+
+/** 仅含一个加粗短行的整段标题（模型常用 `**标题**` 代替 ATX 标题）。 */
+const BOLD_HEADING_MAX_CHARS = 60;
+
+/**
+ * 把单个段落块拆成"节标题 + 节正文"。返回 null 表示该块不含可提取标题。
+ * 识别两类模型常用的标题形态（与正文唯一事实源一致，只在展示层提升标题，不改文本）：
+ * - ATX 标题行：`#{1,6} 标题`（块首行；该块可能紧跟正文行，取首行为标题、其余为正文）；
+ * - 整段加粗短行：`**标题**`（仅当整块只有一行且全部加粗、且足够短时才当作标题，
+ *   避免把正文里的加粗句误判成标题）。
+ */
+export function splitBlockHeading(blockText: string): { title: string; body: string } | null {
+  const atx = blockText.match(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*(?:\n([\s\S]*))?$/);
+  if (atx) {
+    const title = (atx[1] ?? "").trim();
+    const body = (atx[2] ?? "").trim();
+    if (title) return { title, body };
+  }
+  const trimmed = blockText.trim();
+  if (!trimmed.includes("\n") && trimmed.length <= BOLD_HEADING_MAX_CHARS) {
+    const bold = trimmed.match(/^\*\*(.+?)\*\*$/);
+    if (bold && bold[1]?.trim()) return { title: bold[1].trim(), body: "" };
+  }
+  return null;
+}
+
+/**
+ * 把段落块序列组合成节级单元（生成自由化后切片/卡片/导航的粒度）。
+ * 规则：标题块并入紧随其后的正文块——标题提升为节 title，正文为节 content；
+ * 连续的裸标题（无正文）合并取最后一个标题；普通段落块各自成节（title 为空）。
+ * 输出节数 ≤ 输入块数；content 恒由被合并块文本按 "\n\n" 原样拼接，正文一字不改。
+ * 幂等、不依赖 AI、不修改源文本。
+ */
+export function composeSectionUnits(blocks: readonly MessageContentBlock[]): MessageSectionUnit[] {
+  const units: MessageSectionUnit[] = [];
+  // 节以标题为界：标题块开启一个新节，其后连续的普通正文块并入该节；一旦遇到无标题的普通
+  // 段落且当前节还没有标题，则每个普通段落各自成节（保持无标题正文"一段一卡"的现状）。
+  // content 是被合并块文本按 "\n\n" 原样拼接（标题块含标题行），逐字等于对应正文片段。
+  let title = "";
+  let firstOrdinal = -1;
+  let partTexts: string[] = [];
+  const flush = () => {
+    if (firstOrdinal < 0) return;
+    units.push({
+      firstBlockOrdinal: firstOrdinal,
+      title,
+      content: partTexts.join("\n\n"),
+      blockCount: partTexts.length,
+    });
+    title = "";
+    firstOrdinal = -1;
+    partTexts = [];
+  };
+  for (const block of blocks) {
+    const heading = splitBlockHeading(block.text);
+    if (heading && !heading.body) {
+      // 标题块：先收束上一节，再以它为标题开启新节（标题行作为节正文首段，逐字保留）。
+      flush();
+      title = heading.title;
+      firstOrdinal = block.ordinal;
+      partTexts = [block.text];
+      continue;
+    }
+    if (heading && heading.body) {
+      // 同块内"标题 + 正文"：收束上一节，本块独立成节（整块逐字保留）。
+      flush();
+      units.push({ firstBlockOrdinal: block.ordinal, title: heading.title, content: block.text, blockCount: 1 });
+      continue;
+    }
+    // 普通正文块：仅当正处于一个"有标题的节"里才并入；否则自成无标题节（一段一卡）。
+    if (firstOrdinal >= 0 && title) {
+      partTexts.push(block.text);
+    } else {
+      flush();
+      units.push({ firstBlockOrdinal: block.ordinal, title: "", content: block.text, blockCount: 1 });
+    }
+  }
+  flush();
+  return units;
 }
 
 export type AiConfigurationMode = "real" | "demo" | "unconfigured";
@@ -716,7 +1001,6 @@ export interface ResearchSelectionInput {
 }
 
 /** 选区质量阈值。前后端同源，只允许引用本常量，不得另写数值。 */
-export const RESEARCH_SELECTION_MIN_CHARACTERS = 4;
 export const RESEARCH_SELECTION_MAX_CHARACTERS = 4000;
 /** 选区上下文摘录的最大长度（锚点 prefix/suffix 与 record contextBefore/After 共用）。 */
 export const RESEARCH_SELECTION_CONTEXT_CHARACTERS = 120;
@@ -773,18 +1057,20 @@ export function validateResearchSelectionInput(value: unknown): asserts value is
 
 export type ResearchSelectionQuality =
   | { level: "ok" }
-  | { level: "too_short"; minCharacters: number }
   | { level: "too_long"; maxCharacters: number }
   | { level: "cross_block" };
 
 /**
  * 选区质量评估（纯函数，前后端同一实现）。返回调整建议而不阻止创建；
  * 服务端仍按 validateResearchSelectionInput 拒绝结构不合法的请求。
+ *
+ * 修订一·B（issue #10）：非空即有效——最短字符限制全层退役，单字选区同样 ok；
+ * "非空"的结构保证由 validateResearchSelectionInput 的 exact 校验承担
+ * （exact 必须为非空的修剪后文本），本函数不再检查字数下限，字数上限不变。
  */
 export function evaluateSelectionQuality(input: { text: string; blockCount: number }): ResearchSelectionQuality {
   if (input.blockCount > 1) return { level: "cross_block" };
   const length = input.text.trim().length;
-  if (length < RESEARCH_SELECTION_MIN_CHARACTERS) return { level: "too_short", minCharacters: RESEARCH_SELECTION_MIN_CHARACTERS };
   if (length > RESEARCH_SELECTION_MAX_CHARACTERS) return { level: "too_long", maxCharacters: RESEARCH_SELECTION_MAX_CHARACTERS };
   return { level: "ok" };
 }
@@ -845,6 +1131,46 @@ export interface ResearchGroundingScope {
   runId?: string;
 }
 
+/**
+ * plan-then-write 长文任务的单节计划与进度。
+ * content 仅在该节扩写完成后写入；恢复时已完成节直接重放、不重调模型。
+ */
+export interface ResearchBodyPlanSection {
+  /** 节标题；同时作为该节首个派生切片的卡片标题来源。 */
+  heading: string;
+  /** 该节主旨（扩写时的写作指引）。 */
+  summary: string;
+  /** 目标字数（提示用，非硬约束）。 */
+  targetChars: number;
+  status: "pending" | "completed" | "failed";
+  /** 扩写完成的节正文；pending 时缺省。 */
+  content?: string;
+  /** 节内续写断点：本节已接受但尚未完成的部分正文（截断续写/空节修复中途落盘），恢复时从断点续写。 */
+  partialContent?: string;
+  /** 节最终失败原因（截断续写耗尽 / 空输出重问耗尽 / 供应商错误）；仅 status="failed" 时写入。 */
+  failureReason?: string;
+}
+
+/**
+ * 续写拼接去重：剔除 next 与 prior 尾部最长重叠前缀后拼接。
+ * 截断续写/断点续传时模型可能重述断点附近的文字；精确字符匹配（不做模糊/归一化），
+ * 仅当重叠长度 ≥ minOverlap 才认定为重复，避免短巧合重叠误删正文。契约安全、确定。
+ */
+export function joinContinuation(prior: string, next: string, maxOverlap = 2_000, minOverlap = 8): string {
+  if (!prior) return next;
+  if (!next) return prior;
+  const upper = Math.min(maxOverlap, prior.length, next.length);
+  for (let k = upper; k >= minOverlap; k -= 1) {
+    if (prior.endsWith(next.slice(0, k))) return prior + next.slice(k);
+  }
+  return prior + next;
+}
+
+/** plan-then-write 长文任务的大纲与逐节进度，持久化于任务 record_json 以支持断点续扩。 */
+export interface ResearchBodyPlan {
+  sections: ResearchBodyPlanSection[];
+}
+
 export interface ResearchTaskRecord {
   id: string;
   sessionId: string;
@@ -858,7 +1184,19 @@ export interface ResearchTaskRecord {
   provider?: string;
   model?: string;
   promptVersion: string;
+  /** E2：只有完整正式切片落库后才写入；存于既有 research_tasks.record_json。 */
+  sliceCount?: number;
+  /** 本次任务是否获得用户明确授权使用联网搜索；缺省值只兼容旧任务，服务端按 false 处理。 */
+  allowWebSearch?: boolean;
   groundingScope?: ResearchGroundingScope;
+  /** plan-then-write 长文任务的逐节计划与进度；仅存于 record_json，用于断点续扩。 */
+  bodyPlan?: ResearchBodyPlan;
+  /** 单轮流式断点：周期性落盘的已接收正文前缀；流被切断/重启后从断点续传，不整篇重来。 */
+  streamCheckpoint?: { content: string; updatedAt: string };
+  /** #31：融合节点生成的来源计划与关系类型；任务处理时消费，存于 record_json。 */
+  fusionPlan?: { sources: ResearchFusionSource[]; relationType: FusionRelationType };
+  /** #31：融合正文完成后解析出的 [来源n] 引用；存于 record_json，节点视图据此组装来源条。 */
+  fusionReferences?: ResearchFusionReference[];
   error?: ResearchTaskError;
   createdAt: string;
   updatedAt: string;
@@ -884,11 +1222,21 @@ export interface ResearchNodeView {
   session: ResearchSessionRecord;
   messages: ResearchMessageRecord[];
   tasks: ResearchTaskRecord[];
+  /** H3b：按消息 ID 返回已校验的术语位置；缺失时客户端按原文渲染。 */
+  termDetections?: Record<string, TermDetectionResult>;
   childNodes?: ResearchNodeRecord[];
   groundingSources?: ResearchGroundingSourceRecord[];
   citations?: ResearchCitationRecord[];
   attachments?: ResearchAttachmentRecord[];
   importTasks?: ResearchImportTaskRecord[];
+  /** E1：按消息 ID 返回切片列表（#43 起为卡片骨架，不含正文副本；正文由客户端从消息正文派生）；缺失时客户端按原消息块渲染。 */
+  slices?: Record<string, ResearchSliceRecord[]>;
+  /** F1：该节点相关的融合提议列表；缺失时客户端不呈现弱提示。 */
+  fusionProposals?: ResearchFusionProposalRecord[];
+  /** #35：按消息 ID 返回正文版本；可选字段，缺失时前端按消息正文渲染。 */
+  bodyVersions?: Record<string, ResearchBodyVersionRecord>;
+  /** #31：按消息 ID 返回该消息引用的融合来源；可选字段，缺失时前端不渲染来源条。 */
+  fusionSources?: Record<string, ResearchFusionSource[]>;
 }
 
 export interface ResearchTurnAccepted {
@@ -922,11 +1270,13 @@ export function validateResearchImportHeaders(fileName: unknown, mimeType: unkno
   }
 }
 
-export function validateResearchMessageInput(value: unknown): asserts value is { content: string } {
+export function validateResearchMessageInput(value: unknown): asserts value is { content: string; allowWebSearch?: boolean } {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Research message input must be an object");
-  const content = (value as { content?: unknown }).content;
+  const input = value as { content?: unknown; allowWebSearch?: unknown };
+  const content = input.content;
   if (typeof content !== "string" || !content.trim()) throw new Error("content is required");
   if (content.length > 200_000) throw new Error("content must not exceed 200000 characters");
+  if (input.allowWebSearch !== undefined && typeof input.allowWebSearch !== "boolean") throw new Error("allowWebSearch must be a boolean when provided");
 }
 
 // ── Deep Research (MVP 阶段 C) ─────────────────────────────
@@ -955,19 +1305,23 @@ export interface DeepResearchInput {
   direction?: string;
   /** 独立研究会话标题；省略时按选区原文确定性派生，不依赖 AI。 */
   title?: string;
+  /** 本次第一轮是否允许联网搜索，默认关闭。 */
+  allowWebSearch?: boolean;
 }
 
 /** 从选区/弱标记生长子节点的输入（阶段 H）。 */
 export interface CreateChildNodeInput {
   /** 用户补充的研究问题；省略时由系统根据选区原文生成默认追问。 */
   query?: string;
+  /** 本次首轮是否允许联网搜索，默认关闭。 */
+  allowWebSearch?: boolean;
 }
 
 export const CHILD_NODE_QUERY_MAX_CHARACTERS = 2000;
 
 export function validateCreateChildNodeInput(value: unknown): asserts value is CreateChildNodeInput {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Child node input must be an object");
-  const input = value as { query?: unknown };
+  const input = value as { query?: unknown; allowWebSearch?: unknown };
   if (input.query !== undefined) {
     if (typeof input.query !== "string" || !input.query.trim()) {
       throw new Error("query must be a non-empty string when provided");
@@ -976,13 +1330,34 @@ export function validateCreateChildNodeInput(value: unknown): asserts value is C
       throw new Error(`query must not exceed ${CHILD_NODE_QUERY_MAX_CHARACTERS} characters`);
     }
   }
+  if (input.allowWebSearch !== undefined && typeof input.allowWebSearch !== "boolean") throw new Error("allowWebSearch must be a boolean when provided");
+}
+
+export function validateResearchTermPreviewInput(value: unknown): asserts value is ResearchTermPreviewInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Term preview input must be an object");
+  const input = value as { messageId?: unknown; marker?: unknown };
+  if (typeof input.messageId !== "string" || !input.messageId.trim()) throw new Error("messageId is required");
+  if (!input.marker || typeof input.marker !== "object" || Array.isArray(input.marker)) throw new Error("marker is required");
+  const marker = input.marker as Partial<TermMarker>;
+  if (typeof marker.text !== "string" || !marker.text.trim()) throw new Error("marker.text is required");
+  const blockOrdinal = marker.blockOrdinal;
+  const startOffset = marker.startOffset;
+  const endOffset = marker.endOffset;
+  if (typeof blockOrdinal !== "number" || !Number.isSafeInteger(blockOrdinal) || blockOrdinal < 0) throw new Error("marker.blockOrdinal must be a non-negative integer");
+  if (typeof startOffset !== "number" || !Number.isSafeInteger(startOffset) || startOffset < 0) throw new Error("marker.startOffset must be a non-negative integer");
+  if (typeof endOffset !== "number" || !Number.isSafeInteger(endOffset) || endOffset <= startOffset) throw new Error("marker.endOffset must be greater than marker.startOffset");
+  if (endOffset - startOffset !== marker.text.length) throw new Error("marker offsets must match marker.text");
+  const categories: TermCategory[] = ["term", "abbreviation", "proper_noun", "concept"];
+  if (!categories.includes(marker.category as TermCategory)) {
+    throw new Error("marker.category is invalid");
+  }
 }
 
 export const RESEARCH_DIRECTION_MAX_CHARACTERS = 2000;
 
 export function validateDeepResearchInput(value: unknown): asserts value is DeepResearchInput {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Deep research input must be an object");
-  const input = value as { mode?: unknown; direction?: unknown; title?: unknown };
+  const input = value as { mode?: unknown; direction?: unknown; title?: unknown; allowWebSearch?: unknown };
   if (input.mode !== "branch" && input.mode !== "session") throw new Error("mode must be branch or session");
   if (input.direction !== undefined) {
     if (typeof input.direction !== "string" || !input.direction.trim()) {
@@ -995,6 +1370,7 @@ export function validateDeepResearchInput(value: unknown): asserts value is Deep
   if (input.title !== undefined && (typeof input.title !== "string" || !input.title.trim() || input.title.trim().length > 200)) {
     throw new Error("title must contain 1 to 200 characters when provided");
   }
+  if (input.allowWebSearch !== undefined && typeof input.allowWebSearch !== "boolean") throw new Error("allowWebSearch must be a boolean when provided");
 }
 
 export const RESEARCH_TITLE_MAX_CHARACTERS = 40;
@@ -1048,10 +1424,17 @@ export interface DeepResearchAccepted {
 export interface NodeGrowthAccepted {
   node: ResearchNodeRecord;
   session: ResearchSessionRecord;
-  selection: ResearchSelectionRecord;
+  /** 来源选区；确认式融合节点无选区（#31），该字段可为空。 */
+  selection?: ResearchSelectionRecord;
   inputMessage: ResearchMessageRecord;
   outputMessage: ResearchMessageRecord;
   task: ResearchTaskRecord;
+}
+
+/** 术语预览创建结果；selection 保存原消息与术语位置，供点击生长时建立来源关系。 */
+export interface ResearchTermPreviewAccepted {
+  preview: ResearchTermPreviewRecord;
+  selection: ResearchSelectionRecord;
 }
 
 /**
@@ -1069,6 +1452,204 @@ export interface ResearchSessionNodeTreeItem {
   firstMessage?: string;
 }
 
+// ── Research Edge Model & Graph Projection (D1) ───────────────────
+
+/** 边的类型：父子（节点血统）、语义相关、融合来源。 */
+export const RESEARCH_EDGE_KINDS = ["parent-child", "semantic-related", "fused-from"] as const;
+export type ResearchEdgeKind = (typeof RESEARCH_EDGE_KINDS)[number];
+
+/** 边的状态。active 为正常可用，deleted 为软删除保留。 */
+export type ResearchEdgeStatus = "active" | "deleted";
+
+/**
+ * 类型化边记录（D1）。连接两个研究节点，携带类型、创建时间和状态。
+ * 边创建幂等：UNIQUE(kind, fromNodeId, toNodeId) 保证刷新与重试不重复建边。
+ */
+export interface ResearchEdgeRecord {
+  id: string;
+  kind: ResearchEdgeKind;
+  fromNodeId: string;
+  toNodeId: string;
+  createdAt: string;
+  status: ResearchEdgeStatus;
+  /** #31：融合来源边携带该来源贡献的语义片段 ID 并集（存 record_json，画布读取不受影响）。 */
+  sourceFragmentIds?: string[];
+}
+
+/**
+ * 图投影（D1）：以当前节点为中心的关系视图。
+ * 由契约层纯函数从节点集合与边集合确定性派生，
+ * 非血统边成环、缺失节点、多根情形均可复算且安全降级。
+ */
+export interface ResearchGraphProjection {
+  /** 投影包含的节点摘要。 */
+  nodes: ResearchGraphNodeSummary[];
+  /** 投影包含的类型化边。 */
+  edges: ResearchEdgeRecord[];
+  /** 当前焦点节点 ID。 */
+  focusNodeId: string;
+}
+
+/**
+ * 图投影中的节点摘要：节点记录 + 确定性标签 + 深度（相对焦点）。
+ * 标签规则与 ResearchSessionNodeTreeItem 一致：
+ * displayName > 来源选区摘要 > 首条用户消息摘要 > 节点 ID 前 8 字符。
+ */
+export interface ResearchGraphNodeSummary {
+  node: ResearchNodeRecord;
+  /** 节点在投影中的标签（导航呈现用）。 */
+  label: string;
+  /** 相对焦点节点的深度；焦点为 0，邻居为 ±1，逐层外扩。 */
+  depth: number;
+}
+
+/**
+ * 从节点血统确定性派生父子边。
+ * 遍历节点列表，对每个有 parentNodeId 的节点生成一条 parent-child 边。
+ * 边的 ID 由 kind + fromNodeId + toNodeId 确定性派生（FNV-1a），保证幂等。
+ * 缺失父节点（parentNodeId 指向不存在的节点）时跳过该边，不抛错。
+ */
+export function deriveParentChildEdges(
+  nodes: readonly ResearchNodeRecord[],
+): ResearchEdgeRecord[] {
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const edges: ResearchEdgeRecord[] = [];
+  for (const node of nodes) {
+    if (!node.parentNodeId) continue;
+    if (!nodeIds.has(node.parentNodeId)) continue;
+    const id = researchEdgeId("parent-child", node.parentNodeId, node.id);
+    edges.push({
+      id,
+      kind: "parent-child",
+      fromNodeId: node.parentNodeId,
+      toNodeId: node.id,
+      createdAt: node.createdAt,
+      status: "active",
+    });
+  }
+  return edges;
+}
+
+/**
+ * 边 ID 的确定性派生：FNV-1a(kind + ":" + fromNodeId + ":" + toNodeId)。
+ * 与选区幂等键同源规则，保证同一三元组始终生成同一 ID。
+ */
+export function researchEdgeId(kind: ResearchEdgeKind, fromNodeId: string, toNodeId: string): string {
+  const input = `${kind}:${fromNodeId}:${toNodeId}`;
+  return `edge:${fnv1a32(input)}`;
+}
+
+/**
+ * 构建图投影：以 focusNodeId 为中心，逐层邻居扩展。
+ * - 焦点节点 depth=0；
+ * - 父子边连接的直接邻居 depth=±1（父 -1、子 +1）；
+ * - 非血统边（semantic-related / fused-from）的邻居 depth 按最短路径；
+ * - 成环边安全跳过（visited 集合防无限循环）；
+ * - 缺失节点（边指向不在节点集合中的 ID）安全跳过；
+ * - 多根（多个无父节点）不影响投影：焦点可达的全部节点均进入投影。
+ *
+ * maxDepth 控制扩展层数，默认 2（焦点 ± 2 层）。
+ */
+export function buildGraphProjection(
+  allNodes: readonly ResearchNodeRecord[],
+  allEdges: readonly ResearchEdgeRecord[],
+  focusNodeId: string,
+  options: { maxDepth?: number; nodeLabel?: (node: ResearchNodeRecord) => string } = {},
+): ResearchGraphProjection {
+  const maxDepth = options.maxDepth ?? 2;
+  const nodeMap = new Map<string, ResearchNodeRecord>();
+  for (const node of allNodes) nodeMap.set(node.id, node);
+
+  const focusNode = nodeMap.get(focusNodeId);
+  if (!focusNode) {
+    return { nodes: [], edges: [], focusNodeId };
+  }
+
+  // 构建邻接表（无向图，边权重=1）
+  const adjacency = new Map<string, Array<{ neighborId: string; edge: ResearchEdgeRecord }>>();
+  const activeEdges = allEdges.filter((edge) => edge.status === "active");
+  for (const edge of activeEdges) {
+    if (!nodeMap.has(edge.fromNodeId) || !nodeMap.has(edge.toNodeId)) continue;
+    if (!adjacency.has(edge.fromNodeId)) adjacency.set(edge.fromNodeId, []);
+    if (!adjacency.has(edge.toNodeId)) adjacency.set(edge.toNodeId, []);
+    adjacency.get(edge.fromNodeId)!.push({ neighborId: edge.toNodeId, edge });
+    adjacency.get(edge.toNodeId)!.push({ neighborId: edge.fromNodeId, edge });
+  }
+
+  // BFS 从焦点扩展
+  const visited = new Map<string, number>(); // nodeId → depth
+  const queue: Array<{ nodeId: string; depth: number }> = [{ nodeId: focusNodeId, depth: 0 }];
+  visited.set(focusNodeId, 0);
+  const projectedNodeIds = new Set<string>();
+  const projectedEdgeIds = new Set<string>();
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    if (current.depth > maxDepth) continue;
+    projectedNodeIds.add(current.nodeId);
+    const neighbors = adjacency.get(current.nodeId) ?? [];
+    for (const { neighborId, edge } of neighbors) {
+      if (visited.has(neighborId)) {
+        // 成环：仍把边加入投影（如果两端都在投影中），但不重复入队
+        if (projectedNodeIds.has(neighborId)) projectedEdgeIds.add(edge.id);
+        continue;
+      }
+      visited.set(neighborId, current.depth + 1);
+      queue.push({ nodeId: neighborId, depth: current.depth + 1 });
+    }
+  }
+
+  // 第二轮：把投影节点之间的所有边都加入（包括 BFS 未走过的跨层边）
+  for (const edge of activeEdges) {
+    if (projectedNodeIds.has(edge.fromNodeId) && projectedNodeIds.has(edge.toNodeId)) {
+      projectedEdgeIds.add(edge.id);
+    }
+  }
+
+  const labelFn = options.nodeLabel ?? defaultGraphNodeLabel;
+  const nodes: ResearchGraphNodeSummary[] = [];
+  for (const nodeId of projectedNodeIds) {
+    const node = nodeMap.get(nodeId)!;
+    const depth = visited.get(nodeId) ?? 0;
+    nodes.push({
+      node,
+      label: labelFn(node),
+      depth,
+    });
+  }
+  // 按 depth 绝对值排序，同层按创建时间
+  nodes.sort((a, b) => {
+    const depthDiff = Math.abs(a.depth) - Math.abs(b.depth);
+    if (depthDiff !== 0) return depthDiff;
+    return a.node.createdAt.localeCompare(b.node.createdAt);
+  });
+
+  // 只返回两个端点都在本次深度投影中的边，避免 maxDepth=0/1 泄漏层外关系。
+  const edges = activeEdges.filter(
+    (edge) => projectedEdgeIds.has(edge.id)
+      && projectedNodeIds.has(edge.fromNodeId)
+      && projectedNodeIds.has(edge.toNodeId),
+  );
+
+  return { nodes, edges, focusNodeId };
+}
+
+/** 图投影节点的默认标签：displayName > "node-" + id 前 8 字符。 */
+function defaultGraphNodeLabel(node: ResearchNodeRecord): string {
+  if (node.displayName) return node.displayName;
+  return `node-${node.id.slice(0, 8)}`;
+}
+
+/** FNV-1a 32-bit 确定性摘要（与选区幂等键同源）。 */
+function fnv1a32(input: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
 export interface ResearchBranchView {
   branch: ResearchBranchRecord;
   session: ResearchSessionRecord;
@@ -1083,7 +1664,7 @@ export interface ResearchBranchView {
 
 // ── Research Later (MVP 阶段 D) ─────────────────────────────
 
-/** 稍后再学项目状态。当前 MVP 只有待学与完成两种；自动弱重现属后续阶段。 */
+/** 兼容旧数据的项目状态；当前用户路径统一呈现为标记，不再展示状态切换。 */
 export type ResearchLaterItemStatus = "pending" | "done";
 
 /** 用户优先级为一至五星；省略时默认三星。 */
@@ -1093,11 +1674,14 @@ export const RESEARCH_LATER_DEFAULT_PRIORITY = 3;
 /** 用户概括的最大长度；默认值由确定性派生函数生成，不超过 80 字符。 */
 export const RESEARCH_LATER_SUMMARY_MAX_CHARACTERS = 200;
 export const RESEARCH_LATER_DEFAULT_SUMMARY_CHARACTERS = 80;
+/** 用户笔记的最大长度（修订二：标记与笔记）。空笔记等价于无笔记（纯标记）。 */
+export const RESEARCH_LATER_NOTE_MAX_CHARACTERS = 2_000;
 
 /**
- * 稍后再学项目。保存、展示和返回来源不依赖 AI：
+ * 标记项目（沿用旧 research_later_items 存储名）。保存、展示和返回来源不依赖 AI：
  * `selectionId` 是来源关系的唯一依据，选区原文与位置由选区记录保留；
- * `summary` 默认值确定性派生，`priority` 由用户设置的一至五星表达。
+ * `summary` 默认值确定性派生，`priority` 由用户设置的一至五星表达；
+ * 修订二的标记流程只用 `note`（用户笔记，缺省为纯标记），星级 / 概括 / 状态字段闲置保留。
  */
 export interface ResearchLaterItemRecord {
   id: string;
@@ -1108,19 +1692,28 @@ export interface ResearchLaterItemRecord {
   summary: string;
   priority: number;
   status: ResearchLaterItemStatus;
+  /** 用户笔记（修订二）。undefined 或空表示纯标记、无笔记。 */
+  note?: string;
   createdAt: string;
   updatedAt: string;
 }
 
 /**
- * 稍后再学列表视图：联接来源选区原文与来源内容标题，
- * 前端可直接呈现摘要、星级、来源与时间，无需再次查询选区。
+ * 标记列表视图：联接来源选区原文、节点和内容标题，
+ * 前端可直接呈现选区、笔记、来源节点与时间，无需再次查询来源。
  */
+export interface ResearchLaterSourceNode {
+  id: string;
+  label: string;
+}
+
 export interface ResearchLaterItemView {
   item: ResearchLaterItemRecord;
   selection: ResearchSelectionRecord;
   /** 消息选区为所属会话标题，快照选区为内容快照标题。 */
   sourceTitle: string;
+  /** 标记所在的研究节点；旧记录按选区节点或会话根节点补齐。 */
+  sourceNode: ResearchLaterSourceNode;
 }
 
 export interface ResearchLaterItemInput {
@@ -1135,6 +1728,8 @@ export interface ResearchLaterItemUpdate {
   priority?: number;
   summary?: string;
   status?: ResearchLaterItemStatus;
+  /** 用户笔记（修订二）；空字符串 / 纯空白视为清除笔记（纯标记）。 */
+  note?: string;
 }
 
 export function validateResearchLaterItemInput(value: unknown): asserts value is ResearchLaterItemInput {
@@ -1147,12 +1742,13 @@ export function validateResearchLaterItemInput(value: unknown): asserts value is
 
 export function validateResearchLaterItemUpdate(value: unknown): asserts value is ResearchLaterItemUpdate {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Research later item update must be an object");
-  const update = value as { priority?: unknown; summary?: unknown; status?: unknown };
-  if (update.priority === undefined && update.summary === undefined && update.status === undefined) {
-    throw new Error("Update requires at least one of priority, summary, or status");
+  const update = value as { priority?: unknown; summary?: unknown; status?: unknown; note?: unknown };
+  if (update.priority === undefined && update.summary === undefined && update.status === undefined && update.note === undefined) {
+    throw new Error("Update requires at least one of priority, summary, status, or note");
   }
   validateResearchLaterPriority(update.priority);
   validateResearchLaterSummary(update.summary);
+  validateResearchLaterNote(update.note);
   if (update.status !== undefined && update.status !== "pending" && update.status !== "done") {
     throw new Error("status must be pending or done");
   }
@@ -1170,6 +1766,15 @@ function validateResearchLaterSummary(value: unknown): void {
   if (typeof value !== "string" || !value.trim()) throw new Error("summary must be a non-empty string when provided");
   if (value.length > RESEARCH_LATER_SUMMARY_MAX_CHARACTERS) {
     throw new Error(`summary must not exceed ${RESEARCH_LATER_SUMMARY_MAX_CHARACTERS} characters`);
+  }
+}
+
+/** 笔记允许空字符串（语义为清除笔记、纯标记），只要求类型为字符串且不超过上限。 */
+function validateResearchLaterNote(value: unknown): void {
+  if (value === undefined) return;
+  if (typeof value !== "string") throw new Error("note must be a string when provided");
+  if (value.length > RESEARCH_LATER_NOTE_MAX_CHARACTERS) {
+    throw new Error(`note must not exceed ${RESEARCH_LATER_NOTE_MAX_CHARACTERS} characters`);
   }
 }
 
@@ -1317,7 +1922,392 @@ export interface ApiError {
 }
 
 
-// 閳光偓閳光偓 Verification (Issue 08) 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓
+// ── Semantic Slices (E1 / E2) ─────────────────────────────────────
+
+/**
+ * 语义切片记录（#43 收缩后为「卡片骨架 + 派生元数据」）。一条助手消息可被切分为
+ * 多个语义切片，每片携带标题、归一化概念与片内来源引用。切片**不保存正文副本**：
+ * 正文是唯一事实源，经正文版本（`ResearchBodyVersionRecord`）与语义片段
+ * （`ResearchSemanticFragmentRecord`）或消息正文确定性派生回读。
+ *
+ * - id：稳定唯一标识，格式 `slice:{nodeId}:{messageId}:{ordinal}`；
+ * - ordinal：从 0 连续编号，同一消息内单调递增；
+ * - isProvisional：true 表示由确定性规则从消息块边界派生的临时切片（历史兼容读取），
+ *   false 表示由 AI 在回答生成阶段产生的正式切片。
+ */
+export interface ResearchSliceRecord {
+  id: string;
+  nodeId: string;
+  messageId: string;
+  ordinal: number;
+  title: string;
+  normalizedConcepts: string[];
+  sourceRefs: ResearchCitationRecord[];
+  isProvisional: boolean;
+  createdAt: string;
+}
+
+/**
+ * E3：送入下一轮生成的有界上下文条目；与父链上下文分别预算。
+ *
+ * #39 起条目经语义片段 Interface 选择：`bodyVersionId` + `fragmentId` 是稳定引用，
+ * `content` 是 `resolveFragmentExcerpt` 从正文版本范围运行时派生的摘录（正文是唯一
+ * 事实源，不再以独立切片内容副本为源）。正式片段可回指对应切片（`sliceId`）；
+ * 按块派生的临时片段没有对应切片，`sliceId` 缺省。
+ */
+export interface ResearchSliceContextItem {
+  fragmentId: string;
+  bodyVersionId: string;
+  sliceId?: string;
+  nodeId: string;
+  messageId: string;
+  ordinal: number;
+  title: string;
+  content: string;
+  normalizedConcepts: string[];
+  sourceRefs: ResearchCitationRecord[];
+  isProvisional: boolean;
+  parentDistance: number;
+}
+
+export interface ResearchSliceContext {
+  items: ResearchSliceContextItem[];
+  tokenBudget: number;
+  estimatedTokens: number;
+  /** F2 接入融合语义的预留位置；E3 当前保持为空。 */
+  fusionSignals: string[];
+  originSelectionId?: string;
+}
+
+export const RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS = 200;
+export const RESEARCH_NATIVE_SLICE_MAX_CONCEPTS = 12;
+export const RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS = 160;
+
+/**
+ * 校验确定性派生切片序列的结构合法性（生成自由化后的权威切片）。
+ * 其余不变量（稳定 ID、ordinal 严格递增、标题/概念/来源引用结构）与正式切片一致。
+ * #43 起切片不再携带 content 字段（正文经正文版本与片段派生回读）。
+ *
+ * 校验失败时抛错；通过时返回 void。
+ */
+export function validateDerivedSlices(slices: ResearchSliceRecord[], nodeId: string, messageId: string): void {
+  if (!Array.isArray(slices)) throw new Error("Slices must be an array");
+  let previousOrdinal = -1;
+  for (const slice of slices) {
+    if (!slice || typeof slice !== "object" || Array.isArray(slice)) throw new Error("Slice must be an object");
+    if (slice.nodeId !== nodeId) throw new Error(`Slice nodeId must be ${nodeId}`);
+    if (slice.messageId !== messageId) throw new Error(`Slice messageId must be ${messageId}`);
+    if (!Number.isSafeInteger(slice.ordinal) || slice.ordinal < 0) throw new Error(`Slice ordinal must be a non-negative integer, got ${slice.ordinal}`);
+    const expectedId = `slice:${nodeId}:${messageId}:${slice.ordinal}`;
+    if (slice.id !== expectedId) throw new Error(`Slice id must be ${expectedId}, got ${slice.id}`);
+    if (slice.ordinal <= previousOrdinal) throw new Error(`Slice ordinals must be strictly increasing; got ${slice.ordinal} after ${previousOrdinal}`);
+    previousOrdinal = slice.ordinal;
+    if (typeof slice.title !== "string") throw new Error(`Slice ${slice.ordinal} title must be a string`);
+    if (!Array.isArray(slice.normalizedConcepts) || slice.normalizedConcepts.some((concept) => typeof concept !== "string" || !concept.trim())) {
+      throw new Error(`Slice ${slice.ordinal} normalizedConcepts must be an array of non-empty strings`);
+    }
+    if (!Array.isArray(slice.sourceRefs) || slice.sourceRefs.some((ref) => !ref || typeof ref !== "object" || ref.messageId !== messageId)) {
+      throw new Error(`Slice ${slice.ordinal} sourceRefs must reference this message`);
+    }
+    if (typeof slice.isProvisional !== "boolean") throw new Error(`Slice ${slice.ordinal} isProvisional must be a boolean`);
+    if (typeof slice.createdAt !== "string" || Number.isNaN(Date.parse(slice.createdAt))) throw new Error(`Slice ${slice.ordinal} createdAt must be an ISO date`);
+  }
+}
+
+/**
+ * 单个段落块的外部语义标注（标题/概念），由小模型事后抽取或 plan-then-write 大纲提供。
+ * 缺省或字段为空时，对应切片标题给空串、概念给空数组，前端按正文摘要降级。
+ */
+export interface ResearchSliceAnnotation {
+  title?: string;
+  concepts?: string[];
+}
+
+/**
+ * 确定性派生切片（生成自由化后的唯一切片来源）。正文是唯一事实源：
+ * 按 `deriveMessageBlocks` 的段落边界逐块派生一个切片，**不复制正文副本**——
+ * 正文经正文版本与语义片段派生回读（#43 收缩），切片只携带定位与派生元数据。
+ *
+ * - 两次调用结果完全一致（幂等），不修改源文本，不依赖 AI，不入库（由服务层决定持久化）。
+ * - ordinalOffset 为该节点已有切片的最大 ordinal + 1（无切片时为 0），保证节点范围内 ordinal 连续唯一。
+ * - 标题/概念来自 `annotations`（按块下标对齐）：plan-then-write 用大纲节标题，否则用小模型
+ *   事后抽取；缺省或抽取失败时标题为空串（前端退回正文摘要）、概念为空数组（融合退回术语/分词）。
+ * - isProvisional 恒为 false：在生成自由化契约下，派生切片即权威结构，不再是"临时兜底"。
+ */
+export function deriveMessageSlices(
+  nodeId: string,
+  messageId: string,
+  messageContent: string,
+  ordinalOffset: number = 0,
+  citations: ResearchCitationRecord[] = [],
+  annotations: readonly (ResearchSliceAnnotation | undefined)[] = [],
+  createdAt?: string,
+): ResearchSliceRecord[] {
+  const blocks = deriveMessageBlocks(messageContent);
+  if (blocks.length === 0) return [];
+  const timestamp = createdAt ?? new Date().toISOString();
+  const units = composeSectionUnits(blocks);
+  // annotations 按块下标对齐：节的标注取自节起始块——有标题节该块即标题块（plan-then-write
+  // 的 hint 落此），无标题节该块即被抽取的正文段。
+  return units.map((unit, index) => {
+    const ordinal = ordinalOffset + index;
+    const annotation = annotations[unit.firstBlockOrdinal];
+    const extractedTitle = (annotation?.title ?? "").trim();
+    // 节标题（来自正文里的标题行）优先；抽取标题仅作无标题段的补充，且不与节标题重复。
+    const title = unit.title || (extractedTitle && extractedTitle !== unit.title ? extractedTitle : "");
+    const normalizedConcepts = (annotation?.concepts ?? [])
+      .map((concept) => (typeof concept === "string" ? concept.trim() : ""))
+      .filter(Boolean);
+    const sliceCitations = citations.filter(
+      (citation) => citation.blockOrdinal >= unit.firstBlockOrdinal && citation.blockOrdinal < unit.firstBlockOrdinal + unit.blockCount,
+    );
+    return {
+      id: `slice:${nodeId}:${messageId}:${ordinal}`,
+      nodeId,
+      messageId,
+      ordinal,
+      title,
+      normalizedConcepts,
+      sourceRefs: sliceCitations,
+      isProvisional: false,
+      createdAt: timestamp,
+    };
+  });
+}
+
+
+// ── Body Version & Semantic Fragment (Issue #35) ─────────────────────
+
+/**
+ * 正文版本记录。一份研究正文的不可变版本，由正文内容确定性派生。
+ *
+ * - id：`body:{messageId}:{hash16}`，由归一化正文的确定性摘要决定；
+ *   同一消息、同一正文反复派生得到同一 ID（幂等）。
+ * - content：归一化后的正文（CRLF/CR 已归一为 LF），是片段偏移的基准。
+ * - contentHash：归一化正文的确定性摘要，用于一致性校验。
+ * - version：当前恒为 1；保留字段，支持未来的多版本演进。
+ * - origin：`generation`=生成时由模型路径写入；`backfill`=历史回填写入。
+ *
+ * 正文是内容的唯一事实源；本记录不复制正文之外的新内容，仅为正文加稳定版本锚点。
+ */
+export interface ResearchBodyVersionRecord {
+  id: string;
+  messageId: string;
+  nodeId: string;
+  version: number;
+  content: string;
+  contentHash: string;
+  origin: "generation" | "backfill";
+  taskId?: string;
+  createdAt: string;
+}
+
+/**
+ * 语义片段记录。引用正文版本的一个连续范围，是上下文选择与融合引用的最小单位。
+ *
+ * - 片段**不存正文内容副本**，只存 `[startOffset, endOffset)` 范围；
+ *   摘录由 `resolveFragmentExcerpt` 从正文版本运行时派生（验收 3）。
+ * - 偏移单位是 UTF-16 code unit，与 `deriveMessageBlocks` 及选区锚点一致。
+ * - `excerptChecksum` 是该范围文本的确定性摘要，作为校验值，不替代正文。
+ * - `granularity`：当前恒为 `"paragraph"`（按段落/切片边界）。
+ * - `isProvisional`：true 表示按消息块边界确定性派生的临时片段；
+ *   false 表示按已校验的正式切片边界派生的正式片段。
+ */
+export interface ResearchSemanticFragmentRecord {
+  id: string;
+  bodyVersionId: string;
+  messageId: string;
+  nodeId: string;
+  ordinal: number;
+  startOffset: number;
+  endOffset: number;
+  granularity: "paragraph";
+  sourceRefs: ResearchCitationRecord[];
+  isProvisional: boolean;
+  excerptChecksum: string;
+  createdAt: string;
+}
+
+/** 片段 HTTP 视图：在记录上附运行时派生的摘录（不入库）。 */
+export interface ResearchSemanticFragmentView extends ResearchSemanticFragmentRecord {
+  excerpt: string;
+}
+
+/** 正文版本 HTTP 视图：版本 + 带摘录的片段。 */
+export interface ResearchBodyVersionView {
+  version: ResearchBodyVersionRecord;
+  fragments: ResearchSemanticFragmentView[];
+}
+
+/** 正文版本/片段一致性错误的稳定码（验收 6：明确错误，不静默关联）。 */
+export type BodyIntegrityErrorCode =
+  | "body_version_mismatch"
+  | "fragment_range_invalid"
+  | "fragment_checksum_mismatch";
+
+/** 带稳定 `code` 的一致性错误，供调用方分类处理。 */
+export class BodyIntegrityError extends Error {
+  readonly code: BodyIntegrityErrorCode;
+  constructor(code: BodyIntegrityErrorCode, message: string) {
+    super(message);
+    this.name = "BodyIntegrityError";
+    this.code = code;
+  }
+}
+
+/** 归一化正文：CRLF / CR 归一为 LF。与 deriveMessageBlocks 的基准一致。 */
+export function normalizeBodyContent(content: string): string {
+  return content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+/** 归一化正文的确定性摘要（FNV-1a 32，纯 JS，前后端共用，无 node:crypto）。 */
+export function hashBodyContent(content: string): string {
+  let hash = 0x811c9dc5;
+  const normalized = normalizeBodyContent(content);
+  for (let i = 0; i < normalized.length; i++) {
+    hash ^= normalized.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+/**
+ * 确定性派生正文版本（纯函数）。同一 messageId + 同一归一化正文恒得同一记录，
+ * 不依赖时钟之外的任何可变状态；createdAt 由调用方注入以保证可复现。
+ */
+export function deriveBodyVersion(input: {
+  messageId: string;
+  nodeId: string;
+  content: string;
+  origin: "generation" | "backfill";
+  taskId?: string;
+  createdAt: string;
+  version?: number;
+}): ResearchBodyVersionRecord {
+  const content = normalizeBodyContent(input.content);
+  const contentHash = hashBodyContent(content);
+  const version = input.version ?? 1;
+  return {
+    id: `body:${input.messageId}:${contentHash}`,
+    messageId: input.messageId,
+    nodeId: input.nodeId,
+    version,
+    content,
+    contentHash,
+    origin: input.origin,
+    ...(input.taskId ? { taskId: input.taskId } : {}),
+    createdAt: input.createdAt,
+  };
+}
+
+function fragmentExcerptChecksum(excerpt: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < excerpt.length; i++) {
+    hash ^= excerpt.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function makeFragment(
+  version: ResearchBodyVersionRecord,
+  ordinal: number,
+  startOffset: number,
+  endOffset: number,
+  sourceRefs: ResearchCitationRecord[],
+  isProvisional: boolean,
+): ResearchSemanticFragmentRecord {
+  const excerpt = version.content.slice(startOffset, endOffset);
+  return {
+    id: `fragment:${version.id}:${ordinal}`,
+    bodyVersionId: version.id,
+    messageId: version.messageId,
+    nodeId: version.nodeId,
+    ordinal,
+    startOffset,
+    endOffset,
+    granularity: "paragraph",
+    sourceRefs,
+    isProvisional,
+    excerptChecksum: fragmentExcerptChecksum(excerpt),
+    createdAt: version.createdAt,
+  };
+}
+
+/**
+ * 从已校验的正式切片派生正式片段。写库时 deriveMessageSlices 已按节派生（标题块并入正文），
+ * 故此处复用同一 composeSectionUnits 组合，按节单元映射到块范围。
+ *
+ * #43 收缩后切片不再携带正文副本，对齐门从"逐字内容相等"改为结构性门：
+ * 切片与节单元同源于正文的确定性派生，故数量一致（且无旧 provisional 行）即视为同源对齐；
+ * 片段范围始终来自正文版本的块/节派生，摘录永远是正文版本的精确子串，绝不伪造范围。
+ * 对齐门失败（旧数据或数量不一致）时退化为按块派生的临时片段。
+ */
+export function deriveFragmentsFromSlices(
+  version: ResearchBodyVersionRecord,
+  slices: ResearchSliceRecord[],
+  citations: ResearchCitationRecord[] = [],
+): ResearchSemanticFragmentRecord[] {
+  const blocks = deriveMessageBlocks(version.content);
+  const units = composeSectionUnits(blocks);
+  const usable =
+    slices.length > 0 &&
+    slices.every((s) => !s.isProvisional) &&
+    slices.length === units.length;
+  if (!usable) return deriveFragmentsFromBlocks(version, citations);
+  return slices.map((slice, index) => {
+    const unit = units[index]!;
+    const firstBlock = blocks[unit.firstBlockOrdinal];
+    const lastBlock = blocks[unit.firstBlockOrdinal + unit.blockCount - 1] ?? firstBlock;
+    const startOffset = firstBlock?.startOffset ?? 0;
+    const endOffset = lastBlock ? lastBlock.startOffset + lastBlock.text.length : startOffset;
+    const sourceRefs = citations.filter(
+      (c) => c.blockOrdinal >= unit.firstBlockOrdinal && c.blockOrdinal < unit.firstBlockOrdinal + unit.blockCount,
+    );
+    return makeFragment(version, index, startOffset, endOffset, sourceRefs, false);
+  });
+}
+
+/** 按消息块边界确定性派生临时片段（无正式切片或旧数据的兜底路径）。 */
+export function deriveFragmentsFromBlocks(
+  version: ResearchBodyVersionRecord,
+  citations: ResearchCitationRecord[] = [],
+): ResearchSemanticFragmentRecord[] {
+  return deriveMessageBlocks(version.content).map((block) => {
+    const sourceRefs = citations.filter((c) => c.blockOrdinal === block.ordinal);
+    return makeFragment(version, block.ordinal, block.startOffset, block.startOffset + block.text.length, sourceRefs, true);
+  });
+}
+
+/**
+ * 从正文版本派生片段摘录（运行时唯一入口）。任何版本/范围/校验和不一致都抛出
+ * 带稳定 code 的 BodyIntegrityError，绝不静默关联到其他文本（验收 6）。
+ */
+export function resolveFragmentExcerpt(
+  version: ResearchBodyVersionRecord,
+  fragment: ResearchSemanticFragmentRecord,
+): string {
+  if (fragment.bodyVersionId !== version.id) {
+    throw new BodyIntegrityError("body_version_mismatch", `Fragment ${fragment.id} does not belong to body version ${version.id}`);
+  }
+  if (
+    !Number.isSafeInteger(fragment.startOffset) ||
+    !Number.isSafeInteger(fragment.endOffset) ||
+    fragment.startOffset < 0 ||
+    fragment.endOffset > version.content.length ||
+    fragment.endOffset <= fragment.startOffset
+  ) {
+    throw new BodyIntegrityError("fragment_range_invalid", `Fragment ${fragment.id} has invalid range [${fragment.startOffset}, ${fragment.endOffset})`);
+  }
+  const excerpt = version.content.slice(fragment.startOffset, fragment.endOffset);
+  if (fragmentExcerptChecksum(excerpt) !== fragment.excerptChecksum) {
+    throw new BodyIntegrityError("fragment_checksum_mismatch", `Fragment ${fragment.id} excerpt checksum mismatch`);
+  }
+  return excerpt;
+}
+
+
+// ── Verification (Issue 08) ──────────────────────────────────────────────
 
 export type VerificationPolicy = "offline" | "verify_only";
 
@@ -1460,4 +2450,264 @@ function parseProviderBaseUrl(value: unknown): URL {
   if (typeof value !== "string" || !value.trim()) throw new Error("Provider base URL is required");
   try { return new URL(value); }
   catch { throw new Error("Provider base URL must be an absolute URL"); }
+}
+
+// ── Term Detection (H3a) ──────────────────────────────────────────
+
+/** 概念术语的分类。 */
+export type TermCategory = "term" | "abbreviation" | "proper_noun" | "concept";
+
+/**
+ * 单个检测到的术语及其在消息块内的精确位置。
+ * 偏移相对块文本（与 deriveMessageBlocks 产出的 MessageContentBlock.text 对齐），
+ * 消费方通过 blockOrdinal 定位块、用 startOffset/endOffset 切片块文本。
+ */
+export interface TermMarker {
+  /** 术语原文（来自消息块文本的切片）。 */
+  text: string;
+  /** 消息块序号（与 deriveMessageBlocks 对齐）。 */
+  blockOrdinal: number;
+  /** 术语在块文本中的起始偏移（UTF-16 code unit，与 String.prototype.slice 一致）。 */
+  startOffset: number;
+  /** 术语在块文本中的结束偏移（exclusive）。 */
+  endOffset: number;
+  /** 术语分类。 */
+  category: TermCategory;
+}
+
+/** 消息术语检测结果。检测失败或无需检测时 terms 为空数组。 */
+export interface TermDetectionResult {
+  messageId: string;
+  terms: TermMarker[];
+  detectedAt: string;
+  /** H5c：服务端确定性收敛决策，客户端不需要自行推断密度。 */
+  convergence: import("./research-convergence.js").ResearchConvergenceDecision;
+  /** 被收敛策略抑制的候选术语数量。 */
+  suppressedCount: number;
+}
+
+export {
+  DEFAULT_RESEARCH_CONVERGENCE_BOUNDS,
+  RESEARCH_CONVERGENCE_REDUCED_MARKER_MAX_COUNT,
+  RESEARCH_CONVERGENCE_REDUCED_MARKER_RATIO,
+  RESEARCH_CONVERGENCE_REDUCE_AT_CONTENT_CHARACTERS,
+  RESEARCH_CONVERGENCE_REDUCE_AT_DEPTH,
+  RESEARCH_CONVERGENCE_SHORT_CONTENT_MAX_CHARACTERS,
+  RESEARCH_CONVERGENCE_STOP_AT_CONTENT_CHARACTERS,
+  RESEARCH_CONVERGENCE_STOP_AT_DEPTH,
+  measureResearchContentLength,
+  normalizeResearchNodeDepth,
+  resolveResearchConvergence,
+  selectResearchTermMarkers,
+} from "./research-convergence.js";
+export type {
+  ResearchConvergenceBounds,
+  ResearchConvergenceDecision,
+  ResearchConvergenceReason,
+  ResearchTermDensity,
+} from "./research-convergence.js";
+
+// ── Fusion Proposal (F1) ──────────────────────────────────────────
+
+/** 相似性核验提示词版本；模型调用与本地提议留痕都使用这一稳定版本。 */
+export const SIMILARITY_VERIFICATION_PROMPT_VERSION = "similarity-verify-v1";
+
+/** 融合正文生成的独立提示词版本（#31 F2）；模型调用与运行记录留痕都使用这一稳定版本。 */
+export const FUSION_COMPOSE_PROMPT_VERSION = "fusion-compose-v1";
+
+/** 融合正文生成的固定令牌预算；与提示词 maxTokens 一致，随运行记录留痕。 */
+export const FUSION_COMPOSE_TOKEN_BUDGET = 4_000;
+
+/** 融合关系类型；identity 为同一实体，unrelated 为无关。 */
+export const FUSION_RELATION_TYPES = ["identity", "shared-concept", "analogy", "contrast", "unrelated"] as const;
+export type FusionRelationType = (typeof FUSION_RELATION_TYPES)[number];
+
+/** 融合提议状态：pending 待决策，accepted 已确认，rejected 已拒绝。 */
+export type ResearchFusionProposalStatus = "pending" | "accepted" | "rejected";
+export type ResearchFusionProposalDecision = Exclude<ResearchFusionProposalStatus, "pending">;
+
+/**
+ * 触发来源：哪个语义片段命中触发此提议。
+ *
+ * #39 起每条来源至少携带原始节点（`nodeId`）、正文版本（`bodyVersionId`）与稳定片段
+ * 标识（`fragmentId`），摘录可经 `resolveFragmentExcerpt` 回读到正确原文；需要精确
+ * 说明时附带对应切片（`sliceId`）或触发术语（`termText`）。历史旧切片产生的来源可
+ * 由服务层兼容映射补齐正文版本与片段引用（#43 起为序数对齐映射：切片与片段同源于
+ * 正文的确定性派生，按消息内数组下标对齐，不再做正文内容相等匹配）。
+ */
+export interface FusionProposalTriggerSource {
+  /** 触发节点 ID。 */
+  nodeId: string;
+  /** 触发正文版本 ID（如有；新扫描必带）。 */
+  bodyVersionId?: string;
+  /** 触发语义片段 ID（如有；新扫描必带）。 */
+  fragmentId?: string;
+  /** 触发切片 ID（如有）。 */
+  sliceId?: string;
+  /** 触发术语文本（如有）。 */
+  termText?: string;
+}
+
+/**
+ * 相似性核验的可审计输入摘要。仅保留本机 slice/fragment ID、令牌预算和提示词版本，
+ * 不保存模型原始回答或额外的外部传输数据。
+ */
+export interface SimilarityVerificationAudit {
+  promptVersion: typeof SIMILARITY_VERIFICATION_PROMPT_VERSION;
+  sourceSliceIds: string[];
+  /** 参与核验的语义片段 ID 并集（#39 起随扫描写入）。 */
+  sourceFragmentIds?: string[];
+  tokenBudget: number;
+}
+
+/**
+ * 融合提议记录（F1）。确定性候选索引产出宽候选，模型核验关系类型与简短理由。
+ * 节点对按 id 字典序规范化（loNodeId / hiNodeId），使方向无关。
+ * UNIQUE(loNodeId, hiNodeId) 保证刷新与重启不为同一对重复提议。
+ */
+export interface ResearchFusionProposalRecord {
+  id: string;
+  loNodeId: string;
+  hiNodeId: string;
+  relationType: FusionRelationType;
+  reason: string;
+  status: ResearchFusionProposalStatus;
+  /** 拒绝后的冷却截止时间（ISO 8601），冷却期内不重复提议。 */
+  cooldownUntil?: string;
+  /** 触发来源信息。 */
+  triggerSources: FusionProposalTriggerSource[];
+  /** 模型核验的版本、所选切片和固定令牌预算，供本地审计。 */
+  verification: SimilarityVerificationAudit;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * #32：一次自动融合的产物摘要（scan 响应携带，供 WebUI 提示条跳转融合节点页）。
+ */
+export interface ResearchFusionAutoResult {
+  /** 触发自动融合的提议 ID。 */
+  proposalId: string;
+  /** 自动生成的融合节点 ID。 */
+  nodeId: string;
+  /** 融合节点所在会话 ID。 */
+  sessionId: string;
+}
+
+/**
+ * #32：scan 响应形态。proposals 为本次扫描后与本节点相关的全部提案
+ * （含自动融合成功后已 accepted 的留痕提案与维持弱提示的 pending 提案）；
+ * autoFused 为本次新自动生成的融合节点摘要。
+ */
+export interface ResearchFusionScanResult {
+  proposals: ResearchFusionProposalRecord[];
+  autoFused: ResearchFusionAutoResult[];
+}
+
+export interface ResearchFusionProposalDecisionInput {
+  decision: ResearchFusionProposalDecision;
+}
+
+/** 将节点对统一为无方向的字典序键。 */
+export function normalizeResearchFusionProposalPair(nodeAId: string, nodeBId: string): { loNodeId: string; hiNodeId: string } {
+  if (!nodeAId.trim() || !nodeBId.trim()) throw new Error("Fusion proposal node IDs are required");
+  if (nodeAId === nodeBId) throw new Error("Fusion proposal requires two distinct nodes");
+  return nodeAId < nodeBId
+    ? { loNodeId: nodeAId, hiNodeId: nodeBId }
+    : { loNodeId: nodeBId, hiNodeId: nodeAId };
+}
+
+export function validateResearchFusionProposalDecisionInput(value: unknown): asserts value is ResearchFusionProposalDecisionInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Fusion proposal decision input must be an object");
+  const decision = (value as { decision?: unknown }).decision;
+  if (decision !== "accepted" && decision !== "rejected") throw new Error("decision must be accepted or rejected");
+}
+
+/**
+ * 融合提议 ID 的确定性派生：FNV-1a(loNodeId + ":" + hiNodeId)。
+ * 节点对按字典序规范化，保证同一对无论输入顺序都生成同一 ID。
+ */
+export function researchFusionProposalId(nodeAId: string, nodeBId: string): string {
+  const { loNodeId, hiNodeId } = normalizeResearchFusionProposalPair(nodeAId, nodeBId);
+  return `fusion:${fusionFnv1a32(`${loNodeId}:${hiNodeId}`)}`;
+}
+
+/** FNV-1a 32-bit 确定性摘要（与选区幂等键同源）。 */
+function fusionFnv1a32(input: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+// ── Fusion Node Generation (F2) ───────────────────────────────────
+
+/**
+ * #31：融合正文的一个来源（贡献切片）。由确认时的提案触发来源派生，
+ * 携带正文版本与稳定片段标识——融合引用可经 `resolveFragmentExcerpt`
+ * 逐字回读到来源原文。
+ */
+export interface ResearchFusionSource {
+  /** 来源节点 ID。 */
+  nodeId: string;
+  /** 贡献片段的正文版本 ID。 */
+  bodyVersionId: string;
+  /** 贡献语义片段 ID。 */
+  fragmentId: string;
+  /** 来源节点标签（displayName/选区摘要回退），供融合提示词与 UI 展示。 */
+  label: string;
+  /** 对应切片 ID（如有）；供运行记录 sourceSliceIds 记账。 */
+  sliceId?: string;
+}
+
+/**
+ * #31：融合正文中的一条 [来源n] 引用。sourceOrdinal 为 1-based 序号，
+ * 指向融合计划的 sources[sourceOrdinal - 1]；blockOrdinal/markerOffset
+ * 与选区锚点同一派生规则（`deriveMessageBlocks`），可精确定位。
+ * nodeId/bodyVersionId/fragmentId 为冗余快照，保证来源信息不随计划变化漂移。
+ */
+export interface ResearchFusionReference {
+  sourceOrdinal: number;
+  blockOrdinal: number;
+  /** 标记在块文本内的字符偏移。 */
+  markerOffset: number;
+  nodeId: string;
+  bodyVersionId: string;
+  fragmentId: string;
+}
+
+/**
+ * #31：从融合正文确定性解析 [来源n] 引用标记。n 必须在来源数组范围内，
+ * 超界的标记静默丢弃（不产生引用，也不报错）。偏移按 `deriveMessageBlocks`
+ * 的段落块计算：先按全文找 [来源n]，再把标记偏移归入所属块并转为块内偏移。
+ */
+export function parseFusionReferences(
+  content: string,
+  sources: readonly ResearchFusionSource[],
+): ResearchFusionReference[] {
+  if (sources.length === 0) return [];
+  const blocks = deriveMessageBlocks(content);
+  const markerPattern = /\[来源(\d+)\]/g;
+  const references: ResearchFusionReference[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = markerPattern.exec(content)) !== null) {
+    const sourceOrdinal = Number(match[1]);
+    const source = sources[sourceOrdinal - 1];
+    if (!source) continue;
+    const markerStart = match.index;
+    const block = blocks.find((candidate) => markerStart >= candidate.startOffset
+      && markerStart < candidate.startOffset + candidate.text.length);
+    if (!block) continue;
+    references.push({
+      sourceOrdinal,
+      blockOrdinal: block.ordinal,
+      markerOffset: markerStart - block.startOffset,
+      nodeId: source.nodeId,
+      bodyVersionId: source.bodyVersionId,
+      fragmentId: source.fragmentId,
+    });
+  }
+  return references;
 }

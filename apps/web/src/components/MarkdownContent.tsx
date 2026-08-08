@@ -1,12 +1,13 @@
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useLayoutEffect, useMemo, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
-import type { ResearchCitationRecord, ResearchGroundingSourceRecord } from "@collector/capture-contracts";
+import type { ResearchCitationRecord, ResearchFusionSource, ResearchGroundingSourceRecord, TermMarker } from "@collector/capture-contracts";
 import { CitationMarker } from "./CitationMarker";
 import { remarkCitationMarkers } from "../features/research-session/remark-citation-markers";
 import { buildCitationIndex, buildSourceMap } from "../features/research-session/citation-utils";
+import { FusionCitationMarker } from "../features/research-session/FusionCitationMarker";
 
 declare global {
   namespace JSX {
@@ -32,8 +33,17 @@ export interface MarkdownContentProps {
   text: string;
   sources?: readonly ResearchGroundingSourceRecord[];
   citations?: readonly ResearchCitationRecord[];
+  terms?: readonly TermMarker[];
+  /** #31：融合正文的来源列表；存在时 [来源n] 渲染为可点击的融合引用标记。 */
+  fusionSources?: readonly ResearchFusionSource[];
   variant?: "message" | "insight";
   className?: string;
+  /**
+   * 语义卡片标题锚点 id。设置后，正文中第一个标题元素被提升为卡片标题
+   * （挂 slice-card__title 样式与该 id，供章节导航 scrollIntoView 定位），
+   * 其余标题保持默认样式。标题字符仍在正文文本内，选区/术语偏移不受影响。
+   */
+  titleAnchorId?: string;
 }
 
 /**
@@ -43,9 +53,13 @@ export interface MarkdownContentProps {
  * - variant="insight" 时适用较简洁排版
  * - 对极速流式更新做 useMemo 防止闪烁
  */
-export function MarkdownContent({ text, sources = [], citations = [], variant = "message", className }: MarkdownContentProps) {
+export function MarkdownContent({ text, sources = [], citations = [], terms = [], fusionSources, variant = "message", className, titleAnchorId }: MarkdownContentProps) {
+  const rootRef = useRef<HTMLDivElement>(null);
   const sourceById = useMemo(() => buildSourceMap(sources), [sources]);
   const citationIndexById = useMemo(() => buildCitationIndex(citations), [citations]);
+  // 仅提升"第一个"标题为卡片标题；用 ref 计数，ReactMarkdown 每次渲染重置。
+  const promotedTitleRef = useRef(false);
+  promotedTitleRef.current = false;
 
   // 按 source ordinal → 引用记录（用于 cite-marker 根据 data-source-ordinal 查找来源）
   const citationByOrdinal = useMemo(() => {
@@ -62,24 +76,178 @@ export function MarkdownContent({ text, sources = [], citations = [], variant = 
 
   const rootClass = variant === "insight" ? "markdown-content markdown-content--insight" : "markdown-content";
 
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+
+    clearTermMarkers(root);
+    let searchFrom = 0;
+    const validTerms = terms
+      .filter((term) => isValidTermMarker(text, term))
+      .sort((left, right) => left.startOffset - right.startOffset || left.endOffset - right.endOffset);
+
+    for (const term of validTerms) {
+      const match = findRenderedTextRange(root, term.text, searchFrom);
+      if (!match || !wrapTermRange(root, match, term)) continue;
+      searchFrom = match.endOffset;
+    }
+  }, [text, terms]);
+
   return (
-    <div className={`${rootClass}${className ? ` ${className}` : ""}`}>
+    <div ref={rootRef} className={`${rootClass}${className ? ` ${className}` : ""}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkBreaks, remarkCitationMarkers]}
         rehypePlugins={[[rehypeSanitize, safeSchema]]}
         components={{
           "cite-marker": ({ "data-source-ordinal": ordinalStr }: Record<string, unknown>): ReactNode => {
             const ordinal = Number(ordinalStr);
+            // #31 融合正文：优先按来源列表渲染为融合引用（[来源n] → 来源语义片段深链）。
+            if (fusionSources && fusionSources.length > 0) {
+              const source = fusionSources[ordinal - 1];
+              if (!source || Number.isNaN(ordinal)) return null;
+              return <FusionCitationMarker source={source} />;
+            }
             const citation = (citationByOrdinal.get(ordinal) ?? [])[0];
             if (!citation || Number.isNaN(ordinal)) return null;
             const index = citationIndexById.get(citation.id) ?? ordinal;
             const source = sourceById.get(citation.sourceId);
             return <CitationMarker index={index} citation={citation} source={source} />;
           },
+          // 卡片标题提升：正文首个标题（## / ###…）成为卡片大标题并挂导航锚点。
+          ...(titleAnchorId ? buildPromotedHeadingComponents(titleAnchorId, promotedTitleRef) : {}),
         } as Record<string, React.ComponentType<any>>}
       >
         {text}
       </ReactMarkdown>
     </div>
   );
+}
+
+interface TextPoint {
+  node: Text;
+  offset: number;
+}
+
+/**
+ * 生成 h1–h6 的渲染器：正文里第一个标题被提升为卡片标题（挂 anchorId 与 slice-card__title
+ * 样式，但保留原 heading 标签层级，字符与文本节点不变）；其后的标题用默认渲染。
+ * 只在切片卡片正文（titleAnchorId 存在）时启用。
+ */
+function buildPromotedHeadingComponents(
+  anchorId: string,
+  promotedRef: { current: boolean },
+): Record<string, React.ComponentType<any>> {
+  const makeRenderer = (Tag: "h1" | "h2" | "h3" | "h4" | "h5" | "h6") => {
+    function PromotedHeading({ children, ...rest }: React.HTMLAttributes<HTMLHeadingElement> & { children?: ReactNode }) {
+      if (!promotedRef.current) {
+        promotedRef.current = true;
+        return (
+          <Tag id={anchorId} className="slice-card__title" {...rest}>
+            {children}
+          </Tag>
+        );
+      }
+      return <Tag {...rest}>{children}</Tag>;
+    }
+    return PromotedHeading;
+  };
+  return {
+    h1: makeRenderer("h1"),
+    h2: makeRenderer("h2"),
+    h3: makeRenderer("h3"),
+    h4: makeRenderer("h4"),
+    h5: makeRenderer("h5"),
+    h6: makeRenderer("h6"),
+  };
+}
+
+interface RenderedTextRange {
+  start: TextPoint;
+  end: TextPoint;
+  endOffset: number;
+}
+
+function isValidTermMarker(text: string, marker: TermMarker): boolean {
+  return (
+    marker.text.length > 0 &&
+    Number.isSafeInteger(marker.startOffset) &&
+    Number.isSafeInteger(marker.endOffset) &&
+    marker.startOffset >= 0 &&
+    marker.endOffset > marker.startOffset &&
+    marker.endOffset <= text.length &&
+    text.slice(marker.startOffset, marker.endOffset) === marker.text
+  );
+}
+
+/** 读取 Markdown 渲染后的可见文字节点；引用角标没有正文，不参与术语定位。 */
+function renderedTextNodes(root: Element): Text[] {
+  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const textNode = node as Text;
+    const parent = textNode.parentElement;
+    if (parent?.closest("cite-marker")) continue;
+    nodes.push(textNode);
+  }
+  return nodes;
+}
+
+function findRenderedTextRange(root: Element, needle: string, fromOffset: number): RenderedTextRange | undefined {
+  if (!needle) return undefined;
+  const nodes = renderedTextNodes(root);
+  const visibleText = nodes.map((node) => node.data).join("");
+  const startOffset = visibleText.indexOf(needle, fromOffset);
+  if (startOffset < 0) return undefined;
+  const endOffset = startOffset + needle.length;
+  return {
+    start: pointAtOffset(nodes, startOffset),
+    end: pointAtOffset(nodes, endOffset),
+    endOffset,
+  };
+}
+
+function pointAtOffset(nodes: Text[], target: number): TextPoint {
+  let offset = 0;
+  for (const node of nodes) {
+    const nextOffset = offset + node.data.length;
+    if (target <= nextOffset) return { node, offset: target - offset };
+    offset = nextOffset;
+  }
+  const last = nodes[nodes.length - 1];
+  return { node: last, offset: last.data.length };
+}
+
+/** 用无语义的 span 包裹术语，保留原文字节点内容与 DOM 选区字符偏移。 */
+function wrapTermRange(root: Element, rendered: RenderedTextRange, term: TermMarker): boolean {
+  try {
+    const range = root.ownerDocument.createRange();
+    range.setStart(rendered.start.node, rendered.start.offset);
+    range.setEnd(rendered.end.node, rendered.end.offset);
+    const marker = root.ownerDocument.createElement("span");
+    marker.className = "term-marker";
+    marker.setAttribute("data-term-marker", "");
+    marker.setAttribute("data-term-category", term.category);
+    marker.setAttribute("data-term-text", term.text);
+    marker.setAttribute("data-term-block-ordinal", String(term.blockOrdinal));
+    marker.setAttribute("data-term-start-offset", String(term.startOffset));
+    marker.setAttribute("data-term-end-offset", String(term.endOffset));
+    marker.setAttribute("role", "button");
+    marker.setAttribute("tabindex", "0");
+    marker.setAttribute("aria-label", `解释术语 ${term.text}`);
+    marker.appendChild(range.extractContents());
+    range.insertNode(marker);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clearTermMarkers(root: Element): void {
+  root.querySelectorAll<HTMLElement>("[data-term-marker]").forEach((marker) => {
+    const parent = marker.parentNode;
+    if (!parent) return;
+    while (marker.firstChild) parent.insertBefore(marker.firstChild, marker);
+    marker.remove();
+  });
 }

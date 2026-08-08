@@ -6,10 +6,13 @@ import { expect, type Page } from "@playwright/test";
 
 const runtimeDir = join(dirname(fileURLToPath(import.meta.url)), ".runtime");
 
-/** 由页面端口推断对应的 API harness 端口（页面由 API 同源提供：43211 fake，43212 nomodel）。 */
+/** 视觉/地图基线共用问题：假模型对前 24 字稳定产出固定三段正文与切片标题。 */
+export const QUESTION = "什么是本地优先研究？";
+
+/** 由页面端口推断对应的 API harness 端口（页面由 API 同源提供：43211 fake，43212 nomodel，43213 fake+identity）。 */
 export function apiPortForPage(page: Page): number {
   const port = Number(new URL(page.url()).port || "43211");
-  return port === 43212 ? 43212 : 43211;
+  return port === 43212 ? 43212 : port === 43213 ? 43213 : 43211;
 }
 
 async function waitForFileValue(name: string): Promise<string> {
@@ -24,14 +27,29 @@ async function waitForFileValue(name: string): Promise<string> {
   throw new Error(`运行时文件未就绪: ${name}`);
 }
 
-/** 从配对码池取一个一次性配对码（workers=1，游标文件单调递增；harness 启动重写码池时同步删除游标）。 */
-export async function nextPairingCode(apiPort: number): Promise<string> {
+/**
+ * 从配对码池取一个一次性配对码（workers=1；harness 启动重写码池时同步删除游标）。
+ * fromEnd=true 时从池尾（最近 refill 追加的新鲜码）取，使用独立 endcursor 游标：
+ * 供套件末尾才运行的低消耗端口使用，避免与头部消费共享游标导致取到过期码。
+ */
+export async function nextPairingCode(apiPort: number, fromEnd = false): Promise<string> {
   const poolPath = join(runtimeDir, `pairing-${apiPort}.txt`);
   await waitForFileValue(`pairing-${apiPort}.txt`);
   const codes = readFileSync(poolPath, "utf8")
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
+  if (fromEnd) {
+    const endCursorPath = join(runtimeDir, `pairing-${apiPort}.endcursor`);
+    let endCursor = 0;
+    if (existsSync(endCursorPath)) {
+      endCursor = Number(readFileSync(endCursorPath, "utf8").trim()) || 0;
+    }
+    const index = codes.length - 1 - endCursor;
+    if (index < 0) throw new Error(`配对码池已耗尽 (port=${apiPort}, end)`);
+    writeFileSync(endCursorPath, String(endCursor + 1), "utf8");
+    return codes[index]!;
+  }
   const cursorPath = join(runtimeDir, `pairing-${apiPort}.cursor`);
   let cursor = 0;
   if (existsSync(cursorPath)) {
@@ -39,40 +57,71 @@ export async function nextPairingCode(apiPort: number): Promise<string> {
   }
   if (cursor >= codes.length) throw new Error(`配对码池已耗尽 (port=${apiPort})`);
   writeFileSync(cursorPath, String(cursor + 1), "utf8");
-  return codes[cursor];
+  return codes[cursor]!;
 }
 
-/** 在配对页输入配对码完成配对，然后进入目标路径（默认 / 自动恢复最近会话）。 */
-export async function pairAndOpen(page: Page, path = "/"): Promise<void> {
-  await page.goto("/");
-  const code = await nextPairingCode(apiPortForPage(page));
-  const codeInput = page.getByLabel("配对码");
-  await codeInput.waitFor({ state: "visible", timeout: 15_000 });
-  await codeInput.fill(code);
-  await page.getByRole("button", { name: "配对并继续" }).click();
-  await expect(codeInput).toBeHidden({ timeout: 15_000 });
+/**
+ * 在配对页输入配对码完成配对，然后进入目标路径（默认 / 自动恢复最近会话）。fromEnd 见 nextPairingCode。
+ * 配对失败（配对码过期/被抢）时自动重试一次并改用池尾新鲜码：低消耗端口在套件末尾运行时
+ * 常取到 harness 启动时 mint、已过 5 分钟 TTL 的池头码，重试吸收这类基础设施抖动。
+ */
+export async function pairAndOpen(page: Page, path = "/", fromEnd = false): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    await page.goto("/");
+    const code = await nextPairingCode(apiPortForPage(page), attempt > 0 ? true : fromEnd);
+    const codeInput = page.getByLabel("配对码");
+    await codeInput.waitFor({ state: "visible", timeout: 15_000 });
+    await codeInput.fill(code);
+    await page.getByRole("button", { name: "配对并继续" }).click();
+    try {
+      await expect(codeInput).toBeHidden({ timeout: 15_000 });
+      break; // 配对成功
+    } catch (error) {
+      if (attempt >= 1) throw error;
+      // 首次失败：多半是配对码过期（池头码 5 分钟 TTL），重试改用池尾最新码。
+    }
+  }
   if (path !== "/") await page.goto(path);
 }
 
-/** 在最后一个 AI 回答块内选中指定文字并触发 mouseup，供选区/深入研究/稍后再学测试复用。
+/** 在最后一个 AI 回答的所有块内选中指定文字并触发 mouseup，供选区/深入研究/标记测试复用。
  * 实现改为在 data-block-text 容器内查找包含目标文字的最深层文本节点，兼容 Markdown 渲染后
  * 的嵌套结构（例如 .markdown-content > p）。
+ * 生成自由化后一条回答由多张切片卡片组成（每张卡片各有一个 data-block-text 块），
+ * 目标文字可能落在任意一张卡片，故遍历所有块直到命中，而非只看第一个块。
+ *
+ * 可引用锚点（[data-block-text]）只在 AI 消息翻为"已完成"后渲染，而流式正文会更早出现——
+ * 生长链类用例常在完成态到达前就调用本函数。因此先等目标文字在某个可引用块内真的可选，
+ * 再执行圈选，消除"文字已显示、锚点未就绪"的采样竞态；超时仍按原有信息报错。
  */
 export async function selectAnswerText(page: Page, text: string): Promise<void> {
+  await page.waitForFunction((target) => {
+    const blocks = Array.from(document.querySelectorAll(".message--assistant [data-block-text]"));
+    for (const block of blocks) {
+      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, null);
+      while (walker.nextNode()) {
+        if ((walker.currentNode as Text).data.includes(target)) return true;
+      }
+    }
+    return false;
+  }, text, { timeout: 15_000 });
   await page.evaluate((target) => {
-    const block = document.querySelector(".message--assistant [data-block-text]");
-    if (!block) throw new Error("未找到 AI 回答块");
-    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, null);
+    const blocks = Array.from(document.querySelectorAll(".message--assistant [data-block-text]"));
+    if (!blocks.length) throw new Error("未找到 AI 回答块");
     let foundNode: Text | null = null;
     let foundOffset = -1;
-    while (walker.nextNode()) {
-      const node = walker.currentNode as Text;
-      const offset = node.data.indexOf(target);
-      if (offset >= 0) {
-        foundNode = node;
-        foundOffset = offset;
-        break;
+    for (const block of blocks) {
+      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, null);
+      while (walker.nextNode()) {
+        const node = walker.currentNode as Text;
+        const offset = node.data.indexOf(target);
+        if (offset >= 0) {
+          foundNode = node;
+          foundOffset = offset;
+          break;
+        }
       }
+      if (foundNode) break;
     }
     if (!foundNode || foundOffset < 0) throw new Error(`回答中未找到「${target}」`);
     const range = document.createRange();
@@ -84,6 +133,23 @@ export async function selectAnswerText(page: Page, text: string): Promise<void> 
     selection.addRange(range);
     document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
   }, text);
+}
+
+/**
+ * 修订一 #9：点击当前选区上方浮动胶囊的【引用】，等待输入框引用态胶囊出现并返回其定位器。
+ * 选区由调用方以任意方式建立（selectAnswerText / 阅读页 evaluate / 真实拖选）。
+ */
+export async function citeCurrentSelection(page: Page): Promise<ReturnType<Page["getByTestId"]>> {
+  await page.getByTestId("floating-capsule-cite").click();
+  const capsule = page.getByTestId("selection-capsule");
+  await expect(capsule).toBeVisible();
+  return capsule;
+}
+
+/** 修订一 #9：选中最后一条回答中的指定文字并显式引用，返回输入框引用态胶囊定位器。 */
+export async function citeAnswerText(page: Page, text: string): Promise<ReturnType<Page["getByTestId"]>> {
+  await selectAnswerText(page, text);
+  return citeCurrentSelection(page);
 }
 
 /** 通过浏览器上下文（自动携带会话 Cookie）读取 API JSON。 */
@@ -275,7 +341,7 @@ export interface ResearchLaterItemRow {
   recordJson: string;
 }
 
-/** 只读打开 harness 的 SQLite，核对稍后再学项目记录（summary 在 record_json 内）。 */
+/** 只读打开 harness 的 SQLite，核对标记记录（兼容旧 summary 字段，笔记在 record_json 内）。 */
 export function readResearchLaterTables(dbPath: string): { laterItems: ResearchLaterItemRow[] } {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
@@ -326,4 +392,217 @@ export function readResearchNodeTables(dbPath: string): {
   } finally {
     db.close();
   }
+}
+
+/**
+ * 确定性研究节点页基座（#44 视觉基线共用）：提交固定问题并等待假模型完成，
+ * 返回会话 id 与根节点 id（根节点 id ≠ 会话 id）。
+ */
+export async function openSession(page: Page): Promise<{ sessionId: string; rootNodeId: string }> {
+  await pairAndOpen(page, "/research/new");
+  await page.getByLabel("你的问题").fill(QUESTION);
+  await page.getByRole("button", { name: "开始研究" }).click();
+  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
+  await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
+    timeout: 15_000,
+  });
+  const match = new URL(page.url()).pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
+  if (!match) throw new Error("unexpected root node url");
+  return { sessionId: match[1]!, rootNodeId: match[2]! };
+}
+
+/** 从最后一条回答选中文字并显式引用，再长出一个子节点，返回子节点 id。 */
+export async function growChildNode(page: Page, sessionId: string, text: string): Promise<string> {
+  await citeAnswerText(page, text);
+  await page.getByRole("button", { name: "深入研究这段" }).click();
+  await page.waitForURL(
+    (url) => {
+      const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
+      return Boolean(match && match[1] === sessionId && match[2] && match[2] !== sessionId);
+    },
+    { timeout: 10_000 },
+  );
+  await expect(page.getByText(/这是深入研究第一轮/)).toBeVisible({ timeout: 15_000 });
+  return page.url().split("/node/")[1] ?? "";
+}
+
+/** 向 /graph 响应注入语义相关与融合来源节点（隔离血统，只通过非父子边到达）。 */
+export async function installThreeEdgeGraphFixture(page: Page): Promise<void> {
+  await page.route("**/v1/research-sessions/*/graph**", async (route) => {
+    const response = await route.fetch();
+    const projection = await response.json();
+    const focus = projection.nodes.find(
+      (summary: { node: { id: string } }) => summary.node.id === projection.focusNodeId,
+    );
+    if (!focus) {
+      await route.fulfill({ response, json: projection });
+      return;
+    }
+    const makeNode = (id: string, label: string) => ({
+      ...focus,
+      node: {
+        ...focus.node,
+        id,
+        parentNodeId: null,
+        createdAt: "2026-08-02T08:00:00.000Z",
+      },
+      label,
+      depth: 1,
+    });
+    const semanticId = `e2e-semantic-${projection.focusNodeId}`;
+    const fusedId = `e2e-fused-${projection.focusNodeId}`;
+    projection.nodes = [...projection.nodes, makeNode(semanticId, "语义关联节点"), makeNode(fusedId, "融合来源节点")];
+    projection.edges = [
+      ...projection.edges,
+      {
+        id: `e2e-edge-semantic-${projection.focusNodeId}`,
+        kind: "semantic-related",
+        fromNodeId: projection.focusNodeId,
+        toNodeId: semanticId,
+        createdAt: "2026-08-02T08:00:00.000Z",
+        status: "active",
+      },
+      {
+        id: `e2e-edge-fused-${projection.focusNodeId}`,
+        kind: "fused-from",
+        fromNodeId: fusedId,
+        toNodeId: projection.focusNodeId,
+        createdAt: "2026-08-02T08:00:00.000Z",
+        status: "active",
+      },
+    ];
+    await route.fulfill({ response, json: projection });
+  });
+}
+
+/** 建立会话 + 长出子节点（画布基座：子节点有父边）。 */
+export async function openNodeWithParent(page: Page): Promise<{ sessionId: string; childId: string }> {
+  await pairAndOpen(page, "/research/new");
+  await page.getByLabel("你的问题").fill(QUESTION);
+  await page.getByRole("button", { name: "开始研究" }).click();
+  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
+  await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
+    timeout: 15_000,
+  });
+  const sessionId = page.url().split("/research/")[1]?.split("/")[0] ?? "";
+  const childId = await growChildNode(page, sessionId, "本地优先会先把输入保存在本机");
+  return { sessionId, childId };
+}
+
+export interface NodeEvidence {
+  nodeId: string;
+  messageId: string;
+  bodyVersionId: string;
+  fragmentId: string;
+}
+
+/** 从真实节点视图 + 正文版本端点提取一条可定位依据（片段 id 取自真实派生）。 */
+export async function readNodeEvidence(page: Page, nodeId: string, fragmentOrdinal: number): Promise<NodeEvidence> {
+  let view: {
+    messages: Array<{ id: string; role: string; status: string; content: string }>;
+    bodyVersions?: Record<string, { id: string }>;
+  } | undefined;
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    view = await apiJson(page, `/v1/research-nodes/${encodeURIComponent(nodeId)}`);
+    const assistant = view.messages.find((m) => m.role === "assistant" && m.status === "completed" && m.content.trim());
+    if (assistant && view.bodyVersions?.[assistant.id]) break;
+    await page.waitForTimeout(300);
+  }
+  if (!view) throw new Error("node view fetch failed");
+  const assistant = view.messages.find((m) => m.role === "assistant" && m.status === "completed" && m.content.trim());
+  if (!assistant || !view.bodyVersions?.[assistant.id]) throw new Error("node evidence missing body version");
+  const bodyVersionId = view.bodyVersions[assistant.id]!.id;
+  const bodyView = await apiJson<{ fragments: Array<{ id: string; ordinal: number; excerpt: string }> }>(
+    page,
+    `/v1/research-body-versions/${encodeURIComponent(bodyVersionId)}`,
+  );
+  const fragment = bodyView.fragments.find((f) => f.ordinal === fragmentOrdinal);
+  if (!fragment) throw new Error(`fragment ordinal ${fragmentOrdinal} missing`);
+  return { nodeId, messageId: assistant.id, bodyVersionId, fragmentId: fragment.id };
+}
+
+/** 在根节点视图响应中注入 pending + accepted 融合提案（依据指向真实提取的片段）。 */
+export async function installProposalFixture(
+  page: Page,
+  rootNodeId: string,
+  rootEvidence: NodeEvidence,
+  childEvidence: NodeEvidence,
+): Promise<void> {
+  await page.route(`**/v1/research-nodes/${encodeURIComponent(rootNodeId)}`, async (route) => {
+    const response = await route.fetch();
+    const view = await response.json();
+    const pendingProposal = {
+      id: "e2e-proposal-pending",
+      loNodeId: rootNodeId,
+      hiNodeId: childEvidence.nodeId,
+      relationType: "shared-concept",
+      reason: "根节点与子节点共享本地优先概念。",
+      status: "pending",
+      triggerSources: [
+        {
+          nodeId: childEvidence.nodeId,
+          bodyVersionId: childEvidence.bodyVersionId,
+          fragmentId: childEvidence.fragmentId,
+        },
+        {
+          nodeId: rootNodeId,
+          bodyVersionId: rootEvidence.bodyVersionId,
+          fragmentId: rootEvidence.fragmentId,
+        },
+      ],
+      verification: { promptVersion: "similarity-verify-v1", sourceSliceIds: [], sourceFragmentIds: [], tokenBudget: 800 },
+      createdAt: "2026-08-02T00:00:00.000Z",
+      updatedAt: "2026-08-02T00:00:00.000Z",
+    };
+    const acceptedProposal = {
+      ...pendingProposal,
+      id: "e2e-proposal-accepted",
+      status: "accepted",
+    };
+    view.fusionProposals = [pendingProposal, acceptedProposal];
+    await route.fulfill({ response, json: view });
+  });
+}
+
+/**
+ * 浏览器问题跟踪（#44 验收 7）：console error/warning + pageerror + requestfailed。
+ * 返回收集器，测试末尾断言为空数组。配对前的 401 探测属预期流程（研究页 API
+ * 未配对时返回 401），跟踪器自动过滤「status of 401」与配对请求失败的噪音。
+ * 只挂到新 spec——sse-recovery 等测试故意触发错误场景，retro 改造会误伤。
+ */
+export function trackBrowserIssues(page: Page): { issues: string[] } {
+  const issues: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() !== "error" && message.type() !== "warning") return;
+    const text = message.text();
+    // 配对探测的 401 属预期，过滤掉；其余原样收集
+    if (/status of 401|401 \(Unauthorized\)/.test(text)) return;
+    issues.push(text);
+  });
+  page.on("pageerror", (error) => issues.push(String(error)));
+  page.on("requestfailed", (request) => {
+    const errorText = request.failure()?.errorText ?? "";
+    // 配对探测 401 与页面导航导致的中止（ERR_ABORTED，如 NodeChildList 查询选区时
+    // 跳转子节点）均属预期，过滤掉；其余原样收集。
+    if (/Unauthorized|401/.test(errorText)) return;
+    if (/ERR_ABORTED/.test(errorText)) return;
+    issues.push(`requestfailed: ${request.url()} ${errorText}`);
+  });
+  return { issues };
+}
+
+/** #44 视觉基线：节点页/地图覆盖层中会显示真实时钟的文本元素（冻结 clock 无法覆盖
+    harness 真实时间戳，截图时用 mask 盖掉）。 */
+export function dynamicTimeMasks(page: Page) {
+  return [
+    page.locator(".session-header__meta"),
+    page.locator(".branch-list__time"),
+    page.locator(".drawer__session-time"),
+  ];
+}
+
+/** #44 视觉基线：固定时钟（浏览器内 Date），保证「更新于」等文本与基线生成时一致。 */
+export function freezeClock(page: Page): void {
+  void page.clock.setFixedTime(new Date("2026-08-02T08:00:00.000Z"));
 }

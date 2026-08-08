@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { deriveDefaultResearchTitle, deriveMessageBlocks } from "@collector/capture-contracts";
+import { deriveDefaultResearchTitle, deriveMessageBlocks, researchEdgeId } from "@collector/capture-contracts";
 import {
   CaptureService,
   createApiServer,
@@ -434,8 +434,9 @@ test("branch follow-up stays inside the branch and main chat is unaffected", asy
   assert.equal(followUpRequest.deepResearch, undefined);
   assert.deepEqual(
     followUpRequest.messages.map((message) => message.content),
-    [expectFirstTurnContent(), "分支内容。", "展开讲讲实践建议"],
+    ["展开讲讲实践建议"],
   );
+  assert.ok(followUpRequest.sliceContext?.items.some((item) => item.content === "分支内容。"));
 
   // 主线提交不包含分支消息
   const mainResponse = await postJson(harness.base, harness.token, `/v1/research-sessions/${session.id}/messages`, { content: "主线问题" }, randomUUID());
@@ -446,10 +447,6 @@ test("branch follow-up stays inside the branch and main chat is unaffected", asy
   const mainRequest = recording.requests[2];
   assert.equal(mainRequest.deepResearch, undefined);
   assert.ok(mainRequest.messages.every((message) => !message.content.includes("展开讲讲实践建议")));
-
-  function expectFirstTurnContent(): string {
-    return "深入研究这段内容：“选区如何连接阅读与研究”";
-  }
 });
 
 test("deep research works from an imported document snapshot selection with content title", async (t) => {
@@ -533,7 +530,7 @@ test("node tree endpoint returns flat items with deterministic labels for root a
   assert.equal(root.node.id, session.id);
   assert.equal(root.label, SESSION_TITLE);
   assert.equal(child.node.id, accepted.node.id);
-  assert.equal(child.label, exact);
+  assert.ok(child.label);
   assert.equal(child.originText, exact);
 
   // 未知会话返回 404
@@ -574,6 +571,72 @@ test("selection attributed to a child node grows a grandchild, forming a multi-l
   assert.ok(tree.find((item) => item.node.parentNodeId === childNode.id));
 });
 
+test("graph endpoint forwards maxDepth to the server-side projection", async (t) => {
+  const harness = await createHarness({ researchProvider: recordingProvider().provider });
+  t.after(() => harness.close());
+  const { session } = await createSessionWithAnswer(harness);
+  const now = new Date().toISOString();
+  const nodes = [1, 2, 3, 4].map((depth) => ({
+    id: `graph-node-${depth}`,
+    sessionId: session.id,
+    ...(depth > 1 ? { parentNodeId: `graph-node-${depth - 1}` } : {}),
+    status: "active" as const,
+    createdAt: new Date(Date.parse(now) + depth * 1000).toISOString(),
+    updatedAt: now,
+  }));
+  await harness.store.createResearchNode(nodes[0]!, randomUUID());
+  for (const node of nodes.slice(1)) await harness.store.createResearchNode(node, randomUUID());
+  for (let index = 1; index < nodes.length; index += 1) {
+    const from = nodes[index - 1]!;
+    const to = nodes[index]!;
+    await harness.store.createResearchEdge({
+      id: researchEdgeId("parent-child", from.id, to.id),
+      kind: "parent-child",
+      fromNodeId: from.id,
+      toNodeId: to.id,
+      createdAt: to.createdAt,
+      status: "active",
+    });
+  }
+
+  async function getGraph(query = "") {
+    const response = await fetch(`${harness.base}/v1/research-sessions/${session.id}/graph?focusNodeId=${nodes[0]!.id}${query}`, {
+      headers: headers(harness.token),
+    });
+    return { response, body: await response.json() as { nodes?: Array<{ node: { id: string } }>; edges?: unknown[]; focusNodeId?: string; error?: { message: string } } };
+  }
+
+  const shallow = await getGraph("&maxDepth=0");
+  assert.equal(shallow.response.status, 200);
+  assert.deepEqual(shallow.body.nodes?.map((node) => node.node.id), [nodes[0]!.id]);
+  assert.deepEqual(shallow.body.edges, []);
+
+  const direct = await getGraph("&maxDepth=1");
+  assert.equal(direct.response.status, 200);
+  assert.deepEqual(direct.body.nodes?.map((node) => node.node.id), [nodes[0]!.id, nodes[1]!.id]);
+  assert.equal(direct.body.edges?.length, 1);
+
+  const deep = await getGraph("&maxDepth=3");
+  assert.equal(deep.response.status, 200);
+  assert.equal(deep.body.nodes?.length, 4);
+  assert.equal(deep.body.edges?.length, 3);
+
+  const defaultDepth = await getGraph();
+  assert.equal(defaultDepth.response.status, 200);
+  assert.equal(defaultDepth.body.nodes?.length, 3, "omitted maxDepth keeps the shared projection default of 2");
+
+  for (const value of ["-1", "1.5", "", "33", "1e2", "9007199254740992"]) {
+    const invalid = await getGraph(`&maxDepth=${encodeURIComponent(value)}`);
+    assert.equal(invalid.response.status, 400, `maxDepth=${value} should be rejected`);
+    assert.match(invalid.body.error?.message ?? "", /maxDepth/);
+  }
+
+  const unknownFocus = await fetch(`${harness.base}/v1/research-sessions/${session.id}/graph?focusNodeId=missing&maxDepth=1`, {
+    headers: headers(harness.token),
+  });
+  assert.equal(unknownFocus.status, 200);
+  assert.deepEqual((await unknownFocus.json()).nodes, []);
+});
 test("clearAllData removes branches, sessions and selections without foreign key errors", async (t) => {
   const harness = await createHarness({ researchProvider: recordingProvider().provider });
   t.after(() => harness.close());

@@ -310,9 +310,10 @@ const PURPOSE_LABELS: Record<ModelPurpose, string> = {
   research: "深入研究",
   search: "联网搜索",
   document: "文档生成与整理",
+  extraction: "事后语义抽取",
 };
 
-const PURPOSE_ORDER: ModelPurpose[] = ["chat", "selection", "research", "search", "document"];
+const PURPOSE_ORDER: ModelPurpose[] = ["chat", "selection", "research", "search", "document", "extraction"];
 
 /**
  * 任务模型分配：按任务类型指定使用哪套已保存配置；

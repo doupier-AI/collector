@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ResearchNodeView, ResearchTaskRecord } from "@collector/capture-contracts";
+import type { ResearchNodeView, ResearchTaskEvent, ResearchTaskRecord } from "@collector/capture-contracts";
 import { isUnauthorized } from "../../api/errors";
 import type { TaskEventStream } from "../../api/task-events";
 import { useServices } from "../../app/services";
 import { saveDraft } from "../chat-composer/draft";
 import { TurnSubmitter } from "../chat-composer/turn-submitter";
+import { createDeltaBatcher, type DeltaBatcher } from "./delta-batcher";
 import { applyNodeEvent, mergeNodeTurn } from "./node-view";
 import { upsertTask } from "./session-view";
 
@@ -12,6 +13,7 @@ import { upsertTask } from "./session-view";
 export interface PendingFirstTurn {
   content: string;
   idempotencyKey: string;
+  allowWebSearch: boolean;
 }
 
 export type NodeState =
@@ -29,7 +31,7 @@ export interface ResearchNodeController {
   actionError: string | null;
   reload(): void;
   /** 提交一条消息；返回 true 表示后端已确认保存（202）。 */
-  submit(content: string): Promise<boolean>;
+  submit(content: string, allowWebSearch?: boolean): Promise<boolean>;
   retryTask(task: ResearchTaskRecord): Promise<void>;
   /** 在 ready 状态下合并视图更新（附件、导入任务等）；非 ready 时忽略。 */
   updateView(updater: (view: ResearchNodeView) => ResearchNodeView): void;
@@ -58,6 +60,8 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
 
   const generationRef = useRef(0);
   const streamsRef = useRef(new Map<string, TaskEventStream>());
+  // 每个进行中任务一个 delta 批渲器（#38）：delta 按动画帧批量 setState，终态立即 flush。
+  const batchersRef = useRef(new Map<string, DeltaBatcher<ResearchTaskEvent>>());
   // 首次提交在成功前不消费，保证重渲染 / 重挂载后仍能用同一幂等键恢复
   const initialTurnRef = useRef<PendingFirstTurn | undefined>(options?.initialTurn);
   const submitterRef = useRef<TurnSubmitter | null>(null);
@@ -66,13 +70,36 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
   if (submitterNodeRef.current !== nodeId) {
     submitterNodeRef.current = nodeId;
     submitterRef.current = new TurnSubmitter({
-      submit: (content, key) => api.submitResearchNodeMessage(nodeId, content, key),
+      submit: (content, key, allowWebSearch) => api.submitResearchNodeMessage(nodeId, content, key, { allowWebSearch }),
     });
   }
 
   const closeAllStreams = useCallback(() => {
     for (const stream of streamsRef.current.values()) stream.close();
     streamsRef.current.clear();
+    for (const batcher of batchersRef.current.values()) batcher.cancel();
+    batchersRef.current.clear();
+  }, []);
+
+  /** 取某任务的批渲器；不存在则建一个（flush 把一帧事件折叠进视图，单次 setState）。 */
+  const batcherFor = useCallback((taskId: string): DeltaBatcher<ResearchTaskEvent> => {
+    let batcher = batchersRef.current.get(taskId);
+    if (!batcher) {
+      let frameHandle = 0;
+      batcher = createDeltaBatcher<ResearchTaskEvent>({
+        schedule: (callback) => { frameHandle = requestAnimationFrame(callback); },
+        cancelSchedule: () => { cancelAnimationFrame(frameHandle); },
+        flush: (events) => {
+          setState((previous): NodeState =>
+            previous.kind === "ready"
+              ? { kind: "ready", view: events.reduce(applyNodeEvent, previous.view) }
+              : previous,
+          );
+        },
+      });
+      batchersRef.current.set(taskId, batcher);
+    }
+    return batcher;
   }, []);
 
   // 初始加载 / 重新加载 / 节点切换
@@ -93,6 +120,7 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
         try {
           await submitterRef.current!.send(initialTurn.content, {
             idempotencyKey: initialTurn.idempotencyKey,
+            allowWebSearch: initialTurn.allowWebSearch,
           });
           if (isStale()) return;
           initialTurnRef.current = undefined;
@@ -150,8 +178,19 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
         taskId: task.id,
         getTask: (id) => api.getResearchTask(id),
         onEvent: (event) => {
-          setState((previous) =>
-            previous.kind === "ready" ? { kind: "ready", view: applyNodeEvent(previous.view, event) } : previous,
+          // #38 丝滑流式：只有高频 delta 走批渲器（每帧一次 setState，聚合渲染风暴）。
+          // 终态/快照是单发低频事件，必须同步提交——不能经 rAF 延迟，否则完成态翻转比
+          // 下游选区/导航采样晚一帧，出现"已完成却暂不可引用"的空窗（三级生长链回归）。
+          if (event.type === "delta") {
+            batcherFor(task.id).push(event);
+            return;
+          }
+          // 先把该任务已缓冲的 delta 同步 drain（不丢增量），再同步应用终态事件本身。
+          batcherFor(task.id).flushNow([]);
+          setState((previous): NodeState =>
+            previous.kind === "ready"
+              ? { kind: "ready", view: applyNodeEvent(previous.view, event) }
+              : previous,
           );
         },
         onTask: (updated) => {
@@ -164,6 +203,9 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
           if (updated.status === "completed" || updated.status === "failed") {
             streamsRef.current.get(updated.id)?.close();
             streamsRef.current.delete(updated.id);
+            // 终态：取消该任务批渲器（防止泄漏与过期 setState）。
+            batchersRef.current.get(updated.id)?.cancel();
+            batchersRef.current.delete(updated.id);
             setStreamNotice("idle");
             setLiveMessage(updated.status === "completed" ? "已完成" : "暂时无法生成回答，可以重试");
             // 终态确认后与服务端对齐完整视图：SSE 中断回退轮询时消息内容不在
@@ -193,7 +235,7 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
       });
       streamsRef.current.set(task.id, stream);
     }
-  }, [view, api, connectTaskEvents, closeAllStreams, nodeId]);
+  }, [view, api, connectTaskEvents, closeAllStreams, batcherFor, nodeId]);
 
   // 页面恢复可见时立即同步一次
   useEffect(() => {
@@ -206,11 +248,11 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
   }, []);
 
   const submit = useCallback(
-    async (content: string): Promise<boolean> => {
+    async (content: string, allowWebSearch = false): Promise<boolean> => {
       const submitter = submitterRef.current;
       if (!submitter) return false;
       try {
-        const turn = await submitter.send(content);
+        const turn = await submitter.send(content, { allowWebSearch });
         setState((previous) =>
           previous.kind === "ready" ? { kind: "ready", view: mergeNodeTurn(previous.view, turn) } : previous,
         );

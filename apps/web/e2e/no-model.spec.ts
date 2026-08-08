@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
-import { apiJson, apiPortForPage, pairAndOpen, readDataDir, readResearchLaterTables, readResearchNodeTables, readResearchSelectionTables } from "./helpers";
+import { apiJson, apiPortForPage, citeCurrentSelection, pairAndOpen, readDataDir, readResearchLaterTables, readResearchNodeTables, readResearchSelectionTables } from "./helpers";
 
 const QUESTION = "没有模型时也要保存这句话";
 
@@ -57,13 +57,13 @@ interface SelectionView {
   status: string;
 }
 
-test("未配置模型：选区仍然保存，分析失败给出原因与可重试，原文与结束操作不受影响", async ({
+test("未配置模型：选区仍然保存并出现胶囊，分析在后台失败但不影响用户操作", async ({
   page,
 }) => {
   test.setTimeout(45_000);
   await pairAndOpen(page, "/research/new");
 
-  // 无模型下没有 AI 回答，选区目标走导入阅读内容（导入不依赖模型）
+  // 无模型下走导入阅读内容建立选区（导入不依赖模型）
   const createResponse = await page.request.post("/v1/research-sessions", {
     headers: { "Idempotency-Key": crypto.randomUUID() },
     data: {},
@@ -94,12 +94,10 @@ test("未配置模型：选区仍然保存，分析失败给出原因与可重�
     document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
   });
 
-  // 窗口打开：原文立即可见；分析失败给出原因
-  const panel = page.getByTestId("selection-insight-panel");
-  await expect(panel).toBeVisible();
-  await expect(panel.locator(".selection-panel__quote")).toHaveText("无模型也要保留选区原文");
-  await expect(panel.getByText("选区已保存，分析暂时没有完成")).toBeVisible({ timeout: 15_000 });
-  await expect(panel.getByText("未配置可用的 AI 模型。选区已保存，配置模型后可以重试分析。")).toBeVisible();
+  // 浮动胶囊【引用】后引用态胶囊出现（修订一 #9：不再弹旧分析面板，分析在后台静默进行）
+  const capsule = await citeCurrentSelection(page);
+  await expect(capsule).toContainText("无模型也要保留选区原文");
+  await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
 
   // 选区已经落库（不因分析失败而丢失）
   const selections = await apiJson<SelectionView[]>(page, `/v1/research-sessions/${created.id}/selections`);
@@ -107,12 +105,20 @@ test("未配置模型：选区仍然保存，分析失败给出原因与可重�
   expect(selections[0]?.text).toBe("无模型也要保留选区原文");
   expect(selections[0]?.status).toBe("active");
 
-  // 重试分析：无模型下仍失败，但原文、失败原因与结束操作始终可用
-  await panel.getByRole("button", { name: "重试分析" }).click();
-  await expect(panel.getByText("选区已保存，分析暂时没有完成")).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByRole("button", { name: "结束", exact: true })).toBeEnabled();
+  // 分析任务在后台失败（SQLite 核对）
+  // 等待选区任务完成（后台分析是异步的）
+  await expect
+    .poll(
+      async () => {
+        const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
+        const tables = readResearchSelectionTables(dbPath);
+        const taskRows = tables.selectionTasks.filter((row) => row.sessionId === created.id);
+        return taskRows.length > 0 && taskRows[0]?.status !== "queued" && taskRows[0]?.status !== "running";
+      },
+      { timeout: 15_000, intervals: [200, 500, 1000] },
+    )
+    .toBe(true);
 
-  // 任务记录为可重试失败（只读 SQLite 核对）
   const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
   const tables = readResearchSelectionTables(dbPath);
   const taskRows = tables.selectionTasks.filter((row) => row.sessionId === created.id);
@@ -122,17 +128,16 @@ test("未配置模型：选区仍然保存，分析失败给出原因与可重�
   const taskRecord = JSON.parse(taskRows[0]?.recordJson ?? "{}") as { error?: { code?: string } };
   expect(taskRecord.error?.code).toBe("model_not_configured");
 
-  await page.getByRole("button", { name: "结束", exact: true }).click();
-  await expect(panel).toBeHidden();
+  // 胶囊仍在（分析失败不影响引用）
+  await expect(capsule).toBeVisible();
 });
 
-test("未配置模型：分析失败仍可发起深入研究，分支与来源关系保留、第一轮失败可重试", async ({
+test("未配置模型：分析失败仍可通过胶囊发起深入研究，来源关系保留、第一轮失败可重试", async ({
   page,
 }) => {
   test.setTimeout(60_000);
   await pairAndOpen(page, "/research/new");
 
-  // 无模型下走导入阅读内容建立选区（复用上一条测试的路径）
   const createResponse = await page.request.post("/v1/research-sessions", {
     headers: { "Idempotency-Key": crypto.randomUUID() },
     data: {},
@@ -163,17 +168,11 @@ test("未配置模型：分析失败仍可发起深入研究，分支与来源�
     document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
   });
 
-  // 分析失败，但深入研究操作持续可用
-  const panel = page.getByTestId("selection-insight-panel");
-  await expect(panel).toBeVisible();
-  await expect(panel.getByText("选区已保存，分析暂时没有完成")).toBeVisible({ timeout: 15_000 });
-  await panel.getByRole("button", { name: "深入研究" }).click();
-  const grow = page.getByTestId("node-growth-panel");
-  await expect(grow).toBeVisible();
-  await panel.getByRole("button", { name: "开始研究" }).click();
+  // 浮动胶囊【引用】后（修订一 #9），一键深入研究
+  await citeCurrentSelection(page);
+  await page.getByRole("button", { name: "深入研究这段" }).click();
 
   // 子节点视图：来源关系先于生成保存，第一轮失败给出原因与重试
-  // waitForURL 必须排除根节点——当前页面 URL 同样匹配节点路由（根节点 id = 会话 id）
   await page.waitForURL(
     (url) => {
       const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
@@ -186,7 +185,7 @@ test("未配置模型：分析失败仍可发起深入研究，分支与来源�
   await expect(page.getByText("内容已保存，暂时无法生成回答")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText(/还没有配置可用模型/)).toBeVisible();
 
-  // 子节点与来源选区不因生成失败而丢失（harness 全套件共享一个库，按会话过滤）
+  // 子节点与来源选区不因生成失败而丢失
   const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
   const nodeTables = readResearchNodeTables(dbPath);
   const childNodes = nodeTables.nodes.filter((row) => row.sessionId === created.id && row.parentNodeId !== null);
@@ -211,11 +210,10 @@ test("未配置模型：分析失败仍可发起深入研究，分支与来源�
   });
 });
 
-test("未配置模型：分析失败仍可保存稍后再学，栏目呈现并能返回原选区", async ({ page }) => {
-  test.setTimeout(60_000);
+test("未配置模型：标记保存后可在列表查看并返回原选区，不依赖 AI", async ({ page }) => {
+  test.setTimeout(45_000);
   await pairAndOpen(page, "/research/new");
 
-  // 无模型下走导入阅读内容建立选区（导入与保存均不依赖模型）
   const createResponse = await page.request.post("/v1/research-sessions", {
     headers: { "Idempotency-Key": crypto.randomUUID() },
     data: {},
@@ -223,14 +221,14 @@ test("未配置模型：分析失败仍可保存稍后再学，栏目呈现并�
   const created = (await createResponse.json()) as { id: string };
   await page.goto(`/research/${created.id}`);
   await page.locator('input[type="file"]').setInputFiles({
-    name: "无模型稍后再学.txt",
+    name: "无模型标记.txt",
     mimeType: "text/plain",
-    buffer: Buffer.from("无模型也要能保存稍后再学", "utf8"),
+    buffer: Buffer.from("无模型下也要保存这条标记笔记", "utf8"),
   });
   await expect(page.getByText("已导入")).toBeVisible({ timeout: 15_000 });
   await page.getByRole("button", { name: "阅读" }).click();
   await expect(page).toHaveURL(new RegExp(`/research/${created.id}/reading/[^/]+$`));
-  await expect(page.getByText("第 1 行")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("第 1 行")).toBeVisible();
 
   await page.evaluate(() => {
     const textElement = document.querySelector(".reading__block [data-block-text]");
@@ -246,34 +244,41 @@ test("未配置模型：分析失败仍可保存稍后再学，栏目呈现并�
     document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
   });
 
-  // 分析失败，但稍后再学操作持续可用
-  const panel = page.getByTestId("selection-insight-panel");
-  await expect(panel).toBeVisible();
-  await expect(panel.getByText("选区已保存，分析暂时没有完成")).toBeVisible({ timeout: 15_000 });
-  await panel.getByRole("button", { name: "稍后再学" }).click();
-  const form = page.getByTestId("later-form");
-  await expect(form).toBeVisible();
-  // 预填确定性默认概括（不依赖 AI）
-  await expect(panel.getByLabel("概括")).toHaveValue("无模型也要能保存稍后再学");
-  await panel.locator("label.later-star").filter({ hasText: "4 星" }).click();
-  await panel.getByRole("button", { name: "保存" }).click();
-  await expect(page.getByTestId("later-saved")).toBeVisible();
+  await page.getByTestId("floating-capsule-mark").click();
+  const input = page.getByTestId("mark-note-input");
+  await expect(input).toBeVisible();
+  await input.focus();
+  await input.fill("无模型也要保存笔记");
+  await page.mouse.click(12, 12);
+  await expect(page.getByTestId("mark-note-editor")).toHaveCount(0);
 
-  // 右栏即时呈现该项目，稍后再学落库一致
-  const summary = "无模型也要能保存稍后再学";
-  await expect(page.locator(".later-item", { hasText: summary })).toBeVisible();
   const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
-  const laterItems = readResearchLaterTables(dbPath).laterItems.filter((row) => row.sessionId === created.id);
-  expect(laterItems).toHaveLength(1);
-  expect(laterItems[0]?.status).toBe("pending");
-  expect(laterItems[0]?.priority).toBe(4);
-  const selectionTables = readResearchSelectionTables(dbPath);
-  const sessionSelections = selectionTables.selections.filter((row) => row.sessionId === created.id);
-  expect(laterItems[0]?.selectionId).toBe(sessionSelections[0]?.id);
+  const items = readResearchLaterTables(dbPath).laterItems.filter((row) => row.sessionId === created.id);
+  expect(items).toHaveLength(1);
+  const item = items[0];
+  expect(item).toBeDefined();
+  const record = JSON.parse(item?.recordJson ?? "{}") as { note?: string };
+  expect(record.note).toBe("无模型也要保存笔记");
 
-  // 点击项目返回阅读页原选区并自动重开窗口
-  await page.locator(".later-item", { hasText: summary }).locator(".later-item__open").click();
-  await expect(page).toHaveURL(new RegExp(`/research/${created.id}/reading/[^/]+\\?sel=`), { timeout: 10_000 });
-  await expect(page.locator("[data-selection-mark]")).toHaveText(summary, { timeout: 10_000 });
-  await expect(page.getByTestId("selection-insight-panel")).toBeVisible();
+  // 标记列表展示原选区、笔记、来源节点与时间，并可返回原文
+  const marksPanel = page.getByRole("complementary", { name: "标记" });
+  await expect(marksPanel).toBeVisible();
+  await expect(marksPanel).toContainText("无模型下也要保存这条标记笔记");
+  await expect(marksPanel).toContainText("无模型也要保存笔记");
+  await expect(marksPanel).toContainText("来源节点：无模型标记.txt");
+  await page.getByTestId(`mark-open-${item!.id}`).click();
+  await expect(page).toHaveURL(new RegExp(`/research/${created.id}/reading/[^/]+\\?sel=`));
+  await expect(page.locator("[data-selection-mark]")).toHaveText("无模型下也要保存这条标记笔记", { timeout: 10_000 });
+  // 恢复选区模式下浮动胶囊恰好一个（恢复胶囊），SelectionSurface 的残留胶囊不并存（修订二 #12）
+  await expect(page.locator('[data-testid="floating-selection-capsule"]')).toHaveCount(1);
+  await expect(page.locator('[data-testid="floating-selection-capsule"]:not([aria-hidden="true"])')).toBeVisible();
+  await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
+  await page.locator('[data-testid="floating-selection-capsule"]:not([aria-hidden="true"])').getByTestId("floating-capsule-cite").click();
+  await expect(page.getByTestId("selection-capsule")).toBeVisible();
+
+  // 刷新后列表与高亮仍由持久化记录恢复，且不会自动进入引用态
+  await page.reload();
+  await expect(marksPanel).toContainText("无模型也要保存笔记");
+  await expect(page.locator('[data-testid="floating-selection-capsule"]:not([aria-hidden="true"])')).toBeVisible();
+  await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
 });

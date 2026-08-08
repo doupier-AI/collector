@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  buildGraphProjection,
   deriveDefaultResearchTitle,
   type CreateChildNodeInput,
   type DeepResearchAccepted,
@@ -7,6 +8,7 @@ import {
   type NodeGrowthAccepted,
   type ResearchBranchRecord,
   type ResearchBranchView,
+  type ResearchGraphProjection,
   type ResearchMessageRecord,
   type ResearchNodeRecord,
   type ResearchNodeView,
@@ -17,13 +19,29 @@ import {
   type ResearchTurnAccepted,
 } from "@collector/capture-contracts";
 import type { DeepResearchStore } from "./store.js";
-import { DEEP_RESEARCH_PROMPT_VERSION, RESEARCH_CHAT_PROMPT_VERSION, type ResearchSessionService } from "./research.js";
+import { DEEP_RESEARCH_PROMPT_VERSION, RESEARCH_CHAT_PROMPT_VERSION, type ResearchSessionService, type ResearchTurnOptions } from "./research.js";
 
 /** 分支模式首轮用户消息中选区原文的摘录长度。 */
 const SELECTION_EXCERPT_CHARACTERS = 120;
 
 /** 树导航节点标签的摘录长度（H2，H6 节点命名落地前的确定性标签）。 */
 const TREE_LABEL_CHARACTERS = 48;
+
+/** 节点生长首轮用户消息的包装前缀（选区生长模板，见 defaultFirstTurnContent）。 */
+export const NODE_GROWTH_FIRST_TURN_PREFIX = "深入研究这段内容：";
+
+/**
+ * 若内容是节点生长首轮的包装提示（深入研究这段内容：“选区摘录”），返回其中引用的选区摘录正文；否则返回 undefined。
+ * 供确定性节点命名等场景还原用户真正引用的文本，避免把包装前缀当作节点名。
+ */
+export function extractNodeGrowthSelectionText(content: string): string | undefined {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith(NODE_GROWTH_FIRST_TURN_PREFIX)) return undefined;
+  const match = trimmed.slice(NODE_GROWTH_FIRST_TURN_PREFIX.length).trim().match(/^“([\s\S]+)”$/);
+  if (!match) return undefined;
+  const inner = match[1].trim();
+  return inner || undefined;
+}
 
 export interface DeepResearchServiceOptions {
   /** 深入研究任务复用研究会话任务管线（claim / 事件 / 重试 / 重启恢复）。 */
@@ -56,7 +74,7 @@ export class DeepResearchService {
         id: randomUUID(), sessionId: selection.sessionId, selectionId: selection.id,
         status: "active", createdAt: now, updatedAt: now,
       };
-      const { inputMessage, outputMessage, task } = this.buildFirstTurn(selection.sessionId, branch.id, firstTurnContent, idempotencyKey, now);
+      const { inputMessage, outputMessage, task } = this.buildFirstTurn(selection.sessionId, branch.id, firstTurnContent, idempotencyKey, now, input);
       accepted = await this.store.createResearchBranch(originSession, branch, inputMessage, outputMessage, task);
     } else {
       const session: ResearchSessionRecord = {
@@ -68,7 +86,7 @@ export class DeepResearchService {
         createdAt: now,
         updatedAt: now,
       };
-      const { inputMessage, outputMessage, task } = this.buildFirstTurn(session.id, undefined, firstTurnContent, idempotencyKey, now);
+      const { inputMessage, outputMessage, task } = this.buildFirstTurn(session.id, undefined, firstTurnContent, idempotencyKey, now, input);
       accepted = await this.store.createOriginResearchSession(session, inputMessage, outputMessage, task);
     }
     this.scheduleTask(accepted.task.id);
@@ -90,7 +108,7 @@ export class DeepResearchService {
   }
 
   /** 分支内继续追问：消息带 branchId 与 nodeId，复用节点任务管线与幂等规则。 */
-  async submitBranchMessage(branchId: string, content: string, idempotencyKey: string): Promise<ResearchTurnAccepted> {
+  async submitBranchMessage(branchId: string, content: string, idempotencyKey: string, options: ResearchTurnOptions = {}): Promise<ResearchTurnAccepted> {
     const branch = this.store.getResearchBranch(branchId);
     if (!branch) throw new DeepResearchNotFoundError("Research branch not found");
     if (!idempotencyKey.trim()) throw new DeepResearchValidationError("Idempotency-Key is required");
@@ -118,12 +136,15 @@ export class DeepResearchService {
       id: randomUUID(), sessionId: branch.sessionId, nodeId: branch.id, branchId: branch.id, role: "assistant",
       content: "", status: "pending", createdAt: now, updatedAt: now,
     };
+    const allowWebSearch = options.allowWebSearch === true;
     const task: ResearchTaskRecord = {
       id: randomUUID(), sessionId: branch.sessionId, nodeId: branch.id, inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
       idempotencyKey, status: "queued", retryable: false,
       provider: this.options.research.providerId,
       model: this.options.research.modelId,
       promptVersion: RESEARCH_CHAT_PROMPT_VERSION,
+      allowWebSearch,
+      ...(allowWebSearch ? {} : { groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 } }),
       createdAt: now, updatedAt: now,
     };
     const accepted = await this.store.createResearchTurnForNode(node, inputMessage, outputMessage, task);
@@ -137,6 +158,7 @@ export class DeepResearchService {
     content: string,
     idempotencyKey: string,
     now: string,
+    options: ResearchTurnOptions,
   ): { inputMessage: ResearchMessageRecord; outputMessage: ResearchMessageRecord; task: ResearchTaskRecord } {
     const inputMessage: ResearchMessageRecord = {
       id: randomUUID(), sessionId, branchId, role: "user",
@@ -146,10 +168,13 @@ export class DeepResearchService {
       id: randomUUID(), sessionId, branchId, role: "assistant",
       content: "", status: "pending", createdAt: now, updatedAt: now,
     };
+    const allowWebSearch = options.allowWebSearch === true;
     const task: ResearchTaskRecord = {
       id: randomUUID(), sessionId, inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
       idempotencyKey, status: "queued", retryable: false,
       promptVersion: DEEP_RESEARCH_PROMPT_VERSION,
+      allowWebSearch,
+      ...(allowWebSearch ? {} : { groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 } }),
       createdAt: now, updatedAt: now,
     };
     return { inputMessage, outputMessage, task };
@@ -200,6 +225,7 @@ export class NodeGrowthService {
       id: randomUUID(), sessionId: selection.sessionId, nodeId: node.id, role: "assistant",
       content: "", status: "pending", createdAt: now, updatedAt: now,
     };
+    const allowWebSearch = input.allowWebSearch === true;
     const task: ResearchTaskRecord = {
       id: randomUUID(), sessionId: selection.sessionId, nodeId: node.id,
       inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
@@ -207,11 +233,71 @@ export class NodeGrowthService {
       provider: this.options.research.providerId,
       model: this.options.research.modelId,
       promptVersion: DEEP_RESEARCH_PROMPT_VERSION,
+      allowWebSearch,
+      ...(allowWebSearch ? {} : { groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 } }),
       createdAt: now, updatedAt: now,
     };
     const accepted = await this.store.createResearchChildNode(parentNode, node, selection, inputMessage, outputMessage, task);
     this.scheduleTask(accepted.task.id);
     return accepted;
+  }
+
+  /** 点击已完成的术语预览：复用同一份内容创建子节点，不再发起第二次模型调用。 */
+  async startChildNodeFromTermPreview(previewId: string, idempotencyKey: string): Promise<NodeGrowthAccepted> {
+    if (!idempotencyKey.trim()) throw new DeepResearchValidationError("Idempotency-Key is required");
+    if (idempotencyKey.length > 200) throw new DeepResearchValidationError("Idempotency-Key must not exceed 200 characters");
+    const preview = this.store.getResearchTermPreview(previewId);
+    if (!preview) throw new DeepResearchNotFoundError("Research term preview not found");
+    if (preview.status !== "completed" || !preview.content.trim()) {
+      throw new DeepResearchValidationError("Research term preview is not ready");
+    }
+    const selection = this.store.getResearchSelection(preview.selectionId);
+    if (!selection) throw new Error("Research term preview references a missing selection");
+    const parentNodeId = selection.nodeId ?? selection.sessionId;
+    const parentNode = this.store.getResearchNode(parentNodeId);
+    const session = this.store.getResearchSession(selection.sessionId);
+    if (!parentNode || !session) throw new Error("Research term preview references incomplete node state");
+
+    // 即使客户端丢失幂等键，也不允许同一术语来源重复生长多个子节点。
+    const existingNode = this.store.listChildNodes(parentNode.id).find((node) => node.originSelectionId === selection.id);
+    if (existingNode) {
+      const existingTask = this.store.listResearchTasksByNode(existingNode.id)[0];
+      const existingMessages = this.store.listResearchMessagesByNode(existingNode.id);
+      const inputMessage = existingTask ? this.store.getResearchMessage(existingTask.inputMessageId) : undefined;
+      const outputMessage = existingTask ? this.store.getResearchMessage(existingTask.outputMessageId) : undefined;
+      if (existingTask && inputMessage && outputMessage) return { node: existingNode, session, selection, inputMessage, outputMessage, task: existingTask };
+      if (!existingMessages.length) throw new Error("Existing term child node is incomplete");
+    }
+
+    const now = new Date().toISOString();
+    const node: ResearchNodeRecord = {
+      id: randomUUID(),
+      sessionId: selection.sessionId,
+      parentNodeId: parentNode.id,
+      originSelectionId: selection.id,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    };
+    const inputMessage: ResearchMessageRecord = {
+      id: randomUUID(), sessionId: selection.sessionId, nodeId: node.id, role: "user",
+      content: defaultFirstTurnContent(selection), status: "completed", createdAt: now, updatedAt: now,
+    };
+    const outputMessage: ResearchMessageRecord = {
+      id: randomUUID(), sessionId: selection.sessionId, nodeId: node.id, role: "assistant",
+      content: preview.content, status: "completed", createdAt: now, updatedAt: now,
+    };
+    const task: ResearchTaskRecord = {
+      id: randomUUID(), sessionId: selection.sessionId, nodeId: node.id,
+      inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
+      idempotencyKey, status: "completed", retryable: false,
+      provider: preview.provider, model: preview.model,
+      promptVersion: preview.promptVersion,
+      allowWebSearch: false,
+      groundingScope: { status: "not_requested", sourceCount: 0, citationCount: 0 },
+      createdAt: now, updatedAt: now, startedAt: now, completedAt: now,
+    };
+    return this.store.createResearchChildNode(parentNode, node, selection, inputMessage, outputMessage, task);
   }
 
   getNodeView(id: string): ResearchNodeView {
@@ -252,10 +338,40 @@ export class NodeGrowthService {
       if (!node.parentNodeId) return { node, label: session.title };
       const selection = node.originSelectionId ? this.store.getResearchSelection(node.originSelectionId) : undefined;
       const originText = selection ? excerptText(selection.text, TREE_LABEL_CHARACTERS) : undefined;
+      if (node.displayName) return { node, label: node.displayName, ...(originText ? { originText } : {}) };
       if (originText) return { node, label: originText, originText };
       const firstUser = this.store.listResearchMessagesByNode(node.id).find((message) => message.role === "user");
       const firstMessage = firstUser ? excerptText(firstUser.content, TREE_LABEL_CHARACTERS) : undefined;
       return { node, label: firstMessage ?? "子节点", ...(firstMessage ? { firstMessage } : {}) };
+    });
+  }
+
+  /**
+   * 图投影（D1）：以 focusNodeId 为中心的关系视图。
+   * 缺省焦点为会话根节点（sessionId === 根节点 id）。
+   * 标签规则与节点树一致：displayName > 来源选区摘要 > 首条用户消息摘要 > 回退。
+   */
+  /** 图投影最大展开深度；省略时由共享投影使用默认深度。 */
+  getGraphProjection(sessionId: string, focusNodeId?: string, maxDepth?: number): ResearchGraphProjection {
+    const session = this.store.getResearchSession(sessionId);
+    if (!session) throw new DeepResearchNotFoundError("Research session not found");
+    const nodes = this.store.listResearchNodes(sessionId);
+    const nodeIds = new Set(nodes.map((node) => node.id));
+    const allEdges = this.store.listAllResearchEdges();
+    const sessionEdges = allEdges.filter((edge) => nodeIds.has(edge.fromNodeId) && nodeIds.has(edge.toNodeId));
+    const focus = focusNodeId ?? sessionId;
+    return buildGraphProjection(nodes, sessionEdges, focus, {
+      ...(maxDepth === undefined ? {} : { maxDepth }),
+      nodeLabel: (node) => {
+        if (!node.parentNodeId) return session.title;
+        if (node.displayName) return node.displayName;
+        const selection = node.originSelectionId ? this.store.getResearchSelection(node.originSelectionId) : undefined;
+        const originText = selection ? excerptText(selection.text, TREE_LABEL_CHARACTERS) : undefined;
+        if (originText) return originText;
+        const firstUser = this.store.listResearchMessagesByNode(node.id).find((message) => message.role === "user");
+        if (firstUser) return excerptText(firstUser.content, TREE_LABEL_CHARACTERS);
+        return "子节点";
+      },
     });
   }
 
@@ -268,7 +384,7 @@ export class NodeGrowthService {
 function defaultFirstTurnContent(selection: ResearchSelectionRecord): string {
   const text = selection.text.trim();
   const excerpt = text.length > SELECTION_EXCERPT_CHARACTERS ? `${text.slice(0, SELECTION_EXCERPT_CHARACTERS)}…` : text;
-  return `深入研究这段内容：“${excerpt}”`;
+  return `${NODE_GROWTH_FIRST_TURN_PREFIX}“${excerpt}”`;
 }
 
 function excerptText(text: string, maxCharacters: number): string {

@@ -1,16 +1,25 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
+
+/** 研究任务 SSE：无新事件时挂起等推送的封顶重读间隔。与旧 100ms 轮询同节拍——pub/sub 唤醒是
+    快速通道，此计时器是兜底，保证连接重建竞态里丢失的推送至多延迟一个节拍即被 DB 重读捕获。 */
+const RESEARCH_SSE_REDRAIN_MS = 100;
 import { ValidationError, NotFoundError, CaptureService } from "./service.js";
 import { LocalAuth, PairingRateLimitError } from "./auth.js";
-import { RESEARCH_IMPORT_MAX_BYTES, validateCreateChildNodeInput, validateDeepResearchInput, validateResearchImportHeaders, validateResearchLaterItemInput, validateResearchLaterItemUpdate, validateResearchMessageInput, validateResearchSelectionInput, validateResearchSessionInput } from "@collector/capture-contracts";
+import { RESEARCH_IMPORT_MAX_BYTES, validateCreateChildNodeInput, validateDeepResearchInput, validateResearchFusionProposalDecisionInput, validateResearchImportHeaders, validateResearchLaterItemInput, validateResearchLaterItemUpdate, validateResearchMessageInput, validateResearchSelectionInput, validateResearchSessionInput, validateResearchTermPreviewInput } from "@collector/capture-contracts";
 import { ResearchNotFoundError, ResearchValidationError } from "./research.js";
 import { ResearchImportConflictError, ResearchImportNotFoundError, ResearchImportValidationError } from "./research-import.js";
 import { ResearchSelectionConflictError, ResearchSelectionNotFoundError, ResearchSelectionValidationError } from "./selection.js";
 import { DeepResearchNotFoundError, DeepResearchValidationError } from "./deep-research.js";
 import { ResearchLaterNotFoundError, ResearchLaterValidationError } from "./research-later.js";
+import { ResearchTermPreviewNotFoundError, ResearchTermPreviewValidationError } from "./term-preview.js";
+import { ResearchFusionProposalConflictError, ResearchFusionProposalNotFoundError, ResearchFusionProposalValidationError } from "./fusion-proposals.js";
+import { RunRecordsValidationError } from "./observability.js";
+import { streamRunRecordExport } from "./run-record-export.js";
 import { createStaticWebHandler } from "./static-web.js";
 
 const JSON_LIMIT = 2 * 1024 * 1024;
+const MAX_GRAPH_PROJECTION_DEPTH = 32;
 
 export interface ApiServerOptions {
   instanceId?: string;
@@ -52,6 +61,58 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       }
       if (!auth.isAuthorized(requestToken(request))) {
         return json(response, 401, { error: { code: "unauthorized", message: "Collector client is not paired" } });
+      }
+
+      if (request.method === "GET" && url.pathname === "/v1/run-records/export") {
+        const input = runRecordExportInput(url);
+        // Validate before sending headers so invalid filters still receive the normal JSON error shape.
+        service.runRecords.normalizeExportFilters(input);
+        if (service.runRecords.exportPage({ ...input, limit: 1 }).items.length === 0) {
+          return json(response, 404, { error: { code: "no_export_records", message: "当前筛选没有可导出的运行记录" } });
+        }
+        const generatedAt = new Date().toISOString();
+        response.statusCode = 200;
+        response.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+        response.setHeader("Content-Disposition", `attachment; filename*=UTF-8''collector-run-records-${generatedAt.replace(/[:.]/g, "-")}.jsonl`);
+        response.setHeader("Cache-Control", "no-store");
+        response.setHeader("X-Content-Type-Options", "nosniff");
+        response.flushHeaders();
+        let closed = false;
+        request.once("aborted", () => { closed = true; });
+        response.once("close", () => { closed = true; });
+        try {
+          await streamRunRecordExport(service.runRecords, input, {
+            async write(chunk) {
+              if (closed || response.destroyed) throw new Error("Run record export client disconnected");
+              if (!response.write(chunk)) await new Promise<void>((resolve) => response.once("drain", resolve));
+            },
+          }, generatedAt);
+          if (!closed && !response.writableEnded) response.end();
+        } catch {
+          if (!response.writableEnded) response.destroy();
+        }
+        return;
+      }
+
+      const runRecordDetailMatch = url.pathname.match(/^\/v1\/run-records\/([^/]+)$/);
+      if (request.method === "GET" && runRecordDetailMatch) {
+        const detail = service.runRecords.get(decodeURIComponent(runRecordDetailMatch[1]));
+        if (!detail) return json(response, 404, { error: { code: "not_found", message: "Run record not found" } });
+        return json(response, 200, detail);
+      }
+      if (request.method === "GET" && url.pathname === "/v1/run-records") {
+        const limit = url.searchParams.get("limit");
+        return json(response, 200, service.runRecords.list({
+          ...(limit === null ? {} : { limit: Number(limit) }),
+          ...(url.searchParams.get("cursor") ? { cursor: url.searchParams.get("cursor")! } : {}),
+          ...(url.searchParams.get("from") ? { from: url.searchParams.get("from")! } : {}),
+          ...(url.searchParams.get("to") ? { to: url.searchParams.get("to")! } : {}),
+          ...(url.searchParams.get("operationType") || url.searchParams.get("type")
+            ? { operationType: url.searchParams.get("operationType") ?? url.searchParams.get("type")! }
+            : {}),
+          ...(url.searchParams.get("outcome") ? { outcome: url.searchParams.get("outcome")! } : {}),
+          ...(url.searchParams.get("status") ? { status: url.searchParams.get("status")! } : {}),
+        }));
       }
 
       if (request.method === "POST" && url.pathname === "/v1/launcher/bootstrap") {
@@ -215,12 +276,23 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         catch (error) { throw new ResearchValidationError((error as Error).message); }
         const accepted = await service.research.submitMessage(
           decodeURIComponent(researchMessagesMatch[1]), body.content, header(request, "idempotency-key") ?? "",
+          { allowWebSearch: body.allowWebSearch === true },
         );
         return json(response, 202, accepted);
       }
       const researchSessionNodesMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)\/nodes$/);
       if (request.method === "GET" && researchSessionNodesMatch) {
         return json(response, 200, service.nodeGrowth.getNodeTree(decodeURIComponent(researchSessionNodesMatch[1])));
+      }
+      const researchSessionGraphMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)\/graph$/);
+      if (request.method === "GET" && researchSessionGraphMatch) {
+        const focusNodeId = url.searchParams.get("focusNodeId") ?? undefined;
+        const maxDepth = parseGraphProjectionDepth(url.searchParams.get("maxDepth"));
+        return json(response, 200, service.nodeGrowth.getGraphProjection(
+          decodeURIComponent(researchSessionGraphMatch[1]),
+          focusNodeId,
+          maxDepth,
+        ));
       }
       const researchSessionMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)$/);
       if (request.method === "GET" && researchSessionMatch) {
@@ -239,6 +311,26 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       const researchTaskMatch = url.pathname.match(/^\/v1\/research-tasks\/([^/]+)$/);
       if (request.method === "GET" && researchTaskMatch) {
         return json(response, 200, service.research.getTask(decodeURIComponent(researchTaskMatch[1])));
+      }
+      const researchTermPreviewEventsMatch = url.pathname.match(/^\/v1\/research-term-preview-tasks\/([^/]+)\/events$/);
+      if (request.method === "GET" && researchTermPreviewEventsMatch) {
+        const afterId = Number(header(request, "last-event-id") ?? url.searchParams.get("after") ?? "0");
+        if (!Number.isSafeInteger(afterId) || afterId < 0) throw new ResearchTermPreviewValidationError("Last-Event-ID must be a non-negative integer");
+        return streamResearchTermPreviewEvents(request, response, service, decodeURIComponent(researchTermPreviewEventsMatch[1]), afterId);
+      }
+      const researchTermPreviewRetryMatch = url.pathname.match(/^\/v1\/research-term-preview-tasks\/([^/]+)\/retry$/);
+      if (request.method === "POST" && researchTermPreviewRetryMatch) {
+        return json(response, 202, await service.termPreviews.retryTask(decodeURIComponent(researchTermPreviewRetryMatch[1])));
+      }
+      const researchTermPreviewTaskMatch = url.pathname.match(/^\/v1\/research-term-preview-tasks\/([^/]+)$/);
+      if (request.method === "GET" && researchTermPreviewTaskMatch) {
+        return json(response, 200, service.termPreviews.getPreview(decodeURIComponent(researchTermPreviewTaskMatch[1])));
+      }
+      const researchTermPreviewGrowMatch = url.pathname.match(/^\/v1\/research-term-previews\/([^/]+)\/grow$/);
+      if (request.method === "POST" && researchTermPreviewGrowMatch) {
+        return json(response, 202, await service.nodeGrowth.startChildNodeFromTermPreview(
+          decodeURIComponent(researchTermPreviewGrowMatch[1]), header(request, "idempotency-key") ?? "",
+        ));
       }
       const researchSelectionsMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)\/selections$/);
       if (request.method === "POST" && researchSelectionsMatch) {
@@ -288,6 +380,7 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         catch (error) { throw new DeepResearchValidationError((error as Error).message); }
         const accepted = await service.deepResearch.submitBranchMessage(
           decodeURIComponent(researchBranchMessagesMatch[1]), body.content, header(request, "idempotency-key") ?? "",
+          { allowWebSearch: body.allowWebSearch === true },
         );
         return json(response, 202, accepted);
       }
@@ -312,12 +405,62 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         catch (error) { throw new ResearchValidationError((error as Error).message); }
         const accepted = await service.research.submitMessageToNode(
           decodeURIComponent(researchNodeMessagesMatch[1]), body.content, header(request, "idempotency-key") ?? "",
+          { allowWebSearch: body.allowWebSearch === true },
         );
         return json(response, 202, accepted);
       }
+      const researchNodeTermPreviewsMatch = url.pathname.match(/^\/v1\/research-nodes\/([^/]+)\/term-previews$/);
+      if (request.method === "POST" && researchNodeTermPreviewsMatch) {
+        const body = await readJson(request);
+        try { validateResearchTermPreviewInput(body); }
+        catch (error) { throw new ResearchTermPreviewValidationError((error as Error).message); }
+        return json(response, 202, await service.termPreviews.start(
+          decodeURIComponent(researchNodeTermPreviewsMatch[1]), body, header(request, "idempotency-key") ?? "",
+        ));
+      }
+      const researchNodeFusionScanMatch = url.pathname.match(/^\/v1\/research-nodes\/([^/]+)\/fusion-proposals\/scan$/);
+      if (request.method === "POST" && researchNodeFusionScanMatch) {
+        return json(response, 200, await service.fusionProposals.scan(decodeURIComponent(researchNodeFusionScanMatch[1])));
+      }
+      const researchNodeFusionProposalsMatch = url.pathname.match(/^\/v1\/research-nodes\/([^/]+)\/fusion-proposals$/);
+      if (request.method === "GET" && researchNodeFusionProposalsMatch) {
+        const status = url.searchParams.get("status");
+        if (status !== null && status !== "pending" && status !== "accepted" && status !== "rejected") {
+          throw new ResearchFusionProposalValidationError("status must be pending, accepted, or rejected");
+        }
+        return json(response, 200, service.fusionProposals.listForNode(
+          decodeURIComponent(researchNodeFusionProposalsMatch[1]),
+          status ? [status] : undefined,
+        ));
+      }
+      const researchFusionProposalDecisionMatch = url.pathname.match(/^\/v1\/research-fusion-proposals\/([^/]+)\/decide$/);
+      if (request.method === "POST" && researchFusionProposalDecisionMatch) {
+        const body = await readJson(request);
+        try { validateResearchFusionProposalDecisionInput(body); }
+        catch (error) { throw new ResearchFusionProposalValidationError((error as Error).message); }
+        return json(response, 200, await service.fusionProposals.decide(
+          decodeURIComponent(researchFusionProposalDecisionMatch[1]),
+          body.decision,
+        ));
+      }
+      const researchFusionProposalFuseMatch = url.pathname.match(/^\/v1\/research-fusion-proposals\/([^/]+)\/fuse$/);
+      if (request.method === "POST" && researchFusionProposalFuseMatch) {
+        const body = await readJson(request);
+        if (!body || typeof body !== "object" || typeof (body as { idempotencyKey?: unknown }).idempotencyKey !== "string") {
+          throw new ResearchFusionProposalValidationError("idempotencyKey is required");
+        }
+        return json(response, 200, await service.fusionProposals.confirmFusion(
+          decodeURIComponent(researchFusionProposalFuseMatch[1]),
+          (body as { idempotencyKey: string }).idempotencyKey,
+        ));
+      }
       const researchNodeMatch = url.pathname.match(/^\/v1\/research-nodes\/([^/]+)$/);
       if (request.method === "GET" && researchNodeMatch) {
-        return json(response, 200, service.nodeGrowth.getNodeView(decodeURIComponent(researchNodeMatch[1])));
+        return json(response, 200, await service.getResearchNodeView(decodeURIComponent(researchNodeMatch[1])));
+      }
+      const researchBodyVersionMatch = url.pathname.match(/^\/v1\/research-body-versions\/([^/]+)$/);
+      if (request.method === "GET" && researchBodyVersionMatch) {
+        return json(response, 200, service.getResearchBodyVersionView(decodeURIComponent(researchBodyVersionMatch[1])));
       }
       const researchNodeChildrenMatch = url.pathname.match(/^\/v1\/research-nodes\/([^/]+)\/children$/);
       if (request.method === "GET" && researchNodeChildrenMatch) {
@@ -508,6 +651,14 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         };
         return json(response, 200, await service.updateSearchConfig(searchBody));
       }
+// ── Fusion Auto Settings (#32) ────────────────────────
+      if (request.method === "GET" && url.pathname === "/v1/settings/fusion") {
+        return json(response, 200, service.getFusionAutoConfig());
+      }
+      if (request.method === "PUT" && url.pathname === "/v1/settings/fusion") {
+        const fusionBody = await readJson(request) as { enabled?: unknown };
+        return json(response, 200, await service.updateFusionAutoConfig(fusionBody));
+      }
       const docByIdMatch = url.pathname.match(/^\/v1\/documents\/([^/]+)$/);
       if (request.method === "GET" && docByIdMatch) {
         const doc = service.getTopicDocumentVersion(decodeURIComponent(docByIdMatch[1]));
@@ -559,19 +710,32 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (error instanceof LocalAccessError) {
         return json(response, 403, { error: { code: "local_access_denied", message: error.message } });
       }
-      if (error instanceof ResearchImportConflictError || error instanceof ResearchSelectionConflictError) {
-        return json(response, 409, { error: { code: error.code, message: error.message } });
+      if (error instanceof ResearchImportConflictError || error instanceof ResearchSelectionConflictError || error instanceof ResearchFusionProposalConflictError) {
+        const code = error instanceof ResearchFusionProposalConflictError ? "proposal_already_decided" : error.code;
+        return json(response, 409, { error: { code, message: error.message } });
       }
-      if (error instanceof ValidationError || error instanceof ResearchValidationError || error instanceof ResearchImportValidationError || error instanceof ResearchSelectionValidationError || error instanceof DeepResearchValidationError || error instanceof ResearchLaterValidationError || error instanceof SyntaxError) {
+      if (error instanceof ValidationError || error instanceof ResearchValidationError || error instanceof ResearchImportValidationError || error instanceof ResearchSelectionValidationError || error instanceof DeepResearchValidationError || error instanceof ResearchLaterValidationError || error instanceof ResearchTermPreviewValidationError || error instanceof ResearchFusionProposalValidationError || error instanceof RunRecordsValidationError || error instanceof SyntaxError) {
         const code = error instanceof ResearchImportValidationError ? error.code : "invalid_request";
         const status = code === "file_too_large" ? 413 : code === "unsupported_file_type" ? 415 : code === "invalid_file_content" ? 422 : 400;
         return json(response, status, { error: { code, message: error.message } });
       }
-      if (error instanceof NotFoundError || error instanceof ResearchNotFoundError || error instanceof ResearchImportNotFoundError || error instanceof ResearchSelectionNotFoundError || error instanceof DeepResearchNotFoundError || error instanceof ResearchLaterNotFoundError) return json(response, 404, { error: { code: "not_found", message: error.message } });
+      if (error instanceof NotFoundError || error instanceof ResearchNotFoundError || error instanceof ResearchImportNotFoundError || error instanceof ResearchSelectionNotFoundError || error instanceof DeepResearchNotFoundError || error instanceof ResearchLaterNotFoundError || error instanceof ResearchTermPreviewNotFoundError || error instanceof ResearchFusionProposalNotFoundError) return json(response, 404, { error: { code: "not_found", message: error.message } });
       console.error(error);
       return json(response, 500, { error: { code: "internal_error", message: "Internal server error" } });
     }
   });
+}
+
+function parseGraphProjectionDepth(value: string | null): number | undefined {
+  if (value === null) return undefined;
+  if (!/^\d+$/.test(value)) {
+    throw new ResearchValidationError("maxDepth must be a non-negative safe integer");
+  }
+  const maxDepth = Number(value);
+  if (!Number.isSafeInteger(maxDepth) || maxDepth > MAX_GRAPH_PROJECTION_DEPTH) {
+    throw new ResearchValidationError(`maxDepth must be between 0 and ${MAX_GRAPH_PROJECTION_DEPTH}`);
+  }
+  return maxDepth;
 }
 
 function decodeImportComponent(value: string, code: string, label: string): string {
@@ -611,6 +775,17 @@ async function readBytes(request: IncomingMessage, limit: number): Promise<Uint8
 function header(request: IncomingMessage, name: string): string | undefined {
   const value = request.headers[name];
   return Array.isArray(value) ? value[0] : value;
+}
+
+function runRecordExportInput(url: URL): import("./observability.js").RunRecordListInput {
+  const operationType = url.searchParams.get("operationType") ?? url.searchParams.get("type");
+  return {
+    ...(url.searchParams.get("from") ? { from: url.searchParams.get("from")! } : {}),
+    ...(url.searchParams.get("to") ? { to: url.searchParams.get("to")! } : {}),
+    ...(operationType ? { operationType } : {}),
+    ...(url.searchParams.get("outcome") ? { outcome: url.searchParams.get("outcome")! } : {}),
+    ...(url.searchParams.get("status") ? { status: url.searchParams.get("status")! } : {}),
+  };
 }
 
 function json(response: ServerResponse, status: number, payload: unknown) {
@@ -724,6 +899,11 @@ async function streamResearchTaskEvents(request: IncomingMessage, response: Serv
   let cursor = afterId;
   const deadline = Date.now() + 25_000;
   while (!request.destroyed && Date.now() < deadline) {
+    // 先注册 waiter 再 drain（消除 read 与 subscribe 间竞态）；有事件立即续循环，无事件挂起等推送/keep-alive。
+    // pub/sub 只发裸"唤醒"信号，事件本体仍按 sequence>cursor 从 DB 重读（DB 是恰好一次来源）。
+    // 唤醒与短计时竞速：推送是快速通道，RESEARCH_SSE_REDRAIN_MS 计时是兜底——若某次推送在
+    // 两次迭代之间（尚无 once 监听）发出而丢失，至多延迟一个节拍即被强制重读，不会滞留整段封顶。
+    const waiter = service.research.waitForTaskEvent(taskId, RESEARCH_SSE_REDRAIN_MS);
     const events = service.research.getTaskEvents(taskId, cursor);
     for (const event of events) {
       writeSse(response, event);
@@ -732,12 +912,51 @@ async function streamResearchTaskEvents(request: IncomingMessage, response: Serv
     const task = service.research.getTask(taskId);
     if (task.status === "completed" || task.status === "failed") break;
     response.write(": keep-alive\n\n");
-    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    // 本轮无新事件时才挂起等推送；有则立即续循环（已 drain 完会再注册 waiter）。
+    if (events.length === 0) await waiter;
   }
   response.end();
 }
 
 function writeSse(response: ServerResponse, event: import("@collector/capture-contracts").ResearchTaskEvent): void {
+  if (event.id !== undefined) response.write(`id: ${event.id}\n`);
+  response.write(`event: ${event.type}\n`);
+  response.write(`data: ${JSON.stringify(event)}\n\n`);
+}
+
+async function streamResearchTermPreviewEvents(request: IncomingMessage, response: ServerResponse, service: CaptureService, previewId: string, afterId: number): Promise<void> {
+  service.termPreviews.getPreview(previewId);
+  response.statusCode = 200;
+  response.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  response.setHeader("Cache-Control", "no-cache, no-transform");
+  response.setHeader("Connection", "keep-alive");
+  response.setHeader("X-Accel-Buffering", "no");
+  response.flushHeaders();
+
+  let cursor = afterId;
+  const initialEvents = service.termPreviews.getTaskEvents(previewId, cursor);
+  for (const event of initialEvents) {
+    writeTermPreviewSse(response, event);
+    cursor = event.id ?? cursor;
+  }
+  writeTermPreviewSse(response, service.termPreviews.getTaskSnapshot(previewId));
+
+  const deadline = Date.now() + 25_000;
+  while (!request.destroyed && Date.now() < deadline) {
+    const events = service.termPreviews.getTaskEvents(previewId, cursor);
+    for (const event of events) {
+      writeTermPreviewSse(response, event);
+      cursor = event.id ?? cursor;
+    }
+    const preview = service.termPreviews.getPreview(previewId);
+    if (preview.status === "completed" || preview.status === "failed") break;
+    response.write(": keep-alive\n\n");
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  }
+  response.end();
+}
+
+function writeTermPreviewSse(response: ServerResponse, event: import("@collector/capture-contracts").ResearchTermPreviewEvent): void {
   if (event.id !== undefined) response.write(`id: ${event.id}\n`);
   response.write(`event: ${event.type}\n`);
   response.write(`data: ${JSON.stringify(event)}\n\n`);

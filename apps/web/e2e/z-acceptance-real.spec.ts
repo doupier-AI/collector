@@ -30,7 +30,7 @@ import {
 const e2eDir = dirname(fileURLToPath(import.meta.url));
 const PORT = 43211;
 const BASE = `http://127.0.0.1:${PORT}`;
-const REAL_TIMEOUT = 120_000; // 单次真实云模型生成的等待上限
+const REAL_TIMEOUT = 600_000; // 单次真实云模型生成的等待上限（深入走 plan-then-write 逐节扩写，12 节约分钟级）
 
 // ---------------------------------------------------------------------------
 // 验收服务生命周期（真实模型 harness，隔离数据目录；重启复用同一数据目录）
@@ -164,24 +164,47 @@ async function selectRealAnswerText(page: Page, length = 24, offset = 0): Promis
     const lastContainer = containers[containers.length - 1];
     if (!lastContainer) throw new Error("未找到已完成的 AI 回答");
     const lastBlocks = Array.from(lastContainer.querySelectorAll("[data-block-text]"));
+    // 逐块收集文本节点并拼出可见文本；Markdown 渲染后正文可能包在 <p> 里、
+    // 或跨多个文本节点，不能假设块的第一个子节点就是文本节点（TreeWalker 最稳妥）。
+    const textPoints: Array<{ node: Text; data: string }> = [];
     for (const block of lastBlocks) {
-      const node = block.firstChild as Text | null;
-      const text = node?.data ?? "";
-      let start = off;
-      while (start < text.length && /\s/.test(text[start])) start += 1;
-      if (text.length - start < len) continue;
-      const end = start + len;
-      const range = document.createRange();
-      range.setStart(node as Text, start);
-      range.setEnd(node as Text, end);
-      const selection = window.getSelection();
-      if (!selection) throw new Error("浏览器不支持 Selection");
-      selection.removeAllRanges();
-      selection.addRange(range);
-      document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
-      return text.slice(start, end);
+      const walker = block.ownerDocument.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+      let node: Node | null;
+      while ((node = walker.nextNode())) {
+        const textNode = node as Text;
+        const parent = textNode.parentElement;
+        if (parent?.closest("cite-marker")) continue;
+        textPoints.push({ node: textNode, data: textNode.data });
+      }
     }
-    throw new Error("AI 回答中找不到足够长的可选文字");
+    const joined = textPoints.map((point) => point.data).join("");
+    const trimmed = joined.trim();
+    const leading = joined.length - trimmed.length;
+    let start = leading + off;
+    if (start + len > trimmed.length + leading) start = Math.max(leading, trimmed.length + leading - len);
+    const end = start + len;
+    // 定位 start/end 各自所在的文本节点（可能跨节点，如一个段落被切成多个 text node）。
+    function pointAt(target: number): { node: Text; offset: number } {
+      let base = 0;
+      for (const point of textPoints) {
+        const next = base + point.data.length;
+        if (target <= next) return { node: point.node, offset: target - base };
+        base = next;
+      }
+      const last = textPoints[textPoints.length - 1];
+      return { node: last.node, offset: last.data.length };
+    }
+    const startPoint = pointAt(start);
+    const endPoint = pointAt(end);
+    const range = document.createRange();
+    range.setStart(startPoint.node, startPoint.offset);
+    range.setEnd(endPoint.node, endPoint.offset);
+    const selection = window.getSelection();
+    if (!selection) throw new Error("浏览器不支持 Selection");
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    return joined.slice(start, end);
   }, { len: length, off: offset });
 }
 
@@ -208,18 +231,13 @@ async function selectReadingTextByTarget(page: Page, target: string): Promise<vo
   }, target);
 }
 
-/** 打开选区窗口并等待真实分析完成（难度 chip 出现、无失败卡片、摘要非演示），返回窗口定位器。 */
-async function openInsightPanelReal(page: Page, selected: string): Promise<Locator> {
-  const panel = page.getByTestId("selection-insight-panel");
-  await expect(panel).toBeVisible({ timeout: 20_000 });
-  await expect(panel.locator(".selection-panel__quote")).toHaveText(selected);
-  await expect(panel.locator(".selection-panel__chip[data-difficulty]")).toBeVisible({ timeout: REAL_TIMEOUT });
-  await expect(panel.locator(".failure-card")).toHaveCount(0);
-  const summary = panel.locator(".selection-panel__text").first();
-  await expect(summary).toBeVisible();
-  expect(((await summary.textContent()) ?? "").trim().length, "真实分析摘要应非空").toBeGreaterThan(0);
-  expect(await summary.textContent(), "真实分析不应带演示标记").not.toContain("本地演示");
-  return panel;
+/** 修订一 #9：选区后点击浮动胶囊【引用】并等待引用态胶囊出现（分析在后台静默进行），返回胶囊定位器。 */
+async function waitForCapsuleReal(page: Page, selected: string): Promise<Locator> {
+  await page.getByTestId("floating-capsule-cite").click({ timeout: 20_000 });
+  const capsule = page.getByTestId("selection-capsule");
+  await expect(capsule).toBeVisible({ timeout: 20_000 });
+  await expect(capsule).toContainText(selected.slice(0, 36));
+  return capsule;
 }
 
 // ---------------------------------------------------------------------------
@@ -246,13 +264,10 @@ test("场景一：Chat 真实回答 → 选区真实分析 → 节点生长真�
 
   // 选区 + 真实分析
   const selected = await selectRealAnswerText(page);
-  const panel = await openInsightPanelReal(page, selected);
+  await waitForCapsuleReal(page, selected);
 
-  // 深入研究 → 生长面板（二选一已退役，收敛为单一节点生长动作）
-  await panel.getByRole("button", { name: "深入研究" }).click();
-  const grow = page.getByTestId("node-growth-panel");
-  await expect(grow).toBeVisible();
-  await panel.getByRole("button", { name: "开始研究" }).click();
+  // 阶段 H4a：胶囊"深入研究这段"直接创建子节点
+  await page.getByRole("button", { name: "深入研究这段" }).click();
 
   // 子节点视图：来源条、材料范围如实说明、真实第一轮
   const nodeId = await waitChildNodeUrl(page, sessionId);
@@ -302,6 +317,10 @@ test("场景一：Chat 真实回答 → 选区真实分析 → 节点生长真�
 
   // 390 窄屏：来源返回与节点视图不溢出（真实模型内容下的响应式取证）
   await page.setViewportSize({ width: 390, height: 780 });
+  // 从宽屏切窄屏后 useMediaQuery 立即翻转，但 React 需一帧才把 fixed 侧栏换成 overlay；
+  // 等 fixed 侧栏确实消失再量宽，避免量到 reflow 前的瞬时溢出（假模型 320px 用例靠 toBeHidden 自动等待同一原因）。
+  await expect(page.locator(".later-panel--fixed")).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "内容导航" })).toBeHidden();
   await expect(page.locator("[data-selection-mark]")).toHaveText(selected);
   const metrics = await page.evaluate(() => ({
     scrollWidth: document.documentElement.scrollWidth,
@@ -351,15 +370,13 @@ test("场景二：文档导入 → 选区真实分析 → 带方向的节点生�
   await expect(page).toHaveURL(new RegExp(`/research/${originSessionId}/reading/[^/]+$`));
   await expect(page.getByText(DOC_SELECTED)).toBeVisible({ timeout: 20_000 });
 
-  // 选区 + 真实分析（来源为导入快照）
+  // 选区 + 胶囊（来源为导入快照，分析在后台静默进行）
   await selectReadingTextByTarget(page, DOC_SELECTED);
-  const panel = await openInsightPanelReal(page, DOC_SELECTED);
+  await waitForCapsuleReal(page, DOC_SELECTED);
 
-  // 深入研究 → 生长面板，可选方向成为第一轮输入
-  await panel.getByRole("button", { name: "深入研究" }).click();
-  const grow = page.getByTestId("node-growth-panel");
-  await grow.getByLabel("你想重点问什么（可选）").fill("把最终一致性的收敛机制讲透");
-  await panel.getByRole("button", { name: "开始研究" }).click();
+  // 阶段 H4a：先输入方向，再"深入研究这段"直接创建子节点
+  await page.getByLabel("你的问题").fill("把最终一致性的收敛机制讲透");
+  await page.getByRole("button", { name: "深入研究这段" }).click();
 
   // 进入新子节点：来源条带来源内容名、材料范围说明、真实第一轮
   const nodeId = await waitChildNodeUrl(page, originSessionId, 30_000);
@@ -414,82 +431,53 @@ test("场景二：文档导入 → 选区真实分析 → 带方向的节点生�
 });
 
 // ---------------------------------------------------------------------------
-// 场景三：保存为稍后再学 → 栏目呈现 → 从栏目返回原选区并重开窗口 → 刷新保持
+// 场景三：保存标记 → 标记栏目呈现 → 返回原选区 → 明确引用 → 刷新保持
 // ---------------------------------------------------------------------------
-test("场景三：真实回答选区 → 保存稍后再学（星级 / 概括）→ 栏目呈现 → 返回原选区重开窗口 → 刷新保持", async ({
-  page,
-}) => {
-  const laterPosts: Array<{ url: string; headers: Record<string, string> }> = [];
-  page.on("request", (request) => {
-    if (request.url().includes("/v1/research-later-items") && request.method() === "POST") {
-      laterPosts.push({ url: request.url(), headers: request.headers() });
-    }
-  });
-
+test("场景三：真实回答选区 → 保存标记与笔记 → 从栏目返回原选区 → 刷新保持", async ({ page }) => {
   await pairAndOpen(page, "/research/new");
   const consoleIssues = watchConsole(page);
-  const sessionId = await submitQuestion(page, "请用一句话说明什么是间隔重复，以及它对记忆的作用。");
+  const sessionId = await submitQuestion(page, "请用两三句话解释什么是幂等操作。");
   await waitCompletedAnswerText(page, 1);
+  await assertRealMode(page);
 
   const selected = await selectRealAnswerText(page);
-  const panel = await openInsightPanelReal(page, selected);
+  await expect(page.getByTestId("floating-capsule-mark")).toBeVisible({ timeout: 20_000 });
+  await page.getByTestId("floating-capsule-mark").click();
+  const editor = page.getByTestId("mark-note-editor");
+  const input = page.getByTestId("mark-note-input");
+  await expect(editor).toBeVisible();
+  await input.fill("真实回答中的关键定义");
+  await page.mouse.click(12, 12);
+  await expect(editor).toHaveCount(0);
 
-  // 稍后再学：星级 + 可编辑概括（预填确定性默认值，非 AI）
-  await panel.getByRole("button", { name: "稍后再学" }).click();
-  const form = page.getByTestId("later-form");
-  await expect(form).toBeVisible();
-  const summaryInput = panel.getByLabel("概括");
-  expect(((await summaryInput.inputValue()) ?? "").trim().length, "概括应预填确定性默认值").toBeGreaterThan(0);
-  await panel.locator("label.later-star").filter({ hasText: "5 星" }).click();
-  const summary = `收尾真实验收：${selected.slice(0, 12)}`;
-  await summaryInput.fill(summary);
-  await panel.getByRole("button", { name: "保存" }).click();
-  await expect(page.getByTestId("later-saved")).toBeVisible({ timeout: 30_000 });
-
-  // 网络契约：创建请求带稳定幂等键 later:<选区id>
-  expect(laterPosts.length).toBeGreaterThanOrEqual(1);
-  expect(laterPosts[0].headers["idempotency-key"]).toMatch(/^later:/);
-
-  // 栏目即时呈现：概括、来源、数量徽标
-  const item = page.locator(".later-item", { hasText: summary });
-  await expect(item).toBeVisible();
-  await expect(page.getByTestId("later-count")).toBeVisible();
-
-  // SQLite：选区与稍后再学落库一致、幂等重放不重复
   const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
-  const selections = readResearchSelectionTables(dbPath).selections.filter((row) => row.sessionId === sessionId);
-  expect(selections.length).toBeGreaterThanOrEqual(1);
-  const selectionId = selections[0]?.id ?? "";
-  const laterItems = readResearchLaterTables(dbPath).laterItems.filter((row) => row.sessionId === sessionId);
-  expect(laterItems).toHaveLength(1);
-  expect(laterItems[0]?.selectionId).toBe(selectionId);
-  expect(laterItems[0]?.status).toBe("pending");
-  expect(laterItems[0]?.priority).toBe(5);
-  expect(JSON.parse(laterItems[0]?.recordJson ?? "{}").summary).toBe(summary);
+  const items = readResearchLaterTables(dbPath).laterItems.filter((row) => row.sessionId === sessionId);
+  expect(items).toHaveLength(1);
+  const item = items[0];
+  expect(item).toBeDefined();
+  const record = JSON.parse(item?.recordJson ?? "{}") as { note?: string };
+  expect(record.note).toBe("真实回答中的关键定义");
 
-  const replay = await page.request.post("/v1/research-later-items", {
-    headers: { "Idempotency-Key": `later:${selectionId}`, "Content-Type": "application/json" },
-    data: { selectionId, priority: 5, summary },
+  const marksPanel = page.getByRole("complementary", { name: "标记" });
+  await expect(marksPanel).toBeVisible();
+  await expect(marksPanel).toContainText(selected.slice(0, 48));
+  await expect(marksPanel).toContainText("真实回答中的关键定义");
+  await expect(marksPanel).toContainText("来源节点：");
+
+  await page.getByTestId(`mark-open-${item!.id}`).click();
+  await page.waitForURL((url) => url.pathname.includes(`/research/${sessionId}/node/`) && url.searchParams.has("sel"), {
+    timeout: 20_000,
   });
-  expect(replay.ok()).toBe(true);
-  expect(readResearchLaterTables(dbPath).laterItems.filter((row) => row.sessionId === sessionId)).toHaveLength(1);
-
-  // 离开原内容，从栏目重新打开：返回原选区并自动重开窗口
-  await panel.getByRole("button", { name: "结束", exact: true }).click();
-  await expect(page.getByTestId("selection-insight-panel")).toBeHidden();
-  await page.getByRole("link", { name: "开始 Chat" }).click();
-  await page.waitForURL(/\/research\/new$/, { timeout: 15_000 });
-
-  await page.locator(".later-item", { hasText: summary }).locator(".later-item__open").click();
-  await page.waitForURL(new RegExp(`/research/${sessionId}/node/${sessionId}\\?sel=`), { timeout: 20_000 });
   await expect(page.locator("[data-selection-mark]")).toHaveText(selected, { timeout: 20_000 });
-  await expect(page.getByTestId("selection-insight-panel")).toBeVisible();
-  await expect(page.getByTestId("selection-insight-panel").locator(".selection-panel__quote")).toHaveText(selected);
+  await expect(page.locator('[data-testid="floating-selection-capsule"]:not([aria-hidden="true"])')).toBeVisible();
+  await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
+  await page.getByTestId("floating-capsule-cite").click();
+  await expect(page.getByTestId("selection-capsule")).toBeVisible();
 
-  // 刷新后高亮与重开窗口仍在
   await page.reload();
-  await expect(page.locator("[data-selection-mark]")).toHaveText(selected, { timeout: 20_000 });
-  await expect(page.getByTestId("selection-insight-panel")).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "标记" })).toContainText("真实回答中的关键定义");
+  await expect(page.locator('[data-testid="floating-selection-capsule"]:not([aria-hidden="true"])')).toBeVisible();
+  await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
 
   expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
 });
@@ -498,7 +486,7 @@ test("场景三：真实回答选区 → 保存稍后再学（星级 / 概括）
 // 场景四：真实条件下的失败与恢复——刷新不重复创建、材料范围如实、全程无演示标记
 // （更广的失败 / 重试 / 无模型矩阵由默认套件 no-model.spec.ts 等确定性覆盖）
 // ---------------------------------------------------------------------------
-test("场景四：刷新不重复创建子节点与稍后再学项目，材料范围如实说明，全程无演示标记", async ({ page }) => {
+test("场景四：刷新不重复创建子节点与标记项目，材料范围如实说明，全程无演示标记", async ({ page }) => {
   await pairAndOpen(page, "/research/new");
   const consoleIssues = watchConsole(page);
   const sessionId = await submitQuestion(page, "请用一句话解释什么是哈希函数。");
@@ -506,11 +494,10 @@ test("场景四：刷新不重复创建子节点与稍后再学项目，材料�
   await assertRealMode(page);
 
   const selected = await selectRealAnswerText(page);
-  const panel = await openInsightPanelReal(page, selected);
+  await waitForCapsuleReal(page, selected);
 
-  // 生长子节点
-  await panel.getByRole("button", { name: "深入研究" }).click();
-  await panel.getByRole("button", { name: "开始研究" }).click();
+  // 阶段 H4a：胶囊"深入研究这段"直接创建子节点
+  await page.getByRole("button", { name: "深入研究这段" }).click();
   const nodeId = await waitChildNodeUrl(page, sessionId);
   await waitCompletedAnswerText(page, 1);
 
@@ -526,23 +513,24 @@ test("场景四：刷新不重复创建子节点与稍后再学项目，材料�
     readResearchNodeTables(dbPath).nodes.filter((row) => row.sessionId === sessionId && row.parentNodeId !== null),
   ).toHaveLength(childrenBefore);
 
-  // 回到原会话保存一个稍后再学项目，再刷新：不重复创建
+  // 回到原会话做第二次选区并生长子节点，再刷新：不重复创建
   await page.goto(`/research/${sessionId}`);
   await expect(page.locator('.message--assistant [data-content-kind="message"]').first()).toBeVisible({
     timeout: 30_000,
   });
   const reselected = await selectRealAnswerText(page, 24, 8);
-  const repanel = await openInsightPanelReal(page, reselected);
-  await repanel.getByRole("button", { name: "稍后再学" }).click();
-  await repanel.getByLabel("概括").fill("场景四：刷新不重复");
-  await repanel.getByRole("button", { name: "保存" }).click();
-  await expect(page.getByTestId("later-saved")).toBeVisible({ timeout: 30_000 });
-  const laterBefore = readResearchLaterTables(dbPath).laterItems.filter((row) => row.sessionId === sessionId).length;
+  await waitForCapsuleReal(page, reselected);
+  await page.getByRole("button", { name: "深入研究这段" }).click();
+  const nodeId2 = await waitChildNodeUrl(page, sessionId);
+  expect(nodeId2).not.toBe(nodeId);
+  const childrenAfter = readResearchNodeTables(dbPath).nodes.filter(
+    (row) => row.sessionId === sessionId && row.parentNodeId !== null,
+  ).length;
+  expect(childrenAfter).toBe(childrenBefore + 1);
   await page.reload();
-  await expect(page.locator(".later-item", { hasText: "场景四：刷新不重复" })).toBeVisible();
-  expect(readResearchLaterTables(dbPath).laterItems.filter((row) => row.sessionId === sessionId)).toHaveLength(
-    laterBefore,
-  );
+  expect(
+    readResearchNodeTables(dbPath).nodes.filter((row) => row.sessionId === sessionId && row.parentNodeId !== null),
+  ).toHaveLength(childrenAfter);
 
   // 材料范围如实：子节点视图固定说明材料范围，不暗示已核验
   await page.goto(`/research/${sessionId}/node/${nodeId}`);

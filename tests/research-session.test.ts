@@ -7,6 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ResearchGenerationProvider } from "@collector/api";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer } from "@collector/api";
+import { composeSectionUnits, deriveMessageBlocks } from "@collector/capture-contracts";
 
 const deterministicProvider: ResearchGenerationProvider = {
   provider: "deterministic-fake",
@@ -148,6 +149,56 @@ test("research API persists an idempotent turn, streams fake-provider events, an
   reopened.close();
 });
 
+test("research node view exposes validated H3b term positions without changing message text", async (t) => {
+  const content = "**REST API** 在中文中也可读，HTTP 继续出现。";
+  const provider: ResearchGenerationProvider = {
+    provider: "term-marker-fake",
+    model: "term-marker-1",
+    promptVersion: "test-research-v1",
+    async *generate() {
+      yield content;
+    },
+  };
+  const harness = await createHarness(provider);
+  t.after(() => harness.close());
+
+  const sessionResponse = await fetch(`${harness.base}/v1/research-sessions`, {
+    method: "POST",
+    headers: { ...authHeaders(harness.token), "Idempotency-Key": randomUUID() },
+    body: JSON.stringify({ title: "术语弱标记" }),
+  });
+  assert.equal(sessionResponse.status, 201);
+  const session = await sessionResponse.json() as { id: string };
+  const turnResponse = await fetch(`${harness.base}/v1/research-sessions/${session.id}/messages`, {
+    method: "POST",
+    headers: { ...authHeaders(harness.token), "Idempotency-Key": randomUUID() },
+    body: JSON.stringify({ content: "请解释 REST API 和 HTTP 在中文中的含义" }),
+  });
+  assert.equal(turnResponse.status, 202);
+  const turn = await turnResponse.json() as { task: { id: string } };
+  await waitForTask(harness.base, harness.token, turn.task.id, "completed");
+
+  const nodeResponse = await fetch(`${harness.base}/v1/research-nodes/${session.id}`, {
+    headers: authHeaders(harness.token),
+  });
+  assert.equal(nodeResponse.status, 200);
+  const view = await nodeResponse.json() as {
+    messages: Array<{ id: string; role: string; status: string; content: string }>;
+    termDetections?: Record<string, { messageId: string; terms: Array<{ text: string; blockOrdinal: number; startOffset: number; endOffset: number }> }>;
+  };
+  const assistant = view.messages.find((message) => message.role === "assistant");
+  assert.equal(assistant?.status, "completed");
+  assert.ok(assistant);
+  const detection = view.termDetections?.[assistant.id];
+  assert.ok(detection);
+  assert.equal(detection.messageId, assistant.id);
+  assert.deepEqual(detection.terms.map((term) => term.text), ["REST", "API", "HTTP"]);
+  for (const term of detection.terms) {
+    assert.equal(assistant.content.slice(term.startOffset, term.endOffset), term.text);
+  }
+  assert.equal(view.termDetections?.[view.messages[0]?.id ?? ""], undefined);
+});
+
 test("concurrent session creation and restart reuse one idempotency key", async (t) => {
   const harness = await createHarness();
   t.after(() => harness.close());
@@ -251,3 +302,120 @@ test("restart recovery marks an interrupted generation retryable without losing 
   reopenedStore.close();
   t.after(() => rm(root, { recursive: true, force: true }));
 });
+
+test("free body generation persists derived non-provisional slices and records sliceCount", async (t) => {
+  let shouldFail = true;
+  const provider: ResearchGenerationProvider = {
+    provider: "free-body-fake",
+    model: "free-body-1",
+    promptVersion: "research-body-v1",
+    // 生成自由化：模型只产出自由正文，切片由服务层按段落块确定性派生、标题由小模型事后抽取。
+    async writeBody() {
+      if (shouldFail) throw new Error("provider generation failed");
+      return "本地优先把研究内容保留在用户可以检查和备份的环境中。\n\n持久化任务状态让失败后的研究可以从同一上下文重新开始。";
+    },
+    async deriveAnnotations({ content }) {
+      if (content.includes("本地优先")) return { title: "本地控制", concepts: ["本地优先"] };
+      return { title: "可恢复任务", concepts: ["任务恢复"] };
+    },
+    async *generate() { yield "术语预览不使用自由正文"; },
+  };
+  const harness = await createHarness(provider);
+  t.after(() => harness.close());
+  const session = await harness.service.research.createSession("自由正文", "free-body-session");
+  const accepted = await harness.service.research.submitMessage(session.id, "为什么本地优先重要", "free-body-turn");
+
+  const failed = await waitForTask(harness.base, harness.token, accepted.task.id, "failed");
+  assert.equal(failed.retryable, true);
+  assert.equal(harness.store.getResearchMessage(accepted.outputMessage.id)?.content, "");
+  assert.deepEqual(harness.store.listSlicesByMessage(accepted.outputMessage.id), []);
+
+  shouldFail = false;
+  await harness.service.research.retryTask(accepted.task.id);
+  const completed = await waitForTask(harness.base, harness.token, accepted.task.id, "completed");
+  assert.equal(completed.sliceCount, 2);
+  const slices = harness.store.listSlicesByMessage(accepted.outputMessage.id);
+  assert.deepEqual(slices.map((slice) => ({ title: slice.title, isProvisional: slice.isProvisional })), [
+    { title: "本地控制", isProvisional: false },
+    { title: "可恢复任务", isProvisional: false },
+  ]);
+  // #43：切片不再携带正文副本；"拼接等于正文"不变量移到派生层（composeSectionUnits）。
+  assert.equal(
+    harness.store.getResearchMessage(accepted.outputMessage.id)?.content,
+    composeSectionUnits(deriveMessageBlocks(harness.store.getResearchMessage(accepted.outputMessage.id)?.content ?? "")).map((unit) => unit.content).join("\n\n"),
+  );
+
+  const nodeResponse = await fetch(`${harness.base}/v1/research-nodes/${session.id}`, { headers: authHeaders(harness.token) });
+  assert.equal(nodeResponse.status, 200);
+  const view = await nodeResponse.json() as { slices?: Record<string, Array<{ isProvisional: boolean }>> };
+  assert.deepEqual(view.slices?.[accepted.outputMessage.id]?.map((slice) => slice.isProvisional), [false, false]);
+});
+
+test("token-streamed body emits intermediate deltas and derives slices from joined content", async (t) => {
+  // 方案 B：writeBodyStream 逐字产出，服务层边收边落 delta，定稿后从拼接全文派生切片。
+  const provider: ResearchGenerationProvider = {
+    provider: "stream-fake",
+    model: "stream-1",
+    promptVersion: "research-body-v1",
+    async *writeBodyStream(request) {
+      yield "本地优先把研究内容保留在用户可以检查的环境中。";
+      yield "\n\n持久化任务状态让失败后的研究可以从同一上下文重新开始。";
+      // 方案 B 契约：干净结束须回执 finishReason，否则服务层按"无果断信号"续写（#38）。
+      request.onStreamDone?.({ finishReason: "stop" });
+    },
+    async writeBody() {
+      // 不应走到原子回退：流式优先。
+      throw new Error("writeBody should not be called when writeBodyStream is present");
+    },
+    async deriveAnnotations({ content }) {
+      if (content.includes("本地优先")) return { title: "本地控制", concepts: ["本地优先"] };
+      return { title: "可恢复任务", concepts: ["任务恢复"] };
+    },
+    async *generate() { yield "术语预览不使用自由正文"; },
+  };
+  const harness = await createHarness(provider);
+  t.after(() => harness.close());
+  const session = await harness.service.research.createSession("流式正文", "stream-session");
+  const accepted = await harness.service.research.submitMessage(session.id, "为什么本地优先重要", "stream-turn");
+
+  const completed = await waitForTask(harness.base, harness.token, accepted.task.id, "completed");
+  assert.equal(completed.sliceCount, 2);
+  // 中间 delta：两个流式增量各落一条 delta 事件，最后 completed。
+  const events = harness.store.listResearchTaskEvents(accepted.task.id);
+  const deltaEvents = events.filter((event) => event.type === "delta");
+  assert.equal(deltaEvents.length, 2);
+  assert.ok(events.some((event) => event.type === "completed"));
+  // 拼接全文 = 两条增量；切片由其派生。
+  const content = harness.store.getResearchMessage(accepted.outputMessage.id)?.content ?? "";
+  const slices = harness.store.listSlicesByMessage(accepted.outputMessage.id);
+  assert.equal(content, "本地优先把研究内容保留在用户可以检查的环境中。\n\n持久化任务状态让失败后的研究可以从同一上下文重新开始。");
+  assert.deepEqual(slices.map((slice) => slice.title), ["本地控制", "可恢复任务"]);
+  assert.equal(slices.every((slice) => !slice.isProvisional), true);
+});
+
+test("writeBody-only provider still works via the atomic fallback branch", async (t) => {
+  // 缺 writeBodyStream 时退回 writeBody 原子写（单个 delta），保证非流式 provider 兼容。
+  const provider: ResearchGenerationProvider = {
+    provider: "atomic-fake",
+    model: "atomic-1",
+    promptVersion: "research-body-v1",
+    async writeBody() {
+      return "原子正文第一段。\n\n原子正文第二段。";
+    },
+    async deriveAnnotations() {
+      return { title: "", concepts: [] };
+    },
+    async *generate() { yield "unused"; },
+  };
+  const harness = await createHarness(provider);
+  t.after(() => harness.close());
+  const session = await harness.service.research.createSession("原子正文", "atomic-session");
+  const accepted = await harness.service.research.submitMessage(session.id, "原子问题", "atomic-turn");
+
+  const completed = await waitForTask(harness.base, harness.token, accepted.task.id, "completed");
+  assert.equal(completed.sliceCount, 2);
+  const events = harness.store.listResearchTaskEvents(accepted.task.id);
+  assert.equal(events.filter((event) => event.type === "delta").length, 1);
+  assert.equal(harness.store.getResearchMessage(accepted.outputMessage.id)?.content, "原子正文第一段。\n\n原子正文第二段。");
+});
+

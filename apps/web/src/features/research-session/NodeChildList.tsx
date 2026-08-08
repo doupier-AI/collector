@@ -51,7 +51,9 @@ export function NodeChildList({
               to={`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(child.id)}`}
             >
               <span className="branch-list__name">
-                {child.originSelectionId && selectionNames[child.originSelectionId]
+                {child.displayName
+                  ? child.displayName
+                  : child.originSelectionId && selectionNames[child.originSelectionId]
                   ? `深入研究：${selectionNames[child.originSelectionId]}`
                   : "子节点"}
               </span>

@@ -25,7 +25,7 @@ describe("ChatComposer", () => {
     await user.type(textarea, "什么是本地优先");
     await user.click(screen.getByRole("button", { name: "发送" }));
 
-    expect(onSubmit).toHaveBeenCalledWith("什么是本地优先");
+    expect(onSubmit).toHaveBeenCalledWith("什么是本地优先", false);
     expect(textarea).toHaveValue("什么是本地优先");
 
     release(true);
@@ -139,5 +139,179 @@ describe("ChatComposer", () => {
     const textarea = screen.getByLabelText("你的问题");
     expect(hint).not.toBeNull();
     expect(textarea.getAttribute("aria-describedby")).toContain(hint.id);
+  });
+
+  it("联网开关默认关闭，并把用户本次选择传给提交回调", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn(async () => true);
+    renderComposer(onSubmit, "web-search-toggle");
+
+    const toggle = screen.getByRole("checkbox", { name: "允许联网搜索" });
+    expect(toggle).not.toBeChecked();
+    await user.click(toggle);
+    expect(toggle).toBeChecked();
+    await user.type(screen.getByLabelText("你的问题"), "查一下最新资料");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(onSubmit).toHaveBeenCalledWith("查一下最新资料", true);
+  });
+});
+
+describe("ChatComposer 双模发送（阶段 H4a）", () => {
+  const citedSelection = {
+    text: "一段被引用的选区文字",
+    selectionId: "sel-1",
+    anchor: {
+      kind: "message" as const,
+      messageId: "m-out",
+      blockOrdinal: 0,
+      startOffset: 0,
+      endOffset: 10,
+      exact: "一段被引用的选区文字",
+    },
+  };
+
+  it("有引用时显示胶囊与双模按钮，无普通发送按钮", () => {
+    render(
+      <ChatComposer
+        draftScope="test"
+        submitLabel="发送"
+        onSubmit={async () => true}
+        citedSelection={citedSelection}
+        onRemoveCitation={() => {}}
+        onStartChildNode={async () => true}
+      />,
+    );
+
+    expect(screen.getByTestId("selection-capsule")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "在此追问" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "深入研究这段" })).toBeInTheDocument();
+    // 普通圆形发送按钮被替换
+    expect(screen.queryByRole("button", { name: "发送" })).not.toBeInTheDocument();
+  });
+
+  it("在此追问：携带选区文本作为引用上下文发送", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn(async (_content: string) => true);
+    render(
+      <ChatComposer
+        draftScope="test"
+        submitLabel="发送"
+        onSubmit={onSubmit}
+        citedSelection={citedSelection}
+        onRemoveCitation={() => {}}
+        onStartChildNode={async () => true}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("你的问题"), "这段内容怎么理解？");
+    await user.click(screen.getByRole("button", { name: "在此追问" }));
+
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    const [content] = onSubmit.mock.calls[0];
+    // 选区原文以引用格式进入消息内容
+    expect(content).toContain("> 一段被引用的选区文字");
+    expect(content).toContain("这段内容怎么理解？");
+  });
+
+  it("深入研究这段：调用 onStartChildNode，不需要输入也可点击", async () => {
+    const user = userEvent.setup();
+    const onStartChildNode = vi.fn(async () => true);
+    render(
+      <ChatComposer
+        draftScope="test"
+        submitLabel="发送"
+        onSubmit={async () => true}
+        citedSelection={citedSelection}
+        onRemoveCitation={() => {}}
+        onStartChildNode={onStartChildNode}
+      />,
+    );
+
+    // 不输入任何内容也可以点击"深入研究这段"
+    const growButton = screen.getByRole("button", { name: "深入研究这段" });
+    expect(growButton).toBeEnabled();
+    await user.click(growButton);
+
+    expect(onStartChildNode).toHaveBeenCalledTimes(1);
+    expect(onStartChildNode).toHaveBeenCalledWith("", false);
+  });
+
+  it("深入研究这段：输入框有内容时作为 query 传入", async () => {
+    const user = userEvent.setup();
+    const onStartChildNode = vi.fn(async () => true);
+    render(
+      <ChatComposer
+        draftScope="test"
+        submitLabel="发送"
+        onSubmit={async () => true}
+        citedSelection={citedSelection}
+        onRemoveCitation={() => {}}
+        onStartChildNode={onStartChildNode}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("你的问题"), "把背后的机制讲透");
+    await user.click(screen.getByRole("button", { name: "深入研究这段" }));
+
+    expect(onStartChildNode).toHaveBeenCalledWith("把背后的机制讲透", false);
+  });
+
+  it("胶囊移除按钮触发 onRemoveCitation", async () => {
+    const user = userEvent.setup();
+    const onRemoveCitation = vi.fn();
+    render(
+      <ChatComposer
+        draftScope="test"
+        submitLabel="发送"
+        onSubmit={async () => true}
+        citedSelection={citedSelection}
+        onRemoveCitation={onRemoveCitation}
+        onStartChildNode={async () => true}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "移除引用" }));
+    expect(onRemoveCitation).toHaveBeenCalledTimes(1);
+  });
+
+  it("有引用时提示语切换为在此追问说明", () => {
+    render(
+      <ChatComposer
+        draftScope="test"
+        submitLabel="发送"
+        onSubmit={async () => true}
+        citedSelection={citedSelection}
+        onRemoveCitation={() => {}}
+        onStartChildNode={async () => true}
+      />,
+    );
+
+    expect(screen.getByText("Enter 在此追问，Shift+Enter 换行")).toBeInTheDocument();
+  });
+
+  it("Enter 在有引用时走在此追问路径", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn(async (_content: string) => true);
+    render(
+      <ChatComposer
+        draftScope="test"
+        submitLabel="发送"
+        onSubmit={onSubmit}
+        citedSelection={citedSelection}
+        onRemoveCitation={() => {}}
+        onStartChildNode={async () => true}
+      />,
+    );
+
+    const textarea = screen.getByLabelText("你的问题");
+    await user.click(textarea);
+    await user.keyboard("问题内容");
+    await user.keyboard("{Enter}");
+
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    const [content] = onSubmit.mock.calls[0];
+    expect(content).toContain("> 一段被引用的选区文字");
+    expect(content).toContain("问题内容");
   });
 });

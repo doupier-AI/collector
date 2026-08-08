@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import type { ResearchSessionView, ResearchTaskRecord } from "@collector/capture-contracts";
-import { isApiErrorCode, isUnauthorized } from "../../api/errors";
+import type { ResearchSelectionAnchor, ResearchSessionView, ResearchTaskRecord } from "@collector/capture-contracts";
+import { isApiErrorCode, isUnauthorized, apiErrorCopy } from "../../api/errors";
+import { useServices } from "../../app/services";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { StatusMessage } from "../../components/StatusMessage/StatusMessage";
@@ -12,7 +13,20 @@ import { AttachmentList } from "../imports/AttachmentList";
 import { IMPORT_ACCEPT } from "../imports/import-file";
 import { useResearchImports } from "../imports/useResearchImports";
 import { SelectionSurface } from "../selection/SelectionSurface";
-import { highlightForMessages, selectionExcerpt } from "../selection/selection-highlight";
+import { FloatingSelectionCapsule } from "../selection/FloatingSelectionCapsule";
+import { MarkNoteEditor } from "../selection/MarkNoteEditor";
+import {
+  childNodeIdempotencyKey,
+  focusComposerTextarea,
+  highlightForMessages,
+  selectionExactDigest,
+  selectionExcerpt,
+} from "../selection/selection-highlight";
+import type { SelectionRect } from "../selection/useSelection";
+import type { CitedSelection } from "../selection/useSelectionCitation";
+import { useSelectionCitation } from "../selection/useSelectionCitation";
+import type { MarkResult } from "../selection/useSelectionMark";
+import { useSelectionMark } from "../selection/useSelectionMark";
 import { formatSessionTime } from "./format";
 import { MessageItem } from "./MessageItem";
 import { ModelStatusIndicator } from "./ModelStatusIndicator";
@@ -21,6 +35,22 @@ import { ResearchScopeNote, SelectionRestoreFallback, SelectionSourceBar, useSel
 import { taskForMessage } from "./session-view";
 import { useResearchNode } from "./useResearchNode";
 import type { PendingFirstTurn } from "./useResearchNode";
+import { useTermPreviews } from "./useTermPreviews";
+import { deriveSliceCardTargets, sliceCardAccessibleName } from "./slice-cards";
+import { SliceRailNav } from "./SliceRailNav";
+import type { SliceRailItem } from "./SliceRailNav";
+import {
+  FOCUS_DURATION_MS,
+  FRAGMENT_LOCATOR_FALLBACK_TEXT,
+  fetchBodyVersionCached,
+  locateFragment,
+  parseFragmentId,
+  type FragmentLocatorFailureKind,
+} from "./fragment-locator";
+import { FusionProposalNotice } from "./FusionProposalNotice";
+import { FusionSourceBar } from "./FusionSourceBar";
+import { AutoFusionNotice } from "./AutoFusionNotice";
+import type { ResearchFusionAutoResult, ResearchFusionProposalRecord, ResearchFusionSource } from "@collector/capture-contracts";
 
 const STREAM_NOTICE: Record<string, { title: string; body: string }> = {
   reconnecting: { title: "连接中断", body: "正在重新连接，已显示的内容不会丢失。" },
@@ -29,23 +59,60 @@ const STREAM_NOTICE: Record<string, { title: string; body: string }> = {
 };
 
 /**
- * 统一节点页（阶段 H2）：根节点（旧会话页）与子节点（旧分支页）同一页面。
+ * 统一节点页（阶段 H2/H4a）：根节点（旧会话页）与子节点（旧分支页）同一页面。
  * - 数据统一走 GET /v1/research-nodes/:id；提交统一走节点消息端点；
  * - 子节点与带来源的根节点显示顶部来源条与材料范围说明；
  * - 附件与拖放导入只在根节点呈现，子节点没有独立文件空间；
- * - ?sel= 来源返回高亮、选区捕获层、流式事件在所有节点一致。
+ * - ?sel= 来源返回高亮、选区捕获层、流式事件在所有节点一致；
+ * - 选区上方浮动胶囊显式引用（修订一 #9），引用胶囊在输入框区域显示，支持"在此追问"与"深入研究这段"双模发送。
  */
 export function ResearchNodePage() {
   const { sessionId = "", nodeId = "" } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
+  const { api } = useServices();
   // 开始页首问通过路由 state 传入，只在挂载时读取一次；成功前由 hook 保留
   const initialTurnRef = useRef<PendingFirstTurn | undefined>(
     (location.state as { firstTurn?: PendingFirstTurn } | null)?.firstTurn,
   );
   const node = useResearchNode(nodeId, { initialTurn: initialTurnRef.current });
+  const termPreviews = useTermPreviews(nodeId, (error) => node.announce(apiErrorCopy(error).body));
   const [retryingTaskId, setRetryingTaskId] = useState<string | null>(null);
+  const [decidingFusionProposalId, setDecidingFusionProposalId] = useState<string | null>(null);
+  const [fusingProposalId, setFusingProposalId] = useState<string | null>(null);
+  // #32：本次挂载自动融合成功的融合节点摘要（顶部提示条数据源）。
+  const [autoFusionResults, setAutoFusionResults] = useState<ResearchFusionAutoResult[] | null>(null);
+  const autoScanNodeRef = useRef("");
   const readyView = node.state.kind === "ready" ? node.state.view : undefined;
+
+  // #36 章节导航：任一 completed 消息存在派生切片时渲染线列。
+  // 数据源 = 全部 completed 消息的派生切片（按消息顺序 + ordinal），每条线绑定卡片标题锚点。
+  // 卡片目标与 MessageItem 渲染共用 deriveSliceCardTargets——导航锚点与卡片 id 必然同源，
+  // 避免两份手工对齐计算不一致导致的点选漂移。
+  // 必须在所有早退返回之前计算（Hooks 规则）；视图未就绪时为空。
+  // 依赖原始 messages/slices 引用而非整个 view，减少因 view 包装对象变化导致的重建。
+  const readyMessages = readyView?.messages;
+  const readySlices = readyView?.slices;
+  // #31：融合节点来源条（跨消息去重）。必须在所有早退返回之前计算（Hooks 规则）。
+  const fusionSourceEntries = useMemo<ResearchFusionSource[]>(() => {
+    if (!readyView?.fusionSources) return [];
+    const byNode = new Map<string, ResearchFusionSource>();
+    for (const sources of Object.values(readyView.fusionSources)) {
+      for (const source of sources) byNode.set(source.nodeId, source);
+    }
+    return [...byNode.values()];
+  }, [readyView]);
+  const railItems = useMemo<SliceRailItem[]>(() => {
+    const items: SliceRailItem[] = [];
+    if (!readyMessages) return items;
+    for (const message of readyMessages) {
+      if (message.role !== "assistant" || message.status !== "completed") continue;
+      for (const target of deriveSliceCardTargets(message, readySlices?.[message.id])) {
+        items.push({ anchorId: target.anchorId, cardId: target.cardId, title: target.slice.title, excerpt: target.blockText });
+      }
+    }
+    return items;
+  }, [readyMessages, readySlices]);
   // 导入控制器以会话视图形状工作：节点视图结构兼容，合并时保留 node / childNodes
   const importsUpdateView = useRef(
     (updater: (view: ResearchSessionView) => ResearchSessionView) =>
@@ -55,15 +122,82 @@ export function ResearchNodePage() {
   const [dragActive, setDragActive] = useState(false);
   const dragDepthRef = useRef(0);
 
+  // 引用选区管理（修订一 #9：浮动胶囊【引用】显式触发；原生选区坍缩不影响引用态）
+  const { citation: citedSelection, capture: captureCitation, remove: removeCitation } =
+    useSelectionCitation({ sessionId, nodeId });
+
+  // 引用完成后的键盘焦点回归（修订一 #11）：下一步是输入问题，焦点交给输入框
+  const handleSurfaceCite = useCallback(
+    (anchor: ResearchSelectionAnchor, text: string) => {
+      captureCitation(anchor, text);
+      focusComposerTextarea();
+    },
+    [captureCitation],
+  );
+
+  // 用户标记与笔记（修订二 #12）：点击【标记】立即持久化（幂等），输入框在原位展开；
+  // 1 秒未点击自动收起为纯标记；点击其他位置保存笔记关闭；全程不依赖 AI
+  const { mark, saveNote } = useSelectionMark({ sessionId, nodeId });
+  const [markEditor, setMarkEditor] = useState<{
+    rect: SelectionRect;
+    text: string;
+    pending: Promise<MarkResult | null>;
+  } | null>(null);
+  const handleSurfaceMark = useCallback(
+    (anchor: ResearchSelectionAnchor, text: string, rect: SelectionRect) => {
+      setMarkEditor({ rect, text, pending: mark(anchor, text) });
+    },
+    [mark],
+  );
+  const handleMarkAutoCollapse = useCallback(() => {
+    // 标记在点击时已落库：收起即纯标记
+    setMarkEditor(null);
+  }, []);
+  const handleMarkSaveNote = useCallback(
+    async (note: string) => {
+      const current = markEditor;
+      setMarkEditor(null);
+      if (!current) return;
+      const result = await current.pending;
+      if (result && note.trim()) await saveNote(result.itemId, note);
+    },
+    [markEditor, saveNote],
+  );
+
+  // 来源返回：?sel= 查询参数恢复选区；引用与标记都必须由用户在浮动胶囊中明确触发
+  const [searchParams] = useSearchParams();
+  const restoredSelection = useSelectionRestore(searchParams.get("sel"));
+
+  // 修订一 #11：?sel= 恢复高亮后，浮动胶囊呈现在高亮标记上方；
+  // 点击【引用】才创建引用态；点击【标记】进入同一套标记笔记编辑器
+  const [restoredCapsuleRect, setRestoredCapsuleRect] = useState<SelectionRect | null>(null);
+  const [restoreCapsuleDismissedId, setRestoreCapsuleDismissedId] = useState<string | null>(null);
+  const handleRestoreCite = useCallback(() => {
+    if (restoredSelection) {
+      captureCitation(restoredSelection.anchor, restoredSelection.text);
+      setRestoreCapsuleDismissedId(restoredSelection.id);
+    }
+    focusComposerTextarea();
+  }, [captureCitation, restoredSelection]);
+  const handleRestoreMark = useCallback(() => {
+    if (!restoredSelection || !restoredCapsuleRect) return;
+    setRestoreCapsuleDismissedId(restoredSelection.id);
+    setMarkEditor({
+      rect: restoredCapsuleRect,
+      text: restoredSelection.text,
+      pending: mark(restoredSelection.anchor, restoredSelection.text),
+    });
+  }, [mark, restoredCapsuleRect, restoredSelection]);
+  const dismissRestoreCapsule = useCallback(() => {
+    if (restoredSelection) setRestoreCapsuleDismissedId(restoredSelection.id);
+  }, [restoredSelection]);
+
   const isRoot = readyView ? !readyView.node.parentNodeId : true;
   // 来源条：子节点取 node.originSelectionId；带来源的旧独立会话根节点取 session.originSelectionId
   const originSelectionId = readyView
     ? readyView.node.originSelectionId ?? (!readyView.node.parentNodeId ? readyView.session.originSelectionId : undefined)
     : undefined;
   const originSource = useSelectionSource(originSelectionId);
-  // 来源返回：按路由查询参数读取选区，在回答中重定位并高亮，失败降级
-  const [searchParams] = useSearchParams();
-  const restoredSelection = useSelectionRestore(searchParams.get("sel"));
   const reducedMotion = usePrefersReducedMotion();
   const messageHighlight = useMemo(() => {
     if (!restoredSelection || !readyView) return null;
@@ -76,6 +210,11 @@ export function ResearchNodePage() {
   useEffect(() => {
     if (!highlightKey) return;
     const mark = document.querySelector("[data-selection-mark]");
+    if (mark) {
+      // 高亮标记位置（视口坐标）→ 浮动胶囊的页面绝对定位；滚动后绝对位置不变
+      const box = mark.getBoundingClientRect();
+      setRestoredCapsuleRect({ top: box.top, bottom: box.bottom, left: box.left, right: box.right });
+    }
     // scrollIntoView 在个别运行环境不可用；滚动只是便利，不影响高亮本身
     if (typeof mark?.scrollIntoView === "function") {
       mark.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "center" });
@@ -90,12 +229,199 @@ export function ResearchNodePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // #42 融合依据定位：?fragment=<fragmentId> 深链 → 目标语义卡片滚动 + 短暂强调 + 焦点 + 播报。
+  // 状态：focusedCard 携带 nonce——同目标重触发（nonce 递增）与快速切换（state 整体替换只留最新）都成立；
+  // locatedKeyRef 守卫防止视图刷新（流式对齐）重定位；reduced-motion 下即时定位。
+  const [focusedCard, setFocusedCard] = useState<{ cardId: string; nonce: number } | null>(null);
+  const locateNonceRef = useRef(0);
+  const [fragmentFallback, setFragmentFallback] = useState<FragmentLocatorFailureKind | "fetch-failed" | null>(null);
+  const locatedKeyRef = useRef("");
+
+  const fragmentId = searchParams.get("fragment");
+  useEffect(() => {
+    if (!fragmentId) {
+      setFocusedCard(null);
+      setFragmentFallback(null);
+      locatedKeyRef.current = "";
+      return;
+    }
+    if (!readyView) return;
+    // location.key 每次 push/back/forward 都变化：同参数重复跳转、返回后再点、前进恢复均可重触发；
+    // 视图刷新（readyView 引用变化）不重定位。
+    const key = `${nodeId}|${location.key}|${fragmentId}`;
+    if (locatedKeyRef.current === key) return;
+    let stale = false;
+    void (async () => {
+      const parsed = parseFragmentId(fragmentId);
+      if (!parsed) {
+        if (!stale) {
+          setFragmentFallback("invalid-id");
+          node.announce(FRAGMENT_LOCATOR_FALLBACK_TEXT["invalid-id"]);
+        }
+        locatedKeyRef.current = key;
+        return;
+      }
+      try {
+        const view = await fetchBodyVersionCached(api, parsed.bodyVersionId);
+        const located = locateFragment({
+          currentNodeId: nodeId,
+          fragmentId,
+          version: view.version,
+          fragments: view.fragments,
+          messages: readyView.messages,
+          slicesByMessage: readyView.slices,
+        });
+        if (stale) return;
+        locatedKeyRef.current = key;
+        if (located.kind === "ok") {
+          setFragmentFallback(null);
+          setFocusedCard({ cardId: located.target.cardId, nonce: ++locateNonceRef.current });
+          node.announce(`已定位到「${sliceCardAccessibleName(located.slice, located.target.blockText)}」。`);
+        } else {
+          setFocusedCard(null);
+          setFragmentFallback(located.failure);
+          node.announce(FRAGMENT_LOCATOR_FALLBACK_TEXT[located.failure]);
+        }
+      } catch (error) {
+        if (stale) return;
+        locatedKeyRef.current = key;
+        const kind: FragmentLocatorFailureKind | "fetch-failed" = isApiErrorCode(error, "not_found")
+          ? "version-missing"
+          : "fetch-failed";
+        setFocusedCard(null);
+        setFragmentFallback(kind);
+        node.announce(FRAGMENT_LOCATOR_FALLBACK_TEXT[kind]);
+      }
+    })();
+    return () => {
+      stale = true;
+    };
+    // node.announce 是稳定 useCallback（useResearchNode），readyView 引用变化才重跑
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodeId, fragmentId, location.key, readyView, api]);
+
+  // 目标卡片滚动 + 焦点 + 定时恢复。block:"center" 天然避开 sticky 页头（与 ?sel= 高亮同款）；
+  // 顺序：先滚动后聚焦（preventScroll 不产生二次滚动）；cleanup 清定时器（切换/卸载即清旧状态）。
+  useEffect(() => {
+    if (!focusedCard) return;
+    const element = document.getElementById(focusedCard.cardId);
+    if (!element) return;
+    if (typeof element.scrollIntoView === "function") {
+      element.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "center" });
+    }
+    element.focus({ preventScroll: true });
+    const timer = window.setTimeout(() => setFocusedCard(null), FOCUS_DURATION_MS);
+    return () => window.clearTimeout(timer);
+  }, [focusedCard, reducedMotion]);
+
+  // #32 自动融合：开关开启时，节点视图就绪后自动扫描一次相似候选（进入/刷新节点页触发）。
+  // 每节点只扫描一次（刷新=重挂载=重扫）；扫描与融合失败静默，不打断页面。
+  // 依赖 node.state.kind 而非 node 对象：node 控制器每次渲染重建，只有 kind 变化才真正
+  // 代表视图就绪；ref 只在 ready 且开始扫描时置位，避免加载期间提前置位挡住就绪后的扫描。
+  useEffect(() => {
+    if (node.state.kind !== "ready") return;
+    if (autoScanNodeRef.current === nodeId) return;
+    // 旧测试替身/客户端方法缺失时静默跳过。
+    if (!api.getFusionAutoConfig || !api.scanResearchFusionProposals) return;
+    autoScanNodeRef.current = nodeId; // 同步置位防 StrictMode 双跑
+    let cancelled = false;
+    void (async () => {
+      try {
+        const config = await api.getFusionAutoConfig();
+        if (cancelled || !config.enabled) return;
+        const result = await api.scanResearchFusionProposals(nodeId);
+        if (cancelled) return;
+        node.updateView((current) => ({
+          ...current,
+          fusionProposals: mergeFusionProposals(current.fusionProposals ?? [], result.proposals),
+        }));
+        if (result.autoFused.length > 0) setAutoFusionResults(result.autoFused);
+      } catch {
+        // 扫描失败静默：弱提示仍走既有路径（节点视图自带的提案）。
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [api, node.state.kind, nodeId]);
+
   async function handleRetry(task: ResearchTaskRecord) {
     setRetryingTaskId(task.id);
     try {
       await node.retryTask(task);
     } finally {
       setRetryingTaskId(null);
+    }
+  }
+
+  async function handleFusionDecision(proposalId: string, decision: "accepted" | "rejected") {
+    setDecidingFusionProposalId(proposalId);
+    try {
+      const result = await api.decideResearchFusionProposal(proposalId, decision);
+      // #42：accepted 用返回值替换本地提案（转为只读依据入口），rejected 从视图移除
+      node.updateView((current) => ({
+        ...current,
+        fusionProposals:
+          decision === "accepted"
+            ? (current.fusionProposals ?? []).map((proposal) => (proposal.id === proposalId ? result : proposal))
+            : (current.fusionProposals ?? []).filter((proposal) => proposal.id !== proposalId),
+      }));
+      node.announce(
+        decision === "accepted" ? "已保留这条概念关系，依据入口已转为只读。" : "已忽略这条融合提示，近期不会再次显示。 ",
+      );
+    } catch (error) {
+      node.announce(apiErrorCopy(error).body);
+    } finally {
+      setDecidingFusionProposalId(null);
+    }
+  }
+
+  /**
+   * #31 确认式融合：用户确认后创建融合节点并跳转。幂等键按提案确定性派生，
+   * 刷新/重复点击不产生重复节点（服务端按幂等键去重）。
+   */
+  async function handleFuseProposal(proposalId: string) {
+    setFusingProposalId(proposalId);
+    try {
+      const accepted = await api.fuseResearchFusionProposal(proposalId, `fuse:${proposalId}`);
+      navigate(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(accepted.node.id)}`);
+    } catch (error) {
+      node.announce(apiErrorCopy(error).body);
+      setFusingProposalId(null);
+    }
+  }
+
+  /**
+   * "深入研究这段"：以引用选区为来源创建子节点。
+   * 选区文本自动进入子节点第一轮上下文（由后端 NodeGrowthService 处理）。
+   */
+  async function handleStartChildNode(query: string, allowWebSearch = false): Promise<boolean> {
+    if (!citedSelection) return false;
+    try {
+      const trimmed = query.trim();
+      const idempotencyKey = childNodeIdempotencyKey(citedSelection.selectionId, trimmed, selectionExactDigest);
+      const accepted = await api.startChildNode(
+        citedSelection.selectionId,
+        { ...(trimmed ? { query: trimmed } : {}), allowWebSearch },
+        idempotencyKey,
+      );
+      removeCitation();
+      navigate(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(accepted.node.id)}`);
+      return true;
+    } catch (error) {
+      node.announce(apiErrorCopy(error).body);
+      return false;
+    }
+  }
+
+  async function handleGrowTermPreview(preview: import("@collector/capture-contracts").ResearchTermPreviewRecord): Promise<boolean> {
+    try {
+      const accepted = await termPreviews.grow(preview);
+      navigate(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(accepted.node.id)}`);
+      return true;
+    } catch (error) {
+      node.announce(apiErrorCopy(error).body);
+      return false;
     }
   }
 
@@ -207,11 +533,15 @@ export function ResearchNodePage() {
   }
 
   const notice = node.streamNotice !== "idle" ? STREAM_NOTICE[node.streamNotice] : undefined;
+  // #31：融合节点（标记在节点记录上，不依赖生成完成态）。
+  const isFusionNode = Boolean(view.node.isFusionNode);
   const title = view.node.parentNodeId
     ? originSource.selection
       ? `深入研究：${selectionExcerpt(originSource.selection.text, 32)}`
       : "子节点"
-    : view.session.title;
+    : isFusionNode
+      ? "融合节点"
+      : view.session.title;
 
   return (
     <div
@@ -229,10 +559,25 @@ export function ResearchNodePage() {
       ) : null}
 
       <header className="session-header">
-        <h1 className="page__title">{title}</h1>
+        <h1 className="page__title">
+          {title}
+          {isFusionNode && view.node.isAutoFusionNode ? (
+            <span className="fusion-auto-badge" data-testid="auto-fusion-badge">自动生成</span>
+          ) : null}
+        </h1>
         <p className="session-header__meta">更新于 {formatSessionTime(view.session.updatedAt)}</p>
         <ModelStatusIndicator />
       </header>
+
+      {autoFusionResults && autoFusionResults.length > 0 ? (
+        <AutoFusionNotice results={autoFusionResults} sessionId={sessionId} />
+      ) : null}
+
+      {fusionSourceEntries.length > 0 ? (
+        <FusionSourceBar sources={fusionSourceEntries} sessionId={sessionId} />
+      ) : null}
+
+      {railItems.length > 0 ? <SliceRailNav items={railItems} /> : null}
 
       {notice ? (
         <StatusMessage variant="info" role="status" title={notice.title}>
@@ -240,8 +585,27 @@ export function ResearchNodePage() {
         </StatusMessage>
       ) : null}
 
+      {view.fusionProposals?.length ? (
+        <FusionProposalNotice
+          proposals={view.fusionProposals}
+          sessionId={view.session.id}
+          currentNodeId={nodeId}
+          decidingProposalId={decidingFusionProposalId}
+          onDecide={(proposalId, decision) => void handleFusionDecision(proposalId, decision)}
+          onFuse={(proposalId) => void handleFuseProposal(proposalId)}
+          fusingProposalId={fusingProposalId}
+          announce={node.announce}
+        />
+      ) : null}
+
       {messageHighlight?.kind === "fallback" && restoredSelection ? (
         <SelectionRestoreFallback selection={restoredSelection} caption={messageHighlight.caption} />
+      ) : null}
+
+      {fragmentFallback ? (
+        <p className="fragment-locator-fallback" role="status" data-testid="fragment-locator-fallback">
+          {FRAGMENT_LOCATOR_FALLBACK_TEXT[fragmentFallback]}
+        </p>
       ) : null}
 
       {view.messages.length === 0 ? (
@@ -273,6 +637,14 @@ export function ResearchNodePage() {
                 }
                 citations={view.citations}
                 groundingSources={view.groundingSources}
+                terms={view.termDetections?.[message.id]?.terms}
+                termPreviews={termPreviews.previews}
+                onStartTermPreview={termPreviews.start}
+                onRetryTermPreview={termPreviews.retry}
+                onGrowTermPreview={handleGrowTermPreview}
+                slices={view.slices?.[message.id]}
+                fragmentCardId={focusedCard?.cardId}
+                fusionSources={view.fusionSources?.[message.id]}
               />
             );
           })}
@@ -331,6 +703,9 @@ export function ResearchNodePage() {
         onImportFile={isRoot ? (file) => void imports.upload(file) : undefined}
         importAccept={isRoot ? IMPORT_ACCEPT : undefined}
         externalError={isRoot ? imports.uploadError : null}
+        citedSelection={citedSelection}
+        onRemoveCitation={removeCitation}
+        onStartChildNode={handleStartChildNode}
       />
 
       {isRoot && dragActive ? (
@@ -342,13 +717,42 @@ export function ResearchNodePage() {
 
       <SelectionSurface
         sessionId={sessionId}
-        nodeId={nodeId}
-        restoreSelection={restoredSelection?.anchor.kind === "message" ? restoredSelection : null}
+        onCite={handleSurfaceCite}
+        onMark={handleSurfaceMark}
+        onSelectionActivity={dismissRestoreCapsule}
+        immediateDismiss={Boolean(restoredSelection && restoredCapsuleRect && restoreCapsuleDismissedId !== restoredSelection.id)}
       />
+
+      {restoredSelection && restoredCapsuleRect && restoreCapsuleDismissedId !== restoredSelection.id ? (
+        <FloatingSelectionCapsule rect={restoredCapsuleRect} onCite={handleRestoreCite} onMark={handleRestoreMark} />
+      ) : null}
+
+      {markEditor ? (
+        <MarkNoteEditor
+          rect={markEditor.rect}
+          selectedText={markEditor.text}
+          existingNote={markEditor.pending}
+          onAutoCollapse={handleMarkAutoCollapse}
+          onSaveNote={handleMarkSaveNote}
+        />
+      ) : null}
 
       <p className="sr-only" role="status" aria-live="polite">
         {node.liveMessage}
       </p>
     </div>
   );
+}
+
+/**
+ * #32：按 id 合并扫描返回的提案与视图既有提案，保留视图里未在扫描结果中的
+ * 旧提案（如历史 accepted 依据入口）。扫描结果优先覆盖同 id 提案（状态可能已变化）。
+ */
+function mergeFusionProposals(
+  view: ResearchFusionProposalRecord[],
+  scanned: ResearchFusionProposalRecord[],
+): ResearchFusionProposalRecord[] {
+  const byId = new Map(view.map((proposal) => [proposal.id, proposal]));
+  for (const proposal of scanned) byId.set(proposal.id, proposal);
+  return [...byId.values()];
 }

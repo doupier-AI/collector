@@ -12,14 +12,14 @@ import {
 import type { ResearchLaterStore } from "./store.js";
 
 /**
- * 稍后再学服务：基础能力，保存、列表、更新与来源联接均不依赖 AI。
+ * 标记服务：基础能力，保存、列表、更新与来源联接均不依赖 AI。
  * 来源关系以选区记录为唯一依据，选区原文与位置锚点由选区服务保留。
  */
 export class ResearchLaterService {
   constructor(private readonly store: ResearchLaterStore) {}
 
   /**
-   * 保存稍后再学项目：summary 省略时使用确定性默认值（选区首句 / 前 80 字符），
+   * 保存标记项目：summary 省略时使用确定性默认值（选区首句 / 前 80 字符），
    * priority 省略时默认三星。幂等键命中时返回首次创建的项目，网络重试不重复创建。
    */
   async createItem(input: ResearchLaterItemInput, idempotencyKey: string): Promise<ResearchLaterItemView> {
@@ -28,13 +28,15 @@ export class ResearchLaterService {
     const selection = this.store.getResearchSelection(input.selectionId);
     if (!selection) throw new ResearchLaterNotFoundError("Research selection not found");
 
-    const existing = this.store.findResearchLaterItemByCreationKey(idempotencyKey);
+    const existing = this.store.findResearchLaterItemByCreationKey(idempotencyKey)
+      ?? this.store.findResearchLaterItemBySelectionId?.(selection.id);
     if (existing) return this.viewFor(existing);
 
     const now = new Date().toISOString();
     const item: ResearchLaterItemRecord = {
       id: randomUUID(),
       sessionId: selection.sessionId,
+      nodeId: selection.nodeId ?? selection.sessionId,
       selectionId: selection.id,
       summary: input.summary?.trim() || deriveDefaultLaterSummary(selection.text),
       priority: input.priority ?? RESEARCH_LATER_DEFAULT_PRIORITY,
@@ -56,7 +58,7 @@ export class ResearchLaterService {
     return this.store.listResearchLaterItems(status).map((item) => this.viewFor(item));
   }
 
-  /** 更新用户优先级、概括或完成状态；未提供的字段保持原值。 */
+  /** 更新兼容字段或笔记；当前标记列表不展示优先级与完成状态。 */
   async updateItem(id: string, update: ResearchLaterItemUpdate): Promise<ResearchLaterItemView> {
     const item = this.store.getResearchLaterItem(id);
     if (!item) throw new ResearchLaterNotFoundError("Research later item not found");
@@ -65,17 +67,34 @@ export class ResearchLaterService {
       priority: update.priority ?? item.priority,
       summary: update.summary !== undefined ? update.summary.trim() : item.summary,
       status: update.status ?? item.status,
+      note: update.note !== undefined ? update.note.trim() || undefined : item.note,
       updatedAt: new Date().toISOString(),
     };
     await this.store.saveResearchLaterItem(next);
     return this.viewFor(next);
   }
 
-  /** 列表联接：附带来源选区原文与来源内容标题，前端无需再次查询选区。 */
+  /** 列表联接：附带来源选区原文、来源标题与来源节点。 */
   private viewFor(item: ResearchLaterItemRecord): ResearchLaterItemView {
     const selection = this.store.getResearchSelection(item.selectionId);
     if (!selection) throw new Error("Research later item references a missing selection");
-    return { item, selection, sourceTitle: this.sourceTitleFor(selection) };
+    const sourceTitle = this.sourceTitleFor(selection);
+    return { item, selection, sourceTitle, sourceNode: this.sourceNodeFor(item, selection, sourceTitle) };
+  }
+
+  private sourceNodeFor(item: ResearchLaterItemRecord, selection: ResearchSelectionRecord, sourceTitle: string): { id: string; label: string } {
+    const nodeId = selection.nodeId ?? item.nodeId ?? selection.sessionId;
+    const node = this.store.getResearchNode?.(nodeId);
+    if (!node || !node.parentNodeId) return { id: nodeId, label: sourceTitle };
+    if (node.displayName) return { id: nodeId, label: node.displayName };
+
+    const originSelection = node.originSelectionId ? this.store.getResearchSelection(node.originSelectionId) : undefined;
+    const originText = originSelection ? excerptText(originSelection.text) : undefined;
+    if (originText) return { id: nodeId, label: originText };
+
+    const firstUserMessage = this.store.listResearchMessagesByNode?.(nodeId)?.find((message) => message.role === "user");
+    const firstMessage = firstUserMessage ? excerptText(firstUserMessage.content) : undefined;
+    return { id: nodeId, label: firstMessage ?? "子节点" };
   }
 
   private sourceTitleFor(selection: ResearchSelectionRecord): string {
@@ -88,6 +107,12 @@ export class ResearchLaterService {
     }
     return "未知来源";
   }
+}
+
+function excerptText(text: string, maxCharacters = 48): string | undefined {
+  const trimmed = text.trim().replace(/\s+/g, " ");
+  if (!trimmed) return undefined;
+  return trimmed.length > maxCharacters ? `${trimmed.slice(0, maxCharacters)}…` : trimmed;
 }
 
 export class ResearchLaterNotFoundError extends Error {}

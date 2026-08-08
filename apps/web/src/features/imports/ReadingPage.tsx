@@ -1,14 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
-import type { ResearchContentBlock, ResearchContentSnapshotRecord } from "@collector/capture-contracts";
-import { isApiErrorCode, isUnauthorized } from "../../api/errors";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import type { ResearchContentBlock, ResearchContentSnapshotRecord, ResearchSelectionAnchor } from "@collector/capture-contracts";
+import { isApiErrorCode, isUnauthorized, apiErrorCopy } from "../../api/errors";
 import { anchorCaption } from "../../app/anchorCaption";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { useServices } from "../../app/services";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { HighlightedText } from "../selection/HighlightedText";
 import { SelectionSurface } from "../selection/SelectionSurface";
-import { resolveHighlight } from "../selection/selection-highlight";
+import { FloatingSelectionCapsule } from "../selection/FloatingSelectionCapsule";
+import { MarkNoteEditor } from "../selection/MarkNoteEditor";
+import {
+  childNodeIdempotencyKey,
+  focusComposerTextarea,
+  resolveHighlight,
+  selectionExactDigest,
+} from "../selection/selection-highlight";
+import type { SelectionRect } from "../selection/useSelection";
+import { useSelectionCitation } from "../selection/useSelectionCitation";
+import type { MarkResult } from "../selection/useSelectionMark";
+import { useSelectionMark } from "../selection/useSelectionMark";
 import { PairingGate } from "../auth/PairingGate";
 import { SelectionRestoreFallback, useSelectionRestore } from "../research-session/SelectionSourceBar";
 import { ChatComposer } from "../chat-composer/ChatComposer";
@@ -32,9 +43,11 @@ function isCode(block: ResearchContentBlock): boolean {
  * 研究阅读视图：以稳定 contentSnapshotId 读取内容块，按锚点联合类型渲染。
  * 文本一律按不可信内容以纯文本渲染，不保存 DOM 路径，不猜 MIME 字段。
  * 页面底部提供 ChatComposer，可对当前文档直接提问，消息回到所属会话。
+ * 阶段 H4a：选区引用胶囊在输入框区域显示，支持"在此追问"与"深入研究这段"双模发送。
  */
 export function ReadingPage() {
   const { sessionId = "", contentSnapshotId = "" } = useParams();
+  const navigate = useNavigate();
   const { api } = useServices();
   const [state, setState] = useState<ReaderState>({ kind: "loading" });
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -46,9 +59,49 @@ export function ReadingPage() {
   if (submitterSessionRef.current !== sessionId) {
     submitterSessionRef.current = sessionId;
     submitterRef.current = new TurnSubmitter({
-      submit: (content, key) => api.submitResearchMessage(sessionId, content, key),
+      submit: (content, key, allowWebSearch) => api.submitResearchMessage(sessionId, content, key, { allowWebSearch }),
     });
   }
+
+  // 引用选区管理（修订一 #9：浮动胶囊【引用】显式触发）：阅读页不传 nodeId，选区归属根节点
+  const { citation: citedSelection, capture: captureCitation, remove: removeCitation } =
+    useSelectionCitation({ sessionId });
+
+  // 引用完成后的键盘焦点回归（修订一 #11）：下一步是输入问题，焦点交给输入框
+  const handleSurfaceCite = useCallback(
+    (anchor: ResearchSelectionAnchor, text: string) => {
+      captureCitation(anchor, text);
+      focusComposerTextarea();
+    },
+    [captureCitation],
+  );
+
+  // 用户标记与笔记（修订二 #12）：阅读页不传 nodeId，标记归属会话根节点
+  const { mark, saveNote } = useSelectionMark({ sessionId });
+  const [markEditor, setMarkEditor] = useState<{
+    rect: SelectionRect;
+    text: string;
+    pending: Promise<MarkResult | null>;
+  } | null>(null);
+  const handleSurfaceMark = useCallback(
+    (anchor: ResearchSelectionAnchor, text: string, rect: SelectionRect) => {
+      setMarkEditor({ rect, text, pending: mark(anchor, text) });
+    },
+    [mark],
+  );
+  const handleMarkAutoCollapse = useCallback(() => {
+    setMarkEditor(null);
+  }, []);
+  const handleMarkSaveNote = useCallback(
+    async (note: string) => {
+      const current = markEditor;
+      setMarkEditor(null);
+      if (!current) return;
+      const result = await current.pending;
+      if (result && note.trim()) await saveNote(result.itemId, note);
+    },
+    [markEditor, saveNote],
+  );
 
   useEffect(() => {
     let stale = false;
@@ -92,17 +145,45 @@ export function ReadingPage() {
   useEffect(() => {
     if (!restoreKey) return;
     const mark = document.querySelector("[data-selection-mark]");
+    if (mark) {
+      // 高亮标记位置（视口坐标）→ 恢复浮动胶囊的页面绝对定位（修订一 #11）
+      const box = mark.getBoundingClientRect();
+      setRestoredCapsuleRect({ top: box.top, bottom: box.bottom, left: box.left, right: box.right });
+    }
     if (typeof mark?.scrollIntoView === "function") {
       mark.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "center" });
     }
   }, [restoreKey, reducedMotion]);
 
+  // 修订一 #11：?sel= 恢复高亮后，浮动胶囊呈现在高亮标记上方（与节点页一致）
+  const [restoredCapsuleRect, setRestoredCapsuleRect] = useState<SelectionRect | null>(null);
+  const [restoreCapsuleDismissedId, setRestoreCapsuleDismissedId] = useState<string | null>(null);
+  const handleRestoreCite = useCallback(() => {
+    if (restoredSelection) {
+      captureCitation(restoredSelection.anchor, restoredSelection.text);
+      setRestoreCapsuleDismissedId(restoredSelection.id);
+    }
+    focusComposerTextarea();
+  }, [captureCitation, restoredSelection]);
+  const handleRestoreMark = useCallback(() => {
+    if (!restoredSelection || !restoredCapsuleRect) return;
+    setRestoreCapsuleDismissedId(restoredSelection.id);
+    setMarkEditor({
+      rect: restoredCapsuleRect,
+      text: restoredSelection.text,
+      pending: mark(restoredSelection.anchor, restoredSelection.text),
+    });
+  }, [mark, restoredCapsuleRect, restoredSelection]);
+  const dismissRestoreCapsule = useCallback(() => {
+    if (restoredSelection) setRestoreCapsuleDismissedId(restoredSelection.id);
+  }, [restoredSelection]);
+
   const handleSubmitMessage = useCallback(
-    async (content: string): Promise<boolean> => {
+    async (content: string, allowWebSearch = false): Promise<boolean> => {
       const submitter = submitterRef.current;
       if (!submitter) return false;
       try {
-        await submitter.send(content);
+        await submitter.send(content, { allowWebSearch });
         return true;
       } catch (error) {
         if (isUnauthorized(error)) {
@@ -113,6 +194,26 @@ export function ReadingPage() {
     },
     [],
   );
+
+  /** "深入研究这段"：以引用选区为来源创建子节点，导航到节点页。 */
+  async function handleStartChildNode(query: string, allowWebSearch = false): Promise<boolean> {
+    if (!citedSelection) return false;
+    try {
+      const trimmed = query.trim();
+      const idempotencyKey = childNodeIdempotencyKey(citedSelection.selectionId, trimmed, selectionExactDigest);
+      const accepted = await api.startChildNode(
+        citedSelection.selectionId,
+        { ...(trimmed ? { query: trimmed } : {}), allowWebSearch },
+        idempotencyKey,
+      );
+      removeCitation();
+      navigate(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(accepted.node.id)}`);
+      return true;
+    } catch (error) {
+      console.error("创建子节点失败:", apiErrorCopy(error).body);
+      return false;
+    }
+  }
 
   if (authError) {
     return <PairingGate onPaired={() => setAuthError(null)} />;
@@ -221,18 +322,32 @@ export function ReadingPage() {
           submitLabel="发送"
           placeholder="输入关于这篇文档的问题……"
           onSubmit={handleSubmitMessage}
+          citedSelection={citedSelection}
+          onRemoveCitation={removeCitation}
+          onStartChildNode={handleStartChildNode}
         />
       </div>
       <SelectionSurface
         sessionId={sessionId}
-        restoreSelection={
-          restoredSelection &&
-          restoredSelection.anchor.kind === "snapshot" &&
-          restoredSelection.anchor.contentSnapshotId === snapshot.id
-            ? restoredSelection
-            : null
-        }
+        onCite={handleSurfaceCite}
+        onMark={handleSurfaceMark}
+        onSelectionActivity={dismissRestoreCapsule}
+        immediateDismiss={Boolean(restoredSelection && restoredCapsuleRect && restoreCapsuleDismissedId !== restoredSelection.id)}
       />
+
+      {restoredSelection && restoredCapsuleRect && restoreCapsuleDismissedId !== restoredSelection.id ? (
+        <FloatingSelectionCapsule rect={restoredCapsuleRect} onCite={handleRestoreCite} onMark={handleRestoreMark} />
+      ) : null}
+
+      {markEditor ? (
+        <MarkNoteEditor
+          rect={markEditor.rect}
+          selectedText={markEditor.text}
+          existingNote={markEditor.pending}
+          onAutoCollapse={handleMarkAutoCollapse}
+          onSaveNote={handleMarkSaveNote}
+        />
+      ) : null}
     </div>
   );
 }

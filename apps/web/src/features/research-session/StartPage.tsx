@@ -111,14 +111,14 @@ export function StartPage() {
     }
   }
 
-  async function handleSubmit(content: string): Promise<boolean> {
+  async function handleSubmit(content: string, allowWebSearch = false): Promise<boolean> {
     if (creatingRef.current) return false;
 
     // 文件已先创建会话 → 直接用 firstTurn 导航，不再创建
     if (createdSessionIdRef.current) {
       const idempotencyKey = globalThis.crypto.randomUUID();
       navigate(`/research/${encodeURIComponent(createdSessionIdRef.current)}`, {
-        state: { firstTurn: { content, idempotencyKey } },
+        state: { firstTurn: { content, idempotencyKey, allowWebSearch } },
       });
       return true;
     }
@@ -133,7 +133,7 @@ export function StartPage() {
       const idempotencyKey = globalThis.crypto.randomUUID();
       const created = await api.createResearchSession(creationKey);
       navigate(`/research/${encodeURIComponent(created.id)}`, {
-        state: { firstTurn: { content, idempotencyKey } },
+        state: { firstTurn: { content, idempotencyKey, allowWebSearch } },
       });
       return true;
     } catch (error) {

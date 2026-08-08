@@ -1,12 +1,14 @@
 import type { MouseEvent } from "react";
 import type { ResearchSelectionQuality } from "@collector/capture-contracts";
-import { RESEARCH_SELECTION_MAX_CHARACTERS, RESEARCH_SELECTION_MIN_CHARACTERS } from "@collector/capture-contracts";
+import { RESEARCH_SELECTION_MAX_CHARACTERS } from "@collector/capture-contracts";
 import type { ActiveCapture } from "./useSelection";
 
+/**
+ * 修订一·B（issue #10）：非空即有效，"选区太短"提示分支退役；
+ * 仅保留太长与跨段落两种调整建议。
+ */
 function qualityCopy(quality: ResearchSelectionQuality): string {
   switch (quality.level) {
-    case "too_short":
-      return `选区太短。至少选择 ${quality.minCharacters ?? RESEARCH_SELECTION_MIN_CHARACTERS} 个字，才能开始分析。`;
     case "too_long":
       return `选区太长。请控制在 ${quality.maxCharacters ?? RESEARCH_SELECTION_MAX_CHARACTERS} 字以内。`;
     case "cross_block":

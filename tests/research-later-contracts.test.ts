@@ -40,6 +40,15 @@ test("validateResearchLaterItemUpdate requires at least one field and valid valu
   assert.throws(() => validateResearchLaterItemUpdate({ summary: "" }), /summary/);
 });
 
+test("validateResearchLaterItemUpdate accepts note alone; empty note clears, oversize rejects (修订二)", () => {
+  // note 单独即构成合法更新；空字符串语义为清除笔记（纯标记）
+  assert.doesNotThrow(() => validateResearchLaterItemUpdate({ note: "我的笔记" }));
+  assert.doesNotThrow(() => validateResearchLaterItemUpdate({ note: "" }));
+  assert.doesNotThrow(() => validateResearchLaterItemUpdate({ note: "x".repeat(2_000) }));
+  assert.throws(() => validateResearchLaterItemUpdate({ note: 42 }), /note/);
+  assert.throws(() => validateResearchLaterItemUpdate({ note: "x".repeat(2_001) }), /2000/);
+});
+
 test("deriveDefaultLaterSummary takes the first sentence deterministically", () => {
   assert.equal(deriveDefaultLaterSummary("第一句内容。第二句内容。"), "第一句内容");
   assert.equal(deriveDefaultLaterSummary("这是一个没有标点的选区"), "这是一个没有标点的选区");

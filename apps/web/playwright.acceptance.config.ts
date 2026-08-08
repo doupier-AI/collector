@@ -12,11 +12,12 @@ import { defineConfig, devices } from "@playwright/test";
  *   COLLECTOR_AI_API_KEY=… npx playwright test --config playwright.acceptance.config.ts
  * （Windows PowerShell 用 $env:COLLECTOR_AI_API_KEY="…" 前置）。
  */
+// When no COLLECTOR_AI_* override is supplied, the real harness reuses the saved local model profile.
 export default defineConfig({
   testDir: "e2e",
   workers: 1,
-  // 真实云模型调用有网络延迟：单测整体放宽到 6 分钟
-  timeout: 360_000,
+  // 真实云模型调用有网络延迟，深入长文（plan-then-write 逐节扩写）分钟级：整体放宽到 20 分钟
+  timeout: 1_200_000,
   outputDir: "test-results-acceptance",
   reporter: [["list"]],
   use: {

@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import type { ArtifactRecord, CaptureRecord, FragmentRecord, KnowledgeItemRecord, RecentClusterSnapshotRecord, ResearchBranchRecord, ResearchMessageRecord, ResearchSelectionRecord, ResearchSessionRecord, ReviewProposalRecord, WorkflowRunRecord, WorkflowStepRecord } from "@collector/capture-contracts";
+import type { ArtifactRecord, CaptureRecord, FragmentRecord, KnowledgeItemRecord, RecentClusterSnapshotRecord, ResearchBranchRecord, ResearchEdgeRecord, ResearchMessageRecord, ResearchNodeRecord, ResearchSelectionRecord, ResearchSessionRecord, ReviewProposalRecord, WorkflowRunRecord, WorkflowStepRecord } from "@collector/capture-contracts";
+import { researchEdgeId } from "@collector/capture-contracts";
 import { SqliteStore } from "@collector/api";
 
 function records() {
@@ -92,8 +93,8 @@ test("workflow migration creates formal versioned tables", async (t) => {
   store.close();
   const database = new DatabaseSync(databasePath, { readOnly: true });
   const tables = (database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name);
-  for (const table of ["workflow_runs", "workflow_steps", "model_calls", "recent_cluster_snapshots", "material_revisions", "research_sessions", "research_messages", "research_tasks", "research_task_events", "research_attachments", "research_import_tasks", "research_content_snapshots", "research_import_task_events", "research_selections", "research_selection_tasks", "research_selection_task_events", "research_branches", "research_later_items", "research_grounding_runs", "research_grounding_sources", "research_citations", "provider_credentials", "model_purpose_routes", "research_nodes"]) assert.ok(tables.includes(table));
-  assert.equal((database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 24);
+  for (const table of ["workflow_runs", "workflow_steps", "model_calls", "recent_cluster_snapshots", "material_revisions", "research_sessions", "research_messages", "research_tasks", "research_task_events", "research_attachments", "research_import_tasks", "research_content_snapshots", "research_import_task_events", "research_selections", "research_selection_tasks", "research_selection_task_events", "research_branches", "research_later_items", "research_grounding_runs", "research_grounding_sources", "research_citations", "provider_credentials", "model_purpose_routes", "research_nodes", "research_edges", "research_slices", "research_fusion_proposals", "research_body_versions", "research_semantic_fragments"]) assert.ok(tables.includes(table));
+  assert.equal((database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 32);
   const sessionColumns = (database.prepare("PRAGMA table_info(research_sessions)").all() as Array<{ name: string }>).map((column) => column.name);
   assert.ok(sessionColumns.includes("creation_idempotency_key"));
   assert.ok(sessionColumns.includes("origin_selection_id"));
@@ -101,7 +102,7 @@ test("workflow migration creates formal versioned tables", async (t) => {
   const messageColumns = (database.prepare("PRAGMA table_info(research_messages)").all() as Array<{ name: string }>).map((column) => column.name);
   assert.ok(messageColumns.includes("branch_id"));
   const laterColumns = (database.prepare("PRAGMA table_info(research_later_items)").all() as Array<{ name: string }>).map((column) => column.name);
-  for (const column of ["id", "session_id", "selection_id", "status", "priority", "created_at", "updated_at", "creation_idempotency_key", "record_json"]) assert.ok(laterColumns.includes(column));
+  for (const column of ["id", "session_id", "node_id", "selection_id", "status", "priority", "note", "created_at", "updated_at", "creation_idempotency_key", "record_json"]) assert.ok(laterColumns.includes(column));
   const laterIndexes = (database.prepare("PRAGMA index_list(research_later_items)").all() as Array<{ name: string; unique: number }>);
   assert.ok(laterIndexes.some((index) => index.name === "research_later_items_creation_idempotency_idx" && index.unique === 1));
   const sessionIndexes = (database.prepare("PRAGMA index_list(research_sessions)").all() as Array<{ name: string; unique: number }>);
@@ -127,6 +128,10 @@ test("migrations 15 to 21 preserve existing version 14 research sessions", async
 
   const version14 = new DatabaseSync(databasePath);
   version14.exec(`
+    DROP TABLE research_semantic_fragments;
+    DROP TABLE research_body_versions;
+    DROP TABLE research_term_preview_events;
+    DROP TABLE research_term_previews;
     DROP INDEX research_nodes_creation_idempotency_idx;
     DROP INDEX research_nodes_parent_idx;
     DROP INDEX research_nodes_session_idx;
@@ -140,6 +145,9 @@ test("migrations 15 to 21 preserve existing version 14 research sessions", async
     ALTER TABLE research_sessions DROP COLUMN origin_selection_id;
     ALTER TABLE research_sessions DROP COLUMN origin_session_id;
     ALTER TABLE research_messages DROP COLUMN branch_id;
+    DROP TABLE research_fusion_proposals;
+    DROP TABLE research_slices;
+    DROP TABLE research_edges;
     DROP TABLE research_nodes;
     DROP TABLE model_purpose_routes;
     DROP TABLE provider_credentials;
@@ -155,7 +163,8 @@ test("migrations 15 to 21 preserve existing version 14 research sessions", async
     DROP TABLE research_content_snapshots;
     DROP TABLE research_import_tasks;
     DROP TABLE research_attachments;
-    DELETE FROM schema_migrations WHERE version IN (15, 16, 17, 18, 19, 21, 22, 23, 24);
+    -- 真实 v14 旧库不存在任何 >=15 的迁移记录；用 >= 截断，新增迁移后模拟仍然成立
+    DELETE FROM schema_migrations WHERE version >= 15;
   `);
   version14.close();
 
@@ -216,15 +225,24 @@ test("migration v24 maps sessions and branches to nodes and backfills node_id", 
 
   const raw = new DatabaseSync(databasePath);
   raw.exec(`
+    DROP TABLE research_semantic_fragments;
+    DROP TABLE research_body_versions;
+    DROP TABLE research_term_preview_events;
+    DROP TABLE research_term_previews;
     DROP INDEX research_nodes_creation_idempotency_idx;
     DROP INDEX research_nodes_parent_idx;
     DROP INDEX research_nodes_session_idx;
+    DROP TABLE research_fusion_proposals;
+    DROP TABLE research_slices;
+    DROP TABLE research_edges;
     DROP TABLE research_nodes;
     ALTER TABLE research_messages DROP COLUMN node_id;
     ALTER TABLE research_tasks DROP COLUMN node_id;
     ALTER TABLE research_selections DROP COLUMN node_id;
     ALTER TABLE research_later_items DROP COLUMN node_id;
-    DELETE FROM schema_migrations WHERE version = 24;
+    ALTER TABLE research_later_items DROP COLUMN note;
+    -- 模拟 v23 旧库：不存在任何 >=24 的迁移记录（含后续新增版本）
+    DELETE FROM schema_migrations WHERE version >= 24;
   `);
 
   const session: ResearchSessionRecord = {
@@ -394,4 +412,260 @@ test("latest snapshot follows publication order when timestamps are equal", asyn
   await publish("run-later-id", "snapshot-z");
   const actuallyLatest = await publish("run-earlier-id", "snapshot-a");
   assert.deepEqual(store.getLatestRecentClusterSnapshot(), actuallyLatest);
+});
+
+// ── Research Edge Store Tests (D1) ──────────────────────────────
+
+test("createResearchEdge persists and is idempotent", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "collector-edge-create-"));
+  const store = new SqliteStore(join(root, "collector.sqlite"));
+  await store.init();
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+
+  // Create prerequisite nodes
+  const session: ResearchSessionRecord = {
+    id: "session-1", title: "Edge Test", status: "active",
+    createdAt: "2026-08-01T00:00:00.000Z", updatedAt: "2026-08-01T00:00:00.000Z",
+  };
+  await store.saveResearchSession(session);
+  const parentNode: ResearchNodeRecord = {
+    id: "node-parent", sessionId: session.id, status: "active",
+    createdAt: "2026-08-01T00:00:00.000Z", updatedAt: "2026-08-01T00:00:00.000Z",
+  };
+  const childNode: ResearchNodeRecord = {
+    id: "node-child", sessionId: session.id, parentNodeId: parentNode.id, status: "active",
+    createdAt: "2026-08-01T00:01:00.000Z", updatedAt: "2026-08-01T00:01:00.000Z",
+  };
+  await store.createResearchNode(parentNode, "idem-parent");
+  await store.createResearchNode(childNode, "idem-child");
+
+  const edge: ResearchEdgeRecord = {
+    id: researchEdgeId("parent-child", parentNode.id, childNode.id),
+    kind: "parent-child",
+    fromNodeId: parentNode.id,
+    toNodeId: childNode.id,
+    createdAt: childNode.createdAt,
+    status: "active",
+  };
+
+  // First create succeeds
+  const created = await store.createResearchEdge(edge);
+  assert.deepEqual(created, edge);
+
+  // Idempotent: same (kind, from, to) returns existing without duplication
+  const again = await store.createResearchEdge(edge);
+  assert.deepEqual(again, edge);
+
+  // Edge persists across queries
+  const byId = store.getResearchEdge(edge.id);
+  assert.deepEqual(byId, edge);
+});
+
+test("listResearchEdgesByNode returns both incoming and outgoing active edges", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "collector-edge-list-"));
+  const store = new SqliteStore(join(root, "collector.sqlite"));
+  await store.init();
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+
+  const session: ResearchSessionRecord = {
+    id: "session-1", title: "Edge List", status: "active",
+    createdAt: "2026-08-01T00:00:00.000Z", updatedAt: "2026-08-01T00:00:00.000Z",
+  };
+  await store.saveResearchSession(session);
+  const nodeA: ResearchNodeRecord = {
+    id: "node-a", sessionId: session.id, status: "active",
+    createdAt: "2026-08-01T00:00:00.000Z", updatedAt: "2026-08-01T00:00:00.000Z",
+  };
+  const nodeB: ResearchNodeRecord = {
+    id: "node-b", sessionId: session.id, parentNodeId: "node-a", status: "active",
+    createdAt: "2026-08-01T00:01:00.000Z", updatedAt: "2026-08-01T00:01:00.000Z",
+  };
+  const nodeC: ResearchNodeRecord = {
+    id: "node-c", sessionId: session.id, parentNodeId: "node-a", status: "active",
+    createdAt: "2026-08-01T00:02:00.000Z", updatedAt: "2026-08-01T00:02:00.000Z",
+  };
+  await store.createResearchNode(nodeA, "idem-a");
+  await store.createResearchNode(nodeB, "idem-b");
+  await store.createResearchNode(nodeC, "idem-c");
+
+  // a → b (outgoing from a)
+  await store.createResearchEdge({
+    id: researchEdgeId("parent-child", "node-a", "node-b"),
+    kind: "parent-child", fromNodeId: "node-a", toNodeId: "node-b",
+    createdAt: nodeB.createdAt, status: "active",
+  });
+  // a → c (outgoing from a)
+  await store.createResearchEdge({
+    id: researchEdgeId("parent-child", "node-a", "node-c"),
+    kind: "parent-child", fromNodeId: "node-a", toNodeId: "node-c",
+    createdAt: nodeC.createdAt, status: "active",
+  });
+  // b → c semantic edge (incoming to c, outgoing from b)
+  await store.createResearchEdge({
+    id: researchEdgeId("semantic-related", "node-b", "node-c"),
+    kind: "semantic-related", fromNodeId: "node-b", toNodeId: "node-c",
+    createdAt: nodeC.createdAt, status: "active",
+  });
+
+  // node-a sees its 2 outgoing edges
+  const edgesA = store.listResearchEdgesByNode("node-a");
+  assert.equal(edgesA.length, 2);
+  assert.ok(edgesA.every((e) => e.fromNodeId === "node-a" || e.toNodeId === "node-a"));
+
+  // node-b sees parent-child (a→b) + semantic (b→c) = 2 edges
+  const edgesB = store.listResearchEdgesByNode("node-b");
+  assert.equal(edgesB.length, 2);
+
+  // node-c sees parent-child (a→c) + semantic (b→c) = 2 edges
+  const edgesC = store.listResearchEdgesByNode("node-c");
+  assert.equal(edgesC.length, 2);
+});
+
+test("listAllResearchEdges returns all active edges", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "collector-edge-all-"));
+  const store = new SqliteStore(join(root, "collector.sqlite"));
+  await store.init();
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+
+  const session: ResearchSessionRecord = {
+    id: "session-1", title: "All Edges", status: "active",
+    createdAt: "2026-08-01T00:00:00.000Z", updatedAt: "2026-08-01T00:00:00.000Z",
+  };
+  await store.saveResearchSession(session);
+  const nodeA: ResearchNodeRecord = {
+    id: "node-a", sessionId: session.id, status: "active",
+    createdAt: "2026-08-01T00:00:00.000Z", updatedAt: "2026-08-01T00:00:00.000Z",
+  };
+  const nodeB: ResearchNodeRecord = {
+    id: "node-b", sessionId: session.id, parentNodeId: "node-a", status: "active",
+    createdAt: "2026-08-01T00:01:00.000Z", updatedAt: "2026-08-01T00:01:00.000Z",
+  };
+  await store.createResearchNode(nodeA, "idem-a");
+  await store.createResearchNode(nodeB, "idem-b");
+
+  await store.createResearchEdge({
+    id: researchEdgeId("parent-child", "node-a", "node-b"),
+    kind: "parent-child", fromNodeId: "node-a", toNodeId: "node-b",
+    createdAt: nodeB.createdAt, status: "active",
+  });
+  await store.createResearchEdge({
+    id: researchEdgeId("semantic-related", "node-a", "node-b"),
+    kind: "semantic-related", fromNodeId: "node-a", toNodeId: "node-b",
+    createdAt: nodeB.createdAt, status: "active",
+  });
+
+  const allEdges = store.listAllResearchEdges();
+  assert.equal(allEdges.length, 2);
+  assert.ok(allEdges.every((e) => e.status === "active"));
+});
+
+test("migration v28 creates research_edges table and derives parent-child edges from existing nodes", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "collector-edge-v28-"));
+  const databasePath = join(root, "collector.sqlite");
+  const seed = new SqliteStore(databasePath);
+  await seed.init();
+  seed.close();
+
+  // 回滚到 v27：拆除所有 >=v28 迁移创建的结构并删除其迁移记录（>= 截断覆盖后续新增版本）
+  const raw = new DatabaseSync(databasePath);
+  raw.exec(`
+    DROP TABLE IF EXISTS research_semantic_fragments;
+    DROP TABLE IF EXISTS research_body_versions;
+    DROP TABLE IF EXISTS research_fusion_proposals;
+    DROP TABLE IF EXISTS research_slices;
+    DROP TABLE IF EXISTS research_edges;
+    DELETE FROM schema_migrations WHERE version >= 28;
+  `);
+
+  // Insert nodes with parent-child relationships at v27
+  const session: ResearchSessionRecord = {
+    id: "session-v28", title: "Migration v28", status: "active",
+    createdAt: "2026-08-01T00:00:00.000Z", updatedAt: "2026-08-01T00:00:00.000Z",
+  };
+  raw.prepare("INSERT INTO research_sessions (id, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?)")
+    .run(session.id, session.status, session.createdAt, session.updatedAt, JSON.stringify(session));
+
+  const parentNode: ResearchNodeRecord = {
+    id: "v28-parent", sessionId: session.id, status: "active",
+    createdAt: "2026-08-01T00:00:00.000Z", updatedAt: "2026-08-01T00:00:00.000Z",
+  };
+  const childNode: ResearchNodeRecord = {
+    id: "v28-child", sessionId: session.id, parentNodeId: "v28-parent", status: "active",
+    createdAt: "2026-08-01T00:01:00.000Z", updatedAt: "2026-08-01T00:01:00.000Z",
+  };
+  const grandchildNode: ResearchNodeRecord = {
+    id: "v28-grandchild", sessionId: session.id, parentNodeId: "v28-child", status: "active",
+    createdAt: "2026-08-01T00:02:00.000Z", updatedAt: "2026-08-01T00:02:00.000Z",
+  };
+  raw.prepare("INSERT INTO research_nodes (id, session_id, parent_node_id, status, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(parentNode.id, parentNode.sessionId, null, parentNode.status, parentNode.createdAt, parentNode.updatedAt, "idem-v28-parent", JSON.stringify(parentNode));
+  raw.prepare("INSERT INTO research_nodes (id, session_id, parent_node_id, status, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(childNode.id, childNode.sessionId, childNode.parentNodeId!, childNode.status, childNode.createdAt, childNode.updatedAt, "idem-v28-child", JSON.stringify(childNode));
+  raw.prepare("INSERT INTO research_nodes (id, session_id, parent_node_id, status, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(grandchildNode.id, grandchildNode.sessionId, grandchildNode.parentNodeId!, grandchildNode.status, grandchildNode.createdAt, grandchildNode.updatedAt, "idem-v28-grandchild", JSON.stringify(grandchildNode));
+  raw.close();
+
+  // Re-open triggers migration v28 (and v29)
+  const upgraded = new SqliteStore(databasePath);
+  await upgraded.init();
+  t.after(async () => { upgraded.close(); await rm(root, { recursive: true, force: true }); });
+
+  // Verify research_edges table exists
+  const database = new DatabaseSync(databasePath, { readOnly: true });
+  const tables = (database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name);
+  assert.ok(tables.includes("research_edges"), "research_edges table should exist after migration v28");
+
+  // Verify backfilled edges
+  const edges = (database.prepare("SELECT id, kind, from_node_id, to_node_id FROM research_edges ORDER BY created_at, rowid").all() as Array<{ id: string; kind: string; from_node_id: string; to_node_id: string }>);
+  assert.equal(edges.length, 2, "should have derived 2 parent-child edges");
+
+  const parentToChild = edges.find((e) => e.from_node_id === "v28-parent" && e.to_node_id === "v28-child");
+  assert.ok(parentToChild, "parent → child edge should exist");
+  assert.equal(parentToChild.kind, "parent-child");
+  assert.equal(parentToChild.id, researchEdgeId("parent-child", "v28-parent", "v28-child"));
+
+  const childToGrandchild = edges.find((e) => e.from_node_id === "v28-child" && e.to_node_id === "v28-grandchild");
+  assert.ok(childToGrandchild, "child → grandchild edge should exist");
+  assert.equal(childToGrandchild.kind, "parent-child");
+  assert.equal(childToGrandchild.id, researchEdgeId("parent-child", "v28-child", "v28-grandchild"));
+
+  database.close();
+
+  // Store methods should also return the backfilled edges
+  const storeEdges = upgraded.listAllResearchEdges();
+  assert.equal(storeEdges.length, 2);
+  const byNode = upgraded.listResearchEdgesByNode("v28-child");
+  assert.equal(byNode.length, 2, "v28-child should have 2 edges (incoming from parent + outgoing to grandchild)");
+});
+
+test("migration v30 recreates research_fusion_proposals after a v29 rollback", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "collector-fusion-v30-"));
+  const databasePath = join(root, "collector.sqlite");
+  const seed = new SqliteStore(databasePath);
+  await seed.init();
+  seed.close();
+
+  const rollback = new DatabaseSync(databasePath);
+  rollback.exec(`
+    DROP TABLE research_semantic_fragments;
+    DROP TABLE research_body_versions;
+    DROP TABLE research_fusion_proposals;
+    DELETE FROM schema_migrations WHERE version >= 30;
+  `);
+  rollback.close();
+
+  const upgraded = new SqliteStore(databasePath);
+  await upgraded.init();
+  t.after(async () => { upgraded.close(); await rm(root, { recursive: true, force: true }); });
+
+  const database = new DatabaseSync(databasePath, { readOnly: true });
+  const columns = (database.prepare("PRAGMA table_info(research_fusion_proposals)").all() as Array<{ name: string }>).map((column) => column.name);
+  for (const column of ["id", "lo_node_id", "hi_node_id", "relation_type", "reason", "status", "cooldown_until", "created_at", "record_json"]) {
+    assert.ok(columns.includes(column), `migration v30 should recreate ${column}`);
+  }
+  const indexes = database.prepare("PRAGMA index_list(research_fusion_proposals)").all() as Array<{ name: string; unique: number }>;
+  assert.ok(indexes.some((index) => index.name === "research_fusion_proposals_status_idx"));
+  assert.ok(indexes.some((index) => index.unique === 1), "normalized node pair must stay unique");
+  assert.equal((database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 32);
+  database.close();
 });

@@ -2,10 +2,13 @@
 :root {
   --color-canvas: #F5F6F3;
   --color-surface: #FCFCFA;
+  --color-surface-raised: #FFFFFF;
+  --color-surface-hover: #F1F2EE;
   --color-ink: #20231F;
   --color-muted: #6B7168;
   --color-line: #D8DDD5;
   --color-ai: #435A73;
+  --color-ai-hover: #374D63;
   --color-later: #9A6A24;
   --color-danger: #A33B36;
 
@@ -13,9 +16,46 @@
     -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
     "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
 
+  /* 字号与行高：正文 0.9375rem（阅读舒适）、元信息 0.875/0.8125rem、卡片标题 1.125rem */
+  --font-size-xs: 0.75rem;
+  --font-size-sm: 0.8125rem;
+  --font-size-caption: 0.875rem;
+  --font-size-body: 0.9375rem;
+  --font-size-md: 1rem;
+  --font-size-lg: 1.125rem;
+  --font-size-xl: 1.375rem;
+  --line-height-body: 1.75;
+
   /* 正文行宽约 68 个中文字符；开始页输入区使用较窄行宽 */
   --measure: 68rem;
   --measure-start: 42rem;
+
+  /* 表面层级：常态 1（浮动胶囊/标记编辑器的轻投影）、悬停/提升 2、弹层 popover */
+  --shadow-1: 0 2px 10px rgba(0, 0, 0, 0.14);
+  --shadow-2: 0 4px 12px rgba(32, 35, 31, 0.12);
+  --shadow-popover: 0 12px 36px rgba(15, 23, 42, 0.18);
+  /* 焦点环与定位强调光环：同色相、低饱和，不引起布局位移 */
+  --ring-focus: 0 0 0 3px color-mix(in srgb, var(--color-ai) 25%, transparent);
+  --ring-locate: 0 0 0 3px color-mix(in srgb, var(--color-ai) 32%, transparent);
+
+  /* 动效时长与缓动：快速交互 120ms、面板入场 160ms、中速 180ms、慢速强调 200ms、呼吸 1.8s */
+  --duration-fast: 120ms;
+  --duration-base: 160ms;
+  --duration-mid: 180ms;
+  --duration-slow: 200ms;
+  --duration-breathe: 1.8s;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* z-index 层级：app-bar 10（sticky 顶栏，低于覆盖层 30）、rail 15（章节导航）、
+     遮罩 20 → 面板 30（研究地图/抽屉）→ 安全层 40（skip-link/拖放遮罩）→ 浮动 50-55 → 弹层 1000 */
+  --z-app-bar: 10;
+  --z-rail: 15;
+  --z-mask: 20;
+  --z-panel: 30;
+  --z-overlay: 40;
+  --z-capsule: 50;
+  --z-hover-card: 55;
+  --z-popover: 1000;
 
   --space-1: 0.25rem;
   --space-2: 0.5rem;
@@ -43,6 +83,18 @@
   --color-difficulty-high: #A33B36;
   --selection-panel-width: 22.5rem;
   --shadow-panel: 0 0.75rem 2rem rgba(32, 35, 31, 0.16);
+
+  /* 网状图边类型：形状/线型 + 颜色冗余编码，经过相邻对比验证 */
+  --color-edge-parent-child: #2A78D6;
+  --color-edge-semantic-related: #EB6834;
+  --color-edge-fused-from: #1BAF7A;
+
+  /* 网状图节点 */
+  --color-graph-focus: #20231F;
+  --color-graph-node: #FCFCFA;
+  --color-graph-node-stroke: #6B7168;
+  /* 当前节点光晕：硬编码 drop-shadow 的令牌化（现值对齐，视觉增强由 #44 状态收口另做） */
+  --graph-node-halo: drop-shadow(0 2px 4px rgba(32, 35, 31, 0.2));
 }
 
 ::selection {

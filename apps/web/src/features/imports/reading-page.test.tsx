@@ -101,14 +101,16 @@ function snapshotSelection(overrides: Partial<ResearchSelectionRecord> = {}): Re
 
 describe("阅读视图来源返回", () => {
   it("携带选区参数时按锚点重定位并高亮原选区", async () => {
+    const user = userEvent.setup();
+    const createResearchSelection = vi.fn(async () => ({
+      selection: snapshotSelection(),
+      task: makeSelectionTask({ id: "sel-task-1", status: "completed" }),
+    }));
     const { container } = renderReadingPage(
       {
         getResearchContent: async () => snapshotWithAllAnchors(),
         getResearchSelection: async () => snapshotSelection(),
-        createResearchSelection: async () => ({
-          selection: snapshotSelection(),
-          task: makeSelectionTask({ id: "sel-task-1", status: "completed" }),
-        }),
+        createResearchSelection,
       },
       "/research/session-1/reading/snap-1?sel=sel-1",
     );
@@ -117,8 +119,13 @@ describe("阅读视图来源返回", () => {
     expect(mark.tagName).toBe("MARK");
     // 高亮只包住选区范围，块内其余文字仍在
     expect(container.querySelector('[data-block-id="b-2"] [data-block-text]')?.textContent).toBe("正文段落");
-    // 来源返回同时自动重开选区智能窗口
-    expect(await screen.findByTestId("selection-insight-panel")).toBeInTheDocument();
+    // 来源返回先显示浮动胶囊；明确点击引用后才进入引用态
+    expect(await screen.findByTestId("floating-selection-capsule")).toBeInTheDocument();
+    expect(screen.queryByTestId("selection-capsule")).not.toBeInTheDocument();
+    expect(createResearchSelection).not.toHaveBeenCalled();
+    await user.click(screen.getByTestId("floating-capsule-cite"));
+    expect(await screen.findByTestId("selection-capsule")).toBeInTheDocument();
+    expect(createResearchSelection).toHaveBeenCalledTimes(1);
   });
 
   it("块内原文已变化时用原文在块内重新定位", async () => {
@@ -212,7 +219,7 @@ describe("阅读视图 ChatComposer", () => {
     await user.click(screen.getByRole("button", { name: "发送" }));
 
     expect(submitResearchMessage).toHaveBeenCalledTimes(1);
-    expect(submitResearchMessage).toHaveBeenCalledWith("session-1", "总结这篇文章", expect.any(String));
+    expect(submitResearchMessage).toHaveBeenCalledWith("session-1", "总结这篇文章", expect.any(String), { allowWebSearch: false });
   });
 
   it("提交失败时保留草稿不清理", async () => {

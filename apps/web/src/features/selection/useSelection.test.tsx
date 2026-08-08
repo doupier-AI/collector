@@ -71,16 +71,16 @@ describe("useSelectionCapture", () => {
     expect(screen.getByTestId("probe").textContent).toBe("ok:anchor:段落一的内容");
   });
 
-  it("选区太短时只给质量提示，不生成锚点路径之外的记录", () => {
+  it("单字选区同样有效（修订一 #10：非空即有效）", () => {
     const { first } = buildSessionDom();
     render(<CaptureProbe />);
-    mockSelection(makeRange(first, 6, first, 8));
+    mockSelection(makeRange(first, 6, first, 7));
 
     act(() => {
       document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
     });
 
-    expect(screen.getByTestId("probe").textContent).toBe("too_short:anchor:段落");
+    expect(screen.getByTestId("probe").textContent).toBe("ok:anchor:段");
   });
 
   it("跨块选区标记为 cross_block 且没有锚点", () => {
@@ -131,7 +131,7 @@ describe("useSelectionCapture", () => {
     expect(screen.getByTestId("probe").textContent).toBe("idle");
   });
 
-  it("Escape 键关闭捕获并清除选区", () => {
+  it("Escape 键不关闭捕获（修订一 #9：取消方式唯一为点击选取以外区域）", () => {
     const { first } = buildSessionDom();
     render(<CaptureProbe />);
     const removeAllRanges = mockSelection(makeRange(first, 6, first, 12));
@@ -143,8 +143,8 @@ describe("useSelectionCapture", () => {
     act(() => {
       document.dispatchEvent(new KeyboardEvent("keyup", { key: "Escape", bubbles: true }));
     });
-    expect(screen.getByTestId("probe").textContent).toBe("idle");
-    expect(removeAllRanges).toHaveBeenCalled();
+    expect(screen.getByTestId("probe").textContent).toBe("ok:anchor:段落一的内容");
+    expect(removeAllRanges).not.toHaveBeenCalled();
   });
 
   it("点击选区窗口内部不重新捕获", () => {

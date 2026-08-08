@@ -76,3 +76,20 @@ test("purpose gateway snapshot refreshes after profile update or deletion", asyn
   assert.deepEqual(service.getModelRouting(), { routes: [] });
   assert.equal((await service.gatewayForPurpose("chat"))?.modelName, "gpt-4.1-mini");
 });
+
+test("extraction purpose 可独立路由到事后抽取模型并回退激活配置", async () => {
+  const { service } = await fixture();
+  const active = await saveProfile(service, "gpt-4.1-mini", "sk-active");
+  const extraction = await saveProfile(service, "deepseek-v4-flash", "sk-extract");
+  await service.activateProviderProfile(active.id);
+
+  // 未配置时回退激活配置
+  assert.equal((await service.gatewayForPurpose("extraction"))?.modelName, "gpt-4.1-mini");
+
+  await service.setModelRouting("extraction", extraction.id);
+  assert.equal((await service.gatewayForPurpose("extraction"))?.modelName, "deepseek-v4-flash", "事后抽取走独立配置的小模型");
+  assert.equal((await service.gatewayForPurpose("research"))?.modelName, "gpt-4.1-mini", "正文生成不受抽取路由影响");
+
+  await service.setModelRouting("extraction", null);
+  assert.equal((await service.gatewayForPurpose("extraction"))?.modelName, "gpt-4.1-mini");
+});

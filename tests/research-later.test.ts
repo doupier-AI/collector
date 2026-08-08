@@ -107,9 +107,10 @@ async function createSelectionOn(
 }
 
 interface LaterView {
-  item: { id: string; sessionId: string; selectionId: string; summary: string; priority: number; status: string; createdAt: string; updatedAt: string };
+  item: { id: string; sessionId: string; nodeId?: string; selectionId: string; summary: string; priority: number; status: string; note?: string; createdAt: string; updatedAt: string };
   selection: { id: string; text: string };
   sourceTitle: string;
+  sourceNode: { id: string; label: string };
 }
 
 test("creates a later item from a message selection without any AI dependency", async (t) => {
@@ -123,6 +124,7 @@ test("creates a later item from a message selection without any AI dependency", 
   assert.equal(response.status, 201);
   const view = await response.json() as LaterView;
   assert.equal(view.item.sessionId, session.id);
+  assert.equal(view.item.nodeId, session.id);
   assert.equal(view.item.selectionId, created.selection.id);
   assert.equal(view.item.status, "pending");
   assert.equal(view.item.priority, 3);
@@ -131,6 +133,7 @@ test("creates a later item from a message selection without any AI dependency", 
   assert.equal(view.item.summary, exact);
   assert.equal(view.selection.text, exact);
   assert.equal(view.sourceTitle, SESSION_TITLE);
+  assert.deepEqual(view.sourceNode, { id: session.id, label: SESSION_TITLE });
   assert.equal(harness.store.listResearchLaterItems().length, 1);
 });
 
@@ -171,6 +174,31 @@ test("idempotent replay returns the same item without duplicates", async (t) => 
   const first = await (await postJson(harness.base, harness.token, "/v1/research-later-items", { selectionId: created.selection.id }, key)).json() as LaterView;
   const second = await (await postJson(harness.base, harness.token, "/v1/research-later-items", { selectionId: created.selection.id }, key)).json() as LaterView;
   assert.equal(second.item.id, first.item.id);
+  assert.equal(harness.store.listResearchLaterItems().length, 1);
+});
+
+test("mark idempotency is compatible with a legacy later key", async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.close());
+  const { session, assistantMessage } = await createSessionWithAnswer(harness);
+  const created = await createSelectionOn(harness, session.id, anchorForSelection(assistantMessage.id, 1, "实践建议"));
+
+  const legacy = await (await postJson(
+    harness.base,
+    harness.token,
+    "/v1/research-later-items",
+    { selectionId: created.selection.id },
+    `later:${created.selection.id}`,
+  )).json() as LaterView;
+  const mark = await (await postJson(
+    harness.base,
+    harness.token,
+    "/v1/research-later-items",
+    { selectionId: created.selection.id },
+    `mark:${created.selection.id}`,
+  )).json() as LaterView;
+
+  assert.equal(mark.item.id, legacy.item.id);
   assert.equal(harness.store.listResearchLaterItems().length, 1);
 });
 
@@ -235,6 +263,36 @@ test("updates priority, summary and status independently", async (t) => {
   assert.equal(single.item.status, "pending");
 });
 
+test("mark flow: create without note, add a note, then clear it back to a pure mark (修订二)", async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.close());
+  const { session, assistantMessage } = await createSessionWithAnswer(harness);
+  const selection = await createSelectionOn(harness, session.id, anchorForSelection(assistantMessage.id, 1, "实践建议"));
+
+  // 点击【标记】即创建：无笔记（纯标记），不依赖 AI
+  const created = await (await postJson(harness.base, harness.token, "/v1/research-later-items", { selectionId: selection.selection.id }, randomUUID())).json() as LaterView;
+  assert.equal(created.item.note, undefined);
+
+  // 输入笔记后点击其他位置：保存笔记
+  const noted = await (await putJson(harness.base, harness.token, `/v1/research-later-items/${created.item.id}`, { note: "这一段要反复验证" })).json() as LaterView;
+  assert.equal(noted.item.note, "这一段要反复验证");
+  assert.equal(noted.item.summary, created.item.summary);
+
+  const single = await (await fetch(`${harness.base}/v1/research-later-items/${created.item.id}`, { headers: headers(harness.token) })).json() as LaterView;
+  assert.equal(single.item.note, "这一段要反复验证");
+  // 列表视图同样携带笔记
+  const listed = await (await fetch(`${harness.base}/v1/research-later-items`, { headers: headers(harness.token) })).json() as LaterView[];
+  assert.equal(listed.find((view) => view.item.id === created.item.id)?.item.note, "这一段要反复验证");
+
+  // 空笔记 / 纯空白视为清除，回到纯标记
+  const cleared = await (await putJson(harness.base, harness.token, `/v1/research-later-items/${created.item.id}`, { note: "   " })).json() as LaterView;
+  assert.equal(cleared.item.note, undefined);
+  assert.equal(harness.store.getResearchLaterItem(created.item.id)?.note, undefined);
+
+  // 超长笔记被拒绝
+  assert.equal((await putJson(harness.base, harness.token, `/v1/research-later-items/${created.item.id}`, { note: "x".repeat(2_001) })).status, 400);
+});
+
 test("validation rejects malformed requests and unknown references", async (t) => {
   const harness = await createHarness();
   t.after(() => harness.close());
@@ -295,6 +353,7 @@ test("later items persist across store reopen and survive service restart", asyn
   const { session, assistantMessage } = await createSessionWithAnswer(harness);
   const selection = await createSelectionOn(harness, session.id, anchorForSelection(assistantMessage.id, 1, "实践建议"));
   const created = await (await postJson(harness.base, harness.token, "/v1/research-later-items", { selectionId: selection.selection.id, priority: 4 }, randomUUID())).json() as LaterView;
+  await putJson(harness.base, harness.token, `/v1/research-later-items/${created.item.id}`, { note: "重启后仍在的笔记" });
 
   const reopened = new SqliteStore(join(harness.root, "collector.sqlite"));
   await reopened.init();
@@ -302,6 +361,7 @@ test("later items persist across store reopen and survive service restart", asyn
   assert.equal(item?.priority, 4);
   assert.equal(item?.status, "pending");
   assert.equal(item?.selectionId, selection.selection.id);
+  assert.equal(item?.note, "重启后仍在的笔记");
   reopened.close();
 });
 

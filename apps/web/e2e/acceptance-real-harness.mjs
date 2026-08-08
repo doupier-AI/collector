@@ -25,6 +25,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer, startBrowserBootstrap } from "@collector/api";
 import { DEFAULT_PROVIDER_REGISTRY, ProviderRuntimeResolver, fingerprintBaseUrl } from "@collector/model-gateway";
 
@@ -32,6 +33,7 @@ const port = Number(process.env.E2E_API_PORT ?? "43211");
 
 const e2eDir = dirname(fileURLToPath(import.meta.url));
 const runtimeDir = join(e2eDir, ".runtime");
+const repositoryRoot = join(e2eDir, "..", "..", "..");
 mkdirSync(runtimeDir, { recursive: true });
 
 // 页面、静态资源、/v1 与 SSE 由同一个 API 进程同源提供
@@ -43,19 +45,62 @@ if (!existsSync(join(webRoot, "index.html"))) {
 const dataDir = process.env.E2E_DATA_DIR ?? (await mkdtemp(join(tmpdir(), "collector-acceptance-")));
 
 // --- 真实模型运行时（镜像 apps/api/src/server.ts）---
-const apiKey = process.env.COLLECTOR_AI_API_KEY ?? process.env.DEEPSEEK_API_KEY;
+function readPersistedRealModelConfig() {
+  const databasePath = process.env.COLLECTOR_REAL_MODEL_DATABASE?.trim()
+    || join(repositoryRoot, ".collector-data", "collector.sqlite");
+  if (!existsSync(databasePath)) return undefined;
+
+  const database = new DatabaseSync(databasePath, { readOnly: true });
+  try {
+    const activeProfileId = database
+      .prepare("SELECT key, value FROM settings")
+      .all()
+      .find((setting) => setting.key === "active_provider_profile_id")?.value;
+    const rows = database
+      .prepare("SELECT id, record_json AS recordJson FROM provider_profiles")
+      .all();
+    const profiles = rows.flatMap((row) => {
+      try {
+        return [{ id: row.id, profile: JSON.parse(row.recordJson) }];
+      } catch {
+        return [];
+      }
+    });
+    const preferred = profiles.find(({ profile }) => profile.providerId === "deepseek" && profile.model === "deepseek-v4-flash")
+      ?? profiles.find(({ id }) => id === activeProfileId)
+      ?? profiles[0];
+    if (!preferred) return undefined;
+
+    const credential = database
+      .prepare("SELECT api_key AS apiKey FROM provider_credentials WHERE id = ?")
+      .get(preferred.id)?.apiKey;
+    if (typeof credential !== "string" || !credential.trim()) return undefined;
+    return {
+      apiKey: credential.trim(),
+      providerId: preferred.profile.providerId,
+      model: preferred.profile.model,
+      baseUrl: preferred.profile.baseUrl,
+      profileId: preferred.id,
+    };
+  } finally {
+    database.close();
+  }
+}
+
+const persistedConfig = readPersistedRealModelConfig();
+const apiKey = process.env.COLLECTOR_AI_API_KEY ?? process.env.DEEPSEEK_API_KEY ?? persistedConfig?.apiKey;
 if (!apiKey) {
-  console.error("[acceptance] 缺少真实密钥：需要 COLLECTOR_AI_API_KEY（或 DEEPSEEK_API_KEY）");
+  console.error("[acceptance] 缺少真实模型配置：请先在 WebUI 保存并启用模型，或设置 COLLECTOR_AI_API_KEY");
   process.exit(2);
 }
-const providerId = process.env.COLLECTOR_AI_PROVIDER ?? "deepseek";
+const providerId = process.env.COLLECTOR_AI_PROVIDER ?? persistedConfig?.providerId ?? "deepseek";
 const definition = DEFAULT_PROVIDER_REGISTRY.get(providerId);
 if (!definition) {
   console.error(`[acceptance] 未知供应商：${providerId}`);
   process.exit(2);
 }
-const baseUrl = process.env.COLLECTOR_AI_BASE_URL?.trim() || definition.defaultBaseUrl;
-const model = process.env.COLLECTOR_AI_MODEL?.trim() || definition.defaultModel;
+const baseUrl = process.env.COLLECTOR_AI_BASE_URL?.trim() || persistedConfig?.baseUrl || definition.defaultBaseUrl;
+const model = process.env.COLLECTOR_AI_MODEL?.trim() || persistedConfig?.model || definition.defaultModel;
 const now = new Date().toISOString();
 const environmentProfile = {
   id: `environment-${definition.id}`,
