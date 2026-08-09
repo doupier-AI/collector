@@ -7,18 +7,18 @@
   --color-ink: #20231F;
   --color-muted: #6B7168;
   --color-line: #D8DDD5;
-  /* 品牌主色：生长信号绿（ADR-0017，取自 --color-difficulty-low 绿色族谱）。
-     深松绿，安静但有生命感；与米白画布、深色暖金同族。 */
-  --color-ai: #35604A;
-  --color-ai-hover: #2A4D3C;
-  --color-later: #9A6A24;
+  /* 品牌主色：Claude 暖橙/琥珀（supersede ADR-0017 信号绿，#53 用户选定）。
+     赤陶暖橙，安静但有温度；与米白画布同族。supersede 关系见 ADR-0017 调色板条目。 */
+  --color-ai: #C4532F;
+  --color-ai-hover: #A8431F;
+  --color-later: #B04A2A;
   --color-danger: #A33B36;
   /* 正文浅色阅读面（深色主题下局部覆写，长文阅读保持舒适） */
   --color-reading-bg: #FCFCFA;
   --color-reading-ink: #20231F;
   --color-reading-muted: #6B7168;
   --color-reading-line: #D8DDD5;
-  --color-reading-ai: #35604A;
+  --color-reading-ai: #C4532F;
   /* AI 色上的前景（logo 横线等，两主题均为白色） */
   --color-on-ai: #FFFFFF;
 
@@ -92,9 +92,9 @@
   --drawer-width: 17.5rem;
   --app-bar-height: 3.5rem;
 
-  /* 选区与选区智能窗口 */
-  --color-selection: #E7D8A6;
-  --color-selection-line: #C9B26A;
+  /* 选区与选区智能窗口：去旧黄、与暖橙协调（#53） */
+  --color-selection: #F6D9BC;
+  --color-selection-line: #D99268;
   --color-difficulty-low: #3E6B4F;
   --color-difficulty-mid: #9A6A24;
   --color-difficulty-high: #A33B36;
@@ -114,7 +114,7 @@
   --graph-node-halo: drop-shadow(0 2px 4px rgba(32, 35, 31, 0.2));
 }
 
-/* 深色主题（跟随系统）：Manus 式深色工作台，AI 强调色换暖金。正文阅读区保持浅色（--color-reading-*）。 */
+/* 深色主题（跟随系统）：Manus 式深色工作台，AI 强调色为暖橙亮变体（#53）。正文阅读区保持浅色（--color-reading-*）。 */
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
@@ -125,10 +125,10 @@
     --color-ink: #F0F0EC;
     --color-muted: #8B918A;
     --color-line: #2A2E2A;
-    /* 深色主题强调：芽绿（生长信号的夜间形态，亮一度保对比；Manus 暖金退役）。 */
-    --color-ai: #6FB08B;
-    --color-ai-hover: #8CC4A4;
-    --color-later: #D9A441;
+    /* 深色主题强调：暖橙亮变体（同族暖橙的夜间形态，亮一度保对比；深色芽绿/暖金退役，#53）。 */
+    --color-ai: #EB9464;
+    --color-ai-hover: #F2AB84;
+    --color-later: #E08A63;
     --color-danger: #C25E55;
 
     /* 深色投影更浓更深 */
@@ -137,9 +137,9 @@
     --shadow-popover: 0 12px 36px rgba(0, 0, 0, 0.6);
     --shadow-panel: 0 0.75rem 2rem rgba(0, 0, 0, 0.55);
 
-    /* 选区与选区智能窗口（深色适配） */
-    --color-selection: #5A4E26;
-    --color-selection-line: #8A7A3F;
+    /* 选区与选区智能窗口（深色适配，去旧黄、与暖橙协调） */
+    --color-selection: #7A4530;
+    --color-selection-line: #B26B45;
     --color-difficulty-low: #4FA573;
     --color-difficulty-mid: #D9A441;
     --color-difficulty-high: #D9705F;
