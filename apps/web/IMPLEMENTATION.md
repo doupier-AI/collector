@@ -100,6 +100,8 @@ Collector WebUI 使用 React 19、TypeScript、Vite 8 和 React Router 7，通�
 
 #44 已实现统一视觉令牌与卡片状态收口：`src/styles/tokens.css` 提供 surface 层级（`--shadow-1/2/popover`、`--ring-focus/locate`）、字号（`--font-size-xs→xl`）、动效（`--duration-fast/base/mid/slow/breathe`、`--ease-out`）、z-index（`--z-app-bar→--z-popover`）分组令牌，节点页/研究地图/语义卡片核心区硬编码已全部令牌化（令牌值 = 现值对齐，不改既有断言依赖的值）。语义卡片具备五态：默认（扁平无边框）、悬停（`--color-surface-hover` 背景 + `--shadow-1`，只动背景与阴影、零布局位移不污染选区）、键盘焦点（`--ring-focus` 光环）、定位强调（`--ring-locate` + `--duration-slow` pulse，reduced-motion 下静态保留）、来源态（grounding summary 悬停/焦点环、citation 焦点环）。
 
+ADR-0017（2026-08-09）B+A 视觉方向在其上落地：品牌主色 `--color-ai` 由蓝灰改为生长信号绿（浅色 `#35604A` / 深色 `#6FB08B`）；新增 `--font-serif` 系统衬线栈用于节标题/会话标题/Markdown 标题（正文保持黑体）；`.slice-card` 为浅纸阅读面（`--color-reading-*`），深色主题保持浅色阅读面；彩虹签名按钮（ADR-0016）退役、组件已删除，签名让给「生长时刻」——显式生长跳转新节点页的一次性「已从来源长出这个节点」发芽徽记（`.grew-sprout`，路由 state `grew` 传递、挂载后清理、reduced-motion 静态）。rail 设置/工具四入口为真实导航（`aria-current` 激活态），子节点页头有「会话 › 节点」位置行（`.session-header__crumb`）。
+
 ### 4.4 选区、引用与标记
 
 消息正文和阅读快照中的非空文本选区都有效：
@@ -284,7 +286,7 @@ Chrome DevTools MCP 人类拟真测试只在用户主动触发时执行，不是
 
 - #35–#39、#43：兼容迁移到“连续正文唯一事实源、语义片段只承担索引 / 上下文 / 来源定位”（#35/#38/#39 已落地，#43 待办）；
 - #40–#42：研究地图专注 / 关联模式与融合依据回跳（#40 已落地：单入口、默认专注、模块级筛选共享、专注脉络与弱化关联区；#41 关联模式演进；#42 已落地：融合提示依据条目 + `?fragment=` 深链定位语义卡片，前端首次消费 bodyVersions / resolveFragmentExcerpt 校验；accepted 提案只读依据入口）；
-- #44 已落地：统一视觉令牌（tokens.css 分组）、语义卡片五态、研究地图状态容器（`.research-map__state`）、画布组合编码补强（父子/融合边箭头端点、语义边中点标签、透明度通道）、专注脉络 `aria-current`、`z-visual-baseline.spec.ts` 像素回归基线（7 张 png 入库，详见 §10）；
+- #44 已落地：统一视觉令牌（tokens.css 分组）、语义卡片五态、研究地图状态容器（`.research-map__state`）、画布组合编码补强（父子/融合边箭头端点、语义边中点标签、透明度通道）、专注脉络 `aria-current`、`z-visual-baseline.spec.ts` 像素回归基线（8 张 png 入库，含深色主题浅色阅读面，详见 §10）；ADR-0017（2026-08-09）已落地 B+A 视觉方向（信号绿主色、衬线显示字阅读面、生长时刻徽记、彩虹按钮退役、rail 真实导航，详见 §4.3）；
 - #31 已落地：确认式融合——「融合为节点」按钮（同一事务建语义边 + 融合来源边 + 无父链融合节点 + 任务），跳转融合节点页生成融合正文（自由正文 + `## 共同核心/## 差异/## 综合推导` 固定章节 + `[来源n]` 引用）；融合节点页顶部 `FusionSourceBar` 来源条（来源节点可点击）+ 正文 `FusionCitationMarker` 行内引用（点击 `?fragment=` 深链回来源语义卡片）；`fusion-compose-v1` 独立提示词版本与记账；ADR-0013；
 - #32 已落地：自动融合——设置页 `settings/fusion` 开关（默认关闭，`/v1/settings/fusion` 持久化）；开启后节点页挂载自动扫描（`scan` 响应为 `{ proposals, autoFused }`），高置信（同一实体/共享概念）自动融合并标记「自动生成」（`isAutoFusionNode` + 回链 `triggerFusionProposalId`），节点页顶部 `AutoFusionNotice` 提示条可点击跳转，融合节点页标题旁「自动生成」徽章；低置信（类比/对比）保持逐条确认弱提示；ADR-0014。
 

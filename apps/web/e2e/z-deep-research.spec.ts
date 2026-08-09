@@ -77,6 +77,8 @@ test.describe("节点生长与来源返回", () => {
     await expect(sourceBar).toContainText(SELECTED);
     await expect(page.getByTestId("research-scope-note")).toContainText("自动使用当前模型供应商的联网能力");
     await expect(page.getByText(/这是深入研究第一轮/)).toBeVisible({ timeout: 15_000 });
+    // ADR-0017 切片 4：显式生长后新节点页显示「已从来源长出」到达徽记（一次性）
+    await expect(page.getByTestId("grew-sprout")).toContainText("已从来源长出这个节点");
 
     // 网络契约：节点生长请求带稳定幂等键
     const growPost = apiRequests.find(

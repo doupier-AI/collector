@@ -75,6 +75,11 @@ export function ResearchNodePage() {
   const initialTurnRef = useRef<PendingFirstTurn | undefined>(
     (location.state as { firstTurn?: PendingFirstTurn } | null)?.firstTurn,
   );
+  // 生长时刻（ADR-0017 切片 4）：显式生长（选区深入研究/弱标记生长）跳转到新节点页时
+  // 携带路由 state 标记，新节点页据此显示「刚从来源长出」的到达徽记。仅一次性呈现。
+  // location.state 在路由解析后即可靠读取（React Router 已把 history.state.usr 映射过来）；
+  // 不做惰性初始化，渲染期直接派生，配合下方清理 effect（replace state:null）自然只显示一次。
+  const justGrew = Boolean((location.state as { grew?: boolean } | null)?.grew);
   const node = useResearchNode(nodeId, { initialTurn: initialTurnRef.current });
   const termPreviews = useTermPreviews(nodeId, (error) => node.announce(apiErrorCopy(error).body));
   const [retryingTaskId, setRetryingTaskId] = useState<string | null>(null);
@@ -230,9 +235,12 @@ export function ResearchNodePage() {
   const activeHighlight =
     messageHighlight?.kind === "fallback" || (highlightKey && !restoreDismissed) ? messageHighlight : null;
 
-  // 路由 state 只作为一次性传递，挂载后立即清掉，避免刷新后重复提交
+  // 路由 state 只作为一次性传递（开始页首问 firstTurn / 生长到达 grew），
+  // 挂载后立即清掉，避免刷新后重复提交或徽记重复出现。
+  // 与 justGrew 一致读 history.state.usr（SPA 落地瞬间 location.state 可能滞后）。
   useEffect(() => {
-    if ((location.state as { firstTurn?: PendingFirstTurn } | null)?.firstTurn) {
+    const usr = (window.history.state as { usr?: { firstTurn?: PendingFirstTurn; grew?: boolean } } | null)?.usr;
+    if (usr?.firstTurn || usr?.grew) {
       navigate(".", { replace: true, state: null });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -415,7 +423,9 @@ export function ResearchNodePage() {
         idempotencyKey,
       );
       removeCitation();
-      navigate(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(accepted.node.id)}`);
+      navigate(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(accepted.node.id)}`, {
+        state: { grew: true },
+      });
       return true;
     } catch (error) {
       node.announce(apiErrorCopy(error).body);
@@ -426,7 +436,9 @@ export function ResearchNodePage() {
   async function handleGrowTermPreview(preview: import("@collector/capture-contracts").ResearchTermPreviewRecord): Promise<boolean> {
     try {
       const accepted = await termPreviews.grow(preview);
-      navigate(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(accepted.node.id)}`);
+      navigate(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(accepted.node.id)}`, {
+        state: { grew: true },
+      });
       return true;
     } catch (error) {
       node.announce(apiErrorCopy(error).body);
@@ -627,6 +639,22 @@ export function ResearchNodePage() {
         <p className="session-header__meta">更新于 {formatSessionTime(view.session.updatedAt)}</p>
         <ModelStatusIndicator />
       </header>
+
+      {justGrew ? (
+        <p className="grew-sprout" role="status" data-testid="grew-sprout">
+          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false">
+            <path
+              d="M7 12.5V6.5M7 6.5C7 4 5 2.5 2.5 2.5c0 2.5 1.5 4 4.5 4ZM7 6.5c0-2.5 2-4 4.5-4 0 2.5-1.5 4-4.5 4Z"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          已从来源长出这个节点
+        </p>
+      ) : null}
 
       {autoFusionResults && autoFusionResults.length > 0 ? (
         <AutoFusionNotice results={autoFusionResults} sessionId={sessionId} />

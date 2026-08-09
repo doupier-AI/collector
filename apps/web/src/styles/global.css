@@ -970,6 +970,39 @@ button.model-status {
   background: var(--color-ai);
 }
 
+/* 生长时刻到达徽记（ADR-0017 切片 4）：显式生长跳转到新节点页后，
+   一次性显示「已从来源长出这个节点」，发芽式入场。reduced-motion 静态。 */
+@keyframes grew-sprout-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.grew-sprout {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-button);
+  background: color-mix(in srgb, var(--color-ai) 10%, var(--color-surface));
+  color: var(--color-ai);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  animation: grew-sprout-in var(--duration-mid) var(--ease-spring);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .grew-sprout {
+    animation: none;
+  }
+}
+
 /* ---------- AI 占位与失败卡 ---------- */
 
 .ai-placeholder {
@@ -4073,6 +4106,35 @@ button.model-status {
 
 .branch-list__link:hover {
   border-color: var(--color-ai);
+}
+
+/* 生长时刻（ADR-0017 切片 4）：新子节点条目以"发芽"动效入场——
+   从略小、略低、透明到成形，配合一次克制的背景点亮，模拟从来源抽出。
+   全站唯一奢侈动画，只给显式生长产生的新节点；reduced-motion 下静态出现。 */
+@keyframes branch-sprout-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.branch-list__items > li.branch-list__item--new {
+  animation: branch-sprout-in var(--duration-mid) var(--ease-spring);
+}
+
+.branch-list__item--new .branch-list__link {
+  border-color: color-mix(in srgb, var(--color-ai) 55%, var(--color-line));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-ai) 18%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .branch-list__items > li.branch-list__item--new {
+    animation: none;
+  }
 }
 
 .branch-list__name {
