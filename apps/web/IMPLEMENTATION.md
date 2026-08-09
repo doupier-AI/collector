@@ -104,6 +104,8 @@ ADR-0017（2026-08-09）B+A 视觉方向在其上落地：新增 `--font-serif` 
 
 ADR-0019（2026-08-09，全套对齐产品取色板，supersedes ADR-0016/0017 深色浅色阅读面）：确立 `CONTEXT.md`「产品取色板」为全产品唯一取色源（浅/深两套 20 个语义角色），任何元素取色一律从板取、取色即取令牌。tokens.css 全套对齐：浅色底座 `--color-canvas` `#faf9f5` / `--color-surface` `#f5f4ef` / `--color-surface-hover` `#ede9de` / `--color-line` `#dad9d4`；深色外壳暖棕黑 `#262624` / `#2c2c2b` / `#30302e`（废弃冷绿黑）；品牌主色回规格原值——浅色 `--color-ai` `#c96442` / hover `#b05730`，深色 `#d97757` / hover `#b05730`（深色 hover 同取色板 Chart1；撤销 ADR-0018 对比度压深，浅底 ~3.5–3.7:1 为披露取舍）；深色正文阅读区**整站深色化**（`--color-reading-*` 改深色 Card 底 `#2c2c2b` + 浅文字 `#F0F0EC` + 暖橙链接 `#d97757`，`color-scheme: dark`，卡片 hover 用深色 hover，supersede ADR-0016/0017「深色保持浅色阅读面」）；深色破坏性 `#ef4444`；选区/标记徽标沿用暖橙协调族谱，`--color-difficulty-*` 难度色与 `--color-edge-*` 网状图边色为独立语义不在板内；像素基线 8 张全变按 ADR-0012 `--update-snapshots all` 强制重拍逐张人工审 diff。
 
+品牌色统一的两处漏网补齐（#53 收尾）：① 原生复选/单选选中态此前是浏览器默认蓝——新增全局 `input[type="checkbox"], input[type="radio"] { accent-color: var(--color-ai) }`，覆盖选择模型、自动融合开关、允许联网等原生控件的勾选中色；② 融合来源条（`.fusion-source-bar__link`）与自动融合提示（`.auto-fusion-notice`）此前引用未定义的 `--color-accent(--strong)`（CSS 变量未定义时规则失效、回落到默认链接蓝），改为已定义的 `--color-ai` / `--color-ai-hover`。受影响控件不在像素基线旅程内，基线免重拍。
+
 ### 4.4 选区、引用与标记
 
 消息正文和阅读快照中的非空文本选区都有效：
