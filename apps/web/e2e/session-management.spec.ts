@@ -172,3 +172,26 @@ test("会话管理全流程：项目分组 → 改名 → 归档 → 软删/回�
   // ── 12. 控制台无错误 ──
   expect(consoleIssues.issues, consoleIssues.issues.join("\n")).toEqual([]);
 });
+
+test("rail 设置/工具入口真实导航到对应页面（ADR-0017 切片 1）", async ({ page }) => {
+  await pairAndOpen(page, "/research/new");
+  const nav = page.getByRole("navigation", { name: "内容导航" });
+  await expect(nav).toBeVisible();
+
+  // 四个原"僵尸"入口：点击后地址栏到达对应路由，当前页入口带 aria-current
+  await nav.getByRole("link", { name: "回收站" }).click();
+  await page.waitForURL("**/trash");
+  await expect(nav.getByRole("link", { name: "回收站" })).toHaveAttribute("aria-current", "page");
+
+  await nav.getByRole("link", { name: "运行记录" }).click();
+  await page.waitForURL("**/run-records");
+  await expect(nav.getByRole("link", { name: "运行记录" })).toHaveAttribute("aria-current", "page");
+
+  await nav.getByRole("link", { name: "AI 模型设置" }).click();
+  await page.waitForURL("**/settings/ai-model");
+  await expect(nav.getByRole("link", { name: "AI 模型设置" })).toHaveAttribute("aria-current", "page");
+
+  await nav.getByRole("link", { name: "融合设置" }).click();
+  await page.waitForURL("**/settings/fusion");
+  await expect(nav.getByRole("link", { name: "融合设置" })).toHaveAttribute("aria-current", "page");
+});

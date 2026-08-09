@@ -568,6 +568,15 @@ export function ResearchNodePage() {
       ) : null}
 
       <header className="session-header">
+        {!isRoot ? (
+          <nav className="session-header__crumb" aria-label="节点位置">
+            <Link to={`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(sessionId)}`}>
+              {view.session.title}
+            </Link>
+            <span className="session-header__crumb-sep" aria-hidden="true">›</span>
+            <span>{title}</span>
+          </nav>
+        ) : null}
         <div className="session-header__title-row">
           {isRoot && renamingTitle ? (
             <div className="session-header__rename">

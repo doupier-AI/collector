@@ -248,6 +248,40 @@ button {
   font-size: var(--font-size-caption);
 }
 
+/* 子节点位置行：会话 › 当前节点（子节点页头部，告诉你"我在哪"） */
+.session-header__crumb {
+  margin: 0 0 var(--space-1);
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.session-header__crumb a {
+  color: var(--color-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 24rem;
+}
+
+.session-header__crumb a:hover {
+  color: var(--color-ai);
+}
+
+.session-header__crumb-sep {
+  flex: none;
+}
+
+.session-header__crumb > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-ink);
+}
+
 .session-header__rename-button {
   margin-inline-start: var(--space-2);
   padding: 0.125rem 0.5rem;

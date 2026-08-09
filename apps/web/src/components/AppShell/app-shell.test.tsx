@@ -68,6 +68,28 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
     expect(screen.queryByText(/将在后续版本提供/)).not.toBeInTheDocument();
   });
 
+  it("rail 设置/工具入口真实导航并给当前页激活态", async () => {
+    stubMatchMedia(true);
+    renderShell();
+
+    const nav = await screen.findByRole("navigation", { name: "内容导航" });
+    const aiSettings = within(nav).getByRole("link", { name: "AI 模型设置" });
+    expect(aiSettings).toHaveAttribute("href", "/settings/ai-model");
+    expect(within(nav).getByRole("link", { name: "融合设置" })).toHaveAttribute("href", "/settings/fusion");
+    expect(within(nav).getByRole("link", { name: "运行记录" })).toHaveAttribute("href", "/run-records");
+    expect(within(nav).getByRole("link", { name: "回收站" })).toHaveAttribute("href", "/trash");
+    // 不在对应页面时不带当前页标记
+    expect(aiSettings).not.toHaveAttribute("aria-current");
+  });
+
+  it("处于设置页时对应 rail 入口标记当前页", async () => {
+    stubMatchMedia(true);
+    renderShell("/research/session-1/node/node-1");
+    const nav = await screen.findByRole("navigation", { name: "内容导航" });
+    // 研究页面上「会话」入口为当前区
+    expect(within(nav).getByRole("button", { name: "会话" })).toHaveAttribute("aria-current", "page");
+  });
+
   it("固定侧栏宽度默认 264，拖拽手柄可键盘调宽并钳制", async () => {
     stubMatchMedia(true);
     const user = userEvent.setup();

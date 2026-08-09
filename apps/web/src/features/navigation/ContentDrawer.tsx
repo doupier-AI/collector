@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, NavLink, useLocation } from "react-router-dom";
 import { SidebarResizeHandle } from "../../components/AppShell/SidebarResizeHandle";
 import { SessionListPanel } from "./SessionListPanel";
 
@@ -40,6 +40,33 @@ function RailButton({
     >
       {children}
     </button>
+  );
+}
+
+/** 窄图标栏链接：真实导航到对应页面，当前页给激活态（aria-current="page"）。 */
+function RailLink({
+  label,
+  to,
+  active = false,
+  onClick,
+  children,
+}: {
+  label: string;
+  to: string;
+  active?: boolean;
+  onClick?: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <NavLink
+      to={to}
+      className={`dual-rail__button${active ? " dual-rail__button--active" : ""}`}
+      aria-label={label}
+      aria-current={active ? "page" : undefined}
+      onClick={onClick}
+    >
+      {children}
+    </NavLink>
   );
 }
 
@@ -102,7 +129,7 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onClose, settingsOpen]);
 
-  // 点击 rail 图标时展开详情栏
+  // 点击 rail 的会话入口只展开详情栏（本身不产生路由）
   const handleRailNavigate = () => {
     if (collapsed) setCollapsed(false);
     setSettingsOpen(false);
@@ -112,6 +139,9 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
     if (mode === "overlay") onClose();
     setSettingsOpen(false);
   };
+
+  const { pathname } = useLocation();
+  const sessionsActive = pathname === "/" || pathname.startsWith("/research");
 
   return (
     <>
@@ -124,19 +154,19 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
       >
         {/* 窄图标栏 */}
         <div className="dual-rail" aria-label="侧栏导航">
-          <RailButton label="最近研究" active onClick={handleRailNavigate}>
+          <RailButton label="会话" active={sessionsActive} onClick={handleRailNavigate}>
             <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
               <rect x="2.5" y="3" width="15" height="14" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
               <path d="M6 7.5h8M6 10.5h8M6 13.5h4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
           </RailButton>
-          <RailButton label="AI 模型设置" onClick={handleRailNavigate}>
+          <RailLink label="AI 模型设置" to="/settings/ai-model" active={pathname === "/settings/ai-model"} onClick={handleNavigate}>
             <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
               <circle cx="10" cy="10" r="6.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
               <circle cx="10" cy="10" r="2.25" fill="currentColor" stroke="none" />
             </svg>
-          </RailButton>
-          <RailButton label="融合设置" onClick={handleRailNavigate}>
+          </RailLink>
+          <RailLink label="融合设置" to="/settings/fusion" active={pathname === "/settings/fusion"} onClick={handleNavigate}>
             <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
               <path
                 d="M10 3c1.8 3 4.5 3.6 6 3.4-0.4 4.4-2.6 7.2-6 10.6-3.4-3.4-5.6-6.2-6-10.6 1.5 0.2 4.2-0.4 6-3.4Z"
@@ -146,14 +176,14 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
                 strokeLinejoin="round"
               />
             </svg>
-          </RailButton>
-          <RailButton label="运行记录" onClick={handleRailNavigate}>
+          </RailLink>
+          <RailLink label="运行记录" to="/run-records" active={pathname.startsWith("/run-records")} onClick={handleNavigate}>
             <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
               <rect x="3" y="4" width="14" height="12" rx="2" fill="none" stroke="currentColor" strokeWidth="1.5" />
               <path d="M3 8h14M7 4v12" stroke="currentColor" strokeWidth="1.5" />
             </svg>
-          </RailButton>
-          <RailButton label="回收站" onClick={handleRailNavigate}>
+          </RailLink>
+          <RailLink label="回收站" to="/trash" active={pathname === "/trash"} onClick={handleNavigate}>
             <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
               <path
                 d="M4 6.5h12M8.5 6.5V5a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1.5M6 6.5l0.6 9a1.5 1.5 0 0 0 1.5 1.4h3.8a1.5 1.5 0 0 0 1.5-1.4l0.6-9"
@@ -164,7 +194,7 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
                 strokeLinejoin="round"
               />
             </svg>
-          </RailButton>
+          </RailLink>
           <div className="dual-rail__spacer" />
           <RailButton label={collapsed ? "展开侧栏" : "收起侧栏"} onClick={() => setCollapsed((value) => !value)}>
             <span className={`dual-rail__collapse-caret${collapsed ? " dual-rail__collapse-caret--closed" : ""}`} aria-hidden="true">
@@ -177,7 +207,7 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
         {!collapsed ? (
           <div className="dual-detail">
             <div className="drawer__header">
-              <p className="drawer__title">内容</p>
+              <p className="drawer__title">会话</p>
               <button type="button" ref={closeButtonRef} className="drawer__close" onClick={onClose}>
                 关闭
               </button>
