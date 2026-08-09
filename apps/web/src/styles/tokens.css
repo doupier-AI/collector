@@ -1,24 +1,25 @@
 /* Collector WebUI 视觉令牌：安静的研究画布，不使用大面积渐变 */
 :root {
-  --color-canvas: #F5F6F3;
-  --color-surface: #FCFCFA;
+  /* 底座：对齐产品取色板（CONTEXT.md「产品取色板」，全产品唯一取色源） */
+  --color-canvas: #FAF9F5;
+  --color-surface: #F5F4EF;
   --color-surface-raised: #FFFFFF;
-  --color-surface-hover: #F1F2EE;
+  --color-surface-hover: #EDE9DE;
   --color-ink: #20231F;
   --color-muted: #6B7168;
-  --color-line: #D8DDD5;
-  /* 品牌主色：Claude 暖橙/琥珀（supersede ADR-0017 信号绿，#53 用户选定）。
-     赤陶暖橙，安静但有温度；与米白画布同族。supersede 关系见 ADR-0017 调色板条目。 */
-  --color-ai: #C4532F;
-  --color-ai-hover: #A8431F;
-  --color-later: #B04A2A;
+  --color-line: #DAD9D4;
+  /* 品牌主色：Claude 暖橙/琥珀，产品取色板 Primary（#53 用户选定，全套对齐色板）。
+     取色即取板，不另起新色；暖橙族 hover 变体更深一档。 */
+  --color-ai: #C96442;
+  --color-ai-hover: #B05730;
+  --color-later: #B4552D;
   --color-danger: #A33B36;
-  /* 正文浅色阅读面（深色主题下局部覆写，长文阅读保持舒适） */
-  --color-reading-bg: #FCFCFA;
+  /* 正文阅读面：浅色即底座卡片色；深色主题下整站深色化（覆写见深色块） */
+  --color-reading-bg: #F5F4EF;
   --color-reading-ink: #20231F;
   --color-reading-muted: #6B7168;
-  --color-reading-line: #D8DDD5;
-  --color-reading-ai: #C4532F;
+  --color-reading-line: #DAD9D4;
+  --color-reading-ai: #C96442;
   /* AI 色上的前景（logo 横线等，两主题均为白色） */
   --color-on-ai: #FFFFFF;
 
@@ -92,7 +93,7 @@
   --drawer-width: 17.5rem;
   --app-bar-height: 3.5rem;
 
-  /* 选区与选区智能窗口：去旧黄、与暖橙协调（#53） */
+  /* 选区与选区智能窗口：暖橙协调（不取色板独立角色，沿用暖橙族谱） */
   --color-selection: #F6D9BC;
   --color-selection-line: #D99268;
   --color-difficulty-low: #3E6B4F;
@@ -108,28 +109,37 @@
 
   /* 网状图节点 */
   --color-graph-focus: #20231F;
-  --color-graph-node: #FCFCFA;
+  --color-graph-node: #F5F4EF;
   --color-graph-node-stroke: #6B7168;
   /* 当前节点光晕：硬编码 drop-shadow 的令牌化（现值对齐，视觉增强由 #44 状态收口另做） */
   --graph-node-halo: drop-shadow(0 2px 4px rgba(32, 35, 31, 0.2));
 }
 
-/* 深色主题（跟随系统）：Manus 式深色工作台，AI 强调色为暖橙亮变体（#53）。正文阅读区保持浅色（--color-reading-*）。 */
+/* 深色主题（跟随系统）：对齐产品取色板，外壳由冷绿黑改暖棕黑；整站深色化（supersede ADR-0016/0017 浅色阅读面）。 */
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
-    --color-canvas: #0E0F0E;
-    --color-surface: #161816;
-    --color-surface-raised: #1D201D;
-    --color-surface-hover: #232723;
+    --color-canvas: #262624;
+    --color-surface: #2C2C2B;
+    --color-surface-raised: #30302E;
+    --color-surface-hover: #3E3E38;
     --color-ink: #F0F0EC;
     --color-muted: #8B918A;
-    --color-line: #2A2E2A;
-    /* 深色主题强调：暖橙亮变体（同族暖橙的夜间形态，亮一度保对比；深色芽绿/暖金退役，#53）。 */
-    --color-ai: #EB9464;
-    --color-ai-hover: #F2AB84;
+    --color-line: #3E3E38;
+    /* 深色品牌：主色 = 产品取色板 Primary；hover 用色板 Chart1 暖橙深一档，
+       深色背景下与主色形成可感反差（浅色 hover 同理取 Chart1）。 */
+    --color-ai: #D97757;
+    --color-ai-hover: #B05730;
     --color-later: #E08A63;
-    --color-danger: #C25E55;
+    --color-danger: #EF4444;
+
+    /* 深色正文阅读面：整站深色化——卡片用深色 Card 色、文字浅色、链接品牌暖橙。
+       supersede ADR-0016/0017「深色保持浅色阅读面」（用户全套对齐色板决策）。 */
+    --color-reading-bg: #2C2C2B;
+    --color-reading-ink: #F0F0EC;
+    --color-reading-muted: #8B918A;
+    --color-reading-line: #3E3E38;
+    --color-reading-ai: #D97757;
 
     /* 深色投影更浓更深 */
     --shadow-1: 0 2px 10px rgba(0, 0, 0, 0.45);
@@ -137,7 +147,7 @@
     --shadow-popover: 0 12px 36px rgba(0, 0, 0, 0.6);
     --shadow-panel: 0 0.75rem 2rem rgba(0, 0, 0, 0.55);
 
-    /* 选区与选区智能窗口（深色适配，去旧黄、与暖橙协调） */
+    /* 选区与选区智能窗口（深色适配，暖橙协调） */
     --color-selection: #7A4530;
     --color-selection-line: #B26B45;
     --color-difficulty-low: #4FA573;
@@ -151,16 +161,16 @@
 
     /* 网状图节点 */
     --color-graph-focus: #F0F0EC;
-    --color-graph-node: #161816;
+    --color-graph-node: #2C2C2B;
     --color-graph-node-stroke: #8B918A;
     --graph-node-halo: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.55));
   }
 
-  /* 正文阅读区（消息列表/切片卡片）在深色主题下保持浅色阅读面：
-     局部 color-scheme: light + 专用令牌，长文阅读舒适、对比度稳定。 */
+  /* 正文阅读区（消息列表/切片卡片）深色主题下整站深色化：
+     卡片用深色阅读面令牌，文字与链接随之变浅/品牌暖橙。 */
   .message-list,
   .slice-card {
-    color-scheme: light;
+    color-scheme: dark;
   }
 
   .slice-card {
@@ -170,14 +180,14 @@
   }
 
   .slice-card:hover {
-    background: var(--color-reading-bg);
+    background: var(--color-surface-hover);
   }
 
   .slice-card__title {
     color: var(--color-reading-ink);
   }
 
-  /* 阅读面内的正文与链接：不继承深色主题令牌 */
+  /* 阅读面内的正文与链接 */
   .slice-card .markdown-content,
   .slice-card .message__content {
     color: var(--color-reading-ink);

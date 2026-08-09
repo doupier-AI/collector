@@ -100,9 +100,9 @@ Collector WebUI 使用 React 19、TypeScript、Vite 8 和 React Router 7，通�
 
 #44 已实现统一视觉令牌与卡片状态收口：`src/styles/tokens.css` 提供 surface 层级（`--shadow-1/2/popover`、`--ring-focus/locate`）、字号（`--font-size-xs→xl`）、动效（`--duration-fast/base/mid/slow/breathe`、`--ease-out`）、z-index（`--z-app-bar→--z-popover`）分组令牌，节点页/研究地图/语义卡片核心区硬编码已全部令牌化（令牌值 = 现值对齐，不改既有断言依赖的值）。语义卡片具备五态：默认（扁平无边框）、悬停（`--color-surface-hover` 背景 + `--shadow-1`，只动背景与阴影、零布局位移不污染选区）、键盘焦点（`--ring-focus` 光环）、定位强调（`--ring-locate` + `--duration-slow` pulse，reduced-motion 下静态保留）、来源态（grounding summary 悬停/焦点环、citation 焦点环）。
 
-ADR-0017（2026-08-09）B+A 视觉方向在其上落地：新增 `--font-serif` 系统衬线栈用于节标题/会话标题/Markdown 标题（正文保持黑体）；`.slice-card` 为浅纸阅读面（`--color-reading-*`），深色主题保持浅色阅读面；彩虹签名按钮（ADR-0016）退役、组件已删除，签名让给「生长时刻」——显式生长跳转新节点页的一次性「已从来源长出这个节点」发芽徽记（`.grew-sprout`，路由 state `grew` 传递、挂载后清理、reduced-motion 静态）。rail 设置/工具四入口为真实导航（`aria-current` 激活态），子节点页头有「会话 › 节点」位置行（`.session-header__crumb`）。
+ADR-0017（2026-08-09）B+A 视觉方向在其上落地：新增 `--font-serif` 系统衬线栈用于节标题/会话标题/Markdown 标题（正文保持黑体）；`.slice-card` 为浅纸阅读面（`--color-reading-*`），深色主题原保持浅色阅读面（后由 ADR-0019 整站深色化取代）；彩虹签名按钮（ADR-0016）退役、组件已删除，签名让给「生长时刻」——显式生长跳转新节点页的一次性「已从来源长出这个节点」发芽徽记（`.grew-sprout`，路由 state `grew` 传递、挂载后清理、reduced-motion 静态）。rail 设置/工具四入口为真实导航（`aria-current` 激活态），子节点页头有「会话 › 节点」位置行（`.session-header__crumb`）。
 
-ADR-0018（2026-08-09，#53）品牌色收敛为用户选定的 Claude 暖橙/琥珀系，supersede ADR-0017 信号绿调色板：浅色 `--color-ai` `#C4532F` / `--color-ai-hover` `#A8431F`，深色 `#EB9464` / `#F2AB84`（废弃深色芽绿/暖金）；选区 `--color-selection`（浅色 `#F6D9BC` / 深色 `#7A4530`）与标记徽标 `--color-later`（浅色 `#B04A2A` / 深色 `#E08A63`）去旧黄、与暖橙协调；改动集中在 `tokens.css` 令牌层（品牌/选区/徽标色全部 `var()` 消费、零硬编码残留），下游 `color-mix` 引用与 `--ring-focus`/`--ring-locate` 别名随令牌自动更新；正文阅读面 `--color-reading-ai` 同步暖橙；`--color-difficulty-*` 难度色与 `--color-edge-*` 网状图边色保持独立语义不随品牌色改动。像素基线按 ADR-0012 强制重拍（`--update-snapshots all`），8 张中 6 张帧内品牌色元素（圆点/来源条边框/导航激活态/地图选中/深色强调）超 1% 容差更新为暖橙，2 张 slice-card 特写帧内无品牌色逐字节不变，逐张人工审 diff。
+ADR-0019（2026-08-09，全套对齐产品取色板，supersedes ADR-0016/0017 深色浅色阅读面）：确立 `CONTEXT.md`「产品取色板」为全产品唯一取色源（浅/深两套 20 个语义角色），任何元素取色一律从板取、取色即取令牌。tokens.css 全套对齐：浅色底座 `--color-canvas` `#faf9f5` / `--color-surface` `#f5f4ef` / `--color-surface-hover` `#ede9de` / `--color-line` `#dad9d4`；深色外壳暖棕黑 `#262624` / `#2c2c2b` / `#30302e`（废弃冷绿黑）；品牌主色回规格原值——浅色 `--color-ai` `#c96442` / hover `#b05730`，深色 `#d97757` / hover `#b05730`（深色 hover 同取色板 Chart1；撤销 ADR-0018 对比度压深，浅底 ~3.5–3.7:1 为披露取舍）；深色正文阅读区**整站深色化**（`--color-reading-*` 改深色 Card 底 `#2c2c2b` + 浅文字 `#F0F0EC` + 暖橙链接 `#d97757`，`color-scheme: dark`，卡片 hover 用深色 hover，supersede ADR-0016/0017「深色保持浅色阅读面」）；深色破坏性 `#ef4444`；选区/标记徽标沿用暖橙协调族谱，`--color-difficulty-*` 难度色与 `--color-edge-*` 网状图边色为独立语义不在板内；像素基线 8 张全变按 ADR-0012 `--update-snapshots all` 强制重拍逐张人工审 diff。
 
 ### 4.4 选区、引用与标记
 
@@ -271,7 +271,7 @@ Chrome DevTools MCP 人类拟真测试只在用户主动触发时执行，不是
 
 ### 视觉回归像素基线（#44）
 
-`z-visual-baseline.spec.ts` 对五个代表状态（桌面专注、桌面关联、语义卡片常态 + 悬停、融合回溯落点、窄屏 320px 关联）与节点页视觉秩序建立 `toHaveScreenshot` 像素基线，7 张 png 入库（spec 旁）。配置：`snapshotPathTemplate` 去平台后缀（win32 单平台）、`maxDiffPixelRatio: 0.01`、`threshold: 0.2`。基线纪律：
+`z-visual-baseline.spec.ts` 对五个代表状态（桌面专注、桌面关联、语义卡片常态 + 悬停、融合回溯落点、窄屏 320px 关联）与节点页视觉秩序建立 `toHaveScreenshot` 像素基线，8 张 png 入库（spec 旁）。配置：`snapshotPathTemplate` 去平台后缀（win32 单平台）、`maxDiffPixelRatio: 0.01`、`threshold: 0.2`。基线纪律：
 
 - 有意变更视觉时，只对受影响基线单独 `--update-snapshots`，人工逐张审阅 diff 后提交（防"自证基线"）；
 - 基线确定性：固定问题 + 假模型固定文本 + `page.clock` 冻结浏览器时钟；「更新于/创建于」动态时间在截图时 `mask`；视口截图前收起两侧固定侧栏（全量运行时 harness 数据库累积其他测试的会话，侧栏会话列表会污染截图）；
@@ -288,7 +288,7 @@ Chrome DevTools MCP 人类拟真测试只在用户主动触发时执行，不是
 
 - #35–#39、#43：兼容迁移到“连续正文唯一事实源、语义片段只承担索引 / 上下文 / 来源定位”（#35/#38/#39 已落地，#43 待办）；
 - #40–#42：研究地图专注 / 关联模式与融合依据回跳（#40 已落地：单入口、默认专注、模块级筛选共享、专注脉络与弱化关联区；#41 关联模式演进；#42 已落地：融合提示依据条目 + `?fragment=` 深链定位语义卡片，前端首次消费 bodyVersions / resolveFragmentExcerpt 校验；accepted 提案只读依据入口）；
-- #44 已落地：统一视觉令牌（tokens.css 分组）、语义卡片五态、研究地图状态容器（`.research-map__state`）、画布组合编码补强（父子/融合边箭头端点、语义边中点标签、透明度通道）、专注脉络 `aria-current`、`z-visual-baseline.spec.ts` 像素回归基线（8 张 png 入库，含深色主题浅色阅读面，详见 §10）；ADR-0017（2026-08-09）已落地 B+A 视觉方向（衬线显示字阅读面、生长时刻徽记、彩虹按钮退役、rail 真实导航，详见 §4.3）；ADR-0018（2026-08-09，#53）品牌色收敛为用户选定的 Claude 暖橙/琥珀系、选区与标记徽标去旧黄协调（supersede ADR-0017 信号绿调色板，详见 §4.3）；
+- #44 已落地：统一视觉令牌（tokens.css 分组）、语义卡片五态、研究地图状态容器（`.research-map__state`）、画布组合编码补强（父子/融合边箭头端点、语义边中点标签、透明度通道）、专注脉络 `aria-current`、`z-visual-baseline.spec.ts` 像素回归基线（8 张 png 入库，含深色主题阅读面——原为浅色，后由 ADR-0019 改整站深色，详见 §10）；ADR-0017（2026-08-09）已落地 B+A 视觉方向（衬线显示字阅读面、生长时刻徽记、彩虹按钮退役、rail 真实导航，详见 §4.3）；ADR-0019（2026-08-09）全套对齐产品取色板（浅/深底座暖化、主色回规格原值 `#c96442`/`#d97757`、深色整站统一深色化，取色源 `CONTEXT.md`「产品取色板」，详见 §4.3）；
 - #31 已落地：确认式融合——「融合为节点」按钮（同一事务建语义边 + 融合来源边 + 无父链融合节点 + 任务），跳转融合节点页生成融合正文（自由正文 + `## 共同核心/## 差异/## 综合推导` 固定章节 + `[来源n]` 引用）；融合节点页顶部 `FusionSourceBar` 来源条（来源节点可点击）+ 正文 `FusionCitationMarker` 行内引用（点击 `?fragment=` 深链回来源语义卡片）；`fusion-compose-v1` 独立提示词版本与记账；ADR-0013；
 - #32 已落地：自动融合——设置页 `settings/fusion` 开关（默认关闭，`/v1/settings/fusion` 持久化）；开启后节点页挂载自动扫描（`scan` 响应为 `{ proposals, autoFused }`），高置信（同一实体/共享概念）自动融合并标记「自动生成」（`isAutoFusionNode` + 回链 `triggerFusionProposalId`），节点页顶部 `AutoFusionNotice` 提示条可点击跳转，融合节点页标题旁「自动生成」徽章；低置信（类比/对比）保持逐条确认弱提示；ADR-0014。
 
