@@ -7,8 +7,10 @@
   --color-ink: #20231F;
   --color-muted: #6B7168;
   --color-line: #D8DDD5;
-  --color-ai: #435A73;
-  --color-ai-hover: #374D63;
+  /* 品牌主色：生长信号绿（ADR-0017，取自 --color-difficulty-low 绿色族谱）。
+     深松绿，安静但有生命感；与米白画布、深色暖金同族。 */
+  --color-ai: #35604A;
+  --color-ai-hover: #2A4D3C;
   --color-later: #9A6A24;
   --color-danger: #A33B36;
   /* 正文浅色阅读面（深色主题下局部覆写，长文阅读保持舒适） */
@@ -16,7 +18,7 @@
   --color-reading-ink: #20231F;
   --color-reading-muted: #6B7168;
   --color-reading-line: #D8DDD5;
-  --color-reading-ai: #435A73;
+  --color-reading-ai: #35604A;
   /* AI 色上的前景（logo 横线等，两主题均为白色） */
   --color-on-ai: #FFFFFF;
 
@@ -118,8 +120,9 @@
     --color-ink: #F0F0EC;
     --color-muted: #8B918A;
     --color-line: #2A2E2A;
-    --color-ai: #D9A441;
-    --color-ai-hover: #C8912E;
+    /* 深色主题强调：芽绿（生长信号的夜间形态，亮一度保对比；Manus 暖金退役）。 */
+    --color-ai: #6FB08B;
+    --color-ai-hover: #8CC4A4;
     --color-later: #D9A441;
     --color-danger: #C25E55;
 

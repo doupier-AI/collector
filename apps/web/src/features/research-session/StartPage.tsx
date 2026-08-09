@@ -178,7 +178,6 @@ export function StartPage() {
         importAccept={IMPORT_ACCEPT}
         autoFocus
         disabled={creating}
-        rainbow
       />
       {dragActive ? (
         <div className="drop-overlay" aria-hidden="true">

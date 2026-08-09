@@ -1,6 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
-import { AiRainbowButton } from "../../components/AiRainbowButton/AiRainbowButton";
 import { SelectionCapsule } from "../selection/SelectionCapsule";
 import type { CitedSelection } from "../selection/useSelectionCitation";
 import { clearDraft, loadDraft, saveDraft } from "./draft";
@@ -30,8 +29,6 @@ export interface ChatComposerProps {
    * 返回 true 表示后端已确认，输入框清空。
    */
   onStartChildNode?: (query: string, allowWebSearch: boolean) => Promise<boolean>;
-  /** 彩虹签名样式：只用于最需要吸引注意力的 AI 入口（开始页「开始研究」）。 */
-  rainbow?: boolean;
 }
 
 /**
@@ -55,7 +52,6 @@ export function ChatComposer({
   citedSelection,
   onRemoveCitation,
   onStartChildNode,
-  rainbow = false,
 }: ChatComposerProps) {
   const textareaId = useId();
   const hintId = useId();
@@ -267,20 +263,6 @@ export function ChatComposer({
                 在此追问
               </button>
             </div>
-          ) : rainbow ? (
-            <AiRainbowButton type="submit" label={submitLabel} disabled={!canSubmit}>
-              <span>{submitLabel}</span>
-              <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-                <path
-                  d="M10 15.25v-10.5M5 9.5l5-5 5 5"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </AiRainbowButton>
           ) : (
             <button type="submit" className="composer__send" aria-label={submitLabel} disabled={!canSubmit}>
               <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true" focusable="false">

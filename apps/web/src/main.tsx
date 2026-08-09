@@ -6,7 +6,6 @@ import { createDefaultServices, ServicesProvider } from "./app/services";
 import "./styles/tokens.css";
 import "./styles/global.css";
 import "./styles/utilities.css";
-import "./components/AiRainbowButton/ai-rainbow-button.css";
 import "./features/navigation/dual-sidebar.css";
 
 const services = createDefaultServices();
