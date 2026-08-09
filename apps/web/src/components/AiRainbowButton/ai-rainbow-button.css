@@ -1,0 +1,91 @@
+/* 彩虹 AI 签名按钮：只用于最需要吸引注意力的 AI 入口（开始页「开始研究」）。
+   流动彩虹渐变 + 辉光 + 点击弹性；reduced-motion 下关闭流动保留渐变。 */
+.ai-rainbow-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-5);
+  border: none;
+  border-radius: 9999px;
+  background: linear-gradient(
+    90deg,
+    #ff4d4d,
+    #ff8a3d,
+    #ffd23d,
+    #4ade80,
+    #38bdf8,
+    #818cf8,
+    #e879f9,
+    #ff4d4d
+  );
+  background-size: 200% 100%;
+  animation: ai-rainbow-shift 4s linear infinite;
+  color: #ffffff;
+  font: inherit;
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow:
+    0 0 20px rgba(255, 80, 255, 0.35),
+    0 2px 8px rgba(0, 0, 0, 0.25);
+  transition:
+    transform var(--duration-mid) var(--ease-spring),
+    box-shadow var(--duration-base) ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 内容白字下的微投影，避免渐变亮部淹字 */
+.ai-rainbow-button__content {
+  position: relative;
+  z-index: 1;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+.ai-rainbow-button:hover {
+  transform: scale(1.03);
+  box-shadow:
+    0 0 28px rgba(255, 80, 255, 0.5),
+    0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.ai-rainbow-button:active {
+  transform: scale(0.97);
+}
+
+.ai-rainbow-button:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--color-ai) 40%, transparent),
+    0 0 24px rgba(255, 80, 255, 0.45);
+}
+
+.ai-rainbow-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  transform: none;
+}
+
+.ai-rainbow-button--small {
+  padding: 0 var(--space-3);
+  font-size: var(--font-size-sm);
+}
+
+/* 开始页输入区内的签名按钮：行高对齐 2.25rem 圆形发送钮 */
+.page--start .composer__bar .ai-rainbow-button {
+  height: 2.5rem;
+}
+
+@keyframes ai-rainbow-shift {
+  to {
+    background-position: 200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-rainbow-button {
+    animation: none;
+  }
+}

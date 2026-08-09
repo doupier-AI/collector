@@ -95,6 +95,13 @@ button {
   cursor: not-allowed;
 }
 
+/* 激活态（选择模式入口等） */
+.button--active {
+  background: color-mix(in srgb, var(--color-ai) 15%, var(--color-surface));
+  border-color: var(--color-ai);
+  color: var(--color-ai);
+}
+
 /* ---------- 应用框架 ---------- */
 
 .app-shell {
@@ -555,6 +562,19 @@ button {
   padding: var(--space-2) 0;
   /* 窄屏拖动滑轨：禁止原生滚动抢夺指针。 */
   touch-action: none;
+}
+
+/* 固定侧栏展开时（.drawer--fixed 存在）：正文左缘贴近侧栏，悬停带（32px）不足，
+   章节导航收进正文左缘内侧留白（正文右移让位），避免与侧栏重叠（否则侧栏会拦截其交互）。
+   侧栏收起/窄屏 overlay 时恢复原悬停设计。 */
+.app-shell:has(.drawer--fixed) .slice-rail {
+  left: var(--space-2);
+  margin-left: 0;
+  transform: translateY(-50%);
+}
+
+.app-shell:has(.drawer--fixed) .page {
+  padding-left: 2.75rem;
 }
 
 .slice-rail__tick {
@@ -1392,6 +1412,17 @@ button.model-status {
   animation: collector-drawer-in var(--duration-base) ease-out;
 }
 
+/* 双层级侧栏：外层容器接管布局，去掉默认 padding/滚动（rail + detail 各自处理） */
+.drawer.dual-drawer {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+}
+
+.drawer.dual-drawer .dual-detail {
+  padding: 0.875rem 1rem;
+}
+
 /* 宽屏固定侧栏：贴边不加圆角，高度占满顶栏以下视口 */
 .drawer--fixed {
   position: sticky;
@@ -1402,6 +1433,16 @@ button.model-status {
   height: calc(100dvh - var(--app-bar-height));
   max-width: none;
   animation: none;
+}
+
+/* 双层级固定侧栏：rail + detail 占满高度，detail 内部滚动 */
+.drawer--fixed.dual-drawer .dual-detail {
+  overflow-y: auto;
+  height: 100%;
+}
+
+.drawer--fixed.dual-drawer .dual-rail {
+  height: 100%;
 }
 
 /* 侧栏拖拽调宽手柄（#40 清理误删，恢复自 cd5cada^） */
@@ -1673,6 +1714,119 @@ button.model-status {
 .drawer__new-project:hover {
   border-color: var(--color-muted);
   color: var(--color-ink);
+}
+
+/* 顶部工具栏：新建项目 + 选择模式入口 */
+.drawer__toolbar {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.drawer__toolbar .drawer__new-project {
+  flex: 1;
+  margin-top: 0;
+}
+
+.drawer__select-mode {
+  flex: none;
+  padding: 0.375rem 0.625rem;
+  background: none;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  color: var(--color-muted);
+  font: inherit;
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) ease,
+    color var(--duration-fast) ease,
+    border-color var(--duration-fast) ease;
+}
+
+.drawer__select-mode:hover {
+  border-color: var(--color-muted);
+  color: var(--color-ink);
+}
+
+.drawer__select-mode--active {
+  background: color-mix(in srgb, var(--color-ai) 15%, var(--color-surface));
+  border-color: var(--color-ai);
+  color: var(--color-ai);
+}
+
+/* 选择模式：组头/会话行的勾选框 */
+.drawer__group-select,
+.drawer__session-select {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.drawer__checkbox {
+  display: grid;
+  place-items: center;
+  width: 1rem;
+  height: 1rem;
+  border: 1.5px solid var(--color-muted);
+  border-radius: 0.25rem;
+  color: var(--color-surface-raised);
+  font-size: 0.6875rem;
+  line-height: 1;
+  transition:
+    background var(--duration-fast) ease,
+    border-color var(--duration-fast) ease;
+}
+
+.drawer__checkbox--checked {
+  background: var(--color-ai);
+  border-color: var(--color-ai);
+  color: var(--color-surface-raised);
+}
+
+.drawer__group-select:focus-visible .drawer__checkbox,
+.drawer__session-select:focus-visible .drawer__checkbox {
+  outline: none;
+  box-shadow: var(--ring-focus);
+}
+
+/* 底部批量操作栏：sticky 常驻 */
+.drawer__batch-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding: var(--space-2);
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-button);
+  box-shadow: var(--shadow-panel);
+}
+
+.drawer__batch-count {
+  color: var(--color-muted);
+  font-size: var(--font-size-sm);
+}
+
+.drawer__batch-actions {
+  display: flex;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+}
+
+.drawer__batch-move {
+  display: grid;
+  gap: var(--space-1);
+  max-height: 12rem;
+  overflow-y: auto;
 }
 
 /* 会话/项目操作菜单（⋯）：弹层对齐 model-status 菜单先例 */
@@ -2645,6 +2799,73 @@ button.model-status {
   display: flex;
   gap: var(--space-2);
   flex: 0 0 auto;
+}
+
+/* 选择模式：条目勾选框 */
+.trash-page__select {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.trash-page__checkbox {
+  display: grid;
+  place-items: center;
+  width: 1rem;
+  height: 1rem;
+  border: 1.5px solid var(--color-muted);
+  border-radius: 0.25rem;
+  color: var(--color-surface-raised);
+  font-size: 0.6875rem;
+  line-height: 1;
+  transition:
+    background var(--duration-fast) ease,
+    border-color var(--duration-fast) ease;
+}
+
+.trash-page__checkbox--checked {
+  background: var(--color-ai);
+  border-color: var(--color-ai);
+  color: var(--color-surface-raised);
+}
+
+.trash-page__select:focus-visible .trash-page__checkbox {
+  outline: none;
+  box-shadow: var(--ring-focus);
+}
+
+/* 底部批量操作栏 */
+.trash-page__batch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-panel);
+  position: sticky;
+  bottom: var(--space-4);
+}
+
+.trash-page__batch-count {
+  color: var(--color-muted);
+  font-size: var(--font-size-sm);
+}
+
+.trash-page__batch-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .trash-page__back {

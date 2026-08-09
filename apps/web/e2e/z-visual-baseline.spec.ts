@@ -75,7 +75,7 @@ test.describe("#44 视觉回归基线", () => {
 
     await expect(dialog).toHaveScreenshot("focus-desktop", {
       mask: dynamicTimeMasks(page),
-      maskColor: "#F5F6F3",
+      maskColor: "#FFFFFF",
     });
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
@@ -100,7 +100,7 @@ test.describe("#44 视觉回归基线", () => {
 
     await expect(dialog).toHaveScreenshot("assoc-desktop", {
       mask: dynamicTimeMasks(page),
-      maskColor: "#F5F6F3",
+      maskColor: "#FFFFFF",
     });
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
@@ -116,7 +116,7 @@ test.describe("#44 视觉回归基线", () => {
     // 常态：节点页视口截图——连续卡片、章节导航、来源线、输入区的整体视觉秩序
     await expect(page).toHaveScreenshot("node-reading-default", {
       mask: dynamicTimeMasks(page),
-      maskColor: "#F5F6F3",
+      maskColor: "#FFFFFF",
     });
 
     // 首张卡片（含标题与正文）元素级截图——聚焦卡片自身排版
@@ -124,14 +124,14 @@ test.describe("#44 视觉回归基线", () => {
     await firstCard.scrollIntoViewIfNeeded();
     await expect(firstCard).toHaveScreenshot("slice-card-default", {
       mask: dynamicTimeMasks(page),
-      maskColor: "#F5F6F3",
+      maskColor: "#FFFFFF",
     });
 
     // 悬停态：背景 + 阴影低表面提升（不引起布局位移）
     await firstCard.hover();
     await expect(firstCard).toHaveScreenshot("slice-card-hover", {
       mask: dynamicTimeMasks(page),
-      maskColor: "#F5F6F3",
+      maskColor: "#FFFFFF",
     });
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
@@ -163,7 +163,7 @@ test.describe("#44 视觉回归基线", () => {
     // 视口级截图：强调卡片 + 上下文（章节导航、来源线）共同反映定位视觉。
     await expect(page).toHaveScreenshot("fragment-locate", {
       mask: dynamicTimeMasks(page),
-      maskColor: "#F5F6F3",
+      maskColor: "#FFFFFF",
     });
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
@@ -191,7 +191,7 @@ test.describe("#44 视觉回归基线", () => {
 
     await expect(dialog).toHaveScreenshot("assoc-narrow", {
       mask: dynamicTimeMasks(page),
-      maskColor: "#F5F6F3",
+      maskColor: "#FFFFFF",
     });
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });

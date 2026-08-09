@@ -14,11 +14,16 @@ type ListState =
  * 回收站页：软删除的会话保留 30 天，可恢复或彻底删除。
  * 形态对齐 RunRecordsPage（页头 + 状态区 + 列表）；变更后广播 SESSIONS_CHANGED，
  * 侧栏分组树同步刷新。
+ * 支持选择模式：批量恢复 / 批量彻底删除（带确认）。
  */
 export function TrashPage() {
   const { api } = useServices();
   const [state, setState] = useState<ListState>({ kind: "loading" });
   const [reloadNonce, setReloadNonce] = useState(0);
+  // 批量选择模式
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [batchBusy, setBatchBusy] = useState(false);
 
   useEffect(() => {
     let stale = false;
@@ -61,6 +66,55 @@ export function TrashPage() {
     }
   };
 
+  // ── 批量选择模式 ──
+  const exitSelection = () => {
+    setSelectionMode(false);
+    setSelected(new Set());
+  };
+
+  const toggleSelect = (sessionId: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (state.kind !== "ready") return;
+    setSelected((prev) => (prev.size === state.sessions.length ? new Set() : new Set(state.sessions.map((item) => item.id))));
+  };
+
+  const handleBatchRestore = async () => {
+    if (batchBusy || selected.size === 0) return;
+    setBatchBusy(true);
+    try {
+      await Promise.all(Array.from(selected).map((id) => api.restoreResearchSession(id)));
+      notifySessionsChanged();
+      exitSelection();
+    } catch {
+      // 部分失败保持选择与状态，用户可重试
+    } finally {
+      setBatchBusy(false);
+    }
+  };
+
+  const handleBatchPermanentDelete = async () => {
+    if (batchBusy || selected.size === 0) return;
+    if (!window.confirm(`彻底删除选中的 ${selected.size} 个会话后，其中的全部研究与来源记录将被永久清除，无法恢复。确定删除吗？`)) return;
+    setBatchBusy(true);
+    try {
+      await Promise.all(Array.from(selected).map((id) => api.permanentDeleteResearchSession(id)));
+      notifySessionsChanged();
+      exitSelection();
+    } catch {
+      // 部分失败保持选择与状态，用户可重试
+    } finally {
+      setBatchBusy(false);
+    }
+  };
+
   return (
     <div className="page trash-page">
       <header className="trash-page__header">
@@ -73,6 +127,19 @@ export function TrashPage() {
           <button type="button" className="button button--secondary" onClick={() => setReloadNonce((nonce) => nonce + 1)}>
             刷新
           </button>
+          {state.kind === "ready" && state.sessions.length > 0 ? (
+            <button
+              type="button"
+              className={`button button--secondary${selectionMode ? " button--active" : ""}`}
+              aria-pressed={selectionMode}
+              onClick={() => {
+                if (selectionMode) exitSelection();
+                else setSelectionMode(true);
+              }}
+            >
+              选择
+            </button>
+          ) : null}
         </div>
       </header>
 
@@ -92,26 +159,69 @@ export function TrashPage() {
         </div>
       ) : null}
       {state.kind === "ready" && state.sessions.length > 0 ? (
-        <ul className="trash-page__list">
-          {state.sessions.map((session) => (
-            <li key={session.id} className="trash-page__item">
-              <div className="trash-page__item-main">
-                <Link className="trash-page__item-title" to={`/research/${encodeURIComponent(session.id)}/node/${encodeURIComponent(session.id)}`}>
-                  {session.title}
-                </Link>
-                <span className="trash-page__item-time">删除于 {formatSessionTime(session.trashedAt ?? session.updatedAt)}</span>
-              </div>
-              <div className="trash-page__item-actions">
-                <button type="button" className="button button--secondary" onClick={() => void handleRestore(session.id)}>
+        <>
+          <ul className="trash-page__list">
+            {state.sessions.map((session) => (
+              <li key={session.id} className="trash-page__item">
+                {selectionMode ? (
+                  <button
+                    type="button"
+                    className="trash-page__select"
+                    aria-label={`选择${session.title}`}
+                    aria-pressed={selected.has(session.id)}
+                    onClick={() => toggleSelect(session.id)}
+                  >
+                    <span className={`trash-page__checkbox${selected.has(session.id) ? " trash-page__checkbox--checked" : ""}`} aria-hidden="true">
+                      {selected.has(session.id) ? "✓" : ""}
+                    </span>
+                  </button>
+                ) : null}
+                <div className="trash-page__item-main">
+                  <Link className="trash-page__item-title" to={`/research/${encodeURIComponent(session.id)}/node/${encodeURIComponent(session.id)}`}>
+                    {session.title}
+                  </Link>
+                  <span className="trash-page__item-time">删除于 {formatSessionTime(session.trashedAt ?? session.updatedAt)}</span>
+                </div>
+                {!selectionMode ? (
+                  <div className="trash-page__item-actions">
+                    <button type="button" className="button button--secondary" onClick={() => void handleRestore(session.id)}>
+                      恢复
+                    </button>
+                    <button type="button" className="button button--danger" onClick={() => void handlePermanentDelete(session)}>
+                      彻底删除
+                    </button>
+                  </div>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+          {selectionMode ? (
+            <div className="trash-page__batch" role="region" aria-label="批量操作">
+              <span className="trash-page__batch-count">已选 {selected.size} 项</span>
+              <div className="trash-page__batch-actions">
+                <button
+                  type="button"
+                  className="button button--secondary"
+                  disabled={batchBusy || selected.size === 0}
+                  onClick={() => void handleBatchRestore()}
+                >
                   恢复
                 </button>
-                <button type="button" className="button button--danger" onClick={() => void handlePermanentDelete(session)}>
+                <button
+                  type="button"
+                  className="button button--danger"
+                  disabled={batchBusy || selected.size === 0}
+                  onClick={() => void handleBatchPermanentDelete()}
+                >
                   彻底删除
                 </button>
+                <button type="button" className="button button--ghost" disabled={batchBusy} onClick={exitSelection}>
+                  取消
+                </button>
               </div>
-            </li>
-          ))}
-        </ul>
+            </div>
+          ) : null}
+        </>
       ) : null}
       <p className="trash-page__back">
         <Link to="/">← 返回首页</Link>

@@ -95,4 +95,55 @@ describe("TrashPage 回收站页", () => {
     await user.click(screen.getByRole("button", { name: "重新读取" }));
     expect(await screen.findByText("已删会话")).toBeInTheDocument();
   });
+
+  it("选择模式：批量恢复", async () => {
+    const user = userEvent.setup();
+    const restoreResearchSession = vi.fn<() => ReturnType<ApiClient["restoreResearchSession"]>>(
+      async () => makeSession({ id: "s-1" }),
+    );
+    const sessions = [
+      makeSession({ id: "s-1", title: "会话甲", trashedAt: "2026-08-08T10:00:00.000Z" }),
+      makeSession({ id: "s-2", title: "会话乙", trashedAt: "2026-08-08T10:00:00.000Z" }),
+    ];
+    const listResearchSessions = vi
+      .fn<() => ReturnType<ApiClient["listResearchSessions"]>>(async () => [])
+      .mockResolvedValueOnce(sessions)
+      .mockResolvedValueOnce([]);
+    renderPage({ restoreResearchSession, listResearchSessions });
+
+    await user.click(await screen.findByRole("button", { name: "选择" }));
+    await user.click(screen.getByRole("button", { name: "选择会话甲" }));
+    await user.click(screen.getByRole("button", { name: "选择会话乙" }));
+    await user.click(screen.getByRole("button", { name: "恢复" }));
+
+    await waitFor(() => {
+      expect(restoreResearchSession).toHaveBeenCalledWith("s-1");
+      expect(restoreResearchSession).toHaveBeenCalledWith("s-2");
+    });
+    await waitFor(() => expect(screen.queryByText("已选 2 项")).not.toBeInTheDocument());
+  });
+
+  it("选择模式：批量彻底删除需确认", async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const permanentDeleteResearchSession = vi.fn<() => ReturnType<ApiClient["permanentDeleteResearchSession"]>>(
+      async () => undefined,
+    );
+    const sessions = [
+      makeSession({ id: "s-1", title: "会话甲", trashedAt: "2026-08-08T10:00:00.000Z" }),
+    ];
+    const listResearchSessions = vi
+      .fn<() => ReturnType<ApiClient["listResearchSessions"]>>(async () => [])
+      .mockResolvedValueOnce(sessions)
+      .mockResolvedValueOnce([]);
+    renderPage({ permanentDeleteResearchSession, listResearchSessions });
+
+    await user.click(await screen.findByRole("button", { name: "选择" }));
+    await user.click(screen.getByRole("button", { name: "选择会话甲" }));
+    await user.click(screen.getByRole("button", { name: "彻底删除" }));
+
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(permanentDeleteResearchSession).toHaveBeenCalledWith("s-1"));
+    confirmSpy.mockRestore();
+  });
 });

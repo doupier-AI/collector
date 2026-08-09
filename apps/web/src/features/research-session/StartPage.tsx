@@ -162,9 +162,9 @@ export function StartPage() {
       <div className="page__logo" aria-hidden="true">
         <svg width="88" height="88" viewBox="0 0 88 88" focusable="false">
           <rect x="4" y="4" width="80" height="80" rx="21" fill="var(--color-ai)" />
-          <rect x="26" y="30" width="36" height="5.5" rx="2.75" fill="#fff" opacity="0.95" />
-          <rect x="26" y="42.5" width="27" height="5.5" rx="2.75" fill="#fff" opacity="0.75" />
-          <rect x="26" y="55" width="18" height="5.5" rx="2.75" fill="#fff" opacity="0.55" />
+          <rect x="26" y="30" width="36" height="5.5" rx="2.75" fill="var(--color-on-ai)" opacity="0.95" />
+          <rect x="26" y="42.5" width="27" height="5.5" rx="2.75" fill="var(--color-on-ai)" opacity="0.75" />
+          <rect x="26" y="55" width="18" height="5.5" rx="2.75" fill="var(--color-on-ai)" opacity="0.55" />
         </svg>
       </div>
       <h1 className="page__title">从一个问题开始</h1>
@@ -178,6 +178,7 @@ export function StartPage() {
         importAccept={IMPORT_ACCEPT}
         autoFocus
         disabled={creating}
+        rainbow
       />
       {dragActive ? (
         <div className="drop-overlay" aria-hidden="true">

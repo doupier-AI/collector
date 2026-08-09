@@ -234,4 +234,84 @@ describe("SessionListPanel 会话分组树", () => {
     expect(await screen.findByRole("link", { name: /改名后/ })).toBeInTheDocument();
     expect(listResearchSessions).toHaveBeenCalledTimes(2);
   });
+
+  it("选择模式：勾选多个会话批量移动到项目", async () => {
+    const user = userEvent.setup();
+    const updateResearchSession = vi.fn<() => ReturnType<ApiClient["updateResearchSession"]>>(
+      async () => makeSession({ id: "s-1" }),
+    );
+    const projects = [makeProject({ id: "p-1", name: "工作项目" })];
+    const sessions = [
+      makeSession({ id: "s-1", title: "会话甲" }),
+      makeSession({ id: "s-2", title: "会话乙" }),
+    ];
+    const listResearchSessions = vi
+      .fn<() => ReturnType<ApiClient["listResearchSessions"]>>(async () => [])
+      .mockResolvedValueOnce(sessions)
+      .mockResolvedValueOnce(sessions.map((item) => ({ ...item, projectId: "p-1" })));
+    renderPanel(apiWith({ updateResearchSession, listProjects: async () => projects, listResearchSessions }));
+
+    // 进入选择模式并勾选两个会话
+    await user.click(await screen.findByRole("button", { name: "选择" }));
+    await user.click(screen.getByRole("button", { name: "选择会话甲" }));
+    await user.click(screen.getByRole("button", { name: "选择会话乙" }));
+    await waitFor(() => expect(screen.getByText("已选 2 项")).toBeInTheDocument());
+
+    // 批量移动到工作项目（批量栏内的项目按钮）
+    await user.click(screen.getByRole("button", { name: "移动到…" }));
+    const batchMenu = document.querySelector(".drawer__batch-move");
+    expect(batchMenu).not.toBeNull();
+    await user.click(screen.getByRole("button", { name: "工作项目" }));
+
+    await waitFor(() => {
+      expect(updateResearchSession).toHaveBeenCalledWith("s-1", { projectId: "p-1" });
+      expect(updateResearchSession).toHaveBeenCalledWith("s-2", { projectId: "p-1" });
+    });
+    // 完成后退出选择模式（批量栏消失）
+    await waitFor(() => expect(screen.queryByText("已选 2 项")).not.toBeInTheDocument());
+  });
+
+  it("选择模式：批量删除需确认，确认后软删并退出", async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const trashResearchSession = vi.fn<() => ReturnType<ApiClient["trashResearchSession"]>>(
+      async () => makeSession({ id: "s-1" }),
+    );
+    const sessions = [
+      makeSession({ id: "s-1", title: "会话甲" }),
+      makeSession({ id: "s-2", title: "会话乙" }),
+    ];
+    const listResearchSessions = vi
+      .fn<() => ReturnType<ApiClient["listResearchSessions"]>>(async () => [])
+      .mockResolvedValueOnce(sessions)
+      .mockResolvedValueOnce([]);
+    renderPanel(apiWith({ trashResearchSession, listResearchSessions }));
+
+    await user.click(await screen.findByRole("button", { name: "选择" }));
+    await user.click(screen.getByRole("button", { name: "选择会话甲" }));
+    await user.click(screen.getByRole("button", { name: "选择会话乙" }));
+    await user.click(screen.getByRole("button", { name: "删除" }));
+
+    expect(confirmSpy.mock.calls[0][0]).toContain("2 个会话");
+    await waitFor(() => {
+      expect(trashResearchSession).toHaveBeenCalledWith("s-1");
+      expect(trashResearchSession).toHaveBeenCalledWith("s-2");
+    });
+    await waitFor(() => expect(screen.queryByText("已选 2 项")).not.toBeInTheDocument());
+    confirmSpy.mockRestore();
+  });
+
+  it("选择模式：组头选整组一次勾选组内全部", async () => {
+    const user = userEvent.setup();
+    const projects = [makeProject({ id: "p-1", name: "工作项目" })];
+    const sessions = [
+      makeSession({ id: "s-1", title: "会话甲", projectId: "p-1" }),
+      makeSession({ id: "s-2", title: "会话乙", projectId: "p-1" }),
+    ];
+    renderPanel(apiWith({ listProjects: async () => projects, listResearchSessions: async () => sessions }));
+
+    await user.click(await screen.findByRole("button", { name: "选择" }));
+    await user.click(screen.getByRole("button", { name: "选择整个工作项目" }));
+    await waitFor(() => expect(screen.getByText("已选 2 项")).toBeInTheDocument());
+  });
 });

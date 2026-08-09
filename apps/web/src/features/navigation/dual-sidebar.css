@@ -1,0 +1,153 @@
+/* 双层级侧边栏：窄图标栏 + 可折叠详情栏、弹性过渡、批量选择模式 */
+
+/* 外层容器：rail + detail 横向排列（包裹在 .drawer 内） */
+.dual-drawer {
+  display: flex;
+  width: 100%;
+  height: 100%;
+}
+
+/* ---------- 窄图标栏（rail） ---------- */
+
+.dual-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  flex: none;
+  width: 4rem;
+  padding: var(--space-3) 0.5rem;
+  background: color-mix(in srgb, var(--color-surface) 60%, var(--color-canvas));
+  border-right: 1px solid var(--color-line);
+}
+
+.dual-rail__button {
+  display: grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) ease,
+    color var(--duration-fast) ease,
+    transform var(--duration-mid) var(--ease-spring);
+}
+
+.dual-rail__button:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+
+.dual-rail__button--active {
+  background: color-mix(in srgb, var(--color-ai) 18%, var(--color-surface));
+  color: var(--color-ai);
+}
+
+.dual-rail__button:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-focus);
+}
+
+.dual-rail__spacer {
+  flex: 1;
+}
+
+.dual-rail__collapse-caret {
+  display: inline-block;
+  font-size: 0.875rem;
+  transition: transform var(--duration-mid) var(--ease-spring);
+}
+
+.dual-rail__collapse-caret--closed {
+  transform: rotate(180deg);
+}
+
+/* ---------- 详情栏（detail） ---------- */
+
+.dual-detail {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  overflow-y: auto;
+  transition: width var(--duration-mid) var(--ease-spring);
+}
+
+.dual-detail__footer {
+  margin-top: auto;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--color-line);
+}
+
+.dual-detail__settings {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 0.5rem 0.625rem;
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-muted);
+  font: inherit;
+  font-size: var(--font-size-sm);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) ease,
+    color var(--duration-fast) ease;
+}
+
+.dual-detail__settings:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+
+.dual-detail__settings[aria-expanded="true"] {
+  color: var(--color-ai);
+}
+
+.dual-detail__settings-menu {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  margin-top: var(--space-1);
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-button);
+  box-shadow: var(--shadow-panel);
+}
+
+.dual-detail__settings-item {
+  display: block;
+  width: 100%;
+  padding: 0.375rem 0.5rem;
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-ink);
+  font: inherit;
+  font-size: var(--font-size-sm);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.dual-detail__settings-item:hover {
+  background: var(--color-surface-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dual-rail__button,
+  .dual-rail__collapse-caret,
+  .dual-detail {
+    transition: none;
+  }
+}

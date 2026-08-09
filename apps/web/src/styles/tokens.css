@@ -11,6 +11,14 @@
   --color-ai-hover: #374D63;
   --color-later: #9A6A24;
   --color-danger: #A33B36;
+  /* 正文浅色阅读面（深色主题下局部覆写，长文阅读保持舒适） */
+  --color-reading-bg: #FCFCFA;
+  --color-reading-ink: #20231F;
+  --color-reading-muted: #6B7168;
+  --color-reading-line: #D8DDD5;
+  --color-reading-ai: #435A73;
+  /* AI 色上的前景（logo 横线等，两主题均为白色） */
+  --color-on-ai: #FFFFFF;
 
   --font-sans:
     -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
@@ -45,6 +53,8 @@
   --duration-slow: 200ms;
   --duration-breathe: 1.8s;
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  /* 弹性缓动：彩虹按钮点击缩放、双层级侧栏折叠过渡 */
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 
   /* z-index 层级：app-bar 10（sticky 顶栏，低于覆盖层 30）、rail 15（章节导航）、
      遮罩 20 → 面板 30（研究地图/抽屉）→ 安全层 40（skip-link/拖放遮罩）→ 浮动 50-55 → 弹层 1000 */
@@ -95,6 +105,79 @@
   --color-graph-node-stroke: #6B7168;
   /* 当前节点光晕：硬编码 drop-shadow 的令牌化（现值对齐，视觉增强由 #44 状态收口另做） */
   --graph-node-halo: drop-shadow(0 2px 4px rgba(32, 35, 31, 0.2));
+}
+
+/* 深色主题（跟随系统）：Manus 式深色工作台，AI 强调色换暖金。正文阅读区保持浅色（--color-reading-*）。 */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --color-canvas: #0E0F0E;
+    --color-surface: #161816;
+    --color-surface-raised: #1D201D;
+    --color-surface-hover: #232723;
+    --color-ink: #F0F0EC;
+    --color-muted: #8B918A;
+    --color-line: #2A2E2A;
+    --color-ai: #D9A441;
+    --color-ai-hover: #C8912E;
+    --color-later: #D9A441;
+    --color-danger: #C25E55;
+
+    /* 深色投影更浓更深 */
+    --shadow-1: 0 2px 10px rgba(0, 0, 0, 0.45);
+    --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.4);
+    --shadow-popover: 0 12px 36px rgba(0, 0, 0, 0.6);
+    --shadow-panel: 0 0.75rem 2rem rgba(0, 0, 0, 0.55);
+
+    /* 选区与选区智能窗口（深色适配） */
+    --color-selection: #5A4E26;
+    --color-selection-line: #8A7A3F;
+    --color-difficulty-low: #4FA573;
+    --color-difficulty-mid: #D9A441;
+    --color-difficulty-high: #D9705F;
+
+    /* 网状图边类型（深色下提高亮度对比） */
+    --color-edge-parent-child: #5B9AF5;
+    --color-edge-semantic-related: #F5804F;
+    --color-edge-fused-from: #34C98F;
+
+    /* 网状图节点 */
+    --color-graph-focus: #F0F0EC;
+    --color-graph-node: #161816;
+    --color-graph-node-stroke: #8B918A;
+    --graph-node-halo: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.55));
+  }
+
+  /* 正文阅读区（消息列表/切片卡片）在深色主题下保持浅色阅读面：
+     局部 color-scheme: light + 专用令牌，长文阅读舒适、对比度稳定。 */
+  .message-list,
+  .slice-card {
+    color-scheme: light;
+  }
+
+  .slice-card {
+    background: var(--color-reading-bg);
+    border: 1px solid var(--color-reading-line);
+    color: var(--color-reading-ink);
+  }
+
+  .slice-card:hover {
+    background: var(--color-reading-bg);
+  }
+
+  .slice-card__title {
+    color: var(--color-reading-ink);
+  }
+
+  /* 阅读面内的正文与链接：不继承深色主题令牌 */
+  .slice-card .markdown-content,
+  .slice-card .message__content {
+    color: var(--color-reading-ink);
+  }
+
+  .slice-card .markdown-content :where(a) {
+    color: var(--color-reading-ai);
+  }
 }
 
 ::selection {

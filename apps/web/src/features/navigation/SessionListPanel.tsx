@@ -4,7 +4,7 @@ import type { ProjectRecord, ResearchSessionRecord } from "@collector/capture-co
 import { useServices } from "../../app/services";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { PAIRED_EVENT } from "../auth/paired-event";
-import { formatSessionTime } from "../research-session/format";
+import { formatRelativeTime } from "../research-session/format";
 import { notifySessionsChanged, SESSIONS_CHANGED_EVENT } from "./session-events";
 
 type ListState =
@@ -12,7 +12,9 @@ type ListState =
   | { kind: "error" }
   | { kind: "ready"; projects: ProjectRecord[]; sessions: ResearchSessionRecord[] };
 
-/** 抽屉内的最近研究会话：项目 → 会话分组树，未分类兜底；变更操作后广播刷新。 */
+/** 抽屉内的最近研究会话：项目 → 会话分组树，未分类兜底；变更操作后广播刷新。
+ *  顶部工具栏提供「＋ 新建项目」与「选择」批量模式；选择模式下行首出现勾选框、
+ *  组头可选整组，底部批量栏支持移动到 / 删除（软删进回收站）。 */
 export function SessionListPanel({ onNavigate }: { onNavigate?: () => void }) {
   const { api } = useServices();
   const [state, setState] = useState<ListState>({ kind: "loading" });
@@ -30,6 +32,11 @@ export function SessionListPanel({ onNavigate }: { onNavigate?: () => void }) {
   const [creatingProject, setCreatingProject] = useState(false);
   const [submittingProject, setSubmittingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
+  // 批量选择模式
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [batchMoveMenu, setBatchMoveMenu] = useState(false);
+  const [batchBusy, setBatchBusy] = useState(false);
 
   useEffect(() => {
     let stale = false;
@@ -147,6 +154,66 @@ export function SessionListPanel({ onNavigate }: { onNavigate?: () => void }) {
       notifySessionsChanged();
     } catch {
       // 删除失败保持菜单
+    }
+  };
+
+  // ── 批量选择模式 ──
+  const exitSelection = () => {
+    setSelectionMode(false);
+    setSelected(new Set());
+    setBatchMoveMenu(false);
+  };
+
+  const toggleSelect = (sessionId: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      return next;
+    });
+  };
+
+  const toggleSelectGroup = (sessions: ResearchSessionRecord[]) => {
+    const ids = sessions.map((item) => item.id);
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const allSelected = ids.every((id) => next.has(id));
+      for (const id of ids) {
+        if (allSelected) next.delete(id);
+        else next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const handleBatchMove = async (projectId: string | null) => {
+    if (batchBusy || selected.size === 0) return;
+    setBatchBusy(true);
+    try {
+      await Promise.all(
+        Array.from(selected).map((id) => api.updateResearchSession(id, { projectId })),
+      );
+      notifySessionsChanged();
+      exitSelection();
+    } catch {
+      // 部分失败保持选择与菜单，用户可重试
+    } finally {
+      setBatchBusy(false);
+    }
+  };
+
+  const handleBatchTrash = async () => {
+    if (batchBusy || selected.size === 0) return;
+    if (!window.confirm(`删除选中的 ${selected.size} 个会话后，它们将进入回收站，30 天内可恢复。确定删除吗？`)) return;
+    setBatchBusy(true);
+    try {
+      await Promise.all(Array.from(selected).map((id) => api.trashResearchSession(id)));
+      notifySessionsChanged();
+      exitSelection();
+    } catch {
+      // 部分失败保持选择与状态，用户可重试
+    } finally {
+      setBatchBusy(false);
     }
   };
 
@@ -301,11 +368,62 @@ export function SessionListPanel({ onNavigate }: { onNavigate?: () => void }) {
 
   return (
     <div className="drawer__sessions">
+      {/* 顶部工具栏：新建项目上移到标题行下，始终可见；选择模式入口 */}
+      <div className="drawer__toolbar">
+        <button type="button" className="drawer__new-project" onClick={() => setCreatingProject((value) => !value)}>
+          ＋ 新建项目
+        </button>
+        <button
+          type="button"
+          className={`drawer__select-mode${selectionMode ? " drawer__select-mode--active" : ""}`}
+          aria-pressed={selectionMode}
+          onClick={() => {
+            if (selectionMode) exitSelection();
+            else setSelectionMode(true);
+          }}
+        >
+          选择
+        </button>
+      </div>
+      {creatingProject ? (
+        <div className="drawer__inline-create">
+          <input
+            type="text"
+            className="input"
+            value={newProjectName}
+            maxLength={40}
+            aria-label="新项目名称"
+            onChange={(event) => setNewProjectName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void handleCreateProject();
+              if (event.key === "Escape") setCreatingProject(false);
+            }}
+          />
+          <button type="button" className="button button--secondary" disabled={submittingProject} onClick={() => void handleCreateProject()}>
+            创建
+          </button>
+        </div>
+      ) : null}
+
       {groups.map((group) => {
         const isCollapsed = group.projectId !== null && collapsed[group.projectId] === true;
+        const groupAllSelected = group.sessions.length > 0 && group.sessions.every((item) => selected.has(item.id));
         return (
           <section key={group.projectId ?? "unclassified"} className="drawer__group">
             <div className="drawer__group-head">
+              {selectionMode ? (
+                <button
+                  type="button"
+                  className="drawer__group-select"
+                  aria-label={`选择整个${group.title}`}
+                  aria-pressed={groupAllSelected}
+                  onClick={() => toggleSelectGroup(group.sessions)}
+                >
+                  <span className={`drawer__checkbox${groupAllSelected ? " drawer__checkbox--checked" : ""}`} aria-hidden="true">
+                    {groupAllSelected ? "✓" : ""}
+                  </span>
+                </button>
+              ) : null}
               {group.projectId !== null ? (
                 <button
                   type="button"
@@ -348,6 +466,19 @@ export function SessionListPanel({ onNavigate }: { onNavigate?: () => void }) {
                   ) : (
                     <li key={session.id} className="drawer__session-row">
                       <div className="drawer__session-wrap">
+                        {selectionMode ? (
+                          <button
+                            type="button"
+                            className="drawer__session-select"
+                            aria-label={`选择${session.title}`}
+                            aria-pressed={selected.has(session.id)}
+                            onClick={() => toggleSelect(session.id)}
+                          >
+                            <span className={`drawer__checkbox${selected.has(session.id) ? " drawer__checkbox--checked" : ""}`} aria-hidden="true">
+                              {selected.has(session.id) ? "✓" : ""}
+                            </span>
+                          </button>
+                        ) : null}
                         <Link
                           className={`drawer__session${session.status === "archived" ? " drawer__session--archived" : ""}`}
                           to={`/research/${encodeURIComponent(session.id)}`}
@@ -356,19 +487,21 @@ export function SessionListPanel({ onNavigate }: { onNavigate?: () => void }) {
                           <span className="drawer__session-title">{session.title}</span>
                           <span className="drawer__session-time">
                             {session.status === "archived" ? "已归档 · " : ""}
-                            {formatSessionTime(session.updatedAt)}
+                            {formatRelativeTime(session.updatedAt)}
                           </span>
                         </Link>
-                        <button
-                          type="button"
-                          className="drawer__session-more"
-                          aria-label={`${session.title} 的菜单`}
-                          aria-expanded={menuFor === session.id}
-                          aria-haspopup="true"
-                          onClick={() => setMenuFor(menuFor === session.id ? null : session.id)}
-                        >
-                          ⋯
-                        </button>
+                        {!selectionMode ? (
+                          <button
+                            type="button"
+                            className="drawer__session-more"
+                            aria-label={`${session.title} 的菜单`}
+                            aria-expanded={menuFor === session.id}
+                            aria-haspopup="true"
+                            onClick={() => setMenuFor(menuFor === session.id ? null : session.id)}
+                          >
+                            ⋯
+                          </button>
+                        ) : null}
                       </div>
                       {menuFor === session.id ? renderSessionMenu(session) : null}
                     </li>
@@ -380,26 +513,49 @@ export function SessionListPanel({ onNavigate }: { onNavigate?: () => void }) {
           </section>
         );
       })}
-      <button type="button" className="drawer__new-project" onClick={() => setCreatingProject((value) => !value)}>
-        ＋ 新建项目
-      </button>
-      {creatingProject ? (
-        <div className="drawer__inline-create">
-          <input
-            type="text"
-            className="input"
-            value={newProjectName}
-            maxLength={40}
-            aria-label="新项目名称"
-            onChange={(event) => setNewProjectName(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") void handleCreateProject();
-              if (event.key === "Escape") setCreatingProject(false);
-            }}
-          />
-          <button type="button" className="button button--secondary" disabled={submittingProject} onClick={() => void handleCreateProject()}>
-            创建
-          </button>
+
+      {/* 底部批量操作栏：sticky，选择模式下常驻 */}
+      {selectionMode ? (
+        <div className="drawer__batch-bar" role="region" aria-label="批量操作">
+          <span className="drawer__batch-count">已选 {selected.size} 项</span>
+          <div className="drawer__batch-actions">
+            <button
+              type="button"
+              className="button button--secondary"
+              disabled={batchBusy || selected.size === 0}
+              aria-expanded={batchMoveMenu}
+              onClick={() => setBatchMoveMenu((value) => !value)}
+            >
+              移动到…
+            </button>
+            <button
+              type="button"
+              className="button button--danger"
+              disabled={batchBusy || selected.size === 0}
+              onClick={() => void handleBatchTrash()}
+            >
+              删除
+            </button>
+            <button type="button" className="button button--ghost" disabled={batchBusy} onClick={exitSelection}>
+              取消
+            </button>
+          </div>
+          {batchMoveMenu && state.kind === "ready" ? (
+            <div className="drawer__batch-move">
+              <button
+                type="button"
+                className="session-menu__item"
+                onClick={() => void handleBatchMove(null)}
+              >
+                未分类
+              </button>
+              {state.projects.map((project) => (
+                <button key={project.id} type="button" className="session-menu__item" onClick={() => void handleBatchMove(project.id)}>
+                  {project.name}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>
