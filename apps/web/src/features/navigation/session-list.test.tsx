@@ -314,4 +314,34 @@ describe("SessionListPanel 会话分组树", () => {
     await user.click(screen.getByRole("button", { name: "选择整个工作项目" }));
     await waitFor(() => expect(screen.getByText("已选 2 项")).toBeInTheDocument());
   });
+
+  it("⋯ 菜单用 fixed + 按钮锚点坐标定位，脱离侧栏滚动容器（#10）", async () => {
+    const user = userEvent.setup();
+    renderPanel(apiWith({ listResearchSessions: async () => [makeSession({ id: "s-1", title: "会话" })] }));
+
+    const trigger = (await screen.findByLabelText("会话 的菜单")) as HTMLButtonElement;
+    // 给一个确定的视口坐标，模拟按钮在滚动容器内的位置
+    vi.spyOn(trigger, "getBoundingClientRect").mockReturnValue({
+      top: 100,
+      bottom: 128,
+      left: 40,
+      right: 72,
+      width: 32,
+      height: 28,
+      x: 40,
+      y: 100,
+      toJSON: () => ({}),
+    } as DOMRect);
+
+    await user.click(trigger);
+    const menu = (await screen.findByRole("menu", { name: "会话 的操作" })) as HTMLElement;
+    // 锚点内联坐标：top = 按钮下缘(128) +4，left = 按钮右缘(72)；fixed 由 .session-menu 类承担
+    expect(menu.style.top).toBe("132px");
+    expect(menu.style.left).toBe("72px");
+    expect(menu.className).toContain("session-menu");
+
+    // Escape 关闭菜单
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu", { name: "会话 的操作" })).not.toBeInTheDocument();
+  });
 });

@@ -106,6 +106,8 @@ ADR-0019（2026-08-09，全套对齐产品取色板，supersedes ADR-0016/0017 �
 
 品牌色统一的两处漏网补齐（#53 收尾）：① 原生复选/单选选中态此前是浏览器默认蓝——新增全局 `input[type="checkbox"], input[type="radio"] { accent-color: var(--color-ai) }`，覆盖选择模型、自动融合开关、允许联网等原生控件的勾选中色；② 融合来源条（`.fusion-source-bar__link`）与自动融合提示（`.auto-fusion-notice`）此前引用未定义的 `--color-accent(--strong)`（CSS 变量未定义时规则失效、回落到默认链接蓝），改为已定义的 `--color-ai` / `--color-ai-hover`。受影响控件不在像素基线旅程内，基线免重拍。
 
+ADR-0020（2026-08-10，左侧导航单层级化，supersedes ADR-0016「双层级侧栏」与 `:has()` 让位，#54）：左侧导航从「窄图标 rail(64px) + 详情栏(320px) 两栏并列」重构为**单层级可整体收展侧栏**——一个整体容器在两态间切换：展开态渲染完整侧栏（顶部按钮组「收起侧栏/搜索会话/新建会话」+ `SessionListPanel` 会话分组列表 + 底部设置聚合菜单「AI 模型设置/融合设置/运行记录/回收站」与主题口），收起态渲染干净的可点图标 rail；两态互斥，收起是真实整体收起到 64px rail（`localStorage["collector:sidebar-collapsed"]` 持久化），无残留窄条。顶部搜索为真前端过滤（`SessionListPanel searchQuery` 按标题不区分大小写过滤，命中保留分组，无命中空态，不新增后端端点）；主题口仅入口位（临时浅/深切换 `document.documentElement.dataset.theme`），完整三态归 #55。⋯菜单改 `position:fixed` + 触发按钮 `getBoundingClientRect()` 锚点（top=下缘+4/left=右缘，`transform:translateX(-100%)` 右对齐），脱离侧栏滚动容器不漂移不裁剪，打开期间 scroll(capture)/resize/Escape 关闭（消灭 #10）。章节导航让位改读 AppShell 提升到 `.app-shell` 根的真实收展 class（`app-shell--sidebar-open/.collapsed`）：让位规则只在展开态生效（收进正文左缘内侧 + `.page` padding-left 2.75rem），收起成窄 rail/侧栏整隐/窄屏 overlay 恢复翻出正文左缘外侧（消灭 #9）；scrollspy 几何决胜逻辑不变。rail 链接用普通 `Link` + 手动 `aria-current`（「会话」激活是「在研究区任意路径」的业务语义，NavLink 前缀匹配表达不了）。视觉基线 8 张零回归（基线截图前收起侧栏，侧栏结构与让位不入截图，按 ADR-0012 免重拍）。
+
 ### 4.4 选区、引用与标记
 
 消息正文和阅读快照中的非空文本选区都有效：

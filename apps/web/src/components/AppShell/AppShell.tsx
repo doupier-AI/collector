@@ -41,6 +41,8 @@ export function AppShell() {
   const [rightOpenPref, setRightOpenPref] = useState<boolean | null>(null);
   const [leftWidth, setLeftWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
   const [rightWidth, setRightWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
+  // 左侧栏收起（rail）真实状态：提升到 .app-shell 根 class，供章节导航按真实宽度让位（取代 :has 猜测）。
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
   const leftTriggerRef = useRef<HTMLButtonElement>(null);
   const rightTriggerRef = useRef<HTMLButtonElement>(null);
   const mapTriggerRef = useRef<HTMLButtonElement>(null);
@@ -104,7 +106,9 @@ export function AppShell() {
   }, [mapTarget]);
 
   return (
-    <div className="app-shell">
+    <div
+      className={`app-shell${leftVisible && leftCollapsed ? " app-shell--sidebar-collapsed" : ""}${leftVisible && !leftCollapsed ? " app-shell--sidebar-open" : ""}`}
+    >
       <a className="skip-link" href="#main-content">
         跳到主要内容
       </a>
@@ -164,7 +168,13 @@ export function AppShell() {
       </header>
       <div className="app-body">
         {leftVisible ? (
-          <ContentDrawer mode={mode} width={leftWidth} onWidthChange={setLeftWidth} onClose={closeLeft} />
+          <ContentDrawer
+            mode={mode}
+            width={leftWidth}
+            onWidthChange={setLeftWidth}
+            onCollapsedChange={setLeftCollapsed}
+            onClose={closeLeft}
+          />
         ) : null}
         <main className="app-main" id="main-content">
           <Outlet />

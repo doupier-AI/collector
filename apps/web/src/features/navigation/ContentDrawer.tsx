@@ -1,41 +1,50 @@
-import { useEffect, useRef, useState } from "react";
-import { Link, NavLink, useLocation } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useLocation } from "react-router-dom";
 import { SidebarResizeHandle } from "../../components/AppShell/SidebarResizeHandle";
 import { SessionListPanel } from "./SessionListPanel";
 
 export interface ContentDrawerProps {
   /** fixed：宽屏固定侧栏（可拖拽调宽）；overlay：窄屏覆盖抽屉（遮罩 + Escape）。 */
   mode: "fixed" | "overlay";
-  /** fixed 模式下的当前宽度（px，React state，不持久化）。 */
+  /** fixed 模式下展开态的当前宽度（px，React state，不持久化）。 */
   width: number;
   onWidthChange: (width: number) => void;
+  /** 收起态变化时通知父级（用于在 .app-shell 根上标记真实收展状态，供章节导航让位）。 */
+  onCollapsedChange?: (collapsed: boolean) => void;
   onClose: () => void;
 }
 
-/** 双层级侧栏的窄图标栏宽度（rail）+ 详情栏默认宽度。 */
+/** 单层级侧栏收起态的图标 rail 宽度；展开态默认宽度。 */
 export const RAIL_WIDTH = 64;
 export const DETAIL_WIDTH = 320;
 
-const DETAIL_COLLAPSED_KEY = "collector:sidebar-detail-collapsed";
+const SIDEBAR_COLLAPSED_KEY = "collector:sidebar-collapsed";
 
-/** 窄图标栏按钮：图标 + aria-label；激活态高亮。 */
+/** 侧栏图标按钮：图标 + aria-label；激活态高亮。收起态与展开态顶部共用。 */
 function RailButton({
   label,
   active = false,
+  pressed,
   onClick,
+  buttonRef,
   children,
 }: {
   label: string;
   active?: boolean;
+  /** aria-pressed（用于收起/展开这类状态切换钮），与 aria-current 互斥。 */
+  pressed?: boolean;
   onClick?: () => void;
+  buttonRef?: React.Ref<HTMLButtonElement>;
   children: React.ReactNode;
 }) {
   return (
     <button
       type="button"
-      className={`dual-rail__button${active ? " dual-rail__button--active" : ""}`}
+      ref={buttonRef}
+      className={`side-rail__button${active ? " side-rail__button--active" : ""}`}
       aria-label={label}
       aria-current={active ? "page" : undefined}
+      aria-pressed={pressed}
       onClick={onClick}
     >
       {children}
@@ -43,7 +52,8 @@ function RailButton({
   );
 }
 
-/** 窄图标栏链接：真实导航到对应页面，当前页给激活态（aria-current="page"）。 */
+/** 侧栏图标链接：真实导航到对应页面；激活态由调用方按业务语义给定（aria-current="page"）。
+ *  用普通 Link 而非 NavLink：激活条件是业务判断（如「当前在研究区任意路径」），不是 URL 前缀匹配。 */
 function RailLink({
   label,
   to,
@@ -58,19 +68,51 @@ function RailLink({
   children: React.ReactNode;
 }) {
   return (
-    <NavLink
+    <Link
       to={to}
-      className={`dual-rail__button${active ? " dual-rail__button--active" : ""}`}
+      className={`side-rail__button${active ? " side-rail__button--active" : ""}`}
       aria-label={label}
       aria-current={active ? "page" : undefined}
       onClick={onClick}
     >
       {children}
-    </NavLink>
+    </Link>
   );
 }
 
-/** 设置入口图标（齿轮）。 */
+/* ---- 图标 ---- */
+
+function SessionsGlyph() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+      <rect x="2.5" y="3" width="15" height="14" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M6 7.5h8M6 10.5h8M6 13.5h4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function SearchGlyph() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+      <circle cx="9" cy="9" r="5.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <path d="m13 13 3.25 3.25" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function NewChatGlyph() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+      <path
+        d="M10 3.5v13M3.5 10h13"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 function SettingsGlyph() {
   return (
     <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
@@ -85,32 +127,56 @@ function SettingsGlyph() {
   );
 }
 
+function ThemeGlyph() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+      <path
+        d="M10 2.75a7.25 7.25 0 1 0 7.25 7.25A5.5 5.5 0 0 1 10 2.75Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 /**
- * 左侧内容导航：双层级侧栏。
- * - 窄图标栏（rail，固定 64px）：研究（会话）/ AI 模型设置 / 融合设置 / 运行记录 / 回收站。
- * - 详情栏（detail，默认 320px，可折叠到窄图标条）：开始 Chat + 最近研究会话 + 设置菜单。
+ * 左侧内容导航：单层级可整体收展侧栏（取代旧双层级 rail + detail）。
+ * - 展开态：顶部按钮组（收起/搜索/新建会话）+ 会话分组列表 + 底部设置聚合菜单与主题口。
+ * - 收起态：一条干净的可点图标 rail（会话/搜索/新建会话，底部设置/主题/展开），无残留窄条。
+ * 两种状态是同一容器内的互斥视图，收起是真实整体收起到 rail，不是只隐藏详情内容。
  * 宽屏（≥900px）固定侧栏、可拖拽调宽；窄屏覆盖抽屉：Escape 关闭，打开时焦点进入。
- * 折叠态持久化到 localStorage；折叠后点击任意 rail 按钮自动展开详情栏。
+ * 收展状态持久化到 localStorage，并同步到 .app-shell 根供章节导航按真实状态让位。
  */
-export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDrawerProps) {
+export function ContentDrawer({ mode, width, onWidthChange, onCollapsedChange, onClose }: ContentDrawerProps) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     try {
-      return localStorage.getItem(DETAIL_COLLAPSED_KEY) === "1";
+      return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
     } catch {
       return false;
     }
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    localStorage.setItem(DETAIL_COLLAPSED_KEY, collapsed ? "1" : "0");
-  }, [collapsed]);
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0");
+    onCollapsedChange?.(collapsed);
+  }, [collapsed, onCollapsedChange]);
 
   useEffect(() => {
     if (mode === "overlay") closeButtonRef.current?.focus();
   }, [mode]);
+
+  // 搜索框展开时聚焦输入
+  useEffect(() => {
+    if (searchOpen) searchInputRef.current?.focus();
+  }, [searchOpen]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -129,129 +195,159 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onClose, settingsOpen]);
 
-  // 点击 rail 的会话入口只展开详情栏（本身不产生路由）
-  const handleRailNavigate = () => {
-    if (collapsed) setCollapsed(false);
-    setSettingsOpen(false);
-  };
-
-  const handleNavigate = () => {
+  const handleNavigate = useCallback(() => {
     if (mode === "overlay") onClose();
     setSettingsOpen(false);
-  };
+  }, [mode, onClose]);
 
   const { pathname } = useLocation();
   const sessionsActive = pathname === "/" || pathname.startsWith("/research");
+  // 主题口暂为临时浅/深切换占位；完整三态（浅/深/跟随系统）+ 持久化由 #55 落地。
+  const toggleTheme = useCallback(() => {
+    const root = document.documentElement;
+    root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+  }, []);
+
+  const expand = useCallback(() => setCollapsed(false), []);
+  const collapse = useCallback(() => {
+    setCollapsed(true);
+    setSettingsOpen(false);
+    setSearchOpen(false);
+  }, []);
+
+  const openSearch = useCallback(() => {
+    setCollapsed(false);
+    setSearchOpen(true);
+  }, []);
+
+  /* 底部设置聚合菜单（AI 模型 / 融合 / 运行记录 / 回收站），收起与展开两态共用。 */
+  const settingsMenu = settingsOpen ? (
+    <div className="side-settings-menu" role="menu" aria-label="设置">
+      <Link role="menuitem" className="side-settings-menu__item" to="/settings/ai-model" onClick={handleNavigate}>
+        AI 模型设置
+      </Link>
+      <Link role="menuitem" className="side-settings-menu__item" to="/settings/fusion" onClick={handleNavigate}>
+        融合设置
+      </Link>
+      <Link role="menuitem" className="side-settings-menu__item" to="/run-records" onClick={handleNavigate}>
+        运行记录
+      </Link>
+      <Link role="menuitem" className="side-settings-menu__item" to="/trash" onClick={handleNavigate}>
+        回收站
+      </Link>
+    </div>
+  ) : null;
 
   return (
     <>
       {mode === "overlay" ? <div className="panel-backdrop" onClick={onClose} aria-hidden="true" /> : null}
       <nav
-        className={`drawer dual-drawer${mode === "fixed" ? " drawer--fixed" : ""}`}
+        className={`drawer side-drawer${mode === "fixed" ? " drawer--fixed" : ""}${collapsed ? " side-drawer--collapsed" : ""}`}
         id="content-drawer"
         aria-label="内容导航"
-        style={mode === "fixed" ? { width } : undefined}
+        style={mode === "fixed" && !collapsed ? { width } : undefined}
       >
-        {/* 窄图标栏 */}
-        <div className="dual-rail" aria-label="侧栏导航">
-          <RailButton label="会话" active={sessionsActive} onClick={handleRailNavigate}>
-            <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-              <rect x="2.5" y="3" width="15" height="14" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
-              <path d="M6 7.5h8M6 10.5h8M6 13.5h4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          </RailButton>
-          <RailLink label="AI 模型设置" to="/settings/ai-model" active={pathname === "/settings/ai-model"} onClick={handleNavigate}>
-            <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-              <circle cx="10" cy="10" r="6.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
-              <circle cx="10" cy="10" r="2.25" fill="currentColor" stroke="none" />
-            </svg>
-          </RailLink>
-          <RailLink label="融合设置" to="/settings/fusion" active={pathname === "/settings/fusion"} onClick={handleNavigate}>
-            <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-              <path
-                d="M10 3c1.8 3 4.5 3.6 6 3.4-0.4 4.4-2.6 7.2-6 10.6-3.4-3.4-5.6-6.2-6-10.6 1.5 0.2 4.2-0.4 6-3.4Z"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </RailLink>
-          <RailLink label="运行记录" to="/run-records" active={pathname.startsWith("/run-records")} onClick={handleNavigate}>
-            <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-              <rect x="3" y="4" width="14" height="12" rx="2" fill="none" stroke="currentColor" strokeWidth="1.5" />
-              <path d="M3 8h14M7 4v12" stroke="currentColor" strokeWidth="1.5" />
-            </svg>
-          </RailLink>
-          <RailLink label="回收站" to="/trash" active={pathname === "/trash"} onClick={handleNavigate}>
-            <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-              <path
-                d="M4 6.5h12M8.5 6.5V5a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1.5M6 6.5l0.6 9a1.5 1.5 0 0 0 1.5 1.4h3.8a1.5 1.5 0 0 0 1.5-1.4l0.6-9"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </RailLink>
-          <div className="dual-rail__spacer" />
-          <RailButton label={collapsed ? "展开侧栏" : "收起侧栏"} onClick={() => setCollapsed((value) => !value)}>
-            <span className={`dual-rail__collapse-caret${collapsed ? " dual-rail__collapse-caret--closed" : ""}`} aria-hidden="true">
-              ▸
-            </span>
-          </RailButton>
-        </div>
-
-        {/* 详情栏 */}
-        {!collapsed ? (
-          <div className="dual-detail">
-            <div className="drawer__header">
-              <p className="drawer__title">会话</p>
-              <button type="button" ref={closeButtonRef} className="drawer__close" onClick={onClose}>
-                关闭
-              </button>
-            </div>
-            <Link className="drawer__new-chat" to="/research/new" onClick={handleNavigate}>
-              开始 Chat
-            </Link>
-
-            <h2 className="drawer__section-title">最近研究</h2>
-            <SessionListPanel onNavigate={handleNavigate} />
-
-            {/* 设置菜单：AI 模型 / 融合 / 运行记录（回收站已在 rail） */}
-            <div className="dual-detail__footer">
-              <button
-                ref={settingsButtonRef}
-                type="button"
-                className="dual-detail__settings"
-                aria-expanded={settingsOpen}
-                aria-haspopup="true"
-                onClick={() => setSettingsOpen((value) => !value)}
-              >
+        {collapsed ? (
+          /* ── 收起态：干净的可点图标 rail ── */
+          <div className="side-rail" aria-label="侧栏导航">
+            <RailLink label="会话" to="/" active={sessionsActive} onClick={handleNavigate}>
+              <SessionsGlyph />
+            </RailLink>
+            <RailButton label="搜索会话" onClick={openSearch}>
+              <SearchGlyph />
+            </RailButton>
+            <RailLink label="新建会话" to="/research/new" onClick={handleNavigate}>
+              <NewChatGlyph />
+            </RailLink>
+            <div className="side-rail__spacer" />
+            <div className="side-rail__anchor">
+              <RailButton label="设置" pressed={settingsOpen} buttonRef={settingsButtonRef} onClick={() => setSettingsOpen((value) => !value)}>
                 <SettingsGlyph />
-                <span>设置</span>
-              </button>
-              {settingsOpen ? (
-                <div className="dual-detail__settings-menu" role="menu" aria-label="设置">
-                  <Link role="menuitem" className="dual-detail__settings-item" to="/settings/ai-model" onClick={handleNavigate}>
-                    AI 模型设置
-                  </Link>
-                  <Link role="menuitem" className="dual-detail__settings-item" to="/settings/fusion" onClick={handleNavigate}>
-                    融合设置
-                  </Link>
-                  <Link role="menuitem" className="dual-detail__settings-item" to="/run-records" onClick={handleNavigate}>
-                    运行记录
-                  </Link>
-                </div>
+              </RailButton>
+              {settingsMenu}
+            </div>
+            <RailButton label="切换主题" onClick={toggleTheme}>
+              <ThemeGlyph />
+            </RailButton>
+            <RailButton label="展开侧栏" onClick={expand}>
+              <span className="side-rail__caret side-rail__caret--expand" aria-hidden="true">
+                ▸
+              </span>
+            </RailButton>
+          </div>
+        ) : (
+          /* ── 展开态：完整侧栏 ── */
+          <div className="side-detail">
+            <div className="side-detail__top">
+              <RailButton label="收起侧栏" onClick={collapse}>
+                <span className="side-rail__caret" aria-hidden="true">
+                  ◂
+                </span>
+              </RailButton>
+              <RailButton label="搜索会话" pressed={searchOpen} onClick={() => setSearchOpen((value) => !value)}>
+                <SearchGlyph />
+              </RailButton>
+              <RailLink label="新建会话" to="/research/new" onClick={handleNavigate}>
+                <NewChatGlyph />
+              </RailLink>
+              <span className="side-detail__top-spacer" />
+              {mode === "overlay" ? (
+                <button type="button" ref={closeButtonRef} className="drawer__close" onClick={onClose}>
+                  关闭
+                </button>
               ) : null}
+            </div>
+
+            {searchOpen ? (
+              <div className="side-detail__search">
+                <input
+                  ref={searchInputRef}
+                  type="search"
+                  className="input"
+                  value={query}
+                  placeholder="搜索会话标题…"
+                  aria-label="搜索会话标题"
+                  onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      event.stopPropagation();
+                      setQuery("");
+                      setSearchOpen(false);
+                    }
+                  }}
+                />
+              </div>
+            ) : null}
+
+            <h2 className="side-detail__section-title">最近研究</h2>
+            <SessionListPanel searchQuery={query} onNavigate={handleNavigate} />
+
+            <div className="side-detail__footer">
+              <div className="side-rail__anchor">
+                <button
+                  ref={settingsButtonRef}
+                  type="button"
+                  className="side-detail__settings"
+                  aria-expanded={settingsOpen}
+                  aria-haspopup="true"
+                  onClick={() => setSettingsOpen((value) => !value)}
+                >
+                  <SettingsGlyph />
+                  <span>设置</span>
+                </button>
+                {settingsMenu}
+              </div>
+              <button type="button" className="side-detail__settings" aria-label="切换主题" onClick={toggleTheme}>
+                <ThemeGlyph />
+                <span>主题</span>
+              </button>
             </div>
 
             {mode === "fixed" ? (
               <SidebarResizeHandle side="left" width={width} onResize={onWidthChange} label="调整内容侧栏宽度" />
             ) : null}
           </div>
-        ) : null}
+        )}
       </nav>
     </>
   );

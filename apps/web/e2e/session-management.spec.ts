@@ -173,25 +173,71 @@ test("会话管理全流程：项目分组 → 改名 → 归档 → 软删/回�
   expect(consoleIssues.issues, consoleIssues.issues.join("\n")).toEqual([]);
 });
 
-test("rail 设置/工具入口真实导航到对应页面（ADR-0017 切片 1）", async ({ page }) => {
+test("单层级侧栏：收展无残留 + 底部设置聚合菜单真实导航（#54 / ADR 待补）", async ({ page }) => {
   await pairAndOpen(page, "/research/new");
   const nav = page.getByRole("navigation", { name: "内容导航" });
   await expect(nav).toBeVisible();
 
-  // 四个原"僵尸"入口：点击后地址栏到达对应路由，当前页入口带 aria-current
-  await nav.getByRole("link", { name: "回收站" }).click();
+  // 展开态：顶部按钮组（收起/搜索/新建会话）+ 完整侧栏
+  await expect(nav.getByRole("button", { name: "收起侧栏" })).toBeVisible();
+  await expect(nav.getByRole("button", { name: "搜索会话" })).toBeVisible();
+  await expect(nav.getByRole("link", { name: "新建会话" })).toBeVisible();
+  await expect(nav.getByText("最近研究")).toBeVisible();
+
+  // 底部设置聚合菜单：四个入口真实导航
+  await nav.getByRole("button", { name: "设置" }).click();
+  const settingsMenu = nav.getByRole("menu", { name: "设置" });
+  await settingsMenu.getByRole("menuitem", { name: "回收站" }).click();
   await page.waitForURL("**/trash");
-  await expect(nav.getByRole("link", { name: "回收站" })).toHaveAttribute("aria-current", "page");
-
-  await nav.getByRole("link", { name: "运行记录" }).click();
+  await nav.getByRole("button", { name: "设置" }).click();
+  await settingsMenu.getByRole("menuitem", { name: "运行记录" }).click();
   await page.waitForURL("**/run-records");
-  await expect(nav.getByRole("link", { name: "运行记录" })).toHaveAttribute("aria-current", "page");
-
-  await nav.getByRole("link", { name: "AI 模型设置" }).click();
+  await nav.getByRole("button", { name: "设置" }).click();
+  await settingsMenu.getByRole("menuitem", { name: "AI 模型设置" }).click();
   await page.waitForURL("**/settings/ai-model");
-  await expect(nav.getByRole("link", { name: "AI 模型设置" })).toHaveAttribute("aria-current", "page");
-
-  await nav.getByRole("link", { name: "融合设置" }).click();
+  await nav.getByRole("button", { name: "设置" }).click();
+  await settingsMenu.getByRole("menuitem", { name: "融合设置" }).click();
   await page.waitForURL("**/settings/fusion");
-  await expect(nav.getByRole("link", { name: "融合设置" })).toHaveAttribute("aria-current", "page");
+
+  // 收起为干净图标 rail：详情（最近研究/设置文字钮）消失，只剩图标，无残留窄条
+  await nav.getByRole("button", { name: "收起侧栏" }).click();
+  await expect(nav.getByText("最近研究")).not.toBeVisible();
+  await expect(nav.getByRole("button", { name: "展开侧栏" })).toBeVisible();
+  await expect(nav.getByRole("link", { name: "会话", exact: true })).toBeVisible();
+  await expect(nav.getByRole("button", { name: "切换主题" })).toBeVisible();
+
+  // 再展开恢复完整侧栏
+  await nav.getByRole("button", { name: "展开侧栏" }).click();
+  await expect(nav.getByText("最近研究")).toBeVisible();
+});
+
+test("⋯ 菜单在可滚动侧栏中不漂移不被裁剪（#10）", async ({ page }) => {
+  await pairAndOpen(page, "/research/new");
+  // 造 3 个项目 × 各 1 会话，让侧栏出现分组与 ⋯ 菜单
+  await submitFirstQuestion(page, OWN_QUESTION);
+  const nav = page.getByRole("navigation", { name: "内容导航" });
+  // 新建一个项目并把当前会话移入，确保有项目 ⋯ 菜单
+  await nav.getByRole("button", { name: /新建项目/ }).click();
+  await nav.getByLabel("新项目名称").fill(`菜单定位-${RUN_SUFFIX}`);
+  await nav.getByRole("button", { name: /^创建$/ }).click();
+
+  // 打开会话 ⋯ 菜单：应为 fixed 定位（position: fixed），脱离滚动容器
+  const trigger = sessionMenuButton(page, OWN_QUESTION).first();
+  await trigger.click();
+  const menu = page.getByRole("menu", { name: `${OWN_QUESTION} 的操作` });
+  await expect(menu).toBeVisible();
+  const position = await menu.evaluate((el) => getComputedStyle(el).position);
+  expect(position, "⋯ 菜单应为 fixed 定位，脱离侧栏滚动容器").toBe("fixed");
+
+  // 菜单在视口内（未被裁剪）：其边界矩形应在视口范围内
+  const box = await menu.boundingBox();
+  const viewport = page.viewportSize();
+  expect(box, "菜单应有可见边界").not.toBeNull();
+  expect(box!.x, "菜单左缘不应溢出视口左侧").toBeGreaterThanOrEqual(0);
+  expect(box!.x + box!.width, "菜单右缘不应溢出视口右侧").toBeLessThanOrEqual(viewport!.width);
+  expect(box!.y + box!.height, "菜单下缘不应溢出视口底部").toBeLessThanOrEqual(viewport!.height);
+
+  // 菜单项仍可用（移动/重命名契约未破）
+  await expect(menu.getByRole("menuitem", { name: "重命名" })).toBeVisible();
+  await page.keyboard.press("Escape");
 });

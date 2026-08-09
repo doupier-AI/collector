@@ -617,16 +617,18 @@ button {
   touch-action: none;
 }
 
-/* 固定侧栏展开时（.drawer--fixed 存在）：正文左缘贴近侧栏，悬停带（32px）不足，
-   章节导航收进正文左缘内侧留白（正文右移让位），避免与侧栏重叠（否则侧栏会拦截其交互）。
-   侧栏收起/窄屏 overlay 时恢复原悬停设计。 */
-.app-shell:has(.drawer--fixed) .slice-rail {
+/* 侧栏展开（.app-shell--sidebar-open，真实状态见 AppShell）：宽侧栏占掉左侧空间，正文右移、
+   左缘外侧留白被压缩，翻在正文左缘外侧的章节导航会伸进侧栏、拦截侧栏交互（⋯ 菜单/会话行）。
+   此时导航收进正文左缘内侧留白（正文再右移让位），避免与侧栏重叠。
+   收起为窄 rail（64px）时侧栏占用极小、正文左缘外侧留白充足，恢复翻在正文左缘外侧的悬停设计；
+   侧栏整隐/窄屏 overlay 同。 */
+.app-shell--sidebar-open .slice-rail {
   left: var(--space-2);
   margin-left: 0;
   transform: translateY(-50%);
 }
 
-.app-shell:has(.drawer--fixed) .page {
+.app-shell--sidebar-open .page {
   padding-left: 2.75rem;
 }
 
@@ -1498,14 +1500,14 @@ button.model-status {
   animation: collector-drawer-in var(--duration-base) ease-out;
 }
 
-/* 双层级侧栏：外层容器接管布局，去掉默认 padding/滚动（rail + detail 各自处理） */
-.drawer.dual-drawer {
+/* 单层级侧栏：外层容器接管布局，去掉默认 padding/滚动（rail / detail 各自处理） */
+.drawer.side-drawer {
   padding: 0;
   overflow: hidden;
   display: flex;
 }
 
-.drawer.dual-drawer .dual-detail {
+.drawer.side-drawer .side-detail {
   padding: 0.875rem 1rem;
 }
 
@@ -1521,13 +1523,18 @@ button.model-status {
   animation: none;
 }
 
-/* 双层级固定侧栏：rail + detail 占满高度，detail 内部滚动 */
-.drawer--fixed.dual-drawer .dual-detail {
+/* 固定侧栏收起态：整体收成 64px rail（覆盖 React 内联的展开宽度） */
+.drawer--fixed.side-drawer--collapsed {
+  width: 4rem;
+}
+
+/* 固定侧栏展开态 detail 内部滚动；收起态 rail 占满高度 */
+.drawer--fixed.side-drawer .side-detail {
   overflow-y: auto;
   height: 100%;
 }
 
-.drawer--fixed.dual-drawer .dual-rail {
+.drawer--fixed.side-drawer .side-rail {
   height: 100%;
 }
 
@@ -1926,11 +1933,13 @@ button.model-status {
 }
 
 .session-menu {
-  position: absolute;
+  /* fixed + 触发按钮锚点坐标（JS 给 top/left），脱离侧栏滚动容器：滚动时不漂移、不被 overflow 裁剪。 */
+  position: fixed;
   z-index: 31;
-  top: calc(100% + var(--space-1));
-  right: 0;
   min-width: 13rem;
+  max-width: calc(100vw - var(--space-4));
+  max-height: calc(100dvh - var(--space-6));
+  overflow-y: auto;
   display: grid;
   gap: var(--space-1);
   padding: var(--space-2);
@@ -1938,6 +1947,8 @@ button.model-status {
   border: 1px solid var(--color-line);
   border-radius: var(--radius-button);
   box-shadow: var(--shadow-panel);
+  /* 左坐标即按钮右缘：菜单向左展开对齐按钮右缘，避免溢出侧栏右缘。 */
+  transform: translateX(-100%);
 }
 
 .session-menu__item {

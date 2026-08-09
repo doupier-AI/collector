@@ -1,27 +1,17 @@
-/* 双层级侧边栏：窄图标栏 + 可折叠详情栏、弹性过渡、批量选择模式 */
+/* 单层级可整体收展侧栏：展开态完整侧栏 / 收起态干净图标 rail、批量选择模式 */
 
-/* 外层容器：rail + detail 横向排列（包裹在 .drawer 内） */
-.dual-drawer {
+/* ---------- 侧栏容器（单层级：同一容器在 rail/展开两态间整体切换） ---------- */
+
+.side-drawer {
   display: flex;
   width: 100%;
   height: 100%;
+  transition: width var(--duration-mid) var(--ease-spring);
 }
 
-/* ---------- 窄图标栏（rail） ---------- */
+/* ---------- 图标按钮（收起 rail 与展开顶部/底部共用） ---------- */
 
-.dual-rail {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-2);
-  flex: none;
-  width: 4rem;
-  padding: var(--space-3) 0.5rem;
-  background: color-mix(in srgb, var(--color-surface) 60%, var(--color-canvas));
-  border-right: 1px solid var(--color-line);
-}
-
-.dual-rail__button {
+.side-rail__button {
   display: grid;
   place-items: center;
   width: 2.5rem;
@@ -32,65 +22,108 @@
   background: transparent;
   color: var(--color-muted);
   cursor: pointer;
+  text-decoration: none;
   transition:
     background var(--duration-fast) ease,
-    color var(--duration-fast) ease,
-    transform var(--duration-mid) var(--ease-spring);
+    color var(--duration-fast) ease;
 }
 
-.dual-rail__button:hover {
+.side-rail__button:hover {
   background: var(--color-surface-hover);
   color: var(--color-ink);
 }
 
-.dual-rail__button--active {
+.side-rail__button--active {
   background: color-mix(in srgb, var(--color-ai) 18%, var(--color-surface));
   color: var(--color-ai);
 }
 
-.dual-rail__button:focus-visible {
+.side-rail__button:focus-visible {
   outline: none;
   box-shadow: var(--ring-focus);
 }
 
-.dual-rail__spacer {
+.side-rail__spacer {
   flex: 1;
 }
 
-.dual-rail__collapse-caret {
+.side-rail__caret {
   display: inline-block;
   font-size: 0.875rem;
-  transition: transform var(--duration-mid) var(--ease-spring);
+  line-height: 1;
 }
 
-.dual-rail__collapse-caret--closed {
-  transform: rotate(180deg);
+/* 设置/主题等需要把弹出菜单锚定到按钮的容器：建立定位上下文 */
+.side-rail__anchor {
+  position: relative;
+  display: grid;
+  place-items: center;
 }
 
-/* ---------- 详情栏（detail） ---------- */
+/* ---------- 收起态：图标 rail ---------- */
 
-.dual-detail {
+.side-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  width: 4rem;
+  height: 100%;
+  padding: var(--space-3) 0.5rem;
+}
+
+/* ---------- 展开态：完整侧栏 ---------- */
+
+.side-detail {
   position: relative;
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  overflow-y: auto;
-  transition: width var(--duration-mid) var(--ease-spring);
+  height: 100%;
 }
 
-.dual-detail__footer {
+/* 顶部按钮组：收起 / 搜索 / 新建会话（+ overlay 关闭） */
+.side-detail__top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.side-detail__top-spacer {
+  flex: 1;
+}
+
+.side-detail__search {
+  padding-bottom: var(--space-1);
+}
+
+.side-detail__section-title {
+  margin: var(--space-2) 0 0;
+  color: var(--color-muted);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+/* 底部：设置聚合菜单 + 主题口 */
+.side-detail__footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   margin-top: auto;
   padding-top: var(--space-2);
   border-top: 1px solid var(--color-line);
 }
 
-.dual-detail__settings {
+.side-detail__footer .side-rail__anchor {
+  display: block;
+}
+
+.side-detail__settings {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  width: 100%;
   padding: 0.5rem 0.625rem;
   border: none;
   border-radius: var(--radius-control);
@@ -105,27 +138,39 @@
     color var(--duration-fast) ease;
 }
 
-.dual-detail__settings:hover {
+.side-detail__settings:hover {
   background: var(--color-surface-hover);
   color: var(--color-ink);
 }
 
-.dual-detail__settings[aria-expanded="true"] {
+.side-detail__settings[aria-expanded="true"] {
   color: var(--color-ai);
 }
 
-.dual-detail__settings-menu {
+/* 设置聚合菜单：向上弹出（贴底部触发按钮上缘），fixed 脱离滚动容器 */
+.side-settings-menu {
+  position: absolute;
+  bottom: calc(100% + var(--space-1));
+  left: 0;
+  z-index: var(--z-popover);
   display: grid;
   gap: var(--space-1);
+  min-width: 11rem;
   padding: var(--space-2);
-  margin-top: var(--space-1);
   background: var(--color-surface);
   border: 1px solid var(--color-line);
   border-radius: var(--radius-button);
   box-shadow: var(--shadow-panel);
 }
 
-.dual-detail__settings-item {
+/* 收起态 rail 内：菜单改向按钮右侧弹出，避免超出窄 rail */
+.side-rail .side-settings-menu {
+  bottom: auto;
+  top: 0;
+  left: calc(100% + var(--space-1));
+}
+
+.side-settings-menu__item {
   display: block;
   width: 100%;
   padding: 0.375rem 0.5rem;
@@ -140,14 +185,14 @@
   cursor: pointer;
 }
 
-.dual-detail__settings-item:hover {
+.side-settings-menu__item:hover {
   background: var(--color-surface-hover);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .dual-rail__button,
-  .dual-rail__collapse-caret,
-  .dual-detail {
+  .side-drawer,
+  .side-rail__button,
+  .side-detail__settings {
     transition: none;
   }
 }

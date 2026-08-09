@@ -14,8 +14,10 @@ type ListState =
 
 /** 抽屉内的最近研究会话：项目 → 会话分组树，未分类兜底；变更操作后广播刷新。
  *  顶部工具栏提供「＋ 新建项目」与「选择」批量模式；选择模式下行首出现勾选框、
- *  组头可选整组，底部批量栏支持移动到 / 删除（软删进回收站）。 */
-export function SessionListPanel({ onNavigate }: { onNavigate?: () => void }) {
+ *  组头可选整组，底部批量栏支持移动到 / 删除（软删进回收站）。
+ *  searchQuery 非空时按标题过滤（不区分大小写），命中的会话保留其所在分组；
+ *  ⋯ 菜单用 fixed + 触发按钮锚点坐标定位，脱离滚动容器不漂移不被裁剪。 */
+export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery?: string; onNavigate?: () => void }) {
   const { api } = useServices();
   const [state, setState] = useState<ListState>({ kind: "loading" });
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -26,7 +28,9 @@ export function SessionListPanel({ onNavigate }: { onNavigate?: () => void }) {
       return {};
     }
   });
+  // ⋯ 菜单：menuFor 标记目标 id；anchor 为触发按钮的视口坐标，菜单 position:fixed 按此定位（不随滚动容器漂移/裁剪）。
   const [menuFor, setMenuFor] = useState<string | null>(null);
+  const [menuAnchor, setMenuAnchor] = useState<{ top: number; left: number } | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [creatingProject, setCreatingProject] = useState(false);
@@ -73,10 +77,53 @@ export function SessionListPanel({ onNavigate }: { onNavigate?: () => void }) {
     setCollapsed((prev) => ({ ...prev, [projectId]: !prev[projectId] }));
   };
 
+  // ── ⋯ 菜单开关：fixed 定位，记录触发按钮视口坐标 ──
+  const closeMenu = () => {
+    setMenuFor(null);
+    setMenuAnchor(null);
+  };
+
+  const openMenu = (target: string, event: React.MouseEvent<HTMLElement>) => {
+    if (menuFor === target) {
+      closeMenu();
+      return;
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    // 贴按钮下缘、右对齐按钮右缘；视口钳制在 CSS（max-height + 右侧 inset）兜底。
+    setMenuAnchor({ top: rect.bottom + 4, left: rect.right });
+    setMenuFor(target);
+  };
+
+  // 菜单打开期间滚动/resize 会使锚点失效：直接关闭，避免固定在旧坐标漂移。
+  useEffect(() => {
+    if (!menuFor) return;
+    const onScrollOrResize = () => closeMenu();
+    // capture=true 捕获侧栏滚动容器内的滚动（overflow 容器滚动不冒泡到 window）。
+    window.addEventListener("scroll", onScrollOrResize, true);
+    window.addEventListener("resize", onScrollOrResize);
+    return () => {
+      window.removeEventListener("scroll", onScrollOrResize, true);
+      window.removeEventListener("resize", onScrollOrResize);
+    };
+  }, [menuFor]);
+
+  // 菜单打开期间 Escape 关闭（不冒泡到侧栏抽屉的 Escape 收起）。
+  useEffect(() => {
+    if (!menuFor) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        closeMenu();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [menuFor]);
+
   const startRename = (target: string, currentName: string) => {
     setRenaming(target);
     setRenameValue(currentName);
-    setMenuFor(null);
+    closeMenu();
   };
 
   const commitRename = async (target: string) => {
@@ -118,7 +165,7 @@ export function SessionListPanel({ onNavigate }: { onNavigate?: () => void }) {
   const handleMove = async (sessionId: string, projectId: string | null) => {
     try {
       await api.updateResearchSession(sessionId, { projectId });
-      setMenuFor(null);
+      closeMenu();
       notifySessionsChanged();
     } catch {
       // 移动失败保持菜单
@@ -128,7 +175,7 @@ export function SessionListPanel({ onNavigate }: { onNavigate?: () => void }) {
   const handleToggleArchive = async (sessionId: string, status: "active" | "archived") => {
     try {
       await api.updateResearchSession(sessionId, { status });
-      setMenuFor(null);
+      closeMenu();
       notifySessionsChanged();
     } catch {
       // 归档切换失败保持菜单
@@ -139,7 +186,7 @@ export function SessionListPanel({ onNavigate }: { onNavigate?: () => void }) {
     if (!window.confirm("删除后会话将进入回收站，30 天内可恢复。确定删除吗？")) return;
     try {
       await api.trashResearchSession(sessionId);
-      setMenuFor(null);
+      closeMenu();
       notifySessionsChanged();
     } catch {
       // 删除失败保持菜单
@@ -150,7 +197,7 @@ export function SessionListPanel({ onNavigate }: { onNavigate?: () => void }) {
     if (!window.confirm("删除项目不会删除其中的会话，其下会话将回到未分类。确定删除吗？")) return;
     try {
       await api.deleteProject(projectId);
-      setMenuFor(null);
+      closeMenu();
       notifySessionsChanged();
     } catch {
       // 删除失败保持菜单
@@ -266,17 +313,25 @@ export function SessionListPanel({ onNavigate }: { onNavigate?: () => void }) {
     );
   }
 
+  // 搜索过滤：searchQuery 非空时按标题（不区分大小写）过滤会话，命中项保留其分组。
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const visibleSessions = normalizedQuery
+    ? state.sessions.filter((session) => session.title.toLowerCase().includes(normalizedQuery))
+    : state.sessions;
+
   const groups: Array<{ projectId: string | null; title: string; sessions: ResearchSessionRecord[] }> = [
     ...state.projects.map((project) => ({
       projectId: project.id,
       title: project.name,
-      sessions: state.sessions.filter((session) => session.projectId === project.id),
+      sessions: visibleSessions.filter((session) => session.projectId === project.id),
     })),
   ];
-  const unclassified = state.sessions.filter((session) => !session.projectId);
+  const unclassified = visibleSessions.filter((session) => !session.projectId);
   if (unclassified.length > 0) {
     groups.push({ projectId: null, title: "未分类", sessions: unclassified });
   }
+  // 搜索时只展示有命中会话的分组（无命中的空分组隐藏，减少噪音）。
+  const visibleGroups = normalizedQuery ? groups.filter((group) => group.sessions.length > 0) : groups;
 
   const renderInlineRename = (target: string) => (
     <div className="drawer__inline-rename">
@@ -299,10 +354,16 @@ export function SessionListPanel({ onNavigate }: { onNavigate?: () => void }) {
     </div>
   );
 
+  // fixed 菜单定位：top 为按钮下缘，right 使菜单右缘对齐按钮右缘（left = 按钮 right 坐标）。
+  // 视口钳制（不超出底部/右侧）由 CSS 的 max-height 与 inset 兜底；横向右对齐避免溢出右缘。
+  const menuStyle: React.CSSProperties | undefined = menuAnchor
+    ? { top: `${menuAnchor.top}px`, left: `${menuAnchor.left}px` }
+    : undefined;
+
   const renderSessionMenu = (session: ResearchSessionRecord) => (
     <>
-      <button type="button" className="session-menu__overlay" aria-label="关闭菜单" onClick={() => setMenuFor(null)} />
-      <div className="session-menu" role="menu" aria-label={`${session.title} 的操作`}>
+      <button type="button" className="session-menu__overlay" aria-label="关闭菜单" onClick={closeMenu} />
+      <div className="session-menu" role="menu" aria-label={`${session.title} 的操作`} style={menuStyle}>
         <button type="button" role="menuitem" className="session-menu__item" onClick={() => startRename(session.id, session.title)}>
           重命名
         </button>
@@ -349,8 +410,8 @@ export function SessionListPanel({ onNavigate }: { onNavigate?: () => void }) {
 
   const renderProjectMenu = (projectId: string, name: string) => (
     <>
-      <button type="button" className="session-menu__overlay" aria-label="关闭菜单" onClick={() => setMenuFor(null)} />
-      <div className="session-menu" role="menu" aria-label={`${name} 的操作`}>
+      <button type="button" className="session-menu__overlay" aria-label="关闭菜单" onClick={closeMenu} />
+      <div className="session-menu" role="menu" aria-label={`${name} 的操作`} style={menuStyle}>
         <button type="button" role="menuitem" className="session-menu__item" onClick={() => startRename(projectId, name)}>
           重命名
         </button>
@@ -405,7 +466,10 @@ export function SessionListPanel({ onNavigate }: { onNavigate?: () => void }) {
         </div>
       ) : null}
 
-      {groups.map((group) => {
+      {normalizedQuery && visibleGroups.length === 0 ? (
+        <p className="drawer__empty">没有标题包含「{searchQuery.trim()}」的会话。</p>
+      ) : null}
+      {visibleGroups.map((group) => {
         const isCollapsed = group.projectId !== null && collapsed[group.projectId] === true;
         const groupAllSelected = group.sessions.length > 0 && group.sessions.every((item) => selected.has(item.id));
         return (
@@ -450,7 +514,7 @@ export function SessionListPanel({ onNavigate }: { onNavigate?: () => void }) {
                   aria-label={`${group.title} 的菜单`}
                   aria-expanded={menuFor === group.projectId}
                   aria-haspopup="true"
-                  onClick={() => setMenuFor(menuFor === group.projectId ? null : group.projectId)}
+                  onClick={(event) => openMenu(group.projectId as string, event)}
                 >
                   ⋯
                 </button>
@@ -497,7 +561,7 @@ export function SessionListPanel({ onNavigate }: { onNavigate?: () => void }) {
                             aria-label={`${session.title} 的菜单`}
                             aria-expanded={menuFor === session.id}
                             aria-haspopup="true"
-                            onClick={() => setMenuFor(menuFor === session.id ? null : session.id)}
+                            onClick={(event) => openMenu(session.id, event)}
                           >
                             ⋯
                           </button>
