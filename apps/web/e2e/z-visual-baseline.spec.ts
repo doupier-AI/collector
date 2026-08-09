@@ -136,6 +136,22 @@ test.describe("#44 视觉回归基线", () => {
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
+  test("深色主题：深色工作台外壳 + 浅色阅读面像素基线（ADR-0017）", async ({ page }) => {
+    const issues = trackBrowserIssues(page);
+    freezeClock(page);
+    // 模拟深色：触发 tokens.css 深色令牌块（外壳近黑 + 芽绿强调），正文阅读面保持浅色
+    await page.emulateMedia({ colorScheme: "dark" });
+    await openSession(page);
+    await expect(page.locator(".slice-card")).toHaveCount(3);
+    await closeSidebars(page);
+
+    await expect(page).toHaveScreenshot("node-reading-dark", {
+      mask: dynamicTimeMasks(page),
+      maskColor: "#FFFFFF",
+    });
+    expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
+  });
+
   test("融合回溯落点：?fragment= 深链定位强调像素基线", async ({ page }) => {
     test.setTimeout(120_000);
     const issues = trackBrowserIssues(page);

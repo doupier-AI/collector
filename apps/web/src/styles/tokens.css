@@ -26,6 +26,11 @@
     -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
     "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
 
+  /* 衬线显示字（ADR-0017 手稿阅读面）：只用于节标题/会话标题等显示位，不用于正文，
+     保持长文阅读的黑体清晰；系统字体栈，零加载成本。 */
+  --font-serif:
+    "Songti SC", "STSong", "Noto Serif CJK SC", "Source Han Serif SC", "SimSun", serif;
+
   /* 字号与行高：正文 0.9375rem（阅读舒适）、元信息 0.875/0.8125rem、卡片标题 1.125rem */
   --font-size-xs: 0.75rem;
   --font-size-sm: 0.8125rem;
