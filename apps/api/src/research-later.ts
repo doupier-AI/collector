@@ -74,6 +74,13 @@ export class ResearchLaterService {
     return this.viewFor(next);
   }
 
+  /** 标记无回收站：删除即彻底移除；不存在时返回稳定 404。 */
+  async deleteItem(id: string): Promise<void> {
+    if (!(await this.store.deleteResearchLaterItem(id))) {
+      throw new ResearchLaterNotFoundError("Research later item not found");
+    }
+  }
+
   /** 列表联接：附带来源选区原文、来源标题与来源节点。 */
   private viewFor(item: ResearchLaterItemRecord): ResearchLaterItemView {
     const selection = this.store.getResearchSelection(item.selectionId);

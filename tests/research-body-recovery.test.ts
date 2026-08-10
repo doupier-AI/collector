@@ -18,7 +18,7 @@ test("restart recovery: persisted body versions/fragments survive, backfill stay
   // 第一阶段：服务启动并完成一次生成（真实路径落版本+片段）。
   let store = new SqliteStore(dbPath);
   await store.init();
-  await store.createResearchSession({ id: "session-1", title: "T", status: "active", createdAt: NOW, updatedAt: NOW }, "k-s");
+  await store.createResearchSession({ id: "session-1", title: "T", status: "active", isFavorite: false, createdAt: NOW, updatedAt: NOW }, "k-s");
   await store.createResearchNode({ id: "node-1", sessionId: "session-1", status: "active", createdAt: NOW, updatedAt: NOW }, "k-n");
   const provider = {
     provider: "fake", model: "fake-1", promptVersion: "test",
@@ -61,7 +61,7 @@ test("interrupted generation is recoverable and backfill self-heals a completed 
   const dbPath = join(root, "collector.sqlite");
   let store = new SqliteStore(dbPath);
   await store.init();
-  await store.createResearchSession({ id: "session-1", title: "T", status: "active", createdAt: NOW, updatedAt: NOW }, "k-s");
+  await store.createResearchSession({ id: "session-1", title: "T", status: "active", isFavorite: false, createdAt: NOW, updatedAt: NOW }, "k-s");
   await store.createResearchNode({ id: "node-1", sessionId: "session-1", status: "active", createdAt: NOW, updatedAt: NOW }, "k-n");
   // 模拟一条"历史遗留"：已完成但无版本（如旧版本写入，或回填前状态）。
   const db = (store as unknown as { db(): import("node:sqlite").DatabaseSync }).db();

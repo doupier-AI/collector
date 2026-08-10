@@ -22,7 +22,7 @@ async function createHarness() {
     autoRunRecentOrganization: false,
     autoRunResearchTasks: false,
   });
-  await store.createResearchSession({ id: "session-1", title: "T", status: "active", createdAt: NOW, updatedAt: NOW }, "k-s");
+  await store.createResearchSession({ id: "session-1", title: "T", status: "active", isFavorite: false, createdAt: NOW, updatedAt: NOW }, "k-s");
   await store.createResearchNode({ id: "node-1", sessionId: "session-1", status: "active", createdAt: NOW, updatedAt: NOW }, "k-n");
   const db = (store as unknown as { db(): import("node:sqlite").DatabaseSync }).db();
   const message: ResearchMessageRecord = { id: "msg-1", sessionId: "session-1", nodeId: "node-1", role: "assistant", content: CONTENT, status: "completed", createdAt: NOW, updatedAt: NOW };

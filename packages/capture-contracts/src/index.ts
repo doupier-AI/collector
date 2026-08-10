@@ -690,6 +690,8 @@ export interface ResearchSessionRecord {
   id: string;
   title: string;
   status: "active" | "archived";
+  /** 用户收藏；收藏会话在客户端列表中置顶，不改变归档或回收站语义。 */
+  isFavorite: boolean;
   /** 由选区开启的独立研究会话保留来源选区与来源会话，用于来源返回。 */
   originSelectionId?: string;
   originSessionId?: string;
@@ -720,6 +722,7 @@ export interface ResearchSessionUpdateInput {
   /** null 表示移回未分类。 */
   projectId?: string | null;
   status?: "active" | "archived";
+  isFavorite?: boolean;
 }
 
 /**
@@ -1299,7 +1302,7 @@ export function validateProjectInput(value: unknown): asserts value is ProjectIn
 
 export function validateResearchSessionUpdateInput(value: unknown): asserts value is ResearchSessionUpdateInput {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Research session update must be an object");
-  const input = value as { title?: unknown; projectId?: unknown; status?: unknown };
+  const input = value as { title?: unknown; projectId?: unknown; status?: unknown; isFavorite?: unknown };
   if (input.title !== undefined) {
     if (typeof input.title !== "string" || !input.title.trim()) throw new Error("title must contain 1 to 40 characters");
     if (input.title.trim().length > RESEARCH_TITLE_MAX_CHARACTERS) throw new Error(`title must not exceed ${RESEARCH_TITLE_MAX_CHARACTERS} characters`);
@@ -1310,8 +1313,11 @@ export function validateResearchSessionUpdateInput(value: unknown): asserts valu
   if (input.status !== undefined && input.status !== "active" && input.status !== "archived") {
     throw new Error('status must be "active" or "archived"');
   }
-  if (input.title === undefined && input.projectId === undefined && input.status === undefined) {
-    throw new Error("At least one of title, projectId, or status is required");
+  if (input.isFavorite !== undefined && typeof input.isFavorite !== "boolean") {
+    throw new Error("isFavorite must be a boolean");
+  }
+  if (input.title === undefined && input.projectId === undefined && input.status === undefined && input.isFavorite === undefined) {
+    throw new Error("At least one of title, projectId, status, or isFavorite is required");
   }
 }
 

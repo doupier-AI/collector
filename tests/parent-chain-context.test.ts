@@ -36,7 +36,7 @@ async function createStore() {
 
 function makeSession(id?: string, title = "测试会话"): ResearchSessionRecord {
   const sid = id ?? randomUUID();
-  return { id: sid, title, status: "active", createdAt: NOW, updatedAt: NOW };
+  return { id: sid, title, status: "active", isFavorite: false, createdAt: NOW, updatedAt: NOW };
 }
 
 function makeNode(
@@ -310,7 +310,7 @@ test("cycle detection: broken parentNodeId loop", async () => {
   };
   const mockStore: ParentChainContextStore = {
     getResearchNode: (id) => nodes[id],
-    getResearchSession: () => ({ id: "S", title: "循环会话", status: "active", createdAt: NOW, updatedAt: NOW }),
+    getResearchSession: () => ({ id: "S", title: "循环会话", status: "active", isFavorite: false, createdAt: NOW, updatedAt: NOW }),
     getResearchSelection: () => undefined,
     listResearchMessagesByNode: () => [],
   };

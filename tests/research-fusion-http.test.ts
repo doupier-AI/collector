@@ -43,7 +43,7 @@ async function createHarness(options?: { similarityVerifier?: SimilarityVerifica
     } as never,
   });
   const now = "2026-08-02T00:00:00.000Z";
-  const session: ResearchSessionRecord = { id: "session-1", title: "相似性 HTTP", status: "active", createdAt: now, updatedAt: now };
+  const session: ResearchSessionRecord = { id: "session-1", title: "相似性 HTTP", status: "active", isFavorite: false, createdAt: now, updatedAt: now };
   await store.createResearchSession(session, "session-key");
   const nodes: ResearchNodeRecord[] = [
     { id: "node-b", sessionId: session.id, parentNodeId: session.id, status: "active", createdAt: now, updatedAt: now },

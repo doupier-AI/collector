@@ -15,7 +15,7 @@ async function createStore() {
 
 async function seedNode(store: SqliteStore) {
   const now = new Date().toISOString();
-  const session = { id: "session-1", title: "Test", status: "active" as const, createdAt: now, updatedAt: now };
+  const session = { id: "session-1", title: "Test", status: "active" as const, isFavorite: false, createdAt: now, updatedAt: now };
   await store.createResearchSession(session, "session-key");
   const node = { id: "node-1", sessionId: "session-1", status: "active" as const, createdAt: now, updatedAt: now };
   await store.createResearchNode(node, "node-key");

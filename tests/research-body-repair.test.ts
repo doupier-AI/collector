@@ -52,7 +52,7 @@ async function makeService(t: test.TestContext, provider: Record<string, unknown
   t.after(() => rm(root, { recursive: true, force: true }));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  await store.createResearchSession({ id: "session-1", title: "T", status: "active", createdAt: NOW, updatedAt: NOW }, "k-s");
+  await store.createResearchSession({ id: "session-1", title: "T", status: "active", isFavorite: false, createdAt: NOW, updatedAt: NOW }, "k-s");
   await store.createResearchNode({ id: "node-1", sessionId: "session-1", status: "active", createdAt: NOW, updatedAt: NOW }, "k-n");
   const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, {
     autoRunRecentOrganization: false,

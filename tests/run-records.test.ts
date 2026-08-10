@@ -70,6 +70,7 @@ async function seedSession(store: SqliteStore): Promise<ResearchSessionRecord> {
     id: "session-run-records",
     title: "运行记录测试会话",
     status: "active",
+    isFavorite: false,
     createdAt: "2026-07-31T00:00:00.000Z",
     updatedAt: "2026-07-31T00:00:00.000Z",
   };

@@ -212,6 +212,7 @@ export class ResearchSessionService {
       id: randomUUID(),
       title: title?.trim() || DEFAULT_RESEARCH_SESSION_TITLE,
       status: "active",
+      isFavorite: false,
       createdAt: now,
       updatedAt: now,
     };
@@ -248,10 +249,10 @@ export class ResearchSessionService {
     };
   }
 
-  /** 会话管理：部分更新（title/projectId/status）。回收站会话仅允许恢复相关变更，其余 409。 */
+  /** 会话管理：部分更新（title/projectId/status/isFavorite）。回收站会话仅允许恢复相关变更，其余 409。 */
   async updateSession(
     sessionId: string,
-    patch: { title?: string; projectId?: string | null; status?: "active" | "archived" },
+    patch: { title?: string; projectId?: string | null; status?: "active" | "archived"; isFavorite?: boolean },
   ): Promise<ResearchSessionRecord> {
     const session = this.store.getResearchSession(sessionId);
     if (!session) throw new ResearchNotFoundError("Research session not found");

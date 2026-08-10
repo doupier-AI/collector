@@ -139,6 +139,8 @@ export interface ApiClient {
   listResearchLaterItems(status?: ResearchLaterItemStatus): Promise<ResearchLaterItemView[]>;
   getResearchLaterItem(itemId: string): Promise<ResearchLaterItemView>;
   updateResearchLaterItem(itemId: string, update: ResearchLaterItemUpdate): Promise<ResearchLaterItemView>;
+  /** 标记无回收站：删除成功后不可恢复。 */
+  deleteResearchLaterItem(itemId: string): Promise<void>;
   getAiConfiguration(): Promise<AiConfigurationView>;
   getProviderCatalog(): Promise<ProviderDefinition[]>;
   listProviderProfiles(): Promise<ProviderProfile[]>;
@@ -573,6 +575,11 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
         method: "PUT",
         headers: JSON_HEADERS,
         body: JSON.stringify(update),
+      });
+    },
+    deleteResearchLaterItem(itemId: string) {
+      return requestJson<void>(fetchFn, `/v1/research-later-items/${encodeURIComponent(itemId)}`, {
+        method: "DELETE",
       });
     },
     retryResearchTask(taskId: string) {

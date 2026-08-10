@@ -39,7 +39,7 @@ async function createHarness() {
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
   const now = "2026-08-02T00:00:00.000Z";
-  const session: ResearchSessionRecord = { id: "session-1", title: "融合提议", status: "active", createdAt: now, updatedAt: now };
+  const session: ResearchSessionRecord = { id: "session-1", title: "融合提议", status: "active", isFavorite: false, createdAt: now, updatedAt: now };
   await store.createResearchSession(session, "session-key");
   const nodes: ResearchNodeRecord[] = [
     { id: "node-a", sessionId: session.id, status: "active", createdAt: now, updatedAt: now },
@@ -410,7 +410,7 @@ async function createFusionHarness(options?: { similarityVerifier?: SimilarityVe
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
   const now = "2026-08-02T00:00:00.000Z";
-  const session: ResearchSessionRecord = { id: "session-1", title: "融合节点", status: "active", createdAt: now, updatedAt: now };
+  const session: ResearchSessionRecord = { id: "session-1", title: "融合节点", status: "active", isFavorite: false, createdAt: now, updatedAt: now };
   await store.createResearchSession(session, "session-key");
   const nodes: ResearchNodeRecord[] = [
     { id: "node-a", sessionId: session.id, status: "active", createdAt: now, updatedAt: now },

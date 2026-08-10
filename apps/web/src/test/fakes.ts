@@ -87,6 +87,7 @@ export function makeSession(overrides: Partial<ResearchSessionRecord> = {}): Res
     id: `session-${sequence}`,
     title: `研究会话 ${sequence}`,
     status: "active",
+    isFavorite: false,
     createdAt: "2026-07-17T08:00:00.000Z",
     updatedAt: "2026-07-17T08:01:00.000Z",
     ...overrides,

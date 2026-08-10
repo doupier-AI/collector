@@ -24,7 +24,7 @@ async function createStore() {
 
 async function seedNode(store: SqliteStore, messageId = "msg-1") {
   const now = NOW;
-  await store.createResearchSession({ id: "session-1", title: "T", status: "active", createdAt: now, updatedAt: now }, "k-" + messageId + "-s");
+  await store.createResearchSession({ id: "session-1", title: "T", status: "active", isFavorite: false, createdAt: now, updatedAt: now }, "k-" + messageId + "-s");
   await store.createResearchNode({ id: "node-1", sessionId: "session-1", status: "active", createdAt: now, updatedAt: now }, "k-" + messageId + "-n");
   const message = { id: messageId, sessionId: "session-1", nodeId: "node-1", role: "assistant" as const, content: CONTENT, status: "completed" as const, createdAt: now, updatedAt: now };
   (store as unknown as { db(): import("node:sqlite").DatabaseSync }).db().prepare(

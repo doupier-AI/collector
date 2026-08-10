@@ -45,7 +45,7 @@ async function createHarness(provider: Record<string, unknown>) {
     autoRunRecentOrganization: false,
     researchProvider: provider as never,
   });
-  await store.createResearchSession({ id: "session-1", title: "T", status: "active", createdAt: NOW, updatedAt: NOW }, "k-s");
+  await store.createResearchSession({ id: "session-1", title: "T", status: "active", isFavorite: false, createdAt: NOW, updatedAt: NOW }, "k-s");
   await store.createResearchNode({ id: "node-1", sessionId: "session-1", status: "active", createdAt: NOW, updatedAt: NOW }, "k-n");
   const server = createApiServer(service, auth);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

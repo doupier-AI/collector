@@ -127,7 +127,7 @@ ADR-0021（2026-08-10，左侧栏常驻化，amends ADR-0020 的「侧栏可整�
 - `?sel=<selectionId>` 恢复高亮和浮动胶囊，但不得自动进入引用态；
 - 精确锚点失效时使用 exact、prefix/suffix 和粗粒度位置降级，始终保留已保存原文。
 
-标记列表显示选区摘要、笔记、来源节点和时间。旧“稍后再学”的星级、AI 概括和待学 / 完成切换不再显示。
+标记列表显示选区摘要、笔记、来源节点和时间。旧“稍后再学”的星级、AI 概括和待学 / 完成切换不再显示。#57 起标记可经 `DELETE /v1/research-later-items/:id` 彻底删除（无回收站），不存在返回稳定 404；Web API 客户端提供同名删除能力，界面入口归 #56。
 
 ### 4.5 研究地图：专注与关联模式
 
@@ -206,6 +206,8 @@ AI 返回的行内引用使用经过净化的来源记录。外部链接明确�
 - 同源 `/v1/...` 请求；
 - Bearer 或 HttpOnly `collector_session` Cookie 认证；
 - `Idempotency-Key`、输入上限和稳定错误码；
+- 会话 `ResearchSessionRecord.isFavorite` 为正式布尔字段（默认 false），`PATCH /v1/research-sessions/:id` 接受 `isFavorite`，列表与详情均返回；该字段只表达收藏，不改变归档/回收站语义；
+- `DELETE /v1/research-later-items/:id` 在本机认证后彻底删除单条标记，成功返回 `{ deleted: true }`，不存在返回 `not_found`；
 - SSE 的事件游标、去重、退避重连、终态确认和连接关闭；
 - 上传任务的取消、失败重试、刷新和重启恢复；
 - 可重试模型错误与不可重试输入 / 安全错误；

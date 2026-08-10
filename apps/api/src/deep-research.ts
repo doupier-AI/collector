@@ -82,6 +82,7 @@ export class DeepResearchService {
         id: randomUUID(),
         title: input.title?.trim() || deriveDefaultResearchTitle(selection.text),
         status: "active",
+        isFavorite: false,
         originSelectionId: selection.id,
         originSessionId: selection.sessionId,
         createdAt: now,

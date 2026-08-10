@@ -27,7 +27,9 @@ test("validateResearchSessionUpdateInput accepts any single field and combinatio
   assert.doesNotThrow(() => validateResearchSessionUpdateInput({ projectId: null }));
   assert.doesNotThrow(() => validateResearchSessionUpdateInput({ status: "archived" }));
   assert.doesNotThrow(() => validateResearchSessionUpdateInput({ status: "active" }));
-  assert.doesNotThrow(() => validateResearchSessionUpdateInput({ title: "新标题", projectId: "p", status: "archived" }));
+  assert.doesNotThrow(() => validateResearchSessionUpdateInput({ isFavorite: true }));
+  assert.doesNotThrow(() => validateResearchSessionUpdateInput({ isFavorite: false }));
+  assert.doesNotThrow(() => validateResearchSessionUpdateInput({ title: "新标题", projectId: "p", status: "archived", isFavorite: true }));
 });
 
 test("validateResearchSessionUpdateInput rejects malformed updates", () => {
@@ -41,4 +43,5 @@ test("validateResearchSessionUpdateInput rejects malformed updates", () => {
   assert.throws(() => validateResearchSessionUpdateInput({ projectId: 42 }), /projectId/);
   assert.throws(() => validateResearchSessionUpdateInput({ status: "deleted" }), /status/);
   assert.throws(() => validateResearchSessionUpdateInput({ status: "paused" }), /status/);
+  assert.throws(() => validateResearchSessionUpdateInput({ isFavorite: "true" }), /isFavorite/);
 });

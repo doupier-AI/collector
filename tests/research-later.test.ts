@@ -60,6 +60,10 @@ async function putJson(base: string, token: string, path: string, body: unknown)
   return fetch(`${base}${path}`, { method: "PUT", headers: headers(token), body: JSON.stringify(body) });
 }
 
+async function deleteJson(base: string, token: string, path: string) {
+  return fetch(`${base}${path}`, { method: "DELETE", headers: headers(token) });
+}
+
 async function createSessionWithAnswer(harness: Awaited<ReturnType<typeof createHarness>>) {
   const sessionResponse = await postJson(harness.base, harness.token, "/v1/research-sessions", {}, randomUUID());
   assert.equal(sessionResponse.status, 201);
@@ -80,7 +84,7 @@ async function createSessionWithAnswer(harness: Awaited<ReturnType<typeof create
     promptVersion: "research-chat-v1", createdAt: now, updatedAt: now, completedAt: now,
   };
   await harness.store.createResearchTurn(
-    { id: session.id, title: SESSION_TITLE, status: "active", createdAt: now, updatedAt: now },
+    { id: session.id, title: SESSION_TITLE, status: "active", isFavorite: false, createdAt: now, updatedAt: now },
     userMessage, assistantMessage, task,
   );
   return { session, assistantMessage };
@@ -291,6 +295,26 @@ test("mark flow: create without note, add a note, then clear it back to a pure m
 
   // 超长笔记被拒绝
   assert.equal((await putJson(harness.base, harness.token, `/v1/research-later-items/${created.item.id}`, { note: "x".repeat(2_001) })).status, 400);
+});
+
+test("deletes a mark permanently with stable auth and not-found responses", async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.close());
+  const { session, assistantMessage } = await createSessionWithAnswer(harness);
+  const selection = await createSelectionOn(harness, session.id, anchorForSelection(assistantMessage.id, 1, "实践建议"));
+  const created = await (await postJson(harness.base, harness.token, "/v1/research-later-items", { selectionId: selection.selection.id }, randomUUID())).json() as LaterView;
+
+  const unauthorized = await fetch(`${harness.base}/v1/research-later-items/${created.item.id}`, { method: "DELETE" });
+  assert.equal(unauthorized.status, 401);
+  assert.ok(harness.store.getResearchLaterItem(created.item.id));
+
+  const deleted = await deleteJson(harness.base, harness.token, `/v1/research-later-items/${created.item.id}`);
+  assert.equal(deleted.status, 200);
+  assert.deepEqual(await deleted.json(), { deleted: true });
+  assert.equal(harness.store.getResearchLaterItem(created.item.id), undefined);
+
+  assert.equal((await deleteJson(harness.base, harness.token, `/v1/research-later-items/${created.item.id}`)).status, 404);
+  assert.equal((await deleteJson(harness.base, harness.token, `/v1/research-later-items/${randomUUID()}`)).status, 404);
 });
 
 test("validation rejects malformed requests and unknown references", async (t) => {

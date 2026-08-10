@@ -109,7 +109,7 @@ async function createSessionWithAnswer(harness: Awaited<ReturnType<typeof create
     promptVersion: "research-chat-v1", createdAt: now, updatedAt: now, completedAt: now,
   };
   await harness.store.createResearchTurn(
-    { id: session.id, title: SESSION_TITLE, status: "active", createdAt: now, updatedAt: now },
+    { id: session.id, title: SESSION_TITLE, status: "active", isFavorite: false, createdAt: now, updatedAt: now },
     userMessage, assistantMessage, task,
   );
   return { session, userMessage, assistantMessage };
@@ -656,7 +656,7 @@ test("demo research provider returns flagged deterministic deep research content
   const now = new Date().toISOString();
   let content = "";
   for await (const delta of provider.generate({
-    session: { id: "session-1", title: "演示会话", status: "active", createdAt: now, updatedAt: now },
+    session: { id: "session-1", title: "演示会话", status: "active", isFavorite: false, createdAt: now, updatedAt: now },
     messages: [{ role: "user", content: "深入研究这段内容：“选区原文”" }],
     taskId: randomUUID(),
     deepResearch: { mode: "branch", selectionText: "选区原文" },
@@ -667,7 +667,7 @@ test("demo research provider returns flagged deterministic deep research content
 
   let sessionContent = "";
   for await (const delta of provider.generate({
-    session: { id: "session-2", title: "演示会话", status: "active", createdAt: now, updatedAt: now },
+    session: { id: "session-2", title: "演示会话", status: "active", isFavorite: false, createdAt: now, updatedAt: now },
     messages: [{ role: "user", content: "研究方向" }],
     taskId: randomUUID(),
     deepResearch: { mode: "session", selectionText: "一段更长的选区原文内容用于演示截断" },

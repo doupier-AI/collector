@@ -37,7 +37,7 @@ test("startup backfill derives body versions for completed assistant messages wi
   const harness = await createStore();
   t.after(() => harness.close());
   const { store } = harness;
-  await store.createResearchSession({ id: "session-1", title: "T", status: "active", createdAt: NOW, updatedAt: NOW }, "k-s");
+  await store.createResearchSession({ id: "session-1", title: "T", status: "active", isFavorite: false, createdAt: NOW, updatedAt: NOW }, "k-s");
   await store.createResearchNode({ id: "node-1", sessionId: "session-1", status: "active", createdAt: NOW, updatedAt: NOW }, "k-n");
   seedMessage(store, "msg-formal");
   formalSlices(store, "msg-formal");
@@ -68,7 +68,7 @@ test("backfill is idempotent — repeated runs create no duplicates and same ids
   const harness = await createStore();
   t.after(() => harness.close());
   const { store } = harness;
-  await store.createResearchSession({ id: "session-1", title: "T", status: "active", createdAt: NOW, updatedAt: NOW }, "k-s");
+  await store.createResearchSession({ id: "session-1", title: "T", status: "active", isFavorite: false, createdAt: NOW, updatedAt: NOW }, "k-s");
   await store.createResearchNode({ id: "node-1", sessionId: "session-1", status: "active", createdAt: NOW, updatedAt: NOW }, "k-n");
   seedMessage(store, "msg-1");
   const service = new CaptureService(store, join(await mkdtemp(join(tmpdir(), "collector-bodyver-art-")), "artifacts"), undefined, undefined, { autoRunRecentOrganization: false, autoRunResearchTasks: false });
@@ -87,7 +87,7 @@ test("getResearchNodeView returns slices and bodyVersions together (coexistence)
   const harness = await createStore();
   t.after(() => harness.close());
   const { store } = harness;
-  await store.createResearchSession({ id: "session-1", title: "T", status: "active", createdAt: NOW, updatedAt: NOW }, "k-s");
+  await store.createResearchSession({ id: "session-1", title: "T", status: "active", isFavorite: false, createdAt: NOW, updatedAt: NOW }, "k-s");
   await store.createResearchNode({ id: "node-1", sessionId: "session-1", status: "active", createdAt: NOW, updatedAt: NOW }, "k-n");
   seedMessage(store, "msg-1");
   formalSlices(store, "msg-1");
@@ -105,7 +105,7 @@ test("generation path persists body version + formal fragments on task completio
   const harness = await createStore();
   t.after(() => harness.close());
   const { store } = harness;
-  await store.createResearchSession({ id: "session-1", title: "T", status: "active", createdAt: NOW, updatedAt: NOW }, "k-s");
+  await store.createResearchSession({ id: "session-1", title: "T", status: "active", isFavorite: false, createdAt: NOW, updatedAt: NOW }, "k-s");
   await store.createResearchNode({ id: "node-1", sessionId: "session-1", status: "active", createdAt: NOW, updatedAt: NOW }, "k-n");
 
   // 确定性 provider：产出三段自由正文，正式切片/片段由服务层按段落块确定性派生。

@@ -15,6 +15,7 @@ test("MVP demo provider returns a deterministic and permanently disclosed local 
       id: "session-demo",
       title: "演示研究",
       status: "active" as const,
+      isFavorite: false,
       createdAt: "2026-07-20T00:00:00.000Z",
       updatedAt: "2026-07-20T00:00:00.000Z",
     },

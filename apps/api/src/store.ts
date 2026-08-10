@@ -39,6 +39,7 @@ export interface ResearchLaterStore {
   listResearchLaterItems(status?: ResearchLaterItemStatus): ResearchLaterItemRecord[];
   createResearchLaterItem(item: ResearchLaterItemRecord, idempotencyKey: string): Promise<ResearchLaterItemRecord>;
   saveResearchLaterItem(record: ResearchLaterItemRecord): Promise<void>;
+  deleteResearchLaterItem(id: string): Promise<boolean>;
   getResearchSelection(id: string): ResearchSelectionRecord | undefined;
   getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined;
   getResearchSession(id: string): ResearchSessionRecord | undefined;
@@ -100,8 +101,8 @@ export interface ResearchStore {
   /** 会话自动标题：更新会话标题；返回更新后的会话记录。 */
   updateResearchSessionTitle(sessionId: string, title: string): Promise<ResearchSessionRecord | undefined>;
   listResearchSessions(): ResearchSessionRecord[];
-  /** 会话管理：部分更新（title/projectId/status）；title 变更置 titleEdited。 */
-  updateResearchSession(sessionId: string, patch: { title?: string; projectId?: string | null; status?: "active" | "archived" }): Promise<ResearchSessionRecord | undefined>;
+  /** 会话管理：部分更新（title/projectId/status/isFavorite）；title 变更置 titleEdited。 */
+  updateResearchSession(sessionId: string, patch: { title?: string; projectId?: string | null; status?: "active" | "archived"; isFavorite?: boolean }): Promise<ResearchSessionRecord | undefined>;
   /** 会话管理：软删除（回收站），trashedAt 已置位时返回 false。 */
   trashResearchSession(id: string, trashedAt: string): Promise<boolean>;
   restoreResearchSession(id: string): Promise<boolean>;
@@ -345,7 +346,7 @@ export interface CollectorStore
   createResearchSession(record: ResearchSessionRecord, idempotencyKey: string): Promise<ResearchSessionRecord>;
   getResearchSession(id: string): ResearchSessionRecord | undefined;
   listResearchSessions(): ResearchSessionRecord[];
-  updateResearchSession(sessionId: string, patch: { title?: string; projectId?: string | null; status?: "active" | "archived" }): Promise<ResearchSessionRecord | undefined>;
+  updateResearchSession(sessionId: string, patch: { title?: string; projectId?: string | null; status?: "active" | "archived"; isFavorite?: boolean }): Promise<ResearchSessionRecord | undefined>;
   trashResearchSession(id: string, trashedAt: string): Promise<boolean>;
   restoreResearchSession(id: string): Promise<boolean>;
   deleteResearchSession(id: string): Promise<boolean>;
@@ -413,6 +414,7 @@ export interface CollectorStore
   listResearchLaterItems(status?: ResearchLaterItemStatus): ResearchLaterItemRecord[];
   createResearchLaterItem(item: ResearchLaterItemRecord, idempotencyKey: string): Promise<ResearchLaterItemRecord>;
   saveResearchLaterItem(record: ResearchLaterItemRecord): Promise<void>;
+  deleteResearchLaterItem(id: string): Promise<boolean>;
   saveResearchGroundingResult(result: ResearchGroundingResult): Promise<void>;
   getResearchGroundingRun(id: string): ResearchGroundingRunRecord | undefined;
   listResearchGroundingRuns(taskId: string): ResearchGroundingRunRecord[];
@@ -1112,10 +1114,10 @@ export class SqliteStore implements CollectorStore {
   }
 
   async saveResearchSession(record: ResearchSessionRecord): Promise<void> {
-    this.db().prepare(`INSERT INTO research_sessions (id, status, created_at, updated_at, project_id, record_json)
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at, project_id=excluded.project_id, record_json=excluded.record_json`)
-      .run(record.id, record.status, record.createdAt, record.updatedAt, record.projectId ?? null, JSON.stringify(record));
+    this.db().prepare(`INSERT INTO research_sessions (id, status, created_at, updated_at, project_id, is_favorite, record_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at, project_id=excluded.project_id, is_favorite=excluded.is_favorite, record_json=excluded.record_json`)
+      .run(record.id, record.status, record.createdAt, record.updatedAt, record.projectId ?? null, record.isFavorite ? 1 : 0, JSON.stringify(record));
   }
 
   async createResearchSession(record: ResearchSessionRecord, idempotencyKey: string): Promise<ResearchSessionRecord> {
@@ -1129,9 +1131,9 @@ export class SqliteStore implements CollectorStore {
         created = existing;
         return;
       }
-      this.db().prepare(`INSERT INTO research_sessions (id, status, created_at, updated_at, creation_idempotency_key, project_id, record_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?)`)
-        .run(record.id, record.status, record.createdAt, record.updatedAt, idempotencyKey, record.projectId ?? null, JSON.stringify(record));
+      this.db().prepare(`INSERT INTO research_sessions (id, status, created_at, updated_at, creation_idempotency_key, project_id, is_favorite, record_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(record.id, record.status, record.createdAt, record.updatedAt, idempotencyKey, record.projectId ?? null, record.isFavorite ? 1 : 0, JSON.stringify(record));
       const nodeRecord: ResearchNodeRecord = {
         id: record.id,
         sessionId: record.id,
@@ -1177,7 +1179,7 @@ export class SqliteStore implements CollectorStore {
 
   async updateResearchSession(
     sessionId: string,
-    patch: { title?: string; projectId?: string | null; status?: "active" | "archived" },
+    patch: { title?: string; projectId?: string | null; status?: "active" | "archived"; isFavorite?: boolean },
   ): Promise<ResearchSessionRecord | undefined> {
     const session = this.getResearchSession(sessionId);
     if (!session) return undefined;
@@ -1191,8 +1193,9 @@ export class SqliteStore implements CollectorStore {
     }
     if (patch.projectId !== undefined) updated.projectId = patch.projectId ?? undefined;
     if (patch.status !== undefined) updated.status = patch.status;
-    this.db().prepare("UPDATE research_sessions SET updated_at = ?, project_id = ?, record_json = ? WHERE id = ?")
-      .run(updated.updatedAt, updated.projectId ?? null, JSON.stringify(updated), sessionId);
+    if (patch.isFavorite !== undefined) updated.isFavorite = patch.isFavorite;
+    this.db().prepare("UPDATE research_sessions SET updated_at = ?, project_id = ?, is_favorite = ?, record_json = ? WHERE id = ?")
+      .run(updated.updatedAt, updated.projectId ?? null, updated.isFavorite ? 1 : 0, JSON.stringify(updated), sessionId);
     return updated;
   }
 
@@ -2212,8 +2215,8 @@ export class SqliteStore implements CollectorStore {
       if (!session.originSelectionId) throw new Error("Origin research session requires a source selection");
       const selection = this.getResearchSelection(session.originSelectionId);
       if (!selection) throw new Error("Research selection not found");
-      this.db().prepare("INSERT INTO research_sessions (id, status, created_at, updated_at, creation_idempotency_key, origin_selection_id, origin_session_id, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(session.id, session.status, session.createdAt, session.updatedAt, task.idempotencyKey, session.originSelectionId, session.originSessionId ?? null, JSON.stringify(session));
+      this.db().prepare("INSERT INTO research_sessions (id, status, created_at, updated_at, creation_idempotency_key, origin_selection_id, origin_session_id, is_favorite, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(session.id, session.status, session.createdAt, session.updatedAt, task.idempotencyKey, session.originSelectionId, session.originSessionId ?? null, session.isFavorite ? 1 : 0, JSON.stringify(session));
       const nodeRecord: ResearchNodeRecord = {
         id: session.id,
         sessionId: session.id,
@@ -2334,6 +2337,10 @@ export class SqliteStore implements CollectorStore {
   async saveResearchLaterItem(record: ResearchLaterItemRecord): Promise<void> {
     this.db().prepare("UPDATE research_later_items SET status = ?, priority = ?, note = ?, updated_at = ?, record_json = ? WHERE id = ?")
       .run(record.status, record.priority, record.note ?? null, record.updatedAt, JSON.stringify(record), record.id);
+  }
+
+  async deleteResearchLaterItem(id: string): Promise<boolean> {
+    return this.db().prepare("DELETE FROM research_later_items WHERE id = ?").run(id).changes === 1;
   }
 
   async saveResearchGroundingResult(result: ResearchGroundingResult): Promise<void> {
@@ -3495,6 +3502,18 @@ export class SqliteStore implements CollectorStore {
       version = 33;
     }
 
+    if (version < 34) {
+      // 会话收藏：独立布尔列用于稳定持久化；record_json 同步回填正式默认值 false。
+      this.transaction(() => {
+        this.db().exec(`
+          ALTER TABLE research_sessions ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0 CHECK (is_favorite IN (0, 1));
+          UPDATE research_sessions SET record_json = json_set(record_json, '$.isFavorite', json('false'));
+          INSERT INTO schema_migrations(version, applied_at) VALUES (34, datetime('now'));
+        `);
+      });
+      version = 34;
+    }
+
   }
 
   private async migrateLegacyProviderProfile(): Promise<void> {
@@ -3764,7 +3783,7 @@ export class JsonStore implements CollectorStore {
   getResearchSession(_id: string): ResearchSessionRecord | undefined { return undefined; }
   async updateResearchSessionTitle(_sessionId: string, _title: string): Promise<ResearchSessionRecord | undefined> { throw new Error("Research sessions require SQLite persistence"); }
   listResearchSessions(): ResearchSessionRecord[] { return []; }
-  async updateResearchSession(_sessionId: string, _patch: { title?: string; projectId?: string | null; status?: "active" | "archived" }): Promise<ResearchSessionRecord | undefined> { throw new Error("Research sessions require SQLite persistence"); }
+  async updateResearchSession(_sessionId: string, _patch: { title?: string; projectId?: string | null; status?: "active" | "archived"; isFavorite?: boolean }): Promise<ResearchSessionRecord | undefined> { throw new Error("Research sessions require SQLite persistence"); }
   async trashResearchSession(_id: string, _trashedAt: string): Promise<boolean> { throw new Error("Research sessions require SQLite persistence"); }
   async restoreResearchSession(_id: string): Promise<boolean> { throw new Error("Research sessions require SQLite persistence"); }
   async deleteResearchSession(_id: string): Promise<boolean> { throw new Error("Research sessions require SQLite persistence"); }
@@ -3855,6 +3874,7 @@ export class JsonStore implements CollectorStore {
   listResearchLaterItems(_status?: ResearchLaterItemStatus): ResearchLaterItemRecord[] { return []; }
   async createResearchLaterItem(_item: ResearchLaterItemRecord, _idempotencyKey: string): Promise<ResearchLaterItemRecord> { throw new Error("Research later items require SQLite persistence"); }
   async saveResearchLaterItem(_record: ResearchLaterItemRecord): Promise<void> { throw new Error("Research later items require SQLite persistence"); }
+  async deleteResearchLaterItem(_id: string): Promise<boolean> { throw new Error("Research later items require SQLite persistence"); }
   async saveResearchGroundingResult(_result: ResearchGroundingResult): Promise<void> { throw new Error("Research grounding requires SQLite persistence"); }
   getResearchGroundingRun(_id: string): ResearchGroundingRunRecord | undefined { return undefined; }
   listResearchGroundingRuns(_taskId: string): ResearchGroundingRunRecord[] { return []; }

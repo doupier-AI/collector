@@ -27,7 +27,7 @@ async function createStore() {
 }
 
 function session(id = randomUUID(), title = DEFAULT_RESEARCH_SESSION_TITLE): ResearchSessionRecord {
-  return { id, title, status: "active", createdAt: NOW, updatedAt: NOW };
+  return { id, title, status: "active", isFavorite: false, createdAt: NOW, updatedAt: NOW };
 }
 
 function message(sessionId: string, nodeId: string, role: "user" | "assistant", content: string): ResearchMessageRecord {

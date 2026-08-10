@@ -23,7 +23,7 @@ async function createStore() {
 }
 
 function session(id = randomUUID(), title = "新研究会话"): ResearchSessionRecord {
-  return { id, title, status: "active", createdAt: NOW, updatedAt: NOW };
+  return { id, title, status: "active", isFavorite: false, createdAt: NOW, updatedAt: NOW };
 }
 
 function project(name = "工作项目"): ProjectRecord {
@@ -136,18 +136,20 @@ function countRows(store: SqliteStore, table: string, where = "1=1"): number {
   return (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE ${where}`).get() as { n: number }).n;
 }
 
-test("v33 migration creates projects table and project_id column", async (t) => {
+test("v34 migration creates projects and persists the session favorite default", async (t) => {
   const { store, close } = await createStore();
   t.after(close);
   const db = (store as unknown as { db(): import("node:sqlite").DatabaseSync }).db();
   const version = db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { v: number };
-  assert.equal(version.v, 33);
+  assert.equal(version.v, 34);
   const projectCols = db.prepare("PRAGMA table_info(research_sessions)").all() as Array<{ name: string }>;
   assert.ok(projectCols.some((column) => column.name === "project_id"));
+  assert.ok(projectCols.some((column) => column.name === "is_favorite"));
   // 存量会话 project_id 为 NULL（未分类）
   const sid = randomUUID();
   await store.createResearchSession(session(sid), randomUUID());
   assert.equal(store.getResearchSession(sid)?.projectId, undefined);
+  assert.equal(store.getResearchSession(sid)?.isFavorite, false);
 });
 
 test("project CRUD persists and lists by updated desc", async (t) => {
@@ -186,7 +188,7 @@ test("project deletion moves sessions back to uncategorized", async (t) => {
   assert.equal(await store.deleteProject(randomUUID()), false);
 });
 
-test("updateResearchSession patches title, project, and status; title sets titleEdited", async (t) => {
+test("updateResearchSession patches title, project, status, and favorite; title sets titleEdited", async (t) => {
   const { store, close } = await createStore();
   t.after(close);
   const proj = project();
@@ -194,19 +196,22 @@ test("updateResearchSession patches title, project, and status; title sets title
   const sid = randomUUID();
   await store.createResearchSession(session(sid), randomUUID());
 
-  const updated = await store.updateResearchSession(sid, { title: "用户命名", projectId: proj.id, status: "archived" });
+  const updated = await store.updateResearchSession(sid, { title: "用户命名", projectId: proj.id, status: "archived", isFavorite: true });
   assert.equal(updated?.title, "用户命名");
   assert.equal(updated?.projectId, proj.id);
   assert.equal(updated?.status, "archived");
+  assert.equal(updated?.isFavorite, true);
   assert.equal(updated?.titleEdited, true);
   const persisted = store.getResearchSession(sid);
   assert.equal(persisted?.title, "用户命名");
   assert.equal(persisted?.projectId, proj.id);
   assert.equal(persisted?.status, "archived");
+  assert.equal(persisted?.isFavorite, true);
 
   // 移回未分类
   const uncategorized = await store.updateResearchSession(sid, { projectId: null });
   assert.equal(uncategorized?.projectId, undefined);
+  assert.equal(uncategorized?.isFavorite, true);
   // 不存在返回 undefined
   assert.equal(await store.updateResearchSession(randomUUID(), { title: "x" }), undefined);
 });

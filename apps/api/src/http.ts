@@ -530,6 +530,10 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         catch (error) { throw new ResearchLaterValidationError((error as Error).message); }
         return json(response, 200, await service.researchLater.updateItem(decodeURIComponent(researchLaterItemMatch[1]), body));
       }
+      if (request.method === "DELETE" && researchLaterItemMatch) {
+        await service.researchLater.deleteItem(decodeURIComponent(researchLaterItemMatch[1]));
+        return json(response, 200, { deleted: true });
+      }
       if (request.method === "POST" && url.pathname === "/v1/recent-organization/runs") {
         return json(response, 202, await service.organizeRecent(header(request, "idempotency-key")));
       }

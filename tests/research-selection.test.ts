@@ -112,7 +112,7 @@ async function createSessionWithAnswer(harness: Awaited<ReturnType<typeof create
     promptVersion: "research-chat-v1", createdAt: now, updatedAt: now, completedAt: now,
   };
   await harness.store.createResearchTurn(
-    { id: session.id, title: "测试会话", status: "active", createdAt: now, updatedAt: now },
+    { id: session.id, title: "测试会话", status: "active", isFavorite: false, createdAt: now, updatedAt: now },
     userMessage, assistantMessage, task,
   );
   return { session, userMessage, assistantMessage };

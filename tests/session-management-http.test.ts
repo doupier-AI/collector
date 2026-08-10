@@ -98,16 +98,25 @@ test("session management over HTTP: patch/trash/restore/permanent-delete", async
   const created = await jsonRequest(`${harness.base}/v1/research-sessions`, "POST", harness.token, {}, { "Idempotency-Key": randomUUID() });
   const session = created.body as { id: string };
 
-  // PATCH 改名/归档
-  const patched = await jsonRequest(`${harness.base}/v1/research-sessions/${session.id}`, "PATCH", harness.token, { title: "用户命名", status: "archived" });
+  assert.equal((created.body as { isFavorite: boolean }).isFavorite, false);
+
+  // PATCH 改名/归档/收藏
+  const patched = await jsonRequest(`${harness.base}/v1/research-sessions/${session.id}`, "PATCH", harness.token, { title: "用户命名", status: "archived", isFavorite: true });
   assert.equal(patched.status, 200);
   assert.equal((patched.body as { title: string }).title, "用户命名");
   assert.equal((patched.body as { titleEdited?: boolean }).titleEdited, true);
   assert.equal((patched.body as { status: string }).status, "archived");
+  assert.equal((patched.body as { isFavorite: boolean }).isFavorite, true);
+
+  const listed = await jsonRequest(`${harness.base}/v1/research-sessions`, "GET", harness.token);
+  assert.equal(((listed.body as unknown as Array<{ isFavorite: boolean }>)[0]).isFavorite, true);
+  const detailed = await jsonRequest(`${harness.base}/v1/research-sessions/${session.id}`, "GET", harness.token);
+  assert.equal((detailed.body as { session: { isFavorite: boolean } }).session.isFavorite, true);
 
   // PATCH 校验
   assert.equal((await jsonRequest(`${harness.base}/v1/research-sessions/${session.id}`, "PATCH", harness.token, {})).status, 400);
   assert.equal((await jsonRequest(`${harness.base}/v1/research-sessions/${session.id}`, "PATCH", harness.token, { title: "x".repeat(41) })).status, 400);
+  assert.equal((await jsonRequest(`${harness.base}/v1/research-sessions/${session.id}`, "PATCH", harness.token, { isFavorite: "yes" })).status, 400);
   assert.equal((await jsonRequest(`${harness.base}/v1/research-sessions/${randomUUID()}`, "PATCH", harness.token, { title: "x" })).status, 404);
 
   // 回收站查询（此时为空）
