@@ -43,7 +43,7 @@ Collector WebUI 使用 React 19、TypeScript、Vite 8 和 React Router 7，通�
 | --- | --- |
 | `/` | 恢复最近研究；没有可恢复内容时显示开始页 |
 | `/map` | 全局研究图谱稳定入口；当前为可替换承接页，说明迭代边界并列出现有活动会话 |
-| `/research/new` | 新研究开始页；文字提交或文件导入后创建真实研究 |
+| `/research/new` | 新研究开始页；发送前可查看并切换已启用的当前模型，文字提交或文件导入后创建真实研究 |
 | `/research/:sessionId/node/:nodeId` | 统一研究节点页；支持消息、连续正文、选区、来源条、标记、树与关系导航 |
 | `/research/:sessionId/reading/:contentSnapshotId` | 导入内容阅读页；支持选区、提问、标记与来源返回 |
 | `/run-records` | 本地运行记录列表与筛选 |
