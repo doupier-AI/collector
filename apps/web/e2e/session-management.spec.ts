@@ -215,6 +215,47 @@ test("侧栏项目菜单可重命名项目", async ({ page }) => {
   expect(consoleIssues.issues, consoleIssues.issues.join("\n")).toEqual([]);
 });
 
+test("侧栏单行输入框具有足够尺寸与实体表面", async ({ page }) => {
+  const consoleIssues = trackBrowserIssues(page);
+  await page.setViewportSize({ width: 1175, height: 1272 });
+  await pairAndOpen(page, "/map");
+
+  const nav = page.getByRole("navigation", { name: "内容导航" });
+  await nav.getByRole("button", { name: "搜索会话" }).click();
+  const searchInput = nav.getByRole("searchbox", { name: "搜索会话标题" });
+  await expect(searchInput).toBeFocused();
+  await nav.getByRole("button", { name: /新建项目/ }).click();
+
+  const inputStyles = await nav.locator("input.input").evaluateAll((inputs) =>
+    inputs.map((input) => {
+      const element = input as HTMLInputElement;
+      const styles = getComputedStyle(element);
+      const parentBackground = element.parentElement ? getComputedStyle(element.parentElement).backgroundColor : "";
+      return {
+        height: element.getBoundingClientRect().height,
+        paddingLeft: Number.parseFloat(styles.paddingLeft),
+        borderRadius: Number.parseFloat(styles.borderRadius),
+        background: styles.backgroundColor,
+        parentBackground,
+      };
+    }),
+  );
+
+  expect(inputStyles.length).toBeGreaterThanOrEqual(2);
+  for (const styles of inputStyles) {
+    expect(styles.height, "单行输入框点击高度至少 44px").toBeGreaterThanOrEqual(44);
+    expect(styles.paddingLeft, "输入文字与边界保留足够内边距").toBeGreaterThanOrEqual(12);
+    expect(styles.borderRadius, "输入框使用产品圆角层级").toBeGreaterThanOrEqual(10);
+    expect(styles.background, "输入框必须有非透明实体底色").not.toBe("rgba(0, 0, 0, 0)");
+    expect(styles.background, "输入框实体底色需与周围容器形成层次").not.toBe(styles.parentBackground);
+  }
+
+  await searchInput.focus();
+  await expect.poll(() => searchInput.evaluate((input) => getComputedStyle(input).boxShadow)).not.toBe("none");
+  expect(await sidebarHorizontalScrollers(page), "增大输入框后侧栏不应出现横向滚动条").toEqual([]);
+  expect(consoleIssues.issues, consoleIssues.issues.join("\n")).toEqual([]);
+});
+
 test("单层级侧栏：收展无残留 + 底部设置聚合菜单真实导航（#54 / ADR-0020）", async ({ page }) => {
   const browserIssues = trackBrowserIssues(page);
   await pairAndOpen(page, "/research/new");

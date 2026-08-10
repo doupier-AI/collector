@@ -57,6 +57,39 @@ button {
   border-radius: var(--radius-control);
 }
 
+/* ---------- 单行输入控件 ---------- */
+
+/* 侧栏搜索、项目创建与各处行内重命名共用同一块“书写面”：
+   足够高的点击热区 + 实体底色 + 轻微层次，避免退化为浏览器默认的一圈细边框。 */
+.input {
+  display: block;
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.625rem 0.875rem;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-input);
+  background: var(--color-surface-raised);
+  color: var(--color-ink);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-ink) 8%, transparent);
+  font: inherit;
+  line-height: 1.4;
+}
+
+.input::placeholder {
+  color: color-mix(in srgb, var(--color-ink) 62%, transparent);
+  opacity: 1;
+}
+
+.input:hover {
+  border-color: var(--color-muted);
+}
+
+.input:focus {
+  border-color: var(--color-ai);
+  outline: none;
+  box-shadow: var(--ring-focus);
+}
+
 /* ---------- 按钮 ---------- */
 
 .button {
