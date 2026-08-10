@@ -40,6 +40,7 @@ function renderShell(initialEntry = "/") {
         <Routes>
           <Route element={<AppShell />}>
             <Route index element={<p>主页内容</p>} />
+            <Route path="map" element={<p>研究图谱页面</p>} />
             <Route path="research/:sessionId/node/:nodeId" element={<p>节点内容</p>} />
           </Route>
         </Routes>
@@ -127,6 +128,7 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
     expect(within(nav).getByRole("button", { name: "收起侧栏" })).toBeInTheDocument();
     expect(within(nav).getByRole("button", { name: "搜索会话" })).toBeInTheDocument();
     expect(within(nav).getByRole("link", { name: "新建会话" })).toHaveAttribute("href", "/research/new");
+    expect(within(nav).getByRole("link", { name: "研究图谱" })).toHaveAttribute("href", "/map");
     expect(within(nav).getByRole("separator", { name: "调整内容侧栏宽度" })).toBeInTheDocument();
 
     // 收起：真实整体收起为 rail——详情（最近研究/手柄）消失，只剩图标 rail
@@ -165,15 +167,30 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
     const labels = (container: HTMLElement) =>
       Array.from(container.querySelectorAll(".side-rail__button")).map((el) => el.getAttribute("aria-label"));
 
-    // 展开态顶部按钮组：收起在最上方第一个，随后 会话/搜索/新建
+    // 展开态顶部按钮组：收起在最上方第一个，随后 会话/研究图谱/搜索/新建
     const detailTop = nav.querySelector(".side-detail__top") as HTMLElement;
-    expect(labels(detailTop)).toEqual(["收起侧栏", "会话", "搜索会话", "新建会话"]);
+    expect(labels(detailTop)).toEqual(["收起侧栏", "会话", "研究图谱", "搜索会话", "新建会话"]);
 
     // 收起态 rail 顶部集群与展开态同序：展开在最上方第一个
     await user.click(within(nav).getByRole("button", { name: "收起侧栏" }));
     const rail = nav.querySelector(".side-rail") as HTMLElement;
-    // rail 顶部四个与展开态顶部一一对应（收起↔展开是同一开关的两态）
-    expect(labels(rail).slice(0, 4)).toEqual(["展开侧栏", "会话", "搜索会话", "新建会话"]);
+    // rail 顶部五个与展开态顶部一一对应（收起↔展开是同一开关的两态）
+    expect(labels(rail).slice(0, 5)).toEqual(["展开侧栏", "会话", "研究图谱", "搜索会话", "新建会话"]);
+  });
+
+  it("研究图谱入口在所有页面可用，进入 /map 后具有当前页状态", async () => {
+    stubMatchMedia(true);
+    const user = userEvent.setup();
+    renderShell("/map");
+
+    const nav = await screen.findByRole("navigation", { name: "内容导航" });
+    const mapLink = within(nav).getByRole("link", { name: "研究图谱" });
+    expect(mapLink).toHaveAttribute("href", "/map");
+    expect(mapLink).toHaveAttribute("aria-current", "page");
+    expect(screen.getByText("研究图谱页面")).toBeInTheDocument();
+
+    await user.click(within(nav).getByRole("button", { name: "收起侧栏" }));
+    expect(within(nav).getByRole("link", { name: "研究图谱" })).toHaveAttribute("aria-current", "page");
   });
 
   it("顶部搜索：展开输入框按标题过滤会话", async () => {

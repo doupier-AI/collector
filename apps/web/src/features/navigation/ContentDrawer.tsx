@@ -3,6 +3,7 @@ import { Link, useLocation } from "react-router-dom";
 import { SidebarResizeHandle } from "../../components/AppShell/SidebarResizeHandle";
 import { ThemeSwitcher } from "../theme/theme";
 import { SessionListPanel } from "./SessionListPanel";
+import { ResearchMapGlyph } from "./ResearchMapGlyph";
 
 export interface ContentDrawerProps {
   /** fixed：宽屏固定侧栏（可拖拽调宽）；overlay：窄屏覆盖抽屉（遮罩 + Escape）。 */
@@ -147,8 +148,8 @@ function SidebarGlyph({ isLeftPanel = true }: { isLeftPanel?: boolean }) {
 
 /**
  * 左侧内容导航：单层级可整体收展侧栏（取代旧双层级 rail + detail）。
- * - 展开态：顶部按钮组（收起/搜索/新建会话）+ 会话分组列表 + 底部设置聚合菜单与主题口。
- * - 收起态：一条干净的可点图标 rail（会话/搜索/新建会话，底部设置/主题/展开），无残留窄条。
+ * - 展开态：顶部按钮组（收起/会话/研究图谱/搜索/新建会话）+ 会话分组列表 + 底部设置聚合菜单与主题口。
+ * - 收起态：一条干净的可点图标 rail（会话/研究图谱/搜索/新建会话，底部设置/主题/展开），无残留窄条。
  * 两种状态是同一容器内的互斥视图，收起是真实整体收起到 rail，不是只隐藏详情内容。
  * 宽屏（≥900px）固定侧栏、可拖拽调宽；窄屏覆盖抽屉：Escape 关闭，打开时焦点进入。
  * 收展状态持久化到 localStorage；章节导航使用独立布局轨道，不依赖该状态。
@@ -231,6 +232,7 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
 
   const { pathname } = useLocation();
   const sessionsActive = pathname === "/" || pathname.startsWith("/research");
+  const mapActive = pathname === "/map" || pathname.startsWith("/map/");
   const openSearch = useCallback(() => {
     setCollapsed(false);
     setSearchOpen(true);
@@ -271,7 +273,7 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
       >
         {collapsed ? (
           /* ── 收起态：干净的可点图标 rail ──
-           * 顶部顺序与展开态完全一致（收起/展开 → 会话 → 搜索 → 新建），且共用同一网格
+           * 顶部顺序与展开态完全一致（收起/展开 → 会话 → 研究图谱 → 搜索 → 新建），且共用同一网格
            * （左偏移、顶偏移、间距），收展切换时同名按钮位置零跳变。 */
           <div className="side-rail" aria-label="侧栏导航">
             <RailButton label="展开侧栏" onClick={expand}>
@@ -279,6 +281,9 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
             </RailButton>
             <RailLink label="会话" to="/" active={sessionsActive} onClick={handleNavigate}>
               <SessionsGlyph />
+            </RailLink>
+            <RailLink label="研究图谱" to="/map" active={mapActive} onClick={handleNavigate}>
+              <ResearchMapGlyph />
             </RailLink>
             <RailButton label="搜索会话" onClick={openSearch}>
               <SearchGlyph />
@@ -305,6 +310,9 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
               </RailButton>
               <RailLink label="会话" to="/" active={sessionsActive} onClick={handleNavigate}>
                 <SessionsGlyph />
+              </RailLink>
+              <RailLink label="研究图谱" to="/map" active={mapActive} onClick={handleNavigate}>
+                <ResearchMapGlyph />
               </RailLink>
               <RailButton label="搜索会话" pressed={searchOpen} onClick={() => setSearchOpen((value) => !value)}>
                 <SearchGlyph />
