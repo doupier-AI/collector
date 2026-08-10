@@ -166,6 +166,26 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
     expect(document.querySelector(".app-shell")).toHaveClass("app-shell--sidebar-open");
   });
 
+  it("收展两态顶部按钮组同序：收起/展开恒为最上方第一个，顶部集群顺序一致（位置不跳变的 DOM 前提）", async () => {
+    stubMatchMedia(true);
+    const user = userEvent.setup();
+    renderShell();
+
+    const nav = await screen.findByRole("navigation", { name: "内容导航" });
+    const labels = (container: HTMLElement) =>
+      Array.from(container.querySelectorAll(".side-rail__button")).map((el) => el.getAttribute("aria-label"));
+
+    // 展开态顶部按钮组：收起在最上方第一个，随后 会话/搜索/新建
+    const detailTop = nav.querySelector(".side-detail__top") as HTMLElement;
+    expect(labels(detailTop)).toEqual(["收起侧栏", "会话", "搜索会话", "新建会话"]);
+
+    // 收起态 rail 顶部集群与展开态同序：展开在最上方第一个
+    await user.click(within(nav).getByRole("button", { name: "收起侧栏" }));
+    const rail = nav.querySelector(".side-rail") as HTMLElement;
+    // rail 顶部四个与展开态顶部一一对应（收起↔展开是同一开关的两态）
+    expect(labels(rail).slice(0, 4)).toEqual(["展开侧栏", "会话", "搜索会话", "新建会话"]);
+  });
+
   it("顶部搜索：展开输入框按标题过滤会话", async () => {
     stubMatchMedia(true);
     const user = userEvent.setup();

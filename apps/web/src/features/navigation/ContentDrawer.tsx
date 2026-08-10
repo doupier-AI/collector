@@ -287,8 +287,13 @@ export function ContentDrawer({ mode, width, onWidthChange, onCollapsedChange, o
         style={mode === "fixed" && !collapsed ? { width } : undefined}
       >
         {collapsed ? (
-          /* ── 收起态：干净的可点图标 rail ── */
+          /* ── 收起态：干净的可点图标 rail ──
+           * 顶部顺序与展开态完全一致（收起/展开 → 会话 → 搜索 → 新建），且共用同一网格
+           * （左偏移、顶偏移、间距），收展切换时同名按钮位置零跳变。 */
           <div className="side-rail" aria-label="侧栏导航">
+            <RailButton label="展开侧栏" onClick={expand}>
+              <SidebarGlyph />
+            </RailButton>
             <RailLink label="会话" to="/" active={sessionsActive} onClick={handleNavigate}>
               <SessionsGlyph />
             </RailLink>
@@ -308,24 +313,24 @@ export function ContentDrawer({ mode, width, onWidthChange, onCollapsedChange, o
             <RailButton label="切换主题" onClick={toggleTheme}>
               <ThemeGlyph />
             </RailButton>
-            <RailButton label="展开侧栏" onClick={expand}>
-              <SidebarGlyph />
-            </RailButton>
           </div>
         ) : (
-          /* ── 展开态：完整侧栏 ── */
+          /* ── 展开态：完整侧栏 ──
+           * 顶部按钮组与收起 rail 共用同一网格与顺序（收起/展开在最上方第一个）。 */
           <div className="side-detail">
             <div className="side-detail__top">
               <RailButton label="收起侧栏" onClick={collapse}>
                 <SidebarGlyph isLeftPanel={false} />
               </RailButton>
+              <RailLink label="会话" to="/" active={sessionsActive} onClick={handleNavigate}>
+                <SessionsGlyph />
+              </RailLink>
               <RailButton label="搜索会话" pressed={searchOpen} onClick={() => setSearchOpen((value) => !value)}>
                 <SearchGlyph />
               </RailButton>
               <RailLink label="新建会话" to="/research/new" onClick={handleNavigate}>
                 <NewChatGlyph />
               </RailLink>
-              <span className="side-detail__top-spacer" />
               {mode === "overlay" ? (
                 <button type="button" ref={closeButtonRef} className="drawer__close" onClick={close}>
                   关闭

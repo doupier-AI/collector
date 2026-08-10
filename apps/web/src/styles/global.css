@@ -1500,7 +1500,11 @@ button.model-status {
   animation: collector-drawer-in var(--duration-base) ease-out;
 }
 
-/* 单层级侧栏：外层容器接管布局，去掉默认 padding/滚动（rail / detail 各自处理） */
+/* 单层级侧栏：外层容器接管布局，去掉默认 padding/滚动（rail / detail 各自处理）。
+ * 注意：这里不写 height。基类 .drawer（fixed + inset-block:0）已给窄屏覆盖抽屉定高；
+ * 宽屏固定由 .drawer--fixed 的 calc(100dvh - 顶栏) 定高。若在 .side-drawer 再写 height:100%，
+ * 会与 .drawer--fixed 同为单类特异性、靠源码顺序在后盖掉 calc()，而 100% 又解析不到
+ * .app-body 的确定高度（min-height 弹性链）→ 塌成内容高。这正是「侧栏高度不对」的根因。 */
 .drawer.side-drawer {
   padding: 0;
   overflow: hidden;
