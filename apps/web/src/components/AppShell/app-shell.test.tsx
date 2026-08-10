@@ -130,6 +130,10 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
     expect(within(nav).getByRole("link", { name: "新建会话" })).toHaveAttribute("href", "/research/new");
     expect(within(nav).getByRole("link", { name: "研究图谱" })).toHaveAttribute("href", "/map");
     expect(within(nav).getByRole("separator", { name: "调整内容侧栏宽度" })).toBeInTheDocument();
+    const detailTop = nav.querySelector(".side-detail__top") as HTMLElement;
+    for (const label of ["收起侧栏", "会话", "研究图谱", "搜索会话", "新建会话"]) {
+      expect(within(detailTop).getByText(label)).toBeVisible();
+    }
 
     // 收起：真实整体收起为 rail——详情（最近研究/手柄）消失，只剩图标 rail
     await user.click(within(nav).getByRole("button", { name: "收起侧栏" }));
@@ -138,6 +142,7 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
     expect(within(nav).getByRole("link", { name: "会话" })).toBeInTheDocument();
     expect(within(nav).getByRole("button", { name: "展开侧栏" })).toBeInTheDocument();
     expect(within(nav).getByRole("button", { name: "主题：跟随系统" })).toBeInTheDocument();
+    expect(nav.querySelector(".side-detail__top")).not.toBeInTheDocument();
     // 再展开：恢复完整侧栏
     await user.click(within(nav).getByRole("button", { name: "展开侧栏" }));
     expect(within(nav).getByText("最近研究")).toBeInTheDocument();
@@ -229,6 +234,12 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
     await user.type(within(nav).getByRole("searchbox", { name: "搜索会话标题" }), "苏格拉底");
     expect(within(nav).getByText("苏格拉底追问")).toBeInTheDocument();
     expect(within(nav).queryByText("庄子蝴蝶梦")).not.toBeInTheDocument();
+
+    // 点击搜索框以外的正文：取消搜索输入并清空本次筛选。
+    await user.click(screen.getByText("主页内容"));
+    expect(within(nav).queryByRole("searchbox", { name: "搜索会话标题" })).not.toBeInTheDocument();
+    expect(within(nav).getByText("苏格拉底追问")).toBeInTheDocument();
+    expect(within(nav).getByText("庄子蝴蝶梦")).toBeInTheDocument();
   });
 });
 

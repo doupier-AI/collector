@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { ProjectRecord, ResearchSessionRecord } from "@collector/capture-contracts";
 import { useServices } from "../../app/services";
@@ -36,6 +36,9 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
   const [creatingProject, setCreatingProject] = useState(false);
   const [submittingProject, setSubmittingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
+  const newProjectButtonRef = useRef<HTMLButtonElement | null>(null);
+  const createProjectFormRef = useRef<HTMLDivElement | null>(null);
+  const renameFormRef = useRef<HTMLDivElement | null>(null);
   // 批量选择模式
   const [selectionMode, setSelectionMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -72,6 +75,40 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
   useEffect(() => {
     localStorage.setItem("collector:session-collapsed", JSON.stringify(collapsed));
   }, [collapsed]);
+
+  const cancelCreatingProject = useCallback(() => {
+    setCreatingProject(false);
+    setNewProjectName("");
+  }, []);
+
+  const cancelRename = useCallback(() => {
+    setRenaming(null);
+    setRenameValue("");
+  }, []);
+
+  const toggleCreatingProject = () => {
+    if (creatingProject) cancelCreatingProject();
+    else setCreatingProject(true);
+  };
+
+  // 新建项目和 inline 重命名都是临时编辑器：点到输入区及其提交按钮之外即取消，不静默保存草稿。
+  useEffect(() => {
+    if (!creatingProject && !renaming) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (
+        creatingProject &&
+        !createProjectFormRef.current?.contains(target) &&
+        !newProjectButtonRef.current?.contains(target)
+      ) {
+        cancelCreatingProject();
+      }
+      if (renaming && !renameFormRef.current?.contains(target)) cancelRename();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [cancelCreatingProject, cancelRename, creatingProject, renaming]);
 
   const toggleCollapsed = (projectId: string) => {
     setCollapsed((prev) => ({ ...prev, [projectId]: !prev[projectId] }));
@@ -309,21 +346,22 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
     return (
       <div className="drawer__sessions">
         <p className="drawer__empty">还没有研究会话。写下第一个问题，Collector 会为你保存这次研究。</p>
-        <button type="button" className="drawer__new-project" onClick={() => setCreatingProject((value) => !value)}>
+        <button ref={newProjectButtonRef} type="button" className="drawer__new-project" onClick={toggleCreatingProject}>
           ＋ 新建项目
         </button>
         {creatingProject ? (
-          <div className="drawer__inline-create">
+          <div ref={createProjectFormRef} className="drawer__inline-create">
             <input
               type="text"
               className="input"
               value={newProjectName}
               maxLength={40}
               aria-label="新项目名称"
+              autoFocus
               onChange={(event) => setNewProjectName(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter") void handleCreateProject();
-                if (event.key === "Escape") setCreatingProject(false);
+                if (event.key === "Escape") cancelCreatingProject();
               }}
             />
             <button type="button" className="button button--secondary" disabled={submittingProject} onClick={() => void handleCreateProject()}>
@@ -359,7 +397,7 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
   const visibleGroups = normalizedQuery ? groups.filter((group) => group.sessions.length > 0) : groups;
 
   const renderInlineRename = (target: string) => (
-    <div className="drawer__inline-rename">
+    <div ref={renameFormRef} className="drawer__inline-rename">
       <input
         type="text"
         className="input"
@@ -370,7 +408,7 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
         onChange={(event) => setRenameValue(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Enter") void commitRename(target);
-          if (event.key === "Escape") setRenaming(null);
+          if (event.key === "Escape") cancelRename();
         }}
       />
       <button type="button" className="button button--secondary" onClick={() => void commitRename(target)}>
@@ -456,7 +494,7 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
     <div className="drawer__sessions">
       {/* 顶部工具栏：新建项目上移到标题行下，始终可见；选择模式入口 */}
       <div className="drawer__toolbar">
-        <button type="button" className="drawer__new-project" onClick={() => setCreatingProject((value) => !value)}>
+        <button ref={newProjectButtonRef} type="button" className="drawer__new-project" onClick={toggleCreatingProject}>
           ＋ 新建项目
         </button>
         <button
@@ -472,17 +510,18 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
         </button>
       </div>
       {creatingProject ? (
-        <div className="drawer__inline-create">
+        <div ref={createProjectFormRef} className="drawer__inline-create">
           <input
             type="text"
             className="input"
             value={newProjectName}
             maxLength={40}
             aria-label="新项目名称"
+            autoFocus
             onChange={(event) => setNewProjectName(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter") void handleCreateProject();
-              if (event.key === "Escape") setCreatingProject(false);
+              if (event.key === "Escape") cancelCreatingProject();
             }}
           />
           <button type="button" className="button button--secondary" disabled={submittingProject} onClick={() => void handleCreateProject()}>

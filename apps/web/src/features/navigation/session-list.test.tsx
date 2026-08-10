@@ -226,6 +226,38 @@ describe("SessionListPanel 会话分组树", () => {
     expect(await screen.findByRole("button", { name: /新项目名\(/ })).toBeInTheDocument();
   });
 
+  it("临时输入框点击外部时取消并丢弃未提交内容", async () => {
+    const user = userEvent.setup();
+    const createProject = vi.fn<() => ReturnType<ApiClient["createProject"]>>();
+    const renameProject = vi.fn<() => ReturnType<ApiClient["renameProject"]>>();
+    const projects = [makeProject({ id: "p-1", name: "工作项目" })];
+    const sessions = [makeSession({ id: "s-1", title: "会话", projectId: "p-1" })];
+    renderPanel(apiWith({ createProject, renameProject, listProjects: async () => projects, listResearchSessions: async () => sessions }));
+
+    // 新建项目：输入草稿后点击同一区域外的“选择”，输入框消失且不会创建。
+    await user.click(await screen.findByRole("button", { name: /新建项目/ }));
+    await user.type(screen.getByLabelText("新项目名称"), "不应创建");
+    await user.click(screen.getByRole("button", { name: "选择" }));
+    expect(screen.queryByLabelText("新项目名称")).not.toBeInTheDocument();
+    expect(createProject).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: /新建项目/ }));
+    expect(screen.getByLabelText("新项目名称")).toHaveValue("");
+    await user.click(screen.getByRole("button", { name: "选择" }));
+
+    // 项目重命名：输入草稿后点击始终存在的“选择”按钮，编辑器取消且不会提交改名。
+    await user.click(screen.getByLabelText("工作项目 的菜单"));
+    await user.click(screen.getByRole("menuitem", { name: "重命名" }));
+    const renameInput = screen.getByRole("textbox", { name: "重命名" });
+    await user.clear(renameInput);
+    await user.type(renameInput, "不应改名");
+    await user.click(screen.getByRole("button", { name: "选择" }));
+    expect(screen.queryByRole("textbox", { name: "重命名" })).not.toBeInTheDocument();
+    expect(renameProject).not.toHaveBeenCalled();
+    await user.click(screen.getByLabelText("工作项目 的菜单"));
+    await user.click(screen.getByRole("menuitem", { name: "重命名" }));
+    expect(screen.getByRole("textbox", { name: "重命名" })).toHaveValue("工作项目");
+  });
+
   it("加载失败时可重试", async () => {
     const user = userEvent.setup();
     const listResearchSessions = vi
