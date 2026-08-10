@@ -360,12 +360,13 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
               </div>
               <ThemeSwitcher variant="detail" />
             </div>
-
-            {mode === "fixed" ? (
-              <SidebarResizeHandle side="left" width={width} onResize={onWidthChange} label="调整内容侧栏宽度" />
-            ) : null}
           </div>
         )}
+
+        {/* 调宽把手锚定侧栏外框，不能放进可滚动的 detail，否则向外延伸的 5px 会生成横向滚动条。 */}
+        {mode === "fixed" && !collapsed ? (
+          <SidebarResizeHandle side="left" width={width} onResize={onWidthChange} label="调整内容侧栏宽度" />
+        ) : null}
       </nav>
     </>
   );

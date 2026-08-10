@@ -20,6 +20,23 @@ function projectMenuButton(page: Page, projectName: string) {
   return page.getByLabel(`${projectName} 的菜单`);
 }
 
+/** 返回左侧栏中实际会显示横向滚动槽的元素，避免底部出现无意义的滚动条。 */
+async function sidebarHorizontalScrollers(page: Page) {
+  return page.evaluate(() =>
+    Array.from(document.querySelectorAll<HTMLElement>(".side-drawer, .side-drawer *"))
+      .filter((element) => {
+        const overflowX = getComputedStyle(element).overflowX;
+        return ["auto", "scroll"].includes(overflowX) && element.scrollWidth > element.clientWidth + 1;
+      })
+      .map((element) => ({
+        selector: element.className || element.tagName.toLowerCase(),
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        overflowX: getComputedStyle(element).overflowX,
+      })),
+  );
+}
+
 /** 通过开始页提交首问并等回答完成，返回会话 id（根节点 id 与之一致）。 */
 async function submitFirstQuestion(page: Page, question = QUESTION): Promise<string> {
   await page.getByLabel("你的问题").fill(question);
@@ -221,6 +238,20 @@ test("单层级侧栏：收展无残留 + 底部设置聚合菜单真实导航�
   await expect(nav.getByRole("button", { name: "收起侧栏" })).toBeVisible();
   await expect(nav.getByRole("menu", { name: "设置" })).toBeVisible();
   expect(browserIssues.issues, browserIssues.issues.join("\n")).toEqual([]);
+});
+
+test("左侧栏不生成横向滚动条，调宽把手仍可使用", async ({ page }) => {
+  await pairAndOpen(page, "/research/new", true);
+
+  const nav = page.getByRole("navigation", { name: "内容导航" });
+  await expect(nav).toBeVisible();
+  expect(await sidebarHorizontalScrollers(page), "展开侧栏底部不应出现横向滚动条").toEqual([]);
+
+  const resizeHandle = nav.getByRole("separator", { name: "调整内容侧栏宽度" });
+  const widthBeforeResize = Number(await resizeHandle.getAttribute("aria-valuenow"));
+  await resizeHandle.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(resizeHandle).toHaveAttribute("aria-valuenow", String(widthBeforeResize + 16));
 });
 
 test("主题三态：手动选择优先、刷新保持、跟随系统实时响应（#55）", async ({ page }) => {
