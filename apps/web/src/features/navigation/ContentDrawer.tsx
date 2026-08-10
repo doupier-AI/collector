@@ -255,6 +255,11 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
     setSearchOpen(true);
   }, []);
 
+  const openSettingsFromRail = useCallback(() => {
+    setCollapsed(false);
+    setSettingsOpen(true);
+  }, []);
+
   /* 底部设置聚合菜单（AI 模型 / 融合 / 运行记录 / 回收站），收起与展开两态共用。 */
   const settingsMenu = settingsOpen ? (
     <div className="side-settings-menu" role="menu" aria-label="设置">
@@ -302,7 +307,7 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
             </RailLink>
             <div className="side-rail__spacer" />
             <div className="side-rail__anchor">
-              <RailButton label="设置" pressed={settingsOpen} buttonRef={settingsButtonRef} onClick={() => setSettingsOpen((value) => !value)}>
+              <RailButton label="设置" pressed={settingsOpen} buttonRef={settingsButtonRef} onClick={openSettingsFromRail}>
                 <SettingsGlyph />
               </RailButton>
               {settingsMenu}

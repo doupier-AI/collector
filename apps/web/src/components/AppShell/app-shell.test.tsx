@@ -162,6 +162,21 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
     expect(within(nav).getByText("最近研究")).toBeInTheDocument();
   });
 
+  it("收起态点击设置：一次展开完整侧栏并保持设置菜单打开", async () => {
+    stubMatchMedia(true);
+    const user = userEvent.setup();
+    renderShell();
+
+    const nav = await screen.findByRole("navigation", { name: "内容导航" });
+    await user.click(within(nav).getByRole("button", { name: "收起侧栏" }));
+
+    await user.click(within(nav).getByRole("button", { name: "设置" }));
+
+    expect(within(nav).getByText("最近研究")).toBeInTheDocument();
+    expect(within(nav).getByRole("button", { name: "收起侧栏" })).toBeInTheDocument();
+    expect(within(nav).getByRole("menu", { name: "设置" })).toBeInTheDocument();
+  });
+
   it("收展两态顶部按钮组同序：收起/展开恒为最上方第一个，顶部集群顺序一致（位置不跳变的 DOM 前提）", async () => {
     stubMatchMedia(true);
     const user = userEvent.setup();
@@ -326,7 +341,7 @@ describe("researchMapTargetForPath", () => {
 });
 
 describe("AppShell 窄屏（<900px）窄 rail 常驻 + 覆盖抽屉", () => {
-  it("窄屏默认常驻窄 rail，点展开图标开覆盖抽屉带遮罩，Escape 收起回 rail", async () => {
+  it("窄屏默认常驻窄 rail，点设置直接开覆盖抽屉与菜单，逐层 Escape 收起", async () => {
     stubMatchMedia(false);
     const user = userEvent.setup();
     renderShell();
@@ -337,12 +352,18 @@ describe("AppShell 窄屏（<900px）窄 rail 常驻 + 覆盖抽屉", () => {
     expect(document.querySelector(".panel-backdrop")).toBeNull();
     expect(screen.queryByRole("complementary", { name: "标记" })).not.toBeInTheDocument();
 
-    // 点 rail 上的「展开侧栏」：展开为覆盖抽屉，出现遮罩
-    await user.click(within(nav).getByRole("button", { name: "展开侧栏" }));
+    // 点 rail 上的「设置」：一次展开覆盖抽屉并打开设置菜单
+    await user.click(within(nav).getByRole("button", { name: "设置" }));
     expect(within(nav).getByText("最近研究")).toBeInTheDocument();
+    expect(within(nav).getByRole("menu", { name: "设置" })).toBeInTheDocument();
     expect(document.querySelector(".panel-backdrop")).not.toBeNull();
 
-    // Escape：收起回窄 rail，遮罩消失
+    // 第一次 Escape 只关闭设置菜单，侧栏保持展开
+    await user.keyboard("{Escape}");
+    expect(within(nav).queryByRole("menu", { name: "设置" })).not.toBeInTheDocument();
+    expect(within(nav).getByText("最近研究")).toBeInTheDocument();
+
+    // 第二次 Escape：收起回窄 rail，遮罩消失
     await user.keyboard("{Escape}");
     expect(within(nav).queryByText("最近研究")).not.toBeInTheDocument();
     expect(document.querySelector(".panel-backdrop")).toBeNull();

@@ -174,6 +174,7 @@ test("会话管理全流程：项目分组 → 改名 → 归档 → 软删/回�
 });
 
 test("单层级侧栏：收展无残留 + 底部设置聚合菜单真实导航（#54 / ADR-0020）", async ({ page }) => {
+  const browserIssues = trackBrowserIssues(page);
   await pairAndOpen(page, "/research/new");
   const nav = page.getByRole("navigation", { name: "内容导航" });
   await expect(nav).toBeVisible();
@@ -214,9 +215,12 @@ test("单层级侧栏：收展无残留 + 底部设置聚合菜单真实导航�
   await expect(nav.getByRole("link", { name: "会话", exact: true })).toBeVisible();
   await expect(nav.getByRole("button", { name: "切换主题" })).toBeVisible();
 
-  // 再展开恢复完整侧栏
-  await nav.getByRole("button", { name: "展开侧栏" }).click();
+  // 收起态点「设置」：一次点击同时展开侧栏并打开菜单，无需先手动展开
+  await nav.getByRole("button", { name: "设置" }).click();
   await expect(nav.getByText("最近研究")).toBeVisible();
+  await expect(nav.getByRole("button", { name: "收起侧栏" })).toBeVisible();
+  await expect(nav.getByRole("menu", { name: "设置" })).toBeVisible();
+  expect(browserIssues.issues, browserIssues.issues.join("\n")).toEqual([]);
 });
 
 test("自动融合设置页：正文与左右侧栏之间保留页面留白", async ({ page }) => {

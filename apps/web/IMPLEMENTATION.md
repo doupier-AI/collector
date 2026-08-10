@@ -110,6 +110,8 @@ ADR-0020（2026-08-10，左侧导航单层级化，supersedes ADR-0016「双层�
 
 ADR-0021（2026-08-10，左侧栏常驻化，amends ADR-0020 的「侧栏可整隐」与「窄屏整隐」分支）：删除顶栏「内容」按钮——左侧栏不再可整体隐藏，成为常驻结构（`AppShell` 移除 `leftVisible`/`leftOpenPref`/`toggleLeft`/`closeLeft`/`leftTriggerRef`，`ContentDrawer` 无条件渲染、`onClose` 改可选、窄屏「关闭」回退为收起到 rail）；最「小」操作是侧栏内部收成 64px rail，永远留一个可见重开把手。收起/展开开关图标由实心三角形换为面板图标 `SidebarGlyph`（矩形 + x=7.75 竖线，与被删按钮同款，`isLeftPanel` 控制左右镜像），展开态顶部按钮组保持竖向排列（`flex-direction: column`，与 rail 同向）。收展两态顶部按钮组对齐同一网格与同一顺序（收起/展开恒为最上方第一个，rail 里「展开」从底部移到顶部；两态顺序都是「收起/展开 → 会话 → 搜索 → 新建」，共用左 12px/顶 12px/间距 8px 网格），收展切换同名按钮坐标零跳变。会话列表 `flex:1; min-height:0` 撑满顶部按钮组与底部设置/主题之间。侧栏高度此前在宽屏塌成内容高——根因是 `.side-drawer`（单类特异性、源码顺序在后）的 `height:100%` 盖掉 `.drawer--fixed` 的 `calc(100dvh − 顶栏)`、而 100% 解析不到 `.app-body` 确定高；修复为删掉该 100%（窄屏由 `.drawer` 的 `inset-block:0` 定高、宽屏由 `.drawer--fixed` 的 `calc()` 定高），修后实测侧栏高 = 视口高 − 顶栏。窄屏（<900px）由「侧栏整隐」改**常驻 sticky 窄 rail**（`top: var(--app-bar-height)`、`height: calc(100dvh - var(--app-bar-height))`、`flex: none`，占位推开正文而非浮于其上），点 rail 图标展开为 fixed 覆盖抽屉 + 遮罩，Escape/遮罩/内部「收起侧栏」收回；初始 `collapsed` 读 `localStorage`、缺省窄屏收起，`prevModeRef` 监听宽窄模式翻转时重置收展态。视觉基线 3 张视口级截图（`node-reading-default`/`node-reading-dark`/`fragment-locate`）因左缘出现 rail 按 ADR-0012 人工 diff 复核后重拍（diff 全为 rail 占位，无意外像素），覆盖层与元素级截图零重拍；三处视口用例补 `waitForFunction(scrollWidth ≤ clientWidth+1)` 收敛等待再测量，避免捕到响应式重排前的瞬时宽度。
 
+收起态 rail 的「设置」入口是展开侧栏的直接动作：一次点击同时展开完整侧栏并打开设置聚合菜单；窄屏同步展开为覆盖抽屉并保留遮罩。Escape 先关闭设置菜单，再收起侧栏，用户无需先手动展开再点击设置。
+
 ### 4.4 选区、引用与标记
 
 消息正文和阅读快照中的非空文本选区都有效：
