@@ -26,7 +26,6 @@ function renderShell(initialEntry = "/") {
     api: {
       listResearchSessions: async () => [],
       listProjects: async () => [],
-      listResearchLaterItems: async () => [],
       getResearchGraph: async (_sessionId: string, focusNodeId?: string) => ({
         focusNodeId: focusNodeId ?? "node-1",
         nodes: [],
@@ -63,10 +62,10 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
 
     // 顶栏不再有「内容」按钮（旧的「点了整个侧栏连带按钮消失」入口已删除）
     expect(screen.queryByRole("button", { name: "内容" })).not.toBeInTheDocument();
-    // 左侧栏常驻展开、右侧栏初始展开
+    // 左侧栏常驻展开；全局标记入口与右侧标记栏均已移除
     expect(await screen.findByRole("navigation", { name: "内容导航" })).toBeInTheDocument();
-    expect(screen.getByRole("complementary", { name: "标记" })).toBeInTheDocument();
-    expect(await screen.findByTestId("mark-empty")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "标记" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "标记" })).not.toBeInTheDocument();
     // 不再出现旧的弹层提示
     expect(screen.queryByText(/将在后续版本提供/)).not.toBeInTheDocument();
   });
@@ -114,27 +113,7 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
     for (let index = 0; index < 20; index += 1) await user.keyboard("{ArrowRight}");
     expect(handle).toHaveAttribute("aria-valuenow", "400");
 
-    // 右侧栏手柄方向相反：ArrowLeft 变宽
-    const rightHandle = screen.getByRole("separator", { name: "调整标记侧栏宽度" });
-    rightHandle.focus();
-    await user.keyboard("{ArrowLeft}");
-    expect(rightHandle).toHaveAttribute("aria-valuenow", "280");
-  });
-
-  it("点击图标按钮收起/展开右侧标记栏（左侧栏常驻无此入口）", async () => {
-    stubMatchMedia(true);
-    const user = userEvent.setup();
-    renderShell();
-
-    // 左侧栏常驻，顶栏无「内容」按钮
-    expect(screen.queryByRole("button", { name: "内容" })).not.toBeInTheDocument();
-    expect(await screen.findByRole("navigation", { name: "内容导航" })).toBeInTheDocument();
-
-    // 右侧标记栏仍由顶栏「标记」按钮开合
-    await user.click(screen.getByRole("button", { name: "标记" }));
-    expect(screen.queryByRole("complementary", { name: "标记" })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "标记" }));
-    expect(screen.getByRole("complementary", { name: "标记" })).toBeInTheDocument();
+    expect(screen.queryByRole("separator", { name: "调整标记侧栏宽度" })).not.toBeInTheDocument();
   });
 
   it("单层级收展：收起为干净图标 rail 无残留详情，再展开恢复完整侧栏", async () => {
@@ -203,11 +182,10 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
     const services = {
       api: {
         listResearchSessions: async () => [
-          { id: "s-1", title: "苏格拉底追问", updatedAt: "2026-08-09T10:00:00.000Z", status: "active" },
-          { id: "s-2", title: "庄子蝴蝶梦", updatedAt: "2026-08-09T11:00:00.000Z", status: "active" },
+          { id: "s-1", title: "苏格拉底追问", updatedAt: "2026-08-09T10:00:00.000Z", status: "active", isFavorite: false },
+          { id: "s-2", title: "庄子蝴蝶梦", updatedAt: "2026-08-09T11:00:00.000Z", status: "active", isFavorite: false },
         ],
         listProjects: async () => [],
-        listResearchLaterItems: async () => [],
         getResearchGraph: async () => ({ focusNodeId: "n", nodes: [], edges: [] }),
       } as unknown as ApiClient,
       connectTaskEvents: vi.fn(),
@@ -346,11 +324,11 @@ describe("AppShell 窄屏（<900px）窄 rail 常驻 + 覆盖抽屉", () => {
     const user = userEvent.setup();
     renderShell();
 
-    // 初始：窄 rail 常驻（内容导航可见但为收起 rail，无遮罩），右侧标记栏默认收起
+    // 初始：窄 rail 常驻（内容导航可见但为收起 rail，无遮罩）
     const nav = await screen.findByRole("navigation", { name: "内容导航" });
     expect(within(nav).getByRole("button", { name: "展开侧栏" })).toBeInTheDocument();
     expect(document.querySelector(".panel-backdrop")).toBeNull();
-    expect(screen.queryByRole("complementary", { name: "标记" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "标记" })).not.toBeInTheDocument();
 
     // 点 rail 上的「设置」：一次展开覆盖抽屉并打开设置菜单
     await user.click(within(nav).getByRole("button", { name: "设置" }));
@@ -369,18 +347,15 @@ describe("AppShell 窄屏（<900px）窄 rail 常驻 + 覆盖抽屉", () => {
     expect(document.querySelector(".panel-backdrop")).toBeNull();
   });
 
-  it("窄屏左侧栏常驻，标记覆盖抽屉开合不影响左侧 rail", async () => {
+  it("窄屏左侧栏常驻，全局标记入口不再占用顶栏", async () => {
     stubMatchMedia(false);
-    const user = userEvent.setup();
     renderShell();
 
     // 左侧窄 rail 常驻
     const nav = await screen.findByRole("navigation", { name: "内容导航" });
     expect(within(nav).getByRole("button", { name: "展开侧栏" })).toBeInTheDocument();
 
-    // 打开右侧标记覆盖抽屉：左侧 rail 仍在
-    await user.click(screen.getByRole("button", { name: "标记" }));
-    expect(await screen.findByRole("complementary", { name: "标记" })).toBeInTheDocument();
-    expect(screen.getByRole("navigation", { name: "内容导航" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "标记" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "标记" })).not.toBeInTheDocument();
   });
 });

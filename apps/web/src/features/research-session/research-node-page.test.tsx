@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -141,6 +141,49 @@ describe("ResearchNodePage 根节点", () => {
     expect(screen.getByText("为什么需要多头注意力？")).toBeInTheDocument();
     expect(screen.getByText("因为不同头可以关注不同位置。")).toBeInTheDocument();
     expect(screen.getByLabelText("你的问题")).toBeInTheDocument();
+  });
+
+  it("根会话右上角菜单提供重命名、归档、删除、收藏与当前会话标记", async () => {
+    const user = userEvent.setup();
+    const updateResearchSession = vi.fn(async (_id: string, update: { isFavorite?: boolean }) =>
+      makeSession({ id: "session-1", title: "理解注意力机制", isFavorite: update.isFavorite ?? false }),
+    );
+    renderNodePage({
+      getResearchNodeView: async () => readyRootView(),
+      updateResearchSession,
+      listResearchLaterItems: async () => [],
+    });
+
+    const trigger = await screen.findByRole("button", { name: "理解注意力机制 的会话菜单" });
+    await user.click(trigger);
+    const menu = screen.getByRole("menu", { name: "理解注意力机制 的会话操作" });
+    expect(within(menu).getByRole("menuitem", { name: "重命名" })).toBeInTheDocument();
+    expect(within(menu).getByRole("menuitem", { name: "归档" })).toBeInTheDocument();
+    expect(within(menu).getByRole("menuitem", { name: "删除…" })).toBeInTheDocument();
+    expect(within(menu).getByRole("menuitem", { name: "查看标记" })).toBeInTheDocument();
+
+    await user.click(within(menu).getByRole("menuitem", { name: "收藏" }));
+    await waitFor(() => expect(updateResearchSession).toHaveBeenCalledWith("session-1", { isFavorite: true }));
+    expect(await screen.findByLabelText("已收藏")).toHaveTextContent("已收藏");
+
+    await user.click(trigger);
+    await user.click(screen.getByRole("menuitem", { name: "查看标记" }));
+    const dialog = await screen.findByRole("dialog", { name: "本会话标记" });
+    expect(within(dialog).getByTestId("mark-empty")).toHaveTextContent("本会话还没有标记");
+    await user.click(within(dialog).getByRole("button", { name: "关闭标记弹窗" }));
+    expect(trigger).toHaveFocus();
+  });
+
+  it("归档当前会话后离开已归档内容并回到开始页", async () => {
+    const user = userEvent.setup();
+    const updateResearchSession = vi.fn(async () => makeSession({ id: "session-1", status: "archived" }));
+    renderNodePage({ getResearchNodeView: async () => readyRootView(), updateResearchSession });
+
+    await user.click(await screen.findByRole("button", { name: "理解注意力机制 的会话菜单" }));
+    await user.click(screen.getByRole("menuitem", { name: "归档" }));
+
+    await waitFor(() => expect(updateResearchSession).toHaveBeenCalledWith("session-1", { status: "archived" }));
+    expect(await screen.findByText("开始页")).toBeInTheDocument();
   });
 
   it("在流状态提示下方呈现可用键盘展开和决策的相似概念弱提示", async () => {

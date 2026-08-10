@@ -340,15 +340,18 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
   const visibleSessions = normalizedQuery
     ? state.sessions.filter((session) => session.title.toLowerCase().includes(normalizedQuery))
     : state.sessions;
+  // 收藏只改变组内呈现顺序；同为收藏或未收藏时继续沿用接口的更新时间倒序。
+  const favoriteFirst = (left: ResearchSessionRecord, right: ResearchSessionRecord) =>
+    Number(right.isFavorite) - Number(left.isFavorite);
 
   const groups: Array<{ projectId: string | null; title: string; sessions: ResearchSessionRecord[] }> = [
     ...state.projects.map((project) => ({
       projectId: project.id,
       title: project.name,
-      sessions: visibleSessions.filter((session) => session.projectId === project.id),
+      sessions: visibleSessions.filter((session) => session.projectId === project.id).sort(favoriteFirst),
     })),
   ];
-  const unclassified = visibleSessions.filter((session) => !session.projectId);
+  const unclassified = visibleSessions.filter((session) => !session.projectId).sort(favoriteFirst);
   if (unclassified.length > 0) {
     groups.push({ projectId: null, title: "未分类", sessions: unclassified });
   }
@@ -570,7 +573,10 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
                           to={`/research/${encodeURIComponent(session.id)}`}
                           onClick={onNavigate}
                         >
-                          <span className="drawer__session-title">{session.title}</span>
+                          <span className="drawer__session-title">
+                            {session.isFavorite ? <span className="drawer__session-favorite" aria-label="已收藏">★</span> : null}
+                            {session.title}
+                          </span>
                           <span className="drawer__session-time">
                             {session.status === "archived" ? "已归档 · " : ""}
                             {formatRelativeTime(session.updatedAt)}

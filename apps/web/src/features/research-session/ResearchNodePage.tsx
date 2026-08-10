@@ -31,6 +31,7 @@ import { notifySessionsChanged } from "../navigation/session-events";
 import { MessageItem } from "./MessageItem";
 import { ModelStatusIndicator } from "./ModelStatusIndicator";
 import { NodeChildList } from "./NodeChildList";
+import { SessionMarksDialog } from "./SessionMarksDialog";
 import { ResearchScopeNote, SelectionRestoreFallback, SelectionSourceBar, useSelectionRestore, useSelectionSource } from "./SelectionSourceBar";
 import { taskForMessage } from "./session-view";
 import { useResearchNode } from "./useResearchNode";
@@ -180,6 +181,12 @@ export function ResearchNodePage() {
   const [renamingTitle, setRenamingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [titleError, setTitleError] = useState(false);
+  const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
+  const [marksOpen, setMarksOpen] = useState(false);
+  const [sessionActionBusy, setSessionActionBusy] = useState(false);
+  const [sessionActionError, setSessionActionError] = useState("");
+  const sessionMenuTriggerRef = useRef<HTMLButtonElement>(null);
+  const sessionMenuRef = useRef<HTMLDivElement>(null);
   const startRenameTitle = () => {
     if (!readyView) return;
     setTitleDraft(readyView.session.title);
@@ -197,6 +204,77 @@ export function ResearchNodePage() {
       notifySessionsChanged();
     } catch {
       setTitleError(true);
+    }
+  };
+  const closeSessionMenu = useCallback((restoreFocus = true) => {
+    setSessionMenuOpen(false);
+    if (restoreFocus) sessionMenuTriggerRef.current?.focus();
+  }, []);
+  const closeMarks = useCallback(() => {
+    setMarksOpen(false);
+    sessionMenuTriggerRef.current?.focus();
+  }, []);
+  useEffect(() => {
+    if (!sessionMenuOpen) return;
+    sessionMenuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeSessionMenu();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [closeSessionMenu, sessionMenuOpen]);
+
+  const toggleFavorite = async () => {
+    if (!readyView || sessionActionBusy) return;
+    setSessionActionBusy(true);
+    setSessionActionError("");
+    try {
+      const updated = await api.updateResearchSession(readyView.session.id, { isFavorite: !readyView.session.isFavorite });
+      node.updateView((view) => ({ ...view, session: { ...view.session, ...updated } }));
+      notifySessionsChanged();
+      closeSessionMenu();
+    } catch {
+      setSessionActionError("收藏状态没有更新，请重试。");
+    } finally {
+      setSessionActionBusy(false);
+    }
+  };
+
+  const toggleArchiveCurrentSession = async () => {
+    if (!readyView || sessionActionBusy) return;
+    const nextStatus = readyView.session.status === "archived" ? "active" : "archived";
+    setSessionActionBusy(true);
+    setSessionActionError("");
+    try {
+      const updated = await api.updateResearchSession(readyView.session.id, { status: nextStatus });
+      notifySessionsChanged();
+      if (nextStatus === "archived") navigate("/research/new");
+      else {
+        node.updateView((view) => ({ ...view, session: { ...view.session, ...updated } }));
+        closeSessionMenu();
+        setSessionActionBusy(false);
+      }
+    } catch {
+      setSessionActionError("会话没有归档，请重试。");
+      setSessionActionBusy(false);
+    }
+  };
+
+  const deleteCurrentSession = async () => {
+    if (!readyView || sessionActionBusy) return;
+    if (!window.confirm("删除后会话将进入回收站，30 天内可以恢复。确定删除吗？")) return;
+    setSessionActionBusy(true);
+    setSessionActionError("");
+    try {
+      await api.trashResearchSession(readyView.session.id);
+      notifySessionsChanged();
+      navigate("/research/new");
+    } catch {
+      setSessionActionError("会话没有删除，请重试。");
+      setSessionActionBusy(false);
     }
   };
   // 来源条：子节点取 node.originSelectionId；带来源的旧独立会话根节点取 session.originSelectionId
@@ -631,16 +709,52 @@ export function ResearchNodePage() {
                 ) : null}
               </h1>
               {isRoot ? (
-                <button type="button" className="session-header__rename-button" aria-label={`重命名「${view.session.title}」`} onClick={startRenameTitle}>
-                  改名
-                </button>
+                <div className="session-header__actions">
+                  {view.session.isFavorite ? <span className="session-header__favorite" aria-label="已收藏">★ 已收藏</span> : null}
+                  <button
+                    ref={sessionMenuTriggerRef}
+                    type="button"
+                    className="session-header__more"
+                    aria-label={`${view.session.title} 的会话菜单`}
+                    aria-haspopup="menu"
+                    aria-expanded={sessionMenuOpen}
+                    onClick={() => setSessionMenuOpen((open) => !open)}
+                  >
+                    ⋯
+                  </button>
+                  {sessionMenuOpen ? (
+                    <>
+                      <button type="button" className="session-menu__overlay" aria-label="关闭会话菜单" onClick={() => closeSessionMenu()} />
+                      <div ref={sessionMenuRef} className="session-header__menu" role="menu" aria-label={`${view.session.title} 的会话操作`}>
+                        <button type="button" role="menuitem" className="session-menu__item" disabled={sessionActionBusy} onClick={() => { closeSessionMenu(false); startRenameTitle(); }}>
+                          重命名
+                        </button>
+                        <button type="button" role="menuitem" className="session-menu__item" disabled={sessionActionBusy} onClick={() => void toggleArchiveCurrentSession()}>
+                          {view.session.status === "archived" ? "取消归档" : "归档"}
+                        </button>
+                        <button type="button" role="menuitem" className="session-menu__item" disabled={sessionActionBusy} onClick={() => void toggleFavorite()}>
+                          {view.session.isFavorite ? "取消收藏" : "收藏"}
+                        </button>
+                        <button type="button" role="menuitem" className="session-menu__item" onClick={() => { setSessionMenuOpen(false); setMarksOpen(true); }}>
+                          查看标记
+                        </button>
+                        <button type="button" role="menuitem" className="session-menu__item session-menu__item--danger" disabled={sessionActionBusy} onClick={() => void deleteCurrentSession()}>
+                          删除…
+                        </button>
+                      </div>
+                    </>
+                  ) : null}
+                </div>
               ) : null}
             </>
           )}
         </div>
         <p className="session-header__meta">更新于 {formatSessionTime(view.session.updatedAt)}</p>
         <ModelStatusIndicator />
+        {sessionActionError ? <p className="session-header__action-error" role="alert">{sessionActionError}</p> : null}
       </header>
+
+      {isRoot && marksOpen ? <SessionMarksDialog sessionId={view.session.id} onClose={closeMarks} /> : null}
 
       {justGrew ? (
         <p className="grew-sprout" role="status" data-testid="grew-sprout">

@@ -155,7 +155,7 @@ test.describe("标记列表 API 与持久化", () => {
     expect(record.note).toBeUndefined();
   });
 
-  test("标记列表展示选区与笔记，返回原选区后为只读定位提醒（不重开胶囊）", async ({ page }) => {
+  test("会话菜单打开居中标记弹窗，编辑笔记并返回原选区后为只读定位提醒", async ({ page }) => {
     test.setTimeout(60_000);
     await pairAndOpen(page, "/research/new");
     const sessionId = await submitFirstQuestion(page);
@@ -171,10 +171,41 @@ test.describe("标记列表 API 与持久化", () => {
     const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
     const item = readResearchLaterTables(dbPath).laterItems.find((row) => row.sessionId === sessionId);
     expect(item).toBeDefined();
-    const panel = page.getByRole("complementary", { name: "标记" });
-    await expect(panel).toContainText(SELECTED);
-    await expect(panel).toContainText("从列表回来继续验证");
-    await expect(panel).toContainText("来源节点：");
+    await expect(page.getByRole("complementary", { name: "标记" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "标记", exact: true })).toHaveCount(0);
+    const menuTrigger = page.getByRole("button", { name: /的会话菜单$/ });
+    await menuTrigger.click();
+    const sessionMenu = page.getByRole("menu", { name: /的会话操作$/ });
+    await expect(sessionMenu.getByRole("menuitem", { name: "重命名" })).toBeVisible();
+    await expect(sessionMenu.getByRole("menuitem", { name: "归档" })).toBeVisible();
+    await expect(sessionMenu.getByRole("menuitem", { name: "删除…" })).toBeVisible();
+    await expect(sessionMenu.getByRole("menuitem", { name: "收藏" })).toBeVisible();
+    await sessionMenu.getByRole("menuitem", { name: "查看标记" }).click();
+
+    const dialog = page.getByRole("dialog", { name: "本会话标记" });
+    await expect(dialog).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(menuTrigger).toBeFocused();
+    await menuTrigger.click();
+    await page.getByRole("menuitem", { name: "查看标记" }).click();
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText(SELECTED);
+    await expect(dialog).toContainText("从列表回来继续验证");
+    await expect(dialog).toContainText("来源节点：");
+    // 入场动画会短暂从右侧滑入；动画稳定后必须以整个视口为中心。
+    await expect.poll(async () => {
+      const dialogBox = await dialog.boundingBox();
+      return Math.abs((dialogBox?.x ?? 0) + (dialogBox?.width ?? 0) / 2 - page.viewportSize()!.width / 2);
+    }).toBeLessThan(3);
+
+    const note = dialog.getByLabel(/编辑标记笔记/);
+    await note.fill("弹窗中修改后的笔记");
+    await dialog.getByRole("heading", { name: "本会话标记" }).click();
+    await expect.poll(async () => {
+      const items = await apiJson<Array<{ item: { note?: string } }>>(page, "/v1/research-later-items");
+      return items.find((entry) => entry.item.note === "弹窗中修改后的笔记")?.item.note;
+    }).toBe("弹窗中修改后的笔记");
 
     await page.getByTestId(`mark-open-${item!.id}`).click();
     await expect(page).toHaveURL(new RegExp(`/research/${sessionId}/node/[^?]+\\?sel=`));
@@ -187,10 +218,10 @@ test.describe("标记列表 API 与持久化", () => {
     await expect(page.locator("[data-selection-mark]")).toBeVisible();
   });
 
-  test("标记面板条目保留样式（回归保护：#40 曾误删 later-* 样式）", async ({ page }) => {
+  test("标记弹窗支持全选永久删除，卡片视觉保持清晰", async ({ page }) => {
     test.setTimeout(60_000);
     await pairAndOpen(page, "/research/new");
-    await submitFirstQuestion(page);
+    const sessionId = await submitFirstQuestion(page);
     await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
 
     await selectAnswerText(page, SELECTED);
@@ -198,13 +229,65 @@ test.describe("标记列表 API 与持久化", () => {
     await page.mouse.click(12, 12);
     await expect(page.getByTestId("mark-note-editor")).toHaveCount(0);
 
-    // 条目有卡片边框、标题单行省略、元信息弱化色
-    const item = page.locator(".later-item").first();
+    await page.setViewportSize({ width: 320, height: 568 });
+    await page.getByRole("button", { name: /的会话菜单$/ }).click();
+    await page.getByRole("menuitem", { name: "查看标记" }).click();
+    const dialog = page.getByRole("dialog", { name: "本会话标记" });
+
+    // 条目使用产品语义色与圆角卡片，不依赖旧右侧栏样式
+    const item = dialog.locator(".mark-card").first();
     await expect(item).toBeVisible();
+    await expect.poll(async () => {
+      const box = await dialog.boundingBox();
+      return Math.abs((box?.x ?? 0) + (box?.width ?? 0) / 2 - 160);
+    }).toBeLessThan(3);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
     await expect(item).toHaveCSS("border-radius", "10px");
-    await expect(page.locator(".later-item__excerpt").first()).toHaveCSS("color", "rgb(32, 35, 31)");
-    const meta = page.locator(".later-item__meta").first();
+    await expect(dialog.locator(".mark-card__excerpt").first()).toHaveCSS("color", "rgb(32, 35, 31)");
+    const meta = dialog.locator(".mark-card__meta").first();
     await expect(meta).toHaveCSS("color", "rgb(107, 113, 104)");
+
+    await dialog.getByRole("checkbox", { name: "全选" }).check();
+    page.once("dialog", (confirmation) => confirmation.accept());
+    await dialog.getByRole("button", { name: "删除所选" }).click();
+    await expect(dialog.getByTestId("mark-empty")).toBeVisible();
+    await expect.poll(async () => {
+      const items = await apiJson<Array<{ item: { sessionId: string } }>>(page, "/v1/research-later-items");
+      return items.filter((entry) => entry.item.sessionId === sessionId).length;
+    }).toBe(0);
+  });
+
+  test("收藏当前会话后在项目分组内置顶，取消收藏入口同步变化", async ({ page }) => {
+    test.setTimeout(60_000);
+    await pairAndOpen(page, "/research/new");
+    const favoriteSessionId = await submitFirstQuestion(page, "较早但需要收藏的会话");
+    await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
+
+    await page.getByRole("button", { name: /的会话菜单$/ }).click();
+    await page.getByRole("menuitem", { name: "收藏" }).click();
+    await expect(page.getByLabel("已收藏").first()).toBeVisible();
+
+    await page.goto("/research/new");
+    const newerSessionId = await submitFirstQuestion(page, "较新的普通会话");
+    expect(newerSessionId).not.toBe(favoriteSessionId);
+    await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
+    // 重新读取持久化列表，避免把新会话创建时的侧栏刷新时机混入排序验收。
+    await page.reload();
+
+    const favoriteLink = page.locator('.drawer__session[href^="/research/"]', { hasText: "较早但需要收藏的会话" }).first();
+    const newerLink = page.locator('.drawer__session[href^="/research/"]', { hasText: "较新的普通会话" }).first();
+    await expect(favoriteLink).toBeVisible();
+    await expect(newerLink).toBeVisible();
+    await expect(favoriteLink.getByLabel("已收藏")).toBeVisible();
+    const favoriteBox = await favoriteLink.boundingBox();
+    const newerBox = await newerLink.boundingBox();
+    expect(favoriteBox).not.toBeNull();
+    expect(newerBox).not.toBeNull();
+    expect(favoriteBox!.y).toBeLessThan(newerBox!.y);
+
+    await page.goto(`/research/${favoriteSessionId}/node/${favoriteSessionId}`);
+    await page.getByRole("button", { name: /的会话菜单$/ }).click();
+    await expect(page.getByRole("menuitem", { name: "取消收藏" })).toBeVisible();
   });
 
 

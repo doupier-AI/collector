@@ -247,7 +247,7 @@ button {
   font-size: var(--font-size-caption);
 }
 
-/* 根节点改名：页头标题旁入口，inline 输入框 */
+/* 根节点标题与会话操作入口 */
 .session-header__title-row {
   display: flex;
   align-items: center;
@@ -615,6 +615,62 @@ button {
   transform: translateY(-50%);
   /* 低于节点树/网状导航/标记面板（z-index 30）与其遮罩（20）：覆盖层展开时不穿透显示导航。 */
   z-index: var(--z-rail);
+}
+
+.session-header__actions {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-inline-start: auto;
+}
+
+.session-header__favorite {
+  color: var(--color-ai);
+  font-size: var(--font-size-caption);
+  white-space: nowrap;
+}
+
+.session-header__more {
+  display: grid;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-circle);
+  background: var(--color-surface);
+  color: var(--color-muted);
+  font: inherit;
+  font-size: 1.25rem;
+  cursor: pointer;
+}
+
+.session-header__more:hover,
+.session-header__more:focus-visible {
+  border-color: var(--color-ai);
+  color: var(--color-ink);
+}
+
+.session-header__menu {
+  position: absolute;
+  z-index: 31;
+  top: calc(100% + var(--space-1));
+  right: 0;
+  min-width: 10rem;
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-button);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-panel);
+}
+
+.session-header__action-error {
+  margin: var(--space-2) 0 0;
+  color: var(--color-danger);
+  font-size: var(--font-size-caption);
 }
 
 .slice-rail__track {
@@ -1669,6 +1725,12 @@ button.model-status {
   white-space: nowrap;
 }
 
+.drawer__session-favorite {
+  margin-inline-end: 0.375rem;
+  color: var(--color-ai);
+  font-size: var(--font-size-caption);
+}
+
 .drawer__session-time {
   color: var(--color-muted);
   font-size: var(--font-size-sm);
@@ -2002,112 +2064,127 @@ button.model-status {
   font-size: var(--font-size-sm);
 }
 
-.later-panel {
+.marks-dialog__backdrop {
   position: fixed;
-  inset-block: 0;
-  right: 0;
+  inset: 0;
   z-index: var(--z-panel);
-  width: var(--drawer-width);
-  max-width: 85vw;
-  padding: 0.875rem 1rem;
-  overflow-y: auto;
+  display: grid;
+  place-items: center;
+  padding: var(--space-4);
+  background: color-mix(in srgb, var(--color-canvas) 62%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.marks-dialog {
+  width: min(42rem, 100%);
+  max-height: min(42rem, calc(100dvh - var(--space-8)));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
   background: var(--color-surface);
-  border-left: 1px solid var(--color-line);
+  box-shadow: var(--shadow-panel);
   animation: collector-panel-in var(--duration-base) ease-out;
 }
 
-.later-panel--fixed {
-  position: sticky;
-  top: var(--app-bar-height);
-  inset-inline: auto;
-  z-index: 1;
-  flex: none;
-  height: calc(100dvh - var(--app-bar-height));
-  max-width: none;
-  animation: none;
-}
-
-.later-panel__header {
+.marks-dialog__header,
+.marks-dialog__toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: var(--space-3);
+  gap: var(--space-3);
+  padding: var(--space-4);
 }
 
-.later-panel__title {
+.marks-dialog__header {
+  border-bottom: 1px solid var(--color-line);
+}
+
+.marks-dialog__title,
+.marks-dialog__count {
   margin: 0;
-  font-weight: 600;
 }
 
-.later-panel__close {
-  padding: 0.25rem 0.625rem;
+.marks-dialog__title {
+  font-family: var(--font-serif);
+  font-size: var(--font-size-title);
+}
+
+.marks-dialog__count {
+  margin-top: var(--space-1);
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+}
+
+.marks-dialog__close {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
   border: 1px solid var(--color-line);
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-circle);
   background: transparent;
+  color: var(--color-muted);
+  font: inherit;
+  font-size: 1.25rem;
   cursor: pointer;
 }
 
-.later-panel__close:hover {
-  border-color: var(--color-muted);
+.marks-dialog__close:hover {
+  border-color: var(--color-ai);
+  color: var(--color-ink);
 }
 
-/* 标记面板条目（#40 清理误删，恢复自 cd5cada^） */
-.later-panel__empty {
-  margin: var(--space-4) 0 0;
-  color: var(--color-muted);
-  font-size: var(--font-size-body);
+.marks-dialog__toolbar {
+  padding-block: var(--space-3);
+  background: var(--color-canvas);
+  border-bottom: 1px solid var(--color-line);
 }
 
-.later-panel__badge {
+.marks-dialog__select-all {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  min-width: 1.25rem;
-  height: 1.25rem;
-  margin-left: 0.5rem;
-  padding: 0 0.375rem;
-  border-radius: var(--radius-circle);
-  background: var(--color-later);
-  color: var(--color-surface);
-  font-size: var(--font-size-xs);
-  font-weight: 600;
-  vertical-align: middle;
-}
-
-.later-panel__error {
-  margin-top: var(--space-3);
-}
-
-.later-panel__section {
-  margin: var(--space-4) 0 var(--space-2);
+  gap: var(--space-2);
   color: var(--color-muted);
   font-size: var(--font-size-sm);
-  font-weight: 600;
 }
 
-.later-panel__list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+.marks-dialog__state {
   margin: 0;
-  padding: 0;
+  padding: var(--space-6);
+  color: var(--color-muted);
+}
+
+.marks-dialog__list {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-4);
+  overflow-y: auto;
   list-style: none;
 }
 
-.later-item {
-  padding: 0.375rem;
+.mark-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-3);
   border: 1px solid var(--color-line);
   border-radius: var(--radius-control);
   background: var(--color-canvas);
 }
 
-.later-item__open {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
+.mark-card__check {
+  margin-top: 0.35rem;
+}
+
+.mark-card__open {
+  display: grid;
+  gap: var(--space-2);
   min-width: 0;
-  width: 100%;
-  padding: 0.375rem;
+  padding: var(--space-2);
   border: 0;
   border-radius: var(--radius-control);
   background: transparent;
@@ -2115,38 +2192,64 @@ button.model-status {
   cursor: pointer;
 }
 
-.later-item__open:hover {
-  background: var(--color-surface);
+.mark-card__open:hover {
+  background: var(--color-surface-hover);
 }
 
-.later-item__excerpt {
+.mark-card__excerpt {
   color: var(--color-ink);
-  font-size: var(--font-size-body);
-  line-height: 1.4;
+  line-height: 1.45;
   overflow-wrap: anywhere;
 }
 
-.later-item__note {
-  color: var(--color-muted);
-  font-size: var(--font-size-sm);
-  line-height: 1.4;
-  overflow-wrap: anywhere;
-}
-
-.later-item__meta {
+.mark-card__meta {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
+  justify-content: space-between;
+  gap: var(--space-2);
   color: var(--color-muted);
-  font-size: 0.75rem;
+  font-size: var(--font-size-xs);
 }
 
-.later-item__source {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.mark-card__note {
+  grid-column: 2;
+  display: grid;
+  gap: var(--space-1);
+  color: var(--color-muted);
+  font-size: var(--font-size-xs);
+}
+
+.mark-card__note textarea {
+  width: 100%;
+  resize: vertical;
+  padding: var(--space-2);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font: inherit;
+  line-height: 1.4;
+}
+
+.marks-dialog__error {
+  margin: 0;
+  padding: 0 var(--space-4) var(--space-4);
+  color: var(--color-danger);
+  font-size: var(--font-size-caption);
+}
+
+@media (max-width: 520px) {
+  .marks-dialog__backdrop {
+    padding: var(--space-2);
+  }
+
+  .marks-dialog {
+    max-height: calc(100dvh - var(--space-4));
+  }
+
+  .mark-card__note {
+    grid-column: 1 / -1;
+  }
 }
 
 .selection-panel__later-saved {

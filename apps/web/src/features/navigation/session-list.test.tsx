@@ -57,6 +57,23 @@ describe("SessionListPanel 会话分组树", () => {
     expect(screen.getByRole("link", { name: /零散想法/ })).toHaveAttribute("href", "/research/s-3");
   });
 
+  it("收藏会话在各自分组内置顶，并保留已收藏标识", async () => {
+    const projects = [makeProject({ id: "p-1", name: "学习项目" })];
+    const sessions = [
+      makeSession({ id: "s-new", title: "较新普通会话", projectId: "p-1", isFavorite: false, updatedAt: "2026-08-10T10:00:00.000Z" }),
+      makeSession({ id: "s-favorite", title: "收藏会话", projectId: "p-1", isFavorite: true, updatedAt: "2026-08-09T10:00:00.000Z" }),
+    ];
+    renderPanel(apiWith({ listProjects: async () => projects, listResearchSessions: async () => sessions }));
+
+    const links = await screen.findAllByRole("link");
+    const sessionLinks = links.filter((link) => link.getAttribute("href")?.startsWith("/research/"));
+    expect(sessionLinks.map((link) => link.textContent)).toEqual([
+      expect.stringContaining("收藏会话"),
+      expect.stringContaining("较新普通会话"),
+    ]);
+    expect(screen.getByLabelText("已收藏")).toHaveTextContent("★");
+  });
+
   it("项目组可折叠，折叠态持久化到 localStorage", async () => {
     localStorage.setItem("collector:session-collapsed", JSON.stringify({ "p-1": true }));
     const projects = [makeProject({ id: "p-1", name: "工作项目" })];
