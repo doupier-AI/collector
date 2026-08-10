@@ -219,6 +219,27 @@ test("单层级侧栏：收展无残留 + 底部设置聚合菜单真实导航�
   await expect(nav.getByText("最近研究")).toBeVisible();
 });
 
+test("自动融合设置页：正文与左右侧栏之间保留页面留白", async ({ page }) => {
+  await pairAndOpen(page, "/settings/fusion");
+
+  for (const width of [320, 1024, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    const geometry = await page.evaluate(() => {
+      const main = document.querySelector<HTMLElement>(".app-main");
+      const heading = document.querySelector<HTMLElement>('[aria-label="自动融合"] :is(h1, h2)');
+      if (!main || !heading) throw new Error("自动融合设置页尚未渲染");
+      const mainRect = main.getBoundingClientRect();
+      const headingRect = heading.getBoundingClientRect();
+      return {
+        leftGap: headingRect.left - mainRect.left,
+        headingRightGap: mainRect.right - headingRect.right,
+      };
+    });
+    expect(geometry.leftGap).toBeGreaterThanOrEqual(16);
+    expect(geometry.headingRightGap).toBeGreaterThanOrEqual(16);
+  }
+});
+
 test("⋯ 菜单在可滚动侧栏中不漂移不被裁剪（#10）", async ({ page }) => {
   await pairAndOpen(page, "/research/new");
   // 造 3 个项目 × 各 1 会话，让侧栏出现分组与 ⋯ 菜单

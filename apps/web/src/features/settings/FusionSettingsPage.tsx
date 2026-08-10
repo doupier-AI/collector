@@ -52,19 +52,25 @@ export function FusionSettingsPage() {
   );
 
   if (state.kind === "loading") {
-    return <p className="settings-status">正在读取自动融合设置…</p>;
+    return (
+      <div className="page">
+        <p className="settings-status">正在读取自动融合设置…</p>
+      </div>
+    );
   }
   if (state.kind === "error") {
     return (
-      <p className="settings-status settings-status--error" role="alert">
-        {state.message}
-      </p>
+      <div className="page">
+        <p className="settings-status settings-status--error" role="alert">
+          {state.message}
+        </p>
+      </div>
     );
   }
 
   return (
-    <section className="settings-profile-list" aria-label="自动融合">
-      <h2 className="settings-profile-list__title">自动融合</h2>
+    <section className="page" aria-label="自动融合">
+      <h1 className="page__title">自动融合</h1>
       <p className="settings-form__hint">
         开启后，进入或刷新研究节点页时自动扫描相似概念。同一实体与共享概念的提议自动生成融合节点并标记「自动生成」；
         类比与对比保持逐条确认的弱提示。自动融合不改变来源可回溯与跨领域同名判定规则，只处理开启后新出现的提议。
