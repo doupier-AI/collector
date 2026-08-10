@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { SidebarResizeHandle } from "../../components/AppShell/SidebarResizeHandle";
+import { ThemeSwitcher } from "../theme/theme";
 import { SessionListPanel } from "./SessionListPanel";
 
 export interface ContentDrawerProps {
@@ -126,20 +127,6 @@ function SettingsGlyph() {
   );
 }
 
-function ThemeGlyph() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-      <path
-        d="M10 2.75a7.25 7.25 0 1 0 7.25 7.25A5.5 5.5 0 0 1 10 2.75Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
 /** 侧栏展开/收起的「面板」图标（与顶栏「内容」按钮同源）；
  *  isLeftPanel=false 时镜像为「向右收起/展开」方向（左栏收起 = 面板向左合拢）。 */
 function SidebarGlyph({ isLeftPanel = true }: { isLeftPanel?: boolean }) {
@@ -244,12 +231,6 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
 
   const { pathname } = useLocation();
   const sessionsActive = pathname === "/" || pathname.startsWith("/research");
-  // 主题口暂为临时浅/深切换占位；完整三态（浅/深/跟随系统）+ 持久化由 #55 落地。
-  const toggleTheme = useCallback(() => {
-    const root = document.documentElement;
-    root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
-  }, []);
-
   const openSearch = useCallback(() => {
     setCollapsed(false);
     setSearchOpen(true);
@@ -312,9 +293,7 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
               </RailButton>
               {settingsMenu}
             </div>
-            <RailButton label="切换主题" onClick={toggleTheme}>
-              <ThemeGlyph />
-            </RailButton>
+            <ThemeSwitcher variant="rail" />
           </div>
         ) : (
           /* ── 展开态：完整侧栏 ──
@@ -379,10 +358,7 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
                 </button>
                 {settingsMenu}
               </div>
-              <button type="button" className="side-detail__settings" aria-label="切换主题" onClick={toggleTheme}>
-                <ThemeGlyph />
-                <span>主题</span>
-              </button>
+              <ThemeSwitcher variant="detail" />
             </div>
 
             {mode === "fixed" ? (

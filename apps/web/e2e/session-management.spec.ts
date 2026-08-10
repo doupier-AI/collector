@@ -187,7 +187,7 @@ test("单层级侧栏：收展无残留 + 底部设置聚合菜单真实导航�
 
   // 展开态底部保持单列：主题必须完整落在设置下方，不能并排跑到设置右侧。
   const settingsBox = await nav.getByRole("button", { name: "设置" }).boundingBox();
-  const themeBox = await nav.getByRole("button", { name: "切换主题" }).boundingBox();
+  const themeBox = await nav.getByRole("button", { name: "主题：跟随系统" }).boundingBox();
   expect(settingsBox).not.toBeNull();
   expect(themeBox).not.toBeNull();
   expect(themeBox!.y).toBeGreaterThanOrEqual(settingsBox!.y + settingsBox!.height);
@@ -213,13 +213,73 @@ test("单层级侧栏：收展无残留 + 底部设置聚合菜单真实导航�
   await expect(nav.getByText("最近研究")).not.toBeVisible();
   await expect(nav.getByRole("button", { name: "展开侧栏" })).toBeVisible();
   await expect(nav.getByRole("link", { name: "会话", exact: true })).toBeVisible();
-  await expect(nav.getByRole("button", { name: "切换主题" })).toBeVisible();
+  await expect(nav.getByRole("button", { name: "主题：跟随系统" })).toBeVisible();
 
   // 收起态点「设置」：一次点击同时展开侧栏并打开菜单，无需先手动展开
   await nav.getByRole("button", { name: "设置" }).click();
   await expect(nav.getByText("最近研究")).toBeVisible();
   await expect(nav.getByRole("button", { name: "收起侧栏" })).toBeVisible();
   await expect(nav.getByRole("menu", { name: "设置" })).toBeVisible();
+  expect(browserIssues.issues, browserIssues.issues.join("\n")).toEqual([]);
+});
+
+test("主题三态：手动选择优先、刷新保持、跟随系统实时响应（#55）", async ({ page }) => {
+  const browserIssues = trackBrowserIssues(page);
+  await page.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" });
+  await pairAndOpen(page, "/research/new");
+
+  const nav = page.getByRole("navigation", { name: "内容导航" });
+  const canvasColor = () =>
+    page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--color-canvas").trim().toLowerCase());
+
+  // 默认跟随系统；浅色系统下使用浅色令牌。
+  await expect(nav.getByRole("button", { name: "主题：跟随系统" })).toBeVisible();
+  await expect.poll(canvasColor).toBe("#faf9f5");
+
+  // 手动深色优先于当前浅色系统，并在刷新后保持。
+  await nav.getByRole("button", { name: "主题：跟随系统" }).click();
+  await nav.getByRole("radio", { name: "深色" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect.poll(canvasColor).toBe("#262624");
+  await page.reload();
+  await expect(nav.getByRole("button", { name: "主题：深色" })).toBeVisible();
+  await expect.poll(canvasColor).toBe("#262624");
+
+  // 手动浅色同样优先于深色系统。
+  await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
+  await nav.getByRole("button", { name: "主题：深色" }).click();
+  await nav.getByRole("radio", { name: "浅色" }).click();
+  await expect.poll(canvasColor).toBe("#faf9f5");
+
+  // 切回跟随系统后，系统变化不需刷新即可切换令牌。
+  await nav.getByRole("button", { name: "主题：浅色" }).click();
+  await nav.getByRole("radio", { name: "跟随系统" }).click();
+  await expect.poll(canvasColor).toBe("#262624");
+  await page.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" });
+  await expect.poll(canvasColor).toBe("#faf9f5");
+
+  // 320px 常驻 rail 仍能打开完整三态；当前 radio 获焦后可用方向键选择，弹层不溢出视口。
+  await page.setViewportSize({ width: 320, height: 800 });
+  await page.reload();
+  await nav.getByRole("button", { name: "主题：跟随系统" }).click();
+  const themeGroup = nav.getByRole("radiogroup", { name: "选择主题" });
+  await expect(themeGroup).toBeVisible();
+  const groupBox = await themeGroup.boundingBox();
+  expect(groupBox).not.toBeNull();
+  expect(groupBox!.x).toBeGreaterThanOrEqual(0);
+  expect(groupBox!.x + groupBox!.width).toBeLessThanOrEqual(320);
+  const groupCenterIsClickable = await page.evaluate(({ x, y }) => {
+    const hit = document.elementFromPoint(x, y);
+    return Boolean(hit?.closest(".theme-switcher__popover"));
+  }, {
+    x: groupBox!.x + groupBox!.width / 2,
+    y: groupBox!.y + groupBox!.height / 2,
+  });
+  expect(groupCenterIsClickable, "窄 rail 的主题弹层不能被侧栏 overflow 裁剪").toBe(true);
+  await page.keyboard.press("ArrowRight");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect(nav.getByRole("button", { name: "主题：浅色" })).toBeFocused();
+
   expect(browserIssues.issues, browserIssues.issues.join("\n")).toEqual([]);
 });
 

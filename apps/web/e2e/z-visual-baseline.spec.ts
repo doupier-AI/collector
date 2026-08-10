@@ -143,10 +143,10 @@ test.describe("#44 视觉回归基线", () => {
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
-  test("深色主题：深色工作台外壳 + 浅色阅读面像素基线（ADR-0017）", async ({ page }) => {
+  test("深色主题：ADR-0019 整站深色工作台像素基线", async ({ page }) => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);
-    // 模拟深色：触发 tokens.css 深色令牌块（外壳近黑 + 芽绿强调），正文阅读面保持浅色
+    // 默认“跟随系统”：模拟深色后，外壳与正文阅读区共同使用 ADR-0019 深色令牌。
     await page.emulateMedia({ colorScheme: "dark" });
     await openSession(page);
     await expect(page.locator(".slice-card")).toHaveCount(3);

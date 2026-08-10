@@ -156,7 +156,7 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
     expect(within(nav).queryByRole("separator", { name: "调整内容侧栏宽度" })).not.toBeInTheDocument();
     expect(within(nav).getByRole("link", { name: "会话" })).toBeInTheDocument();
     expect(within(nav).getByRole("button", { name: "展开侧栏" })).toBeInTheDocument();
-    expect(within(nav).getByRole("button", { name: "切换主题" })).toBeInTheDocument();
+    expect(within(nav).getByRole("button", { name: "主题：跟随系统" })).toBeInTheDocument();
     // 再展开：恢复完整侧栏
     await user.click(within(nav).getByRole("button", { name: "展开侧栏" }));
     expect(within(nav).getByText("最近研究")).toBeInTheDocument();

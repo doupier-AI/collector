@@ -539,7 +539,7 @@ button {
 
 .slice-card {
   min-width: 0;
-  /* 手稿阅读面（ADR-0017）：每张语义卡片是一页浅纸，padding 只增内边距、不动布局定位；
+  /* 连续阅读面：每张语义卡片使用当前主题的阅读令牌，padding 只增内边距、不动布局定位；
      选区/引用偏移基于正文 DOM 不受卡片内边距影响。 */
   padding: var(--space-4) var(--space-5);
   background: var(--color-reading-bg);
@@ -584,8 +584,7 @@ button {
 
 .slice-card__title {
   margin: 0 0 var(--space-3);
-  /* 阅读面令牌（浅色=--color-ink，深色浅色阅读面=深墨）：
-     标题是阅读面一部分，深色主题下不能跟随外壳变亮。 */
+  /* 标题是阅读面的一部分，随当前浅/深阅读令牌保持对比。 */
   color: var(--color-reading-ink);
   font-family: var(--font-serif);
   font-size: var(--font-size-xl);

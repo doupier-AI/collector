@@ -127,6 +127,75 @@
   width: 100%;
 }
 
+.theme-switcher {
+  position: relative;
+}
+
+.theme-switcher--detail {
+  width: 100%;
+}
+
+.theme-switcher__value {
+  margin-left: auto;
+  color: var(--color-muted);
+  font-size: var(--font-size-xs);
+}
+
+.theme-switcher__popover {
+  position: absolute;
+  bottom: calc(100% + var(--space-1));
+  left: 0;
+  z-index: var(--z-popover);
+  display: grid;
+  gap: var(--space-1);
+  min-width: 11rem;
+  padding: var(--space-2);
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-button);
+  box-shadow: var(--shadow-panel);
+}
+
+.theme-switcher--rail .theme-switcher__popover {
+  bottom: 0;
+  left: calc(100% + var(--space-1));
+}
+
+/* 收起 rail 的父 drawer 默认裁剪溢出；主题三态从 rail 向右弹出时必须完整可见、可点击。 */
+.drawer.side-drawer--collapsed {
+  overflow: visible;
+}
+
+.theme-switcher__option {
+  display: grid;
+  grid-template-columns: auto 1.25rem 1fr;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 2.25rem;
+  padding: 0.375rem 0.5rem;
+  border-radius: var(--radius-control);
+  color: var(--color-ink);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.theme-switcher__option:hover {
+  background: var(--color-surface-hover);
+}
+
+.theme-switcher__option:has(input:checked) {
+  background: color-mix(in srgb, var(--color-ai) 14%, var(--color-surface));
+  color: var(--color-ai);
+}
+
+.theme-switcher__option input {
+  margin: 0;
+}
+
+.theme-switcher__option:has(input:focus-visible) {
+  box-shadow: var(--ring-focus);
+}
+
 .side-detail__settings {
   display: flex;
   align-items: center;
@@ -199,7 +268,8 @@
 @media (prefers-reduced-motion: reduce) {
   .side-drawer,
   .side-rail__button,
-  .side-detail__settings {
+  .side-detail__settings,
+  .theme-switcher__option {
     transition: none;
   }
 }
