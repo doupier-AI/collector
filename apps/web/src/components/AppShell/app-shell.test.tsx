@@ -57,12 +57,13 @@ afterEach(() => {
 });
 
 describe("AppShell 宽屏（≥900px）固定侧栏", () => {
-  it("左右侧栏初始展开，顶栏为图标按钮", async () => {
+  it("左侧栏常驻展开，顶栏不再有整体隐藏左侧栏入口", async () => {
     stubMatchMedia(true);
     renderShell();
 
-    expect(screen.getByRole("button", { name: "内容" })).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("button", { name: "标记" })).toHaveAttribute("aria-expanded", "true");
+    // 顶栏不再有「内容」按钮（旧的「点了整个侧栏连带按钮消失」入口已删除）
+    expect(screen.queryByRole("button", { name: "内容" })).not.toBeInTheDocument();
+    // 左侧栏常驻展开、右侧栏初始展开
     expect(await screen.findByRole("navigation", { name: "内容导航" })).toBeInTheDocument();
     expect(screen.getByRole("complementary", { name: "标记" })).toBeInTheDocument();
     expect(await screen.findByTestId("mark-empty")).toBeInTheDocument();
@@ -120,21 +121,20 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
     expect(rightHandle).toHaveAttribute("aria-valuenow", "280");
   });
 
-  it("点击图标按钮收起/展开对应侧栏", async () => {
+  it("点击图标按钮收起/展开右侧标记栏（左侧栏常驻无此入口）", async () => {
     stubMatchMedia(true);
     const user = userEvent.setup();
     renderShell();
 
-    const nav = await screen.findByRole("navigation", { name: "内容导航" });
-    await user.click(screen.getByRole("button", { name: "内容" }));
-    expect(nav).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "内容" })).toHaveAttribute("aria-expanded", "false");
-
-    await user.click(screen.getByRole("button", { name: "内容" }));
+    // 左侧栏常驻，顶栏无「内容」按钮
+    expect(screen.queryByRole("button", { name: "内容" })).not.toBeInTheDocument();
     expect(await screen.findByRole("navigation", { name: "内容导航" })).toBeInTheDocument();
 
+    // 右侧标记栏仍由顶栏「标记」按钮开合
     await user.click(screen.getByRole("button", { name: "标记" }));
     expect(screen.queryByRole("complementary", { name: "标记" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "标记" }));
+    expect(screen.getByRole("complementary", { name: "标记" })).toBeInTheDocument();
   });
 
   it("单层级收展：收起为干净图标 rail 无残留详情，再展开恢复完整侧栏", async () => {
@@ -309,39 +309,41 @@ describe("researchMapTargetForPath", () => {
   });
 });
 
-describe("AppShell 窄屏（<900px）覆盖抽屉", () => {
-  it("默认收起，点击展开带遮罩，Escape 关闭后焦点回到触发按钮", async () => {
+describe("AppShell 窄屏（<900px）窄 rail 常驻 + 覆盖抽屉", () => {
+  it("窄屏默认常驻窄 rail，点展开图标开覆盖抽屉带遮罩，Escape 收起回 rail", async () => {
     stubMatchMedia(false);
     const user = userEvent.setup();
     renderShell();
 
-    expect(screen.queryByRole("navigation", { name: "内容导航" })).not.toBeInTheDocument();
+    // 初始：窄 rail 常驻（内容导航可见但为收起 rail，无遮罩），右侧标记栏默认收起
+    const nav = await screen.findByRole("navigation", { name: "内容导航" });
+    expect(within(nav).getByRole("button", { name: "展开侧栏" })).toBeInTheDocument();
+    expect(document.querySelector(".panel-backdrop")).toBeNull();
     expect(screen.queryByRole("complementary", { name: "标记" })).not.toBeInTheDocument();
 
-    const trigger = screen.getByRole("button", { name: "内容" });
-    expect(trigger).toHaveAttribute("aria-expanded", "false");
-    await user.click(trigger);
-
-    expect(await screen.findByRole("navigation", { name: "内容导航" })).toBeInTheDocument();
+    // 点 rail 上的「展开侧栏」：展开为覆盖抽屉，出现遮罩
+    await user.click(within(nav).getByRole("button", { name: "展开侧栏" }));
+    expect(within(nav).getByText("最近研究")).toBeInTheDocument();
     expect(document.querySelector(".panel-backdrop")).not.toBeNull();
-    expect(trigger).toHaveAttribute("aria-expanded", "true");
 
+    // Escape：收起回窄 rail，遮罩消失
     await user.keyboard("{Escape}");
-    expect(screen.queryByRole("navigation", { name: "内容导航" })).not.toBeInTheDocument();
-    expect(trigger).toHaveFocus();
-    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(within(nav).queryByText("最近研究")).not.toBeInTheDocument();
+    expect(document.querySelector(".panel-backdrop")).toBeNull();
   });
 
-  it("窄屏一次只展开一个侧栏", async () => {
+  it("窄屏左侧栏常驻，标记覆盖抽屉开合不影响左侧 rail", async () => {
     stubMatchMedia(false);
     const user = userEvent.setup();
     renderShell();
 
-    await user.click(screen.getByRole("button", { name: "内容" }));
-    expect(await screen.findByRole("navigation", { name: "内容导航" })).toBeInTheDocument();
+    // 左侧窄 rail 常驻
+    const nav = await screen.findByRole("navigation", { name: "内容导航" });
+    expect(within(nav).getByRole("button", { name: "展开侧栏" })).toBeInTheDocument();
 
+    // 打开右侧标记覆盖抽屉：左侧 rail 仍在
     await user.click(screen.getByRole("button", { name: "标记" }));
-    expect(screen.queryByRole("navigation", { name: "内容导航" })).not.toBeInTheDocument();
     expect(await screen.findByRole("complementary", { name: "标记" })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "内容导航" })).toBeInTheDocument();
   });
 });

@@ -45,14 +45,21 @@ async function openResearchMap(page: import("@playwright/test").Page): Promise<i
  * 收起宽屏默认展开的两侧固定侧栏：全量运行时同一 harness 数据库会累积其他测试
  * 创建的会话，「内容」抽屉的会话列表会污染节点页视口截图（单独运行不显现）。
  * 基线聚焦正文视觉秩序，不依赖侧栏内容。
+ * 左侧栏顶栏「内容」整体隐藏入口已删，改用侧栏内部「收起侧栏」收成窄 rail（同样让会话列表退出截图）。
  */
 async function closeSidebars(page: import("@playwright/test").Page): Promise<void> {
-  for (const label of ["内容", "标记"]) {
-    const trigger = page.getByRole("button", { name: label, exact: true });
-    if ((await trigger.getAttribute("aria-expanded")) === "true") {
-      await trigger.click();
-      await expect(trigger).toHaveAttribute("aria-expanded", "false");
-    }
+  // 左侧内容栏：收起为窄 rail（展开态才有「收起侧栏」按钮）
+  const nav = page.getByRole("navigation", { name: "内容导航" });
+  const collapse = nav.getByRole("button", { name: "收起侧栏" });
+  if (await collapse.count()) {
+    await collapse.click();
+    await expect(nav.getByRole("button", { name: "展开侧栏" })).toBeVisible();
+  }
+  // 右侧标记栏：顶栏按钮整体隐藏
+  const marks = page.getByRole("button", { name: "标记", exact: true });
+  if ((await marks.getAttribute("aria-expanded")) === "true") {
+    await marks.click();
+    await expect(marks).toHaveAttribute("aria-expanded", "false");
   }
 }
 

@@ -11,7 +11,8 @@ export interface ContentDrawerProps {
   onWidthChange: (width: number) => void;
   /** 收起态变化时通知父级（用于在 .app-shell 根上标记真实收展状态，供章节导航让位）。 */
   onCollapsedChange?: (collapsed: boolean) => void;
-  onClose: () => void;
+  /** 窄屏 overlay 下「关闭抽屉」的回调；缺省时内部回退为「收起回窄 rail」（collapse）。 */
+  onClose?: () => void;
 }
 
 /** 单层级侧栏收起态的图标 rail 宽度；展开态默认宽度。 */
@@ -141,6 +142,24 @@ function ThemeGlyph() {
   );
 }
 
+/** 侧栏展开/收起的「面板」图标（与顶栏「内容」按钮同源）；
+ *  isLeftPanel=false 时镜像为「向右收起/展开」方向（左栏收起 = 面板向左合拢）。 */
+function SidebarGlyph({ isLeftPanel = true }: { isLeftPanel?: boolean }) {
+  return (
+    <svg
+      width="20"
+      height="20"
+      viewBox="0 0 20 20"
+      aria-hidden="true"
+      focusable="false"
+      style={isLeftPanel ? undefined : { transform: "scaleX(-1)" }}
+    >
+      <rect x="2.75" y="3.75" width="14.5" height="12.5" rx="2.75" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <line x1="7.75" y1="4.5" x2="7.75" y2="15.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 /**
  * 左侧内容导航：单层级可整体收展侧栏（取代旧双层级 rail + detail）。
  * - 展开态：顶部按钮组（收起/搜索/新建会话）+ 会话分组列表 + 底部设置聚合菜单与主题口。
@@ -153,9 +172,12 @@ export function ContentDrawer({ mode, width, onWidthChange, onCollapsedChange, o
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     try {
-      return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
+      const saved = localStorage.getItem(SIDEBAR_COLLAPSED_KEY);
+      // 无持久化偏好时：窄屏（overlay）默认收起成窄 rail 常驻，宽屏默认展开。
+      if (saved === null) return mode === "overlay";
+      return saved === "1";
     } catch {
-      return false;
+      return mode === "overlay";
     }
   });
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -169,14 +191,37 @@ export function ContentDrawer({ mode, width, onWidthChange, onCollapsedChange, o
     onCollapsedChange?.(collapsed);
   }, [collapsed, onCollapsedChange]);
 
+  // 窄屏 overlay 展开成覆盖抽屉时，焦点进入「关闭」按钮（rail 常驻态不抢焦点）
   useEffect(() => {
-    if (mode === "overlay") closeButtonRef.current?.focus();
+    if (mode === "overlay" && !collapsed) closeButtonRef.current?.focus();
+  }, [mode, collapsed]);
+
+  // 宽↔窄 mode 翻转时重置收展态为该 mode 默认（窄屏 rail、宽屏展开）。
+  // 初始值只在挂载时读一次，运行时视口切换组件不重挂，需显式响应 mode 变化。
+  const prevModeRef = useRef(mode);
+  useEffect(() => {
+    if (prevModeRef.current === mode) return;
+    prevModeRef.current = mode;
+    setCollapsed(mode === "overlay");
   }, [mode]);
 
   // 搜索框展开时聚焦输入
   useEffect(() => {
     if (searchOpen) searchInputRef.current?.focus();
   }, [searchOpen]);
+
+  const expand = useCallback(() => setCollapsed(false), []);
+  const collapse = useCallback(() => {
+    setCollapsed(true);
+    setSettingsOpen(false);
+    setSearchOpen(false);
+  }, []);
+
+  /* 窄屏 overlay 下「关闭」= 外部 onClose 或回退为「收起回窄 rail」（rail 常驻模型）。 */
+  const close = useCallback(() => {
+    if (onClose) onClose();
+    else collapse();
+  }, [onClose, collapse]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -188,17 +233,17 @@ export function ContentDrawer({ mode, width, onWidthChange, onCollapsedChange, o
           settingsButtonRef.current?.focus();
           return;
         }
-        onClose();
+        close();
       }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose, settingsOpen]);
+  }, [close, settingsOpen]);
 
   const handleNavigate = useCallback(() => {
-    if (mode === "overlay") onClose();
+    if (mode === "overlay") close();
     setSettingsOpen(false);
-  }, [mode, onClose]);
+  }, [mode, close]);
 
   const { pathname } = useLocation();
   const sessionsActive = pathname === "/" || pathname.startsWith("/research");
@@ -206,13 +251,6 @@ export function ContentDrawer({ mode, width, onWidthChange, onCollapsedChange, o
   const toggleTheme = useCallback(() => {
     const root = document.documentElement;
     root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
-  }, []);
-
-  const expand = useCallback(() => setCollapsed(false), []);
-  const collapse = useCallback(() => {
-    setCollapsed(true);
-    setSettingsOpen(false);
-    setSearchOpen(false);
   }, []);
 
   const openSearch = useCallback(() => {
@@ -240,7 +278,8 @@ export function ContentDrawer({ mode, width, onWidthChange, onCollapsedChange, o
 
   return (
     <>
-      {mode === "overlay" ? <div className="panel-backdrop" onClick={onClose} aria-hidden="true" /> : null}
+      {/* 遮罩只在窄屏「展开成覆盖抽屉」时出现；rail 常驻态不遮罩正文。 */}
+      {mode === "overlay" && !collapsed ? <div className="panel-backdrop" onClick={close} aria-hidden="true" /> : null}
       <nav
         className={`drawer side-drawer${mode === "fixed" ? " drawer--fixed" : ""}${collapsed ? " side-drawer--collapsed" : ""}`}
         id="content-drawer"
@@ -270,9 +309,7 @@ export function ContentDrawer({ mode, width, onWidthChange, onCollapsedChange, o
               <ThemeGlyph />
             </RailButton>
             <RailButton label="展开侧栏" onClick={expand}>
-              <span className="side-rail__caret side-rail__caret--expand" aria-hidden="true">
-                ▸
-              </span>
+              <SidebarGlyph />
             </RailButton>
           </div>
         ) : (
@@ -280,9 +317,7 @@ export function ContentDrawer({ mode, width, onWidthChange, onCollapsedChange, o
           <div className="side-detail">
             <div className="side-detail__top">
               <RailButton label="收起侧栏" onClick={collapse}>
-                <span className="side-rail__caret" aria-hidden="true">
-                  ◂
-                </span>
+                <SidebarGlyph isLeftPanel={false} />
               </RailButton>
               <RailButton label="搜索会话" pressed={searchOpen} onClick={() => setSearchOpen((value) => !value)}>
                 <SearchGlyph />
@@ -292,7 +327,7 @@ export function ContentDrawer({ mode, width, onWidthChange, onCollapsedChange, o
               </RailLink>
               <span className="side-detail__top-spacer" />
               {mode === "overlay" ? (
-                <button type="button" ref={closeButtonRef} className="drawer__close" onClick={onClose}>
+                <button type="button" ref={closeButtonRef} className="drawer__close" onClick={close}>
                   关闭
                 </button>
               ) : null}

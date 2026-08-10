@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { ProjectRecord, ResearchSessionRecord } from "@collector/capture-contracts";
 import { useServices } from "../../app/services";
@@ -89,10 +89,32 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
       return;
     }
     const rect = event.currentTarget.getBoundingClientRect();
-    // 贴按钮下缘、右对齐按钮右缘；视口钳制在 CSS（max-height + 右侧 inset）兜底。
-    setMenuAnchor({ top: rect.bottom + 4, left: rect.right });
+    // 贴按钮下缘、右对齐按钮右缘；横向钳制在 CSS（max-width + 右侧 inset）兜底。
+    // 纵向在此钳制：按钮靠近视口底缘时，贴下缘会把菜单顶出底部（max-height 只限高、不移位），
+    // 与浮动胶囊同一类「只翻转不钳制」缺口。先按估计高预钳，挂载后用真实高再精钳（见 menuRef effect）。
+    const margin = 8;
+    const estimated = Math.min(320, window.innerHeight - margin * 2);
+    const top = Math.min(rect.bottom + 4, Math.max(margin, window.innerHeight - estimated - margin));
+    setMenuAnchor({ top, left: rect.right });
     setMenuFor(target);
   };
+
+  // 菜单挂载后用真实高度精钳 top：估计高偏保守，真实高更矮时把菜单对齐到「底缘贴视口底 - 边距」，
+  // 既消除底部溢出又避免过高估计把菜单抬得离触发按钮太远。
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!menuFor || !menuAnchor) return;
+    const el = menuRef.current;
+    if (!el) return;
+    const margin = 8;
+    const height = el.offsetHeight;
+    setMenuAnchor((anchor) => {
+      if (!anchor) return anchor;
+      const clamped = Math.min(anchor.top, Math.max(margin, window.innerHeight - height - margin));
+      return clamped === anchor.top ? anchor : { ...anchor, top: clamped };
+    });
+    // 仅在打开的目标/锚点变化时精钳一次
+  }, [menuFor]);
 
   // 菜单打开期间滚动/resize 会使锚点失效：直接关闭，避免固定在旧坐标漂移。
   useEffect(() => {
@@ -363,7 +385,7 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
   const renderSessionMenu = (session: ResearchSessionRecord) => (
     <>
       <button type="button" className="session-menu__overlay" aria-label="关闭菜单" onClick={closeMenu} />
-      <div className="session-menu" role="menu" aria-label={`${session.title} 的操作`} style={menuStyle}>
+      <div ref={menuRef} className="session-menu" role="menu" aria-label={`${session.title} 的操作`} style={menuStyle}>
         <button type="button" role="menuitem" className="session-menu__item" onClick={() => startRename(session.id, session.title)}>
           重命名
         </button>
@@ -411,7 +433,7 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
   const renderProjectMenu = (projectId: string, name: string) => (
     <>
       <button type="button" className="session-menu__overlay" aria-label="关闭菜单" onClick={closeMenu} />
-      <div className="session-menu" role="menu" aria-label={`${name} 的操作`} style={menuStyle}>
+      <div ref={menuRef} className="session-menu" role="menu" aria-label={`${name} 的操作`} style={menuStyle}>
         <button type="button" role="menuitem" className="session-menu__item" onClick={() => startRename(projectId, name)}>
           重命名
         </button>

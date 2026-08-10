@@ -39,11 +39,12 @@ test("首次打开显示开始页与空状态邀请", async ({ page }) => {
   await expect(page.getByRole("complementary", { name: "标记" })).toBeVisible();
   await expect(page.getByTestId("mark-empty")).toBeVisible();
 
-  // 顶栏图标按钮收起再展开
-  await page.getByRole("button", { name: "内容" }).click();
-  await expect(nav).toBeHidden();
-  await page.getByRole("button", { name: "内容" }).click();
-  await expect(nav).toBeVisible();
+  // 左侧栏收展由侧栏内部按钮控制（顶栏已无「内容」整体隐藏入口）：收起为窄 rail 再展开
+  await nav.getByRole("button", { name: "收起侧栏" }).click();
+  await expect(page.getByText(/还没有研究会话/)).toBeHidden();
+  await expect(nav.getByRole("button", { name: "展开侧栏" })).toBeVisible();
+  await nav.getByRole("button", { name: "展开侧栏" }).click();
+  await expect(page.getByText(/还没有研究会话/)).toBeVisible();
 });
 
 test("提交后渐进内容进入同一条 AI 消息并完成，控制台无错误，网络符合契约", async ({ page }) => {
@@ -231,21 +232,25 @@ test("快速双击发送只创建一个任务", async ({ page }) => {
 });
 
 test("键盘完成侧栏收起与展开、输入与发送", async ({ page }) => {
-  // 宽屏固定侧栏默认展开：键盘收起后焦点留在触发按钮，再按一次重新展开
+  // 宽屏固定侧栏默认展开：键盘触发侧栏内部「收起侧栏」收成窄 rail，再用「展开侧栏」重新展开
   await page.setViewportSize({ width: 1024, height: 800 });
   await pairAndOpen(page, "/research/new");
 
   const nav = page.getByRole("navigation", { name: "内容导航" });
   await expect(nav).toBeVisible();
+  // 「最近研究」标题只在展开态出现（不依赖会话是否存在的空态文案，harness 可能已累积会话）
+  await expect(nav.getByText("最近研究")).toBeVisible();
 
-  const trigger = page.getByRole("button", { name: "内容" });
-  await trigger.focus();
+  const collapseTrigger = nav.getByRole("button", { name: "收起侧栏" });
+  await collapseTrigger.focus();
   await page.keyboard.press("Enter");
-  await expect(nav).toBeHidden();
-  await expect(trigger).toBeFocused();
+  await expect(nav.getByText("最近研究")).toBeHidden();
+  await expect(nav.getByRole("button", { name: "展开侧栏" })).toBeVisible();
 
+  const expandTrigger = nav.getByRole("button", { name: "展开侧栏" });
+  await expandTrigger.focus();
   await page.keyboard.press("Enter");
-  await expect(nav).toBeVisible();
+  await expect(nav.getByText("最近研究")).toBeVisible();
 
   const textarea = page.getByLabel("你的问题");
   await textarea.focus();
@@ -264,9 +269,21 @@ test("320/768/1024/1440 视口无横向溢出并留截图", async ({ page }) => 
   mkdirSync("e2e-artifacts", { recursive: true });
   for (const width of [320, 768, 1024, 1440]) {
     await page.setViewportSize({ width, height: 800 });
-    // 视口切换后等浏览器完成响应式重排再量：低负载时立即量通常已是终态，高负载下重排尚未
-    // 完成会捕到上一档布局的 scrollWidth（如 320px 下仍见宽屏三列的 528px）造成抖动失败。
-    // 等到 scrollWidth 收敛进视口（重排完成的可观测信号），再断最终值。
+    // 视口切换后等浏览器完成响应式重排再量。setViewportSize → 媒体查询 change → React 多次提交
+    // （mode 翻转 → setCollapsed effect）→ 样式重算 → 重排，全程异步；低负载立即量即终态，
+    // 高负载下会捕到重排前的瞬时 scrollWidth（如 320px 下仍见上一档 264px 内联宽刚清除、布局未重算）。
+    // 先等左侧栏到达该断点的结构性目标宽度（窄屏收起 rail=64px / 宽屏展开≥MIN），再等 scrollWidth
+    // 收敛进视口，最后断最终值——结构性等待比单纯轮询 scrollWidth 更能避开读到的中间过渡帧。
+    await page.waitForFunction(
+      (w) => {
+        const drawer = document.querySelector(".drawer.side-drawer");
+        if (!drawer) return true;
+        const dw = drawer.getBoundingClientRect().width;
+        return w < 900 ? dw <= 64 : dw >= 208;
+      },
+      width,
+      { timeout: 10_000 },
+    );
     await page.waitForFunction(
       () => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1,
       undefined,
@@ -278,8 +295,10 @@ test("320/768/1024/1440 视口无横向溢出并留截图", async ({ page }) => 
     }));
     expect(metrics.scrollWidth, `视口 ${width}px 不应横向溢出`).toBeLessThanOrEqual(metrics.clientWidth + 1);
     if (width < 900) {
-      // 窄屏：侧栏为覆盖抽屉，默认收起
-      await expect(page.getByRole("navigation", { name: "内容导航" })).toBeHidden();
+      // 窄屏：左侧栏为常驻窄 rail（收起态可见），右侧标记覆盖抽屉默认收起
+      const nav = page.getByRole("navigation", { name: "内容导航" });
+      await expect(nav).toBeVisible();
+      await expect(nav.getByRole("button", { name: "展开侧栏" })).toBeVisible();
       await expect(page.getByRole("complementary", { name: "标记" })).toBeHidden();
     } else {
       // 宽屏：左右固定侧栏默认展开

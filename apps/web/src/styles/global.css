@@ -1507,6 +1507,19 @@ button.model-status {
   display: flex;
 }
 
+/* 窄屏（<900px）常驻窄 rail：sticky 占位 64px 推开正文（不浮空遮挡），让出顶栏高度。
+ * 展开成覆盖抽屉（非收起态）保持 fixed 浮空 + 遮罩（临时弹层可盖顶栏与正文）。 */
+@media (max-width: 899.98px) {
+  .drawer.side-drawer--collapsed:not(.drawer--fixed) {
+    position: sticky;
+    top: var(--app-bar-height);
+    height: calc(100dvh - var(--app-bar-height));
+    flex: none;
+    z-index: 1;
+    animation: none;
+  }
+}
+
 .drawer.side-drawer .side-detail {
   padding: 0.875rem 1rem;
 }
@@ -1523,8 +1536,10 @@ button.model-status {
   animation: none;
 }
 
-/* 固定侧栏收起态：整体收成 64px rail（覆盖 React 内联的展开宽度） */
-.drawer--fixed.side-drawer--collapsed {
+/* 侧栏收起态：整体收成 64px rail。
+ * 特异性抬到 .drawer.side-drawer--collapsed：盖过 .drawer 的 width:var(--drawer-width)（同特异性会被源码顺序在后的 .drawer 赢）。
+ * 宽屏覆盖 React 内联宽度、窄屏覆盖 .drawer 默认宽度；不设 max-width（.drawer 的 85vw 已够，额外 max-width 会误伤宽屏展开）。 */
+.drawer.side-drawer--collapsed {
   width: 4rem;
 }
 
@@ -1536,6 +1551,13 @@ button.model-status {
 
 .drawer--fixed.side-drawer .side-rail {
   height: 100%;
+}
+
+/* 单层级侧栏展开态：会话列表弹性撑满顶部按钮组与底部设置栏之间的剩余高度，
+ * 让侧栏在视觉上占满整个顶栏以下视口，而不是内容只堆在上方、下面留白。 */
+.side-detail .drawer__sessions {
+  flex: 1;
+  min-height: 0;
 }
 
 /* 侧栏拖拽调宽手柄（#40 清理误删，恢复自 cd5cada^） */
@@ -3618,6 +3640,9 @@ button.model-status {
   display: grid;
   gap: var(--space-4);
   max-width: var(--measure);
+  /* grid 子项默认 min-width:auto 会按 min-content 撑破容器（如 pre 代码块最长行）；
+   * 允许子项收缩，配合 .reading__code 的 overflow-x:auto 自行滚动而不撑破正文。 */
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .reading__block {
@@ -3650,6 +3675,8 @@ button.model-status {
   border-radius: var(--radius-control);
   background: var(--color-surface);
   overflow-x: auto;
+  /* 长行代码在 grid 轨道内自身横向滚动，不撑破正文容器（窄屏 rail 占位后正文更窄）。 */
+  max-width: 100%;
   font-size: var(--font-size-caption);
   line-height: 1.6;
 }

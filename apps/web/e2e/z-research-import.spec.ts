@@ -310,12 +310,32 @@ test("阅读视图在 320/768/1024/1440 视口无横向溢出并留截图", asyn
     await page.setViewportSize({ width, height: 800 });
     // 先等待外壳完成宽/窄布局切换，再测量，避免读取到过渡状态
     if (width < 900) {
-      await expect(page.getByRole("navigation", { name: "内容导航" })).toBeHidden();
+      // 窄屏：左侧栏为常驻窄 rail（收起态可见），右侧标记覆盖抽屉默认收起
+      await expect(page.getByRole("navigation", { name: "内容导航" }).getByRole("button", { name: "展开侧栏" })).toBeVisible();
       await expect(page.getByRole("complementary", { name: "标记" })).toBeHidden();
     } else {
       await expect(page.getByRole("navigation", { name: "内容导航" })).toBeVisible();
       await expect(page.getByRole("complementary", { name: "标记" })).toBeVisible();
     }
+    // 等外壳完成宽/窄布局切换、正文重排收敛进视口再量：窄屏 rail 收展与网格收缩需一帧，
+    // 立即量会捕到切换前的瞬时 scrollWidth（对齐 research-session 视口用例的收敛模式）。
+    // 先等左侧栏到达该断点结构目标宽（窄屏收起 rail=64px / 宽屏展开≥MIN），再轮询 scrollWidth——
+    // 高负载下 React 多提交更新与重排未收敛时会读到中间过渡帧（264px 内联宽刚清除、布局未重算）。
+    await page.waitForFunction(
+      (w) => {
+        const drawer = document.querySelector(".drawer.side-drawer");
+        if (!drawer) return true;
+        const dw = drawer.getBoundingClientRect().width;
+        return w < 900 ? dw <= 64 : dw >= 208;
+      },
+      width,
+      { timeout: 10_000 },
+    );
+    await page.waitForFunction(
+      () => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1,
+      undefined,
+      { timeout: 5_000 },
+    );
     const metrics = await page.evaluate(() => ({
       scrollWidth: document.documentElement.scrollWidth,
       clientWidth: document.documentElement.clientWidth,

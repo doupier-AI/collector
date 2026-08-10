@@ -389,11 +389,39 @@ test.describe("窄屏钳制（修订一 #11）", () => {
       timeout: 15_000,
     });
 
+    // 窄屏 320px：等左侧常驻窄 rail 收起到 64px 终态再建立选区。页面加载于窄屏时 rail 默认收起，
+    // 但收起的多提交 React 更新与重排是异步的——高负载下选区矩形会按未收敛的宽布局量出，
+    // 使相对选区定位的胶囊落出视口右缘（与 research-session 视口用例同一测量竞态根因）。
+    await page.waitForFunction(
+      () => {
+        const drawer = document.querySelector(".drawer.side-drawer");
+        if (!drawer) return true;
+        return drawer.getBoundingClientRect().width <= 64;
+      },
+      undefined,
+      { timeout: 10_000 },
+    );
+    // 再等正文档点位置跨两帧稳定（无残余重排/滚动），胶囊在选区时一次性读 rect+scrollY 定位，
+    // 布局若在选区后才收敛，胶囊就按过期的 rect/scrollY 落位（纵向溢出 568 的同一竞态）。
+    await page.waitForFunction(
+      () =>
+        new Promise<boolean>((resolve) => {
+          const anchor = document.querySelector(".message--assistant");
+          if (!anchor) return resolve(true);
+          const first = anchor.getBoundingClientRect().top;
+          requestAnimationFrame(() =>
+            requestAnimationFrame(() => {
+              resolve(Math.abs(anchor.getBoundingClientRect().top - first) < 1);
+            }),
+          );
+        }),
+      undefined,
+      { timeout: 10_000 },
+    );
+
     await selectAnswerText(page, "本地优先会先把输入保存在本机");
     const floating = page.getByTestId("floating-selection-capsule");
     await expect(floating).toBeVisible();
-
-    // 任何情况下不溢出 320×568 视口
     const box = await floating.boundingBox();
     expect(box).toBeTruthy();
     expect(box!.x).toBeGreaterThanOrEqual(0);

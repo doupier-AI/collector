@@ -47,12 +47,6 @@
   flex: 1;
 }
 
-.side-rail__caret {
-  display: inline-block;
-  font-size: 0.875rem;
-  line-height: 1;
-}
-
 /* 设置/主题等需要把弹出菜单锚定到按钮的容器：建立定位上下文 */
 .side-rail__anchor {
   position: relative;
@@ -84,10 +78,13 @@
   height: 100%;
 }
 
-/* 顶部按钮组：收起 / 搜索 / 新建会话（+ overlay 关闭） */
+/* 顶部按钮组：收起 / 搜索 / 新建会话（+ overlay 关闭）。
+ * 竖向排列（flex-direction: column），与收起态 rail 同一方向——
+ * 收展切换时「收起/展开」按钮始终在最上方第一个、位置不跳变。 */
 .side-detail__top {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-start;
   gap: var(--space-1);
 }
 

@@ -320,7 +320,8 @@ test("场景一：Chat 真实回答 → 选区真实分析 → 节点生长真�
   // 从宽屏切窄屏后 useMediaQuery 立即翻转，但 React 需一帧才把 fixed 侧栏换成 overlay；
   // 等 fixed 侧栏确实消失再量宽，避免量到 reflow 前的瞬时溢出（假模型 320px 用例靠 toBeHidden 自动等待同一原因）。
   await expect(page.locator(".later-panel--fixed")).toHaveCount(0);
-  await expect(page.getByRole("navigation", { name: "内容导航" })).toBeHidden();
+  // 窄屏左侧栏为常驻窄 rail（收起态可见），不再整体隐藏
+  await expect(page.getByRole("navigation", { name: "内容导航" }).getByRole("button", { name: "展开侧栏" })).toBeVisible();
   await expect(page.locator("[data-selection-mark]")).toHaveText(selected);
   const metrics = await page.evaluate(() => ({
     scrollWidth: document.documentElement.scrollWidth,

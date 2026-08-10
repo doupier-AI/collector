@@ -27,23 +27,23 @@ function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 /**
- * 顶栏（左“内容”、中“研究地图”、右“标记”图标按钮）+ 左右侧栏 + 主内容区。
- * 宽屏（≥900px）两侧为固定侧栏、初始展开，可拖拽调宽；
- * 窄屏为覆盖抽屉、初始收起，遮罩点击或 Escape 关闭后焦点回到触发按钮。
+ * 顶栏（中“研究地图”、右“标记”图标按钮）+ 左右侧栏 + 主内容区。
+ * 左侧栏在所有屏幕宽度下常驻：宽屏展开为完整侧栏、窄屏收为窄 rail 贴左缘（点 rail 图标展开），
+ * 收展由侧栏内部按钮控制，顶栏不再有“整体隐藏左侧栏”的入口。
+ * 右侧栏宽屏固定展开、窄屏为覆盖抽屉（顶栏“标记”按钮唤出）。
+ * 宽屏两侧可拖拽调宽；窄屏覆盖抽屉遮罩点击或 Escape 关闭后焦点回到触发按钮。
  * 研究地图为全屏覆盖层：按钮或快捷键 t（专注）/ g（关联）唤出，
  * 打开默认进入上次使用的模式；Escape 或遮罩点击关闭后焦点回到入口按钮。
  */
 export function AppShell() {
   const wide = useMediaQuery("(min-width: 900px)");
   const mode = wide ? "fixed" : "overlay";
-  // null 表示用户尚未显式选择：跟随布局默认值（宽屏展开、窄屏收起）
-  const [leftOpenPref, setLeftOpenPref] = useState<boolean | null>(null);
+  // 左侧栏常驻（不再有整体隐藏入口）；右侧栏 null 表示用户尚未显式选择：跟随布局默认值（宽屏展开、窄屏收起）
   const [rightOpenPref, setRightOpenPref] = useState<boolean | null>(null);
   const [leftWidth, setLeftWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
   const [rightWidth, setRightWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
   // 左侧栏收起（rail）真实状态：提升到 .app-shell 根 class，供章节导航按真实宽度让位（取代 :has 猜测）。
   const [leftCollapsed, setLeftCollapsed] = useState(false);
-  const leftTriggerRef = useRef<HTMLButtonElement>(null);
   const rightTriggerRef = useRef<HTMLButtonElement>(null);
   const mapTriggerRef = useRef<HTMLButtonElement>(null);
   const location = useLocation();
@@ -51,13 +51,7 @@ export function AppShell() {
   const [mapOpen, setMapOpen] = useState(false);
   const [mapMode, setMapMode] = useState<ResearchMapMode>("focus");
 
-  const leftVisible = leftOpenPref ?? wide;
   const rightVisible = rightOpenPref ?? wide;
-
-  const closeLeft = useCallback(() => {
-    setLeftOpenPref(false);
-    leftTriggerRef.current?.focus();
-  }, []);
 
   const closeRight = useCallback(() => {
     setRightOpenPref(false);
@@ -69,15 +63,8 @@ export function AppShell() {
     mapTriggerRef.current?.focus();
   }, []);
 
-  const toggleLeft = useCallback(() => {
-    setLeftOpenPref((pref) => !(pref ?? wide));
-    // 窄屏下一次只展开一个覆盖抽屉
-    if (!wide) setRightOpenPref(false);
-  }, [wide]);
-
   const toggleRight = useCallback(() => {
     setRightOpenPref((pref) => !(pref ?? wide));
-    if (!wide) setLeftOpenPref(false);
   }, [wide]);
 
   // 路由变化时关闭研究地图（例如从地图中跳转到另一个节点后由组件自行关闭，此处兜底）
@@ -107,26 +94,12 @@ export function AppShell() {
 
   return (
     <div
-      className={`app-shell${leftVisible && leftCollapsed ? " app-shell--sidebar-collapsed" : ""}${leftVisible && !leftCollapsed ? " app-shell--sidebar-open" : ""}`}
+      className={`app-shell${leftCollapsed ? " app-shell--sidebar-collapsed" : " app-shell--sidebar-open"}`}
     >
       <a className="skip-link" href="#main-content">
         跳到主要内容
       </a>
       <header className="app-bar">
-        <button
-          type="button"
-          ref={leftTriggerRef}
-          className="app-bar__icon-button"
-          aria-label="内容"
-          aria-expanded={leftVisible}
-          aria-controls="content-drawer"
-          onClick={toggleLeft}
-        >
-          <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-            <rect x="2.75" y="3.75" width="14.5" height="12.5" rx="2.75" fill="none" stroke="currentColor" strokeWidth="1.5" />
-            <line x1="7.75" y1="4.5" x2="7.75" y2="15.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
-        </button>
         {mapTarget ? (
           <button
             type="button"
@@ -167,15 +140,12 @@ export function AppShell() {
         </button>
       </header>
       <div className="app-body">
-        {leftVisible ? (
-          <ContentDrawer
-            mode={mode}
-            width={leftWidth}
-            onWidthChange={setLeftWidth}
-            onCollapsedChange={setLeftCollapsed}
-            onClose={closeLeft}
-          />
-        ) : null}
+        <ContentDrawer
+          mode={mode}
+          width={leftWidth}
+          onWidthChange={setLeftWidth}
+          onCollapsedChange={setLeftCollapsed}
+        />
         <main className="app-main" id="main-content">
           <Outlet />
         </main>
