@@ -204,6 +204,28 @@ describe("SessionListPanel 会话分组树", () => {
     confirmSpy.mockRestore();
   });
 
+  it("项目菜单：重命名 inline 提交并刷新项目名", async () => {
+    const user = userEvent.setup();
+    const renameProject = vi.fn<() => ReturnType<ApiClient["renameProject"]>>(
+      async () => makeProject({ id: "p-1", name: "新项目名" }),
+    );
+    const listProjects = vi
+      .fn<() => ReturnType<ApiClient["listProjects"]>>(async () => [])
+      .mockResolvedValueOnce([makeProject({ id: "p-1", name: "旧项目名" })])
+      .mockResolvedValueOnce([makeProject({ id: "p-1", name: "新项目名" })]);
+    renderPanel(apiWith({ renameProject, listProjects }));
+
+    await user.click(await screen.findByLabelText("旧项目名 的菜单"));
+    await user.click(screen.getByRole("menuitem", { name: "重命名" }));
+    const input = screen.getByRole("textbox", { name: "重命名" });
+    await user.clear(input);
+    await user.type(input, "新项目名");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(renameProject).toHaveBeenCalledWith("p-1", "新项目名"));
+    expect(await screen.findByRole("button", { name: /新项目名\(/ })).toBeInTheDocument();
+  });
+
   it("加载失败时可重试", async () => {
     const user = userEvent.setup();
     const listResearchSessions = vi

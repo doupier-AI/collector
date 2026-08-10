@@ -190,6 +190,31 @@ test("会话管理全流程：项目分组 → 改名 → 归档 → 软删/回�
   expect(consoleIssues.issues, consoleIssues.issues.join("\n")).toEqual([]);
 });
 
+test("侧栏项目菜单可重命名项目", async ({ page }) => {
+  const consoleIssues = trackBrowserIssues(page);
+  const suffix = Date.now().toString(36);
+  const originalName = `待改名项目-${suffix}`;
+  const renamedName = `已改名项目-${suffix}`;
+
+  await pairAndOpen(page, "/research/new");
+  const nav = page.getByRole("navigation", { name: "内容导航" });
+  await page.getByRole("button", { name: "＋ 新建项目" }).click();
+  await page.getByLabel("新项目名称").fill(originalName);
+  await page.getByRole("button", { name: "创建" }).click();
+
+  await projectMenuButton(page, originalName).click();
+  await page.getByRole("menuitem", { name: "重命名" }).click();
+  const renameInput = page.getByRole("textbox", { name: "重命名" });
+  await expect(renameInput).toBeFocused();
+  await renameInput.fill(renamedName);
+  await renameInput.press("Enter");
+  await expect(nav.getByRole("button", { name: new RegExp(`^${renamedName}\\s*\\(`) })).toBeVisible();
+
+  await page.reload();
+  await expect(nav.getByRole("button", { name: new RegExp(`^${renamedName}\\s*\\(`) })).toBeVisible();
+  expect(consoleIssues.issues, consoleIssues.issues.join("\n")).toEqual([]);
+});
+
 test("单层级侧栏：收展无残留 + 底部设置聚合菜单真实导航（#54 / ADR-0020）", async ({ page }) => {
   const browserIssues = trackBrowserIssues(page);
   await pairAndOpen(page, "/research/new");

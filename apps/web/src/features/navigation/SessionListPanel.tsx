@@ -500,7 +500,7 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
         return (
           <section key={group.projectId ?? "unclassified"} className="drawer__group">
             <div className="drawer__group-head">
-              {selectionMode ? (
+              {selectionMode && renaming !== group.projectId ? (
                 <button
                   type="button"
                   className="drawer__group-select"
@@ -514,25 +514,29 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
                 </button>
               ) : null}
               {group.projectId !== null ? (
-                <button
-                  type="button"
-                  className="drawer__group-toggle"
-                  aria-expanded={!isCollapsed}
-                  onClick={() => toggleCollapsed(group.projectId as string)}
-                >
-                  <span className={`drawer__group-caret${isCollapsed ? " drawer__group-caret--closed" : ""}`} aria-hidden="true">
-                    ▾
-                  </span>
-                  {group.title}
-                  <span className="drawer__group-count">({group.sessions.length})</span>
-                </button>
+                renaming === group.projectId ? (
+                  renderInlineRename(group.projectId)
+                ) : (
+                    <button
+                      type="button"
+                      className="drawer__group-toggle"
+                      aria-expanded={!isCollapsed}
+                      onClick={() => toggleCollapsed(group.projectId as string)}
+                    >
+                      <span className={`drawer__group-caret${isCollapsed ? " drawer__group-caret--closed" : ""}`} aria-hidden="true">
+                        ▾
+                      </span>
+                      {group.title}
+                      <span className="drawer__group-count">({group.sessions.length})</span>
+                    </button>
+                )
               ) : (
                 <span className="drawer__group-title">
                   {group.title}
                   <span className="drawer__group-count">({group.sessions.length})</span>
                 </span>
               )}
-              {group.projectId !== null ? (
+              {group.projectId !== null && renaming !== group.projectId ? (
                 <button
                   type="button"
                   className="drawer__group-more"
