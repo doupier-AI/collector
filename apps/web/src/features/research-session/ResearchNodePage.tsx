@@ -566,12 +566,14 @@ export function ResearchNodePage() {
 
   return (
     <div
-      className="page"
+      className={`page${railItems.length > 0 ? " page--with-slice-rail" : ""}`}
       onDragEnter={isRoot ? handleDragEnter : undefined}
       onDragOver={isRoot ? handleDragOver : undefined}
       onDragLeave={isRoot ? handleDragLeave : undefined}
       onDrop={isRoot ? handleDrop : undefined}
     >
+      {railItems.length > 0 ? <SliceRailNav items={railItems} /> : null}
+      <div className="page__content">
       {originSource.selection ? (
         <>
           <SelectionSourceBar sourceName={originSource.sourceName} selection={originSource.selection} />
@@ -663,8 +665,6 @@ export function ResearchNodePage() {
       {fusionSourceEntries.length > 0 ? (
         <FusionSourceBar sources={fusionSourceEntries} sessionId={sessionId} />
       ) : null}
-
-      {railItems.length > 0 ? <SliceRailNav items={railItems} /> : null}
 
       {notice ? (
         <StatusMessage variant="info" role="status" title={notice.title}>
@@ -822,6 +822,7 @@ export function ResearchNodePage() {
       <p className="sr-only" role="status" aria-live="polite">
         {node.liveMessage}
       </p>
+      </div>
     </div>
   );
 }

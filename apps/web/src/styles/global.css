@@ -168,11 +168,24 @@ button {
 /* ---------- 页面 ---------- */
 
 .page {
-  /* 建立定位上下文：让章节导航线列相对正文（而非 100vw）水平定位，随两侧边栏开合跟随正文左缘。 */
   position: relative;
   width: min(100% - 2rem, var(--measure));
   margin: 0 auto;
   padding: var(--space-6) 0 5rem;
+}
+
+/* #54：章节导航与正文使用两条结构上互斥的网格轨道。
+   页面、卡片或左右侧栏以后如何改宽，都只能让整张网格一起回流，导航不会进入正文轨道。 */
+.page.page--with-slice-rail {
+  width: min(100% - 2rem, calc(var(--measure) + 2rem + var(--space-3)));
+  display: grid;
+  grid-template-columns: 2rem minmax(0, var(--measure));
+  column-gap: var(--space-3);
+  align-items: start;
+}
+
+.page--with-slice-rail .page__content {
+  min-width: 0;
 }
 
 .page--start {
@@ -593,17 +606,14 @@ button {
   max-width: none;
 }
 
-/* #36 章节导航线列：悬停于正文左缘外侧留白，跟随滚动与边栏开合，不挤压正文行宽。 */
+/* #36/#54 章节导航线列：固定在正文之外的专用网格轨道内，不使用负边距或横向位移。 */
 .slice-rail {
-  /* sticky：相对最近滚动祖先（整文档）在视口钉住，又随内容容器 .page 水平 reflow——
-     两侧边栏开合、正文重新居中时自动跟随，无需 JS 测量。top 取视口中线，translateY(-50%) 垂直居中。 */
   position: sticky;
   top: 50vh;
-  /* 落正文左缘，再向左翻出自身宽度悬停列外；负 margin 抵消文档流占位，不把正文往下推。 */
-  left: 0;
-  transform: translate(-100%, -50%);
+  align-self: start;
   width: 2rem;
-  margin-left: -2rem;
+  margin: 0;
+  transform: translateY(-50%);
   /* 低于节点树/网状导航/标记面板（z-index 30）与其遮罩（20）：覆盖层展开时不穿透显示导航。 */
   z-index: var(--z-rail);
 }
@@ -615,21 +625,6 @@ button {
   padding: var(--space-2) 0;
   /* 窄屏拖动滑轨：禁止原生滚动抢夺指针。 */
   touch-action: none;
-}
-
-/* 侧栏展开（.app-shell--sidebar-open，真实状态见 AppShell）：宽侧栏占掉左侧空间，正文右移、
-   左缘外侧留白被压缩，翻在正文左缘外侧的章节导航会伸进侧栏、拦截侧栏交互（⋯ 菜单/会话行）。
-   此时导航收进正文左缘内侧留白（正文再右移让位），避免与侧栏重叠。
-   收起为窄 rail（64px）时侧栏占用极小、正文左缘外侧留白充足，恢复翻在正文左缘外侧的悬停设计；
-   侧栏整隐/窄屏 overlay 同。 */
-.app-shell--sidebar-open .slice-rail {
-  left: var(--space-2);
-  margin-left: 0;
-  transform: translateY(-50%);
-}
-
-.app-shell--sidebar-open .page {
-  padding-left: 2.75rem;
 }
 
 .slice-rail__tick {
@@ -697,19 +692,12 @@ button {
 }
 
 @media (max-width: 720px) {
-  /* 窄屏：留白≈1rem，线列改贴屏幕左缘内侧（不再翻出列外——1rem 外边距不够宽，
-     translate(-100%) 会把整列推到视口外 x<0，可见性/拖动全部失效）。
-     sticky 的偏移参照是滚动祖先（文档）而非 .page，故 left 直接取视口内侧坐标；
-     translateY(-50%) 保留垂直居中。 */
-  .slice-rail {
-    left: 0.125rem;
-    width: 1.5rem;
-    margin-left: -1.5rem;
-    transform: translateY(-50%);
+  /* 窄屏仍保留结构化轨道；只压缩页边距，不把导航翻到正文或视口之外。 */
+  .page.page--with-slice-rail {
+    width: min(100% - 1rem, calc(var(--measure) + 2rem + var(--space-2)));
+    column-gap: var(--space-2);
   }
 
-  /* 预览框挂线列右侧（内容侧）：窄屏线列已贴屏左缘，右侧才是内容区，框必须翻进内容区
-     而不是继续向左翻出。 */
   .slice-rail__preview {
     left: calc(100% + 0.5rem);
   }

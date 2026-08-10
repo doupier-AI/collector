@@ -9,8 +9,6 @@ export interface ContentDrawerProps {
   /** fixed 模式下展开态的当前宽度（px，React state，不持久化）。 */
   width: number;
   onWidthChange: (width: number) => void;
-  /** 收起态变化时通知父级（用于在 .app-shell 根上标记真实收展状态，供章节导航让位）。 */
-  onCollapsedChange?: (collapsed: boolean) => void;
   /** 窄屏 overlay 下「关闭抽屉」的回调；缺省时内部回退为「收起回窄 rail」（collapse）。 */
   onClose?: () => void;
 }
@@ -166,9 +164,9 @@ function SidebarGlyph({ isLeftPanel = true }: { isLeftPanel?: boolean }) {
  * - 收起态：一条干净的可点图标 rail（会话/搜索/新建会话，底部设置/主题/展开），无残留窄条。
  * 两种状态是同一容器内的互斥视图，收起是真实整体收起到 rail，不是只隐藏详情内容。
  * 宽屏（≥900px）固定侧栏、可拖拽调宽；窄屏覆盖抽屉：Escape 关闭，打开时焦点进入。
- * 收展状态持久化到 localStorage，并同步到 .app-shell 根供章节导航按真实状态让位。
+ * 收展状态持久化到 localStorage；章节导航使用独立布局轨道，不依赖该状态。
  */
-export function ContentDrawer({ mode, width, onWidthChange, onCollapsedChange, onClose }: ContentDrawerProps) {
+export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDrawerProps) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     try {
@@ -188,8 +186,7 @@ export function ContentDrawer({ mode, width, onWidthChange, onCollapsedChange, o
 
   useEffect(() => {
     localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0");
-    onCollapsedChange?.(collapsed);
-  }, [collapsed, onCollapsedChange]);
+  }, [collapsed]);
 
   // 窄屏 overlay 展开成覆盖抽屉时，焦点进入「关闭」按钮（rail 常驻态不抢焦点）
   useEffect(() => {

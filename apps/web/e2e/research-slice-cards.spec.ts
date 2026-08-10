@@ -24,6 +24,26 @@ async function openSlicedAnswer(page: import("@playwright/test").Page): Promise<
   await expect(page.locator(".slice-card")).toHaveCount(3);
 }
 
+/**
+ * #54 回归：章节导航必须拥有正文之外的独立横向轨道。
+ * 断言计入 tick 透明点击热区向右扩出的 0.35rem，避免“线条看似分开、实际仍拦截正文”。
+ */
+async function expectChapterRailOutsideBody(page: import("@playwright/test").Page): Promise<void> {
+  const geometry = await page.evaluate(() => {
+    const rail = document.querySelector<HTMLElement>(".slice-rail");
+    const firstCard = document.querySelector<HTMLElement>(".slice-card");
+    if (!rail || !firstCard) throw new Error("章节导航或正文卡片尚未渲染");
+    const railRect = rail.getBoundingClientRect();
+    const cardRect = firstCard.getBoundingClientRect();
+    const clickAreaOverflow = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) * 0.35;
+    return {
+      railInteractiveRight: railRect.right + clickAreaOverflow,
+      bodyLeft: cardRect.left,
+    };
+  });
+  expect(geometry.railInteractiveRight).toBeLessThanOrEqual(geometry.bodyLeft);
+}
+
 test.describe("#36 连续语义卡片", () => {
   test("连续阅读：标题与正文交替、无装饰分隔线", async ({ page }) => {
     await openSlicedAnswer(page);
@@ -73,6 +93,21 @@ test.describe("#36 连续语义卡片", () => {
     // 跳转后标题不被 sticky 顶栏遮挡：标题顶缘在顶栏（--app-bar-height 3.5rem=56px）之下。
     const titleTop = await targetTitle.evaluate((el) => el.getBoundingClientRect().top);
     expect(titleTop).toBeGreaterThan(56);
+  });
+
+  test("章节导航·桌面：展开或收起侧栏时都不进入正文", async ({ page }) => {
+    await openSlicedAnswer(page);
+
+    for (const width of [1024, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      await expectChapterRailOutsideBody(page);
+    }
+    await page.getByRole("navigation", { name: "内容导航" }).getByRole("button", { name: "收起侧栏" }).click();
+    await expect(page.getByRole("navigation", { name: "内容导航" }).getByRole("button", { name: "展开侧栏" })).toBeVisible();
+    for (const width of [1024, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      await expectChapterRailOutsideBody(page);
+    }
   });
 
   test("章节导航·当前线跟随滚动", async ({ page }) => {
@@ -173,7 +208,7 @@ test.describe("#36 连续语义卡片", () => {
 });
 
 test.describe("#36 窄屏", () => {
-  test.use({ viewport: { width: 390, height: 844 } });
+  test.use({ viewport: { width: 320, height: 844 } });
 
   test("窄屏：正文行宽不超上限、无横向滚动、线列不挤压正文", async ({ page }) => {
     await openSlicedAnswer(page);
@@ -185,11 +220,12 @@ test.describe("#36 窄屏", () => {
     const content = page.locator(".slice-card .message__content").first();
     const contentBox = await content.boundingBox();
     expect(contentBox).not.toBeNull();
-    expect(contentBox!.width).toBeLessThanOrEqual(390);
+    expect(contentBox!.width).toBeLessThanOrEqual(320);
 
     // 线列仍可见
     await expect(page.getByRole("navigation", { name: "章节导航" })).toBeVisible();
     await expect(page.locator(".slice-rail__tick")).toHaveCount(3);
+    await expectChapterRailOutsideBody(page);
   });
 
   test("窄屏拖动：按住线列上下拖动实时跳转", async ({ page }) => {

@@ -157,13 +157,9 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
     expect(within(nav).getByRole("link", { name: "会话" })).toBeInTheDocument();
     expect(within(nav).getByRole("button", { name: "展开侧栏" })).toBeInTheDocument();
     expect(within(nav).getByRole("button", { name: "切换主题" })).toBeInTheDocument();
-    // .app-shell 根标记真实收起状态（供章节导航让位）
-    expect(document.querySelector(".app-shell")).toHaveClass("app-shell--sidebar-collapsed");
-
     // 再展开：恢复完整侧栏
     await user.click(within(nav).getByRole("button", { name: "展开侧栏" }));
     expect(within(nav).getByText("最近研究")).toBeInTheDocument();
-    expect(document.querySelector(".app-shell")).toHaveClass("app-shell--sidebar-open");
   });
 
   it("收展两态顶部按钮组同序：收起/展开恒为最上方第一个，顶部集群顺序一致（位置不跳变的 DOM 前提）", async () => {
