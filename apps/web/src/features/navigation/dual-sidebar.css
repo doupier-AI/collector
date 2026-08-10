@@ -110,7 +110,8 @@
 /* 底部：设置聚合菜单 + 主题口 */
 .side-detail__footer {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: var(--space-2);
   margin-top: auto;
   padding-top: var(--space-2);
@@ -119,6 +120,11 @@
 
 .side-detail__footer .side-rail__anchor {
   display: block;
+  width: 100%;
+}
+
+.side-detail__footer .side-detail__settings {
+  width: 100%;
 }
 
 .side-detail__settings {

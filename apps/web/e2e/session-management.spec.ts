@@ -173,7 +173,7 @@ test("会话管理全流程：项目分组 → 改名 → 归档 → 软删/回�
   expect(consoleIssues.issues, consoleIssues.issues.join("\n")).toEqual([]);
 });
 
-test("单层级侧栏：收展无残留 + 底部设置聚合菜单真实导航（#54 / ADR 待补）", async ({ page }) => {
+test("单层级侧栏：收展无残留 + 底部设置聚合菜单真实导航（#54 / ADR-0020）", async ({ page }) => {
   await pairAndOpen(page, "/research/new");
   const nav = page.getByRole("navigation", { name: "内容导航" });
   await expect(nav).toBeVisible();
@@ -183,6 +183,14 @@ test("单层级侧栏：收展无残留 + 底部设置聚合菜单真实导航�
   await expect(nav.getByRole("button", { name: "搜索会话" })).toBeVisible();
   await expect(nav.getByRole("link", { name: "新建会话" })).toBeVisible();
   await expect(nav.getByText("最近研究")).toBeVisible();
+
+  // 展开态底部保持单列：主题必须完整落在设置下方，不能并排跑到设置右侧。
+  const settingsBox = await nav.getByRole("button", { name: "设置" }).boundingBox();
+  const themeBox = await nav.getByRole("button", { name: "切换主题" }).boundingBox();
+  expect(settingsBox).not.toBeNull();
+  expect(themeBox).not.toBeNull();
+  expect(themeBox!.y).toBeGreaterThanOrEqual(settingsBox!.y + settingsBox!.height);
+  expect(themeBox!.x).toBe(settingsBox!.x);
 
   // 底部设置聚合菜单：四个入口真实导航
   await nav.getByRole("button", { name: "设置" }).click();
