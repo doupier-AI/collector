@@ -706,15 +706,30 @@ export interface ResearchSessionRecord {
 }
 
 /** 项目：会话的第一层分组容器。项目不嵌套；无归属会话处于"未分类"。 */
+export const PROJECT_COLOR_ROLES = ["amber", "violet", "blue", "teal", "rose"] as const;
+export type ProjectColorRole = (typeof PROJECT_COLOR_ROLES)[number];
+
 export interface ProjectRecord {
   id: string;
   name: string;
+  /** 稳定色板角色；实际浅/深颜色由主题令牌解释，项目改名不改变。 */
+  colorRole?: ProjectColorRole;
   createdAt: string;
   updatedAt: string;
 }
 
 export interface ProjectInput {
   name: string;
+}
+
+export function nextProjectColorRole(projects: readonly ProjectRecord[]): ProjectColorRole {
+  const counts = new Map<ProjectColorRole, number>(PROJECT_COLOR_ROLES.map((role) => [role, 0]));
+  for (const project of projects) {
+    if (project.colorRole) counts.set(project.colorRole, (counts.get(project.colorRole) ?? 0) + 1);
+  }
+  return PROJECT_COLOR_ROLES.reduce((least, role) =>
+    (counts.get(role) ?? 0) < (counts.get(least) ?? 0) ? role : least,
+  PROJECT_COLOR_ROLES[0]);
 }
 
 export interface ResearchSessionUpdateInput {
@@ -1517,6 +1532,13 @@ export interface ResearchSessionNodeTreeItem {
 /** 边的类型：父子（节点血统）、语义相关、融合来源。 */
 export const RESEARCH_EDGE_KINDS = ["parent-child", "semantic-related", "fused-from"] as const;
 export type ResearchEdgeKind = (typeof RESEARCH_EDGE_KINDS)[number];
+
+/**
+ * 节点系统目标模型中的永久关系。`semantic-related` 仅属于迁移期旧实现，
+ * 不得通过新的永久事实接口写入或返回。
+ */
+export const RESEARCH_PERMANENT_EDGE_KINDS = ["parent-child", "fused-from"] as const;
+export type ResearchPermanentEdgeKind = (typeof RESEARCH_PERMANENT_EDGE_KINDS)[number];
 
 /** 边的状态。active 为正常可用，deleted 为软删除保留。 */
 export type ResearchEdgeStatus = "active" | "deleted";
@@ -2570,6 +2592,137 @@ export interface TermMarker {
   endOffset: number;
   /** 术语分类。 */
   category: TermCategory;
+}
+
+export type ResearchPermanentEdgeRecord = Omit<ResearchEdgeRecord, "kind"> & {
+  kind: ResearchPermanentEdgeKind;
+};
+
+export function isResearchPermanentEdge(edge: ResearchEdgeRecord): edge is ResearchPermanentEdgeRecord {
+  return (RESEARCH_PERMANENT_EDGE_KINDS as readonly ResearchEdgeKind[]).includes(edge.kind);
+}
+
+/** 正文中的稳定语义范围引用；搜索、提示与融合都依赖它，而不依赖弱标记。 */
+export interface ResearchSemanticRangeReference {
+  nodeId: string;
+  bodyVersionId: string;
+  fragmentId: string;
+}
+
+export interface ResearchNodeSearchResult {
+  nodeId: string;
+  matchedRanges: ResearchSemanticRangeReference[];
+  scope: "inside-current-filter" | "outside-current-filter";
+}
+
+export type ResearchAssociationHintStatus = "active" | "ignored" | "expired";
+
+/** 临时关联提示不是边，也没有转为永久关系的状态。 */
+export interface ResearchAssociationHintRecord {
+  id: string;
+  anchorNodeId: string;
+  relatedNodeId: string;
+  reason: string;
+  anchorRanges: ResearchSemanticRangeReference[];
+  relatedRanges: ResearchSemanticRangeReference[];
+  /** 同一证据与理由的稳定指纹，用于幂等写入与忽略抑制。 */
+  evidenceKey: string;
+  status: ResearchAssociationHintStatus;
+  createdAt: string;
+  updatedAt: string;
+  ignoredAt?: string;
+  expiredAt?: string;
+}
+
+export type ResearchSourceHealth = "available" | "temporarily-unavailable" | "deleted";
+export type ResearchFusionEvidenceStatus = "pending" | "verified" | "invalid";
+
+/** B 面中的稳定候选身份；它不属于 ResearchNodeRecord，因此不能成为永久边端点。 */
+export interface ResearchTemporaryFusionNodeRecord {
+  id: string;
+  creationKey: string;
+  activeDraftVersionId: string;
+  status: "active";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ResearchFusionDraftVersionRecord {
+  id: string;
+  temporaryFusionNodeId: string;
+  version: number;
+  body: string;
+  contentHash: string;
+  evidenceStatus: ResearchFusionEvidenceStatus;
+  createdAt: string;
+}
+
+/** B 面候选来源连接；仅确认时最终采用且核验通过的连接可转换为 fused-from。 */
+export interface ResearchCandidateSourceConnectionRecord {
+  id: string;
+  temporaryFusionNodeId: string;
+  sourceNodeId: string;
+  sourceKind: "formal";
+  bodyVersionId: string;
+  fragmentIds: string[];
+  sourceHealth: ResearchSourceHealth;
+  createdAt: string;
+}
+
+/** 正式融合确认时固定的正文、直接来源与证据对应。 */
+export interface ResearchConfirmedFusionSnapshotRecord {
+  fusionNodeId: string;
+  confirmedDraftVersionId: string;
+  body: string;
+  contentHash: string;
+  directSources: Array<Pick<ResearchCandidateSourceConnectionRecord,
+    "sourceNodeId" | "bodyVersionId" | "fragmentIds">>;
+  confirmedAt: string;
+}
+
+export interface ResearchTemporaryFusionBundle {
+  node: ResearchTemporaryFusionNodeRecord;
+  activeDraft: ResearchFusionDraftVersionRecord;
+  candidateSources: ResearchCandidateSourceConnectionRecord[];
+}
+
+/** 统一客户端可消费的目标模型快照；不代表对应 HTTP 路径已在 T01 开放。 */
+export interface NodeSystemTargetClientPayload {
+  permanentEdges: ResearchPermanentEdgeRecord[];
+  associationHints: ResearchAssociationHintRecord[];
+  temporaryFusions: ResearchTemporaryFusionBundle[];
+  confirmedFusions: ResearchConfirmedFusionSnapshotRecord[];
+}
+
+/**
+ * 校验自动创建 B 面候选所需的最低事实门槛。这里只校验契约，不触发模型、搜索或弱标记服务。
+ */
+export function validateTemporaryFusionBundle(
+  node: ResearchTemporaryFusionNodeRecord,
+  draft: ResearchFusionDraftVersionRecord,
+  candidateSources: readonly ResearchCandidateSourceConnectionRecord[],
+): void {
+  if (!node.id.trim() || !node.creationKey.trim() || !node.activeDraftVersionId.trim()) {
+    throw new Error("Temporary fusion identity and creation key are required");
+  }
+  if (draft.temporaryFusionNodeId !== node.id || draft.id !== node.activeDraftVersionId) {
+    throw new Error("Temporary fusion active draft does not match its node");
+  }
+  if (!Number.isInteger(draft.version) || draft.version < 1 || !draft.body.trim() || !draft.contentHash.trim()) {
+    throw new Error("Temporary fusion draft must have a positive version, body, and content hash");
+  }
+  const sourceNodeIds = new Set(candidateSources.map((source) => source.sourceNodeId));
+  if (candidateSources.length < 2 || sourceNodeIds.size < 2) {
+    throw new Error("Temporary fusion requires two distinct formal sources");
+  }
+  for (const source of candidateSources) {
+    if (source.temporaryFusionNodeId !== node.id || source.sourceKind !== "formal") {
+      throw new Error("Candidate source must reference the same temporary fusion and a formal source");
+    }
+    if (!source.bodyVersionId.trim() || source.fragmentIds.length === 0) {
+      throw new Error("Candidate source evidence must be locatable");
+    }
+  }
 }
 
 /** 消息术语检测结果。检测失败或无需检测时 terms 为空数组。 */

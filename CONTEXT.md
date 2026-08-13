@@ -192,6 +192,11 @@ Collector 全产品唯一的颜色取色源。任何界面元素需要取色时�
 | Ring 焦点环（同品牌色） | `#c96442` | `#d97757` |
 | Chart 1（暖橙深，亦作品牌 hover） | `#b05730` | `#b05730` |
 | Chart 5（暖橙浅，亦作标记/later） | `#b4552d` | `#b4552d` |
+| Project amber（项目色角色） | `#c96442` | `#d97757` |
+| Project violet（项目色角色） | `#9c87f5` | `#9c87f5` |
+| Project blue（项目色角色） | `#2a78d6` | `#5b9af5` |
+| Project teal（项目色角色） | `#1baf7a` | `#34c98f` |
+| Project rose（项目色角色） | `#a33b36` | `#ef4444` |
 | Chart 2（紫） | `#9c87f5` | `#9c87f5` |
 | Chart 3 | `#ded8c4` | `#1a1915` |
 | Chart 4 | `#dbd3f0` | `#2f2b48` |

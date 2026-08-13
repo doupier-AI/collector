@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ProjectRecord, ProjectInput } from "@collector/capture-contracts";
-import { RESEARCH_TITLE_MAX_CHARACTERS } from "@collector/capture-contracts";
+import { RESEARCH_TITLE_MAX_CHARACTERS, nextProjectColorRole } from "@collector/capture-contracts";
 import type { ResearchStore } from "./store.js";
 import { ResearchValidationError, ResearchNotFoundError } from "./research.js";
 
@@ -16,7 +16,13 @@ export class ResearchProjectService {
       throw new ResearchValidationError(`Project name must contain 1-${RESEARCH_TITLE_MAX_CHARACTERS} characters`);
     }
     const now = new Date().toISOString();
-    const record: ProjectRecord = { id: randomUUID(), name, createdAt: now, updatedAt: now };
+    const record: ProjectRecord = {
+      id: randomUUID(),
+      name,
+      colorRole: nextProjectColorRole(this.store.listProjects()),
+      createdAt: now,
+      updatedAt: now,
+    };
     return this.store.createProject(record, idempotencyKey);
   }
 

@@ -93,8 +93,8 @@ test("workflow migration creates formal versioned tables", async (t) => {
   store.close();
   const database = new DatabaseSync(databasePath, { readOnly: true });
   const tables = (database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name);
-  for (const table of ["workflow_runs", "workflow_steps", "model_calls", "recent_cluster_snapshots", "material_revisions", "research_sessions", "research_messages", "research_tasks", "research_task_events", "research_attachments", "research_import_tasks", "research_content_snapshots", "research_import_task_events", "research_selections", "research_selection_tasks", "research_selection_task_events", "research_branches", "research_later_items", "research_grounding_runs", "research_grounding_sources", "research_citations", "provider_credentials", "model_purpose_routes", "research_nodes", "research_edges", "research_slices", "research_fusion_proposals", "research_body_versions", "research_semantic_fragments", "projects"]) assert.ok(tables.includes(table));
-  assert.equal((database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 34);
+  for (const table of ["workflow_runs", "workflow_steps", "model_calls", "recent_cluster_snapshots", "material_revisions", "research_sessions", "research_messages", "research_tasks", "research_task_events", "research_attachments", "research_import_tasks", "research_content_snapshots", "research_import_task_events", "research_selections", "research_selection_tasks", "research_selection_task_events", "research_branches", "research_later_items", "research_grounding_runs", "research_grounding_sources", "research_citations", "provider_credentials", "model_purpose_routes", "research_nodes", "research_edges", "research_slices", "research_fusion_proposals", "research_body_versions", "research_semantic_fragments", "projects", "research_association_hints", "research_temporary_fusion_nodes", "research_fusion_draft_versions", "research_candidate_source_connections", "research_confirmed_fusion_snapshots"]) assert.ok(tables.includes(table));
+  assert.equal((database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 35);
   const sessionColumns = (database.prepare("PRAGMA table_info(research_sessions)").all() as Array<{ name: string }>).map((column) => column.name);
   assert.ok(sessionColumns.includes("creation_idempotency_key"));
   assert.ok(sessionColumns.includes("origin_selection_id"));
@@ -148,6 +148,11 @@ test("migrations 15 to 21 preserve existing version 14 research sessions", async
     ALTER TABLE research_sessions DROP COLUMN origin_selection_id;
     ALTER TABLE research_sessions DROP COLUMN origin_session_id;
     ALTER TABLE research_messages DROP COLUMN branch_id;
+    DROP TABLE research_confirmed_fusion_snapshots;
+    DROP TABLE research_candidate_source_connections;
+    DROP TABLE research_fusion_draft_versions;
+    DROP TABLE research_temporary_fusion_nodes;
+    DROP TABLE research_association_hints;
     DROP TABLE research_fusion_proposals;
     DROP TABLE research_slices;
     DROP TABLE research_edges;
@@ -239,6 +244,11 @@ test("migration v24 maps sessions and branches to nodes and backfills node_id", 
     DROP INDEX research_nodes_creation_idempotency_idx;
     DROP INDEX research_nodes_parent_idx;
     DROP INDEX research_nodes_session_idx;
+    DROP TABLE research_confirmed_fusion_snapshots;
+    DROP TABLE research_candidate_source_connections;
+    DROP TABLE research_fusion_draft_versions;
+    DROP TABLE research_temporary_fusion_nodes;
+    DROP TABLE research_association_hints;
     DROP TABLE research_fusion_proposals;
     DROP TABLE research_slices;
     DROP TABLE research_edges;
@@ -580,6 +590,11 @@ test("migration v28 creates research_edges table and derives parent-child edges 
   // 回滚到 v27：拆除所有 >=v28 迁移创建的结构并删除其迁移记录（>= 截断覆盖后续新增版本）
   const raw = new DatabaseSync(databasePath);
   raw.exec(`
+    DROP TABLE IF EXISTS research_confirmed_fusion_snapshots;
+    DROP TABLE IF EXISTS research_candidate_source_connections;
+    DROP TABLE IF EXISTS research_fusion_draft_versions;
+    DROP TABLE IF EXISTS research_temporary_fusion_nodes;
+    DROP TABLE IF EXISTS research_association_hints;
     DROP TABLE IF EXISTS research_semantic_fragments;
     DROP TABLE IF EXISTS research_body_versions;
     DROP TABLE IF EXISTS research_fusion_proposals;
@@ -662,6 +677,11 @@ test("migration v30 recreates research_fusion_proposals after a v29 rollback", a
 
   const rollback = new DatabaseSync(databasePath);
   rollback.exec(`
+    DROP TABLE research_confirmed_fusion_snapshots;
+    DROP TABLE research_candidate_source_connections;
+    DROP TABLE research_fusion_draft_versions;
+    DROP TABLE research_temporary_fusion_nodes;
+    DROP TABLE research_association_hints;
     DROP TABLE research_semantic_fragments;
     DROP TABLE research_body_versions;
     DROP TABLE research_fusion_proposals;
@@ -685,6 +705,6 @@ test("migration v30 recreates research_fusion_proposals after a v29 rollback", a
   const indexes = database.prepare("PRAGMA index_list(research_fusion_proposals)").all() as Array<{ name: string; unique: number }>;
   assert.ok(indexes.some((index) => index.name === "research_fusion_proposals_status_idx"));
   assert.ok(indexes.some((index) => index.unique === 1), "normalized node pair must stay unique");
-  assert.equal((database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 34);
+  assert.equal((database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 35);
   database.close();
 });

@@ -136,12 +136,12 @@ function countRows(store: SqliteStore, table: string, where = "1=1"): number {
   return (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE ${where}`).get() as { n: number }).n;
 }
 
-test("v34 migration creates projects and persists the session favorite default", async (t) => {
+test("latest migrations preserve projects and the session favorite default", async (t) => {
   const { store, close } = await createStore();
   t.after(close);
   const db = (store as unknown as { db(): import("node:sqlite").DatabaseSync }).db();
   const version = db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { v: number };
-  assert.equal(version.v, 34);
+  assert.equal(version.v, 35);
   const projectCols = db.prepare("PRAGMA table_info(research_sessions)").all() as Array<{ name: string }>;
   assert.ok(projectCols.some((column) => column.name === "project_id"));
   assert.ok(projectCols.some((column) => column.name === "is_favorite"));

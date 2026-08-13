@@ -2,6 +2,17 @@ import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type AgentRunRecord, type ArtifactRecord, type CaptureRecord, type DeepResearchAccepted, type FragmentRecord, type KnowledgeItemRecord, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type RecentClusterSnapshotRecord, type RelationRecord, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchFusionReference, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ReviewProposalRecord, type TopicRecord, type UserDecisionRecord, type WorkflowRunRecord, type WorkflowStepRecord, type TopicDocumentVersionRecord, type ModelCallRecord, type AiBudgetSettings, type VerificationClaim, type VerificationPolicyConfig, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewInput, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId } from "@collector/capture-contracts";
+import {
+  isResearchPermanentEdge,
+  validateTemporaryFusionBundle,
+  type ResearchAssociationHintRecord,
+  type ResearchCandidateSourceConnectionRecord,
+  type ResearchConfirmedFusionSnapshotRecord,
+  type ResearchFusionDraftVersionRecord,
+  type ResearchPermanentEdgeRecord,
+  type ResearchTemporaryFusionBundle,
+  type ResearchTemporaryFusionNodeRecord,
+} from "@collector/capture-contracts";
 
 export type ObservabilityRecordSource = "research" | "selection" | "import" | "workflow" | "fusion";
 
@@ -241,8 +252,24 @@ export interface ResearchFusionProposalStore {
   ): Promise<NodeGrowthAccepted>;
 }
 
+/** 节点系统目标路径使用的仓储接缝；旧边接口继续服务迁移期实现。 */
+export interface NodeSystemTargetStore {
+  createResearchPermanentEdge(edge: ResearchPermanentEdgeRecord): Promise<ResearchPermanentEdgeRecord>;
+  listResearchPermanentEdges(): ResearchPermanentEdgeRecord[];
+  createTemporaryFusionBundle(bundle: ResearchTemporaryFusionBundle): Promise<ResearchTemporaryFusionBundle>;
+  getTemporaryFusionNode(id: string): ResearchTemporaryFusionNodeRecord | undefined;
+  getTemporaryFusionBundle(id: string): ResearchTemporaryFusionBundle | undefined;
+  listTemporaryFusionNodes(): ResearchTemporaryFusionNodeRecord[];
+  deleteTemporaryFusionNode(id: string): Promise<boolean>;
+  createAssociationHint(hint: ResearchAssociationHintRecord): Promise<ResearchAssociationHintRecord>;
+  saveAssociationHint(hint: ResearchAssociationHintRecord): Promise<void>;
+  listAssociationHints(status?: ResearchAssociationHintRecord["status"]): ResearchAssociationHintRecord[];
+  createConfirmedFusionSnapshot(snapshot: ResearchConfirmedFusionSnapshotRecord): Promise<ResearchConfirmedFusionSnapshotRecord>;
+  getConfirmedFusionSnapshot(fusionNodeId: string): ResearchConfirmedFusionSnapshotRecord | undefined;
+}
+
 export interface CollectorStore
-  extends ResearchLaterStore, ResearchSelectionStore, ResearchImportStore, ResearchStore, DeepResearchStore, ResearchFusionProposalStore {
+  extends ResearchLaterStore, ResearchSelectionStore, ResearchImportStore, ResearchStore, DeepResearchStore, ResearchFusionProposalStore, NodeSystemTargetStore {
   init(): Promise<void>;
   getCapture(id: string): CaptureRecord | undefined;
   getCaptureByClientId(clientId: string): CaptureRecord | undefined;
@@ -732,6 +759,9 @@ export class SqliteStore implements CollectorStore {
       this.db().exec("DELETE FROM research_selection_task_events");
       this.db().exec("DELETE FROM research_selection_tasks");
       this.db().exec("DELETE FROM research_branches");
+      this.db().exec("DELETE FROM research_confirmed_fusion_snapshots");
+      this.db().exec("DELETE FROM research_temporary_fusion_nodes");
+      this.db().exec("DELETE FROM research_association_hints");
       // research_nodes 自引用且外键指向 research_selections，先删子节点再删全部，
       // 并在删除 research_selections 之前完成，避免外键约束失败。
       // research_edges 外键指向 research_nodes，必须在删节点前删边。
@@ -1629,6 +1659,165 @@ export class SqliteStore implements CollectorStore {
 
   findResearchTermPreview(nodeId: string, markerKey: string): ResearchTermPreviewRecord | undefined {
     return this.getRecord<ResearchTermPreviewRecord>("SELECT record_json FROM research_term_previews WHERE node_id = ? AND marker_key = ?", nodeId, markerKey);
+  }
+
+  async createResearchPermanentEdge(edge: ResearchPermanentEdgeRecord): Promise<ResearchPermanentEdgeRecord> {
+    if (!isResearchPermanentEdge(edge)) throw new Error("Target permanent edge kind must be parent-child or fused-from");
+    if (edge.fromNodeId === edge.toNodeId) throw new Error("A permanent edge requires two distinct formal research nodes");
+    const fromNode = this.getResearchNode(edge.fromNodeId);
+    const toNode = this.getResearchNode(edge.toNodeId);
+    if (!fromNode || !toNode) throw new Error("Permanent edges can connect only formal research nodes");
+    if (edge.kind === "parent-child" && toNode.parentNodeId !== fromNode.id) {
+      throw new Error("Parent-child permanent edge must match immutable node lineage");
+    }
+    if (edge.kind === "fused-from" && !toNode.isFusionNode) {
+      throw new Error("Fused-from permanent edge must point to a formal fusion node");
+    }
+    return this.createResearchEdge(edge) as Promise<ResearchPermanentEdgeRecord>;
+  }
+
+  listResearchPermanentEdges(): ResearchPermanentEdgeRecord[] {
+    return this.listAllResearchEdges().filter(isResearchPermanentEdge);
+  }
+
+  async createTemporaryFusionBundle(bundle: ResearchTemporaryFusionBundle): Promise<ResearchTemporaryFusionBundle> {
+    validateTemporaryFusionBundle(bundle.node, bundle.activeDraft, bundle.candidateSources);
+    let persisted: ResearchTemporaryFusionBundle | undefined;
+    this.transaction(() => {
+      const existing = this.getRecord<ResearchTemporaryFusionNodeRecord>(
+        "SELECT record_json FROM research_temporary_fusion_nodes WHERE creation_key = ?",
+        bundle.node.creationKey,
+      );
+      if (existing) {
+        persisted = this.getTemporaryFusionBundle(existing.id);
+        return;
+      }
+      this.db().prepare(`INSERT INTO research_temporary_fusion_nodes
+        (id, creation_key, active_draft_version_id, status, created_at, updated_at, record_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        .run(bundle.node.id, bundle.node.creationKey, bundle.node.activeDraftVersionId, bundle.node.status,
+          bundle.node.createdAt, bundle.node.updatedAt, JSON.stringify(bundle.node));
+      this.db().prepare(`INSERT INTO research_fusion_draft_versions
+        (id, temporary_fusion_node_id, version, evidence_status, created_at, record_json)
+        VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(bundle.activeDraft.id, bundle.activeDraft.temporaryFusionNodeId, bundle.activeDraft.version,
+          bundle.activeDraft.evidenceStatus, bundle.activeDraft.createdAt, JSON.stringify(bundle.activeDraft));
+      const insertSource = this.db().prepare(`INSERT INTO research_candidate_source_connections
+        (id, temporary_fusion_node_id, source_node_id, body_version_id, source_health, created_at, record_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`);
+      for (const source of bundle.candidateSources) {
+        if (!this.getResearchNode(source.sourceNodeId)) {
+          throw new Error(`Temporary fusion source is missing: ${source.sourceNodeId}`);
+        }
+        insertSource.run(source.id, source.temporaryFusionNodeId, source.sourceNodeId, source.bodyVersionId,
+          source.sourceHealth, source.createdAt, JSON.stringify(source));
+      }
+      persisted = bundle;
+    });
+    if (!persisted) throw new Error("Temporary fusion bundle was not persisted");
+    return persisted;
+  }
+
+  getTemporaryFusionNode(id: string): ResearchTemporaryFusionNodeRecord | undefined {
+    return this.getRecord<ResearchTemporaryFusionNodeRecord>(
+      "SELECT record_json FROM research_temporary_fusion_nodes WHERE id = ?",
+      id,
+    );
+  }
+
+  getTemporaryFusionBundle(id: string): ResearchTemporaryFusionBundle | undefined {
+    const node = this.getTemporaryFusionNode(id);
+    if (!node) return undefined;
+    const activeDraft = this.getRecord<ResearchFusionDraftVersionRecord>(
+      "SELECT record_json FROM research_fusion_draft_versions WHERE id = ? AND temporary_fusion_node_id = ?",
+      node.activeDraftVersionId, node.id,
+    );
+    if (!activeDraft) throw new Error(`Temporary fusion ${id} references a missing active draft`);
+    const candidateSources = this.listRecords<ResearchCandidateSourceConnectionRecord>(
+      "SELECT record_json FROM research_candidate_source_connections WHERE temporary_fusion_node_id = ? ORDER BY created_at, id",
+      node.id,
+    );
+    return { node, activeDraft, candidateSources };
+  }
+
+  listTemporaryFusionNodes(): ResearchTemporaryFusionNodeRecord[] {
+    return this.listRecords<ResearchTemporaryFusionNodeRecord>(
+      "SELECT record_json FROM research_temporary_fusion_nodes WHERE status = 'active' ORDER BY created_at, id",
+    );
+  }
+
+  async deleteTemporaryFusionNode(id: string): Promise<boolean> {
+    return this.db().prepare("DELETE FROM research_temporary_fusion_nodes WHERE id = ?").run(id).changes === 1;
+  }
+
+  async createAssociationHint(hint: ResearchAssociationHintRecord): Promise<ResearchAssociationHintRecord> {
+    if (hint.status !== "active") throw new Error("A new association hint must be active");
+    if (hint.anchorNodeId === hint.relatedNodeId || !hint.reason.trim() || !hint.evidenceKey.trim()) {
+      throw new Error("Association hint requires distinct nodes, a reason, and an evidence key");
+    }
+    if (!this.getResearchNode(hint.anchorNodeId) || !this.getResearchNode(hint.relatedNodeId)) {
+      throw new Error("Association hint source is missing");
+    }
+    const rangesMatch = hint.anchorRanges.length > 0 && hint.relatedRanges.length > 0
+      && hint.anchorRanges.every((range) => range.nodeId === hint.anchorNodeId && range.bodyVersionId && range.fragmentId)
+      && hint.relatedRanges.every((range) => range.nodeId === hint.relatedNodeId && range.bodyVersionId && range.fragmentId);
+    if (!rangesMatch) throw new Error("Association hint evidence must be locatable on both nodes");
+    const existing = this.getRecord<ResearchAssociationHintRecord>(
+      "SELECT record_json FROM research_association_hints WHERE anchor_node_id = ? AND related_node_id = ? AND evidence_key = ?",
+      hint.anchorNodeId, hint.relatedNodeId, hint.evidenceKey,
+    );
+    if (existing) return existing;
+    this.db().prepare(`INSERT INTO research_association_hints
+      (id, anchor_node_id, related_node_id, evidence_key, status, created_at, updated_at, record_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(hint.id, hint.anchorNodeId, hint.relatedNodeId, hint.evidenceKey, hint.status,
+        hint.createdAt, hint.updatedAt, JSON.stringify(hint));
+    return hint;
+  }
+
+  async saveAssociationHint(hint: ResearchAssociationHintRecord): Promise<void> {
+    const existing = this.getRecord<ResearchAssociationHintRecord>(
+      "SELECT record_json FROM research_association_hints WHERE id = ?", hint.id,
+    );
+    if (!existing) throw new Error("Association hint not found");
+    if (existing.status !== "active" && hint.status !== existing.status) {
+      throw new Error("Ignored or expired association hint cannot transition to another state");
+    }
+    this.db().prepare("UPDATE research_association_hints SET status = ?, updated_at = ?, record_json = ? WHERE id = ?")
+      .run(hint.status, hint.updatedAt, JSON.stringify(hint), hint.id);
+  }
+
+  listAssociationHints(status?: ResearchAssociationHintRecord["status"]): ResearchAssociationHintRecord[] {
+    return status
+      ? this.listRecords<ResearchAssociationHintRecord>("SELECT record_json FROM research_association_hints WHERE status = ? ORDER BY updated_at, id", status)
+      : this.listRecords<ResearchAssociationHintRecord>("SELECT record_json FROM research_association_hints ORDER BY updated_at, id");
+  }
+
+  async createConfirmedFusionSnapshot(snapshot: ResearchConfirmedFusionSnapshotRecord): Promise<ResearchConfirmedFusionSnapshotRecord> {
+    const existing = this.getConfirmedFusionSnapshot(snapshot.fusionNodeId);
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(snapshot)) throw new Error("Confirmed fusion snapshot is immutable");
+      return existing;
+    }
+    const fusionNode = this.getResearchNode(snapshot.fusionNodeId);
+    const sourceNodeIds = new Set(snapshot.directSources.map((source) => source.sourceNodeId));
+    const sourcesAreValid = snapshot.directSources.length >= 2
+      && sourceNodeIds.size === snapshot.directSources.length
+      && snapshot.directSources.every((source) => this.getResearchNode(source.sourceNodeId)
+        && source.bodyVersionId.trim() && source.fragmentIds.length > 0);
+    if (!fusionNode?.isFusionNode || !sourcesAreValid || !snapshot.body.trim() || !snapshot.contentHash.trim()) {
+      throw new Error("Confirmed fusion snapshot requires a formal fusion node, fixed body, and two sources");
+    }
+    this.db().prepare(`INSERT INTO research_confirmed_fusion_snapshots
+      (fusion_node_id, confirmed_draft_version_id, confirmed_at, record_json) VALUES (?, ?, ?, ?)`)
+      .run(snapshot.fusionNodeId, snapshot.confirmedDraftVersionId, snapshot.confirmedAt, JSON.stringify(snapshot));
+    return snapshot;
+  }
+
+  getConfirmedFusionSnapshot(fusionNodeId: string): ResearchConfirmedFusionSnapshotRecord | undefined {
+    return this.getRecord<ResearchConfirmedFusionSnapshotRecord>(
+      "SELECT record_json FROM research_confirmed_fusion_snapshots WHERE fusion_node_id = ?", fusionNodeId,
+    );
   }
 
   async createResearchTermPreview(preview: ResearchTermPreviewRecord, selection: ResearchSelectionRecord): Promise<ResearchTermPreviewAccepted> {
@@ -3514,6 +3703,75 @@ export class SqliteStore implements CollectorStore {
       version = 34;
     }
 
+    if (version < 35) {
+      // 节点系统目标模型：永久事实、临时提示、B 面候选及固定成果分表保存。
+      // 开发数据期按 ADR-0007 直接 expand，不为旧自动融合数据推断新状态。
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE research_association_hints (
+            id TEXT PRIMARY KEY,
+            anchor_node_id TEXT NOT NULL,
+            related_node_id TEXT NOT NULL,
+            evidence_key TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('active', 'ignored', 'expired')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            UNIQUE(anchor_node_id, related_node_id, evidence_key)
+          );
+          CREATE INDEX research_association_hints_status_idx
+            ON research_association_hints(status, updated_at, id);
+
+          CREATE TABLE research_temporary_fusion_nodes (
+            id TEXT PRIMARY KEY,
+            creation_key TEXT NOT NULL UNIQUE,
+            active_draft_version_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status = 'active'),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL
+          );
+          CREATE INDEX research_temporary_fusion_nodes_created_idx
+            ON research_temporary_fusion_nodes(created_at, id);
+
+          CREATE TABLE research_fusion_draft_versions (
+            id TEXT PRIMARY KEY,
+            temporary_fusion_node_id TEXT NOT NULL REFERENCES research_temporary_fusion_nodes(id) ON DELETE CASCADE,
+            version INTEGER NOT NULL CHECK(version > 0),
+            evidence_status TEXT NOT NULL CHECK(evidence_status IN ('pending', 'verified', 'invalid')),
+            created_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            UNIQUE(temporary_fusion_node_id, version)
+          );
+          CREATE INDEX research_fusion_draft_versions_node_idx
+            ON research_fusion_draft_versions(temporary_fusion_node_id, version);
+
+          CREATE TABLE research_candidate_source_connections (
+            id TEXT PRIMARY KEY,
+            temporary_fusion_node_id TEXT NOT NULL REFERENCES research_temporary_fusion_nodes(id) ON DELETE CASCADE,
+            source_node_id TEXT NOT NULL,
+            body_version_id TEXT NOT NULL,
+            source_health TEXT NOT NULL CHECK(source_health IN ('available', 'temporarily-unavailable', 'deleted')),
+            created_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            UNIQUE(temporary_fusion_node_id, source_node_id, body_version_id)
+          );
+          CREATE INDEX research_candidate_source_connections_node_idx
+            ON research_candidate_source_connections(temporary_fusion_node_id, source_node_id);
+
+          CREATE TABLE research_confirmed_fusion_snapshots (
+            fusion_node_id TEXT PRIMARY KEY REFERENCES research_nodes(id) ON DELETE CASCADE,
+            confirmed_draft_version_id TEXT NOT NULL,
+            confirmed_at TEXT NOT NULL,
+            record_json TEXT NOT NULL
+          );
+
+          INSERT INTO schema_migrations(version, applied_at) VALUES (35, datetime('now'));
+        `);
+      });
+      version = 35;
+    }
+
   }
 
   private async migrateLegacyProviderProfile(): Promise<void> {
@@ -3899,6 +4157,18 @@ export class JsonStore implements CollectorStore {
   findResearchFusionNodeByIdempotencyKey(_idempotencyKey: string): ResearchNodeRecord | undefined { return undefined; }
   async createResearchFusionTurn(_proposal: ResearchFusionProposalRecord, _fusedFromEdges: ResearchEdgeRecord[], _fusionNode: ResearchNodeRecord, _inputMessage: ResearchMessageRecord, _outputMessage: ResearchMessageRecord, _task: ResearchTaskRecord): Promise<NodeGrowthAccepted> { throw new Error("Research fusion turns require SQLite persistence"); }
   async createResearchEdge(_edge: ResearchEdgeRecord): Promise<ResearchEdgeRecord> { throw new Error("Research edges require SQLite persistence"); }
+  async createResearchPermanentEdge(_edge: ResearchPermanentEdgeRecord): Promise<ResearchPermanentEdgeRecord> { throw new Error("Research permanent edges require SQLite persistence"); }
+  listResearchPermanentEdges(): ResearchPermanentEdgeRecord[] { return []; }
+  async createTemporaryFusionBundle(_bundle: ResearchTemporaryFusionBundle): Promise<ResearchTemporaryFusionBundle> { throw new Error("Temporary fusion nodes require SQLite persistence"); }
+  getTemporaryFusionNode(_id: string): ResearchTemporaryFusionNodeRecord | undefined { return undefined; }
+  getTemporaryFusionBundle(_id: string): ResearchTemporaryFusionBundle | undefined { return undefined; }
+  listTemporaryFusionNodes(): ResearchTemporaryFusionNodeRecord[] { return []; }
+  async deleteTemporaryFusionNode(_id: string): Promise<boolean> { return false; }
+  async createAssociationHint(_hint: ResearchAssociationHintRecord): Promise<ResearchAssociationHintRecord> { throw new Error("Association hints require SQLite persistence"); }
+  async saveAssociationHint(_hint: ResearchAssociationHintRecord): Promise<void> { throw new Error("Association hints require SQLite persistence"); }
+  listAssociationHints(_status?: ResearchAssociationHintRecord["status"]): ResearchAssociationHintRecord[] { return []; }
+  async createConfirmedFusionSnapshot(_snapshot: ResearchConfirmedFusionSnapshotRecord): Promise<ResearchConfirmedFusionSnapshotRecord> { throw new Error("Confirmed fusion snapshots require SQLite persistence"); }
+  getConfirmedFusionSnapshot(_fusionNodeId: string): ResearchConfirmedFusionSnapshotRecord | undefined { return undefined; }
   listResearchEdgesByNode(_nodeId: string): ResearchEdgeRecord[] { return []; }
   listAllResearchEdges(): ResearchEdgeRecord[] { return []; }
   getResearchEdge(_id: string): ResearchEdgeRecord | undefined { return undefined; }

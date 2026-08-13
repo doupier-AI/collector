@@ -1,5 +1,6 @@
 import type {
   ResearchAttachmentRecord,
+  ResearchAssociationHintRecord,
   ResearchBodyVersionRecord,
   ResearchBranchRecord,
   ResearchBranchView,
@@ -19,6 +20,7 @@ import type {
   ResearchSemanticFragmentRecord,
   ResearchSessionRecord,
   ResearchTaskRecord,
+  ResearchTemporaryFusionBundle,
   ProjectRecord,
 } from "@collector/capture-contracts";
 import type { EventSourceLike } from "../api/task-events";
@@ -99,6 +101,7 @@ export function makeProject(overrides: Partial<ProjectRecord> = {}): ProjectReco
   return {
     id: `project-${sequence}`,
     name: `项目 ${sequence}`,
+    colorRole: "amber",
     createdAt: "2026-07-17T08:00:00.000Z",
     updatedAt: "2026-07-17T08:01:00.000Z",
     ...overrides,
@@ -114,6 +117,58 @@ export function makeNode(overrides: Partial<ResearchNodeRecord> = {}): ResearchN
     createdAt: "2026-07-17T08:00:00.000Z",
     updatedAt: "2026-07-17T08:01:00.000Z",
     ...overrides,
+  };
+}
+
+export function makeAssociationHint(overrides: Partial<ResearchAssociationHintRecord> = {}): ResearchAssociationHintRecord {
+  sequence += 1;
+  return {
+    id: `hint-${sequence}`,
+    anchorNodeId: "node-1",
+    relatedNodeId: "node-2",
+    reason: "两处正文值得一起回看",
+    anchorRanges: [{ nodeId: "node-1", bodyVersionId: "body:node-1:v1", fragmentId: "fragment:node-1:1" }],
+    relatedRanges: [{ nodeId: "node-2", bodyVersionId: "body:node-2:v1", fragmentId: "fragment:node-2:1" }],
+    evidenceKey: `evidence-${sequence}`,
+    status: "active",
+    createdAt: "2026-07-17T08:00:00.000Z",
+    updatedAt: "2026-07-17T08:01:00.000Z",
+    ...overrides,
+  };
+}
+
+export function makeTemporaryFusionBundle(overrides: Partial<ResearchTemporaryFusionBundle> = {}): ResearchTemporaryFusionBundle {
+  sequence += 1;
+  const id = overrides.node?.id ?? `temporary-fusion-${sequence}`;
+  const node = overrides.node ?? {
+    id,
+    creationKey: `generation-${sequence}`,
+    activeDraftVersionId: `${id}:draft:1`,
+    status: "active" as const,
+    createdAt: "2026-07-17T08:00:00.000Z",
+    updatedAt: "2026-07-17T08:01:00.000Z",
+  };
+  return {
+    node,
+    activeDraft: overrides.activeDraft ?? {
+      id: node.activeDraftVersionId,
+      temporaryFusionNodeId: node.id,
+      version: 1,
+      body: "一条待审查的新认识",
+      contentHash: `sha256:${node.id}`,
+      evidenceStatus: "verified",
+      createdAt: node.createdAt,
+    },
+    candidateSources: overrides.candidateSources ?? ["node-1", "node-2"].map((sourceNodeId, index) => ({
+      id: `${node.id}:source:${index + 1}`,
+      temporaryFusionNodeId: node.id,
+      sourceNodeId,
+      sourceKind: "formal" as const,
+      bodyVersionId: `body:${sourceNodeId}:v1`,
+      fragmentIds: [`fragment:${sourceNodeId}:1`],
+      sourceHealth: "available" as const,
+      createdAt: node.createdAt,
+    })),
   };
 }
 

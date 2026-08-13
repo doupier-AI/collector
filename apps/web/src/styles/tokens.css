@@ -112,6 +112,17 @@
   --color-graph-focus: #20231F;
   --color-graph-node: #F5F4EF;
   --color-graph-node-stroke: #6B7168;
+  /* 节点系统目标语义：角色保持稳定，具体颜色按主题解释。 */
+  --color-project-amber: #C96442;
+  --color-project-violet: #9C87F5;
+  --color-project-blue: #2A78D6;
+  --color-project-teal: #1BAF7A;
+  --color-project-rose: #A33B36;
+  --color-graph-connected: #20231F;
+  --color-graph-dimmed: #6B7168;
+  --color-graph-temporary: #9C87F5;
+  --color-graph-evidence-invalid: #A33B36;
+  --opacity-graph-dimmed: 0.32;
   /* 当前节点光晕：硬编码 drop-shadow 的令牌化（现值对齐，视觉增强由 #44 状态收口另做） */
   --graph-node-halo: drop-shadow(0 2px 4px rgba(32, 35, 31, 0.2));
 }
@@ -150,6 +161,16 @@
   --color-graph-focus: #F0F0EC;
   --color-graph-node: #2C2C2B;
   --color-graph-node-stroke: #8B918A;
+  --color-project-amber: #D97757;
+  --color-project-violet: #9C87F5;
+  --color-project-blue: #5B9AF5;
+  --color-project-teal: #34C98F;
+  --color-project-rose: #EF4444;
+  --color-graph-connected: #F0F0EC;
+  --color-graph-dimmed: #8B918A;
+  --color-graph-temporary: #9C87F5;
+  --color-graph-evidence-invalid: #EF4444;
+  --opacity-graph-dimmed: 0.32;
   --graph-node-halo: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.55));
 }
 
@@ -189,6 +210,16 @@
     --color-graph-focus: #F0F0EC;
     --color-graph-node: #2C2C2B;
     --color-graph-node-stroke: #8B918A;
+    --color-project-amber: #D97757;
+    --color-project-violet: #9C87F5;
+    --color-project-blue: #5B9AF5;
+    --color-project-teal: #34C98F;
+    --color-project-rose: #EF4444;
+    --color-graph-connected: #F0F0EC;
+    --color-graph-dimmed: #8B918A;
+    --color-graph-temporary: #9C87F5;
+    --color-graph-evidence-invalid: #EF4444;
+    --opacity-graph-dimmed: 0.32;
     --graph-node-halo: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.55));
   }
 }

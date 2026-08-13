@@ -5,6 +5,7 @@ import type {
   DeepResearchInput,
   ModelPurpose,
   ModelRoutingView,
+  NodeSystemTargetClientPayload,
   NodeGrowthAccepted,
   ProjectInput,
   ProjectRecord,
@@ -50,6 +51,9 @@ import type {
 import { ApiRequestError, NetworkError, parseApiErrorBody } from "./errors";
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+
+/** T01 只固定统一客户端的数据形状；可调用端点由后续纵向切片逐条加入。 */
+export type NodeSystemClientPayload = NodeSystemTargetClientPayload;
 
 export interface RunRecordListParams {
   cursor?: string;
