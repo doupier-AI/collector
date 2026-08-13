@@ -30,6 +30,30 @@ test("writeResearchBody 以自由文本请求正文，不强制 JSON 输出", as
   assert.match(requests[0]?.prompt ?? "", /连贯、完整/);
 });
 
+test("research body prompt uses the four explainable-object types and stops mention markup at depth four", async () => {
+  const shallow = makeProvider(() => "正文");
+  const shallowGateway = new ModelGateway(shallow.provider);
+  await shallowGateway.writeResearchBody([{ role: "user", content: "解释" }]);
+  const shallowPrompt = shallow.requests[0]?.prompt ?? "";
+  assert.match(shallowPrompt, /\[\[concept:短语\]\]/);
+  assert.match(shallowPrompt, /\[\[entity:短语\]\]/);
+  assert.match(shallowPrompt, /\[\[abbreviation:短语\]\]/);
+  assert.match(shallowPrompt, /\[\[notation:短语\]\]/);
+  assert.match(shallowPrompt, /理解当前论述仍需补充解释/);
+
+  const deep = makeProvider(() => "正文");
+  const deepGateway = new ModelGateway(deep.provider);
+  await deepGateway.writeResearchBody([{ role: "user", content: "继续" }], {
+    parentChainContext: {
+      currentNodeDepth: 4,
+      ancestors: [{ depth: 1, isRoot: true, label: "根" }],
+      truncated: false,
+      cycleDetected: false,
+    },
+  });
+  assert.match(deep.requests[0]?.prompt ?? "", /不要输出任何 \[\[/);
+});
+
 test("generateBodyOutline 用 JSON 输出有序有界大纲", async () => {
   const { provider, requests } = makeProvider(() => JSON.stringify({
     sections: [
@@ -109,6 +133,21 @@ test("deriveSliceAnnotations 对空内容直接返回空标注、不调模型", 
   const annotation = await gateway.deriveSliceAnnotations({ content: "   " });
   assert.deepEqual(annotation, { title: "", concepts: [] });
   assert.equal(requests.length, 0);
+});
+
+test("verifyTermIdentity performs a bounded deterministic context check", async () => {
+  const { provider, requests } = makeProvider(() => JSON.stringify({ sameEntity: true }));
+  const gateway = new ModelGateway(provider);
+  const sameEntity = await gateway.verifyTermIdentity({
+    left: { text: "REST", category: "abbreviation", context: `${"左".repeat(700)}LEFT_SECRET` },
+    right: { text: "REST", category: "abbreviation", context: `${"右".repeat(700)}RIGHT_SECRET` },
+  });
+
+  assert.equal(sameEntity, true);
+  assert.equal(requests[0]?.temperature, 0);
+  assert.deepEqual(requests[0]?.responseFormat, { type: "json_object" });
+  assert.doesNotMatch(requests[0]?.prompt ?? "", /LEFT_SECRET|RIGHT_SECRET/);
+  assert.match(requests[0]?.prompt ?? "", /只有指向同一对象才返回 true/);
 });
 
 test("parseBodyOutline 限制节数上限并拒绝空标题节", () => {

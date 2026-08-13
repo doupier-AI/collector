@@ -367,6 +367,31 @@ describe("#36 连续语义卡片", () => {
     expect(httpMarker.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p1");
   });
 
+  it("标题与后续多段合并成一张卡片时，每个原始正文块的弱标记都保留", async () => {
+    const content = "## 核心\n\n第一段解释反向传播。\n\n第二段解释 RAG。";
+    const slices = [makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "核心" })];
+    const view = viewWithSlices(content, slices);
+    view.termDetections = {
+      "m-out": {
+        messageId: "m-out",
+        detectedAt: "2026-08-13T00:00:00.000Z",
+        terms: [
+          { text: "反向传播", blockOrdinal: 1, startOffset: 5, endOffset: 9, category: "concept" },
+          { text: "RAG", blockOrdinal: 2, startOffset: 6, endOffset: 9, category: "abbreviation" },
+        ],
+        convergence: { termDensity: "full", nodeDepth: 0, reason: "none" },
+        suppressedCount: 0,
+      },
+    };
+
+    const { container } = renderNodePage({ getResearchNodeView: async () => view });
+    await screen.findByText("反向传播", { selector: "[data-term-marker]" });
+    expect(screen.getByText("RAG", { selector: "[data-term-marker]" })).toBeInTheDocument();
+    expect(container.querySelectorAll("section.slice-card")).toHaveLength(1);
+    expect(container.querySelector('[data-term-block-ordinal="1"]')).not.toBeNull();
+    expect(container.querySelector('[data-term-block-ordinal="2"]')).not.toBeNull();
+  });
+
   it("传入 highlight 后 [data-selection-mark] 落在对应卡片正文内", async () => {
     const content = "第一段。\n\n需要高亮的第二段。";
     const slices = [

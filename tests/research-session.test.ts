@@ -149,6 +149,34 @@ test("research API persists an idempotent turn, streams fake-provider events, an
   reopened.close();
 });
 
+test("research generation persists clean text and in-stream mention ranges instead of control markup", async (t) => {
+  const provider: ResearchGenerationProvider = {
+    provider: "mention-stream-fake",
+    model: "mention-stream-1",
+    promptVersion: "mention-stream-v1",
+    async *generate() {
+      yield "理解 [[con";
+      yield "cept:反向传播]] 与 [[abbreviation:RAG]]。";
+    },
+  };
+  const harness = await createHarness(provider);
+  t.after(() => harness.close());
+
+  const session = await harness.service.research.createSession("流内提及", randomUUID());
+  const accepted = await harness.service.research.submitMessage(session.id, "解释概念", randomUUID());
+  await waitForTask(harness.base, harness.token, accepted.task.id, "completed");
+
+  const message = harness.store.getResearchMessage(accepted.outputMessage.id);
+  assert.equal(message?.content, "理解 反向传播 与 RAG。");
+  assert.ok(!message?.content.includes("[["));
+  assert.deepEqual(message?.termMarkers?.map((marker) => ({ text: marker.text, category: marker.category })), [
+    { text: "反向传播", category: "concept" },
+    { text: "RAG", category: "abbreviation" },
+  ]);
+  assert.equal(message?.termMarkers?.[0]?.blockOrdinal, 0);
+  assert.equal(message?.termMarkers?.[0]?.startOffset, 3);
+});
+
 test("research node view exposes validated H3b term positions without changing message text", async (t) => {
   const content = "**REST API** 在中文中也可读，HTTP 继续出现。";
   const provider: ResearchGenerationProvider = {
@@ -156,7 +184,7 @@ test("research node view exposes validated H3b term positions without changing m
     model: "term-marker-1",
     promptVersion: "test-research-v1",
     async *generate() {
-      yield content;
+      yield "**[[abbreviation:REST]] [[abbreviation:API]]** 在中文中也可读，[[abbreviation:HTTP]] 继续出现。";
     },
   };
   const harness = await createHarness(provider);
@@ -189,6 +217,7 @@ test("research node view exposes validated H3b term positions without changing m
   const assistant = view.messages.find((message) => message.role === "assistant");
   assert.equal(assistant?.status, "completed");
   assert.ok(assistant);
+  assert.equal(assistant.content, content);
   const detection = view.termDetections?.[assistant.id];
   assert.ok(detection);
   assert.equal(detection.messageId, assistant.id);

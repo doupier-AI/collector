@@ -8,6 +8,7 @@ import {
   deriveFragmentsFromSlices,
   deriveMessageBlocks,
   deriveMessageSlices,
+  MentionMarkupStream,
   parseFusionReferences,
   redactGroundingValue,
   sanitizeGroundingQueries,
@@ -34,6 +35,7 @@ import {
   ResearchTaskRecord,
   ResearchTurnAccepted,
   type ResearchSliceContext,
+  type TermCategory,
 } from "@collector/capture-contracts";
 import type { ResearchStore } from "./store.js";
 import { ParentChainContextService, type ParentChainContextResult } from "./parent-chain-context.js";
@@ -84,6 +86,11 @@ export interface ResearchGenerationRequest {
   fusionPlan?: { sources: ResearchFusionSource[]; relationType: import("@collector/capture-contracts").FusionRelationType };
 }
 
+export interface TermIdentityVerificationRequest {
+  left: { text: string; category: TermCategory; context: string };
+  right: { text: string; category: TermCategory; context: string };
+}
+
 export interface ResearchGenerationProvider {
   readonly provider: string;
   readonly model: string;
@@ -105,6 +112,8 @@ export interface ResearchGenerationProvider {
   expandSection?(request: ResearchGenerationRequest & { outline: ResearchBodyOutline; sectionIndex: number; writtenSoFar: string; continuation?: { priorSectionContent: string }; repairHint?: string; targetCharsOverride?: number }): Promise<{ content: string; finishReason?: string }>;
   /** 事后语义标注：从一段正文抽取标题/概念（独立抽取模型，temperature=0）。 */
   deriveAnnotations?(input: { content: string }): Promise<ResearchSliceAnnotation>;
+  /** 同一节点不同消息中的同名提及，只有经最小局部语境核验后才可共享预览。 */
+  verifyTermIdentity?(input: TermIdentityVerificationRequest): Promise<boolean>;
 }
 
 export interface ResearchServiceOptions {
@@ -133,6 +142,8 @@ export class ResearchSessionService {
   private readonly retrySleep: (ms: number) => Promise<void>;
   /** 任务事件推送（#38）：每次落库插入研究事件后发裸"唤醒"信号；SSE 循环仍按 sequence>cursor 重读，DB 是恰好一次来源。 */
   private readonly taskEvents = new EventEmitter();
+  /** 每个运行中任务唯一的流内提及解析器；任务结束即释放。 */
+  private readonly mentionStreams = new Map<string, MentionMarkupStream>();
 
   constructor(private readonly store: ResearchStore, private readonly options: ResearchServiceOptions = {}) {
     this.provider = options.provider;
@@ -202,6 +213,17 @@ export class ResearchSessionService {
     const provider = this.provider;
     if (!provider) throw new Error("AI model is not configured");
     yield* provider.generate(request);
+  }
+
+  /** 保守核验：模型不可用、未实现、异常或非法响应一律视为不同实体。 */
+  async verifyTermIdentity(input: TermIdentityVerificationRequest): Promise<boolean> {
+    const provider = this.provider;
+    if (!provider?.verifyTermIdentity) return false;
+    try {
+      return await provider.verifyTermIdentity(input);
+    } catch {
+      return false;
+    }
   }
 
   async createSession(title: string | undefined, idempotencyKey: string): Promise<ResearchSessionRecord> {
@@ -434,6 +456,12 @@ export class ResearchSessionService {
         ...(generation.sliceContext ? { sliceContext: generation.sliceContext } : {}),
         ...(generation.fusionPlan ? { fusionPlan: generation.fusionPlan } : {}),
       };
+      this.mentionStreams.set(task.id, new MentionMarkupStream({
+        messageId: task.outputMessageId,
+        nodeDepth: generation.parentChainContext?.currentNodeDepth ?? 0,
+        seedContent: outputMessage.content,
+        seedMarkers: outputMessage.termMarkers,
+      }));
       let generatedCharacters = 0;
       try {
         const scenario: ResearchGroundingScenario = generation.deepResearch
@@ -455,13 +483,13 @@ export class ResearchSessionService {
             await this.saveGroundingStatus(task, scenario, "grounding_failed", error instanceof Error ? error.message : undefined);
             throw error;
           }
-          await this.store.appendResearchTaskDelta(task.id, content);
+          await this.appendGeneratedDelta(task, content);
         } else {
           if (generationRequest.allowWebSearch) await this.saveGroundingStatus(task, scenario, "grounding_unsupported");
           if (generationRequest.fusionPlan && provider.composeFusion) {
             // #31：确认式融合——由融合计划生成融合正文（原子），收尾走同一派生切片路径。
             content = await this.composeFusionBody(task, provider, generationRequest);
-            await this.store.appendResearchTaskDelta(task.id, content);
+            await this.appendGeneratedDelta(task, content);
           } else if (provider.writeBody) {
             // 生成自由化：按预期长度自动选择单轮自由写或 plan-then-write 逐节扩写。
             // 真实逐字流式（方案 B）只用于单轮自由写；plan-then-write 仍按节增量落正文。
@@ -478,7 +506,7 @@ export class ResearchSessionService {
                 titleHints = planned.titleHints;
               } else {
                 content = await provider.writeBody(generationRequest);
-                await this.store.appendResearchTaskDelta(task.id, content);
+                await this.appendGeneratedDelta(task, content);
               }
             }
           } else {
@@ -487,6 +515,7 @@ export class ResearchSessionService {
             return;
           }
         }
+        content = (await this.finishGeneratedMarkup(task)).content;
         generatedCharacters = content.length;
         if (generatedCharacters > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
         // 正文定稿后统一派生正式切片（确定性边界 + 小模型事后标注），再落库与完成。
@@ -498,12 +527,15 @@ export class ResearchSessionService {
           // 附加任务失败不能把已经完成的研究回答改判为失败。
         }
       } catch {
+        // 失败时也冲洗尚未闭合的控制串：保留其中可读正文，绝不把 [[... 暴露给用户。
+        try { await this.finishGeneratedMarkup(task); } catch { /* 主错误仍由任务失败状态承载。 */ }
         await this.store.failResearchTask(this.getTask(task.id), {
           code: "provider_error",
           message: "AI 生成的回答无效。输入已保存，可以稍后重试。",
         });
       }
     } finally {
+      this.mentionStreams.delete(id);
       this.running.delete(id);
     }
   }
@@ -519,7 +551,7 @@ export class ResearchSessionService {
       if (!delta) continue;
       content += delta;
       if (content.length > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
-      await this.store.appendResearchTaskDelta(task.id, delta);
+      await this.appendGeneratedDelta(task, delta);
     }
     await this.completeLegacyContent(task, provider, content, true);
   }
@@ -531,7 +563,8 @@ export class ResearchSessionService {
   private async completeLegacyContent(task: ResearchTaskRecord, provider: ResearchGenerationProvider, content: string, alreadyAppended = false): Promise<void> {
     if (!content) throw new Error("Provider returned an empty response");
     if (content.length > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
-    if (!alreadyAppended) await this.store.appendResearchTaskDelta(task.id, content);
+    if (!alreadyAppended) await this.appendGeneratedDelta(task, content);
+    content = (await this.finishGeneratedMarkup(task)).content;
     const nodeId = task.nodeId ?? this.store.getResearchMessage(task.outputMessageId)?.nodeId ?? task.sessionId;
     await this.finalizeDerivedSlices(task, provider, nodeId, content, []);
     await this.store.completeResearchTask(task.id);
@@ -540,6 +573,26 @@ export class ResearchSessionService {
     } catch {
       // 保持历史流式任务与现有节点命名的失败隔离。
     }
+  }
+
+  /** 把模型原始增量转换为可立即展示的干净正文，并与独立提及范围原子落入同一消息记录。 */
+  private async appendGeneratedDelta(task: ResearchTaskRecord, rawDelta: string): Promise<ReturnType<MentionMarkupStream["push"]>> {
+    const stream = this.mentionStreams.get(task.id);
+    if (!stream) throw new Error("Mention markup stream is not initialized");
+    const update = stream.push(rawDelta);
+    if (update.delta || update.markers.length > 0) {
+      await this.store.appendResearchTaskDelta(task.id, update.delta, update.markers);
+    }
+    return update;
+  }
+
+  /** 完成时冲洗未闭合/非法控制串：丢标记但保正文，控制符永不进入消息。 */
+  private async finishGeneratedMarkup(task: ResearchTaskRecord): Promise<ReturnType<MentionMarkupStream["finish"]>> {
+    const stream = this.mentionStreams.get(task.id);
+    if (!stream) throw new Error("Mention markup stream is not initialized");
+    const update = stream.finish();
+    if (update.delta) await this.store.appendResearchTaskDelta(task.id, update.delta, update.markers);
+    return update;
   }
 
   /**
@@ -724,7 +777,9 @@ export class ResearchSessionService {
     provider: ResearchGenerationProvider,
     generationRequest: ResearchGenerationRequest,
   ): Promise<string> {
-    let streamed = this.store.getResearchTask(task.id)?.streamCheckpoint?.content ?? "";
+    let streamed = this.store.getResearchMessage(task.outputMessageId)?.content
+      ?? this.store.getResearchTask(task.id)?.streamCheckpoint?.content
+      ?? "";
     const seedLength = streamed.length;
     let continuations = 0;
     let lastCheckpointAt = 0;
@@ -746,7 +801,8 @@ export class ResearchSessionService {
             if (suffix) {
               streamed = next;
               if (streamed.length > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
-              await this.store.appendResearchTaskDelta(task.id, suffix);
+              const update = await this.appendGeneratedDelta(task, suffix);
+              streamed = update.content;
               // 节流落断点：时间间隔或字符增量达标才写，避免逐 token 写放大。
               const nowMs = Date.now();
               if (nowMs - lastCheckpointAt >= STREAM_CHECKPOINT_MIN_INTERVAL_MS || streamed.length - checkpointedLength >= STREAM_CHECKPOINT_MIN_CHARS) {
@@ -821,7 +877,8 @@ export class ResearchSessionService {
       .join("\n\n");
     if (!existing && writtenSoFar) {
       // 默认重试已清空正文：已完成节需重新 append 秒级重建（不调模型），保证前文完整。
-      await this.store.appendResearchTaskDelta(task.id, writtenSoFar);
+      const update = await this.appendGeneratedDelta(task, writtenSoFar);
+      writtenSoFar = update.content;
     }
 
     let hasPriorContent = (existing || writtenSoFar).length > 0;
@@ -840,16 +897,16 @@ export class ResearchSessionService {
         delete section.partialContent;
         completedCount += 1;
         // 增量 append 的分隔符与最终 join("\n\n") 严格一致，保证块边界不错位。
-        await this.store.appendResearchTaskDelta(task.id, hasPriorContent ? `\n\n${result.content}` : result.content);
-        writtenSoFar = writtenSoFar ? `${writtenSoFar}\n\n${result.content}` : result.content;
+        const update = await this.appendGeneratedDelta(task, hasPriorContent ? `\n\n${result.content}` : result.content);
+        writtenSoFar = update.content;
         hasPriorContent = true;
       } else {
         // 节最终失败：写失败标记，继续后续节（绝不静默丢节、不整任务失败）。
         section.status = "failed";
         section.failureReason = result.failed;
         const marker = `[本节生成失败：${section.heading}]`;
-        await this.store.appendResearchTaskDelta(task.id, hasPriorContent ? `\n\n${marker}` : marker);
-        writtenSoFar = writtenSoFar ? `${writtenSoFar}\n\n${marker}` : marker;
+        const update = await this.appendGeneratedDelta(task, hasPriorContent ? `\n\n${marker}` : marker);
+        writtenSoFar = update.content;
         hasPriorContent = true;
       }
       await this.store.saveResearchTaskBodyPlan(task.id, { sections });

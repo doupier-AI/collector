@@ -455,6 +455,15 @@ button {
 
 /* H3b 术语弱标记：只改变视觉提示，不新增文字、间距或交互语义。 */
 .term-marker {
+  display: inline;
+  appearance: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  background: transparent;
   cursor: help;
   border-radius: 0.125rem;
   text-decoration-line: underline;

@@ -114,10 +114,15 @@ const fakeProvider = {
   async *writeBodyStream(request) {
     const question = request.messages.at(-1)?.content ?? "";
     const short = question.length > 24 ? `${question.slice(0, 24)}…` : question;
+    // 确定性假模型也遵守生产环境的流内弱标记契约；可见正文清洗后仍与 short 逐字一致。
+    const markedShort = short
+      .replace(/\bREST\b/g, "[[abbreviation:REST]]")
+      .replace(/\bAPI\b/g, "[[abbreviation:API]]")
+      .replace(/\bHTTP\b/g, "[[abbreviation:HTTP]]");
     const cutAfter = process.env.E2E_STREAM_CUT_AFTER ? Number(process.env.E2E_STREAM_CUT_AFTER) : undefined;
     const segments = request.deepResearch
       ? [`这是深入研究第一轮，围绕「${short}」展开。`, "\n\n本轮只使用来源选区与当前已有材料生成，未联网检索，回答完毕。"]
-      : [`你问的是「${short}」。`, "\n\n本地优先会先把输入保存在本机，再据此组织后续研究。", "\n\n渐进事件把后续内容写进同一条消息，回答完毕。"];
+      : [`你问的是「${markedShort}」。`, "\n\n本地优先会先把输入保存在本机，再据此组织后续研究。", "\n\n渐进事件把后续内容写进同一条消息，回答完毕。"];
     // 前导窗口分路径：深入研究子节点用旧 400ms（多级生长链测试在完成态到达前就会采样选区，
     // 前导过长会把整个生成推后、让采样落进无可引用块的流式窗口）；首问用 1500ms 给导航/视图/
     // SSE 连接留足余量，保证中间态可观测。

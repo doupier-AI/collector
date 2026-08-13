@@ -51,6 +51,8 @@ import {
   type ResearchBodyVersionRecord,
   type ResearchBodyVersionView,
   type ResearchMessageRecord,
+  measureResearchContentLength,
+  resolveResearchConvergence,
 } from "@collector/capture-contracts";
 import type { CollectorStore } from "./store.js";
 import { defaultDataPaths } from "./store.js";
@@ -63,7 +65,7 @@ import { ResearchImportService } from "./research-import.js";
 import { ResearchSelectionAnalysisError, ResearchSelectionService, type ResearchSelectionProvider } from "./selection.js";
 import { DeepResearchService, NodeGrowthService } from "./deep-research.js";
 import { ResearchLaterService } from "./research-later.js";
-import { TermDetectionService } from "./term-detection.js";
+import { TermDetectionService, validateTermMarkers } from "./term-detection.js";
 import { ResearchTermPreviewService } from "./term-preview.js";
 import { ParentChainContextService } from "./parent-chain-context.js";
 import { NodeNamingService } from "./node-naming.js";
@@ -203,7 +205,22 @@ export class CaptureService {
     const fusionSources: NonNullable<ResearchNodeView["fusionSources"]> = {};
     for (const message of view.messages) {
       if (message.role !== "assistant" || message.status !== "completed") continue;
-      termDetections[message.id] = this.termDetection.detect(message.id, message.content, { nodeDepth });
+      if (message.termMarkers !== undefined) {
+        const terms = validateTermMarkers(message.content, message.termMarkers);
+        termDetections[message.id] = {
+          messageId: message.id,
+          terms,
+          detectedAt: message.updatedAt,
+          convergence: resolveResearchConvergence({
+            nodeDepth,
+            contentLength: measureResearchContentLength(message.content),
+          }),
+          suppressedCount: message.termMarkers.length - terms.length,
+        };
+      } else {
+        // 仅为尚未经过流内标记生成的旧开发数据保留确定性词法回退。
+        termDetections[message.id] = this.termDetection.detect(message.id, message.content, { nodeDepth });
+      }
       slices[message.id] = this.store.listSlicesByMessage(message.id);
       bodyVersions[message.id] = await this.getOrCreateBodyArtifacts(nodeId, message, view.citations ?? []);
       // #31：融合正文的消息按任务 fusionReferences 组装来源（去重、补标签）。
@@ -536,7 +553,10 @@ export class CaptureService {
             ...(request.repairHint !== undefined ? { repairHint: request.repairHint } : {}),
             ...(request.targetCharsOverride !== undefined ? { targetCharsOverride: request.targetCharsOverride } : {}),
           },
-          { context: { workflowRunId: request.taskId, purpose: "research_body_section", promptVersion: RESEARCH_SLICE_PROMPT_VERSION } },
+          {
+            nodeDepth: request.parentChainContext?.currentNodeDepth ?? 0,
+            context: { workflowRunId: request.taskId, purpose: "research_body_section", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
+          },
         );
       },
       async deriveAnnotations(input) {
@@ -544,6 +564,13 @@ export class CaptureService {
         if (!purposeGateway) throw new Error("AI model is not configured");
         return purposeGateway.deriveSliceAnnotations(input, {
           context: { workflowRunId: "", purpose: "research_slice_annotation", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
+        });
+      },
+      async verifyTermIdentity(input) {
+        const purposeGateway = await service.gatewayForPurpose("extraction");
+        if (!purposeGateway) throw new Error("AI model is not configured");
+        return purposeGateway.verifyTermIdentity(input, {
+          context: { workflowRunId: "", purpose: "term_entity_verification", promptVersion: "term-entity-verify-v1" },
         });
       },
       // #31：确认式融合正文生成。独立提示词版本；来源切片 ID、片段 ID 与令牌预算

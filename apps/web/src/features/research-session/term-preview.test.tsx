@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import type { ResearchNodeView, ResearchTermPreviewRecord, TermMarker } from "@collector/capture-contracts";
@@ -8,6 +8,7 @@ import type { AppServices } from "../../app/services";
 import { makeMessage, makeNode, makeNodeView, makeSelection, makeSession, makeTask } from "../../test/fakes";
 import type { TermPreviewEventStream } from "../../api/term-preview-events";
 import { ResearchNodePage } from "./ResearchNodePage";
+import { termPreviewClientKey, useTermPreviews } from "./useTermPreviews";
 
 function noopStream(): TermPreviewEventStream {
   return { close: () => {}, syncNow: () => {}, mode: "closed", lastEventId: 0 };
@@ -80,7 +81,7 @@ function renderPage(api: Partial<ApiClient>) {
 }
 
 describe("术语预览交互", () => {
-  it("键盘可到达术语，Enter 启动预览，Escape 只关闭弹层，完成后可进入概念节点", async () => {
+  it("键盘可到达提及，Escape 只关闭弹层，首次点击会生成预览并直接进入概念节点", async () => {
     const { view, marker } = viewWithTerms();
     const preview = previewFor(marker);
     const startResearchTermPreview = vi.fn(async () => ({ preview, selection: makeSelection({ id: "selection-1" }) }));
@@ -101,12 +102,40 @@ describe("术语预览交互", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(startResearchTermPreview).not.toHaveBeenCalled();
 
-    fireEvent.focus(markerElement);
-    fireEvent.keyDown(markerElement, { key: "Enter" });
+    fireEvent.click(markerElement);
     await waitFor(() => expect(startResearchTermPreview).toHaveBeenCalledWith("session-1", { messageId: "m-out", marker }, expect.any(String)));
-    expect(await screen.findByText("REST API 是一种通过 HTTP 交换资源的接口约定。")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "进入这个概念" }));
     await waitFor(() => expect(growResearchTermPreview).toHaveBeenCalledWith("preview-1", expect.any(String)));
+  });
+
+  it("同节点另一条消息复用既有预览时仍映射到当前提及", async () => {
+    const oldMarker = { ...markerFor("REST was introduced earlier.", "REST"), entityId: "entity-rest" };
+    const currentMarker = { ...markerFor("REST is used again here.", "REST"), entityId: "entity-rest" };
+    const reused = previewFor(oldMarker);
+    reused.messageId = "m-old";
+    const startResearchTermPreview = vi.fn(async () => ({ preview: reused, selection: makeSelection({ id: "selection-1" }) }));
+    const grown = {
+      node: makeNode({ id: "child-1", sessionId: "session-1", parentNodeId: "session-1" }),
+      session: makeSession({ id: "session-1" }),
+      selection: makeSelection({ id: "selection-1" }),
+      inputMessage: makeMessage({ id: "child-input", role: "user" }),
+      outputMessage: makeMessage({ id: "child-output", role: "assistant", status: "completed", content: reused.content }),
+      task: makeTask({ id: "child-task", status: "completed" }),
+    };
+    const growResearchTermPreview = vi.fn(async () => grown);
+    const services = {
+      api: { startResearchTermPreview, growResearchTermPreview } as unknown as ApiClient,
+      connectTermPreviewEvents: vi.fn(noopStream),
+    } as unknown as AppServices;
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <ServicesProvider services={services}>{children}</ServicesProvider>
+    );
+    const { result } = renderHook(() => useTermPreviews("session-1"), { wrapper });
+
+    await act(async () => {
+      await result.current.growMarker("m-current", currentMarker);
+    });
+
+    expect(result.current.previews[termPreviewClientKey("m-current", currentMarker)]?.id).toBe(reused.id);
+    expect(growResearchTermPreview).toHaveBeenCalledWith(reused.id, `term-growth:${reused.id}`);
   });
 });

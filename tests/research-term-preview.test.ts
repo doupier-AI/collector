@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { type ResearchMessageRecord, type ResearchTaskRecord, type TermMarker } from "@collector/capture-contracts";
+import { type ResearchMessageRecord, type ResearchNodeRecord, type ResearchTaskRecord, type TermMarker } from "@collector/capture-contracts";
 import {
   CaptureService,
   LocalAuth,
@@ -108,10 +108,47 @@ async function createCompletedAssistant(harness: Awaited<ReturnType<typeof creat
   return { session, node, inputMessage, assistant, marker, markers };
 }
 
+async function appendCompletedAssistant(
+  harness: Awaited<ReturnType<typeof createHarness>>,
+  node: ResearchNodeRecord,
+  content: string,
+) {
+  const now = new Date().toISOString();
+  const inputMessage: ResearchMessageRecord = {
+    id: randomUUID(), sessionId: node.sessionId, nodeId: node.id, role: "user", content: "Continue in this context", status: "completed", createdAt: now, updatedAt: now,
+  };
+  const outputMessage: ResearchMessageRecord = {
+    id: randomUUID(), sessionId: node.sessionId, nodeId: node.id, role: "assistant", content, status: "completed", createdAt: now, updatedAt: now,
+  };
+  const task: ResearchTaskRecord = {
+    id: randomUUID(), sessionId: node.sessionId, nodeId: node.id, inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
+    idempotencyKey: randomUUID(), status: "completed", retryable: false, promptVersion: "test", createdAt: now, updatedAt: now, completedAt: now,
+  };
+  await harness.store.createResearchTurnForNode(node, inputMessage, outputMessage, task);
+  const view = await harness.service.getResearchNodeView(node.id);
+  const assistant = view.messages.find((message: ResearchMessageRecord) => message.id === outputMessage.id);
+  assert.ok(assistant);
+  const marker = view.termDetections?.[assistant.id]?.terms.find((candidate: TermMarker) => candidate.text === "REST");
+  assert.ok(marker);
+  return { assistant, marker };
+}
+
 test("term preview is persisted, streamed once, and grows a child from the exact preview", async (t) => {
   const requests: ResearchGenerationRequest[] = [];
   const answer = "REST API explains how HTTP clients communicate with a service.";
-  const harness = await createHarness({ provider: providerWithAnswer(answer, requests) });
+  const mainAnswer = "[[abbreviation:REST]] API explains how HTTP clients communicate with a service.";
+  const provider: ResearchGenerationProvider = {
+    provider: "term-preview-provider",
+    model: "term-preview-model",
+    async *generate(request) {
+      requests.push(structuredClone(request));
+      const output = request.messages[0]?.content.includes("请解释当前回答中的") ? answer : mainAnswer;
+      yield output.slice(0, Math.ceil(output.length / 2));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      yield output.slice(Math.ceil(output.length / 2));
+    },
+  };
+  const harness = await createHarness({ provider });
   t.after(() => harness.close());
 
   const sessionResponse = await postJson(harness.base, harness.token, "/v1/research-sessions", {}, randomUUID());
@@ -156,7 +193,12 @@ test("term preview is persisted, streamed once, and grows a child from the exact
 
   const completed = await waitForPreview(harness.base, harness.token, accepted.preview.id, "completed") as unknown as { content: string };
   assert.equal(completed.content, answer);
-  assert.equal(requests.filter((request) => request.messages[0]?.content.includes("请解释当前回答中的术语")).length, 1);
+  assert.equal(requests.filter((request) => request.messages[0]?.content.includes("请解释当前回答中的缩写")).length, 1);
+  const previewPrompt = requests.find((request) => request.messages[0]?.content.includes("请解释当前回答中的缩写"))?.messages[0]?.content ?? "";
+  assert.match(previewPrompt, /60–120 字/);
+  assert.match(previewPrompt, /120–220 字/);
+  assert.match(previewPrompt, /220–300 字/);
+  assert.match(previewPrompt, /不得超过 320 字/);
 
   const eventsResponse = await fetch(`${harness.base}/v1/research-term-preview-tasks/${accepted.preview.id}/events`, { headers: headers(harness.token) });
   assert.equal(eventsResponse.status, 200);
@@ -178,6 +220,161 @@ test("term preview is persisted, streamed once, and grows a child from the exact
   const repeatedGrown = await repeatedGrow.json() as { node: { id: string }; outputMessage: { content: string } };
   assert.equal(repeatedGrown.node.id, grown.node.id);
   assert.equal(repeatedGrown.outputMessage.content, answer);
+});
+
+test("multiple mentions of the same entity in one stable answer reuse one preview task", async (t) => {
+  const harness = await createHarness({ autoRunResearchTasks: false });
+  t.after(() => harness.close());
+  const fixture = await createCompletedAssistant(
+    harness,
+    "REST appears in this explanation, and REST appears again with enough surrounding context for detection.",
+  );
+  const mentions = fixture.markers.filter((marker: TermMarker) => marker.text === "REST");
+  assert.equal(mentions.length, 2);
+  assert.equal(mentions[0]?.entityId, mentions[1]?.entityId);
+
+  const first = await harness.service.termPreviews.start(
+    fixture.node.id,
+    { messageId: fixture.assistant.id, marker: mentions[0]! },
+    "same-entity-first",
+  );
+  const second = await harness.service.termPreviews.start(
+    fixture.node.id,
+    { messageId: fixture.assistant.id, marker: mentions[1]! },
+    "same-entity-second",
+  );
+  assert.equal(second.preview.id, first.preview.id);
+});
+
+test("same-named mentions in different messages reuse a preview only after same-node context verification", async (t) => {
+  const checks: Array<{ left: { context: string }; right: { context: string } }> = [];
+  const provider: ResearchGenerationProvider = {
+    provider: "term-identity-provider",
+    model: "term-identity-model",
+    async *generate() { yield "preview"; },
+    async verifyTermIdentity(input) {
+      checks.push(structuredClone(input));
+      return true;
+    },
+  };
+  const harness = await createHarness({ provider, autoRunResearchTasks: false });
+  t.after(() => harness.close());
+
+  const first = await createCompletedAssistant(harness, "REST is discussed as the architectural style used by this service.");
+  const firstPreview = await harness.service.termPreviews.start(
+    first.node.id,
+    { messageId: first.assistant.id, marker: first.marker },
+    "same-node-first-message",
+  );
+  const second = await appendCompletedAssistant(
+    harness,
+    first.node,
+    "In this same service discussion, REST continues to describe that architectural style.",
+  );
+  const reused = await harness.service.termPreviews.start(
+    first.node.id,
+    { messageId: second.assistant.id, marker: second.marker },
+    "same-node-second-message",
+  );
+
+  assert.equal(reused.preview.id, firstPreview.preview.id);
+  assert.equal(checks.length, 1);
+  assert.ok(checks[0]!.left.context.length <= 600);
+  assert.ok(checks[0]!.right.context.length <= 600);
+});
+
+test("same-node verification rejection creates an independent preview", async (t) => {
+  let checks = 0;
+  const provider: ResearchGenerationProvider = {
+    provider: "term-identity-provider",
+    model: "term-identity-model",
+    async *generate() { yield "preview"; },
+    async verifyTermIdentity() {
+      checks += 1;
+      return false;
+    },
+  };
+  const harness = await createHarness({ provider, autoRunResearchTasks: false });
+  t.after(() => harness.close());
+
+  const first = await createCompletedAssistant(harness, "REST is the architectural style used by this service.");
+  const firstPreview = await harness.service.termPreviews.start(
+    first.node.id,
+    { messageId: first.assistant.id, marker: first.marker },
+    "different-meaning-first",
+  );
+  const second = await appendCompletedAssistant(
+    harness,
+    first.node,
+    "The speaker said REST to mean taking a break after the deployment.",
+  );
+  const independent = await harness.service.termPreviews.start(
+    first.node.id,
+    { messageId: second.assistant.id, marker: second.marker },
+    "different-meaning-second",
+  );
+
+  assert.notEqual(independent.preview.id, firstPreview.preview.id);
+  assert.equal(checks, 1);
+});
+
+test("different nodes always regenerate a same-named entity without cross-node verification", async (t) => {
+  let checks = 0;
+  const provider: ResearchGenerationProvider = {
+    provider: "term-identity-provider",
+    model: "term-identity-model",
+    async *generate() { yield "preview"; },
+    async verifyTermIdentity() {
+      checks += 1;
+      return true;
+    },
+  };
+  const harness = await createHarness({ provider, autoRunResearchTasks: false });
+  t.after(() => harness.close());
+
+  const root = await createCompletedAssistant(harness, "REST is the architectural style used by the root-node discussion.");
+  const rootPreview = await harness.service.termPreviews.start(
+    root.node.id,
+    { messageId: root.assistant.id, marker: root.marker },
+    "root-node-preview",
+  );
+  const now = new Date().toISOString();
+  const child: ResearchNodeRecord = {
+    id: randomUUID(), sessionId: root.session.id, parentNodeId: root.node.id, status: "active", createdAt: now, updatedAt: now,
+  };
+  await harness.store.createResearchNode(child, randomUUID());
+  const childMessage = await appendCompletedAssistant(
+    harness,
+    child,
+    "REST appears in this child node and needs an explanation fitted to the child context.",
+  );
+  const childPreview = await harness.service.termPreviews.start(
+    child.id,
+    { messageId: childMessage.assistant.id, marker: childMessage.marker },
+    "child-node-preview",
+  );
+
+  assert.notEqual(childPreview.preview.id, rootPreview.preview.id);
+  assert.equal(checks, 0);
+});
+
+test("term preview uses 320 characters only as a safety cap", async (t) => {
+  const requests: ResearchGenerationRequest[] = [];
+  const harness = await createHarness({
+    autoRunResearchTasks: false,
+    provider: providerWithAnswer("解".repeat(400), requests),
+  });
+  t.after(() => harness.close());
+  const fixture = await createCompletedAssistant(harness, "REST API gives enough context for this preview boundary test.");
+  const started = await harness.service.termPreviews.start(
+    fixture.node.id,
+    { messageId: fixture.assistant.id, marker: fixture.marker },
+    "preview-safety-cap",
+  );
+  await harness.service.termPreviews.processTask(started.preview.id);
+  const completed = harness.service.termPreviews.getPreview(started.preview.id);
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.content.length, 320);
 });
 
 test("term preview failure keeps partial content, retries, and marks interrupted work after restart", async (t) => {

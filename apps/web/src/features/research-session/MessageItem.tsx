@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { ReactNode } from "react";
 import type { ResearchCitationRecord, ResearchFusionSource, ResearchGroundingSourceRecord, ResearchMessageRecord, ResearchSliceRecord, ResearchTaskRecord, ResearchTermPreviewRecord, TermMarker } from "@collector/capture-contracts";
 import { deriveMessageBlocks, messageContentBlockId, splitBlockHeading } from "@collector/capture-contracts";
-import { MarkdownContent } from "../../components/MarkdownContent";
+import { MarkdownContent, type RenderedTermMarker } from "../../components/MarkdownContent";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { markExactInRendered, setRangeFromOffsets } from "../selection/selection-highlight";
 import { taskErrorReason } from "./format";
@@ -33,6 +33,7 @@ export interface MessageItemProps {
   fusionSources?: ResearchFusionSource[];
   onRetryTermPreview?: (preview: ResearchTermPreviewRecord) => void;
   onGrowTermPreview?: (preview: ResearchTermPreviewRecord) => Promise<boolean>;
+  onGrowTermMarker?: (messageId: string, marker: TermMarker) => Promise<boolean>;
   /** #36：切片列表；存在正式切片时渲染为连续语义卡片序列。 */
   slices?: ResearchSliceRecord[];
   /** #42：融合依据定位的当前目标卡片 id（无定位时不传）；目标卡获得短暂强调。 */
@@ -40,7 +41,7 @@ export interface MessageItemProps {
 }
 
 /** 单条消息。AI 消息与对应用户消息之间由 CSS 绘制克制的来源线与节点。 */
-export function MessageItem({ message, task, retrying = false, onRetry, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, slices, fragmentCardId, fusionSources }: MessageItemProps) {
+export function MessageItem({ message, task, retrying = false, onRetry, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, onGrowTermMarker, slices, fragmentCardId, fusionSources }: MessageItemProps) {
   if (message.role === "user") {
     return (
       <li className="message message--user">
@@ -69,6 +70,7 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
             onStart={onStartTermPreview}
             onRetry={onRetryTermPreview}
             onGrow={onGrowTermPreview}
+            onGrowMarker={onGrowTermMarker}
           >
             <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} fragmentCardId={fragmentCardId} fusionSources={fusionSources} />
           </TermPreviewInteraction>
@@ -78,7 +80,7 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
       ) : message.status === "failed" ? (
         <FailedBody message={message} task={task} retrying={retrying} onRetry={onRetry} />
       ) : (
-        <GeneratingBody message={message} task={task} />
+        <GeneratingBody message={message} task={task} terms={terms} />
       )}
     </li>
   );
@@ -116,7 +118,7 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
               highlight={thisHighlight}
               sources={groundingSources}
               citations={citations}
-              terms={terms.filter((term) => term.blockOrdinal === target.blockOrdinal)}
+              terms={termsForSection(terms, target.blockOrdinal, target.blockText)}
               fragmentFocused={fragmentCardId === target.cardId}
               fusionSources={fusionSources}
             />
@@ -237,6 +239,20 @@ function MessageBlock({ blockText, blockId, titleAnchorId, highlight, sources, c
   );
 }
 
+/** 把稳定的块内锚点投影到合并节正文；只改变渲染偏移，不改变交互使用的原锚点。 */
+function termsForSection(terms: readonly TermMarker[], firstBlockOrdinal: number, blockText: string): RenderedTermMarker[] {
+  const renderedBlocks = deriveMessageBlocks(blockText);
+  return terms.flatMap((term) => {
+    const localBlock = renderedBlocks[term.blockOrdinal - firstBlockOrdinal];
+    if (!localBlock || localBlock.text.slice(term.startOffset, term.endOffset) !== term.text) return [];
+    return [{
+      ...term,
+      renderedStartOffset: localBlock.startOffset + term.startOffset,
+      renderedEndOffset: localBlock.startOffset + term.endOffset,
+    }];
+  });
+}
+
 /** 联网完成后保留可访问的来源预览；没有 URL 时不虚构外链。 */
 interface TermPreviewInteractionProps {
   messageId: string;
@@ -245,6 +261,7 @@ interface TermPreviewInteractionProps {
   onStart?: (messageId: string, marker: TermMarker) => void;
   onRetry?: (preview: ResearchTermPreviewRecord) => void;
   onGrow?: (preview: ResearchTermPreviewRecord) => Promise<boolean>;
+  onGrowMarker?: (messageId: string, marker: TermMarker) => Promise<boolean>;
   children: ReactNode;
 }
 
@@ -253,7 +270,7 @@ interface ActiveTermPreview {
   marker: TermMarker;
 }
 
-function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, onGrow, children }: TermPreviewInteractionProps) {
+function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, onGrow, onGrowMarker, children }: TermPreviewInteractionProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const hoverTimerRef = useRef<number | undefined>(undefined);
@@ -326,7 +343,14 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
   const activateMarker = useCallback((marker: TermMarker) => {
     const preview = previews[termPreviewClientKey(messageId, marker)];
     if (!preview || preview.status === "queued" || preview.status === "running") {
-      startPreview(marker);
+      if (onGrowMarker) {
+        setGrowing(true);
+        void onGrowMarker(messageId, marker).then((success) => {
+          if (success) closePopover();
+        }).finally(() => setGrowing(false));
+      } else {
+        startPreview(marker);
+      }
       return;
     }
     if (preview.status === "completed" && preview.content.trim() && onGrow) {
@@ -335,7 +359,11 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
         if (success) closePopover();
       }).finally(() => setGrowing(false));
     }
-  }, [closePopover, messageId, onGrow, previews, startPreview]);
+  }, [closePopover, messageId, onGrow, onGrowMarker, previews, startPreview]);
+  const startPreviewRef = useRef(startPreview);
+  const activateMarkerRef = useRef(activateMarker);
+  startPreviewRef.current = startPreview;
+  activateMarkerRef.current = activateMarker;
 
   useEffect(() => {
     const root = rootRef.current;
@@ -356,7 +384,7 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
       clearHoverTimer();
       hoverTimerRef.current = window.setTimeout(() => {
         openPopover(found.element, found.marker);
-        startPreview(found.marker);
+        startPreviewRef.current(found.marker);
       }, 400);
     };
     const handlePointerOut = (event: Event) => {
@@ -386,7 +414,7 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
       event.preventDefault();
       event.stopPropagation();
       openPopover(found.element, found.marker);
-      activateMarker(found.marker);
+      activateMarkerRef.current(found.marker);
     };
     const handleKeyDown = (event: Event) => {
       const keyboard = event as KeyboardEvent;
@@ -402,7 +430,7 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
         keyboard.preventDefault();
         keyboard.stopPropagation();
         openPopover(found.element, found.marker);
-        activateMarker(found.marker);
+        activateMarkerRef.current(found.marker);
       }
     };
 
@@ -422,7 +450,27 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
       clearHoverTimer();
       clearCloseTimer();
     };
-  }, [activateMarker, clearCloseTimer, clearHoverTimer, closePopover, markerFromElement, openPopover, startPreview]);
+  }, [clearCloseTimer, clearHoverTimer, closePopover, markerFromElement, openPopover]);
+
+  useEffect(() => {
+    if (!active) return;
+    active.element.setAttribute("aria-expanded", "true");
+    active.element.setAttribute("aria-controls", "term-preview-popover");
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      const markerElement = active.element;
+      closePopover();
+      queueMicrotask(() => markerElement.focus());
+    };
+    document.addEventListener("keydown", handleEscape, true);
+    return () => {
+      document.removeEventListener("keydown", handleEscape, true);
+      active.element.setAttribute("aria-expanded", "false");
+      active.element.removeAttribute("aria-controls");
+    };
+  }, [active, closePopover]);
 
   useEffect(() => {
     if (!active) return;
@@ -452,6 +500,7 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
       {children}
       {active && typeof document !== "undefined" ? createPortal(
         <div
+          id="term-preview-popover"
           ref={popoverRef}
           className="term-preview-popover"
           data-testid="term-preview-popover"
@@ -537,7 +586,7 @@ function GroundingScopeNote({ task }: { task?: ResearchTaskRecord }) {
   return <p className="message__status message__grounding-scope" data-testid="grounding-scope-note">{message}</p>;
 }
 
-function GeneratingBody({ message, task }: { message: ResearchMessageRecord; task?: ResearchTaskRecord }) {
+function GeneratingBody({ message, task, terms }: { message: ResearchMessageRecord; task?: ResearchTaskRecord; terms: TermMarker[] }) {
   const hasContent = message.content.trim().length > 0;
   const status = task?.groundingScope?.status === "not_requested"
     ? "已保存，正在生成"
@@ -545,9 +594,7 @@ function GeneratingBody({ message, task }: { message: ResearchMessageRecord; tas
   return (
     <>
       {hasContent ? (
-        <div className="message__content">
-          <MarkdownContent text={message.content} variant="message" />
-        </div>
+        <AssistantBlocks message={message} citations={[]} groundingSources={[]} terms={terms} />
       ) : <AiPlaceholder />}
       <p className="message__status">{hasContent ? "正在生成" : status}</p>
     </>

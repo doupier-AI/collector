@@ -33,7 +33,7 @@ export interface MarkdownContentProps {
   text: string;
   sources?: readonly ResearchGroundingSourceRecord[];
   citations?: readonly ResearchCitationRecord[];
-  terms?: readonly TermMarker[];
+  terms?: readonly RenderedTermMarker[];
   /** #31：融合正文的来源列表；存在时 [来源n] 渲染为可点击的融合引用标记。 */
   fusionSources?: readonly ResearchFusionSource[];
   variant?: "message" | "insight";
@@ -45,6 +45,12 @@ export interface MarkdownContentProps {
    */
   titleAnchorId?: string;
 }
+
+/** 合并渲染多个正文块时的视图偏移；持久化锚点仍保留在 TermMarker 原字段。 */
+export type RenderedTermMarker = TermMarker & {
+  renderedStartOffset?: number;
+  renderedEndOffset?: number;
+};
 
 /**
  * 把 AI 生成的 Markdown 文本渲染为安全 HTML。
@@ -84,7 +90,7 @@ export function MarkdownContent({ text, sources = [], citations = [], terms = []
     let searchFrom = 0;
     const validTerms = terms
       .filter((term) => isValidTermMarker(text, term))
-      .sort((left, right) => left.startOffset - right.startOffset || left.endOffset - right.endOffset);
+      .sort((left, right) => renderedStart(left) - renderedStart(right) || renderedEnd(left) - renderedEnd(right));
 
     for (const term of validTerms) {
       const match = findRenderedTextRange(root, term.text, searchFrom);
@@ -167,16 +173,26 @@ interface RenderedTextRange {
   endOffset: number;
 }
 
-function isValidTermMarker(text: string, marker: TermMarker): boolean {
+function isValidTermMarker(text: string, marker: RenderedTermMarker): boolean {
+  const startOffset = renderedStart(marker);
+  const endOffset = renderedEnd(marker);
   return (
     marker.text.length > 0 &&
-    Number.isSafeInteger(marker.startOffset) &&
-    Number.isSafeInteger(marker.endOffset) &&
-    marker.startOffset >= 0 &&
-    marker.endOffset > marker.startOffset &&
-    marker.endOffset <= text.length &&
-    text.slice(marker.startOffset, marker.endOffset) === marker.text
+    Number.isSafeInteger(startOffset) &&
+    Number.isSafeInteger(endOffset) &&
+    startOffset >= 0 &&
+    endOffset > startOffset &&
+    endOffset <= text.length &&
+    text.slice(startOffset, endOffset) === marker.text
   );
+}
+
+function renderedStart(marker: RenderedTermMarker): number {
+  return marker.renderedStartOffset ?? marker.startOffset;
+}
+
+function renderedEnd(marker: RenderedTermMarker): number {
+  return marker.renderedEndOffset ?? marker.endOffset;
 }
 
 /** 读取 Markdown 渲染后的可见文字节点；引用角标没有正文，不参与术语定位。 */
@@ -219,12 +235,16 @@ function pointAtOffset(nodes: Text[], target: number): TextPoint {
 }
 
 /** 用无语义的 span 包裹术语，保留原文字节点内容与 DOM 选区字符偏移。 */
-function wrapTermRange(root: Element, rendered: RenderedTextRange, term: TermMarker): boolean {
+function wrapTermRange(root: Element, rendered: RenderedTextRange, term: RenderedTermMarker): boolean {
   try {
     const range = root.ownerDocument.createRange();
     range.setStart(rendered.start.node, rendered.start.offset);
     range.setEnd(rendered.end.node, rendered.end.offset);
-    const marker = root.ownerDocument.createElement("span");
+    if (rendered.start.node.parentElement?.closest("a, button, code, pre") || rendered.end.node.parentElement?.closest("a, button, code, pre")) {
+      return false;
+    }
+    const marker = root.ownerDocument.createElement("button");
+    marker.type = "button";
     marker.className = "term-marker";
     marker.setAttribute("data-term-marker", "");
     marker.setAttribute("data-term-category", term.category);
@@ -232,8 +252,6 @@ function wrapTermRange(root: Element, rendered: RenderedTextRange, term: TermMar
     marker.setAttribute("data-term-block-ordinal", String(term.blockOrdinal));
     marker.setAttribute("data-term-start-offset", String(term.startOffset));
     marker.setAttribute("data-term-end-offset", String(term.endOffset));
-    marker.setAttribute("role", "button");
-    marker.setAttribute("tabindex", "0");
     marker.setAttribute("aria-label", `解释术语 ${term.text}`);
     marker.appendChild(range.extractContents());
     range.insertNode(marker);

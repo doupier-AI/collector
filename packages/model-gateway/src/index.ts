@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { FUSION_COMPOSE_PROMPT_VERSION, FUSION_COMPOSE_TOKEN_BUDGET, FUSION_RELATION_TYPES, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, parseResearchSelectionInsight, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight, type ResearchSliceContext } from "@collector/capture-contracts";
+import { FUSION_COMPOSE_PROMPT_VERSION, FUSION_COMPOSE_TOKEN_BUDGET, FUSION_RELATION_TYPES, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, parseResearchSelectionInsight, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight, type ResearchSliceContext, type TermCategory } from "@collector/capture-contracts";
 
 export interface ProviderUsage {
   inputTokens?: number;
@@ -262,6 +262,23 @@ export function formatResearchParentChainContext(context?: ResearchParentChainCo
     lines.push("回答引导：严格收敛到当前问题，只使用以上已建立的知识回答；不要主动引入新的术语、分支或延伸主题，保持来源事实与不确定性。");
   }
   return lines.join("\n");
+}
+
+/** AI 正文与弱标记共用的流内控制说明；深度只控制是否/多少标记，不直接控制预览字数。 */
+export function formatMentionMarkupInstructions(nodeDepth = 0): string {
+  const density = resolveResearchConvergence({ nodeDepth }).termDensity;
+  if (density === "stopped") {
+    return "弱标记：当前研究路径已经足够深入。不要输出任何 [[ 控制标记；只输出干净正文。";
+  }
+  const densityRule = density === "reduced"
+    ? "本回答最多标记 4 个理解当前问题最关键的对象；宁缺毋滥。"
+    : "只标记少量、确实影响当前论述理解的对象；不要为了覆盖类别而凑数。";
+  return `弱标记：
+- 只在读者理解当前论述仍需补充解释时，用下列精确格式包住完整短语：[[concept:短语]]、[[entity:短语]]、[[abbreviation:短语]]、[[notation:短语]]。
+- concept 用于理论、机制、方法、现象和专业概念；entity 用于当前论述中身份重要的人、组织、地点、作品、事件、法律、产品或技术；abbreviation 用于不展开便可能难懂的缩写；notation 用于公式、统计记号、代码标识和状态码。
+- ${densityRule}
+- 普通名词、日期、网址、引用编号、标题、完整句子，以及上下文已经充分解释的对象都不标记。不要嵌套标记，不要让标记跨越 Markdown 结构或段落。
+- [[...]] 是内部控制格式，除上述四种合法形式外不要输出方括号控制符；正文内容本身保持自然连贯。`;
 }
 
 export class ProviderRegistry {
@@ -641,6 +658,7 @@ export class ModelGateway {
   ): string {
     const parentContext = formatResearchParentChainContext(parentChainContext);
     const sliceContextText = formatResearchSliceContext(sliceContext);
+    const mentionInstructions = formatMentionMarkupInstructions(parentChainContext?.currentNodeDepth ?? 0);
     return `你是 Collector 的研究助手。请回答用户最新的问题，输出一篇连贯、完整的中文正文。
 
 要求：
@@ -649,6 +667,8 @@ export class ModelGateway {
 - 内容详实、论述充分，长度服从内容需要，不要刻意压缩或拆成孤立的碎片要点。
 - 保持来源事实与不确定性，不编造来源、链接或引用。
 - 不要使用 Markdown 代码围栏包裹整篇回答，不要返回 JSON 或任何字段结构，只输出正文本身。
+
+${mentionInstructions}
 
 对话：
 ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContextText ? `\n\n${sliceContextText}` : ""}`;
@@ -765,7 +785,7 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
       /** 降级重试时下调的目标字数。 */
       targetCharsOverride?: number;
     },
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number } = {},
   ): Promise<{ content: string; finishReason?: string }> {
     const section = input.outline.sections[input.sectionIndex];
     if (!section) throw new Error(`Body section ${input.sectionIndex} is out of range`);
@@ -776,6 +796,7 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
     const continuation = input.continuation;
     // 断点前文只取尾部一段作衔接上下文，避免整节重复进入提示。
     const continuationTail = continuation ? continuation.priorSectionContent.slice(-500) : "";
+    const mentionInstructions = formatMentionMarkupInstructions(options.nodeDepth ?? 0);
     const prompt = `你是 Collector 的研究助手。你正在按大纲逐节撰写一篇连贯的中文长文，现在请只扩写其中一节。
 
 写作目标：${input.goal}
@@ -789,7 +810,9 @@ ${input.writtenSoFar.trim() ? `已生成的前文（仅供保持连贯，不要�
 ${continuation ? "- 直接从断点继续写正文，不要重复上面的内容，不要再输出节标题。\n" : `- 第一行输出该节标题，格式为 Markdown 二级标题：## ${section.heading}；标题后用一个空行接正文，正文由流畅段落组成、段落间用一个空行分隔。整节只出现这一次标题，正文内不要再重复该标题或另起同级标题。\n`}- 只输出第 ${input.sectionIndex + 1} 节，不要重复大纲或其它节，不要为正文内的小论点再起标题。
 - 与前文自然衔接、保持同一主题与语气；内容详实，服从该节目标字数。
 - 保持来源事实与不确定性，不编造来源、链接或引用。
-- 不要使用 Markdown 代码围栏，不要返回 JSON 或大纲字段，只输出该节标题与正文。`;
+- 不要使用 Markdown 代码围栏，不要返回 JSON 或大纲字段，只输出该节标题与正文。
+
+${mentionInstructions}`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
@@ -834,6 +857,46 @@ ${JSON.stringify(input.content)}`;
       timeoutMs: options.timeoutMs ?? 30_000,
     }, options.context ?? { purpose: "research_slice_annotation" });
     return parseSliceAnnotation(response.content);
+  }
+
+  /**
+   * 同一节点内的同名提及核验。输入只保留双方各 600 字局部语境；
+   * 文本相同不构成充分条件，同形异义或无法确定时必须返回 false。
+   */
+  async verifyTermIdentity(
+    input: {
+      left: { text: string; category: TermCategory; context: string };
+      right: { text: string; category: TermCategory; context: string };
+    },
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<boolean> {
+    const bounded = {
+      left: { ...input.left, text: input.left.text.slice(0, 200), context: input.left.context.slice(0, 600) },
+      right: { ...input.right, text: input.right.text.slice(0, 200), context: input.right.context.slice(0, 600) },
+    };
+    const prompt = `你是 Collector 的实体身份核验助手。判断同一研究节点内的两处提及是否指向同一个可解释对象。
+
+只返回合法 JSON：{"sameEntity":true} 或 {"sameEntity":false}。
+
+规则：
+- 只有指向同一对象才返回 true；拼写相同、类别相同本身都不充分。
+- 人物、组织、作品、概念、缩写或符号存在同名异义、不同展开、不同版本或不同指代时返回 false。
+- 语境不足、结论不确定时返回 false；不要使用外部知识补全缺失信息。
+
+提及 A：${JSON.stringify(bounded.left)}
+提及 B：${JSON.stringify(bounded.right)}`;
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      responseFormat: { type: "json_object" },
+      temperature: 0,
+      thinking: false,
+      maxTokens: options.maxTokens ?? 128,
+      timeoutMs: options.timeoutMs ?? 30_000,
+    }, options.context ?? { purpose: "term_entity_verification", promptVersion: "term-entity-verify-v1" });
+    const parsed = JSON.parse(response.content) as { sameEntity?: unknown };
+    if (typeof parsed.sameEntity !== "boolean") throw new Error("Term identity verification returned an invalid result");
+    return parsed.sameEntity;
   }
 
   /**

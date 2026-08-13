@@ -524,6 +524,19 @@ export function ResearchNodePage() {
     }
   }
 
+  async function handleGrowTermMarker(messageId: string, marker: import("@collector/capture-contracts").TermMarker): Promise<boolean> {
+    try {
+      const accepted = await termPreviews.growMarker(messageId, marker);
+      navigate(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(accepted.node.id)}`, {
+        state: { grew: true },
+      });
+      return true;
+    } catch (error) {
+      node.announce(apiErrorCopy(error).body);
+      return false;
+    }
+  }
+
   function dragHasFiles(event: DragEvent): boolean {
     return Array.from(event.dataTransfer?.types ?? []).includes("Files");
   }
@@ -838,11 +851,12 @@ export function ResearchNodePage() {
                 }
                 citations={view.citations}
                 groundingSources={view.groundingSources}
-                terms={view.termDetections?.[message.id]?.terms}
+                terms={message.termMarkers ?? view.termDetections?.[message.id]?.terms}
                 termPreviews={termPreviews.previews}
                 onStartTermPreview={termPreviews.start}
                 onRetryTermPreview={termPreviews.retry}
                 onGrowTermPreview={handleGrowTermPreview}
+                onGrowTermMarker={handleGrowTermMarker}
                 slices={view.slices?.[message.id]}
                 fragmentCardId={focusedCard?.cardId}
                 fusionSources={view.fusionSources?.[message.id]}

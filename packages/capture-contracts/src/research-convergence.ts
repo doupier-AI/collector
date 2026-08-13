@@ -68,8 +68,8 @@ export function measureResearchContentLength(content: unknown): number {
  * Resolve the convergence phase.
  *
  * When contentLength is omitted (for prompt construction), depth alone is
- * evaluated. When it is present, short content is explicitly protected so a
- * deep but small answer does not lose its existing weak markers.
+ * evaluated. Depth is the primary convergence signal: once the research path
+ * reaches the stop depth, short content does not re-enable weak markers.
  */
 export function resolveResearchConvergence(
   input: { nodeDepth?: number; contentLength?: number },
@@ -81,11 +81,11 @@ export function resolveResearchConvergence(
     : undefined;
   const base = { nodeDepth, ...(contentLength === undefined ? {} : { contentLength }) };
 
-  if (contentLength !== undefined && contentLength <= bounds.shortContentMaxCharacters) {
-    return { ...base, termDensity: "full", reason: "short_content" };
-  }
   if (nodeDepth >= bounds.stopAtDepth) {
     return { ...base, termDensity: "stopped", reason: "node_depth" };
+  }
+  if (contentLength !== undefined && contentLength <= bounds.shortContentMaxCharacters) {
+    return { ...base, termDensity: "full", reason: "short_content" };
   }
   if (contentLength !== undefined && contentLength >= bounds.stopAtContentCharacters) {
     return { ...base, termDensity: "stopped", reason: "content_length" };

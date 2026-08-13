@@ -79,10 +79,10 @@ interface RawMatch {
  * 检测规则（优先级从高到低）：
  * 1. 括号缩写（"X (Y)" 模式中的 Y → abbreviation）
  * 2. 全大写词（≥2 字母，排除停用词 → abbreviation）
- * 3. camelCase 标识符（→ term）
- * 4. PascalCase 词（排除句首普通词 → proper_noun）
+ * 3. camelCase 标识符（→ notation）
+ * 4. PascalCase 词（排除句首普通词 → entity）
  */
-export function detectTermMarkers(content: string): TermMarker[] {
+export function detectTermMarkers(content: string, messageId = "legacy"): TermMarker[] {
   const normalized = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   if (normalized.trim().length < TERM_DETECTION_MIN_CONTENT_LENGTH) return [];
 
@@ -94,7 +94,10 @@ export function detectTermMarkers(content: string): TermMarker[] {
   for (const block of blocks) {
     const rawMatches = detectInBlock(block.text);
     for (const match of rawMatches) {
+      const entityKey = `${match.category}:${match.text.normalize("NFKC").trim().toLowerCase()}`;
       terms.push({
+        mentionId: `legacy:${messageId}:${block.ordinal}:${match.startOffset}:${match.endOffset}`,
+        entityId: `legacy-entity:${messageId}:${entityKey}`,
         text: match.text,
         blockOrdinal: block.ordinal,
         startOffset: match.startOffset,
@@ -145,7 +148,7 @@ function detectInBlock(blockText: string): RawMatch[] {
     const start = match.index;
     if (isOverlapping(start, word.length, parenCovered)) continue;
     if (word.length < TERM_DETECTION_MIN_TERM_LENGTH) continue;
-    matches.push({ text: word, startOffset: start, endOffset: start + word.length, category: "term" });
+    matches.push({ text: word, startOffset: start, endOffset: start + word.length, category: "notation" });
   }
 
   // 4. PascalCase
@@ -158,7 +161,7 @@ function detectInBlock(blockText: string): RawMatch[] {
     if (PROPER_NOUN_STOP_WORDS.has(word)) continue;
     if (word.length < TERM_DETECTION_MIN_TERM_LENGTH) continue;
     // 排除已是全大写匹配结果的词（不会发生，因为 PascalCase 要求后接小写）
-    matches.push({ text: word, startOffset: start, endOffset: start + word.length, category: "proper_noun" });
+    matches.push({ text: word, startOffset: start, endOffset: start + word.length, category: "entity" });
   }
 
   // 按位置排序，去重（同一位置只保留最具体的匹配）
@@ -277,7 +280,7 @@ export class TermDetectionService {
       contentLength: measureResearchContentLength(content),
     });
     try {
-      const candidates = detectTermMarkers(content);
+      const candidates = detectTermMarkers(content, messageId);
       const markers = selectResearchTermMarkers(candidates, convergence);
       return {
         messageId,
