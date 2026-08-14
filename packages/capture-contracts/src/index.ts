@@ -2564,7 +2564,7 @@ export type TermCategory = "concept" | "entity" | "abbreviation" | "notation";
 export interface TermMarker {
   /** 一次具体提及的稳定身份；同一实体的不同出现位置各不相同。 */
   mentionId?: string;
-  /** 当前稳定正文内的实体身份；同一实体的多个提及共享。 */
+  /** 当前回答内的实体身份；同一对象的多个提及共享，不跨回答继承。 */
   entityId?: string;
   /** 术语原文（来自消息块文本的切片）。 */
   text: string;
@@ -2592,9 +2592,15 @@ interface AbsoluteMention {
   startOffset: number;
   endOffset: number;
   category: TermCategory;
+  /** 模型分配、只在当前回答内有效的隐藏对象身份。 */
+  answerLocalEntityId: string;
 }
 
 const MENTION_MARKUP_MAX_TEXT_CHARACTERS = 120;
+const MENTION_MARKUP_MAX_ENTITY_ID_CHARACTERS = 64;
+const MENTION_MARKUP_MAX_CONTROL_CHARACTERS = MENTION_MARKUP_MAX_TEXT_CHARACTERS
+  + MENTION_MARKUP_MAX_ENTITY_ID_CHARACTERS
+  + 32;
 const MENTION_MARKUP_FULL_MAX_COUNT = 24;
 const MENTION_MARKUP_REDUCED_MAX_COUNT = 4;
 
@@ -2677,7 +2683,7 @@ function parseMentionMarkup(raw: string, final: boolean): { content: string; men
     const close = raw.indexOf("]]", open + 2);
     if (close < 0) {
       const inner = raw.slice(open + 2);
-      const definitelyMalformed = inner.includes("\n") || inner.length > MENTION_MARKUP_MAX_TEXT_CHARACTERS + 32;
+      const definitelyMalformed = inner.includes("\n") || inner.length > MENTION_MARKUP_MAX_CONTROL_CHARACTERS;
       if (!final && !definitelyMalformed) break;
       content += fallbackMentionText(inner);
       break;
@@ -2697,24 +2703,36 @@ function parseMentionMarkup(raw: string, final: boolean): { content: string; men
   return { content, mentions };
 }
 
-function parseClosedMention(inner: string): { text: string; category: TermCategory } | undefined {
+function parseClosedMention(inner: string): Pick<AbsoluteMention, "text" | "category" | "answerLocalEntityId"> | undefined {
   if (inner.includes("\n") || inner.includes("[[") || inner.includes("]]")) return undefined;
-  const separator = inner.indexOf(":");
-  if (separator <= 0) return undefined;
-  const category = inner.slice(0, separator).trim();
-  const text = inner.slice(separator + 1).trim();
-  if (!isTermCategory(category) || !text || text.length > MENTION_MARKUP_MAX_TEXT_CHARACTERS) return undefined;
-  return { text, category };
+  const categorySeparator = inner.indexOf(":");
+  const identitySeparator = inner.indexOf(":", categorySeparator + 1);
+  if (categorySeparator <= 0 || identitySeparator <= categorySeparator + 1) return undefined;
+  const category = inner.slice(0, categorySeparator).trim();
+  const answerLocalEntityId = inner.slice(categorySeparator + 1, identitySeparator).trim();
+  const text = inner.slice(identitySeparator + 1).trim();
+  if (!isTermCategory(category)
+    || !isAnswerLocalEntityId(answerLocalEntityId)
+    || !text
+    || text.length > MENTION_MARKUP_MAX_TEXT_CHARACTERS) return undefined;
+  return { text, category, answerLocalEntityId };
 }
 
 function fallbackMentionText(inner: string): string {
   const withoutControls = inner.replaceAll("[[", "").replaceAll("]]", "");
-  const separator = withoutControls.indexOf(":");
-  return (separator >= 0 ? withoutControls.slice(separator + 1) : withoutControls).trim();
+  const categorySeparator = withoutControls.indexOf(":");
+  const identitySeparator = withoutControls.indexOf(":", categorySeparator + 1);
+  const visibleStart = identitySeparator >= 0 ? identitySeparator + 1 : categorySeparator + 1;
+  return (categorySeparator >= 0 ? withoutControls.slice(visibleStart) : withoutControls).trim();
 }
 
 function isTermCategory(value: string): value is TermCategory {
   return value === "concept" || value === "entity" || value === "abbreviation" || value === "notation";
+}
+
+function isAnswerLocalEntityId(value: string): boolean {
+  return value.length <= MENTION_MARKUP_MAX_ENTITY_ID_CHARACTERS
+    && /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(value);
 }
 
 function projectAbsoluteMentions(
@@ -2735,10 +2753,9 @@ function projectAbsoluteMentions(
     const startOffset = absoluteStart - block.startOffset;
     const endOffset = absoluteEnd - block.startOffset;
     if (block.text.slice(startOffset, endOffset) !== mention.text) continue;
-    const entityKey = termEntityCandidateKey(mention);
     result.push({
-      mentionId: `mention:${stableMentionHash(`${messageId}:${absoluteStart}:${absoluteEnd}:${entityKey}`)}`,
-      entityId: `entity:${stableMentionHash(`${messageId}:${entityKey}`)}`,
+      mentionId: `mention:${stableMentionHash(`${messageId}:${absoluteStart}:${absoluteEnd}:${mention.answerLocalEntityId}`)}`,
+      entityId: `entity:${stableMentionHash(`${messageId}:${mention.answerLocalEntityId}`)}`,
       text: mention.text,
       blockOrdinal: block.ordinal,
       startOffset,

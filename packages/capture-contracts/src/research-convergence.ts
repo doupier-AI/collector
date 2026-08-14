@@ -84,14 +84,14 @@ export function resolveResearchConvergence(
   if (nodeDepth >= bounds.stopAtDepth) {
     return { ...base, termDensity: "stopped", reason: "node_depth" };
   }
-  if (contentLength !== undefined && contentLength <= bounds.shortContentMaxCharacters) {
-    return { ...base, termDensity: "full", reason: "short_content" };
-  }
   if (contentLength !== undefined && contentLength >= bounds.stopAtContentCharacters) {
     return { ...base, termDensity: "stopped", reason: "content_length" };
   }
   if (nodeDepth >= bounds.reduceAtDepth) {
     return { ...base, termDensity: "reduced", reason: "node_depth" };
+  }
+  if (contentLength !== undefined && contentLength <= bounds.shortContentMaxCharacters) {
+    return { ...base, termDensity: "full", reason: "short_content" };
   }
   if (contentLength !== undefined && contentLength >= bounds.reduceAtContentCharacters) {
     return { ...base, termDensity: "reduced", reason: "content_length" };

@@ -136,7 +136,7 @@ async function appendCompletedAssistant(
 test("term preview is persisted, streamed once, and grows a child from the exact preview", async (t) => {
   const requests: ResearchGenerationRequest[] = [];
   const answer = "REST API explains how HTTP clients communicate with a service.";
-  const mainAnswer = "[[abbreviation:REST]] API explains how HTTP clients communicate with a service.";
+  const mainAnswer = "[[abbreviation:rest:REST]] API explains how HTTP clients communicate with a service.";
   const provider: ResearchGenerationProvider = {
     provider: "term-preview-provider",
     model: "term-preview-model",

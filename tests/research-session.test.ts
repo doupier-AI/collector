@@ -156,7 +156,7 @@ test("research generation persists clean text and in-stream mention ranges inste
     promptVersion: "mention-stream-v1",
     async *generate() {
       yield "理解 [[con";
-      yield "cept:反向传播]] 与 [[abbreviation:RAG]]。";
+      yield "cept:backprop:反向传播]] 与 [[abbreviation:rag:RAG]]。";
     },
   };
   const harness = await createHarness(provider);
@@ -184,7 +184,7 @@ test("research node view exposes validated H3b term positions without changing m
     model: "term-marker-1",
     promptVersion: "test-research-v1",
     async *generate() {
-      yield "**[[abbreviation:REST]] [[abbreviation:API]]** 在中文中也可读，[[abbreviation:HTTP]] 继续出现。";
+      yield "**[[abbreviation:rest:REST]] [[abbreviation:api:API]]** 在中文中也可读，[[abbreviation:http:HTTP]] 继续出现。";
     },
   };
   const harness = await createHarness(provider);

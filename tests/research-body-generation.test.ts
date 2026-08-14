@@ -35,11 +35,27 @@ test("research body prompt uses the four explainable-object types and stops ment
   const shallowGateway = new ModelGateway(shallow.provider);
   await shallowGateway.writeResearchBody([{ role: "user", content: "解释" }]);
   const shallowPrompt = shallow.requests[0]?.prompt ?? "";
-  assert.match(shallowPrompt, /\[\[concept:短语\]\]/);
-  assert.match(shallowPrompt, /\[\[entity:短语\]\]/);
-  assert.match(shallowPrompt, /\[\[abbreviation:短语\]\]/);
-  assert.match(shallowPrompt, /\[\[notation:短语\]\]/);
+  assert.match(shallowPrompt, /\[\[concept:concept-1:短语\]\]/);
+  assert.match(shallowPrompt, /\[\[entity:entity-1:短语\]\]/);
+  assert.match(shallowPrompt, /\[\[abbreviation:abbr-1:短语\]\]/);
+  assert.match(shallowPrompt, /\[\[notation:notation-1:短语\]\]/);
+  assert.match(shallowPrompt, /同一对象的重复提及必须复用同一个对象身份/);
+  assert.match(shallowPrompt, /同名异义对象必须使用不同对象身份/);
   assert.match(shallowPrompt, /理解当前论述仍需补充解释/);
+
+  for (const currentNodeDepth of [2, 3]) {
+    const reduced = makeProvider(() => "短正文");
+    const reducedGateway = new ModelGateway(reduced.provider);
+    await reducedGateway.writeResearchBody([{ role: "user", content: "继续" }], {
+      parentChainContext: {
+        currentNodeDepth,
+        ancestors: [{ depth: 1, isRoot: true, label: "根" }],
+        truncated: false,
+        cycleDetected: false,
+      },
+    });
+    assert.match(reduced.requests[0]?.prompt ?? "", /最多标记 4 个/);
+  }
 
   const deep = makeProvider(() => "正文");
   const deepGateway = new ModelGateway(deep.provider);

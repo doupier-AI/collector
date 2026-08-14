@@ -116,9 +116,9 @@ const fakeProvider = {
     const short = question.length > 24 ? `${question.slice(0, 24)}…` : question;
     // 确定性假模型也遵守生产环境的流内弱标记契约；可见正文清洗后仍与 short 逐字一致。
     const markedShort = short
-      .replace(/\bREST\b/g, "[[abbreviation:REST]]")
-      .replace(/\bAPI\b/g, "[[abbreviation:API]]")
-      .replace(/\bHTTP\b/g, "[[abbreviation:HTTP]]");
+      .replace(/\bREST\b/g, "[[abbreviation:rest:REST]]")
+      .replace(/\bAPI\b/g, "[[abbreviation:api:API]]")
+      .replace(/\bHTTP\b/g, "[[abbreviation:http:HTTP]]");
     const cutAfter = process.env.E2E_STREAM_CUT_AFTER ? Number(process.env.E2E_STREAM_CUT_AFTER) : undefined;
     const segments = request.deepResearch
       ? [`这是深入研究第一轮，围绕「${short}」展开。`, "\n\n本轮只使用来源选区与当前已有材料生成，未联网检索，回答完毕。"]

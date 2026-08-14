@@ -16,6 +16,8 @@ test("research convergence resolves below, at, and above depth/length thresholds
   assert.equal(resolveResearchConvergence({ nodeDepth: RESEARCH_CONVERGENCE_REDUCE_AT_DEPTH - 1, contentLength: 500 }).termDensity, "full");
   assert.equal(resolveResearchConvergence({ nodeDepth: RESEARCH_CONVERGENCE_REDUCE_AT_DEPTH, contentLength: 500 }).termDensity, "reduced");
   assert.equal(resolveResearchConvergence({ nodeDepth: RESEARCH_CONVERGENCE_REDUCE_AT_DEPTH + 1, contentLength: 500 }).termDensity, "reduced");
+  assert.equal(resolveResearchConvergence({ nodeDepth: RESEARCH_CONVERGENCE_REDUCE_AT_DEPTH, contentLength: 40 }).termDensity, "reduced");
+  assert.equal(resolveResearchConvergence({ nodeDepth: RESEARCH_CONVERGENCE_REDUCE_AT_DEPTH + 1, contentLength: 40 }).termDensity, "reduced");
   assert.equal(resolveResearchConvergence({ nodeDepth: 1, contentLength: bounds.reduceAtContentCharacters - 1 }).termDensity, "full");
   assert.equal(resolveResearchConvergence({ nodeDepth: 1, contentLength: bounds.reduceAtContentCharacters }).termDensity, "reduced");
   assert.equal(resolveResearchConvergence({ nodeDepth: 1, contentLength: bounds.reduceAtContentCharacters + 1 }).termDensity, "reduced");
@@ -36,6 +38,14 @@ test("depth stop wins even when the completed answer is short, and decisions are
     resolveResearchConvergence({ nodeDepth: 2, contentLength: 1200 }),
     resolveResearchConvergence({ nodeDepth: 2, contentLength: 1200 }),
   );
+});
+
+test("depth reduction wins over the short-content relaxation", () => {
+  for (const nodeDepth of [2, 3]) {
+    const decision = resolveResearchConvergence({ nodeDepth, contentLength: 40 });
+    assert.equal(decision.termDensity, "reduced");
+    assert.equal(decision.reason, "node_depth");
+  }
 });
 
 test("reduced marker selection keeps a deterministic, evenly spaced subset", () => {
