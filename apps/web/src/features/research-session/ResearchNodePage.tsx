@@ -511,9 +511,9 @@ export function ResearchNodePage() {
     }
   }
 
-  async function handleGrowTermPreview(preview: import("@collector/capture-contracts").ResearchTermPreviewRecord): Promise<boolean> {
+  async function handleGrowTermPreview(preview: import("@collector/capture-contracts").ResearchTermPreviewRecord, mention?: import("@collector/capture-contracts").ResearchTermPreviewInput): Promise<boolean> {
     try {
-      const accepted = await termPreviews.grow(preview);
+      const accepted = await termPreviews.grow(preview, mention);
       navigate(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(accepted.node.id)}`, {
         state: { grew: true },
       });

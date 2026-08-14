@@ -87,15 +87,20 @@ export function MarkdownContent({ text, sources = [], citations = [], terms = []
     if (!root) return;
 
     clearTermMarkers(root);
-    let searchFrom = 0;
     const validTerms = terms
       .filter((term) => isValidTermMarker(text, term))
       .sort((left, right) => renderedStart(left) - renderedStart(right) || renderedEnd(left) - renderedEnd(right));
 
+    // 同名术语按"源文本第 N 次出现"对应"渲染可见文字第 N 次出现"定位：Markdown 渲染
+    // 不改变出现顺序，因此同名异义只标记其中一次、或前一次出现落在代码/链接里时，
+    // 都能命中正确的可见出现，而不会错误包裹别的同名文字。
+    // 已知边界：术语原文出现在链接 URL 等不可见位置时序号可能漂移（与旧顺序游标同类风险）。
     for (const term of validTerms) {
-      const match = findRenderedTextRange(root, term.text, searchFrom);
-      if (!match || !wrapTermRange(root, match, term)) continue;
-      searchFrom = match.endOffset;
+      const occurrence = countOccurrences(text.slice(0, renderedStart(term)), term.text);
+      const match = findRenderedTextRange(root, term.text, occurrence);
+      if (!match) continue;
+      // 命中的出现落在 a/button/code/pre 内无法包裹时丢弃该标记，不再顺延包裹下一次出现。
+      wrapTermRange(root, match, term);
     }
   }, [text, terms]);
 
@@ -209,12 +214,31 @@ function renderedTextNodes(root: Element): Text[] {
   return nodes;
 }
 
-function findRenderedTextRange(root: Element, needle: string, fromOffset: number): RenderedTextRange | undefined {
+/** 源文本中 needle 在 haystack 里的不重叠出现次数（与渲染侧逐个出现的计数口径一致）。 */
+function countOccurrences(haystack: string, needle: string): number {
+  if (!needle) return 0;
+  let count = 0;
+  let from = 0;
+  for (;;) {
+    const index = haystack.indexOf(needle, from);
+    if (index < 0) return count;
+    count += 1;
+    from = index + needle.length;
+  }
+}
+
+/** 在渲染可见文字中取 needle 的第 occurrenceIndex 次（从 0 计）不重叠出现。 */
+function findRenderedTextRange(root: Element, needle: string, occurrenceIndex: number): RenderedTextRange | undefined {
   if (!needle) return undefined;
   const nodes = renderedTextNodes(root);
   const visibleText = nodes.map((node) => node.data).join("");
-  const startOffset = visibleText.indexOf(needle, fromOffset);
-  if (startOffset < 0) return undefined;
+  let startOffset = -1;
+  let from = 0;
+  for (let seen = 0; seen <= occurrenceIndex; seen += 1) {
+    startOffset = visibleText.indexOf(needle, from);
+    if (startOffset < 0) return undefined;
+    from = startOffset + needle.length;
+  }
   const endOffset = startOffset + needle.length;
   return {
     start: pointAtOffset(nodes, startOffset),

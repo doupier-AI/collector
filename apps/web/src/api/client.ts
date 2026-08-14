@@ -40,6 +40,7 @@ import type {
   ResearchSessionView,
   ResearchTaskRecord,
   ResearchTermPreviewAccepted,
+  ResearchTermPreviewGrowthInput,
   ResearchTermPreviewInput,
   ResearchTermPreviewRecord,
   ResearchTurnAccepted,
@@ -112,7 +113,7 @@ export interface ApiClient {
   startResearchTermPreview(nodeId: string, input: ResearchTermPreviewInput, idempotencyKey: string): Promise<ResearchTermPreviewAccepted>;
   getResearchTermPreviewTask(taskId: string): Promise<ResearchTermPreviewRecord>;
   retryResearchTermPreviewTask(taskId: string): Promise<ResearchTermPreviewRecord>;
-  growResearchTermPreview(previewId: string, idempotencyKey: string): Promise<NodeGrowthAccepted>;
+  growResearchTermPreview(previewId: string, idempotencyKey: string, input?: ResearchTermPreviewGrowthInput): Promise<NodeGrowthAccepted>;
   /** 会话节点树（全屏树导航）：一次性返回扁平条目，客户端按 parentNodeId 建树。 */
   getResearchSessionNodeTree(sessionId: string): Promise<ResearchSessionNodeTreeItem[]>;
   /** 关系图投影：以指定节点为中心，返回邻居节点与类型化边。 */
@@ -473,11 +474,11 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
         body: "{}",
       });
     },
-    growResearchTermPreview(previewId: string, idempotencyKey: string) {
+    growResearchTermPreview(previewId: string, idempotencyKey: string, input: ResearchTermPreviewGrowthInput = {}) {
       return requestJson<NodeGrowthAccepted>(fetchFn, `/v1/research-term-previews/${encodeURIComponent(previewId)}/grow`, {
         method: "POST",
         headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey },
-        body: "{}",
+        body: JSON.stringify(input),
       });
     },
     getResearchSessionNodeTree(sessionId: string) {

@@ -9,10 +9,9 @@ const runtimeDir = join(dirname(fileURLToPath(import.meta.url)), ".runtime");
 /** 视觉/地图基线共用问题：假模型对前 24 字稳定产出固定三段正文与切片标题。 */
 export const QUESTION = "什么是本地优先研究？";
 
-/** 由页面端口推断对应的 API harness 端口（页面由 API 同源提供：43211 fake，43212 nomodel，43213 fake+identity）。 */
+/** 页面与 API 由同一 harness 进程同源提供，页面端口即 API 端口（43211 fake，43212 nomodel，43213 fake+identity，临时并行轨道同理）。 */
 export function apiPortForPage(page: Page): number {
-  const port = Number(new URL(page.url()).port || "43211");
-  return port === 43212 ? 43212 : port === 43213 ? 43213 : 43211;
+  return Number(new URL(page.url()).port || "43211");
 }
 
 async function waitForFileValue(name: string): Promise<string> {

@@ -6,7 +6,7 @@ import { timingSafeEqual } from "node:crypto";
 const RESEARCH_SSE_REDRAIN_MS = 100;
 import { ValidationError, NotFoundError, CaptureService } from "./service.js";
 import { LocalAuth, PairingRateLimitError } from "./auth.js";
-import { RESEARCH_IMPORT_MAX_BYTES, validateCreateChildNodeInput, validateDeepResearchInput, validateProjectInput, validateResearchFusionProposalDecisionInput, validateResearchImportHeaders, validateResearchLaterItemInput, validateResearchLaterItemUpdate, validateResearchMessageInput, validateResearchSelectionInput, validateResearchSessionInput, validateResearchSessionUpdateInput, validateResearchTermPreviewInput } from "@collector/capture-contracts";
+import { RESEARCH_IMPORT_MAX_BYTES, validateCreateChildNodeInput, validateDeepResearchInput, validateProjectInput, validateResearchFusionProposalDecisionInput, validateResearchImportHeaders, validateResearchLaterItemInput, validateResearchLaterItemUpdate, validateResearchMessageInput, validateResearchSelectionInput, validateResearchSessionInput, validateResearchSessionUpdateInput, validateResearchTermPreviewGrowthInput, validateResearchTermPreviewInput } from "@collector/capture-contracts";
 import { ResearchNotFoundError, ResearchValidationError, ResearchConflictError } from "./research.js";
 import { ResearchImportConflictError, ResearchImportNotFoundError, ResearchImportValidationError } from "./research-import.js";
 import { ResearchSelectionConflictError, ResearchSelectionNotFoundError, ResearchSelectionValidationError } from "./selection.js";
@@ -369,8 +369,11 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       }
       const researchTermPreviewGrowMatch = url.pathname.match(/^\/v1\/research-term-previews\/([^/]+)\/grow$/);
       if (request.method === "POST" && researchTermPreviewGrowMatch) {
+        const body = await readJsonOptional(request);
+        try { validateResearchTermPreviewGrowthInput(body); }
+        catch (error) { throw new ResearchTermPreviewValidationError((error as Error).message); }
         return json(response, 202, await service.nodeGrowth.startChildNodeFromTermPreview(
-          decodeURIComponent(researchTermPreviewGrowMatch[1]), header(request, "idempotency-key") ?? "",
+          decodeURIComponent(researchTermPreviewGrowMatch[1]), header(request, "idempotency-key") ?? "", body?.mention,
         ));
       }
       const researchSelectionsMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)\/selections$/);

@@ -616,3 +616,108 @@ test("body, markers, and completed preview survive a process restart", async (t)
   assert.equal(restoredPreview?.content, previewAnswer);
   reopenedStore.close();
 });
+
+test("streaming assistant messages can start a term preview; failed messages cannot", async (t) => {
+  const harness = await createHarness({ autoRunResearchTasks: false });
+  t.after(() => harness.close());
+  const session = await harness.service.research.createSession("Streaming preview session", randomUUID());
+  const node = harness.store.getResearchNode(session.id);
+  assert.ok(node);
+  const now = new Date().toISOString();
+  const content = "REST is still being generated as a streaming answer.";
+  const startOffset = content.indexOf("REST");
+  const marker: TermMarker = {
+    text: "REST", blockOrdinal: 0, startOffset, endOffset: startOffset + 4, category: "abbreviation", entityId: "rest",
+  };
+  const insertTurn = async (status: "streaming" | "failed") => {
+    const inputMessage: ResearchMessageRecord = {
+      id: randomUUID(), sessionId: session.id, nodeId: node.id, role: "user", content: "Explain the terms", status: "completed", createdAt: now, updatedAt: now,
+    };
+    const outputMessage: ResearchMessageRecord = {
+      id: randomUUID(), sessionId: session.id, nodeId: node.id, role: "assistant", content, status, termMarkers: [marker], createdAt: now, updatedAt: now,
+    };
+    const task: ResearchTaskRecord = {
+      id: randomUUID(), sessionId: session.id, nodeId: node.id, inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
+      idempotencyKey: randomUUID(), status: status === "failed" ? "failed" : "running", retryable: false, promptVersion: "test", createdAt: now, updatedAt: now,
+    };
+    await harness.store.createResearchTurnForNode(node, inputMessage, outputMessage, task);
+    return outputMessage;
+  };
+
+  // ADR-0029：流式期间提及闭合后上下文已固定，可以启动预览，不等待整篇完成。
+  const streamingMessage = await insertTurn("streaming");
+  const accepted = await harness.service.termPreviews.start(
+    node.id,
+    { messageId: streamingMessage.id, marker },
+    "streaming-preview-start",
+  );
+  assert.equal(accepted.preview.status, "queued");
+  assert.equal(accepted.preview.messageId, streamingMessage.id);
+
+  const failedMessage = await insertTurn("failed");
+  await assert.rejects(
+    () => harness.service.termPreviews.start(node.id, { messageId: failedMessage.id, marker }, "failed-preview-start"),
+    /streaming or completed/,
+  );
+});
+
+test("growth anchors the child node at the clicked mention and repeated growth stays idempotent", async (t) => {
+  const harness = await createHarness({ provider: providerWithAnswer("preview explanation", []), autoRunResearchTasks: false });
+  t.after(() => harness.close());
+  const first = await createCompletedAssistant(harness, "REST is the architectural style used by this service.");
+  const started = await harness.service.termPreviews.start(
+    first.node.id,
+    { messageId: first.assistant.id, marker: first.marker },
+    "mention-growth-preview",
+  );
+  await harness.service.termPreviews.processTask(started.preview.id);
+  assert.equal(harness.service.termPreviews.getPreview(started.preview.id).status, "completed");
+
+  // 同一对象在同一节点的后一条回答中再次被提及；用户在第二条上点击生长。
+  const second = await appendCompletedAssistant(
+    harness,
+    first.node,
+    "In this same service discussion, REST continues to describe that architectural style.",
+  );
+  const growBody = { mention: { messageId: second.assistant.id, marker: second.marker } };
+  // 真实客户端的生长幂等键按预览派生（`term-growth:{previewId}`），首次生长按同一约定建模。
+  const growKey = `term-growth:${started.preview.id}`;
+  const growResponse = await postJson(
+    harness.base, harness.token, `/v1/research-term-previews/${started.preview.id}/grow`, growBody, growKey,
+  );
+  assert.equal(growResponse.status, 202);
+  const grown = await growResponse.json() as {
+    node: { id: string; originSelectionId?: string };
+    selection: { id: string; anchor: { kind: string; messageId?: string; startOffset: number; endOffset: number; exact: string } };
+  };
+  // ADR-0029：子节点来源锚定用户实际点击的那次提及，而不是预览最初生成时的首次提及。
+  assert.equal(grown.node.originSelectionId, grown.selection.id);
+  assert.equal(grown.selection.anchor.kind, "message");
+  assert.equal(grown.selection.anchor.messageId, second.assistant.id);
+  assert.equal(grown.selection.anchor.startOffset, second.marker.startOffset);
+  assert.equal(grown.selection.anchor.endOffset, second.marker.endOffset);
+  const persistedSelection = harness.store.getResearchSelection(grown.selection.id);
+  assert.ok(persistedSelection);
+
+  // 同一提及重复生长（同幂等键、换幂等键、回落无 mention）都返回首次创建的子节点。
+  for (const [body, key] of [
+    [growBody, growKey],
+    [growBody, "mention-grow-two"],
+    [{}, "mention-grow-three"],
+  ] as const) {
+    const repeat = await postJson(harness.base, harness.token, `/v1/research-term-previews/${started.preview.id}/grow`, body, key);
+    assert.equal(repeat.status, 202);
+    const repeated = await repeat.json() as { node: { id: string } };
+    assert.equal(repeated.node.id, grown.node.id);
+  }
+
+  // 点击提及必须与预览同文同类：不同类别不能伪装成同一对象的生长来源。
+  const mismatched = await postJson(
+    harness.base,
+    harness.token,
+    `/v1/research-term-previews/${started.preview.id}/grow`,
+    { mention: { messageId: second.assistant.id, marker: { ...second.marker, category: "concept" } } },
+    "mention-grow-mismatch",
+  );
+  assert.equal(mismatched.status, 400);
+});

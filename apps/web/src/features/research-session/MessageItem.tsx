@@ -1,7 +1,7 @@
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { ResearchCitationRecord, ResearchFusionSource, ResearchGroundingSourceRecord, ResearchMessageRecord, ResearchSliceRecord, ResearchTaskRecord, ResearchTermPreviewRecord, TermMarker } from "@collector/capture-contracts";
+import type { ResearchCitationRecord, ResearchFusionSource, ResearchGroundingSourceRecord, ResearchMessageRecord, ResearchSliceRecord, ResearchTaskRecord, ResearchTermPreviewInput, ResearchTermPreviewRecord, TermMarker } from "@collector/capture-contracts";
 import { deriveMessageBlocks, messageContentBlockId, splitBlockHeading } from "@collector/capture-contracts";
 import { MarkdownContent, type RenderedTermMarker } from "../../components/MarkdownContent";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
@@ -32,7 +32,8 @@ export interface MessageItemProps {
   /** #31：本条消息引用的融合来源（正文 [来源n] 渲染为可点击的融合引用）。 */
   fusionSources?: ResearchFusionSource[];
   onRetryTermPreview?: (preview: ResearchTermPreviewRecord) => void;
-  onGrowTermPreview?: (preview: ResearchTermPreviewRecord) => Promise<boolean>;
+  /** mention 为用户实际点击的那次提及；缺省时服务端回落为预览原始锚点（ADR-0029）。 */
+  onGrowTermPreview?: (preview: ResearchTermPreviewRecord, mention?: ResearchTermPreviewInput) => Promise<boolean>;
   onGrowTermMarker?: (messageId: string, marker: TermMarker) => Promise<boolean>;
   /** #36：切片列表；存在正式切片时渲染为连续语义卡片序列。 */
   slices?: ResearchSliceRecord[];
@@ -61,7 +62,11 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
   return (
     <li className="message message--assistant" data-message-id={message.id}>
       <p className="message__role">Collector</p>
-      {message.status === "completed" ? (
+      {message.status === "failed" ? (
+        <FailedBody message={message} task={task} retrying={retrying} onRetry={onRetry} />
+      ) : (
+        // ADR-0029：流式期间标记即可交互（悬停启动预览、点击记录生长意图），不等待整篇完成。
+        // 交互层挂在状态分支之外：流式翻为完成时实例存活，进行中的悬停意图与已打开的弹层不被销毁。
         <>
           <TermPreviewInteraction
             messageId={message.id}
@@ -72,15 +77,19 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
             onGrow={onGrowTermPreview}
             onGrowMarker={onGrowTermMarker}
           >
-            <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} fragmentCardId={fragmentCardId} fusionSources={fusionSources} />
+            {message.status === "completed" ? (
+              <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} fragmentCardId={fragmentCardId} fusionSources={fusionSources} />
+            ) : (
+              <GeneratingBody message={message} task={task} terms={terms} />
+            )}
           </TermPreviewInteraction>
-          <GroundingScopeNote task={task} />
-          <GroundingSources sources={taskSources} />
+          {message.status === "completed" ? (
+            <>
+              <GroundingScopeNote task={task} />
+              <GroundingSources sources={taskSources} />
+            </>
+          ) : null}
         </>
-      ) : message.status === "failed" ? (
-        <FailedBody message={message} task={task} retrying={retrying} onRetry={onRetry} />
-      ) : (
-        <GeneratingBody message={message} task={task} terms={terms} />
       )}
     </li>
   );
@@ -260,7 +269,7 @@ interface TermPreviewInteractionProps {
   previews: Record<string, ResearchTermPreviewRecord>;
   onStart?: (messageId: string, marker: TermMarker) => void;
   onRetry?: (preview: ResearchTermPreviewRecord) => void;
-  onGrow?: (preview: ResearchTermPreviewRecord) => Promise<boolean>;
+  onGrow?: (preview: ResearchTermPreviewRecord, mention?: ResearchTermPreviewInput) => Promise<boolean>;
   onGrowMarker?: (messageId: string, marker: TermMarker) => Promise<boolean>;
   children: ReactNode;
 }
@@ -270,20 +279,35 @@ interface ActiveTermPreview {
   marker: TermMarker;
 }
 
+/** 悬注意图键：块位置与提及文本稳定标识同一提及，与 DOM 元素身份无关。 */
+function termHoverKey(marker: TermMarker): string {
+  return `${marker.blockOrdinal}:${marker.startOffset}:${marker.endOffset}:${marker.text}`;
+}
+
 function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, onGrow, onGrowMarker, children }: TermPreviewInteractionProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const hoverTimerRef = useRef<number | undefined>(undefined);
   const closeTimerRef = useRef<number | undefined>(undefined);
+  // 流式重渲染替换标记元素时，浏览器会对新元素重复派发 pointerover；
+  // 用已武装的悬注意图键识别这类重复事件，避免 400ms 意图确认被无限重置。
+  const pendingHoverKeyRef = useRef<string | undefined>(undefined);
   const [active, setActive] = useState<ActiveTermPreview | null>(null);
   const [position, setPosition] = useState({ top: 12, left: 12 });
-  const [growing, setGrowing] = useState(false);
+  const [growing, setGrowingState] = useState(false);
+  // 生长进行中的同步守卫：同一 tick 内的快速双击不能等 React 重渲染后才看到状态。
+  const growingRef = useRef(false);
+  const setGrowing = useCallback((value: boolean) => {
+    growingRef.current = value;
+    setGrowingState(value);
+  }, []);
 
   const clearHoverTimer = useCallback(() => {
     if (hoverTimerRef.current !== undefined) {
       window.clearTimeout(hoverTimerRef.current);
       hoverTimerRef.current = undefined;
     }
+    pendingHoverKeyRef.current = undefined;
   }, []);
 
   const clearCloseTimer = useCallback(() => {
@@ -316,6 +340,11 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
     setActive({ element, marker });
   }, [clearCloseTimer, updatePosition]);
 
+  // terms 在流式期间随每次增量更换数组身份。经 ref 读取让查找函数保持稳定身份：
+  // 否则事件委托层每次增量都拆装监听器，清理函数会连带清掉进行中的悬注意图计时。
+  const termsRef = useRef(terms);
+  termsRef.current = terms;
+
   const markerFromElement = useCallback((element: Element | null): { element: HTMLElement; marker: TermMarker } | undefined => {
     if (!element || !rootRef.current || !rootRef.current.contains(element)) return undefined;
     const markerElement = element.closest<HTMLElement>("[data-term-marker]");
@@ -324,14 +353,25 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
     const startOffset = Number(markerElement.dataset.termStartOffset);
     const endOffset = Number(markerElement.dataset.termEndOffset);
     const text = markerElement.dataset.termText ?? markerElement.textContent ?? "";
-    const marker = terms.find((candidate) =>
+    const marker = termsRef.current.find((candidate) =>
       candidate.text === text
       && candidate.blockOrdinal === blockOrdinal
       && candidate.startOffset === startOffset
       && candidate.endOffset === endOffset,
     );
     return marker ? { element: markerElement, marker } : undefined;
-  }, [terms]);
+  }, []);
+
+  /** 按数据属性找回同一提及的当前标记元素（标记随重渲染替换后使用）。 */
+  const resolveMarkerElement = useCallback((marker: TermMarker): HTMLElement | undefined => {
+    const root = rootRef.current;
+    if (!root) return undefined;
+    return Array.from(
+      root.querySelectorAll<HTMLElement>(
+        `[data-term-marker][data-term-block-ordinal="${marker.blockOrdinal}"][data-term-start-offset="${marker.startOffset}"][data-term-end-offset="${marker.endOffset}"]`,
+      ),
+    ).find((element) => (element.dataset.termText ?? element.textContent) === marker.text);
+  }, []);
 
   const startPreview = useCallback((marker: TermMarker) => {
     const preview = previews[termPreviewClientKey(messageId, marker)];
@@ -341,6 +381,7 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
   }, [messageId, onStart, previews]);
 
   const activateMarker = useCallback((marker: TermMarker) => {
+    if (growingRef.current) return;
     const preview = previews[termPreviewClientKey(messageId, marker)];
     if (!preview || preview.status === "queued" || preview.status === "running") {
       if (onGrowMarker) {
@@ -355,11 +396,11 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
     }
     if (preview.status === "completed" && preview.content.trim() && onGrow) {
       setGrowing(true);
-      void onGrow(preview).then((success) => {
+      void onGrow(preview, { messageId, marker }).then((success) => {
         if (success) closePopover();
       }).finally(() => setGrowing(false));
     }
-  }, [closePopover, messageId, onGrow, onGrowMarker, previews, startPreview]);
+  }, [closePopover, messageId, onGrow, onGrowMarker, previews, setGrowing, startPreview]);
   const startPreviewRef = useRef(startPreview);
   const activateMarkerRef = useRef(activateMarker);
   startPreviewRef.current = startPreview;
@@ -380,10 +421,16 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
       const found = markerFromElement(pointer.target instanceof Element ? pointer.target : null);
       if (!found) return;
       if (pointer.relatedTarget instanceof Node && found.element.contains(pointer.relatedTarget)) return;
+      const hoverKey = termHoverKey(found.marker);
+      // 同一提及的悬注意图已武装（重渲染替换派发的重复 pointerover）：保留原有计时。
+      if (hoverTimerRef.current !== undefined && pendingHoverKeyRef.current === hoverKey) return;
       clearCloseTimer();
       clearHoverTimer();
+      pendingHoverKeyRef.current = hoverKey;
       hoverTimerRef.current = window.setTimeout(() => {
-        openPopover(found.element, found.marker);
+        hoverTimerRef.current = undefined;
+        pendingHoverKeyRef.current = undefined;
+        openPopover(resolveMarkerElement(found.marker) ?? found.element, found.marker);
         startPreviewRef.current(found.marker);
       }, 400);
     };
@@ -484,12 +531,21 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
     };
   }, [active, updatePosition]);
 
+  // 流式期间正文随增量重渲染，标记按钮会被替换：弹层锚点失效时按数据属性找回新元素，
+  // 找不到（提及不再有效）时诚实关闭弹层。子树 MarkdownContent 的包裹先于本布局效应执行。
+  useLayoutEffect(() => {
+    if (!active || active.element.isConnected) return;
+    const replacement = resolveMarkerElement(active.marker);
+    if (replacement) setActive({ element: replacement, marker: active.marker });
+    else closePopover();
+  });
+
   const activePreview = active ? previews[termPreviewClientKey(messageId, active.marker)] : undefined;
   const handleGrow = async () => {
-    if (!activePreview || !onGrow) return;
+    if (!activePreview || !onGrow || !active || growingRef.current) return;
     setGrowing(true);
     try {
-      if (await onGrow(activePreview)) closePopover();
+      if (await onGrow(activePreview, { messageId, marker: active.marker })) closePopover();
     } finally {
       setGrowing(false);
     }

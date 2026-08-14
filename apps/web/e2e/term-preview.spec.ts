@@ -18,8 +18,7 @@ test("H3c 悬停生成一次预览、离开后恢复进度，并用预览内容�
   await page.waitForURL(/\/research\/[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
   const sessionId = page.url().split("/research/")[1]?.split("/")[0] ?? "";
   const rootNodeId = page.url().split("/node/")[1] ?? "";
-  // 预览交互只随完成态挂载（流式期间标记先行显示但不挂交互）；等完成态包装出现再悬停，
-  // 否则悬停落在流式渲染的裸标记上，不会触发预览启动。
+  // ADR-0029：标记随流显示期间即可交互（悬停落在流式标记上也会启动预览并随同一任务继续）。
   const marker = page.locator(".term-preview-surface [data-term-marker]").first();
   await expect(marker).toBeVisible({ timeout: 15_000 });
 
@@ -59,3 +58,60 @@ test("H3c 悬停生成一次预览、离开后恢复进度，并用预览内容�
   expect(childAssistant?.content).toBe(preview.content);
   expect(sessionId).toBeTruthy();
 });
+
+test("H3d 流式生成期间标记即可交互：回答未完成时悬停启动预览（ADR-0029）", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const previewPosts: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && /\/v1\/research-nodes\/[^/]+\/term-previews$/.test(request.url())) {
+      previewPosts.push(request.url());
+    }
+  });
+
+  await pairAndOpen(page, "/research/new");
+  await page.getByLabel("你的问题").fill("REST API 和 HTTP");
+  await page.getByRole("button", { name: "开始研究" }).click();
+  await page.waitForURL(/\/research\/[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
+
+  // 回答仍在生成（状态行可见）时标记已随流出现，且不再是"可见但无响应"。
+  const marker = page.locator(".term-preview-surface [data-term-marker]").first();
+  await expect(marker).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("正在生成", { exact: true })).toBeVisible();
+
+  const startResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" && /\/v1\/research-nodes\/[^/]+\/term-previews$/.test(response.url()),
+  );
+  await marker.hover();
+  await page.waitForTimeout(520);
+  await (await startResponse).json();
+  const popover = page.getByTestId("term-preview-popover");
+  await expect(popover).toBeVisible({ timeout: 15_000 });
+  await expect.poll(() => previewPosts.length).toBe(1);
+});
+
+for (const viewport of [{ width: 1024, height: 768 }, { width: 1440, height: 900 }]) {
+  test.describe(`预览弹层 ${viewport.width}px 视口`, () => {
+    test.use({ viewport });
+
+    test(`弹层保持在 ${viewport.width}px 视口内且页面无横向溢出`, async ({ page }) => {
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      await pairAndOpen(page, "/research/new");
+      await page.getByLabel("你的问题").fill("REST API 和 HTTP");
+      await page.getByRole("button", { name: "开始研究" }).click();
+      await page.waitForURL(/\/research\/[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
+
+      const marker = page.locator(".term-preview-surface [data-term-marker]").first();
+      await expect(marker).toBeVisible({ timeout: 15_000 });
+      await marker.hover();
+      await page.waitForTimeout(520);
+      const popover = page.getByTestId("term-preview-popover");
+      await expect(popover).toBeVisible({ timeout: 15_000 });
+
+      const box = await popover.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.x).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    });
+  });
+}

@@ -66,8 +66,10 @@ export class ResearchTermPreviewService {
     if (!session) throw new Error("Research node references a missing session");
     if (isTrashed(session)) throw new ResearchTermPreviewConflictError("Research session is in trash");
     const message = this.store.listResearchMessagesByNode(nodeId).find((candidate) => candidate.id === input.messageId);
-    if (!message || message.role !== "assistant" || message.status !== "completed") {
-      throw new ResearchTermPreviewValidationError("Term preview requires a completed assistant message");
+    // ADR-0029：流式期间即可启动预览。提及闭合后其上下文已固定（正文只往后追加），
+    // 失败消息不渲染标记、不提供预览入口。
+    if (!message || message.role !== "assistant" || message.status === "failed") {
+      throw new ResearchTermPreviewValidationError("Term preview requires a streaming or completed assistant message");
     }
 
     const marker = this.validatedMarker(message, input.marker, node);
@@ -82,25 +84,8 @@ export class ResearchTermPreviewService {
     const reusable = await this.findReusablePreviewInNode(node, message, marker);
     if (reusable) return reusable;
 
-    const now = new Date().toISOString();
-    const selection: ResearchSelectionRecord = {
-      id: randomUUID(),
-      sessionId: session.id,
-      nodeId: node.id,
-      anchor: {
-        kind: "message",
-        messageId: message.id,
-        blockOrdinal: marker.blockOrdinal,
-        startOffset: marker.startOffset,
-        endOffset: marker.endOffset,
-        exact: marker.text,
-        ...selectionContext(message, marker),
-      },
-      text: marker.text,
-      status: "active",
-      createdAt: now,
-      updatedAt: now,
-    };
+    const selection = buildTermMentionSelection(session, node, message, marker);
+    const now = selection.createdAt;
     const preview: ResearchTermPreviewRecord = {
       id: randomUUID(),
       sessionId: session.id,
@@ -318,6 +303,42 @@ export function termPreviewMarkerKey(messageId: string, marker: TermMarker): str
     : [messageId, marker.blockOrdinal, marker.startOffset, marker.endOffset, marker.text].join(":");
 }
 
+/**
+ * 为一次提及构建来源选区记录（预览锚点与点击生长锚点共用同一构造，
+ * 保证锚点的 exact/prefix/suffix 摘录规则一致）。
+ */
+export function buildTermMentionSelection(
+  session: ResearchSessionRecord,
+  node: ResearchNodeRecord,
+  message: ResearchMessageRecord,
+  marker: TermMarker,
+): ResearchSelectionRecord {
+  const now = new Date().toISOString();
+  return {
+    id: randomUUID(),
+    sessionId: session.id,
+    nodeId: node.id,
+    anchor: {
+      kind: "message",
+      messageId: message.id,
+      blockOrdinal: marker.blockOrdinal,
+      startOffset: marker.startOffset,
+      endOffset: marker.endOffset,
+      exact: marker.text,
+      ...selectionContext(message, marker),
+    },
+    text: marker.text,
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+/** 提及文字归一化：跨消息比较"是否同名"时统一口径（预览复用与点击生长锚点校验共用）。 */
+export function normalizeMentionText(text: string): string {
+  return text.normalize("NFKC").trim().toLocaleLowerCase();
+}
+
 function previewTypeName(marker: TermMarker): string {
   switch (marker.category) {
     case "concept": return "知识概念";
@@ -352,10 +373,6 @@ function selectionContext(message: ResearchMessageRecord, marker: TermMarker): {
     ...(prefix ? { prefix } : {}),
     ...(suffix ? { suffix } : {}),
   };
-}
-
-function normalizeMentionText(text: string): string {
-  return text.normalize("NFKC").trim().toLocaleLowerCase();
 }
 
 function termIdentityContext(message: ResearchMessageRecord, marker: TermMarker): string {

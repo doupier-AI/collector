@@ -586,6 +586,14 @@ export interface ResearchTermPreviewInput {
   marker: TermMarker;
 }
 
+/**
+ * 术语预览生长请求体。mention 是用户实际点击生长的那次提及；
+ * 缺省时子节点来源回落为预览最初生成时的提及位置（ADR-0029）。
+ */
+export interface ResearchTermPreviewGrowthInput {
+  mention?: ResearchTermPreviewInput;
+}
+
 export type ResearchTermPreviewEvent =
   | { id?: number; type: "snapshot"; preview: ResearchTermPreviewRecord; createdAt: string }
   | { id: number; type: "delta"; delta: string; preview: ResearchTermPreviewRecord; createdAt: string }
@@ -1413,6 +1421,14 @@ export function validateResearchTermPreviewInput(value: unknown): asserts value 
   if (!categories.includes(marker.category as TermCategory)) {
     throw new Error("marker.category is invalid");
   }
+}
+
+/** 生长请求体验证：整个 body 可为空对象；mention 存在时复用预览输入的完整校验。 */
+export function validateResearchTermPreviewGrowthInput(value: unknown): asserts value is ResearchTermPreviewGrowthInput {
+  if (value === undefined || value === null) return;
+  if (typeof value !== "object" || Array.isArray(value)) throw new Error("Term preview growth input must be an object");
+  const input = value as { mention?: unknown };
+  if (input.mention !== undefined) validateResearchTermPreviewInput(input.mention);
 }
 
 export const RESEARCH_DIRECTION_MAX_CHARACTERS = 2000;

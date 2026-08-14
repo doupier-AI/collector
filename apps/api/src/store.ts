@@ -171,7 +171,7 @@ export interface ResearchStore {
   listFragmentsByNode(nodeId: string): ResearchSemanticFragmentRecord[];
 }
 
-/** 深入研究所需的持久化能力：12 个方法。 */
+/** 深入研究所需的持久化能力：40 个方法。 */
 export interface DeepResearchStore {
   getResearchBranch(id: string): ResearchBranchRecord | undefined;
   listResearchBranches(sessionId: string): ResearchBranchRecord[];
@@ -186,6 +186,8 @@ export interface DeepResearchStore {
   getResearchSession(id: string): ResearchSessionRecord | undefined;
   getResearchMessage(id: string): ResearchMessageRecord | undefined;
   getResearchSelection(id: string): ResearchSelectionRecord | undefined;
+  /** 术语生长按锚点复用既有选区：需要会话级选区清单（ADR-0029）。 */
+  listResearchSelections(sessionId: string): ResearchSelectionRecord[];
   listResearchMessages(sessionId: string): ResearchMessageRecord[];
   listResearchMessagesByNode(nodeId: string): ResearchMessageRecord[];
   listResearchTasks(sessionId: string): ResearchTaskRecord[];
@@ -2279,6 +2281,11 @@ export class SqliteStore implements CollectorStore {
       }
       const session = this.getResearchSession(node.sessionId);
       if (!session) throw new Error("Research node references a missing session");
+      // 术语生长的点击提及锚点可能尚无选区记录：子节点创建事务同时保证来源选区落库。
+      if (!this.getResearchSelection(selection.id)) {
+        this.db().prepare("INSERT INTO research_selections (id, session_id, node_id, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
+          .run(selection.id, selection.sessionId, selection.nodeId ?? null, selection.status, selection.createdAt, selection.updatedAt, JSON.stringify(selection));
+      }
       const updatedSession: ResearchSessionRecord = { ...session, updatedAt: task.createdAt };
       this.db().prepare("INSERT INTO research_nodes (id, session_id, parent_node_id, origin_selection_id, status, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .run(node.id, node.sessionId, node.parentNodeId ?? null, node.originSelectionId ?? null, node.status, node.createdAt, node.updatedAt, task.idempotencyKey, JSON.stringify(node));

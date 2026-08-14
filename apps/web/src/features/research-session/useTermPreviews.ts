@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   NodeGrowthAccepted,
+  ResearchTermPreviewInput,
   ResearchTermPreviewRecord,
   TermMarker,
 } from "@collector/capture-contracts";
@@ -11,7 +12,8 @@ export interface TermPreviewController {
   previews: Record<string, ResearchTermPreviewRecord>;
   start(messageId: string, marker: TermMarker): void;
   retry(preview: ResearchTermPreviewRecord): void;
-  grow(preview: ResearchTermPreviewRecord): Promise<NodeGrowthAccepted>;
+  /** mention 为用户实际点击的那次提及；服务端以它作为子节点来源锚点（ADR-0029）。 */
+  grow(preview: ResearchTermPreviewRecord, mention?: ResearchTermPreviewInput): Promise<NodeGrowthAccepted>;
   /** 首次激活提及时记录生长意图：必要时等待预览完成，然后直接生长。 */
   growMarker(messageId: string, marker: TermMarker): Promise<NodeGrowthAccepted>;
 }
@@ -147,14 +149,14 @@ export function useTermPreviews(nodeId: string, onError?: (error: unknown) => vo
     }).catch((error) => onError?.(error));
   }, [api, closeStream, connect, onError, updatePreview]);
 
-  const grow = useCallback((preview: ResearchTermPreviewRecord) => {
-    return api.growResearchTermPreview(preview.id, `term-growth:${preview.id}`);
+  const grow = useCallback((preview: ResearchTermPreviewRecord, mention?: ResearchTermPreviewInput) => {
+    return api.growResearchTermPreview(preview.id, `term-growth:${preview.id}`, mention ? { mention } : undefined);
   }, [api]);
 
   const growMarker = useCallback(async (messageId: string, marker: TermMarker) => {
     const preview = await ensurePreview(messageId, marker);
     const ready = await waitUntilReady(preview);
-    return grow(ready);
+    return grow(ready, { messageId, marker });
   }, [ensurePreview, grow, waitUntilReady]);
 
   return { previews, start, retry, grow, growMarker };
