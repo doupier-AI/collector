@@ -84,16 +84,16 @@ test("提交后渐进内容进入同一条 AI 消息并完成，控制台无错�
   // 渐进内容进入同一条 AI 消息
   const assistantMessages = page.locator(".message--assistant");
   const assistantContent = page.locator(".message--assistant .message__content");
-  // 流式中段只有生成中的单一 .message__content（GeneratingBody），单匹配定位有效。
-  await expect(assistantContent).toContainText("你问的是", { timeout: 15_000 });
-  const earlyText = (await assistantContent.textContent()) ?? "";
+  // 流内弱标记后流式中段也按段落块逐块渲染（与完成态同源），.message__content 可有多个；
+  // 首块是问题重述，用 first() 定位。
+  await expect(assistantContent.first()).toContainText("你问的是", { timeout: 15_000 });
+  const earlyText = (await assistantContent.allTextContents()).join("");
   await expect(assistantMessages).toHaveCount(1);
   await expect(assistantContent.last()).toContainText("回答完毕", { timeout: 15_000 });
   await expect(assistantMessages).toHaveCount(1);
   // 完成后渲染为多张切片卡片（各含一个 .message__content），渲染丢弃段落间 \n\n；
   // 拼接所有块文本即完整正文（无 \n\n）。earlyText 是流式中段捕获的部分内容：
-  // 中段 GeneratingBody 是单一 Markdown 容器，段落间 \n\n 在 textContent 里保留为 \n，
-  // 而完成态各卡片拼接不含换行——两侧都归一化去掉换行后再比较。完整正文应更长且含该中间片段。
+  // 流式与完成态两侧都按块拼接（不含换行），归一化去掉换行后再比较。完整正文应更长且含该中间片段。
   const fullText = (await assistantContent.allTextContents()).join("").replace(/\n+/g, "");
   const earlyNorm = earlyText.replace(/\n+/g, "");
   expect(fullText.length).toBeGreaterThan(earlyNorm.length);

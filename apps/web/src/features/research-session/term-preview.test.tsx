@@ -191,6 +191,35 @@ describe("术语预览交互", () => {
     await waitFor(() => expect(document.activeElement).toBe(markerElement));
   });
 
+  it("悬停打开后按 Escape：焦点恢复不重新打开弹层，用户重新聚焦才再打开", async () => {
+    const { view, marker } = viewWithTerms();
+    const preview = previewFor(marker);
+    renderPage({
+      getResearchNodeView: async () => view,
+      startResearchTermPreview: vi.fn(async () => ({ preview, selection: makeSelection({ id: "selection-1" }) })),
+    });
+
+    // 鼠标悬停打开弹层时焦点不在标记上；Escape 的焦点恢复不得被当成新的聚焦意图。
+    const markerElement = await screen.findByRole("button", { name: "解释术语 REST" });
+    fireEvent.pointerOver(markerElement);
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument(), { timeout: 3_000 });
+
+    // 预览状态更新会重渲染正文并替换标记元素，Escape 前重新取当前元素。
+    fireEvent.keyDown(screen.getByRole("button", { name: "解释术语 REST" }), { key: "Escape" });
+    // 焦点恢复到当前提及元素（预览完成触发的重渲染可能已替换原元素，不断言对象同一性）。
+    await waitFor(() => {
+      const focused = document.activeElement as HTMLElement | null;
+      expect(focused?.getAttribute("data-term-text")).toBe("REST");
+    });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    // 用户主动移开焦点再聚焦：正常的键盘进入仍然打开弹层。
+    const currentMarker = document.activeElement as HTMLElement;
+    fireEvent.focusOut(currentMarker);
+    fireEvent.focus(currentMarker);
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
   it("预览失败时弹层保留错误与重试入口，不生长子节点", async () => {
     const { view, marker } = viewWithTerms();
     const failedPreview: ResearchTermPreviewRecord = {

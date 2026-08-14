@@ -317,6 +317,11 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
     }
   }, []);
 
+  // Escape 关闭弹层会把焦点恢复到触发标记；这次程序性 focus 会派发 focusin，
+  // 不得被当作新的键盘进入意图而重开弹层。用户主动移开再聚焦（focusout 后）或
+  // 重新悬停/按键时正常打开。
+  const suppressFocusOpenRef = useRef(false);
+
   const closePopover = useCallback(() => {
     clearHoverTimer();
     clearCloseTimer();
@@ -421,6 +426,7 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
       const found = markerFromElement(pointer.target instanceof Element ? pointer.target : null);
       if (!found) return;
       if (pointer.relatedTarget instanceof Node && found.element.contains(pointer.relatedTarget)) return;
+      suppressFocusOpenRef.current = false;
       const hoverKey = termHoverKey(found.marker);
       // 同一提及的悬注意图已武装（重渲染替换派发的重复 pointerover）：保留原有计时。
       if (hoverTimerRef.current !== undefined && pendingHoverKeyRef.current === hoverKey) return;
@@ -446,10 +452,15 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
     const handleFocusIn = (event: Event) => {
       const found = markerFromElement(event.target instanceof Element ? event.target : null);
       if (!found) return;
+      if (suppressFocusOpenRef.current) {
+        suppressFocusOpenRef.current = false;
+        return;
+      }
       clearHoverTimer();
       openPopover(found.element, found.marker);
     };
     const handleFocusOut = (event: Event) => {
+      suppressFocusOpenRef.current = false;
       const next = (event as FocusEvent).relatedTarget;
       if (next instanceof Node && root.contains(next)) return;
       if (next instanceof Node && popoverRef.current?.contains(next)) return;
@@ -508,6 +519,8 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
       event.preventDefault();
       event.stopPropagation();
       const markerElement = active.element;
+      // 焦点恢复触发的 focusin 不是新的打开意图（尤其悬停打开后 Escape 的场景）。
+      suppressFocusOpenRef.current = true;
       closePopover();
       queueMicrotask(() => markerElement.focus());
     };
