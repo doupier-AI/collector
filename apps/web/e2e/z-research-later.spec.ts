@@ -18,8 +18,8 @@ const SELECTED = "本地优先会先把输入保存在本机";
 async function submitFirstQuestion(page: Page, question = QUESTION): Promise<string> {
   await page.getByLabel("你的问题").fill(question);
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
-  return page.url().split("/research/")[1]?.split("/")[0] ?? "";
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
+  return page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
 }
 
 test.describe("标记列表 API 与持久化", () => {
@@ -208,7 +208,7 @@ test.describe("标记列表 API 与持久化", () => {
     }).toBe("弹窗中修改后的笔记");
 
     await page.getByTestId(`mark-open-${item!.id}`).click();
-    await expect(page).toHaveURL(new RegExp(`/research/${sessionId}/node/[^?]+\\?sel=`));
+    await expect(page).toHaveURL(new RegExp(`/nodes/[^?]+\\?sel=`));
     // #48：只读定位提醒——高亮呈现、不重开浮动胶囊、不进入引用态
     await expect(page.locator("[data-selection-mark]")).toHaveText(SELECTED, { timeout: 10_000 });
     await expect(page.locator('[data-testid="floating-selection-capsule"]')).toHaveCount(0);
@@ -274,8 +274,8 @@ test.describe("标记列表 API 与持久化", () => {
     // 重新读取持久化列表，避免把新会话创建时的侧栏刷新时机混入排序验收。
     await page.reload();
 
-    const favoriteLink = page.locator('.drawer__session[href^="/research/"]', { hasText: "较早但需要收藏的会话" }).first();
-    const newerLink = page.locator('.drawer__session[href^="/research/"]', { hasText: "较新的普通会话" }).first();
+    const favoriteLink = page.locator('.drawer__session[href^="/nodes/"]', { hasText: "较早但需要收藏的会话" }).first();
+    const newerLink = page.locator('.drawer__session[href^="/nodes/"]', { hasText: "较新的普通会话" }).first();
     await expect(favoriteLink).toBeVisible();
     await expect(newerLink).toBeVisible();
     await expect(favoriteLink.getByLabel("已收藏")).toBeVisible();
@@ -285,7 +285,7 @@ test.describe("标记列表 API 与持久化", () => {
     expect(newerBox).not.toBeNull();
     expect(favoriteBox!.y).toBeLessThan(newerBox!.y);
 
-    await page.goto(`/research/${favoriteSessionId}/node/${favoriteSessionId}`);
+    await page.goto(`/nodes/${favoriteSessionId}`);
     await page.getByRole("button", { name: /的会话菜单$/ }).click();
     await expect(page.getByRole("menuitem", { name: "取消收藏" })).toBeVisible();
   });

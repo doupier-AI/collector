@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { ResearchEdgeKind } from "@collector/capture-contracts";
+import { stableNodePath } from "../../app/paths";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { buildFocusLineage, focusLineageBySelectedKinds } from "./focus-lineage";
 import { groupRelationships, useRelationships } from "./useRelationships";
@@ -80,9 +81,9 @@ export function FocusLineage({
 
   const selectNode = useCallback(
     (nodeId: string) => {
-      navigate(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(nodeId)}`);
+      navigate(stableNodePath(nodeId));
     },
-    [navigate, sessionId],
+    [navigate],
   );
 
   const handleKeyDown = useCallback(
@@ -157,7 +158,7 @@ export function FocusLineage({
         <p className="research-map__state">当前节点没有可见的关系。</p>
       ) : (
         <>
-          <FocusBreadcrumb sessionId={sessionId} lineage={lineage!} />
+          <FocusBreadcrumb lineage={lineage!} />
 
           <div className="focus-lineage__safe-exits" aria-label="安全出口">
             {parentNode ? (
@@ -296,10 +297,8 @@ function lineageNodeById(lineage: ReturnType<typeof buildFocusLineage>, nodeId: 
 
 /** 祖先路径面包屑：根 → 父 → 当前，每一级可点击跳转（对齐树导航既有标记）。 */
 function FocusBreadcrumb({
-  sessionId,
   lineage,
 }: {
-  sessionId: string;
   lineage: ReturnType<typeof buildFocusLineage>;
 }) {
   const entries = lineage.ancestors.concat(lineage.current ? [lineage.current] : []);
@@ -315,7 +314,7 @@ function FocusBreadcrumb({
                 <span aria-current="page">{entry.label}</span>
               ) : (
                 <Link
-                  to={`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(entry.node.id)}`}
+                  to={stableNodePath(entry.node.id)}
                 >
                   {entry.label}
                 </Link>

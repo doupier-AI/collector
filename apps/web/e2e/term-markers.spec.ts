@@ -7,8 +7,8 @@ test("H3b 弱标记在窄屏可见且不改变选区锚点原文", async ({ page
   await pairAndOpen(page, "/research/new");
   await page.getByLabel("你的问题").fill("REST API 和 HTTP");
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
-  const sessionId = page.url().split("/research/")[1]?.split("/")[0] ?? "";
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
+  const sessionId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
 
   // 生成自由化后一条回答为多张切片卡片：术语标记（REST/API/HTTP）在首段问题重述卡，
   // 「回答完毕」在末段卡。先在末块等待完成，再取首块断言标记。

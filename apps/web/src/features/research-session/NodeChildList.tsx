@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import type { ResearchNodeRecord } from "@collector/capture-contracts";
+import { stableNodePath } from "../../app/paths";
 import { useServices } from "../../app/services";
 import { selectionExcerpt } from "../selection/selection-highlight";
 import { formatSessionTime } from "./format";
@@ -58,7 +59,7 @@ export function NodeChildList({
             <li key={child.id} className={isNew ? "branch-list__item--new" : undefined}>
               <Link
                 className="branch-list__link"
-                to={`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(child.id)}`}
+                to={stableNodePath(child.id)}
               >
                 <span className="branch-list__name">
                   {child.displayName

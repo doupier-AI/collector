@@ -236,16 +236,16 @@ describe("fetchBodyVersionCached", () => {
 });
 
 describe("fragmentDeepLink", () => {
-  it("构造深链：保留既有查询参数，设置 fragment", () => {
+  it("构造深链：保留既有查询参数，设置 fragment；#61 起使用稳定节点地址", () => {
     const existing = new URLSearchParams("sel=sel-1");
-    expect(fragmentDeepLink("session-1", "node-b", "fragment:body:m-out:abc:1", existing)).toBe(
-      "/research/session-1/node/node-b?sel=sel-1&fragment=fragment%3Abody%3Am-out%3Aabc%3A1",
+    expect(fragmentDeepLink("node-b", "fragment:body:m-out:abc:1", existing)).toBe(
+      "/nodes/node-b?sel=sel-1&fragment=fragment%3Abody%3Am-out%3Aabc%3A1",
     );
   });
 
   it("无既有参数时只带 fragment", () => {
-    expect(fragmentDeepLink("session-1", "node-b", "fragment:body:m-out:abc:0")).toBe(
-      "/research/session-1/node/node-b?fragment=fragment%3Abody%3Am-out%3Aabc%3A0",
+    expect(fragmentDeepLink("node-b", "fragment:body:m-out:abc:0")).toBe(
+      "/nodes/node-b?fragment=fragment%3Abody%3Am-out%3Aabc%3A0",
     );
   });
 });

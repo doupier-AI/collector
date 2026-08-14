@@ -18,13 +18,13 @@ async function openSession(page: Page): Promise<{ sessionId: string; rootNodeId:
   await pairAndOpen(page, "/research/new");
   await page.getByLabel("你的问题").fill(QUESTION);
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
   await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
     timeout: 15_000,
   });
-  const match = new URL(page.url()).pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
+  const match = new URL(page.url()).pathname.match(/^\/nodes\/([^/]+)$/);
   if (!match) throw new Error("unexpected root node url");
-  return { sessionId: match[1]!, rootNodeId: match[2]! };
+  return { sessionId: match[1]!, rootNodeId: match[1]! }; // 稳定地址：根节点 id 与会话 id 相同
 }
 
 /** 生成一个共享「本地优先」概念的子节点：深入研究第一轮 + 节点内追问一轮。 */
@@ -33,13 +33,13 @@ async function growSharedConceptChild(page: Page, sessionId: string): Promise<st
   await page.getByRole("button", { name: "深入研究这段" }).click();
   await page.waitForURL(
     (url) => {
-      const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
-      return Boolean(match && match[1] === sessionId && match[2] && match[2] !== sessionId);
+      const match = url.pathname.match(/^\/nodes\/([^/]+)$/);
+      return Boolean(match && match[1] && match[1] !== sessionId);
     },
     { timeout: 10_000 },
   );
   await expect(page.getByText(/这是深入研究第一轮/)).toBeVisible({ timeout: 15_000 });
-  const childId = page.url().split("/node/")[1] ?? "";
+  const childId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
   await page.getByLabel("你的问题").fill("继续研究本地优先的实践");
   await page.getByRole("button", { name: "发送" }).click();
   await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
@@ -102,7 +102,7 @@ test("#32 开关开启 + 高置信：挂载自动扫描 → 自动融合 → 提
   expect((await put.json()) as { enabled: boolean }).toEqual({ enabled: true });
 
   // 回根节点页：挂载即自动 scan（identity 高置信 → 自动融合），提示条出现。
-  await page.goto(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(rootNodeId)}`);
+  await page.goto(`/nodes/${encodeURIComponent(rootNodeId)}`);
   const notice = page.getByTestId("auto-fusion-notice");
   await expect(notice).toBeVisible({ timeout: 20_000 });
   await expect(notice).toContainText("已自动生成融合节点");
@@ -115,7 +115,7 @@ test("#32 开关开启 + 高置信：挂载自动扫描 → 自动融合 → 提
 
   // 点击提示条跳转融合节点页：标题旁「自动生成」徽章 + 章节 + 来源条。
   await page.getByRole("link", { name: "查看融合节点" }).click();
-  await page.waitForURL((url) => url.pathname.endsWith(`/node/${fusionNodeId}`), { timeout: 10_000 });
+  await page.waitForURL((url) => url.pathname.endsWith(`/nodes/${fusionNodeId}`), { timeout: 10_000 });
   await expect(page.getByTestId("auto-fusion-badge")).toHaveText("自动生成");
   const body = await page.locator(".message--assistant .message__content").allTextContents();
   const joined = body.join("\n");
@@ -141,7 +141,7 @@ test("#32 开关开启 + 高置信：挂载自动扫描 → 自动融合 → 提
 
   // 开关持久化：刷新根节点页再次挂载自动 scan（幂等：提案已 accepted，不重复建节点），
   // 设置页开关保持勾选。
-  await page.goto(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(rootNodeId)}`);
+  await page.goto(`/nodes/${encodeURIComponent(rootNodeId)}`);
   await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕");
   await expect(autoFusionNodes(dbPath)).toHaveLength(1);
   await page.goto("/settings/fusion");

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import type { ResearchSessionRecord } from "@collector/capture-contracts";
+import { stableNodePath } from "../../app/paths";
 import { useServices } from "../../app/services";
 import { formatSessionTime } from "../research-session/format";
 import { notifySessionsChanged, SESSIONS_CHANGED_EVENT } from "../navigation/session-events";
@@ -177,7 +178,7 @@ export function TrashPage() {
                   </button>
                 ) : null}
                 <div className="trash-page__item-main">
-                  <Link className="trash-page__item-title" to={`/research/${encodeURIComponent(session.id)}/node/${encodeURIComponent(session.id)}`}>
+                  <Link className="trash-page__item-title" to={stableNodePath(session.id)}>
                     {session.title}
                   </Link>
                   <span className="trash-page__item-time">删除于 {formatSessionTime(session.trashedAt ?? session.updatedAt)}</span>

@@ -128,20 +128,20 @@ async function submitQuestion(page: Page, question: string): Promise<string> {
   await page.getByLabel("你的问题").fill(question);
   await page.getByRole("button", { name: "开始研究" }).click();
   // 开始页先落到旧会话路由，再由重定向进入统一节点页（根节点 id = 会话 id）
-  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 15_000 });
-  return page.url().split("/research/")[1]?.split("/")[0] ?? "";
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 15_000 });
+  return page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
 }
 
 /** 等待跳转到子节点页并返回新节点 id（排除根节点：根节点 id 与会话 id 相同）。 */
 async function waitChildNodeUrl(page: Page, sessionId: string, timeoutMs = 20_000): Promise<string> {
   await page.waitForURL(
     (url) => {
-      const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
-      return Boolean(match && match[1] === sessionId && match[2] && match[2] !== sessionId);
+      const match = url.pathname.match(/^\/nodes\/([^/]+)$/);
+      return Boolean(match && match[1] && match[1] !== sessionId);
     },
     { timeout: timeoutMs },
   );
-  return page.url().split("/node/")[1] ?? "";
+  return page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
 }
 
 /** 等待至少 minCount 条 AI 消息完成（渲染出 data-content-kind 块），返回最新一条纯文本。 */
@@ -307,7 +307,7 @@ test("场景一：Chat 真实回答 → 选区真实分析 → 节点生长真�
 
   // 返回原文：高亮原选区（消息选区回到根节点页）
   await sourceBar.getByRole("link", { name: "← 返回原文" }).click();
-  await page.waitForURL(new RegExp(`/research/${sessionId}/node/${sessionId}\\?sel=`));
+  await page.waitForURL(new RegExp(`/nodes/${sessionId}\\?sel=`));
   await expect(page.locator("[data-selection-mark]")).toHaveText(selected, { timeout: 20_000 });
 
   // 刷新后高亮与子节点入口仍在
@@ -358,7 +358,7 @@ test("场景二：文档导入 → 选区真实分析 → 带方向的节点生�
   });
   expect(createResponse.status()).toBe(201);
   const originSessionId = ((await createResponse.json()) as { id: string }).id;
-  await page.goto(`/research/${originSessionId}`);
+  await page.goto(`/nodes/${originSessionId}`);
 
   // 导入受支持文档并进入阅读
   await page.locator('input[type="file"]').setInputFiles({
@@ -412,7 +412,7 @@ test("场景二：文档导入 → 选区真实分析 → 带方向的节点生�
   const freshContext = await browser.newContext({ baseURL: BASE });
   const recovered = await freshContext.newPage();
   await pairAndOpen(recovered, "/");
-  await recovered.goto(`/research/${originSessionId}/node/${nodeId}`);
+  await recovered.goto(`/nodes/${nodeId}`);
   // 恢复后的子节点仍带来源条与第一轮真实内容
   await expect(recovered.getByTestId("selection-source-bar")).toBeVisible({ timeout: 30_000 });
   await expect(recovered.getByTestId("selection-source-bar")).toContainText(DOC_SELECTED);
@@ -466,7 +466,7 @@ test("场景三：真实回答选区 → 保存标记与笔记 → 从栏目返�
   await expect(marksPanel).toContainText("来源节点：");
 
   await page.getByTestId(`mark-open-${item!.id}`).click();
-  await page.waitForURL((url) => url.pathname.includes(`/research/${sessionId}/node/`) && url.searchParams.has("sel"), {
+  await page.waitForURL((url) => url.pathname.startsWith("/nodes/") && url.searchParams.has("sel"), {
     timeout: 20_000,
   });
   // #48：只读定位提醒——高亮呈现、不重开浮动胶囊、不进入引用态
@@ -517,7 +517,7 @@ test("场景四：刷新不重复创建子节点与标记项目，材料范围�
   ).toHaveLength(childrenBefore);
 
   // 回到原会话做第二次选区并生长子节点，再刷新：不重复创建
-  await page.goto(`/research/${sessionId}`);
+  await page.goto(`/nodes/${sessionId}`);
   await expect(page.locator('.message--assistant [data-content-kind="message"]').first()).toBeVisible({
     timeout: 30_000,
   });
@@ -536,7 +536,7 @@ test("场景四：刷新不重复创建子节点与标记项目，材料范围�
   ).toHaveLength(childrenAfter);
 
   // 材料范围如实：子节点视图固定说明材料范围，不暗示已核验
-  await page.goto(`/research/${sessionId}/node/${nodeId}`);
+  await page.goto(`/nodes/${nodeId}`);
   await expect(page.getByTestId("research-scope-note")).toContainText("自动使用当前模型供应商的联网能力");
 
   // 全程无演示标记

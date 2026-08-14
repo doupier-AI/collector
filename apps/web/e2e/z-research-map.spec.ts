@@ -20,11 +20,11 @@ async function openSession(page: Page): Promise<string> {
   await pairAndOpen(page, "/research/new");
   await page.getByLabel("你的问题").fill(QUESTION);
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
   await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
     timeout: 15_000,
   });
-  return page.url().split("/research/")[1]?.split("/")[0] ?? "";
+  return page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
 }
 
 /** 从最后一条回答选中文字并显式引用，再长出一个子节点，返回子节点 id。 */
@@ -33,13 +33,13 @@ async function growChildNode(page: Page, sessionId: string, text: string): Promi
   await page.getByRole("button", { name: "深入研究这段" }).click();
   await page.waitForURL(
     (url) => {
-      const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
-      return Boolean(match && match[1] === sessionId && match[2] && match[2] !== sessionId);
+      const match = url.pathname.match(/^\/nodes\/([^/]+)$/);
+      return Boolean(match && match[1] && match[1] !== sessionId);
     },
     { timeout: 10_000 },
   );
   await expect(page.getByText(/这是深入研究第一轮/)).toBeVisible({ timeout: 15_000 });
-  return page.url().split("/node/")[1] ?? "";
+  return page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
 }
 
 /** 向 /graph 响应注入语义相关与融合来源节点（隔离血统，只通过非父子边到达）。 */
@@ -183,7 +183,7 @@ test.describe("统一研究地图（#40）", () => {
     page.on("pageerror", (error) => consoleIssues.push(error.message));
 
     const childB = await growChildNode(page, sessionId, SELECTED_A);
-    await page.goto(`/research/${sessionId}/node/${sessionId}`);
+    await page.goto(`/nodes/${sessionId}`);
     await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
       timeout: 15_000,
     });
@@ -195,13 +195,13 @@ test.describe("统一研究地图（#40）", () => {
     await page.getByRole("button", { name: "深入研究这段" }).click();
     await page.waitForURL(
       (url) => {
-        const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
-        return Boolean(match && match[1] === sessionId && match[2] && match[2] !== sessionId && match[2] !== childC);
+        const match = url.pathname.match(/^\/nodes\/([^/]+)$/);
+        return Boolean(match && match[1] && match[1] !== sessionId && match[1] !== childC);
       },
       { timeout: 10_000 },
     );
     await expect(page.getByText(/这是深入研究第一轮/)).toBeVisible({ timeout: 15_000 });
-    const grandchildD = page.url().split("/node/")[1] ?? "";
+    const grandchildD = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
     expect(grandchildD).not.toBe(childC);
 
     // D 上打开专注模式：祖先链 根›C、面包屑可点击；D 为当前锚点。
@@ -219,14 +219,14 @@ test.describe("统一研究地图（#40）", () => {
 
     // 面包屑点击 C 跳转（局部地图焦点不产生路由，进入节点才导航）
     await breadcrumb.getByRole("link", { name: SELECTED_B }).click();
-    await page.waitForURL(new RegExp(`/research/${sessionId}/node/${childC}$`), { timeout: 10_000 });
+    await page.waitForURL(new RegExp(`/nodes/${childC}$`), { timeout: 10_000 });
     await expect(page.getByRole("dialog", { name: "研究地图" })).toBeHidden();
 
     // D 的返回原文 → 落在 C 页且原选区精确高亮
-    await page.goto(`/research/${sessionId}/node/${grandchildD}`);
+    await page.goto(`/nodes/${grandchildD}`);
     await expect(page.getByText(/这是深入研究第一轮/)).toBeVisible({ timeout: 15_000 });
     await page.getByRole("link", { name: "← 返回原文" }).click();
-    await page.waitForURL(new RegExp(`/research/${sessionId}/node/${childC}\\?sel=`), { timeout: 10_000 });
+    await page.waitForURL(new RegExp(`/nodes/${childC}\\?sel=`), { timeout: 10_000 });
     const mark = page.locator("[data-selection-mark]");
     await expect(mark).toContainText(SELECTED_IN_C, { timeout: 15_000 });
     await expect(page.getByTestId("selection-restore-fallback")).toHaveCount(0);
@@ -351,10 +351,10 @@ test.describe("统一研究地图（#40）", () => {
 
     // 键盘进入节点：Enter 打开当前焦点条目并关闭地图
     await page.keyboard.press("Enter");
-    await page.waitForURL(new RegExp(`/research/${sessionId}/node/${sessionId}$`), { timeout: 10_000 });
+    await page.waitForURL(new RegExp(`/nodes/${sessionId}$`), { timeout: 10_000 });
     await expect(dialog).toBeHidden();
     // 回到节点页再打开地图，筛选保持全量
-    await page.goto(`/research/${sessionId}/node/${childId}`);
+    await page.goto(`/nodes/${childId}`);
     await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
     await page.keyboard.press("t");
     await expect(dialog).toBeVisible();

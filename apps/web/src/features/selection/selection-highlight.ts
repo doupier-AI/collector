@@ -5,6 +5,7 @@ import type {
 } from "@collector/capture-contracts";
 import { composeSectionUnits, deriveMessageBlocks, messageContentBlockId } from "@collector/capture-contracts";
 import { messageBlockCaption } from "../../app/anchorCaption";
+import { stableNodePath } from "../../app/paths";
 
 /** 选区原文在来源条等窄空间中的最大展示长度。 */
 export const SELECTION_EXCERPT_CHARACTERS = 48;
@@ -61,14 +62,14 @@ export function resolveHighlight(
   return null;
 }
 
-/** 来源返回路由：消息选区回其所属节点页，快照选区回阅读页，均携带选区 id 查询参数。 */
+/** 来源返回路由：消息选区回其所属节点的稳定地址（#61），快照选区回阅读页，均携带选区 id 查询参数。 */
 export function backRouteForSelection(selection: ResearchSelectionRecord): string {
   const anchor = selection.anchor;
   const base =
     anchor.kind === "snapshot"
       ? `/research/${encodeURIComponent(selection.sessionId)}/reading/${encodeURIComponent(anchor.contentSnapshotId)}`
-      // 消息选区回到选区所属节点的页面；无节点归属的旧选区回根节点（根节点 id = 会话 id）
-      : `/research/${encodeURIComponent(selection.sessionId)}/node/${encodeURIComponent(selection.nodeId ?? selection.sessionId)}`;
+      // 消息选区回到选区所属节点的稳定地址；无节点归属的旧选区回根节点（根节点 id = 会话 id）
+      : stableNodePath(selection.nodeId ?? selection.sessionId);
   return `${base}?sel=${encodeURIComponent(selection.id)}`;
 }
 

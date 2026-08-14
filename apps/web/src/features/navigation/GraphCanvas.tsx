@@ -6,6 +6,7 @@ import type {
   ResearchGraphNodeSummary,
 } from "@collector/capture-contracts";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
+import { stableNodePath } from "../../app/paths";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import {
   ALL_EDGE_KINDS,
@@ -161,9 +162,9 @@ export function GraphCanvas({
   const selectNode = useCallback(
     (nodeId: string) => {
       onClose();
-      navigate(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(nodeId)}`);
+      navigate(stableNodePath(nodeId));
     },
-    [navigate, onClose, sessionId],
+    [navigate, onClose],
   );
 
   const openFocusedNode = useCallback(() => {

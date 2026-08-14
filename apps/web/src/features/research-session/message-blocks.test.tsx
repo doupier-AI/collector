@@ -9,7 +9,7 @@ import { ResearchNodePage } from "./ResearchNodePage";
 import type { ResearchNodeView, ResearchSliceRecord } from "@collector/capture-contracts";
 import { captureSelection, readContentContext, resolveBlockRange } from "../selection/selection-capture";
 
-function renderNodePage(api: Partial<ApiClient>, entry = "/research/session-1/node/session-1") {
+function renderNodePage(api: Partial<ApiClient>, entry = "/nodes/session-1") {
   const services = {
     api: api as ApiClient,
     connectTaskEvents: vi.fn(() => ({ close: () => {}, syncNow: () => {}, mode: "closed", lastEventId: 0 })),
@@ -18,7 +18,7 @@ function renderNodePage(api: Partial<ApiClient>, entry = "/research/session-1/no
     <ServicesProvider services={services}>
       <MemoryRouter initialEntries={[entry]}>
         <Routes>
-          <Route path="/research/:sessionId/node/:nodeId" element={<ResearchNodePage />} />
+          <Route path="/nodes/:nodeId" element={<ResearchNodePage />} />
         </Routes>
       </MemoryRouter>
     </ServicesProvider>,
@@ -384,7 +384,7 @@ describe("#36 连续语义卡片", () => {
         getResearchNodeView: async () => viewWithSlices(content, slices),
         getResearchSelection: async () => selection,
       },
-      "/research/session-1/node/session-1?sel=sel-1",
+      "/nodes/session-1?sel=sel-1",
     );
 
     // 高亮在渲染后由 useLayoutEffect + rAF 重试圈 <mark>（?sel= 经 getResearchSelection 异步恢复）。

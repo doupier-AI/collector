@@ -15,9 +15,9 @@ test("H3c 悬停生成一次预览、离开后恢复进度，并用预览内容�
   await pairAndOpen(page, "/research/new");
   await page.getByLabel("你的问题").fill("REST API 和 HTTP");
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
-  const sessionId = page.url().split("/research/")[1]?.split("/")[0] ?? "";
-  const rootNodeId = page.url().split("/node/")[1] ?? "";
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
+  const sessionId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
+  const rootNodeId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
   const marker = page.locator(".message--assistant [data-term-marker]").first();
   await expect(marker).toBeVisible({ timeout: 15_000 });
 
@@ -49,8 +49,8 @@ test("H3c 悬停生成一次预览、离开后恢复进度，并用预览内容�
   expect(preview.content.length).toBeGreaterThan(0);
 
   await popover.getByRole("button", { name: "进入这个概念" }).click();
-  await page.waitForURL((url) => url.pathname.includes("/node/") && !url.pathname.endsWith(`/node/${rootNodeId}`), { timeout: 10_000 });
-  const childNodeId = page.url().split("/node/")[1] ?? "";
+  await page.waitForURL((url) => url.pathname.includes("/nodes/") && !url.pathname.endsWith(`/nodes/${rootNodeId}`), { timeout: 10_000 });
+  const childNodeId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
   const childView = await apiJson<{ messages: Array<{ role: string; status: string; content: string }> }>(page, `/v1/research-nodes/${childNodeId}`);
   const childAssistant = childView.messages.find((message) => message.role === "assistant");
   expect(childAssistant?.status).toBe("completed");

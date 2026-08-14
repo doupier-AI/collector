@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
+import { stableNodePath } from "../../app/paths";
 import type { ResearchEdgeKind } from "@collector/capture-contracts";
 import type { RelationshipItem } from "./useRelationships";
 import { ALL_EDGE_KINDS, groupRelationships, useRelationships } from "./useRelationships";
@@ -52,9 +53,9 @@ export function RelationshipList({
   const selectNode = useCallback(
     (nodeId: string) => {
       onClose();
-      navigate(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(nodeId)}`);
+      navigate(stableNodePath(nodeId));
     },
-    [navigate, onClose, sessionId],
+    [navigate, onClose],
   );
 
   function handleListKeyDown(event: KeyboardEvent<HTMLUListElement>): void {

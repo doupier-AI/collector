@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
@@ -28,47 +28,27 @@ async function waitForFileValue(name: string): Promise<string> {
 }
 
 /**
- * 从配对码池取一个一次性配对码（workers=1；harness 启动重写码池时同步删除游标）。
- * fromEnd=true 时从池尾（最近 refill 追加的新鲜码）取，使用独立 endcursor 游标：
- * 供套件末尾才运行的低消耗端口使用，避免与头部消费共享游标导致取到过期码。
+ * 向 harness 现铸端点取一个一次性配对码（workers=1）。
+ * 现铸码在取码那一刻铸造、5 分钟 TTL 从取码起算，取完立即使用不存在过期抖动；
+ * fromEnd 参数为历史兼容保留（旧静态池的池尾游标语义），现铸端点下无意义。
  */
-export async function nextPairingCode(apiPort: number, fromEnd = false): Promise<string> {
-  const poolPath = join(runtimeDir, `pairing-${apiPort}.txt`);
-  await waitForFileValue(`pairing-${apiPort}.txt`);
-  const codes = readFileSync(poolPath, "utf8")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  if (fromEnd) {
-    const endCursorPath = join(runtimeDir, `pairing-${apiPort}.endcursor`);
-    let endCursor = 0;
-    if (existsSync(endCursorPath)) {
-      endCursor = Number(readFileSync(endCursorPath, "utf8").trim()) || 0;
-    }
-    const index = codes.length - 1 - endCursor;
-    if (index < 0) throw new Error(`配对码池已耗尽 (port=${apiPort}, end)`);
-    writeFileSync(endCursorPath, String(endCursor + 1), "utf8");
-    return codes[index]!;
-  }
-  const cursorPath = join(runtimeDir, `pairing-${apiPort}.cursor`);
-  let cursor = 0;
-  if (existsSync(cursorPath)) {
-    cursor = Number(readFileSync(cursorPath, "utf8").trim()) || 0;
-  }
-  if (cursor >= codes.length) throw new Error(`配对码池已耗尽 (port=${apiPort})`);
-  writeFileSync(cursorPath, String(cursor + 1), "utf8");
-  return codes[cursor]!;
+export async function nextPairingCode(apiPort: number, _fromEnd = false): Promise<string> {
+  const endpoint = await waitForFileValue(`pairing-endpoint-${apiPort}.txt`);
+  const response = await fetch(endpoint);
+  if (!response.ok) throw new Error(`配对码端点失败: ${endpoint} → ${response.status}`);
+  const { code } = (await response.json()) as { code: string };
+  return code;
 }
 
 /**
  * 在配对页输入配对码完成配对，然后进入目标路径（默认 / 自动恢复最近会话）。fromEnd 见 nextPairingCode。
- * 配对失败（配对码过期/被抢）时自动重试一次并改用池尾新鲜码：低消耗端口在套件末尾运行时
- * 常取到 harness 启动时 mint、已过 5 分钟 TTL 的池头码，重试吸收这类基础设施抖动。
+ * 配对码由 harness 现铸端点按需铸造，取完即用、TTL 从取码起算，不再有池头码过期抖动；
+ * 交换失败时重试一次防御瞬时故障（重试同样取现铸码）。
  */
 export async function pairAndOpen(page: Page, path = "/", fromEnd = false): Promise<void> {
   for (let attempt = 0; ; attempt += 1) {
     await page.goto("/");
-    const code = await nextPairingCode(apiPortForPage(page), attempt > 0 ? true : fromEnd);
+    const code = await nextPairingCode(apiPortForPage(page), fromEnd);
     const codeInput = page.getByLabel("配对码");
     await codeInput.waitFor({ state: "visible", timeout: 15_000 });
     await codeInput.fill(code);
@@ -78,7 +58,7 @@ export async function pairAndOpen(page: Page, path = "/", fromEnd = false): Prom
       break; // 配对成功
     } catch (error) {
       if (attempt >= 1) throw error;
-      // 首次失败：多半是配对码过期（池头码 5 分钟 TTL），重试改用池尾最新码。
+      // 首次失败：防御配对交换的瞬时故障（现铸码无 TTL 抖动，重试不必换码来源）。
     }
   }
   if (path !== "/") await page.goto(path);
@@ -396,19 +376,19 @@ export function readResearchNodeTables(dbPath: string): {
 
 /**
  * 确定性研究节点页基座（#44 视觉基线共用）：提交固定问题并等待假模型完成，
- * 返回会话 id 与根节点 id（根节点 id ≠ 会话 id）。
+ * 返回会话 id 与根节点 id（根节点 id === 会话 id；#61 起地址只携带节点身份）。
  */
 export async function openSession(page: Page): Promise<{ sessionId: string; rootNodeId: string }> {
   await pairAndOpen(page, "/research/new");
   await page.getByLabel("你的问题").fill(QUESTION);
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
   await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
     timeout: 15_000,
   });
-  const match = new URL(page.url()).pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
+  const match = new URL(page.url()).pathname.match(/^\/nodes\/([^/]+)$/);
   if (!match) throw new Error("unexpected root node url");
-  return { sessionId: match[1]!, rootNodeId: match[2]! };
+  return { sessionId: match[1]!, rootNodeId: match[1]! };
 }
 
 /** 从最后一条回答选中文字并显式引用，再长出一个子节点，返回子节点 id。 */
@@ -417,13 +397,13 @@ export async function growChildNode(page: Page, sessionId: string, text: string)
   await page.getByRole("button", { name: "深入研究这段" }).click();
   await page.waitForURL(
     (url) => {
-      const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
-      return Boolean(match && match[1] === sessionId && match[2] && match[2] !== sessionId);
+      const match = url.pathname.match(/^\/nodes\/([^/]+)$/);
+      return Boolean(match && match[1] && match[1] !== sessionId);
     },
     { timeout: 10_000 },
   );
   await expect(page.getByText(/这是深入研究第一轮/)).toBeVisible({ timeout: 15_000 });
-  return page.url().split("/node/")[1] ?? "";
+  return page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
 }
 
 /** 向 /graph 响应注入语义相关与融合来源节点（隔离血统，只通过非父子边到达）。 */
@@ -480,11 +460,11 @@ export async function openNodeWithParent(page: Page): Promise<{ sessionId: strin
   await pairAndOpen(page, "/research/new");
   await page.getByLabel("你的问题").fill(QUESTION);
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
   await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
     timeout: 15_000,
   });
-  const sessionId = page.url().split("/research/")[1]?.split("/")[0] ?? "";
+  const sessionId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
   const childId = await growChildNode(page, sessionId, "本地优先会先把输入保存在本机");
   return { sessionId, childId };
 }
@@ -605,4 +585,20 @@ export function dynamicTimeMasks(page: Page) {
 /** #44 视觉基线：固定时钟（浏览器内 Date），保证「更新于」等文本与基线生成时一致。 */
 export function freezeClock(page: Page): void {
   void page.clock.setFixedTime(new Date("2026-08-02T08:00:00.000Z"));
+}
+
+/**
+ * #44 视觉基线：固定顶栏模型状态点。全量运行时 settings-ai-model 等先行测试会改变
+ * 共享库配置状态——删除全部配置后服务端重建网关失败、modelError 置位，按钮文案从
+ * 「未配置模型｜点击配置」变为「模型不可用：…」并改变页头高度，节点页像素基线整体
+ * 偏移（#61 四级验证实测 fragment-locate 基线失配 9432 像素）。模型状态属环境状态
+ * （与真实时钟同性质），基线关注正文视觉秩序，统一抹除 modelError 固定为「未配置」态。
+ */
+export async function pinModelStatus(page: Page): Promise<void> {
+  await page.route("**/v1/ai-configuration", async (route) => {
+    const response = await route.fetch();
+    const view = await response.json();
+    delete view.modelError;
+    await route.fulfill({ response, json: view });
+  });
 }

@@ -63,23 +63,23 @@ async function openNodeWithParent(page: Page): Promise<{ sessionId: string; chil
   await pairAndOpen(page, "/research/new");
   await page.getByLabel("你的问题").fill(QUESTION);
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
   await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
     timeout: 15_000,
   });
-  const sessionId = page.url().split("/research/")[1]?.split("/")[0] ?? "";
+  const sessionId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
 
   await citeAnswerText(page, SELECTED_TEXT);
   await page.getByRole("button", { name: "深入研究这段" }).click();
   await page.waitForURL(
     (url) => {
-      const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
-      return Boolean(match && match[1] === sessionId && match[2] && match[2] !== sessionId);
+      const match = url.pathname.match(/^\/nodes\/([^/]+)$/);
+      return Boolean(match && match[1] && match[1] !== sessionId);
     },
     { timeout: 10_000 },
   );
   await expect(page.getByText(/这是深入研究第一轮/)).toBeVisible({ timeout: 15_000 });
-  return { sessionId, childId: page.url().split("/node/")[1] ?? "" };
+  return { sessionId, childId: page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "" };
 }
 
 test.describe("研究地图关联模式画布", () => {

@@ -52,9 +52,9 @@ describe("SessionListPanel 会话分组树", () => {
 
     expect(await screen.findByRole("button", { name: /工作项目\(/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /学习项目\(/ })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /理解注意力机制/ })).toHaveAttribute("href", "/research/s-1");
-    expect(screen.getByRole("link", { name: /比较两种索引结构/ })).toHaveAttribute("href", "/research/s-2");
-    expect(screen.getByRole("link", { name: /零散想法/ })).toHaveAttribute("href", "/research/s-3");
+    expect(screen.getByRole("link", { name: /理解注意力机制/ })).toHaveAttribute("href", "/nodes/s-1");
+    expect(screen.getByRole("link", { name: /比较两种索引结构/ })).toHaveAttribute("href", "/nodes/s-2");
+    expect(screen.getByRole("link", { name: /零散想法/ })).toHaveAttribute("href", "/nodes/s-3");
   });
 
   it("收藏会话在各自分组内置顶，并保留已收藏标识", async () => {
@@ -66,7 +66,7 @@ describe("SessionListPanel 会话分组树", () => {
     renderPanel(apiWith({ listProjects: async () => projects, listResearchSessions: async () => sessions }));
 
     const links = await screen.findAllByRole("link");
-    const sessionLinks = links.filter((link) => link.getAttribute("href")?.startsWith("/research/"));
+    const sessionLinks = links.filter((link) => link.getAttribute("href")?.startsWith("/nodes/"));
     expect(sessionLinks.map((link) => link.textContent)).toEqual([
       expect.stringContaining("收藏会话"),
       expect.stringContaining("较新普通会话"),

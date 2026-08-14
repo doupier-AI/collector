@@ -22,11 +22,11 @@ function SessionRoutes() {
   const navigate = useNavigate();
   return (
     <>
-      <button type="button" onClick={() => navigate("/research/session-2/node/session-2")}>
+      <button type="button" onClick={() => navigate("/nodes/session-2")}>
         切换会话
       </button>
       <Routes>
-        <Route path="/research/:sessionId/node/:nodeId" element={<ResearchNodePage />} />
+        <Route path="/nodes/:nodeId" element={<ResearchNodePage />} />
         <Route path="/research/:sessionId/reading/:contentSnapshotId" element={<ReadingPage />} />
       </Routes>
     </>
@@ -42,7 +42,7 @@ function renderSessionPage(api: Partial<ApiClient>) {
   } as unknown as AppServices;
   return render(
     <ServicesProvider services={services}>
-      <MemoryRouter initialEntries={["/research/session-1/node/session-1"]}>
+      <MemoryRouter initialEntries={["/nodes/session-1"]}>
         <SessionRoutes />
       </MemoryRouter>
     </ServicesProvider>,
@@ -160,7 +160,7 @@ describe("研究文件导入", () => {
     expect(getResearchContent).toHaveBeenCalledWith("snap-1");
     expect(screen.getByText("第 1 行")).toBeInTheDocument();
     expect(screen.getByText("第一行内容")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "返回研究会话" })).toHaveAttribute("href", "/research/session-1/node/session-1");
+    expect(screen.getByRole("link", { name: "返回研究会话" })).toHaveAttribute("href", "/nodes/session-1");
   });
 
   it("切换会话后忽略旧会话延迟返回的上传结果", async () => {

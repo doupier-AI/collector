@@ -7,6 +7,7 @@ import {
   type ResearchSliceRecord,
 } from "@collector/capture-contracts";
 import type { ApiClient } from "../../api/client";
+import { stableNodePath } from "../../app/paths";
 import { deriveSliceCardTargets, type SliceCardTarget } from "./slice-cards";
 
 /**
@@ -109,16 +110,16 @@ export function fetchBodyVersionCached(
   return pending;
 }
 
-/** 构造深链：保留既有查询参数（?sel= 等），设置 fragment。返回相对路径。 */
+/** 构造深链：保留既有查询参数（?sel= 等），设置 fragment。返回相对路径。
+ *  #61：使用稳定节点地址，不再需要会话 ID。 */
 export function fragmentDeepLink(
-  sessionId: string,
   nodeId: string,
   fragmentId: string,
   existing?: URLSearchParams,
 ): string {
   const params = new URLSearchParams(existing?.toString() ?? "");
   params.set("fragment", fragmentId);
-  return `/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(nodeId)}?${params.toString()}`;
+  return `${stableNodePath(nodeId)}?${params.toString()}`;
 }
 
 /** 定位失败时的明确回退文案（验收 6）：不静默定位到其他片段。 */

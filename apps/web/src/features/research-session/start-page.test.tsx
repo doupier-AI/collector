@@ -24,7 +24,7 @@ function renderStartPage(api: Partial<ApiClient>) {
       <MemoryRouter initialEntries={["/research/new"]}>
         <Routes>
           <Route path="/research/new" element={<StartPage />} />
-          <Route path="/research/:sessionId" element={<Destination />} />
+          <Route path="/nodes/:nodeId" element={<Destination />} />
         </Routes>
       </MemoryRouter>
     </ServicesProvider>,
@@ -57,7 +57,7 @@ describe("StartPage 会话创建", () => {
     expect(await screen.findByText("连接失败，请重试。")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "开始研究" }));
-    expect(await screen.findByText("/research/recovered-session")).toBeInTheDocument();
+    expect(await screen.findByText("/nodes/recovered-session")).toBeInTheDocument();
     expect(createResearchSession).toHaveBeenCalledTimes(2);
     expect(createResearchSession.mock.calls[0][0]).toBeTruthy();
     expect(createResearchSession.mock.calls[1][0]).toBe(createResearchSession.mock.calls[0][0]);
@@ -78,7 +78,7 @@ describe("StartPage 文件入口", () => {
     // ChatComposer 的隐藏文件输入
     await fireFileChange(makeTxtFile());
 
-    expect(await screen.findByText("/research/file-session")).toBeInTheDocument();
+    expect(await screen.findByText("/nodes/file-session")).toBeInTheDocument();
     expect(createResearchSession).toHaveBeenCalledTimes(1);
     expect(createResearchImport).toHaveBeenCalledTimes(1);
     expect(createResearchImport.mock.calls[0][0]).toBe("file-session");
@@ -117,7 +117,7 @@ describe("StartPage 文件入口", () => {
     await fireFileChange(makeTxtFile());
 
     // 导航到会话页（导入失败可重试）
-    expect(await screen.findByText("/research/partial-session")).toBeInTheDocument();
+    expect(await screen.findByText("/nodes/partial-session")).toBeInTheDocument();
   });
 
   it("上传文件后输入文本点击提交，不再重复创建会话", async () => {

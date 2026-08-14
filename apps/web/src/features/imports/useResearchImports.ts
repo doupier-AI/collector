@@ -63,7 +63,10 @@ export function useResearchImports(
     setPendingUpload(null);
     setUploadError(null);
     setActionError(null);
-    setActingTaskIds(new Set());
+    // 空集合时返回原引用：React 以 Object.is 判断是否跳过渲染——无条件 new Set()
+    // 会在无害的会话上下文切换（如稳定地址下 ""→真实 ID 的派生翻转）时制造多余
+    // 渲染周期，打断正在进行的键盘交互。
+    setActingTaskIds((previous) => (previous.size === 0 ? previous : new Set()));
     return closeAllStreams;
   }, [sessionId, closeAllStreams]);
 

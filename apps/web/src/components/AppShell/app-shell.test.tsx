@@ -6,6 +6,7 @@ import type { ApiClient } from "../../api/client";
 import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
 import { AppShell, researchMapTargetForPath } from "./AppShell";
+import { makeNode, makeNodeView, makeSession } from "../../test/fakes";
 
 /** jsdom 没有 matchMedia，按宽/窄屏桩掉（useMediaQuery 只识别 900px 断点）。 */
 function stubMatchMedia(wide: boolean) {
@@ -31,6 +32,12 @@ function renderShell(initialEntry = "/") {
         nodes: [],
         edges: [],
       }),
+      // #61：稳定地址不含会话——地图模块打开时按节点视图解析所属会话
+      getResearchNodeView: async (nodeId: string) =>
+        makeNodeView({
+          node: makeNode({ id: nodeId, sessionId: "session-1" }),
+          session: makeSession({ id: "session-1", title: "研究会话" }),
+        }),
     } as Partial<ApiClient> as ApiClient,
     connectTaskEvents: vi.fn(),
   } as unknown as AppServices;
@@ -40,7 +47,7 @@ function renderShell(initialEntry = "/") {
         <Routes>
           <Route element={<AppShell />}>
             <Route index element={<p>主页内容</p>} />
-            <Route path="research/:sessionId/node/:nodeId" element={<p>节点内容</p>} />
+            <Route path="nodes/:nodeId" element={<p>节点内容</p>} />
           </Route>
         </Routes>
       </MemoryRouter>
@@ -88,7 +95,7 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
 
   it("处于研究页时会话入口标记当前区", async () => {
     stubMatchMedia(true);
-    renderShell("/research/session-1/node/node-1");
+    renderShell("/nodes/node-1");
     const nav = await screen.findByRole("navigation", { name: "内容导航" });
     // 收起为 rail 后「会话」入口为真实导航链接并标记当前区
     await userEvent.setup().click(within(nav).getByRole("button", { name: "收起侧栏" }));
@@ -219,7 +226,7 @@ describe("AppShell 研究地图入口（#40）", () => {
   it("宽屏与窄屏都从单一“研究地图”按钮打开统一覆盖层，默认专注模式", async () => {
     const user = userEvent.setup();
     stubMatchMedia(true);
-    const wideRender = renderShell("/research/session-1/node/node-1");
+    const wideRender = renderShell("/nodes/node-1");
 
     const wideTrigger = screen.getByRole("button", { name: "研究地图" });
     expect(wideTrigger).toHaveAttribute("aria-controls", "research-map-overlay");
@@ -230,7 +237,7 @@ describe("AppShell 研究地图入口（#40）", () => {
     wideRender.unmount();
 
     stubMatchMedia(false);
-    renderShell("/research/session-1/node/node-1");
+    renderShell("/nodes/node-1");
     const narrowTrigger = screen.getByRole("button", { name: "研究地图" });
     await user.click(narrowTrigger);
     const narrowDialog = screen.getByRole("dialog", { name: "研究地图" });
@@ -241,7 +248,7 @@ describe("AppShell 研究地图入口（#40）", () => {
   it("快捷键 t 打开专注模式、g 打开关联模式；打开中按键切换模式", async () => {
     const user = userEvent.setup();
     stubMatchMedia(true);
-    renderShell("/research/session-1/node/node-1");
+    renderShell("/nodes/node-1");
 
     await user.keyboard("t");
     const dialog = screen.getByRole("dialog", { name: "研究地图" });
@@ -257,7 +264,7 @@ describe("AppShell 研究地图入口（#40）", () => {
   it("Escape 关闭研究地图，焦点回到入口按钮", async () => {
     const user = userEvent.setup();
     stubMatchMedia(true);
-    renderShell("/research/session-1/node/node-1");
+    renderShell("/nodes/node-1");
 
     const trigger = screen.getByRole("button", { name: "研究地图" });
     await user.click(trigger);
@@ -271,7 +278,7 @@ describe("AppShell 研究地图入口（#40）", () => {
   it("输入框内按 t/g 不误触研究地图", async () => {
     const user = userEvent.setup();
     stubMatchMedia(true);
-    renderShell("/research/session-1/node/node-1");
+    renderShell("/nodes/node-1");
 
     await user.tab();
     // 焦点落到某处后直接在 body 上按 t 应打开
@@ -296,7 +303,19 @@ describe("AppShell 研究地图入口（#40）", () => {
 });
 
 describe("researchMapTargetForPath", () => {
-  it("节点页解析出会话与当前节点", () => {
+  it("稳定节点地址解析出当前节点，会话留待地图模块按节点视图解析（#61）", () => {
+    expect(researchMapTargetForPath("/nodes/node-a")).toEqual({
+      sessionId: null,
+      nodeId: "node-a",
+    });
+    // 带查询参数的稳定地址同样解析（?sel=/?fragment= 深链）
+    expect(researchMapTargetForPath("/nodes/node-b")).toEqual({
+      sessionId: null,
+      nodeId: "node-b",
+    });
+  });
+
+  it("旧会话节点地址仍解析出会话与当前节点（转向期间的过渡路径）", () => {
     expect(researchMapTargetForPath("/research/session-1/node/node-a")).toEqual({
       sessionId: "session-1",
       nodeId: "node-a",

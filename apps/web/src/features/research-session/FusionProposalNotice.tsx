@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactElement } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { resolveFragmentExcerpt } from "@collector/capture-contracts";
@@ -8,11 +8,7 @@ import type {
   ResearchFusionProposalRecord,
 } from "@collector/capture-contracts";
 import { useServices } from "../../app/services";
-import {
-  fetchBodyVersionCached,
-  fragmentDeepLink,
-  type FragmentLocatorFailureKind,
-} from "./fragment-locator";
+import { fetchBodyVersionCached, fragmentDeepLink } from "./fragment-locator";
 import { makeExcerpt } from "./slice-cards";
 
 export const FUSION_RELATION_LABEL: Record<FusionRelationType, string> = {
@@ -25,15 +21,12 @@ export const FUSION_RELATION_LABEL: Record<FusionRelationType, string> = {
 
 export interface FusionProposalNoticeProps {
   proposals: ResearchFusionProposalRecord[];
-  sessionId: string;
-  currentNodeId: string;
   decidingProposalId: string | null;
   onDecide: (proposalId: string, decision: "accepted" | "rejected") => void;
   /** #31：确认式融合——用户确认后创建融合节点并跳转。 */
   onFuse?: (proposalId: string) => void;
   /** 融合请求进行中的提案 id。 */
   fusingProposalId?: string | null;
-  announce: (message: string) => void;
 }
 
 /**
@@ -41,16 +34,14 @@ export interface FusionProposalNoticeProps {
  * 每个提案展开后展示触发依据（triggerSources）——点击依据跳回原始节点的
  * 对应语义片段卡片（深链 ?fragment=<fragmentId>）。依据预览懒加载正文版本，
  * 预览失败不影响跳转（跳转只依赖 nodeId + fragmentId，目标页自己取数）。
+ * #61：依据深链使用稳定节点地址，不再沿组件链传递会话 ID 与当前节点 ID。
  */
 export function FusionProposalNotice({
   proposals,
-  sessionId,
-  currentNodeId,
   decidingProposalId,
   onDecide,
   onFuse,
   fusingProposalId,
-  announce,
 }: FusionProposalNoticeProps): ReactElement | null {
   if (proposals.length === 0) return null;
   return (
@@ -65,11 +56,8 @@ export function FusionProposalNotice({
             accepted={accepted}
             deciding={deciding}
             fusing={fusingProposalId === proposal.id}
-            sessionId={sessionId}
-            currentNodeId={currentNodeId}
             onDecide={onDecide}
             onFuse={onFuse}
-            announce={announce}
           />
         );
       })}
@@ -82,21 +70,15 @@ function FusionProposalItem({
   accepted,
   deciding,
   fusing,
-  sessionId,
-  currentNodeId,
   onDecide,
   onFuse,
-  announce,
 }: {
   proposal: ResearchFusionProposalRecord;
   accepted: boolean;
   deciding: boolean;
   fusing: boolean;
-  sessionId: string;
-  currentNodeId: string;
   onDecide: (proposalId: string, decision: "accepted" | "rejected") => void;
   onFuse?: (proposalId: string) => void;
-  announce: (message: string) => void;
 }): ReactElement {
   // 依据预览只在 details 展开后懒加载：未展开时条目仍在 DOM（details 原生行为），
   // 若挂载即请求，全部提案的来源会在页面加载时一次性拉取正文版本——浪费且违背懒加载。
@@ -109,13 +91,7 @@ function FusionProposalItem({
       <summary>{accepted ? "已保留的概念关系" : "熟悉的概念再现，节点可融合"}</summary>
       <p className="fusion-proposal-notice__relation">关系：{FUSION_RELATION_LABEL[proposal.relationType]}</p>
       <p className="fusion-proposal-notice__reason">{proposal.reason}</p>
-      <TriggerSourceList
-        sources={proposal.triggerSources}
-        sessionId={sessionId}
-        currentNodeId={currentNodeId}
-        announce={announce}
-        expanded={open}
-      />
+      <TriggerSourceList sources={proposal.triggerSources} expanded={open} />
       {!accepted ? (
         <div className="fusion-proposal-notice__actions">
           {onFuse ? (
@@ -152,15 +128,9 @@ function FusionProposalItem({
 
 function TriggerSourceList({
   sources,
-  sessionId,
-  currentNodeId,
-  announce,
   expanded,
 }: {
   sources: FusionProposalTriggerSource[];
-  sessionId: string;
-  currentNodeId: string;
-  announce: (message: string) => void;
   expanded: boolean;
 }): ReactElement | null {
   // 兼容映射补不齐的来源（无 bodyVersionId/fragmentId）无法定位，诚实跳过；
@@ -177,13 +147,7 @@ function TriggerSourceList({
     <ul className="fusion-proposal-notice__sources" aria-label="依据">
       {usable.map((source) => (
         <li key={`${source.bodyVersionId}|${source.fragmentId}`}>
-          <TriggerSourceEntry
-            source={source}
-            sessionId={sessionId}
-            currentNodeId={currentNodeId}
-            announce={announce}
-            expanded={expanded}
-          />
+          <TriggerSourceEntry source={source} expanded={expanded} />
         </li>
       ))}
     </ul>
@@ -192,15 +156,9 @@ function TriggerSourceList({
 
 function TriggerSourceEntry({
   source,
-  sessionId,
-  currentNodeId,
-  announce,
   expanded,
 }: {
   source: FusionProposalTriggerSource;
-  sessionId: string;
-  currentNodeId: string;
-  announce: (message: string) => void;
   expanded: boolean;
 }): ReactElement {
   const { api } = useServices();
@@ -239,23 +197,11 @@ function TriggerSourceEntry({
     };
   }, [api, bodyVersionId, fragmentId, expanded]);
 
-  const handleJump = useCallback(() => {
-    void (async () => {
-      // 防御：路由 sessionId 与目标节点实际会话不一致时，先取真实 sessionId 再导航，
-      // 绝不导航到错误会话。正常路径（同会话）零额外请求。
-      let targetSessionId = sessionId;
-      if (source.nodeId !== currentNodeId) {
-        try {
-          const view = await api.getResearchNodeView(source.nodeId);
-          if (view.session.id !== sessionId) targetSessionId = view.session.id;
-        } catch (error) {
-          announce("依据指向的节点无法读取，无法跳转。");
-          return;
-        }
-      }
-      navigate(fragmentDeepLink(targetSessionId, source.nodeId, fragmentId, searchParams));
-    })();
-  }, [api, announce, currentNodeId, fragmentId, navigate, searchParams, sessionId, source.nodeId]);
+  const handleJump = () => {
+    // #61：稳定节点地址即节点身份，点击直接导航，无需先解析目标所属会话；
+    // 目标节点不可读时由目标页呈现不存在/回收站状态。
+    navigate(fragmentDeepLink(source.nodeId, fragmentId, searchParams));
+  };
 
   const previewLabel =
     preview.state === "ok" ? `查看依据片段：${makeExcerpt(preview.text)}` : "查看依据片段";

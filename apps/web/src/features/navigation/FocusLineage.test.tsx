@@ -40,7 +40,7 @@ function renderLineage(
   const services = { api: api as ApiClient } as unknown as AppServices;
   return render(
     <ServicesProvider services={services}>
-      <MemoryRouter initialEntries={[`/research/session-1/node/${focusNodeId}`]}>
+      <MemoryRouter initialEntries={[`/nodes/${focusNodeId}`]}>
         <FocusLineage sessionId="session-1" focusNodeId={focusNodeId} selectedEdgeKinds={selectedEdgeKinds} />
         <LocationProbe />
       </MemoryRouter>
@@ -130,7 +130,7 @@ describe("FocusLineage", () => {
     await waitFor(() => expect(childRow).toHaveFocus());
     await user.keyboard("{Enter}");
     await waitFor(() =>
-      expect(screen.getByTestId("location-probe")).toHaveTextContent("/research/session-1/node/child-a"),
+      expect(screen.getByTestId("location-probe")).toHaveTextContent("/nodes/child-a"),
     );
   });
 
@@ -141,7 +141,7 @@ describe("FocusLineage", () => {
     await screen.findByRole("list", { name: "专注脉络" });
     await user.click(screen.getByTestId("focus-open-parent"));
     await waitFor(() =>
-      expect(screen.getByTestId("location-probe")).toHaveTextContent("/research/session-1/node/parent"),
+      expect(screen.getByTestId("location-probe")).toHaveTextContent("/nodes/parent"),
     );
   });
 

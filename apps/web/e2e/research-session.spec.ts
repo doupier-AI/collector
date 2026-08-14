@@ -14,10 +14,9 @@ interface SessionView {
 async function submitFirstQuestion(page: Page, question = QUESTION): Promise<string> {
   await page.getByLabel("你的问题").fill(question);
   await page.getByRole("button", { name: "开始研究" }).click();
-  // 不能匹配当前所在的 /research/new（Playwright 对当前 URL 会立即放行）；
-  // 开始页先落到旧会话路由，再由重定向进入统一节点页（根节点 id = 会话 id）
-  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
-  return page.url().split("/research/")[1]?.split("/")[0] ?? "";
+  // #61：开始页直接落到稳定节点地址 /nodes/:id（根节点 id = 会话 id）
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
+  return page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
 }
 
 test("首次打开显示开始页与空状态邀请", async ({ page }) => {
@@ -32,12 +31,11 @@ test("首次打开显示开始页与空状态邀请", async ({ page }) => {
   await expect(page.getByRole("button", { name: "开始研究" })).toBeVisible();
   await expect(page.getByRole("button", { name: /添加附件（TXT、Markdown、DOCX、PDF/ })).toBeVisible();
 
-  // 宽屏（默认 1280px）左右固定侧栏初始展开：左侧内容导航空状态、右侧标记空态
+  // 宽屏（默认 1280px）左侧固定内容导航初始展开为空状态
+  // （#56 已移除右侧常驻标记栏，标记改为会话 ⋯ 菜单内的按需弹窗，开始页不再有标记区）
   const nav = page.getByRole("navigation", { name: "内容导航" });
   await expect(nav).toBeVisible();
   await expect(page.getByText(/还没有研究会话/)).toBeVisible();
-  await expect(page.getByRole("complementary", { name: "标记" })).toBeVisible();
-  await expect(page.getByTestId("mark-empty")).toBeVisible();
 
   // 左侧栏收展由侧栏内部按钮控制（顶栏已无「内容」整体隐藏入口）：收起为窄 rail 再展开
   await nav.getByRole("button", { name: "收起侧栏" }).click();
@@ -131,7 +129,7 @@ test("刷新页面恢复同一会话与完整内容", async ({ page }) => {
 
   await page.reload();
 
-  expect(page.url()).toContain(`/research/${sessionId}`);
+  expect(page.url()).toContain(`/nodes/${sessionId}`);
   await expect(page.getByRole("heading", { name: "什么是本地优先研究" })).toBeVisible();
   await expect(page.getByText(QUESTION, { exact: true })).toBeVisible();
   await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
@@ -165,7 +163,7 @@ test("关闭页面后重新打开自动恢复最近会话", async ({ page, conte
 
   const reopened = await context.newPage();
   await reopened.goto("/");
-  await reopened.waitForURL(/\/research\/(?!new$)[^/]+$/, { timeout: 10_000 });
+  await reopened.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
   await expect(reopened.getByText(QUESTION, { exact: true })).toBeVisible();
   await expect(reopened.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
   await reopened.close();
@@ -195,12 +193,12 @@ test("创建响应丢失后重试恢复同一会话", async ({ page }) => {
   await page.getByRole("button", { name: "开始研究" }).click();
   await expect(page.getByText("连接失败，请重试。")).toBeVisible();
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+$/, { timeout: 10_000 });
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
 
   expect(creationKeys).toHaveLength(2);
   expect(creationKeys[0]).toBeTruthy();
   expect(creationKeys[1]).toBe(creationKeys[0]);
-  const sessionId = page.url().split("/research/")[1]?.split("/")[0] ?? "";
+  const sessionId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
   const dataDir = await readDataDir(apiPortForPage(page));
   const sessions = readResearchTables(join(dataDir, "collector.sqlite")).sessions
     .filter((session) => session.creationIdempotencyKey === creationKeys[0]);
@@ -219,12 +217,12 @@ test("快速双击发送只创建一个任务", async ({ page }) => {
   await pairAndOpen(page, "/research/new");
   await page.getByLabel("你的问题").fill(QUESTION);
   await page.getByRole("button", { name: "开始研究" }).dblclick();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+$/, { timeout: 10_000 });
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
 
   await expect(page.getByText(QUESTION, { exact: true })).toBeVisible();
   await expect(page.locator(".message--assistant")).toHaveCount(1);
 
-  const sessionId = page.url().split("/research/")[1]?.split("/")[0] ?? "";
+  const sessionId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
   const view = await apiJson<SessionView>(page, `/v1/research-sessions/${sessionId}`);
   expect(view.tasks).toHaveLength(1);
   expect(sessionCreates, "创建会话请求只应发出一次").toHaveLength(1);
@@ -256,7 +254,7 @@ test("键盘完成侧栏收起与展开、输入与发送", async ({ page }) => 
   await textarea.focus();
   await page.keyboard.type("用键盘提交的问题");
   await page.keyboard.press("Enter");
-  await page.waitForURL(/\/research\/(?!new$)[^/]+$/, { timeout: 10_000 });
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
   // 提交的消息出现在消息流中（会话标题已自动提炼为同一问题文本，须限定在消息列表内避免歧义）
   await expect(page.locator(".message--user .message__content").getByText("用键盘提交的问题", { exact: true })).toBeVisible();
 });
@@ -295,15 +293,13 @@ test("320/768/1024/1440 视口无横向溢出并留截图", async ({ page }) => 
     }));
     expect(metrics.scrollWidth, `视口 ${width}px 不应横向溢出`).toBeLessThanOrEqual(metrics.clientWidth + 1);
     if (width < 900) {
-      // 窄屏：左侧栏为常驻窄 rail（收起态可见），右侧标记覆盖抽屉默认收起
+      // 窄屏：左侧栏为常驻窄 rail（收起态可见）
       const nav = page.getByRole("navigation", { name: "内容导航" });
       await expect(nav).toBeVisible();
       await expect(nav.getByRole("button", { name: "展开侧栏" })).toBeVisible();
-      await expect(page.getByRole("complementary", { name: "标记" })).toBeHidden();
     } else {
-      // 宽屏：左右固定侧栏默认展开
+      // 宽屏：左侧固定侧栏默认展开（#56 已移除右侧常驻标记栏，不再存在标记区可断言）
       await expect(page.getByRole("navigation", { name: "内容导航" })).toBeVisible();
-      await expect(page.getByRole("complementary", { name: "标记" })).toBeVisible();
     }
     await page.screenshot({ path: `e2e-artifacts/viewport-${width}.png`, fullPage: true });
   }

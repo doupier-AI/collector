@@ -21,7 +21,7 @@ function noopTaskEventStream(): TaskEventStream {
   return { close: () => {}, syncNow: () => {}, mode: "closed", lastEventId: 0 };
 }
 
-function renderNodePage(api: Partial<ApiClient>, entry = "/research/session-1/node/session-1") {
+function renderNodePage(api: Partial<ApiClient>, entry = "/nodes/session-1") {
   const services = {
     api: api as ApiClient,
     connectTaskEvents: vi.fn(noopTaskEventStream),
@@ -30,9 +30,11 @@ function renderNodePage(api: Partial<ApiClient>, entry = "/research/session-1/no
     <ServicesProvider services={services}>
       <MemoryRouter initialEntries={[entry]}>
         <Routes>
-          <Route path="/research/:sessionId/node/:nodeId" element={<ResearchNodePage />} />
+          <Route path="/nodes/:nodeId" element={<ResearchNodePage />} />
           <Route path="/research/:sessionId" element={<p>会话路由</p>} />
           <Route path="/research/new" element={<p>开始页</p>} />
+          <Route path="/trash" element={<p>回收站页</p>} />
+          <Route path="/" element={<p>首页</p>} />
         </Routes>
       </MemoryRouter>
     </ServicesProvider>,
@@ -52,15 +54,15 @@ function readyRootView(): ResearchNodeView {
 }
 
 describe("ResearchNodePage 错误文案映射", () => {
-  it("404 显示“这场研究不存在或已经清理”并提供返回研究", async () => {
+  it("404 显示“这个节点不存在或已经清理”并提供返回首页", async () => {
     renderNodePage({
       getResearchNodeView: async () => {
         throw new ApiRequestError(404, "not_found", "not found");
       },
     });
 
-    expect(await screen.findByRole("heading", { name: "这场研究不存在或已经清理" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "返回研究" })).toHaveAttribute("href", "/research/session-1/node/session-1");
+    expect(await screen.findByRole("heading", { name: "这个节点不存在或已经清理" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "返回首页" })).toHaveAttribute("href", "/");
   });
 
   it("401 显示配对引导，配对码错误时给出文案", async () => {
@@ -141,6 +143,23 @@ describe("ResearchNodePage 根节点", () => {
     expect(screen.getByText("为什么需要多头注意力？")).toBeInTheDocument();
     expect(screen.getByText("因为不同头可以关注不同位置。")).toBeInTheDocument();
     expect(screen.getByLabelText("你的问题")).toBeInTheDocument();
+  });
+
+  it("回收站会话的节点正文可读，提示条说明只读并以前往回收站为行动", async () => {
+    const user = userEvent.setup();
+    const trashedView = {
+      ...readyRootView(),
+      session: { ...readyRootView().session, trashedAt: "2026-08-13T10:00:00.000Z" },
+    };
+    renderNodePage({ getResearchNodeView: async () => trashedView });
+
+    // 正文继续可读
+    expect(await screen.findByText("因为不同头可以关注不同位置。")).toBeInTheDocument();
+    // 提示条：可理解（只读说明）且可行动（前往回收站）
+    expect(screen.getByText("这个节点所在的会话在回收站中")).toBeInTheDocument();
+    expect(screen.getByText(/内容可以继续阅读，但不能修改/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "前往回收站" }));
+    expect(await screen.findByText("回收站页")).toBeInTheDocument();
   });
 
   it("根会话右上角菜单提供重命名、归档、删除、收藏与当前会话标记", async () => {
@@ -287,7 +306,7 @@ describe("ResearchNodePage 根节点", () => {
     expect(list).toBeInTheDocument();
     // 子节点名来自异步读取的选区原文：等待具名链接出现，避免对兜底名做非等待断言
     const link = await screen.findByRole("link", { name: /深入研究：本地优先会先把输入保存在本机/ });
-    expect(link).toHaveAttribute("href", "/research/session-1/node/node-child-1");
+    expect(link).toHaveAttribute("href", "/nodes/node-child-1");
   });
 });
 
@@ -342,13 +361,13 @@ describe("ResearchNodePage 带来源的根节点（旧独立会话）", () => {
           tasks: [],
         }),
       },
-      "/research/session-2/node/session-2",
+      "/nodes/session-2",
     );
 
     const sourceBar = await screen.findByTestId("selection-source-bar");
     expect(sourceBar).toHaveTextContent("来自《理解注意力机制》的选区");
     expect(sourceBar).toHaveTextContent("本地优先会先把输入保存在本机");
-    expect(screen.getByRole("link", { name: "← 返回原文" })).toHaveAttribute("href", "/research/session-1/node/session-1?sel=sel-1");
+    expect(screen.getByRole("link", { name: "← 返回原文" })).toHaveAttribute("href", "/nodes/session-1?sel=sel-1");
     expect(screen.getByTestId("research-scope-note")).toHaveTextContent("自动使用当前模型供应商的联网能力");
   });
 
@@ -377,7 +396,7 @@ describe("ResearchNodePage 带来源的根节点（旧独立会话）", () => {
         getResearchSelection: async () => selection,
         createResearchSelection,
       },
-      "/research/session-1/node/session-1?sel=sel-1",
+      "/nodes/session-1?sel=sel-1",
     );
 
     const mark = await screen.findByText("不同头可", { selector: "[data-selection-mark]" });
@@ -412,7 +431,7 @@ describe("ResearchNodePage 带来源的根节点（旧独立会话）", () => {
           task: makeSelectionTask({ id: "sel-task-1", status: "completed" }),
         }),
       },
-      "/research/session-1/node/session-1?sel=sel-1",
+      "/nodes/session-1?sel=sel-1",
     );
 
     const fallback = await screen.findByTestId("selection-restore-fallback");
@@ -465,14 +484,14 @@ describe("ResearchNodePage 子节点", () => {
   }
 
   it("呈现来源条、材料范围说明与节点消息，标题来自来源选区摘要", async () => {
-    renderNodePage(childApi(), "/research/session-1/node/node-child-1");
+    renderNodePage(childApi(), "/nodes/node-child-1");
 
     const sourceBar = await screen.findByTestId("selection-source-bar");
     expect(sourceBar).toHaveTextContent("来自《理解注意力机制》的选区");
     expect(sourceBar).toHaveTextContent("不同头可以关注不同位置");
     expect(screen.getByRole("link", { name: "← 返回原文" })).toHaveAttribute(
       "href",
-      "/research/session-1/node/session-1?sel=selection-1",
+      "/nodes/session-1?sel=selection-1",
     );
     expect(screen.getByTestId("research-scope-note")).toHaveTextContent("自动使用当前模型供应商的联网能力");
     expect(screen.getByRole("heading", { name: "深入研究：不同头可以关注不同位置" })).toBeInTheDocument();
@@ -491,7 +510,7 @@ describe("ResearchNodePage 子节点", () => {
         task: makeTask({ id: "task-2", status: "queued", inputMessageId: "m-in-2", outputMessageId: "m-out-2" }),
       }),
     );
-    renderNodePage({ ...childApi(), submitResearchNodeMessage }, "/research/session-1/node/node-child-1");
+    renderNodePage({ ...childApi(), submitResearchNodeMessage }, "/nodes/node-child-1");
 
     const composer = await screen.findByLabelText("你的问题");
     await user.type(composer, "继续追问");
@@ -514,18 +533,24 @@ describe("ResearchNodePage 子节点", () => {
     };
     const { container } = renderNodePage(
       { ...childApi(), getResearchNodeView: async () => viewWithAttachments },
-      "/research/session-1/node/node-child-1",
+      "/nodes/node-child-1",
     );
 
     await screen.findByTestId("selection-source-bar");
     expect(container.querySelector(".attachments")).toBeNull();
   });
 
-  it("路由会话编号与节点所属会话不一致时按不存在处理", async () => {
-    const mismatched = readyChildView();
-    mismatched.node = { ...mismatched.node, sessionId: "other-session" };
-    renderNodePage({ ...childApi(), getResearchNodeView: async () => mismatched }, "/research/session-1/node/node-child-1");
-    expect(await screen.findByRole("heading", { name: "这场研究不存在或已经清理" })).toBeInTheDocument();
+  it("稳定地址只凭节点编号渲染，会话上下文从节点视图派生", async () => {
+    // #61：地址不含会话编号——即使节点属于其他会话，页面也按节点身份正常渲染，
+    // 面包屑等会话上下文一律来自已加载视图而非 URL。
+    const foreign = readyChildView();
+    foreign.node = { ...foreign.node, sessionId: "other-session" };
+    foreign.session = makeSession({ id: "other-session", title: "另一场研究" });
+    renderNodePage({ ...childApi(), getResearchNodeView: async () => foreign }, "/nodes/node-child-1");
+
+    expect(await screen.findByRole("heading", { name: "深入研究：不同头可以关注不同位置" })).toBeInTheDocument();
+    const crumb = screen.getByRole("navigation", { name: "节点位置" });
+    expect(within(crumb).getByRole("link", { name: "另一场研究" })).toHaveAttribute("href", "/nodes/other-session");
   });
 
   it("500 错误可重试", async () => {
@@ -544,7 +569,7 @@ describe("ResearchNodePage 子节点", () => {
           tasks: [],
         }),
       },
-      "/research/session-1/node/node-child-1",
+      "/nodes/node-child-1",
     );
 
     expect(await screen.findByRole("heading", { name: "暂时无法打开这场研究" })).toBeInTheDocument();
@@ -564,13 +589,13 @@ describe("ResearchNodePage 子节点", () => {
         getResearchNodeView: async () => viewWithGrandchild,
         listResearchSelections: async () => [makeSelection({ id: "sel-d", sessionId: "session-1", text: "深入探讨位置信息" })],
       },
-      "/research/session-1/node/node-child-1",
+      "/nodes/node-child-1",
     );
 
     const list = await screen.findByTestId("node-child-list");
     expect(list).toBeInTheDocument();
     const link = await screen.findByRole("link", { name: /深入研究：深入探讨位置信息/ });
-    expect(link).toHaveAttribute("href", "/research/session-1/node/node-grandchild-1");
+    expect(link).toHaveAttribute("href", "/nodes/node-grandchild-1");
   });
 
   it("子节点页来源返回只读提醒，不重开窗口不创建选区", async () => {
@@ -595,7 +620,7 @@ describe("ResearchNodePage 子节点", () => {
     );
     renderNodePage(
       { ...childApi(), getResearchSelection: async () => selection, createResearchSelection },
-      "/research/session-1/node/node-child-1?sel=sel-1",
+      "/nodes/node-child-1?sel=sel-1",
     );
 
     // #48：返回定位是只读临时提醒——不重开浮动胶囊、不创建选区记录
@@ -784,7 +809,7 @@ describe("#42 融合依据定位", () => {
     const getResearchBodyVersion = vi.fn(async () => childVersionView);
     renderNodePage(
       { getResearchNodeView, getResearchBodyVersion },
-      "/research/session-1/node/session-1",
+      "/nodes/session-1",
     );
 
     // 根页展开依据 → 点击指向子节点的依据
@@ -812,7 +837,7 @@ describe("#42 融合依据定位", () => {
         getResearchBodyVersion: async () => versionView,
         getResearchSelection: async () => makeSelection({ id: "sel-1", sessionId: "session-1", text: "不同头可以关注不同位置" }),
       },
-      "/research/session-1/node/session-1?sel=sel-1",
+      "/nodes/session-1?sel=sel-1",
     );
 
     await screen.findByText("第一段。");
@@ -925,7 +950,7 @@ describe("#42 融合依据定位", () => {
         getResearchBodyVersion: async () => versionView,
         fuseResearchFusionProposal,
       },
-      "/research/session-1/node/session-1",
+      "/nodes/session-1",
     );
 
     await screen.findByText("第一段。");
@@ -972,7 +997,7 @@ describe("#32 自动融合挂载扫描", () => {
     expect(screen.getByText("已自动生成融合节点")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "查看融合节点" })).toHaveAttribute(
       "href",
-      "/research/session-1/node/fusion-node-1",
+      "/nodes/fusion-node-1",
     );
     // 扫描返回的 pending 提案合并进弱提示区（同一实体/共享概念才自动融合，这里 status 保持 pending）。
     await waitFor(() => expect(screen.getByText("熟悉的概念再现，节点可融合")).toBeInTheDocument());
@@ -1019,7 +1044,7 @@ describe("#32 自动融合挂载扫描", () => {
     });
     const { unmount } = renderNodePage(
       { getResearchNodeView: async () => autoView },
-      "/research/session-1/node/fusion-node-1",
+      "/nodes/fusion-node-1",
     );
     await screen.findByRole("heading", { name: /融合节点/ });
     expect(screen.getByTestId("auto-fusion-badge")).toHaveTextContent("自动生成");
@@ -1034,7 +1059,7 @@ describe("#32 自动融合挂载扫描", () => {
     });
     renderNodePage(
       { getResearchNodeView: async () => manualView },
-      "/research/session-1/node/fusion-node-2",
+      "/nodes/fusion-node-2",
     );
     await screen.findByRole("heading", { name: "融合节点" });
     expect(screen.queryByTestId("auto-fusion-badge")).not.toBeInTheDocument();

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
 import type { ResearchSessionRecord } from "@collector/capture-contracts";
 import { apiErrorCopy, isApiErrorCode, isUnauthorized } from "../../api/errors";
+import { stableNodePath } from "../../app/paths";
 import { useServices } from "../../app/services";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { PairingGate } from "../auth/PairingGate";
@@ -68,7 +69,7 @@ export function HomeRoute() {
 
   const latest = state.sessions[0];
   if (latest) {
-    return <Navigate to={`/research/${encodeURIComponent(latest.id)}`} replace />;
+    return <Navigate to={stableNodePath(latest.id)} replace />;
   }
   return <StartPage />;
 }

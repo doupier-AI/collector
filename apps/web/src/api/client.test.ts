@@ -58,3 +58,37 @@ describe("#42 research body version API client", () => {
     );
   });
 });
+
+describe("#61 stable node address API client", () => {
+  it("reads the node view through the session-free encoded path", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ node: {}, session: {}, messages: [], tasks: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const client = createApiClient(fetchMock);
+
+    await client.getResearchNodeView("node / one");
+
+    // 只凭节点身份读取：URL 不含会话 ID，特殊字符正确编码
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/research-nodes/node%20%2F%20one",
+      undefined,
+    );
+  });
+
+  it("maps a missing node to a not_found error the page can render as 可理解结果", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: { code: "not_found", message: "Research node not found" } }), { status: 404, headers: { "Content-Type": "application/json" } }));
+    const client = createApiClient(fetchMock);
+
+    await expect(client.getResearchNodeView("missing-node")).rejects.toMatchObject({
+      status: 404,
+      code: "not_found",
+    });
+  });
+
+  it("maps a trashed-session write rejection to session_in_trash", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: { code: "session_in_trash", message: "Research session is in trash" } }), { status: 409, headers: { "Content-Type": "application/json" } }));
+    const client = createApiClient(fetchMock);
+
+    await expect(
+      client.submitResearchNodeMessage("node-1", "回收站里不应可写", "idem-key-1"),
+    ).rejects.toMatchObject({ status: 409, code: "session_in_trash" });
+  });
+});

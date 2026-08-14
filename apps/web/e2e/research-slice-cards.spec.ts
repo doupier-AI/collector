@@ -16,7 +16,7 @@ async function openSlicedAnswer(page: import("@playwright/test").Page): Promise<
   await pairAndOpen(page, "/research/new");
   await page.getByLabel("你的问题").fill("本地优先如何组织研究内容？");
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
   // 等待全部 3 张卡片标题出现（生成完成）
   for (const title of SLICE_TITLES) {
     await expect(page.locator(".slice-card__title", { hasText: title })).toBeVisible({ timeout: 15_000 });

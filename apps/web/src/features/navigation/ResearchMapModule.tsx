@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import type { ResearchEdgeKind } from "@collector/capture-contracts";
+import { useServices } from "../../app/services";
 import { FocusLineage } from "./FocusLineage";
 import { GraphCanvas } from "./GraphCanvas";
 import { RelationshipList } from "./RelationshipList";
@@ -14,6 +15,8 @@ import type { ResearchMapMode } from "./useResearchMap";
  * - 模块级筛选工具栏：一份筛选结果同时喂给渲染、键盘候选与窄屏列表分组；
  * - Escape 与遮罩点击关闭；关闭后焦点由调用方（AppShell）还给入口按钮；
  * - 局部焦点不产生路由，只有显式进入节点才导航。
+ * - #61：稳定节点地址不含会话 ID；sessionId 为 null 时先按节点视图解析，
+ *   解析期间呈现与视图一致的加载状态，失败给出可重试错误（不静默空白）。
  */
 export function ResearchMapModule({
   sessionId,
@@ -23,15 +26,41 @@ export function ResearchMapModule({
   onModeChange,
   onClose,
 }: {
-  sessionId: string;
+  sessionId: string | null;
   focusNodeId: string;
   mode: ResearchMapMode;
   wide: boolean;
   onModeChange: (mode: ResearchMapMode) => void;
   onClose: () => void;
 }) {
+  const { api } = useServices();
   const { selectedEdgeKinds, toggleEdgeKind, resetEdgeKinds } = useResearchMapFilters();
   const dialogRef = useRef<HTMLDivElement>(null);
+  const [derived, setDerived] = useState<{ kind: "loading" } | { kind: "ok"; sessionId: string } | { kind: "error" }>(
+    sessionId ? { kind: "ok", sessionId } : { kind: "loading" },
+  );
+  const [resolveNonce, setResolveNonce] = useState(0);
+
+  // #61：稳定地址不含会话——按焦点节点视图解析所属会话（会话图投影迁移前的接缝）。
+  useEffect(() => {
+    if (sessionId) {
+      setDerived({ kind: "ok", sessionId });
+      return;
+    }
+    let stale = false;
+    setDerived({ kind: "loading" });
+    api.getResearchNodeView(focusNodeId).then(
+      (view) => {
+        if (!stale) setDerived({ kind: "ok", sessionId: view.session.id });
+      },
+      () => {
+        if (!stale) setDerived({ kind: "error" });
+      },
+    );
+    return () => {
+      stale = true;
+    };
+  }, [api, sessionId, focusNodeId, resolveNonce]);
 
   // 挂载后把焦点移入对话框，保证 Escape/键盘操作从打开那一刻起可用
   useEffect(() => {
@@ -143,30 +172,45 @@ export function ResearchMapModule({
         </div>
 
         <div className="research-map-overlay__body">
-          {/* key=模式：切模式重放有界淡入转场；内容组件随 key 重建，锚定逻辑在挂载时执行 */}
+          {derived.kind === "error" ? (
+            <div className="research-map__state research-map__state--error" role="alert">
+              <p>暂时无法打开研究地图，请重试。</p>
+              <button
+                type="button"
+                className="button button--secondary"
+                onClick={() => setResolveNonce((nonce) => nonce + 1)}
+              >
+                重试
+              </button>
+            </div>
+          ) : derived.kind === "loading" ? (
+            <div className="research-map__state" role="status">正在打开研究地图…</div>
+          ) : (
+          /* key=模式：切模式重放有界淡入转场；内容组件随 key 重建，锚定逻辑在挂载时执行 */
           <div key={mode} className="research-map-overlay__view" data-testid="map-view">
             {mode === "focus" ? (
               <FocusLineage
-                sessionId={sessionId}
+                sessionId={derived.sessionId}
                 focusNodeId={focusNodeId}
                 selectedEdgeKinds={selectedEdgeKinds}
               />
             ) : wide ? (
               <GraphCanvas
-                sessionId={sessionId}
+                sessionId={derived.sessionId}
                 focusNodeId={focusNodeId}
                 onClose={onClose}
                 {...filterProps}
               />
             ) : (
               <RelationshipList
-                sessionId={sessionId}
+                sessionId={derived.sessionId}
                 focusNodeId={focusNodeId}
                 onClose={onClose}
                 {...filterProps}
               />
             )}
           </div>
+          )}
         </div>
 
         <p className="research-map-overlay__hint">t 专注 · g 关联 · Esc 关闭</p>

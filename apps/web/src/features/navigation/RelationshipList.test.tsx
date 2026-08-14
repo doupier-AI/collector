@@ -125,7 +125,7 @@ function renderList(
   const services = { api: api as ApiClient } as unknown as AppServices;
   return render(
     <ServicesProvider services={services}>
-      <MemoryRouter initialEntries={[`/research/session-1/node/${focusNodeId}`]}>
+      <MemoryRouter initialEntries={[`/nodes/${focusNodeId}`]}>
         <RelationshipList
           sessionId="session-1"
           focusNodeId={focusNodeId}
@@ -210,7 +210,7 @@ describe("RelationshipList 组件", () => {
     // Enter 跳转到第二个条目对应的节点
     await user.keyboard("{Enter}");
     await waitFor(() =>
-      expect(screen.getByTestId("location-probe")).toHaveTextContent("/research/session-1/node/"),
+      expect(screen.getByTestId("location-probe")).toHaveTextContent("/nodes/"),
     );
   });
 
@@ -311,7 +311,7 @@ describe("RelationshipList 组件", () => {
     await user.click(screen.getByRole("button", { name: "位置编码" }));
     await waitFor(() =>
       expect(screen.getByTestId("location-probe")).toHaveTextContent(
-        "/research/session-1/node/related-node",
+        "/nodes/related-node",
       ),
     );
   });

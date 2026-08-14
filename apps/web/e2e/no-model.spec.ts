@@ -18,8 +18,8 @@ test("未配置模型：输入保留、显示失败原因与重试，重试不�
 
   await page.getByLabel("你的问题").fill(QUESTION);
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
-  const sessionId = page.url().split("/research/")[1]?.split("/")[0] ?? "";
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
+  const sessionId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
 
   // 用户输入仍在会话中，AI 区域显示失败卡与可理解原因
   // （会话标题已自动提炼为同一问题文本，须限定在消息列表内避免歧义）
@@ -70,7 +70,7 @@ test("未配置模型：选区仍然保存并出现胶囊，分析在后台失�
     data: {},
   });
   const created = (await createResponse.json()) as { id: string };
-  await page.goto(`/research/${created.id}`);
+  await page.goto(`/nodes/${created.id}`);
   await page.locator('input[type="file"]').setInputFiles({
     name: "无模型笔记.txt",
     mimeType: "text/plain",
@@ -144,7 +144,7 @@ test("未配置模型：分析失败仍可通过胶囊发起深入研究，来�
     data: {},
   });
   const created = (await createResponse.json()) as { id: string };
-  await page.goto(`/research/${created.id}`);
+  await page.goto(`/nodes/${created.id}`);
   await page.locator('input[type="file"]').setInputFiles({
     name: "无模型深入研究.txt",
     mimeType: "text/plain",
@@ -176,8 +176,8 @@ test("未配置模型：分析失败仍可通过胶囊发起深入研究，来�
   // 子节点视图：来源关系先于生成保存，第一轮失败给出原因与重试
   await page.waitForURL(
     (url) => {
-      const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
-      return Boolean(match && match[1] === created.id && match[2] && match[2] !== created.id);
+      const match = url.pathname.match(/^\/nodes\/([^/]+)$/);
+      return Boolean(match && match[1] && match[1] !== created.id);
     },
     { timeout: 10_000 },
   );
@@ -220,7 +220,7 @@ test("未配置模型：标记保存后可在列表查看并返回原选区，�
     data: {},
   });
   const created = (await createResponse.json()) as { id: string };
-  await page.goto(`/research/${created.id}`);
+  await page.goto(`/nodes/${created.id}`);
   await page.locator('input[type="file"]').setInputFiles({
     name: "无模型标记.txt",
     mimeType: "text/plain",
@@ -262,7 +262,13 @@ test("未配置模型：标记保存后可在列表查看并返回原选区，�
   expect(record.note).toBe("无模型也要保存笔记");
 
   // 标记列表展示原选区、笔记、来源节点与时间，并可返回原文
-  const marksPanel = page.getByRole("complementary", { name: "标记" });
+  // （#56 后无右侧标记栏：从节点页页头 ⋯ 会话菜单打开居中标记弹窗；阅读页没有页头
+  //  菜单，侧栏条目按钮 aria-label 为「的菜单」且共享库下同标题会话存在歧义，故回根节点页）
+  await page.goto(`/nodes/${created.id}`);
+  await expect(page.getByRole("button", { name: /的会话菜单$/ })).toBeVisible();
+  await page.getByRole("button", { name: /的会话菜单$/ }).click();
+  await page.getByRole("menuitem", { name: "查看标记" }).click();
+  const marksPanel = page.getByRole("dialog", { name: "本会话标记" });
   await expect(marksPanel).toBeVisible();
   await expect(marksPanel).toContainText("无模型下也要保存这条标记笔记");
   await expect(marksPanel).toContainText("无模型也要保存笔记");
@@ -277,9 +283,13 @@ test("未配置模型：标记保存后可在列表查看并返回原选区，�
   await page.waitForTimeout(2_000);
   await expect(page.locator("[data-selection-mark]")).toBeVisible();
 
-  // 刷新后列表与高亮仍由持久化记录恢复，且不会自动进入引用态
+  // 刷新后高亮仍由持久化记录恢复，且不会自动进入引用态；标记弹窗非右栏常驻，
+  // 重新打开后列表内容同样由持久化记录恢复
   await page.reload();
-  await expect(marksPanel).toContainText("无模型也要保存笔记");
   await expect(page.locator('[data-testid="floating-selection-capsule"]')).toHaveCount(0);
   await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
+  await page.goto(`/nodes/${created.id}`);
+  await page.getByRole("button", { name: /的会话菜单$/ }).click();
+  await page.getByRole("menuitem", { name: "查看标记" }).click();
+  await expect(marksPanel).toContainText("无模型也要保存笔记");
 });

@@ -323,6 +323,9 @@ export class ResearchSessionService {
   async submitMessageToNode(nodeId: string, content: string, idempotencyKey: string, options: ResearchTurnOptions = {}): Promise<ResearchTurnAccepted> {
     const node = this.store.getResearchNode(nodeId);
     if (!node) throw new ResearchNotFoundError("Research node not found");
+    // 回收站语义与会话端点一致：节点入口同样只读（#61 稳定地址直接打开回收站节点时，变更须 409）
+    const session = this.store.getResearchSession(node.sessionId);
+    if (session && isTrashed(session)) throw new ResearchConflictError("Research session is in trash");
     if (!idempotencyKey.trim()) throw new ResearchValidationError("Idempotency-Key is required");
     if (idempotencyKey.length > 200) throw new ResearchValidationError("Idempotency-Key must not exceed 200 characters");
 

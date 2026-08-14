@@ -8,7 +8,7 @@ test("生成中刷新：先显示已保存的部分内容，随后继续到完�
 
   await page.getByLabel("你的问题").fill(QUESTION);
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+$/, { timeout: 10_000 });
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
 
   // 用户消息出现（已保存）后立即刷新，此时生成刚开始
   await expect(page.getByText(QUESTION, { exact: true })).toBeVisible();
@@ -33,7 +33,7 @@ test("SSE 中断后回退任务查询轮询，内容完整恢复且不丢已显�
 
   await page.getByLabel("你的问题").fill(QUESTION);
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+$/, { timeout: 10_000 });
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
 
   // 提交立即落库：用户消息与占位出现，事件流被切断
   await expect(page.getByText(QUESTION, { exact: true })).toBeVisible();

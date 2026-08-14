@@ -44,14 +44,14 @@ describe("setRangeFromOffsets", () => {
 });
 
 describe("backRouteForSelection", () => {
-  it("消息选区带节点归属时回到所属节点页并携带选区参数", () => {
+  it("消息选区带节点归属时回到所属节点的稳定地址并携带选区参数", () => {
     const selection = makeSelection({ id: "sel-3", sessionId: "session-1", nodeId: "node-child-1" });
-    expect(backRouteForSelection(selection)).toBe("/research/session-1/node/node-child-1?sel=sel-3");
+    expect(backRouteForSelection(selection)).toBe("/nodes/node-child-1?sel=sel-3");
   });
 
-  it("消息选区无节点归属（旧数据）时回到根节点页，行为与现状一致", () => {
+  it("消息选区无节点归属（旧数据）时回到根节点稳定地址，行为与现状一致", () => {
     const selection = makeSelection({ id: "sel-1", sessionId: "session-1" });
-    expect(backRouteForSelection(selection)).toBe("/research/session-1/node/session-1?sel=sel-1");
+    expect(backRouteForSelection(selection)).toBe("/nodes/session-1?sel=sel-1");
   });
 
   it("快照选区回到阅读页并携带选区参数", () => {

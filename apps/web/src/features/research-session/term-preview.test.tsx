@@ -70,9 +70,9 @@ function renderPage(api: Partial<ApiClient>) {
   } as unknown as AppServices;
   return render(
     <ServicesProvider services={services}>
-      <MemoryRouter initialEntries={["/research/session-1/node/session-1"]}>
+      <MemoryRouter initialEntries={["/nodes/session-1"]}>
         <Routes>
-          <Route path="/research/:sessionId/node/:nodeId" element={<ResearchNodePage />} />
+          <Route path="/nodes/:nodeId" element={<ResearchNodePage />} />
         </Routes>
       </MemoryRouter>
     </ServicesProvider>,

@@ -22,8 +22,8 @@ const SELECTED = "本地优先会先把输入保存在本机";
 async function submitFirstQuestion(page: Page, question = QUESTION): Promise<string> {
   await page.getByLabel("你的问题").fill(question);
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
-  return page.url().split("/research/")[1]?.split("/")[0] ?? "";
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
+  return page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
 }
 
 /** 选区并显式引用（修订一 #9：浮动胶囊【引用】），返回输入框引用态胶囊定位器。 */
@@ -35,12 +35,12 @@ async function waitForCapsule(page: Page): Promise<ReturnType<Page["getByTestId"
 async function waitForChildNodeUrl(page: Page, sessionId: string): Promise<string> {
   await page.waitForURL(
     (url) => {
-      const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
-      return Boolean(match && match[1] === sessionId && match[2] && match[2] !== sessionId);
+      const match = url.pathname.match(/^\/nodes\/([^/]+)$/);
+      return Boolean(match && match[1] && match[1] !== sessionId);
     },
     { timeout: 10_000 },
   );
-  return page.url().split("/node/")[1] ?? "";
+  return page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
 }
 
 test.describe("节点生长与来源返回", () => {
@@ -112,7 +112,7 @@ test.describe("节点生长与来源返回", () => {
 
     // 返回原文：高亮原选区（消息选区回到根节点页）
     await sourceBar.getByRole("link", { name: "← 返回原文" }).click();
-    await page.waitForURL(new RegExp(`/research/${sessionId}/node/${sessionId}\\?sel=`));
+    await page.waitForURL(new RegExp(`/nodes/${sessionId}\\?sel=`));
     await expect(page.locator("[data-selection-mark]")).toHaveText(SELECTED, { timeout: 10_000 });
 
     // 根节点页子节点入口可见并可回到子节点（H6 起子节点入口统一使用已保存名称，
@@ -127,7 +127,7 @@ test.describe("节点生长与来源返回", () => {
 
     // 从子节点入口回到子节点并继续追问
     await page.getByRole("link", { name: new RegExp(SELECTED) }).click();
-    await page.waitForURL(new RegExp(`/research/${sessionId}/node/${nodeId}$`));
+    await page.waitForURL(new RegExp(`/nodes/${nodeId}$`));
     await expect(page.getByTestId("selection-source-bar")).toBeVisible();
     await page.getByLabel("你的问题").fill("继续追问节点内的下一个问题");
     await page.getByRole("button", { name: "发送" }).click();
@@ -185,7 +185,7 @@ test.describe("节点生长与来源返回", () => {
 
     // 返回原文：回到来源根节点并高亮原选区
     await sourceBar.getByRole("link", { name: "← 返回原文" }).click();
-    await page.waitForURL(new RegExp(`/research/${originSessionId}/node/${originSessionId}\\?sel=`));
+    await page.waitForURL(new RegExp(`/nodes/${originSessionId}\\?sel=`));
     await expect(page.locator("[data-selection-mark]")).toHaveText(SELECTED, { timeout: 10_000 });
 
     // 子节点落库并挂在根节点下

@@ -1,6 +1,7 @@
 import { type DragEvent, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { NetworkError, apiErrorCopy, isUnauthorized } from "../../api/errors";
+import { stableNodePath } from "../../app/paths";
 import { useServices } from "../../app/services";
 import { PairingGate } from "../auth/PairingGate";
 import { ChatComposer } from "../chat-composer/ChatComposer";
@@ -84,7 +85,7 @@ export function StartPage() {
       const mimeType = resolveImportMimeType(file.name, file.type);
       if (!mimeType) {
         // 预检已通过，理论上不会到这里；防御性兜底
-        navigate(`/research/${encodeURIComponent(created.id)}`);
+        navigate(stableNodePath(created.id));
         return;
       }
       const importKey = globalThis.crypto.randomUUID();
@@ -92,7 +93,7 @@ export function StartPage() {
 
       // 文件导入成功后导航到会话页（如果已有待发送首问，由 handleSubmit 接续）
       if (creatingRef.current) {
-        navigate(`/research/${encodeURIComponent(created.id)}`);
+        navigate(stableNodePath(created.id));
       }
     } catch (error) {
       if (isUnauthorized(error)) {
@@ -101,7 +102,7 @@ export function StartPage() {
       }
       // 会话已创建但导入失败 → 仍然导航（会话存在，导入可在会话页重试）
       if (createdSessionIdRef.current) {
-        navigate(`/research/${encodeURIComponent(createdSessionIdRef.current)}`);
+        navigate(stableNodePath(createdSessionIdRef.current));
         return;
       }
       setCreateError(error instanceof NetworkError ? "连接失败，请重试。" : importUploadErrorCopy(error));
@@ -117,7 +118,7 @@ export function StartPage() {
     // 文件已先创建会话 → 直接用 firstTurn 导航，不再创建
     if (createdSessionIdRef.current) {
       const idempotencyKey = globalThis.crypto.randomUUID();
-      navigate(`/research/${encodeURIComponent(createdSessionIdRef.current)}`, {
+      navigate(stableNodePath(createdSessionIdRef.current), {
         state: { firstTurn: { content, idempotencyKey, allowWebSearch } },
       });
       return true;
@@ -132,7 +133,7 @@ export function StartPage() {
       creationKeyRef.current = creationKey;
       const idempotencyKey = globalThis.crypto.randomUUID();
       const created = await api.createResearchSession(creationKey);
-      navigate(`/research/${encodeURIComponent(created.id)}`, {
+      navigate(stableNodePath(created.id), {
         state: { firstTurn: { content, idempotencyKey, allowWebSearch } },
       });
       return true;

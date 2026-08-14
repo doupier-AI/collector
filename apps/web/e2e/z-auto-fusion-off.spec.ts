@@ -16,13 +16,13 @@ async function openSession(page: Page): Promise<{ sessionId: string; rootNodeId:
   await pairAndOpen(page, "/research/new");
   await page.getByLabel("你的问题").fill(QUESTION);
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
   await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
     timeout: 15_000,
   });
-  const match = new URL(page.url()).pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
+  const match = new URL(page.url()).pathname.match(/^\/nodes\/([^/]+)$/);
   if (!match) throw new Error("unexpected root node url");
-  return { sessionId: match[1]!, rootNodeId: match[2]! };
+  return { sessionId: match[1]!, rootNodeId: match[1]! }; // 稳定地址：根节点 id 与会话 id 相同
 }
 
 async function growSharedConceptChild(page: Page, sessionId: string): Promise<string> {
@@ -30,13 +30,13 @@ async function growSharedConceptChild(page: Page, sessionId: string): Promise<st
   await page.getByRole("button", { name: "深入研究这段" }).click();
   await page.waitForURL(
     (url) => {
-      const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
-      return Boolean(match && match[1] === sessionId && match[2] && match[2] !== sessionId);
+      const match = url.pathname.match(/^\/nodes\/([^/]+)$/);
+      return Boolean(match && match[1] && match[1] !== sessionId);
     },
     { timeout: 10_000 },
   );
   await expect(page.getByText(/这是深入研究第一轮/)).toBeVisible({ timeout: 15_000 });
-  const childId = page.url().split("/node/")[1] ?? "";
+  const childId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
   await page.getByLabel("你的问题").fill("继续研究本地优先的实践");
   await page.getByRole("button", { name: "发送" }).click();
   await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
@@ -89,7 +89,7 @@ test("#32 开关关闭（默认）：挂载不自动扫描，手动 scan 弱提�
   page.on("request", (request) => {
     if (request.url().includes("/fusion-proposals/scan")) scanRequests += 1;
   });
-  await page.goto(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(rootNodeId)}`);
+  await page.goto(`/nodes/${encodeURIComponent(rootNodeId)}`);
   await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕");
   await page.waitForTimeout(1_000);
   expect(scanRequests).toBe(0);
@@ -128,7 +128,7 @@ test("#32 开关开启 + 低置信：保持逐条确认弱提示，不自动融�
   const put = await page.request.put("/v1/settings/fusion", { data: { enabled: true } });
   expect(put.ok()).toBeTruthy();
 
-  await page.goto(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(rootNodeId)}`);
+  await page.goto(`/nodes/${encodeURIComponent(rootNodeId)}`);
   // 等待挂载自动 scan 完成（contrast → 不自动融合）→ 无提示条、弱提示可见。
   await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕");
   await expect(page.getByText("熟悉的概念再现，节点可融合").first()).toBeVisible({ timeout: 20_000 });

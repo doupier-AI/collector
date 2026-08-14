@@ -29,7 +29,7 @@ async function openFreshSession(page: Page): Promise<string> {
   });
   expect(response.status()).toBe(201);
   const session = (await response.json()) as { id: string };
-  await page.goto(`/research/${session.id}`);
+  await page.goto(`/nodes/${session.id}`);
   await expect(page.getByRole("button", { name: /添加附件（TXT、Markdown、DOCX、PDF/ })).toBeVisible();
   return session.id;
 }
@@ -136,7 +136,7 @@ test("拖放上传完成，刷新与关闭重开后附件与阅读内容一致�
 
   // 关闭重开：新页面进入同一会话，状态一致
   const reopened = await context.newPage();
-  await reopened.goto(`/research/${sessionId}`);
+  await reopened.goto(`/nodes/${sessionId}`);
   await expect(reopened.locator(".attachment__name", { hasText: "拖放笔记.md" })).toBeVisible();
   await expect(reopened.getByText("已导入")).toBeVisible();
 
@@ -288,7 +288,7 @@ test("键盘完成附件上传、进入阅读视图并返回会话", async ({ pa
   await backLink.focus();
   await expect(page.evaluate(() => document.activeElement?.textContent)).resolves.toContain("返回研究");
   await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(new RegExp(`/research/${sessionId}/node/${sessionId}$`));
+  await expect(page).toHaveURL(new RegExp(`/nodes/${sessionId}$`));
 
   expect(consoleIssues).toEqual([]);
 });
@@ -310,12 +310,11 @@ test("阅读视图在 320/768/1024/1440 视口无横向溢出并留截图", asyn
     await page.setViewportSize({ width, height: 800 });
     // 先等待外壳完成宽/窄布局切换，再测量，避免读取到过渡状态
     if (width < 900) {
-      // 窄屏：左侧栏为常驻窄 rail（收起态可见），右侧标记覆盖抽屉默认收起
+      // 窄屏：左侧栏为常驻窄 rail（收起态可见）
+      // （#56 已移除右侧常驻标记栏，标记改为会话 ⋯ 菜单内的按需弹窗，无标记区可断言）
       await expect(page.getByRole("navigation", { name: "内容导航" }).getByRole("button", { name: "展开侧栏" })).toBeVisible();
-      await expect(page.getByRole("complementary", { name: "标记" })).toBeHidden();
     } else {
       await expect(page.getByRole("navigation", { name: "内容导航" })).toBeVisible();
-      await expect(page.getByRole("complementary", { name: "标记" })).toBeVisible();
     }
     // 等外壳完成宽/窄布局切换、正文重排收敛进视口再量：窄屏 rail 收展与网格收缩需一帧，
     // 立即量会捕到切换前的瞬时 scrollWidth（对齐 research-session 视口用例的收敛模式）。
@@ -364,7 +363,7 @@ test("从开始页上传文件创建研究并导入，进入阅读视图后可�
   });
 
   // 导航到统一节点页（根节点），附件列表可见
-  await expect(page).toHaveURL(/\/research\/[^/]+\/node\/[^/]+$/, { timeout: 15_000 });
+  await expect(page).toHaveURL(/\/nodes\/[^/]+$/, { timeout: 15_000 });
   const sessionId = new URL(page.url()).pathname.split("/")[2] ?? "";
   expect(sessionId).not.toBe("");
 
@@ -381,7 +380,7 @@ test("从开始页上传文件创建研究并导入，进入阅读视图后可�
 
   // 返回研究节点页验证消息已在列表中
   await page.getByRole("link", { name: "返回研究会话" }).click();
-  await expect(page).toHaveURL(/\/research\/[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
+  await expect(page).toHaveURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
   await expect(page.locator(".message-list")).toBeVisible();
 
   expect(consoleIssues.filter((msg) => !msg.includes("pdfjs")).filter((msg) => !msg.includes("canvas"))).toEqual([]);
@@ -405,7 +404,7 @@ test("开始页拖放文件创建研究", async ({ page }) => {
   });
 
   // 等待导航（文件处理完成后跳转到研究节点页）
-  await expect(page).toHaveURL(/\/research\/[^/]+\/node\/[^/]+$/, { timeout: 15_000 });
+  await expect(page).toHaveURL(/\/nodes\/[^/]+$/, { timeout: 15_000 });
   await expect(page.getByText("已导入")).toBeVisible({ timeout: 15_000 });
 
   expect(consoleIssues).toEqual([]);

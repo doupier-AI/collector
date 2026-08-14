@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../../api/client";
 import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
-import { makeEdge, makeGraphNodeSummary, makeGraphProjection } from "../../test/fakes";
+import { makeEdge, makeGraphNodeSummary, makeGraphProjection, makeNode, makeNodeView, makeSession } from "../../test/fakes";
 import { ResearchMapModule } from "./ResearchMapModule";
 import type { ResearchMapMode } from "./useResearchMap";
 
@@ -190,5 +190,63 @@ describe("ResearchMapModule", () => {
     const rows = within(chain).getAllByRole("listitem");
     const currentRow = rows.find((row) => row.textContent?.includes("当前节点"));
     await waitFor(() => expect(currentRow).toHaveFocus());
+  });
+});
+
+describe("ResearchMapModule 稳定地址会话解析（#61）", () => {
+  /** sessionId 为 null 的渲染：稳定地址不含会话，由模块按节点视图解析。 */
+  function renderDerivedModule(api: Partial<ApiClient>) {
+    return render(
+      <ServicesProvider services={{ api: api as ApiClient } as unknown as AppServices}>
+        <MemoryRouter initialEntries={["/nodes/focus"]}>
+          <ResearchMapModule
+            sessionId={null}
+            focusNodeId="focus"
+            mode="focus"
+            wide
+            onModeChange={() => {}}
+            onClose={() => {}}
+          />
+        </MemoryRouter>
+      </ServicesProvider>,
+    );
+  }
+
+  it("sessionId 为空时先显示加载态，按节点视图解析所属会话后渲染地图", async () => {
+    const getResearchNodeView = vi.fn(async (nodeId: string) =>
+      makeNodeView({
+        node: makeNode({ id: nodeId, sessionId: "session-9" }),
+        session: makeSession({ id: "session-9" }),
+      }));
+    const getResearchGraph = vi.fn(async () => moduleProjection());
+    renderDerivedModule({ getResearchNodeView, getResearchGraph });
+
+    expect(screen.getByText("正在打开研究地图…")).toBeInTheDocument();
+    // 解析完成后按解析出的会话取图投影并渲染专注脉络
+    const chain = await screen.findByRole("list", { name: "专注脉络" });
+    expect(within(chain).getByText("当前节点")).toBeInTheDocument();
+    expect(getResearchNodeView).toHaveBeenCalledWith("focus");
+    expect(getResearchGraph).toHaveBeenCalledWith("session-9", "focus");
+  });
+
+  it("解析失败显示可理解错误，点重试后重新解析", async () => {
+    let attempt = 0;
+    const getResearchNodeView = vi.fn(async (nodeId: string) => {
+      attempt += 1;
+      if (attempt === 1) throw new Error("network down");
+      return makeNodeView({
+        node: makeNode({ id: nodeId, sessionId: "session-9" }),
+        session: makeSession({ id: "session-9" }),
+      });
+    });
+    const getResearchGraph = vi.fn(async () => moduleProjection());
+    const user = userEvent.setup();
+    renderDerivedModule({ getResearchNodeView, getResearchGraph });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("暂时无法打开研究地图，请重试。");
+    await user.click(screen.getByRole("button", { name: "重试" }));
+    const chain = await screen.findByRole("list", { name: "专注脉络" });
+    expect(within(chain).getByText("当前节点")).toBeInTheDocument();
+    expect(getResearchNodeView).toHaveBeenCalledTimes(2);
   });
 });

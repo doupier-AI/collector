@@ -20,13 +20,13 @@ async function openSession(page: Page): Promise<{ sessionId: string; rootNodeId:
   await pairAndOpen(page, "/research/new");
   await page.getByLabel("你的问题").fill(QUESTION);
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
   await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
     timeout: 15_000,
   });
-  const match = new URL(page.url()).pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
+  const match = new URL(page.url()).pathname.match(/^\/nodes\/([^/]+)$/);
   if (!match) throw new Error("unexpected root node url");
-  return { sessionId: match[1]!, rootNodeId: match[2]! };
+  return { sessionId: match[1]!, rootNodeId: match[1]! }; // 稳定地址：根节点 id 与会话 id 相同
 }
 
 async function growChildNode(page: Page, sessionId: string): Promise<string> {
@@ -34,13 +34,13 @@ async function growChildNode(page: Page, sessionId: string): Promise<string> {
   await page.getByRole("button", { name: "深入研究这段" }).click();
   await page.waitForURL(
     (url) => {
-      const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
-      return Boolean(match && match[1] === sessionId && match[2] && match[2] !== sessionId);
+      const match = url.pathname.match(/^\/nodes\/([^/]+)$/);
+      return Boolean(match && match[1] && match[1] !== sessionId);
     },
     { timeout: 10_000 },
   );
   await expect(page.getByText(/这是深入研究第一轮/)).toBeVisible({ timeout: 15_000 });
-  return page.url().split("/node/")[1] ?? "";
+  return page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
 }
 
 interface NodeEvidence {
@@ -122,7 +122,7 @@ async function installProposalFixture(
 
 /** 进入根节点页并展开融合提示的依据列表。未展开 details 的来源仍在 DOM 中，断言用可见过滤。 */
 async function openRootNotice(page: Page, rootNodeId: string, sessionId: string): Promise<void> {
-  await page.goto(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(rootNodeId)}`);
+  await page.goto(`/nodes/${encodeURIComponent(rootNodeId)}`);
   await expect(page.locator(".fusion-proposal-notice")).toBeVisible({ timeout: 15_000 });
   await page.locator(".fusion-proposal-notice__item summary").first().click();
   await expect(page.locator(".fusion-proposal-notice__source").filter({ visible: true })).toHaveCount(2, { timeout: 10_000 });
@@ -145,7 +145,7 @@ test.describe("#42 融合依据定位", () => {
 
     // 进入子节点页：URL 带 fragment 深链
     await page.waitForURL((url) => url.searchParams.has("fragment"), { timeout: 10_000 });
-    expect(page.url()).toContain(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(childNodeId)}`);
+    expect(page.url()).toContain(`/nodes/${encodeURIComponent(childNodeId)}`);
 
     // 目标卡片获得强调、在视口内、不被固定顶栏遮挡；live region 播报
     const focusedCard = page.locator(".slice-card--focused");
@@ -211,7 +211,7 @@ test.describe("#42 融合依据定位", () => {
     await expect(page.locator(".slice-card--focused")).toHaveCount(1, { timeout: 10_000 });
     // back：根页无 fragment
     await page.goBack();
-    await expect(page).toHaveURL(new RegExp(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(rootNodeId)}(\\?|$)`));
+    await expect(page).toHaveURL(new RegExp(`/nodes/${encodeURIComponent(rootNodeId)}(\\?|$)`));
     await expect(page.locator(".fusion-proposal-notice")).toBeVisible();
     // forward：恢复 fragment 深链，强调重现
     await page.goForward();

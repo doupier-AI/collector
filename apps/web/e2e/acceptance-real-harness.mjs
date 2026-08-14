@@ -19,7 +19,8 @@
  *
  * 密钥只用于本进程构造网关，不写入 .runtime、数据库明文设置或日志。
  */
-import { existsSync, mkdirSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -160,26 +161,26 @@ const server = createApiServer(service, auth, {
   },
 });
 
-// 配对码池与运行时文件：与 api-harness.mjs 完全一致，helpers.ts 无需改动
-function mintCodes(count) {
-  const lines = [];
-  for (let index = 0; index < count; index += 1) {
-    lines.push(auth.createPairingCode("Acceptance WebUI").code);
+// 配对码现铸端点与运行时文件：与 api-harness.mjs 一致，helpers.ts 无需改动。
+// 现铸码取完立即使用，长套件不触碰 5 分钟 TTL 与配对限流（静态池已退役）。
+const pairingServer = createServer((request, response) => {
+  if (request.url !== "/pairing-code") {
+    response.statusCode = 404;
+    response.end();
+    return;
   }
-  return lines.join("\n") + "\n";
-}
-writeFileSync(join(runtimeDir, `pairing-${port}.txt`), mintCodes(40), "utf8");
-rmSync(join(runtimeDir, `pairing-${port}.cursor`), { force: true });
+  const { code } = auth.createPairingCode("Acceptance WebUI");
+  response.setHeader("content-type", "application/json");
+  response.end(JSON.stringify({ code }));
+});
+await new Promise((resolve) => pairingServer.listen(0, "127.0.0.1", resolve));
+writeFileSync(
+  join(runtimeDir, `pairing-endpoint-${port}.txt`),
+  `http://127.0.0.1:${pairingServer.address().port}/pairing-code`,
+  "utf8",
+);
 writeFileSync(join(runtimeDir, `datadir-${port}.txt`), dataDir, "utf8");
 writeFileSync(join(runtimeDir, `launcher-${port}.token`), launcherToken, { encoding: "utf8", mode: 0o600 });
-const refill = setInterval(() => {
-  try {
-    appendFileSync(join(runtimeDir, `pairing-${port}.txt`), mintCodes(16), "utf8");
-  } catch {
-    // 进程退出阶段忽略写入失败
-  }
-}, 90_000);
-refill.unref();
 
 await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
 // 只记录供应商与模型，绝不记录密钥
@@ -190,7 +191,7 @@ async function gracefulShutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`[acceptance] received ${signal}, closing server and store`);
-  clearInterval(refill);
+  pairingServer.close();
   await Promise.all([...browserBootstraps].map((bootstrap) => bootstrap.close().catch(() => undefined)));
   server.closeAllConnections?.();
   server.close(() => {

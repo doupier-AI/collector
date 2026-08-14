@@ -1,17 +1,17 @@
 import type { ReactElement } from "react";
 import { Link } from "react-router-dom";
 import type { ResearchFusionAutoResult } from "@collector/capture-contracts";
+import { stableNodePath } from "../../app/paths";
 
 /**
  * #32 自动融合成功提示条：不自动跳转、不打断当前阅读，在节点页顶部呈现，
  * 可点击跳转到自动生成的融合节点页。role="status" 播报给读屏用户。
+ * #61：链接使用稳定节点地址，不再拼接会话 ID。
  */
 export function AutoFusionNotice({
   results,
-  sessionId,
 }: {
   results: ResearchFusionAutoResult[];
-  sessionId: string;
 }): ReactElement | null {
   if (results.length === 0) return null;
   return (
@@ -23,7 +23,7 @@ export function AutoFusionNotice({
         <Link
           key={result.nodeId}
           className="auto-fusion-notice__link"
-          to={`/research/${encodeURIComponent(result.sessionId || sessionId)}/node/${encodeURIComponent(result.nodeId)}`}
+          to={stableNodePath(result.nodeId)}
         >
           查看融合节点
         </Link>

@@ -230,7 +230,8 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
   }, [mode, close]);
 
   const { pathname } = useLocation();
-  const sessionsActive = pathname === "/" || pathname.startsWith("/research");
+  // #61：研究区 = 首页恢复入口、旧会话路径（转向中）与稳定节点地址
+  const sessionsActive = pathname === "/" || pathname.startsWith("/research") || pathname.startsWith("/nodes");
   const openSearch = useCallback(() => {
     setCollapsed(false);
     setSearchOpen(true);

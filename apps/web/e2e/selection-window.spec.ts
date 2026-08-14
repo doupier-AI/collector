@@ -23,8 +23,8 @@ const QUESTION = "什么是本地优先研究？";
 async function submitFirstQuestion(page: Page, question = QUESTION): Promise<string> {
   await page.getByLabel("你的问题").fill(question);
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
-  return page.url().split("/research/")[1]?.split("/")[0] ?? "";
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
+  return page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
 }
 
 /** 在阅读页第 index 个正文块的文本内选中 [from, from+length)。 */
@@ -236,7 +236,7 @@ test.describe("选区捕获与浮动胶囊", () => {
       data: {},
     });
     const created = (await createResponse.json()) as { id: string };
-    await page.goto(`/research/${created.id}`);
+    await page.goto(`/nodes/${created.id}`);
 
     const txt = ["第一行：本地优先研究", "", "第二段：导入后保留行号", "", "第三段：可以在同一画布阅读"].join("\n");
     await page.locator('input[type="file"]').setInputFiles({
@@ -287,7 +287,7 @@ test.describe("选区捕获与浮动胶囊", () => {
       data: {},
     });
     const created = (await createResponse.json()) as { id: string };
-    await page.goto(`/research/${created.id}`);
+    await page.goto(`/nodes/${created.id}`);
 
     const txt = ["第一行：本地优先研究", "", "第二段：导入后保留行号", "", "第三段：可以在同一画布阅读"].join("\n");
     await page.locator('input[type="file"]').setInputFiles({

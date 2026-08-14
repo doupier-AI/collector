@@ -18,13 +18,13 @@ async function openSession(page: Page): Promise<{ sessionId: string; rootNodeId:
   await pairAndOpen(page, "/research/new");
   await page.getByLabel("你的问题").fill(QUESTION);
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
   await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
     timeout: 15_000,
   });
-  const match = new URL(page.url()).pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
+  const match = new URL(page.url()).pathname.match(/^\/nodes\/([^/]+)$/);
   if (!match) throw new Error("unexpected root node url");
-  return { sessionId: match[1]!, rootNodeId: match[2]! };
+  return { sessionId: match[1]!, rootNodeId: match[1]! }; // 稳定地址：根节点 id 与会话 id 相同
 }
 
 /** 生成一个共享「本地优先」概念的子节点：深入研究第一轮 + 节点内追问一轮。 */
@@ -34,13 +34,13 @@ async function growSharedConceptChild(page: Page, sessionId: string): Promise<st
   await page.getByRole("button", { name: "深入研究这段" }).click();
   await page.waitForURL(
     (url) => {
-      const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
-      return Boolean(match && match[1] === sessionId && match[2] && match[2] !== sessionId);
+      const match = url.pathname.match(/^\/nodes\/([^/]+)$/);
+      return Boolean(match && match[1] && match[1] !== sessionId);
     },
     { timeout: 10_000 },
   );
   await expect(page.getByText(/这是深入研究第一轮/)).toBeVisible({ timeout: 15_000 });
-  const childId = page.url().split("/node/")[1] ?? "";
+  const childId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
   // 节点内追问一轮：fake 回答含「本地优先」概念 → 与根节点共享概念形成候选。
   await page.getByLabel("你的问题").fill("继续研究本地优先的实践");
   await page.getByRole("button", { name: "发送" }).click();
@@ -94,7 +94,7 @@ test("#31 确认式融合：弱提示 → 确认 → 融合节点 → 章节与�
   await waitForCompletedMessages(dbPath, childNodeId, 1);
 
   // 回根节点页触发真实 scan（确定性核验：共享概念判为对比）。
-  await page.goto(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(rootNodeId)}`);
+  await page.goto(`/nodes/${encodeURIComponent(rootNodeId)}`);
   await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕");
   const scan = await page.request.post(`/v1/research-nodes/${encodeURIComponent(rootNodeId)}/fusion-proposals/scan`, {
     data: {},
@@ -119,12 +119,12 @@ test("#31 确认式融合：弱提示 → 确认 → 融合节点 → 章节与�
   // 跳转到融合节点页并等待生成完成。
   await page.waitForURL(
     (url) => {
-      const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
-      return Boolean(match && match[1] === sessionId && match[2] && match[2] !== rootNodeId && match[2] !== childNodeId);
+      const match = url.pathname.match(/^\/nodes\/([^/]+)$/);
+      return Boolean(match && match[1] && match[1] !== rootNodeId && match[1] !== childNodeId);
     },
     { timeout: 10_000 },
   );
-  const fusionNodeId = page.url().split("/node/")[1] ?? "";
+  const fusionNodeId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
   await expect(page.getByRole("heading", { name: "融合节点" })).toBeVisible({ timeout: 10_000 });
   await expect(page.locator(".message--assistant .message__content").last()).toContainText("综合推导", {
     timeout: 20_000,

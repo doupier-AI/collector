@@ -25,6 +25,7 @@ import {
   installThreeEdgeGraphFixture,
   openNodeWithParent,
   openSession,
+  pinModelStatus,
   QUESTION,
   readNodeEvidence,
   trackBrowserIssues,
@@ -42,10 +43,11 @@ async function openResearchMap(page: import("@playwright/test").Page): Promise<i
 }
 
 /**
- * 收起宽屏默认展开的两侧固定侧栏：全量运行时同一 harness 数据库会累积其他测试
+ * 收起宽屏默认展开的左侧固定内容栏：全量运行时同一 harness 数据库会累积其他测试
  * 创建的会话，「内容」抽屉的会话列表会污染节点页视口截图（单独运行不显现）。
  * 基线聚焦正文视觉秩序，不依赖侧栏内容。
- * 左侧栏顶栏「内容」整体隐藏入口已删，改用侧栏内部「收起侧栏」收成窄 rail（同样让会话列表退出截图）。
+ * 左侧栏顶栏「内容」整体隐藏入口已删，改用侧栏内部「收起侧栏」收成窄 rail（同样让会话列表退出截图）；
+ * #56 起右侧常驻标记栏与顶栏「标记」入口也已移除，标记改为会话 ⋯ 菜单内的按需弹窗，无侧栏可收起。
  */
 async function closeSidebars(page: import("@playwright/test").Page): Promise<void> {
   // 左侧内容栏：收起为窄 rail（展开态才有「收起侧栏」按钮）
@@ -54,12 +56,6 @@ async function closeSidebars(page: import("@playwright/test").Page): Promise<voi
   if (await collapse.count()) {
     await collapse.click();
     await expect(nav.getByRole("button", { name: "展开侧栏" })).toBeVisible();
-  }
-  // 右侧标记栏：顶栏按钮整体隐藏
-  const marks = page.getByRole("button", { name: "标记", exact: true });
-  if ((await marks.getAttribute("aria-expanded")) === "true") {
-    await marks.click();
-    await expect(marks).toHaveAttribute("aria-expanded", "false");
   }
 }
 
@@ -115,6 +111,7 @@ test.describe("#44 视觉回归基线", () => {
   test("语义卡片常态：连续卡片 + 悬停低表面提升 + 页面整体视觉秩序像素基线", async ({ page }) => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);
+    await pinModelStatus(page);
     await openSession(page);
     await expect(page.locator(".slice-card")).toHaveCount(3);
     // 全量运行时侧栏会话列表会污染视口截图：收起两侧固定侧栏
@@ -146,6 +143,7 @@ test.describe("#44 视觉回归基线", () => {
   test("深色主题：ADR-0019 整站深色工作台像素基线", async ({ page }) => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);
+    await pinModelStatus(page);
     // 默认“跟随系统”：模拟深色后，外壳与正文阅读区共同使用 ADR-0019 深色令牌。
     await page.emulateMedia({ colorScheme: "dark" });
     await openSession(page);
@@ -163,6 +161,7 @@ test.describe("#44 视觉回归基线", () => {
     test.setTimeout(120_000);
     const issues = trackBrowserIssues(page);
     freezeClock(page);
+    await pinModelStatus(page);
     const { sessionId, rootNodeId } = await openSession(page);
     const rootEvidence = await readNodeEvidence(page, rootNodeId, 1);
     const childNodeId = await growChildNode(page, sessionId, "本地优先会先把输入保存在本机");
@@ -170,7 +169,7 @@ test.describe("#44 视觉回归基线", () => {
     await installProposalFixture(page, rootNodeId, rootEvidence, childEvidence);
 
     // 进入根页展开依据列表并点击指向子节点的依据 → 深链定位子节点卡片
-    await page.goto(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(rootNodeId)}`);
+    await page.goto(`/nodes/${encodeURIComponent(rootNodeId)}`);
     await expect(page.locator(".fusion-proposal-notice")).toBeVisible({ timeout: 15_000 });
     await closeSidebars(page);
     await page.locator(".fusion-proposal-notice__item summary").first().click();
@@ -275,7 +274,7 @@ test.describe("#44 最高 Seam 验证补充", () => {
     await expect(page.locator(".slice-card")).toHaveCount(3);
     await expect(page.locator("h1")).toHaveCount(1);
     // 会话/节点路由仍指向同一对象
-    expect(new URL(page.url()).pathname).toContain(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(rootNodeId)}`);
+    expect(new URL(page.url()).pathname).toContain(`/nodes/${encodeURIComponent(rootNodeId)}`);
 
     await page.keyboard.press("g");
     await expect(page.getByRole("dialog", { name: "研究地图" })).toBeVisible();

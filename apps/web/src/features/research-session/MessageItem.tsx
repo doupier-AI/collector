@@ -1,5 +1,5 @@
 import { createPortal } from "react-dom";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { ResearchCitationRecord, ResearchFusionSource, ResearchGroundingSourceRecord, ResearchMessageRecord, ResearchSliceRecord, ResearchTaskRecord, ResearchTermPreviewRecord, TermMarker } from "@collector/capture-contracts";
 import { deriveMessageBlocks, messageContentBlockId, splitBlockHeading } from "@collector/capture-contracts";
@@ -84,6 +84,9 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
   );
 }
 
+/** 空术语分组的共享常量：保持数组身份稳定，避免 MarkdownContent 无谓重扫 DOM。 */
+const NO_TERMS: TermMarker[] = [];
+
 /**
  * 完成的 AI 回答按确定性段落块渲染。
  * 块 ID 与后端选区锚点使用同一派生规则。
@@ -95,6 +98,18 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
  */
 function AssistantBlocks({ message, highlight, citations, groundingSources, terms, slices, fragmentCardId, fusionSources }: { message: ResearchMessageRecord; highlight?: MessageHighlight; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[]; terms: TermMarker[]; slices?: ResearchSliceRecord[]; fragmentCardId?: string; fusionSources?: ResearchFusionSource[] }) {
   const blocks = deriveMessageBlocks(message.content);
+  // 术语按块分组一次并保持数组身份稳定：MarkdownContent 以 terms 引用变化决定是否重扫
+  // DOM 重新包裹术语标记；若每次渲染都新建数组，已被键盘聚焦的标记元素会被替换，焦点
+  // 回落 body，Escape/Enter 不再到达交互层（任何背景刷新都会打断术语的键盘操作）。
+  const termsByBlock = useMemo(() => {
+    const grouped = new Map<number, TermMarker[]>();
+    for (const term of terms) {
+      const list = grouped.get(term.blockOrdinal);
+      if (list) list.push(term);
+      else grouped.set(term.blockOrdinal, [term]);
+    }
+    return grouped;
+  }, [terms]);
   if (blocks.length === 0) return <MarkdownContent text={message.content} sources={groundingSources} citations={citations} variant="message" fusionSources={fusionSources} />;
   const activeHighlight = highlight ?? undefined;
 
@@ -116,7 +131,7 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
               highlight={thisHighlight}
               sources={groundingSources}
               citations={citations}
-              terms={terms.filter((term) => term.blockOrdinal === target.blockOrdinal)}
+              terms={termsByBlock.get(target.blockOrdinal) ?? NO_TERMS}
               fragmentFocused={fragmentCardId === target.cardId}
               fusionSources={fusionSources}
             />
@@ -140,7 +155,7 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
             highlight={thisHighlight}
             sources={groundingSources}
             citations={citations}
-            terms={terms.filter((term) => term.blockOrdinal === block.ordinal)}
+            terms={termsByBlock.get(block.ordinal) ?? NO_TERMS}
             fusionSources={fusionSources}
           />
         );
@@ -420,7 +435,9 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
       root.removeEventListener("click", handleClick);
       root.removeEventListener("keydown", handleKeyDown);
       clearHoverTimer();
-      clearCloseTimer();
+      // 注意：不清理 closeTimer——effect 重跑（依赖引用变化，如预览流式更新）时
+      // 用户"已移开鼠标"的关闭意图必须保留；组件真正卸载时 timer 触发也只是
+      // popoverRef 为 null 的安全空操作（closePopover 不会被调用）。
     };
   }, [activateMarker, clearCloseTimer, clearHoverTimer, closePopover, markerFromElement, openPopover, startPreview]);
 

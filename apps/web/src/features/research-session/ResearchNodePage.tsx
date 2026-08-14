@@ -3,6 +3,7 @@ import type { DragEvent } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import type { ResearchSelectionAnchor, ResearchSessionView, ResearchTaskRecord } from "@collector/capture-contracts";
 import { isApiErrorCode, isUnauthorized, apiErrorCopy } from "../../api/errors";
+import { stableNodePath } from "../../app/paths";
 import { useServices } from "../../app/services";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
@@ -61,6 +62,8 @@ const STREAM_NOTICE: Record<string, { title: string; body: string }> = {
 
 /**
  * 统一节点页（阶段 H2/H4a）：根节点（旧会话页）与子节点（旧分支页）同一页面。
+ * #61（T02）起挂载在稳定节点地址 /nodes/:nodeId——路由只携带节点身份；
+ * 会话上下文从已加载节点视图派生，不再从 URL 读取，也不在新链接中传播。
  * - 数据统一走 GET /v1/research-nodes/:id；提交统一走节点消息端点；
  * - 子节点与带来源的根节点显示顶部来源条与材料范围说明；
  * - 附件与拖放导入只在根节点呈现，子节点没有独立文件空间；
@@ -68,7 +71,7 @@ const STREAM_NOTICE: Record<string, { title: string; body: string }> = {
  * - 选区上方浮动胶囊显式引用（修订一 #9），引用胶囊在输入框区域显示，支持"在此追问"与"深入研究这段"双模发送。
  */
 export function ResearchNodePage() {
-  const { sessionId = "", nodeId = "" } = useParams();
+  const { nodeId = "" } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
   const { api } = useServices();
@@ -90,6 +93,11 @@ export function ResearchNodePage() {
   const [autoFusionResults, setAutoFusionResults] = useState<ResearchFusionAutoResult[] | null>(null);
   const autoScanNodeRef = useRef("");
   const readyView = node.state.kind === "ready" ? node.state.view : undefined;
+  // #61：会话上下文从已加载节点视图派生（稳定地址不携带会话 ID）；视图就绪前为空串。
+  // ""→真实 ID 的翻转发生在内容首次渲染的同一提交，其 effect 重跑不得产生可见状态变化——
+  // useResearchImports 的重置已做空集合守卫（返回原引用跳过渲染），
+  // 任何新会话作用域 hook 也必须遵守同一静默约束，避免内容渲染后的多余周期打断键盘交互。
+  const sessionId = readyView?.session.id ?? "";
 
   // #36 章节导航：任一 completed 消息存在派生切片时渲染线列。
   // 数据源 = 全部 completed 消息的派生切片（按消息顺序 + ordinal），每条线绑定卡片标题锚点。
@@ -479,7 +487,7 @@ export function ResearchNodePage() {
     setFusingProposalId(proposalId);
     try {
       const accepted = await api.fuseResearchFusionProposal(proposalId, `fuse:${proposalId}`);
-      navigate(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(accepted.node.id)}`);
+      navigate(stableNodePath(accepted.node.id));
     } catch (error) {
       node.announce(apiErrorCopy(error).body);
       setFusingProposalId(null);
@@ -501,7 +509,7 @@ export function ResearchNodePage() {
         idempotencyKey,
       );
       removeCitation();
-      navigate(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(accepted.node.id)}`, {
+      navigate(stableNodePath(accepted.node.id), {
         state: { grew: true },
       });
       return true;
@@ -514,7 +522,7 @@ export function ResearchNodePage() {
   async function handleGrowTermPreview(preview: import("@collector/capture-contracts").ResearchTermPreviewRecord): Promise<boolean> {
     try {
       const accepted = await termPreviews.grow(preview);
-      navigate(`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(accepted.node.id)}`, {
+      navigate(stableNodePath(accepted.node.id), {
         state: { grew: true },
       });
       return true;
@@ -565,11 +573,11 @@ export function ResearchNodePage() {
     if (isApiErrorCode(state.error, "not_found")) {
       return (
         <div className="page">
-          <h1 className="page__title">这场研究不存在或已经清理</h1>
-          <p className="page__lead">它可能已被删除，或者链接中的编号不正确。</p>
+          <h1 className="page__title">这个节点不存在或已经清理</h1>
+          <p className="page__lead">它可能已被彻底删除，或者链接中的编号不正确。</p>
           <p>
-            <Link className="button button--primary" to={`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(sessionId)}`}>
-              返回研究
+            <Link className="button button--primary" to="/">
+              返回首页
             </Link>
           </p>
         </div>
@@ -616,21 +624,6 @@ export function ResearchNodePage() {
   }
 
   const { view } = state;
-  // 路由中的会话编号与节点所属会话不一致时按不存在处理，避免误导性链接
-  if (view.node.sessionId !== sessionId) {
-    return (
-      <div className="page">
-        <h1 className="page__title">这场研究不存在或已经清理</h1>
-        <p className="page__lead">它可能已被删除，或者链接中的编号不正确。</p>
-        <p>
-          <Link className="button button--primary" to={`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(sessionId)}`}>
-            返回研究
-          </Link>
-        </p>
-      </div>
-    );
-  }
-
   const notice = node.streamNotice !== "idle" ? STREAM_NOTICE[node.streamNotice] : undefined;
   // #31：融合节点（标记在节点记录上，不依赖生成完成态）。
   const isFusionNode = Boolean(view.node.isFusionNode);
@@ -662,7 +655,7 @@ export function ResearchNodePage() {
       <header className="session-header">
         {!isRoot ? (
           <nav className="session-header__crumb" aria-label="节点位置">
-            <Link to={`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(sessionId)}`}>
+            <Link to={stableNodePath(view.session.id)}>
               {view.session.title}
             </Link>
             <span className="session-header__crumb-sep" aria-hidden="true">›</span>
@@ -756,6 +749,18 @@ export function ResearchNodePage() {
 
       {isRoot && marksOpen ? <SessionMarksDialog sessionId={view.session.id} onClose={closeMarks} /> : null}
 
+      {view.session.trashedAt ? (
+        <StatusMessage
+          variant="info"
+          role="status"
+          title="这个节点所在的会话在回收站中"
+          actionLabel="前往回收站"
+          onAction={() => navigate("/trash")}
+        >
+          <p>内容可以继续阅读，但不能修改；在回收站恢复会话后才能继续编辑。</p>
+        </StatusMessage>
+      ) : null}
+
       {justGrew ? (
         <p className="grew-sprout" role="status" data-testid="grew-sprout">
           <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" focusable="false">
@@ -773,11 +778,11 @@ export function ResearchNodePage() {
       ) : null}
 
       {autoFusionResults && autoFusionResults.length > 0 ? (
-        <AutoFusionNotice results={autoFusionResults} sessionId={sessionId} />
+        <AutoFusionNotice results={autoFusionResults} />
       ) : null}
 
       {fusionSourceEntries.length > 0 ? (
-        <FusionSourceBar sources={fusionSourceEntries} sessionId={sessionId} />
+        <FusionSourceBar sources={fusionSourceEntries} />
       ) : null}
 
       {notice ? (
@@ -789,13 +794,10 @@ export function ResearchNodePage() {
       {view.fusionProposals?.length ? (
         <FusionProposalNotice
           proposals={view.fusionProposals}
-          sessionId={view.session.id}
-          currentNodeId={nodeId}
           decidingProposalId={decidingFusionProposalId}
           onDecide={(proposalId, decision) => void handleFusionDecision(proposalId, decision)}
           onFuse={(proposalId) => void handleFuseProposal(proposalId)}
           fusingProposalId={fusingProposalId}
-          announce={node.announce}
         />
       ) : null}
 

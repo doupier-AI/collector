@@ -9,7 +9,8 @@
  * 启动时在 listen 前把配对码池与数据目录写入 e2e/.runtime/。
  * SIGTERM/SIGINT 时关闭 HTTP server 与 store 后退出，保证 Playwright webServer 收尾自然结束。
  */
-import { existsSync, mkdirSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -241,29 +242,29 @@ const server = createApiServer(service, auth, {
   },
 });
 
-// 配对码池：浏览器每个测试使用一个一次性配对码；池按 90 秒补充，避免 5 分钟过期
-// 每次启动重写码池并删除消费游标，避免跨运行残留游标导致"池耗尽"误报
-// 初始数量需覆盖整套 chromium 用例，避免在 90 秒补充窗口内耗尽（用例增删时同步调整）
-function mintCodes(count) {
-  const lines = [];
-  for (let index = 0; index < count; index += 1) {
-    lines.push(auth.createPairingCode("E2E WebUI").code);
+// 配对码现铸端点：只绑定本机回环地址，浏览器测试在取码那一刻现铸一次性配对码。
+// 旧实现预铸 64 码静态池并每 90 秒补充：长套件（37 分钟+）下池头码必然超过 5 分钟
+// TTL，配对失败累计又会触发 10 次/分钟的配对限流，套件尾段级联失败（#61 四级验证
+// 实测 80 失败中约 35 个源自此级联）。现铸码取完立即使用、TTL 从取码起算，套件长短无关；
+// 静态池文件与消费游标全部退役，用例增删也不再需要同步调整池容量。
+const pairingServer = createServer((request, response) => {
+  if (request.url !== "/pairing-code") {
+    response.statusCode = 404;
+    response.end();
+    return;
   }
-  return lines.join("\n") + "\n";
-}
-writeFileSync(join(runtimeDir, `pairing-${port}.txt`), mintCodes(64), "utf8");
-rmSync(join(runtimeDir, `pairing-${port}.cursor`), { force: true });
-rmSync(join(runtimeDir, `pairing-${port}.endcursor`), { force: true });
+  const { code } = auth.createPairingCode("E2E WebUI");
+  response.setHeader("content-type", "application/json");
+  response.end(JSON.stringify({ code }));
+});
+await new Promise((resolve) => pairingServer.listen(0, "127.0.0.1", resolve));
+writeFileSync(
+  join(runtimeDir, `pairing-endpoint-${port}.txt`),
+  `http://127.0.0.1:${pairingServer.address().port}/pairing-code`,
+  "utf8",
+);
 writeFileSync(join(runtimeDir, `datadir-${port}.txt`), dataDir, "utf8");
 writeFileSync(join(runtimeDir, `launcher-${port}.token`), launcherToken, { encoding: "utf8", mode: 0o600 });
-const refill = setInterval(() => {
-  try {
-    appendFileSync(join(runtimeDir, `pairing-${port}.txt`), mintCodes(16), "utf8");
-  } catch {
-    // 进程退出阶段忽略写入失败
-  }
-}, 90_000);
-refill.unref();
 
 await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
 console.log(`[e2e-api] listening on 127.0.0.1:${port} model=${modelMode} data=${dataDir}`);
@@ -275,7 +276,7 @@ async function gracefulShutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`[e2e-api] received ${signal}, closing server and store`);
-  clearInterval(refill);
+  pairingServer.close();
   await Promise.all([...browserBootstraps].map((bootstrap) => bootstrap.close().catch(() => undefined)));
   server.closeAllConnections?.();
   server.close(() => {

@@ -49,19 +49,9 @@ export function FusionCitationMarker({ source }: { source: ResearchFusionSource 
   }, [api, source.bodyVersionId, source.fragmentId]);
 
   const handleJump = useCallback(() => {
-    void (async () => {
-      // 防御：路由 sessionId 与目标节点实际会话不一致时，先取真实 sessionId 再导航，
-      // 绝不导航到错误会话（同 TriggerSourceEntry 的跨节点防御逻辑）。
-      let targetSessionId = "";
-      try {
-        const view = await api.getResearchNodeView(source.nodeId);
-        targetSessionId = view.session.id;
-      } catch {
-        // 目标节点读取失败：仍尝试在当前会话导航（会话可能相同），由目标页自己处理。
-      }
-      navigate(fragmentDeepLink(targetSessionId, source.nodeId, source.fragmentId, searchParams));
-    })();
-  }, [api, navigate, searchParams, source.fragmentId, source.nodeId]);
+    // #61：稳定节点地址即节点身份，点击直接导航，无需先解析目标所属会话。
+    navigate(fragmentDeepLink(source.nodeId, source.fragmentId, searchParams));
+  }, [navigate, searchParams, source.fragmentId, source.nodeId]);
 
   const label = source.label || `节点 ${source.nodeId.slice(0, 8)}`;
   const marker = <sup data-citation-marker aria-hidden="true" />;

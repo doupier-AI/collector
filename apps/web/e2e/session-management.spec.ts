@@ -41,9 +41,9 @@ async function sidebarHorizontalScrollers(page: Page) {
 async function submitFirstQuestion(page: Page, question = QUESTION): Promise<string> {
   await page.getByLabel("你的问题").fill(question);
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
   await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
-  return page.url().split("/research/")[1]?.split("/")[0] ?? "";
+  return page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
 }
 
 test("会话管理全流程：项目分组 → 改名 → 归档 → 软删/回收站/恢复 → 彻底删除", async ({ page }) => {
@@ -83,9 +83,13 @@ test("会话管理全流程：项目分组 → 改名 → 归档 → 软删/回�
   await page.getByRole("button", { name: "保存" }).click();
   await expect(nav.getByRole("link", { name: sessionTitle })).toBeVisible();
 
-  // ── 5. 会话页页头改名入口 ──
-  await nav.getByRole("link", { name: sessionTitle }).click();
-  await page.getByRole("button", { name: new RegExp(`^重命名「${sessionTitle}」`) }).click();
+  // ── 5. 会话页页头改名入口（#56 后收进页头 ⋯ 会话菜单；侧栏同名菜单按钮存在，须限定页头）──
+  // 改名后须导航重建节点页：已打开的节点页不监听会话变更广播，原地点击侧栏同 URL
+  // 链接不会重挂载，页头仍持旧标题（标题同步缺口另立票据跟踪）。
+  await page.goto(`/nodes/${sessionId}`);
+  await expect(page.getByRole("heading", { name: sessionTitle })).toBeVisible();
+  await page.locator(".session-header__actions").getByRole("button", { name: `${sessionTitle} 的会话菜单` }).click();
+  await page.getByRole("menuitem", { name: "重命名" }).click();
   const pageTitleInput = page.getByLabel("会话新标题");
   await pageTitleInput.fill(renamedTitle);
   await page.getByRole("button", { name: "保存" }).click();

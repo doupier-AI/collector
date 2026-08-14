@@ -8,9 +8,9 @@ const OWN_QUESTION = `批量操作验证 ${RUN_SUFFIX}`;
 async function submitFirstQuestion(page: Page, question: string): Promise<string> {
   await page.getByLabel("你的问题").fill(question);
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
   await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
-  return page.url().split("/research/")[1]?.split("/")[0] ?? "";
+  return page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
 }
 
 /** 在侧栏分组树中定位会话行的操作菜单（⋯）按钮。 */

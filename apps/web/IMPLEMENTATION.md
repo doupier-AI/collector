@@ -43,17 +43,18 @@ Collector WebUI 使用 React 19、TypeScript、Vite 8 和 React Router 7，通�
 | --- | --- |
 | `/` | 恢复最近研究；没有可恢复内容时显示开始页 |
 | `/research/new` | 新研究开始页；文字提交或文件导入后创建真实研究 |
-| `/research/:sessionId/node/:nodeId` | 统一研究节点页；支持消息、连续正文、选区、来源条、标记、树与关系导航 |
+| `/nodes/:nodeId` | 统一研究节点页（#61 起为稳定节点地址：只携带节点身份，会话上下文从节点视图派生）；支持消息、连续正文、选区、来源条、标记、树与关系导航 |
 | `/research/:sessionId/reading/:contentSnapshotId` | 导入内容阅读页；支持选区、提问、标记与来源返回 |
 | `/run-records` | 本地运行记录列表与筛选 |
 | `/run-records/:runId` | 指定运行记录详情 |
 | `/settings/ai-model` | AI 模型、凭证状态、模型发现和任务分配设置 |
 
-兼容路由：
+兼容路由（#61 起全部单向转向稳定节点地址，不形成循环或第二套事实）：
 
-- `/research/:sessionId` 重定向到对应根节点页；
-- `/research/:sessionId/branch/:branchId` 重定向到对应节点页；
-- 重定向保留 `?sel=<selectionId>`，用于返回并恢复来源高亮。
+- `/research/:sessionId` 重定向到稳定根节点地址 `/nodes/:sessionId`；
+- `/research/:sessionId/branch/:branchId` 重定向到稳定节点地址 `/nodes/:branchId`；
+- `/research/:sessionId/node/:nodeId`（H2 时期会话节点页）重定向到稳定节点地址 `/nodes/:nodeId`，会话 ID 不再传播；
+- 重定向保留 `?sel=<selectionId>` 与 `?fragment=<fragmentId>` 查询参数，用于返回并恢复来源高亮与定位。
 
 无效会话、节点或内容快照必须显示明确的不存在 / 已清理状态并提供安全返回，不自动创建同名对象掩盖错误。
 

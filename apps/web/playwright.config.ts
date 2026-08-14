@@ -55,7 +55,7 @@ export default defineConfig({
       name: "chromium-nomodel",
       use: { ...devices["Desktop Chrome"], baseURL: "http://127.0.0.1:43212" },
       testMatch: /no-model\.spec\.ts/,
-      // 低消耗端口的配对码在套件末尾可能过期（5 分钟 TTL）：基础设施抖动自动重试一次。
+      // 配对码现铸端点已根治 TTL 过期抖动；retries 保留为一般基础设施防抖。
       retries: 1,
     },
     {

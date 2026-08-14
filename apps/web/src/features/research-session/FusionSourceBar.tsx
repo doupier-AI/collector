@@ -1,16 +1,16 @@
 import { Link } from "react-router-dom";
 import type { ResearchFusionSource } from "@collector/capture-contracts";
+import { stableNodePath } from "../../app/paths";
 
 /**
  * #31 融合节点顶部来源条：列出融合正文引用的来源节点，可点击跳回来源节点页。
  * 来源数据由服务端按任务 fusionReferences 组装（去重、补标签）；本条只做呈现。
+ * #61：来源链接使用稳定节点地址，不再拼接会话 ID（来源可与当前节点跨会话）。
  */
 export function FusionSourceBar({
   sources,
-  sessionId,
 }: {
   sources: ResearchFusionSource[];
-  sessionId: string;
 }) {
   if (sources.length === 0) return null;
   return (
@@ -22,7 +22,7 @@ export function FusionSourceBar({
             <li key={source.nodeId}>
               <Link
                 className="fusion-source-bar__link"
-                to={`/research/${encodeURIComponent(sessionId)}/node/${encodeURIComponent(source.nodeId)}`}
+                to={stableNodePath(source.nodeId)}
               >
                 {source.label || `节点 ${source.nodeId.slice(0, 8)}`}
               </Link>

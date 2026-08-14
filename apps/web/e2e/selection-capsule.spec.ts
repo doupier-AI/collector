@@ -25,8 +25,8 @@ const QUESTION = "什么是本地优先研究？";
 async function submitFirstQuestion(page: Page, question = QUESTION): Promise<string> {
   await page.getByLabel("你的问题").fill(question);
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/research\/(?!new$)[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
-  return page.url().split("/research/")[1]?.split("/")[0] ?? "";
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
+  return page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
 }
 
 function watchConsole(page: Page): string[] {
@@ -147,8 +147,8 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     // 导航到子节点页
     await page.waitForURL(
       (url) => {
-        const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
-        return Boolean(match && match[1] === sessionId && match[2] && match[2] !== sessionId);
+        const match = url.pathname.match(/^\/nodes\/([^/]+)$/);
+        return Boolean(match && match[1] && match[1] !== sessionId);
       },
       { timeout: 10_000 },
     );
@@ -184,8 +184,8 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
 
     await page.waitForURL(
       (url) => {
-        const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
-        return Boolean(match && match[1] === sessionId && match[2] && match[2] !== sessionId);
+        const match = url.pathname.match(/^\/nodes\/([^/]+)$/);
+        return Boolean(match && match[1] && match[1] !== sessionId);
       },
       { timeout: 10_000 },
     );
@@ -229,8 +229,8 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     await page.getByRole("button", { name: "深入研究这段" }).click();
     await page.waitForURL(
       (url) => {
-        const match = url.pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)$/);
-        return Boolean(match && match[1] === sessionId && match[2] && match[2] !== sessionId);
+        const match = url.pathname.match(/^\/nodes\/([^/]+)$/);
+        return Boolean(match && match[1] && match[1] !== sessionId);
       },
       { timeout: 10_000 },
     );
@@ -241,7 +241,7 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     const selId = selections[0]!.id;
 
     // 返回根节点并携带 ?sel= 参数
-    await page.goto(`/research/${sessionId}/node/${sessionId}?sel=${selId}`);
+    await page.goto(`/nodes/${sessionId}?sel=${selId}`);
 
     // #48：只读定位提醒——高亮标记呈现，不重开浮动胶囊、不自动创建引用
     await expect(page.locator("[data-selection-mark]")).toBeVisible({ timeout: 10_000 });
@@ -270,7 +270,7 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     const selId = selections[0]!.id;
 
     // 携带 ?sel= 刷新：高亮标记呈现（定位提醒），不出现恢复浮动胶囊
-    await page.goto(`/research/${sessionId}/node/${sessionId}?sel=${selId}`);
+    await page.goto(`/nodes/${sessionId}?sel=${selId}`);
     const mark = page.locator("[data-selection-mark]");
     await expect(mark).toBeVisible({ timeout: 10_000 });
     await expect(page.getByTestId("floating-selection-capsule")).toHaveCount(0);

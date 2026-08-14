@@ -45,7 +45,7 @@ function renderCanvas(
   const onClose = vi.fn();
   const rendered = render(
     <ServicesProvider services={services}>
-      <MemoryRouter initialEntries={[`/research/session-1/node/${focusNodeId}`]}>
+      <MemoryRouter initialEntries={[`/nodes/${focusNodeId}`]}>
         <GraphCanvas sessionId="session-1" focusNodeId={focusNodeId} onClose={onClose} selectedEdgeKinds={selectedEdgeKinds} />
         <LocationProbe />
       </MemoryRouter>
@@ -161,11 +161,11 @@ describe("GraphCanvas", () => {
     expect(screen.getByText(/已聚焦：/)).toHaveTextContent("深度学习基础");
     await user.keyboard("{Enter}");
     await waitFor(() =>
-      expect(screen.getByTestId("location-probe")).toHaveTextContent("/research/session-1/node/parent"),
+      expect(screen.getByTestId("location-probe")).toHaveTextContent("/nodes/parent"),
     );
 
     await user.click(screen.getByTestId("graph-node-related"));
-    expect(screen.getByTestId("location-probe")).toHaveTextContent("/research/session-1/node/parent");
+    expect(screen.getByTestId("location-probe")).toHaveTextContent("/nodes/parent");
     expect(screen.getByText(/已聚焦：/)).toHaveTextContent("位置编码");
 
     await user.click(screen.getByTestId("graph-return-current"));
@@ -174,7 +174,7 @@ describe("GraphCanvas", () => {
     await user.click(screen.getByTestId("graph-node-related"));
     await user.click(screen.getByTestId("graph-open-focused"));
     await waitFor(() =>
-      expect(screen.getByTestId("location-probe")).toHaveTextContent("/research/session-1/node/related"),
+      expect(screen.getByTestId("location-probe")).toHaveTextContent("/nodes/related"),
     );
   });
 
@@ -208,7 +208,7 @@ describe("GraphCanvas", () => {
 
     await user.click(screen.getByTestId("graph-open-parent"));
     await waitFor(() =>
-      expect(screen.getByTestId("location-probe")).toHaveTextContent("/research/session-1/node/focus"),
+      expect(screen.getByTestId("location-probe")).toHaveTextContent("/nodes/focus"),
     );
     expect(onClose).toHaveBeenCalled();
   });

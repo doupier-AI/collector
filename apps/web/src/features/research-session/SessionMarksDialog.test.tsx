@@ -18,7 +18,7 @@ function renderDialog(api: Partial<ApiClient>, onClose = vi.fn()) {
   const services = { api: api as ApiClient } as unknown as AppServices;
   render(
     <ServicesProvider services={services}>
-      <MemoryRouter initialEntries={["/research/session-1/node/session-1"]}>
+      <MemoryRouter initialEntries={["/nodes/session-1"]}>
         <LocationProbe />
         <SessionMarksDialog sessionId="session-1" onClose={onClose} />
       </MemoryRouter>
@@ -84,7 +84,7 @@ describe("当前会话标记弹窗", () => {
 
     await user.click(await screen.findByTestId("mark-open-later-1"));
     expect(onClose).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId("location-probe")).toHaveTextContent("/research/session-1/node/session-1?sel=selection-9");
+    expect(screen.getByTestId("location-probe")).toHaveTextContent("/nodes/session-1?sel=selection-9");
 
     await user.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalledTimes(2);

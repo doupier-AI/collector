@@ -6,8 +6,14 @@ import { ResearchMapModule } from "../../features/navigation/ResearchMapModule";
 import { SIDEBAR_DEFAULT_WIDTH } from "./sidebar-width";
 import type { ResearchMapMode } from "../../features/navigation/useResearchMap";
 
-/** 顶栏“研究地图”按钮的目标：从当前路由解析会话与节点；不在研究页面时不提供入口。 */
-export function researchMapTargetForPath(pathname: string): { sessionId: string; nodeId: string } | null {
+/** 顶栏“研究地图”按钮的目标：从当前路由解析会话与节点；不在研究页面时不提供入口。
+ *  #61：稳定节点地址 /nodes/:nodeId 不含会话——sessionId 为 null，
+ *  由 ResearchMapModule 打开时按节点视图解析（会话图投影在 T03 才换全局观察）。 */
+export function researchMapTargetForPath(pathname: string): { sessionId: string | null; nodeId: string } | null {
+  const stableNodeMatch = pathname.match(/^\/nodes\/([^/]+)/);
+  if (stableNodeMatch) {
+    return { sessionId: null, nodeId: decodeURIComponent(stableNodeMatch[1]) };
+  }
   const nodeMatch = pathname.match(/^\/research\/([^/]+)\/node\/([^/]+)/);
   if (nodeMatch) {
     return { sessionId: decodeURIComponent(nodeMatch[1]), nodeId: decodeURIComponent(nodeMatch[2]) };

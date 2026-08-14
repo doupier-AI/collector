@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { ProjectRecord, ResearchSessionRecord } from "@collector/capture-contracts";
+import { stableNodePath } from "../../app/paths";
 import { useServices } from "../../app/services";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { PAIRED_EVENT } from "../auth/paired-event";
@@ -570,7 +571,7 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
                         ) : null}
                         <Link
                           className={`drawer__session${session.status === "archived" ? " drawer__session--archived" : ""}`}
-                          to={`/research/${encodeURIComponent(session.id)}`}
+                          to={stableNodePath(session.id)}
                           onClick={onNavigate}
                         >
                           <span className="drawer__session-title">
