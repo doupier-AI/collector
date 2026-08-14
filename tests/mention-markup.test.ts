@@ -109,3 +109,20 @@ test("深度二至三只接收少量核心提及，深度四停止新增提及�
   assert.equal(result.content, "概念1、概念2、概念3、概念4、概念5、概念6、概念7");
   assert.deepEqual(result.markers, []);
 });
+
+test("清洗器把原始输出范围映射到同一段干净正文，控制字段内端点诚实拒绝", () => {
+  const raw = "前文 [[concept:local-first:本地优先]] 之后是联网结论。";
+  const stream = new MentionMarkupStream({ messageId: "citation-answer", nodeDepth: 0 });
+  stream.push(raw);
+  const result = stream.finish();
+
+  const rawConclusionStart = raw.indexOf("联网结论");
+  const cleanConclusionStart = result.content.indexOf("联网结论");
+  assert.deepEqual(
+    stream.mapRawRange(rawConclusionStart, rawConclusionStart + "联网结论".length),
+    { startOffset: cleanConclusionStart, endOffset: cleanConclusionStart + "联网结论".length },
+  );
+
+  const hiddenIdentityStart = raw.indexOf("local-first");
+  assert.equal(stream.mapRawRange(hiddenIdentityStart, hiddenIdentityStart + 5), undefined);
+});

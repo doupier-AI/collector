@@ -148,7 +148,7 @@ async function waitForResearchTask(base: string, token: string, taskId: string, 
 }
 
 test("branch deep research creates branch before generation, completes, and keeps origin out of the main view", async (t) => {
-  const recording = recordingProvider();
+  const recording = recordingProvider("第一轮研究内容：[[concept:selection-context:选区与上下文]]形成确定性回答。");
   const harness = await createHarness({ researchProvider: recording.provider });
   t.after(() => harness.close());
   const { session, userMessage, assistantMessage } = await createSessionWithAnswer(harness);
@@ -205,7 +205,9 @@ test("branch deep research creates branch before generation, completes, and keep
   assert.equal(view.session.id, session.id);
   assert.equal(view.selection.text, "选区如何连接阅读与研究");
   assert.deepEqual(view.messages.map((message) => message.role), ["user", "assistant"]);
-  assert.equal(view.messages[1].content, "第一轮研究内容：基于选区与上下文的确定性回答。");
+  assert.equal(view.messages[1].content, "第一轮研究内容：选区与上下文形成确定性回答。");
+  const deepOutput = harness.store.getResearchMessage(accepted.outputMessage.id);
+  assert.deepEqual(deepOutput?.termMarkers?.map((marker) => marker.text), ["选区与上下文"]);
   assert.ok(view.messages.every((message) => message.branchId === accepted.branch!.id));
   assert.deepEqual(view.tasks.map((task) => task.id), [accepted.task.id]);
 

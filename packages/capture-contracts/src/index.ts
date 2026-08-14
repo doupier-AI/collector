@@ -2614,6 +2614,7 @@ export class MentionMarkupStream {
   private raw = "";
   private lastContent: string;
   private finished = false;
+  private rawToContentOffsets: Array<number | undefined> = [0];
 
   constructor(private readonly input: {
     messageId: string;
@@ -2636,8 +2637,29 @@ export class MentionMarkupStream {
     return this.snapshot(true);
   }
 
+  /**
+   * 把供应商基于原始模型输出给出的 UTF-16 范围换算到干净正文。
+   * 只有完成清洗后范围才稳定；端点落在被移除的控制字段内时返回 undefined，
+   * 让调用方诚实丢弃精确定位，而不是猜测一个看似接近的位置。
+   */
+  mapRawRange(startOffset: number, endOffset: number): { startOffset: number; endOffset: number } | undefined {
+    if (!this.finished
+      || !Number.isSafeInteger(startOffset)
+      || !Number.isSafeInteger(endOffset)
+      || startOffset < 0
+      || endOffset < startOffset
+      || endOffset > this.raw.length) return undefined;
+    const cleanStart = this.rawToContentOffsets[startOffset];
+    const cleanEnd = this.rawToContentOffsets[endOffset];
+    const seedOffset = this.input.seedContent?.length ?? 0;
+    return cleanStart !== undefined && cleanEnd !== undefined && cleanEnd >= cleanStart
+      ? { startOffset: seedOffset + cleanStart, endOffset: seedOffset + cleanEnd }
+      : undefined;
+  }
+
   private snapshot(final: boolean): MentionMarkupUpdate {
     const parsed = parseMentionMarkup(this.raw, final);
+    this.rawToContentOffsets = parsed.rawToContentOffsets;
     const seedContent = this.input.seedContent ?? "";
     const content = seedContent + parsed.content;
     if (!content.startsWith(this.lastContent)) {
@@ -2667,25 +2689,37 @@ export function termEntityCandidateKey(marker: Pick<TermMarker, "category" | "te
   return `${marker.category}:${normalizeMentionText(marker.text)}`;
 }
 
-function parseMentionMarkup(raw: string, final: boolean): { content: string; mentions: AbsoluteMention[] } {
+function parseMentionMarkup(raw: string, final: boolean): {
+  content: string;
+  mentions: AbsoluteMention[];
+  rawToContentOffsets: Array<number | undefined>;
+} {
   let content = "";
   const mentions: AbsoluteMention[] = [];
+  const rawToContentOffsets: Array<number | undefined> = new Array(raw.length + 1).fill(undefined);
+  const appendVisibleRaw = (start: number, end: number): void => {
+    const cleanStart = content.length;
+    content += raw.slice(start, end);
+    for (let offset = start; offset <= end; offset += 1) {
+      rawToContentOffsets[offset] = cleanStart + offset - start;
+    }
+  };
   let cursor = 0;
   while (cursor < raw.length) {
     const open = raw.indexOf("[[", cursor);
     if (open < 0) {
-      let tail = raw.slice(cursor);
-      if (!final && tail.endsWith("[")) tail = tail.slice(0, -1);
-      content += tail;
+      const end = !final && raw.endsWith("[") ? raw.length - 1 : raw.length;
+      appendVisibleRaw(cursor, end);
       break;
     }
-    content += raw.slice(cursor, open);
+    appendVisibleRaw(cursor, open);
     const close = raw.indexOf("]]", open + 2);
     if (close < 0) {
       const inner = raw.slice(open + 2);
       const definitelyMalformed = inner.includes("\n") || inner.length > MENTION_MARKUP_MAX_CONTROL_CHARACTERS;
       if (!final && !definitelyMalformed) break;
       content += fallbackMentionText(inner);
+      rawToContentOffsets[raw.length] = content.length;
       break;
     }
 
@@ -2697,25 +2731,42 @@ function parseMentionMarkup(raw: string, final: boolean): { content: string; men
       const startOffset = content.length;
       content += parsed.text;
       mentions.push({ ...parsed, startOffset, endOffset: content.length });
+      const rawTextStart = open + 2 + parsed.textStartOffset;
+      const rawTextEnd = open + 2 + parsed.textEndOffset;
+      for (let offset = rawTextStart; offset <= rawTextEnd; offset += 1) {
+        rawToContentOffsets[offset] = startOffset + offset - rawTextStart;
+      }
     }
+    rawToContentOffsets[open] ??= content.length - (parsed?.text.length ?? fallbackMentionText(inner).length);
+    rawToContentOffsets[close] = content.length;
+    rawToContentOffsets[close + 2] = content.length;
     cursor = close + 2;
   }
-  return { content, mentions };
+  if (raw.length === 0) rawToContentOffsets[0] = 0;
+  return { content, mentions, rawToContentOffsets };
 }
 
-function parseClosedMention(inner: string): Pick<AbsoluteMention, "text" | "category" | "answerLocalEntityId"> | undefined {
+function parseClosedMention(inner: string): Pick<AbsoluteMention, "text" | "category" | "answerLocalEntityId"> & {
+  textStartOffset: number;
+  textEndOffset: number;
+} | undefined {
   if (inner.includes("\n") || inner.includes("[[") || inner.includes("]]")) return undefined;
   const categorySeparator = inner.indexOf(":");
   const identitySeparator = inner.indexOf(":", categorySeparator + 1);
   if (categorySeparator <= 0 || identitySeparator <= categorySeparator + 1) return undefined;
   const category = inner.slice(0, categorySeparator).trim();
   const answerLocalEntityId = inner.slice(categorySeparator + 1, identitySeparator).trim();
-  const text = inner.slice(identitySeparator + 1).trim();
+  const rawText = inner.slice(identitySeparator + 1);
+  const leadingWhitespace = rawText.length - rawText.trimStart().length;
+  const trailingWhitespace = rawText.length - rawText.trimEnd().length;
+  const textStartOffset = identitySeparator + 1 + leadingWhitespace;
+  const textEndOffset = inner.length - trailingWhitespace;
+  const text = inner.slice(textStartOffset, textEndOffset);
   if (!isTermCategory(category)
     || !isAnswerLocalEntityId(answerLocalEntityId)
     || !text
     || text.length > MENTION_MARKUP_MAX_TEXT_CHARACTERS) return undefined;
-  return { text, category, answerLocalEntityId };
+  return { text, category, answerLocalEntityId, textStartOffset, textEndOffset };
 }
 
 function fallbackMentionText(inner: string): string {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ModelGateway, parseBodyOutline, parseSliceAnnotation, trimStream, type ModelCallEvent, type ModelProvider, type ModelProviderRequest, type ModelProviderStreamEvent } from "@collector/model-gateway";
+import { ModelGateway, parseBodyOutline, parseSliceAnnotation, trimStream, type GroundingModelProvider, type ModelCallEvent, type ModelProvider, type ModelProviderRequest, type ModelProviderStreamEvent } from "@collector/model-gateway";
 
 async function* toAsync(chunks: string[]): AsyncIterable<string> {
   for (const chunk of chunks) yield chunk;
@@ -17,6 +17,15 @@ function makeProvider(respond: (request: ModelProviderRequest) => string): { pro
     },
   };
   return { provider, requests };
+}
+
+function assertUnifiedMentionContract(prompt: string): void {
+  assert.match(prompt, /\[\[concept:concept-1:短语\]\]/);
+  assert.match(prompt, /\[\[entity:entity-1:短语\]\]/);
+  assert.match(prompt, /\[\[abbreviation:abbr-1:短语\]\]/);
+  assert.match(prompt, /\[\[notation:notation-1:短语\]\]/);
+  assert.match(prompt, /同一对象的重复提及必须复用同一个对象身份/);
+  assert.match(prompt, /同名异义对象必须使用不同对象身份/);
 }
 
 test("writeResearchBody 以自由文本请求正文，不强制 JSON 输出", async () => {
@@ -68,6 +77,61 @@ test("research body prompt uses the four explainable-object types and stops ment
     },
   });
   assert.match(deep.requests[0]?.prompt ?? "", /不要输出任何 \[\[/);
+});
+
+test("普通回答、深研、长文分节与融合正文共用回答内弱标记契约", async () => {
+  const regular = makeProvider(() => "普通回答");
+  await new ModelGateway(regular.provider).answerResearchConversation([{ role: "user", content: "解释" }]);
+  assertUnifiedMentionContract(regular.requests[0]?.prompt ?? "");
+
+  const deepResearch = makeProvider(() => "深入研究回答");
+  await new ModelGateway(deepResearch.provider).generateDeepResearchRound({
+    mode: "branch",
+    selectionText: "选区",
+    direction: "继续研究",
+  });
+  assertUnifiedMentionContract(deepResearch.requests[0]?.prompt ?? "");
+
+  const section = makeProvider(() => "分节正文");
+  await new ModelGateway(section.provider).expandBodySection({
+    goal: "写长文",
+    outline: parseBodyOutline(JSON.stringify({ sections: [{ heading: "一", summary: "说明", targetChars: 500 }] })),
+    sectionIndex: 0,
+    writtenSoFar: "",
+  });
+  assertUnifiedMentionContract(section.requests[0]?.prompt ?? "");
+
+  const fusion = makeProvider(() => "## 共同核心\n\n融合正文。[来源1]\n\n## 差异\n\n差异。[来源2]\n\n## 综合推导\n\n结论。");
+  await new ModelGateway(fusion.provider).composeFusion({
+    sources: [
+      { nodeId: "a", title: "A", excerpt: "来源 A" },
+      { nodeId: "b", title: "B", excerpt: "来源 B" },
+    ],
+    relationType: "contrast",
+  });
+  assertUnifiedMentionContract(fusion.requests[0]?.prompt ?? "");
+});
+
+test("原生联网请求由网关注入统一弱标记契约和深度规则", async () => {
+  let prompt = "";
+  const provider: GroundingModelProvider = {
+    name: "grounded-fake",
+    async complete() { throw new Error("complete should not be called"); },
+    async generateGroundedResearch(request) {
+      prompt = request.prompt;
+      return { content: "联网回答", status: "grounded", queries: [], sources: [], citations: [] };
+    },
+  };
+  const gateway = new ModelGateway(provider);
+  await gateway.generateGroundedResearch("需要联网回答的问题", {
+    taskId: "task-1",
+    scenario: "chat",
+    requireGrounding: true,
+    promptVersion: "grounding-v1",
+  }, { nodeDepth: 3 });
+
+  assertUnifiedMentionContract(prompt);
+  assert.match(prompt, /最多标记 4 个/);
 });
 
 test("generateBodyOutline 用 JSON 输出有序有界大纲", async () => {

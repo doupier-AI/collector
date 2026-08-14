@@ -443,16 +443,12 @@ export function parseAgentCitations(
   const sourceCount = sources.length;
   const markerPattern = /\[来源(\d+)\]/g;
   const citations: Array<{ sourceOrdinal: number; markerOffset: number }> = [];
-  let cleanOffset = 0;
-  let lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = markerPattern.exec(content)) !== null) {
     const sourceNum = Number(match[1]);
     if (sourceNum >= 1 && sourceNum <= sourceCount) {
-      // 计算标记之前的累积文本偏移
-      cleanOffset += content.slice(lastIndex, match.index).length;
-      citations.push({ sourceOrdinal: sourceNum, markerOffset: cleanOffset });
-      lastIndex = match.index + match[0].length;
+      // 正文已经过隐藏控制信息清洗；位置直接对齐最终消息文本。
+      citations.push({ sourceOrdinal: sourceNum, markerOffset: match.index });
     }
   }
   return { citations };

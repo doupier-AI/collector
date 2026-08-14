@@ -264,8 +264,11 @@ export function formatResearchParentChainContext(context?: ResearchParentChainCo
   return lines.join("\n");
 }
 
-/** AI 正文与弱标记共用的流内控制说明；深度只控制是否/多少标记，不直接控制预览字数。 */
-export function formatMentionMarkupInstructions(nodeDepth = 0): string {
+export type MentionMarkupScenario = "conversation" | "long_form_section" | "deep_research" | "grounded" | "fusion";
+
+/** AI 正文与弱标记共用的流内控制说明；场景只标识调用入口，深度决定是否/多少标记。 */
+export function formatMentionMarkupInstructions(input: { scenario: MentionMarkupScenario; nodeDepth: number }): string {
+  const { nodeDepth } = input;
   const density = resolveResearchConvergence({ nodeDepth }).termDensity;
   if (density === "stopped") {
     return "弱标记：当前研究路径已经足够深入。不要输出任何 [[ 控制标记；只输出干净正文。";
@@ -520,6 +523,15 @@ const AGENT_SEARCH_SYSTEM_PROMPT = `你是 Collector 的研究助手。你可以
 - 中文优先，使用中文关键词搜索；英文术语保留原样
 - 最多进行 5 轮搜索（web_search 调用次数），达到后请基于已有信息给出最佳回答`;
 
+/** Agent 联网回答与其它正文入口共用同一份弱标记策略。 */
+export function formatAgentSearchSystemPrompt(nodeDepth = 0): string {
+  return `${AGENT_SEARCH_SYSTEM_PROMPT}
+
+最终回答只输出连贯的中文正文，不返回 JSON、字段包装或 Markdown 代码围栏；按自然段落组织，段落之间留一个空行。
+
+${formatMentionMarkupInstructions({ scenario: "grounded", nodeDepth })}`;
+}
+
 /** web_search 和 web_fetch 工具的 OpenAI function tool 定义。 */
 const AGENT_SEARCH_TOOLS: ToolDefinition[] = [
   {
@@ -606,6 +618,41 @@ export class ModelGateway {
 
   get promptVersion(): string { return this.options.promptVersion ?? "knowledge-extraction-v1"; }
 
+  /** 供应商原生联网：统一注入正文弱标记契约，原始引用范围交由服务层在清洗后校正。 */
+  async generateGroundedResearch(
+    prompt: string,
+    grounding: ResearchGroundingRequest,
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number } = {},
+  ): Promise<GroundedResearchResponse> {
+    const provider = this.provider as Partial<GroundingModelProvider>;
+    if (typeof provider.generateGroundedResearch !== "function") {
+      throw new Error("Configured provider does not support native web grounding");
+    }
+    const request: ModelProviderRequest = {
+      prompt: `${prompt}\n\n${formatMentionMarkupInstructions({ scenario: "grounded", nodeDepth: options.nodeDepth ?? 0 })}`,
+      model: options.model ?? this.modelName,
+      maxTokens: options.maxTokens ?? 8_000,
+      timeoutMs: options.timeoutMs ?? 120_000,
+    };
+    const context = options.context ?? { purpose: "research_grounding", promptVersion: grounding.promptVersion };
+    const createdAt = new Date().toISOString();
+    const startedAt = Date.now();
+    try {
+      const result = await provider.generateGroundedResearch({
+        prompt: request.prompt,
+        model: request.model,
+        grounding,
+        maxTokens: request.maxTokens,
+        timeoutMs: request.timeoutMs,
+      });
+      await this.emitCompleted(context, request, startedAt, createdAt, { content: result.content, model: request.model });
+      return result;
+    } catch (error) {
+      await this.emitFailed(context, request, startedAt, createdAt, error);
+      throw error;
+    }
+  }
+
   async answerResearchConversation(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
     options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
@@ -614,7 +661,11 @@ export class ModelGateway {
     const parentContext = formatResearchParentChainContext(options.parentChainContext);
     const sliceContext = formatResearchSliceContext(options.sliceContext);
     // 自由正文：术语预览与旧式流式复用此能力，输出连续文本而非 JSON 包装。
-    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Output a coherent passage of plain text only — no JSON, no field wrappers, no Markdown code fences. Preserve uncertainty and never invent sources.\n\nConversation:\n${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
+    const mentionInstructions = formatMentionMarkupInstructions({
+      scenario: "conversation",
+      nodeDepth: options.parentChainContext?.currentNodeDepth ?? 0,
+    });
+    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Output a coherent passage of plain text only — no JSON, no field wrappers, no Markdown code fences. Preserve uncertainty and never invent sources.\n\n${mentionInstructions}\n\nConversation:\n${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
@@ -659,7 +710,10 @@ export class ModelGateway {
   ): string {
     const parentContext = formatResearchParentChainContext(parentChainContext);
     const sliceContextText = formatResearchSliceContext(sliceContext);
-    const mentionInstructions = formatMentionMarkupInstructions(parentChainContext?.currentNodeDepth ?? 0);
+    const mentionInstructions = formatMentionMarkupInstructions({
+      scenario: "conversation",
+      nodeDepth: parentChainContext?.currentNodeDepth ?? 0,
+    });
     return `你是 Collector 的研究助手。请回答用户最新的问题，输出一篇连贯、完整的中文正文。
 
 要求：
@@ -797,7 +851,10 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
     const continuation = input.continuation;
     // 断点前文只取尾部一段作衔接上下文，避免整节重复进入提示。
     const continuationTail = continuation ? continuation.priorSectionContent.slice(-500) : "";
-    const mentionInstructions = formatMentionMarkupInstructions(options.nodeDepth ?? 0);
+    const mentionInstructions = formatMentionMarkupInstructions({
+      scenario: "long_form_section",
+      nodeDepth: options.nodeDepth ?? 0,
+    });
     const prompt = `你是 Collector 的研究助手。你正在按大纲逐节撰写一篇连贯的中文长文，现在请只扩写其中一节。
 
 写作目标：${input.goal}
@@ -1022,7 +1079,7 @@ ${JSON.stringify(input.right.content.slice(0, 12_000))}
       sources: Array<{ nodeId: string; title: string; excerpt: string }>;
       relationType: FusionRelationType;
     },
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number } = {},
   ): Promise<string> {
     if (input.sources.length < 2) throw new Error("Fusion requires at least two sources");
     const relationGuidance: Record<FusionRelationType, string> = {
@@ -1036,6 +1093,7 @@ ${JSON.stringify(input.right.content.slice(0, 12_000))}
       const ordinal = index + 1;
       return `来源${ordinal}（${source.title}，节点 ${source.nodeId}）：\n${JSON.stringify(source.excerpt.slice(0, 8_000))}`;
     }).join("\n\n");
+    const mentionInstructions = formatMentionMarkupInstructions({ scenario: "fusion", nodeDepth: options.nodeDepth ?? 0 });
     const prompt = `你是 Collector 的融合总结助手。用户确认了 ${input.relationType} 关系，请把下面多个来源综合为一篇融合节点正文。
 
 关系判断：${relationGuidance[input.relationType]}
@@ -1048,7 +1106,9 @@ ${sourceLines}
 - 正文必须按顺序包含三个二级标题章节：## 共同核心、## 差异、## 综合推导。
   ## 共同核心 写各来源共同点；## 差异 写各来源差异（对比/类比关系时重点展开）；## 综合推导 写融合后的增量综合与结论。
 - 正文以 [来源n] 标记引用对应来源（n 为来源序号），同一处可同时引用多个来源如 [来源1][来源2]；每条断言都应可追溯到来源材料。
-- 只使用提供的来源材料，不补充外部事实、不编造来源。`;
+- 只使用提供的来源材料，不补充外部事实、不编造来源。
+
+${mentionInstructions}`;
     const context: ModelCallContext = {
       ...(options.context ?? {}),
       purpose: options.context?.purpose ?? "fusion_compose",
@@ -1087,6 +1147,10 @@ ${sourceLines}
     if (!input.direction.trim()) throw new Error("Deep research requires a research direction");
     const parentContext = formatResearchParentChainContext(input.parentChainContext);
     const sliceContext = formatResearchSliceContext(input.sliceContext);
+    const mentionInstructions = formatMentionMarkupInstructions({
+      scenario: "deep_research",
+      nodeDepth: input.parentChainContext?.currentNodeDepth ?? 0,
+    });
     // 自由正文：旧式流式深入研究复用此能力，输出连续文本而非 {"answer":...} JSON 包装。
     const prompt = `你是 Collector 的深入研究助手。用户从一段选区发起了深入研究第一轮。只使用下面提供的当前已有材料生成研究内容，不要联网检索，不要编造来源、链接或引用。只输出一段连贯的中文纯文本，不要返回 JSON、字段包装或 Markdown 代码围栏。
 
@@ -1105,7 +1169,9 @@ ${parentContext ? `\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext
 - 围绕用户方向，基于选区与上下文展开解释、拆解或延伸；
 - 只依据提供的材料，不编造外部事实、链接或来源；
 - 材料不足以支撑时在回答中如实说明不确定性；
-- 使用中文。`;
+- 使用中文。
+
+${mentionInstructions}`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
@@ -1219,6 +1285,7 @@ ${input.recentUserMessages?.length ? `\n用户最近关注的问题：\n${input.
       maxTurns?: number;
       systemPrompt?: string;
       context?: ModelCallContext;
+      nodeDepth?: number;
     } = {},
   ): Promise<AgentSearchResult> {
     if (typeof (this.provider as any).agentChat !== "function") {
@@ -1234,7 +1301,7 @@ ${input.recentUserMessages?.length ? `\n用户最近关注的问题：\n${input.
     }
 
     const messages: AgentChatMessage[] = [
-      { role: "system", content: options.systemPrompt ?? AGENT_SEARCH_SYSTEM_PROMPT },
+      { role: "system", content: options.systemPrompt ?? formatAgentSearchSystemPrompt(options.nodeDepth ?? 0) },
       { role: "user", content: userMessage },
     ];
 

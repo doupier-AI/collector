@@ -12,6 +12,7 @@ import {
 class ProgrammableAgentProvider extends FakeProvider {
   private agentChatResponses: AgentChatResponse[] = [];
   private agentCallCount = 0;
+  readonly systemPrompts: string[] = [];
 
   constructor() {
     super([]);
@@ -28,10 +29,11 @@ class ProgrammableAgentProvider extends FakeProvider {
   }
 
   async agentChat(
-    _messages: AgentChatMessage[],
+    messages: AgentChatMessage[],
     _tools: ToolDefinition[],
     _options: unknown,
   ): Promise<AgentChatResponse> {
+    if (typeof messages[0]?.content === "string") this.systemPrompts.push(messages[0].content);
     if (this.agentCallCount >= this.agentChatResponses.length) {
       throw new Error(`Unexpected agentChat call #${this.agentCallCount} (only ${this.agentChatResponses.length} responses provided)`);
     }
@@ -107,6 +109,8 @@ test("agent loop: single turn — model searches once then answers", async () =>
   assert.equal(result.queries[0], "AI 技术");
   assert.equal(result.sources.length, 1);
   assert.ok(result.content.includes("[来源1]"));
+  assert.match(provider.systemPrompts[0] ?? "", /\[\[concept:concept-1:短语\]\]/);
+  assert.match(provider.systemPrompts[0] ?? "", /同名异义对象必须使用不同对象身份/);
 });
 
 // ── 搜索 → 抓取 → 回答（两轮工具调用） ──

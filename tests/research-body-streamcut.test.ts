@@ -99,7 +99,7 @@ test("单轮流式 finishReason=length 触发续写（≤3），最终完成不�
   const provider = makeStreamProvider({
     calls,
     script: [
-      () => ({ deltas: ["前半段被截断"], finishReason: "length" }),
+      () => ({ deltas: ["[[concept:streamed-section:前半段]]被截断"], finishReason: "length" }),
       (resumeFrom) => ({ deltas: ["，续写补全后半段。"], finishReason: "stop" }),
     ],
   });
@@ -108,8 +108,9 @@ test("单轮流式 finishReason=length 触发续写（≤3），最终完成不�
   for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)!.status !== "completed"; i++) await new Promise((r) => setImmediate(r));
   assert.equal(store.getResearchTask(accepted.task.id)!.status, "completed");
   assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "前半段被截断，续写补全后半段。", "截断续写拼接完成");
+  assert.deepEqual(store.getResearchMessage(accepted.outputMessage.id)?.termMarkers?.map((marker) => marker.text), ["前半段"]);
   assert.equal(calls.length, 2, "截断 + 一次续写");
-  assert.ok(calls[1]?.resumeFrom?.includes("前半段被截断"));
+  assert.ok(calls[1]?.resumeFrom?.includes("streamed-section:前半段"), "续写提示保留回答内对象身份");
   store.close();
 });
 

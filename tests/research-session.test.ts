@@ -177,6 +177,28 @@ test("research generation persists clean text and in-stream mention ranges inste
   assert.equal(message?.termMarkers?.[0]?.startOffset, 3);
 });
 
+test("新 AI 消息缺少有效流内标记时保存明确空数组，不启用旧词法补标", async (t) => {
+  const provider: ResearchGenerationProvider = {
+    provider: "invalid-mention-fake",
+    model: "invalid-mention-1",
+    async *generate() {
+      yield "REST API 使用 [[concept:旧格式正文]]。";
+    },
+  };
+  const harness = await createHarness(provider);
+  t.after(() => harness.close());
+
+  const session = await harness.service.research.createSession("错误标记", randomUUID());
+  const accepted = await harness.service.research.submitMessage(session.id, "解释", randomUUID());
+  await waitForTask(harness.base, harness.token, accepted.task.id, "completed");
+
+  const message = harness.store.getResearchMessage(accepted.outputMessage.id);
+  assert.equal(message?.content, "REST API 使用 旧格式正文。");
+  assert.deepEqual(message?.termMarkers, []);
+  const view = await harness.service.getResearchNodeView(session.id);
+  assert.deepEqual(view.termDetections?.[accepted.outputMessage.id]?.terms, []);
+});
+
 test("research node view exposes validated H3b term positions without changing message text", async (t) => {
   const content = "**REST API** 在中文中也可读，HTTP 继续出现。";
   const provider: ResearchGenerationProvider = {

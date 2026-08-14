@@ -28,6 +28,7 @@ import {
   FUSION_COMPOSE_PROMPT_VERSION,
   SIMILARITY_VERIFICATION_PROMPT_VERSION,
   deriveBodyVersion,
+  deriveMessageBlocks,
   resolveFragmentExcerpt,
   researchFusionProposalId,
 } from "@collector/capture-contracts";
@@ -452,7 +453,7 @@ async function createFusionHarness(options?: { similarityVerifier?: SimilarityVe
     async composeFusion(request: { fusion: { sources: Array<{ title: string }> } }) {
       composeCalls += 1;
       return [
-        `## 共同核心\n\n${request.fusion.sources[0]?.title ?? ""}与${request.fusion.sources[1]?.title ?? ""}共享孙悟空概念。[来源1]`,
+        `## 共同核心\n\n${request.fusion.sources[0]?.title ?? ""}与${request.fusion.sources[1]?.title ?? ""}共享[[concept:sun-wukong:孙悟空]]概念。[来源1]`,
         "## 差异\n\n两者来自不同作品。[来源2]",
         "## 综合推导\n\n两个孙悟空是不同作品中的同名角色。",
       ].join("\n\n");
@@ -541,6 +542,15 @@ test("#31 confirmFusion runs the fusion task through the research pipeline and r
   assert.match(message?.content ?? "", /## 共同核心/);
   assert.match(message?.content ?? "", /## 差异/);
   assert.match(message?.content ?? "", /## 综合推导/);
+  assert.ok(!message?.content.includes("[["));
+  assert.deepEqual(message?.termMarkers?.map((marker) => marker.text), ["孙悟空"]);
+  const fusionBlocks = deriveMessageBlocks(message?.content ?? "");
+  for (const reference of task?.fusionReferences ?? []) {
+    assert.ok(
+      fusionBlocks[reference.blockOrdinal]?.text.slice(reference.markerOffset).startsWith(`[来源${reference.sourceOrdinal}]`),
+      "融合引用位置应对齐清洗后的正文",
+    );
+  }
 
   // 来源节点逐字节不变（验收 6）。
   assert.equal(store.getResearchMessage("message-a")?.content, "西游记中的孙悟空以反抗精神推动故事。");
