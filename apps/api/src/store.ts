@@ -1552,9 +1552,12 @@ export class SqliteStore implements CollectorStore {
         error: undefined, updatedAt: now, startedAt: undefined, completedAt: undefined,
       };
       // preserveContent：保留已写部分正文与事件流，供断流续传/截断续写从断点继续；默认清空重来。
+      // 默认重试清空正文时必须同事务清掉流内弱标记：标记只在当前正文版本有效（ADR-0028），
+      // 残留旧标记会让空正文消息携带不一致派生状态，甚至被下一次生成误当种子复用。
+      const { termMarkers: _staleMarkers, ...clearedMessage } = currentMessage;
       const message: ResearchMessageRecord = options?.preserveContent
         ? { ...currentMessage, updatedAt: now }
-        : { ...currentMessage, content: "", status: "pending", updatedAt: now };
+        : { ...clearedMessage, content: "", status: "pending", updatedAt: now };
       this.updateResearchMessage(message);
       this.updateResearchTask(queued);
       if (!options?.preserveContent) this.db().prepare("DELETE FROM research_task_events WHERE task_id = ?").run(task.id);

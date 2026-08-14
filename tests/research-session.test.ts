@@ -470,3 +470,42 @@ test("writeBody-only provider still works via the atomic fallback branch", async
   assert.equal(harness.store.getResearchMessage(accepted.outputMessage.id)?.content, "原子正文第一段。\n\n原子正文第二段。");
 });
 
+test("失败任务默认重试清空正文时同步清空弱标记（保留式重试不受影响）", async (t) => {
+  // 默认重试（非断点续传）清空正文重来；正文与弱标记必须同事务一起清，
+  // 否则空正文消息会携带旧正文版本的派生标记（ADR-0028 身份不跨版本继承）。
+  let attempt = 0;
+  const provider: ResearchGenerationProvider = {
+    provider: "retry-marker-fake",
+    model: "retry-marker-1",
+    async *generate() {
+      attempt += 1;
+      if (attempt === 1) {
+        yield "前半段提到 [[abbreviation:rag:RAG]]";
+        throw new Error("provider crashed mid-stream");
+      }
+      yield "完整回答 [[concept:local-first:本地优先]]。";
+    },
+  };
+  const harness = await createHarness(provider);
+  t.after(() => harness.close());
+  const session = await harness.service.research.createSession("重试清标记", randomUUID());
+  const accepted = await harness.service.research.submitMessage(session.id, "解释", randomUUID());
+  await waitForTask(harness.base, harness.token, accepted.task.id, "failed");
+
+  const failedMessage = harness.store.getResearchMessage(accepted.outputMessage.id);
+  assert.equal(failedMessage?.status, "failed");
+  assert.ok(failedMessage && failedMessage.content.length > 0);
+  assert.ok((failedMessage.termMarkers ?? []).length > 0);
+
+  const retried = await harness.service.research.retryTask(accepted.task.id);
+  assert.equal(retried.status, "queued");
+  const cleared = harness.store.getResearchMessage(accepted.outputMessage.id);
+  assert.equal(cleared?.content, "");
+  assert.equal(cleared?.termMarkers, undefined);
+
+  await waitForTask(harness.base, harness.token, accepted.task.id, "completed");
+  const regenerated = harness.store.getResearchMessage(accepted.outputMessage.id);
+  assert.equal(regenerated?.content, "完整回答 本地优先。");
+  assert.deepEqual(regenerated?.termMarkers?.map((marker) => marker.text), ["本地优先"]);
+});
+

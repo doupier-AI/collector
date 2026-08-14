@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { FUSION_COMPOSE_PROMPT_VERSION, FUSION_COMPOSE_TOKEN_BUDGET, FUSION_RELATION_TYPES, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, parseResearchSelectionInsight, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight, type ResearchSliceContext, type TermCategory } from "@collector/capture-contracts";
+import { FUSION_COMPOSE_PROMPT_VERSION, FUSION_COMPOSE_TOKEN_BUDGET, FUSION_RELATION_TYPES, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, TERM_IDENTITY_CONTEXT_MAX_CHARACTERS, TERM_IDENTITY_TEXT_MAX_CHARACTERS, TERM_IDENTITY_VERIFY_PROMPT_VERSION, parseResearchSelectionInsight, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight, type ResearchSliceContext, type TermIdentityVerificationRequest } from "@collector/capture-contracts";
 
 export interface ProviderUsage {
   inputTokens?: number;
@@ -918,20 +918,20 @@ ${JSON.stringify(input.content)}`;
   }
 
   /**
-   * 同一节点内的同名提及核验。输入只保留双方各 600 字局部语境；
-   * 文本相同不构成充分条件，同形异义或无法确定时必须返回 false。
+   * 同一节点内的同名提及核验。输入只保留双方各 600 字局部语境（上限与请求
+   * 结构由 @collector/capture-contracts 统一定义）；文本相同不构成充分条件，
+   * 同形异义或无法确定时必须返回 false。
    */
   async verifyTermIdentity(
-    input: {
-      left: { text: string; category: TermCategory; context: string };
-      right: { text: string; category: TermCategory; context: string };
-    },
+    input: TermIdentityVerificationRequest,
     options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
   ): Promise<boolean> {
-    const bounded = {
-      left: { ...input.left, text: input.left.text.slice(0, 200), context: input.left.context.slice(0, 600) },
-      right: { ...input.right, text: input.right.text.slice(0, 200), context: input.right.context.slice(0, 600) },
-    };
+    const boundMention = (mention: TermIdentityVerificationRequest["left"]) => ({
+      ...mention,
+      text: mention.text.slice(0, TERM_IDENTITY_TEXT_MAX_CHARACTERS),
+      context: mention.context.slice(0, TERM_IDENTITY_CONTEXT_MAX_CHARACTERS),
+    });
+    const bounded = { left: boundMention(input.left), right: boundMention(input.right) };
     const prompt = `你是 Collector 的实体身份核验助手。判断同一研究节点内的两处提及是否指向同一个可解释对象。
 
 只返回合法 JSON：{"sameEntity":true} 或 {"sameEntity":false}。
@@ -951,7 +951,7 @@ ${JSON.stringify(input.content)}`;
       thinking: false,
       maxTokens: options.maxTokens ?? 128,
       timeoutMs: options.timeoutMs ?? 30_000,
-    }, options.context ?? { purpose: "term_entity_verification", promptVersion: "term-entity-verify-v1" });
+    }, options.context ?? { purpose: "term_entity_verification", promptVersion: TERM_IDENTITY_VERIFY_PROMPT_VERSION });
     const parsed = JSON.parse(response.content) as { sameEntity?: unknown };
     if (typeof parsed.sameEntity !== "boolean") throw new Error("Term identity verification returned an invalid result");
     return parsed.sameEntity;

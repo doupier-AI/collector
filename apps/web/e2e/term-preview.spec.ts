@@ -18,7 +18,9 @@ test("H3c 悬停生成一次预览、离开后恢复进度，并用预览内容�
   await page.waitForURL(/\/research\/[^/]+\/node\/[^/]+$/, { timeout: 10_000 });
   const sessionId = page.url().split("/research/")[1]?.split("/")[0] ?? "";
   const rootNodeId = page.url().split("/node/")[1] ?? "";
-  const marker = page.locator(".message--assistant [data-term-marker]").first();
+  // 预览交互只随完成态挂载（流式期间标记先行显示但不挂交互）；等完成态包装出现再悬停，
+  // 否则悬停落在流式渲染的裸标记上，不会触发预览启动。
+  const marker = page.locator(".term-preview-surface [data-term-marker]").first();
   await expect(marker).toBeVisible({ timeout: 15_000 });
 
   const startResponse = page.waitForResponse((response) =>

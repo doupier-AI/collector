@@ -8,6 +8,7 @@ import {
   FUSION_COMPOSE_TOKEN_BUDGET,
   MAX_ARTIFACT_BYTES,
   MODEL_PURPOSES,
+  TERM_IDENTITY_VERIFY_PROMPT_VERSION,
   evidenceGradeFor,
   validateCaptureInput,
   type AiConfigurationView,
@@ -562,7 +563,7 @@ export class CaptureService {
         const purposeGateway = await service.gatewayForPurpose("extraction");
         if (!purposeGateway) throw new Error("AI model is not configured");
         return purposeGateway.verifyTermIdentity(input, {
-          context: { workflowRunId: "", purpose: "term_entity_verification", promptVersion: "term-entity-verify-v1" },
+          context: { workflowRunId: "", purpose: "term_entity_verification", promptVersion: TERM_IDENTITY_VERIFY_PROMPT_VERSION },
         });
       },
       // #31：确认式融合正文生成。独立提示词版本；来源切片 ID、片段 ID 与令牌预算

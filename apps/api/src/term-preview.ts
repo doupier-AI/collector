@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  TERM_IDENTITY_CONTEXT_MAX_CHARACTERS,
   deriveMessageBlocks,
   validateResearchTermPreviewInput,
   type ResearchMessageRecord,
@@ -21,7 +22,7 @@ export const TERM_PREVIEW_PROMPT_VERSION = "term-preview-v2";
 export const TERM_PREVIEW_MAX_CHARACTERS = 320;
 const MAX_SOURCE_CONTEXT_CHARACTERS = 12_000;
 const MAX_CONTEXT_EXCERPT_CHARACTERS = 240;
-const MAX_IDENTITY_CONTEXT_CHARACTERS = 600;
+const MAX_IDENTITY_CONTEXT_CHARACTERS = TERM_IDENTITY_CONTEXT_MAX_CHARACTERS;
 
 export class ResearchTermPreviewNotFoundError extends Error {}
 export class ResearchTermPreviewValidationError extends Error {}

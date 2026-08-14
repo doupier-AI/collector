@@ -2689,6 +2689,32 @@ export function termEntityCandidateKey(marker: Pick<TermMarker, "category" | "te
   return `${marker.category}:${normalizeMentionText(marker.text)}`;
 }
 
+// ── 节点内跨回答实体核验（ADR-0027） ─────────────────────────────
+
+/** 送往核验模型的每侧局部语境上限（字）；两侧各自适用。 */
+export const TERM_IDENTITY_CONTEXT_MAX_CHARACTERS = 600;
+/** 送往核验模型的单侧提及文字上限（字）。 */
+export const TERM_IDENTITY_TEXT_MAX_CHARACTERS = 200;
+/** 实体核验提示词版本；研究任务与模型网关留痕共用这一稳定版本。 */
+export const TERM_IDENTITY_VERIFY_PROMPT_VERSION = "term-entity-verify-v1";
+
+/** 实体核验的一侧提及：可见文字、类别与有界局部语境。 */
+export interface TermIdentityMention {
+  text: string;
+  category: TermCategory;
+  context: string;
+}
+
+/**
+ * 同一研究节点跨回答实体核验的统一请求结构（ADR-0027）。研究任务与模型
+ * 网关共同使用这一份定义，不各自维护重复结构；两侧文字与语境在发送前
+ * 分别按上限截断。
+ */
+export interface TermIdentityVerificationRequest {
+  left: TermIdentityMention;
+  right: TermIdentityMention;
+}
+
 function parseMentionMarkup(raw: string, final: boolean): {
   content: string;
   mentions: AbsoluteMention[];

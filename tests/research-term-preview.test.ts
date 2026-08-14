@@ -70,6 +70,17 @@ async function waitForPreview(base: string, token: string, previewId: string, st
   throw new Error(`Term preview did not reach ${status}`);
 }
 
+async function waitForTask(base: string, token: string, taskId: string, status: "completed" | "failed") {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const response = await fetch(`${base}/v1/research-tasks/${taskId}`, { headers: headers(token) });
+    assert.equal(response.status, 200);
+    const task = await response.json() as { status: string; [key: string]: unknown };
+    if (task.status === status) return task;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Research task did not reach ${status}`);
+}
+
 function providerWithAnswer(answer: string, requests: ResearchGenerationRequest[]) : ResearchGenerationProvider {
   return {
     provider: "term-preview-provider",
@@ -425,5 +436,183 @@ test("term preview failure keeps partial content, retries, and marks interrupted
   assert.equal(restarted.retryable, true);
   assert.equal(restarted.error?.code, "service_restarted");
   assert.equal(restarted.content, "saved before restart");
+  reopenedStore.close();
+});
+
+test("same text with different answer-local identities in one answer gets separate previews without verification", async (t) => {
+  let identityChecks = 0;
+  const provider: ResearchGenerationProvider = {
+    provider: "identity-split-provider",
+    model: "identity-split-model",
+    async *generate(request) {
+      yield request.messages[0]?.content.includes("请解释当前回答中的")
+        ? "preview"
+        : "[[abbreviation:rest-style:REST]] as an architectural style, while [[abbreviation:rest-break:REST]] means taking a break.";
+    },
+    async verifyTermIdentity() {
+      identityChecks += 1;
+      return true;
+    },
+  };
+  const harness = await createHarness({ provider });
+  t.after(() => harness.close());
+
+  const sessionResponse = await postJson(harness.base, harness.token, "/v1/research-sessions", {}, randomUUID());
+  assert.equal(sessionResponse.status, 201);
+  const session = await sessionResponse.json() as { id: string };
+  const turnResponse = await postJson(
+    harness.base,
+    harness.token,
+    `/v1/research-sessions/${session.id}/messages`,
+    { content: "Explain the two meanings of REST" },
+    randomUUID(),
+  );
+  assert.equal(turnResponse.status, 202);
+  const turn = await turnResponse.json() as { task: { id: string } };
+  await waitForTask(harness.base, harness.token, turn.task.id, "completed");
+
+  const viewResponse = await fetch(`${harness.base}/v1/research-nodes/${session.id}`, { headers: headers(harness.token) });
+  assert.equal(viewResponse.status, 200);
+  const view = await viewResponse.json() as {
+    messages: Array<{ id: string; role: string }>;
+    termDetections?: Record<string, { terms: TermMarker[] }>;
+  };
+  const assistant = view.messages.find((message) => message.role === "assistant");
+  assert.ok(assistant);
+  const mentions = view.termDetections?.[assistant.id]?.terms.filter((candidate) => candidate.text === "REST") ?? [];
+  assert.equal(mentions.length, 2);
+  assert.notEqual(mentions[0]?.entityId, mentions[1]?.entityId);
+
+  const first = await postJson(harness.base, harness.token, `/v1/research-nodes/${session.id}/term-previews`, { messageId: assistant.id, marker: mentions[0] }, randomUUID());
+  const second = await postJson(harness.base, harness.token, `/v1/research-nodes/${session.id}/term-previews`, { messageId: assistant.id, marker: mentions[1] }, randomUUID());
+  assert.equal(first.status, 202);
+  assert.equal(second.status, 202);
+  const firstAccepted = await first.json() as { preview: { id: string } };
+  const secondAccepted = await second.json() as { preview: { id: string } };
+  assert.notEqual(secondAccepted.preview.id, firstAccepted.preview.id);
+  // 同一回答内的复用只按回答内身份判断，不触发跨消息实体核验。
+  assert.equal(identityChecks, 0);
+});
+
+test("same-node verification error regenerates an independent preview", async (t) => {
+  let checks = 0;
+  const provider: ResearchGenerationProvider = {
+    provider: "term-identity-provider",
+    model: "term-identity-model",
+    async *generate() { yield "preview"; },
+    async verifyTermIdentity() {
+      checks += 1;
+      throw new Error("verification provider unavailable");
+    },
+  };
+  const harness = await createHarness({ provider, autoRunResearchTasks: false });
+  t.after(() => harness.close());
+
+  const first = await createCompletedAssistant(harness, "REST is the architectural style used by this service.");
+  const firstPreview = await harness.service.termPreviews.start(
+    first.node.id,
+    { messageId: first.assistant.id, marker: first.marker },
+    "verification-error-first",
+  );
+  const second = await appendCompletedAssistant(
+    harness,
+    first.node,
+    "In this same service discussion, REST continues to describe that architectural style.",
+  );
+  const independent = await harness.service.termPreviews.start(
+    first.node.id,
+    { messageId: second.assistant.id, marker: second.marker },
+    "verification-error-second",
+  );
+
+  // 核验失败一律视为不同实体：不复用、不污染新预览任务。
+  assert.notEqual(independent.preview.id, firstPreview.preview.id);
+  assert.equal(checks, 1);
+});
+
+test("same-node reuse is skipped entirely when no model is available for verification", async (t) => {
+  const harness = await createHarness({ autoRunResearchTasks: false });
+  t.after(() => harness.close());
+
+  const first = await createCompletedAssistant(harness, "REST is the architectural style used by this service.");
+  const firstPreview = await harness.service.termPreviews.start(
+    first.node.id,
+    { messageId: first.assistant.id, marker: first.marker },
+    "model-missing-first",
+  );
+  const second = await appendCompletedAssistant(
+    harness,
+    first.node,
+    "In this same service discussion, REST continues to describe that architectural style.",
+  );
+  const independent = await harness.service.termPreviews.start(
+    first.node.id,
+    { messageId: second.assistant.id, marker: second.marker },
+    "model-missing-second",
+  );
+
+  // 模型不可用时不复用：为当前提及创建独立的预览任务（生成失败由任务自身承载）。
+  assert.notEqual(independent.preview.id, firstPreview.preview.id);
+});
+
+test("body, markers, and completed preview survive a process restart", async (t) => {
+  const previewAnswer = "REST API explains how HTTP clients communicate with a service.";
+  const mainAnswer = "[[abbreviation:rest:REST]] API explains how [[abbreviation:http:HTTP]] clients communicate with a service.";
+  const provider: ResearchGenerationProvider = {
+    provider: "restart-consistency-provider",
+    model: "restart-consistency-model",
+    async *generate(request) {
+      yield request.messages[0]?.content.includes("请解释当前回答中的") ? previewAnswer : mainAnswer;
+    },
+  };
+  const harness = await createHarness({ provider });
+  t.after(() => harness.close());
+
+  const sessionResponse = await postJson(harness.base, harness.token, "/v1/research-sessions", {}, randomUUID());
+  assert.equal(sessionResponse.status, 201);
+  const session = await sessionResponse.json() as { id: string };
+  const turnResponse = await postJson(
+    harness.base,
+    harness.token,
+    `/v1/research-sessions/${session.id}/messages`,
+    { content: "Explain REST API and HTTP" },
+    randomUUID(),
+  );
+  assert.equal(turnResponse.status, 202);
+  const turn = await turnResponse.json() as { task: { id: string } };
+  await waitForTask(harness.base, harness.token, turn.task.id, "completed");
+
+  const viewResponse = await fetch(`${harness.base}/v1/research-nodes/${session.id}`, { headers: headers(harness.token) });
+  assert.equal(viewResponse.status, 200);
+  const view = await viewResponse.json() as {
+    messages: Array<{ id: string; role: string }>;
+    termDetections?: Record<string, { terms: TermMarker[] }>;
+  };
+  const assistant = view.messages.find((message) => message.role === "assistant");
+  assert.ok(assistant);
+  const marker = view.termDetections?.[assistant.id]?.terms.find((candidate) => candidate.text === "REST");
+  assert.ok(marker);
+  const startResponse = await postJson(harness.base, harness.token, `/v1/research-nodes/${session.id}/term-previews`, { messageId: assistant.id, marker }, randomUUID());
+  assert.equal(startResponse.status, 202);
+  const accepted = await startResponse.json() as { preview: { id: string } };
+  const completed = await waitForPreview(harness.base, harness.token, accepted.preview.id, "completed") as unknown as { content: string };
+  assert.equal(completed.content, previewAnswer);
+
+  const persisted = harness.store.getResearchMessage(assistant.id);
+  assert.ok(persisted);
+  assert.ok((persisted.termMarkers ?? []).length >= 2);
+  const databasePath = harness.store.getDataFilePath()!;
+  harness.store.close();
+
+  const reopenedStore = new SqliteStore(databasePath);
+  await reopenedStore.init();
+  const restoredMessage = reopenedStore.getResearchMessage(assistant.id);
+  assert.ok(restoredMessage);
+  assert.equal(restoredMessage.content, persisted.content);
+  assert.ok(!restoredMessage.content.includes("[["));
+  assert.deepEqual(restoredMessage.termMarkers, persisted.termMarkers);
+  const restoredPreview = reopenedStore.getResearchTermPreview(accepted.preview.id);
+  assert.equal(restoredPreview?.status, "completed");
+  assert.equal(restoredPreview?.content, previewAnswer);
   reopenedStore.close();
 });

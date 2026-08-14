@@ -35,7 +35,7 @@ import {
   ResearchTaskRecord,
   ResearchTurnAccepted,
   type ResearchSliceContext,
-  type TermCategory,
+  type TermIdentityVerificationRequest,
 } from "@collector/capture-contracts";
 import type { ResearchStore } from "./store.js";
 import { ParentChainContextService, type ParentChainContextResult } from "./parent-chain-context.js";
@@ -87,10 +87,8 @@ export interface ResearchGenerationRequest {
   fusionPlan?: { sources: ResearchFusionSource[]; relationType: import("@collector/capture-contracts").FusionRelationType };
 }
 
-export interface TermIdentityVerificationRequest {
-  left: { text: string; category: TermCategory; context: string };
-  right: { text: string; category: TermCategory; context: string };
-}
+/** 实体核验请求结构集中在 @collector/capture-contracts（ADR-0027），研究任务与模型网关共用一份定义。 */
+export type { TermIdentityVerificationRequest } from "@collector/capture-contracts";
 
 export interface ResearchGenerationProvider {
   readonly provider: string;
