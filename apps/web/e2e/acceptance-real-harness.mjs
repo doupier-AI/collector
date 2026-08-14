@@ -31,6 +31,8 @@ import { CaptureService, LocalAuth, SqliteStore, createApiServer, startBrowserBo
 import { DEFAULT_PROVIDER_REGISTRY, ProviderRuntimeResolver, fingerprintBaseUrl } from "@collector/model-gateway";
 
 const port = Number(process.env.E2E_API_PORT ?? "43211");
+// e2e 放宽配对码 TTL 到 1 小时：长套件中测试排队消费现铸码，TTL 过短会触发限流级联。
+process.env.COLLECTOR_E2E_PAIRING_TTL_MS ??= String(60 * 60 * 1000);
 
 const e2eDir = dirname(fileURLToPath(import.meta.url));
 const runtimeDir = join(e2eDir, ".runtime");

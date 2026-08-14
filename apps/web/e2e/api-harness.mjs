@@ -20,6 +20,8 @@ import { CaptureService, LocalAuth, SqliteStore, createApiServer, startBrowserBo
 import { ModelProviderHttpError } from "@collector/model-gateway";
 
 const port = Number(process.env.E2E_API_PORT ?? "43211");
+// e2e 放宽配对码 TTL 到 1 小时：长套件中测试排队消费现铸码，TTL 过短会触发限流级联。
+process.env.COLLECTOR_E2E_PAIRING_TTL_MS ??= String(60 * 60 * 1000);
 const modelMode = process.env.E2E_MODEL ?? "fake";
 // #32：相似性核验的确定性关系类型（identity | shared-concept | analogy | contrast）。
 // 缺省 contrast 与 #31 行为一致；identity 用于自动融合高置信路径的 e2e。

@@ -43,13 +43,25 @@ export default defineConfig({
       stdout: "ignore",
       stderr: "pipe",
     },
+    // 视觉基线独立 harness：z-visual-baseline 等顺序敏感的像素基线必须跑在
+    // 独享数据库上，避免 settings-ai-model 等共享库配置测试改变服务端状态
+    // （modelError 置位→页头文案变化→整页像素偏移）导致基线失配（#61 复盘）。
+    {
+      command: "node e2e/api-harness.mjs",
+      url: "http://127.0.0.1:43214/health",
+      reuseExistingServer: false,
+      env: { E2E_API_PORT: "43214", E2E_MODEL: "fake" },
+      stdout: "ignore",
+      stderr: "pipe",
+    },
   ],
   projects: [
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"], baseURL: "http://127.0.0.1:43211" },
       // z-auto-fusion（identity 高置信）由 chromium-autofusion（43213）承担；-off 用例用 contrast，留在本 project。
-      testIgnore: /(?:no-model|z-acceptance-real|z-auto-fusion)\.spec\.ts/,
+      // z-visual-baseline 等像素基线由 chromium-visual（43214 独享库）承担，与共享库污染隔离。
+      testIgnore: /(?:no-model|z-acceptance-real|z-auto-fusion|z-visual-baseline)\.spec\.ts/,
     },
     {
       name: "chromium-nomodel",
@@ -63,6 +75,11 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"], baseURL: "http://127.0.0.1:43213" },
       testMatch: /z-auto-fusion\.spec\.ts/,
       retries: 1,
+    },
+    {
+      name: "chromium-visual",
+      use: { ...devices["Desktop Chrome"], baseURL: "http://127.0.0.1:43214" },
+      testMatch: /z-visual-baseline\.spec\.ts/,
     },
   ],
 });
