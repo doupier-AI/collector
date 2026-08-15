@@ -48,6 +48,7 @@ function renderShell(initialEntry = "/") {
           <Route element={<AppShell />}>
             <Route index element={<p>主页内容</p>} />
             <Route path="nodes/:nodeId" element={<p>节点内容</p>} />
+            <Route path="map" element={<p>研究图谱页面</p>} />
           </Route>
         </Routes>
       </MemoryRouter>
@@ -134,7 +135,12 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
     expect(within(nav).getByRole("button", { name: "收起侧栏" })).toBeInTheDocument();
     expect(within(nav).getByRole("button", { name: "搜索会话" })).toBeInTheDocument();
     expect(within(nav).getByRole("link", { name: "新建会话" })).toHaveAttribute("href", "/research/new");
+    expect(within(nav).getByRole("link", { name: "研究图谱" })).toHaveAttribute("href", "/map");
     expect(within(nav).getByRole("separator", { name: "调整内容侧栏宽度" })).toBeInTheDocument();
+    const detailTop = nav.querySelector(".side-detail__top") as HTMLElement;
+    for (const label of ["收起侧栏", "会话", "研究图谱", "搜索会话", "新建会话"]) {
+      expect(within(detailTop).getByText(label)).toBeVisible();
+    }
 
     // 收起：真实整体收起为 rail——详情（最近研究/手柄）消失，只剩图标 rail
     await user.click(within(nav).getByRole("button", { name: "收起侧栏" }));
@@ -143,6 +149,7 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
     expect(within(nav).getByRole("link", { name: "会话" })).toBeInTheDocument();
     expect(within(nav).getByRole("button", { name: "展开侧栏" })).toBeInTheDocument();
     expect(within(nav).getByRole("button", { name: "主题：跟随系统" })).toBeInTheDocument();
+    expect(nav.querySelector(".side-detail__top")).not.toBeInTheDocument();
     // 再展开：恢复完整侧栏
     await user.click(within(nav).getByRole("button", { name: "展开侧栏" }));
     expect(within(nav).getByText("最近研究")).toBeInTheDocument();
@@ -172,15 +179,30 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
     const labels = (container: HTMLElement) =>
       Array.from(container.querySelectorAll(".side-rail__button")).map((el) => el.getAttribute("aria-label"));
 
-    // 展开态顶部按钮组：收起在最上方第一个，随后 会话/搜索/新建
+    // 展开态顶部按钮组：收起在最上方第一个，随后 会话/研究图谱/搜索/新建
     const detailTop = nav.querySelector(".side-detail__top") as HTMLElement;
-    expect(labels(detailTop)).toEqual(["收起侧栏", "会话", "搜索会话", "新建会话"]);
+    expect(labels(detailTop)).toEqual(["收起侧栏", "会话", "研究图谱", "搜索会话", "新建会话"]);
 
     // 收起态 rail 顶部集群与展开态同序：展开在最上方第一个
     await user.click(within(nav).getByRole("button", { name: "收起侧栏" }));
     const rail = nav.querySelector(".side-rail") as HTMLElement;
-    // rail 顶部四个与展开态顶部一一对应（收起↔展开是同一开关的两态）
-    expect(labels(rail).slice(0, 4)).toEqual(["展开侧栏", "会话", "搜索会话", "新建会话"]);
+    // rail 顶部五个与展开态顶部一一对应（收起↔展开是同一开关的两态）
+    expect(labels(rail).slice(0, 5)).toEqual(["展开侧栏", "会话", "研究图谱", "搜索会话", "新建会话"]);
+  });
+
+  it("研究图谱入口在所有页面可用，进入 /map 后具有当前页状态", async () => {
+    stubMatchMedia(true);
+    const user = userEvent.setup();
+    renderShell("/map");
+
+    const nav = await screen.findByRole("navigation", { name: "内容导航" });
+    const mapLink = within(nav).getByRole("link", { name: "研究图谱" });
+    expect(mapLink).toHaveAttribute("href", "/map");
+    expect(mapLink).toHaveAttribute("aria-current", "page");
+    expect(screen.getByText("研究图谱页面")).toBeInTheDocument();
+
+    await user.click(within(nav).getByRole("button", { name: "收起侧栏" }));
+    expect(within(nav).getByRole("link", { name: "研究图谱" })).toHaveAttribute("aria-current", "page");
   });
 
   it("顶部搜索：展开输入框按标题过滤会话", async () => {
@@ -219,6 +241,12 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
     await user.type(within(nav).getByRole("searchbox", { name: "搜索会话标题" }), "苏格拉底");
     expect(within(nav).getByText("苏格拉底追问")).toBeInTheDocument();
     expect(within(nav).queryByText("庄子蝴蝶梦")).not.toBeInTheDocument();
+
+    // 点击搜索框以外的正文：取消搜索输入并清空本次筛选。
+    await user.click(screen.getByText("主页内容"));
+    expect(within(nav).queryByRole("searchbox", { name: "搜索会话标题" })).not.toBeInTheDocument();
+    expect(within(nav).getByText("苏格拉底追问")).toBeInTheDocument();
+    expect(within(nav).getByText("庄子蝴蝶梦")).toBeInTheDocument();
   });
 });
 

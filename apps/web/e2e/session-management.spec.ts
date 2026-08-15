@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { apiJson, apiPortForPage, pairAndOpen, readDataDir, readResearchTables, trackBrowserIssues } from "./helpers";
 
 const QUESTION = "什么是本地优先研究？";
@@ -194,17 +194,125 @@ test("会话管理全流程：项目分组 → 改名 → 归档 → 软删/回�
   expect(consoleIssues.issues, consoleIssues.issues.join("\n")).toEqual([]);
 });
 
+test("侧栏项目菜单可重命名项目", async ({ page }) => {
+  const consoleIssues = trackBrowserIssues(page);
+  const suffix = Date.now().toString(36);
+  const originalName = `待改名项目-${suffix}`;
+  const renamedName = `已改名项目-${suffix}`;
+
+  await pairAndOpen(page, "/research/new");
+  const nav = page.getByRole("navigation", { name: "内容导航" });
+  await page.getByRole("button", { name: "＋ 新建项目" }).click();
+  await page.getByLabel("新项目名称").fill(originalName);
+  await page.getByRole("button", { name: "创建" }).click();
+
+  await projectMenuButton(page, originalName).click();
+  await page.getByRole("menuitem", { name: "重命名" }).click();
+  const renameInput = page.getByRole("textbox", { name: "重命名" });
+  await expect(renameInput).toBeFocused();
+
+  // 输入草稿后点击侧栏外的正文：取消重命名且不保存；再次打开恢复原名称。
+  await renameInput.fill(`不保存-${suffix}`);
+  await page.getByRole("heading", { name: "从一个问题开始" }).click();
+  await expect(renameInput).toBeHidden();
+  await expect(nav.getByRole("button", { name: new RegExp(`^${originalName}\\s*\\(`) })).toBeVisible();
+  await projectMenuButton(page, originalName).click();
+  await page.getByRole("menuitem", { name: "重命名" }).click();
+  await expect(renameInput).toHaveValue(originalName);
+
+  await renameInput.fill(renamedName);
+  await renameInput.press("Enter");
+  await expect(nav.getByRole("button", { name: new RegExp(`^${renamedName}\\s*\\(`) })).toBeVisible();
+
+  await page.reload();
+  await expect(nav.getByRole("button", { name: new RegExp(`^${renamedName}\\s*\\(`) })).toBeVisible();
+  expect(consoleIssues.issues, consoleIssues.issues.join("\n")).toEqual([]);
+});
+
+test("侧栏单行输入框具有足够尺寸与实体表面", async ({ page }) => {
+  const consoleIssues = trackBrowserIssues(page);
+  await page.setViewportSize({ width: 1175, height: 1272 });
+  await pairAndOpen(page, "/map");
+
+  const nav = page.getByRole("navigation", { name: "内容导航" });
+  await nav.getByRole("button", { name: "搜索会话" }).click();
+  const searchInput = nav.getByRole("searchbox", { name: "搜索会话标题" });
+  await expect(searchInput).toBeFocused();
+  const inputStyle = (input: Locator) =>
+    input.evaluate((node) => {
+      const element = node as HTMLInputElement;
+      const styles = getComputedStyle(element);
+      const parentBackground = element.parentElement ? getComputedStyle(element.parentElement).backgroundColor : "";
+      return {
+        height: element.getBoundingClientRect().height,
+        paddingLeft: Number.parseFloat(styles.paddingLeft),
+        borderRadius: Number.parseFloat(styles.borderRadius),
+        background: styles.backgroundColor,
+        parentBackground,
+      };
+    });
+
+  const searchStyles = await inputStyle(searchInput);
+  await expect.poll(() => searchInput.evaluate((input) => getComputedStyle(input).boxShadow)).not.toBe("none");
+
+  // 点击搜索框外的正文会取消搜索框；随后单独检查新建项目输入，避免两个临时编辑器同时占用侧栏。
+  await page.getByRole("heading", { name: "研究图谱", exact: true }).click();
+  await expect(searchInput).toBeHidden();
+  await nav.getByRole("button", { name: /新建项目/ }).click();
+  const projectInput = nav.getByRole("textbox", { name: "新项目名称" });
+  await expect(projectInput).toBeFocused();
+  const projectStyles = await inputStyle(projectInput);
+  const inputStyles = [searchStyles, projectStyles];
+
+  for (const styles of inputStyles) {
+    expect(styles.height, "单行输入框点击高度至少 44px").toBeGreaterThanOrEqual(44);
+    expect(styles.paddingLeft, "输入文字与边界保留足够内边距").toBeGreaterThanOrEqual(12);
+    expect(styles.borderRadius, "输入框使用产品圆角层级").toBeGreaterThanOrEqual(10);
+    expect(styles.background, "输入框必须有非透明实体底色").not.toBe("rgba(0, 0, 0, 0)");
+    expect(styles.background, "输入框实体底色需与周围容器形成层次").not.toBe(styles.parentBackground);
+  }
+
+  await page.getByRole("heading", { name: "研究图谱", exact: true }).click();
+  await expect(projectInput).toBeHidden();
+  expect(await sidebarHorizontalScrollers(page), "增大输入框后侧栏不应出现横向滚动条").toEqual([]);
+  expect(consoleIssues.issues, consoleIssues.issues.join("\n")).toEqual([]);
+});
+
 test("单层级侧栏：收展无残留 + 底部设置聚合菜单真实导航（#54 / ADR-0020）", async ({ page }) => {
   const browserIssues = trackBrowserIssues(page);
   await pairAndOpen(page, "/research/new");
   const nav = page.getByRole("navigation", { name: "内容导航" });
   await expect(nav).toBeVisible();
 
-  // 展开态：顶部按钮组（收起/搜索/新建会话）+ 完整侧栏
+  // 展开态：顶部五个按钮都有可见名称，整行可点；收起态才只保留图标。
   await expect(nav.getByRole("button", { name: "收起侧栏" })).toBeVisible();
   await expect(nav.getByRole("button", { name: "搜索会话" })).toBeVisible();
   await expect(nav.getByRole("link", { name: "新建会话" })).toBeVisible();
   await expect(nav.getByText("最近研究")).toBeVisible();
+  const detailTop = nav.locator(".side-detail__top");
+  for (const label of ["收起侧栏", "会话", "研究图谱", "搜索会话", "新建会话"]) {
+    const visibleLabel = detailTop.getByText(label, { exact: true });
+    await expect(visibleLabel).toBeVisible();
+    const textFits = await visibleLabel.evaluate((element) => element.scrollWidth <= element.clientWidth + 1);
+    expect(textFits, `${label}名称必须完整显示，不能被省略`).toBe(true);
+  }
+  const expandedRows = detailTop.locator(".side-rail__button");
+  await expect(expandedRows).toHaveCount(5);
+  for (let index = 0; index < 5; index += 1) {
+    const box = await expandedRows.nth(index).boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.width, "展开态按钮应为足够宽的整行点击区域").toBeGreaterThanOrEqual(176);
+    expect(box!.height, "侧栏按钮点击高度至少 40px").toBeGreaterThanOrEqual(40);
+  }
+  await detailTop.getByText("搜索会话", { exact: true }).click();
+  await expect(nav.getByRole("searchbox", { name: "搜索会话标题" })).toBeFocused();
+  await detailTop.getByText("搜索会话", { exact: true }).click();
+  await expect(nav.getByRole("searchbox", { name: "搜索会话标题" })).toBeHidden();
+  const expandedIconBoxes = await Promise.all(
+    ["收起侧栏", "会话", "研究图谱", "搜索会话", "新建会话"].map((label) =>
+      nav.getByLabel(label, { exact: true }).locator("svg").boundingBox(),
+    ),
+  );
 
   // 展开态底部保持单列：主题必须完整落在设置下方，不能并排跑到设置右侧。
   const settingsBox = await nav.getByRole("button", { name: "设置" }).boundingBox();
@@ -231,10 +339,27 @@ test("单层级侧栏：收展无残留 + 底部设置聚合菜单真实导航�
 
   // 收起为干净图标 rail：详情（最近研究/设置文字钮）消失，只剩图标，无残留窄条
   await nav.getByRole("button", { name: "收起侧栏" }).click();
+  await expect(nav).toHaveCSS("width", "64px");
   await expect(nav.getByText("最近研究")).not.toBeVisible();
   await expect(nav.getByRole("button", { name: "展开侧栏" })).toBeVisible();
   await expect(nav.getByRole("link", { name: "会话", exact: true })).toBeVisible();
   await expect(nav.getByRole("button", { name: "主题：跟随系统" })).toBeVisible();
+  const collapsedLabels = nav.locator(".side-rail .side-rail__label");
+  for (let index = 0; index < (await collapsedLabels.count()); index += 1) {
+    await expect(collapsedLabels.nth(index)).toBeHidden();
+  }
+  const collapsedIconBoxes = await Promise.all(
+    ["展开侧栏", "会话", "研究图谱", "搜索会话", "新建会话"].map((label) =>
+      nav.getByLabel(label, { exact: true }).locator("svg").boundingBox(),
+    ),
+  );
+  expandedIconBoxes.forEach((expandedBox, index) => {
+    const collapsedBox = collapsedIconBoxes[index];
+    expect(expandedBox).not.toBeNull();
+    expect(collapsedBox).not.toBeNull();
+    expect(Math.abs(expandedBox!.x - collapsedBox!.x), "收展时图标横坐标不跳变").toBeLessThan(1);
+    expect(Math.abs(expandedBox!.y - collapsedBox!.y), "收展时图标纵坐标不跳变").toBeLessThan(1);
+  });
 
   // 收起态点「设置」：一次点击同时展开侧栏并打开菜单，无需先手动展开
   await nav.getByRole("button", { name: "设置" }).click();
@@ -348,6 +473,9 @@ test("⋯ 菜单在可滚动侧栏中不漂移不被裁剪（#10）", async ({ p
   await nav.getByRole("button", { name: /新建项目/ }).click();
   await nav.getByLabel("新项目名称").fill(`菜单定位-${RUN_SUFFIX}`);
   await nav.getByRole("button", { name: /^创建$/ }).click();
+  // 等项目创建引发的列表刷新落定再点 ⋯：非乐观插入，全量共享库下刷新可能在菜单打开后才到达，
+  // 侧栏重排的滚动会让「滚动即关闭」把刚打开的菜单收掉。
+  await expect(nav.getByRole("button", { name: new RegExp(`^菜单定位-${RUN_SUFFIX}\\s*\\(`) })).toBeVisible();
 
   // 打开会话 ⋯ 菜单：应为 fixed 定位（position: fixed），脱离滚动容器
   const trigger = sessionMenuButton(page, OWN_QUESTION).first();

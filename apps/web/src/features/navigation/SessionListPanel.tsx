@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { ProjectRecord, ResearchSessionRecord } from "@collector/capture-contracts";
 import { stableNodePath } from "../../app/paths";
@@ -32,11 +32,17 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
   // ⋯ 菜单：menuFor 标记目标 id；anchor 为触发按钮的视口坐标，菜单 position:fixed 按此定位（不随滚动容器漂移/裁剪）。
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [menuAnchor, setMenuAnchor] = useState<{ top: number; left: number } | null>(null);
+  // 触发按钮与菜单节点引用：滚动期间按按钮实时位置重锚（见下方 scroll effect）。
+  const menuTriggerRef = useRef<HTMLElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [creatingProject, setCreatingProject] = useState(false);
   const [submittingProject, setSubmittingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
+  const newProjectButtonRef = useRef<HTMLButtonElement | null>(null);
+  const createProjectFormRef = useRef<HTMLDivElement | null>(null);
+  const renameFormRef = useRef<HTMLDivElement | null>(null);
   // 批量选择模式
   const [selectionMode, setSelectionMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -74,6 +80,40 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
     localStorage.setItem("collector:session-collapsed", JSON.stringify(collapsed));
   }, [collapsed]);
 
+  const cancelCreatingProject = useCallback(() => {
+    setCreatingProject(false);
+    setNewProjectName("");
+  }, []);
+
+  const cancelRename = useCallback(() => {
+    setRenaming(null);
+    setRenameValue("");
+  }, []);
+
+  const toggleCreatingProject = () => {
+    if (creatingProject) cancelCreatingProject();
+    else setCreatingProject(true);
+  };
+
+  // 新建项目和 inline 重命名都是临时编辑器：点到输入区及其提交按钮之外即取消，不静默保存草稿。
+  useEffect(() => {
+    if (!creatingProject && !renaming) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (
+        creatingProject &&
+        !createProjectFormRef.current?.contains(target) &&
+        !newProjectButtonRef.current?.contains(target)
+      ) {
+        cancelCreatingProject();
+      }
+      if (renaming && !renameFormRef.current?.contains(target)) cancelRename();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [cancelCreatingProject, cancelRename, creatingProject, renaming]);
+
   const toggleCollapsed = (projectId: string) => {
     setCollapsed((prev) => ({ ...prev, [projectId]: !prev[projectId] }));
   };
@@ -82,6 +122,19 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
   const closeMenu = () => {
     setMenuFor(null);
     setMenuAnchor(null);
+    menuTriggerRef.current = null;
+  };
+
+  // 贴按钮下缘、右对齐按钮右缘；横向钳制在 CSS（max-width + 右侧 inset）兜底。
+  // 纵向在此钳制：按钮靠近视口底缘时，贴下缘会把菜单顶出底部（max-height 只限高、不移位），
+  // 与浮动胶囊同一类「只翻转不钳制」缺口。打开瞬间菜单未挂载，先按估计高预钳；
+  // 挂载后的精钳见 menuRef effect，滚动重锚时直接用真实高度。
+  const anchorForTrigger = (trigger: HTMLElement): { top: number; left: number } => {
+    const rect = trigger.getBoundingClientRect();
+    const margin = 8;
+    const height = menuRef.current?.offsetHeight ?? Math.min(320, window.innerHeight - margin * 2);
+    const top = Math.min(rect.bottom + 4, Math.max(margin, window.innerHeight - height - margin));
+    return { top, left: rect.right };
   };
 
   const openMenu = (target: string, event: React.MouseEvent<HTMLElement>) => {
@@ -89,20 +142,13 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
       closeMenu();
       return;
     }
-    const rect = event.currentTarget.getBoundingClientRect();
-    // 贴按钮下缘、右对齐按钮右缘；横向钳制在 CSS（max-width + 右侧 inset）兜底。
-    // 纵向在此钳制：按钮靠近视口底缘时，贴下缘会把菜单顶出底部（max-height 只限高、不移位），
-    // 与浮动胶囊同一类「只翻转不钳制」缺口。先按估计高预钳，挂载后用真实高再精钳（见 menuRef effect）。
-    const margin = 8;
-    const estimated = Math.min(320, window.innerHeight - margin * 2);
-    const top = Math.min(rect.bottom + 4, Math.max(margin, window.innerHeight - estimated - margin));
-    setMenuAnchor({ top, left: rect.right });
+    menuTriggerRef.current = event.currentTarget;
+    setMenuAnchor(anchorForTrigger(event.currentTarget));
     setMenuFor(target);
   };
 
   // 菜单挂载后用真实高度精钳 top：估计高偏保守，真实高更矮时把菜单对齐到「底缘贴视口底 - 边距」，
   // 既消除底部溢出又避免过高估计把菜单抬得离触发按钮太远。
-  const menuRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!menuFor || !menuAnchor) return;
     const el = menuRef.current;
@@ -117,16 +163,35 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
     // 仅在打开的目标/锚点变化时精钳一次
   }, [menuFor]);
 
-  // 菜单打开期间滚动/resize 会使锚点失效：直接关闭，避免固定在旧坐标漂移。
+  // 菜单打开期间的滚动分两类：用户真实滚动让按钮移动，菜单跟随按钮重锚（始终贴住，不漂走）；
+  // 后台列表刷新引发的滚动锚定补偿只调整 scrollTop、按钮视口位置不变，重锚后坐标相同即无感。
+  // 触发按钮滚出视口或被刷新移除时关闭；resize 改变视口几何直接关闭。
   useEffect(() => {
     if (!menuFor) return;
-    const onScrollOrResize = () => closeMenu();
+    const onScroll = (event: Event) => {
+      if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
+      const trigger = menuTriggerRef.current;
+      if (!trigger || !trigger.isConnected) {
+        closeMenu();
+        return;
+      }
+      const rect = trigger.getBoundingClientRect();
+      if (rect.bottom < 0 || rect.top > window.innerHeight) {
+        closeMenu();
+        return;
+      }
+      setMenuAnchor((prev) => {
+        const next = anchorForTrigger(trigger);
+        return prev && prev.top === next.top && prev.left === next.left ? prev : next;
+      });
+    };
+    const onResize = () => closeMenu();
     // capture=true 捕获侧栏滚动容器内的滚动（overflow 容器滚动不冒泡到 window）。
-    window.addEventListener("scroll", onScrollOrResize, true);
-    window.addEventListener("resize", onScrollOrResize);
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
     return () => {
-      window.removeEventListener("scroll", onScrollOrResize, true);
-      window.removeEventListener("resize", onScrollOrResize);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
     };
   }, [menuFor]);
 
@@ -310,21 +375,22 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
     return (
       <div className="drawer__sessions">
         <p className="drawer__empty">还没有研究会话。写下第一个问题，Collector 会为你保存这次研究。</p>
-        <button type="button" className="drawer__new-project" onClick={() => setCreatingProject((value) => !value)}>
+        <button ref={newProjectButtonRef} type="button" className="drawer__new-project" onClick={toggleCreatingProject}>
           ＋ 新建项目
         </button>
         {creatingProject ? (
-          <div className="drawer__inline-create">
+          <div ref={createProjectFormRef} className="drawer__inline-create">
             <input
               type="text"
               className="input"
               value={newProjectName}
               maxLength={40}
               aria-label="新项目名称"
+              autoFocus
               onChange={(event) => setNewProjectName(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter") void handleCreateProject();
-                if (event.key === "Escape") setCreatingProject(false);
+                if (event.key === "Escape") cancelCreatingProject();
               }}
             />
             <button type="button" className="button button--secondary" disabled={submittingProject} onClick={() => void handleCreateProject()}>
@@ -360,7 +426,7 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
   const visibleGroups = normalizedQuery ? groups.filter((group) => group.sessions.length > 0) : groups;
 
   const renderInlineRename = (target: string) => (
-    <div className="drawer__inline-rename">
+    <div ref={renameFormRef} className="drawer__inline-rename">
       <input
         type="text"
         className="input"
@@ -371,7 +437,7 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
         onChange={(event) => setRenameValue(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Enter") void commitRename(target);
-          if (event.key === "Escape") setRenaming(null);
+          if (event.key === "Escape") cancelRename();
         }}
       />
       <button type="button" className="button button--secondary" onClick={() => void commitRename(target)}>
@@ -457,7 +523,7 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
     <div className="drawer__sessions">
       {/* 顶部工具栏：新建项目上移到标题行下，始终可见；选择模式入口 */}
       <div className="drawer__toolbar">
-        <button type="button" className="drawer__new-project" onClick={() => setCreatingProject((value) => !value)}>
+        <button ref={newProjectButtonRef} type="button" className="drawer__new-project" onClick={toggleCreatingProject}>
           ＋ 新建项目
         </button>
         <button
@@ -473,17 +539,18 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
         </button>
       </div>
       {creatingProject ? (
-        <div className="drawer__inline-create">
+        <div ref={createProjectFormRef} className="drawer__inline-create">
           <input
             type="text"
             className="input"
             value={newProjectName}
             maxLength={40}
             aria-label="新项目名称"
+            autoFocus
             onChange={(event) => setNewProjectName(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter") void handleCreateProject();
-              if (event.key === "Escape") setCreatingProject(false);
+              if (event.key === "Escape") cancelCreatingProject();
             }}
           />
           <button type="button" className="button button--secondary" disabled={submittingProject} onClick={() => void handleCreateProject()}>
@@ -501,7 +568,7 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
         return (
           <section key={group.projectId ?? "unclassified"} className="drawer__group">
             <div className="drawer__group-head">
-              {selectionMode ? (
+              {selectionMode && renaming !== group.projectId ? (
                 <button
                   type="button"
                   className="drawer__group-select"
@@ -515,25 +582,29 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
                 </button>
               ) : null}
               {group.projectId !== null ? (
-                <button
-                  type="button"
-                  className="drawer__group-toggle"
-                  aria-expanded={!isCollapsed}
-                  onClick={() => toggleCollapsed(group.projectId as string)}
-                >
-                  <span className={`drawer__group-caret${isCollapsed ? " drawer__group-caret--closed" : ""}`} aria-hidden="true">
-                    ▾
-                  </span>
-                  {group.title}
-                  <span className="drawer__group-count">({group.sessions.length})</span>
-                </button>
+                renaming === group.projectId ? (
+                  renderInlineRename(group.projectId)
+                ) : (
+                    <button
+                      type="button"
+                      className="drawer__group-toggle"
+                      aria-expanded={!isCollapsed}
+                      onClick={() => toggleCollapsed(group.projectId as string)}
+                    >
+                      <span className={`drawer__group-caret${isCollapsed ? " drawer__group-caret--closed" : ""}`} aria-hidden="true">
+                        ▾
+                      </span>
+                      {group.title}
+                      <span className="drawer__group-count">({group.sessions.length})</span>
+                    </button>
+                )
               ) : (
                 <span className="drawer__group-title">
                   {group.title}
                   <span className="drawer__group-count">({group.sessions.length})</span>
                 </span>
               )}
-              {group.projectId !== null ? (
+              {group.projectId !== null && renaming !== group.projectId ? (
                 <button
                   type="button"
                   className="drawer__group-more"

@@ -46,6 +46,10 @@
   box-shadow: var(--ring-focus);
 }
 
+.side-rail__label {
+  display: none;
+}
+
 .side-rail__spacer {
   flex: 1;
 }
@@ -83,7 +87,7 @@
   height: 100%;
 }
 
-/* 顶部按钮组：收起 / 会话 / 搜索 / 新建会话（+ overlay 关闭）。
+/* 顶部按钮组：收起 / 会话 / 研究图谱 / 搜索 / 新建会话（+ overlay 关闭）。
  * 竖向排列（flex-direction: column），与收起态 rail 同一方向、同一网格——
  * 收展切换时「收起/展开」按钮始终在最上方第一个、所有同名按钮位置不跳变。
  * 网格对齐：detail 自身 padding 为 0.875rem/1rem，这里用负 margin 把按钮组拉回
@@ -91,9 +95,33 @@
 .side-detail__top {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  align-items: stretch;
   gap: var(--space-2);
   margin: calc(var(--space-3) - 0.875rem) 0 0 calc(0.75rem - 1rem);
+}
+
+.side-detail__top .side-rail__button {
+  grid-template-columns: 2.5rem minmax(0, 1fr);
+  place-items: center stretch;
+  width: 100%;
+}
+
+.side-detail__top .side-rail__button > svg {
+  justify-self: center;
+}
+
+.side-detail__top .side-rail__label {
+  display: block;
+  min-width: 0;
+  padding: 0 var(--space-3) 0 var(--space-2);
+  overflow: hidden;
+  color: inherit;
+  font-size: var(--font-size-caption);
+  font-weight: 500;
+  line-height: 1.2;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .side-detail__search {

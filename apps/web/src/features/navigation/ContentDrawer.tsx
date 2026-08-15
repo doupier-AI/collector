@@ -3,6 +3,7 @@ import { Link, useLocation } from "react-router-dom";
 import { SidebarResizeHandle } from "../../components/AppShell/SidebarResizeHandle";
 import { ThemeSwitcher } from "../theme/theme";
 import { SessionListPanel } from "./SessionListPanel";
+import { ResearchMapGlyph } from "./ResearchMapGlyph";
 
 export interface ContentDrawerProps {
   /** fixed：宽屏固定侧栏（可拖拽调宽）；overlay：窄屏覆盖抽屉（遮罩 + Escape）。 */
@@ -20,7 +21,7 @@ export const DETAIL_WIDTH = 320;
 
 const SIDEBAR_COLLAPSED_KEY = "collector:sidebar-collapsed";
 
-/** 侧栏图标按钮：图标 + aria-label；激活态高亮。收起态与展开态顶部共用。 */
+/** 侧栏导航按钮：收起态只显示图标，展开态同时显示可见名称；aria-label 始终保留。 */
 function RailButton({
   label,
   active = false,
@@ -48,11 +49,12 @@ function RailButton({
       onClick={onClick}
     >
       {children}
+      <span className="side-rail__label">{label}</span>
     </button>
   );
 }
 
-/** 侧栏图标链接：真实导航到对应页面；激活态由调用方按业务语义给定（aria-current="page"）。
+/** 侧栏导航链接：真实导航到对应页面；激活态由调用方按业务语义给定（aria-current="page"）。
  *  用普通 Link 而非 NavLink：激活条件是业务判断（如「当前在研究区任意路径」），不是 URL 前缀匹配。 */
 function RailLink({
   label,
@@ -76,6 +78,7 @@ function RailLink({
       onClick={onClick}
     >
       {children}
+      <span className="side-rail__label">{label}</span>
     </Link>
   );
 }
@@ -147,8 +150,8 @@ function SidebarGlyph({ isLeftPanel = true }: { isLeftPanel?: boolean }) {
 
 /**
  * 左侧内容导航：单层级可整体收展侧栏（取代旧双层级 rail + detail）。
- * - 展开态：顶部按钮组（收起/搜索/新建会话）+ 会话分组列表 + 底部设置聚合菜单与主题口。
- * - 收起态：一条干净的可点图标 rail（会话/搜索/新建会话，底部设置/主题/展开），无残留窄条。
+ * - 展开态：顶部按钮组（收起/会话/研究图谱/搜索/新建会话）+ 会话分组列表 + 底部设置聚合菜单与主题口。
+ * - 收起态：一条干净的可点图标 rail（会话/研究图谱/搜索/新建会话，底部设置/主题/展开），无残留窄条。
  * 两种状态是同一容器内的互斥视图，收起是真实整体收起到 rail，不是只隐藏详情内容。
  * 宽屏（≥900px）固定侧栏、可拖拽调宽；窄屏覆盖抽屉：Escape 关闭，打开时焦点进入。
  * 收展状态持久化到 localStorage；章节导航使用独立布局轨道，不依赖该状态。
@@ -169,6 +172,8 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
+  const searchButtonRef = useRef<HTMLButtonElement>(null);
+  const searchAreaRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -194,12 +199,30 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
     if (searchOpen) searchInputRef.current?.focus();
   }, [searchOpen]);
 
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setQuery("");
+  }, []);
+
+  // 搜索是侧栏内的临时输入：点击输入区域和触发按钮以外的位置时取消，并丢弃本次筛选词。
+  useEffect(() => {
+    if (!searchOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (searchAreaRef.current?.contains(target) || searchButtonRef.current?.contains(target)) return;
+      closeSearch();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [closeSearch, searchOpen]);
+
   const expand = useCallback(() => setCollapsed(false), []);
   const collapse = useCallback(() => {
     setCollapsed(true);
     setSettingsOpen(false);
-    setSearchOpen(false);
-  }, []);
+    closeSearch();
+  }, [closeSearch]);
 
   /* 窄屏 overlay 下「关闭」= 外部 onClose 或回退为「收起回窄 rail」（rail 常驻模型）。 */
   const close = useCallback(() => {
@@ -227,11 +250,13 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
   const handleNavigate = useCallback(() => {
     if (mode === "overlay") close();
     setSettingsOpen(false);
-  }, [mode, close]);
+    closeSearch();
+  }, [mode, close, closeSearch]);
 
   const { pathname } = useLocation();
   // #61：研究区 = 首页恢复入口、旧会话路径（转向中）与稳定节点地址
   const sessionsActive = pathname === "/" || pathname.startsWith("/research") || pathname.startsWith("/nodes");
+  const mapActive = pathname === "/map" || pathname.startsWith("/map/");
   const openSearch = useCallback(() => {
     setCollapsed(false);
     setSearchOpen(true);
@@ -272,7 +297,7 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
       >
         {collapsed ? (
           /* ── 收起态：干净的可点图标 rail ──
-           * 顶部顺序与展开态完全一致（收起/展开 → 会话 → 搜索 → 新建），且共用同一网格
+           * 顶部顺序与展开态完全一致（收起/展开 → 会话 → 研究图谱 → 搜索 → 新建），且共用同一网格
            * （左偏移、顶偏移、间距），收展切换时同名按钮位置零跳变。 */
           <div className="side-rail" aria-label="侧栏导航">
             <RailButton label="展开侧栏" onClick={expand}>
@@ -280,6 +305,9 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
             </RailButton>
             <RailLink label="会话" to="/" active={sessionsActive} onClick={handleNavigate}>
               <SessionsGlyph />
+            </RailLink>
+            <RailLink label="研究图谱" to="/map" active={mapActive} onClick={handleNavigate}>
+              <ResearchMapGlyph />
             </RailLink>
             <RailButton label="搜索会话" onClick={openSearch}>
               <SearchGlyph />
@@ -307,7 +335,15 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
               <RailLink label="会话" to="/" active={sessionsActive} onClick={handleNavigate}>
                 <SessionsGlyph />
               </RailLink>
-              <RailButton label="搜索会话" pressed={searchOpen} onClick={() => setSearchOpen((value) => !value)}>
+              <RailLink label="研究图谱" to="/map" active={mapActive} onClick={handleNavigate}>
+                <ResearchMapGlyph />
+              </RailLink>
+              <RailButton
+                label="搜索会话"
+                pressed={searchOpen}
+                buttonRef={searchButtonRef}
+                onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
+              >
                 <SearchGlyph />
               </RailButton>
               <RailLink label="新建会话" to="/research/new" onClick={handleNavigate}>
@@ -321,7 +357,7 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
             </div>
 
             {searchOpen ? (
-              <div className="side-detail__search">
+              <div ref={searchAreaRef} className="side-detail__search">
                 <input
                   ref={searchInputRef}
                   type="search"
@@ -333,8 +369,7 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
                   onKeyDown={(event) => {
                     if (event.key === "Escape") {
                       event.stopPropagation();
-                      setQuery("");
-                      setSearchOpen(false);
+                      closeSearch();
                     }
                   }}
                 />

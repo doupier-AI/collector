@@ -6,6 +6,7 @@ import { useServices } from "../../app/services";
 import { PairingGate } from "../auth/PairingGate";
 import { ChatComposer } from "../chat-composer/ChatComposer";
 import { IMPORT_ACCEPT, importUploadErrorCopy, resolveImportMimeType, validateImportFile } from "../imports/import-file";
+import { ModelStatusIndicator } from "./ModelStatusIndicator";
 
 /**
  * 开始页：Chat 与文件导入是并列入口。
@@ -170,6 +171,9 @@ export function StartPage() {
       </div>
       <h1 className="page__title">从一个问题开始</h1>
       <p className="page__lead">写下你正在理解的内容，Collector 会保存这次研究，并让你随时回来继续。也可以直接拖入文件开始。</p>
+      <div className="start-page__model-picker">
+        <ModelStatusIndicator variant="picker" />
+      </div>
       <ChatComposer
         draftScope="new"
         submitLabel="开始研究"

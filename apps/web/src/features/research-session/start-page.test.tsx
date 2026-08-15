@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
+import type { AiConfigurationView, ProviderProfile } from "@collector/capture-contracts";
 import type { ApiClient } from "../../api/client";
 import { NetworkError } from "../../api/errors";
 import { ServicesProvider } from "../../app/services";
@@ -44,6 +45,35 @@ function makeTxtFile(name = "test.txt", content = "hello world"): File {
 }
 
 describe("StartPage 会话创建", () => {
+  it("在发送前显示当前模型并可切换到另一套可用配置", async () => {
+    const user = userEvent.setup();
+    const now = "2026-08-10T00:00:00.000Z";
+    const active: ProviderProfile = {
+      id: "profile-1", providerId: "deepseek", displayName: "快速模型", baseUrl: "https://api.deepseek.com",
+      model: "deepseek-v4-flash", credentialConfigured: true, enabled: true, configurationVersion: 1, createdAt: now, updatedAt: now,
+    };
+    const precise: ProviderProfile = { ...active, id: "profile-2", displayName: "精确模型", model: "deepseek-v4-pro" };
+    const initialConfig: AiConfigurationView = {
+      consent: true, configured: true, mode: "real", provider: "deepseek", model: active.model, providerProfileId: active.id,
+    };
+    const activateProviderProfile = vi.fn<ApiClient["activateProviderProfile"]>().mockResolvedValue(precise);
+    const getAiConfiguration = vi.fn<ApiClient["getAiConfiguration"]>()
+      .mockResolvedValueOnce(initialConfig)
+      .mockResolvedValue({ ...initialConfig, model: precise.model, providerProfileId: precise.id });
+
+    renderStartPage({
+      getAiConfiguration,
+      listProviderProfiles: vi.fn<ApiClient["listProviderProfiles"]>().mockResolvedValue([active, precise]),
+      activateProviderProfile,
+    });
+
+    await user.click(await screen.findByRole("button", { name: /选择模型，模型：deepseek · deepseek-v4-flash/ }));
+    await user.click(await screen.findByRole("menuitem", { name: /精确模型（deepseek · deepseek-v4-pro）/ }));
+
+    expect(activateProviderProfile).toHaveBeenCalledWith("profile-2");
+    expect(await screen.findByRole("button", { name: /选择模型，模型：deepseek · deepseek-v4-pro/ })).toBeInTheDocument();
+  });
+
   it("结果不确定后重试复用同一个创建幂等键", async () => {
     const user = userEvent.setup();
     const createResearchSession = vi

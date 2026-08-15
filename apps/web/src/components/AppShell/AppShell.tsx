@@ -3,6 +3,7 @@ import { Outlet, useLocation } from "react-router-dom";
 import { useMediaQuery } from "../../app/useMediaQuery";
 import { ContentDrawer } from "../../features/navigation/ContentDrawer";
 import { ResearchMapModule } from "../../features/navigation/ResearchMapModule";
+import { ResearchMapGlyph } from "../../features/navigation/ResearchMapGlyph";
 import { SIDEBAR_DEFAULT_WIDTH } from "./sidebar-width";
 import type { ResearchMapMode } from "../../features/navigation/useResearchMap";
 
@@ -95,13 +96,7 @@ export function AppShell() {
             aria-controls="research-map-overlay"
             onClick={() => setMapOpen(true)}
           >
-            <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
-              <circle cx="10" cy="4.5" r="2" fill="none" stroke="currentColor" strokeWidth="1.5" />
-              <circle cx="5" cy="15.5" r="2" fill="none" stroke="currentColor" strokeWidth="1.5" />
-              <circle cx="15" cy="15.5" r="2" fill="none" stroke="currentColor" strokeWidth="1.5" />
-              <line x1="8.5" y1="6" x2="6" y2="14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              <line x1="11.5" y1="6" x2="14" y2="14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
+            <ResearchMapGlyph />
           </button>
         ) : null}
       </header>

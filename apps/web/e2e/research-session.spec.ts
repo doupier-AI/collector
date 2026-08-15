@@ -45,6 +45,21 @@ test("首次打开显示开始页与空状态邀请", async ({ page }) => {
   await expect(page.getByText(/还没有研究会话/)).toBeVisible();
 });
 
+test("开始页可查看模型并用 Escape 单独关闭选择菜单", async ({ page }) => {
+  await pairAndOpen(page, "/research/new");
+
+  const nav = page.getByRole("navigation", { name: "内容导航" });
+  const picker = page.getByRole("button", { name: /选择模型/ });
+  await expect(picker).toBeVisible();
+
+  await picker.click();
+  await expect(page.getByRole("menu", { name: "切换模型配置" })).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  await expect(page.getByRole("menu", { name: "切换模型配置" })).toBeHidden();
+  await expect(nav.getByRole("button", { name: "收起侧栏" })).toBeVisible();
+});
+
 test("提交后渐进内容进入同一条 AI 消息并完成，控制台无错误，网络符合契约", async ({ page }) => {
   const consoleIssues: string[] = [];
   const apiRequests: Array<{ method: string; url: string; headers: Record<string, string> }> = [];

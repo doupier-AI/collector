@@ -94,21 +94,28 @@ describe("ModelStatusIndicator 快速切换", () => {
 
   it("点击遮罩或按 Escape 关闭菜单", async () => {
     const user = userEvent.setup();
-    renderIndicator({
-      getAiConfiguration: vi.fn<ApiClient["getAiConfiguration"]>().mockResolvedValue(activeConfig),
-      listProviderProfiles: vi.fn<ApiClient["listProviderProfiles"]>().mockResolvedValue([makeProfile()]),
-    });
+    const escapedToPage = vi.fn();
+    document.addEventListener("keydown", escapedToPage);
+    try {
+      renderIndicator({
+        getAiConfiguration: vi.fn<ApiClient["getAiConfiguration"]>().mockResolvedValue(activeConfig),
+        listProviderProfiles: vi.fn<ApiClient["listProviderProfiles"]>().mockResolvedValue([makeProfile()]),
+      });
 
-    const toggle = await screen.findByRole("button", { name: /模型：openai/ });
-    await user.click(toggle);
-    expect(await screen.findByRole("menu")).toBeInTheDocument();
+      const toggle = await screen.findByRole("button", { name: /模型：openai/ });
+      await user.click(toggle);
+      expect(await screen.findByRole("menu")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "关闭模型切换菜单" }));
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "关闭模型切换菜单" }));
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
 
-    await user.click(toggle);
-    expect(await screen.findByRole("menu")).toBeInTheDocument();
-    await user.keyboard("{Escape}");
-    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+      await user.click(toggle);
+      expect(await screen.findByRole("menu")).toBeInTheDocument();
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+      expect(escapedToPage).not.toHaveBeenCalled();
+    } finally {
+      document.removeEventListener("keydown", escapedToPage);
+    }
   });
 });

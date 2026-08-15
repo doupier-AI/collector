@@ -2,6 +2,7 @@ import { Navigate, Route, Routes, useLocation, useParams } from "react-router-do
 import { AppShell } from "../components/AppShell/AppShell";
 import { ReadingPage } from "../features/imports/ReadingPage";
 import { stableNodePath } from "./paths";
+import { ResearchMapLandingPage } from "../features/navigation/ResearchMapLandingPage";
 import { HomeRoute } from "../features/research-session/HomeRoute";
 import { NotFoundPage } from "../features/research-session/NotFoundPage";
 import { ResearchNodePage } from "../features/research-session/ResearchNodePage";
@@ -72,6 +73,7 @@ export function AppRoutes() {
         <Route path="research/:sessionId/node/:nodeId" element={<SessionNodeRedirect />} />
         <Route path="research/:sessionId/reading/:contentSnapshotId" element={<ReadingPage />} />
         <Route path="nodes/:nodeId" element={<ResearchNodePage />} />
+        <Route path="map" element={<ResearchMapLandingPage />} />
         <Route path="run-records" element={<RunRecordsPage />} />
         <Route path="run-records/:runId" element={<RunRecordsPage />} />
         <Route path="trash" element={<TrashPage />} />
