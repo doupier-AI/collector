@@ -223,7 +223,7 @@ MVP 文件范围为 TXT、Markdown、DOCX 和文本型 PDF，单文件上限为 
 
 ## WebUI 布局
 
-WebUI 统一以 `/research/:sessionId/node/:nodeId` 作为节点页：中央显示当前节点的连续正文，顶部来源条展示来路并可返回原内容原选区。`/research/:sessionId` 与 `/research/:sessionId/branch/:branchId` 只提供兼容重定向；导入文档阅读使用 `/research/:sessionId/reading/:contentSnapshotId`，`?sel=<selectionId>` 恢复来源高亮。
+WebUI 统一以稳定节点地址 `/nodes/:nodeId` 作为节点页（#61/T02）：地址只携带节点身份，会话上下文从节点视图派生，可直接打开、刷新与深链；中央显示当前节点的连续正文，顶部来源条展示来路并可返回原内容原选区。三类旧会话地址只保留单向重定向，不形成循环或第二套事实：`/research/:sessionId`、`/research/:sessionId/branch/:branchId` 与 `/research/:sessionId/node/:nodeId` 均转向对应稳定节点地址，并保留 `?sel=<selectionId>` 与 `?fragment=<fragmentId>` 以恢复来源高亮与定位。导入文档阅读使用现役路由 `/research/:sessionId/reading/:contentSnapshotId`。
 
 全局研究图谱使用稳定 `/map` 入口（ADR-0030）。左侧导航只依赖该路由，不读取会话、节点或当前图投影；当前迁移期承接页可由后续节点系统整体替换，不构成全局图谱数据模型、搜索或专注模式的技术基线。
 
