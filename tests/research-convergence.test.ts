@@ -16,6 +16,8 @@ test("research convergence resolves below, at, and above depth/length thresholds
   assert.equal(resolveResearchConvergence({ nodeDepth: RESEARCH_CONVERGENCE_REDUCE_AT_DEPTH - 1, contentLength: 500 }).termDensity, "full");
   assert.equal(resolveResearchConvergence({ nodeDepth: RESEARCH_CONVERGENCE_REDUCE_AT_DEPTH, contentLength: 500 }).termDensity, "reduced");
   assert.equal(resolveResearchConvergence({ nodeDepth: RESEARCH_CONVERGENCE_REDUCE_AT_DEPTH + 1, contentLength: 500 }).termDensity, "reduced");
+  assert.equal(resolveResearchConvergence({ nodeDepth: RESEARCH_CONVERGENCE_REDUCE_AT_DEPTH, contentLength: 40 }).termDensity, "reduced");
+  assert.equal(resolveResearchConvergence({ nodeDepth: RESEARCH_CONVERGENCE_REDUCE_AT_DEPTH + 1, contentLength: 40 }).termDensity, "reduced");
   assert.equal(resolveResearchConvergence({ nodeDepth: 1, contentLength: bounds.reduceAtContentCharacters - 1 }).termDensity, "full");
   assert.equal(resolveResearchConvergence({ nodeDepth: 1, contentLength: bounds.reduceAtContentCharacters }).termDensity, "reduced");
   assert.equal(resolveResearchConvergence({ nodeDepth: 1, contentLength: bounds.reduceAtContentCharacters + 1 }).termDensity, "reduced");
@@ -28,14 +30,22 @@ test("research convergence resolves below, at, and above depth/length thresholds
   assert.equal(resolveResearchConvergence({ nodeDepth: 1, contentLength: bounds.stopAtContentCharacters + 1 }).termDensity, "stopped");
 });
 
-test("short deep content keeps full marker behavior and decisions are stable", () => {
+test("depth stop wins even when the completed answer is short, and decisions are stable", () => {
   const decision = resolveResearchConvergence({ nodeDepth: RESEARCH_CONVERGENCE_STOP_AT_DEPTH, contentLength: 40 });
-  assert.equal(decision.termDensity, "full");
-  assert.equal(decision.reason, "short_content");
+  assert.equal(decision.termDensity, "stopped");
+  assert.equal(decision.reason, "node_depth");
   assert.deepEqual(
     resolveResearchConvergence({ nodeDepth: 2, contentLength: 1200 }),
     resolveResearchConvergence({ nodeDepth: 2, contentLength: 1200 }),
   );
+});
+
+test("depth reduction wins over the short-content relaxation", () => {
+  for (const nodeDepth of [2, 3]) {
+    const decision = resolveResearchConvergence({ nodeDepth, contentLength: 40 });
+    assert.equal(decision.termDensity, "reduced");
+    assert.equal(decision.reason, "node_depth");
+  }
 });
 
 test("reduced marker selection keeps a deterministic, evenly spaced subset", () => {
@@ -73,6 +83,7 @@ test("term detection service applies full, reduced, and stopped density by node 
   assert.equal(reduced.suppressedCount, shallow.terms.length - reduced.terms.length);
   assert.equal(stopped.convergence.termDensity, "stopped");
   assert.deepEqual(stopped.terms, []);
-  assert.equal(shortDeep.convergence.termDensity, "full");
+  assert.equal(shortDeep.convergence.termDensity, "stopped");
+  assert.deepEqual(shortDeep.terms, []);
   assert.strictEqual(service.detect("reduced", content, { nodeDepth: 2 }), reduced);
 });

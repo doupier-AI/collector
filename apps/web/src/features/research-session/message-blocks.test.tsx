@@ -130,6 +130,77 @@ describe("AI 回答分块渲染", () => {
     expect(block.querySelector("[data-term-marker]")).toBeNull();
   });
 
+  it("同名文字只标记被标记的那一次出现，不误标前一次同名文字（同名异义）", async () => {
+    const content = "苹果是水果，苹果发布了手机。";
+    const secondOccurrence = content.indexOf("苹果", 1);
+    const view = viewWithAssistant(content);
+    view.termDetections = {
+      "m-out": {
+        messageId: "m-out",
+        detectedAt: "2026-07-31T00:00:00.000Z",
+        terms: [{ text: "苹果", blockOrdinal: 0, startOffset: secondOccurrence, endOffset: secondOccurrence + 2, category: "entity" }],
+        convergence: { termDensity: "full", nodeDepth: 0, reason: "none" },
+        suppressedCount: 0,
+      },
+    };
+    const { container } = renderNodePage({ getResearchNodeView: async () => view });
+    const marked = await screen.findByText("苹果", { selector: "[data-term-marker]" });
+    const block = marked.closest("[data-block-text]") as HTMLElement;
+    expect(block.querySelectorAll("[data-term-marker]")).toHaveLength(1);
+    const before = document.createRange();
+    before.setStart(block, 0);
+    before.setEndBefore(marked);
+    expect(before.toString()).toBe("苹果是水果，");
+    expect(block.textContent).toBe("苹果是水果，苹果发布了手机。");
+    expect(container.querySelectorAll("[data-term-marker]")).toHaveLength(1);
+  });
+
+  it("前一次同名出现落在内联代码中时，仍命中后一次被标记的出现", async () => {
+    const content = "`苹果`是代号，苹果发布了手机。";
+    const plainOccurrence = content.indexOf("苹果", 2);
+    const view = viewWithAssistant(content);
+    view.termDetections = {
+      "m-out": {
+        messageId: "m-out",
+        detectedAt: "2026-07-31T00:00:00.000Z",
+        terms: [{ text: "苹果", blockOrdinal: 0, startOffset: plainOccurrence, endOffset: plainOccurrence + 2, category: "entity" }],
+        convergence: { termDensity: "full", nodeDepth: 0, reason: "none" },
+        suppressedCount: 0,
+      },
+    };
+    renderNodePage({ getResearchNodeView: async () => view });
+    const marked = await screen.findByText("苹果", { selector: "[data-term-marker]" });
+    const block = marked.closest("[data-block-text]") as HTMLElement;
+    expect(block.querySelectorAll("[data-term-marker]")).toHaveLength(1);
+    const before = document.createRange();
+    before.setStart(block, 0);
+    before.setEndBefore(marked);
+    expect(before.toString()).toBe("苹果是代号，");
+    expect(block.querySelector("code")?.textContent).toBe("苹果");
+    expect(block.textContent).toBe("苹果是代号，苹果发布了手机。");
+  });
+
+  it("被标记的出现落在代码内时丢弃该标记且正文保持不变", async () => {
+    const content = "苹果发布了手机，`苹果`是代号。";
+    const codeOccurrence = content.indexOf("苹果", 2);
+    const view = viewWithAssistant(content);
+    view.termDetections = {
+      "m-out": {
+        messageId: "m-out",
+        detectedAt: "2026-07-31T00:00:00.000Z",
+        terms: [{ text: "苹果", blockOrdinal: 0, startOffset: codeOccurrence, endOffset: codeOccurrence + 2, category: "entity" }],
+        convergence: { termDensity: "full", nodeDepth: 0, reason: "none" },
+        suppressedCount: 0,
+      },
+    };
+    const { container } = renderNodePage({ getResearchNodeView: async () => view });
+    const codeElement = await screen.findByText("苹果", { selector: "code" });
+    const block = codeElement.closest("[data-block-text]") as HTMLElement;
+    expect(block.querySelector("[data-term-marker]")).toBeNull();
+    expect(block.textContent).toBe("苹果发布了手机，苹果是代号。");
+    expect(container.querySelector("[data-term-marker]")).toBeNull();
+  });
+
   it("引用标记由 remark 插件从 [来源n] token 渲染为可悬停角标，编号与文末列表一致", async () => {
     const view = viewWithAssistant("[来源1]第一段文字。[来源2]\n\n第二段文字。");
     view.tasks[0] = makeTask({
@@ -365,6 +436,31 @@ describe("#36 连续语义卡片", () => {
     // 术语标记在各自卡片正文块内
     expect(restMarker.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p0");
     expect(httpMarker.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p1");
+  });
+
+  it("标题与后续多段合并成一张卡片时，每个原始正文块的弱标记都保留", async () => {
+    const content = "## 核心\n\n第一段解释反向传播。\n\n第二段解释 RAG。";
+    const slices = [makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "核心" })];
+    const view = viewWithSlices(content, slices);
+    view.termDetections = {
+      "m-out": {
+        messageId: "m-out",
+        detectedAt: "2026-08-13T00:00:00.000Z",
+        terms: [
+          { text: "反向传播", blockOrdinal: 1, startOffset: 5, endOffset: 9, category: "concept" },
+          { text: "RAG", blockOrdinal: 2, startOffset: 6, endOffset: 9, category: "abbreviation" },
+        ],
+        convergence: { termDensity: "full", nodeDepth: 0, reason: "none" },
+        suppressedCount: 0,
+      },
+    };
+
+    const { container } = renderNodePage({ getResearchNodeView: async () => view });
+    await screen.findByText("反向传播", { selector: "[data-term-marker]" });
+    expect(screen.getByText("RAG", { selector: "[data-term-marker]" })).toBeInTheDocument();
+    expect(container.querySelectorAll("section.slice-card")).toHaveLength(1);
+    expect(container.querySelector('[data-term-block-ordinal="1"]')).not.toBeNull();
+    expect(container.querySelector('[data-term-block-ordinal="2"]')).not.toBeNull();
   });
 
   it("传入 highlight 后 [data-selection-mark] 落在对应卡片正文内", async () => {

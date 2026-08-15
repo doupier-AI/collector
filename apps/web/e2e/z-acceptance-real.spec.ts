@@ -14,7 +14,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { DatabaseSync } from "node:sqlite";
+import { expect, test, type Locator, type Page, type Response } from "@playwright/test";
+import { deriveMessageBlocks } from "@collector/capture-contracts";
 import {
   apiJson,
   apiPortForPage,
@@ -108,7 +110,11 @@ test.afterAll(async () => {
 function watchConsole(page: Page): string[] {
   const issues: string[] = [];
   page.on("console", (message) => {
-    if (message.type() === "error" || message.type() === "warning") issues.push(message.text());
+    if (message.type() !== "error" && message.type() !== "warning") return;
+    const text = message.text();
+    // 配对前未带凭据的探测请求产生一次预期 401（与 helpers.trackBrowserIssues 同约定过滤）
+    if (/status of 401|401 \(Unauthorized\)/.test(text)) return;
+    issues.push(text);
   });
   page.on("pageerror", (error) => issues.push(error.message));
   return issues;
@@ -238,6 +244,24 @@ async function waitForCapsuleReal(page: Page, selected: string): Promise<Locator
   await expect(capsule).toBeVisible({ timeout: 20_000 });
   await expect(capsule).toContainText(selected.slice(0, 36));
   return capsule;
+}
+
+/**
+ * 选区并等待浮动胶囊，最多换偏移重选 3 次：回答完成落库后的事后标注（切片标题等）
+ * 会触发一次晚期重渲染，可能摧毁刚建立的选区使浮动胶囊永不出现。
+ */
+async function selectAndOpenCapsuleWithRetry(page: Page): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const selected = await selectRealAnswerText(page, 24, attempt * 24);
+    try {
+      await waitForCapsuleReal(page, selected);
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 // ---------------------------------------------------------------------------
@@ -543,6 +567,533 @@ test("场景四：刷新不重复创建子节点与标记项目，材料范围�
   const bodyText = await page.locator("body").innerText();
   expect(bodyText, "真实模式不应出现演示标记").not.toContain("本地演示");
   expect(bodyText).not.toContain("非真实 AI");
+
+  expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// 弱标记真实模型语义验收（#83 / 父规格 #80）
+//
+// 阻断问题（任一出现即失败）：控制字符泄漏、正文损坏、引用错位、同名异义错误复用、
+// 跨节点复用、预览复用不一致。偶发漏标、类别与密度偏差只记录（recordWeakMarkerNote），
+// 真实模型语义验收不替代确定性自动化测试。
+// ---------------------------------------------------------------------------
+
+interface RealTermMarker {
+  mentionId?: string;
+  entityId?: string;
+  text: string;
+  blockOrdinal: number;
+  startOffset: number;
+  endOffset: number;
+  category: string;
+}
+
+interface RealAssistantMessage {
+  id: string;
+  role: string;
+  status: string;
+  content: string;
+  termMarkers?: RealTermMarker[];
+}
+
+interface RealNodeView {
+  node: { id: string; parentNodeId?: string | null; originSelectionId?: string | null; isFusionNode?: boolean };
+  messages: RealAssistantMessage[];
+  tasks: Array<{ id: string; status: string; allowWebSearch?: boolean; groundingScope?: { status: string } }>;
+  groundingSources?: Array<{ id: string }>;
+  citations?: Array<{ id: string; messageId: string; blockOrdinal: number; markerOffset: number }>;
+  fusionSources?: Record<string, Array<{ nodeId: string }>>;
+}
+
+/** 记录真实模型语义观察（漏标、密度、类别分布），不构成失败。 */
+function recordWeakMarkerNote(note: string): void {
+  console.log(`【弱标记真实验收·记录】${note}`);
+}
+
+/**
+ * 真实模型产出并落位（范围逐字对齐）的弱标记累计数。flash 模型对标记指令的依从
+ * 随问题形态波动（已用同提示词直连探针确认零标记时原始输出就没有控制串，属模型
+ * 漏标而非服务端丢弃），故单场景零标记只记录；全链路一次都没有才判定链路失效（阻断）。
+ */
+let realMarkersSeen = 0;
+
+/** 阻断：持久化干净正文与页面可见正文都不得残留任何流内控制符。 */
+function expectNoControlChars(content: string, label: string): void {
+  expect(content.includes("[["), `${label}：正文残留开控制符`).toBe(false);
+  expect(content.includes("]]"), `${label}：正文残留闭控制符`).toBe(false);
+}
+
+/** 阻断：每个弱标记的范围切片必须与块文本逐字相等（不错位、不损坏正文）。 */
+function expectMarkersAligned(message: RealAssistantMessage, label: string): RealTermMarker[] {
+  const markers = message.termMarkers ?? [];
+  const blocks = deriveMessageBlocks(message.content);
+  for (const marker of markers) {
+    const block = blocks[marker.blockOrdinal];
+    expect(block, `${label}：标记「${marker.text}」指向不存在的块 ${marker.blockOrdinal}`).toBeTruthy();
+    expect(
+      block!.text.slice(marker.startOffset, marker.endOffset),
+      `${label}：标记范围与正文错位（${marker.blockOrdinal}:${marker.startOffset}-${marker.endOffset}）`,
+    ).toBe(marker.text);
+  }
+  realMarkersSeen += markers.length;
+  return markers;
+}
+
+async function fetchNodeView(page: Page, nodeId: string): Promise<RealNodeView> {
+  return apiJson<RealNodeView>(page, `/v1/research-nodes/${encodeURIComponent(nodeId)}`);
+}
+
+/**
+ * 等待节点最新一条 AI 消息完成落库并返回它。渲染块在流式期间就出现，
+ * 只有视图里的 completed 状态代表正文、标记与引用已稳定，之后才能选区与断言。
+ */
+async function waitLatestAssistantCompleted(page: Page, nodeId: string, label: string): Promise<RealAssistantMessage> {
+  let latest: RealAssistantMessage | undefined;
+  await expect
+    .poll(
+      async () => {
+        const view = await fetchNodeView(page, nodeId);
+        latest = [...view.messages].reverse().find((row) => row.role === "assistant");
+        return latest?.status;
+      },
+      { timeout: REAL_TIMEOUT, message: `${label}：等待最新 AI 消息完成落库` },
+    )
+    .toBe("completed");
+  expect(latest, `${label}：应存在 AI 消息`).toBeTruthy();
+  return latest!;
+}
+
+/** 最近一条 AI 消息容器内的某个提及元素（按块序数+偏移三元组精确定位）。 */
+function markerLocator(page: Page, marker: RealTermMarker): Locator {
+  return page
+    .locator(".message--assistant")
+    .last()
+    .locator(
+      `[data-term-marker][data-term-block-ordinal="${marker.blockOrdinal}"][data-term-start-offset="${marker.startOffset}"][data-term-end-offset="${marker.endOffset}"]`,
+    )
+    .first();
+}
+
+type PreviewCache = Map<string, { id: string; content: string }>;
+
+function markerKey(marker: RealTermMarker): string {
+  return `${marker.blockOrdinal}:${marker.startOffset}:${marker.endOffset}`;
+}
+
+/**
+ * 悬停提及并拿到完整预览：未生成过时等待启动请求并轮询到完成；已生成过（同回答
+ * 同对象复用）时不应有新请求，直接命中缓存并核对弹层内容一致。
+ */
+async function openPreview(
+  page: Page,
+  marker: RealTermMarker,
+  cache: PreviewCache,
+  label: string,
+): Promise<{ id: string; content: string }> {
+  const cached = cache.get(markerKey(marker));
+  let response: Response | undefined;
+  // 回答完成后切片标题的事后标注会引发一次晚期重渲染，可能清掉 400ms 悬停意图计时器；
+  // 最多重试 3 次悬停（每次先移开重置悬停态）以拿到启动请求。
+  for (let attempt = 1; attempt <= 3 && !response; attempt += 1) {
+    const responsePromise = page
+      .waitForResponse(
+        (candidate) =>
+          candidate.request().method() === "POST" && /\/v1\/research-nodes\/[^/]+\/term-previews$/.test(candidate.url()),
+        { timeout: 8_000 },
+      )
+      .catch(() => undefined);
+    if (attempt > 1) await page.mouse.move(4, 4);
+    await markerLocator(page, marker).hover();
+    response = await responsePromise;
+  }
+  if (!response) {
+    expect(cached, `${label}：未启动新预览、也未命中同对象既有预览`).toBeTruthy();
+    const popover = page.getByTestId("term-preview-popover");
+    await expect(popover).toBeVisible({ timeout: 15_000 });
+    await expect(popover).toContainText(cached!.content.trim().slice(0, 20));
+    return cached!;
+  }
+  const accepted = (await response.json()) as { preview: { id: string } };
+  const previewId = accepted.preview.id;
+  let content = "";
+  await expect
+    .poll(
+      async () => {
+        const task = await apiJson<{ status: string; content: string }>(
+          page,
+          `/v1/research-term-preview-tasks/${previewId}`,
+        );
+        content = task.content;
+        return task.status;
+      },
+      { timeout: 180_000, message: `${label}：等待真实预览完成` },
+    )
+    .toBe("completed");
+  expect(content.trim().length, `${label}：预览应有实质内容`).toBeGreaterThan(0);
+  expect(content.length, `${label}：预览不得超过 320 字安全上限`).toBeLessThanOrEqual(320);
+  const result = { id: previewId, content };
+  cache.set(markerKey(marker), result);
+  return result;
+}
+
+async function closePreviewPopover(page: Page): Promise<void> {
+  await page.mouse.move(4, 4);
+  await expect(page.getByTestId("term-preview-popover")).toBeHidden();
+}
+
+/** 读取某节点已持久化的预览任务（跨节点复用核验用）。 */
+function readPreviewTaskRows(dbPath: string, nodeId: string): Array<{ id: string; nodeId: string; status: string }> {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    return db
+      .prepare("SELECT id, node_id AS nodeId, status FROM research_term_previews WHERE node_id = ? ORDER BY created_at")
+      .all(nodeId) as Array<{ id: string; nodeId: string; status: string }>;
+  } finally {
+    db.close();
+  }
+}
+
+/** 在节点页提交追问并等待新一条 AI 回答完成落库，返回该消息。 */
+async function submitFollowUp(
+  page: Page,
+  nodeId: string,
+  question: string,
+  assistantCount: number,
+): Promise<RealAssistantMessage> {
+  await page.getByLabel("你的问题").fill(question);
+  await page.getByRole("button", { name: "发送" }).click();
+  await waitCompletedAnswerText(page, assistantCount);
+  return waitLatestAssistantCompleted(page, nodeId, "节点追问");
+}
+
+// ---------------------------------------------------------------------------
+// 弱标记场景五：普通回答——四类对象、中文多词、重复提及、同名异义、
+// 悬停预览、点击生长与跨节点重新生成
+// ---------------------------------------------------------------------------
+test("弱标记场景五：普通回答真实标记语义、预览复用边界与点击生长", async ({ page }) => {
+  test.setTimeout(1_200_000);
+  const consoleIssues = watchConsole(page);
+  const previewPosts: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && /\/v1\/research-nodes\/[^/]+\/term-previews$/.test(request.url())) {
+      previewPosts.push(request.url());
+    }
+  });
+
+  await pairAndOpen(page, "/research/new");
+  const sessionId = await submitQuestion(
+    page,
+    "请用中文分四点简要回答：(1) 什么是 Transformer 的自注意力机制，它由 Google 在哪篇论文中提出？"
+      + "(2) NLP 和 API 分别是什么的缩写？(3) 在 softmax 公式里，符号 σ 起什么作用？"
+      + "(4) 「苹果」既可以指一种水果，也可以指一家科技公司，请分别用一句话说明。"
+      + "回答中如果需要再次提到自注意力机制，请保持同一个说法。",
+  );
+  const rootNodeId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? sessionId;
+  await waitCompletedAnswerText(page, 1);
+  await assertRealMode(page);
+  const rootMessage = await waitLatestAssistantCompleted(page, rootNodeId, "普通回答");
+  const visibleText = await page.locator('.message--assistant [data-content-kind="message"]').last().innerText();
+  expect(visibleText.includes("[["), "页面可见正文残留开控制符").toBe(false);
+  expect(visibleText.includes("]]"), "页面可见正文残留闭控制符").toBe(false);
+
+  expectNoControlChars(rootMessage.content, "普通回答");
+  let markedMessage = rootMessage;
+  let markers = expectMarkersAligned(rootMessage, "普通回答");
+  if (markers.length === 0) {
+    // flash 模型对概念密集的多段指令问题会整体忽略标记指令（同提示词直连探针复现：
+    // 原始输出零控制串），属模型漏标而非链路失效，按约定只记录。追问一条简单问题拿到
+    // 有标记的回答，让预览复用 / 点击生长 / 跨节点边界等交互断言仍在真实模型下执行。
+    recordWeakMarkerNote("普通回答：概念密集问题零标记（探针确认为模型未输出控制串，漏标记录不阻断），改用简单追问执行交互断言");
+    const fallback = await submitFollowUp(
+      page,
+      rootNodeId,
+      "请再用两三句话分别解释什么是自注意力机制和 NLP，并再提一次自注意力机制的作用。",
+      2,
+    );
+    expectNoControlChars(fallback.content, "兜底追问");
+    markers = expectMarkersAligned(fallback, "兜底追问");
+    if (markers.length === 0) {
+      recordWeakMarkerNote("兜底追问仍零标记：场景五交互路径本轮未触发，记为漏标观察");
+      expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
+      return;
+    }
+    markedMessage = fallback;
+  }
+  const categories = [...new Set(markers.map((marker) => marker.category))].sort();
+  recordWeakMarkerNote(`普通回答：${markers.length} 个标记，类别分布 ${categories.join("/") || "无"}`);
+  recordWeakMarkerNote(
+    `普通回答：中文多词标记 ${markers.filter((m) => m.text.length >= 2 && /[一-鿿]/.test(m.text)).length} 个`,
+  );
+
+  // 同一对象重复提及：共享身份时两次悬停必须拿到同一份预览，不重复调用模型。
+  const previewCache: PreviewCache = new Map();
+  const byEntity = new Map<string, RealTermMarker[]>();
+  for (const marker of markers) {
+    if (!marker.entityId) continue;
+    byEntity.set(marker.entityId, [...(byEntity.get(marker.entityId) ?? []), marker]);
+  }
+  const repeated = [...byEntity.values()].find((group) => group.length >= 2);
+  if (repeated) {
+    const firstPreview = await openPreview(page, repeated[0]!, previewCache, "重复提及首次悬停");
+    previewCache.set(markerKey(repeated[1]!), firstPreview);
+    await closePreviewPopover(page);
+    const postsBefore = previewPosts.length;
+    const secondPreview = await openPreview(page, repeated[1]!, previewCache, "重复提及第二处");
+    expect(secondPreview.id, "同一对象重复提及必须复用同一份预览").toBe(firstPreview.id);
+    expect(previewPosts.length, "同一对象重复提及不得重复启动预览").toBe(postsBefore);
+    recordWeakMarkerNote(`重复提及「${repeated[0]!.text}」共享一份预览（${repeated.length} 处提及）`);
+    await closePreviewPopover(page);
+  } else {
+    recordWeakMarkerNote("普通回答：模型未输出共享身份的重复提及（或仅提及一次），复用路径未触发");
+  }
+
+  // 同名异义：回答同时讨论了两种「苹果」时，两处提及必须保持身份与预览分离。
+  const appleMarkers = markers.filter((marker) => marker.text === "苹果");
+  if (appleMarkers.length >= 2 && markedMessage.content.includes("公司")) {
+    const identities = new Set(appleMarkers.map((marker) => marker.entityId));
+    expect(identities.size, "同名异义被合并为同一身份＝错误复用（阻断）").toBeGreaterThanOrEqual(2);
+    const first = await openPreview(page, appleMarkers[0]!, previewCache, "同名异义第一处");
+    await closePreviewPopover(page);
+    const second = await openPreview(page, appleMarkers[1]!, previewCache, "同名异义第二处");
+    expect(second.id, "同名异义不得复用同一份预览（阻断）").not.toBe(first.id);
+    recordWeakMarkerNote(`同名异义「苹果」分离为 ${identities.size} 个身份、两份预览`);
+    await closePreviewPopover(page);
+  } else {
+    recordWeakMarkerNote(`普通回答：「苹果」标记 ${appleMarkers.length} 处（同名异义场景未完整触发，记为漏标观察）`);
+  }
+
+  // 点击生长：复用悬停同一份预览作为子节点第一条 AI 内容，来源锚定实际点击的提及。
+  const grownMarker = markers[0]!;
+  const grownPreview = await openPreview(page, grownMarker, previewCache, "点击生长前的预览");
+  await page.getByTestId("term-preview-grow").click();
+  const childNodeId = await waitChildNodeUrl(page, sessionId, 60_000);
+  const childView = await fetchNodeView(page, childNodeId);
+  const childFirst = childView.messages.find((message) => message.role === "assistant");
+  expect(childFirst?.status).toBe("completed");
+  expect(childFirst?.content, "子节点第一条 AI 内容必须与点击时看到的预览逐字一致").toBe(grownPreview.content);
+  expect(childView.node.originSelectionId, "生长子节点必须锚定来源提及").toBeTruthy();
+
+  // 跨节点硬边界：子节点追问再次提到同一对象时必须重新生成预览，不得复用根节点预览。
+  const childFollowUp = await submitFollowUp(page, childNodeId, "请再用两句话总结这个对象在当前讨论中的作用。", 2);
+  expectNoControlChars(childFollowUp.content, "子节点追问");
+  const childMarkers = expectMarkersAligned(childFollowUp, "子节点追问");
+  const sameText = childMarkers.find((marker) => marker.text === grownMarker.text);
+  if (sameText) {
+    const childCache: PreviewCache = new Map();
+    const childPreview = await openPreview(page, sameText, childCache, "跨节点同名提及");
+    expect(childPreview.id, "跨节点不得复用其他节点的预览（阻断）").not.toBe(grownPreview.id);
+    const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
+    const childTasks = readPreviewTaskRows(dbPath, childNodeId);
+    expect(childTasks.some((row) => row.id === childPreview.id), "子节点预览必须落在子节点名下").toBe(true);
+    recordWeakMarkerNote(`跨节点同名「${sameText.text}」重新生成预览（根节点预览未被读取）`);
+  } else {
+    recordWeakMarkerNote("子节点追问未再次标记同一对象（记为漏标观察），跨节点核验未触发");
+  }
+
+  expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// 弱标记场景六：深度策略——深度 0–1 正常、2–3 减少（≤4）、4 停止（0）
+// ---------------------------------------------------------------------------
+test("弱标记场景六：深度 2–3 减少、深度 4 停止的真实生成链", async ({ page }) => {
+  // 漏标时每个深度用选区深入研究兜底生长，真实长文生成逐节扩写可能很慢。
+  test.setTimeout(1_800_000);
+  const consoleIssues = watchConsole(page);
+  await pairAndOpen(page, "/research/new");
+  const sessionId = await submitQuestion(page, "请用中文简要解释什么是 Transformer 模型，以及它与循环神经网络的区别。");
+  const rootNodeId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? sessionId;
+  await waitCompletedAnswerText(page, 1);
+  await assertRealMode(page);
+
+  const followUps = [
+    "请解释什么是位置编码，以及它为什么必要。",
+    "请解释什么是层归一化，它与批归一化有何区别。",
+    "请解释什么是残差连接。",
+    "请用一句话总结以上内容的核心。",
+  ];
+  const depthCaps = [24, 24, 4, 4, 0];
+  let currentNodeId = rootNodeId;
+
+  for (let depth = 0; depth <= 4; depth += 1) {
+    const message = await waitLatestAssistantCompleted(page, currentNodeId, `深度 ${depth}`);
+    expectNoControlChars(message.content, `深度 ${depth}`);
+    const markers = expectMarkersAligned(message, `深度 ${depth}`);
+    expect(
+      markers.length,
+      `深度 ${depth} 标记数 ${markers.length} 超过服务端上限 ${depthCaps[depth]}（阻断）`,
+    ).toBeLessThanOrEqual(depthCaps[depth]!);
+    recordWeakMarkerNote(`深度 ${depth}：标记 ${markers.length} 个（上限 ${depthCaps[depth]}）`);
+
+    if (depth === 4) {
+      expect(markers.length, "深度 4 不得出现任何新弱标记（阻断）").toBe(0);
+      const domCount = await page
+        .locator(".message--assistant")
+        .last()
+        .locator("[data-term-marker]")
+        .count();
+      expect(domCount, "深度 4 页面不得渲染任何弱标记").toBe(0);
+      break;
+    }
+
+    // 生长到下一深度：优先点击弱标记（复用预览）；漏标时用选区深入研究兜底保持链路。
+    const clickable = markers[0];
+    if (clickable) {
+      await openPreview(page, clickable, new Map(), `深度 ${depth} 生长预览`);
+      await page.getByTestId("term-preview-grow").click();
+      currentNodeId = await waitChildNodeUrl(page, sessionId, 60_000);
+      await submitFollowUp(page, currentNodeId, followUps[depth]!, 2);
+    } else {
+      recordWeakMarkerNote(`深度 ${depth} 无标记可点击，用选区深入研究兜底生长`);
+      await selectAndOpenCapsuleWithRetry(page);
+      await page.getByRole("button", { name: "深入研究这段" }).click();
+      currentNodeId = await waitChildNodeUrl(page, sessionId, 60_000);
+    }
+  }
+
+  expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// 弱标记场景七：深入研究第一轮的统一标记行为
+// ---------------------------------------------------------------------------
+test("弱标记场景七：深入研究第一轮正文携带一致弱标记", async ({ page }) => {
+  test.setTimeout(1_200_000);
+  const consoleIssues = watchConsole(page);
+  await pairAndOpen(page, "/research/new");
+  const sessionId = await submitQuestion(page, "请用两三句话介绍图灵测试的含义和提出者。");
+  const rootNodeId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? sessionId;
+  await waitCompletedAnswerText(page, 1);
+  await assertRealMode(page);
+  // 等回答完成落库、正文稳定后再选区（流式中段选区会被重渲染销毁）。
+  await waitLatestAssistantCompleted(page, rootNodeId, "普通回答（场景七）");
+
+  await selectAndOpenCapsuleWithRetry(page);
+  await page.getByLabel("你的问题").fill("梳理图灵测试的主要争议");
+  await page.getByRole("button", { name: "深入研究这段" }).click();
+  const nodeId = await waitChildNodeUrl(page, sessionId, 60_000);
+
+  const message = await waitLatestAssistantCompleted(page, nodeId, "深入研究第一轮");
+  expectNoControlChars(message.content, "深入研究第一轮");
+  const markers = expectMarkersAligned(message, "深入研究第一轮");
+  if (markers.length === 0) {
+    recordWeakMarkerNote("深入研究第一轮：模型未输出弱标记（漏标记录不阻断；路径接入由确定性套件证明）");
+  } else {
+    recordWeakMarkerNote(
+      `深入研究第一轮：${markers.length} 个标记，类别 ${[...new Set(markers.map((m) => m.category))].sort().join("/")}`,
+    );
+  }
+  expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// 弱标记场景八：联网回答——引用锚点不漂移、标记与来源并存
+// ---------------------------------------------------------------------------
+test("弱标记场景八：联网回答的引用锚点与弱标记一致落位", async ({ page }) => {
+  test.setTimeout(1_200_000);
+  const consoleIssues = watchConsole(page);
+  await pairAndOpen(page, "/research/new");
+  const toggle = page.getByRole("checkbox", { name: "允许联网搜索" });
+  await expect(toggle).not.toBeChecked();
+  await toggle.check();
+  const sessionId = await submitQuestion(page, "请介绍 2026 年冬奥会的举办城市、开幕时间和新增比赛项目。");
+  const rootNodeId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? sessionId;
+  await waitCompletedAnswerText(page, 1);
+  await assertRealMode(page);
+
+  const message = await waitLatestAssistantCompleted(page, rootNodeId, "联网回答");
+  const view = await fetchNodeView(page, rootNodeId);
+  expectNoControlChars(message.content, "联网回答");
+  const markers = expectMarkersAligned(message, "联网回答");
+  if (markers.length === 0) {
+    recordWeakMarkerNote("联网回答：模型未输出弱标记（Agent 多轮工具调用后依从性下降，探针确认原始输出零控制串；漏标记录不阻断）");
+  } else {
+    recordWeakMarkerNote(`联网回答：${markers.length} 个标记`);
+  }
+
+  // 引用锚点（点式：块序数 + 偏移）必须落在有效正文范围内；无来源时记为环境观察。
+  const task = view.tasks.at(-1);
+  recordWeakMarkerNote(`联网回答：grounding=${task?.groundingScope?.status ?? "未知"}，来源 ${view.groundingSources?.length ?? 0} 条，引用 ${view.citations?.length ?? 0} 处`);
+  const blocks = deriveMessageBlocks(message.content);
+  for (const citation of view.citations ?? []) {
+    const block = blocks[citation.blockOrdinal];
+    expect(block, `联网回答：引用 ${citation.id} 指向不存在的块（阻断）`).toBeTruthy();
+    expect(
+      citation.markerOffset >= 0 && citation.markerOffset <= block!.text.length,
+      `联网回答：引用 ${citation.id} 偏移越界（阻断）`,
+    ).toBe(true);
+  }
+  expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// 弱标记场景九：融合正文——统一标记、[来源n] 引用与来源正文不变
+// ---------------------------------------------------------------------------
+test("弱标记场景九：融合正文真实生成后的标记、引用与来源完整性", async ({ page }) => {
+  // 双来源生成 + 扫描 + 原子融合正文，真实模型下整链可能超过 20 分钟。
+  test.setTimeout(1_800_000);
+  const consoleIssues = watchConsole(page);
+  await pairAndOpen(page, "/research/new");
+  const sessionId = await submitQuestion(
+    page,
+    "请用三到四句话解释 Transformer 的自注意力机制，包括查询、键、值各自的作用。",
+  );
+  const rootNodeId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? sessionId;
+  await waitCompletedAnswerText(page, 1);
+  await assertRealMode(page);
+  // 等回答完成落库、正文稳定后再选区（流式中段选区会被重渲染销毁）。
+  const rootContentBefore = (await waitLatestAssistantCompleted(page, rootNodeId, "融合来源根节点")).content;
+
+  // 生长一个同主题的深入研究子节点作为第二来源。
+  await selectAndOpenCapsuleWithRetry(page);
+  await page.getByLabel("你的问题").fill("自注意力机制在 BERT 双向编码器中的应用");
+  await page.getByRole("button", { name: "深入研究这段" }).click();
+  const childNodeId = await waitChildNodeUrl(page, sessionId, 60_000);
+  const childContentBefore = (await waitLatestAssistantCompleted(page, childNodeId, "融合来源子节点")).content;
+
+  // 真实相似性扫描（同主题应稳定产出提案；偶发为空时重扫一次）。
+  await page.goto(`/nodes/${encodeURIComponent(rootNodeId)}`);
+  let proposals: Array<{ id: string; status: string; relationType: string }> = [];
+  for (let attempt = 0; attempt < 2 && proposals.length === 0; attempt += 1) {
+    const scan = await page.request.post(`/v1/research-nodes/${encodeURIComponent(rootNodeId)}/fusion-proposals/scan`, {
+      data: {},
+    });
+    expect(scan.ok()).toBeTruthy();
+    proposals = ((await scan.json()) as { proposals: Array<{ id: string; status: string; relationType: string }> }).proposals;
+  }
+  expect(proposals.length, "同主题双来源应扫描出融合提案").toBeGreaterThanOrEqual(1);
+  recordWeakMarkerNote(`融合扫描：${proposals.length} 条提案，关系 ${proposals[0]!.relationType}`);
+
+  // 确认融合并等待真实融合正文（原子生成）。提案折叠在 details 里，先展开再点按钮。
+  await page.reload();
+  await expect(page.getByText("熟悉的概念再现，节点可融合").first()).toBeVisible({ timeout: 15_000 });
+  await page.getByText("熟悉的概念再现，节点可融合").first().click();
+  await page.getByRole("button", { name: "融合为节点" }).first().click();
+  const fusionNodeId = await waitChildNodeUrl(page, sessionId, 60_000);
+
+  // 来源条数据只在融合正文完成后进视图（服务侧按 completed 消息组装），先等完成再刷新断言。
+  const fusionMessage = await waitLatestAssistantCompleted(page, fusionNodeId, "融合正文");
+  await page.reload();
+  await expect(page.getByTestId("fusion-source-bar")).toBeVisible({ timeout: 30_000 });
+  expectNoControlChars(fusionMessage.content, "融合正文");
+  const fusionMarkers = expectMarkersAligned(fusionMessage, "融合正文");
+  if (fusionMarkers.length === 0) {
+    recordWeakMarkerNote("融合正文：模型未输出弱标记（漏标记录不阻断；路径接入由确定性套件证明）");
+  }
+  expect(fusionMessage.content, "融合正文必须携带 [来源n] 引用").toMatch(/\[来源\d\]/);
+  recordWeakMarkerNote(`融合正文：${fusionMarkers.length} 个标记，来源引用 ${(fusionMessage.content.match(/\[来源\d\]/g) ?? []).length} 处`);
+
+  // 来源节点正文逐字节不变（融合是独立增量节点）。
+  const rootAfter = (await waitLatestAssistantCompleted(page, rootNodeId, "融合后根节点")).content;
+  const childAfter = (await waitLatestAssistantCompleted(page, childNodeId, "融合后子节点")).content;
+  expect(rootAfter, "融合不得改写根节点正文（阻断）").toBe(rootContentBefore);
+  expect(childAfter, "融合不得改写子节点正文（阻断）").toBe(childContentBefore);
+
+  // 全链路闸口（本测试是弱标记场景组的最后一个）：五个真实场景至少一次产出并落位
+  // 弱标记，证明真实模型→服务端清洗→持久化→页面渲染链路整体可用；单场景零标记
+  // 已在各自场景内记录为模型漏标。
+  expect(realMarkersSeen, "五个真实场景全部零弱标记＝真实模型下流内标记链路整体失效（阻断）").toBeGreaterThan(0);
 
   expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
 });

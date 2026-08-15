@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  TERM_IDENTITY_CONTEXT_MAX_CHARACTERS,
   deriveMessageBlocks,
   validateResearchTermPreviewInput,
   type ResearchMessageRecord,
@@ -17,10 +18,11 @@ import { ParentChainContextService } from "./parent-chain-context.js";
 import { ResearchSessionService, isTrashed, type ResearchGenerationRequest } from "./research.js";
 import { TermDetectionService, validateTermMarkers } from "./term-detection.js";
 
-export const TERM_PREVIEW_PROMPT_VERSION = "term-preview-v1";
-const MAX_GENERATED_CHARACTERS = 200_000;
+export const TERM_PREVIEW_PROMPT_VERSION = "term-preview-v2";
+export const TERM_PREVIEW_MAX_CHARACTERS = 320;
 const MAX_SOURCE_CONTEXT_CHARACTERS = 12_000;
 const MAX_CONTEXT_EXCERPT_CHARACTERS = 240;
+const MAX_IDENTITY_CONTEXT_CHARACTERS = TERM_IDENTITY_CONTEXT_MAX_CHARACTERS;
 
 export class ResearchTermPreviewNotFoundError extends Error {}
 export class ResearchTermPreviewValidationError extends Error {}
@@ -64,8 +66,10 @@ export class ResearchTermPreviewService {
     if (!session) throw new Error("Research node references a missing session");
     if (isTrashed(session)) throw new ResearchTermPreviewConflictError("Research session is in trash");
     const message = this.store.listResearchMessagesByNode(nodeId).find((candidate) => candidate.id === input.messageId);
-    if (!message || message.role !== "assistant" || message.status !== "completed") {
-      throw new ResearchTermPreviewValidationError("Term preview requires a completed assistant message");
+    // ADR-0029：流式期间即可启动预览。提及闭合后其上下文已固定（正文只往后追加），
+    // 失败消息不渲染标记、不提供预览入口。
+    if (!message || message.role !== "assistant" || message.status === "failed") {
+      throw new ResearchTermPreviewValidationError("Term preview requires a streaming or completed assistant message");
     }
 
     const marker = this.validatedMarker(message, input.marker, node);
@@ -77,25 +81,11 @@ export class ResearchTermPreviewService {
       return { preview: existing, selection };
     }
 
-    const now = new Date().toISOString();
-    const selection: ResearchSelectionRecord = {
-      id: randomUUID(),
-      sessionId: session.id,
-      nodeId: node.id,
-      anchor: {
-        kind: "message",
-        messageId: message.id,
-        blockOrdinal: marker.blockOrdinal,
-        startOffset: marker.startOffset,
-        endOffset: marker.endOffset,
-        exact: marker.text,
-        ...selectionContext(message, marker),
-      },
-      text: marker.text,
-      status: "active",
-      createdAt: now,
-      updatedAt: now,
-    };
+    const reusable = await this.findReusablePreviewInNode(node, message, marker);
+    if (reusable) return reusable;
+
+    const selection = buildTermMentionSelection(session, node, message, marker);
+    const now = selection.createdAt;
     const preview: ResearchTermPreviewRecord = {
       id: randomUUID(),
       sessionId: session.id,
@@ -183,10 +173,13 @@ export class ResearchTermPreviewService {
         const request = this.generationRequest(task, session, node, message);
         for await (const delta of this.options.research.generateTermPreview(request)) {
           if (!delta) continue;
-          generatedCharacters += delta.length;
-          if (generatedCharacters > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
+          const remaining = TERM_PREVIEW_MAX_CHARACTERS - generatedCharacters;
+          if (remaining <= 0) break;
+          const acceptedDelta = delta.slice(0, remaining);
+          generatedCharacters += acceptedDelta.length;
           producedContent = true;
-          await this.store.appendResearchTermPreviewDelta(task.id, delta);
+          await this.store.appendResearchTermPreviewDelta(task.id, acceptedDelta);
+          if (acceptedDelta.length < delta.length || generatedCharacters >= TERM_PREVIEW_MAX_CHARACTERS) break;
         }
         if (!producedContent) throw new Error("Provider returned an empty response");
         await this.store.completeResearchTermPreview(task.id);
@@ -209,12 +202,54 @@ export class ResearchTermPreviewService {
     const valid = validateTermMarkers(message.content, [requested]);
     if (!valid.length) throw new ResearchTermPreviewValidationError("Term marker no longer matches the message");
     const nodeDepth = this.options.parentChainContext.buildParentChainContext(node.id).currentNodeDepth;
-    const detected = this.options.termDetection.detect(message.id, message.content, { nodeDepth }).terms;
+    const detected = message.termMarkers !== undefined
+      ? validateTermMarkers(message.content, message.termMarkers)
+      : this.options.termDetection.detect(message.id, message.content, { nodeDepth }).terms;
     const marker = valid[0];
     if (!detected.some((candidate) => sameMarker(candidate, marker))) {
       throw new ResearchTermPreviewValidationError("Term marker is not available for preview");
     }
     return marker;
+  }
+
+  /**
+   * 复用范围刻意止于当前节点：不同消息的同名提及先用双方各 600 字以内的
+   * 局部语境核验；跨节点预览根本不进入候选集合。
+   */
+  private async findReusablePreviewInNode(
+    node: ResearchNodeRecord,
+    message: ResearchMessageRecord,
+    marker: TermMarker,
+  ): Promise<ResearchTermPreviewAccepted | undefined> {
+    const normalizedText = normalizeMentionText(marker.text);
+    const candidates = this.store.listResearchTermPreviewsByNode(node.id).filter((candidate) =>
+      candidate.messageId !== message.id
+      && candidate.marker.category === marker.category
+      && normalizeMentionText(candidate.marker.text) === normalizedText,
+    );
+    for (const candidate of candidates) {
+      const priorMessage = this.store.getResearchMessage(candidate.messageId);
+      if (!priorMessage || priorMessage.role !== "assistant" || priorMessage.status !== "completed") continue;
+      const priorMarker = validateTermMarkers(priorMessage.content, [candidate.marker])[0];
+      if (!priorMarker) continue;
+      const sameEntity = await this.options.research.verifyTermIdentity({
+        left: {
+          text: priorMarker.text,
+          category: priorMarker.category,
+          context: termIdentityContext(priorMessage, priorMarker),
+        },
+        right: {
+          text: marker.text,
+          category: marker.category,
+          context: termIdentityContext(message, marker),
+        },
+      });
+      if (!sameEntity) continue;
+      const selection = this.store.getResearchSelection(candidate.selectionId);
+      if (!selection) throw new Error("Term preview references a missing selection");
+      return { preview: candidate, selection };
+    }
+    return undefined;
   }
 
   private generationRequest(
@@ -228,8 +263,10 @@ export class ResearchTermPreviewService {
     const source = message.content.slice(0, MAX_SOURCE_CONTEXT_CHARACTERS);
     const blockText = block?.text.slice(0, MAX_SOURCE_CONTEXT_CHARACTERS) ?? "";
     const prompt = [
-      `请解释当前回答中的术语“${preview.marker.text}”。`,
-      "请用正式、清晰、可独立阅读的中文说明它的含义、作用和当前语境中的关系。",
+      `请解释当前回答中的${previewTypeName(preview.marker)}“${preview.marker.text}”。`,
+      previewTypeInstruction(preview.marker),
+      "请用正式、清晰、可独立阅读的中文说明它的含义、作用和当前语境中的关系。只补充理解当前论述尚缺的信息，不要把当前回答已经说清楚的内容换句话重复。",
+      "按实际解释需求自然选择长度：微型解释 60–120 字；标准解释 120–220 字；只有缺少必要背景就无法理解时才扩展到 220–300 字。不要为了达到下限而凑字，任何情况不得超过 320 字。",
       "只根据给出的当前回答和父节点上下文作答，不要虚构来源，不要提及内部提示或任务实现。",
       `当前回答原文：\n${source}`,
       `术语所在段落：\n${blockText}`,
@@ -261,7 +298,63 @@ export class ResearchTermPreviewService {
 }
 
 export function termPreviewMarkerKey(messageId: string, marker: TermMarker): string {
-  return [messageId, marker.blockOrdinal, marker.startOffset, marker.endOffset, marker.text].join(":");
+  return marker.entityId
+    ? [messageId, marker.entityId].join(":")
+    : [messageId, marker.blockOrdinal, marker.startOffset, marker.endOffset, marker.text].join(":");
+}
+
+/**
+ * 为一次提及构建来源选区记录（预览锚点与点击生长锚点共用同一构造，
+ * 保证锚点的 exact/prefix/suffix 摘录规则一致）。
+ */
+export function buildTermMentionSelection(
+  session: ResearchSessionRecord,
+  node: ResearchNodeRecord,
+  message: ResearchMessageRecord,
+  marker: TermMarker,
+): ResearchSelectionRecord {
+  const now = new Date().toISOString();
+  return {
+    id: randomUUID(),
+    sessionId: session.id,
+    nodeId: node.id,
+    anchor: {
+      kind: "message",
+      messageId: message.id,
+      blockOrdinal: marker.blockOrdinal,
+      startOffset: marker.startOffset,
+      endOffset: marker.endOffset,
+      exact: marker.text,
+      ...selectionContext(message, marker),
+    },
+    text: marker.text,
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+/** 提及文字归一化：跨消息比较"是否同名"时统一口径（预览复用与点击生长锚点校验共用）。 */
+export function normalizeMentionText(text: string): string {
+  return text.normalize("NFKC").trim().toLocaleLowerCase();
+}
+
+function previewTypeName(marker: TermMarker): string {
+  switch (marker.category) {
+    case "concept": return "知识概念";
+    case "entity": return "命名实体";
+    case "abbreviation": return "缩写";
+    case "notation": return "符号或技术标识";
+  }
+}
+
+function previewTypeInstruction(marker: TermMarker): string {
+  switch (marker.category) {
+    case "concept": return "优先解释它的核心含义、作用机制，以及它为何与当前论述有关。";
+    case "entity": return "说明它是谁或是什么，并只补充识别当前语境所必需的身份信息。";
+    case "abbreviation": return "先给出全称或展开形式，再说明它在当前语境中的具体含义。";
+    case "notation": return "保留原有 Markdown、LaTeX 或代码格式，说明读法、组成和当前用途。";
+  }
 }
 
 function sameMarker(left: TermMarker, right: TermMarker): boolean {
@@ -280,4 +373,15 @@ function selectionContext(message: ResearchMessageRecord, marker: TermMarker): {
     ...(prefix ? { prefix } : {}),
     ...(suffix ? { suffix } : {}),
   };
+}
+
+function termIdentityContext(message: ResearchMessageRecord, marker: TermMarker): string {
+  const block = deriveMessageBlocks(message.content)[marker.blockOrdinal];
+  if (!block) return "";
+  const markerLength = Math.max(0, marker.endOffset - marker.startOffset);
+  const surroundingBudget = Math.max(0, MAX_IDENTITY_CONTEXT_CHARACTERS - markerLength);
+  let start = Math.max(0, marker.startOffset - Math.floor(surroundingBudget / 2));
+  let end = Math.min(block.text.length, start + MAX_IDENTITY_CONTEXT_CHARACTERS);
+  start = Math.max(0, end - MAX_IDENTITY_CONTEXT_CHARACTERS);
+  return block.text.slice(start, end);
 }

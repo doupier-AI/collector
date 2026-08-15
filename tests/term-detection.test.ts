@@ -51,9 +51,9 @@ test("detectTermMarkers: camelCase and PascalCase terms", () => {
   assert.ok(texts.includes("React"), "Should detect PascalCase proper noun React");
 
   const useEffect = markers.find((m) => m.text === "useEffect");
-  assert.equal(useEffect?.category, "term");
+  assert.equal(useEffect?.category, "notation");
   const react = markers.find((m) => m.text === "React");
-  assert.equal(react?.category, "proper_noun");
+  assert.equal(react?.category, "entity");
 });
 
 test("detectTermMarkers: Pure Chinese text", () => {
@@ -230,8 +230,8 @@ test("validateTermMarkers: Mixed valid and invalid markers", () => {
   // Add some invalid markers
   const mixed: TermMarker[] = [
     ...markers,
-    { text: "FAKE", blockOrdinal: 999, startOffset: 0, endOffset: 4, category: "term" },
-    { text: "NOPE", blockOrdinal: 0, startOffset: 0, endOffset: 9999, category: "term" },
+    { text: "FAKE", blockOrdinal: 999, startOffset: 0, endOffset: 4, category: "notation" },
+    { text: "NOPE", blockOrdinal: 0, startOffset: 0, endOffset: 9999, category: "notation" },
   ];
   const validated = validateTermMarkers(content, mixed);
   assert.equal(validated.length, markers.length, "Only valid markers should survive");

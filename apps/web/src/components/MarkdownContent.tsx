@@ -33,7 +33,7 @@ export interface MarkdownContentProps {
   text: string;
   sources?: readonly ResearchGroundingSourceRecord[];
   citations?: readonly ResearchCitationRecord[];
-  terms?: readonly TermMarker[];
+  terms?: readonly RenderedTermMarker[];
   /** #31：融合正文的来源列表；存在时 [来源n] 渲染为可点击的融合引用标记。 */
   fusionSources?: readonly ResearchFusionSource[];
   variant?: "message" | "insight";
@@ -45,6 +45,12 @@ export interface MarkdownContentProps {
    */
   titleAnchorId?: string;
 }
+
+/** 合并渲染多个正文块时的视图偏移；持久化锚点仍保留在 TermMarker 原字段。 */
+export type RenderedTermMarker = TermMarker & {
+  renderedStartOffset?: number;
+  renderedEndOffset?: number;
+};
 
 /**
  * 把 AI 生成的 Markdown 文本渲染为安全 HTML。
@@ -81,15 +87,20 @@ export function MarkdownContent({ text, sources = [], citations = [], terms = []
     if (!root) return;
 
     clearTermMarkers(root);
-    let searchFrom = 0;
     const validTerms = terms
       .filter((term) => isValidTermMarker(text, term))
-      .sort((left, right) => left.startOffset - right.startOffset || left.endOffset - right.endOffset);
+      .sort((left, right) => renderedStart(left) - renderedStart(right) || renderedEnd(left) - renderedEnd(right));
 
+    // 同名术语按"源文本第 N 次出现"对应"渲染可见文字第 N 次出现"定位：Markdown 渲染
+    // 不改变出现顺序，因此同名异义只标记其中一次、或前一次出现落在代码/链接里时，
+    // 都能命中正确的可见出现，而不会错误包裹别的同名文字。
+    // 已知边界：术语原文出现在链接 URL 等不可见位置时序号可能漂移（与旧顺序游标同类风险）。
     for (const term of validTerms) {
-      const match = findRenderedTextRange(root, term.text, searchFrom);
-      if (!match || !wrapTermRange(root, match, term)) continue;
-      searchFrom = match.endOffset;
+      const occurrence = countOccurrences(text.slice(0, renderedStart(term)), term.text);
+      const match = findRenderedTextRange(root, term.text, occurrence);
+      if (!match) continue;
+      // 命中的出现落在 a/button/code/pre 内无法包裹时丢弃该标记，不再顺延包裹下一次出现。
+      wrapTermRange(root, match, term);
     }
   }, [text, terms]);
 
@@ -167,16 +178,26 @@ interface RenderedTextRange {
   endOffset: number;
 }
 
-function isValidTermMarker(text: string, marker: TermMarker): boolean {
+function isValidTermMarker(text: string, marker: RenderedTermMarker): boolean {
+  const startOffset = renderedStart(marker);
+  const endOffset = renderedEnd(marker);
   return (
     marker.text.length > 0 &&
-    Number.isSafeInteger(marker.startOffset) &&
-    Number.isSafeInteger(marker.endOffset) &&
-    marker.startOffset >= 0 &&
-    marker.endOffset > marker.startOffset &&
-    marker.endOffset <= text.length &&
-    text.slice(marker.startOffset, marker.endOffset) === marker.text
+    Number.isSafeInteger(startOffset) &&
+    Number.isSafeInteger(endOffset) &&
+    startOffset >= 0 &&
+    endOffset > startOffset &&
+    endOffset <= text.length &&
+    text.slice(startOffset, endOffset) === marker.text
   );
+}
+
+function renderedStart(marker: RenderedTermMarker): number {
+  return marker.renderedStartOffset ?? marker.startOffset;
+}
+
+function renderedEnd(marker: RenderedTermMarker): number {
+  return marker.renderedEndOffset ?? marker.endOffset;
 }
 
 /** 读取 Markdown 渲染后的可见文字节点；引用角标没有正文，不参与术语定位。 */
@@ -193,12 +214,31 @@ function renderedTextNodes(root: Element): Text[] {
   return nodes;
 }
 
-function findRenderedTextRange(root: Element, needle: string, fromOffset: number): RenderedTextRange | undefined {
+/** 源文本中 needle 在 haystack 里的不重叠出现次数（与渲染侧逐个出现的计数口径一致）。 */
+function countOccurrences(haystack: string, needle: string): number {
+  if (!needle) return 0;
+  let count = 0;
+  let from = 0;
+  for (;;) {
+    const index = haystack.indexOf(needle, from);
+    if (index < 0) return count;
+    count += 1;
+    from = index + needle.length;
+  }
+}
+
+/** 在渲染可见文字中取 needle 的第 occurrenceIndex 次（从 0 计）不重叠出现。 */
+function findRenderedTextRange(root: Element, needle: string, occurrenceIndex: number): RenderedTextRange | undefined {
   if (!needle) return undefined;
   const nodes = renderedTextNodes(root);
   const visibleText = nodes.map((node) => node.data).join("");
-  const startOffset = visibleText.indexOf(needle, fromOffset);
-  if (startOffset < 0) return undefined;
+  let startOffset = -1;
+  let from = 0;
+  for (let seen = 0; seen <= occurrenceIndex; seen += 1) {
+    startOffset = visibleText.indexOf(needle, from);
+    if (startOffset < 0) return undefined;
+    from = startOffset + needle.length;
+  }
   const endOffset = startOffset + needle.length;
   return {
     start: pointAtOffset(nodes, startOffset),
@@ -219,12 +259,16 @@ function pointAtOffset(nodes: Text[], target: number): TextPoint {
 }
 
 /** 用无语义的 span 包裹术语，保留原文字节点内容与 DOM 选区字符偏移。 */
-function wrapTermRange(root: Element, rendered: RenderedTextRange, term: TermMarker): boolean {
+function wrapTermRange(root: Element, rendered: RenderedTextRange, term: RenderedTermMarker): boolean {
   try {
     const range = root.ownerDocument.createRange();
     range.setStart(rendered.start.node, rendered.start.offset);
     range.setEnd(rendered.end.node, rendered.end.offset);
-    const marker = root.ownerDocument.createElement("span");
+    if (rendered.start.node.parentElement?.closest("a, button, code, pre") || rendered.end.node.parentElement?.closest("a, button, code, pre")) {
+      return false;
+    }
+    const marker = root.ownerDocument.createElement("button");
+    marker.type = "button";
     marker.className = "term-marker";
     marker.setAttribute("data-term-marker", "");
     marker.setAttribute("data-term-category", term.category);
@@ -232,8 +276,6 @@ function wrapTermRange(root: Element, rendered: RenderedTextRange, term: TermMar
     marker.setAttribute("data-term-block-ordinal", String(term.blockOrdinal));
     marker.setAttribute("data-term-start-offset", String(term.startOffset));
     marker.setAttribute("data-term-end-offset", String(term.endOffset));
-    marker.setAttribute("role", "button");
-    marker.setAttribute("tabindex", "0");
     marker.setAttribute("aria-label", `解释术语 ${term.text}`);
     marker.appendChild(range.extractContents());
     range.insertNode(marker);

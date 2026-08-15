@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { FUSION_COMPOSE_PROMPT_VERSION, FUSION_COMPOSE_TOKEN_BUDGET, FUSION_RELATION_TYPES, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, parseResearchSelectionInsight, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight, type ResearchSliceContext } from "@collector/capture-contracts";
+import { FUSION_COMPOSE_PROMPT_VERSION, FUSION_COMPOSE_TOKEN_BUDGET, FUSION_RELATION_TYPES, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, TERM_IDENTITY_CONTEXT_MAX_CHARACTERS, TERM_IDENTITY_TEXT_MAX_CHARACTERS, TERM_IDENTITY_VERIFY_PROMPT_VERSION, parseResearchSelectionInsight, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight, type ResearchSliceContext, type TermIdentityVerificationRequest } from "@collector/capture-contracts";
 
 export interface ProviderUsage {
   inputTokens?: number;
@@ -264,6 +264,27 @@ export function formatResearchParentChainContext(context?: ResearchParentChainCo
   return lines.join("\n");
 }
 
+export type MentionMarkupScenario = "conversation" | "long_form_section" | "deep_research" | "grounded" | "fusion";
+
+/** AI 正文与弱标记共用的流内控制说明；场景只标识调用入口，深度决定是否/多少标记。 */
+export function formatMentionMarkupInstructions(input: { scenario: MentionMarkupScenario; nodeDepth: number }): string {
+  const { nodeDepth } = input;
+  const density = resolveResearchConvergence({ nodeDepth }).termDensity;
+  if (density === "stopped") {
+    return "弱标记：当前研究路径已经足够深入。不要输出任何 [[ 控制标记；只输出干净正文。";
+  }
+  const densityRule = density === "reduced"
+    ? "本回答最多标记 4 个理解当前问题最关键的对象；宁缺毋滥。"
+    : "只标记少量、确实影响当前论述理解的对象；不要为了覆盖类别而凑数。";
+  return `弱标记：
+- 只在读者理解当前论述仍需补充解释时，用“类别:对象身份:可见短语”的精确格式包住完整短语：[[concept:concept-1:短语]]、[[entity:entity-1:短语]]、[[abbreviation:abbr-1:短语]]、[[notation:notation-1:短语]]。
+- concept 用于理论、机制、方法、现象和专业概念；entity 用于当前论述中身份重要的人、组织、地点、作品、事件、法律、产品或技术；abbreviation 用于不展开便可能难懂的缩写；notation 用于公式、统计记号、代码标识和状态码。
+- 对象身份只在本回答内有效，使用 1–64 位英文字母、数字、连字符或下划线。同一对象的重复提及必须复用同一个对象身份，即使可见文字不同；同名异义对象必须使用不同对象身份。
+- ${densityRule}
+- 普通名词、日期、网址、引用编号、标题、完整句子，以及上下文已经充分解释的对象都不标记。不要嵌套标记，不要让标记跨越 Markdown 结构或段落。
+- [[...]] 是内部控制格式，除上述四种合法形式外不要输出方括号控制符；正文内容本身保持自然连贯。`;
+}
+
 export class ProviderRegistry {
   private readonly definitions = new Map<string, ProviderDefinition>();
 
@@ -502,6 +523,15 @@ const AGENT_SEARCH_SYSTEM_PROMPT = `你是 Collector 的研究助手。你可以
 - 中文优先，使用中文关键词搜索；英文术语保留原样
 - 最多进行 5 轮搜索（web_search 调用次数），达到后请基于已有信息给出最佳回答`;
 
+/** Agent 联网回答与其它正文入口共用同一份弱标记策略。 */
+export function formatAgentSearchSystemPrompt(nodeDepth = 0): string {
+  return `${AGENT_SEARCH_SYSTEM_PROMPT}
+
+最终回答只输出连贯的中文正文，不返回 JSON、字段包装或 Markdown 代码围栏；按自然段落组织，段落之间留一个空行。
+
+${formatMentionMarkupInstructions({ scenario: "grounded", nodeDepth })}`;
+}
+
 /** web_search 和 web_fetch 工具的 OpenAI function tool 定义。 */
 const AGENT_SEARCH_TOOLS: ToolDefinition[] = [
   {
@@ -588,6 +618,41 @@ export class ModelGateway {
 
   get promptVersion(): string { return this.options.promptVersion ?? "knowledge-extraction-v1"; }
 
+  /** 供应商原生联网：统一注入正文弱标记契约，原始引用范围交由服务层在清洗后校正。 */
+  async generateGroundedResearch(
+    prompt: string,
+    grounding: ResearchGroundingRequest,
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number } = {},
+  ): Promise<GroundedResearchResponse> {
+    const provider = this.provider as Partial<GroundingModelProvider>;
+    if (typeof provider.generateGroundedResearch !== "function") {
+      throw new Error("Configured provider does not support native web grounding");
+    }
+    const request: ModelProviderRequest = {
+      prompt: `${prompt}\n\n${formatMentionMarkupInstructions({ scenario: "grounded", nodeDepth: options.nodeDepth ?? 0 })}`,
+      model: options.model ?? this.modelName,
+      maxTokens: options.maxTokens ?? 8_000,
+      timeoutMs: options.timeoutMs ?? 120_000,
+    };
+    const context = options.context ?? { purpose: "research_grounding", promptVersion: grounding.promptVersion };
+    const createdAt = new Date().toISOString();
+    const startedAt = Date.now();
+    try {
+      const result = await provider.generateGroundedResearch({
+        prompt: request.prompt,
+        model: request.model,
+        grounding,
+        maxTokens: request.maxTokens,
+        timeoutMs: request.timeoutMs,
+      });
+      await this.emitCompleted(context, request, startedAt, createdAt, { content: result.content, model: request.model });
+      return result;
+    } catch (error) {
+      await this.emitFailed(context, request, startedAt, createdAt, error);
+      throw error;
+    }
+  }
+
   async answerResearchConversation(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
     options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
@@ -596,7 +661,11 @@ export class ModelGateway {
     const parentContext = formatResearchParentChainContext(options.parentChainContext);
     const sliceContext = formatResearchSliceContext(options.sliceContext);
     // 自由正文：术语预览与旧式流式复用此能力，输出连续文本而非 JSON 包装。
-    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Output a coherent passage of plain text only — no JSON, no field wrappers, no Markdown code fences. Preserve uncertainty and never invent sources.\n\nConversation:\n${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
+    const mentionInstructions = formatMentionMarkupInstructions({
+      scenario: "conversation",
+      nodeDepth: options.parentChainContext?.currentNodeDepth ?? 0,
+    });
+    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Output a coherent passage of plain text only — no JSON, no field wrappers, no Markdown code fences. Preserve uncertainty and never invent sources.\n\n${mentionInstructions}\n\nConversation:\n${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
@@ -641,6 +710,10 @@ export class ModelGateway {
   ): string {
     const parentContext = formatResearchParentChainContext(parentChainContext);
     const sliceContextText = formatResearchSliceContext(sliceContext);
+    const mentionInstructions = formatMentionMarkupInstructions({
+      scenario: "conversation",
+      nodeDepth: parentChainContext?.currentNodeDepth ?? 0,
+    });
     return `你是 Collector 的研究助手。请回答用户最新的问题，输出一篇连贯、完整的中文正文。
 
 要求：
@@ -649,6 +722,8 @@ export class ModelGateway {
 - 内容详实、论述充分，长度服从内容需要，不要刻意压缩或拆成孤立的碎片要点。
 - 保持来源事实与不确定性，不编造来源、链接或引用。
 - 不要使用 Markdown 代码围栏包裹整篇回答，不要返回 JSON 或任何字段结构，只输出正文本身。
+
+${mentionInstructions}
 
 对话：
 ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContextText ? `\n\n${sliceContextText}` : ""}`;
@@ -765,7 +840,7 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
       /** 降级重试时下调的目标字数。 */
       targetCharsOverride?: number;
     },
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number } = {},
   ): Promise<{ content: string; finishReason?: string }> {
     const section = input.outline.sections[input.sectionIndex];
     if (!section) throw new Error(`Body section ${input.sectionIndex} is out of range`);
@@ -776,6 +851,10 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
     const continuation = input.continuation;
     // 断点前文只取尾部一段作衔接上下文，避免整节重复进入提示。
     const continuationTail = continuation ? continuation.priorSectionContent.slice(-500) : "";
+    const mentionInstructions = formatMentionMarkupInstructions({
+      scenario: "long_form_section",
+      nodeDepth: options.nodeDepth ?? 0,
+    });
     const prompt = `你是 Collector 的研究助手。你正在按大纲逐节撰写一篇连贯的中文长文，现在请只扩写其中一节。
 
 写作目标：${input.goal}
@@ -789,7 +868,9 @@ ${input.writtenSoFar.trim() ? `已生成的前文（仅供保持连贯，不要�
 ${continuation ? "- 直接从断点继续写正文，不要重复上面的内容，不要再输出节标题。\n" : `- 第一行输出该节标题，格式为 Markdown 二级标题：## ${section.heading}；标题后用一个空行接正文，正文由流畅段落组成、段落间用一个空行分隔。整节只出现这一次标题，正文内不要再重复该标题或另起同级标题。\n`}- 只输出第 ${input.sectionIndex + 1} 节，不要重复大纲或其它节，不要为正文内的小论点再起标题。
 - 与前文自然衔接、保持同一主题与语气；内容详实，服从该节目标字数。
 - 保持来源事实与不确定性，不编造来源、链接或引用。
-- 不要使用 Markdown 代码围栏，不要返回 JSON 或大纲字段，只输出该节标题与正文。`;
+- 不要使用 Markdown 代码围栏，不要返回 JSON 或大纲字段，只输出该节标题与正文。
+
+${mentionInstructions}`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
@@ -834,6 +915,46 @@ ${JSON.stringify(input.content)}`;
       timeoutMs: options.timeoutMs ?? 30_000,
     }, options.context ?? { purpose: "research_slice_annotation" });
     return parseSliceAnnotation(response.content);
+  }
+
+  /**
+   * 同一节点内的同名提及核验。输入只保留双方各 600 字局部语境（上限与请求
+   * 结构由 @collector/capture-contracts 统一定义）；文本相同不构成充分条件，
+   * 同形异义或无法确定时必须返回 false。
+   */
+  async verifyTermIdentity(
+    input: TermIdentityVerificationRequest,
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<boolean> {
+    const boundMention = (mention: TermIdentityVerificationRequest["left"]) => ({
+      ...mention,
+      text: mention.text.slice(0, TERM_IDENTITY_TEXT_MAX_CHARACTERS),
+      context: mention.context.slice(0, TERM_IDENTITY_CONTEXT_MAX_CHARACTERS),
+    });
+    const bounded = { left: boundMention(input.left), right: boundMention(input.right) };
+    const prompt = `你是 Collector 的实体身份核验助手。判断同一研究节点内的两处提及是否指向同一个可解释对象。
+
+只返回合法 JSON：{"sameEntity":true} 或 {"sameEntity":false}。
+
+规则：
+- 只有指向同一对象才返回 true；拼写相同、类别相同本身都不充分。
+- 人物、组织、作品、概念、缩写或符号存在同名异义、不同展开、不同版本或不同指代时返回 false。
+- 语境不足、结论不确定时返回 false；不要使用外部知识补全缺失信息。
+
+提及 A：${JSON.stringify(bounded.left)}
+提及 B：${JSON.stringify(bounded.right)}`;
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      responseFormat: { type: "json_object" },
+      temperature: 0,
+      thinking: false,
+      maxTokens: options.maxTokens ?? 128,
+      timeoutMs: options.timeoutMs ?? 30_000,
+    }, options.context ?? { purpose: "term_entity_verification", promptVersion: TERM_IDENTITY_VERIFY_PROMPT_VERSION });
+    const parsed = JSON.parse(response.content) as { sameEntity?: unknown };
+    if (typeof parsed.sameEntity !== "boolean") throw new Error("Term identity verification returned an invalid result");
+    return parsed.sameEntity;
   }
 
   /**
@@ -958,7 +1079,7 @@ ${JSON.stringify(input.right.content.slice(0, 12_000))}
       sources: Array<{ nodeId: string; title: string; excerpt: string }>;
       relationType: FusionRelationType;
     },
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number } = {},
   ): Promise<string> {
     if (input.sources.length < 2) throw new Error("Fusion requires at least two sources");
     const relationGuidance: Record<FusionRelationType, string> = {
@@ -972,6 +1093,7 @@ ${JSON.stringify(input.right.content.slice(0, 12_000))}
       const ordinal = index + 1;
       return `来源${ordinal}（${source.title}，节点 ${source.nodeId}）：\n${JSON.stringify(source.excerpt.slice(0, 8_000))}`;
     }).join("\n\n");
+    const mentionInstructions = formatMentionMarkupInstructions({ scenario: "fusion", nodeDepth: options.nodeDepth ?? 0 });
     const prompt = `你是 Collector 的融合总结助手。用户确认了 ${input.relationType} 关系，请把下面多个来源综合为一篇融合节点正文。
 
 关系判断：${relationGuidance[input.relationType]}
@@ -984,7 +1106,9 @@ ${sourceLines}
 - 正文必须按顺序包含三个二级标题章节：## 共同核心、## 差异、## 综合推导。
   ## 共同核心 写各来源共同点；## 差异 写各来源差异（对比/类比关系时重点展开）；## 综合推导 写融合后的增量综合与结论。
 - 正文以 [来源n] 标记引用对应来源（n 为来源序号），同一处可同时引用多个来源如 [来源1][来源2]；每条断言都应可追溯到来源材料。
-- 只使用提供的来源材料，不补充外部事实、不编造来源。`;
+- 只使用提供的来源材料，不补充外部事实、不编造来源。
+
+${mentionInstructions}`;
     const context: ModelCallContext = {
       ...(options.context ?? {}),
       purpose: options.context?.purpose ?? "fusion_compose",
@@ -1023,6 +1147,10 @@ ${sourceLines}
     if (!input.direction.trim()) throw new Error("Deep research requires a research direction");
     const parentContext = formatResearchParentChainContext(input.parentChainContext);
     const sliceContext = formatResearchSliceContext(input.sliceContext);
+    const mentionInstructions = formatMentionMarkupInstructions({
+      scenario: "deep_research",
+      nodeDepth: input.parentChainContext?.currentNodeDepth ?? 0,
+    });
     // 自由正文：旧式流式深入研究复用此能力，输出连续文本而非 {"answer":...} JSON 包装。
     const prompt = `你是 Collector 的深入研究助手。用户从一段选区发起了深入研究第一轮。只使用下面提供的当前已有材料生成研究内容，不要联网检索，不要编造来源、链接或引用。只输出一段连贯的中文纯文本，不要返回 JSON、字段包装或 Markdown 代码围栏。
 
@@ -1041,7 +1169,9 @@ ${parentContext ? `\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext
 - 围绕用户方向，基于选区与上下文展开解释、拆解或延伸；
 - 只依据提供的材料，不编造外部事实、链接或来源；
 - 材料不足以支撑时在回答中如实说明不确定性；
-- 使用中文。`;
+- 使用中文。
+
+${mentionInstructions}`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
@@ -1155,6 +1285,7 @@ ${input.recentUserMessages?.length ? `\n用户最近关注的问题：\n${input.
       maxTurns?: number;
       systemPrompt?: string;
       context?: ModelCallContext;
+      nodeDepth?: number;
     } = {},
   ): Promise<AgentSearchResult> {
     if (typeof (this.provider as any).agentChat !== "function") {
@@ -1170,7 +1301,7 @@ ${input.recentUserMessages?.length ? `\n用户最近关注的问题：\n${input.
     }
 
     const messages: AgentChatMessage[] = [
-      { role: "system", content: options.systemPrompt ?? AGENT_SEARCH_SYSTEM_PROMPT },
+      { role: "system", content: options.systemPrompt ?? formatAgentSearchSystemPrompt(options.nodeDepth ?? 0) },
       { role: "user", content: userMessage },
     ];
 

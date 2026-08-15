@@ -142,7 +142,7 @@ export interface ResearchStore {
   createResearchTurn(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<ResearchTurnAccepted>;
   createResearchTurnForNode(node: ResearchNodeRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<ResearchTurnAccepted>;
   claimResearchTask(id: string, provider?: string, model?: string, promptVersion?: string): ResearchTaskRecord | undefined;
-  appendResearchTaskDelta(id: string, delta: string): Promise<void>;
+  appendResearchTaskDelta(id: string, delta: string, termMarkers?: readonly import("@collector/capture-contracts").TermMarker[]): Promise<void>;
   completeResearchTask(id: string): Promise<void>;
   failResearchTask(task: ResearchTaskRecord, error: ResearchTaskError): Promise<void>;
   retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string, options?: { preserveContent?: boolean }): Promise<ResearchTaskRecord>;
@@ -182,7 +182,7 @@ export interface ResearchStore {
   listFragmentsByNode(nodeId: string): ResearchSemanticFragmentRecord[];
 }
 
-/** 深入研究所需的持久化能力：12 个方法。 */
+/** 深入研究所需的持久化能力：40 个方法。 */
 export interface DeepResearchStore {
   getResearchBranch(id: string): ResearchBranchRecord | undefined;
   listResearchBranches(sessionId: string): ResearchBranchRecord[];
@@ -197,6 +197,8 @@ export interface DeepResearchStore {
   getResearchSession(id: string): ResearchSessionRecord | undefined;
   getResearchMessage(id: string): ResearchMessageRecord | undefined;
   getResearchSelection(id: string): ResearchSelectionRecord | undefined;
+  /** 术语生长按锚点复用既有选区：需要会话级选区清单（ADR-0029）。 */
+  listResearchSelections(sessionId: string): ResearchSelectionRecord[];
   listResearchMessages(sessionId: string): ResearchMessageRecord[];
   listResearchMessagesByNode(nodeId: string): ResearchMessageRecord[];
   listResearchTasks(sessionId: string): ResearchTaskRecord[];
@@ -210,6 +212,7 @@ export interface DeepResearchStore {
   listResearchImportTasks(sessionId: string): ResearchImportTaskRecord[];
   getResearchTermPreview(id: string): ResearchTermPreviewRecord | undefined;
   findResearchTermPreview(nodeId: string, markerKey: string): ResearchTermPreviewRecord | undefined;
+  listResearchTermPreviewsByNode(nodeId: string): ResearchTermPreviewRecord[];
   createResearchTermPreview(preview: ResearchTermPreviewRecord, selection: ResearchSelectionRecord): Promise<ResearchTermPreviewAccepted>;
   claimResearchTermPreview(id: string, provider?: string, model?: string, promptVersion?: string): ResearchTermPreviewRecord | undefined;
   appendResearchTermPreviewDelta(id: string, delta: string): Promise<void>;
@@ -390,7 +393,7 @@ export interface CollectorStore
   listResearchTasks(sessionId: string): ResearchTaskRecord[];
   createResearchTurn(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<ResearchTurnAccepted>;
   claimResearchTask(id: string, provider?: string, model?: string, promptVersion?: string): ResearchTaskRecord | undefined;
-  appendResearchTaskDelta(id: string, delta: string): Promise<void>;
+  appendResearchTaskDelta(id: string, delta: string, termMarkers?: readonly import("@collector/capture-contracts").TermMarker[]): Promise<void>;
   completeResearchTask(id: string): Promise<void>;
   failResearchTask(task: ResearchTaskRecord, error: ResearchTaskError): Promise<void>;
   retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string, options?: { preserveContent?: boolean }): Promise<ResearchTaskRecord>;
@@ -1517,14 +1520,20 @@ export class SqliteStore implements CollectorStore {
     return claimed;
   }
 
-  async appendResearchTaskDelta(id: string, delta: string): Promise<void> {
+  async appendResearchTaskDelta(id: string, delta: string, termMarkers?: readonly import("@collector/capture-contracts").TermMarker[]): Promise<void> {
     this.transaction(() => {
       const task = this.getResearchTask(id);
       if (!task || task.status !== "running") throw new Error("Research task is not running");
       const current = this.getResearchMessage(task.outputMessageId);
       if (!current) throw new Error("Research output message not found");
       const now = new Date().toISOString();
-      const message: ResearchMessageRecord = { ...current, content: current.content + delta, status: "streaming", updatedAt: now };
+      const message: ResearchMessageRecord = {
+        ...current,
+        content: current.content + delta,
+        ...(termMarkers ? { termMarkers: [...termMarkers] } : {}),
+        status: "streaming",
+        updatedAt: now,
+      };
       this.updateResearchMessage(message);
       const updatedTask: ResearchTaskRecord = { ...task, updatedAt: now };
       this.updateResearchTask(updatedTask);
@@ -1575,9 +1584,12 @@ export class SqliteStore implements CollectorStore {
         error: undefined, updatedAt: now, startedAt: undefined, completedAt: undefined,
       };
       // preserveContent：保留已写部分正文与事件流，供断流续传/截断续写从断点继续；默认清空重来。
+      // 默认重试清空正文时必须同事务清掉流内弱标记：标记只在当前正文版本有效（ADR-0028），
+      // 残留旧标记会让空正文消息携带不一致派生状态，甚至被下一次生成误当种子复用。
+      const { termMarkers: _staleMarkers, ...clearedMessage } = currentMessage;
       const message: ResearchMessageRecord = options?.preserveContent
         ? { ...currentMessage, updatedAt: now }
-        : { ...currentMessage, content: "", status: "pending", updatedAt: now };
+        : { ...clearedMessage, content: "", status: "pending", updatedAt: now };
       this.updateResearchMessage(message);
       this.updateResearchTask(queued);
       if (!options?.preserveContent) this.db().prepare("DELETE FROM research_task_events WHERE task_id = ?").run(task.id);
@@ -1659,6 +1671,13 @@ export class SqliteStore implements CollectorStore {
 
   findResearchTermPreview(nodeId: string, markerKey: string): ResearchTermPreviewRecord | undefined {
     return this.getRecord<ResearchTermPreviewRecord>("SELECT record_json FROM research_term_previews WHERE node_id = ? AND marker_key = ?", nodeId, markerKey);
+  }
+
+  listResearchTermPreviewsByNode(nodeId: string): ResearchTermPreviewRecord[] {
+    return this.listRecords<ResearchTermPreviewRecord>(
+      "SELECT record_json FROM research_term_previews WHERE node_id = ? ORDER BY created_at DESC, id DESC",
+      nodeId,
+    );
   }
 
   async createResearchPermanentEdge(edge: ResearchPermanentEdgeRecord): Promise<ResearchPermanentEdgeRecord> {
@@ -2451,6 +2470,11 @@ export class SqliteStore implements CollectorStore {
       }
       const session = this.getResearchSession(node.sessionId);
       if (!session) throw new Error("Research node references a missing session");
+      // 术语生长的点击提及锚点可能尚无选区记录：子节点创建事务同时保证来源选区落库。
+      if (!this.getResearchSelection(selection.id)) {
+        this.db().prepare("INSERT INTO research_selections (id, session_id, node_id, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
+          .run(selection.id, selection.sessionId, selection.nodeId ?? null, selection.status, selection.createdAt, selection.updatedAt, JSON.stringify(selection));
+      }
       const updatedSession: ResearchSessionRecord = { ...session, updatedAt: task.createdAt };
       this.db().prepare("INSERT INTO research_nodes (id, session_id, parent_node_id, origin_selection_id, status, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .run(node.id, node.sessionId, node.parentNodeId ?? null, node.originSelectionId ?? null, node.status, node.createdAt, node.updatedAt, task.idempotencyKey, JSON.stringify(node));
@@ -4066,7 +4090,7 @@ export class JsonStore implements CollectorStore {
   async createResearchTurn(_session: ResearchSessionRecord, _inputMessage: ResearchMessageRecord, _outputMessage: ResearchMessageRecord, _task: ResearchTaskRecord): Promise<ResearchTurnAccepted> { throw new Error("Research sessions require SQLite persistence"); }
   async createResearchTurnForNode(_node: ResearchNodeRecord, _inputMessage: ResearchMessageRecord, _outputMessage: ResearchMessageRecord, _task: ResearchTaskRecord): Promise<ResearchTurnAccepted> { throw new Error("Research nodes require SQLite persistence"); }
   claimResearchTask(_id: string, _provider?: string, _model?: string, _promptVersion?: string): ResearchTaskRecord | undefined { return undefined; }
-  async appendResearchTaskDelta(_id: string, _delta: string): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
+  async appendResearchTaskDelta(_id: string, _delta: string, _termMarkers?: readonly import("@collector/capture-contracts").TermMarker[]): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
   async completeResearchTask(_id: string): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
   async failResearchTask(_task: ResearchTaskRecord, _error: ResearchTaskError): Promise<void> { throw new Error("Research sessions require SQLite persistence"); }
   async retryResearchTask(_task: ResearchTaskRecord, _provider?: string, _model?: string, _promptVersion?: string, _options?: { preserveContent?: boolean }): Promise<ResearchTaskRecord> { throw new Error("Research sessions require SQLite persistence"); }
@@ -4116,6 +4140,7 @@ export class JsonStore implements CollectorStore {
   async createResearchChildNode(_parentNode: ResearchNodeRecord, _node: ResearchNodeRecord, _selection: ResearchSelectionRecord, _inputMessage: ResearchMessageRecord, _outputMessage: ResearchMessageRecord, _task: ResearchTaskRecord): Promise<NodeGrowthAccepted> { throw new Error("Research nodes require SQLite persistence"); }
   getResearchTermPreview(_id: string): ResearchTermPreviewRecord | undefined { return undefined; }
   findResearchTermPreview(_nodeId: string, _markerKey: string): ResearchTermPreviewRecord | undefined { return undefined; }
+  listResearchTermPreviewsByNode(_nodeId: string): ResearchTermPreviewRecord[] { return []; }
   async createResearchTermPreview(_preview: ResearchTermPreviewRecord, _selection: ResearchSelectionRecord): Promise<ResearchTermPreviewAccepted> { throw new Error("Term previews require SQLite persistence"); }
   claimResearchTermPreview(_id: string, _provider?: string, _model?: string, _promptVersion?: string): ResearchTermPreviewRecord | undefined { return undefined; }
   async appendResearchTermPreviewDelta(_id: string, _delta: string): Promise<void> { throw new Error("Term previews require SQLite persistence"); }

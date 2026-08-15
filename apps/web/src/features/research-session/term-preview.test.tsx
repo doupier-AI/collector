@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import type { ResearchNodeView, ResearchTermPreviewRecord, TermMarker } from "@collector/capture-contracts";
@@ -8,6 +8,7 @@ import type { AppServices } from "../../app/services";
 import { makeMessage, makeNode, makeNodeView, makeSelection, makeSession, makeTask } from "../../test/fakes";
 import type { TermPreviewEventStream } from "../../api/term-preview-events";
 import { ResearchNodePage } from "./ResearchNodePage";
+import { termPreviewClientKey, useTermPreviews } from "./useTermPreviews";
 
 function noopStream(): TermPreviewEventStream {
   return { close: () => {}, syncNow: () => {}, mode: "closed", lastEventId: 0 };
@@ -18,7 +19,7 @@ function markerFor(content: string, text: string, category: TermMarker["category
   return { text, blockOrdinal: 0, startOffset, endOffset: startOffset + text.length, category };
 }
 
-function viewWithTerms(): { view: ResearchNodeView; marker: TermMarker } {
+function viewWithTerms(status: "completed" | "streaming" = "completed"): { view: ResearchNodeView; marker: TermMarker } {
   const content = "REST API is documented through HTTP.";
   const marker = markerFor(content, "REST");
   const view = makeNodeView({
@@ -26,9 +27,9 @@ function viewWithTerms(): { view: ResearchNodeView; marker: TermMarker } {
     session: makeSession({ id: "session-1", title: "Term preview" }),
     messages: [
       makeMessage({ id: "m-in", role: "user", content: "Explain REST" }),
-      makeMessage({ id: "m-out", role: "assistant", status: "completed", content }),
+      makeMessage({ id: "m-out", role: "assistant", status, content }),
     ],
-    tasks: [makeTask({ id: "task-1", status: "completed", inputMessageId: "m-in", outputMessageId: "m-out" })],
+    tasks: [makeTask({ id: "task-1", status: status === "completed" ? "completed" : "running", inputMessageId: "m-in", outputMessageId: "m-out" })],
   });
   view.termDetections = {
     "m-out": {
@@ -79,19 +80,23 @@ function renderPage(api: Partial<ApiClient>) {
   );
 }
 
+function grownResult(view: ResearchNodeView, preview: ResearchTermPreviewRecord) {
+  return {
+    node: makeNode({ id: "child-1", sessionId: "session-1", parentNodeId: "session-1" }),
+    session: view.session,
+    selection: makeSelection({ id: "selection-1" }),
+    inputMessage: makeMessage({ id: "child-input", role: "user" }),
+    outputMessage: makeMessage({ id: "child-output", role: "assistant", status: "completed", content: preview.content }),
+    task: makeTask({ id: "child-task", status: "completed" }),
+  };
+}
+
 describe("术语预览交互", () => {
-  it("键盘可到达术语，Enter 启动预览，Escape 只关闭弹层，完成后可进入概念节点", async () => {
+  it("键盘可到达提及，Escape 只关闭弹层，首次点击会生成预览并直接进入概念节点", async () => {
     const { view, marker } = viewWithTerms();
     const preview = previewFor(marker);
     const startResearchTermPreview = vi.fn(async () => ({ preview, selection: makeSelection({ id: "selection-1" }) }));
-    const growResearchTermPreview = vi.fn(async () => ({
-      node: makeNode({ id: "child-1", sessionId: "session-1", parentNodeId: "session-1" }),
-      session: view.session,
-      selection: makeSelection({ id: "selection-1" }),
-      inputMessage: makeMessage({ id: "child-input", role: "user" }),
-      outputMessage: makeMessage({ id: "child-output", role: "assistant", status: "completed", content: preview.content }),
-      task: makeTask({ id: "child-task", status: "completed" }),
-    }));
+    const growResearchTermPreview = vi.fn(async () => grownResult(view, preview));
     renderPage({ getResearchNodeView: async () => view, startResearchTermPreview, growResearchTermPreview });
 
     const markerElement = await screen.findByRole("button", { name: "解释术语 REST" });
@@ -101,12 +106,176 @@ describe("术语预览交互", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(startResearchTermPreview).not.toHaveBeenCalled();
 
-    fireEvent.focus(markerElement);
+    fireEvent.click(markerElement);
+    await waitFor(() => expect(startResearchTermPreview).toHaveBeenCalledWith("session-1", { messageId: "m-out", marker }, expect.any(String)));
+    await waitFor(() => expect(growResearchTermPreview).toHaveBeenCalledWith(
+      "preview-1",
+      "term-growth:preview-1",
+      { mention: { messageId: "m-out", marker } },
+    ));
+  });
+
+  it("流式生成中的标记同样可悬停启动预览、点击直接生长（ADR-0029）", async () => {
+    const { view, marker } = viewWithTerms("streaming");
+    const preview = previewFor(marker);
+    const startResearchTermPreview = vi.fn(async () => ({ preview, selection: makeSelection({ id: "selection-1" }) }));
+    const growResearchTermPreview = vi.fn(async () => grownResult(view, preview));
+    renderPage({ getResearchNodeView: async () => view, startResearchTermPreview, growResearchTermPreview });
+
+    const markerElement = await screen.findByRole("button", { name: "解释术语 REST" });
+    fireEvent.pointerOver(markerElement);
+    // 悬停沿用约 400ms 意图确认后启动预览，不等待整篇回答完成。
+    await waitFor(
+      () => expect(startResearchTermPreview).toHaveBeenCalledWith("session-1", { messageId: "m-out", marker }, expect.any(String)),
+      { timeout: 3_000 },
+    );
+    expect(startResearchTermPreview).toHaveBeenCalledTimes(1);
+
+    // 预览状态更新会重渲染正文并替换标记元素（流式期间每个增量亦如此），点击当前元素。
+    fireEvent.click(screen.getByRole("button", { name: "解释术语 REST" }));
+    await waitFor(() => expect(growResearchTermPreview).toHaveBeenCalledWith(
+      "preview-1",
+      "term-growth:preview-1",
+      { mention: { messageId: "m-out", marker } },
+    ));
+    // 点击复用悬停启动的同一份预览，不重复调用启动端点。
+    expect(startResearchTermPreview).toHaveBeenCalledTimes(1);
+  });
+
+  it("生长进行中的快速重复点击与回车只触发一次预览启动与一次生长", async () => {
+    const { view, marker } = viewWithTerms();
+    const preview = previewFor(marker);
+    let resolveStart: ((accepted: { preview: ResearchTermPreviewRecord; selection: ReturnType<typeof makeSelection> }) => void) | undefined;
+    const startResearchTermPreview = vi.fn(() => new Promise<{ preview: ResearchTermPreviewRecord; selection: ReturnType<typeof makeSelection> }>((resolve) => {
+      resolveStart = resolve;
+    }));
+    const growResearchTermPreview = vi.fn(async () => grownResult(view, preview));
+    renderPage({ getResearchNodeView: async () => view, startResearchTermPreview, growResearchTermPreview });
+
+    const markerElement = await screen.findByRole("button", { name: "解释术语 REST" });
+    fireEvent.click(markerElement);
+    fireEvent.click(markerElement);
+    fireEvent.keyDown(markerElement, { key: "Enter" });
+    expect(startResearchTermPreview).toHaveBeenCalledTimes(1);
+
+    resolveStart?.({ preview, selection: makeSelection({ id: "selection-1" }) });
+    await waitFor(() => expect(growResearchTermPreview).toHaveBeenCalledTimes(1));
+  });
+
+  it("Enter 键激活标记：启动预览、等待完成后直接生长", async () => {
+    const { view, marker } = viewWithTerms();
+    const preview = previewFor(marker);
+    const startResearchTermPreview = vi.fn(async () => ({ preview, selection: makeSelection({ id: "selection-1" }) }));
+    const growResearchTermPreview = vi.fn(async () => grownResult(view, preview));
+    renderPage({ getResearchNodeView: async () => view, startResearchTermPreview, growResearchTermPreview });
+
+    const markerElement = await screen.findByRole("button", { name: "解释术语 REST" });
     fireEvent.keyDown(markerElement, { key: "Enter" });
     await waitFor(() => expect(startResearchTermPreview).toHaveBeenCalledWith("session-1", { messageId: "m-out", marker }, expect.any(String)));
-    expect(await screen.findByText("REST API 是一种通过 HTTP 交换资源的接口约定。")).toBeInTheDocument();
+    await waitFor(() => expect(growResearchTermPreview).toHaveBeenCalledWith(
+      "preview-1",
+      "term-growth:preview-1",
+      { mention: { messageId: "m-out", marker } },
+    ));
+  });
 
-    fireEvent.click(screen.getByRole("button", { name: "进入这个概念" }));
-    await waitFor(() => expect(growResearchTermPreview).toHaveBeenCalledWith("preview-1", expect.any(String)));
+  it("Escape 关闭弹层后焦点恢复到触发标记", async () => {
+    const { view } = viewWithTerms();
+    renderPage({ getResearchNodeView: async () => view });
+
+    const markerElement = await screen.findByRole("button", { name: "解释术语 REST" });
+    fireEvent.focus(markerElement);
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    fireEvent.keyDown(markerElement, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(document.activeElement).toBe(markerElement));
+  });
+
+  it("悬停打开后按 Escape：焦点恢复不重新打开弹层，用户重新聚焦才再打开", async () => {
+    const { view, marker } = viewWithTerms();
+    const preview = previewFor(marker);
+    renderPage({
+      getResearchNodeView: async () => view,
+      startResearchTermPreview: vi.fn(async () => ({ preview, selection: makeSelection({ id: "selection-1" }) })),
+    });
+
+    // 鼠标悬停打开弹层时焦点不在标记上；Escape 的焦点恢复不得被当成新的聚焦意图。
+    const markerElement = await screen.findByRole("button", { name: "解释术语 REST" });
+    fireEvent.pointerOver(markerElement);
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument(), { timeout: 3_000 });
+
+    // 预览状态更新会重渲染正文并替换标记元素，Escape 前重新取当前元素。
+    fireEvent.keyDown(screen.getByRole("button", { name: "解释术语 REST" }), { key: "Escape" });
+    // 焦点恢复到当前提及元素（预览完成触发的重渲染可能已替换原元素，不断言对象同一性）。
+    await waitFor(() => {
+      const focused = document.activeElement as HTMLElement | null;
+      expect(focused?.getAttribute("data-term-text")).toBe("REST");
+    });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    // 用户主动移开焦点再聚焦：正常的键盘进入仍然打开弹层。
+    const currentMarker = document.activeElement as HTMLElement;
+    fireEvent.focusOut(currentMarker);
+    fireEvent.focus(currentMarker);
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("预览失败时弹层保留错误与重试入口，不生长子节点", async () => {
+    const { view, marker } = viewWithTerms();
+    const failedPreview: ResearchTermPreviewRecord = {
+      ...previewFor(marker),
+      status: "failed",
+      retryable: true,
+      content: "",
+      error: { code: "provider_error", message: "AI 生成失败。术语和已生成内容已保留，可以稍后重试。" },
+    };
+    const startResearchTermPreview = vi.fn(async () => ({ preview: failedPreview, selection: makeSelection({ id: "selection-1" }) }));
+    const retryResearchTermPreviewTask = vi.fn(async () => ({ ...failedPreview, status: "queued" as const, retryable: false }));
+    const growResearchTermPreview = vi.fn();
+    renderPage({ getResearchNodeView: async () => view, startResearchTermPreview, retryResearchTermPreviewTask, growResearchTermPreview });
+
+    const markerElement = await screen.findByRole("button", { name: "解释术语 REST" });
+    fireEvent.click(markerElement);
+    const retryButton = await screen.findByRole("button", { name: "重试" });
+    expect(screen.getByText(/解释生成失败/)).toBeInTheDocument();
+    expect(growResearchTermPreview).not.toHaveBeenCalled();
+
+    fireEvent.click(retryButton);
+    await waitFor(() => expect(retryResearchTermPreviewTask).toHaveBeenCalledWith("preview-1"));
+  });
+
+  it("同节点另一条消息复用既有预览时仍映射到当前提及", async () => {
+    const oldMarker = { ...markerFor("REST was introduced earlier.", "REST"), entityId: "entity-rest" };
+    const currentMarker = { ...markerFor("REST is used again here.", "REST"), entityId: "entity-rest" };
+    const reused = previewFor(oldMarker);
+    reused.messageId = "m-old";
+    const startResearchTermPreview = vi.fn(async () => ({ preview: reused, selection: makeSelection({ id: "selection-1" }) }));
+    const grown = {
+      node: makeNode({ id: "child-1", sessionId: "session-1", parentNodeId: "session-1" }),
+      session: makeSession({ id: "session-1" }),
+      selection: makeSelection({ id: "selection-1" }),
+      inputMessage: makeMessage({ id: "child-input", role: "user" }),
+      outputMessage: makeMessage({ id: "child-output", role: "assistant", status: "completed", content: reused.content }),
+      task: makeTask({ id: "child-task", status: "completed" }),
+    };
+    const growResearchTermPreview = vi.fn(async () => grown);
+    const services = {
+      api: { startResearchTermPreview, growResearchTermPreview } as unknown as ApiClient,
+      connectTermPreviewEvents: vi.fn(noopStream),
+    } as unknown as AppServices;
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <ServicesProvider services={services}>{children}</ServicesProvider>
+    );
+    const { result } = renderHook(() => useTermPreviews("session-1"), { wrapper });
+
+    await act(async () => {
+      await result.current.growMarker("m-current", currentMarker);
+    });
+
+    expect(result.current.previews[termPreviewClientKey("m-current", currentMarker)]?.id).toBe(reused.id);
+    // 跨消息复用预览时，生长携带用户实际点击的提及作为子节点来源锚点（ADR-0029）。
+    expect(growResearchTermPreview).toHaveBeenCalledWith(reused.id, `term-growth:${reused.id}`, {
+      mention: { messageId: "m-current", marker: currentMarker },
+    });
   });
 });

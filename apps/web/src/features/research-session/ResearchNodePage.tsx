@@ -519,9 +519,22 @@ export function ResearchNodePage() {
     }
   }
 
-  async function handleGrowTermPreview(preview: import("@collector/capture-contracts").ResearchTermPreviewRecord): Promise<boolean> {
+  async function handleGrowTermPreview(preview: import("@collector/capture-contracts").ResearchTermPreviewRecord, mention?: import("@collector/capture-contracts").ResearchTermPreviewInput): Promise<boolean> {
     try {
-      const accepted = await termPreviews.grow(preview);
+      const accepted = await termPreviews.grow(preview, mention);
+      navigate(stableNodePath(accepted.node.id), {
+        state: { grew: true },
+      });
+      return true;
+    } catch (error) {
+      node.announce(apiErrorCopy(error).body);
+      return false;
+    }
+  }
+
+  async function handleGrowTermMarker(messageId: string, marker: import("@collector/capture-contracts").TermMarker): Promise<boolean> {
+    try {
+      const accepted = await termPreviews.growMarker(messageId, marker);
       navigate(stableNodePath(accepted.node.id), {
         state: { grew: true },
       });
@@ -840,11 +853,12 @@ export function ResearchNodePage() {
                 }
                 citations={view.citations}
                 groundingSources={view.groundingSources}
-                terms={view.termDetections?.[message.id]?.terms}
+                terms={message.termMarkers ?? view.termDetections?.[message.id]?.terms}
                 termPreviews={termPreviews.previews}
                 onStartTermPreview={termPreviews.start}
                 onRetryTermPreview={termPreviews.retry}
                 onGrowTermPreview={handleGrowTermPreview}
+                onGrowTermMarker={handleGrowTermMarker}
                 slices={view.slices?.[message.id]}
                 fragmentCardId={focusedCard?.cardId}
                 fusionSources={view.fusionSources?.[message.id]}

@@ -4,7 +4,7 @@ import { createServer, type Server } from "node:http";
 import test from "node:test";
 import { fetchPublicResource, PublicFetchError, type PublicUrlDnsLookup } from "../apps/api/dist/parsers.js";
 import { sanitizeGroundingUrl } from "@collector/capture-contracts";
-import { webFetch, createSearchRunContext, filterCitationsByEvidence } from "../apps/api/dist/web-search-agent.js";
+import { webFetch, createSearchRunContext, filterCitationsByEvidence, parseAgentCitations } from "../apps/api/dist/web-search-agent.js";
 
 /**
  * #49 C2：证据管线测试。
@@ -110,6 +110,22 @@ test("failure classification: transient vs permanent (message text unchanged)", 
       return true;
     },
   );
+});
+
+test("citation offsets align with the final clean message", () => {
+  const content = "开头[来源1]，中间内容[来源2]。";
+  const sources = [1, 2].map((ordinal) => ({
+    id: `source-${ordinal}`,
+    runId: "run-1",
+    ordinal,
+    title: `Source ${ordinal}`,
+    createdAt: "2026-08-14T00:00:00.000Z",
+  }));
+
+  assert.deepEqual(parseAgentCitations(content, sources).citations, [
+    { sourceOrdinal: 1, markerOffset: content.indexOf("[来源1]") },
+    { sourceOrdinal: 2, markerOffset: content.indexOf("[来源2]") },
+  ]);
 });
 
 // ── 重试：瞬时失败退避重试成功后成功 ──────────────────────────────────

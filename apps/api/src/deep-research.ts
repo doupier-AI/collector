@@ -16,10 +16,14 @@ import {
   type ResearchSessionNodeTreeItem,
   type ResearchSessionRecord,
   type ResearchTaskRecord,
+  type ResearchTermPreviewInput,
+  type ResearchTermPreviewRecord,
   type ResearchTurnAccepted,
 } from "@collector/capture-contracts";
 import type { DeepResearchStore } from "./store.js";
 import { DEEP_RESEARCH_PROMPT_VERSION, RESEARCH_CHAT_PROMPT_VERSION, isTrashed, type ResearchSessionService, type ResearchTurnOptions } from "./research.js";
+import { buildTermMentionSelection, normalizeMentionText } from "./term-preview.js";
+import { validateTermMarkers } from "./term-detection.js";
 
 /** 分支模式首轮用户消息中选区原文的摘录长度。 */
 const SELECTION_EXCERPT_CHARACTERS = 120;
@@ -245,7 +249,7 @@ export class NodeGrowthService {
   }
 
   /** 点击已完成的术语预览：复用同一份内容创建子节点，不再发起第二次模型调用。 */
-  async startChildNodeFromTermPreview(previewId: string, idempotencyKey: string): Promise<NodeGrowthAccepted> {
+  async startChildNodeFromTermPreview(previewId: string, idempotencyKey: string, mention?: ResearchTermPreviewInput): Promise<NodeGrowthAccepted> {
     if (!idempotencyKey.trim()) throw new DeepResearchValidationError("Idempotency-Key is required");
     if (idempotencyKey.length > 200) throw new DeepResearchValidationError("Idempotency-Key must not exceed 200 characters");
     const preview = this.store.getResearchTermPreview(previewId);
@@ -253,7 +257,10 @@ export class NodeGrowthService {
     if (preview.status !== "completed" || !preview.content.trim()) {
       throw new DeepResearchValidationError("Research term preview is not ready");
     }
-    const selection = this.store.getResearchSelection(preview.selectionId);
+    // ADR-0029：子节点来源锚定用户实际点击的那次提及；未提供时回落为预览最初生成时的提及位置。
+    const selection = mention
+      ? this.resolveGrowthMentionSelection(preview, mention)
+      : this.store.getResearchSelection(preview.selectionId);
     if (!selection) throw new Error("Research term preview references a missing selection");
     const parentNodeId = selection.nodeId ?? selection.sessionId;
     const parentNode = this.store.getResearchNode(parentNodeId);
@@ -261,7 +268,14 @@ export class NodeGrowthService {
     if (!parentNode || !session) throw new Error("Research term preview references incomplete node state");
 
     // 即使客户端丢失幂等键，也不允许同一术语来源重复生长多个子节点。
-    const existingNode = this.store.listChildNodes(parentNode.id).find((node) => node.originSelectionId === selection.id);
+    // 三道防重：点击提及锚点、预览原始锚点（兼容无 mention 的旧客户端），
+    // 以及真实客户端按预览派生幂等键的约定（`term-growth:{previewId}`）。
+    const childNodes = this.store.listChildNodes(parentNode.id);
+    const growthKeyConvention = `term-growth:${preview.id}`;
+    const existingNode = childNodes.find((node) =>
+      node.originSelectionId === selection.id || node.originSelectionId === preview.selectionId)
+      ?? childNodes.find((node) =>
+        this.store.listResearchTasksByNode(node.id)[0]?.idempotencyKey === growthKeyConvention);
     if (existingNode) {
       const existingTask = this.store.listResearchTasksByNode(existingNode.id)[0];
       const existingMessages = this.store.listResearchMessagesByNode(existingNode.id);
@@ -300,6 +314,46 @@ export class NodeGrowthService {
       createdAt: now, updatedAt: now, startedAt: now, completedAt: now,
     };
     return this.store.createResearchChildNode(parentNode, node, selection, inputMessage, outputMessage, task);
+  }
+
+  /**
+   * 把用户实际点击的提及解析为子节点来源选区（ADR-0029）。
+   * 同一锚点的选区复用既有记录；没有则构建新记录（由子节点创建事务一并落库）。
+   */
+  private resolveGrowthMentionSelection(preview: ResearchTermPreviewRecord, mention: ResearchTermPreviewInput): ResearchSelectionRecord {
+    const node = this.store.getResearchNode(preview.nodeId);
+    const session = this.store.getResearchSession(preview.sessionId);
+    if (!node || !session) throw new Error("Research term preview references incomplete node state");
+    const message = this.store.getResearchMessage(mention.messageId);
+    // 点击后可以等待预览完成再生长，此时正文可能仍在流式追加；失败消息不提供生长入口。
+    if (!message || message.nodeId !== node.id || message.role !== "assistant" || message.status === "failed") {
+      throw new DeepResearchValidationError("Growth mention must reference a streaming or completed assistant message in the same node");
+    }
+    const marker = validateTermMarkers(message.content, [mention.marker])[0];
+    if (!marker) throw new DeepResearchValidationError("Growth mention no longer matches the message");
+    // 提及必须是该消息上真实存在的弱标记，不能把任意正文位置伪装成生长来源。
+    if (message.termMarkers !== undefined) {
+      const available = validateTermMarkers(message.content, message.termMarkers);
+      const matches = available.some((candidate) =>
+        candidate.text === marker.text
+        && candidate.blockOrdinal === marker.blockOrdinal
+        && candidate.startOffset === marker.startOffset
+        && candidate.endOffset === marker.endOffset);
+      if (!matches) throw new DeepResearchValidationError("Growth mention is not a term marker of the message");
+    }
+    // 点击提及必须与预览指向同一对象（跨消息复用已在预览启动时按同文同类候选核验）。
+    if (normalizeMentionText(marker.text) !== normalizeMentionText(preview.marker.text) || marker.category !== preview.marker.category) {
+      throw new DeepResearchValidationError("Growth mention does not match the preview entity");
+    }
+    const existing = this.store.listResearchSelections(session.id).find((candidate) =>
+      candidate.nodeId === node.id
+      && candidate.anchor.kind === "message"
+      && candidate.anchor.messageId === message.id
+      && candidate.anchor.blockOrdinal === marker.blockOrdinal
+      && candidate.anchor.startOffset === marker.startOffset
+      && candidate.anchor.endOffset === marker.endOffset);
+    if (existing) return existing;
+    return buildTermMentionSelection(session, node, message, marker);
   }
 
   getNodeView(id: string): ResearchNodeView {

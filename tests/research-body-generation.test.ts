@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ModelGateway, parseBodyOutline, parseSliceAnnotation, trimStream, type ModelCallEvent, type ModelProvider, type ModelProviderRequest, type ModelProviderStreamEvent } from "@collector/model-gateway";
+import { ModelGateway, parseBodyOutline, parseSliceAnnotation, trimStream, type GroundingModelProvider, type ModelCallEvent, type ModelProvider, type ModelProviderRequest, type ModelProviderStreamEvent } from "@collector/model-gateway";
 
 async function* toAsync(chunks: string[]): AsyncIterable<string> {
   for (const chunk of chunks) yield chunk;
@@ -19,6 +19,15 @@ function makeProvider(respond: (request: ModelProviderRequest) => string): { pro
   return { provider, requests };
 }
 
+function assertUnifiedMentionContract(prompt: string): void {
+  assert.match(prompt, /\[\[concept:concept-1:短语\]\]/);
+  assert.match(prompt, /\[\[entity:entity-1:短语\]\]/);
+  assert.match(prompt, /\[\[abbreviation:abbr-1:短语\]\]/);
+  assert.match(prompt, /\[\[notation:notation-1:短语\]\]/);
+  assert.match(prompt, /同一对象的重复提及必须复用同一个对象身份/);
+  assert.match(prompt, /同名异义对象必须使用不同对象身份/);
+}
+
 test("writeResearchBody 以自由文本请求正文，不强制 JSON 输出", async () => {
   const { provider, requests } = makeProvider(() => "第一节连贯正文。\n\n第二节继续展开。");
   const gateway = new ModelGateway(provider);
@@ -28,6 +37,101 @@ test("writeResearchBody 以自由文本请求正文，不强制 JSON 输出", as
   // 自由正文不携带 responseFormat，传输层不再强制 JSON。
   assert.equal(requests[0]?.responseFormat, undefined);
   assert.match(requests[0]?.prompt ?? "", /连贯、完整/);
+});
+
+test("research body prompt uses the four explainable-object types and stops mention markup at depth four", async () => {
+  const shallow = makeProvider(() => "正文");
+  const shallowGateway = new ModelGateway(shallow.provider);
+  await shallowGateway.writeResearchBody([{ role: "user", content: "解释" }]);
+  const shallowPrompt = shallow.requests[0]?.prompt ?? "";
+  assert.match(shallowPrompt, /\[\[concept:concept-1:短语\]\]/);
+  assert.match(shallowPrompt, /\[\[entity:entity-1:短语\]\]/);
+  assert.match(shallowPrompt, /\[\[abbreviation:abbr-1:短语\]\]/);
+  assert.match(shallowPrompt, /\[\[notation:notation-1:短语\]\]/);
+  assert.match(shallowPrompt, /同一对象的重复提及必须复用同一个对象身份/);
+  assert.match(shallowPrompt, /同名异义对象必须使用不同对象身份/);
+  assert.match(shallowPrompt, /理解当前论述仍需补充解释/);
+
+  for (const currentNodeDepth of [2, 3]) {
+    const reduced = makeProvider(() => "短正文");
+    const reducedGateway = new ModelGateway(reduced.provider);
+    await reducedGateway.writeResearchBody([{ role: "user", content: "继续" }], {
+      parentChainContext: {
+        currentNodeDepth,
+        ancestors: [{ depth: 1, isRoot: true, label: "根" }],
+        truncated: false,
+        cycleDetected: false,
+      },
+    });
+    assert.match(reduced.requests[0]?.prompt ?? "", /最多标记 4 个/);
+  }
+
+  const deep = makeProvider(() => "正文");
+  const deepGateway = new ModelGateway(deep.provider);
+  await deepGateway.writeResearchBody([{ role: "user", content: "继续" }], {
+    parentChainContext: {
+      currentNodeDepth: 4,
+      ancestors: [{ depth: 1, isRoot: true, label: "根" }],
+      truncated: false,
+      cycleDetected: false,
+    },
+  });
+  assert.match(deep.requests[0]?.prompt ?? "", /不要输出任何 \[\[/);
+});
+
+test("普通回答、深研、长文分节与融合正文共用回答内弱标记契约", async () => {
+  const regular = makeProvider(() => "普通回答");
+  await new ModelGateway(regular.provider).answerResearchConversation([{ role: "user", content: "解释" }]);
+  assertUnifiedMentionContract(regular.requests[0]?.prompt ?? "");
+
+  const deepResearch = makeProvider(() => "深入研究回答");
+  await new ModelGateway(deepResearch.provider).generateDeepResearchRound({
+    mode: "branch",
+    selectionText: "选区",
+    direction: "继续研究",
+  });
+  assertUnifiedMentionContract(deepResearch.requests[0]?.prompt ?? "");
+
+  const section = makeProvider(() => "分节正文");
+  await new ModelGateway(section.provider).expandBodySection({
+    goal: "写长文",
+    outline: parseBodyOutline(JSON.stringify({ sections: [{ heading: "一", summary: "说明", targetChars: 500 }] })),
+    sectionIndex: 0,
+    writtenSoFar: "",
+  });
+  assertUnifiedMentionContract(section.requests[0]?.prompt ?? "");
+
+  const fusion = makeProvider(() => "## 共同核心\n\n融合正文。[来源1]\n\n## 差异\n\n差异。[来源2]\n\n## 综合推导\n\n结论。");
+  await new ModelGateway(fusion.provider).composeFusion({
+    sources: [
+      { nodeId: "a", title: "A", excerpt: "来源 A" },
+      { nodeId: "b", title: "B", excerpt: "来源 B" },
+    ],
+    relationType: "contrast",
+  });
+  assertUnifiedMentionContract(fusion.requests[0]?.prompt ?? "");
+});
+
+test("原生联网请求由网关注入统一弱标记契约和深度规则", async () => {
+  let prompt = "";
+  const provider: GroundingModelProvider = {
+    name: "grounded-fake",
+    async complete() { throw new Error("complete should not be called"); },
+    async generateGroundedResearch(request) {
+      prompt = request.prompt;
+      return { content: "联网回答", status: "grounded", queries: [], sources: [], citations: [] };
+    },
+  };
+  const gateway = new ModelGateway(provider);
+  await gateway.generateGroundedResearch("需要联网回答的问题", {
+    taskId: "task-1",
+    scenario: "chat",
+    requireGrounding: true,
+    promptVersion: "grounding-v1",
+  }, { nodeDepth: 3 });
+
+  assertUnifiedMentionContract(prompt);
+  assert.match(prompt, /最多标记 4 个/);
 });
 
 test("generateBodyOutline 用 JSON 输出有序有界大纲", async () => {
@@ -109,6 +213,21 @@ test("deriveSliceAnnotations 对空内容直接返回空标注、不调模型", 
   const annotation = await gateway.deriveSliceAnnotations({ content: "   " });
   assert.deepEqual(annotation, { title: "", concepts: [] });
   assert.equal(requests.length, 0);
+});
+
+test("verifyTermIdentity performs a bounded deterministic context check", async () => {
+  const { provider, requests } = makeProvider(() => JSON.stringify({ sameEntity: true }));
+  const gateway = new ModelGateway(provider);
+  const sameEntity = await gateway.verifyTermIdentity({
+    left: { text: "REST", category: "abbreviation", context: `${"左".repeat(700)}LEFT_SECRET` },
+    right: { text: "REST", category: "abbreviation", context: `${"右".repeat(700)}RIGHT_SECRET` },
+  });
+
+  assert.equal(sameEntity, true);
+  assert.equal(requests[0]?.temperature, 0);
+  assert.deepEqual(requests[0]?.responseFormat, { type: "json_object" });
+  assert.doesNotMatch(requests[0]?.prompt ?? "", /LEFT_SECRET|RIGHT_SECRET/);
+  assert.match(requests[0]?.prompt ?? "", /只有指向同一对象才返回 true/);
 });
 
 test("parseBodyOutline 限制节数上限并拒绝空标题节", () => {

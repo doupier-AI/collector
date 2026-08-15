@@ -1,9 +1,9 @@
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { ResearchCitationRecord, ResearchFusionSource, ResearchGroundingSourceRecord, ResearchMessageRecord, ResearchSliceRecord, ResearchTaskRecord, ResearchTermPreviewRecord, TermMarker } from "@collector/capture-contracts";
+import type { ResearchCitationRecord, ResearchFusionSource, ResearchGroundingSourceRecord, ResearchMessageRecord, ResearchSliceRecord, ResearchTaskRecord, ResearchTermPreviewInput, ResearchTermPreviewRecord, TermMarker } from "@collector/capture-contracts";
 import { deriveMessageBlocks, messageContentBlockId, splitBlockHeading } from "@collector/capture-contracts";
-import { MarkdownContent } from "../../components/MarkdownContent";
+import { MarkdownContent, type RenderedTermMarker } from "../../components/MarkdownContent";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { markExactInRendered, setRangeFromOffsets } from "../selection/selection-highlight";
 import { taskErrorReason } from "./format";
@@ -32,7 +32,9 @@ export interface MessageItemProps {
   /** #31：本条消息引用的融合来源（正文 [来源n] 渲染为可点击的融合引用）。 */
   fusionSources?: ResearchFusionSource[];
   onRetryTermPreview?: (preview: ResearchTermPreviewRecord) => void;
-  onGrowTermPreview?: (preview: ResearchTermPreviewRecord) => Promise<boolean>;
+  /** mention 为用户实际点击的那次提及；缺省时服务端回落为预览原始锚点（ADR-0029）。 */
+  onGrowTermPreview?: (preview: ResearchTermPreviewRecord, mention?: ResearchTermPreviewInput) => Promise<boolean>;
+  onGrowTermMarker?: (messageId: string, marker: TermMarker) => Promise<boolean>;
   /** #36：切片列表；存在正式切片时渲染为连续语义卡片序列。 */
   slices?: ResearchSliceRecord[];
   /** #42：融合依据定位的当前目标卡片 id（无定位时不传）；目标卡获得短暂强调。 */
@@ -40,7 +42,7 @@ export interface MessageItemProps {
 }
 
 /** 单条消息。AI 消息与对应用户消息之间由 CSS 绘制克制的来源线与节点。 */
-export function MessageItem({ message, task, retrying = false, onRetry, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, slices, fragmentCardId, fusionSources }: MessageItemProps) {
+export function MessageItem({ message, task, retrying = false, onRetry, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, onGrowTermMarker, slices, fragmentCardId, fusionSources }: MessageItemProps) {
   if (message.role === "user") {
     return (
       <li className="message message--user">
@@ -60,7 +62,11 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
   return (
     <li className="message message--assistant" data-message-id={message.id}>
       <p className="message__role">Collector</p>
-      {message.status === "completed" ? (
+      {message.status === "failed" ? (
+        <FailedBody message={message} task={task} retrying={retrying} onRetry={onRetry} />
+      ) : (
+        // ADR-0029：流式期间标记即可交互（悬停启动预览、点击记录生长意图），不等待整篇完成。
+        // 交互层挂在状态分支之外：流式翻为完成时实例存活，进行中的悬停意图与已打开的弹层不被销毁。
         <>
           <TermPreviewInteraction
             messageId={message.id}
@@ -69,16 +75,21 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
             onStart={onStartTermPreview}
             onRetry={onRetryTermPreview}
             onGrow={onGrowTermPreview}
+            onGrowMarker={onGrowTermMarker}
           >
-            <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} fragmentCardId={fragmentCardId} fusionSources={fusionSources} />
+            {message.status === "completed" ? (
+              <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} fragmentCardId={fragmentCardId} fusionSources={fusionSources} />
+            ) : (
+              <GeneratingBody message={message} task={task} terms={terms} />
+            )}
           </TermPreviewInteraction>
-          <GroundingScopeNote task={task} />
-          <GroundingSources sources={taskSources} />
+          {message.status === "completed" ? (
+            <>
+              <GroundingScopeNote task={task} />
+              <GroundingSources sources={taskSources} />
+            </>
+          ) : null}
         </>
-      ) : message.status === "failed" ? (
-        <FailedBody message={message} task={task} retrying={retrying} onRetry={onRetry} />
-      ) : (
-        <GeneratingBody message={message} task={task} />
       )}
     </li>
   );
@@ -102,14 +113,19 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
   // DOM 重新包裹术语标记；若每次渲染都新建数组，已被键盘聚焦的标记元素会被替换，焦点
   // 回落 body，Escape/Enter 不再到达交互层（任何背景刷新都会打断术语的键盘操作）。
   const termsByBlock = useMemo(() => {
-    const grouped = new Map<number, TermMarker[]>();
+    const grouped = new Map<number, RenderedTermMarker[]>();
     for (const term of terms) {
       const list = grouped.get(term.blockOrdinal);
       if (list) list.push(term);
       else grouped.set(term.blockOrdinal, [term]);
     }
+    // 卡片正文为合并节文本：同组术语的块内偏移需投影到合并文本，否则
+    // MarkdownContent 的逐字校验不通过会静默丢弃标记（termsForSection）。
+    for (const target of deriveSliceCardTargets(message, slices)) {
+      grouped.set(target.blockOrdinal, termsForSection(terms, target.blockOrdinal, target.blockText));
+    }
     return grouped;
-  }, [terms]);
+  }, [terms, message, slices]);
   if (blocks.length === 0) return <MarkdownContent text={message.content} sources={groundingSources} citations={citations} variant="message" fusionSources={fusionSources} />;
   const activeHighlight = highlight ?? undefined;
 
@@ -252,6 +268,20 @@ function MessageBlock({ blockText, blockId, titleAnchorId, highlight, sources, c
   );
 }
 
+/** 把稳定的块内锚点投影到合并节正文；只改变渲染偏移，不改变交互使用的原锚点。 */
+function termsForSection(terms: readonly TermMarker[], firstBlockOrdinal: number, blockText: string): RenderedTermMarker[] {
+  const renderedBlocks = deriveMessageBlocks(blockText);
+  return terms.flatMap((term) => {
+    const localBlock = renderedBlocks[term.blockOrdinal - firstBlockOrdinal];
+    if (!localBlock || localBlock.text.slice(term.startOffset, term.endOffset) !== term.text) return [];
+    return [{
+      ...term,
+      renderedStartOffset: localBlock.startOffset + term.startOffset,
+      renderedEndOffset: localBlock.startOffset + term.endOffset,
+    }];
+  });
+}
+
 /** 联网完成后保留可访问的来源预览；没有 URL 时不虚构外链。 */
 interface TermPreviewInteractionProps {
   messageId: string;
@@ -259,7 +289,8 @@ interface TermPreviewInteractionProps {
   previews: Record<string, ResearchTermPreviewRecord>;
   onStart?: (messageId: string, marker: TermMarker) => void;
   onRetry?: (preview: ResearchTermPreviewRecord) => void;
-  onGrow?: (preview: ResearchTermPreviewRecord) => Promise<boolean>;
+  onGrow?: (preview: ResearchTermPreviewRecord, mention?: ResearchTermPreviewInput) => Promise<boolean>;
+  onGrowMarker?: (messageId: string, marker: TermMarker) => Promise<boolean>;
   children: ReactNode;
 }
 
@@ -268,20 +299,35 @@ interface ActiveTermPreview {
   marker: TermMarker;
 }
 
-function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, onGrow, children }: TermPreviewInteractionProps) {
+/** 悬注意图键：块位置与提及文本稳定标识同一提及，与 DOM 元素身份无关。 */
+function termHoverKey(marker: TermMarker): string {
+  return `${marker.blockOrdinal}:${marker.startOffset}:${marker.endOffset}:${marker.text}`;
+}
+
+function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, onGrow, onGrowMarker, children }: TermPreviewInteractionProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const hoverTimerRef = useRef<number | undefined>(undefined);
   const closeTimerRef = useRef<number | undefined>(undefined);
+  // 流式重渲染替换标记元素时，浏览器会对新元素重复派发 pointerover；
+  // 用已武装的悬注意图键识别这类重复事件，避免 400ms 意图确认被无限重置。
+  const pendingHoverKeyRef = useRef<string | undefined>(undefined);
   const [active, setActive] = useState<ActiveTermPreview | null>(null);
   const [position, setPosition] = useState({ top: 12, left: 12 });
-  const [growing, setGrowing] = useState(false);
+  const [growing, setGrowingState] = useState(false);
+  // 生长进行中的同步守卫：同一 tick 内的快速双击不能等 React 重渲染后才看到状态。
+  const growingRef = useRef(false);
+  const setGrowing = useCallback((value: boolean) => {
+    growingRef.current = value;
+    setGrowingState(value);
+  }, []);
 
   const clearHoverTimer = useCallback(() => {
     if (hoverTimerRef.current !== undefined) {
       window.clearTimeout(hoverTimerRef.current);
       hoverTimerRef.current = undefined;
     }
+    pendingHoverKeyRef.current = undefined;
   }, []);
 
   const clearCloseTimer = useCallback(() => {
@@ -290,6 +336,11 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
       closeTimerRef.current = undefined;
     }
   }, []);
+
+  // Escape 关闭弹层会把焦点恢复到触发标记；这次程序性 focus 会派发 focusin，
+  // 不得被当作新的键盘进入意图而重开弹层。用户主动移开再聚焦（focusout 后）或
+  // 重新悬停/按键时正常打开。
+  const suppressFocusOpenRef = useRef(false);
 
   const closePopover = useCallback(() => {
     clearHoverTimer();
@@ -314,6 +365,11 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
     setActive({ element, marker });
   }, [clearCloseTimer, updatePosition]);
 
+  // terms 在流式期间随每次增量更换数组身份。经 ref 读取让查找函数保持稳定身份：
+  // 否则事件委托层每次增量都拆装监听器，清理函数会连带清掉进行中的悬注意图计时。
+  const termsRef = useRef(terms);
+  termsRef.current = terms;
+
   const markerFromElement = useCallback((element: Element | null): { element: HTMLElement; marker: TermMarker } | undefined => {
     if (!element || !rootRef.current || !rootRef.current.contains(element)) return undefined;
     const markerElement = element.closest<HTMLElement>("[data-term-marker]");
@@ -322,14 +378,25 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
     const startOffset = Number(markerElement.dataset.termStartOffset);
     const endOffset = Number(markerElement.dataset.termEndOffset);
     const text = markerElement.dataset.termText ?? markerElement.textContent ?? "";
-    const marker = terms.find((candidate) =>
+    const marker = termsRef.current.find((candidate) =>
       candidate.text === text
       && candidate.blockOrdinal === blockOrdinal
       && candidate.startOffset === startOffset
       && candidate.endOffset === endOffset,
     );
     return marker ? { element: markerElement, marker } : undefined;
-  }, [terms]);
+  }, []);
+
+  /** 按数据属性找回同一提及的当前标记元素（标记随重渲染替换后使用）。 */
+  const resolveMarkerElement = useCallback((marker: TermMarker): HTMLElement | undefined => {
+    const root = rootRef.current;
+    if (!root) return undefined;
+    return Array.from(
+      root.querySelectorAll<HTMLElement>(
+        `[data-term-marker][data-term-block-ordinal="${marker.blockOrdinal}"][data-term-start-offset="${marker.startOffset}"][data-term-end-offset="${marker.endOffset}"]`,
+      ),
+    ).find((element) => (element.dataset.termText ?? element.textContent) === marker.text);
+  }, []);
 
   const startPreview = useCallback((marker: TermMarker) => {
     const preview = previews[termPreviewClientKey(messageId, marker)];
@@ -339,18 +406,30 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
   }, [messageId, onStart, previews]);
 
   const activateMarker = useCallback((marker: TermMarker) => {
+    if (growingRef.current) return;
     const preview = previews[termPreviewClientKey(messageId, marker)];
     if (!preview || preview.status === "queued" || preview.status === "running") {
-      startPreview(marker);
+      if (onGrowMarker) {
+        setGrowing(true);
+        void onGrowMarker(messageId, marker).then((success) => {
+          if (success) closePopover();
+        }).finally(() => setGrowing(false));
+      } else {
+        startPreview(marker);
+      }
       return;
     }
     if (preview.status === "completed" && preview.content.trim() && onGrow) {
       setGrowing(true);
-      void onGrow(preview).then((success) => {
+      void onGrow(preview, { messageId, marker }).then((success) => {
         if (success) closePopover();
       }).finally(() => setGrowing(false));
     }
-  }, [closePopover, messageId, onGrow, previews, startPreview]);
+  }, [closePopover, messageId, onGrow, onGrowMarker, previews, setGrowing, startPreview]);
+  const startPreviewRef = useRef(startPreview);
+  const activateMarkerRef = useRef(activateMarker);
+  startPreviewRef.current = startPreview;
+  activateMarkerRef.current = activateMarker;
 
   useEffect(() => {
     const root = rootRef.current;
@@ -367,11 +446,18 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
       const found = markerFromElement(pointer.target instanceof Element ? pointer.target : null);
       if (!found) return;
       if (pointer.relatedTarget instanceof Node && found.element.contains(pointer.relatedTarget)) return;
+      suppressFocusOpenRef.current = false;
+      const hoverKey = termHoverKey(found.marker);
+      // 同一提及的悬注意图已武装（重渲染替换派发的重复 pointerover）：保留原有计时。
+      if (hoverTimerRef.current !== undefined && pendingHoverKeyRef.current === hoverKey) return;
       clearCloseTimer();
       clearHoverTimer();
+      pendingHoverKeyRef.current = hoverKey;
       hoverTimerRef.current = window.setTimeout(() => {
-        openPopover(found.element, found.marker);
-        startPreview(found.marker);
+        hoverTimerRef.current = undefined;
+        pendingHoverKeyRef.current = undefined;
+        openPopover(resolveMarkerElement(found.marker) ?? found.element, found.marker);
+        startPreviewRef.current(found.marker);
       }, 400);
     };
     const handlePointerOut = (event: Event) => {
@@ -386,10 +472,15 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
     const handleFocusIn = (event: Event) => {
       const found = markerFromElement(event.target instanceof Element ? event.target : null);
       if (!found) return;
+      if (suppressFocusOpenRef.current) {
+        suppressFocusOpenRef.current = false;
+        return;
+      }
       clearHoverTimer();
       openPopover(found.element, found.marker);
     };
     const handleFocusOut = (event: Event) => {
+      suppressFocusOpenRef.current = false;
       const next = (event as FocusEvent).relatedTarget;
       if (next instanceof Node && root.contains(next)) return;
       if (next instanceof Node && popoverRef.current?.contains(next)) return;
@@ -401,7 +492,7 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
       event.preventDefault();
       event.stopPropagation();
       openPopover(found.element, found.marker);
-      activateMarker(found.marker);
+      activateMarkerRef.current(found.marker);
     };
     const handleKeyDown = (event: Event) => {
       const keyboard = event as KeyboardEvent;
@@ -417,7 +508,7 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
         keyboard.preventDefault();
         keyboard.stopPropagation();
         openPopover(found.element, found.marker);
-        activateMarker(found.marker);
+        activateMarkerRef.current(found.marker);
       }
     };
 
@@ -439,7 +530,29 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
       // 用户"已移开鼠标"的关闭意图必须保留；组件真正卸载时 timer 触发也只是
       // popoverRef 为 null 的安全空操作（closePopover 不会被调用）。
     };
-  }, [activateMarker, clearCloseTimer, clearHoverTimer, closePopover, markerFromElement, openPopover, startPreview]);
+  }, [clearCloseTimer, clearHoverTimer, closePopover, markerFromElement, openPopover]);
+
+  useEffect(() => {
+    if (!active) return;
+    active.element.setAttribute("aria-expanded", "true");
+    active.element.setAttribute("aria-controls", "term-preview-popover");
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      const markerElement = active.element;
+      // 焦点恢复触发的 focusin 不是新的打开意图（尤其悬停打开后 Escape 的场景）。
+      suppressFocusOpenRef.current = true;
+      closePopover();
+      queueMicrotask(() => markerElement.focus());
+    };
+    document.addEventListener("keydown", handleEscape, true);
+    return () => {
+      document.removeEventListener("keydown", handleEscape, true);
+      active.element.setAttribute("aria-expanded", "false");
+      active.element.removeAttribute("aria-controls");
+    };
+  }, [active, closePopover]);
 
   useEffect(() => {
     if (!active) return;
@@ -453,12 +566,21 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
     };
   }, [active, updatePosition]);
 
+  // 流式期间正文随增量重渲染，标记按钮会被替换：弹层锚点失效时按数据属性找回新元素，
+  // 找不到（提及不再有效）时诚实关闭弹层。子树 MarkdownContent 的包裹先于本布局效应执行。
+  useLayoutEffect(() => {
+    if (!active || active.element.isConnected) return;
+    const replacement = resolveMarkerElement(active.marker);
+    if (replacement) setActive({ element: replacement, marker: active.marker });
+    else closePopover();
+  });
+
   const activePreview = active ? previews[termPreviewClientKey(messageId, active.marker)] : undefined;
   const handleGrow = async () => {
-    if (!activePreview || !onGrow) return;
+    if (!activePreview || !onGrow || !active || growingRef.current) return;
     setGrowing(true);
     try {
-      if (await onGrow(activePreview)) closePopover();
+      if (await onGrow(activePreview, { messageId, marker: active.marker })) closePopover();
     } finally {
       setGrowing(false);
     }
@@ -469,6 +591,7 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
       {children}
       {active && typeof document !== "undefined" ? createPortal(
         <div
+          id="term-preview-popover"
           ref={popoverRef}
           className="term-preview-popover"
           data-testid="term-preview-popover"
@@ -554,7 +677,7 @@ function GroundingScopeNote({ task }: { task?: ResearchTaskRecord }) {
   return <p className="message__status message__grounding-scope" data-testid="grounding-scope-note">{message}</p>;
 }
 
-function GeneratingBody({ message, task }: { message: ResearchMessageRecord; task?: ResearchTaskRecord }) {
+function GeneratingBody({ message, task, terms }: { message: ResearchMessageRecord; task?: ResearchTaskRecord; terms: TermMarker[] }) {
   const hasContent = message.content.trim().length > 0;
   const status = task?.groundingScope?.status === "not_requested"
     ? "已保存，正在生成"
@@ -562,9 +685,7 @@ function GeneratingBody({ message, task }: { message: ResearchMessageRecord; tas
   return (
     <>
       {hasContent ? (
-        <div className="message__content">
-          <MarkdownContent text={message.content} variant="message" />
-        </div>
+        <AssistantBlocks message={message} citations={[]} groundingSources={[]} terms={terms} />
       ) : <AiPlaceholder />}
       <p className="message__status">{hasContent ? "正在生成" : status}</p>
     </>

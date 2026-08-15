@@ -149,6 +149,56 @@ test("research API persists an idempotent turn, streams fake-provider events, an
   reopened.close();
 });
 
+test("research generation persists clean text and in-stream mention ranges instead of control markup", async (t) => {
+  const provider: ResearchGenerationProvider = {
+    provider: "mention-stream-fake",
+    model: "mention-stream-1",
+    promptVersion: "mention-stream-v1",
+    async *generate() {
+      yield "理解 [[con";
+      yield "cept:backprop:反向传播]] 与 [[abbreviation:rag:RAG]]。";
+    },
+  };
+  const harness = await createHarness(provider);
+  t.after(() => harness.close());
+
+  const session = await harness.service.research.createSession("流内提及", randomUUID());
+  const accepted = await harness.service.research.submitMessage(session.id, "解释概念", randomUUID());
+  await waitForTask(harness.base, harness.token, accepted.task.id, "completed");
+
+  const message = harness.store.getResearchMessage(accepted.outputMessage.id);
+  assert.equal(message?.content, "理解 反向传播 与 RAG。");
+  assert.ok(!message?.content.includes("[["));
+  assert.deepEqual(message?.termMarkers?.map((marker) => ({ text: marker.text, category: marker.category })), [
+    { text: "反向传播", category: "concept" },
+    { text: "RAG", category: "abbreviation" },
+  ]);
+  assert.equal(message?.termMarkers?.[0]?.blockOrdinal, 0);
+  assert.equal(message?.termMarkers?.[0]?.startOffset, 3);
+});
+
+test("新 AI 消息缺少有效流内标记时保存明确空数组，不启用旧词法补标", async (t) => {
+  const provider: ResearchGenerationProvider = {
+    provider: "invalid-mention-fake",
+    model: "invalid-mention-1",
+    async *generate() {
+      yield "REST API 使用 [[concept:旧格式正文]]。";
+    },
+  };
+  const harness = await createHarness(provider);
+  t.after(() => harness.close());
+
+  const session = await harness.service.research.createSession("错误标记", randomUUID());
+  const accepted = await harness.service.research.submitMessage(session.id, "解释", randomUUID());
+  await waitForTask(harness.base, harness.token, accepted.task.id, "completed");
+
+  const message = harness.store.getResearchMessage(accepted.outputMessage.id);
+  assert.equal(message?.content, "REST API 使用 旧格式正文。");
+  assert.deepEqual(message?.termMarkers, []);
+  const view = await harness.service.getResearchNodeView(session.id);
+  assert.deepEqual(view.termDetections?.[accepted.outputMessage.id]?.terms, []);
+});
+
 test("research node view exposes validated H3b term positions without changing message text", async (t) => {
   const content = "**REST API** 在中文中也可读，HTTP 继续出现。";
   const provider: ResearchGenerationProvider = {
@@ -156,7 +206,7 @@ test("research node view exposes validated H3b term positions without changing m
     model: "term-marker-1",
     promptVersion: "test-research-v1",
     async *generate() {
-      yield content;
+      yield "**[[abbreviation:rest:REST]] [[abbreviation:api:API]]** 在中文中也可读，[[abbreviation:http:HTTP]] 继续出现。";
     },
   };
   const harness = await createHarness(provider);
@@ -189,6 +239,7 @@ test("research node view exposes validated H3b term positions without changing m
   const assistant = view.messages.find((message) => message.role === "assistant");
   assert.equal(assistant?.status, "completed");
   assert.ok(assistant);
+  assert.equal(assistant.content, content);
   const detection = view.termDetections?.[assistant.id];
   assert.ok(detection);
   assert.equal(detection.messageId, assistant.id);
@@ -417,5 +468,44 @@ test("writeBody-only provider still works via the atomic fallback branch", async
   const events = harness.store.listResearchTaskEvents(accepted.task.id);
   assert.equal(events.filter((event) => event.type === "delta").length, 1);
   assert.equal(harness.store.getResearchMessage(accepted.outputMessage.id)?.content, "原子正文第一段。\n\n原子正文第二段。");
+});
+
+test("失败任务默认重试清空正文时同步清空弱标记（保留式重试不受影响）", async (t) => {
+  // 默认重试（非断点续传）清空正文重来；正文与弱标记必须同事务一起清，
+  // 否则空正文消息会携带旧正文版本的派生标记（ADR-0028 身份不跨版本继承）。
+  let attempt = 0;
+  const provider: ResearchGenerationProvider = {
+    provider: "retry-marker-fake",
+    model: "retry-marker-1",
+    async *generate() {
+      attempt += 1;
+      if (attempt === 1) {
+        yield "前半段提到 [[abbreviation:rag:RAG]]";
+        throw new Error("provider crashed mid-stream");
+      }
+      yield "完整回答 [[concept:local-first:本地优先]]。";
+    },
+  };
+  const harness = await createHarness(provider);
+  t.after(() => harness.close());
+  const session = await harness.service.research.createSession("重试清标记", randomUUID());
+  const accepted = await harness.service.research.submitMessage(session.id, "解释", randomUUID());
+  await waitForTask(harness.base, harness.token, accepted.task.id, "failed");
+
+  const failedMessage = harness.store.getResearchMessage(accepted.outputMessage.id);
+  assert.equal(failedMessage?.status, "failed");
+  assert.ok(failedMessage && failedMessage.content.length > 0);
+  assert.ok((failedMessage.termMarkers ?? []).length > 0);
+
+  const retried = await harness.service.research.retryTask(accepted.task.id);
+  assert.equal(retried.status, "queued");
+  const cleared = harness.store.getResearchMessage(accepted.outputMessage.id);
+  assert.equal(cleared?.content, "");
+  assert.equal(cleared?.termMarkers, undefined);
+
+  await waitForTask(harness.base, harness.token, accepted.task.id, "completed");
+  const regenerated = harness.store.getResearchMessage(accepted.outputMessage.id);
+  assert.equal(regenerated?.content, "完整回答 本地优先。");
+  assert.deepEqual(regenerated?.termMarkers?.map((marker) => marker.text), ["本地优先"]);
 });
 

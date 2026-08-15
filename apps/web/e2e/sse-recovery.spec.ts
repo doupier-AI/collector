@@ -15,12 +15,12 @@ test("生成中刷新：先显示已保存的部分内容，随后继续到完�
   await page.reload();
 
   // 刷新后重新拉取视图：用户消息仍在，AI 内容从已保存位置继续。
-  // 逐字流式（方案 B）下，流式中段只有生成中的单一 .message__content（GeneratingBody）。
+  // 流内弱标记后流式中段也按段落块逐块渲染（与完成态同源），.message__content 可有多个。
   const assistantContent = page.locator(".message--assistant .message__content");
   await expect(page.getByText(QUESTION, { exact: true })).toBeVisible();
-  await expect(assistantContent).toContainText("你问的是", { timeout: 15_000 });
+  await expect(assistantContent.first()).toContainText("你问的是", { timeout: 15_000 });
   // 此刻仍是部分内容，随后渐进补齐
-  await expect(assistantContent).not.toContainText("回答完毕");
+  expect((await assistantContent.allTextContents()).join("")).not.toContain("回答完毕");
   await expect(assistantContent.last()).toContainText("回答完毕", { timeout: 15_000 });
   await expect(page.locator("[aria-live=polite]")).toHaveText("已完成", { timeout: 15_000 });
   await expect(page.locator(".message--assistant")).toHaveCount(1);
