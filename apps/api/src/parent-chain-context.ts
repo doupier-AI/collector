@@ -16,6 +16,12 @@ export const PARENT_CHAIN_PER_ANCESTOR_CHARACTERS = 200;
 /** 整条父链所有文本累计的最大字符数。 */
 export const PARENT_CHAIN_TOTAL_CHARACTERS = 2000;
 
+/** 单个祖先节点最多纳入的已标记概念数（抑制重复标记用，有界）。 */
+export const PARENT_CHAIN_COVERED_TERMS_MAX_PER_ANCESTOR = 24;
+
+/** 单个已标记概念文本的最大字符数。 */
+export const PARENT_CHAIN_COVERED_TERM_MAX_CHARACTERS = 40;
+
 // ── 依赖接口 ────────────────────────────────────────────────
 
 /** 父链上下文组装所需的最小 store 能力。 */
@@ -42,6 +48,8 @@ export interface AncestorContext {
   originText?: string;
   /** 该节点首条用户消息摘要。 */
   firstUserMessage?: string;
+  /** 该祖先已完成消息中持久化弱标记的概念文本（去重、保序、有界）；无标记时缺省。 */
+  coveredTerms?: string[];
 }
 
 /** 父链上下文组装结果。 */
@@ -168,6 +176,7 @@ export class ParentChainContextService {
   private extractNodeContext(node: ResearchNodeRecord, depth: number): AncestorContext {
     const isRoot = !node.parentNodeId;
     const maxChars = this.bounds.perAncestorCharacters;
+    const messages = this.store.listResearchMessagesByNode(node.id);
 
     // 标签：根节点取会话标题；子节点优先来源选区摘要，其次首条用户消息。
     let label: string;
@@ -175,7 +184,7 @@ export class ParentChainContextService {
       const session = this.store.getResearchSession(node.sessionId);
       label = this.excerpt(session?.title ?? "", maxChars) || "研究会话";
     } else {
-      label = this.deriveChildLabel(node, maxChars);
+      label = this.deriveChildLabel(node, maxChars, messages);
     }
 
     // 来源选区引用文本。
@@ -187,11 +196,13 @@ export class ParentChainContextService {
 
     // 首条用户消息摘要。
     let firstUserMessage: string | undefined;
-    const firstUser = this.store.listResearchMessagesByNode(node.id)
-      .find((m) => m.role === "user");
+    const firstUser = messages.find((m) => m.role === "user");
     if (firstUser?.content) {
       firstUserMessage = this.excerpt(firstUser.content, maxChars);
     }
+
+    // 该祖先已持久化标记的概念清单（供生成侧抑制向上游已覆盖概念重复标记）。
+    const coveredTerms = this.collectCoveredTerms(messages);
 
     return {
       nodeId: node.id,
@@ -200,18 +211,43 @@ export class ParentChainContextService {
       label,
       ...(originText ? { originText } : {}),
       ...(firstUserMessage ? { firstUserMessage } : {}),
+      ...(coveredTerms ? { coveredTerms } : {}),
     };
   }
 
-  private deriveChildLabel(node: ResearchNodeRecord, maxChars: number): string {
+  private deriveChildLabel(node: ResearchNodeRecord, maxChars: number, messages: ResearchMessageRecord[]): string {
     if (node.originSelectionId) {
       const selection = this.store.getResearchSelection(node.originSelectionId);
       if (selection?.text) return this.excerpt(selection.text, maxChars);
     }
-    const firstUser = this.store.listResearchMessagesByNode(node.id)
-      .find((m) => m.role === "user");
+    const firstUser = messages.find((m) => m.role === "user");
     if (firstUser?.content) return this.excerpt(firstUser.content, maxChars);
     return "子节点";
+  }
+
+  /**
+   * 收集祖先节点已完成回答里持久化弱标记的概念文本。
+   * 同节点内按规范化文本去重、保持出现顺序；只读取持久化标记，
+   * 不做词法回退，避免把旧数据噪声带入下游提示词。
+   */
+  private collectCoveredTerms(messages: ResearchMessageRecord[]): string[] | undefined {
+    const seen = new Set<string>();
+    const terms: string[] = [];
+    for (const message of messages) {
+      if (message.role !== "assistant" || message.status !== "completed" || !message.termMarkers?.length) continue;
+      for (const marker of message.termMarkers) {
+        const text = marker.text.trim();
+        if (!text) continue;
+        const key = text.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        terms.push(text.length > PARENT_CHAIN_COVERED_TERM_MAX_CHARACTERS
+          ? `${text.slice(0, PARENT_CHAIN_COVERED_TERM_MAX_CHARACTERS)}…`
+          : text);
+        if (terms.length >= PARENT_CHAIN_COVERED_TERMS_MAX_PER_ANCESTOR) return terms;
+      }
+    }
+    return terms.length > 0 ? terms : undefined;
   }
 
   // ── 内部：预算度量与截断 ──────────────────────────────────
@@ -219,7 +255,8 @@ export class ParentChainContextService {
   private measureContextChars(ctx: AncestorContext): number {
     return ctx.label.length
       + (ctx.originText?.length ?? 0)
-      + (ctx.firstUserMessage?.length ?? 0);
+      + (ctx.firstUserMessage?.length ?? 0)
+      + (ctx.coveredTerms?.reduce((sum, term) => sum + term.length, 0) ?? 0);
   }
 
   private truncateContext(ctx: AncestorContext, budget: number): AncestorContext {
@@ -234,6 +271,18 @@ export class ParentChainContextService {
     let firstUserMessage: string | undefined;
     if (ctx.firstUserMessage && remaining > 0) {
       firstUserMessage = this.excerpt(ctx.firstUserMessage, remaining);
+      remaining -= firstUserMessage.length;
+    }
+    // 已标记概念清单优先级最低：预算不足时先砍清单，保留主题与来源选区。
+    let coveredTerms: string[] | undefined;
+    if (ctx.coveredTerms?.length && remaining > 0) {
+      const kept: string[] = [];
+      for (const term of ctx.coveredTerms) {
+        if (term.length > remaining) break;
+        kept.push(term);
+        remaining -= term.length;
+      }
+      if (kept.length > 0) coveredTerms = kept;
     }
     return {
       nodeId: ctx.nodeId,
@@ -242,6 +291,7 @@ export class ParentChainContextService {
       label,
       ...(originText ? { originText } : {}),
       ...(firstUserMessage ? { firstUserMessage } : {}),
+      ...(coveredTerms ? { coveredTerms } : {}),
     };
   }
 

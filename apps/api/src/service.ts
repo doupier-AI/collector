@@ -499,6 +499,7 @@ export class CaptureService {
         const answer = await purposeGateway.answerResearchConversation(request.messages, {
           parentChainContext: request.parentChainContext,
           sliceContext: request.sliceContext,
+          ...(request.mentionMarkup !== undefined ? { mentionMarkup: request.mentionMarkup } : {}),
           context: { workflowRunId: request.taskId, purpose: "research_chat", promptVersion: "research-chat-v1" },
         });
         for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);

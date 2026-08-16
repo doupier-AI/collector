@@ -302,6 +302,9 @@ export class NodeGrowthService {
     const outputMessage: ResearchMessageRecord = {
       id: randomUUID(), sessionId: selection.sessionId, nodeId: node.id, role: "assistant",
       content: preview.content, status: "completed", createdAt: now, updatedAt: now,
+      // 预览内容不经流内标记管线生成：显式空标记声明"本条回答无标记"，
+      // 避免节点视图把它当作无标记字段的旧数据退回词法检测（那会把完整标题拆碎、重标上游已覆盖概念）。
+      termMarkers: [],
     };
     const task: ResearchTaskRecord = {
       id: randomUUID(), sessionId: selection.sessionId, nodeId: node.id,

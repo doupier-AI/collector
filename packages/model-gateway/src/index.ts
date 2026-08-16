@@ -52,6 +52,13 @@ export interface ModelProviderRequest {
   timeoutMs?: number;
 }
 
+/**
+ * 注入弱标记指令的正文生成路径默认输出预算（ADR-0031）。
+ * thinking 模型的推理与正文共用该预算：密度/示例/去重指令使推理占用显著增加，
+ * 8_000 在 thinking 模式下会被推理耗尽、正文为空（#86 真实探针两次复现），故提高。
+ */
+export const RESEARCH_BODY_DEFAULT_MAX_TOKENS = 16_000;
+
 export interface ModelProvider {
   readonly name: string;
   readonly defaultModel?: string;
@@ -200,6 +207,8 @@ export interface ResearchParentChainContext {
     label: string;
     originText?: string;
     firstUserMessage?: string;
+    /** 该祖先消息中已持久化的弱标记概念文本（去重、有界），用于抑制向上游已覆盖概念重复标记。 */
+    coveredTerms?: string[];
   }>;
   truncated: boolean;
   cycleDetected: boolean;
@@ -240,7 +249,10 @@ export function formatResearchSliceContext(context?: ResearchSliceContext): stri
 }
 
 /** 将父链结果渲染为研究提示词片段；空链不产生任何占位文本。 */
-export function formatResearchParentChainContext(context?: ResearchParentChainContext): string {
+export function formatResearchParentChainContext(
+  context?: ResearchParentChainContext,
+  options: { markerAware?: boolean } = {},
+): string {
   if (!context?.ancestors.length) return "";
 
   const lines = [
@@ -252,7 +264,12 @@ export function formatResearchParentChainContext(context?: ResearchParentChainCo
     lines.push(`- 祖先（距当前 ${ancestor.depth} 层${ancestor.depth === 1 ? "，最近" : ""}）主题：${JSON.stringify(ancestor.label)}`);
     if (ancestor.originText) lines.push(`  来源选区：${JSON.stringify(ancestor.originText)}`);
     if (ancestor.firstUserMessage) lines.push(`  首条问题摘要：${JSON.stringify(ancestor.firstUserMessage)}`);
+    if (ancestor.coveredTerms?.length) lines.push(`  已标记概念：${ancestor.coveredTerms.join("、")}`);
   }
+  // 术语预览关闭标记指令时同样省略标记措辞：模型不知道 [[ 语法，被要求"不要再输出弱标记"只会自相矛盾。
+  lines.push(options.markerAware === false
+    ? "去重规则：以上祖先的主题与已标记概念在研究路径上游已经充分展开；正文可以自然提及它们，但不要重复展开解释。"
+    : "去重规则：以上祖先的主题与已标记概念在研究路径上游已经充分展开；正文可以自然提及它们，但不要再为它们输出弱标记，也不要重复展开解释；只标记当前回答真正新引入的对象。");
   if (context.truncated) lines.push("- 说明：父链已达到既有层数或总字符预算，只能使用以上内容，不要补全未提供的祖先信息。");
   if (context.cycleDetected) lines.push("- 说明：父链存在异常环路，已安全截断；不要根据缺失关系进行推断。");
   const convergence = resolveResearchConvergence({ nodeDepth: context.currentNodeDepth });
@@ -275,13 +292,15 @@ export function formatMentionMarkupInstructions(input: { scenario: MentionMarkup
   }
   const densityRule = density === "reduced"
     ? "本回答最多标记 4 个理解当前问题最关键的对象；宁缺毋滥。"
-    : "只标记少量、确实影响当前论述理解的对象；不要为了覆盖类别而凑数。";
+    : "每个段落中首次出现的重要概念都要标记：专业概念、理论、机制、方法、关键技术名词、重要的人物/组织/作品，以及不展开便可能难懂的缩写与记号，都是应标对象。一段通常标记 2–4 个，概念密集的段落可以更多；不要因为前面的段落已经标记过，就跳过后面段落首次出现的重要概念。";
   return `弱标记：
-- 只在读者理解当前论述仍需补充解释时，用“类别:对象身份:可见短语”的精确格式包住完整短语：[[concept:concept-1:短语]]、[[entity:entity-1:短语]]、[[abbreviation:abbr-1:短语]]、[[notation:notation-1:短语]]。
+- 用“类别:对象身份:可见短语”的精确格式包住完整短语：[[concept:concept-1:短语]]、[[entity:entity-1:短语]]、[[abbreviation:abbr-1:短语]]、[[notation:notation-1:短语]]。
 - concept 用于理论、机制、方法、现象和专业概念；entity 用于当前论述中身份重要的人、组织、地点、作品、事件、法律、产品或技术；abbreviation 用于不展开便可能难懂的缩写；notation 用于公式、统计记号、代码标识和状态码。
 - 对象身份只在本回答内有效，使用 1–64 位英文字母、数字、连字符或下划线。同一对象的重复提及必须复用同一个对象身份，即使可见文字不同；同名异义对象必须使用不同对象身份。
 - ${densityRule}
-- 普通名词、日期、网址、引用编号、标题、完整句子，以及上下文已经充分解释的对象都不标记。不要嵌套标记，不要让标记跨越 Markdown 结构或段落。
+- 标记示例：「Transformer 是一种基于[[concept:attention-mechanism:注意力机制]]的[[concept:deep-learning:深度学习]]模型架构」——注意力机制与深度学习是首次出现的重要概念，应当标记；「一种」「模型架构」这类普通说法不标记。
+- 可见短语必须是语义完整的名称：论文、书籍、产品等完整标题作为一个整体标记，不得拆成碎片（正确：[[entity:attention-is-all-you-need:Attention is All You Need]]；错误：拆成 Attention 与 Need 两个碎片标记）。
+- 普通名词、日期、网址、引用编号、Markdown 标题行、完整句子，以及上下文已经充分解释的对象都不标记。不要嵌套标记，不要让标记跨越 Markdown 结构或段落。
 - [[...]] 是内部控制格式，除上述四种合法形式外不要输出方括号控制符；正文内容本身保持自然连贯。`;
 }
 
@@ -631,7 +650,7 @@ export class ModelGateway {
     const request: ModelProviderRequest = {
       prompt: `${prompt}\n\n${formatMentionMarkupInstructions({ scenario: "grounded", nodeDepth: options.nodeDepth ?? 0 })}`,
       model: options.model ?? this.modelName,
-      maxTokens: options.maxTokens ?? 8_000,
+      maxTokens: options.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS,
       timeoutMs: options.timeoutMs ?? 120_000,
     };
     const context = options.context ?? { purpose: "research_grounding", promptVersion: grounding.promptVersion };
@@ -655,22 +674,24 @@ export class ModelGateway {
 
   async answerResearchConversation(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; mentionMarkup?: boolean; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
   ): Promise<string> {
     if (!messages.length) throw new Error("Research conversation requires at least one message");
-    const parentContext = formatResearchParentChainContext(options.parentChainContext);
+    const parentContext = formatResearchParentChainContext(options.parentChainContext, { markerAware: options.mentionMarkup !== false });
     const sliceContext = formatResearchSliceContext(options.sliceContext);
     // 自由正文：术语预览与旧式流式复用此能力，输出连续文本而非 JSON 包装。
-    const mentionInstructions = formatMentionMarkupInstructions({
+    // 术语预览显式关闭弱标记指令（mentionMarkup: false）：预览内容不经标记管线解析，
+    // 注入指令只会让模型输出无法解析的原始控制串；父链去重规则同步省略标记措辞。
+    const mentionInstructions = options.mentionMarkup === false ? "" : formatMentionMarkupInstructions({
       scenario: "conversation",
       nodeDepth: options.parentChainContext?.currentNodeDepth ?? 0,
     });
-    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Output a coherent passage of plain text only — no JSON, no field wrappers, no Markdown code fences. Preserve uncertainty and never invent sources.\n\n${mentionInstructions}\n\nConversation:\n${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
+    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Output a coherent passage of plain text only — no JSON, no field wrappers, no Markdown code fences. Preserve uncertainty and never invent sources.${mentionInstructions ? `\n\n${mentionInstructions}` : ""}\n\nConversation:\n${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
       thinking: this.options.thinking ?? true,
-      maxTokens: options.maxTokens ?? 8_000,
+      maxTokens: options.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS,
       timeoutMs: options.timeoutMs ?? 120_000,
     }, options.context ?? { purpose: "research_chat" });
     const content = response.content.trim();
@@ -694,7 +715,7 @@ export class ModelGateway {
       prompt,
       model: options.model ?? this.modelName,
       thinking: this.options.thinking ?? true,
-      maxTokens: options.maxTokens ?? 8_000,
+      maxTokens: options.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS,
       timeoutMs: options.timeoutMs ?? 120_000,
     }, options.context ?? { purpose: "research_body" });
     const content = response.content.trim();
@@ -751,7 +772,7 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
       prompt,
       model: options.model ?? this.modelName,
       thinking: this.options.thinking ?? true,
-      maxTokens: options.maxTokens ?? 8_000,
+      maxTokens: options.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS,
       timeoutMs: options.timeoutMs ?? 120_000,
     };
     const context = options.context ?? { purpose: "research_body" };
@@ -875,7 +896,7 @@ ${mentionInstructions}`;
       prompt,
       model: options.model ?? this.modelName,
       thinking: this.options.thinking ?? true,
-      maxTokens: options.maxTokens ?? 8_000,
+      maxTokens: options.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS,
       timeoutMs: options.timeoutMs ?? 120_000,
     }, options.context ?? { purpose: "research_body_section" });
     const content = response.content.trim();
@@ -1117,7 +1138,11 @@ ${mentionInstructions}`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
-      thinking: this.options.thinking ?? true,
+      // #86 直连探针证据：deepseek-v4-flash 思考模式在融合提示词（密度标记指令 + 固定章节 +
+      // [来源n] 引用 + 来源材料）下推理不收敛——8192 与 16384 预算均为 finish_reason=length、
+      // 推理耗尽、正文 0 字；关闭思考模式 10.5s 产出契约合规正文（finish_reason=stop）。
+      // 融合是给定来源材料的整理任务，固定关闭思考模式。
+      thinking: false,
       maxTokens: options.maxTokens ?? FUSION_COMPOSE_TOKEN_BUDGET,
       timeoutMs: options.timeoutMs ?? 120_000,
     }, context);
@@ -1176,7 +1201,7 @@ ${mentionInstructions}`;
       prompt,
       model: options.model ?? this.modelName,
       thinking: this.options.thinking ?? true,
-      maxTokens: options.maxTokens ?? 8_000,
+      maxTokens: options.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS,
       timeoutMs: options.timeoutMs ?? 120_000,
     }, options.context ?? { purpose: "deep_research" });
     const content = response.content.trim();

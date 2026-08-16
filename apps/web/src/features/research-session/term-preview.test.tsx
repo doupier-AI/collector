@@ -115,6 +115,31 @@ describe("术语预览交互", () => {
     ));
   });
 
+  it("弹层按实测高度定位：下方上方都放不下时贴视口底边钳制，按钮不被推出视口", async () => {
+    const { view, marker } = viewWithTerms();
+    const preview = previewFor(marker);
+    const startResearchTermPreview = vi.fn(async () => ({ preview, selection: makeSelection({ id: "selection-1" }) }));
+    renderPage({ getResearchNodeView: async () => view, startResearchTermPreview });
+
+    const markerElement = await screen.findByRole("button", { name: "解释术语 REST" });
+    // #86 回归：jsdom 视口 768px，标记下沿在 400px；弹层实测高 420——下方（410+420）与
+    // 上方（380-430）都放不下，必须贴底钳制（768-420-12=336），否则 fixed 弹层不随页面滚动，
+    // 底部的生长按钮永远不可达（真实验收曾因此点击等待到测试超时）。
+    vi.spyOn(markerElement, "getBoundingClientRect").mockReturnValue({
+      left: 100, right: 120, top: 380, bottom: 400, width: 20, height: 20, x: 100, y: 380, toJSON: () => ({}),
+    } as DOMRect);
+    const offsetHeightSpy = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+      return this.classList?.contains("term-preview-popover") ? 420 : 0;
+    });
+    try {
+      fireEvent.focus(markerElement);
+      const popover = screen.getByRole("dialog");
+      expect(popover.style.top).toBe("336px");
+    } finally {
+      offsetHeightSpy.mockRestore();
+    }
+  });
+
   it("流式生成中的标记同样可悬停启动预览、点击直接生长（ADR-0029）", async () => {
     const { view, marker } = viewWithTerms("streaming");
     const preview = previewFor(marker);

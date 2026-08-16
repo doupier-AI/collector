@@ -45,7 +45,7 @@ export interface MessageItemProps {
 export function MessageItem({ message, task, retrying = false, onRetry, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, onGrowTermMarker, slices, fragmentCardId, fusionSources }: MessageItemProps) {
   if (message.role === "user") {
     return (
-      <li className="message message--user">
+      <li className="message message--user" data-message-id={message.id}>
         <p className="message__role">你</p>
         <p className="message__content">{message.content}</p>
       </li>
@@ -353,9 +353,16 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
     const rect = element.getBoundingClientRect();
     const width = Math.min(320, Math.max(220, window.innerWidth - 24));
     const left = Math.min(Math.max(12, rect.left), Math.max(12, window.innerWidth - width - 12));
-    const estimatedHeight = 240;
+    // 弹层是 fixed 定位、不随页面滚动：必须按实测高度（CSS max-height 已钳在视口内）保证
+    // 整个弹层——尤其是底部的生长按钮——落在视口内。下方放得下放下方，否则放上方，
+    // 都放不下就贴视口底边钳制（允许盖住标记本身，不允许任何部分推出视口）。
+    const height = popoverRef.current?.offsetHeight || 240;
     const below = rect.bottom + 10;
-    const top = below + estimatedHeight <= window.innerHeight ? below : Math.max(12, rect.top - estimatedHeight - 10);
+    const top = below + height <= window.innerHeight - 12
+      ? below
+      : rect.top - height - 10 >= 12
+        ? rect.top - height - 10
+        : Math.max(12, window.innerHeight - height - 12);
     setPosition({ top, left });
   }, []);
 
@@ -576,6 +583,14 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
   });
 
   const activePreview = active ? previews[termPreviewClientKey(messageId, active.marker)] : undefined;
+
+  // 弹层内容随预览状态/增量变化（"正在生成"→完整解释+生长按钮），真实高度随之改变：
+  // 每次内容变化后按实测高度重新锚定，避免打开时按占位高度选好的朝向在内容增长后把按钮推出视口。
+  useLayoutEffect(() => {
+    if (!active || !active.element.isConnected) return;
+    updatePosition(active.element);
+  }, [active, activePreview, updatePosition]);
+
   const handleGrow = async () => {
     if (!activePreview || !onGrow || !active || growingRef.current) return;
     setGrowing(true);

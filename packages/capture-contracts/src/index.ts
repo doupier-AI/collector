@@ -3074,8 +3074,10 @@ export const SIMILARITY_VERIFICATION_PROMPT_VERSION = "similarity-verify-v1";
 /** 融合正文生成的独立提示词版本（#31 F2）；模型调用与运行记录留痕都使用这一稳定版本。 */
 export const FUSION_COMPOSE_PROMPT_VERSION = "fusion-compose-v1";
 
-/** 融合正文生成的固定令牌预算；与提示词 maxTokens 一致，随运行记录留痕。 */
-export const FUSION_COMPOSE_TOKEN_BUDGET = 4_000;
+/** 融合正文生成的固定令牌预算；与提示词 maxTokens 一致，随运行记录留痕。
+ *  ADR-0031 起由 4_000 提高：融合正文同样注入弱标记指令，thinking 模型的推理与正文
+ *  共用该预算，4_000 会被推理耗尽导致正文为空（#86 融合场景实测超时）。 */
+export const FUSION_COMPOSE_TOKEN_BUDGET = 8_192;
 
 /** 融合关系类型；identity 为同一实体，unrelated 为无关。 */
 export const FUSION_RELATION_TYPES = ["identity", "shared-concept", "analogy", "contrast", "unrelated"] as const;

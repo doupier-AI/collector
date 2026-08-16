@@ -468,3 +468,54 @@ test("parent chain does not affect existing store operations", async (t) => {
   assert.equal(store.listChildNodes(session.id).length, 1);
   assert.equal(store.getResearchSession(session.id)?.title, "回归测试");
 });
+
+test("covered terms come from persisted assistant term markers, deduplicated in order", async (t) => {
+  const { store, close } = await createStore();
+  t.after(close);
+
+  const session = makeSession(undefined, "Transformer架构详解");
+  await store.createResearchSession(session, randomUUID());
+  const rootNode = makeNode(session.id, { id: session.id });
+
+  const input = makeMessage(session.id, rootNode.id, "user", "什么是Transformer架构");
+  // 助手消息带持久化标记：含重复文本与大小写变体，应去重保序。
+  const output: ResearchMessageRecord = {
+    ...makeMessage(session.id, rootNode.id, "assistant", "Transformer 是一种基于注意力机制的深度学习模型架构。"),
+    termMarkers: [
+      { mentionId: "mention:1", entityId: "entity:1", text: "Attention is All You Need", blockOrdinal: 0, startOffset: 0, endOffset: 25, category: "entity" },
+      { mentionId: "mention:2", entityId: "entity:2", text: "注意力机制", blockOrdinal: 0, startOffset: 30, endOffset: 35, category: "concept" },
+      { mentionId: "mention:3", entityId: "entity:1", text: "Attention is All You Need", blockOrdinal: 1, startOffset: 0, endOffset: 25, category: "entity" },
+      { mentionId: "mention:4", entityId: "entity:3", text: "attention is all you need", blockOrdinal: 1, startOffset: 30, endOffset: 55, category: "entity" },
+    ],
+  };
+  await store.createResearchTurnForNode(rootNode, input, output, makeTask(session.id, input.id, output.id));
+
+  const childNode = makeNode(session.id, { parentNodeId: session.id });
+  await store.createResearchNode(childNode, randomUUID());
+
+  const service = new ParentChainContextService(store);
+  const result = service.buildParentChainContext(childNode.id);
+
+  assert.equal(result.ancestors.length, 1);
+  assert.deepEqual(result.ancestors[0].coveredTerms, ["Attention is All You Need", "注意力机制"]);
+});
+
+test("covered terms are omitted when ancestor messages have no persisted markers", async (t) => {
+  const { store, close } = await createStore();
+  t.after(close);
+
+  const session = makeSession(undefined, "无标记会话");
+  await store.createResearchSession(session, randomUUID());
+  const rootNode = makeNode(session.id, { id: session.id });
+  // 旧数据消息：无 termMarkers 字段——不做词法回退，coveredTerms 缺省。
+  await createNodeWithMessages(store, rootNode, "根问题", "没有任何标记字段的回答");
+
+  const childNode = makeNode(session.id, { parentNodeId: session.id });
+  await store.createResearchNode(childNode, randomUUID());
+
+  const service = new ParentChainContextService(store);
+  const result = service.buildParentChainContext(childNode.id);
+
+  assert.equal(result.ancestors.length, 1);
+  assert.equal(result.ancestors[0].coveredTerms, undefined);
+});

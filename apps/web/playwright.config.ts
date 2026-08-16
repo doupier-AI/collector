@@ -1,5 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
 
+// 端口基准可被 E2E_PORT_BASE 覆盖：四个 harness 依次占用 base+0..base+3。
+// 默认 43211 不变；真实模型验收长跑占用默认端口时，确定性套件可用另一组端口并行
+// （如 E2E_PORT_BASE=43221 npx playwright test），验收与日常开发互不挡路（#86 复盘）。
+const PORT_BASE = Number(process.env.E2E_PORT_BASE ?? "43211");
+
 export default defineConfig({
   testDir: "e2e",
   workers: 1,
@@ -20,26 +25,26 @@ export default defineConfig({
     // 页面、静态资源、/v1 与 SSE 均由 API 测试进程同源提供，不再启动 Vite preview
     {
       command: "node e2e/api-harness.mjs",
-      url: "http://127.0.0.1:43211/health",
+      url: `http://127.0.0.1:${PORT_BASE}/health`,
       reuseExistingServer: false,
-      env: { E2E_API_PORT: "43211", E2E_MODEL: "fake" },
+      env: { E2E_API_PORT: String(PORT_BASE), E2E_MODEL: "fake" },
       stdout: "ignore",
       stderr: "pipe",
     },
     {
       command: "node e2e/api-harness.mjs",
-      url: "http://127.0.0.1:43212/health",
+      url: `http://127.0.0.1:${PORT_BASE + 1}/health`,
       reuseExistingServer: false,
-      env: { E2E_API_PORT: "43212", E2E_MODEL: "none" },
+      env: { E2E_API_PORT: String(PORT_BASE + 1), E2E_MODEL: "none" },
       stdout: "ignore",
       stderr: "pipe",
     },
     // #32 自动融合高置信路径：相似性核验恒判为 identity（同一实体）→ 自动融合。
     {
       command: "node e2e/api-harness.mjs",
-      url: "http://127.0.0.1:43213/health",
+      url: `http://127.0.0.1:${PORT_BASE + 2}/health`,
       reuseExistingServer: false,
-      env: { E2E_API_PORT: "43213", E2E_MODEL: "fake", E2E_SIMILARITY_RELATION: "identity" },
+      env: { E2E_API_PORT: String(PORT_BASE + 2), E2E_MODEL: "fake", E2E_SIMILARITY_RELATION: "identity" },
       stdout: "ignore",
       stderr: "pipe",
     },
@@ -48,9 +53,9 @@ export default defineConfig({
     // （modelError 置位→页头文案变化→整页像素偏移）导致基线失配（#61 复盘）。
     {
       command: "node e2e/api-harness.mjs",
-      url: "http://127.0.0.1:43214/health",
+      url: `http://127.0.0.1:${PORT_BASE + 3}/health`,
       reuseExistingServer: false,
-      env: { E2E_API_PORT: "43214", E2E_MODEL: "fake" },
+      env: { E2E_API_PORT: String(PORT_BASE + 3), E2E_MODEL: "fake" },
       stdout: "ignore",
       stderr: "pipe",
     },
@@ -58,27 +63,27 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"], baseURL: "http://127.0.0.1:43211" },
+      use: { ...devices["Desktop Chrome"], baseURL: `http://127.0.0.1:${PORT_BASE}` },
       // z-auto-fusion（identity 高置信）由 chromium-autofusion（43213）承担；-off 用例用 contrast，留在本 project。
       // z-visual-baseline 等像素基线由 chromium-visual（43214 独享库）承担，与共享库污染隔离。
       testIgnore: /(?:no-model|z-acceptance-real|z-auto-fusion|z-visual-baseline)\.spec\.ts/,
     },
     {
       name: "chromium-nomodel",
-      use: { ...devices["Desktop Chrome"], baseURL: "http://127.0.0.1:43212" },
+      use: { ...devices["Desktop Chrome"], baseURL: `http://127.0.0.1:${PORT_BASE + 1}` },
       testMatch: /no-model\.spec\.ts/,
       // 配对码现铸端点已根治 TTL 过期抖动；retries 保留为一般基础设施防抖。
       retries: 1,
     },
     {
       name: "chromium-autofusion",
-      use: { ...devices["Desktop Chrome"], baseURL: "http://127.0.0.1:43213" },
+      use: { ...devices["Desktop Chrome"], baseURL: `http://127.0.0.1:${PORT_BASE + 2}` },
       testMatch: /z-auto-fusion\.spec\.ts/,
       retries: 1,
     },
     {
       name: "chromium-visual",
-      use: { ...devices["Desktop Chrome"], baseURL: "http://127.0.0.1:43214" },
+      use: { ...devices["Desktop Chrome"], baseURL: `http://127.0.0.1:${PORT_BASE + 3}` },
       testMatch: /z-visual-baseline\.spec\.ts/,
     },
   ],

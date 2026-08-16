@@ -68,6 +68,25 @@ test("parent-chain prompt guidance changes only after convergence depth threshol
   assert.equal(formatResearchParentChainContext({ ...base, currentNodeDepth: 0, ancestors: [] }), "");
 });
 
+test("parent-chain prompt renders covered terms and the upstream dedup rule", () => {
+  const prompt = formatResearchParentChainContext({
+    currentNodeDepth: 1,
+    ancestors: [
+      { depth: 2, isRoot: true, label: "Transformer架构详解", coveredTerms: ["Attention is All You Need", "注意力机制"] },
+      { depth: 1, isRoot: false, label: "注意力机制" },
+    ],
+    truncated: false,
+    cycleDetected: false,
+  });
+  assert.match(prompt, /已标记概念：Attention is All You Need、注意力机制/);
+  assert.match(prompt, /去重规则/);
+  assert.match(prompt, /不要再为它们输出弱标记/);
+  // 无已标记概念的祖先不渲染该行，但去重规则仍约束祖先主题。
+  assert.equal(prompt.split("\n").filter((line) => line.startsWith("  已标记概念：")).length, 1);
+  // 根节点（无祖先）不产生去重规则。
+  assert.equal(formatResearchParentChainContext({ currentNodeDepth: 0, ancestors: [], truncated: false, cycleDetected: false }), "");
+});
+
 test("term detection service applies full, reduced, and stopped density by node depth", () => {
   const content = "REST API HTTP TCP UDP JSON XML YAML GraphQL WebSocket useEffect React Transformer JavaScript ".repeat(5);
   const service = new TermDetectionService();

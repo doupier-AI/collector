@@ -85,6 +85,12 @@ export interface ResearchGenerationRequest {
   sliceContext?: import("@collector/capture-contracts").ResearchSliceContext;
   /** #31：确认式融合生成计划；任务带 fusionPlan 时 provider 走 composeFusion。 */
   fusionPlan?: { sources: ResearchFusionSource[]; relationType: import("@collector/capture-contracts").FusionRelationType };
+  /**
+   * 是否在提示词中注入弱标记语法指令（缺省注入）。术语预览置 false：预览是可独立阅读的
+   * 解释片段，内容不经流内标记管线解析——模型若按指令输出 [[category:id:text]]，原始控制串
+   * 会原样落库并泄漏到弹层与生长子节点正文（#86 真实验收复现）。
+   */
+  mentionMarkup?: boolean;
 }
 
 /** 实体核验请求结构集中在 @collector/capture-contracts（ADR-0027），研究任务与模型网关共用一份定义。 */
@@ -398,6 +404,12 @@ export class ResearchSessionService {
     return this.store.listResearchTaskEvents(id, afterId);
   }
 
+  /** 任务记录应写本次尝试实际使用的正文提示词版本；融合任务走 fusion-compose-v1，不得被通用研究版本覆盖（#86 场景九取证）。 */
+  private promptVersionForAttempt(task: ResearchTaskRecord): string {
+    if (task.fusionPlan) return FUSION_COMPOSE_PROMPT_VERSION;
+    return this.provider?.promptVersion ?? PROMPT_VERSION;
+  }
+
   async retryTask(id: string): Promise<ResearchTaskRecord> {
     const current = this.getTask(id);
     if (current.status !== "failed" || !current.retryable) throw new ResearchValidationError("Research task is not retryable");
@@ -406,7 +418,7 @@ export class ResearchSessionService {
     const hasCompletedSection = (current.bodyPlan?.sections ?? []).some((section) => section.status === "completed");
     const hasStreamCheckpoint = Boolean(current.streamCheckpoint?.content?.trim());
     const preserveContent = hasCompletedSection || hasStreamCheckpoint;
-    const task = await this.store.retryResearchTask(current, this.provider?.provider, this.provider?.model, this.provider?.promptVersion ?? PROMPT_VERSION, { preserveContent });
+    const task = await this.store.retryResearchTask(current, this.provider?.provider, this.provider?.model, this.promptVersionForAttempt(current), { preserveContent });
     if (this.options.autoRunTasks !== false) this.scheduleTask(task.id);
     return task;
   }
@@ -429,7 +441,7 @@ export class ResearchSessionService {
       const generation = this.buildGenerationRequest(current);
       const task = this.store.claimResearchTask(
         id, this.provider?.provider, this.provider?.model,
-        this.provider?.promptVersion ?? PROMPT_VERSION,
+        this.promptVersionForAttempt(current),
       );
       if (!task) return;
       const provider = this.provider;

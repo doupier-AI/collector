@@ -8,6 +8,14 @@
  * - 服务进程由本文件自行启动 / 重启（场景二需要同一数据目录内重启进程验证恢复）。
  *
  * 本文件不进默认 test:e2e（playwright.config.ts 不匹配它），只由 playwright.acceptance.config.ts 运行。
+ *
+ * 快速失败约定（#86 复盘，防"动辄 3 小时"复发）：
+ * - 动作 2 分钟不可达即报错（配置 actionTimeout），长等待 5 分钟无任何落库/模型进展即判卡死
+ *   并带"最后在做什么"的诊断（pollUntil）；杜绝"挂起到整测超时"的失败方式；
+ * - 修复后只重跑失败场景：`--last-failed` 或 `--grep 场景N`，全量仅在收口时跑；
+ * - 提示词 / 预算 / 模型配置改动必须先过直连探针（scripts/probe-mention-density.mjs，
+ *   分钟级）再进本套件；
+ * - 端口可被 E2E_API_PORT 覆盖：本套件长跑时，另一端口可并行跑确定性套件或实验。
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -30,9 +38,11 @@ import {
 } from "./helpers";
 
 const e2eDir = dirname(fileURLToPath(import.meta.url));
-const PORT = 43211;
+const PORT = Number(process.env.E2E_API_PORT ?? "43211");
 const BASE = `http://127.0.0.1:${PORT}`;
 const REAL_TIMEOUT = 600_000; // 单次真实云模型生成的等待上限（深入走 plan-then-write 逐节扩写，12 节约分钟级）
+const DEEP_RESEARCH_TIMEOUT = 900_000; // 深入研究第一轮在 thinking + 长预算下逐节扩写更慢，单设更宽上限
+const STALL_TIMEOUT = 300_000; // 等待期间无任何落库/模型进展的判死阈值（合法静默窗口：非流式调用 120s 超时 + 退避重试）
 
 // ---------------------------------------------------------------------------
 // 验收服务生命周期（真实模型 harness，隔离数据目录；重启复用同一数据目录）
@@ -130,6 +140,97 @@ async function assertRealMode(page: Page): Promise<void> {
   expect(text, "模型状态不应为未配置").not.toContain("未配置");
 }
 
+// ---------------------------------------------------------------------------
+// 快速失败基础设施（#86 复盘）：停滞判死 + 子节点页就绪等待
+// ---------------------------------------------------------------------------
+
+/** 验收库最近一次落库/模型活动时间（ISO 字符串；流式增量、任务状态、调用记账都会刷新它）。 */
+function readLastActivityAt(): string {
+  const db = new DatabaseSync(join(dataDir, "collector.sqlite"), { readOnly: true });
+  try {
+    const row = db
+      .prepare(
+        `SELECT MAX(ts) AS latest FROM (
+           SELECT MAX(updated_at) AS ts FROM research_messages
+           UNION ALL SELECT MAX(updated_at) FROM research_tasks
+           UNION ALL SELECT MAX(created_at) FROM model_calls
+           UNION ALL SELECT MAX(updated_at) FROM research_term_previews
+         )`,
+      )
+      .get() as { latest: string | null };
+    return row.latest ?? "";
+  } finally {
+    db.close();
+  }
+}
+
+/** 卡死诊断：最近的模型调用与未完成的任务/预览，直接回答"最后在做什么"。 */
+function dumpStallDiagnostics(): string {
+  const db = new DatabaseSync(join(dataDir, "collector.sqlite"), { readOnly: true });
+  try {
+    const calls = db
+      .prepare("SELECT created_at, purpose, status, latency_ms, error_message FROM model_calls ORDER BY created_at DESC LIMIT 5")
+      .all() as Array<{ created_at: string; purpose: string; status: string; latency_ms: number | null; error_message: string | null }>;
+    const tasks = db
+      .prepare("SELECT id, status, updated_at FROM research_tasks WHERE status != 'completed' ORDER BY updated_at DESC LIMIT 5")
+      .all() as Array<{ id: string; status: string; updated_at: string }>;
+    const previews = db
+      .prepare("SELECT id, status, updated_at FROM research_term_previews WHERE status != 'completed' ORDER BY updated_at DESC LIMIT 5")
+      .all() as Array<{ id: string; status: string; updated_at: string }>;
+    const lines = [
+      "—— 卡死诊断 ——",
+      ...calls.map((c) => `最近调用 ${c.created_at} ${c.purpose} ${c.status} lat=${c.latency_ms ?? "?"}ms${c.error_message ? ` err=${c.error_message.slice(0, 120)}` : ""}`),
+      ...tasks.map((t) => `未完任务 ${t.id.slice(0, 8)} ${t.status} updated=${t.updated_at}`),
+      ...previews.map((p) => `未完成预览 ${p.id.slice(0, 8)} ${p.status} updated=${p.updated_at}`),
+    ];
+    return lines.join("\n");
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * 带停滞判死的轮询等待：fn 返回非 undefined 即达成；超过 STALL_TIMEOUT 没有任何
+ * 落库/模型进展 → 立即带诊断报错（杜绝"挂起到整测超时"的失败方式）；总时长仍受 timeoutMs 约束。
+ */
+async function pollUntil<T>(label: string, fn: () => Promise<T | undefined>, timeoutMs: number): Promise<T> {
+  console.log(`[acceptance] ${label}：等待开始 ${new Date().toISOString()}`);
+  const startedAt = Date.now();
+  let lastActivity = Date.now();
+  for (;;) {
+    const value = await fn();
+    if (value !== undefined) {
+      console.log(`[acceptance] ${label}：达成，耗时 ${((Date.now() - startedAt) / 1000).toFixed(0)}s`);
+      return value;
+    }
+    const activityMs = Date.parse(readLastActivityAt()) || 0;
+    if (activityMs > lastActivity) lastActivity = activityMs;
+    const stalledFor = Date.now() - lastActivity;
+    if (stalledFor > STALL_TIMEOUT) {
+      throw new Error(`${label}：${(stalledFor / 1000).toFixed(0)}s 无任何落库/模型进展，判定卡死\n${dumpStallDiagnostics()}`);
+    }
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error(`${label}：等待超过 ${(timeoutMs / 1000).toFixed(0)}s 上限\n${dumpStallDiagnostics()}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+}
+
+/**
+ * 生长跳转后等子节点页把种子消息渲染出来，证明新视图就绪再操作。
+ * URL 变化早于新页面渲染（加载期间旧页面正在卸载）：不等待就直接填字，
+ * 会落进旧页面输入框、换页时被草稿作用域切换清掉（#86 复现：发送键永久禁用、无任何请求发出）。
+ * 按种子消息的 data-message-id 等待——与旧页面内容、Markdown 渲染形式完全解耦
+ * （审查：按内容前缀匹配会被 `**强调**` 开头的预览误杀，也可能被旧页面陈旧帧误判通过）。
+ */
+async function waitChildNodeReady(page: Page, childNodeId: string, seedRole: "assistant" | "user"): Promise<void> {
+  const view = await fetchNodeView(page, childNodeId);
+  const seed = view.messages.find((message) => message.role === seedRole);
+  expect(seed, "生长子节点应已有种子消息落库").toBeTruthy();
+  // 只匹配消息外层 li：AI 消息的内层正文容器也带同一 data-message-id，不加作用域会撞严格模式。
+  await expect(page.locator(`li[data-message-id="${seed!.id}"]`)).toBeVisible({ timeout: 15_000 });
+}
+
 async function submitQuestion(page: Page, question: string): Promise<string> {
   await page.getByLabel("你的问题").fill(question);
   await page.getByRole("button", { name: "开始研究" }).click();
@@ -138,12 +239,18 @@ async function submitQuestion(page: Page, question: string): Promise<string> {
   return page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
 }
 
-/** 等待跳转到子节点页并返回新节点 id（排除根节点：根节点 id 与会话 id 相同）。 */
-async function waitChildNodeUrl(page: Page, sessionId: string, timeoutMs = 20_000): Promise<string> {
+/**
+ * 等待跳转到子节点页并返回新节点 id。
+ * 必须传入点击生长前的节点 id（fromNodeId）：URL 跳转可能晚于调用，也可能早已完成；
+ * 只排除根节点时，第二次及以后的生长会把"上一个子节点"的 URL 误判为已到达
+ * （#86 复现：深度 2 读回深度 1 的消息，7 个合法 full 标记被误报为超上限）。
+ * 同时排除 fromNodeId 后两种时序都确定：未跳转时旧 URL 不匹配，已跳转时新 URL 才匹配。
+ */
+async function waitChildNodeUrl(page: Page, sessionId: string, fromNodeId: string, timeoutMs = 20_000): Promise<string> {
   await page.waitForURL(
     (url) => {
       const match = url.pathname.match(/^\/nodes\/([^/]+)$/);
-      return Boolean(match && match[1] && match[1] !== sessionId);
+      return Boolean(match && match[1] && match[1] !== sessionId && match[1] !== fromNodeId);
     },
     { timeout: timeoutMs },
   );
@@ -151,11 +258,18 @@ async function waitChildNodeUrl(page: Page, sessionId: string, timeoutMs = 20_00
 }
 
 /** 等待至少 minCount 条 AI 消息完成（渲染出 data-content-kind 块），返回最新一条纯文本。 */
+/**
+ * 等待当前节点至少有 minCount 条 AI 回答完成落库，再读最后一条的渲染文本做实质检查。
+ * 不能只数渲染容器：容器随首段增量就出现，流式中段读取会把半截正文（实测 13 字）误判为无实质内容。
+ */
 async function waitCompletedAnswerText(page: Page, minCount: number): Promise<string> {
+  const nodeId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
+  await pollUntil(`至少 ${minCount} 条真实回答完成落库`, async () => {
+    const view = await fetchNodeView(page, nodeId);
+    const completed = view.messages.filter((message) => message.role === "assistant" && message.status === "completed");
+    return completed.length >= minCount ? true : undefined;
+  }, REAL_TIMEOUT);
   const blocks = page.locator('.message--assistant [data-content-kind="message"]');
-  await expect
-    .poll(async () => blocks.count(), { timeout: REAL_TIMEOUT, message: "等待真实回答完成" })
-    .toBeGreaterThanOrEqual(minCount);
   const text = ((await blocks.last().innerText()) ?? "").trim();
   expect(text.length, "真实回答应有实质内容").toBeGreaterThan(20);
   expect(text, "真实回答不应带演示标记").not.toContain("本地演示");
@@ -294,7 +408,7 @@ test("场景一：Chat 真实回答 → 选区真实分析 → 节点生长真�
   await page.getByRole("button", { name: "深入研究这段" }).click();
 
   // 子节点视图：来源条、材料范围如实说明、真实第一轮
-  const nodeId = await waitChildNodeUrl(page, sessionId);
+  const nodeId = await waitChildNodeUrl(page, sessionId, sessionId);
   expect(nodeId).not.toBe("");
   const sourceBar = page.getByTestId("selection-source-bar");
   await expect(sourceBar).toBeVisible();
@@ -404,7 +518,7 @@ test("场景二：文档导入 → 选区真实分析 → 带方向的节点生�
   await page.getByRole("button", { name: "深入研究这段" }).click();
 
   // 进入新子节点：来源条带来源内容名、材料范围说明、真实第一轮
-  const nodeId = await waitChildNodeUrl(page, originSessionId, 30_000);
+  const nodeId = await waitChildNodeUrl(page, originSessionId, originSessionId, 30_000);
   expect(nodeId).not.toBe(originSessionId);
   const sourceBar = page.getByTestId("selection-source-bar");
   await expect(sourceBar).toContainText(DOC_FILE);
@@ -525,7 +639,7 @@ test("场景四：刷新不重复创建子节点与标记项目，材料范围�
 
   // 阶段 H4a：胶囊"深入研究这段"直接创建子节点
   await page.getByRole("button", { name: "深入研究这段" }).click();
-  const nodeId = await waitChildNodeUrl(page, sessionId);
+  const nodeId = await waitChildNodeUrl(page, sessionId, sessionId);
   await waitCompletedAnswerText(page, 1);
 
   const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
@@ -548,7 +662,7 @@ test("场景四：刷新不重复创建子节点与标记项目，材料范围�
   const reselected = await selectRealAnswerText(page, 24, 8);
   await waitForCapsuleReal(page, reselected);
   await page.getByRole("button", { name: "深入研究这段" }).click();
-  const nodeId2 = await waitChildNodeUrl(page, sessionId);
+  const nodeId2 = await waitChildNodeUrl(page, sessionId, sessionId);
   expect(nodeId2).not.toBe(nodeId);
   const childrenAfter = readResearchNodeTables(dbPath).nodes.filter(
     (row) => row.sessionId === sessionId && row.parentNodeId !== null,
@@ -647,21 +761,16 @@ async function fetchNodeView(page: Page, nodeId: string): Promise<RealNodeView> 
 /**
  * 等待节点最新一条 AI 消息完成落库并返回它。渲染块在流式期间就出现，
  * 只有视图里的 completed 状态代表正文、标记与引用已稳定，之后才能选区与断言。
+ * 带停滞判死；深入研究第一轮等更慢的生成可传入 DEEP_RESEARCH_TIMEOUT。
  */
-async function waitLatestAssistantCompleted(page: Page, nodeId: string, label: string): Promise<RealAssistantMessage> {
-  let latest: RealAssistantMessage | undefined;
-  await expect
-    .poll(
-      async () => {
-        const view = await fetchNodeView(page, nodeId);
-        latest = [...view.messages].reverse().find((row) => row.role === "assistant");
-        return latest?.status;
-      },
-      { timeout: REAL_TIMEOUT, message: `${label}：等待最新 AI 消息完成落库` },
-    )
-    .toBe("completed");
+async function waitLatestAssistantCompleted(page: Page, nodeId: string, label: string, timeoutMs = REAL_TIMEOUT): Promise<RealAssistantMessage> {
+  const latest = await pollUntil(`${label}：等待最新 AI 消息完成落库`, async () => {
+    const view = await fetchNodeView(page, nodeId);
+    const candidate = [...view.messages].reverse().find((row) => row.role === "assistant");
+    return candidate?.status === "completed" ? candidate : undefined;
+  }, timeoutMs);
   expect(latest, `${label}：应存在 AI 消息`).toBeTruthy();
-  return latest!;
+  return latest;
 }
 
 /** 最近一条 AI 消息容器内的某个提及元素（按块序数+偏移三元组精确定位）。 */
@@ -673,6 +782,27 @@ function markerLocator(page: Page, marker: RealTermMarker): Locator {
       `[data-term-marker][data-term-block-ordinal="${marker.blockOrdinal}"][data-term-start-offset="${marker.startOffset}"][data-term-end-offset="${marker.endOffset}"]`,
     )
     .first();
+}
+
+/**
+ * 从持久化标记里挑出实际渲染到页面的第一个：落进链接/代码等不可包裹位置的标记
+ * 按产品设计被渲染层丢弃（MarkdownContent.wrapTermRange 返回 false），点击它只会空等。
+ * 先等至多 20s 让完成消息的标记渲染进 DOM；一个都没有则返回 undefined（走兜底生长）。
+ */
+async function pickRenderedMarker(page: Page, markers: RealTermMarker[], label: string): Promise<RealTermMarker | undefined> {
+  if (markers.length === 0) return undefined;
+  const anyMarker = page.locator(".message--assistant").last().locator("[data-term-marker]").first();
+  try {
+    await anyMarker.waitFor({ state: "attached", timeout: 20_000 });
+  } catch {
+    recordWeakMarkerNote(`${label}：${markers.length} 个持久化标记均未渲染进页面（落进不可包裹位置被丢弃），走兜底生长`);
+    return undefined;
+  }
+  for (const marker of markers) {
+    if ((await markerLocator(page, marker).count()) > 0) return marker;
+  }
+  recordWeakMarkerNote(`${label}：${markers.length} 个持久化标记均不在页面 DOM（被渲染层丢弃），走兜底生长`);
+  return undefined;
 }
 
 type PreviewCache = Map<string, { id: string; content: string }>;
@@ -717,19 +847,18 @@ async function openPreview(
   const accepted = (await response.json()) as { preview: { id: string } };
   const previewId = accepted.preview.id;
   let content = "";
-  await expect
-    .poll(
-      async () => {
-        const task = await apiJson<{ status: string; content: string }>(
-          page,
-          `/v1/research-term-preview-tasks/${previewId}`,
-        );
-        content = task.content;
-        return task.status;
-      },
-      { timeout: 180_000, message: `${label}：等待真实预览完成` },
-    )
-    .toBe("completed");
+  await pollUntil(`${label}：等待真实预览完成`, async () => {
+    const task = await apiJson<{ status: string; content: string; error?: { code: string; message: string } }>(
+      page,
+      `/v1/research-term-preview-tasks/${previewId}`,
+    );
+    // 快速失败：任务已失败（如模型调用 120s 超时）就不该再盲等轮询上限——立即带原因报错。
+    if (task.status === "failed") {
+      throw new Error(`${label}：预览任务失败（${task.error?.code ?? "unknown"}：${task.error?.message ?? "无错误信息"}），任务可重试但本场景不自动重试`);
+    }
+    content = task.content;
+    return task.status === "completed" ? true : undefined;
+  }, 180_000);
   expect(content.trim().length, `${label}：预览应有实质内容`).toBeGreaterThan(0);
   expect(content.length, `${label}：预览不得超过 320 字安全上限`).toBeLessThanOrEqual(320);
   const result = { id: previewId, content };
@@ -864,10 +993,17 @@ test("弱标记场景五：普通回答真实标记语义、预览复用边界�
   }
 
   // 点击生长：复用悬停同一份预览作为子节点第一条 AI 内容，来源锚定实际点击的提及。
-  const grownMarker = markers[0]!;
+  const grownMarker = await pickRenderedMarker(page, markers, "点击生长");
+  if (!grownMarker) {
+    recordWeakMarkerNote("无可点击的已渲染标记：场景五生长与跨节点核验本轮未触发，记为漏标观察");
+    expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
+    return;
+  }
   const grownPreview = await openPreview(page, grownMarker, previewCache, "点击生长前的预览");
   await page.getByTestId("term-preview-grow").click();
-  const childNodeId = await waitChildNodeUrl(page, sessionId, 60_000);
+  const childNodeId = await waitChildNodeUrl(page, sessionId, rootNodeId, 60_000);
+  // 快速失败约定：URL 跳转早于新页面渲染（旧页面立即卸载），先等子节点种子回答可见再操作。
+  await waitChildNodeReady(page, childNodeId, "assistant");
   const childView = await fetchNodeView(page, childNodeId);
   const childFirst = childView.messages.find((message) => message.role === "assistant");
   expect(childFirst?.status).toBe("completed");
@@ -937,18 +1073,21 @@ test("弱标记场景六：深度 2–3 减少、深度 4 停止的真实生成�
       break;
     }
 
-    // 生长到下一深度：优先点击弱标记（复用预览）；漏标时用选区深入研究兜底保持链路。
-    const clickable = markers[0];
+    // 生长到下一深度：优先点击弱标记（复用预览）；标记未渲染进页面或漏标时用选区深入研究兜底保持链路。
+    const clickable = await pickRenderedMarker(page, markers, `深度 ${depth}`);
     if (clickable) {
-      await openPreview(page, clickable, new Map(), `深度 ${depth} 生长预览`);
+      const grownPreview = await openPreview(page, clickable, new Map(), `深度 ${depth} 生长预览`);
       await page.getByTestId("term-preview-grow").click();
-      currentNodeId = await waitChildNodeUrl(page, sessionId, 60_000);
+      currentNodeId = await waitChildNodeUrl(page, sessionId, currentNodeId, 60_000);
+      // URL 跳转早于新页面渲染，等种子回答可见再填追问，避免打进正在卸载的旧页面。
+      await waitChildNodeReady(page, currentNodeId, "assistant");
       await submitFollowUp(page, currentNodeId, followUps[depth]!, 2);
     } else {
       recordWeakMarkerNote(`深度 ${depth} 无标记可点击，用选区深入研究兜底生长`);
       await selectAndOpenCapsuleWithRetry(page);
       await page.getByRole("button", { name: "深入研究这段" }).click();
-      currentNodeId = await waitChildNodeUrl(page, sessionId, 60_000);
+      currentNodeId = await waitChildNodeUrl(page, sessionId, currentNodeId, 60_000);
+      await waitChildNodeReady(page, currentNodeId, "user");
     }
   }
 
@@ -972,9 +1111,10 @@ test("弱标记场景七：深入研究第一轮正文携带一致弱标记", as
   await selectAndOpenCapsuleWithRetry(page);
   await page.getByLabel("你的问题").fill("梳理图灵测试的主要争议");
   await page.getByRole("button", { name: "深入研究这段" }).click();
-  const nodeId = await waitChildNodeUrl(page, sessionId, 60_000);
+  const nodeId = await waitChildNodeUrl(page, sessionId, rootNodeId, 60_000);
+  await waitChildNodeReady(page, nodeId, "user");
 
-  const message = await waitLatestAssistantCompleted(page, nodeId, "深入研究第一轮");
+  const message = await waitLatestAssistantCompleted(page, nodeId, "深入研究第一轮", DEEP_RESEARCH_TIMEOUT);
   expectNoControlChars(message.content, "深入研究第一轮");
   const markers = expectMarkersAligned(message, "深入研究第一轮");
   if (markers.length === 0) {
@@ -1049,7 +1189,7 @@ test("弱标记场景九：融合正文真实生成后的标记、引用与来�
   await selectAndOpenCapsuleWithRetry(page);
   await page.getByLabel("你的问题").fill("自注意力机制在 BERT 双向编码器中的应用");
   await page.getByRole("button", { name: "深入研究这段" }).click();
-  const childNodeId = await waitChildNodeUrl(page, sessionId, 60_000);
+  const childNodeId = await waitChildNodeUrl(page, sessionId, rootNodeId, 60_000);
   const childContentBefore = (await waitLatestAssistantCompleted(page, childNodeId, "融合来源子节点")).content;
 
   // 真实相似性扫描（同主题应稳定产出提案；偶发为空时重扫一次）。
@@ -1070,7 +1210,7 @@ test("弱标记场景九：融合正文真实生成后的标记、引用与来�
   await expect(page.getByText("熟悉的概念再现，节点可融合").first()).toBeVisible({ timeout: 15_000 });
   await page.getByText("熟悉的概念再现，节点可融合").first().click();
   await page.getByRole("button", { name: "融合为节点" }).first().click();
-  const fusionNodeId = await waitChildNodeUrl(page, sessionId, 60_000);
+  const fusionNodeId = await waitChildNodeUrl(page, sessionId, rootNodeId, 60_000);
 
   // 来源条数据只在融合正文完成后进视图（服务侧按 completed 消息组装），先等完成再刷新断言。
   const fusionMessage = await waitLatestAssistantCompleted(page, fusionNodeId, "融合正文");

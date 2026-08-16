@@ -23,11 +23,16 @@ export default defineConfig({
   use: {
     screenshot: "on",
     trace: "retain-on-failure",
+    // 快速失败（#86 复盘）：点击/填写等动作 2 分钟内不可达即报错并留 error-context 快照，
+    // 不再无限重试到整测超时（曾出现"按钮在视口外"重试 3154 次挂 26 分钟的失败方式）。
+    actionTimeout: 120_000,
+    // 端口可被 E2E_API_PORT 覆盖：验收长跑时另一端口可并行跑确定性套件或实验（默认不变）。
+    baseURL: `http://127.0.0.1:${process.env.E2E_API_PORT ?? "43211"}`,
   },
   projects: [
     {
       name: "chromium-acceptance",
-      use: { ...devices["Desktop Chrome"], baseURL: "http://127.0.0.1:43211" },
+      use: { ...devices["Desktop Chrome"] },
       testMatch: /z-acceptance-real\.spec\.ts/,
     },
   ],

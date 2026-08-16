@@ -205,7 +205,10 @@ test("term preview is persisted, streamed once, and grows a child from the exact
   const completed = await waitForPreview(harness.base, harness.token, accepted.preview.id, "completed") as unknown as { content: string };
   assert.equal(completed.content, answer);
   assert.equal(requests.filter((request) => request.messages[0]?.content.includes("请解释当前回答中的缩写")).length, 1);
-  const previewPrompt = requests.find((request) => request.messages[0]?.content.includes("请解释当前回答中的缩写"))?.messages[0]?.content ?? "";
+  const previewRequest = requests.find((request) => request.messages[0]?.content.includes("请解释当前回答中的缩写"));
+  const previewPrompt = previewRequest?.messages[0]?.content ?? "";
+  // 预览请求显式关闭弱标记指令：预览内容不经标记管线解析，注入指令会让模型输出原始控制串（#86）。
+  assert.equal(previewRequest?.mentionMarkup, false);
   assert.match(previewPrompt, /60–120 字/);
   assert.match(previewPrompt, /120–220 字/);
   assert.match(previewPrompt, /220–300 字/);
@@ -220,11 +223,24 @@ test("term preview is persisted, streamed once, and grows a child from the exact
 
   const growResponse = await postJson(harness.base, harness.token, `/v1/research-term-previews/${accepted.preview.id}/grow`, {}, "term-grow-one");
   assert.equal(growResponse.status, 202);
-  const grown = await growResponse.json() as { node: { id: string; originSelectionId?: string }; selection: { id: string }; outputMessage: { content: string; status: string }; task: { status: string } };
+  const grown = await growResponse.json() as { node: { id: string; originSelectionId?: string }; selection: { id: string }; outputMessage: { content: string; status: string; termMarkers?: TermMarker[] }; task: { status: string } };
   assert.equal(grown.node.originSelectionId, grown.selection.id);
   assert.equal(grown.outputMessage.content, answer);
   assert.equal(grown.outputMessage.status, "completed");
+  // 生长落库显式空标记：预览内容不经流内标记管线，声明"本条无标记"。
+  assert.deepEqual(grown.outputMessage.termMarkers, []);
   assert.equal(grown.task.status, "completed");
+
+  // 节点视图不得把显式空标记的新消息退回词法检测——否则 "REST"/"API"/"HTTP" 会被乱标。
+  const childViewResponse = await fetch(`${harness.base}/v1/research-nodes/${grown.node.id}`, { headers: headers(harness.token) });
+  assert.equal(childViewResponse.status, 200);
+  const childView = await childViewResponse.json() as {
+    messages: Array<{ id: string; role: string }>;
+    termDetections?: Record<string, { terms: TermMarker[] }>;
+  };
+  const grownAssistant = childView.messages.find((message) => message.role === "assistant");
+  assert.ok(grownAssistant);
+  assert.deepEqual(childView.termDetections?.[grownAssistant.id]?.terms, []);
 
   const repeatedGrow = await postJson(harness.base, harness.token, `/v1/research-term-previews/${accepted.preview.id}/grow`, {}, "term-grow-two");
   assert.equal(repeatedGrow.status, 202);

@@ -50,7 +50,9 @@ test("research body prompt uses the four explainable-object types and stops ment
   assert.match(shallowPrompt, /\[\[notation:notation-1:短语\]\]/);
   assert.match(shallowPrompt, /同一对象的重复提及必须复用同一个对象身份/);
   assert.match(shallowPrompt, /同名异义对象必须使用不同对象身份/);
-  assert.match(shallowPrompt, /理解当前论述仍需补充解释/);
+  // 浅层（full 密度）：每段首次出现的重要概念应标尽标，完整标题不得拆成碎片。
+  assert.match(shallowPrompt, /每个段落中首次出现的重要概念都要标记/);
+  assert.match(shallowPrompt, /完整标题作为一个整体标记，不得拆成碎片/);
 
   for (const currentNodeDepth of [2, 3]) {
     const reduced = makeProvider(() => "短正文");
@@ -77,6 +79,38 @@ test("research body prompt uses the four explainable-object types and stops ment
     },
   });
   assert.match(deep.requests[0]?.prompt ?? "", /不要输出任何 \[\[/);
+});
+
+test("answerResearchConversation 可按需关闭弱标记指令（术语预览路径）", async () => {
+  // 术语预览显式关闭（mentionMarkup: false）：预览内容不经标记管线解析，
+  // 注入指令只会让模型输出无法解析的原始控制串（#86 真实验收复现）。
+  const parentChain = {
+    currentNodeDepth: 1,
+    ancestors: [{ depth: 1, isRoot: true, label: "Transformer 架构", coveredTerms: ["注意力机制"] }],
+    truncated: false,
+    cycleDetected: false,
+  };
+  const off = makeProvider(() => "预览解释正文");
+  await new ModelGateway(off.provider).answerResearchConversation(
+    [{ role: "user", content: "请解释当前回答中的概念" }],
+    { mentionMarkup: false, parentChainContext: parentChain },
+  );
+  const offPrompt = off.requests[0]?.prompt ?? "";
+  assert.doesNotMatch(offPrompt, /\[\[concept:/);
+  assert.doesNotMatch(offPrompt, /重要概念都要标记/);
+  // 父链去重规则同步省略标记措辞，但保留内容层面的"不要重复展开解释"。
+  assert.doesNotMatch(offPrompt, /不要再为它们输出弱标记/);
+  assert.match(offPrompt, /不要重复展开解释/);
+
+  // 缺省行为不变：普通回答仍注入统一弱标记契约与完整的去重规则措辞。
+  const on = makeProvider(() => "普通回答");
+  await new ModelGateway(on.provider).answerResearchConversation(
+    [{ role: "user", content: "解释" }],
+    { parentChainContext: parentChain },
+  );
+  const onPrompt = on.requests[0]?.prompt ?? "";
+  assert.match(onPrompt, /每个段落中首次出现的重要概念都要标记/);
+  assert.match(onPrompt, /不要再为它们输出弱标记/);
 });
 
 test("普通回答、深研、长文分节与融合正文共用回答内弱标记契约", async () => {
