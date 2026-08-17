@@ -212,6 +212,15 @@ const fakeProvider = {
       "## 综合推导\n\n融合后的增量综合结论。",
     ].join("\n\n");
   },
+  // T03 导入章节解析：确定性假模型按 [Bn] 编号取首/中/尾三块作为章节起点。
+  // E2E_CHAPTER_PARSE=fail 时模拟 AI 解析失败（服务端应退化为规则锚点）。
+  async parseImportChapters(request) {
+    await sleep(250);
+    if (process.env.E2E_CHAPTER_PARSE === "fail") throw new Error("e2e simulated chapter parse failure");
+    const blocks = [...request.content.matchAll(/\[B(\d+)\]/g)].map((match) => Number(match[1]));
+    const picked = [...new Set([blocks[0], blocks[Math.floor(blocks.length / 2)], blocks[blocks.length - 1]])].filter(Number.isInteger);
+    return JSON.stringify({ chapters: picked.map((block, index) => ({ block, title: `第${index + 1}章` })) });
+  },
 };
 
 // 选区分析的确定性假模型：字段齐全（可选的 relationToFocus 缺省），不调用真实云模型
@@ -240,6 +249,12 @@ const service = new CaptureService(store, join(dataDir, "artifacts"), undefined,
   autoRunRecentOrganization: false,
   researchProvider: modelMode === "fake" ? fakeProvider : undefined,
   selectionProvider: modelMode === "fake" ? fakeSelectionProvider : undefined,
+  // T03 章节解析假模型：与正文生成同源注入；no-model harness 不注入，走规则锚点负路径。
+  chapterParseProvider: modelMode === "fake" ? {
+    provider: "e2e-fake",
+    model: "fake-research-e2e",
+    parseImportChapters: (request) => fakeProvider.parseImportChapters(request),
+  } : undefined,
   // #31/#32：相似性核验的确定性假模型——共享概念按环境变量判为对比或同一实体，
   // 使真实 scan 端点产出可确认的 pending 提案（contrast）或自动融合（identity）。
   // 只在 fake 模式注入：no-model harness 保持无任何模型能力的纯负路径。

@@ -232,12 +232,22 @@ export interface ResearchImportEventRow {
   eventType: string;
 }
 
+export interface ResearchChapterTaskRow {
+  id: string;
+  sessionId: string;
+  snapshotId: string;
+  status: string;
+  retryable: number;
+  recordJson: string;
+}
+
 /** 只读打开 harness 的 SQLite，核对研究附件 / 导入任务 / 内容快照 / 导入事件记录。 */
 export function readResearchImportTables(dbPath: string): {
   attachments: ResearchAttachmentRow[];
   importTasks: ResearchImportTaskRow[];
   snapshots: ResearchContentSnapshotRow[];
   importEvents: ResearchImportEventRow[];
+  chapterTasks: ResearchChapterTaskRow[];
 } {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
@@ -257,7 +267,10 @@ export function readResearchImportTables(dbPath: string): {
     const importEvents = db
       .prepare("SELECT task_id AS taskId, event_type AS eventType FROM research_import_task_events ORDER BY sequence")
       .all() as unknown as ResearchImportEventRow[];
-    return { attachments, importTasks, snapshots, importEvents };
+    const chapterTasks = db
+      .prepare("SELECT id, session_id AS sessionId, snapshot_id AS snapshotId, status, retryable, record_json AS recordJson FROM research_chapter_tasks ORDER BY created_at, rowid")
+      .all() as unknown as ResearchChapterTaskRow[];
+    return { attachments, importTasks, snapshots, importEvents, chapterTasks };
   } finally {
     db.close();
   }

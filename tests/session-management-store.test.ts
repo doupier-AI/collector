@@ -141,7 +141,7 @@ test("latest migrations preserve projects and the session favorite default", asy
   t.after(close);
   const db = (store as unknown as { db(): import("node:sqlite").DatabaseSync }).db();
   const version = db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { v: number };
-  assert.equal(version.v, 35);
+  assert.equal(version.v, 36);
   const projectCols = db.prepare("PRAGMA table_info(research_sessions)").all() as Array<{ name: string }>;
   assert.ok(projectCols.some((column) => column.name === "project_id"));
   assert.ok(projectCols.some((column) => column.name === "is_favorite"));

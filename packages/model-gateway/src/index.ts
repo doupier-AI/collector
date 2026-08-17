@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { FUSION_COMPOSE_PROMPT_VERSION, FUSION_COMPOSE_TOKEN_BUDGET, FUSION_RELATION_TYPES, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, TERM_IDENTITY_CONTEXT_MAX_CHARACTERS, TERM_IDENTITY_TEXT_MAX_CHARACTERS, TERM_IDENTITY_VERIFY_PROMPT_VERSION, parseResearchSelectionInsight, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight, type ResearchSliceContext, type TermIdentityVerificationRequest } from "@collector/capture-contracts";
+import { FUSION_COMPOSE_PROMPT_VERSION, FUSION_COMPOSE_TOKEN_BUDGET, FUSION_RELATION_TYPES, IMPORT_CHAPTER_PARSE_PROMPT_VERSION, IMPORT_CHAPTER_PARSE_TOKEN_BUDGET, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, TERM_IDENTITY_CONTEXT_MAX_CHARACTERS, TERM_IDENTITY_TEXT_MAX_CHARACTERS, TERM_IDENTITY_VERIFY_PROMPT_VERSION, parseResearchSelectionInsight, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight, type ResearchSliceContext, type TermIdentityVerificationRequest } from "@collector/capture-contracts";
 
 export interface ProviderUsage {
   inputTokens?: number;
@@ -1029,6 +1029,40 @@ ${JSON.stringify(input.content)}`;
     const parsed = JSON.parse(response.content) as { name?: unknown };
     if (typeof parsed.name !== "string" || !parsed.name.trim()) throw new Error("Node naming provider returned an invalid name");
     return parsed.name.trim();
+  }
+
+  /**
+   * T03 导入章节解析：通读按 `[B<ordinal>]` 编号的导入内容块，输出章节起点块号与标题。
+   * 返回模型原始 JSON 文本；合法性校验（块号范围/递增/标题）由调用方经
+   * validateImportChapterPlan 完成，不合契约时调用方退化为规则锚点。
+   * 给定材料的结构化整理任务，固定关闭思考模式（融合正文同源教训：thinking 耗尽预算）。
+   */
+  async parseImportChapters(
+    input: { content: string },
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<string> {
+    const prompt = `你是 Collector 的文档章节解析助手。下面是一篇导入文章，已按段落块编号（[B0]、[B1]……）。请通读全文，按文章真实结构划分章节，并为每章给出起始段落块编号与章节标题。
+
+只返回合法 JSON：{"chapters":[{"block":0,"title":"第一章标题"}]}
+
+规则：
+- block 是该章起始段落块的编号（整数）；第一章必须从 0 开始。
+- chapters 按 block 严格递增且不重复；章节数在 2 到 12 之间，不要逐段成章。
+- title 概括该章内容，不超过 30 字，不要编号、引号、标点收尾或解释。
+- 只依据所给文本划分，不要补充外部事实；不要输出任何 [[...]] 标记或额外字段。
+
+文章：
+${input.content}`;
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      responseFormat: { type: "json_object" },
+      temperature: 0,
+      thinking: false,
+      maxTokens: options.maxTokens ?? IMPORT_CHAPTER_PARSE_TOKEN_BUDGET,
+      timeoutMs: options.timeoutMs ?? 120_000,
+    }, options.context ?? { purpose: "research", promptVersion: IMPORT_CHAPTER_PARSE_PROMPT_VERSION });
+    return response.content;
   }
 
   /**

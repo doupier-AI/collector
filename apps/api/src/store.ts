@@ -7,6 +7,7 @@ import {
   validateTemporaryFusionBundle,
   type ResearchAssociationHintRecord,
   type ResearchCandidateSourceConnectionRecord,
+  type ResearchChapterTaskRecord,
   type ResearchConfirmedFusionSnapshotRecord,
   type ResearchFusionDraftVersionRecord,
   type ResearchPermanentEdgeRecord,
@@ -14,7 +15,7 @@ import {
   type ResearchTemporaryFusionNodeRecord,
 } from "@collector/capture-contracts";
 
-export type ObservabilityRecordSource = "research" | "selection" | "import" | "workflow" | "fusion";
+export type ObservabilityRecordSource = "research" | "selection" | "import" | "workflow" | "fusion" | "chapter";
 
 export interface ObservabilityRecordRow {
   source: ObservabilityRecordSource;
@@ -101,6 +102,23 @@ export interface ResearchImportStore {
   listResearchImportTaskEvents(taskId: string, afterId?: number): ResearchImportTaskEvent[];
   listRecoverableResearchImportTasks(): ResearchImportTaskRecord[];
   failInterruptedResearchImportTasks(): number;
+  getResearchSession(id: string): ResearchSessionRecord | undefined;
+}
+
+/** 导入章节解析任务（T03）所需的持久化能力：快照与任务一对一，snapshot_id 唯一即幂等。 */
+export interface ResearchChapterStore {
+  getResearchChapterTask(id: string): ResearchChapterTaskRecord | undefined;
+  getResearchChapterTaskBySnapshot(snapshotId: string): ResearchChapterTaskRecord | undefined;
+  /** 按 snapshot_id 幂等创建：已存在时原样返回既有任务，不产生重复锚点任务。 */
+  createResearchChapterTask(record: ResearchChapterTaskRecord): Promise<ResearchChapterTaskRecord>;
+  /** CAS 认领：queued → running，原子累加 attempts；已被认领返回 undefined。 */
+  claimResearchChapterTask(id: string): ResearchChapterTaskRecord | undefined;
+  /** 完成/失败/重排队等终态写回；以任务记录整体更新（record_json 全量）。 */
+  updateResearchChapterTask(record: ResearchChapterTaskRecord): Promise<ResearchChapterTaskRecord>;
+  listRecoverableResearchChapterTasks(): ResearchChapterTaskRecord[];
+  /** 重启恢复：running 回 queued（模型调用未落库，重跑即幂等），返回受影响数。 */
+  requeueInterruptedResearchChapterTasks(): number;
+  getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined;
   getResearchSession(id: string): ResearchSessionRecord | undefined;
 }
 
@@ -272,7 +290,7 @@ export interface NodeSystemTargetStore {
 }
 
 export interface CollectorStore
-  extends ResearchLaterStore, ResearchSelectionStore, ResearchImportStore, ResearchStore, DeepResearchStore, ResearchFusionProposalStore, NodeSystemTargetStore {
+  extends ResearchLaterStore, ResearchSelectionStore, ResearchImportStore, ResearchChapterStore, ResearchStore, DeepResearchStore, ResearchFusionProposalStore, NodeSystemTargetStore {
   init(): Promise<void>;
   getCapture(id: string): CaptureRecord | undefined;
   getCaptureByClientId(clientId: string): CaptureRecord | undefined;
@@ -550,6 +568,7 @@ export class SqliteStore implements CollectorStore {
       { source: "research", operationType: "research", table: "research_tasks" },
       { source: "selection", operationType: "selection_analysis", table: "research_selection_tasks" },
       { source: "import", operationType: "document_import", table: "research_import_tasks" },
+      { source: "chapter", operationType: "chapter_parse", table: "research_chapter_tasks" },
       { source: "workflow", operationType: "workflow_type", table: "workflow_runs", operationColumn: "workflow_type" },
       // 相似性核验在模型完成时已经结束；提议的 pending/accepted/rejected 是后续用户决定，不是运行状态。
       { source: "fusion", operationType: "similarity_verification", table: "research_fusion_proposals", statusExpression: "'completed'" },
@@ -587,6 +606,7 @@ export class SqliteStore implements CollectorStore {
       research: { table: "research_tasks", operation: "'research'", status: "status" },
       selection: { table: "research_selection_tasks", operation: "'selection_analysis'", status: "status" },
       import: { table: "research_import_tasks", operation: "'document_import'", status: "status" },
+      chapter: { table: "research_chapter_tasks", operation: "'chapter_parse'", status: "status" },
       workflow: { table: "workflow_runs", operation: "workflow_type", status: "status" },
       fusion: { table: "research_fusion_proposals", operation: "'similarity_verification'", status: "'completed'" },
     }[source];
@@ -754,6 +774,7 @@ export class SqliteStore implements CollectorStore {
       this.db().exec("DELETE FROM research_body_versions");
       this.db().exec("DELETE FROM research_slices");
       this.db().exec("DELETE FROM research_import_task_events");
+      this.db().exec("DELETE FROM research_chapter_tasks");
       this.db().exec("DELETE FROM research_content_snapshots");
       this.db().exec("DELETE FROM research_import_tasks");
       this.db().exec("DELETE FROM research_attachments");
@@ -1277,6 +1298,7 @@ export class SqliteStore implements CollectorStore {
       del(`DELETE FROM research_fusion_proposals WHERE lo_node_id IN (${NODE_SCOPE}) OR hi_node_id IN (${NODE_SCOPE})`, id, id);
       del(`DELETE FROM research_edges WHERE from_node_id IN (${NODE_SCOPE}) OR to_node_id IN (${NODE_SCOPE})`, id, id);
       del("DELETE FROM research_import_tasks WHERE session_id = ?", id);
+      del("DELETE FROM research_chapter_tasks WHERE session_id = ?", id);
       del("DELETE FROM research_content_snapshots WHERE session_id = ?", id);
       del("DELETE FROM research_attachments WHERE session_id = ?", id);
       del("DELETE FROM research_selection_tasks WHERE session_id = ?", id);
@@ -2160,6 +2182,73 @@ export class SqliteStore implements CollectorStore {
         this.updateResearchImportTask(failed);
         this.updateResearchAttachment(failedAttachment);
         this.insertResearchImportEvent(task.id, "failed", now, { task: failed, attachment: failedAttachment });
+      }
+    });
+    return interrupted.length;
+  }
+
+  // ── 导入章节解析任务（T03）──
+
+  getResearchChapterTask(id: string): ResearchChapterTaskRecord | undefined {
+    return this.getRecord<ResearchChapterTaskRecord>("SELECT record_json FROM research_chapter_tasks WHERE id = ?", id);
+  }
+
+  getResearchChapterTaskBySnapshot(snapshotId: string): ResearchChapterTaskRecord | undefined {
+    return this.getRecord<ResearchChapterTaskRecord>("SELECT record_json FROM research_chapter_tasks WHERE snapshot_id = ?", snapshotId);
+  }
+
+  async createResearchChapterTask(record: ResearchChapterTaskRecord): Promise<ResearchChapterTaskRecord> {
+    let created: ResearchChapterTaskRecord | undefined;
+    this.transaction(() => {
+      const existing = this.getResearchChapterTaskBySnapshot(record.snapshotId);
+      if (existing) {
+        created = existing;
+        return;
+      }
+      this.db().prepare("INSERT INTO research_chapter_tasks (id, session_id, snapshot_id, status, retryable, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(record.id, record.sessionId, record.snapshotId, record.status, record.retryable ? 1 : 0, record.createdAt, record.updatedAt, JSON.stringify(record));
+      created = record;
+    });
+    if (!created) throw new Error("Research chapter task was not persisted");
+    return created;
+  }
+
+  claimResearchChapterTask(id: string): ResearchChapterTaskRecord | undefined {
+    let claimed: ResearchChapterTaskRecord | undefined;
+    this.transaction(() => {
+      const current = this.getRecord<ResearchChapterTaskRecord>("SELECT record_json FROM research_chapter_tasks WHERE id = ? AND status = 'queued'", id);
+      if (!current) return;
+      const now = new Date().toISOString();
+      claimed = { ...current, status: "running", attempts: current.attempts + 1, updatedAt: now, startedAt: now };
+      const result = this.db().prepare("UPDATE research_chapter_tasks SET status = 'running', updated_at = ?, record_json = ? WHERE id = ? AND status = 'queued'")
+        .run(now, JSON.stringify(claimed), id);
+      if (result.changes !== 1) {
+        claimed = undefined;
+        return;
+      }
+    });
+    return claimed;
+  }
+
+  async updateResearchChapterTask(record: ResearchChapterTaskRecord): Promise<ResearchChapterTaskRecord> {
+    this.db().prepare("UPDATE research_chapter_tasks SET status = ?, retryable = ?, updated_at = ?, record_json = ? WHERE id = ?")
+      .run(record.status, record.retryable ? 1 : 0, record.updatedAt, JSON.stringify(record), record.id);
+    return record;
+  }
+
+  listRecoverableResearchChapterTasks(): ResearchChapterTaskRecord[] {
+    return this.listRecords<ResearchChapterTaskRecord>("SELECT record_json FROM research_chapter_tasks WHERE status = 'queued' ORDER BY created_at");
+  }
+
+  requeueInterruptedResearchChapterTasks(): number {
+    const interrupted = this.listRecords<ResearchChapterTaskRecord>("SELECT record_json FROM research_chapter_tasks WHERE status = 'running' ORDER BY created_at");
+    if (!interrupted.length) return 0;
+    this.transaction(() => {
+      for (const task of interrupted) {
+        // 模型调用未落库即重启：回到 queued 重跑即可（同一快照幂等），不向用户报失败。
+        const requeued: ResearchChapterTaskRecord = { ...task, status: "queued", updatedAt: new Date().toISOString(), startedAt: undefined };
+        this.db().prepare("UPDATE research_chapter_tasks SET status = 'queued', updated_at = ?, record_json = ? WHERE id = ? AND status = 'running'")
+          .run(requeued.updatedAt, JSON.stringify(requeued), task.id);
       }
     });
     return interrupted.length;
@@ -3796,6 +3885,30 @@ export class SqliteStore implements CollectorStore {
       version = 35;
     }
 
+    if (version < 36) {
+      // T03 导入章节解析任务：每个长文快照至多一条任务（snapshot_id 唯一即幂等），
+      // 锚点落在既有内容块上，不另立第二套锚点事实。
+      // IF NOT EXISTS：迁移重放测试按旧版本回滚 schema_migrations 后重放迁移序列，
+      // 表可能已由初始 init 建好，重放必须幂等。
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE IF NOT EXISTS research_chapter_tasks (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            snapshot_id TEXT NOT NULL UNIQUE,
+            status TEXT NOT NULL,
+            retryable INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS research_chapter_tasks_status_idx ON research_chapter_tasks(status, created_at);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (36, datetime('now'));
+        `);
+      });
+      version = 36;
+    }
+
   }
 
   private async migrateLegacyProviderProfile(): Promise<void> {
@@ -4119,6 +4232,13 @@ export class JsonStore implements CollectorStore {
   listResearchImportTaskEvents(_taskId: string, _afterId?: number): ResearchImportTaskEvent[] { return []; }
   listRecoverableResearchImportTasks(): ResearchImportTaskRecord[] { return []; }
   failInterruptedResearchImportTasks(): number { return 0; }
+  getResearchChapterTask(_id: string): ResearchChapterTaskRecord | undefined { return undefined; }
+  getResearchChapterTaskBySnapshot(_snapshotId: string): ResearchChapterTaskRecord | undefined { return undefined; }
+  async createResearchChapterTask(_record: ResearchChapterTaskRecord): Promise<ResearchChapterTaskRecord> { throw new Error("Research chapter parsing requires SQLite persistence"); }
+  claimResearchChapterTask(_id: string): ResearchChapterTaskRecord | undefined { return undefined; }
+  async updateResearchChapterTask(_record: ResearchChapterTaskRecord): Promise<ResearchChapterTaskRecord> { throw new Error("Research chapter parsing requires SQLite persistence"); }
+  listRecoverableResearchChapterTasks(): ResearchChapterTaskRecord[] { return []; }
+  requeueInterruptedResearchChapterTasks(): number { return 0; }
   getResearchSelection(_id: string): ResearchSelectionRecord | undefined { return undefined; }
   listResearchSelections(_sessionId: string): ResearchSelectionRecord[] { return []; }
   getResearchSelectionTask(_id: string): ResearchSelectionTaskRecord | undefined { return undefined; }

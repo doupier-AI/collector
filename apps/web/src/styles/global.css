@@ -3984,6 +3984,8 @@ button.model-status {
 .reading__block {
   display: grid;
   gap: var(--space-1);
+  /* 章节导航跳转目标的顶栏补偿；只影响滚动定位，不改变布局与选区偏移。 */
+  scroll-margin-top: calc(var(--app-bar-height) + var(--space-4));
 }
 
 .reading__anchor {
@@ -4808,4 +4810,170 @@ button.model-status {
   margin-top: var(--space-2);
   margin-bottom: var(--space-1);
   font-size: 0.9375rem;
+}
+
+/* ---------- 导入阅读页章节导航（T03） ---------- */
+
+.chapter-nav__inline-status {
+  margin: var(--space-2) 0 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+}
+
+.chapter-nav__retry-inline {
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-raised);
+  color: var(--color-ink);
+  font-size: var(--font-size-caption);
+  padding: 0.25rem var(--space-3);
+  cursor: pointer;
+}
+
+.chapter-nav__retry-inline:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+}
+
+.chapter-nav__retry-inline:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* 宽屏右侧固定线列：与正文互斥轨道之外，定位脱离滚动容器 */
+.chapter-nav--rail {
+  position: fixed;
+  top: calc(var(--app-bar-height) + var(--space-6));
+  right: max(var(--space-4), calc((100vw - var(--measure)) / 2 - 15.5rem));
+  width: 14rem;
+  max-height: calc(100vh - var(--app-bar-height) - var(--space-6) * 2);
+  overflow-y: auto;
+  display: grid;
+  gap: var(--space-3);
+  align-content: start;
+  z-index: var(--z-rail);
+  padding: var(--space-4);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-1);
+}
+
+.chapter-nav--status-only {
+  width: auto;
+  max-width: 15rem;
+  right: max(var(--space-4), calc((100vw - var(--measure)) / 2 - 15.5rem));
+}
+
+.chapter-nav__status {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.5;
+}
+
+.chapter-nav__retry {
+  align-self: start;
+  font-size: var(--font-size-xs);
+  padding: 0.25rem var(--space-3);
+}
+
+.chapter-nav__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.chapter-nav__item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-muted);
+  font: inherit;
+  font-size: var(--font-size-caption);
+  line-height: 1.45;
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.chapter-nav__item:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+
+.chapter-nav__item:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-focus);
+}
+
+.chapter-nav__item--active {
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+  box-shadow: inset 0.1875rem 0 0 var(--color-ai);
+}
+
+/* 窄屏浮动入口 */
+.chapter-nav__entry {
+  position: fixed;
+  right: var(--space-4);
+  bottom: var(--space-4);
+  z-index: var(--z-rail);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-circle);
+  background: var(--color-surface-raised);
+  color: var(--color-ink);
+  font: inherit;
+  font-size: var(--font-size-caption);
+  width: 3rem;
+  height: 3rem;
+  cursor: pointer;
+  box-shadow: var(--shadow-2);
+}
+
+.chapter-nav__entry:hover {
+  background: var(--color-surface-hover);
+}
+
+.chapter-nav__entry:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-focus);
+}
+
+/* 窄屏覆盖抽屉 */
+.chapter-nav--drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(20rem, 86vw);
+  z-index: var(--z-panel);
+  display: grid;
+  gap: var(--space-3);
+  align-content: start;
+  padding: var(--space-4);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-panel);
+  overflow-y: auto;
+}
+
+.chapter-nav__drawer-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.chapter-nav__drawer-title {
+  font-size: var(--font-size-body);
+  font-weight: 600;
+  color: var(--color-ink);
 }

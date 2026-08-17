@@ -9,6 +9,7 @@ export { ResearchSessionService, ResearchNotFoundError, ResearchValidationError,
 export { DEFAULT_RESEARCH_SLICE_CONTEXT_TOKEN_BUDGET, buildResearchSliceContext, estimateResearchSliceContextItemTokens, estimateResearchSliceTokens, type ResearchFragmentContextCandidate } from "./slice-context.js";
 export { deriveMessageBodyArtifacts, getOrDeriveMessageBodyArtifacts, matchSliceForFragment, tryResolveFragmentExcerpt, type BodyArtifactsStoreLookup, type MessageBodyArtifacts, type MessageBodyArtifactsInput } from "./body-artifacts.js";
 export { ResearchImportService, ResearchImportConflictError, ResearchImportNotFoundError, ResearchImportValidationError, type ResearchImportServiceOptions } from "./research-import.js";
+export { ResearchChapterParseService, type ResearchChapterParseProvider, type ResearchChapterParseServiceOptions } from "./research-chapters.js";
 export { ResearchSelectionAnalysisError, ResearchSelectionConflictError, ResearchSelectionNotFoundError, ResearchSelectionService, ResearchSelectionValidationError, type ResearchSelectionProvider, type ResearchSelectionAnalysisRequest, type ResearchSelectionServiceOptions } from "./selection.js";
 export { DeepResearchNotFoundError, DeepResearchService, DeepResearchValidationError, type DeepResearchServiceOptions } from "./deep-research.js";
 export { ResearchLaterNotFoundError, ResearchLaterService, ResearchLaterValidationError } from "./research-later.js";

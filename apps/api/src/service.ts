@@ -6,6 +6,8 @@ import {
   ACCEPTED_MIME_TYPES,
   FUSION_COMPOSE_PROMPT_VERSION,
   FUSION_COMPOSE_TOKEN_BUDGET,
+  IMPORT_CHAPTER_PARSE_PROMPT_VERSION,
+  IMPORT_CHAPTER_PARSE_TOKEN_BUDGET,
   MAX_ARTIFACT_BYTES,
   MODEL_PURPOSES,
   TERM_IDENTITY_VERIFY_PROMPT_VERSION,
@@ -63,6 +65,7 @@ import { DEFAULT_PROVIDER_REGISTRY, formatResearchParentChainContext, formatRese
 import { createVerificationWorkflow } from "./verification.js";
 import { ResearchSessionService, RESEARCH_SLICE_PROMPT_VERSION, type ResearchGenerationProvider } from "./research.js";
 import { ResearchImportService } from "./research-import.js";
+import { ResearchChapterParseService, type ResearchChapterParseProvider } from "./research-chapters.js";
 import { ResearchSelectionAnalysisError, ResearchSelectionService, type ResearchSelectionProvider } from "./selection.js";
 import { DeepResearchService, NodeGrowthService } from "./deep-research.js";
 import { ResearchLaterService } from "./research-later.js";
@@ -96,6 +99,7 @@ export class CaptureService {
   private modelGatewayError?: string;
   readonly research: ResearchSessionService;
   readonly researchImports: ResearchImportService;
+  readonly researchChapters: ResearchChapterParseService;
   readonly researchSelections: ResearchSelectionService;
   readonly deepResearch: DeepResearchService;
   readonly nodeGrowth: NodeGrowthService;
@@ -114,7 +118,7 @@ export class CaptureService {
     private readonly artifactRoot: string,
     private readonly parser = new SourceParser(),
     private modelGateway?: ModelGateway,
-    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; selectionProvider?: ResearchSelectionProvider; similarityVerifier?: SimilarityVerificationGateway; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunSelectionTasks?: boolean; mvpDemoMode?: boolean; researchRetrySleep?: (ms: number) => Promise<void> } = {},
+    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; selectionProvider?: ResearchSelectionProvider; similarityVerifier?: SimilarityVerificationGateway; chapterParseProvider?: ResearchChapterParseProvider; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunResearchChapters?: boolean; autoRunSelectionTasks?: boolean; mvpDemoMode?: boolean; researchRetrySleep?: (ms: number) => Promise<void> } = {},
   ) {
     this.runRecords = new RunRecordsService(this.store);
     this.attachModelGateway(this.modelGateway);
@@ -137,8 +141,16 @@ export class CaptureService {
       onTaskCompleted: (task) => { void this.nodeNaming.nameNode(task.nodeId ?? task.sessionId); },
       ...(this.options.researchRetrySleep ? { retrySleep: this.options.researchRetrySleep } : {}),
     });
+    this.researchChapters = new ResearchChapterParseService(this.store, {
+      provider: this.options.chapterParseProvider ?? this.chapterParseProviderFor(this.modelGateway),
+      autoRunTasks: this.options.autoRunResearchChapters ?? this.options.autoRunResearchImports,
+    });
     this.researchImports = new ResearchImportService(this.store, join(this.artifactRoot, "research-imports"), {
       autoRunTasks: this.options.autoRunResearchImports,
+      // T03：导入完成即触发章节解析评估（长文阈值判定与任务创建都在章节服务内，幂等）。
+      onSnapshotCompleted: (snapshot) => {
+        this.researchChapters.enqueueForSnapshot(snapshot);
+      },
     });
     this.researchSelections = new ResearchSelectionService(this.store, {
       provider: this.options.selectionProvider ?? this.selectionProviderFor(this.modelGateway),
@@ -184,6 +196,7 @@ export class CaptureService {
     this.attachModelGateway(gateway);
     if (!this.options.researchProvider) this.research.setProvider(this.researchProviderFor(gateway));
     if (!this.options.selectionProvider) this.researchSelections.setProvider(this.selectionProviderFor(gateway));
+    if (!this.options.chapterParseProvider) this.researchChapters.setProvider(this.chapterParseProviderFor(gateway));
     if (this.options.autoRunResearchTasks !== false) void this.termPreviews.resumeTasks().catch(() => undefined);
   }
 
@@ -619,6 +632,34 @@ export class CaptureService {
           }
           throw error;
         }
+      },
+    };
+  }
+
+  /**
+   * T03 章节解析供应商适配：网关经 purpose 路由在调用时解析，随 context 落入运行记录。
+   * 返回模型原始输出；契约校验与规则降级由章节服务完成。
+   */
+  private chapterParseProviderFor(gateway: ModelGateway | undefined): ResearchChapterParseProvider | undefined {
+    if (!gateway) return undefined;
+    const service = this;
+    return {
+      provider: gateway.providerName,
+      model: gateway.modelName,
+      async parseImportChapters(request) {
+        const purposeGateway = await service.gatewayForPurpose("research");
+        if (!purposeGateway) throw new Error("AI model is not configured");
+        return purposeGateway.parseImportChapters(
+          { content: request.content },
+          {
+            context: {
+              workflowRunId: request.taskId,
+              purpose: "research",
+              promptVersion: IMPORT_CHAPTER_PARSE_PROMPT_VERSION,
+              tokenBudget: IMPORT_CHAPTER_PARSE_TOKEN_BUDGET,
+            },
+          },
+        );
       },
     };
   }

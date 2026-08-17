@@ -409,3 +409,99 @@ test("开始页拖放文件创建研究", async ({ page }) => {
 
   expect(consoleIssues).toEqual([]);
 });
+
+const LONG_TXT_CONTENT = Array.from(
+  { length: 12 },
+  (_, index) => `第${index + 1}段开头句：这是导入长文章节解析的第${index + 1}段确定性正文，用于验证 AI 异步补齐章节锚点与导航点击跳转。`.repeat(4),
+).join("\n\n");
+
+test("导入长文：正文立即可读，AI 章节解析异步补齐章节导航并可在刷新后恢复", async ({ page }) => {
+  test.setTimeout(60_000);
+  const sessionId = await openFreshSession(page);
+  const consoleIssues = watchConsole(page);
+
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "长文文章.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from(LONG_TXT_CONTENT, "utf8"),
+  });
+  await expect(page.getByText("已导入")).toBeVisible({ timeout: 15_000 });
+
+  // 导入完成即可读：阅读视图正文与块锚点立即可用，不等待章节解析
+  await page.getByRole("button", { name: "阅读" }).click();
+  await expect(page).toHaveURL(new RegExp(`/research/${sessionId}/reading/[^/]+$`));
+  await expect(page.getByRole("heading", { name: "长文文章.txt" })).toBeVisible();
+  await expect(page.getByText("第 1 行")).toBeVisible();
+  await expect(page.getByText(/第1段开头句/).first()).toBeVisible();
+
+  // 章节导航异步补齐：AI 章节锚点按 T01 契约落在既有块上
+  const nav = page.getByTestId("reading-chapter-nav");
+  await expect(nav).toHaveAttribute("data-chapter-source", "ai", { timeout: 15_000 });
+  await expect(nav).toContainText("章节由 AI 通读全文生成");
+  await expect(nav.getByRole("button", { name: "第1章" })).toBeVisible();
+  await expect(nav.getByRole("button", { name: "第2章" })).toBeVisible();
+  await expect(nav.getByRole("button", { name: "第3章" })).toBeVisible();
+
+  // 点击中间章节：精确跳转到既有块，滚动真实发生且该线保持高亮
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await nav.getByRole("button", { name: "第2章" }).click();
+  await expect.poll(() => page.evaluate(() => window.scrollY), { timeout: 5_000 }).toBeGreaterThan(0);
+  await expect(nav.getByRole("button", { name: "第2章" })).toHaveClass(/chapter-nav__item--active/);
+
+  // 刷新后状态一致：锚点与来源状态由持久化记录恢复，不重复解析
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "长文文章.txt" })).toBeVisible();
+  const reloadedNav = page.getByTestId("reading-chapter-nav");
+  await expect(reloadedNav).toHaveAttribute("data-chapter-source", "ai", { timeout: 15_000 });
+  await expect(reloadedNav.getByRole("button", { name: "第1章" })).toBeVisible();
+
+  // 界面、API 与 SQLite 一致
+  const view = await apiJson<SessionView>(page, `/v1/research-sessions/${sessionId}`);
+  const content = await apiJson<{ chapterParse?: { source?: string; chapters: Array<{ blockOrdinal: number; title: string }> } }>(
+    page,
+    `/v1/research-content/${view.attachments![0].contentSnapshotId}`,
+  );
+  expect(content.chapterParse?.source).toBe("ai");
+  expect(content.chapterParse?.chapters).toHaveLength(3);
+  // 假模型按 [Bn] 编号取首/中/尾三块：B0、B6（12 块的中间）、B11。
+  expect(content.chapterParse!.chapters.map((chapter) => chapter.blockOrdinal)).toEqual([0, 6, 11]);
+
+  const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
+  const tables = readResearchImportTables(dbPath);
+  const chapterTasks = tables.chapterTasks.filter((row) => row.sessionId === sessionId);
+  expect(chapterTasks).toHaveLength(1);
+  expect(chapterTasks[0].status).toBe("completed");
+  expect(chapterTasks[0].retryable).toBe(0);
+  const record = JSON.parse(chapterTasks[0].recordJson) as { source?: string; chapters?: unknown[] };
+  expect(record.source).toBe("ai");
+  expect(record.chapters).toHaveLength(3);
+
+  expect(consoleIssues).toEqual([]);
+});
+
+test("短于长文阈值的导入内容不触发章节解析、无章节导航", async ({ page }) => {
+  const sessionId = await openFreshSession(page);
+  const consoleIssues = watchConsole(page);
+
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "短文.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from(TXT_CONTENT, "utf8"),
+  });
+  await expect(page.getByText("已导入")).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "阅读" }).click();
+  await expect(page).toHaveURL(new RegExp(`/research/${sessionId}/reading/[^/]+$`));
+  await expect(page.getByRole("heading", { name: "短文.txt" })).toBeVisible();
+  await expect(page.getByText(/第一行：本地优先研究/)).toBeVisible();
+
+  // 界面无章节导航，API 视图无 chapterParse，数据库无章节任务
+  await expect(page.getByTestId("reading-chapter-nav")).toHaveCount(0);
+  const view = await apiJson<SessionView>(page, `/v1/research-sessions/${sessionId}`);
+  const content = await apiJson<{ chapterParse?: unknown }>(page, `/v1/research-content/${view.attachments![0].contentSnapshotId}`);
+  expect(content.chapterParse).toBeUndefined();
+  const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
+  const tables = readResearchImportTables(dbPath);
+  expect(tables.chapterTasks.filter((row) => row.sessionId === sessionId)).toHaveLength(0);
+
+  expect(consoleIssues).toEqual([]);
+});

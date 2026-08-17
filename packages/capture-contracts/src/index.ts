@@ -374,8 +374,8 @@ export interface AiUsageSummary {
 
 // ── Local run records (issue #19) ────────────────────────────────
 
-export type RunRecordSource = "research" | "selection" | "import" | "workflow" | "fusion";
-export type RunRecordOperationType = "research" | "selection_analysis" | "document_import" | "recent_organization" | "topic_document" | "similarity_verification";
+export type RunRecordSource = "research" | "selection" | "import" | "workflow" | "fusion" | "chapter";
+export type RunRecordOperationType = "research" | "selection_analysis" | "document_import" | "recent_organization" | "topic_document" | "similarity_verification" | "chapter_parse";
 export type RunRecordStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "corrupt";
 export type RunRecordOutcome = "success" | "failure" | "active" | "cancelled" | "unavailable";
 export type RunRecordErrorCategory = "authentication" | "network" | "validation" | "provider" | "search" | "storage" | "unknown";
@@ -693,6 +693,203 @@ export type ResearchImportTaskEvent =
   | { id: number; type: "completed"; task: ResearchImportTaskRecord; attachment: ResearchAttachmentRecord; createdAt: string }
   | { id: number; type: "failed"; task: ResearchImportTaskRecord; attachment: ResearchAttachmentRecord; createdAt: string }
   | { id: number; type: "cancelled"; task: ResearchImportTaskRecord; attachment: ResearchAttachmentRecord; createdAt: string };
+
+// ── 导入章节解析（T03，ADR-0032）────────────────────────────────
+// 导入主流程保持纯本地解析、完成即可阅读；超过长文阈值（LONG_TEXT_CHAR_THRESHOLD 同源）
+// 的快照另起独立异步任务：有模型时 AI 通读全文产出章节划分，无模型/失败/输出不合契约时
+// 退化为规则锚点。章节锚点一律落在既有内容块（ResearchContentBlock.ordinal）上，
+// 不另立第二套锚点事实；界面按 source/fallbackReason 诚实呈现锚点来源。
+
+export const IMPORT_CHAPTER_PARSE_PROMPT_VERSION = "import-chapter-parse-v1";
+/** 章节解析输出预算；JSON 结构有界，2048 足够覆盖上限章节数。 */
+export const IMPORT_CHAPTER_PARSE_TOKEN_BUDGET = 2_048;
+/** 送入模型的正文上限（字符）；超出部分按块边界截断，锚点仍只落在被送入的既有块上。 */
+export const IMPORT_CHAPTER_PARSE_MAX_INPUT_CHARS = 60_000;
+/** AI 与规则锚点共同的章节数上限（导航有界性）。 */
+export const IMPORT_CHAPTER_MAX_COUNT = 24;
+/** 章节标题长度上限（AI 输出与规则首句共用）。 */
+export const IMPORT_CHAPTER_TITLE_MAX_CHARACTERS = 40;
+
+export type ResearchChapterSource = "ai" | "rule";
+export type ResearchChapterFallbackReason = "no_model" | "ai_failed" | "ai_invalid";
+export type ResearchChapterTaskStatus = "queued" | "running" | "completed" | "failed";
+export type ResearchChapterErrorCode =
+  | "model_not_configured"
+  | "provider_error"
+  | "invalid_output"
+  | "snapshot_missing"
+  | "service_restarted";
+
+/** 章节锚点：节标题 + 既有内容块下标。标题由 AI 理解生成或规则派生（原文标题/段落首句）。 */
+export interface ResearchChapterAnchor {
+  /** 章节顺序号，从 0 连续编号。 */
+  ordinal: number;
+  title: string;
+  /** 章节起始内容块在快照 blocks 中的 ordinal（导航跳转目标恒存在于既有块）。 */
+  blockOrdinal: number;
+}
+
+export interface ResearchChapterTaskRecord {
+  id: string;
+  sessionId: string;
+  snapshotId: string;
+  /** 运行记录列表标题（导入文件名）。 */
+  title: string;
+  status: ResearchChapterTaskStatus;
+  /** 失败或规则降级后可重试；AI 成功后为 false。 */
+  retryable: boolean;
+  /** 已产出锚点的来源；尚未产出时缺省。 */
+  source?: ResearchChapterSource;
+  /** 规则锚点的降级原因；AI 成功时缺省。 */
+  fallbackReason?: ResearchChapterFallbackReason;
+  chapters: ResearchChapterAnchor[];
+  provider?: string;
+  model?: string;
+  promptVersion?: string;
+  attempts: number;
+  error?: { code: ResearchChapterErrorCode; message: string };
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+/** 阅读内容 HTTP 视图附带的章节解析状态（视图字段，不入库）。 */
+export interface ResearchChapterParseView {
+  taskId: string;
+  status: ResearchChapterTaskStatus;
+  retryable: boolean;
+  source?: ResearchChapterSource;
+  fallbackReason?: ResearchChapterFallbackReason;
+  chapters: ResearchChapterAnchor[];
+  error?: { code: string; message: string };
+  updatedAt: string;
+}
+
+/** 阅读内容 HTTP 视图：快照 + 章节解析状态（只有达到长文阈值的快照携带 chapterParse）。 */
+export interface ResearchContentView extends ResearchContentSnapshotRecord {
+  chapterParse?: ResearchChapterParseView;
+}
+
+/** 导入快照是否需要章节解析：全文超过长文阈值才触发（与 T01 阈值常量同源）。 */
+export function importSnapshotNeedsChapterParse(blocks: readonly Pick<ResearchContentBlock, "text">[]): boolean {
+  return isLongText(blocks.map((block) => block.text).join("\n\n"));
+}
+
+/** 截断为带上限的标题；超长以省略号收口，长度恒 ≤ max。 */
+function truncateChapterTitle(value: string, max: number): string {
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+
+/**
+ * 规则章节锚点（确定性降级路径）：
+ * - 原文带标题（markdown/docx heading 块）且 ≥2 个时，以标题块为章节起点，标题取原文标题；
+ *   标题过多时均匀抽样保留首尾，章节数不超过上限。
+ * - 否则按段落结构均分：目标章数随全文长度在 2–8 间取值，每章起点取该段首句。
+ * 幂等、不依赖 AI、不修改块内容；空快照返回空数组。
+ */
+export function deriveImportRuleChapters(blocks: readonly ResearchContentBlock[]): ResearchChapterAnchor[] {
+  const meaningful = blocks.filter((block) => block.text.trim());
+  if (meaningful.length === 0) return [];
+  const headingBlocks = meaningful.filter((block) => {
+    const anchor = block.anchor;
+    return (anchor.kind === "markdown" || anchor.kind === "docx") && anchor.blockType === "heading" && block.text.trim();
+  });
+  if (headingBlocks.length >= 2) {
+    const selected: ResearchContentBlock[] = [];
+    const seen = new Set<number>();
+    const max = Math.min(IMPORT_CHAPTER_MAX_COUNT, headingBlocks.length);
+    for (let index = 0; index < max; index += 1) {
+      const sourceIndex = max === 1 ? 0 : Math.round((index * (headingBlocks.length - 1)) / (max - 1));
+      const candidate = headingBlocks[sourceIndex];
+      if (!seen.has(candidate.ordinal)) {
+        seen.add(candidate.ordinal);
+        selected.push(candidate);
+      }
+    }
+    return selected.map((block, ordinal) => {
+      const split = splitBlockHeading(block.text);
+      const title = (split?.title ?? block.text).trim().replace(/\s+/g, " ");
+      return { ordinal, title: truncateChapterTitle(title, IMPORT_CHAPTER_TITLE_MAX_CHARACTERS), blockOrdinal: block.ordinal };
+    });
+  }
+  const totalChars = meaningful.reduce((sum, block) => sum + block.text.length, 0);
+  const target = Math.min(meaningful.length, Math.max(2, Math.min(8, Math.round(totalChars / LONG_TEXT_CHAR_THRESHOLD))));
+  const budget = totalChars / target;
+  const anchors: ResearchChapterAnchor[] = [];
+  let accumulated = 0;
+  for (const block of meaningful) {
+    if (anchors.length === 0 || (anchors.length < target && accumulated >= budget)) {
+      anchors.push({ ordinal: anchors.length, title: ruleChapterTitle(block.text), blockOrdinal: block.ordinal });
+      accumulated = 0;
+    }
+    accumulated += block.text.length;
+  }
+  return anchors;
+}
+
+/** 规则章节标题：段落首句（剥离 ATX/引用/加粗等弱格式），收口到标题长度上限。 */
+function ruleChapterTitle(blockText: string): string {
+  const cleaned = blockText
+    .trim()
+    .replace(/^\s{0,3}#{1,6}\s+/, "")
+    .replace(/^\s*>+\s*/, "")
+    .replace(/\*\*(.+?)\*\*/g, "$1");
+  const match = cleaned.match(/^[^。！？!?；;\n]+[。！？!?；;]?/);
+  const sentence = (match?.[0] ?? cleaned).trim().replace(/\s+/g, " ");
+  return truncateChapterTitle(sentence || "开始", IMPORT_CHAPTER_TITLE_MAX_CHARACTERS);
+}
+
+/**
+ * 章节解析模型输入：既有块按 `[B<ordinal>]` 编号拼接，按块边界截断到上限内。
+ * blockCount 是被送入的块数（ordinal 0..blockCount-1），供输出校验约束章节起点范围。
+ */
+export function formatImportChapterParseInput(
+  blocks: readonly ResearchContentBlock[],
+  maxChars: number = IMPORT_CHAPTER_PARSE_MAX_INPUT_CHARS,
+): { content: string; blockCount: number } {
+  const parts: string[] = [];
+  let length = 0;
+  for (const block of blocks) {
+    const part = `[B${block.ordinal}] ${block.text}`.slice(0, maxChars);
+    if (parts.length > 0 && length + part.length + 2 > maxChars) break;
+    parts.push(part);
+    length += part.length + 2;
+  }
+  return { content: parts.join("\n\n"), blockCount: parts.length };
+}
+
+/**
+ * 校验 AI 章节解析输出：只接受 `{chapters:[{block,title}]}`，block 为合法、严格递增的块下标，
+ * title 非空；章节数在 1..上限之间。任何不合规返回 null，由调用方退化为规则锚点。
+ */
+export function validateImportChapterPlan(raw: string, blockCount: number): ResearchChapterAnchor[] | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const list = (parsed as { chapters?: unknown }).chapters;
+  if (!Array.isArray(list) || list.length === 0 || list.length > IMPORT_CHAPTER_MAX_COUNT) return null;
+  const anchors: ResearchChapterAnchor[] = [];
+  let previousBlock = -1;
+  for (const item of list) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    const block = (item as { block?: unknown }).block;
+    const title = (item as { title?: unknown }).title;
+    if (typeof block !== "number" || !Number.isInteger(block) || block < 0 || block >= blockCount || block <= previousBlock) return null;
+    if (typeof title !== "string" || !title.trim()) return null;
+    previousBlock = block;
+    anchors.push({
+      ordinal: anchors.length,
+      blockOrdinal: block,
+      title: truncateChapterTitle(title.trim().replace(/\s+/g, " "), IMPORT_CHAPTER_TITLE_MAX_CHARACTERS),
+    });
+  }
+  return anchors;
+}
 
 export interface ResearchSessionRecord {
   id: string;

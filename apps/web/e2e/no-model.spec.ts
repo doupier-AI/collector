@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
-import { apiJson, apiPortForPage, citeCurrentSelection, pairAndOpen, readDataDir, readResearchLaterTables, readResearchNodeTables, readResearchSelectionTables } from "./helpers";
+import { apiJson, apiPortForPage, citeCurrentSelection, pairAndOpen, readDataDir, readResearchImportTables, readResearchLaterTables, readResearchNodeTables, readResearchSelectionTables } from "./helpers";
 
 const QUESTION = "没有模型时也要保存这句话";
 
@@ -292,4 +292,58 @@ test("未配置模型：标记保存后可在列表查看并返回原选区，�
   await page.getByRole("button", { name: /的会话菜单$/ }).click();
   await page.getByRole("menuitem", { name: "查看标记" }).click();
   await expect(marksPanel).toContainText("无模型也要保存笔记");
+});
+
+const LONG_IMPORT_CONTENT = Array.from(
+  { length: 12 },
+  (_, index) => `第${index + 1}段开头句：这是无模型导入长文章节规则锚点的第${index + 1}段确定性正文，用于验证章节导航不依赖模型可用性。`.repeat(4),
+).join("\n\n");
+
+test("未配置模型：导入长文获得规则锚点，章节导航可用且如实反映来源", async ({ page }) => {
+  test.setTimeout(60_000);
+  await pairAndOpen(page, "/research/new");
+  const createResponse = await page.request.post("/v1/research-sessions", {
+    headers: { "Idempotency-Key": crypto.randomUUID() },
+    data: {},
+  });
+  const created = (await createResponse.json()) as { id: string };
+  await page.goto(`/nodes/${created.id}`);
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "无模型长文.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from(LONG_IMPORT_CONTENT, "utf8"),
+  });
+  await expect(page.getByText("已导入")).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "阅读" }).click();
+  await expect(page).toHaveURL(new RegExp(`/research/${created.id}/reading/[^/]+$`));
+  await expect(page.getByText(/第1段开头句/).first()).toBeVisible();
+
+  // 规则锚点：不依赖模型，导航可用且来源如实呈现（未配置模型 → 按原文结构）
+  const nav = page.getByTestId("reading-chapter-nav");
+  await expect(nav).toHaveAttribute("data-chapter-source", "rule", { timeout: 15_000 });
+  await expect(nav).toContainText("未配置可用模型，章节按原文结构生成");
+  await expect(nav.locator(".chapter-nav__item").first()).toContainText("第1段开头句");
+  await expect(nav.getByTestId("chapter-retry")).toBeVisible();
+
+  // 点击章节锚点：精确滚动到既有块（先回顶确保目标在视口外）
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await nav.locator(".chapter-nav__item").last().click();
+  await expect.poll(() => page.evaluate(() => window.scrollY), { timeout: 5_000 }).toBeGreaterThan(0);
+
+  // 无模型重试仍走规则降级，状态保持一致
+  await nav.getByTestId("chapter-retry").click();
+  await expect(nav).toHaveAttribute("data-chapter-source", "rule", { timeout: 15_000 });
+  await expect(nav).toContainText("未配置可用模型，章节按原文结构生成");
+
+  // SQLite 核对：章节任务完成、规则来源、可重试
+  const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
+  const tables = readResearchImportTables(dbPath);
+  const chapterTasks = tables.chapterTasks.filter((row) => row.sessionId === created.id);
+  expect(chapterTasks).toHaveLength(1);
+  expect(chapterTasks[0].status).toBe("completed");
+  expect(chapterTasks[0].retryable).toBe(1);
+  const record = JSON.parse(chapterTasks[0].recordJson) as { source?: string; fallbackReason?: string; chapters?: unknown[] };
+  expect(record.source).toBe("rule");
+  expect(record.fallbackReason).toBe("no_model");
+  expect((record.chapters ?? []).length).toBeGreaterThanOrEqual(2);
 });

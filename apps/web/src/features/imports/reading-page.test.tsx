@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
-import type { ResearchContentSnapshotRecord, ResearchSelectionRecord, ResearchTurnAccepted } from "@collector/capture-contracts";
+import type { ResearchChapterParseView, ResearchContentSnapshotRecord, ResearchSelectionRecord, ResearchTurnAccepted } from "@collector/capture-contracts";
 import type { ApiClient } from "../../api/client";
 import { ApiRequestError } from "../../api/errors";
 import { ServicesProvider } from "../../app/services";
@@ -250,5 +250,77 @@ describe("阅读视图 ChatComposer", () => {
     await user.click(screen.getByRole("button", { name: "发送" }));
 
     expect(await screen.findByRole("heading", { name: "配对 Collector" })).toBeInTheDocument();
+  });
+});
+
+describe("阅读视图章节解析（T03）", () => {
+  /** jsdom 没有 matchMedia：章节导航宽屏线列需要 900px 断点。 */
+  function stubWide() {
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query.includes("min-width: 900px") ? true : false,
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+  }
+
+  function chapterView(overrides: Partial<ResearchChapterParseView> = {}): ResearchChapterParseView {
+    return {
+      taskId: "chapter-task-1",
+      status: "completed",
+      retryable: false,
+      source: "ai",
+      chapters: [
+        { ordinal: 0, title: "第一章", blockOrdinal: 0 },
+        { ordinal: 1, title: "正文段落", blockOrdinal: 1 },
+      ],
+      updatedAt: createdAt,
+      ...overrides,
+    };
+  }
+
+  it("解析进行中每 2s 静默轮询，完成后章节导航出现", async () => {
+    stubWide();
+    const queued = { ...snapshotWithAllAnchors(), chapterParse: chapterView({ status: "queued", source: undefined, chapters: [] }) };
+    const completed = { ...snapshotWithAllAnchors(), chapterParse: chapterView() };
+    const getResearchContent = vi.fn<ApiClient["getResearchContent"]>()
+      .mockResolvedValueOnce(queued)
+      .mockResolvedValue(completed);
+    renderReadingPage({ getResearchContent });
+
+    expect(await screen.findByText("AI 正在通读全文，章节导航稍后补齐…")).toBeInTheDocument();
+    await vi.waitFor(() => expect(getResearchContent).toHaveBeenCalledTimes(2), { timeout: 5_000 });
+    expect(await screen.findByTestId("reading-chapter-nav")).toHaveAttribute("data-chapter-source", "ai");
+    expect(screen.getByText("章节由 AI 通读全文生成")).toBeInTheDocument();
+    // 终态后轮询停止。
+    await new Promise((resolve) => setTimeout(resolve, 2_500));
+    expect(getResearchContent).toHaveBeenCalledTimes(2);
+    Reflect.deleteProperty(window, "matchMedia");
+  });
+
+  it("规则降级状态如实呈现，重试后替换为 AI 章节", async () => {
+    stubWide();
+    const degraded = { ...snapshotWithAllAnchors(), chapterParse: chapterView({ source: "rule", fallbackReason: "no_model", retryable: true, chapters: [{ ordinal: 0, title: "按原文结构", blockOrdinal: 0 }, { ordinal: 1, title: "首句标题", blockOrdinal: 1 }] }) };
+    const aiDone = { ...snapshotWithAllAnchors(), chapterParse: chapterView() };
+    const getResearchContent = vi.fn<ApiClient["getResearchContent"]>().mockResolvedValue(degraded);
+    const retryResearchChapterParse = vi.fn<ApiClient["retryResearchChapterParse"]>().mockResolvedValue(aiDone);
+    const user = userEvent.setup();
+    renderReadingPage({ getResearchContent, retryResearchChapterParse });
+
+    expect(await screen.findByText("未配置可用模型，章节按原文结构生成")).toBeInTheDocument();
+    await user.click(screen.getByTestId("chapter-retry"));
+    expect(retryResearchChapterParse).toHaveBeenCalledWith("snap-1");
+    expect(await screen.findByText("章节由 AI 通读全文生成")).toBeInTheDocument();
+    Reflect.deleteProperty(window, "matchMedia");
+  });
+
+  it("无章节解析状态时不渲染任何章节导航", async () => {
+    renderReadingPage({ getResearchContent: async () => snapshotWithAllAnchors() });
+    expect(await screen.findByRole("heading", { name: "混合文档.md", level: 1 })).toBeInTheDocument();
+    expect(screen.queryByTestId("reading-chapter-nav")).not.toBeInTheDocument();
   });
 });

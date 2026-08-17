@@ -250,7 +250,12 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       }
       const researchContentMatch = url.pathname.match(/^\/v1\/research-content\/([^/]+)$/);
       if (request.method === "GET" && researchContentMatch) {
-        return json(response, 200, service.researchImports.getContent(decodeURIComponent(researchContentMatch[1])));
+        return json(response, 200, service.researchChapters.getContentView(decodeURIComponent(researchContentMatch[1])));
+      }
+      const researchChapterRetryMatch = url.pathname.match(/^\/v1\/research-content\/([^/]+)\/chapters\/retry$/);
+      if (request.method === "POST" && researchChapterRetryMatch) {
+        const task = await service.researchChapters.retryTaskBySnapshot(decodeURIComponent(researchChapterRetryMatch[1]));
+        return json(response, 202, service.researchChapters.getContentView(task.snapshotId));
       }
       const researchImportEventsMatch = url.pathname.match(/^\/v1\/research-imports\/([^/]+)\/events$/);
       if (request.method === "GET" && researchImportEventsMatch) {

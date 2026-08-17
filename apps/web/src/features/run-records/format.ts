@@ -7,6 +7,7 @@ export const operationLabels: Record<RunRecordOperationType, string> = {
   recent_organization: "近期内容整理",
   topic_document: "主题文档",
   similarity_verification: "相似概念核验",
+  chapter_parse: "导入章节解析",
 };
 
 export const outcomeLabels: Record<RunRecordOutcome, string> = {

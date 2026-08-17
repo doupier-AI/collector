@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import type { ResearchContentBlock, ResearchContentSnapshotRecord, ResearchSelectionAnchor } from "@collector/capture-contracts";
+import type { ResearchContentBlock, ResearchContentView, ResearchSelectionAnchor } from "@collector/capture-contracts";
 import { isApiErrorCode, isUnauthorized, apiErrorCopy } from "../../api/errors";
 import { anchorCaption } from "../../app/anchorCaption";
 import { stableNodePath } from "../../app/paths";
@@ -24,11 +24,12 @@ import { PairingGate } from "../auth/PairingGate";
 import { SelectionRestoreFallback, useSelectionRestore } from "../research-session/SelectionSourceBar";
 import { ChatComposer } from "../chat-composer/ChatComposer";
 import { TurnSubmitter } from "../chat-composer/turn-submitter";
+import { ReadingChapterNav } from "./ReadingChapterNav";
 
 type ReaderState =
   | { kind: "loading" }
   | { kind: "error"; error: unknown }
-  | { kind: "ready"; snapshot: ResearchContentSnapshotRecord };
+  | { kind: "ready"; snapshot: ResearchContentView };
 
 function isHeading(block: ResearchContentBlock): boolean {
   const anchor = block.anchor;
@@ -120,6 +121,38 @@ export function ReadingPage() {
   }, [api, contentSnapshotId, reloadNonce]);
 
   const reload = useCallback(() => setReloadNonce((nonce) => nonce + 1), []);
+
+  // T03 章节解析轮询：解析未达终态时每 2s 静默重拉视图（不触发整页 loading 闪烁）；
+  // 终态（AI 完成/规则降级/失败）后自动停止。重试后状态回 queued，轮询随之恢复。
+  const chapterParseActive =
+    state.kind === "ready" &&
+    state.snapshot.chapterParse !== undefined &&
+    (state.snapshot.chapterParse.status === "queued" || state.snapshot.chapterParse.status === "running");
+  useEffect(() => {
+    if (!chapterParseActive) return;
+    let stale = false;
+    const timer = setInterval(() => {
+      api.getResearchContent(contentSnapshotId).then(
+        (view) => {
+          if (!stale) setState({ kind: "ready", snapshot: view });
+        },
+        () => undefined, // 轮询途中的瞬时错误交给下一轮；主加载路径已有错误态
+      );
+    }, 2_000);
+    return () => {
+      stale = true;
+      clearInterval(timer);
+    };
+  }, [chapterParseActive, api, contentSnapshotId]);
+
+  const [chapterRetryPending, setChapterRetryPending] = useState(false);
+  const handleRetryChapters = useCallback(() => {
+    setChapterRetryPending(true);
+    api.retryResearchChapterParse(contentSnapshotId).then(
+      (view) => setState({ kind: "ready", snapshot: view }),
+      () => undefined, // 不可重试等冲突由服务端状态如实呈现，不打断阅读
+    ).finally(() => setChapterRetryPending(false));
+  }, [api, contentSnapshotId]);
 
   // 来源返回：快照选区按块 id 与原文重定位，失败降级为原文与位置说明
   const [searchParams] = useSearchParams();
@@ -266,6 +299,15 @@ export function ReadingPage() {
         <h1 className="page__title">{snapshot.title}</h1>
         <p className="session-header__meta">共 {snapshot.blocks.length} 个内容块</p>
       </header>
+      {snapshot.chapterParse ? (
+        <ReadingChapterNav
+          parse={snapshot.chapterParse}
+          blocks={snapshot.blocks}
+          reducedMotion={reducedMotion}
+          retryPending={chapterRetryPending}
+          onRetry={handleRetryChapters}
+        />
+      ) : null}
       {activeSnapshotRestore?.kind === "fallback" && restoredSelection ? (
         <SelectionRestoreFallback selection={restoredSelection} caption={activeSnapshotRestore.caption} />
       ) : null}

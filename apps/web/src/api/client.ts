@@ -20,7 +20,7 @@ import type {
   ResearchSessionUpdateInput,
   ResearchBodyVersionView,
   ResearchBranchView,
-  ResearchContentSnapshotRecord,
+  ResearchContentView,
   ResearchImportAccepted,
   ResearchImportTaskRecord,
   ResearchLaterItemInput,
@@ -98,7 +98,9 @@ export interface ApiClient {
   getResearchImportTask(taskId: string): Promise<ResearchImportTaskRecord>;
   cancelResearchImport(taskId: string): Promise<ResearchImportTaskRecord>;
   retryResearchImport(taskId: string): Promise<ResearchImportTaskRecord>;
-  getResearchContent(contentSnapshotId: string): Promise<ResearchContentSnapshotRecord>;
+  getResearchContent(contentSnapshotId: string): Promise<ResearchContentView>;
+  /** T03：重试章节解析（无模型降级或 AI 解析失败后可用）；返回刷新后的阅读视图。 */
+  retryResearchChapterParse(contentSnapshotId: string): Promise<ResearchContentView>;
   createResearchSelection(sessionId: string, input: ResearchSelectionInput, idempotencyKey: string): Promise<ResearchSelectionAccepted>;
   listResearchSelections(sessionId: string): Promise<ResearchSelectionRecord[]>;
   getResearchSelection(selectionId: string): Promise<ResearchSelectionRecord>;
@@ -384,9 +386,16 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
       });
     },
     getResearchContent(contentSnapshotId: string) {
-      return requestJson<ResearchContentSnapshotRecord>(
+      return requestJson<ResearchContentView>(
         fetchFn,
         `/v1/research-content/${encodeURIComponent(contentSnapshotId)}`,
+      );
+    },
+    retryResearchChapterParse(contentSnapshotId: string) {
+      return requestJson<ResearchContentView>(
+        fetchFn,
+        `/v1/research-content/${encodeURIComponent(contentSnapshotId)}/chapters/retry`,
+        { method: "POST", headers: JSON_HEADERS, body: "{}" },
       );
     },
     createResearchSelection(sessionId: string, input: ResearchSelectionInput, idempotencyKey: string) {

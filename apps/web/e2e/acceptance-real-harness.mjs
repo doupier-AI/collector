@@ -16,6 +16,8 @@
  * - COLLECTOR_AI_PROVIDER：供应商（缺省 deepseek）
  * - COLLECTOR_AI_MODEL：模型名覆盖（缺省用供应商默认模型）
  * - COLLECTOR_AI_BASE_URL：接入地址覆盖（缺省用供应商默认地址）
+ * - E2E_REAL_MODEL=none：无模型模式（不要求密钥、不写配置、不构造网关；
+ *   供真实模型验收的无模型两态中的负路径——章节解析等退化规则锚点）
  *
  * 密钥只用于本进程构造网关，不写入 .runtime、数据库明文设置或日志。
  */
@@ -90,9 +92,10 @@ function readPersistedRealModelConfig() {
   }
 }
 
-const persistedConfig = readPersistedRealModelConfig();
-const apiKey = process.env.COLLECTOR_AI_API_KEY ?? process.env.DEEPSEEK_API_KEY ?? persistedConfig?.apiKey;
-if (!apiKey) {
+const noModelMode = process.env.E2E_REAL_MODEL === "none";
+const persistedConfig = noModelMode ? undefined : readPersistedRealModelConfig();
+const apiKey = noModelMode ? undefined : (process.env.COLLECTOR_AI_API_KEY ?? process.env.DEEPSEEK_API_KEY ?? persistedConfig?.apiKey);
+if (!noModelMode && !apiKey) {
   console.error("[acceptance] 缺少真实模型配置：请先在 WebUI 保存并启用模型，或设置 COLLECTOR_AI_API_KEY");
   process.exit(2);
 }
@@ -121,35 +124,39 @@ const environmentProfile = {
 const store = new SqliteStore(join(dataDir, "collector.sqlite"));
 await store.init();
 await store.saveSetting("ai_consent", "true");
-await store.saveProviderProfile(environmentProfile);
-await store.setActiveProviderProfile(environmentProfile.id);
-await store.saveSetting("ai_configured", "true");
+if (!noModelMode) {
+  await store.saveProviderProfile(environmentProfile);
+  await store.setActiveProviderProfile(environmentProfile.id);
+  await store.saveSetting("ai_configured", "true");
+}
 
-const resolver = new ProviderRuntimeResolver(DEFAULT_PROVIDER_REGISTRY, async (profileId) =>
+const resolver = noModelMode ? undefined : new ProviderRuntimeResolver(DEFAULT_PROVIDER_REGISTRY, async (profileId) =>
   profileId === environmentProfile.id ? apiKey : undefined,
 );
-const runtime = await resolver.resolve(environmentProfile);
+const runtime = noModelMode ? undefined : await resolver.resolve(environmentProfile);
 
 const auth = new LocalAuth(store);
 const launcherToken = randomBytes(32).toString("base64url");
 await auth.registerTrustedToken(launcherToken, "Acceptance launcher control");
 
-const service = new CaptureService(store, join(dataDir, "artifacts"), undefined, runtime.gateway, {
+const service = new CaptureService(store, join(dataDir, "artifacts"), undefined, runtime?.gateway, {
   autoRunRecentOrganization: false,
 });
-service.setModelGateway(runtime.gateway, runtime.route);
-service.setModelGatewayResolver(async (route) => {
-  if (
-    route.providerProfileId !== environmentProfile.id ||
-    route.providerId !== environmentProfile.providerId ||
-    route.model !== environmentProfile.model ||
-    route.configurationVersion !== environmentProfile.configurationVersion ||
-    route.baseUrlFingerprint !== fingerprintBaseUrl(environmentProfile.baseUrl)
-  ) {
-    throw new Error("Workflow environment provider configuration is unavailable or has changed");
-  }
-  return (await resolver.resolve(environmentProfile)).gateway;
-});
+if (!noModelMode && runtime) {
+  service.setModelGateway(runtime.gateway, runtime.route);
+  service.setModelGatewayResolver(async (route) => {
+    if (
+      route.providerProfileId !== environmentProfile.id ||
+      route.providerId !== environmentProfile.providerId ||
+      route.model !== environmentProfile.model ||
+      route.configurationVersion !== environmentProfile.configurationVersion ||
+      route.baseUrlFingerprint !== fingerprintBaseUrl(environmentProfile.baseUrl)
+    ) {
+      throw new Error("Workflow environment provider configuration is unavailable or has changed");
+    }
+    return (await resolver.resolve(environmentProfile)).gateway;
+  });
+}
 
 const browserBootstraps = new Set();
 const server = createApiServer(service, auth, {

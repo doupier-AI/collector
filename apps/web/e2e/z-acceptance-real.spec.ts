@@ -1237,3 +1237,212 @@ test("弱标记场景九：融合正文真实生成后的标记、引用与来�
 
   expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
 });
+
+// ---------------------------------------------------------------------------
+// T03：导入文章 AI 章节解析异步管线（有模型/无模型两态）
+// ---------------------------------------------------------------------------
+const CHAPTER_IMPORT_PARAGRAPHS = [
+  "城市公共交通的演化从来不只是工程问题。它折射出一个社会对空间、时间与公平的理解。",
+  "在工业化早期，城市规模有限，步行与畜力足以覆盖大多数出行需求。电车与铁路的出现第一次把通勤距离拉长到十公里以上。",
+  "二战以后，私人汽车一度成为规划的主导逻辑。宽阔的快速路把城市切开，也把生活功能推向边缘。",
+  "拥堵治理的实践表明，单纯增加道路供给往往诱发更多出行需求，这就是交通经济学中的诱导需求现象。",
+  "公交优先战略试图逆转这一逻辑：把有限的路权让给载客效率更高的交通工具，并用地价与停车政策引导出行结构。",
+  "轨道交通的容量优势无可替代，但建设周期长、成本高，无法独自解决全部问题。地面公交的灵活性则是它的补充。",
+  "慢行系统的回归同样重要。连续的步行与骑行网络不仅服务最后一公里，也直接改善街道活力与公共健康。",
+  "票价体系的设计需要在公益性与财务可持续之间取得平衡。过低票价加重财政负担，过高票价又把乘客推回私人交通。",
+  "数据技术的进步让动态调度、按需公交与一体化支付成为可能，但也带来了隐私与算法公平的新问题。",
+  "面向未来，城市交通的评价标准正在从“车辆通行速度”转向“人的可达性”：一个普通居民能否在合理时间内抵达工作、学校、医疗与文化设施。",
+  "这也意味着规划的组织方式需要变化：交通、住房、就业政策必须放在同一张图上协同决策，而不是各自为政。",
+  "最终，一座出行友好的城市，是让不拥有私家车的人也能体面、便捷地生活的城市。",
+];
+// 扩写到超过长文阈值（LONG_TEXT_CHAR_THRESHOLD=2000）：每段补足论述性正文，全文约 2600 字。
+const CHAPTER_IMPORT_CONTENT = CHAPTER_IMPORT_PARAGRAPHS.map((text, index) =>
+  `第${index + 1}段 ${text} 这一段进一步展开：城市交通问题的讨论离不开对出行结构、路权分配与公共财政的持续观察，好的规划应当兼顾效率、公平与环境成本。`.repeat(2),
+).join("\n\n");
+
+/** 章节解析任务视图（有模型两态共用）。 */
+interface ChapterParseView {
+  chapterParse?: {
+    taskId: string;
+    status: string;
+    source?: string;
+    fallbackReason?: string;
+    retryable: boolean;
+    chapters: Array<{ ordinal: number; title: string; blockOrdinal: number }>;
+  };
+}
+
+async function importChapterArticle(page: Page, sessionId: string, fileName: string, content = CHAPTER_IMPORT_CONTENT) {
+  await page.goto(`/nodes/${sessionId}`);
+  await page.locator('input[type="file"]').setInputFiles({
+    name: fileName,
+    mimeType: "text/plain",
+    buffer: Buffer.from(content, "utf8"),
+  });
+  await expect(page.getByText("已导入")).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("button", { name: "阅读" }).click();
+  await expect(page).toHaveURL(new RegExp(`/research/${sessionId}/reading/[^/]+$`));
+  await expect(page.getByText(/第1段/).first()).toBeVisible({ timeout: 20_000 });
+  const snapshotId = page.url().split("/reading/")[1]?.split(/[?#]/)[0] ?? "";
+  expect(snapshotId).not.toBe("");
+  return snapshotId;
+}
+
+test("T03 有模型：导入长文立即可读，AI 章节解析异步补齐并落位、刷新可恢复、调用留痕", async ({ page }) => {
+  await pairAndOpen(page, "/research/new");
+  const consoleIssues = watchConsole(page);
+  const createResponse = await page.request.post("/v1/research-sessions", {
+    headers: { "Idempotency-Key": crypto.randomUUID() },
+    data: {},
+  });
+  expect(createResponse.status()).toBe(201);
+  const sessionId = ((await createResponse.json()) as { id: string }).id;
+  const snapshotId = await importChapterArticle(page, sessionId, "真实模型长文.txt");
+
+  // 正文立即可读（导入主流程不等待模型），章节随后补齐
+  const view = await pollUntil(
+    "AI 章节解析完成",
+    async () => {
+      const content = await apiJson<ChapterParseView>(page, `/v1/research-content/${snapshotId}`);
+      const parse = content.chapterParse;
+      if (parse && parse.status === "completed" && parse.source === "ai") return parse;
+      if (parse && (parse.status === "failed" || (parse.status === "completed" && parse.source !== "ai"))) {
+        throw new Error(`章节解析落入非 AI 终态：${JSON.stringify(parse)}`);
+      }
+      return undefined;
+    },
+    REAL_TIMEOUT,
+  );
+  expect(view.chapters.length).toBeGreaterThanOrEqual(3);
+  expect(view.chapters[0].blockOrdinal).toBe(0);
+  expect(view.chapters.every((chapter) => chapter.title.trim().length > 0)).toBe(true);
+  expect(view.retryable).toBe(false);
+
+  // 页面轮询补齐章节导航，点击末章真实滚动到既有块（先滚到底：向上定位必有位移）
+  const nav = page.getByTestId("reading-chapter-nav");
+  await expect(nav).toHaveAttribute("data-chapter-source", "ai", { timeout: 30_000 });
+  await expect(nav).toContainText("章节由 AI 通读全文生成");
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await nav.getByRole("button").last().click();
+  await expect
+    .poll(async () => {
+      const position = await page.evaluate(() => ({ y: window.scrollY, height: document.body.scrollHeight }));
+      return position.y < position.height * 0.9;
+    }, { timeout: 10_000 })
+    .toBe(true);
+
+  // 刷新后状态一致：锚点与来源由持久化记录恢复
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "真实模型长文.txt" })).toBeVisible();
+  const reloadedNav = page.getByTestId("reading-chapter-nav");
+  await expect(reloadedNav).toHaveAttribute("data-chapter-source", "ai", { timeout: 30_000 });
+
+  // 模型调用留痕：章节解析调用按约定记账（promptVersion/预算随 context 落库，tokenBudget 存 record_json）
+  const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
+  const database = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    const rows = database
+      .prepare("SELECT record_json AS recordJson FROM model_calls WHERE workflow_run_id = ?")
+      .all(view.taskId) as Array<{ recordJson: string }>;
+    const calls = rows.map((row) => JSON.parse(row.recordJson) as { promptVersion?: string; tokenBudget?: number; status?: string });
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    expect(calls[0]?.promptVersion).toBe("import-chapter-parse-v1");
+    expect(calls[0]?.tokenBudget).toBe(2048);
+    expect(calls[0]?.status).toBe("completed");
+  } finally {
+    database.close();
+  }
+
+  expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
+});
+
+test("T03 无模型：导入长文获得规则锚点，章节导航可用且如实呈现来源", async ({ browser }) => {
+  // 独立无模型 harness：不要求密钥、不构造网关（E2E_REAL_MODEL=none）。
+  const noModelPort = PORT + 1;
+  const noModelBase = `http://127.0.0.1:${noModelPort}`;
+  const noModelDataDir = await mkdtemp(join(tmpdir(), "collector-acceptance-nomodel-"));
+  const noModelChild = spawn(process.execPath, [join(e2eDir, "acceptance-real-harness.mjs")], {
+    env: { ...process.env, E2E_API_PORT: String(noModelPort), E2E_DATA_DIR: noModelDataDir, E2E_REAL_MODEL: "none", COLLECTOR_MVP_DEMO: "" },
+    stdio: ["ignore", "pipe", "pipe"],
+    cwd: e2eDir,
+  });
+  noModelChild.stdout?.on("data", (chunk) => process.stdout.write(`[harness-nomodel] ${chunk}`));
+  noModelChild.stderr?.on("data", (chunk) => process.stderr.write(`[harness-nomodel:err] ${chunk}`));
+  try {
+    const deadline = Date.now() + 30_000;
+    for (;;) {
+      try {
+        const response = await fetch(`${noModelBase}/health`);
+        if (response.ok) break;
+      } catch {
+        // 继续等就绪
+      }
+      if (Date.now() > deadline) throw new Error("无模型验收服务未在时限内就绪");
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+
+    const context = await browser.newContext({ baseURL: noModelBase });
+    try {
+      const page = await context.newPage();
+      await pairAndOpen(page, "/research/new");
+      const createResponse = await page.request.post("/v1/research-sessions", {
+        headers: { "Idempotency-Key": crypto.randomUUID() },
+        data: {},
+      });
+      expect(createResponse.status()).toBe(201);
+      const sessionId = ((await createResponse.json()) as { id: string }).id;
+      await importChapterArticle(page, sessionId, "无模型长文.txt");
+
+      // 无模型：不发起任何模型调用，规则锚点直接可用，界面如实说明来源
+      const nav = page.getByTestId("reading-chapter-nav");
+      await expect(nav).toHaveAttribute("data-chapter-source", "rule", { timeout: 20_000 });
+      await expect(nav).toContainText("未配置可用模型，章节按原文结构生成");
+      await expect(nav.getByTestId("chapter-retry")).toBeVisible();
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await nav.locator(".chapter-nav__item").last().click();
+      await expect
+        .poll(async () => {
+          const position = await page.evaluate(() => ({ y: window.scrollY, height: document.body.scrollHeight }));
+          return position.y < position.height * 0.9;
+        }, { timeout: 10_000 })
+        .toBe(true);
+
+      // SQLite 核对：规则来源、可重试、锚点落在既有块上
+      const dbPath = join(noModelDataDir, "collector.sqlite");
+      const database = new DatabaseSync(dbPath, { readOnly: true });
+      try {
+        const rows = database
+          .prepare("SELECT status, retryable, record_json AS recordJson FROM research_chapter_tasks WHERE session_id = ?")
+          .all(sessionId) as Array<{ status: string; retryable: number; recordJson: string }>;
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.status).toBe("completed");
+        expect(rows[0]?.retryable).toBe(1);
+        const record = JSON.parse(rows[0]?.recordJson ?? "{}") as { source?: string; fallbackReason?: string; chapters?: unknown[] };
+        expect(record.source).toBe("rule");
+        expect(record.fallbackReason).toBe("no_model");
+        expect((record.chapters ?? []).length).toBeGreaterThanOrEqual(2);
+        const calls = database.prepare("SELECT COUNT(*) AS count FROM model_calls").get() as { count: number };
+        expect(calls.count, "无模型状态不得发起任何模型调用").toBe(0);
+      } finally {
+        database.close();
+      }
+    } finally {
+      await context.close();
+    }
+  } finally {
+    if (noModelChild.exitCode === null) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          noModelChild.kill("SIGKILL");
+          resolve();
+        }, 6_000);
+        noModelChild.once("exit", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+        noModelChild.kill("SIGINT");
+      });
+    }
+    await rm(noModelDataDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});

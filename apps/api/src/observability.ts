@@ -5,6 +5,7 @@ import {
   type ResearchGroundingRunRecord,
   type ResearchGroundingSourceRecord,
   type ResearchGroundingTraceEntry,
+  type ResearchChapterTaskRecord,
   type ResearchImportTaskRecord,
   type ResearchSelectionTaskRecord,
   type ResearchTaskRecord,
@@ -44,8 +45,9 @@ const OPERATION_TYPES: readonly RunRecordOperationType[] = [
   "recent_organization",
   "topic_document",
   "similarity_verification",
+  "chapter_parse",
 ];
-const SOURCES: readonly RunRecordSource[] = ["research", "selection", "import", "workflow", "fusion"];
+const SOURCES: readonly RunRecordSource[] = ["research", "selection", "import", "workflow", "fusion", "chapter"];
 const STATUSES: readonly RunRecordStatus[] = ["queued", "running", "completed", "failed", "cancelled", "corrupt"];
 const OUTCOMES: readonly RunRecordOutcome[] = ["success", "failure", "active", "cancelled", "unavailable"];
 
@@ -277,6 +279,7 @@ function sourceForOperation(operation: RunRecordOperationType): ObservabilityRec
   if (operation === "research") return "research";
   if (operation === "selection_analysis") return "selection";
   if (operation === "document_import") return "import";
+  if (operation === "chapter_parse") return "chapter";
   if (operation === "similarity_verification") return "fusion";
   return "workflow";
 }
@@ -447,6 +450,10 @@ function taskView(source: ObservabilityRecordSource, record: Record<string, unkn
   if (source === "import") {
     const task = record as Partial<ResearchImportTaskRecord>;
     return { id: safeId(task.id), ...(safeText(task.sessionId) ? { sessionId: safeText(task.sessionId) } : {}), ...(typeof task.retryable === "boolean" ? { retryable: task.retryable } : {}) };
+  }
+  if (source === "chapter") {
+    const task = record as Partial<ResearchChapterTaskRecord>;
+    return { id: safeId(task.id), ...(safeText(task.sessionId) ? { sessionId: safeText(task.sessionId) } : {}), ...(safeText(task.provider) ? { provider: safeText(task.provider) } : {}), ...(safeText(task.model) ? { model: safeText(task.model) } : {}), ...(safeText(task.promptVersion) ? { promptVersion: safeText(task.promptVersion) } : {}), ...(typeof task.retryable === "boolean" ? { retryable: task.retryable } : {}) };
   }
   const workflow = record as Partial<WorkflowRunRecord>;
   return { id: safeId(workflow.id) };

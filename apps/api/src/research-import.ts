@@ -24,6 +24,11 @@ const DOCX_MAX_ENTRIES = 2_000;
 
 export interface ResearchImportServiceOptions {
   autoRunTasks?: boolean;
+  /**
+   * 快照落库（导入完成）后的非阻塞通知（T03：章节解析异步管线从这里接入）。
+   * 回调异常不得回灌导入流程——导入完成即可阅读优先。
+   */
+  onSnapshotCompleted?: (snapshot: ResearchContentSnapshotRecord) => void;
 }
 
 export class ResearchImportService {
@@ -190,6 +195,11 @@ export class ResearchImportService {
           createdAt: new Date().toISOString(),
         };
         await this.store.completeResearchImport(id, snapshot);
+        try {
+          this.options.onSnapshotCompleted?.(snapshot);
+        } catch {
+          // 章节解析是增量补齐：通知失败不改变导入完成态。
+        }
       } catch {
         if (this.wasCancelled(id)) return;
         await this.store.failResearchImport(this.getTask(id), {
