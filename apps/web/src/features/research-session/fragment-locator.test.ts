@@ -68,7 +68,7 @@ describe("parseFragmentId", () => {
 });
 
 describe("locateFragment", () => {
-  it("正常定位：返回对应切片与卡片目标（cardId 取节起始块）", () => {
+  it("正常定位（普通回答）：返回对应切片与轮次卡片内段落块落点", () => {
     const message = makeAssistantMessage();
     const { version, slices, fragments } = makeArtifacts(message);
     const result = locateFragment({
@@ -83,9 +83,9 @@ describe("locateFragment", () => {
     if (result.kind !== "ok") return;
     expect(result.slice.id).toBe(slices[1].id);
     // 卡片正文由消息正文确定性派生（#43 起切片不再携带正文副本）
-    expect(result.target.blockText).toBe("第二段。");
+    expect(result.target.excerpt).toBe("第二段。");
     // 无标题块合并：节起始块 ordinal = 切片下标 1
-    expect(result.target.cardId).toBe(`${messageContentBlockId(message.id, 1)}-card`);
+    expect(result.target.elementId).toBe(messageContentBlockId(message.id, 1));
   });
 
   it("序数对齐：片段 ordinal 即切片数组下标（不再做内容相等回退）", () => {
@@ -113,7 +113,28 @@ describe("locateFragment", () => {
     expect(result.kind).toBe("ok");
     if (result.kind !== "ok") return;
     expect(result.slice.id).toBe(slices[0].id);
-    expect(result.target.blockText).toBe("第一段。");
+    expect(result.target.excerpt).toBe("第一段。");
+    expect(result.target.elementId).toBe(messageContentBlockId(message.id, 0));
+  });
+
+  it("正常定位（长文）：节卡保留，落点为节卡容器 id", () => {
+    const content = "## 第一节\n\n" + "这是第一段正文。".repeat(150) + "\n\n## 第二节\n\n" + "这是第二段正文。".repeat(150);
+    const message = makeAssistantMessage("m-long", content);
+    const { version, slices, fragments } = makeArtifacts(message);
+    const result = locateFragment({
+      currentNodeId: "node-a",
+      fragmentId: fragments[1].id,
+      version,
+      fragments,
+      messages: [message],
+      slicesByMessage: { [message.id]: slices },
+    });
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.slice.id).toBe(slices[1].id);
+    // 节单元 0 = "## 第一节 + 首段正文"，节单元 1 = "## 第二节 + 末段正文"（节首块 ordinal=2）。
+    expect(result.target.elementId).toBe(`${messageContentBlockId(message.id, 2)}-card`);
+    expect(result.target.excerpt).toContain("## 第二节");
   });
 
   it("invalid-id：标识无法解析", () => {
@@ -189,7 +210,7 @@ describe("locateFragment", () => {
     expect(result).toEqual({ kind: "failure", failure: "slice-not-found" });
   });
 
-  it("card-not-derived：临时（provisional）切片不渲染卡片", () => {
+  it("provisional 切片：切片缺失时返回 slice-not-found（与现状一致）", () => {
     const message = makeAssistantMessage();
     const { version, fragments } = makeArtifacts(message);
     const provisional = [{ ...fragments[0], isProvisional: true }];

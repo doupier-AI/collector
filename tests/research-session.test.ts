@@ -386,10 +386,12 @@ test("free body generation persists derived non-provisional slices and records s
   const completed = await waitForTask(harness.base, harness.token, accepted.task.id, "completed");
   assert.equal(completed.sliceCount, 2);
   const slices = harness.store.listSlicesByMessage(accepted.outputMessage.id);
+  // #91：普通回答逐块标题抽取收敛——切片标题为空；概念按块抽取保留（融合信号不回退）。
   assert.deepEqual(slices.map((slice) => ({ title: slice.title, isProvisional: slice.isProvisional })), [
-    { title: "本地控制", isProvisional: false },
-    { title: "可恢复任务", isProvisional: false },
+    { title: "", isProvisional: false },
+    { title: "", isProvisional: false },
   ]);
+  assert.deepEqual(slices.map((slice) => slice.normalizedConcepts), [["本地优先"], ["任务恢复"]]);
   // #43：切片不再携带正文副本；"拼接等于正文"不变量移到派生层（composeSectionUnits）。
   assert.equal(
     harness.store.getResearchMessage(accepted.outputMessage.id)?.content,
@@ -440,8 +442,44 @@ test("token-streamed body emits intermediate deltas and derives slices from join
   const content = harness.store.getResearchMessage(accepted.outputMessage.id)?.content ?? "";
   const slices = harness.store.listSlicesByMessage(accepted.outputMessage.id);
   assert.equal(content, "本地优先把研究内容保留在用户可以检查的环境中。\n\n持久化任务状态让失败后的研究可以从同一上下文重新开始。");
-  assert.deepEqual(slices.map((slice) => slice.title), ["本地控制", "可恢复任务"]);
+  assert.deepEqual(slices.map((slice) => slice.title), ["", ""]);
+  assert.deepEqual(slices.map((slice) => slice.normalizedConcepts), [["本地优先"], ["任务恢复"]]);
   assert.equal(slices.every((slice) => !slice.isProvisional), true);
+});
+
+test("long-form body keeps per-block title extraction beyond the shared threshold", async (t) => {
+  // #91 呈现契约：长文保留节卡与逐块标题/概念抽取；普通回答才收敛为按轮概念。
+  let annotationCalls = 0;
+  const provider: ResearchGenerationProvider = {
+    provider: "long-form-fake",
+    model: "long-form-1",
+    promptVersion: "research-body-v1",
+    async writeBody() {
+      return [
+        "甲" + "长文第一段正文。".repeat(140),
+        "乙" + "长文第二段正文。".repeat(140),
+      ].join("\n\n");
+    },
+    async deriveAnnotations({ content }) {
+      annotationCalls += 1;
+      if (content.startsWith("甲")) return { title: "第一节", concepts: ["概念甲"] };
+      if (content.startsWith("乙")) return { title: "第二节", concepts: ["概念乙"] };
+      return { title: "", concepts: [] };
+    },
+    async *generate() { yield "unused"; },
+  };
+  const harness = await createHarness(provider);
+  t.after(() => harness.close());
+  const session = await harness.service.research.createSession("长文正文", "long-form-session");
+  const accepted = await harness.service.research.submitMessage(session.id, "请展开讲", "long-form-turn");
+
+  const completed = await waitForTask(harness.base, harness.token, accepted.task.id, "completed");
+  assert.equal(completed.sliceCount, 2);
+  const slices = harness.store.listSlicesByMessage(accepted.outputMessage.id);
+  assert.deepEqual(slices.map((slice) => slice.title), ["第一节", "第二节"]);
+  assert.deepEqual(slices.map((slice) => slice.normalizedConcepts), [["概念甲"], ["概念乙"]]);
+  // 长文按块抽取：两块 → 两次调用（而不是普通回答的一次按轮调用）。
+  assert.equal(annotationCalls, 2);
 });
 
 test("writeBody-only provider still works via the atomic fallback branch", async (t) => {

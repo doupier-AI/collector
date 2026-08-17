@@ -2,8 +2,9 @@ import type {
   ResearchMessageRecord,
   ResearchSelectionRecord,
   ResearchSelectionAnchor,
+  ResearchSliceRecord,
 } from "@collector/capture-contracts";
-import { composeSectionUnits, deriveMessageBlocks, messageContentBlockId } from "@collector/capture-contracts";
+import { composeSectionUnits, deriveMessageBlocks, messageContentBlockId, messageUsesSectionCards } from "@collector/capture-contracts";
 import { messageBlockCaption } from "../../app/anchorCaption";
 import { stableNodePath } from "../../app/paths";
 
@@ -94,19 +95,20 @@ export type MessageHighlightResult =
   | { kind: "fallback"; caption: string };
 
 /**
- * 在会话页消息列表中定位消息选区。
+ * 在节点页消息列表中定位消息选区。
  *
- * 捕获时的锚点 blockOrdinal 是"渲染后 DOM 块下标"，而生成自由化后卡片由节单元
- * （composeSectionUnits：标题块并入随后的正文节）渲染——DOM 块 = 节单元，
- * 不是 deriveMessageBlocks 的原始段落。返回定位必须与卡片渲染同源对齐：
- * 按 anchor.blockOrdinal 取第 index 个节单元，blockId 用节首块原始段落 ordinal
- * （与 deriveSliceCardTargets 一致），偏移直接透传节单元 content 文本空间
- * （捕获时偏移正是相对卡片 DOM 文本 = 节单元 content）。
- * 用原始段落下标索引会把标题块场景下（节数 < 段落数）的定位错位到错误块
- * 甚至越界，导致高亮不出现、滚动不落位（#48 复验暴露）。
+ * 捕获时的锚点 blockOrdinal 是"渲染后 DOM 块下标"，其语义随 #91 呈现契约变化：
+ * - 长文（节卡呈现）：DOM 块 = 节单元（composeSectionUnits：标题块并入随后的正文节），
+ *   按 anchor.blockOrdinal 取第 index 个节单元，blockId 用节首块原始段落 ordinal，
+ *   偏移直接透传节单元 content 文本空间（与 deriveSliceCardTargets 一致）；
+ * - 普通回答（轮次卡片连续正文）：DOM 块 = deriveMessageBlocks 的原始段落块，
+ *   blockOrdinal 即原始段落下标，偏移相对单块文本。
+ * 判定必须与渲染派生同源（messageUsesSectionCards），否则标题块场景下（节数 <
+ * 段落数）会定位错位到错误块甚至越界，导致高亮不出现、滚动不落位（#48 复验暴露）。
  */
 export function highlightForMessages(
   messages: ResearchMessageRecord[],
+  slicesByMessage: Record<string, ResearchSliceRecord[]> | undefined,
   anchor: ResearchSelectionAnchor,
   exact: string,
 ): MessageHighlightResult | null {
@@ -116,14 +118,15 @@ export function highlightForMessages(
   if (!message) return { kind: "fallback", caption };
   const blocks = deriveMessageBlocks(message.content);
   if (blocks.length === 0) return { kind: "fallback", caption };
-  const units = composeSectionUnits(blocks);
-  const unit = units[anchor.blockOrdinal];
-  if (!unit) return { kind: "fallback", caption };
+  const blockOrdinal = messageUsesSectionCards(message.content, slicesByMessage?.[message.id])
+    ? composeSectionUnits(blocks)[anchor.blockOrdinal]?.firstBlockOrdinal
+    : blocks[anchor.blockOrdinal]?.ordinal;
+  if (blockOrdinal === undefined) return { kind: "fallback", caption };
   return {
     kind: "found",
     messageId: message.id,
-    blockId: messageContentBlockId(message.id, unit.firstBlockOrdinal),
-    blockOrdinal: unit.firstBlockOrdinal,
+    blockId: messageContentBlockId(message.id, blockOrdinal),
+    blockOrdinal,
     start: anchor.startOffset,
     end: anchor.endOffset,
   };

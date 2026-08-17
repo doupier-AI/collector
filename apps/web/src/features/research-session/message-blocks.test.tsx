@@ -7,6 +7,7 @@ import type { AppServices } from "../../app/services";
 import { makeMessage, makeNode, makeNodeView, makeSelection, makeSession, makeTask } from "../../test/fakes";
 import { ResearchNodePage } from "./ResearchNodePage";
 import type { ResearchNodeView, ResearchSliceRecord } from "@collector/capture-contracts";
+import { deriveBodyVersion, deriveFragmentsFromSlices, deriveMessageSlices } from "@collector/capture-contracts";
 import { captureSelection, readContentContext, resolveBlockRange } from "../selection/selection-capture";
 
 function renderNodePage(api: Partial<ApiClient>, entry = "/nodes/session-1") {
@@ -288,7 +289,15 @@ function makeSlice(overrides: Partial<ResearchSliceRecord> = {}): ResearchSliceR
   };
 }
 
-describe("#36 连续语义卡片", () => {
+/** 把最后一段拉长到超过共享长文阈值（>2000 字），前文断言文本保持逐字不变。 */
+function asLong(content: string): string {
+  const filler = "填充".repeat(1_200);
+  const blocks = content.split("\n\n");
+  const last = blocks[blocks.length - 1] ?? "";
+  return [...blocks.slice(0, -1), `${last}${filler}`].join("\n\n");
+}
+
+describe("#36 连续语义卡片（长文路径，#91 后仅长文保留）", () => {
   function viewWithSlices(content: string, slices: ResearchSliceRecord[]): ResearchNodeView {
     const view = viewWithAssistant(content);
     view.slices = { "m-out": slices };
@@ -296,7 +305,7 @@ describe("#36 连续语义卡片", () => {
   }
 
   it("每个正式切片一张卡片：h3 标题按 ordinal 顺序输出切片标题", async () => {
-    const content = "第一段。\n\n第二段。\n\n第三段。";
+    const content = asLong("第一段。\n\n第二段。\n\n第三段。");
     const slices = [
       makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点" }),
       makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "推进" }),
@@ -310,7 +319,7 @@ describe("#36 连续语义卡片", () => {
   });
 
   it("卡片 region 的可访问名 = 标题（aria-labelledby）", async () => {
-    const content = "第一段。\n\n第二段。";
+    const content = asLong("第一段。\n\n第二段。");
     const slices = [
       makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点" }),
       makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "推进" }),
@@ -324,7 +333,7 @@ describe("#36 连续语义卡片", () => {
   });
 
   it("生成自由化：空标题派生切片仍渲染卡片，改用 aria-label=正文摘要（无悬空 aria-labelledby）", async () => {
-    const content = "第一段没有标题的正文。\n\n第二段也没有标题的正文。";
+    const content = asLong("第一段没有标题的正文。\n\n第二段也没有标题的正文。");
     const slices = [
       makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "" }),
       makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "  " }),
@@ -342,7 +351,7 @@ describe("#36 连续语义卡片", () => {
   });
 
   it("防回归锁：标题是正文容器外的兄弟节点，data-block-text 的 textContent 不含标题", async () => {
-    const content = "第一段。\n\n第二段。";
+    const content = asLong("第一段。\n\n第二段。");
     const slices = [
       makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点" }),
       makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "推进" }),
@@ -367,7 +376,7 @@ describe("#36 连续语义卡片", () => {
   it("正文含节标题时：标题只渲染一次（提升正文标题），锚点正确，正文 textContent 仍含标题行", async () => {
     // plan-then-write 形态：节单元 content 首行即节标题，title 与之同源。
     const sectionContent = "## 背景与起源\n\n背景正文第一段。";
-    const content = `${sectionContent}\n\n## 核心创新\n\n创新正文第一段。`;
+    const content = asLong(`${sectionContent}\n\n## 核心创新\n\n创新正文第一段。`);
     const slices = [
       makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "背景与起源" }),
       makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "核心创新" }),
@@ -391,7 +400,7 @@ describe("#36 连续语义卡片", () => {
   });
 
   it("正文无标题行、title 为事后补题时：独立 <h3> 在正文容器外，不重复、不混入偏移基准", async () => {
-    const content = "第一段。\n\n第二段。";
+    const content = asLong("第一段。\n\n第二段。");
     const slices = [
       makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点" }),
     ];
@@ -408,7 +417,7 @@ describe("#36 连续语义卡片", () => {
   });
 
   it("术语标记按块 ordinal 落在对应卡片正文，且不混入标题", async () => {
-    const content = "REST 第一段。\n\nHTTP 第二段。";
+    const content = asLong("REST 第一段。\n\nHTTP 第二段。");
     const slices = [
       makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点" }),
       makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "推进" }),
@@ -439,7 +448,7 @@ describe("#36 连续语义卡片", () => {
   });
 
   it("标题与后续多段合并成一张卡片时，每个原始正文块的弱标记都保留", async () => {
-    const content = "## 核心\n\n第一段解释反向传播。\n\n第二段解释 RAG。";
+    const content = asLong("## 核心\n\n第一段解释反向传播。\n\n第二段解释 RAG。");
     const slices = [makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "核心" })];
     const view = viewWithSlices(content, slices);
     view.termDetections = {
@@ -464,7 +473,7 @@ describe("#36 连续语义卡片", () => {
   });
 
   it("传入 highlight 后 [data-selection-mark] 落在对应卡片正文内", async () => {
-    const content = "第一段。\n\n需要高亮的第二段。";
+    const content = asLong("第一段。\n\n需要高亮的第二段。");
     const slices = [
       makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点" }),
       makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "推进" }),
@@ -520,5 +529,72 @@ describe("#36 连续语义卡片", () => {
     expect(container.querySelector(".message__slice-boundary")).toBeNull();
     expect(container.querySelector("[data-slice-boundary]")).toBeNull();
     expect(container.querySelectorAll("hr").length).toBe(0);
+  });
+});
+
+describe("#91 普通回答轮次卡片", () => {
+  it("普通回答即使有正式切片也渲染为一张轮次卡片，连续正文不再逐段拆卡", async () => {
+    const content = "第一段。\n\n第二段。\n\n第三段。";
+    const slices = [
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点" }),
+      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "推进" }),
+      makeSlice({ id: "slice:session-1:m-out:2", ordinal: 2, title: "收束" }),
+    ];
+    const view = viewWithAssistant(content);
+    view.slices = { "m-out": slices };
+    const { container } = renderNodePage({ getResearchNodeView: async () => view });
+
+    await screen.findByText("第一段。");
+    expect(container.querySelectorAll("section.turn-card")).toHaveLength(1);
+    expect(container.querySelectorAll("section.slice-card")).toHaveLength(0);
+    // 轮次卡片容器 id 稳定：普通回答的 ?fragment=/来源落点不依赖节卡。
+    expect(container.querySelector("section.turn-card")).toHaveAttribute("id", "m-out-turn");
+    // 连续正文内部仍保留段落块稳定锚点（选区/弱标记/引用基线不变）。
+    const blocks = container.querySelectorAll<HTMLElement>("section.turn-card [data-block-id]");
+    expect(blocks).toHaveLength(3);
+    expect([...blocks].map((block) => block.getAttribute("data-block-id"))).toEqual(["m-out#p0", "m-out#p1", "m-out#p2"]);
+    // 切片标题不再渲染成节卡标题。
+    expect(container.querySelectorAll(".slice-card__title")).toHaveLength(0);
+  });
+
+  it("普通回答不显示章节导航线", async () => {
+    const view = viewWithAssistant("只有一段的普通回答。");
+    view.slices = {
+      "m-out": [makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点" })],
+    };
+    const { container } = renderNodePage({ getResearchNodeView: async () => view });
+
+    await screen.findByText("只有一段的普通回答。");
+    expect(screen.queryByRole("navigation", { name: "章节导航" })).not.toBeInTheDocument();
+    expect(container.querySelectorAll(".slice-rail__tick")).toHaveLength(0);
+  });
+
+  it("片段深链落点强调作用于轮次卡片内对应段落块（fragment-target--focused）", async () => {
+    const content = "第一段。\n\n第二段。\n\n第三段。";
+    const version = deriveBodyVersion({ messageId: "m-out", nodeId: "session-1", content, origin: "backfill", createdAt: "2026-08-02T00:00:00.000Z" });
+    const slices = deriveMessageSlices("session-1", "m-out", content, 0, []);
+    const fragments = deriveFragmentsFromSlices(version, slices, []);
+    const view = makeNodeView({
+      node: makeNode({ id: "session-1", sessionId: "session-1" }),
+      session: makeSession({ id: "session-1" }),
+      messages: [makeMessage({ id: "m-in", role: "user", content: "一个问题" }), makeMessage({ id: "m-out", role: "assistant", status: "completed", content })],
+      tasks: [makeTask({ id: "task-1", status: "completed", inputMessageId: "m-in", outputMessageId: "m-out" })],
+      slices: { "m-out": slices },
+      bodyVersions: { "m-out": version },
+    });
+    const { container } = renderNodePage(
+      {
+        getResearchNodeView: async () => view,
+        getResearchBodyVersion: async () => ({ version, fragments: fragments.map((fragment) => ({ ...fragment, excerpt: content.slice(fragment.startOffset, fragment.endOffset) })) }),
+      },
+      `/nodes/session-1?fragment=${encodeURIComponent(fragments[1].id)}`,
+    );
+
+    await screen.findByText("第二段。");
+    await waitFor(() => {
+      const focused = container.querySelector(".fragment-target--focused");
+      expect(focused).not.toBeNull();
+      expect(focused).toHaveAttribute("id", "m-out#p1");
+    });
   });
 });

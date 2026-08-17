@@ -740,6 +740,16 @@ button {
   transition: background var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
 }
 
+/* #91 轮次卡片：普通回答整条消息一张卡片，连续正文不再拆成逐段碎卡。
+   与节卡共用同一阅读令牌，视觉同源；段落块仍各自保持稳定锚点（选区/标记/引用）。 */
+.turn-card {
+  min-width: 0;
+  padding: var(--space-4) var(--space-5);
+  background: var(--color-reading-bg);
+  border: 1px solid var(--color-reading-line);
+  border-radius: var(--radius-panel);
+}
+
 /* #44 卡片常态：悬停给出低表面提升；键盘焦点给出光环（与定位强调区分：不染色背景）。 */
 .slice-card:hover {
   background: var(--color-surface-hover);
@@ -750,15 +760,17 @@ button {
   box-shadow: var(--ring-focus);
 }
 
-/* #42 片段定位强调：box-shadow 光环 + 浅背景，不引起布局位移；动画只放大光环，无位移。
+/* #42/#91 片段定位强调：box-shadow 光环 + 浅背景，不引起布局位移；动画只放大光环，无位移。
+   落点随呈现契约有两种载体：长文=节卡容器，普通回答=轮次卡片内对应段落块。
    reduced-motion 下取消动画，保留静态强调（验收 8）。 */
-.slice-card--focused {
+.fragment-target--focused {
   background: color-mix(in srgb, var(--color-surface) 97%, var(--color-ai) 4%);
   box-shadow: var(--ring-locate);
-  animation: slice-card-focus-pulse var(--duration-slow) ease-out;
+  border-radius: var(--radius-panel);
+  animation: fragment-target-focus-pulse var(--duration-slow) ease-out;
 }
 
-@keyframes slice-card-focus-pulse {
+@keyframes fragment-target-focus-pulse {
   from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-ai) 32%, transparent); }
   to { box-shadow: var(--ring-locate); }
 }
@@ -768,7 +780,7 @@ button {
     transition: none;
   }
 
-  .slice-card--focused {
+  .fragment-target--focused {
     animation: none;
   }
 }
@@ -792,7 +804,8 @@ button {
 /* 卡片正文随卡片宽度延伸：正文行宽上限交由页面容器（--measure 68rem）统一把关。
    此前限定 42rem 会在宽视口下让正文与卡片脱节——卡片右侧出现大片空白，
    且框选文字时选区在 672px 处戛然而止，与卡片版面不符。 */
-.slice-card .message__content {
+.slice-card .message__content,
+.turn-card .message__content {
   max-width: none;
 }
 

@@ -1,4 +1,4 @@
-import { composeSectionUnits, deriveMessageBlocks, messageContentBlockId } from "@collector/capture-contracts";
+import { composeSectionUnits, deriveMessageBlocks, messageContentBlockId, messageUsesSectionCards } from "@collector/capture-contracts";
 import type { ResearchMessageRecord, ResearchSliceRecord } from "@collector/capture-contracts";
 
 /**
@@ -35,8 +35,15 @@ export interface SliceCardTarget {
   blockText: string;
 }
 
+/** 轮次卡片容器 id：普通回答整条消息渲染为一张轮次卡片（片段/来源落点的稳定消息级锚点）。 */
+export function turnCardId(messageId: string): string {
+  return `${messageId}-turn`;
+}
+
 /**
  * 由一条消息的正文与切片派生卡片目标序列。
+ * #91 呈现契约：普通（非长文）回答不再逐段渲染节卡——返回空数组，整条消息由调用方
+ * 渲染为一张轮次卡片的连续正文；长文保留节单元派生（与后端 deriveMessageSlices 同构）。
  * 只取正式切片（isProvisional=false）——历史临时切片不渲染卡片（与现状一致、无回归），
  * 新派生切片在写入时恒为正式，因此正常生成路径下全部被覆盖。
  * 返回空数组表示该消息无可渲染卡片（调用方降级为纯文本连续渲染）。
@@ -45,6 +52,7 @@ export function deriveSliceCardTargets(
   message: ResearchMessageRecord,
   slices: ResearchSliceRecord[] | undefined,
 ): SliceCardTarget[] {
+  if (!messageUsesSectionCards(message.content, slices)) return [];
   const formal = (slices ?? [])
     .filter((slice) => !slice.isProvisional)
     .sort((a, b) => a.ordinal - b.ordinal);

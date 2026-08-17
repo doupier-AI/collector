@@ -650,7 +650,8 @@ describe("#36 连续语义卡片与章节导航", () => {
   function viewWithSlices(): ResearchNodeView {
     const view = readyRootView();
     const assistant = view.messages.find((m) => m.role === "assistant")!;
-    assistant.content = "第一段。\n\n第二段。\n\n第三段。";
+    // #91：节卡只在长文出现——把最后一段拉长超过共享阈值，前两段断言文本保持逐字不变。
+    assistant.content = "第一段。\n\n第二段。\n\n第三段。" + "填充".repeat(1_200);
     view.slices = {
       [assistant.id]: [
         makeSlice({ id: `slice:session-1:${assistant.id}:0`, messageId: assistant.id, ordinal: 0, title: "起点" }),
@@ -745,9 +746,9 @@ describe("#42 融合依据定位", () => {
     });
   }
 
-  /** 卡片容器 id：与 deriveSliceCardTargets 同源派生（无标题合并时下标=节起始块 ordinal）。 */
-  function cardIdFor(messageId: string, ordinal: number): string {
-    return `${messageContentBlockId(messageId, ordinal)}-card`;
+  /** #91：普通回答的片段落点 = 轮次卡片内段落块容器（与 deriveSliceCardTargets 同源判定）。 */
+  function blockTargetFor(messageId: string, ordinal: number): string {
+    return messageContentBlockId(messageId, ordinal);
   }
 
   function bodyVersionViewFor(message: ReturnType<typeof makeMessage>, nodeId = "session-1"): ResearchBodyVersionView {
@@ -821,7 +822,7 @@ describe("#42 融合依据定位", () => {
     // 子节点页加载完成，目标卡片（子节点第二段）获得强调
     await screen.findByText("子节点第二段。");
     await waitFor(() => {
-      expect(document.getElementById(cardIdFor("m-child-out", 1))).toHaveClass("slice-card--focused");
+      expect(document.getElementById(blockTargetFor("m-child-out", 1))).toHaveClass("fragment-target--focused");
     });
     // 播报（sr-only live region）
     expect(screen.getByText(/已定位到/)).toBeInTheDocument();
@@ -847,7 +848,7 @@ describe("#42 融合依据定位", () => {
 
     // 同节点：留在本页并定位（导航成功 → 目标卡片获得强调；?sel= 保留由 fragmentDeepLink 保证）
     await waitFor(() => {
-      expect(document.getElementById(cardIdFor("m-out", 1))).toHaveClass("slice-card--focused");
+      expect(document.getElementById(blockTargetFor("m-out", 1))).toHaveClass("fragment-target--focused");
     });
     expect(screen.getByText(/已定位到/)).toBeInTheDocument();
   });
@@ -867,14 +868,14 @@ describe("#42 融合依据定位", () => {
     // 第一条依据（第二段）→ 第二段卡片强调
     await user.click(sources[0]);
     await waitFor(() => {
-      expect(document.getElementById(cardIdFor("m-out", 1))).toHaveClass("slice-card--focused");
+      expect(document.getElementById(blockTargetFor("m-out", 1))).toHaveClass("fragment-target--focused");
     });
     // 第二条依据（第一段）→ 强调转移到第一段卡片
     await user.click(sources[1]);
     await waitFor(() => {
-      expect(document.getElementById(cardIdFor("m-out", 0))).toHaveClass("slice-card--focused");
+      expect(document.getElementById(blockTargetFor("m-out", 0))).toHaveClass("fragment-target--focused");
     });
-    expect(document.getElementById(cardIdFor("m-out", 1))).not.toHaveClass("slice-card--focused");
+    expect(document.getElementById(blockTargetFor("m-out", 1))).not.toHaveClass("fragment-target--focused");
   });
 
   it("失效回退：版本获取失败时显示明确回退信息，不静默定位", async () => {
@@ -892,7 +893,7 @@ describe("#42 融合依据定位", () => {
     const fallback = await screen.findByTestId("fragment-locator-fallback");
     expect(fallback).toHaveTextContent("正文版本已不存在");
     // 无卡片获得强调
-    expect(document.querySelector(".slice-card--focused")).toBeNull();
+    expect(document.querySelector(".fragment-target--focused")).toBeNull();
   });
 
   it("accepted 提案：无决策按钮，依据仍可点击", async () => {

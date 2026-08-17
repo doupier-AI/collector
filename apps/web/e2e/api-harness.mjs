@@ -74,6 +74,20 @@ const fakeProvider = {
   provider: "e2e-fake",
   model: "fake-research-e2e",
   promptVersion: "e2e-v1",
+  // #91 确定性长文：共享阈值（2000 字）以上的三节正文，各节带 ## 节标题。
+  // 服务端 isLongText 判定为长文 → 保留节卡与章节导航；普通回答走轮次卡片。
+  longSections() {
+    return [1, 2, 3].map((index) => {
+      const paragraph = Array.from(
+        { length: 7 },
+        () => `这是长文第${index}节的确定性正文，用于验证长文保留节卡与章节导航的呈现契约。`,
+      ).join("");
+      return `## 长文第${index}节\n\n${Array.from({ length: 3 }, () => paragraph).join("\n\n")}`;
+    });
+  },
+  longBody() {
+    return this.longSections().join("\n\n");
+  },
   async *generate(request) {
     const question = request.messages.at(-1)?.content ?? "";
     const short = question.length > 24 ? `${question.slice(0, 24)}…` : question;
@@ -102,6 +116,9 @@ const fakeProvider = {
     const question = request.messages.at(-1)?.content ?? "";
     const short = question.length > 24 ? `${question.slice(0, 24)}…` : question;
     await sleep(400);
+    if (/(长文|长篇|报告)/.test(question)) {
+      return this.longBody();
+    }
     if (request.deepResearch) {
       return `这是深入研究第一轮，围绕「${short}」展开。\n\n本轮只使用来源选区与当前已有材料生成，未联网检索，回答完毕。`;
     }
@@ -123,9 +140,12 @@ const fakeProvider = {
       .replace(/\bAPI\b/g, "[[abbreviation:api:API]]")
       .replace(/\bHTTP\b/g, "[[abbreviation:http:HTTP]]");
     const cutAfter = process.env.E2E_STREAM_CUT_AFTER ? Number(process.env.E2E_STREAM_CUT_AFTER) : undefined;
-    const segments = request.deepResearch
-      ? [`这是深入研究第一轮，围绕「${short}」展开。`, "\n\n本轮只使用来源选区与当前已有材料生成，未联网检索，回答完毕。"]
-      : [`你问的是「${markedShort}」。`, "\n\n本地优先会先把输入保存在本机，再据此组织后续研究。", "\n\n渐进事件把后续内容写进同一条消息，回答完毕。"];
+    const longSections = this.longSections();
+    const segments = /(长文|长篇|报告)/.test(question)
+      ? [longSections[0], ...longSections.slice(1).map((section) => `\n\n${section}`)]
+      : request.deepResearch
+        ? [`这是深入研究第一轮，围绕「${short}」展开。`, "\n\n本轮只使用来源选区与当前已有材料生成，未联网检索，回答完毕。"]
+        : [`你问的是「${markedShort}」。`, "\n\n本地优先会先把输入保存在本机，再据此组织后续研究。", "\n\n渐进事件把后续内容写进同一条消息，回答完毕。"];
     // 前导窗口分路径：深入研究子节点用旧 400ms（多级生长链测试在完成态到达前就会采样选区，
     // 前导过长会把整个生成推后、让采样落进无可引用块的流式窗口）；首问用 1500ms 给导航/视图/
     // SSE 连接留足余量，保证中间态可观测。

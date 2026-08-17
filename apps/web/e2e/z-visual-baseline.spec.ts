@@ -25,6 +25,7 @@ import {
   installThreeEdgeGraphFixture,
   openNodeWithParent,
   openSession,
+  pairAndOpen,
   pinModelStatus,
   QUESTION,
   readNodeEvidence,
@@ -57,6 +58,18 @@ async function closeSidebars(page: import("@playwright/test").Page): Promise<voi
     await collapse.click();
     await expect(nav.getByRole("button", { name: "展开侧栏" })).toBeVisible();
   }
+}
+
+/** 打开一篇超过共享长文阈值的确定性长文（三节 + ## 节标题）。 */
+async function openLongSession(page: import("@playwright/test").Page): Promise<string> {
+  await pairAndOpen(page, "/research/new");
+  await page.getByLabel("你的问题").fill("写一份完整的长文报告");
+  await page.getByRole("button", { name: "开始研究" }).click();
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
+  await expect(page.locator(".slice-card")).toHaveCount(3, { timeout: 15_000 });
+  const match = new URL(page.url()).pathname.match(/^\/nodes\/([^/]+)$/);
+  if (!match) throw new Error("unexpected long node url");
+  return match[1];
 }
 
 test.describe("#44 视觉回归基线", () => {
@@ -108,22 +121,32 @@ test.describe("#44 视觉回归基线", () => {
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
-  test("语义卡片常态：连续卡片 + 悬停低表面提升 + 页面整体视觉秩序像素基线", async ({ page }) => {
+  test("普通回答轮次卡片常态：页面视觉秩序 + 轮次卡片像素基线（#91）", async ({ page }) => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);
     await pinModelStatus(page);
     await openSession(page);
-    await expect(page.locator(".slice-card")).toHaveCount(3);
+    await expect(page.locator(".turn-card")).toHaveCount(1);
     // 全量运行时侧栏会话列表会污染视口截图：收起两侧固定侧栏
     await closeSidebars(page);
 
-    // 常态：节点页视口截图——连续卡片、章节导航、来源线、输入区的整体视觉秩序
+    // 常态：节点页视口截图——一张轮次卡片、来源线、输入区的整体视觉秩序
     await expect(page).toHaveScreenshot("node-reading-default", {
       mask: dynamicTimeMasks(page),
       maskColor: "#FFFFFF",
     });
+    expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
+  });
 
-    // 首张卡片（含标题与正文）元素级截图——聚焦卡片自身排版
+  test("长文节卡常态：连续卡片 + 悬停低表面提升像素基线（#91 后仅长文保留）", async ({ page }) => {
+    const issues = trackBrowserIssues(page);
+    freezeClock(page);
+    await pinModelStatus(page);
+    await openLongSession(page);
+    await expect(page.locator(".slice-card")).toHaveCount(3);
+    await closeSidebars(page);
+
+    // 首张节卡（含标题与正文）元素级截图——聚焦卡片自身排版
     const firstCard = page.locator(".slice-card").first();
     await firstCard.scrollIntoViewIfNeeded();
     await expect(firstCard).toHaveScreenshot("slice-card-default", {
@@ -147,7 +170,7 @@ test.describe("#44 视觉回归基线", () => {
     // 默认“跟随系统”：模拟深色后，外壳与正文阅读区共同使用 ADR-0019 深色令牌。
     await page.emulateMedia({ colorScheme: "dark" });
     await openSession(page);
-    await expect(page.locator(".slice-card")).toHaveCount(3);
+    await expect(page.locator(".turn-card")).toHaveCount(1);
     await closeSidebars(page);
 
     await expect(page).toHaveScreenshot("node-reading-dark", {
@@ -177,9 +200,9 @@ test.describe("#44 视觉回归基线", () => {
       timeout: 10_000,
     });
     await page.locator(".fusion-proposal-notice__source").filter({ visible: true }).first().click();
-    const focusedCard = page.locator(".slice-card--focused");
-    await expect(focusedCard).toHaveCount(1, { timeout: 10_000 });
-    await expect(focusedCard).toBeInViewport();
+    const focusedTarget = page.locator(".fragment-target--focused");
+    await expect(focusedTarget).toHaveCount(1, { timeout: 10_000 });
+    await expect(focusedTarget).toBeInViewport();
 
     // 定位强调持续 1600ms：等 pulse 动画结束（200ms）后截取静态强调态。
     // 视口级截图：强调卡片 + 上下文（章节导航、来源线）共同反映定位视觉。
@@ -244,13 +267,12 @@ test.describe("#44 最高 Seam 验证补充", () => {
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
-  test("读屏语义结构：单一 h1、卡片标题序列、地图对话框语义与专注脉络 aria-current", async ({ page }) => {
+  test("读屏语义结构：单一 h1、轮次卡片区域、地图对话框语义与专注脉络 aria-current", async ({ page }) => {
     await openSession(page);
     await expect(page.locator("h1")).toHaveCount(1);
-    const titles = ["问题重述", "本地优先", "渐进生成"];
-    for (const title of titles) {
-      await expect(page.locator(".slice-card__title", { hasText: title })).toBeVisible();
-    }
+    // #91：普通回答 = 一张轮次卡片连续正文（可访问名 Collector 回答），无逐段节卡。
+    await expect(page.getByRole("region", { name: "Collector 回答" })).toBeVisible();
+    await expect(page.locator(".slice-card")).toHaveCount(0);
 
     await page.keyboard.press("t");
     const dialog = page.getByRole("dialog", { name: "研究地图" });
@@ -271,7 +293,7 @@ test.describe("#44 最高 Seam 验证补充", () => {
     await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", {
       timeout: 15_000,
     });
-    await expect(page.locator(".slice-card")).toHaveCount(3);
+    await expect(page.locator(".turn-card")).toHaveCount(1);
     await expect(page.locator("h1")).toHaveCount(1);
     // 会话/节点路由仍指向同一对象
     expect(new URL(page.url()).pathname).toContain(`/nodes/${encodeURIComponent(rootNodeId)}`);

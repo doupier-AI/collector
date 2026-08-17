@@ -1,4 +1,7 @@
 import {
+  composeSectionUnits,
+  deriveMessageBlocks,
+  messageContentBlockId,
   resolveFragmentExcerpt,
   type ResearchBodyVersionRecord,
   type ResearchBodyVersionView,
@@ -8,7 +11,7 @@ import {
 } from "@collector/capture-contracts";
 import type { ApiClient } from "../../api/client";
 import { stableNodePath } from "../../app/paths";
-import { deriveSliceCardTargets, type SliceCardTarget } from "./slice-cards";
+import { deriveSliceCardTargets } from "./slice-cards";
 
 /**
  * #42 融合依据片段定位：把 `fragment:{bodyVersionId}:{ordinal}` 深链解析为
@@ -40,10 +43,17 @@ export type FragmentLocatorFailureKind =
   | "node-mismatch"
   | "integrity-failed"
   | "slice-not-found"
-  | "card-not-derived";
+  | "target-not-derived";
+
+/** ?fragment= 深链的滚动/焦点落点：长文=节卡容器 id，普通回答=轮次卡片内对应段落块 id。 */
+export interface FragmentTarget {
+  elementId: string;
+  /** 目标节正文（#43 由正文确定性派生），用于定位播报与文字级高亮基线。 */
+  excerpt: string;
+}
 
 export type FragmentLocatorResult =
-  | { kind: "ok"; slice: ResearchSliceRecord; target: SliceCardTarget }
+  | { kind: "ok"; slice: ResearchSliceRecord; target: FragmentTarget }
   | { kind: "failure"; failure: FragmentLocatorFailureKind };
 
 export interface FragmentLocatorInput {
@@ -81,8 +91,21 @@ export function locateFragment(input: FragmentLocatorInput): FragmentLocatorResu
   const matched = messageSlices[fragment.ordinal];
   if (!matched) return { kind: "failure", failure: "slice-not-found" };
   const target = deriveSliceCardTargets(message, messageSlices).find((entry) => entry.slice.id === matched.id);
-  if (!target) return { kind: "failure", failure: "card-not-derived" };
-  return { kind: "ok", slice: matched, target };
+  if (target) {
+    return { kind: "ok", slice: matched, target: { elementId: target.cardId, excerpt: target.blockText } };
+  }
+  // #91：普通回答无节卡呈现——落点改为轮次卡片内对应段落块容器（id 恒存在），
+  // 不再依赖呈现层卡片；节↔片段/切片序数对齐仍由同一 composeSectionUnits 派生。
+  const blocks = deriveMessageBlocks(message.content);
+  const units = composeSectionUnits(blocks);
+  const unit = units[fragment.ordinal];
+  const block = blocks[unit?.firstBlockOrdinal ?? fragment.ordinal];
+  if (!block) return { kind: "failure", failure: "target-not-derived" };
+  return {
+    kind: "ok",
+    slice: matched,
+    target: { elementId: messageContentBlockId(message.id, block.ordinal), excerpt: unit?.content ?? block.text },
+  };
 }
 
 const bodyVersionCache = new Map<string, Promise<ResearchBodyVersionView>>();
@@ -130,7 +153,7 @@ export const FRAGMENT_LOCATOR_FALLBACK_TEXT: Record<FragmentLocatorFailureKind |
   "node-mismatch": "这条依据指向的节点与当前页面不一致，无法定位。",
   "integrity-failed": "依据原文与保存的片段对不上，已失效。",
   "slice-not-found": "依据对应的内容卡片不存在，无法定位。",
-  "card-not-derived": "依据对应的卡片未能派生，无法定位。",
+  "target-not-derived": "依据对应的内容位置未能派生，无法定位。",
   "fetch-failed": "依据原文暂时无法读取，请稍后重试。",
 };
 

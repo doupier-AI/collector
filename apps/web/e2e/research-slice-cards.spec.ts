@@ -1,24 +1,33 @@
 import { expect, test } from "@playwright/test";
-import { pairAndOpen } from "./helpers";
+import { apiJson, pairAndOpen } from "./helpers";
 
 /**
- * 连续语义卡片 + 章节导航 e2e（生成自由化后）。
- * e2e 假模型走 writeBody 产出三段自由正文，服务层按段落块确定性派生切片、
- * deriveAnnotations 事后抽取标题（问题重述/本地优先/渐进生成），渲染为 3 张卡片。
- * 覆盖：连续阅读、响应式行宽、章节导航桌面悬停预览/点击跳转/当前线跟随、
- * 窄屏线列与拖动、键盘、可访问性、reduced-motion、控制台/网络、降级。
+ * #91 呈现契约 e2e（确定性假模型）：
+ * - 普通回答：整条消息渲染为一张轮次卡片连续正文，无逐段节卡、无章节导航线；
+ *   切片数据仍派生（标题为空、概念按轮抽取保持）。
+ * - 长文（共享阈值 2000 字以上）：保留节卡与章节导航，行为与迁移前一致。
  */
 
-const SLICE_TITLES = ["问题重述", "本地优先", "渐进生成"];
+const LONG_SLICE_TITLES = ["长文第1节", "长文第2节", "长文第3节"];
 
-/** 提交一个问题并等待 3 张切片卡片渲染完成，返回会话页 URL。 */
-async function openSlicedAnswer(page: import("@playwright/test").Page): Promise<void> {
+/** 提交普通问题并等待一张轮次卡片渲染完成。 */
+async function openNormalAnswer(page: import("@playwright/test").Page): Promise<void> {
   await pairAndOpen(page, "/research/new");
   await page.getByLabel("你的问题").fill("本地优先如何组织研究内容？");
   await page.getByRole("button", { name: "开始研究" }).click();
   await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
-  // 等待全部 3 张卡片标题出现（生成完成）
-  for (const title of SLICE_TITLES) {
+  await expect(page.locator(".turn-card")).toHaveCount(1, { timeout: 15_000 });
+  // 流式期间轮次卡片就会出现（无切片降级渲染）；等任务完成播报，保证切片已落库。
+  await expect(page.locator("[aria-live=polite]")).toHaveText("已完成", { timeout: 15_000 });
+}
+
+/** 提交长文问题并等待 3 张节卡渲染完成（标题由正文 ## 节标题提升）。 */
+async function openLongAnswer(page: import("@playwright/test").Page): Promise<void> {
+  await pairAndOpen(page, "/research/new");
+  await page.getByLabel("你的问题").fill("写一份完整的长文报告");
+  await page.getByRole("button", { name: "开始研究" }).click();
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
+  for (const title of LONG_SLICE_TITLES) {
     await expect(page.locator(".slice-card__title", { hasText: title })).toBeVisible({ timeout: 15_000 });
   }
   await expect(page.locator(".slice-card")).toHaveCount(3);
@@ -44,34 +53,70 @@ async function expectChapterRailOutsideBody(page: import("@playwright/test").Pag
   expect(geometry.railInteractiveRight).toBeLessThanOrEqual(geometry.bodyLeft);
 }
 
-test.describe("#36 连续语义卡片", () => {
-  test("连续阅读：标题与正文交替、无装饰分隔线", async ({ page }) => {
-    await openSlicedAnswer(page);
+test.describe("#91 普通回答轮次卡片", () => {
+  test("连续正文一张轮次卡片：无逐段碎卡、无章节导航线", async ({ page }) => {
+    await openNormalAnswer(page);
 
-    // 每切片一卡：标题 h3 + 正文容器兄弟
-    await expect(page.locator(".slice-card")).toHaveCount(3);
-    await expect(page.locator(".slice-card__title")).toHaveCount(3);
-    // 无装饰边界元素
+    await expect(page.locator(".turn-card")).toHaveCount(1);
+    await expect(page.locator(".slice-card")).toHaveCount(0);
+    await expect(page.locator(".turn-card [data-block-id]")).toHaveCount(3);
+    await expect(page.getByRole("navigation", { name: "章节导航" })).toHaveCount(0);
     await expect(page.locator(".message__slice-boundary")).toHaveCount(0);
     await expect(page.locator("[data-slice-boundary]")).toHaveCount(0);
-    // 标题不进入正文容器（选区锚点基准）
-    const firstCardText = await page.locator(".slice-card [data-block-text]").first().textContent();
-    expect(firstCardText).not.toContain("问题重述");
-    // 滚动无横向滚动
+    // 连续正文：三段内容在同一张卡片内依序可见。
+    const cardText = await page.locator(".turn-card").textContent();
+    expect(cardText).toContain("本地优先会先把输入保存在本机");
+    expect(cardText).toContain("渐进事件把后续内容写进同一条消息");
+    const noHorizontal = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth);
+    expect(noHorizontal).toBe(true);
+  });
+
+  test("普通回答切片不再逐块抽标题，概念抽取信号保持", async ({ page }) => {
+    await openNormalAnswer(page);
+    const nodeId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
+    const view = await apiJson<{
+      messages: Array<{ id: string; role: string }>;
+      slices?: Record<string, Array<{ title: string; normalizedConcepts: string[] }>>;
+    }>(page, `/v1/research-nodes/${encodeURIComponent(nodeId)}`);
+    const assistant = view.messages.find((message) => message.role === "assistant");
+    expect(assistant).toBeTruthy();
+    const slices = view.slices?.[assistant!.id] ?? [];
+    expect(slices).toHaveLength(3);
+    // 逐块标题抽取已收敛：普通回答切片标题为空；概念按块抽取保持（融合信号不回退）。
+    expect(slices.map((slice) => slice.title)).toEqual(["", "", ""]);
+    expect(slices.map((slice) => slice.normalizedConcepts)).toEqual([
+      [],
+      ["本地优先"],
+      ["渐进生成"],
+    ]);
+  });
+});
+
+test.describe("#91 长文保留节卡与章节导航", () => {
+  test("长文：三节各一张卡片，标题只渲染一次，无装饰分隔线", async ({ page }) => {
+    await openLongAnswer(page);
+
+    await expect(page.locator(".slice-card")).toHaveCount(3);
+    await expect(page.locator(".slice-card__title")).toHaveCount(3);
+    await expect(page.locator(".message__slice-boundary")).toHaveCount(0);
+    await expect(page.locator("[data-slice-boundary]")).toHaveCount(0);
+    // 标题从正文 ## 节标题提升，同一标题只出现一次（卡片内唯一）。
+    const firstCard = page.locator(".slice-card").first();
+    await expect(firstCard.locator(".slice-card__title")).toHaveCount(1);
     const noHorizontal = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth);
     expect(noHorizontal).toBe(true);
   });
 
   test("章节导航·桌面：线列可见、当前线高亮、点击跳转、悬停预览", async ({ page }) => {
-    await openSlicedAnswer(page);
+    await openLongAnswer(page);
 
     const nav = page.getByRole("navigation", { name: "章节导航" });
     await expect(nav).toBeVisible();
     const ticks = page.locator(".slice-rail__tick");
     await expect(ticks).toHaveCount(3);
-    // 每条线 aria-label = 切片标题
-    for (let i = 0; i < SLICE_TITLES.length; i += 1) {
-      await expect(ticks.nth(i)).toHaveAttribute("aria-label", SLICE_TITLES[i]);
+    // 每条线 aria-label = 节标题
+    for (let i = 0; i < LONG_SLICE_TITLES.length; i += 1) {
+      await expect(ticks.nth(i)).toHaveAttribute("aria-label", LONG_SLICE_TITLES[i]);
     }
 
     // 当前线：第一条默认高亮（aria-current）
@@ -81,14 +126,14 @@ test.describe("#36 连续语义卡片", () => {
     await ticks.nth(1).hover();
     const preview = page.locator(".slice-rail__preview");
     await expect(preview).toBeVisible({ timeout: 2_000 });
-    await expect(preview.locator(".slice-rail__preview-title")).toHaveText("本地优先");
-    await expect(preview.locator(".slice-rail__preview-excerpt")).toContainText("本地优先会先把输入保存在本机");
+    await expect(preview.locator(".slice-rail__preview-title")).toHaveText("长文第2节");
+    await expect(preview.locator(".slice-rail__preview-excerpt")).toContainText("这是长文第2节的确定性正文");
 
     // 点击第三条 → 当前线高亮跟随到最后一张
     await ticks.nth(2).click();
     await expect(ticks.nth(2)).toHaveAttribute("aria-current", "location");
     // 对应卡片滚入视口
-    const targetTitle = page.locator(".slice-card__title", { hasText: "渐进生成" });
+    const targetTitle = page.locator(".slice-card__title", { hasText: "长文第3节" });
     await expect(targetTitle).toBeInViewport();
     // 跳转后标题不被 sticky 顶栏遮挡：标题顶缘在顶栏（--app-bar-height 3.5rem=56px）之下。
     const titleTop = await targetTitle.evaluate((el) => el.getBoundingClientRect().top);
@@ -96,7 +141,7 @@ test.describe("#36 连续语义卡片", () => {
   });
 
   test("章节导航·桌面：展开或收起侧栏时都不进入正文", async ({ page }) => {
-    await openSlicedAnswer(page);
+    await openLongAnswer(page);
 
     for (const width of [1024, 1440]) {
       await page.setViewportSize({ width, height: 900 });
@@ -110,18 +155,8 @@ test.describe("#36 连续语义卡片", () => {
     }
   });
 
-  test("章节导航·当前线跟随滚动", async ({ page }) => {
-    await openSlicedAnswer(page);
-    const ticks = page.locator(".slice-rail__tick");
-
-    // e2e 假数据内容较短，三张卡片可能同时可见；此时 IntersectionObserver 会认定第一张为当前。
-    // 滚动跟随行为已在组件测试中通过 mock IntersectionObserver 验证，这里只验证导航存在且可交互。
-    await expect(ticks).toHaveCount(3);
-    await expect(ticks.nth(0)).toHaveAttribute("aria-current", "location");
-  });
-
   test("键盘：Tab 聚焦导航线并触发预览，Enter 跳转", async ({ page }) => {
-    await openSlicedAnswer(page);
+    await openLongAnswer(page);
     const ticks = page.locator(".slice-rail__tick");
 
     await ticks.nth(1).focus();
@@ -131,27 +166,27 @@ test.describe("#36 连续语义卡片", () => {
     // Enter 跳转并更新当前线
     await ticks.nth(1).press("Enter");
     await expect(ticks.nth(1)).toHaveAttribute("aria-current", "location");
-    await expect(page.locator(".slice-card__title", { hasText: "本地优先" })).toBeInViewport();
+    await expect(page.locator(".slice-card__title", { hasText: "长文第2节" })).toBeInViewport();
   });
 
   test("reduced-motion：跳转与预览无平滑动画", async ({ page }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
-    await openSlicedAnswer(page);
+    await openLongAnswer(page);
     const ticks = page.locator(".slice-rail__tick");
     await ticks.nth(2).click();
     await expect(ticks.nth(2)).toHaveAttribute("aria-current", "location");
-    await expect(page.locator(".slice-card__title", { hasText: "渐进生成" })).toBeInViewport();
+    await expect(page.locator(".slice-card__title", { hasText: "长文第3节" })).toBeInViewport();
   });
 
   test("控制台无错误；无 fragment 参数、未展开融合依据时不请求 body-versions", async ({ page }) => {
     // #42 起前端在深链定位（?fragment=）与依据预览展开时才请求正文版本；
-    // 本 spec 不走这些路径，body-versions 请求必须保持为零（由 z-fusion-evidence.spec.ts 覆盖请求场景）。
+    // 本 spec 不走这些路径，body-versions 请求必须保持为零。
     const bodyVersionRequests: string[] = [];
     page.on("request", (request) => {
       if (request.url().includes("/v1/research-body-versions/")) bodyVersionRequests.push(request.url());
     });
 
-    await openSlicedAnswer(page);
+    await openLongAnswer(page);
 
     // 配对前探测返回 401 属预期流程，控制台断言只覆盖配对后的研究操作
     const consoleErrors: string[] = [];
@@ -168,16 +203,7 @@ test.describe("#36 连续语义卡片", () => {
   });
 
   test("章节导航·预览框打开时滚动不漂移（参考系为线列自身）", async ({ page }) => {
-    await openSlicedAnswer(page);
-
-    // 注入高占位：让文档够高、线列真正被 sticky 钉住（滚动漂移只在钉住时暴露）。
-    await page.evaluate(() => {
-      const pageEl = document.querySelector<HTMLElement>(".page")!;
-      const spacer = document.createElement("div");
-      spacer.style.height = "3600px";
-      spacer.style.pointerEvents = "none";
-      pageEl.appendChild(spacer);
-    });
+    await openLongAnswer(page);
 
     const ticks = page.locator(".slice-rail__tick");
     const preview = page.locator(".slice-rail__preview");
@@ -207,11 +233,11 @@ test.describe("#36 连续语义卡片", () => {
   });
 });
 
-test.describe("#36 窄屏", () => {
+test.describe("#91 长文窄屏", () => {
   test.use({ viewport: { width: 320, height: 844 } });
 
   test("窄屏：正文行宽不超上限、无横向滚动、线列不挤压正文", async ({ page }) => {
-    await openSlicedAnswer(page);
+    await openLongAnswer(page);
 
     const noHorizontal = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth);
     expect(noHorizontal).toBe(true);
@@ -229,7 +255,7 @@ test.describe("#36 窄屏", () => {
   });
 
   test("窄屏拖动：按住线列上下拖动实时跳转", async ({ page }) => {
-    await openSlicedAnswer(page);
+    await openLongAnswer(page);
     const track = page.locator(".slice-rail__track");
     const trackBox = await track.boundingBox();
     expect(trackBox).not.toBeNull();
@@ -245,6 +271,6 @@ test.describe("#36 窄屏", () => {
 
     // 拖动后当前线落到最后一张
     await expect(ticks.nth(2)).toHaveAttribute("aria-current", "location", { timeout: 3_000 });
-    await expect(page.locator(".slice-card__title", { hasText: "渐进生成" })).toBeInViewport();
+    await expect(page.locator(".slice-card__title", { hasText: "长文第3节" })).toBeInViewport();
   });
 });

@@ -126,11 +126,12 @@ test("#31 确认式融合：弱提示 → 确认 → 融合节点 → 章节与�
   );
   const fusionNodeId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
   await expect(page.getByRole("heading", { name: "融合节点" })).toBeVisible({ timeout: 10_000 });
-  await expect(page.locator(".message--assistant .message__content").last()).toContainText("综合推导", {
-    timeout: 20_000,
-  });
 
-  // 验收 7：共同核心 / 差异 / 综合推导 章节（派生为多张语义卡片，汇总断言）。
+  // 验收 7：共同核心 / 差异 / 综合推导 章节（#91 起短融合正文渲染为轮次卡片连续正文，汇总断言）。
+  await expect(async () => {
+    const current = await page.locator(".message--assistant .message__content").allTextContents();
+    expect(current.join("\n")).toContain("综合推导");
+  }).toPass({ timeout: 20_000 });
   const body = await page.locator(".message--assistant .message__content").allTextContents();
   const joined = body.join("\n");
   expect(joined).toContain("共同核心");
@@ -146,9 +147,9 @@ test("#31 确认式融合：弱提示 → 确认 → 融合节点 → 章节与�
   await expect(firstFusionSource).toBeVisible();
   await firstFusionSource.click();
   await page.waitForURL((url) => url.searchParams.has("fragment"), { timeout: 10_000 });
-  await expect(page.locator(".slice-card--focused")).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator(".fragment-target--focused")).toBeVisible({ timeout: 10_000 });
   // 回到来源节点：片段摘录逐字一致。
-  const locatedText = await page.locator(".slice-card--focused").textContent();
+  const locatedText = await page.locator(".fragment-target--focused").textContent();
   expect(locatedText).toContain("本地优先");
 
   // 验收 6：来源节点消息逐字节不变。

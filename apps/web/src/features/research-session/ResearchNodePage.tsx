@@ -293,7 +293,7 @@ export function ResearchNodePage() {
   const reducedMotion = usePrefersReducedMotion();
   const messageHighlight = useMemo(() => {
     if (!restoredSelection || !readyView) return null;
-    return highlightForMessages(readyView.messages, restoredSelection.anchor, restoredSelection.text);
+    return highlightForMessages(readyView.messages, readyView.slices, restoredSelection.anchor, restoredSelection.text);
   }, [restoredSelection, readyView]);
   const highlightKey =
     messageHighlight?.kind === "found"
@@ -332,10 +332,10 @@ export function ResearchNodePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // #42 融合依据定位：?fragment=<fragmentId> 深链 → 目标语义卡片滚动 + 短暂强调 + 焦点 + 播报。
-  // 状态：focusedCard 携带 nonce——同目标重触发（nonce 递增）与快速切换（state 整体替换只留最新）都成立；
+  // #42 融合依据定位：?fragment=<fragmentId> 深链 → 目标元素滚动 + 短暂强调 + 焦点 + 播报。
+  // 状态：fragmentFocus 携带 nonce——同目标重触发（nonce 递增）与快速切换（state 整体替换只留最新）都成立；
   // locatedKeyRef 守卫防止视图刷新（流式对齐）重定位；reduced-motion 下即时定位。
-  const [focusedCard, setFocusedCard] = useState<{ cardId: string; nonce: number } | null>(null);
+  const [fragmentFocus, setFragmentFocus] = useState<{ elementId: string; nonce: number } | null>(null);
   const locateNonceRef = useRef(0);
   const [fragmentFallback, setFragmentFallback] = useState<FragmentLocatorFailureKind | "fetch-failed" | null>(null);
   const locatedKeyRef = useRef("");
@@ -343,7 +343,7 @@ export function ResearchNodePage() {
   const fragmentId = searchParams.get("fragment");
   useEffect(() => {
     if (!fragmentId) {
-      setFocusedCard(null);
+      setFragmentFocus(null);
       setFragmentFallback(null);
       locatedKeyRef.current = "";
       return;
@@ -378,10 +378,10 @@ export function ResearchNodePage() {
         locatedKeyRef.current = key;
         if (located.kind === "ok") {
           setFragmentFallback(null);
-          setFocusedCard({ cardId: located.target.cardId, nonce: ++locateNonceRef.current });
-          node.announce(`已定位到「${sliceCardAccessibleName(located.slice, located.target.blockText)}」。`);
+          setFragmentFocus({ elementId: located.target.elementId, nonce: ++locateNonceRef.current });
+          node.announce(`已定位到「${sliceCardAccessibleName(located.slice, located.target.excerpt)}」。`);
         } else {
-          setFocusedCard(null);
+          setFragmentFocus(null);
           setFragmentFallback(located.failure);
           node.announce(FRAGMENT_LOCATOR_FALLBACK_TEXT[located.failure]);
         }
@@ -391,7 +391,7 @@ export function ResearchNodePage() {
         const kind: FragmentLocatorFailureKind | "fetch-failed" = isApiErrorCode(error, "not_found")
           ? "version-missing"
           : "fetch-failed";
-        setFocusedCard(null);
+        setFragmentFocus(null);
         setFragmentFallback(kind);
         node.announce(FRAGMENT_LOCATOR_FALLBACK_TEXT[kind]);
       }
@@ -406,16 +406,16 @@ export function ResearchNodePage() {
   // 目标卡片滚动 + 焦点 + 定时恢复。block:"center" 天然避开 sticky 页头（与 ?sel= 高亮同款）；
   // 顺序：先滚动后聚焦（preventScroll 不产生二次滚动）；cleanup 清定时器（切换/卸载即清旧状态）。
   useEffect(() => {
-    if (!focusedCard) return;
-    const element = document.getElementById(focusedCard.cardId);
+    if (!fragmentFocus) return;
+    const element = document.getElementById(fragmentFocus.elementId);
     if (!element) return;
     if (typeof element.scrollIntoView === "function") {
       element.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "center" });
     }
     element.focus({ preventScroll: true });
-    const timer = window.setTimeout(() => setFocusedCard(null), FOCUS_DURATION_MS);
+    const timer = window.setTimeout(() => setFragmentFocus(null), FOCUS_DURATION_MS);
     return () => window.clearTimeout(timer);
-  }, [focusedCard, reducedMotion]);
+  }, [fragmentFocus, reducedMotion]);
 
   // #32 自动融合：开关开启时，节点视图就绪后自动扫描一次相似候选（进入/刷新节点页触发）。
   // 每节点只扫描一次（刷新=重挂载=重扫）；扫描与融合失败静默，不打断页面。
@@ -860,7 +860,7 @@ export function ResearchNodePage() {
                 onGrowTermPreview={handleGrowTermPreview}
                 onGrowTermMarker={handleGrowTermMarker}
                 slices={view.slices?.[message.id]}
-                fragmentCardId={focusedCard?.cardId}
+                fragmentTargetId={fragmentFocus?.elementId}
                 fusionSources={view.fusionSources?.[message.id]}
               />
             );

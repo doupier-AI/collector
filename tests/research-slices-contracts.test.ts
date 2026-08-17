@@ -1,6 +1,36 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { deriveMessageSlices, validateDerivedSlices, deriveMessageBlocks, composeSectionUnits, deriveFragmentsFromSlices, resolveFragmentExcerpt, type ResearchSliceRecord, type ResearchTaskRecord } from "@collector/capture-contracts";
+import { deriveMessageSlices, validateDerivedSlices, deriveMessageBlocks, composeSectionUnits, deriveFragmentsFromSlices, resolveFragmentExcerpt, isLongText, LONG_TEXT_CHAR_THRESHOLD, messageUsesSectionCards, type ResearchSliceRecord, type ResearchTaskRecord } from "@collector/capture-contracts";
+
+describe("长文判定共享契约（#91）", () => {
+  it("阈值边界：等于阈值不算长文，超过阈值才算长文", () => {
+    assert.equal(isLongText("字".repeat(LONG_TEXT_CHAR_THRESHOLD)), false);
+    assert.equal(isLongText("字".repeat(LONG_TEXT_CHAR_THRESHOLD + 1)), true);
+    assert.equal(isLongText(""), false);
+  });
+
+  it("节卡呈现判定：长文且存在正式切片才节卡呈现；普通回答或仅有临时切片都不是", () => {
+    const formal: ResearchSliceRecord[] = [{
+      id: "slice:node:msg:0",
+      nodeId: "node",
+      messageId: "msg",
+      ordinal: 0,
+      title: "",
+      normalizedConcepts: [],
+      sourceRefs: [],
+      isProvisional: false,
+      createdAt: "2026-08-01T00:00:00.000Z",
+    }];
+    const provisional: ResearchSliceRecord[] = [{ ...formal[0]!, isProvisional: true }];
+    const long = "字".repeat(LONG_TEXT_CHAR_THRESHOLD + 1);
+    const short = "字".repeat(LONG_TEXT_CHAR_THRESHOLD);
+    assert.equal(messageUsesSectionCards(long, formal), true);
+    assert.equal(messageUsesSectionCards(short, formal), false);
+    assert.equal(messageUsesSectionCards(long, provisional), false);
+    assert.equal(messageUsesSectionCards(long, undefined), false);
+    assert.equal(messageUsesSectionCards(long, []), false);
+  });
+});
 
 describe("deriveMessageSlices (生成自由化后的确定性派生切片)", () => {
   const nodeId = "node-d";

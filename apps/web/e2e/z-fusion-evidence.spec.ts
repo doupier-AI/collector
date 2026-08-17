@@ -148,7 +148,7 @@ test.describe("#42 融合依据定位", () => {
     expect(page.url()).toContain(`/nodes/${encodeURIComponent(childNodeId)}`);
 
     // 目标卡片获得强调、在视口内、不被固定顶栏遮挡；live region 播报
-    const focusedCard = page.locator(".slice-card--focused");
+    const focusedCard = page.locator(".fragment-target--focused");
     await expect(focusedCard).toHaveCount(1, { timeout: 10_000 });
     await expect(focusedCard).toBeInViewport();
     const box = await focusedCard.boundingBox();
@@ -167,16 +167,16 @@ test.describe("#42 融合依据定位", () => {
     await openRootNotice(page, rootNodeId, sessionId);
     const sources = page.locator(".fusion-proposal-notice__source").filter({ visible: true });
     await sources.nth(0).click();
-    await expect(page.locator(".slice-card--focused")).toHaveCount(1, { timeout: 10_000 });
+    await expect(page.locator(".fragment-target--focused")).toHaveCount(1, { timeout: 10_000 });
     // 等强调自动恢复
-    await expect(page.locator(".slice-card--focused")).toHaveCount(0, { timeout: 5_000 });
+    await expect(page.locator(".fragment-target--focused")).toHaveCount(0, { timeout: 5_000 });
     // 返回根页（details 折叠态重置）再展开并点击同一条依据 → 强调重新出现
     await page.goBack();
     await expect(page.locator(".fusion-proposal-notice")).toBeVisible();
     await page.locator(".fusion-proposal-notice__item summary").first().click();
     await expect(page.locator(".fusion-proposal-notice__source").filter({ visible: true })).toHaveCount(2);
     await page.locator(".fusion-proposal-notice__source").filter({ visible: true }).nth(0).click();
-    await expect(page.locator(".slice-card--focused")).toHaveCount(1, { timeout: 10_000 });
+    await expect(page.locator(".fragment-target--focused")).toHaveCount(1, { timeout: 10_000 });
   });
 
   test("失效回退：正文版本不存在时显示明确回退信息，不静默定位", async ({ page }) => {
@@ -195,7 +195,7 @@ test.describe("#42 融合依据定位", () => {
     await page.locator(".fusion-proposal-notice__source").filter({ visible: true }).nth(0).click();
     await expect(page.locator(".fragment-locator-fallback")).toBeVisible({ timeout: 10_000 });
     await expect(page.locator(".fragment-locator-fallback")).toContainText("正文版本已不存在");
-    await expect(page.locator(".slice-card--focused")).toHaveCount(0);
+    await expect(page.locator(".fragment-target--focused")).toHaveCount(0);
   });
 
   test("历史导航：back 回根页，forward 恢复 fragment 深链并重新定位", async ({ page }) => {
@@ -208,14 +208,14 @@ test.describe("#42 融合依据定位", () => {
 
     await openRootNotice(page, rootNodeId, sessionId);
     await page.locator(".fusion-proposal-notice__source").filter({ visible: true }).nth(0).click();
-    await expect(page.locator(".slice-card--focused")).toHaveCount(1, { timeout: 10_000 });
+    await expect(page.locator(".fragment-target--focused")).toHaveCount(1, { timeout: 10_000 });
     // back：根页无 fragment
     await page.goBack();
     await expect(page).toHaveURL(new RegExp(`/nodes/${encodeURIComponent(rootNodeId)}(\\?|$)`));
     await expect(page.locator(".fusion-proposal-notice")).toBeVisible();
     // forward：恢复 fragment 深链，强调重现
     await page.goForward();
-    await expect(page.locator(".slice-card--focused")).toHaveCount(1, { timeout: 10_000 });
+    await expect(page.locator(".fragment-target--focused")).toHaveCount(1, { timeout: 10_000 });
     await expect(page).toHaveURL(/(\?|&)fragment=/);
   });
 
@@ -230,7 +230,7 @@ test.describe("#42 融合依据定位", () => {
 
     await openRootNotice(page, rootNodeId, sessionId);
     await page.locator(".fusion-proposal-notice__source").filter({ visible: true }).nth(0).click();
-    const focusedCard = page.locator(".slice-card--focused");
+    const focusedCard = page.locator(".fragment-target--focused");
     await expect(focusedCard).toHaveCount(1, { timeout: 10_000 });
     await expect(focusedCard).toBeInViewport();
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
@@ -248,7 +248,7 @@ test.describe("#42 融合依据定位", () => {
 
     await openRootNotice(page, rootNodeId, sessionId);
     await page.locator(".fusion-proposal-notice__source").filter({ visible: true }).nth(0).click();
-    await expect(page.locator(".slice-card--focused")).toHaveCount(1, { timeout: 10_000 });
+    await expect(page.locator(".fragment-target--focused")).toHaveCount(1, { timeout: 10_000 });
   });
 
   test("accepted 只读入口：无决策按钮，依据可点击跳转", async ({ page }) => {
@@ -268,7 +268,7 @@ test.describe("#42 融合依据定位", () => {
     // 依据仍可点击跳转
     await items.nth(1).locator(".fusion-proposal-notice__source").nth(1).click();
     await page.waitForURL((url) => url.searchParams.has("fragment"), { timeout: 10_000 });
-    await expect(page.locator(".slice-card--focused")).toHaveCount(1, { timeout: 10_000 });
+    await expect(page.locator(".fragment-target--focused")).toHaveCount(1, { timeout: 10_000 });
   });
 
   test("网络契约：跳转页同一正文版本只请求一次（缓存）", async ({ page }) => {
@@ -292,7 +292,7 @@ test.describe("#42 融合依据定位", () => {
     await expect.poll(() => requests.filter((url) => url.includes(encodeURIComponent(rootEvidence.bodyVersionId))).length).toBe(1);
     // 跳转后定位命中缓存，子节点版本不产生第二次请求
     await page.locator(".fusion-proposal-notice__source").filter({ visible: true }).nth(0).click();
-    await expect(page.locator(".slice-card--focused")).toHaveCount(1, { timeout: 10_000 });
+    await expect(page.locator(".fragment-target--focused")).toHaveCount(1, { timeout: 10_000 });
     await expect.poll(() => requests.filter((url) => url.includes(encodeURIComponent(childEvidence.bodyVersionId))).length).toBe(1);
   });
 });

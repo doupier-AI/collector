@@ -822,6 +822,18 @@ export interface MessageSectionUnit {
 }
 
 /**
+ * 长文判定长度阈值（可调产品常量，ADR-0032）：正文长度（UTF-16 code unit，与选区/
+ * 片段偏移单位一致）超过该值即视为长文。服务端（plan-then-write 阈值与切片标注策略）
+ * 与 Web 端（轮次卡片呈现）同源消费本常量与 `isLongText`，禁止各自另写判定。
+ */
+export const LONG_TEXT_CHAR_THRESHOLD = 2_000;
+
+/** 长文判定唯一入口：内容长度超过阈值即视为长文。服务端与 Web 端共用。 */
+export function isLongText(content: string): boolean {
+  return content.length > LONG_TEXT_CHAR_THRESHOLD;
+}
+
+/**
  * 把消息纯文本确定性切分为段落块。规则（前后端必须只使用本实现，禁止另写切分逻辑）：
  * 1. 先把 CRLF / CR 归一为 LF；
  * 2. 按一个或多个空行（只含空白字符的行）切分段落；
@@ -925,6 +937,19 @@ export function composeSectionUnits(blocks: readonly MessageContentBlock[]): Mes
   }
   flush();
   return units;
+}
+
+/**
+ * 判定一条消息是否按节级卡片呈现（#91 呈现契约，ADR-0032）：
+ * 仅当内容为长文（`isLongText`）且存在正式切片时才派生节卡；普通回答渲染为一张
+ * 轮次卡片的连续正文。呈现层、选区恢复与 `?fragment=` 深链定位共用本判定，
+ * 避免多处手写同一规则产生错位（切片/片段派生契约本身不变）。
+ */
+export function messageUsesSectionCards(
+  content: string,
+  slices: readonly ResearchSliceRecord[] | undefined,
+): boolean {
+  return isLongText(content) && (slices ?? []).some((slice) => !slice.isProvisional);
 }
 
 export type AiConfigurationMode = "real" | "demo" | "unconfigured";

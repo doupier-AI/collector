@@ -44,7 +44,7 @@ import { buildResearchSliceContext, DEFAULT_RESEARCH_SLICE_CONTEXT_TOKEN_BUDGET,
 import { getOrDeriveMessageBodyArtifacts, matchSliceForFragment, tryResolveFragmentExcerpt } from "./body-artifacts.js";
 import type { ResearchBodyOutline, ResearchSliceAnnotation } from "@collector/model-gateway";
 import { ModelProviderHttpError, ModelProviderTimeoutError } from "@collector/model-gateway";
-import { joinContinuation } from "@collector/capture-contracts";
+import { isLongText, joinContinuation, LONG_TEXT_CHAR_THRESHOLD } from "@collector/capture-contracts";
 import { filterCitationsByEvidence, parseAgentCitations } from "./web-search-agent.js";
 
 export const RESEARCH_CHAT_PROMPT_VERSION = "research-chat-v1";
@@ -53,8 +53,6 @@ export const DEEP_RESEARCH_PROMPT_VERSION = "deep-research-v1";
 export const RESEARCH_SLICE_PROMPT_VERSION = "research-slices-v1";
 const PROMPT_VERSION = RESEARCH_SLICE_PROMPT_VERSION;
 const MAX_GENERATED_CHARACTERS = 1_000_000;
-/** 预期长度达到该字数（或显式更高诉求）时启用 plan-then-write；阈值偏保守，避免短问题多一次大纲调用。 */
-const LONG_FORM_CHAR_THRESHOLD = 2_000;
 /** 有界修复：单节因截断/无果断信号触发的续写上限。 */
 const BODY_SECTION_MAX_CONTINUATIONS = 3;
 /** 有界修复：单节空输出的重问上限。 */
@@ -670,7 +668,14 @@ export class ResearchSessionService {
   ): Promise<ResearchSliceRecord[]> {
     const blocks = deriveMessageBlocks(content);
     if (blocks.length === 0) throw new Error("Provider returned an empty response");
-    const annotations = await this.deriveBlockAnnotations(provider, blocks.map((block) => block.text), titleHints);
+    // #91 呈现契约：长文按块抽取标题/概念（节卡标题需要）；普通回答逐块标题抽取收敛
+    // （标题不再落库、不再服务呈现），概念抽取保留按块粒度——融合候选扫描信号零回退。
+    const annotations = await this.deriveBlockAnnotations(
+      provider,
+      blocks.map((block) => block.text),
+      titleHints,
+      { extractTitles: isLongText(content) },
+    );
     const ordinalStart = this.sliceOrdinalStartFor(nodeId, task.outputMessageId);
     const slices = deriveMessageSlices(nodeId, task.outputMessageId, content, ordinalStart, citations, annotations);
     validateDerivedSlices(slices, nodeId, task.outputMessageId);
@@ -737,7 +742,9 @@ export class ResearchSessionService {
     provider: ResearchGenerationProvider,
     blockTexts: readonly string[],
     titleHints: ReadonlyMap<number, string>,
+    options: { extractTitles?: boolean } = {},
   ): Promise<Array<ResearchSliceAnnotation | undefined>> {
+    const extractTitles = options.extractTitles ?? true;
     const annotations: Array<ResearchSliceAnnotation | undefined> = new Array(blockTexts.length).fill(undefined);
     if (!provider.deriveAnnotations) {
       // 未配置抽取模型（如 e2e 假 provider）时：只落大纲节标题，概念为空，融合退回术语/分词。
@@ -756,7 +763,7 @@ export class ResearchSessionService {
         try {
           const extracted = await provider.deriveAnnotations!({ content: text });
           annotations[index] = {
-            title: (hinted ?? extracted.title ?? "").trim(),
+            title: extractTitles ? (hinted ?? extracted.title ?? "").trim() : (hinted ?? "").trim(),
             concepts: extracted.concepts ?? [],
           };
         } catch {
@@ -781,7 +788,8 @@ export class ResearchSessionService {
     const explicit = latestUser.match(/(\d+(?:\.\d+)?)\s*(万|千)?\s*字/);
     if (explicit) {
       const unit = explicit[2] === "万" ? 10_000 : explicit[2] === "千" ? 1_000 : 1;
-      if (Number.parseFloat(explicit[1] ?? "0") * unit >= LONG_FORM_CHAR_THRESHOLD) return true;
+      // 阈值同源消费共享契约的长文判定常量（LONG_TEXT_CHAR_THRESHOLD）。
+      if (Number.parseFloat(explicit[1] ?? "0") * unit >= LONG_TEXT_CHAR_THRESHOLD) return true;
     }
     return false;
   }

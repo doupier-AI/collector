@@ -7,7 +7,7 @@ import { MarkdownContent, type RenderedTermMarker } from "../../components/Markd
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { markExactInRendered, setRangeFromOffsets } from "../selection/selection-highlight";
 import { taskErrorReason } from "./format";
-import { deriveSliceCardTargets, sliceCardAccessibleName } from "./slice-cards";
+import { deriveSliceCardTargets, sliceCardAccessibleName, turnCardId } from "./slice-cards";
 import { termPreviewClientKey } from "./useTermPreviews";
 
 /** 来源返回高亮：消息层定位结果。start/end 为可见文本空间偏移，exact 供 DOM 兜底搜索。 */
@@ -37,12 +37,12 @@ export interface MessageItemProps {
   onGrowTermMarker?: (messageId: string, marker: TermMarker) => Promise<boolean>;
   /** #36：切片列表；存在正式切片时渲染为连续语义卡片序列。 */
   slices?: ResearchSliceRecord[];
-  /** #42：融合依据定位的当前目标卡片 id（无定位时不传）；目标卡获得短暂强调。 */
-  fragmentCardId?: string;
+  /** #42：融合依据/片段深链定位的当前目标元素 id（长文=节卡容器，普通回答=轮次卡片内段落块）。 */
+  fragmentTargetId?: string;
 }
 
 /** 单条消息。AI 消息与对应用户消息之间由 CSS 绘制克制的来源线与节点。 */
-export function MessageItem({ message, task, retrying = false, onRetry, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, onGrowTermMarker, slices, fragmentCardId, fusionSources }: MessageItemProps) {
+export function MessageItem({ message, task, retrying = false, onRetry, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, onGrowTermMarker, slices, fragmentTargetId, fusionSources }: MessageItemProps) {
   if (message.role === "user") {
     return (
       <li className="message message--user" data-message-id={message.id}>
@@ -78,7 +78,7 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
             onGrowMarker={onGrowTermMarker}
           >
             {message.status === "completed" ? (
-              <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} fragmentCardId={fragmentCardId} fusionSources={fusionSources} />
+              <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} fragmentTargetId={fragmentTargetId} fusionSources={fusionSources} />
             ) : (
               <GeneratingBody message={message} task={task} terms={terms} />
             )}
@@ -104,10 +104,11 @@ const NO_TERMS: TermMarker[] = [];
  * Markdown 由 MarkdownContent 安全渲染；[来源n] 由 remark 插件转可悬停角标。
  * 返回高亮在渲染后 DOM 上用可见文本空间偏移圈 <mark>，偏移失败时兜底 exact 搜索。
  * 生成自由化：卡片由派生切片渲染（deriveSliceCardTargets 与章节导航共用同一份对齐），
- * 一张卡片 = 一个段落块；标题来自大纲节标题或小模型事后抽取，可为空（空标题卡片只显正文）。
- * completed 必带派生切片；切片缺失属异常，此时防御性降级为纯文本连续渲染（不造重试卡，那是 failed 的事）。
+ * 一张卡片 = 一个完整论述单元；标题来自大纲节标题或小模型事后抽取，可为空（空标题卡片只显正文）。
+ * #91 呈现契约：仅长文派生节卡；普通回答整条消息渲染为一张轮次卡片连续正文，不造重试卡
+ * （那是 failed 的事），切片缺失时同样防御性降级为连续正文。
  */
-function AssistantBlocks({ message, highlight, citations, groundingSources, terms, slices, fragmentCardId, fusionSources }: { message: ResearchMessageRecord; highlight?: MessageHighlight; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[]; terms: TermMarker[]; slices?: ResearchSliceRecord[]; fragmentCardId?: string; fusionSources?: ResearchFusionSource[] }) {
+function AssistantBlocks({ message, highlight, citations, groundingSources, terms, slices, fragmentTargetId, fusionSources }: { message: ResearchMessageRecord; highlight?: MessageHighlight; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[]; terms: TermMarker[]; slices?: ResearchSliceRecord[]; fragmentTargetId?: string; fusionSources?: ResearchFusionSource[] }) {
   const blocks = deriveMessageBlocks(message.content);
   // 术语按块分组一次并保持数组身份稳定：MarkdownContent 以 terms 引用变化决定是否重扫
   // DOM 重新包裹术语标记；若每次渲染都新建数组，已被键盘聚焦的标记元素会被替换，焦点
@@ -130,6 +131,7 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
   const activeHighlight = highlight ?? undefined;
 
   // 生成自由化：卡片目标与章节导航同源派生；块对齐与 blockId 计算不再各自手工进行。
+  // #91：普通回答无节卡目标——整条消息渲染为一张轮次卡片的连续正文。
   const cardTargets = deriveSliceCardTargets(message, slices);
   if (cardTargets.length > 0) {
     return (
@@ -148,7 +150,7 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
               sources={groundingSources}
               citations={citations}
               terms={termsByBlock.get(target.blockOrdinal) ?? NO_TERMS}
-              fragmentFocused={fragmentCardId === target.cardId}
+              fragmentFocused={fragmentTargetId === target.cardId}
               fusionSources={fusionSources}
             />
           );
@@ -157,25 +159,36 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
     );
   }
 
-  const matchHighlight = activeHighlight?.blockOrdinal;
+  // #91 轮次卡片：普通回答 = 一张卡片的连续正文，不再逐段拆卡、不显示导航线。
+  // 段落块仍是选区锚点、弱标记与引用偏移的共同基线（deriveMessageBlocks 未改动），
+  // 块容器带稳定 id，供 ?fragment= 深链与来源返回按段落精确定位。
   return (
     <div className="message__blocks" data-content-kind="message" data-message-id={message.id}>
-      {blocks.map((block) => {
-        const blockId = messageContentBlockId(message.id, block.ordinal);
-        const thisHighlight = activeHighlight && activeHighlight.blockOrdinal === block.ordinal ? activeHighlight : undefined;
-        return (
-          <MessageBlock
-            key={block.ordinal}
-            blockText={block.text}
-            blockId={blockId}
-            highlight={thisHighlight}
-            sources={groundingSources}
-            citations={citations}
-            terms={termsByBlock.get(block.ordinal) ?? NO_TERMS}
-            fusionSources={fusionSources}
-          />
-        );
-      })}
+      <section
+        id={turnCardId(message.id)}
+        className="turn-card"
+        data-turn-card=""
+        aria-label="Collector 回答"
+      >
+        {blocks.map((block) => {
+          const blockId = messageContentBlockId(message.id, block.ordinal);
+          const thisHighlight = activeHighlight && activeHighlight.blockOrdinal === block.ordinal ? activeHighlight : undefined;
+          return (
+            <MessageBlock
+              key={block.ordinal}
+              blockText={block.text}
+              blockId={blockId}
+              elementId={blockId}
+              fragmentFocused={fragmentTargetId === blockId}
+              highlight={thisHighlight}
+              sources={groundingSources}
+              citations={citations}
+              terms={termsByBlock.get(block.ordinal) ?? NO_TERMS}
+              fusionSources={fusionSources}
+            />
+          );
+        })}
+      </section>
     </div>
   );
 }
@@ -212,7 +225,7 @@ function SliceCard({ slice, blockText, blockId, anchorId, cardId, highlight, sou
   return (
     <section
       id={cardId}
-      className={fragmentFocused ? "slice-card slice-card--focused" : "slice-card"}
+      className={fragmentFocused ? "slice-card fragment-target--focused" : "slice-card"}
       data-slice-id={slice.id}
       tabIndex={-1}
       {...(title ? { "aria-labelledby": anchorId } : { "aria-label": sliceCardAccessibleName(slice, blockText) })}
@@ -237,8 +250,9 @@ function SliceCard({ slice, blockText, blockId, anchorId, cardId, highlight, sou
 }
 
 /** 单个消息块：Markdown 渲染 + 渲染后 DOM 高亮（useLayoutEffect）。
-    titleAnchorId 存在时，把正文首个标题元素提升为卡片标题（挂该 id 供导航定位）。 */
-function MessageBlock({ blockText, blockId, titleAnchorId, highlight, sources, citations, terms, fusionSources }: { blockText: string; blockId: string; titleAnchorId?: string; highlight?: MessageHighlight; sources: ResearchGroundingSourceRecord[]; citations: ResearchCitationRecord[]; terms: TermMarker[]; fusionSources?: ResearchFusionSource[] }) {
+    titleAnchorId 存在时，把正文首个标题元素提升为卡片标题（挂该 id 供导航定位）。
+    elementId 存在时容器挂稳定 id 并可聚焦——轮次卡片内段落块是 ?fragment= 深链的落点。 */
+function MessageBlock({ blockText, blockId, elementId, fragmentFocused = false, titleAnchorId, highlight, sources, citations, terms, fusionSources }: { blockText: string; blockId: string; elementId?: string; fragmentFocused?: boolean; titleAnchorId?: string; highlight?: MessageHighlight; sources: ResearchGroundingSourceRecord[]; citations: ResearchCitationRecord[]; terms: TermMarker[]; fusionSources?: ResearchFusionSource[] }) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
@@ -262,7 +276,14 @@ function MessageBlock({ blockText, blockId, titleAnchorId, highlight, sources, c
   }, [highlight]);
 
   return (
-    <div className="message__content" data-block-id={blockId} data-block-text ref={containerRef}>
+    <div
+      id={elementId}
+      className={fragmentFocused ? "message__content fragment-target--focused" : "message__content"}
+      tabIndex={elementId !== undefined ? -1 : undefined}
+      data-block-id={blockId}
+      data-block-text
+      ref={containerRef}
+    >
       <MarkdownContent text={blockText} sources={sources} citations={citations} terms={terms} variant="message" titleAnchorId={titleAnchorId} fusionSources={fusionSources} />
     </div>
   );

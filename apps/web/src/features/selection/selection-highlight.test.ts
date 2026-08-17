@@ -90,7 +90,7 @@ describe("highlightForMessages", () => {
   });
 
   it("锚点有效时返回消息、块与高亮范围", () => {
-    const result = highlightForMessages([message], {
+    const result = highlightForMessages([message], undefined, {
       kind: "message",
       messageId: "m-out",
       blockOrdinal: 1,
@@ -109,7 +109,7 @@ describe("highlightForMessages", () => {
   });
 
   it("消息不存在时返回带段落说明的降级结果", () => {
-    const result = highlightForMessages([], {
+    const result = highlightForMessages([], undefined, {
       kind: "message",
       messageId: "m-gone",
       blockOrdinal: 2,
@@ -121,7 +121,7 @@ describe("highlightForMessages", () => {
   });
 
   it("块存在即返回 found；原文已不在块中匹配改为由渲染层 DOM 校验", () => {
-    const result = highlightForMessages([message], {
+    const result = highlightForMessages([message], undefined, {
       kind: "message",
       messageId: "m-out",
       blockOrdinal: 0,
@@ -140,7 +140,7 @@ describe("highlightForMessages", () => {
   });
 
   it("快照锚点不属于会话页，返回 null", () => {
-    const result = highlightForMessages([message], {
+    const result = highlightForMessages([message], undefined, {
       kind: "snapshot",
       contentSnapshotId: "snap-1",
       blockId: "block-1",
@@ -152,9 +152,9 @@ describe("highlightForMessages", () => {
   });
 });
 
-describe("highlightForMessages 节单元对齐（#48）", () => {
-  // plan-then-write 常态：正文含 ATX 标题块，标题块并入随后的正文节。
-  // 捕获时锚点 blockOrdinal 是渲染后 DOM 块下标 = 节单元下标（标题块并入节后节数 < 段落数）。
+describe("highlightForMessages 锚点随呈现契约对齐（#48/#91）", () => {
+  // 普通回答（短正文）：渲染为轮次卡片连续正文，DOM 块 = deriveMessageBlocks 原始段落块，
+  // 捕获时 blockOrdinal 即原始段落下标，直接透传。
   const titled = makeMessage({
     id: "m-out",
     role: "assistant",
@@ -162,9 +162,8 @@ describe("highlightForMessages 节单元对齐（#48）", () => {
     content: "## 第一节\n\n这是第一段正文。\n\n## 第二节\n\n这是第二段正文。",
   });
 
-  it("标题块并入节后，锚点 blockOrdinal 按节单元解析（blockId 用节首块段落 ordinal）", () => {
-    // 节单元序列：0 = "## 第一节\n\n这是第一段正文。"，1 = "## 第二节\n\n这是第二段正文。"
-    const result = highlightForMessages([titled], {
+  it("普通回答：blockOrdinal 即原始段落块下标，不经过节单元合并", () => {
+    const result = highlightForMessages([titled], undefined, {
       kind: "message",
       messageId: "m-out",
       blockOrdinal: 1,
@@ -175,16 +174,15 @@ describe("highlightForMessages 节单元对齐（#48）", () => {
     expect(result).toEqual({
       kind: "found",
       messageId: "m-out",
-      // 第二节以第 3 个原始段落开头（## 第一节=0、正文=1、## 第二节=2）
-      blockId: "m-out#p2",
-      blockOrdinal: 2,
+      blockId: "m-out#p1",
+      blockOrdinal: 1,
       start: 4,
       end: 8,
     });
   });
 
-  it("偏移落在并入节的标题块内时仍定位到该节", () => {
-    const result = highlightForMessages([titled], {
+  it("普通回答：标题块仍是独立锚点块（偏移落在标题块内定位到该块）", () => {
+    const result = highlightForMessages([titled], undefined, {
       kind: "message",
       messageId: "m-out",
       blockOrdinal: 0,
@@ -202,8 +200,60 @@ describe("highlightForMessages 节单元对齐（#48）", () => {
     });
   });
 
-  it("节单元下标越界时降级（blockOrdinal 超过节数）", () => {
-    const result = highlightForMessages([titled], {
+  it("普通回答：块下标越界时降级", () => {
+    const result = highlightForMessages([titled], undefined, {
+      kind: "message",
+      messageId: "m-out",
+      blockOrdinal: 5,
+      startOffset: 0,
+      endOffset: 4,
+      exact: "不存在的节",
+    }, "不存在的节");
+    expect(result).toEqual({ kind: "fallback", caption: "段落 6" });
+  });
+
+  // 长文：渲染为节卡（标题块并入随后正文节），捕获时 blockOrdinal 是渲染后节单元下标。
+  const longContent = "## 第一节\n\n" + "这是第一段正文。".repeat(150) + "\n\n## 第二节\n\n" + "这是第二段正文。".repeat(150);
+  const longTitled = makeMessage({
+    id: "m-out",
+    role: "assistant",
+    status: "completed",
+    content: longContent,
+  });
+  const formalSlices = [{
+    id: "slice:node:m-out:0",
+    nodeId: "node-a",
+    messageId: "m-out",
+    ordinal: 0,
+    title: "",
+    normalizedConcepts: [] as string[],
+    sourceRefs: [],
+    isProvisional: false,
+    createdAt: "2026-08-01T00:00:00.000Z",
+  }];
+
+  it("长文节卡：锚点 blockOrdinal 按节单元解析（blockId 用节首块段落 ordinal）", () => {
+    // 节单元序列：0 = "## 第一节" + 首段正文块，1 = "## 第二节" + 末段正文块。
+    const result = highlightForMessages([longTitled], { "m-out": formalSlices }, {
+      kind: "message",
+      messageId: "m-out",
+      blockOrdinal: 1,
+      startOffset: 4,
+      endOffset: 8,
+      exact: "第二段正文",
+    }, "第二段正文");
+    expect(result).toEqual({
+      kind: "found",
+      messageId: "m-out",
+      blockId: "m-out#p2",
+      blockOrdinal: 2,
+      start: 4,
+      end: 8,
+    });
+  });
+
+  it("长文节卡：节单元下标越界时降级", () => {
+    const result = highlightForMessages([longTitled], { "m-out": formalSlices }, {
       kind: "message",
       messageId: "m-out",
       blockOrdinal: 5,
