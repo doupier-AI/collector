@@ -39,10 +39,12 @@ export interface MessageItemProps {
   slices?: ResearchSliceRecord[];
   /** #42：融合依据/片段深链定位的当前目标元素 id（长文=节卡容器，普通回答=轮次卡片内段落块）。 */
   fragmentTargetId?: string;
+  /** #94：节点内轮次 ≥2 时为真——轮次卡片以背景/边框色/阴影区分轮次（零布局位移）；单轮不额外装饰。 */
+  multiTurn?: boolean;
 }
 
 /** 单条消息。AI 消息与对应用户消息之间由 CSS 绘制克制的来源线与节点。 */
-export function MessageItem({ message, task, retrying = false, onRetry, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, onGrowTermMarker, slices, fragmentTargetId, fusionSources }: MessageItemProps) {
+export function MessageItem({ message, task, retrying = false, onRetry, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, onGrowTermMarker, slices, fragmentTargetId, fusionSources, multiTurn = false }: MessageItemProps) {
   if (message.role === "user") {
     return (
       <li className="message message--user" data-message-id={message.id}>
@@ -78,9 +80,9 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
             onGrowMarker={onGrowTermMarker}
           >
             {message.status === "completed" ? (
-              <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} fragmentTargetId={fragmentTargetId} fusionSources={fusionSources} />
+              <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} fragmentTargetId={fragmentTargetId} fusionSources={fusionSources} multiTurn={multiTurn} />
             ) : (
-              <GeneratingBody message={message} task={task} terms={terms} />
+              <GeneratingBody message={message} task={task} terms={terms} multiTurn={multiTurn} />
             )}
           </TermPreviewInteraction>
           {message.status === "completed" ? (
@@ -108,7 +110,7 @@ const NO_TERMS: TermMarker[] = [];
  * #91 呈现契约：仅长文派生节卡；普通回答整条消息渲染为一张轮次卡片连续正文，不造重试卡
  * （那是 failed 的事），切片缺失时同样防御性降级为连续正文。
  */
-function AssistantBlocks({ message, highlight, citations, groundingSources, terms, slices, fragmentTargetId, fusionSources }: { message: ResearchMessageRecord; highlight?: MessageHighlight; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[]; terms: TermMarker[]; slices?: ResearchSliceRecord[]; fragmentTargetId?: string; fusionSources?: ResearchFusionSource[] }) {
+function AssistantBlocks({ message, highlight, citations, groundingSources, terms, slices, fragmentTargetId, fusionSources, multiTurn = false }: { message: ResearchMessageRecord; highlight?: MessageHighlight; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[]; terms: TermMarker[]; slices?: ResearchSliceRecord[]; fragmentTargetId?: string; fusionSources?: ResearchFusionSource[]; multiTurn?: boolean }) {
   const blocks = deriveMessageBlocks(message.content);
   // 术语按块分组一次并保持数组身份稳定：MarkdownContent 以 terms 引用变化决定是否重扫
   // DOM 重新包裹术语标记；若每次渲染都新建数组，已被键盘聚焦的标记元素会被替换，焦点
@@ -135,7 +137,7 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
   const cardTargets = deriveSliceCardTargets(message, slices);
   if (cardTargets.length > 0) {
     return (
-      <div className="message__blocks" data-content-kind="message" data-message-id={message.id}>
+      <div className={multiTurn ? "message__blocks message__blocks--turn" : "message__blocks"} data-content-kind="message" data-message-id={message.id}>
         {cardTargets.map((target) => {
           const thisHighlight = activeHighlight && activeHighlight.blockOrdinal === target.blockOrdinal ? activeHighlight : undefined;
           return (
@@ -162,11 +164,12 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
   // #91 轮次卡片：普通回答 = 一张卡片的连续正文，不再逐段拆卡、不显示导航线。
   // 段落块仍是选区锚点、弱标记与引用偏移的共同基线（deriveMessageBlocks 未改动），
   // 块容器带稳定 id，供 ?fragment= 深链与来源返回按段落精确定位。
+  // #94 多轮（≥2）时卡片以背景/边框色/阴影区分轮次（turn-card--multi，零布局位移）；单轮无额外装饰。
   return (
     <div className="message__blocks" data-content-kind="message" data-message-id={message.id}>
       <section
         id={turnCardId(message.id)}
-        className="turn-card"
+        className={multiTurn ? "turn-card turn-card--multi" : "turn-card"}
         data-turn-card=""
         aria-label="Collector 回答"
       >
@@ -713,7 +716,7 @@ function GroundingScopeNote({ task }: { task?: ResearchTaskRecord }) {
   return <p className="message__status message__grounding-scope" data-testid="grounding-scope-note">{message}</p>;
 }
 
-function GeneratingBody({ message, task, terms }: { message: ResearchMessageRecord; task?: ResearchTaskRecord; terms: TermMarker[] }) {
+function GeneratingBody({ message, task, terms, multiTurn = false }: { message: ResearchMessageRecord; task?: ResearchTaskRecord; terms: TermMarker[]; multiTurn?: boolean }) {
   const hasContent = message.content.trim().length > 0;
   const status = task?.groundingScope?.status === "not_requested"
     ? "已保存，正在生成"
@@ -721,7 +724,7 @@ function GeneratingBody({ message, task, terms }: { message: ResearchMessageReco
   return (
     <>
       {hasContent ? (
-        <AssistantBlocks message={message} citations={[]} groundingSources={[]} terms={terms} />
+        <AssistantBlocks message={message} citations={[]} groundingSources={[]} terms={terms} multiTurn={multiTurn} />
       ) : <AiPlaceholder />}
       <p className="message__status">{hasContent ? "正在生成" : status}</p>
     </>

@@ -163,6 +163,28 @@ test.describe("#44 视觉回归基线", () => {
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
+  test("多轮阅读页：轮次卡片视觉与左侧轮次导航像素基线（#94）", async ({ page }) => {
+    const issues = trackBrowserIssues(page);
+    freezeClock(page);
+    await pinModelStatus(page);
+    await openSession(page);
+    // 第二轮追问：确定性假模型产出与首轮同构的三段正文
+    await page.getByLabel("你的问题").fill("第二轮追问：渐进事件如何落地？");
+    await page.getByRole("button", { name: /发送/ }).click();
+    await expect(page.locator(".turn-card")).toHaveCount(2, { timeout: 15_000 });
+    await expect(page.locator(".turn-card").last()).toContainText("回答完毕", { timeout: 15_000 });
+    await closeSidebars(page);
+
+    // 多轮状态：两张轮次卡片（多轮区分视觉）+ 左侧轮次导航线列（两条线，第一条高亮）
+    await expect(page.getByRole("navigation", { name: "轮次导航" })).toBeVisible();
+    await expect(page.locator(".turn-rail__tick")).toHaveCount(2);
+    await expect(page).toHaveScreenshot("node-reading-multi-turn", {
+      mask: dynamicTimeMasks(page),
+      maskColor: "#FFFFFF",
+    });
+    expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
+  });
+
   test("深色主题：ADR-0019 整站深色工作台像素基线", async ({ page }) => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);
@@ -259,8 +281,17 @@ test.describe("#44 最高 Seam 验证补充", () => {
     await expect(dialog).toBeVisible();
     await page.keyboard.press("g");
     await expect(dialog.getByTestId("map-mode-assoc")).toHaveAttribute("aria-pressed", "true");
+    // 等目标视图（关联画布）挂载落定再发 Escape（快速失败约定的就绪信号）。
+    await expect(dialog.getByRole("region", { name: "关系网状画布" })).toBeVisible();
+    // #94 修复回归：Escape 可达的前提是焦点在对话框内（不必精确落在对话框元素）。
+    // 模式切换重建视图会卸载专注脉络被聚焦的行；若焦点落回 body，模块必须重新接管。
+    await page.waitForFunction(() => {
+      const dlg = document.getElementById("research-map-overlay");
+      return Boolean(dlg && dlg.contains(document.activeElement));
+    }, undefined, { timeout: 5_000 });
     await page.keyboard.press("Escape");
-    await expect(dialog).toBeHidden();
+    // 高负载串行下关闭渲染可能有秒级延迟：有界放宽到 15s（默认 5s 曾出现全量门禁超时）。
+    await expect(dialog).toBeHidden({ timeout: 15_000 });
 
     const after = await bodyText();
     expect(after).toBe(before);

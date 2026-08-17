@@ -1066,3 +1066,97 @@ describe("#32 自动融合挂载扫描", () => {
     expect(screen.queryByTestId("auto-fusion-badge")).not.toBeInTheDocument();
   });
 });
+
+describe("#94 轮次卡片视觉与左侧轮次导航", () => {
+  function makeSlice(messageId: string, ordinal: number, title: string): import("@collector/capture-contracts").ResearchSliceRecord {
+    return {
+      id: `slice:session-1:${messageId}:${ordinal}`,
+      nodeId: "session-1",
+      messageId,
+      ordinal,
+      title,
+      normalizedConcepts: [],
+      sourceRefs: [],
+      isProvisional: false,
+      createdAt: "2026-08-01T00:00:00.000Z",
+    };
+  }
+
+  function twoTurnView(): ResearchNodeView {
+    return makeNodeView({
+      node: makeNode({ id: "session-1", sessionId: "session-1" }),
+      session: makeSession({ id: "session-1", title: "两轮会话" }),
+      messages: [
+        makeMessage({ id: "m-in-1", role: "user", content: "第一个问题：什么是本地优先？" }),
+        makeMessage({ id: "m-out-1", role: "assistant", status: "completed", content: "第一轮回答。" }),
+        makeMessage({ id: "m-in-2", role: "user", content: "第二个问题：渐进事件如何落地？" }),
+        makeMessage({ id: "m-out-2", role: "assistant", status: "completed", content: "第二轮回答。" }),
+      ],
+      tasks: [],
+    });
+  }
+
+  /** 多轮 + 首轮长文（超共享阈值、带正式切片）。 */
+  function twoTurnLongFirstView(): ResearchNodeView {
+    const view = twoTurnView();
+    const first = view.messages.find((m) => m.id === "m-out-1")!;
+    first.content = "第一段。\n\n第二段。\n\n第三段。" + "填充".repeat(1_200);
+    view.slices = {
+      [first.id]: [
+        makeSlice(first.id, 0, "起点"),
+        makeSlice(first.id, 1, "推进"),
+        makeSlice(first.id, 2, "收束"),
+      ],
+    };
+    return view;
+  }
+
+  it("轮次 ≥2：渲染轮次导航，线数=轮次数，线绑定该轮用户提问开头", async () => {
+    const { container } = renderNodePage({ getResearchNodeView: async () => twoTurnView() });
+    await screen.findByText("第一轮回答。");
+    const nav = screen.getByRole("navigation", { name: "轮次导航" });
+    expect(nav).toBeInTheDocument();
+    const ticks = container.querySelectorAll(".turn-rail__tick");
+    expect(ticks.length).toBe(2);
+    expect(ticks[0]).toHaveAttribute("aria-label", "第 1 轮：第一个问题：什么是本地优先？");
+    expect(ticks[1]).toHaveAttribute("aria-label", "第 2 轮：第二个问题：渐进事件如何落地？");
+    // 多轮轮次卡片视觉区分：两张轮次卡片都带多轮修饰类
+    expect(container.querySelectorAll(".turn-card--multi").length).toBe(2);
+  });
+
+  it("多轮时章节导航让位轮次导航（长文暂由轮次导航覆盖）", async () => {
+    const { container } = renderNodePage({ getResearchNodeView: async () => twoTurnLongFirstView() });
+    await screen.findByText("第一段。");
+    expect(screen.getByRole("navigation", { name: "轮次导航" })).toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "章节导航" })).not.toBeInTheDocument();
+    expect(container.querySelectorAll(".turn-rail__tick").length).toBe(2);
+    // 长文轮次容器带轮次级修饰类
+    expect(container.querySelectorAll(".message__blocks--turn").length).toBe(1);
+  });
+
+  it("单轮：不渲染轮次导航，也不给轮次卡片额外装饰", async () => {
+    const { container } = renderNodePage({ getResearchNodeView: async () => readyRootView() });
+    await screen.findByText("因为不同头可以关注不同位置。");
+    expect(screen.queryByRole("navigation", { name: "轮次导航" })).not.toBeInTheDocument();
+    expect(container.querySelectorAll(".turn-rail__tick").length).toBe(0);
+    expect(container.querySelectorAll(".turn-card--multi").length).toBe(0);
+  });
+
+  it("单轮长文：章节导航保持现状（现状不回归）", async () => {
+    const view = readyRootView();
+    const assistant = view.messages.find((m) => m.role === "assistant")!;
+    assistant.content = "第一段。\n\n第二段。\n\n第三段。" + "填充".repeat(1_200);
+    view.slices = {
+      [assistant.id]: [
+        makeSlice(assistant.id, 0, "起点"),
+        makeSlice(assistant.id, 1, "推进"),
+        makeSlice(assistant.id, 2, "收束"),
+      ],
+    };
+    const { container } = renderNodePage({ getResearchNodeView: async () => view });
+    await screen.findByText("第一段。");
+    expect(screen.getByRole("navigation", { name: "章节导航" })).toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "轮次导航" })).not.toBeInTheDocument();
+    expect(container.querySelectorAll(".slice-rail__tick").length).toBe(3);
+  });
+});

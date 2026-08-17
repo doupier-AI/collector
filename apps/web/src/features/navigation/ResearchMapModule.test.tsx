@@ -250,3 +250,35 @@ describe("ResearchMapModule 稳定地址会话解析（#61）", () => {
     expect(getResearchNodeView).toHaveBeenCalledTimes(2);
   });
 });
+
+  it("#94 修复：模式切换卸载被聚焦的脉络行后，对话框重新接管焦点（Escape 保持可达）", async () => {
+    const api: Partial<ApiClient> = { getResearchGraph: async () => moduleProjection() };
+    const renderWithMode = (mode: "focus" | "assoc") => (
+      <ServicesProvider services={{ api: api as ApiClient } as unknown as AppServices}>
+        <MemoryRouter initialEntries={["/research/session-1/node/focus"]}>
+          <ResearchMapModule
+            sessionId="session-1"
+            focusNodeId="focus"
+            mode={mode}
+            wide
+            onModeChange={() => {}}
+            onClose={() => {}}
+          />
+        </MemoryRouter>
+      </ServicesProvider>
+    );
+    const { rerender } = render(renderWithMode("focus"));
+
+    const dialog = screen.getByRole("dialog", { name: "研究地图" });
+    const chain = await within(dialog).findByRole("list", { name: "专注脉络" });
+    // 真实时序：数据就绪后 roving 焦点抢到当前节点行（#94 门禁取证——约 100ms 后焦点离开对话框）。
+    const currentRow = within(chain).getByRole("listitem", { name: /当前节点/ });
+    await waitFor(() => expect(currentRow).toHaveFocus());
+
+    // 键盘切模式（不经过按钮点击转移焦点）：key={mode} 重建视图，被聚焦的行随视图卸载。
+    rerender(renderWithMode("assoc"));
+    expect(within(dialog).getByRole("region", { name: "关系网状画布" })).toBeInTheDocument();
+
+    // 修复：焦点已不在对话框内（浏览器回落 body）→ 恢复到对话框，Escape 关闭路径保持可达。
+    await waitFor(() => expect(dialog).toHaveFocus());
+  });

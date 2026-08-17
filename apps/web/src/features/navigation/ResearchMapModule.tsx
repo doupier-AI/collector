@@ -67,6 +67,16 @@ export function ResearchMapModule({
     dialogRef.current?.focus();
   }, []);
 
+  // 模式切换以 key={mode} 重建视图：专注脉络 roving 焦点所在的行（<li>）随视图卸载，
+  // 浏览器把焦点落回 body，对话框的 Escape 处理随之不可达（#94 全量门禁取证：
+  // 「t 打开 → 脉络数据就绪抢焦到行 → g 切关联 → Esc 失效」）。切模式后若焦点已不在
+  // 对话框内，恢复到对话框——模态语义：焦点永远留在对话框内。
+  useEffect(() => {
+    if (dialogRef.current && !dialogRef.current.contains(document.activeElement)) {
+      dialogRef.current.focus();
+    }
+  }, [mode]);
+
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
       if (event.key !== "Escape") return;

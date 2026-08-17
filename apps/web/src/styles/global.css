@@ -207,9 +207,9 @@ button {
   padding: var(--space-6) 0 5rem;
 }
 
-/* #54：章节导航与正文使用两条结构上互斥的网格轨道。
-   页面、卡片或左右侧栏以后如何改宽，都只能让整张网格一起回流，导航不会进入正文轨道。 */
-.page.page--with-slice-rail {
+/* #54/#94：左侧导航线列（章节导航或轮次导航，两者互斥出现）与正文使用两条结构上互斥的
+   网格轨道。页面、卡片或左右侧栏以后如何改宽，都只能让整张网格一起回流，导航不会进入正文轨道。 */
+.page.page--with-rail {
   width: min(100% - 2rem, calc(var(--measure) + 2rem + var(--space-3)));
   display: grid;
   grid-template-columns: 2rem minmax(0, var(--measure));
@@ -217,7 +217,7 @@ button {
   align-items: start;
 }
 
-.page--with-slice-rail .page__content {
+.page--with-rail .page__content {
   min-width: 0;
 }
 
@@ -750,6 +750,21 @@ button {
   border-radius: var(--radius-panel);
 }
 
+/* #94 多轮（≥2）轮次区分：只动边框色与阴影，零布局位移、不污染选区偏移（#44 纪律）。
+   单轮不额外装饰，保持 T01 现状。 */
+.turn-card--multi {
+  border-color: color-mix(in srgb, var(--color-reading-line) 55%, var(--color-reading-ink));
+  box-shadow: var(--shadow-1);
+}
+
+/* #94 多轮长文：节卡组获得轮次级容器视觉（托盘底色 + 阴影 + 圆角），节卡自身视觉不变。
+   容器无 padding/margin 变化——只动背景/阴影，零布局位移。 */
+.message__blocks--turn {
+  background: color-mix(in srgb, var(--color-reading-bg) 55%, var(--color-canvas));
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-1);
+}
+
 /* #44 卡片常态：悬停给出低表面提升；键盘焦点给出光环（与定位强调区分：不染色背景）。 */
 .slice-card:hover {
   background: var(--color-surface-hover);
@@ -952,7 +967,7 @@ button {
 
 @media (max-width: 720px) {
   /* 窄屏仍保留结构化轨道；只压缩页边距，不把导航翻到正文或视口之外。 */
-  .page.page--with-slice-rail {
+  .page.page--with-rail {
     width: min(100% - 1rem, calc(var(--measure) + 2rem + var(--space-2)));
     column-gap: var(--space-2);
   }
@@ -964,6 +979,98 @@ button {
 
 @media (prefers-reduced-motion: reduce) {
   .slice-rail__preview {
+    transition: none;
+    animation: none;
+  }
+}
+
+/* #94 轮次导航（ADR-0032 双导航左侧轨道）：一条线对应一轮问答，仅轮次 ≥2 出现。
+   与章节导航同款 sticky 独立轨道（#54 网格轨道由 .page--with-rail 提供）；两者互斥渲染。 */
+.turn-rail {
+  position: sticky;
+  top: 50vh;
+  align-self: start;
+  width: 2rem;
+  margin: 0;
+  transform: translateY(-50%);
+  /* 与章节导航同层：低于节点树/网状导航/标记面板（z-index 30）与其遮罩（20）。 */
+  z-index: var(--z-rail);
+}
+
+.turn-rail__track {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+}
+
+.turn-rail__tick {
+  display: block;
+  width: 1.25rem;
+  height: 0.1875rem;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-control);
+  background: var(--color-line);
+  cursor: pointer;
+  position: relative;
+}
+
+/* 透明热区：与章节导航线同规格，扩到最小触控目标；视觉线仍细。 */
+.turn-rail__tick::after {
+  content: "";
+  position: absolute;
+  inset: -0.5rem -0.35rem;
+}
+
+.turn-rail__tick:hover,
+.turn-rail__tick:focus-visible {
+  background: var(--color-muted);
+}
+
+.turn-rail__tick--active {
+  width: 2rem;
+  background: var(--color-ai);
+}
+
+.turn-rail__preview {
+  /* 与线列同一参考系：absolute 挂在 sticky rail 下，top 由 JS 按被预览线偏移给定。
+     left 在线列右外侧 + pointer-events:none——双重保证预览框永不遮挡线的点击热区。 */
+  position: absolute;
+  left: calc(100% + var(--space-2));
+  z-index: var(--z-rail);
+  width: min(18rem, calc(100vw - 4rem));
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-panel);
+  pointer-events: none;
+}
+
+.turn-rail__preview-title {
+  margin: 0 0 var(--space-1);
+  color: var(--color-ink);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.turn-rail__preview-excerpt {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* 轮次跳转锚点：消息元素预留 sticky 顶栏高度 + 呼吸位（沿用章节导航 scroll-margin 补偿思路）。
+   scroll-margin 只影响滚动定位，不改变布局与选区偏移。 */
+.message[data-message-id] {
+  scroll-margin-top: calc(var(--app-bar-height) + var(--space-4));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .turn-rail__preview {
     transition: none;
     animation: none;
   }

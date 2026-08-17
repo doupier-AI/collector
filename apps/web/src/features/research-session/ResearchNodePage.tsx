@@ -41,6 +41,8 @@ import { useTermPreviews } from "./useTermPreviews";
 import { deriveSliceCardTargets, sliceCardAccessibleName } from "./slice-cards";
 import { SliceRailNav } from "./SliceRailNav";
 import type { SliceRailItem } from "./SliceRailNav";
+import { TurnRailNav } from "./TurnRailNav";
+import type { TurnRailItem } from "./TurnRailNav";
 import {
   FOCUS_DURATION_MS,
   FRAGMENT_LOCATOR_FALLBACK_TEXT,
@@ -127,6 +129,32 @@ export function ResearchNodePage() {
     }
     return items;
   }, [readyMessages, readySlices]);
+  // #94 轮次导航（ADR-0032 左侧轨道）：一条 AI 回答 = 一轮，线绑定该轮起始消息
+  // （用户提问；无提问时为 AI 回答本身）——消息元素恒存在，锚点由导航组件现场解析。
+  // 出现条件：轮次 ≥2；此时长文章节导航让位（长文暂由轮次导航覆盖，章节导航右移归 T05）。
+  const turnItems = useMemo<TurnRailItem[]>(() => {
+    const items: TurnRailItem[] = [];
+    if (!readyMessages) return items;
+    let lastUser: (typeof readyMessages)[number] | undefined;
+    for (const message of readyMessages) {
+      if (message.role === "user") {
+        lastUser = message;
+        continue;
+      }
+      if (message.role !== "assistant") continue;
+      const anchor = lastUser ?? message;
+      items.push({
+        anchorMessageId: anchor.id,
+        messageId: message.id,
+        excerpt: lastUser && lastUser.content.trim() ? lastUser.content : message.content,
+      });
+      lastUser = undefined;
+    }
+    return items;
+  }, [readyMessages]);
+  const showTurnRail = turnItems.length >= 2;
+  // 章节导航仅在轮次导航不出现时渲染（单轮长文现状不回归）；两轨共用正文左侧独立网格轨道。
+  const showSliceRail = !showTurnRail && railItems.length > 0;
   // 导入控制器以会话视图形状工作：节点视图结构兼容，合并时保留 node / childNodes
   const importsUpdateView = useRef(
     (updater: (view: ResearchSessionView) => ResearchSessionView) =>
@@ -650,13 +678,14 @@ export function ResearchNodePage() {
 
   return (
     <div
-      className={`page${railItems.length > 0 ? " page--with-slice-rail" : ""}`}
+      className={`page${showTurnRail || showSliceRail ? " page--with-rail" : ""}`}
       onDragEnter={isRoot ? handleDragEnter : undefined}
       onDragOver={isRoot ? handleDragOver : undefined}
       onDragLeave={isRoot ? handleDragLeave : undefined}
       onDrop={isRoot ? handleDrop : undefined}
     >
-      {railItems.length > 0 ? <SliceRailNav items={railItems} /> : null}
+      {showTurnRail ? <TurnRailNav items={turnItems} /> : null}
+      {showSliceRail ? <SliceRailNav items={railItems} /> : null}
       <div className="page__content">
       {originSource.selection ? (
         <>
@@ -862,6 +891,7 @@ export function ResearchNodePage() {
                 slices={view.slices?.[message.id]}
                 fragmentTargetId={fragmentFocus?.elementId}
                 fusionSources={view.fusionSources?.[message.id]}
+                multiTurn={showTurnRail}
               />
             );
           })}
