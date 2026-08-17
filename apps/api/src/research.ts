@@ -65,6 +65,18 @@ const PROVIDER_RETRY_MAX_DELAY_MS = 30_000;
 const STREAM_CHECKPOINT_MIN_INTERVAL_MS = 2_000;
 const STREAM_CHECKPOINT_MIN_CHARS = 2_000;
 
+/**
+ * T02 硬约束判定（#92，ADR-0032）：长文节正文首行必须是 Markdown 二级标题（`## 标题`）。
+ * 与 deriveMessageBlocks 的 splitBlockHeading ATX 规则对齐（`#` 后留空白、标题非空），
+ * 但只接受二级标题——扩写提示词约定的形态；`#`/`###` 等其它级别不算合规。
+ * 章节导航锚点由该架构保证：每节首行即标题块，锚点恒存在。
+ */
+function sectionStartsWithHeading(content: string): boolean {
+  const normalized = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const firstLine = normalized.trimStart().split("\n", 1)[0] ?? "";
+  return /^##(?!#)\s+\S/.test(firstLine);
+}
+
 export interface ResearchGenerationRequest {
   session: ResearchSessionRecord;
   messages: Array<Pick<ResearchMessageRecord, "role" | "content">>;
@@ -876,6 +888,8 @@ export class ResearchSessionService {
    * 不整任务失败，仅当零节完成时整体失败）。断点续扩：preserveContent 重试时 message.content
    * 非空则不调模型、不重 append；否则把已完成节重新 append 秒级重建前文，再从首个 pending/failed
    * 节的 partialContent 续扩。
+   * T02 硬约束（#92）：每节首行 `##` 标题为章节导航锚点保证；节完成品缺标题时确定性补齐
+   * 大纲标题（enforceSectionHeading），不静默通过。
    * 返回最终正文与每节首块的标题映射（供 finalizeDerivedSlices 注入卡片标题）。
    */
   private async writeLongFormBody(
@@ -923,13 +937,16 @@ export class ResearchSessionService {
         await this.store.saveResearchTaskBodyPlan(task.id, { sections });
       });
       if ("content" in result) {
-        section.content = result.content;
+        // T02 硬约束（#92）：节完成品首行必须是 `##` 标题；缺标题时确定性补齐大纲标题。
+        // 正常完成、截断续写与降级产出都在此收口，append 落库前修复，用户不会看到无标题节。
+        const content = this.enforceSectionHeading(task.id, section.heading, result.content);
+        section.content = content;
         section.status = "completed";
         delete section.partialContent;
         completedCount += 1;
         // 增量 append 的分隔符与最终 join("\n\n") 严格一致，保证块边界不错位。
-        await this.appendGeneratedDelta(task, hasPriorContent ? `\n\n${result.content}` : result.content);
-        writtenSoFar = hasPriorContent ? `${writtenSoFar}\n\n${result.content}` : result.content;
+        await this.appendGeneratedDelta(task, hasPriorContent ? `\n\n${content}` : content);
+        writtenSoFar = hasPriorContent ? `${writtenSoFar}\n\n${content}` : content;
         hasPriorContent = true;
       } else {
         // 节最终失败：写失败标记，继续后续节（绝不静默丢节、不整任务失败）。
@@ -1082,6 +1099,19 @@ export class ResearchSessionService {
     const detail = cause instanceof Error ? cause.message : reason;
     console.warn(`[research] 节最终失败 task=${task.id} reason=${reason} detail=${detail}`);
     return { failed: `${reason}（${detail}）` };
+  }
+
+  /**
+   * T02 硬约束（#92，ADR-0032）：plan-then-write 每节首行必须是 `##` 标题。
+   * 缺标题时确定性补齐大纲标题：标题取自大纲契约数据（与节卡标题 hint 同源），
+   * 不调模型、不做任何内容质量评估、天然一次完成——属 ADR-0010「只做契约安全修复」
+   * 同类的有界修复（对照空节重问/截断续写），绝不静默放行无标题节。
+   * 节内已有错位标题时同样只在节首批注大纲标题：不改写正文，锚点契约以首行为准。
+   */
+  private enforceSectionHeading(taskId: string, heading: string, content: string): string {
+    if (sectionStartsWithHeading(content)) return content;
+    console.warn(`[research] 节缺失首行标题，确定性补齐大纲标题 task=${taskId} heading=${heading}`);
+    return `## ${heading.trim()}\n\n${content.replace(/^\s+/, "")}`;
   }
 
   /**

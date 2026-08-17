@@ -39,6 +39,32 @@ test("writeResearchBody 以自由文本请求正文，不强制 JSON 输出", as
   assert.match(requests[0]?.prompt ?? "", /连贯、完整/);
 });
 
+test("T02：普通回答提示词收敛为连续行文，不再鼓励 ## 分节（#92）", async () => {
+  const { provider, requests } = makeProvider(() => "连续正文。");
+  const gateway = new ModelGateway(provider);
+  await gateway.writeResearchBody([{ role: "user", content: "解释本地优先这个概念" }]);
+  const prompt = requests[0]?.prompt ?? "";
+  // 旧「需要分节时…二级标题」鼓励措辞整体移除。
+  assert.doesNotMatch(prompt, /需要分节时/);
+  assert.doesNotMatch(prompt, /二级标题/);
+  // 新的连续行文约束在场。
+  assert.match(prompt, /连续的行文/);
+  assert.match(prompt, /不要用 Markdown 标题把内容拆成小节/);
+  assert.match(prompt, /碎片化的小标题/);
+  // 弱标记契约不受提示词收敛影响（四类对象与身份规则原样保留）。
+  assertUnifiedMentionContract(prompt);
+});
+
+test("T02：长文扩写提示词保留首行 ## 节标题硬约束（#92）", async () => {
+  const { provider, requests } = makeProvider(() => "## 引言\n\n本节正文。");
+  const gateway = new ModelGateway(provider);
+  const outline = parseBodyOutline(JSON.stringify({ sections: [{ heading: "引言", summary: "开端", targetChars: 500 }] }));
+  await gateway.expandBodySection({ goal: "写一篇长文", outline, sectionIndex: 0, writtenSoFar: "" });
+  const prompt = requests[0]?.prompt ?? "";
+  assert.match(prompt, /第一行输出该节标题/);
+  assert.match(prompt, /## 引言/);
+});
+
 test("research body prompt uses the four explainable-object types and stops mention markup at depth four", async () => {
   const shallow = makeProvider(() => "正文");
   const shallowGateway = new ModelGateway(shallow.provider);

@@ -79,8 +79,8 @@ test("两节一次成功：每节恰一次 expand 调用，正文完整拼接", 
   const provider = makeProvider({
     expandCalls,
     expandScript: [
-      () => ({ content: "[[concept:origin:第一节正文]]，论述起源。", finishReason: "stop" }),
-      () => ({ content: "[[concept:practice:第二节正文]]，论述实践。", finishReason: "stop" }),
+      () => ({ content: "## 起源\n\n[[concept:origin:第一节正文]]，论述起源。", finishReason: "stop" }),
+      () => ({ content: "## 实践\n\n[[concept:practice:第二节正文]]，论述实践。", finishReason: "stop" }),
     ],
   });
   const { store, service } = await makeService(t, provider);
@@ -91,6 +91,7 @@ test("两节一次成功：每节恰一次 expand 调用，正文完整拼接", 
   assert.equal(expandCalls[1]?.sectionIndex, 1);
   assert.match(expandCalls[1]?.writtenSoFar ?? "", /\[\[concept:origin:第一节正文\]\]/, "后续节可复用前文的回答内对象身份");
   const content = store.getResearchMessage(outputMessageId)!.content;
+  assert.ok(content.startsWith("## 起源\n\n"), "合规节标题原样保留在正文首部");
   assert.ok(content.includes("第一节正文，论述起源。"));
   assert.ok(content.includes("第二节正文，论述实践。"));
   assert.ok(!content.includes("[本节生成失败"), "成功路径无失败标记");
@@ -99,15 +100,80 @@ test("两节一次成功：每节恰一次 expand 调用，正文完整拼接", 
   store.close();
 });
 
+test("T02 硬约束：节缺首行标题时确定性补齐大纲标题，不额外调模型、不静默通过", async (t) => {
+  const expandCalls: SectionCall[] = [];
+  const provider = makeProvider({
+    expandCalls,
+    expandScript: [
+      // 两节都违反硬约束：直接写正文、不输出首行 ## 标题。
+      () => ({ content: "第一节正文直接开始，没有标题。", finishReason: "stop" }),
+      () => ({ content: "第二节正文也没有标题。", finishReason: "stop" }),
+    ],
+  });
+  const { store, service } = await makeService(t, provider);
+  const { outputMessageId, status } = await runToCompletion(store, service, "k-heading-repair");
+  assert.equal(status, "completed");
+  assert.equal(expandCalls.length, 2, "补齐是确定性修复：不产生额外模型调用");
+  const content = store.getResearchMessage(outputMessageId)!.content;
+  assert.ok(content.startsWith("## 起源\n\n第一节正文直接开始，没有标题。"), "第一节补齐大纲标题且正文一字不改");
+  assert.ok(content.includes("\n\n## 实践\n\n第二节正文也没有标题。"), "第二节同样补齐大纲标题");
+  assert.ok(!content.includes("[本节生成失败"), "补齐修复不触发节失败");
+  // 补齐后的正文派生结构与真实长文一致：每节首块即标题块。
+  const slices = store.listSlicesByMessage(outputMessageId);
+  assert.ok(slices.length >= 2, "缺标题节补齐后仍正常派生切片");
+  store.close();
+});
+
+test("T02 硬约束：截断续写后仍缺标题的节在定稿时统一补齐", async (t) => {
+  const expandCalls: SectionCall[] = [];
+  const provider = makeProvider({
+    expandCalls,
+    expandScript: [
+      // 第一节首次调用即被截断（未及输出标题），续写补齐正文但始终没有标题。
+      () => ({ content: "第一节开头被截断", finishReason: "length" }),
+      () => ({ content: "，续写补全第一节。", finishReason: "stop" }),
+      () => ({ content: "## 实践\n\n第二节正文。", finishReason: "stop" }),
+    ],
+  });
+  const { store, service } = await makeService(t, provider);
+  const { outputMessageId, status } = await runToCompletion(store, service, "k-heading-trunc");
+  assert.equal(status, "completed");
+  assert.equal(expandCalls.length, 3);
+  const content = store.getResearchMessage(outputMessageId)!.content;
+  assert.ok(content.startsWith("## 起源\n\n第一节开头被截断，续写补全第一节。"), "续写拼合后的整节在定稿时补齐标题");
+  assert.equal(content.split("## 起源").length, 2, "标题只补齐一次");
+  store.close();
+});
+
+test("T02 硬约束：降级产出的节内容同样强制首行标题", async (t) => {
+  const expandCalls: SectionCall[] = [];
+  const provider = makeProvider({
+    expandCalls,
+    expandScript: [
+      // 第一节正常调用致命 400：跳过重试直接进降级；降级单次再试返回无标题正文。
+      () => { throw new ModelProviderHttpError("bad request (HTTP 400)", 400); },
+      () => ({ content: "降级产出的无标题正文。", finishReason: "stop" }),
+      () => ({ content: "## 实践\n\n第二节正文。", finishReason: "stop" }),
+    ],
+  });
+  const { store, service } = await makeService(t, provider);
+  const { outputMessageId, status } = await runToCompletion(store, service, "k-heading-degrade");
+  assert.equal(status, "completed");
+  assert.equal(expandCalls.length, 3, "致命错误 + 降级单次再试 + 第二节");
+  const content = store.getResearchMessage(outputMessageId)!.content;
+  assert.ok(content.startsWith("## 起源\n\n降级产出的无标题正文。"), "降级产出也强制首行标题");
+  store.close();
+});
+
 test("单节截断续写一次成功：恰两次调用、第二次带 continuation 断点", async (t) => {
   const expandCalls: SectionCall[] = [];
   const provider = makeProvider({
     expandCalls,
     expandScript: [
-      // 第一节：先截断（length），后续写完成。
-      () => ({ content: "[[concept:section-one:第一节正文]]被截断在中途", finishReason: "length" }),
+      // 第一节：先截断（length），后续写完成；标题在首个增量中已给出。
+      () => ({ content: "## 起源\n\n[[concept:section-one:第一节正文]]被截断在中途", finishReason: "length" }),
       (call) => ({ content: "，续写补全第一节并使用 [[abbreviation:rag:RAG]]。", finishReason: "stop" }),
-      () => ({ content: "第二节正文。", finishReason: "stop" }),
+      () => ({ content: "## 实践\n\n第二节正文。", finishReason: "stop" }),
     ],
   });
   const { store, service } = await makeService(t, provider);
@@ -134,7 +200,7 @@ test("空节重问两次仍空 → 节失败写标记、不静默丢、另一节
       () => ({ content: "", finishReason: "stop" }),    // 空 2
       () => ({ content: "", finishReason: "stop" }),    // 空 3（超 MAX_EMPTY_REASKS=2）→ 进降级
       () => ({ content: "", finishReason: "stop" }),    // 降级重试仍空 → 节失败
-      () => ({ content: "第二节完整正文。", finishReason: "stop" }),
+      () => ({ content: "## 实践\n\n第二节完整正文。", finishReason: "stop" }),
     ],
   });
   const { store, service } = await makeService(t, provider);
@@ -155,8 +221,8 @@ test("429 可重试退避序列后成功；retrySleep 记录递增退避", async
     expandScript: [
       () => { firstSectionCalls += 1; throw new ModelProviderHttpError("rate limited (HTTP 429)", 429); },
       () => { firstSectionCalls += 1; throw new ModelProviderHttpError("rate limited (HTTP 429)", 429); },
-      () => ({ content: "第一节正文。", finishReason: "stop" }),
-      () => ({ content: "第二节正文。", finishReason: "stop" }),
+      () => ({ content: "## 起源\n\n第一节正文。", finishReason: "stop" }),
+      () => ({ content: "## 实践\n\n第二节正文。", finishReason: "stop" }),
     ],
   });
   const { store, service } = await makeService(t, provider, sleeps);
@@ -176,7 +242,7 @@ test("400 致命错误跳过重试直接进降级，降级仍败 → 节失败",
     expandScript: [
       () => { throw new ModelProviderHttpError("bad request (HTTP 400)", 400); },
       () => { throw new ModelProviderHttpError("bad request (HTTP 400)", 400); }, // 降级重试也 400
-      () => ({ content: "第二节正文。", finishReason: "stop" }),
+      () => ({ content: "## 实践\n\n第二节正文。", finishReason: "stop" }),
     ],
   });
   const { store, service } = await makeService(t, provider, sleeps);
@@ -196,8 +262,8 @@ test("空闲超时属可重试类，退避后重试成功", async (t) => {
     expandCalls,
     expandScript: [
       () => { throw new ModelProviderTimeoutError("stream idle timed out"); },
-      () => ({ content: "第一节正文。", finishReason: "stop" }),
-      () => ({ content: "第二节正文。", finishReason: "stop" }),
+      () => ({ content: "## 起源\n\n第一节正文。", finishReason: "stop" }),
+      () => ({ content: "## 实践\n\n第二节正文。", finishReason: "stop" }),
     ],
   });
   const { store, service } = await makeService(t, provider, sleeps);
@@ -226,9 +292,9 @@ test("续写完成派生新版本、旧版本行不变（正文唯一事实源 +
   const provider = makeProvider({
     expandCalls,
     expandScript: [
-      () => ({ content: "第一节截断在中途", finishReason: "length" }),
+      () => ({ content: "## 起源\n\n第一节截断在中途", finishReason: "length" }),
       () => ({ content: "，续写完成第一节。", finishReason: "stop" }),
-      () => ({ content: "第二节正文。", finishReason: "stop" }),
+      () => ({ content: "## 实践\n\n第二节正文。", finishReason: "stop" }),
     ],
   });
   const { store, service } = await makeService(t, provider);
