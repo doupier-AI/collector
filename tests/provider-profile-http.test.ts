@@ -26,7 +26,7 @@ async function createHarness() {
     async close() {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       store.close();
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     },
   };
 }
@@ -127,7 +127,7 @@ test("provider model discovery endpoint returns models without leaking credentia
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   const response = await fetch(`${base}/v1/provider-models/discover`, {

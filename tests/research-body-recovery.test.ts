@@ -11,7 +11,7 @@ const CONTENT = "First paragraph.\n\nSecond paragraph.\n\nThird paragraph.";
 
 test("restart recovery: persisted body versions/fragments survive, backfill stays idempotent", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-bodyver-restart-svc-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const dbPath = join(root, "collector.sqlite");
   const artifacts = join(root, "artifacts");
 
@@ -57,7 +57,7 @@ test("restart recovery: persisted body versions/fragments survive, backfill stay
 
 test("interrupted generation is recoverable and backfill self-heals a completed message lacking artifacts", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-bodyver-heal-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const dbPath = join(root, "collector.sqlite");
   let store = new SqliteStore(dbPath);
   await store.init();

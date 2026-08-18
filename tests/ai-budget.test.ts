@@ -46,7 +46,7 @@ async function fixture() {
 
 test("saveModelCall persists and listModelCalls returns records", async (t) => {
   const { root, store } = await fixture();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 
   const runId = crypto.randomUUID();
   await store.saveWorkflowRun(dummyRun(runId));
@@ -63,7 +63,7 @@ test("saveModelCall persists and listModelCalls returns records", async (t) => {
 
 test("listModelCalls filters by workflowRunId", async (t) => {
   const { root, store } = await fixture();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 
   const runA = crypto.randomUUID();
   const runB = crypto.randomUUID();
@@ -81,7 +81,7 @@ test("listModelCalls filters by workflowRunId", async (t) => {
 
 test("model calls persist failed status and error message", async (t) => {
   const { root, store } = await fixture();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 
   const runId = crypto.randomUUID();
   await store.saveWorkflowRun(dummyRun(runId));
@@ -97,7 +97,7 @@ test("model calls persist failed status and error message", async (t) => {
 
 test("getMonthModelCallCostUsd sums completed calls for a month", async (t) => {
   const { root, store } = await fixture();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 
   const now = new Date();
   const year = now.getUTCFullYear();
@@ -120,7 +120,7 @@ test("getMonthModelCallCostUsd sums completed calls for a month", async (t) => {
 
 test("getMonthModelCalls returns calls in date range", async (t) => {
   const { root, store } = await fixture();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 
   const now = new Date();
   const year = now.getUTCFullYear();
@@ -138,7 +138,7 @@ test("getMonthModelCalls returns calls in date range", async (t) => {
 
 test("AI budget settings can be saved and retrieved", async (t) => {
   const { root, store } = await fixture();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 
   await store.saveAiBudgetSetting("monthly_limit_usd", "5.00");
   await store.saveAiBudgetSetting("warning_threshold_usd", "4.00");
@@ -152,7 +152,7 @@ test("AI budget settings can be saved and retrieved", async (t) => {
 
 test("saveAiBudgetSetting overwrites existing values", async (t) => {
   const { root, store } = await fixture();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 
   await store.saveAiBudgetSetting("monthly_limit_usd", "10.00");
   await store.saveAiBudgetSetting("monthly_limit_usd", "20.00");
@@ -161,7 +161,7 @@ test("saveAiBudgetSetting overwrites existing values", async (t) => {
 
 test("usage separates provider/model routes and strict budgets block unknown costs", async (t) => {
   const { root, store } = await fixture();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const runId = crypto.randomUUID();
   await store.saveWorkflowRun(dummyRun(runId));
   await store.saveModelCall(modelCall({ workflowRunId: runId, provider: "openai", model: "gpt-4.1-mini", costStatus: "unknown", estimatedCostUsd: 0 }));

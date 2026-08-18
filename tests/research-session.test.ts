@@ -41,7 +41,7 @@ async function createHarness(provider?: ResearchGenerationProvider) {
     async close() {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       store.close();
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     },
   };
 }
@@ -351,7 +351,7 @@ test("restart recovery marks an interrupted generation retryable without losing 
   assert.equal(failed.error?.code, "service_restarted");
   assert.equal(reopenedService.research.getSession(session.id).messages[1].content, "已保存的部分内容");
   reopenedStore.close();
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 });
 
 test("free body generation persists derived non-provisional slices and records sliceCount", async (t) => {

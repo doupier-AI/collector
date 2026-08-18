@@ -18,7 +18,7 @@ test("cluster promotion trusts the persisted snapshot membership", async (t) => 
   const root = await mkdtemp(join(tmpdir(), "collector-mvp-cluster-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
   const first = await service.createCapture(captureInput("Alpha material with enough source text.", "mvp-cluster-1"), "mvp-cluster-1");
   const second = await service.createCapture(captureInput("Beta material with enough source text.", "mvp-cluster-2"), "mvp-cluster-2");
@@ -39,7 +39,7 @@ test("recent cluster validation rejects forced and duplicate memberships and sta
   const root = await mkdtemp(join(tmpdir(), "collector-mvp-cluster-validation-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
   const first = await service.createCapture(captureInput("Shared subject evidence one.", "mvp-validate-1"), "mvp-validate-1");
   const second = await service.createCapture(captureInput("Shared subject evidence two.", "mvp-validate-2"), "mvp-validate-2");
@@ -70,7 +70,7 @@ test("materials disabled for cloud AI remain local and are never sent into AI wo
   const root = await mkdtemp(join(tmpdir(), "collector-mvp-local-only-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
   const first = await service.createCapture(captureInput("Cloud eligible material one.", "mvp-cloud-1"), "mvp-cloud-1");
   const second = await service.createCapture(captureInput("Cloud eligible material two.", "mvp-cloud-2"), "mvp-cloud-2");
@@ -97,7 +97,7 @@ test("material revisions atomically replace searchable content and citable fragm
   const root = await mkdtemp(join(tmpdir(), "collector-mvp-revision-current-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
   const material = await service.createCapture(captureInput("Original wording for the material.", "mvp-revision-current"), "mvp-revision-current");
   const originalFragmentIds = store.listFragments(material.id).map((fragment) => fragment.id);
@@ -115,7 +115,7 @@ test("topic document completes all checkpoints and stays on the requested topic"
   const root = await mkdtemp(join(tmpdir(), "collector-mvp-document-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
   const shared = await service.createCapture(captureInput("Research shows TypeScript improves maintainability because types expose errors.", "mvp-doc-1"), "mvp-doc-1");
   const firstTopic = await service.createTopic("First topic", [shared.id]);
@@ -148,7 +148,7 @@ test("recent organization workers never claim topic document steps", async (t) =
   const root = await mkdtemp(join(tmpdir(), "collector-mvp-workflow-isolation-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
   const material = await service.createCapture(captureInput("A citable source for workflow isolation.", "mvp-isolation-1"), "mvp-isolation-1");
   const topic = await service.createTopic("Workflow isolation", [material.id]);
@@ -163,7 +163,7 @@ test("failed model generation publishes no document version", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-mvp-model-failure-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
   const material = await service.createCapture(captureInput("A citable material that cannot be drafted without a model.", "mvp-failure-1"), "mvp-failure-1");
   const topic = await service.createTopic("Failure topic", [material.id]);
@@ -177,7 +177,7 @@ test("AI workflows wait for budget and resume after the limit is raised", async 
   const root = await mkdtemp(join(tmpdir(), "collector-mvp-budget-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
   await store.saveModelCall({
     id: crypto.randomUUID(), provider: "deepseek", model: "test-model", purpose: "budget-fixture", promptVersion: "v1",
@@ -209,7 +209,7 @@ test("incremental confirmation preserves existing sections and records the new m
   const root = await mkdtemp(join(tmpdir(), "collector-mvp-incremental-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
   const first = await service.createCapture(captureInput("Research shows the first fact is stable because evidence exists.", "mvp-update-1"), "mvp-update-1");
   const topic = await service.createTopic("Incremental topic", [first.id]);
@@ -252,7 +252,7 @@ test("permanent deletion reports document and workflow impact and publishes a ci
   const root = await mkdtemp(join(tmpdir(), "collector-mvp-delete-impact-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
   const material = await service.createCapture(captureInput("A source that will later be deleted after publication.", "mvp-delete-1"), "mvp-delete-1");
   const topic = await service.createTopic("Deletion impact", [material.id]);

@@ -67,7 +67,7 @@ async function createHarness(options: {
     async close() {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       store.close();
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     },
     async closeKeepData() {
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -368,7 +368,7 @@ test("重启恢复：running 回排队、queued 重跑，状态一致且无重�
   });
   t.after(async () => {
     storeB.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   const waitFor = async (snapshotId: string) => {

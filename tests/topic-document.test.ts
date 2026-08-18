@@ -18,7 +18,7 @@ test("generate topic document creates a workflow run", async (t) => {
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const addr = server.address();
   if (!addr || typeof addr === "string") throw new Error("Server did not bind");
@@ -76,7 +76,7 @@ test("generate topic document is idempotent", async (t) => {
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const addr = server.address();
   if (!addr || typeof addr === "string") throw new Error("Server did not bind");
@@ -122,7 +122,7 @@ test("get latest document returns 404 when none exists", async (t) => {
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const addr = server.address();
   if (!addr || typeof addr === "string") throw new Error("Server did not bind");
@@ -147,7 +147,7 @@ test("list document versions returns empty array for topic with no documents", a
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const addr = server.address();
   if (!addr || typeof addr === "string") throw new Error("Server did not bind");
@@ -185,7 +185,7 @@ test("get document by id returns 404 for nonexistent document", async (t) => {
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const addr = server.address();
   if (!addr || typeof addr === "string") throw new Error("Server did not bind");
@@ -209,7 +209,7 @@ test("GET /v1/data-paths returns database and artifact paths", async (t) => {
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const addr = server.address();
   if (!addr || typeof addr === "string") throw new Error("Server did not bind");
@@ -234,7 +234,7 @@ test("GET /v1/data-paths requires auth", async (t) => {
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const addr = server.address();
   if (!addr || typeof addr === "string") throw new Error("Server did not bind");
@@ -255,7 +255,7 @@ test("GET /v1/ai-configuration returns defaults", async (t) => {
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const addr = server.address();
   if (!addr || typeof addr === "string") throw new Error("Server did not bind");
@@ -282,7 +282,7 @@ test("POST /v1/ai-configuration updates consent", async (t) => {
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const addr = server.address();
   if (!addr || typeof addr === "string") throw new Error("Server did not bind");

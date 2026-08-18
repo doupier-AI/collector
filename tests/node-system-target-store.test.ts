@@ -23,7 +23,7 @@ async function makeStore(t: test.TestContext): Promise<SqliteStore> {
   const root = await mkdtemp(join(tmpdir(), "collector-node-target-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   return store;
 }
 
@@ -107,7 +107,7 @@ test("temporary fusion bundle is transactional, idempotent, and restart-safe", a
   const databasePath = join(root, "collector.sqlite");
   let store = new SqliteStore(databasePath);
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 
   for (const nodeId of ["node-source-a", "node-source-b"]) {
     await seedNode(store, { id: nodeId, sessionId: `session:${nodeId}`, status: "active", createdAt: NOW, updatedAt: NOW });

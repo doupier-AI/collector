@@ -18,7 +18,7 @@ test("create topic from cluster promotes with materials as members", async (t) =
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");
@@ -82,7 +82,7 @@ test("create topic manually with materialIds", async (t) => {
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");
@@ -134,7 +134,7 @@ test("same material can belong to multiple topics", async (t) => {
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");
@@ -184,7 +184,7 @@ test("add and remove topic members", async (t) => {
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");
@@ -231,7 +231,7 @@ test("topic suggestions return related captures", async (t) => {
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");
@@ -285,7 +285,7 @@ test("unauthorized requests are rejected", async (t) => {
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");
@@ -313,7 +313,7 @@ test("promote cluster preserves all materials", async (t) => {
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");

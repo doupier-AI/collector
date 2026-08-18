@@ -27,7 +27,7 @@ test("provider profiles persist, activate, survive clear, and delete consistentl
   const path = join(root, "collector.sqlite");
   const store = new SqliteStore(path);
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   await store.saveProviderProfile(profile("profile-one"));
   await store.setActiveProviderProfile("profile-one");
   assert.equal(store.getActiveProviderProfile()?.id, "profile-one");
@@ -54,5 +54,5 @@ test("legacy DeepSeek settings create one idempotent generic profile", async () 
   await store.init();
   assert.equal(store.listProviderProfiles().length, 1);
   store.close();
-  await rm(root, { recursive: true, force: true });
+  await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });

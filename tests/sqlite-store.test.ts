@@ -45,7 +45,7 @@ test("SQLite migrates legacy JSON completely and only once", async (t) => {
   assert.equal(reopened.listCaptures().length, 1);
   reopened.close();
   await chmod(join(root, backups[0]), 0o666);
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 });
 
 test("failed legacy JSON migration preserves the source file", async (t) => {
@@ -57,7 +57,7 @@ test("failed legacy JSON migration preserves the source file", async (t) => {
   store.close();
   assert.equal(await readFile(jsonPath, "utf8"), "{invalid json");
   assert.equal((await readdir(root)).filter((name) => name.endsWith(".bak")).length, 0);
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 });
 
 test("legacy migration uses an explicit marker when JSON contains artifacts but no captures", async (t) => {
@@ -82,7 +82,7 @@ test("legacy migration uses an explicit marker when JSON contains artifacts but 
   const backups = (await readdir(root)).filter((name) => name.endsWith(".bak"));
   assert.equal(backups.length, 1);
   await chmod(join(root, backups[0]), 0o666);
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 });
 
 test("workflow migration creates formal versioned tables", async (t) => {
@@ -110,7 +110,7 @@ test("workflow migration creates formal versioned tables", async (t) => {
   const sessionIndexes = (database.prepare("PRAGMA index_list(research_sessions)").all() as Array<{ name: string; unique: number }>);
   assert.ok(sessionIndexes.some((index) => index.name === "research_sessions_creation_idempotency_idx" && index.unique === 1));
   database.close();
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 });
 
 test("migrations 15 to 21 preserve existing version 14 research sessions", async (t) => {
@@ -225,7 +225,7 @@ test("migrations 15 to 21 preserve existing version 14 research sessions", async
     "model_purpose_routes",
   );
   database.close();
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 });
 
 test("migration v24 maps sessions and branches to nodes and backfills node_id", async (t) => {
@@ -314,7 +314,7 @@ test("migration v24 maps sessions and branches to nodes and backfills node_id", 
 
   const upgraded = new SqliteStore(databasePath);
   await upgraded.init();
-  t.after(async () => { upgraded.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { upgraded.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 
   const rootNode = upgraded.getResearchNode(session.id);
   assert.ok(rootNode);
@@ -347,7 +347,7 @@ test("snapshot publication rolls back the completed run when the snapshot cannot
   const root = await mkdtemp(join(tmpdir(), "collector-workflow-atomic-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const createdAt = "2026-06-14T00:00:00.000Z";
   const makeRun = (id: string): WorkflowRunRecord => ({
     id, workflowType: "recent_organization", idempotencyKey: id, materialIds: [], materialSetVersion: id,
@@ -372,7 +372,7 @@ test("model purpose routes CRUD, profile deletion cleanup, and clearAllData pres
   const root = await mkdtemp(join(tmpdir(), "collector-purpose-routes-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const now = "2026-07-29T00:00:00.000Z";
   const profile = {
     id: "route-profile",
@@ -411,7 +411,7 @@ test("latest snapshot follows publication order when timestamps are equal", asyn
   const root = await mkdtemp(join(tmpdir(), "collector-workflow-order-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const createdAt = "2026-06-14T00:00:00.000Z";
   const publish = async (runId: string, snapshotId: string) => {
     const run: WorkflowRunRecord = {
@@ -441,7 +441,7 @@ test("createResearchEdge persists and is idempotent", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-edge-create-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 
   // Create prerequisite nodes
   const session: ResearchSessionRecord = {
@@ -486,7 +486,7 @@ test("listResearchEdgesByNode returns both incoming and outgoing active edges", 
   const root = await mkdtemp(join(tmpdir(), "collector-edge-list-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 
   const session: ResearchSessionRecord = {
     id: "session-1", title: "Edge List", status: "active", isFavorite: false,
@@ -546,7 +546,7 @@ test("listAllResearchEdges returns all active edges", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-edge-all-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 
   const session: ResearchSessionRecord = {
     id: "session-1", title: "All Edges", status: "active", isFavorite: false,
@@ -638,7 +638,7 @@ test("migration v28 creates research_edges table and derives parent-child edges 
   // Re-open triggers migration v28 (and v29)
   const upgraded = new SqliteStore(databasePath);
   await upgraded.init();
-  t.after(async () => { upgraded.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { upgraded.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 
   // Verify research_edges table exists
   const database = new DatabaseSync(databasePath, { readOnly: true });
@@ -695,7 +695,7 @@ test("migration v30 recreates research_fusion_proposals after a v29 rollback", a
 
   const upgraded = new SqliteStore(databasePath);
   await upgraded.init();
-  t.after(async () => { upgraded.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { upgraded.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 
   const database = new DatabaseSync(databasePath, { readOnly: true });
   const columns = (database.prepare("PRAGMA table_info(research_fusion_proposals)").all() as Array<{ name: string }>).map((column) => column.name);

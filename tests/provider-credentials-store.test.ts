@@ -27,7 +27,7 @@ test("provider credentials persist, update, delete, and survive clearAllData", a
   const path = join(root, "collector.sqlite");
   const store = new SqliteStore(path);
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 
   await store.saveProviderProfile(profile("profile-a"));
   await store.saveProviderCredential("profile-a", "sk-test-one");
@@ -48,7 +48,7 @@ test("deleteProviderProfile cascades to provider credentials", async (t) => {
   const path = join(root, "collector.sqlite");
   const store = new SqliteStore(path);
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
 
   await store.saveProviderProfile(profile("profile-b"));
   await store.saveProviderCredential("profile-b", "sk-secret");

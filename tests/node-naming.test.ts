@@ -13,7 +13,7 @@ async function createStore() {
   const root = await mkdtemp(join(tmpdir(), "collector-node-naming-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  return { store, async close() { store.close(); await rm(root, { recursive: true, force: true }); } };
+  return { store, async close() { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } };
 }
 
 function session(id = randomUUID()): ResearchSessionRecord {

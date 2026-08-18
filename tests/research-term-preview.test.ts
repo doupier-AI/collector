@@ -42,7 +42,7 @@ async function createHarness(options: HarnessOptions = {}) {
     async close() {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       store.close();
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     },
   };
 }

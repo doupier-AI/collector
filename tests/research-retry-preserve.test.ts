@@ -22,7 +22,7 @@ async function seedTurn(store: SqliteStore, suffix: string): Promise<{ input: Re
 
 async function makeStore(t: test.TestContext): Promise<{ store: SqliteStore; root: string }> {
   const root = await mkdtemp(join(tmpdir(), "collector-retrypreserve-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
   await store.createResearchSession({ id: "session-1", title: "T", status: "active", isFavorite: false, createdAt: NOW, updatedAt: NOW }, "k-s");

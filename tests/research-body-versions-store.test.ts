@@ -19,7 +19,7 @@ async function createStore() {
   const root = await mkdtemp(join(tmpdir(), "collector-bodyver-store-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  return { store, close: async () => { store.close(); await rm(root, { recursive: true, force: true }); } };
+  return { store, close: async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } };
 }
 
 async function seedNode(store: SqliteStore, messageId = "msg-1") {
@@ -103,7 +103,7 @@ test("body versions and fragments coexist with slice skeletons for the same mess
 
 test("v32 migration strips legacy content from slice record_json (idempotent, verifiable)", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-v32-strip-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const dbPath = join(root, "collector.sqlite");
   let store = new SqliteStore(dbPath);
   await store.init();
@@ -153,7 +153,7 @@ test("v32 migration strips legacy content from slice record_json (idempotent, ve
 
 test("body version persists across close and reopen (restart)", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-bodyver-restart-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const dbPath = join(root, "collector.sqlite");
   let store = new SqliteStore(dbPath);
   await store.init();

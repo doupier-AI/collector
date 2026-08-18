@@ -11,7 +11,7 @@ test("full backup is consistent and portable export excludes credentials", async
   const artifacts = join(root, "artifacts");
   const store = new SqliteStore(database);
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const service = new CaptureService(store, artifacts, undefined, undefined, { autoRunRecentOrganization: false });
   const material = await service.createCapture({
     captureType: "pasted_text",
@@ -50,7 +50,7 @@ test("AI budget validation rejects negative and inverted thresholds", async (t) 
   const root = await mkdtemp(join(tmpdir(), "collector-budget-validation-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
   await assert.rejects(service.updateAiBudgetSettings({ monthlyLimitUsd: -1 }), /non-negative/);
   await assert.rejects(service.updateAiBudgetSettings({ monthlyLimitUsd: 5, warningThresholdUsd: 6 }), /cannot exceed/);

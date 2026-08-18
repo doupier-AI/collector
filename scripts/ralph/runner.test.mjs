@@ -28,7 +28,7 @@ async function issue(root, name, { status = "ready-for-agent", type = "AFK", res
 
 test("selects the first open AFK issue whose dependencies are complete", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-ralph-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 
   await issue(root, "01-foundation.md", { resolution: "completed" });
   await issue(root, "02-human-design.md", { status: "ready-for-human", type: "HITL" });
@@ -41,7 +41,7 @@ test("selects the first open AFK issue whose dependencies are complete", async (
 
 test("does not select an issue with an incomplete dependency", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-ralph-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 
   await issue(root, "01-foundation.md", { status: "ready-for-human", type: "HITL" });
   await issue(root, "02-next-slice.md", { blockedBy: "- [`01-foundation.md`](01-foundation.md)" });
@@ -53,7 +53,7 @@ test("does not select an issue with an incomplete dependency", async (t) => {
 
 test("does not select an issue whose blocker syntax cannot be parsed", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-ralph-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   await issue(root, "01-unsafe.md", { blockedBy: "Wait for the storage migration." });
 
   assert.equal(await selectNextIssue(root), null);
@@ -61,7 +61,7 @@ test("does not select an issue whose blocker syntax cannot be parsed", async (t)
 
 test("does not treat contradictory None blocker text as unblocked", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-ralph-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   await issue(root, "01-unsafe.md", { blockedBy: "None, but wait for the storage migration." });
 
   assert.equal(await selectNextIssue(root), null);
@@ -69,7 +69,7 @@ test("does not treat contradictory None blocker text as unblocked", async (t) =>
 
 test("returns null when only human or completed work remains", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-ralph-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 
   await issue(root, "01-complete.md", { resolution: "completed" });
   await issue(root, "02-human.md", { status: "ready-for-human", type: "HITL" });
@@ -136,7 +136,7 @@ test("implementation agent cannot modify tracker or runner control files", () =>
 
 test("unauthorized implementation commits are removed without discarding their changes", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-ralph-git-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   await execFileAsync("git", ["init"], { cwd: root });
   await execFileAsync("git", ["config", "user.email", "ralph@example.invalid"], { cwd: root });
   await execFileAsync("git", ["config", "user.name", "Collector Ralph Test"], { cwd: root });
@@ -172,7 +172,7 @@ test("timed out child processes cannot continue running", {
     : false,
 }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-ralph-timeout-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const marker = join(root, "orphan.txt");
 
   const grandchild = `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'orphan'), 900); setInterval(() => {}, 1000);`;
@@ -188,7 +188,7 @@ test("timed out child processes cannot continue running", {
 
 test("dry run reports the selected issue without starting Codex", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-ralph-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   await issue(root, "01-foundation.md");
 
   const { stdout } = await execFileAsync(process.execPath, [

@@ -13,7 +13,7 @@ async function createStore() {
   const root = await mkdtemp(join(tmpdir(), "collector-bodyver-svc-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  return { store, close: async () => { store.close(); await rm(root, { recursive: true, force: true }); } };
+  return { store, close: async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } };
 }
 
 function seedMessage(store: SqliteStore, messageId: string, content = CONTENT, role: "assistant" | "user" = "assistant", status: "completed" | "generating" = "completed") {

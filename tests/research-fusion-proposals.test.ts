@@ -72,7 +72,7 @@ async function createHarness() {
     nodes,
     messages,
     slices,
-    close: async () => { store.close(); await rm(root, { recursive: true, force: true }); },
+    close: async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); },
   };
 }
 
@@ -476,7 +476,7 @@ async function createFusionHarness(options?: { similarityVerifier?: SimilarityVe
     messages,
     now,
     composeCalls: () => composeCalls,
-    close: async () => { store.close(); await rm(root, { recursive: true, force: true }); },
+    close: async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); },
   };
 }
 

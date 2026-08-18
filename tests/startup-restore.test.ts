@@ -35,7 +35,7 @@ async function makeStore(dbPath: string) {
 
 test("#47 启动恢复：已保存配置+凭证+同意记录齐备即建立可用网关，重启后首条消息直接可用", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-startup-restore-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const dbPath = join(root, "collector.sqlite");
 
   // 第一阶段：模拟用户此前在 WebUI 保存并启用模型配置（持久化状态）。
@@ -74,7 +74,7 @@ test("#47 启动恢复：已保存配置+凭证+同意记录齐备即建立可�
 
 test("#47 启动恢复不覆写同意记录：无环境变量通道时保持已保存值", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-startup-consent-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const dbPath = join(root, "collector.sqlite");
 
   let store = await makeStore(dbPath);
@@ -96,7 +96,7 @@ test("#47 启动恢复不覆写同意记录：无环境变量通道时保持已�
 
 test("#47 无效配置区分具体原因：配置缺失 / 停用 / 缺 Key", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-startup-invalid-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const dbPath = join(root, "collector.sqlite");
 
   // 场景一：从未配置过模型 → 一律"未配置"，但错误信息说明去向。

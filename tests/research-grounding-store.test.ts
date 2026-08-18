@@ -9,7 +9,7 @@ async function createStore() {
   const root = await mkdtemp(join(tmpdir(), "collector-grounding-store-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  return { store, close: async () => { store.close(); await rm(root, { recursive: true, force: true }); } };
+  return { store, close: async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } };
 }
 
 test("grounded research persists a v21 run, sources, citations, and task scope", async (t) => {

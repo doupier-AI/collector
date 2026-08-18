@@ -20,7 +20,7 @@ test("queued workflow keeps its provider route after the active provider changes
   const root = await mkdtemp(join(tmpdir(), "collector-provider-route-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
   const first = await service.createCapture({ captureType: "pasted_text", content: "First routed material with enough content.", clientCaptureId: "route-1", capturedAt: new Date().toISOString() }, "route-1");
   const second = await service.createCapture({ captureType: "pasted_text", content: "Second routed material with enough content.", clientCaptureId: "route-2", capturedAt: new Date().toISOString() }, "route-2");

@@ -44,7 +44,7 @@ async function close(server: ReturnType<typeof createServer>): Promise<void> {
 
 test("runtime version changes when a shared runtime package changes", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-runtime-version-test-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const apiRoot = join(root, "apps", "api", "dist");
   const webRoot = join(root, "apps", "web", "dist");
   const contractsRoot = join(root, "packages", "capture-contracts", "dist");
@@ -76,7 +76,7 @@ test("service lock prevents two Collector services from using the same data root
   });
   t.after(async () => {
     await first.release();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   assert.equal(isServiceLockHeld(root), true);
@@ -119,7 +119,7 @@ test("browser bootstrap sets one HttpOnly cookie without putting a secret in the
 
 test("instance metadata is private, identity-checked, and removed only by its owner", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-instance-test-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const firstToken = await ensureInstanceControlToken(root);
   assert.match(firstToken, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(await ensureInstanceControlToken(root), firstToken);
@@ -162,7 +162,7 @@ test("instance metadata is private, identity-checked, and removed only by its ow
 
 test("launcher bootstrap endpoint requires the dedicated control token", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-launch-api-test-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const store = new MemoryStore();
   await store.init();
   const auth = new LocalAuth(store);
@@ -209,7 +209,7 @@ test("launcher bootstrap endpoint requires the dedicated control token", async (
 
 test("launcher shutdown is bound to the probed instance and times out", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-launch-shutdown-test-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const store = new MemoryStore();
   await store.init();
   const auth = new LocalAuth(store);
@@ -255,7 +255,7 @@ test("launcher shutdown is bound to the probed instance and times out", async (t
 
 test("launcher does not open an incompatible running service", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-launch-incompatible-test-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const controlToken = await ensureInstanceControlToken(root);
   const instanceId = "incompatible-instance-1234";
   let bootstrapRequests = 0;
@@ -304,7 +304,7 @@ test("launcher does not open an incompatible running service", async (t) => {
 
 test("repeated launch reuses the identity-checked service and opens a fresh cookie handoff", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-launch-reuse-test-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const controlToken = await ensureInstanceControlToken(root);
   const runtimeVersion = RUNTIME_CURRENT;
   const instanceId = "reuse-instance-1234";

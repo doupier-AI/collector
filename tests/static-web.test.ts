@@ -28,7 +28,7 @@ async function startServer(t: TestContext, options: { withWebRoot?: boolean } = 
   t.after(async () => {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   return { baseUrl: `http://127.0.0.1:${address.port}` };

@@ -17,7 +17,7 @@ async function createStore() {
     store,
     async close() {
       store.close();
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     },
   };
 }

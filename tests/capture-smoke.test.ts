@@ -42,7 +42,7 @@ describe("Capture-to-persistence integration smoke", () => {
   after(async () => {
     server?.close();
     store?.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   it("creates a text capture and persists to SQLite", async () => {

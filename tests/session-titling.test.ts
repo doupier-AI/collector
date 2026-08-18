@@ -23,7 +23,7 @@ async function createStore() {
   const root = await mkdtemp(join(tmpdir(), "collector-session-titling-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  return { store, async close() { store.close(); await rm(root, { recursive: true, force: true }); } };
+  return { store, async close() { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } };
 }
 
 function session(id = randomUUID(), title = DEFAULT_RESEARCH_SESSION_TITLE): ResearchSessionRecord {
@@ -167,7 +167,7 @@ test("root turn queueing auto-titles the session end-to-end", async (t) => {
   t.after(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   const createdResponse = await fetch(`${base}/v1/research-sessions`, {
