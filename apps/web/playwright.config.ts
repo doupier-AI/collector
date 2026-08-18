@@ -20,6 +20,9 @@ export default defineConfig({
   use: {
     screenshot: "only-on-failure",
     trace: "retain-on-failure",
+    // 快速失败（#86 复盘）：交互动作 15s 内不可达即报错并留取证快照，替代整测 30s 超时的模糊失败；
+    // 个别确有需要的用例可用 test.use({ actionTimeout }) 或动作参数局部覆盖。真实验收侧见 playwright.acceptance.config.ts。
+    actionTimeout: 15_000,
   },
   webServer: [
     // 页面、静态资源、/v1 与 SSE 均由 API 测试进程同源提供，不再启动 Vite preview
