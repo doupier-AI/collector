@@ -299,6 +299,7 @@ Chrome DevTools MCP 人类拟真测试只在用户主动触发时执行，不是
 `z-visual-baseline.spec.ts` 对五个代表状态（桌面专注、桌面关联、语义卡片常态 + 悬停、融合回溯落点、窄屏 320px 关联）与节点页视觉秩序建立 `toHaveScreenshot` 像素基线，8 张 png 入库（spec 旁）。配置：`snapshotPathTemplate` 去平台后缀（win32 单平台）、`maxDiffPixelRatio: 0.01`、`threshold: 0.2`。基线纪律：
 
 - 有意变更视觉时，只对受影响基线单独 `--update-snapshots`，人工逐张审阅 diff 后提交（防"自证基线"）；
+- 重拍陷阱（#95 实测）：`--update-snapshots` 默认 `changed` 模式只重写「判定为变化」的基线——有意的视觉差异若小于 `maxDiffPixelRatio`（0.01）阈值会被判「未变化」而静默不重写，旧图残留（曾致圆点改线条后基线仍是旧线条、测试还显示通过）。小面积/形态类变更重拍时，先删除旧 PNG 或改用 `--update-snapshots all` 强制重写，再人工逐张审 diff，并核对文件修改时间确为本次；
 - 基线确定性：固定问题 + 假模型固定文本 + `page.clock` 冻结浏览器时钟；「更新于/创建于」动态时间在截图时 `mask`；视口截图前收起两侧固定侧栏（全量运行时 harness 数据库累积其他测试的会话，侧栏会话列表会污染截图）；
 - 基线测试 serial 模式运行；失败时先确认是真实视觉回归还是环境变化（如字体），再决定更新或修复；
 - `e2e-artifacts/` 保持不入库（仅人工调试产物）。
