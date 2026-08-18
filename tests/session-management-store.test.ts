@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ProjectRecord, ResearchMessageRecord, ResearchNodeRecord, ResearchSessionRecord } from "@collector/capture-contracts";
-import { SqliteStore, type CollectorStore } from "@collector/api";
+import { LATEST_SCHEMA_VERSION, SqliteStore, type CollectorStore } from "@collector/api";
 
 const NOW = "2026-08-08T00:00:00.000Z";
 
@@ -141,7 +141,7 @@ test("latest migrations preserve projects and the session favorite default", asy
   t.after(close);
   const db = (store as unknown as { db(): import("node:sqlite").DatabaseSync }).db();
   const version = db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { v: number };
-  assert.equal(version.v, 36);
+  assert.equal(version.v, LATEST_SCHEMA_VERSION);
   const projectCols = db.prepare("PRAGMA table_info(research_sessions)").all() as Array<{ name: string }>;
   assert.ok(projectCols.some((column) => column.name === "project_id"));
   assert.ok(projectCols.some((column) => column.name === "is_favorite"));

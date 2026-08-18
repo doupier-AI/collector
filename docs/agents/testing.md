@@ -18,7 +18,7 @@
 
 ## 迁移重放与 schema 版本断言
 
-- **条件性必须**：新增或修改 SQLite 迁移时，必须执行迁移重放测试（sqlite-store、session-management-store 等），并 grep 全仓 schema 版本断言、同步更新受影响项——不同步断言会使全量测试直接失败。
+- **条件性必须**：新增或修改 SQLite 迁移时，必须在 `apps/api/src/store.ts` 的 `migrateSchema()` 追加版本块并递增同文件导出的 `LATEST_SCHEMA_VERSION`——全部版本断言统一读该常量，漏递增常量或漏写版本块都会使迁移测试直接失败；并执行迁移重放测试（sqlite-store、session-management-store 等）。
 - **默认**：迁移重放安排在进入全量验证之前完成，让迁移类错误尽早暴露；有明确理由时可调整顺序。
 
 ## 快速失败约定（防"动辄数小时"挂起）

@@ -518,9 +518,15 @@ const EMPTY_DATA: StoreData = {
   captures: {}, captureByClientId: {}, captureByChecksum: {}, artifacts: {}, fragments: {}, knowledgeItems: {}, reviewProposals: {}, clientTokens: {}, agentRuns: {}, relations: {}, userDecisions: {}, topics: {}, topicMemberships: {}, settings: {}, providerProfiles: {}, providerCredentials: {}, modelPurposeRoutes: {},
 };
 
+/**
+ * 最新 schema 迁移版本的唯一事实源。新增迁移时在 migrateSchema() 末尾追加
+ * `if (version < N+1)` 版本块（块内写入对应 schema_migrations 行）并递增本常量；
+ * 测试以此常量断言「打开/重放后数据库实际到达声明版本」，无需再手工同步多处硬编码断言。
+ */
+export const LATEST_SCHEMA_VERSION = 36;
+
 export class SqliteStore implements CollectorStore {
   private database?: DatabaseSync;
-
   constructor(private readonly filePath: string, private readonly legacyJsonPath?: string) {}
 
   getDataFilePath(): string { return this.filePath; }
