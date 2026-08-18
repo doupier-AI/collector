@@ -10,15 +10,11 @@
 
 ## 全量 Playwright 门禁（防测试债务积累）
 
-任何合并进 `master` 的提交、任何跨分支共享的测试基础设施改动（harness、helpers、playwright.config、e2e 基础库），必须先跑一次**完整**三项目全量（chromium + chromium-nomodel + chromium-autofusion）并全绿。日常功能切片仍按分级验证只跑受影响子集；但「视觉基线组（z-*.spec.ts）+ 共享库配置测试（settings-ai-model 等）」对测试顺序与共享库状态最敏感，全量门禁能一次性暴露「前序测试污染后序基线」这类跨测试依赖，避免其在仓库中无声积累到下一次强制全量时才爆发。
+任何合并进 `master` 的提交、任何跨分支共享的测试基础设施改动（harness、helpers、playwright.config、e2e 基础库），必须先跑 `npm run gate` 并全绿。`npm run gate` 是唯一全量门禁入口，依次执行：项目检查（`npm run check`）→ 构建 + 单元/集成测试（`npm test`）→ 构建 + Playwright 全量（`npm run test:e2e`）；任一阶段失败即整体失败并指出失败阶段。Playwright 项目集合由 `apps/web/playwright.config.ts` 唯一决定，规则与脚本不再枚举项目名。日常功能切片仍按分级验证只跑受影响子集；但「视觉基线组（z-*.spec.ts）+ 共享库配置测试（settings-ai-model 等）」对测试顺序与共享库状态最敏感，全量门禁能一次性暴露「前序测试污染后序基线」这类跨测试依赖，避免其在仓库中无声积累到下一次强制全量时才爆发。修复后单阶段重跑：`npm run gate -- check|test|e2e`（始终基于最新构建）。
 
 ### 门禁按批次收税，不按票据收税（默认做法）
 
-同一迭代/同一批待合票据先合并到集成分支，在集成分支上跑一次全量门禁全绿后再合 `master`，不为每笔合并各付一次门禁与构建。纯注释/纯文档/元数据改动（diff 无代码行变化，如 `git diff --stat` 不含代码语句变化）豁免全量门禁，只跑受影响子集，提交说明标注豁免理由。
-
-### 门禁启动前确认最新构建
-
-src 改动后必须先重建（根 `npm run build`）再启动全量门禁，防整轮门禁跑在旧构建上。
+同一迭代/同一批待合票据先合并到集成分支，在集成分支上跑一次 `npm run gate` 全绿后再合 `master`，不为每笔合并各付一次门禁与构建。纯注释/纯文档/元数据改动（diff 无代码行变化，如 `git diff --stat` 不含代码语句变化）豁免全量门禁，只跑受影响子集，提交说明标注豁免理由。
 
 ## 迁移重放与 schema 版本断言
 

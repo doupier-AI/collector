@@ -41,10 +41,10 @@ WebUI ↔ HTTP / 流式连接 ↔ Node 服务 ↔ SQLite / 文件 / 模型 / 搜
 
 ```powershell
 npm.cmd install --cache .npm-cache
-npm.cmd run build
-npm.cmd test
-powershell -ExecutionPolicy Bypass -File scripts\check-project.ps1
+npm.cmd run gate    # 全量门禁：项目检查 + 最新构建 + 单元/集成测试 + Playwright 全量端到端
 ```
+
+分步运行：`npm.cmd run check`（项目检查）、`npm.cmd test`（构建 + 单元/集成测试）、`npm.cmd run test:e2e`（构建 + 端到端）。
 
 构建后，可以直接双击根目录的 `Collector.cmd`。它会启动或复用本机服务，安全完成首次浏览器配对，并打开默认浏览器。命令行等价入口是：
 

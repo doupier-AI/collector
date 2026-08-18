@@ -18,6 +18,8 @@
     "dev:web": "npm run dev -w @collector/web",
     "test:web": "npm run test -w @collector/web",
     "test:e2e": "npm run build && npm run test:e2e -w @collector/web",
+    "check": "powershell -ExecutionPolicy Bypass -File scripts/check-project.ps1",
+    "gate": "node scripts/gate.mjs",
     "clean": "node scripts/clean.mjs",
     "ralph:dry": "powershell -ExecutionPolicy Bypass -File scripts/ralph/once.ps1 -DryRun",
     "ralph:once": "powershell -ExecutionPolicy Bypass -File scripts/ralph/once.ps1",
