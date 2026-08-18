@@ -28,6 +28,8 @@ import { deriveMessageBlocks } from "@collector/capture-contracts";
 import {
   apiJson,
   apiPortForPage,
+  assertFixtureContains,
+  assertLongTextFixture,
   pairAndOpen,
   readDataDir,
   readResearchImportTables,
@@ -61,12 +63,19 @@ function spawnHarness(): ChildProcess {
   return proc;
 }
 
-async function waitForHealth(timeoutMs = 30_000): Promise<void> {
+async function waitForHealth(proc: ChildProcess, timeoutMs = 30_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastError = "";
   while (Date.now() < deadline) {
+    // harness 启动期退出（缺模型配置 / 端口被占 / 缺前端构建）＝启动前提未满足：
+    // 立即失败，不空等健康检查超时（harness stderr 已带具体原因，见上方 [harness:err]）。
+    if (proc.exitCode !== null) {
+      throw new Error(`验收 harness 启动期退出（码 ${proc.exitCode}），启动前提未满足——具体原因见上方 [harness:err] 输出`);
+    }
     try {
-      const response = await fetch(`${BASE}/health`);
+      // 单次探测必须有界：端口被只接受连接却不回应的进程占用时 fetch 会挂到 undici
+      // headersTimeout（300s），把 30s  deadline 与上面的退出检查全部吞掉（#端口冲突负验证实测）。
+      const response = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(2_000) });
       if (response.ok) return;
       lastError = `HTTP ${response.status}`;
     } catch (error) {
@@ -79,7 +88,7 @@ async function waitForHealth(timeoutMs = 30_000): Promise<void> {
 
 async function startServer(): Promise<void> {
   child = spawnHarness();
-  await waitForHealth();
+  await waitForHealth(child);
 }
 
 async function stopServer(): Promise<void> {
@@ -105,6 +114,11 @@ async function restartServer(): Promise<void> {
 }
 
 test.beforeAll(async () => {
+  // 启动期夹具前提自检（毫秒级）：客观条件不满足立即失败并说明原因，先于任何服务启动；
+  // 不靠运行期轮询兜底——未达长文阈值时章节任务根本不会创建，pollUntil 只会白等整上限。
+  assertLongTextFixture("T03 章节夹具", CHAPTER_IMPORT_CONTENT);
+  assertFixtureContains("T03 章节夹具", CHAPTER_IMPORT_CONTENT, "第1段");
+  assertFixtureContains("场景二文档夹具", DOC_CONTENT, DOC_SELECTED);
   dataDir = await mkdtemp(join(tmpdir(), "collector-acceptance-run-"));
   await startServer();
 });
@@ -1371,8 +1385,12 @@ test("T03 无模型：导入长文获得规则锚点，章节导航可用且如�
   try {
     const deadline = Date.now() + 30_000;
     for (;;) {
+      // 与 waitForHealth 同约定：harness 提前退出即失败；单次探测有界防黑洞占用吞掉循环。
+      if (noModelChild.exitCode !== null) {
+        throw new Error(`无模型验收 harness 启动期退出（码 ${noModelChild.exitCode}）——具体原因见上方 [harness-nomodel:err] 输出`);
+      }
       try {
-        const response = await fetch(`${noModelBase}/health`);
+        const response = await fetch(`${noModelBase}/health`, { signal: AbortSignal.timeout(2_000) });
         if (response.ok) break;
       } catch {
         // 继续等就绪

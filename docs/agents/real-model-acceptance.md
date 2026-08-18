@@ -16,7 +16,11 @@
 
 ## 夹具前提自检
 
-验收/探针夹具在启动期自检触发条件（导入内容是否达到长文阈值、模型配置是否就绪等），条件不满足立即报错并说明原因；不靠运行期轮询停滞判死兜底。
+验收/探针的客观前提在启动期由代码保证，条件不满足即报错并说明原因，不靠运行期轮询停滞判死兜底：
+
+- 夹具内容条件（长文阈值、场景必需片段）：`z-acceptance-real.spec.ts` 的 `test.beforeAll` 在服务启动前经 `helpers.ts` 的 `assertLongTextFixture` / `assertFixtureContains` 检查，阈值与服务端触发判定同源（`LONG_TEXT_CHAR_THRESHOLD`）；
+- 模型配置 / 前端构建 / 端口：`acceptance-real-harness.mjs` 启动自检（缺配置即退出码 2 并说明原因），spec 侧对 harness 启动期退出即失败，不空等健康检查超时；
+- 探针（`scripts/probe-*.mjs`）：读取不到模型档案或凭证即时报错并指出补救路径。
 
 ## 相关
 

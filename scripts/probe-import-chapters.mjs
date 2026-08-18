@@ -29,9 +29,14 @@ const database = new DatabaseSync(databasePath, { readOnly: true });
 const profiles = database.prepare("SELECT id, record_json FROM provider_profiles").all()
   .map((row) => ({ id: row.id, profile: JSON.parse(row.record_json) }));
 const preferred = profiles.find(({ profile }) => profile.providerId === "deepseek" && profile.model === "deepseek-v4-flash") ?? profiles[0];
+if (!preferred) {
+  throw new Error(`探针前提未满足：${databasePath} 中没有模型档案——请先在 WebUI 的 AI 模型设置中保存并启用`);
+}
 const credential = database.prepare("SELECT api_key FROM provider_credentials WHERE id = ?").get(preferred.id)?.api_key;
 database.close();
-if (!credential) throw new Error("no credential");
+if (!credential) {
+  throw new Error(`探针前提未满足：模型档案 ${preferred.id}（${preferred.profile.providerId}/${preferred.profile.model}）无凭证——请在 WebUI 检查该配置的 API Key`);
+}
 
 const definition = DEFAULT_PROVIDER_REGISTRY.get(preferred.profile.providerId);
 const provider = createProvider(definition, {
@@ -40,7 +45,8 @@ const provider = createProvider(definition, {
 });
 const gateway = new ModelGateway(provider, { model: preferred.profile.model, thinking: false });
 
-// 无标题长文样本：段落即块（与导入 TXT 解析产出一致），全文超过长文阈值。
+// 无标题多段样本：段落即块（与导入 TXT 解析产出一致）。探针直连 gateway.parseImportChapters，
+// 不经过导入主流程的长文阈值门槛（阈值只决定是否创建解析任务），故样本无需达到阈值。
 const paragraphs = [
   "城市公共交通的演化从来不只是工程问题。它折射出一个社会对空间、时间与公平的理解。",
   "在工业化早期，城市规模有限，步行与畜力足以覆盖大多数出行需求。电车与铁路的出现第一次把通勤距离拉长到十公里以上。",

@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { expect, type Page } from "@playwright/test";
+import { LONG_TEXT_CHAR_THRESHOLD, isLongText } from "@collector/capture-contracts";
 
 const runtimeDir = join(dirname(fileURLToPath(import.meta.url)), ".runtime");
 
@@ -25,6 +26,27 @@ export const QUESTION = "什么是本地优先研究？";
 /** 页面与 API 由同一 harness 进程同源提供，页面端口即 API 端口（43211 fake，43212 nomodel，43213 fake+identity，43214 视觉基线独享 fake，临时并行轨道同理）。 */
 export function apiPortForPage(page: Page): number {
   return Number(new URL(page.url()).port || "43211");
+}
+
+// ---------------------------------------------------------------------------
+// 夹具启动期前提断言：客观条件不满足即抛错并说明原因，把夹具编写失误挡在启动期，
+// 不留到运行期靠轮询/超时兜底（如未达长文阈值时章节任务根本不会创建，轮询只会白等整上限）。
+// ---------------------------------------------------------------------------
+
+/** 夹具正文必须达到长文阈值——与服务端触发判定同源消费 isLongText / LONG_TEXT_CHAR_THRESHOLD。 */
+export function assertLongTextFixture(label: string, content: string): void {
+  if (!isLongText(content)) {
+    throw new Error(
+      `${label}：夹具正文 ${content.length} 字未达长文阈值 ${LONG_TEXT_CHAR_THRESHOLD}，长文路径（章节解析/节卡）不会触发——请扩充夹具内容`,
+    );
+  }
+}
+
+/** 夹具正文必须包含后续交互依赖的片段（如被选区选中的句子、导入后断言可见的标记词）。 */
+export function assertFixtureContains(label: string, content: string, needle: string): void {
+  if (!content.includes(needle)) {
+    throw new Error(`${label}：夹具正文不包含必需片段「${needle.slice(0, 40)}」——夹具内容与场景断言脱节`);
+  }
 }
 
 async function waitForFileValue(name: string): Promise<string> {
