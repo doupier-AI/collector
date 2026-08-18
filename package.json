@@ -23,7 +23,8 @@
     "clean": "node scripts/clean.mjs",
     "ralph:dry": "powershell -ExecutionPolicy Bypass -File scripts/ralph/once.ps1 -DryRun",
     "ralph:once": "powershell -ExecutionPolicy Bypass -File scripts/ralph/once.ps1",
-    "ralph:afk": "powershell -ExecutionPolicy Bypass -File scripts/ralph/afk.ps1"
+    "ralph:afk": "powershell -ExecutionPolicy Bypass -File scripts/ralph/afk.ps1",
+    "run:logged": "node scripts/run-logged.mjs"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.322",
