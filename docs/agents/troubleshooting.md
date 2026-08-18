@@ -8,4 +8,4 @@ Escape/快捷键失效类缺陷优先用 100ms 间隔 activeElement 采样探针
 
 ## 图片不可渲染环境的视觉审阅
 
-环境无法渲染图片时的视觉基线审阅方法，见 `docs/agents/testing.md`「视觉基线无图环境审阅」。
+环境无法渲染图片时如何完成视觉验证（含默认审图方法），见 `docs/agents/testing.md`「无图环境的视觉验证」。
