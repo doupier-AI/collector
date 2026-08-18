@@ -185,6 +185,57 @@ test.describe("#44 视觉回归基线", () => {
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
+  test("长文阅读页：右侧章节导航独立轨道像素基线（#95）", async ({ page }) => {
+    const issues = trackBrowserIssues(page);
+    freezeClock(page);
+    await pinModelStatus(page);
+    await openLongSession(page);
+    await expect(page.locator(".slice-card")).toHaveCount(3);
+    await closeSidebars(page);
+
+    // 单长文轮：右侧章节导航线列（3 条），无轮次导航；正文 + 右轨两列网格。
+    await expect(page.getByRole("navigation", { name: "章节导航" })).toBeVisible();
+    await expect(page.locator(".slice-rail__tick")).toHaveCount(3);
+    await expect(page.getByRole("navigation", { name: "轮次导航" })).toHaveCount(0);
+    // 回到顶部让首条节线高亮，截图确定。
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.waitForTimeout(200);
+
+    await expect(page).toHaveScreenshot("node-reading-chapter-right", {
+      mask: dynamicTimeMasks(page),
+      maskColor: "#FFFFFF",
+    });
+    expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
+  });
+
+  test("长文 + 追问双轨：左轮次导航与右章节导航并存像素基线（#95）", async ({ page }) => {
+    const issues = trackBrowserIssues(page);
+    freezeClock(page);
+    await pinModelStatus(page);
+    await openLongSession(page);
+    // 第二轮普通追问：产出一张轮次卡片，触发双轨并存。
+    await page.getByLabel("你的问题").fill("第二轮追问：渐进事件如何落地？");
+    await page.getByRole("button", { name: /发送/ }).click();
+    await expect(page.locator(".turn-card")).toHaveCount(1, { timeout: 15_000 });
+    await expect(page.locator(".turn-card")).toContainText("回答完毕", { timeout: 20_000 });
+    await closeSidebars(page);
+
+    // 双轨：左轮次（2 条）+ 右章节（当前长文轮 3 节）并存，正文居中。
+    await expect(page.getByRole("navigation", { name: "轮次导航" })).toBeVisible();
+    await expect(page.locator(".turn-rail__tick")).toHaveCount(2);
+    await expect(page.getByRole("navigation", { name: "章节导航" })).toBeVisible();
+    await expect(page.locator(".slice-rail__tick")).toHaveCount(3);
+    // 回到顶部让两条导航的首线高亮，截图确定。
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.waitForTimeout(200);
+
+    await expect(page).toHaveScreenshot("node-reading-dual-rail", {
+      mask: dynamicTimeMasks(page),
+      maskColor: "#FFFFFF",
+    });
+    expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
+  });
+
   test("深色主题：ADR-0019 整站深色工作台像素基线", async ({ page }) => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);

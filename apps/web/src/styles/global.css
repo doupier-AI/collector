@@ -221,6 +221,31 @@ button {
   min-width: 0;
 }
 
+/* #95：章节导航右移后的两种新网格态（ADR-0032）。均不用负边距或横向位移，
+   导航线列与正文各占结构互斥的独立轨道，一起回流、互不进入对方轨道。 */
+/* 仅章节导航（单/多轮含长文但轮次 <2）：正文 + 右轨。 */
+.page.page--with-chapter-rail {
+  width: min(100% - 2rem, calc(var(--measure) + 2rem + var(--space-3)));
+  display: grid;
+  grid-template-columns: minmax(0, var(--measure)) 2rem;
+  column-gap: var(--space-3);
+  align-items: start;
+}
+
+/* 双轨并存（多轮且含长文）：左轨轮次 + 正文 + 右轨章节，正文因两侧对称保持居中。 */
+.page.page--with-dual-rail {
+  width: min(100% - 2rem, calc(var(--measure) + 4rem + var(--space-3) * 2));
+  display: grid;
+  grid-template-columns: 2rem minmax(0, var(--measure)) 2rem;
+  column-gap: var(--space-3);
+  align-items: start;
+}
+
+.page--with-chapter-rail .page__content,
+.page--with-dual-rail .page__content {
+  min-width: 0;
+}
+
 .page--start {
   width: min(100% - 2rem, var(--measure-start));
   padding-top: 10vh;
@@ -730,6 +755,10 @@ button {
 
 .slice-card {
   min-width: 0;
+  /* #95：章节导航点击目标从标题锚点改为恒在的卡片容器（无标题卡片也能跳转）。
+     卡片顶预留 sticky 顶栏高度 + 呼吸位，跳转后卡片不被顶栏遮挡。
+     scroll-margin 只影响滚动定位，不改变布局与选区偏移。 */
+  scroll-margin-top: calc(var(--app-bar-height) + var(--space-4));
   /* 连续阅读面：每张语义卡片使用当前主题的阅读令牌，padding 只增内边距、不动布局定位；
      选区/引用偏移基于正文 DOM 不受卡片内边距影响。 */
   padding: var(--space-4) var(--space-5);
@@ -895,22 +924,22 @@ button {
 .slice-rail__track {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: var(--space-3);
   padding: var(--space-2) 0;
-  /* 窄屏拖动滑轨：禁止原生滚动抢夺指针。 */
-  touch-action: none;
 }
 
+/* #95 圆点形态：与左侧轮次导航的水平细线在形状上明确区分——轮次 = 线，章节 = 点。 */
 .slice-rail__tick {
   display: block;
-  width: 1.25rem;
-  height: 0.1875rem;
+  width: 0.5rem;
+  height: 0.5rem;
   padding: 0;
   border: none;
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-circle);
   background: var(--color-line);
   cursor: pointer;
-  /* 扩大透明可点热区到最小触控目标，视觉线仍细。 */
+  /* 扩大透明可点热区到最小触控目标，视觉圆点仍小。 */
   background-clip: padding-box;
 }
 
@@ -931,15 +960,21 @@ button {
 }
 
 .slice-rail__tick--active {
-  width: 2rem;
   background: var(--color-ai);
+  /* 用 transform 放大 + 品牌色光环表达当前节，不改盒尺寸——
+     滚动跟随切换高亮时零布局位移，圆点列不上下跳动。 */
+  transform: scale(1.4);
+  box-shadow: 0 0 0 0.1875rem color-mix(in srgb, var(--color-ai) 22%, transparent);
 }
 
 .slice-rail__preview {
   /* 与线列同一参考系：absolute 挂在线列（sticky，自身即定位上下文）下；top 由 JS 按
-     被预览线相对 rail 顶部的偏移给定，rail 钉住时与 tick 一起平移，滚动不漂移。 */
+     被预览线相对 rail 顶部的偏移给定，rail 钉住时与 tick 一起平移，滚动不漂移。
+     #95 右移：预览框放在线列左外侧（朝正文方向留出间距），且 pointer-events:none——
+     任何状态下都不覆盖线列的可点击热区，鼠标直接穿过。 */
   position: absolute;
-  left: 1rem;
+  right: calc(100% + var(--space-2));
+  pointer-events: none;
   /* 低于覆盖层（z-index 30）与其遮罩（20）：覆盖层展开时预览不穿透显示。 */
   z-index: var(--z-rail);
   width: min(18rem, calc(100vw - 4rem));
@@ -970,10 +1005,6 @@ button {
   .page.page--with-rail {
     width: min(100% - 1rem, calc(var(--measure) + 2rem + var(--space-2)));
     column-gap: var(--space-2);
-  }
-
-  .slice-rail__preview {
-    left: calc(100% + 0.5rem);
   }
 }
 

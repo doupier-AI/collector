@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveBodyVersion, deriveFragmentsFromSlices, deriveMessageSlices, messageContentBlockId } from "@collector/capture-contracts";
 import type { ResearchBodyVersionView, ResearchNodeView, ResearchSelectionInput, ResearchTurnAccepted } from "@collector/capture-contracts";
 import type { ApiClient } from "../../api/client";
@@ -13,8 +13,32 @@ import { makeAttachment, makeBodyVersion, makeFragment, makeFusionProposal, make
 import { ResearchNodePage } from "./ResearchNodePage";
 import { __clearBodyVersionCache } from "./fragment-locator";
 
+/** jsdom 无 matchMedia：节点页章节导航据此判定宽/窄屏。本文件多数用例针对宽屏线列，
+    统一 stub 为宽屏（≥900px）；prefers-reduced-motion 与其余查询不匹配，保持旧默认行为。 */
+function stubWideMatchMedia() {
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    writable: true,
+    value: vi.fn((query: string) => ({
+      matches: query.includes("min-width: 900px"),
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })),
+  });
+}
+
 beforeEach(() => {
   __clearBodyVersionCache();
+  stubWideMatchMedia();
+});
+
+afterEach(() => {
+  Reflect.deleteProperty(window, "matchMedia");
 });
 
 function noopTaskEventStream(): TaskEventStream {
@@ -1124,12 +1148,19 @@ describe("#94 轮次卡片视觉与左侧轮次导航", () => {
     expect(container.querySelectorAll(".turn-card--multi").length).toBe(2);
   });
 
-  it("多轮时章节导航让位轮次导航（长文暂由轮次导航覆盖）", async () => {
+  it("多轮含长文：轮次导航（左）与章节导航（右）并存，各司其职", async () => {
     const { container } = renderNodePage({ getResearchNodeView: async () => twoTurnLongFirstView() });
     await screen.findByText("第一段。");
+    // 左轨轮次导航：两条线，绑定两轮。
     expect(screen.getByRole("navigation", { name: "轮次导航" })).toBeInTheDocument();
-    expect(screen.queryByRole("navigation", { name: "章节导航" })).not.toBeInTheDocument();
     expect(container.querySelectorAll(".turn-rail__tick").length).toBe(2);
+    // 右轨章节导航：#95 起不再让位，与轮次导航并存；呈现当前长文轮的节（起点/推进/收束）。
+    const chapterNav = screen.getByRole("navigation", { name: "章节导航" });
+    expect(chapterNav).toBeInTheDocument();
+    const chapterTicks = container.querySelectorAll(".slice-rail__tick");
+    expect(chapterTicks.length).toBe(3);
+    // 双轨并存：页面用三列网格（左轮次 + 正文 + 右章节）。
+    expect(container.querySelector(".page")!.className).toContain("page--with-dual-rail");
     // 长文轮次容器带轮次级修饰类
     expect(container.querySelectorAll(".message__blocks--turn").length).toBe(1);
   });
@@ -1158,5 +1189,7 @@ describe("#94 轮次卡片视觉与左侧轮次导航", () => {
     expect(screen.getByRole("navigation", { name: "章节导航" })).toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "轮次导航" })).not.toBeInTheDocument();
     expect(container.querySelectorAll(".slice-rail__tick").length).toBe(3);
+    // #95：单轮长文章节导航铺在正文右侧独立轨道（正文 + 右轨两列网格）。
+    expect(container.querySelector(".page")!.className).toContain("page--with-chapter-rail");
   });
 });

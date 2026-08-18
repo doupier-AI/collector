@@ -6,6 +6,7 @@ import { isApiErrorCode, isUnauthorized, apiErrorCopy } from "../../api/errors";
 import { stableNodePath } from "../../app/paths";
 import { useServices } from "../../app/services";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
+import { useMediaQuery } from "../../app/useMediaQuery";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { StatusMessage } from "../../components/StatusMessage/StatusMessage";
 import { PairingGate } from "../auth/PairingGate";
@@ -101,8 +102,10 @@ export function ResearchNodePage() {
   // 任何新会话作用域 hook 也必须遵守同一静默约束，避免内容渲染后的多余周期打断键盘交互。
   const sessionId = readyView?.session.id ?? "";
 
-  // #36 章节导航：任一 completed 消息存在派生切片时渲染线列。
-  // 数据源 = 全部 completed 消息的派生切片（按消息顺序 + ordinal），每条线绑定卡片标题锚点。
+  // #95 章节导航（ADR-0032 右侧轨道）：长文节点的每一节对应一条线，点击跳到该节卡片。
+  // 数据源 = 全部 completed 长文消息的派生切片（按消息顺序 + ordinal），每条线绑定恒在的
+  // 卡片容器 id（不是可能缺省的标题锚点），无标题卡片也能可靠跳转。
+  // groupKey = 所属长文轮（消息 id）：多长文轮并存时导航只呈现「当前阅读那一轮」的节。
   // 卡片目标与 MessageItem 渲染共用 deriveSliceCardTargets——导航锚点与卡片 id 必然同源，
   // 避免两份手工对齐计算不一致导致的点选漂移。
   // 必须在所有早退返回之前计算（Hooks 规则）；视图未就绪时为空。
@@ -124,7 +127,7 @@ export function ResearchNodePage() {
     for (const message of readyMessages) {
       if (message.role !== "assistant" || message.status !== "completed") continue;
       for (const target of deriveSliceCardTargets(message, readySlices?.[message.id])) {
-        items.push({ anchorId: target.anchorId, cardId: target.cardId, title: target.slice.title, excerpt: target.blockText });
+        items.push({ cardId: target.cardId, groupKey: message.id, title: target.slice.title, excerpt: target.blockText });
       }
     }
     return items;
@@ -153,8 +156,22 @@ export function ResearchNodePage() {
     return items;
   }, [readyMessages]);
   const showTurnRail = turnItems.length >= 2;
-  // 章节导航仅在轮次导航不出现时渲染（单轮长文现状不回归）；两轨共用正文左侧独立网格轨道。
-  const showSliceRail = !showTurnRail && railItems.length > 0;
+  // #95：章节导航（长文）与轮次导航（多轮）并存——左轨轮次、右轨章节，各司其职，不再互斥让位。
+  // 出现条件只看是否有长文节（railItems 非空）；普通回答无派生节卡，天然不出现。
+  const showSliceRail = railItems.length > 0;
+  // 宽屏（≥900px）才把章节导航铺进右侧独立网格轨道；窄屏它是浮动入口 + 抽屉，不占轨道。
+  // Hooks 规则：与上面的显隐判定同处早退返回之前。
+  const wideChapterRail = useMediaQuery("(min-width: 900px)");
+  const chapterTrack = wideChapterRail && showSliceRail;
+  // 页面网格三态：仅轮次（左轨，沿用 #94 基线不动）、仅章节（右轨）、双轨（左右各一，正文居中）。
+  // 轨道随 completed 长文消息单调预留，出现/收起不引起正文布局跳动。
+  const pageRailClass = showTurnRail
+    ? chapterTrack
+      ? " page--with-dual-rail"
+      : " page--with-rail"
+    : chapterTrack
+      ? " page--with-chapter-rail"
+      : "";
   // 导入控制器以会话视图形状工作：节点视图结构兼容，合并时保留 node / childNodes
   const importsUpdateView = useRef(
     (updater: (view: ResearchSessionView) => ResearchSessionView) =>
@@ -678,14 +695,13 @@ export function ResearchNodePage() {
 
   return (
     <div
-      className={`page${showTurnRail || showSliceRail ? " page--with-rail" : ""}`}
+      className={`page${pageRailClass}`}
       onDragEnter={isRoot ? handleDragEnter : undefined}
       onDragOver={isRoot ? handleDragOver : undefined}
       onDragLeave={isRoot ? handleDragLeave : undefined}
       onDrop={isRoot ? handleDrop : undefined}
     >
       {showTurnRail ? <TurnRailNav items={turnItems} /> : null}
-      {showSliceRail ? <SliceRailNav items={railItems} /> : null}
       <div className="page__content">
       {originSource.selection ? (
         <>
@@ -983,6 +999,7 @@ export function ResearchNodePage() {
         {node.liveMessage}
       </p>
       </div>
+      {showSliceRail ? <SliceRailNav items={railItems} /> : null}
     </div>
   );
 }

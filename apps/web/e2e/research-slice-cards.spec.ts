@@ -34,8 +34,8 @@ async function openLongAnswer(page: import("@playwright/test").Page): Promise<vo
 }
 
 /**
- * #54 回归：章节导航必须拥有正文之外的独立横向轨道。
- * 断言计入 tick 透明点击热区向右扩出的 0.35rem，避免“线条看似分开、实际仍拦截正文”。
+ * #95 几何回归：章节导航在正文右侧拥有独立轨道（ADR-0032）。
+ * 断言计入 tick 透明点击热区向左扩出的 0.35rem，避免“线条看似分开、实际仍拦截正文”。
  */
 async function expectChapterRailOutsideBody(page: import("@playwright/test").Page): Promise<void> {
   const geometry = await page.evaluate(() => {
@@ -46,11 +46,11 @@ async function expectChapterRailOutsideBody(page: import("@playwright/test").Pag
     const cardRect = firstCard.getBoundingClientRect();
     const clickAreaOverflow = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) * 0.35;
     return {
-      railInteractiveRight: railRect.right + clickAreaOverflow,
-      bodyLeft: cardRect.left,
+      bodyRight: cardRect.right,
+      railInteractiveLeft: railRect.left - clickAreaOverflow,
     };
   });
-  expect(geometry.railInteractiveRight).toBeLessThanOrEqual(geometry.bodyLeft);
+  expect(geometry.bodyRight).toBeLessThanOrEqual(geometry.railInteractiveLeft);
 }
 
 test.describe("#91 普通回答轮次卡片", () => {
@@ -233,10 +233,10 @@ test.describe("#91 长文保留节卡与章节导航", () => {
   });
 });
 
-test.describe("#91 长文窄屏", () => {
+test.describe("#95 长文窄屏：浮动入口 + 抽屉", () => {
   test.use({ viewport: { width: 320, height: 844 } });
 
-  test("窄屏：正文行宽不超上限、无横向滚动、线列不挤压正文", async ({ page }) => {
+  test("窄屏：正文行宽不超上限、无横向滚动、章节导航收为浮动入口", async ({ page }) => {
     await openLongAnswer(page);
 
     const noHorizontal = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth);
@@ -248,29 +248,49 @@ test.describe("#91 长文窄屏", () => {
     expect(contentBox).not.toBeNull();
     expect(contentBox!.width).toBeLessThanOrEqual(320);
 
-    // 线列仍可见
-    await expect(page.getByRole("navigation", { name: "章节导航" })).toBeVisible();
-    await expect(page.locator(".slice-rail__tick")).toHaveCount(3);
-    await expectChapterRailOutsideBody(page);
+    // 窄屏（<900px）不铺右侧线列，改为右下浮动入口；抽屉未开时无线列、无残留轨道。
+    await expect(page.locator(".slice-rail")).toHaveCount(0);
+    await expect(page.locator(".slice-rail__tick")).toHaveCount(0);
+    await expect(page.getByTestId("slice-chapter-entry")).toBeVisible();
   });
 
-  test("窄屏拖动：按住线列上下拖动实时跳转", async ({ page }) => {
+  test("窄屏抽屉：浮动入口打开抽屉，点节跳转并关闭，Escape 关闭归还焦点", async ({ page }) => {
     await openLongAnswer(page);
-    const track = page.locator(".slice-rail__track");
-    const trackBox = await track.boundingBox();
-    expect(trackBox).not.toBeNull();
 
-    const ticks = page.locator(".slice-rail__tick");
-    // 从线列顶部拖到底部：指针 Y 映射到最后一张卡片
-    const startY = trackBox!.y + 2;
-    const endY = trackBox!.y + trackBox!.height - 2;
-    await page.mouse.move(trackBox!.x + trackBox!.width / 2, startY);
-    await page.mouse.down();
-    await page.mouse.move(trackBox!.x + trackBox!.width / 2, endY, { steps: 6 });
-    await page.mouse.up();
+    const entry = page.getByTestId("slice-chapter-entry");
+    await expect(entry).toHaveAttribute("aria-expanded", "false");
+    await entry.click();
+    const drawer = page.getByTestId("slice-chapter-drawer");
+    await expect(drawer).toBeVisible();
+    await expect(entry).toHaveAttribute("aria-expanded", "true");
+    // 抽屉列出当前长文轮的节标题。
+    for (const title of LONG_SLICE_TITLES) {
+      await expect(drawer.getByRole("button", { name: title })).toBeVisible();
+    }
 
-    // 拖动后当前线落到最后一张
-    await expect(ticks.nth(2)).toHaveAttribute("aria-current", "location", { timeout: 3_000 });
-    await expect(page.locator(".slice-card__title", { hasText: "长文第3节" })).toBeInViewport();
+    // 点「长文第3节」→ 精确跳到对应卡片并关闭抽屉。
+    await drawer.getByRole("button", { name: "长文第3节" }).click();
+    await expect(page.getByTestId("slice-chapter-drawer")).toHaveCount(0);
+    await expect(page.locator(".slice-card__title", { hasText: "长文第3节" })).toBeInViewport({ timeout: 5_000 });
+
+    // 再次打开，Escape 关闭并把焦点归还浮动入口。
+    await entry.click();
+    await expect(page.getByTestId("slice-chapter-drawer")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("slice-chapter-drawer")).toHaveCount(0);
+    await expect(entry).toBeFocused();
+
+    // 抽屉开闭全程无横向溢出。
+    const noHorizontal = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth);
+    expect(noHorizontal).toBe(true);
+  });
+
+  test("窄屏抽屉：点击遮罩关闭", async ({ page }) => {
+    await openLongAnswer(page);
+    await page.getByTestId("slice-chapter-entry").click();
+    await expect(page.getByTestId("slice-chapter-drawer")).toBeVisible();
+    // 遮罩在线列抽屉左侧，点遮罩空白处关闭。
+    await page.mouse.click(20, 400);
+    await expect(page.getByTestId("slice-chapter-drawer")).toHaveCount(0);
   });
 });

@@ -3,7 +3,8 @@ import { pairAndOpen, trackBrowserIssues } from "./helpers";
 
 /**
  * #94 轮次卡片视觉与左侧轮次导航 e2e（确定性假模型）：
- * - 出现条件：轮次 ≥2 才显示轮次导航；单轮不显示；章节导航未右移前与轮次导航互斥（长文暂由轮次导航覆盖）；
+ * - 出现条件：轮次 ≥2 才显示轮次导航；单轮不显示；#95 起章节导航右移右轨、与轮次导航并存，
+ *   不再互斥让位（长文轮的节由右侧章节导航呈现，轮次导航仍在左轨负责按轮跳转）；
  * - 轮次卡片视觉：多轮以背景/边框色/阴影区分轮次（零布局位移），单轮不额外装饰；
  * - 精确跳转：点击来自线自身索引（覆盖多轮、长短混排、流式进行中）；锚点为恒存在的消息元素；
  * - 高亮粘住：点击后保持高亮直到用户自己滚动，滚动跟随恢复正常；
@@ -123,12 +124,15 @@ test.describe("#94 出现条件与轮次卡片视觉", () => {
     expect(multiBorder).toMatch(/^(rgb\(134, 135, 13\d\)|color\(srgb 0\.526\d+ 0\.529\d+ 0\.51\d+\))$/);
   });
 
-  test("多轮含长文：章节导航让位轮次导航（长文暂由轮次导航覆盖）", async ({ page }) => {
+  test("多轮含长文：轮次导航（左）与章节导航（右）并存，各司其职", async ({ page }) => {
     await openLongThenNormal(page);
     await expect(page.locator(".slice-card")).toHaveCount(3);
+    // 左轨轮次导航：两条线，绑定两轮。
     await expect(page.getByRole("navigation", { name: "轮次导航" })).toBeVisible();
     await expect(page.locator(".turn-rail__tick")).toHaveCount(2);
-    await expect(page.getByRole("navigation", { name: "章节导航" })).toHaveCount(0);
+    // 右轨章节导航：#95 起不再让位，与轮次导航并存；呈现当前长文轮的 3 节。
+    await expect(page.getByRole("navigation", { name: "章节导航" })).toBeVisible();
+    await expect(page.locator(".slice-rail__tick")).toHaveCount(3);
     // 长文轮的节卡组获得轮次级容器视觉
     await expect(page.locator(".message__blocks--turn")).toHaveCount(1);
   });
