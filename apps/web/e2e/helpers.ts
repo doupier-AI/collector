@@ -529,7 +529,7 @@ export async function readNodeEvidence(page: Page, nodeId: string, fragmentOrdin
   } | undefined;
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
-    view = await apiJson(page, `/v1/research-nodes/${encodeURIComponent(nodeId)}`);
+    view = await apiJson<NonNullable<typeof view>>(page, `/v1/research-nodes/${encodeURIComponent(nodeId)}`);
     const assistant = view.messages.find((m) => m.role === "assistant" && m.status === "completed" && m.content.trim());
     if (assistant && view.bodyVersions?.[assistant.id]) break;
     await page.waitForTimeout(300);

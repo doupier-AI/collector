@@ -1,10 +1,11 @@
 import { mkdir, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 
-export default async function globalSetup() {
-  const webDir = join(dirname(fileURLToPath(import.meta.url)), "..");
-  const evidenceDir = join(webDir, "test-results-acceptance", "marker-evidence");
+/** @param {import("@playwright/test").FullConfig} fullConfig */
+export default async function globalSetup(fullConfig) {
+  const project = fullConfig.projects.find((candidate) => candidate.name === "chromium-acceptance");
+  if (!project) throw new Error("真实验收主项目 chromium-acceptance 未配置，无法初始化弱标记证据目录");
+  const evidenceDir = join(project.outputDir, "marker-evidence");
   await rm(evidenceDir, { recursive: true, force: true });
   await mkdir(evidenceDir, { recursive: true });
 }

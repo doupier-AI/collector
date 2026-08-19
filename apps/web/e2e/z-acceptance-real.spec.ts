@@ -19,9 +19,10 @@
  */
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { createServer } from "node:net";
 import { type Locator, type Page, type Response } from "@playwright/test";
 import { deriveMessageBlocks } from "@collector/capture-contracts";
-import { expect, test, type AcceptanceRuntime } from "./acceptance-real-fixtures";
+import { expect, getActiveAcceptanceRuntime, test } from "./acceptance-real-fixtures";
 import {
   apiJson,
   apiPortForPage,
@@ -43,20 +44,9 @@ const STALL_TIMEOUT = 300_000; // 等待期间无任何落库/模型进展的判
 // ---------------------------------------------------------------------------
 // 验收服务生命周期（真实模型 harness，隔离数据目录；重启复用同一数据目录）
 // ---------------------------------------------------------------------------
-let currentRuntime: AcceptanceRuntime | undefined;
-
 function runtimeDataDir(): string {
-  if (!currentRuntime) throw new Error("验收 runtime 尚未就绪");
-  return currentRuntime.dataDir;
+  return getActiveAcceptanceRuntime().dataDir;
 }
-
-test.beforeEach(async ({ acceptance }) => {
-  currentRuntime = acceptance;
-  // 启动期夹具前提自检（毫秒级）：客观条件不满足立即失败并说明原因，先于任何服务启动。
-  assertLongTextFixture("T03 章节夹具", CHAPTER_IMPORT_CONTENT);
-  assertFixtureContains("T03 章节夹具", CHAPTER_IMPORT_CONTENT, "第1段");
-  assertFixtureContains("场景二文档夹具", DOC_CONTENT, DOC_SELECTED);
-});
 
 // ---------------------------------------------------------------------------
 // 真实模型通用辅助
@@ -431,8 +421,8 @@ const DOC_SELECTED = "副本之间会在没有新写入时逐步收敛";
 test("场景二：文档导入 → 选区真实分析 → 带方向的节点生长真实第一轮 → 返回原文 → 服务重启后恢复", async ({
   page,
   browser,
-  acceptance,
 }) => {
+  const acceptance = getActiveAcceptanceRuntime();
   await pairAndOpen(page, "/research/new");
   const consoleIssues = watchConsole(page);
   const createResponse = await page.request.post("/v1/research-sessions", {
@@ -668,7 +658,7 @@ interface RealNodeView {
 /** 记录真实模型语义观察（漏标、密度、类别分布），不构成失败。 */
 function recordWeakMarkerNote(note: string): void {
   console.log(`【弱标记真实验收·记录】${note}`);
-  currentRuntime?.weakMarkerNotes.push(note);
+  getActiveAcceptanceRuntime().weakMarkerNotes.push(note);
 }
 
 /**
@@ -694,7 +684,7 @@ function expectMarkersAligned(message: RealAssistantMessage, label: string): Rea
       `${label}：标记范围与正文错位（${marker.blockOrdinal}:${marker.startOffset}-${marker.endOffset}）`,
     ).toBe(marker.text);
   }
-  if (currentRuntime) currentRuntime.weakMarkersSeen += markers.length;
+  getActiveAcceptanceRuntime().weakMarkersSeen += markers.length;
   return markers;
 }
 
@@ -1202,6 +1192,12 @@ const CHAPTER_IMPORT_CONTENT = CHAPTER_IMPORT_PARAGRAPHS.map((text, index) =>
   `第${index + 1}段 ${text} 这一段进一步展开：城市交通问题的讨论离不开对出行结构、路权分配与公共财政的持续观察，好的规划应当兼顾效率、公平与环境成本。`.repeat(2),
 ).join("\n\n");
 
+// 纯同步夹具前提在模块载入时完成，不请求 Playwright fixture，也不会提前启动 harness。
+// 任一内容漂移都在真实模型调用前立即失败，避免进入分钟级等待后才暴露夹具问题。
+assertLongTextFixture("T03 章节夹具", CHAPTER_IMPORT_CONTENT);
+assertFixtureContains("T03 章节夹具", CHAPTER_IMPORT_CONTENT, "第1段");
+assertFixtureContains("场景二文档夹具", DOC_CONTENT, DOC_SELECTED);
+
 /** 章节解析任务视图（有模型两态共用）。 */
 interface ChapterParseView {
   chapterParse?: {
@@ -1300,7 +1296,8 @@ test("T03 有模型：导入长文立即可读，AI 章节解析异步补齐并�
 
 test.describe("T03 无模型 runtime", () => {
   test.use({ acceptanceMode: "none" });
-  test("T03 无模型：导入长文获得规则锚点，章节导航可用且如实呈现来源", async ({ page, acceptance }) => {
+  test("T03 无模型：导入长文获得规则锚点，章节导航可用且如实呈现来源", async ({ page }) => {
+    const acceptance = getActiveAcceptanceRuntime();
     expect(acceptance.mode).toBe("none");
     await pairAndOpen(page, "/research/new");
     const createResponse = await page.request.post("/v1/research-sessions", { headers: { "Idempotency-Key": crypto.randomUUID() }, data: {} });
@@ -1328,20 +1325,32 @@ test.describe("T03 无模型 runtime", () => {
       expect(record.fallbackReason).toBe("no_model");
       expect((record.chapters ?? []).length).toBeGreaterThanOrEqual(2);
       expect(database.prepare("SELECT COUNT(*) AS count FROM model_calls").get() as { count: number }, "无模型状态不得发起任何模型调用").toMatchObject({ count: 0 });
+      expect(database.prepare("SELECT COUNT(*) AS count FROM provider_profiles").get() as { count: number }, "无模型状态不得写入模型档案").toMatchObject({ count: 0 });
+      expect(database.prepare("SELECT COUNT(*) AS count FROM provider_credentials").get() as { count: number }, "无模型状态不得写入凭证").toMatchObject({ count: 0 });
+      expect(database.prepare("SELECT COUNT(*) AS count FROM settings WHERE key IN ('active_provider_profile_id', 'ai_configured', 'deepseek_configured')").get() as { count: number }, "无模型状态不得留下模型激活或已配置标志").toMatchObject({ count: 0 });
     } finally { database.close(); }
   });
 
-  test("无模型 runtime：独占端口健康、同目录重启恢复与 close 幂等接缝", async ({ page, acceptance }) => {
+  test("无模型 runtime：独占端口健康、同目录重启恢复与 close 幂等接缝", async ({ page }) => {
+    const acceptance = getActiveAcceptanceRuntime();
+    expect(acceptance.mode).toBe("none");
+    expect(acceptance.startCount).toBe(1);
     expect((await fetch(`${acceptance.baseURL}/health`)).ok).toBe(true);
     await pairAndOpen(page, "/research/new");
     const created = await page.request.post("/v1/research-sessions", { headers: { "Idempotency-Key": crypto.randomUUID() }, data: {} });
     expect(created.status()).toBe(201);
     const sessionId = ((await created.json()) as { id: string }).id;
     await acceptance.restart();
+    expect(acceptance.startCount).toBe(2);
     expect((await fetch(`${acceptance.baseURL}/health`)).ok).toBe(true);
     const recovered = await page.request.get(`/v1/research-sessions/${encodeURIComponent(sessionId)}`);
     expect(recovered.ok()).toBe(true);
     await acceptance.close();
     await acceptance.close();
+    await new Promise<void>((resolve, reject) => {
+      const probe = createServer();
+      probe.once("error", reject);
+      probe.listen(acceptance.port, "127.0.0.1", () => probe.close((error) => error ? reject(error) : resolve()));
+    });
   });
 });
