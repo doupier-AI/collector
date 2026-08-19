@@ -394,22 +394,78 @@ button {
   display: block;
   width: 100%;
   min-height: 31rem;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.global-map__canvas--dragging svg {
+  cursor: grabbing;
+}
+
+.global-map__pan-surface {
+  fill: transparent;
+}
+
+.global-map__zoom-controls {
+  position: absolute;
+  z-index: 2;
+  top: var(--space-3);
+  right: var(--space-3);
+  display: grid;
+  grid-template-columns: 2.25rem 3.25rem 2.25rem;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--color-surface) 92%, transparent);
+  box-shadow: var(--shadow-sm);
+}
+
+.global-map__zoom-controls button {
+  min-height: 2.25rem;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--font-size-lg);
+}
+
+.global-map__zoom-controls button:hover {
+  background: var(--color-surface-hover);
+}
+
+.global-map__zoom-controls button:focus-visible {
+  outline: none;
+  box-shadow: inset var(--ring-focus);
+}
+
+.global-map__zoom-controls output {
+  color: var(--color-muted);
+  font-size: var(--font-size-xs);
+  text-align: center;
 }
 
 .global-map__view-title {
   position: absolute;
   z-index: 1;
   margin: var(--space-4);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--color-surface) 92%, transparent);
   color: var(--color-muted);
   font-family: var(--font-sans);
   font-size: var(--font-size-sm);
   font-weight: 650;
   letter-spacing: 0.04em;
+  pointer-events: none;
 }
 
 .global-map__edge {
   stroke: color-mix(in srgb, var(--color-muted) 44%, transparent);
   stroke-width: 1.25;
+  transition: opacity var(--duration-fast) var(--ease-out), stroke-width var(--duration-fast) var(--ease-out);
 }
 
 .global-map__edge--fused-from {
@@ -417,39 +473,69 @@ button {
   stroke-width: 1.75;
 }
 
+.global-map__edge--emphasized {
+  opacity: 1;
+  stroke: color-mix(in srgb, var(--color-ai) 62%, var(--color-muted));
+  stroke-width: 2.25;
+}
+
+.global-map__edge--muted {
+  opacity: 0.2;
+}
+
 .global-map__node {
   cursor: pointer;
   color: var(--color-ink);
   outline: none;
+  transition: opacity var(--duration-fast) var(--ease-out);
 }
 
-.global-map__node circle {
+.global-map__node-core {
   fill: var(--color-graph-node);
   stroke: var(--color-graph-node-stroke);
   stroke-width: 3;
-  transition: r var(--duration-fast) var(--ease-out), stroke-width var(--duration-fast) var(--ease-out);
+  transition: r var(--duration-fast) var(--ease-out), stroke-width var(--duration-fast) var(--ease-out), filter var(--duration-fast) var(--ease-out);
 }
 
-.global-map__node--project-amber circle { stroke: var(--color-project-amber); }
-.global-map__node--project-violet circle { stroke: var(--color-project-violet); }
-.global-map__node--project-blue circle { stroke: var(--color-project-blue); }
-.global-map__node--project-teal circle { stroke: var(--color-project-teal); }
-.global-map__node--project-rose circle { stroke: var(--color-project-rose); }
+.global-map__node-halo {
+  fill: transparent;
+  stroke: transparent;
+  stroke-width: 2;
+}
 
-.global-map__node--fusion circle {
+.global-map__node--project-amber .global-map__node-core { stroke: var(--color-project-amber); }
+.global-map__node--project-violet .global-map__node-core { stroke: var(--color-project-violet); }
+.global-map__node--project-blue .global-map__node-core { stroke: var(--color-project-blue); }
+.global-map__node--project-teal .global-map__node-core { stroke: var(--color-project-teal); }
+.global-map__node--project-rose .global-map__node-core { stroke: var(--color-project-rose); }
+
+.global-map__node--fusion .global-map__node-core {
   fill: transparent;
   stroke-width: 5;
 }
 
-.global-map__node--archived circle {
+.global-map__node--archived .global-map__node-core {
   opacity: 0.55;
   stroke-dasharray: 3 3;
 }
 
-.global-map__node:focus-visible circle,
-.global-map__node:hover circle {
-  r: 14px;
+.global-map__node--emphasized .global-map__node-core,
+.global-map__node--neighbor .global-map__node-core {
+  r: 9px;
   stroke-width: 5;
+}
+
+.global-map__node--selected .global-map__node-halo,
+.global-map__node:focus-visible .global-map__node-halo {
+  stroke: var(--color-ai);
+}
+
+.global-map__node--selected .global-map__node-core {
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--color-ai) 48%, transparent));
+}
+
+.global-map__node--muted {
+  opacity: 0.3;
 }
 
 .global-map__node text {
@@ -457,6 +543,29 @@ button {
   font-family: var(--font-sans);
   font-size: 13px;
   font-weight: 650;
+  opacity: 0.62;
+  paint-order: stroke;
+  stroke: var(--color-surface);
+  stroke-width: 4px;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.global-map__node--emphasized text,
+.global-map__node--neighbor text,
+.global-map__node--selected text,
+.global-map__node:focus-visible text {
+  opacity: 1;
+}
+
+.global-map__viewport--zoomed-out .global-map__node text {
+  opacity: 0;
+}
+
+.global-map__viewport--zoomed-out .global-map__node--emphasized text,
+.global-map__viewport--zoomed-out .global-map__node--neighbor text,
+.global-map__viewport--zoomed-out .global-map__node--selected text,
+.global-map__viewport--zoomed-out .global-map__node:focus-visible text {
+  opacity: 1;
 }
 
 .global-map__node .global-map__node-state {
@@ -697,7 +806,10 @@ button {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .global-map__node circle { transition: none; }
+  .global-map__node,
+  .global-map__node-core,
+  .global-map__node text,
+  .global-map__edge { transition: none; }
 }
 
 /* ---------- 会话页 ---------- */
