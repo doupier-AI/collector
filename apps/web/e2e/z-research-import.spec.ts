@@ -473,7 +473,32 @@ test("导入长文：正文立即可读，AI 章节解析异步补齐章节导�
   await page.evaluate(() => window.scrollTo(0, 0));
   await nav.getByRole("button", { name: "第2章" }).click();
   await expect.poll(() => page.evaluate(() => window.scrollY), { timeout: 5_000 }).toBeGreaterThan(0);
-  await expect(nav.getByRole("button", { name: "第2章" })).toHaveClass(/chapter-nav__item--active/);
+  const activeChapter = nav.getByRole("button", { name: "第2章" });
+  await expect(activeChapter).toHaveClass(/chapter-nav__item--active/);
+
+  // 选中态会同时放大圆点并绘制外圈；完整视觉边界必须留在 rail 的裁切区域内。
+  const activeDotBounds = await activeChapter.evaluate((element) => {
+    const navElement = element.closest<HTMLElement>(".chapter-nav--rail");
+    if (!navElement) throw new Error("章节导航条目缺少宽屏 rail 容器");
+    const itemRect = element.getBoundingClientRect();
+    const navRect = navElement.getBoundingClientRect();
+    const itemStyle = getComputedStyle(element);
+    const dotStyle = getComputedStyle(element, "::before");
+    const dotWidth = Number.parseFloat(dotStyle.width);
+    const transformScale = dotStyle.transform === "none" ? 1 : Math.abs(new DOMMatrixReadOnly(dotStyle.transform).a);
+    const shadowLengths = [...dotStyle.boxShadow.matchAll(/(-?\d+(?:\.\d+)?)px/g)].map((match) => Number.parseFloat(match[1]));
+    const shadowSpread = shadowLengths.length >= 4 ? shadowLengths[3] : 0;
+    const centerX = itemRect.left + Number.parseFloat(itemStyle.paddingLeft) + dotWidth / 2;
+    const visualRadius = (dotWidth / 2 + shadowSpread) * transformScale;
+    return {
+      dotLeft: centerX - visualRadius,
+      dotRight: centerX + visualRadius,
+      clipLeft: navRect.left,
+      clipRight: navRect.right,
+    };
+  });
+  expect(activeDotBounds.dotLeft).toBeGreaterThanOrEqual(activeDotBounds.clipLeft);
+  expect(activeDotBounds.dotRight).toBeLessThanOrEqual(activeDotBounds.clipRight);
 
   // 刷新后状态一致：锚点与来源状态由持久化记录恢复，不重复解析
   await page.reload();

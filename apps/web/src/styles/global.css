@@ -5247,6 +5247,11 @@ button.model-status {
   background: transparent;
 }
 
+.chapter-nav--rail .chapter-nav__list {
+  /* 纵向滚动会同时建立横向裁切边界；为选中圆点的放大与光环预留安全区。 */
+  padding-inline: var(--space-2);
+}
+
 .chapter-nav--status-only {
   width: 100%;
 }
