@@ -17,14 +17,39 @@ import { expect, test, type Page } from "@playwright/test";
 import { deriveMessageBlocks, isLongText } from "@collector/capture-contracts";
 import { QUESTION, apiJson, citeAnswerText, pairAndOpen } from "./helpers";
 
-interface NodeViewLite {
-  messages: Array<{ role: string; status: string; content: string; reasoning?: string }>;
+interface TermMarkerLite {
+  text: string;
+  category: "concept" | "entity" | "abbreviation" | "notation";
 }
+
+interface NodeViewLite {
+  messages: Array<{ role: string; status: string; content: string; reasoning?: string; termMarkers?: TermMarkerLite[] }>;
+}
+
+const EXTREME_RESPONSE_TRIGGERS = {
+  longBody: "E2E 极端形态：多段长正文",
+  unbrokenLine: "E2E 极端形态：超长无断行",
+  denseMarkers: "E2E 极端形态：密集弱标记",
+  longChineseMarker: "E2E 极端形态：超长中文多词标记",
+} as const;
+
+const EXTREME_RESPONSE_CONTRACT = {
+  longBodyCharacters: { minimum: 3_000, maximum: 5_000 },
+  longBodyParagraphs: 12,
+  unbrokenLineCharacters: 1_000,
+  denseMarkerCount: 20,
+  longChineseMarkerMinimumCharacters: 48,
+} as const;
 
 /** 已完成的 AI 消息正文列表（按落库顺序）。 */
 async function assistantContents(page: Page, nodeId: string): Promise<string[]> {
   const view = await apiJson<NodeViewLite>(page, `/v1/research-nodes/${encodeURIComponent(nodeId)}`);
   return view.messages.filter((message) => message.role === "assistant" && message.status === "completed").map((message) => message.content);
+}
+
+async function completedAssistants(page: Page, nodeId: string): Promise<NodeViewLite["messages"]> {
+  const view = await apiJson<NodeViewLite>(page, `/v1/research-nodes/${encodeURIComponent(nodeId)}`);
+  return view.messages.filter((message) => message.role === "assistant" && message.status === "completed");
 }
 
 /** 等已完成的 AI 消息达到指定条数（后续轮次的完成等待；aria-live 只在首轮从空变为「已完成」）。 */
@@ -75,6 +100,50 @@ test("普通回答契约：三段结构、含完成词「回答完毕」、非�
   expect(deriveMessageBlocks(content), "普通回答契约：三段结构").toHaveLength(3);
   expect(content, "普通回答契约：不得带长文节标题").not.toMatch(/^## /m);
   expect(isLongText(content), "普通回答契约：不得触发长文路径（走轮次卡片而非节卡）").toBe(false);
+});
+
+test("极端响应契约：专用触发词覆盖长正文、无断行、四类密集标记与超长中文多词标记，清洗后走真实外部结构", async ({ page }) => {
+  test.setTimeout(60_000);
+  await pairAndOpen(page, "/research/new");
+  const nodeId = await submitQuestion(page, EXTREME_RESPONSE_TRIGGERS.longBody);
+  await expect(page.locator("[aria-live=polite]")).toHaveText("已完成", { timeout: 15_000 });
+  await waitAssistantCount(page, nodeId, 1);
+
+  await page.getByLabel("你的问题").fill(EXTREME_RESPONSE_TRIGGERS.unbrokenLine);
+  await page.getByRole("button", { name: "发送" }).click();
+  await waitAssistantCount(page, nodeId, 2);
+  await page.getByLabel("你的问题").fill(EXTREME_RESPONSE_TRIGGERS.denseMarkers);
+  await page.getByRole("button", { name: "发送" }).click();
+  await waitAssistantCount(page, nodeId, 3);
+  await page.getByLabel("你的问题").fill(EXTREME_RESPONSE_TRIGGERS.longChineseMarker);
+  await page.getByRole("button", { name: "发送" }).click();
+  await waitAssistantCount(page, nodeId, 4);
+
+  const answers = await completedAssistants(page, nodeId);
+  expect(answers, "四个专用触发词应各产生一条完成回答").toHaveLength(4);
+  const [longBody, unbrokenLine, denseMarkers, longChineseMarker] = answers;
+  expect(longBody).toBeDefined();
+  expect(unbrokenLine).toBeDefined();
+  expect(denseMarkers).toBeDefined();
+  expect(longChineseMarker).toBeDefined();
+
+  expect(longBody!.content.length, "多段长正文应保持在验收范围内").toBeGreaterThanOrEqual(EXTREME_RESPONSE_CONTRACT.longBodyCharacters.minimum);
+  expect(longBody!.content.length, "多段长正文应有受控上限，避免分钟级门禁膨胀").toBeLessThanOrEqual(EXTREME_RESPONSE_CONTRACT.longBodyCharacters.maximum);
+  expect(deriveMessageBlocks(longBody!.content), "多段长正文段数应稳定").toHaveLength(EXTREME_RESPONSE_CONTRACT.longBodyParagraphs);
+
+  expect(unbrokenLine!.content.length, "超长无断行文本长度应锁定").toBe(EXTREME_RESPONSE_CONTRACT.unbrokenLineCharacters);
+  expect(unbrokenLine!.content, "超长无断行文本不得含换行").not.toMatch(/[\r\n]/);
+  expect(deriveMessageBlocks(unbrokenLine!.content), "超长无断行文本应是单一正文块").toHaveLength(1);
+
+  expect(denseMarkers!.content, "清洗后正文不得泄漏弱标记控制串").not.toContain("[[");
+  expect(denseMarkers!.content, "清洗后正文不得泄漏弱标记控制串").not.toContain("]]");
+  expect(denseMarkers!.termMarkers, "密集标记须由原始控制串经现有清洗/落库路径派生").toHaveLength(EXTREME_RESPONSE_CONTRACT.denseMarkerCount);
+  expect(new Set(denseMarkers!.termMarkers!.map((marker) => marker.category)), "密集标记应覆盖四类合法类别").toEqual(new Set(["concept", "entity", "abbreviation", "notation"]));
+
+  expect(longChineseMarker!.content, "超长中文多词标记清洗后不得泄漏控制串").not.toContain("[[");
+  expect(longChineseMarker!.termMarkers, "超长中文多词标记应保留一个外部标记").toHaveLength(1);
+  expect(longChineseMarker!.termMarkers![0]!.text.length, "超长中文多词标记须足够长以覆盖溢出风险").toBeGreaterThanOrEqual(EXTREME_RESPONSE_CONTRACT.longChineseMarkerMinimumCharacters);
+  expect(longChineseMarker!.content).toContain(longChineseMarker!.termMarkers![0]!.text);
 });
 
 test("长文契约：三个触发词各产三节「## 长文第N节」、正文无完成词、aria-live 播报完成", async ({ page }) => {

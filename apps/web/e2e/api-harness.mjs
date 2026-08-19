@@ -27,6 +27,79 @@ const modelMode = process.env.E2E_MODEL ?? "fake";
 // 缺省 contrast 与 #31 行为一致；identity 用于自动融合高置信路径的 e2e。
 const similarityRelation = process.env.E2E_SIMILARITY_RELATION ?? "contrast";
 
+// #89 极端响应夹具：只由精确专用提问触发，避免改变默认 fake 输出及既有场景。
+// 这些是 E2E 验收参数，不是产品配置；原始文本仍经服务端流内标记清洗与落库路径。
+const EXTREME_RESPONSE_TRIGGERS = Object.freeze({
+  longBody: "E2E 极端形态：多段长正文",
+  unbrokenLine: "E2E 极端形态：超长无断行",
+  denseMarkers: "E2E 极端形态：密集弱标记",
+  longChineseMarker: "E2E 极端形态：超长中文多词标记",
+});
+const EXTREME_RESPONSE_SHAPE = Object.freeze({
+  longBodyParagraphCount: 12,
+  longBodyParagraphCharacters: 320,
+  unbrokenLineCharacters: 1_000,
+  denseMarkerCount: 20,
+  denseMarkerParagraphCharacters: 180,
+  longChineseMarkerMinimumCharacters: 48,
+  streamChunkCount: 4,
+});
+
+function repeatToLength(seed, length) {
+  return seed.repeat(Math.ceil(length / seed.length)).slice(0, length);
+}
+
+function marker(category, entityId, text) {
+  return `[[${category}:${entityId}:${text}]]`;
+}
+
+function streamParagraphs(paragraphs) {
+  const chunkSize = Math.ceil(paragraphs.length / EXTREME_RESPONSE_SHAPE.streamChunkCount);
+  return Array.from({ length: Math.ceil(paragraphs.length / chunkSize) }, (_, index) => {
+    const chunk = paragraphs.slice(index * chunkSize, (index + 1) * chunkSize).join("\n\n");
+    return index === 0 ? chunk : `\n\n${chunk}`;
+  });
+}
+
+function createExtremeResponseFixtures() {
+  const longParagraphs = Array.from({ length: EXTREME_RESPONSE_SHAPE.longBodyParagraphCount }, (_, index) => {
+    const prefix = `第${index + 1}段：本段用于稳定复现多段长正文在阅读、滚动与预览锚定中的行为。`;
+    return `${prefix}${repeatToLength("本地事实、证据关系与渐进阅读需要保持可追溯。", EXTREME_RESPONSE_SHAPE.longBodyParagraphCharacters)}`;
+  });
+  const unbrokenLine = repeatToLength("超长无断行文本用于验证浏览器对连续中文内容的换行与溢出处理。", EXTREME_RESPONSE_SHAPE.unbrokenLineCharacters);
+  const longChineseMarkerText = "面向本地优先研究的长期知识沉淀与可追溯证据协作机制需要在跨轮次阅读中保持完整语义边界并支持长期可审计的知识演进记录";
+  if (longChineseMarkerText.length < EXTREME_RESPONSE_SHAPE.longChineseMarkerMinimumCharacters) {
+    throw new Error("E2E long Chinese marker fixture is shorter than its contract minimum");
+  }
+  const markerCategories = ["concept", "entity", "abbreviation", "notation"];
+  const denseParagraphs = Array.from({ length: EXTREME_RESPONSE_SHAPE.denseMarkerCount }, (_, index) => {
+    const category = markerCategories[index % markerCategories.length];
+    const text = index === EXTREME_RESPONSE_SHAPE.denseMarkerCount - 1
+      ? longChineseMarkerText
+      : category === "concept" ? `概念${index + 1}`
+        : category === "entity" ? `实体${index + 1}`
+          : category === "abbreviation" ? `E2E${index + 1}`
+            : `O(${index + 1})`;
+    const marked = marker(category, `extreme-${category}-${index + 1}`, text);
+    return `密集标记第${index + 1}段包含${marked}。${repeatToLength("该段补足稳定长度，以便验证长内容中标记的定位、悬停与点击。", EXTREME_RESPONSE_SHAPE.denseMarkerParagraphCharacters)}`;
+  });
+  const longChineseMarkerParagraph = `这个专用夹具只标记一个完整术语：${marker("concept", "long-chinese-multiword", longChineseMarkerText)}。`;
+
+  const response = (paragraphs) => ({ body: paragraphs.join("\n\n"), segments: streamParagraphs(paragraphs) });
+  return Object.freeze({
+    [EXTREME_RESPONSE_TRIGGERS.longBody]: response(longParagraphs),
+    [EXTREME_RESPONSE_TRIGGERS.unbrokenLine]: { body: unbrokenLine, segments: [unbrokenLine] },
+    [EXTREME_RESPONSE_TRIGGERS.denseMarkers]: response(denseParagraphs),
+    [EXTREME_RESPONSE_TRIGGERS.longChineseMarker]: response([longChineseMarkerParagraph]),
+  });
+}
+
+const EXTREME_RESPONSE_FIXTURES = createExtremeResponseFixtures();
+
+function extremeResponseForQuestion(question) {
+  return EXTREME_RESPONSE_FIXTURES[question.trim()];
+}
+
 const e2eDir = dirname(fileURLToPath(import.meta.url));
 const runtimeDir = join(e2eDir, ".runtime");
 mkdirSync(runtimeDir, { recursive: true });
@@ -142,6 +215,8 @@ const fakeProvider = {
     const question = request.messages.at(-1)?.content ?? "";
     const short = question.length > 24 ? `${question.slice(0, 24)}…` : question;
     await sleep(400);
+    const extremeResponse = extremeResponseForQuestion(question);
+    if (extremeResponse) return extremeResponse.body;
     if (/(长文|长篇|报告)/.test(question)) {
       return this.longBody();
     }
@@ -167,6 +242,7 @@ const fakeProvider = {
       .replace(/\bHTTP\b/g, "[[abbreviation:http:HTTP]]");
     const cutAfter = process.env.E2E_STREAM_CUT_AFTER ? Number(process.env.E2E_STREAM_CUT_AFTER) : undefined;
     const longSections = this.longSections();
+    const extremeResponse = extremeResponseForQuestion(question);
     // ADR-0035 续写语义：resumeFrom 非空时只补写剩余段落（与真实模型「从断点继续」同语义），
     // 否则 joinContinuation 会把首段重述重复拼接进正文（确定性假模型不读断点指令）。
     // 重新生成/重新编辑场景：同一任务第二次生成产出不同文本（第 2 次起正文带「第二版」标识），
@@ -175,9 +251,11 @@ const fakeProvider = {
     const count = generation.get(request.taskId) ?? 0;
     generation.set(request.taskId, count + 1);
     const secondEdition = count >= 1;
-    const fullSegments = /(长文|长篇|报告)/.test(question)
-      ? [longSections[0], ...longSections.slice(1).map((section) => `\n\n${section}`)]
-      : request.deepResearch
+    const fullSegments = extremeResponse
+      ? extremeResponse.segments
+      : /(长文|长篇|报告)/.test(question)
+        ? [longSections[0], ...longSections.slice(1).map((section) => `\n\n${section}`)]
+        : request.deepResearch
         ? [`这是深入研究第一轮，围绕「${short}」展开。`, "\n\n本轮只使用来源选区与当前已有材料生成，未联网检索，回答完毕。"]
         : secondEdition
           ? [`你问的是「${markedShort}」（第二版）。`, "\n\n重新生成的回答：本地优先会先把输入保存在本机。", "\n\n第二版渐进事件把后续内容写进同一条消息，回答完毕。"]

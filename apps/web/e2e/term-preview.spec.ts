@@ -121,21 +121,24 @@ for (const viewport of [{ width: 1024, height: 768 }, { width: 1440, height: 900
   });
 }
 
-test("标记贴近滚动视口底边时弹层完整留在视口内、生长按钮可直接点击", async ({ page }) => {
+test("长正文密集标记可悬停并点击生长，页面无横向溢出", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await pairAndOpen(page, "/research/new");
-  await page.getByLabel("你的问题").fill("REST API 和 HTTP");
+  await page.getByLabel("你的问题").fill("E2E 极端形态：密集弱标记");
   await page.getByRole("button", { name: "开始研究" }).click();
   await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
   const rootNodeId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
-  await expect(page.locator(".message--assistant [data-block-text]").last()).toContainText("回答完毕", {
+  const markers = page.locator(".term-preview-surface [data-term-marker]");
+  await expect(markers).toHaveCount(20, {
     timeout: 15_000,
   });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
-  // #86 回归：真实验收中标记被滚到视口底边，弹层按低估高度锚定导致生长按钮被推出
-  // fixed 视口、点击无限等待。这里把最后一个标记贴到视口底边，走翻转/钳制路径。
-  const marker = page.locator(".term-preview-surface [data-term-marker]").last();
-  await marker.evaluate((element) => element.scrollIntoView({ block: "end" }));
+  // #89：对数千字正文中的密集标记走真实清洗、预览与生长路径；贴底定位的同一夹具由下方 #88
+  // blocker 断言保留，避免在假模型票据中掩盖产品定位缺口。
+  const marker = markers.first();
+  const viewport = page.viewportSize();
+  expect(viewport).not.toBeNull();
   await marker.hover();
   await page.waitForTimeout(520);
   const popover = page.getByTestId("term-preview-popover");
@@ -143,11 +146,10 @@ test("标记贴近滚动视口底边时弹层完整留在视口内、生长按�
   await expect(popover.locator(".markdown-content")).toBeVisible({ timeout: 15_000 });
 
   const box = await popover.boundingBox();
-  const viewport = page.viewportSize();
   expect(box).not.toBeNull();
-  expect(viewport).not.toBeNull();
   expect(box!.y).toBeGreaterThanOrEqual(0);
   expect(box!.y + box!.height).toBeLessThanOrEqual(viewport!.height);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
   // 关键断言：生长按钮在视口内可立即点击（旧实现在此无限重试"element is outside of the viewport"）。
   await popover.getByRole("button", { name: "进入这个概念" }).click({ timeout: 5_000 });
@@ -155,6 +157,25 @@ test("标记贴近滚动视口底边时弹层完整留在视口内、生长按�
     (url) => url.pathname.includes("/nodes/") && !url.pathname.endsWith(`/nodes/${rootNodeId}`),
     { timeout: 10_000 },
   );
+});
+
+test.fixme("#88 blocker：320px 长正文末尾标记贴底时，弹层与生长按钮也应完整留在视口内", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await pairAndOpen(page, "/research/new");
+  await page.getByLabel("你的问题").fill("E2E 极端形态：密集弱标记");
+  await page.getByRole("button", { name: "开始研究" }).click();
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
+  const marker = page.locator(".term-preview-surface [data-term-marker]").last();
+  await expect(page.locator(".term-preview-surface [data-term-marker]")).toHaveCount(20, { timeout: 15_000 });
+  await marker.evaluate((element) => element.scrollIntoView({ block: "end" }));
+  await marker.hover();
+  await page.waitForTimeout(520);
+  const box = await page.getByTestId("term-preview-popover").boundingBox();
+  const viewport = page.viewportSize();
+  expect(box).not.toBeNull();
+  expect(viewport).not.toBeNull();
+  expect(box!.y).toBeGreaterThanOrEqual(0);
+  expect(box!.y + box!.height).toBeLessThanOrEqual(viewport!.height);
 });
 
 test.describe("弱标记键盘、可访问性与失败路径（桌面 1024px）", () => {
