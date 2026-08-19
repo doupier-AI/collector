@@ -450,9 +450,10 @@ function TurnSection({ slice, blockText, blockId, anchorId, sectionId, highlight
     elementId 存在时容器挂稳定 id 并可聚焦——轮次卡片内段落块是 ?fragment= 深链的落点。 */
 function MessageBlock({ blockText, blockId, elementId, titleAnchorId, highlights = [], sources, citations, terms, fusionSources }: { blockText: string; blockId: string; elementId?: string; titleAnchorId?: string; highlights?: readonly MessageHighlight[]; sources: ResearchGroundingSourceRecord[]; citations: ResearchCitationRecord[]; terms: TermMarker[]; fusionSources?: ResearchFusionSource[] }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const normalizedHighlights = mergeMessageHighlights(highlights, blockText);
   // 父层组合高亮时会新建数组；以值键约束 DOM 重包裹只发生在实际范围变化时，
   // 避免无关刷新替换术语标记节点并打断其键盘焦点。
-  const highlightsKey = highlights.map((highlight) => `${highlight.start}:${highlight.end}:${highlight.exact}`).join("|");
+  const highlightsKey = normalizedHighlights.map((highlight) => `${highlight.start}:${highlight.end}:${highlight.exact}`).join("|");
 
   useLayoutEffect(() => {
     if (!containerRef.current) return;
@@ -467,8 +468,7 @@ function MessageBlock({ blockText, blockId, elementId, titleAnchorId, highlights
       }
       parent.removeChild(el);
     });
-    const unique = [...new Map(highlights.map((highlight) => [`${highlight.start}:${highlight.end}:${highlight.exact}`, highlight])).values()];
-    for (const highlight of unique) {
+    for (const highlight of normalizedHighlights) {
       const applied = setRangeFromOffsets(containerRef.current, highlight.start, highlight.end);
       if (!applied && highlight.exact) {
         markExactInRendered(containerRef.current, highlight.exact);
@@ -488,6 +488,27 @@ function MessageBlock({ blockText, blockId, elementId, titleAnchorId, highlights
       <MarkdownContent text={blockText} sources={sources} citations={citations} terms={terms} variant="message" titleAnchorId={titleAnchorId} fusionSources={fusionSources} />
     </div>
   );
+}
+
+/**
+ * `?sel=` 与 `?fragment=` 可同时指向同一正文块。先在共同的块文本空间合并重叠/相邻范围，
+ * 再操作 DOM，避免后应用的范围把已有 mark 再包一层而形成嵌套高亮。
+ */
+function mergeMessageHighlights(highlights: readonly MessageHighlight[], blockText: string): MessageHighlight[] {
+  const sorted = [...new Map(highlights.map((highlight) => [`${highlight.start}:${highlight.end}:${highlight.exact}`, highlight])).values()]
+    .sort((left, right) => left.start - right.start || left.end - right.end);
+  const merged: MessageHighlight[] = [];
+  for (const highlight of sorted) {
+    const previous = merged.at(-1);
+    if (!previous || highlight.start > previous.end) {
+      merged.push(highlight);
+      continue;
+    }
+    const start = Math.min(previous.start, highlight.start);
+    const end = Math.max(previous.end, highlight.end);
+    merged[merged.length - 1] = { blockOrdinal: previous.blockOrdinal, start, end, exact: blockText.slice(start, end) };
+  }
+  return merged;
 }
 
 /** 把稳定的块内锚点投影到合并节正文；只改变渲染偏移，不改变交互使用的原锚点。 */

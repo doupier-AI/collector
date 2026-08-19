@@ -634,11 +634,17 @@ describe("#91 普通回答轮次卡片", () => {
     expect(container.querySelectorAll(".slice-rail__tick")).toHaveLength(0);
   });
 
-  it("片段深链：轮次卡片承载强调，段落保留精确落点，片段正文逐字高亮", async () => {
+  it("片段深链与选区同块重叠：轮次卡片承载强调，精确落点保留且文字范围合并为一层", async () => {
     const content = "第一段。\n\n第二段。\n\n第三段。";
     const version = deriveBodyVersion({ messageId: "m-out", nodeId: "session-1", content, origin: "backfill", createdAt: "2026-08-02T00:00:00.000Z" });
     const slices = deriveMessageSlices("session-1", "m-out", content, 0, []);
     const fragments = deriveFragmentsFromSlices(version, slices, []);
+    const selection = makeSelection({
+      id: "sel-overlap",
+      sessionId: "session-1",
+      text: "二段",
+      anchor: { kind: "message", messageId: "m-out", blockOrdinal: 1, startOffset: 1, endOffset: 3, exact: "二段" },
+    });
     const view = makeNodeView({
       node: makeNode({ id: "session-1", sessionId: "session-1" }),
       session: makeSession({ id: "session-1" }),
@@ -650,9 +656,10 @@ describe("#91 普通回答轮次卡片", () => {
     const { container } = renderNodePage(
       {
         getResearchNodeView: async () => view,
+        getResearchSelection: async () => selection,
         getResearchBodyVersion: async () => ({ version, fragments: fragments.map((fragment) => ({ ...fragment, excerpt: content.slice(fragment.startOffset, fragment.endOffset) })) }),
       },
-      `/nodes/session-1?fragment=${encodeURIComponent(fragments[1].id)}`,
+      `/nodes/session-1?fragment=${encodeURIComponent(fragments[1].id)}&sel=${selection.id}`,
     );
 
     await screen.findByText("第二段。");
@@ -662,6 +669,9 @@ describe("#91 普通回答轮次卡片", () => {
       expect(focused).toHaveAttribute("id", "m-out-turn");
     });
     expect(container.querySelector("#m-out\\#p1")).not.toHaveClass("fragment-target--focused");
-    expect(container.querySelector("[data-selection-mark]")).toHaveTextContent("第二段。");
+    const marks = container.querySelectorAll("[data-selection-mark]");
+    expect(marks).toHaveLength(1);
+    expect(marks[0]).toHaveTextContent("第二段。");
+    expect(marks[0]?.querySelector("[data-selection-mark]")).toBeNull();
   });
 });
