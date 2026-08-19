@@ -393,11 +393,23 @@ test("场景一：Chat 真实回答 → 选区真实分析 → 节点生长真�
 
   // 390 窄屏：来源返回与节点视图不溢出（真实模型内容下的响应式取证）
   await page.setViewportSize({ width: 390, height: 780 });
-  // 从宽屏切窄屏后 useMediaQuery 立即翻转，但 React 需一帧才把 fixed 侧栏换成 overlay；
-  // 等 fixed 侧栏确实消失再量宽，避免量到 reflow 前的瞬时溢出（假模型 320px 用例靠 toBeHidden 自动等待同一原因）。
-  await expect(page.locator(".later-panel--fixed")).toHaveCount(0);
-  // 窄屏左侧栏为常驻窄 rail（收起态可见），不再整体隐藏
-  await expect(page.getByRole("navigation", { name: "内容导航" }).getByRole("button", { name: "展开侧栏" })).toBeVisible();
+  // 从宽屏切窄屏后 useMediaQuery 会先翻转收起状态，再播放 180ms 的侧栏宽度过渡；
+  // 等窄 rail 达到稳态后再量宽，避免把动画中的正常中间帧误报为横向溢出。
+  const navigation = page.getByRole("navigation", { name: "内容导航" });
+  await expect(navigation.getByRole("button", { name: "展开侧栏" })).toBeVisible();
+  await page.waitForFunction(
+    () => {
+      const drawer = document.querySelector(".drawer.side-drawer");
+      return !drawer || drawer.getBoundingClientRect().width <= 64;
+    },
+    undefined,
+    { timeout: 10_000 },
+  );
+  await page.waitForFunction(
+    () => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1,
+    undefined,
+    { timeout: 5_000 },
+  );
   await expect(page.locator("[data-selection-mark]")).toHaveText(selected);
   const metrics = await page.evaluate(() => ({
     scrollWidth: document.documentElement.scrollWidth,
@@ -540,13 +552,15 @@ test("场景三：真实回答选区 → 保存标记与笔记 → 从栏目返�
   const record = JSON.parse(item?.recordJson ?? "{}") as { note?: string };
   expect(record.note).toBe("真实回答中的关键定义");
 
-  const marksPanel = page.getByRole("complementary", { name: "标记" });
-  await expect(marksPanel).toBeVisible();
-  await expect(marksPanel).toContainText(selected.slice(0, 48));
-  await expect(marksPanel).toContainText("真实回答中的关键定义");
-  await expect(marksPanel).toContainText("来源节点：");
+  await page.getByRole("button", { name: /的会话菜单$/ }).click();
+  await page.getByRole("menuitem", { name: "查看标记" }).click();
+  const marksDialog = page.getByRole("dialog", { name: "本会话标记" });
+  await expect(marksDialog).toBeVisible();
+  await expect(marksDialog).toContainText(selected.slice(0, 48));
+  await expect(marksDialog).toContainText("真实回答中的关键定义");
+  await expect(marksDialog).toContainText("来源节点：");
 
-  await page.getByTestId(`mark-open-${item!.id}`).click();
+  await marksDialog.getByTestId(`mark-open-${item!.id}`).click();
   await page.waitForURL((url) => url.pathname.startsWith("/nodes/") && url.searchParams.has("sel"), {
     timeout: 20_000,
   });
@@ -559,7 +573,9 @@ test("场景三：真实回答选区 → 保存标记与笔记 → 从栏目返�
   await expect(page.locator("[data-selection-mark]")).toBeVisible();
 
   await page.reload();
-  await expect(page.getByRole("complementary", { name: "标记" })).toContainText("真实回答中的关键定义");
+  await page.getByRole("button", { name: /的会话菜单$/ }).click();
+  await page.getByRole("menuitem", { name: "查看标记" }).click();
+  await expect(page.getByRole("dialog", { name: "本会话标记" })).toContainText("真实回答中的关键定义");
   await expect(page.locator('[data-testid="floating-selection-capsule"]')).toHaveCount(0);
   await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
 
