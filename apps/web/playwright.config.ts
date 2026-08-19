@@ -69,7 +69,9 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"], baseURL: `http://127.0.0.1:${PORT_BASE}` },
       // z-auto-fusion（identity 高置信）由 chromium-autofusion（43213）承担；-off 用例用 contrast，留在本 project。
       // z-visual-baseline 等像素基线由 chromium-visual（43214 独享库）承担，与共享库污染隔离。
-      testIgnore: /(?:no-model|z-acceptance-real|z-auto-fusion|z-visual-baseline)\.spec\.ts/,
+      // 真实验收主场景及跨 worker 汇总只由 playwright.acceptance.config.ts 收集。
+      // 基础设施契约仍留在默认门禁中，但它只启动无模型的临时 runtime。
+      testIgnore: /(?:no-model|z-acceptance-real(?:-summary)?|z-auto-fusion|z-visual-baseline)\.spec\.ts/,
     },
     {
       name: "chromium-nomodel",

@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { createServer as createTcpServer } from "node:net";
 import { once } from "node:events";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -24,6 +25,19 @@ const passingEvidence = (): WeakMarkerEvidence[] => ["5", "6", "7", "8", "9"].ma
   notes: [],
   status: "passed",
 }));
+
+/** 默认门禁已有固定 webServer 占用 43211；基础设施契约应使用一次性的独立空闲端口。 */
+async function emptyPort(): Promise<number> {
+  const server = createTcpServer();
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("未获得临时测试端口");
+  const { port } = address;
+  server.close();
+  await once(server, "close");
+  return port;
+}
 
 test("真实验收基础设施：弱标记汇总要求五份最终证据且总数非零", () => {
   expect(() => validateWeakMarkerEvidence(passingEvidence())).not.toThrow();
@@ -66,6 +80,7 @@ test("真实验收基础设施：Windows signalCode 也代表 harness 已退出�
 test("真实验收基础设施：目录清理失败不伪称 close 成功，重试可完成", async ({}, testInfo) => {
   let removals = 0;
   const runtime = await createAcceptanceRuntime(testInfo, "none", {
+    port: await emptyPort(),
     removeDataDir: async (path, options) => {
       removals += 1;
       if (removals === 1) throw new Error("模拟删除失败");

@@ -33,7 +33,11 @@ export interface AcceptanceRuntime {
 
 type FixtureOptions = { acceptanceMode: AcceptanceMode };
 type Fixtures = { acceptance: AcceptanceRuntime };
-export type RuntimeDependencies = { removeDataDir?: typeof rm };
+export type RuntimeDependencies = {
+  removeDataDir?: typeof rm;
+  /** 仅供基础设施契约使用的临时空闲端口；真实验收仍固定按 worker 推导端口。 */
+  port?: number;
+};
 let activeAcceptanceRuntime: AcceptanceRuntime | undefined;
 
 /** 当前 Playwright worker 正在执行的唯一验收 runtime，仅供同一测试文件读取其数据目录。 */
@@ -160,7 +164,10 @@ function harnessEnvironment(port: number, dataDir: string, readyFile: string, mo
 }
 
 export async function createAcceptanceRuntime(testInfo: TestInfo, mode: AcceptanceMode, dependencies: RuntimeDependencies = {}): Promise<AcceptanceRuntime> {
-  const port = portFor(testInfo);
+  const port = dependencies.port ?? portFor(testInfo);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+    throw new Error(`验收端口必须是 1024–65535 的整数，当前为 ${port}`);
+  }
   const baseURL = `http://127.0.0.1:${port}`;
   const dataDir = await mkdtemp(join(tmpdir(), `collector-acceptance-${testInfo.parallelIndex}-`));
   const readyFile = join(dataDir, "harness-ready.pid");
