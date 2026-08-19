@@ -647,12 +647,6 @@ button {
   gap: var(--space-5);
 }
 
-.message__role {
-  margin: 0 0 var(--space-1);
-  color: var(--color-muted);
-  font-size: var(--font-size-sm);
-}
-
 .message__content {
   margin: 0;
   line-height: var(--line-height-body);
@@ -1363,28 +1357,104 @@ button.model-status {
   font-size: var(--font-size-sm);
 }
 
-/* ADR-0035 生成控制按钮组：生成中「暂停」，暂停后「继续」+「停止」。 */
-.generation-controls {
+/* ADR-0035 消息页脚：无历史版本时操作靠右；有版本时版本组件与操作从卡片左侧同排。 */
+.message-footer {
   display: flex;
+  align-items: center;
+  justify-content: flex-end;
   gap: var(--space-2);
   margin-top: var(--space-2);
 }
 
-.generation-controls .button--small {
-  padding: 0.25rem 0.625rem;
-  font-size: var(--font-size-sm);
+.message-footer--with-versions {
+  justify-content: flex-start;
 }
 
-/* ADR-0035 消息操作行：复制/重新生成/重新编辑，小号幽灵按钮紧凑排列。 */
 .message-actions {
   display: flex;
   gap: var(--space-2);
-  margin-top: var(--space-2);
 }
 
-.message-actions .button--small {
-  padding: 0.25rem 0.625rem;
-  font-size: var(--font-size-sm);
+.message-icon-button {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+}
+
+.message-icon-button:hover,
+.message-icon-button:focus-visible {
+  border-color: var(--color-line);
+  background: var(--color-surface-hover);
+  color: var(--color-ink);
+}
+
+.message-icon-button::after,
+.composer__generation-control::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  z-index: var(--z-popover);
+  left: 50%;
+  bottom: calc(100% + var(--space-2));
+  transform: translate(-50%, var(--space-1));
+  width: max-content;
+  max-width: 10rem;
+  padding: 0.25rem var(--space-2);
+  border-radius: var(--radius-control);
+  background: var(--color-ink);
+  color: var(--color-canvas);
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out);
+}
+
+.message-icon-button:hover::after,
+.message-icon-button:focus-visible::after,
+.composer__generation-control:hover::after,
+.composer__generation-control:focus-visible::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.message--user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.message-user-bubble {
+  max-width: min(78%, 42rem);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--color-ai) 24%, var(--color-line));
+  border-radius: var(--radius-panel) var(--radius-panel) var(--radius-control) var(--radius-panel);
+  background: color-mix(in srgb, var(--color-ai) 9%, var(--color-surface));
+  color: var(--color-ink);
+}
+
+.message-actions--user {
+  justify-content: flex-end;
+  margin-top: var(--space-1);
+}
+
+.message-actions--user .message-icon-button:last-child::after {
+  right: 0;
+  left: auto;
+  transform: translateY(var(--space-1));
+}
+
+.message-actions--user .message-icon-button:last-child:hover::after,
+.message-actions--user .message-icon-button:last-child:focus-visible::after {
+  transform: translateY(0);
 }
 
 /* ADR-0035 版本切换：一左一右箭头与序号标签。 */
@@ -1392,7 +1462,6 @@ button.model-status {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  margin-top: var(--space-2);
 }
 
 .message-versions__arrow {
@@ -1429,6 +1498,10 @@ button.model-status {
 }
 
 /* ADR-0035 用户消息编辑态：内联输入框与保存/取消。 */
+.message-edit {
+  width: min(90%, 42rem);
+}
+
 .message-edit__input {
   width: 100%;
   min-height: 4.5rem;
@@ -1443,6 +1516,7 @@ button.model-status {
 
 .message-edit__actions {
   display: flex;
+  justify-content: flex-end;
   gap: var(--space-2);
   margin-top: var(--space-2);
 }
@@ -1515,31 +1589,14 @@ button.model-status {
   }
 }
 
-/* 研究来源线：仅在有父子关系的用户 → AI 消息处出现 */
-.message--assistant {
-  position: relative;
-  padding-left: 1.375rem;
-}
+@media (max-width: 520px) {
+  .message-user-bubble {
+    max-width: 88%;
+  }
 
-.message--assistant::before {
-  content: "";
-  position: absolute;
-  left: 0.3125rem;
-  top: -1rem;
-  bottom: 0.375rem;
-  width: 1px;
-  background: var(--color-line);
-}
-
-.message--assistant::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0.45rem;
-  width: 0.6875rem;
-  height: 0.6875rem;
-  border-radius: 50%;
-  background: var(--color-ai);
+  .message-edit {
+    width: 100%;
+  }
 }
 
 /* 生长时刻到达徽记（ADR-0017 切片 4）：显式生长跳转到新节点页后，
@@ -1711,6 +1768,43 @@ button.model-status {
 .composer__send:disabled {
   opacity: 0.35;
   cursor: not-allowed;
+}
+
+.composer__generation-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.composer__generation-control {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  border: 1px solid var(--color-ai);
+  border-radius: var(--radius-circle);
+  background: var(--color-ai);
+  color: var(--color-surface-raised);
+  cursor: pointer;
+}
+
+.composer__generation-control:hover,
+.composer__generation-control:focus-visible {
+  background: var(--color-ai-hover);
+  border-color: var(--color-ai-hover);
+}
+
+.composer__generation-control--secondary {
+  background: transparent;
+  color: var(--color-ai);
+}
+
+.composer__generation-control--secondary:hover,
+.composer__generation-control--secondary:focus-visible {
+  background: color-mix(in srgb, var(--color-ai) 10%, transparent);
+  color: var(--color-ai-hover);
 }
 
 .composer__attach {
@@ -4243,6 +4337,20 @@ button.model-status {
   text-decoration: underline;
 }
 
+.page.reading-page--with-chapters {
+  width: min(100% - 2rem, calc(var(--measure) + 15rem + var(--space-6)));
+  display: grid;
+  grid-template-columns: minmax(0, var(--measure)) minmax(11rem, 15rem);
+  column-gap: var(--space-6);
+  align-items: start;
+}
+
+.reading-page__main {
+  min-width: 0;
+  grid-column: 1;
+  grid-row: 1;
+}
+
 /* 阅读页底部 ChatComposer：分隔线与间距，与正文和选区窗口隔开 */
 .reading-page__composer {
   margin-top: var(--space-6);
@@ -5121,29 +5229,26 @@ button.model-status {
   cursor: default;
 }
 
-/* 宽屏右侧固定线列：与正文互斥轨道之外，定位脱离滚动容器 */
+/* 宽屏右侧同层章节轨道：跟随阅读页网格，不使用浮层、卡片或阴影。 */
 .chapter-nav--rail {
-  position: fixed;
+  position: sticky;
   top: calc(var(--app-bar-height) + var(--space-6));
-  right: max(var(--space-4), calc((100vw - var(--measure)) / 2 - 15.5rem));
-  width: 14rem;
+  grid-column: 2;
+  grid-row: 1;
+  width: 100%;
   max-height: calc(100vh - var(--app-bar-height) - var(--space-6) * 2);
   overflow-y: auto;
   display: grid;
   gap: var(--space-3);
   align-content: start;
   z-index: var(--z-rail);
-  padding: var(--space-4);
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-panel);
-  background: var(--color-surface-raised);
-  box-shadow: var(--shadow-1);
+  padding: var(--space-2) 0;
+  border: 0;
+  background: transparent;
 }
 
 .chapter-nav--status-only {
-  width: auto;
-  max-width: 15rem;
-  right: max(var(--space-4), calc((100vw - var(--measure)) / 2 - 15.5rem));
+  width: 100%;
 }
 
 .chapter-nav__status {
@@ -5164,28 +5269,42 @@ button.model-status {
   margin: 0;
   padding: 0;
   display: grid;
-  gap: var(--space-1);
+  gap: var(--space-2);
 }
 
 .chapter-nav__item {
-  display: block;
+  display: grid;
+  grid-template-columns: 0.5rem minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-2);
   width: 100%;
   text-align: left;
   border: none;
-  border-radius: var(--radius-control);
   background: transparent;
   color: var(--color-muted);
   font: inherit;
   font-size: var(--font-size-caption);
   line-height: 1.45;
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-1) 0;
   cursor: pointer;
   overflow-wrap: anywhere;
 }
 
+.chapter-nav__item::before {
+  content: "";
+  width: 0.4375rem;
+  height: 0.4375rem;
+  margin-top: 0.35rem;
+  border-radius: var(--radius-circle);
+  background: var(--color-line);
+}
+
 .chapter-nav__item:hover {
-  background: var(--color-surface-hover);
   color: var(--color-ink);
+}
+
+.chapter-nav__item:hover::before {
+  background: var(--color-muted);
 }
 
 .chapter-nav__item:focus-visible {
@@ -5194,9 +5313,14 @@ button.model-status {
 }
 
 .chapter-nav__item--active {
-  background: var(--color-surface-hover);
   color: var(--color-ink);
-  box-shadow: inset 0.1875rem 0 0 var(--color-ai);
+  font-weight: 600;
+}
+
+.chapter-nav__item--active::before {
+  background: var(--color-ai);
+  transform: scale(1.35);
+  box-shadow: 0 0 0 0.1875rem color-mix(in srgb, var(--color-ai) 20%, transparent);
 }
 
 /* 窄屏浮动入口 */
@@ -5254,4 +5378,15 @@ button.model-status {
   font-size: var(--font-size-body);
   font-weight: 600;
   color: var(--color-ink);
+}
+
+@media (max-width: 899.98px) {
+  .page.reading-page--with-chapters {
+    width: min(100% - 2rem, var(--measure));
+    display: block;
+  }
+
+  .reading-page__main {
+    display: block;
+  }
 }

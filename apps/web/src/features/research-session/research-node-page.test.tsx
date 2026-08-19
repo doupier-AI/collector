@@ -296,7 +296,7 @@ describe("ResearchNodePage 根节点", () => {
 
     // 重试沿用原任务与 AI 消息，不新增第二条占位消息
     expect(container.querySelectorAll(".message--assistant")).toHaveLength(1);
-    expect(screen.getAllByText("Collector")).toHaveLength(1);
+    expect(screen.queryByText("Collector")).not.toBeInTheDocument();
   });
 
   it("进行中的任务显示 AI 固定占位与状态文字", async () => {

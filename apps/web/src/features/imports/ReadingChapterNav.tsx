@@ -26,7 +26,8 @@ export function chapterParseStatusCopy(parse: ResearchChapterParseView): string 
 
 /**
  * 导入文章章节导航（T03）：锚点一律落在快照既有内容块（data-block-id）上。
- * 宽屏（≥900px）右侧固定线列；窄屏浮动入口 + 覆盖抽屉（Escape/遮罩关闭，焦点回到入口）。
+ * 宽屏（≥900px）在正文同层右侧轨道内呈现「圆点 + 章节名」；窄屏浮动入口 + 覆盖抽屉
+ * （Escape/遮罩关闭，焦点回到入口）。
  * 状态行如实呈现锚点来源（AI/规则）与降级原因；规则降级或失败时提供重试入口。
  */
 export function ReadingChapterNav({ parse, blocks, reducedMotion, retryPending, onRetry }: ReadingChapterNavProps) {

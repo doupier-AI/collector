@@ -690,6 +690,9 @@ export function ResearchNodePage() {
   }
 
   const { view } = state;
+  const composerGenerationTask = [...view.tasks]
+    .reverse()
+    .find((task) => task.status === "queued" || task.status === "running" || task.status === "paused");
   const notice = node.streamNotice !== "idle" ? STREAM_NOTICE[node.streamNotice] : undefined;
   // #31：融合节点（标记在节点记录上，不依赖生成完成态）。
   const isFusionNode = Boolean(view.node.isFusionNode);
@@ -894,9 +897,6 @@ export function ResearchNodePage() {
                 task={task}
                 retrying={task ? retryingTaskId === task.id : false}
                 onRetry={handleRetry}
-                onPauseTask={handlePause}
-                onResumeTask={handleResume}
-                onStopTask={handleStop}
                 onRegenerateTask={handleRegenerate}
                 onEditMessage={handleEditMessage}
                 highlight={
@@ -982,6 +982,10 @@ export function ResearchNodePage() {
         citedSelection={citedSelection}
         onRemoveCitation={removeCitation}
         onStartChildNode={handleStartChildNode}
+        generationTask={composerGenerationTask}
+        onPauseTask={handlePause}
+        onResumeTask={handleResume}
+        onStopTask={handleStop}
       />
 
       {isRoot && dragActive ? (

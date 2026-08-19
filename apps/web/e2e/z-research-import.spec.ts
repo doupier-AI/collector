@@ -442,6 +442,33 @@ test("导入长文：正文立即可读，AI 章节解析异步补齐章节导�
   await expect(nav.getByRole("button", { name: "第2章" })).toBeVisible();
   await expect(nav.getByRole("button", { name: "第3章" })).toBeVisible();
 
+  // 宽屏导航与正文处于同一网格层，不再是固定悬浮卡片；条目使用圆点 + 章节名。
+  const navLayout = await nav.evaluate((element) => {
+    const style = getComputedStyle(element);
+    const firstItem = element.querySelector<HTMLElement>(".chapter-nav__item");
+    const dot = firstItem ? getComputedStyle(firstItem, "::before") : null;
+    return {
+      position: style.position,
+      borderTopWidth: style.borderTopWidth,
+      boxShadow: style.boxShadow,
+      backgroundColor: style.backgroundColor,
+      dotContent: dot?.content,
+      dotRadius: dot?.borderRadius,
+    };
+  });
+  expect(navLayout.position).toBe("sticky");
+  expect(navLayout.borderTopWidth).toBe("0px");
+  expect(navLayout.boxShadow).toBe("none");
+  expect(navLayout.backgroundColor).toBe("rgba(0, 0, 0, 0)");
+  expect(navLayout.dotContent).not.toBe("none");
+  expect(navLayout.dotRadius).toBe("50%");
+  const [mainBox, navBox] = await Promise.all([
+    page.locator(".reading-page__main").boundingBox(),
+    nav.boundingBox(),
+  ]);
+  expect(mainBox && navBox).toBeTruthy();
+  expect(navBox!.x).toBeGreaterThanOrEqual(mainBox!.x + mainBox!.width);
+
   // 点击中间章节：精确跳转到既有块，滚动真实发生且该线保持高亮
   await page.evaluate(() => window.scrollTo(0, 0));
   await nav.getByRole("button", { name: "第2章" }).click();

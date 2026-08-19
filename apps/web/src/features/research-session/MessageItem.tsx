@@ -23,10 +23,6 @@ export interface MessageItemProps {
   task?: ResearchTaskRecord;
   retrying?: boolean;
   onRetry?: (task: ResearchTaskRecord) => void;
-  /** ADR-0035：生成控制（暂停/继续/停止）；缺省时不显示按钮。 */
-  onPauseTask?: (task: ResearchTaskRecord) => void;
-  onResumeTask?: (task: ResearchTaskRecord) => void;
-  onStopTask?: (task: ResearchTaskRecord) => void;
   /** ADR-0035：重新生成（旧回答保留可切换）与重新编辑（改写已发送的问题）。 */
   onRegenerateTask?: (task: ResearchTaskRecord) => void;
   onEditMessage?: (messageId: string, content: string) => void;
@@ -50,8 +46,8 @@ export interface MessageItemProps {
   multiTurn?: boolean;
 }
 
-/** 单条消息。AI 消息与对应用户消息之间由 CSS 绘制克制的来源线与节点。 */
-export function MessageItem({ message, task, retrying = false, onRetry, onPauseTask, onResumeTask, onStopTask, onRegenerateTask, onEditMessage, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, onGrowTermMarker, slices, fragmentTargetId, fusionSources, multiTurn = false }: MessageItemProps) {
+/** 单条消息。用户消息靠右呈现，AI 回答保持完整阅读卡片。 */
+export function MessageItem({ message, task, retrying = false, onRetry, onRegenerateTask, onEditMessage, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, onGrowTermMarker, slices, fragmentTargetId, fusionSources, multiTurn = false }: MessageItemProps) {
   // ADR-0035：版本切换索引（0=最新正文，1..N=versions[0..N-1]）。hooks 须在角色分支之前声明。
   const [versionIndex, setVersionIndex] = useState(0);
   const versions = message.versions ?? [];
@@ -77,7 +73,6 @@ export function MessageItem({ message, task, retrying = false, onRetry, onPauseT
 
   return (
     <li className="message message--assistant" data-message-id={message.id}>
-      <p className="message__role">Collector</p>
       {reasoning ? <ReasoningDisclosure reasoning={viewingVersion?.reasoning ?? reasoning} streaming={thinkingInProgress && !viewingVersion} /> : null}
       {message.status === "failed" ? (
         <FailedBody message={message} task={task} retrying={retrying} onRetry={onRetry} />
@@ -103,7 +98,7 @@ export function MessageItem({ message, task, retrying = false, onRetry, onPauseT
               {message.status === "completed" ? (
                 <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} fragmentTargetId={fragmentTargetId} fusionSources={fusionSources} multiTurn={multiTurn} />
               ) : (
-                <GeneratingBody message={message} task={task} terms={terms} multiTurn={multiTurn} onPauseTask={onPauseTask} onResumeTask={onResumeTask} onStopTask={onStopTask} />
+                <GeneratingBody message={message} task={task} terms={terms} multiTurn={multiTurn} />
               )}
             </TermPreviewInteraction>
           )}
@@ -113,19 +108,23 @@ export function MessageItem({ message, task, retrying = false, onRetry, onPauseT
               <GroundingSources sources={taskSources} />
             </>
           ) : null}
-          {showActions ? (
-            <MessageActionRow
-              copyText={viewContent}
-              onRegenerate={task && onRegenerateTask ? () => onRegenerateTask(task) : undefined}
-            />
-          ) : null}
-          {showVersionSwitcher ? (
-            <VersionSwitcher
-              index={versionIndex}
-              total={versions.length + 1}
-              onSelect={setVersionIndex}
-              onReset={() => setVersionIndex(0)}
-            />
+          {showActions || showVersionSwitcher ? (
+            <div className={`message-footer${showVersionSwitcher ? " message-footer--with-versions" : ""}`}>
+              {showVersionSwitcher ? (
+                <VersionSwitcher
+                  index={versionIndex}
+                  total={versions.length + 1}
+                  onSelect={setVersionIndex}
+                  onReset={() => setVersionIndex(0)}
+                />
+              ) : null}
+              {showActions ? (
+                <MessageActionRow
+                  copyText={viewContent}
+                  onRegenerate={task && onRegenerateTask ? () => onRegenerateTask(task) : undefined}
+                />
+              ) : null}
+            </div>
           ) : null}
         </>
       )}
@@ -133,7 +132,44 @@ export function MessageItem({ message, task, retrying = false, onRetry, onPauseT
   );
 }
 
-/** ADR-0035 消息操作行：复制（带「已复制」反馈）与可选的重新生成。 */
+function CopyIcon({ copied }: { copied: boolean }) {
+  return copied ? (
+    <svg width="16" height="16" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+      <path d="m4.5 10 3.25 3.25 7.75-7.75" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  ) : (
+    <svg width="16" height="16" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+      <rect x="6.25" y="6.25" width="9" height="9" rx="1.75" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M13.25 6.25V4.75h-8.5v8.5h1.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function RegenerateIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+      <path d="M15.75 8A6 6 0 1 0 16 11.5M15.75 8V4.75M15.75 8H12.5" fill="none" stroke="currentColor" strokeWidth="1.55" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function EditIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+      <path d="m12.75 4.75 2.5 2.5-7.5 7.5-3.25.75.75-3.25 7.5-7.5Z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function MessageIconButton({ label, onClick, children }: { label: string; onClick: () => void; children: ReactNode }) {
+  return (
+    <button type="button" className="message-icon-button" aria-label={label} data-tooltip={label} onClick={onClick}>
+      {children}
+    </button>
+  );
+}
+
+/** ADR-0035 消息操作行：图标按钮保留可访问名称，并在悬停/聚焦时显示功能提示。 */
 function MessageActionRow({ copyText, onRegenerate }: { copyText: string; onRegenerate?: () => void }) {
   const [copied, setCopied] = useState(false);
   const handleCopy = async () => {
@@ -147,13 +183,13 @@ function MessageActionRow({ copyText, onRegenerate }: { copyText: string; onRege
   };
   return (
     <div className="message-actions">
-      <button type="button" className="button button--ghost button--small" onClick={() => void handleCopy()}>
-        {copied ? "已复制" : "复制"}
-      </button>
+      <MessageIconButton label={copied ? "已复制" : "复制"} onClick={() => void handleCopy()}>
+        <CopyIcon copied={copied} />
+      </MessageIconButton>
       {onRegenerate ? (
-        <button type="button" className="button button--ghost button--small" onClick={onRegenerate}>
-          重新生成
-        </button>
+        <MessageIconButton label="重新生成" onClick={onRegenerate}>
+          <RegenerateIcon />
+        </MessageIconButton>
       ) : null}
     </div>
   );
@@ -204,7 +240,6 @@ function UserMessageItem({ message, onEditMessage }: { message: ResearchMessageR
 
   return (
     <li className="message message--user" data-message-id={message.id}>
-      <p className="message__role">你</p>
       {editing ? (
         <div className="message-edit">
           <textarea
@@ -226,15 +261,17 @@ function UserMessageItem({ message, onEditMessage }: { message: ResearchMessageR
         </div>
       ) : (
         <>
-          <p className="message__content">{message.content}</p>
+          <div className="message-user-bubble">
+            <p className="message__content">{message.content}</p>
+          </div>
           {onEditMessage ? (
-            <div className="message-actions">
-              <button type="button" className="button button--ghost button--small" onClick={() => void handleCopy()}>
-                {copied ? "已复制" : "复制"}
-              </button>
-              <button type="button" className="button button--ghost button--small" onClick={startEditing}>
-                重新编辑
-              </button>
+            <div className="message-actions message-actions--user">
+              <MessageIconButton label={copied ? "已复制" : "复制"} onClick={() => void handleCopy()}>
+                <CopyIcon copied={copied} />
+              </MessageIconButton>
+              <MessageIconButton label="重新编辑" onClick={startEditing}>
+                <EditIcon />
+              </MessageIconButton>
             </div>
           ) : null}
         </>
@@ -893,7 +930,7 @@ function ReasoningDisclosure({ reasoning, streaming }: { reasoning: string; stre
   );
 }
 
-function GeneratingBody({ message, task, terms, multiTurn = false, onPauseTask, onResumeTask, onStopTask }: { message: ResearchMessageRecord; task?: ResearchTaskRecord; terms: TermMarker[]; multiTurn?: boolean; onPauseTask?: (task: ResearchTaskRecord) => void; onResumeTask?: (task: ResearchTaskRecord) => void; onStopTask?: (task: ResearchTaskRecord) => void }) {
+function GeneratingBody({ message, task, terms, multiTurn = false }: { message: ResearchMessageRecord; task?: ResearchTaskRecord; terms: TermMarker[]; multiTurn?: boolean }) {
   const hasContent = message.content.trim().length > 0;
   const thinking = !hasContent && (message.reasoning?.length ?? 0) > 0;
   const paused = task?.status === "paused" || message.status === "paused";
@@ -915,33 +952,7 @@ function GeneratingBody({ message, task, terms, multiTurn = false, onPauseTask, 
         <AssistantBlocks message={message} citations={[]} groundingSources={[]} terms={terms} multiTurn={multiTurn} />
       ) : <AiPlaceholder />}
       <p className="message__status">{status}</p>
-      {task && !stopped ? (
-        <GenerationControls task={task} paused={paused} onPauseTask={onPauseTask} onResumeTask={onResumeTask} onStopTask={onStopTask} />
-      ) : null}
     </>
-  );
-}
-
-/** ADR-0035 生成控制按钮组：生成中显示「暂停」；暂停后显示「继续」+「停止」。 */
-function GenerationControls({ task, paused, onPauseTask, onResumeTask, onStopTask }: { task: ResearchTaskRecord; paused: boolean; onPauseTask?: (task: ResearchTaskRecord) => void; onResumeTask?: (task: ResearchTaskRecord) => void; onStopTask?: (task: ResearchTaskRecord) => void }) {
-  if (!onPauseTask && !onResumeTask && !onStopTask) return null;
-  return (
-    <div className="generation-controls">
-      {paused ? (
-        <>
-          <button type="button" className="button button--secondary button--small" onClick={() => onResumeTask?.(task)}>
-            继续
-          </button>
-          <button type="button" className="button button--ghost button--small" onClick={() => onStopTask?.(task)}>
-            停止
-          </button>
-        </>
-      ) : (
-        <button type="button" className="button button--secondary button--small" onClick={() => onPauseTask?.(task)}>
-          暂停
-        </button>
-      )}
-    </div>
   );
 }
 /** AI 固定占位：低对比度呼吸骨架；系统开启减少动态效果时退化为静态骨架。 */

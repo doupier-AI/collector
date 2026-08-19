@@ -147,8 +147,9 @@ test.describe("#94 精确跳转与高亮粘住", () => {
     await openLongThenNormal(page);
     const ticks = page.locator(".turn-rail__tick");
 
-    // 点第二轮 → 第二轮用户提问进入视口且位于顶栏之下；
-    // 末轮下方内容不足以撑满视口时，浏览器滚到最大位置（页面触底），仍是精确跳转。
+    // 点第二轮 → 第二轮用户提问进入视口且位于顶栏之下的阅读起始带。
+    // 不以「文档必须触底」代替落点断言：消息标签/卡片行高变化会改变页面总高度，
+    // 但用户真正需要的是目标轮次稳定落在可读位置。
     await ticks.nth(1).click();
     await expect(ticks.nth(1)).toHaveAttribute("aria-current", "location");
     await waitForScrollSettle(page);
@@ -156,11 +157,7 @@ test.describe("#94 精确跳转与高亮粘住", () => {
     await expect(secondQuestion).toBeInViewport({ timeout: 5_000 });
     const secondTop = await secondQuestion.evaluate((el) => el.getBoundingClientRect().top);
     expect(secondTop).toBeGreaterThanOrEqual(56);
-    const atBottom = await page.evaluate(() => {
-      const el = document.scrollingElement ?? document.documentElement;
-      return el.scrollTop + window.innerHeight >= el.scrollHeight - 4;
-    });
-    expect(atBottom).toBe(true);
+    expect(secondTop).toBeLessThan(240);
 
     // 点第一轮 → 长文轮的用户提问同样精确落位
     await ticks.nth(0).click();

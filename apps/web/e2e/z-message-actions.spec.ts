@@ -18,9 +18,44 @@ test("复制：AI 回答复制到剪贴板并显示已复制反馈", async ({ pa
   await submitQuestion(page);
   await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
 
+  // 消息视觉契约：不显示角色标签；用户气泡与操作靠右；AI 卡片不再绘制左侧来源线/圆点。
+  await expect(page.locator(".message__role")).toHaveCount(0);
+  const userMessage = page.locator(".message--user");
+  const userBubble = userMessage.locator(".message-user-bubble");
+  const userActions = userMessage.locator(".message-actions--user");
+  const [userMessageBox, userBubbleBox, userActionsBox] = await Promise.all([
+    userMessage.boundingBox(),
+    userBubble.boundingBox(),
+    userActions.boundingBox(),
+  ]);
+  expect(userMessageBox && userBubbleBox && userActionsBox).toBeTruthy();
+  expect(Math.abs((userBubbleBox!.x + userBubbleBox!.width) - (userMessageBox!.x + userMessageBox!.width))).toBeLessThan(2);
+  expect(Math.abs((userActionsBox!.x + userActionsBox!.width) - (userBubbleBox!.x + userBubbleBox!.width))).toBeLessThan(2);
+
+  const assistant = page.locator(".message--assistant");
+  const assistantDecoration = await assistant.evaluate((element) => ({
+    before: getComputedStyle(element, "::before").content,
+    after: getComputedStyle(element, "::after").content,
+    paddingLeft: getComputedStyle(element).paddingLeft,
+  }));
+  expect(assistantDecoration).toEqual({ before: "none", after: "none", paddingLeft: "0px" });
+
+  const userCopy = userMessage.getByRole("button", { name: "复制" });
+  await expect(userCopy.locator("svg")).toHaveCount(1);
+  await expect(userCopy).toHaveAttribute("data-tooltip", "复制");
+  await userCopy.hover();
+  await expect.poll(() => userCopy.evaluate((element) => getComputedStyle(element, "::after").opacity)).toBe("1");
+
   // 消息列表里用户消息也有复制按钮：定位 AI 消息内的按钮。
-  await page.locator(".message--assistant").getByRole("button", { name: "复制" }).click();
-  await expect(page.locator(".message--assistant").getByRole("button", { name: "已复制" })).toBeVisible();
+  const assistantCopy = assistant.getByRole("button", { name: "复制" });
+  const assistantCard = assistant.locator(".turn-card");
+  const assistantActions = assistant.locator(".message-actions");
+  const [assistantCardBox, assistantActionsBox] = await Promise.all([assistantCard.boundingBox(), assistantActions.boundingBox()]);
+  expect(assistantCardBox && assistantActionsBox).toBeTruthy();
+  expect(Math.abs((assistantActionsBox!.x + assistantActionsBox!.width) - (assistantCardBox!.x + assistantCardBox!.width))).toBeLessThan(2);
+  await expect(assistantCopy.locator("svg")).toHaveCount(1);
+  await assistantCopy.click();
+  await expect(assistant.getByRole("button", { name: "已复制" })).toBeVisible();
   const clipboard = await page.evaluate(() => navigator.clipboard.readText());
   expect(clipboard).toContain("你问的是");
   expect(clipboard).toContain("回答完毕");
@@ -44,6 +79,12 @@ test("重新生成：第二版内容替换展示，旧版可经左右箭头回�
   const switcher = page.getByRole("group", { name: "回答版本" });
   await expect(switcher).toBeVisible();
   await expect(switcher).toContainText("2/2");
+  const footer = page.locator(".message--assistant .message-footer--with-versions");
+  const footerActions = footer.locator(".message-actions");
+  const [switcherBox, footerActionsBox] = await Promise.all([switcher.boundingBox(), footerActions.boundingBox()]);
+  expect(switcherBox && footerActionsBox).toBeTruthy();
+  expect(Math.abs((switcherBox!.y + switcherBox!.height / 2) - (footerActionsBox!.y + footerActionsBox!.height / 2))).toBeLessThan(2);
+  expect(switcherBox!.x).toBeLessThan(footerActionsBox!.x);
   await page.getByRole("button", { name: "上一个版本" }).click();
   // 旧版渲染在独立只读容器 .message__version，不含最新正文。
   await expect(page.locator(".message__version")).toContainText("渐进事件把后续内容写进同一条消息", { timeout: 5_000 });

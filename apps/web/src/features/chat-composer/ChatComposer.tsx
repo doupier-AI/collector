@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
+import type { ResearchTaskRecord } from "@collector/capture-contracts";
 import { SelectionCapsule } from "../selection/SelectionCapsule";
 import type { CitedSelection } from "../selection/useSelectionCitation";
 import { clearDraft, loadDraft, saveDraft } from "./draft";
@@ -29,6 +30,11 @@ export interface ChatComposerProps {
    * 返回 true 表示后端已确认，输入框清空。
    */
   onStartChildNode?: (query: string, allowWebSearch: boolean) => Promise<boolean>;
+  /** 生成中或暂停中的任务占用原发送按钮位置，提供暂停/继续/停止。 */
+  generationTask?: ResearchTaskRecord;
+  onPauseTask?: (task: ResearchTaskRecord) => void;
+  onResumeTask?: (task: ResearchTaskRecord) => void;
+  onStopTask?: (task: ResearchTaskRecord) => void;
 }
 
 /**
@@ -52,6 +58,10 @@ export function ChatComposer({
   citedSelection,
   onRemoveCitation,
   onStartChildNode,
+  generationTask,
+  onPauseTask,
+  onResumeTask,
+  onStopTask,
 }: ChatComposerProps) {
   const textareaId = useId();
   const hintId = useId();
@@ -243,7 +253,14 @@ export function ChatComposer({
               <span>允许联网搜索</span>
             </label>
           </div>
-          {hasCitation ? (
+          {generationTask && (generationTask.status === "queued" || generationTask.status === "running" || generationTask.status === "paused") ? (
+            <ComposerGenerationControls
+              task={generationTask}
+              onPauseTask={onPauseTask}
+              onResumeTask={onResumeTask}
+              onStopTask={onStopTask}
+            />
+          ) : hasCitation ? (
             <div className="composer__dual-actions">
               <button
                 type="button"
@@ -293,5 +310,62 @@ export function ChatComposer({
         </p>
       ) : null}
     </form>
+  );
+}
+
+/** 生成控制占用发送位：运行中为暂停；暂停后为停止 + 继续。 */
+function ComposerGenerationControls({
+  task,
+  onPauseTask,
+  onResumeTask,
+  onStopTask,
+}: {
+  task: ResearchTaskRecord;
+  onPauseTask?: (task: ResearchTaskRecord) => void;
+  onResumeTask?: (task: ResearchTaskRecord) => void;
+  onStopTask?: (task: ResearchTaskRecord) => void;
+}) {
+  const paused = task.status === "paused";
+  if (paused) {
+    return (
+      <div className="composer__generation-actions" role="group" aria-label="生成控制">
+        <button
+          type="button"
+          className="composer__generation-control composer__generation-control--secondary"
+          aria-label="停止"
+          data-tooltip="停止"
+          onClick={() => onStopTask?.(task)}
+        >
+          <svg width="14" height="14" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+            <rect x="5.5" y="5.5" width="9" height="9" rx="1.25" fill="currentColor" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          className="composer__generation-control"
+          aria-label="继续"
+          data-tooltip="继续"
+          onClick={() => onResumeTask?.(task)}
+        >
+          <svg width="16" height="16" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+            <path d="m7 5 7 5-7 5V5Z" fill="currentColor" />
+          </svg>
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className="composer__generation-control"
+      aria-label="暂停"
+      data-tooltip="暂停"
+      onClick={() => onPauseTask?.(task)}
+    >
+      <svg width="16" height="16" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+        <path d="M7 5.25v9.5M13 5.25v9.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      </svg>
+    </button>
   );
 }

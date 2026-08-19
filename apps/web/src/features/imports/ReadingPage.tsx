@@ -289,16 +289,7 @@ export function ReadingPage() {
   const { snapshot } = state;
   const foundBlockId = activeSnapshotRestore?.kind === "found" ? activeSnapshotRestore.blockId : null;
   return (
-    <div className="page reading-page">
-      <header className="session-header">
-        <p className="reading-page__back">
-          <Link to={stableNodePath(sessionId)} aria-label="返回研究会话">
-            ← 返回研究
-          </Link>
-        </p>
-        <h1 className="page__title">{snapshot.title}</h1>
-        <p className="session-header__meta">共 {snapshot.blocks.length} 个内容块</p>
-      </header>
+    <div className={`page reading-page${snapshot.chapterParse ? " reading-page--with-chapters" : ""}`}>
       {snapshot.chapterParse ? (
         <ReadingChapterNav
           parse={snapshot.chapterParse}
@@ -308,70 +299,81 @@ export function ReadingPage() {
           onRetry={handleRetryChapters}
         />
       ) : null}
-      {activeSnapshotRestore?.kind === "fallback" && restoredSelection ? (
-        <SelectionRestoreFallback selection={restoredSelection} caption={activeSnapshotRestore.caption} />
-      ) : null}
-      <article
-        className="reading"
-        aria-label={`${snapshot.title} 正文`}
-        data-content-kind="snapshot"
-        data-content-snapshot-id={snapshot.id}
-      >
-        {snapshot.blocks.map((block) => {
-          const highlight =
-            foundBlockId === block.id && activeSnapshotRestore?.kind === "found" ? activeSnapshotRestore : null;
-          const text = highlight ? (
-            <HighlightedText text={block.text} start={highlight.start} end={highlight.end} />
-          ) : (
-            block.text
-          );
-          return (
-            <section className="reading__block" key={block.id} data-block-id={block.id}>
-              <p className="reading__anchor">{anchorCaption(block)}</p>
-              {isHeading(block) ? (
-                <h2 className="reading__heading" data-block-text>
-                  {text}
-                </h2>
-              ) : isCode(block) ? (
-                <pre className="reading__code" data-block-text>
-                  <code>{text}</code>
-                </pre>
-              ) : (
-                <p className="reading__text" data-block-text>
-                  {text}
-                </p>
-              )}
-            </section>
-          );
-        })}
-      </article>
-      <div className="reading-page__composer">
-        <ChatComposer
-          draftScope={sessionId}
-          submitLabel="发送"
-          placeholder="输入关于这篇文档的问题……"
-          onSubmit={handleSubmitMessage}
-          citedSelection={citedSelection}
-          onRemoveCitation={removeCitation}
-          onStartChildNode={handleStartChildNode}
+      <div className="reading-page__main">
+        <header className="session-header">
+          <p className="reading-page__back">
+            <Link to={stableNodePath(sessionId)} aria-label="返回研究会话">
+              ← 返回研究
+            </Link>
+          </p>
+          <h1 className="page__title">{snapshot.title}</h1>
+          <p className="session-header__meta">共 {snapshot.blocks.length} 个内容块</p>
+        </header>
+        {activeSnapshotRestore?.kind === "fallback" && restoredSelection ? (
+          <SelectionRestoreFallback selection={restoredSelection} caption={activeSnapshotRestore.caption} />
+        ) : null}
+        <article
+          className="reading"
+          aria-label={`${snapshot.title} 正文`}
+          data-content-kind="snapshot"
+          data-content-snapshot-id={snapshot.id}
+        >
+          {snapshot.blocks.map((block) => {
+            const highlight =
+              foundBlockId === block.id && activeSnapshotRestore?.kind === "found" ? activeSnapshotRestore : null;
+            const text = highlight ? (
+              <HighlightedText text={block.text} start={highlight.start} end={highlight.end} />
+            ) : (
+              block.text
+            );
+            return (
+              <section className="reading__block" key={block.id} data-block-id={block.id}>
+                <p className="reading__anchor">{anchorCaption(block)}</p>
+                {isHeading(block) ? (
+                  <h2 className="reading__heading" data-block-text>
+                    {text}
+                  </h2>
+                ) : isCode(block) ? (
+                  <pre className="reading__code" data-block-text>
+                    <code>{text}</code>
+                  </pre>
+                ) : (
+                  <p className="reading__text" data-block-text>
+                    {text}
+                  </p>
+                )}
+              </section>
+            );
+          })}
+        </article>
+        <div className="reading-page__composer">
+          <ChatComposer
+            draftScope={sessionId}
+            submitLabel="发送"
+            placeholder="输入关于这篇文档的问题……"
+            onSubmit={handleSubmitMessage}
+            citedSelection={citedSelection}
+            onRemoveCitation={removeCitation}
+            onStartChildNode={handleStartChildNode}
+          />
+        </div>
+        <SelectionSurface
+          sessionId={sessionId}
+          onCite={handleSurfaceCite}
+          onMark={handleSurfaceMark}
+          onSelectionActivity={dismissRestoreHighlight}
         />
-      </div>
-      <SelectionSurface
-        sessionId={sessionId}
-        onCite={handleSurfaceCite}
-        onMark={handleSurfaceMark}
-        onSelectionActivity={dismissRestoreHighlight}
-      />
 
-      {markEditor ? (
-        <MarkNoteEditor
-          rect={markEditor.rect}
-          selectedText={markEditor.text}
-          existingNote={markEditor.pending}
-          onAutoCollapse={handleMarkAutoCollapse}
-          onSaveNote={handleMarkSaveNote}
-        />
-      ) : null}
+        {markEditor ? (
+          <MarkNoteEditor
+            rect={markEditor.rect}
+            selectedText={markEditor.text}
+            existingNote={markEditor.pending}
+            onAutoCollapse={handleMarkAutoCollapse}
+            onSaveNote={handleMarkSaveNote}
+          />
+        ) : null}
+      </div>
     </div>
   );
 }
