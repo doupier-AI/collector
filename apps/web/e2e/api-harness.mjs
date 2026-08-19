@@ -150,6 +150,14 @@ const fakeProvider = {
     // 前导过长会把整个生成推后、让采样落进无可引用块的流式窗口）；首问用 1500ms 给导航/视图/
     // SSE 连接留足余量，保证中间态可观测。
     await sleep(request.deepResearch ? 400 : 1500);
+    // ADR-0035 思考形态：问题含「思考」触发词时先产出两段思考增量（经 onReasoning 旁路，与正文分离）。
+    // 段间 300ms 大于思考落库节流（250ms），保证「深度思考中」中间态可被 e2e 观测。
+    if (/思考/.test(question)) {
+      request.onReasoning?.("推理第一步：先拆解问题的核心概念。");
+      await sleep(300);
+      request.onReasoning?.("推理第二步：组织回答的结构与顺序。");
+      await sleep(300);
+    }
     let emitted = 0;
     for (const segment of segments) {
       // 断流脚本：推第 n 段后抛致命错，模拟切断（保留已写部分、由重试续传）。

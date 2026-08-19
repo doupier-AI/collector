@@ -533,7 +533,7 @@ export class CaptureService {
           context: { workflowRunId: request.taskId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
         });
       },
-      // 真实逐字流式（方案 B）：委托网关 writeResearchBodyStream，逐字产出文本增量。
+      // 真实逐字流式（方案 B）：委托网关 writeResearchBodyStream，逐字产出文本增量；思考增量经 onReasoning 旁路转发（ADR-0035）。
       async *writeBodyStream(request) {
         const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
         if (!purposeGateway) throw new Error("AI model is not configured");
@@ -542,6 +542,7 @@ export class CaptureService {
           sliceContext: request.sliceContext,
           ...(request.resumeFrom !== undefined ? { resumeFrom: request.resumeFrom } : {}),
           ...(request.onStreamDone ? { onDone: request.onStreamDone } : {}),
+          ...(request.onReasoning ? { onReasoning: request.onReasoning } : {}),
           context: { workflowRunId: request.taskId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
         });
       },
@@ -844,6 +845,8 @@ export class CaptureService {
       model,
       credentialConfigured,
       enabled: input.enabled ?? existing?.enabled ?? true,
+      // ADR-0035：深度思考默认关闭；仅对支持思考模式的供应商有意义，保存后由 Resolver 传入网关。
+      thinkingEnabled: input.thinkingEnabled ?? existing?.thinkingEnabled ?? false,
       configurationVersion: existing ? existing.configurationVersion + (changed ? 1 : 0) : 1,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,

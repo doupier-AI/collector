@@ -22,6 +22,8 @@ export interface ModelProviderResponse {
   usage?: ProviderUsage;
   /** 生成终止原因（stop/length/…）；length 表示被 max_tokens 截断，供有界续写判断。 */
   finishReason?: string;
+  /** 思考内容（ADR-0035）：供 FakeProvider 等测试替身模拟推理输出，不计入正文。 */
+  reasoning?: string;
 }
 
 /** 供应商返回非 2xx：status 供分类重试（429/5xx 可退避重试，其余 4xx 立即失败）。 */
@@ -74,9 +76,11 @@ export interface ModelProvider {
 
 /** 流式增量事件：正文逐字片段。 */
 export interface ModelProviderStreamDelta { type: "delta"; text: string }
+/** 流式思考增量事件（ADR-0035）：模型的推理过程逐字片段，不计入正文，与 delta 交错到达。 */
+export interface ModelProviderStreamReasoning { type: "reasoning"; text: string }
 /** 流式终帧事件：模型名与 usage（token/成本记账依据，仅在流结束时可用）。 */
 export interface ModelProviderStreamDone { type: "done"; model: string; usage?: ProviderUsage; finishReason?: string }
-export type ModelProviderStreamEvent = ModelProviderStreamDelta | ModelProviderStreamDone;
+export type ModelProviderStreamEvent = ModelProviderStreamDelta | ModelProviderStreamReasoning | ModelProviderStreamDone;
 
 /** plan-then-write 大纲的节数边界，防止模型产出过多碎节。 */
 export const RESEARCH_BODY_OUTLINE_MIN_SECTIONS = 1;
@@ -454,6 +458,8 @@ export class ProviderRuntimeResolver {
     if (!apiKey) throw new Error(`Credential is unavailable for provider profile: ${profile.id}`);
     const gateway = new ModelGateway(createProvider(definition, { apiKey: () => apiKey, baseUrl: profile.baseUrl }), {
       model: profile.model,
+      // ADR-0035：深度思考默认关闭，由模型配置的开关控制；未保存过开关的旧配置同样按关闭处理。
+      thinking: profile.thinkingEnabled ?? false,
       pricing: this.pricing,
     });
     return {
@@ -690,7 +696,7 @@ export class ModelGateway {
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
-      thinking: this.options.thinking ?? true,
+      thinking: this.options.thinking ?? false,
       maxTokens: options.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS,
       timeoutMs: options.timeoutMs ?? 120_000,
     }, options.context ?? { purpose: "research_chat" });
@@ -716,7 +722,7 @@ export class ModelGateway {
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
-      thinking: this.options.thinking ?? true,
+      thinking: this.options.thinking ?? false,
       maxTokens: options.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS,
       timeoutMs: options.timeoutMs ?? 120_000,
     }, options.context ?? { purpose: "research_body" });
@@ -758,10 +764,12 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
    * 循环结束后 emitCall 恰好一次。经 trimStream 过滤保证 concat(yielded) === 完整正文.trim()，
    * 与 finalizeDerivedSlices 从 trimmed 文本派生块的偏移严格一致。
    * provider 未实现 completeStream 时退回非流式 complete()，把 trimmed 正文作为单个增量产出。
+   * ADR-0035：思考增量经 onReasoning 旁路转发（不计入正文、不参与 trim 与记账），
+   * 调用方按各自节流策略落思考展示区。
    */
   async *writeResearchBodyStream(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext; resumeFrom?: string; onDone?: (done: { finishReason?: string }) => void } = {},
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext; resumeFrom?: string; onDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void } = {},
   ): AsyncIterable<string> {
     if (!messages.length) throw new Error("Research body requires at least one message");
     const basePrompt = this.researchBodyPrompt(messages, options.parentChainContext, options.sliceContext);
@@ -773,12 +781,14 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
     const request: ModelProviderRequest = {
       prompt,
       model: options.model ?? this.modelName,
-      thinking: this.options.thinking ?? true,
+      thinking: this.options.thinking ?? false,
       maxTokens: options.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS,
       timeoutMs: options.timeoutMs ?? 120_000,
     };
     const context = options.context ?? { purpose: "research_body" };
-    if (typeof this.provider.completeStream !== "function") {
+    // 窄化 provider：非流式回退分支后，后续引用 guaranteed 有 completeStream。
+    const provider = this.provider;
+    if (!provider || typeof provider.completeStream !== "function") {
       // 非流式 provider 回退：complete() 自带记账，把 trimmed 正文作为单增量产出。
       const content = (await this.complete(request, context)).content.trim();
       if (!content) throw new Error("Research body provider returned an empty body");
@@ -791,7 +801,16 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
     const doneRef: { model: string; usage?: ProviderUsage; finishReason?: string } = { model: request.model };
     let assembled = "";
     try {
-      for await (const trimmed of trimStream(extractStreamDeltas(this.provider.completeStream(request), doneRef))) {
+      // reasoning 旁路：思考事件经 onReasoning 转发、不进入 trim/记账；delta/done 走原通道。
+      // completeStream 在窄化作用域内调用（async generator 惰性执行，调用本身不发起请求）。
+      const streamEvents = provider.completeStream(request);
+      const textEvents = (async function* () {
+        for await (const event of streamEvents) {
+          if (event.type === "reasoning") { options.onReasoning?.(event.text); continue; }
+          yield event;
+        }
+      })();
+      for await (const trimmed of trimStream(extractStreamDeltas(textEvents, doneRef))) {
         assembled += trimmed;
         yield trimmed;
       }
@@ -832,7 +851,7 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
       prompt,
       model: options.model ?? this.modelName,
       responseFormat: { type: "json_object" },
-      thinking: this.options.thinking ?? true,
+      thinking: this.options.thinking ?? false,
       maxTokens: options.maxTokens ?? 4_000,
       timeoutMs: options.timeoutMs ?? 120_000,
     }, options.context ?? { purpose: "research_body_outline" });
@@ -897,7 +916,7 @@ ${mentionInstructions}`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
-      thinking: this.options.thinking ?? true,
+      thinking: this.options.thinking ?? false,
       maxTokens: options.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS,
       timeoutMs: options.timeoutMs ?? 120_000,
     }, options.context ?? { purpose: "research_body_section" });
@@ -1236,7 +1255,7 @@ ${mentionInstructions}`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
-      thinking: this.options.thinking ?? true,
+      thinking: this.options.thinking ?? false,
       maxTokens: options.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS,
       timeoutMs: options.timeoutMs ?? 120_000,
     }, options.context ?? { purpose: "deep_research" });
@@ -1378,7 +1397,7 @@ ${input.recentUserMessages?.length ? `\n用户最近关注的问题：\n${input.
       const response = await provider.agentChat(messages, AGENT_SEARCH_TOOLS, {
         model: this.modelName,
         maxTokens: 4096,
-        thinking: this.options.thinking ?? true,
+        thinking: this.options.thinking ?? false,
       });
       console.log(`[web-search] agentLoop turn=${turn} finishReason=${response.finishReason} latency=${Date.now() - startedAt}ms`);
 
@@ -1689,6 +1708,10 @@ export class FakeProvider implements ModelProvider {
     const resolved: ModelProviderResponse = typeof response === "string"
       ? { content: response, model: request.model, usage: { inputTokens: 10, outputTokens: 20 } }
       : response ?? { content: "", model: request.model };
+    // ADR-0035：思考内容先于正文按 80 字切片产出 reasoning 事件，与真实供应商的流式语义对齐。
+    for (let index = 0; index < (resolved.reasoning ?? "").length; index += 80) {
+      yield { type: "reasoning", text: resolved.reasoning!.slice(index, index + 80) };
+    }
     for (let index = 0; index < resolved.content.length; index += 80) {
       yield { type: "delta", text: resolved.content.slice(index, index + 80) };
     }
@@ -1820,6 +1843,9 @@ export class OpenAiCompatibleProvider implements ModelProvider {
         const choice = payload?.choices?.[0];
         const text = choice?.delta?.content;
         if (typeof text === "string" && text) yield { type: "delta", text };
+        // ADR-0035：思考增量作为独立 reasoning 事件产出（不计入正文），供网关转发到思考展示区。
+        const reasoning = choice?.delta?.reasoning_content;
+        if (typeof reasoning === "string" && reasoning) yield { type: "reasoning", text: reasoning };
         if (typeof choice?.finish_reason === "string" && choice.finish_reason) finishReason = choice.finish_reason;
         if (payload?.usage) {
           usage = {

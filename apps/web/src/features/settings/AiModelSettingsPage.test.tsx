@@ -19,6 +19,16 @@ const catalog: ProviderDefinition[] = [
     capabilities: { structuredJson: false, thinkingMode: "none", modelDiscovery: false, webGrounding: "unsupported" },
   },
   {
+    id: "deepseek",
+    label: "DeepSeek",
+    apiMode: "openai_chat_completions",
+    authMode: "bearer",
+    defaultBaseUrl: "https://api.deepseek.com",
+    defaultModel: "deepseek-v4-flash",
+    models: ["deepseek-v4-flash"],
+    capabilities: { structuredJson: true, thinkingMode: "deepseek", modelDiscovery: false, webGrounding: "unsupported" },
+  },
+  {
     id: "custom",
     label: "自定义兼容端点",
     apiMode: "openai_chat_completions",
@@ -474,5 +484,60 @@ describe("AiModelSettingsPage", () => {
       activate: false,
     });
     expect(await screen.findByText("已保存当前配置，并新增 1 个模型配置")).toBeInTheDocument();
+  });
+});
+
+describe("深度思考开关（ADR-0035）", () => {
+  it("仅对支持思考模式的供应商显示开关，默认关闭；保存时随表单提交", async () => {
+    const saveProviderProfile = vi.fn<ApiClient["saveProviderProfile"]>().mockResolvedValue(makeProfile());
+    const user = userEvent.setup();
+    renderSettings(baseApi({ saveProviderProfile }));
+
+    // 默认供应商 openai（thinkingMode: none）不显示开关
+    await screen.findByLabelText("模型供应商");
+    expect(screen.queryByRole("checkbox", { name: /深度思考/ })).not.toBeInTheDocument();
+
+    // 切换到 deepseek（thinkingMode: deepseek）显示开关，默认未勾选
+    await user.selectOptions(screen.getByLabelText("模型供应商"), "deepseek");
+    const thinkingCheckbox = screen.getByRole("checkbox", { name: /深度思考/ });
+    expect(thinkingCheckbox).not.toBeChecked();
+
+    await user.type(screen.getByLabelText("API Key"), "sk-deepseek");
+    await user.click(thinkingCheckbox);
+    expect(thinkingCheckbox).toBeChecked();
+
+    await user.click(screen.getByRole("button", { name: "保存并启用" }));
+    await waitFor(() => expect(saveProviderProfile).toHaveBeenCalledTimes(1));
+    expect(saveProviderProfile.mock.calls[0][0]).toMatchObject({ providerId: "deepseek", thinkingEnabled: true });
+  });
+
+  it("编辑已开启思考的配置：开关回填勾选，取消勾选后保存为关闭", async () => {
+    const existing = makeProfile({
+      providerId: "deepseek",
+      displayName: "DeepSeek 主配置",
+      model: "deepseek-v4-flash",
+      baseUrl: "https://api.deepseek.com",
+      thinkingEnabled: true,
+    });
+    const saveProviderProfile = vi.fn<ApiClient["saveProviderProfile"]>().mockResolvedValue(existing);
+    const user = userEvent.setup();
+    renderSettings(baseApi({
+      listProviderProfiles: vi.fn<ApiClient["listProviderProfiles"]>().mockResolvedValue([existing]),
+      getProviderCredential: vi.fn<ApiClient["getProviderCredential"]>().mockResolvedValue("sk-deepseek"),
+      saveProviderProfile,
+    }));
+
+    await screen.findByText("DeepSeek 主配置");
+    expect(screen.getByText(/深度思考/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "编辑" }));
+    await screen.findByRole("heading", { name: "编辑模型供应商「DeepSeek 主配置」" });
+
+    const thinkingCheckbox = await screen.findByRole("checkbox", { name: /深度思考/ });
+    expect(thinkingCheckbox).toBeChecked();
+    await user.click(thinkingCheckbox);
+    await user.click(screen.getByRole("button", { name: "保存并启用" }));
+
+    await waitFor(() => expect(saveProviderProfile).toHaveBeenCalledTimes(1));
+    expect(saveProviderProfile.mock.calls[0][0]).toMatchObject({ id: "profile-1", thinkingEnabled: false });
   });
 });

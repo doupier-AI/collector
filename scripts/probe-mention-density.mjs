@@ -21,16 +21,17 @@ const provider = createProvider(definition, {
   baseUrl: preferred.profile.baseUrl || definition.defaultBaseUrl,
 });
 const question = process.argv[2] ?? "什么是Transformer架构";
-const noThinking = process.argv.includes("--no-thinking");
+// ADR-0035：思考默认关闭（与产品默认一致）；--thinking 显式开启以复现思考场景。
+const thinking = process.argv.includes("--thinking");
 const maxTokensArg = process.argv.find((arg) => arg.startsWith("--max-tokens="));
 const maxTokens = maxTokensArg ? Number(maxTokensArg.split("=")[1]) : undefined;
 // --fusion：复现融合正文路径（composeFusion + 标记指令 + 固定章节 + [来源n] 引用）。
 // 素材与 z-acceptance 场景九同型（双来源 shared-concept），#86 场景九取证用。
 const fusionMode = process.argv.includes("--fusion");
-const gateway = new ModelGateway(provider, { model: preferred.profile.model, thinking: !noThinking });
+const gateway = new ModelGateway(provider, { model: preferred.profile.model, thinking });
 const startedAt = Date.now();
 console.log(`[probe] question: ${question}`);
-console.log(`[probe] thinking: ${!noThinking}, maxTokens: ${maxTokens ?? (fusionMode ? "default(8192)" : "default(16000)")}`);
+console.log(`[probe] thinking: ${thinking}, maxTokens: ${maxTokens ?? (fusionMode ? "default(8192)" : "default(16000)")}`);
 console.log(`[probe] started at ${new Date().toISOString()}`);
 
 let text = "";

@@ -18,7 +18,7 @@ import { deriveMessageBlocks, isLongText } from "@collector/capture-contracts";
 import { QUESTION, apiJson, citeAnswerText, pairAndOpen } from "./helpers";
 
 interface NodeViewLite {
-  messages: Array<{ role: string; status: string; content: string }>;
+  messages: Array<{ role: string; status: string; content: string; reasoning?: string }>;
 }
 
 /** 已完成的 AI 消息正文列表（按落库顺序）。 */
@@ -50,6 +50,18 @@ async function waitForChildNodeUrl(page: Page, sessionId: string): Promise<strin
   );
   return page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
 }
+
+test("思考契约（ADR-0035）：问题含「思考」触发词时 reasoning 两段固定推理、与正文分离", async ({ page }) => {
+  await pairAndOpen(page, "/research/new");
+  const nodeId = await submitQuestion(page, "请深入思考：什么是本地优先研究？");
+  await expect(page.locator("[aria-live=polite]")).toHaveText("已完成", { timeout: 15_000 });
+
+  const view = await apiJson<NodeViewLite>(page, `/v1/research-nodes/${encodeURIComponent(nodeId)}`);
+  const answer = view.messages.filter((message) => message.role === "assistant" && message.status === "completed")[0];
+  expect(answer?.reasoning, "思考契约：推理两段固定文字累计在 reasoning 字段").toBe("推理第一步：先拆解问题的核心概念。推理第二步：组织回答的结构与顺序。");
+  expect(answer?.content, "思考契约：正文不含推理文字").not.toContain("推理第一步");
+  expect(answer?.content, "思考契约：正文契约保持普通回答三段+完成词").toContain("回答完毕");
+});
 
 test("普通回答契约：三段结构、含完成词「回答完毕」、非长文节标题形态", async ({ page }) => {
   await pairAndOpen(page, "/research/new");

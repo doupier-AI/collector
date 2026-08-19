@@ -10,10 +10,11 @@ const NOW = "2026-08-05T00:00:00.000Z";
 
 /**
  * 可编程的单轮流式假 provider：writeBodyStream 按 script 逐次编程。
- * 每次编程返回一个 AsyncIterable（可中途抛错）+ 可选 onStreamDone 终帧。
+ * 每次编程返回一个 AsyncIterable（可中途抛错）+ 可选 onStreamDone 终帧；
+ * reasonings 在 deltas 前经 onReasoning 逐个发出（ADR-0035 思考旁路）。
  */
 function makeStreamProvider(opts: {
-  script: Array<(resumeFrom: string | undefined) => { deltas: string[]; finishReason?: string; cutAfter?: number; cutError?: "timeout" | "fatal500" | "fatal400" }>;
+  script: Array<(resumeFrom: string | undefined) => { deltas: string[]; reasonings?: string[]; finishReason?: string; cutAfter?: number; cutError?: "timeout" | "fatal500" | "fatal400" }>;
   calls: Array<{ resumeFrom: string | undefined }>;
 }): Record<string, unknown> {
   return {
@@ -22,11 +23,12 @@ function makeStreamProvider(opts: {
     promptVersion: "test",
     async *generate() { yield "unused"; },
     async writeBody() { return "短正文占位（触发流式分支前置）。"; },
-    async *writeBodyStream(request: { resumeFrom?: string; onStreamDone?: (done: { finishReason?: string }) => void }) {
+    async *writeBodyStream(request: { resumeFrom?: string; onStreamDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void }) {
       opts.calls.push({ resumeFrom: request.resumeFrom });
       const next = opts.script.shift();
       if (!next) throw new Error("writeBodyStream called more than scripted");
-      const { deltas, finishReason, cutAfter, cutError = "timeout" } = next(request.resumeFrom);
+      const { deltas, reasonings = [], finishReason, cutAfter, cutError = "timeout" } = next(request.resumeFrom);
+      for (const reasoning of reasonings) request.onReasoning?.(reasoning);
       let emitted = 0;
       for (const delta of deltas) {
         if (cutAfter !== undefined && emitted >= cutAfter) {
@@ -132,5 +134,57 @@ test("重启恢复：从 streamCheckpoint 续传（流被切断时断点已落�
   assert.equal(store.getResearchTask(accepted.task.id)!.status, "completed");
   assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "第一段正文。，重启后续写完成。");
   assert.ok(calls[1]?.resumeFrom?.includes("第一段正文"), "从断点续传");
+  store.close();
+});
+
+test("思考增量与正文分离落库：message.reasoning 累计、正文不含思考、事件快照携带思考", async (t) => {
+  const calls: Array<{ resumeFrom: string | undefined }> = [];
+  const provider = makeStreamProvider({
+    calls,
+    script: [
+      () => ({
+        reasonings: ["先思考", "再推演"],
+        deltas: ["正文第一段。", "正文第二段。"],
+        finishReason: "stop",
+      }),
+    ],
+  });
+  const { store, service } = await makeService(t, provider);
+  const accepted = await service.research.submitMessage("session-1", "问题", "k-reasoning");
+  for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)!.status !== "completed"; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(store.getResearchTask(accepted.task.id)!.status, "completed");
+  const message = store.getResearchMessage(accepted.outputMessage.id)!;
+  assert.equal(message.reasoning, "先思考再推演", "思考全文累计在 reasoning 字段");
+  assert.equal(message.content, "正文第一段。正文第二段。", "正文与思考严格分离");
+  assert.ok(!message.content.includes("思考"), "思考文字不进入正文");
+  // 事件流快照携带思考累计值，前端可直接渲染思考区。
+  const events = store.listResearchTaskEvents(accepted.task.id);
+  assert.ok(events.some((event) => event.type === "delta" && event.message?.reasoning?.includes("先思考")), "delta 事件快照含思考累计");
+  const last = [...events].reverse().find((event) => event.type === "completed");
+  assert.equal(last?.message?.reasoning, "先思考再推演", "完成事件快照含完整思考");
+  store.close();
+});
+
+test("默认重试清空正文时一并清空思考（新一轮生成与旧思考无关）", async (t) => {
+  const calls: Array<{ resumeFrom: string | undefined }> = [];
+  const provider = makeStreamProvider({
+    calls,
+    script: [
+      // 首轮在产出任何正文前切断：不落断点 → 重试走默认清空路径。
+      () => ({ reasonings: ["第一轮思考"], deltas: ["第一轮正文。"], cutAfter: 0, cutError: "fatal400" }),
+      () => ({ deltas: ["第二轮正文。"], finishReason: "stop" }),
+    ],
+  });
+  const { store, service } = await makeService(t, provider);
+  const accepted = await service.research.submitMessage("session-1", "问题", "k-retry-clear");
+  let task = store.getResearchTask(accepted.task.id)!;
+  for (let i = 0; i < 200 && task.status !== "failed"; i++) { await new Promise((r) => setImmediate(r)); task = store.getResearchTask(accepted.task.id)!; }
+  const afterFail = store.getResearchMessage(accepted.outputMessage.id)!;
+  assert.equal(afterFail.reasoning, "第一轮思考", "失败保留部分思考");
+  await service.research.retryTask(accepted.task.id);
+  for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)!.status !== "completed"; i++) await new Promise((r) => setImmediate(r));
+  const afterRetry = store.getResearchMessage(accepted.outputMessage.id)!;
+  assert.equal(afterRetry.reasoning, undefined, "默认重试清空思考");
+  assert.equal(afterRetry.content, "第二轮正文。", "默认重试清空正文后重写");
   store.close();
 });

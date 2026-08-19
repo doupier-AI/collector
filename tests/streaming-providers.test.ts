@@ -4,6 +4,7 @@ import {
   AnthropicMessagesProvider,
   FakeProvider,
   GeminiGroundingProvider,
+  ModelGateway,
   ModelProviderHttpError,
   ModelProviderTimeoutError,
   OpenAiCompatibleProvider,
@@ -79,6 +80,51 @@ test("OpenAI 兼容 provider 流式：delta.content 逐字、终帧 usage、[DON
   const done = doneOf(events);
   assert.equal(done.model, "deepseek-v4-flash");
   assert.deepEqual(done.usage, { inputTokens: 11, outputTokens: 22, inputCacheHitTokens: 3, inputCacheMissTokens: 8 });
+});
+
+test("OpenAI 兼容 provider 流式：reasoning_content 作为独立 reasoning 事件产出，不计入正文", async () => {
+  let body: Record<string, unknown> | undefined;
+  const provider = createProvider(DEFAULT_PROVIDER_REGISTRY.get("deepseek"), {
+    apiKey: () => "deepseek-secret",
+    fetchImpl: async (_input, init) => {
+      body = JSON.parse(String(init?.body));
+      return sseResponse([
+        { data: JSON.stringify({ model: "deepseek-v4-flash", choices: [{ delta: { reasoning_content: "先想" } }] }) },
+        { data: JSON.stringify({ model: "deepseek-v4-flash", choices: [{ delta: { content: "你好", reasoning_content: "再想" } }] }) },
+        { data: JSON.stringify({ model: "deepseek-v4-flash", choices: [{ delta: { content: "世界" } }] }) },
+        { data: "[DONE]" },
+      ]);
+    },
+  });
+  const events = await collect(provider.completeStream!({ prompt: "问题", model: "deepseek-v4-flash" }));
+  assert.equal(deltasOf(events), "你好世界");
+  const reasoning = events.filter((event): event is Extract<ModelProviderStreamEvent, { type: "reasoning" }> => event.type === "reasoning").map((event) => event.text).join("");
+  assert.equal(reasoning, "先想再想");
+  doneOf(events);
+});
+
+test("网关 writeResearchBodyStream：reasoning 经 onReasoning 旁路转发，正文走 trim 通道互不污染", async () => {
+  const provider = new FakeProvider([{ content: "  正文内容", reasoning: "深度推理过程", model: "fake-model", usage: { inputTokens: 10, outputTokens: 20 } }]);
+  const gateway = new ModelGateway(provider, { model: "fake-model" });
+  const reasoningChunks: string[] = [];
+  const deltas: string[] = [];
+  for await (const delta of gateway.writeResearchBodyStream([{ role: "user", content: "问题" }], {
+    onReasoning: (text) => reasoningChunks.push(text),
+  })) {
+    deltas.push(delta);
+  }
+  assert.equal(reasoningChunks.join(""), "深度推理过程");
+  // trim 不变量：正文首尾空白被修剪，与思考内容严格分离。
+  assert.equal(deltas.join(""), "正文内容");
+  // 思考开关默认关闭（ADR-0035）：未显式开启时请求不带 thinking 开启参数。
+  assert.equal(provider.calls[0]?.thinking, false);
+});
+
+test("网关 writeResearchBodyStream：thinking 显式开启时透传到请求", async () => {
+  const provider = new FakeProvider(["回答"]);
+  const gateway = new ModelGateway(provider, { model: "fake-model", thinking: true });
+  for await (const _delta of gateway.writeResearchBodyStream([{ role: "user", content: "问题" }])) { void _delta; }
+  assert.equal(provider.calls[0]?.thinking, true);
 });
 
 test("OpenAI Responses provider 流式：output_text.delta 逐字、completed 帧 usage、failed 抛错", async () => {

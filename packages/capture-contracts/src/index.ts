@@ -37,6 +37,8 @@ export interface ProviderProfile {
   model: string;
   credentialConfigured: boolean;
   enabled: boolean;
+  /** 深度思考开关（ADR-0035）：仅对支持思考模式的供应商有意义；缺省即关闭。 */
+  thinkingEnabled?: boolean;
   configurationVersion: number;
   createdAt: string;
   updatedAt: string;
@@ -49,6 +51,8 @@ export interface ProviderProfileInput {
   baseUrl?: string;
   model: string;
   enabled?: boolean;
+  /** 深度思考开关；缺省关闭。 */
+  thinkingEnabled?: boolean;
   /** 真实 API Key：仅创建/更新时提交。列表与详情读取响应不含 Key；只有专用凭证读取端点向已认证的本地客户端回传，用于设置页回填暗文显示。 */
   apiKey?: string;
 }
@@ -735,6 +739,8 @@ export interface ResearchMessageRecord {
   branchId?: string;
   role: ResearchMessageRole;
   content: string;
+  /** 深度思考过程全文（ADR-0035）：开关开启时随生成流式累计，与正文分开存储；完成后可回看。 */
+  reasoning?: string;
   /** AI 正文生成时与干净正文一起落下的提及范围；不含任何模型控制符。 */
   termMarkers?: TermMarker[];
   status: ResearchMessageStatus;

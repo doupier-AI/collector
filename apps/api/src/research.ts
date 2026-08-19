@@ -64,6 +64,9 @@ const PROVIDER_RETRY_MAX_DELAY_MS = 30_000;
 /** 单轮流式断点落盘节流：时间间隔与最小字符增量，避免逐 token 写放大。 */
 const STREAM_CHECKPOINT_MIN_INTERVAL_MS = 2_000;
 const STREAM_CHECKPOINT_MIN_CHARS = 2_000;
+/** ADR-0035：思考增量落库节流——思考期间正文可能长时间零增量，思考须独立及时落库且不逐 token 写放大。 */
+const REASONING_FLUSH_MIN_INTERVAL_MS = 250;
+const REASONING_FLUSH_MIN_CHARS = 400;
 
 /**
  * T02 硬约束判定（#92，ADR-0032）：长文节正文首行必须是 Markdown 二级标题（`## 标题`）。
@@ -119,8 +122,8 @@ export interface ResearchGenerationProvider {
   writeBody?(request: ResearchGenerationRequest): Promise<string>;
   /** #31：融合节点正文生成；任务带 fusionPlan 时优先走本方法。来源材料含可回读的片段摘录。 */
   composeFusion?(request: ResearchGenerationRequest & { fusion: { sources: Array<ResearchFusionSource & { excerpt: string }>; relationType: import("@collector/capture-contracts").FusionRelationType } }): Promise<string>;
-  /** 真实模型逐字流式正文（方案 B）；缺省时退回 writeBody 原子写或 legacy generate 流式。 */
-  writeBodyStream?(request: ResearchGenerationRequest & { resumeFrom?: string; onStreamDone?: (done: { finishReason?: string }) => void }): AsyncIterable<string>;
+  /** 真实模型逐字流式正文（方案 B）；缺省时退回 writeBody 原子写或 legacy generate 流式。onReasoning 旁路接收思考增量（ADR-0035）。 */
+  writeBodyStream?(request: ResearchGenerationRequest & { resumeFrom?: string; onStreamDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void }): AsyncIterable<string>;
   /** plan-then-write 第一阶段：为长文生成有序大纲。 */
   generateOutline?(request: ResearchGenerationRequest): Promise<ResearchBodyOutline>;
   /** plan-then-write 第二阶段：在大纲与前文前提下串行扩写某节；支持断点续写/空节修复提示/降级目标字数。 */
@@ -611,13 +614,14 @@ export class ResearchSessionService {
     }
   }
 
-  /** 把模型原始增量转换为可立即展示的干净正文，并与独立提及范围原子落入同一消息记录。 */
-  private async appendGeneratedDelta(task: ResearchTaskRecord, rawDelta: string): Promise<ReturnType<MentionMarkupStream["push"]>> {
+  /** 把模型原始增量转换为可立即展示的干净正文，并与独立提及范围原子落入同一消息记录。
+   *  reasoningDelta 与正文增量同事务落库（ADR-0035）：思考累计在消息 reasoning 字段，不经过弱标记清洗。 */
+  private async appendGeneratedDelta(task: ResearchTaskRecord, rawDelta: string, reasoningDelta?: string): Promise<ReturnType<MentionMarkupStream["push"]>> {
     const stream = this.mentionStreams.get(task.id);
     if (!stream) throw new Error("Mention markup stream is not initialized");
     const update = stream.push(rawDelta);
-    if (update.delta || update.markers.length > 0) {
-      await this.store.appendResearchTaskDelta(task.id, update.delta, update.markers);
+    if (update.delta || update.markers.length > 0 || reasoningDelta) {
+      await this.store.appendResearchTaskDelta(task.id, update.delta, update.markers, reasoningDelta);
     }
     return update;
   }
@@ -813,6 +817,8 @@ export class ResearchSessionService {
    * 并按 2s/2000 字节节流落 streamCheckpoint 作续传边界。流被切断→落断点后抛错（failResearchTask
    * 保留已写部分，可重试从断点续传）；finishReason==="length" 或无果断信号且非空且未超续写上限→
    * 续写循环再入（resumeFrom 续写）。完成后清断点。返回最终正文（由调用方派生切片/版本）。
+   * ADR-0035：思考增量经 onReasoning 旁路按 250ms/400 字节流落消息 reasoning 字段；
+   * 落库经同一 promise 链保序，正文增量必在待落思考之后追加。
    */
   private async writeSingleTurnBodyStream(
     task: ResearchTaskRecord,
@@ -828,6 +834,18 @@ export class ResearchSessionService {
     let continuations = 0;
     let lastCheckpointAt = 0;
     let checkpointedLength = seedLength;
+    // 思考增量缓冲与保序落库链：回调只推缓冲，flush 排队执行；正文 append 前先等链清空。
+    let reasoningBuffer = "";
+    let lastReasoningFlushAt = 0;
+    let reasoningChain: Promise<void> = Promise.resolve();
+    const queueReasoningFlush = (): void => {
+      if (!reasoningBuffer) return;
+      const chunk = reasoningBuffer;
+      reasoningBuffer = "";
+      reasoningChain = reasoningChain
+        .then(async () => { await this.appendGeneratedDelta(task, "", chunk); })
+        .catch(() => { /* 落库失败由主流程错误承载，不打断思考缓冲链 */ });
+    };
     for (;;) {
       let doneFinish: string | undefined;
       const resumeFrom = rawStreamed || undefined;
@@ -838,12 +856,22 @@ export class ResearchSessionService {
             ...generationRequest,
             ...(resumeFrom ? { resumeFrom } : {}),
             onStreamDone: (done) => { doneFinish = done.finishReason; },
+            onReasoning: (text) => {
+              reasoningBuffer += text;
+              if (Date.now() - lastReasoningFlushAt >= REASONING_FLUSH_MIN_INTERVAL_MS || reasoningBuffer.length >= REASONING_FLUSH_MIN_CHARS) {
+                lastReasoningFlushAt = Date.now();
+                queueReasoningFlush();
+              }
+            },
           })) {
             if (!delta) continue;
             const next = joinContinuation(rawStreamed, delta);
             const suffix = next.slice(rawStreamed.length);
             if (suffix) {
               rawStreamed = next;
+              // 先落已缓冲的思考（保序），再落正文增量。
+              queueReasoningFlush();
+              await reasoningChain;
               const update = await this.appendGeneratedDelta(task, suffix);
               visibleStreamed = update.content;
               if (visibleStreamed.length > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
@@ -859,6 +887,8 @@ export class ResearchSessionService {
         });
       } catch (error) {
         // 流被切断/重试耗尽：落断点保留已写部分后抛错（failResearchTask → 可重试从断点续传）。
+        queueReasoningFlush();
+        await reasoningChain;
         if (visibleStreamed.trim()) await this.store.saveResearchTaskStreamCheckpoint(task.id, visibleStreamed);
         console.warn(`[research] 单轮流式中断，已落断点 task=${task.id} chars=${visibleStreamed.length} detail=${error instanceof Error ? error.message : String(error)}`);
         throw error;
@@ -866,6 +896,8 @@ export class ResearchSessionService {
       // 完成判定：length 截断 / 无果断信号，且非空、未超续写上限 → 续写；否则完成。
       const truncated = doneFinish === "length";
       const noDecisiveSignal = !doneFinish;
+      queueReasoningFlush();
+      await reasoningChain;
       if (!visibleStreamed.trim()) throw new Error("Provider returned an empty body");
       if (!truncated && !noDecisiveSignal) break;
       continuations += 1;

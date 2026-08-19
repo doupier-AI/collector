@@ -10,8 +10,9 @@ const runtimeDir = join(dirname(fileURLToPath(import.meta.url)), ".runtime");
 /**
  * 确定性假模型响应形态：稳定契约由 z-fake-model-contract.spec.ts 机器锁定（普通回答三段式与完成词
  * 「回答完毕」；长文三触发词「长文/长篇/报告」、三节「## 长文第N节」标题、正文无完成词——完成信号
- * 用 aria-live 播报「已完成」，勿等该词；深入研究两段式）。编写新 spec 先读该契约；修改假模型行为后
- * 先跑它确认漂移面，不必反向读 harness 源码。契约之外的实现说明（可变，不属于契约）：
+ * 用 aria-live 播报「已完成」，勿等该词；深入研究两段式；思考触发词「思考」→ reasoning 两段固定
+ * 推理、与正文分离）。编写新 spec 先读该契约；修改假模型行为后先跑它确认漂移面，不必反向读
+ * harness 源码。契约之外的实现说明（可变，不属于契约）：
  * - 节奏：首问前导 1500ms（留导航/视图/SSE 连接窗口）、深入研究 400ms，段间 250ms；
  * - 流式正文与 writeBody 拼接结果逐字节一致（harness 内部保证，spec 不直接消费）；
  * - 弱标记：假模型输出同样遵守流内弱标记契约，可见正文清洗后与提问一致（term-markers/term-preview 覆盖）；

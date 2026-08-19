@@ -160,7 +160,7 @@ export interface ResearchStore {
   createResearchTurn(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<ResearchTurnAccepted>;
   createResearchTurnForNode(node: ResearchNodeRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<ResearchTurnAccepted>;
   claimResearchTask(id: string, provider?: string, model?: string, promptVersion?: string): ResearchTaskRecord | undefined;
-  appendResearchTaskDelta(id: string, delta: string, termMarkers?: readonly import("@collector/capture-contracts").TermMarker[]): Promise<void>;
+  appendResearchTaskDelta(id: string, delta: string, termMarkers?: readonly import("@collector/capture-contracts").TermMarker[], reasoningDelta?: string): Promise<void>;
   completeResearchTask(id: string): Promise<void>;
   failResearchTask(task: ResearchTaskRecord, error: ResearchTaskError): Promise<void>;
   retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string, options?: { preserveContent?: boolean }): Promise<ResearchTaskRecord>;
@@ -340,7 +340,7 @@ export interface CollectorStore
   listResearchTasks(sessionId: string): ResearchTaskRecord[];
   createResearchTurn(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<ResearchTurnAccepted>;
   claimResearchTask(id: string, provider?: string, model?: string, promptVersion?: string): ResearchTaskRecord | undefined;
-  appendResearchTaskDelta(id: string, delta: string, termMarkers?: readonly import("@collector/capture-contracts").TermMarker[]): Promise<void>;
+  appendResearchTaskDelta(id: string, delta: string, termMarkers?: readonly import("@collector/capture-contracts").TermMarker[], reasoningDelta?: string): Promise<void>;
   completeResearchTask(id: string): Promise<void>;
   failResearchTask(task: ResearchTaskRecord, error: ResearchTaskError): Promise<void>;
   retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string, options?: { preserveContent?: boolean }): Promise<ResearchTaskRecord>;
@@ -1008,7 +1008,7 @@ export class SqliteStore implements CollectorStore {
     return claimed;
   }
 
-  async appendResearchTaskDelta(id: string, delta: string, termMarkers?: readonly import("@collector/capture-contracts").TermMarker[]): Promise<void> {
+  async appendResearchTaskDelta(id: string, delta: string, termMarkers?: readonly import("@collector/capture-contracts").TermMarker[], reasoningDelta?: string): Promise<void> {
     this.transaction(() => {
       const task = this.getResearchTask(id);
       if (!task || task.status !== "running") throw new Error("Research task is not running");
@@ -1018,6 +1018,8 @@ export class SqliteStore implements CollectorStore {
       const message: ResearchMessageRecord = {
         ...current,
         content: current.content + delta,
+        // ADR-0035：思考增量与正文分开累计，不进入正文与弱标记管线；仅在有思考时携带字段。
+        ...(reasoningDelta ? { reasoning: (current.reasoning ?? "") + reasoningDelta } : {}),
         ...(termMarkers ? { termMarkers: [...termMarkers] } : {}),
         status: "streaming",
         updatedAt: now,
@@ -1074,7 +1076,8 @@ export class SqliteStore implements CollectorStore {
       // preserveContent：保留已写部分正文与事件流，供断流续传/截断续写从断点继续；默认清空重来。
       // 默认重试清空正文时必须同事务清掉流内弱标记：标记只在当前正文版本有效（ADR-0028），
       // 残留旧标记会让空正文消息携带不一致派生状态，甚至被下一次生成误当种子复用。
-      const { termMarkers: _staleMarkers, ...clearedMessage } = currentMessage;
+      // 思考过程同样清空（ADR-0035）：重试是新一轮生成，旧思考与新回答无关。
+      const { termMarkers: _staleMarkers, reasoning: _staleReasoning, ...clearedMessage } = currentMessage;
       const message: ResearchMessageRecord = options?.preserveContent
         ? { ...currentMessage, updatedAt: now }
         : { ...clearedMessage, content: "", status: "pending", updatedAt: now };

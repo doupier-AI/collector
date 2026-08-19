@@ -61,9 +61,13 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
     ? groundingSources.filter((source) => source.runId === task.groundingScope?.runId)
     : [];
 
+  const reasoning = message.reasoning ?? "";
+  const thinkingInProgress = reasoning.length > 0 && message.status !== "completed" && message.status !== "failed";
+
   return (
     <li className="message message--assistant" data-message-id={message.id}>
       <p className="message__role">Collector</p>
+      {reasoning ? <ReasoningDisclosure reasoning={reasoning} streaming={thinkingInProgress} /> : null}
       {message.status === "failed" ? (
         <FailedBody message={message} task={task} retrying={retrying} onRetry={onRetry} />
       ) : (
@@ -716,11 +720,38 @@ function GroundingScopeNote({ task }: { task?: ResearchTaskRecord }) {
   return <p className="message__status message__grounding-scope" data-testid="grounding-scope-note">{message}</p>;
 }
 
+/**
+ * ADR-0035：深度思考折叠区。生成期间默认折叠、展开后逐字流式显示推理内容；
+ * 完成后折叠区保留，可随时展开回看完整思考过程。思考文字不进入正文与弱标记管线。
+ */
+function ReasoningDisclosure({ reasoning, streaming }: { reasoning: string; streaming: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const label = streaming ? "深度思考中…" : "思考过程";
+  const toggleLabel = expanded ? `收起${label}` : `展开${label}`;
+  return (
+    <div className="reasoning" data-reasoning-state={streaming ? "streaming" : "done"}>
+      <button type="button" className="reasoning__toggle" aria-expanded={expanded} aria-label={toggleLabel} onClick={() => setExpanded((current) => !current)}>
+        <span className={expanded ? "reasoning__chevron reasoning__chevron--open" : "reasoning__chevron"} aria-hidden="true">▸</span>
+        <span>{label}</span>
+        {streaming ? <span className="reasoning__pulse" aria-hidden="true" /> : null}
+      </button>
+      {expanded ? (
+        <div className="reasoning__body">
+          <MarkdownContent text={reasoning} variant="insight" />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function GeneratingBody({ message, task, terms, multiTurn = false }: { message: ResearchMessageRecord; task?: ResearchTaskRecord; terms: TermMarker[]; multiTurn?: boolean }) {
   const hasContent = message.content.trim().length > 0;
-  const status = task?.groundingScope?.status === "not_requested"
-    ? "已保存，正在生成"
-    : "已保存，正在请求联网";
+  const thinking = !hasContent && (message.reasoning?.length ?? 0) > 0;
+  const status = thinking
+    ? "深度思考中"
+    : task?.groundingScope?.status === "not_requested"
+      ? "已保存，正在生成"
+      : "已保存，正在请求联网";
   return (
     <>
       {hasContent ? (
