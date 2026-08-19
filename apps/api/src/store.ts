@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchFusionReference, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchFusionReference, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId } from "@collector/capture-contracts";
 import {
   isResearchPermanentEdge,
   validateTemporaryFusionBundle,
@@ -168,6 +168,12 @@ export interface ResearchStore {
   pauseResearchTask(id: string): Promise<ResearchTaskRecord>;
   resumeResearchTask(id: string): Promise<ResearchTaskRecord>;
   stopResearchTask(id: string): Promise<ResearchTaskRecord>;
+  /** ADR-0035 重新生成：当前正文/思考快照进 versions，清空正文/思考/标记后 queued 重跑（旧版保留可切换）。 */
+  regenerateResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string): Promise<ResearchTaskRecord>;
+  /** ADR-0035 重新编辑：改写已发送的用户消息并重新生成——新回答直接替换旧回答（不写版本、清空旧版本）。 */
+  editResearchMessage(inputMessageId: string, content: string, provider?: string, model?: string, promptVersion?: string): Promise<ResearchTaskRecord>;
+  /** ADR-0035：按输入消息定位最近一次任务（重新编辑入口用）。 */
+  getResearchTaskByInput(inputMessageId: string): ResearchTaskRecord | undefined;
   /** plan-then-write：持久化正文大纲与逐节进度，供断点续扩；record_json 整行覆盖。 */
   saveResearchTaskBodyPlan(taskId: string, bodyPlan: ResearchBodyPlan): Promise<void>;
   /** #31：融合正文完成后写入解析出的 [来源n] 引用；record_json 整行覆盖。 */
@@ -351,6 +357,10 @@ export interface CollectorStore
   pauseResearchTask(id: string): Promise<ResearchTaskRecord>;
   resumeResearchTask(id: string): Promise<ResearchTaskRecord>;
   stopResearchTask(id: string): Promise<ResearchTaskRecord>;
+  regenerateResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string): Promise<ResearchTaskRecord>;
+  editResearchMessage(inputMessageId: string, content: string, provider?: string, model?: string, promptVersion?: string): Promise<ResearchTaskRecord>;
+  /** ADR-0035：按输入消息定位最近一次任务（重新编辑入口用）。 */
+  getResearchTaskByInput(inputMessageId: string): ResearchTaskRecord | undefined;
   saveResearchTaskBodyPlan(taskId: string, bodyPlan: ResearchBodyPlan): Promise<void>;
   saveResearchTaskStreamCheckpoint(taskId: string, content: string): Promise<void>;
   clearResearchTaskStreamCheckpoint(taskId: string): Promise<void>;
@@ -1146,6 +1156,79 @@ export class SqliteStore implements CollectorStore {
     });
     if (!stopped) throw new Error("Research task stop was not persisted");
     return stopped;
+  }
+
+  /** ADR-0035 重新生成：当前正文/思考快照进 versions，清空正文/思考/标记后 queued 重跑（旧版保留可切换）。 */
+  async regenerateResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion = "research-chat-v1"): Promise<ResearchTaskRecord> {
+    let queued: ResearchTaskRecord | undefined;
+    this.transaction(() => {
+      const current = this.getResearchTask(task.id);
+      if (!current || (current.status !== "completed" && current.status !== "stopped")) throw new Error("Research task is not regenerable");
+      const currentMessage = this.getResearchMessage(current.outputMessageId);
+      if (!currentMessage) throw new Error("Research output message not found");
+      const now = new Date().toISOString();
+      const version: ResearchMessageVersion = {
+        content: currentMessage.content,
+        ...(currentMessage.reasoning !== undefined ? { reasoning: currentMessage.reasoning } : {}),
+        createdAt: now,
+      };
+      const versions = [version, ...(currentMessage.versions ?? [])];
+      const message: ResearchMessageRecord = {
+        ...currentMessage,
+        content: "",
+        reasoning: undefined,
+        termMarkers: undefined,
+        versions,
+        status: "pending",
+        updatedAt: now,
+      };
+      this.updateResearchMessage(message);
+      queued = {
+        ...current, status: "queued", retryable: false, provider, model, promptVersion,
+        error: undefined, updatedAt: now, startedAt: undefined, completedAt: undefined,
+      };
+      this.updateResearchTask(queued);
+      // 清空旧事件流：新生成是全新一轮，旧 delta/completed 重放会提前终止前端连接
+      // 并把旧任务快照覆盖回视图（与 retry 默认清空的先例一致）。
+      this.db().prepare("DELETE FROM research_task_events WHERE task_id = ?").run(task.id);
+    });
+    if (!queued) throw new Error("Research task regenerate was not persisted");
+    return queued;
+  }
+
+  /** ADR-0035：按输入消息定位最近一次任务（重新编辑入口用）。 */
+  getResearchTaskByInput(inputMessageId: string): ResearchTaskRecord | undefined {
+    const row = this.db().prepare("SELECT record_json FROM research_tasks WHERE input_message_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
+      .get(inputMessageId) as { record_json: string } | undefined;
+    return row ? JSON.parse(row.record_json) as ResearchTaskRecord : undefined;
+  }
+
+  /** ADR-0035 重新编辑：改写已发送的用户消息并重新生成——新回答直接替换旧回答（不写版本、清空旧版本）。 */
+  async editResearchMessage(inputMessageId: string, content: string, provider?: string, model?: string, promptVersion = "research-chat-v1"): Promise<ResearchTaskRecord> {
+    let queued: ResearchTaskRecord | undefined;
+    this.transaction(() => {
+      const current = this.getResearchTaskByInput(inputMessageId);
+      if (!current || (current.status !== "completed" && current.status !== "stopped")) throw new Error("Research task is not editable");
+      const inputMessage = this.getResearchMessage(inputMessageId);
+      if (!inputMessage) throw new Error("Research input message not found");
+      const currentMessage = this.getResearchMessage(current.outputMessageId);
+      if (!currentMessage) throw new Error("Research output message not found");
+      const now = new Date().toISOString();
+      this.updateResearchMessage({ ...inputMessage, content, updatedAt: now });
+      // 直接替换：旧回答与旧版本全部清空，不保留可回看历史（用户裁决：编辑后生成不支持查看旧版本）。
+      const { versions: _dropped, termMarkers: _staleMarkers, reasoning: _staleReasoning, ...restMessage } = currentMessage;
+      const cleared: ResearchMessageRecord = { ...restMessage, content: "", status: "pending", updatedAt: now };
+      this.updateResearchMessage(cleared);
+      queued = {
+        ...current, status: "queued", retryable: false, provider, model, promptVersion,
+        error: undefined, updatedAt: now, startedAt: undefined, completedAt: undefined,
+      };
+      this.updateResearchTask(queued);
+      // 清空旧事件流：编辑生成是全新一轮（与 regenerate 同理由）。
+      this.db().prepare("DELETE FROM research_task_events WHERE task_id = ?").run(current.id);
+    });
+    if (!queued) throw new Error("Research message edit was not persisted");
+    return queued;
   }
 
   async saveResearchTaskStreamCheckpoint(taskId: string, content: string): Promise<void> {

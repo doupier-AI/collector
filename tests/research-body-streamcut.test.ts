@@ -287,3 +287,67 @@ test("思考阶段暂停：reasoning 已落、正文空，暂停后继续从断�
   assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "续写完成。", "无断点时继续从空重写");
   store.close();
 });
+
+test("重新生成：旧正文/思考快照进 versions，消息清空重跑，完成后可回看旧版", async (t) => {
+  const calls: Array<{ resumeFrom: string | undefined }> = [];
+  const provider = makeStreamProvider({
+    calls,
+    script: [
+      () => ({ reasonings: ["第一轮思考"], deltas: ["第一轮正文。"], finishReason: "stop" }),
+      () => ({ deltas: ["第二轮正文。"], finishReason: "stop" }),
+    ],
+  });
+  const { store, service } = await makeService(t, provider);
+  const accepted = await service.research.submitMessage("session-1", "问题", "k-regenerate");
+  for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)!.status !== "completed"; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "第一轮正文。");
+
+  await service.research.regenerateTask(accepted.task.id);
+  const queued = store.getResearchTask(accepted.task.id)!;
+  assert.equal(queued.status, "queued", "重新生成后任务重排队");
+  const cleared = store.getResearchMessage(accepted.outputMessage.id)!;
+  assert.equal(cleared.content, "", "正文清空等待新回答");
+  assert.equal(cleared.reasoning, undefined, "思考清空");
+  assert.equal(cleared.versions?.length, 1, "旧版快照已写入");
+  assert.equal(cleared.versions?.[0]?.content, "第一轮正文。", "旧版内容完整");
+  assert.equal(cleared.versions?.[0]?.reasoning, "第一轮思考", "旧版思考完整");
+
+  for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)!.status !== "completed"; i++) await new Promise((r) => setImmediate(r));
+  const done = store.getResearchMessage(accepted.outputMessage.id)!;
+  assert.equal(done.content, "第二轮正文。", "新回答落位");
+  assert.equal(done.versions?.length, 1, "版本保留");
+  assert.equal(done.versions?.[0]?.content, "第一轮正文。", "旧版可回看");
+  store.close();
+});
+
+test("重新编辑：用户消息改写、旧回答直接替换不写版本、旧版本清空", async (t) => {
+  const calls: Array<{ resumeFrom: string | undefined }> = [];
+  const provider = makeStreamProvider({
+    calls,
+    script: [
+      () => ({ deltas: ["第一版回答。"], finishReason: "stop" }),
+      () => ({ deltas: ["第二版回答。"], finishReason: "stop" }),
+      () => ({ deltas: ["第三版回答。"], finishReason: "stop" }),
+    ],
+  });
+  const { store, service } = await makeService(t, provider);
+  const accepted = await service.research.submitMessage("session-1", "原始问题", "k-edit");
+  for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)!.status !== "completed"; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "第一版回答。");
+  // 先制造一个旧版本，验证编辑时一并清空。
+  await service.research.regenerateTask(accepted.task.id);
+  for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)!.status !== "completed"; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "第二版回答。");
+  assert.equal((store.getResearchMessage(accepted.outputMessage.id)?.versions?.length ?? 0) >= 1, true, "重生成后有旧版本");
+
+  await service.research.editMessage(accepted.inputMessage.id, "修改后的问题");
+  assert.equal(store.getResearchMessage(accepted.inputMessage.id)!.content, "修改后的问题", "用户消息已改写");
+  const cleared = store.getResearchMessage(accepted.outputMessage.id)!;
+  assert.equal(cleared.content, "", "旧回答清空");
+  assert.equal(cleared.versions, undefined, "编辑后旧版本清空（不支持查看旧版本）");
+
+  for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)!.status !== "completed"; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "第三版回答。", "新回答落位");
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.versions, undefined, "编辑生成不写版本");
+  store.close();
+});

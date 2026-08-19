@@ -143,11 +143,19 @@ const fakeProvider = {
     const longSections = this.longSections();
     // ADR-0035 续写语义：resumeFrom 非空时只补写剩余段落（与真实模型「从断点继续」同语义），
     // 否则 joinContinuation 会把首段重述重复拼接进正文（确定性假模型不读断点指令）。
+    // 重新生成/重新编辑场景：同一任务第二次生成产出不同文本（第 2 次起正文带「第二版」标识），
+    // 供版本切换与直接替换 e2e 断言区分新旧回答。
+    const generation = (this.generationCounts ??= new Map());
+    const count = generation.get(request.taskId) ?? 0;
+    generation.set(request.taskId, count + 1);
+    const secondEdition = count >= 1;
     const fullSegments = /(长文|长篇|报告)/.test(question)
       ? [longSections[0], ...longSections.slice(1).map((section) => `\n\n${section}`)]
       : request.deepResearch
         ? [`这是深入研究第一轮，围绕「${short}」展开。`, "\n\n本轮只使用来源选区与当前已有材料生成，未联网检索，回答完毕。"]
-        : [`你问的是「${markedShort}」。`, "\n\n本地优先会先把输入保存在本机，再据此组织后续研究。", "\n\n渐进事件把后续内容写进同一条消息，回答完毕。"];
+        : secondEdition
+          ? [`你问的是「${markedShort}」（第二版）。`, "\n\n重新生成的回答：本地优先会先把输入保存在本机。", "\n\n第二版渐进事件把后续内容写进同一条消息，回答完毕。"]
+          : [`你问的是「${markedShort}」。`, "\n\n本地优先会先把输入保存在本机，再据此组织后续研究。", "\n\n渐进事件把后续内容写进同一条消息，回答完毕。"];
     const segments = request.resumeFrom ? fullSegments.slice(1) : fullSegments;
     // 前导窗口分路径：深入研究子节点用旧 400ms（多级生长链测试在完成态到达前就会采样选区，
     // 前导过长会把整个生成推后、让采样落进无可引用块的流式窗口）；首问用 1500ms 给导航/视图/

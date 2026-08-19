@@ -743,9 +743,18 @@ export interface ResearchMessageRecord {
   reasoning?: string;
   /** AI 正文生成时与干净正文一起落下的提及范围；不含任何模型控制符。 */
   termMarkers?: TermMarker[];
+  /** ADR-0035 旧版本快照（重新生成保留旧版）：最新正文在 content/reasoning；旧版本按时间倒序（最新在前）。仅重新生成场景写入，重新编辑直接替换不写版本。 */
+  versions?: ResearchMessageVersion[];
   status: ResearchMessageStatus;
   createdAt: string;
   updatedAt: string;
+}
+
+/** 消息旧版本快照（ADR-0035）：只读历史，不参与选区/弱标记/切片派生。 */
+export interface ResearchMessageVersion {
+  content: string;
+  reasoning?: string;
+  createdAt: string;
 }
 
 /**

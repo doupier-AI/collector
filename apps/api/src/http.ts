@@ -364,6 +364,18 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (request.method === "POST" && researchTaskStopMatch) {
         return json(response, 200, await service.research.stopTask(decodeURIComponent(researchTaskStopMatch[1])));
       }
+      // ADR-0035 重新生成：旧回答保留为可切换版本，任务 queued 重跑。
+      const researchTaskRegenerateMatch = url.pathname.match(/^\/v1\/research-tasks\/([^/]+)\/regenerate$/);
+      if (request.method === "POST" && researchTaskRegenerateMatch) {
+        return json(response, 202, await service.research.regenerateTask(decodeURIComponent(researchTaskRegenerateMatch[1])));
+      }
+      // ADR-0035 重新编辑：改写已发送的用户消息并重新生成（直接替换旧回答）。
+      const researchMessageEditMatch = url.pathname.match(/^\/v1\/research-messages\/([^/]+)\/edit$/);
+      if (request.method === "POST" && researchMessageEditMatch) {
+        const body = await readJson(request) as { content?: unknown };
+        if (typeof body.content !== "string") throw new ResearchValidationError("content is required");
+        return json(response, 202, await service.research.editMessage(decodeURIComponent(researchMessageEditMatch[1]), body.content));
+      }
       const researchTaskMatch = url.pathname.match(/^\/v1\/research-tasks\/([^/]+)$/);
       if (request.method === "GET" && researchTaskMatch) {
         return json(response, 200, service.research.getTask(decodeURIComponent(researchTaskMatch[1])));
@@ -786,7 +798,7 @@ async function streamResearchTaskEvents(request: IncomingMessage, response: Serv
       cursor = event.id ?? cursor;
     }
     const task = service.research.getTask(taskId);
-    if (task.status === "completed" || task.status === "failed") break;
+    if (task.status === "completed" || task.status === "failed" || task.status === "stopped") break;
     response.write(": keep-alive\n\n");
     // 本轮无新事件时才挂起等推送；有则立即续循环（已 drain 完会再注册 waiter）。
     if (events.length === 0) await waiter;

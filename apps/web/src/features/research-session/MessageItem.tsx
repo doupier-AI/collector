@@ -27,6 +27,9 @@ export interface MessageItemProps {
   onPauseTask?: (task: ResearchTaskRecord) => void;
   onResumeTask?: (task: ResearchTaskRecord) => void;
   onStopTask?: (task: ResearchTaskRecord) => void;
+  /** ADR-0035：重新生成（旧回答保留可切换）与重新编辑（改写已发送的问题）。 */
+  onRegenerateTask?: (task: ResearchTaskRecord) => void;
+  onEditMessage?: (messageId: string, content: string) => void;
   highlight?: MessageHighlight;
   citations?: ResearchCitationRecord[];
   groundingSources?: ResearchGroundingSourceRecord[];
@@ -48,14 +51,14 @@ export interface MessageItemProps {
 }
 
 /** 单条消息。AI 消息与对应用户消息之间由 CSS 绘制克制的来源线与节点。 */
-export function MessageItem({ message, task, retrying = false, onRetry, onPauseTask, onResumeTask, onStopTask, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, onGrowTermMarker, slices, fragmentTargetId, fusionSources, multiTurn = false }: MessageItemProps) {
+export function MessageItem({ message, task, retrying = false, onRetry, onPauseTask, onResumeTask, onStopTask, onRegenerateTask, onEditMessage, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, onGrowTermMarker, slices, fragmentTargetId, fusionSources, multiTurn = false }: MessageItemProps) {
+  // ADR-0035：版本切换索引（0=最新正文，1..N=versions[0..N-1]）。hooks 须在角色分支之前声明。
+  const [versionIndex, setVersionIndex] = useState(0);
+  const versions = message.versions ?? [];
+  const viewingVersion = versionIndex > 0 ? versions[versionIndex - 1] : undefined;
+
   if (message.role === "user") {
-    return (
-      <li className="message message--user" data-message-id={message.id}>
-        <p className="message__role">你</p>
-        <p className="message__content">{message.content}</p>
-      </li>
-    );
+    return <UserMessageItem message={message} onEditMessage={onEditMessage} />;
   }
 
   const messageCitations = citations.filter(
@@ -67,37 +70,172 @@ export function MessageItem({ message, task, retrying = false, onRetry, onPauseT
 
   const reasoning = message.reasoning ?? "";
   const thinkingInProgress = reasoning.length > 0 && message.status !== "completed" && message.status !== "failed";
+  // ADR-0035：操作入口只在完成/停止后显示；复制取当前查看版本（旧版切换时复制旧版）。
+  const viewContent = viewingVersion?.content ?? message.content;
+  const showActions = (message.status === "completed" || message.status === "stopped") && !viewingVersion;
+  const showVersionSwitcher = (message.status === "completed" || message.status === "stopped") && versions.length > 0;
 
   return (
     <li className="message message--assistant" data-message-id={message.id}>
       <p className="message__role">Collector</p>
-      {reasoning ? <ReasoningDisclosure reasoning={reasoning} streaming={thinkingInProgress} /> : null}
+      {reasoning ? <ReasoningDisclosure reasoning={viewingVersion?.reasoning ?? reasoning} streaming={thinkingInProgress && !viewingVersion} /> : null}
       {message.status === "failed" ? (
         <FailedBody message={message} task={task} retrying={retrying} onRetry={onRetry} />
       ) : (
         // ADR-0029：流式期间标记即可交互（悬停启动预览、点击记录生长意图），不等待整篇完成。
         // 交互层挂在状态分支之外：流式翻为完成时实例存活，进行中的悬停意图与已打开的弹层不被销毁。
         <>
-          <TermPreviewInteraction
-            messageId={message.id}
-            terms={terms}
-            previews={termPreviews}
-            onStart={onStartTermPreview}
-            onRetry={onRetryTermPreview}
-            onGrow={onGrowTermPreview}
-            onGrowMarker={onGrowTermMarker}
-          >
-            {message.status === "completed" ? (
-              <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} fragmentTargetId={fragmentTargetId} fusionSources={fusionSources} multiTurn={multiTurn} />
-            ) : (
-              <GeneratingBody message={message} task={task} terms={terms} multiTurn={multiTurn} onPauseTask={onPauseTask} onResumeTask={onResumeTask} onStopTask={onStopTask} />
-            )}
-          </TermPreviewInteraction>
-          {message.status === "completed" ? (
+          {viewingVersion ? (
+            // ADR-0035：查看旧版本——只读连续正文，不参与标记/选区/切片交互。
+            <div className="message__version" data-message-version={versionIndex}>
+              <MarkdownContent text={viewingVersion.content} variant="message" />
+            </div>
+          ) : (
+            <TermPreviewInteraction
+              messageId={message.id}
+              terms={terms}
+              previews={termPreviews}
+              onStart={onStartTermPreview}
+              onRetry={onRetryTermPreview}
+              onGrow={onGrowTermPreview}
+              onGrowMarker={onGrowTermMarker}
+            >
+              {message.status === "completed" ? (
+                <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} fragmentTargetId={fragmentTargetId} fusionSources={fusionSources} multiTurn={multiTurn} />
+              ) : (
+                <GeneratingBody message={message} task={task} terms={terms} multiTurn={multiTurn} onPauseTask={onPauseTask} onResumeTask={onResumeTask} onStopTask={onStopTask} />
+              )}
+            </TermPreviewInteraction>
+          )}
+          {message.status === "completed" && !viewingVersion ? (
             <>
               <GroundingScopeNote task={task} />
               <GroundingSources sources={taskSources} />
             </>
+          ) : null}
+          {showActions ? (
+            <MessageActionRow
+              copyText={viewContent}
+              onRegenerate={task && onRegenerateTask ? () => onRegenerateTask(task) : undefined}
+            />
+          ) : null}
+          {showVersionSwitcher ? (
+            <VersionSwitcher
+              index={versionIndex}
+              total={versions.length + 1}
+              onSelect={setVersionIndex}
+              onReset={() => setVersionIndex(0)}
+            />
+          ) : null}
+        </>
+      )}
+    </li>
+  );
+}
+
+/** ADR-0035 消息操作行：复制（带「已复制」反馈）与可选的重新生成。 */
+function MessageActionRow({ copyText, onRegenerate }: { copyText: string; onRegenerate?: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(copyText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2_000);
+    } catch {
+      // 剪贴板不可用（如未授权）：静默保持原状，不打断阅读。
+    }
+  };
+  return (
+    <div className="message-actions">
+      <button type="button" className="button button--ghost button--small" onClick={() => void handleCopy()}>
+        {copied ? "已复制" : "复制"}
+      </button>
+      {onRegenerate ? (
+        <button type="button" className="button button--ghost button--small" onClick={onRegenerate}>
+          重新生成
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/** ADR-0035 版本切换：一左一右箭头在旧版本间切换；index=0 为最新正文。 */
+function VersionSwitcher({ index, total, onSelect, onReset }: { index: number; total: number; onSelect: (index: number) => void; onReset: () => void }) {
+  return (
+    <div className="message-versions" role="group" aria-label="回答版本">
+      <button type="button" className="message-versions__arrow" aria-label="上一个版本" disabled={index >= total - 1} onClick={() => onSelect(index + 1)}>
+        ◀
+      </button>
+      <button type="button" className="message-versions__label" onClick={index > 0 ? onReset : undefined} aria-label="回到最新版本">
+        {total - index}/{total}
+      </button>
+      <button type="button" className="message-versions__arrow" aria-label="下一个版本" disabled={index <= 0} onClick={() => onSelect(index - 1)}>
+        ▶
+      </button>
+    </div>
+  );
+}
+
+/** ADR-0035 用户消息：复制与重新编辑（编辑态为内联输入框，保存即改写问题并重新生成）。 */
+function UserMessageItem({ message, onEditMessage }: { message: ResearchMessageRecord; onEditMessage?: (messageId: string, content: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(message.content);
+  const [copied, setCopied] = useState(false);
+
+  const startEditing = () => {
+    setDraft(message.content);
+    setEditing(true);
+  };
+  const save = () => {
+    const trimmed = draft.trim();
+    if (!trimmed || !onEditMessage) return;
+    onEditMessage(message.id, trimmed);
+    setEditing(false);
+  };
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2_000);
+    } catch {
+      // 剪贴板不可用：静默保持原状。
+    }
+  };
+
+  return (
+    <li className="message message--user" data-message-id={message.id}>
+      <p className="message__role">你</p>
+      {editing ? (
+        <div className="message-edit">
+          <textarea
+            className="message-edit__input"
+            aria-label="修改问题"
+            value={draft}
+            rows={3}
+            onChange={(event) => setDraft(event.target.value)}
+            autoFocus
+          />
+          <div className="message-edit__actions">
+            <button type="button" className="button button--secondary button--small" disabled={!draft.trim()} onClick={save}>
+              保存并重新生成
+            </button>
+            <button type="button" className="button button--ghost button--small" onClick={() => setEditing(false)}>
+              取消
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <p className="message__content">{message.content}</p>
+          {onEditMessage ? (
+            <div className="message-actions">
+              <button type="button" className="button button--ghost button--small" onClick={() => void handleCopy()}>
+                {copied ? "已复制" : "复制"}
+              </button>
+              <button type="button" className="button button--ghost button--small" onClick={startEditing}>
+                重新编辑
+              </button>
+            </div>
           ) : null}
         </>
       )}

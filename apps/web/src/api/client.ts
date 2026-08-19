@@ -97,6 +97,9 @@ export interface ApiClient {
   pauseResearchTask(taskId: string): Promise<ResearchTaskRecord>;
   resumeResearchTask(taskId: string): Promise<ResearchTaskRecord>;
   stopResearchTask(taskId: string): Promise<ResearchTaskRecord>;
+  /** ADR-0035：重新生成（旧回答保留为可切换版本）；重新编辑已发送的用户消息（直接替换旧回答）。 */
+  regenerateResearchTask(taskId: string): Promise<ResearchTaskRecord>;
+  editResearchMessage(messageId: string, content: string): Promise<ResearchTaskRecord>;
   /** 上传原始文件字节；mimeType 为浏览器 MIME 或按扩展名回退的稳定 MIME。 */
   createResearchImport(sessionId: string, file: Blob, fileName: string, mimeType: string, idempotencyKey: string): Promise<ResearchImportAccepted>;
   getResearchImportTask(taskId: string): Promise<ResearchImportTaskRecord>;
@@ -626,6 +629,20 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
         method: "POST",
         headers: JSON_HEADERS,
         body: "{}",
+      });
+    },
+    regenerateResearchTask(taskId: string) {
+      return requestJson<ResearchTaskRecord>(fetchFn, `/v1/research-tasks/${encodeURIComponent(taskId)}/regenerate`, {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: "{}",
+      });
+    },
+    editResearchMessage(messageId: string, content: string) {
+      return requestJson<ResearchTaskRecord>(fetchFn, `/v1/research-messages/${encodeURIComponent(messageId)}/edit`, {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ content }),
       });
     },
     getAiConfiguration() {

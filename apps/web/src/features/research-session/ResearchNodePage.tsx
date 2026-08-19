@@ -506,6 +506,9 @@ export function ResearchNodePage() {
   const handlePause = (task: ResearchTaskRecord) => void node.pauseTask(task);
   const handleResume = (task: ResearchTaskRecord) => void node.resumeTask(task);
   const handleStop = (task: ResearchTaskRecord) => void node.stopTask(task);
+  // ADR-0035 消息操作：重新生成与重新编辑。
+  const handleRegenerate = (task: ResearchTaskRecord) => void node.regenerateTask(task);
+  const handleEditMessage = (messageId: string, content: string) => void node.editMessage(messageId, content);
 
   async function handleFusionDecision(proposalId: string, decision: "accepted" | "rejected") {
     setDecidingFusionProposalId(proposalId);
@@ -894,6 +897,8 @@ export function ResearchNodePage() {
                 onPauseTask={handlePause}
                 onResumeTask={handleResume}
                 onStopTask={handleStop}
+                onRegenerateTask={handleRegenerate}
+                onEditMessage={handleEditMessage}
                 highlight={
                   activeHighlight?.kind === "found" && activeHighlight.messageId === message.id
                     ? {

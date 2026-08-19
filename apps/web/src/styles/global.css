@@ -1387,6 +1387,78 @@ button.model-status {
   font-size: var(--font-size-sm);
 }
 
+/* ADR-0035 消息操作行：复制/重新生成/重新编辑，小号幽灵按钮紧凑排列。 */
+.message-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.message-actions .button--small {
+  padding: 0.25rem 0.625rem;
+  font-size: var(--font-size-sm);
+}
+
+/* ADR-0035 版本切换：一左一右箭头与序号标签。 */
+.message-versions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+}
+
+.message-versions__arrow {
+  border: 1px solid var(--color-line);
+  border-radius: 0.375rem;
+  background: none;
+  color: var(--color-muted);
+  font-size: var(--font-size-sm);
+  padding: 0.125rem 0.5rem;
+  cursor: pointer;
+}
+
+.message-versions__arrow:hover:not(:disabled) {
+  color: var(--color-ink);
+}
+
+.message-versions__arrow:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.message-versions__label {
+  border: none;
+  background: none;
+  color: var(--color-muted);
+  font-size: var(--font-size-sm);
+  padding: 0.125rem 0.25rem;
+  cursor: default;
+}
+
+/* ADR-0035 旧版本只读正文：与最新正文同阅读面，但不带标记交互。 */
+.message__version {
+  margin-top: var(--space-2);
+}
+
+/* ADR-0035 用户消息编辑态：内联输入框与保存/取消。 */
+.message-edit__input {
+  width: 100%;
+  min-height: 4.5rem;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--color-line);
+  border-radius: 0.5rem;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font: inherit;
+  resize: vertical;
+}
+
+.message-edit__actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
 /* ADR-0035 深度思考折叠区：回答上方默认折叠；展开后逐字流式显示推理内容，完成后可回看。 */
 .reasoning {
   margin: 0 0 var(--space-2);

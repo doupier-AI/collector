@@ -467,6 +467,29 @@ export class ResearchSessionService {
     return task;
   }
 
+  /** ADR-0035 重新生成：旧回答快照进 versions（保留可回看），任务 queued 重跑。 */
+  async regenerateTask(id: string): Promise<ResearchTaskRecord> {
+    const current = this.getTask(id);
+    if (current.status !== "completed" && current.status !== "stopped") {
+      throw new ResearchValidationError("Research task is not regenerable");
+    }
+    const task = await this.store.regenerateResearchTask(current, this.provider?.provider, this.provider?.model, this.promptVersionForAttempt(current));
+    if (this.options.autoRunTasks !== false) this.scheduleTask(task.id);
+    return task;
+  }
+
+  /** ADR-0035 重新编辑：改写已发送的用户消息并重新生成——新回答直接替换旧回答（不保留旧版）。 */
+  async editMessage(inputMessageId: string, content: string): Promise<ResearchTaskRecord> {
+    const trimmed = content.trim();
+    if (!trimmed) throw new ResearchValidationError("Message content is required");
+    if (trimmed.length > 200_000) throw new ResearchValidationError("Message content must not exceed 200000 characters");
+    const existing = this.store.getResearchTaskByInput(inputMessageId);
+    const promptVersion = existing ? this.promptVersionForAttempt(existing) : PROMPT_VERSION;
+    const task = await this.store.editResearchMessage(inputMessageId, trimmed, this.provider?.provider, this.provider?.model, promptVersion);
+    if (this.options.autoRunTasks !== false) this.scheduleTask(task.id);
+    return task;
+  }
+
   async resumeTasks(): Promise<number> {
     const interrupted = this.store.failInterruptedResearchTasks();
     const tasks = this.store.listRecoverableResearchTasks();

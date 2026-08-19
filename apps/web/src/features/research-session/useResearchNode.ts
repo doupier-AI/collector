@@ -7,7 +7,7 @@ import { saveDraft } from "../chat-composer/draft";
 import { TurnSubmitter } from "../chat-composer/turn-submitter";
 import { createDeltaBatcher, type DeltaBatcher } from "./delta-batcher";
 import { applyNodeEvent, mergeNodeTurn } from "./node-view";
-import { upsertTask } from "./session-view";
+import { upsertMessage, upsertTask } from "./session-view";
 
 /** 开始页首问携带到节点页的待提交内容。 */
 export interface PendingFirstTurn {
@@ -37,6 +37,9 @@ export interface ResearchNodeController {
   pauseTask(task: ResearchTaskRecord): Promise<void>;
   resumeTask(task: ResearchTaskRecord): Promise<void>;
   stopTask(task: ResearchTaskRecord): Promise<void>;
+  /** ADR-0035：重新生成（旧回答保留可切换）与重新编辑（改写已发送的问题，直接替换旧回答）。 */
+  regenerateTask(task: ResearchTaskRecord): Promise<void>;
+  editMessage(messageId: string, content: string): Promise<void>;
   /** 在 ready 状态下合并视图更新（附件、导入任务等）；非 ready 时忽略。 */
   updateView(updater: (view: ResearchNodeView) => ResearchNodeView): void;
   /** 通过节点页 aria-live 区播报一条状态变化。 */
@@ -377,6 +380,58 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
     [api, applyTaskUpdate, closeAllStreams],
   );
 
+  const regenerateTask = useCallback(
+    async (task: ResearchTaskRecord): Promise<void> => {
+      setActionError(null);
+      try {
+        const updated = await api.regenerateResearchTask(task.id);
+        applyTaskUpdate(updated);
+        setLiveMessage("正在重新生成");
+      } catch (error) {
+        if (isUnauthorized(error)) {
+          closeAllStreams();
+          setState({ kind: "error", error });
+        } else {
+          setActionError("重新生成没有成功，请稍后再试。");
+        }
+      }
+    },
+    [api, applyTaskUpdate, closeAllStreams],
+  );
+
+  const editMessage = useCallback(
+    async (messageId: string, content: string): Promise<void> => {
+      setActionError(null);
+      try {
+        const updated = await api.editResearchMessage(messageId, content);
+        // 直接替换：用户消息显示新内容，输出消息清空重置为 pending 等待重新生成（不保留旧版）。
+        setState((previous) => {
+          if (previous.kind !== "ready") return previous;
+          const view = previous.view;
+          let messages = view.messages;
+          const output = view.messages.find((message) => message.id === updated.outputMessageId);
+          if (output) {
+            messages = upsertMessage(messages, { ...output, content: "", status: "pending" as const, updatedAt: updated.updatedAt });
+          }
+          const input = view.messages.find((message) => message.id === messageId);
+          if (input) {
+            messages = upsertMessage(messages, { ...input, content, updatedAt: updated.updatedAt });
+          }
+          return { kind: "ready", view: { ...view, messages, tasks: upsertTask(view.tasks, updated) } };
+        });
+        setLiveMessage("已修改，正在重新生成");
+      } catch (error) {
+        if (isUnauthorized(error)) {
+          closeAllStreams();
+          setState({ kind: "error", error });
+        } else {
+          setActionError("修改没有成功，请稍后再试。");
+        }
+      }
+    },
+    [api, closeAllStreams],
+  );
+
   const reload = useCallback(() => setReloadNonce((nonce) => nonce + 1), []);
 
   const updateView = useCallback((updater: (view: ResearchNodeView) => ResearchNodeView) => {
@@ -393,5 +448,5 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
     [closeAllStreams],
   );
 
-  return { state, streamNotice, liveMessage, actionError, reload, submit, retryTask, pauseTask, resumeTask, stopTask, updateView, announce, escalateError };
+  return { state, streamNotice, liveMessage, actionError, reload, submit, retryTask, pauseTask, resumeTask, stopTask, regenerateTask, editMessage, updateView, announce, escalateError };
 }
