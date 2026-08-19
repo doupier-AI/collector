@@ -50,7 +50,7 @@ async function createHarness(options: {
   const auth = new LocalAuth(store);
   const token = `chapters-${randomUUID()}`;
   await auth.registerTrustedToken(token, "research-chapters-test");
-  const service = new CaptureService(store, artifactRoot, undefined, undefined, {
+  const service = new CaptureService(store, artifactRoot, undefined, {
     autoRunRecentOrganization: false,
     autoRunResearchTasks: false,
     autoRunResearchImports: options.autoRunResearchImports,
@@ -330,7 +330,7 @@ test("重启恢复：running 回排队、queued 重跑，状态一致且无重�
   const authA = new LocalAuth(storeA);
   const tokenA = `recovery-a-${randomUUID()}`;
   await authA.registerTrustedToken(tokenA, "recovery-a");
-  const serviceA = new CaptureService(storeA, artifactRoot, undefined, undefined, {
+  const serviceA = new CaptureService(storeA, artifactRoot, undefined, {
     autoRunRecentOrganization: false,
     autoRunResearchTasks: false,
     autoRunResearchImports: true,
@@ -360,7 +360,7 @@ test("重启恢复：running 回排队、queued 重跑，状态一致且无重�
   const authB = new LocalAuth(storeB);
   const tokenB = `recovery-b-${randomUUID()}`;
   await authB.registerTrustedToken(tokenB, "recovery-b");
-  const serviceB = new CaptureService(storeB, artifactRoot, undefined, undefined, {
+  const serviceB = new CaptureService(storeB, artifactRoot, undefined, {
     autoRunRecentOrganization: false,
     autoRunResearchTasks: false,
     autoRunResearchImports: false,

@@ -30,7 +30,7 @@ async function createHarness(options: HarnessOptions = {}) {
   const auth = new LocalAuth(store);
   const token = `deep-research-${randomUUID()}`;
   await auth.registerTrustedToken(token, "deep-research-test");
-  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, {
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
     autoRunResearchTasks: options.autoRunResearchTasks ?? true,
     autoRunResearchImports: false,
@@ -373,7 +373,7 @@ test("queued deep research task resumes after service restart and keeps origin",
   assert.equal(harness.store.getResearchTask(accepted.task.id)?.status, "queued");
 
   // 模拟重启：同一数据库上的新服务实例执行恢复
-  const recovered = new CaptureService(harness.store, join(harness.root, "artifacts"), undefined, undefined, {
+  const recovered = new CaptureService(harness.store, join(harness.root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
     autoRunResearchTasks: false,
     autoRunResearchImports: false,

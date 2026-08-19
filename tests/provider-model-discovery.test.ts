@@ -76,7 +76,7 @@ test("service discovery reuses the stored credential when apiKey is omitted", as
   const store = new MemoryStore();
   await store.init();
   let seenAuthorization: string | null = null;
-  const service = new CaptureService(store, join(tmpdir(), "collector-discovery-service"), undefined, undefined, {
+  const service = new CaptureService(store, join(tmpdir(), "collector-discovery-service"), undefined, {
     autoRunRecentOrganization: false,
     modelDiscoveryFetch: async (_input, init) => {
       seenAuthorization = new Headers(init?.headers).get("authorization");

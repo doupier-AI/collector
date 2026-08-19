@@ -23,7 +23,7 @@ async function createHarness() {
   const token = `later-${randomUUID()}`;
   await auth.registerTrustedToken(token, "later-test");
   // 稍后再学是基础能力：不配置任何模型供应商，也不运行分析与生成任务。
-  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, {
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
     autoRunResearchTasks: false,
     autoRunResearchImports: false,

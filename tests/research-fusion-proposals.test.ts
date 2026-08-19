@@ -460,7 +460,7 @@ async function createFusionHarness(options?: { similarityVerifier?: SimilarityVe
     },
   } as never;
 
-  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, {
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
     autoRunResearchTasks: false,
     researchProvider: provider,

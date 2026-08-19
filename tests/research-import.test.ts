@@ -17,7 +17,7 @@ async function createHarness(autoRunResearchImports = true) {
   const auth = new LocalAuth(store);
   const token = `import-${randomUUID()}`;
   await auth.registerTrustedToken(token, "research-import-test");
-  const service = new CaptureService(store, artifactRoot, undefined, undefined, {
+  const service = new CaptureService(store, artifactRoot, undefined, {
     autoRunRecentOrganization: false,
     autoRunResearchTasks: false,
     autoRunResearchImports,
@@ -260,7 +260,7 @@ test("research import exposes persisted progress events, cancellation, retry, an
   harness.store.close();
   const reopened = new SqliteStore(harness.databasePath);
   await reopened.init();
-  const restartedService = new CaptureService(reopened, harness.artifactRoot, undefined, undefined, {
+  const restartedService = new CaptureService(reopened, harness.artifactRoot, undefined, {
     autoRunRecentOrganization: false, autoRunResearchTasks: false, autoRunResearchImports: false,
   });
   assert.ok((await restartedService.researchImports.resumeTasks()) >= 1);

@@ -4,11 +4,9 @@ const paths = [
   "dist-tests",
   "apps/api/dist",
   "apps/web/dist",
-  "packages/capture-client/dist",
   "packages/capture-contracts/dist",
   "packages/model-gateway/dist",
   "apps/api/tsconfig.tsbuildinfo",
-  "packages/capture-client/tsconfig.tsbuildinfo",
   "packages/capture-contracts/tsconfig.tsbuildinfo",
   "packages/model-gateway/tsconfig.tsbuildinfo",
 ];

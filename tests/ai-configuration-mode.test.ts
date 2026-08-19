@@ -15,7 +15,7 @@ async function createHarness(options: { mvpDemoMode?: boolean; markConfigured?: 
   const auth = new LocalAuth(store);
   const token = `ai-mode-${randomUUID()}`;
   await auth.registerTrustedToken(token, "ai-mode-test");
-  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, {
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
     mvpDemoMode: options.mvpDemoMode,
   });

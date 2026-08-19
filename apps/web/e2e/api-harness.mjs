@@ -245,7 +245,7 @@ const fakeSelectionProvider = {
   },
 };
 
-const service = new CaptureService(store, join(dataDir, "artifacts"), undefined, undefined, {
+const service = new CaptureService(store, join(dataDir, "artifacts"), undefined, {
   autoRunRecentOrganization: false,
   researchProvider: modelMode === "fake" ? fakeProvider : undefined,
   selectionProvider: modelMode === "fake" ? fakeSelectionProvider : undefined,

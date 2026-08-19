@@ -13,7 +13,7 @@ async function createHarness() {
   const auth = new LocalAuth(store);
   const token = `mgmt-${randomUUID()}`;
   await auth.registerTrustedToken(token, "session-mgmt-test");
-  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, {
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
   });
   const server = createApiServer(service, auth);

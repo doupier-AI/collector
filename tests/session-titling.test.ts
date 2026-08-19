@@ -154,7 +154,7 @@ test("root turn queueing auto-titles the session end-to-end", async (t) => {
       yield "本地优先可以保留上下文，并让失败恢复更可靠。";
     },
   };
-  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, {
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
     researchProvider: provider,
   });

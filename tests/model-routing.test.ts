@@ -7,7 +7,7 @@ import { CaptureService, MemoryStore } from "@collector/api";
 async function fixture() {
   const store = new MemoryStore();
   await store.init();
-  const service = new CaptureService(store, join(tmpdir(), "collector-model-routing"), undefined, undefined, {
+  const service = new CaptureService(store, join(tmpdir(), "collector-model-routing"), undefined, {
     autoRunRecentOrganization: false,
   });
   return { store, service };

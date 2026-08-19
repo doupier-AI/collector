@@ -28,7 +28,7 @@ async function createHarness(provider?: ResearchGenerationProvider) {
   const auth = new LocalAuth(store);
   const token = `research-${randomUUID()}`;
   await auth.registerTrustedToken(token, "research-test");
-  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, {
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
     researchProvider: provider,
   });
@@ -269,7 +269,7 @@ test("concurrent session creation and restart reuse one idempotency key", async 
   harness.store.close();
   const reopened = new SqliteStore(databasePath);
   await reopened.init();
-  const service = new CaptureService(reopened, join(harness.root, "artifacts-reopened"), undefined, undefined, {
+  const service = new CaptureService(reopened, join(harness.root, "artifacts-reopened"), undefined, {
     autoRunRecentOrganization: false,
     autoRunResearchTasks: false,
   });
@@ -329,7 +329,7 @@ test("restart recovery marks an interrupted generation retryable without losing 
   const databasePath = join(root, "collector.sqlite");
   const firstStore = new SqliteStore(databasePath);
   await firstStore.init();
-  const firstService = new CaptureService(firstStore, join(root, "artifacts"), undefined, undefined, {
+  const firstService = new CaptureService(firstStore, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false, autoRunResearchTasks: false, researchProvider: deterministicProvider,
   });
   const session = await firstService.research.createSession("重启恢复", "restart-session");
@@ -341,7 +341,7 @@ test("restart recovery marks an interrupted generation retryable without losing 
 
   const reopenedStore = new SqliteStore(databasePath);
   await reopenedStore.init();
-  const reopenedService = new CaptureService(reopenedStore, join(root, "artifacts"), undefined, undefined, {
+  const reopenedService = new CaptureService(reopenedStore, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false, autoRunResearchTasks: false,
   });
   assert.equal(await reopenedService.research.resumeTasks(), 1);

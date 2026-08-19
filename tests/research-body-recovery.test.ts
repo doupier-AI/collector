@@ -26,7 +26,7 @@ test("restart recovery: persisted body versions/fragments survive, backfill stay
     async writeBody() { return CONTENT; },
     async *generate() { yield "unused"; },
   };
-  let service = new CaptureService(store, artifacts, undefined, undefined, { autoRunRecentOrganization: false, researchProvider: provider as never });
+  let service = new CaptureService(store, artifacts, undefined, { autoRunRecentOrganization: false, researchProvider: provider as never });
   const accepted = await service.research.submitMessage("session-1", "研究一下", "restart-bodyver");
   for (let i = 0; i < 50; i++) {
     if (store.getResearchTask(accepted.task.id)?.status === "completed") break;
@@ -40,7 +40,7 @@ test("restart recovery: persisted body versions/fragments survive, backfill stay
   // 第二阶段：重启（新 SqliteStore + 新 CaptureService），数据完好，回填无操作。
   store = new SqliteStore(dbPath);
   await store.init();
-  service = new CaptureService(store, artifacts, undefined, undefined, { autoRunRecentOrganization: false, autoRunResearchTasks: false });
+  service = new CaptureService(store, artifacts, undefined, { autoRunRecentOrganization: false, autoRunResearchTasks: false });
   const outMsg = store.getResearchMessage(accepted.outputMessage.id)!;
   const back = store.getBodyVersionForMessage(accepted.outputMessage.id);
   assert.ok(back, "body version survives restart");
@@ -73,7 +73,7 @@ test("interrupted generation is recoverable and backfill self-heals a completed 
   // 重启后服务自愈：回填为缺版本的已完成消息补建。
   store = new SqliteStore(dbPath);
   await store.init();
-  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false, autoRunResearchTasks: false });
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, { autoRunRecentOrganization: false, autoRunResearchTasks: false });
   const result = await service.backfillResearchBodyVersions();
   assert.strictEqual(result.created, 1);
   assert.ok(store.getBodyVersionForMessage("msg-legacy"), "backfill healed the missing version");

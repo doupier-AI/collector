@@ -49,7 +49,7 @@ test("#47 启动恢复：已保存配置+凭证+同意记录齐备即建立可�
   // 第二阶段：重启（新 SqliteStore + 新 CaptureService，不传网关、不传环境变量通道）。
   // 对应 server.ts 启动路径：restoreModelGateway() 以持久化状态重建网关。
   store = await makeStore(dbPath);
-  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, {
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
   });
   await service.restoreModelGateway();
@@ -86,7 +86,7 @@ test("#47 启动恢复不覆写同意记录：无环境变量通道时保持已�
 
   // 重启：即使进程环境未传 COLLECTOR_AI_CONSENT，也保持持久化的同意值。
   store = await makeStore(dbPath);
-  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, {
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
   });
   await service.restoreModelGateway();
@@ -101,7 +101,7 @@ test("#47 无效配置区分具体原因：配置缺失 / 停用 / 缺 Key", asy
 
   // 场景一：从未配置过模型 → 一律"未配置"，但错误信息说明去向。
   let store = await makeStore(dbPath);
-  let service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
+  let service = new CaptureService(store, join(root, "artifacts"), undefined, { autoRunRecentOrganization: false });
   await service.restoreModelGateway();
   let config = service.getAiConfiguration();
   assert.equal(config.mode, "unconfigured");
@@ -116,7 +116,7 @@ test("#47 无效配置区分具体原因：配置缺失 / 停用 / 缺 Key", asy
   await store.saveProviderCredential("profile-restore", "sk-disabled");
   await store.setActiveProviderProfile("profile-restore");
   await store.saveProviderProfile(makeProfile({ enabled: false }));
-  service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
+  service = new CaptureService(store, join(root, "artifacts"), undefined, { autoRunRecentOrganization: false });
   await service.restoreModelGateway();
   config = service.getAiConfiguration();
   assert.ok(config.modelError, "停用配置应暴露原因");
@@ -130,7 +130,7 @@ test("#47 无效配置区分具体原因：配置缺失 / 停用 / 缺 Key", asy
   await store.saveProviderCredential("profile-restore", "sk-missing");
   await store.setActiveProviderProfile("profile-restore");
   await store.saveProviderProfile(makeProfile({ credentialConfigured: false }));
-  service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, { autoRunRecentOrganization: false });
+  service = new CaptureService(store, join(root, "artifacts"), undefined, { autoRunRecentOrganization: false });
   await service.restoreModelGateway();
   config = service.getAiConfiguration();
   assert.ok(config.modelError, "缺 Key 配置应暴露原因");

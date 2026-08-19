@@ -41,7 +41,7 @@ async function createHarness(provider: Record<string, unknown>) {
   const auth = new LocalAuth(store);
   const token = `sse-${randomUUID()}`;
   await auth.registerTrustedToken(token, "sse-push-test");
-  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, {
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
     researchProvider: provider as never,
   });

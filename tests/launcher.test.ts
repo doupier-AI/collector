@@ -170,7 +170,7 @@ test("launcher bootstrap endpoint requires the dedicated control token", async (
   const ordinaryToken = "o".repeat(43);
   await auth.registerTrustedToken(controlToken, "launcher");
   await auth.registerTrustedToken(ordinaryToken, "ordinary client");
-  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, {
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
   });
   let mintCount = 0;
@@ -215,7 +215,7 @@ test("launcher shutdown is bound to the probed instance and times out", async (t
   const auth = new LocalAuth(store);
   const controlToken = "s".repeat(43);
   await auth.registerTrustedToken(controlToken, "launcher");
-  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, {
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
   });
   let shutdownCount = 0;

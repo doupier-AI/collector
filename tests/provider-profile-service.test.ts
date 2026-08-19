@@ -8,7 +8,7 @@ async function fixture() {
   const store = new MemoryStore();
   await store.init();
   const validatedUrls: string[] = [];
-  const service = new CaptureService(store, join(tmpdir(), "collector-provider-service"), undefined, undefined, {
+  const service = new CaptureService(store, join(tmpdir(), "collector-provider-service"), undefined, {
     autoRunRecentOrganization: false,
     providerBaseUrlValidator: async (value) => {
       validatedUrls.push(value);
@@ -56,34 +56,6 @@ test("provider profiles use registry defaults, custom validation, versioning, an
     model: "company-model-v2",
   }, true);
   assert.equal(rerouted.configurationVersion, custom.configurationVersion + 1);
-});
-
-test("unfinished workflows protect their frozen provider profile from deletion", async () => {
-  const { store, service } = await fixture();
-  const profile = await service.saveProviderProfile({
-    providerId: "openrouter",
-    displayName: "OpenRouter",
-    model: "openai/gpt-4.1-mini",
-  }, true);
-  const now = new Date().toISOString();
-  await store.saveWorkflowRun({
-    id: "protected-run",
-    workflowType: "recent_organization",
-    idempotencyKey: "protected-run",
-    materialIds: [],
-    materialSetVersion: "protected-run",
-    modelRoute: {
-      providerProfileId: profile.id,
-      providerId: profile.providerId,
-      apiMode: "openai_chat_completions",
-      baseUrlFingerprint: "a".repeat(64),
-      model: profile.model,
-      configurationVersion: profile.configurationVersion,
-    },
-    status: "queued",
-    createdAt: now,
-  });
-  await assert.rejects(() => service.deleteProviderProfile(profile.id), /unfinished workflow/);
 });
 
 test("saveProviderProfileWithCredential stores key and toggles credentialConfigured", async () => {

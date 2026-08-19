@@ -239,7 +239,7 @@ WebUI 统一以稳定节点地址 `/nodes/:nodeId` 作为节点页（#61/T02）�
 
 WebUI 当前没有用户可见的关闭服务入口；启动与退出生命周期仍由启动器、受控本机端点和操作系统进程边界承担。文件导入后续仍需决定接近 20 MiB 的性能目标与 Markdown 列表结构渲染策略。
 
-浏览器来源采集扩展（原 `apps/browser-extension`，含 `43110` 回环适配入口）已退役并移除。新的产品界面行为进入 WebUI 与 HTTP/SSE 路径。
+浏览器来源采集扩展（原 `apps/browser-extension`，含 `43110` 回环适配入口）已退役并移除；上一代「可信知识整理」后端层（`/v1/captures`、`/v1/topics`、`/v1/materials`、`/v1/recent-organization` 与相邻孤儿端点、19 张遗留数据表、`@collector/capture-client` 包）随 ADR-0034 一并退役删除。`@collector/capture-contracts` 名字含「采集」但承载现行共享契约，不在退役范围。新的产品界面行为进入 WebUI 与 HTTP/SSE 路径。
 
 ## 技术原型与验证
 

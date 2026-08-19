@@ -17,7 +17,7 @@ async function startServer(t: TestContext, options: { withWebRoot?: boolean } = 
   const store = new MemoryStore();
   await store.init();
   const auth = new LocalAuth(store);
-  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, {
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
   });
   const server = createApiServer(service, auth, options.withWebRoot === false ? {} : { webRoot });

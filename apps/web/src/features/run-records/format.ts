@@ -4,8 +4,6 @@ export const operationLabels: Record<RunRecordOperationType, string> = {
   research: "对话研究",
   selection_analysis: "选区分析",
   document_import: "文档导入",
-  recent_organization: "近期内容整理",
-  topic_document: "主题文档",
   similarity_verification: "相似概念核验",
   chapter_parse: "导入章节解析",
 };

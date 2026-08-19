@@ -35,7 +35,7 @@ const mvpDemoMode = process.env.COLLECTOR_MVP_DEMO === "1";
 const runtimeVersion = suppliedRuntimeVersion
   || await calculateRuntimeVersion(dirname(fileURLToPath(import.meta.url)), webRoot, mvpDemoMode ? "mvp-demo" : "standard");
 const serviceLock = await acquireServiceLock(paths.root, { instanceId, pid: process.pid, runtimeVersion });
-const store = new SqliteStore(paths.database, paths.legacyJson);
+const store = new SqliteStore(paths.database);
 try {
   await store.init();
 } catch (error) {
@@ -89,7 +89,7 @@ if (providerId && consent) {
 }
 await store.saveSetting("ai_configured", String(Boolean(activeProfile?.credentialConfigured)));
 const resolver = new ProviderRuntimeResolver(DEFAULT_PROVIDER_REGISTRY, async (profileId) => store.getProviderCredential(profileId));
-const service = new CaptureService(store, paths.artifacts, undefined, undefined, {
+const service = new CaptureService(store, paths.artifacts, undefined, {
   researchProvider: mvpDemoMode ? createMvpDemoResearchProvider() : undefined,
   selectionProvider: mvpDemoMode ? createMvpDemoSelectionProvider() : undefined,
   mvpDemoMode,

@@ -136,9 +136,6 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         return;
       }
 
-      if (request.method === "GET" && url.pathname === "/v1/data-paths") {
-        return json(response, 200, service.getDataPaths());
-      }
       if (request.method === "POST" && url.pathname === "/v1/ai-configuration/test") {
         const testResult = await service.testAiConnection();
         return json(response, testResult.ok ? 200 : 502, testResult);
@@ -542,155 +539,6 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         await service.researchLater.deleteItem(decodeURIComponent(researchLaterItemMatch[1]));
         return json(response, 200, { deleted: true });
       }
-      if (request.method === "POST" && url.pathname === "/v1/recent-organization/runs") {
-        return json(response, 202, await service.organizeRecent(header(request, "idempotency-key")));
-      }
-      if (request.method === "GET" && url.pathname === "/v1/recent-organization/runs") {
-        return json(response, 200, service.listRecentOrganizationRuns());
-      }
-      if (request.method === "GET" && url.pathname === "/v1/recent-organization/snapshots/latest") {
-        return json(response, 200, service.getLatestRecentClusterSnapshot());
-      }
-      const workflowRunMatch = url.pathname.match(/^\/v1\/recent-organization\/runs\/([^/]+)$/);
-      if (request.method === "GET" && workflowRunMatch) return json(response, 200, service.getWorkflowRun(decodeURIComponent(workflowRunMatch[1])));
-      const cancelMatch = url.pathname.match(/^\/v1\/recent-organization\/runs\/([^/]+)\/cancel$/);
-      if (request.method === "POST" && cancelMatch) return json(response, 200, service.cancelWorkflowRun(decodeURIComponent(cancelMatch[1])));
-      const anyWorkflowRunMatch = url.pathname.match(/^\/v1\/workflow-runs\/([^/]+)$/);
-      if (request.method === "GET" && anyWorkflowRunMatch) return json(response, 200, service.getWorkflowRun(decodeURIComponent(anyWorkflowRunMatch[1])));
-      // ── Materials ────────────────────────────────────────────────
-      if (request.method === "GET" && url.pathname === "/v1/materials") {
-        const page = Number(url.searchParams.get("page") ?? "1");
-        const limit = Number(url.searchParams.get("limit") ?? "50");
-        return json(response, 200, service.listMaterials(url.searchParams.get("q") ?? undefined, page, limit, url.searchParams.get("trash") === "true"));
-      }
-      const materialMatch = url.pathname.match(/^\/v1\/materials\/([^/]+)$/);
-      if (request.method === "GET" && materialMatch) { return json(response, 200, service.getMaterial(decodeURIComponent(materialMatch[1]))); }
-      // Material revisions
-      const revisionMatch = url.pathname.match(/^\/v1\/materials\/([^/]+)\/revisions$/);
-      if (request.method === "GET" && revisionMatch) return json(response, 200, service.listRevisions(decodeURIComponent(revisionMatch[1])));
-      if (request.method === "POST" && revisionMatch) {
-        const body = await readJson(request) as { content?: string };
-        if (!body.content) throw new ValidationError("content is required");
-        return json(response, 201, await service.editRevision(decodeURIComponent(revisionMatch[1]), body.content));
-      }
-      const aiProcessingMatch = url.pathname.match(/^\/v1\/materials\/([^/]+)\/ai-processing$/);
-      if (request.method === "PUT" && aiProcessingMatch) {
-        const body = await readJson(request) as { disabled?: boolean };
-        if (typeof body.disabled !== "boolean") throw new ValidationError("disabled must be boolean");
-        return json(response, 200, await service.setMaterialAiProcessing(decodeURIComponent(aiProcessingMatch[1]), body.disabled));
-      }
-      // Material text extraction (PDF)
-      const extractMatch = url.pathname.match(/^\/v1\/materials\/([^/]+)\/extract-text$/);
-      if (request.method === "POST" && extractMatch) return json(response, 200, await service.extractMaterialText(decodeURIComponent(extractMatch[1])));
-      // Material trash & restore
-      const trashMatch = url.pathname.match(/^\/v1\/materials\/([^/]+)\/trash$/);
-      if (request.method === "PUT" && trashMatch) return json(response, 200, await service.trashMaterial(decodeURIComponent(trashMatch[1])));
-      const restoreMatch = url.pathname.match(/^\/v1\/materials\/([^/]+)\/restore$/);
-      if (request.method === "PUT" && restoreMatch) return json(response, 200, await service.restoreMaterial(decodeURIComponent(restoreMatch[1])));
-      // Material delete impact & permanent delete
-      const impactMatch = url.pathname.match(/^\/v1\/materials\/([^/]+)\/delete-impact$/);
-      if (request.method === "GET" && impactMatch) return json(response, 200, service.getDeleteImpact(decodeURIComponent(impactMatch[1])));
-      if (request.method === "DELETE" && materialMatch) {
-        const acknowledge = url.searchParams.get("acknowledgeImpact") === "true";
-        const result = await service.permanentDelete(decodeURIComponent(materialMatch[1]), acknowledge);
-        if ((result as any).impactBlocked) return json(response, 409, { error: { code: "impact_exists", message: "This material has downstream impact. Review impact and retry with ?acknowledgeImpact=true" } });
-        return json(response, 200, result);
-      }
-
-      if (request.method === "GET" && url.pathname === "/v1/topics") return json(response, 200, service.listTopics());
-      if (request.method === "POST" && url.pathname === "/v1/topics") {
-        const body = await readJson(request) as { title?: string; materialIds?: string[] };
-        return json(response, 201, await service.createTopic(body.title ?? "", body.materialIds));
-      }
-      if (request.method === "POST" && url.pathname === "/v1/captures/preflight") {
-        return json(response, 200, service.preflight(await readJson(request)));
-      }
-      if (request.method === "POST" && url.pathname === "/v1/captures") {
-        const record = await service.createCapture(await readJson(request), header(request, "idempotency-key"));
-        return json(response, 201, record);
-      }
-      if (request.method === "POST" && url.pathname === "/v1/artifacts") {
-        const fileName = decodeURIComponent(header(request, "x-file-name") ?? "");
-        const mimeType = header(request, "content-type")?.split(";", 1)[0] ?? "application/octet-stream";
-        const record = await service.createArtifact(fileName, mimeType, await readBytes(request, 21 * 1024 * 1024));
-        return json(response, 201, record);
-      }
-      const match = url.pathname.match(/^\/v1\/captures\/([^/]+)$/);
-      if (request.method === "GET" && match) return json(response, 200, service.getCapture(decodeURIComponent(match[1])));
-      if (request.method === "POST" && url.pathname === "/v1/topics/from-cluster") {
-        const body = await readJson(request) as { clusterSnapshotId?: string; clusterIndex?: number; title?: string; materialIds?: string[] };
-        if (!body.clusterSnapshotId) throw new ValidationError("clusterSnapshotId is required");
-        if (body.clusterIndex === undefined || body.clusterIndex < 0) throw new ValidationError("clusterIndex is required");
-        if (!body.title) throw new ValidationError("title is required");
-        return json(response, 201, await service.promoteClusterToTopic(body.clusterSnapshotId, body.clusterIndex, body.title));
-      }
-      const topicSuggestionsMatch = url.pathname.match(/^\/v1\/topics\/([^/]+)\/suggestions$/);
-      if (request.method === "GET" && topicSuggestionsMatch) return json(response, 200, service.getTopicSuggestions(decodeURIComponent(topicSuggestionsMatch[1])));
-
-      // ── Topic Documents ──────────────────────────────────────
-      const docGenerateMatch = url.pathname.match(/^\/v1\/topics\/([^/]+)\/documents$/);
-      if (request.method === "POST" && docGenerateMatch) {
-        const docBody = await readJsonOptional(request) as { idempotencyKey?: string };
-        const idempotencyKey = docBody?.idempotencyKey ?? header(request, "idempotency-key");
-        const docRun = await service.generateTopicDocument(decodeURIComponent(docGenerateMatch[1]), idempotencyKey);
-        return json(response, 202, docRun);
-      }
-      if (request.method === "GET" && docGenerateMatch) {
-        return json(response, 200, service.listTopicDocumentVersions(decodeURIComponent(docGenerateMatch[1])));
-      }
-      const docLatestMatch = url.pathname.match(/^\/v1\/topics\/([^/]+)\/documents\/latest$/);
-      if (request.method === "GET" && docLatestMatch) {
-        const docVersion = service.getLatestTopicDocument(decodeURIComponent(docLatestMatch[1]));
-        if (!docVersion) return json(response, 404, { error: { code: "not_found", message: "No document version found" } });
-        return json(response, 200, docVersion);
-      }
-      const docRollbackMatch = url.pathname.match(/^\/v1\/topics\/([^/]+)\/documents\/([^/]+)\/rollback$/);
-      if (request.method === "POST" && docRollbackMatch) {
-        return json(response, 201, await service.rollbackTopicDocument(
-          decodeURIComponent(docRollbackMatch[1]),
-          decodeURIComponent(docRollbackMatch[2]),
-        ));
-      }
-      const topicMatch = url.pathname.match(/^\/v1\/topics\/([^/]+)$/);
-      if (request.method === "GET" && topicMatch) {
-        return json(response, 200, service.getTopicDetail(decodeURIComponent(topicMatch[1])));
-      }
-      if (request.method === "POST" && topicMatch) {
-        const body = await readJson(request) as { title?: string; status?: "active" | "archived" };
-        return json(response, 200, await service.updateTopic(decodeURIComponent(topicMatch[1]), body));
-      }
-      const topicMemberMatch = url.pathname.match(/^\/v1\/topics\/([^/]+)\/members\/([^/]+)$/);
-      if (request.method === "POST" && topicMemberMatch) {
-        await service.addTopicMember(decodeURIComponent(topicMemberMatch[1]), decodeURIComponent(topicMemberMatch[2]));
-        return json(response, 200, { added: true });
-      }
-      if (request.method === "DELETE" && topicMemberMatch) {
-        await service.removeTopicMember(decodeURIComponent(topicMemberMatch[1]), decodeURIComponent(topicMemberMatch[2]));
-        return json(response, 200, { removed: true });
-      }
-
-
-      
-      
-      // ── Incremental Document Update ──────────────────────
-      if (request.method === "POST" && (url.pathname.match(/^\/v1\/topics\/([^/]+)\/document-update-preview$/))) {
-        const previewTopicId = decodeURIComponent(url.pathname.match(/^\/v1\/topics\/([^/]+)\/document-update-preview$/)![1]);
-        const preview = await service.previewDocumentUpdate(previewTopicId);
-        return json(response, preview ? 200 : 204, preview ?? { message: "No changes detected" });
-      }
-      if (request.method === "POST" && (url.pathname.match(/^\/v1\/topics\/([^/]+)\/document-update-confirm$/))) {
-        const confirmTopicId = decodeURIComponent(url.pathname.match(/^\/v1\/topics\/([^/]+)\/document-update-confirm$/)![1]);
-        const body = await readJson(request) as { previewId: string; accepted: boolean };
-        return json(response, 200, await service.confirmDocumentUpdate(confirmTopicId, body.previewId, body.accepted));
-      }
-// ── Verification ─────────────────────────────────────
-      if (request.method === "GET" && url.pathname === "/v1/settings/verification-policy") {
-        return json(response, 200, service.getVerificationPolicy());
-      }
-      if (request.method === "PUT" && url.pathname === "/v1/settings/verification-policy") {
-        const policyBody = await readJson(request) as import("@collector/capture-contracts").VerificationPolicyConfig;
-        return json(response, 200, await service.updateVerificationPolicy(policyBody));
-      }
 // ── Search Backend ───────────────────────────────────
       if (request.method === "GET" && url.pathname === "/v1/settings/search") {
         return json(response, 200, service.getSearchConfig());
@@ -711,43 +559,6 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (request.method === "PUT" && url.pathname === "/v1/settings/fusion") {
         const fusionBody = await readJson(request) as { enabled?: unknown };
         return json(response, 200, await service.updateFusionAutoConfig(fusionBody));
-      }
-      const docByIdMatch = url.pathname.match(/^\/v1\/documents\/([^/]+)$/);
-      if (request.method === "GET" && docByIdMatch) {
-        const doc = service.getTopicDocumentVersion(decodeURIComponent(docByIdMatch[1]));
-        if (!doc) return json(response, 404, { error: { code: "not_found", message: "Document not found" } });
-        return json(response, 200, doc);
-      }
-      const verifClaimsMatch = url.pathname.match(/^\/v1\/documents\/([^/]+)\/verification-claims$/);
-      if (request.method === "GET" && verifClaimsMatch) {
-        return json(response, 200, service.getVerificationClaims(decodeURIComponent(verifClaimsMatch[1])));
-      }
-// ── AI Usage & Budget ──────────────────────────────────
-      if (request.method === "GET" && url.pathname === "/v1/ai-usage") {
-        const y = url.searchParams.get("year");
-        const m = url.searchParams.get("month");
-        return json(response, 200, service.getAiUsage(y ? Number(y) : undefined, m ? Number(m) : undefined));
-      }
-      if (request.method === "GET" && url.pathname === "/v1/settings/ai-budget") {
-        return json(response, 200, service.getAiBudgetSettings());
-      }
-      if (request.method === "PUT" && url.pathname === "/v1/settings/ai-budget") {
-        const budgetBody = await readJson(request) as { monthlyLimitUsd?: number; warningThresholdUsd?: number; enabled?: boolean };
-        return json(response, 200, await service.updateAiBudgetSettings(budgetBody));
-      }
-      if (request.method === "GET" && url.pathname === "/v1/backups") {
-        return json(response, 200, service.listBackups());
-      }
-      if (request.method === "POST" && url.pathname === "/v1/backups") {
-        return json(response, 201, await service.createBackup());
-      }
-      const verifyBackupMatch = url.pathname.match(/^\/v1\/backups\/([^/]+)\/verify$/);
-      if (request.method === "POST" && verifyBackupMatch) {
-        return json(response, 200, await service.verifyBackup(decodeURIComponent(verifyBackupMatch[1])));
-      }
-      if (request.method === "POST" && url.pathname === "/v1/exports") {
-        const exportRequest = await readJson(request) as import("@collector/capture-contracts").ExportRequest;
-        return json(response, 201, await service.exportPortable(exportRequest));
       }
 
       return json(response, 404, { error: { code: "not_found", message: "Route not found" } });

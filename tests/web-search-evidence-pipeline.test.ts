@@ -82,7 +82,7 @@ test("failure classification: transient vs permanent (message text unchanged)", 
         assert.equal(error.transient, item.transient, `transient flag for ${item.path}`);
         assert.equal(error.category, "http_status", `category for ${item.path}`);
         if (item.status !== undefined) assert.equal(error.status, item.status, `status for ${item.path}`);
-        // message 文本与旧版逐字一致（回归硬闸：SourceParser 导入路径与既有测试依赖它）
+        // message 文本与旧版逐字一致（回归硬闸：既有抓取调用方与测试依赖该 message 文本）
         assert.equal(error.message, `URL returned HTTP ${item.status}`, `message for ${item.path}`);
         return true;
       },

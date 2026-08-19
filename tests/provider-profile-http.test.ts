@@ -13,7 +13,7 @@ async function createHarness() {
   const auth = new LocalAuth(store);
   const token = `provider-http-${randomUUID()}`;
   await auth.registerTrustedToken(token, "provider-http-test");
-  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, {
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
     providerBaseUrlValidator: async (value) => value.replace(/\/+$/, ""),
   });
@@ -111,7 +111,7 @@ test("provider model discovery endpoint returns models without leaking credentia
   const token = `discovery-http-${randomUUID()}`;
   await auth.registerTrustedToken(token, "discovery-http-test");
   let upstreamAuthorization: string | null = null;
-  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, {
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
     modelDiscoveryFetch: async (_input, init) => {
       upstreamAuthorization = new Headers(init?.headers).get("authorization");

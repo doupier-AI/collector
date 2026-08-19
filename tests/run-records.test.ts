@@ -11,7 +11,6 @@ import type {
   ResearchMessageRecord,
   ResearchSessionRecord,
   ResearchTaskRecord,
-  WorkflowRunRecord,
 } from "@collector/capture-contracts";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer } from "@collector/api";
 
@@ -32,7 +31,7 @@ async function createHarness(): Promise<Harness> {
   await store.init();
   const auth = new LocalAuth(store);
   await auth.registerTrustedToken(AUTH_TOKEN, "run-records-test");
-  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, {
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
     autoRunResearchTasks: false,
     autoRunResearchImports: false,
@@ -140,16 +139,6 @@ async function seedSearch(store: SqliteStore, taskId: string, sessionId: string)
   await store.saveResearchGroundingResult(result);
 }
 
-async function seedWorkflow(store: SqliteStore): Promise<void> {
-  const workflow: WorkflowRunRecord = {
-    id: "workflow-failed", workflowType: "recent_organization", idempotencyKey: "workflow-key",
-    materialIds: [], materialSetVersion: "materials-v1", status: "failed",
-    createdAt: "2026-07-31T00:02:00.000Z", startedAt: "2026-07-31T00:02:01.000Z",
-    completedAt: "2026-07-31T00:02:02.000Z", errorMessage: "workflow failed",
-  };
-  await store.saveWorkflowRun(workflow);
-}
-
 test("run record API paginates, filters, restores related traces, and redacts sensitive values", async (t) => {
   const harness = await createHarness();
   t.after(() => harness.close());
@@ -157,7 +146,7 @@ test("run record API paginates, filters, restores related traces, and redacts se
   const task = await seedResearchTask(harness.store, session, "task-run-records", "2026-07-31T00:03:00.000Z");
   await seedModelCall(harness.store, task.id);
   await seedSearch(harness.store, task.id, session.id);
-  await seedWorkflow(harness.store);
+  await seedResearchTask(harness.store, session, "task-run-records-failed", "2026-07-31T00:02:00.000Z", "failed");
 
   const unauthorized = await fetch(`${harness.base}/v1/run-records`);
   assert.equal(unauthorized.status, 401);
@@ -173,11 +162,11 @@ test("run record API paginates, filters, restores related traces, and redacts se
 
   const second = await responseJson<{ items: Array<{ id: string }> }>(harness, `/v1/run-records?limit=1&cursor=${encodeURIComponent(first.body.nextCursor!)}`);
   assert.equal(second.status, 200);
-  assert.deepEqual(second.body.items.map((item) => item.id), ["workflow:workflow-failed"]);
+  assert.deepEqual(second.body.items.map((item) => item.id), ["research:task-run-records-failed"]);
 
-  const filtered = await responseJson<{ items: Array<{ id: string; outcome: string }> }>(harness, "/v1/run-records?operationType=recent_organization&outcome=failure");
+  const filtered = await responseJson<{ items: Array<{ id: string; outcome: string }> }>(harness, "/v1/run-records?operationType=research&outcome=failure");
   assert.equal(filtered.status, 200);
-  assert.deepEqual(filtered.body.items.map((item) => item.id), ["workflow:workflow-failed"]);
+  assert.deepEqual(filtered.body.items.map((item) => item.id), ["research:task-run-records-failed"]);
   assert.equal(filtered.body.items[0].outcome, "failure");
 
   const detail = await responseJson<{
@@ -217,8 +206,10 @@ test("run record API paginates, filters, restores related traces, and redacts se
   assert.equal(exportedRecord.searches[0].sources[0].url, "https://example.com/article?safe=1");
   assert.ok(exportedRecord.errors.some((error) => error.message.includes("[REDACTED]")));
   assert.doesNotMatch(JSON.stringify(exportLines), /sk-model-secret|sk-search-secret|source-secret|Bearer/);
-  assert.equal(exportLines[2].type, "summary");
-  assert.equal((exportLines[2] as unknown as { recordCount: number }).recordCount, 1);
+  assert.equal(exportLines[2].type, "record");
+  assert.equal((exportLines[2].record as { id: string }).id, "research:task-run-records-failed");
+  assert.equal(exportLines[3].type, "summary");
+  assert.equal((exportLines[3] as unknown as { recordCount: number }).recordCount, 2);
 
   const emptyExport = await fetch(`${harness.base}/v1/run-records/export?operationType=selection_analysis`, { headers: headers(harness.token) });
   assert.equal(emptyExport.status, 404);

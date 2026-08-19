@@ -22,7 +22,6 @@ import {
   type RunRecordStatus,
   type RunRecordSummary,
   type RunRecordTaskView,
-  type WorkflowRunRecord,
 } from "@collector/capture-contracts";
 import {
   type CollectorStore,
@@ -42,12 +41,10 @@ const OPERATION_TYPES: readonly RunRecordOperationType[] = [
   "research",
   "selection_analysis",
   "document_import",
-  "recent_organization",
-  "topic_document",
   "similarity_verification",
   "chapter_parse",
 ];
-const SOURCES: readonly RunRecordSource[] = ["research", "selection", "import", "workflow", "fusion", "chapter"];
+const SOURCES: readonly RunRecordSource[] = ["research", "selection", "import", "fusion", "chapter"];
 const STATUSES: readonly RunRecordStatus[] = ["queued", "running", "completed", "failed", "cancelled", "corrupt"];
 const OUTCOMES: readonly RunRecordOutcome[] = ["success", "failure", "active", "cancelled", "unavailable"];
 
@@ -243,8 +240,8 @@ export class RunRecordsService {
     return { modelCallCount: modelCalls.length, searchCount, retryCount };
   }
 
-  private modelCalls(workflowRunId: string): RunRecordModelCallView[] {
-    return safeRows(() => this.store.listRunModelCallRows(workflowRunId)).map((row) => modelCallView(row));
+  private modelCalls(runId: string): RunRecordModelCallView[] {
+    return safeRows(() => this.store.listRunModelCallRows(runId)).map((row) => modelCallView(row));
   }
 
   private searches(taskId: string): RunRecordSearchView[] {
@@ -280,8 +277,7 @@ function sourceForOperation(operation: RunRecordOperationType): ObservabilityRec
   if (operation === "selection_analysis") return "selection";
   if (operation === "document_import") return "import";
   if (operation === "chapter_parse") return "chapter";
-  if (operation === "similarity_verification") return "fusion";
-  return "workflow";
+  return "fusion"; // similarity_verification
 }
 
 function statusesForStatus(status: RunRecordStatus): string[] {
@@ -399,7 +395,7 @@ function operationTypeForRow(row: ObservabilityRecordRow): RunRecordOperationTyp
   if (row.source === "selection") return "selection_analysis";
   if (row.source === "import") return "document_import";
   if (row.source === "fusion") return "similarity_verification";
-  return "topic_document";
+  return "chapter_parse";
 }
 
 function statusForRow(row: ObservabilityRecordRow, record: Record<string, unknown>): RunRecordStatus {
@@ -455,8 +451,8 @@ function taskView(source: ObservabilityRecordSource, record: Record<string, unkn
     const task = record as Partial<ResearchChapterTaskRecord>;
     return { id: safeId(task.id), ...(safeText(task.sessionId) ? { sessionId: safeText(task.sessionId) } : {}), ...(safeText(task.provider) ? { provider: safeText(task.provider) } : {}), ...(safeText(task.model) ? { model: safeText(task.model) } : {}), ...(safeText(task.promptVersion) ? { promptVersion: safeText(task.promptVersion) } : {}), ...(typeof task.retryable === "boolean" ? { retryable: task.retryable } : {}) };
   }
-  const workflow = record as Partial<WorkflowRunRecord>;
-  return { id: safeId(workflow.id) };
+  // fusion（相似性核验）提议记录：仅取 id。
+  return { id: safeId(record.id) };
 }
 
 function modelCallView(row: ObservabilityRelatedRow): RunRecordModelCallView {

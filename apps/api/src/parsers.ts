@@ -3,10 +3,9 @@ import type { LookupAddress, LookupOptions } from "node:dns";
 import { isIP } from "node:net";
 import { request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { readFile } from "node:fs/promises";
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
-import type { ArtifactRecord, CaptureLocator, CaptureRecord, FileLocator, FetchErrorCategory } from "@collector/capture-contracts";
+import type { ArtifactRecord, CaptureLocator, FileLocator, FetchErrorCategory } from "@collector/capture-contracts";
 
 const MAX_FRAGMENT_CHARS = 2_000;
 const MAX_URL_BYTES = 5 * 1024 * 1024;
@@ -62,50 +61,6 @@ export function classifyFetchError(error: unknown): { category: FetchErrorCatego
 export interface ParsedFragment {
   text: string;
   locator?: CaptureLocator;
-}
-
-export interface ParsedSource {
-  fragments: ParsedFragment[];
-  snapshot?: { fileName: string; mimeType: string; bytes: Uint8Array };
-}
-
-export class SourceParser {
-  async parse(capture: CaptureRecord, artifacts: ArtifactRecord[]): Promise<ParsedSource> {
-    if (capture.captureType === "pasted_url" && capture.sourceUrl && !capture.content?.trim()) {
-      return this.parseUrl(capture.sourceUrl);
-    }
-    if (capture.captureType === "local_file") return this.parseArtifacts(artifacts);
-    const content = capture.content?.trim();
-    if (!content) return { fragments: [] };
-    if (capture.captureType === "browser_selection") {
-      return { fragments: [{ text: content, locator: capture.locator }] };
-    }
-    return { fragments: splitPlainText(content, capture.locator) };
-  }
-
-  private async parseArtifacts(artifacts: ArtifactRecord[]): Promise<ParsedSource> {
-    const fragments: ParsedFragment[] = [];
-    for (const artifact of artifacts) {
-      const bytes = await readFile(artifact.objectPath);
-      if (artifact.mimeType === "text/plain") fragments.push(...splitPlainText(bytes.toString("utf8"), fileLocator(artifact)));
-      else if (artifact.mimeType === "text/markdown") fragments.push(...parseMarkdown(bytes.toString("utf8"), artifact));
-      else if (artifact.mimeType === "application/pdf") fragments.push(...await parsePdf(bytes, artifact));
-    }
-    return { fragments };
-  }
-
-  private async parseUrl(value: string): Promise<ParsedSource> {
-    const fetched = await fetchPublicResource(value);
-    const mimeType = fetched.contentType === "text/plain" ? "text/plain" : "text/html";
-    const raw = Buffer.from(fetched.bytes).toString("utf8");
-    const text = mimeType === "text/html" ? extractReadableText(raw, fetched.url) : raw;
-    if (!text.trim()) throw new Error("URL did not contain readable text");
-    const fileName = `${new URL(fetched.url).hostname}-${Date.now()}.${mimeType === "text/html" ? "html" : "txt"}`;
-    return {
-      fragments: splitPlainText(text, { kind: "browser", pageUrl: fetched.url }),
-      snapshot: { fileName, mimeType, bytes: fetched.bytes },
-    };
-  }
 }
 
 export function splitPlainText(value: string, baseLocator?: CaptureLocator): ParsedFragment[] {

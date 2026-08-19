@@ -139,7 +139,7 @@ const auth = new LocalAuth(store);
 const launcherToken = randomBytes(32).toString("base64url");
 await auth.registerTrustedToken(launcherToken, "Acceptance launcher control");
 
-const service = new CaptureService(store, join(dataDir, "artifacts"), undefined, runtime?.gateway, {
+const service = new CaptureService(store, join(dataDir, "artifacts"), runtime?.gateway, {
   autoRunRecentOrganization: false,
 });
 if (!noModelMode && runtime) {

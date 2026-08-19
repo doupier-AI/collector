@@ -46,7 +46,7 @@ test("startup backfill derives body versions for completed assistant messages wi
   seedMessage(store, "msg-pending", "", "assistant", "generating");
 
   // CaptureService 构造即触发 setImmediate 回填；此处直接调用保证确定性。
-  const service = new CaptureService(store, join(await mkdtemp(join(tmpdir(), "collector-bodyver-art-")), "artifacts"), undefined, undefined, { autoRunRecentOrganization: false, autoRunResearchTasks: false });
+  const service = new CaptureService(store, join(await mkdtemp(join(tmpdir(), "collector-bodyver-art-")), "artifacts"), undefined, { autoRunRecentOrganization: false, autoRunResearchTasks: false });
   let providerCalled = 0;
   void providerCalled; // 无模型 provider 注入；若回填误调模型会抛错（无 generate）。
   const first = await service.backfillResearchBodyVersions();
@@ -71,7 +71,7 @@ test("backfill is idempotent — repeated runs create no duplicates and same ids
   await store.createResearchSession({ id: "session-1", title: "T", status: "active", isFavorite: false, createdAt: NOW, updatedAt: NOW }, "k-s");
   await store.createResearchNode({ id: "node-1", sessionId: "session-1", status: "active", createdAt: NOW, updatedAt: NOW }, "k-n");
   seedMessage(store, "msg-1");
-  const service = new CaptureService(store, join(await mkdtemp(join(tmpdir(), "collector-bodyver-art-")), "artifacts"), undefined, undefined, { autoRunRecentOrganization: false, autoRunResearchTasks: false });
+  const service = new CaptureService(store, join(await mkdtemp(join(tmpdir(), "collector-bodyver-art-")), "artifacts"), undefined, { autoRunRecentOrganization: false, autoRunResearchTasks: false });
 
   const first = await service.backfillResearchBodyVersions();
   const versionId = store.getBodyVersionForMessage("msg-1")!.id;
@@ -91,7 +91,7 @@ test("getResearchNodeView returns slices and bodyVersions together (coexistence)
   await store.createResearchNode({ id: "node-1", sessionId: "session-1", status: "active", createdAt: NOW, updatedAt: NOW }, "k-n");
   seedMessage(store, "msg-1");
   formalSlices(store, "msg-1");
-  const service = new CaptureService(store, join(await mkdtemp(join(tmpdir(), "collector-bodyver-art-")), "artifacts"), undefined, undefined, { autoRunRecentOrganization: false, autoRunResearchTasks: false });
+  const service = new CaptureService(store, join(await mkdtemp(join(tmpdir(), "collector-bodyver-art-")), "artifacts"), undefined, { autoRunRecentOrganization: false, autoRunResearchTasks: false });
 
   const view = await service.getResearchNodeView("node-1");
   assert.ok(view.slices?.["msg-1"], "slices present");
@@ -114,7 +114,7 @@ test("generation path persists body version + formal fragments on task completio
     async writeBody() { return "First paragraph.\n\nSecond paragraph.\n\nThird paragraph."; },
     async *generate() { yield "unused"; },
   };
-  const service = new CaptureService(store, join(await mkdtemp(join(tmpdir(), "collector-bodyver-art-")), "artifacts"), undefined, undefined, { autoRunRecentOrganization: false, researchProvider: provider as never });
+  const service = new CaptureService(store, join(await mkdtemp(join(tmpdir(), "collector-bodyver-art-")), "artifacts"), undefined, { autoRunRecentOrganization: false, researchProvider: provider as never });
 
   // 通过研究服务的公开入口发起一轮研究，驱动真实 processTask。
   const accepted = await service.research.submitMessage("session-1", "研究一下", "bodyver-turn");

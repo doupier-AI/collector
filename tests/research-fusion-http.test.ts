@@ -27,7 +27,7 @@ async function createHarness(options?: { similarityVerifier?: SimilarityVerifica
       return { relationType: "contrast", reason: "两处材料共享孙悟空名称，但来自不同作品。" };
     },
   };
-  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, {
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
     autoRunResearchTasks: false,
     similarityVerifier: verifier,

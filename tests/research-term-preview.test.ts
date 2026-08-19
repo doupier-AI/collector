@@ -26,7 +26,7 @@ async function createHarness(options: HarnessOptions = {}) {
   const auth = new LocalAuth(store);
   const token = `term-preview-${randomUUID()}`;
   await auth.registerTrustedToken(token, "term-preview-test");
-  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, {
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
     autoRunResearchTasks: options.autoRunResearchTasks ?? true,
     autoRunResearchImports: false,
@@ -441,7 +441,7 @@ test("term preview failure keeps partial content, retries, and marks interrupted
 
   const reopenedStore = new SqliteStore(databasePath);
   await reopenedStore.init();
-  const reopened = new CaptureService(reopenedStore, join(harness.root, "artifacts-reopened"), undefined, undefined, {
+  const reopened = new CaptureService(reopenedStore, join(harness.root, "artifacts-reopened"), undefined, {
     autoRunRecentOrganization: false,
     autoRunResearchTasks: false,
     researchProvider: failingProvider,

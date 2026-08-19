@@ -18,7 +18,7 @@ async function createHarness() {
   const auth = new LocalAuth(store);
   const token = `bodyver-${randomUUID()}`;
   await auth.registerTrustedToken(token, "bodyver-http-test");
-  const service = new CaptureService(store, join(root, "artifacts"), undefined, undefined, {
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
     autoRunResearchTasks: false,
   });

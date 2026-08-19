@@ -1,8 +1,0 @@
-{
-  "name": "@collector/capture-client",
-  "version": "0.1.0",
-  "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "dependencies": { "@collector/capture-contracts": "0.1.0" }
-}
