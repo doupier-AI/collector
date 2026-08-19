@@ -229,6 +229,50 @@ test("branch deep research creates branch before generation, completes, and keep
   assert.match(sseText, /event: completed/);
 });
 
+test("branch view keeps all grounded sources in store but only returns cited sources", async (t) => {
+  const provider: ResearchGenerationProvider = {
+    provider: "grounding-stub",
+    model: "grounding-model",
+    async *generate() { yield "ordinary fallback"; },
+    async generateAgentGrounded() {
+      const content = "深入研究结论。[来源3]";
+      return {
+        content,
+        status: "grounded",
+        queries: ["branch grounding"],
+        sources: [
+          { title: "未引用一", url: "https://example.com/one" },
+          { title: "未引用二", url: "https://example.com/two" },
+          { title: "实际引用", url: "https://example.com/three" },
+        ],
+        citations: [],
+      };
+    },
+  };
+  const harness = await createHarness({ researchProvider: provider, autoRunResearchTasks: false });
+  t.after(() => harness.close());
+  const { session, assistantMessage } = await createSessionWithAnswer(harness);
+  const created = await createSelectionOn(harness, session.id, anchorForSelection(assistantMessage.id, 1, "选区如何连接阅读与研究"));
+
+  const response = await postJson(harness.base, harness.token, `/v1/research-selections/${created.selection.id}/deep-research`, {
+    mode: "branch",
+    allowWebSearch: true,
+  }, randomUUID());
+  assert.equal(response.status, 202);
+  const accepted = await response.json() as { branch: { id: string }; task: { id: string } };
+  await harness.service.research.processTask(accepted.task.id);
+
+  const persistedTask = harness.service.research.getTask(accepted.task.id);
+  assert.ok(persistedTask.groundingScope?.runId);
+  assert.equal(harness.store.listResearchGroundingSources(persistedTask.groundingScope.runId).length, 3);
+  const viewResponse = await fetch(`${harness.base}/v1/research-branches/${accepted.branch.id}`, { headers: headers(harness.token) });
+  assert.equal(viewResponse.status, 200);
+  const view = await viewResponse.json() as { groundingSources?: Array<{ ordinal: number; title: string }> };
+  assert.deepEqual(view.groundingSources?.map((source) => ({ ordinal: source.ordinal, title: source.title })), [
+    { ordinal: 3, title: "实际引用" },
+  ]);
+});
+
 test("session deep research creates an origin session with direction and custom title", async (t) => {
   const recording = recordingProvider();
   const harness = await createHarness({ researchProvider: recording.provider });

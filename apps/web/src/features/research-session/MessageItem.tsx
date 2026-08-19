@@ -858,7 +858,7 @@ function GroundingScopeNote({ task }: { task?: ResearchTaskRecord }) {
   const scope = task?.groundingScope;
   if (!scope) return null;
   const message = scope.status === "grounded"
-    ? `本轮已联网核验，获得 ${scope.sourceCount} 个可核验来源。`
+    ? "本轮已联网核验。"
     : scope.status === "grounding_failed"
       ? "联网尝试失败，本回答仅基于当前会话材料生成，未完成外部核验。"
       : scope.status === "grounding_unsupported"

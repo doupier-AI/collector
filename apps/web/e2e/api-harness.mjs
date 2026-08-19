@@ -109,6 +109,31 @@ const fakeProvider = {
     await sleep(250);
     yield "第二段：渐进事件把后续内容写进同一条消息，回答完毕。";
   },
+  // #98：联网读取层过滤的确定性浏览器夹具。只有专用问题返回 grounded，
+  // 其余联网请求维持既有 unsupported 语义，避免改变联网开关回归用例。
+  async generateAgentGrounded(request) {
+    const question = request.messages.at(-1)?.content ?? "";
+    if (!question.includes("验证来源过滤")) {
+      return {
+        content: "当前确定性模型不执行联网搜索，回答完毕。",
+        status: "grounding_unsupported",
+        queries: [],
+        sources: [],
+        citations: [],
+      };
+    }
+    return {
+      content: "只有第三条来源实际支撑这段结论。[来源3]",
+      status: "grounded",
+      queries: ["验证来源过滤"],
+      sources: [
+        { title: "未引用来源一", url: "https://example.com/uncited-one" },
+        { title: "未引用来源二", url: "https://example.com/uncited-two" },
+        { title: "实际引用来源", url: "https://example.com/cited-three" },
+      ],
+      citations: [],
+    };
+  },
   // 生成自由化：模型只产出自由正文（\n\n 分段），切片由服务层按段落块确定性派生，
   // 标题/概念由 deriveAnnotations 事后抽取。三段正文与三条标注一一对应，
   // 供连续语义卡片与章节导航 e2e 使用。

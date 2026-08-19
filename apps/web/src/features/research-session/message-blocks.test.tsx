@@ -203,33 +203,35 @@ describe("AI 回答分块渲染", () => {
   });
 
   it("引用标记由 remark 插件从 [来源n] token 渲染为可悬停角标，编号与文末列表一致", async () => {
-    const view = viewWithAssistant("[来源1]第一段文字。[来源2]\n\n第二段文字。");
+    const view = viewWithAssistant("[来源2]第一段文字。[来源5]\n\n第二段文字。");
     view.tasks[0] = makeTask({
       id: "task-1",
       status: "completed",
       inputMessageId: "m-in",
       outputMessageId: "m-out",
-      groundingScope: { status: "grounded", sourceCount: 2, citationCount: 2, runId: "run-1" },
+      groundingScope: { status: "grounded", sourceCount: 5, citationCount: 2, runId: "run-1" },
     });
     view.groundingSources = [
-      { id: "source-1", runId: "run-1", ordinal: 1, title: "第一个来源", url: "https://example.com/one", createdAt: "2026-01-01T00:00:00.000Z" },
       { id: "source-2", runId: "run-1", ordinal: 2, title: "第二个来源", url: "https://example.com/two", createdAt: "2026-01-01T00:00:00.000Z" },
+      { id: "source-5", runId: "run-1", ordinal: 5, title: "第五个来源", url: "https://example.com/five", createdAt: "2026-01-01T00:00:00.000Z" },
     ];
     view.citations = [
-      { id: "citation-1", messageId: "m-out", runId: "run-1", sourceId: "source-1", blockOrdinal: 0, markerOffset: 2, createdAt: "2026-01-01T00:00:00.000Z" },
-      { id: "citation-2", messageId: "m-out", runId: "run-1", sourceId: "source-2", blockOrdinal: 0, markerOffset: 12, createdAt: "2026-01-01T00:00:00.000Z" },
+      { id: "citation-2", messageId: "m-out", runId: "run-1", sourceId: "source-2", blockOrdinal: 0, markerOffset: 2, createdAt: "2026-01-01T00:00:00.000Z" },
+      { id: "citation-5", messageId: "m-out", runId: "run-1", sourceId: "source-5", blockOrdinal: 0, markerOffset: 12, createdAt: "2026-01-01T00:00:00.000Z" },
     ];
     renderNodePage({ getResearchNodeView: async () => view });
 
-    const firstMarker = await screen.findByLabelText("打开来源 1：第一个来源");
-    const secondMarker = screen.getByLabelText("打开来源 2：第二个来源");
-    expect(firstMarker).toHaveAttribute("href", "https://example.com/one");
+    const firstMarker = await screen.findByLabelText("打开来源 2：第二个来源");
+    const secondMarker = screen.getByLabelText("打开来源 5：第五个来源");
+    expect(firstMarker).toHaveAttribute("href", "https://example.com/two");
     expect(firstMarker).toHaveAttribute("rel", "noopener noreferrer");
     expect(firstMarker.querySelector("sup")).toHaveTextContent("");
-    expect(firstMarker.querySelector("sup")).toHaveAttribute("data-citation-index", "1");
-    expect(secondMarker.querySelector("sup")).toHaveAttribute("data-citation-index", "2");
+    expect(firstMarker.querySelector("sup")).toHaveAttribute("data-citation-index", "2");
+    expect(secondMarker.querySelector("sup")).toHaveAttribute("data-citation-index", "5");
     expect(firstMarker.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p0");
     expect(screen.getByText("本轮可核验来源")).toBeInTheDocument();
+    expect(screen.getByTestId("grounding-scope-note")).toHaveTextContent("本轮已联网核验。");
+    expect(screen.getByTestId("grounding-scope-note")).not.toHaveTextContent("2 个");
   });
 });
 

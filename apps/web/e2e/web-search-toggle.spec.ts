@@ -41,3 +41,18 @@ test("用户主动开启联网后沿用同一提交语义，并诚实显示供�
   expect(task?.groundingScope?.status).toBe("grounding_unsupported");
   await expect(page.getByText("当前模型供应商不支持联网")).toBeVisible();
 });
+
+test("grounded 回答只展示正文实际引用的来源并保留原序号", async ({ page }) => {
+  await pairAndOpen(page, "/research/new");
+  await page.getByRole("checkbox", { name: "允许联网搜索" }).check();
+  await page.getByLabel("你的问题").fill("验证来源过滤");
+  await page.getByRole("button", { name: "开始研究" }).click();
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
+
+  await expect(page.getByTestId("grounding-scope-note")).toHaveText("本轮已联网核验。", { timeout: 15_000 });
+  await expect(page.getByText("实际引用来源")).toBeVisible();
+  await expect(page.getByText("来源 3", { exact: true })).toBeVisible();
+  await expect(page.getByText("未引用来源一")).toHaveCount(0);
+  await expect(page.getByText("未引用来源二")).toHaveCount(0);
+  await expect(page.getByLabel("打开来源 3：实际引用来源")).toHaveAttribute("href", "https://example.com/cited-three");
+});

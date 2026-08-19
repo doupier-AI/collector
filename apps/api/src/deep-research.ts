@@ -21,7 +21,7 @@ import {
   type ResearchTurnAccepted,
 } from "@collector/capture-contracts";
 import type { DeepResearchStore } from "./store.js";
-import { DEEP_RESEARCH_PROMPT_VERSION, RESEARCH_CHAT_PROMPT_VERSION, isTrashed, type ResearchSessionService, type ResearchTurnOptions } from "./research.js";
+import { citedGroundingSources, DEEP_RESEARCH_PROMPT_VERSION, RESEARCH_CHAT_PROMPT_VERSION, isTrashed, type ResearchSessionService, type ResearchTurnOptions } from "./research.js";
 import { buildTermMentionSelection, normalizeMentionText } from "./term-preview.js";
 import { validateTermMarkers } from "./term-detection.js";
 
@@ -109,8 +109,12 @@ export class DeepResearchService {
     const messageIds = new Set(messages.map((message) => message.id));
     const tasks = this.store.listResearchTasks(branch.sessionId).filter((task) => messageIds.has(task.inputMessageId));
     const runIds = tasks.flatMap((task) => task.groundingScope?.runId ? [task.groundingScope.runId] : []);
-    const groundingSources = runIds.flatMap((runId) => this.store.listResearchGroundingSources(runId));
-    return { branch, session, selection, messages, tasks, ...(groundingSources.length ? { groundingSources } : {}), ...(messages.length ? { citations: this.store.listResearchCitationsForMessages(messages.map((message) => message.id)) } : {}) };
+    const citations = messages.length ? this.store.listResearchCitationsForMessages(messages.map((message) => message.id)) : [];
+    const groundingSources = citedGroundingSources(
+      runIds.flatMap((runId) => this.store.listResearchGroundingSources(runId)),
+      citations,
+    );
+    return { branch, session, selection, messages, tasks, ...(groundingSources.length ? { groundingSources } : {}), ...(messages.length ? { citations } : {}) };
   }
 
   /** 分支内继续追问：消息带 branchId 与 nodeId，复用节点任务管线与幂等规则。 */
@@ -368,7 +372,11 @@ export class NodeGrowthService {
     const tasks = this.store.listResearchTasksByNode(id);
     const childNodes = this.store.listChildNodes(id);
     const runIds = tasks.flatMap((task) => task.groundingScope?.runId ? [task.groundingScope.runId] : []);
-    const groundingSources = runIds.flatMap((runId) => this.store.listResearchGroundingSources(runId));
+    const citations = messages.length ? this.store.listResearchCitationsForMessages(messages.map((message) => message.id)) : [];
+    const groundingSources = citedGroundingSources(
+      runIds.flatMap((runId) => this.store.listResearchGroundingSources(runId)),
+      citations,
+    );
     return {
       node,
       session,
@@ -376,7 +384,7 @@ export class NodeGrowthService {
       tasks,
       childNodes,
       ...(groundingSources.length ? { groundingSources } : {}),
-      ...(messages.length ? { citations: this.store.listResearchCitationsForMessages(messages.map((message) => message.id)) } : {}),
+      ...(messages.length ? { citations } : {}),
       attachments: this.store.listResearchAttachments(node.sessionId),
       importTasks: this.store.listResearchImportTasks(node.sessionId),
     };

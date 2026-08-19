@@ -77,6 +77,19 @@ const REASONING_FLUSH_MIN_INTERVAL_MS = 250;
 const REASONING_FLUSH_MIN_CHARS = 400;
 
 /**
+ * ADR-0033 / #98：用户视图中的来源代表正文实际依据，而不是本轮搜索痕迹。
+ * 完整来源仍保存在 grounding 表与运行记录中；这里只按当前视图内引用做投影，
+ * 并保留来源原始 ordinal，确保正文里的「来源 2」仍指向来源 2。
+ */
+export function citedGroundingSources(
+  sources: readonly ResearchGroundingSourceRecord[],
+  citations: readonly ResearchCitationRecord[],
+): ResearchGroundingSourceRecord[] {
+  const citedSourceKeys = new Set(citations.map((citation) => `${citation.runId}\u0000${citation.sourceId}`));
+  return sources.filter((source) => citedSourceKeys.has(`${source.runId}\u0000${source.id}`));
+}
+
+/**
  * T02 硬约束判定（#92，ADR-0032）：长文节正文首行必须是 Markdown 二级标题（`## 标题`）。
  * 与 deriveMessageBlocks 的 splitBlockHeading ATX 规则对齐（`#` 后留空白、标题非空），
  * 但只接受二级标题——扩写提示词约定的形态；`#`/`###` 等其它级别不算合规。
@@ -286,13 +299,17 @@ export class ResearchSessionService {
     const messageIds = new Set(messages.map((message) => message.id));
     const tasks = this.store.listResearchTasks(id).filter((task) => messageIds.has(task.inputMessageId));
     const runIds = tasks.flatMap((task) => task.groundingScope?.runId ? [task.groundingScope.runId] : []);
-    const groundingSources = runIds.flatMap((runId) => this.store.listResearchGroundingSources(runId));
+    const citations = messages.length ? this.store.listResearchCitationsForMessages(messages.map((message) => message.id)) : [];
+    const groundingSources = citedGroundingSources(
+      runIds.flatMap((runId) => this.store.listResearchGroundingSources(runId)),
+      citations,
+    );
     return {
       session,
       messages,
       tasks,
       ...(groundingSources.length ? { groundingSources } : {}),
-      ...(messages.length ? { citations: this.store.listResearchCitationsForMessages(messages.map((message) => message.id)) } : {}),
+      ...(messages.length ? { citations } : {}),
       attachments: this.store.listResearchAttachments(id),
       importTasks: this.store.listResearchImportTasks(id),
       branches: this.store.listResearchBranches(id),

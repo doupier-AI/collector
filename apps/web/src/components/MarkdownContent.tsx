@@ -120,8 +120,10 @@ export function MarkdownContent({ text, sources = [], citations = [], terms = []
             }
             const citation = (citationByOrdinal.get(ordinal) ?? [])[0];
             if (!citation || Number.isNaN(ordinal)) return null;
-            const index = citationIndexById.get(citation.id) ?? ordinal;
             const source = sourceById.get(citation.sourceId);
+            // #98：过滤后的来源数组可能只剩 2、5、7；角标必须沿用来源原始序号，
+            // 不能再按当前消息内引用的数组位置从 1 重新编号。
+            const index = source?.ordinal ?? citationIndexById.get(citation.id) ?? ordinal;
             return <CitationMarker index={index} citation={citation} source={source} />;
           },
           // 卡片标题提升：正文首个标题（## / ###…）成为卡片大标题并挂导航锚点。

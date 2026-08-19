@@ -3,33 +3,58 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ResearchSessionService, SqliteStore, type ResearchGenerationProvider } from "@collector/api";
+import { CaptureService, ResearchSessionService, SqliteStore, citedGroundingSources, type ResearchGenerationProvider } from "@collector/api";
 
 async function createStore() {
   const root = await mkdtemp(join(tmpdir(), "collector-grounding-store-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
-  return { store, close: async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } };
+  return { root, store, close: async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } };
 }
 
-test("grounded research persists a v21 run, sources, citations, and task scope", async (t) => {
+test("引用来源过滤同时匹配 runId 与 sourceId", () => {
+  const createdAt = "2026-01-01T00:00:00.000Z";
+  const sources = [
+    { id: "shared", runId: "run-a", ordinal: 2, title: "A", createdAt },
+    { id: "shared", runId: "run-b", ordinal: 5, title: "B", createdAt },
+  ];
+  const citations = [{ id: "citation", messageId: "message", runId: "run-b", sourceId: "shared", blockOrdinal: 0, markerOffset: 0, createdAt }];
+
+  assert.deepEqual(citedGroundingSources(sources, citations).map((source) => [source.runId, source.ordinal]), [["run-b", 5]]);
+});
+
+test("grounded research persists all sources but views only expose cited original ordinals", async (t) => {
   const harness = await createStore();
   t.after(() => harness.close());
   const provider: ResearchGenerationProvider = {
     provider: "grounding-fake", model: "grounding-model", promptVersion: "grounding-test-v1",
     async *generate() { yield "ordinary fallback"; },
     async generateAgentGrounded() {
-      const content = "[[concept:web-grounding:联网回答]]内容。";
-      const cited = content.indexOf("内容");
+      const content = "[[concept:web-grounding:联网回答]]内容与补充证据。";
+      const firstCitation = content.indexOf("内容");
+      const secondCitation = content.indexOf("证据");
       return {
         content, status: "grounded", queries: ["collector web search"],
-        sources: [{
-          title: "Source api-key=secret-value",
-          url: "https://example.com/source?token=hidden",
-          snippet: "摘要 authorization=Bearer-secret",
-          locator: "页码 2 cookie=session-secret",
-        }],
-        citations: [{ sourceOrdinal: 1, startOffset: cited, endOffset: cited + 2 }],
+        sources: [
+          {
+            title: "Uncited search result",
+            url: "https://example.com/search-result",
+            snippet: "搜索到但没有写入正文依据",
+          },
+          {
+            title: "Source api-key=secret-value",
+            url: "https://example.com/source?token=hidden",
+            snippet: "摘要 authorization=Bearer-secret",
+            locator: "页码 2 cookie=session-secret",
+          },
+          { title: "No evidence", url: "https://example.com/none", evidenceStatus: "none" },
+          { title: "Another uncited result", url: "https://example.com/uncited" },
+          { title: "Second cited source", url: "https://example.com/second-cited" },
+        ],
+        citations: [
+          { sourceOrdinal: 2, startOffset: firstCitation, endOffset: firstCitation + 2 },
+          { sourceOrdinal: 5, startOffset: secondCitation, endOffset: secondCitation + 2 },
+        ],
         responseSummary: { result: "ok", authorization: "Bearer secret" },
         errorMessage: "token=error-secret",
       };
@@ -40,23 +65,43 @@ test("grounded research persists a v21 run, sources, citations, and task scope",
   const turn = await service.submitMessage(session.id, "解释联网研究", "turn-key", { allowWebSearch: true });
   await service.processTask(turn.task.id);
   const task = service.getTask(turn.task.id);
-  assert.deepEqual(task.groundingScope && { status: task.groundingScope.status, sourceCount: task.groundingScope.sourceCount, citationCount: task.groundingScope.citationCount }, { status: "grounded", sourceCount: 1, citationCount: 1 });
+  assert.deepEqual(task.groundingScope && { status: task.groundingScope.status, sourceCount: task.groundingScope.sourceCount, citationCount: task.groundingScope.citationCount }, { status: "grounded", sourceCount: 5, citationCount: 2 });
   const run = harness.store.listResearchGroundingRuns(turn.task.id)[0];
   assert.equal(run.queries[0], "collector web search");
   assert.equal(run.responseSummary?.authorization, "[REDACTED]");
   assert.equal(run.errorMessage, "token=[REDACTED]");
-  const source = harness.store.listResearchGroundingSources(run.id)[0];
+  const storedSources = harness.store.listResearchGroundingSources(run.id);
+  assert.equal(storedSources.length, 5);
+  const source = storedSources[1];
+  const secondSource = storedSources[4];
   assert.equal(source.url, "https://example.com/source");
   assert.equal(source.title, "Source api-key=[REDACTED]");
   assert.equal(source.snippet, "摘要 authorization=[REDACTED]");
   assert.equal(source.locator, "页码 2 cookie=[REDACTED]");
   const output = harness.store.getResearchMessage(turn.task.outputMessageId);
   assert.ok(output);
-  assert.equal(output.content, "联网回答内容。");
+  assert.equal(output.content, "联网回答内容与补充证据。");
   assert.deepEqual(output.termMarkers?.map((marker) => marker.text), ["联网回答"]);
   const citations = harness.store.listResearchCitationsForMessages([output.id]);
-  assert.equal(citations.length, 1);
+  assert.equal(citations.length, 2);
   assert.equal(citations[0]?.markerOffset, output.content.indexOf("内容"));
+  const view = service.getSession(session.id);
+  assert.deepEqual(view.groundingSources?.map((item) => ({ id: item.id, ordinal: item.ordinal })), [
+    { id: source.id, ordinal: 2 },
+    { id: secondSource.id, ordinal: 5 },
+  ]);
+  assert.equal(view.citations?.[0]?.sourceId, source.id);
+  const nodeView = new CaptureService(harness.store, join(harness.root, "artifacts"), undefined, {
+    autoRunRecentOrganization: false,
+    autoRunResearchTasks: false,
+    autoRunResearchImports: false,
+    autoRunResearchChapters: false,
+    autoRunSelectionTasks: false,
+  }).nodeGrowth.getNodeView(session.id);
+  assert.deepEqual(nodeView.groundingSources?.map((item) => ({ id: item.id, ordinal: item.ordinal })), [
+    { id: source.id, ordinal: 2 },
+    { id: secondSource.id, ordinal: 5 },
+  ]);
 });
 
 test("联网引用端点落在隐藏控制字段内时不伪造精确位置", async (t) => {
@@ -84,6 +129,8 @@ test("联网引用端点落在隐藏控制字段内时不伪造精确位置", as
   assert.equal(output?.content, "结论来自 本地优先。");
   assert.equal(harness.store.listResearchCitationsForMessages([turn.task.outputMessageId]).length, 0);
   assert.equal(service.getTask(turn.task.id).groundingScope?.citationCount, 0);
+  assert.equal(harness.store.listResearchGroundingSources(service.getTask(turn.task.id).groundingScope!.runId!).length, 1);
+  assert.equal(service.getSession(session.id).groundingSources, undefined);
 });
 
 test("文本型来源标记在弱标记清洗后的正文上解析", async (t) => {
