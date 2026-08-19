@@ -548,6 +548,34 @@ describe("长文轮次卡片内章节结构", () => {
     expect(mark!.closest("section.turn-card__section")).not.toBeNull();
   });
 
+  it("?sel 选区跨来源角标时恢复为两个文字标记，角标仍保持独立可点击", async () => {
+    const content = "前[来源1]后";
+    const selection = makeSelection({
+      id: "sel-citation",
+      sessionId: "session-1",
+      text: "前后",
+      anchor: { kind: "message", messageId: "m-out", blockOrdinal: 0, startOffset: 0, endOffset: 2, exact: "前后" },
+    });
+    const view = makeNodeView({
+      node: makeNode({ id: "session-1", sessionId: "session-1" }),
+      session: makeSession({ id: "session-1" }),
+      messages: [makeMessage({ id: "m-in", role: "user", content: "问题" }), makeMessage({ id: "m-out", role: "assistant", status: "completed", content })],
+      tasks: [makeTask({ id: "task-1", status: "completed", inputMessageId: "m-in", outputMessageId: "m-out", groundingScope: { status: "grounded", sourceCount: 1, citationCount: 1, runId: "run-1" } })],
+      groundingSources: [{ id: "source-1", runId: "run-1", ordinal: 1, title: "来源一", url: "https://example.test/one", createdAt: "2026-08-02T00:00:00.000Z" }],
+      citations: [{ id: "citation-1", messageId: "m-out", runId: "run-1", sourceId: "source-1", blockOrdinal: 0, markerOffset: 1, createdAt: "2026-08-02T00:00:00.000Z" }],
+    });
+    const { container } = renderNodePage(
+      { getResearchNodeView: async () => view, getResearchSelection: async () => selection },
+      "/nodes/session-1?sel=sel-citation",
+    );
+
+    await waitFor(() => expect(container.querySelectorAll("[data-selection-mark]")).toHaveLength(2));
+    expect([...container.querySelectorAll("[data-selection-mark]")].map((mark) => mark.textContent)).toEqual(["前", "后"]);
+    const citation = screen.getByLabelText("打开来源 1：来源一");
+    expect(citation.closest("[data-selection-mark]")).toBeNull();
+    expect(container.querySelector(".turn-card.fragment-target--focused")).toHaveAttribute("id", "m-out-turn");
+  });
+
   it("降级：切片为空或全是临时切片时纯文本连续渲染，不渲染标题卡", async () => {
     const content = "无正式切片的段落一。\n\n无正式切片的段落二。";
     const provisionalOnly = [
@@ -673,5 +701,66 @@ describe("#91 普通回答轮次卡片", () => {
     expect(marks).toHaveLength(1);
     expect(marks[0]).toHaveTextContent("第二段。");
     expect(marks[0]?.querySelector("[data-selection-mark]")).toBeNull();
+  });
+
+  it("片段跨来源角标时分别高亮角标两侧正文，不把引用按钮包进 mark", async () => {
+    const content = "前文[来源1]后文";
+    const version = deriveBodyVersion({ messageId: "m-out", nodeId: "session-1", content, origin: "backfill", createdAt: "2026-08-02T00:00:00.000Z" });
+    const slices = deriveMessageSlices("session-1", "m-out", content, 0, []);
+    const fragments = deriveFragmentsFromSlices(version, slices, []);
+    const view = makeNodeView({
+      node: makeNode({ id: "session-1", sessionId: "session-1" }),
+      session: makeSession({ id: "session-1" }),
+      messages: [makeMessage({ id: "m-in", role: "user", content: "一个问题" }), makeMessage({ id: "m-out", role: "assistant", status: "completed", content })],
+      tasks: [makeTask({ id: "task-1", status: "completed", inputMessageId: "m-in", outputMessageId: "m-out", groundingScope: { status: "grounded", sourceCount: 1, citationCount: 1, runId: "run-1" } })],
+      slices: { "m-out": slices },
+      bodyVersions: { "m-out": version },
+      groundingSources: [{ id: "source-1", runId: "run-1", ordinal: 1, title: "来源一", url: "https://example.test/one", createdAt: "2026-08-02T00:00:00.000Z" }],
+      citations: [{ id: "citation-1", messageId: "m-out", runId: "run-1", sourceId: "source-1", blockOrdinal: 0, markerOffset: 2, createdAt: "2026-08-02T00:00:00.000Z" }],
+    });
+    const { container } = renderNodePage(
+      {
+        getResearchNodeView: async () => view,
+        getResearchBodyVersion: async () => ({ version, fragments: fragments.map((fragment) => ({ ...fragment, excerpt: content.slice(fragment.startOffset, fragment.endOffset) })) }),
+      },
+      `/nodes/session-1?fragment=${encodeURIComponent(fragments[0]!.id)}`,
+    );
+
+    await screen.findByText("前文");
+    await waitFor(() => expect(container.querySelectorAll("[data-selection-mark]")).toHaveLength(2));
+    expect([...container.querySelectorAll("[data-selection-mark]")].map((mark) => mark.textContent)).toEqual(["前文", "后文"]);
+    const citation = screen.getByLabelText("打开来源 1：来源一");
+    expect(citation.closest("[data-selection-mark]")).toBeNull();
+    expect(container.querySelector(".turn-card.fragment-target--focused")).toHaveAttribute("id", "m-out-turn");
+  });
+
+  it("短标题与后续正文分块的片段在同一轮次卡内分别标到两个实际 DOM 块", async () => {
+    const content = "## 标题\n\n**正文** [链接](https://example.test)";
+    const version = deriveBodyVersion({ messageId: "m-out", nodeId: "session-1", content, origin: "backfill", createdAt: "2026-08-02T00:00:00.000Z" });
+    const slices = deriveMessageSlices("session-1", "m-out", content, 0, []);
+    const fragments = deriveFragmentsFromSlices(version, slices, []);
+    const view = makeNodeView({
+      node: makeNode({ id: "session-1", sessionId: "session-1" }),
+      session: makeSession({ id: "session-1" }),
+      messages: [makeMessage({ id: "m-in", role: "user", content: "一个问题" }), makeMessage({ id: "m-out", role: "assistant", status: "completed", content })],
+      tasks: [makeTask({ id: "task-1", status: "completed", inputMessageId: "m-in", outputMessageId: "m-out" })],
+      slices: { "m-out": slices },
+      bodyVersions: { "m-out": version },
+    });
+    const { container } = renderNodePage(
+      {
+        getResearchNodeView: async () => view,
+        getResearchBodyVersion: async () => ({ version, fragments: fragments.map((fragment) => ({ ...fragment, excerpt: content.slice(fragment.startOffset, fragment.endOffset) })) }),
+      },
+      `/nodes/session-1?fragment=${encodeURIComponent(fragments[0]!.id)}`,
+    );
+
+    await screen.findByRole("heading", { name: "标题" });
+    await waitFor(() => expect(container.querySelectorAll("[data-selection-mark]")).toHaveLength(2));
+    const marks = container.querySelectorAll<HTMLElement>("[data-selection-mark]");
+    expect([...marks].map((mark) => mark.textContent)).toEqual(["标题", "正文 链接"]);
+    expect(marks[0]?.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p0");
+    expect(marks[1]?.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p1");
+    expect(container.querySelector(".turn-card.fragment-target--focused")).toHaveAttribute("id", "m-out-turn");
   });
 });

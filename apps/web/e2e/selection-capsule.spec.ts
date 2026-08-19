@@ -244,7 +244,12 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     await page.goto(`/nodes/${sessionId}?sel=${selId}`);
 
     // #48：只读定位提醒——高亮标记呈现，不重开浮动胶囊、不自动创建引用
-    await expect(page.locator("[data-selection-mark]")).toBeVisible({ timeout: 10_000 });
+    const mark = page.locator("[data-selection-mark]");
+    await expect(mark).toBeVisible({ timeout: 10_000 });
+    // #96：来源返回的可见光环属于整条回答轮次卡片，而不是段落块。
+    const card = page.locator(".turn-card.fragment-target--focused");
+    await expect(card).toHaveCount(1);
+    await expect(card.locator("[data-selection-mark]")).toContainText("本地优先会先把输入保存在本机");
     await expect(page.getByTestId("floating-selection-capsule")).toHaveCount(0);
     await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
     await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
@@ -273,6 +278,8 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     await page.goto(`/nodes/${sessionId}?sel=${selId}`);
     const mark = page.locator("[data-selection-mark]");
     await expect(mark).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator(".turn-card.fragment-target--focused")).toHaveCount(1);
+    await expect(page.locator(".turn-card.fragment-target--focused [data-selection-mark]")).toContainText("本地优先会先把输入保存在本机");
     await expect(page.getByTestId("floating-selection-capsule")).toHaveCount(0);
 
     // #50：定位提醒持续高亮——超过原 1.6s 自动消失时长仍保持可见，不自动让位

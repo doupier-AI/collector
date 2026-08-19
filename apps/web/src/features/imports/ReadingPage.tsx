@@ -313,10 +313,11 @@ export function ReadingPage() {
           <SelectionRestoreFallback selection={restoredSelection} caption={activeSnapshotRestore.caption} />
         ) : null}
         <article
-          className="reading"
+          className={`reading turn-card${activeSnapshotRestore?.kind === "found" ? " fragment-target--focused" : ""}`}
           aria-label={`${snapshot.title} 正文`}
           data-content-kind="snapshot"
           data-content-snapshot-id={snapshot.id}
+          data-turn-card=""
         >
           {snapshot.blocks.map((block) => {
             const highlight =

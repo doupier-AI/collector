@@ -7,7 +7,7 @@ import { MarkdownContent, type RenderedTermMarker } from "../../components/Markd
 import { subscribeToGroundingSourceReveal } from "../../components/grounding-source-navigation";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { computeAnchoredOverlayPosition } from "../../utils/anchored-overlay-position";
-import { markExactInRendered, setRangeFromOffsets } from "../selection/selection-highlight";
+import { markdownVisibleText, markExactInRendered, setRangeFromOffsets } from "../selection/selection-highlight";
 import { taskErrorReason } from "./format";
 import type { FragmentTarget } from "./fragment-locator";
 import { deriveSliceCardTargets, sliceCardAccessibleName, turnCardId } from "./slice-cards";
@@ -29,7 +29,7 @@ export interface MessageItemProps {
   /** ADR-0035：重新生成（旧回答保留可切换）与重新编辑（改写已发送的问题）。 */
   onRegenerateTask?: (task: ResearchTaskRecord) => void;
   onEditMessage?: (messageId: string, content: string) => void;
-  highlight?: MessageHighlight;
+  highlights?: MessageHighlight[];
   citations?: ResearchCitationRecord[];
   groundingSources?: ResearchGroundingSourceRecord[];
   terms?: TermMarker[];
@@ -50,7 +50,7 @@ export interface MessageItemProps {
 }
 
 /** 单条消息。用户消息靠右呈现，AI 回答保持完整阅读卡片。 */
-export function MessageItem({ message, task, retrying = false, onRetry, onRegenerateTask, onEditMessage, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, onGrowTermMarker, slices, fragmentTarget, fusionSources, multiTurn = false }: MessageItemProps) {
+export function MessageItem({ message, task, retrying = false, onRetry, onRegenerateTask, onEditMessage, highlights = [], citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, onGrowTermMarker, slices, fragmentTarget, fusionSources, multiTurn = false }: MessageItemProps) {
   // ADR-0035：版本切换索引（0=最新正文，1..N=versions[0..N-1]）。hooks 须在角色分支之前声明。
   const [versionIndex, setVersionIndex] = useState(0);
   const versions = message.versions ?? [];
@@ -99,7 +99,7 @@ export function MessageItem({ message, task, retrying = false, onRetry, onRegene
               onGrowMarker={onGrowTermMarker}
             >
               {message.status === "completed" ? (
-                <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} fragmentTarget={fragmentTarget} fusionSources={fusionSources} multiTurn={multiTurn} />
+                <AssistantBlocks message={message} highlights={highlights} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} fragmentTarget={fragmentTarget} fusionSources={fusionSources} multiTurn={multiTurn} />
               ) : (
                 <GeneratingBody message={message} task={task} terms={terms} multiTurn={multiTurn} />
               )}
@@ -296,7 +296,7 @@ const NO_TERMS: TermMarker[] = [];
  * ADR-0032 呈现契约：普通回答为一张轮次卡片内的连续正文；长文为一张轮次卡片内的多章节结构。不造重试卡
  * （那是 failed 的事），切片缺失时同样防御性降级为连续正文。
  */
-function AssistantBlocks({ message, highlight, citations, groundingSources, terms, slices, fragmentTarget, fusionSources, multiTurn = false }: { message: ResearchMessageRecord; highlight?: MessageHighlight; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[]; terms: TermMarker[]; slices?: ResearchSliceRecord[]; fragmentTarget?: FragmentTarget; fusionSources?: ResearchFusionSource[]; multiTurn?: boolean }) {
+function AssistantBlocks({ message, highlights = [], citations, groundingSources, terms, slices, fragmentTarget, fusionSources, multiTurn = false }: { message: ResearchMessageRecord; highlights?: MessageHighlight[]; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[]; terms: TermMarker[]; slices?: ResearchSliceRecord[]; fragmentTarget?: FragmentTarget; fusionSources?: ResearchFusionSource[]; multiTurn?: boolean }) {
   const blocks = deriveMessageBlocks(message.content);
   // 术语按块分组一次并保持数组身份稳定：MarkdownContent 以 terms 引用变化决定是否重扫
   // DOM 重新包裹术语标记；若每次渲染都新建数组，已被键盘聚焦的标记元素会被替换，焦点
@@ -316,13 +316,13 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
     return grouped;
   }, [terms, message, slices]);
   if (blocks.length === 0) return <MarkdownContent text={message.content} sources={groundingSources} citations={citations} variant="message" fusionSources={fusionSources} />;
-  const activeHighlight = highlight ?? undefined;
+  const activeHighlights = highlights.filter((highlight) => highlight.blockOrdinal >= 0 && highlight.blockOrdinal < blocks.length);
 
   // 长文章节目标与章节导航同源派生；块对齐与 blockId 计算不再各自手工进行。
   // 有章节目标时也只渲染一个轮次容器，各 target 只作为卡内章节和导航/落点锚点。
   const cardTargets = deriveSliceCardTargets(message, slices);
-  const cardLocated = Boolean(highlight || fragmentTarget?.cardId === turnCardId(message.id));
-  const fragmentHighlight = fragmentTarget?.cardId === turnCardId(message.id) ? fragmentTarget.highlight : undefined;
+  const cardLocated = activeHighlights.length > 0 || fragmentTarget?.cardId === turnCardId(message.id);
+  const fragmentHighlights = fragmentTarget?.cardId === turnCardId(message.id) ? fragmentTarget.highlights : [];
   if (cardTargets.length > 0) {
     return (
       <div className="message__blocks" data-content-kind="message" data-message-id={message.id}>
@@ -333,8 +333,8 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
           aria-label="Collector 回答"
         >
           {cardTargets.map((target) => {
-            const thisHighlight = activeHighlight && activeHighlight.blockOrdinal === target.blockOrdinal ? activeHighlight : undefined;
-            const thisFragmentHighlight = fragmentHighlight && fragmentHighlight.blockOrdinal === target.blockOrdinal ? fragmentHighlight : undefined;
+            const thisHighlights = activeHighlights.filter((highlight) => highlight.blockOrdinal === target.blockOrdinal);
+            const thisFragmentHighlights = fragmentHighlights.filter((highlight) => highlight.blockOrdinal === target.blockOrdinal);
             return (
               <TurnSection
                 key={target.slice.id}
@@ -343,7 +343,7 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
                 blockId={target.blockId}
                 anchorId={target.anchorId}
                 sectionId={target.cardId}
-                highlights={[thisHighlight, thisFragmentHighlight].filter((entry): entry is MessageHighlight => Boolean(entry))}
+                highlights={[...thisHighlights, ...thisFragmentHighlights]}
                 sources={groundingSources}
                 citations={citations}
                 terms={termsByBlock.get(target.blockOrdinal) ?? NO_TERMS}
@@ -370,15 +370,15 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
       >
         {blocks.map((block) => {
           const blockId = messageContentBlockId(message.id, block.ordinal);
-          const thisHighlight = activeHighlight && activeHighlight.blockOrdinal === block.ordinal ? activeHighlight : undefined;
-          const thisFragmentHighlight = fragmentHighlight && fragmentHighlight.blockOrdinal === block.ordinal ? fragmentHighlight : undefined;
+          const thisHighlights = activeHighlights.filter((highlight) => highlight.blockOrdinal === block.ordinal);
+          const thisFragmentHighlights = fragmentHighlights.filter((highlight) => highlight.blockOrdinal === block.ordinal);
           return (
             <MessageBlock
               key={block.ordinal}
               blockText={block.text}
               blockId={blockId}
               elementId={blockId}
-              highlights={[thisHighlight, thisFragmentHighlight].filter((entry): entry is MessageHighlight => Boolean(entry))}
+              highlights={[...thisHighlights, ...thisFragmentHighlights]}
               sources={groundingSources}
               citations={citations}
               terms={termsByBlock.get(block.ordinal) ?? NO_TERMS}
@@ -469,7 +469,7 @@ function MessageBlock({ blockText, blockId, elementId, titleAnchorId, highlights
       parent.removeChild(el);
     });
     for (const highlight of normalizedHighlights) {
-      const applied = setRangeFromOffsets(containerRef.current, highlight.start, highlight.end);
+      const applied = setRangeFromOffsets(containerRef.current, highlight.start, highlight.end, highlight.exact);
       if (!applied && highlight.exact) {
         markExactInRendered(containerRef.current, highlight.exact);
       }
@@ -491,7 +491,7 @@ function MessageBlock({ blockText, blockId, elementId, titleAnchorId, highlights
 }
 
 /**
- * `?sel=` 与 `?fragment=` 可同时指向同一正文块。先在共同的块文本空间合并重叠/相邻范围，
+ * `?sel=` 与 `?fragment=` 可同时指向同一正文块。先在共同的块文本空间合并重叠范围，
  * 再操作 DOM，避免后应用的范围把已有 mark 再包一层而形成嵌套高亮。
  */
 function mergeMessageHighlights(highlights: readonly MessageHighlight[], blockText: string): MessageHighlight[] {
@@ -500,13 +500,15 @@ function mergeMessageHighlights(highlights: readonly MessageHighlight[], blockTe
   const merged: MessageHighlight[] = [];
   for (const highlight of sorted) {
     const previous = merged.at(-1);
-    if (!previous || highlight.start > previous.end) {
+    // 相邻范围也可能被零宽的引用角标隔开。绝不可把它们合并，否则 DOM Range
+    // 会将角标按钮一并包进 mark；只有真正重叠的范围才合并。
+    if (!previous || highlight.start >= previous.end) {
       merged.push(highlight);
       continue;
     }
     const start = Math.min(previous.start, highlight.start);
     const end = Math.max(previous.end, highlight.end);
-    merged[merged.length - 1] = { blockOrdinal: previous.blockOrdinal, start, end, exact: blockText.slice(start, end) };
+    merged[merged.length - 1] = { blockOrdinal: previous.blockOrdinal, start, end, exact: markdownVisibleText(blockText).slice(start, end) };
   }
   return merged;
 }

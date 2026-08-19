@@ -1,13 +1,10 @@
 import { type ReactNode, useLayoutEffect, useMemo, useRef } from "react";
 import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkBreaks from "remark-breaks";
-import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import type { ResearchCitationRecord, ResearchFusionSource, ResearchGroundingSourceRecord, TermMarker } from "@collector/capture-contracts";
 import { CitationMarker } from "./CitationMarker";
-import { remarkCitationMarkers } from "../features/research-session/remark-citation-markers";
 import { buildCitationIndex, buildSourceMap } from "../features/research-session/citation-utils";
 import { FusionCitationMarker } from "../features/research-session/FusionCitationMarker";
+import { markdownRehypePlugins, markdownRemarkPlugins } from "./markdown-projection";
 
 declare global {
   namespace JSX {
@@ -18,16 +15,6 @@ declare global {
     }
   }
 }
-
-/** rehype-sanitize 默认 schema 上的安全扩展：放行 cite-marker 与内联容器标签。 */
-const safeSchema = {
-  ...defaultSchema,
-  tagNames: [...(defaultSchema.tagNames ?? []), "cite-marker", "del", "input"],
-  attributes: {
-    ...defaultSchema.attributes,
-    "cite-marker": ["data-source-ordinal", "class", "role", "tabindex", "aria-label", "aria-expanded", "aria-describedby"],
-  },
-};
 
 export interface MarkdownContentProps {
   text: string;
@@ -107,8 +94,8 @@ export function MarkdownContent({ text, sources = [], citations = [], terms = []
   return (
     <div ref={rootRef} className={`${rootClass}${className ? ` ${className}` : ""}`}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkBreaks, remarkCitationMarkers]}
-        rehypePlugins={[[rehypeSanitize, safeSchema]]}
+        remarkPlugins={[...markdownRemarkPlugins]}
+        rehypePlugins={[...markdownRehypePlugins]}
         components={{
           "cite-marker": ({ "data-source-ordinal": ordinalStr }: Record<string, unknown>): ReactNode => {
             const ordinal = Number(ordinalStr);

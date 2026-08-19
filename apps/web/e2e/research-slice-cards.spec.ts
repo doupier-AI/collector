@@ -170,6 +170,25 @@ test.describe("长文轮次卡片与章节导航", () => {
     await ticks.nth(1).press("Enter");
     await expect(ticks.nth(1)).toHaveAttribute("aria-current", "location");
     await expect(page.locator(".slice-card__title", { hasText: "长文第2节" })).toBeInViewport();
+    const targetSection = page.locator(".turn-card__section").nth(1);
+    // 导航线按键后保留焦点便于继续浏览；单独把键盘焦点交给章节锚点，验证
+    // 来源深链等真实章节焦点场景只点亮外层轮次卡片，不恢复节级轮廓。
+    await targetSection.focus();
+    await expect(targetSection).toBeFocused();
+    const focusStyles = await targetSection.evaluate((section) => {
+      const card = section.parentElement;
+      if (!card) throw new Error("章节缺少轮次卡片父容器");
+      const sectionStyle = getComputedStyle(section);
+      const cardStyle = getComputedStyle(card);
+      return {
+        sectionOutline: sectionStyle.outlineStyle,
+        sectionShadow: sectionStyle.boxShadow,
+        cardShadow: cardStyle.boxShadow,
+      };
+    });
+    expect(focusStyles.sectionOutline).toBe("none");
+    expect(focusStyles.sectionShadow).toBe("none");
+    expect(focusStyles.cardShadow).not.toBe("none");
   });
 
   test("reduced-motion：跳转与预览无平滑动画", async ({ page }) => {

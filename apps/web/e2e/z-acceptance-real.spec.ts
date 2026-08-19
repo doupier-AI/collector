@@ -21,7 +21,8 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createServer } from "node:net";
 import { type Locator, type Page, type Response } from "@playwright/test";
-import { deriveMessageBlocks } from "@collector/capture-contracts";
+import { composeSectionUnits, deriveMessageBlocks, isLongText } from "@collector/capture-contracts";
+import { markdownVisibleText } from "../src/features/selection/selection-highlight";
 import { expect, getActiveAcceptanceRuntime, test } from "./acceptance-real-fixtures";
 import {
   apiJson,
@@ -380,11 +381,14 @@ test("场景一：Chat 真实回答 → 选区真实分析 → 节点生长真�
   // 返回原文：高亮原选区（消息选区回到根节点页）
   await sourceBar.getByRole("link", { name: "← 返回原文" }).click();
   await page.waitForURL(new RegExp(`/nodes/${sessionId}\\?sel=`));
-  await expect(page.locator("[data-selection-mark]")).toHaveText(selected, { timeout: 20_000 });
+  const restoredCard = page.locator(".turn-card.fragment-target--focused[data-turn-card]");
+  await expect(restoredCard).toHaveCount(1, { timeout: 20_000 });
+  await expect(restoredCard.locator("[data-selection-mark]")).toHaveText(selected);
 
   // 刷新后高亮与子节点入口仍在
   await page.reload();
-  await expect(page.locator("[data-selection-mark]")).toHaveText(selected, { timeout: 20_000 });
+  await expect(restoredCard).toHaveCount(1, { timeout: 20_000 });
+  await expect(restoredCard.locator("[data-selection-mark]")).toHaveText(selected);
   await expect(page.getByTestId("node-child-list")).toBeVisible();
 
   // 390 窄屏：来源返回与节点视图不溢出（真实模型内容下的响应式取证）
@@ -466,7 +470,9 @@ test("场景二：文档导入 → 选区真实分析 → 带方向的节点生�
   await page.waitForURL((url) => url.href.includes(`?sel=`) && url.href.includes(originSessionId), {
     timeout: 20_000,
   });
-  await expect(page.locator("[data-selection-mark]")).toHaveText(DOC_SELECTED, { timeout: 20_000 });
+  const restoredDocument = page.locator("article.reading.turn-card.fragment-target--focused[data-turn-card]");
+  await expect(restoredDocument).toHaveCount(1, { timeout: 20_000 });
+  await expect(restoredDocument.locator("[data-selection-mark]")).toHaveText(DOC_SELECTED);
 
   // SQLite：子节点挂在根节点下并记录来源选区、导入快照仍在
   const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
@@ -498,7 +504,9 @@ test("场景二：文档导入 → 选区真实分析 → 带方向的节点生�
     (url) => url.href.includes(`?sel=`) && url.href.includes(originSessionId),
     { timeout: 20_000 },
   );
-  await expect(recovered.locator("[data-selection-mark]")).toHaveText(DOC_SELECTED, { timeout: 20_000 });
+  const recoveredDocument = recovered.locator("article.reading.turn-card.fragment-target--focused[data-turn-card]");
+  await expect(recoveredDocument).toHaveCount(1, { timeout: 20_000 });
+  await expect(recoveredDocument.locator("[data-selection-mark]")).toHaveText(DOC_SELECTED);
   await freshContext.close();
 
   expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
@@ -621,6 +629,49 @@ test("场景四：刷新不重复创建子节点与标记项目，材料范围�
 });
 
 // ---------------------------------------------------------------------------
+// 双导航 T06：真实长文必须走 plan-then-write，章节保留在同一张轮次卡片内。
+// ---------------------------------------------------------------------------
+test("T06 真实 AI 长文：plan-then-write 每节标题完整且整轮只呈现一张卡片", async ({ page }) => {
+  test.setTimeout(1_200_000);
+  await pairAndOpen(page, "/research/new");
+  const consoleIssues = watchConsole(page);
+  const nodeId = await submitQuestion(
+    page,
+    "请写一篇约 3000 字的完整报告，系统梳理本地优先软件的价值、技术架构、同步冲突、安全边界与落地路线。要求结构完整、逐节深入论述。",
+  );
+  const message = await waitLatestAssistantCompleted(page, nodeId, "T06 AI 长文", DEEP_RESEARCH_TIMEOUT);
+  expect(isLongText(message.content), "真实回答必须超过共享长文阈值").toBe(true);
+
+  const units = composeSectionUnits(deriveMessageBlocks(message.content));
+  expect(units.length, "plan-then-write 应形成多个章节").toBeGreaterThanOrEqual(3);
+  for (const [index, unit] of units.entries()) {
+    expect(unit.title.trim(), `第 ${index + 1} 节必须有标题`).not.toBe("");
+    expect(unit.content.trimStart(), `第 ${index + 1} 节正文首行必须是 ## 标题`).toMatch(/^##\s+\S+/);
+  }
+
+  const messageItem = page.locator(`li[data-message-id="${message.id}"]`);
+  await expect(messageItem.locator(".turn-card[data-turn-card]")).toHaveCount(1);
+  await expect(messageItem.locator(".turn-card__section")).toHaveCount(units.length);
+  await expect(page.getByRole("navigation", { name: "章节导航" })).toBeVisible();
+
+  const database = new DatabaseSync(join(runtimeDataDir(), "collector.sqlite"), { readOnly: true });
+  try {
+    const row = database
+      .prepare("SELECT record_json AS recordJson FROM research_tasks WHERE node_id = ? ORDER BY created_at DESC LIMIT 1")
+      .get(nodeId) as { recordJson: string } | undefined;
+    expect(row, "长文任务必须落库").toBeTruthy();
+    const record = JSON.parse(row?.recordJson ?? "{}") as {
+      bodyPlan?: { sections?: Array<{ heading?: string; status?: string }> };
+    };
+    expect(record.bodyPlan?.sections?.length, "任务记录必须保留 plan-then-write 大纲").toBe(units.length);
+    expect(record.bodyPlan?.sections?.every((section) => Boolean(section.heading?.trim()) && section.status === "completed")).toBe(true);
+  } finally {
+    database.close();
+  }
+  expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
 // 弱标记真实模型语义验收（#83 / 父规格 #80）
 //
 // 阻断问题（任一出现即失败）：控制字符泄漏、正文损坏、引用错位、同名异义错误复用、
@@ -652,7 +703,7 @@ interface RealNodeView {
   tasks: Array<{ id: string; status: string; allowWebSearch?: boolean; groundingScope?: { status: string } }>;
   groundingSources?: Array<{ id: string }>;
   citations?: Array<{ id: string; messageId: string; blockOrdinal: number; markerOffset: number }>;
-  fusionSources?: Record<string, Array<{ nodeId: string }>>;
+  fusionSources?: Record<string, Array<{ nodeId: string; bodyVersionId: string; fragmentId: string }>>;
 }
 
 /** 记录真实模型语义观察（漏标、密度、类别分布），不构成失败。 */
@@ -856,6 +907,10 @@ test("弱标记场景五：普通回答真实标记语义、预览复用边界�
   await waitCompletedAnswerText(page, 1);
   await assertRealMode(page);
   const rootMessage = await waitLatestAssistantCompleted(page, rootNodeId, "普通回答");
+  expect(isLongText(rootMessage.content), "普通回答不得误入长文呈现").toBe(false);
+  const rootMessageItem = page.locator(`li[data-message-id="${rootMessage.id}"]`);
+  await expect(rootMessageItem.locator(".turn-card[data-turn-card]")).toHaveCount(1);
+  await expect(rootMessageItem.locator(".turn-card__section")).toHaveCount(0);
   const visibleText = await page.locator('.message--assistant [data-content-kind="message"]').last().innerText();
   expect(visibleText.includes("[["), "页面可见正文残留开控制符").toBe(false);
   expect(visibleText.includes("]]"), "页面可见正文残留闭控制符").toBe(false);
@@ -1163,6 +1218,33 @@ test("弱标记场景九：融合正文真实生成后的标记、引用与来�
   const childAfter = (await waitLatestAssistantCompleted(page, childNodeId, "融合后子节点")).content;
   expect(rootAfter, "融合不得改写根节点正文（阻断）").toBe(rootContentBefore);
   expect(childAfter, "融合不得改写子节点正文（阻断）").toBe(childContentBefore);
+
+  // 真实融合正文的 [来源n] 点击后必须同时得到轮次卡片光环和文字级高亮。
+  const firstReference = fusionMessage.content.match(/\[来源(\d+)\]/);
+  expect(firstReference, "融合正文必须能解析第一条来源序号").toBeTruthy();
+  const fusionView = await fetchNodeView(page, fusionNodeId);
+  const source = fusionView.fusionSources?.[fusionMessage.id]?.[Number(firstReference?.[1] ?? 0) - 1];
+  expect(source, "第一条融合引用必须对应视图中的稳定来源").toBeTruthy();
+  const sourceBody = await apiJson<{
+    fragments: Array<{ id: string; messageId: string; excerpt: string }>;
+  }>(page, `/v1/research-body-versions/${encodeURIComponent(source!.bodyVersionId)}`);
+  const sourceFragment = sourceBody.fragments.find((fragment) => fragment.id === source!.fragmentId);
+  expect(sourceFragment, "融合引用的稳定片段必须能从正文版本逐字回读").toBeTruthy();
+  const expectedVisibleExcerpt = markdownVisibleText(sourceFragment!.excerpt);
+
+  const citation = page.locator(".fusion-citation-marker").first();
+  await expect(citation).toBeVisible();
+  await citation.click();
+  await page.waitForURL(
+    (url) => url.pathname.endsWith(`/nodes/${encodeURIComponent(source!.nodeId)}`) && url.searchParams.get("fragment") === source!.fragmentId,
+    { timeout: 20_000 },
+  );
+  const restoredSourceCard = page.locator(".turn-card.fragment-target--focused[data-turn-card]");
+  await expect(restoredSourceCard).toHaveCount(1, { timeout: 20_000 });
+  await expect(restoredSourceCard).toHaveAttribute("id", `${sourceFragment!.messageId}-turn`);
+  const restoredMarks = restoredSourceCard.locator("[data-selection-mark]");
+  expect(await restoredMarks.count(), "融合引用回源必须有文字级高亮").toBeGreaterThan(0);
+  expect((await restoredMarks.allTextContents()).join(""), "高亮文字必须逐字对应点击来源片段的可见正文").toBe(expectedVisibleExcerpt);
 
   // 跨场景总闸口由依赖本项目的 chromium-acceptance-summary 读取每场景原子证据执行；
   // 并行 worker 间不再依赖进程内全局变量。

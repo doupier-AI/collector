@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
@@ -116,6 +116,10 @@ describe("阅读视图来源返回", () => {
 
     const mark = await screen.findByText("正文", { selector: "[data-selection-mark]" });
     expect(mark.tagName).toBe("MARK");
+    // 导入阅读页整篇正文是一张轮次卡片；块/章节仍只承担精确落点。
+    const card = container.querySelector("article.reading[data-turn-card]");
+    expect(card).toHaveClass("fragment-target--focused");
+    expect(mark.closest("[data-block-id]")).not.toHaveClass("fragment-target--focused");
     // 高亮只包住选区范围，块内其余文字仍在
     expect(container.querySelector('[data-block-id="b-2"] [data-block-text]')?.textContent).toBe("正文段落");
     // #48：返回定位是只读临时提醒——不重开浮动胶囊，不进入引用态
@@ -165,6 +169,7 @@ describe("阅读视图来源返回", () => {
     expect(fallback).toHaveTextContent("第 3–5 行");
     expect(fallback).toHaveTextContent("正文");
     expect(screen.queryByText("正文", { selector: "[data-selection-mark]" })).not.toBeInTheDocument();
+    expect(document.querySelector("article.reading[data-turn-card]")).not.toHaveClass("fragment-target--focused");
   });
 
   it("选区属于其他内容时不呈现恢复内容", async () => {
@@ -294,7 +299,7 @@ describe("阅读视图章节解析（T03）", () => {
 
     expect(await screen.findByText("AI 正在通读全文，章节导航稍后补齐…")).toBeInTheDocument();
     await vi.waitFor(() => expect(getResearchContent).toHaveBeenCalledTimes(2), { timeout: 5_000 });
-    expect(await screen.findByTestId("reading-chapter-nav")).toHaveAttribute("data-chapter-source", "ai");
+    await waitFor(() => expect(screen.getByTestId("reading-chapter-nav")).toHaveAttribute("data-chapter-source", "ai"));
     expect(screen.getByText("章节由 AI 通读全文生成")).toBeInTheDocument();
     // 终态后轮询停止。
     await new Promise((resolve) => setTimeout(resolve, 2_500));

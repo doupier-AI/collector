@@ -210,7 +210,12 @@ test.describe("标记列表 API 与持久化", () => {
     await page.getByTestId(`mark-open-${item!.id}`).click();
     await expect(page).toHaveURL(new RegExp(`/nodes/[^?]+\\?sel=`));
     // #48：只读定位提醒——高亮呈现、不重开浮动胶囊、不进入引用态
-    await expect(page.locator("[data-selection-mark]")).toHaveText(SELECTED, { timeout: 10_000 });
+    const mark = page.locator("[data-selection-mark]");
+    await expect(mark).toHaveText(SELECTED, { timeout: 10_000 });
+    // #96：标记列表返回同样由一张轮次卡片承担定位光环，精确文字留在卡内。
+    const card = page.locator(".turn-card.fragment-target--focused[data-turn-card]");
+    await expect(card).toHaveCount(1);
+    await expect(card.locator("[data-selection-mark]")).toHaveText(SELECTED);
     await expect(page.locator('[data-testid="floating-selection-capsule"]')).toHaveCount(0);
     await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
     // #50：定位提醒持续高亮——超过原 1.6s 自动消失时长仍保持可见

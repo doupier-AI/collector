@@ -774,10 +774,14 @@ button {
   box-shadow: var(--shadow-1);
 }
 
-/* 章节锚点只在程序定位或键盘聚焦时显示光环，常态不呈现独立卡片。 */
+/* 章节锚点不再拥有节级焦点外观；可见键盘光环由外层轮次卡片统一承担。
+   只匹配直接章节子元素，正文内按钮/链接聚焦不会触发整张卡片。 */
 .turn-card__section:focus-visible {
+  outline: none;
+}
+
+.turn-card:has(> .turn-card__section:focus-visible) {
   box-shadow: var(--ring-focus);
-  border-radius: var(--radius-panel);
 }
 
 /* 卡片交互态跟随轮次容器；章节本身不再拥有悬停卡片态。 */

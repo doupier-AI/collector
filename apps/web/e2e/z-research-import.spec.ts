@@ -110,6 +110,49 @@ test("上传 TXT 后显示真实状态、完成并进入阅读视图，界面与
   expect(consoleIssues).toEqual([]);
 });
 
+test("导入正文来源返回：整篇阅读页轮次卡片获得光环，并精确高亮原选区", async ({ page }) => {
+  const sessionId = await openFreshSession(page);
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "来源返回.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from(TXT_CONTENT, "utf8"),
+  });
+  await expect(page.getByText("已导入")).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "阅读" }).click();
+  await expect(page).toHaveURL(new RegExp(`/research/${sessionId}/reading/[^/]+$`));
+  await expect(page.getByText("第一行：本地优先研究")).toBeVisible();
+  const readingUrl = page.url();
+
+  // 阅读页正文块与消息页同样经 SelectionSurface 捕获；这里不复用消息专用 helper。
+  await page.evaluate((target) => {
+    const root = document.querySelector('[data-content-kind="snapshot"] [data-block-text]');
+    const text = root?.firstChild;
+    if (!(text instanceof Text)) throw new Error("导入正文块未就绪");
+    const offset = text.data.indexOf(target);
+    if (offset < 0) throw new Error("导入正文中未找到目标文字");
+    const range = document.createRange();
+    range.setStart(text, offset);
+    range.setEnd(text, offset + target.length);
+    const selection = window.getSelection();
+    if (!selection) throw new Error("浏览器不支持 Selection");
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  }, "第一行：本地优先研究");
+  await expect(page.getByTestId("floating-selection-capsule")).toBeVisible();
+  await page.getByTestId("floating-capsule-cite").click();
+  await expect(page.getByTestId("selection-capsule")).toBeVisible();
+
+  const selections = await apiJson<Array<{ id: string }>>(page, `/v1/research-sessions/${sessionId}/selections`);
+  expect(selections).toHaveLength(1);
+  await page.goto(`${readingUrl}?sel=${encodeURIComponent(selections[0]!.id)}`);
+
+  const card = page.locator("article.reading.turn-card.fragment-target--focused[data-turn-card]");
+  await expect(card).toBeVisible({ timeout: 10_000 });
+  await expect(card.locator("[data-selection-mark]")).toHaveText("第一行：本地优先研究");
+  await expect(page.locator(".reading__block.fragment-target--focused")).toHaveCount(0);
+});
+
 test("拖放上传完成，刷新与关闭重开后附件与阅读内容一致恢复", async ({ page, context }) => {
   const sessionId = await openFreshSession(page);
   const consoleIssues = watchConsole(page);

@@ -900,15 +900,13 @@ export function ResearchNodePage() {
                 onRetry={handleRetry}
                 onRegenerateTask={handleRegenerate}
                 onEditMessage={handleEditMessage}
-                highlight={
+                highlights={
                   activeHighlight?.kind === "found" && activeHighlight.messageId === message.id
-                    ? {
+                    ? activeHighlight.highlights.map((highlight) => ({
                         blockOrdinal: activeHighlight.blockOrdinal,
-                        start: activeHighlight.start,
-                        end: activeHighlight.end,
-                        exact: restoredSelection?.anchor?.exact ?? restoredSelection?.text ?? "",
-                      }
-                    : undefined
+                        ...highlight,
+                      }))
+                    : []
                 }
                 citations={view.citations}
                 groundingSources={view.groundingSources}

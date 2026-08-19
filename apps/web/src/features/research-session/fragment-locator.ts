@@ -12,6 +12,7 @@ import {
 import type { ApiClient } from "../../api/client";
 import { stableNodePath } from "../../app/paths";
 import type { MessageHighlight } from "./MessageItem";
+import { markdownSourceHighlightRanges } from "../selection/selection-highlight";
 import { deriveSliceCardTargets, turnCardId } from "./slice-cards";
 
 /**
@@ -55,7 +56,7 @@ export interface FragmentTarget {
   elementId: string;
   /** 目标节正文（#43 由正文确定性派生），用于定位播报与文字级高亮基线。 */
   excerpt: string;
-  highlight: MessageHighlight;
+  highlights: MessageHighlight[];
 }
 
 export type FragmentLocatorResult =
@@ -99,12 +100,12 @@ export function locateFragment(input: FragmentLocatorInput): FragmentLocatorResu
   const target = deriveSliceCardTargets(message, messageSlices).find((entry) => entry.slice.id === matched.id);
   if (target) {
     const excerpt = resolveFragmentExcerpt(input.version, fragment);
-    const highlight = fragmentTextHighlight(target.blockOrdinal, target.blockText, excerpt);
-    if (!highlight) return { kind: "failure", failure: "target-not-derived" };
+    const highlights = fragmentTextHighlights(target.blockOrdinal, target.blockText, excerpt);
+    if (highlights.length === 0) return { kind: "failure", failure: "target-not-derived" };
     return {
       kind: "ok",
       slice: matched,
-      target: { cardId: turnCardId(message.id), elementId: target.cardId, excerpt, highlight },
+      target: { cardId: turnCardId(message.id), elementId: target.cardId, excerpt, highlights },
     };
   }
   // #91：普通回答无节卡呈现——落点改为轮次卡片内对应段落块容器（id 恒存在），
@@ -113,22 +114,44 @@ export function locateFragment(input: FragmentLocatorInput): FragmentLocatorResu
   const units = composeSectionUnits(blocks);
   const unit = units[fragment.ordinal];
   const block = blocks[unit?.firstBlockOrdinal ?? fragment.ordinal];
-  if (!block) return { kind: "failure", failure: "target-not-derived" };
+  if (!block || !unit) return { kind: "failure", failure: "target-not-derived" };
   const excerpt = resolveFragmentExcerpt(input.version, fragment);
-  const highlight = fragmentTextHighlight(block.ordinal, block.text, excerpt);
-  if (!highlight) return { kind: "failure", failure: "target-not-derived" };
+  // 片段、切片与展示单元必须仍指向同一份正文。只靠片段的绝对范围会在序数
+  // 数据错位时出现“滚到第一段、却高亮第三段”的假定位；先逐字验证当前单元，
+  // 不一致便沿用既有诚实降级。
+  if (!unit.content.includes(excerpt)) return { kind: "failure", failure: "target-not-derived" };
+  // 短回答不渲染合并节容器：带独立标题的短节会跨多个实际段落块，逐块投影并保留
+  // 首块作为滚动/焦点锚点，避免把完整节摘录错误塞进首块而诚实降级。
+  const highlights = blocks
+    .slice(unit.firstBlockOrdinal, unit.firstBlockOrdinal + unit.blockCount)
+    .flatMap((candidate) => {
+    const blockStart = candidate.startOffset;
+    const blockEnd = blockStart + candidate.text.length;
+    const start = Math.max(fragment.startOffset, blockStart);
+    const end = Math.min(fragment.endOffset, blockEnd);
+    return start < end
+      ? markdownSourceHighlightRanges(candidate.text, start - blockStart, end - blockStart).map((highlight) => ({
+          blockOrdinal: candidate.ordinal,
+          ...highlight,
+        }))
+      : [];
+    });
+  if (highlights.length === 0) return { kind: "failure", failure: "target-not-derived" };
   return {
     kind: "ok",
     slice: matched,
-    target: { cardId: turnCardId(message.id), elementId: messageContentBlockId(message.id, block.ordinal), excerpt, highlight },
+    target: { cardId: turnCardId(message.id), elementId: messageContentBlockId(message.id, block.ordinal), excerpt, highlights },
   };
 }
 
 /** 片段摘录须能在实际渲染的局部正文中逐字找到，才允许创建文字高亮。 */
-function fragmentTextHighlight(blockOrdinal: number, blockText: string, excerpt: string): MessageHighlight | null {
+function fragmentTextHighlights(blockOrdinal: number, blockText: string, excerpt: string): MessageHighlight[] {
   const start = blockText.indexOf(excerpt);
-  if (start < 0) return null;
-  return { blockOrdinal, start, end: start + excerpt.length, exact: excerpt };
+  if (start < 0) return [];
+  return markdownSourceHighlightRanges(blockText, start, start + excerpt.length).map((highlight) => ({
+    blockOrdinal,
+    ...highlight,
+  }));
 }
 
 const bodyVersionCache = new Map<string, Promise<ResearchBodyVersionView>>();

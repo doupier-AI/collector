@@ -87,7 +87,28 @@ describe("locateFragment", () => {
     expect(result.target.cardId).toBe("m-out-turn");
     // 无标题块合并：节起始块 ordinal = 切片下标 1；仍用于精确滚动和焦点。
     expect(result.target.elementId).toBe(messageContentBlockId(message.id, 1));
-    expect(result.target.highlight).toEqual({ blockOrdinal: 1, start: 0, end: 4, exact: "第二段。" });
+    expect(result.target.highlights).toEqual([{ blockOrdinal: 1, start: 0, end: 4, exact: "第二段。" }]);
+  });
+
+  it("短回答标题与后续正文分块时，片段分别投影到实际渲染的两个块", () => {
+    const message = makeAssistantMessage("m-titled", "## 标题\n\n**正文** [链接](https://example.test)");
+    const { version, slices, fragments } = makeArtifacts(message);
+    const result = locateFragment({
+      currentNodeId: "node-a",
+      fragmentId: fragments[0]!.id,
+      version,
+      fragments,
+      messages: [message],
+      slicesByMessage: { [message.id]: slices },
+    });
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    // 仍滚到首块（标题），但不能把整个节摘录塞给标题块。
+    expect(result.target.elementId).toBe(messageContentBlockId(message.id, 0));
+    expect(result.target.highlights).toEqual([
+      { blockOrdinal: 0, start: 0, end: 2, exact: "标题" },
+      { blockOrdinal: 1, start: 0, end: 5, exact: "正文 链接" },
+    ]);
   });
 
   it("序数对齐后片段摘录若无法逐字投影到目标正文，诚实降级", () => {
@@ -134,8 +155,8 @@ describe("locateFragment", () => {
     expect(result.target.cardId).toBe("m-long-turn");
     expect(result.target.elementId).toBe(`${messageContentBlockId(message.id, 2)}-card`);
     expect(result.target.excerpt).toContain("## 第二节");
-    expect(result.target.highlight).toMatchObject({ blockOrdinal: 2, start: 0, exact: result.target.excerpt });
-    expect(result.target.highlight.end).toBe(result.target.excerpt.length);
+    expect(result.target.highlights[0]).toMatchObject({ blockOrdinal: 2, start: 0 });
+    expect(result.target.highlights.at(-1)?.end).toBeGreaterThan(0);
   });
 
   it("invalid-id：标识无法解析", () => {

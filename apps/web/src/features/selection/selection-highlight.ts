@@ -7,6 +7,7 @@ import type {
 import { composeSectionUnits, deriveMessageBlocks, messageContentBlockId, messageUsesSectionCards } from "@collector/capture-contracts";
 import { messageBlockCaption } from "../../app/anchorCaption";
 import { stableNodePath } from "../../app/paths";
+import { projectMarkdownVisibleText, type MarkdownVisibleProjection } from "../../components/markdown-projection";
 
 /** 选区原文在来源条等窄空间中的最大展示长度。 */
 export const SELECTION_EXCERPT_CHARACTERS = 48;
@@ -91,8 +92,60 @@ export function focusComposerTextarea(): void {
 }
 
 export type MessageHighlightResult =
-  | { kind: "found"; messageId: string; blockId: string; blockOrdinal: number; start: number; end: number }
+  | {
+      kind: "found";
+      messageId: string;
+      blockId: string;
+      blockOrdinal: number;
+      start: number;
+      end: number;
+      highlights: Array<{ start: number; end: number; exact: string }>;
+    }
   | { kind: "fallback"; caption: string };
+
+/** 与 MarkdownContent 的正文文本空间一致的可见文字；引用角标本身不属于正文。 */
+export function markdownVisibleText(source: string): string {
+  return projectMarkdownVisibleText(source).text;
+}
+
+function visibleRanges(projection: MarkdownVisibleProjection, start: number, end: number): Array<{ start: number; end: number; exact: string }> {
+  if (start < 0 || end > projection.text.length || start >= end) return [];
+  const splitPoints = projection.citationBoundaries.filter((boundary) => boundary > start && boundary < end);
+  const points = [start, ...splitPoints, end];
+  return points.slice(0, -1).flatMap((rangeStart, index) => {
+    const rangeEnd = points[index + 1]!;
+    return rangeStart < rangeEnd
+      ? [{ start: rangeStart, end: rangeEnd, exact: projection.text.slice(rangeStart, rangeEnd) }]
+      : [];
+  });
+}
+
+/** 源 Markdown 的一个片段投影为实际 DOM 可见文本的一个或多个不跨来源角标的范围。 */
+export function markdownSourceHighlightRanges(source: string, sourceStart: number, sourceEnd: number): Array<{ start: number; end: number; exact: string }> {
+  if (sourceStart < 0 || sourceEnd > source.length || sourceStart >= sourceEnd) return [];
+  const projection = projectMarkdownVisibleText(source);
+  const selected = projectMarkdownVisibleText(source.slice(sourceStart, sourceEnd));
+  if (!selected.text) return [];
+  let start = sourceStart === 0 && sourceEnd === source.length ? 0 : projection.text.indexOf(selected.text);
+  if (start < 0 || projection.text.indexOf(selected.text, start + selected.text.length) >= 0) return [];
+  const relocated: MarkdownVisibleProjection = {
+    text: projection.text,
+    citationBoundaries: selected.citationBoundaries.map((boundary) => start + boundary),
+  };
+  return visibleRanges(relocated, start, start + selected.text.length);
+}
+
+/** 选区偏移本来处于可见 DOM 文本空间；原位置不再匹配时只接受唯一的 exact 重定位。 */
+function resolveMarkdownVisibleHighlights(source: string, target: { startOffset: number; endOffset: number; exact: string }): Array<{ start: number; end: number; exact: string }> {
+  const projection = projectMarkdownVisibleText(source);
+  if (target.exact && projection.text.slice(target.startOffset, target.endOffset) === target.exact) {
+    return visibleRanges(projection, target.startOffset, target.endOffset);
+  }
+  if (!target.exact) return [];
+  const first = projection.text.indexOf(target.exact);
+  if (first < 0 || projection.text.indexOf(target.exact, first + target.exact.length) >= 0) return [];
+  return visibleRanges(projection, first, first + target.exact.length);
+}
 
 /**
  * 在节点页消息列表中定位消息选区。
@@ -118,17 +171,26 @@ export function highlightForMessages(
   if (!message) return { kind: "fallback", caption };
   const blocks = deriveMessageBlocks(message.content);
   if (blocks.length === 0) return { kind: "fallback", caption };
-  const blockOrdinal = messageUsesSectionCards(message.content, slicesByMessage?.[message.id])
-    ? composeSectionUnits(blocks)[anchor.blockOrdinal]?.firstBlockOrdinal
-    : blocks[anchor.blockOrdinal]?.ordinal;
-  if (blockOrdinal === undefined) return { kind: "fallback", caption };
+  const unit = messageUsesSectionCards(message.content, slicesByMessage?.[message.id])
+    ? composeSectionUnits(blocks)[anchor.blockOrdinal]
+    : undefined;
+  const blockOrdinal = unit?.firstBlockOrdinal ?? blocks[anchor.blockOrdinal]?.ordinal;
+  const blockText = unit?.content ?? blocks[anchor.blockOrdinal]?.text;
+  if (blockOrdinal === undefined || blockText === undefined) return { kind: "fallback", caption };
+  const highlights = resolveMarkdownVisibleHighlights(blockText, {
+    startOffset: anchor.startOffset,
+    endOffset: anchor.endOffset,
+    exact,
+  });
+  if (highlights.length === 0) return { kind: "fallback", caption };
   return {
     kind: "found",
     messageId: message.id,
     blockId: messageContentBlockId(message.id, blockOrdinal),
     blockOrdinal,
-    start: anchor.startOffset,
-    end: anchor.endOffset,
+    start: highlights[0]!.start,
+    end: highlights.at(-1)!.end,
+    highlights,
   };
 }
 
@@ -168,7 +230,7 @@ export function childNodeIdempotencyKey(
  * 用 extractContents/insertNode 包裹 <mark>，允许选区跨过弱标记等内联元素。
  * 失败（偏移越界/文本节点边界不干净）返回 false，调用方应降级为 exact 文本搜索或兜底说明。
  */
-export function setRangeFromOffsets(root: Element, start: number, end: number): boolean {
+export function setRangeFromOffsets(root: Element, start: number, end: number, exact?: string): boolean {
   if (start >= end || start < 0) return false;
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const nodes: Text[] = [];
@@ -181,6 +243,9 @@ export function setRangeFromOffsets(root: Element, start: number, end: number): 
     textContent += node.textContent ?? "";
   }
   if (start >= textContent.length || end > textContent.length) return false;
+  // 偏移来自 Markdown 源→可见 DOM 的投影，应用前仍逐字校验，避免 Markdown
+  // 结构变化后把同一偏移套到另一段文字上。
+  if (exact !== undefined && textContent.slice(start, end) !== exact) return false;
 
   let offset = 0;
   let startNode: Text | null = null;
@@ -206,6 +271,9 @@ export function setRangeFromOffsets(root: Element, start: number, end: number): 
     const range = document.createRange();
     range.setStart(startNode, startNodeOffset);
     range.setEnd(endNode, endNodeOffset);
+    // 引用角标在可见文字空间长度为零；Range 若跨过它仍会把角标节点一并
+    // extract。任何这种情况都拒绝，交由上层保留诚实降级而不是高亮引用按钮。
+    if (range.cloneContents().querySelector("cite-marker, [data-citation-marker]")) return false;
     const mark = document.createElement("mark");
     mark.className = "selection-mark";
     mark.setAttribute("data-selection-mark", "");
@@ -235,5 +303,7 @@ export function markExactInRendered(root: Element, exact: string): boolean {
   }
   const idx = textContent.indexOf(exact);
   if (idx < 0) return false;
-  return setRangeFromOffsets(root, idx, idx + exact.length);
+  // 偏移投影失效时，重复正文无法证明是哪一次出现，不能猜测并标到错误位置。
+  if (textContent.indexOf(exact, idx + exact.length) >= 0) return false;
+  return setRangeFromOffsets(root, idx, idx + exact.length, exact);
 }

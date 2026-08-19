@@ -147,10 +147,10 @@ test("#31 确认式融合：弱提示 → 确认 → 融合节点 → 章节与�
   await expect(firstFusionSource).toBeVisible();
   await firstFusionSource.click();
   await page.waitForURL((url) => url.searchParams.has("fragment"), { timeout: 10_000 });
-  await expect(page.locator(".fragment-target--focused")).toBeVisible({ timeout: 10_000 });
-  // 回到来源节点：片段摘录逐字一致。
-  const locatedText = await page.locator(".fragment-target--focused").textContent();
-  expect(locatedText).toContain("本地优先");
+  const locatedCard = page.locator(".turn-card.fragment-target--focused");
+  await expect(locatedCard).toBeVisible({ timeout: 10_000 });
+  // 回到来源节点：轮次卡片承担光环，片段摘录在卡内逐字高亮。
+  await expect(locatedCard.locator("[data-selection-mark]")).toContainText("本地优先");
 
   // 验收 6：来源节点消息逐字节不变。
   const rootContents = assistantMessageContents(dbPath, rootNodeId);

@@ -6,6 +6,8 @@ import {
   childNodeIdempotencyKey,
   highlightForMessages,
   laterIdempotencyKey,
+  markdownSourceHighlightRanges,
+  markdownVisibleText,
   resolveHighlight,
   selectionExcerpt,
   setRangeFromOffsets,
@@ -40,6 +42,47 @@ describe("setRangeFromOffsets", () => {
     expect(root.textContent).toBe(before);
     expect(root.querySelector("[data-selection-mark]")?.textContent).toBe("前REST");
     expect(root.querySelector("[data-term-marker]")).not.toBeNull();
+  });
+
+  it("拒绝把零宽来源角标一并包进高亮", () => {
+    const root = document.createElement("p");
+    root.innerHTML = '前<a class="citation-marker"><sup data-citation-marker></sup></a>后';
+    document.body.appendChild(root);
+
+    expect(setRangeFromOffsets(root, 0, 2, "前后")).toBe(false);
+    expect(root.querySelector("[data-selection-mark]")).toBeNull();
+    expect(root.querySelector("[data-citation-marker]")).not.toBeNull();
+  });
+});
+
+describe("Markdown 源文本到可见正文投影", () => {
+  it("剥离标题、强调、链接地址，并把来源角标两侧拆成独立可见范围", () => {
+    const source = "## 标题\n\n**加粗**和[链接](https://example.test)[来源1]后文";
+    expect(markdownVisibleText(source)).toBe("标题\n加粗和链接后文");
+    expect(markdownSourceHighlightRanges(source, 0, source.length)).toEqual([
+      { start: 0, end: 8, exact: "标题\n加粗和链接" },
+      { start: 8, end: 10, exact: "后文" },
+    ]);
+  });
+
+  it("与 GFM 渲染保持同一文本空间：列表、斜体、行内代码、引用、表格与围栏代码", () => {
+    const source = [
+      "- 列表 *斜体* `code`",
+      "",
+      "> 引用",
+      "",
+      "| 甲 | 乙 |",
+      "| --- | --- |",
+      "| 一 | 二 |",
+      "",
+      "```js",
+      "let x=1",
+      "```",
+    ].join("\n");
+    expect(markdownVisibleText(source)).toBe("\n列表 斜体 code\n\n\n引用\n\n甲乙一二\nlet x=1\n");
+    const ranges = markdownSourceHighlightRanges(source, 0, source.length);
+    expect(ranges).toHaveLength(1);
+    expect(ranges[0]?.exact).toBe(markdownVisibleText(source));
   });
 });
 
@@ -105,6 +148,7 @@ describe("highlightForMessages", () => {
       blockOrdinal: 1,
       start: 0,
       end: 3,
+      highlights: [{ start: 0, end: 3, exact: "第二段" }],
     });
   });
 
@@ -120,7 +164,7 @@ describe("highlightForMessages", () => {
     expect(result).toEqual({ kind: "fallback", caption: "段落 3" });
   });
 
-  it("块存在即返回 found；原文已不在块中匹配改为由渲染层 DOM 校验", () => {
+  it("原文已不在块中且 exact 也不存在时诚实降级", () => {
     const result = highlightForMessages([message], undefined, {
       kind: "message",
       messageId: "m-out",
@@ -129,13 +173,37 @@ describe("highlightForMessages", () => {
       endOffset: 5,
       exact: "已被改写的内容",
     }, "已被改写的内容");
+    expect(result).toEqual({ kind: "fallback", caption: "段落 1" });
+  });
+
+  it("锚点偏移变化时仅在 exact 唯一时重定位，重复文本不猜测", () => {
+    const rewritten = makeMessage({ id: "m-out", content: "前缀后唯一目标后缀" });
+    const found = highlightForMessages([rewritten], undefined, {
+      kind: "message", messageId: "m-out", blockOrdinal: 0, startOffset: 0, endOffset: 4, exact: "唯一目标",
+    }, "唯一目标");
+    expect(found).toMatchObject({ kind: "found", start: 3, end: 7 });
+    const repeated = makeMessage({ id: "m-out", content: "目标和目标" });
+    expect(highlightForMessages([repeated], undefined, {
+      kind: "message", messageId: "m-out", blockOrdinal: 0, startOffset: 2, endOffset: 4, exact: "目标",
+    }, "目标")).toEqual({ kind: "fallback", caption: "段落 1" });
+  });
+
+  it("选区跨零文本来源角标时拆成两个真实范围，不把角标当正文", () => {
+    const cited = makeMessage({ id: "m-out", content: "前[来源1]后" });
+    const result = highlightForMessages([cited], undefined, {
+      kind: "message", messageId: "m-out", blockOrdinal: 0, startOffset: 0, endOffset: 2, exact: "前后",
+    }, "前后");
     expect(result).toEqual({
       kind: "found",
       messageId: "m-out",
       blockId: "m-out#p0",
       blockOrdinal: 0,
       start: 0,
-      end: 5,
+      end: 2,
+      highlights: [
+        { start: 0, end: 1, exact: "前" },
+        { start: 1, end: 2, exact: "后" },
+      ],
     });
   });
 
@@ -166,37 +234,39 @@ describe("highlightForMessages 锚点随呈现契约对齐（#48/#91）", () => 
     const result = highlightForMessages([titled], undefined, {
       kind: "message",
       messageId: "m-out",
-      blockOrdinal: 1,
-      startOffset: 4,
-      endOffset: 8,
+      blockOrdinal: 3,
+      startOffset: 2,
+      endOffset: 7,
       exact: "第二段正文",
     }, "第二段正文");
     expect(result).toEqual({
       kind: "found",
       messageId: "m-out",
-      blockId: "m-out#p1",
-      blockOrdinal: 1,
-      start: 4,
-      end: 8,
+      blockId: "m-out#p3",
+      blockOrdinal: 3,
+      start: 2,
+      end: 7,
+      highlights: [{ start: 2, end: 7, exact: "第二段正文" }],
     });
   });
 
-  it("普通回答：标题块仍是独立锚点块（偏移落在标题块内定位到该块）", () => {
+  it("普通回答：Markdown 标题选区按可见文字空间定位", () => {
     const result = highlightForMessages([titled], undefined, {
       kind: "message",
       messageId: "m-out",
       blockOrdinal: 0,
       startOffset: 0,
-      endOffset: 4,
-      exact: "## 第",
-    }, "## 第");
+      endOffset: 3,
+      exact: "第一节",
+    }, "第一节");
     expect(result).toEqual({
       kind: "found",
       messageId: "m-out",
       blockId: "m-out#p0",
       blockOrdinal: 0,
       start: 0,
-      end: 4,
+      end: 3,
+      highlights: [{ start: 0, end: 3, exact: "第一节" }],
     });
   });
 
@@ -230,6 +300,16 @@ describe("highlightForMessages 锚点随呈现契约对齐（#48/#91）", () => 
     sourceRefs: [],
     isProvisional: false,
     createdAt: "2026-08-01T00:00:00.000Z",
+  }, {
+    id: "slice:node:m-out:1",
+    nodeId: "node-a",
+    messageId: "m-out",
+    ordinal: 1,
+    title: "",
+    normalizedConcepts: [] as string[],
+    sourceRefs: [],
+    isProvisional: false,
+    createdAt: "2026-08-01T00:00:00.000Z",
   }];
 
   it("长文节卡：锚点 blockOrdinal 按节单元解析（blockId 用节首块段落 ordinal）", () => {
@@ -238,8 +318,8 @@ describe("highlightForMessages 锚点随呈现契约对齐（#48/#91）", () => 
       kind: "message",
       messageId: "m-out",
       blockOrdinal: 1,
-      startOffset: 4,
-      endOffset: 8,
+      startOffset: 6,
+      endOffset: 11,
       exact: "第二段正文",
     }, "第二段正文");
     expect(result).toEqual({
@@ -247,8 +327,9 @@ describe("highlightForMessages 锚点随呈现契约对齐（#48/#91）", () => 
       messageId: "m-out",
       blockId: "m-out#p2",
       blockOrdinal: 2,
-      start: 4,
-      end: 8,
+      start: 6,
+      end: 11,
+      highlights: [{ start: 6, end: 11, exact: "第二段正文" }],
     });
   });
 
