@@ -90,6 +90,7 @@ Collector 是具备自然普通对话能力的研究与学习工作空间（不�
 - 文本型 PDF 只提供正文快照与页码锚点，不复原版式。
 - 视觉回归像素基线以 win32 + Chromium 为准（snapshotPathTemplate 去平台后缀、maxDiffPixelRatio 0.01）；跨平台运行需按平台重新生成基线。
 - #49 修复：`fetchPublicResource` 请求此前未携带 pathname/query，实际请求目标页面的根路径（首页）而非目标 URL——已修复（含查询参数），抓取正文确为目标页面。
+- 旧「采集」后端层为待产品决定的遗留面：`/v1/captures`、`/v1/topics`、`/v1/materials`、`/v1/recent-organization` 等接口与 `captures`/`topics`/`materials` 等数据表、`@collector/capture-client` 包及 capture-smoke / material / topic / recent-organization 等测试，属上一代「可信知识整理」产品形态；当前 WebUI 对其零调用，仅由自身测试保持存活。浏览器来源采集扩展（`apps/browser-extension`）已退役删除；该后端层是否一并移除为待产品决定，裁决前原样保留。注意 `@collector/capture-contracts` 名字含「采集」但承载全产品现行共享契约，不在退役范围。
 
 ## #43 收缩记录（验收 8）
 

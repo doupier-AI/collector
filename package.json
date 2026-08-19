@@ -8,7 +8,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "tsc -b && npm run build -w @collector/web && node scripts/build-assets.mjs",
+    "build": "tsc -b && npm run build -w @collector/web",
     "test": "npm run build && node --test dist-tests/**/*.test.js scripts/ralph/*.test.mjs",
     "start": "node apps/api/dist/launcher-main.js",
     "launch": "npm run build && node apps/api/dist/launcher-main.js",
@@ -28,7 +28,6 @@
     "visual:diff": "node scripts/visual-review.mjs"
   },
   "devDependencies": {
-    "@types/chrome": "^0.0.322",
     "@types/node": "^24.0.0",
     "pdf-lib": "^1.17.1",
     "pixelmatch": "^7.2.0",

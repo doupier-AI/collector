@@ -20,7 +20,7 @@ import { acquireServiceLock } from "./service-lock.js";
 import { calculateRuntimeVersion, isRuntimeVersion } from "./runtime-version.js";
 import { createMvpDemoResearchProvider, createMvpDemoSelectionProvider } from "./mvp-demo-research.js";
 
-// 直接运行服务时保留 43110 便于前端/扩展开发；正式启动器显式传入 0 由系统选择端口。
+// 直接运行服务时保留 43110 便于前端开发调试；正式启动器显式传入 0 由系统选择端口。
 const port = Number(process.env.COLLECTOR_PORT ?? "43110");
 if (!Number.isSafeInteger(port) || port < 0 || port > 65_535) throw new Error("COLLECTOR_PORT must be an integer from 0 to 65535");
 const paths = defaultDataPaths(process.env.COLLECTOR_DATA_DIR);
@@ -112,7 +112,6 @@ if (!webIndexStat?.isFile()) {
   throw new Error(`Collector WebUI production build not found at ${webIndex}. Run npm.cmd run build before starting the service.`);
 }
 let activePort = 0;
-let extensionServer: ReturnType<typeof createApiServer> | undefined;
 const browserBootstraps = new Set<BrowserBootstrap>();
 const server = createApiServer(service, auth, {
   instanceId,
@@ -130,11 +129,6 @@ const server = createApiServer(service, auth, {
     void gracefulShutdown("launcher upgrade");
   },
 });
-const extensionPort = Number(process.env.COLLECTOR_EXTENSION_PORT ?? "43110");
-if (!Number.isSafeInteger(extensionPort) || extensionPort < 0 || extensionPort > 65_535) {
-  throw new Error("COLLECTOR_EXTENSION_PORT must be an integer from 0 to 65535");
-}
-
 // 启动工作流调度器守护进程
 const scheduler = new WorkflowScheduler(service);
 await new Promise<void>((resolveListen, reject) => {
@@ -162,20 +156,6 @@ await new Promise<void>((resolveListen, reject) => {
   });
 });
 
-if (extensionPort > 0 && extensionPort !== activePort) {
-  const candidate = createApiServer(service, auth, { instanceId, runtimeVersion });
-  try {
-    await new Promise<void>((resolveListen, reject) => {
-      candidate.once("error", reject);
-      candidate.listen(extensionPort, "127.0.0.1", resolveListen);
-    });
-    extensionServer = candidate;
-    console.log(`Collector extension adapter listening on http://127.0.0.1:${extensionPort}`);
-  } catch (error) {
-    if (candidate.listening) candidate.close();
-    console.warn(`Collector extension adapter unavailable on port ${extensionPort}: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
 scheduler.start();
 console.log(`Collector WebUI and API listening on http://127.0.0.1:${activePort}`);
 if (mvpDemoMode) console.log("Collector MVP demo mode enabled: research answers are deterministic local simulations without network access.");
@@ -194,14 +174,8 @@ async function gracefulShutdown(signal: string): Promise<void> {
   forcedExit.unref();
   try {
     await Promise.all([...browserBootstraps].map((bootstrap) => bootstrap.close().catch(() => undefined)));
-    extensionServer?.closeAllConnections?.();
     server.closeAllConnections?.();
-    await Promise.all([
-      new Promise<void>((resolveClose) => server.close(() => resolveClose())),
-      extensionServer
-        ? new Promise<void>((resolveClose) => extensionServer!.close(() => resolveClose()))
-        : Promise.resolve(),
-    ]);
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
     store.close();
     await removeInstanceState(paths.root, instanceId);
     await serviceLock.release();

@@ -862,7 +862,7 @@ function requestToken(request: IncomingMessage): string | undefined {
 
 function setCors(request: IncomingMessage, response: ServerResponse) {
   const origin = header(request, "origin");
-  if (origin && (/^chrome-extension:\/\/[a-p]{32}$/.test(origin) || /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin))) {
+  if (origin && /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) {
     response.setHeader("Access-Control-Allow-Origin", origin);
     response.setHeader("Vary", "Origin");
   }
@@ -892,7 +892,6 @@ function validateLocalRequest(request: IncomingMessage): void {
   }
   const origin = header(request, "origin");
   if (!origin) return;
-  if (/^chrome-extension:\/\/[a-p]{32}$/.test(origin)) return;
   let parsed: URL;
   try { parsed = new URL(origin); }
   catch { throw new LocalAccessError("Request Origin is invalid"); }
