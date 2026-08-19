@@ -5,7 +5,7 @@ import { apiJson, pairAndOpen } from "./helpers";
  * #91 呈现契约 e2e（确定性假模型）：
  * - 普通回答：整条消息渲染为一张轮次卡片连续正文，无逐段节卡、无章节导航线；
  *   切片数据仍派生（标题为空、概念按轮抽取保持）。
- * - 长文（共享阈值 2000 字以上）：保留节卡与章节导航，行为与迁移前一致。
+ * - 长文（共享阈值 2000 字以上）：同样只有一张轮次卡片，章节作为卡内结构并保留导航。
  */
 
 const LONG_SLICE_TITLES = ["长文第1节", "长文第2节", "长文第3节"];
@@ -21,7 +21,7 @@ async function openNormalAnswer(page: import("@playwright/test").Page): Promise<
   await expect(page.locator("[aria-live=polite]")).toHaveText("已完成", { timeout: 15_000 });
 }
 
-/** 提交长文问题并等待 3 张节卡渲染完成（标题由正文 ## 节标题提升）。 */
+/** 提交长文问题并等待一张轮次卡片内的 3 个章节渲染完成。 */
 async function openLongAnswer(page: import("@playwright/test").Page): Promise<void> {
   await pairAndOpen(page, "/research/new");
   await page.getByLabel("你的问题").fill("写一份完整的长文报告");
@@ -30,7 +30,8 @@ async function openLongAnswer(page: import("@playwright/test").Page): Promise<vo
   for (const title of LONG_SLICE_TITLES) {
     await expect(page.locator(".slice-card__title", { hasText: title })).toBeVisible({ timeout: 15_000 });
   }
-  await expect(page.locator(".slice-card")).toHaveCount(3);
+  await expect(page.locator(".turn-card")).toHaveCount(1);
+  await expect(page.locator(".turn-card__section")).toHaveCount(3);
 }
 
 /**
@@ -40,8 +41,8 @@ async function openLongAnswer(page: import("@playwright/test").Page): Promise<vo
 async function expectChapterRailOutsideBody(page: import("@playwright/test").Page): Promise<void> {
   const geometry = await page.evaluate(() => {
     const rail = document.querySelector<HTMLElement>(".slice-rail");
-    const firstCard = document.querySelector<HTMLElement>(".slice-card");
-    if (!rail || !firstCard) throw new Error("章节导航或正文卡片尚未渲染");
+    const firstCard = document.querySelector<HTMLElement>(".turn-card");
+    if (!rail || !firstCard) throw new Error("章节导航或轮次卡片尚未渲染");
     const railRect = rail.getBoundingClientRect();
     const cardRect = firstCard.getBoundingClientRect();
     const clickAreaOverflow = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) * 0.35;
@@ -92,17 +93,19 @@ test.describe("#91 普通回答轮次卡片", () => {
   });
 });
 
-test.describe("#91 长文保留节卡与章节导航", () => {
-  test("长文：三节各一张卡片，标题只渲染一次，无装饰分隔线", async ({ page }) => {
+test.describe("长文轮次卡片与章节导航", () => {
+  test("长文：三节共用一张轮次卡片，标题只渲染一次", async ({ page }) => {
     await openLongAnswer(page);
 
-    await expect(page.locator(".slice-card")).toHaveCount(3);
+    await expect(page.locator(".turn-card")).toHaveCount(1);
+    await expect(page.locator(".turn-card__section")).toHaveCount(3);
+    await expect(page.locator(".slice-card")).toHaveCount(0);
     await expect(page.locator(".slice-card__title")).toHaveCount(3);
     await expect(page.locator(".message__slice-boundary")).toHaveCount(0);
     await expect(page.locator("[data-slice-boundary]")).toHaveCount(0);
-    // 标题从正文 ## 节标题提升，同一标题只出现一次（卡片内唯一）。
-    const firstCard = page.locator(".slice-card").first();
-    await expect(firstCard.locator(".slice-card__title")).toHaveCount(1);
+    // 标题从正文 ## 节标题提升，同一标题在对应章节内只出现一次。
+    const firstSection = page.locator(".turn-card__section").first();
+    await expect(firstSection.locator(".slice-card__title")).toHaveCount(1);
     const noHorizontal = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth);
     expect(noHorizontal).toBe(true);
   });
@@ -132,7 +135,7 @@ test.describe("#91 长文保留节卡与章节导航", () => {
     // 点击第三条 → 当前线高亮跟随到最后一张
     await ticks.nth(2).click();
     await expect(ticks.nth(2)).toHaveAttribute("aria-current", "location");
-    // 对应卡片滚入视口
+    // 对应章节滚入视口
     const targetTitle = page.locator(".slice-card__title", { hasText: "长文第3节" });
     await expect(targetTitle).toBeInViewport();
     // 跳转后标题不被 sticky 顶栏遮挡：标题顶缘在顶栏（--app-bar-height 3.5rem=56px）之下。
@@ -243,7 +246,7 @@ test.describe("#95 长文窄屏：浮动入口 + 抽屉", () => {
     expect(noHorizontal).toBe(true);
 
     // 正文行宽随页面容器收缩（.page 宽度 min(100% - 2rem, --measure)）；窄屏下不超过视口宽
-    const content = page.locator(".slice-card .message__content").first();
+    const content = page.locator(".turn-card__section .message__content").first();
     const contentBox = await content.boundingBox();
     expect(contentBox).not.toBeNull();
     expect(contentBox!.width).toBeLessThanOrEqual(320);
@@ -268,7 +271,7 @@ test.describe("#95 长文窄屏：浮动入口 + 抽屉", () => {
       await expect(drawer.getByRole("button", { name: title })).toBeVisible();
     }
 
-    // 点「长文第3节」→ 精确跳到对应卡片并关闭抽屉。
+    // 点「长文第3节」→ 精确跳到对应卡内章节并关闭抽屉。
     await drawer.getByRole("button", { name: "长文第3节" }).click();
     await expect(page.getByTestId("slice-chapter-drawer")).toHaveCount(0);
     await expect(page.locator(".slice-card__title", { hasText: "长文第3节" })).toBeInViewport({ timeout: 5_000 });

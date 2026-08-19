@@ -45,12 +45,12 @@ async function openLongThenNormal(page: import("@playwright/test").Page): Promis
   await page.getByLabel("你的问题").fill("写一份完整的长文报告");
   await page.getByRole("button", { name: "开始研究" }).click();
   await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
-  await expect(page.locator(".slice-card")).toHaveCount(3, { timeout: 15_000 });
+  await expect(page.locator(".turn-card__section")).toHaveCount(3, { timeout: 15_000 });
   // 长文正文没有固定完成词：完成信号取任务播报（首轮有效，不会被上一轮残留污染）。
   await expect(page.locator("[aria-live=polite]")).toHaveText("已完成", { timeout: 20_000 });
   await askFollowUp(page, FOLLOW_UP);
-  await expect(page.locator(".turn-card")).toHaveCount(1, { timeout: 15_000 });
-  await expect(page.locator(".turn-card")).toContainText("回答完毕", { timeout: 20_000 });
+  await expect(page.locator(".turn-card")).toHaveCount(2, { timeout: 15_000 });
+  await expect(page.locator(".turn-card").last()).toContainText("回答完毕", { timeout: 20_000 });
 }
 
 /** 等待平滑滚动落定：连续多次轮询滚动位置不变即视为到位（带超时，不无限等待）。 */
@@ -126,15 +126,16 @@ test.describe("#94 出现条件与轮次卡片视觉", () => {
 
   test("多轮含长文：轮次导航（左）与章节导航（右）并存，各司其职", async ({ page }) => {
     await openLongThenNormal(page);
-    await expect(page.locator(".slice-card")).toHaveCount(3);
+    await expect(page.locator(".turn-card")).toHaveCount(2);
+    await expect(page.locator(".turn-card__section")).toHaveCount(3);
     // 左轨轮次导航：两条线，绑定两轮。
     await expect(page.getByRole("navigation", { name: "轮次导航" })).toBeVisible();
     await expect(page.locator(".turn-rail__tick")).toHaveCount(2);
     // 右轨章节导航：#95 起不再让位，与轮次导航并存；呈现当前长文轮的 3 节。
     await expect(page.getByRole("navigation", { name: "章节导航" })).toBeVisible();
     await expect(page.locator(".slice-rail__tick")).toHaveCount(3);
-    // 长文轮的节卡组获得轮次级容器视觉
-    await expect(page.locator(".message__blocks--turn")).toHaveCount(1);
+    // 长文轮同样是单张轮次卡片，章节位于卡内。
+    await expect(page.locator(".turn-card--sectioned.turn-card--multi")).toHaveCount(1);
   });
 });
 

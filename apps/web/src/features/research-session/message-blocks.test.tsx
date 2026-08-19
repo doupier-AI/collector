@@ -297,14 +297,14 @@ function asLong(content: string): string {
   return [...blocks.slice(0, -1), `${last}${filler}`].join("\n\n");
 }
 
-describe("#36 连续语义卡片（长文路径，#91 后仅长文保留）", () => {
+describe("长文轮次卡片内章节结构", () => {
   function viewWithSlices(content: string, slices: ResearchSliceRecord[]): ResearchNodeView {
     const view = viewWithAssistant(content);
     view.slices = { "m-out": slices };
     return view;
   }
 
-  it("每个正式切片一张卡片：h3 标题按 ordinal 顺序输出切片标题", async () => {
+  it("每个正式切片形成一个卡内章节：h3 标题按 ordinal 顺序输出切片标题", async () => {
     const content = asLong("第一段。\n\n第二段。\n\n第三段。");
     const slices = [
       makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点" }),
@@ -318,7 +318,7 @@ describe("#36 连续语义卡片（长文路径，#91 后仅长文保留）", ()
     expect(headings.map((h) => h.textContent)).toEqual(["起点", "推进", "收束"]);
   });
 
-  it("卡片 region 的可访问名 = 标题（aria-labelledby）", async () => {
+  it("章节 region 的可访问名 = 标题（aria-labelledby）", async () => {
     const content = asLong("第一段。\n\n第二段。");
     const slices = [
       makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点" }),
@@ -341,13 +341,13 @@ describe("#36 连续语义卡片（长文路径，#91 后仅长文保留）", ()
     const { container } = renderNodePage({ getResearchNodeView: async () => viewWithSlices(content, slices) });
 
     await screen.findByText("第一段没有标题的正文。");
-    // 空标题卡片仍渲染（不消失），但不输出空 <h3>。
-    expect(container.querySelectorAll("section.slice-card").length).toBe(2);
+    // 空标题章节仍渲染（不消失），但不输出空 <h3>。
+    expect(container.querySelectorAll("section.turn-card__section").length).toBe(2);
     expect(container.querySelectorAll(".slice-card__title").length).toBe(0);
     // 无标题时不留悬空 aria-labelledby，改用 aria-label = 正文摘要作为可访问名。
-    const firstCard = container.querySelectorAll<HTMLElement>("section.slice-card")[0]!;
-    expect(firstCard).not.toHaveAttribute("aria-labelledby");
-    expect(firstCard).toHaveAttribute("aria-label", "第一段没有标题的正文。");
+    const firstSection = container.querySelectorAll<HTMLElement>("section.turn-card__section")[0]!;
+    expect(firstSection).not.toHaveAttribute("aria-labelledby");
+    expect(firstSection).toHaveAttribute("aria-label", "第一段没有标题的正文。");
   });
 
   it("防回归锁：标题是正文容器外的兄弟节点，data-block-text 的 textContent 不含标题", async () => {
@@ -363,11 +363,11 @@ describe("#36 连续语义卡片（长文路径，#91 后仅长文保留）", ()
     // 选区锚点偏移基准：块文本恰为切片正文，标题绝不混入
     expect(block.textContent).toBe("第一段。");
     expect(block).toHaveAttribute("data-block-id", "m-out#p0");
-    // 标题在块容器外、卡片内
-    const card = first.closest("section.slice-card")!;
-    const title = card.querySelector(".slice-card__title")!;
+    // 标题在块容器外、卡内章节中
+    const section = first.closest("section.turn-card__section")!;
+    const title = section.querySelector(".slice-card__title")!;
     expect(block.contains(title)).toBe(false);
-    expect(card.contains(title)).toBe(true);
+    expect(section.contains(title)).toBe(true);
     // 祖先仍带选区锚点定位所需标记
     expect(first.closest("[data-content-kind]")).toHaveAttribute("data-content-kind", "message");
     expect(first.closest("[data-message-id]")).toHaveAttribute("data-message-id", "m-out");
@@ -388,13 +388,13 @@ describe("#36 连续语义卡片（长文路径，#91 后仅长文保留）", ()
     const titles = container.querySelectorAll(".slice-card__title");
     expect(titles.length).toBe(2);
     expect([...titles].map((t) => t.textContent)).toEqual(["背景与起源", "核心创新"]);
-    // 每个卡片里该标题只出现一次（不重复渲染）。
-    const firstCard = container.querySelectorAll<HTMLElement>("section.slice-card")[0]!;
-    expect(firstCard.querySelectorAll(".slice-card__title").length).toBe(1);
+    // 每个章节里该标题只出现一次（不重复渲染）。
+    const firstSection = container.querySelectorAll<HTMLElement>("section.turn-card__section")[0]!;
+    expect(firstSection.querySelectorAll(".slice-card__title").length).toBe(1);
     // 导航锚点挂在被提升的正文标题上。
-    expect(firstCard.querySelector(".slice-card__title")).toHaveAttribute("id", "m-out#p0-title");
+    expect(firstSection.querySelector(".slice-card__title")).toHaveAttribute("id", "m-out#p0-title");
     // 选区偏移基准：正文 textContent 仍含标题行（标题字符留在 data-block-text 内）。
-    const block = firstCard.querySelector<HTMLElement>("[data-block-text]")!;
+    const block = firstSection.querySelector<HTMLElement>("[data-block-text]")!;
     expect(block.textContent).toContain("背景与起源");
     expect(block.textContent).toContain("背景正文第一段。");
   });
@@ -408,8 +408,8 @@ describe("#36 连续语义卡片（长文路径，#91 后仅长文保留）", ()
 
     const first = await screen.findByText("第一段。");
     const block = first.closest<HTMLElement>("[data-block-text]")!;
-    const card = first.closest("section.slice-card")!;
-    const title = card.querySelector(".slice-card__title")!;
+    const section = first.closest("section.turn-card__section")!;
+    const title = section.querySelector(".slice-card__title")!;
     // 补题 <h3> 留在正文容器外；正文 textContent 不含补题文字。
     expect(block.contains(title)).toBe(false);
     expect(block.textContent).toBe("第一段。");
@@ -467,7 +467,7 @@ describe("#36 连续语义卡片（长文路径，#91 后仅长文保留）", ()
     const { container } = renderNodePage({ getResearchNodeView: async () => view });
     await screen.findByText("反向传播", { selector: "[data-term-marker]" });
     expect(screen.getByText("RAG", { selector: "[data-term-marker]" })).toBeInTheDocument();
-    expect(container.querySelectorAll("section.slice-card")).toHaveLength(1);
+    expect(container.querySelectorAll("section.turn-card__section")).toHaveLength(1);
     expect(container.querySelector('[data-term-block-ordinal="1"]')).not.toBeNull();
     expect(container.querySelector('[data-term-block-ordinal="2"]')).not.toBeNull();
   });
@@ -493,14 +493,14 @@ describe("#36 连续语义卡片（长文路径，#91 后仅长文保留）", ()
     );
 
     // 高亮在渲染后由 useLayoutEffect + rAF 重试圈 <mark>（?sel= 经 getResearchSelection 异步恢复）。
-    // 等待卡片容器出现，再留出高亮应用的帧窗口，随后断言 mark 落在正确卡片。
-    await waitFor(() => expect(container.querySelector("section.slice-card")).not.toBeNull());
+    // 等待卡内章节出现，再留出高亮应用的帧窗口。
+    await waitFor(() => expect(container.querySelector("section.turn-card__section")).not.toBeNull());
     await new Promise((resolve) => setTimeout(resolve, 1000));
     const mark = container.querySelector<HTMLElement>("[data-selection-mark]");
     expect(mark).not.toBeNull();
     expect(mark).toHaveTextContent("高亮");
     expect(mark!.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p1");
-    expect(mark!.closest("section.slice-card")).not.toBeNull();
+    expect(mark!.closest("section.turn-card__section")).not.toBeNull();
   });
 
   it("降级：切片为空或全是临时切片时纯文本连续渲染，不渲染标题卡", async () => {
@@ -514,7 +514,7 @@ describe("#36 连续语义卡片（长文路径，#91 后仅长文保留）", ()
     await screen.findByText("无正式切片的段落一。");
     expect(container.querySelectorAll(".slice-card__title").length).toBe(0);
     expect(screen.queryByRole("heading", { level: 3, name: "段落 1" })).not.toBeInTheDocument();
-    expect(container.querySelectorAll(".slice-card").length).toBe(0);
+    expect(container.querySelectorAll(".turn-card__section").length).toBe(0);
   });
 
   it("无装饰性边界元素", async () => {
@@ -555,6 +555,26 @@ describe("#91 普通回答轮次卡片", () => {
     expect([...blocks].map((block) => block.getAttribute("data-block-id"))).toEqual(["m-out#p0", "m-out#p1", "m-out#p2"]);
     // 切片标题不再渲染成节卡标题。
     expect(container.querySelectorAll(".slice-card__title")).toHaveLength(0);
+  });
+
+  it("长文分节也只渲染一张轮次卡片，章节仅作为卡内结构", async () => {
+    const content = asLong("## 起点\n\n第一节正文。\n\n## 推进\n\n第二节正文。\n\n## 收束\n\n第三节正文。");
+    const slices = [
+      makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "起点" }),
+      makeSlice({ id: "slice:session-1:m-out:1", ordinal: 1, title: "推进" }),
+      makeSlice({ id: "slice:session-1:m-out:2", ordinal: 2, title: "收束" }),
+    ];
+    const view = viewWithAssistant(content);
+    view.slices = { "m-out": slices };
+    const { container } = renderNodePage({ getResearchNodeView: async () => view });
+
+    await screen.findByText("第一节正文。");
+    expect(container.querySelectorAll("section.turn-card")).toHaveLength(1);
+    expect(container.querySelectorAll("section.slice-card")).toHaveLength(0);
+    expect(container.querySelectorAll("section.turn-card__section")).toHaveLength(3);
+    expect(container.querySelector("section.turn-card")).toContainElement(
+      container.querySelector("section.turn-card__section"),
+    );
   });
 
   it("普通回答不显示章节导航线", async () => {

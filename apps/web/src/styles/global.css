@@ -747,26 +747,13 @@ button {
   gap: var(--space-3);
 }
 
-/* #36 连续语义卡片：一张卡片 = 一个完整论述单元（带标题）。
-   扁平、低干扰——靠标题上间距建立节奏，像连续文章，不用编号/图标/强分隔线。 */
-.message__blocks:has(.slice-card) {
-  gap: var(--space-6);
-}
-
-.slice-card {
+/* 长文的卡内章节：靠标题和章节间距建立阅读节奏，不使用独立背景/边框/阴影。 */
+.turn-card__section {
   min-width: 0;
-  /* #95：章节导航点击目标从标题锚点改为恒在的卡片容器（无标题卡片也能跳转）。
-     卡片顶预留 sticky 顶栏高度 + 呼吸位，跳转后卡片不被顶栏遮挡。
+  /* #95：章节导航点击目标是恒在的卡内章节容器（无标题章节也能跳转）。
+     章节顶预留 sticky 顶栏高度 + 呼吸位，跳转后不被顶栏遮挡。
      scroll-margin 只影响滚动定位，不改变布局与选区偏移。 */
   scroll-margin-top: calc(var(--app-bar-height) + var(--space-4));
-  /* 连续阅读面：每张语义卡片使用当前主题的阅读令牌，padding 只增内边距、不动布局定位；
-     选区/引用偏移基于正文 DOM 不受卡片内边距影响。 */
-  padding: var(--space-4) var(--space-5);
-  background: var(--color-reading-bg);
-  border: 1px solid var(--color-reading-line);
-  border-radius: var(--radius-panel);
-  /* 悬停/焦点强调只动背景与阴影，不改变 padding/margin——零布局位移、不污染选区偏移。 */
-  transition: background var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
 }
 
 /* #91 轮次卡片：普通回答整条消息一张卡片，连续正文不再拆成逐段碎卡。
@@ -777,6 +764,13 @@ button {
   background: var(--color-reading-bg);
   border: 1px solid var(--color-reading-line);
   border-radius: var(--radius-panel);
+  transition: background var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
+}
+
+/* 长文仍保留章节结构与导航锚点，但章节只在同一张轮次卡片内排版，不再各自拥有卡片外观。 */
+.turn-card--sectioned {
+  display: grid;
+  gap: var(--space-6);
 }
 
 /* #94 多轮（≥2）轮次区分：只动边框色与阴影，零布局位移、不污染选区偏移（#44 纪律）。
@@ -786,22 +780,16 @@ button {
   box-shadow: var(--shadow-1);
 }
 
-/* #94 多轮长文：节卡组获得轮次级容器视觉（托盘底色 + 阴影 + 圆角），节卡自身视觉不变。
-   容器无 padding/margin 变化——只动背景/阴影，零布局位移。 */
-.message__blocks--turn {
-  background: color-mix(in srgb, var(--color-reading-bg) 55%, var(--color-canvas));
+/* 章节锚点只在程序定位或键盘聚焦时显示光环，常态不呈现独立卡片。 */
+.turn-card__section:focus-visible {
+  box-shadow: var(--ring-focus);
   border-radius: var(--radius-panel);
-  box-shadow: var(--shadow-1);
 }
 
-/* #44 卡片常态：悬停给出低表面提升；键盘焦点给出光环（与定位强调区分：不染色背景）。 */
-.slice-card:hover {
+/* 卡片交互态跟随轮次容器；章节本身不再拥有悬停卡片态。 */
+.turn-card:hover {
   background: var(--color-surface-hover);
   box-shadow: var(--shadow-1);
-}
-
-.slice-card:focus-visible {
-  box-shadow: var(--ring-focus);
 }
 
 /* #42/#91 片段定位强调：box-shadow 光环 + 浅背景，不引起布局位移；动画只放大光环，无位移。
@@ -820,7 +808,7 @@ button {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .slice-card {
+  .turn-card {
     transition: none;
   }
 
@@ -848,7 +836,7 @@ button {
 /* 卡片正文随卡片宽度延伸：正文行宽上限交由页面容器（--measure 68rem）统一把关。
    此前限定 42rem 会在宽视口下让正文与卡片脱节——卡片右侧出现大片空白，
    且框选文字时选区在 672px 处戛然而止，与卡片版面不符。 */
-.slice-card .message__content,
+.turn-card__section .message__content,
 .turn-card .message__content {
   max-width: none;
 }

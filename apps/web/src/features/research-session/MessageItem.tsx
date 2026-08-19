@@ -251,9 +251,9 @@ const NO_TERMS: TermMarker[] = [];
  * 块 ID 与后端选区锚点使用同一派生规则。
  * Markdown 由 MarkdownContent 安全渲染；[来源n] 由 remark 插件转可悬停角标。
  * 返回高亮在渲染后 DOM 上用可见文本空间偏移圈 <mark>，偏移失败时兜底 exact 搜索。
- * 生成自由化：卡片由派生切片渲染（deriveSliceCardTargets 与章节导航共用同一份对齐），
- * 一张卡片 = 一个完整论述单元；标题来自大纲节标题或小模型事后抽取，可为空（空标题卡片只显正文）。
- * #91 呈现契约：仅长文派生节卡；普通回答整条消息渲染为一张轮次卡片连续正文，不造重试卡
+ * 生成自由化：长文章节由派生切片渲染（deriveSliceCardTargets 与章节导航共用同一份对齐），
+ * 但呈现层始终以整条 AI 回答为卡片边界；节标题来自大纲或小模型事后抽取，可为空。
+ * ADR-0032 呈现契约：普通回答为一张轮次卡片内的连续正文；长文为一张轮次卡片内的多章节结构。不造重试卡
  * （那是 failed 的事），切片缺失时同样防御性降级为连续正文。
  */
 function AssistantBlocks({ message, highlight, citations, groundingSources, terms, slices, fragmentTargetId, fusionSources, multiTurn = false }: { message: ResearchMessageRecord; highlight?: MessageHighlight; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[]; terms: TermMarker[]; slices?: ResearchSliceRecord[]; fragmentTargetId?: string; fusionSources?: ResearchFusionSource[]; multiTurn?: boolean }) {
@@ -278,31 +278,38 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
   if (blocks.length === 0) return <MarkdownContent text={message.content} sources={groundingSources} citations={citations} variant="message" fusionSources={fusionSources} />;
   const activeHighlight = highlight ?? undefined;
 
-  // 生成自由化：卡片目标与章节导航同源派生；块对齐与 blockId 计算不再各自手工进行。
-  // #91：普通回答无节卡目标——整条消息渲染为一张轮次卡片的连续正文。
+  // 长文章节目标与章节导航同源派生；块对齐与 blockId 计算不再各自手工进行。
+  // 有章节目标时也只渲染一个轮次容器，各 target 只作为卡内章节和导航/落点锚点。
   const cardTargets = deriveSliceCardTargets(message, slices);
   if (cardTargets.length > 0) {
     return (
-      <div className={multiTurn ? "message__blocks message__blocks--turn" : "message__blocks"} data-content-kind="message" data-message-id={message.id}>
-        {cardTargets.map((target) => {
-          const thisHighlight = activeHighlight && activeHighlight.blockOrdinal === target.blockOrdinal ? activeHighlight : undefined;
-          return (
-            <SliceCard
-              key={target.slice.id}
-              slice={target.slice}
-              blockText={target.blockText}
-              blockId={target.blockId}
-              anchorId={target.anchorId}
-              cardId={target.cardId}
-              highlight={thisHighlight}
-              sources={groundingSources}
-              citations={citations}
-              terms={termsByBlock.get(target.blockOrdinal) ?? NO_TERMS}
-              fragmentFocused={fragmentTargetId === target.cardId}
-              fusionSources={fusionSources}
-            />
-          );
-        })}
+      <div className="message__blocks" data-content-kind="message" data-message-id={message.id}>
+        <section
+          id={turnCardId(message.id)}
+          className={multiTurn ? "turn-card turn-card--sectioned turn-card--multi" : "turn-card turn-card--sectioned"}
+          data-turn-card=""
+          aria-label="Collector 回答"
+        >
+          {cardTargets.map((target) => {
+            const thisHighlight = activeHighlight && activeHighlight.blockOrdinal === target.blockOrdinal ? activeHighlight : undefined;
+            return (
+              <TurnSection
+                key={target.slice.id}
+                slice={target.slice}
+                blockText={target.blockText}
+                blockId={target.blockId}
+                anchorId={target.anchorId}
+                sectionId={target.cardId}
+                highlight={thisHighlight}
+                sources={groundingSources}
+                citations={citations}
+                terms={termsByBlock.get(target.blockOrdinal) ?? NO_TERMS}
+                fragmentFocused={fragmentTargetId === target.cardId}
+                fusionSources={fusionSources}
+              />
+            );
+          })}
+        </section>
       </div>
     );
   }
@@ -343,21 +350,21 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
 }
 
 /**
- * 语义卡片：一张卡片 = 一个完整论述单元（节级派生切片）。标题只渲染一次，两种形态：
+ * 轮次卡片内的章节（节级派生切片）。标题只渲染一次，两种形态：
  * - 正文首行就是该节标题（plan-then-write / 含 ## 的正文）：把正文里那个标题元素提升为
- *   卡片标题样式并挂导航锚点 id（titleAnchorId），不再另起 <h3>——标题字符仍在正文内，
+ *   章节标题样式并挂导航锚点 id（titleAnchorId），不再另起 <h3>——标题字符仍在正文内，
  *   选区/术语的可见文本偏移零漂移；
  * - 正文无标题行、slice.title 是事后抽取的补题：另起一个独立 <h3> 显示补题。补题文字本就不在
  *   正文文本里，故 <h3> 必须留在 data-block-text 容器外（兄弟节点），不污染选区偏移。
  * data-block-id 与 data-block-text 保留在内容容器上；data-slice-id 留作未来融合追溯关联钩。
  * 无标题切片退化为 aria-label = 正文摘要。
  */
-function SliceCard({ slice, blockText, blockId, anchorId, cardId, highlight, sources, citations, terms, fragmentFocused = false, fusionSources }: {
+function TurnSection({ slice, blockText, blockId, anchorId, sectionId, highlight, sources, citations, terms, fragmentFocused = false, fusionSources }: {
   slice: ResearchSliceRecord;
   blockText: string;
   blockId: string;
   anchorId: string;
-  cardId: string;
+  sectionId: string;
   highlight?: MessageHighlight;
   sources: ResearchGroundingSourceRecord[];
   citations: ResearchCitationRecord[];
@@ -373,8 +380,8 @@ function SliceCard({ slice, blockText, blockId, anchorId, cardId, highlight, sou
   const promoteInBody = Boolean(inBodyHeading && inBodyHeading.title === title);
   return (
     <section
-      id={cardId}
-      className={fragmentFocused ? "slice-card fragment-target--focused" : "slice-card"}
+      id={sectionId}
+      className={fragmentFocused ? "turn-card__section fragment-target--focused" : "turn-card__section"}
       data-slice-id={slice.id}
       tabIndex={-1}
       {...(title ? { "aria-labelledby": anchorId } : { "aria-label": sliceCardAccessibleName(slice, blockText) })}

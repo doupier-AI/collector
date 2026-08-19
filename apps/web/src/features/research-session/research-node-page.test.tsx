@@ -1161,8 +1161,8 @@ describe("#94 轮次卡片视觉与左侧轮次导航", () => {
     expect(chapterTicks.length).toBe(3);
     // 双轨并存：页面用三列网格（左轮次 + 正文 + 右章节）。
     expect(container.querySelector(".page")!.className).toContain("page--with-dual-rail");
-    // 长文轮次容器带轮次级修饰类
-    expect(container.querySelectorAll(".message__blocks--turn").length).toBe(1);
+    // 长文也是一张轮次卡片，章节只作为卡内结构。
+    expect(container.querySelectorAll(".turn-card--sectioned.turn-card--multi").length).toBe(1);
   });
 
   it("单轮：不渲染轮次导航，也不给轮次卡片额外装饰", async () => {

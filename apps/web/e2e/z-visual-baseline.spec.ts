@@ -4,7 +4,7 @@
  * 五个代表状态（验收 5，用户已选 Playwright 像素基线）：
  * 1. 桌面专注：研究地图覆盖层专注模式（当前节点 + 血统脉络 + 关联区）；
  * 2. 桌面关联：研究地图覆盖层关联模式（网状画布 + 三类边 + 图例）；
- * 3. 语义卡片常态：节点页连续语义卡片（含悬停态）；
+ * 3. 轮次卡片常态：普通回答与长文分节都以轮次为卡片边界（含悬停态）；
  * 4. 融合回溯落点：?fragment= 深链定位后的强调卡片；
  * 5. 窄屏代表状态：320px 关联模式（关系列表呈现）。
  *
@@ -66,7 +66,8 @@ async function openLongSession(page: import("@playwright/test").Page): Promise<s
   await page.getByLabel("你的问题").fill("写一份完整的长文报告");
   await page.getByRole("button", { name: "开始研究" }).click();
   await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
-  await expect(page.locator(".slice-card")).toHaveCount(3, { timeout: 15_000 });
+  await expect(page.locator(".turn-card")).toHaveCount(1, { timeout: 15_000 });
+  await expect(page.locator(".turn-card__section")).toHaveCount(3);
   const match = new URL(page.url()).pathname.match(/^\/nodes\/([^/]+)$/);
   if (!match) throw new Error("unexpected long node url");
   return match[1];
@@ -138,25 +139,26 @@ test.describe("#44 视觉回归基线", () => {
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
-  test("长文节卡常态：连续卡片 + 悬停低表面提升像素基线（#91 后仅长文保留）", async ({ page }) => {
+  test("长文轮次卡片：章节共用一张卡片 + 悬停低表面提升", async ({ page }) => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);
     await pinModelStatus(page);
     await openLongSession(page);
-    await expect(page.locator(".slice-card")).toHaveCount(3);
+    await expect(page.locator(".turn-card")).toHaveCount(1);
+    await expect(page.locator(".turn-card__section")).toHaveCount(3);
     await closeSidebars(page);
 
-    // 首张节卡（含标题与正文）元素级截图——聚焦卡片自身排版
-    const firstCard = page.locator(".slice-card").first();
-    await firstCard.scrollIntoViewIfNeeded();
-    await expect(firstCard).toHaveScreenshot("slice-card-default", {
+    // 整轮长文（含三个章节）元素级截图——确认只有一个卡片边界。
+    const turnCard = page.locator(".turn-card");
+    await turnCard.scrollIntoViewIfNeeded();
+    await expect(turnCard).toHaveScreenshot("turn-card-sectioned-default", {
       mask: dynamicTimeMasks(page),
       maskColor: "#FFFFFF",
     });
 
     // 悬停态：背景 + 阴影低表面提升（不引起布局位移）
-    await firstCard.hover();
-    await expect(firstCard).toHaveScreenshot("slice-card-hover", {
+    await turnCard.hover();
+    await expect(turnCard).toHaveScreenshot("turn-card-sectioned-hover", {
       mask: dynamicTimeMasks(page),
       maskColor: "#FFFFFF",
     });
@@ -190,7 +192,8 @@ test.describe("#44 视觉回归基线", () => {
     freezeClock(page);
     await pinModelStatus(page);
     await openLongSession(page);
-    await expect(page.locator(".slice-card")).toHaveCount(3);
+    await expect(page.locator(".turn-card")).toHaveCount(1);
+    await expect(page.locator(".turn-card__section")).toHaveCount(3);
     await closeSidebars(page);
 
     // 单长文轮：右侧章节导航线列（3 条），无轮次导航；正文 + 右轨两列网格。
@@ -216,8 +219,8 @@ test.describe("#44 视觉回归基线", () => {
     // 第二轮普通追问：产出一张轮次卡片，触发双轨并存。
     await page.getByLabel("你的问题").fill("第二轮追问：渐进事件如何落地？");
     await page.getByRole("button", { name: /发送/ }).click();
-    await expect(page.locator(".turn-card")).toHaveCount(1, { timeout: 15_000 });
-    await expect(page.locator(".turn-card")).toContainText("回答完毕", { timeout: 20_000 });
+    await expect(page.locator(".turn-card")).toHaveCount(2, { timeout: 15_000 });
+    await expect(page.locator(".turn-card").last()).toContainText("回答完毕", { timeout: 20_000 });
     await closeSidebars(page);
 
     // 双轨：左轮次（2 条）+ 右章节（当前长文轮 3 节）并存，正文居中。
