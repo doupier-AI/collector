@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { computeAnchoredOverlayPosition } from "../utils/anchored-overlay-position";
 
 export interface HoverCardState {
   open: boolean;
@@ -6,8 +7,6 @@ export interface HoverCardState {
   left: number;
   placement: "top" | "bottom";
 }
-
-const CARD_WIDTH = 320;
 
 /**
  * 管理引用来源预览卡片的显隐与固定定位。
@@ -17,6 +16,7 @@ const CARD_WIDTH = 320;
 export function useHoverCard(gap = 8) {
   const [state, setState] = useState<HoverCardState>({ open: false, top: 0, left: 0, placement: "top" });
   const anchorRef = useRef<HTMLElement | null>(null);
+  const overlayRef = useRef<HTMLDivElement | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const supportsHover = useRef(
@@ -27,28 +27,47 @@ export function useHoverCard(gap = 8) {
 
   const computePosition = useCallback((): { top: number; left: number; placement: "top" | "bottom" } => {
     const el = anchorRef.current;
-    if (!el) return { top: -9999, left: -9999, placement: "top" };
+    const overlay = overlayRef.current;
+    if (!el || !overlay) return { top: -9999, left: -9999, placement: "top" };
     const rect = el.getBoundingClientRect();
-    const cardHalf = Math.min(CARD_WIDTH / 2, window.innerWidth / 2 - 8);
-    const left = Math.max(cardHalf + 8, Math.min(rect.left + rect.width / 2, window.innerWidth - cardHalf - 8));
-    // 近似卡片高度用于上下翻转判断；真实高度由 CSS 约束
-    if (rect.top - gap - 220 < 8) {
-      return { top: rect.bottom + gap, left, placement: "bottom" };
-    }
-    return { top: rect.top - gap, left, placement: "top" };
+    const position = computeAnchoredOverlayPosition(rect, { width: overlay.offsetWidth, height: overlay.offsetHeight }, { width: window.innerWidth, height: window.innerHeight }, {
+      gap,
+      margin: 8,
+      preferredPlacement: "top",
+    });
+    return { top: position.top, left: position.left, placement: position.placement === "bottom" ? "bottom" : "top" };
   }, [gap]);
 
   const open = useCallback(() => {
     if (!supportsHover.current) return;
     if (!anchorRef.current) return; // ref 尚未挂载，不设 state（防止左上角幽灵卡片）
     if (timer.current) clearTimeout(timer.current);
-    setState((s) => {
+    // 卡片尚未挂载时不猜测高度；先打开，再由 layout effect 读取实测尺寸完成首帧定位。
+    setState((s) => ({ ...s, open: true }));
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!state.open) return;
+    const update = () => {
       const pos = computePosition();
-      // 坐标未初始化时跳过（anchorRef 存在但 DOM 尚未布局），
-      // 但 top === 0 && left === 0 也可能是真实坐标——用 placement 保持兼容
-      return { open: true, ...pos };
-    });
-  }, [computePosition]);
+      if (pos.top === -9999) return;
+      setState((current) => current.open && (current.top !== pos.top || current.left !== pos.left || current.placement !== pos.placement)
+        ? { ...current, ...pos }
+        : current);
+    };
+    update();
+    // 融合来源卡会从“加载中”异步长成完整摘要；仅监听窗口滚动/缩放无法感知
+    // 弹层自身高度变化。观察实测尺寸后重锚，保持底部操作始终在视口内。
+    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(update);
+    if (overlayRef.current) observer?.observe(overlayRef.current);
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [computePosition, state.open]);
 
   const close = useCallback(() => {
     if (timer.current) clearTimeout(timer.current);
@@ -83,5 +102,5 @@ export function useHoverCard(gap = 8) {
     };
   }, [state.open, dismiss]);
 
-  return { state, anchorRef, open, close, dismiss };
+  return { state, anchorRef, overlayRef, open, close, dismiss };
 }

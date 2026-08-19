@@ -159,12 +159,16 @@ test("长正文密集标记可悬停并点击生长，页面无横向溢出", as
   );
 });
 
-test.fixme("#88 blocker：320px 长正文末尾标记贴底时，弹层与生长按钮也应完整留在视口内", async ({ page }) => {
+for (const testViewport of [{ width: 320, height: 568 }, { width: 1024, height: 768 }]) {
+test(`#88：${testViewport.width}px 长正文末尾标记贴底时，弹层与生长按钮完整留在视口内`, async ({ page }) => {
+  await page.setViewportSize(testViewport);
   await page.emulateMedia({ reducedMotion: "reduce" });
+  const tracker = trackBrowserIssues(page);
   await pairAndOpen(page, "/research/new");
   await page.getByLabel("你的问题").fill("E2E 极端形态：密集弱标记");
   await page.getByRole("button", { name: "开始研究" }).click();
   await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
+  const rootNodeId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
   const marker = page.locator(".term-preview-surface [data-term-marker]").last();
   await expect(page.locator(".term-preview-surface [data-term-marker]")).toHaveCount(20, { timeout: 15_000 });
   await marker.evaluate((element) => element.scrollIntoView({ block: "end" }));
@@ -176,7 +180,11 @@ test.fixme("#88 blocker：320px 长正文末尾标记贴底时，弹层与生长
   expect(viewport).not.toBeNull();
   expect(box!.y).toBeGreaterThanOrEqual(0);
   expect(box!.y + box!.height).toBeLessThanOrEqual(viewport!.height);
+  await page.getByTestId("term-preview-popover").getByRole("button", { name: "进入这个概念" }).click({ timeout: 5_000 });
+  await page.waitForURL((url) => url.pathname.includes("/nodes/") && !url.pathname.endsWith(`/nodes/${rootNodeId}`), { timeout: 10_000 });
+  expect(tracker.issues, tracker.issues.join(" | ")).toEqual([]);
 });
+}
 
 test.describe("弱标记键盘、可访问性与失败路径（桌面 1024px）", () => {
   test.use({ viewport: { width: 1024, height: 768 } });

@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { clampOverlayToViewport } from "../../utils/anchored-overlay-position";
 import { computeFloatingCapsulePlacement } from "./floating-capsule-position";
 import type { FloatingPlacement } from "./floating-capsule-position";
 import type { SelectionRect } from "./useSelection";
@@ -107,9 +108,22 @@ export function MarkNoteEditor({
     if (focused) return;
     // 锁定当前视口坐标：fixed 定位，滚轮滑动页面不移动
     const box = containerRef.current?.getBoundingClientRect();
-    if (box) setLocked({ top: box.top, left: box.left });
+    if (box) setLocked(clampOverlayToViewport({ top: box.top, left: box.left }, { width: box.width, height: box.height }, { width: window.innerWidth, height: window.innerHeight }));
     setFocused(true);
   }
+
+  useLayoutEffect(() => {
+    if (!locked) return;
+    const clampLockedPosition = () => {
+      const box = containerRef.current?.getBoundingClientRect();
+      if (!box) return;
+      setLocked((current) => current
+        ? clampOverlayToViewport(current, { width: box.width, height: box.height }, { width: window.innerWidth, height: window.innerHeight })
+        : current);
+    };
+    window.addEventListener("resize", clampLockedPosition);
+    return () => window.removeEventListener("resize", clampLockedPosition);
+  }, [locked]);
 
   const style = locked
     ? { position: "fixed" as const, top: locked.top, left: locked.left }

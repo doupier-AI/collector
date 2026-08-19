@@ -950,16 +950,15 @@ button {
 }
 
 .slice-rail__preview {
-  /* 与线列同一参考系：absolute 挂在线列（sticky，自身即定位上下文）下；top 由 JS 按
-     被预览线相对 rail 顶部的偏移给定，rail 钉住时与 tick 一起平移，滚动不漂移。
-     #95 右移：预览框放在线列左外侧（朝正文方向留出间距），且 pointer-events:none——
-     任何状态下都不覆盖线列的可点击热区，鼠标直接穿过。 */
-  position: absolute;
-  right: calc(100% + var(--space-2));
+  /* fixed 挂在视口层，公共定位工具按实测尺寸锚定当前线；默认放在线列左侧，
+     空间不足时翻转并贴边。pointer-events:none 保证预览不形成点击死区。 */
+  position: fixed;
   pointer-events: none;
   /* 低于覆盖层（z-index 30）与其遮罩（20）：覆盖层展开时预览不穿透显示。 */
   z-index: var(--z-rail);
   width: min(18rem, calc(100vw - 4rem));
+  max-height: calc(100vh - var(--space-6));
+  overflow: auto;
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--color-line);
   border-radius: var(--radius-panel);
@@ -1047,12 +1046,13 @@ button {
 }
 
 .turn-rail__preview {
-  /* 与线列同一参考系：absolute 挂在 sticky rail 下，top 由 JS 按被预览线偏移给定。
-     left 在线列右外侧 + pointer-events:none——双重保证预览框永不遮挡线的点击热区。 */
-  position: absolute;
-  left: calc(100% + var(--space-2));
+  /* fixed 挂在视口层，公共定位工具按实测尺寸锚定当前线；默认放在线列右侧，
+     空间不足时翻转并贴边。pointer-events:none 保证预览不形成点击死区。 */
+  position: fixed;
   z-index: var(--z-rail);
   width: min(18rem, calc(100vw - 4rem));
+  max-height: calc(100vh - var(--space-6));
+  overflow: auto;
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--color-line);
   border-radius: var(--radius-panel);
@@ -2676,8 +2676,6 @@ button.model-status {
   border: 1px solid var(--color-line);
   border-radius: var(--radius-button);
   box-shadow: var(--shadow-panel);
-  /* 左坐标即按钮右缘：菜单向左展开对齐按钮右缘，避免溢出侧栏右缘。 */
-  transform: translateX(-100%);
 }
 
 .session-menu__item {
@@ -4479,11 +4477,12 @@ button.model-status {
 .selection-hint {
   position: fixed;
   z-index: var(--z-capsule);
-  transform: translate(-50%, -100%);
   display: flex;
   align-items: flex-start;
   gap: var(--space-2);
   max-width: 20rem;
+  max-height: calc(100vh - var(--space-4));
+  overflow: auto;
   padding: var(--space-2) var(--space-3);
   background: var(--color-surface);
   border: 1px solid var(--color-selection-line);
@@ -5035,19 +5034,21 @@ button.model-status {
   position: fixed;
   z-index: var(--z-hover-card);
   width: min(20rem, calc(100vw - 1rem));
-  padding: var(--space-3) var(--space-4);
   background: var(--color-surface);
   border: 1px solid var(--color-line);
   border-radius: var(--radius-panel);
   box-shadow: var(--shadow-panel);
-  display: grid;
-  gap: var(--space-2);
-  transform: translateX(-50%);
   pointer-events: auto;
 }
 
-.source-card[data-placement="top"] {
-  transform: translate(-50%, -100%);
+/* 滚动留在卡片内容层，外层继续允许方向箭头伸出边框。 */
+.source-card__body {
+  display: grid;
+  gap: var(--space-2);
+  max-height: calc(100vh - 1rem);
+  overflow: auto;
+  padding: var(--space-3) var(--space-4);
+  border-radius: inherit;
 }
 
 .source-card[data-placement="top"]::after {

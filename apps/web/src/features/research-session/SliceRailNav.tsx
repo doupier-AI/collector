@@ -1,5 +1,6 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
+import { computeAnchoredOverlayPosition } from "../../utils/anchored-overlay-position";
 import { useMediaQuery } from "../../app/useMediaQuery";
 import { makeExcerpt } from "./slice-cards";
 
@@ -309,22 +310,31 @@ export const SliceRailNav = memo(function SliceRailNav({ items }: { items: Slice
   const preview = previewIndex !== null ? items[previewIndex] : null;
   const previewExcerpt = useMemo(() => (preview ? makeExcerpt(preview.excerpt) : ""), [preview]);
 
-  // 预览框与线列同一参考系（sticky rail 自身是定位上下文）：top 取被预览线中心对齐预览框中心，
-  // 并钳制在视口内；水平位置由 CSS 放在线列左外侧，任何状态不覆盖线的热区。
-  const [previewTop, setPreviewTop] = useState(0);
-  useEffect(() => {
+  const previewRef = useRef<HTMLDivElement>(null);
+  const [previewPosition, setPreviewPosition] = useState({ top: 0, left: 0 });
+  useLayoutEffect(() => {
     if (previewIndex === null) return;
     const rail = railRef.current;
-    if (!rail) return;
-    const tick = rail.querySelector<HTMLElement>(`.slice-rail__tick[data-flat-index="${previewIndex}"]`);
-    if (!tick) return;
-    const tickRect = tick.getBoundingClientRect();
-    const railTop = rail.getBoundingClientRect().top;
-    const estimatedHeight = 132;
-    const centered = tickRect.top + tickRect.height / 2 - estimatedHeight / 2 - railTop;
-    const maxTop = Math.max(0, window.innerHeight - railTop - estimatedHeight - 12);
-    setPreviewTop(Math.min(Math.max(0, centered), maxTop));
-  }, [previewIndex]);
+    const previewElement = previewRef.current;
+    if (!rail || !previewElement) return;
+    const update = () => {
+      const tick = rail.querySelector<HTMLElement>(`.slice-rail__tick[data-flat-index="${previewIndex}"]`);
+      if (!tick) return;
+      const position = computeAnchoredOverlayPosition(tick.getBoundingClientRect(), { width: previewElement.offsetWidth, height: previewElement.offsetHeight }, { width: window.innerWidth, height: window.innerHeight }, {
+        gap: 8,
+        margin: 12,
+        preferredPlacement: "left",
+      });
+      setPreviewPosition((current) => current.top === position.top && current.left === position.left ? current : { top: position.top, left: position.left });
+    };
+    update();
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [previewIndex, previewExcerpt]);
 
   if (items.length === 0) return null;
 
@@ -413,7 +423,7 @@ export const SliceRailNav = memo(function SliceRailNav({ items }: { items: Slice
         ))}
       </div>
       {preview && previewIndex !== null ? (
-        <div className="slice-rail__preview" role="tooltip" style={{ top: `${previewTop}px` }}>
+        <div ref={previewRef} className="slice-rail__preview" role="tooltip" style={{ top: `${previewPosition.top}px`, left: `${previewPosition.left}px` }}>
           {preview.title.trim() ? <p className="slice-rail__preview-title">{preview.title}</p> : null}
           <p className="slice-rail__preview-excerpt">{previewExcerpt}</p>
         </div>

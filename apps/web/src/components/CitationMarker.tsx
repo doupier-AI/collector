@@ -14,7 +14,7 @@ export interface CitationMarkerProps {
 export function CitationMarker({ index, citation, source }: CitationMarkerProps) {
   const title = source?.title || "来源元数据不足";
   const label = source?.url ? `打开来源 ${index}：${title}` : `查看来源 ${index}：${title}`;
-  const { state, anchorRef, open: showCard, close: hideCard } = useHoverCard();
+  const { state, anchorRef, overlayRef, open: showCard, close: hideCard } = useHoverCard();
   const marker = <sup data-citation-marker aria-hidden="true" data-citation-index={index} />;
   const anchor = source?.url ? (
     <a
@@ -56,7 +56,7 @@ export function CitationMarker({ index, citation, source }: CitationMarkerProps)
       {anchor}
       {state.open && source
         ? createPortal(
-            <SourceCard source={source} index={index} top={state.top} left={state.left} placement={state.placement} onClose={hideCard} onEnter={showCard} onLeave={close} />,
+            <SourceCard source={source} index={index} top={state.top} left={state.left} placement={state.placement} overlayRef={overlayRef} onClose={hideCard} onEnter={showCard} onLeave={close} />,
             document.body,
           )
         : null}

@@ -1,4 +1,5 @@
 import type { ResearchGroundingSourceRecord } from "@collector/capture-contracts";
+import type { Ref } from "react";
 
 export interface SourceCardProps {
   source: ResearchGroundingSourceRecord;
@@ -9,10 +10,11 @@ export interface SourceCardProps {
   onClose: () => void;
   onEnter?: () => void;
   onLeave?: () => void;
+  overlayRef?: Ref<HTMLDivElement>;
 }
 
 /** 悬停/聚焦时显示的来源预览卡片。纯展示组件，由调用方通过 createPortal 挂到 body。 */
-export function SourceCard({ source, index, top, left, placement, onClose, onEnter, onLeave }: SourceCardProps) {
+export function SourceCard({ source, index, top, left, placement, onClose, onEnter, onLeave, overlayRef }: SourceCardProps) {
   const hostname = source.url ? safeHostname(source.url) : undefined;
   const snippet = source.snippet ? truncate(source.snippet, 200) : undefined;
 
@@ -20,6 +22,7 @@ export function SourceCard({ source, index, top, left, placement, onClose, onEnt
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions
     <div
       className="source-card"
+      ref={overlayRef}
       role="tooltip"
       aria-label={`来源 ${index}`}
       data-placement={placement}
@@ -31,26 +34,28 @@ export function SourceCard({ source, index, top, left, placement, onClose, onEnt
         e.stopPropagation();
       }}
     >
-      <div className="source-card__header">
-        {hostname ? <span className="source-card__hostname">{hostname}</span> : null}
-        <span className="source-card__index">来源 {index}</span>
+      <div className="source-card__body">
+        <div className="source-card__header">
+          {hostname ? <span className="source-card__hostname">{hostname}</span> : null}
+          <span className="source-card__index">来源 {index}</span>
+        </div>
+        <p className="source-card__title">{source.title || "来源元数据不足"}</p>
+        {snippet ? <p className="source-card__snippet">{snippet}</p> : null}
+        {source.publishedAt ? <p className="source-card__published">{source.publishedAt}</p> : null}
+        {source.url ? (
+          <a
+            href={source.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="source-card__link"
+            onClick={() => onClose()}
+          >
+            打开原文
+          </a>
+        ) : (
+          <p className="source-card__missing">未提供可安全打开的原链接。</p>
+        )}
       </div>
-      <p className="source-card__title">{source.title || "来源元数据不足"}</p>
-      {snippet ? <p className="source-card__snippet">{snippet}</p> : null}
-      {source.publishedAt ? <p className="source-card__published">{source.publishedAt}</p> : null}
-      {source.url ? (
-        <a
-          href={source.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="source-card__link"
-          onClick={() => onClose()}
-        >
-          打开原文
-        </a>
-      ) : (
-        <p className="source-card__missing">未提供可安全打开的原链接。</p>
-      )}
     </div>
   );
 }

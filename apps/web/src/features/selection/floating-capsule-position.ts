@@ -1,4 +1,5 @@
 import type { SelectionRect } from "./useSelection";
+import { computeAnchoredOverlayPosition } from "../../utils/anchored-overlay-position";
 
 /** 浮动胶囊的定位结果：页面绝对坐标（随内容滚动）与呈现侧。 */
 export interface FloatingPlacement {
@@ -32,23 +33,14 @@ export function computeFloatingCapsulePlacement(
   scroll: { x: number; y: number },
   options: FloatingPositionOptions = {},
 ): FloatingPlacement {
-  const gap = options.gap ?? 8;
-  const margin = options.margin ?? 8;
-  const side = selection.top - gap - capsule.height >= margin ? "above" : "below";
-  const viewportTop = side === "above" ? selection.top - gap - capsule.height : selection.bottom + gap;
-  const centerX = (selection.left + selection.right) / 2;
-  const minLeft = margin;
-  const maxLeft = Math.max(minLeft, viewport.width - capsule.width - margin);
-  const viewportLeft = Math.min(Math.max(centerX - capsule.width / 2, minLeft), maxLeft);
-  // 纵向与横向一样钳制在视口安全边距内：矮视口（如 568px）下选区贴底时，上方放不下、
-  // 翻转到下方又会顶出视口底缘。钳到「视口底 - 胶囊高 - 边距」保证任何选区位置都不纵向溢出
-  // （横向早已钳制，纵向此前缺失，窄屏钳制验收在并行高负载选区偏底时暴露 615>568）。
-  const minTop = margin;
-  const maxTop = Math.max(minTop, viewport.height - capsule.height - margin);
-  const clampedViewportTop = Math.min(Math.max(viewportTop, minTop), maxTop);
+  const position = computeAnchoredOverlayPosition(selection, capsule, viewport, {
+    gap: options.gap,
+    margin: options.margin,
+    preferredPlacement: "top",
+  });
   return {
-    top: clampedViewportTop + scroll.y,
-    left: viewportLeft + scroll.x,
-    side,
+    top: position.top + scroll.y,
+    left: position.left + scroll.x,
+    side: position.placement === "top" ? "above" : "below",
   };
 }

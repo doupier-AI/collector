@@ -288,19 +288,25 @@ describe("TurnRailNav 轮次导航", () => {
     expect(container.querySelector(".turn-rail__preview")).not.toBeNull();
   });
 
-  it("预览框参考系为线列自身：滚动后仍与被预览线中心对齐（不漂移）", () => {
+  it("预览框按实测尺寸固定在视口内：滚动后仍与被预览线中心对齐", () => {
     const { container } = setup();
     const rail = container.querySelector<HTMLElement>(".turn-rail")!;
     const tick = rail.querySelectorAll<HTMLElement>(".turn-rail__tick")[1];
     rail.getBoundingClientRect = () => ({ top: 100 }) as DOMRect;
-    tick.getBoundingClientRect = () => ({ top: 400, height: 32 }) as DOMRect;
-    const expected = 400 + 32 / 2 - 132 / 2 - 100; // = 250
+    tick.getBoundingClientRect = () => ({ top: 400, bottom: 432, left: 100, right: 120, width: 20, height: 32 }) as DOMRect;
+    const dimensions = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+      return this.classList?.contains("turn-rail__preview") ? 132 : 0;
+    });
     act(() => {
       fireEvent.mouseEnter(tick);
       vi.advanceTimersByTime(501);
     });
-    const preview = container.querySelector<HTMLElement>(".turn-rail__preview")!;
-    expect(preview).not.toBeNull();
-    expect(preview.style.top).toBe(`${expected}px`);
+    try {
+      const preview = container.querySelector<HTMLElement>(".turn-rail__preview")!;
+      expect(preview).not.toBeNull();
+      expect(preview.style.top).toBe("350px");
+    } finally {
+      dimensions.mockRestore();
+    }
   });
 });

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { ProjectRecord, ResearchSessionRecord } from "@collector/capture-contracts";
 import { stableNodePath } from "../../app/paths";
@@ -7,6 +7,7 @@ import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { PAIRED_EVENT } from "../auth/paired-event";
 import { formatRelativeTime } from "../research-session/format";
 import { notifySessionsChanged, SESSIONS_CHANGED_EVENT } from "./session-events";
+import { computeAnchoredOverlayPosition } from "../../utils/anchored-overlay-position";
 
 type ListState =
   | { kind: "loading" }
@@ -125,16 +126,19 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
     menuTriggerRef.current = null;
   };
 
-  // 贴按钮下缘、右对齐按钮右缘；横向钳制在 CSS（max-width + 右侧 inset）兜底。
-  // 纵向在此钳制：按钮靠近视口底缘时，贴下缘会把菜单顶出底部（max-height 只限高、不移位），
-  // 与浮动胶囊同一类「只翻转不钳制」缺口。打开瞬间菜单未挂载，先按估计高预钳；
-  // 挂载后的精钳见 menuRef effect，滚动重锚时直接用真实高度。
+  // 菜单已挂载时按实测尺寸决定下方→上方→贴边；首次挂载前只给一个临时锚点，
+  // layout effect 会在首帧绘制前完成实测定位，避免以估算高度决定最终位置。
   const anchorForTrigger = (trigger: HTMLElement): { top: number; left: number } => {
     const rect = trigger.getBoundingClientRect();
-    const margin = 8;
-    const height = menuRef.current?.offsetHeight ?? Math.min(320, window.innerHeight - margin * 2);
-    const top = Math.min(rect.bottom + 4, Math.max(margin, window.innerHeight - height - margin));
-    return { top, left: rect.right };
+    const menu = menuRef.current;
+    if (!menu) return { top: rect.bottom + 4, left: rect.right };
+    const position = computeAnchoredOverlayPosition(
+      rect,
+      { width: menu.offsetWidth, height: menu.offsetHeight },
+      { width: window.innerWidth, height: window.innerHeight },
+      { gap: 4, margin: 8, preferredPlacement: "bottom", crossAxisAlignment: "end" },
+    );
+    return { top: position.top, left: position.left };
   };
 
   const openMenu = (target: string, event: React.MouseEvent<HTMLElement>) => {
@@ -147,20 +151,9 @@ export function SessionListPanel({ searchQuery = "", onNavigate }: { searchQuery
     setMenuFor(target);
   };
 
-  // 菜单挂载后用真实高度精钳 top：估计高偏保守，真实高更矮时把菜单对齐到「底缘贴视口底 - 边距」，
-  // 既消除底部溢出又避免过高估计把菜单抬得离触发按钮太远。
-  useEffect(() => {
-    if (!menuFor || !menuAnchor) return;
-    const el = menuRef.current;
-    if (!el) return;
-    const margin = 8;
-    const height = el.offsetHeight;
-    setMenuAnchor((anchor) => {
-      if (!anchor) return anchor;
-      const clamped = Math.min(anchor.top, Math.max(margin, window.innerHeight - height - margin));
-      return clamped === anchor.top ? anchor : { ...anchor, top: clamped };
-    });
-    // 仅在打开的目标/锚点变化时精钳一次
+  useLayoutEffect(() => {
+    if (!menuFor || !menuTriggerRef.current || !menuRef.current) return;
+    setMenuAnchor(anchorForTrigger(menuTriggerRef.current));
   }, [menuFor]);
 
   // 菜单打开期间的滚动分两类：用户真实滚动让按钮移动，菜单跟随按钮重锚（始终贴住，不漂走）；

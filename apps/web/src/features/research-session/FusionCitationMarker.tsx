@@ -22,7 +22,7 @@ export function FusionCitationMarker({ source }: { source: ResearchFusionSource 
   const [preview, setPreview] = useState<{ state: "loading" } | { state: "ok"; text: string } | { state: "failed" }>({
     state: "loading",
   });
-  const { state, anchorRef, open: showCard, close: hideCard } = useHoverCard();
+  const { state, anchorRef, overlayRef, open: showCard, close: hideCard } = useHoverCard();
 
   useEffect(() => {
     let stale = false;
@@ -90,6 +90,7 @@ export function FusionCitationMarker({ source }: { source: ResearchFusionSource 
               top={state.top}
               left={state.left}
               placement={state.placement}
+              overlayRef={overlayRef}
               onClose={hideCard}
               onEnter={showCard}
               onLeave={close}

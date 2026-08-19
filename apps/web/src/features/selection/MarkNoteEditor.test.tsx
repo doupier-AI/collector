@@ -64,6 +64,20 @@ describe("MarkNoteEditor（修订二 #12）", () => {
     expect(screen.getByTestId("mark-note-editor").style.position).toBe("fixed");
   });
 
+  it("已锁定的编辑器在视口缩小时重新钳制，不会推出边界", () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: 800 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, writable: true, value: 800 });
+    renderEditor();
+    const editor = screen.getByTestId("mark-note-editor");
+    vi.spyOn(editor, "getBoundingClientRect").mockReturnValue({ top: 600, left: 600, width: 240, height: 40 } as DOMRect);
+    fireEvent.focus(screen.getByTestId("mark-note-input"));
+    Object.defineProperty(window, "innerWidth", { configurable: true, writable: true, value: 320 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, writable: true, value: 500 });
+    fireEvent(window, new Event("resize"));
+    expect(editor.style.top).toBe("452px");
+    expect(editor.style.left).toBe("72px");
+  });
+
   it("点击编辑器以外区域：以当前笔记内容保存并关闭", () => {
     const onSaveNote = vi.fn();
     renderEditor({ onSaveNote });

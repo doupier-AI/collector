@@ -6,6 +6,7 @@ import { deriveMessageBlocks, messageContentBlockId, splitBlockHeading } from "@
 import { MarkdownContent, type RenderedTermMarker } from "../../components/MarkdownContent";
 import { subscribeToGroundingSourceReveal } from "../../components/grounding-source-navigation";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
+import { computeAnchoredOverlayPosition } from "../../utils/anchored-overlay-position";
 import { markExactInRendered, setRangeFromOffsets } from "../selection/selection-highlight";
 import { taskErrorReason } from "./format";
 import type { FragmentTarget } from "./fragment-locator";
@@ -571,27 +572,21 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
   }, [clearCloseTimer, clearHoverTimer]);
 
   const updatePosition = useCallback((element: HTMLElement) => {
+    const popover = popoverRef.current;
+    if (!popover) return;
     const rect = element.getBoundingClientRect();
-    const width = Math.min(320, Math.max(220, window.innerWidth - 24));
-    const left = Math.min(Math.max(12, rect.left), Math.max(12, window.innerWidth - width - 12));
-    // 弹层是 fixed 定位、不随页面滚动：必须按实测高度（CSS max-height 已钳在视口内）保证
-    // 整个弹层——尤其是底部的生长按钮——落在视口内。下方放得下放下方，否则放上方，
-    // 都放不下就贴视口底边钳制（允许盖住标记本身，不允许任何部分推出视口）。
-    const height = popoverRef.current?.offsetHeight || 240;
-    const below = rect.bottom + 10;
-    const top = below + height <= window.innerHeight - 12
-      ? below
-      : rect.top - height - 10 >= 12
-        ? rect.top - height - 10
-        : Math.max(12, window.innerHeight - height - 12);
-    setPosition({ top, left });
+    const next = computeAnchoredOverlayPosition(rect, { width: popover.offsetWidth, height: popover.offsetHeight }, { width: window.innerWidth, height: window.innerHeight }, {
+      gap: 10,
+      margin: 12,
+      preferredPlacement: "bottom",
+    });
+    setPosition({ top: next.top, left: next.left });
   }, []);
 
   const openPopover = useCallback((element: HTMLElement, marker: TermMarker) => {
     clearCloseTimer();
-    updatePosition(element);
     setActive({ element, marker });
-  }, [clearCloseTimer, updatePosition]);
+  }, [clearCloseTimer]);
 
   // terms 在流式期间随每次增量更换数组身份。经 ref 读取让查找函数保持稳定身份：
   // 否则事件委托层每次增量都拆装监听器，清理函数会连带清掉进行中的悬注意图计时。
