@@ -28,13 +28,14 @@ export function upsertTask(tasks: ResearchTaskRecord[], task: ResearchTaskRecord
  * 把渐进事件合并进会话视图：
  * - snapshot：整体对齐任务与消息；
  * - delta：delta.message 已是追加后的完整消息，整体替换同 id 消息；
- * - completed / failed：写入终态任务与消息。
+ * - completed / failed / stopped：写入终态任务与消息。
  */
 export function applyTaskEvent(view: ResearchSessionView, event: ResearchTaskEvent): ResearchSessionView {
   switch (event.type) {
     case "snapshot":
     case "completed":
     case "failed":
+    case "stopped":
       return {
         ...view,
         messages: upsertMessage(view.messages, event.message),

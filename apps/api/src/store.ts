@@ -164,6 +164,10 @@ export interface ResearchStore {
   completeResearchTask(id: string): Promise<void>;
   failResearchTask(task: ResearchTaskRecord, error: ResearchTaskError): Promise<void>;
   retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string, options?: { preserveContent?: boolean }): Promise<ResearchTaskRecord>;
+  /** ADR-0035 暂停：running → paused，已写正文与断点保留；可继续（queued 重入）或停止（stopped 终态）。 */
+  pauseResearchTask(id: string): Promise<ResearchTaskRecord>;
+  resumeResearchTask(id: string): Promise<ResearchTaskRecord>;
+  stopResearchTask(id: string): Promise<ResearchTaskRecord>;
   /** plan-then-write：持久化正文大纲与逐节进度，供断点续扩；record_json 整行覆盖。 */
   saveResearchTaskBodyPlan(taskId: string, bodyPlan: ResearchBodyPlan): Promise<void>;
   /** #31：融合正文完成后写入解析出的 [来源n] 引用；record_json 整行覆盖。 */
@@ -344,6 +348,9 @@ export interface CollectorStore
   completeResearchTask(id: string): Promise<void>;
   failResearchTask(task: ResearchTaskRecord, error: ResearchTaskError): Promise<void>;
   retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string, options?: { preserveContent?: boolean }): Promise<ResearchTaskRecord>;
+  pauseResearchTask(id: string): Promise<ResearchTaskRecord>;
+  resumeResearchTask(id: string): Promise<ResearchTaskRecord>;
+  stopResearchTask(id: string): Promise<ResearchTaskRecord>;
   saveResearchTaskBodyPlan(taskId: string, bodyPlan: ResearchBodyPlan): Promise<void>;
   saveResearchTaskStreamCheckpoint(taskId: string, content: string): Promise<void>;
   clearResearchTaskStreamCheckpoint(taskId: string): Promise<void>;
@@ -1090,6 +1097,57 @@ export class SqliteStore implements CollectorStore {
     return retried;
   }
 
+  /** ADR-0035 暂停：running → paused，消息 paused；已写正文与断点保留，等待继续（queued 重入）或停止。 */
+  async pauseResearchTask(id: string): Promise<ResearchTaskRecord> {
+    let paused: ResearchTaskRecord | undefined;
+    this.transaction(() => {
+      const task = this.getResearchTask(id);
+      if (!task || task.status !== "running") throw new Error("Research task is not running");
+      const now = new Date().toISOString();
+      paused = { ...task, status: "paused", updatedAt: now };
+      this.updateResearchTask(paused);
+      const message = this.getResearchMessage(task.outputMessageId);
+      if (message) this.updateResearchMessage({ ...message, status: "paused", updatedAt: now });
+    });
+    if (!paused) throw new Error("Research task pause was not persisted");
+    return paused;
+  }
+
+  /** ADR-0035 继续：paused → queued 重新入队；正文/思考/断点全部保留，由 claim 循环接走从断点续写。 */
+  async resumeResearchTask(id: string): Promise<ResearchTaskRecord> {
+    let queued: ResearchTaskRecord | undefined;
+    this.transaction(() => {
+      const task = this.getResearchTask(id);
+      if (!task || task.status !== "paused") throw new Error("Research task is not paused");
+      const now = new Date().toISOString();
+      queued = { ...task, status: "queued", retryable: false, updatedAt: now };
+      this.updateResearchTask(queued);
+      const message = this.getResearchMessage(task.outputMessageId);
+      if (message) this.updateResearchMessage({ ...message, status: "pending", updatedAt: now });
+    });
+    if (!queued) throw new Error("Research task resume was not persisted");
+    return queued;
+  }
+
+  /** ADR-0035 停止：running/paused → stopped 终态；已写内容保留、事件留痕，不再自动重试。 */
+  async stopResearchTask(id: string): Promise<ResearchTaskRecord> {
+    let stopped: ResearchTaskRecord | undefined;
+    this.transaction(() => {
+      const task = this.getResearchTask(id);
+      if (!task || (task.status !== "running" && task.status !== "paused")) throw new Error("Research task is not stoppable");
+      const now = new Date().toISOString();
+      stopped = { ...task, status: "stopped", retryable: false, updatedAt: now, completedAt: now };
+      this.updateResearchTask(stopped);
+      const message = this.getResearchMessage(task.outputMessageId);
+      if (!message) throw new Error("Research output message not found");
+      const stoppedMessage: ResearchMessageRecord = { ...message, status: "stopped", updatedAt: now };
+      this.updateResearchMessage(stoppedMessage);
+      this.insertResearchEvent(id, "stopped", now, { task: stopped, message: stoppedMessage });
+    });
+    if (!stopped) throw new Error("Research task stop was not persisted");
+    return stopped;
+  }
+
   async saveResearchTaskStreamCheckpoint(taskId: string, content: string): Promise<void> {
     this.transaction(() => {
       const task = this.getResearchTask(taskId);
@@ -1127,7 +1185,7 @@ export class SqliteStore implements CollectorStore {
 
   listResearchTaskEvents(taskId: string, afterId = 0): ResearchTaskEvent[] {
     const rows = this.db().prepare("SELECT sequence, event_type, created_at, data_json FROM research_task_events WHERE task_id = ? AND sequence > ? ORDER BY sequence")
-      .all(taskId, afterId) as Array<{ sequence: number; event_type: "delta" | "completed" | "failed"; created_at: string; data_json: string }>;
+      .all(taskId, afterId) as Array<{ sequence: number; event_type: "delta" | "completed" | "failed" | "stopped"; created_at: string; data_json: string }>;
     return rows.map((row) => ({ id: row.sequence, type: row.event_type, createdAt: row.created_at, ...JSON.parse(row.data_json) }) as ResearchTaskEvent);
   }
 
@@ -2382,7 +2440,7 @@ export class SqliteStore implements CollectorStore {
       .run(task.status, task.retryable ? 1 : 0, task.updatedAt, JSON.stringify(task), task.id);
   }
 
-  private insertResearchEvent(taskId: string, type: "delta" | "completed" | "failed", createdAt: string, data: unknown): void {
+  private insertResearchEvent(taskId: string, type: "delta" | "completed" | "failed" | "stopped", createdAt: string, data: unknown): void {
     this.db().prepare("INSERT INTO research_task_events (task_id, event_type, created_at, data_json) VALUES (?, ?, ?, ?)")
       .run(taskId, type, createdAt, JSON.stringify(data));
   }

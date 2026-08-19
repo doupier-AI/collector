@@ -23,6 +23,10 @@ export interface MessageItemProps {
   task?: ResearchTaskRecord;
   retrying?: boolean;
   onRetry?: (task: ResearchTaskRecord) => void;
+  /** ADR-0035：生成控制（暂停/继续/停止）；缺省时不显示按钮。 */
+  onPauseTask?: (task: ResearchTaskRecord) => void;
+  onResumeTask?: (task: ResearchTaskRecord) => void;
+  onStopTask?: (task: ResearchTaskRecord) => void;
   highlight?: MessageHighlight;
   citations?: ResearchCitationRecord[];
   groundingSources?: ResearchGroundingSourceRecord[];
@@ -44,7 +48,7 @@ export interface MessageItemProps {
 }
 
 /** 单条消息。AI 消息与对应用户消息之间由 CSS 绘制克制的来源线与节点。 */
-export function MessageItem({ message, task, retrying = false, onRetry, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, onGrowTermMarker, slices, fragmentTargetId, fusionSources, multiTurn = false }: MessageItemProps) {
+export function MessageItem({ message, task, retrying = false, onRetry, onPauseTask, onResumeTask, onStopTask, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, onGrowTermMarker, slices, fragmentTargetId, fusionSources, multiTurn = false }: MessageItemProps) {
   if (message.role === "user") {
     return (
       <li className="message message--user" data-message-id={message.id}>
@@ -86,7 +90,7 @@ export function MessageItem({ message, task, retrying = false, onRetry, highligh
             {message.status === "completed" ? (
               <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} fragmentTargetId={fragmentTargetId} fusionSources={fusionSources} multiTurn={multiTurn} />
             ) : (
-              <GeneratingBody message={message} task={task} terms={terms} multiTurn={multiTurn} />
+              <GeneratingBody message={message} task={task} terms={terms} multiTurn={multiTurn} onPauseTask={onPauseTask} onResumeTask={onResumeTask} onStopTask={onStopTask} />
             )}
           </TermPreviewInteraction>
           {message.status === "completed" ? (
@@ -744,21 +748,55 @@ function ReasoningDisclosure({ reasoning, streaming }: { reasoning: string; stre
   );
 }
 
-function GeneratingBody({ message, task, terms, multiTurn = false }: { message: ResearchMessageRecord; task?: ResearchTaskRecord; terms: TermMarker[]; multiTurn?: boolean }) {
+function GeneratingBody({ message, task, terms, multiTurn = false, onPauseTask, onResumeTask, onStopTask }: { message: ResearchMessageRecord; task?: ResearchTaskRecord; terms: TermMarker[]; multiTurn?: boolean; onPauseTask?: (task: ResearchTaskRecord) => void; onResumeTask?: (task: ResearchTaskRecord) => void; onStopTask?: (task: ResearchTaskRecord) => void }) {
   const hasContent = message.content.trim().length > 0;
   const thinking = !hasContent && (message.reasoning?.length ?? 0) > 0;
-  const status = thinking
-    ? "深度思考中"
-    : task?.groundingScope?.status === "not_requested"
-      ? "已保存，正在生成"
-      : "已保存，正在请求联网";
+  const paused = task?.status === "paused" || message.status === "paused";
+  const stopped = task?.status === "stopped" || message.status === "stopped";
+  const status = stopped
+    ? "已停止"
+    : paused
+      ? "已暂停"
+      : thinking
+        ? "深度思考中"
+        : hasContent
+          ? "正在生成"
+          : task?.groundingScope?.status === "not_requested"
+            ? "已保存，正在生成"
+            : "已保存，正在请求联网";
   return (
     <>
       {hasContent ? (
         <AssistantBlocks message={message} citations={[]} groundingSources={[]} terms={terms} multiTurn={multiTurn} />
       ) : <AiPlaceholder />}
-      <p className="message__status">{hasContent ? "正在生成" : status}</p>
+      <p className="message__status">{status}</p>
+      {task && !stopped ? (
+        <GenerationControls task={task} paused={paused} onPauseTask={onPauseTask} onResumeTask={onResumeTask} onStopTask={onStopTask} />
+      ) : null}
     </>
+  );
+}
+
+/** ADR-0035 生成控制按钮组：生成中显示「暂停」；暂停后显示「继续」+「停止」。 */
+function GenerationControls({ task, paused, onPauseTask, onResumeTask, onStopTask }: { task: ResearchTaskRecord; paused: boolean; onPauseTask?: (task: ResearchTaskRecord) => void; onResumeTask?: (task: ResearchTaskRecord) => void; onStopTask?: (task: ResearchTaskRecord) => void }) {
+  if (!onPauseTask && !onResumeTask && !onStopTask) return null;
+  return (
+    <div className="generation-controls">
+      {paused ? (
+        <>
+          <button type="button" className="button button--secondary button--small" onClick={() => onResumeTask?.(task)}>
+            继续
+          </button>
+          <button type="button" className="button button--ghost button--small" onClick={() => onStopTask?.(task)}>
+            停止
+          </button>
+        </>
+      ) : (
+        <button type="button" className="button button--secondary button--small" onClick={() => onPauseTask?.(task)}>
+          暂停
+        </button>
+      )}
+    </div>
   );
 }
 /** AI 固定占位：低对比度呼吸骨架；系统开启减少动态效果时退化为静态骨架。 */

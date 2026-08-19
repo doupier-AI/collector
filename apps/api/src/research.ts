@@ -43,7 +43,7 @@ import { DEFAULT_RESEARCH_SESSION_TITLE } from "./session-titling.js";
 import { buildResearchSliceContext, DEFAULT_RESEARCH_SLICE_CONTEXT_TOKEN_BUDGET, type ResearchFragmentContextCandidate } from "./slice-context.js";
 import { getOrDeriveMessageBodyArtifacts, matchSliceForFragment, tryResolveFragmentExcerpt } from "./body-artifacts.js";
 import type { ResearchBodyOutline, ResearchSliceAnnotation } from "@collector/model-gateway";
-import { ModelProviderHttpError, ModelProviderTimeoutError } from "@collector/model-gateway";
+import { ModelProviderAbortedError, ModelProviderHttpError, ModelProviderTimeoutError } from "@collector/model-gateway";
 import { isLongText, joinContinuation, LONG_TEXT_CHAR_THRESHOLD } from "@collector/capture-contracts";
 import { filterCitationsByEvidence, parseAgentCitations } from "./web-search-agent.js";
 
@@ -53,6 +53,14 @@ export const DEEP_RESEARCH_PROMPT_VERSION = "deep-research-v1";
 export const RESEARCH_SLICE_PROMPT_VERSION = "research-slices-v1";
 const PROMPT_VERSION = RESEARCH_SLICE_PROMPT_VERSION;
 const MAX_GENERATED_CHARACTERS = 1_000_000;
+
+/** 内部信号：暂停/停止中止生成循环——由 runTask 捕获后静默收尾，不判任务失败。 */
+class TaskPausedByUserError extends Error {
+  constructor(reason: string) {
+    super(`Research generation aborted by user action: ${reason}`);
+    this.name = "TaskPausedByUserError";
+  }
+}
 /** 有界修复：单节因截断/无果断信号触发的续写上限。 */
 const BODY_SECTION_MAX_CONTINUATIONS = 3;
 /** 有界修复：单节空输出的重问上限。 */
@@ -122,8 +130,8 @@ export interface ResearchGenerationProvider {
   writeBody?(request: ResearchGenerationRequest): Promise<string>;
   /** #31：融合节点正文生成；任务带 fusionPlan 时优先走本方法。来源材料含可回读的片段摘录。 */
   composeFusion?(request: ResearchGenerationRequest & { fusion: { sources: Array<ResearchFusionSource & { excerpt: string }>; relationType: import("@collector/capture-contracts").FusionRelationType } }): Promise<string>;
-  /** 真实模型逐字流式正文（方案 B）；缺省时退回 writeBody 原子写或 legacy generate 流式。onReasoning 旁路接收思考增量（ADR-0035）。 */
-  writeBodyStream?(request: ResearchGenerationRequest & { resumeFrom?: string; onStreamDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void }): AsyncIterable<string>;
+  /** 真实模型逐字流式正文（方案 B）；缺省时退回 writeBody 原子写或 legacy generate 流式。onReasoning 旁路接收思考增量（ADR-0035）；signal 供暂停/停止中止物理流。 */
+  writeBodyStream?(request: ResearchGenerationRequest & { resumeFrom?: string; onStreamDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; signal?: AbortSignal }): AsyncIterable<string>;
   /** plan-then-write 第一阶段：为长文生成有序大纲。 */
   generateOutline?(request: ResearchGenerationRequest): Promise<ResearchBodyOutline>;
   /** plan-then-write 第二阶段：在大纲与前文前提下串行扩写某节；支持断点续写/空节修复提示/降级目标字数。 */
@@ -162,6 +170,8 @@ export class ResearchSessionService {
   private readonly taskEvents = new EventEmitter();
   /** 每个运行中任务唯一的流内提及解析器；任务结束即释放。 */
   private readonly mentionStreams = new Map<string, MentionMarkupStream>();
+  /** ADR-0035 暂停/停止：每个运行中任务的中止控制器；pause/stop 触发 abort 中止物理 provider 流。 */
+  private readonly abortControllers = new Map<string, AbortController>();
 
   constructor(private readonly store: ResearchStore, private readonly options: ResearchServiceOptions = {}) {
     this.provider = options.provider;
@@ -436,6 +446,27 @@ export class ResearchSessionService {
     return task;
   }
 
+  /** ADR-0035 暂停：任务置 paused（保留已写正文与断点）后中止物理 provider 流。 */
+  async pauseTask(id: string): Promise<ResearchTaskRecord> {
+    const task = await this.store.pauseResearchTask(id);
+    this.abortControllers.get(id)?.abort();
+    return task;
+  }
+
+  /** ADR-0035 继续：paused → queued 重新入队，从断点续写（正文/思考/断点全部保留）。 */
+  async resumeTask(id: string): Promise<ResearchTaskRecord> {
+    const task = await this.store.resumeResearchTask(id);
+    if (this.options.autoRunTasks !== false) this.scheduleTask(task.id);
+    return task;
+  }
+
+  /** ADR-0035 停止：任务置 stopped 终态（保留已写内容）后中止物理 provider 流。 */
+  async stopTask(id: string): Promise<ResearchTaskRecord> {
+    const task = await this.store.stopResearchTask(id);
+    this.abortControllers.get(id)?.abort();
+    return task;
+  }
+
   async resumeTasks(): Promise<number> {
     const interrupted = this.store.failInterruptedResearchTasks();
     const tasks = this.store.listRecoverableResearchTasks();
@@ -444,7 +475,12 @@ export class ResearchSessionService {
   }
 
   async processTask(id: string): Promise<void> {
-    if (this.running.has(id)) return;
+    if (this.running.has(id)) {
+      // ADR-0035：旧生成循环仍在收尾（暂停/停止中止路径尚未退出 running 集合），
+      // 重排一次等待其退出后接走；旧循环必然退出（TaskPausedByUserError 传播到 finally）。
+      this.scheduleTask(id);
+      return;
+    }
     this.running.add(id);
     try {
       const current = this.store.getResearchTask(id);
@@ -457,6 +493,9 @@ export class ResearchSessionService {
         this.promptVersionForAttempt(current),
       );
       if (!task) return;
+      // ADR-0035：本任务本次生成的中止控制器；pause/stop 触发 abort 中止物理流。
+      const abortController = new AbortController();
+      this.abortControllers.set(task.id, abortController);
       const provider = this.provider;
       if (!provider) {
         await this.store.failResearchTask(task, {
@@ -565,7 +604,10 @@ export class ResearchSessionService {
         } catch {
           // 附加任务失败不能把已经完成的研究回答改判为失败。
         }
-      } catch {
+      } catch (error) {
+        // ADR-0035：暂停/停止中止的生成循环静默收尾——任务状态已由 pause/stop 落库，不判失败、不发失败事件。
+        if (error instanceof TaskPausedByUserError) return;
+        console.warn(`[research] 生成失败 task=${task.id} detail=${error instanceof Error ? `${error.name}: ${error.message}` : String(error)}`);
         // 失败时也冲洗尚未闭合的控制串：保留其中可读正文，绝不把 [[... 暴露给用户。
         try { await this.finishGeneratedMarkup(task); } catch { /* 主错误仍由任务失败状态承载。 */ }
         await this.store.failResearchTask(this.getTask(task.id), {
@@ -574,6 +616,7 @@ export class ResearchSessionService {
         });
       }
     } finally {
+      this.abortControllers.delete(id);
       this.mentionStreams.delete(id);
       this.running.delete(id);
     }
@@ -855,6 +898,7 @@ export class ResearchSessionService {
           for await (const delta of provider.writeBodyStream!({
             ...generationRequest,
             ...(resumeFrom ? { resumeFrom } : {}),
+            ...(this.abortControllers.get(task.id)?.signal ? { signal: this.abortControllers.get(task.id)!.signal } : {}),
             onStreamDone: (done) => { doneFinish = done.finishReason; },
             onReasoning: (text) => {
               reasoningBuffer += text;
@@ -865,6 +909,10 @@ export class ResearchSessionService {
             },
           })) {
             if (!delta) continue;
+            // ADR-0035：任务离开 running（暂停/停止/恢复重入队等）即退出本生成循环，
+            // 防止旧循环在任务状态已被新操作改写后继续 append（与 store 的 running 校验同源）。
+            const statusNow = this.store.getResearchTask(task.id)?.status;
+            if (statusNow !== "running") throw new TaskPausedByUserError(statusNow ?? "stopped");
             const next = joinContinuation(rawStreamed, delta);
             const suffix = next.slice(rawStreamed.length);
             if (suffix) {
@@ -886,6 +934,28 @@ export class ResearchSessionService {
           }
         });
       } catch (error) {
+        // 状态检查触发的退出（含 resume 竞态下任务被改写为 queued）：静默重抛，由 runTask 收尾。
+        if (error instanceof TaskPausedByUserError) {
+          queueReasoningFlush();
+          await reasoningChain;
+          throw error;
+        }
+        // ADR-0035：外部中止（暂停/停止触发）——无论任务状态已被改写为 paused/queued/stopped
+        // （resume 竞态下状态先于旧循环退出被改写），都落断点并静默退出，绝不判失败。
+        if (error instanceof ModelProviderAbortedError) {
+          queueReasoningFlush();
+          await reasoningChain;
+          if (visibleStreamed.trim()) await this.store.saveResearchTaskStreamCheckpoint(task.id, visibleStreamed);
+          throw new TaskPausedByUserError(this.store.getResearchTask(task.id)?.status ?? "aborted");
+        }
+        // ADR-0035：暂停/停止中止——先落已缓冲思考与断点，再以内部信号退出（runTask 静默收尾）。
+        const status = this.store.getResearchTask(task.id)?.status;
+        if (status === "paused" || status === "stopped") {
+          queueReasoningFlush();
+          await reasoningChain;
+          if (visibleStreamed.trim()) await this.store.saveResearchTaskStreamCheckpoint(task.id, visibleStreamed);
+          throw new TaskPausedByUserError(status);
+        }
         // 流被切断/重试耗尽：落断点保留已写部分后抛错（failResearchTask → 可重试从断点续传）。
         queueReasoningFlush();
         await reasoningChain;
@@ -963,6 +1033,10 @@ export class ResearchSessionService {
     for (let index = 0; index < sections.length; index += 1) {
       const section = sections[index];
       if (!section || section.status === "completed") continue;
+      // ADR-0035：长文节间暂停/停止——已完成节与节内断点（partialContent）均已持久化，
+      // 此处退出即保留全部进度；继续时从当前节断点续扩。任务离开 running 即退出。
+      const statusNow = this.store.getResearchTask(task.id)?.status;
+      if (statusNow !== "running") throw new TaskPausedByUserError(statusNow ?? "stopped");
       const result = await this.expandSectionBounded(task, provider, request, outline, index, writtenSoFar, section, async (partial) => {
         // onPartial：增量落节内断点 partialContent（append 新增后缀已由流式/收尾统一处理，此处只持久化断点）。
         section.partialContent = partial;
@@ -1006,6 +1080,9 @@ export class ResearchSessionService {
    */
   private classifyProviderError(error: unknown): "retryable" | "fatal" {
     if (error instanceof ModelProviderTimeoutError) return "retryable";
+    // ADR-0035：用户暂停/停止与外部中止不得触发退避重试——重试会重新发起物理调用。
+    if (error instanceof TaskPausedByUserError) return "fatal";
+    if (error instanceof ModelProviderAbortedError) return "fatal";
     if (error instanceof ModelProviderHttpError) {
       if (error.status === 429 || error.status >= 500) return "retryable";
       return "fatal";

@@ -14,6 +14,7 @@ export function applyNodeEvent(view: ResearchNodeView, event: ResearchTaskEvent)
     case "snapshot":
     case "completed":
     case "failed":
+    case "stopped":
       return {
         ...view,
         messages: upsertMessage(view.messages, event.message),

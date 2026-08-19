@@ -1375,6 +1375,18 @@ button.model-status {
   font-size: var(--font-size-sm);
 }
 
+/* ADR-0035 生成控制按钮组：生成中「暂停」，暂停后「继续」+「停止」。 */
+.generation-controls {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.generation-controls .button--small {
+  padding: 0.25rem 0.625rem;
+  font-size: var(--font-size-sm);
+}
+
 /* ADR-0035 深度思考折叠区：回答上方默认折叠；展开后逐字流式显示推理内容，完成后可回看。 */
 .reasoning {
   margin: 0 0 var(--space-2);

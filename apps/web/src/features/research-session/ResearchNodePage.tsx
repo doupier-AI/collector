@@ -502,6 +502,11 @@ export function ResearchNodePage() {
     }
   }
 
+  // ADR-0035 生成控制：暂停/继续/停止直接委托控制器，状态由任务视图回推。
+  const handlePause = (task: ResearchTaskRecord) => void node.pauseTask(task);
+  const handleResume = (task: ResearchTaskRecord) => void node.resumeTask(task);
+  const handleStop = (task: ResearchTaskRecord) => void node.stopTask(task);
+
   async function handleFusionDecision(proposalId: string, decision: "accepted" | "rejected") {
     setDecidingFusionProposalId(proposalId);
     try {
@@ -886,6 +891,9 @@ export function ResearchNodePage() {
                 task={task}
                 retrying={task ? retryingTaskId === task.id : false}
                 onRetry={handleRetry}
+                onPauseTask={handlePause}
+                onResumeTask={handleResume}
+                onStopTask={handleStop}
                 highlight={
                   activeHighlight?.kind === "found" && activeHighlight.messageId === message.id
                     ? {

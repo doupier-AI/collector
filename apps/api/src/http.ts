@@ -351,6 +351,19 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (request.method === "POST" && researchTaskRetryMatch) {
         return json(response, 202, await service.research.retryTask(decodeURIComponent(researchTaskRetryMatch[1])));
       }
+      // ADR-0035 暂停/继续/停止：状态转换由服务层落库并中止物理流，响应返回更新后的任务。
+      const researchTaskPauseMatch = url.pathname.match(/^\/v1\/research-tasks\/([^/]+)\/pause$/);
+      if (request.method === "POST" && researchTaskPauseMatch) {
+        return json(response, 200, await service.research.pauseTask(decodeURIComponent(researchTaskPauseMatch[1])));
+      }
+      const researchTaskResumeMatch = url.pathname.match(/^\/v1\/research-tasks\/([^/]+)\/resume$/);
+      if (request.method === "POST" && researchTaskResumeMatch) {
+        return json(response, 202, await service.research.resumeTask(decodeURIComponent(researchTaskResumeMatch[1])));
+      }
+      const researchTaskStopMatch = url.pathname.match(/^\/v1\/research-tasks\/([^/]+)\/stop$/);
+      if (request.method === "POST" && researchTaskStopMatch) {
+        return json(response, 200, await service.research.stopTask(decodeURIComponent(researchTaskStopMatch[1])));
+      }
       const researchTaskMatch = url.pathname.match(/^\/v1\/research-tasks\/([^/]+)$/);
       if (request.method === "GET" && researchTaskMatch) {
         return json(response, 200, service.research.getTask(decodeURIComponent(researchTaskMatch[1])));

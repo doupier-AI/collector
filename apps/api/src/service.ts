@@ -533,7 +533,7 @@ export class CaptureService {
           context: { workflowRunId: request.taskId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
         });
       },
-      // 真实逐字流式（方案 B）：委托网关 writeResearchBodyStream，逐字产出文本增量；思考增量经 onReasoning 旁路转发（ADR-0035）。
+      // 真实逐字流式（方案 B）：委托网关 writeResearchBodyStream，逐字产出文本增量；思考增量经 onReasoning 旁路转发（ADR-0035）；signal 供暂停/停止中止物理流。
       async *writeBodyStream(request) {
         const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
         if (!purposeGateway) throw new Error("AI model is not configured");
@@ -543,6 +543,7 @@ export class CaptureService {
           ...(request.resumeFrom !== undefined ? { resumeFrom: request.resumeFrom } : {}),
           ...(request.onStreamDone ? { onDone: request.onStreamDone } : {}),
           ...(request.onReasoning ? { onReasoning: request.onReasoning } : {}),
+          ...(request.signal ? { signal: request.signal } : {}),
           context: { workflowRunId: request.taskId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
         });
       },

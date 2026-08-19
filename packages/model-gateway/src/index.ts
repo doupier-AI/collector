@@ -42,6 +42,14 @@ export class ModelProviderTimeoutError extends Error {
   }
 }
 
+/** 外部中止（ADR-0035 暂停/停止）：调用方经 signal 请求中止物理流，属致命类错误、不重试。 */
+export class ModelProviderAbortedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ModelProviderAbortedError";
+  }
+}
+
 export interface ModelProviderRequest {
   prompt: string;
   model: string;
@@ -52,6 +60,8 @@ export interface ModelProviderRequest {
   temperature?: number;
   maxTokens?: number;
   timeoutMs?: number;
+  /** 外部中止信号（暂停/停止）：与传输层内部超时信号组合，中止后抛 ModelProviderAbortedError。 */
+  signal?: AbortSignal;
 }
 
 /**
@@ -769,7 +779,7 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
    */
   async *writeResearchBodyStream(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext; resumeFrom?: string; onDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void } = {},
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext; resumeFrom?: string; onDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; signal?: AbortSignal } = {},
   ): AsyncIterable<string> {
     if (!messages.length) throw new Error("Research body requires at least one message");
     const basePrompt = this.researchBodyPrompt(messages, options.parentChainContext, options.sliceContext);
@@ -784,6 +794,7 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
       thinking: this.options.thinking ?? false,
       maxTokens: options.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS,
       timeoutMs: options.timeoutMs ?? 120_000,
+      ...(options.signal ? { signal: options.signal } : {}),
     };
     const context = options.context ?? { purpose: "research_body" };
     // 窄化 provider：非流式回退分支后，后续引用 guaranteed 有 completeStream。
@@ -1763,7 +1774,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
       response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/chat/completions`, {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        signal: controller.signal,
+        signal: combinedAbortSignal(request.signal, controller),
         redirect: "error",
         body: JSON.stringify(body),
       });
@@ -1991,7 +2002,7 @@ export class OpenAiResponsesProvider implements GroundingModelProvider {
       const body: Record<string, unknown> = { model: request.model, input: request.prompt, max_output_tokens: request.maxTokens, stream: true };
       if (typeof request.temperature === "number") body.temperature = request.temperature;
       response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/responses`, {
-        method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, signal: controller.signal, redirect: "error", body: JSON.stringify(body),
+        method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, signal: combinedAbortSignal(request.signal, controller), redirect: "error", body: JSON.stringify(body),
       });
     } catch (error) {
       idle.clear();
@@ -2115,7 +2126,7 @@ export class GeminiGroundingProvider implements GroundingModelProvider {
     try {
       response = await this.fetchImpl(
         `${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/models/${encodeURIComponent(request.model)}:streamGenerateContent?alt=sse`,
-        { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey }, signal: controller.signal, redirect: "error", body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: request.prompt }] }], generationConfig }) },
+        { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey }, signal: combinedAbortSignal(request.signal, controller), redirect: "error", body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: request.prompt }] }], generationConfig }) },
       );
     } catch (error) {
       idle.clear();
@@ -2327,7 +2338,7 @@ export class AnthropicMessagesProvider implements GroundingModelProvider {
       response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/messages`, {
         method: "POST",
         headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "Content-Type": "application/json" },
-        signal: controller.signal,
+        signal: combinedAbortSignal(request.signal, controller),
         redirect: "error",
         body: JSON.stringify(body),
       });
@@ -2569,7 +2580,14 @@ function rethrowStreamError(error: unknown): never {
   if (error instanceof ModelProviderTimeoutError) throw error;
   const cause = (error as { cause?: unknown })?.cause;
   if (cause instanceof ModelProviderTimeoutError) throw cause;
+  // 外部中止（暂停/停止）：AbortSignal.any 无 reason 中止表现为 AbortError，映射为致命类、不重试。
+  if ((error as { name?: string })?.name === "AbortError") throw new ModelProviderAbortedError("provider stream aborted");
   throw error;
+}
+
+/** 组合外部中止信号与内部超时控制器：任一侧触发都中止 fetch；无外部信号时直接用内部控制器。 */
+function combinedAbortSignal(external: AbortSignal | undefined, internal: AbortController): AbortSignal {
+  return external ? AbortSignal.any([external, internal.signal]) : internal.signal;
 }
 
 export async function* iterateServerSentEvents(body: ReadableStream<Uint8Array>): AsyncIterable<{ event?: string; data: string }> {

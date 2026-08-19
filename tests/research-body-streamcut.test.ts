@@ -11,10 +11,11 @@ const NOW = "2026-08-05T00:00:00.000Z";
 /**
  * 可编程的单轮流式假 provider：writeBodyStream 按 script 逐次编程。
  * 每次编程返回一个 AsyncIterable（可中途抛错）+ 可选 onStreamDone 终帧；
- * reasonings 在 deltas 前经 onReasoning 逐个发出（ADR-0035 思考旁路）。
+ * reasonings 在 deltas 前经 onReasoning 逐个发出（ADR-0035 思考旁路）；
+ * sleepAfterReasoningsMs 给「思考阶段暂停」场景留出正文尚未开始的窗口。
  */
 function makeStreamProvider(opts: {
-  script: Array<(resumeFrom: string | undefined) => { deltas: string[]; reasonings?: string[]; finishReason?: string; cutAfter?: number; cutError?: "timeout" | "fatal500" | "fatal400" }>;
+  script: Array<(resumeFrom: string | undefined) => { deltas: string[]; reasonings?: string[]; sleepAfterReasoningsMs?: number; sleepBetweenDeltasMs?: number; finishReason?: string; cutAfter?: number; cutError?: "timeout" | "fatal500" | "fatal400" }>;
   calls: Array<{ resumeFrom: string | undefined }>;
 }): Record<string, unknown> {
   return {
@@ -27,8 +28,9 @@ function makeStreamProvider(opts: {
       opts.calls.push({ resumeFrom: request.resumeFrom });
       const next = opts.script.shift();
       if (!next) throw new Error("writeBodyStream called more than scripted");
-      const { deltas, reasonings = [], finishReason, cutAfter, cutError = "timeout" } = next(request.resumeFrom);
+      const { deltas, reasonings = [], sleepAfterReasoningsMs = 0, sleepBetweenDeltasMs = 0, finishReason, cutAfter, cutError = "timeout" } = next(request.resumeFrom);
       for (const reasoning of reasonings) request.onReasoning?.(reasoning);
+      if (sleepAfterReasoningsMs > 0) await new Promise((r) => setTimeout(r, sleepAfterReasoningsMs));
       let emitted = 0;
       for (const delta of deltas) {
         if (cutAfter !== undefined && emitted >= cutAfter) {
@@ -38,6 +40,7 @@ function makeStreamProvider(opts: {
         }
         emitted += 1;
         yield delta;
+        if (sleepBetweenDeltasMs > 0) await new Promise((r) => setTimeout(r, sleepBetweenDeltasMs));
       }
       request.onStreamDone?.({ ...(finishReason !== undefined ? { finishReason } : {}) });
     },
@@ -186,5 +189,101 @@ test("默认重试清空正文时一并清空思考（新一轮生成与旧思�
   const afterRetry = store.getResearchMessage(accepted.outputMessage.id)!;
   assert.equal(afterRetry.reasoning, undefined, "默认重试清空思考");
   assert.equal(afterRetry.content, "第二轮正文。", "默认重试清空正文后重写");
+  store.close();
+});
+
+test("暂停：中止物理流保留已写内容与断点，任务/消息置 paused，后续 delta 不再落库", async (t) => {
+  const calls: Array<{ resumeFrom: string | undefined }> = [];
+  const provider = makeStreamProvider({
+    calls,
+    script: [
+      () => ({ deltas: ["第一段正文。", "第二段正文。", "第三段正文。"], sleepBetweenDeltasMs: 30, finishReason: "stop" }),
+      (resumeFrom) => ({ deltas: ["续写补全。", "续写完成。"], finishReason: "stop" }),
+    ],
+  });
+  const { store, service } = await makeService(t, provider);
+  const accepted = await service.research.submitMessage("session-1", "问题", "k-pause");
+  // 等第一段落库后暂停。
+  let message = store.getResearchMessage(accepted.outputMessage.id)!;
+  for (let i = 0; i < 200 && message.content !== "第一段正文。"; i++) { await new Promise((r) => setImmediate(r)); message = store.getResearchMessage(accepted.outputMessage.id)!; }
+  await service.research.pauseTask(accepted.task.id);
+
+  const pausedTask = store.getResearchTask(accepted.task.id)!;
+  assert.equal(pausedTask.status, "paused", "任务置 paused");
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.status, "paused", "消息置 paused");
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "第一段正文。", "已写部分保留");
+  assert.ok(pausedTask.streamCheckpoint?.content.includes("第一段正文"), "断点已落盘");
+  // 等待一个静默窗口：物理流中止后其余 delta 不得继续落库（含旧生成循环完全退出）。
+  await new Promise((r) => setTimeout(r, 250));
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "第一段正文。", "中止后无新增正文");
+  assert.equal(store.getResearchTask(accepted.task.id)!.status, "paused", "任务保持 paused 不判失败");
+
+  // 继续：从断点续写完成。
+  await service.research.resumeTask(accepted.task.id);
+  for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)!.status !== "completed"; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(store.getResearchTask(accepted.task.id)!.status, "completed");
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "第一段正文。续写补全。续写完成。", "从断点续写、无重复");
+  assert.ok(calls[1]?.resumeFrom?.includes("第一段正文"), "继续携带断点 resumeFrom");
+  assert.equal(store.getResearchTask(accepted.task.id)!.streamCheckpoint, undefined, "完成后清断点");
+  store.close();
+});
+
+test("停止：任务/消息置 stopped 终态并留 stopped 事件，已写内容保留且不再生成", async (t) => {
+  const calls: Array<{ resumeFrom: string | undefined }> = [];
+  const provider = makeStreamProvider({
+    calls,
+    script: [
+      () => ({ deltas: ["第一段正文。", "第二段正文。"], sleepBetweenDeltasMs: 30, finishReason: "stop" }),
+    ],
+  });
+  const { store, service } = await makeService(t, provider);
+  const accepted = await service.research.submitMessage("session-1", "问题", "k-stop");
+  let message = store.getResearchMessage(accepted.outputMessage.id)!;
+  for (let i = 0; i < 200 && message.content !== "第一段正文。"; i++) { await new Promise((r) => setImmediate(r)); message = store.getResearchMessage(accepted.outputMessage.id)!; }
+  await service.research.stopTask(accepted.task.id);
+
+  const stopped = store.getResearchTask(accepted.task.id)!;
+  assert.equal(stopped.status, "stopped", "任务置 stopped 终态");
+  assert.equal(stopped.retryable, false, "stopped 不可重试");
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.status, "stopped", "消息置 stopped");
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "第一段正文。", "已写内容保留");
+  const events = store.listResearchTaskEvents(accepted.task.id);
+  assert.ok(events.some((event) => event.type === "stopped"), "事件流含 stopped 事件");
+  const last = events[events.length - 1];
+  assert.equal(last?.type, "stopped", "stopped 是最后一个事件");
+  assert.equal(last?.message?.content, "第一段正文。", "stopped 事件快照保留部分正文");
+  // 静默窗口：不再自动生成（含旧生成循环完全退出）。
+  await new Promise((r) => setTimeout(r, 250));
+  assert.equal(store.getResearchTask(accepted.task.id)!.status, "stopped", "保持 stopped 不自动恢复");
+  store.close();
+});
+
+test("思考阶段暂停：reasoning 已落、正文空，暂停后继续从断点补齐思考与正文", async (t) => {
+  const calls: Array<{ resumeFrom: string | undefined }> = [];
+  const provider = makeStreamProvider({
+    calls,
+    script: [
+      () => ({ reasonings: ["思考第一段"], sleepAfterReasoningsMs: 60, deltas: ["正文第一段。", "正文第二段。"], sleepBetweenDeltasMs: 30, finishReason: "stop" }),
+      () => ({ reasonings: ["思考第二段"], deltas: ["续写完成。"], finishReason: "stop" }),
+    ],
+  });
+  const { store, service } = await makeService(t, provider);
+  const accepted = await service.research.submitMessage("session-1", "问题", "k-pause-thinking");
+  // 等思考落库、正文尚未开始（60ms 窗口）时暂停。
+  let message = store.getResearchMessage(accepted.outputMessage.id)!;
+  for (let i = 0; i < 200 && message.reasoning !== "思考第一段"; i++) { await new Promise((r) => setImmediate(r)); message = store.getResearchMessage(accepted.outputMessage.id)!; }
+  await service.research.pauseTask(accepted.task.id);
+  assert.equal(store.getResearchTask(accepted.task.id)!.status, "paused");
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.reasoning, "思考第一段", "暂停保留已落思考");
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "", "思考阶段暂停时正文为空");
+  // 等旧生成循环完全退出后再继续（假模型段间/思考后延迟窗口）。
+  await new Promise((r) => setTimeout(r, 250));
+
+  await service.research.resumeTask(accepted.task.id);
+  for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)!.status !== "completed"; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(store.getResearchTask(accepted.task.id)!.status, "completed");
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.reasoning, "思考第一段思考第二段", "继续后思考追加");
+  // 思考阶段暂停时正文为空、无断点：继续是新物理调用从空重写（第一次调用剩余部分随中止丢弃）。
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "续写完成。", "无断点时继续从空重写");
   store.close();
 });

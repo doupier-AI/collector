@@ -307,8 +307,8 @@ export interface RunRecordExportSummary {
 export type RunRecordExportLine = RunRecordExportHeader | RunRecordExportRecord | RunRecordExportSummary;
 
 export type ResearchMessageRole = "user" | "assistant";
-export type ResearchMessageStatus = "pending" | "streaming" | "completed" | "failed";
-export type ResearchTaskStatus = "queued" | "running" | "completed" | "failed";
+export type ResearchMessageStatus = "pending" | "streaming" | "paused" | "completed" | "failed" | "stopped";
+export type ResearchTaskStatus = "queued" | "running" | "paused" | "completed" | "failed" | "stopped";
 
 /** AI 弱标记预览任务状态（H3c）。预览独立于节点消息，点击后才会转成子节点。 */
 export type ResearchTermPreviewStatus = "queued" | "running" | "completed" | "failed";
@@ -1293,7 +1293,8 @@ export type ResearchTaskEvent =
   | { id?: number; type: "snapshot"; task: ResearchTaskRecord; message: ResearchMessageRecord; createdAt: string }
   | { id: number; type: "delta"; delta: string; message: ResearchMessageRecord; createdAt: string }
   | { id: number; type: "completed"; task: ResearchTaskRecord; message: ResearchMessageRecord; createdAt: string }
-  | { id: number; type: "failed"; task: ResearchTaskRecord; message: ResearchMessageRecord; createdAt: string };
+  | { id: number; type: "failed"; task: ResearchTaskRecord; message: ResearchMessageRecord; createdAt: string }
+  | { id: number; type: "stopped"; task: ResearchTaskRecord; message: ResearchMessageRecord; createdAt: string };
 
 export function validateResearchSessionInput(value: unknown): asserts value is { title?: string } {
   if (value === undefined || value === null) return;

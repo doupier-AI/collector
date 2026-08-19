@@ -49,7 +49,7 @@ export interface TaskEventStream {
   readonly lastEventId: number;
 }
 
-const STREAM_EVENT_TYPES = ["snapshot", "delta", "completed", "failed"] as const;
+const STREAM_EVENT_TYPES = ["snapshot", "delta", "completed", "failed", "stopped"] as const;
 
 function defaultCreateEventSource(url: string): EventSourceLike {
   return new EventSource(url);
@@ -124,7 +124,7 @@ export function connectTaskEvents(options: TaskEventStreamOptions): TaskEventStr
       lastEventId = event.id;
     }
     options.onEvent(event);
-    if (event.type === "completed" || event.type === "failed") {
+    if (event.type === "completed" || event.type === "failed" || event.type === "stopped") {
       void finishWithTerminalTask();
     }
   }
@@ -168,7 +168,7 @@ export function connectTaskEvents(options: TaskEventStreamOptions): TaskEventStr
     try {
       const task = await options.getTask(options.taskId);
       if (closed || terminal) return;
-      if (task.status === "completed" || task.status === "failed") {
+      if (task.status === "completed" || task.status === "failed" || task.status === "stopped") {
         terminal = true;
         teardownSource();
         clearScheduled();
@@ -215,7 +215,7 @@ export function connectTaskEvents(options: TaskEventStreamOptions): TaskEventStr
       const task = await options.getTask(options.taskId);
       if (closed || terminal) return;
       options.onTask(task);
-      if (task.status === "completed" || task.status === "failed") {
+      if (task.status === "completed" || task.status === "failed" || task.status === "stopped") {
         terminal = true;
         scheduleNext = false;
       }

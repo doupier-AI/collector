@@ -33,6 +33,10 @@ export interface ResearchNodeController {
   /** 提交一条消息；返回 true 表示后端已确认保存（202）。 */
   submit(content: string, allowWebSearch?: boolean): Promise<boolean>;
   retryTask(task: ResearchTaskRecord): Promise<void>;
+  /** ADR-0035：暂停生成（保留已写内容）、从断点继续、停止（终态保留已写内容）。 */
+  pauseTask(task: ResearchTaskRecord): Promise<void>;
+  resumeTask(task: ResearchTaskRecord): Promise<void>;
+  stopTask(task: ResearchTaskRecord): Promise<void>;
   /** 在 ready 状态下合并视图更新（附件、导入任务等）；非 ready 时忽略。 */
   updateView(updater: (view: ResearchNodeView) => ResearchNodeView): void;
   /** 通过节点页 aria-live 区播报一条状态变化。 */
@@ -172,6 +176,14 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
   useEffect(() => {
     if (!view) return;
     for (const task of view.tasks) {
+      if (task.status === "paused") {
+        // ADR-0035：暂停即断开事件连接与批渲器；继续（queued）后由本循环重新连接。
+        streamsRef.current.get(task.id)?.close();
+        streamsRef.current.delete(task.id);
+        batchersRef.current.get(task.id)?.cancel();
+        batchersRef.current.delete(task.id);
+        continue;
+      }
       if (task.status !== "queued" && task.status !== "running") continue;
       if (streamsRef.current.has(task.id)) continue;
       const stream = connectTaskEvents({
@@ -200,14 +212,18 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
               : previous,
           );
           setStreamNotice((previous) => (previous === "offline" ? "polling" : previous));
-          if (updated.status === "completed" || updated.status === "failed") {
+          if (updated.status === "completed" || updated.status === "failed" || updated.status === "stopped") {
             streamsRef.current.get(updated.id)?.close();
             streamsRef.current.delete(updated.id);
             // 终态：取消该任务批渲器（防止泄漏与过期 setState）。
             batchersRef.current.get(updated.id)?.cancel();
             batchersRef.current.delete(updated.id);
             setStreamNotice("idle");
-            setLiveMessage(updated.status === "completed" ? "已完成" : "暂时无法生成回答，可以重试");
+            setLiveMessage(
+              updated.status === "completed" ? "已完成"
+                : updated.status === "stopped" ? "已停止"
+                  : "暂时无法生成回答，可以重试",
+            );
             // 终态确认后与服务端对齐完整视图：SSE 中断回退轮询时消息内容不在
             // getTask 响应里，只能从节点视图恢复；内容由服务端持久化，不会丢失。
             const generation = generationRef.current;
@@ -295,6 +311,72 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
     [api, closeAllStreams],
   );
 
+  /** ADR-0035：暂停/继续/停止——把服务端返回的任务合并进视图；终态由事件连接收尾。 */
+  const applyTaskUpdate = useCallback((updated: ResearchTaskRecord): void => {
+    setState((previous) =>
+      previous.kind === "ready"
+        ? { kind: "ready", view: { ...previous.view, tasks: upsertTask(previous.view.tasks, updated) } }
+        : previous,
+    );
+  }, []);
+
+  const pauseTask = useCallback(
+    async (task: ResearchTaskRecord): Promise<void> => {
+      setActionError(null);
+      try {
+        const updated = await api.pauseResearchTask(task.id);
+        applyTaskUpdate(updated);
+        setLiveMessage("已暂停");
+      } catch (error) {
+        if (isUnauthorized(error)) {
+          closeAllStreams();
+          setState({ kind: "error", error });
+        } else {
+          setActionError("暂停没有成功，请稍后再试。");
+        }
+      }
+    },
+    [api, applyTaskUpdate, closeAllStreams],
+  );
+
+  const resumeTask = useCallback(
+    async (task: ResearchTaskRecord): Promise<void> => {
+      setActionError(null);
+      try {
+        const updated = await api.resumeResearchTask(task.id);
+        applyTaskUpdate(updated);
+        setLiveMessage("继续生成");
+      } catch (error) {
+        if (isUnauthorized(error)) {
+          closeAllStreams();
+          setState({ kind: "error", error });
+        } else {
+          setActionError("继续没有成功，请稍后再试。");
+        }
+      }
+    },
+    [api, applyTaskUpdate, closeAllStreams],
+  );
+
+  const stopTask = useCallback(
+    async (task: ResearchTaskRecord): Promise<void> => {
+      setActionError(null);
+      try {
+        const updated = await api.stopResearchTask(task.id);
+        applyTaskUpdate(updated);
+        setLiveMessage("已停止");
+      } catch (error) {
+        if (isUnauthorized(error)) {
+          closeAllStreams();
+          setState({ kind: "error", error });
+        } else {
+          setActionError("停止没有成功，请稍后再试。");
+        }
+      }
+    },
+    [api, applyTaskUpdate, closeAllStreams],
+  );
+
   const reload = useCallback(() => setReloadNonce((nonce) => nonce + 1), []);
 
   const updateView = useCallback((updater: (view: ResearchNodeView) => ResearchNodeView) => {
@@ -311,5 +393,5 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
     [closeAllStreams],
   );
 
-  return { state, streamNotice, liveMessage, actionError, reload, submit, retryTask, updateView, announce, escalateError };
+  return { state, streamNotice, liveMessage, actionError, reload, submit, retryTask, pauseTask, resumeTask, stopTask, updateView, announce, escalateError };
 }

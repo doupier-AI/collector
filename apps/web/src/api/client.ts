@@ -93,6 +93,10 @@ export interface ApiClient {
   submitResearchMessage(sessionId: string, content: string, idempotencyKey: string, options?: { allowWebSearch?: boolean }): Promise<ResearchTurnAccepted>;
   getResearchTask(taskId: string): Promise<ResearchTaskRecord>;
   retryResearchTask(taskId: string): Promise<ResearchTaskRecord>;
+  /** ADR-0035：暂停生成（保留已写内容与断点）、从断点继续、停止（终态保留已写内容）。 */
+  pauseResearchTask(taskId: string): Promise<ResearchTaskRecord>;
+  resumeResearchTask(taskId: string): Promise<ResearchTaskRecord>;
+  stopResearchTask(taskId: string): Promise<ResearchTaskRecord>;
   /** 上传原始文件字节；mimeType 为浏览器 MIME 或按扩展名回退的稳定 MIME。 */
   createResearchImport(sessionId: string, file: Blob, fileName: string, mimeType: string, idempotencyKey: string): Promise<ResearchImportAccepted>;
   getResearchImportTask(taskId: string): Promise<ResearchImportTaskRecord>;
@@ -598,6 +602,27 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
     },
     retryResearchTask(taskId: string) {
       return requestJson<ResearchTaskRecord>(fetchFn, `/v1/research-tasks/${encodeURIComponent(taskId)}/retry`, {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: "{}",
+      });
+    },
+    pauseResearchTask(taskId: string) {
+      return requestJson<ResearchTaskRecord>(fetchFn, `/v1/research-tasks/${encodeURIComponent(taskId)}/pause`, {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: "{}",
+      });
+    },
+    resumeResearchTask(taskId: string) {
+      return requestJson<ResearchTaskRecord>(fetchFn, `/v1/research-tasks/${encodeURIComponent(taskId)}/resume`, {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: "{}",
+      });
+    },
+    stopResearchTask(taskId: string) {
+      return requestJson<ResearchTaskRecord>(fetchFn, `/v1/research-tasks/${encodeURIComponent(taskId)}/stop`, {
         method: "POST",
         headers: JSON_HEADERS,
         body: "{}",

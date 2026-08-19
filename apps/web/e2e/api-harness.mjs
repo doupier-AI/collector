@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer, startBrowserBootstrap } from "@collector/api";
-import { ModelProviderHttpError } from "@collector/model-gateway";
+import { ModelProviderAbortedError, ModelProviderHttpError } from "@collector/model-gateway";
 
 const port = Number(process.env.E2E_API_PORT ?? "43211");
 // e2e 放宽配对码 TTL 到 1 小时：长套件中测试排队消费现铸码，TTL 过短会触发限流级联。
@@ -141,11 +141,14 @@ const fakeProvider = {
       .replace(/\bHTTP\b/g, "[[abbreviation:http:HTTP]]");
     const cutAfter = process.env.E2E_STREAM_CUT_AFTER ? Number(process.env.E2E_STREAM_CUT_AFTER) : undefined;
     const longSections = this.longSections();
-    const segments = /(长文|长篇|报告)/.test(question)
+    // ADR-0035 续写语义：resumeFrom 非空时只补写剩余段落（与真实模型「从断点继续」同语义），
+    // 否则 joinContinuation 会把首段重述重复拼接进正文（确定性假模型不读断点指令）。
+    const fullSegments = /(长文|长篇|报告)/.test(question)
       ? [longSections[0], ...longSections.slice(1).map((section) => `\n\n${section}`)]
       : request.deepResearch
         ? [`这是深入研究第一轮，围绕「${short}」展开。`, "\n\n本轮只使用来源选区与当前已有材料生成，未联网检索，回答完毕。"]
         : [`你问的是「${markedShort}」。`, "\n\n本地优先会先把输入保存在本机，再据此组织后续研究。", "\n\n渐进事件把后续内容写进同一条消息，回答完毕。"];
+    const segments = request.resumeFrom ? fullSegments.slice(1) : fullSegments;
     // 前导窗口分路径：深入研究子节点用旧 400ms（多级生长链测试在完成态到达前就会采样选区，
     // 前导过长会把整个生成推后、让采样落进无可引用块的流式窗口）；首问用 1500ms 给导航/视图/
     // SSE 连接留足余量，保证中间态可观测。
@@ -158,8 +161,13 @@ const fakeProvider = {
       request.onReasoning?.("推理第二步：组织回答的结构与顺序。");
       await sleep(300);
     }
+    // ADR-0035 暂停/停止：尊重外部中止信号——每段产出前检查，已中止即抛中止错误（与真实 provider 同语义）。
+    const ensureRunning = () => {
+      if (request.signal?.aborted) throw new ModelProviderAbortedError("e2e generation aborted");
+    };
     let emitted = 0;
     for (const segment of segments) {
+      ensureRunning();
       // 断流脚本：推第 n 段后抛致命错，模拟切断（保留已写部分、由重试续传）。
       // 用真实类型化错误而非 new Error()+name 伪装：分类重试按 instanceof 判定，
       // 真 400 应归 fatal（立即进降级），而不是掉进"未知→可重试"的兜底分支。
