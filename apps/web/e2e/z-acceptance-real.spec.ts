@@ -17,14 +17,11 @@
  *   分钟级）再进本套件；
  * - 端口可被 E2E_API_PORT 覆盖：本套件长跑时，另一端口可并行跑确定性套件或实验。
  */
-import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { expect, test, type Locator, type Page, type Response } from "@playwright/test";
+import { type Locator, type Page, type Response } from "@playwright/test";
 import { deriveMessageBlocks } from "@collector/capture-contracts";
+import { expect, test, type AcceptanceRuntime } from "./acceptance-real-fixtures";
 import {
   apiJson,
   apiPortForPage,
@@ -39,9 +36,6 @@ import {
   readResearchTables,
 } from "./helpers";
 
-const e2eDir = dirname(fileURLToPath(import.meta.url));
-const PORT = Number(process.env.E2E_API_PORT ?? "43211");
-const BASE = `http://127.0.0.1:${PORT}`;
 const REAL_TIMEOUT = 600_000; // 单次真实云模型生成的等待上限（深入走 plan-then-write 逐节扩写，12 节约分钟级）
 const DEEP_RESEARCH_TIMEOUT = 900_000; // 深入研究第一轮在 thinking + 长预算下逐节扩写更慢，单设更宽上限
 const STALL_TIMEOUT = 300_000; // 等待期间无任何落库/模型进展的判死阈值（合法静默窗口：非流式调用 120s 超时 + 退避重试）
@@ -49,83 +43,19 @@ const STALL_TIMEOUT = 300_000; // 等待期间无任何落库/模型进展的判
 // ---------------------------------------------------------------------------
 // 验收服务生命周期（真实模型 harness，隔离数据目录；重启复用同一数据目录）
 // ---------------------------------------------------------------------------
-let dataDir = "";
-let child: ChildProcess | null = null;
+let currentRuntime: AcceptanceRuntime | undefined;
 
-function spawnHarness(): ChildProcess {
-  const proc = spawn(process.execPath, [join(e2eDir, "acceptance-real-harness.mjs")], {
-    env: { ...process.env, E2E_API_PORT: String(PORT), E2E_DATA_DIR: dataDir, COLLECTOR_MVP_DEMO: "" },
-    stdio: ["ignore", "pipe", "pipe"],
-    cwd: e2eDir,
-  });
-  proc.stdout?.on("data", (chunk) => process.stdout.write(`[harness] ${chunk}`));
-  proc.stderr?.on("data", (chunk) => process.stderr.write(`[harness:err] ${chunk}`));
-  return proc;
+function runtimeDataDir(): string {
+  if (!currentRuntime) throw new Error("验收 runtime 尚未就绪");
+  return currentRuntime.dataDir;
 }
 
-async function waitForHealth(proc: ChildProcess, timeoutMs = 30_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let lastError = "";
-  while (Date.now() < deadline) {
-    // harness 启动期退出（缺模型配置 / 端口被占 / 缺前端构建）＝启动前提未满足：
-    // 立即失败，不空等健康检查超时（harness stderr 已带具体原因，见上方 [harness:err]）。
-    if (proc.exitCode !== null) {
-      throw new Error(`验收 harness 启动期退出（码 ${proc.exitCode}），启动前提未满足——具体原因见上方 [harness:err] 输出`);
-    }
-    try {
-      // 单次探测必须有界：端口被只接受连接却不回应的进程占用时 fetch 会挂到 undici
-      // headersTimeout（300s），把 30s  deadline 与上面的退出检查全部吞掉（#端口冲突负验证实测）。
-      const response = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(2_000) });
-      if (response.ok) return;
-      lastError = `HTTP ${response.status}`;
-    } catch (error) {
-      lastError = String(error);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 300));
-  }
-  throw new Error(`验收服务未在时限内就绪（/health）：${lastError}`);
-}
-
-async function startServer(): Promise<void> {
-  child = spawnHarness();
-  await waitForHealth(child);
-}
-
-async function stopServer(): Promise<void> {
-  const proc = child;
-  child = null;
-  if (!proc || proc.exitCode !== null) return;
-  await new Promise<void>((resolve) => {
-    const timer = setTimeout(() => {
-      proc.kill("SIGKILL");
-      resolve();
-    }, 6_000);
-    proc.once("exit", () => {
-      clearTimeout(timer);
-      resolve();
-    });
-    proc.kill("SIGINT");
-  });
-}
-
-async function restartServer(): Promise<void> {
-  await stopServer();
-  await startServer();
-}
-
-test.beforeAll(async () => {
-  // 启动期夹具前提自检（毫秒级）：客观条件不满足立即失败并说明原因，先于任何服务启动；
-  // 不靠运行期轮询兜底——未达长文阈值时章节任务根本不会创建，pollUntil 只会白等整上限。
+test.beforeEach(async ({ acceptance }) => {
+  currentRuntime = acceptance;
+  // 启动期夹具前提自检（毫秒级）：客观条件不满足立即失败并说明原因，先于任何服务启动。
   assertLongTextFixture("T03 章节夹具", CHAPTER_IMPORT_CONTENT);
   assertFixtureContains("T03 章节夹具", CHAPTER_IMPORT_CONTENT, "第1段");
   assertFixtureContains("场景二文档夹具", DOC_CONTENT, DOC_SELECTED);
-  dataDir = await mkdtemp(join(tmpdir(), "collector-acceptance-run-"));
-  await startServer();
-});
-
-test.afterAll(async () => {
-  await stopServer();
-  await rm(dataDir, { recursive: true, force: true }).catch(() => undefined);
 });
 
 // ---------------------------------------------------------------------------
@@ -160,7 +90,7 @@ async function assertRealMode(page: Page): Promise<void> {
 
 /** 验收库最近一次落库/模型活动时间（ISO 字符串；流式增量、任务状态、调用记账都会刷新它）。 */
 function readLastActivityAt(): string {
-  const db = new DatabaseSync(join(dataDir, "collector.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runtimeDataDir(), "collector.sqlite"), { readOnly: true });
   try {
     const row = db
       .prepare(
@@ -180,7 +110,7 @@ function readLastActivityAt(): string {
 
 /** 卡死诊断：最近的模型调用与未完成的任务/预览，直接回答"最后在做什么"。 */
 function dumpStallDiagnostics(): string {
-  const db = new DatabaseSync(join(dataDir, "collector.sqlite"), { readOnly: true });
+  const db = new DatabaseSync(join(runtimeDataDir(), "collector.sqlite"), { readOnly: true });
   try {
     const calls = db
       .prepare("SELECT created_at, purpose, status, latency_ms, error_message FROM model_calls ORDER BY created_at DESC LIMIT 5")
@@ -501,6 +431,7 @@ const DOC_SELECTED = "副本之间会在没有新写入时逐步收敛";
 test("场景二：文档导入 → 选区真实分析 → 带方向的节点生长真实第一轮 → 返回原文 → 服务重启后恢复", async ({
   page,
   browser,
+  acceptance,
 }) => {
   await pairAndOpen(page, "/research/new");
   const consoleIssues = watchConsole(page);
@@ -559,9 +490,9 @@ test("场景二：文档导入 → 选区真实分析 → 带方向的节点生�
   expect(readResearchImportTables(dbPath).snapshots.filter((row) => row.sessionId === originSessionId).length).toBeGreaterThanOrEqual(1);
 
   // 服务重启（同一数据目录）：节点、来源快照与返回路径可恢复
-  await restartServer();
+  await acceptance.restart();
   // 全新浏览器上下文重新配对（模拟重启后重新打开产品），验证持久化数据可恢复
-  const freshContext = await browser.newContext({ baseURL: BASE });
+  const freshContext = await browser.newContext({ baseURL: acceptance.baseURL });
   const recovered = await freshContext.newPage();
   await pairAndOpen(recovered, "/");
   await recovered.goto(`/nodes/${nodeId}`);
@@ -737,6 +668,7 @@ interface RealNodeView {
 /** 记录真实模型语义观察（漏标、密度、类别分布），不构成失败。 */
 function recordWeakMarkerNote(note: string): void {
   console.log(`【弱标记真实验收·记录】${note}`);
+  currentRuntime?.weakMarkerNotes.push(note);
 }
 
 /**
@@ -744,8 +676,6 @@ function recordWeakMarkerNote(note: string): void {
  * 随问题形态波动（已用同提示词直连探针确认零标记时原始输出就没有控制串，属模型
  * 漏标而非服务端丢弃），故单场景零标记只记录；全链路一次都没有才判定链路失效（阻断）。
  */
-let realMarkersSeen = 0;
-
 /** 阻断：持久化干净正文与页面可见正文都不得残留任何流内控制符。 */
 function expectNoControlChars(content: string, label: string): void {
   expect(content.includes("[["), `${label}：正文残留开控制符`).toBe(false);
@@ -764,7 +694,7 @@ function expectMarkersAligned(message: RealAssistantMessage, label: string): Rea
       `${label}：标记范围与正文错位（${marker.blockOrdinal}:${marker.startOffset}-${marker.endOffset}）`,
     ).toBe(marker.text);
   }
-  realMarkersSeen += markers.length;
+  if (currentRuntime) currentRuntime.weakMarkersSeen += markers.length;
   return markers;
 }
 
@@ -1244,10 +1174,8 @@ test("弱标记场景九：融合正文真实生成后的标记、引用与来�
   expect(rootAfter, "融合不得改写根节点正文（阻断）").toBe(rootContentBefore);
   expect(childAfter, "融合不得改写子节点正文（阻断）").toBe(childContentBefore);
 
-  // 全链路闸口（本测试是弱标记场景组的最后一个）：五个真实场景至少一次产出并落位
-  // 弱标记，证明真实模型→服务端清洗→持久化→页面渲染链路整体可用；单场景零标记
-  // 已在各自场景内记录为模型漏标。
-  expect(realMarkersSeen, "五个真实场景全部零弱标记＝真实模型下流内标记链路整体失效（阻断）").toBeGreaterThan(0);
+  // 跨场景总闸口由依赖本项目的 chromium-acceptance-summary 读取每场景原子证据执行；
+  // 并行 worker 间不再依赖进程内全局变量。
 
   expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
 });
@@ -1370,97 +1298,50 @@ test("T03 有模型：导入长文立即可读，AI 章节解析异步补齐并�
   expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
 });
 
-test("T03 无模型：导入长文获得规则锚点，章节导航可用且如实呈现来源", async ({ browser }) => {
-  // 独立无模型 harness：不要求密钥、不构造网关（E2E_REAL_MODEL=none）。
-  const noModelPort = PORT + 1;
-  const noModelBase = `http://127.0.0.1:${noModelPort}`;
-  const noModelDataDir = await mkdtemp(join(tmpdir(), "collector-acceptance-nomodel-"));
-  const noModelChild = spawn(process.execPath, [join(e2eDir, "acceptance-real-harness.mjs")], {
-    env: { ...process.env, E2E_API_PORT: String(noModelPort), E2E_DATA_DIR: noModelDataDir, E2E_REAL_MODEL: "none", COLLECTOR_MVP_DEMO: "" },
-    stdio: ["ignore", "pipe", "pipe"],
-    cwd: e2eDir,
-  });
-  noModelChild.stdout?.on("data", (chunk) => process.stdout.write(`[harness-nomodel] ${chunk}`));
-  noModelChild.stderr?.on("data", (chunk) => process.stderr.write(`[harness-nomodel:err] ${chunk}`));
-  try {
-    const deadline = Date.now() + 30_000;
-    for (;;) {
-      // 与 waitForHealth 同约定：harness 提前退出即失败；单次探测有界防黑洞占用吞掉循环。
-      if (noModelChild.exitCode !== null) {
-        throw new Error(`无模型验收 harness 启动期退出（码 ${noModelChild.exitCode}）——具体原因见上方 [harness-nomodel:err] 输出`);
-      }
-      try {
-        const response = await fetch(`${noModelBase}/health`, { signal: AbortSignal.timeout(2_000) });
-        if (response.ok) break;
-      } catch {
-        // 继续等就绪
-      }
-      if (Date.now() > deadline) throw new Error("无模型验收服务未在时限内就绪");
-      await new Promise((resolve) => setTimeout(resolve, 300));
-    }
-
-    const context = await browser.newContext({ baseURL: noModelBase });
+test.describe("T03 无模型 runtime", () => {
+  test.use({ acceptanceMode: "none" });
+  test("T03 无模型：导入长文获得规则锚点，章节导航可用且如实呈现来源", async ({ page, acceptance }) => {
+    expect(acceptance.mode).toBe("none");
+    await pairAndOpen(page, "/research/new");
+    const createResponse = await page.request.post("/v1/research-sessions", { headers: { "Idempotency-Key": crypto.randomUUID() }, data: {} });
+    expect(createResponse.status()).toBe(201);
+    const sessionId = ((await createResponse.json()) as { id: string }).id;
+    await importChapterArticle(page, sessionId, "无模型长文.txt");
+    const nav = page.getByTestId("reading-chapter-nav");
+    await expect(nav).toHaveAttribute("data-chapter-source", "rule", { timeout: 20_000 });
+    await expect(nav).toContainText("未配置可用模型，章节按原文结构生成");
+    await expect(nav.getByTestId("chapter-retry")).toBeVisible();
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await nav.locator(".chapter-nav__item").last().click();
+    await expect.poll(async () => {
+      const position = await page.evaluate(() => ({ y: window.scrollY, height: document.body.scrollHeight }));
+      return position.y < position.height * 0.9;
+    }, { timeout: 10_000 }).toBe(true);
+    const database = new DatabaseSync(join(acceptance.dataDir, "collector.sqlite"), { readOnly: true });
     try {
-      const page = await context.newPage();
-      await pairAndOpen(page, "/research/new");
-      const createResponse = await page.request.post("/v1/research-sessions", {
-        headers: { "Idempotency-Key": crypto.randomUUID() },
-        data: {},
-      });
-      expect(createResponse.status()).toBe(201);
-      const sessionId = ((await createResponse.json()) as { id: string }).id;
-      await importChapterArticle(page, sessionId, "无模型长文.txt");
+      const rows = database.prepare("SELECT status, retryable, record_json AS recordJson FROM research_chapter_tasks WHERE session_id = ?").all(sessionId) as Array<{ status: string; retryable: number; recordJson: string }>;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.status).toBe("completed");
+      expect(rows[0]?.retryable).toBe(1);
+      const record = JSON.parse(rows[0]?.recordJson ?? "{}") as { source?: string; fallbackReason?: string; chapters?: unknown[] };
+      expect(record.source).toBe("rule");
+      expect(record.fallbackReason).toBe("no_model");
+      expect((record.chapters ?? []).length).toBeGreaterThanOrEqual(2);
+      expect(database.prepare("SELECT COUNT(*) AS count FROM model_calls").get() as { count: number }, "无模型状态不得发起任何模型调用").toMatchObject({ count: 0 });
+    } finally { database.close(); }
+  });
 
-      // 无模型：不发起任何模型调用，规则锚点直接可用，界面如实说明来源
-      const nav = page.getByTestId("reading-chapter-nav");
-      await expect(nav).toHaveAttribute("data-chapter-source", "rule", { timeout: 20_000 });
-      await expect(nav).toContainText("未配置可用模型，章节按原文结构生成");
-      await expect(nav.getByTestId("chapter-retry")).toBeVisible();
-      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-      await nav.locator(".chapter-nav__item").last().click();
-      await expect
-        .poll(async () => {
-          const position = await page.evaluate(() => ({ y: window.scrollY, height: document.body.scrollHeight }));
-          return position.y < position.height * 0.9;
-        }, { timeout: 10_000 })
-        .toBe(true);
-
-      // SQLite 核对：规则来源、可重试、锚点落在既有块上
-      const dbPath = join(noModelDataDir, "collector.sqlite");
-      const database = new DatabaseSync(dbPath, { readOnly: true });
-      try {
-        const rows = database
-          .prepare("SELECT status, retryable, record_json AS recordJson FROM research_chapter_tasks WHERE session_id = ?")
-          .all(sessionId) as Array<{ status: string; retryable: number; recordJson: string }>;
-        expect(rows).toHaveLength(1);
-        expect(rows[0]?.status).toBe("completed");
-        expect(rows[0]?.retryable).toBe(1);
-        const record = JSON.parse(rows[0]?.recordJson ?? "{}") as { source?: string; fallbackReason?: string; chapters?: unknown[] };
-        expect(record.source).toBe("rule");
-        expect(record.fallbackReason).toBe("no_model");
-        expect((record.chapters ?? []).length).toBeGreaterThanOrEqual(2);
-        const calls = database.prepare("SELECT COUNT(*) AS count FROM model_calls").get() as { count: number };
-        expect(calls.count, "无模型状态不得发起任何模型调用").toBe(0);
-      } finally {
-        database.close();
-      }
-    } finally {
-      await context.close();
-    }
-  } finally {
-    if (noModelChild.exitCode === null) {
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(() => {
-          noModelChild.kill("SIGKILL");
-          resolve();
-        }, 6_000);
-        noModelChild.once("exit", () => {
-          clearTimeout(timer);
-          resolve();
-        });
-        noModelChild.kill("SIGINT");
-      });
-    }
-    await rm(noModelDataDir, { recursive: true, force: true }).catch(() => undefined);
-  }
+  test("无模型 runtime：独占端口健康、同目录重启恢复与 close 幂等接缝", async ({ page, acceptance }) => {
+    expect((await fetch(`${acceptance.baseURL}/health`)).ok).toBe(true);
+    await pairAndOpen(page, "/research/new");
+    const created = await page.request.post("/v1/research-sessions", { headers: { "Idempotency-Key": crypto.randomUUID() }, data: {} });
+    expect(created.status()).toBe(201);
+    const sessionId = ((await created.json()) as { id: string }).id;
+    await acceptance.restart();
+    expect((await fetch(`${acceptance.baseURL}/health`)).ok).toBe(true);
+    const recovered = await page.request.get(`/v1/research-sessions/${encodeURIComponent(sessionId)}`);
+    expect(recovered.ok()).toBe(true);
+    await acceptance.close();
+    await acceptance.close();
+  });
 });

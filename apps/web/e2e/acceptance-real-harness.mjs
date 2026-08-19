@@ -192,6 +192,8 @@ writeFileSync(join(runtimeDir, `datadir-${port}.txt`), dataDir, "utf8");
 writeFileSync(join(runtimeDir, `launcher-${port}.token`), launcherToken, { encoding: "utf8", mode: 0o600 });
 
 await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
+// 调用方必须同时看到本进程写出的就绪信号和 /health=200，避免端口上的旧服务被误判为新实例。
+if (process.env.E2E_READY_FILE) writeFileSync(process.env.E2E_READY_FILE, String(process.pid), "utf8");
 // 只记录供应商与模型，绝不记录密钥
 console.log(`[acceptance] listening on 127.0.0.1:${port} provider=${providerId} model=${model} data=${dataDir}`);
 

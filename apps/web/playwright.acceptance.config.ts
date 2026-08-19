@@ -1,5 +1,14 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const acceptanceWorkers = Number(process.env.E2E_ACCEPTANCE_WORKERS ?? "2");
+const acceptancePort = Number(process.env.E2E_API_PORT ?? "43211");
+if (!Number.isInteger(acceptanceWorkers) || acceptanceWorkers < 1 || acceptanceWorkers > 64) {
+  throw new Error(`E2E_ACCEPTANCE_WORKERS 必须是 1–64 的整数，当前为 ${process.env.E2E_ACCEPTANCE_WORKERS ?? "2"}`);
+}
+if (!Number.isInteger(acceptancePort) || acceptancePort < 1024 || acceptancePort + acceptanceWorkers - 1 > 65535) {
+  throw new Error(`E2E_API_PORT 与 E2E_ACCEPTANCE_WORKERS 组合没有足够的合法端口：${acceptancePort} + ${acceptanceWorkers - 1}`);
+}
+
 /**
  * 收尾阶段【真实模型验收专用】配置。
  *
@@ -15,10 +24,13 @@ import { defineConfig, devices } from "@playwright/test";
 // When no COLLECTOR_AI_* override is supplied, the real harness reuses the saved local model profile.
 export default defineConfig({
   testDir: "e2e",
-  workers: 1,
+  // 每个测试由 fixture 启动自己的 API + 数据目录；默认并发 2，必要时可 E2E_ACCEPTANCE_WORKERS=1 降到串行。
+  fullyParallel: true,
+  workers: acceptanceWorkers,
   // 真实云模型调用有网络延迟，深入长文（plan-then-write 逐节扩写）分钟级：整体放宽到 20 分钟
   timeout: 1_200_000,
   outputDir: "test-results-acceptance",
+  globalSetup: "./e2e/acceptance-real-global-setup.mjs",
   reporter: [["list"]],
   use: {
     screenshot: "on",
@@ -26,14 +38,20 @@ export default defineConfig({
     // 快速失败（#86 复盘）：点击/填写等动作 2 分钟内不可达即报错并留 error-context 快照，
     // 不再无限重试到整测超时（曾出现"按钮在视口外"重试 3154 次挂 26 分钟的失败方式）。
     actionTimeout: 120_000,
-    // 端口可被 E2E_API_PORT 覆盖：验收长跑时另一端口可并行跑确定性套件或实验（默认不变）。
-    baseURL: `http://127.0.0.1:${process.env.E2E_API_PORT ?? "43211"}`,
+    // baseURL 由场景 fixture 按 E2E_API_PORT + parallelIndex 注入，避免 worker 间串场。
   },
   projects: [
     {
       name: "chromium-acceptance",
       use: { ...devices["Desktop Chrome"] },
       testMatch: /z-acceptance-real\.spec\.ts/,
+    },
+    {
+      // 汇总项目在主验收项目完成后读取每个 worker 的原子弱标记证据，保留跨场景总闸口语义。
+      name: "chromium-acceptance-summary",
+      dependencies: ["chromium-acceptance"],
+      use: { ...devices["Desktop Chrome"] },
+      testMatch: /z-acceptance-real-summary\.spec\.ts/,
     },
   ],
 });
