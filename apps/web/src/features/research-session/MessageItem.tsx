@@ -7,7 +7,7 @@ import { MarkdownContent, type RenderedTermMarker } from "../../components/Markd
 import { subscribeToGroundingSourceReveal } from "../../components/grounding-source-navigation";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { computeAnchoredOverlayPosition } from "../../utils/anchored-overlay-position";
-import { markdownVisibleText, markExactInRendered, setRangeFromOffsets } from "../selection/selection-highlight";
+import { markdownVisibleText } from "../selection/selection-highlight";
 import { taskErrorReason } from "./format";
 import type { FragmentTarget } from "./fragment-locator";
 import { deriveSliceCardTargets, sliceCardAccessibleName, turnCardId } from "./slice-cards";
@@ -290,7 +290,7 @@ const NO_TERMS: TermMarker[] = [];
  * 完成的 AI 回答按确定性段落块渲染。
  * 块 ID 与后端选区锚点使用同一派生规则。
  * Markdown 由 MarkdownContent 安全渲染；[来源n] 由 remark 插件转可悬停角标。
- * 返回高亮在渲染后 DOM 上用可见文本空间偏移圈 <mark>，偏移失败时兜底 exact 搜索。
+ * 返回高亮与弱标记先投影到同一可见文字空间，再由 React 组合渲染，避免两套 DOM 包裹互相破坏。
  * 生成自由化：长文章节由派生切片渲染（deriveSliceCardTargets 与章节导航共用同一份对齐），
  * 但呈现层始终以整条 AI 回答为卡片边界；节标题来自大纲或小模型事后抽取，可为空。
  * ADR-0032 呈现契约：普通回答为一张轮次卡片内的连续正文；长文为一张轮次卡片内的多章节结构。不造重试卡
@@ -298,9 +298,7 @@ const NO_TERMS: TermMarker[] = [];
  */
 function AssistantBlocks({ message, highlights = [], citations, groundingSources, terms, slices, fragmentTarget, fusionSources, multiTurn = false }: { message: ResearchMessageRecord; highlights?: MessageHighlight[]; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[]; terms: TermMarker[]; slices?: ResearchSliceRecord[]; fragmentTarget?: FragmentTarget; fusionSources?: ResearchFusionSource[]; multiTurn?: boolean }) {
   const blocks = deriveMessageBlocks(message.content);
-  // 术语按块分组一次并保持数组身份稳定：MarkdownContent 以 terms 引用变化决定是否重扫
-  // DOM 重新包裹术语标记；若每次渲染都新建数组，已被键盘聚焦的标记元素会被替换，焦点
-  // 回落 body，Escape/Enter 不再到达交互层（任何背景刷新都会打断术语的键盘操作）。
+  // 术语按块分组一次并保持数组身份稳定，避免无关背景刷新重建术语按钮并打断键盘焦点。
   const termsByBlock = useMemo(() => {
     const grouped = new Map<number, RenderedTermMarker[]>();
     for (const term of terms) {
@@ -445,36 +443,11 @@ function TurnSection({ slice, blockText, blockId, anchorId, sectionId, highlight
   );
 }
 
-/** 单个消息块：Markdown 渲染 + 渲染后 DOM 高亮（useLayoutEffect）。
+/** 单个消息块：Markdown 渲染 + React 管理的可见文字高亮。
     titleAnchorId 存在时，把正文首个标题元素提升为卡片标题（挂该 id 供导航定位）。
     elementId 存在时容器挂稳定 id 并可聚焦——轮次卡片内段落块是 ?fragment= 深链的落点。 */
 function MessageBlock({ blockText, blockId, elementId, titleAnchorId, highlights = [], sources, citations, terms, fusionSources }: { blockText: string; blockId: string; elementId?: string; titleAnchorId?: string; highlights?: readonly MessageHighlight[]; sources: ResearchGroundingSourceRecord[]; citations: ResearchCitationRecord[]; terms: TermMarker[]; fusionSources?: ResearchFusionSource[] }) {
-  const containerRef = useRef<HTMLDivElement>(null);
   const normalizedHighlights = mergeMessageHighlights(highlights, blockText);
-  // 父层组合高亮时会新建数组；以值键约束 DOM 重包裹只发生在实际范围变化时，
-  // 避免无关刷新替换术语标记节点并打断其键盘焦点。
-  const highlightsKey = normalizedHighlights.map((highlight) => `${highlight.start}:${highlight.end}:${highlight.exact}`).join("|");
-
-  useLayoutEffect(() => {
-    if (!containerRef.current) return;
-    // 先清除上一次高亮遗留的 <mark>——否则残留会把文本节点切碎，
-    // 导致后续 setRangeFromOffsets 的偏移算错（漂移），以及
-    // 多个不同选区在同一个文本容器里同时高亮（标记与引用共用选区记录）
-    containerRef.current.querySelectorAll("[data-selection-mark]").forEach((el) => {
-      const parent = el.parentNode;
-      if (!parent) return;
-      while (el.firstChild) {
-        parent.insertBefore(el.firstChild, el);
-      }
-      parent.removeChild(el);
-    });
-    for (const highlight of normalizedHighlights) {
-      const applied = setRangeFromOffsets(containerRef.current, highlight.start, highlight.end, highlight.exact);
-      if (!applied && highlight.exact) {
-        markExactInRendered(containerRef.current, highlight.exact);
-      }
-    }
-  }, [highlightsKey]);
 
   return (
     <div
@@ -483,9 +456,8 @@ function MessageBlock({ blockText, blockId, elementId, titleAnchorId, highlights
       tabIndex={elementId !== undefined ? -1 : undefined}
       data-block-id={blockId}
       data-block-text
-      ref={containerRef}
     >
-      <MarkdownContent text={blockText} sources={sources} citations={citations} terms={terms} variant="message" titleAnchorId={titleAnchorId} fusionSources={fusionSources} />
+      <MarkdownContent text={blockText} sources={sources} citations={citations} terms={terms} variant="message" titleAnchorId={titleAnchorId} fusionSources={fusionSources} highlights={normalizedHighlights} />
     </div>
   );
 }

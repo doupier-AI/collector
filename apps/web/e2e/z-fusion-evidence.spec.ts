@@ -132,6 +132,8 @@ async function openRootNotice(page: Page, rootNodeId: string, sessionId: string)
 test.describe("#42 融合依据定位", () => {
   test("提案来源正常跳转：进入子节点并定位目标卡片（强调 + 播报 + 视口）", async ({ page }) => {
     test.setTimeout(120_000);
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
     const { sessionId, rootNodeId } = await openSession(page);
     const rootEvidence = await readNodeEvidence(page, rootNodeId, 1);
     const childNodeId = await growChildNode(page, sessionId);
@@ -157,6 +159,10 @@ test.describe("#42 融合依据定位", () => {
     const box = await focusedCard.boundingBox();
     expect(box?.y ?? 0).toBeGreaterThan(56); // app-bar 高度之上
     await expect(page.locator('[role="status"][aria-live="polite"]')).toContainText("已定位到");
+    // 回归：1.6 秒高亮自动恢复不得破坏 React 管理的正文树。
+    await expect(page.locator(".fragment-target--focused")).toHaveCount(0, { timeout: 5_000 });
+    await expect(page.locator(`[data-message-id="${childEvidence.messageId}"] [data-block-text]`).first()).toContainText(CHILD_EVIDENCE_TEXT);
+    expect(pageErrors).toEqual([]);
   });
 
   test("重复跳转：同一依据再次点击可重新触发强调", async ({ page }) => {

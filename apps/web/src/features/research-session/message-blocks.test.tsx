@@ -718,6 +718,15 @@ describe("#91 普通回答轮次卡片", () => {
       groundingSources: [{ id: "source-1", runId: "run-1", ordinal: 1, title: "来源一", url: "https://example.test/one", createdAt: "2026-08-02T00:00:00.000Z" }],
       citations: [{ id: "citation-1", messageId: "m-out", runId: "run-1", sourceId: "source-1", blockOrdinal: 0, markerOffset: 2, createdAt: "2026-08-02T00:00:00.000Z" }],
     });
+    view.termDetections = {
+      "m-out": {
+        messageId: "m-out",
+        detectedAt: "2026-08-02T00:00:00.000Z",
+        terms: [{ text: "前文", blockOrdinal: 0, startOffset: 0, endOffset: 2, category: "concept" }],
+        convergence: { termDensity: "full", nodeDepth: 0, reason: "none" },
+        suppressedCount: 0,
+      },
+    };
     const { container } = renderNodePage(
       {
         getResearchNodeView: async () => view,
@@ -732,6 +741,57 @@ describe("#91 普通回答轮次卡片", () => {
     const citation = screen.getByLabelText("打开来源 1：来源一");
     expect(citation.closest("[data-selection-mark]")).toBeNull();
     expect(container.querySelector(".turn-card.fragment-target--focused")).toHaveAttribute("id", "m-out-turn");
+  });
+
+  it("片段高亮自动消失时不破坏 React 正文树，来源页保持可读", async () => {
+    const content = asLong("## 引言\n\n注意力机制连接查询向量、键向量和值向量。\n\nTransformer 架构通过自注意力聚合上下文。\n\nBERT 使用掩码语言模型训练双向编码器。");
+    const version = deriveBodyVersion({ messageId: "m-out", nodeId: "session-1", content, origin: "backfill", createdAt: "2026-08-02T00:00:00.000Z" });
+    const slices = [makeSlice({ id: "slice:session-1:m-out:0", ordinal: 0, title: "引言" })];
+    const fragments = deriveFragmentsFromSlices(version, slices, []);
+    const view = makeNodeView({
+      node: makeNode({ id: "session-1", sessionId: "session-1" }),
+      session: makeSession({ id: "session-1" }),
+      messages: [makeMessage({ id: "m-in", role: "user", content: "一个问题" }), makeMessage({ id: "m-out", role: "assistant", status: "completed", content })],
+      tasks: [makeTask({ id: "task-1", status: "completed", inputMessageId: "m-in", outputMessageId: "m-out" })],
+      slices: { "m-out": slices },
+      bodyVersions: { "m-out": version },
+    });
+    view.termDetections = {
+      "m-out": {
+        messageId: "m-out",
+        detectedAt: "2026-08-02T00:00:00.000Z",
+        terms: [
+          { text: "注意力机制", blockOrdinal: 1, startOffset: 0, endOffset: 5, category: "concept" },
+          { text: "查询向量", blockOrdinal: 1, startOffset: 7, endOffset: 11, category: "concept" },
+          { text: "Transformer", blockOrdinal: 2, startOffset: 0, endOffset: 11, category: "entity" },
+          { text: "掩码语言模型", blockOrdinal: 3, startOffset: 8, endOffset: 14, category: "concept" },
+        ],
+        convergence: { termDensity: "full", nodeDepth: 0, reason: "none" },
+        suppressedCount: 0,
+      },
+    };
+    const startResearchTermPreview = vi.fn<NonNullable<ApiClient["startResearchTermPreview"]>>(() => new Promise(() => {}));
+    const { container } = renderNodePage(
+      {
+        getResearchNodeView: async () => view,
+        getResearchBodyVersion: async () => ({ version, fragments: fragments.map((fragment) => ({ ...fragment, excerpt: content.slice(fragment.startOffset, fragment.endOffset) })) }),
+        startResearchTermPreview,
+      },
+      `/nodes/session-1?fragment=${encodeURIComponent(fragments[0]!.id)}`,
+    );
+
+    await waitFor(() => expect(container.querySelectorAll("[data-selection-mark]").length).toBeGreaterThan(0));
+    const marker = await screen.findByRole("button", { name: "解释术语 注意力机制" });
+    expect(marker.querySelector("[data-selection-mark]")).not.toBeNull();
+    marker.focus();
+    fireEvent.keyDown(marker, { key: "Enter" });
+    await waitFor(() => expect(startResearchTermPreview).toHaveBeenCalled());
+    await waitFor(() => expect(container.querySelector(".fragment-target--focused")).toBeNull(), { timeout: 3_000 });
+    expect(screen.getByRole("button", { name: "解释术语 注意力机制" })).toBe(marker);
+    expect(document.activeElement).toBe(marker);
+    expect(container.querySelector('[data-block-id="m-out#p0"]')).toHaveTextContent("注意力机制连接查询向量、键向量和值向量");
+    expect(container.querySelectorAll('[data-term-marker]').length).toBeGreaterThanOrEqual(3);
+    expect(screen.getByRole("heading", { name: "引言" })).toBeVisible();
   });
 
   it("短标题与后续正文分块的片段在同一轮次卡内分别标到两个实际 DOM 块", async () => {
@@ -756,11 +816,11 @@ describe("#91 普通回答轮次卡片", () => {
     );
 
     await screen.findByRole("heading", { name: "标题" });
-    await waitFor(() => expect(container.querySelectorAll("[data-selection-mark]")).toHaveLength(2));
-    const marks = container.querySelectorAll<HTMLElement>("[data-selection-mark]");
-    expect([...marks].map((mark) => mark.textContent)).toEqual(["标题", "正文 链接"]);
-    expect(marks[0]?.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p0");
-    expect(marks[1]?.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p1");
+    await waitFor(() => expect(container.querySelectorAll("[data-selection-mark]").length).toBeGreaterThanOrEqual(4));
+    const titleBlock = container.querySelector<HTMLElement>('[data-block-id="m-out#p0"]')!;
+    const bodyBlock = container.querySelector<HTMLElement>('[data-block-id="m-out#p1"]')!;
+    expect([...titleBlock.querySelectorAll<HTMLElement>("[data-selection-mark]")].map((mark) => mark.textContent).join("")).toBe("标题");
+    expect([...bodyBlock.querySelectorAll<HTMLElement>("[data-selection-mark]")].map((mark) => mark.textContent).join("")).toBe("正文 链接");
     expect(container.querySelector(".turn-card.fragment-target--focused")).toHaveAttribute("id", "m-out-turn");
   });
 });
