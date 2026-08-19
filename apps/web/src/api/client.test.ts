@@ -92,3 +92,22 @@ describe("#61 stable node address API client", () => {
     ).rejects.toMatchObject({ status: 409, code: "session_in_trash" });
   });
 });
+
+describe("#62 global research map API client", () => {
+  it("reads one unified observation and preserves repeated scope and relationship query values", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ nodes: [], edges: [], appliedRelationshipKinds: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const client = createApiClient(fetchMock);
+
+    await client.getResearchMap({
+      focusNodeId: "node / one",
+      projectIds: ["project-a", "project-b"],
+      includeArchived: false,
+      relationshipKinds: ["parent-child", "fused-from"],
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/research-map?focusNodeId=node+%2F+one&projectId=project-a&projectId=project-b&includeArchived=false&relationshipKind=parent-child&relationshipKind=fused-from",
+      undefined,
+    );
+  });
+});

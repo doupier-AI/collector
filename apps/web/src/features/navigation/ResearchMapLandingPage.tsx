@@ -1,22 +1,21 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import type { ResearchSessionRecord } from "@collector/capture-contracts";
+import type { ResearchGraphObservation } from "@collector/capture-contracts";
 import { apiErrorCopy, isUnauthorized } from "../../api/errors";
-import { stableNodePath } from "../../app/paths";
 import { useServices } from "../../app/services";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { PairingGate } from "../auth/PairingGate";
-import { formatRelativeTime } from "../research-session/format";
+import { GlobalResearchMap } from "./GlobalResearchMap";
 import { ResearchMapGlyph } from "./ResearchMapGlyph";
 
 type LandingState =
   | { kind: "loading" }
   | { kind: "error"; error: unknown }
-  | { kind: "ready"; sessions: ResearchSessionRecord[] };
+  | { kind: "ready"; observation: ResearchGraphObservation };
 
 /**
- * 稳定 /map 入口的迁移期承接页。
- * 完整图谱可整体替换本页；左侧入口只依赖路由，不依赖当前会话内地图实现。
+ * #62：稳定 /map 入口消费服务端统一全局观察结果。
+ * 画布与窄屏列表只替换呈现，不各自请求或重算图范围。
  */
 export function ResearchMapLandingPage() {
   const { api } = useServices();
@@ -25,9 +24,9 @@ export function ResearchMapLandingPage() {
 
   useEffect(() => {
     let stale = false;
-    api.listResearchSessions().then(
-      (sessions) => {
-        if (!stale) setState({ kind: "ready", sessions });
+    api.getResearchMap().then(
+      (observation) => {
+        if (!stale) setState({ kind: "ready", observation });
       },
       (error) => {
         if (!stale) setState({ kind: "error", error });
@@ -59,14 +58,17 @@ export function ResearchMapLandingPage() {
       <div className="page map-landing">
         <h1 className="page__title">暂时无法打开研究图谱</h1>
         <p className="page__lead">{copy.body}</p>
-        <button type="button" className="button button--primary" onClick={() => setReloadNonce((nonce) => nonce + 1)}>
-          重试
-        </button>
+        <div className="map-landing__error-actions">
+          <button type="button" className="button button--primary" onClick={() => setReloadNonce((nonce) => nonce + 1)}>
+            重试
+          </button>
+          <Link className="button button--secondary" to="/research/new">
+            开始新研究
+          </Link>
+        </div>
       </div>
     );
   }
-
-  const sessions = state.sessions.filter((session) => session.status === "active" && !session.trashedAt);
 
   return (
     <div className="page map-landing">
@@ -77,43 +79,29 @@ export function ResearchMapLandingPage() {
         <div>
           <h1 className="page__title">研究图谱</h1>
           <p className="page__lead">
-            全局图谱、节点搜索和新的专注模式正在独立迭代。这个入口与地址会保留，后续能力将在这里直接接续。
+            这里汇集全部尚未删除的研究节点。归档内容保留标记，回收站内容不会出现在地图中。
           </p>
         </div>
       </header>
 
-      <section className="map-landing__bridge" aria-labelledby="map-landing-sessions-title">
-        <div className="map-landing__section-heading">
-          <div>
-            <h2 id="map-landing-sessions-title">先从已有会话继续</h2>
-            <p>进入会话后，仍可从页面顶部打开当前的研究地图。</p>
-          </div>
+      <div className="map-landing__actions" aria-label="地图操作">
+        <p>节点可来自不同会话；父子生长与融合来源保留原有方向。</p>
+        <div>
           <Link className="button button--primary" to="/research/new">
             新建会话
           </Link>
+          <Link className="button button--secondary" to="/trash">查看回收站</Link>
         </div>
+      </div>
 
-        {sessions.length === 0 ? (
-          <div className="map-landing__empty" role="status">
-            <p>还没有可继续的会话。从一个问题开始，之后可以随时从这里进入研究图谱。</p>
-            <Link to="/research/new">开始第一次研究</Link>
-          </div>
-        ) : (
-          <ul className="map-landing__sessions">
-            {sessions.map((session) => (
-              <li key={session.id}>
-                <Link
-                  className="map-landing__session-link"
-                  to={stableNodePath(session.id)}
-                >
-                  <span className="map-landing__session-title">{session.title}</span>
-                  <span className="map-landing__session-time">{formatRelativeTime(session.updatedAt)}</span>
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+      {state.observation.nodes.length === 0 ? (
+        <div className="map-landing__empty" role="status">
+          <p>还没有研究节点。从一个问题开始，完成后的节点会出现在这里。</p>
+          <Link to="/research/new">开始第一次研究</Link>
+        </div>
+      ) : (
+        <GlobalResearchMap observation={state.observation} />
+      )}
     </div>
   );
 }

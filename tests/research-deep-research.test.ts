@@ -683,6 +683,64 @@ test("graph endpoint forwards maxDepth to the server-side projection", async (t)
   assert.equal(unknownFocus.status, 200);
   assert.deepEqual((await unknownFocus.json()).nodes, []);
 });
+
+test("global map endpoint returns one cross-session observation with archived and isolated nodes, excluding trash and legacy semantic edges", async (t) => {
+  const harness = await createHarness({ researchProvider: recordingProvider().provider });
+  t.after(() => harness.close());
+  const first = await createSessionWithAnswer(harness);
+  const archived = await createSessionWithAnswer(harness);
+  const isolated = await createSessionWithAnswer(harness);
+  const trashed = await createSessionWithAnswer(harness);
+  const createHint = (id: string, anchorNodeId: string, relatedNodeId: string) => harness.store.createAssociationHint({
+    id,
+    anchorNodeId,
+    relatedNodeId,
+    reason: "可定位的候选关联",
+    anchorRanges: [{ nodeId: anchorNodeId, bodyVersionId: `body:${anchorNodeId}`, fragmentId: `fragment:${anchorNodeId}` }],
+    relatedRanges: [{ nodeId: relatedNodeId, bodyVersionId: `body:${relatedNodeId}`, fragmentId: `fragment:${relatedNodeId}` }],
+    evidenceKey: `evidence:${id}`,
+    status: "active" as const,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+  await createHint("hint-live", first.session.id, isolated.session.id);
+  await createHint("hint-trash", first.session.id, trashed.session.id);
+  await harness.store.updateResearchSession(archived.session.id, { status: "archived" });
+  await harness.store.trashResearchSession(trashed.session.id, new Date().toISOString());
+  await harness.store.createResearchEdge({
+    id: researchEdgeId("fused-from", first.session.id, archived.session.id),
+    kind: "fused-from", fromNodeId: first.session.id, toNodeId: archived.session.id,
+    status: "active", createdAt: new Date().toISOString(),
+  });
+  await harness.store.createResearchEdge({
+    id: researchEdgeId("semantic-related", first.session.id, isolated.session.id),
+    kind: "semantic-related", fromNodeId: first.session.id, toNodeId: isolated.session.id,
+    status: "active", createdAt: new Date().toISOString(),
+  });
+
+  const response = await fetch(`${harness.base}/v1/research-map`, { headers: headers(harness.token) });
+  assert.equal(response.status, 200);
+  const observation = await response.json() as {
+    nodes: Array<{ node: { id: string }; lifecycle: string; connectivity: string; candidateCount: number }>;
+    edges: Array<{ edge: { kind: string; fromNodeId: string; toNodeId: string } }>;
+  };
+  assert.deepEqual(new Set(observation.nodes.map((item) => item.node.id)), new Set([
+    first.session.id, archived.session.id, isolated.session.id,
+  ]));
+  assert.equal(observation.nodes.find((item) => item.node.id === archived.session.id)?.lifecycle, "archived");
+  assert.equal(observation.nodes.find((item) => item.node.id === first.session.id)?.candidateCount, 1,
+    "a hint whose other endpoint is trashed must not inflate the live candidate summary");
+  assert.equal(observation.nodes.find((item) => item.node.id === isolated.session.id)?.candidateCount, 1);
+  assert.ok(observation.nodes.every((item) => item.connectivity === "default"));
+  assert.deepEqual(observation.edges.map((item) => item.edge.kind), ["fused-from"]);
+
+  const refreshed = await (await fetch(`${harness.base}/v1/research-map`, { headers: headers(harness.token) })).json();
+  assert.deepEqual(refreshed, observation);
+  assert.equal((await fetch(`${harness.base}/v1/research-map`)).status, 401);
+  assert.equal((await fetch(`${harness.base}/v1/research-map?relationshipKind=semantic-related`, { headers: headers(harness.token) })).status, 400);
+  assert.equal((await fetch(`${harness.base}/v1/research-map?focusNodeId=missing`, { headers: headers(harness.token) })).status, 404);
+  assert.equal((await fetch(`${harness.base}/v1/research-map?focusNodeId=${trashed.session.id}`, { headers: headers(harness.token) })).status, 404);
+});
 test("clearAllData removes branches, sessions and selections without foreign key errors", async (t) => {
   const harness = await createHarness({ researchProvider: recordingProvider().provider });
   t.after(() => harness.close());

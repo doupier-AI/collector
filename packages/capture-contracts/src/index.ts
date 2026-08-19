@@ -2497,6 +2497,182 @@ export function isResearchPermanentEdge(edge: ResearchEdgeRecord): edge is Resea
   return (RESEARCH_PERMANENT_EDGE_KINDS as readonly ResearchEdgeKind[]).includes(edge.kind);
 }
 
+// ── Global research observation (node system T03 / #62) ─────────
+
+/**
+ * 全局观察查询的稳定输入。布局、缩放与画布坐标不属于该契约。
+ * 省略范围时包含全部未进入回收站的现存节点（含归档与孤立节点）。
+ */
+export interface ResearchGraphObservationInput {
+  focusNodeId?: string;
+  projectIds?: string[];
+  includeArchived?: boolean;
+  updatedFrom?: string;
+  updatedTo?: string;
+  relationshipKinds?: ResearchPermanentEdgeKind[];
+}
+
+export type ResearchGraphObservationConnectivity = "default" | "focus" | "connected" | "unconnected";
+export type ResearchGraphObservationScope = "inside-current-filter" | "outside-bridge";
+export type ResearchGraphFusionEvidenceHealth = "not-applicable" | "available" | "incomplete";
+
+/** 图谱扫读所需的最小节点摘要；不携带正文、候选详情或语义范围正文。 */
+export interface ResearchGraphObservationNode {
+  node: ResearchNodeRecord;
+  label: string;
+  sessionTitle: string;
+  projectId?: string;
+  projectColorRole?: ProjectColorRole;
+  lifecycle: "active" | "archived";
+  role: "research" | "fusion";
+  scope: ResearchGraphObservationScope;
+  connectivity: ResearchGraphObservationConnectivity;
+  candidateCount: number;
+  fusionEvidenceHealth: ResearchGraphFusionEvidenceHealth;
+}
+
+export interface ResearchGraphObservationEdge {
+  edge: ResearchPermanentEdgeRecord;
+  connectivity: ResearchGraphObservationConnectivity;
+}
+
+/** 服务端统一产出的观察结果；画布、窄屏列表与键盘导航消费同一份 nodes/edges。 */
+export interface ResearchGraphObservation {
+  nodes: ResearchGraphObservationNode[];
+  edges: ResearchGraphObservationEdge[];
+  focusNodeId?: string;
+  appliedRelationshipKinds: ResearchPermanentEdgeKind[];
+}
+
+export interface ResearchGraphObservationDerivations {
+  nodeLabel?: (node: ResearchNodeRecord, session: ResearchSessionRecord) => string;
+  candidateCountByNodeId?: ReadonlyMap<string, number>;
+  evidenceHealthByFusionNodeId?: ReadonlyMap<string, Exclude<ResearchGraphFusionEvidenceHealth, "not-applicable">>;
+}
+
+/**
+ * 从正式节点、会话与永久边确定性派生统一全局观察结果。
+ * - 回收站会话首先退出普通全局范围；归档默认保留；
+ * - `semantic-related` 即使仍存在于迁移期存储也不会进入目标观察；
+ * - 焦点连通不接受深度参数，沿启用的永久关系遍历完整分量；
+ * - 范围筛选时保留焦点到范围内节点的最短路径外部节点作为桥接节点。
+ */
+export function buildResearchGraphObservation(
+  allNodes: readonly ResearchNodeRecord[],
+  allEdges: readonly ResearchEdgeRecord[],
+  sessions: readonly ResearchSessionRecord[],
+  projects: readonly ProjectRecord[],
+  input: ResearchGraphObservationInput = {},
+  derivations: ResearchGraphObservationDerivations = {},
+): ResearchGraphObservation {
+  const sessionById = new Map(sessions.filter((session) => !session.trashedAt).map((session) => [session.id, session]));
+  const projectById = new Map(projects.map((project) => [project.id, project]));
+  const nodeById = new Map(allNodes.filter((node) => sessionById.has(node.sessionId)).map((node) => [node.id, node]));
+  const enabledKinds = input.relationshipKinds?.length
+    ? RESEARCH_PERMANENT_EDGE_KINDS.filter((kind) => input.relationshipKinds!.includes(kind))
+    : [...RESEARCH_PERMANENT_EDGE_KINDS];
+  const enabledKindSet = new Set<ResearchEdgeKind>(enabledKinds);
+  const permanentEdges = allEdges.filter((edge): edge is ResearchPermanentEdgeRecord =>
+    edge.status === "active" && isResearchPermanentEdge(edge) && enabledKindSet.has(edge.kind)
+      && nodeById.has(edge.fromNodeId) && nodeById.has(edge.toNodeId));
+  const projectFilter = input.projectIds?.length ? new Set(input.projectIds) : undefined;
+  const includeArchived = input.includeArchived ?? true;
+
+  const inScope = (node: ResearchNodeRecord): boolean => {
+    const session = sessionById.get(node.sessionId);
+    if (!session) return false;
+    if (!includeArchived && session.status === "archived") return false;
+    if (projectFilter && (!session.projectId || !projectFilter.has(session.projectId))) return false;
+    if (input.updatedFrom && node.updatedAt < input.updatedFrom) return false;
+    if (input.updatedTo && node.updatedAt > input.updatedTo) return false;
+    return true;
+  };
+
+  const inScopeIds = new Set([...nodeById.values()].filter(inScope).map((node) => node.id));
+  const includedIds = new Set(inScopeIds);
+  const connectedIds = new Set<string>();
+
+  if (input.focusNodeId && nodeById.has(input.focusNodeId)) {
+    const adjacency = new Map<string, string[]>();
+    const addNeighbor = (nodeId: string, neighborId: string) => {
+      const neighbors = adjacency.get(nodeId) ?? [];
+      neighbors.push(neighborId);
+      adjacency.set(nodeId, neighbors);
+    };
+    for (const edge of permanentEdges) {
+      addNeighbor(edge.fromNodeId, edge.toNodeId);
+      addNeighbor(edge.toNodeId, edge.fromNodeId);
+    }
+    const parent = new Map<string, string | undefined>([[input.focusNodeId, undefined]]);
+    const queue = [input.focusNodeId];
+    while (queue.length) {
+      const current = queue.shift()!;
+      connectedIds.add(current);
+      for (const neighbor of adjacency.get(current) ?? []) {
+        if (parent.has(neighbor)) continue;
+        parent.set(neighbor, current);
+        queue.push(neighbor);
+      }
+    }
+    includedIds.add(input.focusNodeId);
+    for (const nodeId of inScopeIds) {
+      if (!connectedIds.has(nodeId)) continue;
+      let cursor: string | undefined = nodeId;
+      while (cursor !== undefined) {
+        includedIds.add(cursor);
+        cursor = parent.get(cursor);
+      }
+    }
+  }
+
+  const connectivityFor = (nodeId: string): ResearchGraphObservationConnectivity => {
+    if (!input.focusNodeId) return "default";
+    if (nodeId === input.focusNodeId) return "focus";
+    return connectedIds.has(nodeId) ? "connected" : "unconnected";
+  };
+  const labelFor = derivations.nodeLabel ?? ((node: ResearchNodeRecord, session: ResearchSessionRecord) =>
+    node.displayName ?? (node.id === session.id ? session.title : `节点 ${node.id.slice(0, 8)}`));
+
+  const nodes = [...nodeById.values()]
+    .filter((node) => includedIds.has(node.id))
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
+    .map((node): ResearchGraphObservationNode => {
+      const session = sessionById.get(node.sessionId)!;
+      const project = session.projectId ? projectById.get(session.projectId) : undefined;
+      return {
+        node,
+        label: labelFor(node, session),
+        sessionTitle: session.title,
+        ...(session.projectId ? { projectId: session.projectId } : {}),
+        ...(project?.colorRole ? { projectColorRole: project.colorRole } : {}),
+        lifecycle: session.status,
+        role: node.isFusionNode ? "fusion" : "research",
+        scope: inScopeIds.has(node.id) ? "inside-current-filter" : "outside-bridge",
+        connectivity: connectivityFor(node.id),
+        candidateCount: derivations.candidateCountByNodeId?.get(node.id) ?? 0,
+        fusionEvidenceHealth: node.isFusionNode
+          ? derivations.evidenceHealthByFusionNodeId?.get(node.id) ?? "incomplete"
+          : "not-applicable",
+      };
+    });
+  const visibleIds = new Set(nodes.map((summary) => summary.node.id));
+  const edges = permanentEdges
+    .filter((edge) => visibleIds.has(edge.fromNodeId) && visibleIds.has(edge.toNodeId))
+    .map((edge): ResearchGraphObservationEdge => ({
+      edge,
+      connectivity: !input.focusNodeId
+        ? "default"
+        : connectedIds.has(edge.fromNodeId) && connectedIds.has(edge.toNodeId) ? "connected" : "unconnected",
+    }));
+
+  return {
+    nodes,
+    edges,
+    ...(input.focusNodeId && nodeById.has(input.focusNodeId) ? { focusNodeId: input.focusNodeId } : {}),
+    appliedRelationshipKinds: enabledKinds,
+  };
+}
+
 /** 正文中的稳定语义范围引用；搜索、提示与融合都依赖它，而不依赖弱标记。 */
 export interface ResearchSemanticRangeReference {
   nodeId: string;

@@ -28,6 +28,8 @@ import type {
   ResearchLaterItemUpdate,
   ResearchLaterItemView,
   ResearchGraphProjection,
+  ResearchGraphObservation,
+  ResearchGraphObservationInput,
   ResearchFusionProposalDecision,
   ResearchFusionProposalRecord,
   ResearchFusionScanResult,
@@ -131,6 +133,8 @@ export interface ApiClient {
   getResearchSessionNodeTree(sessionId: string): Promise<ResearchSessionNodeTreeItem[]>;
   /** 关系图投影：以指定节点为中心，返回邻居节点与类型化边。 */
   getResearchGraph(sessionId: string, focusNodeId?: string, maxDepth?: number): Promise<ResearchGraphProjection>;
+  /** #62：跨会话 A 面统一观察；画布、窄屏列表和键盘导航共享同一响应。 */
+  getResearchMap(input?: ResearchGraphObservationInput): Promise<ResearchGraphObservation>;
   /**
    * #32：手动触发当前节点的确定性相似候选扫描。返回本次扫描后的全部提案
    * （含自动融合成功后已 accepted 的留痕提案）与本次新自动生成的融合节点摘要。
@@ -516,6 +520,17 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
         fetchFn,
         `/v1/research-sessions/${encodeURIComponent(sessionId)}/graph${query}`,
       );
+    },
+    getResearchMap(input = {}) {
+      const params = new URLSearchParams();
+      if (input.focusNodeId) params.set("focusNodeId", input.focusNodeId);
+      for (const projectId of input.projectIds ?? []) params.append("projectId", projectId);
+      if (input.includeArchived !== undefined) params.set("includeArchived", String(input.includeArchived));
+      if (input.updatedFrom) params.set("updatedFrom", input.updatedFrom);
+      if (input.updatedTo) params.set("updatedTo", input.updatedTo);
+      for (const kind of input.relationshipKinds ?? []) params.append("relationshipKind", kind);
+      const query = params.toString() ? `?${params.toString()}` : "";
+      return requestJson<ResearchGraphObservation>(fetchFn, `/v1/research-map${query}`);
     },
     scanResearchFusionProposals(nodeId: string) {
       return requestJson<ResearchFusionScanResult>(

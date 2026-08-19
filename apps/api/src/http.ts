@@ -287,6 +287,9 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (request.method === "GET" && researchSessionNodesMatch) {
         return json(response, 200, service.nodeGrowth.getNodeTree(decodeURIComponent(researchSessionNodesMatch[1])));
       }
+      if (request.method === "GET" && url.pathname === "/v1/research-map") {
+        return json(response, 200, service.nodeGrowth.getGraphObservation(parseGraphObservationInput(url)));
+      }
       const researchSessionGraphMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)\/graph$/);
       if (request.method === "GET" && researchSessionGraphMatch) {
         const focusNodeId = url.searchParams.get("focusNodeId") ?? undefined;
@@ -625,6 +628,38 @@ function parseGraphProjectionDepth(value: string | null): number | undefined {
     throw new ResearchValidationError(`maxDepth must be between 0 and ${MAX_GRAPH_PROJECTION_DEPTH}`);
   }
   return maxDepth;
+}
+
+function parseGraphObservationInput(url: URL): import("@collector/capture-contracts").ResearchGraphObservationInput {
+  const focusNodeId = url.searchParams.get("focusNodeId")?.trim() || undefined;
+  const projectIds = url.searchParams.getAll("projectId").map((value) => value.trim()).filter(Boolean);
+  const relationshipKinds = url.searchParams.getAll("relationshipKind");
+  if (relationshipKinds.some((kind) => kind !== "parent-child" && kind !== "fused-from")) {
+    throw new ResearchValidationError("relationshipKind must be parent-child or fused-from");
+  }
+  const includeArchivedValue = url.searchParams.get("includeArchived");
+  if (includeArchivedValue !== null && includeArchivedValue !== "true" && includeArchivedValue !== "false") {
+    throw new ResearchValidationError("includeArchived must be true or false");
+  }
+  const updatedFrom = parseOptionalIsoDate(url.searchParams.get("updatedFrom"), "updatedFrom");
+  const updatedTo = parseOptionalIsoDate(url.searchParams.get("updatedTo"), "updatedTo");
+  if (updatedFrom && updatedTo && updatedFrom > updatedTo) {
+    throw new ResearchValidationError("updatedFrom must not be later than updatedTo");
+  }
+  return {
+    ...(focusNodeId ? { focusNodeId } : {}),
+    ...(projectIds.length ? { projectIds } : {}),
+    ...(includeArchivedValue !== null ? { includeArchived: includeArchivedValue === "true" } : {}),
+    ...(updatedFrom ? { updatedFrom } : {}),
+    ...(updatedTo ? { updatedTo } : {}),
+    ...(relationshipKinds.length ? { relationshipKinds: relationshipKinds as Array<"parent-child" | "fused-from"> } : {}),
+  };
+}
+
+function parseOptionalIsoDate(value: string | null, label: string): string | undefined {
+  if (value === null) return undefined;
+  if (!value.trim() || Number.isNaN(Date.parse(value))) throw new ResearchValidationError(`${label} must be an ISO date`);
+  return new Date(value).toISOString();
 }
 
 function decodeImportComponent(value: string, code: string, label: string): string {

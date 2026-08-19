@@ -11,7 +11,7 @@ export { deriveMessageBodyArtifacts, getOrDeriveMessageBodyArtifacts, matchSlice
 export { ResearchImportService, ResearchImportConflictError, ResearchImportNotFoundError, ResearchImportValidationError, type ResearchImportServiceOptions } from "./research-import.js";
 export { ResearchChapterParseService, type ResearchChapterParseProvider, type ResearchChapterParseServiceOptions } from "./research-chapters.js";
 export { ResearchSelectionAnalysisError, ResearchSelectionConflictError, ResearchSelectionNotFoundError, ResearchSelectionService, ResearchSelectionValidationError, type ResearchSelectionProvider, type ResearchSelectionAnalysisRequest, type ResearchSelectionServiceOptions } from "./selection.js";
-export { DeepResearchNotFoundError, DeepResearchService, DeepResearchValidationError, type DeepResearchServiceOptions } from "./deep-research.js";
+export { DeepResearchNotFoundError, DeepResearchService, DeepResearchValidationError, deriveFusionEvidenceHealth, type DeepResearchServiceOptions } from "./deep-research.js";
 export { ResearchLaterNotFoundError, ResearchLaterService, ResearchLaterValidationError } from "./research-later.js";
 export { TermDetectionService, detectTermMarkers, validateTermMarkers, TERM_DETECTION_MIN_CONTENT_LENGTH, type TermDetectionOptions } from "./term-detection.js";
 export { ResearchTermPreviewNotFoundError, ResearchTermPreviewService, ResearchTermPreviewValidationError, TERM_PREVIEW_PROMPT_VERSION, termPreviewMarkerKey, type ResearchTermPreviewServiceOptions } from "./term-preview.js";

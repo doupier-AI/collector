@@ -8,6 +8,8 @@ import type {
   ResearchEdgeRecord,
   ResearchFusionProposalRecord,
   ResearchGraphProjection,
+  ResearchGraphObservation,
+  ResearchGraphObservationNode,
   ResearchGraphNodeSummary,
   ResearchImportTaskRecord,
   ResearchLaterItemRecord,
@@ -366,6 +368,36 @@ export function makeGraphProjection(
     focusNodeId: overrides.focusNodeId ?? (nodes[0]?.node.id ?? "focus"),
     edges: overrides.edges ?? [],
     nodes,
+  };
+}
+
+/** #62 全局观察工厂：最小摘要，不携带正文或候选详情。 */
+export function makeGraphObservation(
+  overrides: { nodes?: ResearchGraphObservationNode[]; edges?: ResearchGraphObservation["edges"] } = {},
+): ResearchGraphObservation {
+  return {
+    nodes: overrides.nodes ?? [],
+    edges: overrides.edges ?? [],
+    appliedRelationshipKinds: ["parent-child", "fused-from"],
+  };
+}
+
+export function makeGraphObservationNode(
+  id: string,
+  label: string,
+  overrides: Partial<ResearchGraphObservationNode> = {},
+): ResearchGraphObservationNode {
+  return {
+    node: makeNode({ id, sessionId: overrides.node?.sessionId ?? id, ...overrides.node }),
+    label,
+    sessionTitle: overrides.sessionTitle ?? label,
+    lifecycle: "active",
+    role: "research",
+    scope: "inside-current-filter",
+    connectivity: "default",
+    candidateCount: 0,
+    fusionEvidenceHealth: "not-applicable",
+    ...overrides,
   };
 }
 

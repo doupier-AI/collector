@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   buildGraphProjection,
+  buildResearchGraphObservation,
   deriveDefaultResearchTitle,
   type CreateChildNodeInput,
   type DeepResearchAccepted,
@@ -9,6 +10,9 @@ import {
   type ResearchBranchRecord,
   type ResearchBranchView,
   type ResearchGraphProjection,
+  type ResearchGraphObservation,
+  type ResearchGraphObservationInput,
+  type ResearchEdgeRecord,
   type ResearchMessageRecord,
   type ResearchNodeRecord,
   type ResearchNodeView,
@@ -51,6 +55,25 @@ export interface DeepResearchServiceOptions {
   /** 深入研究任务复用研究会话任务管线（claim / 事件 / 重试 / 重启恢复）。 */
   research: ResearchSessionService;
   autoRunTasks?: boolean;
+}
+
+/** 融合证据健康的保守摘要：至少两个仍属于普通全局范围的不同正式来源才算可用。 */
+export function deriveFusionEvidenceHealth(
+  nodes: readonly ResearchNodeRecord[],
+  edges: readonly ResearchEdgeRecord[],
+): Map<string, "available" | "incomplete"> {
+  const liveNodeIds = new Set(nodes.map((node) => node.id));
+  const sourcesByFusionNodeId = new Map<string, Set<string>>();
+  for (const node of nodes) if (node.isFusionNode) sourcesByFusionNodeId.set(node.id, new Set());
+  for (const edge of edges) {
+    if (edge.status === "active" && edge.kind === "fused-from" && liveNodeIds.has(edge.fromNodeId)) {
+      sourcesByFusionNodeId.get(edge.toNodeId)?.add(edge.fromNodeId);
+    }
+  }
+  return new Map([...sourcesByFusionNodeId].map(([nodeId, sourceIds]) => [
+    nodeId,
+    sourceIds.size >= 2 ? "available" as const : "incomplete" as const,
+  ]));
 }
 
 export class DeepResearchService {
@@ -440,6 +463,51 @@ export class NodeGrowthService {
         return "子节点";
       },
     });
+  }
+
+  /**
+   * #62：统一 A 面全局观察。会话只提供生命周期与项目归属，不再截断节点或跨会话永久边；
+   * 旧 semantic-related 由共享契约排除，候选只以数量摘要进入结果。
+   */
+  getGraphObservation(input: ResearchGraphObservationInput = {}): ResearchGraphObservation {
+    const sessions = this.store.listResearchSessions();
+    if (input.focusNodeId) {
+      const focusNode = this.store.getResearchNode(input.focusNodeId);
+      if (!focusNode || !sessions.some((session) => session.id === focusNode.sessionId)) {
+        throw new DeepResearchNotFoundError("Research node is not available in the global map");
+      }
+    }
+    const nodes = sessions.flatMap((session) => this.store.listResearchNodes(session.id));
+    const liveNodeIds = new Set(nodes.map((node) => node.id));
+    const activeHints = this.store.listAssociationHints("active");
+    const candidateCountByNodeId = new Map<string, number>();
+    for (const hint of activeHints) {
+      if (!liveNodeIds.has(hint.anchorNodeId) || !liveNodeIds.has(hint.relatedNodeId)) continue;
+      candidateCountByNodeId.set(hint.anchorNodeId, (candidateCountByNodeId.get(hint.anchorNodeId) ?? 0) + 1);
+      candidateCountByNodeId.set(hint.relatedNodeId, (candidateCountByNodeId.get(hint.relatedNodeId) ?? 0) + 1);
+    }
+    const allEdges = this.store.listAllResearchEdges();
+    const evidenceHealthByFusionNodeId = deriveFusionEvidenceHealth(nodes, allEdges);
+    return buildResearchGraphObservation(
+      nodes,
+      allEdges,
+      sessions,
+      this.store.listProjects(),
+      input,
+      {
+        candidateCountByNodeId,
+        evidenceHealthByFusionNodeId,
+        nodeLabel: (node, session) => {
+          if (node.displayName) return node.displayName;
+          if (!node.parentNodeId) return session.title;
+          const selection = node.originSelectionId ? this.store.getResearchSelection(node.originSelectionId) : undefined;
+          const originText = selection ? excerptText(selection.text, TREE_LABEL_CHARACTERS) : undefined;
+          if (originText) return originText;
+          const firstUser = this.store.listResearchMessagesByNode(node.id).find((message) => message.role === "user");
+          return firstUser ? excerptText(firstUser.content, TREE_LABEL_CHARACTERS) : "子节点";
+        },
+      },
+    );
   }
 
   private scheduleTask(id: string): void {

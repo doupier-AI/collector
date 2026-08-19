@@ -212,6 +212,8 @@ export interface ResearchStore {
 
 /** 深入研究所需的持久化能力：40 个方法。 */
 export interface DeepResearchStore {
+  listResearchSessions(): ResearchSessionRecord[];
+  listProjects(): ProjectRecord[];
   getResearchBranch(id: string): ResearchBranchRecord | undefined;
   listResearchBranches(sessionId: string): ResearchBranchRecord[];
   findResearchBranchByCreationKey(sessionId: string, idempotencyKey: string): ResearchBranchRecord | undefined;
@@ -256,6 +258,7 @@ export interface DeepResearchStore {
   createResearchEdge(edge: ResearchEdgeRecord): Promise<ResearchEdgeRecord>;
   /** 查询全部活跃边（调用方按会话节点集合过滤）。 */
   listAllResearchEdges(): ResearchEdgeRecord[];
+  listAssociationHints(status?: ResearchAssociationHintRecord["status"]): ResearchAssociationHintRecord[];
 }
 
 export interface ResearchFusionProposalStore {

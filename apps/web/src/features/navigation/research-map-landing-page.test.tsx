@@ -3,8 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../../api/client";
+import { ApiRequestError } from "../../api/errors";
 import { ServicesProvider, type AppServices } from "../../app/services";
-import { makeSession } from "../../test/fakes";
+import { makeEdge, makeGraphObservation, makeGraphObservationNode } from "../../test/fakes";
 import { ResearchMapLandingPage } from "./ResearchMapLandingPage";
 
 function renderPage(api: Partial<ApiClient>) {
@@ -15,7 +16,8 @@ function renderPage(api: Partial<ApiClient>) {
         <Routes>
           <Route path="map" element={<ResearchMapLandingPage />} />
           <Route path="research/new" element={<p>新建会话页</p>} />
-          <Route path="research/:sessionId/node/:nodeId" element={<p>节点页</p>} />
+          <Route path="nodes/:nodeId" element={<p>节点页</p>} />
+          <Route path="trash" element={<p>回收站页</p>} />
         </Routes>
       </MemoryRouter>
     </ServicesProvider>,
@@ -24,42 +26,62 @@ function renderPage(api: Partial<ApiClient>) {
 
 describe("ResearchMapLandingPage", () => {
   it("读取期间呈现明确的加载状态", () => {
-    renderPage({ listResearchSessions: () => new Promise(() => {}) });
+    renderPage({ getResearchMap: () => new Promise(() => {}) });
     expect(screen.getByLabelText("正在打开研究图谱")).toHaveAttribute("aria-busy", "true");
   });
 
   it("读取失败时说明状态并允许重试", async () => {
-    const listResearchSessions = vi
-      .fn<() => Promise<ReturnType<typeof makeSession>[]>>()
+    const getResearchMap = vi
+      .fn<() => Promise<ReturnType<typeof makeGraphObservation>>>()
       .mockRejectedValueOnce(new Error("offline"))
-      .mockResolvedValueOnce([]);
-    renderPage({ listResearchSessions });
+      .mockResolvedValueOnce(makeGraphObservation());
+    renderPage({ getResearchMap });
 
     expect(await screen.findByRole("heading", { name: "暂时无法打开研究图谱" })).toBeInTheDocument();
     await userEvent.setup().click(screen.getByRole("button", { name: "重试" }));
-    expect(await screen.findByText(/还没有可继续的会话/)).toBeInTheDocument();
-    expect(listResearchSessions).toHaveBeenCalledTimes(2);
+    expect(await screen.findByText(/还没有研究节点/)).toBeInTheDocument();
+    expect(getResearchMap).toHaveBeenCalledTimes(2);
   });
 
   it("空状态可直接开始第一次研究", async () => {
-    renderPage({ listResearchSessions: async () => [] });
+    renderPage({ getResearchMap: async () => makeGraphObservation() });
     const link = await screen.findByRole("link", { name: "开始第一次研究" });
     expect(link).toHaveAttribute("href", "/research/new");
   });
 
-  it("只列活动且未进回收站的会话，并可进入根节点", async () => {
+  it("认证失效时回到可重新配对的安全入口", async () => {
+    renderPage({ getResearchMap: async () => { throw new ApiRequestError(401, "unauthorized", "unauthorized"); } });
+    expect(await screen.findByRole("heading", { name: "配对 Collector" })).toBeInTheDocument();
+    expect(screen.getByLabelText("配对码")).toBeInTheDocument();
+  });
+
+  it("同一观察结果呈现跨会话、归档、孤立与融合节点，并只使用稳定节点地址", async () => {
+    const active = makeGraphObservationNode("active", "注意力机制");
+    const archived = makeGraphObservationNode("archived", "已归档会话", { lifecycle: "archived" });
+    const isolated = makeGraphObservationNode("isolated", "孤立根节点");
+    const fusion = makeGraphObservationNode("fusion", "跨会话综合", {
+      role: "fusion",
+      fusionEvidenceHealth: "available",
+      node: { ...makeGraphObservationNode("fusion", "跨会话综合").node, isFusionNode: true },
+    });
     renderPage({
-      listResearchSessions: async () => [
-        makeSession({ id: "active", title: "注意力机制", status: "active" }),
-        makeSession({ id: "archived", title: "已归档会话", status: "archived" }),
-        makeSession({ id: "trashed", title: "回收站会话", status: "active", trashedAt: "2026-08-10T00:00:00.000Z" }),
-      ],
+      getResearchMap: async () => makeGraphObservation({
+        nodes: [active, archived, isolated, fusion],
+        edges: [{ edge: { ...makeEdge("fused-from", "active", "fusion"), kind: "fused-from" }, connectivity: "default" }],
+      }),
     });
 
-    const active = await screen.findByRole("link", { name: /注意力机制/ });
-    expect(active).toHaveAttribute("href", "/nodes/active");
-    expect(screen.queryByText("已归档会话")).not.toBeInTheDocument();
-    expect(screen.queryByText("回收站会话")).not.toBeInTheDocument();
+    expect(await screen.findByTestId("global-map-canvas")).toBeInTheDocument();
+    expect(screen.getByTestId("global-map-list")).toBeInTheDocument();
+    expect(screen.getAllByLabelText(/注意力机制，研究节点，活跃/)).toHaveLength(2);
+    expect(screen.getAllByLabelText(/已归档会话，研究节点，已归档/)).toHaveLength(2);
+    expect(screen.getAllByLabelText(/孤立根节点/)).toHaveLength(2);
+    const fusionLinks = screen.getAllByLabelText(/跨会话综合，融合成果/);
+    expect(fusionLinks).toHaveLength(2);
+    expect(fusionLinks[1]).toHaveAttribute("href", "/nodes/fusion");
+    expect(screen.getByTestId("global-map-canvas").querySelector('[data-edge-kind="fused-from"]')).not.toBeNull();
+    expect(screen.getByText("4")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "新建会话" })).toHaveAttribute("href", "/research/new");
+    expect(screen.getByRole("link", { name: "查看回收站" })).toHaveAttribute("href", "/trash");
   });
 });
