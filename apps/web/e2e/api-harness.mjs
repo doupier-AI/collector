@@ -123,13 +123,14 @@ const fakeProvider = {
       };
     }
     return {
-      content: "只有第三条来源实际支撑这段结论。[来源3]",
+      content: "第三条来源支撑可打开的结论。[来源3] 第四条来源提供供应商定位信息。[来源4]",
       status: "grounded",
       queries: ["验证来源过滤"],
       sources: [
         { title: "未引用来源一", url: "https://example.com/uncited-one" },
         { title: "未引用来源二", url: "https://example.com/uncited-two" },
         { title: "实际引用来源", url: "https://example.com/cited-three" },
+        { title: "无链接引用来源", locator: "供应商片段 4" },
       ],
       citations: [],
     };

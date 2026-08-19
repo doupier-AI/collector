@@ -1,9 +1,10 @@
 import { createPortal } from "react-dom";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { ResearchCitationRecord, ResearchFusionSource, ResearchGroundingSourceRecord, ResearchMessageRecord, ResearchSliceRecord, ResearchTaskRecord, ResearchTermPreviewInput, ResearchTermPreviewRecord, TermMarker } from "@collector/capture-contracts";
 import { deriveMessageBlocks, messageContentBlockId, splitBlockHeading } from "@collector/capture-contracts";
 import { MarkdownContent, type RenderedTermMarker } from "../../components/MarkdownContent";
+import { subscribeToGroundingSourceReveal } from "../../components/grounding-source-navigation";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { markExactInRendered, setRangeFromOffsets } from "../selection/selection-highlight";
 import { taskErrorReason } from "./format";
@@ -861,13 +862,56 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
 }
 
 function GroundingSources({ sources }: { sources: ResearchGroundingSourceRecord[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const [targetSourceId, setTargetSourceId] = useState<string>();
+  const listId = `grounding-sources-${useId().replaceAll(":", "")}`;
+  const reducedMotion = usePrefersReducedMotion();
+  const revealFrameRef = useRef<number | undefined>(undefined);
+  const clearTargetRef = useRef<number | undefined>(undefined);
+
+  useEffect(() => subscribeToGroundingSourceReveal((sourceId) => {
+    if (!sources.some((source) => source.id === sourceId)) return;
+    setExpanded(true);
+    setTargetSourceId(sourceId);
+    if (revealFrameRef.current !== undefined) window.cancelAnimationFrame(revealFrameRef.current);
+    if (clearTargetRef.current !== undefined) window.clearTimeout(clearTargetRef.current);
+    revealFrameRef.current = window.requestAnimationFrame(() => {
+      document.getElementById(`grounding-source-${sourceId}`)?.scrollIntoView({
+        behavior: reducedMotion ? "auto" : "smooth",
+        block: "nearest",
+      });
+      clearTargetRef.current = window.setTimeout(() => setTargetSourceId(undefined), 1_600);
+    });
+  }), [reducedMotion, sources]);
+
+  useEffect(() => () => {
+    if (revealFrameRef.current !== undefined) window.cancelAnimationFrame(revealFrameRef.current);
+    if (clearTargetRef.current !== undefined) window.clearTimeout(clearTargetRef.current);
+  }, []);
+
   if (sources.length === 0) return null;
   return (
-    <section className="grounding-sources" aria-label="本轮可核验来源">
-      <h3 className="grounding-sources__title">本轮可核验来源</h3>
-      <ol className="grounding-sources__list">
+    <section className="grounding-sources" aria-label="本轮引用来源">
+      <button
+        type="button"
+        className="grounding-sources__toggle"
+        aria-expanded={expanded}
+        aria-controls={listId}
+        onClick={() => {
+          setExpanded((current) => !current);
+          setTargetSourceId(undefined);
+        }}
+      >
+        <span>本轮引用了 {sources.length} 个来源</span>
+        <span className="grounding-sources__chevron" aria-hidden="true">{expanded ? "▾" : "▸"}</span>
+      </button>
+      <ol id={listId} className="grounding-sources__list" aria-label="本轮引用来源列表" hidden={!expanded}>
         {sources.map((source) => (
-          <li className="grounding-source" id={`grounding-source-${source.id}`} key={source.id}>
+          <li
+            className={`grounding-source${targetSourceId === source.id ? " grounding-source--target" : ""}`}
+            id={`grounding-source-${source.id}`}
+            key={source.id}
+          >
             <details>
               <summary>
                 <span className="grounding-source__ordinal">来源 {source.ordinal}</span>

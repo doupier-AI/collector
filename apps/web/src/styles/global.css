@@ -1120,17 +1120,43 @@ sup[data-citation-marker]::after {
 
 .grounding-sources {
   margin-top: var(--space-3);
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-2) var(--space-4);
   border: 1px solid var(--color-line);
   border-radius: var(--radius-panel);
   background: var(--color-surface);
 }
 
-.grounding-sources__title {
-  margin: 0 0 var(--space-2);
+.grounding-sources__toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 2rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
   color: var(--color-muted);
+  cursor: pointer;
+  font: inherit;
   font-size: var(--font-size-sm);
   font-weight: 600;
+  text-align: left;
+}
+
+.grounding-sources__toggle:hover {
+  color: var(--color-ink);
+}
+
+.grounding-sources__toggle:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-focus);
+}
+
+.grounding-sources__chevron {
+  flex: none;
+  color: var(--color-ai);
 }
 
 .grounding-sources__list {
@@ -1141,6 +1167,14 @@ sup[data-citation-marker]::after {
   list-style: none;
 }
 
+.grounding-sources__list[hidden] {
+  display: none;
+}
+
+.grounding-sources__toggle[aria-expanded="true"] + .grounding-sources__list {
+  margin-top: var(--space-2);
+}
+
 .grounding-source {
   min-width: 0;
   border-top: 1px solid var(--color-line);
@@ -1148,6 +1182,12 @@ sup[data-citation-marker]::after {
 
 .grounding-source:first-child {
   border-top: 0;
+}
+
+.grounding-source--target {
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--color-ai) 10%, var(--color-surface));
+  box-shadow: inset 0.1875rem 0 0 var(--color-ai);
 }
 
 .grounding-source summary {

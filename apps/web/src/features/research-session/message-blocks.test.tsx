@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../../api/client";
@@ -229,9 +229,52 @@ describe("AI 回答分块渲染", () => {
     expect(firstMarker.querySelector("sup")).toHaveAttribute("data-citation-index", "2");
     expect(secondMarker.querySelector("sup")).toHaveAttribute("data-citation-index", "5");
     expect(firstMarker.closest("[data-block-id]")).toHaveAttribute("data-block-id", "m-out#p0");
-    expect(screen.getByText("本轮可核验来源")).toBeInTheDocument();
+    const toggle = screen.getByRole("button", { name: "本轮引用了 2 个来源" });
+    const list = document.getElementById(toggle.getAttribute("aria-controls") ?? "") as HTMLOListElement;
+    expect(list).toHaveAttribute("aria-label", "本轮引用来源列表");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveAttribute("aria-controls", list.id);
+    expect(list).not.toBeVisible();
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(list).toBeVisible();
+    expect(screen.getByText("第二个来源")).toBeVisible();
+    expect(screen.getByText("第五个来源")).toBeVisible();
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(list).not.toBeVisible();
     expect(screen.getByTestId("grounding-scope-note")).toHaveTextContent("本轮已联网核验。");
     expect(screen.getByTestId("grounding-scope-note")).not.toHaveTextContent("2 个");
+  });
+
+  it("无 URL 引用点击后先展开来源区域，再定位并短暂强调对应条目", async () => {
+    const view = viewWithAssistant("这条结论来自供应商定位信息。[来源4]");
+    view.tasks[0] = makeTask({
+      id: "task-1",
+      status: "completed",
+      inputMessageId: "m-in",
+      outputMessageId: "m-out",
+      groundingScope: { status: "grounded", sourceCount: 1, citationCount: 1, runId: "run-1" },
+    });
+    view.groundingSources = [
+      { id: "source-4", runId: "run-1", ordinal: 4, title: "无链接来源", locator: "第 4 段", createdAt: "2026-01-01T00:00:00.000Z" },
+    ];
+    view.citations = [
+      { id: "citation-4", messageId: "m-out", runId: "run-1", sourceId: "source-4", blockOrdinal: 0, markerOffset: 16, createdAt: "2026-01-01T00:00:00.000Z" },
+    ];
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    renderNodePage({ getResearchNodeView: async () => view });
+
+    const marker = await screen.findByLabelText("查看来源 4：无链接来源");
+    const toggle = screen.getByRole("button", { name: "本轮引用了 1 个来源" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(marker);
+
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-expanded", "true"));
+    const target = document.getElementById("grounding-source-source-4");
+    expect(target).toHaveClass("grounding-source--target");
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "nearest" }));
   });
 });
 

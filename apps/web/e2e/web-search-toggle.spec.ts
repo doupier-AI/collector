@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { apiJson, pairAndOpen } from "./helpers";
+import { apiJson, pairAndOpen, trackBrowserIssues } from "./helpers";
 
 interface NodeView {
   tasks: Array<{ allowWebSearch?: boolean; groundingScope?: { status: string } }>;
@@ -42,7 +42,11 @@ test("用户主动开启联网后沿用同一提交语义，并诚实显示供�
   await expect(page.getByText("当前模型供应商不支持联网")).toBeVisible();
 });
 
-test("grounded 回答只展示正文实际引用的来源并保留原序号", async ({ page }) => {
+test("grounded 回答收起来源，并从引用标记打开或定位对应来源", async ({ page }) => {
+  const browserIssues = trackBrowserIssues(page);
+  await page.context().route("https://example.com/**", async (route) => {
+    await route.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><title>来源</title>" });
+  });
   await pairAndOpen(page, "/research/new");
   await page.getByRole("checkbox", { name: "允许联网搜索" }).check();
   await page.getByLabel("你的问题").fill("验证来源过滤");
@@ -50,9 +54,52 @@ test("grounded 回答只展示正文实际引用的来源并保留原序号", as
   await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
 
   await expect(page.getByTestId("grounding-scope-note")).toHaveText("本轮已联网核验。", { timeout: 15_000 });
-  await expect(page.getByText("实际引用来源")).toBeVisible();
-  await expect(page.getByText("来源 3", { exact: true })).toBeVisible();
+  const toggle = page.getByRole("button", { name: "本轮引用了 2 个来源" });
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  const list = page.locator(`#${await toggle.getAttribute("aria-controls")}`);
+  await expect(list).toBeHidden();
   await expect(page.getByText("未引用来源一")).toHaveCount(0);
   await expect(page.getByText("未引用来源二")).toHaveCount(0);
-  await expect(page.getByLabel("打开来源 3：实际引用来源")).toHaveAttribute("href", "https://example.com/cited-three");
+
+  await toggle.press("Enter");
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByText("实际引用来源")).toBeVisible();
+  await expect(page.getByText("无链接引用来源")).toBeVisible();
+  await expect(page.getByText("来源 3", { exact: true })).toBeVisible();
+  await expect(page.getByText("来源 4", { exact: true })).toBeVisible();
+  await toggle.press("Enter");
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+  const urlMarker = page.getByLabel("打开来源 3：实际引用来源");
+  await expect(urlMarker).toHaveAttribute("href", "https://example.com/cited-three");
+  const popupPromise = page.waitForEvent("popup");
+  await urlMarker.click();
+  const popup = await popupPromise;
+  await popup.waitForLoadState("domcontentloaded");
+  expect(popup.url()).toBe("https://example.com/cited-three");
+  await popup.close();
+
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const locatorMarker = page.getByLabel("查看来源 4：无链接引用来源");
+  const targetSelector = await locatorMarker.getAttribute("href");
+  expect(targetSelector).toMatch(/^#grounding-source-/);
+  await locatorMarker.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  const target = page.locator(targetSelector!);
+  await expect(target).toHaveClass(/grounding-source--target/);
+  await expect(target).toBeInViewport();
+  await expect.poll(async () => target.evaluate((element) => getComputedStyle(element).animationName)).toBe("none");
+
+  for (const width of [320, 1024, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.reload();
+    await expect(page.getByTestId("grounding-scope-note")).toHaveText("本轮已联网核验。", { timeout: 15_000 });
+    const resizedSourceRegion = page.getByRole("region", { name: "本轮引用来源" });
+    const sourceOverflow = await resizedSourceRegion.evaluate((element) => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+    }));
+    expect(sourceOverflow.scrollWidth, `来源区域在 ${width}px 视口下不应横向溢出`).toBeLessThanOrEqual(sourceOverflow.clientWidth);
+  }
+  expect(browserIssues.issues).toEqual([]);
 });

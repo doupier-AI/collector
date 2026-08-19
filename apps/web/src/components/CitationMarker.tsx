@@ -2,6 +2,7 @@ import { createPortal } from "react-dom";
 import type { ResearchCitationRecord, ResearchGroundingSourceRecord } from "@collector/capture-contracts";
 import { SourceCard } from "./SourceCard";
 import { useHoverCard } from "../hooks/useHoverCard";
+import { requestGroundingSourceReveal } from "./grounding-source-navigation";
 
 export interface CitationMarkerProps {
   index: number;
@@ -42,6 +43,10 @@ export function CitationMarker({ index, citation, source }: CitationMarkerProps)
       onMouseLeave={hideCard}
       onFocus={showCard}
       onBlur={hideCard}
+      onClick={(event) => {
+        event.preventDefault();
+        requestGroundingSourceReveal(citation.sourceId);
+      }}
     >
       {marker}
     </a>
