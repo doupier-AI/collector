@@ -8,6 +8,7 @@ import { subscribeToGroundingSourceReveal } from "../../components/grounding-sou
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { markExactInRendered, setRangeFromOffsets } from "../selection/selection-highlight";
 import { taskErrorReason } from "./format";
+import type { FragmentTarget } from "./fragment-locator";
 import { deriveSliceCardTargets, sliceCardAccessibleName, turnCardId } from "./slice-cards";
 import { termPreviewClientKey } from "./useTermPreviews";
 
@@ -41,14 +42,14 @@ export interface MessageItemProps {
   onGrowTermMarker?: (messageId: string, marker: TermMarker) => Promise<boolean>;
   /** #36：切片列表；存在正式切片时渲染为连续语义卡片序列。 */
   slices?: ResearchSliceRecord[];
-  /** #42：融合依据/片段深链定位的当前目标元素 id（长文=节卡容器，普通回答=轮次卡片内段落块）。 */
-  fragmentTargetId?: string;
+  /** #42/#96：片段深链的轮次光环、局部文字高亮与节/段落精确落点。 */
+  fragmentTarget?: FragmentTarget;
   /** #94：节点内轮次 ≥2 时为真——轮次卡片以背景/边框色/阴影区分轮次（零布局位移）；单轮不额外装饰。 */
   multiTurn?: boolean;
 }
 
 /** 单条消息。用户消息靠右呈现，AI 回答保持完整阅读卡片。 */
-export function MessageItem({ message, task, retrying = false, onRetry, onRegenerateTask, onEditMessage, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, onGrowTermMarker, slices, fragmentTargetId, fusionSources, multiTurn = false }: MessageItemProps) {
+export function MessageItem({ message, task, retrying = false, onRetry, onRegenerateTask, onEditMessage, highlight, citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, onGrowTermMarker, slices, fragmentTarget, fusionSources, multiTurn = false }: MessageItemProps) {
   // ADR-0035：版本切换索引（0=最新正文，1..N=versions[0..N-1]）。hooks 须在角色分支之前声明。
   const [versionIndex, setVersionIndex] = useState(0);
   const versions = message.versions ?? [];
@@ -97,7 +98,7 @@ export function MessageItem({ message, task, retrying = false, onRetry, onRegene
               onGrowMarker={onGrowTermMarker}
             >
               {message.status === "completed" ? (
-                <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} fragmentTargetId={fragmentTargetId} fusionSources={fusionSources} multiTurn={multiTurn} />
+                <AssistantBlocks message={message} highlight={highlight} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} fragmentTarget={fragmentTarget} fusionSources={fusionSources} multiTurn={multiTurn} />
               ) : (
                 <GeneratingBody message={message} task={task} terms={terms} multiTurn={multiTurn} />
               )}
@@ -294,7 +295,7 @@ const NO_TERMS: TermMarker[] = [];
  * ADR-0032 呈现契约：普通回答为一张轮次卡片内的连续正文；长文为一张轮次卡片内的多章节结构。不造重试卡
  * （那是 failed 的事），切片缺失时同样防御性降级为连续正文。
  */
-function AssistantBlocks({ message, highlight, citations, groundingSources, terms, slices, fragmentTargetId, fusionSources, multiTurn = false }: { message: ResearchMessageRecord; highlight?: MessageHighlight; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[]; terms: TermMarker[]; slices?: ResearchSliceRecord[]; fragmentTargetId?: string; fusionSources?: ResearchFusionSource[]; multiTurn?: boolean }) {
+function AssistantBlocks({ message, highlight, citations, groundingSources, terms, slices, fragmentTarget, fusionSources, multiTurn = false }: { message: ResearchMessageRecord; highlight?: MessageHighlight; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[]; terms: TermMarker[]; slices?: ResearchSliceRecord[]; fragmentTarget?: FragmentTarget; fusionSources?: ResearchFusionSource[]; multiTurn?: boolean }) {
   const blocks = deriveMessageBlocks(message.content);
   // 术语按块分组一次并保持数组身份稳定：MarkdownContent 以 terms 引用变化决定是否重扫
   // DOM 重新包裹术语标记；若每次渲染都新建数组，已被键盘聚焦的标记元素会被替换，焦点
@@ -319,17 +320,20 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
   // 长文章节目标与章节导航同源派生；块对齐与 blockId 计算不再各自手工进行。
   // 有章节目标时也只渲染一个轮次容器，各 target 只作为卡内章节和导航/落点锚点。
   const cardTargets = deriveSliceCardTargets(message, slices);
+  const cardLocated = Boolean(highlight || fragmentTarget?.cardId === turnCardId(message.id));
+  const fragmentHighlight = fragmentTarget?.cardId === turnCardId(message.id) ? fragmentTarget.highlight : undefined;
   if (cardTargets.length > 0) {
     return (
       <div className="message__blocks" data-content-kind="message" data-message-id={message.id}>
         <section
           id={turnCardId(message.id)}
-          className={multiTurn ? "turn-card turn-card--sectioned turn-card--multi" : "turn-card turn-card--sectioned"}
+          className={`${multiTurn ? "turn-card turn-card--sectioned turn-card--multi" : "turn-card turn-card--sectioned"}${cardLocated ? " fragment-target--focused" : ""}`}
           data-turn-card=""
           aria-label="Collector 回答"
         >
           {cardTargets.map((target) => {
             const thisHighlight = activeHighlight && activeHighlight.blockOrdinal === target.blockOrdinal ? activeHighlight : undefined;
+            const thisFragmentHighlight = fragmentHighlight && fragmentHighlight.blockOrdinal === target.blockOrdinal ? fragmentHighlight : undefined;
             return (
               <TurnSection
                 key={target.slice.id}
@@ -338,11 +342,10 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
                 blockId={target.blockId}
                 anchorId={target.anchorId}
                 sectionId={target.cardId}
-                highlight={thisHighlight}
+                highlights={[thisHighlight, thisFragmentHighlight].filter((entry): entry is MessageHighlight => Boolean(entry))}
                 sources={groundingSources}
                 citations={citations}
                 terms={termsByBlock.get(target.blockOrdinal) ?? NO_TERMS}
-                fragmentFocused={fragmentTargetId === target.cardId}
                 fusionSources={fusionSources}
               />
             );
@@ -360,21 +363,21 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
     <div className="message__blocks" data-content-kind="message" data-message-id={message.id}>
       <section
         id={turnCardId(message.id)}
-        className={multiTurn ? "turn-card turn-card--multi" : "turn-card"}
+        className={`${multiTurn ? "turn-card turn-card--multi" : "turn-card"}${cardLocated ? " fragment-target--focused" : ""}`}
         data-turn-card=""
         aria-label="Collector 回答"
       >
         {blocks.map((block) => {
           const blockId = messageContentBlockId(message.id, block.ordinal);
           const thisHighlight = activeHighlight && activeHighlight.blockOrdinal === block.ordinal ? activeHighlight : undefined;
+          const thisFragmentHighlight = fragmentHighlight && fragmentHighlight.blockOrdinal === block.ordinal ? fragmentHighlight : undefined;
           return (
             <MessageBlock
               key={block.ordinal}
               blockText={block.text}
               blockId={blockId}
               elementId={blockId}
-              fragmentFocused={fragmentTargetId === blockId}
-              highlight={thisHighlight}
+              highlights={[thisHighlight, thisFragmentHighlight].filter((entry): entry is MessageHighlight => Boolean(entry))}
               sources={groundingSources}
               citations={citations}
               terms={termsByBlock.get(block.ordinal) ?? NO_TERMS}
@@ -397,18 +400,16 @@ function AssistantBlocks({ message, highlight, citations, groundingSources, term
  * data-block-id 与 data-block-text 保留在内容容器上；data-slice-id 留作未来融合追溯关联钩。
  * 无标题切片退化为 aria-label = 正文摘要。
  */
-function TurnSection({ slice, blockText, blockId, anchorId, sectionId, highlight, sources, citations, terms, fragmentFocused = false, fusionSources }: {
+function TurnSection({ slice, blockText, blockId, anchorId, sectionId, highlights, sources, citations, terms, fusionSources }: {
   slice: ResearchSliceRecord;
   blockText: string;
   blockId: string;
   anchorId: string;
   sectionId: string;
-  highlight?: MessageHighlight;
+  highlights: readonly MessageHighlight[];
   sources: ResearchGroundingSourceRecord[];
   citations: ResearchCitationRecord[];
   terms: TermMarker[];
-  /** #42：融合依据定位目标；短暂强调（边框/背景/投影），不引起布局位移。 */
-  fragmentFocused?: boolean;
   /** #31：融合正文引用来源（[来源n] 渲染为可点击的融合引用）。 */
   fusionSources?: ResearchFusionSource[];
 }) {
@@ -419,7 +420,7 @@ function TurnSection({ slice, blockText, blockId, anchorId, sectionId, highlight
   return (
     <section
       id={sectionId}
-      className={fragmentFocused ? "turn-card__section fragment-target--focused" : "turn-card__section"}
+      className="turn-card__section"
       data-slice-id={slice.id}
       tabIndex={-1}
       {...(title ? { "aria-labelledby": anchorId } : { "aria-label": sliceCardAccessibleName(slice, blockText) })}
@@ -433,7 +434,7 @@ function TurnSection({ slice, blockText, blockId, anchorId, sectionId, highlight
         blockText={blockText}
         blockId={blockId}
         titleAnchorId={promoteInBody ? anchorId : undefined}
-        highlight={highlight}
+        highlights={highlights}
         sources={sources}
         citations={citations}
         terms={terms}
@@ -446,8 +447,11 @@ function TurnSection({ slice, blockText, blockId, anchorId, sectionId, highlight
 /** 单个消息块：Markdown 渲染 + 渲染后 DOM 高亮（useLayoutEffect）。
     titleAnchorId 存在时，把正文首个标题元素提升为卡片标题（挂该 id 供导航定位）。
     elementId 存在时容器挂稳定 id 并可聚焦——轮次卡片内段落块是 ?fragment= 深链的落点。 */
-function MessageBlock({ blockText, blockId, elementId, fragmentFocused = false, titleAnchorId, highlight, sources, citations, terms, fusionSources }: { blockText: string; blockId: string; elementId?: string; fragmentFocused?: boolean; titleAnchorId?: string; highlight?: MessageHighlight; sources: ResearchGroundingSourceRecord[]; citations: ResearchCitationRecord[]; terms: TermMarker[]; fusionSources?: ResearchFusionSource[] }) {
+function MessageBlock({ blockText, blockId, elementId, titleAnchorId, highlights = [], sources, citations, terms, fusionSources }: { blockText: string; blockId: string; elementId?: string; titleAnchorId?: string; highlights?: readonly MessageHighlight[]; sources: ResearchGroundingSourceRecord[]; citations: ResearchCitationRecord[]; terms: TermMarker[]; fusionSources?: ResearchFusionSource[] }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  // 父层组合高亮时会新建数组；以值键约束 DOM 重包裹只发生在实际范围变化时，
+  // 避免无关刷新替换术语标记节点并打断其键盘焦点。
+  const highlightsKey = highlights.map((highlight) => `${highlight.start}:${highlight.end}:${highlight.exact}`).join("|");
 
   useLayoutEffect(() => {
     if (!containerRef.current) return;
@@ -462,17 +466,19 @@ function MessageBlock({ blockText, blockId, elementId, fragmentFocused = false, 
       }
       parent.removeChild(el);
     });
-    if (!highlight) return;
-    const applied = setRangeFromOffsets(containerRef.current, highlight.start, highlight.end);
-    if (!applied && highlight.exact) {
-      markExactInRendered(containerRef.current, highlight.exact);
+    const unique = [...new Map(highlights.map((highlight) => [`${highlight.start}:${highlight.end}:${highlight.exact}`, highlight])).values()];
+    for (const highlight of unique) {
+      const applied = setRangeFromOffsets(containerRef.current, highlight.start, highlight.end);
+      if (!applied && highlight.exact) {
+        markExactInRendered(containerRef.current, highlight.exact);
+      }
     }
-  }, [highlight]);
+  }, [highlightsKey]);
 
   return (
     <div
       id={elementId}
-      className={fragmentFocused ? "message__content fragment-target--focused" : "message__content"}
+      className="message__content"
       tabIndex={elementId !== undefined ? -1 : undefined}
       data-block-id={blockId}
       data-block-text

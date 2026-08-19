@@ -634,7 +634,7 @@ describe("#91 普通回答轮次卡片", () => {
     expect(container.querySelectorAll(".slice-rail__tick")).toHaveLength(0);
   });
 
-  it("片段深链落点强调作用于轮次卡片内对应段落块（fragment-target--focused）", async () => {
+  it("片段深链：轮次卡片承载强调，段落保留精确落点，片段正文逐字高亮", async () => {
     const content = "第一段。\n\n第二段。\n\n第三段。";
     const version = deriveBodyVersion({ messageId: "m-out", nodeId: "session-1", content, origin: "backfill", createdAt: "2026-08-02T00:00:00.000Z" });
     const slices = deriveMessageSlices("session-1", "m-out", content, 0, []);
@@ -659,7 +659,9 @@ describe("#91 普通回答轮次卡片", () => {
     await waitFor(() => {
       const focused = container.querySelector(".fragment-target--focused");
       expect(focused).not.toBeNull();
-      expect(focused).toHaveAttribute("id", "m-out#p1");
+      expect(focused).toHaveAttribute("id", "m-out-turn");
     });
+    expect(container.querySelector("#m-out\\#p1")).not.toHaveClass("fragment-target--focused");
+    expect(container.querySelector("[data-selection-mark]")).toHaveTextContent("第二段。");
   });
 });

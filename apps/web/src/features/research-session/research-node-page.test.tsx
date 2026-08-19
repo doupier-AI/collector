@@ -770,9 +770,13 @@ describe("#42 融合依据定位", () => {
     });
   }
 
-  /** #91：普通回答的片段落点 = 轮次卡片内段落块容器（与 deriveSliceCardTargets 同源判定）。 */
+  /** #96：片段定位光环归轮次卡片，段落块仍只负责精确滚动与焦点。 */
   function blockTargetFor(messageId: string, ordinal: number): string {
     return messageContentBlockId(messageId, ordinal);
+  }
+
+  function turnTargetFor(messageId: string): string {
+    return `${messageId}-turn`;
   }
 
   function bodyVersionViewFor(message: ReturnType<typeof makeMessage>, nodeId = "session-1"): ResearchBodyVersionView {
@@ -843,10 +847,10 @@ describe("#42 融合依据定位", () => {
     const source = await screen.findByRole("button", { name: /查看依据片段/ });
     await user.click(source);
 
-    // 子节点页加载完成，目标卡片（子节点第二段）获得强调
+    // 子节点页加载完成，第二段仍是精确落点，轮次卡片获得强调。
     await screen.findByText("子节点第二段。");
     await waitFor(() => {
-      expect(document.getElementById(blockTargetFor("m-child-out", 1))).toHaveClass("fragment-target--focused");
+      expect(document.getElementById(turnTargetFor("m-child-out"))).toHaveClass("fragment-target--focused");
     });
     // 播报（sr-only live region）
     expect(screen.getByText(/已定位到/)).toBeInTheDocument();
@@ -872,9 +876,38 @@ describe("#42 融合依据定位", () => {
 
     // 同节点：留在本页并定位（导航成功 → 目标卡片获得强调；?sel= 保留由 fragmentDeepLink 保证）
     await waitFor(() => {
-      expect(document.getElementById(blockTargetFor("m-out", 1))).toHaveClass("fragment-target--focused");
+      expect(document.getElementById(turnTargetFor("m-out"))).toHaveClass("fragment-target--focused");
     });
     expect(screen.getByText(/已定位到/)).toBeInTheDocument();
+  });
+
+  it("?sel= 与 ?fragment= 同时存在时保留两处精确文字高亮，轮次卡片承担定位光环", async () => {
+    const view = viewWithFusionEvidence();
+    const message = view.messages.find((entry) => entry.id === "m-out")!;
+    const versionView = bodyVersionViewFor(message, "session-1");
+    const selection = makeSelection({
+      id: "sel-1",
+      sessionId: "session-1",
+      nodeId: "session-1",
+      text: "第一段。",
+      anchor: { kind: "message", messageId: "m-out", blockOrdinal: 0, startOffset: 0, endOffset: 4, exact: "第一段。" },
+    });
+    renderNodePage(
+      {
+        getResearchNodeView: async () => view,
+        getResearchBodyVersion: async () => versionView,
+        getResearchSelection: async () => selection,
+      },
+      `/nodes/session-1?sel=sel-1&fragment=${encodeURIComponent(versionView.fragments[1].id)}`,
+    );
+
+    await screen.findByText("第二段。");
+    await waitFor(() => {
+      const marks = [...document.querySelectorAll("[data-selection-mark]")].map((mark) => mark.textContent);
+      expect(marks).toEqual(expect.arrayContaining(["第一段。", "第二段。"]));
+      expect(document.getElementById(turnTargetFor("m-out"))).toHaveClass("fragment-target--focused");
+    });
+    expect(document.getElementById(blockTargetFor("m-out", 1))).not.toHaveClass("fragment-target--focused");
   });
 
   it("快速切换目标：旧卡片强调消失，只保留最新落点", async () => {
@@ -889,15 +922,15 @@ describe("#42 融合依据定位", () => {
     await screen.findByText("第一段。");
     await user.click(screen.getByText("熟悉的概念再现，节点可融合"));
     const sources = await screen.findAllByRole("button", { name: /查看依据片段/ });
-    // 第一条依据（第二段）→ 第二段卡片强调
+    // 第一条依据（第二段）→ 同一回答的轮次卡片强调
     await user.click(sources[0]);
     await waitFor(() => {
-      expect(document.getElementById(blockTargetFor("m-out", 1))).toHaveClass("fragment-target--focused");
+      expect(document.getElementById(turnTargetFor("m-out"))).toHaveClass("fragment-target--focused");
     });
-    // 第二条依据（第一段）→ 强调转移到第一段卡片
+    // 第二条依据（第一段）→ 同一轮次卡片仍是唯一光环载体
     await user.click(sources[1]);
     await waitFor(() => {
-      expect(document.getElementById(blockTargetFor("m-out", 0))).toHaveClass("fragment-target--focused");
+      expect(document.getElementById(turnTargetFor("m-out"))).toHaveClass("fragment-target--focused");
     });
     expect(document.getElementById(blockTargetFor("m-out", 1))).not.toHaveClass("fragment-target--focused");
   });

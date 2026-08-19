@@ -11,7 +11,8 @@ import {
 } from "@collector/capture-contracts";
 import type { ApiClient } from "../../api/client";
 import { stableNodePath } from "../../app/paths";
-import { deriveSliceCardTargets } from "./slice-cards";
+import type { MessageHighlight } from "./MessageItem";
+import { deriveSliceCardTargets, turnCardId } from "./slice-cards";
 
 /**
  * #42 融合依据片段定位：把 `fragment:{bodyVersionId}:{ordinal}` 深链解析为
@@ -45,11 +46,16 @@ export type FragmentLocatorFailureKind =
   | "slice-not-found"
   | "target-not-derived";
 
-/** ?fragment= 深链的滚动/焦点落点：长文=节卡容器 id，普通回答=轮次卡片内对应段落块 id。 */
+/**
+ * `?fragment=` 深链的呈现目标：轮次卡片承担定位光环；elementId 保留为节/段落级的
+ * 精确滚动与焦点目标；highlight 在该局部正文的可见文本空间内圈出片段摘录。
+ */
 export interface FragmentTarget {
+  cardId: string;
   elementId: string;
   /** 目标节正文（#43 由正文确定性派生），用于定位播报与文字级高亮基线。 */
   excerpt: string;
+  highlight: MessageHighlight;
 }
 
 export type FragmentLocatorResult =
@@ -92,7 +98,14 @@ export function locateFragment(input: FragmentLocatorInput): FragmentLocatorResu
   if (!matched) return { kind: "failure", failure: "slice-not-found" };
   const target = deriveSliceCardTargets(message, messageSlices).find((entry) => entry.slice.id === matched.id);
   if (target) {
-    return { kind: "ok", slice: matched, target: { elementId: target.cardId, excerpt: target.blockText } };
+    const excerpt = resolveFragmentExcerpt(input.version, fragment);
+    const highlight = fragmentTextHighlight(target.blockOrdinal, target.blockText, excerpt);
+    if (!highlight) return { kind: "failure", failure: "target-not-derived" };
+    return {
+      kind: "ok",
+      slice: matched,
+      target: { cardId: turnCardId(message.id), elementId: target.cardId, excerpt, highlight },
+    };
   }
   // #91：普通回答无节卡呈现——落点改为轮次卡片内对应段落块容器（id 恒存在），
   // 不再依赖呈现层卡片；节↔片段/切片序数对齐仍由同一 composeSectionUnits 派生。
@@ -101,11 +114,21 @@ export function locateFragment(input: FragmentLocatorInput): FragmentLocatorResu
   const unit = units[fragment.ordinal];
   const block = blocks[unit?.firstBlockOrdinal ?? fragment.ordinal];
   if (!block) return { kind: "failure", failure: "target-not-derived" };
+  const excerpt = resolveFragmentExcerpt(input.version, fragment);
+  const highlight = fragmentTextHighlight(block.ordinal, block.text, excerpt);
+  if (!highlight) return { kind: "failure", failure: "target-not-derived" };
   return {
     kind: "ok",
     slice: matched,
-    target: { elementId: messageContentBlockId(message.id, block.ordinal), excerpt: unit?.content ?? block.text },
+    target: { cardId: turnCardId(message.id), elementId: messageContentBlockId(message.id, block.ordinal), excerpt, highlight },
   };
+}
+
+/** 片段摘录须能在实际渲染的局部正文中逐字找到，才允许创建文字高亮。 */
+function fragmentTextHighlight(blockOrdinal: number, blockText: string, excerpt: string): MessageHighlight | null {
+  const start = blockText.indexOf(excerpt);
+  if (start < 0) return null;
+  return { blockOrdinal, start, end: start + excerpt.length, exact: excerpt };
 }
 
 const bodyVersionCache = new Map<string, Promise<ResearchBodyVersionView>>();

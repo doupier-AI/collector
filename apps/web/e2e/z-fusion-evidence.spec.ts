@@ -48,6 +48,7 @@ interface NodeEvidence {
   messageId: string;
   bodyVersionId: string;
   fragmentId: string;
+  excerpt: string;
 }
 
 /** 从真实节点视图 + 正文版本端点提取一条可定位依据（片段 id 取自真实派生）。
@@ -74,7 +75,7 @@ async function readNodeEvidence(page: Page, nodeId: string, fragmentOrdinal: num
   );
   const fragment = bodyView.fragments.find((f) => f.ordinal === fragmentOrdinal);
   if (!fragment) throw new Error(`fragment ordinal ${fragmentOrdinal} missing`);
-  return { nodeId, messageId: assistant.id, bodyVersionId, fragmentId: fragment.id };
+  return { nodeId, messageId: assistant.id, bodyVersionId, fragmentId: fragment.id, excerpt: fragment.excerpt };
 }
 
 /** 在根节点视图响应中注入 pending + accepted 融合提案（依据指向真实提取的片段）。 */
@@ -147,9 +148,11 @@ test.describe("#42 融合依据定位", () => {
     await page.waitForURL((url) => url.searchParams.has("fragment"), { timeout: 10_000 });
     expect(page.url()).toContain(`/nodes/${encodeURIComponent(childNodeId)}`);
 
-    // 目标卡片获得强调、在视口内、不被固定顶栏遮挡；live region 播报
+    // #96：目标轮次卡片获得强调，卡内片段摘录逐字高亮；精确滚动仍保证视口位置。
     const focusedCard = page.locator(".fragment-target--focused");
     await expect(focusedCard).toHaveCount(1, { timeout: 10_000 });
+    await expect(focusedCard).toHaveAttribute("data-turn-card", "");
+    await expect(focusedCard.locator("[data-selection-mark]")).toHaveText(childEvidence.excerpt);
     await expect(focusedCard).toBeInViewport();
     const box = await focusedCard.boundingBox();
     expect(box?.y ?? 0).toBeGreaterThan(56); // app-bar 高度之上

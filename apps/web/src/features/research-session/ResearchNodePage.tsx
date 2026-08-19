@@ -51,6 +51,7 @@ import {
   locateFragment,
   parseFragmentId,
   type FragmentLocatorFailureKind,
+  type FragmentTarget,
 } from "./fragment-locator";
 import { FusionProposalNotice } from "./FusionProposalNotice";
 import { FusionSourceBar } from "./FusionSourceBar";
@@ -380,7 +381,7 @@ export function ResearchNodePage() {
   // #42 融合依据定位：?fragment=<fragmentId> 深链 → 目标元素滚动 + 短暂强调 + 焦点 + 播报。
   // 状态：fragmentFocus 携带 nonce——同目标重触发（nonce 递增）与快速切换（state 整体替换只留最新）都成立；
   // locatedKeyRef 守卫防止视图刷新（流式对齐）重定位；reduced-motion 下即时定位。
-  const [fragmentFocus, setFragmentFocus] = useState<{ elementId: string; nonce: number } | null>(null);
+  const [fragmentFocus, setFragmentFocus] = useState<{ target: FragmentTarget; nonce: number } | null>(null);
   const locateNonceRef = useRef(0);
   const [fragmentFallback, setFragmentFallback] = useState<FragmentLocatorFailureKind | "fetch-failed" | null>(null);
   const locatedKeyRef = useRef("");
@@ -423,7 +424,7 @@ export function ResearchNodePage() {
         locatedKeyRef.current = key;
         if (located.kind === "ok") {
           setFragmentFallback(null);
-          setFragmentFocus({ elementId: located.target.elementId, nonce: ++locateNonceRef.current });
+          setFragmentFocus({ target: located.target, nonce: ++locateNonceRef.current });
           node.announce(`已定位到「${sliceCardAccessibleName(located.slice, located.target.excerpt)}」。`);
         } else {
           setFragmentFocus(null);
@@ -452,7 +453,7 @@ export function ResearchNodePage() {
   // 顺序：先滚动后聚焦（preventScroll 不产生二次滚动）；cleanup 清定时器（切换/卸载即清旧状态）。
   useEffect(() => {
     if (!fragmentFocus) return;
-    const element = document.getElementById(fragmentFocus.elementId);
+    const element = document.getElementById(fragmentFocus.target.elementId);
     if (!element) return;
     if (typeof element.scrollIntoView === "function") {
       element.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "center" });
@@ -918,7 +919,7 @@ export function ResearchNodePage() {
                 onGrowTermPreview={handleGrowTermPreview}
                 onGrowTermMarker={handleGrowTermMarker}
                 slices={view.slices?.[message.id]}
-                fragmentTargetId={fragmentFocus?.elementId}
+                fragmentTarget={fragmentFocus?.target}
                 fusionSources={view.fusionSources?.[message.id]}
                 multiTurn={showTurnRail}
               />

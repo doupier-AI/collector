@@ -68,7 +68,7 @@ describe("parseFragmentId", () => {
 });
 
 describe("locateFragment", () => {
-  it("正常定位（普通回答）：返回对应切片与轮次卡片内段落块落点", () => {
+  it("正常定位（普通回答）：返回轮次卡片光环、段落精确落点与局部文字高亮", () => {
     const message = makeAssistantMessage();
     const { version, slices, fragments } = makeArtifacts(message);
     const result = locateFragment({
@@ -82,17 +82,19 @@ describe("locateFragment", () => {
     expect(result.kind).toBe("ok");
     if (result.kind !== "ok") return;
     expect(result.slice.id).toBe(slices[1].id);
-    // 卡片正文由消息正文确定性派生（#43 起切片不再携带正文副本）
+    // 片段摘录来自正文版本，局部高亮按段落文本空间定位。
     expect(result.target.excerpt).toBe("第二段。");
-    // 无标题块合并：节起始块 ordinal = 切片下标 1
+    expect(result.target.cardId).toBe("m-out-turn");
+    // 无标题块合并：节起始块 ordinal = 切片下标 1；仍用于精确滚动和焦点。
     expect(result.target.elementId).toBe(messageContentBlockId(message.id, 1));
+    expect(result.target.highlight).toEqual({ blockOrdinal: 1, start: 0, end: 4, exact: "第二段。" });
   });
 
-  it("序数对齐：片段 ordinal 即切片数组下标（不再做内容相等回退）", () => {
+  it("序数对齐后片段摘录若无法逐字投影到目标正文，诚实降级", () => {
     const message = makeAssistantMessage();
     const { version, fragments } = makeArtifacts(message);
-    // 构造错位：fragment 序号与切片内容不匹配——#43 后序数是唯一对齐依据，
-    // 内容相等回退已删除：即使 ordinal=0 切片正文不是对应摘录，仍按下标命中。
+    // 构造错位：片段序号与片段摘录不一致。片段与切片仍按序数对齐，
+    // 但 #96 不允许把无法逐字验证的摘录静默高亮到另一段正文。
     const mismatched = [
       { ...fragments[2], id: fragments[2].id, ordinal: 0 },
       { ...fragments[1], id: fragments[1].id, ordinal: 1 },
@@ -110,14 +112,10 @@ describe("locateFragment", () => {
       messages: [message],
       slicesByMessage: { [message.id]: reversedSlices },
     });
-    expect(result.kind).toBe("ok");
-    if (result.kind !== "ok") return;
-    expect(result.slice.id).toBe(slices[0].id);
-    expect(result.target.excerpt).toBe("第一段。");
-    expect(result.target.elementId).toBe(messageContentBlockId(message.id, 0));
+    expect(result).toEqual({ kind: "failure", failure: "target-not-derived" });
   });
 
-  it("正常定位（长文）：节卡保留，落点为节卡容器 id", () => {
+  it("正常定位（长文）：轮次卡片承载光环，节容器保留精确落点与合并节文字高亮", () => {
     const content = "## 第一节\n\n" + "这是第一段正文。".repeat(150) + "\n\n## 第二节\n\n" + "这是第二段正文。".repeat(150);
     const message = makeAssistantMessage("m-long", content);
     const { version, slices, fragments } = makeArtifacts(message);
@@ -133,8 +131,11 @@ describe("locateFragment", () => {
     if (result.kind !== "ok") return;
     expect(result.slice.id).toBe(slices[1].id);
     // 节单元 0 = "## 第一节 + 首段正文"，节单元 1 = "## 第二节 + 末段正文"（节首块 ordinal=2）。
+    expect(result.target.cardId).toBe("m-long-turn");
     expect(result.target.elementId).toBe(`${messageContentBlockId(message.id, 2)}-card`);
     expect(result.target.excerpt).toContain("## 第二节");
+    expect(result.target.highlight).toMatchObject({ blockOrdinal: 2, start: 0, exact: result.target.excerpt });
+    expect(result.target.highlight.end).toBe(result.target.excerpt.length);
   });
 
   it("invalid-id：标识无法解析", () => {
