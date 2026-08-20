@@ -10,7 +10,8 @@ import {
 } from "@collector/capture-contracts";
 import { stableNodePath } from "../../app/paths";
 import { createStableOrganicGraphLayout } from "./organicGraphLayout";
-import { mapSceneLayout, serializeMapScene, type MapSceneV1 } from "./map-scene";
+import { mapSceneLayout, serializeMapScene, type MapSceneV2 } from "./map-scene";
+import { DEFAULT_RESEARCH_MAP_FILTER_STATE, type ResearchMapFilterState } from "./research-map-filters";
 
 interface ViewBoxState {
   x: number;
@@ -132,15 +133,16 @@ interface GlobalResearchMapProps {
   onFocusNode?: (nodeId: string) => void;
   onExitFocus?: () => void;
   /** 由地图路由 history entry 还原的临时现场，不是知识事实。 */
-  initialScene?: MapSceneV1;
-  onSceneChange?: (scene: MapSceneV1) => void;
+  initialScene?: MapSceneV2;
+  onSceneChange?: (scene: MapSceneV2) => void;
   onOpenNode?: (nodeId: string) => void;
   nodeHref?: (nodeId: string) => string;
   relationshipKinds?: readonly ResearchPermanentEdgeKind[];
   onRelationshipKindToggle?: (kind: ResearchPermanentEdgeKind) => void;
+  filters?: ResearchMapFilterState;
 }
 
-export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initialScene, onSceneChange, onOpenNode, nodeHref = stableNodePath, relationshipKinds = observation.appliedRelationshipKinds, onRelationshipKindToggle }: GlobalResearchMapProps) {
+export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initialScene, onSceneChange, onOpenNode, nodeHref = stableNodePath, relationshipKinds = observation.appliedRelationshipKinds, onRelationshipKindToggle, filters = DEFAULT_RESEARCH_MAP_FILTER_STATE }: GlobalResearchMapProps) {
   const layoutRef = useRef<ReturnType<typeof createStableOrganicGraphLayout> | undefined>(undefined);
   if (!layoutRef.current && initialScene) {
     const restored = mapSceneLayout(initialScene);
@@ -178,8 +180,8 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
   const focusSummary = focusedNodeId ? observation.nodes.find((summary) => summary.node.id === focusedNodeId) : undefined;
 
   useEffect(() => {
-    onSceneChange?.(serializeMapScene({ relationshipKinds, viewBox, layout }));
-  }, [layout, onSceneChange, relationshipKinds, viewBox]);
+    onSceneChange?.(serializeMapScene({ filters, relationshipKinds, viewBox, layout }));
+  }, [filters, layout, onSceneChange, relationshipKinds, viewBox]);
 
   const selectNode = useCallback((nodeId: string) => {
     onFocusNode?.(nodeId);

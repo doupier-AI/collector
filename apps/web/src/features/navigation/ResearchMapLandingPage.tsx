@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import { RESEARCH_PERMANENT_EDGE_KINDS, type ResearchGraphObservation, type ResearchPermanentEdgeKind } from "@collector/capture-contracts";
+import { RESEARCH_PERMANENT_EDGE_KINDS, type ProjectRecord, type ResearchGraphObservation, type ResearchPermanentEdgeKind } from "@collector/capture-contracts";
 import { apiErrorCopy, isUnauthorized } from "../../api/errors";
 import { globalMapFocusPath, stableNodePath } from "../../app/paths";
 import { useServices } from "../../app/services";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { PairingGate } from "../auth/PairingGate";
 import { GlobalResearchMap } from "./GlobalResearchMap";
+import { ResearchMapFilters } from "./ResearchMapFilters";
 import { ResearchMapGlyph } from "./ResearchMapGlyph";
 import {
   createMapReturn,
@@ -15,8 +16,15 @@ import {
   mergeRouteState,
   nodeEntryStateFromMapReturn,
   replaceCurrentMapScene,
-  type MapSceneV1,
+  type MapSceneV2,
 } from "./map-scene";
+import {
+  DEFAULT_RESEARCH_MAP_FILTER_STATE,
+  isDefaultResearchMapFilterState,
+  reconcileResearchMapFilterProjects,
+  serializeResearchMapFilters,
+  type ResearchMapFilterState,
+} from "./research-map-filters";
 
 function sameRelationshipKinds(left: readonly ResearchPermanentEdgeKind[], right: readonly ResearchPermanentEdgeKind[]): boolean {
   return left.length === right.length && left.every((kind, index) => kind === right[index]);
@@ -31,14 +39,21 @@ export function ResearchMapLandingPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const { focusNodeId } = useParams();
+  const entryScene = useMemo(() => mapSceneFromRouteState(location.state), [location.key, location.state]);
   const [observation, setObservation] = useState<ResearchGraphObservation | null>(null);
+  const [projects, setProjects] = useState<ProjectRecord[] | null>(null);
   const [error, setError] = useState<unknown>(null);
+  const [projectError, setProjectError] = useState<unknown>(null);
   const [updating, setUpdating] = useState(true);
   const [reloadNonce, setReloadNonce] = useState(0);
-  const entryScene = useMemo(() => mapSceneFromRouteState(location.state), [location.key, location.state]);
+  const [filters, setFilters] = useState<ResearchMapFilterState>(() => entryScene?.filters ?? DEFAULT_RESEARCH_MAP_FILTER_STATE);
+  const serializedFilters = useMemo(() => serializeResearchMapFilters(filters), [filters]);
+  const projectsReady = projects !== null;
+  const lastValidFiltersRef = useRef<ResearchMapFilterState>(entryScene?.filters ?? DEFAULT_RESEARCH_MAP_FILTER_STATE);
+  const sceneFilters = serializedFilters.valid ? serializedFilters.state : lastValidFiltersRef.current;
   const mapEntry = currentHistoryEntry();
   const mapEntryKey = mapEntry ? `${mapEntry.idx}:${mapEntry.key}` : location.key;
-  const sceneRef = useRef<MapSceneV1 | undefined>(entryScene);
+  const sceneRef = useRef<MapSceneV2 | undefined>(entryScene);
   const routeStateRef = useRef(location.state);
   const pathnameRef = useRef(location.pathname);
   routeStateRef.current = location.state;
@@ -50,9 +65,14 @@ export function ResearchMapLandingPage() {
     sceneRef.current = entryScene;
     const next = entryScene?.relationshipKinds ?? [...RESEARCH_PERMANENT_EDGE_KINDS];
     setRelationshipKinds((current) => sameRelationshipKinds(current, next) ? current : next);
+    setFilters(entryScene?.filters ?? DEFAULT_RESEARCH_MAP_FILTER_STATE);
   }, [entryScene, location.key]);
 
-  const saveScene = useCallback((scene: MapSceneV1) => {
+  useEffect(() => {
+    if (serializedFilters.valid) lastValidFiltersRef.current = serializedFilters.state;
+  }, [serializedFilters]);
+
+  const saveScene = useCallback((scene: MapSceneV2) => {
     sceneRef.current = scene;
     if (currentHistoryEntry()) replaceCurrentMapScene(scene, routeStateRef.current);
   }, []);
@@ -60,13 +80,13 @@ export function ResearchMapLandingPage() {
   const pushFocus = useCallback((nodeId: string) => {
     const scene = sceneRef.current;
     if (scene && currentHistoryEntry()) replaceCurrentMapScene(scene, routeStateRef.current);
-    navigate(globalMapFocusPath(nodeId), { state: scene ? mergeRouteState({}, { mapSceneV1: scene }) : undefined });
+    navigate(globalMapFocusPath(nodeId), { state: scene ? mergeRouteState({}, { mapSceneV2: scene }) : undefined });
   }, [navigate]);
 
   const exitFocus = useCallback(() => {
     const scene = sceneRef.current;
     if (scene && currentHistoryEntry()) replaceCurrentMapScene(scene, routeStateRef.current);
-    navigate("/map", { state: scene ? mergeRouteState({}, { mapSceneV1: scene }) : undefined });
+    navigate("/map", { state: scene ? mergeRouteState({}, { mapSceneV2: scene }) : undefined });
   }, [navigate]);
 
   const openNode = useCallback((nodeId: string) => {
@@ -80,9 +100,30 @@ export function ResearchMapLandingPage() {
 
   useEffect(() => {
     let stale = false;
+    setProjectError(null);
+    api.listProjects().then(
+      (nextProjects) => {
+        if (stale) return;
+        const sorted = [...nextProjects].sort((left, right) => left.name.localeCompare(right.name, "zh-CN") || left.id.localeCompare(right.id));
+        setProjects(sorted);
+        setFilters((current) => reconcileResearchMapFilterProjects(current, sorted.map((project) => project.id)));
+      },
+      (nextError) => {
+        if (!stale) setProjectError(nextError);
+      },
+    );
+    return () => { stale = true; };
+  }, [api, reloadNonce]);
+
+  useEffect(() => {
+    if (!projectsReady || !serializedFilters.valid) {
+      setUpdating(false);
+      return;
+    }
+    let stale = false;
     setError(null);
     setUpdating(true);
-    api.getResearchMap({ ...(focusNodeId ? { focusNodeId } : {}), relationshipKinds }).then(
+    api.getResearchMap({ ...serializedFilters.input, ...(focusNodeId ? { focusNodeId } : {}), relationshipKinds }).then(
       (observation) => {
         if (!stale) {
           setObservation(observation);
@@ -99,9 +140,9 @@ export function ResearchMapLandingPage() {
     return () => {
       stale = true;
     };
-  }, [api, focusNodeId, relationshipKinds, reloadNonce]);
+  }, [api, focusNodeId, projectsReady, relationshipKinds, reloadNonce, serializedFilters]);
 
-  if (!observation && updating) {
+  if (!observation && !projectError && (updating || !projects)) {
     return (
       <div className="page map-landing" aria-busy="true" aria-label="正在打开研究图谱">
         <div className="skeleton-stack" aria-hidden="true">
@@ -113,11 +154,12 @@ export function ResearchMapLandingPage() {
     );
   }
 
-  if (!observation && error) {
-    if (isUnauthorized(error)) {
+  const initialError = projectError ?? error;
+  if ((!observation || !projects) && initialError) {
+    if (isUnauthorized(initialError)) {
       return <PairingGate onPaired={() => setReloadNonce((nonce) => nonce + 1)} />;
     }
-    const copy = apiErrorCopy(error);
+    const copy = apiErrorCopy(initialError);
     return (
       <div className="page map-landing">
         <h1 className="page__title">暂时无法打开研究图谱</h1>
@@ -134,7 +176,10 @@ export function ResearchMapLandingPage() {
     );
   }
 
-  if (!observation) return null;
+  if (!observation || !projects) return null;
+
+  const filterValidation = serializedFilters.valid ? undefined : serializedFilters.reason;
+  const hasFilters = !isDefaultResearchMapFilterState(filters);
 
   return (
     <div className="page map-landing">
@@ -160,10 +205,33 @@ export function ResearchMapLandingPage() {
         </div>
       </div>
 
+      <ResearchMapFilters
+        projects={projects}
+        value={filters}
+        onChange={setFilters}
+        validationMessage={filterValidation}
+      />
+
+      {projectError ? (
+        <div className="map-landing__update-error" role="alert">
+          <span>项目列表暂时无法更新，地图继续使用上一次加载的项目。</span>
+          <button type="button" className="button button--secondary" onClick={() => setReloadNonce((nonce) => nonce + 1)}>重试</button>
+        </div>
+      ) : null}
+
       {observation.nodes.length === 0 ? (
         <div className="map-landing__empty" role="status">
-          <p>还没有研究节点。从一个问题开始，完成后的节点会出现在这里。</p>
-          <Link to="/research/new">开始第一次研究</Link>
+          {hasFilters ? (
+            <>
+              <p>当前筛选没有匹配的研究节点，地图事实没有被删除。</p>
+              <button type="button" className="button button--secondary" onClick={() => setFilters(DEFAULT_RESEARCH_MAP_FILTER_STATE)}>清除筛选</button>
+            </>
+          ) : (
+            <>
+              <p>还没有研究节点。从一个问题开始，完成后的节点会出现在这里。</p>
+              <Link to="/research/new">开始第一次研究</Link>
+            </>
+          )}
         </div>
       ) : (
         <div aria-busy={updating}>
@@ -183,6 +251,7 @@ export function ResearchMapLandingPage() {
             onOpenNode={openNode}
             nodeHref={stableNodePath}
             relationshipKinds={relationshipKinds}
+            filters={sceneFilters}
             onRelationshipKindToggle={(kind) => setRelationshipKinds((current) => (
               current.includes(kind) ? current.filter((item) => item !== kind) : [...current, kind]
             ))}

@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { makeEdge, makeGraphObservation, makeGraphObservationNode } from "../../test/fakes";
 import { GlobalResearchMap } from "./GlobalResearchMap";
 import { serializeMapScene } from "./map-scene";
+import { DEFAULT_RESEARCH_MAP_FILTER_STATE } from "./research-map-filters";
 
 function renderMap() {
   render(
@@ -96,6 +97,7 @@ describe("GlobalResearchMap stable organic canvas", () => {
       edges: [{ edge: { ...makeEdge("parent-child", "a", "b"), kind: "parent-child" as const }, connectivity: "default" }],
     });
     const initialScene = serializeMapScene({
+      filters: DEFAULT_RESEARCH_MAP_FILTER_STATE,
       relationshipKinds: ["parent-child"],
       viewBox: { x: 40, y: 20, width: 480, height: 270 },
       layout: {

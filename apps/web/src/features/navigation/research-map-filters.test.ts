@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_RESEARCH_MAP_FILTER_STATE,
+  isDefaultResearchMapFilterState,
   normalizeResearchMapFilterState,
+  reconcileResearchMapFilterProjects,
   researchMapFilterSummary,
   serializeResearchMapFilters,
   type ResearchMapFilterState,
@@ -62,5 +64,21 @@ describe("research map filters", () => {
     expect(normalizeResearchMapFilterState(state({ lifecycles: [] }))).toEqual({ valid: false, reason: "生命周期筛选必须至少保留“活跃”或“已归档”中的一项。" });
     expect(normalizeResearchMapFilterState(state({ lifecycles: ["active", "active"] }))).toEqual({ valid: false, reason: "生命周期筛选不能包含重复项。" });
     expect(normalizeResearchMapFilterState(state({ lifecycles: ["retired"] as unknown as ResearchMapFilterState["lifecycles"] }))).toEqual({ valid: false, reason: "生命周期筛选仅支持“活跃”和“已归档”。" });
+  });
+
+  it("恢复现场时剔除已删除项目，并在选择清空后回到全部项目", () => {
+    const selected = state({ projectScope: { kind: "selected", projectIds: ["gone", "keep"], includeUncategorized: false } });
+    expect(reconcileResearchMapFilterProjects(selected, ["keep"]).projectScope).toEqual({
+      kind: "selected",
+      projectIds: ["keep"],
+      includeUncategorized: false,
+    });
+    expect(reconcileResearchMapFilterProjects(selected, []).projectScope).toEqual({ kind: "all" });
+  });
+
+  it("只把全部项目、全部时间和双生命周期识别为默认现场", () => {
+    expect(isDefaultResearchMapFilterState(DEFAULT_RESEARCH_MAP_FILTER_STATE)).toBe(true);
+    expect(isDefaultResearchMapFilterState(state({ lifecycles: ["active"] }))).toBe(false);
+    expect(isDefaultResearchMapFilterState(state({ projectScope: { kind: "selected", projectIds: [], includeUncategorized: true } }))).toBe(false);
   });
 });

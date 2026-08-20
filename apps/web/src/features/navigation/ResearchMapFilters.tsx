@@ -40,7 +40,9 @@ function nextProjectScope(
 }
 
 function withDate(value: ResearchMapFilterState, field: "fromDate" | "throughDate", date: string): ResearchMapFilterState {
-  return { ...value, ...(date ? { [field]: date } : { [field]: undefined }) };
+  const next = { ...value, [field]: date || undefined };
+  if (!date) delete next[field];
+  return next;
 }
 
 /**

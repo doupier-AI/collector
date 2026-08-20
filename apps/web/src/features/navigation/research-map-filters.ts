@@ -134,3 +134,30 @@ export function researchMapFilterSummary(state: ResearchMapFilterState): Researc
   const lifecycle = lifecycles.join("和").replace("active", "活跃").replace("archived", "归档");
   return { project, time, lifecycle };
 }
+
+/** 项目被删除或现场来自旧标签页时，只保留当前仍存在的项目选择。 */
+export function reconcileResearchMapFilterProjects(
+  state: ResearchMapFilterState,
+  availableProjectIds: readonly string[],
+): ResearchMapFilterState {
+  if (state.projectScope.kind === "all") return state;
+  const selectedScope = state.projectScope;
+  const available = new Set(availableProjectIds);
+  const projectIds = selectedScope.projectIds.filter((id) => available.has(id));
+  const projectScope = projectIds.length || selectedScope.includeUncategorized
+    ? { kind: "selected" as const, projectIds, includeUncategorized: selectedScope.includeUncategorized }
+    : { kind: "all" as const };
+  if (projectScope.kind === "selected"
+    && projectIds.length === selectedScope.projectIds.length
+    && projectIds.every((id, index) => id === selectedScope.projectIds[index])) return state;
+  return { ...state, projectScope };
+}
+
+export function isDefaultResearchMapFilterState(state: ResearchMapFilterState): boolean {
+  const normalized = normalizeResearchMapFilterState(state);
+  if (!normalized.valid) return false;
+  return normalized.state.projectScope.kind === "all"
+    && !normalized.state.fromDate
+    && !normalized.state.throughDate
+    && normalized.state.lifecycles.length === 2;
+}

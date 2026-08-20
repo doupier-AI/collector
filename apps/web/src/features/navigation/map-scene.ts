@@ -1,7 +1,6 @@
 import { RESEARCH_PERMANENT_EDGE_KINDS, type ResearchPermanentEdgeKind } from "@collector/capture-contracts";
 import type { GraphPoint, GraphWorld, StableOrganicGraphLayout } from "./organicGraphLayout";
 import {
-  DEFAULT_RESEARCH_MAP_FILTER_STATE,
   normalizeResearchMapFilterState,
   type ResearchMapFilterState,
   type ResearchMapProjectScope,
@@ -32,9 +31,6 @@ export interface MapSceneV2 {
     edgeKeys: Array<[string, string, string]>;
   };
 }
-
-/** @deprecated V1 路由现场不会再被读取；保留别名仅用于迁移期调用方类型兼容。 */
-export type MapSceneV1 = MapSceneV2;
 
 export interface MapReturnV1 {
   version: 1;
@@ -131,13 +127,12 @@ function mapFilters(value: unknown): ResearchMapFilterState | undefined {
  * 路由 history entry 的临时地图现场。它不是业务数据：不进入 URL、存储或服务端。
  */
 export function serializeMapScene(input: {
-  /** 迁移期缺省为全部项目、全部时间、两种生命周期；调用方升级后始终显式传入。 */
-  filters?: ResearchMapFilterState;
+  filters: ResearchMapFilterState;
   relationshipKinds: readonly ResearchPermanentEdgeKind[];
   viewBox: MapViewBox;
   layout: Pick<StableOrganicGraphLayout, "world" | "positions" | "edgeKeys">;
 }): MapSceneV2 {
-  const normalizedFilters = normalizeResearchMapFilterState(input.filters ?? DEFAULT_RESEARCH_MAP_FILTER_STATE);
+  const normalizedFilters = normalizeResearchMapFilterState(input.filters);
   if (!normalizedFilters.valid) throw new Error(`Cannot serialize invalid research map filters: ${normalizedFilters.reason}`);
   return {
     version: MAP_SCENE_VERSION,
