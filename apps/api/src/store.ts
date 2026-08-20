@@ -4,6 +4,7 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchFusionReference, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId } from "@collector/capture-contracts";
 import {
   isResearchPermanentEdge,
+  nextProjectColorRole,
   validateTemporaryFusionBundle,
   type ResearchAssociationHintRecord,
   type ResearchCandidateSourceConnectionRecord,
@@ -812,9 +813,12 @@ export class SqliteStore implements CollectorStore {
         created = existing;
         return;
       }
+      // Project creation owns color allocation: callers cannot bypass the
+      // least-used-role invariant by pre-filling a role outside this transaction.
+      const assigned: ProjectRecord = { ...record, colorRole: nextProjectColorRole(this.listProjects()) };
       this.db().prepare("INSERT INTO projects (id, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?)")
-        .run(record.id, record.createdAt, record.updatedAt, idempotencyKey, JSON.stringify(record));
-      created = record;
+        .run(assigned.id, assigned.createdAt, assigned.updatedAt, idempotencyKey, JSON.stringify(assigned));
+      created = assigned;
     });
     if (!created) throw new Error("Project was not persisted");
     return created;

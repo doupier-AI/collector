@@ -110,4 +110,16 @@ describe("#62 global research map API client", () => {
       undefined,
     );
   });
+
+  it("preserves an explicit empty relationship selection", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ nodes: [], edges: [], appliedRelationshipKinds: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const client = createApiClient(fetchMock);
+
+    await client.getResearchMap({ focusNodeId: "node-a", relationshipKinds: [] });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/research-map?focusNodeId=node-a&relationshipKind=",
+      undefined,
+    );
+  });
 });

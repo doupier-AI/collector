@@ -55,13 +55,15 @@ test("project CRUD over HTTP: create/list/rename/delete", async (t) => {
   const key = randomUUID();
   const created = await jsonRequest(`${harness.base}/v1/projects`, "POST", harness.token, { name: "工作项目" }, { "Idempotency-Key": key });
   assert.equal(created.status, 201);
-  const project = created.body as { id: string; name: string };
+  const project = created.body as { id: string; name: string; colorRole: string };
   assert.equal(project.name, "工作项目");
+  assert.equal(project.colorRole, "amber");
 
   // 幂等：同键返回同项目
   const repeated = await jsonRequest(`${harness.base}/v1/projects`, "POST", harness.token, { name: "工作项目" }, { "Idempotency-Key": key });
   assert.equal(repeated.status, 201);
   assert.equal((repeated.body as { id: string }).id, project.id);
+  assert.equal((repeated.body as { colorRole: string }).colorRole, project.colorRole);
 
   // 校验：空名 / 超长
   assert.equal((await jsonRequest(`${harness.base}/v1/projects`, "POST", harness.token, { name: "" }, { "Idempotency-Key": randomUUID() })).status, 400);
@@ -76,6 +78,7 @@ test("project CRUD over HTTP: create/list/rename/delete", async (t) => {
   const renamed = await jsonRequest(`${harness.base}/v1/projects/${project.id}`, "PATCH", harness.token, { name: "更名项目" });
   assert.equal(renamed.status, 200);
   assert.equal((renamed.body as { name: string }).name, "更名项目");
+  assert.equal((renamed.body as { colorRole: string }).colorRole, project.colorRole);
 
   // 删除项目 → 其下会话回未分类
   const sessionKey = randomUUID();

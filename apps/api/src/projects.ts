@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ProjectRecord, ProjectInput } from "@collector/capture-contracts";
-import { RESEARCH_TITLE_MAX_CHARACTERS, nextProjectColorRole } from "@collector/capture-contracts";
+import { RESEARCH_TITLE_MAX_CHARACTERS } from "@collector/capture-contracts";
 import type { ResearchStore } from "./store.js";
 import { ResearchValidationError, ResearchNotFoundError } from "./research.js";
 
@@ -19,7 +19,6 @@ export class ResearchProjectService {
     const record: ProjectRecord = {
       id: randomUUID(),
       name,
-      colorRole: nextProjectColorRole(this.store.listProjects()),
       createdAt: now,
       updatedAt: now,
     };

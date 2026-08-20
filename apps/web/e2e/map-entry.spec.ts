@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { installGlobalMapVisualFixture } from "./global-map-fixture";
 import { pairAndOpen, trackBrowserIssues } from "./helpers";
 
 let sessionsCreatedByCurrentTest: string[] = [];
@@ -94,6 +95,63 @@ test("全局研究图谱：两个会话的根节点进入同一真实观察结�
   await reopenedFirstNode.focus();
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/\/nodes\/[^/]+$/);
+  expect(browserIssues.issues, browserIssues.issues.join("\n")).toEqual([]);
+});
+
+test("#64 项目色：深浅主题、融合归档、焦点与窄屏语义保持独立", async ({ page }) => {
+  const browserIssues = trackBrowserIssues(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await pairAndOpen(page, "/research/new");
+  await installGlobalMapVisualFixture(page);
+  await page.goto("/map");
+
+  const canvas = page.getByTestId("global-map-canvas");
+  const amberNode = canvas.getByRole("button", { name: /检索架构，知识工程，研究节点，活跃/ });
+  const fusionNode = canvas.getByRole("button", { name: /跨域综合，综合成果，融合成果，已归档/ });
+  await expect(amberNode).toHaveClass(/global-map__node--project-amber/);
+  await expect(fusionNode).toHaveClass(/global-map__node--project-violet/);
+  await expect(fusionNode).toHaveClass(/global-map__node--fusion/);
+  await expect(fusionNode).toHaveClass(/global-map__node--archived/);
+
+  const amberCore = amberNode.locator(".global-map__node-core");
+  const fusionCore = fusionNode.locator(".global-map__node-core");
+  const lightAmberFill = await amberCore.evaluate((element) => getComputedStyle(element).fill);
+  await expect(fusionCore).toHaveCSS("stroke-width", "4px");
+  await expect(amberNode.locator(".global-map__node-details")).toHaveCSS("opacity", "0");
+  await amberNode.hover();
+  await expect(amberNode.locator(".global-map__node-details")).toHaveCSS("opacity", "1");
+
+  await amberNode.focus();
+  await page.keyboard.press("Space");
+  await expect(amberNode).toHaveAttribute("aria-pressed", "true");
+  await expect(amberNode.locator(".global-map__node-focus-ring")).not.toHaveCSS("stroke", "rgba(0, 0, 0, 0)");
+  await expect(amberNode.locator(".global-map__node-selection-halo")).not.toHaveCSS("stroke", "rgba(0, 0, 0, 0)");
+  const stableTransform = await amberNode.getAttribute("transform");
+  const stableViewBox = await canvas.locator("svg").getAttribute("viewBox");
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
+
+  await page.setViewportSize({ width: 1024, height: 800 });
+  await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
+  await expect(amberNode).toHaveAttribute("transform", stableTransform!);
+  await expect(canvas.locator("svg")).toHaveAttribute("viewBox", stableViewBox!);
+  await expect(amberNode).toHaveCSS("transition-duration", "0s");
+  await expect.poll(() => amberCore.evaluate((element) => getComputedStyle(element).fill)).not.toBe(lightAmberFill);
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
+
+  await page.setViewportSize({ width: 320, height: 760 });
+  await expect(canvas).toBeHidden();
+  const list = page.getByTestId("global-map-list");
+  const amberLink = list.getByRole("link", { name: /检索架构，知识工程，研究节点，活跃/ });
+  const archivedLink = list.getByRole("link", { name: /跨域综合，综合成果，融合成果，已归档/ });
+  await expect(amberLink).toContainText("知识工程");
+  await expect(amberLink.locator(".global-map__list-dot")).toHaveClass(/global-map__list-dot--project-amber/);
+  await expect(archivedLink.locator(".global-map__list-dot")).toHaveClass(/global-map__list-dot--fusion/);
+  await expect(archivedLink.locator(".global-map__list-dot")).toHaveClass(/global-map__list-dot--archived/);
+  await expect(list.getByRole("link", { name: "父子生长：检索架构 指向 证据链" })).toBeVisible();
+  await expect(list.getByRole("link", { name: "融合来源：证据链 指向 跨域综合" })).toBeVisible();
+  await amberLink.focus();
+  await expect(amberLink).toBeFocused();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
   expect(browserIssues.issues, browserIssues.issues.join("\n")).toEqual([]);
 });
 

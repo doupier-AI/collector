@@ -62,6 +62,25 @@ test("project scope keeps an outside node on the focus path as a bridge", () => 
   });
 
   assert.equal(result.nodes.find((item) => item.node.id === "b")?.scope, "outside-bridge");
+  assert.equal(result.nodes.find((item) => item.node.id === "b")?.projectName, "项目二");
   assert.equal(result.nodes.find((item) => item.node.id === "b")?.projectColorRole, "blue");
   assert.equal(result.edges.length, 2);
+});
+
+test("an explicit empty relationship selection keeps only the focus emphasized", () => {
+  const sessions = [session("a"), session("b"), session("island")];
+  const nodes = sessions.map((item) => node(item.id, item.id));
+  const result = buildResearchGraphObservation(
+    nodes,
+    [edge("parent-child", "a", "b")],
+    sessions,
+    [],
+    { focusNodeId: "a", relationshipKinds: [] },
+  );
+
+  assert.deepEqual(result.appliedRelationshipKinds, []);
+  assert.deepEqual(result.edges, []);
+  assert.equal(result.nodes.find((item) => item.node.id === "a")?.connectivity, "focus");
+  assert.equal(result.nodes.find((item) => item.node.id === "b")?.connectivity, "unconnected");
+  assert.equal(result.nodes.find((item) => item.node.id === "island")?.connectivity, "unconnected");
 });

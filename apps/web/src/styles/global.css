@@ -484,6 +484,7 @@ button {
 }
 
 .global-map__node {
+  --global-map-project-color: var(--color-graph-node-stroke);
   cursor: pointer;
   color: var(--color-ink);
   outline: none;
@@ -491,32 +492,38 @@ button {
 }
 
 .global-map__node-core {
-  fill: var(--color-graph-node);
-  stroke: var(--color-graph-node-stroke);
-  stroke-width: 3;
+  fill: var(--global-map-project-color);
+  stroke: color-mix(in srgb, var(--global-map-project-color) 62%, var(--color-ink));
+  stroke-width: 1.5;
   transition: r var(--duration-fast) var(--ease-out), stroke-width var(--duration-fast) var(--ease-out), filter var(--duration-fast) var(--ease-out);
 }
 
-.global-map__node-halo {
+.global-map__node-selection-halo,
+.global-map__node-focus-ring {
   fill: transparent;
   stroke: transparent;
   stroke-width: 2;
 }
 
-.global-map__node--project-amber .global-map__node-core { stroke: var(--color-project-amber); }
-.global-map__node--project-violet .global-map__node-core { stroke: var(--color-project-violet); }
-.global-map__node--project-blue .global-map__node-core { stroke: var(--color-project-blue); }
-.global-map__node--project-teal .global-map__node-core { stroke: var(--color-project-teal); }
-.global-map__node--project-rose .global-map__node-core { stroke: var(--color-project-rose); }
+.global-map__node--project-amber { --global-map-project-color: var(--color-project-amber); }
+.global-map__node--project-violet { --global-map-project-color: var(--color-project-violet); }
+.global-map__node--project-blue { --global-map-project-color: var(--color-project-blue); }
+.global-map__node--project-teal { --global-map-project-color: var(--color-project-teal); }
+.global-map__node--project-rose { --global-map-project-color: var(--color-project-rose); }
 
 .global-map__node--fusion .global-map__node-core {
-  fill: transparent;
-  stroke-width: 5;
+  fill: var(--color-surface);
+  stroke: var(--global-map-project-color);
+  stroke-width: 4;
 }
 
 .global-map__node--archived .global-map__node-core {
-  opacity: 0.55;
-  stroke-dasharray: 3 3;
+  fill: color-mix(in srgb, var(--global-map-project-color) 32%, var(--color-muted));
+  stroke: color-mix(in srgb, var(--global-map-project-color) 36%, var(--color-muted));
+}
+
+.global-map__node--archived.global-map__node--fusion .global-map__node-core {
+  fill: var(--color-surface);
 }
 
 .global-map__node--emphasized .global-map__node-core,
@@ -525,9 +532,13 @@ button {
   stroke-width: 5;
 }
 
-.global-map__node--selected .global-map__node-halo,
-.global-map__node:focus-visible .global-map__node-halo {
+.global-map__node--selected .global-map__node-selection-halo {
   stroke: var(--color-ai);
+}
+
+.global-map__node:focus-visible .global-map__node-focus-ring {
+  stroke: var(--color-graph-focus);
+  stroke-dasharray: 2 2;
 }
 
 .global-map__node--selected .global-map__node-core {
@@ -568,10 +579,22 @@ button {
   opacity: 1;
 }
 
-.global-map__node .global-map__node-state {
+.global-map__node .global-map__node-details {
   fill: var(--color-muted);
   font-size: 11px;
   font-weight: 500;
+  opacity: 0;
+}
+
+.global-map__node--archived .global-map__node-details {
+  opacity: 0.82;
+}
+
+.global-map__node--emphasized .global-map__node-details,
+.global-map__node--neighbor .global-map__node-details,
+.global-map__node--selected .global-map__node-details,
+.global-map__node:focus-visible .global-map__node-details {
+  opacity: 1;
 }
 
 .global-map__keyboard-hint {
@@ -792,16 +815,54 @@ button {
   }
 
   .global-map__list-dot {
+    --global-map-project-color: var(--color-graph-node-stroke);
     width: 0.75rem;
     height: 0.75rem;
-    border: 2px solid var(--color-graph-node-stroke);
+    border: 1px solid color-mix(in srgb, var(--global-map-project-color) 62%, var(--color-ink));
     border-radius: var(--radius-circle);
-    background: var(--color-graph-node);
+    background: var(--global-map-project-color);
   }
+
+  .global-map__relation-link {
+    display: block;
+    overflow: hidden;
+    padding: var(--space-2) var(--space-4);
+    color: var(--color-muted);
+    font-size: var(--font-size-xs);
+    text-decoration: none;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .global-map__relation-link:hover {
+    color: var(--color-ink);
+    background: var(--color-surface-hover);
+  }
+
+  .global-map__relation-link:focus-visible {
+    outline: none;
+    box-shadow: inset var(--ring-focus);
+  }
+
+  .global-map__list-dot--project-amber { --global-map-project-color: var(--color-project-amber); }
+  .global-map__list-dot--project-violet { --global-map-project-color: var(--color-project-violet); }
+  .global-map__list-dot--project-blue { --global-map-project-color: var(--color-project-blue); }
+  .global-map__list-dot--project-teal { --global-map-project-color: var(--color-project-teal); }
+  .global-map__list-dot--project-rose { --global-map-project-color: var(--color-project-rose); }
 
   .global-map__list-dot--fusion {
     border-width: 3px;
-    background: transparent;
+    border-color: var(--global-map-project-color);
+    background: var(--color-surface);
+  }
+
+  .global-map__list-dot--archived {
+    border-color: color-mix(in srgb, var(--global-map-project-color) 36%, var(--color-muted));
+    background: color-mix(in srgb, var(--global-map-project-color) 32%, var(--color-muted));
+  }
+
+  .global-map__list-dot--archived.global-map__list-dot--fusion {
+    background: var(--color-surface);
   }
 }
 

@@ -528,7 +528,10 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
       if (input.includeArchived !== undefined) params.set("includeArchived", String(input.includeArchived));
       if (input.updatedFrom) params.set("updatedFrom", input.updatedFrom);
       if (input.updatedTo) params.set("updatedTo", input.updatedTo);
-      for (const kind of input.relationshipKinds ?? []) params.append("relationshipKind", kind);
+      if (input.relationshipKinds !== undefined) {
+        if (input.relationshipKinds.length === 0) params.append("relationshipKind", "");
+        else for (const kind of input.relationshipKinds) params.append("relationshipKind", kind);
+      }
       const query = params.toString() ? `?${params.toString()}` : "";
       return requestJson<ResearchGraphObservation>(fetchFn, `/v1/research-map${query}`);
     },

@@ -633,10 +633,13 @@ function parseGraphProjectionDepth(value: string | null): number | undefined {
 function parseGraphObservationInput(url: URL): import("@collector/capture-contracts").ResearchGraphObservationInput {
   const focusNodeId = url.searchParams.get("focusNodeId")?.trim() || undefined;
   const projectIds = url.searchParams.getAll("projectId").map((value) => value.trim()).filter(Boolean);
-  const relationshipKinds = url.searchParams.getAll("relationshipKind");
-  if (relationshipKinds.some((kind) => kind !== "parent-child" && kind !== "fused-from")) {
+  const relationshipKindsWereSpecified = url.searchParams.has("relationshipKind");
+  const relationshipKindValues = url.searchParams.getAll("relationshipKind");
+  const encodesEmptyRelationshipSet = relationshipKindValues.length === 1 && relationshipKindValues[0] === "";
+  if (!encodesEmptyRelationshipSet && relationshipKindValues.some((kind) => kind !== "parent-child" && kind !== "fused-from")) {
     throw new ResearchValidationError("relationshipKind must be parent-child or fused-from");
   }
+  const relationshipKinds = encodesEmptyRelationshipSet ? [] : relationshipKindValues;
   const includeArchivedValue = url.searchParams.get("includeArchived");
   if (includeArchivedValue !== null && includeArchivedValue !== "true" && includeArchivedValue !== "false") {
     throw new ResearchValidationError("includeArchived must be true or false");
@@ -652,7 +655,9 @@ function parseGraphObservationInput(url: URL): import("@collector/capture-contra
     ...(includeArchivedValue !== null ? { includeArchived: includeArchivedValue === "true" } : {}),
     ...(updatedFrom ? { updatedFrom } : {}),
     ...(updatedTo ? { updatedTo } : {}),
-    ...(relationshipKinds.length ? { relationshipKinds: relationshipKinds as Array<"parent-child" | "fused-from"> } : {}),
+    ...(relationshipKindsWereSpecified
+      ? { relationshipKinds: relationshipKinds as Array<"parent-child" | "fused-from"> }
+      : {}),
   };
 }
 

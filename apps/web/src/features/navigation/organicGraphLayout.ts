@@ -8,6 +8,13 @@ export interface GraphPoint {
   y: number;
 }
 
+export interface GraphWorld { width: number; height: number; }
+export interface StableOrganicGraphLayout {
+  positions: ReadonlyMap<string, GraphPoint>;
+  world: GraphWorld;
+  edgeKeys: ReadonlyMap<string, readonly [string, string]>;
+}
+
 const WORLD_MARGIN = 36;
 const COLLISION_DISTANCE = 74;
 const SPRING_LENGTH = 138;
@@ -137,4 +144,64 @@ export function createOrganicGraphLayout(
     x: Number(point.x.toFixed(2)),
     y: Number(point.y.toFixed(2)),
   }]));
+}
+
+function stableEdgeKey(edge: ResearchGraphObservationEdge): string {
+  return `${edge.edge.id}:${edge.edge.fromNodeId}:${edge.edge.toNodeId}`;
+}
+
+function scaledWorld(count: number, previous?: GraphWorld): GraphWorld {
+  const scale = Math.max(1, Math.sqrt(Math.max(count, 1) / 64));
+  const next = { width: Math.round(GRAPH_WORLD_WIDTH * scale), height: Math.round(GRAPH_WORLD_HEIGHT * scale) };
+  return previous ? { width: Math.max(previous.width, next.width), height: Math.max(previous.height, next.height) } : next;
+}
+
+function stableSeed(nodeId: string, world: GraphWorld): GraphPoint {
+  return {
+    x: WORLD_MARGIN + unitHash(nodeId, 0x9e3779b9) * (world.width - WORLD_MARGIN * 2),
+    y: WORLD_MARGIN + unitHash(nodeId, 0x85ebca6b) * (world.height - WORLD_MARGIN * 2),
+  };
+}
+
+function clampScaled(point: GraphPoint, world: GraphWorld): GraphPoint {
+  return { x: Math.max(WORLD_MARGIN, Math.min(world.width - WORLD_MARGIN, point.x)), y: Math.max(WORLD_MARGIN, Math.min(world.height - WORLD_MARGIN, point.y)) };
+}
+
+/**
+ * 地图组件的运行时增量布局：首轮确定，后续仅移动新增节点、关系变更端点及其一跳邻域。
+ * previous 只由组件 ref 保留，绝不写回 observation 或业务数据。
+ */
+export function createStableOrganicGraphLayout(
+  nodes: readonly ResearchGraphObservationNode[],
+  edges: readonly ResearchGraphObservationEdge[],
+  previous?: StableOrganicGraphLayout,
+): StableOrganicGraphLayout {
+  const ids = nodes.map(({ node }) => node.id).sort((a, b) => a.localeCompare(b));
+  const set = new Set(ids);
+  const world = scaledWorld(ids.length, previous?.world);
+  const edgeEntries: Array<readonly [string, readonly [string, string]]> = edges.filter(({ edge }) => set.has(edge.fromNodeId) && set.has(edge.toNodeId) && edge.fromNodeId !== edge.toNodeId)
+    .map((edge) => [stableEdgeKey(edge), [edge.edge.fromNodeId, edge.edge.toNodeId] as const]);
+  edgeEntries.sort(([a], [b]) => a.localeCompare(b));
+  const edgeKeys = new Map<string, readonly [string, string]>(edgeEntries);
+  const positions = new Map(ids.map((id) => [id, previous?.positions.get(id) ?? stableSeed(id, world)]));
+  const adjacency = new Map(ids.map((id) => [id, new Set<string>()]));
+  for (const [, [from, to]] of edgeKeys) { adjacency.get(from)?.add(to); adjacency.get(to)?.add(from); }
+  const movable = new Set(previous ? ids.filter((id) => !previous.positions.has(id)) : ids);
+  const changed = new Set<string>();
+  for (const [key, endpoints] of edgeKeys) if (!previous?.edgeKeys.has(key)) endpoints.forEach((id) => changed.add(id));
+  for (const [key, endpoints] of previous?.edgeKeys ?? []) if (!edgeKeys.has(key)) endpoints.forEach((id) => changed.add(id));
+  if (previous) for (const id of changed) { if (set.has(id)) movable.add(id); for (const neighbor of adjacency.get(id) ?? []) movable.add(neighbor); }
+  // 只计算可移动节点的受力；其他节点严格不写回，新增孤点不会让旧图重新洗牌。
+  for (let step = 0; step < 24 && movable.size; step += 1) for (const id of movable) {
+    const point = positions.get(id)!; let fx = 0; let fy = 0;
+    for (const otherId of ids) {
+      if (otherId === id) continue; const other = positions.get(otherId)!; let dx = point.x - other.x; let dy = point.y - other.y; let distance = Math.hypot(dx, dy);
+      if (distance >= COLLISION_DISTANCE) continue;
+      if (distance < .01) { dx = unitHash(`${id}:${otherId}`, 17) - .5; dy = unitHash(`${otherId}:${id}`, 31) - .5; distance = Math.max(.01, Math.hypot(dx, dy)); }
+      const strength = (COLLISION_DISTANCE - distance) * .06; fx += dx / distance * strength; fy += dy / distance * strength;
+    }
+    for (const neighbor of adjacency.get(id) ?? []) { const other = positions.get(neighbor)!; const dx = other.x - point.x; const dy = other.y - point.y; const distance = Math.max(1, Math.hypot(dx, dy)); const strength = (distance - SPRING_LENGTH) * .012; fx += dx / distance * strength; fy += dy / distance * strength; }
+    positions.set(id, clampScaled({ x: point.x + Math.max(-8, Math.min(8, fx)), y: point.y + Math.max(-8, Math.min(8, fy)) }, world));
+  }
+  return { positions: new Map([...positions].map(([id, point]) => [id, { x: Number(point.x.toFixed(2)), y: Number(point.y.toFixed(2)) }])), world, edgeKeys };
 }

@@ -2522,6 +2522,8 @@ export interface ResearchGraphObservationNode {
   label: string;
   sessionTitle: string;
   projectId?: string;
+  /** 扫读与无障碍解码所需的项目名称；未分类节点省略。 */
+  projectName?: string;
   projectColorRole?: ProjectColorRole;
   lifecycle: "active" | "archived";
   role: "research" | "fusion";
@@ -2568,9 +2570,9 @@ export function buildResearchGraphObservation(
   const sessionById = new Map(sessions.filter((session) => !session.trashedAt).map((session) => [session.id, session]));
   const projectById = new Map(projects.map((project) => [project.id, project]));
   const nodeById = new Map(allNodes.filter((node) => sessionById.has(node.sessionId)).map((node) => [node.id, node]));
-  const enabledKinds = input.relationshipKinds?.length
-    ? RESEARCH_PERMANENT_EDGE_KINDS.filter((kind) => input.relationshipKinds!.includes(kind))
-    : [...RESEARCH_PERMANENT_EDGE_KINDS];
+  const enabledKinds = input.relationshipKinds === undefined
+    ? [...RESEARCH_PERMANENT_EDGE_KINDS]
+    : RESEARCH_PERMANENT_EDGE_KINDS.filter((kind) => input.relationshipKinds!.includes(kind));
   const enabledKindSet = new Set<ResearchEdgeKind>(enabledKinds);
   const permanentEdges = allEdges.filter((edge): edge is ResearchPermanentEdgeRecord =>
     edge.status === "active" && isResearchPermanentEdge(edge) && enabledKindSet.has(edge.kind)
@@ -2644,6 +2646,7 @@ export function buildResearchGraphObservation(
         label: labelFor(node, session),
         sessionTitle: session.title,
         ...(session.projectId ? { projectId: session.projectId } : {}),
+        ...(project ? { projectName: project.name } : {}),
         ...(project?.colorRole ? { projectColorRole: project.colorRole } : {}),
         lifecycle: session.status,
         role: node.isFusionNode ? "fusion" : "research",

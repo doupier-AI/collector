@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import type { ResearchGraphObservation, ResearchGraphObservationNode } from "@collector/capture-contracts";
+import { PROJECT_COLOR_ROLES, type ResearchGraphObservation, type ResearchGraphObservationNode } from "@collector/capture-contracts";
 import { stableNodePath } from "../../app/paths";
-import { createOrganicGraphLayout, GRAPH_WORLD_HEIGHT, GRAPH_WORLD_WIDTH } from "./organicGraphLayout";
+import { createStableOrganicGraphLayout } from "./organicGraphLayout";
 
 interface ViewBoxState {
   x: number;
@@ -19,16 +19,29 @@ interface DragState {
   viewBox: ViewBoxState;
 }
 
-const INITIAL_VIEW_BOX: ViewBoxState = { x: 0, y: 0, width: GRAPH_WORLD_WIDTH, height: GRAPH_WORLD_HEIGHT };
 const MIN_VIEW_WIDTH = 320;
 const MAX_VIEW_WIDTH = 1_440;
 
 function nodeStatus(summary: ResearchGraphObservationNode): string {
   return [
+    summary.projectName ?? "未分类",
     summary.role === "fusion" ? "融合成果" : "研究节点",
     summary.lifecycle === "archived" ? "已归档" : "活跃",
     summary.scope === "outside-bridge" ? "范围外桥接" : "当前范围",
   ].join("，");
+}
+
+function projectColorClass(summary: ResearchGraphObservationNode, prefix = "global-map__node"): string {
+  return summary.projectColorRole && PROJECT_COLOR_ROLES.includes(summary.projectColorRole)
+    ? `${prefix}--project-${summary.projectColorRole}`
+    : "";
+}
+
+function compactNodeDetails(summary: ResearchGraphObservationNode): string {
+  const role = summary.role === "fusion" ? "融合成果" : "研究节点";
+  const lifecycle = summary.lifecycle === "archived" ? " · 已归档" : "";
+  const details = `${summary.projectName ?? "未分类"} · ${role}${lifecycle}`;
+  return details.length > 22 ? `${details.slice(0, 21)}…` : details;
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {
@@ -46,16 +59,20 @@ function adjacencyFor(observation: ResearchGraphObservation): ReadonlyMap<string
 
 export function GlobalResearchMap({ observation }: { observation: ResearchGraphObservation }) {
   const navigate = useNavigate();
-  const positions = useMemo(
-    () => createOrganicGraphLayout(observation.nodes, observation.edges),
+  const layoutRef = useRef<ReturnType<typeof createStableOrganicGraphLayout> | undefined>(undefined);
+  const layout = useMemo(
+    () => createStableOrganicGraphLayout(observation.nodes, observation.edges, layoutRef.current),
     [observation.nodes, observation.edges],
   );
+  useLayoutEffect(() => { layoutRef.current = layout; }, [layout]);
+  const positions = layout.positions;
+  const world = layout.world;
+  const [viewBox, setViewBox] = useState<ViewBoxState>(() => ({ x: 0, y: 0, width: world.width, height: world.height }));
   const adjacency = useMemo(() => adjacencyFor(observation), [observation]);
   const [rovingNodeId, setRovingNodeId] = useState(observation.nodes[0]?.node.id ?? "");
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [keyboardNodeId, setKeyboardNodeId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [viewBox, setViewBox] = useState<ViewBoxState>(INITIAL_VIEW_BOX);
   const [dragging, setDragging] = useState(false);
   const dragRef = useRef<DragState | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -65,7 +82,7 @@ export function GlobalResearchMap({ observation }: { observation: ResearchGraphO
   const listNodeRefs = useRef(new Map<string, HTMLAnchorElement>());
   const interactionNodeId = hoveredNodeId ?? keyboardNodeId;
   const directNeighbors = interactionNodeId ? adjacency.get(interactionNodeId) ?? new Set<string>() : new Set<string>();
-  const zoomScale = GRAPH_WORLD_WIDTH / viewBox.width;
+  const zoomScale = world.width / viewBox.width;
 
   const moveFocus = (event: KeyboardEvent, direction: -1 | 1, refs: ReadonlyMap<string, Element>) => {
     event.preventDefault();
@@ -90,8 +107,8 @@ export function GlobalResearchMap({ observation }: { observation: ResearchGraphO
 
   const zoomAt = useCallback((factor: number, centerX: number, centerY: number) => {
     setViewBox((current) => {
-      const width = clamp(current.width * factor, MIN_VIEW_WIDTH, MAX_VIEW_WIDTH);
-      const height = width * (GRAPH_WORLD_HEIGHT / GRAPH_WORLD_WIDTH);
+      const width = clamp(current.width * factor, MIN_VIEW_WIDTH, Math.max(MAX_VIEW_WIDTH, world.width));
+      const height = width * (world.height / world.width);
       const ratioX = (centerX - current.x) / current.width;
       const ratioY = (centerY - current.y) / current.height;
       return {
@@ -101,7 +118,7 @@ export function GlobalResearchMap({ observation }: { observation: ResearchGraphO
         height,
       };
     });
-  }, []);
+  }, [world.height, world.width]);
 
   useEffect(() => {
     const svg = svgRef.current;
@@ -201,7 +218,7 @@ export function GlobalResearchMap({ observation }: { observation: ResearchGraphO
               "global-map__node",
               `global-map__node--${summary.role}`,
               `global-map__node--${summary.lifecycle}`,
-              summary.projectColorRole ? `global-map__node--project-${summary.projectColorRole}` : "",
+              projectColorClass(summary),
               interactionClass,
               selectedNodeId === summary.node.id ? "global-map__node--selected" : "",
             ].filter(Boolean).join(" ");
@@ -226,10 +243,11 @@ export function GlobalResearchMap({ observation }: { observation: ResearchGraphO
                 onDoubleClick={() => navigate(stableNodePath(summary.node.id))}
                 onKeyDown={(event) => handleKey(event, summary.node.id, canvasNodeRefs.current, true)}
               >
-                <circle className="global-map__node-halo" r="14" />
+                <circle className="global-map__node-selection-halo" r="14" />
+                <circle className="global-map__node-focus-ring" r="17" />
                 <circle className="global-map__node-core" r="7" />
                 <text textAnchor="middle" y="27" aria-hidden="true">{summary.label.length > 15 ? `${summary.label.slice(0, 14)}…` : summary.label}</text>
-                {summary.lifecycle === "archived" ? <text className="global-map__node-state" textAnchor="middle" y="43" aria-hidden="true">已归档</text> : null}
+                <text className="global-map__node-details" textAnchor="middle" y="43" aria-hidden="true">{compactNodeDetails(summary)}</text>
               </g>
             );
           })}
@@ -243,11 +261,20 @@ export function GlobalResearchMap({ observation }: { observation: ResearchGraphO
           {observation.nodes.map((summary) => (
             <li key={summary.node.id}>
               <Link ref={(element) => { if (element) listNodeRefs.current.set(summary.node.id, element); else listNodeRefs.current.delete(summary.node.id); }} to={stableNodePath(summary.node.id)} className="global-map__list-link" aria-label={`${summary.label}，${nodeStatus(summary)}`} onFocus={() => setRovingNodeId(summary.node.id)} onKeyDown={(event) => handleKey(event, summary.node.id, listNodeRefs.current, false)}>
-                <span className={`global-map__list-dot global-map__list-dot--${summary.role}`} aria-hidden="true" />
-                <span><strong>{summary.label}</strong><small>{summary.sessionTitle}{summary.lifecycle === "archived" ? " · 已归档" : ""}</small></span>
+                <span className={["global-map__list-dot", `global-map__list-dot--${summary.role}`, `global-map__list-dot--${summary.lifecycle}`, projectColorClass(summary, "global-map__list-dot")].filter(Boolean).join(" ")} aria-hidden="true" />
+                <span><strong>{summary.label}</strong><small>{summary.projectName ?? "未分类"} · {summary.sessionTitle} · {summary.role === "fusion" ? "融合成果" : "研究节点"}{summary.lifecycle === "archived" ? " · 已归档" : ""}</small></span>
               </Link>
             </li>
           ))}
+        </ul>
+        <ul className="global-map__relations" data-testid="global-map-relations" aria-label="直接关系">
+          {observation.edges.map(({ edge }) => {
+            const from = observation.nodes.find((node) => node.node.id === edge.fromNodeId);
+            const to = observation.nodes.find((node) => node.node.id === edge.toNodeId);
+            if (!from || !to) return null;
+            const type = edge.kind === "parent-child" ? "父子生长" : "融合来源";
+            return <li key={edge.id}><Link className="global-map__relation-link" to={stableNodePath(to.node.id)} aria-label={`${type}：${from.label} 指向 ${to.label}`}>{type}：{from.label} → {to.label}</Link></li>;
+          })}
         </ul>
         <p className="global-map__keyboard-hint">上下方向键移动 · Enter 打开节点</p>
       </div>

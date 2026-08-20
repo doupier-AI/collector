@@ -155,10 +155,12 @@ test("latest migrations preserve projects and the session favorite default", asy
 test("project CRUD persists and lists by updated desc", async (t) => {
   const { store, close } = await createStore();
   t.after(close);
-  const first: ProjectRecord = { ...project("旧项目"), updatedAt: "2026-08-08T00:00:00.000Z" };
+  const first: ProjectRecord = { ...project("旧项目"), colorRole: "rose", updatedAt: "2026-08-08T00:00:00.000Z" };
   const second: ProjectRecord = { ...project("新项目"), updatedAt: "2026-08-08T00:01:00.000Z" };
-  await store.createProject(first, "key-1");
-  await store.createProject(second, "key-2");
+  const createdFirst = await store.createProject(first, "key-1");
+  const createdSecond = await store.createProject(second, "key-2");
+  assert.equal(createdFirst.colorRole, "amber", "store transaction must own allocation even if a caller pre-fills a role");
+  assert.equal(createdSecond.colorRole, "violet");
   // 幂等：同幂等键返回同记录
   const duplicate = await store.createProject(project("重复"), "key-1");
   assert.equal(duplicate.id, first.id);
@@ -166,10 +168,36 @@ test("project CRUD persists and lists by updated desc", async (t) => {
   // 改名
   const renamed = await store.renameProject(first.id, "更名项目");
   assert.equal(renamed?.name, "更名项目");
+  assert.equal(renamed?.colorRole, "amber", "renaming must not change the stable project color role");
   assert.equal(store.getProject(first.id)?.name, "更名项目");
   // 改名后项目冒顶（updatedAt 更新）
   assert.deepEqual(store.listProjects().map((item) => item.id), [first.id, second.id]);
   assert.equal(await store.renameProject(randomUUID(), "不存在"), undefined);
+});
+
+test("project color role survives store restart and remains stable after rename", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "collector-project-color-"));
+  const databasePath = join(root, "collector.sqlite");
+  let store = new SqliteStore(databasePath);
+  t.after(async () => {
+    store.close();
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  await store.init();
+  const created = await store.createProject(project("稳定项目色"), "stable-color-key");
+  assert.equal(created.colorRole, "amber");
+
+  store.close();
+  store = new SqliteStore(databasePath);
+  await store.init();
+  assert.equal(store.getProject(created.id)?.colorRole, "amber");
+  const renamed = await store.renameProject(created.id, "稳定项目色（改名）");
+  assert.equal(renamed?.colorRole, "amber");
+
+  store.close();
+  store = new SqliteStore(databasePath);
+  await store.init();
+  assert.equal(store.getProject(created.id)?.colorRole, "amber");
 });
 
 test("project deletion moves sessions back to uncategorized", async (t) => {

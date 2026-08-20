@@ -250,8 +250,13 @@ test("未配置模型：标记保存后可在列表查看并返回原选区，�
   await expect(input).toBeVisible();
   await input.focus();
   await input.fill("无模型也要保存笔记");
+  const noteSaved = page.waitForResponse((response) =>
+    response.request().method() === "PUT"
+    && /\/v1\/research-later-items\/[^/]+$/.test(new URL(response.url()).pathname)
+    && response.ok());
   await page.mouse.click(12, 12);
   await expect(page.getByTestId("mark-note-editor")).toHaveCount(0);
+  await noteSaved;
 
   const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
   const items = readResearchLaterTables(dbPath).laterItems.filter((row) => row.sessionId === created.id);

@@ -69,6 +69,16 @@ async function waitForScrollSettle(page: import("@playwright/test").Page): Promi
   }, undefined, { timeout: 5_000, polling: 100 });
 }
 
+/** 全量负载下 smooth scroll 可能在相邻采样间短暂停顿；直接等用户可见落点进入阅读带。 */
+async function expectInReadingBand(target: import("@playwright/test").Locator): Promise<number> {
+  await expect(target).toBeInViewport({ timeout: 5_000 });
+  await expect.poll(async () => {
+    const top = await target.evaluate((element) => element.getBoundingClientRect().top);
+    return top >= 56 && top < 240;
+  }, { timeout: 5_000, intervals: [50, 100, 150] }).toBe(true);
+  return target.evaluate((element) => element.getBoundingClientRect().top);
+}
+
 /**
  * #54 同款几何断言的轮次导航版：导航本体 + 透明热区（右扩 0.35rem）不进入正文容器。
  */
@@ -154,8 +164,7 @@ test.describe("#94 精确跳转与高亮粘住", () => {
     await expect(ticks.nth(1)).toHaveAttribute("aria-current", "location");
     await waitForScrollSettle(page);
     const secondQuestion = page.locator(".message--user", { hasText: FOLLOW_UP });
-    await expect(secondQuestion).toBeInViewport({ timeout: 5_000 });
-    const secondTop = await secondQuestion.evaluate((el) => el.getBoundingClientRect().top);
+    const secondTop = await expectInReadingBand(secondQuestion);
     expect(secondTop).toBeGreaterThanOrEqual(56);
     expect(secondTop).toBeLessThan(240);
 
@@ -164,8 +173,7 @@ test.describe("#94 精确跳转与高亮粘住", () => {
     await expect(ticks.nth(0)).toHaveAttribute("aria-current", "location");
     await waitForScrollSettle(page);
     const firstQuestion = page.locator(".message--user", { hasText: "写一份完整的长文报告" });
-    await expect(firstQuestion).toBeInViewport({ timeout: 5_000 });
-    const firstTop = await firstQuestion.evaluate((el) => el.getBoundingClientRect().top);
+    const firstTop = await expectInReadingBand(firstQuestion);
     expect(firstTop).toBeGreaterThanOrEqual(56);
     expect(firstTop).toBeLessThan(240);
     // 长文首节标题随之进入视口（跳转未漂移到其他轮次）

@@ -734,6 +734,22 @@ test("global map endpoint returns one cross-session observation with archived an
   assert.ok(observation.nodes.every((item) => item.connectivity === "default"));
   assert.deepEqual(observation.edges.map((item) => item.edge.kind), ["fused-from"]);
 
+  const noRelationshipsResponse = await fetch(
+    `${harness.base}/v1/research-map?focusNodeId=${first.session.id}&relationshipKind=`,
+    { headers: headers(harness.token) },
+  );
+  assert.equal(noRelationshipsResponse.status, 200);
+  const noRelationships = await noRelationshipsResponse.json() as {
+    nodes: Array<{ node: { id: string }; connectivity: string }>;
+    edges: unknown[];
+    appliedRelationshipKinds: string[];
+  };
+  assert.deepEqual(noRelationships.appliedRelationshipKinds, []);
+  assert.deepEqual(noRelationships.edges, []);
+  assert.equal(noRelationships.nodes.find((item) => item.node.id === first.session.id)?.connectivity, "focus");
+  assert.ok(noRelationships.nodes.filter((item) => item.node.id !== first.session.id)
+    .every((item) => item.connectivity === "unconnected"));
+
   const refreshed = await (await fetch(`${harness.base}/v1/research-map`, { headers: headers(harness.token) })).json();
   assert.deepEqual(refreshed, observation);
   assert.equal((await fetch(`${harness.base}/v1/research-map`)).status, 401);

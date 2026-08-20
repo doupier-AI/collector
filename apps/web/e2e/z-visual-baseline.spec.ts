@@ -17,6 +17,7 @@
  * 刷新后落点恢复、浏览器问题（console/pageerror/requestfailed）零容忍。
  */
 import { expect, test } from "@playwright/test";
+import { installGlobalMapVisualFixture } from "./global-map-fixture";
 import {
   dynamicTimeMasks,
   freezeClock,
@@ -314,6 +315,35 @@ test.describe("#44 视觉回归基线", () => {
       mask: dynamicTimeMasks(page),
       maskColor: "#FFFFFF",
     });
+    expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
+  });
+
+  test("#64 全局地图项目视觉：浅色、深色与窄屏像素基线", async ({ page }) => {
+    const issues = trackBrowserIssues(page);
+    freezeClock(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await pairAndOpen(page, "/research/new");
+    await installGlobalMapVisualFixture(page);
+    await page.goto("/map");
+    await closeSidebars(page);
+
+    const canvas = page.getByTestId("global-map-canvas");
+    const amberNode = canvas.getByRole("button", { name: /检索架构，知识工程/ });
+    await expect(amberNode).toBeVisible();
+    await amberNode.focus();
+    await page.keyboard.press("Space");
+    await expect(amberNode).toHaveAttribute("aria-pressed", "true");
+    await expect(page).toHaveScreenshot("global-map-project-light");
+
+    await page.setViewportSize({ width: 1024, height: 800 });
+    await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
+    await expect(canvas).toBeVisible();
+    await expect(page).toHaveScreenshot("global-map-project-dark");
+
+    await page.setViewportSize({ width: 320, height: 800 });
+    await expect(canvas).toBeHidden();
+    await expect(page.getByTestId("global-map-list")).toBeVisible();
+    await expect(page).toHaveScreenshot("global-map-project-narrow");
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 });
