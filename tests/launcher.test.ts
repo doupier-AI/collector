@@ -22,19 +22,14 @@ import {
   writeInstanceState,
   type CollectorInstanceState,
 } from "@collector/api";
+import { listenOnFetchSafePort } from "./test-http-server.js";
 
 const RUNTIME_CURRENT = `collector-runtime-v1-${"a".repeat(64)}`;
 const RUNTIME_UPDATED = `collector-runtime-v1-${"b".repeat(64)}`;
 const RUNTIME_OLD = `collector-runtime-v1-${"c".repeat(64)}`;
 
 async function listen(server: ReturnType<typeof createServer>): Promise<number> {
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Test server did not bind");
-  return address.port;
+  return listenOnFetchSafePort(server);
 }
 
 async function close(server: ReturnType<typeof createServer>): Promise<void> {

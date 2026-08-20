@@ -14,6 +14,7 @@ import {
   type ResearchGenerationProvider,
   type ResearchGenerationRequest,
 } from "@collector/api";
+import { listenOnFetchSafePort } from "./test-http-server.js";
 
 const ASSISTANT_CONTENT = "第一段介绍本地优先研究的基本概念。\n\n第二段讨论选区如何连接阅读与研究，并给出实践建议。\n\n第三段总结尚未验证的问题。";
 const SESSION_TITLE = "测试会话";
@@ -38,7 +39,7 @@ async function createHarness(options: HarnessOptions = {}) {
     researchProvider: options.researchProvider,
   });
   const server = createApiServer(service, auth);
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafePort(server);
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");
   return {

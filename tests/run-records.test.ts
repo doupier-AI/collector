@@ -5,6 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { listenOnFetchSafePort } from "./test-http-server.js";
 import type {
   ModelCallRecord,
   ResearchGroundingResult,
@@ -38,7 +39,7 @@ async function createHarness(): Promise<Harness> {
     autoRunSelectionTasks: false,
   });
   const server = createApiServer(service, auth);
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafePort(server);
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Run record test server did not bind");
   return {

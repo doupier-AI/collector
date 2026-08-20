@@ -7,6 +7,7 @@ import test from "node:test";
 import type { ResearchMessageRecord, ResearchSliceRecord } from "@collector/capture-contracts";
 import { deriveBodyVersion, deriveFragmentsFromBlocks } from "@collector/capture-contracts";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer } from "@collector/api";
+import { listenOnFetchSafePort } from "./test-http-server.js";
 
 const NOW = "2026-08-01T00:00:00.000Z";
 const CONTENT = "First paragraph.\n\nSecond paragraph.\n\nThird paragraph.";
@@ -34,7 +35,7 @@ async function createHarness() {
   }));
   await store.replaceSlicesForMessage("msg-1", slices);
   const server = createApiServer(service, auth);
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafePort(server);
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");
   return {

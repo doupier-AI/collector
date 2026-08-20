@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer } from "@collector/api";
+import { listenOnFetchSafePort } from "./test-http-server.js";
 
 const NOW = "2026-08-05T00:00:00.000Z";
 
@@ -48,7 +49,7 @@ async function createHarness(provider: Record<string, unknown>) {
   await store.createResearchSession({ id: "session-1", title: "T", status: "active", isFavorite: false, createdAt: NOW, updatedAt: NOW }, "k-s");
   await store.createResearchNode({ id: "node-1", sessionId: "session-1", status: "active", createdAt: NOW, updatedAt: NOW }, "k-n");
   const server = createApiServer(service, auth);
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafePort(server);
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");
   return {

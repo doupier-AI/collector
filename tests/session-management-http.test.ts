@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer } from "@collector/api";
+import { listenOnFetchSafePort } from "./test-http-server.js";
 
 async function createHarness() {
   const root = await mkdtemp(join(tmpdir(), "collector-session-mgmt-http-"));
@@ -17,7 +18,7 @@ async function createHarness() {
     autoRunRecentOrganization: false,
   });
   const server = createApiServer(service, auth);
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafePort(server);
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");
   return {

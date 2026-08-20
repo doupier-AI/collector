@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { CaptureService, LocalAuth, MemoryStore, createApiServer } from "@collector/api";
+import { listenOnFetchSafePort } from "./test-http-server.js";
 
 async function startServer(t: TestContext, options: { withWebRoot?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), "collector-static-web-"));
@@ -21,7 +22,7 @@ async function startServer(t: TestContext, options: { withWebRoot?: boolean } = 
     autoRunRecentOrganization: false,
   });
   const server = createApiServer(service, auth, options.withWebRoot === false ? {} : { webRoot });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafePort(server);
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Collector test server did not bind");
 

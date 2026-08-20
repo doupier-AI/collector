@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { AiConfigurationView } from "@collector/capture-contracts";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer } from "@collector/api";
+import { listenOnFetchSafePort } from "./test-http-server.js";
 
 async function createHarness(options: { mvpDemoMode?: boolean; markConfigured?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), "collector-ai-mode-"));
@@ -20,7 +21,7 @@ async function createHarness(options: { mvpDemoMode?: boolean; markConfigured?: 
     mvpDemoMode: options.mvpDemoMode,
   });
   const server = createApiServer(service, auth);
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafePort(server);
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");
   return {

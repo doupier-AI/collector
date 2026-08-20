@@ -7,6 +7,7 @@ import test from "node:test";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import JSZip from "jszip";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer } from "@collector/api";
+import { listenOnFetchSafePort } from "./test-http-server.js";
 
 async function createHarness(autoRunResearchImports = true) {
   const root = await mkdtemp(join(tmpdir(), "collector-import-"));
@@ -23,7 +24,7 @@ async function createHarness(autoRunResearchImports = true) {
     autoRunResearchImports,
   });
   const server = createApiServer(service, auth);
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafePort(server);
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");
   return {

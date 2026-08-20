@@ -5,6 +5,7 @@ import test from "node:test";
 import { fetchPublicResource, PublicFetchError, type PublicUrlDnsLookup } from "../apps/api/dist/parsers.js";
 import { sanitizeGroundingUrl } from "@collector/capture-contracts";
 import { webFetch, createSearchRunContext, filterCitationsByEvidence, parseAgentCitations } from "../apps/api/dist/web-search-agent.js";
+import { listenOnFetchSafePort } from "./test-http-server.js";
 
 /**
  * #49 C2：证据管线测试。
@@ -20,16 +21,7 @@ async function createLocalServer(
   handler: (req: IncomingMessage, res: ServerResponse) => void,
 ): Promise<{ server: Server; port: number }> {
   const server = createServer(handler);
-  await new Promise<void>((resolvePromise, reject) => {
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", resolvePromise);
-  });
-  const address = server.address();
-  if (!address || typeof address === "string") {
-    await closeServer(server);
-    throw new Error("Server did not bind");
-  }
-  return { server, port: address.port };
+  return { server, port: await listenOnFetchSafePort(server) };
 }
 
 function closeServer(server: Server): Promise<void> {

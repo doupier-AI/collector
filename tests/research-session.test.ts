@@ -8,6 +8,7 @@ import test from "node:test";
 import type { ResearchGenerationProvider } from "@collector/api";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer } from "@collector/api";
 import { composeSectionUnits, deriveMessageBlocks } from "@collector/capture-contracts";
+import { listenOnFetchSafePort } from "./test-http-server.js";
 
 const deterministicProvider: ResearchGenerationProvider = {
   provider: "deterministic-fake",
@@ -33,7 +34,7 @@ async function createHarness(provider?: ResearchGenerationProvider) {
     researchProvider: provider,
   });
   const server = createApiServer(service, auth);
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafePort(server);
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");
   return {
@@ -546,4 +547,3 @@ test("失败任务默认重试清空正文时同步清空弱标记（保留式�
   assert.equal(regenerated?.content, "完整回答 本地优先。");
   assert.deepEqual(regenerated?.termMarkers?.map((marker) => marker.text), ["本地优先"]);
 });
-

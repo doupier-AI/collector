@@ -13,6 +13,7 @@ import {
   createApiServer,
   type ResearchGenerationProvider,
 } from "@collector/api";
+import { listenOnFetchSafePort } from "./test-http-server.js";
 
 interface HarnessOptions {
   provider?: ResearchGenerationProvider;
@@ -34,7 +35,7 @@ async function createHarness(options: HarnessOptions = {}) {
     researchProvider: options.provider,
   });
   const server = createApiServer(service, auth);
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafePort(server);
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");
   return {

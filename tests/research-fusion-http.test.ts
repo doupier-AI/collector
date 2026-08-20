@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { listenOnFetchSafePort } from "./test-http-server.js";
 import type {
   FusionProposalTriggerSource,
   ResearchMessageRecord,
@@ -63,7 +64,7 @@ async function createHarness(options?: { similarityVerifier?: SimilarityVerifica
   await store.replaceSlicesForMessage("message-a", [slices[0]!]);
   await store.replaceSlicesForMessage("message-b", [slices[1]!]);
   const server = createApiServer(service, auth);
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafePort(server);
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");
   return {

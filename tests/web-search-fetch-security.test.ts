@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer, type Server } from "node:http";
 import test from "node:test";
 import { fetchPublicResource, resolvePublicUrl, type PublicUrlDnsLookup } from "../apps/api/dist/parsers.js";
+import { listenOnFetchSafePort } from "./test-http-server.js";
 
 /**
  * #46 C1：搜索抓取私网校验（安全）测试。
@@ -17,16 +18,7 @@ async function createLocalServer(
   handler: (req: IncomingMessage, res: ServerResponse) => void,
 ): Promise<{ server: Server; port: number }> {
   const server = createServer(handler);
-  await new Promise<void>((resolvePromise, reject) => {
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", resolvePromise);
-  });
-  const address = server.address();
-  if (!address || typeof address === "string") {
-    await closeServer(server);
-    throw new Error("Server did not bind");
-  }
-  return { server, port: address.port };
+  return { server, port: await listenOnFetchSafePort(server) };
 }
 
 function closeServer(server: Server): Promise<void> {

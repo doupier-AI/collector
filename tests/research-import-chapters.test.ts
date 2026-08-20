@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer } from "@collector/api";
 import type { ResearchChapterTaskRecord } from "@collector/capture-contracts";
+import { listenOnFetchSafePort } from "./test-http-server.js";
 
 function longText(): string {
   return Array.from(
@@ -58,7 +59,7 @@ async function createHarness(options: {
     ...(options.chapterParseProvider ? { chapterParseProvider: options.chapterParseProvider } : {}),
   });
   const server = createApiServer(service, auth);
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOnFetchSafePort(server);
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Server did not bind");
   return {
