@@ -1,5 +1,5 @@
-import { expect, test } from "@playwright/test";
-import { installGlobalMapVisualFixture } from "./global-map-fixture";
+import { expect, test, type Locator } from "@playwright/test";
+import { installGlobalMapFilterFixture, installGlobalMapVisualFixture } from "./global-map-fixture";
 import { pairAndOpen, trackBrowserIssues } from "./helpers";
 
 let sessionsCreatedByCurrentTest: string[] = [];
@@ -73,11 +73,15 @@ test("全局研究图谱：两个会话的根节点进入同一真实观察结�
   await expect.poll(() => svg.getAttribute("viewBox")).not.toBe(viewBoxBeforeZoom);
   await expect(wideFirstNode).toHaveAttribute("transform", stableTransform!);
   const viewBoxBeforePan = await svg.getAttribute("viewBox");
+  await svg.evaluate((element) => element.scrollIntoView({ block: "center" }));
   const canvasBounds = await svg.boundingBox();
   expect(canvasBounds).not.toBeNull();
-  await page.mouse.move(canvasBounds!.x + 72, canvasBounds!.y + 280);
+  const panStart = { x: canvasBounds!.x + canvasBounds!.width - 48, y: canvasBounds!.y + canvasBounds!.height - 48 };
+  expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.getAttribute("class"), panStart)).toContain("global-map__pan-surface");
+  await page.mouse.move(panStart.x, panStart.y);
   await page.mouse.down();
-  await page.mouse.move(canvasBounds!.x + 126, canvasBounds!.y + 250);
+  await expect(wideCanvas).toHaveClass(/global-map__canvas--dragging/);
+  await page.mouse.move(canvasBounds!.x + canvasBounds!.width - 104, canvasBounds!.y + canvasBounds!.height - 86);
   await page.mouse.up();
   await expect.poll(() => svg.getAttribute("viewBox")).not.toBe(viewBoxBeforePan);
   await expect(wideFirstNode).toHaveAttribute("transform", stableTransform!);
@@ -97,7 +101,32 @@ test("全局研究图谱：两个会话的根节点进入同一真实观察结�
   const secondNode = page.getByTestId("global-map-canvas").getByRole("button", { name: /全局地图测试二/ });
   await expect(secondNode).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("global-map-dark-reduced-motion.png"), fullPage: true });
-  await secondNode.dblclick();
+  const collapseSidebar = page.getByRole("navigation", { name: "内容导航" }).getByRole("button", { name: "收起侧栏" });
+  if (await collapseSidebar.isVisible()) await collapseSidebar.click();
+  const drawer = page.locator(".drawer.side-drawer");
+  await expect.poll(() => drawer.evaluate((element) => element.getBoundingClientRect().width)).toBeLessThanOrEqual(64);
+  const canvasNodes = page.getByTestId("global-map-canvas").locator("[data-node-id]");
+  let openTarget: Locator | undefined;
+  for (let attempt = 0; attempt < 4 && !openTarget; attempt += 1) {
+    for (let index = 0; index < await canvasNodes.count(); index += 1) {
+      const candidate = canvasNodes.nth(index);
+      await candidate.scrollIntoViewIfNeeded();
+      const bounds = await candidate.boundingBox();
+      const nodeId = await candidate.getAttribute("data-node-id");
+      if (!bounds || !nodeId) continue;
+      const hitNodeId = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest("[data-node-id]")?.getAttribute("data-node-id"), {
+        x: bounds.x + bounds.width / 2,
+        y: bounds.y + bounds.height / 2,
+      });
+      if (hitNodeId === nodeId) {
+        openTarget = candidate;
+        break;
+      }
+    }
+    if (!openTarget) await page.getByTestId("global-map-canvas").getByRole("button", { name: "缩小地图" }).click();
+  }
+  expect(openTarget, "缩放后应至少有一个节点不被侧栏或提示遮挡").toBeDefined();
+  await openTarget!.dblclick();
   await expect(page).toHaveURL(/\/nodes\/[^/]+$/);
   await page.goto("/map");
   const reopenedFirstNode = page.getByTestId("global-map-canvas").getByRole("button", { name: /全局地图测试一/ });
@@ -349,6 +378,85 @@ test("#65 同图专注：完整连通、关系重算、方向与灰色节点全�
       && url.searchParams.getAll("relationshipKind").length === 1
       && url.searchParams.get("relationshipKind") === "parent-child";
   })).toBe(true);
+  expect(browserIssues.issues, browserIssues.issues.join("\n")).toEqual([]);
+});
+
+test("#66 地图范围：项目、日期、生命周期、桥接和历史现场使用同一观察结果", async ({ page }) => {
+  const browserIssues = trackBrowserIssues(page);
+  const observationRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/v1/research-map")) observationRequests.push(request.url());
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await pairAndOpen(page, "/research/new");
+  await installGlobalMapFilterFixture(page);
+  await page.goto("/map");
+
+  const canvas = page.getByTestId("global-map-canvas");
+  const initialSpatial = await readGlobalMapSpatialState(page);
+  const projectOne = page.getByRole("checkbox", { name: "项目一" });
+  await projectOne.click();
+  await expect(projectOne).toBeChecked();
+  const nodeA = canvas.getByRole("button", { name: /^项目一节点 A，/ });
+  const nodeB = canvas.getByRole("button", { name: /^桥接节点 B，/ });
+  const nodeC = canvas.getByRole("button", { name: /^项目一节点 C，/ });
+  await expect(nodeA).toBeVisible();
+  await expect(nodeB).toHaveAccessibleName(/范围边界/);
+  await expect(nodeC).toBeVisible();
+  await expect(canvas.getByRole("button", { name: /^未分类节点，/ })).toHaveCount(0);
+  const filteredSpatial = await readGlobalMapSpatialState(page);
+  expect(filteredSpatial.viewBox).toBe(initialSpatial.viewBox);
+  for (const nodeId of ["filter-a", "filter-b", "filter-c"]) {
+    expect(filteredSpatial.nodes[nodeId]).toBe(initialSpatial.nodes[nodeId]);
+  }
+
+  const archived = page.getByRole("checkbox", { name: "已归档" });
+  await archived.click();
+  await expect(archived).not.toBeChecked();
+  await expect(nodeC).toHaveCount(0);
+  await page.getByLabel("开始日期").fill("2026-08-18");
+  await page.getByLabel("结束日期").fill("2026-08-18");
+  await expect(page.getByLabel("当前筛选摘要")).toContainText("2026-08-18至2026-08-18");
+  await expect.poll(() => observationRequests.some((requestUrl) => {
+    const url = new URL(requestUrl);
+    return url.searchParams.getAll("projectId").join(",") === "project-one"
+      && url.searchParams.getAll("lifecycle").join(",") === "active"
+      && url.searchParams.get("createdFrom") === new Date(2026, 7, 18).toISOString()
+      && url.searchParams.get("createdBefore") === new Date(2026, 7, 19).toISOString();
+  })).toBe(true);
+  expect(await page.evaluate(() => window.history.state?.usr?.mapSceneV2?.filters)).toMatchObject({
+    projectScope: { kind: "selected", projectIds: ["project-one"] },
+    fromDate: "2026-08-18",
+    throughDate: "2026-08-18",
+    lifecycles: ["active"],
+  });
+
+  await nodeA.click();
+  await expect(page).toHaveURL(/\/map\/focus\/filter-a$/);
+  await expect(page.getByTestId("global-map-canvas").getByRole("button", { name: /^桥接节点 B，/ })).toHaveAccessibleName(/范围外桥接/);
+  await page.reload();
+  await expect(page.getByRole("checkbox", { name: "项目一" })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "已归档" })).not.toBeChecked();
+  await expect(page.getByLabel("开始日期")).toHaveValue("2026-08-18");
+  await expect(page.getByLabel("结束日期")).toHaveValue("2026-08-18");
+
+  await page.goBack();
+  await expect(page).toHaveURL(/\/map$/);
+  expect(await page.evaluate(() => window.history.state?.usr?.mapSceneV2?.filters)).toMatchObject({
+    projectScope: { kind: "selected", projectIds: ["project-one"] },
+    fromDate: "2026-08-18",
+    throughDate: "2026-08-18",
+    lifecycles: ["active"],
+  });
+  await expect(page.getByRole("checkbox", { name: "项目一" })).toBeChecked();
+  await expect(page.getByLabel("开始日期")).toHaveValue("2026-08-18");
+  await expect(page.getByTestId("global-map-canvas").getByRole("button", { name: /^桥接节点 B，/ })).toHaveAccessibleName(/范围边界/);
+
+  await page.setViewportSize({ width: 320, height: 760 });
+  await expect(page.getByTestId("global-map-canvas")).toBeHidden();
+  const list = page.getByTestId("global-map-list");
+  await expect(list.getByRole("button", { name: /^桥接节点 B，/ })).toContainText("范围边界");
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
   expect(browserIssues.issues, browserIssues.issues.join("\n")).toEqual([]);
 });
 

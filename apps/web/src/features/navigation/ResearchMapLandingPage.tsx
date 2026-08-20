@@ -51,13 +51,15 @@ export function ResearchMapLandingPage() {
   const projectsReady = projects !== null;
   const lastValidFiltersRef = useRef<ResearchMapFilterState>(entryScene?.filters ?? DEFAULT_RESEARCH_MAP_FILTER_STATE);
   const sceneFilters = serializedFilters.valid ? serializedFilters.state : lastValidFiltersRef.current;
-  const mapEntry = currentHistoryEntry();
+  const mapEntry = currentHistoryEntry(location.key);
   const mapEntryKey = mapEntry ? `${mapEntry.idx}:${mapEntry.key}` : location.key;
   const sceneRef = useRef<MapSceneV2 | undefined>(entryScene);
   const routeStateRef = useRef(location.state);
   const pathnameRef = useRef(location.pathname);
+  const locationKeyRef = useRef(location.key);
   routeStateRef.current = location.state;
   pathnameRef.current = location.pathname;
+  locationKeyRef.current = location.key;
   const [relationshipKinds, setRelationshipKinds] = useState<ResearchPermanentEdgeKind[]>(() => entryScene?.relationshipKinds ?? [...RESEARCH_PERMANENT_EDGE_KINDS]);
 
   // 每个 browser history entry 独立拥有自己的临时地图现场；切换 entry 时只从该 entry 恢复。
@@ -74,25 +76,25 @@ export function ResearchMapLandingPage() {
 
   const saveScene = useCallback((scene: MapSceneV2) => {
     sceneRef.current = scene;
-    if (currentHistoryEntry()) replaceCurrentMapScene(scene, routeStateRef.current);
+    if (currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(scene, routeStateRef.current);
   }, []);
 
   const pushFocus = useCallback((nodeId: string) => {
     const scene = sceneRef.current;
-    if (scene && currentHistoryEntry()) replaceCurrentMapScene(scene, routeStateRef.current);
+    if (scene && currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(scene, routeStateRef.current);
     navigate(globalMapFocusPath(nodeId), { state: scene ? mergeRouteState({}, { mapSceneV2: scene }) : undefined });
   }, [navigate]);
 
   const exitFocus = useCallback(() => {
     const scene = sceneRef.current;
-    if (scene && currentHistoryEntry()) replaceCurrentMapScene(scene, routeStateRef.current);
+    if (scene && currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(scene, routeStateRef.current);
     navigate("/map", { state: scene ? mergeRouteState({}, { mapSceneV2: scene }) : undefined });
   }, [navigate]);
 
   const openNode = useCallback((nodeId: string) => {
     const scene = sceneRef.current;
-    if (scene && currentHistoryEntry()) replaceCurrentMapScene(scene, routeStateRef.current);
-    const mapReturn = createMapReturn(currentHistoryEntry(), pathnameRef.current);
+    if (scene && currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(scene, routeStateRef.current);
+    const mapReturn = createMapReturn(currentHistoryEntry(locationKeyRef.current), pathnameRef.current);
     navigate(stableNodePath(nodeId), {
       state: nodeEntryStateFromMapReturn(mapReturn),
     });

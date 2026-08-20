@@ -166,11 +166,13 @@ export function mapSceneLayout(scene: MapSceneV2): Pick<StableOrganicGraphLayout
   };
 }
 
-export function currentHistoryEntry(): HistoryEntryIdentity | undefined {
+export function currentHistoryEntry(fallbackKey?: string): HistoryEntryIdentity | undefined {
   if (typeof window === "undefined") return undefined;
   const state = record(window.history.state);
   const idx = state?.idx;
-  const key = state?.key;
+  const key = typeof state?.key === "string" && state.key.length > 0 && state.key.length <= 128
+    ? state.key
+    : fallbackKey;
   return state && Number.isSafeInteger(idx) && typeof idx === "number" && idx >= 0 && typeof key === "string" && key.length > 0 && key.length <= 128
     ? { idx, key }
     : undefined;

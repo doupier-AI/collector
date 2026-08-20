@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createMapReturn,
+  currentHistoryEntry,
   mapReturnDelta,
   mapReturnFromRouteState,
   mapSceneFromRouteState,
@@ -54,6 +55,13 @@ describe("mapSceneV2", () => {
 });
 
 describe("地图返回标记", () => {
+  it("直接打开的首个 BrowserRouter entry 没有 key 时使用路由 key 建立身份", () => {
+    const previous = window.history.state;
+    window.history.replaceState({ idx: 0 }, "");
+    expect(currentHistoryEntry("default")).toEqual({ idx: 0, key: "default" });
+    window.history.replaceState(previous, "");
+  });
+
   it("保留 React Router usr 的既有字段，并只删除一次性字段", () => {
     const mapReturn = createMapReturn({ idx: 4, key: "map-entry" }, "/map/focus/node-a");
     const merged = mergeRouteState({ firstTurn: { query: "hello" }, grew: true, keep: "yes" }, { mapReturn });
