@@ -787,6 +787,9 @@ test("global map endpoint returns one cross-session observation with archived an
   assert.equal((await fetch(`${harness.base}/v1/research-map?relationshipKind=semantic-related`, { headers: headers(harness.token) })).status, 400);
   assert.equal((await fetch(`${harness.base}/v1/research-map?createdFrom=not-an-iso-date`, { headers: headers(harness.token) })).status, 400);
   assert.equal((await fetch(`${harness.base}/v1/research-map?createdFrom=2026-08-10`, { headers: headers(harness.token) })).status, 400);
+  assert.equal((await fetch(`${harness.base}/v1/research-map?createdFrom=2026-02-29T00%3A00%3A00.000Z`, { headers: headers(harness.token) })).status, 400);
+  assert.equal((await fetch(`${harness.base}/v1/research-map?createdFrom=2026-02-30T00%3A00%3A00.000Z`, { headers: headers(harness.token) })).status, 400);
+  assert.equal((await fetch(`${harness.base}/v1/research-map?createdFrom=2024-02-29T00%3A00%3A00.000Z`, { headers: headers(harness.token) })).status, 200);
   assert.equal((await fetch(`${harness.base}/v1/research-map?createdFrom=2026-08-10T00%3A00%3A00.000Z&createdBefore=2026-08-10T00%3A00%3A00.000Z`, { headers: headers(harness.token) })).status, 400);
   assert.equal((await fetch(`${harness.base}/v1/research-map?createdFrom=2026-08-11T00%3A00%3A00.000Z&createdBefore=2026-08-10T00%3A00%3A00.000Z`, { headers: headers(harness.token) })).status, 400);
   assert.equal((await fetch(`${harness.base}/v1/research-map?updatedFrom=2026-08-10T00%3A00%3A00.000Z`, { headers: headers(harness.token) })).status, 400);

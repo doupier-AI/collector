@@ -342,6 +342,11 @@ test.describe("#44 视觉回归基线", () => {
     await expect(page).toHaveURL(/\/map\/focus\/map-amber$/);
     await expect(page.getByRole("button", { name: "退出专注" })).toBeVisible();
     await expect(canvas.locator(".global-map__node--unconnected")).toHaveCount(1);
+    await page.locator(".global-map__focus-controls").evaluate((element) => {
+      element.scrollIntoView({ block: "start" });
+      const appBarHeight = document.querySelector<HTMLElement>(".app-bar")?.getBoundingClientRect().height ?? 56;
+      window.scrollBy({ top: -(appBarHeight + 12) });
+    });
     await expect(page).toHaveScreenshot("global-map-project-light");
 
     await page.setViewportSize({ width: 1024, height: 800 });

@@ -66,6 +66,9 @@ export function ResearchMapLandingPage() {
   const layoutFilters = observationEntry?.entryKey === mapEntryKey
     ? observationEntry.filters
     : serializedFilters.valid ? serializedFilters.state : lastValidFiltersRef.current;
+  // 筛选请求尚未返回时，画布仍可能使用上一次筛选观察计算布局。保存现场时必须以该观察的范围判断是否保留隐藏节点。
+  const layoutFilterEntryRef = useRef({ entryKey: mapEntryKey, filters: layoutFilters });
+  layoutFilterEntryRef.current = { entryKey: mapEntryKey, filters: layoutFilters };
   const sceneFilters = serializedFilters.valid ? serializedFilters.state : lastValidFiltersRef.current;
   const sceneRef = useRef<MapSceneV2 | undefined>(entryScene);
   const sceneEntryKeyRef = useRef(mapEntryKey);
@@ -107,8 +110,10 @@ export function ResearchMapLandingPage() {
 
   const saveScene = useCallback((scene: MapSceneV2) => {
     const previous = sceneRef.current;
+    const layoutStillFiltered = layoutFilterEntryRef.current.entryKey === sceneEntryKeyRef.current
+      && !isDefaultResearchMapFilterState(layoutFilterEntryRef.current.filters);
     const preserveHiddenLayout = previous
-      && (!isDefaultResearchMapFilterState(previous.filters) || !isDefaultResearchMapFilterState(scene.filters));
+      && (layoutStillFiltered || !isDefaultResearchMapFilterState(previous.filters) || !isDefaultResearchMapFilterState(scene.filters));
     const next = preserveHiddenLayout ? {
       ...scene,
       layout: {

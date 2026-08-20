@@ -205,4 +205,48 @@ describe("ResearchMapLandingPage", () => {
     await waitFor(() => expect(window.history.state.usr?.mapSceneV2?.filters?.lifecycles).toEqual(["active"]));
     expect(screen.getByTestId("global-map-canvas")).toBeInTheDocument();
   });
+
+  it("清除筛选请求失败后再次保存仍保留筛选前隐藏节点的位置", async () => {
+    window.history.replaceState({ idx: 0, key: "map-clear-error", usr: null }, "");
+    const allNodes = [
+      makeGraphObservationNode("a", "节点 A"),
+      makeGraphObservationNode("b", "节点 B", { lifecycle: "archived" }),
+      makeGraphObservationNode("c", "节点 C"),
+      makeGraphObservationNode("u", "节点 U"),
+    ];
+    const allEdges = [{
+      edge: { ...makeEdge("parent-child", "a", "b"), kind: "parent-child" as const },
+      connectivity: "default" as const,
+    }];
+    const getResearchMap = vi.fn()
+      .mockResolvedValueOnce(makeGraphObservation({ nodes: allNodes, edges: allEdges }))
+      .mockResolvedValueOnce(makeGraphObservation({ nodes: allNodes.filter((node) => node.lifecycle === "active") }))
+      .mockRejectedValueOnce(new Error("offline"));
+    renderPage({ getResearchMap });
+    const user = userEvent.setup();
+
+    await screen.findByTestId("global-map-canvas");
+    await waitFor(() => {
+      expect(window.history.state.usr?.mapSceneV2?.layout?.positions).toHaveLength(4);
+      expect(window.history.state.usr?.mapSceneV2?.layout?.edgeKeys).toHaveLength(1);
+    });
+    const initialLayout = structuredClone(window.history.state.usr.mapSceneV2.layout);
+
+    await user.click(screen.getByRole("checkbox", { name: "已归档" }));
+    await waitFor(() => expect(screen.getByTestId("global-map-canvas").querySelector('[data-node-id="b"]')).toBeNull());
+
+    await user.click(screen.getByRole("button", { name: "清除筛选" }));
+    await screen.findByRole("alert");
+    const viewBoxBeforeZoom = structuredClone(window.history.state.usr.mapSceneV2.viewBox);
+    await user.click(screen.getByRole("button", { name: "放大地图" }));
+
+    await waitFor(() => {
+      expect(window.history.state.usr?.mapSceneV2?.filters).toEqual({
+        projectScope: { kind: "all" },
+        lifecycles: ["active", "archived"],
+      });
+      expect(window.history.state.usr?.mapSceneV2?.viewBox.width).toBeLessThan(viewBoxBeforeZoom.width);
+    });
+    expect(window.history.state.usr.mapSceneV2.layout).toEqual(initialLayout);
+  });
 });

@@ -678,8 +678,16 @@ function parseGraphObservationInput(url: URL): import("@collector/capture-contra
 
 function parseOptionalIsoDate(value: string | null, label: string): string | undefined {
   if (value === null) return undefined;
-  const ISO_DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
-  if (!ISO_DATE_TIME.test(value) || Number.isNaN(Date.parse(value))) throw new ResearchValidationError(`${label} must be an ISO date-time`);
+  const ISO_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
+  const match = ISO_DATE_TIME.exec(value);
+  const year = Number(match?.[1]);
+  const month = Number(match?.[2]);
+  const day = Number(match?.[3]);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+  if (!match || day < 1 || day > (daysInMonth ?? 0) || Number.isNaN(Date.parse(value))) {
+    throw new ResearchValidationError(`${label} must be an ISO date-time`);
+  }
   return new Date(value).toISOString();
 }
 
