@@ -2517,7 +2517,7 @@ export interface ResearchGraphObservationInput {
 }
 
 export type ResearchGraphObservationConnectivity = "default" | "focus" | "connected" | "unconnected";
-export type ResearchGraphObservationScope = "inside-current-filter" | "outside-bridge";
+export type ResearchGraphObservationScope = "inside-current-filter" | "outside-boundary" | "outside-bridge";
 export type ResearchGraphFusionEvidenceHealth = "not-applicable" | "available" | "incomplete";
 
 /** 图谱扫读所需的最小节点摘要；不携带正文、候选详情或语义范围正文。 */
@@ -2578,13 +2578,22 @@ export function buildResearchGraphObservation(
     ? [...RESEARCH_PERMANENT_EDGE_KINDS]
     : RESEARCH_PERMANENT_EDGE_KINDS.filter((kind) => input.relationshipKinds!.includes(kind));
   const enabledKindSet = new Set<ResearchEdgeKind>(enabledKinds);
-  const permanentEdges = allEdges.filter((edge): edge is ResearchPermanentEdgeRecord =>
-    edge.status === "active" && isResearchPermanentEdge(edge)
-      && nodeById.has(edge.fromNodeId) && nodeById.has(edge.toNodeId));
+  const compareEdges = (left: ResearchPermanentEdgeRecord, right: ResearchPermanentEdgeRecord) =>
+    left.kind.localeCompare(right.kind)
+      || left.fromNodeId.localeCompare(right.fromNodeId)
+      || left.toNodeId.localeCompare(right.toNodeId)
+      || left.id.localeCompare(right.id);
+  const permanentEdges = allEdges
+    .filter((edge): edge is ResearchPermanentEdgeRecord =>
+      edge.status === "active" && isResearchPermanentEdge(edge)
+        && nodeById.has(edge.fromNodeId) && nodeById.has(edge.toNodeId))
+    .sort(compareEdges);
   const traversableEdges = permanentEdges.filter((edge) => enabledKindSet.has(edge.kind));
   const projectFilter = input.projectIds?.length ? new Set(input.projectIds) : undefined;
   const filtersByProjectScope = projectFilter !== undefined || input.includeUncategorized === true;
   const includeArchived = input.includeArchived ?? true;
+  const hasRangeFilter = filtersByProjectScope || input.includeArchived === false
+    || input.createdFrom !== undefined || input.createdBefore !== undefined;
 
   const inScope = (node: ResearchNodeRecord): boolean => {
     const session = sessionById.get(node.sessionId);
@@ -2615,6 +2624,7 @@ export function buildResearchGraphObservation(
       addNeighbor(edge.fromNodeId, edge.toNodeId);
       addNeighbor(edge.toNodeId, edge.fromNodeId);
     }
+    for (const neighbors of adjacency.values()) neighbors.sort((left, right) => left.localeCompare(right));
     const parent = new Map<string, string | undefined>([[input.focusNodeId, undefined]]);
     const queue = [input.focusNodeId];
     while (queue.length) {
@@ -2639,6 +2649,12 @@ export function buildResearchGraphObservation(
       for (const edge of traversableEdges) {
         if (edge.kind === "fused-from" && edge.toNodeId === input.focusNodeId) includedIds.add(edge.fromNodeId);
       }
+    }
+  } else if (hasRangeFilter) {
+    for (const edge of traversableEdges) {
+      const fromIsInScope = inScopeIds.has(edge.fromNodeId);
+      const toIsInScope = inScopeIds.has(edge.toNodeId);
+      if (fromIsInScope !== toIsInScope) includedIds.add(fromIsInScope ? edge.toNodeId : edge.fromNodeId);
     }
   }
 
@@ -2665,7 +2681,11 @@ export function buildResearchGraphObservation(
         ...(project?.colorRole ? { projectColorRole: project.colorRole } : {}),
         lifecycle: session.status,
         role: node.isFusionNode ? "fusion" : "research",
-        scope: inScopeIds.has(node.id) ? "inside-current-filter" : "outside-bridge",
+        scope: inScopeIds.has(node.id)
+          ? "inside-current-filter"
+          : input.focusNodeId
+            ? "outside-bridge"
+            : "outside-boundary",
         connectivity: connectivityFor(node.id),
         candidateCount: derivations.candidateCountByNodeId?.get(node.id) ?? 0,
         fusionEvidenceHealth: node.isFusionNode
@@ -2676,6 +2696,7 @@ export function buildResearchGraphObservation(
   const visibleIds = new Set(nodes.map((summary) => summary.node.id));
   const edges = permanentEdges
     .filter((edge) => visibleIds.has(edge.fromNodeId) && visibleIds.has(edge.toNodeId))
+    .sort(compareEdges)
     .map((edge): ResearchGraphObservationEdge => ({
       edge,
       connectivity: !input.focusNodeId

@@ -597,6 +597,7 @@ button {
 
 /* 范围外节点只为连接当前筛选结果而保留。虚线轮廓弱化其权重，
  * 但不降低整节点不透明度，以保留归档、证据与焦点等原有语义。 */
+.global-map__node--outside-boundary .global-map__node-core,
 .global-map__node--outside-bridge .global-map__node-core {
   stroke-dasharray: 2 1;
 }
@@ -1012,6 +1013,7 @@ button {
     background: var(--color-surface);
   }
 
+  .global-map__list-dot--outside-boundary,
   .global-map__list-dot--outside-bridge {
     border-style: dashed;
   }

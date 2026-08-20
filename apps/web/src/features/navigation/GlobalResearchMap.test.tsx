@@ -214,6 +214,11 @@ describe("GlobalResearchMap stable organic canvas", () => {
             scope: "outside-bridge",
             node: { ...makeGraphObservationNode("bridge-base", "融合基础").node, id: "bridge", isFusionNode: true },
           }), connectivity: "focus" as const },
+          { ...makeGraphObservationNode("boundary", "范围边界节点", {
+            projectName: "蓝色项目",
+            projectColorRole: "blue",
+            scope: "outside-boundary",
+          }), connectivity: "connected" as const },
           { ...makeGraphObservationNode("uncategorized-bridge", "范围外未分类", { scope: "outside-bridge" }), connectivity: "connected" as const },
         ],
       }),
@@ -224,25 +229,35 @@ describe("GlobalResearchMap stable organic canvas", () => {
     const canvas = screen.getByTestId("global-map-canvas");
     const inside = within(canvas).getByLabelText(/当前范围节点，琥珀项目，研究节点，活跃/);
     const bridge = within(canvas).getByLabelText(/范围外归档融合，紫色项目，融合成果，已归档，证据不完整，范围外桥接，当前专注/);
+    const boundary = within(canvas).getByLabelText(/范围边界节点，蓝色项目，研究节点，活跃，范围边界，与焦点连通/);
     const uncategorizedBridge = within(canvas).getByLabelText(/范围外未分类，未分类，研究节点，活跃，范围外桥接，与焦点连通/);
 
-    expect(inside).not.toHaveClass("global-map__node--outside-bridge");
-    expect(inside).not.toHaveTextContent("范围外桥接");
+    expect(inside).not.toHaveClass("global-map__node--outside-boundary", "global-map__node--outside-bridge");
+    expect(inside).not.toHaveTextContent("范围边界");
     expect(bridge).toHaveClass("global-map__node--outside-bridge", "global-map__node--project-violet", "global-map__node--fusion", "global-map__node--archived", "global-map__node--focus");
+    expect(bridge).not.toHaveClass("global-map__node--outside-boundary");
     expect(bridge.querySelector(".global-map__node-scope")).toHaveTextContent("范围外桥接");
     expect(bridge.querySelector(".global-map__node-evidence--incomplete")).toHaveTextContent("证据不完整");
+    expect(boundary).toHaveClass("global-map__node--outside-boundary", "global-map__node--project-blue", "global-map__node--connected");
+    expect(boundary).not.toHaveClass("global-map__node--outside-bridge");
+    expect(boundary.querySelector(".global-map__node-scope")).toHaveTextContent("范围边界");
     expect(uncategorizedBridge).toHaveClass("global-map__node--outside-bridge");
     expect(uncategorizedBridge.getAttribute("class")).not.toContain("global-map__node--project-");
 
     const narrowList = screen.getByTestId("global-map-list");
     const bridgeLink = within(narrowList).getByLabelText(/范围外归档融合，紫色项目，融合成果，已归档，证据不完整，范围外桥接，当前专注/);
+    const boundaryLink = within(narrowList).getByLabelText(/范围边界节点，蓝色项目，研究节点，活跃，范围边界，与焦点连通/);
     const insideLink = within(narrowList).getByLabelText(/当前范围节点，琥珀项目，研究节点，活跃/);
     expect(bridgeLink).toHaveClass("global-map__list-link--outside-bridge");
     expect(bridgeLink).toHaveTextContent("紫色项目 · 范围外归档融合 · 融合成果 · 已归档 · 证据不完整 · 当前专注");
     expect(bridgeLink.querySelector(".global-map__scope-badge")).toHaveTextContent("范围外桥接");
     expect(bridgeLink.querySelector(".global-map__list-dot")).toHaveClass("global-map__list-dot--outside-bridge", "global-map__list-dot--fusion", "global-map__list-dot--archived");
-    expect(insideLink).not.toHaveTextContent("范围外桥接");
-    expect(insideLink).not.toHaveClass("global-map__list-link--outside-bridge");
+    expect(boundaryLink).toHaveClass("global-map__list-link--outside-boundary");
+    expect(boundaryLink).not.toHaveClass("global-map__list-link--outside-bridge");
+    expect(boundaryLink.querySelector(".global-map__scope-badge")).toHaveTextContent("范围边界");
+    expect(boundaryLink.querySelector(".global-map__list-dot")).toHaveClass("global-map__list-dot--outside-boundary", "global-map__list-dot--project-blue");
+    expect(insideLink).not.toHaveTextContent("范围边界");
+    expect(insideLink).not.toHaveClass("global-map__list-link--outside-boundary", "global-map__list-link--outside-bridge");
   });
 
   it("observation 增加孤立节点时既有 SVG 坐标不变，并让 viewBox 消费扩展世界", () => {

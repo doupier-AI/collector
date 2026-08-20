@@ -105,6 +105,56 @@ test("project scope keeps an outside node on the focus path as a bridge", () => 
   assert.equal(result.edges.length, 2);
 });
 
+test("unfocused range scope keeps only one-hop endpoints of enabled permanent boundary relations", () => {
+  const sessions = [
+    session("inside", { projectId: "p1" }),
+    session("boundary", { projectId: "p2" }),
+    session("outside", { projectId: "p2" }),
+  ];
+  const nodes = sessions.map((item) => node(item.id, item.id));
+  const edges = [
+    edge("parent-child", "inside", "boundary"),
+    edge("parent-child", "boundary", "outside"),
+  ];
+
+  const boundary = buildResearchGraphObservation(nodes, edges, sessions, [], { projectIds: ["p1"] });
+  assert.deepEqual(boundary.nodes.map((item) => item.node.id), ["boundary", "inside"]);
+  assert.equal(boundary.nodes.find((item) => item.node.id === "boundary")?.scope, "outside-boundary");
+  assert.equal(boundary.nodes.find((item) => item.node.id === "outside"), undefined);
+  assert.deepEqual(boundary.edges.map((item) => item.edge.id), [researchEdgeId("parent-child", "inside", "boundary")]);
+
+  const noEnabledBoundary = buildResearchGraphObservation(nodes, edges, sessions, [], {
+    projectIds: ["p1"], relationshipKinds: ["fused-from"],
+  });
+  assert.deepEqual(noEnabledBoundary.nodes.map((item) => item.node.id), ["inside"]);
+  assert.deepEqual(noEnabledBoundary.edges, []);
+});
+
+test("focused range scope picks the same lexicographic shortest bridge path from shuffled nodes and edges", () => {
+  const sessions = [
+    session("focus", { projectId: "p1" }),
+    session("inside", { projectId: "p1" }),
+    session("bridge-b", { projectId: "p2" }),
+    session("bridge-c", { projectId: "p2" }),
+  ];
+  const nodes = sessions.map((item) => node(item.id, item.id));
+  const edges = [
+    edge("parent-child", "focus", "bridge-c"),
+    edge("parent-child", "bridge-c", "inside"),
+    edge("parent-child", "focus", "bridge-b"),
+    edge("parent-child", "bridge-b", "inside"),
+  ];
+  const input = { focusNodeId: "focus", projectIds: ["p1"] };
+  const first = buildResearchGraphObservation(nodes, edges, sessions, [], input);
+  const shuffled = buildResearchGraphObservation([...nodes].reverse(), [...edges].reverse(), [...sessions].reverse(), [], input);
+
+  assert.deepEqual(shuffled, first);
+  assert.deepEqual(first.nodes.map((item) => item.node.id), ["bridge-b", "focus", "inside"]);
+  assert.equal(first.nodes.find((item) => item.node.id === "bridge-b")?.scope, "outside-bridge");
+  assert.equal(first.nodes.find((item) => item.node.id === "bridge-c"), undefined);
+  assert.ok(first.nodes.every((item) => item.scope !== "outside-boundary"), "bridge classification wins while focused");
+});
+
 test("project scope distinguishes all projects, uncategorized-only, project-only, and their union while retaining bridges", () => {
   const projects: ProjectRecord[] = [
     { id: "p1", name: "项目一", colorRole: "amber", createdAt: AT, updatedAt: AT },
@@ -119,15 +169,15 @@ test("project scope distinguishes all projects, uncategorized-only, project-only
   const edgeChain = [edge("parent-child", "p1", "p2"), edge("parent-child", "p2", "uncategorized")];
 
   assert.deepEqual(
-    buildResearchGraphObservation(nodes, edgeChain, sessions, projects).nodes.map((item) => item.node.id),
+    buildResearchGraphObservation(nodes, [], sessions, projects).nodes.map((item) => item.node.id),
     ["p1", "p2", "uncategorized"],
   );
   assert.deepEqual(
-    buildResearchGraphObservation(nodes, edgeChain, sessions, projects, { includeUncategorized: true }).nodes.map((item) => item.node.id),
+    buildResearchGraphObservation(nodes, [], sessions, projects, { includeUncategorized: true }).nodes.map((item) => item.node.id),
     ["uncategorized"],
   );
   assert.deepEqual(
-    buildResearchGraphObservation(nodes, edgeChain, sessions, projects, { projectIds: ["p1"] }).nodes.map((item) => item.node.id),
+    buildResearchGraphObservation(nodes, [], sessions, projects, { projectIds: ["p1"] }).nodes.map((item) => item.node.id),
     ["p1"],
   );
 
