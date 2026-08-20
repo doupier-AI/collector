@@ -1,10 +1,18 @@
 import { RESEARCH_PERMANENT_EDGE_KINDS, type ResearchPermanentEdgeKind } from "@collector/capture-contracts";
 import type { GraphPoint, GraphWorld, StableOrganicGraphLayout } from "./organicGraphLayout";
+import {
+  DEFAULT_RESEARCH_MAP_FILTER_STATE,
+  normalizeResearchMapFilterState,
+  type ResearchMapFilterState,
+  type ResearchMapProjectScope,
+} from "./research-map-filters";
 
-const MAP_SCENE_VERSION = 1;
+const MAP_SCENE_VERSION = 2;
 const MAP_RETURN_VERSION = 1;
 const MAX_SCENE_POSITIONS = 2_000;
 const MAX_COORDINATE = 100_000;
+const MAX_SCENE_PROJECT_IDS = 500;
+const MAX_SCENE_PROJECT_ID_LENGTH = 256;
 
 export interface MapViewBox {
   x: number;
@@ -13,8 +21,9 @@ export interface MapViewBox {
   height: number;
 }
 
-export interface MapSceneV1 {
-  version: 1;
+export interface MapSceneV2 {
+  version: 2;
+  filters: ResearchMapFilterState;
   relationshipKinds: ResearchPermanentEdgeKind[];
   viewBox: MapViewBox;
   layout: {
@@ -23,6 +32,9 @@ export interface MapSceneV1 {
     edgeKeys: Array<[string, string, string]>;
   };
 }
+
+/** @deprecated V1 路由现场不会再被读取；保留别名仅用于迁移期调用方类型兼容。 */
+export type MapSceneV1 = MapSceneV2;
 
 export interface MapReturnV1 {
   version: 1;
@@ -51,8 +63,8 @@ function validPath(value: unknown): value is string {
 }
 
 function relationshipKinds(value: unknown): ResearchPermanentEdgeKind[] | undefined {
-  if (!Array.isArray(value) || value.some((kind) => !RESEARCH_PERMANENT_EDGE_KINDS.includes(kind as ResearchPermanentEdgeKind))) return undefined;
-  return [...new Set(value as ResearchPermanentEdgeKind[])];
+  if (!Array.isArray(value) || value.some((kind) => !RESEARCH_PERMANENT_EDGE_KINDS.includes(kind as ResearchPermanentEdgeKind)) || new Set(value).size !== value.length) return undefined;
+  return [...value] as ResearchPermanentEdgeKind[];
 }
 
 function mapViewBox(value: unknown): MapViewBox | undefined {
@@ -61,7 +73,7 @@ function mapViewBox(value: unknown): MapViewBox | undefined {
   return { x: candidate.x, y: candidate.y, width: candidate.width, height: candidate.height };
 }
 
-function mapLayout(value: unknown): MapSceneV1["layout"] | undefined {
+function mapLayout(value: unknown): MapSceneV2["layout"] | undefined {
   const candidate = record(value);
   const world = record(candidate?.world);
   if (!candidate || !world || !finite(world.width, 1, MAX_COORDINATE) || !finite(world.height, 1, MAX_COORDINATE) || !Array.isArray(candidate.positions) || candidate.positions.length > MAX_SCENE_POSITIONS || !Array.isArray(candidate.edgeKeys) || candidate.edgeKeys.length > MAX_SCENE_POSITIONS) return undefined;
@@ -82,16 +94,54 @@ function mapLayout(value: unknown): MapSceneV1["layout"] | undefined {
   return { world: { width: world.width, height: world.height }, positions, edgeKeys };
 }
 
+function mapFilters(value: unknown): ResearchMapFilterState | undefined {
+  const candidate = record(value);
+  const projectScope = record(candidate?.projectScope);
+  if (!candidate || !projectScope || !Array.isArray(candidate.lifecycles)
+    || (candidate.fromDate !== undefined && typeof candidate.fromDate !== "string")
+    || (candidate.throughDate !== undefined && typeof candidate.throughDate !== "string")) return undefined;
+
+  let scope: ResearchMapProjectScope;
+  if (projectScope.kind === "all") {
+    scope = { kind: "all" };
+  } else if (projectScope.kind === "selected" && Array.isArray(projectScope.projectIds)
+    && typeof projectScope.includeUncategorized === "boolean"
+    && projectScope.projectIds.length <= MAX_SCENE_PROJECT_IDS
+    && projectScope.projectIds.every((id) => typeof id === "string" && id.length > 0 && id.length <= MAX_SCENE_PROJECT_ID_LENGTH)
+    && new Set(projectScope.projectIds).size === projectScope.projectIds.length) {
+    scope = {
+      kind: "selected",
+      projectIds: [...projectScope.projectIds] as string[],
+      includeUncategorized: projectScope.includeUncategorized,
+    };
+  } else {
+    return undefined;
+  }
+
+  const normalized = normalizeResearchMapFilterState({
+    projectScope: scope,
+    ...(candidate.fromDate ? { fromDate: candidate.fromDate } : {}),
+    ...(candidate.throughDate ? { throughDate: candidate.throughDate } : {}),
+    lifecycles: candidate.lifecycles as ResearchMapFilterState["lifecycles"],
+  });
+  return normalized.valid ? normalized.state : undefined;
+}
+
 /**
  * 路由 history entry 的临时地图现场。它不是业务数据：不进入 URL、存储或服务端。
  */
 export function serializeMapScene(input: {
+  /** 迁移期缺省为全部项目、全部时间、两种生命周期；调用方升级后始终显式传入。 */
+  filters?: ResearchMapFilterState;
   relationshipKinds: readonly ResearchPermanentEdgeKind[];
   viewBox: MapViewBox;
   layout: Pick<StableOrganicGraphLayout, "world" | "positions" | "edgeKeys">;
-}): MapSceneV1 {
+}): MapSceneV2 {
+  const normalizedFilters = normalizeResearchMapFilterState(input.filters ?? DEFAULT_RESEARCH_MAP_FILTER_STATE);
+  if (!normalizedFilters.valid) throw new Error(`Cannot serialize invalid research map filters: ${normalizedFilters.reason}`);
   return {
     version: MAP_SCENE_VERSION,
+    filters: normalizedFilters.state,
     relationshipKinds: [...new Set(input.relationshipKinds)],
     viewBox: { ...input.viewBox },
     layout: {
@@ -102,17 +152,18 @@ export function serializeMapScene(input: {
   };
 }
 
-export function mapSceneFromRouteState(value: unknown): MapSceneV1 | undefined {
+export function mapSceneFromRouteState(value: unknown): MapSceneV2 | undefined {
   const routeState = record(value);
-  const candidate = record(routeState?.mapSceneV1);
+  const candidate = record(routeState?.mapSceneV2);
   if (!candidate || candidate.version !== MAP_SCENE_VERSION) return undefined;
+  const filters = mapFilters(candidate.filters);
   const kinds = relationshipKinds(candidate.relationshipKinds);
   const viewBox = mapViewBox(candidate.viewBox);
   const layout = mapLayout(candidate.layout);
-  return kinds && viewBox && layout ? { version: MAP_SCENE_VERSION, relationshipKinds: kinds, viewBox, layout } : undefined;
+  return filters && kinds && viewBox && layout ? { version: MAP_SCENE_VERSION, filters, relationshipKinds: kinds, viewBox, layout } : undefined;
 }
 
-export function mapSceneLayout(scene: MapSceneV1): Pick<StableOrganicGraphLayout, "world" | "positions" | "edgeKeys"> {
+export function mapSceneLayout(scene: MapSceneV2): Pick<StableOrganicGraphLayout, "world" | "positions" | "edgeKeys"> {
   return {
     world: { ...scene.layout.world },
     positions: new Map(scene.layout.positions.map(([id, x, y]) => [id, { x, y } satisfies GraphPoint])),
@@ -143,11 +194,11 @@ export function mergeRouteState(current: unknown, additions: RouteState): RouteS
  * 同一地图 history entry 的现场更新只 replace，绝不能触发新的导航或 React 重挂载。
  * React Router 的 usr/key/idx 包装保持原样，之后 popstate/刷新会读取这份 state。
  */
-export function replaceCurrentMapScene(scene: MapSceneV1, routeState?: unknown): void {
+export function replaceCurrentMapScene(scene: MapSceneV2, routeState?: unknown): void {
   if (typeof window === "undefined") return;
   const historyState = record(window.history.state);
   if (!historyState) return;
-  window.history.replaceState({ ...historyState, usr: mergeRouteState(routeState ?? currentRouteState(), { mapSceneV1: scene }) }, "");
+  window.history.replaceState({ ...historyState, usr: mergeRouteState(routeState ?? currentRouteState(), { mapSceneV2: scene }) }, "");
 }
 
 export function createMapReturn(source: HistoryEntryIdentity | undefined, sourcePath: string): MapReturnV1 | undefined {
