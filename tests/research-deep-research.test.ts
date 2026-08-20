@@ -734,6 +734,13 @@ test("global map endpoint returns one cross-session observation with archived an
   assert.ok(observation.nodes.every((item) => item.connectivity === "default"));
   assert.deepEqual(observation.edges.map((item) => item.edge.kind), ["fused-from"]);
 
+  const futureOnlyResponse = await fetch(
+    `${harness.base}/v1/research-map?createdFrom=2999-01-01T00%3A00%3A00.000Z`,
+    { headers: headers(harness.token) },
+  );
+  assert.equal(futureOnlyResponse.status, 200);
+  assert.deepEqual((await futureOnlyResponse.json() as { nodes: unknown[] }).nodes, []);
+
   const noRelationshipsResponse = await fetch(
     `${harness.base}/v1/research-map?focusNodeId=${first.session.id}&relationshipKind=`,
     { headers: headers(harness.token) },
@@ -770,6 +777,12 @@ test("global map endpoint returns one cross-session observation with archived an
   assert.deepEqual(refreshed, observation);
   assert.equal((await fetch(`${harness.base}/v1/research-map`)).status, 401);
   assert.equal((await fetch(`${harness.base}/v1/research-map?relationshipKind=semantic-related`, { headers: headers(harness.token) })).status, 400);
+  assert.equal((await fetch(`${harness.base}/v1/research-map?createdFrom=not-an-iso-date`, { headers: headers(harness.token) })).status, 400);
+  assert.equal((await fetch(`${harness.base}/v1/research-map?createdFrom=2026-08-10`, { headers: headers(harness.token) })).status, 400);
+  assert.equal((await fetch(`${harness.base}/v1/research-map?createdFrom=2026-08-10T00%3A00%3A00.000Z&createdBefore=2026-08-10T00%3A00%3A00.000Z`, { headers: headers(harness.token) })).status, 400);
+  assert.equal((await fetch(`${harness.base}/v1/research-map?createdFrom=2026-08-11T00%3A00%3A00.000Z&createdBefore=2026-08-10T00%3A00%3A00.000Z`, { headers: headers(harness.token) })).status, 400);
+  assert.equal((await fetch(`${harness.base}/v1/research-map?updatedFrom=2026-08-10T00%3A00%3A00.000Z`, { headers: headers(harness.token) })).status, 400);
+  assert.equal((await fetch(`${harness.base}/v1/research-map?updatedTo=2026-08-10T00%3A00%3A00.000Z`, { headers: headers(harness.token) })).status, 400);
   assert.equal((await fetch(`${harness.base}/v1/research-map?focusNodeId=missing`, { headers: headers(harness.token) })).status, 404);
   assert.equal((await fetch(`${harness.base}/v1/research-map?focusNodeId=${trashed.session.id}`, { headers: headers(harness.token) })).status, 404);
 });

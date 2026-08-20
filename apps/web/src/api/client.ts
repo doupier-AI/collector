@@ -526,8 +526,8 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
       if (input.focusNodeId) params.set("focusNodeId", input.focusNodeId);
       for (const projectId of input.projectIds ?? []) params.append("projectId", projectId);
       if (input.includeArchived !== undefined) params.set("includeArchived", String(input.includeArchived));
-      if (input.updatedFrom) params.set("updatedFrom", input.updatedFrom);
-      if (input.updatedTo) params.set("updatedTo", input.updatedTo);
+      if (input.createdFrom) params.set("createdFrom", input.createdFrom);
+      if (input.createdBefore) params.set("createdBefore", input.createdBefore);
       if (input.relationshipKinds !== undefined) {
         if (input.relationshipKinds.length === 0) params.append("relationshipKind", "");
         else for (const kind of input.relationshipKinds) params.append("relationshipKind", kind);

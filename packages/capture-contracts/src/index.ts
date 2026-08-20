@@ -2507,8 +2507,10 @@ export interface ResearchGraphObservationInput {
   focusNodeId?: string;
   projectIds?: string[];
   includeArchived?: boolean;
-  updatedFrom?: string;
-  updatedTo?: string;
+  /** 节点创建时间的含下界。 */
+  createdFrom?: string;
+  /** 节点创建时间的不含上界。 */
+  createdBefore?: string;
   relationshipKinds?: ResearchPermanentEdgeKind[];
 }
 
@@ -2586,8 +2588,8 @@ export function buildResearchGraphObservation(
     if (!session) return false;
     if (!includeArchived && session.status === "archived") return false;
     if (projectFilter && (!session.projectId || !projectFilter.has(session.projectId))) return false;
-    if (input.updatedFrom && node.updatedAt < input.updatedFrom) return false;
-    if (input.updatedTo && node.updatedAt > input.updatedTo) return false;
+    if (input.createdFrom && node.createdAt < input.createdFrom) return false;
+    if (input.createdBefore && node.createdAt >= input.createdBefore) return false;
     return true;
   };
 

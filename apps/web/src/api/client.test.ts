@@ -102,11 +102,13 @@ describe("#62 global research map API client", () => {
       focusNodeId: "node / one",
       projectIds: ["project-a", "project-b"],
       includeArchived: false,
+      createdFrom: "2026-08-10T00:00:00.000Z",
+      createdBefore: "2026-08-11T00:00:00.000Z",
       relationshipKinds: ["parent-child", "fused-from"],
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "/v1/research-map?focusNodeId=node+%2F+one&projectId=project-a&projectId=project-b&includeArchived=false&relationshipKind=parent-child&relationshipKind=fused-from",
+      "/v1/research-map?focusNodeId=node+%2F+one&projectId=project-a&projectId=project-b&includeArchived=false&createdFrom=2026-08-10T00%3A00%3A00.000Z&createdBefore=2026-08-11T00%3A00%3A00.000Z&relationshipKind=parent-child&relationshipKind=fused-from",
       undefined,
     );
   });

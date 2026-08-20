@@ -595,6 +595,12 @@ button {
   fill: var(--color-surface);
 }
 
+/* 范围外节点只为连接当前筛选结果而保留。虚线轮廓弱化其权重，
+ * 但不降低整节点不透明度，以保留归档、证据与焦点等原有语义。 */
+.global-map__node--outside-bridge .global-map__node-core {
+  stroke-dasharray: 2 1;
+}
+
 .global-map__node--emphasized .global-map__node-core,
 .global-map__node--neighbor .global-map__node-core {
   r: 9px;
@@ -683,6 +689,13 @@ button {
 
 .global-map__node .global-map__node-evidence--incomplete {
   font-weight: 750;
+}
+
+.global-map__node .global-map__node-scope {
+  fill: var(--color-muted);
+  font-size: 10px;
+  font-weight: 650;
+  opacity: 0.92;
 }
 
 .global-map__node--archived .global-map__node-details {
@@ -918,6 +931,19 @@ button {
     font-size: var(--font-size-xs);
   }
 
+  .global-map__scope-badge {
+    display: inline-flex;
+    margin-top: var(--space-1);
+    padding: 0 var(--space-1);
+    border: 1px dashed var(--color-line);
+    border-radius: var(--radius-control);
+    color: var(--color-muted);
+    font-size: var(--font-size-xs);
+    font-weight: 650;
+    line-height: 1.45;
+    white-space: nowrap;
+  }
+
   .global-map__list-dot {
     --global-map-project-color: var(--color-graph-node-stroke);
     width: 0.75rem;
@@ -984,6 +1010,10 @@ button {
 
   .global-map__list-dot--archived.global-map__list-dot--fusion {
     background: var(--color-surface);
+  }
+
+  .global-map__list-dot--outside-bridge {
+    border-style: dashed;
   }
 
   .global-map__focus-controls {

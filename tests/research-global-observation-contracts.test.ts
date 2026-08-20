@@ -51,6 +51,22 @@ test("focus traverses the complete permanent component without maxDepth and keep
   assert.ok(result.edges.every((item) => item.connectivity === "connected"));
 });
 
+test("creation time scope includes its lower boundary, excludes its upper boundary, and ignores later node updates", () => {
+  const sessions = [session("lower"), session("upper"), session("outside")];
+  const nodes = [
+    node("lower", "lower", { createdAt: "2026-08-10T00:00:00.000Z", updatedAt: "2026-08-19T00:00:00.000Z" }),
+    node("upper", "upper", { createdAt: "2026-08-11T00:00:00.000Z", updatedAt: "2026-08-01T00:00:00.000Z" }),
+    node("outside", "outside", { createdAt: "2026-08-09T23:59:59.999Z", updatedAt: "2026-08-20T00:00:00.000Z" }),
+  ];
+
+  const result = buildResearchGraphObservation(nodes, [], sessions, [], {
+    createdFrom: "2026-08-10T00:00:00.000Z",
+    createdBefore: "2026-08-11T00:00:00.000Z",
+  });
+
+  assert.deepEqual(result.nodes.map((item) => item.node.id), ["lower"]);
+});
+
 test("mixed permanent paths, cycles and disabled parallel facts keep one server-classified observation", () => {
   const sessions = [session("a"), session("b"), session("c"), session("d")];
   const nodes = sessions.map((item) => node(item.id, item.id));

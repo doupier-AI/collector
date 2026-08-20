@@ -35,8 +35,13 @@ function nodeStatus(summary: ResearchGraphObservationNode): string {
     summary.role === "fusion" ? "融合成果" : "研究节点",
     summary.lifecycle === "archived" ? "已归档" : "活跃",
     evidenceStatus(summary),
-    summary.scope === "outside-bridge" ? "范围外桥接" : "当前范围",
+    bridgeScopeLabel(summary),
   ].filter(Boolean).join("，");
+}
+
+/** 仅给为维持关系脉络而保留的节点添加范围说明；当前范围节点不需要额外标记。 */
+function bridgeScopeLabel(summary: ResearchGraphObservationNode): string | undefined {
+  return summary.scope === "outside-bridge" ? "范围外桥接" : undefined;
 }
 
 function evidenceStatus(summary: ResearchGraphObservationNode): string | undefined {
@@ -365,6 +370,8 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
           {observation.nodes.map((summary) => {
             const position = positions.get(summary.node.id)!;
             const current = summary.node.id === rovingNodeId;
+            const evidence = evidenceStatus(summary);
+            const bridgeScope = bridgeScopeLabel(summary);
             const interactionClass = interactionNodeId
               ? summary.node.id === interactionNodeId
                 ? "global-map__node--emphasized"
@@ -375,6 +382,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
               `global-map__node--${summary.role}`,
               `global-map__node--${summary.lifecycle}`,
               `global-map__node--${summary.connectivity}`,
+              bridgeScope ? "global-map__node--outside-bridge" : "",
               projectColorClass(summary),
               interactionClass,
               focusedNodeId === summary.node.id ? "global-map__node--selected" : "",
@@ -405,7 +413,8 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
                 <circle className="global-map__node-core" r="7" />
                 <text textAnchor="middle" y="27" aria-hidden="true">{summary.label.length > 15 ? `${summary.label.slice(0, 14)}…` : summary.label}</text>
                 <text className="global-map__node-details" textAnchor="middle" y="43" aria-hidden="true">{compactNodeDetails(summary)}</text>
-                {evidenceStatus(summary) ? <text className={`global-map__node-evidence global-map__node-evidence--${summary.fusionEvidenceHealth}`} textAnchor="middle" y="58" aria-hidden="true">{evidenceStatus(summary)}</text> : null}
+                {evidence ? <text className={`global-map__node-evidence global-map__node-evidence--${summary.fusionEvidenceHealth}`} textAnchor="middle" y="58" aria-hidden="true">{evidence}</text> : null}
+                {bridgeScope ? <text className="global-map__node-scope" textAnchor="middle" y={evidence ? 73 : 58} aria-hidden="true">{bridgeScope}</text> : null}
               </g>
             );
           })}
@@ -416,14 +425,17 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
       <div className="global-map__list" data-testid="global-map-list">
         <h2 className="global-map__view-title">全部研究节点</h2>
         <ul>
-          {observation.nodes.map((summary) => (
-            <li key={summary.node.id}>
-              <button ref={(element) => { if (element) listNodeRefs.current.set(summary.node.id, element); else listNodeRefs.current.delete(summary.node.id); }} type="button" className={`global-map__list-link global-map__list-link--${summary.connectivity}`} aria-current={focusedNodeId === summary.node.id ? "true" : undefined} aria-pressed={focusedNodeId === summary.node.id} aria-label={[summary.label, nodeStatus(summary), connectivityStatus(summary.connectivity), "单击或 Space 专注", "Enter 打开"].filter(Boolean).join("，")} onClick={() => selectNode(summary.node.id)} onFocus={() => setRovingNodeId(summary.node.id)} onKeyDown={(event) => handleKey(event, summary.node.id, listNodeRefs.current)}>
-                <span className={["global-map__list-dot", `global-map__list-dot--${summary.role}`, `global-map__list-dot--${summary.lifecycle}`, projectColorClass(summary, "global-map__list-dot")].filter(Boolean).join(" ")} aria-hidden="true" />
-                <span><strong>{summary.label}</strong><small>{summary.projectName ?? "未分类"} · {summary.sessionTitle} · {summary.role === "fusion" ? "融合成果" : "研究节点"}{summary.lifecycle === "archived" ? " · 已归档" : ""}{evidenceStatus(summary) ? ` · ${evidenceStatus(summary)}` : ""}{summary.connectivity === "focus" ? " · 当前专注" : summary.connectivity === "connected" ? " · 已连通" : summary.connectivity === "unconnected" ? " · 未连通" : ""}</small></span>
-              </button>
-            </li>
-          ))}
+          {observation.nodes.map((summary) => {
+            const bridgeScope = bridgeScopeLabel(summary);
+            return (
+              <li key={summary.node.id}>
+                <button ref={(element) => { if (element) listNodeRefs.current.set(summary.node.id, element); else listNodeRefs.current.delete(summary.node.id); }} type="button" className={["global-map__list-link", `global-map__list-link--${summary.connectivity}`, bridgeScope ? "global-map__list-link--outside-bridge" : ""].filter(Boolean).join(" ")} aria-current={focusedNodeId === summary.node.id ? "true" : undefined} aria-pressed={focusedNodeId === summary.node.id} aria-label={[summary.label, nodeStatus(summary), connectivityStatus(summary.connectivity), "单击或 Space 专注", "Enter 打开"].filter(Boolean).join("，")} onClick={() => selectNode(summary.node.id)} onFocus={() => setRovingNodeId(summary.node.id)} onKeyDown={(event) => handleKey(event, summary.node.id, listNodeRefs.current)}>
+                  <span className={["global-map__list-dot", `global-map__list-dot--${summary.role}`, `global-map__list-dot--${summary.lifecycle}`, bridgeScope ? "global-map__list-dot--outside-bridge" : "", projectColorClass(summary, "global-map__list-dot")].filter(Boolean).join(" ")} aria-hidden="true" />
+                  <span><strong>{summary.label}</strong><small>{summary.projectName ?? "未分类"} · {summary.sessionTitle} · {summary.role === "fusion" ? "融合成果" : "研究节点"}{summary.lifecycle === "archived" ? " · 已归档" : ""}{evidenceStatus(summary) ? ` · ${evidenceStatus(summary)}` : ""}{summary.connectivity === "focus" ? " · 当前专注" : summary.connectivity === "connected" ? " · 已连通" : summary.connectivity === "unconnected" ? " · 未连通" : ""}</small>{bridgeScope ? <span className="global-map__scope-badge">{bridgeScope}</span> : null}</span>
+                </button>
+              </li>
+            );
+          })}
         </ul>
         <ul className="global-map__relations" data-testid="global-map-relations" aria-label="直接关系">
           {observation.edges.map(({ edge, connectivity }) => {

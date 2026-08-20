@@ -631,6 +631,9 @@ function parseGraphProjectionDepth(value: string | null): number | undefined {
 }
 
 function parseGraphObservationInput(url: URL): import("@collector/capture-contracts").ResearchGraphObservationInput {
+  if (url.searchParams.has("updatedFrom") || url.searchParams.has("updatedTo")) {
+    throw new ResearchValidationError("updatedFrom and updatedTo are no longer supported; use createdFrom and createdBefore");
+  }
   const focusNodeId = url.searchParams.get("focusNodeId")?.trim() || undefined;
   const projectIds = url.searchParams.getAll("projectId").map((value) => value.trim()).filter(Boolean);
   const relationshipKindsWereSpecified = url.searchParams.has("relationshipKind");
@@ -644,17 +647,17 @@ function parseGraphObservationInput(url: URL): import("@collector/capture-contra
   if (includeArchivedValue !== null && includeArchivedValue !== "true" && includeArchivedValue !== "false") {
     throw new ResearchValidationError("includeArchived must be true or false");
   }
-  const updatedFrom = parseOptionalIsoDate(url.searchParams.get("updatedFrom"), "updatedFrom");
-  const updatedTo = parseOptionalIsoDate(url.searchParams.get("updatedTo"), "updatedTo");
-  if (updatedFrom && updatedTo && updatedFrom > updatedTo) {
-    throw new ResearchValidationError("updatedFrom must not be later than updatedTo");
+  const createdFrom = parseOptionalIsoDate(url.searchParams.get("createdFrom"), "createdFrom");
+  const createdBefore = parseOptionalIsoDate(url.searchParams.get("createdBefore"), "createdBefore");
+  if (createdFrom && createdBefore && createdFrom >= createdBefore) {
+    throw new ResearchValidationError("createdFrom must be earlier than createdBefore");
   }
   return {
     ...(focusNodeId ? { focusNodeId } : {}),
     ...(projectIds.length ? { projectIds } : {}),
     ...(includeArchivedValue !== null ? { includeArchived: includeArchivedValue === "true" } : {}),
-    ...(updatedFrom ? { updatedFrom } : {}),
-    ...(updatedTo ? { updatedTo } : {}),
+    ...(createdFrom ? { createdFrom } : {}),
+    ...(createdBefore ? { createdBefore } : {}),
     ...(relationshipKindsWereSpecified
       ? { relationshipKinds: relationshipKinds as Array<"parent-child" | "fused-from"> }
       : {}),
@@ -663,7 +666,8 @@ function parseGraphObservationInput(url: URL): import("@collector/capture-contra
 
 function parseOptionalIsoDate(value: string | null, label: string): string | undefined {
   if (value === null) return undefined;
-  if (!value.trim() || Number.isNaN(Date.parse(value))) throw new ResearchValidationError(`${label} must be an ISO date`);
+  const ISO_DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
+  if (!ISO_DATE_TIME.test(value) || Number.isNaN(Date.parse(value))) throw new ResearchValidationError(`${label} must be an ISO date-time`);
   return new Date(value).toISOString();
 }
 
