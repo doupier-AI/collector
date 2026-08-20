@@ -175,6 +175,7 @@ export function createStableOrganicGraphLayout(
   nodes: readonly ResearchGraphObservationNode[],
   edges: readonly ResearchGraphObservationEdge[],
   previous?: StableOrganicGraphLayout,
+  options: { preserveExisting?: boolean } = {},
 ): StableOrganicGraphLayout {
   const ids = nodes.map(({ node }) => node.id).sort((a, b) => a.localeCompare(b));
   const set = new Set(ids);
@@ -190,7 +191,7 @@ export function createStableOrganicGraphLayout(
   const changed = new Set<string>();
   for (const [key, endpoints] of edgeKeys) if (!previous?.edgeKeys.has(key)) endpoints.forEach((id) => changed.add(id));
   for (const [key, endpoints] of previous?.edgeKeys ?? []) if (!edgeKeys.has(key)) endpoints.forEach((id) => changed.add(id));
-  if (previous) for (const id of changed) { if (set.has(id)) movable.add(id); for (const neighbor of adjacency.get(id) ?? []) movable.add(neighbor); }
+  if (previous && !options.preserveExisting) for (const id of changed) { if (set.has(id)) movable.add(id); for (const neighbor of adjacency.get(id) ?? []) movable.add(neighbor); }
   // 只计算可移动节点的受力；其他节点严格不写回，新增孤点不会让旧图重新洗牌。
   for (let step = 0; step < 24 && movable.size; step += 1) for (const id of movable) {
     const point = positions.get(id)!; let fx = 0; let fy = 0;

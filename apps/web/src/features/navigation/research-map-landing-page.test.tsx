@@ -86,6 +86,32 @@ describe("ResearchMapLandingPage", () => {
     expect(screen.getByRole("link", { name: "查看回收站" })).toHaveAttribute("href", "/trash");
   });
 
+  it("空结果也把筛选保存到当前 history entry，刷新可恢复同一现场", async () => {
+    window.history.replaceState({ idx: 0, key: "map-empty", usr: null }, "");
+    renderPage({ getResearchMap: async () => makeGraphObservation() });
+    const user = userEvent.setup();
+
+    await screen.findByRole("link", { name: "开始第一次研究" });
+    await user.click(screen.getByRole("checkbox", { name: "已归档" }));
+
+    await waitFor(() => expect(window.history.state.usr?.mapSceneV2?.filters?.lifecycles).toEqual(["active"]));
+    expect(window.history.state.usr.mapSceneV2.layout.positions).toEqual([]);
+  });
+
+  it("已有空结果后的更新失败仍明确显示网络错误", async () => {
+    const getResearchMap = vi.fn()
+      .mockResolvedValueOnce(makeGraphObservation())
+      .mockRejectedValueOnce(new Error("offline"));
+    renderPage({ getResearchMap });
+    const user = userEvent.setup();
+
+    await screen.findByRole("link", { name: "开始第一次研究" });
+    await user.click(screen.getByRole("checkbox", { name: "已归档" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("操作没有完成，请重试。");
+    expect(screen.getByText("当前筛选没有匹配的研究节点，地图事实没有被删除。")).toBeInTheDocument();
+  });
+
   it("专注地址把焦点和永久关系开关交给同一观察请求，退出时回到全图", async () => {
     const focusObservation = {
       ...makeGraphObservation({
@@ -163,5 +189,20 @@ describe("ResearchMapLandingPage", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("开始日期不能晚于结束日期。");
     expect(screen.getByTestId("global-map-canvas")).toBeInTheDocument();
     expect(getResearchMap).toHaveBeenCalledTimes(2);
+  });
+
+  it("非空地图的新筛选请求失败时仍立即保存当前有效筛选", async () => {
+    window.history.replaceState({ idx: 0, key: "map-filter-error", usr: null }, "");
+    const getResearchMap = vi.fn()
+      .mockResolvedValueOnce(makeGraphObservation({ nodes: [makeGraphObservationNode("a", "节点 A")] }))
+      .mockRejectedValueOnce(new Error("offline"));
+    renderPage({ getResearchMap });
+
+    await screen.findByTestId("global-map-canvas");
+    await userEvent.setup().click(screen.getByRole("checkbox", { name: "已归档" }));
+
+    await screen.findByRole("alert");
+    await waitFor(() => expect(window.history.state.usr?.mapSceneV2?.filters?.lifecycles).toEqual(["active"]));
+    expect(screen.getByTestId("global-map-canvas")).toBeInTheDocument();
   });
 });

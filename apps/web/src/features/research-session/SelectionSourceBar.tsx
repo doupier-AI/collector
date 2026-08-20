@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import type { ResearchSelectionRecord } from "@collector/capture-contracts";
 import { useServices } from "../../app/services";
+import { useNodeNavigationState } from "../navigation/useNodeNavigationState";
 import { backRouteForSelection, selectionExcerpt } from "../selection/selection-highlight";
 
 /**
@@ -15,13 +16,14 @@ export function SelectionSourceBar({
   sourceName: string | null;
   selection: ResearchSelectionRecord;
 }) {
+  const navigationState = useNodeNavigationState();
   return (
     <aside className="source-bar" data-testid="selection-source-bar" aria-label="来源关系">
       <div className="source-bar__info">
         <p className="source-bar__title">{sourceName ? `来自《${sourceName}》的选区` : "来自原内容的选区"}</p>
         <blockquote className="source-bar__quote">{selectionExcerpt(selection.text)}</blockquote>
       </div>
-      <Link className="button button--secondary source-bar__back" to={backRouteForSelection(selection)}>
+      <Link className="button button--secondary source-bar__back" to={backRouteForSelection(selection)} state={navigationState}>
         ← 返回原文
       </Link>
     </aside>

@@ -410,6 +410,17 @@ test("#66 地图范围：项目、日期、生命周期、桥接和历史现场�
     expect(filteredSpatial.nodes[nodeId]).toBe(initialSpatial.nodes[nodeId]);
   }
 
+  await page.getByLabel("筛选地图").getByRole("button", { name: "清除筛选" }).click();
+  await expect(canvas.getByRole("button", { name: /^未分类节点，/ })).toBeVisible();
+  const clearedNonEmptySpatial = await readGlobalMapSpatialState(page);
+  expect(clearedNonEmptySpatial.viewBox).toBe(initialSpatial.viewBox);
+  for (const nodeId of ["filter-a", "filter-b", "filter-c", "filter-u"]) {
+    expect(clearedNonEmptySpatial.nodes[nodeId]).toBe(initialSpatial.nodes[nodeId]);
+  }
+  await projectOne.click();
+  await expect(projectOne).toBeChecked();
+  await expect(canvas.getByRole("button", { name: /^未分类节点，/ })).toHaveCount(0);
+
   const archived = page.getByRole("checkbox", { name: "已归档" });
   await archived.click();
   await expect(archived).not.toBeChecked();
@@ -457,6 +468,28 @@ test("#66 地图范围：项目、日期、生命周期、桥接和历史现场�
   const list = page.getByTestId("global-map-list");
   await expect(list.getByRole("button", { name: /^桥接节点 B，/ })).toContainText("范围边界");
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
+  const preEmptySpatial = await readGlobalMapSpatialState(page);
+
+  await page.getByLabel("开始日期").fill("2026-08-22");
+  await page.getByLabel("结束日期").fill("2026-08-22");
+  await expect(page.getByText("当前筛选没有匹配的研究节点，地图事实没有被删除。")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.history.state?.usr?.mapSceneV2?.filters?.fromDate)).toBe("2026-08-22");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole("status").getByRole("button", { name: "清除筛选" }).click();
+  await expect(page.getByTestId("global-map-canvas")).toBeVisible();
+  const restoredSpatial = await readGlobalMapSpatialState(page);
+  expect(restoredSpatial.viewBox).toBe(preEmptySpatial.viewBox);
+  for (const nodeId of ["filter-a", "filter-b", "filter-c", "filter-u"]) {
+    expect(restoredSpatial.nodes[nodeId]).toBe(initialSpatial.nodes[nodeId]);
+  }
+
+  await page.getByLabel("开始日期").fill("2026-08-22");
+  await page.getByLabel("结束日期").fill("2026-08-22");
+  await expect(page.getByText("当前筛选没有匹配的研究节点，地图事实没有被删除。")).toBeVisible();
+  await page.reload();
+  await expect(page.getByLabel("开始日期")).toHaveValue("2026-08-22");
+  await expect(page.getByLabel("结束日期")).toHaveValue("2026-08-22");
+  await expect(page.getByText("当前筛选没有匹配的研究节点，地图事实没有被删除。")).toBeVisible();
   expect(browserIssues.issues, browserIssues.issues.join("\n")).toEqual([]);
 });
 

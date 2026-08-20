@@ -11,7 +11,7 @@ import {
 import { stableNodePath } from "../../app/paths";
 import { createStableOrganicGraphLayout } from "./organicGraphLayout";
 import { mapSceneLayout, serializeMapScene, type MapSceneV2 } from "./map-scene";
-import { DEFAULT_RESEARCH_MAP_FILTER_STATE, type ResearchMapFilterState } from "./research-map-filters";
+import { DEFAULT_RESEARCH_MAP_FILTER_STATE, isDefaultResearchMapFilterState, type ResearchMapFilterState } from "./research-map-filters";
 
 interface ViewBoxState {
   x: number;
@@ -140,9 +140,11 @@ interface GlobalResearchMapProps {
   relationshipKinds?: readonly ResearchPermanentEdgeKind[];
   onRelationshipKindToggle?: (kind: ResearchPermanentEdgeKind) => void;
   filters?: ResearchMapFilterState;
+  preserveExistingLayout?: boolean;
 }
 
-export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initialScene, onSceneChange, onOpenNode, nodeHref = stableNodePath, relationshipKinds = observation.appliedRelationshipKinds, onRelationshipKindToggle, filters = DEFAULT_RESEARCH_MAP_FILTER_STATE }: GlobalResearchMapProps) {
+export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initialScene, onSceneChange, onOpenNode, nodeHref = stableNodePath, relationshipKinds = observation.appliedRelationshipKinds, onRelationshipKindToggle, filters = DEFAULT_RESEARCH_MAP_FILTER_STATE, preserveExistingLayout }: GlobalResearchMapProps) {
+  const filtering = preserveExistingLayout ?? !isDefaultResearchMapFilterState(filters);
   const layoutRef = useRef<ReturnType<typeof createStableOrganicGraphLayout> | undefined>(undefined);
   if (!layoutRef.current && initialScene) {
     const restored = mapSceneLayout(initialScene);
@@ -153,16 +155,31 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
     };
   }
   const layout = useMemo(
-    () => createStableOrganicGraphLayout(observation.nodes, observation.edges, layoutRef.current),
-    [observation.nodes, observation.edges],
+    () => createStableOrganicGraphLayout(observation.nodes, observation.edges, layoutRef.current, { preserveExisting: filtering }),
+    [filtering, observation.nodes, observation.edges],
   );
-  useLayoutEffect(() => { layoutRef.current = layout; }, [layout]);
+  useLayoutEffect(() => {
+    const previous = layoutRef.current;
+    layoutRef.current = filtering && previous ? {
+      world: {
+        width: Math.max(previous.world.width, layout.world.width),
+        height: Math.max(previous.world.height, layout.world.height),
+      },
+      positions: new Map([...previous.positions, ...layout.positions]),
+      edgeKeys: new Map([...previous.edgeKeys, ...layout.edgeKeys]),
+    } : layout;
+  }, [filtering, layout]);
   const positions = layout.positions;
   const world = layout.world;
   const [viewBox, setViewBox] = useState<ViewBoxState>(() => initialScene?.viewBox ?? ({ x: 0, y: 0, width: world.width, height: world.height }));
   const adjacency = useMemo(() => adjacencyFor(observation), [observation]);
   const visualEdges = useMemo(() => visualEdgesFor(observation), [observation]);
   const [rovingNodeId, setRovingNodeId] = useState(observation.nodes[0]?.node.id ?? "");
+  const resolvedRovingNodeId = observation.nodes.some((summary) => summary.node.id === rovingNodeId)
+    ? rovingNodeId
+    : observation.nodes.find((summary) => summary.node.id === observation.focusNodeId)?.node.id
+      ?? observation.nodes[0]?.node.id
+      ?? "";
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [keyboardNodeId, setKeyboardNodeId] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -182,6 +199,10 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
   useEffect(() => {
     onSceneChange?.(serializeMapScene({ filters, relationshipKinds, viewBox, layout }));
   }, [filters, layout, onSceneChange, relationshipKinds, viewBox]);
+
+  useEffect(() => {
+    if (resolvedRovingNodeId !== rovingNodeId) setRovingNodeId(resolvedRovingNodeId);
+  }, [resolvedRovingNodeId, rovingNodeId]);
 
   const selectNode = useCallback((nodeId: string) => {
     onFocusNode?.(nodeId);
@@ -213,7 +234,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
 
   const moveFocus = (event: KeyboardEvent, direction: -1 | 1, refs: ReadonlyMap<string, Element>) => {
     event.preventDefault();
-    const current = Math.max(0, observation.nodes.findIndex((item) => item.node.id === rovingNodeId));
+    const current = Math.max(0, observation.nodes.findIndex((item) => item.node.id === resolvedRovingNodeId));
     const next = observation.nodes[Math.max(0, Math.min(observation.nodes.length - 1, current + direction))];
     if (!next) return;
     setRovingNodeId(next.node.id);
@@ -373,7 +394,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
           })}
           {observation.nodes.map((summary) => {
             const position = positions.get(summary.node.id)!;
-            const current = summary.node.id === rovingNodeId;
+            const current = summary.node.id === resolvedRovingNodeId;
             const evidence = evidenceStatus(summary);
             const externalScope = externalScopePresentation(summary);
             const interactionClass = interactionNodeId

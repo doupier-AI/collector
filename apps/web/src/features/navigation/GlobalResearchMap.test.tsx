@@ -40,6 +40,30 @@ function canvasNode(canvas: HTMLElement, label: string): HTMLElement {
 }
 
 describe("GlobalResearchMap keyboard navigation", () => {
+  it("筛选移除当前 roving 节点后把桌面 Tab 入口收敛到仍可见节点", async () => {
+    const initial = makeGraphObservation({ nodes: [
+      makeGraphObservationNode("a", "节点 A"),
+      makeGraphObservationNode("b", "节点 B"),
+    ] });
+    const rendered = render(
+      <MemoryRouter>
+        <GlobalResearchMap observation={initial} />
+      </MemoryRouter>,
+    );
+    const initialCanvas = screen.getByTestId("global-map-canvas");
+    canvasNode(initialCanvas, "节点 A").focus();
+
+    rendered.rerender(
+      <MemoryRouter>
+        <GlobalResearchMap observation={makeGraphObservation({ nodes: [makeGraphObservationNode("b", "节点 B")] })} />
+      </MemoryRouter>,
+    );
+
+    const remaining = canvasNode(screen.getByTestId("global-map-canvas"), "节点 B");
+    await waitFor(() => expect(remaining).toHaveAttribute("tabindex", "0"));
+    expect(screen.getByTestId("global-map-canvas").querySelectorAll('[tabindex="0"]')).toHaveLength(1);
+  });
+
   it("wide canvas moves focus only among SVG nodes", async () => {
     renderMap();
     const canvas = screen.getByTestId("global-map-canvas");
@@ -91,6 +115,34 @@ describe("GlobalResearchMap keyboard navigation", () => {
 });
 
 describe("GlobalResearchMap stable organic canvas", () => {
+  it("范围筛选隐藏再恢复节点时保留全部已知坐标", () => {
+    const nodes = [
+      makeGraphObservationNode("a", "节点 A"),
+      makeGraphObservationNode("b", "节点 B"),
+      makeGraphObservationNode("c", "节点 C"),
+      makeGraphObservationNode("d", "节点 D"),
+    ];
+    const edges = [
+      { edge: { ...makeEdge("parent-child", "a", "b"), kind: "parent-child" as const }, connectivity: "default" as const },
+      { edge: { ...makeEdge("parent-child", "b", "c"), kind: "parent-child" as const }, connectivity: "default" as const },
+    ];
+    const full = makeGraphObservation({ nodes, edges });
+    const filtered = makeGraphObservation({ nodes: nodes.slice(0, 2), edges: edges.slice(0, 1) });
+    const selectedFilters = {
+      ...DEFAULT_RESEARCH_MAP_FILTER_STATE,
+      projectScope: { kind: "selected" as const, projectIds: ["project-one"], includeUncategorized: false },
+    };
+    const rendered = render(<MemoryRouter><GlobalResearchMap observation={full} /></MemoryRouter>);
+    const initial = Object.fromEntries(nodes.map(({ node }) => [node.id, screen.getByTestId("global-map-canvas").querySelector(`[data-node-id="${node.id}"]`)?.getAttribute("transform")]));
+
+    rendered.rerender(<MemoryRouter><GlobalResearchMap observation={filtered} filters={selectedFilters} /></MemoryRouter>);
+    rendered.rerender(<MemoryRouter><GlobalResearchMap observation={full} /></MemoryRouter>);
+
+    for (const { node } of nodes) {
+      expect(screen.getByTestId("global-map-canvas").querySelector(`[data-node-id="${node.id}"]`)).toHaveAttribute("transform", initial[node.id]);
+    }
+  });
+
   it("从当前 history entry 恢复视口、坐标和边快照，并继续把现场交回页面", () => {
     const observation = makeGraphObservation({
       nodes: [makeGraphObservationNode("a", "节点 A"), makeGraphObservationNode("b", "节点 B")],

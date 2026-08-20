@@ -21,6 +21,7 @@ import { useSelectionCitation } from "../selection/useSelectionCitation";
 import type { MarkResult } from "../selection/useSelectionMark";
 import { useSelectionMark } from "../selection/useSelectionMark";
 import { PairingGate } from "../auth/PairingGate";
+import { useNodeNavigationState } from "../navigation/useNodeNavigationState";
 import { SelectionRestoreFallback, useSelectionRestore } from "../research-session/SelectionSourceBar";
 import { ChatComposer } from "../chat-composer/ChatComposer";
 import { TurnSubmitter } from "../chat-composer/turn-submitter";
@@ -49,6 +50,7 @@ function isCode(block: ResearchContentBlock): boolean {
 export function ReadingPage() {
   const { sessionId = "", contentSnapshotId = "" } = useParams();
   const navigate = useNavigate();
+  const navigationState = useNodeNavigationState();
   const { api } = useServices();
   const [state, setState] = useState<ReaderState>({ kind: "loading" });
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -227,7 +229,7 @@ export function ReadingPage() {
         idempotencyKey,
       );
       removeCitation();
-      navigate(stableNodePath(accepted.node.id));
+      navigate(stableNodePath(accepted.node.id), { state: navigationState });
       return true;
     } catch (error) {
       console.error("创建子节点失败:", apiErrorCopy(error).body);
@@ -249,7 +251,7 @@ export function ReadingPage() {
           <h1 className="page__title">这份内容不存在或已经清理</h1>
           <p className="page__lead">它可能已被删除，或者链接中的编号不正确。</p>
           <p>
-            <Link className="button button--primary" to={stableNodePath(sessionId)}>
+            <Link className="button button--primary" to={stableNodePath(sessionId)} state={navigationState}>
               返回研究
             </Link>
           </p>
@@ -302,7 +304,7 @@ export function ReadingPage() {
       <div className="reading-page__main">
         <header className="session-header">
           <p className="reading-page__back">
-            <Link to={stableNodePath(sessionId)} aria-label="返回研究会话">
+            <Link to={stableNodePath(sessionId)} state={navigationState} aria-label="返回研究会话">
               ← 返回研究
             </Link>
           </p>

@@ -958,7 +958,9 @@ export function ResearchNodePage() {
             actingTaskIds={imports.actingTaskIds}
             onCancel={(taskId) => void imports.cancel(taskId)}
             onRetry={(taskId) => void imports.retry(taskId)}
-            onRead={(contentSnapshotId) => navigate(`/research/${encodeURIComponent(sessionId)}/reading/${encodeURIComponent(contentSnapshotId)}`)}
+            onRead={(contentSnapshotId) => navigate(`/research/${encodeURIComponent(sessionId)}/reading/${encodeURIComponent(contentSnapshotId)}`, {
+              state: nodeRouteStateWithMapReturn(location.state),
+            })}
           />
 
           {imports.actionError ? (
