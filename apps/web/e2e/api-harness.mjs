@@ -14,10 +14,15 @@ import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer, startBrowserBootstrap } from "@collector/api";
 import { ModelProviderAbortedError, ModelProviderHttpError } from "@collector/model-gateway";
+import { IsolatedSemanticInferenceAdapter } from "../../api/dist/semantic-search/inference-adapter.js";
+import { createSemanticSearchModule } from "../../api/dist/semantic-search/module.js";
+import { createSemanticModelArtifactInstaller } from "../../api/dist/semantic-search/model-artifacts.js";
+import { SemanticSearchSqliteStore } from "../../api/dist/semantic-search/store.js";
 
 const port = Number(process.env.E2E_API_PORT ?? "43211");
 // e2e 放宽配对码 TTL 到 1 小时：长套件中测试排队消费现铸码，TTL 过短会触发限流级联。
@@ -400,10 +405,26 @@ const service = new CaptureService(store, join(dataDir, "artifacts"), undefined,
   } : {}),
 });
 
+// #67：确定性浏览器套件使用与正式启动相同的投影、SQLite、HTTP 与降级链。
+// 测试不下载模型；未安装状态应自然落入真实关键词路径。
+const semanticDatabase = new DatabaseSync(join(dataDir, "collector.sqlite"));
+semanticDatabase.exec("PRAGMA foreign_keys = ON");
+semanticDatabase.exec("PRAGMA journal_mode = WAL");
+semanticDatabase.exec("PRAGMA busy_timeout = 5000");
+const semanticModelRoot = join(dataDir, "semantic-models");
+const semanticSearch = createSemanticSearchModule({
+  reader: store,
+  searchStore: new SemanticSearchSqliteStore(semanticDatabase),
+  installer: createSemanticModelArtifactInstaller(semanticModelRoot),
+  inference: new IsolatedSemanticInferenceAdapter(),
+  modelRoot: semanticModelRoot,
+});
+
 const browserBootstraps = new Set();
 const server = createApiServer(service, auth, {
   webRoot,
   launcherToken,
+  semanticSearch,
   async createLaunchBootstrap() {
     const bootstrap = await startBrowserBootstrap(auth, port);
     browserBootstraps.add(bootstrap);
@@ -446,18 +467,17 @@ async function gracefulShutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`[e2e-api] received ${signal}, closing server and store`);
+  const forceExit = setTimeout(() => process.exit(1), 5_000);
+  forceExit.unref();
   pairingServer.close();
   await Promise.all([...browserBootstraps].map((bootstrap) => bootstrap.close().catch(() => undefined)));
   server.closeAllConnections?.();
-  server.close(() => {
-    try {
-      store.close();
-    } catch {
-      // 进程退出阶段忽略关闭失败
-    }
-    process.exit(0);
-  });
-  setTimeout(() => process.exit(1), 5_000).unref();
+  await new Promise((resolve) => server.close(resolve));
+  await semanticSearch.close();
+  try { semanticDatabase.close(); } catch { /* 进程退出阶段忽略关闭失败 */ }
+  try { store.close(); } catch { /* 进程退出阶段忽略关闭失败 */ }
+  clearTimeout(forceExit);
+  process.exit(0);
 }
 process.on("SIGTERM", () => { void gracefulShutdown("SIGTERM"); });
 process.on("SIGINT", () => { void gracefulShutdown("SIGINT"); });

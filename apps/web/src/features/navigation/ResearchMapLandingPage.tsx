@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import { RESEARCH_PERMANENT_EDGE_KINDS, type ProjectRecord, type ResearchGraphObservation, type ResearchPermanentEdgeKind } from "@collector/capture-contracts";
+import { RESEARCH_PERMANENT_EDGE_KINDS, type ProjectRecord, type ResearchGraphObservation, type ResearchPermanentEdgeKind, type ResearchSearchMatch } from "@collector/capture-contracts";
 import { apiErrorCopy, isUnauthorized } from "../../api/errors";
 import { globalMapFocusPath, stableNodePath } from "../../app/paths";
 import { useServices } from "../../app/services";
@@ -9,6 +9,8 @@ import { PairingGate } from "../auth/PairingGate";
 import { GlobalResearchMap } from "./GlobalResearchMap";
 import { ResearchMapFilters } from "./ResearchMapFilters";
 import { ResearchMapGlyph } from "./ResearchMapGlyph";
+import { ResearchMapSearch } from "./ResearchMapSearch";
+import { researchSearchMatchTarget } from "./research-search-navigation";
 import {
   createMapReturn,
   currentHistoryEntry,
@@ -19,6 +21,7 @@ import {
   replaceCurrentMapScene,
   serializeMapScene,
   type MapSceneV2,
+  type MapSearchScene,
 } from "./map-scene";
 import { GRAPH_WORLD_HEIGHT, GRAPH_WORLD_WIDTH } from "./organicGraphLayout";
 import {
@@ -90,6 +93,18 @@ export function ResearchMapLandingPage() {
       return { entryKey: mapEntryKey, value: typeof next === "function" ? next(base) : next };
     });
   }, [entryScene, mapEntryKey]);
+  const [searchEntry, setSearchEntry] = useState<{ entryKey: string; value?: MapSearchScene }>(() => ({ entryKey: mapEntryKey, value: entryScene?.search }));
+  const search = searchEntry.entryKey === mapEntryKey ? searchEntry.value : entryScene?.search;
+
+  const setSceneSearch = useCallback((next: MapSearchScene | undefined) => {
+    setSearchEntry({ entryKey: mapEntryKey, value: next });
+    const current = sceneRef.current;
+    if (!current) return;
+    const { search: _previousSearch, ...sceneWithoutSearch } = current;
+    const nextScene: MapSceneV2 = next ? { ...sceneWithoutSearch, search: next } : sceneWithoutSearch;
+    sceneRef.current = nextScene;
+    if (currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(nextScene, routeStateRef.current);
+  }, [mapEntryKey]);
 
   // 每个 browser history entry 独立拥有自己的临时地图现场；切换 entry 时只从该 entry 恢复。
   useEffect(() => {
@@ -102,6 +117,7 @@ export function ResearchMapLandingPage() {
       const nextFilters = entryScene?.filters ?? DEFAULT_RESEARCH_MAP_FILTER_STATE;
       return current.entryKey === mapEntryKey && current.value === nextFilters ? current : { entryKey: mapEntryKey, value: nextFilters };
     });
+    setSearchEntry({ entryKey: mapEntryKey, value: entryScene?.search });
   }, [entryScene, mapEntryKey]);
 
   useEffect(() => {
@@ -141,6 +157,20 @@ export function ResearchMapLandingPage() {
     navigate(globalMapFocusPath(nodeId), { state: scene ? mergeRouteState({}, { mapSceneV2: scene }) : undefined });
   }, [navigate]);
 
+  const revealSequenceRef = useRef(0);
+  const [revealRequest, setRevealRequest] = useState<{ nodeId: string; requestId: number } | null>(null);
+  const revealSearchNode = useCallback((nodeId: string) => {
+    const next = { query: search?.query ?? "", selectedNodeId: nodeId };
+    if (!next.query) return;
+    setSceneSearch(next);
+    revealSequenceRef.current += 1;
+    setRevealRequest({ nodeId, requestId: revealSequenceRef.current });
+    if (focusNodeId !== nodeId) pushFocus(nodeId);
+  }, [focusNodeId, pushFocus, search?.query, setSceneSearch]);
+  const finishReveal = useCallback((nodeId: string, requestId: number) => {
+    setRevealRequest((current) => current?.nodeId === nodeId && current.requestId === requestId ? null : current);
+  }, []);
+
   const exitFocus = useCallback(() => {
     const scene = sceneRef.current;
     if (scene && currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(scene, routeStateRef.current);
@@ -153,6 +183,17 @@ export function ResearchMapLandingPage() {
     const mapReturn = createMapReturn(currentHistoryEntry(locationKeyRef.current), pathnameRef.current);
     navigate(stableNodePath(nodeId), {
       state: nodeEntryStateFromMapReturn(mapReturn),
+    });
+  }, [navigate]);
+
+  const openSearchMatch = useCallback((nodeId: string, match: ResearchSearchMatch) => {
+    const scene = sceneRef.current;
+    if (scene && currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(scene, routeStateRef.current);
+    const mapReturn = createMapReturn(currentHistoryEntry(locationKeyRef.current), pathnameRef.current);
+    const target = researchSearchMatchTarget(nodeId, match);
+    const mapState = nodeEntryStateFromMapReturn(mapReturn);
+    navigate(target.path, {
+      state: target.fallback ? mergeRouteState(mapState, { searchLocatorFallback: target.fallback }) : mapState,
     });
   }, [navigate]);
 
@@ -212,10 +253,11 @@ export function ResearchMapLandingPage() {
     saveScene(serializeMapScene({
       filters: serializedFilters.state,
       relationshipKinds,
+      ...(search ? { search } : {}),
       viewBox: current?.viewBox ?? { x: 0, y: 0, width: GRAPH_WORLD_WIDTH, height: GRAPH_WORLD_HEIGHT },
       layout,
     }));
-  }, [observation, relationshipKinds, saveScene, serializedFilters]);
+  }, [observation, relationshipKinds, saveScene, search, serializedFilters]);
 
   if (!observation && !projectError && !error) {
     return (
@@ -287,6 +329,14 @@ export function ResearchMapLandingPage() {
         validationMessage={filterValidation}
       />
 
+      <ResearchMapSearch
+        search={search}
+        insideNodeIds={observation.nodes.filter((node) => node.scope === "inside-current-filter").map((node) => node.node.id)}
+        onSearchChange={setSceneSearch}
+        onRevealNode={revealSearchNode}
+        onOpenMatch={openSearchMatch}
+      />
+
       {projectError ? (
         <div className="map-landing__update-error" role="alert">
           <span>项目列表暂时无法更新，地图继续使用上一次加载的项目。</span>
@@ -328,6 +378,10 @@ export function ResearchMapLandingPage() {
             nodeHref={stableNodePath}
             relationshipKinds={relationshipKinds}
             filters={sceneFilters}
+            search={search}
+            revealNodeId={revealRequest?.nodeId}
+            revealRequestId={revealRequest?.requestId}
+            onRevealHandled={finishReveal}
             preserveExistingLayout={!isDefaultResearchMapFilterState(layoutFilters)}
             onRelationshipKindToggle={(kind) => setRelationshipKinds((current) => (
               current.includes(kind) ? current.filter((item) => item !== kind) : [...current, kind]

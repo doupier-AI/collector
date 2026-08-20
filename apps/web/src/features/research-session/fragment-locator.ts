@@ -41,6 +41,7 @@ export function parseFragmentId(fragmentId: string): { bodyVersionId: string; or
 export type FragmentLocatorFailureKind =
   | "invalid-id"
   | "version-missing"
+  | "current-version-mismatch"
   | "fragment-missing"
   | "node-mismatch"
   | "integrity-failed"
@@ -73,6 +74,10 @@ export interface FragmentLocatorInput {
   fragments: ResearchSemanticFragmentRecord[];
   messages: ResearchMessageRecord[];
   slicesByMessage?: Record<string, ResearchSliceRecord[]>;
+  /** 搜索窗口可把一个稳定 fragment 进一步收窄到各自的绝对字符范围。 */
+  range?: { startOffset: number; endOffset: number };
+  /** 搜索范围只允许落到节点视图中的当前正文版本；普通历史依据不传。 */
+  currentBodyVersionId?: string;
 }
 
 export function locateFragment(input: FragmentLocatorInput): FragmentLocatorResult {
@@ -81,13 +86,24 @@ export function locateFragment(input: FragmentLocatorInput): FragmentLocatorResu
   const fragment = input.fragments.find((entry) => entry.id === input.fragmentId);
   if (!fragment) return { kind: "failure", failure: "fragment-missing" };
   if (input.version.nodeId !== input.currentNodeId) return { kind: "failure", failure: "node-mismatch" };
+  if (input.range && input.currentBodyVersionId !== input.version.id) {
+    return { kind: "failure", failure: "current-version-mismatch" };
+  }
   // 完整性校验（验收 6）：版本/范围/校验和任一不一致都拒绝定位，绝不静默关联到其他文本。
   // #43 后不再用摘录做内容相等匹配，校验的返回值只在失败时决定 integrity-failed 分类。
+  let fragmentExcerpt: string;
   try {
-    resolveFragmentExcerpt(input.version, fragment);
+    fragmentExcerpt = resolveFragmentExcerpt(input.version, fragment);
   } catch {
     return { kind: "failure", failure: "integrity-failed" };
   }
+  const rangeStart = input.range?.startOffset ?? fragment.startOffset;
+  const rangeEnd = input.range?.endOffset ?? fragment.endOffset;
+  if (!Number.isSafeInteger(rangeStart) || !Number.isSafeInteger(rangeEnd)
+    || rangeStart < fragment.startOffset || rangeEnd > fragment.endOffset || rangeEnd <= rangeStart) {
+    return { kind: "failure", failure: "integrity-failed" };
+  }
+  const excerpt = input.version.content.slice(rangeStart, rangeEnd);
   const message = input.messages.find((entry) => entry.id === fragment.messageId);
   if (!message) return { kind: "failure", failure: "slice-not-found" };
   const messageSlices = (input.slicesByMessage?.[message.id] ?? [])
@@ -99,8 +115,13 @@ export function locateFragment(input: FragmentLocatorInput): FragmentLocatorResu
   if (!matched) return { kind: "failure", failure: "slice-not-found" };
   const target = deriveSliceCardTargets(message, messageSlices).find((entry) => entry.slice.id === matched.id);
   if (target) {
-    const excerpt = resolveFragmentExcerpt(input.version, fragment);
-    const highlights = fragmentTextHighlights(target.blockOrdinal, target.blockText, excerpt);
+    const highlights = fragmentTextHighlights(
+      target.blockOrdinal,
+      target.blockText,
+      fragmentExcerpt,
+      rangeStart - fragment.startOffset,
+      rangeEnd - fragment.startOffset,
+    );
     if (highlights.length === 0) return { kind: "failure", failure: "target-not-derived" };
     return {
       kind: "ok",
@@ -115,7 +136,6 @@ export function locateFragment(input: FragmentLocatorInput): FragmentLocatorResu
   const unit = units[fragment.ordinal];
   const block = blocks[unit?.firstBlockOrdinal ?? fragment.ordinal];
   if (!block || !unit) return { kind: "failure", failure: "target-not-derived" };
-  const excerpt = resolveFragmentExcerpt(input.version, fragment);
   // 片段、切片与展示单元必须仍指向同一份正文。只靠片段的绝对范围会在序数
   // 数据错位时出现“滚到第一段、却高亮第三段”的假定位；先逐字验证当前单元，
   // 不一致便沿用既有诚实降级。
@@ -127,8 +147,8 @@ export function locateFragment(input: FragmentLocatorInput): FragmentLocatorResu
     .flatMap((candidate) => {
     const blockStart = candidate.startOffset;
     const blockEnd = blockStart + candidate.text.length;
-    const start = Math.max(fragment.startOffset, blockStart);
-    const end = Math.min(fragment.endOffset, blockEnd);
+    const start = Math.max(rangeStart, blockStart);
+    const end = Math.min(rangeEnd, blockEnd);
     return start < end
       ? markdownSourceHighlightRanges(candidate.text, start - blockStart, end - blockStart).map((highlight) => ({
           blockOrdinal: candidate.ordinal,
@@ -145,10 +165,10 @@ export function locateFragment(input: FragmentLocatorInput): FragmentLocatorResu
 }
 
 /** 片段摘录须能在实际渲染的局部正文中逐字找到，才允许创建文字高亮。 */
-function fragmentTextHighlights(blockOrdinal: number, blockText: string, excerpt: string): MessageHighlight[] {
-  const start = blockText.indexOf(excerpt);
-  if (start < 0) return [];
-  return markdownSourceHighlightRanges(blockText, start, start + excerpt.length).map((highlight) => ({
+function fragmentTextHighlights(blockOrdinal: number, blockText: string, fragmentExcerpt: string, relativeStart: number, relativeEnd: number): MessageHighlight[] {
+  const fragmentStart = blockText.indexOf(fragmentExcerpt);
+  if (fragmentStart < 0) return [];
+  return markdownSourceHighlightRanges(blockText, fragmentStart + relativeStart, fragmentStart + relativeEnd).map((highlight) => ({
     blockOrdinal,
     ...highlight,
   }));
@@ -195,6 +215,7 @@ export function fragmentDeepLink(
 export const FRAGMENT_LOCATOR_FALLBACK_TEXT: Record<FragmentLocatorFailureKind | "fetch-failed", string> = {
   "invalid-id": "这条依据引用的片段标识无效，无法定位。",
   "version-missing": "这条依据引用的正文版本已不存在，无法定位。",
+  "current-version-mismatch": "这条搜索命中的正文已经更新，旧位置已失效。",
   "fragment-missing": "这条依据引用的片段已不存在，无法定位。",
   "node-mismatch": "这条依据指向的节点与当前页面不一致，无法定位。",
   "integrity-failed": "依据原文与保存的片段对不上，已失效。",

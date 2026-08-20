@@ -10,7 +10,7 @@ import {
 } from "@collector/capture-contracts";
 import { stableNodePath } from "../../app/paths";
 import { createStableOrganicGraphLayout } from "./organicGraphLayout";
-import { mapSceneLayout, serializeMapScene, type MapSceneV2 } from "./map-scene";
+import { mapSceneLayout, serializeMapScene, type MapSceneV2, type MapSearchScene } from "./map-scene";
 import { DEFAULT_RESEARCH_MAP_FILTER_STATE, isDefaultResearchMapFilterState, type ResearchMapFilterState } from "./research-map-filters";
 
 interface ViewBoxState {
@@ -141,9 +141,16 @@ interface GlobalResearchMapProps {
   onRelationshipKindToggle?: (kind: ResearchPermanentEdgeKind) => void;
   filters?: ResearchMapFilterState;
   preserveExistingLayout?: boolean;
+  /** 只有搜索结果定位才提供；普通点图专注不会强制移动用户视口。 */
+  revealNodeId?: string;
+  /** 每次用户主动点击搜索结果都会变化，同一结果也可在平移后重新居中。 */
+  revealRequestId?: number;
+  /** 定位动画和焦点转移完成后清除瞬态请求，避免刷新或新 entry 重放。 */
+  onRevealHandled?: (nodeId: string, requestId: number) => void;
+  search?: MapSearchScene;
 }
 
-export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initialScene, onSceneChange, onOpenNode, nodeHref = stableNodePath, relationshipKinds = observation.appliedRelationshipKinds, onRelationshipKindToggle, filters = DEFAULT_RESEARCH_MAP_FILTER_STATE, preserveExistingLayout }: GlobalResearchMapProps) {
+export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initialScene, onSceneChange, onOpenNode, nodeHref = stableNodePath, relationshipKinds = observation.appliedRelationshipKinds, onRelationshipKindToggle, filters = DEFAULT_RESEARCH_MAP_FILTER_STATE, preserveExistingLayout, revealNodeId, revealRequestId, onRevealHandled, search }: GlobalResearchMapProps) {
   const filtering = preserveExistingLayout ?? !isDefaultResearchMapFilterState(filters);
   const layoutRef = useRef<ReturnType<typeof createStableOrganicGraphLayout> | undefined>(undefined);
   if (!layoutRef.current && initialScene) {
@@ -190,6 +197,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
   const canvasNodeRefs = useRef(new Map<string, SVGGElement>());
   const listNodeRefs = useRef(new Map<string, HTMLButtonElement>());
   const pendingFocusTimer = useRef<number | undefined>(undefined);
+  const lastRevealKey = useRef<string | undefined>(undefined);
   const interactionNodeId = hoveredNodeId ?? keyboardNodeId;
   const directNeighbors = interactionNodeId ? adjacency.get(interactionNodeId) ?? new Set<string>() : new Set<string>();
   const zoomScale = world.width / viewBox.width;
@@ -197,12 +205,54 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
   const focusSummary = focusedNodeId ? observation.nodes.find((summary) => summary.node.id === focusedNodeId) : undefined;
 
   useEffect(() => {
-    onSceneChange?.(serializeMapScene({ filters, relationshipKinds, viewBox, layout }));
-  }, [filters, layout, onSceneChange, relationshipKinds, viewBox]);
+    onSceneChange?.(serializeMapScene({ filters, relationshipKinds, ...(search ? { search } : {}), viewBox, layout }));
+  }, [filters, layout, onSceneChange, relationshipKinds, search, viewBox]);
 
   useEffect(() => {
     if (resolvedRovingNodeId !== rovingNodeId) setRovingNodeId(resolvedRovingNodeId);
   }, [resolvedRovingNodeId, rovingNodeId]);
+
+  useEffect(() => {
+    if (!revealNodeId) return;
+    const revealKey = revealRequestId === undefined ? revealNodeId : `${revealNodeId}:${revealRequestId}`;
+    if (lastRevealKey.current === revealKey) return;
+    const point = positions.get(revealNodeId);
+    if (!point) return;
+    lastRevealKey.current = revealKey;
+    setRovingNodeId(revealNodeId);
+    const start = viewBoxRef.current;
+    const target = { ...start, x: point.x - start.width / 2, y: point.y - start.height / 2 };
+    const focusTarget = () => {
+      const narrow = typeof window.matchMedia === "function" && window.matchMedia("(max-width: 899px)").matches;
+      (narrow ? listNodeRefs.current.get(revealNodeId) : canvasNodeRefs.current.get(revealNodeId))?.focus();
+    };
+    if (typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setViewBox(target);
+      const frame = requestAnimationFrame(() => {
+        focusTarget();
+        if (revealRequestId !== undefined) onRevealHandled?.(revealNodeId, revealRequestId);
+      });
+      return () => cancelAnimationFrame(frame);
+    }
+    const startedAt = performance.now();
+    let frame = 0;
+    const animate = (now: number) => {
+      const progress = Math.min(1, (now - startedAt) / 220);
+      const eased = 1 - (1 - progress) ** 3;
+      setViewBox({
+        ...start,
+        x: start.x + (target.x - start.x) * eased,
+        y: start.y + (target.y - start.y) * eased,
+      });
+      if (progress < 1) frame = requestAnimationFrame(animate);
+      else {
+        focusTarget();
+        if (revealRequestId !== undefined) onRevealHandled?.(revealNodeId, revealRequestId);
+      }
+    };
+    frame = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(frame);
+  }, [onRevealHandled, positions, revealNodeId, revealRequestId]);
 
   const selectNode = useCallback((nodeId: string) => {
     onFocusNode?.(nodeId);

@@ -89,6 +89,7 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
     const menu = within(nav).getByRole("menu", { name: "设置" });
     const aiSettings = within(menu).getByRole("menuitem", { name: "AI 模型设置" });
     expect(aiSettings).toHaveAttribute("href", "/settings/ai-model");
+    expect(within(menu).getByRole("menuitem", { name: "语义搜索" })).toHaveAttribute("href", "/settings/semantic-search");
     expect(within(menu).getByRole("menuitem", { name: "融合设置" })).toHaveAttribute("href", "/settings/fusion");
     expect(within(menu).getByRole("menuitem", { name: "运行记录" })).toHaveAttribute("href", "/run-records");
     expect(within(menu).getByRole("menuitem", { name: "回收站" })).toHaveAttribute("href", "/trash");
@@ -361,6 +362,7 @@ describe("researchMapTargetForPath", () => {
   it("开始页与设置页不提供研究地图入口", () => {
     expect(researchMapTargetForPath("/research/new")).toBeNull();
     expect(researchMapTargetForPath("/settings/ai-model")).toBeNull();
+    expect(researchMapTargetForPath("/settings/semantic-search")).toBeNull();
     expect(researchMapTargetForPath("/")).toBeNull();
   });
 });

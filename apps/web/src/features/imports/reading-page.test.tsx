@@ -100,6 +100,17 @@ function snapshotSelection(overrides: Partial<ResearchSelectionRecord> = {}): Re
 }
 
 describe("阅读视图来源返回", () => {
+  it("语义搜索命中直接按稳定 block 与字符范围定位，不创建选区记录", async () => {
+    const { container } = renderReadingPage(
+      { getResearchContent: async () => snapshotWithAllAnchors() },
+      "/research/session-1/reading/snap-1?searchBlock=b-2&searchStart=2&searchEnd=4",
+    );
+
+    expect(await screen.findByText("段落", { selector: "[data-selection-mark]" })).toBeInTheDocument();
+    expect(container.querySelector('[data-block-id="b-2"] [data-block-text]')?.textContent).toBe("正文段落");
+    expect(container.querySelector("article.reading[data-turn-card]")).toHaveClass("fragment-target--focused");
+  });
+
   it("携带选区参数时按锚点重定位并高亮原选区，只读提醒不重开胶囊", async () => {
     const createResearchSelection = vi.fn(async () => ({
       selection: snapshotSelection(),

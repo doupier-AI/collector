@@ -15,6 +15,7 @@ import type {
 import { deriveBodyVersion } from "@collector/capture-contracts";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer, type SimilarityVerificationGateway } from "@collector/api";
 import { FakeProvider, ModelGateway } from "@collector/model-gateway";
+import { projectCurrentSearchUnits } from "../apps/api/dist/semantic-search/projector.js";
 
 async function createHarness(options?: { similarityVerifier?: SimilarityVerificationGateway }) {
   const root = await mkdtemp(join(tmpdir(), "collector-fusion-http-"));
@@ -198,12 +199,21 @@ test("#31 fusion HTTP creates a parentless fusion node with fused-from edges and
     method: "POST", headers: headers(harness.token), body: JSON.stringify({ idempotencyKey: "fusion-http-key" }),
   });
   assert.equal(fuse.status, 200);
-  const accepted = await fuse.json() as { node: { id: string; parentNodeId?: string; sessionId: string }; task: { status: string; fusionPlan?: { sources: unknown[]; relationType: string } } };
+  const accepted = await fuse.json() as { node: { id: string; parentNodeId?: string; sessionId: string }; task: { id: string; outputMessageId: string; status: string; fusionPlan?: { sources: unknown[]; relationType: string } } };
   assert.equal(accepted.node.parentNodeId, undefined, "fusion node has no parent lineage");
   assert.equal(accepted.node.sessionId, "session-1");
   assert.equal(accepted.task.status, "queued");
   assert.equal(accepted.task.fusionPlan?.relationType, "contrast");
   assert.equal(accepted.task.fusionPlan?.sources.length, 2);
+
+  for (let attempt = 0; attempt < 200 && harness.store.getResearchTask(accepted.task.id)?.status !== "completed"; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(harness.store.getResearchTask(accepted.task.id)?.status, "completed");
+  const formalUnits = projectCurrentSearchUnits(harness.store).filter((unit) => unit.field === "formal-fusion-body");
+  assert.ok(formalUnits.some((unit) => unit.locator.kind === "message-semantic-range"
+    && unit.locator.messageId === accepted.task.outputMessageId
+    && /共同核心/.test(unit.searchText)), "the production fusion output must retain its formal field identity in search");
 
   // 融合节点视图可见；原节点消息逐字节不变（验收 6）。
   const node = await fetch(`${harness.base}/v1/research-nodes/${encodeURIComponent(accepted.node.id)}`, { headers: headers(harness.token) });

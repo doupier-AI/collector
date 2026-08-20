@@ -30,6 +30,8 @@ import type {
   ResearchGraphProjection,
   ResearchGraphObservation,
   ResearchGraphObservationInput,
+  ResearchSearchInput,
+  ResearchSearchResponse,
   ResearchFusionProposalDecision,
   ResearchFusionProposalRecord,
   ResearchFusionScanResult,
@@ -50,6 +52,8 @@ import type {
   RunRecordDetail,
   RunRecordExportFilters,
   RunRecordPage,
+  SemanticSearchCommand,
+  SemanticSearchStatusView,
 } from "@collector/capture-contracts";
 import { ApiRequestError, NetworkError, parseApiErrorBody } from "./errors";
 
@@ -135,6 +139,9 @@ export interface ApiClient {
   getResearchGraph(sessionId: string, focusNodeId?: string, maxDepth?: number): Promise<ResearchGraphProjection>;
   /** #62：跨会话 A 面统一观察；画布、窄屏列表和键盘导航共享同一响应。 */
   getResearchMap(input?: ResearchGraphObservationInput): Promise<ResearchGraphObservation>;
+  searchResearch(input: ResearchSearchInput): Promise<ResearchSearchResponse>;
+  getSemanticSearchStatus(): Promise<SemanticSearchStatusView>;
+  executeSemanticSearchCommand(command: SemanticSearchCommand): Promise<SemanticSearchStatusView>;
   /**
    * #32：手动触发当前节点的确定性相似候选扫描。返回本次扫描后的全部提案
    * （含自动融合成功后已 accepted 的留痕提案）与本次新自动生成的融合节点摘要。
@@ -546,6 +553,23 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
       }
       const query = params.toString() ? `?${params.toString()}` : "";
       return requestJson<ResearchGraphObservation>(fetchFn, `/v1/research-map${query}`);
+    },
+    searchResearch(input: ResearchSearchInput) {
+      return requestJson<ResearchSearchResponse>(fetchFn, "/v1/semantic-search/search", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify(input),
+      });
+    },
+    getSemanticSearchStatus() {
+      return requestJson<SemanticSearchStatusView>(fetchFn, "/v1/semantic-search/status");
+    },
+    executeSemanticSearchCommand(command: SemanticSearchCommand) {
+      return requestJson<SemanticSearchStatusView>(fetchFn, "/v1/semantic-search/commands", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify(command),
+      });
     },
     scanResearchFusionProposals(nodeId: string) {
       return requestJson<ResearchFusionScanResult>(

@@ -6,7 +6,7 @@ import { timingSafeEqual } from "node:crypto";
 const RESEARCH_SSE_REDRAIN_MS = 100;
 import { ValidationError, NotFoundError, CaptureService } from "./service.js";
 import { LocalAuth, PairingRateLimitError } from "./auth.js";
-import { RESEARCH_IMPORT_MAX_BYTES, validateCreateChildNodeInput, validateDeepResearchInput, validateProjectInput, validateResearchFusionProposalDecisionInput, validateResearchImportHeaders, validateResearchLaterItemInput, validateResearchLaterItemUpdate, validateResearchMessageInput, validateResearchSelectionInput, validateResearchSessionInput, validateResearchSessionUpdateInput, validateResearchTermPreviewGrowthInput, validateResearchTermPreviewInput } from "@collector/capture-contracts";
+import { RESEARCH_IMPORT_MAX_BYTES, validateCreateChildNodeInput, validateDeepResearchInput, validateProjectInput, validateResearchFusionProposalDecisionInput, validateResearchImportHeaders, validateResearchLaterItemInput, validateResearchLaterItemUpdate, validateResearchMessageInput, validateResearchSearchInput, validateResearchSelectionInput, validateResearchSessionInput, validateResearchSessionUpdateInput, validateResearchTermPreviewGrowthInput, validateResearchTermPreviewInput, validateSemanticSearchCommand } from "@collector/capture-contracts";
 import { ResearchNotFoundError, ResearchValidationError, ResearchConflictError } from "./research.js";
 import { ResearchImportConflictError, ResearchImportNotFoundError, ResearchImportValidationError } from "./research-import.js";
 import { ResearchSelectionConflictError, ResearchSelectionNotFoundError, ResearchSelectionValidationError } from "./selection.js";
@@ -17,6 +17,7 @@ import { ResearchFusionProposalConflictError, ResearchFusionProposalNotFoundErro
 import { RunRecordsValidationError } from "./observability.js";
 import { streamRunRecordExport } from "./run-record-export.js";
 import { createStaticWebHandler } from "./static-web.js";
+import type { SemanticSearchModule } from "./semantic-search/module.js";
 
 const JSON_LIMIT = 2 * 1024 * 1024;
 const MAX_GRAPH_PROJECTION_DEPTH = 32;
@@ -32,6 +33,8 @@ export interface ApiServerOptions {
   createLaunchBootstrap?: () => Promise<{ url: string }>;
   /** Gracefully stop this exact service after authenticating the dedicated launcher token. */
   requestShutdown?: () => void;
+  /** Optional local semantic search runtime. Tests and API-only embeddings may omit it. */
+  semanticSearch?: SemanticSearchModule;
 }
 
 export function createApiServer(service: CaptureService, auth: LocalAuth, options: ApiServerOptions = {}) {
@@ -61,6 +64,27 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       }
       if (!auth.isAuthorized(requestToken(request))) {
         return json(response, 401, { error: { code: "unauthorized", message: "Collector client is not paired" } });
+      }
+
+      if (url.pathname.startsWith("/v1/semantic-search/")) {
+        if (!options.semanticSearch) {
+          return json(response, 503, { error: { code: "semantic_search_unavailable", message: "Semantic search is not available in this runtime" } });
+        }
+        if (request.method === "GET" && url.pathname === "/v1/semantic-search/status") {
+          return json(response, 200, await options.semanticSearch.getStatus());
+        }
+        if (request.method === "POST" && url.pathname === "/v1/semantic-search/search") {
+          const body = await readJson(request);
+          try { validateResearchSearchInput(body); }
+          catch (error) { throw new ValidationError((error as Error).message); }
+          return json(response, 200, await options.semanticSearch.search(body));
+        }
+        if (request.method === "POST" && url.pathname === "/v1/semantic-search/commands") {
+          const body = await readJson(request);
+          try { validateSemanticSearchCommand(body); }
+          catch (error) { throw new ValidationError((error as Error).message); }
+          return json(response, 200, await options.semanticSearch.execute(body));
+        }
       }
 
       if (request.method === "GET" && url.pathname === "/v1/run-records/export") {

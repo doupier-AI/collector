@@ -448,7 +448,7 @@ export interface CollectorStore
  * `if (version < N+1)` 版本块（块内写入对应 schema_migrations 行）并递增本常量；
  * 测试以此常量断言「打开/重放后数据库实际到达声明版本」，无需再手工同步多处硬编码断言。
  */
-export const LATEST_SCHEMA_VERSION = 37;
+export const LATEST_SCHEMA_VERSION = 39;
 
 export class SqliteStore implements CollectorStore {
   private database?: DatabaseSync;
@@ -552,6 +552,13 @@ export class SqliteStore implements CollectorStore {
 
   async clearAllData(): Promise<void> {
     this.transaction(() => {
+      // #67 搜索单元是正文的可再生派生层。先删 FTS 再删其 rowid 对应的向量单元，
+      // 让清空研究数据不会遗留可搜索的已删除内容；模型安装和已选档位属于本机配置，
+      // 与既有 provider 配置一样保留。
+      this.db().exec("DELETE FROM semantic_search_units_fts");
+      this.db().exec("DELETE FROM semantic_search_units");
+      this.db().exec("DELETE FROM semantic_search_tasks");
+      this.db().exec("DELETE FROM semantic_search_index_generations");
       // 语义片段引用正文版本，正文版本与切片引用消息/节点：这些是最下游引用方（不被任何表
       // 引用），必须在删除 nodes/messages/selections 之前先删，避免外键约束失败。
       this.db().exec("DELETE FROM research_semantic_fragments");
@@ -744,8 +751,19 @@ export class SqliteStore implements CollectorStore {
     const session = this.getResearchSession(id);
     if (!session || (session as ResearchSessionRecord & { trashedAt?: string }).trashedAt) return false;
     const record = { ...session, trashedAt };
-    this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
-      .run(trashedAt, JSON.stringify(record), id);
+    this.transaction(() => {
+      // 回收站不应继续通过关键词或向量暴露其正文。恢复后由搜索 reconcile 重建，
+      // 不保留可能对应旧正文版本的派生向量。
+      this.db().prepare(`
+        UPDATE semantic_search_index_generations
+        SET source_key = CASE WHEN source_key LIKE 'invalidated:%' THEN source_key ELSE 'invalidated:' || source_key END
+        WHERE id IN (SELECT DISTINCT generation_id FROM semantic_search_units WHERE session_id = ?)
+      `).run(id);
+      this.db().prepare("DELETE FROM semantic_search_units_fts WHERE rowid IN (SELECT rowid FROM semantic_search_units WHERE session_id = ?)").run(id);
+      this.db().prepare("DELETE FROM semantic_search_units WHERE session_id = ?").run(id);
+      this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
+        .run(trashedAt, JSON.stringify(record), id);
+    });
     return true;
   }
 
@@ -771,6 +789,13 @@ export class SqliteStore implements CollectorStore {
       };
       const NODE_SCOPE = "SELECT id FROM research_nodes WHERE session_id = ?";
       const MESSAGE_SCOPE = "SELECT id FROM research_messages WHERE session_id = ?";
+      del(`
+        UPDATE semantic_search_index_generations
+        SET source_key = CASE WHEN source_key LIKE 'invalidated:%' THEN source_key ELSE 'invalidated:' || source_key END
+        WHERE id IN (SELECT DISTINCT generation_id FROM semantic_search_units WHERE session_id = ?)
+      `, id);
+      del("DELETE FROM semantic_search_units_fts WHERE rowid IN (SELECT rowid FROM semantic_search_units WHERE session_id = ?)", id);
+      del("DELETE FROM semantic_search_units WHERE session_id = ?", id);
       del(`DELETE FROM research_semantic_fragments WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
       del(`DELETE FROM research_body_versions WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
       del(`DELETE FROM research_slices WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
@@ -3558,6 +3583,101 @@ export class SqliteStore implements CollectorStore {
         `);
       });
       version = 37;
+    }
+
+    if (version < 38) {
+      // #67 本地混合搜索：向量、关键词 FTS、模型安装与可恢复任务均只存本机 SQLite。
+      // generation 仅在完整构建后切为 active；partial unique index 保证每个档位最多
+      // 一个可见 generation，building/failed 单元永远不会参与检索。
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE IF NOT EXISTS semantic_model_installations (
+            profile TEXT PRIMARY KEY CHECK(profile IN ('standard', 'lightweight')),
+            manifest_json TEXT NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('not-installed', 'downloading', 'installed', 'corrupt', 'failed')),
+            downloaded_bytes INTEGER NOT NULL DEFAULT 0 CHECK(downloaded_bytes >= 0),
+            total_bytes INTEGER NOT NULL DEFAULT 0 CHECK(total_bytes >= 0),
+            error_code TEXT,
+            updated_at TEXT NOT NULL
+          );
+
+          CREATE TABLE IF NOT EXISTS semantic_search_settings (
+            id INTEGER PRIMARY KEY CHECK(id = 1),
+            configured_profile TEXT NOT NULL CHECK(configured_profile IN ('standard', 'lightweight'))
+          );
+
+          CREATE TABLE IF NOT EXISTS semantic_search_index_generations (
+            id TEXT PRIMARY KEY,
+            profile TEXT NOT NULL CHECK(profile IN ('standard', 'lightweight')),
+            embedding_key TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('building', 'active', 'retired', 'failed')),
+            error_code TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          );
+          CREATE UNIQUE INDEX IF NOT EXISTS semantic_search_one_active_generation_idx
+            ON semantic_search_index_generations(profile) WHERE state = 'active';
+
+          CREATE TABLE IF NOT EXISTS semantic_search_units (
+            rowid INTEGER PRIMARY KEY,
+            unit_id TEXT NOT NULL,
+            generation_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            field TEXT NOT NULL CHECK(field IN ('node-title', 'user-question', 'ai-body', 'import-body', 'formal-fusion-body')),
+            source_locator_json TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            search_text TEXT NOT NULL,
+            vector BLOB NOT NULL,
+            embedding_key TEXT NOT NULL,
+            UNIQUE(generation_id, unit_id),
+            FOREIGN KEY(generation_id) REFERENCES semantic_search_index_generations(id)
+          );
+          CREATE INDEX IF NOT EXISTS semantic_search_units_generation_idx ON semantic_search_units(generation_id, rowid);
+          CREATE INDEX IF NOT EXISTS semantic_search_units_node_idx ON semantic_search_units(node_id, rowid);
+          CREATE INDEX IF NOT EXISTS semantic_search_units_session_idx ON semantic_search_units(session_id, rowid);
+          CREATE INDEX IF NOT EXISTS semantic_search_units_embedding_idx ON semantic_search_units(generation_id, embedding_key, rowid);
+          CREATE VIRTUAL TABLE IF NOT EXISTS semantic_search_units_fts USING fts5(search_text, tokenize = 'trigram');
+
+          CREATE TABLE IF NOT EXISTS semantic_search_tasks (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK(kind IN ('download', 'index-build')),
+            profile TEXT CHECK(profile IN ('standard', 'lightweight')),
+            state TEXT NOT NULL CHECK(state IN ('queued', 'running', 'completed', 'cancelled', 'failed')),
+            completed_units INTEGER NOT NULL DEFAULT 0 CHECK(completed_units >= 0),
+            total_units INTEGER NOT NULL DEFAULT 0 CHECK(total_units >= 0),
+            error_code TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS semantic_search_tasks_state_idx ON semantic_search_tasks(state, created_at);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (38, datetime('now'));
+        `);
+      });
+      version = 38;
+    }
+
+    if (version < 39) {
+      // A durable failed index task must identify the exact source/model facts it
+      // failed for. Without these keys, a resource failure would either retry on
+      // every search or incorrectly block a genuinely changed document/model.
+      // Column checks keep migration-fact replay idempotent: migration tests and
+      // interrupted upgrades may retain the schema while losing only version 39.
+      this.transaction(() => {
+        const columns = new Set(
+          (this.db().prepare("PRAGMA table_info(semantic_search_tasks)").all() as Array<{ name: string }>)
+            .map((column) => column.name),
+        );
+        if (!columns.has("source_key")) {
+          this.db().exec("ALTER TABLE semantic_search_tasks ADD COLUMN source_key TEXT");
+        }
+        if (!columns.has("embedding_key")) {
+          this.db().exec("ALTER TABLE semantic_search_tasks ADD COLUMN embedding_key TEXT");
+        }
+        this.db().exec("INSERT INTO schema_migrations(version, applied_at) VALUES (39, datetime('now'))");
+      });
+      version = 39;
     }
 
   }

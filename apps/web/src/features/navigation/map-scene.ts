@@ -12,6 +12,7 @@ const MAX_SCENE_POSITIONS = 2_000;
 const MAX_COORDINATE = 100_000;
 const MAX_SCENE_PROJECT_IDS = 500;
 const MAX_SCENE_PROJECT_ID_LENGTH = 256;
+const MAX_SCENE_SEARCH_QUERY_LENGTH = 400;
 
 export interface MapViewBox {
   x: number;
@@ -24,12 +25,19 @@ export interface MapSceneV2 {
   version: 2;
   filters: ResearchMapFilterState;
   relationshipKinds: ResearchPermanentEdgeKind[];
+  /** 当前 history entry 的搜索现场；结果由当前索引重新计算，不写入现场。 */
+  search?: MapSearchScene;
   viewBox: MapViewBox;
   layout: {
     world: GraphWorld;
     positions: Array<[string, number, number]>;
     edgeKeys: Array<[string, string, string]>;
   };
+}
+
+export interface MapSearchScene {
+  query: string;
+  selectedNodeId?: string;
 }
 
 export interface MapReturnV1 {
@@ -61,6 +69,18 @@ function validPath(value: unknown): value is string {
 function relationshipKinds(value: unknown): ResearchPermanentEdgeKind[] | undefined {
   if (!Array.isArray(value) || value.some((kind) => !RESEARCH_PERMANENT_EDGE_KINDS.includes(kind as ResearchPermanentEdgeKind)) || new Set(value).size !== value.length) return undefined;
   return [...value] as ResearchPermanentEdgeKind[];
+}
+
+function mapSearch(value: unknown): MapSearchScene | undefined {
+  if (value === undefined) return undefined;
+  const candidate = record(value);
+  if (!candidate || typeof candidate.query !== "string" || !candidate.query.trim()
+    || candidate.query.length > MAX_SCENE_SEARCH_QUERY_LENGTH
+    || (candidate.selectedNodeId !== undefined && (typeof candidate.selectedNodeId !== "string" || !candidate.selectedNodeId || candidate.selectedNodeId.length > 256))) return undefined;
+  return {
+    query: candidate.query.trim(),
+    ...(candidate.selectedNodeId ? { selectedNodeId: candidate.selectedNodeId } : {}),
+  };
 }
 
 function mapViewBox(value: unknown): MapViewBox | undefined {
@@ -129,6 +149,7 @@ function mapFilters(value: unknown): ResearchMapFilterState | undefined {
 export function serializeMapScene(input: {
   filters: ResearchMapFilterState;
   relationshipKinds: readonly ResearchPermanentEdgeKind[];
+  search?: MapSearchScene;
   viewBox: MapViewBox;
   layout: Pick<StableOrganicGraphLayout, "world" | "positions" | "edgeKeys">;
 }): MapSceneV2 {
@@ -138,6 +159,7 @@ export function serializeMapScene(input: {
     version: MAP_SCENE_VERSION,
     filters: normalizedFilters.state,
     relationshipKinds: [...new Set(input.relationshipKinds)],
+    ...(input.search ? { search: mapSearch(input.search) } : {}),
     viewBox: { ...input.viewBox },
     layout: {
       world: { ...input.layout.world },
@@ -153,9 +175,11 @@ export function mapSceneFromRouteState(value: unknown): MapSceneV2 | undefined {
   if (!candidate || candidate.version !== MAP_SCENE_VERSION) return undefined;
   const filters = mapFilters(candidate.filters);
   const kinds = relationshipKinds(candidate.relationshipKinds);
+  const search = mapSearch(candidate.search);
   const viewBox = mapViewBox(candidate.viewBox);
   const layout = mapLayout(candidate.layout);
-  return filters && kinds && viewBox && layout ? { version: MAP_SCENE_VERSION, filters, relationshipKinds: kinds, viewBox, layout } : undefined;
+  if (!filters || !kinds || !viewBox || !layout || (candidate.search !== undefined && !search)) return undefined;
+  return { version: MAP_SCENE_VERSION, filters, relationshipKinds: kinds, ...(search ? { search } : {}), viewBox, layout };
 }
 
 export function mapSceneLayout(scene: MapSceneV2): Pick<StableOrganicGraphLayout, "world" | "positions" | "edgeKeys"> {
@@ -226,7 +250,7 @@ export function mapReturnDelta(marker: MapReturnV1 | undefined, current = curren
 export function stripOneShotRouteState(value: unknown): RouteState | null {
   const routeState = record(value);
   if (!routeState) return null;
-  const { firstTurn: _firstTurn, grew: _grew, ...rest } = routeState;
+  const { firstTurn: _firstTurn, grew: _grew, searchLocatorFallback: _searchLocatorFallback, ...rest } = routeState;
   return Object.keys(rest).length ? rest : null;
 }
 

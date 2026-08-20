@@ -1289,6 +1289,8 @@ export interface ResearchNodeView {
   bodyVersions?: Record<string, ResearchBodyVersionRecord>;
   /** #31：按消息 ID 返回该消息引用的融合来源；可选字段，缺失时前端不渲染来源条。 */
   fusionSources?: Record<string, ResearchFusionSource[]>;
+  /** 正式融合确认稿是独立于可继续对话消息的不可变正文。 */
+  confirmedFusion?: ResearchConfirmedFusionSnapshotRecord;
 }
 
 export interface ResearchTurnAccepted {
@@ -2551,6 +2553,244 @@ export interface ResearchGraphObservation {
   edges: ResearchGraphObservationEdge[];
   focusNodeId?: string;
   appliedRelationshipKinds: ResearchPermanentEdgeKind[];
+}
+
+// ── Cross-session research search (Issue #67) ─────────────────────
+
+/** 搜索请求的查询文本上限；与模型输入预算无关。 */
+export const RESEARCH_SEARCH_QUERY_MAX_CHARACTERS = 400;
+/** 单次搜索返回的节点结果上限。 */
+export const RESEARCH_SEARCH_MAX_LIMIT = 50;
+/** 当前地图主要范围节点上限；只用于结果分组，不改变搜索事实范围。 */
+export const RESEARCH_SEARCH_MAX_SCOPE_NODE_IDS = 2_000;
+
+export interface ResearchSearchInput {
+  query: string;
+  limit?: number;
+  insideNodeIds?: string[];
+}
+
+/** 搜索单元的字段身份；不得把不同来源揉成一个无来源的节点文本。 */
+export type ResearchSearchField =
+  | "node-title"
+  | "user-question"
+  | "ai-body"
+  | "import-body"
+  | "formal-fusion-body";
+
+/** 命中标题时可直接打开节点；标题本身不需要复制为另一份正文。 */
+export interface ResearchSearchNodeTitleLocator {
+  kind: "node-title";
+  nodeId: string;
+}
+
+/** 消息正文命中始终回到既有正文版本及其稳定语义范围。 */
+export interface ResearchSearchMessageSemanticRangeLocator {
+  kind: "message-semantic-range";
+  nodeId: string;
+  messageId: string;
+  bodyVersionId: string;
+  fragmentId: string;
+  startOffset: number;
+  endOffset: number;
+}
+
+/** 用户问题没有正文版本副本；定位使用当前消息及其确定性字符范围。 */
+export interface ResearchSearchMessageTextRangeLocator {
+  kind: "message-text-range";
+  nodeId: string;
+  messageId: string;
+  /** 当前用户问题全文摘要；原地重新编辑后旧定位必须失效。 */
+  contentHash: string;
+  startOffset: number;
+  endOffset: number;
+}
+
+/** 导入正文命中始终回到既有内容快照的一个 block。 */
+export interface ResearchSearchImportBlockLocator {
+  kind: "import-block";
+  nodeId: string;
+  contentSnapshotId: string;
+  blockId: string;
+  startOffset: number;
+  endOffset: number;
+}
+
+/** 正式融合正文以确认快照为不可变事实源，并保留窗口在该快照中的字符范围。 */
+export interface ResearchSearchFusionSnapshotRangeLocator {
+  kind: "fusion-snapshot-range";
+  nodeId: string;
+  confirmedDraftVersionId: string;
+  startOffset: number;
+  endOffset: number;
+}
+
+export type ResearchSearchLocator =
+  | ResearchSearchNodeTitleLocator
+  | ResearchSearchMessageTextRangeLocator
+  | ResearchSearchMessageSemanticRangeLocator
+  | ResearchSearchImportBlockLocator
+  | ResearchSearchFusionSnapshotRangeLocator;
+
+interface ResearchSearchUnitBase {
+  id: string;
+  nodeId: string;
+}
+
+/** 当前正文派生的一个可检索单位；不携带正文副本、向量或模型细节。 */
+export type ResearchSearchUnit =
+  | (ResearchSearchUnitBase & { field: "node-title"; locator: ResearchSearchNodeTitleLocator })
+  | (ResearchSearchUnitBase & {
+    field: "user-question";
+    locator: ResearchSearchMessageTextRangeLocator;
+  })
+  | (ResearchSearchUnitBase & {
+    field: "ai-body";
+    locator: ResearchSearchMessageSemanticRangeLocator;
+  })
+  | (ResearchSearchUnitBase & { field: "import-body"; locator: ResearchSearchImportBlockLocator })
+  | (ResearchSearchUnitBase & {
+    field: "formal-fusion-body";
+    locator: ResearchSearchFusionSnapshotRangeLocator | ResearchSearchMessageSemanticRangeLocator;
+  });
+
+export type ResearchSearchScope = "inside-current-scope" | "outside-current-scope";
+export type ResearchSearchMode = "hybrid" | "keyword-only";
+export type ResearchSearchDegradationReason =
+  | "model-not-installed"
+  | "model-downloading"
+  | "model-unavailable"
+  | "index-unavailable";
+
+export type ResearchSearchMatch = ({ preview: string } & (
+  | { field: "node-title"; locator: ResearchSearchNodeTitleLocator }
+  | {
+    field: "user-question";
+    locator: ResearchSearchMessageTextRangeLocator;
+  }
+  | {
+    field: "ai-body";
+    locator: ResearchSearchMessageSemanticRangeLocator;
+  }
+  | { field: "import-body"; locator: ResearchSearchImportBlockLocator }
+  | {
+    field: "formal-fusion-body";
+    locator: ResearchSearchFusionSnapshotRangeLocator | ResearchSearchMessageSemanticRangeLocator;
+  }
+));
+
+/** 同一节点下最多保留有限、可定位的相关命中；preview 是有界派生摘录，不取得正文事实权。 */
+export interface ResearchSearchNodeResult {
+  nodeId: string;
+  nodeLabel: string;
+  matches: ResearchSearchMatch[];
+}
+
+/** scope 在协议层分组，避免调用方把范围外结果伪装成当前范围命中。 */
+export interface ResearchSearchResultGroup {
+  scope: ResearchSearchScope;
+  nodes: ResearchSearchNodeResult[];
+}
+
+export type ResearchSearchResponse = {
+  query: string;
+  groups: ResearchSearchResultGroup[];
+} & (
+  | { mode: "hybrid"; degradationReason?: never }
+  | { mode: "keyword-only"; degradationReason: ResearchSearchDegradationReason }
+);
+
+/** 语义搜索模型档位独立于生成模型供应商配置，且不得静默切换。 */
+export type SemanticSearchProfile = "standard" | "lightweight";
+export type SemanticSearchRuntimeState =
+  | "model-missing"
+  | "model-downloading"
+  | "model-corrupt"
+  | "index-absent"
+  | "index-stale"
+  | "index-building"
+  | "ready"
+  | "resource-insufficient"
+  | "failed";
+
+export type SemanticSearchInstallationState =
+  | "not-installed"
+  | "downloading"
+  | "installed"
+  | "corrupt"
+  | "failed";
+
+export interface SemanticSearchProfileInstallationView {
+  profile: SemanticSearchProfile;
+  state: SemanticSearchInstallationState;
+  downloadedBytes: number;
+  totalBytes: number;
+  canCancel: boolean;
+  canRetry: boolean;
+  errorCode?: string;
+}
+
+export interface SemanticSearchStatusView {
+  configuredProfile: SemanticSearchProfile;
+  runtimeState: SemanticSearchRuntimeState;
+  installations: SemanticSearchProfileInstallationView[];
+  indexProgress?: { completedUnits: number; totalUnits: number };
+  errorCode?: string;
+}
+
+export type SemanticSearchCommand =
+  | { type: "select-profile"; profile: SemanticSearchProfile }
+  | { type: "download-profile"; profile: SemanticSearchProfile }
+  | { type: "cancel-download"; profile: SemanticSearchProfile }
+  | { type: "retry-download"; profile: SemanticSearchProfile }
+  | { type: "delete-profile"; profile: SemanticSearchProfile }
+  | { type: "rebuild-index" };
+
+const SEMANTIC_SEARCH_PROFILE_COMMANDS = new Set<SemanticSearchCommand["type"]>([
+  "select-profile",
+  "download-profile",
+  "cancel-download",
+  "retry-download",
+  "delete-profile",
+]);
+
+/** 显式模型安装与索引命令的结构校验；未知字段一律拒绝。 */
+export function validateSemanticSearchCommand(value: unknown): asserts value is SemanticSearchCommand {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Semantic search command must be an object");
+  const command = value as { type?: unknown; profile?: unknown };
+  if (typeof command.type !== "string") throw new Error("Semantic search command type is required");
+  const keys = Object.keys(value);
+  if (command.type === "rebuild-index") {
+    if (keys.length !== 1 || keys[0] !== "type") throw new Error("rebuild-index command has unexpected fields");
+    return;
+  }
+  if (!SEMANTIC_SEARCH_PROFILE_COMMANDS.has(command.type as SemanticSearchCommand["type"])) {
+    throw new Error("Unknown semantic search command type");
+  }
+  if (keys.some((key) => key !== "type" && key !== "profile") || keys.length !== 2) {
+    throw new Error("Semantic search profile command has unexpected fields");
+  }
+  if (command.profile !== "standard" && command.profile !== "lightweight") {
+    throw new Error("Semantic search profile must be standard or lightweight");
+  }
+}
+
+/** 共享搜索入口的结构校验；调用方仍负责参数化查询，不可把 query 拼入 SQL。 */
+export function validateResearchSearchInput(value: unknown): asserts value is ResearchSearchInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Research search input must be an object");
+  const input = value as { query?: unknown; limit?: unknown; insideNodeIds?: unknown };
+  if (typeof input.query !== "string" || !input.query.trim() || input.query.length > RESEARCH_SEARCH_QUERY_MAX_CHARACTERS) {
+    throw new Error(`query must be a non-empty string no longer than ${RESEARCH_SEARCH_QUERY_MAX_CHARACTERS} characters`);
+  }
+  if (input.limit !== undefined && (typeof input.limit !== "number" || !Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > RESEARCH_SEARCH_MAX_LIMIT)) {
+    throw new Error(`limit must be an integer between 1 and ${RESEARCH_SEARCH_MAX_LIMIT}`);
+  }
+  if (input.insideNodeIds !== undefined && (!Array.isArray(input.insideNodeIds)
+    || input.insideNodeIds.length > RESEARCH_SEARCH_MAX_SCOPE_NODE_IDS
+    || input.insideNodeIds.some((id) => typeof id !== "string" || !id.trim() || id.length > 256)
+    || new Set(input.insideNodeIds).size !== input.insideNodeIds.length)) {
+    throw new Error(`insideNodeIds must contain at most ${RESEARCH_SEARCH_MAX_SCOPE_NODE_IDS} unique node IDs`);
+  }
 }
 
 export interface ResearchGraphObservationDerivations {

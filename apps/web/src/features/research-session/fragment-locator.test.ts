@@ -90,6 +90,26 @@ describe("locateFragment", () => {
     expect(result.target.highlights).toEqual([{ blockOrdinal: 1, start: 0, end: 4, exact: "第二段。" }]);
   });
 
+  it("同一片段的不同搜索窗口保留各自文字范围，不会落到同一个整段高亮", () => {
+    const message = makeAssistantMessage();
+    const { version, slices, fragments } = makeArtifacts(message);
+    const second = fragments[1]!;
+    const result = locateFragment({
+      currentNodeId: "node-a",
+      fragmentId: second.id,
+      version,
+      fragments,
+      messages: [message],
+      slicesByMessage: { [message.id]: slices },
+      range: { startOffset: second.startOffset + 1, endOffset: second.startOffset + 3 },
+      currentBodyVersionId: version.id,
+    });
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.target.excerpt).toBe("二段");
+    expect(result.target.highlights).toEqual([{ blockOrdinal: 1, start: 1, end: 3, exact: "二段" }]);
+  });
+
   it("短回答标题与后续正文分块时，片段分别投影到实际渲染的两个块", () => {
     const message = makeAssistantMessage("m-titled", "## 标题\n\n**正文** [链接](https://example.test)");
     const { version, slices, fragments } = makeArtifacts(message);
@@ -214,6 +234,22 @@ describe("locateFragment", () => {
       slicesByMessage: { [message.id]: slices },
     });
     expect(result).toEqual({ kind: "failure", failure: "integrity-failed" });
+  });
+
+  it("搜索范围引用的旧正文版本即使仍可读取也必须诚实降级", () => {
+    const message = makeAssistantMessage();
+    const { version, slices, fragments } = makeArtifacts(message);
+    const result = locateFragment({
+      currentNodeId: "node-a",
+      fragmentId: fragments[0]!.id,
+      version,
+      fragments,
+      messages: [message],
+      slicesByMessage: { [message.id]: slices },
+      range: { startOffset: fragments[0]!.startOffset, endOffset: fragments[0]!.endOffset },
+      currentBodyVersionId: "body:new-current-version",
+    });
+    expect(result).toEqual({ kind: "failure", failure: "current-version-mismatch" });
   });
 
   it("slice-not-found：序号与内容都不匹配", () => {

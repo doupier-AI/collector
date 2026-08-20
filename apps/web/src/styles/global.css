@@ -4775,6 +4775,121 @@ button.model-status {
   color: var(--color-danger);
 }
 
+.confirmed-fusion-snapshot {
+  margin: var(--space-4) 0;
+  padding: var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--color-ai) 32%, var(--color-line));
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--color-ai) 5%, var(--color-surface-raised));
+}
+
+.confirmed-fusion-snapshot:focus { outline: none; box-shadow: var(--ring-locate); }
+.confirmed-fusion-snapshot h2 { margin: 0; font-family: var(--font-serif); font-size: var(--font-size-lg); }
+.confirmed-fusion-snapshot header p { margin: var(--space-1) 0 0; color: var(--color-muted); font-size: var(--font-size-sm); }
+.confirmed-fusion-snapshot__body { margin-top: var(--space-3); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.75; }
+.confirmed-fusion-snapshot__body mark { background: var(--color-highlight); color: inherit; }
+
+/* ---------- 语义搜索设置 ---------- */
+
+.semantic-search-settings {
+  max-width: 52rem;
+}
+
+.semantic-search-settings__header,
+.semantic-search-settings__status,
+.semantic-search-settings__rebuild {
+  max-width: 44rem;
+}
+
+.semantic-search-settings__header > p,
+.semantic-search-settings__status > p,
+.semantic-search-settings__rebuild > p,
+.semantic-search-settings__profile-heading p {
+  color: var(--color-muted);
+}
+
+.semantic-search-settings__status,
+.semantic-search-settings__profile,
+.semantic-search-settings__rebuild {
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+}
+
+.semantic-search-settings__status h2,
+.semantic-search-settings__rebuild h2,
+.semantic-search-settings__profile h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.semantic-search-settings__status p,
+.semantic-search-settings__rebuild p,
+.semantic-search-settings__profile p {
+  margin: var(--space-2) 0 0;
+}
+
+.semantic-search-settings__profiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.semantic-search-settings__profile {
+  min-width: 0;
+}
+
+.semantic-search-settings__profile-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.semantic-search-settings__badge {
+  flex: 0 0 auto;
+  padding: 0.125rem 0.5rem;
+  border-radius: var(--radius-input);
+  color: var(--color-ai);
+  background: color-mix(in srgb, var(--color-ai) 12%, var(--color-surface));
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.semantic-search-settings__facts {
+  display: grid;
+  gap: var(--space-1);
+  margin: var(--space-3) 0;
+  padding-left: 1.25rem;
+  color: var(--color-muted);
+  font-size: 0.875rem;
+}
+
+.semantic-search-settings__installation {
+  font-weight: 600;
+}
+
+.semantic-search-settings__progress-wrap {
+  display: grid;
+  gap: var(--space-1);
+  margin: var(--space-3) 0;
+  color: var(--color-muted);
+  font-size: 0.8125rem;
+}
+
+.semantic-search-settings__progress-wrap progress {
+  width: 100%;
+  accent-color: var(--color-ai);
+}
+
+@media (max-width: 42rem) {
+  .semantic-search-settings__profiles {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ---------- 鏈満杩愯璁板綍 ---------- */
 
 .run-records__header,

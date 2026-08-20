@@ -62,23 +62,24 @@ export interface BodyArtifactsStoreLookup {
 }
 
 /**
- * 先查持久化版本与片段；缺失时在内存确定性派生（不写库）。
- * 已持久化但片段为空的版本同样走内存重派生，保持读取方永远拿到可用引用。
+ * 先按当前消息正文确定性派生，再仅在持久化版本摘要仍与当前正文一致时复用它和它的
+ * 片段。消息重新生成后旧正文版本仍可供历史引用回读，但绝不能被当前读取路径复用。
+ * 缺失、不一致或片段为空时走内存派生（不写库），保持读取方永远拿到与当前正文一致的
+ * 可用引用。
  */
 export function getOrDeriveMessageBodyArtifacts(
   store: BodyArtifactsStoreLookup,
   input: MessageBodyArtifactsInput,
 ): MessageBodyArtifacts {
+  const derived = deriveMessageBodyArtifacts(input);
   const persistedVersion = store.getBodyVersionForMessage(input.message.id);
-  if (persistedVersion) {
+  if (persistedVersion?.contentHash === derived.version.contentHash) {
     const persistedFragments = store.listFragmentsByBodyVersion(persistedVersion.id);
     if (persistedFragments.length > 0) {
       return { version: persistedVersion, fragments: persistedFragments, persisted: true };
     }
-    const derived = deriveMessageBodyArtifacts(input);
     return { version: persistedVersion, fragments: derived.fragments, persisted: true };
   }
-  const derived = deriveMessageBodyArtifacts(input);
   return { ...derived, persisted: false };
 }
 

@@ -430,4 +430,42 @@ describe("GlobalResearchMap stable organic canvas", () => {
     expect(first).toHaveAttribute("transform", transformBefore);
     expect(JSON.stringify(observation)).toBe(serializedBefore);
   });
+
+  it("只有搜索结果 reveal 会把目标移到视口中央并转移键盘焦点", async () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("prefers-reduced-motion"),
+      addEventListener: vi.fn(), removeEventListener: vi.fn(),
+    }));
+    const observation = makeGraphObservation({ nodes: [makeGraphObservationNode("a", "节点 A"), makeGraphObservationNode("b", "节点 B")] });
+    const initialScene = serializeMapScene({
+      filters: DEFAULT_RESEARCH_MAP_FILTER_STATE,
+      relationshipKinds: ["parent-child", "fused-from"],
+      viewBox: { x: 0, y: 0, width: 480, height: 270 },
+      layout: { world: { width: 960, height: 540 }, positions: new Map([["a", { x: 100, y: 100 }], ["b", { x: 800, y: 400 }]]), edgeKeys: new Map() },
+    });
+    const rendered = render(
+      <MemoryRouter>
+        <GlobalResearchMap observation={observation} initialScene={initialScene} revealNodeId="b" revealRequestId={1} />
+      </MemoryRouter>,
+    );
+
+    const canvas = screen.getByTestId("global-map-canvas");
+    const svg = within(canvas).getByRole("group", { name: "跨会话研究关系画布" });
+    await waitFor(() => expect(svg).toHaveAttribute("viewBox", "560 265 480 270"));
+    await waitFor(() => expect(document.activeElement).toBe(canvasNode(canvas, "节点 B")));
+
+    fireEvent.wheel(svg, { clientX: 0, clientY: 0, deltaY: -1 });
+    await waitFor(() => expect(svg).not.toHaveAttribute("viewBox", "560 265 480 270"));
+    rendered.rerender(
+      <MemoryRouter>
+        <GlobalResearchMap observation={observation} initialScene={initialScene} revealNodeId="b" revealRequestId={2} />
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      const [x, y, width, height] = (svg.getAttribute("viewBox") ?? "").split(" ").map(Number);
+      expect(x + width / 2).toBeCloseTo(800);
+      expect(y + height / 2).toBeCloseTo(400);
+    });
+    vi.unstubAllGlobals();
+  });
 });

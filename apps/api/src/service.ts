@@ -265,12 +265,14 @@ export class CaptureService {
         fusionSources[message.id] = [...byNode.values()];
       }
     }
+    const confirmedFusion = this.store.getConfirmedFusionSnapshot(nodeId);
     return {
       ...view,
       termDetections,
       slices,
       bodyVersions,
       fusionSources: Object.keys(fusionSources).length > 0 ? fusionSources : undefined,
+      ...(confirmedFusion ? { confirmedFusion } : {}),
       fusionProposals: this.fusionProposals.listForNode(nodeId, ["pending", "accepted"]),
     };
   }
@@ -296,16 +298,16 @@ export class CaptureService {
 
   /**
    * #35：为一条已完成助手消息获取或确定性派生正文版本与语义片段（惰性兜底）。
-   * 已有版本直接返回；缺失时按正文确定性派生（有正式切片→正式片段，否则临时片段）。
-   * 幂等：同文同 id，重复调用/重启无副作用。不调用模型、不删除原文。
+   * 只有版本摘要仍与当前消息正文一致时才复用；重新生成后同一消息会保留历史正文
+   * 版本，必须按当前正文另派生，避免把旧版本误当成当前正文。缺失或不一致时按正文
+   * 确定性派生（有正式切片→正式片段，否则临时片段）。幂等：同文同 id，重复调用/
+   * 重启无副作用。不调用模型、不删除原文。
    */
   private async getOrCreateBodyArtifacts(
     nodeId: string,
     message: Pick<ResearchMessageRecord, "id" | "nodeId" | "branchId" | "sessionId" | "content" | "createdAt">,
     citations: import("@collector/capture-contracts").ResearchCitationRecord[],
   ): Promise<ResearchBodyVersionRecord> {
-    const existing = this.store.getBodyVersionForMessage(message.id);
-    if (existing) return existing;
     const scopeNodeId = message.nodeId ?? message.branchId ?? nodeId;
     const slices = this.store.listSlicesByMessage(message.id);
     const { version, fragments } = deriveMessageBodyArtifacts({
@@ -314,9 +316,18 @@ export class CaptureService {
       slices,
       citations,
     });
-    await this.store.createResearchBodyVersion(version);
+    const existing = this.store.getBodyVersionForMessage(message.id);
+    if (existing?.contentHash === version.contentHash) return existing;
+    // 同一内容可能在稍后的重新生成中再次成为当前正文；它已有稳定版本时直接复用，
+    // 既不重写历史定位，也不因内容摘要主键重复而误报一个未持久化的新版本。
+    const matchingHistoricalVersion = this.store.getBodyVersion(version.id);
+    if (matchingHistoricalVersion?.contentHash === version.contentHash) return matchingHistoricalVersion;
+    // 表约束按 (message_id, version) 保留历史正文；正文 ID 仍只由消息和内容摘要决定。
+    // 重新生成时必须递增版本号，不能让 INSERT OR IGNORE 静默吞掉新的内容版本。
+    const currentVersion = existing ? { ...version, version: existing.version + 1 } : version;
+    await this.store.createResearchBodyVersion(currentVersion);
     await this.store.createSemanticFragments(fragments);
-    return version;
+    return currentVersion;
   }
 
   /**
@@ -331,12 +342,12 @@ export class CaptureService {
       for (const message of this.store.listResearchMessages(session.id)) {
         if (message.role !== "assistant" || message.status !== "completed" || !message.content.trim()) continue;
         processed += 1;
-        if (this.store.getBodyVersionForMessage(message.id)) continue;
         try {
           const citations = this.store.listResearchCitationsForMessages([message.id]);
           const scopeNodeId = message.nodeId ?? message.branchId ?? session.id;
-          await this.getOrCreateBodyArtifacts(scopeNodeId, message, citations);
-          created += 1;
+          const before = this.store.getBodyVersionForMessage(message.id);
+          const version = await this.getOrCreateBodyArtifacts(scopeNodeId, message, citations);
+          if (before?.id !== version.id) created += 1;
         } catch {
           // 单条消息回填失败只跳过该条，不阻断其余；派生失败不污染正文（ADR-0004）。
         }
@@ -1072,4 +1083,3 @@ export class CaptureService {
   }
 
 }
-

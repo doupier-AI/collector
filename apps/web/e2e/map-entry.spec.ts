@@ -188,9 +188,11 @@ test("#68 地图 entry：专注链、节点打开、浏览器返回和刷新均�
   await expect(page.getByRole("button", { name: "融合来源" })).toHaveAttribute("aria-pressed", "false");
 
   await page.setViewportSize({ width: 320, height: 760 });
+  await expect(canvas).toBeHidden();
   const narrowList = page.getByTestId("global-map-list");
   const narrowSecondNode = narrowList.getByRole("button", { name: /地图现场恢复二/ });
   await narrowSecondNode.focus();
+  await expect(narrowSecondNode).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(new RegExp(`/nodes/${secondNodeId}$`));
   await page.reload();

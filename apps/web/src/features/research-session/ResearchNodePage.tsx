@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import type { ResearchSelectionAnchor, ResearchSessionView, ResearchTaskRecord } from "@collector/capture-contracts";
+import { hashBodyContent, type ResearchSelectionAnchor, type ResearchSessionView, type ResearchTaskRecord } from "@collector/capture-contracts";
 import { isApiErrorCode, isUnauthorized, apiErrorCopy } from "../../api/errors";
 import { globalMapFocusPath, stableNodePath } from "../../app/paths";
 import { useServices } from "../../app/services";
@@ -94,6 +94,10 @@ export function ResearchNodePage() {
   // location.state 在路由解析后即可靠读取（React Router 已把 history.state.usr 映射过来）；
   // 不做惰性初始化，渲染期直接派生，配合下方清理 effect（replace state:null）自然只显示一次。
   const justGrew = Boolean((location.state as { grew?: boolean } | null)?.grew);
+  const [searchLocatorFallback] = useState(() => {
+    const candidate = (location.state as { searchLocatorFallback?: unknown } | null)?.searchLocatorFallback;
+    return typeof candidate === "string" && candidate.length <= 240 ? candidate : null;
+  });
   const mapReturn = mapReturnFromRouteState(location.state);
   const node = useResearchNode(nodeId, { initialTurn: initialTurnRef.current });
   const termPreviews = useTermPreviews(nodeId, (error) => node.announce(apiErrorCopy(error).body));
@@ -236,6 +240,31 @@ export function ResearchNodePage() {
   // #50：定位提醒持续高亮，直到用户下一次框选操作解除（onSelectionActivity）。
   const [searchParams] = useSearchParams();
   const restoredSelection = useSelectionRestore(searchParams.get("sel"));
+  const fusionSearchTarget = useMemo(() => {
+    const draftId = searchParams.get("fusionDraft");
+    if (!draftId) return null;
+    const snapshot = readyView?.confirmedFusion;
+    const start = Number(searchParams.get("fusionStart"));
+    const end = Number(searchParams.get("fusionEnd"));
+    if (!snapshot || snapshot.confirmedDraftVersionId !== draftId
+      || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)
+      || start < 0 || end <= start || end > snapshot.body.length) {
+      return { kind: "fallback" as const };
+    }
+    return { kind: "found" as const, snapshot, start, end };
+  }, [readyView, searchParams]);
+  const fusionSnapshotRef = useRef<HTMLElement>(null);
+  const locatedFusionKeyRef = useRef("");
+  useEffect(() => {
+    if (fusionSearchTarget?.kind !== "found") return;
+    const key = `${location.key}:${fusionSearchTarget.snapshot.confirmedDraftVersionId}:${fusionSearchTarget.start}:${fusionSearchTarget.end}`;
+    if (locatedFusionKeyRef.current === key) return;
+    locatedFusionKeyRef.current = key;
+    const target = fusionSnapshotRef.current;
+    if (typeof target?.scrollIntoView === "function") target.scrollIntoView({ behavior: "auto", block: "center" });
+    target?.focus({ preventScroll: true });
+    node.announce("已定位到正式融合正文的命中位置。");
+  }, [fusionSearchTarget, location.key, node]);
 
   const isRoot = readyView ? !readyView.node.parentNodeId : true;
   // 根节点改名：inline 编辑；改名后置 titleEdited，自动标题永久让位（服务端行为）。
@@ -348,9 +377,35 @@ export function ResearchNodePage() {
     if (!restoredSelection || !readyView) return null;
     return highlightForMessages(readyView.messages, readyView.slices, restoredSelection.anchor, restoredSelection.text);
   }, [restoredSelection, readyView]);
+  const searchMessageHighlight = useMemo(() => {
+    if (!readyView) return null;
+    const messageId = searchParams.get("searchMessage");
+    if (!messageId) return null;
+    const rawStart = searchParams.get("searchStart");
+    const rawEnd = searchParams.get("searchEnd");
+    const expectedHash = searchParams.get("searchHash");
+    const start = rawStart === null ? Number.NaN : Number(rawStart);
+    const end = rawEnd === null ? Number.NaN : Number(rawEnd);
+    const message = readyView.messages.find((candidate) => candidate.id === messageId && candidate.role === "user");
+    if (!message || !expectedHash || hashBodyContent(message.content) !== expectedHash
+      || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end <= start || end > message.content.length) {
+      return { kind: "fallback" as const, source: "search" as const };
+    }
+    return {
+      kind: "found" as const,
+      source: "search" as const,
+      messageId,
+      blockId: `${messageId}#search`,
+      blockOrdinal: 0,
+      start,
+      end,
+      highlights: [{ start, end, exact: message.content.slice(start, end) }],
+    };
+  }, [readyView, searchParams]);
+  const effectiveMessageHighlight = searchMessageHighlight ?? messageHighlight;
   const highlightKey =
-    messageHighlight?.kind === "found"
-      ? `${messageHighlight.blockId}:${messageHighlight.start}:${messageHighlight.end}`
+    effectiveMessageHighlight?.kind === "found"
+      ? `${effectiveMessageHighlight.blockId}:${effectiveMessageHighlight.start}:${effectiveMessageHighlight.end}`
       : null;
   // 目标先稳定定位（DOM 高亮由 MessageBlock 渲染后圈出），再滚动到视口。
   useEffect(() => {
@@ -372,14 +427,14 @@ export function ResearchNodePage() {
     setRestoreDismissed((dismissed) => (dismissed ? dismissed : highlightKey !== null));
   }, [highlightKey]);
   const activeHighlight =
-    messageHighlight?.kind === "fallback" || (highlightKey && !restoreDismissed) ? messageHighlight : null;
+    effectiveMessageHighlight?.kind === "fallback" || (highlightKey && !restoreDismissed) ? effectiveMessageHighlight : null;
 
   // 路由 state 只作为一次性传递（开始页首问 firstTurn / 生长到达 grew），
   // 挂载后立即清掉，避免刷新后重复提交或徽记重复出现。
   // 与 justGrew 一致读 history.state.usr（SPA 落地瞬间 location.state 可能滞后）。
   useEffect(() => {
-    const routeState = location.state as { firstTurn?: PendingFirstTurn; grew?: boolean } | null;
-    if (routeState?.firstTurn || routeState?.grew) {
+    const routeState = location.state as { firstTurn?: PendingFirstTurn; grew?: boolean; searchLocatorFallback?: unknown } | null;
+    if (routeState?.firstTurn || routeState?.grew || routeState?.searchLocatorFallback) {
       navigate(".", { replace: true, state: stripOneShotRouteState(location.state) });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -403,6 +458,8 @@ export function ResearchNodePage() {
   const locatedKeyRef = useRef("");
 
   const fragmentId = searchParams.get("fragment");
+  const fragmentStart = searchParams.get("fragmentStart");
+  const fragmentEnd = searchParams.get("fragmentEnd");
   useEffect(() => {
     if (!fragmentId) {
       setFragmentFocus(null);
@@ -435,6 +492,13 @@ export function ResearchNodePage() {
           fragments: view.fragments,
           messages: readyView.messages,
           slicesByMessage: readyView.slices,
+          ...((fragmentStart !== null || fragmentEnd !== null) ? {
+            range: {
+              startOffset: fragmentStart === null ? Number.NaN : Number(fragmentStart),
+              endOffset: fragmentEnd === null ? Number.NaN : Number(fragmentEnd),
+            },
+            currentBodyVersionId: readyView.bodyVersions?.[view.version.messageId]?.id,
+          } : {}),
         });
         if (stale) return;
         locatedKeyRef.current = key;
@@ -463,7 +527,7 @@ export function ResearchNodePage() {
     };
     // node.announce 是稳定 useCallback（useResearchNode），readyView 引用变化才重跑
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodeId, fragmentId, location.key, readyView, api]);
+  }, [nodeId, fragmentId, fragmentStart, fragmentEnd, location.key, readyView, api]);
 
   // 目标卡片滚动 + 焦点 + 定时恢复。block:"center" 天然避开 sticky 页头（与 ?sel= 高亮同款）；
   // 顺序：先滚动后聚焦（preventScroll 不产生二次滚动）；cleanup 清定时器（切换/卸载即清旧状态）。
@@ -892,14 +956,50 @@ export function ResearchNodePage() {
         />
       ) : null}
 
-      {activeHighlight?.kind === "fallback" && restoredSelection ? (
+      {activeHighlight?.kind === "fallback" && !("source" in activeHighlight) && restoredSelection ? (
         <SelectionRestoreFallback selection={restoredSelection} caption={activeHighlight.caption} />
+      ) : null}
+
+      {activeHighlight?.kind === "fallback" && "source" in activeHighlight ? (
+        <p className="fragment-locator-fallback" role="status">
+          这条搜索命中的精确位置已不存在，已打开对应问题。
+        </p>
       ) : null}
 
       {fragmentFallback ? (
         <p className="fragment-locator-fallback" role="status" data-testid="fragment-locator-fallback">
           {FRAGMENT_LOCATOR_FALLBACK_TEXT[fragmentFallback]}
         </p>
+      ) : null}
+
+      {searchLocatorFallback ? (
+        <p className="fragment-locator-fallback" role="status">
+          {searchLocatorFallback}
+        </p>
+      ) : null}
+
+      {fusionSearchTarget?.kind === "fallback" ? (
+        <p className="fragment-locator-fallback" role="status">
+          这条正式融合正文的命中位置已失效，已打开对应融合节点。
+        </p>
+      ) : null}
+
+      {view.confirmedFusion ? (
+        <section ref={fusionSnapshotRef} className="confirmed-fusion-snapshot" tabIndex={-1} aria-labelledby="confirmed-fusion-title">
+          <header>
+            <h2 id="confirmed-fusion-title">正式融合正文</h2>
+            <p>这是确认时固定的只读版本；后续讨论仍作为独立 AI 正文保留。</p>
+          </header>
+          <div className="confirmed-fusion-snapshot__body">
+            {fusionSearchTarget?.kind === "found" ? (
+              <>
+                {view.confirmedFusion.body.slice(0, fusionSearchTarget.start)}
+                <mark data-search-match>{view.confirmedFusion.body.slice(fusionSearchTarget.start, fusionSearchTarget.end)}</mark>
+                {view.confirmedFusion.body.slice(fusionSearchTarget.end)}
+              </>
+            ) : view.confirmedFusion.body}
+          </div>
+        </section>
       ) : null}
 
       {view.messages.length === 0 ? (

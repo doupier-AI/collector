@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
@@ -7,8 +7,10 @@ import { ApiRequestError } from "../../api/errors";
 import { ServicesProvider, type AppServices } from "../../app/services";
 import { makeEdge, makeGraphObservation, makeGraphObservationNode, makeProject } from "../../test/fakes";
 import { ResearchMapLandingPage } from "./ResearchMapLandingPage";
+import { serializeMapScene } from "./map-scene";
+import { DEFAULT_RESEARCH_MAP_FILTER_STATE } from "./research-map-filters";
 
-function renderPage(api: Partial<ApiClient>, initialEntry = "/map") {
+function renderPage(api: Partial<ApiClient>, initialEntry: string | { pathname: string; state: unknown } = "/map") {
   const services = { api: { listProjects: async () => [], ...api }, connectTaskEvents: vi.fn() } as unknown as AppServices;
   return render(
     <ServicesProvider services={services}>
@@ -88,14 +90,49 @@ describe("ResearchMapLandingPage", () => {
 
   it("空结果也把筛选保存到当前 history entry，刷新可恢复同一现场", async () => {
     window.history.replaceState({ idx: 0, key: "map-empty", usr: null }, "");
-    renderPage({ getResearchMap: async () => makeGraphObservation() });
+    renderPage({
+      getResearchMap: async () => makeGraphObservation(),
+      searchResearch: async ({ query }) => ({ query, mode: "keyword-only", degradationReason: "model-not-installed", groups: [] }),
+    });
     const user = userEvent.setup();
 
     await screen.findByRole("link", { name: "开始第一次研究" });
+    await user.type(screen.getByRole("searchbox", { name: "搜索全部研究内容" }), "量子纠缠");
+    await user.click(screen.getByRole("button", { name: "搜索" }));
+    await waitFor(() => expect(window.history.state.usr?.mapSceneV2?.search?.query).toBe("量子纠缠"));
     await user.click(screen.getByRole("checkbox", { name: "已归档" }));
 
     await waitFor(() => expect(window.history.state.usr?.mapSceneV2?.filters?.lifecycles).toEqual(["active"]));
+    expect(window.history.state.usr.mapSceneV2.search.query).toBe("量子纠缠");
     expect(window.history.state.usr.mapSceneV2.layout.positions).toEqual([]);
+  });
+
+  it("恢复的搜索选中项只保留现场，不会在新挂载时重新居中或抢焦点", async () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("prefers-reduced-motion"),
+      addEventListener: vi.fn(), removeEventListener: vi.fn(),
+    }));
+    const scene = serializeMapScene({
+      filters: DEFAULT_RESEARCH_MAP_FILTER_STATE,
+      relationshipKinds: ["parent-child", "fused-from"],
+      search: { query: "量子", selectedNodeId: "b" },
+      viewBox: { x: 0, y: 0, width: 480, height: 270 },
+      layout: {
+        world: { width: 960, height: 540 },
+        positions: new Map([["a", { x: 100, y: 100 }], ["b", { x: 800, y: 400 }]]),
+        edgeKeys: new Map(),
+      },
+    });
+    renderPage({
+      getResearchMap: async () => makeGraphObservation({ nodes: [makeGraphObservationNode("a", "节点 A"), makeGraphObservationNode("b", "节点 B")] }),
+      searchResearch: async ({ query }) => ({ query, mode: "hybrid", groups: [] }),
+    }, { pathname: "/map", state: { mapSceneV2: scene } });
+
+    const canvas = await screen.findByTestId("global-map-canvas");
+    const svg = within(canvas).getByRole("group", { name: "跨会话研究关系画布" });
+    await waitFor(() => expect(svg).toHaveAttribute("viewBox", "0 0 480 270"));
+    expect(document.activeElement).not.toBe(within(canvas).getByLabelText(/节点 B/));
+    vi.unstubAllGlobals();
   });
 
   it("已有空结果后的更新失败仍明确显示网络错误", async () => {

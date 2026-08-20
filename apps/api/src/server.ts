@@ -3,6 +3,7 @@ import { CaptureService } from "./service.js";
 import { SqliteStore, defaultDataPaths } from "./store.js";
 import { LocalAuth } from "./auth.js";
 import { randomUUID } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import { DEFAULT_PROVIDER_REGISTRY, fingerprintBaseUrl, ProviderRuntimeResolver, validateExternalProviderBaseUrl } from "@collector/model-gateway";
 import type { ProviderProfile } from "@collector/capture-contracts";
 import { WorkflowScheduler } from "./scheduler.js";
@@ -19,6 +20,10 @@ import {
 import { acquireServiceLock } from "./service-lock.js";
 import { calculateRuntimeVersion, isRuntimeVersion } from "./runtime-version.js";
 import { createMvpDemoResearchProvider, createMvpDemoSelectionProvider } from "./mvp-demo-research.js";
+import { createSemanticModelArtifactInstaller } from "./semantic-search/model-artifacts.js";
+import { IsolatedSemanticInferenceAdapter } from "./semantic-search/inference-adapter.js";
+import { createSemanticSearchModule } from "./semantic-search/module.js";
+import { SemanticSearchSqliteStore } from "./semantic-search/store.js";
 
 // 直接运行服务时保留 43110 便于前端开发调试；正式启动器显式传入 0 由系统选择端口。
 const port = Number(process.env.COLLECTOR_PORT ?? "43110");
@@ -94,6 +99,18 @@ const service = new CaptureService(store, paths.artifacts, undefined, {
   selectionProvider: mvpDemoMode ? createMvpDemoSelectionProvider() : undefined,
   mvpDemoMode,
 });
+const semanticDatabase = new DatabaseSync(paths.database);
+semanticDatabase.exec("PRAGMA foreign_keys = ON");
+semanticDatabase.exec("PRAGMA journal_mode = WAL");
+semanticDatabase.exec("PRAGMA busy_timeout = 5000");
+const semanticModelRoot = join(paths.root, "semantic-models");
+const semanticSearch = createSemanticSearchModule({
+  reader: store,
+  searchStore: new SemanticSearchSqliteStore(semanticDatabase),
+  installer: createSemanticModelArtifactInstaller(semanticModelRoot),
+  inference: new IsolatedSemanticInferenceAdapter(),
+  modelRoot: semanticModelRoot,
+});
 // #47：启动即从持久化状态重建模型网关——已保存的活动配置、凭证与同意记录齐备
 // 即建立可用网关（双击启动器不传 COLLECTOR_AI_CONSENT，不依赖环境变量通道）。
 // 配置不存在或不可用时网关为空，具体原因经 getAiConfiguration 暴露；恢复失败不阻断启动。
@@ -118,6 +135,7 @@ const server = createApiServer(service, auth, {
   runtimeVersion,
   webRoot,
   launcherToken,
+  semanticSearch,
   async createLaunchBootstrap() {
     if (!activePort) throw new Error("Collector service is not ready for browser launch");
     const bootstrap = await startBrowserBootstrap(auth, activePort);
@@ -176,6 +194,8 @@ async function gracefulShutdown(signal: string): Promise<void> {
     await Promise.all([...browserBootstraps].map((bootstrap) => bootstrap.close().catch(() => undefined)));
     server.closeAllConnections?.();
     await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    await semanticSearch.close();
+    semanticDatabase.close();
     store.close();
     await removeInstanceState(paths.root, instanceId);
     await serviceLock.release();

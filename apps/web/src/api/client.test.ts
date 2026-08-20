@@ -126,3 +126,30 @@ describe("#62 global research map API client", () => {
     );
   });
 });
+
+describe("#67 semantic research search API client", () => {
+  it("keeps search, status and explicit model commands on the unified client", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      configuredProfile: "standard",
+      runtimeState: "model-missing",
+      installations: [],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const client = createApiClient(fetchMock);
+
+    await client.getSemanticSearchStatus();
+    await client.searchResearch({ query: "量子纠缠", limit: 12, insideNodeIds: ["node-a"] });
+    await client.executeSemanticSearchCommand({ type: "download-profile", profile: "lightweight" });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/v1/semantic-search/status", undefined);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/v1/semantic-search/search",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ query: "量子纠缠", limit: 12, insideNodeIds: ["node-a"] }) }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/v1/semantic-search/commands",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ type: "download-profile", profile: "lightweight" }) }),
+    );
+  });
+});

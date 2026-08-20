@@ -8,6 +8,7 @@ import { subscribeToGroundingSourceReveal } from "../../components/grounding-sou
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { computeAnchoredOverlayPosition } from "../../utils/anchored-overlay-position";
 import { markdownVisibleText } from "../selection/selection-highlight";
+import { HighlightedText } from "../selection/HighlightedText";
 import { taskErrorReason } from "./format";
 import type { FragmentTarget } from "./fragment-locator";
 import { deriveSliceCardTargets, sliceCardAccessibleName, turnCardId } from "./slice-cards";
@@ -57,7 +58,7 @@ export function MessageItem({ message, task, retrying = false, onRetry, onRegene
   const viewingVersion = versionIndex > 0 ? versions[versionIndex - 1] : undefined;
 
   if (message.role === "user") {
-    return <UserMessageItem message={message} onEditMessage={onEditMessage} />;
+    return <UserMessageItem message={message} onEditMessage={onEditMessage} highlights={highlights} />;
   }
 
   const messageCitations = citations.filter(
@@ -216,7 +217,7 @@ function VersionSwitcher({ index, total, onSelect, onReset }: { index: number; t
 }
 
 /** ADR-0035 用户消息：复制与重新编辑（编辑态为内联输入框，保存即改写问题并重新生成）。 */
-function UserMessageItem({ message, onEditMessage }: { message: ResearchMessageRecord; onEditMessage?: (messageId: string, content: string) => void }) {
+function UserMessageItem({ message, onEditMessage, highlights }: { message: ResearchMessageRecord; onEditMessage?: (messageId: string, content: string) => void; highlights: MessageHighlight[] }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.content);
   const [copied, setCopied] = useState(false);
@@ -240,6 +241,13 @@ function UserMessageItem({ message, onEditMessage }: { message: ResearchMessageR
       // 剪贴板不可用：静默保持原状。
     }
   };
+  const highlight = highlights.find(
+    (candidate) =>
+      candidate.start >= 0 &&
+      candidate.end > candidate.start &&
+      candidate.end <= message.content.length &&
+      message.content.slice(candidate.start, candidate.end) === candidate.exact,
+  );
 
   return (
     <li className="message message--user" data-message-id={message.id}>
@@ -265,7 +273,9 @@ function UserMessageItem({ message, onEditMessage }: { message: ResearchMessageR
       ) : (
         <>
           <div className="message-user-bubble">
-            <p className="message__content">{message.content}</p>
+            <p className="message__content">
+              {highlight ? <HighlightedText text={message.content} start={highlight.start} end={highlight.end} /> : message.content}
+            </p>
           </div>
           {onEditMessage ? (
             <div className="message-actions message-actions--user">

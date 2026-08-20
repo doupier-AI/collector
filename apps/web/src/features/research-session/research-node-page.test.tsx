@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { deriveBodyVersion, deriveFragmentsFromSlices, deriveMessageSlices, messageContentBlockId } from "@collector/capture-contracts";
+import { deriveBodyVersion, deriveFragmentsFromSlices, deriveMessageSlices, hashBodyContent, messageContentBlockId } from "@collector/capture-contracts";
 import type { ResearchBodyVersionView, ResearchNodeView, ResearchSelectionInput, ResearchTurnAccepted } from "@collector/capture-contracts";
 import type { ApiClient } from "../../api/client";
 import { ApiRequestError, NetworkError } from "../../api/errors";
@@ -465,6 +465,53 @@ describe("ResearchNodePage 带来源的根节点（旧独立会话）", () => {
     expect(screen.queryByTestId("floating-selection-capsule")).not.toBeInTheDocument();
     expect(screen.queryByTestId("selection-capsule")).not.toBeInTheDocument();
     expect(createResearchSelection).not.toHaveBeenCalled();
+  });
+
+  it("语义搜索命中按消息与全文字符范围定位用户提问，不创建选区记录", async () => {
+    const createResearchSelection = vi.fn();
+    renderNodePage(
+      {
+        getResearchNodeView: async () => readyRootView(),
+        createResearchSelection,
+      },
+      `/nodes/session-1?searchMessage=m-in&searchHash=${hashBodyContent("为什么需要多头注意力？")}&searchStart=3&searchEnd=5`,
+    );
+
+    expect(await screen.findByText("需要", { selector: "[data-selection-mark]" })).toBeInTheDocument();
+    expect(screen.queryByTestId("selection-restore-fallback")).not.toBeInTheDocument();
+    expect(createResearchSelection).not.toHaveBeenCalled();
+  });
+
+  it("用户问题原地改写后旧搜索范围不再高亮新文字", async () => {
+    renderNodePage(
+      { getResearchNodeView: async () => readyRootView() },
+      `/nodes/session-1?searchMessage=m-in&searchHash=${hashBodyContent("旧问题但消息标识相同")}&searchStart=3&searchEnd=5`,
+    );
+
+    expect(await screen.findByText("这条搜索命中的精确位置已不存在，已打开对应问题。")).toBeInTheDocument();
+    expect(document.querySelector("[data-selection-mark]")).toBeNull();
+  });
+
+  it("语义搜索可在固定的正式融合正文中精确定位并高亮命中范围", async () => {
+    const view: ResearchNodeView = {
+      ...readyRootView(),
+      confirmedFusion: {
+        fusionNodeId: "session-1",
+        confirmedDraftVersionId: "draft-v2",
+        body: "固定后的正式融合正文",
+        contentHash: "hash",
+        directSources: [],
+        confirmedAt: "2026-08-02T00:00:00.000Z",
+      },
+    };
+    renderNodePage(
+      { getResearchNodeView: async () => view },
+      "/nodes/session-1?fusionDraft=draft-v2&fusionStart=5&fusionEnd=9",
+    );
+
+    const mark = await screen.findByText("式融合正", { selector: "[data-search-match]" });
+    expect(mark.tagName).toBe("MARK");
+    expect(screen.queryByText(/目前只能定位到节点/)).not.toBeInTheDocument();
   });
 
   it("来源返回：原消息不存在时降级展示保存原文与段落说明", async () => {
@@ -943,6 +990,31 @@ describe("#42 融合依据定位", () => {
       expect(document.getElementById(turnTargetFor("m-out"))).toHaveClass("fragment-target--focused");
     });
     expect(document.getElementById(blockTargetFor("m-out", 1))).not.toHaveClass("fragment-target--focused");
+  });
+
+  it("重新生成后旧搜索片段仍可读取也不会高亮当前正文", async () => {
+    const oldMessage = makeMessage({ id: "m-out", role: "assistant", status: "completed", content: "第一段。\n\n第二段。" });
+    const oldVersionView = bodyVersionViewFor(oldMessage, "session-1");
+    const currentMessage = { ...oldMessage, content: "新第一段。\n\n前移后的第二段。" };
+    const currentVersion = deriveBodyVersion({ messageId: currentMessage.id, nodeId: "session-1", content: currentMessage.content, origin: "generation", createdAt: "2026-08-02T00:00:00.000Z" });
+    const currentSlices = deriveMessageSlices("session-1", currentMessage.id, currentMessage.content, 0, []);
+    const view = makeNodeView({
+      node: makeNode({ id: "session-1", sessionId: "session-1" }),
+      session: makeSession({ id: "session-1" }),
+      messages: [makeMessage({ id: "m-in", role: "user", content: "问题" }), currentMessage],
+      tasks: [makeTask({ id: "task-1", status: "completed", inputMessageId: "m-in", outputMessageId: currentMessage.id })],
+      slices: { [currentMessage.id]: currentSlices },
+      bodyVersions: { [currentMessage.id]: currentVersion },
+    });
+    const oldFragment = oldVersionView.fragments[1]!;
+
+    renderNodePage(
+      { getResearchNodeView: async () => view, getResearchBodyVersion: async () => oldVersionView },
+      `/nodes/session-1?fragment=${encodeURIComponent(oldFragment.id)}&fragmentStart=${oldFragment.startOffset}&fragmentEnd=${oldFragment.endOffset}`,
+    );
+
+    expect(await screen.findByTestId("fragment-locator-fallback")).toHaveTextContent("这条搜索命中的正文已经更新，旧位置已失效。");
+    expect(document.querySelector("[data-selection-mark]")).toBeNull();
   });
 
   it("快速切换目标：旧卡片强调消失，只保留最新落点", async () => {

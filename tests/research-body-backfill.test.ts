@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { ResearchMessageRecord, ResearchSliceRecord } from "@collector/capture-contracts";
+import { deriveBodyVersion, deriveFragmentsFromBlocks, type ResearchMessageRecord, type ResearchSliceRecord } from "@collector/capture-contracts";
 import { CaptureService, SqliteStore } from "@collector/api";
 
 const NOW = "2026-08-01T00:00:00.000Z";
@@ -11,9 +11,10 @@ const CONTENT = "First paragraph.\n\nSecond paragraph.\n\nThird paragraph.";
 
 async function createStore() {
   const root = await mkdtemp(join(tmpdir(), "collector-bodyver-svc-"));
-  const store = new SqliteStore(join(root, "collector.sqlite"));
+  const dbPath = join(root, "collector.sqlite");
+  const store = new SqliteStore(dbPath);
   await store.init();
-  return { store, close: async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } };
+  return { store, dbPath, close: async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } };
 }
 
 function seedMessage(store: SqliteStore, messageId: string, content = CONTENT, role: "assistant" | "user" = "assistant", status: "completed" | "generating" = "completed") {
@@ -99,6 +100,63 @@ test("getResearchNodeView returns slices and bodyVersions together (coexistence)
   assert.strictEqual(view.bodyVersions!["msg-1"].content, CONTENT);
   const frags = store.listFragmentsByMessage("msg-1");
   assert.ok(frags.length > 0);
+});
+
+test("getResearchNodeView replaces a stale body artifact when the completed message has been regenerated", async (t) => {
+  const harness = await createStore();
+  t.after(() => harness.close());
+  const { store, dbPath } = harness;
+  await store.createResearchSession({ id: "session-1", title: "T", status: "active", isFavorite: false, createdAt: NOW, updatedAt: NOW }, "k-s");
+  await store.createResearchNode({ id: "node-1", sessionId: "session-1", status: "active", createdAt: NOW, updatedAt: NOW }, "k-n");
+  const original = seedMessage(store, "msg-regenerated", "旧的已完成正文。");
+  const staleVersion = deriveBodyVersion({
+    messageId: original.id,
+    nodeId: "node-1",
+    content: original.content,
+    origin: "generation",
+    createdAt: NOW,
+  });
+  await store.createResearchBodyVersion(staleVersion);
+  await store.createSemanticFragments(deriveFragmentsFromBlocks(staleVersion));
+
+  const regenerated: ResearchMessageRecord = {
+    ...original,
+    content: "新的已完成正文。",
+    updatedAt: "2026-08-02T00:00:00.000Z",
+  };
+  (store as unknown as { db(): import("node:sqlite").DatabaseSync }).db().prepare(
+    "UPDATE research_messages SET updated_at = ?, record_json = ? WHERE id = ?",
+  ).run(regenerated.updatedAt, JSON.stringify(regenerated), regenerated.id);
+  assert.strictEqual(store.getResearchMessage(regenerated.id)?.content, regenerated.content, "fixture must expose the regenerated current message body");
+
+  const service = new CaptureService(store, join(await mkdtemp(join(tmpdir(), "collector-bodyver-art-")), "artifacts"), undefined, { autoRunRecentOrganization: false, autoRunResearchTasks: false });
+  const view = await service.getResearchNodeView("node-1");
+
+  assert.strictEqual(view.messages.find((message) => message.id === regenerated.id)?.content, regenerated.content);
+  assert.strictEqual(view.bodyVersions?.[regenerated.id]?.content, regenerated.content);
+  assert.notStrictEqual(view.bodyVersions?.[regenerated.id]?.id, staleVersion.id);
+  assert.strictEqual(store.getBodyVersionForMessage(regenerated.id)?.content, regenerated.content);
+  assert.strictEqual(store.getBodyVersion(staleVersion.id)?.content, original.content, "the historical body locator remains stable");
+
+  const restored: ResearchMessageRecord = {
+    ...regenerated,
+    content: original.content,
+    updatedAt: "2026-08-03T00:00:00.000Z",
+  };
+  (store as unknown as { db(): import("node:sqlite").DatabaseSync }).db().prepare(
+    "UPDATE research_messages SET updated_at = ?, record_json = ? WHERE id = ?",
+  ).run(restored.updatedAt, JSON.stringify(restored), restored.id);
+  const restoredView = await service.getResearchNodeView("node-1");
+  assert.strictEqual(restoredView.bodyVersions?.[restored.id]?.id, staleVersion.id, "reusing an identical historical body keeps its stable locator");
+
+  store.close();
+  const reopened = new SqliteStore(dbPath);
+  await reopened.init();
+  const restartedService = new CaptureService(reopened, join(await mkdtemp(join(tmpdir(), "collector-bodyver-art-")), "artifacts"), undefined, { autoRunRecentOrganization: false, autoRunResearchTasks: false });
+  const restartedView = await restartedService.getResearchNodeView("node-1");
+  assert.strictEqual(restartedView.bodyVersions?.[restored.id]?.content, restored.content, "restart must read the current restored body instead of the newer-but-stale persisted row");
+  assert.strictEqual(reopened.getBodyVersion(staleVersion.id)?.content, original.content, "restart must retain the historical body locator");
+  reopened.close();
 });
 
 test("generation path persists body version + formal fragments on task completion", async (t) => {

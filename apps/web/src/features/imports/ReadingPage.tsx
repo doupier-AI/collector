@@ -176,7 +176,21 @@ export function ReadingPage() {
     if (!resolved) return { kind: "fallback" as const, caption: anchorCaption(block) };
     return { kind: "found" as const, blockId: block.id, start: resolved.start, end: resolved.end };
   }, [state, restoredSelection]);
-  const restoreKey = snapshotRestore?.kind === "found" ? `${snapshotRestore.blockId}:${snapshotRestore.start}` : null;
+  const searchRestore = useMemo(() => {
+    if (state.kind !== "ready") return null;
+    const blockId = searchParams.get("searchBlock");
+    const start = Number(searchParams.get("searchStart"));
+    const end = Number(searchParams.get("searchEnd"));
+    if (!blockId) return null;
+    const block = state.snapshot.blocks.find((candidate) => candidate.id === blockId);
+    if (!block || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end <= start || end > block.text.length) {
+      return { kind: "fallback" as const, source: "search" as const };
+    }
+    return { kind: "found" as const, source: "search" as const, blockId, start, end };
+  }, [searchParams, state]);
+  const effectiveRestore = searchRestore ?? snapshotRestore;
+  const restoreKey =
+    effectiveRestore?.kind === "found" ? `${effectiveRestore.blockId}:${effectiveRestore.start}:${effectiveRestore.end}` : null;
   useEffect(() => {
     if (!restoreKey) return;
     const mark = document.querySelector("[data-selection-mark]");
@@ -195,7 +209,7 @@ export function ReadingPage() {
     setRestoreDismissed((dismissed) => (dismissed ? dismissed : restoreKey !== null));
   }, [restoreKey]);
   const activeSnapshotRestore =
-    snapshotRestore?.kind === "fallback" || (restoreKey && !restoreDismissed) ? snapshotRestore : null;
+    effectiveRestore?.kind === "fallback" || (restoreKey && !restoreDismissed) ? effectiveRestore : null;
 
   // 修订一 #11 决策已被 #48 推翻：?sel= 恢复后不再重开浮动胶囊（只读临时提醒）；
   // #50 起提醒持续高亮，用户下一次框选时解除。
@@ -311,8 +325,13 @@ export function ReadingPage() {
           <h1 className="page__title">{snapshot.title}</h1>
           <p className="session-header__meta">共 {snapshot.blocks.length} 个内容块</p>
         </header>
-        {activeSnapshotRestore?.kind === "fallback" && restoredSelection ? (
+        {activeSnapshotRestore?.kind === "fallback" && !("source" in activeSnapshotRestore) && restoredSelection ? (
           <SelectionRestoreFallback selection={restoredSelection} caption={activeSnapshotRestore.caption} />
+        ) : null}
+        {activeSnapshotRestore?.kind === "fallback" && "source" in activeSnapshotRestore ? (
+          <p className="fragment-locator-fallback" role="status">
+            这条搜索命中的精确位置已不存在，已打开对应资料。
+          </p>
         ) : null}
         <article
           className={`reading turn-card${activeSnapshotRestore?.kind === "found" ? " fragment-target--focused" : ""}`}
