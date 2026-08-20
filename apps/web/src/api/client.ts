@@ -525,6 +525,7 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
       const params = new URLSearchParams();
       if (input.focusNodeId) params.set("focusNodeId", input.focusNodeId);
       for (const projectId of input.projectIds ?? []) params.append("projectId", projectId);
+      if (input.includeUncategorized) params.set("includeUncategorized", "true");
       if (input.includeArchived !== undefined) params.set("includeArchived", String(input.includeArchived));
       if (input.createdFrom) params.set("createdFrom", input.createdFrom);
       if (input.createdBefore) params.set("createdBefore", input.createdBefore);

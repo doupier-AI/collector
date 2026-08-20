@@ -105,6 +105,41 @@ test("project scope keeps an outside node on the focus path as a bridge", () => 
   assert.equal(result.edges.length, 2);
 });
 
+test("project scope distinguishes all projects, uncategorized-only, project-only, and their union while retaining bridges", () => {
+  const projects: ProjectRecord[] = [
+    { id: "p1", name: "项目一", colorRole: "amber", createdAt: AT, updatedAt: AT },
+    { id: "p2", name: "项目二", colorRole: "blue", createdAt: AT, updatedAt: AT },
+  ];
+  const sessions = [
+    session("p1", { projectId: "p1" }),
+    session("p2", { projectId: "p2" }),
+    session("uncategorized"),
+  ];
+  const nodes = sessions.map((item) => node(item.id, item.id));
+  const edgeChain = [edge("parent-child", "p1", "p2"), edge("parent-child", "p2", "uncategorized")];
+
+  assert.deepEqual(
+    buildResearchGraphObservation(nodes, edgeChain, sessions, projects).nodes.map((item) => item.node.id),
+    ["p1", "p2", "uncategorized"],
+  );
+  assert.deepEqual(
+    buildResearchGraphObservation(nodes, edgeChain, sessions, projects, { includeUncategorized: true }).nodes.map((item) => item.node.id),
+    ["uncategorized"],
+  );
+  assert.deepEqual(
+    buildResearchGraphObservation(nodes, edgeChain, sessions, projects, { projectIds: ["p1"] }).nodes.map((item) => item.node.id),
+    ["p1"],
+  );
+
+  const combined = buildResearchGraphObservation(nodes, edgeChain, sessions, projects, {
+    focusNodeId: "p1",
+    projectIds: ["p1"],
+    includeUncategorized: true,
+  });
+  assert.equal(combined.nodes.find((item) => item.node.id === "p2")?.scope, "outside-bridge");
+  assert.deepEqual(combined.nodes.map((item) => item.node.id), ["p1", "p2", "uncategorized"]);
+});
+
 test("a focused fusion keeps every direct source visible across the project filter", () => {
   const projects: ProjectRecord[] = [
     { id: "p1", name: "项目一", colorRole: "amber", createdAt: AT, updatedAt: AT },

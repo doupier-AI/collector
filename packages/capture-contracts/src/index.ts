@@ -2506,6 +2506,8 @@ export function isResearchPermanentEdge(edge: ResearchEdgeRecord): edge is Resea
 export interface ResearchGraphObservationInput {
   focusNodeId?: string;
   projectIds?: string[];
+  /** 明确把没有项目归属的节点加入项目范围；省略时仅在未筛选项目时包含它们。 */
+  includeUncategorized?: true;
   includeArchived?: boolean;
   /** 节点创建时间的含下界。 */
   createdFrom?: string;
@@ -2581,13 +2583,18 @@ export function buildResearchGraphObservation(
       && nodeById.has(edge.fromNodeId) && nodeById.has(edge.toNodeId));
   const traversableEdges = permanentEdges.filter((edge) => enabledKindSet.has(edge.kind));
   const projectFilter = input.projectIds?.length ? new Set(input.projectIds) : undefined;
+  const filtersByProjectScope = projectFilter !== undefined || input.includeUncategorized === true;
   const includeArchived = input.includeArchived ?? true;
 
   const inScope = (node: ResearchNodeRecord): boolean => {
     const session = sessionById.get(node.sessionId);
     if (!session) return false;
     if (!includeArchived && session.status === "archived") return false;
-    if (projectFilter && (!session.projectId || !projectFilter.has(session.projectId))) return false;
+    if (filtersByProjectScope) {
+      const matchesProject = session.projectId !== undefined && projectFilter?.has(session.projectId) === true;
+      const matchesUncategorized = session.projectId === undefined && input.includeUncategorized === true;
+      if (!matchesProject && !matchesUncategorized) return false;
+    }
     if (input.createdFrom && node.createdAt < input.createdFrom) return false;
     if (input.createdBefore && node.createdAt >= input.createdBefore) return false;
     return true;

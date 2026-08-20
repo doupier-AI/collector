@@ -636,6 +636,11 @@ function parseGraphObservationInput(url: URL): import("@collector/capture-contra
   }
   const focusNodeId = url.searchParams.get("focusNodeId")?.trim() || undefined;
   const projectIds = url.searchParams.getAll("projectId").map((value) => value.trim()).filter(Boolean);
+  const includeUncategorizedValues = url.searchParams.getAll("includeUncategorized");
+  if (includeUncategorizedValues.length > 1 || (includeUncategorizedValues.length === 1 && includeUncategorizedValues[0] !== "true")) {
+    throw new ResearchValidationError("includeUncategorized must be true when specified once");
+  }
+  const includeUncategorized = includeUncategorizedValues[0] === "true";
   const relationshipKindsWereSpecified = url.searchParams.has("relationshipKind");
   const relationshipKindValues = url.searchParams.getAll("relationshipKind");
   const encodesEmptyRelationshipSet = relationshipKindValues.length === 1 && relationshipKindValues[0] === "";
@@ -655,6 +660,7 @@ function parseGraphObservationInput(url: URL): import("@collector/capture-contra
   return {
     ...(focusNodeId ? { focusNodeId } : {}),
     ...(projectIds.length ? { projectIds } : {}),
+    ...(includeUncategorized ? { includeUncategorized: true as const } : {}),
     ...(includeArchivedValue !== null ? { includeArchived: includeArchivedValue === "true" } : {}),
     ...(createdFrom ? { createdFrom } : {}),
     ...(createdBefore ? { createdBefore } : {}),

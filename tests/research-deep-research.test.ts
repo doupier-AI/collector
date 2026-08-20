@@ -783,6 +783,9 @@ test("global map endpoint returns one cross-session observation with archived an
   assert.equal((await fetch(`${harness.base}/v1/research-map?createdFrom=2026-08-11T00%3A00%3A00.000Z&createdBefore=2026-08-10T00%3A00%3A00.000Z`, { headers: headers(harness.token) })).status, 400);
   assert.equal((await fetch(`${harness.base}/v1/research-map?updatedFrom=2026-08-10T00%3A00%3A00.000Z`, { headers: headers(harness.token) })).status, 400);
   assert.equal((await fetch(`${harness.base}/v1/research-map?updatedTo=2026-08-10T00%3A00%3A00.000Z`, { headers: headers(harness.token) })).status, 400);
+  assert.equal((await fetch(`${harness.base}/v1/research-map?includeUncategorized=false`, { headers: headers(harness.token) })).status, 400);
+  assert.equal((await fetch(`${harness.base}/v1/research-map?includeUncategorized=`, { headers: headers(harness.token) })).status, 400);
+  assert.equal((await fetch(`${harness.base}/v1/research-map?includeUncategorized=true&includeUncategorized=true`, { headers: headers(harness.token) })).status, 400);
   assert.equal((await fetch(`${harness.base}/v1/research-map?focusNodeId=missing`, { headers: headers(harness.token) })).status, 404);
   assert.equal((await fetch(`${harness.base}/v1/research-map?focusNodeId=${trashed.session.id}`, { headers: headers(harness.token) })).status, 404);
 });
