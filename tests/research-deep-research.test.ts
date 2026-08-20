@@ -741,14 +741,30 @@ test("global map endpoint returns one cross-session observation with archived an
   assert.equal(noRelationshipsResponse.status, 200);
   const noRelationships = await noRelationshipsResponse.json() as {
     nodes: Array<{ node: { id: string }; connectivity: string }>;
-    edges: unknown[];
+    edges: Array<{ connectivity: string }>;
     appliedRelationshipKinds: string[];
   };
   assert.deepEqual(noRelationships.appliedRelationshipKinds, []);
-  assert.deepEqual(noRelationships.edges, []);
+  assert.equal(noRelationships.edges.length, 1);
+  assert.ok(noRelationships.edges.every((item) => item.connectivity === "unconnected"));
   assert.equal(noRelationships.nodes.find((item) => item.node.id === first.session.id)?.connectivity, "focus");
   assert.ok(noRelationships.nodes.filter((item) => item.node.id !== first.session.id)
     .every((item) => item.connectivity === "unconnected"));
+
+  const parentOnlyResponse = await fetch(
+    `${harness.base}/v1/research-map?focusNodeId=${first.session.id}&relationshipKind=parent-child`,
+    { headers: headers(harness.token) },
+  );
+  assert.equal(parentOnlyResponse.status, 200);
+  const parentOnly = await parentOnlyResponse.json() as {
+    nodes: Array<{ node: { id: string }; connectivity: string }>;
+    edges: Array<{ edge: { kind: string }; connectivity: string }>;
+    appliedRelationshipKinds: string[];
+  };
+  assert.deepEqual(parentOnly.appliedRelationshipKinds, ["parent-child"]);
+  assert.equal(parentOnly.edges[0]?.edge.kind, "fused-from");
+  assert.equal(parentOnly.edges[0]?.connectivity, "unconnected");
+  assert.equal(parentOnly.nodes.find((item) => item.node.id === archived.session.id)?.connectivity, "unconnected");
 
   const refreshed = await (await fetch(`${harness.base}/v1/research-map`, { headers: headers(harness.token) })).json();
   assert.deepEqual(refreshed, observation);

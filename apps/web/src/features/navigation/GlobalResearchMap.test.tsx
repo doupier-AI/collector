@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { makeEdge, makeGraphObservation, makeGraphObservationNode } from "../../test/fakes";
 import { GlobalResearchMap } from "./GlobalResearchMap";
 
@@ -16,7 +16,7 @@ function renderMap() {
   );
 }
 
-function renderConnectedMap() {
+function renderConnectedMap(onFocusNode = vi.fn()) {
   const observation = makeGraphObservation({
     nodes: [
       makeGraphObservationNode("a", "节点 A"),
@@ -25,20 +25,24 @@ function renderConnectedMap() {
     ],
     edges: [{ edge: { ...makeEdge("parent-child", "a", "b"), kind: "parent-child" as const }, connectivity: "default" }],
   });
-  render(
+  const rendered = render(
     <MemoryRouter>
-      <GlobalResearchMap observation={observation} />
+      <GlobalResearchMap observation={observation} onFocusNode={onFocusNode} />
     </MemoryRouter>,
   );
-  return observation;
+  return { observation, onFocusNode, rendered };
+}
+
+function canvasNode(canvas: HTMLElement, label: string): HTMLElement {
+  return within(canvas).getByRole("button", { name: new RegExp(`^${label}，`) });
 }
 
 describe("GlobalResearchMap keyboard navigation", () => {
   it("wide canvas moves focus only among SVG nodes", async () => {
     renderMap();
     const canvas = screen.getByTestId("global-map-canvas");
-    const first = within(canvas).getByLabelText(/节点 A/);
-    const second = within(canvas).getByLabelText(/节点 B/);
+    const first = canvasNode(canvas, "节点 A");
+    const second = canvasNode(canvas, "节点 B");
     first.focus();
     fireEvent.keyDown(first, { key: "ArrowRight" });
     await waitFor(() => expect(document.activeElement).toBe(second));
@@ -58,40 +62,85 @@ describe("GlobalResearchMap keyboard navigation", () => {
 });
 
 describe("GlobalResearchMap stable organic canvas", () => {
+  it("专注观察保留全图坐标：单击或 Space 选择焦点，连通与未连通状态同源呈现", () => {
+    const focus = vi.fn();
+    const base = {
+      ...makeGraphObservation({
+      nodes: [
+        { ...makeGraphObservationNode("a", "节点 A"), connectivity: "focus" as const },
+        { ...makeGraphObservationNode("b", "节点 B"), connectivity: "connected" as const },
+        { ...makeGraphObservationNode("c", "节点 C"), connectivity: "unconnected" as const },
+      ],
+      edges: [
+        { edge: { ...makeEdge("parent-child", "a", "b"), kind: "parent-child" as const }, connectivity: "connected" as const },
+        { edge: { ...makeEdge("fused-from", "a", "b"), kind: "fused-from" as const }, connectivity: "connected" as const },
+      ],
+      }),
+      focusNodeId: "a",
+    };
+    render(<MemoryRouter><GlobalResearchMap observation={base} onFocusNode={focus} /></MemoryRouter>);
+    const canvas = screen.getByTestId("global-map-canvas");
+    const first = canvasNode(canvas, "节点 A");
+    const connected = canvasNode(canvas, "节点 B");
+    const unconnected = canvasNode(canvas, "节点 C");
+
+    expect(first).toHaveClass("global-map__node--focus");
+    expect(connected).toHaveClass("global-map__node--connected");
+    expect(unconnected).toHaveClass("global-map__node--unconnected");
+    expect(canvas.querySelectorAll("line.global-map__edge")).toHaveLength(1);
+    expect(canvas.querySelector(".global-map__edge--connected")).toHaveClass("global-map__edge--fused-from");
+
+    fireEvent.click(unconnected);
+    fireEvent.keyDown(connected, { key: " " });
+    expect(focus).toHaveBeenNthCalledWith(1, "c");
+    expect(focus).toHaveBeenNthCalledWith(2, "b");
+  });
+
   it("用独立形状、归档文字、项目名和焦点环解码地图状态", () => {
     const observation = makeGraphObservation({
       nodes: [
-        makeGraphObservationNode("regular", "普通节点", { projectName: "琥珀项目", projectColorRole: "amber" }),
-        makeGraphObservationNode("fusion", "融合节点", {
+        { ...makeGraphObservationNode("regular", "普通节点", { projectName: "琥珀项目", projectColorRole: "amber" }), connectivity: "unconnected" as const },
+        { ...makeGraphObservationNode("fusion", "融合节点", {
           projectName: "紫色项目",
           projectColorRole: "violet",
           role: "fusion",
           lifecycle: "archived",
           fusionEvidenceHealth: "available",
           node: { ...makeGraphObservationNode("fusion-base", "融合基础").node, id: "fusion", isFusionNode: true },
-        }),
-        makeGraphObservationNode("uncategorized", "未分类节点"),
+        }), connectivity: "focus" as const },
+        { ...makeGraphObservationNode("incomplete", "证据缺失融合", {
+          projectName: "蓝色项目",
+          projectColorRole: "blue",
+          role: "fusion",
+          fusionEvidenceHealth: "incomplete",
+          node: { ...makeGraphObservationNode("incomplete-base", "融合基础").node, id: "incomplete", isFusionNode: true },
+        }), connectivity: "unconnected" as const },
+        { ...makeGraphObservationNode("uncategorized", "未分类节点"), connectivity: "unconnected" as const },
       ],
     });
-    render(<MemoryRouter><GlobalResearchMap observation={observation} /></MemoryRouter>);
+    render(<MemoryRouter><GlobalResearchMap observation={{ ...observation, focusNodeId: "fusion" }} /></MemoryRouter>);
     const canvas = screen.getByTestId("global-map-canvas");
     const regular = within(canvas).getByLabelText(/普通节点，琥珀项目，研究节点，活跃/);
-    const fusion = within(canvas).getByLabelText(/融合节点，紫色项目，融合成果，已归档/);
+    const fusion = within(canvas).getByLabelText(/融合节点，紫色项目，融合成果，已归档，证据可用/);
+    const incomplete = within(canvas).getByLabelText(/证据缺失融合，蓝色项目，融合成果，活跃，证据不完整，当前范围，未与焦点连通/);
     const uncategorized = within(canvas).getByLabelText(/未分类节点，未分类，研究节点，活跃/);
 
     expect(regular).toHaveClass("global-map__node--project-amber", "global-map__node--research");
     expect(fusion).toHaveClass("global-map__node--project-violet", "global-map__node--fusion", "global-map__node--archived");
     expect(fusion).toHaveTextContent("紫色项目 · 融合成果 · 已归档");
+    expect(fusion.querySelector(".global-map__node-evidence")).toHaveTextContent("证据可用");
+    expect(incomplete.querySelector(".global-map__node-evidence--incomplete")).toHaveTextContent("证据不完整");
     expect(uncategorized.getAttribute("class")).not.toContain("global-map__node--project-");
     fusion.focus();
-    fireEvent.click(fusion);
     expect(fusion).toHaveClass("global-map__node--selected");
     expect(fusion.querySelector(".global-map__node-selection-halo")).not.toBeNull();
     expect(fusion.querySelector(".global-map__node-focus-ring")).not.toBeNull();
 
     const narrowList = screen.getByTestId("global-map-list");
     const fusionLink = within(narrowList).getByLabelText(/融合节点，紫色项目，融合成果，已归档/);
+    const incompleteLink = within(narrowList).getByLabelText(/证据缺失融合，蓝色项目，融合成果，活跃，证据不完整/);
     expect(fusionLink).toHaveTextContent("紫色项目 · 融合节点 · 融合成果 · 已归档");
+    expect(incompleteLink).toHaveTextContent("证据不完整 · 未连通");
     expect(fusionLink.querySelector(".global-map__list-dot")).toHaveClass(
       "global-map__list-dot--project-violet",
       "global-map__list-dot--fusion",
@@ -103,9 +152,9 @@ describe("GlobalResearchMap stable organic canvas", () => {
     const base = makeGraphObservation({ nodes: [makeGraphObservationNode("a", "节点 A"), makeGraphObservationNode("b", "节点 B")] });
     const rendered = render(<MemoryRouter><GlobalResearchMap observation={base} /></MemoryRouter>);
     const canvas = screen.getByTestId("global-map-canvas");
-    const before = within(canvas).getByLabelText(/节点 A/).getAttribute("transform");
+    const before = canvasNode(canvas, "节点 A").getAttribute("transform");
     rendered.rerender(<MemoryRouter><GlobalResearchMap observation={makeGraphObservation({ nodes: [...base.nodes, makeGraphObservationNode("c", "节点 C")] })} /></MemoryRouter>);
-    expect(within(canvas).getByLabelText(/节点 A/)).toHaveAttribute("transform", before);
+    expect(canvasNode(canvas, "节点 A")).toHaveAttribute("transform", before);
   });
 
   it("世界扩容时保留用户当前缩放视图", () => {
@@ -124,12 +173,54 @@ describe("GlobalResearchMap stable organic canvas", () => {
     expect(relations).toHaveTextContent("父子生长：节点 A → 节点 B");
     expect(within(relations).getByRole("link", { name: "父子生长：节点 A 指向 节点 B" })).toHaveAttribute("href", "/nodes/b");
   });
+
+  it("同一节点对只画一条连接，并以任一已连通事实决定连接状态", () => {
+    const observation = makeGraphObservation({
+      nodes: [
+        { ...makeGraphObservationNode("a", "节点 A"), connectivity: "focus" as const },
+        { ...makeGraphObservationNode("b", "节点 B"), connectivity: "connected" as const },
+      ],
+      edges: [
+        { edge: { ...makeEdge("parent-child", "a", "b"), kind: "parent-child" as const }, connectivity: "unconnected" as const },
+        { edge: { ...makeEdge("fused-from", "a", "b"), kind: "fused-from" as const }, connectivity: "connected" as const },
+      ],
+    });
+    render(<MemoryRouter><GlobalResearchMap observation={{ ...observation, focusNodeId: "a" }} /></MemoryRouter>);
+    const canvas = screen.getByTestId("global-map-canvas");
+    const connection = canvas.querySelector("[data-connection-id] line.global-map__edge");
+
+    expect(canvas.querySelectorAll("[data-connection-id]")).toHaveLength(1);
+    expect(connection).toHaveClass("global-map__edge--connected", "global-map__edge--fused-from");
+    expect(connection).toHaveAttribute("data-edge-kind", expect.stringContaining("parent-child"));
+    expect(connection).toHaveAttribute("data-edge-kind", expect.stringContaining("fused-from"));
+    expect(canvas.querySelectorAll(".global-map__edge-direction-flow")).toHaveLength(1);
+  });
+
+  it("同一节点对的相反方向事实保留可访问语义，但不伪造单向流动", () => {
+    const observation = makeGraphObservation({
+      nodes: [
+        { ...makeGraphObservationNode("a", "节点 A"), connectivity: "focus" as const },
+        { ...makeGraphObservationNode("b", "节点 B"), connectivity: "connected" as const },
+      ],
+      edges: [
+        { edge: { ...makeEdge("parent-child", "a", "b"), kind: "parent-child" as const }, connectivity: "connected" as const },
+        { edge: { ...makeEdge("fused-from", "b", "a"), kind: "fused-from" as const }, connectivity: "connected" as const },
+      ],
+    });
+    render(<MemoryRouter><GlobalResearchMap observation={{ ...observation, focusNodeId: "a" }} /></MemoryRouter>);
+    const canvas = screen.getByTestId("global-map-canvas");
+    const connection = within(canvas).getByRole("img", { name: /父子生长：节点 A 指向 节点 B/ });
+
+    expect(connection).toHaveAccessibleName(expect.stringContaining("融合来源：节点 B 指向 节点 A"));
+    expect(canvas.querySelectorAll(".global-map__edge-direction-flow")).toHaveLength(0);
+    expect(canvas.querySelectorAll(".global-map__edge-direction-static")).toHaveLength(0);
+  });
   it("hover only emphasizes the direct neighborhood without moving nodes", () => {
     renderConnectedMap();
     const canvas = screen.getByTestId("global-map-canvas");
-    const first = within(canvas).getByLabelText(/节点 A/);
-    const second = within(canvas).getByLabelText(/节点 B/);
-    const unrelated = within(canvas).getByLabelText(/节点 C/);
+    const first = canvasNode(canvas, "节点 A");
+    const second = canvasNode(canvas, "节点 B");
+    const unrelated = canvasNode(canvas, "节点 C");
     const before = [first, second, unrelated].map((node) => node.getAttribute("transform"));
 
     fireEvent.pointerEnter(first);
@@ -143,18 +234,31 @@ describe("GlobalResearchMap stable organic canvas", () => {
     expect(unrelated).not.toHaveClass("global-map__node--muted");
   });
 
-  it("single click selects in place and zoom controls only change the viewport", async () => {
-    const observation = renderConnectedMap();
+  it("single click requests a server focus while coordinates and zoom remain controlled locally", async () => {
+    const { observation, onFocusNode, rendered } = renderConnectedMap();
     const serializedBefore = JSON.stringify(observation);
     const canvas = screen.getByTestId("global-map-canvas");
-    const first = within(canvas).getByLabelText(/节点 A/);
+    const first = canvasNode(canvas, "节点 A");
     const transformBefore = first.getAttribute("transform");
     const svg = within(canvas).getByRole("group", { name: "跨会话研究关系画布" });
     const viewBoxBefore = svg.getAttribute("viewBox");
 
     fireEvent.click(first);
-    expect(first).toHaveClass("global-map__node--selected");
+    expect(onFocusNode).toHaveBeenCalledWith("a");
+    expect(first).not.toHaveClass("global-map__node--selected");
     expect(first).toHaveAttribute("transform", transformBefore);
+    const focusedObservation = {
+      ...observation,
+      focusNodeId: "a",
+      nodes: observation.nodes.map((summary) => ({
+        ...summary,
+        connectivity: summary.node.id === "a" ? "focus" as const : summary.node.id === "b" ? "connected" as const : "unconnected" as const,
+      })),
+      edges: observation.edges.map((summary) => ({ ...summary, connectivity: "connected" as const })),
+    };
+    rendered.rerender(<MemoryRouter><GlobalResearchMap observation={focusedObservation} onFocusNode={onFocusNode} /></MemoryRouter>);
+    expect(canvasNode(canvas, "节点 A")).toHaveClass("global-map__node--selected");
+    expect(svg).toHaveAttribute("viewBox", viewBoxBefore);
     fireEvent.click(within(canvas).getByRole("button", { name: "放大地图" }));
     expect(svg.getAttribute("viewBox")).not.toBe(viewBoxBefore);
     expect(first).toHaveAttribute("transform", transformBefore);

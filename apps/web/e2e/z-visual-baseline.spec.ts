@@ -318,7 +318,7 @@ test.describe("#44 视觉回归基线", () => {
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
-  test("#64 全局地图项目视觉：浅色、深色与窄屏像素基线", async ({ page }) => {
+  test("#64/#65 全局地图项目与专注视觉：浅色、深色与窄屏像素基线", async ({ page }) => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -333,6 +333,9 @@ test.describe("#44 视觉回归基线", () => {
     await amberNode.focus();
     await page.keyboard.press("Space");
     await expect(amberNode).toHaveAttribute("aria-pressed", "true");
+    await expect(page).toHaveURL(/\/map\/focus\/map-amber$/);
+    await expect(page.getByRole("button", { name: "退出专注" })).toBeVisible();
+    await expect(canvas.locator(".global-map__node--unconnected")).toHaveCount(1);
     await expect(page).toHaveScreenshot("global-map-project-light");
 
     await page.setViewportSize({ width: 1024, height: 800 });

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
@@ -8,13 +8,14 @@ import { ServicesProvider, type AppServices } from "../../app/services";
 import { makeEdge, makeGraphObservation, makeGraphObservationNode } from "../../test/fakes";
 import { ResearchMapLandingPage } from "./ResearchMapLandingPage";
 
-function renderPage(api: Partial<ApiClient>) {
+function renderPage(api: Partial<ApiClient>, initialEntry = "/map") {
   const services = { api, connectTaskEvents: vi.fn() } as unknown as AppServices;
   return render(
     <ServicesProvider services={services}>
-      <MemoryRouter initialEntries={["/map"]}>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <Routes>
           <Route path="map" element={<ResearchMapLandingPage />} />
+          <Route path="map/focus/:focusNodeId" element={<ResearchMapLandingPage />} />
           <Route path="research/new" element={<p>新建会话页</p>} />
           <Route path="nodes/:nodeId" element={<p>节点页</p>} />
           <Route path="trash" element={<p>回收站页</p>} />
@@ -73,15 +74,55 @@ describe("ResearchMapLandingPage", () => {
 
     expect(await screen.findByTestId("global-map-canvas")).toBeInTheDocument();
     expect(screen.getByTestId("global-map-list")).toBeInTheDocument();
-    expect(screen.getAllByLabelText(/注意力机制，研究节点，活跃/)).toHaveLength(2);
-    expect(screen.getAllByLabelText(/已归档会话，研究节点，已归档/)).toHaveLength(2);
+    expect(screen.getAllByLabelText(/注意力机制，未分类，研究节点，活跃/)).toHaveLength(2);
+    expect(screen.getAllByLabelText(/已归档会话，未分类，研究节点，已归档/)).toHaveLength(2);
     expect(screen.getAllByLabelText(/孤立根节点/)).toHaveLength(2);
-    const fusionLinks = screen.getAllByLabelText(/跨会话综合，融合成果/);
-    expect(fusionLinks).toHaveLength(2);
-    expect(fusionLinks[1]).toHaveAttribute("href", "/nodes/fusion");
+    const fusionTargets = screen.getAllByLabelText(/跨会话综合，未分类，融合成果/);
+    expect(fusionTargets).toHaveLength(2);
+    expect(fusionTargets[1]).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByTestId("global-map-canvas").querySelector('[data-edge-kind="fused-from"]')).not.toBeNull();
     expect(screen.getByText("4")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "新建会话" })).toHaveAttribute("href", "/research/new");
     expect(screen.getByRole("link", { name: "查看回收站" })).toHaveAttribute("href", "/trash");
+  });
+
+  it("专注地址把焦点和永久关系开关交给同一观察请求，退出时回到全图", async () => {
+    const focusObservation = {
+      ...makeGraphObservation({
+      nodes: [{ ...makeGraphObservationNode("focus", "焦点节点"), connectivity: "focus" as const }],
+      }),
+      focusNodeId: "focus",
+    };
+    const getResearchMap = vi.fn(async () => focusObservation);
+    renderPage({ getResearchMap }, "/map/focus/focus");
+
+    expect(await screen.findByText(/正在专注：/)).toHaveTextContent("焦点节点");
+    expect(getResearchMap).toHaveBeenCalledWith({ focusNodeId: "focus", relationshipKinds: ["parent-child", "fused-from"] });
+    await userEvent.setup().click(screen.getByRole("button", { name: "退出专注" }));
+    await waitFor(() => expect(getResearchMap).toHaveBeenLastCalledWith({ relationshipKinds: ["parent-child", "fused-from"] }));
+  });
+
+  it("请求仍在进行时连续关闭两类关系，保留两次即时意图并最终请求空关系集", async () => {
+    const focusObservation = {
+      ...makeGraphObservation({
+        nodes: [{ ...makeGraphObservationNode("focus", "焦点节点"), connectivity: "focus" as const }],
+      }),
+      focusNodeId: "focus",
+    };
+    const pending = new Promise<never>(() => {});
+    const getResearchMap = vi.fn()
+      .mockResolvedValueOnce(focusObservation)
+      .mockReturnValue(pending);
+    renderPage({ getResearchMap }, "/map/focus/focus");
+
+    const parentToggle = await screen.findByRole("button", { name: "父子生长" });
+    const fusionToggle = screen.getByRole("button", { name: "融合来源" });
+    const user = userEvent.setup();
+    await user.click(parentToggle);
+    await user.click(fusionToggle);
+
+    expect(parentToggle).toHaveAttribute("aria-pressed", "false");
+    expect(fusionToggle).toHaveAttribute("aria-pressed", "false");
+    await waitFor(() => expect(getResearchMap).toHaveBeenLastCalledWith({ focusNodeId: "focus", relationshipKinds: [] }));
   });
 });

@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { PROJECT_COLOR_ROLES, type ResearchGraphObservation, type ResearchGraphObservationNode } from "@collector/capture-contracts";
+import {
+  PROJECT_COLOR_ROLES,
+  type ResearchGraphObservation,
+  type ResearchGraphObservationConnectivity,
+  type ResearchGraphObservationNode,
+  type ResearchPermanentEdgeKind,
+} from "@collector/capture-contracts";
 import { stableNodePath } from "../../app/paths";
 import { createStableOrganicGraphLayout } from "./organicGraphLayout";
 
@@ -27,8 +33,14 @@ function nodeStatus(summary: ResearchGraphObservationNode): string {
     summary.projectName ?? "未分类",
     summary.role === "fusion" ? "融合成果" : "研究节点",
     summary.lifecycle === "archived" ? "已归档" : "活跃",
+    evidenceStatus(summary),
     summary.scope === "outside-bridge" ? "范围外桥接" : "当前范围",
-  ].join("，");
+  ].filter(Boolean).join("，");
+}
+
+function evidenceStatus(summary: ResearchGraphObservationNode): string | undefined {
+  if (summary.role !== "fusion") return undefined;
+  return summary.fusionEvidenceHealth === "available" ? "证据可用" : "证据不完整";
 }
 
 function projectColorClass(summary: ResearchGraphObservationNode, prefix = "global-map__node"): string {
@@ -57,7 +69,65 @@ function adjacencyFor(observation: ResearchGraphObservation): ReadonlyMap<string
   return adjacency;
 }
 
-export function GlobalResearchMap({ observation }: { observation: ResearchGraphObservation }) {
+function relationshipName(kind: ResearchPermanentEdgeKind): string {
+  return kind === "parent-child" ? "父子生长" : "融合来源";
+}
+
+function connectivityStatus(connectivity: ResearchGraphObservationConnectivity): string | undefined {
+  if (connectivity === "focus") return "当前专注";
+  if (connectivity === "connected") return "与焦点连通";
+  if (connectivity === "unconnected") return "未与焦点连通";
+  return undefined;
+}
+
+interface GlobalMapVisualEdge {
+  id: string;
+  fromNodeId: string;
+  toNodeId: string;
+  kinds: ResearchPermanentEdgeKind[];
+  connectivity: ResearchGraphObservationConnectivity;
+  directionConsistent: boolean;
+  facts: Array<{ kind: ResearchPermanentEdgeKind; fromNodeId: string; toNodeId: string }>;
+}
+
+function visualEdgesFor(observation: ResearchGraphObservation): GlobalMapVisualEdge[] {
+  const visualEdges = new Map<string, GlobalMapVisualEdge>();
+  for (const { edge, connectivity } of observation.edges) {
+    const key = [edge.fromNodeId, edge.toNodeId].sort().join("::");
+    const current = visualEdges.get(key);
+    if (current) {
+      if (!current.kinds.includes(edge.kind)) current.kinds.push(edge.kind);
+      current.facts.push({ kind: edge.kind, fromNodeId: edge.fromNodeId, toNodeId: edge.toNodeId });
+      current.directionConsistent = current.directionConsistent
+        && current.fromNodeId === edge.fromNodeId
+        && current.toNodeId === edge.toNodeId;
+      if (connectivity === "connected" || (connectivity === "default" && current.connectivity === "unconnected")) {
+        current.connectivity = connectivity;
+      }
+    } else {
+      visualEdges.set(key, {
+        id: key,
+        fromNodeId: edge.fromNodeId,
+        toNodeId: edge.toNodeId,
+        kinds: [edge.kind],
+        connectivity,
+        directionConsistent: true,
+        facts: [{ kind: edge.kind, fromNodeId: edge.fromNodeId, toNodeId: edge.toNodeId }],
+      });
+    }
+  }
+  return [...visualEdges.values()];
+}
+
+interface GlobalResearchMapProps {
+  observation: ResearchGraphObservation;
+  onFocusNode?: (nodeId: string) => void;
+  onExitFocus?: () => void;
+  relationshipKinds?: readonly ResearchPermanentEdgeKind[];
+  onRelationshipKindToggle?: (kind: ResearchPermanentEdgeKind) => void;
+}
+
+export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, relationshipKinds = observation.appliedRelationshipKinds, onRelationshipKindToggle }: GlobalResearchMapProps) {
   const navigate = useNavigate();
   const layoutRef = useRef<ReturnType<typeof createStableOrganicGraphLayout> | undefined>(undefined);
   const layout = useMemo(
@@ -69,20 +139,30 @@ export function GlobalResearchMap({ observation }: { observation: ResearchGraphO
   const world = layout.world;
   const [viewBox, setViewBox] = useState<ViewBoxState>(() => ({ x: 0, y: 0, width: world.width, height: world.height }));
   const adjacency = useMemo(() => adjacencyFor(observation), [observation]);
+  const visualEdges = useMemo(() => visualEdgesFor(observation), [observation]);
   const [rovingNodeId, setRovingNodeId] = useState(observation.nodes[0]?.node.id ?? "");
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [keyboardNodeId, setKeyboardNodeId] = useState<string | null>(null);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const dragRef = useRef<DragState | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const viewBoxRef = useRef(viewBox);
   viewBoxRef.current = viewBox;
   const canvasNodeRefs = useRef(new Map<string, SVGGElement>());
-  const listNodeRefs = useRef(new Map<string, HTMLAnchorElement>());
+  const listNodeRefs = useRef(new Map<string, HTMLButtonElement>());
   const interactionNodeId = hoveredNodeId ?? keyboardNodeId;
   const directNeighbors = interactionNodeId ? adjacency.get(interactionNodeId) ?? new Set<string>() : new Set<string>();
   const zoomScale = world.width / viewBox.width;
+  const focusedNodeId = observation.focusNodeId;
+  const focusSummary = focusedNodeId ? observation.nodes.find((summary) => summary.node.id === focusedNodeId) : undefined;
+
+  const selectNode = useCallback((nodeId: string) => {
+    onFocusNode?.(nodeId);
+  }, [onFocusNode]);
+
+  const toggleRelationship = (kind: ResearchPermanentEdgeKind) => {
+    onRelationshipKindToggle?.(kind);
+  };
 
   const moveFocus = (event: KeyboardEvent, direction: -1 | 1, refs: ReadonlyMap<string, Element>) => {
     event.preventDefault();
@@ -92,16 +172,16 @@ export function GlobalResearchMap({ observation }: { observation: ResearchGraphO
     setRovingNodeId(next.node.id);
     requestAnimationFrame(() => (refs.get(next.node.id) as HTMLElement | SVGElement | undefined)?.focus());
   };
-  const handleKey = (event: KeyboardEvent, nodeId: string, refs: ReadonlyMap<string, Element>, canvas: boolean) => {
+  const handleKey = (event: KeyboardEvent, nodeId: string, refs: ReadonlyMap<string, Element>) => {
     if (event.key === "ArrowRight" || event.key === "ArrowDown") moveFocus(event, 1, refs);
     if (event.key === "ArrowLeft" || event.key === "ArrowUp") moveFocus(event, -1, refs);
     if (event.key === "Enter") {
       event.preventDefault();
       navigate(stableNodePath(nodeId));
     }
-    if (canvas && event.key === " ") {
+    if (event.key === " ") {
       event.preventDefault();
-      setSelectedNodeId(nodeId);
+      selectNode(nodeId);
     }
   };
 
@@ -169,6 +249,20 @@ export function GlobalResearchMap({ observation }: { observation: ResearchGraphO
         <span><strong>{observation.nodes.filter((item) => item.lifecycle === "archived").length}</strong> 个已归档</span>
       </div>
 
+      {focusSummary && onRelationshipKindToggle ? (
+        <div className="global-map__focus-controls" aria-label="专注地图操作">
+          <p>正在专注：<strong>{focusSummary.label}</strong>。完整连通脉络保持清晰，其余节点留在原位置。</p>
+          <div role="group" aria-label="显示的关系">
+            {(["parent-child", "fused-from"] as const).map((kind) => (
+              <button key={kind} type="button" className="button button--secondary" aria-pressed={relationshipKinds.includes(kind)} onClick={() => toggleRelationship(kind)}>
+                {relationshipName(kind)}
+              </button>
+            ))}
+            <button type="button" className="button button--secondary" onClick={onExitFocus}>退出专注</button>
+          </div>
+        </div>
+      ) : null}
+
       <div
         className={`global-map__canvas${dragging ? " global-map__canvas--dragging" : ""}`}
         data-testid="global-map-canvas"
@@ -189,22 +283,45 @@ export function GlobalResearchMap({ observation }: { observation: ResearchGraphO
           aria-label="跨会话研究关系画布"
           className={zoomScale < 0.72 ? "global-map__viewport--zoomed-out" : ""}
           viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`}
-          onClick={(event) => {
-            if (!(event.target as Element).closest("[data-node-id]")) setSelectedNodeId(null);
-          }}
         >
           <rect className="global-map__pan-surface" x={viewBox.x} y={viewBox.y} width={viewBox.width} height={viewBox.height} />
-          {observation.edges.map(({ edge }) => {
-            const from = positions.get(edge.fromNodeId);
-            const to = positions.get(edge.toNodeId);
+          {visualEdges.map(({ id, fromNodeId, toNodeId, kinds, connectivity, directionConsistent, facts }, index) => {
+            const from = positions.get(fromNodeId);
+            const to = positions.get(toNodeId);
             if (!from || !to) return null;
-            const emphasized = interactionNodeId === edge.fromNodeId || interactionNodeId === edge.toNodeId;
+            const directionGradientId = `global-map-direction-${index}`;
+            const emphasized = interactionNodeId === fromNodeId || interactionNodeId === toNodeId;
             const edgeClasses = [
               "global-map__edge",
-              `global-map__edge--${edge.kind}`,
+              ...kinds.map((kind) => `global-map__edge--${kind}`),
+              `global-map__edge--${connectivity}`,
               interactionNodeId ? (emphasized ? "global-map__edge--emphasized" : "global-map__edge--muted") : "",
             ].filter(Boolean).join(" ");
-            return <line key={edge.id} data-edge-kind={edge.kind} className={edgeClasses} x1={from.x} y1={from.y} x2={to.x} y2={to.y} />;
+            const directionDescription = facts.map((fact) => {
+              const factFrom = observation.nodes.find((summary) => summary.node.id === fact.fromNodeId)?.label ?? fact.fromNodeId;
+              const factTo = observation.nodes.find((summary) => summary.node.id === fact.toNodeId)?.label ?? fact.toNodeId;
+              return `${relationshipName(fact.kind)}：${factFrom} 指向 ${factTo}`;
+            }).join("；");
+            const showDirection = connectivity === "connected" && directionConsistent;
+            return (
+              <g key={id} data-connection-id={id} role="img" aria-label={`${directionDescription}，${connectivity === "connected" ? "当前专注脉络" : connectivity === "unconnected" ? "当前未连通" : "全局关系"}`}>
+                {showDirection ? (
+                  <defs>
+                    <linearGradient id={directionGradientId} gradientUnits="userSpaceOnUse" x1={from.x} y1={from.y} x2={to.x} y2={to.y}>
+                      <stop offset="0" stopColor="var(--color-muted)" stopOpacity="0.34" />
+                      <stop offset="1" stopColor="var(--color-ai)" stopOpacity="0.92" />
+                    </linearGradient>
+                  </defs>
+                ) : null}
+                <line data-edge-kind={kinds.join(" ")} className={edgeClasses} x1={from.x} y1={from.y} x2={to.x} y2={to.y} />
+                {showDirection ? (
+                  <>
+                    <line aria-hidden="true" className="global-map__edge-direction-flow" x1={from.x} y1={from.y} x2={to.x} y2={to.y} />
+                    <line aria-hidden="true" className="global-map__edge-direction-static" style={{ stroke: `url(#${directionGradientId})` }} x1={from.x} y1={from.y} x2={to.x} y2={to.y} />
+                  </>
+                ) : null}
+              </g>
+            );
           })}
           {observation.nodes.map((summary) => {
             const position = positions.get(summary.node.id)!;
@@ -218,9 +335,10 @@ export function GlobalResearchMap({ observation }: { observation: ResearchGraphO
               "global-map__node",
               `global-map__node--${summary.role}`,
               `global-map__node--${summary.lifecycle}`,
+              `global-map__node--${summary.connectivity}`,
               projectColorClass(summary),
               interactionClass,
-              selectedNodeId === summary.node.id ? "global-map__node--selected" : "",
+              focusedNodeId === summary.node.id ? "global-map__node--selected" : "",
             ].filter(Boolean).join(" ");
             return (
               <g
@@ -233,26 +351,27 @@ export function GlobalResearchMap({ observation }: { observation: ResearchGraphO
                 transform={`translate(${position.x} ${position.y})`}
                 role="button"
                 tabIndex={current ? 0 : -1}
-                aria-pressed={selectedNodeId === summary.node.id}
-                aria-label={`${summary.label}，${nodeStatus(summary)}，单击选择，双击或 Enter 打开`}
+                aria-pressed={focusedNodeId === summary.node.id}
+                aria-label={[summary.label, nodeStatus(summary), connectivityStatus(summary.connectivity), "单击或 Space 专注", "双击或 Enter 打开"].filter(Boolean).join("，")}
                 onFocus={() => { setRovingNodeId(summary.node.id); setKeyboardNodeId(summary.node.id); }}
                 onBlur={() => setKeyboardNodeId((nodeId) => nodeId === summary.node.id ? null : nodeId)}
                 onPointerEnter={() => setHoveredNodeId(summary.node.id)}
                 onPointerLeave={() => setHoveredNodeId((nodeId) => nodeId === summary.node.id ? null : nodeId)}
-                onClick={(event) => { event.stopPropagation(); setSelectedNodeId(summary.node.id); }}
+                onClick={(event) => { event.stopPropagation(); selectNode(summary.node.id); }}
                 onDoubleClick={() => navigate(stableNodePath(summary.node.id))}
-                onKeyDown={(event) => handleKey(event, summary.node.id, canvasNodeRefs.current, true)}
+                onKeyDown={(event) => handleKey(event, summary.node.id, canvasNodeRefs.current)}
               >
                 <circle className="global-map__node-selection-halo" r="14" />
                 <circle className="global-map__node-focus-ring" r="17" />
                 <circle className="global-map__node-core" r="7" />
                 <text textAnchor="middle" y="27" aria-hidden="true">{summary.label.length > 15 ? `${summary.label.slice(0, 14)}…` : summary.label}</text>
                 <text className="global-map__node-details" textAnchor="middle" y="43" aria-hidden="true">{compactNodeDetails(summary)}</text>
+                {evidenceStatus(summary) ? <text className={`global-map__node-evidence global-map__node-evidence--${summary.fusionEvidenceHealth}`} textAnchor="middle" y="58" aria-hidden="true">{evidenceStatus(summary)}</text> : null}
               </g>
             );
           })}
         </svg>
-        <p className="global-map__keyboard-hint">拖动画布平移 · 滚轮缩放 · 单击选择 · 双击或 Enter 打开节点</p>
+        <p className="global-map__keyboard-hint">拖动画布平移 · 滚轮缩放 · 单击或 Space 专注 · 双击或 Enter 打开节点</p>
       </div>
 
       <div className="global-map__list" data-testid="global-map-list">
@@ -260,23 +379,23 @@ export function GlobalResearchMap({ observation }: { observation: ResearchGraphO
         <ul>
           {observation.nodes.map((summary) => (
             <li key={summary.node.id}>
-              <Link ref={(element) => { if (element) listNodeRefs.current.set(summary.node.id, element); else listNodeRefs.current.delete(summary.node.id); }} to={stableNodePath(summary.node.id)} className="global-map__list-link" aria-label={`${summary.label}，${nodeStatus(summary)}`} onFocus={() => setRovingNodeId(summary.node.id)} onKeyDown={(event) => handleKey(event, summary.node.id, listNodeRefs.current, false)}>
+              <button ref={(element) => { if (element) listNodeRefs.current.set(summary.node.id, element); else listNodeRefs.current.delete(summary.node.id); }} type="button" className={`global-map__list-link global-map__list-link--${summary.connectivity}`} aria-current={focusedNodeId === summary.node.id ? "true" : undefined} aria-pressed={focusedNodeId === summary.node.id} aria-label={[summary.label, nodeStatus(summary), connectivityStatus(summary.connectivity), "单击或 Space 专注", "Enter 打开"].filter(Boolean).join("，")} onClick={() => selectNode(summary.node.id)} onFocus={() => setRovingNodeId(summary.node.id)} onKeyDown={(event) => handleKey(event, summary.node.id, listNodeRefs.current)}>
                 <span className={["global-map__list-dot", `global-map__list-dot--${summary.role}`, `global-map__list-dot--${summary.lifecycle}`, projectColorClass(summary, "global-map__list-dot")].filter(Boolean).join(" ")} aria-hidden="true" />
-                <span><strong>{summary.label}</strong><small>{summary.projectName ?? "未分类"} · {summary.sessionTitle} · {summary.role === "fusion" ? "融合成果" : "研究节点"}{summary.lifecycle === "archived" ? " · 已归档" : ""}</small></span>
-              </Link>
+                <span><strong>{summary.label}</strong><small>{summary.projectName ?? "未分类"} · {summary.sessionTitle} · {summary.role === "fusion" ? "融合成果" : "研究节点"}{summary.lifecycle === "archived" ? " · 已归档" : ""}{evidenceStatus(summary) ? ` · ${evidenceStatus(summary)}` : ""}{summary.connectivity === "focus" ? " · 当前专注" : summary.connectivity === "connected" ? " · 已连通" : summary.connectivity === "unconnected" ? " · 未连通" : ""}</small></span>
+              </button>
             </li>
           ))}
         </ul>
         <ul className="global-map__relations" data-testid="global-map-relations" aria-label="直接关系">
-          {observation.edges.map(({ edge }) => {
+          {observation.edges.map(({ edge, connectivity }) => {
             const from = observation.nodes.find((node) => node.node.id === edge.fromNodeId);
             const to = observation.nodes.find((node) => node.node.id === edge.toNodeId);
             if (!from || !to) return null;
-            const type = edge.kind === "parent-child" ? "父子生长" : "融合来源";
-            return <li key={edge.id}><Link className="global-map__relation-link" to={stableNodePath(to.node.id)} aria-label={`${type}：${from.label} 指向 ${to.label}`}>{type}：{from.label} → {to.label}</Link></li>;
+            const type = relationshipName(edge.kind);
+            return <li key={edge.id}><Link className={`global-map__relation-link global-map__relation-link--${connectivity}`} to={stableNodePath(to.node.id)} aria-label={`${type}：${from.label} 指向 ${to.label}`}>{type}：{from.label} → {to.label}{connectivity === "unconnected" ? "（未连通）" : ""}</Link></li>;
           })}
         </ul>
-        <p className="global-map__keyboard-hint">上下方向键移动 · Enter 打开节点</p>
+        <p className="global-map__keyboard-hint">上下方向键移动 · 单击或 Space 专注 · Enter 打开节点</p>
       </div>
 
       <div className="global-map__legend" aria-label="地图图例">

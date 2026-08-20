@@ -74,6 +74,7 @@ export function AppRoutes() {
         <Route path="research/:sessionId/reading/:contentSnapshotId" element={<ReadingPage />} />
         <Route path="nodes/:nodeId" element={<ResearchNodePage />} />
         <Route path="map" element={<ResearchMapLandingPage />} />
+        <Route path="map/focus/:focusNodeId" element={<ResearchMapLandingPage />} />
         <Route path="run-records" element={<RunRecordsPage />} />
         <Route path="run-records/:runId" element={<RunRecordsPage />} />
         <Route path="trash" element={<TrashPage />} />

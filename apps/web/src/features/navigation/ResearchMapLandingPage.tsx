@@ -1,17 +1,13 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
-import type { ResearchGraphObservation } from "@collector/capture-contracts";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { RESEARCH_PERMANENT_EDGE_KINDS, type ResearchGraphObservation, type ResearchPermanentEdgeKind } from "@collector/capture-contracts";
 import { apiErrorCopy, isUnauthorized } from "../../api/errors";
+import { globalMapFocusPath } from "../../app/paths";
 import { useServices } from "../../app/services";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { PairingGate } from "../auth/PairingGate";
 import { GlobalResearchMap } from "./GlobalResearchMap";
 import { ResearchMapGlyph } from "./ResearchMapGlyph";
-
-type LandingState =
-  | { kind: "loading" }
-  | { kind: "error"; error: unknown }
-  | { kind: "ready"; observation: ResearchGraphObservation };
 
 /**
  * #62：稳定 /map 入口消费服务端统一全局观察结果。
@@ -19,25 +15,38 @@ type LandingState =
  */
 export function ResearchMapLandingPage() {
   const { api } = useServices();
-  const [state, setState] = useState<LandingState>({ kind: "loading" });
+  const navigate = useNavigate();
+  const { focusNodeId } = useParams();
+  const [observation, setObservation] = useState<ResearchGraphObservation | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  const [updating, setUpdating] = useState(true);
   const [reloadNonce, setReloadNonce] = useState(0);
+  const [relationshipKinds, setRelationshipKinds] = useState<ResearchPermanentEdgeKind[]>([...RESEARCH_PERMANENT_EDGE_KINDS]);
 
   useEffect(() => {
     let stale = false;
-    api.getResearchMap().then(
+    setError(null);
+    setUpdating(true);
+    api.getResearchMap({ ...(focusNodeId ? { focusNodeId } : {}), relationshipKinds }).then(
       (observation) => {
-        if (!stale) setState({ kind: "ready", observation });
+        if (!stale) {
+          setObservation(observation);
+          setUpdating(false);
+        }
       },
       (error) => {
-        if (!stale) setState({ kind: "error", error });
+        if (!stale) {
+          setError(error);
+          setUpdating(false);
+        }
       },
     );
     return () => {
       stale = true;
     };
-  }, [api, reloadNonce]);
+  }, [api, focusNodeId, relationshipKinds, reloadNonce]);
 
-  if (state.kind === "loading") {
+  if (!observation && updating) {
     return (
       <div className="page map-landing" aria-busy="true" aria-label="正在打开研究图谱">
         <div className="skeleton-stack" aria-hidden="true">
@@ -49,11 +58,11 @@ export function ResearchMapLandingPage() {
     );
   }
 
-  if (state.kind === "error") {
-    if (isUnauthorized(state.error)) {
+  if (!observation && error) {
+    if (isUnauthorized(error)) {
       return <PairingGate onPaired={() => setReloadNonce((nonce) => nonce + 1)} />;
     }
-    const copy = apiErrorCopy(state.error);
+    const copy = apiErrorCopy(error);
     return (
       <div className="page map-landing">
         <h1 className="page__title">暂时无法打开研究图谱</h1>
@@ -69,6 +78,8 @@ export function ResearchMapLandingPage() {
       </div>
     );
   }
+
+  if (!observation) return null;
 
   return (
     <div className="page map-landing">
@@ -94,13 +105,29 @@ export function ResearchMapLandingPage() {
         </div>
       </div>
 
-      {state.observation.nodes.length === 0 ? (
+      {observation.nodes.length === 0 ? (
         <div className="map-landing__empty" role="status">
           <p>还没有研究节点。从一个问题开始，完成后的节点会出现在这里。</p>
           <Link to="/research/new">开始第一次研究</Link>
         </div>
       ) : (
-        <GlobalResearchMap observation={state.observation} />
+        <div aria-busy={updating}>
+          {error ? (
+            <div className="map-landing__update-error" role="alert">
+              <span>{apiErrorCopy(error).body}</span>
+              <button type="button" className="button button--secondary" onClick={() => setReloadNonce((nonce) => nonce + 1)}>重试</button>
+            </div>
+          ) : null}
+          <GlobalResearchMap
+            observation={observation}
+            onFocusNode={(nodeId) => navigate(globalMapFocusPath(nodeId))}
+            onExitFocus={() => navigate("/map")}
+            relationshipKinds={relationshipKinds}
+            onRelationshipKindToggle={(kind) => setRelationshipKinds((current) => (
+              current.includes(kind) ? current.filter((item) => item !== kind) : [...current, kind]
+            ))}
+          />
+        </div>
       )}
     </div>
   );

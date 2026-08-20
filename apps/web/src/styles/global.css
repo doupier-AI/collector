@@ -361,6 +361,20 @@ button {
   gap: var(--space-2);
 }
 
+.map-landing__update-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--color-danger) 8%, var(--color-surface));
+  color: var(--color-ink);
+  font-size: var(--font-size-sm);
+}
+
 .global-map {
   border-top: 1px solid var(--color-line);
 }
@@ -377,6 +391,35 @@ button {
 .global-map__summary strong {
   color: var(--color-ink);
   font-variant-numeric: tabular-nums;
+}
+
+.global-map__focus-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-button);
+  background: var(--color-surface);
+}
+
+.global-map__focus-controls p {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: var(--font-size-sm);
+}
+
+.global-map__focus-controls > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.global-map__focus-controls [aria-pressed="true"] {
+  border-color: var(--color-ai);
+  color: var(--color-ai);
 }
 
 .global-map__canvas {
@@ -483,6 +526,32 @@ button {
   opacity: 0.2;
 }
 
+.global-map__edge--unconnected { opacity: 0.16; }
+
+.global-map__edge--connected {
+  stroke: color-mix(in srgb, var(--color-ai) 54%, var(--color-muted));
+  stroke-width: 1.75;
+}
+
+.global-map__edge-direction-flow,
+.global-map__edge-direction-static {
+  fill: none;
+  pointer-events: none;
+  stroke-width: 2.25;
+}
+
+.global-map__edge-direction-flow {
+  stroke: color-mix(in srgb, var(--color-ai) 84%, var(--color-muted));
+  stroke-dasharray: 6 5;
+  animation: global-map-edge-flow 1.6s linear infinite;
+}
+
+.global-map__edge-direction-static { display: none; }
+
+@keyframes global-map-edge-flow {
+  to { stroke-dashoffset: -22; }
+}
+
 .global-map__node {
   --global-map-project-color: var(--color-graph-node-stroke);
   cursor: pointer;
@@ -495,7 +564,7 @@ button {
   fill: var(--global-map-project-color);
   stroke: color-mix(in srgb, var(--global-map-project-color) 62%, var(--color-ink));
   stroke-width: 1.5;
-  transition: r var(--duration-fast) var(--ease-out), stroke-width var(--duration-fast) var(--ease-out), filter var(--duration-fast) var(--ease-out);
+  transition: r var(--duration-fast) var(--ease-out), stroke-width var(--duration-fast) var(--ease-out), filter var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out);
 }
 
 .global-map__node-selection-halo,
@@ -545,8 +614,21 @@ button {
   filter: drop-shadow(0 0 5px color-mix(in srgb, var(--color-ai) 48%, transparent));
 }
 
-.global-map__node--muted {
-  opacity: 0.3;
+.global-map__node--muted .global-map__node-core { opacity: 0.3; }
+
+.global-map__node--unconnected .global-map__node-core {
+  fill: color-mix(in srgb, var(--color-muted) 36%, var(--color-surface));
+  stroke: color-mix(in srgb, var(--color-muted) 64%, var(--color-line));
+}
+
+.global-map__node--unconnected.global-map__node--fusion .global-map__node-core {
+  fill: var(--color-surface);
+  stroke-width: 4;
+}
+
+.global-map__node--focus .global-map__node-focus-ring {
+  stroke: var(--color-graph-focus);
+  stroke-width: 3;
 }
 
 .global-map__node text {
@@ -559,6 +641,12 @@ button {
   stroke: var(--color-surface);
   stroke-width: 4px;
   transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.global-map__node--muted text { opacity: 0.3; }
+
+.global-map__node--unconnected text {
+  fill: var(--color-muted);
 }
 
 .global-map__node--emphasized text,
@@ -584,6 +672,17 @@ button {
   font-size: 11px;
   font-weight: 500;
   opacity: 0;
+}
+
+.global-map__node .global-map__node-evidence {
+  fill: var(--color-muted);
+  font-size: 10px;
+  font-weight: 600;
+  opacity: 0.82;
+}
+
+.global-map__node .global-map__node-evidence--incomplete {
+  font-weight: 750;
 }
 
 .global-map__node--archived .global-map__node-details {
@@ -788,6 +887,11 @@ button {
     min-height: 3.75rem;
     padding: var(--space-3) var(--space-4);
     color: var(--color-ink);
+    width: 100%;
+    border: 0;
+    background: transparent;
+    font: inherit;
+    text-align: left;
     text-decoration: none;
   }
 
@@ -821,6 +925,23 @@ button {
     border: 1px solid color-mix(in srgb, var(--global-map-project-color) 62%, var(--color-ink));
     border-radius: var(--radius-circle);
     background: var(--global-map-project-color);
+  }
+
+  .global-map__list-link--unconnected strong,
+  .global-map__list-link--unconnected small,
+  .global-map__relation-link--unconnected { color: var(--color-muted); }
+
+  .global-map__list-link--unconnected .global-map__list-dot {
+    border-color: color-mix(in srgb, var(--color-muted) 64%, var(--color-line));
+    background: color-mix(in srgb, var(--color-muted) 36%, var(--color-surface));
+  }
+
+  .global-map__list-link--unconnected .global-map__list-dot--fusion {
+    background: var(--color-surface);
+  }
+
+  .global-map__list-link--focus {
+    background: color-mix(in srgb, var(--color-ai) 12%, var(--color-surface));
   }
 
   .global-map__relation-link {
@@ -864,6 +985,11 @@ button {
   .global-map__list-dot--archived.global-map__list-dot--fusion {
     background: var(--color-surface);
   }
+
+  .global-map__focus-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -871,6 +997,9 @@ button {
   .global-map__node-core,
   .global-map__node text,
   .global-map__edge { transition: none; }
+
+  .global-map__edge-direction-flow { display: none; }
+  .global-map__edge-direction-static { display: block; }
 }
 
 /* ---------- 会话页 ---------- */

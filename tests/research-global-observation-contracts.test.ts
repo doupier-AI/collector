@@ -48,6 +48,28 @@ test("focus traverses the complete permanent component without maxDepth and keep
   assert.equal(result.nodes.find((item) => item.node.id === "a")?.connectivity, "focus");
   assert.equal(result.nodes.find((item) => item.node.id === "d")?.connectivity, "connected");
   assert.equal(result.nodes.find((item) => item.node.id === "island")?.connectivity, "unconnected");
+  assert.ok(result.edges.every((item) => item.connectivity === "connected"));
+});
+
+test("mixed permanent paths, cycles and disabled parallel facts keep one server-classified observation", () => {
+  const sessions = [session("a"), session("b"), session("c"), session("d")];
+  const nodes = sessions.map((item) => node(item.id, item.id));
+  const result = buildResearchGraphObservation(nodes, [
+    edge("parent-child", "a", "b"),
+    edge("fused-from", "a", "b"),
+    edge("parent-child", "b", "c"),
+    edge("parent-child", "c", "a"),
+    edge("fused-from", "c", "d"),
+  ], sessions, [], { focusNodeId: "a", relationshipKinds: ["parent-child"] });
+
+  assert.deepEqual(result.appliedRelationshipKinds, ["parent-child"]);
+  assert.equal(result.nodes.find((item) => item.node.id === "c")?.connectivity, "connected");
+  assert.equal(result.nodes.find((item) => item.node.id === "d")?.connectivity, "unconnected");
+  assert.equal(result.edges.length, 5, "disabled facts remain visible background instead of disappearing");
+  assert.equal(result.edges.find((item) => item.edge.id === researchEdgeId("fused-from", "a", "b"))?.connectivity, "unconnected");
+  assert.equal(result.edges.find((item) => item.edge.id === researchEdgeId("fused-from", "c", "d"))?.connectivity, "unconnected");
+  assert.ok(result.edges.filter((item) => item.edge.kind === "parent-child")
+    .every((item) => item.connectivity === "connected"));
 });
 
 test("project scope keeps an outside node on the focus path as a bridge", () => {
@@ -67,6 +89,26 @@ test("project scope keeps an outside node on the focus path as a bridge", () => 
   assert.equal(result.edges.length, 2);
 });
 
+test("a focused fusion keeps every direct source visible across the project filter", () => {
+  const projects: ProjectRecord[] = [
+    { id: "p1", name: "项目一", colorRole: "amber", createdAt: AT, updatedAt: AT },
+    { id: "p2", name: "项目二", colorRole: "blue", createdAt: AT, updatedAt: AT },
+  ];
+  const sessions = [session("fusion", { projectId: "p1" }), session("source", { projectId: "p2" })];
+  const nodes = [node("fusion", "fusion", { isFusionNode: true }), node("source", "source")];
+  const result = buildResearchGraphObservation(
+    nodes,
+    [edge("fused-from", "source", "fusion")],
+    sessions,
+    projects,
+    { focusNodeId: "fusion", projectIds: ["p1"], relationshipKinds: ["fused-from"] },
+  );
+
+  assert.equal(result.nodes.find((item) => item.node.id === "source")?.scope, "outside-bridge");
+  assert.equal(result.nodes.find((item) => item.node.id === "source")?.connectivity, "connected");
+  assert.equal(result.edges[0]?.connectivity, "connected");
+});
+
 test("an explicit empty relationship selection keeps only the focus emphasized", () => {
   const sessions = [session("a"), session("b"), session("island")];
   const nodes = sessions.map((item) => node(item.id, item.id));
@@ -79,8 +121,25 @@ test("an explicit empty relationship selection keeps only the focus emphasized",
   );
 
   assert.deepEqual(result.appliedRelationshipKinds, []);
-  assert.deepEqual(result.edges, []);
+  assert.equal(result.edges.length, 1);
+  assert.equal(result.edges[0]?.connectivity, "unconnected");
   assert.equal(result.nodes.find((item) => item.node.id === "a")?.connectivity, "focus");
   assert.equal(result.nodes.find((item) => item.node.id === "b")?.connectivity, "unconnected");
   assert.equal(result.nodes.find((item) => item.node.id === "island")?.connectivity, "unconnected");
+});
+
+test("a 1200-node permanent chain is classified as one complete component without a depth cutoff", () => {
+  const sessions = Array.from({ length: 1_200 }, (_, index) => session(`scale-${index.toString().padStart(4, "0")}`));
+  const nodes = sessions.map((item) => node(item.id, item.id));
+  const edges = sessions.slice(1).map((item, index) => edge(
+    index % 2 === 0 ? "parent-child" : "fused-from",
+    sessions[index]!.id,
+    item.id,
+  ));
+  const result = buildResearchGraphObservation(nodes, edges, sessions, [], { focusNodeId: sessions[0]!.id });
+
+  assert.equal(result.nodes.length, 1_200);
+  assert.equal(result.edges.length, 1_199);
+  assert.equal(result.nodes.at(-1)?.connectivity, "connected");
+  assert.ok(result.edges.every((item) => item.connectivity === "connected"));
 });

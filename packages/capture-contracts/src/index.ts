@@ -2575,8 +2575,9 @@ export function buildResearchGraphObservation(
     : RESEARCH_PERMANENT_EDGE_KINDS.filter((kind) => input.relationshipKinds!.includes(kind));
   const enabledKindSet = new Set<ResearchEdgeKind>(enabledKinds);
   const permanentEdges = allEdges.filter((edge): edge is ResearchPermanentEdgeRecord =>
-    edge.status === "active" && isResearchPermanentEdge(edge) && enabledKindSet.has(edge.kind)
+    edge.status === "active" && isResearchPermanentEdge(edge)
       && nodeById.has(edge.fromNodeId) && nodeById.has(edge.toNodeId));
+  const traversableEdges = permanentEdges.filter((edge) => enabledKindSet.has(edge.kind));
   const projectFilter = input.projectIds?.length ? new Set(input.projectIds) : undefined;
   const includeArchived = input.includeArchived ?? true;
 
@@ -2601,7 +2602,7 @@ export function buildResearchGraphObservation(
       neighbors.push(neighborId);
       adjacency.set(nodeId, neighbors);
     };
-    for (const edge of permanentEdges) {
+    for (const edge of traversableEdges) {
       addNeighbor(edge.fromNodeId, edge.toNodeId);
       addNeighbor(edge.toNodeId, edge.fromNodeId);
     }
@@ -2623,6 +2624,11 @@ export function buildResearchGraphObservation(
       while (cursor !== undefined) {
         includedIds.add(cursor);
         cursor = parent.get(cursor);
+      }
+    }
+    if (enabledKindSet.has("fused-from") && nodeById.get(input.focusNodeId)?.isFusionNode) {
+      for (const edge of traversableEdges) {
+        if (edge.kind === "fused-from" && edge.toNodeId === input.focusNodeId) includedIds.add(edge.fromNodeId);
       }
     }
   }
@@ -2665,7 +2671,11 @@ export function buildResearchGraphObservation(
       edge,
       connectivity: !input.focusNodeId
         ? "default"
-        : connectedIds.has(edge.fromNodeId) && connectedIds.has(edge.toNodeId) ? "connected" : "unconnected",
+        : enabledKindSet.has(edge.kind)
+            && connectedIds.has(edge.fromNodeId)
+            && connectedIds.has(edge.toNodeId)
+          ? "connected"
+          : "unconnected",
     }));
 
   return {
