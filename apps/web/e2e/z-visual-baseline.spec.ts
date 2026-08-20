@@ -331,6 +331,9 @@ test.describe("#44 视觉回归基线", () => {
     await closeSidebars(page);
 
     const canvas = page.getByTestId("global-map-canvas");
+    const filters = page.locator(".research-map-filters");
+    await filters.evaluate((element) => element.scrollIntoView({ block: "center" }));
+    await expect(filters).toHaveScreenshot("global-map-filters-light");
     const amberNode = canvas.getByRole("button", { name: /检索架构，知识工程/ });
     await expect(amberNode).toBeVisible();
     await amberNode.focus();
@@ -343,12 +346,19 @@ test.describe("#44 视觉回归基线", () => {
 
     await page.setViewportSize({ width: 1024, height: 800 });
     await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
+    await filters.evaluate((element) => element.scrollIntoView({ block: "center" }));
+    await expect(filters).toHaveScreenshot("global-map-filters-dark");
     await expect(canvas).toBeVisible();
+    await canvas.evaluate((element) => element.scrollIntoView({ block: "center" }));
     await expect(page).toHaveScreenshot("global-map-project-dark");
 
     await page.setViewportSize({ width: 320, height: 800 });
+    await filters.evaluate((element) => element.scrollIntoView({ block: "center" }));
+    await expect(filters).toHaveScreenshot("global-map-filters-narrow");
     await expect(canvas).toBeHidden();
-    await expect(page.getByTestId("global-map-list")).toBeVisible();
+    const list = page.getByTestId("global-map-list");
+    await expect(list).toBeVisible();
+    await list.evaluate((element) => element.scrollIntoView({ block: "center" }));
     await expect(page).toHaveScreenshot("global-map-project-narrow");
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
