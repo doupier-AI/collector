@@ -340,7 +340,7 @@ test("场景一：Chat 真实回答 → 选区真实分析 → 节点生长真�
   await waitForCapsuleReal(page, selected);
 
   // 阶段 H4a：胶囊"深入研究这段"直接创建子节点
-  await page.getByRole("button", { name: "深入研究这段" }).click();
+  await page.getByRole("button", { name: "深入研究这段", exact: true }).click();
 
   // 子节点视图：来源条、材料范围如实说明、真实第一轮
   const nodeId = await waitChildNodeUrl(page, sessionId, sessionId);
@@ -466,7 +466,7 @@ test("场景二：文档导入 → 选区真实分析 → 带方向的节点生�
 
   // 阶段 H4a：先输入方向，再"深入研究这段"直接创建子节点
   await page.getByLabel("你的问题").fill("把最终一致性的收敛机制讲透");
-  await page.getByRole("button", { name: "深入研究这段" }).click();
+  await page.getByRole("button", { name: "深入研究这段", exact: true }).click();
 
   // 进入新子节点：来源条带来源内容名、材料范围说明、真实第一轮
   const nodeId = await waitChildNodeUrl(page, originSessionId, originSessionId, 30_000);
@@ -597,7 +597,7 @@ test("场景四：刷新不重复创建子节点与标记项目，材料范围�
   await waitForCapsuleReal(page, selected);
 
   // 阶段 H4a：胶囊"深入研究这段"直接创建子节点
-  await page.getByRole("button", { name: "深入研究这段" }).click();
+  await page.getByRole("button", { name: "深入研究这段", exact: true }).click();
   const nodeId = await waitChildNodeUrl(page, sessionId, sessionId);
   await waitCompletedAnswerText(page, 1);
 
@@ -620,7 +620,7 @@ test("场景四：刷新不重复创建子节点与标记项目，材料范围�
   });
   const reselected = await selectRealAnswerText(page, 24, 8);
   await waitForCapsuleReal(page, reselected);
-  await page.getByRole("button", { name: "深入研究这段" }).click();
+  await page.getByRole("button", { name: "深入研究这段", exact: true }).click();
   const nodeId2 = await waitChildNodeUrl(page, sessionId, sessionId);
   expect(nodeId2).not.toBe(nodeId);
   const childrenAfter = readResearchNodeTables(dbPath).nodes.filter(
@@ -1090,7 +1090,7 @@ test("弱标记场景六：深度 2–3 减少、深度 4 停止的真实生成�
     } else {
       recordWeakMarkerNote(`深度 ${depth} 无标记可点击，用选区深入研究兜底生长`);
       await selectAndOpenCapsuleWithRetry(page);
-      await page.getByRole("button", { name: "深入研究这段" }).click();
+      await page.getByRole("button", { name: "深入研究这段", exact: true }).click();
       currentNodeId = await waitChildNodeUrl(page, sessionId, currentNodeId, 60_000);
       await waitChildNodeReady(page, currentNodeId, "user");
     }
@@ -1115,7 +1115,7 @@ test("弱标记场景七：深入研究第一轮正文携带一致弱标记", as
 
   await selectAndOpenCapsuleWithRetry(page);
   await page.getByLabel("你的问题").fill("梳理图灵测试的主要争议");
-  await page.getByRole("button", { name: "深入研究这段" }).click();
+  await page.getByRole("button", { name: "深入研究这段", exact: true }).click();
   const nodeId = await waitChildNodeUrl(page, sessionId, rootNodeId, 60_000);
   await waitChildNodeReady(page, nodeId, "user");
 
@@ -1193,7 +1193,7 @@ test("弱标记场景九：融合正文真实生成后的标记、引用与来�
   // 生长一个同主题的深入研究子节点作为第二来源。
   await selectAndOpenCapsuleWithRetry(page);
   await page.getByLabel("你的问题").fill("自注意力机制在 BERT 双向编码器中的应用");
-  await page.getByRole("button", { name: "深入研究这段" }).click();
+  await page.getByRole("button", { name: "深入研究这段", exact: true }).click();
   const childNodeId = await waitChildNodeUrl(page, sessionId, rootNodeId, 60_000);
   const childContentBefore = (await waitLatestAssistantCompleted(page, childNodeId, "融合来源子节点")).content;
 
