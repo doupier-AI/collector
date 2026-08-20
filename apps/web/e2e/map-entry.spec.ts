@@ -108,6 +108,75 @@ test("全局研究图谱：两个会话的根节点进入同一真实观察结�
   expect(browserIssues.issues, browserIssues.issues.join("\n")).toEqual([]);
 });
 
+test("#68 地图 entry：专注链、节点打开、浏览器返回和刷新均恢复各自现场", async ({ page }) => {
+  const browserIssues = trackBrowserIssues(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await pairAndOpen(page, "/research/new");
+  const firstNodeId = await createSession(page, "地图现场恢复一：如何验证返回路径？");
+  const secondNodeId = await createSession(page, "地图现场恢复二：如何保持图谱坐标？");
+  await page.goto("/map");
+
+  const canvas = page.getByTestId("global-map-canvas");
+  await canvas.getByRole("button", { name: /地图现场恢复一/ }).click();
+  await expect(page).toHaveURL(new RegExp(`/map/focus/${firstNodeId}$`));
+  const firstEntrySpatial = await readGlobalMapSpatialState(page);
+
+  await canvas.getByRole("button", { name: /地图现场恢复二/ }).click();
+  await expect(page).toHaveURL(new RegExp(`/map/focus/${secondNodeId}$`));
+  const fusionToggle = page.getByRole("button", { name: "融合来源" });
+  await fusionToggle.click();
+  await expect(fusionToggle).toHaveAttribute("aria-pressed", "false");
+  await canvas.getByRole("button", { name: "放大地图" }).click();
+  const svg = canvas.locator("svg");
+  const canvasBounds = await svg.boundingBox();
+  expect(canvasBounds).not.toBeNull();
+  await page.mouse.move(canvasBounds!.x + 80, canvasBounds!.y + 260);
+  await page.mouse.down();
+  await page.mouse.move(canvasBounds!.x + 138, canvasBounds!.y + 224);
+  await page.mouse.up();
+  const secondEntrySpatial = await readGlobalMapSpatialState(page);
+  expect(secondEntrySpatial.viewBox).not.toBe(firstEntrySpatial.viewBox);
+
+  await canvas.getByRole("button", { name: /地图现场恢复二/ }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(new RegExp(`/nodes/${secondNodeId}$`));
+  await page.reload();
+  await page.getByRole("button", { name: "返回图谱" }).click();
+  await expect(page).toHaveURL(new RegExp(`/map/focus/${secondNodeId}$`));
+  expect(await readGlobalMapSpatialState(page)).toEqual(secondEntrySpatial);
+  await expect(page.getByRole("button", { name: "融合来源" })).toHaveAttribute("aria-pressed", "false");
+  await page.goBack();
+  await expect(page).toHaveURL(new RegExp(`/map/focus/${firstNodeId}$`));
+  expect(await readGlobalMapSpatialState(page)).toEqual(firstEntrySpatial);
+  await page.goBack();
+  await expect(page).toHaveURL(/\/map$/);
+  await page.goForward();
+  await expect(page).toHaveURL(new RegExp(`/map/focus/${firstNodeId}$`));
+  await page.goForward();
+  await expect(page).toHaveURL(new RegExp(`/map/focus/${secondNodeId}$`));
+  await page.reload();
+  expect(await readGlobalMapSpatialState(page)).toEqual(secondEntrySpatial);
+  await expect(page.getByRole("button", { name: "融合来源" })).toHaveAttribute("aria-pressed", "false");
+
+  await page.setViewportSize({ width: 320, height: 760 });
+  const narrowList = page.getByTestId("global-map-list");
+  const narrowSecondNode = narrowList.getByRole("button", { name: /地图现场恢复二/ });
+  await narrowSecondNode.focus();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(new RegExp(`/nodes/${secondNodeId}$`));
+  await page.reload();
+  await page.getByRole("button", { name: "返回图谱" }).click();
+  await expect(page).toHaveURL(new RegExp(`/map/focus/${secondNodeId}$`));
+  await expect(page.getByRole("button", { name: "融合来源" })).toHaveAttribute("aria-pressed", "false");
+  expect(await readGlobalMapSpatialState(page)).toEqual(secondEntrySpatial);
+
+  await page.goto(`/nodes/${secondNodeId}`);
+  await expect(page.getByRole("button", { name: "在图谱中查看" })).toBeVisible();
+  await page.getByRole("button", { name: "在图谱中查看" }).click();
+  await expect(page).toHaveURL(new RegExp(`/map/focus/${secondNodeId}$`));
+  expect(browserIssues.issues, browserIssues.issues.join("\n")).toEqual([]);
+});
+
 test("#64 项目色：深浅主题、融合归档、焦点与窄屏语义保持独立", async ({ page }) => {
   const browserIssues = trackBrowserIssues(page);
   await page.setViewportSize({ width: 1440, height: 900 });

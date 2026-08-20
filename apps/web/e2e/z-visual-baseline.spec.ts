@@ -67,6 +67,9 @@ async function openLongSession(page: import("@playwright/test").Page): Promise<s
   await page.getByLabel("你的问题").fill("写一份完整的长文报告");
   await page.getByRole("button", { name: "开始研究" }).click();
   await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
+  // 三个节容器会在长文仍流式写入时提前出现；视觉取证必须等正式完成播报，
+  // 否则会把第二、三节的中间帧误判成稳定像素基线。
+  await expect(page.locator("[aria-live=polite]")).toHaveText("已完成", { timeout: 15_000 });
   await expect(page.locator(".turn-card")).toHaveCount(1, { timeout: 15_000 });
   await expect(page.locator(".turn-card__section")).toHaveCount(3);
   const match = new URL(page.url()).pathname.match(/^\/nodes\/([^/]+)$/);

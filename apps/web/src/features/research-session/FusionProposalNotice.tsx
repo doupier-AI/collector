@@ -10,6 +10,7 @@ import type {
 import { useServices } from "../../app/services";
 import { fetchBodyVersionCached, fragmentDeepLink } from "./fragment-locator";
 import { makeExcerpt } from "./slice-cards";
+import { useNodeNavigationState } from "../navigation/useNodeNavigationState";
 
 export const FUSION_RELATION_LABEL: Record<FusionRelationType, string> = {
   identity: "同一实体",
@@ -163,6 +164,7 @@ function TriggerSourceEntry({
 }): ReactElement {
   const { api } = useServices();
   const navigate = useNavigate();
+  const navigationState = useNodeNavigationState();
   const [searchParams] = useSearchParams();
   const bodyVersionId = source.bodyVersionId!;
   const fragmentId = source.fragmentId!;
@@ -200,7 +202,7 @@ function TriggerSourceEntry({
   const handleJump = () => {
     // #61：稳定节点地址即节点身份，点击直接导航，无需先解析目标所属会话；
     // 目标节点不可读时由目标页呈现不存在/回收站状态。
-    navigate(fragmentDeepLink(source.nodeId, fragmentId, searchParams));
+    navigate(fragmentDeepLink(source.nodeId, fragmentId, searchParams), { state: navigationState });
   };
 
   const previewLabel =

@@ -3,7 +3,7 @@ import type { DragEvent } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import type { ResearchSelectionAnchor, ResearchSessionView, ResearchTaskRecord } from "@collector/capture-contracts";
 import { isApiErrorCode, isUnauthorized, apiErrorCopy } from "../../api/errors";
-import { stableNodePath } from "../../app/paths";
+import { globalMapFocusPath, stableNodePath } from "../../app/paths";
 import { useServices } from "../../app/services";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { useMediaQuery } from "../../app/useMediaQuery";
@@ -30,6 +30,12 @@ import type { MarkResult } from "../selection/useSelectionMark";
 import { useSelectionMark } from "../selection/useSelectionMark";
 import { formatSessionTime } from "./format";
 import { notifySessionsChanged } from "../navigation/session-events";
+import {
+  mapReturnDelta,
+  mapReturnFromRouteState,
+  nodeRouteStateWithMapReturn,
+  stripOneShotRouteState,
+} from "../navigation/map-scene";
 import { MessageItem } from "./MessageItem";
 import { ModelStatusIndicator } from "./ModelStatusIndicator";
 import { NodeChildList } from "./NodeChildList";
@@ -88,6 +94,7 @@ export function ResearchNodePage() {
   // location.state 在路由解析后即可靠读取（React Router 已把 history.state.usr 映射过来）；
   // 不做惰性初始化，渲染期直接派生，配合下方清理 effect（replace state:null）自然只显示一次。
   const justGrew = Boolean((location.state as { grew?: boolean } | null)?.grew);
+  const mapReturn = mapReturnFromRouteState(location.state);
   const node = useResearchNode(nodeId, { initialTurn: initialTurnRef.current });
   const termPreviews = useTermPreviews(nodeId, (error) => node.announce(apiErrorCopy(error).body));
   const [retryingTaskId, setRetryingTaskId] = useState<string | null>(null);
@@ -371,12 +378,21 @@ export function ResearchNodePage() {
   // 挂载后立即清掉，避免刷新后重复提交或徽记重复出现。
   // 与 justGrew 一致读 history.state.usr（SPA 落地瞬间 location.state 可能滞后）。
   useEffect(() => {
-    const usr = (window.history.state as { usr?: { firstTurn?: PendingFirstTurn; grew?: boolean } } | null)?.usr;
-    if (usr?.firstTurn || usr?.grew) {
-      navigate(".", { replace: true, state: null });
+    const routeState = location.state as { firstTurn?: PendingFirstTurn; grew?: boolean } | null;
+    if (routeState?.firstTurn || routeState?.grew) {
+      navigate(".", { replace: true, state: stripOneShotRouteState(location.state) });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const returnToMap = useCallback(() => {
+    const delta = mapReturnDelta(mapReturn);
+    if (delta !== undefined) {
+      navigate(delta);
+      return;
+    }
+    navigate(globalMapFocusPath(nodeId));
+  }, [mapReturn, navigate, nodeId]);
 
   // #42 融合依据定位：?fragment=<fragmentId> 深链 → 目标元素滚动 + 短暂强调 + 焦点 + 播报。
   // 状态：fragmentFocus 携带 nonce——同目标重触发（nonce 递增）与快速切换（state 整体替换只留最新）都成立；
@@ -541,7 +557,7 @@ export function ResearchNodePage() {
     setFusingProposalId(proposalId);
     try {
       const accepted = await api.fuseResearchFusionProposal(proposalId, `fuse:${proposalId}`);
-      navigate(stableNodePath(accepted.node.id));
+      navigate(stableNodePath(accepted.node.id), { state: nodeRouteStateWithMapReturn(location.state) });
     } catch (error) {
       node.announce(apiErrorCopy(error).body);
       setFusingProposalId(null);
@@ -564,7 +580,7 @@ export function ResearchNodePage() {
       );
       removeCitation();
       navigate(stableNodePath(accepted.node.id), {
-        state: { grew: true },
+        state: nodeRouteStateWithMapReturn(location.state, { grew: true }),
       });
       return true;
     } catch (error) {
@@ -577,7 +593,7 @@ export function ResearchNodePage() {
     try {
       const accepted = await termPreviews.grow(preview, mention);
       navigate(stableNodePath(accepted.node.id), {
-        state: { grew: true },
+        state: nodeRouteStateWithMapReturn(location.state, { grew: true }),
       });
       return true;
     } catch (error) {
@@ -590,7 +606,7 @@ export function ResearchNodePage() {
     try {
       const accepted = await termPreviews.growMarker(messageId, marker);
       navigate(stableNodePath(accepted.node.id), {
-        state: { grew: true },
+        state: nodeRouteStateWithMapReturn(location.state, { grew: true }),
       });
       return true;
     } catch (error) {
@@ -723,9 +739,14 @@ export function ResearchNodePage() {
       ) : null}
 
       <header className="session-header">
+        <div className="session-header__map-action">
+          <button type="button" className="button button--secondary" onClick={returnToMap}>
+            {mapReturn ? "返回图谱" : "在图谱中查看"}
+          </button>
+        </div>
         {!isRoot ? (
           <nav className="session-header__crumb" aria-label="节点位置">
-            <Link to={stableNodePath(view.session.id)}>
+            <Link to={stableNodePath(view.session.id)} state={nodeRouteStateWithMapReturn(location.state)}>
               {view.session.title}
             </Link>
             <span className="session-header__crumb-sep" aria-hidden="true">›</span>

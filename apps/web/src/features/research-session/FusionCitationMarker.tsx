@@ -8,6 +8,7 @@ import { useHoverCard } from "../../hooks/useHoverCard";
 import { SourceCard } from "../../components/SourceCard";
 import { fetchBodyVersionCached, fragmentDeepLink } from "./fragment-locator";
 import { makeExcerpt } from "./slice-cards";
+import { useNodeNavigationState } from "../navigation/useNodeNavigationState";
 
 /**
  * #31 融合正文的行内引用标记：[来源n] → 来源语义片段。
@@ -18,6 +19,7 @@ import { makeExcerpt } from "./slice-cards";
 export function FusionCitationMarker({ source }: { source: ResearchFusionSource }) {
   const { api } = useServices();
   const navigate = useNavigate();
+  const navigationState = useNodeNavigationState();
   const [searchParams] = useSearchParams();
   const [preview, setPreview] = useState<{ state: "loading" } | { state: "ok"; text: string } | { state: "failed" }>({
     state: "loading",
@@ -50,8 +52,8 @@ export function FusionCitationMarker({ source }: { source: ResearchFusionSource 
 
   const handleJump = useCallback(() => {
     // #61：稳定节点地址即节点身份，点击直接导航，无需先解析目标所属会话。
-    navigate(fragmentDeepLink(source.nodeId, source.fragmentId, searchParams));
-  }, [navigate, searchParams, source.fragmentId, source.nodeId]);
+    navigate(fragmentDeepLink(source.nodeId, source.fragmentId, searchParams), { state: navigationState });
+  }, [navigate, navigationState, searchParams, source.fragmentId, source.nodeId]);
 
   const label = source.label || `节点 ${source.nodeId.slice(0, 8)}`;
   const marker = <sup data-citation-marker aria-hidden="true" />;

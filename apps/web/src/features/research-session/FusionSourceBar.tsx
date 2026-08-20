@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import type { ResearchFusionSource } from "@collector/capture-contracts";
 import { stableNodePath } from "../../app/paths";
+import { useNodeNavigationState } from "../navigation/useNodeNavigationState";
 
 /**
  * #31 融合节点顶部来源条：列出融合正文引用的来源节点，可点击跳回来源节点页。
@@ -12,6 +13,7 @@ export function FusionSourceBar({
 }: {
   sources: ResearchFusionSource[];
 }) {
+  const navigationState = useNodeNavigationState();
   if (sources.length === 0) return null;
   return (
     <aside className="source-bar fusion-source-bar" data-testid="fusion-source-bar" aria-label="融合来源">
@@ -23,6 +25,7 @@ export function FusionSourceBar({
               <Link
                 className="fusion-source-bar__link"
                 to={stableNodePath(source.nodeId)}
+                state={navigationState}
               >
                 {source.label || `节点 ${source.nodeId.slice(0, 8)}`}
               </Link>

@@ -45,7 +45,10 @@ function noopTaskEventStream(): TaskEventStream {
   return { close: () => {}, syncNow: () => {}, mode: "closed", lastEventId: 0 };
 }
 
-function renderNodePage(api: Partial<ApiClient>, entry = "/nodes/session-1") {
+function renderNodePage(
+  api: Partial<ApiClient>,
+  entry: string | { pathname: string; state?: Record<string, unknown> } = "/nodes/session-1",
+) {
   const services = {
     api: api as ApiClient,
     connectTaskEvents: vi.fn(noopTaskEventStream),
@@ -331,6 +334,38 @@ describe("ResearchNodePage 根节点", () => {
     // 子节点名来自异步读取的选区原文：等待具名链接出现，避免对兜底名做非等待断言
     const link = await screen.findByRole("link", { name: /深入研究：本地优先会先把输入保存在本机/ });
     expect(link).toHaveAttribute("href", "/nodes/node-child-1");
+  });
+
+  it("从地图进入后沿子节点继续阅读仍保留同一返回现场", async () => {
+    const user = userEvent.setup();
+    const root = makeNodeView({
+      ...readyRootView(),
+      childNodes: [makeNode({ id: "node-child-1", sessionId: "session-1", parentNodeId: "session-1", originSelectionId: "sel-1" })],
+    });
+    const child = makeNodeView({
+      node: makeNode({ id: "node-child-1", sessionId: "session-1", parentNodeId: "session-1", originSelectionId: "sel-1" }),
+      session: root.session,
+      messages: root.messages,
+      tasks: root.tasks,
+    });
+    const mapReturn = {
+      version: 1 as const,
+      sourceHistoryIndex: 2,
+      sourceEntryKey: "map-entry",
+      sourcePath: "/map/focus/session-1",
+    };
+    renderNodePage(
+      {
+        getResearchNodeView: async (nodeId) => nodeId === "node-child-1" ? child : root,
+        listResearchSelections: async () => [makeSelection({ id: "sel-1", sessionId: "session-1", text: "沿子节点继续研究" })],
+        getResearchSelection: async () => makeSelection({ id: "sel-1", sessionId: "session-1", text: "沿子节点继续研究" }),
+        getResearchSessionView: async () => ({ session: root.session, messages: root.messages, tasks: root.tasks }),
+      },
+      { pathname: "/nodes/session-1", state: { mapReturn } },
+    );
+
+    await user.click(await screen.findByRole("link", { name: /深入研究：沿子节点继续研究/ }));
+    expect(await screen.findByRole("button", { name: "返回图谱" })).toBeVisible();
   });
 });
 

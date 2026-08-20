@@ -3,6 +3,7 @@ import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { makeEdge, makeGraphObservation, makeGraphObservationNode } from "../../test/fakes";
 import { GlobalResearchMap } from "./GlobalResearchMap";
+import { serializeMapScene } from "./map-scene";
 
 function renderMap() {
   render(
@@ -59,9 +60,60 @@ describe("GlobalResearchMap keyboard navigation", () => {
     await waitFor(() => expect(document.activeElement).toBe(second));
     expect(screen.getByTestId("global-map-canvas")).not.toContainElement(document.activeElement as HTMLElement);
   });
+
+  it("打开或卸载地图会取消尚未执行的单击专注", () => {
+    vi.useFakeTimers();
+    try {
+      const focus = vi.fn();
+      const open = vi.fn();
+      const observation = makeGraphObservation({ nodes: [makeGraphObservationNode("a", "节点 A")] });
+      const rendered = render(
+        <MemoryRouter>
+          <GlobalResearchMap observation={observation} onFocusNode={focus} onOpenNode={open} />
+        </MemoryRouter>,
+      );
+      const node = canvasNode(screen.getByTestId("global-map-canvas"), "节点 A");
+      fireEvent.click(node, { detail: 1 });
+      fireEvent.keyDown(node, { key: "Enter" });
+      vi.advanceTimersByTime(200);
+      expect(open).toHaveBeenCalledWith("a");
+      expect(focus).not.toHaveBeenCalled();
+
+      fireEvent.click(node, { detail: 1 });
+      rendered.unmount();
+      vi.advanceTimersByTime(200);
+      expect(focus).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("GlobalResearchMap stable organic canvas", () => {
+  it("从当前 history entry 恢复视口、坐标和边快照，并继续把现场交回页面", () => {
+    const observation = makeGraphObservation({
+      nodes: [makeGraphObservationNode("a", "节点 A"), makeGraphObservationNode("b", "节点 B")],
+      edges: [{ edge: { ...makeEdge("parent-child", "a", "b"), kind: "parent-child" as const }, connectivity: "default" }],
+    });
+    const initialScene = serializeMapScene({
+      relationshipKinds: ["parent-child"],
+      viewBox: { x: 40, y: 20, width: 480, height: 270 },
+      layout: {
+        world: { width: 960, height: 540 },
+        positions: new Map([["a", { x: 144, y: 188 }], ["b", { x: 322, y: 266 }]]),
+        edgeKeys: new Map([["edge:parent-child:a:b:a:b", ["a", "b"] as const]]),
+      },
+    });
+    const onSceneChange = vi.fn();
+    render(<MemoryRouter><GlobalResearchMap observation={observation} initialScene={initialScene} onSceneChange={onSceneChange} /></MemoryRouter>);
+    const canvas = screen.getByTestId("global-map-canvas");
+    expect(canvasNode(canvas, "节点 A")).toHaveAttribute("transform", "translate(144 188)");
+    expect(within(canvas).getByRole("group", { name: "跨会话研究关系画布" })).toHaveAttribute("viewBox", "40 20 480 270");
+    expect(onSceneChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      layout: expect.objectContaining({ edgeKeys: [["edge:parent-child:a:b:a:b", "a", "b"]] }),
+    }));
+  });
+
   it("专注观察保留全图坐标：单击或 Space 选择焦点，连通与未连通状态同源呈现", () => {
     const focus = vi.fn();
     const base = {

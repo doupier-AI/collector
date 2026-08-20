@@ -1,0 +1,193 @@
+import { RESEARCH_PERMANENT_EDGE_KINDS, type ResearchPermanentEdgeKind } from "@collector/capture-contracts";
+import type { GraphPoint, GraphWorld, StableOrganicGraphLayout } from "./organicGraphLayout";
+
+const MAP_SCENE_VERSION = 1;
+const MAP_RETURN_VERSION = 1;
+const MAX_SCENE_POSITIONS = 2_000;
+const MAX_COORDINATE = 100_000;
+
+export interface MapViewBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface MapSceneV1 {
+  version: 1;
+  relationshipKinds: ResearchPermanentEdgeKind[];
+  viewBox: MapViewBox;
+  layout: {
+    world: GraphWorld;
+    positions: Array<[string, number, number]>;
+    edgeKeys: Array<[string, string, string]>;
+  };
+}
+
+export interface MapReturnV1 {
+  version: 1;
+  sourceHistoryIndex: number;
+  sourceEntryKey: string;
+  sourcePath: string;
+}
+
+export interface HistoryEntryIdentity {
+  idx: number;
+  key: string;
+}
+
+type RouteState = Record<string, unknown>;
+
+function finite(value: unknown, minimum = -MAX_COORDINATE, maximum = MAX_COORDINATE): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= minimum && value <= maximum;
+}
+
+function record(value: unknown): RouteState | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as RouteState : undefined;
+}
+
+function validPath(value: unknown): value is string {
+  return typeof value === "string" && (/^\/map$/.test(value) || /^\/map\/focus\/[^/?#]+$/.test(value));
+}
+
+function relationshipKinds(value: unknown): ResearchPermanentEdgeKind[] | undefined {
+  if (!Array.isArray(value) || value.some((kind) => !RESEARCH_PERMANENT_EDGE_KINDS.includes(kind as ResearchPermanentEdgeKind))) return undefined;
+  return [...new Set(value as ResearchPermanentEdgeKind[])];
+}
+
+function mapViewBox(value: unknown): MapViewBox | undefined {
+  const candidate = record(value);
+  if (!candidate || !finite(candidate.x) || !finite(candidate.y) || !finite(candidate.width, 1, MAX_COORDINATE) || !finite(candidate.height, 1, MAX_COORDINATE)) return undefined;
+  return { x: candidate.x, y: candidate.y, width: candidate.width, height: candidate.height };
+}
+
+function mapLayout(value: unknown): MapSceneV1["layout"] | undefined {
+  const candidate = record(value);
+  const world = record(candidate?.world);
+  if (!candidate || !world || !finite(world.width, 1, MAX_COORDINATE) || !finite(world.height, 1, MAX_COORDINATE) || !Array.isArray(candidate.positions) || candidate.positions.length > MAX_SCENE_POSITIONS || !Array.isArray(candidate.edgeKeys) || candidate.edgeKeys.length > MAX_SCENE_POSITIONS) return undefined;
+  const ids = new Set<string>();
+  const positions: Array<[string, number, number]> = [];
+  for (const item of candidate.positions) {
+    if (!Array.isArray(item) || item.length !== 3 || typeof item[0] !== "string" || item[0].length === 0 || item[0].length > 256 || !finite(item[1]) || !finite(item[2]) || ids.has(item[0])) return undefined;
+    ids.add(item[0]);
+    positions.push([item[0], item[1], item[2]]);
+  }
+  const edgeKeySet = new Set<string>();
+  const edgeKeys: Array<[string, string, string]> = [];
+  for (const item of candidate.edgeKeys) {
+    if (!Array.isArray(item) || item.length !== 3 || item.some((value) => typeof value !== "string" || value.length === 0 || value.length > 256) || edgeKeySet.has(item[0])) return undefined;
+    edgeKeySet.add(item[0]);
+    edgeKeys.push([item[0], item[1], item[2]]);
+  }
+  return { world: { width: world.width, height: world.height }, positions, edgeKeys };
+}
+
+/**
+ * 路由 history entry 的临时地图现场。它不是业务数据：不进入 URL、存储或服务端。
+ */
+export function serializeMapScene(input: {
+  relationshipKinds: readonly ResearchPermanentEdgeKind[];
+  viewBox: MapViewBox;
+  layout: Pick<StableOrganicGraphLayout, "world" | "positions" | "edgeKeys">;
+}): MapSceneV1 {
+  return {
+    version: MAP_SCENE_VERSION,
+    relationshipKinds: [...new Set(input.relationshipKinds)],
+    viewBox: { ...input.viewBox },
+    layout: {
+      world: { ...input.layout.world },
+      positions: [...input.layout.positions].map(([id, point]) => [id, point.x, point.y]),
+      edgeKeys: [...input.layout.edgeKeys].map(([key, [from, to]]) => [key, from, to]),
+    },
+  };
+}
+
+export function mapSceneFromRouteState(value: unknown): MapSceneV1 | undefined {
+  const routeState = record(value);
+  const candidate = record(routeState?.mapSceneV1);
+  if (!candidate || candidate.version !== MAP_SCENE_VERSION) return undefined;
+  const kinds = relationshipKinds(candidate.relationshipKinds);
+  const viewBox = mapViewBox(candidate.viewBox);
+  const layout = mapLayout(candidate.layout);
+  return kinds && viewBox && layout ? { version: MAP_SCENE_VERSION, relationshipKinds: kinds, viewBox, layout } : undefined;
+}
+
+export function mapSceneLayout(scene: MapSceneV1): Pick<StableOrganicGraphLayout, "world" | "positions" | "edgeKeys"> {
+  return {
+    world: { ...scene.layout.world },
+    positions: new Map(scene.layout.positions.map(([id, x, y]) => [id, { x, y } satisfies GraphPoint])),
+    edgeKeys: new Map(scene.layout.edgeKeys.map(([key, from, to]) => [key, [from, to] as const])),
+  };
+}
+
+export function currentHistoryEntry(): HistoryEntryIdentity | undefined {
+  if (typeof window === "undefined") return undefined;
+  const state = record(window.history.state);
+  const idx = state?.idx;
+  const key = state?.key;
+  return state && Number.isSafeInteger(idx) && typeof idx === "number" && idx >= 0 && typeof key === "string" && key.length > 0 && key.length <= 128
+    ? { idx, key }
+    : undefined;
+}
+
+export function currentRouteState(): RouteState | undefined {
+  if (typeof window === "undefined") return undefined;
+  return record(record(window.history.state)?.usr);
+}
+
+export function mergeRouteState(current: unknown, additions: RouteState): RouteState {
+  return { ...(record(current) ?? {}), ...additions };
+}
+
+/**
+ * 同一地图 history entry 的现场更新只 replace，绝不能触发新的导航或 React 重挂载。
+ * React Router 的 usr/key/idx 包装保持原样，之后 popstate/刷新会读取这份 state。
+ */
+export function replaceCurrentMapScene(scene: MapSceneV1, routeState?: unknown): void {
+  if (typeof window === "undefined") return;
+  const historyState = record(window.history.state);
+  if (!historyState) return;
+  window.history.replaceState({ ...historyState, usr: mergeRouteState(routeState ?? currentRouteState(), { mapSceneV1: scene }) }, "");
+}
+
+export function createMapReturn(source: HistoryEntryIdentity | undefined, sourcePath: string): MapReturnV1 | undefined {
+  if (!source || !validPath(sourcePath)) return undefined;
+  return { version: MAP_RETURN_VERSION, sourceHistoryIndex: source.idx, sourceEntryKey: source.key, sourcePath };
+}
+
+export function mapReturnFromRouteState(value: unknown): MapReturnV1 | undefined {
+  const routeState = record(value);
+  const candidate = record(routeState?.mapReturn);
+  const sourceHistoryIndex = candidate?.sourceHistoryIndex;
+  const sourceEntryKey = candidate?.sourceEntryKey;
+  const sourcePath = candidate?.sourcePath;
+  if (!candidate || candidate.version !== MAP_RETURN_VERSION || !Number.isSafeInteger(sourceHistoryIndex) || typeof sourceHistoryIndex !== "number" || sourceHistoryIndex < 0 || typeof sourceEntryKey !== "string" || sourceEntryKey.length === 0 || sourceEntryKey.length > 128 || !validPath(sourcePath)) return undefined;
+  return {
+    version: MAP_RETURN_VERSION,
+    sourceHistoryIndex,
+    sourceEntryKey,
+    sourcePath,
+  };
+}
+
+export function mapReturnDelta(marker: MapReturnV1 | undefined, current = currentHistoryEntry()): number | undefined {
+  if (!marker || !current || !validPath(marker.sourcePath) || current.idx <= marker.sourceHistoryIndex) return undefined;
+  return marker.sourceHistoryIndex - current.idx;
+}
+
+export function stripOneShotRouteState(value: unknown): RouteState | null {
+  const routeState = record(value);
+  if (!routeState) return null;
+  const { firstTurn: _firstTurn, grew: _grew, ...rest } = routeState;
+  return Object.keys(rest).length ? rest : null;
+}
+
+export function nodeRouteStateWithMapReturn(current: unknown, additions: RouteState = {}): RouteState {
+  const marker = mapReturnFromRouteState(current);
+  return marker ? mergeRouteState(additions, { mapReturn: marker }) : mergeRouteState({}, additions);
+}
+
+/** 节点 entry 只携带返回标记；地图现场始终留在来源 map entry。 */
+export function nodeEntryStateFromMapReturn(marker: MapReturnV1 | undefined): RouteState | undefined {
+  return marker ? { mapReturn: marker } : undefined;
+}

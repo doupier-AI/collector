@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import type { ResearchNodeRecord } from "@collector/capture-contracts";
 import { stableNodePath } from "../../app/paths";
 import { useServices } from "../../app/services";
+import { useNodeNavigationState } from "../navigation/useNodeNavigationState";
 import { selectionExcerpt } from "../selection/selection-highlight";
 import { formatSessionTime } from "./format";
 
@@ -26,6 +27,7 @@ export function NodeChildList({
   newChildIds?: ReadonlySet<string>;
 }) {
   const { api } = useServices();
+  const navigationState = useNodeNavigationState();
   const [selectionNames, setSelectionNames] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -60,6 +62,7 @@ export function NodeChildList({
               <Link
                 className="branch-list__link"
                 to={stableNodePath(child.id)}
+                state={navigationState}
               >
                 <span className="branch-list__name">
                   {child.displayName

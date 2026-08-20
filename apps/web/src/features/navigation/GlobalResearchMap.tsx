@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import type { KeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
+import { Link } from "react-router-dom";
 import {
   PROJECT_COLOR_ROLES,
   type ResearchGraphObservation,
@@ -10,6 +10,7 @@ import {
 } from "@collector/capture-contracts";
 import { stableNodePath } from "../../app/paths";
 import { createStableOrganicGraphLayout } from "./organicGraphLayout";
+import { mapSceneLayout, serializeMapScene, type MapSceneV1 } from "./map-scene";
 
 interface ViewBoxState {
   x: number;
@@ -123,13 +124,25 @@ interface GlobalResearchMapProps {
   observation: ResearchGraphObservation;
   onFocusNode?: (nodeId: string) => void;
   onExitFocus?: () => void;
+  /** 由地图路由 history entry 还原的临时现场，不是知识事实。 */
+  initialScene?: MapSceneV1;
+  onSceneChange?: (scene: MapSceneV1) => void;
+  onOpenNode?: (nodeId: string) => void;
+  nodeHref?: (nodeId: string) => string;
   relationshipKinds?: readonly ResearchPermanentEdgeKind[];
   onRelationshipKindToggle?: (kind: ResearchPermanentEdgeKind) => void;
 }
 
-export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, relationshipKinds = observation.appliedRelationshipKinds, onRelationshipKindToggle }: GlobalResearchMapProps) {
-  const navigate = useNavigate();
+export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initialScene, onSceneChange, onOpenNode, nodeHref = stableNodePath, relationshipKinds = observation.appliedRelationshipKinds, onRelationshipKindToggle }: GlobalResearchMapProps) {
   const layoutRef = useRef<ReturnType<typeof createStableOrganicGraphLayout> | undefined>(undefined);
+  if (!layoutRef.current && initialScene) {
+    const restored = mapSceneLayout(initialScene);
+    layoutRef.current = {
+      positions: restored.positions,
+      world: restored.world,
+      edgeKeys: restored.edgeKeys,
+    };
+  }
   const layout = useMemo(
     () => createStableOrganicGraphLayout(observation.nodes, observation.edges, layoutRef.current),
     [observation.nodes, observation.edges],
@@ -137,7 +150,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, relat
   useLayoutEffect(() => { layoutRef.current = layout; }, [layout]);
   const positions = layout.positions;
   const world = layout.world;
-  const [viewBox, setViewBox] = useState<ViewBoxState>(() => ({ x: 0, y: 0, width: world.width, height: world.height }));
+  const [viewBox, setViewBox] = useState<ViewBoxState>(() => initialScene?.viewBox ?? ({ x: 0, y: 0, width: world.width, height: world.height }));
   const adjacency = useMemo(() => adjacencyFor(observation), [observation]);
   const visualEdges = useMemo(() => visualEdgesFor(observation), [observation]);
   const [rovingNodeId, setRovingNodeId] = useState(observation.nodes[0]?.node.id ?? "");
@@ -150,15 +163,40 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, relat
   viewBoxRef.current = viewBox;
   const canvasNodeRefs = useRef(new Map<string, SVGGElement>());
   const listNodeRefs = useRef(new Map<string, HTMLButtonElement>());
+  const pendingFocusTimer = useRef<number | undefined>(undefined);
   const interactionNodeId = hoveredNodeId ?? keyboardNodeId;
   const directNeighbors = interactionNodeId ? adjacency.get(interactionNodeId) ?? new Set<string>() : new Set<string>();
   const zoomScale = world.width / viewBox.width;
   const focusedNodeId = observation.focusNodeId;
   const focusSummary = focusedNodeId ? observation.nodes.find((summary) => summary.node.id === focusedNodeId) : undefined;
 
+  useEffect(() => {
+    onSceneChange?.(serializeMapScene({ relationshipKinds, viewBox, layout }));
+  }, [layout, onSceneChange, relationshipKinds, viewBox]);
+
   const selectNode = useCallback((nodeId: string) => {
     onFocusNode?.(nodeId);
   }, [onFocusNode]);
+
+  const cancelPendingFocus = useCallback(() => {
+    if (pendingFocusTimer.current !== undefined) window.clearTimeout(pendingFocusTimer.current);
+    pendingFocusTimer.current = undefined;
+  }, []);
+
+  useEffect(() => cancelPendingFocus, [cancelPendingFocus]);
+
+  const selectCanvasNode = useCallback((nodeId: string, event: ReactMouseEvent<SVGGElement>) => {
+    // SVG 双击会先派发两次 click。短暂延后单击专注，避免“打开正文”额外制造一层 focus history entry。
+    if (event.detail === 0) {
+      selectNode(nodeId);
+      return;
+    }
+    cancelPendingFocus();
+    pendingFocusTimer.current = window.setTimeout(() => {
+      pendingFocusTimer.current = undefined;
+      selectNode(nodeId);
+    }, 180);
+  }, [cancelPendingFocus, selectNode]);
 
   const toggleRelationship = (kind: ResearchPermanentEdgeKind) => {
     onRelationshipKindToggle?.(kind);
@@ -177,7 +215,8 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, relat
     if (event.key === "ArrowLeft" || event.key === "ArrowUp") moveFocus(event, -1, refs);
     if (event.key === "Enter") {
       event.preventDefault();
-      navigate(stableNodePath(nodeId));
+      cancelPendingFocus();
+      onOpenNode?.(nodeId);
     }
     if (event.key === " ") {
       event.preventDefault();
@@ -357,8 +396,8 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, relat
                 onBlur={() => setKeyboardNodeId((nodeId) => nodeId === summary.node.id ? null : nodeId)}
                 onPointerEnter={() => setHoveredNodeId(summary.node.id)}
                 onPointerLeave={() => setHoveredNodeId((nodeId) => nodeId === summary.node.id ? null : nodeId)}
-                onClick={(event) => { event.stopPropagation(); selectNode(summary.node.id); }}
-                onDoubleClick={() => navigate(stableNodePath(summary.node.id))}
+                onClick={(event) => { event.stopPropagation(); selectCanvasNode(summary.node.id, event); }}
+                onDoubleClick={() => { cancelPendingFocus(); onOpenNode?.(summary.node.id); }}
                 onKeyDown={(event) => handleKey(event, summary.node.id, canvasNodeRefs.current)}
               >
                 <circle className="global-map__node-selection-halo" r="14" />
@@ -392,7 +431,12 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, relat
             const to = observation.nodes.find((node) => node.node.id === edge.toNodeId);
             if (!from || !to) return null;
             const type = relationshipName(edge.kind);
-            return <li key={edge.id}><Link className={`global-map__relation-link global-map__relation-link--${connectivity}`} to={stableNodePath(to.node.id)} aria-label={`${type}：${from.label} 指向 ${to.label}`}>{type}：{from.label} → {to.label}{connectivity === "unconnected" ? "（未连通）" : ""}</Link></li>;
+            return <li key={edge.id}><Link className={`global-map__relation-link global-map__relation-link--${connectivity}`} to={nodeHref(to.node.id)} onClick={(event) => {
+              if (!onOpenNode || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+              event.preventDefault();
+              cancelPendingFocus();
+              onOpenNode(to.node.id);
+            }} aria-label={`${type}：${from.label} 指向 ${to.label}`}>{type}：{from.label} → {to.label}{connectivity === "unconnected" ? "（未连通）" : ""}</Link></li>;
           })}
         </ul>
         <p className="global-map__keyboard-hint">上下方向键移动 · 单击或 Space 专注 · Enter 打开节点</p>

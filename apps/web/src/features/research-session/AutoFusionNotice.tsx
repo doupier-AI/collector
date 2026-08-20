@@ -2,6 +2,7 @@ import type { ReactElement } from "react";
 import { Link } from "react-router-dom";
 import type { ResearchFusionAutoResult } from "@collector/capture-contracts";
 import { stableNodePath } from "../../app/paths";
+import { useNodeNavigationState } from "../navigation/useNodeNavigationState";
 
 /**
  * #32 自动融合成功提示条：不自动跳转、不打断当前阅读，在节点页顶部呈现，
@@ -13,6 +14,7 @@ export function AutoFusionNotice({
 }: {
   results: ResearchFusionAutoResult[];
 }): ReactElement | null {
+  const navigationState = useNodeNavigationState();
   if (results.length === 0) return null;
   return (
     <section className="auto-fusion-notice" role="status" data-testid="auto-fusion-notice" aria-label="自动融合">
@@ -24,6 +26,7 @@ export function AutoFusionNotice({
           key={result.nodeId}
           className="auto-fusion-notice__link"
           to={stableNodePath(result.nodeId)}
+          state={navigationState}
         >
           查看融合节点
         </Link>
