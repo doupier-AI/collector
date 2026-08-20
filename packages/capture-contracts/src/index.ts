@@ -2503,12 +2503,15 @@ export function isResearchPermanentEdge(edge: ResearchEdgeRecord): edge is Resea
  * 全局观察查询的稳定输入。布局、缩放与画布坐标不属于该契约。
  * 省略范围时包含全部未进入回收站的现存节点（含归档与孤立节点）。
  */
+export type ResearchGraphLifecycle = "active" | "archived";
+
 export interface ResearchGraphObservationInput {
   focusNodeId?: string;
   projectIds?: string[];
   /** 明确把没有项目归属的节点加入项目范围；省略时仅在未筛选项目时包含它们。 */
   includeUncategorized?: true;
-  includeArchived?: boolean;
+  /** 省略时同时包含活跃与已归档；显式值必须是去重后的非空集合。 */
+  lifecycles?: ResearchGraphLifecycle[];
   /** 节点创建时间的含下界。 */
   createdFrom?: string;
   /** 节点创建时间的不含上界。 */
@@ -2591,14 +2594,22 @@ export function buildResearchGraphObservation(
   const traversableEdges = permanentEdges.filter((edge) => enabledKindSet.has(edge.kind));
   const projectFilter = input.projectIds?.length ? new Set(input.projectIds) : undefined;
   const filtersByProjectScope = projectFilter !== undefined || input.includeUncategorized === true;
-  const includeArchived = input.includeArchived ?? true;
-  const hasRangeFilter = filtersByProjectScope || input.includeArchived === false
+  const lifecycleValues = input.lifecycles ?? ["active", "archived"];
+  if (input.lifecycles !== undefined && (
+    lifecycleValues.length === 0
+    || new Set(lifecycleValues).size !== lifecycleValues.length
+    || lifecycleValues.some((lifecycle) => lifecycle !== "active" && lifecycle !== "archived")
+  )) {
+    throw new Error("Research graph lifecycles must be a non-empty, non-duplicated active or archived set");
+  }
+  const lifecycleSet = new Set(lifecycleValues);
+  const hasRangeFilter = filtersByProjectScope || lifecycleSet.size !== 2
     || input.createdFrom !== undefined || input.createdBefore !== undefined;
 
   const inScope = (node: ResearchNodeRecord): boolean => {
     const session = sessionById.get(node.sessionId);
     if (!session) return false;
-    if (!includeArchived && session.status === "archived") return false;
+    if (!lifecycleSet.has(session.status)) return false;
     if (filtersByProjectScope) {
       const matchesProject = session.projectId !== undefined && projectFilter?.has(session.projectId) === true;
       const matchesUncategorized = session.projectId === undefined && input.includeUncategorized === true;

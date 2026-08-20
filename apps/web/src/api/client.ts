@@ -526,7 +526,18 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
       if (input.focusNodeId) params.set("focusNodeId", input.focusNodeId);
       for (const projectId of input.projectIds ?? []) params.append("projectId", projectId);
       if (input.includeUncategorized) params.set("includeUncategorized", "true");
-      if (input.includeArchived !== undefined) params.set("includeArchived", String(input.includeArchived));
+      if (input.lifecycles !== undefined) {
+        const lifecycleSet = new Set(input.lifecycles);
+        if (
+          lifecycleSet.size === 0 || lifecycleSet.size !== input.lifecycles.length
+          || [...lifecycleSet].some((lifecycle) => lifecycle !== "active" && lifecycle !== "archived")
+        ) {
+          throw new Error("lifecycles must be a non-duplicated non-empty active or archived set");
+        }
+        for (const lifecycle of ["active", "archived"] as const) {
+          if (lifecycleSet.has(lifecycle)) params.append("lifecycle", lifecycle);
+        }
+      }
       if (input.createdFrom) params.set("createdFrom", input.createdFrom);
       if (input.createdBefore) params.set("createdBefore", input.createdBefore);
       if (input.relationshipKinds !== undefined) {

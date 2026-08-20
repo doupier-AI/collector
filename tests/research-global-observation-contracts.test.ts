@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   buildResearchGraphObservation,
   researchEdgeId,
+  type ResearchGraphLifecycle,
   type ProjectRecord,
   type ResearchEdgeRecord,
   type ResearchNodeRecord,
@@ -65,6 +66,70 @@ test("creation time scope includes its lower boundary, excludes its upper bounda
   });
 
   assert.deepEqual(result.nodes.map((item) => item.node.id), ["lower"]);
+});
+
+test("lifecycle scope composes with project and creation time without treating later changes as range membership", () => {
+  const sessions = [
+    session("archived-in-project", { projectId: "p1", status: "archived" }),
+    session("active-in-project", { projectId: "p1" }),
+    session("archived-other-project", { projectId: "p2", status: "archived" }),
+    session("archived-outside-time", { projectId: "p1", status: "archived" }),
+  ];
+  const nodes = [
+    node("archived-in-project", "archived-in-project", { createdAt: "2026-08-10T00:00:00.000Z" }),
+    node("active-in-project", "active-in-project", { createdAt: "2026-08-10T00:00:00.000Z" }),
+    node("archived-other-project", "archived-other-project", { createdAt: "2026-08-10T00:00:00.000Z" }),
+    node("archived-outside-time", "archived-outside-time", { createdAt: "2026-08-11T00:00:00.000Z" }),
+  ];
+
+  const result = buildResearchGraphObservation(nodes, [], sessions, [], {
+    projectIds: ["p1"],
+    lifecycles: ["archived"],
+    createdFrom: "2026-08-10T00:00:00.000Z",
+    createdBefore: "2026-08-11T00:00:00.000Z",
+  });
+
+  assert.deepEqual(result.nodes.map((item) => item.node.id), ["archived-in-project"]);
+});
+
+test("archived-only scope preserves an active bridge but explicit both keeps both endpoints in scope", () => {
+  const sessions = [
+    session("archived-focus", { projectId: "p1", status: "archived" }),
+    session("active-bridge", { projectId: "p2" }),
+    session("archived-target", { projectId: "p1", status: "archived" }),
+  ];
+  const nodes = sessions.map((item) => node(item.id, item.id));
+  const edges = [
+    edge("parent-child", "archived-focus", "active-bridge"),
+    edge("parent-child", "active-bridge", "archived-target"),
+  ];
+  const archivedOnly = buildResearchGraphObservation(nodes, edges, sessions, [], {
+    focusNodeId: "archived-focus", lifecycles: ["archived"],
+  });
+  assert.equal(archivedOnly.nodes.find((item) => item.node.id === "active-bridge")?.scope, "outside-bridge");
+
+  const both = buildResearchGraphObservation(nodes, edges, sessions, [], { lifecycles: ["active", "archived"] });
+  assert.ok(both.nodes.every((item) => item.scope === "inside-current-filter"));
+});
+
+test("shared lifecycle input rejects empty, duplicated, and invalid explicit values", () => {
+  const sessions = [session("node")];
+  const nodes = [node("node", "node")];
+
+  assert.throws(
+    () => buildResearchGraphObservation(nodes, [], sessions, [], { lifecycles: [] }),
+    /non-empty, non-duplicated active or archived/,
+  );
+  assert.throws(
+    () => buildResearchGraphObservation(nodes, [], sessions, [], { lifecycles: ["active", "active"] }),
+    /non-empty, non-duplicated active or archived/,
+  );
+  assert.throws(
+    () => buildResearchGraphObservation(nodes, [], sessions, [], {
+      lifecycles: ["retired"] as unknown as ResearchGraphLifecycle[],
+    }),
+    /non-empty, non-duplicated active or archived/,
+  );
 });
 
 test("mixed permanent paths, cycles and disabled parallel facts keep one server-classified observation", () => {

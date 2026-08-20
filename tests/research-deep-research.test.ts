@@ -734,6 +734,13 @@ test("global map endpoint returns one cross-session observation with archived an
   assert.ok(observation.nodes.every((item) => item.connectivity === "default"));
   assert.deepEqual(observation.edges.map((item) => item.edge.kind), ["fused-from"]);
 
+  const archivedOnlyResponse = await fetch(
+    `${harness.base}/v1/research-map?lifecycle=archived&relationshipKind=`,
+    { headers: headers(harness.token) },
+  );
+  assert.equal(archivedOnlyResponse.status, 200);
+  assert.deepEqual((await archivedOnlyResponse.json() as { nodes: Array<{ node: { id: string } }> }).nodes.map((item) => item.node.id), [archived.session.id]);
+
   const futureOnlyResponse = await fetch(
     `${harness.base}/v1/research-map?createdFrom=2999-01-01T00%3A00%3A00.000Z`,
     { headers: headers(harness.token) },
@@ -783,6 +790,10 @@ test("global map endpoint returns one cross-session observation with archived an
   assert.equal((await fetch(`${harness.base}/v1/research-map?createdFrom=2026-08-11T00%3A00%3A00.000Z&createdBefore=2026-08-10T00%3A00%3A00.000Z`, { headers: headers(harness.token) })).status, 400);
   assert.equal((await fetch(`${harness.base}/v1/research-map?updatedFrom=2026-08-10T00%3A00%3A00.000Z`, { headers: headers(harness.token) })).status, 400);
   assert.equal((await fetch(`${harness.base}/v1/research-map?updatedTo=2026-08-10T00%3A00%3A00.000Z`, { headers: headers(harness.token) })).status, 400);
+  assert.equal((await fetch(`${harness.base}/v1/research-map?includeArchived=false`, { headers: headers(harness.token) })).status, 400);
+  assert.equal((await fetch(`${harness.base}/v1/research-map?lifecycle=`, { headers: headers(harness.token) })).status, 400);
+  assert.equal((await fetch(`${harness.base}/v1/research-map?lifecycle=active&lifecycle=active`, { headers: headers(harness.token) })).status, 400);
+  assert.equal((await fetch(`${harness.base}/v1/research-map?lifecycle=retired`, { headers: headers(harness.token) })).status, 400);
   assert.equal((await fetch(`${harness.base}/v1/research-map?includeUncategorized=false`, { headers: headers(harness.token) })).status, 400);
   assert.equal((await fetch(`${harness.base}/v1/research-map?includeUncategorized=`, { headers: headers(harness.token) })).status, 400);
   assert.equal((await fetch(`${harness.base}/v1/research-map?includeUncategorized=true&includeUncategorized=true`, { headers: headers(harness.token) })).status, 400);

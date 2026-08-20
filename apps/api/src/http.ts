@@ -641,6 +641,16 @@ function parseGraphObservationInput(url: URL): import("@collector/capture-contra
     throw new ResearchValidationError("includeUncategorized must be true when specified once");
   }
   const includeUncategorized = includeUncategorizedValues[0] === "true";
+  if (url.searchParams.has("includeArchived")) {
+    throw new ResearchValidationError("includeArchived is no longer supported; use lifecycle");
+  }
+  const lifecycleValues = url.searchParams.getAll("lifecycle");
+  if (lifecycleValues.length > 0 && (
+    lifecycleValues.some((value) => value !== "active" && value !== "archived")
+    || new Set(lifecycleValues).size !== lifecycleValues.length
+  )) {
+    throw new ResearchValidationError("lifecycle must be a non-duplicated active or archived value");
+  }
   const relationshipKindsWereSpecified = url.searchParams.has("relationshipKind");
   const relationshipKindValues = url.searchParams.getAll("relationshipKind");
   const encodesEmptyRelationshipSet = relationshipKindValues.length === 1 && relationshipKindValues[0] === "";
@@ -648,10 +658,6 @@ function parseGraphObservationInput(url: URL): import("@collector/capture-contra
     throw new ResearchValidationError("relationshipKind must be parent-child or fused-from");
   }
   const relationshipKinds = encodesEmptyRelationshipSet ? [] : relationshipKindValues;
-  const includeArchivedValue = url.searchParams.get("includeArchived");
-  if (includeArchivedValue !== null && includeArchivedValue !== "true" && includeArchivedValue !== "false") {
-    throw new ResearchValidationError("includeArchived must be true or false");
-  }
   const createdFrom = parseOptionalIsoDate(url.searchParams.get("createdFrom"), "createdFrom");
   const createdBefore = parseOptionalIsoDate(url.searchParams.get("createdBefore"), "createdBefore");
   if (createdFrom && createdBefore && createdFrom >= createdBefore) {
@@ -661,7 +667,7 @@ function parseGraphObservationInput(url: URL): import("@collector/capture-contra
     ...(focusNodeId ? { focusNodeId } : {}),
     ...(projectIds.length ? { projectIds } : {}),
     ...(includeUncategorized ? { includeUncategorized: true as const } : {}),
-    ...(includeArchivedValue !== null ? { includeArchived: includeArchivedValue === "true" } : {}),
+    ...(lifecycleValues.length ? { lifecycles: lifecycleValues as Array<"active" | "archived"> } : {}),
     ...(createdFrom ? { createdFrom } : {}),
     ...(createdBefore ? { createdBefore } : {}),
     ...(relationshipKindsWereSpecified
