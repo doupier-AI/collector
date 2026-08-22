@@ -80,7 +80,7 @@ emit(`   目录：${repositoryRoot}`);
 emit(`   日志：${absoluteLogPath}`);
 emit(`   开始：${timestampForLog(startedAt)}`);
 
-const child = spawn(commandString, { shell: true, cwd: repositoryRoot });
+const child = spawn(commandString, { shell: true, cwd: repositoryRoot, windowsHide: true });
 child.stdout.on("data", (chunk) => {
   process.stdout.write(chunk);
   log.write(chunk);

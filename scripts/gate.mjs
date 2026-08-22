@@ -33,7 +33,7 @@ const stages = requested.length > 0 ? STAGES.filter((stage) => requested.include
 
 for (const [index, stage] of stages.entries()) {
   console.log(`\n── gate [${index + 1}/${stages.length}] ${stage.label}：${stage.command}`);
-  const result = spawnSync(stage.command, { shell: true, stdio: "inherit", cwd: repositoryRoot });
+  const result = spawnSync(stage.command, { shell: true, stdio: "inherit", cwd: repositoryRoot, windowsHide: true });
   if (result.status !== 0) {
     console.error(`\ngate 失败于阶段「${stage.label}」（${stage.command}），退出码 ${result.status ?? "信号终止"}。`);
     process.exit(result.status ?? 1);

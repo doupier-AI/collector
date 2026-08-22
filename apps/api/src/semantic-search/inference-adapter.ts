@@ -1,4 +1,4 @@
-import { fork, type ChildProcess } from "node:child_process";
+import { fork, type ChildProcess, type ForkOptions } from "node:child_process";
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -141,10 +141,16 @@ export class IsolatedSemanticInferenceAdapter implements SemanticInferenceAdapte
   private run(request: SemanticInferenceRequest): Promise<unknown> {
     if (this.closed) return Promise.reject(new Error("Semantic inference adapter is closed"));
     return new Promise((resolve, reject) => {
-      const child = fork(this.childPath, [], {
+      // fork forwards its options object to spawn, where windowsHide is
+      // honoured; ForkOptions simply does not declare it yet. Without this the
+      // console-less API server makes every inference child open a visible
+      // terminal window on Windows.
+      const childOptions: ForkOptions & { windowsHide: boolean } = {
         stdio: ["ignore", "ignore", "ignore", "ipc"],
         serialization: "advanced",
-      });
+        windowsHide: true,
+      };
+      const child = fork(this.childPath, [], childOptions);
       let response: SemanticInferenceChildResponse | undefined;
       let terminalError: Error | undefined;
       const terminate = (error: Error) => {
