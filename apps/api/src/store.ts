@@ -448,7 +448,7 @@ export interface CollectorStore
  * `if (version < N+1)` 版本块（块内写入对应 schema_migrations 行）并递增本常量；
  * 测试以此常量断言「打开/重放后数据库实际到达声明版本」，无需再手工同步多处硬编码断言。
  */
-export const LATEST_SCHEMA_VERSION = 39;
+export const LATEST_SCHEMA_VERSION = 40;
 
 export class SqliteStore implements CollectorStore {
   private database?: DatabaseSync;
@@ -3678,6 +3678,22 @@ export class SqliteStore implements CollectorStore {
         this.db().exec("INSERT INTO schema_migrations(version, applied_at) VALUES (39, datetime('now'))");
       });
       version = 39;
+    }
+
+    if (version < 40) {
+      // Model downloads may need an explicit proxy (ADR-0040). Column checks keep
+      // migration-fact replay idempotent like the versions above.
+      this.transaction(() => {
+        const columns = new Set(
+          (this.db().prepare("PRAGMA table_info(semantic_search_settings)").all() as Array<{ name: string }>)
+            .map((column) => column.name),
+        );
+        if (!columns.has("download_proxy_url")) {
+          this.db().exec("ALTER TABLE semantic_search_settings ADD COLUMN download_proxy_url TEXT");
+        }
+        this.db().exec("INSERT INTO schema_migrations(version, applied_at) VALUES (40, datetime('now'))");
+      });
+      version = 40;
     }
 
   }

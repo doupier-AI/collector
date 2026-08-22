@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { ProxyAgent } from "undici";
 import {
   listSemanticModelManifests,
   type ModelArtifactManifest,
@@ -37,6 +38,12 @@ export interface ModelArtifactInstallerOptions {
   manifests?: readonly ModelArtifactManifest[];
   /** Test seam for the network boundary. Production callers omit this and use HTTPS fetch. */
   download?: ModelArtifactDownloader;
+  /** Optional proxy for model downloads only (ADR-0040); read per attempt so runtime changes apply. */
+  proxyUrl?: () => string | undefined;
+  /** Test seam observing the dispatcher passed to fetch when a proxy is configured. */
+  fetchImpl?: (url: URL, init: RequestInit & { dispatcher?: unknown }) => Promise<Response>;
+  /** Test seam to shorten the per-source connect and stall budgets. */
+  sourceTimeouts?: { headersMs?: number; stallMs?: number };
 }
 
 interface ActiveInstall {
@@ -47,8 +54,11 @@ interface ActiveInstall {
 const stagingDirectoryName = ".staging";
 
 /** Production entry point: it exposes only the pinned manifest list. */
-export function createSemanticModelArtifactInstaller(modelRoot: string): ModelArtifactInstaller {
-  return createModelArtifactInstaller({ modelRoot, manifests: listSemanticModelManifests() });
+export function createSemanticModelArtifactInstaller(
+  modelRoot: string,
+  options: { proxyUrl?: () => string | undefined } = {},
+): ModelArtifactInstaller {
+  return createModelArtifactInstaller({ modelRoot, manifests: listSemanticModelManifests(), proxyUrl: options.proxyUrl });
 }
 
 /**
@@ -64,9 +74,39 @@ export function createModelArtifactInstaller(options: ModelArtifactInstallerOpti
     manifests.set(manifest.profile, manifest);
   }
   const root = resolve(options.modelRoot);
-  const download = options.download ?? downloadVerifiedAsset;
+  const fetchImpl = options.fetchImpl ?? ((url: URL, init: RequestInit & { dispatcher?: unknown }) => fetch(url, init));
+  let proxyAgent: { url: string; agent: ProxyAgent } | undefined;
+  /** A proxy is built lazily per unique URL and rebuilt when the setting changes. */
+  function currentDispatcher(): unknown {
+    const raw = options.proxyUrl?.();
+    if (!raw || !raw.trim()) return undefined;
+    let parsed: URL;
+    try {
+      parsed = new URL(raw.trim());
+    } catch {
+      return undefined;
+    }
+    if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.hostname) return undefined;
+    const normalized = parsed.toString();
+    if (proxyAgent?.url !== normalized) {
+      void proxyAgent?.agent.close().catch(() => undefined);
+      proxyAgent = { url: normalized, agent: new ProxyAgent(normalized) };
+    }
+    return proxyAgent.agent;
+  }
+  const download = options.download ?? ((url: URL, signal: AbortSignal) => downloadStream(
+    url,
+    signal,
+    currentDispatcher(),
+    fetchImpl,
+    options.sourceTimeouts?.headersMs ?? SOURCE_HEADERS_TIMEOUT_MS,
+    options.sourceTimeouts?.stallMs ?? SOURCE_STALL_TIMEOUT_MS,
+  ));
   const statuses = new Map<SemanticModelProfile, ModelArtifactInstallationStatus>();
   const active = new Map<SemanticModelProfile, ActiveInstall>();
+  // Once a source answers, later assets try it first instead of paying the
+  // connect timeout of an unreachable source on every file.
+  let preferredSourceHost: string | undefined;
   // Hashing the standard profile reads about 1.18GB. Once verified in this process,
   // status polling may trust that result until an explicit lifecycle action invalidates it.
   const verified = new Set<SemanticModelProfile>();
@@ -142,8 +182,7 @@ export function createModelArtifactInstaller(options: ModelArtifactInstallerOpti
         const completedBeforeAsset = completedBytes;
         const received = await downloadAsset(asset, assetPath, controller.signal, download, (assetBytes) => {
           update("downloading", undefined, completedBeforeAsset + assetBytes);
-        });
-        if (received !== asset.size) throw new Error(`Verified asset ${asset.path} has an unexpected size`);
+        }, preferredSourceHost, (host) => { preferredSourceHost = host; });
         completedBytes += received;
       }
       if (controller.signal.aborted) throw new DownloadCancelledError();
@@ -155,9 +194,11 @@ export function createModelArtifactInstaller(options: ModelArtifactInstallerOpti
     } catch (error) {
       await rm(staging, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(() => undefined);
       if (controller.signal.aborted || error instanceof DownloadCancelledError) return copyStatus(update("cancelled", "Model download was cancelled."));
-      const message = error instanceof AssetChecksumError
-        ? `Model download was not enabled because ${error.message}`
-        : "Model download failed. Retry to download a complete verified model.";
+      const message = error instanceof ModelSourceUnreachableError
+        ? "Could not reach any model download source (hf-mirror.com, modelscope.cn, huggingface.co). Check the network, or set a download proxy in semantic search settings, then retry."
+        : error instanceof AssetChecksumError
+          ? `Model download was not enabled because ${error.message}`
+          : "Model download failed. Retry to download a complete verified model.";
       return copyStatus(update("failed", message));
     }
   }
@@ -195,21 +236,33 @@ async function downloadAsset(
   signal: AbortSignal,
   download: ModelArtifactDownloader,
   reportAssetBytes: (bytes: number) => void,
+  preferredHost: string | undefined,
+  onSourceAdopted: (host: string) => void,
 ): Promise<number> {
+  const ordered = preferredHost
+    ? [...asset.urls].sort((left, right) => Number(right.hostname === preferredHost) - Number(left.hostname === preferredHost))
+    : [...asset.urls];
   let lastError: unknown;
-  for (const url of asset.urls) {
+  let unreachableAttempts = 0;
+  for (const url of ordered) {
     let received = 0;
     try {
-      return await writeVerifiedAsset(asset, target, url, signal, download, (bytes) => {
+      const verified = await writeVerifiedAsset(asset, target, url, signal, download, (bytes) => {
         received += bytes;
         reportAssetBytes(received);
       });
+      onSourceAdopted(url.hostname);
+      return verified;
     } catch (error) {
-      await rm(`${target}.part`, { force: true, maxRetries: 5, retryDelay: 100 });
+      await rm(`${target}.part`, { force: true, maxRetries: 5, retryDelay: 100 }).catch(() => undefined);
       if (signal.aborted || error instanceof DownloadCancelledError) throw error;
+      if (error instanceof ModelSourceUnreachableError) unreachableAttempts += 1;
       reportAssetBytes(0);
       lastError = error;
     }
+  }
+  if (unreachableAttempts === ordered.length) {
+    throw new ModelSourceUnreachableError("No model download source could be reached.");
   }
   throw lastError instanceof Error ? lastError : new Error("All verified model sources failed");
 }
@@ -249,23 +302,93 @@ async function writeVerifiedAsset(
   return received;
 }
 
-async function* downloadStream(url: URL, signal: AbortSignal): AsyncIterable<Uint8Array> {
-  const response = await fetch(url, { signal });
-  if (!response.ok || !response.body) throw new Error(`Verified model source returned HTTP ${response.status}`);
-  const reader = response.body.getReader();
+const SOURCE_HEADERS_TIMEOUT_MS = 20_000;
+const SOURCE_STALL_TIMEOUT_MS = 60_000;
+
+/**
+ * Streams one verified source with a bounded connect budget: headers must
+ * arrive within {@link SOURCE_HEADERS_TIMEOUT_MS} and the transfer must not
+ * stall longer than {@link SOURCE_STALL_TIMEOUT_MS} between chunks, so an
+ * unreachable host fails over to the next source instead of hanging the UI.
+ */
+async function* downloadStream(
+  url: URL,
+  signal: AbortSignal,
+  dispatcher: unknown,
+  fetchImpl: (url: URL, init: RequestInit & { dispatcher?: unknown }) => Promise<Response>,
+  headersTimeoutMs: number,
+  stallTimeoutMs: number,
+): AsyncIterable<Uint8Array> {
+  const attempt = new AbortController();
+  const onExternalAbort = () => attempt.abort(new Error("Model download was cancelled"));
+  signal.addEventListener("abort", onExternalAbort, { once: true });
+  let headersTimer: NodeJS.Timeout | undefined = setTimeout(() => {
+    attempt.abort(new Error("Connecting to the model source timed out"));
+  }, headersTimeoutMs);
+  headersTimer.unref?.();
+  let response: Response;
   try {
+    response = await fetchImpl(url, { signal: attempt.signal, ...(dispatcher ? { dispatcher } : {}) });
+    if (headersTimer) {
+      clearTimeout(headersTimer);
+      headersTimer = undefined;
+    }
+  } catch (error) {
+    if (signal.aborted) throw new DownloadCancelledError();
+    throw classifyNetworkError(error);
+  }
+  if (!response.ok || !response.body) {
+    void response.body?.cancel().catch(() => undefined);
+    throw new Error(`Verified model source returned HTTP ${response.status}`);
+  }
+  const reader = response.body.getReader();
+  let stallTimer: NodeJS.Timeout | undefined;
+  const armStallTimer = () => {
+    if (stallTimer) clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => {
+      attempt.abort(new Error("The model source stopped sending data"));
+    }, stallTimeoutMs);
+    stallTimer.unref?.();
+  };
+  try {
+    armStallTimer();
     while (true) {
-      const next = await reader.read();
+      let next: ReadableStreamReadResult<Uint8Array>;
+      try {
+        next = await reader.read();
+      } catch (error) {
+        if (signal.aborted) throw new DownloadCancelledError();
+        throw classifyNetworkError(error);
+      }
       if (next.done) return;
+      armStallTimer();
       if (next.value) yield next.value;
     }
   } finally {
+    if (headersTimer) clearTimeout(headersTimer);
+    if (stallTimer) clearTimeout(stallTimer);
     reader.releaseLock();
+    signal.removeEventListener("abort", onExternalAbort);
   }
 }
 
-function downloadVerifiedAsset(url: URL, signal: AbortSignal): AsyncIterable<Uint8Array> {
-  return downloadStream(url, signal);
+const NETWORK_FAILURE_MARKERS = [
+  "enotfound", "econnrefused", "etimedout", "etimed_out", "econnreset", "eai_again",
+  "econnaborted", "epipe", "ehostunreach", "enetunreach", "und_err", "fetch failed",
+  "timed out", "timeout", "stopped sending data", "socket", "network",
+] as const;
+
+function classifyNetworkError(error: unknown): Error {
+  const cause = (error as { cause?: { code?: unknown; message?: unknown } })?.cause;
+  const text = [
+    error instanceof Error ? error.message : String(error),
+    typeof cause?.code === "string" ? cause.code : "",
+    typeof cause?.message === "string" ? cause.message : "",
+  ].join(" ").toLowerCase();
+  if (NETWORK_FAILURE_MARKERS.some((marker) => text.includes(marker))) {
+    return new ModelSourceUnreachableError("The model download source could not be reached.");
+  }
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 async function isInstalled(root: string, manifest: ModelArtifactManifest): Promise<boolean> {
@@ -354,3 +477,6 @@ function copyStatus(status: ModelArtifactInstallationStatus): ModelArtifactInsta
 
 class AssetChecksumError extends Error {}
 class DownloadCancelledError extends Error {}
+
+/** Every allowed download host was unreachable; the user needs a network fix or a proxy, not another blind retry. */
+export class ModelSourceUnreachableError extends Error {}

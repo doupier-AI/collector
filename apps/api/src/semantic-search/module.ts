@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
+  normalizeSemanticDownloadProxyUrl,
   validateResearchSearchInput,
   validateSemanticSearchCommand,
   type ResearchSearchInput,
@@ -92,6 +93,7 @@ export function createSemanticSearchModule(options: CreateSemanticSearchModuleOp
       configuredProfile: profile,
       runtimeState,
       installations,
+      downloadProxy: downloadProxyView(options.searchStore.getDownloadProxyUrl()),
       ...((indexTask?.state === "queued" || indexTask?.state === "running") ? { indexProgress: { completedUnits: indexTask.completedUnits, totalUnits: indexTask.totalUnits } } : {}),
       ...(selected?.state === "installed" && indexTask?.state === "failed" && indexTask.errorCode ? { errorCode: indexTask.errorCode } : {}),
     };
@@ -142,6 +144,11 @@ export function createSemanticSearchModule(options: CreateSemanticSearchModuleOp
         const units = projectCurrentSearchUnits(options.reader);
         ensureKeywordGeneration(profile, units);
         if ((await inspectAndPersist(profile)).state === "installed") scheduleSemanticBuild(profile, units, true);
+        break;
+      }
+      case "set-download-proxy": {
+        const proxyUrl = normalizeSemanticDownloadProxyUrl((command as { proxyUrl?: string }).proxyUrl);
+        options.searchStore.setDownloadProxyUrl(proxyUrl);
         break;
       }
     }
@@ -641,6 +648,7 @@ function degradationReasonFor(status: ModelArtifactInstallationStatus): "model-n
 
 function installationView(status: ModelArtifactInstallationStatus): SemanticSearchProfileInstallationView {
   const isCorrupt = status.state === "failed" && /checksum|corrupt|verified size/i.test(status.message ?? "");
+  const isUnreachable = status.state === "failed" && /could not reach any model download source/i.test(status.message ?? "");
   const state = isCorrupt ? "corrupt" : status.state === "cancelled" ? "failed" : status.state === "unavailable" ? "failed" : status.state;
   return {
     profile: status.profile,
@@ -649,8 +657,22 @@ function installationView(status: ModelArtifactInstallationStatus): SemanticSear
     totalBytes: status.totalBytes,
     canCancel: status.state === "downloading",
     canRetry: status.state === "failed" || status.state === "cancelled" || status.state === "unavailable",
-    ...(status.message ? { errorCode: safeErrorCode(status.message) } : {}),
+    ...(status.message ? { errorCode: isUnreachable ? "model-source-unreachable" : safeErrorCode(status.message) } : {}),
   };
+}
+
+/** 代理预览隐藏用户名密码，只回显出口形态；完整地址留在本机设置内。 */
+function downloadProxyView(proxyUrl: string | undefined): { configured: boolean; preview?: string } {
+  if (!proxyUrl) return { configured: false };
+  try {
+    const parsed = new URL(proxyUrl);
+    const preview = parsed.username || parsed.password
+      ? `${parsed.protocol}//***@${parsed.host}/`
+      : `${parsed.protocol}//${parsed.host}/`;
+    return { configured: true, preview };
+  } catch {
+    return { configured: true };
+  }
 }
 
 function downloadTaskState(status: ModelArtifactInstallationStatus): "running" | "completed" | "cancelled" | "failed" | undefined {

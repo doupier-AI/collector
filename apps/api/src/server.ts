@@ -104,10 +104,13 @@ semanticDatabase.exec("PRAGMA foreign_keys = ON");
 semanticDatabase.exec("PRAGMA journal_mode = WAL");
 semanticDatabase.exec("PRAGMA busy_timeout = 5000");
 const semanticModelRoot = join(paths.root, "semantic-models");
+const semanticSearchStore = new SemanticSearchSqliteStore(semanticDatabase);
 const semanticSearch = createSemanticSearchModule({
   reader: store,
-  searchStore: new SemanticSearchSqliteStore(semanticDatabase),
-  installer: createSemanticModelArtifactInstaller(semanticModelRoot),
+  searchStore: semanticSearchStore,
+  // ADR-0040: model downloads (and only model downloads) may leave through an
+  // explicitly configured proxy; the setting is read per attempt from SQLite.
+  installer: createSemanticModelArtifactInstaller(semanticModelRoot, { proxyUrl: () => semanticSearchStore.getDownloadProxyUrl() }),
   inference: new IsolatedSemanticInferenceAdapter(),
   modelRoot: semanticModelRoot,
 });

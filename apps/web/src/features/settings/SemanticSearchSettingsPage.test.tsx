@@ -155,3 +155,35 @@ describe("SemanticSearchSettingsPage #67 修复/切档/重建入口", () => {
     await waitFor(() => expect(executeSemanticSearchCommand).toHaveBeenCalledWith({ type: "rebuild-index" }));
   });
 });
+
+describe("SemanticSearchSettingsPage 下载代理与源不可达提示", () => {
+  it("保存代理发出 set-download-proxy 命令并回显脱敏出口", async () => {
+    const user = userEvent.setup();
+    const base = status();
+    const withProxy = { ...base, downloadProxy: { configured: true, preview: "http://***@127.0.0.1:7890/" } };
+    const getSemanticSearchStatus = vi.fn(async () => base);
+    const executeSemanticSearchCommand = vi.fn(async () => withProxy);
+    renderPage({ getSemanticSearchStatus, executeSemanticSearchCommand });
+
+    await screen.findByRole("heading", { name: "语义搜索" });
+    expect(screen.getByText(/未配置，直接连接模型源/)).toBeInTheDocument();
+    await user.type(screen.getByLabelText("下载代理地址"), "http://user:secret@127.0.0.1:7890");
+    await user.click(screen.getByRole("button", { name: "保存代理" }));
+    await waitFor(() => expect(executeSemanticSearchCommand).toHaveBeenCalledWith({ type: "set-download-proxy", proxyUrl: "http://user:secret@127.0.0.1:7890" }));
+    expect(await screen.findByText(/已配置（http:\/\/\*\*\*@127.0.0.1:7890\/）/)).toBeInTheDocument();
+  });
+
+  it("源不可达失败显示明确的网络原因与代理指引", async () => {
+    const failed = status({
+      installations: [
+        { profile: "standard", state: "failed", downloadedBytes: 0, totalBytes: 1_179_663_362, canCancel: false, canRetry: true, errorCode: "model-source-unreachable" },
+        { profile: "lightweight", state: "not-installed", downloadedBytes: 0, totalBytes: 94_851_877, canCancel: false, canRetry: false },
+      ],
+    });
+    renderPage({ getSemanticSearchStatus: vi.fn(async () => failed), executeSemanticSearchCommand: vi.fn(async () => failed) });
+
+    const standard = await screen.findByRole("region", { name: "标准档" });
+    expect(within(standard).getByText(/无法连接模型下载源/)).toBeInTheDocument();
+    expect(within(standard).getByText(/下载代理/)).toBeInTheDocument();
+  });
+});

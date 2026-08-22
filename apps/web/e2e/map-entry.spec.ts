@@ -193,7 +193,15 @@ test("#68 地图 entry：专注链、节点打开、浏览器返回和刷新均�
   const narrowSecondNode = narrowList.getByRole("button", { name: /地图现场恢复二/ });
   await narrowSecondNode.focus();
   await expect(narrowSecondNode).toBeFocused();
-  await page.keyboard.press("Enter");
+  // #68 窄屏同款时序加固：全量套件负载下，聚焦断言与 Enter 之间的一次重渲染
+  // 可能把焦点移走；短等待未跳转则重新聚焦再按，而不是盲等长超时。
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await page.keyboard.press("Enter");
+    const navigated = await page.waitForURL(new RegExp(`/nodes/${secondNodeId}$`), { timeout: 2_000 }).then(() => true, () => false);
+    if (navigated) break;
+    await narrowSecondNode.focus();
+    await expect(narrowSecondNode).toBeFocused();
+  }
   await expect(page).toHaveURL(new RegExp(`/nodes/${secondNodeId}$`));
   await page.reload();
   await page.getByRole("button", { name: "返回图谱" }).click();

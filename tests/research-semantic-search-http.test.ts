@@ -115,3 +115,24 @@ test("runtimes without a semantic search module report 503 instead of hanging", 
   assert.equal(response.status, 503);
   assert.equal(((await response.json()) as { error: { code: string } }).error.code, "semantic_search_unavailable");
 });
+
+test("download proxy commands pass validation and reach the module", async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.close());
+
+  const accepted = await fetch(`${harness.base}/v1/semantic-search/commands`, {
+    method: "POST",
+    headers: headers(harness.token),
+    body: JSON.stringify({ type: "set-download-proxy", proxyUrl: "http://127.0.0.1:7890" }),
+  });
+  assert.equal(accepted.status, 200);
+  assert.deepEqual(harness.calls.at(-1), { type: "set-download-proxy", proxyUrl: "http://127.0.0.1:7890" });
+
+  const rejected = await fetch(`${harness.base}/v1/semantic-search/commands`, {
+    method: "POST",
+    headers: headers(harness.token),
+    body: JSON.stringify({ type: "set-download-proxy", proxyUrl: "ftp://127.0.0.1:21" }),
+  });
+  assert.equal(rejected.status, 400);
+  assert.equal(((await rejected.json()) as { error: { code: string } }).error.code, "invalid_request");
+});

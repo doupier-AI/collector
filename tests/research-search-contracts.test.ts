@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  normalizeSemanticDownloadProxyUrl,
   RESEARCH_SEARCH_MAX_LIMIT,
   RESEARCH_SEARCH_MAX_SCOPE_NODE_IDS,
   RESEARCH_SEARCH_QUERY_MAX_CHARACTERS,
@@ -43,4 +44,17 @@ test("semantic search commands keep profile installation explicit and bounded", 
   assert.throws(() => validateSemanticSearchCommand({ type: "select-profile", profile: "unknown" }), /profile/);
   assert.throws(() => validateSemanticSearchCommand({ type: "rebuild-index", profile: "standard" }), /fields/);
   assert.throws(() => validateSemanticSearchCommand({ type: "download-profile" }), /profile/);
+});
+
+test("download proxy commands validate origin URLs and clear explicitly", () => {
+  assert.doesNotThrow(() => validateSemanticSearchCommand({ type: "set-download-proxy", proxyUrl: "http://127.0.0.1:7890" }));
+  assert.doesNotThrow(() => validateSemanticSearchCommand({ type: "set-download-proxy" }));
+  assert.equal(normalizeSemanticDownloadProxyUrl("  http://127.0.0.1:7890  "), "http://127.0.0.1:7890/");
+  assert.equal(normalizeSemanticDownloadProxyUrl(undefined), undefined);
+  assert.equal(normalizeSemanticDownloadProxyUrl("   "), undefined);
+  assert.throws(() => validateSemanticSearchCommand({ type: "set-download-proxy", proxyUrl: "ftp://127.0.0.1:21" }), /http or https/);
+  assert.throws(() => validateSemanticSearchCommand({ type: "set-download-proxy", proxyUrl: "http://127.0.0.1:7890/path" }), /origin URL/);
+  assert.throws(() => validateSemanticSearchCommand({ type: "set-download-proxy", proxyUrl: "http://127.0.0.1:7890/?x=1" }), /origin URL/);
+  assert.throws(() => validateSemanticSearchCommand({ type: "set-download-proxy", proxyUrl: "127.0.0.1" }), /absolute URL/);
+  assert.throws(() => validateSemanticSearchCommand({ type: "set-download-proxy", profile: "standard" }), /unexpected fields/);
 });

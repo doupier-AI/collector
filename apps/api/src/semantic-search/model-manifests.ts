@@ -32,7 +32,7 @@ export interface ModelArtifactManifest {
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
 const REVISION_PATTERN = /^[a-f0-9]{40}$/;
 const SAFE_PATH_SEGMENT = /^[A-Za-z0-9._-]+$/;
-const ALLOWED_MODEL_HOSTS = new Set(["huggingface.co", "hf-mirror.com"]);
+const ALLOWED_MODEL_HOSTS = new Set(["huggingface.co", "hf-mirror.com", "modelscope.cn"]);
 
 const lightweightRevision = "75c43b069aac4d136ba6bc1122f995fedcfd2781";
 const lightweightRepository = "Xenova/bge-small-zh-v1.5";
@@ -41,11 +41,41 @@ const standardEmbeddingRepository = "Xenova/bge-m3";
 const standardRerankerRevision = "6f5ff65298512715a1e669753bc754d2bc8f367b";
 const standardRerankerRepository = "onnx-community/bge-reranker-v2-m3-ONNX";
 
+/**
+ * ModelScope mirrors verified byte-identical per file (SHA-256 + size) against
+ * the pinned Hugging Face artefacts (ADR-0040). `pathRevisions` pin files that
+ * were synced in a different commit; `exclude` lists files whose mirror content
+ * differs from the pinned digest and therefore must not carry a mirror URL.
+ */
+interface ModelScopeMirror {
+  revision: string;
+  pathRevisions?: Record<string, string>;
+  exclude?: readonly string[];
+}
+
+const MODEL_SCOPE_MIRRORS: Record<string, ModelScopeMirror> = {
+  "Xenova/bge-small-zh-v1.5": { revision: "08d7186b7de51be7c12444137221ad96825593d6" },
+  "Xenova/bge-m3": { revision: "7e30e09cb67a98e25630f931594609f1807c3568", exclude: ["config.json"] },
+  "onnx-community/bge-reranker-v2-m3-ONNX": {
+    revision: "466cd3139fa42a473af347d04dae7bd6abc1d980",
+    pathRevisions: { "onnx/model_quantized.onnx": "cb859a7bfce86974a7e15899e2f993b4c9aa108c" },
+  },
+};
+
 function modelUrls(repository: string, revision: string, path: string): URL[] {
-  return [
-    new URL(`https://huggingface.co/${repository}/resolve/${revision}/${path}`),
+  // Domestic mirrors first: the official host stays as the final fallback for
+  // networks that can reach it, while blocked networks do not pay its timeout
+  // on every asset. Content safety rests on the pinned digest, not the host.
+  const urls = [
     new URL(`https://hf-mirror.com/${repository}/resolve/${revision}/${path}`),
   ];
+  const mirror = MODEL_SCOPE_MIRRORS[repository];
+  if (mirror && !mirror.exclude?.includes(path)) {
+    const mirrorRevision = mirror.pathRevisions?.[path] ?? mirror.revision;
+    urls.push(new URL(`https://modelscope.cn/models/${repository}/resolve/${mirrorRevision}/${path}`));
+  }
+  urls.push(new URL(`https://huggingface.co/${repository}/resolve/${revision}/${path}`));
+  return urls;
 }
 
 function lightweightAsset(path: string, size: number, sha256: string): ModelArtifactAsset {
@@ -155,7 +185,17 @@ export function validateModelArtifactManifest(manifest: ModelArtifactManifest): 
 
 function validateAssetUrl(url: URL, source: { repository: string; revision: string; path: string }): void {
   if (url.protocol !== "https:" || !ALLOWED_MODEL_HOSTS.has(url.hostname) || url.username || url.password || url.search || url.hash) {
-    throw new Error("Model asset URL must be a fixed HTTPS Hugging Face source");
+    throw new Error("Model asset URL must be a fixed HTTPS model source");
+  }
+  if (url.hostname === "modelscope.cn") {
+    const mirror = MODEL_SCOPE_MIRRORS[source.repository];
+    const mirrorRevision = mirror?.pathRevisions?.[source.path] ?? mirror?.revision;
+    const expected = `/models/${source.repository}/resolve/${mirrorRevision}/${source.path}`;
+    if (!mirror || mirror.exclude?.includes(source.path)) {
+      throw new Error("Model asset has no verified ModelScope mirror for this file");
+    }
+    if (url.pathname !== expected) throw new Error("Model asset URL must match its pinned ModelScope mirror, revision and path");
+    return;
   }
   const expected = `/${source.repository}/resolve/${source.revision}/${source.path}`;
   if (url.pathname !== expected) throw new Error("Model asset URL must match its pinned repository, revision and path");

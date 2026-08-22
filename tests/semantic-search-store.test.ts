@@ -56,7 +56,7 @@ test("migration v39 creates local semantic tables and replays both schema and mi
   await replay.init();
   replay.close();
   const checked = new DatabaseSync(databasePath, { readOnly: true });
-  assert.equal((checked.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 39);
+  assert.equal((checked.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 40);
   checked.close();
 
   const factRollback = new DatabaseSync(databasePath);
@@ -69,7 +69,7 @@ test("migration v39 creates local semantic tables and replays both schema and mi
   const taskColumns = (factChecked.prepare("PRAGMA table_info(semantic_search_tasks)").all() as Array<{ name: string }>).map((column) => column.name);
   assert.equal(taskColumns.filter((name) => name === "source_key").length, 1);
   assert.equal(taskColumns.filter((name) => name === "embedding_key").length, 1);
-  assert.equal((factChecked.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 39);
+  assert.equal((factChecked.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 40);
   factChecked.close();
 });
 
@@ -241,4 +241,20 @@ test("keyword candidates rank by FTS relevance instead of insertion order", asyn
   const matches = store.searchActiveKeyword("lightweight", "量子电池", 100);
   assert.equal(matches.length, 2);
   assert.equal(matches[0]?.unitId, "better", "the denser match must rank above the earlier-inserted sparser one");
+});
+
+test("download proxy setting round-trips and clears without touching the configured profile", async (t) => {
+  const { store } = await openSearchStore(t);
+  assert.equal(store.getDownloadProxyUrl(), undefined);
+  store.setConfiguredProfile("lightweight");
+  store.setDownloadProxyUrl("http://127.0.0.1:7890/");
+  assert.equal(store.getDownloadProxyUrl(), "http://127.0.0.1:7890/");
+  assert.equal(store.getConfiguredProfile(), "lightweight");
+  store.setDownloadProxyUrl(undefined);
+  assert.equal(store.getDownloadProxyUrl(), undefined);
+  assert.equal(store.getConfiguredProfile(), "lightweight");
+  store.setDownloadProxyUrl("  ");
+  assert.equal(store.getDownloadProxyUrl(), undefined);
+  store.setDownloadProxyUrl("http://user:secret@127.0.0.1:7890/");
+  assert.equal(store.getDownloadProxyUrl(), "http://user:secret@127.0.0.1:7890/");
 });

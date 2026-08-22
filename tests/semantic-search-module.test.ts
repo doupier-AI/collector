@@ -812,3 +812,26 @@ test("a mismatched query embedding dimension degrades honestly instead of silent
   assert.equal(result.degradationReason, "model-unavailable");
   assert.ok(result.groups.some((group) => group.nodes.length > 0), "keyword results must stay available");
 });
+
+test("download proxy commands persist, mask credentials in status, and unreachable sources get a distinct error code", async (t) => {
+  const store = await openSearchStore(t);
+  const module = createSemanticSearchModule({ reader: source(), searchStore: store, installer: new FakeInstaller(), inference: new FakeInference(), modelRoot: "C:/semantic-models" });
+
+  let status = await module.getStatus();
+  assert.deepEqual(status.downloadProxy, { configured: false });
+
+  status = await module.execute({ type: "set-download-proxy", proxyUrl: "http://user:secret@127.0.0.1:7890" });
+  assert.equal(store.getDownloadProxyUrl(), "http://user:secret@127.0.0.1:7890/");
+  assert.deepEqual(status.downloadProxy, { configured: true, preview: "http://***@127.0.0.1:7890/" });
+
+  status = await module.execute({ type: "set-download-proxy" });
+  assert.equal(store.getDownloadProxyUrl(), undefined);
+  assert.deepEqual(status.downloadProxy, { configured: false });
+
+  const unreachable = new FakeInstaller();
+  unreachable.statuses.get("standard")!.state = "failed";
+  unreachable.statuses.get("standard")!.message = "Could not reach any model download source (hf-mirror.com, modelscope.cn, huggingface.co). Check the network, or set a download proxy in semantic search settings, then retry.";
+  const unreachableModule = createSemanticSearchModule({ reader: source(), searchStore: await openSearchStore(t), installer: unreachable, inference: new FakeInference(), modelRoot: "C:/semantic-models" });
+  const unreachableStatus = await unreachableModule.getStatus();
+  assert.equal(unreachableStatus.installations.find((item) => item.profile === "standard")?.errorCode, "model-source-unreachable");
+});

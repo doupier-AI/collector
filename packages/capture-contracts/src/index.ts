@@ -2736,6 +2736,8 @@ export interface SemanticSearchStatusView {
   installations: SemanticSearchProfileInstallationView[];
   indexProgress?: { completedUnits: number; totalUnits: number };
   errorCode?: string;
+  /** 已配置下载代理时为 true；preview 隐藏凭据，只显示出口形态。 */
+  downloadProxy?: { configured: boolean; preview?: string };
 }
 
 export type SemanticSearchCommand =
@@ -2744,7 +2746,31 @@ export type SemanticSearchCommand =
   | { type: "cancel-download"; profile: SemanticSearchProfile }
   | { type: "retry-download"; profile: SemanticSearchProfile }
   | { type: "delete-profile"; profile: SemanticSearchProfile }
-  | { type: "rebuild-index" };
+  | { type: "rebuild-index" }
+  /** 仅作用于模型下载的网络出口（ADR-0040）；清除时不带 proxyUrl 字段。 */
+  | { type: "set-download-proxy"; proxyUrl?: string };
+
+/** 下载代理的取值上限；仅允许 http/https 且不带路径与查询。 */
+export const SEMANTIC_DOWNLOAD_PROXY_MAX_CHARACTERS = 500;
+
+/** 校验并归一化下载代理；返回 undefined 表示清除。 */
+export function normalizeSemanticDownloadProxyUrl(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw new Error("Download proxy must be a string or absent");
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.length > SEMANTIC_DOWNLOAD_PROXY_MAX_CHARACTERS) throw new Error("Download proxy is too long");
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error("Download proxy must be a valid absolute URL");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("Download proxy must use http or https");
+  if (!parsed.hostname) throw new Error("Download proxy must include a host");
+  if (parsed.pathname !== "/" || parsed.search || parsed.hash) throw new Error("Download proxy must be an origin URL without a path or query");
+  return parsed.toString();
+}
 
 const SEMANTIC_SEARCH_PROFILE_COMMANDS = new Set<SemanticSearchCommand["type"]>([
   "select-profile",
@@ -2762,6 +2788,11 @@ export function validateSemanticSearchCommand(value: unknown): asserts value is 
   const keys = Object.keys(value);
   if (command.type === "rebuild-index") {
     if (keys.length !== 1 || keys[0] !== "type") throw new Error("rebuild-index command has unexpected fields");
+    return;
+  }
+  if (command.type === "set-download-proxy") {
+    if (keys.some((key) => key !== "type" && key !== "proxyUrl")) throw new Error("set-download-proxy command has unexpected fields");
+    normalizeSemanticDownloadProxyUrl((value as { proxyUrl?: unknown }).proxyUrl);
     return;
   }
   if (!SEMANTIC_SEARCH_PROFILE_COMMANDS.has(command.type as SemanticSearchCommand["type"])) {

@@ -129,6 +129,11 @@ function ProfileCard({
       <p className="semantic-search-settings__installation" aria-live="polite">
         本地模型：{installationStateText(installation.state)}
       </p>
+      {installation.errorCode === "model-source-unreachable" ? (
+        <p className="settings-status settings-status--error" role="alert">
+          无法连接模型下载源（hf-mirror.com / modelscope.cn / huggingface.co）。请检查网络，或在下方“下载代理”中配置代理后重试。
+        </p>
+      ) : null}
       {installation.state === "downloading" ? (
         <div className="semantic-search-settings__progress-wrap">
           <progress value={progress} max={100} aria-label={`${definition.name}下载进度`}>
@@ -198,6 +203,7 @@ export function SemanticSearchSettingsPage() {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [commandError, setCommandError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [proxyDraft, setProxyDraft] = useState("");
 
   const load = useCallback(async () => {
     if (!api.getSemanticSearchStatus) {
@@ -295,6 +301,36 @@ export function SemanticSearchSettingsPage() {
           />
         ))}
       </div>
+
+      <section className="semantic-search-settings__proxy" aria-label="下载代理">
+        <h2>下载代理</h2>
+        <p>仅用于下载本地模型文件，不影响聊天、搜索等其他联网功能。网络无法直连模型源时，可在这里填写本机代理地址。</p>
+        <p aria-live="polite">
+          当前状态：{state.status.downloadProxy?.configured
+            ? `已配置（${state.status.downloadProxy.preview ?? "已隐藏"}）`
+            : "未配置，直接连接模型源"}
+        </p>
+        <form
+          className="semantic-search-settings__proxy-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const trimmed = proxyDraft.trim();
+            void execute({ type: "set-download-proxy", ...(trimmed ? { proxyUrl: trimmed } : {}) });
+          }}
+        >
+          <label className="sr-only" htmlFor="semantic-download-proxy-input">下载代理地址</label>
+          <input
+            id="semantic-download-proxy-input"
+            type="text"
+            className="input"
+            value={proxyDraft}
+            placeholder="例如 http://127.0.0.1:7890"
+            onChange={(event) => setProxyDraft(event.target.value)}
+          />
+          <button type="submit" className="button button--secondary" disabled={busy}>保存代理</button>
+        </form>
+        <p className="semantic-search-settings__proxy-hint">留空并点“保存代理”即可清除已配置的代理。</p>
+      </section>
 
       <section className="semantic-search-settings__rebuild" aria-label="索引维护">
         <h2>索引维护</h2>

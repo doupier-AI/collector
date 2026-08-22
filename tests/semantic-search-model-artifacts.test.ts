@@ -69,7 +69,7 @@ test("the public manifests pin both profiles and preserve standard component dir
     "Xenova/bge-small-zh-v1.5/tokenizer.json",
     "Xenova/bge-small-zh-v1.5/onnx/model.onnx",
   ]);
-  assert.deepEqual(lightweight.assets[0].urls.map((url) => url.hostname), ["huggingface.co", "hf-mirror.com"]);
+  assert.deepEqual(lightweight.assets[0].urls.map((url) => url.hostname), ["hf-mirror.com", "modelscope.cn", "huggingface.co"]);
   const standard = getSemanticModelManifest("standard");
   assert.ok(standard);
   assert.equal(standard.profile, "standard");
@@ -77,7 +77,7 @@ test("the public manifests pin both profiles and preserve standard component dir
   assert.equal(standard.assets.reduce((total, item) => total + item.size, 0), 1_179_663_362);
   assert.equal(standard.assets.filter((item) => item.path.startsWith("Xenova/bge-m3/")).length, 7);
   assert.equal(standard.assets.filter((item) => item.path.startsWith("onnx-community/bge-reranker-v2-m3-ONNX/")).length, 6);
-  assert.deepEqual(standard.assets[0].urls.map((url) => url.hostname), ["huggingface.co", "hf-mirror.com"]);
+  assert.deepEqual(standard.assets[0].urls.map((url) => url.hostname), ["hf-mirror.com", "huggingface.co"]);
 });
 
 test("creating or inspecting the production installer does not download a model", async (t) => {
@@ -260,4 +260,102 @@ test("manifest validation rejects paths that could escape the model root", () =>
   unsafe.installDirectory = "safe-directory";
   unsafe.assets[0] = { ...unsafe.assets[0], path: "../../outside" };
   assert.throws(() => validateModelArtifactManifest(unsafe), /relative path|escape/i);
+});
+
+test("production manifests keep HF-only sources where the ModelScope mirror content differs", () => {
+  const standard = getSemanticModelManifest("standard");
+  assert.ok(standard);
+  const bgeM3Config = standard.assets.find((item) => item.path === "Xenova/bge-m3/config.json");
+  assert.ok(bgeM3Config);
+  assert.deepEqual(bgeM3Config.urls.map((url) => url.hostname), ["hf-mirror.com", "huggingface.co"]);
+
+  const rerankerOnnx = standard.assets.find((item) => item.path === "onnx-community/bge-reranker-v2-m3-ONNX/onnx/model_quantized.onnx");
+  assert.ok(rerankerOnnx);
+  const mirror = rerankerOnnx.urls.find((url) => url.hostname === "modelscope.cn");
+  assert.ok(mirror);
+  assert.equal(mirror.pathname, "/models/onnx-community/bge-reranker-v2-m3-ONNX/resolve/cb859a7bfce86974a7e15899e2f993b4c9aa108c/onnx/model_quantized.onnx");
+});
+
+test("an unreachable first source fails over inside the connect budget and later assets reuse the working host", async (t) => {
+  const base = manifest();
+  const contents = new Map<string, Uint8Array>([
+    ["config.json", textEncoder.encode("{\"model\":\"test\"}")],
+    ["onnx/model.onnx", textEncoder.encode("verified model bytes")],
+  ]);
+  const revision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const hanging = (path: string) => new URL(`https://hf-mirror.com/test/repository/resolve/${revision}/${path}`);
+  const working = (path: string) => new URL(`https://huggingface.co/test/repository/resolve/${revision}/${path}`);
+  const manifests: ModelArtifactManifest[] = [{
+    ...base,
+    assets: base.assets.map((item) => ({ ...item, urls: [hanging(item.path), working(item.path)] })),
+  }];
+  const calls: string[] = [];
+  const fetchImpl = (url: URL, init: RequestInit & { dispatcher?: unknown }) => new Promise<Response>((resolve, reject) => {
+    calls.push(url.hostname);
+    if (url.hostname !== "hf-mirror.com") {
+      const bytes = contents.get(assetPathFor(url));
+      resolve(new Response(new Uint8Array(bytes ?? new Uint8Array())));
+      return;
+    }
+    init.signal?.addEventListener("abort", () => reject(new Error("This operation was aborted")));
+  });
+  const installer = createModelArtifactInstaller({
+    modelRoot: await temporaryModelRoot(t),
+    manifests,
+    fetchImpl,
+    sourceTimeouts: { headersMs: 120, stallMs: 800 },
+  });
+
+  const startedAt = Date.now();
+  const status = await installer.install("lightweight");
+  assert.equal(status.state, "installed");
+  assert.ok(Date.now() - startedAt < 5_000, `fallback took too long: ${Date.now() - startedAt}ms`);
+  assert.deepEqual(calls, ["hf-mirror.com", "huggingface.co", "huggingface.co"]);
+});
+
+test("when every allowed source is unreachable the failure names the network cause", async (t) => {
+  const fetchImpl = () => Promise.reject(new TypeError("fetch failed", { cause: { code: "ECONNREFUSED" } } satisfies ErrorOptions));
+  const installer = createModelArtifactInstaller({
+    modelRoot: await temporaryModelRoot(t),
+    manifests: [manifest()],
+    fetchImpl,
+    sourceTimeouts: { headersMs: 100, stallMs: 400 },
+  });
+
+  const status = await installer.install("lightweight");
+  assert.equal(status.state, "failed");
+  assert.match(status.message ?? "", /Could not reach any model download source/);
+  assert.match(status.message ?? "", /set a download proxy/);
+});
+
+test("a configured proxy is applied to model downloads only and cleared when the setting empties", async (t) => {
+  const { ProxyAgent } = await import("undici");
+  const base = manifest();
+  const contents = new Map<string, Uint8Array>([
+    ["config.json", textEncoder.encode("{\"model\":\"test\"}")],
+    ["onnx/model.onnx", textEncoder.encode("verified model bytes")],
+  ]);
+  const seen: Array<{ host: string; dispatcher: unknown }> = [];
+  const fetchImpl = async (url: URL, init: RequestInit & { dispatcher?: unknown }): Promise<Response> => {
+    seen.push({ host: url.hostname, dispatcher: init.dispatcher });
+    const bytes = contents.get(assetPathFor(url)) ?? new Uint8Array();
+    return new Response(new Uint8Array(bytes));
+  };
+  let proxyUrl = "http://127.0.0.1:7890";
+  const installer = createModelArtifactInstaller({
+    modelRoot: await temporaryModelRoot(t),
+    manifests: [base],
+    fetchImpl,
+    proxyUrl: () => proxyUrl,
+  });
+
+  assert.equal((await installer.install("lightweight")).state, "installed");
+  assert.ok(seen.length >= 2);
+  assert.ok(seen.every((entry) => entry.dispatcher instanceof ProxyAgent), "every model fetch must carry the proxy dispatcher");
+
+  proxyUrl = "not a url at all";
+  seen.length = 0;
+  await installer.delete("lightweight");
+  assert.equal((await installer.install("lightweight")).state, "installed");
+  assert.ok(seen.length >= 2 && seen.every((entry) => entry.dispatcher === undefined), "an unusable proxy setting must fall back to direct fetch");
 });

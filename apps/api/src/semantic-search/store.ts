@@ -85,6 +85,21 @@ export class SemanticSearchSqliteStore {
     this.database.prepare("INSERT INTO semantic_search_settings (id, configured_profile) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET configured_profile = excluded.configured_profile").run(profile);
   }
 
+  getDownloadProxyUrl(): string | undefined {
+    const row = this.database.prepare("SELECT download_proxy_url FROM semantic_search_settings WHERE id = 1").get() as { download_proxy_url: string | null } | undefined;
+    const value = row?.download_proxy_url ?? undefined;
+    return value && value.trim() ? value : undefined;
+  }
+
+  setDownloadProxyUrl(proxyUrl: string | undefined): void {
+    const normalized = proxyUrl && proxyUrl.trim() ? proxyUrl.trim() : null;
+    if (this.database.prepare("SELECT id FROM semantic_search_settings WHERE id = 1").get() === undefined) {
+      this.database.prepare("INSERT INTO semantic_search_settings (id, configured_profile, download_proxy_url) VALUES (1, 'standard', ?)").run(normalized);
+      return;
+    }
+    this.database.prepare("UPDATE semantic_search_settings SET download_proxy_url = ? WHERE id = 1").run(normalized);
+  }
+
   saveInstallation(input: SemanticSearchInstallationInput): void {
     this.database.prepare(`
       INSERT INTO semantic_model_installations (profile, manifest_json, state, downloaded_bytes, total_bytes, error_code, updated_at)
