@@ -9,7 +9,18 @@ import {
   type ResearchPermanentEdgeKind,
 } from "@collector/capture-contracts";
 import { stableNodePath } from "../../app/paths";
-import { createStableOrganicGraphLayout } from "./organicGraphLayout";
+import { createStableOrganicGraphLayout, type GraphPoint } from "./organicGraphLayout";
+import {
+  ORCHESTRATION_DURATION_MS,
+  applyDragDeltaToAnchors,
+  createNeighborPhysicsState,
+  interpolatePoints,
+  KEYBOARD_NUDGE_STEP,
+  orchestrationRingTargets,
+  settleNeighborPhysics,
+  stepNeighborPhysics,
+  type NeighborPhysicsState,
+} from "./mapInteractions";
 import { mapSceneLayout, serializeMapScene, type MapSceneV2, type MapSearchScene } from "./map-scene";
 import { DEFAULT_RESEARCH_MAP_FILTER_STATE, isDefaultResearchMapFilterState, type ResearchMapFilterState } from "./research-map-filters";
 
@@ -25,6 +36,19 @@ interface DragState {
   clientX: number;
   clientY: number;
   viewBox: ViewBoxState;
+}
+
+/** 节点拖动/键盘移动的进行时状态（ADR-0041 邻域物理交互）。 */
+interface NodeDragState {
+  pointerId: number;
+  nodeId: string;
+  grabOffset: GraphPoint;
+  lastSvg: GraphPoint;
+  physics: NeighborPhysicsState;
+  moved: boolean;
+  cancelled: boolean;
+  settling: boolean;
+  raf: number;
 }
 
 const MIN_VIEW_WIDTH = 320;
@@ -153,6 +177,8 @@ interface GlobalResearchMapProps {
 export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initialScene, onSceneChange, onOpenNode, nodeHref = stableNodePath, relationshipKinds = observation.appliedRelationshipKinds, onRelationshipKindToggle, filters = DEFAULT_RESEARCH_MAP_FILTER_STATE, preserveExistingLayout, revealNodeId, revealRequestId, onRevealHandled, search }: GlobalResearchMapProps) {
   const filtering = preserveExistingLayout ?? !isDefaultResearchMapFilterState(filters);
   const layoutRef = useRef<ReturnType<typeof createStableOrganicGraphLayout> | undefined>(undefined);
+  /** 用户拖动/键盘移动确认后的位置覆盖，随 Map Scene 持久化。 */
+  const [positionOverrides, setPositionOverrides] = useState<Map<string, GraphPoint>>(() => new Map());
   if (!layoutRef.current && initialScene) {
     const restored = mapSceneLayout(initialScene);
     layoutRef.current = {
@@ -172,11 +198,28 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
         width: Math.max(previous.world.width, layout.world.width),
         height: Math.max(previous.world.height, layout.world.height),
       },
-      positions: new Map([...previous.positions, ...layout.positions]),
+      positions: new Map([...previous.positions, ...layout.positions, ...positionOverrides]),
       edgeKeys: new Map([...previous.edgeKeys, ...layout.edgeKeys]),
-    } : layout;
-  }, [filtering, layout]);
-  const positions = layout.positions;
+    } : {
+      ...layout,
+      // 用户拖动/键盘移动过的位置在后续重算中保持（ADR-0041 持久坐标只对非交互路径稳定）。
+      positions: new Map([...layout.positions, ...positionOverrides]),
+    };
+  }, [filtering, layout, positionOverrides]);
+  // 持久层 = 布局 + 用户交互提交的覆盖；序列化与物理基准都基于它，编排预览不进持久层。
+  const persistPositions = useMemo(() => {
+    const merged = new Map(layout.positions);
+    for (const [id, point] of positionOverrides) merged.set(id, point);
+    return merged;
+  }, [layout.positions, positionOverrides]);
+  const [interactivePositions, setInteractivePositions] = useState<Map<string, GraphPoint> | null>(null);
+  const [orchestrationPositions, setOrchestrationPositions] = useState<Map<string, GraphPoint> | null>(null);
+  const positions = useMemo(() => {
+    const merged = new Map(persistPositions);
+    if (interactivePositions) for (const [id, point] of interactivePositions) merged.set(id, point);
+    if (orchestrationPositions) for (const [id, point] of orchestrationPositions) merged.set(id, point);
+    return merged;
+  }, [interactivePositions, orchestrationPositions, persistPositions]);
   const world = layout.world;
   const [viewBox, setViewBox] = useState<ViewBoxState>(() => initialScene?.viewBox ?? ({ x: 0, y: 0, width: world.width, height: world.height }));
   const adjacency = useMemo(() => adjacencyFor(observation), [observation]);
@@ -205,8 +248,14 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
   const focusSummary = focusedNodeId ? observation.nodes.find((summary) => summary.node.id === focusedNodeId) : undefined;
 
   useEffect(() => {
-    onSceneChange?.(serializeMapScene({ filters, relationshipKinds, ...(search ? { search } : {}), viewBox, layout }));
-  }, [filters, layout, onSceneChange, relationshipKinds, search, viewBox]);
+    onSceneChange?.(serializeMapScene({
+      filters,
+      relationshipKinds,
+      ...(search ? { search } : {}),
+      viewBox,
+      layout: { world: layout.world, edgeKeys: layout.edgeKeys, positions: persistPositions },
+    }));
+  }, [filters, layout.edgeKeys, layout.world, onSceneChange, persistPositions, relationshipKinds, search, viewBox]);
 
   useEffect(() => {
     if (resolvedRovingNodeId !== rovingNodeId) setRovingNodeId(resolvedRovingNodeId);
@@ -273,6 +322,135 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
     return () => cancelAnimationFrame(frame);
   }, [onRevealHandled, positions, revealNodeId, revealRequestId]);
 
+  // ADR-0041 临时编排预览：专注某节点时其直接关系节点聚拢成环，退出时复原；
+  // 预览位只存在于渲染层，不写入 Map Scene 持久坐标。
+  const orchestrationRafRef = useRef<number | undefined>(undefined);
+  const orchestrationLatestRef = useRef<Map<string, GraphPoint> | null>(null);
+  useEffect(() => {
+    if (orchestrationRafRef.current !== undefined) {
+      cancelAnimationFrame(orchestrationRafRef.current);
+      orchestrationRafRef.current = undefined;
+    }
+    if (nodeDragRef.current) return;
+    const reduced = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const neighborIds = focusedNodeId ? [...(adjacency.get(focusedNodeId) ?? [])] : [];
+    if (!focusedNodeId || !neighborIds.length) {
+      const current = orchestrationLatestRef.current;
+      if (!current) return;
+      if (reduced) {
+        orchestrationLatestRef.current = null;
+        setOrchestrationPositions(null);
+        return;
+      }
+      const from = new Map(current);
+      const back = new Map([...from.keys()].map((id) => [id, persistPositions.get(id) ?? from.get(id)!]));
+      const startAt = performance.now();
+      const tick = (now: number) => {
+        const progress = Math.min(1, (now - startAt) / ORCHESTRATION_DURATION_MS);
+        if (progress >= 1) {
+          orchestrationRafRef.current = undefined;
+          orchestrationLatestRef.current = null;
+          setOrchestrationPositions(null);
+          return;
+        }
+        const next = interpolatePoints(from, back, progress);
+        orchestrationLatestRef.current = next;
+        setOrchestrationPositions(next);
+        orchestrationRafRef.current = requestAnimationFrame(tick);
+      };
+      orchestrationRafRef.current = requestAnimationFrame(tick);
+      return;
+    }
+    const base = new Map(persistPositions);
+    // 同一焦点重复触发（观察刷新/关系切换）从当前编排位继续，不闪回。
+    for (const [id, point] of orchestrationLatestRef.current ?? []) base.set(id, point);
+    const targets = orchestrationRingTargets(focusedNodeId, neighborIds, base);
+    if (reduced) {
+      orchestrationLatestRef.current = targets;
+      setOrchestrationPositions(targets);
+      return;
+    }
+    const from = new Map(base);
+    const startAt = performance.now();
+    const tick = (now: number) => {
+      const progress = Math.min(1, (now - startAt) / ORCHESTRATION_DURATION_MS);
+      const next = interpolatePoints(from, targets, progress);
+      orchestrationLatestRef.current = next;
+      setOrchestrationPositions(next);
+      if (progress < 1) orchestrationRafRef.current = requestAnimationFrame(tick);
+      else orchestrationRafRef.current = undefined;
+    };
+    orchestrationRafRef.current = requestAnimationFrame(tick);
+  }, [adjacency, focusedNodeId, persistPositions]);
+
+  const nodeDragRef = useRef<NodeDragState | null>(null);
+  const dragPositionsRef = useRef<Map<string, GraphPoint>>(new Map());
+  const lastDragMovedRef = useRef(false);
+  const commitNodePositions = useCallback((next: ReadonlyMap<string, GraphPoint>) => {
+    const seed = layoutRef.current;
+    if (seed) {
+      const merged = new Map(seed.positions);
+      for (const [id, point] of next) merged.set(id, point);
+      seed.positions = merged;
+    }
+    setPositionOverrides((current) => {
+      const merged = new Map(current);
+      for (const [id, point] of next) merged.set(id, point);
+      return merged;
+    });
+  }, []);
+  const finishNodeDrag = useCallback((cancelled: boolean) => {
+    const drag = nodeDragRef.current;
+    if (!drag) return;
+    cancelAnimationFrame(drag.raf);
+    lastDragMovedRef.current = drag.moved;
+    nodeDragRef.current = null;
+    setInteractivePositions(null);
+    if (!cancelled) commitNodePositions(dragPositionsRef.current);
+  }, [commitNodePositions]);
+  const stepNodeDragFrame = useCallback(() => {
+    const drag = nodeDragRef.current;
+    if (!drag) return;
+    const draggedPoint = dragPositionsRef.current.get(drag.nodeId);
+    if (!draggedPoint) return;
+    if (drag.settling) {
+      // 松手后：有界步数内结算邻域物理，避免阻尼残差导致无限循环。
+      settleNeighborPhysics(drag.physics, draggedPoint);
+      const merged = new Map(drag.physics.positions);
+      merged.set(drag.nodeId, draggedPoint);
+      dragPositionsRef.current = merged;
+      setInteractivePositions(new Map(merged));
+      finishNodeDrag(false);
+      return;
+    }
+    stepNeighborPhysics(drag.physics, draggedPoint);
+    const merged = new Map(drag.physics.positions);
+    merged.set(drag.nodeId, draggedPoint);
+    dragPositionsRef.current = merged;
+    setInteractivePositions(new Map(merged));
+    drag.raf = requestAnimationFrame(stepNodeDragFrame);
+  }, [finishNodeDrag]);
+  const toSvgPoint = useCallback((clientX: number, clientY: number): GraphPoint | undefined => {
+    const bounds = svgRef.current?.getBoundingClientRect();
+    if (!bounds) return undefined;
+    const view = viewBoxRef.current;
+    return {
+      x: view.x + ((clientX - bounds.left) / Math.max(1, bounds.width)) * view.width,
+      y: view.y + ((clientY - bounds.top) / Math.max(1, bounds.height)) * view.height,
+    };
+  }, []);
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      const drag = nodeDragRef.current;
+      if (event.key !== "Escape" || !drag) return;
+      event.preventDefault();
+      drag.cancelled = true;
+      finishNodeDrag(true);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [finishNodeDrag]);
+
   const selectNode = useCallback((nodeId: string) => {
     onFocusNode?.(nodeId);
   }, [onFocusNode]);
@@ -309,7 +487,31 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
     setRovingNodeId(next.node.id);
     requestAnimationFrame(() => (refs.get(next.node.id) as HTMLElement | SVGElement | undefined)?.focus());
   };
+  const nudgeNode = (nodeId: string, key: string) => {
+    if (nodeDragRef.current) return;
+    const start = persistPositions.get(nodeId);
+    if (!start) return;
+    const delta = { x: 0, y: 0 };
+    if (key === "ArrowLeft") delta.x = -KEYBOARD_NUDGE_STEP;
+    if (key === "ArrowRight") delta.x = KEYBOARD_NUDGE_STEP;
+    if (key === "ArrowUp") delta.y = -KEYBOARD_NUDGE_STEP;
+    if (key === "ArrowDown") delta.y = KEYBOARD_NUDGE_STEP;
+    const dragged = { x: start.x + delta.x, y: start.y + delta.y };
+    const neighborIds = [...(adjacency.get(nodeId) ?? [])].filter((id) => id !== nodeId);
+    const physics = createNeighborPhysicsState(neighborIds, persistPositions);
+    applyDragDeltaToAnchors(physics, delta);
+    settleNeighborPhysics(physics, dragged);
+    const merged = new Map(physics.positions);
+    merged.set(nodeId, dragged);
+    commitNodePositions(merged);
+  };
   const handleKey = (event: KeyboardEvent, nodeId: string, refs: ReadonlyMap<string, Element>) => {
+    // ADR-0041：Shift+方向键微调节点位置（同样带动邻域物理响应）；普通方向键仍是焦点导航。
+    if (event.shiftKey && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+      event.preventDefault();
+      nudgeNode(nodeId, event.key);
+      return;
+    }
     if (event.key === "ArrowRight" || event.key === "ArrowDown") moveFocus(event, 1, refs);
     if (event.key === "ArrowLeft" || event.key === "ArrowUp") moveFocus(event, -1, refs);
     if (event.key === "Enter") {
@@ -373,10 +575,14 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
   };
 
   const endPan = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (dragRef.current?.pointerId !== event.pointerId) return;
+    // 子元素（节点拖动）的 pointerup 会冒泡到这里；没有进行中的平移时直接忽略。
+    if (!dragRef.current || dragRef.current.pointerId !== event.pointerId) return;
     dragRef.current = null;
     setDragging(false);
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    const target = event.currentTarget;
+    if (typeof target.hasPointerCapture === "function" && target.hasPointerCapture(event.pointerId)) {
+      target.releasePointerCapture(event.pointerId);
+    }
   };
 
   return (
@@ -498,7 +704,82 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
                 onBlur={() => setKeyboardNodeId((nodeId) => nodeId === summary.node.id ? null : nodeId)}
                 onPointerEnter={() => setHoveredNodeId(summary.node.id)}
                 onPointerLeave={() => setHoveredNodeId((nodeId) => nodeId === summary.node.id ? null : nodeId)}
-                onClick={(event) => { event.stopPropagation(); selectCanvasNode(summary.node.id, event); }}
+                onPointerDown={(event) => {
+                  if (event.button !== 0) return;
+                  event.stopPropagation();
+                  const svgPoint = toSvgPoint(event.clientX, event.clientY);
+                  const nodePoint = positions.get(summary.node.id);
+                  if (!svgPoint || !nodePoint) return;
+                  event.currentTarget.setPointerCapture?.(event.pointerId);
+                  const neighborIds = [...(adjacency.get(summary.node.id) ?? [])].filter((id) => id !== summary.node.id);
+                  nodeDragRef.current = {
+                    pointerId: event.pointerId,
+                    nodeId: summary.node.id,
+                    grabOffset: { x: svgPoint.x - nodePoint.x, y: svgPoint.y - nodePoint.y },
+                    lastSvg: svgPoint,
+                    physics: createNeighborPhysicsState(neighborIds, persistPositions),
+                    moved: false,
+                    cancelled: false,
+                    settling: false,
+                    raf: 0,
+                  };
+                  dragPositionsRef.current = new Map([[summary.node.id, { ...nodePoint }]]);
+                  setInteractivePositions(new Map(dragPositionsRef.current));
+                  nodeDragRef.current.raf = requestAnimationFrame(stepNodeDragFrame);
+                }}
+                onPointerMove={(event) => {
+                  const drag = nodeDragRef.current;
+                  if (!drag || drag.pointerId !== event.pointerId || drag.settling) return;
+                  const svgPoint = toSvgPoint(event.clientX, event.clientY);
+                  if (!svgPoint) return;
+                  const delta = { x: svgPoint.x - drag.lastSvg.x, y: svgPoint.y - drag.lastSvg.y };
+                  if (!delta.x && !delta.y) return;
+                  drag.lastSvg = svgPoint;
+                  const dragged = dragPositionsRef.current.get(drag.nodeId);
+                  if (dragged) {
+                    const next = { x: svgPoint.x - drag.grabOffset.x, y: svgPoint.y - drag.grabOffset.y };
+                    drag.moved = drag.moved || Math.hypot(next.x - dragged.x, next.y - dragged.y) > 0.5;
+                    dragPositionsRef.current.set(drag.nodeId, next);
+                  }
+                  applyDragDeltaToAnchors(drag.physics, delta);
+                }}
+                onPointerUp={(event) => {
+                  event.stopPropagation();
+                  const drag = nodeDragRef.current;
+                  if (!drag || drag.pointerId !== event.pointerId) return;
+                  const target = event.currentTarget;
+                  if (typeof target.hasPointerCapture === "function" && target.hasPointerCapture(event.pointerId)) {
+                    target.releasePointerCapture(event.pointerId);
+                  }
+                  if (drag.cancelled) {
+                    finishNodeDrag(true);
+                    return;
+                  }
+                  drag.settling = true;
+                  const reduced = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+                  if (reduced) {
+                    const draggedPoint = dragPositionsRef.current.get(drag.nodeId);
+                    if (draggedPoint) settleNeighborPhysics(drag.physics, draggedPoint);
+                    const merged = new Map(drag.physics.positions);
+                    if (draggedPoint) merged.set(drag.nodeId, draggedPoint);
+                    dragPositionsRef.current = merged;
+                    finishNodeDrag(false);
+                    return;
+                  }
+                  // 非 reduced-motion：主动续跑结算帧，松手后邻域带阻尼稳定到静止再提交。
+                  drag.raf = requestAnimationFrame(stepNodeDragFrame);
+                }}
+                onPointerCancel={() => {
+                  if (nodeDragRef.current) finishNodeDrag(true);
+                }}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (lastDragMovedRef.current) {
+                    lastDragMovedRef.current = false;
+                    return;
+                  }
+                  selectCanvasNode(summary.node.id, event);
+                }}
                 onDoubleClick={() => { cancelPendingFocus(); onOpenNode?.(summary.node.id); }}
                 onKeyDown={(event) => handleKey(event, summary.node.id, canvasNodeRefs.current)}
               >
@@ -513,7 +794,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
             );
           })}
         </svg>
-        <p className="global-map__keyboard-hint">拖动画布平移 · 滚轮缩放 · 单击或 Space 专注 · 双击或 Enter 打开节点</p>
+        <p className="global-map__keyboard-hint">拖动画布平移 · 滚轮缩放 · 按住节点拖动整理（周边联动）· Shift+方向键微调 · 单击或 Space 专注 · 双击或 Enter 打开节点</p>
       </div>
 
       <div className="global-map__list" data-testid="global-map-list">

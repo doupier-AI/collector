@@ -498,3 +498,176 @@ describe("GlobalResearchMap stable organic canvas", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("GlobalResearchMap ADR-0041 交互（编排预览与拖动物理）", () => {
+  function stubReducedMotion() {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("prefers-reduced-motion"),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }));
+  }
+
+  function nodeLayout(canvas: HTMLElement, nodeId: string): { x: number; y: number } {
+    const element = canvas.querySelector(`[data-node-id="${nodeId}"]`);
+    if (!element) throw new Error(`missing node ${nodeId}`);
+    return { x: Number(element.getAttribute("data-layout-x")), y: Number(element.getAttribute("data-layout-y")) };
+  }
+
+  it("专注时直接关系节点聚拢成环，预览位不写入持久现场；退出专注复原", () => {
+    stubReducedMotion();
+    const nodes = [
+      makeGraphObservationNode("a", "节点 A"),
+      makeGraphObservationNode("b", "节点 B"),
+      makeGraphObservationNode("c", "节点 C"),
+    ];
+    const edges = [
+      { edge: { ...makeEdge("parent-child", "a", "b"), kind: "parent-child" as const }, connectivity: "default" as const },
+      { edge: { ...makeEdge("fused-from", "a", "c"), kind: "fused-from" as const }, connectivity: "default" as const },
+    ];
+    const plain = makeGraphObservation({ nodes, edges });
+    const onSceneChange = vi.fn();
+    const rendered = render(
+      <MemoryRouter>
+        <GlobalResearchMap observation={plain} onSceneChange={onSceneChange} />
+      </MemoryRouter>,
+    );
+    const canvas = screen.getByTestId("global-map-canvas");
+    const baseB = nodeLayout(canvas, "b");
+    const baseC = nodeLayout(canvas, "c");
+    const baseA = nodeLayout(canvas, "a");
+
+    rendered.rerender(
+      <MemoryRouter>
+        <GlobalResearchMap observation={{ ...makeGraphObservation({ nodes, edges }), focusNodeId: "a" }} onSceneChange={onSceneChange} />
+      </MemoryRouter>,
+    );
+    const gatheredB = nodeLayout(canvas, "b");
+    const gatheredC = nodeLayout(canvas, "c");
+    const focusPoint = nodeLayout(canvas, "a");
+    expect(Math.hypot(gatheredB.x - focusPoint.x, gatheredB.y - focusPoint.y)).toBeCloseTo(130, 0);
+    expect(Math.hypot(gatheredC.x - focusPoint.x, gatheredC.y - focusPoint.y)).toBeCloseTo(130, 0);
+    const gap = Math.hypot(gatheredB.x - gatheredC.x, gatheredB.y - gatheredC.y);
+    expect(gap).toBeCloseTo(2 * 130 * Math.sin(Math.PI / 2), 0);
+
+    const persisted = onSceneChange.mock.calls.at(-1)![0];
+    const persistedB = [...persisted.layout.positions].find(([id]) => id === "b");
+    expect(persistedB).toEqual(["b", baseB.x, baseB.y]);
+
+    rendered.rerender(
+      <MemoryRouter>
+        <GlobalResearchMap observation={makeGraphObservation({ nodes, edges })} onSceneChange={onSceneChange} />
+      </MemoryRouter>,
+    );
+    expect(nodeLayout(canvas, "b")).toEqual(baseB);
+    expect(nodeLayout(canvas, "c")).toEqual(baseC);
+    expect(nodeLayout(canvas, "a")).toEqual(baseA);
+    vi.unstubAllGlobals();
+  });
+
+  it("拖动节点带动邻域并在松手后持久化，位置随 Map Scene 保存", async () => {
+    stubReducedMotion();
+    const observation = makeGraphObservation({
+      nodes: [makeGraphObservationNode("a", "节点 A"), makeGraphObservationNode("b", "节点 B")],
+      edges: [{ edge: { ...makeEdge("parent-child", "a", "b"), kind: "parent-child" as const }, connectivity: "default" as const }],
+    });
+    const onSceneChange = vi.fn();
+    const onFocusNode = vi.fn();
+    render(
+      <MemoryRouter>
+        <GlobalResearchMap observation={observation} onSceneChange={onSceneChange} onFocusNode={onFocusNode} />
+      </MemoryRouter>,
+    );
+    const canvas = screen.getByTestId("global-map-canvas");
+    const svg = canvas.querySelector("svg")!;
+    vi.spyOn(svg, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, width: 960, height: 540, top: 0, left: 0, right: 960, bottom: 540, toJSON: () => ({}) } as DOMRect);
+    const nodeB = canvasNode(canvas, "节点 B");
+    const before = nodeLayout(canvas, "b");
+    const startX = before.x + 8;
+    const startY = before.y + 4;
+    const pointer = (type: string, x: number, y: number) => nodeB.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y }));
+
+    pointer("pointerdown", startX, startY);
+    pointer("pointermove", startX + 40, startY);
+    pointer("pointerup", startX + 40, startY);
+
+    let after = before;
+    await waitFor(() => {
+      after = nodeLayout(canvas, "b");
+      expect(after.x - before.x).toBeCloseTo(40, 0);
+    });
+    expect(after.y - before.y).toBeCloseTo(0, 0);
+
+    await waitFor(() => {
+      const persisted = onSceneChange.mock.calls.at(-1)![0];
+      const persistedB = [...persisted.layout.positions].find(([id]) => id === "b");
+      expect(persistedB![1]).toBeCloseTo(after.x, 0);
+    });
+
+    fireEvent.click(nodeB);
+    expect(onFocusNode).not.toHaveBeenCalled();
+    fireEvent.click(nodeB);
+    expect(onFocusNode).toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("Esc 取消本次拖动，持久位置保持不变", () => {
+    stubReducedMotion();
+    const observation = makeGraphObservation({
+      nodes: [makeGraphObservationNode("a", "节点 A"), makeGraphObservationNode("b", "节点 B")],
+      edges: [{ edge: { ...makeEdge("parent-child", "a", "b"), kind: "parent-child" as const }, connectivity: "default" as const }],
+    });
+    const onSceneChange = vi.fn();
+    render(
+      <MemoryRouter>
+        <GlobalResearchMap observation={observation} onSceneChange={onSceneChange} />
+      </MemoryRouter>,
+    );
+    const canvas = screen.getByTestId("global-map-canvas");
+    const svg = canvas.querySelector("svg")!;
+    vi.spyOn(svg, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, width: 960, height: 540, top: 0, left: 0, right: 960, bottom: 540, toJSON: () => ({}) } as DOMRect);
+    const nodeB = canvasNode(canvas, "节点 B");
+    const before = nodeLayout(canvas, "b");
+
+    const pointer = (type: string, x: number, y: number) => nodeB.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y }));
+    pointer("pointerdown", before.x + 5, before.y + 5);
+    pointer("pointermove", before.x + 60, before.y + 5);
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(nodeLayout(canvas, "b")).toEqual(before);
+    const persisted = onSceneChange.mock.calls.at(-1)![0];
+    const persistedB = [...persisted.layout.positions].find(([id]) => id === "b");
+    expect(persistedB).toEqual(["b", before.x, before.y]);
+    vi.unstubAllGlobals();
+  });
+
+  it("Shift+方向键微调焦点节点位置并带动邻域，普通方向键仍是焦点导航", () => {
+    stubReducedMotion();
+    const observation = makeGraphObservation({
+      nodes: [makeGraphObservationNode("a", "节点 A"), makeGraphObservationNode("b", "节点 B")],
+      edges: [{ edge: { ...makeEdge("parent-child", "a", "b"), kind: "parent-child" as const }, connectivity: "default" as const }],
+    });
+    const onSceneChange = vi.fn();
+    render(
+      <MemoryRouter>
+        <GlobalResearchMap observation={observation} onSceneChange={onSceneChange} />
+      </MemoryRouter>,
+    );
+    const canvas = screen.getByTestId("global-map-canvas");
+    const nodeB = canvasNode(canvas, "节点 B");
+    const beforeB = nodeLayout(canvas, "b");
+    const beforeA = nodeLayout(canvas, "a");
+
+    fireEvent.keyDown(nodeB, { key: "ArrowRight", shiftKey: true });
+    const afterB = nodeLayout(canvas, "b");
+    const afterA = nodeLayout(canvas, "a");
+    expect(afterB.x - beforeB.x).toBeCloseTo(12, 0);
+    expect(afterA.x - beforeA.x).toBeGreaterThan(2);
+    expect(afterA.x - beforeA.x).toBeLessThanOrEqual(12);
+
+    nodeB.focus();
+    fireEvent.keyDown(nodeB, { key: "ArrowRight" });
+    expect(nodeLayout(canvas, "b")).toEqual(afterB);
+    vi.unstubAllGlobals();
+  });
+});
