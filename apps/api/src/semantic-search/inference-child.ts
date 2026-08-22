@@ -11,18 +11,30 @@ type PairClassifierPipeline = {
 };
 
 process.once("message", async (value: unknown) => {
+  let payload: { ok: true; value: unknown } | { ok: false; errorCode: string };
   try {
     validateSemanticInferenceRequest(value);
     configureLocalModels(value.modelRoot);
     const result = value.operation === "embed" ? await embed(value) : await rerank(value);
-    process.send?.({ ok: true, value: result });
+    payload = { ok: true, value: result };
   } catch (error) {
-    process.send?.({ ok: false, errorCode: stableErrorCode(error) });
-  } finally {
-    process.disconnect?.();
-    setImmediate(() => process.exit(0));
+    payload = { ok: false, errorCode: stableErrorCode(error) };
   }
+  // Exit only after the response write is flushed; a bare send followed by
+  // setImmediate(exit) can drop the IPC message and look like a crash.
+  const exit = () => {
+    process.disconnect?.();
+    process.exit(0);
+  };
+  const fallbackExit = setTimeout(exit, 1_000);
+  fallbackExit.unref();
+  if (process.send) process.send(payload, () => exit());
+  else exit();
 });
+
+// The parent owns this child's lifetime. If it dies or closes the IPC channel
+// mid-inference, exit instead of lingering as a >1GB orphan on the user's machine.
+process.on("disconnect", () => process.exit(1));
 
 function configureLocalModels(modelRoot: string): void {
   env.allowRemoteModels = false;
@@ -57,7 +69,7 @@ async function rerank(request: Extract<SemanticInferenceRequest, { operation: "r
 function stableErrorCode(error: unknown): string {
   const message = error instanceof Error ? error.message.toLowerCase() : "unknown";
   if (message.includes("no such file") || message.includes("not found")) return "model-files-missing";
-  if (message.includes("out of memory") || message.includes("allocation")) return "resource-insufficient";
+  if (message.includes("out of memory") || message.includes("alloc")) return "resource-insufficient";
   if (message.includes("invalid-logit")) return "invalid-model-output";
   return "inference-failed";
 }

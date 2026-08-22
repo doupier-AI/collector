@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   RESEARCH_SEARCH_MAX_LIMIT,
+  RESEARCH_SEARCH_MAX_SCOPE_NODE_IDS,
   RESEARCH_SEARCH_QUERY_MAX_CHARACTERS,
   validateSemanticSearchCommand,
   validateResearchSearchInput,
@@ -15,6 +16,21 @@ test("search input accepts a bounded non-empty query and rejects malformed limit
   assert.throws(() => validateResearchSearchInput({ query: "量子", limit: RESEARCH_SEARCH_MAX_LIMIT + 1 }), /limit/);
   assert.throws(() => validateResearchSearchInput({ query: "量子", limit: 2.5 }), /limit/);
   assert.throws(() => validateResearchSearchInput({ query: "量子", insideNodeIds: ["node-a", "node-a"] }), /insideNodeIds/);
+  assert.doesNotThrow(() => validateResearchSearchInput({
+    query: "量子",
+    insideNodeIds: Array.from({ length: RESEARCH_SEARCH_MAX_SCOPE_NODE_IDS }, (_, index) => `node-${index}`),
+  }));
+  assert.throws(() => validateResearchSearchInput({
+    query: "量子",
+    insideNodeIds: Array.from({ length: RESEARCH_SEARCH_MAX_SCOPE_NODE_IDS + 1 }, (_, index) => `node-${index}`),
+  }), /insideNodeIds/);
+});
+
+test("search queries reject control characters that would flow verbatim into FTS phrases", () => {
+  assert.doesNotThrow(() => validateResearchSearchInput({ query: "正常 查询\t带空白" }));
+  assert.throws(() => validateResearchSearchInput({ query: "带\u0000空字符的查询" }), /control/);
+  assert.throws(() => validateResearchSearchInput({ query: "带\u001F分隔符的查询" }), /control/);
+  assert.throws(() => validateResearchSearchInput({ query: "带\u007F删除符的查询" }), /control/);
 });
 
 test("semantic search commands keep profile installation explicit and bounded", () => {

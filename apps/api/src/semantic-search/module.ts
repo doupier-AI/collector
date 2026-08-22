@@ -184,6 +184,7 @@ export function createSemanticSearchModule(options: CreateSemanticSearchModuleOp
     try {
       const queryEmbedding = (await options.inference.embed(profile, installedProfileRoot(options.modelRoot, profile), [input.query]))[0];
       if (!queryEmbedding) throw new Error("query embedding was empty");
+      if (queryEmbedding.length !== expectedDimension(profile)) throw new Error("query embedding dimension mismatch");
       const semanticMatches = listAllActiveVectors(profile, embeddingKey)
         .map((entry) => ({ entry, similarity: cosineSimilarity(queryEmbedding, vectorFromBlob(entry)) }))
         .filter((candidate) => Number.isFinite(candidate.similarity))
@@ -724,7 +725,8 @@ function safeErrorCode(error: unknown): string {
 
 function errorCode(error: unknown): string {
   const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  if (message.includes("resource-insufficient") || message.includes("out of memory") || message.includes("allocation")) {
+  // "alloc" also covers onnxruntime's "Alloc failed" allocation failures.
+  if (message.includes("resource-insufficient") || message.includes("out of memory") || message.includes("alloc")) {
     return "resource-insufficient";
   }
   return safeErrorCode(error);

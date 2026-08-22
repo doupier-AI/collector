@@ -148,12 +148,12 @@ export function createModelArtifactInstaller(options: ModelArtifactInstallerOpti
       }
       if (controller.signal.aborted) throw new DownloadCancelledError();
       const target = installPath(root, manifest);
-      await rm(target, { recursive: true, force: true });
+      await rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       await rename(staging, target);
       verified.add(profile);
       return copyStatus(update("installed"));
     } catch (error) {
-      await rm(staging, { recursive: true, force: true }).catch(() => undefined);
+      await rm(staging, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(() => undefined);
       if (controller.signal.aborted || error instanceof DownloadCancelledError) return copyStatus(update("cancelled", "Model download was cancelled."));
       const message = error instanceof AssetChecksumError
         ? `Model download was not enabled because ${error.message}`
@@ -179,7 +179,7 @@ export function createModelArtifactInstaller(options: ModelArtifactInstallerOpti
     const manifest = manifests.get(profile);
     if (!manifest) return unavailable(profile);
     verified.delete(profile);
-    await rm(installPath(root, manifest), { recursive: true, force: true });
+    await rm(installPath(root, manifest), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     await removeInterruptedStaging(root, manifest);
     const status = statusFor(manifest, "not-installed", 0);
     statuses.set(profile, status);
@@ -205,7 +205,7 @@ async function downloadAsset(
         reportAssetBytes(received);
       });
     } catch (error) {
-      await rm(`${target}.part`, { force: true });
+      await rm(`${target}.part`, { force: true, maxRetries: 5, retryDelay: 100 });
       if (signal.aborted || error instanceof DownloadCancelledError) throw error;
       reportAssetBytes(0);
       lastError = error;
@@ -306,7 +306,7 @@ async function removeInterruptedStaging(root: string, manifest: ModelArtifactMan
   const entries = await readdir(stagingRoot, { withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
     if (!entry.isDirectory() || !entry.name.startsWith(`${manifest.profile}-`)) continue;
-    await rm(pathWithin(stagingRoot, entry.name), { recursive: true, force: true });
+    await rm(pathWithin(stagingRoot, entry.name), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 

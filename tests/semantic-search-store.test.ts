@@ -228,3 +228,17 @@ test("trashing, permanently deleting, and clearing canonical research data remov
   assert.equal((afterClear.prepare("SELECT COUNT(*) AS count FROM semantic_search_index_generations").get() as { count: number }).count, 0);
   afterClear.close();
 });
+
+test("keyword candidates rank by FTS relevance instead of insertion order", async (t) => {
+  const { store } = await openSearchStore(t);
+  store.createGeneration({ id: "ranked", profile: "lightweight", embeddingKey: "bge-small@v1", sourceKey: "source", createdAt: now });
+  store.replaceGenerationUnits("ranked", [
+    { ...unit("worse", "ranked", "量子电池以及大量与查询无关的填充文本让这个窗口明显更长更稀疏"), nodeId: "node-shared", sessionId: "session-shared" },
+    { ...unit("better", "ranked", "量子电池"), nodeId: "node-shared", sessionId: "session-shared" },
+  ]);
+  store.activateGeneration("ranked", now);
+
+  const matches = store.searchActiveKeyword("lightweight", "量子电池", 100);
+  assert.equal(matches.length, 2);
+  assert.equal(matches[0]?.unitId, "better", "the denser match must rank above the earlier-inserted sparser one");
+});

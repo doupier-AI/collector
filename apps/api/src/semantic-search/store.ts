@@ -174,22 +174,35 @@ export class SemanticSearchSqliteStore {
     if (!query) return [];
     const boundedLimit = requireLimit(limit, 100);
     const queryLength = [...query].length;
-    const matchCte = `
+    // The FTS5 hidden rank column (= bm25, lower is better) ranks matches for
+    // both the per-node window and the global cutoff; rowid tiebreaks keep the
+    // order deterministic. The LIKE fallback has no relevance signal, so it
+    // keeps stable insertion order.
+    const ftsCte = `
       SELECT u.unit_id, u.node_id, u.session_id, u.field, u.source_locator_json, u.search_text, u.rowid AS unit_rowid,
+        f.rank AS relevance,
+        ROW_NUMBER() OVER (PARTITION BY u.node_id ORDER BY f.rank, u.rowid) AS node_rank
+      FROM semantic_search_units u
+      JOIN semantic_search_index_generations g ON g.id = u.generation_id AND g.state = 'active'
+      JOIN semantic_search_units_fts f ON f.rowid = u.rowid
+    `;
+    const likeCte = `
+      SELECT u.unit_id, u.node_id, u.session_id, u.field, u.source_locator_json, u.search_text, u.rowid AS unit_rowid,
+        u.rowid AS relevance,
         ROW_NUMBER() OVER (PARTITION BY u.node_id ORDER BY u.rowid) AS node_rank
       FROM semantic_search_units u
       JOIN semantic_search_index_generations g ON g.id = u.generation_id AND g.state = 'active'
     `;
-    const selectRanked = "SELECT unit_id, node_id, session_id, field, source_locator_json, search_text FROM matches WHERE node_rank <= 3 ORDER BY unit_rowid LIMIT ?";
+    const selectRanked = "SELECT unit_id, node_id, session_id, field, source_locator_json, search_text FROM matches WHERE node_rank <= 3 ORDER BY relevance, unit_rowid LIMIT ?";
     let rows: UnitMatchRow[];
     if (queryLength >= 3) {
       // FTS grammar receives a quoted literal through a bound parameter; user text never becomes SQL.
       const safePhrase = `"${query.replaceAll('"', '""')}"`;
-      rows = this.database.prepare(`WITH matches AS (${matchCte} JOIN semantic_search_units_fts f ON f.rowid = u.rowid WHERE g.profile = ? AND f.search_text MATCH ?) ${selectRanked}`)
+      rows = this.database.prepare(`WITH matches AS (${ftsCte} WHERE g.profile = ? AND f.search_text MATCH ?) ${selectRanked}`)
         .all(profile, safePhrase, boundedLimit) as unknown as UnitMatchRow[];
     } else {
       const escaped = query.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
-      rows = this.database.prepare(`WITH matches AS (${matchCte} WHERE g.profile = ? AND u.search_text LIKE ? ESCAPE '\\') ${selectRanked}`)
+      rows = this.database.prepare(`WITH matches AS (${likeCte} WHERE g.profile = ? AND u.search_text LIKE ? ESCAPE '\\') ${selectRanked}`)
         .all(profile, `%${escaped}%`, boundedLimit) as unknown as UnitMatchRow[];
     }
     return rows.map(keywordMatchFromRow);
@@ -207,7 +220,7 @@ export class SemanticSearchSqliteStore {
     return rows.map((row) => ({ ...keywordMatchFromRow(row), vector: new Uint8Array(row.vector) }));
   }
 
-  /** Used by permanent node deletion and trashing before canonical node rows are removed. */
+  /** Reserved for future node-level deletion. Session trashing and deletion clean their rows via the cascade helpers below. */
   deleteUnitsForNodes(nodeIds: readonly string[]): number {
     if (!nodeIds.length) return 0;
     let deleted = 0;

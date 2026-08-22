@@ -92,3 +92,26 @@ test("semantic search rejects malformed query and command bodies before invoking
   assert.equal(command.status, 400);
   assert.equal(harness.calls.length, 0);
 });
+
+test("runtimes without a semantic search module report 503 instead of hanging", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "collector-semantic-http-503-"));
+  const store = new SqliteStore(join(root, "collector.sqlite"));
+  await store.init();
+  const auth = new LocalAuth(store);
+  const token = `semantic-503-${randomUUID()}`;
+  await auth.registerTrustedToken(token, "semantic-http-test");
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, { autoRunRecentOrganization: false, autoRunResearchTasks: false });
+  const server = createApiServer(service, auth);
+  await listenOnFetchSafePort(server);
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Server did not bind");
+  t.after(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    store.close();
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+
+  const response = await fetch(`http://127.0.0.1:${address.port}/v1/semantic-search/status`, { headers: headers(token) });
+  assert.equal(response.status, 503);
+  assert.equal(((await response.json()) as { error: { code: string } }).error.code, "semantic_search_unavailable");
+});

@@ -1,4 +1,4 @@
-import { RESEARCH_PERMANENT_EDGE_KINDS, type ResearchPermanentEdgeKind } from "@collector/capture-contracts";
+import { RESEARCH_PERMANENT_EDGE_KINDS, RESEARCH_SEARCH_QUERY_MAX_CHARACTERS, type ResearchPermanentEdgeKind } from "@collector/capture-contracts";
 import type { GraphPoint, GraphWorld, StableOrganicGraphLayout } from "./organicGraphLayout";
 import {
   normalizeResearchMapFilterState,
@@ -12,7 +12,7 @@ const MAX_SCENE_POSITIONS = 2_000;
 const MAX_COORDINATE = 100_000;
 const MAX_SCENE_PROJECT_IDS = 500;
 const MAX_SCENE_PROJECT_ID_LENGTH = 256;
-const MAX_SCENE_SEARCH_QUERY_LENGTH = 400;
+const MAX_SCENE_SEARCH_QUERY_LENGTH = RESEARCH_SEARCH_QUERY_MAX_CHARACTERS;
 
 export interface MapViewBox {
   x: number;

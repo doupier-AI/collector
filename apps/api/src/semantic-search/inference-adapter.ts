@@ -71,6 +71,7 @@ export class IsolatedSemanticInferenceAdapter implements SemanticInferenceAdapte
   private readonly activeChildren = new Map<ChildProcess, { profile: SemanticInferenceProfile; terminate: (error: Error) => void }>();
   private readonly cancellationEpochs = new Map<SemanticInferenceProfile, number>();
   private readonly pendingByProfile = new Map<SemanticInferenceProfile, Set<Promise<unknown>>>();
+  private readonly rejectByProfile = new Map<SemanticInferenceProfile, Set<(error: Error) => void>>();
   private closed = false;
 
   constructor(options: { childPath?: string; timeoutMs?: number; /** Test-only observability for the serial process gate. */ onChildState?: (state: "started" | "exited") => void } = {}) {
@@ -93,11 +94,14 @@ export class IsolatedSemanticInferenceAdapter implements SemanticInferenceAdapte
 
   async cancel(profile: SemanticInferenceProfile): Promise<void> {
     this.cancellationEpochs.set(profile, (this.cancellationEpochs.get(profile) ?? 0) + 1);
-    const pending = [...(this.pendingByProfile.get(profile) ?? [])];
+    const error = new Error("Semantic inference was cancelled");
     for (const active of this.activeChildren.values()) {
-      if (active.profile === profile) active.terminate(new Error("Semantic inference was cancelled"));
+      if (active.profile === profile) active.terminate(error);
     }
-    await Promise.allSettled(pending);
+    // Without this, requests of this profile still queued behind unrelated
+    // profiles would keep cancel() waiting for work it did not ask to stop.
+    for (const reject of [...(this.rejectByProfile.get(profile) ?? [])]) reject(error);
+    await Promise.allSettled([...(this.pendingByProfile.get(profile) ?? [])]);
   }
 
   async close(): Promise<void> {
@@ -117,13 +121,21 @@ export class IsolatedSemanticInferenceAdapter implements SemanticInferenceAdapte
     });
     this.tail = next.then(() => undefined, () => undefined);
     const pending = this.pendingByProfile.get(request.profile) ?? new Set<Promise<unknown>>();
-    const tracked = next.then(
-      (value) => { pending.delete(tracked); return value; },
-      (error: unknown) => { pending.delete(tracked); throw error; },
-    );
-    pending.add(tracked);
+    const rejects = this.rejectByProfile.get(request.profile) ?? new Set<(error: Error) => void>();
+    let rejectTracked!: (error: Error) => void;
+    const tracked = new Promise<unknown>((resolve, reject) => {
+      rejectTracked = reject;
+      rejects.add(reject);
+      next.then(resolve, reject);
+    });
+    const settled = tracked.finally(() => {
+      rejects.delete(rejectTracked);
+      pending.delete(settled);
+    });
+    pending.add(settled);
     this.pendingByProfile.set(request.profile, pending);
-    return tracked;
+    this.rejectByProfile.set(request.profile, rejects);
+    return settled;
   }
 
   private run(request: SemanticInferenceRequest): Promise<unknown> {
@@ -146,7 +158,13 @@ export class IsolatedSemanticInferenceAdapter implements SemanticInferenceAdapte
       }, this.timeoutMs);
 
       child.once("error", (error) => {
-        terminate(new Error(`Semantic inference process failed: ${error.message}`));
+        // Spawn-level failures may never emit "exit"; settle here so the serial
+        // queue cannot hang forever waiting for a process that never existed.
+        const failure = new Error(`Semantic inference process failed: ${error.message}`);
+        terminate(failure);
+        clearTimeout(timer);
+        this.activeChildren.delete(child);
+        reject(failure);
       });
       child.on("message", (message) => {
         if (!isTerminalResponse(message)) return;

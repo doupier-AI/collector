@@ -212,13 +212,32 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
     if (resolvedRovingNodeId !== rovingNodeId) setRovingNodeId(resolvedRovingNodeId);
   }, [resolvedRovingNodeId, rovingNodeId]);
 
+  const pendingRevealRef = useRef<{ nodeId: string; requestId: number | undefined } | undefined>(undefined);
+  const onRevealHandledRef = useRef(onRevealHandled);
+  onRevealHandledRef.current = onRevealHandled;
+  useEffect(() => () => {
+    // Leaving this entry while the one-time reveal animation is still running
+    // must consume the request, otherwise returning to the previous entry
+    // replays the centering and steals focus on an entry the user left.
+    const pending = pendingRevealRef.current;
+    if (pending && pending.requestId !== undefined) onRevealHandledRef.current?.(pending.nodeId, pending.requestId);
+  }, []);
+
   useEffect(() => {
-    if (!revealNodeId) return;
+    if (!revealNodeId) {
+      pendingRevealRef.current = undefined;
+      return;
+    }
     const revealKey = revealRequestId === undefined ? revealNodeId : `${revealNodeId}:${revealRequestId}`;
     if (lastRevealKey.current === revealKey) return;
     const point = positions.get(revealNodeId);
     if (!point) return;
     lastRevealKey.current = revealKey;
+    pendingRevealRef.current = { nodeId: revealNodeId, requestId: revealRequestId };
+    const handled = () => {
+      pendingRevealRef.current = undefined;
+      if (revealRequestId !== undefined) onRevealHandled?.(revealNodeId, revealRequestId);
+    };
     setRovingNodeId(revealNodeId);
     const start = viewBoxRef.current;
     const target = { ...start, x: point.x - start.width / 2, y: point.y - start.height / 2 };
@@ -230,7 +249,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
       setViewBox(target);
       const frame = requestAnimationFrame(() => {
         focusTarget();
-        if (revealRequestId !== undefined) onRevealHandled?.(revealNodeId, revealRequestId);
+        handled();
       });
       return () => cancelAnimationFrame(frame);
     }
@@ -247,7 +266,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
       if (progress < 1) frame = requestAnimationFrame(animate);
       else {
         focusTarget();
-        if (revealRequestId !== undefined) onRevealHandled?.(revealNodeId, revealRequestId);
+        handled();
       }
     };
     frame = requestAnimationFrame(animate);

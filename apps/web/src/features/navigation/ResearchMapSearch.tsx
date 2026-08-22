@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { ResearchSearchMatch, ResearchSearchResponse } from "@collector/capture-contracts";
+import {
+  RESEARCH_SEARCH_MAX_SCOPE_NODE_IDS,
+  RESEARCH_SEARCH_QUERY_MAX_CHARACTERS,
+  type ResearchSearchMatch,
+  type ResearchSearchResponse,
+} from "@collector/capture-contracts";
 import { apiErrorCopy } from "../../api/errors";
 import { useServices } from "../../app/services";
 import type { MapSearchScene } from "./map-scene";
@@ -38,6 +43,9 @@ export function ResearchMapSearch({ search, insideNodeIds, onSearchChange, onRev
   const [retryNonce, setRetryNonce] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const insideKey = useMemo(() => [...insideNodeIds].sort().join("\0"), [insideNodeIds]);
+  // Beyond the contract cap the scope set can no longer be shipped verbatim;
+  // searching must keep working, so grouping degrades instead of failing.
+  const boundedInsideNodeIds = insideNodeIds.length <= RESEARCH_SEARCH_MAX_SCOPE_NODE_IDS ? insideNodeIds : undefined;
 
   useEffect(() => setDraft(search?.query ?? ""), [search?.query]);
 
@@ -51,7 +59,7 @@ export function ResearchMapSearch({ search, insideNodeIds, onSearchChange, onRev
     let stale = false;
     setLoading(true);
     setError(null);
-    api.searchResearch({ query: search.query, insideNodeIds: [...insideNodeIds] }).then(
+    api.searchResearch({ query: search.query, ...(boundedInsideNodeIds ? { insideNodeIds: [...boundedInsideNodeIds] } : {}) }).then(
       (next) => {
         if (!stale) {
           setResponse(next);
@@ -66,7 +74,7 @@ export function ResearchMapSearch({ search, insideNodeIds, onSearchChange, onRev
       },
     );
     return () => { stale = true; };
-  }, [api, insideKey, retryNonce, search?.query]);
+  }, [api, insideKey, retryNonce, search?.query, boundedInsideNodeIds]);
 
   const submit = () => {
     const query = draft.trim();
@@ -98,7 +106,7 @@ export function ResearchMapSearch({ search, insideNodeIds, onSearchChange, onRev
           id="research-map-search-input"
           type="search"
           className="input"
-          maxLength={400}
+          maxLength={RESEARCH_SEARCH_QUERY_MAX_CHARACTERS}
           value={draft}
           placeholder="例如：向量数据库如何降低检索成本"
           onChange={(event) => setDraft(event.target.value)}
@@ -115,8 +123,10 @@ export function ResearchMapSearch({ search, insideNodeIds, onSearchChange, onRev
         </div>
       ) : null}
       {!loading && !error && response ? (
-        <div className="map-search__results" aria-live="polite">
-          <div className="map-search__result-summary">
+        <div className="map-search__results">
+          {/* The live region covers only the summary so result changes are
+              announced concisely instead of reading the whole result list. */}
+          <div className="map-search__result-summary" aria-live="polite">
             <strong>{resultCount ? `找到 ${resultCount} 个相关节点` : "没有找到相关内容"}</strong>
             <span>{response.mode === "hybrid" ? "语义与关键词共同排序" : degradationCopy[response.degradationReason]}</span>
           </div>
@@ -136,7 +146,7 @@ export function ResearchMapSearch({ search, insideNodeIds, onSearchChange, onRev
                       <strong>{node.nodeLabel}</strong>
                       <span>在图谱中定位</span>
                     </button>
-                    <div className="map-search__matches" aria-label={`${node.nodeLabel} 的命中位置`}>
+                    <div className="map-search__matches" role="group" aria-label={`${node.nodeLabel} 的命中位置`}>
                       {node.matches.map((match, index) => {
                         const sameFieldTotal = node.matches.filter((candidate) => candidate.field === match.field).length;
                         const sameFieldIndex = node.matches.slice(0, index + 1).filter((candidate) => candidate.field === match.field).length;

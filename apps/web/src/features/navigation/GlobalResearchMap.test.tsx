@@ -468,4 +468,33 @@ describe("GlobalResearchMap stable organic canvas", () => {
     });
     vi.unstubAllGlobals();
   });
+
+  it("离开地图时消费尚未完成的 reveal 请求，返回旧现场不会重放居中", async () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("prefers-reduced-motion"),
+      addEventListener: vi.fn(), removeEventListener: vi.fn(),
+    }));
+    const observation = makeGraphObservation({ nodes: [makeGraphObservationNode("a", "节点 A"), makeGraphObservationNode("b", "节点 B")] });
+    const initialScene = serializeMapScene({
+      filters: DEFAULT_RESEARCH_MAP_FILTER_STATE,
+      relationshipKinds: ["parent-child", "fused-from"],
+      viewBox: { x: 0, y: 0, width: 480, height: 270 },
+      layout: { world: { width: 960, height: 540 }, positions: new Map([["a", { x: 100, y: 100 }], ["b", { x: 800, y: 400 }]]), edgeKeys: new Map() },
+    });
+    const onRevealHandled = vi.fn();
+    const rendered = render(
+      <MemoryRouter>
+        <GlobalResearchMap observation={observation} initialScene={initialScene} revealNodeId="b" revealRequestId={7} onRevealHandled={onRevealHandled} />
+      </MemoryRouter>,
+    );
+
+    const canvas = screen.getByTestId("global-map-canvas");
+    const svg = within(canvas).getByRole("group", { name: "跨会话研究关系画布" });
+    await waitFor(() => expect(svg).toHaveAttribute("viewBox", "560 265 480 270"));
+
+    rendered.unmount();
+    expect(onRevealHandled).toHaveBeenCalledTimes(1);
+    expect(onRevealHandled).toHaveBeenCalledWith("b", 7);
+    vi.unstubAllGlobals();
+  });
 });

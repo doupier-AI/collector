@@ -153,3 +153,26 @@ test("cancelling one profile rejects its queued work without killing or delaying
   assert.equal(started, 1);
   assert.deepEqual(await adapter.embed("standard", root, ["later"]), [[1]]);
 });
+
+test("cancelling a profile does not wait for unrelated inference queued ahead of it", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "collector-inference-cancel-timing-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const childPath = join(root, "slow-child.mjs");
+  await writeFile(childPath, `
+    process.on("message", (request) => {
+      setTimeout(() => process.send?.({ ok: true, value: request.texts.map(() => [1]) }), 400);
+    });
+  `, "utf8");
+  const adapter = new IsolatedSemanticInferenceAdapter({ childPath, timeoutMs: 5_000 });
+
+  const slowUnrelated = adapter.embed("lightweight", root, ["unrelated"]);
+  const queued = assert.rejects(adapter.embed("standard", root, ["queued"]), /cancelled/);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  const startedAt = Date.now();
+  await adapter.cancel("standard");
+  const cancelElapsed = Date.now() - startedAt;
+  await queued;
+
+  assert.ok(cancelElapsed < 250, `cancel must reject queued work promptly, took ${cancelElapsed}ms`);
+  assert.deepEqual(await slowUnrelated, [[1]]);
+});

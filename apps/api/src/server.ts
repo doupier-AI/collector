@@ -194,9 +194,11 @@ async function gracefulShutdown(signal: string): Promise<void> {
     await Promise.all([...browserBootstraps].map((bootstrap) => bootstrap.close().catch(() => undefined)));
     server.closeAllConnections?.();
     await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
-    await semanticSearch.close();
-    semanticDatabase.close();
-    store.close();
+    // Each shutdown step is best-effort: a failing semantic-search close must
+    // not skip the SQLite connections, matching the e2e harness behaviour.
+    await semanticSearch.close().catch((error: unknown) => console.error(error instanceof Error ? error.message : String(error)));
+    try { semanticDatabase.close(); } catch (error) { console.error(error instanceof Error ? error.message : String(error)); }
+    try { store.close(); } catch (error) { console.error(error instanceof Error ? error.message : String(error)); }
     await removeInstanceState(paths.root, instanceId);
     await serviceLock.release();
     console.log("Collector service closed");

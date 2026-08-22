@@ -115,11 +115,16 @@ class FakeInference implements SemanticInferenceAdapter {
   cancelCalls = 0;
   onCancel?: () => void;
   cancelled = false;
+  /** Deterministic per-text vectors so semantic recall can be asserted by content. */
+  vectorFor?: (text: string, profile: SemanticModelProfile) => number[];
+  /** Forces a mismatched dimension for the single-text query embed. */
+  queryDimension?: number;
 
   async embed(profile: SemanticModelProfile, _modelRoot: string, texts: readonly string[]): Promise<number[][]> {
     this.embeds.push({ profile, texts });
     this.onEmbed?.();
     if (texts.length === 1 && (this.failQuery || this.failQueryWith)) throw new Error(this.failQueryWith ?? "model unavailable");
+    if (texts.length === 1 && this.queryDimension) return [new Array<number>(this.queryDimension).fill(0.5)];
     if (texts.length === 1 && this.queryGate) {
       const gate = this.queryGate;
       this.queryGate = undefined;
@@ -133,6 +138,7 @@ class FakeInference implements SemanticInferenceAdapter {
       await gate;
       if (this.cancelled) throw new Error("semantic inference cancelled");
     }
+    if (this.vectorFor) return texts.map((text) => this.vectorFor!(text, profile));
     const dimension = profile === "standard" ? 1024 : 512;
     return texts.map((text) => {
       const vector = new Array<number>(dimension).fill(0);
@@ -719,3 +725,90 @@ function proxyReader(getCurrent: () => CurrentSearchSourceReader): CurrentSearch
     listResearchCitationsForMessages: (messageIds) => getCurrent().listResearchCitationsForMessages(messageIds),
   };
 }
+
+test("hybrid search surfaces nodes the keyword channel cannot see", async (t) => {
+  const installer = new FakeInstaller(["standard"]);
+  const inference = new FakeInference();
+  const directed = (first: number, second: number) => {
+    const vector = new Array<number>(1024).fill(0);
+    vector[0] = first;
+    vector[1] = second;
+    return vector;
+  };
+  inference.vectorFor = (text) => {
+    if (text.includes("范围外")) return directed(-1, 0.05);
+    if (text.includes("纠缠")) return directed(1, 0.1);
+    return directed(0, 1);
+  };
+  const module = createSemanticSearchModule({ reader: source({ extraNode: true }), searchStore: await openSearchStore(t), installer, inference, modelRoot: "C:/semantic-models" });
+
+  // "纠缠现象的观察方法" never appears verbatim in any fixture text, so the
+  // keyword channel provably returns nothing before the semantic index exists.
+  const keywordOnly = await module.search({ query: "纠缠现象的观察方法" });
+  assert.equal(keywordOnly.mode, "keyword-only");
+  assert.equal(keywordOnly.groups.reduce((total, group) => total + group.nodes.length, 0), 0);
+
+  await waitFor(async () => (await module.getStatus()).runtimeState === "ready", "semantic index did not become ready");
+  const hybrid = await module.search({ query: "纠缠现象的观察方法" });
+
+  assert.equal(hybrid.mode, "hybrid");
+  const nodeIds = hybrid.groups.flatMap((group) => group.nodes.map((node) => node.nodeId));
+  assert.ok(nodeIds.includes("inside"), "semantic recall must surface the meaning-related node the keyword channel cannot match");
+});
+
+test("keyword degradation states map to honest distinct reasons", async (t) => {
+  const downloadingInstaller = new ProgressInstaller();
+  const downloadingModule = createSemanticSearchModule({ reader: source(), searchStore: await openSearchStore(t), installer: downloadingInstaller, inference: new FakeInference(), modelRoot: "C:/semantic-models" });
+  await downloadingModule.execute({ type: "download-profile", profile: "standard" });
+  const downloading = await downloadingModule.search({ query: "量子纠缠" });
+  assert.equal(downloading.mode, "keyword-only");
+  assert.equal(downloading.degradationReason, "model-downloading");
+
+  const pendingIndexModule = createSemanticSearchModule({ reader: source(), searchStore: await openSearchStore(t), installer: new FakeInstaller(["standard"]), inference: new FakeInference(), modelRoot: "C:/semantic-models" });
+  const pendingIndex = await pendingIndexModule.search({ query: "量子纠缠" });
+  assert.equal(pendingIndex.mode, "keyword-only");
+  assert.equal(pendingIndex.degradationReason, "index-unavailable");
+
+  const corruptInstaller = new FakeInstaller();
+  corruptInstaller.statuses.get("standard")!.state = "failed";
+  corruptInstaller.statuses.get("standard")!.message = "Model download was not enabled because asset checksum mismatch";
+  const corruptModule = createSemanticSearchModule({ reader: source(), searchStore: await openSearchStore(t), installer: corruptInstaller, inference: new FakeInference(), modelRoot: "C:/semantic-models" });
+  const corrupt = await corruptModule.search({ query: "量子纠缠" });
+  assert.equal(corrupt.mode, "keyword-only");
+  assert.equal(corrupt.degradationReason, "model-unavailable");
+});
+
+test("search responses carry real stable locators for each hit range", async (t) => {
+  const module = createSemanticSearchModule({ reader: source({ extraNode: true }), searchStore: await openSearchStore(t), installer: new FakeInstaller(), inference: new FakeInference(), modelRoot: "C:/semantic-models" });
+
+  const result = await module.search({ query: "量子纠缠" });
+  const inside = result.groups.flatMap((group) => group.nodes).find((node) => node.nodeId === "inside");
+  assert.ok(inside, "inside node missing from keyword results");
+
+  const titleMatch = inside?.matches.find((match) => match.field === "node-title");
+  assert.ok(titleMatch);
+  assert.deepEqual(titleMatch.locator, { kind: "node-title", nodeId: "inside" });
+
+  const questionMatch = inside?.matches.find((match) => match.field === "user-question");
+  assert.ok(questionMatch, "user-question hit missing");
+  const question = "量子纠缠如何工作";
+  assert.deepEqual(
+    { ...questionMatch.locator, contentHash: "<elided>" },
+    { kind: "message-text-range", nodeId: "inside", messageId: "question-inside", contentHash: "<elided>", startOffset: 0, endOffset: [...question].length },
+  );
+});
+
+test("a mismatched query embedding dimension degrades honestly instead of silently emptying the semantic channel", async (t) => {
+  const installer = new FakeInstaller(["standard"]);
+  const inference = new FakeInference();
+  const module = createSemanticSearchModule({ reader: source(), searchStore: await openSearchStore(t), installer, inference, modelRoot: "C:/semantic-models" });
+
+  await module.search({ query: "量子纠缠" });
+  await waitFor(async () => (await module.getStatus()).runtimeState === "ready", "semantic index did not become ready");
+  inference.queryDimension = 7;
+
+  const result = await module.search({ query: "量子纠缠" });
+  assert.equal(result.mode, "keyword-only");
+  assert.equal(result.degradationReason, "model-unavailable");
+  assert.ok(result.groups.some((group) => group.nodes.length > 0), "keyword results must stay available");
+});

@@ -101,4 +101,25 @@ describe("ResearchMapSearch", () => {
       expect(screen.getAllByText(/意思相近但用词不同的内容可能找不到/).length).toBeGreaterThan(0);
     },
   );
+
+  it("范围节点超过契约上限时省略分组信息而不是让搜索整体失败", async () => {
+    const searchResearch = vi.fn(async () => ({ query: "向量数据库", mode: "keyword-only" as const, degradationReason: "model-not-installed" as const, groups: [] }));
+    const services = { api: { searchResearch }, connectTaskEvents: vi.fn() } as unknown as AppServices;
+    render(
+      <ServicesProvider services={services}>
+        <MemoryRouter>
+          <ResearchMapSearch
+            search={{ query: "向量数据库" }}
+            insideNodeIds={Array.from({ length: 10_001 }, (_, index) => `node-${index}`)}
+            onSearchChange={vi.fn()}
+            onRevealNode={vi.fn()}
+            onOpenMatch={vi.fn()}
+          />
+        </MemoryRouter>
+      </ServicesProvider>,
+    );
+
+    await waitFor(() => expect(searchResearch).toHaveBeenCalledTimes(1));
+    expect(searchResearch).toHaveBeenCalledWith({ query: "向量数据库" });
+  });
 });

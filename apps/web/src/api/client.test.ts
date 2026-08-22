@@ -129,17 +129,27 @@ describe("#62 global research map API client", () => {
 
 describe("#67 semantic research search API client", () => {
   it("keeps search, status and explicit model commands on the unified client", async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-      configuredProfile: "standard",
-      runtimeState: "model-missing",
-      installations: [],
-    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const statusView = { configuredProfile: "standard", runtimeState: "model-missing", installations: [] };
+    const keywordOnlyResponse = {
+      query: "量子纠缠",
+      mode: "keyword-only",
+      degradationReason: "model-not-installed",
+      groups: [
+        { scope: "inside-current-scope", nodes: [{ nodeId: "node-a", nodeLabel: "节点 A", matches: [] }] },
+      ],
+    };
+    let call = 0;
+    const fetchMock = vi.fn(async () => {
+      call += 1;
+      return new Response(JSON.stringify(call === 2 ? keywordOnlyResponse : statusView), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
     const client = createApiClient(fetchMock);
 
     await client.getSemanticSearchStatus();
-    await client.searchResearch({ query: "量子纠缠", limit: 12, insideNodeIds: ["node-a"] });
+    const search = await client.searchResearch({ query: "量子纠缠", limit: 12, insideNodeIds: ["node-a"] });
     await client.executeSemanticSearchCommand({ type: "download-profile", profile: "lightweight" });
 
+    expect(search).toEqual(keywordOnlyResponse);
     expect(fetchMock).toHaveBeenNthCalledWith(1, "/v1/semantic-search/status", undefined);
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,

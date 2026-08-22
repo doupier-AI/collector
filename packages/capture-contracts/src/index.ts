@@ -2562,7 +2562,7 @@ export const RESEARCH_SEARCH_QUERY_MAX_CHARACTERS = 400;
 /** 单次搜索返回的节点结果上限。 */
 export const RESEARCH_SEARCH_MAX_LIMIT = 50;
 /** 当前地图主要范围节点上限；只用于结果分组，不改变搜索事实范围。 */
-export const RESEARCH_SEARCH_MAX_SCOPE_NODE_IDS = 2_000;
+export const RESEARCH_SEARCH_MAX_SCOPE_NODE_IDS = 10_000;
 
 export interface ResearchSearchInput {
   query: string;
@@ -2781,6 +2781,11 @@ export function validateResearchSearchInput(value: unknown): asserts value is Re
   const input = value as { query?: unknown; limit?: unknown; insideNodeIds?: unknown };
   if (typeof input.query !== "string" || !input.query.trim() || input.query.length > RESEARCH_SEARCH_QUERY_MAX_CHARACTERS) {
     throw new Error(`query must be a non-empty string no longer than ${RESEARCH_SEARCH_QUERY_MAX_CHARACTERS} characters`);
+  }
+  // Control characters never reach the keyword index through the search box and
+  // would flow verbatim into FTS phrase matching; reject them explicitly.
+  if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(input.query)) {
+    throw new Error("query must not contain control characters");
   }
   if (input.limit !== undefined && (typeof input.limit !== "number" || !Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > RESEARCH_SEARCH_MAX_LIMIT)) {
     throw new Error(`limit must be an integer between 1 and ${RESEARCH_SEARCH_MAX_LIMIT}`);

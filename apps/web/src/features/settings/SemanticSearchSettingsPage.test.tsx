@@ -102,3 +102,56 @@ describe("SemanticSearchSettingsPage #67 语义搜索设置", () => {
     await waitFor(() => expect(executeSemanticSearchCommand).toHaveBeenCalledWith({ type: "delete-profile", profile: "standard" }));
   });
 });
+
+describe("SemanticSearchSettingsPage #67 修复/切档/重建入口", () => {
+  it("失败且可重试的档位发出 retry-download 命令", async () => {
+    const user = userEvent.setup();
+    const failed = status({
+      runtimeState: "failed",
+      installations: [
+        { profile: "standard", state: "failed", downloadedBytes: 3, totalBytes: 1_179_663_362, canCancel: false, canRetry: true },
+        { profile: "lightweight", state: "not-installed", downloadedBytes: 0, totalBytes: 94_851_877, canCancel: false, canRetry: false },
+      ],
+    });
+    const executeSemanticSearchCommand = vi.fn(async () => failed);
+    renderPage({ getSemanticSearchStatus: vi.fn(async () => failed), executeSemanticSearchCommand });
+
+    const standard = await screen.findByRole("region", { name: "标准档" });
+    await user.click(within(standard).getByRole("button", { name: "重试下载标准档" }));
+    await waitFor(() => expect(executeSemanticSearchCommand).toHaveBeenCalledWith({ type: "retry-download", profile: "standard" }));
+  });
+
+  it("已安装但未选用的档位可以通过 select-profile 切换", async () => {
+    const user = userEvent.setup();
+    const configured = status({
+      configuredProfile: "standard",
+      runtimeState: "ready",
+      installations: [
+        { profile: "standard", state: "installed", downloadedBytes: 1_179_663_362, totalBytes: 1_179_663_362, canCancel: false, canRetry: false },
+        { profile: "lightweight", state: "installed", downloadedBytes: 94_851_877, totalBytes: 94_851_877, canCancel: false, canRetry: false },
+      ],
+    });
+    const executeSemanticSearchCommand = vi.fn(async () => configured);
+    renderPage({ getSemanticSearchStatus: vi.fn(async () => configured), executeSemanticSearchCommand });
+
+    const lightweight = await screen.findByRole("region", { name: "轻量档" });
+    await user.click(within(lightweight).getByRole("button", { name: "使用轻量档" }));
+    await waitFor(() => expect(executeSemanticSearchCommand).toHaveBeenCalledWith({ type: "select-profile", profile: "lightweight" }));
+  });
+
+  it("用户可以手动发出 rebuild-index 命令", async () => {
+    const user = userEvent.setup();
+    const ready = status({
+      runtimeState: "ready",
+      installations: [
+        { profile: "standard", state: "installed", downloadedBytes: 1_179_663_362, totalBytes: 1_179_663_362, canCancel: false, canRetry: false },
+        { profile: "lightweight", state: "not-installed", downloadedBytes: 0, totalBytes: 94_851_877, canCancel: false, canRetry: false },
+      ],
+    });
+    const executeSemanticSearchCommand = vi.fn(async () => ready);
+    renderPage({ getSemanticSearchStatus: vi.fn(async () => ready), executeSemanticSearchCommand });
+
+    await user.click(await screen.findByRole("button", { name: "重新建立索引" }));
+    await waitFor(() => expect(executeSemanticSearchCommand).toHaveBeenCalledWith({ type: "rebuild-index" }));
+  });
+});
