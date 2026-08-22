@@ -682,6 +682,7 @@ button {
 }
 
 .global-map__edge {
+  fill: none;
   stroke: color-mix(in srgb, var(--color-muted) 44%, transparent);
   stroke-width: 1.25;
   transition: opacity var(--duration-fast) var(--ease-out), stroke-width var(--duration-fast) var(--ease-out);

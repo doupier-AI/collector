@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeEdge, makeGraphObservation, makeGraphObservationNode } from "../../test/fakes";
 import { GlobalResearchMap } from "./GlobalResearchMap";
 import { serializeMapScene } from "./map-scene";
@@ -115,6 +115,16 @@ describe("GlobalResearchMap keyboard navigation", () => {
 });
 
 describe("GlobalResearchMap stable organic canvas", () => {
+  beforeEach(() => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("prefers-reduced-motion"),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }));
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
   it("范围筛选隐藏再恢复节点时保留全部已知坐标", () => {
     const nodes = [
       makeGraphObservationNode("a", "节点 A"),
@@ -193,7 +203,8 @@ describe("GlobalResearchMap stable organic canvas", () => {
     expect(first).toHaveClass("global-map__node--focus");
     expect(connected).toHaveClass("global-map__node--connected");
     expect(unconnected).toHaveClass("global-map__node--unconnected");
-    expect(canvas.querySelectorAll("line.global-map__edge")).toHaveLength(1);
+    expect(canvas.querySelectorAll("path.global-map__edge")).toHaveLength(1);
+    expect(canvas.querySelector("path.global-map__edge")?.getAttribute("d")).toContain(" Q ");
     expect(canvas.querySelector(".global-map__edge--connected")).toHaveClass("global-map__edge--fused-from");
 
     fireEvent.click(unconnected);
@@ -353,7 +364,7 @@ describe("GlobalResearchMap stable organic canvas", () => {
     });
     render(<MemoryRouter><GlobalResearchMap observation={{ ...observation, focusNodeId: "a" }} /></MemoryRouter>);
     const canvas = screen.getByTestId("global-map-canvas");
-    const connection = canvas.querySelector("[data-connection-id] line.global-map__edge");
+    const connection = canvas.querySelector("[data-connection-id] path.global-map__edge");
 
     expect(canvas.querySelectorAll("[data-connection-id]")).toHaveLength(1);
     expect(connection).toHaveClass("global-map__edge--connected", "global-map__edge--fused-from");
@@ -499,7 +510,7 @@ describe("GlobalResearchMap stable organic canvas", () => {
   });
 });
 
-describe("GlobalResearchMap ADR-0041 交互（编排预览与拖动物理）", () => {
+describe("GlobalResearchMap ADR-0042 活体物理交互", () => {
   function stubReducedMotion() {
     vi.stubGlobal("matchMedia", (query: string) => ({
       matches: query.includes("prefers-reduced-motion"),
@@ -514,7 +525,7 @@ describe("GlobalResearchMap ADR-0041 交互（编排预览与拖动物理）", (
     return { x: Number(element.getAttribute("data-layout-x")), y: Number(element.getAttribute("data-layout-y")) };
   }
 
-  it("专注时直接关系节点聚拢成环，预览位不写入持久现场；退出专注复原", () => {
+  it("专注时直接关系节点自然聚拢且不形成机械等距环，预览位不写入持久现场；退出专注复原", () => {
     stubReducedMotion();
     const nodes = [
       makeGraphObservationNode("a", "节点 A"),
@@ -545,10 +556,13 @@ describe("GlobalResearchMap ADR-0041 交互（编排预览与拖动物理）", (
     const gatheredB = nodeLayout(canvas, "b");
     const gatheredC = nodeLayout(canvas, "c");
     const focusPoint = nodeLayout(canvas, "a");
-    expect(Math.hypot(gatheredB.x - focusPoint.x, gatheredB.y - focusPoint.y)).toBeCloseTo(130, 0);
-    expect(Math.hypot(gatheredC.x - focusPoint.x, gatheredC.y - focusPoint.y)).toBeCloseTo(130, 0);
+    const radiusB = Math.hypot(gatheredB.x - focusPoint.x, gatheredB.y - focusPoint.y);
+    const radiusC = Math.hypot(gatheredC.x - focusPoint.x, gatheredC.y - focusPoint.y);
+    expect(radiusB).toBeLessThanOrEqual(171);
+    expect(radiusC).toBeLessThanOrEqual(171);
     const gap = Math.hypot(gatheredB.x - gatheredC.x, gatheredB.y - gatheredC.y);
-    expect(gap).toBeCloseTo(2 * 130 * Math.sin(Math.PI / 2), 0);
+    expect(gap).toBeGreaterThanOrEqual(51);
+    expect(Math.abs(radiusB - radiusC)).toBeGreaterThan(0.1);
 
     const persisted = onSceneChange.mock.calls.at(-1)![0];
     const persistedB = [...persisted.layout.positions].find(([id]) => id === "b");
@@ -583,6 +597,7 @@ describe("GlobalResearchMap ADR-0041 交互（编排预览与拖动物理）", (
     vi.spyOn(svg, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, width: 960, height: 540, top: 0, left: 0, right: 960, bottom: 540, toJSON: () => ({}) } as DOMRect);
     const nodeB = canvasNode(canvas, "节点 B");
     const before = nodeLayout(canvas, "b");
+    const neighborBefore = nodeLayout(canvas, "a");
     const startX = before.x + 8;
     const startY = before.y + 4;
     const pointer = (type: string, x: number, y: number) => nodeB.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y }));
@@ -597,17 +612,32 @@ describe("GlobalResearchMap ADR-0041 交互（编排预览与拖动物理）", (
       expect(after.x - before.x).toBeCloseTo(40, 0);
     });
     expect(after.y - before.y).toBeCloseTo(0, 0);
+    const neighborAfter = nodeLayout(canvas, "a");
+    expect(neighborAfter.x).toBeGreaterThan(neighborBefore.x);
 
     await waitFor(() => {
       const persisted = onSceneChange.mock.calls.at(-1)![0];
       const persistedB = [...persisted.layout.positions].find(([id]) => id === "b");
+      const persistedA = [...persisted.layout.positions].find(([id]) => id === "a");
       expect(persistedB![1]).toBeCloseTo(after.x, 0);
+      expect(persistedA![1]).toBeCloseTo(neighborAfter.x, 0);
     });
 
     fireEvent.click(nodeB);
     expect(onFocusNode).not.toHaveBeenCalled();
     fireEvent.click(nodeB);
     expect(onFocusNode).toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("reduced-motion 下入场同步完成并暴露稳定标记", () => {
+    stubReducedMotion();
+    render(
+      <MemoryRouter>
+        <GlobalResearchMap observation={makeGraphObservation({ nodes: [makeGraphObservationNode("a", "节点 A")] })} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByTestId("global-map-canvas")).toHaveAttribute("data-entry-animation", "complete");
     vi.unstubAllGlobals();
   });
 

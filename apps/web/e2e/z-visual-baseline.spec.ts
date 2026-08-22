@@ -331,6 +331,7 @@ test.describe("#44 视觉回归基线", () => {
     await closeSidebars(page);
 
     const canvas = page.getByTestId("global-map-canvas");
+    await expect(canvas).toHaveAttribute("data-entry-animation", "complete");
     const filters = page.locator(".research-map-filters");
     await filters.evaluate((element) => element.scrollIntoView({ block: "center" }));
     await expect(filters).toHaveScreenshot("global-map-filters-light");
