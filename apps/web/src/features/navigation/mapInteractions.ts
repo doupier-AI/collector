@@ -9,8 +9,18 @@ import type { GraphPoint } from "./organicGraphLayout";
 
 /** 拖动联动的 BFS 跳数上限（一跳强响应，二/三跳衰减带动）。 */
 export const DRAG_REACH_HOPS = 3;
-/** 拖动影响节点数超过该值时丢弃最外层，自动收窄带动范围保证大图流畅。 */
-export const DRAG_REACH_MAX_NODES = 240;
+/** 有关系的 BFS 力场最多保留 180 个节点（含被拖节点）。 */
+export const DRAG_RELATION_MAX_NODES = 180;
+/** 没有关系、只作为空间碰撞体的节点最多保留 60 个。 */
+export const DRAG_PASSIVE_MAX_NODES = 60;
+/** 一次拖动力场的硬总上限，避免大图每帧碰撞计算失控。 */
+export const DRAG_TOTAL_MAX_NODES = DRAG_RELATION_MAX_NODES + DRAG_PASSIVE_MAX_NODES;
+/** @deprecated 使用关系/被动两类预算；保留旧名称供既有调用方读取总上限。 */
+export const DRAG_REACH_MAX_NODES = DRAG_TOTAL_MAX_NODES;
+/** 动态发现被动碰撞体时使用的空间查询半径（斥力半径仍是 64）。 */
+export const DRAG_SPATIAL_QUERY_RADIUS = 128;
+/** 被动碰撞体受力比直接关系节点略弱，保留水面式惯性而不喧宾夺主。 */
+export const PASSIVE_COLLIDER_STRENGTH = 0.7;
 /** 各跳数节点承受的力衰减系数（下标 = 跳数 - 1）。 */
 export const HOP_STRENGTH: ReadonlyArray<number> = [1, 0.45, 0.18];
 /** 连线弹簧：偏离拖动开始时边长的回复加速度系数。 */
@@ -95,7 +105,9 @@ export interface SimulationNode {
   y: number;
   vx: number;
   vy: number;
-  /** 0 = 被拖节点（固定），1..3 = 距被拖节点的 BFS 跳数。 */
+  /** relation = BFS 关系节点；passive = 无关系、仅参与碰撞的空间近邻。 */
+  kind: "relation" | "passive";
+  /** 0 = 被拖节点（固定），1..3 = 距被拖节点的 BFS 跳数；被动节点为 -1。 */
   hop: number;
   /** 承受力的衰减系数（跳数越远越弱）。 */
   strength: number;
@@ -109,6 +121,20 @@ export interface DragSimulation {
   frames: number;
   /** 当前一次松手结算已经消耗的步数，独立于拖动总步数。 */
   settleFrames: number;
+  /** 所有已知布局位置；只用于动态查找无关系的近邻，不会被模拟写回。 */
+  allPositions: ReadonlyMap<string, GraphPoint>;
+  /** 当前关系子图的直接边界不降级成被动体；其他关系簇仍可发生空间碰撞。 */
+  relatedNodeIds: ReadonlySet<string>;
+  /** 本次模拟可加入的被动碰撞体数。 */
+  maxPassiveNodes: number;
+}
+
+export interface DragSimulationOptions {
+  maxHops?: number;
+  /** 兼容旧调用：作为关系节点预算；新代码优先使用 maxRelationNodes。 */
+  maxNodes?: number;
+  maxRelationNodes?: number;
+  maxPassiveNodes?: number;
 }
 
 /**
@@ -119,14 +145,23 @@ export function createDragSimulation(
   draggedId: string,
   adjacency: ReadonlyMap<string, ReadonlySet<string>>,
   positions: ReadonlyMap<string, GraphPoint>,
-  options: { maxHops?: number; maxNodes?: number } = {},
+  options: DragSimulationOptions = {},
 ): DragSimulation {
   const maxHops = Math.max(0, Math.min(options.maxHops ?? DRAG_REACH_HOPS, DRAG_REACH_HOPS));
-  const maxNodes = Math.max(1, options.maxNodes ?? DRAG_REACH_MAX_NODES);
+  const maxRelationNodes = Math.min(
+    DRAG_RELATION_MAX_NODES,
+    Math.max(1, options.maxRelationNodes ?? options.maxNodes ?? DRAG_RELATION_MAX_NODES),
+  );
+  const maxPassiveNodes = Math.min(
+    DRAG_PASSIVE_MAX_NODES,
+    Math.max(0, options.maxPassiveNodes ?? DRAG_PASSIVE_MAX_NODES),
+    DRAG_TOTAL_MAX_NODES - maxRelationNodes,
+  );
   const nodes = new Map<string, SimulationNode>();
   const springs = new Map<string, Array<{ otherId: string; restLength: number }>>();
+  const relatedNodeIds = new Set<string>();
   const start = positions.get(draggedId);
-  if (!start) return { draggedId, nodes, springs, frames: 0, settleFrames: 0 };
+  if (!start) return { draggedId, nodes, springs, frames: 0, settleFrames: 0, allPositions: positions, relatedNodeIds, maxPassiveNodes };
   const levels: string[][] = [[draggedId]];
   const visited = new Set([draggedId]);
   let frontier = [draggedId];
@@ -143,8 +178,8 @@ export function createDragSimulation(
     const collectedCount = levels.reduce((count, level) => count + level.length, 0);
     // 二/三跳超预算时整层放弃，确实降为更近的跳数；若一跳本身已经超过
     // 上限，则按稳定 id 顺序取预算内的直接邻居，避免超大星形图退化为零响应。
-    if (collectedCount + next.length > maxNodes) {
-      if (hop === 1 && maxNodes > collectedCount) levels.push(next.slice(0, maxNodes - collectedCount));
+    if (collectedCount + next.length > maxRelationNodes) {
+      if (hop === 1 && maxRelationNodes > collectedCount) levels.push(next.slice(0, maxRelationNodes - collectedCount));
       break;
     }
     levels.push(next);
@@ -153,8 +188,13 @@ export function createDragSimulation(
   for (let hop = 0; hop < levels.length; hop += 1) {
     for (const id of levels[hop]!) {
       const point = positions.get(id)!;
-      nodes.set(id, { id, x: point.x, y: point.y, vx: 0, vy: 0, hop, strength: hop === 0 ? 0 : HOP_STRENGTH[hop - 1] ?? 0.1 });
+      nodes.set(id, { id, x: point.x, y: point.y, vx: 0, vy: 0, kind: "relation", hop, strength: hop === 0 ? 0 : HOP_STRENGTH[hop - 1] ?? 0.1 });
     }
+  }
+  // 预算外但直接连着本次关系子图的节点仍有关系语义，不能把它们伪装成
+  // 无弹簧被动体；与本次子图无边的其他关系簇则仍然可以发生空间碰撞。
+  for (const id of nodes.keys()) {
+    for (const neighbor of adjacency.get(id) ?? []) relatedNodeIds.add(neighbor);
   }
   for (const id of nodes.keys()) springs.set(id, []);
   for (const [id, node] of nodes) {
@@ -167,7 +207,47 @@ export function createDragSimulation(
       springs.get(neighbor)!.push({ otherId: id, restLength });
     }
   }
-  return { draggedId, nodes, springs, frames: 0, settleFrames: 0 };
+  const state: DragSimulation = { draggedId, nodes, springs, frames: 0, settleFrames: 0, allPositions: positions, relatedNodeIds, maxPassiveNodes };
+  discoverPassiveColliders(state);
+  return state;
+}
+
+/**
+ * 用每帧重建的小型网格找出空间近邻。未入场节点永远保持原持久坐标；已入场
+ * 节点使用本帧物理坐标，因此被动节点可以继续把水波传给其他被动节点。
+ */
+function discoverPassiveColliders(state: DragSimulation): void {
+  const currentPassiveCount = [...state.nodes.values()].filter((node) => node.kind === "passive").length;
+  const available = Math.min(state.maxPassiveNodes - currentPassiveCount, DRAG_TOTAL_MAX_NODES - state.nodes.size);
+  if (available <= 0) return;
+  const cellSize = DRAG_SPATIAL_QUERY_RADIUS;
+  const cellKey = (x: number, y: number) => `${Math.floor(x / cellSize)}:${Math.floor(y / cellSize)}`;
+  const grid = new Map<string, string[]>();
+  for (const [id, point] of state.allPositions) {
+    if (state.nodes.has(id) || state.relatedNodeIds.has(id)) continue;
+    const key = cellKey(point.x, point.y);
+    const entries = grid.get(key) ?? [];
+    entries.push(id);
+    grid.set(key, entries);
+  }
+  const candidates = new Set<string>();
+  for (const node of state.nodes.values()) {
+    const cellX = Math.floor(node.x / cellSize);
+    const cellY = Math.floor(node.y / cellSize);
+    for (let y = cellY - 1; y <= cellY + 1; y += 1) {
+      for (let x = cellX - 1; x <= cellX + 1; x += 1) {
+        for (const id of grid.get(`${x}:${y}`) ?? []) {
+          const point = state.allPositions.get(id)!;
+          if (Math.hypot(point.x - node.x, point.y - node.y) <= DRAG_SPATIAL_QUERY_RADIUS) candidates.add(id);
+        }
+      }
+    }
+  }
+  for (const id of [...candidates].sort().slice(0, available)) {
+    const point = state.allPositions.get(id)!;
+    // 被动节点不进 springs：它们从不暗示关系，只接受排斥、阻尼与惯性。
+    state.nodes.set(id, { id, x: point.x, y: point.y, vx: 0, vy: 0, kind: "passive", hop: -1, strength: PASSIVE_COLLIDER_STRENGTH });
+  }
 }
 
 /** 完全重合时的确定性分离方向，避免斥力死锁。 */
@@ -190,6 +270,7 @@ export function stepDragSimulation(state: DragSimulation, draggedPoint: GraphPoi
     dragged.vx = 0;
     dragged.vy = 0;
   }
+  discoverPassiveColliders(state);
   const participants = [...state.nodes.values()];
   const accelerations = new Map(participants.map((node) => [node.id, { x: 0, y: 0 }]));
   const addForce = (id: string, x: number, y: number) => {
@@ -297,7 +378,7 @@ export function createGatherSimulation(
     if (id === focusId) continue;
     const point = positions.get(id);
     if (!point) continue;
-    nodes.set(id, { id, x: point.x, y: point.y, vx: 0, vy: 0, hop: 1, strength: 1 });
+    nodes.set(id, { id, x: point.x, y: point.y, vx: 0, vy: 0, kind: "relation", hop: 1, strength: 1 });
   }
   return { focusId, focus: { ...focus }, nodes, frames: 0 };
 }

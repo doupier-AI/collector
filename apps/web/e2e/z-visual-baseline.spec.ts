@@ -328,43 +328,40 @@ test.describe("#44 视觉回归基线", () => {
     await pairAndOpen(page, "/research/new");
     await installGlobalMapVisualFixture(page);
     await page.goto("/map");
-    await closeSidebars(page);
 
     const canvas = page.getByTestId("global-map-canvas");
     await expect(canvas).toHaveAttribute("data-entry-animation", "complete");
+    await page.getByRole("button", { name: "筛选地图" }).click();
     const filters = page.locator(".research-map-filters");
-    await filters.evaluate((element) => element.scrollIntoView({ block: "center" }));
     await expect(filters).toHaveScreenshot("global-map-filters-light");
+    await page.getByRole("button", { name: "关闭工具面板" }).click();
     const amberNode = canvas.getByRole("button", { name: /检索架构，知识工程/ });
     await expect(amberNode).toBeVisible();
-    await amberNode.focus();
-    await page.keyboard.press("Space");
+    await amberNode.click();
     await expect(amberNode).toHaveAttribute("aria-pressed", "true");
     await expect(page).toHaveURL(/\/map\/focus\/map-amber$/);
     await expect(page.getByRole("button", { name: "退出专注" })).toBeVisible();
     await expect(canvas.locator(".global-map__node--unconnected")).toHaveCount(1);
-    await page.locator(".global-map__focus-controls").evaluate((element) => {
-      element.scrollIntoView({ block: "start" });
-      const appBarHeight = document.querySelector<HTMLElement>(".app-bar")?.getBoundingClientRect().height ?? 56;
-      window.scrollBy({ top: -(appBarHeight + 12) });
-    });
     await expect(page).toHaveScreenshot("global-map-project-light");
 
     await page.setViewportSize({ width: 1024, height: 800 });
     await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
-    await filters.evaluate((element) => element.scrollIntoView({ block: "center" }));
+    await page.getByRole("button", { name: "筛选地图" }).click();
     await expect(filters).toHaveScreenshot("global-map-filters-dark");
+    await page.getByRole("button", { name: "关闭工具面板" }).click();
     await expect(canvas).toBeVisible();
-    await canvas.evaluate((element) => element.scrollIntoView({ block: "center" }));
     await expect(page).toHaveScreenshot("global-map-project-dark");
 
     await page.setViewportSize({ width: 320, height: 800 });
-    await filters.evaluate((element) => element.scrollIntoView({ block: "center" }));
+    await expect(canvas).toBeVisible();
+    await expect(page).toHaveScreenshot("global-map-project-narrow-canvas");
+    await page.getByRole("button", { name: "筛选地图" }).click();
     await expect(filters).toHaveScreenshot("global-map-filters-narrow");
+    await page.getByRole("button", { name: "关闭工具面板" }).click();
+    await page.getByRole("button", { name: "切换到节点列表" }).click();
     await expect(canvas).toBeHidden();
     const list = page.getByTestId("global-map-list");
     await expect(list).toBeVisible();
-    await list.evaluate((element) => element.scrollIntoView({ block: "center" }));
     await expect(page).toHaveScreenshot("global-map-project-narrow");
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });

@@ -191,19 +191,14 @@ describe("AppShell 宽屏（≥900px）固定侧栏", () => {
     expect(labels(rail).slice(0, 5)).toEqual(["展开侧栏", "会话", "研究图谱", "搜索会话", "新建会话"]);
   });
 
-  it("研究图谱入口在所有页面可用，进入 /map 后具有当前页状态", async () => {
+  it("研究图谱入口在普通页面可用，进入 /map 后切换为独占视口", async () => {
     stubMatchMedia(true);
-    const user = userEvent.setup();
     renderShell("/map");
 
-    const nav = await screen.findByRole("navigation", { name: "内容导航" });
-    const mapLink = within(nav).getByRole("link", { name: "研究图谱" });
-    expect(mapLink).toHaveAttribute("href", "/map");
-    expect(mapLink).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByRole("navigation", { name: "内容导航" })).not.toBeInTheDocument();
+    expect(document.querySelector(".app-shell--immersive-map")).not.toBeNull();
+    expect(document.querySelector(".app-bar")).toBeNull();
     expect(screen.getByText("研究图谱页面")).toBeInTheDocument();
-
-    await user.click(within(nav).getByRole("button", { name: "收起侧栏" }));
-    expect(within(nav).getByRole("link", { name: "研究图谱" })).toHaveAttribute("aria-current", "page");
   });
 
   it("顶部搜索：展开输入框按标题过滤会话", async () => {

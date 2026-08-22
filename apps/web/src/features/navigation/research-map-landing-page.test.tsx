@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
@@ -27,10 +27,18 @@ function renderPage(api: Partial<ApiClient>, initialEntry: string | { pathname: 
   );
 }
 
+async function openMapTool(name: "搜索研究内容" | "筛选地图" | "显示的关系" | "更多地图功能") {
+  const button = screen.getByRole("button", { name });
+  if (button.getAttribute("aria-expanded") !== "true") await userEvent.setup().click(button);
+}
+
 describe("ResearchMapLandingPage", () => {
   it("读取期间呈现明确的加载状态", () => {
     renderPage({ getResearchMap: () => new Promise(() => {}) });
     expect(screen.getByLabelText("正在打开研究图谱")).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("navigation", { name: "研究图谱工具" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "筛选地图" })).toBeDisabled();
+    expect(screen.getByRole("link", { name: "新建会话" })).toHaveAttribute("href", "/research/new");
   });
 
   it("读取失败时说明状态并允许重试", async () => {
@@ -41,6 +49,7 @@ describe("ResearchMapLandingPage", () => {
     renderPage({ getResearchMap });
 
     expect(await screen.findByRole("heading", { name: "暂时无法打开研究图谱" })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "研究图谱工具" })).toBeInTheDocument();
     await userEvent.setup().click(screen.getByRole("button", { name: "重试" }));
     expect(await screen.findByText(/还没有研究节点/)).toBeInTheDocument();
     expect(getResearchMap).toHaveBeenCalledTimes(2);
@@ -56,6 +65,9 @@ describe("ResearchMapLandingPage", () => {
     renderPage({ getResearchMap: async () => { throw new ApiRequestError(401, "unauthorized", "unauthorized"); } });
     expect(await screen.findByRole("heading", { name: "配对 Collector" })).toBeInTheDocument();
     expect(screen.getByLabelText("配对码")).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "研究图谱工具" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "筛选地图" })).toBeDisabled();
+    expect(screen.getByRole("link", { name: "新建会话" })).toHaveAttribute("href", "/research/new");
   });
 
   it("同一观察结果呈现跨会话、归档、孤立与融合节点，并只使用稳定节点地址", async () => {
@@ -83,9 +95,61 @@ describe("ResearchMapLandingPage", () => {
     expect(fusionTargets).toHaveLength(2);
     expect(fusionTargets[1]).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByTestId("global-map-canvas").querySelector('[data-edge-kind="fused-from"]')).not.toBeNull();
-    expect(screen.getByText("4")).toBeInTheDocument();
+    await openMapTool("更多地图功能");
+    expect(screen.getByLabelText("地图摘要")).toHaveTextContent("4 个节点");
     expect(screen.getByRole("link", { name: "新建会话" })).toHaveAttribute("href", "/research/new");
-    expect(screen.getByRole("link", { name: "查看回收站" })).toHaveAttribute("href", "/trash");
+    expect(screen.getByRole("link", { name: "回收站" })).toHaveAttribute("href", "/trash");
+  });
+
+  it("边缘工具一次只展开一个，Escape 关闭并把焦点还给图标", async () => {
+    renderPage({ getResearchMap: async () => makeGraphObservation({ nodes: [makeGraphObservationNode("a", "节点 A")] }) });
+    const user = userEvent.setup();
+    await screen.findByTestId("global-map-canvas");
+
+    await user.click(screen.getByRole("button", { name: "搜索研究内容" }));
+    expect(screen.getByRole("searchbox", { name: "搜索全部研究内容" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "筛选地图" }));
+    expect(screen.queryByRole("searchbox", { name: "搜索全部研究内容" })).not.toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "已归档" })).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("checkbox", { name: "已归档" })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "筛选地图" })).toHaveFocus());
+
+    await user.click(screen.getByRole("button", { name: "筛选地图" }));
+    Object.defineProperty(screen.getByTestId("global-map-canvas"), "setPointerCapture", { value: vi.fn() });
+    fireEvent.pointerDown(document.querySelector(".global-map__pan-surface")!);
+    expect(screen.queryByRole("checkbox", { name: "已归档" })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "筛选地图" })).toHaveFocus());
+  });
+
+  it("窄屏默认保留画布，并可临时切换到同源节点列表", async () => {
+    renderPage({ getResearchMap: async () => makeGraphObservation({ nodes: [makeGraphObservationNode("a", "节点 A")] }) });
+    const user = userEvent.setup();
+    await screen.findByTestId("global-map-canvas");
+    const region = screen.getByRole("region", { name: "全部研究节点" });
+    expect(region).toHaveClass("global-map--presentation-canvas");
+
+    await user.click(screen.getByRole("button", { name: "切换到节点列表" }));
+    expect(region).toHaveClass("global-map--presentation-list");
+    expect(screen.getByRole("button", { name: "切换到地图画布" })).toBeInTheDocument();
+  });
+
+  it("点击专注时保留同一画布并用局部更新状态等待新观察", async () => {
+    vi.stubGlobal("matchMedia", () => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
+    const observation = makeGraphObservation({ nodes: [makeGraphObservationNode("a", "节点 A")] });
+    const pending = new Promise<never>(() => {});
+    const getResearchMap = vi.fn().mockResolvedValueOnce(observation).mockReturnValue(pending);
+    renderPage({ getResearchMap });
+    const user = userEvent.setup();
+    const canvas = await screen.findByTestId("global-map-canvas");
+    await user.click(within(canvas).getByRole("button", { name: /节点 A/ }));
+
+    expect(await screen.findByText("正在更新地图…")).toBeInTheDocument();
+    expect(screen.getByTestId("global-map-canvas")).toBe(canvas);
+    expect(screen.queryByLabelText("正在打开研究图谱")).not.toBeInTheDocument();
+    await waitFor(() => expect(getResearchMap).toHaveBeenCalledTimes(2));
+    vi.unstubAllGlobals();
   });
 
   it("空结果也把筛选保存到当前 history entry，刷新可恢复同一现场", async () => {
@@ -97,9 +161,11 @@ describe("ResearchMapLandingPage", () => {
     const user = userEvent.setup();
 
     await screen.findByRole("link", { name: "开始第一次研究" });
+    await openMapTool("搜索研究内容");
     await user.type(screen.getByRole("searchbox", { name: "搜索全部研究内容" }), "量子纠缠");
     await user.click(screen.getByRole("button", { name: "搜索" }));
     await waitFor(() => expect(window.history.state.usr?.mapSceneV2?.search?.query).toBe("量子纠缠"));
+    await openMapTool("筛选地图");
     await user.click(screen.getByRole("checkbox", { name: "已归档" }));
 
     await waitFor(() => expect(window.history.state.usr?.mapSceneV2?.filters?.lifecycles).toEqual(["active"]));
@@ -143,6 +209,7 @@ describe("ResearchMapLandingPage", () => {
     const user = userEvent.setup();
 
     await screen.findByRole("link", { name: "开始第一次研究" });
+    await openMapTool("筛选地图");
     await user.click(screen.getByRole("checkbox", { name: "已归档" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("操作没有完成，请重试。");
@@ -178,7 +245,9 @@ describe("ResearchMapLandingPage", () => {
       .mockReturnValue(pending);
     renderPage({ getResearchMap }, "/map/focus/focus");
 
-    const parentToggle = await screen.findByRole("button", { name: "父子生长" });
+    await screen.findByTestId("global-map-canvas");
+    await openMapTool("显示的关系");
+    const parentToggle = screen.getByRole("button", { name: "父子生长" });
     const fusionToggle = screen.getByRole("button", { name: "融合来源" });
     const user = userEvent.setup();
     await user.click(parentToggle);
@@ -198,6 +267,7 @@ describe("ResearchMapLandingPage", () => {
     const user = userEvent.setup();
 
     await screen.findByTestId("global-map-canvas");
+    await openMapTool("筛选地图");
     await user.click(screen.getByRole("checkbox", { name: "项目 A" }));
     await user.click(screen.getByRole("checkbox", { name: "未分类" }));
     await user.click(screen.getByRole("checkbox", { name: "已归档" }));
@@ -219,6 +289,7 @@ describe("ResearchMapLandingPage", () => {
     const user = userEvent.setup();
 
     await screen.findByTestId("global-map-canvas");
+    await openMapTool("筛选地图");
     await user.type(screen.getByLabelText("开始日期"), "2026-08-21");
     await waitFor(() => expect(getResearchMap).toHaveBeenCalledTimes(2));
     await user.type(screen.getByLabelText("结束日期"), "2026-08-20");
@@ -236,6 +307,7 @@ describe("ResearchMapLandingPage", () => {
     renderPage({ getResearchMap });
 
     await screen.findByTestId("global-map-canvas");
+    await openMapTool("筛选地图");
     await userEvent.setup().click(screen.getByRole("checkbox", { name: "已归档" }));
 
     await screen.findByRole("alert");
@@ -263,6 +335,7 @@ describe("ResearchMapLandingPage", () => {
     const user = userEvent.setup();
 
     await screen.findByTestId("global-map-canvas");
+    await openMapTool("筛选地图");
     await waitFor(() => {
       expect(window.history.state.usr?.mapSceneV2?.layout?.positions).toHaveLength(4);
       expect(window.history.state.usr?.mapSceneV2?.layout?.edgeKeys).toHaveLength(1);

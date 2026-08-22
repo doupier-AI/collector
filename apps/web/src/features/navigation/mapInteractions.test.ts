@@ -3,6 +3,9 @@ import {
   beginDragSettlement,
   createDragSimulation,
   createGatherSimulation,
+  DRAG_PASSIVE_MAX_NODES,
+  DRAG_RELATION_MAX_NODES,
+  DRAG_TOTAL_MAX_NODES,
   dragPositions,
   edgeCurvedPath,
   enterOrigin,
@@ -57,6 +60,62 @@ describe("mapInteractions 活体力导向", () => {
     expect(Math.abs(Math.hypot(settled.get("neighbor")!.x - 80, settled.get("neighbor")!.y) - 120)).toBeLessThan(6);
   });
 
+  it("无关系的空间近邻是被动碰撞体：会被推开、没有弹簧，远处节点不被纳入", () => {
+    const positions = new Map([
+      ["dragged", { x: 0, y: 0 }],
+      ["passive-near", { x: 30, y: 0 }],
+      ["passive-far", { x: 260, y: 0 }],
+    ]);
+    const simulation = createDragSimulation("dragged", graph([["dragged", []]]), positions);
+    expect(simulation.nodes.get("passive-near")!.kind).toBe("passive");
+    expect(simulation.nodes.get("passive-near")!.strength).toBeCloseTo(0.7);
+    expect(simulation.springs.has("passive-near")).toBe(false);
+    expect(simulation.nodes.has("passive-far")).toBe(false);
+
+    for (let frame = 0; frame < 8; frame += 1) stepDragSimulation(simulation, { x: 20, y: 0 });
+    expect(dragPositions(simulation).get("passive-near")!.x).toBeGreaterThan(30);
+    expect(simulation.nodes.has("passive-far")).toBe(false);
+    settleDragSimulation(simulation, { x: 20, y: 0 });
+    expect(simulation.nodes.get("passive-near")!.vx).toBe(0);
+  });
+
+  it("其他关系簇的近邻仍可被动碰撞，但当前关系子图的预算外直接邻居不会降级", () => {
+    const positions = new Map([
+      ["dragged", { x: 0, y: 0 }],
+      ["other-cluster-near", { x: 30, y: 0 }],
+      ["other-cluster-far", { x: 300, y: 0 }],
+      ["direct-budget-edge", { x: 35, y: 20 }],
+    ]);
+    const adjacency = graph([
+      ["dragged", ["direct-budget-edge"]],
+      ["other-cluster-near", ["other-cluster-far"]],
+    ]);
+    const simulation = createDragSimulation("dragged", adjacency, positions, { maxRelationNodes: 1 });
+    expect(simulation.nodes.get("other-cluster-near")?.kind).toBe("passive");
+    expect(simulation.springs.has("other-cluster-near")).toBe(false);
+    expect(simulation.nodes.has("direct-budget-edge")).toBe(false);
+  });
+
+  it("被动碰撞体在移动时动态发现，顺序稳定，并能继续推开其他被动节点", () => {
+    const positions = new Map([
+      ["dragged", { x: 0, y: 0 }],
+      ["passive-b", { x: 200, y: 0 }],
+      ["passive-a", { x: 150, y: 0 }],
+      ["passive-far", { x: 400, y: 0 }],
+    ]);
+    const first = createDragSimulation("dragged", graph([["dragged", []]]), positions);
+    const second = createDragSimulation("dragged", graph([["dragged", []]]), positions);
+    expect([...first.nodes.values()].filter((node) => node.kind === "passive")).toHaveLength(0);
+    stepDragSimulation(first, { x: 80, y: 0 });
+    stepDragSimulation(second, { x: 80, y: 0 });
+    const passiveIds = [...first.nodes.values()].filter((node) => node.kind === "passive").map((node) => node.id);
+    expect(passiveIds).toEqual(["passive-a", "passive-b"]);
+    expect(dragPositions(first)).toEqual(dragPositions(second));
+    // passive-b 距被拖节点 100，不在 64 斥力半径内；其位移只能经 passive-a 传来。
+    for (let frame = 0; frame < 12; frame += 1) stepDragSimulation(first, { x: 100, y: 0 });
+    expect(dragPositions(first).get("passive-b")!.x).toBeGreaterThan(200);
+  });
+
   it("BFS 跳数及其力度递减固定，超过预算时整层收窄", () => {
     const positions = new Map([
       ["root", { x: 0, y: 0 }], ["one", { x: 90, y: 0 }], ["two", { x: 180, y: 0 }], ["three", { x: 270, y: 0 }],
@@ -88,8 +147,26 @@ describe("mapInteractions 活体力导向", () => {
       directNeighbors.push(id);
     }
     const boundedStar = createDragSimulation("root", graph([["root", directNeighbors]]), starPositions);
-    expect(boundedStar.nodes.size).toBe(240);
+    expect(boundedStar.nodes.size).toBe(DRAG_RELATION_MAX_NODES);
     expect([...boundedStar.nodes.values()].every((node) => node.hop <= 1)).toBe(true);
+
+    const budgetPositions = new Map<string, { x: number; y: number }>([["root", { x: 0, y: 0 }]]);
+    const relationIds: string[] = [];
+    const passiveIds: string[] = [];
+    for (let index = 0; index < 300; index += 1) {
+      const id = `relation-${index.toString().padStart(3, "0")}`;
+      budgetPositions.set(id, { x: 300 + index, y: 0 });
+      relationIds.push(id);
+    }
+    for (let index = 0; index < 100; index += 1) {
+      const id = `passive-${index.toString().padStart(3, "0")}`;
+      budgetPositions.set(id, { x: 8 + index / 10, y: 0 });
+      passiveIds.push(id);
+    }
+    const budgeted = createDragSimulation("root", graph([["root", relationIds]]), budgetPositions);
+    expect([...budgeted.nodes.values()].filter((node) => node.kind === "relation")).toHaveLength(DRAG_RELATION_MAX_NODES);
+    expect([...budgeted.nodes.values()].filter((node) => node.kind === "passive")).toHaveLength(DRAG_PASSIVE_MAX_NODES);
+    expect(budgeted.nodes.size).toBe(DRAG_TOTAL_MAX_NODES);
   });
 
   it("松手总有独立的最多 240 帧结算窗口，并在上限清掉数值残差", () => {

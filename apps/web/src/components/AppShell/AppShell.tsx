@@ -46,6 +46,7 @@ export function AppShell() {
   const [leftWidth, setLeftWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
   const mapTriggerRef = useRef<HTMLButtonElement>(null);
   const location = useLocation();
+  const immersiveMap = /^\/map\/?$/.test(location.pathname) || /^\/map\/focus\/[^/]+\/?$/.test(location.pathname);
   const mapTarget = researchMapTargetForPath(location.pathname);
   const [mapOpen, setMapOpen] = useState(false);
   const [mapMode, setMapMode] = useState<ResearchMapMode>("focus");
@@ -81,11 +82,11 @@ export function AppShell() {
   }, [mapTarget]);
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${immersiveMap ? " app-shell--immersive-map" : ""}`}>
       <a className="skip-link" href="#main-content">
         跳到主要内容
       </a>
-      <header className="app-bar">
+      {!immersiveMap ? <header className="app-bar">
         {mapTarget ? (
           <button
             type="button"
@@ -99,13 +100,13 @@ export function AppShell() {
             <ResearchMapGlyph />
           </button>
         ) : null}
-      </header>
+      </header> : null}
       <div className="app-body">
-        <ContentDrawer
+        {!immersiveMap ? <ContentDrawer
           mode={mode}
           width={leftWidth}
           onWidthChange={setLeftWidth}
-        />
+        /> : null}
         <main className="app-main" id="main-content">
           <Outlet />
         </main>

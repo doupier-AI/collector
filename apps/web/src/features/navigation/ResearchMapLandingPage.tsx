@@ -4,8 +4,10 @@ import { RESEARCH_PERMANENT_EDGE_KINDS, type ProjectRecord, type ResearchGraphOb
 import { apiErrorCopy, isUnauthorized } from "../../api/errors";
 import { globalMapFocusPath, stableNodePath } from "../../app/paths";
 import { useServices } from "../../app/services";
+import { useMediaQuery } from "../../app/useMediaQuery";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { PairingGate } from "../auth/PairingGate";
+import { ThemeSwitcher } from "../theme/theme";
 import { GlobalResearchMap } from "./GlobalResearchMap";
 import { ResearchMapFilters } from "./ResearchMapFilters";
 import { ResearchMapGlyph } from "./ResearchMapGlyph";
@@ -36,6 +38,33 @@ function sameRelationshipKinds(left: readonly ResearchPermanentEdgeKind[], right
   return left.length === right.length && left.every((kind, index) => kind === right[index]);
 }
 
+type MapTool = "search" | "filters" | "relationships" | "more";
+type MapPresentation = "canvas" | "list";
+
+function MapToolGlyph({ kind }: { kind: "back" | "search" | "filters" | "relationships" | "new" | "more" | "canvas" | "list" }) {
+  if (kind === "back") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12.5 4.5-5.5 5.5 5.5 5.5M7.5 10H17" /></svg>;
+  if (kind === "search") return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5" /><path d="m12.2 12.2 4.3 4.3" /></svg>;
+  if (kind === "filters") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M5.5 10h9M8 15h4" /></svg>;
+  if (kind === "relationships") return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4.5" cy="10" r="2" /><circle cx="15.5" cy="5" r="2" /><circle cx="15.5" cy="15" r="2" /><path d="m6.4 9.1 7.2-3.2M6.4 10.9l7.2 3.2" /></svg>;
+  if (kind === "new") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.5v13M3.5 10h13" /></svg>;
+  if (kind === "canvas") return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="5" cy="11" r="2" /><circle cx="10" cy="5" r="2" /><circle cx="15" cy="12" r="2" /><path d="m6.2 9.4 2.6-2.8m2.5-.3 2.5 4" /></svg>;
+  if (kind === "list") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 5h10M7 10h10M7 15h10" /><circle cx="3.5" cy="5" r=".75" /><circle cx="3.5" cy="10" r=".75" /><circle cx="3.5" cy="15" r=".75" /></svg>;
+  return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4" cy="10" r="1" /><circle cx="10" cy="10" r="1" /><circle cx="16" cy="10" r="1" /></svg>;
+}
+
+function MapStateDock({ onBack }: { onBack: () => void }) {
+  return (
+    <nav className="map-tool-dock" aria-label="研究图谱工具">
+      <button type="button" className="map-tool-button" aria-label="返回" title="返回" onClick={onBack}><MapToolGlyph kind="back" /></button>
+      <button type="button" className="map-tool-button" aria-label="搜索研究内容" title="搜索研究内容" disabled><MapToolGlyph kind="search" /></button>
+      <button type="button" className="map-tool-button" aria-label="筛选地图" title="筛选地图" disabled><MapToolGlyph kind="filters" /></button>
+      <button type="button" className="map-tool-button" aria-label="显示的关系" title="显示的关系" disabled><MapToolGlyph kind="relationships" /></button>
+      <Link className="map-tool-button" aria-label="新建会话" title="新建会话" to="/research/new"><MapToolGlyph kind="new" /></Link>
+      <button type="button" className="map-tool-button" aria-label="更多地图功能" title="更多地图功能" disabled><MapToolGlyph kind="more" /></button>
+    </nav>
+  );
+}
+
 /**
  * #62：稳定 /map 入口消费服务端统一全局观察结果。
  * 画布与窄屏列表只替换呈现，不各自请求或重算图范围。
@@ -45,11 +74,18 @@ export function ResearchMapLandingPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const { focusNodeId } = useParams();
+  const wide = useMediaQuery("(min-width: 900px)");
+  const [activeTool, setActiveTool] = useState<MapTool | null>(null);
+  const [presentation, setPresentation] = useState<MapPresentation>("canvas");
+  const toolButtonRefs = useRef(new Map<MapTool, HTMLButtonElement>());
+  const toolPanelRef = useRef<HTMLDivElement>(null);
   const entryScene = useMemo(() => mapSceneFromRouteState(location.state), [location.key, location.state]);
   const mapEntry = currentHistoryEntry(location.key);
   const mapEntryKey = mapEntry ? `${mapEntry.idx}:${mapEntry.key}` : location.key;
   const [observationEntry, setObservationEntry] = useState<{ entryKey: string; filters: ResearchMapFilterState; value: ResearchGraphObservation } | null>(null);
-  const observation = observationEntry?.entryKey === mapEntryKey ? observationEntry.value : null;
+  // 专注 PUSH/浏览器 POP 期间保留同一画布；新观察只在响应到达后原位替换，
+  // 避免页面短暂塌成加载骨架把浏览器强制滚回顶部。
+  const observation = observationEntry?.value ?? null;
   const [projects, setProjects] = useState<ProjectRecord[] | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [projectError, setProjectError] = useState<unknown>(null);
@@ -95,6 +131,34 @@ export function ResearchMapLandingPage() {
   }, [entryScene, mapEntryKey]);
   const [searchEntry, setSearchEntry] = useState<{ entryKey: string; value?: MapSearchScene }>(() => ({ entryKey: mapEntryKey, value: entryScene?.search }));
   const search = searchEntry.entryKey === mapEntryKey ? searchEntry.value : entryScene?.search;
+
+  const closeTool = useCallback((restoreFocus = false) => {
+    setActiveTool((current) => {
+      if (restoreFocus && current) requestAnimationFrame(() => toolButtonRefs.current.get(current)?.focus());
+      return null;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!activeTool) return;
+    const frame = requestAnimationFrame(() => {
+      const selector = activeTool === "search"
+        ? "input[type='search']"
+        : "button, input, a[href]";
+      toolPanelRef.current?.querySelector<HTMLElement>(selector)?.focus();
+    });
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (document.querySelector('[data-node-physics="active"]')) return;
+      event.preventDefault();
+      closeTool(true);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [activeTool, closeTool]);
 
   const setSceneSearch = useCallback((next: MapSearchScene | undefined) => {
     setSearchEntry({ entryKey: mapEntryKey, value: next });
@@ -197,6 +261,16 @@ export function ResearchMapLandingPage() {
     });
   }, [navigate]);
 
+  const leaveMap = useCallback(() => {
+    const entry = currentHistoryEntry(locationKeyRef.current);
+    if (entry && entry.idx > 0) navigate(-1);
+    else navigate("/");
+  }, [navigate]);
+
+  const toggleTool = useCallback((tool: MapTool) => {
+    setActiveTool((current) => current === tool ? null : tool);
+  }, []);
+
   useEffect(() => {
     let stale = false;
     setProjectError(null);
@@ -261,8 +335,10 @@ export function ResearchMapLandingPage() {
 
   if (!observation && !projectError && !error) {
     return (
-      <div className="page map-landing" aria-busy="true" aria-label="正在打开研究图谱">
-        <div className="skeleton-stack" aria-hidden="true">
+      <div className="map-landing map-landing--immersive map-landing--state" aria-busy="true" aria-label="正在打开研究图谱">
+        <div className="map-landing__identity"><ResearchMapGlyph size={22} /><span>研究图谱</span></div>
+        <MapStateDock onBack={leaveMap} />
+        <div className="skeleton-stack map-landing__state-card" aria-hidden="true">
           <Skeleton variant="title" width="12rem" />
           <Skeleton variant="text" width="28rem" />
           <Skeleton variant="block" />
@@ -274,11 +350,22 @@ export function ResearchMapLandingPage() {
   const initialError = projectError ?? error;
   if ((!observation || !projects) && initialError) {
     if (isUnauthorized(initialError)) {
-      return <PairingGate onPaired={() => setReloadNonce((nonce) => nonce + 1)} />;
+      return (
+        <div className="map-landing map-landing--immersive map-landing--state">
+          <div className="map-landing__identity"><ResearchMapGlyph size={22} /><span>研究图谱</span></div>
+          <MapStateDock onBack={leaveMap} />
+          <div className="map-landing__state-card">
+            <PairingGate onPaired={() => setReloadNonce((nonce) => nonce + 1)} />
+          </div>
+        </div>
+      );
     }
     const copy = apiErrorCopy(initialError);
     return (
-      <div className="page map-landing">
+      <div className="map-landing map-landing--immersive map-landing--state">
+        <div className="map-landing__identity"><ResearchMapGlyph size={22} /><span>研究图谱</span></div>
+        <MapStateDock onBack={leaveMap} />
+        <div className="map-landing__state-card">
         <h1 className="page__title">暂时无法打开研究图谱</h1>
         <p className="page__lead">{copy.body}</p>
         <div className="map-landing__error-actions">
@@ -289,6 +376,7 @@ export function ResearchMapLandingPage() {
             开始新研究
           </Link>
         </div>
+        </div>
       </div>
     );
   }
@@ -297,62 +385,138 @@ export function ResearchMapLandingPage() {
 
   const filterValidation = serializedFilters.valid ? undefined : serializedFilters.reason;
   const hasFilters = !isDefaultResearchMapFilterState(filters);
+  const focusSummary = focusNodeId ? observation.nodes.find((item) => item.node.id === focusNodeId) : undefined;
+  const toolDefinitions: Array<{ tool: MapTool; label: string; glyph: "search" | "filters" | "relationships" | "more"; active?: boolean }> = [
+    { tool: "search", label: "搜索研究内容", glyph: "search", active: Boolean(search?.query) },
+    { tool: "filters", label: "筛选地图", glyph: "filters", active: hasFilters },
+    { tool: "relationships", label: "显示的关系", glyph: "relationships", active: relationshipKinds.length < RESEARCH_PERMANENT_EDGE_KINDS.length },
+    { tool: "more", label: "更多地图功能", glyph: "more" },
+  ];
 
   return (
-    <div className="page map-landing">
-      <header className="map-landing__header">
-        <div className="map-landing__glyph" aria-hidden="true">
-          <ResearchMapGlyph size={28} />
-        </div>
-        <div>
-          <h1 className="page__title">研究图谱</h1>
-          <p className="page__lead">
-            这里汇集全部尚未删除的研究节点。归档内容保留标记，回收站内容不会出现在地图中。
-          </p>
-        </div>
-      </header>
+    <div className="map-landing map-landing--immersive">
+      <h1 className="sr-only">研究图谱</h1>
+      <div className="map-landing__identity" aria-hidden="true"><ResearchMapGlyph size={22} /><span>研究图谱</span></div>
 
-      <div className="map-landing__actions" aria-label="地图操作">
-        <p>节点可来自不同会话；父子生长与融合来源保留原有方向。</p>
-        <div>
-          <Link className="button button--primary" to="/research/new">
-            新建会话
-          </Link>
-          <Link className="button button--secondary" to="/trash">查看回收站</Link>
+      <nav className="map-tool-dock" aria-label="研究图谱工具">
+        <button type="button" className="map-tool-button" aria-label="返回" title="返回" onClick={leaveMap}><MapToolGlyph kind="back" /></button>
+        {toolDefinitions.slice(0, 3).map(({ tool, label, glyph, active }) => (
+          <button
+            key={tool}
+            type="button"
+            ref={(element) => { if (element) toolButtonRefs.current.set(tool, element); else toolButtonRefs.current.delete(tool); }}
+            className={`map-tool-button${active ? " map-tool-button--has-state" : ""}`}
+            aria-label={label}
+            title={label}
+            aria-expanded={activeTool === tool}
+            aria-controls="map-tool-panel"
+            onClick={() => toggleTool(tool)}
+          ><MapToolGlyph kind={glyph} /></button>
+        ))}
+        <Link className="map-tool-button" aria-label="新建会话" title="新建会话" to="/research/new"><MapToolGlyph kind="new" /></Link>
+        {toolDefinitions.slice(3).map(({ tool, label, glyph }) => (
+          <button
+            key={tool}
+            type="button"
+            ref={(element) => { if (element) toolButtonRefs.current.set(tool, element); else toolButtonRefs.current.delete(tool); }}
+            className="map-tool-button"
+            aria-label={label}
+            title={label}
+            aria-expanded={activeTool === tool}
+            aria-controls="map-tool-panel"
+            onClick={() => toggleTool(tool)}
+          ><MapToolGlyph kind={glyph} /></button>
+        ))}
+      </nav>
+
+      {!wide ? (
+        <button
+          type="button"
+          className="map-presentation-toggle"
+          aria-label={presentation === "canvas" ? "切换到节点列表" : "切换到地图画布"}
+          title={presentation === "canvas" ? "节点列表" : "地图画布"}
+          onClick={() => setPresentation((current) => current === "canvas" ? "list" : "canvas")}
+        ><MapToolGlyph kind={presentation === "canvas" ? "list" : "canvas"} /></button>
+      ) : null}
+
+      {focusSummary ? (
+        <div className="map-focus-status" aria-label="当前专注节点">
+          <span>正在专注：<strong>{focusSummary.label}</strong></span>
+          <button type="button" aria-label="退出专注" onClick={exitFocus}>×</button>
         </div>
-      </div>
+      ) : null}
 
-      <ResearchMapFilters
-        projects={projects}
-        value={filters}
-        onChange={setFilters}
-        validationMessage={filterValidation}
-      />
+      {updating ? <div className="map-update-status" role="status">正在更新地图…</div> : null}
 
-      <ResearchMapSearch
-        search={search}
-        insideNodeIds={observation.nodes.filter((node) => node.scope === "inside-current-filter").map((node) => node.node.id)}
-        onSearchChange={setSceneSearch}
-        onRevealNode={revealSearchNode}
-        onOpenMatch={openSearchMatch}
-      />
+      {activeTool ? (
+        <div ref={toolPanelRef} id="map-tool-panel" className={`map-tool-panel map-tool-panel--${activeTool}`} role="region" aria-label={toolDefinitions.find((item) => item.tool === activeTool)?.label}>
+          <div className="map-tool-panel__topline">
+            <strong>{toolDefinitions.find((item) => item.tool === activeTool)?.label}</strong>
+            <button type="button" aria-label="关闭工具面板" onClick={() => closeTool(true)}>×</button>
+          </div>
+          {activeTool === "filters" ? (
+            <ResearchMapFilters projects={projects} value={filters} onChange={setFilters} validationMessage={filterValidation} />
+          ) : null}
+          {activeTool === "search" ? (
+            <ResearchMapSearch
+              search={search}
+              insideNodeIds={observation.nodes.filter((node) => node.scope === "inside-current-filter").map((node) => node.node.id)}
+              onSearchChange={setSceneSearch}
+              onRevealNode={(nodeId) => { closeTool(false); revealSearchNode(nodeId); }}
+              onOpenMatch={openSearchMatch}
+            />
+          ) : null}
+          {activeTool === "relationships" ? (
+            <div className="map-relationship-tools" role="group" aria-label="显示的关系">
+              <p>控制专注和连线使用哪些永久关系；关闭关系不会删除事实或改变节点坐标。</p>
+              {RESEARCH_PERMANENT_EDGE_KINDS.map((kind) => (
+                <button key={kind} type="button" className="button button--secondary" aria-pressed={relationshipKinds.includes(kind)} onClick={() => setRelationshipKinds((current) => current.includes(kind) ? current.filter((item) => item !== kind) : [...current, kind])}>
+                  {kind === "parent-child" ? "父子生长" : "融合来源"}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {activeTool === "more" ? (
+            <div className="map-more-tools">
+              <div className="map-more-tools__summary" aria-label="地图摘要">
+                <span><strong>{observation.nodes.length}</strong> 个节点</span>
+                <span><strong>{observation.edges.length}</strong> 条永久关系</span>
+                <span><strong>{observation.nodes.filter((item) => item.lifecycle === "archived").length}</strong> 个已归档</span>
+              </div>
+              <div className="map-more-tools__legend" aria-label="地图图例">
+                <span><i className="global-map__legend-node" />研究节点</span>
+                <span><i className="global-map__legend-node global-map__legend-node--fusion" />融合成果</span>
+                <span><i className="global-map__legend-line" />父子生长</span>
+                <span><i className="global-map__legend-line global-map__legend-line--fusion" />融合来源</span>
+              </div>
+              <div className="map-more-tools__links">
+                <Link to="/trash">回收站</Link><Link to="/run-records">运行记录</Link>
+                <Link to="/settings/ai-model">AI 模型设置</Link><Link to="/settings/semantic-search">语义搜索设置</Link>
+                <Link to="/settings/fusion">融合设置</Link>
+              </div>
+              <ThemeSwitcher variant="detail" />
+              <p className="map-more-tools__hint">拖动画布平移 · 滚轮缩放 · 拖动节点整理 · Shift+方向键微调 · 单击或 Space 专注 · 双击或 Enter 打开</p>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {projectError ? (
-        <div className="map-landing__update-error" role="alert">
+        <div className="map-landing__update-error map-landing__update-error--floating" role="alert">
           <span>项目列表暂时无法更新，地图继续使用上一次加载的项目。</span>
           <button type="button" className="button button--secondary" onClick={() => setReloadNonce((nonce) => nonce + 1)}>重试</button>
         </div>
       ) : null}
 
       {error ? (
-        <div className="map-landing__update-error" role="alert">
+        <div className="map-landing__update-error map-landing__update-error--floating" role="alert">
           <span>{apiErrorCopy(error).body}</span>
           <button type="button" className="button button--secondary" onClick={() => setReloadNonce((nonce) => nonce + 1)}>重试</button>
         </div>
       ) : null}
 
       {observation.nodes.length === 0 ? (
-        <div className="map-landing__empty" role="status">
+        <div className="map-landing__empty map-landing__empty--immersive" role="status">
           {hasFilters ? (
             <>
               <p>当前筛选没有匹配的研究节点，地图事实没有被删除。</p>
@@ -366,11 +530,11 @@ export function ResearchMapLandingPage() {
           )}
         </div>
       ) : (
-        <div aria-busy={updating}>
+        <div className="map-landing__surface" aria-busy={updating}>
           <GlobalResearchMap
-            key={mapEntryKey}
             observation={observation}
             initialScene={sceneRef.current}
+            sceneKey={mapEntryKey}
             onSceneChange={saveScene}
             onFocusNode={pushFocus}
             onExitFocus={exitFocus}
@@ -379,6 +543,9 @@ export function ResearchMapLandingPage() {
             relationshipKinds={relationshipKinds}
             filters={sceneFilters}
             search={search}
+            immersive
+            presentation={wide ? "canvas" : presentation}
+            onSurfaceInteraction={(restoreToolFocus) => closeTool(restoreToolFocus)}
             revealNodeId={revealRequest?.nodeId}
             revealRequestId={revealRequest?.requestId}
             onRevealHandled={finishReveal}

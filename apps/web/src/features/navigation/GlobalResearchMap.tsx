@@ -54,7 +54,10 @@ interface NodeDragState {
   grabOffset: GraphPoint;
   lastSvg: GraphPoint;
   physics: DragSimulation;
-  persistedPositions: Map<string, GraphPoint>;
+  /** 拖动开始时的显示层快照，包含专注编排/入场偏移。 */
+  displayStartPositions: ReadonlyMap<string, GraphPoint>;
+  /** 拖动开始时的持久层快照；最终只叠加真实交互位移。 */
+  persistentBasePositions: ReadonlyMap<string, GraphPoint>;
   moved: boolean;
   cancelled: boolean;
   settling: boolean;
@@ -73,6 +76,23 @@ function displacedPositions(
     const origin = from.get(id);
     return !origin || Math.hypot(point.x - origin.x, point.y - origin.y) > POSITION_COMMIT_EPSILON;
   }));
+}
+
+function persistentPositionsAfterDrag(
+  persistentBase: ReadonlyMap<string, GraphPoint>,
+  displayStart: ReadonlyMap<string, GraphPoint>,
+  displayFinal: ReadonlyMap<string, GraphPoint>,
+): Map<string, GraphPoint> {
+  const committed = new Map<string, GraphPoint>();
+  for (const [id, final] of displayFinal) {
+    const shownAtStart = displayStart.get(id);
+    const persistedAtStart = persistentBase.get(id);
+    if (!shownAtStart || !persistedAtStart) continue;
+    const delta = { x: final.x - shownAtStart.x, y: final.y - shownAtStart.y };
+    if (Math.hypot(delta.x, delta.y) <= POSITION_COMMIT_EPSILON) continue;
+    committed.set(id, { x: persistedAtStart.x + delta.x, y: persistedAtStart.y + delta.y });
+  }
+  return committed;
 }
 
 function nodeStatus(summary: ResearchGraphObservationNode): string {
@@ -193,9 +213,17 @@ interface GlobalResearchMapProps {
   /** 定位动画和焦点转移完成后清除瞬态请求，避免刷新或新 entry 重放。 */
   onRevealHandled?: (nodeId: string, requestId: number) => void;
   search?: MapSearchScene;
+  /** 全屏图谱在窄屏可在同一份观察结果上切换画布/列表，不改变 Map Scene。 */
+  presentation?: "canvas" | "list";
+  /** 沉浸式页面把摘要、专注和关系工具移到边缘工具坞。 */
+  immersive?: boolean;
+  /** history entry 改变时在同一画布实例中恢复现场，避免重挂载与入场动画重播。 */
+  sceneKey?: string;
+  /** 用户开始操作地图表面时关闭外层悬浮工具。 */
+  onSurfaceInteraction?: (restoreToolFocus: boolean) => void;
 }
 
-export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initialScene, onSceneChange, onOpenNode, nodeHref = stableNodePath, relationshipKinds = observation.appliedRelationshipKinds, onRelationshipKindToggle, filters = DEFAULT_RESEARCH_MAP_FILTER_STATE, preserveExistingLayout, revealNodeId, revealRequestId, onRevealHandled, search }: GlobalResearchMapProps) {
+export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initialScene, onSceneChange, onOpenNode, nodeHref = stableNodePath, relationshipKinds = observation.appliedRelationshipKinds, onRelationshipKindToggle, filters = DEFAULT_RESEARCH_MAP_FILTER_STATE, preserveExistingLayout, revealNodeId, revealRequestId, onRevealHandled, search, presentation = "canvas", immersive = false, sceneKey, onSurfaceInteraction }: GlobalResearchMapProps) {
   const filtering = preserveExistingLayout ?? !isDefaultResearchMapFilterState(filters);
   const layoutRef = useRef<ReturnType<typeof createStableOrganicGraphLayout> | undefined>(undefined);
   /** 用户拖动/键盘移动确认后的位置覆盖，随 Map Scene 持久化。 */
@@ -238,6 +266,8 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
   // 入场展开层（ADR-0042）：新节点从终点附近的确定性偏移柔展开，只在显示层，不进 Map Scene。
   const [enteringPositions, setEnteringPositions] = useState<Map<string, GraphPoint> | null>(null);
   const [entryAnimationState, setEntryAnimationState] = useState<"pending" | "running" | "complete">("pending");
+  const enteringRafRef = useRef<number | undefined>(undefined);
+  const knownNodeIdsRef = useRef<ReadonlySet<string> | null>(null);
   const [nodePhysicsActive, setNodePhysicsActive] = useState(false);
   const positions = useMemo(() => {
     const merged = new Map(persistPositions);
@@ -247,8 +277,55 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
     if (interactivePositions) for (const [id, point] of interactivePositions) merged.set(id, point);
     return merged;
   }, [enteringPositions, interactivePositions, orchestrationPositions, persistPositions]);
+  // Map Scene 为筛选恢复保留不可见节点坐标；所有直接交互共用同一份
+  // 可见节点物理快照，避免隐藏节点占用被动预算或被悄悄写回。
+  const visibleNodeIds = useMemo(() => new Set(observation.nodes.map((item) => item.node.id)), [observation.nodes]);
+  const physicsPersistentPositions = useMemo(
+    () => new Map([...persistPositions].filter(([id]) => visibleNodeIds.has(id))),
+    [persistPositions, visibleNodeIds],
+  );
+  const physicsDisplayPositions = useMemo(
+    () => new Map([...positions].filter(([id]) => visibleNodeIds.has(id))),
+    [positions, visibleNodeIds],
+  );
   const world = layout.world;
   const [viewBox, setViewBox] = useState<ViewBoxState>(() => initialScene?.viewBox ?? ({ x: 0, y: 0, width: world.width, height: world.height }));
+  const [dragging, setDragging] = useState(false);
+  const dragRef = useRef<DragState | null>(null);
+  const nodeDragRef = useRef<NodeDragState | null>(null);
+  const dragPositionsRef = useRef<Map<string, GraphPoint>>(new Map());
+  const lastDragMovedRef = useRef(false);
+  const pendingFocusTimer = useRef<number | undefined>(undefined);
+  const restoredSceneKeyRef = useRef(sceneKey);
+  useLayoutEffect(() => {
+    if (!sceneKey || restoredSceneKeyRef.current === sceneKey) return;
+    restoredSceneKeyRef.current = sceneKey;
+    const staleNodeDrag = nodeDragRef.current;
+    if (staleNodeDrag) cancelAnimationFrame(staleNodeDrag.raf);
+    nodeDragRef.current = null;
+    dragPositionsRef.current = new Map();
+    lastDragMovedRef.current = false;
+    dragRef.current = null;
+    if (pendingFocusTimer.current !== undefined) window.clearTimeout(pendingFocusTimer.current);
+    pendingFocusTimer.current = undefined;
+    if (enteringRafRef.current !== undefined) cancelAnimationFrame(enteringRafRef.current);
+    enteringRafRef.current = undefined;
+    setDragging(false);
+    setNodePhysicsActive(false);
+    setInteractivePositions(null);
+    if (!initialScene) return;
+    const restored = mapSceneLayout(initialScene);
+    knownNodeIdsRef.current = new Set(restored.positions.keys());
+    layoutRef.current = {
+      positions: new Map(restored.positions),
+      world: restored.world,
+      edgeKeys: new Map(restored.edgeKeys),
+    };
+    setPositionOverrides(new Map(restored.positions));
+    setViewBox(initialScene.viewBox);
+    setEnteringPositions(null);
+    setEntryAnimationState("complete");
+  }, [initialScene, sceneKey]);
   const adjacency = useMemo(() => adjacencyFor(observation), [observation]);
   const visualEdges = useMemo(() => visualEdgesFor(observation), [observation]);
   const nodeLabelsById = useMemo(
@@ -269,14 +346,11 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
       ?? "";
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [keyboardNodeId, setKeyboardNodeId] = useState<string | null>(null);
-  const [dragging, setDragging] = useState(false);
-  const dragRef = useRef<DragState | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const viewBoxRef = useRef(viewBox);
   viewBoxRef.current = viewBox;
   const canvasNodeRefs = useRef(new Map<string, SVGGElement>());
   const listNodeRefs = useRef(new Map<string, HTMLButtonElement>());
-  const pendingFocusTimer = useRef<number | undefined>(undefined);
   const lastRevealKey = useRef<string | undefined>(undefined);
   const interactionNodeId = hoveredNodeId ?? keyboardNodeId;
   const directNeighbors = interactionNodeId ? adjacency.get(interactionNodeId) ?? new Set<string>() : new Set<string>();
@@ -301,13 +375,11 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
   const pendingRevealRef = useRef<{ nodeId: string; requestId: number | undefined } | undefined>(undefined);
   const onRevealHandledRef = useRef(onRevealHandled);
   onRevealHandledRef.current = onRevealHandled;
-  useEffect(() => () => {
-    // Leaving this entry while the one-time reveal animation is still running
-    // must consume the request, otherwise returning to the previous entry
-    // replays the centering and steals focus on an entry the user left.
-    const pending = pendingRevealRef.current;
-    if (pending && pending.requestId !== undefined) onRevealHandledRef.current?.(pending.nodeId, pending.requestId);
-  }, []);
+  const positionsRef = useRef(positions);
+  positionsRef.current = positions;
+  const presentationRef = useRef(presentation);
+  presentationRef.current = presentation;
+  const revealTargetAvailable = revealNodeId ? visibleNodeIds.has(revealNodeId) : false;
 
   useEffect(() => {
     if (!revealNodeId) {
@@ -316,20 +388,20 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
     }
     const revealKey = revealRequestId === undefined ? revealNodeId : `${revealNodeId}:${revealRequestId}`;
     if (lastRevealKey.current === revealKey) return;
-    const point = positions.get(revealNodeId);
+    const point = positionsRef.current.get(revealNodeId);
     if (!point) return;
     lastRevealKey.current = revealKey;
     pendingRevealRef.current = { nodeId: revealNodeId, requestId: revealRequestId };
     const handled = () => {
       pendingRevealRef.current = undefined;
-      if (revealRequestId !== undefined) onRevealHandled?.(revealNodeId, revealRequestId);
+      if (revealRequestId !== undefined) onRevealHandledRef.current?.(revealNodeId, revealRequestId);
     };
     setRovingNodeId(revealNodeId);
     const start = viewBoxRef.current;
     const target = { ...start, x: point.x - start.width / 2, y: point.y - start.height / 2 };
     const focusTarget = () => {
-      const narrow = typeof window.matchMedia === "function" && window.matchMedia("(max-width: 899px)").matches;
-      (narrow ? listNodeRefs.current.get(revealNodeId) : canvasNodeRefs.current.get(revealNodeId))?.focus();
+      const refs = presentationRef.current === "list" ? listNodeRefs : canvasNodeRefs;
+      refs.current.get(revealNodeId)?.focus();
     };
     if (typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       setViewBox(target);
@@ -337,7 +409,10 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
         focusTarget();
         handled();
       });
-      return () => cancelAnimationFrame(frame);
+      return () => {
+        cancelAnimationFrame(frame);
+        if (pendingRevealRef.current?.nodeId === revealNodeId && pendingRevealRef.current.requestId === revealRequestId) handled();
+      };
     }
     const startedAt = performance.now();
     let frame = 0;
@@ -356,14 +431,25 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
       }
     };
     frame = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(frame);
-  }, [onRevealHandled, positions, revealNodeId, revealRequestId]);
+    return () => {
+      cancelAnimationFrame(frame);
+      if (pendingRevealRef.current?.nodeId === revealNodeId && pendingRevealRef.current.requestId === revealRequestId) handled();
+    };
+  }, [revealNodeId, revealRequestId, revealTargetAvailable, sceneKey]);
 
   // ADR-0042 专注自然聚拢：直接关系节点在力场（距离带径向力 + 邻居间斥力）下
   // 柔性聚到焦点周围，位置由物理决定而非规则圆环；退出时插值复原。
   // 预览位只存在于显示层，不写入 Map Scene 持久坐标。
   const orchestrationRafRef = useRef<number | undefined>(undefined);
   const orchestrationLatestRef = useRef<Map<string, GraphPoint> | null>(null);
+  useEffect(() => () => {
+    const drag = nodeDragRef.current;
+    if (drag) cancelAnimationFrame(drag.raf);
+    nodeDragRef.current = null;
+    dragPositionsRef.current = new Map();
+    if (orchestrationRafRef.current !== undefined) cancelAnimationFrame(orchestrationRafRef.current);
+    orchestrationRafRef.current = undefined;
+  }, []);
   useEffect(() => {
     if (orchestrationRafRef.current !== undefined) {
       cancelAnimationFrame(orchestrationRafRef.current);
@@ -428,8 +514,6 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
 
   // ADR-0042 入场展开：首次挂载与新增节点从各自终点附近的确定性偏移柔展开到位；
   // 纯显示层动画，不触发 Map Scene 序列化，reduced-motion 直接就位。
-  const enteringRafRef = useRef<number | undefined>(undefined);
-  const knownNodeIdsRef = useRef<ReadonlySet<string> | null>(null);
   useLayoutEffect(() => {
     if (enteringRafRef.current !== undefined) {
       cancelAnimationFrame(enteringRafRef.current);
@@ -485,9 +569,6 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
     };
   }, [nodeIdsKey]);
 
-  const nodeDragRef = useRef<NodeDragState | null>(null);
-  const dragPositionsRef = useRef<Map<string, GraphPoint>>(new Map());
-  const lastDragMovedRef = useRef(false);
   const commitNodePositions = useCallback((next: ReadonlyMap<string, GraphPoint>) => {
     const seed = layoutRef.current;
     if (seed) {
@@ -510,7 +591,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
     setInteractivePositions(null);
     if (cancelled) lastDragMovedRef.current = false;
     if (!cancelled) {
-      const displaced = displacedPositions(drag.persistedPositions, dragPositionsRef.current);
+      const displaced = persistentPositionsAfterDrag(drag.persistentBasePositions, drag.displayStartPositions, dragPositionsRef.current);
       if (displaced.size) commitNodePositions(displaced);
     }
   }, [commitNodePositions]);
@@ -594,7 +675,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
   };
   const nudgeNode = (nodeId: string, key: string) => {
     if (nodeDragRef.current) return;
-    const start = persistPositions.get(nodeId);
+    const start = physicsPersistentPositions.get(nodeId);
     if (!start) return;
     const delta = { x: 0, y: 0 };
     if (key === "ArrowLeft") delta.x = -KEYBOARD_NUDGE_STEP;
@@ -602,9 +683,9 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
     if (key === "ArrowUp") delta.y = -KEYBOARD_NUDGE_STEP;
     if (key === "ArrowDown") delta.y = KEYBOARD_NUDGE_STEP;
     const dragged = { x: start.x + delta.x, y: start.y + delta.y };
-    const physics = createDragSimulation(nodeId, adjacency, persistPositions);
+    const physics = createDragSimulation(nodeId, adjacency, physicsPersistentPositions);
     settleDragSimulation(physics, dragged);
-    const displaced = displacedPositions(persistPositions, dragPositions(physics));
+    const displaced = displacedPositions(physicsPersistentPositions, dragPositions(physics));
     if (displaced.size) commitNodePositions(displaced);
   };
   const handleKey = (event: KeyboardEvent, nodeId: string, refs: ReadonlyMap<string, Element>) => {
@@ -688,14 +769,14 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
   };
 
   return (
-    <section className="global-map" aria-labelledby="global-map-title">
-      <div className="global-map__summary" aria-label="地图摘要">
+    <section className={["global-map", immersive ? "global-map--immersive" : "", `global-map--presentation-${presentation}`].filter(Boolean).join(" ")} aria-labelledby="global-map-title">
+      {!immersive ? <div className="global-map__summary" aria-label="地图摘要">
         <span><strong>{observation.nodes.length}</strong> 个节点</span>
         <span><strong>{observation.edges.length}</strong> 条永久关系</span>
         <span><strong>{observation.nodes.filter((item) => item.lifecycle === "archived").length}</strong> 个已归档</span>
-      </div>
+      </div> : null}
 
-      {focusSummary && onRelationshipKindToggle ? (
+      {!immersive && focusSummary && onRelationshipKindToggle ? (
         <div className="global-map__focus-controls" aria-label="专注地图操作">
           <p>正在专注：<strong>{focusSummary.label}</strong>。完整连通脉络保持清晰，其余节点留在原位置。</p>
           <div role="group" aria-label="显示的关系">
@@ -714,6 +795,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
         data-testid="global-map-canvas"
         data-entry-animation={entryAnimationState}
         data-node-physics={nodePhysicsActive ? "active" : "idle"}
+        onPointerDownCapture={(event) => onSurfaceInteraction?.(!(event.target as Element).closest("[data-node-id], button, a[href]"))}
         onPointerDown={startPan}
         onPointerMove={continuePan}
         onPointerUp={endPan}
@@ -816,8 +898,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
                   const nodePoint = positions.get(summary.node.id);
                   if (!svgPoint || !nodePoint) return;
                   event.currentTarget.setPointerCapture?.(event.pointerId);
-                  const physics = createDragSimulation(summary.node.id, adjacency, positions);
-                  const persistedPositions = new Map([...physics.nodes.keys()].map((id) => [id, persistPositions.get(id) ?? positions.get(id)!]));
+                  const physics = createDragSimulation(summary.node.id, adjacency, physicsDisplayPositions);
                   lastDragMovedRef.current = false;
                   nodeDragRef.current = {
                     pointerId: event.pointerId,
@@ -825,7 +906,8 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
                     grabOffset: { x: svgPoint.x - nodePoint.x, y: svgPoint.y - nodePoint.y },
                     lastSvg: svgPoint,
                     physics,
-                    persistedPositions,
+                    displayStartPositions: physicsDisplayPositions,
+                    persistentBasePositions: physicsPersistentPositions,
                     moved: false,
                     cancelled: false,
                     settling: false,
@@ -867,6 +949,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
                     finishNodeDrag(true);
                     return;
                   }
+                  cancelAnimationFrame(drag.raf);
                   drag.settling = true;
                   beginDragSettlement(drag.physics);
                   const reduced = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -908,7 +991,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
         <p className="global-map__keyboard-hint">拖动画布平移 · 滚轮缩放 · 按住节点拖动整理（周边联动）· Shift+方向键微调 · 单击或 Space 专注 · 双击或 Enter 打开节点</p>
       </div>
 
-      <div className="global-map__list" data-testid="global-map-list">
+      <div className="global-map__list" data-testid="global-map-list" onPointerDownCapture={(event) => onSurfaceInteraction?.(!(event.target as Element).closest("button, a[href]"))}>
         <h2 className="global-map__view-title">全部研究节点</h2>
         <ul>
           {observation.nodes.map((summary) => {
@@ -940,12 +1023,12 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
         <p className="global-map__keyboard-hint">上下方向键移动 · 单击或 Space 专注 · Enter 打开节点</p>
       </div>
 
-      <div className="global-map__legend" aria-label="地图图例">
+      {!immersive ? <div className="global-map__legend" aria-label="地图图例">
         <span><i className="global-map__legend-node" aria-hidden="true" />研究节点</span>
         <span><i className="global-map__legend-node global-map__legend-node--fusion" aria-hidden="true" />融合成果</span>
         <span><i className="global-map__legend-line" aria-hidden="true" />父子生长</span>
         <span><i className="global-map__legend-line global-map__legend-line--fusion" aria-hidden="true" />融合来源</span>
-      </div>
+      </div> : null}
     </section>
   );
 }
