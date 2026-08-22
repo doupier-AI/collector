@@ -857,3 +857,190 @@ test("#32 confirmFusion without options leaves the fusion node unmarked (manual 
   assert.equal(node?.triggerFusionProposalId, undefined);
   assert.equal(accepted.task.idempotencyKey, "fusion-idempotency-manual");
 });
+
+/** 护栏测试共用的概念节点构造器（可选标记为融合成果）。 */
+async function addConceptNode(
+  harness: { store: SqliteStore; now: string },
+  id: string,
+  options: { fusion?: boolean; concept?: string } = {},
+) {
+  const now = harness.now;
+  await harness.store.createResearchNode(
+    { id, sessionId: "session-1", status: "active", createdAt: now, updatedAt: now, ...(options.fusion ? { isFusionNode: true, isAutoFusionNode: true } : {}) },
+    `node:${id}`,
+  );
+  const message: ResearchMessageRecord = {
+    id: `message-${id}`, sessionId: "session-1", nodeId: id, role: "assistant",
+    content: `${id} 的${options.concept ?? "孙悟空"}材料。`, status: "completed", createdAt: now, updatedAt: now,
+  };
+  const db = (harness.store as unknown as { db(): import("node:sqlite").DatabaseSync }).db();
+  db.prepare("INSERT INTO research_messages (id, session_id, node_id, branch_id, role, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(message.id, message.sessionId, message.nodeId!, null, message.role, message.status, message.createdAt, message.updatedAt, JSON.stringify(message));
+  await harness.store.replaceSlicesForMessage(message.id, [{
+    id: `slice:${id}:message-${id}:0`, nodeId: id, messageId: message.id, ordinal: 0,
+    title: options.concept ?? "孙悟空", normalizedConcepts: [options.concept ?? "孙悟空"], sourceRefs: [], isProvisional: false, createdAt: now,
+  }]);
+}
+
+test("融合护栏：融合成果不参与候选配对，也不作为扫描焦点", async (t) => {
+  const harness = await createHarness();
+  t.after(harness.close);
+  await addConceptNode(harness, "node-f", { fusion: true });
+  let verifierCalls = 0;
+  const service = new ResearchFusionProposalService(
+    harness.store,
+    new TermDetectionService(),
+    async () => ({
+      async verifyResearchSimilarity() {
+        verifierCalls += 1;
+        return { relationType: "shared-concept", reason: "两处材料都讨论孙悟空。" };
+      },
+    }),
+  );
+
+  const result = await service.scan("node-a");
+  assert.equal(verifierCalls, 1, "只有普通节点对进入核验");
+  assert.equal(result.proposals.length, 1);
+  assert.equal(result.proposals[0]?.loNodeId, "node-a");
+  assert.equal(result.proposals[0]?.hiNodeId, "node-b");
+
+  const fusionFocus = await service.scan("node-f");
+  assert.equal(verifierCalls, 1, "融合节点作为焦点时不产生任何新核验");
+  assert.deepEqual(fusionFocus.autoFused, []);
+});
+
+test("融合护栏：单次扫描最多核验 12 个候选对", async (t) => {
+  const harness = await createHarness();
+  t.after(harness.close);
+  for (let index = 0; index < 15; index += 1) {
+    await addConceptNode(harness, `node-extra-${index}`);
+  }
+  let verifierCalls = 0;
+  const service = new ResearchFusionProposalService(
+    harness.store,
+    new TermDetectionService(),
+    async () => ({
+      async verifyResearchSimilarity() {
+        verifierCalls += 1;
+        return { relationType: "contrast", reason: "仅作计数用途。" };
+      },
+    }),
+  );
+
+  const result = await service.scan("node-a");
+  assert.equal(verifierCalls, 12, "核验次数被截断到单次扫描上限");
+  assert.equal(result.proposals.length, 12);
+});
+
+test("融合护栏：单轮自动融合最多 3 个，其余保留为待确认提议", async (t) => {
+  const harness = await createFusionHarness({
+    similarityVerifier: {
+      async verifyResearchSimilarity() {
+        return { relationType: "identity", reason: "两处材料为同一实体。" };
+      },
+    },
+  });
+  t.after(harness.close);
+  const now = "2026-08-02T00:00:00.000Z";
+  for (let index = 0; index < 5; index += 1) {
+    await addConceptNode({ store: harness.store, now }, `node-extra-${index}`);
+  }
+  await harness.store.saveSetting(AUTO_FUSION_SETTING_KEY, "true");
+
+  const result = await harness.service.fusionProposals.scan("node-a");
+  assert.equal(result.autoFused.length, 3, "自动融合数量被截断到单轮上限");
+  assert.equal(result.proposals.filter((proposal) => proposal.status === "accepted").length, 3);
+  assert.ok(result.proposals.some((proposal) => proposal.status === "pending"), "超出上限的提议保留为待确认");
+  const fusionNodes = harness.store.listResearchNodes("session-1").filter((node) => node.isFusionNode);
+  assert.equal(fusionNodes.length, 3);
+});
+
+test("融合护栏：会话融合节点达到上限后扫描只返回既有提议", async (t) => {
+  const harness = await createHarness();
+  t.after(harness.close);
+  for (let index = 0; index < 12; index += 1) {
+    await addConceptNode(harness, `node-fusion-${index}`, { fusion: true });
+  }
+  let verifierCalls = 0;
+  const service = new ResearchFusionProposalService(
+    harness.store,
+    new TermDetectionService(),
+    async () => ({
+      async verifyResearchSimilarity() {
+        verifierCalls += 1;
+        return { relationType: "shared-concept", reason: "不应被调用。" };
+      },
+    }),
+  );
+
+  const result = await service.scan("node-a");
+  assert.equal(verifierCalls, 0, "达到上限后不再发起核验");
+  assert.deepEqual(result.proposals, []);
+  assert.deepEqual(result.autoFused, []);
+});
+
+test("融合护栏：涉及融合节点的提议不再可确认；会话超上限也不可确认", async (t) => {
+  const harness = await createHarness();
+  t.after(harness.close);
+  const now = harness.now;
+  const baseProposal: ResearchFusionProposalRecord = {
+    id: researchFusionProposalId("node-a", "node-b"),
+    loNodeId: "node-a",
+    hiNodeId: "node-b",
+    relationType: "identity",
+    reason: "测试用直接构造的提议。",
+    status: "pending",
+    triggerSources: [],
+    verification: { promptVersion: SIMILARITY_VERIFICATION_PROMPT_VERSION, sourceSliceIds: [], sourceFragmentIds: [], tokenBudget: SIMILARITY_VERIFICATION_TOKEN_BUDGET },
+    createdAt: now,
+    updatedAt: now,
+  };
+  await addConceptNode(harness, "node-f", { fusion: true });
+  await harness.store.createResearchFusionProposal({ ...baseProposal, id: researchFusionProposalId("node-a", "node-f"), hiNodeId: "node-f" });
+  const dummyResearch = {} as unknown as import("@collector/api").ResearchSessionService;
+  const service = new ResearchFusionProposalService(harness.store, new TermDetectionService(), async () => undefined, () => new Date(now), dummyResearch);
+  await assert.rejects(
+    () => service.confirmFusion(researchFusionProposalId("node-a", "node-f"), "fuse:fusion-pair"),
+    /not ingredients/,
+  );
+
+  for (let index = 0; index < 12; index += 1) {
+    await addConceptNode(harness, `node-fusion-${index}`, { fusion: true });
+  }
+  await harness.store.createResearchFusionProposal(baseProposal);
+  await assert.rejects(
+    () => service.confirmFusion(baseProposal.id, "fuse:cap"),
+    /fusion node limit/,
+  );
+});
+
+test("融合护栏：候选集合未变化的重复扫描在冷却窗口内不再核验", async (t) => {
+  const harness = await createHarness();
+  t.after(harness.close);
+  let current = new Date("2026-08-02T00:00:00.000Z");
+  let verifierCalls = 0;
+  const service = new ResearchFusionProposalService(
+    harness.store,
+    new TermDetectionService(),
+    async () => ({
+      async verifyResearchSimilarity() {
+        verifierCalls += 1;
+        return { relationType: "contrast", reason: "计数。" };
+      },
+    }),
+    () => current,
+  );
+
+  await service.scan("node-a");
+  assert.equal(verifierCalls, 1);
+  const second = await service.scan("node-a");
+  assert.equal(verifierCalls, 1, "冷却窗口内的重复扫描不重新核验");
+  assert.equal(second.proposals.length, 1, "既有提议仍然返回");
+
+  // 候选集合变化（新增共享概念节点）立即打破冷却，新配对重新核验；
+  // 既有 (node-a, node-b) 提议按状态短路，不重复调用模型。
+  await addConceptNode(harness, "node-z");
+  const third = await service.scan("node-a");
+  assert.equal(verifierCalls, 2, "候选集合变化后恢复核验新配对");
+  assert.equal(third.proposals.length, 2);
+});

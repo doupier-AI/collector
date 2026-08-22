@@ -41,6 +41,22 @@ const MAX_VERIFICATION_CONTENT_CHARACTERS = 12_000;
  */
 export const MIN_SIMILARITY_FALLBACK_UNIT_CHARACTERS = 20;
 
+/**
+ * 融合护栏（2026-08-22 用户裁决：融合成果永不再作为融合原料）。
+ * 一起失控事故的教训：融合节点不被排除出候选扫描 + 新节点配对绕过按对去重
+ * + 零上限，5 分钟内一个会话滚出 263 个自动融合节点、约 2600 次模型调用。
+ * 融合成果（isFusionNode）不参与任何候选配对——既不做扫描焦点，也不做配对
+ * 对端，确认入口同样拒绝涉及融合节点的提议。
+ */
+/** 单次扫描最多核验的候选对数；其余留待下次扫描。 */
+export const FUSION_MAX_VERIFICATIONS_PER_SCAN = 12;
+/** 单轮扫描最多自动融合数；超出部分保留为待确认提议。 */
+export const FUSION_MAX_AUTO_FUSIONS_PER_SCAN = 3;
+/** 单会话融合节点数上限；达到后扫描只返回既有提议。 */
+export const FUSION_MAX_NODES_PER_SESSION = 12;
+/** 同焦点同候选集合的重复扫描冷却窗口（毫秒）。 */
+export const FUSION_SCAN_COOLDOWN_MS = 10 * 60 * 1000;
+
 export class ResearchFusionProposalNotFoundError extends Error {}
 export class ResearchFusionProposalValidationError extends Error {}
 export class ResearchFusionProposalConflictError extends Error {}
@@ -199,6 +215,8 @@ export function buildSimilarityCandidates(focusNodeId: string, nodes: readonly I
 /** F1 相似性扫描与提议生命周期；不生成融合节点，也不建立任何新外部数据通道。 */
 export class ResearchFusionProposalService {
   private readonly runningPairs = new Set<string>();
+  /** 扫描冷却（进程内）：同焦点同候选集合在冷却窗口内不重复核验。 */
+  private readonly scanCooldowns = new Map<string, { fingerprint: string; at: number }>();
 
   constructor(
     private readonly store: CollectorStore,
@@ -217,7 +235,19 @@ export class ResearchFusionProposalService {
   async scan(nodeId: string): Promise<ResearchFusionScanResult> {
     const focus = this.store.getResearchNode(nodeId);
     if (!focus) throw new ResearchFusionProposalNotFoundError("Research node not found");
-    const indexedNodes = this.store.listResearchNodes(focus.sessionId)
+    // 护栏：融合成果是结果不是原料——融合节点不做扫描焦点。
+    if (focus.isFusionNode) {
+      console.log(`[fusion] 扫描跳过：节点 ${nodeId} 是融合成果，不再产生新提议`);
+      return { proposals: this.listExistingForScan(nodeId), autoFused: [] };
+    }
+    const sessionNodes = this.store.listResearchNodes(focus.sessionId);
+    // 护栏：会话融合节点数达到上限后停止产生新提议（既有提议仍可见）。
+    if (sessionNodes.filter((node) => node.isFusionNode).length >= FUSION_MAX_NODES_PER_SESSION) {
+      console.log(`[fusion] 扫描跳过：会话 ${focus.sessionId} 融合节点数已达上限 ${FUSION_MAX_NODES_PER_SESSION}`);
+      return { proposals: this.listExistingForScan(nodeId), autoFused: [] };
+    }
+    const indexedNodes = sessionNodes
+      .filter((node) => !node.isFusionNode)
       .sort((left, right) => left.id.localeCompare(right.id))
       .map((node) => indexNodeSimilaritySignals(
         node,
@@ -233,7 +263,18 @@ export class ResearchFusionProposalService {
     const candidates = buildSimilarityCandidates(focus.id, indexedNodes);
     const proposals: ResearchFusionProposalRecord[] = [];
     const autoFused: ResearchFusionAutoResult[] = [];
-    if (!candidates.length) return { proposals, autoFused };
+    const fingerprint = `${focus.id}\u0000${candidates.map((candidate) => `${candidate.lo.node.id}\u0000${candidate.hi.node.id}`).join("|")}`;
+    // 护栏：同焦点同候选集合的重复扫描（进页即重扫、融合后跳转再扫）在冷却
+    // 窗口内直接返回既有提议，阻断级联循环。
+    const cooldown = this.scanCooldowns.get(nodeId);
+    if (cooldown && cooldown.fingerprint === fingerprint && this.now().getTime() - cooldown.at < FUSION_SCAN_COOLDOWN_MS) {
+      console.log(`[fusion] 扫描冷却：节点 ${nodeId} 候选集合未变化，${Math.round((FUSION_SCAN_COOLDOWN_MS - (this.now().getTime() - cooldown.at)) / 60000)} 分钟内不重复核验`);
+      return { proposals: this.listExistingForScan(nodeId), autoFused };
+    }
+    if (!candidates.length) {
+      this.scanCooldowns.set(nodeId, { fingerprint, at: this.now().getTime() });
+      return { proposals, autoFused };
+    }
 
     let gateway: SimilarityVerificationGateway | undefined;
     try {
@@ -248,10 +289,13 @@ export class ResearchFusionProposalService {
     const autoEnabled = this.store.getSetting(AUTO_FUSION_SETTING_KEY) === "true";
     // #32：只处理"开启后新出现的提议"——扫描前已存在（含开关开启前落库）的 pending 不自动融合。
     const knownIds = new Set(this.store.listResearchFusionProposalsByNode(nodeId).map((proposal) => proposal.id));
-    for (const candidate of candidates) {
+    // 护栏：单次扫描只核验前 N 个候选，其余留待下次。
+    let verified = 0;
+    for (const candidate of candidates.slice(0, FUSION_MAX_VERIFICATIONS_PER_SCAN)) {
       const proposal = await this.verifyCandidate(candidate, gateway);
       if (!proposal) continue;
-      if (autoEnabled && proposal.status === "pending" && !knownIds.has(proposal.id)) {
+      verified += 1;
+      if (autoEnabled && proposal.status === "pending" && !knownIds.has(proposal.id) && autoFused.length < FUSION_MAX_AUTO_FUSIONS_PER_SCAN) {
         const fused = await this.tryAutoFuse(proposal);
         if (fused) autoFused.push(fused);
       }
@@ -259,6 +303,8 @@ export class ResearchFusionProposalService {
       const current = this.store.getResearchFusionProposal(proposal.id) ?? proposal;
       proposals.push(this.withResolvedFragmentRefs(current));
     }
+    this.scanCooldowns.set(nodeId, { fingerprint, at: this.now().getTime() });
+    console.log(`[fusion] 扫描完成：节点 ${nodeId} 候选=${candidates.length} 核验通过=${verified} 新提议=${proposals.filter((proposal) => !knownIds.has(proposal.id)).length} 自动融合=${autoFused.length}${candidates.length > FUSION_MAX_VERIFICATIONS_PER_SCAN ? `（候选超上限，${candidates.length - FUSION_MAX_VERIFICATIONS_PER_SCAN} 个留待下次）` : ""}`);
     return { proposals, autoFused };
   }
 
@@ -352,6 +398,17 @@ export class ResearchFusionProposalService {
     if (!current) throw new ResearchFusionProposalNotFoundError("Research fusion proposal not found");
     if (current.status !== "pending") {
       throw new ResearchFusionProposalConflictError("Research fusion proposal has already been decided");
+    }
+    // 护栏（2026-08-22 裁决）：融合成果是结果不是原料——涉及融合节点的提议不再可确认。
+    const loSourceNode = this.store.getResearchNode(current.loNodeId);
+    const hiSourceNode = this.store.getResearchNode(current.hiNodeId);
+    if (loSourceNode?.isFusionNode || hiSourceNode?.isFusionNode) {
+      throw new ResearchFusionProposalValidationError("Fusion results are outcomes, not ingredients: a proposal involving a fusion node can no longer be confirmed");
+    }
+    // 护栏：会话融合节点数达到上限后不再新建融合节点。
+    const guardSessionId = loSourceNode?.sessionId ?? hiSourceNode?.sessionId ?? "";
+    if (guardSessionId && this.store.listResearchNodes(guardSessionId).filter((node) => node.isFusionNode).length >= FUSION_MAX_NODES_PER_SESSION) {
+      throw new ResearchFusionProposalValidationError(`This session already reached its fusion node limit of ${FUSION_MAX_NODES_PER_SESSION}`);
     }
     const resolved = this.withResolvedFragmentRefs(current);
     const sources = this.buildFusionSources(resolved);
