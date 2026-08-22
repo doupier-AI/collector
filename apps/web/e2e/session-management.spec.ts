@@ -232,7 +232,8 @@ test("侧栏项目菜单可重命名项目", async ({ page }) => {
 test("侧栏单行输入框具有足够尺寸与实体表面", async ({ page }) => {
   const consoleIssues = trackBrowserIssues(page);
   await page.setViewportSize({ width: 1175, height: 1272 });
-  await pairAndOpen(page, "/map");
+  // ADR-0043 起 /map 为沉浸式例外页、无普通侧栏；侧栏度量改用 /research/new 作为背景页。
+  await pairAndOpen(page, "/research/new");
 
   const nav = page.getByRole("navigation", { name: "内容导航" });
   await nav.getByRole("button", { name: "搜索会话" }).click();
@@ -256,7 +257,7 @@ test("侧栏单行输入框具有足够尺寸与实体表面", async ({ page }) 
   await expect.poll(() => searchInput.evaluate((input) => getComputedStyle(input).boxShadow)).not.toBe("none");
 
   // 点击搜索框外的正文会取消搜索框；随后单独检查新建项目输入，避免两个临时编辑器同时占用侧栏。
-  await page.getByRole("heading", { name: "研究图谱", exact: true }).click();
+  await page.getByRole("heading", { name: "从一个问题开始" }).click();
   await expect(searchInput).toBeHidden();
   await nav.getByRole("button", { name: /新建项目/ }).click();
   const projectInput = nav.getByRole("textbox", { name: "新项目名称" });
@@ -272,7 +273,7 @@ test("侧栏单行输入框具有足够尺寸与实体表面", async ({ page }) 
     expect(styles.background, "输入框实体底色需与周围容器形成层次").not.toBe(styles.parentBackground);
   }
 
-  await page.getByRole("heading", { name: "研究图谱", exact: true }).click();
+  await page.getByRole("heading", { name: "从一个问题开始" }).click();
   await expect(projectInput).toBeHidden();
   expect(await sidebarHorizontalScrollers(page), "增大输入框后侧栏不应出现横向滚动条").toEqual([]);
   expect(consoleIssues.issues, consoleIssues.issues.join("\n")).toEqual([]);

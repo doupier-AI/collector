@@ -12,15 +12,22 @@ async function createCompletedNode(page: Page): Promise<string> {
   return page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
 }
 
+// ADR-0043 起搜索面板收进地图边缘工具坞，先点「搜索研究内容」再操作搜索框。
+async function openMapSearch(page: Page) {
+  await page.getByRole("button", { name: "搜索研究内容" }).click();
+  return page.getByRole("searchbox", { name: "搜索全部研究内容" });
+}
+
 test.describe("#67 跨会话搜索", () => {
   test("真实正文经过 SQLite 与 HTTP 后，以关键词降级出现在地图搜索中", async ({ page }) => {
     test.setTimeout(60_000);
     const nodeId = await createCompletedNode(page);
 
     await page.goto("/map");
+    const searchbox = await openMapSearch(page);
     const responsePromise = page.waitForResponse((response) => response.url().endsWith("/v1/semantic-search/search") && response.request().method() === "POST");
-    await page.getByRole("searchbox", { name: "搜索全部研究内容" }).fill("向量数据库");
-    await page.getByRole("searchbox", { name: "搜索全部研究内容" }).press("Enter");
+    await searchbox.fill("向量数据库");
+    await searchbox.press("Enter");
 
     const response = await responsePromise;
     expect(response.ok()).toBe(true);
@@ -74,6 +81,7 @@ test.describe("#67 跨会话搜索", () => {
     });
 
     await page.goto("/map");
+    await page.getByRole("button", { name: "搜索研究内容" }).click();
     const search = page.getByRole("search");
     await search.getByRole("searchbox", { name: "搜索全部研究内容" }).fill("向量检索");
     await search.getByRole("searchbox", { name: "搜索全部研究内容" }).press("Enter");
@@ -89,6 +97,8 @@ test.describe("#67 跨会话搜索", () => {
     const target = page.locator(`[data-node-id="${nodeId}"]`).first();
     await expect(target).toBeFocused();
 
+    // ADR-0043：「在图谱中定位」会收起工具面板露出画布；重新打开搜索面板后再从命中打开节点正文。
+    await page.getByRole("button", { name: "搜索研究内容" }).click();
     await page.getByLabel("向量数据库怎样降低检索成本？ 的命中位置").getByRole("button", { name: "打开 节点标题" }).click();
     await page.waitForURL(new RegExp(`/nodes/${nodeId}$`));
     expect(consoleIssues).toEqual([]);
@@ -110,7 +120,8 @@ test.describe("#67 跨会话搜索", () => {
       }),
     }));
     await page.goto("/map");
-    await page.getByRole("searchbox", { name: "搜索全部研究内容" }).fill("向量");
+    const narrowSearchbox = await openMapSearch(page);
+    await narrowSearchbox.fill("向量");
     await page.getByRole("button", { name: "搜索", exact: true }).click();
     await expect(page.getByRole("button", { name: "很长但仍可阅读的向量数据库研究节点标题 在图谱中定位" })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

@@ -91,9 +91,11 @@
   list-style: none;
 }
 
+/* 搜索结果只出现在约 30rem 宽的地图工具面板里：命中按钮纵向排列在节点行下方，
+   不允许 auto 列把节点标题挤压成零宽竖排（曾在宽屏面板内不可见）。 */
 .map-search__result {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-3);
   align-items: center;
   padding: var(--space-3);
@@ -126,7 +128,7 @@
 .map-search__matches {
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: var(--space-1);
 }
 
@@ -157,8 +159,6 @@
   .map-search__result-summary { align-items: flex-start; flex-direction: column; gap: var(--space-1); }
   .map-search__form { flex-wrap: wrap; }
   .map-search__form .input { flex-basis: 100%; }
-  .map-search__result { grid-template-columns: 1fr; }
-  .map-search__matches { justify-content: flex-start; }
 }
 
 @media (prefers-reduced-motion: reduce) {
