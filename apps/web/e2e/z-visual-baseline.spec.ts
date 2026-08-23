@@ -32,6 +32,7 @@ import {
   readNodeEvidence,
   trackBrowserIssues,
 } from "./helpers";
+import { expectSystemFontStableScreenshot } from "./visual-snapshot";
 
 test.describe.configure({ mode: "serial" });
 
@@ -143,7 +144,7 @@ test.describe("#44 视觉回归基线", () => {
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
-  test("长文轮次卡片：章节共用一张卡片 + 悬停低表面提升", async ({ page }) => {
+  test("长文轮次卡片：章节共用一张卡片 + 悬停低表面提升", async ({ page }, testInfo) => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);
     await pinModelStatus(page);
@@ -155,14 +156,14 @@ test.describe("#44 视觉回归基线", () => {
     // 整轮长文（含三个章节）元素级截图——确认只有一个卡片边界。
     const turnCard = page.locator(".turn-card");
     await turnCard.scrollIntoViewIfNeeded();
-    await expect(turnCard).toHaveScreenshot("turn-card-sectioned-default", {
+    await expectSystemFontStableScreenshot(turnCard, "turn-card-sectioned-default", testInfo, {
       mask: dynamicTimeMasks(page),
       maskColor: "#FFFFFF",
     });
 
     // 悬停态：背景 + 阴影低表面提升（不引起布局位移）
     await turnCard.hover();
-    await expect(turnCard).toHaveScreenshot("turn-card-sectioned-hover", {
+    await expectSystemFontStableScreenshot(turnCard, "turn-card-sectioned-hover", testInfo, {
       mask: dynamicTimeMasks(page),
       maskColor: "#FFFFFF",
     });
@@ -191,7 +192,7 @@ test.describe("#44 视觉回归基线", () => {
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
-  test("长文阅读页：右侧章节导航独立轨道像素基线（#95）", async ({ page }) => {
+  test("长文阅读页：右侧章节导航独立轨道像素基线（#95）", async ({ page }, testInfo) => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);
     await pinModelStatus(page);
@@ -208,14 +209,14 @@ test.describe("#44 视觉回归基线", () => {
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.waitForTimeout(200);
 
-    await expect(page).toHaveScreenshot("node-reading-chapter-right", {
+    await expectSystemFontStableScreenshot(page, "node-reading-chapter-right", testInfo, {
       mask: dynamicTimeMasks(page),
       maskColor: "#FFFFFF",
     });
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
-  test("长文 + 追问双轨：左轮次导航与右章节导航并存像素基线（#95）", async ({ page }) => {
+  test("长文 + 追问双轨：左轮次导航与右章节导航并存像素基线（#95）", async ({ page }, testInfo) => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);
     await pinModelStatus(page);
@@ -236,7 +237,7 @@ test.describe("#44 视觉回归基线", () => {
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.waitForTimeout(200);
 
-    await expect(page).toHaveScreenshot("node-reading-dual-rail", {
+    await expectSystemFontStableScreenshot(page, "node-reading-dual-rail", testInfo, {
       mask: dynamicTimeMasks(page),
       maskColor: "#FFFFFF",
     });
@@ -293,7 +294,7 @@ test.describe("#44 视觉回归基线", () => {
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
-  test("窄屏代表状态：320px 关联模式关系列表像素基线", async ({ page }) => {
+  test("窄屏代表状态：320px 关联模式关系列表像素基线", async ({ page }, testInfo) => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);
     await page.setViewportSize({ width: 320, height: 800 });
@@ -314,14 +315,14 @@ test.describe("#44 视觉回归基线", () => {
     }));
     expect(metrics.scrollWidth, "320px 关联覆盖层不应横向溢出").toBeLessThanOrEqual(metrics.clientWidth + 1);
 
-    await expect(dialog).toHaveScreenshot("assoc-narrow", {
+    await expectSystemFontStableScreenshot(dialog, "assoc-narrow", testInfo, {
       mask: dynamicTimeMasks(page),
       maskColor: "#FFFFFF",
     });
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
-  test("#64/#65 全局地图项目与专注视觉：浅色、深色与窄屏像素基线", async ({ page }) => {
+  test("#64/#65 全局地图项目与专注视觉：浅色、深色与窄屏像素基线", async ({ page }, testInfo) => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -333,7 +334,7 @@ test.describe("#44 视觉回归基线", () => {
     await expect(canvas).toHaveAttribute("data-entry-animation", "complete");
     await page.getByRole("button", { name: "筛选地图" }).click();
     const filters = page.locator(".research-map-filters");
-    await expect(filters).toHaveScreenshot("global-map-filters-light");
+    await expectSystemFontStableScreenshot(filters, "global-map-filters-light", testInfo);
     await page.getByRole("button", { name: "关闭工具面板" }).click();
     const amberNode = canvas.getByRole("button", { name: /检索架构，知识工程/ });
     await expect(amberNode).toBeVisible();
@@ -342,27 +343,27 @@ test.describe("#44 视觉回归基线", () => {
     await expect(page).toHaveURL(/\/map\/focus\/map-amber$/);
     await expect(page.getByRole("button", { name: "退出专注" })).toBeVisible();
     await expect(canvas.locator(".global-map__node--unconnected")).toHaveCount(1);
-    await expect(page).toHaveScreenshot("global-map-project-light");
+    await expectSystemFontStableScreenshot(page, "global-map-project-light", testInfo);
 
     await page.setViewportSize({ width: 1024, height: 800 });
     await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
     await page.getByRole("button", { name: "筛选地图" }).click();
-    await expect(filters).toHaveScreenshot("global-map-filters-dark");
+    await expectSystemFontStableScreenshot(filters, "global-map-filters-dark", testInfo);
     await page.getByRole("button", { name: "关闭工具面板" }).click();
     await expect(canvas).toBeVisible();
-    await expect(page).toHaveScreenshot("global-map-project-dark");
+    await expectSystemFontStableScreenshot(page, "global-map-project-dark", testInfo);
 
     await page.setViewportSize({ width: 320, height: 800 });
     await expect(canvas).toBeVisible();
-    await expect(page).toHaveScreenshot("global-map-project-narrow-canvas");
+    await expectSystemFontStableScreenshot(page, "global-map-project-narrow-canvas", testInfo);
     await page.getByRole("button", { name: "筛选地图" }).click();
-    await expect(filters).toHaveScreenshot("global-map-filters-narrow");
+    await expectSystemFontStableScreenshot(filters, "global-map-filters-narrow", testInfo);
     await page.getByRole("button", { name: "关闭工具面板" }).click();
     await page.getByRole("button", { name: "切换到节点列表" }).click();
     await expect(canvas).toBeHidden();
     const list = page.getByTestId("global-map-list");
     await expect(list).toBeVisible();
-    await expect(page).toHaveScreenshot("global-map-project-narrow");
+    await expectSystemFontStableScreenshot(page, "global-map-project-narrow", testInfo);
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 });

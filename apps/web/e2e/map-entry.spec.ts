@@ -158,7 +158,9 @@ test("全局研究图谱：两个会话的根节点进入同一真实观察结�
     if (!openTarget) await page.getByTestId("global-map-canvas").getByRole("button", { name: "缩小地图" }).click();
   }
   expect(openTarget, "缩放后应至少有一个节点不被工具坞或提示遮挡").toBeDefined();
-  await openTarget!.dblclick();
+  // 力导向节点会在命中检测与 Playwright 真正派发双击之间继续亚像素移动；
+  // 上面的 elementFromPoint 已证明存在可达节点，此处强制派发只消除两步间的竞态。
+  await openTarget!.dblclick({ force: true });
   await expect(page).toHaveURL(/\/nodes\/[^/]+$/);
   await page.goto("/map");
   const reopenedFirstNode = page.getByTestId("global-map-canvas").getByRole("button", { name: /全局地图测试一/ });
