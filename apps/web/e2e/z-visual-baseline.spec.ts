@@ -32,6 +32,10 @@ import {
   readNodeEvidence,
   trackBrowserIssues,
 } from "./helpers";
+import {
+  expectScreenshotWithFontRasterRegions,
+  type TextLayoutContract,
+} from "./visual-snapshot";
 
 test.describe.configure({ mode: "serial" });
 
@@ -76,6 +80,128 @@ async function openLongSession(page: import("@playwright/test").Page): Promise<s
   if (!match) throw new Error("unexpected long node url");
   return match[1];
 }
+
+const LONG_TURN_RENDERING_STYLE = {
+  display: "block",
+  visibility: "visible",
+  opacity: "1",
+  filter: "none",
+  backdropFilter: "none",
+  transform: "none",
+  clipPath: "none",
+  maskImage: "none",
+  mixBlendMode: "normal",
+  isolation: "auto",
+  perspective: "none",
+  overflow: "visible",
+  contain: "none",
+  contentVisibility: "visible",
+};
+
+function longTurnTextAncestors(sectionIndex: number) {
+  const sectionY = 17 + sectionIndex * 515.390625;
+  const contentAncestor = (className: string) => ({
+    tagName: "DIV",
+    className,
+    computedStyleSha256: "18c7c923020be45c93bc273c7bba1a9b91dc785e838a9c70218bdad4f61cf98c",
+    beforeStyleSha256: "5f48c865b18743ea82d012e9a29bf908235dde8d59534c76cfbbb230418d61c3",
+    afterStyleSha256: "5f48c865b18743ea82d012e9a29bf908235dde8d59534c76cfbbb230418d61c3",
+    rect: { x: 25, y: sectionY + 16, width: 1038, height: 467.390625 },
+    renderingStyle: LONG_TURN_RENDERING_STYLE,
+  });
+  return [
+    contentAncestor("markdown-content"),
+    contentAncestor("message__content"),
+    {
+      tagName: "SECTION",
+      className: "turn-card__section",
+      computedStyleSha256: "3a426cd1d786aa3025d4bcada712338569a6003012503cd5dad9df8230f09859",
+      beforeStyleSha256: "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+      afterStyleSha256: "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+      rect: { x: 25, y: sectionY, width: 1038, height: 483.390625 },
+      renderingStyle: LONG_TURN_RENDERING_STYLE,
+    },
+  ];
+}
+
+const LONG_TURN_CARD_TEXT_LAYOUT: TextLayoutContract = {
+  root: {
+    width: 1088,
+    height: 1548.171875,
+    renderingStyle: {
+      display: "grid",
+      visibility: "visible",
+      opacity: "1",
+      filter: "none",
+      backdropFilter: "none",
+      transform: "none",
+      clipPath: "none",
+      maskImage: "none",
+      mixBlendMode: "normal",
+      isolation: "auto",
+      perspective: "none",
+      overflow: "visible",
+      contain: "none",
+      contentVisibility: "visible",
+    },
+  },
+  regions: [92.390625, 607.78125, 1123.171875].flatMap((sectionY, sectionIndex) =>
+    [0, 1, 2].map((paragraphIndex) => {
+      const y = sectionY + paragraphIndex * 148;
+      const sentence = `这是长文第${sectionIndex + 1}节的确定性正文，用于验证长文保留节卡与章节导航的呈现契约。`;
+      return {
+        text: sentence.repeat(7),
+        childElementCount: 0,
+        childNodeTypes: [3],
+        beforeContent: "none",
+        afterContent: "none",
+        computedStyleSha256: paragraphIndex === 2
+          ? "5faa2b9bfb3dda1a84d3f7f0286f6b0dfe9643915156b214717fb208b4a0c300"
+          : "a7cdf3f01a4523b4d776b4e1f90c45719ad191d3ffc2e46648ae0e1ee4b93ad8",
+        beforeStyleSha256: "5f48c865b18743ea82d012e9a29bf908235dde8d59534c76cfbbb230418d61c3",
+        afterStyleSha256: "5f48c865b18743ea82d012e9a29bf908235dde8d59534c76cfbbb230418d61c3",
+        rect: { x: 25, y, width: 1038, height: 112 },
+        lines: [1025.25, 1025.25, 1025.25, 792.625].map((width, lineIndex) => ({
+          x: 25,
+          y: y + 3 + lineIndex * 28,
+          width,
+          height: 21,
+        })),
+        ancestors: longTurnTextAncestors(sectionIndex),
+        style: {
+          display: "block",
+          visibility: "visible",
+          opacity: "1",
+          color: "rgb(32, 35, 31)",
+          webkitTextFillColor: "rgb(32, 35, 31)",
+          webkitTextStrokeColor: "rgb(32, 35, 31)",
+          webkitTextStrokeWidth: "0px",
+          textShadow: "none",
+          filter: "none",
+          transform: "none",
+          clipPath: "none",
+          maskImage: "none",
+          mixBlendMode: "normal",
+          fontFamily: "-apple-system, BlinkMacSystemFont, \"Segoe UI\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", \"Noto Sans CJK SC\", \"Source Han Sans SC\", sans-serif",
+          fontSize: "16px",
+          fontWeight: "400",
+          fontStyle: "normal",
+          lineHeight: "28px",
+          letterSpacing: "normal",
+          wordSpacing: "0px",
+          textIndent: "0px",
+          textTransform: "none",
+          whiteSpace: "pre-wrap",
+          overflowWrap: "anywhere",
+          textRendering: "auto",
+          backgroundColor: "rgba(0, 0, 0, 0)",
+          backgroundImage: "none",
+          boxShadow: "none",
+        },
+      };
+    }),
+  ),
+};
 
 test.describe("#44 视觉回归基线", () => {
   // 会话建立 + 生长链 + 融合定位需要超过默认 30s 时限
@@ -143,7 +269,7 @@ test.describe("#44 视觉回归基线", () => {
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
-  test("长文轮次卡片：章节共用一张卡片 + 悬停低表面提升", async ({ page }) => {
+  test("长文轮次卡片：章节共用一张卡片 + 悬停低表面提升", async ({ page }, testInfo) => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);
     await pinModelStatus(page);
@@ -155,17 +281,28 @@ test.describe("#44 视觉回归基线", () => {
     // 整轮长文（含三个章节）元素级截图——确认只有一个卡片边界。
     const turnCard = page.locator(".turn-card");
     await turnCard.scrollIntoViewIfNeeded();
-    await expect(turnCard).toHaveScreenshot("turn-card-sectioned-default", {
-      mask: dynamicTimeMasks(page),
-      maskColor: "#FFFFFF",
-    });
+    // 同一浏览器进程连续采样两次：跨进程冷启动波动由定向 repeat 验证，热进程也不能偶发变红。
+    for (let sample = 0; sample < 2; sample += 1) {
+      await expectScreenshotWithFontRasterRegions(turnCard, "turn-card-sectioned-default", testInfo, {
+        textLayoutSelector: ".markdown-content p",
+        expectedTextLayout: LONG_TURN_CARD_TEXT_LAYOUT,
+        fontColor: [32, 35, 31, 255],
+        mask: dynamicTimeMasks(page),
+        maskColor: "#FFFFFF",
+      });
+    }
 
     // 悬停态：背景 + 阴影低表面提升（不引起布局位移）
     await turnCard.hover();
-    await expect(turnCard).toHaveScreenshot("turn-card-sectioned-hover", {
-      mask: dynamicTimeMasks(page),
-      maskColor: "#FFFFFF",
-    });
+    for (let sample = 0; sample < 2; sample += 1) {
+      await expectScreenshotWithFontRasterRegions(turnCard, "turn-card-sectioned-hover", testInfo, {
+        textLayoutSelector: ".markdown-content p",
+        expectedTextLayout: LONG_TURN_CARD_TEXT_LAYOUT,
+        fontColor: [32, 35, 31, 255],
+        mask: dynamicTimeMasks(page),
+        maskColor: "#FFFFFF",
+      });
+    }
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
