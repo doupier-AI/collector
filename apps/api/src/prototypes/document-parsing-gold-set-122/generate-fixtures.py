@@ -261,8 +261,26 @@ def sample(identifier,group,file,weight,layout,anchors,outcome="success",decisio
     result={"id":identifier,"group":group,"candidate":True,"file":file,"weight":weight,"expectedOutcome":outcome,"layout":layout,"documentValueChecks":negative_checks(identifier) if group=="negative" else positive_checks(identifier),"diagnosticAnchors":anchors}
     if decision_dependency is not None: result["decisionDependency"]=decision_dependency
     return result
+def external_benchmarks():
+    return [{
+        "id":"omnidocbench-v1.6",
+        "status":"approved-external-research-only",
+        "includedInScore":False,
+        "includedInRepository":False,
+        "automaticDownload":False,
+        "purpose":"Optional page-level comparison for text, table, formula, layout, and reading-order accuracy, with emphasis on the 296-page Hard subset.",
+        "doesNotReplace":["whole-document research value","cross-page continuity","DOCX native structure","corrupt, encrypted, and oversized failure behavior"],
+        "licenseBoundary":"Dataset copyright statement limits use to research and prohibits commercial use; no dataset asset or cache is committed or distributed.",
+        "independenceBoundary":"OmniDocBench and MinerU are both in the OpenDataLab ecosystem, so this benchmark is not the sole evidence for choosing MinerU.",
+        "revisionPolicy":"Any future local run must pin both the dataset revision and evaluation-code commit and report results separately from this seven-file score.",
+        "references":{
+            "dataset":"https://huggingface.co/datasets/opendatalab/OmniDocBench",
+            "evaluationCode":"https://github.com/opendatalab/OmniDocBench",
+            "copyrightStatement":"https://github.com/opendatalab/OmniDocBench#copyright-statement",
+        },
+    }]
 def gold_set():
-    return {"schemaVersion":2,"prototype":True,"issue":122,"decisionStatus":"awaiting-user-review","question":"Can a candidate preserve research value and disclose loss, rather than merely export text?","scoring":{"candidate":True,"weights":{"documentValue":60,"diagnosticAnchors":40},"sampleGroups":{"core-research":70,"office-regression":10,"negative":20},"successRule":"Total >= 85; each core-research sample >= 75; each core-research documentValue >= 80; zero critical violations."},"criticalViolations":["fabricated_text","false_precise_locator","negative_reported_success","silent_content_loss"],"samples":[
+    return {"schemaVersion":2,"prototype":True,"issue":122,"decisionStatus":"awaiting-user-review","question":"Can a candidate preserve research value and disclose loss, rather than merely export text?","scoring":{"candidate":True,"weights":{"documentValue":60,"diagnosticAnchors":40},"sampleGroups":{"core-research":70,"office-regression":10,"negative":20},"successRule":"Total >= 85; each core-research sample >= 75; each core-research documentValue >= 80; zero critical violations."},"criticalViolations":["fabricated_text","false_precise_locator","negative_reported_success","silent_content_loss"],"externalBenchmarks":external_benchmarks(),"samples":[
         sample("zh-single-column-textbook","core-research","output/pdf/zh-single-column-textbook.pdf",70/3,"12-page original Chinese single-column textbook with dense unique prose, running header/footer notes, cross-page table, formula, figure, references, and appendix",[
             {"id":"zh-a1","page":1,"region":"upper-half","objectType":"heading","exactText":"1.1 研究型阅读的最小闭环","structureExpectation":"section 1.1 heading remains related to the body paragraphs on the same page"},{"id":"zh-a2","page":2,"region":"upper-middle","objectType":"readingOrder","exactText":"1.2 标题层级与阅读顺序","structureExpectation":"heading followed by its three body paragraphs in visual reading order, without interleaving the review callout or footer"},{"id":"zh-a3","page":4,"region":"middle-lower","objectType":"table","exactText":"表 1 结构对象的研究后果（上）","structureExpectation":"table name, three columns, column headers, and upper-half data rows remain a table"},{"id":"zh-a4","page":5,"region":"middle","objectType":"continuedTable","exactText":"表 1（续）结构对象的研究后果","structureExpectation":"same table as zh-a3 with three columns, repeated header, and explicit continuation relationship"},{"id":"zh-a5","page":6,"region":"middle-lower","objectType":"figureAndCaption","exactText":"图 1  四类解析对象的合成恢复概况","structureExpectation":"image resource, four labeled groups, caption, and body cross-reference remain linked"},{"id":"zh-a6","page":8,"region":"middle","objectType":"equation","exactText":"S = 0.45T + 0.35L + 0.20V","requiredText":["其中 T 为文字完整性，L 为定位质量，V 为视觉对象保留度。"],"structureExpectation":"formula and definitions of T, L, and V remain one inspectable equation object"},{"id":"zh-a7","page":10,"region":"upper-half","objectType":"honestDegradation","exactText":"4.1 不可识别对象的处理","requiredText":["这些情况不能被伪装成空白内容"],"structureExpectation":"heading and body preserve the rule that missing scan text is disclosed rather than reported as blank body text"},{"id":"zh-a8","page":11,"region":"middle","objectType":"references","exactText":"Anonymous benchmark protocol #122","requiredText":["Evidence-aware reading systems","Stable locators for research notes","Object-aware document recovery"],"structureExpectation":"four complete reference entries remain distinct, non-overlapping, and separate from the body and review callout"},
         ]),
@@ -292,8 +310,12 @@ def verify_gold_exact_text(gold):
 def verify(gold):
     if gold["schemaVersion"]!=2 or len(gold["samples"])!=7: raise RuntimeError("gold set must contain exactly seven schema-v2 samples")
     if round(sum(item["weight"] for item in gold["samples"]),6)!=100: raise RuntimeError("gold weights must total 100")
+    if len(gold.get("externalBenchmarks",[]))!=1 or gold["externalBenchmarks"][0].get("includedInScore") is not False or gold["externalBenchmarks"][0].get("includedInRepository") is not False:
+        raise RuntimeError("OmniDocBench must remain a single unscored, unbundled external benchmark")
     ui_anchor_specs={"zh-single-column-textbook":("zh",8),"en-two-column-paper":("en",8),"hybrid-technical-report":("hybrid",9),"office-docx-regression":("docx",8),"negative-corrupted":("corrupt",4),"negative-encrypted":("encrypted",4),"negative-oversized":("oversized",4)}
     prototype_html=(ROOT/"document-parsing-gold-set-122.prototype.html").read_text(encoding="utf8")
+    if "OmniDocBench 不进入七份金集" not in prototype_html or "本原型不下载、不提交、不分发 OmniDocBench 数据" not in prototype_html:
+        raise RuntimeError("OmniDocBench external-boundary disclosure is missing from the prototype")
     for item in gold["samples"]:
         prefix,count=ui_anchor_specs[item["id"]]
         if [check["id"] for check in item["documentValueChecks"]] != ["integrity","navigable-reading","citation-return","honest-degradation"] or [anchor.get("id") for anchor in item["diagnosticAnchors"]] != [f"{prefix}-a{i}" for i in range(1,count+1)]:

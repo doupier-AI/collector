@@ -19,6 +19,13 @@
     .lede { max-width: 910px; margin: 0; color: var(--slate); font-size: 16px; line-height: 1.7; }
     .candidate-note { display: flex; gap: 10px; align-items: flex-start; max-width: 1000px; margin-top: 18px; padding: 12px 14px; border-left: 4px solid var(--warning); background: var(--warning-soft); color: #68410c; font-size: 13px; line-height: 1.55; }
     .candidate-note strong { white-space: nowrap; }
+    .benchmark-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .benchmark-card { padding: 18px 22px; border-right: 1px solid var(--line); }
+    .benchmark-card:last-child { border-right: 0; }
+    .benchmark-card p { margin: 8px 0 0; color: var(--slate); font-size: 13px; line-height: 1.65; }
+    .benchmark-boundary { display: flex; gap: 10px; align-items: flex-start; margin: 0 22px 22px; padding: 12px 14px; border-left: 4px solid var(--warning); background: var(--warning-soft); color: #68410c; font-size: 13px; line-height: 1.55; }
+    .benchmark-boundary strong { white-space: nowrap; }
+    .benchmark-boundary a { color: #68410c; font-weight: 700; }
     .summary-strip { display: grid; grid-template-columns: 1.3fr repeat(4, minmax(0, 1fr)); margin-top: 20px; border: 1px solid var(--line-strong); background: var(--surface); box-shadow: var(--shadow); }
     .summary { min-height: 122px; padding: 17px; border-right: 1px solid var(--line); } .summary:last-child { border-right: 0; }
     .summary-value { margin-top: 9px; font-family: Georgia, Cambria, serif; font-size: 28px; font-weight: 700; line-height: 1; }
@@ -55,7 +62,7 @@
     .table-wrap { overflow-x: auto; } .table-wrap:focus-visible { outline: 3px solid #7fc1bd; outline-offset: -3px; } table { width: 100%; min-width: 860px; border-collapse: collapse; font-size: 13px; } th, td { padding: 11px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; } th { background: #fbfcfd; } td { color: var(--slate); } td strong { color: var(--ink); }
     .pill { display: inline-block; padding: 3px 6px; border-radius: 2px; font-family: Consolas, monospace; font-size: 10px; font-weight: 700; } .pill.success { background: var(--evidence-soft); color: var(--evidence); } .pill.partial { background: var(--warning-soft); color: var(--warning); } .pill.failure { background: var(--danger-soft); color: var(--danger); } .pill.unrated { background: var(--quiet); color: var(--slate); }
     .violations { margin: 16px 22px 22px; padding: 12px; border-left: 4px solid var(--danger); background: var(--danger-soft); color: #842e2e; font-size: 13px; line-height: 1.55; } .footer { margin-top: 20px; color: var(--slate); font-size: 12px; line-height: 1.6; text-align: center; } .footer a { color: var(--evidence); }
-    @media (max-width: 980px) { .summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } .summary:nth-child(2) { border-right: 0; } .summary:nth-child(-n+2) { border-bottom: 1px solid var(--line); } .method, .workspace, .scenario { grid-template-columns: 1fr; } .sample-nav { border-right: 0; border-bottom: 1px solid var(--line); } .sample-list { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 980px) { .summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } .summary:nth-child(2) { border-right: 0; } .summary:nth-child(-n+2) { border-bottom: 1px solid var(--line); } .method, .workspace, .scenario, .benchmark-grid { grid-template-columns: 1fr; } .benchmark-card { border-right: 0; border-bottom: 1px solid var(--line); } .benchmark-card:last-child { border-bottom: 0; } .sample-nav { border-right: 0; border-bottom: 1px solid var(--line); } .sample-list { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     @media (max-width: 620px) { .shell { width: min(100% - 16px, 1440px); } .masthead { padding-top: 21px; } .summary-strip, .sample-list, .scoreboard { grid-template-columns: 1fr; } .summary, .scoreboard-cell { border-right: 0; border-bottom: 1px solid var(--line); } .summary:last-child, .scoreboard-cell:last-child { border-bottom: 0; } .panel-head, .review-head { display: block; padding: 17px; } .actions { margin-top: 14px; } .method, .review, .scenario { padding: 17px; } .open-file { display: inline-block; margin-top: 13px; } .scoreboard { margin-left: 22px; } .checkpoint { grid-template-columns: 1fr; } .rating { width: 100%; } .rating button { flex: 1; } }
     @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; } }
   </style>
@@ -68,6 +75,19 @@
       <p class="lede">这不是把“能抽出文字”换一个名字。每份文件都要先经受整份文档的研究任务检查，再逐一核对页、区域和对象。两条证据链会在同一个组合分数中相遇，却不会互相掩盖。</p>
       <div class="candidate-note"><strong>候选权重，待裁决</strong><span>整份文档研究价值 60% · 对象级诊断锚点 40%。本原型只探索该规则是否有辨识力；它不是正式产品决定，也不会写入产品能力。</span></div>
     </header>
+
+    <section class="panel" aria-labelledby="external-benchmark-title">
+      <div class="panel-head">
+        <div><div class="eyebrow">已确认边界 · 外部研究评测</div><h2 id="external-benchmark-title">OmniDocBench 不进入七份金集</h2><p>它是 MinerU 官方采用的页面级公开基准，可补充复杂对象精度，但不替代 #122 对完整文档、失败边界和研究价值的裁决。</p></div>
+        <span class="pill success">已确认</span>
+      </div>
+      <div class="benchmark-grid">
+        <article class="benchmark-card"><h3>能补什么</h3><p>只在独立研究环境比较复杂嵌套表格、密集公式、非常规版式、手写与历史页面；优先参考 v1.6 的 296 页 Hard 子集。</p></article>
+        <article class="benchmark-card"><h3>不能替代什么</h3><p>它以页面图像为核心，不验证 DOCX 原生结构、完整文档连续性、损坏/加密/超限失败，亦不进入本页评分。</p></article>
+        <article class="benchmark-card"><h3>为什么分开</h3><p>数据版权声明限定研究用途且不可商用；同时它与 MinerU 同属 OpenDataLab 生态，不宜成为裁决 MinerU 的唯一证据。</p></article>
+      </div>
+      <div class="benchmark-boundary"><strong>执行约束</strong><span>本原型不下载、不提交、不分发 OmniDocBench 数据。若以后单独运行，只能本地按固定 revision 获取，并与固定评测代码 commit 配对；结果另行报告，不改写这 7 份样本的分数。查看 <a href="https://huggingface.co/datasets/opendatalab/OmniDocBench" target="_blank" rel="noopener">官方数据卡</a>与<a href="https://github.com/opendatalab/OmniDocBench#copyright-statement" target="_blank" rel="noopener">版权声明</a>。</span></div>
+    </section>
 
     <section class="summary-strip" aria-label="当前评分状态">
       <article class="summary"><div class="meta-label">当前裁决</div><div class="summary-value unrated" id="overall-class">未评分</div><div class="summary-hint" id="overall-rule">选择一个情景，或逐项打分。</div></article>
@@ -108,7 +128,7 @@
     <section class="panel" aria-labelledby="scenario-title-label"><div class="panel-head"><div><h2 id="scenario-title-label">引导式推演</h2><p>先选择情景，再点击第一步套用该情景的完整评分；后续步骤会带你查看关键证据或追加致命违规。</p></div></div><div class="scenario-tabs" id="scenario-tabs" aria-label="演示情景"></div><div class="scenario"><div><h3 id="scenario-title"></h3><p id="scenario-copy"></p></div><div class="steps" id="scenario-steps"></div></div></section>
 
     <section class="panel" aria-labelledby="state-title"><div class="panel-head"><div><h2 id="state-title">完整状态表</h2><p>不只给一个漂亮总分：每份文件分别列出文档层、锚点层、组合分、分组和仍未通过的项目。</p></div></div><div class="table-wrap" tabindex="0" role="region" aria-label="七份样本完整状态表，可横向滚动"><table><thead><tr><th>样本</th><th>分类</th><th>文档分</th><th>锚点分</th><th>组合分</th><th>状态</th><th>未通过项</th></tr></thead><tbody id="state-body"></tbody></table></div><div class="violations" id="violations" hidden></div></section>
-    <footer class="footer">PROTOTYPE — 资产只保留在 #122 独立分支，不合入 master。外部材料来源和许可证据见 <a href="sources/manifest.json" target="_blank" rel="noopener">sources/manifest.json</a>；混合技术报告明确为 NIST 材料衍生样本，不是 NIST 官方出版物。</footer>
+    <footer class="footer">PROTOTYPE — 资产只保留在 #122 独立分支，不合入 master。已纳入样本的来源和许可证据见 <a href="sources/manifest.json" target="_blank" rel="noopener">sources/manifest.json</a>；OmniDocBench 仅为外部研究评测边界，不属于本原型资产。</footer>
   </main>
 
   <script>

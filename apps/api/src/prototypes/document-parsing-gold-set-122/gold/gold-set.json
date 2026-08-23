@@ -23,6 +23,30 @@
     "negative_reported_success",
     "silent_content_loss"
   ],
+  "externalBenchmarks": [
+    {
+      "id": "omnidocbench-v1.6",
+      "status": "approved-external-research-only",
+      "includedInScore": false,
+      "includedInRepository": false,
+      "automaticDownload": false,
+      "purpose": "Optional page-level comparison for text, table, formula, layout, and reading-order accuracy, with emphasis on the 296-page Hard subset.",
+      "doesNotReplace": [
+        "whole-document research value",
+        "cross-page continuity",
+        "DOCX native structure",
+        "corrupt, encrypted, and oversized failure behavior"
+      ],
+      "licenseBoundary": "Dataset copyright statement limits use to research and prohibits commercial use; no dataset asset or cache is committed or distributed.",
+      "independenceBoundary": "OmniDocBench and MinerU are both in the OpenDataLab ecosystem, so this benchmark is not the sole evidence for choosing MinerU.",
+      "revisionPolicy": "Any future local run must pin both the dataset revision and evaluation-code commit and report results separately from this seven-file score.",
+      "references": {
+        "dataset": "https://huggingface.co/datasets/opendatalab/OmniDocBench",
+        "evaluationCode": "https://github.com/opendatalab/OmniDocBench",
+        "copyrightStatement": "https://github.com/opendatalab/OmniDocBench#copyright-statement"
+      }
+    }
+  ],
   "samples": [
     {
       "id": "zh-single-column-textbook",

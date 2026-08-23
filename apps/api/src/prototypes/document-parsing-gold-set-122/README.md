@@ -89,6 +89,17 @@ NIST 锚点同时记录 `sourcePdfPage` 与 `sourcePrintedPage`：前者是从 1
 
 “能免费下载”不等于“能进入仓库或制作衍生品”。例如带 `ND` 条款的中文开放图书没有纳入本原型。
 
+## 已确认的外部评测边界
+
+OmniDocBench 是 MinerU 官方准确率所采用的公开页面级 benchmark，但它不属于这 7 份金集，也不进入本原型的评分。两条轨道保持分离：
+
+- **#122 自有金集**继续裁决完整文档的研究价值、对象定位、DOCX 原生结构和损坏/加密/超限失败；
+- **OmniDocBench 外部轨道**只在独立研究环境补充页面级文字、表格、公式、版式与阅读顺序精度，优先参考 v1.6 的 296 页 Hard 子集；
+- 外部轨道不能成为裁决 MinerU 的唯一证据，因为 OmniDocBench 与 MinerU 同属 OpenDataLab 生态，且公开 Gold 存在针对 benchmark 优化的可能；
+- OmniDocBench 数据卡明确限制为仅供研究、不可商用。仓库不保存其页面、PDF、标注或缓存，也不提供自动下载脚本；如以后单独运行，必须固定数据 revision 与评测代码 commit，产出另行报告，不回写这 7 份样本的分数。
+
+参考：[OmniDocBench 官方数据卡](https://huggingface.co/datasets/opendatalab/OmniDocBench)、[评测代码](https://github.com/opendatalab/OmniDocBench)、[数据版权声明](https://github.com/opendatalab/OmniDocBench#copyright-statement)。
+
 ## 重新生成
 
 先从 Codex workspace dependency loader 取得 bundled Python 路径，再在本目录运行：
