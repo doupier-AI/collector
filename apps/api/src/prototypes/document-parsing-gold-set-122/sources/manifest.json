@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Public-source provenance for Issue #122 prototype fixtures. Cache files are verified before generation and are not user content.",
+  "sources": [
+    {
+      "id": "frontiers-fphys-2020-00452",
+      "cacheFile": "cache/frontiers-fphys-2020-00452.pdf",
+      "landingUrl": "https://www.frontiersin.org/journals/physiology/articles/10.3389/fphys.2020.00452/full",
+      "downloadUrl": "https://www.frontiersin.org/journals/physiology/articles/10.3389/fphys.2020.00452/pdf",
+      "license": "Creative Commons Attribution (CC BY)",
+      "licenseEvidence": "https://www.frontiersin.org/journals/physiology/articles/10.3389/fphys.2020.00452/full",
+      "attribution": "Tivay, A., Jin, X., Lo, A. K.-Y., Scully, C. G., and Hahn, J.-O. (2020). Practical Use of Regularization in Individualizing a Mathematical Model of Cardiovascular Hemodynamics Using Scarce Data. Frontiers in Physiology, 11, 452. https://doi.org/10.3389/fphys.2020.00452",
+      "downloadedAt": "2026-08-24",
+      "expectedSha256": "EFE8CCE4394D43894BAA98D1ABEF12A3EAB69CEEF46B537822F470696D287A12",
+      "bytes": 1823747,
+      "pages": 13,
+      "derivativePolicy": "Copied unchanged into the benchmark output with author attribution and CC BY notice retained."
+    },
+    {
+      "id": "nist-ai-100-1",
+      "cacheFile": "cache/NIST.AI.100-1.pdf",
+      "landingUrl": "https://www.nist.gov/itl/ai-risk-management-framework",
+      "downloadUrl": "https://nvlpubs.nist.gov/nistpubs/ai/NIST.AI.100-1.pdf",
+      "license": "NIST Technical Series reuse rights, including derivatives with attribution and no implied endorsement",
+      "licenseEvidence": "https://www.nist.gov/open/copyright-fair-use-and-licensing-statements-srd-data-software-and-technical-series-publications",
+      "attribution": "Tabassi, E. (2023), Artificial Intelligence Risk Management Framework (AI RMF 1.0), NIST AI 100-1, National Institute of Standards and Technology, Gaithersburg, MD, https://doi.org/10.6028/NIST.AI.100-1. Republished courtesy of the National Institute of Standards and Technology.",
+      "downloadedAt": "2026-08-24",
+      "expectedSha256": "7576EDB531D9848825814EE88E28B1795D3A84B435B4B797D3670EAFDC4A89F1",
+      "bytes": 1946127,
+      "pages": 48,
+      "modifiedAt": "2026-08-24",
+      "modificationNotice": "Selected and reordered source pages; rasterized source PDF physical pages 28 and 45 with synthetic scan noise; added four original benchmark framing pages.",
+      "pageNumbering": "selectedNativePages and selectedRasterPages are 1-based physical PDF page indexes; printed page labels are recorded separately in the Gold anchors.",
+      "selectedNativePages": [4, 17, 27, 29, 31, 34, 37, 40, 43, 46],
+      "selectedRasterPages": [28, 45],
+      "derivativePolicy": "The benchmark may rasterize selected original NIST pages with light synthetic scan noise. The recommended citation must be followed by 'Republished courtesy of the National Institute of Standards and Technology.' The derivative must state the date and nature of its changes, must not imply NIST endorsement, and must not use pages carrying third-party copyright notices, including text or figures explicitly credited to OECD."
+    }
+  ]
+}

@@ -1,13 +1,21 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "prototype": true,
   "issue": 122,
-  "question": "Which minimal anonymous gold set lets a user compare real reading and citation value instead of only Markdown export?",
   "decisionStatus": "awaiting-user-review",
-  "classification": {
-    "success": "Overall score >= 85, every core research sample >= 75, and no critical violation.",
-    "partial": "Overall score 50-84, or a non-critical research structure is missing while the degradation is explicit.",
-    "failure": "Overall score < 50, any fabricated content, an unusable citation locator claimed as precise, or a negative sample reported as a clean success."
+  "question": "Can a candidate preserve research value and disclose loss, rather than merely export text?",
+  "scoring": {
+    "candidate": true,
+    "weights": {
+      "documentValue": 60,
+      "diagnosticAnchors": 40
+    },
+    "sampleGroups": {
+      "core-research": 70,
+      "office-regression": 10,
+      "negative": 20
+    },
+    "successRule": "Total >= 85; each core-research sample >= 75; each core-research documentValue >= 80; zero critical violations."
   },
   "criticalViolations": [
     "fabricated_text",
@@ -15,496 +23,638 @@
     "negative_reported_success",
     "silent_content_loss"
   ],
-  "dimensions": [
-    {
-      "id": "body",
-      "label": "可读正文",
-      "weight": 25
-    },
-    {
-      "id": "order",
-      "label": "阅读顺序与标题层级",
-      "weight": 20
-    },
-    {
-      "id": "locator",
-      "label": "页码与区域定位",
-      "weight": 20
-    },
-    {
-      "id": "structure",
-      "label": "表格与公式结构",
-      "weight": 15
-    },
-    {
-      "id": "image",
-      "label": "图片资源与图注",
-      "weight": 10
-    },
-    {
-      "id": "degradation",
-      "label": "失败分类与诚实降级",
-      "weight": 10
-    }
-  ],
   "samples": [
     {
       "id": "zh-single-column-textbook",
       "group": "core-research",
+      "candidate": true,
       "file": "output/pdf/zh-single-column-textbook.pdf",
-      "format": "pdf",
-      "language": "zh-CN",
-      "layout": "single-column selectable text",
-      "coverage": [
-        "headings",
-        "page-region",
-        "table",
-        "formula",
-        "footnote",
-        "figure",
-        "references"
-      ],
+      "weight": 23.333333333333332,
       "expectedOutcome": "success",
-      "checkpoints": [
+      "layout": "12-page original Chinese single-column textbook with dense unique prose, running header/footer notes, cross-page table, formula, figure, references, and appendix",
+      "documentValueChecks": [
         {
-          "id": "zh-body",
-          "dimension": "body",
-          "label": "三页中文正文可复制，关键断言完整，无页眉脚注混入"
+          "id": "integrity",
+          "label": "正文、章节标题、跨页表、图、公式、参考文献和附录完整，不靠重复段落制造页数。"
         },
         {
-          "id": "zh-headings",
-          "dimension": "order",
-          "label": "三章与 1.1 小节层级正确，正文顺序不跳页"
+          "id": "navigable-reading",
+          "label": "章与节形成连续阅读路径；表 1 的上半段和续页仍是同一个对象。"
         },
         {
-          "id": "zh-locators",
-          "dimension": "locator",
-          "label": "关键断言定位到第 1 页中部；表 1 和公式 1 定位到第 2 页；图 1 定位到第 3 页"
+          "id": "citation-return",
+          "label": "图、公式、参考文献、页码与对象区域能支撑研究者回到原页。"
         },
         {
-          "id": "zh-table-formula",
-          "dimension": "structure",
-          "label": "表 1 保留 4x3 单元格；公式 S = 0.5T + 0.3L + 0.2V 可读"
-        },
-        {
-          "id": "zh-figure",
-          "dimension": "image",
-          "label": "图 1 作为独立图片资源并关联图注与第 3 页"
-        },
-        {
-          "id": "zh-degrade",
-          "dimension": "degradation",
-          "label": "若公式或图片不可结构化，明确标记缺失，不把图像内容伪造成正文"
+          "id": "honest-degradation",
+          "label": "无法提取某类对象时，明确对象类型与范围，不把视觉内容伪成正文。"
         }
       ],
-      "gold": {
-        "readingOrder": [
-          "第一章",
-          "1.1 可验证引用",
-          "第二章",
-          "表 1",
-          "公式 1",
-          "第三章",
-          "图 1",
-          "参考文献"
-        ],
-        "regions": [
-          {
-            "page": 1,
-            "region": "middle",
-            "contains": "引用价值同时依赖文字完整性和稳定定位"
-          },
-          {
-            "page": 2,
-            "region": "upper-middle",
-            "object": "table-1"
-          },
-          {
-            "page": 2,
-            "region": "lower-middle",
-            "object": "formula-1"
-          },
-          {
-            "page": 3,
-            "region": "upper-middle",
-            "object": "figure-1"
-          }
-        ],
-        "table": [
-          [
-            "对象",
-            "最低保留要求",
-            "错误降级的后果"
+      "diagnosticAnchors": [
+        {
+          "id": "zh-a1",
+          "page": 1,
+          "region": "upper-half",
+          "objectType": "heading",
+          "exactText": "1.1 研究型阅读的最小闭环",
+          "structureExpectation": "section 1.1 heading remains related to the body paragraphs on the same page"
+        },
+        {
+          "id": "zh-a2",
+          "page": 2,
+          "region": "upper-middle",
+          "objectType": "readingOrder",
+          "exactText": "1.2 标题层级与阅读顺序",
+          "structureExpectation": "heading followed by its three body paragraphs in visual reading order, without interleaving the review callout or footer"
+        },
+        {
+          "id": "zh-a3",
+          "page": 4,
+          "region": "middle-lower",
+          "objectType": "table",
+          "exactText": "表 1 结构对象的研究后果（上）",
+          "structureExpectation": "table name, three columns, column headers, and upper-half data rows remain a table"
+        },
+        {
+          "id": "zh-a4",
+          "page": 5,
+          "region": "middle",
+          "objectType": "continuedTable",
+          "exactText": "表 1（续）结构对象的研究后果",
+          "structureExpectation": "same table as zh-a3 with three columns, repeated header, and explicit continuation relationship"
+        },
+        {
+          "id": "zh-a5",
+          "page": 6,
+          "region": "middle-lower",
+          "objectType": "figureAndCaption",
+          "exactText": "图 1  四类解析对象的合成恢复概况",
+          "structureExpectation": "image resource, four labeled groups, caption, and body cross-reference remain linked"
+        },
+        {
+          "id": "zh-a6",
+          "page": 8,
+          "region": "middle",
+          "objectType": "equation",
+          "exactText": "S = 0.45T + 0.35L + 0.20V",
+          "requiredText": [
+            "其中 T 为文字完整性，L 为定位质量，V 为视觉对象保留度。"
           ],
-          [
-            "表格",
-            "单元格与行列关系",
-            "数字脱离指标，比较失真"
+          "structureExpectation": "formula and definitions of T, L, and V remain one inspectable equation object"
+        },
+        {
+          "id": "zh-a7",
+          "page": 10,
+          "region": "upper-half",
+          "objectType": "honestDegradation",
+          "exactText": "4.1 不可识别对象的处理",
+          "requiredText": [
+            "这些情况不能被伪装成空白内容"
           ],
-          [
-            "公式",
-            "可读表达与所在区域",
-            "变量关系丢失，推导不可复核"
+          "structureExpectation": "heading and body preserve the rule that missing scan text is disclosed rather than reported as blank body text"
+        },
+        {
+          "id": "zh-a8",
+          "page": 11,
+          "region": "middle",
+          "objectType": "references",
+          "exactText": "Anonymous benchmark protocol #122",
+          "requiredText": [
+            "Evidence-aware reading systems",
+            "Stable locators for research notes",
+            "Object-aware document recovery"
           ],
-          [
-            "图片",
-            "资源、说明文字与页码",
-            "图证据消失或被误写成正文"
-          ]
-        ],
-        "formula": "S = 0.5T + 0.3L + 0.2V",
-        "imageCaption": "图 1  四类学习活动的时间分配（合成数据）"
-      }
+          "structureExpectation": "four complete reference entries remain distinct, non-overlapping, and separate from the body and review callout"
+        }
+      ]
     },
     {
       "id": "en-two-column-paper",
       "group": "core-research",
+      "candidate": true,
       "file": "output/pdf/en-two-column-paper.pdf",
-      "format": "pdf",
-      "language": "en",
-      "layout": "two-column selectable text; content stream intentionally draws right column first",
-      "coverage": [
-        "two-column-order",
-        "table",
-        "formula",
-        "footnote",
-        "figure",
-        "references"
-      ],
+      "weight": 23.333333333333332,
       "expectedOutcome": "success",
-      "checkpoints": [
+      "layout": "13-page original Frontiers in Physiology article, copied unchanged; CC BY",
+      "documentValueChecks": [
         {
-          "id": "en-body",
-          "dimension": "body",
-          "label": "正文与参考文献完整，无跨栏句子拼接"
+          "id": "integrity",
+          "label": "Title、Abstract、正文、附录和 References 的范围完整，不跨栏拼句。"
         },
         {
-          "id": "en-order",
-          "dimension": "order",
-          "label": "第 1 页视觉顺序为标题/摘要 → 左栏 Introduction → 右栏 Evaluation protocol"
+          "id": "navigable-reading",
+          "label": "按视觉阅读顺序读取左右栏，图表跨栏时不打断章节逻辑。"
         },
         {
-          "id": "en-locators",
-          "dimension": "locator",
-          "label": "Introduction 与 Evaluation protocol 均保留第 1 页及左右栏区域"
+          "id": "citation-return",
+          "label": "图表、方程、附录表和文内引用均可回到页级对象。"
         },
         {
-          "id": "en-structures",
-          "dimension": "structure",
-          "label": "第 2 页表格 4x4、Equation 1 与变量表达保持可读"
-        },
-        {
-          "id": "en-figure",
-          "dimension": "image",
-          "label": "Figure 1 资源、图注和第 2 页位置可回读"
-        },
-        {
-          "id": "en-degrade",
-          "dimension": "degradation",
-          "label": "无法恢复跨栏顺序时明确声明布局受限，不将交错文本称为成功"
+          "id": "honest-degradation",
+          "label": "无法恢复版式时明确标记双栏限制，不把交错文本报告为正常文章。"
         }
       ],
-      "gold": {
-        "readingOrder": [
-          "Title",
-          "Abstract",
-          "1 Introduction",
-          "2 Evaluation protocol",
-          "3 Results",
-          "Table 1",
-          "Equation 1",
-          "Figure 1",
-          "References"
-        ],
-        "regions": [
-          {
-            "page": 1,
-            "region": "left-column",
-            "heading": "1 Introduction"
-          },
-          {
-            "page": 1,
-            "region": "right-column",
-            "heading": "2 Evaluation protocol"
-          }
-        ],
-        "formula": "Q = 0.4R + 0.35C + 0.25D"
-      }
+      "diagnosticAnchors": [
+        {
+          "id": "en-a1",
+          "page": 1,
+          "region": "top",
+          "objectType": "metadataAndAbstract",
+          "exactText": "Practical Use of Regularization",
+          "requiredText": [
+            "Regularization provides an established framework to cope with this",
+            "INTRODUCTION"
+          ],
+          "structureExpectation": "title block and abstract paragraph remain distinct front matter before the first two-column INTRODUCTION section"
+        },
+        {
+          "id": "en-a2",
+          "pageRange": [
+            1,
+            10
+          ],
+          "region": "two-column",
+          "objectType": "readingOrder",
+          "requiredTextByPage": [
+            {
+              "page": 1,
+              "text": "INTRODUCTION"
+            },
+            {
+              "page": 10,
+              "text": "CONCLUSION"
+            }
+          ],
+          "structureExpectation": "pages 1 through 10 preserve left-then-right visual column order; cross-column figures and tables do not interrupt section continuity"
+        },
+        {
+          "id": "en-a3",
+          "page": 3,
+          "region": "columns",
+          "objectType": "figureAndEquations",
+          "exactText": "FIGURE 1",
+          "requiredText": [
+            "(2)",
+            "(3)",
+            "(4)",
+            "(5a)",
+            "(5b)"
+          ],
+          "structureExpectation": "Figure 1, its caption, and equations (2) through (5) keep separate object boundaries"
+        },
+        {
+          "id": "en-a4",
+          "page": 4,
+          "region": "columns",
+          "objectType": "tableAndEquations",
+          "exactText": "TABLE 1",
+          "requiredText": [
+            "(7)",
+            "(8)",
+            "(9)",
+            "(10)"
+          ],
+          "structureExpectation": "Table 1 and equations (7) through (10) do not interleave with adjacent column body text"
+        },
+        {
+          "id": "en-a5",
+          "page": 6,
+          "region": "columns",
+          "objectType": "figureAndEquations",
+          "exactText": "FIGURE 3",
+          "requiredText": [
+            "(12)",
+            "(13)"
+          ],
+          "structureExpectation": "Figure 3 and equations (12) and (13) remain page-level objects with return paths"
+        },
+        {
+          "id": "en-a6",
+          "page": 7,
+          "region": "columns",
+          "objectType": "table",
+          "exactText": "TABLE 2",
+          "structureExpectation": "table caption, column headers, rows, and footnotes retain their column relationships"
+        },
+        {
+          "id": "en-a7",
+          "page": 11,
+          "region": "lower-half",
+          "objectType": "references",
+          "exactText": "REFERENCES",
+          "structureExpectation": "dense reference entries begin in a distinct region and preserve two-column reading order"
+        },
+        {
+          "id": "en-a8",
+          "page": 13,
+          "region": "full-page",
+          "objectType": "appendixTable",
+          "exactText": "TABLE A1",
+          "requiredText": [
+            "APPENDIX"
+          ],
+          "structureExpectation": "Appendix Table A1 remains an appendix table with column relationships and is not merged into the reference section"
+        }
+      ]
     },
     {
-      "id": "scanned-lab-note",
+      "id": "hybrid-technical-report",
       "group": "core-research",
-      "file": "output/pdf/scanned-lab-note.pdf",
-      "format": "pdf",
-      "language": "en",
-      "layout": "two image-only scanned pages; intentionally no text layer",
-      "coverage": [
-        "scan",
-        "ocr",
-        "page-region",
-        "image-only-table"
-      ],
-      "expectedOutcome": "success-or-explicit-partial",
-      "checkpoints": [
+      "candidate": true,
+      "file": "output/pdf/hybrid-technical-report.pdf",
+      "weight": 23.333333333333332,
+      "expectedOutcome": "decision-dependent",
+      "layout": "16-page NIST AI 100-1 benchmark derivative: 10 native source pages, two raster-only source pages, and four original derivative pages",
+      "documentValueChecks": [
         {
-          "id": "scan-body",
-          "dimension": "body",
-          "label": "OCR 读取主要正文；第 2 页保留短语 BLUE ANCHOR"
+          "id": "integrity",
+          "label": "封面、来源声明、目录、原生正文/表图、附录和页映射作为同一报告完整保留。"
         },
         {
-          "id": "scan-order",
-          "dimension": "order",
-          "label": "两页顺序和每页行序稳定"
+          "id": "navigable-reading",
+          "label": "目录、章节标题与页映射让读者能跨原生页、横向页和扫描页理解报告结构。"
         },
         {
-          "id": "scan-locator",
-          "dimension": "locator",
-          "label": "BLUE ANCHOR 可定位到第 2 页上半部"
+          "id": "citation-return",
+          "label": "原生图表、长表、横向宽表与扫描页分别说明自己的页级和对象级复核范围。"
         },
         {
-          "id": "scan-grid",
-          "dimension": "structure",
-          "label": "图像内测量网格被识别为图片/表格候选，不伪造单元格数值"
-        },
-        {
-          "id": "scan-image",
-          "dimension": "image",
-          "label": "每页保留原始页面图像资源"
-        },
-        {
-          "id": "scan-degrade",
-          "dimension": "degradation",
-          "label": "无 OCR 时返回部分成功并明确无文本层；不得返回空白成功"
+          "id": "honest-degradation",
+          "label": "第 6、12 页没有原生文字层；OCR 结果必须标明来源，不能伪装成原生精确文字。"
         }
       ],
-      "gold": {
-        "pageCount": 2,
-        "textLayer": false,
-        "anchor": {
+      "diagnosticAnchors": [
+        {
+          "id": "hybrid-a1",
+          "page": 1,
+          "region": "full-page",
+          "objectType": "cover",
+          "exactText": "Recoverable AI Risk Evidence",
+          "structureExpectation": "report title and benchmark-derivative identity are both visible on the cover"
+        },
+        {
+          "id": "hybrid-a2",
           "page": 2,
           "region": "upper-half",
-          "contains": "BLUE ANCHOR"
+          "objectType": "provenance",
+          "exactText": "Tabassi, E. (2023), Artificial Intelligence Risk Management Framework (AI RMF 1.0), NIST AI 100-1, National Institute of Standards and Technology, Gaithersburg, MD, https://doi.org/10.6028/NIST.AI.100-1.",
+          "requiredText": [
+            "Republished courtesy of the National Institute of Standards and Technology.",
+            "Modified on 2026-08-24 for parser evaluation",
+            "This is not an official NIST publication",
+            "does not review, approve, or endorse"
+          ],
+          "structureExpectation": "recommended citation and DOI are followed by the exact NIST courtesy line; modification date and nature and no-endorsement notice remain complete"
+        },
+        {
+          "id": "hybrid-a3",
+          "page": 3,
+          "region": "upper-half",
+          "objectType": "contents",
+          "exactText": "Table of Contents",
+          "structureExpectation": "original heading hierarchy and printed page-number relationships remain a table of contents",
+          "sourcePdfPage": 4,
+          "sourcePrintedPage": "i",
+          "sourceSha256": "7576EDB531D9848825814EE88E28B1795D3A84B435B4B797D3670EAFDC4A89F1"
+        },
+        {
+          "id": "hybrid-a4",
+          "page": 4,
+          "region": "upper-half",
+          "objectType": "headingAndFigure",
+          "exactText": "AI Risks and Trustworthiness",
+          "requiredText": [
+            "Figure 4"
+          ],
+          "structureExpectation": "section heading, Figure 4, caption, and body remain separate but related objects",
+          "sourcePdfPage": 17,
+          "sourcePrintedPage": "12",
+          "sourceSha256": "7576EDB531D9848825814EE88E28B1795D3A84B435B4B797D3670EAFDC4A89F1"
+        },
+        {
+          "id": "hybrid-a5",
+          "page": 5,
+          "region": "body",
+          "objectType": "bodyAndLongTable",
+          "exactText": "GOVERN is a cross-cutting function",
+          "requiredText": [
+            "Table 1: Categories and subcategories for the GOVERN function."
+          ],
+          "structureExpectation": "GOVERN body flows into the upper portion of Table 1 while preserving table rows and columns",
+          "sourcePdfPage": 27,
+          "sourcePrintedPage": "22",
+          "sourceSha256": "7576EDB531D9848825814EE88E28B1795D3A84B435B4B797D3670EAFDC4A89F1"
+        },
+        {
+          "id": "hybrid-a6",
+          "page": 6,
+          "region": "full-page",
+          "objectType": "imageOnlyPage",
+          "ocrReferenceText": "Mechanisms are in place to inventory AI systems",
+          "structureExpectation": "accurate OCR matching ocrReferenceText with disclosed OCR provenance may pass; image preserved plus explicit no-native-text disclosure without OCR remains pending between partial and failure",
+          "sourcePdfPage": 28,
+          "sourcePrintedPage": "23",
+          "sourceSha256": "7576EDB531D9848825814EE88E28B1795D3A84B435B4B797D3670EAFDC4A89F1"
+        },
+        {
+          "id": "hybrid-a7",
+          "page": 8,
+          "region": "upper-half",
+          "objectType": "table",
+          "exactText": "Table 2: Categories and subcategories for the MAP function.",
+          "structureExpectation": "current-page categories, subcategories, rows, and columns remain a table rather than scattered text",
+          "sourcePdfPage": 31,
+          "sourcePrintedPage": "26",
+          "sourceSha256": "7576EDB531D9848825814EE88E28B1795D3A84B435B4B797D3670EAFDC4A89F1"
+        },
+        {
+          "id": "hybrid-a8",
+          "page": 9,
+          "region": "upper-half",
+          "objectType": "landscapeTable",
+          "exactText": "Wide control comparison (landscape)",
+          "structureExpectation": "original landscape page, six columns, six rows, header, and row-column relationships remain intact"
+        },
+        {
+          "id": "hybrid-a9",
+          "page": 12,
+          "region": "full-page",
+          "objectType": "imageOnlyPage",
+          "ocrReferenceText": "AI Risk Management and Human-AI Interaction",
+          "structureExpectation": "accurate OCR matching ocrReferenceText with disclosed OCR provenance may pass; image preserved plus explicit no-native-text disclosure without OCR remains pending between partial and failure",
+          "sourcePdfPage": 45,
+          "sourcePrintedPage": "40",
+          "sourceSha256": "7576EDB531D9848825814EE88E28B1795D3A84B435B4B797D3670EAFDC4A89F1"
         }
+      ],
+      "decisionDependency": {
+        "status": "pending-user-verdict",
+        "question": "If image-only pages are preserved and native-text absence is disclosed, but OCR is unavailable, is the result partial or failure?",
+        "passCondition": "Accurate OCR is returned with OCR provenance and uncertainty disclosed.",
+        "unresolvedNoOcrCondition": "Preserve the page image and disclose the missing native text; do not automatically mark pass."
       }
     },
     {
       "id": "office-docx-regression",
       "group": "office-regression",
+      "candidate": true,
       "file": "output/documents/office-regression.docx",
-      "format": "docx",
-      "language": "en",
-      "layout": "two-page business brief",
-      "coverage": [
-        "headings",
-        "paragraphs",
-        "table",
-        "image",
-        "page-break",
-        "references"
-      ],
+      "weight": 10,
       "expectedOutcome": "success",
-      "checkpoints": [
+      "layout": "8-page original DOCX with real headings, numbering, merged cells, repeating long table, inline image/caption, OOXML footnote, and PAGE field",
+      "documentValueChecks": [
         {
-          "id": "docx-body",
-          "dimension": "body",
-          "label": "两页段落完整且按文档顺序"
+          "id": "integrity",
+          "label": "段落、列表、表格、图片、脚注、页眉页码组成的内容完整。"
         },
         {
-          "id": "docx-order",
-          "dimension": "order",
-          "label": "Heading 1/2 层级和分页前后顺序正确"
+          "id": "navigable-reading",
+          "label": "Heading 1/2/3 和真实多级列表可用于顺序阅读。"
         },
         {
-          "id": "docx-locator",
-          "dimension": "locator",
-          "label": "至少保留段落或块级稳定定位；不要求复原 Word 像素版式"
+          "id": "citation-return",
+          "label": "图注、脚注、跨页表和页码能回到相应对象。"
         },
         {
-          "id": "docx-table",
-          "dimension": "structure",
-          "label": "4x3 表格的行列关系保留"
-        },
-        {
-          "id": "docx-image",
-          "dimension": "image",
-          "label": "Figure 1 图片资源与图注可关联"
-        },
-        {
-          "id": "docx-degrade",
-          "dimension": "degradation",
-          "label": "若图片不支持，正文仍成功且明确图片缺失"
+          "id": "honest-degradation",
+          "label": "不支持嵌入对象时明确标明缺失，正文不被静默删去。"
         }
       ],
-      "gold": {
-        "headingOrder": [
-          "1. Executive summary",
-          "1.1 Decision criteria",
-          "2. Observed results",
-          "3. Reproducibility notes",
-          "3.1 References"
-        ],
-        "tableSize": [
-          4,
-          3
-        ],
-        "imageCaption": "Figure 1. Synthetic quality profile used only to test image extraction."
-      }
+      "diagnosticAnchors": [
+        {
+          "id": "docx-a1",
+          "page": 1,
+          "region": "cover",
+          "objectType": "title",
+          "exactText": "Recoverable Evidence Operations",
+          "structureExpectation": "title remains the cover title"
+        },
+        {
+          "id": "docx-a2",
+          "page": 2,
+          "region": "body",
+          "objectType": "headingHierarchy",
+          "exactText": "Executive summary",
+          "structureExpectation": "Heading 1, Heading 2, and Heading 3 retain their semantic hierarchy"
+        },
+        {
+          "id": "docx-a3",
+          "page": 2,
+          "region": "body",
+          "objectType": "nestedNumberedList",
+          "structureExpectation": "real Word numbering preserves two levels, sequence, and indentation"
+        },
+        {
+          "id": "docx-a4",
+          "page": 2,
+          "region": "footnote",
+          "objectType": "ooxmlFootnote",
+          "structureExpectation": "body footnote marker is linked to the note in word/footnotes.xml"
+        },
+        {
+          "id": "docx-a5",
+          "page": 3,
+          "region": "upper-half",
+          "objectType": "mergedTableCells",
+          "structureExpectation": "matrix first row spans three columns while headers and data rows retain their grid"
+        },
+        {
+          "id": "docx-a6",
+          "pageRange": [
+            4,
+            5
+          ],
+          "region": "body",
+          "objectType": "repeatingHeaderTable",
+          "structureExpectation": "four columns and 32 unique records split across pages 4 and 5 with the header repeated on page 5"
+        },
+        {
+          "id": "docx-a7",
+          "page": 6,
+          "region": "middle",
+          "objectType": "inlineImageAndCaption",
+          "exactText": "Figure 1. Synthetic evidence-recovery profile",
+          "structureExpectation": "inline image, alternative text, and Caption remain related"
+        },
+        {
+          "id": "docx-a8",
+          "page": 8,
+          "region": "footer",
+          "objectType": "pageField",
+          "structureExpectation": "running header and real PAGE field remain layout objects and do not pollute body text"
+        }
+      ]
     },
     {
       "id": "negative-corrupted",
       "group": "negative",
+      "candidate": true,
       "file": "output/pdf/negative-corrupted.pdf",
-      "format": "pdf",
-      "language": "none",
-      "layout": "truncated malformed PDF",
-      "coverage": [
-        "corrupt"
-      ],
+      "weight": 6.666666666666667,
       "expectedOutcome": "failure",
-      "checkpoints": [
+      "layout": "truncated malformed PDF",
+      "documentValueChecks": [
         {
-          "id": "corrupt-body",
-          "dimension": "body",
-          "label": "不产生任何伪造正文"
+          "id": "integrity",
+          "label": "不凭空产生正文或摘要。"
         },
         {
-          "id": "corrupt-order",
-          "dimension": "order",
-          "label": "不伪造结构"
+          "id": "navigable-reading",
+          "label": "不把损坏字节伪装成可导航结构。"
         },
         {
-          "id": "corrupt-locator",
-          "dimension": "locator",
-          "label": "不伪造页码或区域"
+          "id": "citation-return",
+          "label": "不产生看似可复核的页码或引用。"
         },
         {
-          "id": "corrupt-structure",
-          "dimension": "structure",
-          "label": "不伪造表格/公式"
-        },
-        {
-          "id": "corrupt-image",
-          "dimension": "image",
-          "label": "不伪造图片资源"
-        },
-        {
-          "id": "corrupt-degrade",
-          "dimension": "degradation",
-          "label": "稳定分类为 damaged/corrupt，失败可解释且不可伪装成成功"
+          "id": "honest-degradation",
+          "label": "稳定返回 damaged_file / corrupt_pdf 专用失败分类。"
         }
       ],
-      "gold": {
-        "classification": "failure",
-        "acceptedCodes": [
-          "damaged_file",
-          "corrupt_pdf",
-          "parse_failed"
-        ]
-      }
+      "diagnosticAnchors": [
+        {
+          "id": "corrupt-a1",
+          "page": null,
+          "region": "file",
+          "objectType": "zeroBody",
+          "structureExpectation": "no fabricated body text or summary"
+        },
+        {
+          "id": "corrupt-a2",
+          "page": null,
+          "region": "file",
+          "objectType": "zeroStructure",
+          "structureExpectation": "no fabricated headings, table of contents, or chapters"
+        },
+        {
+          "id": "corrupt-a3",
+          "page": null,
+          "region": "file",
+          "objectType": "zeroLocator",
+          "structureExpectation": "no fabricated page, region, or object coordinates"
+        },
+        {
+          "id": "corrupt-a4",
+          "page": null,
+          "region": "file",
+          "objectType": "failureCode",
+          "structureExpectation": "stable repeatable damaged_file or corrupt_pdf; human-reviewable and no unrelated leakage"
+        }
+      ]
     },
     {
       "id": "negative-encrypted",
       "group": "negative",
+      "candidate": true,
       "file": "output/pdf/negative-encrypted.pdf",
-      "format": "pdf",
-      "language": "en",
-      "layout": "AES-256 password-protected PDF",
-      "coverage": [
-        "encrypted"
-      ],
+      "weight": 6.666666666666667,
       "expectedOutcome": "failure",
-      "checkpoints": [
+      "layout": "deterministic AES-256 password-protected PDF",
+      "documentValueChecks": [
         {
-          "id": "encrypted-body",
-          "dimension": "body",
-          "label": "未提供密码时不返回正文"
+          "id": "integrity",
+          "label": "未提供密码时不返回正文。"
         },
         {
-          "id": "encrypted-order",
-          "dimension": "order",
-          "label": "不猜测标题或结构"
+          "id": "navigable-reading",
+          "label": "不因元数据猜测出一份可导航文档。"
         },
         {
-          "id": "encrypted-locator",
-          "dimension": "locator",
-          "label": "不伪造页码区域"
+          "id": "citation-return",
+          "label": "不产生未经解密的可复核引用。"
         },
         {
-          "id": "encrypted-structure",
-          "dimension": "structure",
-          "label": "不伪造结构对象"
-        },
-        {
-          "id": "encrypted-image",
-          "dimension": "image",
-          "label": "不伪造图片资源"
-        },
-        {
-          "id": "encrypted-degrade",
-          "dimension": "degradation",
-          "label": "稳定分类为 password_required/encrypted；密码 collector-122 只供人工验证"
+          "id": "honest-degradation",
+          "label": "稳定返回 password_required / encrypted_pdf 专用失败分类。"
         }
       ],
-      "gold": {
-        "classification": "failure",
-        "acceptedCodes": [
-          "password_required",
-          "encrypted_pdf",
-          "parse_failed"
-        ],
-        "reviewPassword": "collector-122"
-      }
+      "diagnosticAnchors": [
+        {
+          "id": "encrypted-a1",
+          "page": null,
+          "region": "file",
+          "objectType": "zeroBody",
+          "structureExpectation": "no content before successful password authorization"
+        },
+        {
+          "id": "encrypted-a2",
+          "page": null,
+          "region": "file",
+          "objectType": "zeroStructure",
+          "structureExpectation": "no guessed title, chapter, or table"
+        },
+        {
+          "id": "encrypted-a3",
+          "page": null,
+          "region": "file",
+          "objectType": "zeroLocator",
+          "structureExpectation": "no fabricated page, region, or object locator"
+        },
+        {
+          "id": "encrypted-a4",
+          "page": null,
+          "region": "file",
+          "objectType": "failureCode",
+          "structureExpectation": "password_required or encrypted_pdf; fixture is AES-256-R5 and review password is collector-122"
+        }
+      ]
     },
     {
       "id": "negative-oversized",
       "group": "negative",
+      "candidate": true,
       "file": "output/pdf/negative-oversized.pdf",
-      "format": "pdf",
-      "language": "en",
-      "layout": "valid PDF prefix padded to 20 MiB + 1 byte",
-      "coverage": [
-        "size-limit"
-      ],
+      "weight": 6.666666666666667,
       "expectedOutcome": "failure-before-parse",
-      "checkpoints": [
+      "layout": "valid PDF padded to exactly 20 MiB + 1 byte",
+      "documentValueChecks": [
         {
-          "id": "oversized-body",
-          "dimension": "body",
-          "label": "大小校验失败后不进入解析，不产生正文"
+          "id": "integrity",
+          "label": "大小校验失败后不产生正文。"
         },
         {
-          "id": "oversized-order",
-          "dimension": "order",
-          "label": "不产生结构"
+          "id": "navigable-reading",
+          "label": "不进入阅读结构或对象提取阶段。"
         },
         {
-          "id": "oversized-locator",
-          "dimension": "locator",
-          "label": "不产生定位"
+          "id": "citation-return",
+          "label": "不制造可复核的页内定位。"
         },
         {
-          "id": "oversized-structure",
-          "dimension": "structure",
-          "label": "不产生结构对象"
-        },
-        {
-          "id": "oversized-image",
-          "dimension": "image",
-          "label": "不产生图片资源"
-        },
-        {
-          "id": "oversized-degrade",
-          "dimension": "degradation",
-          "label": "在解析前稳定分类 file_too_large，报告实际大小与 20 MiB 限制"
+          "id": "honest-degradation",
+          "label": "解析前返回 file_too_large，并报告 20 MiB 限制。"
         }
       ],
-      "gold": {
-        "classification": "failure-before-parse",
-        "byteLength": 20971521,
-        "acceptedCodes": [
-          "file_too_large"
-        ]
-      }
+      "diagnosticAnchors": [
+        {
+          "id": "oversized-a1",
+          "page": null,
+          "region": "file",
+          "objectType": "preflightBoundary",
+          "structureExpectation": "exact input is 20971521 bytes and file_too_large occurs before parser invocation"
+        },
+        {
+          "id": "oversized-a2",
+          "page": null,
+          "region": "file",
+          "objectType": "zeroExtraction",
+          "structureExpectation": "no body, table, image, or equation output"
+        },
+        {
+          "id": "oversized-a3",
+          "page": null,
+          "region": "file",
+          "objectType": "zeroLocator",
+          "structureExpectation": "no page, region, or object locator output"
+        },
+        {
+          "id": "oversized-a4",
+          "page": null,
+          "region": "file",
+          "objectType": "failureCode",
+          "structureExpectation": "file_too_large reports actual 20971521 bytes and the 20 MiB limit"
+        }
+      ]
     }
   ]
 }
