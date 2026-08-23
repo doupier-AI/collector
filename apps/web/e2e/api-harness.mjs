@@ -419,6 +419,14 @@ const semanticSearch = createSemanticSearchModule({
   inference: new IsolatedSemanticInferenceAdapter(),
   modelRoot: semanticModelRoot,
 });
+// #69：临时关联提示扫描复用同一语义搜索模块（测试不下载模型，走真实关键词降级路径）。
+// 提示扫描是「每次回答完成即触发」的常驻能力：跨会话内容在共享库里随套件累积，
+// 假模型核验对任何候选都恒判 contrast，会让提示在非提示用例里非确定性浮现并增加
+// 事件循环负载（冻结像素基线与计时敏感用例都会被扰动）。因此只在专项 harness
+// （E2E_ASSOCIATION_HINT=1）接线扫描；其余 harness 不接线，scan 在 search() 为空时安静跳过。
+if (process.env.E2E_ASSOCIATION_HINT === "1") {
+  service.setAssociationHintSearch(semanticSearch);
+}
 
 const browserBootstraps = new Set();
 const server = createApiServer(service, auth, {

@@ -1806,6 +1806,106 @@ button {
   gap: var(--space-2);
 }
 
+/* #69 临时关联提示：与融合提议同族但视觉更轻——它绝不产生永久事实，只提供回看入口。 */
+.association-hint {
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3);
+  border: 1px dashed color-mix(in srgb, var(--color-ai) 42%, var(--color-line));
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--color-surface) 92%, var(--color-canvas));
+  color: var(--color-muted);
+  font-size: var(--font-size-caption);
+}
+
+.association-hint__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.association-hint__badge {
+  padding: 0 var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--color-ai) 42%, var(--color-line));
+  border-radius: var(--radius-button);
+  color: var(--color-ai);
+  font-weight: 600;
+}
+
+.association-hint__intro {
+  margin: 0;
+}
+
+.association-hint__reason {
+  margin: var(--space-2) 0 0;
+  color: var(--color-ink);
+  font-weight: 600;
+}
+
+.association-hint__evidence {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.association-hint__range {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.association-hint__range-label {
+  color: var(--color-muted);
+  white-space: nowrap;
+}
+
+.association-hint__range-excerpt {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.association-hint__range-excerpt--failed {
+  color: var(--color-muted);
+}
+
+.association-hint__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.association-hint__open {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-ai);
+  border-radius: var(--radius-button);
+  background: transparent;
+  color: var(--color-ai);
+  cursor: pointer;
+}
+
+.association-hint__dismiss {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-button);
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+}
+
+.association-hint__open:focus-visible,
+.association-hint__dismiss:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-focus);
+}
+
+.association-hint__dismiss:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+
 .fusion-proposal-notice__source {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;

@@ -30,6 +30,7 @@ import type {
   ResearchGraphProjection,
   ResearchGraphObservation,
   ResearchGraphObservationInput,
+  ResearchAssociationHintRecord,
   ResearchSearchInput,
   ResearchSearchResponse,
   ResearchFusionProposalDecision,
@@ -152,6 +153,10 @@ export interface ApiClient {
   decideResearchFusionProposal(proposalId: string, decision: ResearchFusionProposalDecision): Promise<ResearchFusionProposalRecord>;
   /** #31：确认式融合——确认后创建融合节点并返回首轮结果，客户端跳转到融合节点页。 */
   fuseResearchFusionProposal(proposalId: string, idempotencyKey: string): Promise<NodeGrowthAccepted>;
+  /** #69：读取当前节点的活跃临时关联提示（最多展示一条，其余留给候选观察）。 */
+  listAssociationHints(nodeId: string): Promise<ResearchAssociationHintRecord[]>;
+  /** #69：明确忽略提示；幂等，重复忽略返回同一记录。忽略不创建任何永久事实。 */
+  dismissAssociationHint(hintId: string): Promise<ResearchAssociationHintRecord>;
   /** #32：读取自动融合开关（默认关闭）。 */
   getFusionAutoConfig(): Promise<{ enabled: boolean }>;
   /** #32：写入自动融合开关，返回更新后的配置。 */
@@ -607,6 +612,19 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
         fetchFn,
         `/v1/research-fusion-proposals/${encodeURIComponent(proposalId)}/fuse`,
         { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ idempotencyKey }) },
+      );
+    },
+    listAssociationHints(nodeId: string) {
+      return requestJson<ResearchAssociationHintRecord[]>(
+        fetchFn,
+        `/v1/research-nodes/${encodeURIComponent(nodeId)}/association-hints`,
+      );
+    },
+    dismissAssociationHint(hintId: string) {
+      return requestJson<ResearchAssociationHintRecord>(
+        fetchFn,
+        `/v1/research-association-hints/${encodeURIComponent(hintId)}/dismiss`,
+        { method: "POST", headers: JSON_HEADERS, body: "{}" },
       );
     },
     startChildNode(selectionId: string, input: CreateChildNodeInput, idempotencyKey: string) {

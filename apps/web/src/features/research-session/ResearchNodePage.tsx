@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { hashBodyContent, type ResearchSelectionAnchor, type ResearchSessionView, type ResearchTaskRecord } from "@collector/capture-contracts";
+import { hashBodyContent, type ResearchAssociationHintRecord, type ResearchSelectionAnchor, type ResearchSessionView, type ResearchTaskRecord } from "@collector/capture-contracts";
 import { isApiErrorCode, isUnauthorized, apiErrorCopy } from "../../api/errors";
 import { globalMapFocusPath, stableNodePath } from "../../app/paths";
 import { useServices } from "../../app/services";
@@ -62,6 +62,7 @@ import {
 import { FusionProposalNotice } from "./FusionProposalNotice";
 import { FusionSourceBar } from "./FusionSourceBar";
 import { AutoFusionNotice } from "./AutoFusionNotice";
+import { TransientAssociationNotice } from "./TransientAssociationNotice";
 import type { ResearchFusionAutoResult, ResearchFusionProposalRecord, ResearchFusionSource } from "@collector/capture-contracts";
 
 const STREAM_NOTICE: Record<string, { title: string; body: string }> = {
@@ -106,6 +107,9 @@ export function ResearchNodePage() {
   const [fusingProposalId, setFusingProposalId] = useState<string | null>(null);
   // #32：本次挂载自动融合成功的融合节点摘要（顶部提示条数据源）。
   const [autoFusionResults, setAutoFusionResults] = useState<ResearchFusionAutoResult[] | null>(null);
+  // #69：当前节点的活跃临时关联提示（一次最多突出最新一条，其余留在候选层）。
+  const [associationHints, setAssociationHints] = useState<ResearchAssociationHintRecord[]>([]);
+  const [dismissingHintId, setDismissingHintId] = useState<string | null>(null);
   const autoScanNodeRef = useRef("");
   const readyView = node.state.kind === "ready" ? node.state.view : undefined;
   // #61：会话上下文从已加载节点视图派生（稳定地址不携带会话 ID）；视图就绪前为空串。
@@ -574,6 +578,41 @@ export function ResearchNodePage() {
     };
   }, [api, node.state.kind, nodeId]);
 
+  // #69 临时关联提示：视图就绪时拉取一次；最新回答完成后按 0/2.5s/7s 补拉，
+  // 等待服务端异步扫描落库。拉取失败静默——提示是附加发现，不影响正文阅读与手动搜索。
+  const isReady = readyView !== undefined;
+  const latestCompletedAssistantId = readyView
+    ? [...readyView.messages].filter((message) => message.role === "assistant" && message.status === "completed").at(-1)?.id ?? ""
+    : "";
+  useEffect(() => {
+    if (!isReady || !nodeId) return;
+    if (!api.listAssociationHints) return; // 旧测试替身缺方法时静默跳过
+    let cancelled = false;
+    const timers: number[] = [];
+    const load = () => api.listAssociationHints(nodeId)
+      .then((hints) => { if (!cancelled) setAssociationHints(hints); })
+      .catch(() => undefined);
+    for (const delay of latestCompletedAssistantId ? [0, 2500, 7000] : [0]) {
+      timers.push(window.setTimeout(() => { void load(); }, delay));
+    }
+    return () => {
+      cancelled = true;
+      for (const timer of timers) window.clearTimeout(timer);
+    };
+  }, [api, isReady, nodeId, latestCompletedAssistantId]);
+
+  async function handleDismissAssociationHint(hintId: string) {
+    setDismissingHintId(hintId);
+    try {
+      await api.dismissAssociationHint(hintId);
+      setAssociationHints((current) => current.filter((hint) => hint.id !== hintId));
+    } catch (error) {
+      node.announce(apiErrorCopy(error).body);
+    } finally {
+      setDismissingHintId(null);
+    }
+  }
+
   async function handleRetry(task: ResearchTaskRecord) {
     setRetryingTaskId(task.id);
     try {
@@ -934,6 +973,14 @@ export function ResearchNodePage() {
 
       {autoFusionResults && autoFusionResults.length > 0 ? (
         <AutoFusionNotice results={autoFusionResults} />
+      ) : null}
+
+      {associationHints.length > 0 ? (
+        <TransientAssociationNotice
+          hint={associationHints[associationHints.length - 1]!}
+          dismissing={dismissingHintId === associationHints[associationHints.length - 1]!.id}
+          onDismiss={(hintId) => void handleDismissAssociationHint(hintId)}
+        />
       ) : null}
 
       {fusionSourceEntries.length > 0 ? (

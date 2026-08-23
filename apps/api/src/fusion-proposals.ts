@@ -670,7 +670,7 @@ function normalizeSimilarityConcept(value: unknown): string {
   return value.normalize("NFKC").toLocaleLowerCase().replace(/\s+/g, " ").trim().slice(0, 80);
 }
 
-function contentWordSignals(content: string): string[] {
+export function contentWordSignals(content: string): string[] {
   const terms = new Set<string>();
   for (const match of content.matchAll(/[\p{Script=Han}]{2,}/gu)) {
     const run = match[0];

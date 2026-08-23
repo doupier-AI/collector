@@ -14,6 +14,7 @@ import { DeepResearchNotFoundError, DeepResearchValidationError, DeepResearchCon
 import { ResearchLaterNotFoundError, ResearchLaterValidationError } from "./research-later.js";
 import { ResearchTermPreviewNotFoundError, ResearchTermPreviewValidationError, ResearchTermPreviewConflictError } from "./term-preview.js";
 import { ResearchFusionProposalConflictError, ResearchFusionProposalNotFoundError, ResearchFusionProposalValidationError } from "./fusion-proposals.js";
+import { AssociationHintNotFoundError } from "./association-hints.js";
 import { RunRecordsValidationError } from "./observability.js";
 import { streamRunRecordExport } from "./run-record-export.js";
 import { createStaticWebHandler } from "./static-web.js";
@@ -520,6 +521,15 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (request.method === "POST" && researchNodeFusionScanMatch) {
         return json(response, 200, await service.fusionProposals.scan(decodeURIComponent(researchNodeFusionScanMatch[1])));
       }
+      // #69 临时关联提示：只读列出当前节点的活跃提示；忽略只改提示状态，不写任何永久事实。
+      const researchNodeAssociationHintsMatch = url.pathname.match(/^\/v1\/research-nodes\/([^/]+)\/association-hints$/);
+      if (request.method === "GET" && researchNodeAssociationHintsMatch) {
+        return json(response, 200, service.associationHints.listActiveForNode(decodeURIComponent(researchNodeAssociationHintsMatch[1])));
+      }
+      const associationHintDismissMatch = url.pathname.match(/^\/v1\/research-association-hints\/([^/]+)\/dismiss$/);
+      if (request.method === "POST" && associationHintDismissMatch) {
+        return json(response, 200, await service.associationHints.dismiss(decodeURIComponent(associationHintDismissMatch[1])));
+      }
       const researchNodeFusionProposalsMatch = url.pathname.match(/^\/v1\/research-nodes\/([^/]+)\/fusion-proposals$/);
       if (request.method === "GET" && researchNodeFusionProposalsMatch) {
         const status = url.searchParams.get("status");
@@ -635,7 +645,7 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         const status = code === "file_too_large" ? 413 : code === "unsupported_file_type" ? 415 : code === "invalid_file_content" ? 422 : 400;
         return json(response, status, { error: { code, message: error.message } });
       }
-      if (error instanceof NotFoundError || error instanceof ResearchNotFoundError || error instanceof ResearchImportNotFoundError || error instanceof ResearchSelectionNotFoundError || error instanceof DeepResearchNotFoundError || error instanceof ResearchLaterNotFoundError || error instanceof ResearchTermPreviewNotFoundError || error instanceof ResearchFusionProposalNotFoundError) return json(response, 404, { error: { code: "not_found", message: error.message } });
+      if (error instanceof NotFoundError || error instanceof ResearchNotFoundError || error instanceof ResearchImportNotFoundError || error instanceof ResearchSelectionNotFoundError || error instanceof DeepResearchNotFoundError || error instanceof ResearchLaterNotFoundError || error instanceof ResearchTermPreviewNotFoundError || error instanceof ResearchFusionProposalNotFoundError || error instanceof AssociationHintNotFoundError) return json(response, 404, { error: { code: "not_found", message: error.message } });
       console.error(error);
       return json(response, 500, { error: { code: "internal_error", message: "Internal server error" } });
     }

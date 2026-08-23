@@ -114,6 +114,8 @@ const semanticSearch = createSemanticSearchModule({
   inference: new IsolatedSemanticInferenceAdapter(),
   modelRoot: semanticModelRoot,
 });
+// #69：临时关联提示的跨会话召回复用同一语义搜索模块（关键词降级同样可用）。
+service.setAssociationHintSearch(semanticSearch);
 // #47：启动即从持久化状态重建模型网关——已保存的活动配置、凭证与同意记录齐备
 // 即建立可用网关（双击启动器不传 COLLECTOR_AI_CONSENT，不依赖环境变量通道）。
 // 配置不存在或不可用时网关为空，具体原因经 getAiConfiguration 暴露；恢复失败不阻断启动。

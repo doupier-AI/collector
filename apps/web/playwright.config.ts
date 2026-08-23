@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 
-// 端口基准可被 E2E_PORT_BASE 覆盖：四个 harness 依次占用 base+0..base+3。
+// 端口基准可被 E2E_PORT_BASE 覆盖：六个 harness 依次占用 base+0..base+5。
 // 默认 43211 不变；真实模型验收长跑占用默认端口时，确定性套件可用另一组端口并行
 // （如 E2E_PORT_BASE=43221 npx playwright test），验收与日常开发互不挡路（#86 复盘）。
 const PORT_BASE = Number(process.env.E2E_PORT_BASE ?? "43211");
@@ -62,6 +62,26 @@ export default defineConfig({
       stdout: "ignore",
       stderr: "pipe",
     },
+    // #69 临时关联提示安静路径：独享库 + 相似性核验恒判无关（unrelated），
+    // 与共享库中其他套件的内容和对比型核验互不干扰。
+    {
+      command: "node e2e/api-harness.mjs",
+      url: `http://127.0.0.1:${PORT_BASE + 4}/health`,
+      reuseExistingServer: false,
+      env: { E2E_API_PORT: String(PORT_BASE + 4), E2E_MODEL: "fake", E2E_SIMILARITY_RELATION: "unrelated", E2E_ASSOCIATION_HINT: "1" },
+      stdout: "ignore",
+      stderr: "pipe",
+    },
+    // #69 临时关联提示正向路径：独享库 + 对比型核验（contrast）+ 接线提示扫描。
+    // 提示扫描常驻且对任何候选恒判 contrast，只在专项 harness 接线，避免污染共享库与像素基线。
+    {
+      command: "node e2e/api-harness.mjs",
+      url: `http://127.0.0.1:${PORT_BASE + 5}/health`,
+      reuseExistingServer: false,
+      env: { E2E_API_PORT: String(PORT_BASE + 5), E2E_MODEL: "fake", E2E_ASSOCIATION_HINT: "1" },
+      stdout: "ignore",
+      stderr: "pipe",
+    },
   ],
   projects: [
     {
@@ -69,9 +89,12 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"], baseURL: `http://127.0.0.1:${PORT_BASE}` },
       // z-auto-fusion（identity 高置信）由 chromium-autofusion（43213）承担；-off 用例用 contrast，留在本 project。
       // z-visual-baseline 等像素基线由 chromium-visual（43214 独享库）承担，与共享库污染隔离。
+      // z-association-hint-quiet 由 chromium-hint-quiet（43215 独享库 + 核验恒判无关）承担；
+      // z-association-hint 由 chromium-hint（43216 独享库 + 接线提示扫描）承担。两条提示用例
+      // 都移出本 project，使共享库不再触发常驻提示扫描（保持像素基线与计时敏感用例确定）。
       // 真实验收主场景及跨 worker 汇总只由 playwright.acceptance.config.ts 收集。
       // 基础设施契约仍留在默认门禁中，但它只启动无模型的临时 runtime。
-      testIgnore: /(?:no-model|z-acceptance-real(?:-summary)?|z-auto-fusion|z-visual-baseline)\.spec\.ts/,
+      testIgnore: /(?:no-model|z-acceptance-real(?:-summary)?|z-auto-fusion|z-visual-baseline|z-association-hint(?:-quiet)?)\.spec\.ts/,
     },
     {
       name: "chromium-nomodel",
@@ -90,6 +113,16 @@ export default defineConfig({
       name: "chromium-visual",
       use: { ...devices["Desktop Chrome"], baseURL: `http://127.0.0.1:${PORT_BASE + 3}` },
       testMatch: /z-visual-baseline\.spec\.ts/,
+    },
+    {
+      name: "chromium-hint-quiet",
+      use: { ...devices["Desktop Chrome"], baseURL: `http://127.0.0.1:${PORT_BASE + 4}` },
+      testMatch: /z-association-hint-quiet\.spec\.ts/,
+    },
+    {
+      name: "chromium-hint",
+      use: { ...devices["Desktop Chrome"], baseURL: `http://127.0.0.1:${PORT_BASE + 5}` },
+      testMatch: /z-association-hint\.spec\.ts/,
     },
   ],
 });

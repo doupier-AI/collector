@@ -96,6 +96,7 @@ import {
   ResearchFusionProposalService,
   type SimilarityVerificationGateway,
 } from "./fusion-proposals.js";
+import { AssociationHintService, type AssociationHintSearchGateway } from "./association-hints.js";
 
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
@@ -119,6 +120,13 @@ export class CaptureService {
   readonly termDetection: TermDetectionService;
   readonly fusionProposals: ResearchFusionProposalService;
   readonly termPreviews: ResearchTermPreviewService;
+  readonly associationHints: AssociationHintService;
+  /** 语义搜索模块由组合根构建后经 setter 接线（组合顺序：CaptureService 先于语义搜索模块）。 */
+  private associationHintSearch?: AssociationHintSearchGateway;
+
+  setAssociationHintSearch(search: AssociationHintSearchGateway): void {
+    this.associationHintSearch = search;
+  }
   readonly parentChainContext: ParentChainContextService;
   readonly nodeNaming: NodeNamingService;
   readonly sessionTitling: SessionTitlingService;
@@ -149,7 +157,11 @@ export class CaptureService {
           void this.sessionTitling.refineSessionTitle(task.sessionId);
         }
       },
-      onTaskCompleted: (task) => { void this.nodeNaming.nameNode(task.nodeId ?? task.sessionId); },
+      onTaskCompleted: (task) => {
+        void this.nodeNaming.nameNode(task.nodeId ?? task.sessionId);
+        // #69：回答完成且内容稳定后异步评估跨会话临时关联提示；扫描失败在内部安静降级。
+        void this.associationHints.scheduleScanForCompletedTask(task);
+      },
       ...(this.options.researchRetrySleep ? { retrySleep: this.options.researchRetrySleep } : {}),
     });
     this.researchChapters = new ResearchChapterParseService(this.store, {
@@ -189,6 +201,13 @@ export class CaptureService {
       parentChainContext: this.parentChainContext,
       termDetection: this.termDetection,
       autoRunTasks: this.options.autoRunResearchTasks,
+    });
+    // #69（NS-06/T10）临时关联提示：复用既有 similarityVerifier 注入与弱标记服务；
+    // 语义搜索模块由组合根（server.ts / e2e harness）在构建后经 setter 接线，未接线时扫描安静跳过。
+    this.associationHints = new AssociationHintService(this.store, {
+      search: () => this.associationHintSearch,
+      verifier: async () => this.options.similarityVerifier ?? this.gatewayForPurpose("research"),
+      termDetection: this.termDetection,
     });
     // #35：启动时对历史研究正文做确定性、幂等的正文版本与语义片段回填。
     // 不调用模型、不删除原文；同文同标识，重复执行无副作用。
