@@ -1,0 +1,796 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>#115 流式旁路增强与联网最终定稿原型</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #20251f;
+      --muted: #687066;
+      --paper: #f4f2eb;
+      --panel: #fffdf8;
+      --line: #d9d5c9;
+      --accent: #356a52;
+      --accent-soft: #e3eee8;
+      --warn: #8a5a1f;
+      --danger: #9b3b32;
+      font-family: Inter, "Segoe UI", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--paper); color: var(--ink); }
+    button, select { font: inherit; }
+    button { cursor: pointer; }
+    .shell { max-width: 1320px; margin: 0 auto; padding: 32px 24px 64px; }
+    .eyebrow { color: var(--accent); font-size: 13px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+    h1 { margin: 8px 0 10px; font-family: Georgia, "Noto Serif SC", serif; font-size: clamp(30px, 5vw, 48px); line-height: 1.08; }
+    .question { max-width: 940px; margin: 0; color: #4f574e; font-size: 16px; line-height: 1.75; }
+    .notice { margin-top: 18px; padding: 12px 14px; border-left: 3px solid var(--warn); background: #fff5df; color: #65471f; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin: 26px 0 18px; }
+    .field { display: grid; gap: 6px; min-width: 220px; }
+    .field label, .section-label { font-size: 12px; font-weight: 750; color: var(--muted); letter-spacing: .04em; }
+    select, .button { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); padding: 10px 12px; }
+    .button:hover { border-color: var(--accent); }
+    .button.primary { background: var(--accent); border-color: var(--accent); color: white; }
+    .button.subtle { background: transparent; }
+    .button.danger { color: var(--danger); }
+    .change { flex: 1 1 320px; min-height: 42px; padding: 10px 12px; border-radius: 8px; background: var(--accent-soft); color: #28543f; }
+    .grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(310px, .8fr); gap: 18px; }
+    .stack { display: grid; gap: 18px; align-content: start; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; box-shadow: 0 7px 22px rgba(47, 53, 45, .05); }
+    .card h2, .card h3 { margin: 0 0 12px; }
+    .card h2 { font-size: 18px; }
+    .card h3 { font-size: 15px; }
+    .status-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+    .pill { display: inline-flex; align-items: center; min-height: 26px; border-radius: 999px; padding: 3px 9px; background: #eceae2; color: #555b52; font-size: 12px; font-weight: 700; }
+    .pill.good { background: var(--accent-soft); color: #28543f; }
+    .pill.warn { background: #fff0ce; color: #76501c; }
+    .pill.bad { background: #f8dfdc; color: #7f312a; }
+    .body-copy { min-height: 180px; white-space: pre-wrap; line-height: 1.76; padding: 16px; border: 1px solid #e4e0d6; border-radius: 9px; background: #fff; }
+    .placeholder { color: #92978f; }
+    .state-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .state-table th, .state-table td { padding: 8px 0; border-bottom: 1px solid #ebe8df; text-align: left; vertical-align: top; }
+    .state-table th { width: 42%; color: var(--muted); font-weight: 650; }
+    .list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+    .list li { padding: 10px; border: 1px solid #e5e1d7; border-radius: 8px; background: #fff; }
+    .list small { display: block; margin-top: 4px; color: var(--muted); }
+    .empty { color: var(--muted); font-size: 13px; }
+    .free-play { display: grid; grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); gap: 8px; }
+    .free-play .button { text-align: left; min-height: 45px; }
+    .tabs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
+    .tab { white-space: nowrap; border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 9px 10px; color: var(--muted); }
+    .tab[aria-selected="true"] { color: var(--accent); border-color: var(--accent); font-weight: 750; }
+    .walkthrough { margin-top: 14px; }
+    .walkthrough p { color: var(--muted); line-height: 1.6; }
+    .steps { display: grid; gap: 8px; counter-reset: step; }
+    .step { display: grid; grid-template-columns: 28px 1fr; gap: 8px; align-items: center; border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 9px; text-align: left; }
+    .step::before { counter-increment: step; content: counter(step); display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: #eceae2; font-size: 12px; font-weight: 750; }
+    .step.done { border-color: #9fbea9; background: #f0f7f3; }
+    .step.done::before { content: "✓"; color: white; background: var(--accent); }
+    .step.next { border-color: var(--accent); }
+    .comparison { overflow-x: auto; }
+    .comparison table { min-width: 620px; width: 100%; border-collapse: collapse; }
+    .comparison th, .comparison td { padding: 9px; border-bottom: 1px solid var(--line); text-align: left; }
+    .comparison th { color: var(--muted); font-size: 12px; }
+    .log { max-height: 260px; overflow: auto; font: 12px/1.55 ui-monospace, Consolas, monospace; }
+    .log div { border-bottom: 1px solid #ece8de; padding: 5px 0; }
+    .log b { color: var(--accent); }
+    @media (max-width: 900px) {
+      .shell { padding: 22px 14px 48px; }
+      .grid { grid-template-columns: 1fr; }
+      .toolbar { align-items: stretch; }
+      .change { flex-basis: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="eyebrow">一次性逻辑原型 · GitHub #115</div>
+    <h1>干净正文，旁路增强</h1>
+    <p class="question">这个原型要回答：正文逐字出现时，弱标记、引用和章节候选能否在段落闭合后异步产生，同时不把控制串或联网工具草稿混入正文；段落级旁路与全文完成后统一增强在实时性、范围稳定性、恢复行为和额外模型调用成本上，哪一种边界更可接受？</p>
+    <div class="notice"><strong>候选方案，不是现行产品。</strong> 全部内容均为匿名合成材料与确定性假模型结果；页面不联网、不读取本地数据、不保存状态。刷新页面即可清空。</div>
+
+    <section class="toolbar" aria-label="原型设置">
+      <div class="field">
+        <label for="strategy">增强策略</label>
+        <select id="strategy">
+          <option value="paragraph">段落闭合后旁路增强</option>
+          <option value="completion">全文完成后统一增强</option>
+        </select>
+      </div>
+      <button class="button" id="reset">重置当前场景</button>
+      <div class="change" id="last-change" aria-live="polite"></div>
+    </section>
+
+    <div class="grid">
+      <div class="stack">
+        <section class="card">
+          <h2>用户正在阅读的正文</h2>
+          <div class="status-row" id="status-row"></div>
+          <div class="body-copy" id="body-copy"></div>
+        </section>
+
+        <section class="card">
+          <h2>已验证的旁路增强</h2>
+          <p class="empty">只有范围仍与正文逐字一致的结果才会显示；失败候选不会改写正文。</p>
+          <ul class="list" id="enhancement-list"></ul>
+        </section>
+
+        <section class="card" id="comparison-card">
+          <h2>两种策略的同材料对照</h2>
+          <div class="comparison" id="comparison"></div>
+        </section>
+
+        <section class="card">
+          <h2>自由操作</h2>
+          <p class="empty">按钮始终可按；不合法的动作会被状态机拒绝并说明原因。</p>
+          <div class="free-play" id="free-play"></div>
+        </section>
+
+        <section class="card">
+          <h2>引导场景</h2>
+          <div class="tabs" id="tabs" role="tablist"></div>
+          <div class="walkthrough" id="walkthrough"></div>
+        </section>
+      </div>
+
+      <aside class="stack">
+        <section class="card">
+          <h2>完整状态</h2>
+          <table class="state-table" id="state-table"></table>
+        </section>
+
+        <section class="card">
+          <h2>联网证据工作区</h2>
+          <p class="empty">工具工作区只供最终写作读取，永不直接拼进正文。</p>
+          <ul class="list" id="evidence-list"></ul>
+        </section>
+
+        <section class="card">
+          <h2>测量</h2>
+          <table class="state-table" id="metrics-table"></table>
+        </section>
+
+        <section class="card">
+          <h2>事件记录</h2>
+          <div class="log" id="event-log"></div>
+        </section>
+      </aside>
+    </div>
+  </main>
+
+  <script>
+    const PrototypeModel = (() => {
+      const SCENARIOS = {
+        normal: {
+          label: "普通回答",
+          kind: "direct",
+          chunks: [
+            "间隔复习的关键不是重复次数，",
+            "而是在即将遗忘时重新提取信息。\n\n",
+            "一次主动回忆通常比连续重读更能暴露理解缺口。",
+            "\n\n"
+          ]
+        },
+        long: {
+          label: "无固定标题的长文",
+          kind: "direct",
+          chunks: [
+            "学习计划先从可完成的最小单元开始。每天固定二十分钟，比偶尔集中数小时更容易形成稳定节奏。\n\n",
+            "第二步是把阅读改成主动提取。合上材料后复述要点，能立刻看见理解中的空白。\n\n",
+            "反馈需要紧跟练习，但不必打断每一次尝试。完成一个小段后再核对，既保留思考时间，也避免错误长期固化。\n\n",
+            "最后保留调整空间。连续两周记录完成率，再根据真实负担缩短或延长单元，而不是一次制定无法维持的宏大计划。\n\n"
+          ]
+        },
+        web: {
+          label: "联网多轮搜索",
+          kind: "web",
+          evidence: [
+            { source: "样本来源 A", claim: "匿名课程在样本期采用每周一次小测。" },
+            { source: "样本来源 B", claim: "匿名研究报告记录了练习后的延迟反馈。" },
+            { source: "样本来源 C", claim: "样本统计表给出完成率变化，但不包含因果结论。" }
+          ],
+          chunks: [
+            "现有样本支持一个谨慎结论：规律的小测与延迟反馈同时出现时，课程完成率有所上升。",
+            "这些资料只能说明共现，不能单独证明因果关系。\n\n",
+            "因此更稳妥的做法是先进行小范围试行，并继续记录完成率与退出原因。\n\n"
+          ]
+        }
+      };
+
+      const clone = (value) => JSON.parse(JSON.stringify(value));
+      const fingerprint = (text) => {
+        let hash = 2166136261;
+        for (const char of text) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+        return (hash >>> 0).toString(16).padStart(8, "0");
+      };
+      const formatMs = (value) => value == null ? "尚无" : `${value} ms`;
+
+      function initial(strategy = "paragraph", scenario = "normal") {
+        return {
+          strategy,
+          scenario,
+          now: 0,
+          runId: 1,
+          status: "idle",
+          phase: "未开始",
+          body: "",
+          bodyVersion: 0,
+          confirmedBody: "",
+          chunkIndex: 0,
+          evidence: [],
+          evidenceIndex: 0,
+          paragraphs: [],
+          pending: [],
+          enhancements: [],
+          failNextEnhancement: false,
+          eligibleForCompletion: true,
+          metrics: {
+            startedAt: null,
+            firstByteAt: null,
+            enhancementLatencies: [],
+            offsetChecks: 0,
+            offsetFailures: 0,
+            fullValidation: "尚未运行",
+            calls: { writer: 0, tool: 0, enhancer: 0 }
+          },
+          comparison: null,
+          lastChange: "请选择一个引导场景，或直接在自由操作区开始。",
+          events: [{ at: 0, kind: "系统", text: "原型已重置，所有状态只存在于当前页面内存。" }]
+        };
+      }
+
+      function event(state, kind, text) {
+        state.events.unshift({ at: state.now, kind, text });
+        state.events = state.events.slice(0, 60);
+        state.lastChange = text;
+      }
+
+      function reject(state, text) {
+        event(state, "拒绝", text);
+        return state;
+      }
+
+      function discoverClosedParagraphs(state) {
+        const regex = /[^\n][\s\S]*?(?:\n\n)/g;
+        const matches = [...state.body.matchAll(regex)];
+        for (const match of matches) {
+          const start = match.index;
+          const raw = match[0];
+          const text = raw.replace(/\n\n$/, "");
+          const end = start + text.length;
+          if (state.paragraphs.some((item) => item.start === start && item.end === end)) continue;
+          const paragraph = {
+            id: `P${state.paragraphs.length + 1}`,
+            start,
+            end,
+            text,
+            fingerprint: fingerprint(text),
+            closedAt: state.now,
+            version: state.bodyVersion
+          };
+          state.paragraphs.push(paragraph);
+          event(state, "正文", `${paragraph.id} 已闭合；范围 ${start}–${end} 现在稳定。`);
+          if (state.strategy === "paragraph") {
+            state.pending.push({ type: "paragraph", paragraphId: paragraph.id, dueAt: state.now + 700, runId: state.runId });
+          }
+        }
+      }
+
+      function candidateFor(paragraph, scenario) {
+        const snippet = paragraph.text.slice(0, Math.min(12, paragraph.text.length));
+        const candidates = [{ kind: "弱标记", label: snippet, start: paragraph.start, end: paragraph.start + snippet.length }];
+        if (scenario === "web") candidates.push({ kind: "引用", label: `证据对应 ${paragraph.id}`, start: paragraph.start, end: paragraph.end });
+        if (paragraph.id === "P1" || paragraph.id === "P3") candidates.push({ kind: "章节候选", label: paragraph.text.slice(0, 16), start: paragraph.start, end: paragraph.end });
+        return candidates;
+      }
+
+      function validateAndApply(state, paragraph, source) {
+        state.metrics.calls.enhancer += 1;
+        if (state.failNextEnhancement) {
+          state.failNextEnhancement = false;
+          event(state, "增强失败", `${paragraph.id} 的候选被丢弃；正文保持不变。`);
+          return;
+        }
+        const exact = state.body.slice(paragraph.start, paragraph.end) === paragraph.text
+          && fingerprint(state.body.slice(paragraph.start, paragraph.end)) === paragraph.fingerprint;
+        state.metrics.offsetChecks += 1;
+        if (!exact) {
+          state.metrics.offsetFailures += 1;
+          event(state, "范围失效", `${paragraph.id} 已与当前正文不一致，候选未显示。`);
+          return;
+        }
+        if (!state.enhancements.some((item) => item.paragraphId === paragraph.id)) {
+          state.enhancements.push({
+            paragraphId: paragraph.id,
+            source,
+            fingerprint: paragraph.fingerprint,
+            appliedAt: state.now,
+            candidates: candidateFor(paragraph, state.scenario)
+          });
+          state.metrics.enhancementLatencies.push(state.now - paragraph.closedAt);
+          event(state, "增强就绪", `${paragraph.id} 的候选通过逐字范围校验，现可安全显示。`);
+        }
+      }
+
+      function processDue(state) {
+        const ready = state.pending.filter((task) => task.dueAt <= state.now);
+        state.pending = state.pending.filter((task) => task.dueAt > state.now);
+        for (const task of ready) {
+          if (task.runId !== state.runId) continue;
+          if (task.type === "paragraph") {
+            const paragraph = state.paragraphs.find((item) => item.id === task.paragraphId);
+            if (paragraph) validateAndApply(state, paragraph, "段落旁路");
+          }
+          if (task.type === "completion") {
+            state.metrics.calls.enhancer += 1;
+            if (state.failNextEnhancement) {
+              state.failNextEnhancement = false;
+              state.metrics.fullValidation = "统一增强失败；正文仍完成";
+              event(state, "增强失败", "全文统一增强失败，正文仍保持完成且可读。 ");
+            } else {
+              for (const paragraph of state.paragraphs) {
+                const exact = state.body.slice(paragraph.start, paragraph.end) === paragraph.text;
+                state.metrics.offsetChecks += 1;
+                if (!exact) state.metrics.offsetFailures += 1;
+                else if (!state.enhancements.some((item) => item.paragraphId === paragraph.id)) {
+                  state.enhancements.push({
+                    paragraphId: paragraph.id,
+                    source: "全文统一增强",
+                    fingerprint: paragraph.fingerprint,
+                    appliedAt: state.now,
+                    candidates: candidateFor(paragraph, state.scenario)
+                  });
+                  state.metrics.enhancementLatencies.push(state.now - paragraph.closedAt);
+                }
+              }
+              state.metrics.fullValidation = state.metrics.offsetFailures ? "发现失效范围" : "全部范围逐字一致";
+              event(state, "全文增强", "全文统一增强完成；所有候选一次性出现。 ");
+            }
+          }
+          if (task.type === "validation") {
+            state.metrics.calls.enhancer += 1;
+            let failures = 0;
+            for (const enhancement of state.enhancements) {
+              const paragraph = state.paragraphs.find((item) => item.id === enhancement.paragraphId);
+              const exact = paragraph && fingerprint(state.body.slice(paragraph.start, paragraph.end)) === enhancement.fingerprint;
+              state.metrics.offsetChecks += 1;
+              if (!exact) failures += 1;
+            }
+            state.metrics.offsetFailures += failures;
+            state.metrics.fullValidation = failures ? `${failures} 个已显示范围异常` : "已显示候选全部稳定；未显示候选不被移动";
+            event(state, "全篇校验", state.metrics.fullValidation);
+          }
+        }
+        if (state.status === "finalizing" && state.pending.length === 0) {
+          state.status = "completed";
+          state.phase = "正文与可用增强均已完成";
+          event(state, "完成", "正文完成；所有仍有效的增强已校验。 ");
+        }
+      }
+
+      function startWriting(state) {
+        state.status = "streaming";
+        state.phase = "独立最终写作正在逐字输出";
+        state.metrics.calls.writer += 1;
+        if (state.metrics.startedAt == null) state.metrics.startedAt = state.now;
+        event(state, "写作", state.scenario === "web"
+          ? "最终写作只读取结构化证据，工具草稿没有进入正文通道。"
+          : "普通回答直接进入最终写作，正文通道不包含增强指令。" );
+      }
+
+      function reduce(previous, action) {
+        let state = clone(previous);
+        const scenario = SCENARIOS[state.scenario];
+        switch (action.type) {
+          case "SET_STRATEGY": {
+            if (state.status !== "idle") return reject(state, "运行中不能换策略；请先重置场景。 ");
+            state.strategy = action.value;
+            event(state, "设置", action.value === "paragraph" ? "已选择段落闭合后旁路增强。" : "已选择全文完成后统一增强。 ");
+            return state;
+          }
+          case "LOAD": {
+            const next = initial(state.strategy, action.scenario);
+            next.comparison = state.comparison;
+            next.lastChange = `已载入“${SCENARIOS[action.scenario].label}”场景。`;
+            next.events[0].text = next.lastChange;
+            return next;
+          }
+          case "RESET": {
+            const next = initial(state.strategy, state.scenario);
+            next.comparison = state.comparison;
+            return next;
+          }
+          case "START": {
+            if (state.status !== "idle") return reject(state, "只有未开始的场景可以启动。 ");
+            state.metrics.startedAt = state.now;
+            if (scenario.kind === "web") {
+              state.status = "gathering";
+              state.phase = "工具只在证据工作区搜索";
+              event(state, "联网取证", "搜索已开始；用户正文仍为空。 ");
+            } else startWriting(state);
+            return state;
+          }
+          case "SEARCH": {
+            if (state.status !== "gathering") return reject(state, "当前不在联网取证阶段。 ");
+            if (state.evidenceIndex >= scenario.evidence.length) return reject(state, "匿名证据已经收集完毕。 ");
+            state.evidence.push(clone(scenario.evidence[state.evidenceIndex]));
+            state.evidenceIndex += 1;
+            state.metrics.calls.tool += 1;
+            state.now += 450;
+            event(state, "工具", `已收集第 ${state.evidenceIndex} 条结构化证据；正文仍未写入。`);
+            if (state.evidenceIndex === scenario.evidence.length) {
+              state.status = "ready-to-write";
+              state.phase = "证据齐备，等待独立最终写作";
+            }
+            return state;
+          }
+          case "START_WRITING": {
+            if (state.status !== "ready-to-write") return reject(state, "只有证据齐备后才能启动联网最终写作。 ");
+            startWriting(state);
+            return state;
+          }
+          case "EMIT": {
+            if (state.status !== "streaming") return reject(state, "只有正在写作时才能继续输出正文。 ");
+            if (state.chunkIndex >= scenario.chunks.length) return reject(state, "正文片段已全部输出，请结束写作。 ");
+            const chunk = scenario.chunks[state.chunkIndex];
+            if (/\[\[|<mark:|__CONTROL__/.test(chunk)) {
+              state.status = "failed";
+              state.eligibleForCompletion = false;
+              state.phase = "显式协议污染已在展示前拦截";
+              event(state, "安全拦截", "检测到显式控制协议；污染片段未进入正文。 ");
+              return state;
+            }
+            state.now += 240;
+            state.body += chunk;
+            state.confirmedBody = state.body;
+            state.bodyVersion += 1;
+            state.chunkIndex += 1;
+            if (state.metrics.firstByteAt == null) state.metrics.firstByteAt = state.now;
+            event(state, "正文", `已确认 ${chunk.length} 个干净字符；正文版本升至 v${state.bodyVersion}。`);
+            discoverClosedParagraphs(state);
+            return state;
+          }
+          case "EMIT_ALL": {
+            if (state.status !== "streaming") return reject(state, "只有正在写作时才能输出剩余正文。 ");
+            while (state.chunkIndex < scenario.chunks.length && state.status === "streaming") {
+              state = reduce(state, { type: "EMIT" });
+            }
+            return state;
+          }
+          case "PAUSE": {
+            if (state.status !== "streaming") return reject(state, "只有正在写作时才能暂停。 ");
+            state.status = "paused";
+            state.phase = "正文已暂停，已确认前缀保留";
+            event(state, "暂停", "物理流已停；已确认正文和已验证增强保持可见。 ");
+            return state;
+          }
+          case "RESUME": {
+            if (!['paused', 'recovered'].includes(state.status)) return reject(state, "当前没有可继续的中断写作。 ");
+            state.status = "streaming";
+            state.phase = "从已确认断点继续最终写作";
+            event(state, "继续", "从干净正文断点继续，不重放工具草稿或失效增强。 ");
+            return state;
+          }
+          case "RESTART": {
+            if (!['streaming', 'paused', 'finalizing'].includes(state.status)) return reject(state, "当前状态没有需要模拟恢复的未完成工作。 ");
+            state.runId += 1;
+            state.body = state.confirmedBody;
+            state.status = "recovered";
+            state.phase = "重启后等待用户继续";
+            state.pending = [];
+            if (state.strategy === "paragraph") {
+              for (const paragraph of state.paragraphs) {
+                if (!state.enhancements.some((item) => item.paragraphId === paragraph.id)) {
+                  state.pending.push({ type: "paragraph", paragraphId: paragraph.id, dueAt: state.now + 700, runId: state.runId });
+                }
+              }
+            }
+            event(state, "重启恢复", "只恢复已确认正文与已验证增强；未完成增强已重新排队。 ");
+            return state;
+          }
+          case "FINISH": {
+            if (state.status !== "streaming") return reject(state, "只有正在写作时才能结束。 ");
+            if (state.chunkIndex < scenario.chunks.length) return reject(state, "仍有正文未输出；请先继续输出或主动停止。 ");
+            state.status = "finalizing";
+            state.phase = "正文已完成，等待增强收口";
+            if (state.strategy === "completion") {
+              state.pending.push({ type: "completion", dueAt: state.now + 1600, runId: state.runId });
+            } else {
+              state.pending.push({ type: "validation", dueAt: state.now + 1000, runId: state.runId });
+            }
+            event(state, "正文完成", state.strategy === "paragraph"
+              ? "已安排全篇稳定性校验；不会移动已显示标记。"
+              : "已安排一次全文统一增强；此前没有候选显示。" );
+            return state;
+          }
+          case "ADVANCE": {
+            state.now += action.ms ?? 1000;
+            processDue(state);
+            if (!state.pending.length) event(state, "时间推进", `虚拟时间推进至 ${state.now} ms；当前没有待处理增强。`);
+            return state;
+          }
+          case "FAIL_NEXT": {
+            state.failNextEnhancement = true;
+            event(state, "故障注入", "下一次增强调用将失败；正文通道不受影响。 ");
+            return state;
+          }
+          case "INJECT_PROTOCOL": {
+            if (state.status !== "streaming") return reject(state, "只有正文流中可以测试协议污染拦截。 ");
+            state.status = "failed";
+            state.phase = "显式协议污染已在展示前拦截";
+            state.eligibleForCompletion = false;
+            event(state, "安全拦截", "模拟控制串 [[entity:id]] 在展示前被拦截；干净前缀保留为失败的部分回答。 ");
+            return state;
+          }
+          case "COMPARE": {
+            state.comparison = {
+              paragraph: simulate("paragraph", "long"),
+              completion: simulate("completion", "long")
+            };
+            event(state, "对照完成", "已用同一篇匿名长文运行两种策略；结果见对照表。 ");
+            return state;
+          }
+          default:
+            return reject(state, "未知动作未执行。 ");
+        }
+      }
+
+      function simulate(strategy, scenarioName) {
+        let state = initial(strategy, scenarioName);
+        state = reduce(state, { type: "START" });
+        while (state.chunkIndex < SCENARIOS[scenarioName].chunks.length) {
+          state = reduce(state, { type: "EMIT" });
+          state = reduce(state, { type: "ADVANCE", ms: 800 });
+        }
+        state = reduce(state, { type: "FINISH" });
+        state = reduce(state, { type: "ADVANCE", ms: 1800 });
+        return summary(state);
+      }
+
+      function summary(state) {
+        const latencies = state.metrics.enhancementLatencies;
+        const average = latencies.length ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length) : null;
+        const estimatedTokens = Math.round(state.body.length * .7 + state.metrics.calls.tool * 480 + state.metrics.calls.enhancer * 260);
+        return {
+          firstByte: state.metrics.firstByteAt == null ? null : state.metrics.firstByteAt - state.metrics.startedAt,
+          firstEnhancement: latencies.length ? Math.min(...latencies) : null,
+          averageEnhancement: average,
+          enhancementCalls: state.metrics.calls.enhancer,
+          totalCalls: state.metrics.calls.writer + state.metrics.calls.tool + state.metrics.calls.enhancer,
+          estimatedTokens,
+          offsetResult: state.metrics.offsetFailures ? `${state.metrics.offsetFailures} 处失败` : `${state.metrics.offsetChecks} 次全通过`,
+          validation: state.metrics.fullValidation
+        };
+      }
+
+      return { SCENARIOS, initial, reduce, summary, formatMs };
+    })();
+
+    const ACTIONS = [
+      ["载入普通回答", { type: "LOAD", scenario: "normal" }],
+      ["载入无标题长文", { type: "LOAD", scenario: "long" }],
+      ["载入联网多轮搜索", { type: "LOAD", scenario: "web" }],
+      ["开始", { type: "START" }],
+      ["执行下一次搜索", { type: "SEARCH" }],
+      ["启动独立最终写作", { type: "START_WRITING" }],
+      ["输出下一段正文流", { type: "EMIT" }],
+      ["输出全部剩余正文", { type: "EMIT_ALL" }],
+      ["推进 1 秒并处理增强", { type: "ADVANCE", ms: 1000 }],
+      ["暂停正文", { type: "PAUSE" }],
+      ["继续正文", { type: "RESUME" }],
+      ["模拟应用重启", { type: "RESTART" }],
+      ["结束正文并全篇校验", { type: "FINISH" }],
+      ["让下一次增强失败", { type: "FAIL_NEXT" }],
+      ["注入显式控制串", { type: "INJECT_PROTOCOL" }],
+      ["运行两种策略对照", { type: "COMPARE" }]
+    ];
+
+    const WALKTHROUGHS = [
+      {
+        id: "normal",
+        label: "普通回答",
+        description: "观察首字先出现，第一段闭合后增强独立到达；正文中没有弱标记控制串。",
+        steps: [
+          ["载入普通回答", { type: "LOAD", scenario: "normal" }],
+          ["开始最终写作", { type: "START" }],
+          ["输出首个短片段", { type: "EMIT" }],
+          ["闭合第一段", { type: "EMIT" }],
+          ["等待旁路增强", { type: "ADVANCE", ms: 1000 }],
+          ["输出余下正文", { type: "EMIT_ALL" }],
+          ["结束并完成全篇校验", { type: "FINISH" }],
+          ["等待收口", { type: "ADVANCE", ms: 1800 }]
+        ]
+      },
+      {
+        id: "compare",
+        label: "长文对照",
+        description: "用同一篇无固定 Markdown 标题的长文跑两种策略，比较增强出现时间、调用次数和范围一致性。",
+        steps: [
+          ["生成两种策略对照结果", { type: "COMPARE" }]
+        ]
+      },
+      {
+        id: "web",
+        label: "联网最终定稿",
+        description: "搜索阶段只积累证据；完成三轮搜索后，独立写作才开始生成用户正文与引用候选。",
+        steps: [
+          ["载入联网场景", { type: "LOAD", scenario: "web" }],
+          ["开始联网取证", { type: "START" }],
+          ["收集来源 A", { type: "SEARCH" }],
+          ["收集来源 B", { type: "SEARCH" }],
+          ["收集来源 C", { type: "SEARCH" }],
+          ["启动独立最终写作", { type: "START_WRITING" }],
+          ["输出干净正文", { type: "EMIT_ALL" }],
+          ["结束正文", { type: "FINISH" }],
+          ["等待引用与全篇校验", { type: "ADVANCE", ms: 2000 }]
+        ]
+      },
+      {
+        id: "recovery",
+        label: "中断与重启",
+        description: "在长文中途暂停并重启；只恢复已确认正文和已验证增强，未完成增强重新计算，再从断点继续。",
+        steps: [
+          ["载入长文", { type: "LOAD", scenario: "long" }],
+          ["开始最终写作", { type: "START" }],
+          ["输出第一段", { type: "EMIT" }],
+          ["暂停", { type: "PAUSE" }],
+          ["模拟应用重启", { type: "RESTART" }],
+          ["处理重新排队的增强", { type: "ADVANCE", ms: 1000 }],
+          ["从断点继续", { type: "RESUME" }],
+          ["输出剩余正文", { type: "EMIT_ALL" }],
+          ["结束并校验", { type: "FINISH" }],
+          ["等待收口", { type: "ADVANCE", ms: 1800 }]
+        ]
+      },
+      {
+        id: "failure",
+        label: "增强失败",
+        description: "故意让一次段落增强失败。正文继续写完，失败只会减少可见增强，不会改写或阻塞正文。",
+        steps: [
+          ["载入普通回答", { type: "LOAD", scenario: "normal" }],
+          ["开始最终写作", { type: "START" }],
+          ["让下一次增强失败", { type: "FAIL_NEXT" }],
+          ["输出并闭合第一段", { type: "EMIT" }],
+          ["继续闭合第一段", { type: "EMIT" }],
+          ["触发失败的增强", { type: "ADVANCE", ms: 1000 }],
+          ["输出剩余正文", { type: "EMIT_ALL" }],
+          ["结束并校验", { type: "FINISH" }],
+          ["等待收口", { type: "ADVANCE", ms: 1800 }]
+        ]
+      }
+    ];
+
+    let state = PrototypeModel.initial();
+    let activeWalkthrough = "normal";
+    const progress = Object.fromEntries(WALKTHROUGHS.map((item) => [item.id, 0]));
+
+    function dispatch(action) {
+      state = PrototypeModel.reduce(state, action);
+      render();
+    }
+
+    function esc(value) {
+      return String(value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' })[char]);
+    }
+
+    function statusTone(status) {
+      if (status === "completed") return "good";
+      if (["failed"].includes(status)) return "bad";
+      if (["paused", "recovered", "finalizing"].includes(status)) return "warn";
+      return "";
+    }
+
+    function render() {
+      document.querySelector('#strategy').value = state.strategy;
+      document.querySelector('#last-change').textContent = state.lastChange;
+      const scenario = PrototypeModel.SCENARIOS[state.scenario];
+      document.querySelector('#status-row').innerHTML = `
+        <span class="pill ${statusTone(state.status)}">${esc(state.status)}</span>
+        <span class="pill">${esc(scenario.label)}</span>
+        <span class="pill">正文 v${state.bodyVersion}</span>
+        <span class="pill">虚拟时间 ${state.now} ms</span>`;
+      document.querySelector('#body-copy').innerHTML = state.body
+        ? esc(state.body.trimEnd())
+        : '<span class="placeholder">正文尚未开始。联网工具即使已经工作，这里仍应保持为空，直到独立最终写作启动。</span>';
+
+      const enhancementList = document.querySelector('#enhancement-list');
+      enhancementList.innerHTML = state.enhancements.length ? state.enhancements.map((item) => `
+        <li><strong>${esc(item.paragraphId)} · ${esc(item.source)}</strong>
+          ${item.candidates.map((candidate) => `<small>${esc(candidate.kind)}：${esc(candidate.label)} · 范围 ${candidate.start}–${candidate.end}</small>`).join('')}
+          <small>正文指纹 ${esc(item.fingerprint)} · ${item.appliedAt} ms 通过校验</small>
+        </li>`).join('') : '<li class="empty">尚无已验证增强。</li>';
+
+      const evidenceList = document.querySelector('#evidence-list');
+      evidenceList.innerHTML = state.evidence.length ? state.evidence.map((item) => `
+        <li><strong>${esc(item.source)}</strong><small>${esc(item.claim)}</small></li>`).join('') : '<li class="empty">证据工作区为空。</li>';
+
+      const summary = PrototypeModel.summary(state);
+      const stateRows = [
+        ["阶段", state.phase],
+        ["正文通道", state.status === "gathering" ? "关闭：工具不得写正文" : "只接受最终写作"],
+        ["增强策略", state.strategy === "paragraph" ? "段落闭合后旁路" : "全文完成后统一增强"],
+        ["已确认正文", `${state.confirmedBody.length} 字符`],
+        ["闭合段落", `${state.paragraphs.length} 个`],
+        ["待处理增强", `${state.pending.length} 项`],
+        ["已显示增强", `${state.enhancements.length} 段`],
+        ["完成态资格", state.eligibleForCompletion ? "保留" : "已撤销（污染/失败）"],
+        ["运行代次", `R${state.runId}`]
+      ];
+      document.querySelector('#state-table').innerHTML = stateRows.map(([key, value]) => `<tr><th>${esc(key)}</th><td>${esc(value)}</td></tr>`).join('');
+
+      const latencyText = state.metrics.enhancementLatencies.length
+        ? state.metrics.enhancementLatencies.map((item) => `${item} ms`).join(' / ')
+        : "尚无";
+      const metricRows = [
+        ["正文首字", PrototypeModel.formatMs(summary.firstByte)],
+        ["各段增强延迟", latencyText],
+        ["全篇校验", state.metrics.fullValidation],
+        ["偏移一致性", summary.offsetResult],
+        ["调用次数", `写作 ${state.metrics.calls.writer} · 工具 ${state.metrics.calls.tool} · 增强 ${state.metrics.calls.enhancer}`],
+        ["估算总模型成本", `${summary.estimatedTokens} token 单位（仅用于两策略对照）`]
+      ];
+      document.querySelector('#metrics-table').innerHTML = metricRows.map(([key, value]) => `<tr><th>${esc(key)}</th><td>${esc(value)}</td></tr>`).join('');
+
+      document.querySelector('#event-log').innerHTML = state.events.map((item) => `<div><b>${item.at} ms · ${esc(item.kind)}</b><br>${esc(item.text)}</div>`).join('');
+      renderComparison();
+      renderWalkthrough();
+    }
+
+    function renderComparison() {
+      const target = document.querySelector('#comparison');
+      if (!state.comparison) {
+        target.innerHTML = '<p class="empty">点击“运行两种策略对照”后显示同材料测量结果。</p>';
+        return;
+      }
+      const p = state.comparison.paragraph;
+      const c = state.comparison.completion;
+      target.innerHTML = `<table>
+        <thead><tr><th>测量</th><th>段落旁路</th><th>全文统一增强</th></tr></thead>
+        <tbody>
+          <tr><td>正文首字</td><td>${PrototypeModel.formatMs(p.firstByte)}</td><td>${PrototypeModel.formatMs(c.firstByte)}</td></tr>
+          <tr><td>首个增强出现</td><td>${PrototypeModel.formatMs(p.firstEnhancement)}</td><td>${PrototypeModel.formatMs(c.firstEnhancement)}</td></tr>
+          <tr><td>增强模型调用</td><td>${p.enhancementCalls}</td><td>${c.enhancementCalls}</td></tr>
+          <tr><td>总调用</td><td>${p.totalCalls}</td><td>${c.totalCalls}</td></tr>
+          <tr><td>估算 token 单位</td><td>${p.estimatedTokens}</td><td>${c.estimatedTokens}</td></tr>
+          <tr><td>偏移校验</td><td>${esc(p.offsetResult)}</td><td>${esc(c.offsetResult)}</td></tr>
+          <tr><td>体验差异</td><td>较早可交互，调用随段落增加</td><td>调用少，但增强全部延后</td></tr>
+        </tbody>
+      </table>`;
+    }
+
+    function renderWalkthrough() {
+      const tabs = document.querySelector('#tabs');
+      tabs.innerHTML = WALKTHROUGHS.map((item) => `<button class="tab" role="tab" aria-selected="${item.id === activeWalkthrough}" data-tab="${item.id}">${esc(item.label)}</button>`).join('');
+      tabs.querySelectorAll('[data-tab]').forEach((button) => button.addEventListener('click', () => {
+        activeWalkthrough = button.dataset.tab;
+        progress[activeWalkthrough] = 0;
+        const walkthrough = WALKTHROUGHS.find((item) => item.id === activeWalkthrough);
+        const firstLoad = walkthrough.steps[0][1];
+        if (firstLoad.type === 'LOAD') dispatch(firstLoad);
+        else render();
+      }));
+      const walkthrough = WALKTHROUGHS.find((item) => item.id === activeWalkthrough);
+      const current = progress[activeWalkthrough];
+      document.querySelector('#walkthrough').innerHTML = `
+        <p>${esc(walkthrough.description)}</p>
+        <div class="steps">${walkthrough.steps.map(([label], index) => `<button class="step ${index < current ? 'done' : ''} ${index === current ? 'next' : ''}" data-step="${index}">${esc(label)}</button>`).join('')}</div>`;
+      document.querySelectorAll('[data-step]').forEach((button) => button.addEventListener('click', () => {
+        const index = Number(button.dataset.step);
+        const [, action] = walkthrough.steps[index];
+        dispatch(action);
+        progress[activeWalkthrough] = Math.max(progress[activeWalkthrough], index + 1);
+        render();
+      }));
+    }
+
+    const freePlay = document.querySelector('#free-play');
+    freePlay.innerHTML = ACTIONS.map(([label], index) => `<button class="button ${index === 3 ? 'primary' : ''} ${index === 14 ? 'danger' : ''}" data-action="${index}">${esc(label)}</button>`).join('');
+    freePlay.querySelectorAll('[data-action]').forEach((button) => button.addEventListener('click', () => dispatch(ACTIONS[Number(button.dataset.action)][1])));
+    document.querySelector('#strategy').addEventListener('change', (event) => dispatch({ type: 'SET_STRATEGY', value: event.target.value }));
+    document.querySelector('#reset').addEventListener('click', () => dispatch({ type: 'RESET' }));
+    render();
+  </script>
+</body>
+</html>
