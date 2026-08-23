@@ -122,15 +122,15 @@ export async function webSearch(query: string, maxResults = 5): Promise<WebSearc
   const registry = ensureRegistry();
   const { backend, usedFallback } = selectSearchBackend(registry, _searchConfig.backend, _searchConfig.fallback);
 
-  console.log(`[web-search] webSearch backend="${backend.id}"${usedFallback ? " (fallback)" : ""} query="${query.trim()}" maxResults=${maxResults}`);
+  console.log(`[web-search] webSearch backend="${backend.id}"${usedFallback ? " (fallback)" : ""} queryChars=${query.trim().length} maxResults=${maxResults}`);
 
   try {
     const result = await backend.search(query.trim(), maxResults);
-    console.log(`[web-search] webSearch ${result.errorMessage ? "error" : "completed"} backend="${backend.id}" query="${result.query}" resultCount=${result.results.length} latency=${Date.now() - searchStartedAt}ms`);
+    console.log(`[web-search] webSearch ${result.errorMessage ? "error" : "completed"} backend="${backend.id}" queryChars=${result.query.length} resultCount=${result.results.length} latency=${Date.now() - searchStartedAt}ms`);
     return { ...result, backend: backend.id, usedFallback };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown search error";
-    console.log(`[web-search] webSearch error backend="${backend.id}" query="${query.trim()}" message="${message}" latency=${Date.now() - searchStartedAt}ms`);
+    console.log(`[web-search] webSearch error backend="${backend.id}" queryChars=${query.trim().length} error=${safeLogErrorKind(error)} latency=${Date.now() - searchStartedAt}ms`);
 
     // 如果启用了回退且当前后端不是回退选择，尝试用首选后端重试
     if (_searchConfig.fallback && usedFallback) {
@@ -244,12 +244,12 @@ export async function fetchPageContent(
       return { url: fetched.url, text: "", errorMessage: "页面疑似验证码或付费墙（内容被拦截）", errorCategory: "blocked" };
     }
     const result = { url: fetched.url, text: trimmed.slice(0, 6000), errorMessage: trimmed ? undefined : "No readable text", ...(!trimmed ? { errorCategory: "content" as const } : {}) };
-    console.log(`[web-search] fetchPageContent ${result.errorMessage ? "error" : "completed"} url="${fetched.url}" textLen=${result.text.length} latency=${Date.now() - fetchStartedAt}ms${result.errorMessage ? ` error="${result.errorMessage}"` : ""}`);
+    console.log(`[web-search] fetchPageContent ${result.errorMessage ? "error" : "completed"} host=${safeLogHost(fetched.url)} textLen=${result.text.length} latency=${Date.now() - fetchStartedAt}ms`);
     return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown fetch error";
     const { category, status } = classifyFetchError(error);
-    console.log(`[web-search] fetchPageContent error url="${url}" message="${message}" latency=${Date.now() - fetchStartedAt}ms`);
+    console.log(`[web-search] fetchPageContent error host=${safeLogHost(url)} error=${safeLogErrorKind(error)} category=${category}${status !== undefined ? ` httpStatus=${status}` : ""} latency=${Date.now() - fetchStartedAt}ms`);
     return { url, text: "", errorMessage: message, errorCategory: category, ...(status !== undefined ? { httpStatus: status } : {}) };
   }
 }
@@ -282,7 +282,7 @@ export async function webFetch(
     ctx.recordEntry({
       stage: "fetch", domain, url, status: "circuit_open", latencyMs: 0, errorCategory: "circuit_open", evidenceStatus: "none",
     });
-    console.log(`[web-search] webFetch circuitOpen url="${url}"`);
+    console.log(`[web-search] webFetch circuitOpen host=${safeLogHost(url)}`);
     return { url, content: "", errorMessage: message, errorCategory: "circuit_open", retryCount: 0 };
   }
 
@@ -298,7 +298,7 @@ export async function webFetch(
       ctx?.recordEntry({ stage: "fetch", domain, url: page.url, status: "completed", attempts: attempt + 1, latencyMs: latency, evidenceStatus: "full" });
       // 成功但抓取过慢：计入慢域熔断计数，本轮不再请求该慢速域名。
       if (latency > SLOW_DOMAIN_MS) ctx?.recordFailure(domain, false);
-      console.log(`[web-search] webFetch completed url="${page.url}" contentLen=${page.text.length} attempts=${attempt + 1} latency=${Date.now() - startedAt}ms`);
+      console.log(`[web-search] webFetch completed host=${safeLogHost(page.url)} contentLen=${page.text.length} attempts=${attempt + 1} latency=${Date.now() - startedAt}ms`);
       return { url: page.url, content: page.text, retryCount: attempt };
     }
     lastCategory = page.errorCategory ?? classifyFetchError(page.errorMessage).category;
@@ -307,7 +307,7 @@ export async function webFetch(
     if (!isRetryable(page)) break; // 永久失败（含 401/403 等非 408/429/5xx 的 4xx）：不重试
     if (attempt >= maxRetries) break;
     const delay = backoffDelayMs(attempt);
-    console.log(`[web-search] webFetch retry url="${url}" attempt=${attempt + 1} category=${lastCategory} delay=${delay}ms`);
+    console.log(`[web-search] webFetch retry host=${safeLogHost(url)} attempt=${attempt + 1} category=${lastCategory} delay=${delay}ms`);
     await (options.retrySleep ?? sleep)(delay);
   }
 
@@ -318,7 +318,7 @@ export async function webFetch(
     stage: "fetch", domain, url, status: finalStatus, attempts: attempt + 1, latencyMs: Date.now() - startedAt,
     errorCategory: lastCategory, httpStatus: lastHttpStatus, retryReason: attempt > 0 ? lastMessage : undefined, evidenceStatus: "none", ...(tripped ? { fallbackReason: "circuit_tripped" as const } : {}),
   });
-  console.log(`[web-search] webFetch ${finalStatus} url="${url}" category=${lastCategory} attempts=${attempt + 1} latency=${Date.now() - startedAt}ms`);
+  console.log(`[web-search] webFetch ${finalStatus} host=${safeLogHost(url)} category=${lastCategory} attempts=${attempt + 1} latency=${Date.now() - startedAt}ms`);
   return { url, content: "", errorMessage: lastMessage, errorCategory: lastCategory, retryCount: attempt };
 }
 
@@ -329,6 +329,20 @@ function hostnameOf(url: string): string {
   } catch {
     return url.split("/")[0] ?? url;
   }
+}
+
+/** 日志只保留可公开的 hostname；凭证、路径与查询参数永不进入控制台。 */
+function safeLogHost(url: string): string {
+  try {
+    return new URL(url).hostname || "unknown";
+  } catch {
+    return "invalid-url";
+  }
+}
+
+/** 错误正文可能回显查询或 URL，日志仅保留稳定错误类别。 */
+function safeLogErrorKind(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
 }
 
 /**

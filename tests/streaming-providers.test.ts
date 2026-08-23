@@ -127,7 +127,7 @@ test("网关 writeResearchBodyStream：thinking 显式开启时透传到请求",
   assert.equal(provider.calls[0]?.thinking, true);
 });
 
-test("OpenAI Responses provider 流式：output_text.delta 逐字、completed 帧 usage、failed 抛错", async () => {
+test("OpenAI Responses provider 流式：output_text.delta 逐字、completed 帧 usage、failed 只抛稳定错误", async () => {
   const provider = createProvider(DEFAULT_PROVIDER_REGISTRY.get("openai"), {
     apiKey: () => "openai-secret",
     fetchImpl: async () =>
@@ -146,9 +146,17 @@ test("OpenAI Responses provider 流式：output_text.delta 逐字、completed �
 
   const failing = createProvider(DEFAULT_PROVIDER_REGISTRY.get("openai"), {
     apiKey: () => "openai-secret",
-    fetchImpl: async () => sseResponse([{ event: "response.failed", data: JSON.stringify({ type: "response.failed", response: { error: { message: "boom" } } }) }]),
+    fetchImpl: async () => sseResponse([{ event: "response.failed", data: JSON.stringify({ type: "response.failed", response: { error: { message: "token=secret 私人正文" } } }) }]),
   });
-  await assert.rejects(collect(failing.completeStream!({ prompt: "问题", model: "gpt-4.1" })), /boom/);
+  await assert.rejects(
+    collect(failing.completeStream!({ prompt: "问题", model: "gpt-4.1" })),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message, "OpenAI streaming failed");
+      assert.doesNotMatch(error.message, /secret|私人正文|token=/);
+      return true;
+    },
+  );
 });
 
 test("Gemini provider 流式：parts[].text 逐字、usageMetadata 终帧", async () => {

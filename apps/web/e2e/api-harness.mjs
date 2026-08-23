@@ -189,10 +189,20 @@ const fakeProvider = {
   },
   // #98：联网读取层过滤的确定性浏览器夹具。只有专用问题返回 grounded，
   // 其余联网请求维持既有 unsupported 语义，避免改变联网开关回归用例。
-  async generateAgentGrounded(request) {
+  async prepareGrounded(request) {
     const question = request.messages.at(-1)?.content ?? "";
+    if (question.includes("验证最终正文污染")) {
+      return {
+        kind: "confirmed_final",
+        content: "干净前缀。<think>匿名内部草稿</think>",
+        status: "grounded", queries: [],
+        sources: [{ title: "匿名合成来源", url: "https://example.com/final-body-fixture" }],
+        citations: [],
+      };
+    }
     if (!question.includes("验证来源过滤")) {
       return {
+        kind: "confirmed_final",
         content: "当前确定性模型不执行联网搜索，回答完毕。",
         status: "grounding_unsupported",
         queries: [],
@@ -201,17 +211,25 @@ const fakeProvider = {
       };
     }
     return {
-      content: "第三条来源支撑可打开的结论。[来源3] 第四条来源提供供应商定位信息。[来源4]",
+      kind: "evidence",
+      evidence: "[来源3] 实际引用来源\n第三条来源支撑可打开的结论。\nhttps://example.com/cited-three\n\n[来源4] 无链接引用来源\n第四条来源提供供应商定位信息。",
       status: "grounded",
       queries: ["验证来源过滤"],
       sources: [
         { title: "未引用来源一", url: "https://example.com/uncited-one" },
         { title: "未引用来源二", url: "https://example.com/uncited-two" },
-        { title: "实际引用来源", url: "https://example.com/cited-three" },
-        { title: "无链接引用来源", locator: "供应商片段 4" },
+        { title: "实际引用来源", url: "https://example.com/cited-three", snippet: "第三条来源支撑可打开的结论。", evidenceStatus: "full" },
+        { title: "无链接引用来源", locator: "供应商片段 4", snippet: "第四条来源提供供应商定位信息。", evidenceStatus: "partial" },
       ],
       citations: [],
     };
+  },
+  async *writeGroundedFinalStream(_request, evidence, options) {
+    if (!evidence.includes("来源3")) throw new Error("final writer did not receive grounded evidence");
+    yield "第三条来源支撑可打开的结论。[来源3] ";
+    await sleep(120);
+    yield "第四条来源提供供应商定位信息。[来源4]";
+    options.onStreamDone?.({ finishReason: "stop" });
   },
   // 生成自由化：模型只产出自由正文（\n\n 分段），切片由服务层按段落块确定性派生，
   // 标题/概念由 deriveAnnotations 事后抽取。三段正文与三条标注一一对应，

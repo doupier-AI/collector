@@ -61,7 +61,7 @@ export function createSearchBackendRegistry(config: SearchConfig): SearchBackend
     try {
       registry.register(createTavilyBackend(config.tavilyApiKey.trim()));
     } catch (error) {
-      console.log(`[search-backend] tavily registration failed: ${error instanceof Error ? error.message : "unknown"}`);
+      console.log(`[search-backend] tavily registration failed error=${error instanceof Error ? error.name : typeof error}`);
     }
   }
 
@@ -69,7 +69,7 @@ export function createSearchBackendRegistry(config: SearchConfig): SearchBackend
     try {
       registry.register(createSearxngBackend(config.searxngUrl.trim()));
     } catch (error) {
-      console.log(`[search-backend] searxng registration failed: ${error instanceof Error ? error.message : "unknown"}`);
+      console.log(`[search-backend] searxng registration failed error=${error instanceof Error ? error.name : typeof error}`);
     }
   }
 

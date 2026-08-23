@@ -1,5 +1,5 @@
 export { createApiServer, type ApiServerOptions } from "./http.js";
-export { CaptureService, NotFoundError, ValidationError } from "./service.js";
+export { CaptureService, NotFoundError, ValidationError, formatFinalWriterEvidence } from "./service.js";
 export { RunRecordsService, RunRecordsValidationError, type RunRecordListInput } from "./observability.js";
 export { MemoryStore, SqliteStore, defaultDataPaths, LATEST_SCHEMA_VERSION, type CollectorStore } from "./store.js";
 export { LocalAuth, PairingRateLimitError, hashToken } from "./auth.js";

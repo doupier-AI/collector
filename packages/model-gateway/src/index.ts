@@ -198,7 +198,7 @@ export interface GroundingCitation {
   providerCitationId?: string;
 }
 
-export interface GroundedResearchResponse {
+type GroundedResearchMetadata = {
   content: string;
   status: ResearchGroundingScopeStatus;
   queries: string[];
@@ -206,7 +206,12 @@ export interface GroundedResearchResponse {
   citations: GroundingCitation[];
   responseSummary?: Record<string, unknown>;
   errorMessage?: string;
-}
+};
+
+/** 只有经供应商终态确认的变体拥有正文；证据变体在类型上不能携带草稿文本。 */
+export type GroundedResearchResponse =
+  | (GroundedResearchMetadata & { bodyKind: "confirmed_final"; content: string })
+  | (Omit<GroundedResearchMetadata, "content"> & { bodyKind: "evidence" });
 
 export interface GroundingModelProvider extends ModelProvider {
   generateGroundedResearch(request: { prompt: string; model: string; grounding: ResearchGroundingRequest; maxTokens?: number; timeoutMs?: number }): Promise<GroundedResearchResponse>;
@@ -531,9 +536,10 @@ export interface AgentSearchToolContext {
 
 /** Agent 搜索循环的最终输出。 */
 export interface AgentSearchResult {
-  content: string;
   queries: string[];
   sources: GroundingSource[];
+  /** 仅供 API 最终写作阶段使用的、按来源编号关联的原始证据；消费方负责限额与脱敏。 */
+  evidence: Array<{ sourceOrdinal: number; content: string }>;
 }
 
 /** Agent 搜索循环的默认系统提示。 */
@@ -543,28 +549,17 @@ const AGENT_SEARCH_SYSTEM_PROMPT = `你是 Collector 的研究助手。你可以
 1. 根据用户问题，先调用 web_search 进行搜索
 2. 分析搜索结果，选择最相关的页面调用 web_fetch 抓取详细内容
 3. 如果信息不够充足，可以换关键词重新搜索
-4. 信息收集充分后，给出完整回答
-
-引用规则：
-- 回答中引用来源时在陈述后标注 [来源n]（n 为搜索结果列表中该项的序号）
-- 只在确实有依据的陈述后标注
-- 没有依据时如实说明不确定性
-- 若某页抓取失败、只拿到搜索摘要（工具返回"[来源n 部分证据（搜索摘要）]"），仍可基于摘要陈述并标注 [来源n]，但需在文中说明"（依据搜索摘要）"，不得把摘要当作全文细节
-- 抓取失败且未提供摘要的页面不得作为依据，也不要标注引用
-- 当 web_fetch 返回"已被暂时熔断"提示时，本轮不要再抓取该域名的其他页面，改用其他来源
+4. 信息收集充分后停止；最终面向用户的正文由独立写作阶段生成
 
 约束：
-- 必须经过搜索再回答，不能凭记忆编造
+- 你只负责调用工具收集可追溯证据，不能把任何自然语言回答、草稿、总结或控制协议作为最终正文输出
+- 必须经过搜索取证，不能凭记忆编造
 - 中文优先，使用中文关键词搜索；英文术语保留原样
-- 最多进行 5 轮搜索（web_search 调用次数），达到后请基于已有信息给出最佳回答`;
+- 最多进行 5 轮搜索（web_search 调用次数），达到后停止工具循环`;
 
-/** Agent 联网回答与其它正文入口共用同一份弱标记策略。 */
-export function formatAgentSearchSystemPrompt(nodeDepth = 0): string {
-  return `${AGENT_SEARCH_SYSTEM_PROMPT}
-
-最终回答只输出连贯的中文正文，不返回 JSON、字段包装或 Markdown 代码围栏；按自然段落组织，段落之间留一个空行。
-
-${formatMentionMarkupInstructions({ scenario: "grounded", nodeDepth })}`;
+/** Agent 是匿名取证工作区，提示词不含任何正文或弱标记协议。 */
+export function formatAgentSearchSystemPrompt(_nodeDepth = 0): string {
+  return AGENT_SEARCH_SYSTEM_PROMPT;
 }
 
 /** web_search 和 web_fetch 工具的 OpenAI function tool 定义。 */
@@ -680,7 +675,7 @@ export class ModelGateway {
         maxTokens: request.maxTokens,
         timeoutMs: request.timeoutMs,
       });
-      await this.emitCompleted(context, request, startedAt, createdAt, { content: result.content, model: request.model });
+      await this.emitCompleted(context, request, startedAt, createdAt, { content: result.bodyKind === "confirmed_final" ? result.content : "", model: request.model });
       return result;
     } catch (error) {
       await this.emitFailed(context, request, startedAt, createdAt, error);
@@ -1354,11 +1349,11 @@ ${input.recentUserMessages?.length ? `\n用户最近关注的问题：\n${input.
       const parsed = JSON.parse(response.content) as { keywords?: unknown };
       if (typeof parsed.keywords === "string" && parsed.keywords.trim()) {
         const reformulated = parsed.keywords.trim();
-        console.log(`[search-query] reformulated "${userMessage.slice(0, 80)}" → "${reformulated}"`);
+        console.log(`[search-query] reformulated inputChars=${userMessage.length} outputChars=${reformulated.length}`);
         return reformulated;
       }
     } catch (error) {
-      console.log(`[search-query] reformulation failed, using original query: ${error instanceof Error ? error.message : "unknown"}`);
+      console.log(`[search-query] reformulation failed, using original query error=${error instanceof Error ? error.name : "unknown"}`);
     }
     // 失败时返回原文，不阻塞搜索
     return userMessage.trim();
@@ -1384,7 +1379,7 @@ ${input.recentUserMessages?.length ? `\n用户最近关注的问题：\n${input.
     }
     const maxTurns = options.maxTurns ?? MAX_AGENT_TURNS;
     const loopStartedAt = Date.now();
-    console.log(`[web-search] agentLoop start userMessage="${userMessage.slice(0, 80)}" maxTurns=${maxTurns}`);
+    console.log(`[web-search] agentLoop start userMessageChars=${userMessage.length} maxTurns=${maxTurns}`);
 
     const provider = this.provider as ModelProvider & { agentChat?: OpenAiCompatibleProvider["agentChat"] };
     if (typeof provider.agentChat !== "function") {
@@ -1398,6 +1393,7 @@ ${input.recentUserMessages?.length ? `\n用户最近关注的问题：\n${input.
 
     const queries: string[] = [];
     const sources: GroundingSource[] = [];
+    const evidenceBySource = new Map<number, string>();
     const sourceUrlSet = new Set<string>();
     let searchCallCount = 0;
     let fetchCallCount = 0;
@@ -1413,9 +1409,11 @@ ${input.recentUserMessages?.length ? `\n用户最近关注的问题：\n${input.
       console.log(`[web-search] agentLoop turn=${turn} finishReason=${response.finishReason} latency=${Date.now() - startedAt}ms`);
 
       if (response.finishReason === "stop") {
-        const content = response.message.content ?? "";
-        console.log(`[web-search] agentLoop completed turns=${turn} queries=${queries.length} fetchCount=${fetchCallCount} sourceCount=${sources.length} contentLen=${content.length} latency=${Date.now() - loopStartedAt}ms`);
-        return { content, queries, sources };
+        const workspaceContent = response.message.content ?? "";
+        console.log(`[web-search] agentLoop completed turns=${turn} queries=${queries.length} fetchCount=${fetchCallCount} sourceCount=${sources.length} ignoredWorkspaceContentLen=${workspaceContent.length} latency=${Date.now() - loopStartedAt}ms`);
+        // 工具调用循环只负责取证。供应商在该匿名工作区的 stop 文本不能获得研究正文写入权；
+        // 上层必须在独立的最终写作阶段生成可展示的正文。
+        return { queries, sources, evidence: [...evidenceBySource.entries()].map(([sourceOrdinal, content]) => ({ sourceOrdinal, content })) };
       }
 
       if (response.finishReason === "tool_calls" && response.message.toolCalls?.length) {
@@ -1445,7 +1443,7 @@ ${input.recentUserMessages?.length ? `\n用户最近关注的问题：\n${input.
               messages.push({
                 role: "tool" as const,
                 tool_call_id: tc.id,
-                content: "已达到搜索轮次上限(5次)。请基于已有信息给出回答，不要继续搜索。",
+                content: "已达到搜索轮次上限(5次)。请停止工具调用；不要输出面向用户的回答或总结。",
               });
               continue;
             }
@@ -1467,6 +1465,7 @@ ${input.recentUserMessages?.length ? `\n用户最近关注的问题：\n${input.
               if (!sourceUrlSet.has(r.url)) {
                 sourceUrlSet.add(r.url);
                 sources.push({ title: r.title, url: r.url, snippet: r.snippet, evidenceStatus: r.snippet.trim() ? "partial" : "none" });
+                if (r.snippet.trim()) evidenceBySource.set(sources.length, r.snippet.trim());
               }
               const ordinal = sources.findIndex((s) => s.url === r.url) + 1;
               formatted.push({ ordinal, title: r.title, url: r.url, snippet: r.snippet });
@@ -1478,7 +1477,7 @@ ${input.recentUserMessages?.length ? `\n用户最近关注的问题：\n${input.
               content: JSON.stringify({ query: result.query, total_results: result.total_results, results: formatted }),
             });
 
-            console.log(`[web-search] agentLoop webSearch query="${query}" resultCount=${formatted.length} totalSources=${sources.length}`);
+            console.log(`[web-search] agentLoop webSearch queryChars=${query.length} resultCount=${formatted.length} totalSources=${sources.length}`);
           } else if (tc.function.name === "web_fetch") {
             fetchCallCount += 1;
             const url = typeof args.url === "string" ? args.url.trim() : "";
@@ -1504,26 +1503,27 @@ ${input.recentUserMessages?.length ? `\n用户最近关注的问题：\n${input.
               }
             } else {
               if (existingOrdinal > 0) sources[existingOrdinal - 1].evidenceStatus = "full";
+              if (existingOrdinal > 0 && result.content.trim()) evidenceBySource.set(existingOrdinal, result.content.trim());
               contentText = `[来源${existingOrdinal || "?"} 完整内容]\n${result.content}`;
             }
 
             messages.push({ role: "tool" as const, tool_call_id: tc.id, content: contentText });
 
-            console.log(`[web-search] agentLoop webFetch url="${url}" contentLen=${result.content.length}${result.errorMessage ? ` error="${result.errorMessage}"` : ""}`);
+            console.log(`[web-search] agentLoop webFetch host=${safeLogHost(url)} contentLen=${result.content.length}${result.errorMessage ? " error=true" : ""}`);
           } else {
             messages.push({
               role: "tool" as const,
               tool_call_id: tc.id,
               content: JSON.stringify({ error: `Unknown tool: ${tc.function.name}` }),
             });
-            console.log(`[web-search] agentLoop unknownTool name="${tc.function.name}"`);
+            console.log(`[web-search] agentLoop unknownTool nameChars=${tc.function.name.length}`);
           }
         }
         continue;
       }
 
-      // finishReason was "length" or "content_filter" — push the model to wrap up
-      messages.push({ role: "user", content: "请基于已有信息给出简要回答（标注[来源n]引用），不要继续搜索。" });
+      // 非正常终态只要求结束匿名取证工作区；任何自然语言收尾都不会获得正文写入权。
+      messages.push({ role: "user", content: "请停止工具调用；不要输出面向用户的回答、总结或控制协议。" });
     }
 
     throw new Error(`Agent search loop exceeded ${maxTurns} turns without producing a response`);
@@ -2033,7 +2033,8 @@ export class OpenAiResponsesProvider implements GroundingModelProvider {
           // 达到 max_output_tokens 等原因未完整：reason 供有界续写判断。
           finishReason = payload?.response?.incomplete_details?.reason === "max_output_tokens" ? "length" : (payload?.response?.incomplete_details?.reason ?? "length");
         } else if (type === "response.failed" || type === "error") {
-          throw new Error(`${this.options.definition.label} streaming failed (${payload?.response?.error?.message ?? payload?.message ?? "unknown error"})`);
+          // 供应商错误载荷可能回显请求正文或凭证；它没有进入上层日志/任务错误的资格。
+          throw new Error(`${this.options.definition.label} streaming failed`);
         }
       }
     } catch (error) {
@@ -2053,22 +2054,31 @@ export class OpenAiResponsesProvider implements GroundingModelProvider {
       tools: [{ type: "web_search" }],
       tool_choice: "required",
     }, request.timeoutMs);
-    const content = openAiOutputText(payload);
+    // 原生联网的确认依据与正文取值必须来自同一个结构化 output_text 通道；
+    // 顶层便捷字段可能混入供应商工作区文本，不能在此获得正文资格。
+    const content = openAiStructuredOutputText(payload);
     const annotations = openAiAnnotations(payload);
-    const sources = uniqueSources(annotations.map((citation) => ({ title: citation.title || citation.url || "OpenAI 联网来源", url: citation.url })));
+    const sources = uniqueSources(annotations.flatMap((citation) => {
+      const url = safeHttpUrl(citation.url);
+      return url ? [{ title: citation.title || url, url }] : [];
+    }));
     const citations = annotations.flatMap((citation) => {
-      const sourceOrdinal = sources.findIndex((source) => source.url === citation.url) + 1;
+      const url = safeHttpUrl(citation.url);
+      const sourceOrdinal = sources.findIndex((source) => source.url === url) + 1;
       return sourceOrdinal > 0 ? [{ sourceOrdinal, startOffset: citation.start_index ?? 0, endOffset: citation.end_index ?? citation.start_index ?? 0 }] : [];
     });
     const queries = extractOpenAiQueries(payload);
-    return {
-      content,
-      status: sources.length ? "grounded" : "no_verifiable_sources",
+    const confirmedFinal = payload?.status === "completed" && Boolean(content) && sources.length > 0;
+    const metadata = {
+      // Responses 只有明确 completed 的结构化 output_text 才拥有最终正文资格。
+      // 其它状态即使携带文本，也只能作为取证阶段的非正文输出。
+      status: (sources.length ? "grounded" : "no_verifiable_sources") as ResearchGroundingScopeStatus,
       queries,
       sources,
       citations,
       responseSummary: { outputItemCount: Array.isArray(payload?.output) ? payload.output.length : 0 },
     };
+    return confirmedFinal ? { bodyKind: "confirmed_final", content, ...metadata } : { bodyKind: "evidence", ...metadata };
   }
 
   private async request(body: Record<string, unknown>, timeoutMs = 75_000): Promise<any> {
@@ -2169,12 +2179,23 @@ export class GeminiGroundingProvider implements GroundingModelProvider {
     }, request.timeoutMs);
     const candidate = payload?.candidates?.[0];
     const metadata = candidate?.groundingMetadata ?? {};
-    const sources = uniqueSources((metadata.groundingChunks ?? []).map((chunk: any) => ({ title: chunk?.web?.title || chunk?.web?.uri || "Google 联网来源", url: chunk?.web?.uri, snippet: chunk?.web?.snippet })));
-    const citations = (metadata.groundingSupports ?? []).flatMap((support: any) => (support?.groundingChunkIndices ?? []).map((index: number) => ({ sourceOrdinal: index + 1, startOffset: support?.segment?.startIndex ?? 0, endOffset: support?.segment?.endIndex ?? support?.segment?.startIndex ?? 0 })));
-    return {
-      content: geminiText(payload), status: sources.length ? "grounded" : "no_verifiable_sources", queries: stringArray(metadata.webSearchQueries), sources, citations,
+    const groundingChunks = Array.isArray(metadata.groundingChunks) ? metadata.groundingChunks : [];
+    const sources = uniqueSources(groundingChunks.flatMap((chunk: any) => {
+      const url = safeHttpUrl(chunk?.web?.uri);
+      return url ? [{ title: chunk?.web?.title || url, url, snippet: chunk?.web?.snippet }] : [];
+    }));
+    const citations = (metadata.groundingSupports ?? []).flatMap((support: any) => (support?.groundingChunkIndices ?? []).flatMap((index: number) => {
+      const url = safeHttpUrl(groundingChunks[index]?.web?.uri);
+      const sourceOrdinal = sources.findIndex((source) => source.url === url) + 1;
+      return sourceOrdinal > 0 ? [{ sourceOrdinal, startOffset: support?.segment?.startIndex ?? 0, endOffset: support?.segment?.endIndex ?? support?.segment?.startIndex ?? 0 }] : [];
+    }));
+    const content = geminiFinalText(payload);
+    const confirmedFinal = candidate?.finishReason === "STOP" && Boolean(content) && sources.length > 0;
+    const responseMetadata = {
+      status: (sources.length ? "grounded" : "no_verifiable_sources") as ResearchGroundingScopeStatus, queries: stringArray(metadata.webSearchQueries), sources, citations,
       responseSummary: { groundingChunkCount: Array.isArray(metadata.groundingChunks) ? metadata.groundingChunks.length : 0 },
     };
+    return confirmedFinal ? { bodyKind: "confirmed_final", content, ...responseMetadata } : { bodyKind: "evidence", ...responseMetadata };
   }
 
   private async request(model: string, body: Record<string, unknown>, timeoutMs = 75_000): Promise<any> {
@@ -2261,14 +2282,15 @@ export class AnthropicMessagesProvider implements GroundingModelProvider {
         return sourceOrdinal > 0 ? [{ sourceOrdinal, startOffset, endOffset: offset, ...(typeof citation?.id === "string" ? { providerCitationId: citation.id } : {}) }] : [];
       });
     });
-    return {
-      content,
-      status: sources.length ? "grounded" : "no_verifiable_sources",
+    const confirmedFinal = payload?.stop_reason === "end_turn" && textBlocks.length > 0 && Boolean(content) && sources.length > 0;
+    const responseMetadata = {
+      status: (sources.length ? "grounded" : "no_verifiable_sources") as ResearchGroundingScopeStatus,
       queries: [],
       sources,
       citations,
       responseSummary: { contentBlockCount: Array.isArray(payload?.content) ? payload.content.length : 0, continuationCount: messages.length - 1 },
     };
+    return confirmedFinal ? { bodyKind: "confirmed_final", content, ...responseMetadata } : { bodyKind: "evidence", ...responseMetadata };
   }
 
   async complete(request: ModelProviderRequest): Promise<ModelProviderResponse> {
@@ -2377,7 +2399,8 @@ export class AnthropicMessagesProvider implements GroundingModelProvider {
           const stopReason = payload?.delta?.stop_reason;
           if (typeof stopReason === "string" && stopReason) finishReason = stopReason === "max_tokens" ? "length" : stopReason;
         } else if (type === "error") {
-          throw new Error(`${this.options.definition.label} streaming failed (${payload?.error?.message ?? "unknown error"})`);
+          // 错误事件正文不可信，可能含请求回显；上层只接收稳定错误类别。
+          throw new Error(`${this.options.definition.label} streaming failed`);
         }
       }
     } catch (error) {
@@ -2477,6 +2500,22 @@ function geminiText(payload: any): string {
   return (payload?.candidates?.[0]?.content?.parts ?? []).map((part: any) => typeof part?.text === "string" ? part.text : "").join("");
 }
 
+/** 原生联网只读取 Responses wire format 的结构化 output_text。 */
+function openAiStructuredOutputText(payload: any): string {
+  return (payload?.output ?? [])
+    .flatMap((item: any) => item?.content ?? [])
+    .filter((part: any) => part?.type === "output_text" && typeof part.text === "string")
+    .map((part: any) => part.text)
+    .join("");
+}
+
+/** Gemini 原生联网只有非 thought 文本块才是结构化确认的最终回答。 */
+function geminiFinalText(payload: any): string {
+  return (payload?.candidates?.[0]?.content?.parts ?? [])
+    .map((part: any) => typeof part?.text === "string" && part.thought !== true ? part.text : "")
+    .join("");
+}
+
 function geminiUsage(usage: any): ProviderUsage | undefined {
   if (!usage) return undefined;
   return { inputTokens: usage.promptTokenCount, outputTokens: usage.candidatesTokenCount };
@@ -2500,6 +2539,13 @@ function safeHttpUrl(value: unknown): string | undefined {
     const url = new URL(value);
     return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : undefined;
   } catch { return undefined; }
+}
+
+/** 日志只保留净化后的 host，绝不输出带查询参数/凭证的原始 URL。 */
+function safeLogHost(value: string): string {
+  const normalized = safeHttpUrl(value);
+  if (!normalized) return "invalid";
+  try { return new URL(normalized).hostname; } catch { return "invalid"; }
 }
 
 const MAX_ANTHROPIC_SERVER_TOOL_CONTINUATIONS = 5;
@@ -2536,10 +2582,12 @@ function safeProviderErrorSummary(error: unknown): string {
 }
 
 function redactError(error: unknown): string {
-  return (error instanceof Error ? error.message : "Model provider failed")
-    .replace(/(authorization|api[-_]?key|token|secret|cookie|signature|credential)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]")
-    .replace(/\b(?:sk|AIza)[-_A-Za-z0-9]{12,}\b/g, "[REDACTED]")
-    .slice(0, 500);
+  // 任意错误正文都可能由远端供应商控制并回显用户输入。运行记录只保存稳定类别，
+  // 不尝试用关键词替换把不可信正文变成“可记录”文本。
+  if (error instanceof ModelProviderHttpError) return `模型供应商请求失败（HTTP ${error.status}）`;
+  if (error instanceof ModelProviderTimeoutError) return "模型供应商请求超时";
+  if (error instanceof ModelProviderAbortedError) return "模型供应商请求已中止";
+  return safeProviderErrorSummary(error);
 }
 
 function normalizeBaseUrl(value: string): string { return value.replace(/\/+$/, ""); }

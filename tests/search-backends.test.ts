@@ -16,6 +16,7 @@ import {
   getSearchConfig,
   updateSearchConfig,
   listAvailableBackends,
+  webSearch,
 } from "../apps/api/dist/web-search-agent.js";
 
 // ── 后端接口约定 ──
@@ -185,4 +186,26 @@ test("listAvailableBackends always includes bing and duckduckgo", () => {
   const list = listAvailableBackends();
   assert.ok(list.includes("bing"));
   assert.ok(list.includes("duckduckgo"));
+});
+
+test("production webSearch and backend logs never include the private query or API key", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalLog = console.log;
+  const lines: string[] = [];
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    results: [{ title: "Result", url: "https://example.com/result", content: "Evidence" }],
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+  console.log = (...args: unknown[]) => { lines.push(args.join(" ")); };
+  try {
+    initSearchBackends({ backend: "tavily", tavilyApiKey: "api-key-secret-value", fallback: false });
+    const result = await webSearch("query-secret-value", 3);
+    assert.equal(result.results.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+    initSearchBackends();
+  }
+  const output = lines.join("\n");
+  assert.doesNotMatch(output, /query-secret-value|api-key-secret-value/);
+  assert.match(output, /queryChars=18/);
 });

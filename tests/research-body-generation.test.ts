@@ -179,7 +179,7 @@ test("原生联网请求由网关注入统一弱标记契约和深度规则", as
     async complete() { throw new Error("complete should not be called"); },
     async generateGroundedResearch(request) {
       prompt = request.prompt;
-      return { content: "联网回答", status: "grounded", queries: [], sources: [], citations: [] };
+      return { bodyKind: "confirmed_final", content: "联网回答", status: "grounded", queries: [], sources: [], citations: [] };
     },
   };
   const gateway = new ModelGateway(provider);
@@ -376,6 +376,25 @@ test("writeResearchBodyStream 流式产出空正文时抛错并记失败", async
   await assert.rejects(async () => {
     for await (const _ of gateway.writeResearchBodyStream([{ role: "user", content: "问题" }])) { /* drain */ }
   }, /empty body/);
+});
+
+test("writeResearchBodyStream 失败记账只保存稳定类别，不保存供应商错误正文", async () => {
+  const provider: ModelProvider = {
+    name: "unsafe-error-fake",
+    async complete() { throw new Error("complete should not be called"); },
+    async *completeStream() { throw new Error("token=secret 私人正文"); },
+  };
+  const calls: ModelCallEvent[] = [];
+  const gateway = new ModelGateway(provider, { onCall: (event) => { calls.push(event); } });
+
+  await assert.rejects(async () => {
+    for await (const _ of gateway.writeResearchBodyStream([{ role: "user", content: "问题" }])) { /* drain */ }
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.status, "failed");
+  assert.equal(calls[0]?.errorMessage, "模型供应商请求失败");
+  assert.doesNotMatch(calls[0]?.errorMessage ?? "", /secret|私人正文|token=/);
 });
 
 test("trimStream 保证 concat(输出) === concat(输入).trim()", async () => {

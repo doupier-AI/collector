@@ -42,6 +42,23 @@ function html(body: string) {
   return `<html><body>${body}</body></html>`;
 }
 
+test("production webFetch logs hostname only, never URL credentials, path, query, or error text", async (t) => {
+  const { server, port } = await createLocalServer((_req, res) => { res.writeHead(403); res.end(); });
+  t.after(() => closeServer(server));
+  const url = `http://user-secret:pass-secret@localhost:${port}/private-path?token=url-secret`;
+  const lines: string[] = [];
+  const original = console.log;
+  console.log = (...args: unknown[]) => { lines.push(args.join(" ")); };
+  try {
+    await webFetch(url, { ...fetchOptionsFor(port), retrySleep: async () => {} });
+  } finally {
+    console.log = original;
+  }
+  const output = lines.join("\n");
+  assert.doesNotMatch(output, /user-secret|pass-secret|private-path|url-secret|token=/);
+  assert.match(output, /host=localhost/);
+});
+
 // ── 失败分类（parsers 层）─────────────────────────────────────────────
 
 test("failure classification: transient vs permanent (message text unchanged)", async (t) => {

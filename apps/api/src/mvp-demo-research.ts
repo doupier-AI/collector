@@ -19,9 +19,10 @@ export function createMvpDemoResearchProvider(): ResearchGenerationProvider {
       const answer = demoAnswer(request);
       for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);
     },
-    async generateAgentGrounded(request: ResearchGenerationRequest & { scenario: ResearchGroundingScenario }) {
+    async prepareGrounded(request: ResearchGenerationRequest & { scenario: ResearchGroundingScenario }) {
       const content = `${DEMO_NOTICE}\n\n量子计算是一种利用量子力学原理进行信息处理的计算范式。与传统计算不同，量子比特可以同时处于 0 和 1 的叠加态，从而在特定问题上实现指数级加速。\n\n目前最著名的量子算法是 Shor 算法和 Grover 算法，它们分别在整数分解和无序搜索上展示了量子优势。\n\n在硬件实现方面，超导量子比特和离子阱是目前最成熟的两条技术路线。`;
       return {
+        kind: "confirmed_final" as const,
         content,
         status: "grounded" as ResearchGroundingScopeStatus,
         queries: ["量子计算基本原理"],
