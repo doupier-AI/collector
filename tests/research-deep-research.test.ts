@@ -230,14 +230,38 @@ test("branch deep research creates branch before generation, completes, and keep
   assert.match(sseText, /event: completed/);
 });
 
+test("深入研究正文遇到显式 think 协议时只保留干净前缀并如实失败", async (t) => {
+  const provider: ResearchGenerationProvider = {
+    provider: "deep-protocol-stub", model: "deep-model",
+    async *generate() { yield "深入研究干净前缀。<think>匿名深研草稿</think>"; },
+  };
+  const harness = await createHarness({ researchProvider: provider });
+  t.after(() => harness.close());
+  const { session, assistantMessage } = await createSessionWithAnswer(harness);
+  const anchor = anchorForSelection(assistantMessage.id, 1, "选区如何连接阅读与研究");
+  const created = await createSelectionOn(harness, session.id, anchor);
+
+  const response = await postJson(harness.base, harness.token, `/v1/research-selections/${created.selection.id}/deep-research`, { mode: "branch" }, randomUUID());
+  assert.equal(response.status, 202);
+  const accepted = await response.json() as { outputMessage: { id: string }; task: { id: string } };
+  await waitForResearchTask(harness.base, harness.token, accepted.task.id, "failed");
+
+  const message = harness.store.getResearchMessage(accepted.outputMessage.id);
+  assert.equal(message?.content, "深入研究干净前缀。");
+  assert.doesNotMatch(message?.content ?? "", /think|匿名深研草稿/);
+  assert.equal(harness.store.listSlicesByMessage(accepted.outputMessage.id).length, 0);
+  assert.equal(harness.store.getBodyVersionForMessage(accepted.outputMessage.id), undefined);
+});
+
 test("branch view keeps all grounded sources in store but only returns cited sources", async (t) => {
   const provider: ResearchGenerationProvider = {
     provider: "grounding-stub",
     model: "grounding-model",
     async *generate() { yield "ordinary fallback"; },
-    async generateAgentGrounded() {
+    async prepareGrounded() {
       const content = "深入研究结论。[来源3]";
       return {
+        kind: "confirmed_final" as const,
         content,
         status: "grounded",
         queries: ["branch grounding"],

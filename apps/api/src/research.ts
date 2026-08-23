@@ -37,6 +37,7 @@ import {
   type ResearchSliceContext,
   type TermIdentityVerificationRequest,
 } from "@collector/capture-contracts";
+import { FinalBodyProtocolError, FinalBodySink } from "./final-body-sink.js";
 import type { ResearchStore } from "./store.js";
 import { ParentChainContextService, type ParentChainContextResult } from "./parent-chain-context.js";
 import { DEFAULT_RESEARCH_SESSION_TITLE } from "./session-titling.js";
@@ -137,8 +138,10 @@ export interface ResearchGenerationProvider {
   readonly groundingCapability?: import("@collector/capture-contracts").ProviderWebGrounding;
   /** H3c 术语预览仍复用文本流，不参与节点回答的正式切片生成。 */
   generate(request: ResearchGenerationRequest): AsyncIterable<string>;
-  /** Agent 式搜索：Collector 自行完成搜索，不依赖供应商原生联网。 */
-  generateAgentGrounded?(request: ResearchGenerationRequest & { scenario: ResearchGroundingScenario }): Promise<{ content: string; slices?: ResearchSliceRecord[]; status: ResearchGroundingScopeStatus; queries: string[]; sources: Array<{ providerSourceId?: string; title: string; url?: string; snippet?: string; publishedAt?: string; locator?: string; evidenceStatus?: GroundingEvidenceStatus }>; citations: Array<{ sourceOrdinal: number; startOffset: number; endOffset: number; providerCitationId?: string }>; responseSummary?: Record<string, unknown>; errorMessage?: string; trace?: ResearchGroundingTraceEntry[] }>;
+  /** 联网准备阶段只交付已确认定稿，或可追溯证据；不得把工作区文本伪装成正文。 */
+  prepareGrounded?(request: ResearchGenerationRequest & { scenario: ResearchGroundingScenario }): Promise<ResearchGroundedPreparation>;
+  /** 仅证据准备结果必须经独立最终写作流转成用户正文。 */
+  writeGroundedFinalStream?(request: ResearchGenerationRequest, evidence: string, options: { resumeFrom?: string; signal?: AbortSignal; onStreamDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void }): AsyncIterable<string>;
   /** 生成自由化：自由写连续正文，不返回 JSON 切片结构。 */
   writeBody?(request: ResearchGenerationRequest): Promise<string>;
   /** #31：融合节点正文生成；任务带 fusionPlan 时优先走本方法。来源材料含可回读的片段摘录。 */
@@ -154,6 +157,20 @@ export interface ResearchGenerationProvider {
   /** 同一节点不同消息中的同名提及，只有经最小局部语境核验后才可共享预览。 */
   verifyTermIdentity?(input: TermIdentityVerificationRequest): Promise<boolean>;
 }
+
+type ResearchGroundingMetadata = {
+  status: ResearchGroundingScopeStatus;
+  queries: string[];
+  sources: Array<{ providerSourceId?: string; title: string; url?: string; snippet?: string; publishedAt?: string; locator?: string; evidenceStatus?: GroundingEvidenceStatus }>;
+  citations: Array<{ sourceOrdinal: number; startOffset: number; endOffset: number; providerCitationId?: string }>;
+  responseSummary?: Record<string, unknown>;
+  errorMessage?: string;
+  trace?: ResearchGroundingTraceEntry[];
+};
+
+export type ResearchGroundedPreparation =
+  | (ResearchGroundingMetadata & { kind: "confirmed_final"; content: string })
+  | (ResearchGroundingMetadata & { kind: "evidence"; evidence: string });
 
 export interface ResearchServiceOptions {
   provider?: ResearchGenerationProvider;
@@ -183,6 +200,8 @@ export class ResearchSessionService {
   private readonly taskEvents = new EventEmitter();
   /** 每个运行中任务唯一的流内提及解析器；任务结束即释放。 */
   private readonly mentionStreams = new Map<string, MentionMarkupStream>();
+  /** 所有可展示正文在进入弱标记清洗和持久化前必须经过同一个准入边界。 */
+  private readonly finalBodySinks = new Map<string, FinalBodySink>();
   /** ADR-0035 暂停/停止：每个运行中任务的中止控制器；pause/stop 触发 abort 中止物理 provider 流。 */
   private readonly abortControllers = new Map<string, AbortController>();
 
@@ -456,8 +475,13 @@ export class ResearchSessionService {
     // 保留式重试（#38）：plan-then-write 有已完成节、或单轮流式有非空断点时，保留部分正文与事件流，
     // 让任务从断点续传而非清空重来。
     const hasCompletedSection = (current.bodyPlan?.sections ?? []).some((section) => section.status === "completed");
-    const hasStreamCheckpoint = Boolean(current.streamCheckpoint?.content?.trim());
-    const preserveContent = hasCompletedSection || hasStreamCheckpoint;
+    const hasStreamCheckpoint = Boolean(current.streamCheckpoint?.content?.trim() || current.streamCheckpoint?.protocolPrefix);
+    // 联网证据路径每次执行都会重新取证；失败重试若保留旧正文/断点，就会把来源 A 的
+    // 半篇正文续到来源 B，并最终只保存 B 的来源。该路径必须把 retry 当成一次全新尝试。
+    const restartGroundedEvidence = current.allowWebSearch === true
+      && Boolean(this.provider?.prepareGrounded)
+      && (hasStreamCheckpoint || Boolean(this.store.getResearchMessage(current.outputMessageId)?.content.trim()));
+    const preserveContent = !restartGroundedEvidence && (hasCompletedSection || hasStreamCheckpoint);
     const task = await this.store.retryResearchTask(current, this.provider?.provider, this.provider?.model, this.promptVersionForAttempt(current), { preserveContent });
     if (this.options.autoRunTasks !== false) this.scheduleTask(task.id);
     return task;
@@ -472,7 +496,14 @@ export class ResearchSessionService {
 
   /** ADR-0035 继续：paused → queued 重新入队，从断点续写（正文/思考/断点全部保留）。 */
   async resumeTask(id: string): Promise<ResearchTaskRecord> {
-    const task = await this.store.resumeResearchTask(id);
+    const current = this.getTask(id);
+    // 仅证据路径的流式断点不能跨暂停复用：恢复时 prepareGrounded 会重新取证，
+    // 所以必须以空正文/事件开始同一任务的新尝试，避免 A 的正文对应 B 的来源。
+    const restartGroundedEvidence = current.allowWebSearch === true
+      && Boolean(this.provider?.prepareGrounded);
+    const task = restartGroundedEvidence
+      ? await this.store.restartPausedResearchTask(id)
+      : await this.store.resumeResearchTask(id);
     if (this.options.autoRunTasks !== false) this.scheduleTask(task.id);
     return task;
   }
@@ -568,6 +599,7 @@ export class ResearchSessionService {
         seedContent: outputMessage.content,
         seedMarkers: outputMessage.termMarkers,
       }));
+      this.finalBodySinks.set(task.id, new FinalBodySink(task.streamCheckpoint?.protocolPrefix));
       let generatedCharacters = 0;
       try {
         const scenario: ResearchGroundingScenario = generation.deepResearch
@@ -577,19 +609,28 @@ export class ResearchSessionService {
         let citations: ResearchCitationRecord[] = [];
         let titleHints: ReadonlyMap<number, string> = new Map();
         let markupFinished = false;
-        if (generationRequest.allowWebSearch && provider.generateAgentGrounded) {
-          // 联网研究：agent 自由检索后产出自由正文 + 引用，不再要求模型返回切片 JSON。
+        if (generationRequest.allowWebSearch && provider.prepareGrounded) {
+          // 联网先准备可追溯证据；只有显式确认的最终通道才可直入正文，
+          // 否则必须由独立最终写作阶段产出用户可见内容。
           try {
-            const grounded = await provider.generateAgentGrounded({ ...generationRequest, scenario });
-            if (!grounded.content.trim()) throw new Error("Agent search provider returned an empty response");
-            await this.appendGeneratedDelta(task, grounded.content);
+            const grounded = await provider.prepareGrounded({ ...generationRequest, scenario });
+            if (grounded.kind === "confirmed_final") {
+              if (!grounded.content.trim()) throw new Error("Confirmed final provider response was empty");
+              await this.appendGeneratedDelta(task, grounded.content);
+            } else {
+              if (!grounded.evidence.trim()) throw new Error("Grounding preparation returned no traceable evidence");
+              if (!provider.writeGroundedFinalStream) throw new Error("Grounding preparation requires a final writing stream");
+              await this.writeGroundedFinalBody(task, provider, generationRequest, grounded.evidence);
+            }
             const cleaned = await this.finishGeneratedMarkup(task);
             markupFinished = true;
             content = cleaned.content;
             const correctedGrounding = {
               ...grounded,
               content,
-              citations: this.groundedCitationsAfterCleaning(task, grounded, content),
+              // evidence 是新一轮最终写作的输入，原生草稿的字符偏移绝不能借用到新正文；
+              // 此路径只从最终干净正文里的 [来源n] 重新解析引用。
+              citations: this.groundedCitationsAfterCleaning(task, grounded, content, grounded.kind === "confirmed_final"),
             };
             const result = this.groundingResultFor(task, correctedGrounding, scenario);
             await this.store.saveResearchGroundingResult(result);
@@ -647,9 +688,16 @@ export class ResearchSessionService {
       } catch (error) {
         // ADR-0035：暂停/停止中止的生成循环静默收尾——任务状态已由 pause/stop 落库，不判失败、不发失败事件。
         if (error instanceof TaskPausedByUserError) return;
+        if (error instanceof FinalBodyProtocolError) {
+          // 长文逐节、融合与单轮共享此终态收口：协议污染绝不能留下 completed section 供 retry 保留。
+          await this.store.clearResearchTaskStreamCheckpoint(task.id);
+          await this.store.saveResearchTaskBodyPlan(task.id, { sections: [] });
+        }
         console.warn(`[research] 生成失败 task=${task.id} detail=${error instanceof Error ? `${error.name}: ${error.message}` : String(error)}`);
-        // 失败时也冲洗尚未闭合的控制串：保留其中可读正文，绝不把 [[... 暴露给用户。
-        try { await this.finishGeneratedMarkup(task); } catch { /* 主错误仍由任务失败状态承载。 */ }
+        // 失败时只冲洗弱标记控制串；FinalBodySink 中未确认的协议前缀必须留在安全断点，
+        // 不能被 finish() 当普通正文释放到 SSE/持久化消息。
+        this.finalBodySinks.get(task.id)?.abort();
+        try { await this.finishGeneratedMarkup(task, true); } catch { /* 主错误仍由任务失败状态承载。 */ }
         await this.store.failResearchTask(this.getTask(task.id), {
           code: "provider_error",
           message: "AI 生成的回答无效。输入已保存，可以稍后重试。",
@@ -658,6 +706,7 @@ export class ResearchSessionService {
     } finally {
       this.abortControllers.delete(id);
       this.mentionStreams.delete(id);
+      this.finalBodySinks.delete(id);
       this.running.delete(id);
     }
   }
@@ -699,22 +748,47 @@ export class ResearchSessionService {
 
   /** 把模型原始增量转换为可立即展示的干净正文，并与独立提及范围原子落入同一消息记录。
    *  reasoningDelta 与正文增量同事务落库（ADR-0035）：思考累计在消息 reasoning 字段，不经过弱标记清洗。 */
-  private async appendGeneratedDelta(task: ResearchTaskRecord, rawDelta: string, reasoningDelta?: string): Promise<ReturnType<MentionMarkupStream["push"]>> {
+  private async appendGeneratedDelta(task: ResearchTaskRecord, rawDelta: string, reasoningDelta?: string): Promise<ReturnType<MentionMarkupStream["push"]> & { acceptedRawDelta: string }> {
     const stream = this.mentionStreams.get(task.id);
     if (!stream) throw new Error("Mention markup stream is not initialized");
-    const update = stream.push(rawDelta);
+    const sink = this.finalBodySinks.get(task.id);
+    if (!sink) throw new Error("Final body sink is not initialized");
+    let acceptedDelta: string;
+    try {
+      acceptedDelta = sink.accept(rawDelta);
+    } catch (error) {
+      if (error instanceof FinalBodyProtocolError && error.acceptedDelta) {
+        const accepted = stream.push(error.acceptedDelta);
+        if (accepted.delta || accepted.markers.length > 0) await this.store.appendResearchTaskDelta(task.id, accepted.delta, accepted.markers);
+      }
+      throw error;
+    }
+    const update = stream.push(acceptedDelta);
     if (update.delta || update.markers.length > 0 || reasoningDelta) {
       await this.store.appendResearchTaskDelta(task.id, update.delta, update.markers, reasoningDelta);
     }
-    return update;
+    const checkpointBefore = this.store.getResearchTask(task.id)?.streamCheckpoint;
+    const protocolPrefix = sink.protocolPrefix();
+    if (protocolPrefix || checkpointBefore?.protocolPrefix) {
+      await this.store.saveResearchTaskStreamCheckpoint(task.id, update.content, protocolPrefix);
+    }
+    return { ...update, acceptedRawDelta: acceptedDelta };
   }
 
   /** 完成时冲洗未闭合/非法控制串：丢标记但保正文，控制符永不进入消息。 */
-  private async finishGeneratedMarkup(task: ResearchTaskRecord): Promise<ReturnType<MentionMarkupStream["finish"]>> {
+  private async finishGeneratedMarkup(task: ResearchTaskRecord, preserveStreamCheckpoint = false): Promise<ReturnType<MentionMarkupStream["finish"]>> {
     const stream = this.mentionStreams.get(task.id);
     if (!stream) throw new Error("Mention markup stream is not initialized");
+    const sink = this.finalBodySinks.get(task.id);
+    if (!sink) throw new Error("Final body sink is not initialized");
+    const trailing = sink.finish();
+    if (trailing) {
+      const accepted = stream.push(trailing);
+      if (accepted.delta || accepted.markers.length > 0) await this.store.appendResearchTaskDelta(task.id, accepted.delta, accepted.markers);
+    }
     const update = stream.finish();
     if (update.delta) await this.store.appendResearchTaskDelta(task.id, update.delta, update.markers);
+    if (!preserveStreamCheckpoint && this.store.getResearchTask(task.id)?.streamCheckpoint) await this.store.clearResearchTaskStreamCheckpoint(task.id);
     return update;
   }
 
@@ -893,6 +967,18 @@ export class ResearchSessionService {
     return false;
   }
 
+  /** 仅取证的联网路径在此进入独立最终写作；正文仍复用同一准入、事件和断点边界。 */
+  private async writeGroundedFinalBody(
+    task: ResearchTaskRecord,
+    provider: ResearchGenerationProvider,
+    request: ResearchGenerationRequest,
+    evidence: string,
+  ): Promise<string> {
+    if (!provider.writeGroundedFinalStream) throw new Error("Grounding preparation requires a final writing stream");
+    // 最终写作不是另一套简化流：复用普通单轮的断流续传、暂停与幂等拼接状态机。
+    return this.writeSingleTurnBodyStream(task, provider, request, evidence);
+  }
+
   /**
    * 单轮流式正文的断流续传（#38）。seed 自 task.streamCheckpoint（preserveContent 重试时，
    * message.content 也已是该前缀）；外层续写循环、内层 withProviderRetry 包整段流消费。
@@ -907,6 +993,7 @@ export class ResearchSessionService {
     task: ResearchTaskRecord,
     provider: ResearchGenerationProvider,
     generationRequest: ResearchGenerationRequest,
+    groundedEvidence?: string,
   ): Promise<string> {
     let visibleStreamed = this.store.getResearchMessage(task.outputMessageId)?.content
       ?? this.store.getResearchTask(task.id)?.streamCheckpoint?.content
@@ -915,6 +1002,7 @@ export class ResearchSessionService {
     let rawStreamed = visibleStreamed;
     const seedLength = visibleStreamed.length;
     let continuations = 0;
+    let physicalCalls = 0;
     let lastCheckpointAt = 0;
     let checkpointedLength = seedLength;
     // 思考增量缓冲与保序落库链：回调只推缓冲，flush 排队执行；正文 append 前先等链清空。
@@ -935,19 +1023,26 @@ export class ResearchSessionService {
       try {
         // 内层：整段流消费包一次分类退避重试；每次重入都是独立物理调用（emitCall 恰好一次）。
         await this.withProviderRetry(async () => {
-          for await (const delta of provider.writeBodyStream!({
+          // 网络重试是新的物理流。上一个流末尾未准入的 `<thi` 不能与新流的开头组合，
+          // 否则会被误当成普通正文写出。
+          if (physicalCalls++ > 0) this.finalBodySinks.get(task.id)?.discardPending();
+          const streamOptions = {
             ...generationRequest,
             ...(resumeFrom ? { resumeFrom } : {}),
             ...(this.abortControllers.get(task.id)?.signal ? { signal: this.abortControllers.get(task.id)!.signal } : {}),
-            onStreamDone: (done) => { doneFinish = done.finishReason; },
-            onReasoning: (text) => {
+            onStreamDone: (done: { finishReason?: string }) => { doneFinish = done.finishReason; },
+            onReasoning: (text: string) => {
               reasoningBuffer += text;
               if (Date.now() - lastReasoningFlushAt >= REASONING_FLUSH_MIN_INTERVAL_MS || reasoningBuffer.length >= REASONING_FLUSH_MIN_CHARS) {
                 lastReasoningFlushAt = Date.now();
                 queueReasoningFlush();
               }
             },
-          })) {
+          };
+          const stream = groundedEvidence === undefined
+            ? provider.writeBodyStream!(streamOptions)
+            : provider.writeGroundedFinalStream!(generationRequest, groundedEvidence, streamOptions);
+          for await (const delta of stream) {
             if (!delta) continue;
             // ADR-0035：任务离开 running（暂停/停止/恢复重入队等）即退出本生成循环，
             // 防止旧循环在任务状态已被新操作改写后继续 append（与 store 的 running 校验同源）。
@@ -956,17 +1051,19 @@ export class ResearchSessionService {
             const next = joinContinuation(rawStreamed, delta);
             const suffix = next.slice(rawStreamed.length);
             if (suffix) {
-              rawStreamed = next;
               // 先落已缓冲的思考（保序），再落正文增量。
               queueReasoningFlush();
               await reasoningChain;
               const update = await this.appendGeneratedDelta(task, suffix);
+              // 续写/去重只以已通过 FinalBodySink 的原始正文为种子。像 "<thi" 这样的
+              // 协议前缀会留在 sink.pending，物理重试不能把它误当成可展示前缀再拼回来。
+              rawStreamed += update.acceptedRawDelta;
               visibleStreamed = update.content;
               if (visibleStreamed.length > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
               // 节流落断点：时间间隔或字符增量达标才写，避免逐 token 写放大。
               const nowMs = Date.now();
               if (nowMs - lastCheckpointAt >= STREAM_CHECKPOINT_MIN_INTERVAL_MS || visibleStreamed.length - checkpointedLength >= STREAM_CHECKPOINT_MIN_CHARS) {
-                await this.store.saveResearchTaskStreamCheckpoint(task.id, visibleStreamed);
+                await this.store.saveResearchTaskStreamCheckpoint(task.id, visibleStreamed, this.finalBodySinks.get(task.id)?.protocolPrefix());
                 lastCheckpointAt = nowMs;
                 checkpointedLength = visibleStreamed.length;
               }
@@ -974,6 +1071,14 @@ export class ResearchSessionService {
           }
         });
       } catch (error) {
+        // 显式协议污染的干净前缀可展示为 failed partial，但绝不能成为“可续写”断点；
+        // retryTask 因此默认清正文与事件，从独立最终写作重新开始。
+        if (error instanceof FinalBodyProtocolError) {
+          await this.store.clearResearchTaskStreamCheckpoint(task.id);
+          // 长文/融合等若已有计划，协议污染后不得让已完成节触发 preserveContent 重试。
+          await this.store.saveResearchTaskBodyPlan(task.id, { sections: [] });
+          throw error;
+        }
         // 状态检查触发的退出（含 resume 竞态下任务被改写为 queued）：静默重抛，由 runTask 收尾。
         if (error instanceof TaskPausedByUserError) {
           queueReasoningFlush();
@@ -985,7 +1090,9 @@ export class ResearchSessionService {
         if (error instanceof ModelProviderAbortedError) {
           queueReasoningFlush();
           await reasoningChain;
-          if (visibleStreamed.trim()) await this.store.saveResearchTaskStreamCheckpoint(task.id, visibleStreamed);
+          if (visibleStreamed.trim() || this.finalBodySinks.get(task.id)?.protocolPrefix()) {
+            await this.store.saveResearchTaskStreamCheckpoint(task.id, visibleStreamed, this.finalBodySinks.get(task.id)?.protocolPrefix());
+          }
           throw new TaskPausedByUserError(this.store.getResearchTask(task.id)?.status ?? "aborted");
         }
         // ADR-0035：暂停/停止中止——先落已缓冲思考与断点，再以内部信号退出（runTask 静默收尾）。
@@ -993,13 +1100,17 @@ export class ResearchSessionService {
         if (status === "paused" || status === "stopped") {
           queueReasoningFlush();
           await reasoningChain;
-          if (visibleStreamed.trim()) await this.store.saveResearchTaskStreamCheckpoint(task.id, visibleStreamed);
+          if (visibleStreamed.trim() || this.finalBodySinks.get(task.id)?.protocolPrefix()) {
+            await this.store.saveResearchTaskStreamCheckpoint(task.id, visibleStreamed, this.finalBodySinks.get(task.id)?.protocolPrefix());
+          }
           throw new TaskPausedByUserError(status);
         }
         // 流被切断/重试耗尽：落断点保留已写部分后抛错（failResearchTask → 可重试从断点续传）。
         queueReasoningFlush();
         await reasoningChain;
-        if (visibleStreamed.trim()) await this.store.saveResearchTaskStreamCheckpoint(task.id, visibleStreamed);
+        if (visibleStreamed.trim() || this.finalBodySinks.get(task.id)?.protocolPrefix()) {
+          await this.store.saveResearchTaskStreamCheckpoint(task.id, visibleStreamed, this.finalBodySinks.get(task.id)?.protocolPrefix());
+        }
         console.warn(`[research] 单轮流式中断，已落断点 task=${task.id} chars=${visibleStreamed.length} detail=${error instanceof Error ? error.message : String(error)}`);
         throw error;
       }
@@ -1012,6 +1123,12 @@ export class ResearchSessionService {
       if (!truncated && !noDecisiveSignal) break;
       continuations += 1;
       if (continuations > BODY_SECTION_MAX_CONTINUATIONS) {
+        if (groundedEvidence !== undefined) {
+          // 最终写作连续被截断时不能把不完整答案伪装成 completed；保留可见前缀为 failed partial，
+          // 同时清断点，使下一次尝试重新取证并重新定稿。
+          await this.store.clearResearchTaskStreamCheckpoint(task.id);
+          throw new Error("Grounded final writing continuation limit exceeded");
+        }
         console.warn(`[research] 单轮流式续写达上限，按现有正文完成 task=${task.id} chars=${visibleStreamed.length}`);
         break;
       }
@@ -1042,7 +1159,7 @@ export class ResearchSessionService {
     if (!provider.generateOutline || !provider.expandSection) return undefined;
 
     let plan = this.store.getResearchTask(task.id)?.bodyPlan ?? task.bodyPlan;
-    if (!plan) {
+    if (!plan || plan.sections.length === 0) {
       // 大纲失败降级：回退单轮 writeBody（由调用方在拿到 undefined 后走 writeBody），不阻断生成。
       try {
         const outline = await provider.generateOutline(request);
@@ -1119,6 +1236,8 @@ export class ResearchSessionService {
    * 只做错误类型分类，绝不做任何内容质量评估。
    */
   private classifyProviderError(error: unknown): "retryable" | "fatal" {
+    // 明确协议污染不是供应商暂时故障；保留已确认前缀后立即失败，绝不重试或续写。
+    if (error instanceof FinalBodyProtocolError) return "fatal";
     if (error instanceof ModelProviderTimeoutError) return "retryable";
     // ADR-0035：用户暂停/停止与外部中止不得触发退避重试——重试会重新发起物理调用。
     if (error instanceof TaskPausedByUserError) return "fatal";
@@ -1309,7 +1428,7 @@ export class ResearchSessionService {
 
   private groundingResultFor(
     task: ResearchTaskRecord,
-    grounded: NonNullable<ResearchGenerationProvider["generateAgentGrounded"]> extends (request: any) => Promise<infer Result> ? Result : never,
+    grounded: ResearchGroundingMetadata & { content: string },
     scenario: ResearchGroundingScenario,
   ): ResearchGroundingResult {
     const createdAt = new Date().toISOString();
@@ -1377,8 +1496,9 @@ export class ResearchSessionService {
    */
   private groundedCitationsAfterCleaning(
     task: ResearchTaskRecord,
-    grounded: NonNullable<ResearchGenerationProvider["generateAgentGrounded"]> extends (request: any) => Promise<infer Result> ? Result : never,
+    grounded: ResearchGroundingMetadata,
     cleanContent: string,
+    includeProviderRanges = true,
   ): Array<{ sourceOrdinal: number; startOffset: number; endOffset: number; providerCitationId?: string }> {
     const stream = this.mentionStreams.get(task.id);
     if (!stream) throw new Error("Mention markup stream is not initialized");
@@ -1386,7 +1506,7 @@ export class ResearchSessionService {
       const source = grounded.sources[sourceOrdinal - 1];
       return source !== undefined && source.evidenceStatus !== "none";
     };
-    const providerCitations = grounded.citations.flatMap((citation) => {
+    const providerCitations = (includeProviderRanges ? grounded.citations : []).flatMap((citation) => {
       if (!sourceExistsWithEvidence(citation.sourceOrdinal)) return [];
       const mapped = stream.mapRawRange(citation.startOffset, citation.endOffset);
       return mapped ? [{

@@ -81,12 +81,13 @@ describe("ResearchBodyPlanSection 与 streamCheckpoint 契约", () => {
       status: "failed",
       retryable: true,
       promptVersion: "v1",
-      streamCheckpoint: { content: "已接收的部分正文前缀。", updatedAt: "2026-08-05T00:00:00.000Z" },
+      streamCheckpoint: { content: "已接收的部分正文前缀。", updatedAt: "2026-08-05T00:00:00.000Z", protocolPrefix: "<thi" },
       createdAt: "2026-08-05T00:00:00.000Z",
       updatedAt: "2026-08-05T00:00:00.000Z",
     } as ResearchTaskRecord;
     const roundTripped = JSON.parse(JSON.stringify(task)) as ResearchTaskRecord;
     assert.equal(roundTripped.streamCheckpoint?.content, "已接收的部分正文前缀。");
     assert.equal(roundTripped.streamCheckpoint?.updatedAt, "2026-08-05T00:00:00.000Z");
+    assert.equal(roundTripped.streamCheckpoint?.protocolPrefix, "<thi");
   });
 });

@@ -168,6 +168,7 @@ export interface ResearchStore {
   /** ADR-0035 暂停：running → paused，已写正文与断点保留；可继续（queued 重入）或停止（stopped 终态）。 */
   pauseResearchTask(id: string): Promise<ResearchTaskRecord>;
   resumeResearchTask(id: string): Promise<ResearchTaskRecord>;
+  restartPausedResearchTask(id: string): Promise<ResearchTaskRecord>;
   stopResearchTask(id: string): Promise<ResearchTaskRecord>;
   /** ADR-0035 重新生成：当前正文/思考快照进 versions，清空正文/思考/标记后 queued 重跑（旧版保留可切换）。 */
   regenerateResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string): Promise<ResearchTaskRecord>;
@@ -180,7 +181,7 @@ export interface ResearchStore {
   /** #31：融合正文完成后写入解析出的 [来源n] 引用；record_json 整行覆盖。 */
   saveResearchTaskFusionReferences(taskId: string, fusionReferences: ResearchFusionReference[]): Promise<void>;
   /** 单轮流式：持久化已接收的部分正文断点，供切断续传；record_json 整行覆盖。 */
-  saveResearchTaskStreamCheckpoint(taskId: string, content: string): Promise<void>;
+  saveResearchTaskStreamCheckpoint(taskId: string, content: string, protocolPrefix?: string): Promise<void>;
   /** 单轮流式：任务完成后清除断点。 */
   clearResearchTaskStreamCheckpoint(taskId: string): Promise<void>;
   listResearchTaskEvents(taskId: string, afterId?: number): ResearchTaskEvent[];
@@ -360,13 +361,14 @@ export interface CollectorStore
   retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string, options?: { preserveContent?: boolean }): Promise<ResearchTaskRecord>;
   pauseResearchTask(id: string): Promise<ResearchTaskRecord>;
   resumeResearchTask(id: string): Promise<ResearchTaskRecord>;
+  restartPausedResearchTask(id: string): Promise<ResearchTaskRecord>;
   stopResearchTask(id: string): Promise<ResearchTaskRecord>;
   regenerateResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string): Promise<ResearchTaskRecord>;
   editResearchMessage(inputMessageId: string, content: string, provider?: string, model?: string, promptVersion?: string): Promise<ResearchTaskRecord>;
   /** ADR-0035：按输入消息定位最近一次任务（重新编辑入口用）。 */
   getResearchTaskByInput(inputMessageId: string): ResearchTaskRecord | undefined;
   saveResearchTaskBodyPlan(taskId: string, bodyPlan: ResearchBodyPlan): Promise<void>;
-  saveResearchTaskStreamCheckpoint(taskId: string, content: string): Promise<void>;
+  saveResearchTaskStreamCheckpoint(taskId: string, content: string, protocolPrefix?: string): Promise<void>;
   clearResearchTaskStreamCheckpoint(taskId: string): Promise<void>;
   listResearchTaskEvents(taskId: string, afterId?: number): ResearchTaskEvent[];
   listRecoverableResearchTasks(): ResearchTaskRecord[];
@@ -1118,8 +1120,9 @@ export class SqliteStore implements CollectorStore {
       const currentMessage = this.getResearchMessage(current.outputMessageId);
       if (!currentMessage) throw new Error("Research output message not found");
       const now = new Date().toISOString();
+      const { bodyPlan: _bodyPlan, streamCheckpoint: _streamCheckpoint, sliceCount: _sliceCount, ...freshTask } = current;
       const queued: ResearchTaskRecord = {
-        ...current, status: "queued", retryable: false, provider, model, promptVersion,
+        ...(options?.preserveContent ? current : freshTask), status: "queued", retryable: false, provider, model, promptVersion,
         error: undefined, updatedAt: now, startedAt: undefined, completedAt: undefined,
       };
       // preserveContent：保留已写部分正文与事件流，供断流续传/截断续写从断点继续；默认清空重来。
@@ -1168,6 +1171,26 @@ export class SqliteStore implements CollectorStore {
       if (message) this.updateResearchMessage({ ...message, status: "pending", updatedAt: now });
     });
     if (!queued) throw new Error("Research task resume was not persisted");
+    return queued;
+  }
+
+  /** 联网证据写作暂停后必须重新取证：清掉旧正文、事件、断点和长文计划，避免跨次来源错配。 */
+  async restartPausedResearchTask(id: string): Promise<ResearchTaskRecord> {
+    let queued: ResearchTaskRecord | undefined;
+    this.transaction(() => {
+      const task = this.getResearchTask(id);
+      if (!task || task.status !== "paused") throw new Error("Research task is not paused");
+      const message = this.getResearchMessage(task.outputMessageId);
+      if (!message) throw new Error("Research output message not found");
+      const now = new Date().toISOString();
+      const { bodyPlan: _bodyPlan, streamCheckpoint: _checkpoint, sliceCount: _sliceCount, ...freshTask } = task;
+      queued = { ...freshTask, status: "queued", retryable: false, updatedAt: now, startedAt: undefined, completedAt: undefined };
+      const { termMarkers: _markers, reasoning: _reasoning, ...freshMessage } = message;
+      this.updateResearchTask(queued);
+      this.updateResearchMessage({ ...freshMessage, content: "", status: "pending", updatedAt: now });
+      this.db().prepare("DELETE FROM research_task_events WHERE task_id = ?").run(id);
+    });
+    if (!queued) throw new Error("Research task restart was not persisted");
     return queued;
   }
 
@@ -1263,12 +1286,12 @@ export class SqliteStore implements CollectorStore {
     return queued;
   }
 
-  async saveResearchTaskStreamCheckpoint(taskId: string, content: string): Promise<void> {
+  async saveResearchTaskStreamCheckpoint(taskId: string, content: string, protocolPrefix?: string): Promise<void> {
     this.transaction(() => {
       const task = this.getResearchTask(taskId);
       if (!task) throw new Error("Research task not found");
       const updatedAt = new Date().toISOString();
-      this.updateResearchTask({ ...task, streamCheckpoint: { content, updatedAt }, updatedAt });
+      this.updateResearchTask({ ...task, streamCheckpoint: { content, updatedAt, ...(protocolPrefix ? { protocolPrefix } : {}) }, updatedAt });
     });
   }
 

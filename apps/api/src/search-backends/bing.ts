@@ -58,7 +58,7 @@ async function searchBing(query: string): Promise<{
   errorMessage?: string;
 }> {
   const searchStartedAt = Date.now();
-  console.log(`[web-search] searchBing query="${query}"`);
+  console.log(`[web-search] searchBing queryChars=${query.length}`);
   try {
     const params = new URLSearchParams({ q: query.trim(), count: "10" });
     const controller = new AbortController();
@@ -79,20 +79,20 @@ async function searchBing(query: string): Promise<{
       clearTimeout(timer);
     }
     if (!response.ok) {
-      console.log(`[web-search] searchBing error query="${query.trim()}" httpStatus=${response.status} latency=${Date.now() - searchStartedAt}ms`);
+      console.log(`[web-search] searchBing error queryChars=${query.trim().length} httpStatus=${response.status} latency=${Date.now() - searchStartedAt}ms`);
       return { status: "error", query: query.trim(), results: [], errorMessage: `Bing returned HTTP ${response.status}` };
     }
     const html = await response.text();
     const results = parseBingHtmlBlocks(html);
     if (!results.length) {
-      console.log(`[web-search] searchBing no_results query="${query.trim()}" latency=${Date.now() - searchStartedAt}ms`);
+      console.log(`[web-search] searchBing no_results queryChars=${query.trim().length} latency=${Date.now() - searchStartedAt}ms`);
       return { status: "no_results", query: query.trim(), results: [] };
     }
-    console.log(`[web-search] searchBing completed query="${query.trim()}" resultCount=${results.length} latency=${Date.now() - searchStartedAt}ms`);
+    console.log(`[web-search] searchBing completed queryChars=${query.trim().length} resultCount=${results.length} latency=${Date.now() - searchStartedAt}ms`);
     return { status: "completed", query: query.trim(), results };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown search error";
-    console.log(`[web-search] searchBing error query="${query.trim()}" message="${message}" latency=${Date.now() - searchStartedAt}ms`);
+    console.log(`[web-search] searchBing error queryChars=${query.trim().length} error=${error instanceof Error ? error.name : typeof error} latency=${Date.now() - searchStartedAt}ms`);
     return { status: "error", query: query.trim(), results: [], errorMessage: message };
   }
 }
@@ -108,14 +108,14 @@ export const bingBackend: SearchBackend = {
 
   async search(query: string, maxResults = 5): Promise<WebSearchResultSet> {
     const searchStartedAt = Date.now();
-    console.log(`[web-search] bing search query="${query.trim()}" maxResults=${maxResults}`);
+    console.log(`[web-search] bing search queryChars=${query.trim().length} maxResults=${maxResults}`);
     const outcome = await searchBing(query.trim());
     if (outcome.status === "error" || outcome.status === "no_results") {
-      console.log(`[web-search] bing ${outcome.status} query="${outcome.query}" latency=${Date.now() - searchStartedAt}ms`);
+      console.log(`[web-search] bing ${outcome.status} queryChars=${outcome.query.length} latency=${Date.now() - searchStartedAt}ms`);
       return { query: outcome.query, total_results: 0, results: [], errorMessage: outcome.errorMessage };
     }
     const trimmed = outcome.results.slice(0, maxResults);
-    console.log(`[web-search] bing completed query="${outcome.query}" resultCount=${trimmed.length} latency=${Date.now() - searchStartedAt}ms`);
+    console.log(`[web-search] bing completed queryChars=${outcome.query.length} resultCount=${trimmed.length} latency=${Date.now() - searchStartedAt}ms`);
     return {
       query: outcome.query,
       total_results: outcome.results.length,

@@ -17,7 +17,7 @@ import { CaptureService, LocalAuth, SqliteStore, createApiServer, type Similarit
 import { FakeProvider, ModelGateway } from "@collector/model-gateway";
 import { projectCurrentSearchUnits } from "../apps/api/dist/semantic-search/projector.js";
 
-async function createHarness(options?: { similarityVerifier?: SimilarityVerificationGateway }) {
+async function createHarness(options?: { similarityVerifier?: SimilarityVerificationGateway; fusionBody?: string }) {
   const root = await mkdtemp(join(tmpdir(), "collector-fusion-http-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
@@ -40,7 +40,7 @@ async function createHarness(options?: { similarityVerifier?: SimilarityVerifica
       async *generate() { yield "unused"; },
       async writeBody() { return "unused"; },
       async composeFusion() {
-        return "## 共同核心\n\n来源一。[来源1]\n\n## 差异\n\n来源二。[来源2]\n\n## 综合推导\n\n综合结论。";
+        return options?.fusionBody ?? "## 共同核心\n\n来源一。[来源1]\n\n## 差异\n\n来源二。[来源2]\n\n## 综合推导\n\n综合结论。";
       },
     } as never,
   });
@@ -245,6 +245,27 @@ test("#31 fusion HTTP creates a parentless fusion node with fused-from edges and
     method: "POST", headers: headers(harness.token), body: JSON.stringify({ idempotencyKey: "fusion-http-key-3" }),
   });
   assert.equal(missing.status, 404);
+});
+
+test("融合正文遇到显式 think 协议时只保留干净前缀且不生成正式派生", async (t) => {
+  const harness = await createHarness({ fusionBody: "融合干净前缀。<think>匿名融合草稿</think>" });
+  t.after(harness.close);
+  const scan = await fetch(`${harness.base}/v1/research-nodes/session-1/fusion-proposals/scan`, {
+    method: "POST", headers: headers(harness.token), body: "{}",
+  });
+  const { proposals } = await scan.json() as { proposals: Array<{ id: string }> };
+  const fuse = await fetch(`${harness.base}/v1/research-fusion-proposals/${encodeURIComponent(proposals[0]!.id)}/fuse`, {
+    method: "POST", headers: headers(harness.token), body: JSON.stringify({ idempotencyKey: "fusion-protocol-key" }),
+  });
+  assert.equal(fuse.status, 200);
+  const accepted = await fuse.json() as { task: { id: string; outputMessageId: string } };
+  for (let attempt = 0; attempt < 200 && harness.store.getResearchTask(accepted.task.id)?.status !== "failed"; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(harness.store.getResearchTask(accepted.task.id)?.status, "failed");
+  assert.equal(harness.store.getResearchMessage(accepted.task.outputMessageId)?.content, "融合干净前缀。");
+  assert.equal(harness.store.listSlicesByMessage(accepted.task.outputMessageId).length, 0);
+  assert.equal(harness.store.getBodyVersionForMessage(accepted.task.outputMessageId), undefined);
 });
 
 // ── #32 自动融合 HTTP ─────────────────────────────────────────

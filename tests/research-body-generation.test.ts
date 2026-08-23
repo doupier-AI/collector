@@ -179,7 +179,7 @@ test("原生联网请求由网关注入统一弱标记契约和深度规则", as
     async complete() { throw new Error("complete should not be called"); },
     async generateGroundedResearch(request) {
       prompt = request.prompt;
-      return { content: "联网回答", status: "grounded", queries: [], sources: [], citations: [] };
+      return { bodyKind: "confirmed_final", content: "联网回答", status: "grounded", queries: [], sources: [], citations: [] };
     },
   };
   const gateway = new ModelGateway(provider);

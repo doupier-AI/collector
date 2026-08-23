@@ -24,6 +24,8 @@ import {
   type ProviderProfileTestInput,
   type ProviderCredentialView,
   type ProviderTestResult,
+  RESEARCH_GROUNDING_MAX_SOURCES,
+  RESEARCH_GROUNDING_TEXT_MAX_CHARACTERS,
   type ResearchGroundingScopeStatus,
   type ResearchFusionSource,
   type ResearchNodeRecord,
@@ -34,6 +36,8 @@ import {
   type ResearchBodyVersionView,
   type ResearchMessageRecord,
   measureResearchContentLength,
+  redactGroundingValue,
+  sanitizeGroundingUrl,
   resolveResearchConvergence,
 } from "@collector/capture-contracts";
 import { CollectorStore } from "./store.js";
@@ -101,6 +105,54 @@ import { AssociationHintService, type AssociationHintSearchGateway } from "./ass
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
 class BudgetExceededError extends Error {}
+
+const FINAL_WRITER_EVIDENCE_MAX_CHARACTERS = 24_000;
+
+function safeEvidenceText(value: string | undefined): string {
+  if (!value) return "";
+  return String(redactGroundingValue(value, RESEARCH_GROUNDING_TEXT_MAX_CHARACTERS)).trim();
+}
+
+/** 仅将有界、脱敏的来源证据交给最终写作；来源序号保持落库原序，绝不为过滤项重排。 */
+export function formatFinalWriterEvidence(
+  entries: ReadonlyArray<{ sourceOrdinal: number; source: { title: string; url?: string; evidenceStatus?: "full" | "partial" | "none" }; content?: string }>,
+): string {
+  let total = 0;
+  const formatted: string[] = [];
+  for (const entry of entries) {
+    // 供应商持久化来源序号从 1 开始；只取前 20 个原始来源，不能因过滤而改写引用号。
+    if (entry.sourceOrdinal < 1 || entry.sourceOrdinal > RESEARCH_GROUNDING_MAX_SOURCES) continue;
+    if (entry.source.evidenceStatus === "none") continue;
+    const text = safeEvidenceText(entry.content);
+    if (!text) continue;
+    const title = safeEvidenceText(entry.source.title) || "未命名来源";
+    const url = sanitizeGroundingUrl(entry.source.url);
+    const evidenceStatus = entry.source.evidenceStatus === "partial"
+      ? "\n证据状态：部分证据（仅搜索摘要，未获取全文）"
+      : "";
+    const block = `[来源${entry.sourceOrdinal}] ${title}${evidenceStatus}\n${text}${url ? `\n${url}` : ""}`;
+    const separatorLength = formatted.length ? 2 : 0;
+    if (total + separatorLength + block.length > FINAL_WRITER_EVIDENCE_MAX_CHARACTERS) break;
+    formatted.push(block);
+    total += separatorLength + block.length;
+  }
+  return formatted.join("\n\n");
+}
+
+function formatGroundingEvidence(sources: ReadonlyArray<{ title: string; url?: string; snippet?: string; evidenceStatus?: "full" | "partial" | "none" }>): string {
+  return formatFinalWriterEvidence(sources.map((source, index) => ({ sourceOrdinal: index + 1, source, content: source.snippet })));
+}
+
+function formatAgentEvidence(
+  sources: ReadonlyArray<{ title: string; url?: string; evidenceStatus?: "full" | "partial" | "none" }>,
+  evidence: ReadonlyArray<{ sourceOrdinal: number; content: string }>,
+): string {
+  const sourceByOrdinal = new Map(sources.map((source, index) => [index + 1, source]));
+  return formatFinalWriterEvidence(evidence.map((item) => {
+    const source = sourceByOrdinal.get(item.sourceOrdinal);
+    return source ? { sourceOrdinal: item.sourceOrdinal, source, content: item.content } : undefined;
+  }).filter((entry): entry is { sourceOrdinal: number; source: { title: string; url?: string; evidenceStatus?: "full" | "partial" | "none" }; content: string } => entry !== undefined));
+}
 
 export class CaptureService {
   private currentModelRoute?: ActiveModelRoute;
@@ -429,7 +481,7 @@ export class CaptureService {
       model: gateway.modelName,
       promptVersion: RESEARCH_SLICE_PROMPT_VERSION,
       groundingCapability,
-      async generateAgentGrounded(request) {
+      async prepareGrounded(request) {
         const purposeGateway = await service.gatewayForPurpose("search");
         if (!purposeGateway) throw new Error("AI model is not configured");
         const direction = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
@@ -449,7 +501,7 @@ export class CaptureService {
         }
 
         if (purposeGateway.providerGroundingCapability !== "unsupported") {
-          return purposeGateway.generateGroundedResearch(userMessage, {
+          const grounded = await purposeGateway.generateGroundedResearch(userMessage, {
             taskId: request.taskId,
             scenario: request.scenario,
             requireGrounding: true,
@@ -458,6 +510,10 @@ export class CaptureService {
             nodeDepth,
             context: { workflowRunId: request.taskId, purpose: "research", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
           });
+          if (grounded.bodyKind === "confirmed_final") return { kind: "confirmed_final" as const, ...grounded };
+          const evidence = formatGroundingEvidence(grounded.sources);
+          if (evidence) return { kind: "evidence" as const, evidence, ...grounded };
+          // 原生适配器无法确认最终文本、也没有可回读证据时，改走本地 Agent 取证。
         }
 
         // #49 证据管线上下文：一次研究调用一个实例，任务间隔离（并发任务互不污染）。
@@ -498,11 +554,10 @@ export class CaptureService {
           },
         );
 
-        if (!result.content) throw new Error("Provider returned an empty response");
-
         const scopeStatus: ResearchGroundingScopeStatus = result.sources.length ? "grounded" : "no_verifiable_sources";
         return {
-          content: result.content,
+          kind: "evidence" as const,
+          evidence: formatAgentEvidence(result.sources, result.evidence),
           status: scopeStatus,
           queries: result.queries,
           sources: result.sources.map((source, i) => ({
@@ -524,6 +579,27 @@ export class CaptureService {
           },
           ...(searchCtx.toTrace().length ? { trace: searchCtx.toTrace() } : {}),
         };
+      },
+      async *writeGroundedFinalStream(request, evidence, streamOptions) {
+        const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
+        if (!purposeGateway) throw new Error("AI model is not configured");
+        const direction = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
+        const finalRequest = [
+          "请只输出直接给用户阅读的最终 Markdown 回答。不要描述搜索、工具调用、草稿、推理或内部工作。",
+          "只使用下列带编号的证据；涉及外部事实时使用对应的 [来源n] 标记。",
+          `用户问题：${direction}`,
+          "证据：",
+          evidence,
+        ].join("\n\n");
+        yield* purposeGateway.writeResearchBodyStream([{ role: "user", content: finalRequest }], {
+          ...(streamOptions.resumeFrom ? { resumeFrom: streamOptions.resumeFrom } : {}),
+          ...(streamOptions.signal ? { signal: streamOptions.signal } : {}),
+          ...(streamOptions.onStreamDone ? { onDone: streamOptions.onStreamDone } : {}),
+          ...(streamOptions.onReasoning ? { onReasoning: streamOptions.onReasoning } : {}),
+          parentChainContext: request.parentChainContext,
+          sliceContext: request.sliceContext,
+          context: { workflowRunId: request.taskId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
+        });
       },
       async *generate(request) {
         const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");

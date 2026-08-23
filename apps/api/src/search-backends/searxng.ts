@@ -33,7 +33,7 @@ export function createSearxngBackend(instanceUrl: string): SearchBackend {
 
     async search(query: string, maxResults = 5): Promise<WebSearchResultSet> {
       const searchStartedAt = Date.now();
-      console.log(`[web-search] searxng search query="${query.trim()}" maxResults=${maxResults}`);
+      console.log(`[web-search] searxng search queryChars=${query.trim().length} maxResults=${maxResults}`);
 
       try {
         const params = new URLSearchParams({
@@ -63,7 +63,7 @@ export function createSearxngBackend(instanceUrl: string): SearchBackend {
         }
 
         if (!response.ok) {
-          console.log(`[web-search] searxng error query="${query.trim()}" httpStatus=${response.status} latency=${Date.now() - searchStartedAt}ms`);
+          console.log(`[web-search] searxng error queryChars=${query.trim().length} httpStatus=${response.status} latency=${Date.now() - searchStartedAt}ms`);
           return { query: query.trim(), total_results: 0, results: [], errorMessage: `SearXNG returned HTTP ${response.status}` };
         }
 
@@ -75,12 +75,12 @@ export function createSearxngBackend(instanceUrl: string): SearchBackend {
         }));
 
         if (!results.length) {
-          console.log(`[web-search] searxng no_results query="${query.trim()}" latency=${Date.now() - searchStartedAt}ms`);
+          console.log(`[web-search] searxng no_results queryChars=${query.trim().length} latency=${Date.now() - searchStartedAt}ms`);
           return { query: query.trim(), total_results: 0, results: [] };
         }
 
         const trimmed = results.slice(0, maxResults);
-        console.log(`[web-search] searxng completed query="${query.trim()}" resultCount=${trimmed.length} totalResults=${results.length} latency=${Date.now() - searchStartedAt}ms`);
+        console.log(`[web-search] searxng completed queryChars=${query.trim().length} resultCount=${trimmed.length} totalResults=${results.length} latency=${Date.now() - searchStartedAt}ms`);
         return {
           query: query.trim(),
           total_results: data.number_of_results ?? results.length,
@@ -88,7 +88,7 @@ export function createSearxngBackend(instanceUrl: string): SearchBackend {
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown search error";
-        console.log(`[web-search] searxng error query="${query.trim()}" message="${message}" latency=${Date.now() - searchStartedAt}ms`);
+        console.log(`[web-search] searxng error queryChars=${query.trim().length} error=${error instanceof Error ? error.name : typeof error} latency=${Date.now() - searchStartedAt}ms`);
         return { query: query.trim(), total_results: 0, results: [], errorMessage: message };
       }
     },

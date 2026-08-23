@@ -1244,7 +1244,7 @@ export interface ResearchTaskRecord {
   /** plan-then-write 长文任务的逐节计划与进度；仅存于 record_json，用于断点续扩。 */
   bodyPlan?: ResearchBodyPlan;
   /** 单轮流式断点：周期性落盘的已接收正文前缀；流被切断/重启后从断点续传，不整篇重来。 */
-  streamCheckpoint?: { content: string; updatedAt: string };
+  streamCheckpoint?: { content: string; updatedAt: string; protocolPrefix?: string };
   /** #31：融合节点生成的来源计划与关系类型；任务处理时消费，存于 record_json。 */
   fusionPlan?: { sources: ResearchFusionSource[]; relationType: FusionRelationType };
   /** #31：融合正文完成后解析出的 [来源n] 引用；存于 record_json，节点视图据此组装来源条。 */

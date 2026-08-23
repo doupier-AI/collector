@@ -108,9 +108,71 @@ test("agent loop: single turn — model searches once then answers", async () =>
   assert.equal(result.queries.length, 1);
   assert.equal(result.queries[0], "AI 技术");
   assert.equal(result.sources.length, 1);
-  assert.ok(result.content.includes("[来源1]"));
-  assert.match(provider.systemPrompts[0] ?? "", /\[\[concept:concept-1:短语\]\]/);
-  assert.match(provider.systemPrompts[0] ?? "", /同名异义对象必须使用不同对象身份/);
+  assert.ok(!("content" in result), "取证结果在类型和运行时都不暴露正文槽位");
+  assert.match(provider.systemPrompts[0] ?? "", /只负责调用工具收集可追溯证据/);
+  assert.doesNotMatch(provider.systemPrompts[0] ?? "", /\[\[concept:/, "取证工作区不接收弱标记协议");
+  assert.doesNotMatch(provider.systemPrompts[0] ?? "", /最终回答只输出/, "取证工作区不被要求生成最终正文");
+});
+
+test("agent loop: stop content stays in the anonymous tool workspace", async () => {
+  const provider = new ProgrammableAgentProvider();
+  provider.setAgentChatSequence([
+    {
+      finishReason: "stop",
+      message: {
+        role: "assistant",
+        content: "<think>tool trace</think>{\"name\":\"web_search\"}This must never become a research body.",
+      },
+      model: "test-model",
+    },
+  ]);
+
+  const gateway = createTestGateway(provider);
+  const { tools } = createTestTools();
+
+  const result = await gateway.runAgentSearchLoop("查找资料", tools);
+
+  assert.ok(!("content" in result));
+  assert.equal(result.queries.length, 0);
+  assert.equal(result.sources.length, 0);
+});
+
+test("agent loop logs never include user text, query text, or raw URL credentials", async () => {
+  const provider = new ProgrammableAgentProvider();
+  provider.setAgentChatSequence([
+    { finishReason: "tool_calls", message: { role: "assistant", content: null, toolCalls: [
+      { id: "s", type: "function", function: { name: "web_search", arguments: JSON.stringify({ query: "query-secret-value" }) } },
+      { id: "u", type: "function", function: { name: "unknown-secret-tool", arguments: "{}" } },
+    ] }, model: "test-model" },
+    { finishReason: "tool_calls", message: { role: "assistant", content: null, toolCalls: [{ id: "f", type: "function", function: { name: "web_fetch", arguments: JSON.stringify({ url: "https://user:pass@example.com/a?token=url-secret" }) } }] }, model: "test-model" },
+    { finishReason: "stop", message: { role: "assistant", content: "" }, model: "test-model" },
+  ]);
+  const { tools, mockSearchResults } = createTestTools();
+  mockSearchResults.set("query-secret-value", [{ title: "S", url: "https://user:pass@example.com/a?token=url-secret", snippet: "x" }]);
+  const lines: string[] = [];
+  const original = console.log;
+  console.log = (...args: unknown[]) => { lines.push(args.join(" ")); };
+  try { await createTestGateway(provider).runAgentSearchLoop("user-secret-value", tools); }
+  finally { console.log = original; }
+  const output = lines.join("\n");
+  assert.doesNotMatch(output, /user-secret-value|query-secret-value|url-secret|user:pass|unknown-secret-tool/);
+  assert.match(output, /host=example\.com/);
+});
+
+test("query reformulation logs only lengths, never original or rewritten private text", async () => {
+  const provider = new FakeProvider([JSON.stringify({ keywords: "rewritten-secret-query" })]);
+  const gateway = new ModelGateway(provider, { model: "test-model", thinking: false });
+  const lines: string[] = [];
+  const original = console.log;
+  console.log = (...args: unknown[]) => { lines.push(args.join(" ")); };
+  try {
+    assert.equal(await gateway.reformulateSearchQuery("original-secret-question"), "rewritten-secret-query");
+  } finally {
+    console.log = original;
+  }
+  const output = lines.join("\n");
+  assert.doesNotMatch(output, /original-secret-question|rewritten-secret-query/);
+  assert.match(output, /inputChars=24 outputChars=22/);
 });
 
 // ── 搜索 → 抓取 → 回答（两轮工具调用） ──
@@ -161,6 +223,7 @@ test("agent loop: search then fetch then answer", async () => {
   assert.equal(fetchCalls.length, 1);
   assert.equal(result.queries.length, 1);
   assert.equal(result.sources.length, 1);
+  assert.equal(result.evidence[0]?.content, "Full content of https://example.com/test?q=TypeScript%205.8%20%E6%96%B0%E7%89%B9%E6%80%A7");
 });
 
 // ── 多轮换词重搜 ──
@@ -232,8 +295,7 @@ test("agent loop: re-search with different query when first attempt insufficient
   assert.equal(result.queries.length, 2);
   // Two unique URLs from two searches → 2 sources
   assert.equal(result.sources.length, 2);
-  assert.ok(result.content.includes("[来源1]"));
-  assert.ok(result.content.includes("[来源2]"));
+  assert.ok(!("content" in result));
 });
 
 // ── 搜索上限：第五次后被阻止 ──
@@ -273,7 +335,7 @@ test("agent loop: search cap at 5 — further searches blocked", async () => {
   // Only 5 searches actually executed
   assert.equal(searchCalls.length, 5);
   assert.equal(result.queries.length, 5);
-  assert.ok(result.content.length > 0);
+  assert.ok(!("content" in result));
 });
 
 // ── 空 tool_calls（模型直接回答，无工具调用） ──
@@ -297,7 +359,7 @@ test("agent loop: model answers immediately without calling any tools", async ()
   assert.equal(searchCalls.length, 0);
   assert.equal(result.queries.length, 0);
   assert.equal(result.sources.length, 0);
-  assert.ok(result.content.length > 0);
+  assert.ok(!("content" in result));
 });
 
 // ── 多工具并行（同一轮调用 web_search + web_fetch） ──
@@ -422,7 +484,7 @@ test("agent loop: length finish reason triggers wrap-up push", async () => {
 
   const result = await gateway.runAgentSearchLoop("test", tools);
 
-  assert.ok(result.content.length > 0);
+  assert.ok(!("content" in result));
 });
 
 // ── 搜索上限后与 web_fetch 共存 ──
@@ -484,7 +546,7 @@ test("agent loop: web_fetch still works after search cap reached", async () => {
   assert.equal(searchCalls.length, 5);
   assert.equal(fetchCalls.length, 1);
   assert.equal(result.queries.length, 5);
-  assert.ok(result.content.length > 0);
+  assert.ok(!("content" in result));
 });
 
 // ── #49 部分证据：抓取失败但搜索摘要可作依据 ──

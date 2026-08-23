@@ -71,7 +71,7 @@ export const duckduckgoBackend: SearchBackend = {
 
   async search(query: string, maxResults = 5): Promise<WebSearchResultSet> {
     const searchStartedAt = Date.now();
-    console.log(`[web-search] duckduckgo search query="${query.trim()}" maxResults=${maxResults}`);
+    console.log(`[web-search] duckduckgo search queryChars=${query.trim().length} maxResults=${maxResults}`);
 
     try {
       const params = new URLSearchParams({ q: query.trim() });
@@ -97,7 +97,7 @@ export const duckduckgoBackend: SearchBackend = {
       }
 
       if (!response.ok) {
-        console.log(`[web-search] duckduckgo error query="${query.trim()}" httpStatus=${response.status} latency=${Date.now() - searchStartedAt}ms`);
+        console.log(`[web-search] duckduckgo error queryChars=${query.trim().length} httpStatus=${response.status} latency=${Date.now() - searchStartedAt}ms`);
         return { query: query.trim(), total_results: 0, results: [], errorMessage: `DuckDuckGo returned HTTP ${response.status}` };
       }
 
@@ -105,12 +105,12 @@ export const duckduckgoBackend: SearchBackend = {
       const results = parseDdgHtml(html);
 
       if (!results.length) {
-        console.log(`[web-search] duckduckgo no_results query="${query.trim()}" latency=${Date.now() - searchStartedAt}ms`);
+        console.log(`[web-search] duckduckgo no_results queryChars=${query.trim().length} latency=${Date.now() - searchStartedAt}ms`);
         return { query: query.trim(), total_results: 0, results: [] };
       }
 
       const trimmed = results.slice(0, maxResults);
-      console.log(`[web-search] duckduckgo completed query="${query.trim()}" resultCount=${trimmed.length} totalResults=${results.length} latency=${Date.now() - searchStartedAt}ms`);
+      console.log(`[web-search] duckduckgo completed queryChars=${query.trim().length} resultCount=${trimmed.length} totalResults=${results.length} latency=${Date.now() - searchStartedAt}ms`);
       return {
         query: query.trim(),
         total_results: results.length,
@@ -118,7 +118,7 @@ export const duckduckgoBackend: SearchBackend = {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown search error";
-      console.log(`[web-search] duckduckgo error query="${query.trim()}" message="${message}" latency=${Date.now() - searchStartedAt}ms`);
+      console.log(`[web-search] duckduckgo error queryChars=${query.trim().length} error=${error instanceof Error ? error.name : typeof error} latency=${Date.now() - searchStartedAt}ms`);
       return { query: query.trim(), total_results: 0, results: [], errorMessage: message };
     }
   },

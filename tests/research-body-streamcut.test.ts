@@ -15,7 +15,7 @@ const NOW = "2026-08-05T00:00:00.000Z";
  * sleepAfterReasoningsMs 给「思考阶段暂停」场景留出正文尚未开始的窗口。
  */
 function makeStreamProvider(opts: {
-  script: Array<(resumeFrom: string | undefined) => { deltas: string[]; reasonings?: string[]; sleepAfterReasoningsMs?: number; sleepBetweenDeltasMs?: number; finishReason?: string; cutAfter?: number; cutError?: "timeout" | "fatal500" | "fatal400" }>;
+  script: Array<(resumeFrom: string | undefined) => { deltas: string[]; reasonings?: string[]; sleepAfterReasoningsMs?: number; sleepBetweenDeltasMs?: number; finishReason?: string; cutAfter?: number; cutError?: "timeout" | "fatal500" | "fatal400" | "network" }>;
   calls: Array<{ resumeFrom: string | undefined }>;
 }): Record<string, unknown> {
   return {
@@ -36,6 +36,7 @@ function makeStreamProvider(opts: {
         if (cutAfter !== undefined && emitted >= cutAfter) {
           if (cutError === "fatal400") throw new ModelProviderHttpError("bad request (HTTP 400)", 400);
           if (cutError === "fatal500") throw new ModelProviderHttpError("server error (HTTP 500)", 500);
+          if (cutError === "network") throw new TypeError("network interrupted");
           throw new ModelProviderTimeoutError("stream idle timed out");
         }
         emitted += 1;
@@ -47,7 +48,7 @@ function makeStreamProvider(opts: {
   };
 }
 
-async function makeService(t: test.TestContext, provider: Record<string, unknown>, sleeps?: number[]): Promise<{ store: SqliteStore; service: CaptureService }> {
+async function makeService(t: test.TestContext, provider: Record<string, unknown>, sleeps?: number[], autoRunResearchTasks = true): Promise<{ store: SqliteStore; service: CaptureService }> {
   const root = await mkdtemp(join(tmpdir(), "collector-streamcut-"));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const store = new SqliteStore(join(root, "collector.sqlite"));
@@ -56,6 +57,7 @@ async function makeService(t: test.TestContext, provider: Record<string, unknown
   await store.createResearchNode({ id: "node-1", sessionId: "session-1", status: "active", createdAt: NOW, updatedAt: NOW }, "k-n");
   const service = new CaptureService(store, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
+    autoRunResearchTasks,
     researchProvider: provider as never,
     researchRetrySleep: async (ms) => { sleeps?.push(ms); },
   });
@@ -119,6 +121,81 @@ test("单轮流式 finishReason=length 触发续写（≤3），最终完成不�
   store.close();
 });
 
+test("显式 think 协议跨流片段出现时：污染不展示，干净前缀保留为失败部分回答", async (t) => {
+  const calls: Array<{ resumeFrom: string | undefined }> = [];
+  const provider = makeStreamProvider({
+    calls,
+    script: [
+      () => ({ deltas: ["已确认的正文。", "<thi", "nk>内部推理</think>"], finishReason: "stop" }),
+      () => ({ deltas: ["重试后的干净正文。"], finishReason: "stop" }),
+    ],
+  });
+  const { store, service } = await makeService(t, provider);
+  const accepted = await service.research.submitMessage("session-1", "问题", "k-protocol-boundary");
+  for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)!.status !== "failed"; i++) await new Promise((r) => setImmediate(r));
+
+  const task = store.getResearchTask(accepted.task.id)!;
+  const message = store.getResearchMessage(accepted.outputMessage.id)!;
+  assert.equal(task.status, "failed");
+  assert.equal(message.status, "failed");
+  assert.equal(message.content, "已确认的正文。");
+  assert.doesNotMatch(message.content, /<think>|内部推理/);
+  assert.equal(store.listSlicesByMessage(message.id).length, 0, "失败部分回答不派生切片");
+  assert.equal(store.getBodyVersionForMessage(message.id), undefined, "失败部分回答不生成正文版本");
+  const deltas = store.listResearchTaskEvents(accepted.task.id)
+    .filter((event) => event.type === "delta")
+    .map((event) => event.message?.content ?? "");
+  assert.equal(deltas.at(-1), message.content, "最后一个正文事件与保存正文一致");
+  let prior = "";
+  let concatenated = "";
+  for (const snapshot of deltas) {
+    assert.ok(snapshot.startsWith(prior), "每个 delta 事件只追加已准入正文");
+    concatenated += snapshot.slice(prior.length);
+    prior = snapshot;
+  }
+  assert.equal(concatenated, message.content, "delta 事件相邻差值拼接等于保存正文");
+  assert.equal(task.streamCheckpoint, undefined, "协议污染不得留下可续写断点");
+
+  await service.research.retryTask(accepted.task.id);
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)?.content, "", "协议污染后默认重试清空失败前缀");
+  assert.equal(store.listResearchTaskEvents(accepted.task.id).length, 0, "协议污染后默认重试清空旧事件快照");
+  for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)!.status !== "completed"; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)?.content, "重试后的干净正文。", "新尝试可以干净完成");
+  store.close();
+});
+
+test("显式 think 协议出现在首片段时：正文为空且任务失败", async (t) => {
+  const provider = makeStreamProvider({
+    calls: [],
+    script: [() => ({ deltas: ["<think>匿名内部草稿</think>"], finishReason: "stop" })],
+  });
+  const { store, service } = await makeService(t, provider);
+  const accepted = await service.research.submitMessage("session-1", "问题", "k-protocol-first");
+  for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)!.status !== "failed"; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(store.getResearchTask(accepted.task.id)?.status, "failed");
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)?.content, "");
+  assert.equal(store.getResearchTask(accepted.task.id)?.streamCheckpoint, undefined);
+  store.close();
+});
+
+test("物理流重试续传被切开的 think 边界时，补全片段也不能进入正文", async (t) => {
+  const provider = makeStreamProvider({
+    calls: [],
+    script: [
+      () => ({ deltas: ["干净。", "<thi", "never emitted"], cutAfter: 2, cutError: "network" }),
+      () => ({ deltas: ["nk>秘密</think>"], finishReason: "stop" }),
+    ],
+  });
+  const { store, service } = await makeService(t, provider, []);
+  const accepted = await service.research.submitMessage("session-1", "问题", "k-retry-protocol-prefix");
+  for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)!.status !== "failed"; i++) await new Promise((r) => setImmediate(r));
+  const message = store.getResearchMessage(accepted.outputMessage.id)!;
+  assert.equal(message.content, "干净。");
+  assert.doesNotMatch(message.content, /<thi|nk>|秘密/);
+  assert.ok(store.listResearchTaskEvents(accepted.task.id).every((event) => !/<thi|秘密/.test(event.message?.content ?? "")));
+  store.close();
+});
+
 test("重启恢复：从 streamCheckpoint 续传（流被切断时断点已落盘）", async (t) => {
   const calls: Array<{ resumeFrom: string | undefined }> = [];
   const provider = makeStreamProvider({
@@ -137,6 +214,67 @@ test("重启恢复：从 streamCheckpoint 续传（流被切断时断点已落�
   assert.equal(store.getResearchTask(accepted.task.id)!.status, "completed");
   assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "第一段正文。，重启后续写完成。");
   assert.ok(calls[1]?.resumeFrom?.includes("第一段正文"), "从断点续传");
+  store.close();
+});
+
+test("服务重启后从持久化断点恢复时遇到显式 think 协议，污染仍不会进入正文", async (t) => {
+  const firstProvider = makeStreamProvider({
+    calls: [],
+    script: [() => ({ deltas: ["重启前干净正文。", "<thi", "不会发出"], cutAfter: 2, cutError: "fatal400" })],
+  });
+  const { store, service: firstService } = await makeService(t, firstProvider);
+  const accepted = await firstService.research.submitMessage("session-1", "问题", "k-restart-protocol");
+  for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)?.status !== "failed"; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)?.content, "重启前干净正文。");
+  assert.equal(store.getResearchTask(accepted.task.id)?.streamCheckpoint?.protocolPrefix, "<thi");
+
+  const restartedProvider = makeStreamProvider({
+    calls: [],
+    script: [() => ({ deltas: ["nk>重启后的匿名草稿</think>"], finishReason: "stop" })],
+  });
+  const restartedService = new CaptureService(store, join(tmpdir(), "collector-streamcut-restart-artifacts"), undefined, {
+    autoRunRecentOrganization: false,
+    researchProvider: restartedProvider as never,
+    researchRetrySleep: async () => {},
+  });
+  await restartedService.research.retryTask(accepted.task.id);
+  for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)?.status !== "failed"; i++) await new Promise((r) => setImmediate(r));
+
+  const message = store.getResearchMessage(accepted.outputMessage.id)!;
+  assert.equal(message.content, "重启前干净正文。");
+  assert.doesNotMatch(message.content, /think|匿名草稿/);
+  assert.equal(store.listSlicesByMessage(message.id).length, 0);
+  assert.equal(store.getBodyVersionForMessage(message.id), undefined);
+  store.close();
+});
+
+test("暂停恢复跨断点补全 think 协议时，前缀和补全片段都不会进入正文", async (t) => {
+  const provider = makeStreamProvider({
+    calls: [],
+    script: [
+      () => ({ deltas: ["暂停前干净正文。", "<thi", "旧流不得写入"], sleepBetweenDeltasMs: 35 }),
+      () => ({ deltas: ["nk>暂停后的匿名草稿</think>"], finishReason: "stop" }),
+    ],
+  });
+  const { store, service } = await makeService(t, provider, undefined, false);
+  const accepted = await service.research.submitMessage("session-1", "问题", "k-pause-protocol-prefix");
+  const firstRun = service.research.processTask(accepted.task.id);
+  for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)?.streamCheckpoint?.protocolPrefix !== "<thi"; i++) await new Promise((r) => setTimeout(r, 1));
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)?.content, "暂停前干净正文。");
+  assert.equal(store.getResearchTask(accepted.task.id)?.streamCheckpoint?.protocolPrefix, "<thi", "暂停前隔离前缀已持久化");
+  await service.research.pauseTask(accepted.task.id);
+  await firstRun;
+  assert.equal(store.getResearchTask(accepted.task.id)?.streamCheckpoint?.protocolPrefix, "<thi", "暂停收尾保留隔离前缀");
+  await service.research.resumeTask(accepted.task.id);
+  assert.equal(store.getResearchTask(accepted.task.id)?.streamCheckpoint?.protocolPrefix, "<thi", "恢复入队保留隔离前缀");
+  await service.research.processTask(accepted.task.id);
+
+  const message = store.getResearchMessage(accepted.outputMessage.id)!;
+  assert.equal(message.content, "暂停前干净正文。");
+  assert.doesNotMatch(message.content, /<thi|nk>|匿名草稿/);
+  assert.ok(store.listResearchTaskEvents(accepted.task.id).every((event) => !/<thi|nk>|匿名草稿/.test(event.message?.content ?? "")));
+  assert.equal(store.listSlicesByMessage(message.id).length, 0);
+  assert.equal(store.getBodyVersionForMessage(message.id), undefined);
   store.close();
 });
 

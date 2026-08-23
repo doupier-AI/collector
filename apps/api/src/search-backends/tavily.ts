@@ -27,7 +27,7 @@ export function createTavilyBackend(apiKey: string): SearchBackend {
 
     async search(query: string, maxResults = 5): Promise<WebSearchResultSet> {
       const searchStartedAt = Date.now();
-      console.log(`[web-search] tavily search query="${query.trim()}" maxResults=${maxResults}`);
+      console.log(`[web-search] tavily search queryChars=${query.trim().length} maxResults=${maxResults}`);
 
       try {
         const controller = new AbortController();
@@ -58,7 +58,7 @@ export function createTavilyBackend(apiKey: string): SearchBackend {
           const errMessage = response.status === 401 ? "Tavily API key is invalid"
             : response.status === 429 ? "Tavily rate limit exceeded"
             : `Tavily returned HTTP ${response.status}${body ? `: ${body.slice(0, 200)}` : ""}`;
-          console.log(`[web-search] tavily error query="${query.trim()}" httpStatus=${response.status} latency=${Date.now() - searchStartedAt}ms`);
+          console.log(`[web-search] tavily error queryChars=${query.trim().length} httpStatus=${response.status} latency=${Date.now() - searchStartedAt}ms`);
           return { query: query.trim(), total_results: 0, results: [], errorMessage: errMessage };
         }
 
@@ -70,11 +70,11 @@ export function createTavilyBackend(apiKey: string): SearchBackend {
         }));
 
         if (!results.length) {
-          console.log(`[web-search] tavily no_results query="${query.trim()}" latency=${Date.now() - searchStartedAt}ms`);
+          console.log(`[web-search] tavily no_results queryChars=${query.trim().length} latency=${Date.now() - searchStartedAt}ms`);
           return { query: query.trim(), total_results: 0, results: [] };
         }
 
-        console.log(`[web-search] tavily completed query="${query.trim()}" resultCount=${results.length} latency=${Date.now() - searchStartedAt}ms`);
+        console.log(`[web-search] tavily completed queryChars=${query.trim().length} resultCount=${results.length} latency=${Date.now() - searchStartedAt}ms`);
         return {
           query: query.trim(),
           total_results: results.length,
@@ -82,7 +82,7 @@ export function createTavilyBackend(apiKey: string): SearchBackend {
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown search error";
-        console.log(`[web-search] tavily error query="${query.trim()}" message="${message}" latency=${Date.now() - searchStartedAt}ms`);
+        console.log(`[web-search] tavily error queryChars=${query.trim().length} error=${error instanceof Error ? error.name : typeof error} latency=${Date.now() - searchStartedAt}ms`);
         return { query: query.trim(), total_results: 0, results: [], errorMessage: message };
       }
     },
