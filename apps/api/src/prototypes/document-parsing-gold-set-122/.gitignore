@@ -1,0 +1,3 @@
+# 20 MiB + 1 byte negative is generated on demand. Its byte-count assertion,
+# not the zero padding itself, is the durable prototype evidence.
+output/pdf/negative-oversized.pdf

@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Collector #122 文档解析金标准原型</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #182230;
+      --muted: #667085;
+      --line: #d9e0e8;
+      --paper: #fbfcfe;
+      --panel: #ffffff;
+      --accent: #275d91;
+      --accent-soft: #eaf2f9;
+      --pass: #19724b;
+      --pass-soft: #e8f5ee;
+      --partial: #9a6700;
+      --partial-soft: #fff5d6;
+      --fail: #b42318;
+      --fail-soft: #ffebe9;
+      --shadow: 0 14px 36px rgba(24, 34, 48, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--paper); color: var(--ink); font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif; }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+    .shell { width: min(1420px, calc(100% - 32px)); margin: 24px auto 80px; }
+    .hero { padding: 34px 38px; color: #f7fbff; border-radius: 22px; background: linear-gradient(135deg, #17324d 0%, #275d91 70%, #3977ad 100%); box-shadow: var(--shadow); }
+    .eyebrow { display: inline-flex; gap: 8px; align-items: center; padding: 5px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; letter-spacing: .04em; background: rgba(255,255,255,.14); }
+    h1 { margin: 16px 0 8px; max-width: 900px; font-size: clamp(30px, 4vw, 52px); line-height: 1.08; letter-spacing: -.035em; }
+    .hero p { max-width: 1000px; margin: 0; color: #dceaf6; font-size: 16px; line-height: 1.75; }
+    .notice { margin-top: 18px; padding: 13px 15px; border-radius: 12px; background: rgba(8, 25, 42, .35); color: #fff; font-size: 13px; }
+    .grid { display: grid; gap: 18px; }
+    .summary-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 18px; }
+    .card { border: 1px solid var(--line); border-radius: 18px; background: var(--panel); box-shadow: 0 7px 20px rgba(24,34,48,.045); }
+    .summary { min-height: 140px; padding: 22px; }
+    .summary .label { color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+    .summary .value { margin-top: 8px; font-size: 31px; font-weight: 750; letter-spacing: -.03em; }
+    .summary .hint { margin-top: 8px; color: var(--muted); font-size: 13px; line-height: 1.45; }
+    .status-success { color: var(--pass); }
+    .status-partial { color: var(--partial); }
+    .status-failure { color: var(--fail); }
+    .section { margin-top: 20px; padding: 24px; }
+    .section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
+    .section h2 { margin: 0 0 6px; font-size: 21px; }
+    .section-head p, .muted { margin: 0; color: var(--muted); line-height: 1.55; }
+    .freeplay { display: flex; flex-wrap: wrap; gap: 9px; }
+    .action { border: 1px solid #b7c5d5; border-radius: 10px; padding: 9px 12px; background: #fff; color: #24415d; font-weight: 650; }
+    .action:hover { background: var(--accent-soft); border-color: #7b9dbc; }
+    .action.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+    .action.danger { border-color: #f2a9a0; color: var(--fail); background: #fff8f7; }
+    .coverage { display: grid; grid-template-columns: 1.2fr 2fr; gap: 18px; }
+    .coverage-list { display: grid; gap: 10px; }
+    .coverage-row { display: grid; grid-template-columns: 170px 1fr; gap: 12px; align-items: center; }
+    .coverage-row strong { font-size: 13px; }
+    .bar { height: 10px; border-radius: 999px; background: #edf1f5; overflow: hidden; }
+    .bar > span { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+    .weights { border-left: 1px solid var(--line); padding-left: 18px; }
+    .weights ul { margin: 8px 0 0; padding-left: 19px; color: var(--muted); line-height: 1.75; }
+    .workspace { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 18px; }
+    .sample-list { display: grid; gap: 8px; align-content: start; }
+    .sample-button { width: 100%; padding: 12px; text-align: left; border: 1px solid var(--line); border-radius: 12px; background: #fff; color: var(--ink); }
+    .sample-button:hover, .sample-button.active { border-color: #7b9dbc; background: var(--accent-soft); }
+    .sample-button b { display: block; font-size: 13px; }
+    .sample-button span { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; }
+    .sample-detail { min-width: 0; }
+    .sample-meta { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 16px; }
+    .tag { padding: 4px 8px; border-radius: 999px; background: #edf2f7; color: #475467; font-size: 11px; font-weight: 700; }
+    .open-file { color: var(--accent); font-weight: 700; text-decoration: none; }
+    .open-file:hover { text-decoration: underline; }
+    .checkpoints { display: grid; gap: 10px; }
+    .checkpoint { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; }
+    .checkpoint .dimension { color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .04em; }
+    .checkpoint .copy { margin-top: 4px; font-size: 13px; line-height: 1.45; }
+    .rating { display: flex; gap: 5px; }
+    .rating button { min-width: 48px; border: 1px solid var(--line); border-radius: 8px; padding: 7px 8px; background: #fff; color: var(--muted); font-size: 12px; font-weight: 700; }
+    .rating button[data-value="pass"].selected { color: var(--pass); border-color: #72b896; background: var(--pass-soft); }
+    .rating button[data-value="partial"].selected { color: var(--partial); border-color: #d6b65f; background: var(--partial-soft); }
+    .rating button[data-value="fail"].selected { color: var(--fail); border-color: #e59c93; background: var(--fail-soft); }
+    .sample-score { display: flex; align-items: center; gap: 12px; margin-top: 16px; padding: 13px 15px; border-radius: 12px; background: #f4f7fa; }
+    .sample-score strong { font-size: 20px; }
+    .walkthrough-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+    .tab { border: 1px solid var(--line); border-radius: 999px; padding: 8px 12px; background: #fff; color: var(--muted); font-weight: 700; }
+    .tab.active { color: #fff; border-color: var(--accent); background: var(--accent); }
+    .scenario { display: grid; grid-template-columns: 1.1fr 1fr; gap: 18px; padding: 18px; border-radius: 14px; background: #f5f8fb; }
+    .scenario h3 { margin: 0 0 7px; }
+    .scenario p { margin: 0; color: var(--muted); line-height: 1.6; }
+    .steps { display: grid; gap: 8px; align-content: start; }
+    .step { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border: 1px solid #c6d3df; border-radius: 10px; padding: 10px; background: #fff; color: #24415d; }
+    .step.done { opacity: .55; }
+    .step strong { display: grid; place-items: center; width: 23px; height: 23px; flex: 0 0 auto; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-size: 11px; }
+    .state-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .state-table th, .state-table td { padding: 10px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    .state-table th { color: var(--muted); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+    .pill { display: inline-block; padding: 3px 7px; border-radius: 999px; font-size: 11px; font-weight: 750; }
+    .pill.success { color: var(--pass); background: var(--pass-soft); }
+    .pill.partial { color: var(--partial); background: var(--partial-soft); }
+    .pill.failure { color: var(--fail); background: var(--fail-soft); }
+    .violations { margin-top: 12px; padding: 12px 14px; border-radius: 12px; background: var(--fail-soft); color: var(--fail); font-size: 13px; }
+    .verdict { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .verdict h3 { margin: 0 0 8px; }
+    .verdict ul { margin: 0; padding-left: 20px; color: var(--muted); line-height: 1.65; }
+    .footer-note { margin-top: 18px; color: var(--muted); font-size: 12px; text-align: center; }
+    @media (max-width: 980px) {
+      .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .coverage, .workspace, .scenario, .verdict { grid-template-columns: 1fr; }
+      .weights { border-left: 0; border-top: 1px solid var(--line); padding: 18px 0 0; }
+      .sample-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 620px) {
+      .shell { width: min(100% - 18px, 1420px); margin-top: 9px; }
+      .hero, .section { padding: 20px; border-radius: 15px; }
+      .summary-grid, .sample-list { grid-template-columns: 1fr; }
+      .section-head { display: block; }
+      .freeplay { margin-top: 12px; }
+      .checkpoint { grid-template-columns: 1fr; }
+      .rating { width: 100%; }
+      .rating button { flex: 1; }
+      .coverage-row { grid-template-columns: 130px 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <div class="eyebrow">一次性原型 · Issue #122 · 不代表正式解析实现</div>
+      <h1>文档解析候选，真的提升了阅读与引用价值吗？</h1>
+      <p>这个原型验证一套最小样本与人工金标准是否足以区分“能导出文字”和“能用于研究复核”。你可以打开 7 份匿名合成样本、逐项评分，并观察成功、部分成功、失败与不可接受伪造如何改变最终裁决。</p>
+      <div class="notice">待回答的问题：3 份核心研究材料 + 1 份办公回归 + 3 份负例，是否已经覆盖论文、教材、技术报告的关键阅读与引用风险，而没有重复堆样本？</div>
+    </section>
+
+    <section class="grid summary-grid" aria-label="当前评分状态">
+      <article class="card summary"><div class="label">当前裁决</div><div class="value" id="overall-class">未评分</div><div class="hint" id="overall-rule">先选择一个演示情景，或逐项人工评分。</div></article>
+      <article class="card summary"><div class="label">加权总分</div><div class="value" id="overall-score">—</div><div class="hint">核心研究 70% · 办公回归 10% · 负例 20%</div></article>
+      <article class="card summary"><div class="label">核心材料下限</div><div class="value" id="core-floor">—</div><div class="hint">成功要求每份核心研究材料 ≥ 75 分，不能靠简单样本拉高均分。</div></article>
+      <article class="card summary"><div class="label">致命违规</div><div class="value" id="violation-count">0</div><div class="hint">伪造文字、伪精确定位、负例假成功、静默丢失会直接判失败。</div></article>
+    </section>
+
+    <section class="card section">
+      <div class="section-head">
+        <div><h2>自由试验</h2><p>随时套用一组代表性评分，或清空后自己逐项判断。</p></div>
+        <div class="freeplay">
+          <button class="action primary" data-profile="ideal">模拟完整成功</button>
+          <button class="action" data-profile="current">模拟文本提取基线</button>
+          <button class="action" data-profile="markdown">模拟“只有 Markdown”</button>
+          <button class="action danger" data-profile="fabricated">模拟伪造式 OCR</button>
+          <button class="action" id="reset">清空评分</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card section">
+      <div class="section-head"><div><h2>为什么是这 7 份</h2><p>每个核心风险只设置一个主要承载样本；办公文档不参与“研究材料代表性”的证明。</p></div></div>
+      <div class="coverage">
+        <div class="coverage-list" id="coverage-list"></div>
+        <div class="weights">
+          <strong>样本权重</strong>
+          <ul>
+            <li>中文单栏教材式 PDF、英文双栏论文式 PDF、扫描实验记录：合计 70%。</li>
+            <li>DOCX：10%，只防办公文档回归，不替代论文/教材。</li>
+            <li>损坏、加密、超长：合计 20%，只评失败是否诚实且不可伪造。</li>
+            <li>每份样本用同一组六维检查点，候选之间才可横向比较。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="card section">
+      <div class="section-head"><div><h2>给候选打分</h2><p>先打开样本核对，再选择“通过 / 部分 / 失败”。全部状态只保存在内存，刷新即清空。</p></div></div>
+      <div class="workspace">
+        <nav class="sample-list" id="sample-list" aria-label="样本列表"></nav>
+        <article class="sample-detail">
+          <div class="section-head">
+            <div><h2 id="sample-title"></h2><p id="sample-description"></p></div>
+            <a class="open-file" id="sample-link" target="_blank" rel="noopener">打开原始样本 ↗</a>
+          </div>
+          <div class="sample-meta" id="sample-meta"></div>
+          <div class="checkpoints" id="checkpoints"></div>
+          <div class="sample-score"><span>本样本：</span><strong id="sample-score">—</strong><span class="muted" id="sample-class"></span></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="card section">
+      <div class="section-head"><div><h2>引导式推演</h2><p>每个情景都会从已知初始状态开始。按步骤点击，观察哪条规则真正改变裁决。</p></div></div>
+      <div class="walkthrough-tabs" id="scenario-tabs"></div>
+      <div class="scenario">
+        <div><h3 id="scenario-title"></h3><p id="scenario-copy"></p></div>
+        <div class="steps" id="scenario-steps"></div>
+      </div>
+    </section>
+
+    <section class="card section">
+      <div class="section-head"><div><h2>完整状态</h2><p>这里展示每份样本的状态，而不是只给一个漂亮总分。</p></div></div>
+      <div style="overflow:auto">
+        <table class="state-table">
+          <thead><tr><th>样本</th><th>角色</th><th>已评分</th><th>分数</th><th>分类</th><th>未通过维度</th></tr></thead>
+          <tbody id="state-body"></tbody>
+        </table>
+      </div>
+      <div class="violations" id="violations" hidden></div>
+    </section>
+
+    <section class="card section verdict">
+      <div><h3>原型当前主张</h3><ul><li>7 份文件已覆盖 Issue 列出的中英、单双栏、扫描、表格、公式、脚注/参考文献、图像、DOCX 与三类负例。</li><li>成功必须同时满足总分、核心样本下限与零致命违规。</li><li>“无 OCR”“只有页码”“丢图片”可以是部分成功，但必须明确展示。</li></ul></div>
+      <div><h3>仍需用户裁决</h3><ul><li>这套材料是否像你真正会读的论文、教材与技术报告？</li><li>六个维度和 70/10/20 权重是否符合你的研究优先级？</li><li>扫描页无 OCR 时，明确部分成功是否可接受，还是必须直接失败？</li></ul></div>
+    </section>
+    <p class="footer-note">PROTOTYPE — 资产保留在 #122 独立分支，不合入 master；任何评分都不是正式解析能力承诺。</p>
+  </main>
+
+  <script>
+    // Pure prototype module: no DOM access. It can be lifted out independently
+    // if the scoring model is later confirmed.
+    const Evaluation = (() => {
+      const dimensions = [
+        { id: "body", label: "可读正文", weight: 25 },
+        { id: "order", label: "顺序/层级", weight: 20 },
+        { id: "locator", label: "页码/区域", weight: 20 },
+        { id: "structure", label: "表格/公式", weight: 15 },
+        { id: "image", label: "图片/图注", weight: 10 },
+        { id: "degradation", label: "诚实降级", weight: 10 },
+      ];
+      const checkpointSet = (prefix, labels) => dimensions.map((dimension, index) => ({
+        id: `${prefix}-${dimension.id}`,
+        dimension: dimension.id,
+        label: labels[index],
+      }));
+      const samples = [
+        {
+          id: "zh", title: "中文单栏教材式 PDF", group: "core", weight: 70 / 3,
+          file: "output/pdf/zh-single-column-textbook.pdf", format: "PDF · 3 页", language: "中文", layout: "可复制单栏",
+          coverage: ["标题", "表格", "公式", "脚注", "图片", "参考文献", "页码/区域"],
+          description: "主测中文正文、标题层级、表格/公式、图像资源与页区定位。",
+          checkpoints: checkpointSet("zh", ["三页中文正文完整，无页眉脚注混入。", "三章与 1.1 小节层级正确，正文不跳页。", "关键断言在第 1 页中部；表/公式在第 2 页；图在第 3 页。", "表 1 保留 4×3 单元格；公式 S = 0.5T + 0.3L + 0.2V 可读。", "图 1 是独立图片资源，并关联图注与第 3 页。", "不支持公式/图片时明确缺失，不把视觉内容伪造成正文。"]),
+        },
+        {
+          id: "en", title: "英文双栏论文式 PDF", group: "core", weight: 70 / 3,
+          file: "output/pdf/en-two-column-paper.pdf", format: "PDF · 3 页", language: "英文", layout: "可复制双栏",
+          coverage: ["双栏顺序", "表格", "公式", "脚注", "图片", "参考文献", "左右栏区域"],
+          description: "内容流故意先绘制右栏；只有理解视觉布局的解析器才能恢复左栏→右栏阅读顺序。",
+          checkpoints: checkpointSet("en", ["正文与参考文献完整，无跨栏句子拼接。", "标题/摘要之后，先读左栏 Introduction，再读右栏 Evaluation protocol。", "两个小节均保留第 1 页及左右栏区域。", "第 2 页 4×4 表格、Equation 1 与变量表达可读。", "Figure 1 资源、图注和第 2 页位置可回读。", "无法恢复跨栏顺序时明确布局受限，不把交错文本称为成功。"]),
+        },
+        {
+          id: "scan", title: "扫描实验记录 PDF", group: "core", weight: 70 / 3,
+          file: "output/pdf/scanned-lab-note.pdf", format: "PDF · 2 页", language: "英文", layout: "纯图片，无文本层",
+          coverage: ["扫描页", "OCR", "页区定位", "图像内网格", "原始页图"],
+          description: "主测 OCR 与诚实降级。第二页短语 BLUE ANCHOR 是引用定位锚点。",
+          checkpoints: checkpointSet("scan", ["OCR 读取主要正文，并保留第 2 页 BLUE ANCHOR。", "两页顺序和每页行序稳定。", "BLUE ANCHOR 可定位到第 2 页上半部。", "测量网格标记为图片/表格候选，不伪造单元格值。", "每页保留原始页面图像资源。", "无 OCR 时明确部分成功/无文本层，不返回空白成功。"]),
+        },
+        {
+          id: "docx", title: "DOCX 办公回归", group: "office", weight: 10,
+          file: "output/documents/office-regression.docx", format: "DOCX · 2 页", language: "英文", layout: "标准技术简报",
+          coverage: ["Heading 1/2", "表格", "图片", "分页", "参考文献"],
+          description: "只用于防办公文档退化，不参与证明研究材料的代表性。",
+          checkpoints: checkpointSet("docx", ["两页段落完整且顺序正确。", "Heading 1/2 层级和分页前后顺序正确。", "至少保留段落或块级稳定定位；不要求像素复原。", "4×3 表格的行列关系保留。", "Figure 1 图片资源与图注可关联。", "若图片不支持，正文仍成功且明确图片缺失。"]),
+        },
+        {
+          id: "corrupt", title: "损坏 PDF 负例", group: "negative", weight: 20 / 3,
+          file: "output/pdf/negative-corrupted.pdf", format: "PDF · 83 B", language: "无", layout: "截断且无有效 xref",
+          coverage: ["损坏", "不可伪造失败"], description: "应稳定失败，不产生任何正文、结构或定位。",
+          checkpoints: checkpointSet("corrupt", ["不产生伪造正文。", "不伪造标题或结构。", "不伪造页码或区域。", "不伪造表格/公式。", "不伪造图片资源。", "稳定分类 damaged/corrupt/parse_failed，错误可解释。"]),
+        },
+        {
+          id: "encrypted", title: "加密 PDF 负例", group: "negative", weight: 20 / 3,
+          file: "output/pdf/negative-encrypted.pdf", format: "PDF · AES-256", language: "英文", layout: "密码 collector-122",
+          coverage: ["加密", "需要密码", "不可伪造失败"], description: "未提供密码时应稳定失败；密码只供人工确认文件确实有效。",
+          checkpoints: checkpointSet("encrypted", ["未提供密码时不返回正文。", "不猜测标题或结构。", "不伪造页码区域。", "不伪造表格/公式。", "不伪造图片资源。", "稳定分类 password_required/encrypted/parse_failed。"]),
+        },
+        {
+          id: "oversized", title: "超长 PDF 负例", group: "negative", weight: 20 / 3,
+          file: null, format: "PDF · 20 MiB + 1 B", language: "英文", layout: "运行生成器产生；有效前缀 + 固定填充",
+          coverage: ["20 MiB 限制", "解析前拒绝"], description: "必须在解析前拒绝，并报告实际大小与 20 MiB 限制。",
+          checkpoints: checkpointSet("oversized", ["大小校验失败后不产生正文。", "不产生阅读结构。", "不产生定位。", "不产生表格/公式。", "不产生图片资源。", "解析前稳定分类 file_too_large，并报告限制。"]),
+        },
+      ];
+      const ratingValue = { pass: 1, partial: .5, fail: 0 };
+      const groups = { core: "核心研究", office: "办公回归", negative: "负例" };
+
+      function initialState() {
+        return { selectedSampleId: "zh", ratings: {}, criticalViolations: [], activeScenario: "happy", completedSteps: {} };
+      }
+
+      function rateSample(ratings, sample, values) {
+        const next = { ...ratings };
+        sample.checkpoints.forEach((checkpoint, index) => { next[checkpoint.id] = Array.isArray(values) ? values[index] : values; });
+        return next;
+      }
+
+      function applyProfile(state, profile) {
+        let ratings = {};
+        let criticalViolations = [];
+        if (profile === "ideal") {
+          samples.forEach(sample => { ratings = rateSample(ratings, sample, "pass"); });
+        }
+        if (profile === "current") {
+          ratings = rateSample(ratings, samples[0], ["pass", "partial", "partial", "fail", "fail", "pass"]);
+          ratings = rateSample(ratings, samples[1], ["partial", "fail", "partial", "fail", "fail", "partial"]);
+          ratings = rateSample(ratings, samples[2], ["fail", "fail", "fail", "fail", "partial", "partial"]);
+          ratings = rateSample(ratings, samples[3], ["pass", "pass", "pass", "partial", "fail", "partial"]);
+          samples.slice(4).forEach(sample => { ratings = rateSample(ratings, sample, "pass"); });
+        }
+        if (profile === "markdown") {
+          samples.forEach(sample => { ratings = rateSample(ratings, sample, ["pass", "partial", "fail", "fail", "fail", "partial"]); });
+          samples.slice(4).forEach(sample => { ratings = rateSample(ratings, sample, ["pass", "pass", "pass", "pass", "pass", "partial"]); });
+        }
+        if (profile === "fabricated") {
+          samples.forEach(sample => { ratings = rateSample(ratings, sample, "pass"); });
+          ratings = rateSample(ratings, samples[2], ["fail", "pass", "partial", "fail", "pass", "fail"]);
+          criticalViolations = ["fabricated_text", "negative_reported_success"];
+        }
+        return { ...state, ratings, criticalViolations };
+      }
+
+      function reducer(state, action) {
+        if (action.type === "RESET") return initialState();
+        if (action.type === "SELECT_SAMPLE") return { ...state, selectedSampleId: action.sampleId };
+        if (action.type === "SET_SCENARIO") return { ...initialState(), activeScenario: action.scenarioId };
+        if (action.type === "APPLY_PROFILE") return applyProfile(state, action.profile);
+        if (action.type === "RATE") return { ...state, ratings: { ...state.ratings, [action.checkpointId]: action.value } };
+        if (action.type === "MARK_STEP") return { ...state, completedSteps: { ...state.completedSteps, [action.stepId]: true } };
+        if (action.type === "ADD_VIOLATION") {
+          const criticalViolations = state.criticalViolations.includes(action.violation) ? state.criticalViolations : [...state.criticalViolations, action.violation];
+          return { ...state, criticalViolations };
+        }
+        return state;
+      }
+
+      function sampleResult(sample, ratings) {
+        const rated = sample.checkpoints.filter(checkpoint => ratings[checkpoint.id]);
+        if (!rated.length) return { score: null, classification: "unrated", rated: 0, failedDimensions: [] };
+        const numerator = sample.checkpoints.reduce((sum, checkpoint) => {
+          const weight = dimensions.find(dimension => dimension.id === checkpoint.dimension).weight;
+          return sum + weight * (ratingValue[ratings[checkpoint.id]] ?? 0);
+        }, 0);
+        const score = Math.round(numerator);
+        const classification = score >= 85 ? "success" : score >= 50 ? "partial" : "failure";
+        const failedDimensions = sample.checkpoints.filter(checkpoint => ratings[checkpoint.id] && ratings[checkpoint.id] !== "pass").map(checkpoint => dimensions.find(item => item.id === checkpoint.dimension).label);
+        return { score, classification, rated: rated.length, failedDimensions };
+      }
+
+      function evaluate(state) {
+        const results = Object.fromEntries(samples.map(sample => [sample.id, sampleResult(sample, state.ratings)]));
+        const fullyRated = samples.every(sample => results[sample.id].rated === sample.checkpoints.length);
+        const weightedScore = fullyRated ? Math.round(samples.reduce((sum, sample) => sum + results[sample.id].score * sample.weight / 100, 0)) : null;
+        const coreScores = samples.filter(sample => sample.group === "core").map(sample => results[sample.id].score).filter(score => score !== null);
+        const coreFloor = coreScores.length === 3 ? Math.min(...coreScores) : null;
+        let classification = "unrated";
+        if (fullyRated) {
+          if (state.criticalViolations.length || weightedScore < 50) classification = "failure";
+          else if (weightedScore >= 85 && coreFloor >= 75) classification = "success";
+          else classification = "partial";
+        }
+        return { results, fullyRated, weightedScore, coreFloor, classification };
+      }
+
+      return { dimensions, samples, groups, initialState, reducer, evaluate };
+    })();
+
+    const scenarios = [
+      {
+        id: "happy", title: "情景一：完整成功", copy: "先让所有检查点通过，再观察成功不是只看总分：核心研究材料下限和致命违规同样是硬门槛。",
+        steps: [{ label: "套用完整成功评分", action: { type: "APPLY_PROFILE", profile: "ideal" } }, { label: "查看三份核心材料是否都 ≥ 75", action: { type: "SELECT_SAMPLE", sampleId: "scan" } }],
+      },
+      {
+        id: "text", title: "情景二：能提取文字，但研究价值不足", copy: "模拟现有文本提取型能力：文本 PDF 和 DOCX 可读，但双栏、扫描、表格、公式与图片明显不足。观察它为何只能是部分成功。",
+        steps: [{ label: "套用文本提取基线", action: { type: "APPLY_PROFILE", profile: "current" } }, { label: "打开双栏论文的顺序检查", action: { type: "SELECT_SAMPLE", sampleId: "en" } }, { label: "打开扫描页的诚实降级检查", action: { type: "SELECT_SAMPLE", sampleId: "scan" } }],
+      },
+      {
+        id: "markdown", title: "情景三：Markdown 看起来漂亮", copy: "候选导出了流畅正文，却丢掉页区、单元格、公式和图片。观察正文 25 分为何不能掩盖引用与结构失败。",
+        steps: [{ label: "套用“只有 Markdown”评分", action: { type: "APPLY_PROFILE", profile: "markdown" } }, { label: "查看中文教材的引用定位", action: { type: "SELECT_SAMPLE", sampleId: "zh" } }, { label: "查看办公回归不是主权重", action: { type: "SELECT_SAMPLE", sampleId: "docx" } }],
+      },
+      {
+        id: "fraud", title: "情景四：高分也不能挽救伪造", copy: "模拟 OCR 编造了扫描页正文，并把负例称为成功。即使其他检查点全部通过，致命违规仍必须直接判失败。",
+        steps: [{ label: "先制造一个表面高分候选", action: { type: "APPLY_PROFILE", profile: "fabricated" } }, { label: "查看扫描页的伪造风险", action: { type: "SELECT_SAMPLE", sampleId: "scan" } }, { label: "追加“伪精确定位”违规", action: { type: "ADD_VIOLATION", violation: "false_precise_locator" } }],
+      },
+    ];
+
+    let state = Evaluation.initialState();
+
+    function dispatch(action) {
+      state = Evaluation.reducer(state, action);
+      render();
+    }
+
+    function classLabel(value) {
+      return ({ success: "成功", partial: "部分成功", failure: "失败", unrated: "未评分" })[value];
+    }
+
+    function renderSummary(view) {
+      const classNode = document.querySelector("#overall-class");
+      classNode.textContent = classLabel(view.classification);
+      classNode.className = `value ${view.classification === "unrated" ? "" : `status-${view.classification}`}`;
+      document.querySelector("#overall-score").textContent = view.weightedScore === null ? "—" : `${view.weightedScore} / 100`;
+      document.querySelector("#core-floor").textContent = view.coreFloor === null ? "—" : `${view.coreFloor} / 100`;
+      document.querySelector("#violation-count").textContent = String(state.criticalViolations.length);
+      document.querySelector("#overall-rule").textContent = view.classification === "success" ? "总分、三份核心材料和零违规同时过线。" : view.classification === "partial" ? "仍有结构或定位缺口，不能称为完整成功。" : view.classification === "failure" ? "总分过低或触发不可平均的致命违规。" : "先选择一个演示情景，或逐项人工评分。";
+    }
+
+    function renderCoverage() {
+      const rows = [
+        ["中英可复制 PDF", 100], ["单栏 / 双栏顺序", 100], ["扫描页 / OCR", 100], ["表格 / 公式", 100],
+        ["脚注 / 参考文献", 100], ["图片资源 / 图注", 100], ["DOCX 回归", 100], ["损坏 / 加密 / 超长", 100],
+      ];
+      document.querySelector("#coverage-list").innerHTML = rows.map(([label, value]) => `<div class="coverage-row"><strong>${label}</strong><div class="bar"><span style="width:${value}%"></span></div></div>`).join("");
+    }
+
+    function renderSampleList(view) {
+      document.querySelector("#sample-list").innerHTML = Evaluation.samples.map(sample => {
+        const result = view.results[sample.id];
+        const score = result.score === null ? "未评分" : `${result.score} 分 · ${classLabel(result.classification)}`;
+        return `<button class="sample-button ${state.selectedSampleId === sample.id ? "active" : ""}" data-sample="${sample.id}"><b>${sample.title}</b><span>${Evaluation.groups[sample.group]} · ${score}</span></button>`;
+      }).join("");
+      document.querySelectorAll("[data-sample]").forEach(button => button.addEventListener("click", () => dispatch({ type: "SELECT_SAMPLE", sampleId: button.dataset.sample })));
+    }
+
+    function renderSelected(view) {
+      const sample = Evaluation.samples.find(item => item.id === state.selectedSampleId);
+      const result = view.results[sample.id];
+      document.querySelector("#sample-title").textContent = sample.title;
+      document.querySelector("#sample-description").textContent = sample.description;
+      const link = document.querySelector("#sample-link");
+      if (sample.file) {
+        link.href = sample.file;
+        link.target = "_blank";
+        link.textContent = "打开原始样本 ↗";
+      } else {
+        link.removeAttribute("href");
+        link.removeAttribute("target");
+        link.textContent = "运行生成器产生 20 MiB + 1 B 负例";
+      }
+      document.querySelector("#sample-meta").innerHTML = [sample.format, sample.language, sample.layout, ...sample.coverage].map(tag => `<span class="tag">${tag}</span>`).join("");
+      document.querySelector("#checkpoints").innerHTML = sample.checkpoints.map(checkpoint => {
+        const dimension = Evaluation.dimensions.find(item => item.id === checkpoint.dimension);
+        const selected = state.ratings[checkpoint.id];
+        return `<div class="checkpoint"><div><div class="dimension">${dimension.label} · 权重 ${dimension.weight}</div><div class="copy">${checkpoint.label}</div></div><div class="rating" data-checkpoint="${checkpoint.id}">${[["pass","通过"],["partial","部分"],["fail","失败"]].map(([value,label]) => `<button data-value="${value}" class="${selected === value ? "selected" : ""}">${label}</button>`).join("")}</div></div>`;
+      }).join("");
+      document.querySelectorAll("[data-checkpoint] button").forEach(button => button.addEventListener("click", () => dispatch({ type: "RATE", checkpointId: button.parentElement.dataset.checkpoint, value: button.dataset.value })));
+      document.querySelector("#sample-score").textContent = result.score === null ? "—" : `${result.score} / 100`;
+      document.querySelector("#sample-class").textContent = result.score === null ? "尚未评分" : classLabel(result.classification);
+    }
+
+    function renderScenarios() {
+      const active = scenarios.find(scenario => scenario.id === state.activeScenario);
+      document.querySelector("#scenario-tabs").innerHTML = scenarios.map(scenario => `<button class="tab ${scenario.id === active.id ? "active" : ""}" data-scenario="${scenario.id}">${scenario.title.replace(/^情景.：/, "")}</button>`).join("");
+      document.querySelectorAll("[data-scenario]").forEach(button => button.addEventListener("click", () => dispatch({ type: "SET_SCENARIO", scenarioId: button.dataset.scenario })));
+      document.querySelector("#scenario-title").textContent = active.title;
+      document.querySelector("#scenario-copy").textContent = active.copy;
+      document.querySelector("#scenario-steps").innerHTML = active.steps.map((step, index) => {
+        const id = `${active.id}-${index}`;
+        return `<button class="step ${state.completedSteps[id] ? "done" : ""}" data-step="${index}"><strong>${index + 1}</strong><span>${step.label}</span></button>`;
+      }).join("");
+      document.querySelectorAll("[data-step]").forEach(button => button.addEventListener("click", () => {
+        const index = Number(button.dataset.step);
+        dispatch(active.steps[index].action);
+        state = Evaluation.reducer(state, { type: "MARK_STEP", stepId: `${active.id}-${index}` });
+        render();
+      }));
+    }
+
+    function renderStateTable(view) {
+      document.querySelector("#state-body").innerHTML = Evaluation.samples.map(sample => {
+        const result = view.results[sample.id];
+        return `<tr><td><strong>${sample.title}</strong></td><td>${Evaluation.groups[sample.group]}</td><td>${result.rated} / 6</td><td>${result.score === null ? "—" : result.score}</td><td><span class="pill ${result.classification}">${classLabel(result.classification)}</span></td><td>${result.failedDimensions.length ? result.failedDimensions.join("、") : "—"}</td></tr>`;
+      }).join("");
+      const box = document.querySelector("#violations");
+      box.hidden = state.criticalViolations.length === 0;
+      box.textContent = state.criticalViolations.length ? `致命违规：${state.criticalViolations.join("、")}。这些违规不能被其他高分平均掉。` : "";
+    }
+
+    function render() {
+      const view = Evaluation.evaluate(state);
+      renderSummary(view);
+      renderSampleList(view);
+      renderSelected(view);
+      renderScenarios();
+      renderStateTable(view);
+    }
+
+    document.querySelectorAll("[data-profile]").forEach(button => button.addEventListener("click", () => dispatch({ type: "APPLY_PROFILE", profile: button.dataset.profile })));
+    document.querySelector("#reset").addEventListener("click", () => dispatch({ type: "RESET" }));
+    renderCoverage();
+    render();
+  </script>
+</body>
+</html>
