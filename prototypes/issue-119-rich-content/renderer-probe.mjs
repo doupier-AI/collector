@@ -9,6 +9,7 @@
  */
 
 import assert from "node:assert/strict";
+import { deriveMessageBlocks } from "@collector/capture-contracts";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
@@ -39,11 +40,31 @@ const answer = 42;
 <script>alert("raw html")</script>
 `;
 
-const html = renderToStaticMarkup(createElement(ReactMarkdown, {
-  children: markdown,
-  remarkPlugins: [remarkGfm, remarkBreaks],
-  rehypePlugins: [rehypeSanitize],
-}));
+function renderMarkdown(source) {
+  return renderToStaticMarkup(createElement(ReactMarkdown, {
+    children: source,
+    remarkPlugins: [remarkGfm, remarkBreaks],
+    rehypePlugins: [rehypeSanitize],
+  }));
+}
+
+const html = renderMarkdown(markdown);
+const crossBlankCode = `\`\`\`ts
+const first = 1;
+
+const second = 2;
+\`\`\``;
+const looseList = `- 第一项
+
+  第一项的续段
+
+- 第二项`;
+const codeBlocks = deriveMessageBlocks(crossBlankCode);
+const listBlocks = deriveMessageBlocks(looseList);
+const wholeCodeHtml = renderMarkdown(crossBlankCode);
+const splitCodeHtml = codeBlocks.map((block) => renderMarkdown(block.text)).join("");
+const wholeListHtml = renderMarkdown(looseList);
+const splitListHtml = listBlocks.map((block) => renderMarkdown(block.text)).join("");
 
 const checks = {
   heading: html.includes("<h1>自然标题</h1>"),
@@ -51,10 +72,13 @@ const checks = {
   table: html.includes("<table>"),
   fencedCode: html.includes('class="language-ts"') && html.includes("const answer = 42;"),
   formulaIsUnrenderedText: html.includes("$E=mc^2$"),
-  remoteHttpsImageLoadsDirectly: html.includes('src="https://images.example/research.png"') && html.includes('alt="有意义的替代文本"'),
+  rendererEmitsRemoteHttpsImageRequest: html.includes('src="https://images.example/research.png"') && html.includes('alt="有意义的替代文本"'),
   javascriptImageBlocked: !html.includes("javascript:"),
   dataImageBlocked: !html.includes("data:image"),
   rawScriptBlocked: !html.includes("<script"),
+  fullDocumentCodeFenceWorks: wholeCodeHtml.includes("const first = 1;") && wholeCodeHtml.includes("const second = 2;"),
+  currentBlockPipelineChangesCrossBlankCode: codeBlocks.length === 2 && splitCodeHtml !== wholeCodeHtml,
+  currentBlockPipelineChangesLooseList: listBlocks.length === 3 && splitListHtml !== wholeListHtml,
 };
 
 for (const [name, passed] of Object.entries(checks)) {
@@ -68,10 +92,16 @@ console.log(JSON.stringify({
     securityObserved: ["javascript image URL blocked", "data image URL blocked", "raw script blocked"],
     gaps: [
       "formula syntax remains literal text",
-      "HTTPS images are loaded directly from their remote origin",
+      "the renderer emits a direct HTTPS image request",
+      "the production block-by-block pipeline changes Markdown constructs that cross blank lines",
       "no provenance, cache, expiry, export, or alt-quality contract is established",
     ],
   },
+  limitation: "This component probe does not simulate HTTP headers; Collector's production CSP currently blocks non-self image origins.",
   checks,
+  blockPipelineEvidence: {
+    crossBlankCode: { blockCount: codeBlocks.length, wholeCodeHtml, splitCodeHtml },
+    looseList: { blockCount: listBlocks.length, wholeListHtml, splitListHtml },
+  },
   renderedHtml: html,
 }, null, 2));
