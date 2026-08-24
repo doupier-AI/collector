@@ -34,9 +34,9 @@ export const ASSOCIATION_PANEL_DESKTOP_TEXT_LAYOUT: TextLayoutContract = {
       ],
       "beforeContent": "none",
       "afterContent": "none",
-      "computedStyleSha256": "01916858e86a3bd36823e6cbf2d2a95982cba1d76d97cdecc4e66d220e59b26c",
-      "beforeStyleSha256": "8062f61f3b28fb678d63eecd0eb1ac12b9787005afe57ec794adfca0238e9630",
-      "afterStyleSha256": "8062f61f3b28fb678d63eecd0eb1ac12b9787005afe57ec794adfca0238e9630",
+      "computedStyleSha256": "2c13dd5bf61818e4c2990edbbf85310c8a24218005b33481753dab2cfb9df45f",
+      "beforeStyleSha256": "4f7fb28f9b34ee4262f90935a22be1ec0ed98151d1ea020937c82992ece1dd87",
+      "afterStyleSha256": "4f7fb28f9b34ee4262f90935a22be1ec0ed98151d1ea020937c82992ece1dd87",
       "rect": {
         "x": 1,
         "y": 49,
@@ -115,9 +115,9 @@ export const ASSOCIATION_PANEL_DESKTOP_TEXT_LAYOUT: TextLayoutContract = {
       ],
       "beforeContent": "none",
       "afterContent": "none",
-      "computedStyleSha256": "5ccf927bdf9e7bccacfb855bb5d7a6cdb7920a29e85c08de2239ede520983c4f",
-      "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-      "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+      "computedStyleSha256": "6ebff0390a9814dbcda791f353ebf40a3578c89a8af23e703ae01a9d4779cf38",
+      "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+      "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
       "rect": {
         "x": 36,
         "y": 199.5,
@@ -136,9 +136,9 @@ export const ASSOCIATION_PANEL_DESKTOP_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "ARTICLE",
           "className": "map-candidate-card",
-          "computedStyleSha256": "16a1b3005a14c9c2236bc483dfcf328f727d10de545783af54cef271d365bb9d",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "c6443dec4a0bda007cca827d8281ce46e8cad1e9506e48ed36aadfd015af3451",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 17,
             "y": 149.1875,
@@ -165,9 +165,9 @@ export const ASSOCIATION_PANEL_DESKTOP_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "LI",
           "className": "",
-          "computedStyleSha256": "e16aedc59c2f17a207113f8dc3a25c44eb8b345db5262b34a5ff47217f9a006f",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "71e56701a3def0e3dfaa47025a19be4a7f1b03ea4d98258bffdcae1dedeb21e9",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 17,
             "y": 149.1875,
@@ -194,9 +194,9 @@ export const ASSOCIATION_PANEL_DESKTOP_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "OL",
           "className": "map-candidate-list",
-          "computedStyleSha256": "ca504295f06921f399e5234cf7335a884321a8b463dd93068fb8ca9e3b66639c",
-          "beforeStyleSha256": "059bf0f55b802d8b4a997ae585099f9ca9cc5de1ca59b5f3729744087948764b",
-          "afterStyleSha256": "059bf0f55b802d8b4a997ae585099f9ca9cc5de1ca59b5f3729744087948764b",
+          "computedStyleSha256": "3c5983b4b39683c3de173cfc797402b821cad3e0849b2d4c412e841d62dbd413",
+          "beforeStyleSha256": "754a2d2879479df3bc174f2a239050fed3b94fc483fd5388630ca3406e4e74ff",
+          "afterStyleSha256": "754a2d2879479df3bc174f2a239050fed3b94fc483fd5388630ca3406e4e74ff",
           "rect": {
             "x": 1,
             "y": 133.1875,
@@ -260,9 +260,9 @@ export const ASSOCIATION_PANEL_DESKTOP_TEXT_LAYOUT: TextLayoutContract = {
       ],
       "beforeContent": "none",
       "afterContent": "none",
-      "computedStyleSha256": "519c850d1fd9500fb96c82041cc2400f2e6e36896d3f3beeebf9931573c7c3e9",
-      "beforeStyleSha256": "46e5b1931b3f36cd2907a28a7e51b8dab89d2ce6e6e930fd125e93e855a94ff6",
-      "afterStyleSha256": "46e5b1931b3f36cd2907a28a7e51b8dab89d2ce6e6e930fd125e93e855a94ff6",
+      "computedStyleSha256": "2b5bae3d8a59daae4e9d038afc8e0e28756491f10973fe8fa454fcdbc0c555ad",
+      "beforeStyleSha256": "a32f71b886b8b40d62b8ccb21b265702c45d44fcdd9d1b91016f70216bc43d62",
+      "afterStyleSha256": "a32f71b886b8b40d62b8ccb21b265702c45d44fcdd9d1b91016f70216bc43d62",
       "rect": {
         "x": 49,
         "y": 283.6875,
@@ -287,9 +287,9 @@ export const ASSOCIATION_PANEL_DESKTOP_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "DIV",
           "className": "association-hint__range",
-          "computedStyleSha256": "418508e5d10a87645110d3dc37dbb035e34f51486fe2b1ec0bac42d4d2dfd818",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "e8ac8ff3baeaa1204a31dd35e1b393444fac82becb04bee6841799257303f4af",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 49,
             "y": 250.09375,
@@ -316,9 +316,9 @@ export const ASSOCIATION_PANEL_DESKTOP_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "DIV",
           "className": "map-candidate-evidence__range",
-          "computedStyleSha256": "f76e96908e4130efe30719c57bb7d48b2316aa21d8e1a63ff0e7836b6c322752",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "1af1e25b17053aad16e30fc7e13e4886942f86ac36de7d453a2f24f09b8dd511",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 49,
             "y": 250.09375,
@@ -345,9 +345,9 @@ export const ASSOCIATION_PANEL_DESKTOP_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "SECTION",
           "className": "map-candidate-evidence",
-          "computedStyleSha256": "a12eff01d5090ccd0da4fc6643643eacbe267f2fb476f897f52bf103eceee4d1",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "f73f21a831654370a437d8996f0d9cf686bb6262fd34c922456bb7ea907980ab",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 36,
             "y": 237.09375,
@@ -374,9 +374,9 @@ export const ASSOCIATION_PANEL_DESKTOP_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "DIV",
           "className": "map-candidate-card__evidence",
-          "computedStyleSha256": "ab1efacb911eef9440758b160d380c89ae06e8b359f5d84090ebe701fee8c625",
-          "beforeStyleSha256": "059bf0f55b802d8b4a997ae585099f9ca9cc5de1ca59b5f3729744087948764b",
-          "afterStyleSha256": "059bf0f55b802d8b4a997ae585099f9ca9cc5de1ca59b5f3729744087948764b",
+          "computedStyleSha256": "6739f35048c37ad58a5298faff053dfbb66203f104c29190ba971129ef7d60bd",
+          "beforeStyleSha256": "754a2d2879479df3bc174f2a239050fed3b94fc483fd5388630ca3406e4e74ff",
+          "afterStyleSha256": "754a2d2879479df3bc174f2a239050fed3b94fc483fd5388630ca3406e4e74ff",
           "rect": {
             "x": 36,
             "y": 237.09375,
@@ -403,9 +403,9 @@ export const ASSOCIATION_PANEL_DESKTOP_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "ARTICLE",
           "className": "map-candidate-card",
-          "computedStyleSha256": "16a1b3005a14c9c2236bc483dfcf328f727d10de545783af54cef271d365bb9d",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "c6443dec4a0bda007cca827d8281ce46e8cad1e9506e48ed36aadfd015af3451",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 17,
             "y": 149.1875,
@@ -432,9 +432,9 @@ export const ASSOCIATION_PANEL_DESKTOP_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "LI",
           "className": "",
-          "computedStyleSha256": "e16aedc59c2f17a207113f8dc3a25c44eb8b345db5262b34a5ff47217f9a006f",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "71e56701a3def0e3dfaa47025a19be4a7f1b03ea4d98258bffdcae1dedeb21e9",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 17,
             "y": 149.1875,
@@ -461,9 +461,9 @@ export const ASSOCIATION_PANEL_DESKTOP_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "OL",
           "className": "map-candidate-list",
-          "computedStyleSha256": "ca504295f06921f399e5234cf7335a884321a8b463dd93068fb8ca9e3b66639c",
-          "beforeStyleSha256": "059bf0f55b802d8b4a997ae585099f9ca9cc5de1ca59b5f3729744087948764b",
-          "afterStyleSha256": "059bf0f55b802d8b4a997ae585099f9ca9cc5de1ca59b5f3729744087948764b",
+          "computedStyleSha256": "3c5983b4b39683c3de173cfc797402b821cad3e0849b2d4c412e841d62dbd413",
+          "beforeStyleSha256": "754a2d2879479df3bc174f2a239050fed3b94fc483fd5388630ca3406e4e74ff",
+          "afterStyleSha256": "754a2d2879479df3bc174f2a239050fed3b94fc483fd5388630ca3406e4e74ff",
           "rect": {
             "x": 1,
             "y": 133.1875,
@@ -527,9 +527,9 @@ export const ASSOCIATION_PANEL_DESKTOP_TEXT_LAYOUT: TextLayoutContract = {
       ],
       "beforeContent": "none",
       "afterContent": "none",
-      "computedStyleSha256": "519c850d1fd9500fb96c82041cc2400f2e6e36896d3f3beeebf9931573c7c3e9",
-      "beforeStyleSha256": "46e5b1931b3f36cd2907a28a7e51b8dab89d2ce6e6e930fd125e93e855a94ff6",
-      "afterStyleSha256": "46e5b1931b3f36cd2907a28a7e51b8dab89d2ce6e6e930fd125e93e855a94ff6",
+      "computedStyleSha256": "2b5bae3d8a59daae4e9d038afc8e0e28756491f10973fe8fa454fcdbc0c555ad",
+      "beforeStyleSha256": "a32f71b886b8b40d62b8ccb21b265702c45d44fcdd9d1b91016f70216bc43d62",
+      "afterStyleSha256": "a32f71b886b8b40d62b8ccb21b265702c45d44fcdd9d1b91016f70216bc43d62",
       "rect": {
         "x": 340,
         "y": 283.6875,
@@ -554,9 +554,9 @@ export const ASSOCIATION_PANEL_DESKTOP_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "DIV",
           "className": "association-hint__range",
-          "computedStyleSha256": "418508e5d10a87645110d3dc37dbb035e34f51486fe2b1ec0bac42d4d2dfd818",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "e8ac8ff3baeaa1204a31dd35e1b393444fac82becb04bee6841799257303f4af",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 340,
             "y": 250.09375,
@@ -583,9 +583,9 @@ export const ASSOCIATION_PANEL_DESKTOP_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "DIV",
           "className": "map-candidate-evidence__range",
-          "computedStyleSha256": "f76e96908e4130efe30719c57bb7d48b2316aa21d8e1a63ff0e7836b6c322752",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "1af1e25b17053aad16e30fc7e13e4886942f86ac36de7d453a2f24f09b8dd511",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 340,
             "y": 250.09375,
@@ -612,9 +612,9 @@ export const ASSOCIATION_PANEL_DESKTOP_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "SECTION",
           "className": "map-candidate-evidence",
-          "computedStyleSha256": "a12eff01d5090ccd0da4fc6643643eacbe267f2fb476f897f52bf103eceee4d1",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "f73f21a831654370a437d8996f0d9cf686bb6262fd34c922456bb7ea907980ab",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 327,
             "y": 237.09375,
@@ -641,9 +641,9 @@ export const ASSOCIATION_PANEL_DESKTOP_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "DIV",
           "className": "map-candidate-card__evidence",
-          "computedStyleSha256": "ab1efacb911eef9440758b160d380c89ae06e8b359f5d84090ebe701fee8c625",
-          "beforeStyleSha256": "059bf0f55b802d8b4a997ae585099f9ca9cc5de1ca59b5f3729744087948764b",
-          "afterStyleSha256": "059bf0f55b802d8b4a997ae585099f9ca9cc5de1ca59b5f3729744087948764b",
+          "computedStyleSha256": "6739f35048c37ad58a5298faff053dfbb66203f104c29190ba971129ef7d60bd",
+          "beforeStyleSha256": "754a2d2879479df3bc174f2a239050fed3b94fc483fd5388630ca3406e4e74ff",
+          "afterStyleSha256": "754a2d2879479df3bc174f2a239050fed3b94fc483fd5388630ca3406e4e74ff",
           "rect": {
             "x": 36,
             "y": 237.09375,
@@ -670,9 +670,9 @@ export const ASSOCIATION_PANEL_DESKTOP_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "ARTICLE",
           "className": "map-candidate-card",
-          "computedStyleSha256": "16a1b3005a14c9c2236bc483dfcf328f727d10de545783af54cef271d365bb9d",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "c6443dec4a0bda007cca827d8281ce46e8cad1e9506e48ed36aadfd015af3451",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 17,
             "y": 149.1875,
@@ -699,9 +699,9 @@ export const ASSOCIATION_PANEL_DESKTOP_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "LI",
           "className": "",
-          "computedStyleSha256": "e16aedc59c2f17a207113f8dc3a25c44eb8b345db5262b34a5ff47217f9a006f",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "71e56701a3def0e3dfaa47025a19be4a7f1b03ea4d98258bffdcae1dedeb21e9",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 17,
             "y": 149.1875,
@@ -728,9 +728,9 @@ export const ASSOCIATION_PANEL_DESKTOP_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "OL",
           "className": "map-candidate-list",
-          "computedStyleSha256": "ca504295f06921f399e5234cf7335a884321a8b463dd93068fb8ca9e3b66639c",
-          "beforeStyleSha256": "059bf0f55b802d8b4a997ae585099f9ca9cc5de1ca59b5f3729744087948764b",
-          "afterStyleSha256": "059bf0f55b802d8b4a997ae585099f9ca9cc5de1ca59b5f3729744087948764b",
+          "computedStyleSha256": "3c5983b4b39683c3de173cfc797402b821cad3e0849b2d4c412e841d62dbd413",
+          "beforeStyleSha256": "754a2d2879479df3bc174f2a239050fed3b94fc483fd5388630ca3406e4e74ff",
+          "afterStyleSha256": "754a2d2879479df3bc174f2a239050fed3b94fc483fd5388630ca3406e4e74ff",
           "rect": {
             "x": 1,
             "y": 133.1875,
@@ -819,9 +819,9 @@ export const ASSOCIATION_PANEL_MOBILE_TEXT_LAYOUT: TextLayoutContract = {
       ],
       "beforeContent": "none",
       "afterContent": "none",
-      "computedStyleSha256": "5ae60d7d7dedcd1cfd3f8396758a313ac29f638cce5ea0a0e02d0eacd894f213",
-      "beforeStyleSha256": "8062f61f3b28fb678d63eecd0eb1ac12b9787005afe57ec794adfca0238e9630",
-      "afterStyleSha256": "8062f61f3b28fb678d63eecd0eb1ac12b9787005afe57ec794adfca0238e9630",
+      "computedStyleSha256": "44344cfd29733d488716b65365c6f02aceaf2b542f195d79fedce92e4354564b",
+      "beforeStyleSha256": "4f7fb28f9b34ee4262f90935a22be1ec0ed98151d1ea020937c82992ece1dd87",
+      "afterStyleSha256": "4f7fb28f9b34ee4262f90935a22be1ec0ed98151d1ea020937c82992ece1dd87",
       "rect": {
         "x": 1,
         "y": 49,
@@ -912,9 +912,9 @@ export const ASSOCIATION_PANEL_MOBILE_TEXT_LAYOUT: TextLayoutContract = {
       ],
       "beforeContent": "none",
       "afterContent": "none",
-      "computedStyleSha256": "a001a2771dc9019fe105c27fc05699aead72c155d5c4efbdc5d5eee48ecedc10",
-      "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-      "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+      "computedStyleSha256": "c85378388ad47f4887192fb18c05bfbf21f975b1eea79c6a079203a25798d420",
+      "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+      "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
       "rect": {
         "x": 36,
         "y": 272,
@@ -933,9 +933,9 @@ export const ASSOCIATION_PANEL_MOBILE_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "ARTICLE",
           "className": "map-candidate-card",
-          "computedStyleSha256": "1abea6dd8e895096f5c1657fdc8e2aa37151c4b6161ac5456a6c0e0dea578bc0",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "9f596240ead58c4013c0c2b514383c9a9969cc1373ee3dbbb84cfa4c1a13a15d",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 17,
             "y": 200.375,
@@ -962,9 +962,9 @@ export const ASSOCIATION_PANEL_MOBILE_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "LI",
           "className": "",
-          "computedStyleSha256": "647fd9020caf85fb7ccbd000ceb7c95a3ebdd60fe7bc8cb3f7d08587f4ee974a",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "614218d65cea8ee159c7df0507ce8161fc786f40f4d6133abc4c747053b2f55a",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 17,
             "y": 200.375,
@@ -991,9 +991,9 @@ export const ASSOCIATION_PANEL_MOBILE_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "OL",
           "className": "map-candidate-list",
-          "computedStyleSha256": "8ada5f8b294fba235f43c0068a9262835a7e0636ff631f351ab4aae90d769230",
-          "beforeStyleSha256": "059bf0f55b802d8b4a997ae585099f9ca9cc5de1ca59b5f3729744087948764b",
-          "afterStyleSha256": "059bf0f55b802d8b4a997ae585099f9ca9cc5de1ca59b5f3729744087948764b",
+          "computedStyleSha256": "e22993145c768322aedc62858d702e83bdb07baccd8f8b94c0d69065f4e5e44f",
+          "beforeStyleSha256": "754a2d2879479df3bc174f2a239050fed3b94fc483fd5388630ca3406e4e74ff",
+          "afterStyleSha256": "754a2d2879479df3bc174f2a239050fed3b94fc483fd5388630ca3406e4e74ff",
           "rect": {
             "x": 1,
             "y": 184.375,
@@ -1057,9 +1057,9 @@ export const ASSOCIATION_PANEL_MOBILE_TEXT_LAYOUT: TextLayoutContract = {
       ],
       "beforeContent": "none",
       "afterContent": "none",
-      "computedStyleSha256": "4057ca867538c624034addda2266ecd86cb8e3b285d3df96cc3954f6e3c689dd",
-      "beforeStyleSha256": "46e5b1931b3f36cd2907a28a7e51b8dab89d2ce6e6e930fd125e93e855a94ff6",
-      "afterStyleSha256": "46e5b1931b3f36cd2907a28a7e51b8dab89d2ce6e6e930fd125e93e855a94ff6",
+      "computedStyleSha256": "b7d21a139141e85e1b408f34638a49e85dab0350525666e9220c1cd5395d4a0b",
+      "beforeStyleSha256": "a32f71b886b8b40d62b8ccb21b265702c45d44fcdd9d1b91016f70216bc43d62",
+      "afterStyleSha256": "a32f71b886b8b40d62b8ccb21b265702c45d44fcdd9d1b91016f70216bc43d62",
       "rect": {
         "x": 49,
         "y": 356.1875,
@@ -1084,9 +1084,9 @@ export const ASSOCIATION_PANEL_MOBILE_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "DIV",
           "className": "association-hint__range",
-          "computedStyleSha256": "47dd95b15ca4de88ad07c98b1efc26d90faff71e940f376f2153b0975dac87f0",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "8d246125c4f8712449022e43593ab85980fc31f18d701ed9e2af89287f8c6835",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 49,
             "y": 322.59375,
@@ -1113,9 +1113,9 @@ export const ASSOCIATION_PANEL_MOBILE_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "DIV",
           "className": "map-candidate-evidence__range",
-          "computedStyleSha256": "8e86dc4e69d986e4aa29767d5a762c47f3482e2f53757563768e38f8b790069a",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "3a64333d91865258c6db95521babd8782971f02519c06792937dfb8317d125bb",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 49,
             "y": 322.59375,
@@ -1142,9 +1142,9 @@ export const ASSOCIATION_PANEL_MOBILE_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "SECTION",
           "className": "map-candidate-evidence",
-          "computedStyleSha256": "fa47052b464ca1a95c3affeeb7831d104d5f83a8515ddd00f8c34d37edc71aa7",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "2d1c467bdb5c2e4424b05b8217f8a8d0d59b201ad3cd329c3bdb621ec2b17fca",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 36,
             "y": 309.59375,
@@ -1171,9 +1171,9 @@ export const ASSOCIATION_PANEL_MOBILE_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "DIV",
           "className": "map-candidate-card__evidence",
-          "computedStyleSha256": "583e0fbf6d21b74264e38e8e3cd50e2233793eb8865ea82e6252a51e8614cdd7",
-          "beforeStyleSha256": "059bf0f55b802d8b4a997ae585099f9ca9cc5de1ca59b5f3729744087948764b",
-          "afterStyleSha256": "059bf0f55b802d8b4a997ae585099f9ca9cc5de1ca59b5f3729744087948764b",
+          "computedStyleSha256": "43c77c680933b304f2479cd4bd86135b0e2fbf2a0274eacf2e544553717e94d5",
+          "beforeStyleSha256": "754a2d2879479df3bc174f2a239050fed3b94fc483fd5388630ca3406e4e74ff",
+          "afterStyleSha256": "754a2d2879479df3bc174f2a239050fed3b94fc483fd5388630ca3406e4e74ff",
           "rect": {
             "x": 36,
             "y": 309.59375,
@@ -1200,9 +1200,9 @@ export const ASSOCIATION_PANEL_MOBILE_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "ARTICLE",
           "className": "map-candidate-card",
-          "computedStyleSha256": "1abea6dd8e895096f5c1657fdc8e2aa37151c4b6161ac5456a6c0e0dea578bc0",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "9f596240ead58c4013c0c2b514383c9a9969cc1373ee3dbbb84cfa4c1a13a15d",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 17,
             "y": 200.375,
@@ -1229,9 +1229,9 @@ export const ASSOCIATION_PANEL_MOBILE_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "LI",
           "className": "",
-          "computedStyleSha256": "647fd9020caf85fb7ccbd000ceb7c95a3ebdd60fe7bc8cb3f7d08587f4ee974a",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "614218d65cea8ee159c7df0507ce8161fc786f40f4d6133abc4c747053b2f55a",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 17,
             "y": 200.375,
@@ -1258,9 +1258,9 @@ export const ASSOCIATION_PANEL_MOBILE_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "OL",
           "className": "map-candidate-list",
-          "computedStyleSha256": "8ada5f8b294fba235f43c0068a9262835a7e0636ff631f351ab4aae90d769230",
-          "beforeStyleSha256": "059bf0f55b802d8b4a997ae585099f9ca9cc5de1ca59b5f3729744087948764b",
-          "afterStyleSha256": "059bf0f55b802d8b4a997ae585099f9ca9cc5de1ca59b5f3729744087948764b",
+          "computedStyleSha256": "e22993145c768322aedc62858d702e83bdb07baccd8f8b94c0d69065f4e5e44f",
+          "beforeStyleSha256": "754a2d2879479df3bc174f2a239050fed3b94fc483fd5388630ca3406e4e74ff",
+          "afterStyleSha256": "754a2d2879479df3bc174f2a239050fed3b94fc483fd5388630ca3406e4e74ff",
           "rect": {
             "x": 1,
             "y": 184.375,
@@ -1324,9 +1324,9 @@ export const ASSOCIATION_PANEL_MOBILE_TEXT_LAYOUT: TextLayoutContract = {
       ],
       "beforeContent": "none",
       "afterContent": "none",
-      "computedStyleSha256": "4057ca867538c624034addda2266ecd86cb8e3b285d3df96cc3954f6e3c689dd",
-      "beforeStyleSha256": "46e5b1931b3f36cd2907a28a7e51b8dab89d2ce6e6e930fd125e93e855a94ff6",
-      "afterStyleSha256": "46e5b1931b3f36cd2907a28a7e51b8dab89d2ce6e6e930fd125e93e855a94ff6",
+      "computedStyleSha256": "b7d21a139141e85e1b408f34638a49e85dab0350525666e9220c1cd5395d4a0b",
+      "beforeStyleSha256": "a32f71b886b8b40d62b8ccb21b265702c45d44fcdd9d1b91016f70216bc43d62",
+      "afterStyleSha256": "a32f71b886b8b40d62b8ccb21b265702c45d44fcdd9d1b91016f70216bc43d62",
       "rect": {
         "x": 49,
         "y": 522.5625,
@@ -1351,9 +1351,9 @@ export const ASSOCIATION_PANEL_MOBILE_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "DIV",
           "className": "association-hint__range",
-          "computedStyleSha256": "47dd95b15ca4de88ad07c98b1efc26d90faff71e940f376f2153b0975dac87f0",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "8d246125c4f8712449022e43593ab85980fc31f18d701ed9e2af89287f8c6835",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 49,
             "y": 488.96875,
@@ -1380,9 +1380,9 @@ export const ASSOCIATION_PANEL_MOBILE_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "DIV",
           "className": "map-candidate-evidence__range",
-          "computedStyleSha256": "8e86dc4e69d986e4aa29767d5a762c47f3482e2f53757563768e38f8b790069a",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "3a64333d91865258c6db95521babd8782971f02519c06792937dfb8317d125bb",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 49,
             "y": 488.96875,
@@ -1409,9 +1409,9 @@ export const ASSOCIATION_PANEL_MOBILE_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "SECTION",
           "className": "map-candidate-evidence",
-          "computedStyleSha256": "fa47052b464ca1a95c3affeeb7831d104d5f83a8515ddd00f8c34d37edc71aa7",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "2d1c467bdb5c2e4424b05b8217f8a8d0d59b201ad3cd329c3bdb621ec2b17fca",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 36,
             "y": 475.96875,
@@ -1438,9 +1438,9 @@ export const ASSOCIATION_PANEL_MOBILE_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "DIV",
           "className": "map-candidate-card__evidence",
-          "computedStyleSha256": "583e0fbf6d21b74264e38e8e3cd50e2233793eb8865ea82e6252a51e8614cdd7",
-          "beforeStyleSha256": "059bf0f55b802d8b4a997ae585099f9ca9cc5de1ca59b5f3729744087948764b",
-          "afterStyleSha256": "059bf0f55b802d8b4a997ae585099f9ca9cc5de1ca59b5f3729744087948764b",
+          "computedStyleSha256": "43c77c680933b304f2479cd4bd86135b0e2fbf2a0274eacf2e544553717e94d5",
+          "beforeStyleSha256": "754a2d2879479df3bc174f2a239050fed3b94fc483fd5388630ca3406e4e74ff",
+          "afterStyleSha256": "754a2d2879479df3bc174f2a239050fed3b94fc483fd5388630ca3406e4e74ff",
           "rect": {
             "x": 36,
             "y": 309.59375,
@@ -1467,9 +1467,9 @@ export const ASSOCIATION_PANEL_MOBILE_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "ARTICLE",
           "className": "map-candidate-card",
-          "computedStyleSha256": "1abea6dd8e895096f5c1657fdc8e2aa37151c4b6161ac5456a6c0e0dea578bc0",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "9f596240ead58c4013c0c2b514383c9a9969cc1373ee3dbbb84cfa4c1a13a15d",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 17,
             "y": 200.375,
@@ -1496,9 +1496,9 @@ export const ASSOCIATION_PANEL_MOBILE_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "LI",
           "className": "",
-          "computedStyleSha256": "647fd9020caf85fb7ccbd000ceb7c95a3ebdd60fe7bc8cb3f7d08587f4ee974a",
-          "beforeStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-          "afterStyleSha256": "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+          "computedStyleSha256": "614218d65cea8ee159c7df0507ce8161fc786f40f4d6133abc4c747053b2f55a",
+          "beforeStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+          "afterStyleSha256": "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
           "rect": {
             "x": 17,
             "y": 200.375,
@@ -1525,9 +1525,9 @@ export const ASSOCIATION_PANEL_MOBILE_TEXT_LAYOUT: TextLayoutContract = {
         {
           "tagName": "OL",
           "className": "map-candidate-list",
-          "computedStyleSha256": "8ada5f8b294fba235f43c0068a9262835a7e0636ff631f351ab4aae90d769230",
-          "beforeStyleSha256": "059bf0f55b802d8b4a997ae585099f9ca9cc5de1ca59b5f3729744087948764b",
-          "afterStyleSha256": "059bf0f55b802d8b4a997ae585099f9ca9cc5de1ca59b5f3729744087948764b",
+          "computedStyleSha256": "e22993145c768322aedc62858d702e83bdb07baccd8f8b94c0d69065f4e5e44f",
+          "beforeStyleSha256": "754a2d2879479df3bc174f2a239050fed3b94fc483fd5388630ca3406e4e74ff",
+          "afterStyleSha256": "754a2d2879479df3bc174f2a239050fed3b94fc483fd5388630ca3406e4e74ff",
           "rect": {
             "x": 1,
             "y": 184.375,

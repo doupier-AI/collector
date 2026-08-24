@@ -103,9 +103,9 @@ function longTurnTextAncestors(sectionIndex: number) {
   const contentAncestor = (className: string) => ({
     tagName: "DIV",
     className,
-    computedStyleSha256: "18c7c923020be45c93bc273c7bba1a9b91dc785e838a9c70218bdad4f61cf98c",
-    beforeStyleSha256: "5f48c865b18743ea82d012e9a29bf908235dde8d59534c76cfbbb230418d61c3",
-    afterStyleSha256: "5f48c865b18743ea82d012e9a29bf908235dde8d59534c76cfbbb230418d61c3",
+    computedStyleSha256: "c8b8a5b1a05f2cb4b0c08fb9307fcb17abbe04b475e4e7f3b4ec6528902591fd",
+    beforeStyleSha256: "db1e6ec3d4b72055aeaa912ed14147febdf020f84c105bd251aa3462cf3dc5d3",
+    afterStyleSha256: "db1e6ec3d4b72055aeaa912ed14147febdf020f84c105bd251aa3462cf3dc5d3",
     rect: { x: 25, y: sectionY + 16, width: 1038, height: 467.390625 },
     renderingStyle: LONG_TURN_RENDERING_STYLE,
   });
@@ -115,9 +115,9 @@ function longTurnTextAncestors(sectionIndex: number) {
     {
       tagName: "SECTION",
       className: "turn-card__section",
-      computedStyleSha256: "3a426cd1d786aa3025d4bcada712338569a6003012503cd5dad9df8230f09859",
-      beforeStyleSha256: "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
-      afterStyleSha256: "f002cc760521dfe9f0d4dc6f3b1e19dc504477aab8288aeb4782efed0770bce8",
+      computedStyleSha256: "ebdfc9549347b5048b397edbbb6538b7f4eda6d90edaf065aca45bba4a0a6388",
+      beforeStyleSha256: "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
+      afterStyleSha256: "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
       rect: { x: 25, y: sectionY, width: 1038, height: 483.390625 },
       renderingStyle: LONG_TURN_RENDERING_STYLE,
     },
@@ -156,10 +156,10 @@ const LONG_TURN_CARD_TEXT_LAYOUT: TextLayoutContract = {
         beforeContent: "none",
         afterContent: "none",
         computedStyleSha256: paragraphIndex === 2
-          ? "5faa2b9bfb3dda1a84d3f7f0286f6b0dfe9643915156b214717fb208b4a0c300"
-          : "a7cdf3f01a4523b4d776b4e1f90c45719ad191d3ffc2e46648ae0e1ee4b93ad8",
-        beforeStyleSha256: "5f48c865b18743ea82d012e9a29bf908235dde8d59534c76cfbbb230418d61c3",
-        afterStyleSha256: "5f48c865b18743ea82d012e9a29bf908235dde8d59534c76cfbbb230418d61c3",
+          ? "263b476622d43bf160a13cdd4f33f0cbab4adbf55db9fa989d034a6f57aec233"
+          : "88b10b0839a6a1a47e216b6deaf29e42deb37be417f957981a999879e8ca07df",
+        beforeStyleSha256: "db1e6ec3d4b72055aeaa912ed14147febdf020f84c105bd251aa3462cf3dc5d3",
+        afterStyleSha256: "db1e6ec3d4b72055aeaa912ed14147febdf020f84c105bd251aa3462cf3dc5d3",
         rect: { x: 25, y, width: 1038, height: 112 },
         lines: [1025.25, 1025.25, 1025.25, 792.625].map((width, lineIndex) => ({
           x: 25,
