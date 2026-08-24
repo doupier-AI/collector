@@ -2,13 +2,23 @@
   "schemaVersion": 2,
   "prototype": true,
   "issue": 122,
-  "decisionStatus": "awaiting-user-review",
+  "decisionStatus": "confirmed",
+  "decidedOn": "2026-08-25",
+  "decisions": {
+    "sampleSet": "approved-seven-file-minimum",
+    "layerWeights": {
+      "documentValue": 50,
+      "diagnosticAnchors": 50
+    },
+    "imageOnlyPageWithoutOcr": "failure",
+    "mixedDocumentWithoutOcr": "partial-only-if-page-image-preserved-and-gap-disclosed"
+  },
   "question": "Can a candidate preserve research value and disclose loss, rather than merely export text?",
   "scoring": {
-    "candidate": true,
+    "candidate": false,
     "weights": {
-      "documentValue": 60,
-      "diagnosticAnchors": 40
+      "documentValue": 50,
+      "diagnosticAnchors": 50
     },
     "sampleGroups": {
       "core-research": 70,
@@ -287,7 +297,7 @@
       "candidate": true,
       "file": "output/pdf/hybrid-technical-report.pdf",
       "weight": 23.333333333333332,
-      "expectedOutcome": "decision-dependent",
+      "expectedOutcome": "conditional",
       "layout": "16-page NIST AI 100-1 benchmark derivative: 10 native source pages, two raster-only source pages, and four original derivative pages",
       "documentValueChecks": [
         {
@@ -304,7 +314,7 @@
         },
         {
           "id": "honest-degradation",
-          "label": "第 6、12 页没有原生文字层；OCR 结果必须标明来源，不能伪装成原生精确文字。"
+          "label": "第 6、12 页无 OCR 时页级失败；只有保留页图并明确披露缺口，整份报告才可降级为部分成功；不得伪装成原生精确文字。"
         }
       ],
       "diagnosticAnchors": [
@@ -375,7 +385,7 @@
           "region": "full-page",
           "objectType": "imageOnlyPage",
           "ocrReferenceText": "Mechanisms are in place to inventory AI systems",
-          "structureExpectation": "accurate OCR matching ocrReferenceText with disclosed OCR provenance may pass; image preserved plus explicit no-native-text disclosure without OCR remains pending between partial and failure",
+          "structureExpectation": "accurate OCR matching ocrReferenceText with disclosed OCR provenance and uncertainty may pass; without OCR this page-level anchor fails even when the page image is preserved and the missing native text is disclosed",
           "sourcePdfPage": 28,
           "sourcePrintedPage": "23",
           "sourceSha256": "7576EDB531D9848825814EE88E28B1795D3A84B435B4B797D3670EAFDC4A89F1"
@@ -405,17 +415,17 @@
           "region": "full-page",
           "objectType": "imageOnlyPage",
           "ocrReferenceText": "AI Risk Management and Human-AI Interaction",
-          "structureExpectation": "accurate OCR matching ocrReferenceText with disclosed OCR provenance may pass; image preserved plus explicit no-native-text disclosure without OCR remains pending between partial and failure",
+          "structureExpectation": "accurate OCR matching ocrReferenceText with disclosed OCR provenance and uncertainty may pass; without OCR this page-level anchor fails even when the page image is preserved and the missing native text is disclosed",
           "sourcePdfPage": 45,
           "sourcePrintedPage": "40",
           "sourceSha256": "7576EDB531D9848825814EE88E28B1795D3A84B435B4B797D3670EAFDC4A89F1"
         }
       ],
       "decisionDependency": {
-        "status": "pending-user-verdict",
-        "question": "If image-only pages are preserved and native-text absence is disclosed, but OCR is unavailable, is the result partial or failure?",
+        "status": "resolved",
         "passCondition": "Accurate OCR is returned with OCR provenance and uncertainty disclosed.",
-        "unresolvedNoOcrCondition": "Preserve the page image and disclose the missing native text; do not automatically mark pass."
+        "noOcrPageOutcome": "failure",
+        "mixedDocumentOutcome": "partial-success-only-when-page-image-is-preserved-and-native-text-gap-is-explicitly-disclosed"
       }
     },
     {

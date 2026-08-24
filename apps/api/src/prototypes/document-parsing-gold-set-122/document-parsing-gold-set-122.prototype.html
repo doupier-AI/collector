@@ -73,7 +73,7 @@
       <div class="eyebrow">一次性原型 · Issue #122 · 离线 · 刷新清空</div>
       <h1>证据审阅台：先看整篇是否可研究，再查对象有没有丢。</h1>
       <p class="lede">这不是把“能抽出文字”换一个名字。每份文件都要先经受整份文档的研究任务检查，再逐一核对页、区域和对象。两条证据链会在同一个组合分数中相遇，却不会互相掩盖。</p>
-      <div class="candidate-note"><strong>候选权重，待裁决</strong><span>整份文档研究价值 60% · 对象级诊断锚点 40%。本原型只探索该规则是否有辨识力；它不是正式产品决定，也不会写入产品能力。</span></div>
+      <div class="candidate-note"><strong>已确认的评分规则</strong><span>整份文档研究价值 50% · 对象级诊断锚点 50%。等权用于防止完整正文掩盖对象证据缺口；这是 #122 原型的产品决定，不代表生产解析能力。</span></div>
     </header>
 
     <section class="panel" aria-labelledby="external-benchmark-title">
@@ -116,7 +116,7 @@
         <article class="review">
           <div class="review-head"><div><h2 id="sample-title"></h2><p class="review-description" id="sample-description"></p></div><a class="open-file" id="sample-link" target="_blank" rel="noopener">打开样本 ↗</a></div>
           <div class="tags" id="sample-meta"></div>
-          <div class="scoreboard" aria-label="当前样本两个层级与组合分数" aria-live="polite" aria-atomic="true"><div class="scoreboard-cell"><div class="meta-label">文档价值 · 60%</div><strong id="document-score">—</strong></div><div class="scoreboard-cell"><div class="meta-label">对象锚点 · 40%</div><strong id="anchor-score">—</strong></div><div class="scoreboard-cell"><div class="meta-label">组合分</div><strong id="sample-score">—</strong><span class="sample-status" id="sample-class">未评分</span></div></div>
+          <div class="scoreboard" aria-label="当前样本两个层级与组合分数" aria-live="polite" aria-atomic="true"><div class="scoreboard-cell"><div class="meta-label">文档价值 · 50%</div><strong id="document-score">—</strong></div><div class="scoreboard-cell"><div class="meta-label">对象锚点 · 50%</div><strong id="anchor-score">—</strong></div><div class="scoreboard-cell"><div class="meta-label">组合分</div><strong id="sample-score">—</strong><span class="sample-status" id="sample-class">未评分</span></div></div>
           <div class="evidence-chain">
             <fieldset><legend>研究任务卡</legend><p class="layer-note">整份文档层：内容完整性、可导航阅读、引用可复核、降级诚实。</p><div class="checkpoints" id="document-checkpoints"></div></fieldset>
             <fieldset><legend>证据锚点清单</legend><p class="layer-note">对象层：正向样本 8–9 项；负例固定 4 项。标签写明页码 / 区域 / 对象类型。</p><div class="checkpoints" id="anchor-checkpoints"></div></fieldset>
@@ -133,7 +133,7 @@
 
   <script>
     // Pure prototype module: no DOM access or persistence. It can be lifted out
-    // only if the user later confirms the candidate scoring model.
+    // The evaluation model records the product decisions confirmed for Issue #122.
     const Evaluation = (() => {
       const documentTasks = [
         { id: "integrity", label: "内容完整性" }, { id: "navigable", label: "可导航阅读" },
@@ -179,18 +179,18 @@
         {
           id: "hybrid", group: "core", weight: 70 / 3, title: "NIST 衍生混合技术报告 PDF", file: "output/pdf/hybrid-technical-report.pdf", format: "PDF · 16 页", language: "English", layout: "10 个原生来源页 + 2 个纯图扫描页 + 4 个原创衍生页",
           description: "这是带完整署名和页映射的 NIST AI 100-1 基准衍生稿，不是 NIST 官方出版物。它混合目录、原生图表和长表、横向宽表、附录、两页无文字层扫描与来源说明。",
-          tags: ["衍生与署名", "TOC", "原生 Figure 4", "长表", "横向宽表", "2 个 image-only 页", "无 OCR 结果待裁决", "page map"],
-          document: tasks("hybrid", ["封面、来源声明、目录、原生正文/表图、附录和页映射作为同一报告完整保留。", "目录、章节标题与页映射让读者能跨原生页、横向页和扫描页理解报告结构。", "原生图表、长表、横向宽表与扫描页分别说明自己的页级和对象级复核范围。", "第 6、12 页没有原生文字层；OCR 结果必须标明来源，不能伪装成原生精确文字。"]),
+          tags: ["衍生与署名", "TOC", "原生 Figure 4", "长表", "横向宽表", "2 个 image-only 页", "无 OCR 页级失败", "page map"],
+          document: tasks("hybrid", ["封面、来源声明、目录、原生正文/表图、附录和页映射作为同一报告完整保留。", "目录、章节标题与页映射让读者能跨原生页、横向页和扫描页理解报告结构。", "原生图表、长表、横向宽表与扫描页分别说明自己的页级和对象级复核范围。", "第 6、12 页无 OCR 时页级失败；只有保留页图并明确披露缺口，整份报告才可降级为部分成功；不得伪装成原生精确文字。"]),
           anchors: [
             checkpoint("hybrid-a1", "封面", "报告标题与基准衍生身份在封面明确可见。", "第 1 页 · full-page cover"),
             checkpoint("hybrid-a2", "来源声明", "NIST 推荐署名、DOI、2026-08-24 修改日期与性质、无背书声明完整。", "第 2 页 · 上半部/provenance"),
             checkpoint("hybrid-a3", "目录", "原始 Table of Contents 保留层级和页码关系。", "第 3 页 · 上半部/TOC（来源 PDF 物理第 4 页；印刷页码 i）"),
             checkpoint("hybrid-a4", "标题与图", "AI Risks and Trustworthiness、Figure 4 与正文保持对象边界。", "第 4 页 · 标题 + Figure 4（来源 PDF 物理第 17 页；印刷页码 12）"),
             checkpoint("hybrid-a5", "正文与长表", "GOVERN 正文与 Table 1 上半段保持连续。", "第 5 页 · body + table（来源 PDF 物理第 27 页；印刷页码 22）"),
-            checkpoint("hybrid-a6", "扫描续表", "若候选执行 OCR，必须命中参考短语 “Mechanisms are in place to inventory AI systems” 并标明 OCR 来源，才可通过；只保留整页图并说明无原生文字层时，部分/失败仍待裁决。", "第 6 页 · image-only（来源 PDF 物理第 28 页；印刷页码 23）"),
+            checkpoint("hybrid-a6", "扫描续表", "若候选执行 OCR，必须命中参考短语 “Mechanisms are in place to inventory AI systems” 并标明 OCR 来源与不确定性，才可通过；无 OCR 时该页失败。保留整页图并明确披露缺口，只能让整份混合文档降级为部分成功。", "第 6 页 · image-only（来源 PDF 物理第 28 页；印刷页码 23）"),
             checkpoint("hybrid-a7", "原生表格", "Table 2 当页的类别、子类别和行列关系保留，不把单元格降成散列文字。", "第 8 页 · Table 2（来源 PDF 物理第 31 页；印刷页码 26）"),
             checkpoint("hybrid-a8", "横向宽表", "6 列 × 6 行原创宽表保留表头、行列和横向页面。", "第 9 页 · landscape table"),
-            checkpoint("hybrid-a9", "扫描附录", "若候选执行 OCR，必须命中参考短语 “AI Risk Management and Human-AI Interaction” 并标明 OCR 来源，才可通过；无 OCR 时必须保留页图且不伪造正文，部分/失败仍待裁决。", "第 12 页 · image-only（来源 PDF 物理第 45 页；印刷页码 40）"),
+            checkpoint("hybrid-a9", "扫描附录", "若候选执行 OCR，必须命中参考短语 “AI Risk Management and Human-AI Interaction” 并标明 OCR 来源与不确定性，才可通过；无 OCR 时该页失败。保留页图并明确披露缺口，只能让整份混合文档降级为部分成功。", "第 12 页 · image-only（来源 PDF 物理第 45 页；印刷页码 40）"),
           ],
         },
         {
@@ -235,10 +235,14 @@
       function applyProfile(state, profile) {
         let ratings = {}; let criticalViolations = [];
         if (profile === "ideal") samples.forEach(sample => { ratings = rateAll(sample, "pass", "pass", ratings); });
+        if (profile === "noocr") {
+          samples.forEach(sample => { ratings = rateAll(sample, "pass", "pass", ratings); });
+          ratings = rateAll(samples[2], ["pass", "pass", "pass", "partial"], ["pass", "pass", "pass", "pass", "pass", "fail", "pass", "pass", "fail"], ratings);
+        }
         if (profile === "current") {
           ratings = rateAll(samples[0], ["pass", "partial", "partial", "pass"], ["pass", "partial", "fail", "partial", "fail", "fail", "partial", "pass"], ratings);
           ratings = rateAll(samples[1], ["partial", "fail", "partial", "pass"], ["pass", "fail", "partial", "fail", "fail", "fail", "fail", "partial"], ratings);
-          ratings = rateAll(samples[2], ["partial", "fail", "fail", "partial"], ["partial", "fail", "partial", "fail", "fail", "partial", "pass", "pass", "partial"], ratings);
+          ratings = rateAll(samples[2], ["partial", "fail", "fail", "fail"], ["partial", "fail", "partial", "fail", "fail", "fail", "pass", "pass", "fail"], ratings);
           ratings = rateAll(samples[3], ["pass", "partial", "partial", "pass"], ["pass", "partial", "partial", "partial", "fail", "fail", "pass", "partial"], ratings);
           ratings = rateAll(samples[4], ["pass", "pass", "pass", "partial"], ["pass", "pass", "pass", "fail"], ratings);
           ratings = rateAll(samples[5], ["pass", "pass", "pass", "partial"], ["pass", "pass", "pass", "fail"], ratings);
@@ -259,7 +263,7 @@
         return state;
       }
       function layerResult(items, ratings) { const rated = items.filter(item => ratings[item.id]); if (!rated.length) return { score: null, rated: 0, failed: [] }; const score = Math.round(items.reduce((sum, item) => sum + (ratingValue[ratings[item.id]] ?? 0), 0) / items.length * 100); return { score, rated: rated.length, failed: items.filter(item => ratings[item.id] && ratings[item.id] !== "pass") }; }
-      function sampleResult(sample, ratings) { const document = layerResult(sample.document, ratings); const anchors = layerResult(sample.anchors, ratings); const complete = document.rated === sample.document.length && anchors.rated === sample.anchors.length; const score = complete ? Math.round(document.score * .6 + anchors.score * .4) : null; const classification = score === null ? "unrated" : score >= 85 ? "success" : score >= 50 ? "partial" : "failure"; return { document, anchors, score, classification, complete }; }
+      function sampleResult(sample, ratings) { const document = layerResult(sample.document, ratings); const anchors = layerResult(sample.anchors, ratings); const complete = document.rated === sample.document.length && anchors.rated === sample.anchors.length; const score = complete ? Math.round(document.score * .5 + anchors.score * .5) : null; const classification = score === null ? "unrated" : score >= 85 ? "success" : score >= 50 ? "partial" : "failure"; return { document, anchors, score, classification, complete }; }
       function evaluate(state) {
         const results = Object.fromEntries(samples.map(sample => [sample.id, sampleResult(sample, state.ratings)]));
         const fullyRated = samples.every(sample => results[sample.id].complete);
@@ -276,9 +280,10 @@
 
     const scenarios = [
       { id: "happy", title: "情景一：完整成功", copy: "所有研究任务与对象锚点均通过；这里明确假设两张扫描页取得准确 OCR，并标明 OCR 来源与不确定性。完整成功还要过总分、三份核心组合下限、三份核心文档价值下限，以及零违规。", steps: [{ label: "套用完整成功", action: { type: "APPLY_PROFILE", profile: "ideal" } }, { label: "查看混合报告的扫描页锚点", action: { type: "SELECT_SAMPLE", sampleId: "hybrid" } }] },
-      { id: "text", title: "情景二：现有文本提取基线", copy: "当前可稳定提取文本型 PDF，但双栏顺序、宽表、图表、脚注与扫描页仍有实质缺口；损坏与加密目前只得到通用 parse_failed，未达到金标的专用分类。两张无 OCR 扫描页在本情景暂记部分，只用于比较分数，部分还是失败仍等你裁决。", steps: [{ label: "套用现有文本提取基线", action: { type: "APPLY_PROFILE", profile: "current" } }, { label: "查看英文双栏论文", action: { type: "SELECT_SAMPLE", sampleId: "en" } }, { label: "查看混合报告扫描页", action: { type: "SELECT_SAMPLE", sampleId: "hybrid" } }] },
-      { id: "markdown", title: "情景三：漂亮 Markdown，但丢锚点", copy: "候选看起来很流畅，却不能把一个结论带回表格、图注、脚注或扫描页。60% 的文档层不能自动掩盖 40% 的锚点层。", steps: [{ label: "套用漂亮 Markdown 情景", action: { type: "APPLY_PROFILE", profile: "markdown" } }, { label: "查看中文教材跨页表", action: { type: "SELECT_SAMPLE", sampleId: "zh" } }, { label: "查看复杂 DOCX 回归", action: { type: "SELECT_SAMPLE", sampleId: "docx" } }] },
-      { id: "fraud", title: "情景四：混合扫描页伪造 / 负例假成功", copy: "即使表面分数很高，把噪声扫描页伪造为可靠文字，或把本应拒绝的负例报成成功，都是不可平均的致命违规。", steps: [{ label: "套用伪造情景", action: { type: "APPLY_PROFILE", profile: "fabricated" } }, { label: "查看混合报告的两页扫描", action: { type: "SELECT_SAMPLE", sampleId: "hybrid" } }, { label: "追加“伪精确定位”违规", action: { type: "ADD_VIOLATION", violation: "扫描页伪精确定位" } }] },
+      { id: "text", title: "情景二：现有文本提取基线", copy: "当前可稳定提取文本型 PDF，但双栏顺序、宽表、图表、脚注与扫描页仍有实质缺口；损坏与加密目前只得到通用 parse_failed，未达到金标的专用分类。两张无 OCR 扫描页按已确认规则判页级失败；当前基线也没有保留页图并明确披露缺口，因此不能把这份混合文档当作合格的文档级部分成功。", steps: [{ label: "套用现有文本提取基线", action: { type: "APPLY_PROFILE", profile: "current" } }, { label: "查看英文双栏论文", action: { type: "SELECT_SAMPLE", sampleId: "en" } }, { label: "查看混合报告扫描页", action: { type: "SELECT_SAMPLE", sampleId: "hybrid" } }] },
+      { id: "noocr", title: "情景三：保留页图但无 OCR", copy: "两张纯图片页都保留，且明确披露没有原生文字层、未执行 OCR：两项页级锚点直接失败，整份混合文档按规则判部分成功。这里同时展示样本文档裁决与七份基准的总体裁决并不是同一层级。", steps: [{ label: "套用无 OCR 但诚实降级情景", action: { type: "APPLY_PROFILE", profile: "noocr" } }, { label: "查看混合文档的部分成功", action: { type: "SELECT_SAMPLE", sampleId: "hybrid" } }] },
+      { id: "markdown", title: "情景四：漂亮 Markdown，但丢锚点", copy: "候选看起来很流畅，却不能把一个结论带回表格、图注、脚注或扫描页。文档层与锚点层等权，完整正文不能自动掩盖对象证据缺口。", steps: [{ label: "套用漂亮 Markdown 情景", action: { type: "APPLY_PROFILE", profile: "markdown" } }, { label: "查看中文教材跨页表", action: { type: "SELECT_SAMPLE", sampleId: "zh" } }, { label: "查看复杂 DOCX 回归", action: { type: "SELECT_SAMPLE", sampleId: "docx" } }] },
+      { id: "fraud", title: "情景五：混合扫描页伪造 / 负例假成功", copy: "即使表面分数很高，把噪声扫描页伪造为可靠文字，或把本应拒绝的负例报成成功，都是不可平均的致命违规。", steps: [{ label: "套用伪造情景", action: { type: "APPLY_PROFILE", profile: "fabricated" } }, { label: "查看混合报告的两页扫描", action: { type: "SELECT_SAMPLE", sampleId: "hybrid" } }, { label: "追加“伪精确定位”违规", action: { type: "ADD_VIOLATION", violation: "扫描页伪精确定位" } }] },
     ];
     let state = Evaluation.initialState();
     const label = value => ({ success: "成功", partial: "部分成功", failure: "失败", unrated: "未评分" })[value];
@@ -306,7 +311,7 @@
     }
     function renderScenarios() {
       const active = scenarios.find(scenario => scenario.id === state.activeScenario);
-      document.querySelector("#scenario-tabs").innerHTML = scenarios.map(scenario => `<button type="button" class="tab ${scenario.id === active.id ? "active" : ""}" data-scenario="${scenario.id}" aria-pressed="${scenario.id === active.id}">${scenario.title.replace(/^情景[一二三四]：/, "")}</button>`).join("");
+      document.querySelector("#scenario-tabs").innerHTML = scenarios.map(scenario => `<button type="button" class="tab ${scenario.id === active.id ? "active" : ""}" data-scenario="${scenario.id}" aria-pressed="${scenario.id === active.id}">${scenario.title.replace(/^情景[一二三四五]：/, "")}</button>`).join("");
       document.querySelectorAll("[data-scenario]").forEach(button => button.addEventListener("click", () => dispatch({ type: "SET_SCENARIO", scenarioId: button.dataset.scenario })));
       document.querySelector("#scenario-title").textContent = active.title; document.querySelector("#scenario-copy").textContent = active.copy;
       document.querySelector("#scenario-steps").innerHTML = active.steps.map((step, index) => { const id = `${active.id}-${index}`; return `<button type="button" class="step ${state.completedSteps[id] ? "done" : ""}" data-step="${index}"><strong>${index + 1}</strong><span>${step.label}</span></button>`; }).join("");
