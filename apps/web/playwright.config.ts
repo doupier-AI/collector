@@ -62,7 +62,7 @@ export default defineConfig({
       stdout: "ignore",
       stderr: "pipe",
     },
-    // #69 临时关联提示安静路径：独享库 + 相似性核验恒判无关（unrelated），
+    // #69/#70 临时关联提示安静路径：独享库 + 产品价值评估恒判不足（unrelated），
     // 与共享库中其他套件的内容和对比型核验互不干扰。
     {
       command: "node e2e/api-harness.mjs",
@@ -72,8 +72,8 @@ export default defineConfig({
       stdout: "ignore",
       stderr: "pipe",
     },
-    // #69 临时关联提示正向路径：独享库 + 对比型核验（contrast）+ 接线提示扫描。
-    // 提示扫描常驻且对任何候选恒判 contrast，只在专项 harness 接线，避免污染共享库与像素基线。
+    // #69/#70 临时关联提示正向路径：独享库 + 对比型价值评估 + 接线提示扫描。
+    // 专项假评估只接受共享独占主题的候选，避免跨场景通用措辞污染数量与像素基线。
     {
       command: "node e2e/api-harness.mjs",
       url: `http://127.0.0.1:${PORT_BASE + 5}/health`,

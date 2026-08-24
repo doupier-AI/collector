@@ -24,9 +24,7 @@ export function TransientAssociationNotice({
   dismissing,
   onDismiss,
 }: TransientAssociationNoticeProps): ReactElement | null {
-  const anchorRange = hint.anchorRanges[0];
-  const relatedRange = hint.relatedRanges[0];
-  if (!anchorRange || !relatedRange) return null;
+  if (hint.anchorRanges.length === 0 || hint.relatedRanges.length === 0) return null;
   return (
     <section className="association-hint" aria-label="临时关联提示" data-testid="association-hint">
       <div className="association-hint__header">
@@ -35,11 +33,29 @@ export function TransientAssociationNotice({
       </div>
       <p className="association-hint__reason">{hint.reason}</p>
       <div className="association-hint__evidence">
-        <HintRangeExcerpt label="本次回答" range={anchorRange} />
-        <HintRangeExcerpt label="旧内容" range={relatedRange} />
+        {hint.anchorRanges.map((range, index) => (
+          <HintRangeExcerpt
+            key={`${range.bodyVersionId}:${range.fragmentId}`}
+            label={rangeLabel("本次回答", index, hint.anchorRanges.length)}
+            range={range}
+          />
+        ))}
+        {hint.relatedRanges.map((range, index) => (
+          <HintRangeExcerpt
+            key={`${range.bodyVersionId}:${range.fragmentId}`}
+            label={rangeLabel("旧内容", index, hint.relatedRanges.length)}
+            range={range}
+          />
+        ))}
       </div>
       <div className="association-hint__actions">
-        <OpenRelatedButton range={relatedRange} />
+        {hint.relatedRanges.map((range, index) => (
+          <OpenRelatedButton
+            key={`${range.bodyVersionId}:${range.fragmentId}`}
+            range={range}
+            label={rangeLabel("打开旧内容", index, hint.relatedRanges.length)}
+          />
+        ))}
         <button
           type="button"
           className="association-hint__dismiss"
@@ -54,7 +70,11 @@ export function TransientAssociationNotice({
   );
 }
 
-function OpenRelatedButton({ range }: { range: ResearchSemanticRangeReference }): ReactElement {
+function rangeLabel(label: string, index: number, total: number): string {
+  return total > 1 ? `${label} · 第 ${index + 1} 段` : label;
+}
+
+function OpenRelatedButton({ range, label }: { range: ResearchSemanticRangeReference; label: string }): ReactElement {
   const navigate = useNavigate();
   const navigationState = useNodeNavigationState();
   const [searchParams] = useSearchParams();
@@ -64,13 +84,13 @@ function OpenRelatedButton({ range }: { range: ResearchSemanticRangeReference })
       className="association-hint__open"
       onClick={() => navigate(fragmentDeepLink(range.nodeId, range.fragmentId, searchParams), { state: navigationState })}
     >
-      打开旧内容
+      {label}
     </button>
   );
 }
 
 /** 懒加载一端语义范围的摘录（带 checksum 校验）；读取失败不阻塞打开与忽略。 */
-function HintRangeExcerpt({ label, range }: { label: string; range: ResearchSemanticRangeReference }): ReactElement {
+export function HintRangeExcerpt({ label, range }: { label: string; range: ResearchSemanticRangeReference }): ReactElement {
   const { api } = useServices();
   const [preview, setPreview] = useState<{ state: "loading" } | { state: "ok"; text: string } | { state: "failed" }>({ state: "loading" });
 

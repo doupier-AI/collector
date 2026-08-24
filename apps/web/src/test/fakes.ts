@@ -128,9 +128,11 @@ export function makeAssociationHint(overrides: Partial<ResearchAssociationHintRe
     id: `hint-${sequence}`,
     anchorNodeId: "node-1",
     relatedNodeId: "node-2",
+    relationType: "shared-concept",
     reason: "两处正文值得一起回看",
     anchorRanges: [{ nodeId: "node-1", bodyVersionId: "body:node-1:v1", fragmentId: "fragment:node-1:1" }],
     relatedRanges: [{ nodeId: "node-2", bodyVersionId: "body:node-2:v1", fragmentId: "fragment:node-2:1" }],
+    evidenceContentKey: `evidence-content-${sequence}`,
     evidenceKey: `evidence-${sequence}`,
     status: "active",
     createdAt: "2026-07-17T08:00:00.000Z",
@@ -373,12 +375,14 @@ export function makeGraphProjection(
 
 /** #62 全局观察工厂：最小摘要，不携带正文或候选详情。 */
 export function makeGraphObservation(
-  overrides: { nodes?: ResearchGraphObservationNode[]; edges?: ResearchGraphObservation["edges"] } = {},
+  overrides: Pick<Partial<ResearchGraphObservation>, "activeCandidateCount" | "associationHints" | "edges" | "nodes"> = {},
 ): ResearchGraphObservation {
   return {
     nodes: overrides.nodes ?? [],
     edges: overrides.edges ?? [],
     appliedRelationshipKinds: ["parent-child", "fused-from"],
+    activeCandidateCount: overrides.activeCandidateCount ?? 0,
+    ...(overrides.associationHints ? { associationHints: overrides.associationHints } : {}),
   };
 }
 

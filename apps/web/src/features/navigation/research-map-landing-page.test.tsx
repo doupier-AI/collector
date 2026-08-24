@@ -2,10 +2,11 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
+import type { ResearchGraphObservationInput } from "@collector/capture-contracts";
 import type { ApiClient } from "../../api/client";
 import { ApiRequestError } from "../../api/errors";
 import { ServicesProvider, type AppServices } from "../../app/services";
-import { makeEdge, makeGraphObservation, makeGraphObservationNode, makeProject } from "../../test/fakes";
+import { makeAssociationHint, makeEdge, makeGraphObservation, makeGraphObservationNode, makeProject } from "../../test/fakes";
 import { ResearchMapLandingPage } from "./ResearchMapLandingPage";
 import { serializeMapScene } from "./map-scene";
 import { DEFAULT_RESEARCH_MAP_FILTER_STATE } from "./research-map-filters";
@@ -297,6 +298,81 @@ describe("ResearchMapLandingPage", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("开始日期不能晚于结束日期。");
     expect(screen.getByTestId("global-map-canvas")).toBeInTheDocument();
     expect(getResearchMap).toHaveBeenCalledTimes(2);
+  });
+
+  it("opens exact global and node-scoped candidate observations without changing the A-plane scene", async () => {
+    window.history.replaceState({ idx: 0, key: "candidate-map", usr: null }, "");
+    const hint = makeAssociationHint({ anchorNodeId: "a", relatedNodeId: "b" });
+    const base = {
+      ...makeGraphObservation({ nodes: [
+        makeGraphObservationNode("a", "节点 A", { candidateCount: 1 }),
+        makeGraphObservationNode("b", "节点 B", { candidateCount: 1 }),
+      ] }),
+      activeCandidateCount: 1,
+    };
+    const getResearchMap = vi.fn(async (input: ResearchGraphObservationInput = {}) => input.includeAssociationHints
+      ? { ...base, associationHints: [hint] }
+      : base);
+    renderPage({ getResearchMap, getResearchBodyVersion: async () => { throw new Error("preview unavailable"); } });
+    const user = userEvent.setup();
+    const canvas = await screen.findByTestId("global-map-canvas");
+    const transformsBefore = [...canvas.querySelectorAll<SVGGElement>("[data-node-id]")].map((node) => node.getAttribute("transform"));
+
+    await user.click(screen.getByRole("button", { name: "查看 1 条关联候选" }));
+
+    expect(await screen.findByRole("region", { name: "关联候选" })).toHaveTextContent("临时观察");
+    expect(screen.getByRole("region", { name: "关联候选" })).toHaveTextContent("不会建立永久关系");
+    expect(canvas.closest(".global-map")).toHaveClass("global-map--candidate-mode");
+    expect(getResearchMap).toHaveBeenCalledWith(expect.objectContaining({ includeAssociationHints: true }));
+    expect(window.history.state.usr.mapSceneV2.associationCandidates).toEqual({ kind: "all" });
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("region", { name: "关联候选" })).not.toBeInTheDocument());
+    expect([...canvas.querySelectorAll<SVGGElement>("[data-node-id]")].map((node) => node.getAttribute("transform"))).toEqual(transformsBefore);
+    expect(window.history.state.usr.mapSceneV2.associationCandidates).toBeUndefined();
+
+    await user.click(within(canvas).getByRole("button", { name: "查看节点 A的1条关联候选" }));
+    await screen.findByText("节点 A的候选");
+    expect(getResearchMap).toHaveBeenCalledWith(expect.objectContaining({
+      includeAssociationHints: true,
+      associationCandidateNodeId: "a",
+    }));
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(within(canvas).getByRole("button", { name: "查看节点 A的1条关联候选" })).toHaveFocus());
+  });
+
+  it("候选读取使失效证据过期后同步刷新工具坞与节点卫星计数", async () => {
+    const counted = {
+      ...makeGraphObservation({ nodes: [
+        makeGraphObservationNode("a", "节点 A", { candidateCount: 1 }),
+        makeGraphObservationNode("b", "节点 B", { candidateCount: 1 }),
+      ] }),
+      activeCandidateCount: 1,
+    };
+    const reconciled = makeGraphObservation({ nodes: [
+      makeGraphObservationNode("a", "节点 A"),
+      makeGraphObservationNode("b", "节点 B"),
+    ] });
+    let detailsRead = false;
+    const getResearchMap = vi.fn(async (input: ResearchGraphObservationInput = {}) => {
+      if (input.includeAssociationHints) {
+        detailsRead = true;
+        return { ...reconciled, associationHints: [] };
+      }
+      return detailsRead ? reconciled : counted;
+    });
+    renderPage({ getResearchMap });
+    const user = userEvent.setup();
+    const canvas = await screen.findByTestId("global-map-canvas");
+
+    await user.click(screen.getByRole("button", { name: "查看 1 条关联候选" }));
+    expect(await screen.findByRole("region", { name: "关联候选" })).toHaveTextContent("当前没有可查看的关联候选");
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "查看 0 条关联候选" })).toBeDisabled());
+    expect(within(canvas).queryByRole("button", { name: /查看节点 A的1条关联候选/ })).not.toBeInTheDocument();
+    expect(getResearchMap).toHaveBeenCalledWith(expect.not.objectContaining({ includeAssociationHints: true }));
+    await user.click(screen.getByRole("button", { name: "关闭关联候选" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "返回" })).toHaveFocus());
   });
 
   it("非空地图的新筛选请求失败时仍立即保存当前有效筛选", async () => {

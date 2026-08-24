@@ -420,6 +420,34 @@ const service = new CaptureService(store, join(dataDir, "artifacts"), undefined,
         };
       },
     },
+    // #70：普通关联提示拥有独立的产品价值评估入口。这里保持理由与既有专项
+    // 用例一致，但不复用会产生融合提案的相似性核验调用。
+    associationHintEvaluator: {
+      async evaluateAssociationHint(input) {
+        const sharedTestTopic = ["量子苔藓", "月尘浮萍"].some((topic) =>
+          input.left.currentContext.includes(topic) && input.right.currentContext.includes(topic));
+        if (similarityRelation === "unrelated" || !sharedTestTopic) {
+          return {
+            relationType: "unrelated",
+            reason: "没有能帮助当前研究的新关联。",
+            hasValue: false,
+            benefits: [],
+            priority: 0,
+            reasonSubstantiallyChanged: true,
+          };
+        }
+        return {
+          relationType: similarityRelation,
+          reason: similarityRelation === "contrast"
+            ? "同名概念来自不同作品或语境。"
+            : "两处材料为同一实体或共享同一概念。",
+          hasValue: true,
+          benefits: similarityRelation === "contrast" ? ["comparison"] : ["rediscovery"],
+          priority: similarityRelation === "contrast" ? 90 : 80,
+          reasonSubstantiallyChanged: true,
+        };
+      },
+    },
   } : {}),
 });
 
@@ -439,8 +467,7 @@ const semanticSearch = createSemanticSearchModule({
 });
 // #69：临时关联提示扫描复用同一语义搜索模块（测试不下载模型，走真实关键词降级路径）。
 // 提示扫描是「每次回答完成即触发」的常驻能力：跨会话内容在共享库里随套件累积，
-// 假模型核验对任何候选都恒判 contrast，会让提示在非提示用例里非确定性浮现并增加
-// 事件循环负载（冻结像素基线与计时敏感用例都会被扰动）。因此只在专项 harness
+// 专项假评估仅接受共享独占主题的候选；提示扫描仍只在专项 harness
 // （E2E_ASSOCIATION_HINT=1）接线扫描；其余 harness 不接线，scan 在 search() 为空时安静跳过。
 if (process.env.E2E_ASSOCIATION_HINT === "1") {
   service.setAssociationHintSearch(semanticSearch);

@@ -20,6 +20,7 @@ const scene = serializeMapScene({
   },
   relationshipKinds: ["parent-child"],
   search: { query: "量子纠缠", selectedNodeId: "node-a" },
+  associationCandidates: { kind: "node", nodeId: "node-a" },
   viewBox: { x: 12, y: 24, width: 480, height: 270 },
   layout: { world: { width: 960, height: 540 }, positions: new Map([["node-a", { x: 100, y: 120 }]]), edgeKeys: new Map([["edge-a", ["node-a", "node-b"] as const]]) },
 });
@@ -36,6 +37,7 @@ describe("mapSceneV2", () => {
       },
       relationshipKinds: ["parent-child"],
       search: { query: "量子纠缠", selectedNodeId: "node-a" },
+      associationCandidates: { kind: "node", nodeId: "node-a" },
       viewBox: { x: 12, y: 24, width: 480, height: 270 },
       layout: { world: { width: 960, height: 540 }, positions: [["node-a", 100, 120]], edgeKeys: [["edge-a", "node-a", "node-b"]] },
     });
@@ -51,6 +53,8 @@ describe("mapSceneV2", () => {
     { mapSceneV2: { ...scene, relationshipKinds: ["parent-child", "parent-child"] } },
     { mapSceneV2: { ...scene, search: { query: "   " } } },
     { mapSceneV2: { ...scene, search: { query: "x".repeat(401) } } },
+    { mapSceneV2: { ...scene, associationCandidates: { kind: "node", nodeId: "" } } },
+    { mapSceneV2: { ...scene, associationCandidates: { kind: "unknown" } } },
     { mapSceneV2: { ...scene, viewBox: { ...scene.viewBox, x: Number.NaN } } },
     { mapSceneV2: { ...scene, layout: { ...scene.layout, positions: Array.from({ length: 2_001 }, () => ["n", 1, 2]) } } },
   ])("丢弃旧V1、损坏、重复或过大的快照", (routeState) => {

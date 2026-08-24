@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import { RESEARCH_PERMANENT_EDGE_KINDS, type ProjectRecord, type ResearchGraphObservation, type ResearchPermanentEdgeKind, type ResearchSearchMatch } from "@collector/capture-contracts";
+import { RESEARCH_PERMANENT_EDGE_KINDS, type ProjectRecord, type ResearchAssociationHintRecord, type ResearchGraphObservation, type ResearchPermanentEdgeKind, type ResearchSearchMatch, type ResearchSemanticRangeReference } from "@collector/capture-contracts";
 import { apiErrorCopy, isUnauthorized } from "../../api/errors";
 import { globalMapFocusPath, stableNodePath } from "../../app/paths";
 import { useServices } from "../../app/services";
@@ -9,6 +9,7 @@ import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { PairingGate } from "../auth/PairingGate";
 import { ThemeSwitcher } from "../theme/theme";
 import { GlobalResearchMap } from "./GlobalResearchMap";
+import { AssociationCandidatePanel } from "./AssociationCandidatePanel";
 import { ResearchMapFilters } from "./ResearchMapFilters";
 import { ResearchMapGlyph } from "./ResearchMapGlyph";
 import { ResearchMapSearch } from "./ResearchMapSearch";
@@ -23,9 +24,11 @@ import {
   replaceCurrentMapScene,
   serializeMapScene,
   type MapSceneV2,
+  type MapAssociationCandidateScene,
   type MapSearchScene,
 } from "./map-scene";
 import { GRAPH_WORLD_HEIGHT, GRAPH_WORLD_WIDTH } from "./organicGraphLayout";
+import { fragmentDeepLink } from "../research-session/fragment-locator";
 import {
   DEFAULT_RESEARCH_MAP_FILTER_STATE,
   isDefaultResearchMapFilterState,
@@ -41,11 +44,12 @@ function sameRelationshipKinds(left: readonly ResearchPermanentEdgeKind[], right
 type MapTool = "search" | "filters" | "relationships" | "more";
 type MapPresentation = "canvas" | "list";
 
-function MapToolGlyph({ kind }: { kind: "back" | "search" | "filters" | "relationships" | "new" | "more" | "canvas" | "list" }) {
+function MapToolGlyph({ kind }: { kind: "back" | "search" | "filters" | "relationships" | "candidates" | "new" | "more" | "canvas" | "list" }) {
   if (kind === "back") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12.5 4.5-5.5 5.5 5.5 5.5M7.5 10H17" /></svg>;
   if (kind === "search") return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5" /><path d="m12.2 12.2 4.3 4.3" /></svg>;
   if (kind === "filters") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M5.5 10h9M8 15h4" /></svg>;
   if (kind === "relationships") return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4.5" cy="10" r="2" /><circle cx="15.5" cy="5" r="2" /><circle cx="15.5" cy="15" r="2" /><path d="m6.4 9.1 7.2-3.2M6.4 10.9l7.2 3.2" /></svg>;
+  if (kind === "candidates") return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8" cy="10" r="3" /><circle cx="14.5" cy="5.5" r="1.75" /><path d="M4 14.5c2.5 2 7.5 2.5 11-.5M10.5 8l2.6-1.5" strokeDasharray="2 2" /></svg>;
   if (kind === "new") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.5v13M3.5 10h13" /></svg>;
   if (kind === "canvas") return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="5" cy="11" r="2" /><circle cx="10" cy="5" r="2" /><circle cx="15" cy="12" r="2" /><path d="m6.2 9.4 2.6-2.8m2.5-.3 2.5 4" /></svg>;
   if (kind === "list") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 5h10M7 10h10M7 15h10" /><circle cx="3.5" cy="5" r=".75" /><circle cx="3.5" cy="10" r=".75" /><circle cx="3.5" cy="15" r=".75" /></svg>;
@@ -131,6 +135,13 @@ export function ResearchMapLandingPage() {
   }, [entryScene, mapEntryKey]);
   const [searchEntry, setSearchEntry] = useState<{ entryKey: string; value?: MapSearchScene }>(() => ({ entryKey: mapEntryKey, value: entryScene?.search }));
   const search = searchEntry.entryKey === mapEntryKey ? searchEntry.value : entryScene?.search;
+  const [candidateEntry, setCandidateEntry] = useState<{ entryKey: string; value?: MapAssociationCandidateScene }>(() => ({ entryKey: mapEntryKey, value: entryScene?.associationCandidates }));
+  const candidateScope = candidateEntry.entryKey === mapEntryKey ? candidateEntry.value : entryScene?.associationCandidates;
+  const [candidateResult, setCandidateResult] = useState<{ hints: ResearchAssociationHintRecord[]; loading: boolean; error?: string }>({ hints: [], loading: false });
+  const [candidateReloadNonce, setCandidateReloadNonce] = useState(0);
+  const [dismissingCandidateId, setDismissingCandidateId] = useState<string>();
+  const candidateTriggerKeyRef = useRef<string | undefined>(undefined);
+  const mapBackButtonRef = useRef<HTMLButtonElement | null>(null);
 
   const closeTool = useCallback((restoreFocus = false) => {
     setActiveTool((current) => {
@@ -138,6 +149,37 @@ export function ResearchMapLandingPage() {
       return null;
     });
   }, []);
+
+  const writeCandidateScope = useCallback((next: MapAssociationCandidateScene | undefined) => {
+    setCandidateEntry({ entryKey: mapEntryKey, value: next });
+    const current = sceneRef.current;
+    if (!current) return;
+    const { associationCandidates: _previousCandidates, ...sceneWithoutCandidates } = current;
+    const nextScene: MapSceneV2 = next ? { ...sceneWithoutCandidates, associationCandidates: next } : sceneWithoutCandidates;
+    sceneRef.current = nextScene;
+    if (currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(nextScene, routeStateRef.current);
+  }, [mapEntryKey]);
+
+  const openCandidates = useCallback((scope: MapAssociationCandidateScene, trigger: Element) => {
+    closeTool(false);
+    candidateTriggerKeyRef.current = trigger.getAttribute("data-candidate-trigger")
+      ?? (scope.kind === "all" ? "all" : `node:${scope.nodeId}`);
+    writeCandidateScope(scope);
+  }, [closeTool, writeCandidateScope]);
+
+  const closeCandidates = useCallback((restoreFocus = true) => {
+    writeCandidateScope(undefined);
+    setCandidateResult({ hints: [], loading: false });
+    if (restoreFocus) requestAnimationFrame(() => {
+      const triggerKey = candidateTriggerKeyRef.current;
+      const target = triggerKey
+        ? Array.from(document.querySelectorAll<HTMLElement | SVGElement>("[data-candidate-trigger]"))
+          .find((element) => element.getAttribute("data-candidate-trigger") === triggerKey)
+        : undefined;
+      const triggerUnavailable = !target || (target instanceof HTMLButtonElement && target.disabled);
+      (triggerUnavailable ? mapBackButtonRef.current : target)?.focus();
+    });
+  }, [writeCandidateScope]);
 
   useEffect(() => {
     if (!activeTool) return;
@@ -182,6 +224,7 @@ export function ResearchMapLandingPage() {
       return current.entryKey === mapEntryKey && current.value === nextFilters ? current : { entryKey: mapEntryKey, value: nextFilters };
     });
     setSearchEntry({ entryKey: mapEntryKey, value: entryScene?.search });
+    setCandidateEntry({ entryKey: mapEntryKey, value: entryScene?.associationCandidates });
   }, [entryScene, mapEntryKey]);
 
   useEffect(() => {
@@ -190,27 +233,30 @@ export function ResearchMapLandingPage() {
 
   const saveScene = useCallback((scene: MapSceneV2) => {
     const previous = sceneRef.current;
+    const sceneWithCandidates = previous?.associationCandidates
+      ? { ...scene, associationCandidates: previous.associationCandidates }
+      : scene;
     const layoutStillFiltered = layoutFilterEntryRef.current.entryKey === sceneEntryKeyRef.current
       && !isDefaultResearchMapFilterState(layoutFilterEntryRef.current.filters);
     const preserveHiddenLayout = previous
-      && (layoutStillFiltered || !isDefaultResearchMapFilterState(previous.filters) || !isDefaultResearchMapFilterState(scene.filters));
+      && (layoutStillFiltered || !isDefaultResearchMapFilterState(previous.filters) || !isDefaultResearchMapFilterState(sceneWithCandidates.filters));
     const next = preserveHiddenLayout ? {
-      ...scene,
+      ...sceneWithCandidates,
       layout: {
         world: {
-          width: Math.max(previous.layout.world.width, scene.layout.world.width),
-          height: Math.max(previous.layout.world.height, scene.layout.world.height),
+          width: Math.max(previous.layout.world.width, sceneWithCandidates.layout.world.width),
+          height: Math.max(previous.layout.world.height, sceneWithCandidates.layout.world.height),
         },
         positions: [...new Map([
           ...previous.layout.positions.map((position) => [position[0], position] as const),
-          ...scene.layout.positions.map((position) => [position[0], position] as const),
+          ...sceneWithCandidates.layout.positions.map((position) => [position[0], position] as const),
         ]).values()].sort(([left], [right]) => left.localeCompare(right)),
         edgeKeys: [...new Map([
           ...previous.layout.edgeKeys.map((edge) => [edge[0], edge] as const),
-          ...scene.layout.edgeKeys.map((edge) => [edge[0], edge] as const),
+          ...sceneWithCandidates.layout.edgeKeys.map((edge) => [edge[0], edge] as const),
         ]).values()].sort(([left], [right]) => left.localeCompare(right)),
       },
-    } satisfies MapSceneV2 : scene;
+    } satisfies MapSceneV2 : sceneWithCandidates;
     sceneRef.current = next;
     if (currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(next, routeStateRef.current);
   }, []);
@@ -315,6 +361,66 @@ export function ResearchMapLandingPage() {
     };
   }, [api, focusNodeId, mapEntryKey, projectsReady, relationshipKinds, reloadNonce, serializedFilters]);
 
+  useEffect(() => {
+    if (!candidateScope || !projectsReady || !serializedFilters.valid) {
+      if (!candidateScope) setCandidateResult({ hints: [], loading: false });
+      return;
+    }
+    let stale = false;
+    setCandidateResult((current) => ({ ...current, loading: true, error: undefined }));
+    api.getResearchMap({
+      ...serializedFilters.input,
+      ...(focusNodeId ? { focusNodeId } : {}),
+      relationshipKinds,
+      includeAssociationHints: true,
+      ...(candidateScope.kind === "node" ? { associationCandidateNodeId: candidateScope.nodeId } : {}),
+    }).then(
+      (next) => {
+        if (!stale) {
+          setCandidateResult({ hints: [...(next.associationHints ?? [])], loading: false });
+        }
+        // 即使面板已先关闭，已完成的详情读取也可能已令永久失效候选过期；基础观察仍须同步。
+        setReloadNonce((nonce) => nonce + 1);
+      },
+      () => {
+        if (!stale) setCandidateResult((current) => ({ ...current, loading: false, error: "关联候选暂时无法读取，请稍后重试。" }));
+      },
+    );
+    return () => { stale = true; };
+  }, [api, candidateReloadNonce, candidateScope, focusNodeId, projectsReady, relationshipKinds, serializedFilters]);
+
+  useEffect(() => {
+    if (!candidateScope) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      event.preventDefault();
+      closeCandidates(true);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [candidateScope, closeCandidates]);
+
+  const openCandidateRange = useCallback((range: ResearchSemanticRangeReference) => {
+    const scene = sceneRef.current;
+    if (scene && currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(scene, routeStateRef.current);
+    const mapReturn = createMapReturn(currentHistoryEntry(locationKeyRef.current), pathnameRef.current);
+    navigate(fragmentDeepLink(range.nodeId, range.fragmentId), { state: nodeEntryStateFromMapReturn(mapReturn) });
+  }, [navigate]);
+
+  const dismissCandidate = useCallback(async (hintId: string) => {
+    setDismissingCandidateId(hintId);
+    try {
+      await api.dismissAssociationHint(hintId);
+      setCandidateResult((current) => ({ ...current, hints: current.hints.filter((hint) => hint.id !== hintId) }));
+      setReloadNonce((nonce) => nonce + 1);
+      setCandidateReloadNonce((nonce) => nonce + 1);
+    } catch {
+      setCandidateResult((current) => ({ ...current, error: "这条候选暂时无法忽略，请稍后重试。" }));
+    } finally {
+      setDismissingCandidateId(undefined);
+    }
+  }, [api]);
+
   // 空观察结果也必须拥有完整现场，否则筛选页不会渲染画布，刷新后会退回默认范围。
   useEffect(() => {
     if (!serializedFilters.valid || observation?.nodes.length !== 0) return;
@@ -399,7 +505,7 @@ export function ResearchMapLandingPage() {
       <div className="map-landing__identity" aria-hidden="true"><ResearchMapGlyph size={22} /><span>研究图谱</span></div>
 
       <nav className="map-tool-dock" aria-label="研究图谱工具">
-        <button type="button" className="map-tool-button" aria-label="返回" title="返回" onClick={leaveMap}><MapToolGlyph kind="back" /></button>
+        <button ref={mapBackButtonRef} type="button" className="map-tool-button" aria-label="返回" title="返回" onClick={leaveMap}><MapToolGlyph kind="back" /></button>
         {toolDefinitions.slice(0, 3).map(({ tool, label, glyph, active }) => (
           <button
             key={tool}
@@ -410,10 +516,25 @@ export function ResearchMapLandingPage() {
             title={label}
             aria-expanded={activeTool === tool}
             aria-controls="map-tool-panel"
+            disabled={Boolean(candidateScope)}
             onClick={() => toggleTool(tool)}
           ><MapToolGlyph kind={glyph} /></button>
         ))}
-        <Link className="map-tool-button" aria-label="新建会话" title="新建会话" to="/research/new"><MapToolGlyph kind="new" /></Link>
+        <button
+          type="button"
+          data-candidate-trigger="all"
+          className="map-tool-button"
+          aria-label={`查看 ${observation.activeCandidateCount} 条关联候选`}
+          title="关联候选"
+          aria-expanded={Boolean(candidateScope)}
+          aria-controls="association-candidate-panel"
+          disabled={observation.activeCandidateCount === 0}
+          onClick={(event) => candidateScope ? closeCandidates(false) : openCandidates({ kind: "all" }, event.currentTarget)}
+        >
+          <MapToolGlyph kind="candidates" />
+          {observation.activeCandidateCount > 0 ? <span className="map-tool-button__count" aria-hidden="true">{observation.activeCandidateCount}</span> : null}
+        </button>
+        <Link className="map-tool-button" aria-disabled={candidateScope ? "true" : undefined} aria-label="新建会话" title="新建会话" to="/research/new" onClick={(event) => { if (candidateScope) event.preventDefault(); }}><MapToolGlyph kind="new" /></Link>
         {toolDefinitions.slice(3).map(({ tool, label, glyph }) => (
           <button
             key={tool}
@@ -424,6 +545,7 @@ export function ResearchMapLandingPage() {
             title={label}
             aria-expanded={activeTool === tool}
             aria-controls="map-tool-panel"
+            disabled={Boolean(candidateScope)}
             onClick={() => toggleTool(tool)}
           ><MapToolGlyph kind={glyph} /></button>
         ))}
@@ -448,7 +570,22 @@ export function ResearchMapLandingPage() {
 
       {updating ? <div className="map-update-status" role="status">正在更新地图…</div> : null}
 
-      {activeTool ? (
+      {candidateScope ? (
+        <AssociationCandidatePanel
+          hints={candidateResult.hints}
+          nodeLabels={new Map(observation.nodes.map((item) => [item.node.id, item.label]))}
+          scopeLabel={candidateScope.kind === "node" ? `${observation.nodes.find((item) => item.node.id === candidateScope.nodeId)?.label ?? "所选节点"}的候选` : "当前地图范围"}
+          loading={candidateResult.loading}
+          error={candidateResult.error}
+          dismissingId={dismissingCandidateId}
+          onClose={() => closeCandidates(true)}
+          onRetry={() => setCandidateReloadNonce((nonce) => nonce + 1)}
+          onOpenRange={openCandidateRange}
+          onDismiss={dismissCandidate}
+        />
+      ) : null}
+
+      {activeTool && !candidateScope ? (
         <div ref={toolPanelRef} id="map-tool-panel" className={`map-tool-panel map-tool-panel--${activeTool}`} role="region" aria-label={toolDefinitions.find((item) => item.tool === activeTool)?.label}>
           <div className="map-tool-panel__topline">
             <strong>{toolDefinitions.find((item) => item.tool === activeTool)?.label}</strong>
@@ -553,6 +690,9 @@ export function ResearchMapLandingPage() {
             onRelationshipKindToggle={(kind) => setRelationshipKinds((current) => (
               current.includes(kind) ? current.filter((item) => item !== kind) : [...current, kind]
             ))}
+            associationHints={candidateResult.hints}
+            candidateMode={Boolean(candidateScope)}
+            onOpenCandidates={openCandidates}
           />
         </div>
       )}

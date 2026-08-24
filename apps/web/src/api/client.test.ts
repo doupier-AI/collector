@@ -125,6 +125,18 @@ describe("#62 global research map API client", () => {
       undefined,
     );
   });
+
+  it("only requests association evidence when candidate observation opens", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ nodes: [], edges: [], appliedRelationshipKinds: [], activeCandidateCount: 0, associationHints: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const client = createApiClient(fetchMock);
+
+    await client.getResearchMap({ includeAssociationHints: true, associationCandidateNodeId: "node / one" });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/research-map?includeAssociationHints=true&associationCandidateNodeId=node+%2F+one",
+      undefined,
+    );
+  });
 });
 
 describe("#67 semantic research search API client", () => {

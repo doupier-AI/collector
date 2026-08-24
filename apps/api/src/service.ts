@@ -100,7 +100,7 @@ import {
   ResearchFusionProposalService,
   type SimilarityVerificationGateway,
 } from "./fusion-proposals.js";
-import { AssociationHintService, type AssociationHintSearchGateway } from "./association-hints.js";
+import { AssociationHintService, type AssociationHintEvaluationGateway, type AssociationHintSearchGateway } from "./association-hints.js";
 
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
@@ -195,7 +195,7 @@ export class CaptureService {
     private readonly store: CollectorStore,
     private readonly artifactRoot: string,
     private modelGateway?: ModelGateway,
-    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; selectionProvider?: ResearchSelectionProvider; similarityVerifier?: SimilarityVerificationGateway; chapterParseProvider?: ResearchChapterParseProvider; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunResearchChapters?: boolean; autoRunSelectionTasks?: boolean; mvpDemoMode?: boolean; researchRetrySleep?: (ms: number) => Promise<void> } = {},
+    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; selectionProvider?: ResearchSelectionProvider; similarityVerifier?: SimilarityVerificationGateway; associationHintEvaluator?: AssociationHintEvaluationGateway; chapterParseProvider?: ResearchChapterParseProvider; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunResearchChapters?: boolean; autoRunSelectionTasks?: boolean; mvpDemoMode?: boolean; researchRetrySleep?: (ms: number) => Promise<void> } = {},
   ) {
     this.runRecords = new RunRecordsService(this.store);
     this.attachModelGateway(this.modelGateway);
@@ -260,11 +260,11 @@ export class CaptureService {
       termDetection: this.termDetection,
       autoRunTasks: this.options.autoRunResearchTasks,
     });
-    // #69（NS-06/T10）临时关联提示：复用既有 similarityVerifier 注入与弱标记服务；
+    // #70：普通关联提示有独立的价值评估适配，不能借用融合核验或其调用方。
     // 语义搜索模块由组合根（server.ts / e2e harness）在构建后经 setter 接线，未接线时扫描安静跳过。
     this.associationHints = new AssociationHintService(this.store, {
       search: () => this.associationHintSearch,
-      verifier: async () => this.options.similarityVerifier ?? this.gatewayForPurpose("research"),
+      evaluator: async () => this.options.associationHintEvaluator ?? this.gatewayForPurpose("research"),
       termDetection: this.termDetection,
     });
     // #35：启动时对历史研究正文做确定性、幂等的正文版本与语义片段回填。

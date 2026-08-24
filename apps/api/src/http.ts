@@ -313,6 +313,7 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         return json(response, 200, service.nodeGrowth.getNodeTree(decodeURIComponent(researchSessionNodesMatch[1])));
       }
       if (request.method === "GET" && url.pathname === "/v1/research-map") {
+        await service.associationHints.reconcileActive();
         return json(response, 200, service.nodeGrowth.getGraphObservation(parseGraphObservationInput(url)));
       }
       const researchSessionGraphMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)\/graph$/);
@@ -524,7 +525,7 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       // #69 临时关联提示：只读列出当前节点的活跃提示；忽略只改提示状态，不写任何永久事实。
       const researchNodeAssociationHintsMatch = url.pathname.match(/^\/v1\/research-nodes\/([^/]+)\/association-hints$/);
       if (request.method === "GET" && researchNodeAssociationHintsMatch) {
-        return json(response, 200, service.associationHints.listActiveForNode(decodeURIComponent(researchNodeAssociationHintsMatch[1])));
+        return json(response, 200, await service.associationHints.listActiveForNode(decodeURIComponent(researchNodeAssociationHintsMatch[1])));
       }
       const associationHintDismissMatch = url.pathname.match(/^\/v1\/research-association-hints\/([^/]+)\/dismiss$/);
       if (request.method === "POST" && associationHintDismissMatch) {
@@ -675,6 +676,15 @@ function parseGraphObservationInput(url: URL): import("@collector/capture-contra
     throw new ResearchValidationError("includeUncategorized must be true when specified once");
   }
   const includeUncategorized = includeUncategorizedValues[0] === "true";
+  const includeAssociationHintValues = url.searchParams.getAll("includeAssociationHints");
+  if (includeAssociationHintValues.length > 1 || (includeAssociationHintValues.length === 1 && includeAssociationHintValues[0] !== "true")) {
+    throw new ResearchValidationError("includeAssociationHints must be true when specified once");
+  }
+  const associationCandidateNodeIdValues = url.searchParams.getAll("associationCandidateNodeId");
+  if (associationCandidateNodeIdValues.length > 1) {
+    throw new ResearchValidationError("associationCandidateNodeId must be specified at most once");
+  }
+  const associationCandidateNodeId = associationCandidateNodeIdValues[0]?.trim() || undefined;
   if (url.searchParams.has("includeArchived")) {
     throw new ResearchValidationError("includeArchived is no longer supported; use lifecycle");
   }
@@ -701,6 +711,8 @@ function parseGraphObservationInput(url: URL): import("@collector/capture-contra
     ...(focusNodeId ? { focusNodeId } : {}),
     ...(projectIds.length ? { projectIds } : {}),
     ...(includeUncategorized ? { includeUncategorized: true as const } : {}),
+    ...(includeAssociationHintValues[0] === "true" ? { includeAssociationHints: true as const } : {}),
+    ...(associationCandidateNodeId ? { associationCandidateNodeId } : {}),
     ...(lifecycleValues.length ? { lifecycles: lifecycleValues as Array<"active" | "archived"> } : {}),
     ...(createdFrom ? { createdFrom } : {}),
     ...(createdBefore ? { createdBefore } : {}),

@@ -17,7 +17,7 @@ export { TermDetectionService, detectTermMarkers, validateTermMarkers, TERM_DETE
 export { ResearchTermPreviewNotFoundError, ResearchTermPreviewService, ResearchTermPreviewValidationError, TERM_PREVIEW_PROMPT_VERSION, termPreviewMarkerKey, type ResearchTermPreviewServiceOptions } from "./term-preview.js";
 export { AUTO_FUSION_IDEMPOTENCY_PREFIX, AUTO_FUSION_SETTING_KEY, FUSION_PROPOSAL_COOLDOWN_DAYS, MIN_SIMILARITY_FALLBACK_UNIT_CHARACTERS, ResearchFusionProposalConflictError, ResearchFusionProposalNotFoundError, ResearchFusionProposalService, ResearchFusionProposalValidationError, SIMILARITY_VERIFICATION_TOKEN_BUDGET, buildSimilarityCandidates, contentWordSignals, indexNodeSimilaritySignals, isHighConfidenceFusion, type SimilarityCandidate, type SimilarityVerificationGateway } from "./fusion-proposals.js";
 export { NodeNamingService, deterministicNodeDisplayName, validateNodeDisplayName, NODE_DISPLAY_NAME_MAX_CHARACTERS, type NodeNamingStore, type NodeNamingGateway } from "./node-naming.js";
-export { AssociationHintNotFoundError, AssociationHintService, type AssociationHintSearchGateway, type AssociationHintServiceOptions } from "./association-hints.js";
+export { AssociationHintNotFoundError, AssociationHintService, type AssociationHintEvaluation, type AssociationHintEvaluationGateway, type AssociationHintSearchGateway, type AssociationHintServiceOptions } from "./association-hints.js";
 export { DEFAULT_RESEARCH_SESSION_TITLE, SessionTitlingService, deterministicSessionTitle, validateSessionTitle, type SessionTitlingStore, type SessionTitlingGateway } from "./session-titling.js";
 export {
   ParentChainContextService,

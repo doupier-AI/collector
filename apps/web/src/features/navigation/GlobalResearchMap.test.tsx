@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { makeEdge, makeGraphObservation, makeGraphObservationNode } from "../../test/fakes";
+import { makeAssociationHint, makeEdge, makeGraphObservation, makeGraphObservationNode } from "../../test/fakes";
 import { GlobalResearchMap } from "./GlobalResearchMap";
 import { serializeMapScene } from "./map-scene";
 import { DEFAULT_RESEARCH_MAP_FILTER_STATE } from "./research-map-filters";
@@ -130,6 +130,48 @@ describe("GlobalResearchMap keyboard navigation", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("GlobalResearchMap association candidate observation", () => {
+  it("shows one exact satellite per node and opens its node-scoped candidate list by keyboard", () => {
+    const onOpenCandidates = vi.fn();
+    const observation = makeGraphObservation({ nodes: [
+      makeGraphObservationNode("a", "节点 A", { candidateCount: 2 }),
+      makeGraphObservationNode("b", "节点 B", { candidateCount: 1 }),
+    ] });
+    render(<MemoryRouter><GlobalResearchMap observation={observation} onOpenCandidates={onOpenCandidates} /></MemoryRouter>);
+    const canvas = screen.getByTestId("global-map-canvas");
+    const satellite = within(canvas).getByRole("button", { name: "查看节点 A的2条关联候选" });
+
+    satellite.focus();
+    expect(satellite).toHaveFocus();
+    fireEvent.keyDown(satellite, { key: "Enter" });
+
+    expect(onOpenCandidates).toHaveBeenCalledWith({ kind: "node", nodeId: "a" }, satellite);
+    expect([...canvas.querySelectorAll("title")].some((title) => title.textContent === "2 条关联候选")).toBe(true);
+    expect(satellite.querySelector("text")).toBeNull();
+    expect(satellite.querySelectorAll(".global-map__candidate-satellite-core")).toHaveLength(1);
+  });
+
+  it("draws temporary hints over unchanged coordinates without adding permanent layout edges", async () => {
+    const onSceneChange = vi.fn();
+    const observation = makeGraphObservation({ nodes: [
+      makeGraphObservationNode("a", "节点 A", { candidateCount: 1 }),
+      makeGraphObservationNode("b", "节点 B", { candidateCount: 1 }),
+    ] });
+    const hint = makeAssociationHint({ anchorNodeId: "a", relatedNodeId: "b" });
+    const rendered = render(<MemoryRouter><GlobalResearchMap observation={observation} onSceneChange={onSceneChange} /></MemoryRouter>);
+    const before = [...screen.getByTestId("global-map-canvas").querySelectorAll<SVGGElement>("[data-node-id]")].map((node) => node.getAttribute("transform"));
+
+    rendered.rerender(<MemoryRouter><GlobalResearchMap observation={observation} associationHints={[hint]} candidateMode onSceneChange={onSceneChange} /></MemoryRouter>);
+
+    const canvas = screen.getByTestId("global-map-canvas");
+    expect(canvas.querySelector(`[data-candidate-id="${hint.id}"]`)).not.toBeNull();
+    expect(canvas.closest(".global-map")).toHaveClass("global-map--candidate-mode");
+    expect([...canvas.querySelectorAll<SVGGElement>("[data-node-id]")].map((node) => node.getAttribute("transform"))).toEqual(before);
+    await waitFor(() => expect(onSceneChange).toHaveBeenCalled());
+    expect(onSceneChange.mock.calls.at(-1)?.[0].layout.edgeKeys).toEqual([]);
   });
 });
 

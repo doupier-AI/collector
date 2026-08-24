@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  compareAssociationHintsByValue,
   researchEdgeId,
   type ResearchCandidateSourceConnectionRecord,
   type ResearchAssociationHintRecord,
@@ -18,6 +19,20 @@ import {
 import { SqliteStore } from "@collector/api";
 
 const NOW = "2026-08-13T00:00:00.000Z";
+
+test("association hint value ordering is total and stable when legacy rows lack an assessment", () => {
+  assert.deepEqual(
+    [{ id: "b" }, { id: "a" }].sort(compareAssociationHintsByValue).map(({ id }) => id),
+    ["a", "b"],
+  );
+  assert.deepEqual(
+    [
+      { id: "legacy" },
+      { id: "valued", valueAssessment: { promptVersion: "v1", benefits: ["comparison" as const], priority: 60, assessedAt: NOW, contextKey: "context" } },
+    ].sort(compareAssociationHintsByValue).map(({ id }) => id),
+    ["valued", "legacy"],
+  );
+});
 
 async function makeStore(t: test.TestContext): Promise<SqliteStore> {
   const root = await mkdtemp(join(tmpdir(), "collector-node-target-"));
@@ -165,9 +180,11 @@ test("association hints stay temporary and confirmed fusion snapshots stay immut
     id: "hint-1",
     anchorNodeId: "node-a",
     relatedNodeId: "node-b",
+    relationType: "shared-concept",
     reason: "可返回原文的临时关联",
     anchorRanges: [{ nodeId: "node-a", bodyVersionId: "body:a:1", fragmentId: "fragment:a:1" }],
     relatedRanges: [{ nodeId: "node-b", bodyVersionId: "body:b:1", fragmentId: "fragment:b:1" }],
+    evidenceContentKey: "content-1",
     evidenceKey: "evidence-1",
     status: "active",
     createdAt: NOW,
@@ -177,6 +194,7 @@ test("association hints stay temporary and confirmed fusion snapshots stay immut
   assert.deepEqual(await store.createAssociationHint({ ...hint, id: "hint-retry" }), hint);
   await store.saveAssociationHint({ ...hint, status: "ignored", ignoredAt: NOW });
   await assert.rejects(store.saveAssociationHint(hint), /cannot transition/i);
+  await assert.rejects(store.saveAssociationHint({ ...hint, status: "expired", expiredAt: NOW }), /cannot transition/i);
   assert.deepEqual(store.listResearchPermanentEdges(), []);
 
   const snapshot: ResearchConfirmedFusionSnapshotRecord = {

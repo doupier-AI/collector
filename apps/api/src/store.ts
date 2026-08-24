@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchFusionReference, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId } from "@collector/capture-contracts";
 import {
+  compareAssociationHintsByValue,
   isResearchPermanentEdge,
   nextProjectColorRole,
   validateTemporaryFusionBundle,
@@ -1458,8 +1459,9 @@ export class SqliteStore implements CollectorStore {
 
   async createAssociationHint(hint: ResearchAssociationHintRecord): Promise<ResearchAssociationHintRecord> {
     if (hint.status !== "active") throw new Error("A new association hint must be active");
-    if (hint.anchorNodeId === hint.relatedNodeId || !hint.reason.trim() || !hint.evidenceKey.trim()) {
-      throw new Error("Association hint requires distinct nodes, a reason, and an evidence key");
+    if (hint.anchorNodeId === hint.relatedNodeId || !hint.reason.trim() || !hint.evidenceContentKey.trim() || !hint.evidenceKey.trim()
+      || !["identity", "shared-concept", "analogy", "contrast"].includes(hint.relationType)) {
+      throw new Error("Association hint requires distinct nodes, a verified relation, a reason, and evidence keys");
     }
     if (!this.getResearchNode(hint.anchorNodeId) || !this.getResearchNode(hint.relatedNodeId)) {
       throw new Error("Association hint source is missing");
@@ -1468,11 +1470,23 @@ export class SqliteStore implements CollectorStore {
       && hint.anchorRanges.every((range) => range.nodeId === hint.anchorNodeId && range.bodyVersionId && range.fragmentId)
       && hint.relatedRanges.every((range) => range.nodeId === hint.relatedNodeId && range.bodyVersionId && range.fragmentId);
     if (!rangesMatch) throw new Error("Association hint evidence must be locatable on both nodes");
-    const existing = this.getRecord<ResearchAssociationHintRecord>(
-      "SELECT record_json FROM research_association_hints WHERE anchor_node_id = ? AND related_node_id = ? AND evidence_key = ?",
-      hint.anchorNodeId, hint.relatedNodeId, hint.evidenceKey,
-    );
+    const sameNodePair = (other: ResearchAssociationHintRecord) =>
+      (other.anchorNodeId === hint.anchorNodeId && other.relatedNodeId === hint.relatedNodeId)
+      || (other.anchorNodeId === hint.relatedNodeId && other.relatedNodeId === hint.anchorNodeId);
+    const pairHints = this.listAssociationHints().filter(sameNodePair);
+    const existing = pairHints.find((other) => other.id === hint.id || other.evidenceKey === hint.evidenceKey);
     if (existing) return existing;
+    // 活跃候选以“无向节点对 + 稳定证据正文”为幂等边界；模型换一种理由措辞不能制造第二条线。
+    const sameActiveEvidence = pairHints.find((other) => other.status === "active"
+      && other.evidenceContentKey === hint.evidenceContentKey);
+    if (sameActiveEvidence) return sameActiveEvidence;
+    // ignored/expired 都是终态。同内容不能复活；内容变化后也必须让用户可见理由
+    // 发生实质变化，单纯换关系类型不能再次打扰用户。
+    const normalizeReason = (value: string) => value.normalize("NFKC").replace(/\s+/g, " ").trim();
+    const suppressed = pairHints.find((other) => other.status !== "active"
+      && (other.evidenceContentKey === hint.evidenceContentKey
+        || normalizeReason(other.reason) === normalizeReason(hint.reason)));
+    if (suppressed) return suppressed;
     this.db().prepare(`INSERT INTO research_association_hints
       (id, anchor_node_id, related_node_id, evidence_key, status, created_at, updated_at, record_json)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -1489,14 +1503,20 @@ export class SqliteStore implements CollectorStore {
     if (existing.status !== "active" && hint.status !== existing.status) {
       throw new Error("Ignored or expired association hint cannot transition to another state");
     }
-    this.db().prepare("UPDATE research_association_hints SET status = ?, updated_at = ?, record_json = ? WHERE id = ?")
-      .run(hint.status, hint.updatedAt, JSON.stringify(hint), hint.id);
+    const result = this.db().prepare("UPDATE research_association_hints SET status = ?, updated_at = ?, record_json = ? WHERE id = ? AND status = ?")
+      .run(hint.status, hint.updatedAt, JSON.stringify(hint), hint.id, existing.status);
+    if (result.changes === 1) return;
+    // 并发的忽略/过期只允许第一个 active→terminal 条件更新获胜；落败者保留已落库终态。
+    if (!this.getRecord<ResearchAssociationHintRecord>("SELECT record_json FROM research_association_hints WHERE id = ?", hint.id)) {
+      throw new Error("Association hint not found");
+    }
   }
 
   listAssociationHints(status?: ResearchAssociationHintRecord["status"]): ResearchAssociationHintRecord[] {
-    return status
+    const records = status
       ? this.listRecords<ResearchAssociationHintRecord>("SELECT record_json FROM research_association_hints WHERE status = ? ORDER BY updated_at, id", status)
       : this.listRecords<ResearchAssociationHintRecord>("SELECT record_json FROM research_association_hints ORDER BY updated_at, id");
+    return status === "active" ? records.sort(compareAssociationHintsByValue) : records;
   }
 
   async createConfirmedFusionSnapshot(snapshot: ResearchConfirmedFusionSnapshotRecord): Promise<ResearchConfirmedFusionSnapshotRecord> {

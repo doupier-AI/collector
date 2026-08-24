@@ -40,3 +40,43 @@ test("document generation sends every long-input segment and merges batch result
   assert.match(combinedPrompts, /-MIDDLE-/);
   assert.match(combinedPrompts, /-END/);
 });
+
+test("association hint evaluation returns a value decision and rejects an inconsistent provider result", async () => {
+  const valid: ModelProvider = {
+    name: "fake",
+    async complete() {
+      return { model: "fake", content: JSON.stringify({ relationType: "contrast", reason: "两段材料可形成有助于理解差异的对照。", hasValue: true, benefits: ["comparison"], priority: 72, reasonSubstantiallyChanged: true }) };
+    },
+  };
+  const gateway = new ModelGateway(valid);
+  const result = await gateway.evaluateAssociationHint({
+    left: { nodeId: "a", content: "证据 A", currentContext: "当前认识 A" },
+    right: { nodeId: "b", content: "证据 B", currentContext: "当前认识 B" },
+    terminalReasons: ["先前只是同名概念的对照。"],
+  });
+  assert.deepEqual(result, { relationType: "contrast", reason: "两段材料可形成有助于理解差异的对照。", hasValue: true, benefits: ["comparison"], priority: 72, reasonSubstantiallyChanged: true });
+
+  const invalid = new ModelGateway({
+    name: "fake",
+    async complete() {
+      return { model: "fake", content: JSON.stringify({ relationType: "contrast", reason: "关系成立但不值得打扰。", hasValue: false, benefits: ["comparison"], priority: 30, reasonSubstantiallyChanged: false }) };
+    },
+  });
+  await assert.rejects(() => invalid.evaluateAssociationHint({
+    left: { nodeId: "a", content: "证据 A", currentContext: "当前认识 A" },
+    right: { nodeId: "b", content: "证据 B", currentContext: "当前认识 B" },
+    terminalReasons: [],
+  }), /inconsistent value decision/);
+
+  const missingReasonChangeDecision = new ModelGateway({
+    name: "fake",
+    async complete() {
+      return { model: "fake", content: JSON.stringify({ relationType: "contrast", reason: "一个看似新的理由。", hasValue: true, benefits: ["comparison"], priority: 30 }) };
+    },
+  });
+  await assert.rejects(() => missingReasonChangeDecision.evaluateAssociationHint({
+    left: { nodeId: "a", content: "证据 A", currentContext: "当前认识 A" },
+    right: { nodeId: "b", content: "证据 B", currentContext: "当前认识 B" },
+    terminalReasons: ["历史理由"],
+  }), /invalid result/);
+});

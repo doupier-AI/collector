@@ -478,14 +478,7 @@ export class NodeGrowthService {
       }
     }
     const nodes = sessions.flatMap((session) => this.store.listResearchNodes(session.id));
-    const liveNodeIds = new Set(nodes.map((node) => node.id));
-    const activeHints = this.store.listAssociationHints("active");
-    const candidateCountByNodeId = new Map<string, number>();
-    for (const hint of activeHints) {
-      if (!liveNodeIds.has(hint.anchorNodeId) || !liveNodeIds.has(hint.relatedNodeId)) continue;
-      candidateCountByNodeId.set(hint.anchorNodeId, (candidateCountByNodeId.get(hint.anchorNodeId) ?? 0) + 1);
-      candidateCountByNodeId.set(hint.relatedNodeId, (candidateCountByNodeId.get(hint.relatedNodeId) ?? 0) + 1);
-    }
+    const activeAssociationHints = this.store.listAssociationHints("active");
     const allEdges = this.store.listAllResearchEdges();
     const evidenceHealthByFusionNodeId = deriveFusionEvidenceHealth(nodes, allEdges);
     return buildResearchGraphObservation(
@@ -495,7 +488,7 @@ export class NodeGrowthService {
       this.store.listProjects(),
       input,
       {
-        candidateCountByNodeId,
+        activeAssociationHints,
         evidenceHealthByFusionNodeId,
         nodeLabel: (node, session) => {
           if (node.displayName) return node.displayName;

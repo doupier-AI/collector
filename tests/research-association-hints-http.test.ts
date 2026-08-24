@@ -55,9 +55,11 @@ async function createHarness() {
     id: "assoc-hint:test-1",
     anchorNodeId: "node-a",
     relatedNodeId: "node-b",
+    relationType: "contrast",
     reason: "两处材料共享孙悟空名称，但来自不同作品与语境。",
     anchorRanges: [{ nodeId: "node-a", bodyVersionId: a.bodyVersionId, fragmentId: a.fragmentId }],
     relatedRanges: [{ nodeId: "node-b", bodyVersionId: b.bodyVersionId, fragmentId: b.fragmentId }],
+    evidenceContentKey: "test-content-1",
     evidenceKey: "test-evidence-1",
     status: "active",
     createdAt: NOW,
@@ -65,8 +67,15 @@ async function createHarness() {
   };
   await store.createAssociationHint(hint);
   // 已被忽略的提示：不应出现在活跃列表。
-  await store.createAssociationHint({ ...hint, id: "assoc-hint:test-ignored", evidenceKey: "test-evidence-ignored", status: "active" });
-  await store.saveAssociationHint({ ...hint, id: "assoc-hint:test-ignored", evidenceKey: "test-evidence-ignored", status: "ignored", ignoredAt: NOW, updatedAt: NOW });
+  const ignoredHint = {
+    ...hint,
+    id: "assoc-hint:test-ignored",
+    evidenceContentKey: "test-content-ignored",
+    evidenceKey: "test-evidence-ignored",
+    status: "active" as const,
+  };
+  await store.createAssociationHint(ignoredHint);
+  await store.saveAssociationHint({ ...ignoredHint, status: "ignored", ignoredAt: NOW, updatedAt: NOW });
 
   const server = createApiServer(service, auth);
   await listenOnFetchSafePort(server);
@@ -114,6 +123,22 @@ test("GET 只返回锚定当前节点的活跃提示，忽略态与他节点提�
 
   const otherNode = await api("/v1/research-nodes/node-b/association-hints");
   assert.deepEqual(await otherNode.json(), [], "node-b 是来源端而非锚点端，不返回提示");
+});
+
+test("GET 在读取前使永久缺失的提示过期", async (t) => {
+  const harness = await createHarness();
+  t.after(harness.close);
+  const db = (harness.store as unknown as { db(): import("node:sqlite").DatabaseSync }).db();
+  db.prepare("DELETE FROM research_semantic_fragments WHERE id = ?").run(
+    harness.store.listAssociationHints("active")[0]!.relatedRanges[0]!.fragmentId,
+  );
+
+  const response = await authed(harness.base, harness.token)("/v1/research-nodes/node-a/association-hints");
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), []);
+  const expired = harness.store.listAssociationHints("expired");
+  assert.equal(expired.length, 1);
+  assert.ok(expired[0]!.expiredAt);
 });
 
 test("dismiss 把提示置为忽略且幂等；未知提示返回 404", async (t) => {

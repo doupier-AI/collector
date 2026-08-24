@@ -2519,6 +2519,10 @@ export interface ResearchGraphObservationInput {
   /** 节点创建时间的不含上界。 */
   createdBefore?: string;
   relationshipKinds?: ResearchPermanentEdgeKind[];
+  /** 候选详情默认不随地图摘要返回；仅候选观察主动请求时带回。 */
+  includeAssociationHints?: true;
+  /** 只返回触及该节点的候选详情；总数与卫星计数同步限定为该子集。 */
+  associationCandidateNodeId?: string;
 }
 
 export type ResearchGraphObservationConnectivity = "default" | "focus" | "connected" | "unconnected";
@@ -2553,6 +2557,10 @@ export interface ResearchGraphObservation {
   edges: ResearchGraphObservationEdge[];
   focusNodeId?: string;
   appliedRelationshipKinds: ResearchPermanentEdgeKind[];
+  /** 当前可见节点之间的活跃候选唯一数；服务端已完成范围与节点筛选。 */
+  activeCandidateCount: number;
+  /** 仅 includeAssociationHints=true 时返回，避免普通地图观察携带候选证据详情。 */
+  associationHints?: ResearchAssociationHintRecord[];
 }
 
 // ── Cross-session research search (Issue #67) ─────────────────────
@@ -2831,7 +2839,8 @@ export function validateResearchSearchInput(value: unknown): asserts value is Re
 
 export interface ResearchGraphObservationDerivations {
   nodeLabel?: (node: ResearchNodeRecord, session: ResearchSessionRecord) => string;
-  candidateCountByNodeId?: ReadonlyMap<string, number>;
+  /** 活跃临时提示由统一观察构建器在可见节点确定后筛选、计数和按需展开。 */
+  activeAssociationHints?: readonly ResearchAssociationHintRecord[];
   evidenceHealthByFusionNodeId?: ReadonlyMap<string, Exclude<ResearchGraphFusionEvidenceHealth, "not-applicable">>;
 }
 
@@ -2974,13 +2983,33 @@ export function buildResearchGraphObservation(
             ? "outside-bridge"
             : "outside-boundary",
         connectivity: connectivityFor(node.id),
-        candidateCount: derivations.candidateCountByNodeId?.get(node.id) ?? 0,
+        candidateCount: 0,
         fusionEvidenceHealth: node.isFusionNode
           ? derivations.evidenceHealthByFusionNodeId?.get(node.id) ?? "incomplete"
           : "not-applicable",
       };
     });
   const visibleIds = new Set(nodes.map((summary) => summary.node.id));
+  const seenHintIds = new Set<string>();
+  const activeAssociationHints = (derivations.activeAssociationHints ?? [])
+    .filter((hint) => hint.status === "active"
+      && visibleIds.has(hint.anchorNodeId)
+      && visibleIds.has(hint.relatedNodeId)
+      && (!input.associationCandidateNodeId
+        || hint.anchorNodeId === input.associationCandidateNodeId
+        || hint.relatedNodeId === input.associationCandidateNodeId))
+    .filter((hint) => {
+      if (seenHintIds.has(hint.id)) return false;
+      seenHintIds.add(hint.id);
+      return true;
+    })
+    .sort(compareAssociationHintsByValue);
+  const candidateCountByNodeId = new Map<string, number>();
+  for (const hint of activeAssociationHints) {
+    candidateCountByNodeId.set(hint.anchorNodeId, (candidateCountByNodeId.get(hint.anchorNodeId) ?? 0) + 1);
+    candidateCountByNodeId.set(hint.relatedNodeId, (candidateCountByNodeId.get(hint.relatedNodeId) ?? 0) + 1);
+  }
+  for (const summary of nodes) summary.candidateCount = candidateCountByNodeId.get(summary.node.id) ?? 0;
   const edges = permanentEdges
     .filter((edge) => visibleIds.has(edge.fromNodeId) && visibleIds.has(edge.toNodeId))
     .sort(compareEdges)
@@ -3000,6 +3029,8 @@ export function buildResearchGraphObservation(
     edges,
     ...(input.focusNodeId && nodeById.has(input.focusNodeId) ? { focusNodeId: input.focusNodeId } : {}),
     appliedRelationshipKinds: enabledKinds,
+    activeCandidateCount: activeAssociationHints.length,
+    ...(input.includeAssociationHints ? { associationHints: activeAssociationHints } : {}),
   };
 }
 
@@ -3018,21 +3049,65 @@ export interface ResearchNodeSearchResult {
 
 export type ResearchAssociationHintStatus = "active" | "ignored" | "expired";
 
+/** 临时提示对当前学习的实际帮助类型；只供内部评估与稳定排序，不向用户呈现分数。 */
+export const ASSOCIATION_HINT_BENEFITS = ["rediscovery", "supplement", "correction", "comparison", "expansion"] as const;
+export type ResearchAssociationHintBenefit = (typeof ASSOCIATION_HINT_BENEFITS)[number];
+export const ASSOCIATION_HINT_EVALUATION_PROMPT_VERSION = "association-hint-evaluation-v1";
+
+/**
+ * 与可定位证据分开的内部价值判断。contextKey 随两端当前稳定内容变化，
+ * 使后台可以重评而不会把检索召回权重误当成产品价值。
+ */
+export interface ResearchAssociationHintValueAssessment {
+  promptVersion: string;
+  benefits: ResearchAssociationHintBenefit[];
+  /** 仅用于内部排序的正整数；界面不得展示。 */
+  priority: number;
+  assessedAt: string;
+  contextKey: string;
+}
+
 /** 临时关联提示不是边，也没有转为永久关系的状态。 */
 export interface ResearchAssociationHintRecord {
   id: string;
   anchorNodeId: string;
   relatedNodeId: string;
+  /** 关系核验的结构化结果；临时提示永远不接受 unrelated。 */
+  relationType: Exclude<FusionRelationType, "unrelated">;
   reason: string;
   anchorRanges: ResearchSemanticRangeReference[];
   relatedRanges: ResearchSemanticRangeReference[];
-  /** 同一证据与理由的稳定指纹，用于幂等写入与忽略抑制。 */
+  /** 两端稳定证据正文的指纹；不依赖正文版本或片段 ID。 */
+  evidenceContentKey: string;
+  /** 节点对 + 证据正文 + 关系类型 + 规范化理由的稳定指纹，用于幂等写入与忽略抑制。 */
   evidenceKey: string;
+  /** 已通过价值判断的提示留下内部判断，以便正文上下文变化后重新评估。 */
+  valueAssessment?: ResearchAssociationHintValueAssessment;
   status: ResearchAssociationHintStatus;
   createdAt: string;
   updatedAt: string;
   ignoredAt?: string;
   expiredAt?: string;
+}
+
+/**
+ * 关联提示唯一的产品排序：先看重新发现、补充、纠正、对比或扩展当前认识的价值，
+ * 再用稳定键消除并列抖动。检索分数不进入这里。
+ */
+export function compareAssociationHintsByValue(
+  left: Pick<ResearchAssociationHintRecord, "id" | "valueAssessment">,
+  right: Pick<ResearchAssociationHintRecord, "id" | "valueAssessment">,
+): number {
+  const leftPriority = left.valueAssessment?.priority;
+  const rightPriority = right.valueAssessment?.priority;
+  if (leftPriority !== rightPriority) {
+    if (leftPriority === undefined) return 1;
+    if (rightPriority === undefined) return -1;
+    return rightPriority - leftPriority;
+  }
+  const benefitCount = (right.valueAssessment?.benefits.length ?? 0) - (left.valueAssessment?.benefits.length ?? 0);
+  if (benefitCount !== 0) return benefitCount;
+  return left.id.localeCompare(right.id);
 }
 
 export type ResearchSourceHealth = "available" | "temporarily-unavailable" | "deleted";

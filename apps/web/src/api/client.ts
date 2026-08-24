@@ -153,7 +153,7 @@ export interface ApiClient {
   decideResearchFusionProposal(proposalId: string, decision: ResearchFusionProposalDecision): Promise<ResearchFusionProposalRecord>;
   /** #31：确认式融合——确认后创建融合节点并返回首轮结果，客户端跳转到融合节点页。 */
   fuseResearchFusionProposal(proposalId: string, idempotencyKey: string): Promise<NodeGrowthAccepted>;
-  /** #69：读取当前节点的活跃临时关联提示（最多展示一条，其余留给候选观察）。 */
+  /** #69/#70：按产品价值读取当前节点的活跃临时关联提示（客户端只突出第一条，其余留给候选观察）。 */
   listAssociationHints(nodeId: string): Promise<ResearchAssociationHintRecord[]>;
   /** #69：明确忽略提示；幂等，重复忽略返回同一记录。忽略不创建任何永久事实。 */
   dismissAssociationHint(hintId: string): Promise<ResearchAssociationHintRecord>;
@@ -552,6 +552,8 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
       }
       if (input.createdFrom) params.set("createdFrom", input.createdFrom);
       if (input.createdBefore) params.set("createdBefore", input.createdBefore);
+      if (input.includeAssociationHints) params.set("includeAssociationHints", "true");
+      if (input.associationCandidateNodeId) params.set("associationCandidateNodeId", input.associationCandidateNodeId);
       if (input.relationshipKinds !== undefined) {
         if (input.relationshipKinds.length === 0) params.append("relationshipKind", "");
         else for (const kind of input.relationshipKinds) params.append("relationshipKind", kind);

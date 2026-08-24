@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { FUSION_COMPOSE_PROMPT_VERSION, FUSION_COMPOSE_TOKEN_BUDGET, FUSION_RELATION_TYPES, IMPORT_CHAPTER_PARSE_PROMPT_VERSION, IMPORT_CHAPTER_PARSE_TOKEN_BUDGET, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, TERM_IDENTITY_CONTEXT_MAX_CHARACTERS, TERM_IDENTITY_TEXT_MAX_CHARACTERS, TERM_IDENTITY_VERIFY_PROMPT_VERSION, parseResearchSelectionInsight, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight, type ResearchSliceContext, type TermIdentityVerificationRequest } from "@collector/capture-contracts";
+import { ASSOCIATION_HINT_BENEFITS, ASSOCIATION_HINT_EVALUATION_PROMPT_VERSION, FUSION_COMPOSE_PROMPT_VERSION, FUSION_COMPOSE_TOKEN_BUDGET, FUSION_RELATION_TYPES, IMPORT_CHAPTER_PARSE_PROMPT_VERSION, IMPORT_CHAPTER_PARSE_TOKEN_BUDGET, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, TERM_IDENTITY_CONTEXT_MAX_CHARACTERS, TERM_IDENTITY_TEXT_MAX_CHARACTERS, TERM_IDENTITY_VERIFY_PROMPT_VERSION, parseResearchSelectionInsight, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchAssociationHintBenefit, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSelectionInsight, type ResearchSliceContext, type TermIdentityVerificationRequest } from "@collector/capture-contracts";
 
 export interface ProviderUsage {
   inputTokens?: number;
@@ -1088,6 +1088,92 @@ ${input.content}`;
       timeoutMs: options.timeoutMs ?? 120_000,
     }, options.context ?? { purpose: "research", promptVersion: IMPORT_CHAPTER_PARSE_PROMPT_VERSION });
     return response.content;
+  }
+
+  /**
+   * 普通临时关联提示的专用评估。关系成立不等于值得打扰用户：模型还必须判断
+   * 此刻是否能帮助重新发现、补充、纠正、对比或扩展当前认识。该方法不触碰融合路径。
+   */
+  async evaluateAssociationHint(
+    input: {
+      left: { nodeId: string; content: string; currentContext: string };
+      right: { nodeId: string; content: string; currentContext: string };
+      terminalReasons: string[];
+    },
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<{ relationType: FusionRelationType; reason: string; hasValue: boolean; benefits: ResearchAssociationHintBenefit[]; priority: number; reasonSubstantiallyChanged: boolean }> {
+    if (!input.left.nodeId || !input.right.nodeId || input.left.nodeId === input.right.nodeId) {
+      throw new Error("Association hint evaluation requires two distinct nodes");
+    }
+    const prompt = `你是 Collector 的普通关联提示评估助手。只根据给出的两端可定位证据和各自当前稳定上下文判断；这不是融合任务，不得提出融合、建边、任务或新节点。
+
+节点 A 的可定位证据（${input.left.nodeId}）：
+${JSON.stringify(input.left.content.slice(0, 12_000))}
+
+节点 A 的当前上下文：
+${JSON.stringify(input.left.currentContext.slice(0, 12_000))}
+
+节点 B 的可定位证据（${input.right.nodeId}）：
+${JSON.stringify(input.right.content.slice(0, 12_000))}
+
+节点 B 的当前上下文：
+${JSON.stringify(input.right.currentContext.slice(0, 12_000))}
+
+同一节点对已经终结的历史理由（可能为空）：
+${JSON.stringify(input.terminalReasons.map((reason) => reason.slice(0, 160)))}
+
+只返回合法 JSON：
+{"relationType":"identity | shared-concept | analogy | contrast | unrelated","reason":"不超过160个中文字符的可回溯理由","hasValue":true|false,"benefits":["rediscovery | supplement | correction | comparison | expansion"],"priority":1-100,"reasonSubstantiallyChanged":true|false}
+
+规则：
+- relationType 和 reason 只说明两段可定位证据可见的关系，材料不足时为 unrelated；
+- hasValue 只在这条提示确实能帮助用户重新发现、补充、纠正、对比或扩展当前认识时为 true；字面相似、重复已知信息或没有下一步认识价值时为 false；
+- hasValue 为 true 时 relationType 不能是 unrelated，benefits 至少一个且去重，priority 为 1 到 100 的整数；
+- hasValue 为 false 时 benefits 必须是 []，priority 必须是 0；
+- 历史理由为空时 reasonSubstantiallyChanged 固定为 true；历史理由非空时，只有当前 reason 由新的实质证据支撑、能带来不同认识，且不是同义改写或仅替换 relationType 时才为 true；无法确定时为 false；
+- reason 不得提及提示词、模型或系统，不得补充外部事实。`;
+    const evaluationContext: ModelCallContext = {
+      ...(options.context ?? {}),
+      purpose: options.context?.purpose ?? "association_hint_evaluation",
+      promptVersion: options.context?.promptVersion ?? ASSOCIATION_HINT_EVALUATION_PROMPT_VERSION,
+    };
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      responseFormat: { type: "json_object" },
+      temperature: 0,
+      thinking: false,
+      maxTokens: options.maxTokens ?? 900,
+      timeoutMs: options.timeoutMs ?? 45_000,
+    }, evaluationContext);
+    let parsed: { relationType?: unknown; reason?: unknown; hasValue?: unknown; benefits?: unknown; priority?: unknown; reasonSubstantiallyChanged?: unknown };
+    try {
+      parsed = JSON.parse(response.content) as typeof parsed;
+    } catch {
+      throw new Error("Association hint evaluation provider returned invalid JSON");
+    }
+    if (!FUSION_RELATION_TYPES.includes(parsed.relationType as FusionRelationType)
+      || typeof parsed.reason !== "string" || !parsed.reason.replace(/\s+/g, " ").trim() || parsed.reason.replace(/\s+/g, " ").trim().length > 160
+      || typeof parsed.hasValue !== "boolean" || !Array.isArray(parsed.benefits)
+      || !parsed.benefits.every((benefit): benefit is ResearchAssociationHintBenefit => typeof benefit === "string" && ASSOCIATION_HINT_BENEFITS.includes(benefit as ResearchAssociationHintBenefit))
+      || new Set(parsed.benefits).size !== parsed.benefits.length
+      || !Number.isSafeInteger(parsed.priority) || (parsed.priority as number) < 0 || (parsed.priority as number) > 100
+      || typeof parsed.reasonSubstantiallyChanged !== "boolean") {
+      throw new Error("Association hint evaluation provider returned an invalid result");
+    }
+    if (parsed.hasValue
+      ? parsed.relationType === "unrelated" || parsed.benefits.length === 0 || parsed.priority === 0
+      : parsed.benefits.length !== 0 || parsed.priority !== 0) {
+      throw new Error("Association hint evaluation provider returned an inconsistent value decision");
+    }
+    return {
+      relationType: parsed.relationType as FusionRelationType,
+      reason: parsed.reason.replace(/\s+/g, " ").trim(),
+      hasValue: parsed.hasValue,
+      benefits: parsed.benefits,
+      priority: parsed.priority as number,
+      reasonSubstantiallyChanged: parsed.reasonSubstantiallyChanged,
+    };
   }
 
   /**

@@ -4,11 +4,12 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { deriveDefaultResearchTitle, deriveMessageBlocks, researchEdgeId } from "@collector/capture-contracts";
+import { deriveBodyVersion, deriveDefaultResearchTitle, deriveMessageBlocks, researchEdgeId } from "@collector/capture-contracts";
 import {
   CaptureService,
   createApiServer,
   createMvpDemoResearchProvider,
+  deriveMessageBodyArtifacts,
   LocalAuth,
   SqliteStore,
   type ResearchGenerationProvider,
@@ -716,13 +717,24 @@ test("global map endpoint returns one cross-session observation with archived an
   const archived = await createSessionWithAnswer(harness);
   const isolated = await createSessionWithAnswer(harness);
   const trashed = await createSessionWithAnswer(harness);
+  const evidenceFor = async (record: typeof first) => {
+    const message = { ...record.assistantMessage, nodeId: record.session.id };
+    const body = deriveBodyVersion({ messageId: message.id, nodeId: record.session.id, content: message.content, origin: "backfill", createdAt: message.createdAt });
+    const { fragments } = deriveMessageBodyArtifacts({ nodeId: record.session.id, message, slices: [] });
+    await harness.store.createResearchBodyVersion(body);
+    await harness.store.createSemanticFragments(fragments);
+    return { bodyVersionId: body.id, fragmentId: fragments[0]!.id };
+  };
+  const evidences = new Map(await Promise.all([first, archived, isolated, trashed].map(async (record) => [record.session.id, await evidenceFor(record)] as const)));
   const createHint = (id: string, anchorNodeId: string, relatedNodeId: string) => harness.store.createAssociationHint({
     id,
     anchorNodeId,
     relatedNodeId,
+    relationType: "shared-concept" as const,
     reason: "可定位的候选关联",
-    anchorRanges: [{ nodeId: anchorNodeId, bodyVersionId: `body:${anchorNodeId}`, fragmentId: `fragment:${anchorNodeId}` }],
-    relatedRanges: [{ nodeId: relatedNodeId, bodyVersionId: `body:${relatedNodeId}`, fragmentId: `fragment:${relatedNodeId}` }],
+    anchorRanges: [{ nodeId: anchorNodeId, ...evidences.get(anchorNodeId)! }],
+    relatedRanges: [{ nodeId: relatedNodeId, ...evidences.get(relatedNodeId)! }],
+    evidenceContentKey: `content:${id}`,
     evidenceKey: `evidence:${id}`,
     status: "active" as const,
     createdAt: new Date().toISOString(),
@@ -758,6 +770,24 @@ test("global map endpoint returns one cross-session observation with archived an
   assert.equal(observation.nodes.find((item) => item.node.id === isolated.session.id)?.candidateCount, 1);
   assert.ok(observation.nodes.every((item) => item.connectivity === "default"));
   assert.deepEqual(observation.edges.map((item) => item.edge.kind), ["fused-from"]);
+
+  const candidateDetailsResponse = await fetch(
+    `${harness.base}/v1/research-map?includeAssociationHints=true&associationCandidateNodeId=${first.session.id}`,
+    { headers: headers(harness.token) },
+  );
+  assert.equal(candidateDetailsResponse.status, 200);
+  const candidateDetails = await candidateDetailsResponse.json() as { activeCandidateCount: number; associationHints?: Array<{ id: string }> };
+  const visibleNodeIds = new Set(observation.nodes.map((item) => item.node.id));
+  const activeRows = harness.store.listAssociationHints("active");
+  const visibleActiveRows = activeRows.filter((hint) => visibleNodeIds.has(hint.anchorNodeId) && visibleNodeIds.has(hint.relatedNodeId));
+  assert.equal(activeRows.length, 2, "数据库保留回收站端点的活跃提示，供恢复后重新出现");
+  assert.equal(visibleActiveRows.length, 1, "当前观察只统计两端都可见的数据库活跃记录");
+  assert.equal(candidateDetails.activeCandidateCount, 1);
+  assert.equal(observation.nodes.reduce((sum, item) => sum + item.candidateCount, 0) / 2, candidateDetails.activeCandidateCount,
+    "工具坞总数必须等于两端节点计数之和的一半");
+  assert.equal(candidateDetails.associationHints?.length, visibleActiveRows.length,
+    "候选列表、工具坞总数和当前观察内数据库活跃记录必须一致");
+  assert.deepEqual(candidateDetails.associationHints?.map((hint) => hint.id), ["hint-live"]);
 
   const archivedOnlyResponse = await fetch(
     `${harness.base}/v1/research-map?lifecycle=archived&relationshipKind=`,

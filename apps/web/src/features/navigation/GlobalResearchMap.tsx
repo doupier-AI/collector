@@ -3,6 +3,7 @@ import type { KeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as Reac
 import { Link } from "react-router-dom";
 import {
   PROJECT_COLOR_ROLES,
+  type ResearchAssociationHintRecord,
   type ResearchGraphObservation,
   type ResearchGraphObservationConnectivity,
   type ResearchGraphObservationNode,
@@ -30,7 +31,7 @@ import {
   stepGatherSimulation,
   type DragSimulation,
 } from "./mapInteractions";
-import { mapSceneLayout, serializeMapScene, type MapSceneV2, type MapSearchScene } from "./map-scene";
+import { mapSceneLayout, serializeMapScene, type MapAssociationCandidateScene, type MapSceneV2, type MapSearchScene } from "./map-scene";
 import { DEFAULT_RESEARCH_MAP_FILTER_STATE, isDefaultResearchMapFilterState, type ResearchMapFilterState } from "./research-map-filters";
 
 interface ViewBoxState {
@@ -221,9 +222,13 @@ interface GlobalResearchMapProps {
   sceneKey?: string;
   /** 用户开始操作地图表面时关闭外层悬浮工具。 */
   onSurfaceInteraction?: (restoreToolFocus: boolean) => void;
+  /** #70 临时观察只借用当前坐标绘制，不参与永久关系和布局。 */
+  associationHints?: readonly ResearchAssociationHintRecord[];
+  candidateMode?: boolean;
+  onOpenCandidates?: (scope: MapAssociationCandidateScene, trigger: Element) => void;
 }
 
-export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initialScene, onSceneChange, onOpenNode, nodeHref = stableNodePath, relationshipKinds = observation.appliedRelationshipKinds, onRelationshipKindToggle, filters = DEFAULT_RESEARCH_MAP_FILTER_STATE, preserveExistingLayout, revealNodeId, revealRequestId, onRevealHandled, search, presentation = "canvas", immersive = false, sceneKey, onSurfaceInteraction }: GlobalResearchMapProps) {
+export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initialScene, onSceneChange, onOpenNode, nodeHref = stableNodePath, relationshipKinds = observation.appliedRelationshipKinds, onRelationshipKindToggle, filters = DEFAULT_RESEARCH_MAP_FILTER_STATE, preserveExistingLayout, revealNodeId, revealRequestId, onRevealHandled, search, presentation = "canvas", immersive = false, sceneKey, onSurfaceInteraction, associationHints = [], candidateMode = false, onOpenCandidates }: GlobalResearchMapProps) {
   const filtering = preserveExistingLayout ?? !isDefaultResearchMapFilterState(filters);
   const layoutRef = useRef<ReturnType<typeof createStableOrganicGraphLayout> | undefined>(undefined);
   /** 用户拖动/键盘移动确认后的位置覆盖，随 Map Scene 持久化。 */
@@ -328,6 +333,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
   }, [initialScene, sceneKey]);
   const adjacency = useMemo(() => adjacencyFor(observation), [observation]);
   const visualEdges = useMemo(() => visualEdgesFor(observation), [observation]);
+  const candidateEndpointIds = useMemo(() => new Set(associationHints.flatMap((hint) => [hint.anchorNodeId, hint.relatedNodeId])), [associationHints]);
   const nodeLabelsById = useMemo(
     () => new Map(observation.nodes.map((summary) => [summary.node.id, summary.label])),
     [observation.nodes],
@@ -725,7 +731,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
 
   useEffect(() => {
     const svg = svgRef.current;
-    if (!svg) return;
+    if (!svg || candidateMode) return;
     const handleWheel = (event: WheelEvent) => {
       event.preventDefault();
       const current = viewBoxRef.current;
@@ -736,10 +742,10 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
     };
     svg.addEventListener("wheel", handleWheel, { passive: false });
     return () => svg.removeEventListener("wheel", handleWheel);
-  }, [zoomAt]);
+  }, [candidateMode, zoomAt]);
 
   const startPan = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || (event.target as Element).closest("[data-node-id], button, a")) return;
+    if (event.button !== 0 || (event.target as Element).closest("[data-node-id], .global-map__candidate-satellite, button, a")) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     dragRef.current = { pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY, viewBox };
     setDragging(true);
@@ -769,7 +775,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
   };
 
   return (
-    <section className={["global-map", immersive ? "global-map--immersive" : "", `global-map--presentation-${presentation}`].filter(Boolean).join(" ")} aria-labelledby="global-map-title">
+    <section className={["global-map", immersive ? "global-map--immersive" : "", candidateMode ? "global-map--candidate-mode" : "", `global-map--presentation-${presentation}`].filter(Boolean).join(" ")} aria-labelledby="global-map-title">
       {!immersive ? <div className="global-map__summary" aria-label="地图摘要">
         <span><strong>{observation.nodes.length}</strong> 个节点</span>
         <span><strong>{observation.edges.length}</strong> 条永久关系</span>
@@ -795,17 +801,17 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
         data-testid="global-map-canvas"
         data-entry-animation={entryAnimationState}
         data-node-physics={nodePhysicsActive ? "active" : "idle"}
-        onPointerDownCapture={(event) => onSurfaceInteraction?.(!(event.target as Element).closest("[data-node-id], button, a[href]"))}
-        onPointerDown={startPan}
-        onPointerMove={continuePan}
-        onPointerUp={endPan}
-        onPointerCancel={endPan}
+        onPointerDownCapture={(event) => onSurfaceInteraction?.(!(event.target as Element).closest("[data-node-id], .global-map__candidate-satellite, button, a[href]"))}
+        onPointerDown={candidateMode ? undefined : startPan}
+        onPointerMove={candidateMode ? undefined : continuePan}
+        onPointerUp={candidateMode ? undefined : endPan}
+        onPointerCancel={candidateMode ? undefined : endPan}
       >
         <h2 id="global-map-title" className="global-map__view-title">全部研究节点</h2>
         <div className="global-map__zoom-controls" role="group" aria-label="地图缩放">
-          <button type="button" aria-label="缩小地图" onClick={() => zoomAt(1.2, viewBox.x + viewBox.width / 2, viewBox.y + viewBox.height / 2)}>−</button>
+          <button type="button" aria-label="缩小地图" disabled={candidateMode} onClick={() => zoomAt(1.2, viewBox.x + viewBox.width / 2, viewBox.y + viewBox.height / 2)}>−</button>
           <output aria-live="polite" aria-label="当前缩放比例">{Math.round(zoomScale * 100)}%</output>
-          <button type="button" aria-label="放大地图" onClick={() => zoomAt(0.82, viewBox.x + viewBox.width / 2, viewBox.y + viewBox.height / 2)}>+</button>
+          <button type="button" aria-label="放大地图" disabled={candidateMode} onClick={() => zoomAt(0.82, viewBox.x + viewBox.width / 2, viewBox.y + viewBox.height / 2)}>+</button>
         </div>
         <svg
           ref={svgRef}
@@ -815,6 +821,12 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
           viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`}
         >
           <rect className="global-map__pan-surface" x={viewBox.x} y={viewBox.y} width={viewBox.width} height={viewBox.height} />
+          {candidateMode ? associationHints.map((hint) => {
+            const from = positions.get(hint.anchorNodeId);
+            const to = positions.get(hint.relatedNodeId);
+            if (!from || !to) return null;
+            return <path key={hint.id} data-candidate-id={hint.id} className="global-map__candidate-edge" d={edgeCurvedPath(from, to, `candidate:${hint.id}`)} />;
+          }) : null}
           {visualEdges.map(({ id, fromNodeId, toNodeId, kinds, connectivity, directionConsistent, facts }, index) => {
             const from = positions.get(fromNodeId);
             const to = positions.get(toNodeId);
@@ -873,6 +885,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
               projectColorClass(summary),
               interactionClass,
               focusedNodeId === summary.node.id ? "global-map__node--selected" : "",
+              candidateMode && candidateEndpointIds.has(summary.node.id) ? "global-map__node--candidate-endpoint" : "",
             ].filter(Boolean).join(" ");
             return (
               <g
@@ -884,7 +897,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
                 className={classes}
                 transform={`translate(${position.x} ${position.y})`}
                 role="button"
-                tabIndex={current ? 0 : -1}
+                tabIndex={candidateMode ? -1 : current ? 0 : -1}
                 aria-pressed={focusedNodeId === summary.node.id}
                 aria-label={[summary.label, nodeStatus(summary), connectivityStatus(summary.connectivity), "单击或 Space 专注", "双击或 Enter 打开"].filter(Boolean).join("，")}
                 onFocus={() => { setRovingNodeId(summary.node.id); setKeyboardNodeId(summary.node.id); }}
@@ -892,6 +905,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
                 onPointerEnter={() => setHoveredNodeId(summary.node.id)}
                 onPointerLeave={() => setHoveredNodeId((nodeId) => nodeId === summary.node.id ? null : nodeId)}
                 onPointerDown={(event) => {
+                  if (candidateMode) return;
                   if (event.button !== 0) return;
                   event.stopPropagation();
                   const svgPoint = toSvgPoint(event.clientX, event.clientY);
@@ -967,6 +981,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
                   if (nodeDragRef.current) finishNodeDrag(true);
                 }}
                 onClick={(event) => {
+                  if (candidateMode) return;
                   event.stopPropagation();
                   if (lastDragMovedRef.current) {
                     lastDragMovedRef.current = false;
@@ -974,8 +989,8 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
                   }
                   selectCanvasNode(summary.node.id, event);
                 }}
-                onDoubleClick={() => { cancelPendingFocus(); onOpenNode?.(summary.node.id); }}
-                onKeyDown={(event) => handleKey(event, summary.node.id, canvasNodeRefs.current)}
+                onDoubleClick={() => { if (!candidateMode) { cancelPendingFocus(); onOpenNode?.(summary.node.id); } }}
+                onKeyDown={(event) => { if (!candidateMode) handleKey(event, summary.node.id, canvasNodeRefs.current); }}
               >
                 <circle className="global-map__node-selection-halo" r="14" />
                 <circle className="global-map__node-focus-ring" r="17" />
@@ -987,6 +1002,33 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
               </g>
             );
           })}
+          {!candidateMode ? observation.nodes.map((summary) => {
+            if (summary.candidateCount <= 0) return null;
+            const position = positions.get(summary.node.id);
+            if (!position) return null;
+            return (
+              <g
+                key={`candidate-satellite:${summary.node.id}`}
+                className="global-map__candidate-satellite"
+                data-candidate-trigger={`canvas:${summary.node.id}`}
+                transform={`translate(${position.x + 17} ${position.y - 17})`}
+                role="button"
+                tabIndex={0}
+                aria-label={`查看${summary.label}的${summary.candidateCount}条关联候选`}
+                onClick={(event) => { event.stopPropagation(); onOpenCandidates?.({ kind: "node", nodeId: summary.node.id }, event.currentTarget); }}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  onOpenCandidates?.({ kind: "node", nodeId: summary.node.id }, event.currentTarget);
+                }}
+              >
+                <title>{summary.candidateCount} 条关联候选</title>
+                <circle className="global-map__candidate-orbit" cx="-8" cy="8" r="12" />
+                <circle className="global-map__candidate-satellite-core" r="5" />
+              </g>
+            );
+          }) : null}
         </svg>
         <p className="global-map__keyboard-hint">拖动画布平移 · 滚轮缩放 · 按住节点拖动整理（周边联动）· Shift+方向键微调 · 单击或 Space 专注 · 双击或 Enter 打开节点</p>
       </div>
@@ -998,10 +1040,15 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
             const externalScope = externalScopePresentation(summary);
             return (
               <li key={summary.node.id}>
-                <button ref={(element) => { if (element) listNodeRefs.current.set(summary.node.id, element); else listNodeRefs.current.delete(summary.node.id); }} type="button" className={["global-map__list-link", `global-map__list-link--${summary.connectivity}`, externalScope ? `global-map__list-link--${externalScope.modifier}` : ""].filter(Boolean).join(" ")} aria-current={focusedNodeId === summary.node.id ? "true" : undefined} aria-pressed={focusedNodeId === summary.node.id} aria-label={[summary.label, nodeStatus(summary), connectivityStatus(summary.connectivity), "单击或 Space 专注", "Enter 打开"].filter(Boolean).join("，")} onClick={() => selectNode(summary.node.id)} onFocus={() => setRovingNodeId(summary.node.id)} onKeyDown={(event) => handleKey(event, summary.node.id, listNodeRefs.current)}>
+                <button ref={(element) => { if (element) listNodeRefs.current.set(summary.node.id, element); else listNodeRefs.current.delete(summary.node.id); }} type="button" disabled={candidateMode} className={["global-map__list-link", `global-map__list-link--${summary.connectivity}`, externalScope ? `global-map__list-link--${externalScope.modifier}` : ""].filter(Boolean).join(" ")} aria-current={focusedNodeId === summary.node.id ? "true" : undefined} aria-pressed={focusedNodeId === summary.node.id} aria-label={[summary.label, nodeStatus(summary), connectivityStatus(summary.connectivity), "单击或 Space 专注", "Enter 打开"].filter(Boolean).join("，")} onClick={() => { if (!candidateMode) selectNode(summary.node.id); }} onFocus={() => setRovingNodeId(summary.node.id)} onKeyDown={(event) => { if (!candidateMode) handleKey(event, summary.node.id, listNodeRefs.current); }}>
                   <span className={["global-map__list-dot", `global-map__list-dot--${summary.role}`, `global-map__list-dot--${summary.lifecycle}`, externalScope ? `global-map__list-dot--${externalScope.modifier}` : "", projectColorClass(summary, "global-map__list-dot")].filter(Boolean).join(" ")} aria-hidden="true" />
                   <span><strong>{summary.label}</strong><small>{summary.projectName ?? "未分类"} · {summary.sessionTitle} · {summary.role === "fusion" ? "融合成果" : "研究节点"}{summary.lifecycle === "archived" ? " · 已归档" : ""}{evidenceStatus(summary) ? ` · ${evidenceStatus(summary)}` : ""}{summary.connectivity === "focus" ? " · 当前专注" : summary.connectivity === "connected" ? " · 已连通" : summary.connectivity === "unconnected" ? " · 未连通" : ""}</small>{externalScope ? <span className="global-map__scope-badge">{externalScope.label}</span> : null}</span>
                 </button>
+                {!candidateMode && summary.candidateCount > 0 ? (
+                  <button type="button" className="global-map__list-candidate" data-candidate-trigger={`list:${summary.node.id}`} aria-label={`查看${summary.label}的${summary.candidateCount}条关联候选`} onClick={(event) => onOpenCandidates?.({ kind: "node", nodeId: summary.node.id }, event.currentTarget)}>
+                    <span aria-hidden="true">◌</span> {summary.candidateCount} 条候选
+                  </button>
+                ) : null}
               </li>
             );
           })}

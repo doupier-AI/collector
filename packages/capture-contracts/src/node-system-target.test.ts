@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   RESEARCH_PERMANENT_EDGE_KINDS,
+  compareAssociationHintsByValue,
   nextProjectColorRole,
   isResearchPermanentEdge,
   validateTemporaryFusionBundle,
+  type ResearchAssociationHintBenefit,
   type ResearchAssociationHintRecord,
   type ResearchCandidateSourceConnectionRecord,
   type ResearchEdgeRecord,
@@ -54,9 +56,11 @@ describe("node system target contracts", () => {
       id: "hint-1",
       anchorNodeId: "node-a",
       relatedNodeId: "node-b",
+      relationType: "shared-concept",
       reason: "两段内容从不同角度解释同一个限制",
       anchorRanges: [range],
       relatedRanges: [{ ...range, nodeId: "node-b", bodyVersionId: "body-b-v1", fragmentId: "fragment-b-1" }],
+      evidenceContentKey: "content-1",
       evidenceKey: "evidence-1",
       status: "active",
       createdAt: "2026-08-13T00:00:00.000Z",
@@ -66,6 +70,26 @@ describe("node system target contracts", () => {
     expect(searchResult.matchedRanges).toEqual([range]);
     expect(hint.anchorRanges).toEqual([range]);
     expect(Object.keys({ searchResult, hint }).join(" ")).not.toMatch(/mention|marker|term/i);
+  });
+
+  it("orders association hints by assessed value and uses stable ids for every fallback", () => {
+    const assessment = (priority: number, benefits: ResearchAssociationHintBenefit[]): NonNullable<ResearchAssociationHintRecord["valueAssessment"]> => ({
+      promptVersion: "association-hint-value-v1",
+      priority,
+      benefits,
+      assessedAt: "2026-08-13T00:00:00.000Z",
+      contextKey: "context-1",
+    });
+
+    expect([{ id: "b" }, { id: "a" }].sort(compareAssociationHintsByValue).map(({ id }) => id)).toEqual(["a", "b"]);
+    expect([
+      { id: "a" },
+      { id: "z", valueAssessment: assessment(1, ["rediscovery"]) },
+    ].sort(compareAssociationHintsByValue).map(({ id }) => id)).toEqual(["z", "a"]);
+    expect([
+      { id: "b", valueAssessment: assessment(50, ["comparison"]) },
+      { id: "a", valueAssessment: assessment(50, ["comparison"]) },
+    ].sort(compareAssociationHintsByValue).map(({ id }) => id)).toEqual(["a", "b"]);
   });
 
   it("requires two distinct locatable sources without treating evidence health as confirmation", () => {

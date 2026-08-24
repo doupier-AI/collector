@@ -27,6 +27,8 @@ export interface MapSceneV2 {
   relationshipKinds: ResearchPermanentEdgeKind[];
   /** 当前 history entry 的搜索现场；结果由当前索引重新计算，不写入现场。 */
   search?: MapSearchScene;
+  /** #70 临时关联候选观察；只属于当前 history entry，不进入业务库或 URL。 */
+  associationCandidates?: MapAssociationCandidateScene;
   viewBox: MapViewBox;
   layout: {
     world: GraphWorld;
@@ -39,6 +41,8 @@ export interface MapSearchScene {
   query: string;
   selectedNodeId?: string;
 }
+
+export type MapAssociationCandidateScene = { kind: "all" } | { kind: "node"; nodeId: string };
 
 export interface MapReturnV1 {
   version: 1;
@@ -81,6 +85,16 @@ function mapSearch(value: unknown): MapSearchScene | undefined {
     query: candidate.query.trim(),
     ...(candidate.selectedNodeId ? { selectedNodeId: candidate.selectedNodeId } : {}),
   };
+}
+
+function mapAssociationCandidates(value: unknown): MapAssociationCandidateScene | undefined {
+  if (value === undefined) return undefined;
+  const candidate = record(value);
+  if (candidate?.kind === "all") return { kind: "all" };
+  if (candidate?.kind === "node" && typeof candidate.nodeId === "string" && candidate.nodeId.length > 0 && candidate.nodeId.length <= 256) {
+    return { kind: "node", nodeId: candidate.nodeId };
+  }
+  return undefined;
 }
 
 function mapViewBox(value: unknown): MapViewBox | undefined {
@@ -150,6 +164,7 @@ export function serializeMapScene(input: {
   filters: ResearchMapFilterState;
   relationshipKinds: readonly ResearchPermanentEdgeKind[];
   search?: MapSearchScene;
+  associationCandidates?: MapAssociationCandidateScene;
   viewBox: MapViewBox;
   layout: Pick<StableOrganicGraphLayout, "world" | "positions" | "edgeKeys">;
 }): MapSceneV2 {
@@ -160,6 +175,7 @@ export function serializeMapScene(input: {
     filters: normalizedFilters.state,
     relationshipKinds: [...new Set(input.relationshipKinds)],
     ...(input.search ? { search: mapSearch(input.search) } : {}),
+    ...(input.associationCandidates ? { associationCandidates: mapAssociationCandidates(input.associationCandidates) } : {}),
     viewBox: { ...input.viewBox },
     layout: {
       world: { ...input.layout.world },
@@ -176,10 +192,21 @@ export function mapSceneFromRouteState(value: unknown): MapSceneV2 | undefined {
   const filters = mapFilters(candidate.filters);
   const kinds = relationshipKinds(candidate.relationshipKinds);
   const search = mapSearch(candidate.search);
+  const associationCandidates = mapAssociationCandidates(candidate.associationCandidates);
   const viewBox = mapViewBox(candidate.viewBox);
   const layout = mapLayout(candidate.layout);
-  if (!filters || !kinds || !viewBox || !layout || (candidate.search !== undefined && !search)) return undefined;
-  return { version: MAP_SCENE_VERSION, filters, relationshipKinds: kinds, ...(search ? { search } : {}), viewBox, layout };
+  if (!filters || !kinds || !viewBox || !layout
+    || (candidate.search !== undefined && !search)
+    || (candidate.associationCandidates !== undefined && !associationCandidates)) return undefined;
+  return {
+    version: MAP_SCENE_VERSION,
+    filters,
+    relationshipKinds: kinds,
+    ...(search ? { search } : {}),
+    ...(associationCandidates ? { associationCandidates } : {}),
+    viewBox,
+    layout,
+  };
 }
 
 export function mapSceneLayout(scene: MapSceneV2): Pick<StableOrganicGraphLayout, "world" | "positions" | "edgeKeys"> {

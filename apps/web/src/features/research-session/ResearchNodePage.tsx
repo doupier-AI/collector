@@ -107,7 +107,7 @@ export function ResearchNodePage() {
   const [fusingProposalId, setFusingProposalId] = useState<string | null>(null);
   // #32：本次挂载自动融合成功的融合节点摘要（顶部提示条数据源）。
   const [autoFusionResults, setAutoFusionResults] = useState<ResearchFusionAutoResult[] | null>(null);
-  // #69：当前节点的活跃临时关联提示（一次最多突出最新一条，其余留在候选层）。
+  // #69/#70：当前节点的活跃临时关联提示已按产品价值排序；只突出第一条，其余留在候选层。
   const [associationHints, setAssociationHints] = useState<ResearchAssociationHintRecord[]>([]);
   const [dismissingHintId, setDismissingHintId] = useState<string | null>(null);
   const autoScanNodeRef = useRef("");
@@ -977,8 +977,8 @@ export function ResearchNodePage() {
 
       {associationHints.length > 0 ? (
         <TransientAssociationNotice
-          hint={associationHints[associationHints.length - 1]!}
-          dismissing={dismissingHintId === associationHints[associationHints.length - 1]!.id}
+          hint={associationHints[0]!}
+          dismissing={dismissingHintId === associationHints[0]!.id}
           onDismiss={(hintId) => void handleDismissAssociationHint(hintId)}
         />
       ) : null}

@@ -9,7 +9,7 @@ import { ApiRequestError, NetworkError } from "../../api/errors";
 import type { TaskEventStream } from "../../api/task-events";
 import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
-import { makeAttachment, makeBodyVersion, makeFragment, makeFusionProposal, makeMessage, makeNode, makeNodeView, makeSelection, makeSelectionTask, makeSession, makeTask } from "../../test/fakes";
+import { makeAssociationHint, makeAttachment, makeBodyVersion, makeFragment, makeFusionProposal, makeMessage, makeNode, makeNodeView, makeSelection, makeSelectionTask, makeSession, makeTask } from "../../test/fakes";
 import { ResearchNodePage } from "./ResearchNodePage";
 import { __clearBodyVersionCache } from "./fragment-locator";
 
@@ -79,6 +79,59 @@ function readyRootView(): ResearchNodeView {
     tasks: [makeTask({ id: "task-1", status: "completed", inputMessageId: "m-in", outputMessageId: "m-out" })],
   });
 }
+
+describe("ResearchNodePage 关联候选主动提示", () => {
+  it("突出服务端价值排序后的第一条，而不是最新创建的一条", async () => {
+    const highestValue = makeAssociationHint({ id: "hint-high", reason: "这条高价值对比直接纠正当前认识。", createdAt: "2026-08-20T00:00:00.000Z" });
+    const newestLowerValue = makeAssociationHint({ id: "hint-new", reason: "这条较新的提示留在候选层。", createdAt: "2026-08-24T00:00:00.000Z" });
+    renderNodePage({
+      getResearchNodeView: async () => readyRootView(),
+      listAssociationHints: async () => [highestValue, newestLowerValue],
+      getResearchBodyVersion: async () => { throw new Error("excerpt is irrelevant to ordering"); },
+    });
+
+    const notice = await screen.findByRole("region", { name: "临时关联提示" });
+    expect(notice).toHaveTextContent(highestValue.reason);
+    expect(notice).not.toHaveTextContent(newestLowerValue.reason);
+  });
+
+  it("完整展示两端全部依据段，并可逐段打开旧内容", async () => {
+    const user = userEvent.setup();
+    const makeEvidenceView = (nodeId: string, messageId: string, content: string): ResearchBodyVersionView => {
+      const version = deriveBodyVersion({ messageId, nodeId, content, origin: "backfill", createdAt: "2026-08-02T00:00:00.000Z" });
+      const slices = deriveMessageSlices(nodeId, messageId, content, 0, []);
+      const fragments = deriveFragmentsFromSlices(version, slices, []);
+      return { version, fragments: fragments.map((fragment) => ({ ...fragment, excerpt: content.slice(fragment.startOffset, fragment.endOffset) })) };
+    };
+    const anchor = makeEvidenceView("session-1", "anchor-message", "本次第一段。\n\n本次第二段。");
+    const related = makeEvidenceView("node-2", "related-message", "旧内容第一段。\n\n旧内容第二段。");
+    const hint = makeAssociationHint({
+      anchorNodeId: "session-1",
+      relatedNodeId: "node-2",
+      anchorRanges: anchor.fragments.map((fragment) => ({ nodeId: "session-1", bodyVersionId: anchor.version.id, fragmentId: fragment.id })),
+      relatedRanges: related.fragments.map((fragment) => ({ nodeId: "node-2", bodyVersionId: related.version.id, fragmentId: fragment.id })),
+    });
+    const getResearchNodeView = vi.fn(async () => readyRootView());
+    renderNodePage({
+      getResearchNodeView,
+      listAssociationHints: async () => [hint],
+      getResearchBodyVersion: async (bodyVersionId) => bodyVersionId === anchor.version.id ? anchor : related,
+    });
+
+    const notice = await screen.findByRole("region", { name: "临时关联提示" });
+    await waitFor(() => {
+      expect(within(notice).getByText("本次第一段。")).toBeVisible();
+      expect(within(notice).getByText("本次第二段。")).toBeVisible();
+      expect(within(notice).getByText("旧内容第一段。")).toBeVisible();
+      expect(within(notice).getByText("旧内容第二段。")).toBeVisible();
+    });
+    expect(within(notice).getByText("本次回答 · 第 1 段")).toBeVisible();
+    expect(within(notice).getByText("旧内容 · 第 2 段")).toBeVisible();
+    const secondOldRange = within(notice).getByRole("button", { name: "打开旧内容 · 第 2 段" });
+    await user.click(secondOldRange);
+    await waitFor(() => expect(getResearchNodeView).toHaveBeenLastCalledWith("node-2"));
+  });
+});
 
 describe("ResearchNodePage 错误文案映射", () => {
   it("404 显示“这个节点不存在或已经清理”并提供返回首页", async () => {

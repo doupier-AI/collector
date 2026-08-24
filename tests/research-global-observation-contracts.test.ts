@@ -6,6 +6,7 @@ import {
   type ResearchGraphLifecycle,
   type ProjectRecord,
   type ResearchEdgeRecord,
+  type ResearchAssociationHintRecord,
   type ResearchNodeRecord,
   type ResearchSessionRecord,
 } from "@collector/capture-contracts";
@@ -35,6 +36,47 @@ test("global observation includes cross-session roots, archived and isolated nod
   assert.equal(result.nodes.find((item) => item.node.id === "b")?.lifecycle, "archived");
   assert.deepEqual(result.edges.map((item) => item.edge.kind), ["fused-from"]);
   assert.ok(result.nodes.every((item) => item.connectivity === "default"));
+});
+
+test("observation derives unique active candidate totals, endpoint satellites, and opt-in details only after visible nodes are known", () => {
+  const sessions = [session("a"), session("b"), session("hidden", { trashedAt: AT })];
+  const nodes = [node("a", "a"), node("b", "b"), node("hidden", "hidden")];
+  const hints: ResearchAssociationHintRecord[] = [
+    {
+      id: "hint:a-b", anchorNodeId: "a", relatedNodeId: "b", relationType: "contrast",
+      reason: "同名概念在两处材料中形成对比。",
+      anchorRanges: [{ nodeId: "a", bodyVersionId: "body:a", fragmentId: "fragment:a" }],
+      relatedRanges: [{ nodeId: "b", bodyVersionId: "body:b", fragmentId: "fragment:b" }],
+      evidenceContentKey: "content:a-b", evidenceKey: "evidence:a-b", status: "active", createdAt: AT, updatedAt: AT,
+    },
+    {
+      id: "hint:a-hidden", anchorNodeId: "a", relatedNodeId: "hidden", relationType: "shared-concept",
+      reason: "隐藏会话不应混入当前观察。",
+      anchorRanges: [{ nodeId: "a", bodyVersionId: "body:a", fragmentId: "fragment:a" }],
+      relatedRanges: [{ nodeId: "hidden", bodyVersionId: "body:hidden", fragmentId: "fragment:hidden" }],
+      evidenceContentKey: "content:a-hidden", evidenceKey: "evidence:a-hidden", status: "active", createdAt: AT, updatedAt: AT,
+    },
+    {
+      id: "hint:ignored", anchorNodeId: "a", relatedNodeId: "b", relationType: "contrast",
+      reason: "已忽略提示不应返回。",
+      anchorRanges: [{ nodeId: "a", bodyVersionId: "body:a", fragmentId: "fragment:a" }],
+      relatedRanges: [{ nodeId: "b", bodyVersionId: "body:b", fragmentId: "fragment:b" }],
+      evidenceContentKey: "content:ignored", evidenceKey: "evidence:ignored", status: "ignored", createdAt: AT, updatedAt: AT,
+    },
+  ];
+
+  const summary = buildResearchGraphObservation(nodes, [], sessions, [], {}, { activeAssociationHints: hints });
+  assert.equal(summary.activeCandidateCount, 1);
+  assert.equal(summary.nodes.find((item) => item.node.id === "a")?.candidateCount, 1);
+  assert.equal(summary.nodes.find((item) => item.node.id === "b")?.candidateCount, 1);
+  assert.equal(summary.associationHints, undefined, "详情必须显式按需请求");
+
+  const details = buildResearchGraphObservation(nodes, [], sessions, [], {
+    includeAssociationHints: true,
+    associationCandidateNodeId: "b",
+  }, { activeAssociationHints: hints });
+  assert.equal(details.activeCandidateCount, 1);
+  assert.deepEqual(details.associationHints?.map((hint) => hint.id), ["hint:a-b"]);
 });
 
 test("focus traverses the complete permanent component without maxDepth and keeps unrelated nodes as unconnected context", () => {

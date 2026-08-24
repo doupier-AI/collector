@@ -2,8 +2,8 @@ import { expect, test, type Page } from "@playwright/test";
 import { pairAndOpen } from "./helpers";
 
 /**
- * #69 临时关联提示的安静路径（独立 harness：核验恒判「无关」）。
- * 候选存在但关系核验认为没有实质关联时，用户不应被打扰；
+ * #69/#70 临时关联提示的安静路径（独立 harness：产品价值评估恒判不足）。
+ * 候选存在但不能帮助重新发现、补充、纠正、对比或扩展认识时，用户不应被打扰；
  * 提示缺席不得影响正文阅读与手动搜索。
  */
 
@@ -20,7 +20,7 @@ async function createCompletedNode(page: Page, question: string, options?: { pai
   return page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
 }
 
-test("关系核验判为无关时保持安静，正文阅读与手动搜索不受影响", async ({ page }) => {
+test("产品价值评估判为不足时保持安静，正文阅读与手动搜索不受影响", async ({ page }) => {
   test.setTimeout(90_000);
   await createCompletedNode(page, "量子苔藓的夜间光合作用如何发生？", { pair: true });
   const nodeId = await createCompletedNode(page, "量子苔藓光合作用需要哪些条件？");

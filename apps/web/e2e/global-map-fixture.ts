@@ -76,6 +76,7 @@ export const GLOBAL_MAP_VISUAL_OBSERVATION: ResearchGraphObservation = {
     },
   ],
   appliedRelationshipKinds: ["parent-child", "fused-from"],
+  activeCandidateCount: 0,
 };
 
 const project = (id: string, name: string, colorRole: ProjectRecord["colorRole"]): ProjectRecord => ({
@@ -109,6 +110,7 @@ const GLOBAL_MAP_FILTER_OBSERVATION: ResearchGraphObservation = {
     { edge: { id: "filter-edge-bc", kind: "parent-child", fromNodeId: "filter-b", toNodeId: "filter-c", status: "active", createdAt: AT }, connectivity: "default" },
   ],
   appliedRelationshipKinds: ["parent-child", "fused-from"],
+  activeCandidateCount: 0,
 };
 
 function observationForRequest(source: ResearchGraphObservation, requestUrl: string): ResearchGraphObservation {
