@@ -322,7 +322,10 @@ const PROTECTED_IMPLEMENTATION_PATHS = [
   ".scratch/",
   "scripts/ralph/",
   ".agents/skills/tdd/",
-  "docs/agents/",
+  "docs/product/",
+  "docs/ENGINEERING.md",
+  "docs/ACCEPTANCE.md",
+  "docs/ARCHITECTURE.md",
   "AGENTS.md",
 ];
 

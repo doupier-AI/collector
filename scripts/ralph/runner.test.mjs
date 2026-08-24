@@ -128,9 +128,13 @@ test("implementation agent cannot modify tracker or runner control files", () =>
     ".scratch/collector-prd-v2/issues/01-foundation.md",
   ]), /protected control file/);
   assert.throws(() => assertImplementationPathsAllowed(["scripts/ralph/runner.mjs"]), /protected control file/);
+  assert.throws(() => assertImplementationPathsAllowed(["docs/product/ai-answer.md"]), /protected control file/);
+  assert.throws(() => assertImplementationPathsAllowed(["docs/ENGINEERING.md"]), /protected control file/);
+  assert.throws(() => assertImplementationPathsAllowed(["docs/ACCEPTANCE.md"]), /protected control file/);
+  assert.throws(() => assertImplementationPathsAllowed(["docs/ARCHITECTURE.md"]), /protected control file/);
   assert.doesNotThrow(() => assertImplementationPathsAllowed([
     "apps/api/src/service.ts",
-    "docs/ARCHITECTURE.md",
+    "README.md",
   ]));
 });
 

@@ -1,7 +1,7 @@
 /* Collector WebUI 视觉令牌：安静的研究画布，不使用大面积渐变 */
 :root {
   color-scheme: light;
-  /* 底座：对齐产品取色板（CONTEXT.md「产品取色板」，全产品唯一取色源） */
+  /* 底座：现行视觉令牌本身是运行取色事实；界面只消费语义令牌。 */
   --color-canvas: #FAF9F5;
   --color-surface: #F5F4EF;
   --color-surface-raised: #FFFFFF;
