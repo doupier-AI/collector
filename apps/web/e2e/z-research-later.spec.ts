@@ -39,7 +39,6 @@ test.describe("标记列表 API 与持久化", () => {
 
     // 选区 → 浮动胶囊【引用】→ 引用态胶囊出现（修订一 #9）
     await citeAnswerText(page, SELECTED);
-    await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
 
     // 选区已落库
     const selections = await apiJson<Array<{ id: string }>>(page, `/v1/research-sessions/${sessionId}/selections`);

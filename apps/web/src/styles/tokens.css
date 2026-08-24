@@ -94,13 +94,10 @@
   --drawer-width: 17.5rem;
   --app-bar-height: 3.5rem;
 
-  /* 选区与选区智能窗口：暖橙协调（不取色板独立角色，沿用暖橙族谱） */
+  /* 选区操作：暖橙协调（不取色板独立角色，沿用暖橙族谱） */
   --color-selection: #F6D9BC;
   --color-selection-line: #D99268;
-  --color-difficulty-low: #3E6B4F;
-  --color-difficulty-mid: #9A6A24;
-  --color-difficulty-high: #A33B36;
-  --selection-panel-width: 22.5rem;
+  --color-run-success: #3E6B4F;
   --shadow-panel: 0 0.75rem 2rem rgba(32, 35, 31, 0.16);
 
   /* 网状图边类型：形状/线型 + 颜色冗余编码，经过相邻对比验证 */
@@ -152,9 +149,7 @@
   --shadow-panel: 0 0.75rem 2rem rgba(0, 0, 0, 0.55);
   --color-selection: #7A4530;
   --color-selection-line: #B26B45;
-  --color-difficulty-low: #4FA573;
-  --color-difficulty-mid: #D9A441;
-  --color-difficulty-high: #D9705F;
+  --color-run-success: #4FA573;
   --color-edge-parent-child: #5B9AF5;
   --color-edge-semantic-related: #F5804F;
   --color-edge-fused-from: #34C98F;
@@ -201,9 +196,7 @@
     --shadow-panel: 0 0.75rem 2rem rgba(0, 0, 0, 0.55);
     --color-selection: #7A4530;
     --color-selection-line: #B26B45;
-    --color-difficulty-low: #4FA573;
-    --color-difficulty-mid: #D9A441;
-    --color-difficulty-high: #D9705F;
+    --color-run-success: #4FA573;
     --color-edge-parent-child: #5B9AF5;
     --color-edge-semantic-related: #F5804F;
     --color-edge-fused-from: #34C98F;

@@ -1,7 +1,7 @@
 /**
- * 选区捕获与浮动胶囊端到端（修订一 #9 改造）：假模型（E2E_MODEL=fake）确定性分析。
+ * 选区捕获、引用与来源返回端到端（修订一 #9 改造）。
  * 覆盖：AI 回答选区 → 浮动胶囊出现在选区上方 → 显式【引用】后引用态胶囊进入输入框区域
- * （不再弹旧分析面板）→ 选区记录落库 → 网络契约（幂等键）→ SQLite 落库；
+ * → 选区记录落库 → 网络契约（幂等键）→ SQLite 落库；
  * 太短只提示不落库；键盘 Shift 选择同样触发浮动胶囊、Escape 不关闭；
  * 阅读页快照选区与跨段落只提示；控制台与网络无异常。
  * 修订一 #11 补充：阅读页 ?sel= 恢复与节点页一致（高亮上方浮动胶囊、引用后引用态保持）。
@@ -111,7 +111,6 @@ test.describe("选区捕获与浮动胶囊", () => {
     await expect(capsule.getByRole("button", { name: "移除引用" })).toBeVisible();
 
     // 旧分析面板不再出现；不再展示 AI 分析字段
-    await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
     await expect(page.getByText("理解难度")).toHaveCount(0);
     await expect(page.getByText("快速了解")).toHaveCount(0);
 
@@ -162,7 +161,6 @@ test.describe("选区捕获与浮动胶囊", () => {
     await expect(page.getByTestId("selection-quality-hint")).toHaveCount(0);
     // 浮动胶囊直接出现
     await expect(page.getByTestId("floating-selection-capsule")).toBeVisible();
-    await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
 
     // 引用后选区记录落库
     await page.getByTestId("floating-capsule-cite").click();
@@ -258,7 +256,6 @@ test.describe("选区捕获与浮动胶囊", () => {
     const capsule = await citeCurrentSelection(page);
     await expect(capsule).toContainText("本地优先研究");
     // 旧面板不出现
-    await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
 
     // 移除引用态胶囊
     await capsule.getByRole("button", { name: "移除引用" }).click();

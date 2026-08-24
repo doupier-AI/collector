@@ -7,7 +7,7 @@ import type { ApiClient } from "../../api/client";
 import { ApiRequestError } from "../../api/errors";
 import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
-import { makeSelectionTask, makeSession } from "../../test/fakes";
+import { makeSession } from "../../test/fakes";
 import { ReadingPage } from "./ReadingPage";
 
 function renderReadingPage(api: Partial<ApiClient>, entry = "/research/session-1/reading/snap-1") {
@@ -114,7 +114,6 @@ describe("阅读视图来源返回", () => {
   it("携带选区参数时按锚点重定位并高亮原选区，只读提醒不重开胶囊", async () => {
     const createResearchSelection = vi.fn(async () => ({
       selection: snapshotSelection(),
-      task: makeSelectionTask({ id: "sel-task-1", status: "completed" }),
     }));
     const { container } = renderReadingPage(
       {
@@ -151,7 +150,6 @@ describe("阅读视图来源返回", () => {
         getResearchSelection: async () => snapshotSelection(),
         createResearchSelection: async () => ({
           selection: snapshotSelection(),
-          task: makeSelectionTask({ id: "sel-task-1", status: "completed" }),
         }),
       },
       "/research/session-1/reading/snap-1?sel=sel-1",
@@ -169,7 +167,6 @@ describe("阅读视图来源返回", () => {
         getResearchSelection: async () => snapshotSelection(),
         createResearchSelection: async () => ({
           selection: snapshotSelection(),
-          task: makeSelectionTask({ id: "sel-task-1", status: "completed" }),
         }),
       },
       "/research/session-1/reading/snap-1?sel=sel-1",

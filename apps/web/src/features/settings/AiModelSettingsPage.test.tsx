@@ -315,7 +315,7 @@ describe("AiModelSettingsPage", () => {
     const setModelRouting = vi.fn<ApiClient["setModelRouting"]>().mockResolvedValue({
       routes: [
         { purpose: "research", profileId: "profile-2" },
-        { purpose: "selection", profileId: "profile-1" },
+        { purpose: "extraction", profileId: "profile-1" },
       ],
     });
     renderSettings(baseApi({
@@ -328,9 +328,9 @@ describe("AiModelSettingsPage", () => {
     expect(screen.getByLabelText("深入研究")).toHaveValue("profile-2");
     expect(screen.getByLabelText("对话与问答")).toHaveValue("");
 
-    await user.selectOptions(screen.getByLabelText("选区分析"), "profile-1");
-    await waitFor(() => expect(setModelRouting).toHaveBeenCalledWith("selection", "profile-1"));
-    await waitFor(() => expect(screen.getByLabelText("选区分析")).toHaveValue("profile-1"));
+    await user.selectOptions(screen.getByLabelText("事后语义抽取"), "profile-1");
+    await waitFor(() => expect(setModelRouting).toHaveBeenCalledWith("extraction", "profile-1"));
+    await waitFor(() => expect(screen.getByLabelText("事后语义抽取")).toHaveValue("profile-1"));
   });
 
   it("获取模型后展示分组勾选列表，默认勾选当前默认模型", async () => {

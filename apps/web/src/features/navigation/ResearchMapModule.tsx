@@ -133,7 +133,7 @@ export function ResearchMapModule({
           </div>
           <button
             type="button"
-            className="selection-panel__close"
+            className="research-map-overlay__close"
             aria-label="关闭研究地图"
             onClick={onClose}
           >

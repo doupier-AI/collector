@@ -19,7 +19,7 @@ import {
 } from "./instance.js";
 import { acquireServiceLock } from "./service-lock.js";
 import { calculateRuntimeVersion, isRuntimeVersion } from "./runtime-version.js";
-import { createMvpDemoResearchProvider, createMvpDemoSelectionProvider } from "./mvp-demo-research.js";
+import { createMvpDemoResearchProvider } from "./mvp-demo-research.js";
 import { createSemanticModelArtifactInstaller } from "./semantic-search/model-artifacts.js";
 import { IsolatedSemanticInferenceAdapter } from "./semantic-search/inference-adapter.js";
 import { createSemanticSearchModule } from "./semantic-search/module.js";
@@ -96,7 +96,6 @@ await store.saveSetting("ai_configured", String(Boolean(activeProfile?.credentia
 const resolver = new ProviderRuntimeResolver(DEFAULT_PROVIDER_REGISTRY, async (profileId) => store.getProviderCredential(profileId));
 const service = new CaptureService(store, paths.artifacts, undefined, {
   researchProvider: mvpDemoMode ? createMvpDemoResearchProvider() : undefined,
-  selectionProvider: mvpDemoMode ? createMvpDemoSelectionProvider() : undefined,
   mvpDemoMode,
 });
 const semanticDatabase = new DatabaseSync(paths.database);

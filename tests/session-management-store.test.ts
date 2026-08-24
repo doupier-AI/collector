@@ -86,15 +86,10 @@ async function seedFullSession(store: SqliteStore, sid: string) {
   db.prepare("INSERT INTO research_import_task_events (task_id, event_type, created_at, data_json) VALUES (?, 'completed', ?, '{}')")
     .run(importTaskId, NOW);
 
-  // 选区/选区任务/稍后项/分支
+  // 选区/稍后项/分支
   const selectionId = randomUUID();
   db.prepare("INSERT INTO research_selections (id, session_id, status, created_at, updated_at, record_json) VALUES (?, ?, 'completed', ?, ?, ?)")
     .run(selectionId, sid, NOW, NOW, JSON.stringify({ id: selectionId, sessionId: sid, status: "completed", createdAt: NOW, updatedAt: NOW }));
-  const selectionTaskId = randomUUID();
-  db.prepare("INSERT INTO research_selection_tasks (id, session_id, selection_id, idempotency_key, status, retryable, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, 'completed', 0, ?, ?, ?)")
-    .run(selectionTaskId, sid, selectionId, randomUUID(), NOW, NOW, JSON.stringify({}));
-  db.prepare("INSERT INTO research_selection_task_events (task_id, event_type, created_at, data_json) VALUES (?, 'completed', ?, '{}')")
-    .run(selectionTaskId, NOW);
   await store.createResearchLaterItem({
     id: randomUUID(), sessionId: sid, nodeId: childNode.id, selectionId, status: "pending", priority: 1,
     summary: "稍后学习", createdAt: NOW, updatedAt: NOW,
@@ -280,10 +275,10 @@ test("deleteResearchSession cascades across the full node tree", async (t) => {
   const tables: Array<[string, string]> = [
     ["research_semantic_fragments", "session_id"], ["research_body_versions", "session_id"], ["research_slices", "session_id"],
     ["research_citations", "session_id"], ["research_grounding_sources", "session_id"], ["research_grounding_runs", "session_id"],
-    ["research_task_events", "session_id"], ["research_import_task_events", "session_id"], ["research_selection_task_events", "session_id"],
+    ["research_task_events", "session_id"], ["research_import_task_events", "session_id"],
     ["research_term_preview_events", "session_id"], ["research_term_previews", "session_id"], ["research_edges", "session_id"],
     ["research_fusion_proposals", "session_id"], ["research_tasks", "session_id"], ["research_import_tasks", "session_id"],
-    ["research_content_snapshots", "session_id"], ["research_attachments", "session_id"], ["research_selection_tasks", "session_id"],
+    ["research_content_snapshots", "session_id"], ["research_attachments", "session_id"],
     ["research_selections", "session_id"], ["research_branches", "session_id"], ["research_later_items", "session_id"],
     ["research_nodes", "session_id"], ["research_messages", "session_id"],
   ];

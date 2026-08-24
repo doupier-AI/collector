@@ -36,7 +36,6 @@ async function createHarness(options: HarnessOptions = {}) {
     autoRunRecentOrganization: false,
     autoRunResearchTasks: options.autoRunResearchTasks ?? true,
     autoRunResearchImports: false,
-    autoRunSelectionTasks: false,
     researchProvider: options.researchProvider,
   });
   const server = createApiServer(service, auth);
@@ -135,7 +134,7 @@ async function createSelectionOn(
 ) {
   const response = await postJson(harness.base, harness.token, `/v1/research-sessions/${sessionId}/selections`, { anchor, ...extra }, randomUUID());
   assert.equal(response.status, 201);
-  return await response.json() as { selection: { id: string; text: string; status: string }; task: { id: string } };
+  return await response.json() as { selection: { id: string; text: string; status: string } };
 }
 
 async function waitForResearchTask(base: string, token: string, taskId: string, status: "completed" | "failed") {
@@ -447,7 +446,6 @@ test("queued deep research task resumes after service restart and keeps origin",
     autoRunRecentOrganization: false,
     autoRunResearchTasks: false,
     autoRunResearchImports: false,
-    autoRunSelectionTasks: false,
     researchProvider: recordingProvider("重启后生成的研究内容。").provider,
   });
   const resumed = await recovered.research.resumeTasks();

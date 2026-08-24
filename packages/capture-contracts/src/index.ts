@@ -83,7 +83,7 @@ export interface ProviderModelDiscoveryInput {
 export type ProviderModelDiscoveryResult = { ok: true; models: string[] } | { ok: false; error: string };
 
 /** 可按任务类型分配模型的用途；未分配时跟随当前激活配置。 */
-export const MODEL_PURPOSES = ["chat", "selection", "research", "search", "document", "extraction"] as const;
+export const MODEL_PURPOSES = ["chat", "research", "search", "document", "extraction"] as const;
 export type ModelPurpose = (typeof MODEL_PURPOSES)[number];
 
 export interface ModelPurposeRoute {
@@ -182,8 +182,8 @@ export interface ModelCallRecord {
 
 // ── Local run records (issue #19) ────────────────────────────────
 
-export type RunRecordSource = "research" | "selection" | "import" | "fusion" | "chapter";
-export type RunRecordOperationType = "research" | "selection_analysis" | "document_import" | "similarity_verification" | "chapter_parse";
+export type RunRecordSource = "research" | "import" | "fusion" | "chapter";
+export type RunRecordOperationType = "research" | "document_import" | "similarity_verification" | "chapter_parse";
 export type RunRecordStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "corrupt";
 export type RunRecordOutcome = "success" | "failure" | "active" | "cancelled" | "unavailable";
 export type RunRecordErrorCategory = "authentication" | "network" | "validation" | "provider" | "search" | "storage" | "unknown";
@@ -942,7 +942,7 @@ export interface AiConfigurationView {
   modelError?: string;
 }
 
-// ── Research Selection & Insight (MVP 阶段 B) ──────────────────────
+// ── Research Selection ─────────────────────────────────────────────
 
 /**
  * 选区锚点统一两种内容来源。offsets 是相对该锚定块文本的字符偏移
@@ -972,24 +972,12 @@ export type ResearchSelectionAnchor =
       suffix?: string;
     };
 
-/** 选区智能窗口的分析结果。除 relationToFocus 外全部为必需字段。 */
-export interface ResearchSelectionInsight {
-  summary: string;
-  difficulty: "低" | "中" | "高";
-  quickReadMinutes: number;
-  deepStudyMinutes: number;
-  prerequisites: string[];
-  relationToContent: string;
-  relationToFocus?: string;
-  rationale: string;
-}
-
 export type ResearchSelectionStatus = "active" | "stale";
 
 /**
  * 选区记录。text 是创建时刻的原文副本，永远不因内容变化或 AI 失败而删除；
  * anchor 保存服务端校验（必要时自愈重定位）后的位置；stale 表示原文已变化，
- * 选区与分析仍保留，按粗粒度位置降级展示。
+ * 选区仍保留，按粗粒度位置降级展示。
  */
 export interface ResearchSelectionRecord {
   id: string;
@@ -1001,44 +989,13 @@ export interface ResearchSelectionRecord {
   contextBefore?: string;
   contextAfter?: string;
   status: ResearchSelectionStatus;
-  insight?: ResearchSelectionInsight;
   createdAt: string;
   updatedAt: string;
-}
-
-export type ResearchSelectionTaskStatus = "queued" | "running" | "completed" | "failed";
-
-export interface ResearchSelectionTaskError {
-  code: "model_not_configured" | "provider_error" | "invalid_analysis" | "service_restarted";
-  message: string;
-}
-
-export interface ResearchSelectionTaskRecord {
-  id: string;
-  sessionId: string;
-  selectionId: string;
-  idempotencyKey: string;
-  status: ResearchSelectionTaskStatus;
-  retryable: boolean;
-  provider?: string;
-  model?: string;
-  promptVersion: string;
-  error?: ResearchSelectionTaskError;
-  createdAt: string;
-  updatedAt: string;
-  startedAt?: string;
-  completedAt?: string;
 }
 
 export interface ResearchSelectionAccepted {
   selection: ResearchSelectionRecord;
-  task: ResearchSelectionTaskRecord;
 }
-
-export type ResearchSelectionTaskEvent =
-  | { id?: number; type: "snapshot"; task: ResearchSelectionTaskRecord; selection: ResearchSelectionRecord; createdAt: string }
-  | { id: number; type: "completed"; task: ResearchSelectionTaskRecord; selection: ResearchSelectionRecord; createdAt: string }
-  | { id: number; type: "failed"; task: ResearchSelectionTaskRecord; selection: ResearchSelectionRecord; createdAt: string };
 
 export interface ResearchSelectionInput {
   anchor: ResearchSelectionAnchor;
@@ -1125,47 +1082,6 @@ export function evaluateSelectionQuality(input: { text: string; blockCount: numb
   const length = input.text.trim().length;
   if (length > RESEARCH_SELECTION_MAX_CHARACTERS) return { level: "too_long", maxCharacters: RESEARCH_SELECTION_MAX_CHARACTERS };
   return { level: "ok" };
-}
-
-/**
- * 校验 AI 返回的选区分析 JSON。必需字段缺失或类型不合法时抛错
- * （对应任务失败 invalid_analysis）；可选字段 relationToFocus 缺失合法。
- */
-export function parseResearchSelectionInsight(value: unknown): ResearchSelectionInsight {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Selection analysis must be a JSON object");
-  const candidate = value as Record<string, unknown>;
-  for (const field of ["summary", "relationToContent", "rationale"] as const) {
-    if (typeof candidate[field] !== "string" || !(candidate[field] as string).trim()) {
-      throw new Error(`Selection analysis field ${field} must be a non-empty string`);
-    }
-  }
-  if (!["低", "中", "高"].includes(candidate.difficulty as string)) {
-    throw new Error("Selection analysis field difficulty must be 低, 中, or 高");
-  }
-  for (const field of ["quickReadMinutes", "deepStudyMinutes"] as const) {
-    const minutes = candidate[field];
-    if (typeof minutes !== "number" || !Number.isFinite(minutes) || minutes < 1 || minutes > 24 * 60) {
-      throw new Error(`Selection analysis field ${field} must be a plausible number of minutes`);
-    }
-  }
-  if (!Array.isArray(candidate.prerequisites) || candidate.prerequisites.length > 6 || candidate.prerequisites.some((item) => typeof item !== "string" || !item.trim())) {
-    throw new Error("Selection analysis field prerequisites must be an array of up to 6 non-empty strings");
-  }
-  if (candidate.relationToFocus !== undefined && typeof candidate.relationToFocus !== "string") {
-    throw new Error("Selection analysis field relationToFocus must be a string when present");
-  }
-  return {
-    summary: (candidate.summary as string).trim(),
-    difficulty: candidate.difficulty as ResearchSelectionInsight["difficulty"],
-    quickReadMinutes: Math.round(candidate.quickReadMinutes as number),
-    deepStudyMinutes: Math.round(candidate.deepStudyMinutes as number),
-    prerequisites: (candidate.prerequisites as string[]).map((item) => item.trim()),
-    relationToContent: (candidate.relationToContent as string).trim(),
-    ...(typeof candidate.relationToFocus === "string" && candidate.relationToFocus.trim()
-      ? { relationToFocus: candidate.relationToFocus.trim() }
-      : {}),
-    rationale: (candidate.rationale as string).trim(),
-  };
 }
 
 export interface ResearchTaskError {

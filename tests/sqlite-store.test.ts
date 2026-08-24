@@ -16,7 +16,9 @@ test("creates formal versioned tables", async (t) => {
   store.close();
   const database = new DatabaseSync(databasePath, { readOnly: true });
   const tables = (database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name);
-  for (const table of ["model_calls", "research_sessions", "research_messages", "research_tasks", "research_task_events", "research_attachments", "research_import_tasks", "research_content_snapshots", "research_import_task_events", "research_chapter_tasks", "research_selections", "research_selection_tasks", "research_selection_task_events", "research_branches", "research_later_items", "research_grounding_runs", "research_grounding_sources", "research_citations", "provider_credentials", "model_purpose_routes", "research_nodes", "research_edges", "research_slices", "research_fusion_proposals", "research_body_versions", "research_semantic_fragments", "projects", "research_association_hints", "research_temporary_fusion_nodes", "research_fusion_draft_versions", "research_candidate_source_connections", "research_confirmed_fusion_snapshots"]) assert.ok(tables.includes(table));
+  for (const table of ["model_calls", "research_sessions", "research_messages", "research_tasks", "research_task_events", "research_attachments", "research_import_tasks", "research_content_snapshots", "research_import_task_events", "research_chapter_tasks", "research_selections", "research_branches", "research_later_items", "research_grounding_runs", "research_grounding_sources", "research_citations", "provider_credentials", "model_purpose_routes", "research_nodes", "research_edges", "research_slices", "research_fusion_proposals", "research_body_versions", "research_semantic_fragments", "projects", "research_association_hints", "research_temporary_fusion_nodes", "research_fusion_draft_versions", "research_candidate_source_connections", "research_confirmed_fusion_snapshots"]) assert.ok(tables.includes(table));
+  assert.ok(!tables.includes("research_selection_tasks"));
+  assert.ok(!tables.includes("research_selection_task_events"));
   assert.equal((database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, LATEST_SCHEMA_VERSION);
   const sessionColumns = (database.prepare("PRAGMA table_info(research_sessions)").all() as Array<{ name: string }>).map((column) => column.name);
   assert.ok(sessionColumns.includes("creation_idempotency_key"));
@@ -32,7 +34,101 @@ test("creates formal versioned tables", async (t) => {
   assert.ok(laterIndexes.some((index) => index.name === "research_later_items_creation_idempotency_idx" && index.unique === 1));
   const sessionIndexes = (database.prepare("PRAGMA index_list(research_sessions)").all() as Array<{ name: string; unique: number }>);
   assert.ok(sessionIndexes.some((index) => index.name === "research_sessions_creation_idempotency_idx" && index.unique === 1));
+  const selectionColumns = (database.prepare("PRAGMA table_info(research_selections)").all() as Array<{ name: string }>).map((column) => column.name);
+  assert.ok(selectionColumns.includes("idempotency_key"));
   database.close();
+  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+});
+
+test("migration v41 preserves selections while removing retired selection AI data", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "collector-selection-v40-"));
+  const databasePath = join(root, "collector.sqlite");
+  const store = new SqliteStore(databasePath);
+  await store.init();
+  const now = "2026-08-24T00:00:00.000Z";
+  const session: ResearchSessionRecord = { id: "selection-session", title: "选区迁移", status: "active", isFavorite: false, createdAt: now, updatedAt: now };
+  await store.createResearchSession(session, "selection-session-key");
+  const selection: ResearchSelectionRecord = {
+    id: "selection-preserved",
+    sessionId: session.id,
+    nodeId: session.id,
+    anchor: { kind: "message", messageId: "legacy-message", blockOrdinal: 0, startOffset: 0, endOffset: 2, exact: "原文" },
+    text: "原文",
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+  };
+  await store.saveResearchSelection(selection);
+  await store.saveProviderProfile({
+    id: "retired-profile",
+    providerId: "openai",
+    displayName: "保留的供应商配置",
+    baseUrl: "https://api.openai.com/v1",
+    model: "gpt-4.1-mini",
+    credentialConfigured: false,
+    enabled: true,
+    configurationVersion: 1,
+    createdAt: now,
+    updatedAt: now,
+  });
+  store.close();
+
+  const legacy = new DatabaseSync(databasePath);
+  legacy.exec(`
+    DROP INDEX research_selections_session_idempotency_idx;
+    ALTER TABLE research_selections DROP COLUMN idempotency_key;
+    CREATE TABLE research_selection_tasks (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      selection_id TEXT NOT NULL UNIQUE,
+      idempotency_key TEXT NOT NULL,
+      status TEXT NOT NULL,
+      retryable INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      record_json TEXT NOT NULL,
+      UNIQUE(session_id, idempotency_key)
+    );
+    CREATE TABLE research_selection_task_events (
+      sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      data_json TEXT NOT NULL
+    );
+    INSERT INTO research_selection_tasks
+      (id, session_id, selection_id, idempotency_key, status, retryable, created_at, updated_at, record_json)
+      VALUES ('legacy-selection-task', 'selection-session', 'selection-preserved', 'sel:legacy-key', 'completed', 0,
+        '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z', '{}');
+    INSERT INTO research_selection_task_events (task_id, event_type, created_at, data_json)
+      VALUES ('legacy-selection-task', 'completed', '2026-08-24T00:00:00.000Z', '{}');
+    UPDATE research_selections
+      SET record_json = '{"id":"selection-preserved","sessionId":"selection-session","nodeId":"selection-session","anchor":{"kind":"message","messageId":"legacy-message","blockOrdinal":0,"startOffset":0,"endOffset":2,"exact":"原文"},"text":"原文","status":"active","insight":{"summary":"旧卡片"},"createdAt":"2026-08-24T00:00:00.000Z","updatedAt":"2026-08-24T00:00:00.000Z"}'
+      WHERE id = 'selection-preserved';
+    INSERT INTO model_purpose_routes (purpose, profile_id, updated_at)
+      VALUES ('selection', 'retired-profile', '2026-08-24T00:00:00.000Z');
+    INSERT INTO model_calls
+      (id, workflow_run_id, provider, model, purpose, prompt_version, status, input_tokens, output_tokens, cache_hit_tokens, estimated_cost_usd, latency_ms, retry_count, created_at, record_json)
+      VALUES ('legacy-selection-call', 'legacy-selection-task', 'legacy', 'legacy', 'selection_analysis', 'legacy', 'succeeded', 1, 1, 0, 0, 1, 0, '2026-08-24T00:00:00.000Z', '{}');
+    DELETE FROM schema_migrations WHERE version = 41;
+  `);
+  legacy.close();
+
+  const migrated = new SqliteStore(databasePath);
+  await migrated.init();
+  const preserved = migrated.getResearchSelection(selection.id) as ResearchSelectionRecord & { insight?: unknown };
+  assert.equal(preserved.text, "原文");
+  assert.equal(preserved.insight, undefined);
+  const checked = new DatabaseSync(databasePath, { readOnly: true });
+  const tables = (checked.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name);
+  assert.ok(!tables.includes("research_selection_tasks"));
+  assert.ok(!tables.includes("research_selection_task_events"));
+  assert.equal((checked.prepare("SELECT idempotency_key AS key FROM research_selections WHERE id = ?").get(selection.id) as { key: string }).key, "sel:legacy-key");
+  assert.equal((checked.prepare("SELECT COUNT(*) AS count FROM model_purpose_routes WHERE purpose = 'selection'").get() as { count: number }).count, 0);
+  assert.equal((checked.prepare("SELECT COUNT(*) AS count FROM model_calls WHERE purpose = 'selection_analysis'").get() as { count: number }).count, 0);
+  assert.equal((checked.prepare("SELECT COUNT(*) AS count FROM provider_profiles WHERE id = 'retired-profile'").get() as { count: number }).count, 1);
+  checked.close();
+  migrated.close();
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 });
 
@@ -87,8 +183,6 @@ test("migrations 15 to 21 preserve existing version 14 research sessions", async
     DROP TABLE research_grounding_runs;
     DROP TABLE research_later_items;
     DROP TABLE research_branches;
-    DROP TABLE research_selection_task_events;
-    DROP TABLE research_selection_tasks;
     DROP TABLE research_selections;
     DROP TABLE research_import_task_events;
     DROP TABLE research_content_snapshots;
@@ -287,14 +381,14 @@ test("model purpose routes CRUD, profile deletion cleanup, and clearAllData pres
   await store.saveProviderProfile(profile);
 
   await store.setModelPurposeRoute("chat", profile.id);
-  await store.setModelPurposeRoute("selection", profile.id);
+  await store.setModelPurposeRoute("extraction", profile.id);
   await store.setModelPurposeRoute("chat", profile.id);
   assert.deepEqual(store.listModelPurposeRoutes(), [
     { purpose: "chat", profileId: profile.id },
-    { purpose: "selection", profileId: profile.id },
+    { purpose: "extraction", profileId: profile.id },
   ]);
 
-  await store.clearModelPurposeRoute("selection");
+  await store.clearModelPurposeRoute("extraction");
   assert.deepEqual(store.listModelPurposeRoutes(), [{ purpose: "chat", profileId: profile.id }]);
 
   await store.clearAllData();

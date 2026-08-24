@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchFusionReference, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchSelectionAccepted, type ResearchSelectionInsight, type ResearchSelectionRecord, type ResearchSelectionTaskError, type ResearchSelectionTaskEvent, type ResearchSelectionTaskRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchFusionReference, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId } from "@collector/capture-contracts";
 import {
   compareAssociationHintsByValue,
   isResearchPermanentEdge,
@@ -17,7 +17,7 @@ import {
   type ResearchTemporaryFusionNodeRecord,
 } from "@collector/capture-contracts";
 
-export type ObservabilityRecordSource = "research" | "selection" | "import" | "fusion" | "chapter";
+export type ObservabilityRecordSource = "research" | "import" | "fusion" | "chapter";
 
 export interface ObservabilityRecordRow {
   source: ObservabilityRecordSource;
@@ -62,25 +62,16 @@ export interface ResearchLaterStore {
   listResearchMessagesByNode(nodeId: string): ResearchMessageRecord[];
 }
 
-/** 选区分析所需的持久化能力：16 个专属方法。 */
+/** 选区、稳定锚点与来源返回所需的持久化能力。 */
 export interface ResearchSelectionStore {
   getResearchSelection(id: string): ResearchSelectionRecord | undefined;
   listResearchSelections(sessionId: string): ResearchSelectionRecord[];
-  getResearchSelectionTask(id: string): ResearchSelectionTaskRecord | undefined;
-  findResearchSelectionTaskByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchSelectionTaskRecord | undefined;
-  createResearchSelection(selection: ResearchSelectionRecord, task: ResearchSelectionTaskRecord): Promise<ResearchSelectionAccepted>;
+  findResearchSelectionByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchSelectionRecord | undefined;
+  createResearchSelection(selection: ResearchSelectionRecord, idempotencyKey: string): Promise<ResearchSelectionAccepted>;
   saveResearchSelection(record: ResearchSelectionRecord): Promise<void>;
-  claimResearchSelectionTask(id: string, provider?: string, model?: string, promptVersion?: string): ResearchSelectionTaskRecord | undefined;
-  completeResearchSelectionTask(id: string, insight: ResearchSelectionInsight): Promise<void>;
-  failResearchSelectionTask(task: ResearchSelectionTaskRecord, error: ResearchSelectionTaskError): Promise<void>;
-  retryResearchSelectionTask(task: ResearchSelectionTaskRecord, provider?: string, model?: string, promptVersion?: string): Promise<ResearchSelectionTaskRecord>;
-  listResearchSelectionTaskEvents(taskId: string, afterId?: number): ResearchSelectionTaskEvent[];
-  listRecoverableResearchSelectionTasks(): ResearchSelectionTaskRecord[];
-  failInterruptedResearchSelectionTasks(): number;
   getResearchSession(id: string): ResearchSessionRecord | undefined;
   getResearchMessage(id: string): ResearchMessageRecord | undefined;
   getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined;
-  listResearchMessages(sessionId: string): ResearchMessageRecord[];
   getResearchNode(id: string): ResearchNodeRecord | undefined;
 }
 
@@ -394,17 +385,9 @@ export interface CollectorStore
   failInterruptedResearchImportTasks(): number;
   getResearchSelection(id: string): ResearchSelectionRecord | undefined;
   listResearchSelections(sessionId: string): ResearchSelectionRecord[];
-  getResearchSelectionTask(id: string): ResearchSelectionTaskRecord | undefined;
-  findResearchSelectionTaskByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchSelectionTaskRecord | undefined;
-  createResearchSelection(selection: ResearchSelectionRecord, task: ResearchSelectionTaskRecord): Promise<ResearchSelectionAccepted>;
+  findResearchSelectionByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchSelectionRecord | undefined;
+  createResearchSelection(selection: ResearchSelectionRecord, idempotencyKey: string): Promise<ResearchSelectionAccepted>;
   saveResearchSelection(record: ResearchSelectionRecord): Promise<void>;
-  claimResearchSelectionTask(id: string, provider?: string, model?: string, promptVersion?: string): ResearchSelectionTaskRecord | undefined;
-  completeResearchSelectionTask(id: string, insight: ResearchSelectionInsight): Promise<void>;
-  failResearchSelectionTask(task: ResearchSelectionTaskRecord, error: ResearchSelectionTaskError): Promise<void>;
-  retryResearchSelectionTask(task: ResearchSelectionTaskRecord, provider?: string, model?: string, promptVersion?: string): Promise<ResearchSelectionTaskRecord>;
-  listResearchSelectionTaskEvents(taskId: string, afterId?: number): ResearchSelectionTaskEvent[];
-  listRecoverableResearchSelectionTasks(): ResearchSelectionTaskRecord[];
-  failInterruptedResearchSelectionTasks(): number;
   getResearchBranch(id: string): ResearchBranchRecord | undefined;
   listResearchBranches(sessionId: string): ResearchBranchRecord[];
   findResearchBranchByCreationKey(sessionId: string, idempotencyKey: string): ResearchBranchRecord | undefined;
@@ -451,7 +434,7 @@ export interface CollectorStore
  * `if (version < N+1)` 版本块（块内写入对应 schema_migrations 行）并递增本常量；
  * 测试以此常量断言「打开/重放后数据库实际到达声明版本」，无需再手工同步多处硬编码断言。
  */
-export const LATEST_SCHEMA_VERSION = 40;
+export const LATEST_SCHEMA_VERSION = 41;
 
 export class SqliteStore implements CollectorStore {
   private database?: DatabaseSync;
@@ -481,7 +464,6 @@ export class SqliteStore implements CollectorStore {
   listRunRecordRows(query: ObservabilityRecordQuery): ObservabilityRecordRow[] {
     const sourceTables: Array<{ source: ObservabilityRecordSource; operationType: string; table: string; operationColumn?: string; statusExpression?: string }> = [
       { source: "research", operationType: "research", table: "research_tasks" },
-      { source: "selection", operationType: "selection_analysis", table: "research_selection_tasks" },
       { source: "import", operationType: "document_import", table: "research_import_tasks" },
       { source: "chapter", operationType: "chapter_parse", table: "research_chapter_tasks" },
       // 相似性核验在模型完成时已经结束；提议的 pending/accepted/rejected 是后续用户决定，不是运行状态。
@@ -518,7 +500,6 @@ export class SqliteStore implements CollectorStore {
   getRunRecordRow(source: ObservabilityRecordSource, id: string): ObservabilityRecordRow | undefined {
     const sourceConfig = {
       research: { table: "research_tasks", operation: "'research'", status: "status" },
-      selection: { table: "research_selection_tasks", operation: "'selection_analysis'", status: "status" },
       import: { table: "research_import_tasks", operation: "'document_import'", status: "status" },
       chapter: { table: "research_chapter_tasks", operation: "'chapter_parse'", status: "status" },
       fusion: { table: "research_fusion_proposals", operation: "'similarity_verification'", status: "'completed'" },
@@ -574,8 +555,6 @@ export class SqliteStore implements CollectorStore {
       this.db().exec("DELETE FROM research_attachments");
       this.db().exec("DELETE FROM research_term_preview_events");
       this.db().exec("DELETE FROM research_term_previews");
-      this.db().exec("DELETE FROM research_selection_task_events");
-      this.db().exec("DELETE FROM research_selection_tasks");
       this.db().exec("DELETE FROM research_branches");
       this.db().exec("DELETE FROM research_confirmed_fusion_snapshots");
       this.db().exec("DELETE FROM research_temporary_fusion_nodes");
@@ -807,7 +786,6 @@ export class SqliteStore implements CollectorStore {
       del("DELETE FROM research_grounding_runs WHERE session_id = ?", id);
       del("DELETE FROM research_task_events WHERE task_id IN (SELECT id FROM research_tasks WHERE session_id = ?)", id);
       del("DELETE FROM research_import_task_events WHERE task_id IN (SELECT id FROM research_import_tasks WHERE session_id = ?)", id);
-      del("DELETE FROM research_selection_task_events WHERE task_id IN (SELECT id FROM research_selection_tasks WHERE session_id = ?)", id);
       del("DELETE FROM research_term_preview_events WHERE preview_id IN (SELECT id FROM research_term_previews WHERE session_id = ?)", id);
       del("DELETE FROM research_term_previews WHERE session_id = ?", id);
       del(`DELETE FROM research_fusion_proposals WHERE lo_node_id IN (${NODE_SCOPE}) OR hi_node_id IN (${NODE_SCOPE})`, id, id);
@@ -816,7 +794,6 @@ export class SqliteStore implements CollectorStore {
       del("DELETE FROM research_chapter_tasks WHERE session_id = ?", id);
       del("DELETE FROM research_content_snapshots WHERE session_id = ?", id);
       del("DELETE FROM research_attachments WHERE session_id = ?", id);
-      del("DELETE FROM research_selection_tasks WHERE session_id = ?", id);
       del("DELETE FROM research_branches WHERE session_id = ?", id);
       del("DELETE FROM research_later_items WHERE session_id = ?", id);
       // 节点引用选区（origin_selection_id），须先删节点再删选区。
@@ -1962,29 +1939,21 @@ export class SqliteStore implements CollectorStore {
     return this.listRecords<ResearchSelectionRecord>("SELECT record_json FROM research_selections WHERE session_id = ? ORDER BY created_at, rowid", sessionId);
   }
 
-  getResearchSelectionTask(id: string): ResearchSelectionTaskRecord | undefined {
-    return this.getRecord<ResearchSelectionTaskRecord>("SELECT record_json FROM research_selection_tasks WHERE id = ?", id);
+  findResearchSelectionByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchSelectionRecord | undefined {
+    return this.getRecord<ResearchSelectionRecord>("SELECT record_json FROM research_selections WHERE session_id = ? AND idempotency_key = ?", sessionId, idempotencyKey);
   }
 
-  findResearchSelectionTaskByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchSelectionTaskRecord | undefined {
-    return this.getRecord<ResearchSelectionTaskRecord>("SELECT record_json FROM research_selection_tasks WHERE session_id = ? AND idempotency_key = ?", sessionId, idempotencyKey);
-  }
-
-  async createResearchSelection(selection: ResearchSelectionRecord, task: ResearchSelectionTaskRecord): Promise<ResearchSelectionAccepted> {
+  async createResearchSelection(selection: ResearchSelectionRecord, idempotencyKey: string): Promise<ResearchSelectionAccepted> {
     let accepted: ResearchSelectionAccepted | undefined;
     this.transaction(() => {
-      const existing = this.findResearchSelectionTaskByIdempotencyKey(selection.sessionId, task.idempotencyKey);
+      const existing = this.findResearchSelectionByIdempotencyKey(selection.sessionId, idempotencyKey);
       if (existing) {
-        const existingSelection = this.getResearchSelection(existing.selectionId);
-        if (!existingSelection) throw new Error("Research selection task references a missing selection");
-        accepted = { selection: existingSelection, task: existing };
+        accepted = { selection: existing };
         return;
       }
-      this.db().prepare("INSERT INTO research_selections (id, session_id, node_id, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
-        .run(selection.id, selection.sessionId, selection.nodeId ?? null, selection.status, selection.createdAt, selection.updatedAt, JSON.stringify(selection));
-      this.db().prepare("INSERT INTO research_selection_tasks (id, session_id, selection_id, idempotency_key, status, retryable, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(task.id, task.sessionId, task.selectionId, task.idempotencyKey, task.status, 0, task.createdAt, task.updatedAt, JSON.stringify(task));
-      accepted = { selection, task };
+      this.db().prepare("INSERT INTO research_selections (id, session_id, node_id, idempotency_key, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(selection.id, selection.sessionId, selection.nodeId ?? null, idempotencyKey, selection.status, selection.createdAt, selection.updatedAt, JSON.stringify(selection));
+      accepted = { selection };
     });
     if (!accepted) throw new Error("Research selection was not persisted");
     return accepted;
@@ -1995,113 +1964,6 @@ export class SqliteStore implements CollectorStore {
       VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET session_id=excluded.session_id, node_id=excluded.node_id, status=excluded.status, updated_at=excluded.updated_at, record_json=excluded.record_json`)
       .run(record.id, record.sessionId, record.nodeId ?? null, record.status, record.createdAt, record.updatedAt, JSON.stringify(record));
-  }
-
-  claimResearchSelectionTask(id: string, provider?: string, model?: string, promptVersion = "selection-analysis-v1"): ResearchSelectionTaskRecord | undefined {
-    let claimed: ResearchSelectionTaskRecord | undefined;
-    this.transaction(() => {
-      const current = this.getResearchSelectionTask(id);
-      if (!current || current.status !== "queued") return;
-      const now = new Date().toISOString();
-      const next: ResearchSelectionTaskRecord = {
-        ...current, status: "running", retryable: false, provider, model, promptVersion,
-        error: undefined, updatedAt: now, startedAt: now, completedAt: undefined,
-      };
-      const result = this.db().prepare("UPDATE research_selection_tasks SET status = ?, retryable = 0, updated_at = ?, record_json = ? WHERE id = ? AND status = 'queued'")
-        .run(next.status, now, JSON.stringify(next), id);
-      if (result.changes !== 1) return;
-      claimed = next;
-    });
-    return claimed;
-  }
-
-  async completeResearchSelectionTask(id: string, insight: ResearchSelectionInsight): Promise<void> {
-    this.transaction(() => {
-      const task = this.getResearchSelectionTask(id);
-      if (!task || task.status !== "running") throw new Error("Research selection task is not running");
-      const selection = this.getResearchSelection(task.selectionId);
-      if (!selection) throw new Error("Research selection not found");
-      const now = new Date().toISOString();
-      const analyzed: ResearchSelectionRecord = { ...selection, insight, updatedAt: now };
-      const completed: ResearchSelectionTaskRecord = { ...task, status: "completed", retryable: false, updatedAt: now, completedAt: now };
-      this.updateResearchSelectionRow(analyzed);
-      this.updateResearchSelectionTask(completed);
-      this.insertResearchSelectionEvent(id, "completed", now, { task: completed, selection: analyzed });
-    });
-  }
-
-  async failResearchSelectionTask(task: ResearchSelectionTaskRecord, error: ResearchSelectionTaskError): Promise<void> {
-    this.transaction(() => {
-      const current = this.getResearchSelectionTask(task.id);
-      if (!current || (current.status !== "running" && current.status !== "queued")) return;
-      const selection = this.getResearchSelection(current.selectionId);
-      if (!selection) throw new Error("Research selection not found");
-      const now = new Date().toISOString();
-      const failed: ResearchSelectionTaskRecord = { ...current, status: "failed", retryable: true, error, updatedAt: now, completedAt: now };
-      this.updateResearchSelectionTask(failed);
-      this.insertResearchSelectionEvent(task.id, "failed", now, { task: failed, selection });
-    });
-  }
-
-  async retryResearchSelectionTask(task: ResearchSelectionTaskRecord, provider?: string, model?: string, promptVersion = "selection-analysis-v1"): Promise<ResearchSelectionTaskRecord> {
-    let retried: ResearchSelectionTaskRecord | undefined;
-    this.transaction(() => {
-      const current = this.getResearchSelectionTask(task.id);
-      if (!current || current.status !== "failed" || !current.retryable) throw new Error("Research selection task is not retryable");
-      const now = new Date().toISOString();
-      retried = {
-        ...current, status: "queued", retryable: false, provider, model, promptVersion,
-        error: undefined, updatedAt: now, startedAt: undefined, completedAt: undefined,
-      };
-      this.updateResearchSelectionTask(retried);
-      this.db().prepare("DELETE FROM research_selection_task_events WHERE task_id = ?").run(task.id);
-    });
-    if (!retried) throw new Error("Research selection task retry was not persisted");
-    return retried;
-  }
-
-  listResearchSelectionTaskEvents(taskId: string, afterId = 0): ResearchSelectionTaskEvent[] {
-    const rows = this.db().prepare("SELECT sequence, event_type, created_at, data_json FROM research_selection_task_events WHERE task_id = ? AND sequence > ? ORDER BY sequence")
-      .all(taskId, afterId) as Array<{ sequence: number; event_type: "completed" | "failed"; created_at: string; data_json: string }>;
-    return rows.map((row) => ({ id: row.sequence, type: row.event_type, createdAt: row.created_at, ...JSON.parse(row.data_json) }) as ResearchSelectionTaskEvent);
-  }
-
-  listRecoverableResearchSelectionTasks(): ResearchSelectionTaskRecord[] {
-    return this.listRecords<ResearchSelectionTaskRecord>("SELECT record_json FROM research_selection_tasks WHERE status = 'queued' ORDER BY created_at");
-  }
-
-  failInterruptedResearchSelectionTasks(): number {
-    const interrupted = this.listRecords<ResearchSelectionTaskRecord>("SELECT record_json FROM research_selection_tasks WHERE status = 'running' ORDER BY created_at");
-    if (!interrupted.length) return 0;
-    this.transaction(() => {
-      for (const task of interrupted) {
-        const selection = this.getResearchSelection(task.selectionId);
-        if (!selection) continue;
-        const now = new Date().toISOString();
-        const failed: ResearchSelectionTaskRecord = {
-          ...task, status: "failed", retryable: true, updatedAt: now, completedAt: now,
-          error: { code: "service_restarted", message: "服务在分析过程中重启。选区已保存，可以重试。" },
-        };
-        this.updateResearchSelectionTask(failed);
-        this.insertResearchSelectionEvent(task.id, "failed", now, { task: failed, selection });
-      }
-    });
-    return interrupted.length;
-  }
-
-  private updateResearchSelectionRow(selection: ResearchSelectionRecord): void {
-    this.db().prepare("UPDATE research_selections SET status = ?, updated_at = ?, record_json = ? WHERE id = ?")
-      .run(selection.status, selection.updatedAt, JSON.stringify(selection), selection.id);
-  }
-
-  private updateResearchSelectionTask(task: ResearchSelectionTaskRecord): void {
-    this.db().prepare("UPDATE research_selection_tasks SET status = ?, retryable = ?, updated_at = ?, record_json = ? WHERE id = ?")
-      .run(task.status, task.retryable ? 1 : 0, task.updatedAt, JSON.stringify(task), task.id);
-  }
-
-  private insertResearchSelectionEvent(taskId: string, type: "completed" | "failed", createdAt: string, data: unknown): void {
-    this.db().prepare("INSERT INTO research_selection_task_events (task_id, event_type, created_at, data_json) VALUES (?, ?, ?, ?)")
-      .run(taskId, type, createdAt, JSON.stringify(data));
   }
 
   private insertResearchMessage(message: ResearchMessageRecord): void {
@@ -2998,6 +2860,7 @@ export class SqliteStore implements CollectorStore {
           CREATE TABLE research_selections (
             id TEXT PRIMARY KEY,
             session_id TEXT NOT NULL,
+            idempotency_key TEXT,
             status TEXT NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -3005,30 +2868,9 @@ export class SqliteStore implements CollectorStore {
             FOREIGN KEY(session_id) REFERENCES research_sessions(id)
           );
           CREATE INDEX research_selections_session_idx ON research_selections(session_id, created_at);
-          CREATE TABLE research_selection_tasks (
-            id TEXT PRIMARY KEY,
-            session_id TEXT NOT NULL,
-            selection_id TEXT NOT NULL UNIQUE,
-            idempotency_key TEXT NOT NULL,
-            status TEXT NOT NULL,
-            retryable INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            record_json TEXT NOT NULL,
-            FOREIGN KEY(session_id) REFERENCES research_sessions(id),
-            FOREIGN KEY(selection_id) REFERENCES research_selections(id),
-            UNIQUE(session_id, idempotency_key)
-          );
-          CREATE INDEX research_selection_tasks_status_idx ON research_selection_tasks(status, created_at);
-          CREATE TABLE research_selection_task_events (
-            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-            task_id TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            data_json TEXT NOT NULL,
-            FOREIGN KEY(task_id) REFERENCES research_selection_tasks(id)
-          );
-          CREATE INDEX research_selection_task_events_task_idx ON research_selection_task_events(task_id, sequence);
+          CREATE UNIQUE INDEX research_selections_session_idempotency_idx
+            ON research_selections(session_id, idempotency_key)
+            WHERE idempotency_key IS NOT NULL;
           INSERT INTO schema_migrations(version, applied_at) VALUES (17, datetime('now'));
         `);
       });
@@ -3737,6 +3579,64 @@ export class SqliteStore implements CollectorStore {
         this.db().exec("INSERT INTO schema_migrations(version, applied_at) VALUES (40, datetime('now'))");
       });
       version = 40;
+    }
+
+    if (version < 41) {
+      // The retired automatic selection workflow stored creation idempotency on
+      // its task row. Move that key onto the durable selection before removing
+      // the obsolete task/event data and model-routing residue.
+      this.transaction(() => {
+        const selectionColumns = new Set(
+          (this.db().prepare("PRAGMA table_info(research_selections)").all() as Array<{ name: string }>)
+            .map((column) => column.name),
+        );
+        if (!selectionColumns.has("idempotency_key")) {
+          this.db().exec("ALTER TABLE research_selections ADD COLUMN idempotency_key TEXT");
+        }
+
+        const hasTable = (name: string): boolean => Boolean(this.db().prepare(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        ).get(name));
+        if (hasTable("research_selection_tasks")) {
+          this.db().exec(`
+            UPDATE research_selections
+            SET idempotency_key = (
+              SELECT task.idempotency_key
+              FROM research_selection_tasks AS task
+              WHERE task.selection_id = research_selections.id
+              ORDER BY task.created_at, task.rowid
+              LIMIT 1
+            )
+            WHERE idempotency_key IS NULL
+          `);
+        }
+
+        const updateSelection = this.db().prepare("UPDATE research_selections SET record_json = ? WHERE id = ?");
+        const selections = this.db().prepare("SELECT id, record_json FROM research_selections").all() as Array<{ id: string; record_json: string }>;
+        for (const row of selections) {
+          try {
+            const record = JSON.parse(row.record_json) as Record<string, unknown>;
+            if (!("insight" in record)) continue;
+            delete record.insight;
+            updateSelection.run(JSON.stringify(record), row.id);
+          } catch {
+            // Keep malformed selection JSON untouched; normal reads will expose
+            // the existing corruption instead of making the migration lossy.
+          }
+        }
+
+        this.db().exec("DELETE FROM model_purpose_routes WHERE purpose = 'selection'");
+        this.db().exec("DELETE FROM model_calls WHERE purpose = 'selection_analysis'");
+        if (hasTable("research_selection_task_events")) this.db().exec("DROP TABLE research_selection_task_events");
+        if (hasTable("research_selection_tasks")) this.db().exec("DROP TABLE research_selection_tasks");
+        this.db().exec(`
+          CREATE UNIQUE INDEX IF NOT EXISTS research_selections_session_idempotency_idx
+          ON research_selections(session_id, idempotency_key)
+          WHERE idempotency_key IS NOT NULL;
+          INSERT INTO schema_migrations(version, applied_at) VALUES (41, datetime('now'));
+        `);
+      });
+      version = 41;
     }
 
   }

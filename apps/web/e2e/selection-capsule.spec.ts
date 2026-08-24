@@ -1,5 +1,5 @@
 /**
- * 浮动胶囊与引用闭环端到端（修订一 #9，#11 收口边界场景）：假模型（E2E_MODEL=fake）确定性分析。
+ * 浮动胶囊、引用与标记闭环端到端（修订一 #9，#11 收口边界场景）。
  * 覆盖：AI 回答选区 → 浮动胶囊出现在选区上方 → 点击【引用】完成引用（输入框呈现引用态）
  * → 死循环回归：聚焦输入框 / 输入文字 / 原生选区坍缩均不影响引用 → 模式一就地追问
  * → 模式二创建子节点并导航 → 点击选取以外区域关闭选区与胶囊、Escape 无关闭效果
@@ -57,7 +57,6 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     await expect(floating).toBeVisible();
     await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
     // 旧面板不再出现
-    await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
 
     // 点击【引用】：浮动胶囊关闭，输入框区域呈现引用态（文本截取 + 移除按钮）
     await page.getByTestId("floating-capsule-cite").click();
@@ -252,7 +251,6 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     await expect(card.locator("[data-selection-mark]")).toContainText("本地优先会先把输入保存在本机");
     await expect(page.getByTestId("floating-selection-capsule")).toHaveCount(0);
     await expect(page.getByTestId("selection-capsule")).toHaveCount(0);
-    await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
     // #50：定位提醒持续高亮——超过原 1.6s 自动消失时长仍保持可见
     await page.waitForTimeout(2_000);
     await expect(page.locator("[data-selection-mark]")).toBeVisible();
@@ -313,7 +311,6 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     await page.keyboard.press("Escape");
     await expect(capsule).toBeVisible();
     // 旧面板也不出现
-    await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
 
     // 显式移除：点击移除按钮
     await capsule.getByRole("button", { name: "移除引用" }).click();

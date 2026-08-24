@@ -51,7 +51,6 @@ describe("useSelectionMark（修订二 #12）", () => {
     const createResearchSelection = vi.fn(
       async (_sessionId: string, _input: ResearchSelectionInput, _key: string): Promise<ResearchSelectionAccepted> => ({
         selection: makeSelection({ id: "sel-9" }),
-        task: { id: "task-1", status: "queued", selectionId: "sel-9", retryable: false, idempotencyKey: "sel:key", createdAt: "", updatedAt: "" } as any,
       }),
     );
     const createResearchLaterItem = vi.fn(async (_input: ResearchLaterItemInput, _key: string) =>
@@ -77,7 +76,6 @@ describe("useSelectionMark（修订二 #12）", () => {
     const createResearchSelection = vi.fn(
       async (_sessionId: string, _input: ResearchSelectionInput, _key: string) => ({
         selection: makeSelection({ id: "sel-9" }),
-        task: { id: "task-1", status: "queued" } as any,
       }),
     );
     const createResearchLaterItem = vi.fn(async () => makeItemView());
@@ -92,7 +90,6 @@ describe("useSelectionMark（修订二 #12）", () => {
   it("mark：重复标记返回既有记录（含既有笔记，供输入框回填）", async () => {
     const createResearchSelection = vi.fn(async () => ({
       selection: makeSelection({ id: "sel-9" }),
-      task: { id: "task-1", status: "queued" } as any,
     }));
     const createResearchLaterItem = vi.fn(async (_input: ResearchLaterItemInput) =>
       makeItemView({ id: "later-1", note: "上次留下的笔记" }),

@@ -7,7 +7,6 @@ import {
   type ResearchGroundingTraceEntry,
   type ResearchChapterTaskRecord,
   type ResearchImportTaskRecord,
-  type ResearchSelectionTaskRecord,
   type ResearchTaskRecord,
   type RunRecordDetail,
   type RunRecordErrorCategory,
@@ -39,12 +38,11 @@ const SAFE_QUERY_LIMIT = 400;
 
 const OPERATION_TYPES: readonly RunRecordOperationType[] = [
   "research",
-  "selection_analysis",
   "document_import",
   "similarity_verification",
   "chapter_parse",
 ];
-const SOURCES: readonly RunRecordSource[] = ["research", "selection", "import", "fusion", "chapter"];
+const SOURCES: readonly RunRecordSource[] = ["research", "import", "fusion", "chapter"];
 const STATUSES: readonly RunRecordStatus[] = ["queued", "running", "completed", "failed", "cancelled", "corrupt"];
 const OUTCOMES: readonly RunRecordOutcome[] = ["success", "failure", "active", "cancelled", "unavailable"];
 
@@ -210,7 +208,7 @@ export class RunRecordsService {
     const summary = this.summary(row);
     const task = taskView(row.source, parsed.value);
     const modelCalls = this.modelCalls(row.id);
-    const searches = row.source === "research" || row.source === "selection" ? this.searches(row.id) : [];
+    const searches = row.source === "research" ? this.searches(row.id) : [];
     const errors = errorsFor(row.source, parsed.value, modelCalls, searches);
     return {
       ...summary,
@@ -223,7 +221,7 @@ export class RunRecordsService {
 
   private relatedCounts(row: ObservabilityRecordRow, record: Record<string, unknown>): { modelCallCount: number; searchCount: number; retryCount: number } {
     const modelCalls = safeRows(() => this.store.listRunModelCallRows(row.id));
-    const searches = row.source === "research" || row.source === "selection" ? safeRows(() => this.store.listRunGroundingRunRows(row.id)) : [];
+    const searches = row.source === "research" ? safeRows(() => this.store.listRunGroundingRunRows(row.id)) : [];
     let searchCount = 0;
     let retryCount = numberValue(record.retryCount);
     for (const search of searches) {
@@ -274,7 +272,6 @@ export class RunRecordsService {
 
 function sourceForOperation(operation: RunRecordOperationType): ObservabilityRecordSource {
   if (operation === "research") return "research";
-  if (operation === "selection_analysis") return "selection";
   if (operation === "document_import") return "import";
   if (operation === "chapter_parse") return "chapter";
   return "fusion"; // similarity_verification
@@ -392,7 +389,6 @@ function parseRecord(recordJson: string): ParsedRecord {
 function operationTypeForRow(row: ObservabilityRecordRow): RunRecordOperationType {
   if (OPERATION_TYPES.includes(row.operationType as RunRecordOperationType)) return row.operationType as RunRecordOperationType;
   if (row.source === "research") return "research";
-  if (row.source === "selection") return "selection_analysis";
   if (row.source === "import") return "document_import";
   if (row.source === "fusion") return "similarity_verification";
   return "chapter_parse";
@@ -437,10 +433,6 @@ function titleFor(record: Record<string, unknown>): string | undefined {
 function taskView(source: ObservabilityRecordSource, record: Record<string, unknown>): RunRecordTaskView | undefined {
   if (source === "research") {
     const task = record as Partial<ResearchTaskRecord>;
-    return { id: safeId(task.id), ...(safeText(task.sessionId) ? { sessionId: safeText(task.sessionId) } : {}), ...(safeText(task.provider) ? { provider: safeText(task.provider) } : {}), ...(safeText(task.model) ? { model: safeText(task.model) } : {}), ...(safeText(task.promptVersion) ? { promptVersion: safeText(task.promptVersion) } : {}), ...(Number.isSafeInteger(task.sliceCount) && (task.sliceCount ?? -1) >= 0 ? { sliceCount: task.sliceCount ?? 0 } : {}), ...(typeof task.retryable === "boolean" ? { retryable: task.retryable } : {}) };
-  }
-  if (source === "selection") {
-    const task = record as Partial<ResearchSelectionTaskRecord & { sliceCount?: number }>;
     return { id: safeId(task.id), ...(safeText(task.sessionId) ? { sessionId: safeText(task.sessionId) } : {}), ...(safeText(task.provider) ? { provider: safeText(task.provider) } : {}), ...(safeText(task.model) ? { model: safeText(task.model) } : {}), ...(safeText(task.promptVersion) ? { promptVersion: safeText(task.promptVersion) } : {}), ...(Number.isSafeInteger(task.sliceCount) && (task.sliceCount ?? -1) >= 0 ? { sliceCount: task.sliceCount ?? 0 } : {}), ...(typeof task.retryable === "boolean" ? { retryable: task.retryable } : {}) };
   }
   if (source === "import") {

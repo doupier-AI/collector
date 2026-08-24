@@ -10,7 +10,7 @@ export { DEFAULT_RESEARCH_SLICE_CONTEXT_TOKEN_BUDGET, buildResearchSliceContext,
 export { deriveMessageBodyArtifacts, getOrDeriveMessageBodyArtifacts, matchSliceForFragment, tryResolveFragmentExcerpt, type BodyArtifactsStoreLookup, type MessageBodyArtifacts, type MessageBodyArtifactsInput } from "./body-artifacts.js";
 export { ResearchImportService, ResearchImportConflictError, ResearchImportNotFoundError, ResearchImportValidationError, type ResearchImportServiceOptions } from "./research-import.js";
 export { ResearchChapterParseService, type ResearchChapterParseProvider, type ResearchChapterParseServiceOptions } from "./research-chapters.js";
-export { ResearchSelectionAnalysisError, ResearchSelectionConflictError, ResearchSelectionNotFoundError, ResearchSelectionService, ResearchSelectionValidationError, type ResearchSelectionProvider, type ResearchSelectionAnalysisRequest, type ResearchSelectionServiceOptions } from "./selection.js";
+export { ResearchSelectionConflictError, ResearchSelectionNotFoundError, ResearchSelectionService, ResearchSelectionValidationError } from "./selection.js";
 export { DeepResearchNotFoundError, DeepResearchService, DeepResearchValidationError, deriveFusionEvidenceHealth, type DeepResearchServiceOptions } from "./deep-research.js";
 export { ResearchLaterNotFoundError, ResearchLaterService, ResearchLaterValidationError } from "./research-later.js";
 export { TermDetectionService, detectTermMarkers, validateTermMarkers, TERM_DETECTION_MIN_CONTENT_LENGTH, type TermDetectionOptions } from "./term-detection.js";
@@ -49,5 +49,5 @@ export {
 } from "./instance.js";
 export { acquireServiceLock, isProcessRunning, isServiceLockHeld, type ServiceLock } from "./service-lock.js";
 export { calculateRuntimeVersion, isRuntimeVersion } from "./runtime-version.js";
-export { createMvpDemoResearchProvider, createMvpDemoSelectionProvider, DEMO_NOTICE, DEMO_SELECTION_NOTICE } from "./mvp-demo-research.js";
+export { createMvpDemoResearchProvider, DEMO_NOTICE } from "./mvp-demo-research.js";
 export { launchCollector, openDefaultBrowser, type LaunchCollectorOptions, type LaunchCollectorResult } from "./launcher.js";

@@ -445,20 +445,6 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (request.method === "GET" && researchSelectionsMatch) {
         return json(response, 200, service.researchSelections.listSelections(decodeURIComponent(researchSelectionsMatch[1])));
       }
-      const researchSelectionTaskEventsMatch = url.pathname.match(/^\/v1\/research-selection-tasks\/([^/]+)\/events$/);
-      if (request.method === "GET" && researchSelectionTaskEventsMatch) {
-        const afterId = Number(header(request, "last-event-id") ?? url.searchParams.get("after") ?? "0");
-        if (!Number.isSafeInteger(afterId) || afterId < 0) throw new ResearchSelectionValidationError("Last-Event-ID must be a non-negative integer");
-        return streamResearchSelectionTaskEvents(request, response, service, decodeURIComponent(researchSelectionTaskEventsMatch[1]), afterId);
-      }
-      const researchSelectionTaskRetryMatch = url.pathname.match(/^\/v1\/research-selection-tasks\/([^/]+)\/retry$/);
-      if (request.method === "POST" && researchSelectionTaskRetryMatch) {
-        return json(response, 202, await service.researchSelections.retryTask(decodeURIComponent(researchSelectionTaskRetryMatch[1])));
-      }
-      const researchSelectionTaskMatch = url.pathname.match(/^\/v1\/research-selection-tasks\/([^/]+)$/);
-      if (request.method === "GET" && researchSelectionTaskMatch) {
-        return json(response, 200, service.researchSelections.getTask(decodeURIComponent(researchSelectionTaskMatch[1])));
-      }
       const researchSelectionMatch = url.pathname.match(/^\/v1\/research-selections\/([^/]+)$/);
       if (request.method === "GET" && researchSelectionMatch) {
         return json(response, 200, service.researchSelections.getSelection(decodeURIComponent(researchSelectionMatch[1])));
@@ -955,44 +941,6 @@ async function streamResearchTermPreviewEvents(request: IncomingMessage, respons
 }
 
 function writeTermPreviewSse(response: ServerResponse, event: import("@collector/capture-contracts").ResearchTermPreviewEvent): void {
-  if (event.id !== undefined) response.write(`id: ${event.id}\n`);
-  response.write(`event: ${event.type}\n`);
-  response.write(`data: ${JSON.stringify(event)}\n\n`);
-}
-
-async function streamResearchSelectionTaskEvents(request: IncomingMessage, response: ServerResponse, service: CaptureService, taskId: string, afterId: number): Promise<void> {
-  service.researchSelections.getTask(taskId);
-  response.statusCode = 200;
-  response.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-  response.setHeader("Cache-Control", "no-cache, no-transform");
-  response.setHeader("Connection", "keep-alive");
-  response.setHeader("X-Accel-Buffering", "no");
-  response.flushHeaders();
-
-  let cursor = afterId;
-  const initialEvents = service.researchSelections.getTaskEvents(taskId, cursor);
-  for (const event of initialEvents) {
-    writeSelectionSse(response, event);
-    cursor = event.id ?? cursor;
-  }
-  writeSelectionSse(response, service.researchSelections.getTaskSnapshot(taskId));
-
-  const deadline = Date.now() + 25_000;
-  while (!request.destroyed && Date.now() < deadline) {
-    const events = service.researchSelections.getTaskEvents(taskId, cursor);
-    for (const event of events) {
-      writeSelectionSse(response, event);
-      cursor = event.id ?? cursor;
-    }
-    const task = service.researchSelections.getTask(taskId);
-    if (task.status === "completed" || task.status === "failed") break;
-    response.write(": keep-alive\n\n");
-    await new Promise<void>((resolve) => setTimeout(resolve, 100));
-  }
-  response.end();
-}
-
-function writeSelectionSse(response: ServerResponse, event: import("@collector/capture-contracts").ResearchSelectionTaskEvent): void {
   if (event.id !== undefined) response.write(`id: ${event.id}\n`);
   response.write(`event: ${event.type}\n`);
   response.write(`data: ${JSON.stringify(event)}\n\n`);

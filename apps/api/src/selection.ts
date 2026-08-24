@@ -5,59 +5,18 @@ import {
   type ResearchSelectionAccepted,
   type ResearchSelectionAnchor,
   type ResearchSelectionInput,
-  type ResearchSelectionInsight,
   type ResearchSelectionRecord,
-  type ResearchSelectionTaskEvent,
-  type ResearchSelectionTaskRecord,
 } from "@collector/capture-contracts";
 import type { ResearchSelectionStore } from "./store.js";
 import { isTrashed } from "./research.js";
 
-const PROMPT_VERSION = "selection-analysis-v1";
-
-export interface ResearchSelectionAnalysisRequest {
-  text: string;
-  contextBefore?: string;
-  contextAfter?: string;
-  contentTitle?: string;
-  recentUserMessages: string[];
-  taskId: string;
-}
-
-export interface ResearchSelectionProvider {
-  readonly provider: string;
-  readonly model: string;
-  readonly promptVersion?: string;
-  analyze(request: ResearchSelectionAnalysisRequest): Promise<ResearchSelectionInsight>;
-}
-
-export interface ResearchSelectionServiceOptions {
-  provider?: ResearchSelectionProvider;
-  autoRunTasks?: boolean;
-}
-
 interface ResolvedAnchor {
   anchor: ResearchSelectionAnchor;
   status: ResearchSelectionRecord["status"];
-  /** 选区所属块文本之外的邻接上下文（消息相邻段落），供分析提示词使用。 */
-  neighborBefore?: string;
-  neighborAfter?: string;
 }
 
 export class ResearchSelectionService {
-  private provider?: ResearchSelectionProvider;
-  private readonly running = new Set<string>();
-  private recoveryScheduled = false;
-
-  constructor(private readonly store: ResearchSelectionStore, private readonly options: ResearchSelectionServiceOptions = {}) {
-    this.provider = options.provider;
-    if (options.autoRunTasks !== false) this.scheduleRecovery();
-  }
-
-  setProvider(provider: ResearchSelectionProvider | undefined): void {
-    this.provider = provider;
-    if (this.options.autoRunTasks !== false) this.scheduleRecovery();
-  }
+  constructor(private readonly store: ResearchSelectionStore) {}
 
   async createSelection(sessionId: string, input: ResearchSelectionInput, idempotencyKey: string): Promise<ResearchSelectionAccepted> {
     const session = this.store.getResearchSession(sessionId);
@@ -66,12 +25,8 @@ export class ResearchSelectionService {
     if (!idempotencyKey.trim()) throw new ResearchSelectionValidationError("Idempotency-Key is required");
     if (idempotencyKey.length > 200) throw new ResearchSelectionValidationError("Idempotency-Key must not exceed 200 characters");
 
-    const existing = this.store.findResearchSelectionTaskByIdempotencyKey(sessionId, idempotencyKey);
-    if (existing) {
-      const selection = this.store.getResearchSelection(existing.selectionId);
-      if (!selection) throw new Error("Research selection task references a missing selection");
-      return { selection, task: existing };
-    }
+    const existing = this.store.findResearchSelectionByIdempotencyKey(sessionId, idempotencyKey);
+    if (existing) return { selection: existing };
 
     const resolved = this.resolveAnchor(sessionId, input.anchor);
     const ownerNodeId = this.resolveOwnerNodeId(sessionId, input.nodeId);
@@ -89,22 +44,7 @@ export class ResearchSelectionService {
       createdAt: now,
       updatedAt: now,
     };
-    const task: ResearchSelectionTaskRecord = {
-      id: randomUUID(),
-      sessionId,
-      selectionId: selection.id,
-      idempotencyKey,
-      status: "queued",
-      retryable: false,
-      provider: this.provider?.provider,
-      model: this.provider?.model,
-      promptVersion: this.provider?.promptVersion ?? PROMPT_VERSION,
-      createdAt: now,
-      updatedAt: now,
-    };
-    const accepted = await this.store.createResearchSelection(selection, task);
-    if (this.options.autoRunTasks !== false) this.scheduleTask(accepted.task.id);
-    return accepted;
+    return this.store.createResearchSelection(selection, idempotencyKey);
   }
 
   getSelection(id: string): ResearchSelectionRecord {
@@ -116,107 +56,6 @@ export class ResearchSelectionService {
   listSelections(sessionId: string): ResearchSelectionRecord[] {
     if (!this.store.getResearchSession(sessionId)) throw new ResearchSelectionNotFoundError("Research session not found");
     return this.store.listResearchSelections(sessionId);
-  }
-
-  getTask(id: string): ResearchSelectionTaskRecord {
-    const task = this.store.getResearchSelectionTask(id);
-    if (!task) throw new ResearchSelectionNotFoundError("Research selection task not found");
-    return task;
-  }
-
-  getTaskSnapshot(id: string): ResearchSelectionTaskEvent {
-    const task = this.getTask(id);
-    const selection = this.store.getResearchSelection(task.selectionId);
-    if (!selection) throw new ResearchSelectionNotFoundError("Research selection not found");
-    return { type: "snapshot", task, selection, createdAt: new Date().toISOString() };
-  }
-
-  getTaskEvents(id: string, afterId = 0): ResearchSelectionTaskEvent[] {
-    this.getTask(id);
-    return this.store.listResearchSelectionTaskEvents(id, afterId);
-  }
-
-  async retryTask(id: string): Promise<ResearchSelectionTaskRecord> {
-    const current = this.getTask(id);
-    if (current.status !== "failed" || !current.retryable) throw new ResearchSelectionConflictError("Research selection task is not retryable", "selection_not_retryable");
-    const task = await this.store.retryResearchSelectionTask(current, this.provider?.provider, this.provider?.model, this.provider?.promptVersion ?? PROMPT_VERSION);
-    if (this.options.autoRunTasks !== false) this.scheduleTask(task.id);
-    return task;
-  }
-
-  async resumeTasks(): Promise<number> {
-    const interrupted = this.store.failInterruptedResearchSelectionTasks();
-    const tasks = this.store.listRecoverableResearchSelectionTasks();
-    for (const task of tasks) await this.processTask(task.id);
-    return interrupted + tasks.length;
-  }
-
-  async processTask(id: string): Promise<void> {
-    // 同一数据库上可能并存多个服务实例（如重启恢复演练），running 只防止
-    // 本实例重复进入；跨实例的并发由 claim 的原子比较并交换保证。
-    if (this.running.has(id)) return;
-    const claimed = this.store.claimResearchSelectionTask(id, this.provider?.provider, this.provider?.model, this.provider?.promptVersion ?? PROMPT_VERSION);
-    if (!claimed) return;
-    this.running.add(id);
-    try {
-      const task = claimed;
-      const selection = this.store.getResearchSelection(task.selectionId);
-      if (!selection) throw new Error("Research selection task references a missing selection");
-      const provider = this.provider;
-      if (!provider) {
-        await this.store.failResearchSelectionTask(task, {
-          code: "model_not_configured",
-          message: "未配置可用的 AI 模型。选区已保存，配置模型后可以重试分析。",
-        });
-        return;
-      }
-
-      try {
-        const insight = await provider.analyze(this.analysisRequestFor(task, selection));
-        await this.store.completeResearchSelectionTask(task.id, insight);
-      } catch (error) {
-        const invalid = error instanceof ResearchSelectionAnalysisError;
-        await this.store.failResearchSelectionTask(this.getTask(task.id), {
-          code: invalid ? "invalid_analysis" : "provider_error",
-          message: invalid
-            ? "AI 返回的分析不完整。选区已保存，可以重试。"
-            : "AI 分析失败。选区已保存，可以稍后重试。",
-        });
-      }
-    } finally {
-      this.running.delete(id);
-    }
-  }
-
-  private analysisRequestFor(task: ResearchSelectionTaskRecord, selection: ResearchSelectionRecord): ResearchSelectionAnalysisRequest {
-    const anchor = selection.anchor;
-    const request: ResearchSelectionAnalysisRequest = {
-      text: selection.text,
-      contextBefore: selection.contextBefore,
-      contextAfter: selection.contextAfter,
-      recentUserMessages: this.store.listResearchMessages(selection.sessionId)
-        .filter((message) => message.role === "user")
-        .slice(-3)
-        .map((message) => message.content.slice(0, 200)),
-      taskId: task.id,
-    };
-    if (anchor.kind === "snapshot") {
-      const snapshot = this.store.getResearchContentSnapshot(anchor.contentSnapshotId);
-      const block = snapshot?.blocks.find((candidate) => candidate.id === anchor.blockId);
-      if (snapshot) request.contentTitle = snapshot.title;
-      if (snapshot && block) {
-        request.contextBefore = request.contextBefore ?? siblingText(snapshot.blocks, block.ordinal - 1);
-        request.contextAfter = request.contextAfter ?? siblingText(snapshot.blocks, block.ordinal + 1);
-      }
-    } else {
-      const message = this.store.getResearchMessage(anchor.messageId);
-      if (message) {
-        const blocks = deriveMessageBlocks(message.content);
-        request.contextBefore = request.contextBefore ?? siblingText(blocks, anchor.blockOrdinal - 1);
-        request.contextAfter = request.contextAfter ?? siblingText(blocks, anchor.blockOrdinal + 1);
-      }
-    }
-    return request;
   }
 
   /**
@@ -247,8 +86,6 @@ export class ResearchSelectionService {
         return {
           anchor: { ...anchor, ...anchorContext(block.text, anchor.startOffset, anchor.endOffset, anchor.prefix, anchor.suffix) },
           status: "active",
-          neighborBefore: siblingText(blocks, anchor.blockOrdinal - 1),
-          neighborAfter: siblingText(blocks, anchor.blockOrdinal + 1),
         };
       }
       const relocated = relocateWithinBlock(block.text, anchor);
@@ -257,8 +94,6 @@ export class ResearchSelectionService {
         return {
           anchor: { ...anchor, startOffset, endOffset, ...anchorContext(block.text, startOffset, endOffset, undefined, undefined) },
           status: "active",
-          neighborBefore: siblingText(blocks, anchor.blockOrdinal - 1),
-          neighborAfter: siblingText(blocks, anchor.blockOrdinal + 1),
         };
       }
       return { anchor: { ...anchor, startOffset: 0, endOffset: 0 }, status: "stale" };
@@ -273,8 +108,6 @@ export class ResearchSelectionService {
       return {
         anchor: { ...anchor, ...anchorContext(block.text, anchor.startOffset, anchor.endOffset, anchor.prefix, anchor.suffix) },
         status: "active",
-        neighborBefore: siblingText(snapshot.blocks, block.ordinal - 1),
-        neighborAfter: siblingText(snapshot.blocks, block.ordinal + 1),
       };
     }
     const relocated = relocateWithinBlock(block.text, anchor);
@@ -283,32 +116,11 @@ export class ResearchSelectionService {
       return {
         anchor: { ...anchor, startOffset, endOffset, ...anchorContext(block.text, startOffset, endOffset, undefined, undefined) },
         status: "active",
-        neighborBefore: siblingText(snapshot.blocks, block.ordinal - 1),
-        neighborAfter: siblingText(snapshot.blocks, block.ordinal + 1),
       };
     }
     return { anchor: { ...anchor, startOffset: 0, endOffset: 0 }, status: "stale" };
   }
 
-  private scheduleRecovery(): void {
-    if (this.recoveryScheduled) return;
-    this.recoveryScheduled = true;
-    setImmediate(() => {
-      this.recoveryScheduled = false;
-      void this.resumeTasks().catch(() => undefined);
-    });
-  }
-
-  private scheduleTask(id: string): void {
-    setImmediate(() => void this.processTask(id).catch(() => undefined));
-  }
-}
-
-function siblingText(blocks: ReadonlyArray<{ ordinal: number; text: string }>, ordinal: number): string | undefined {
-  if (ordinal < 0 || ordinal >= blocks.length) return undefined;
-  const block = blocks[ordinal];
-  if (!block || block.ordinal !== ordinal) return undefined;
-  return block.text.slice(0, RESEARCH_SELECTION_CONTEXT_CHARACTERS);
 }
 
 /** 块内上下文摘录；调用方已提供的 prefix/suffix 原样保留，缺失时由服务端补齐。 */
@@ -353,8 +165,6 @@ function relocateWithinBlock(blockText: string, anchor: ResearchSelectionAnchor)
   return undefined;
 }
 
-/** Provider 输出未通过分析契约校验（区别于网络等 provider_error）。 */
-export class ResearchSelectionAnalysisError extends Error {}
 export class ResearchSelectionNotFoundError extends Error {}
 export class ResearchSelectionValidationError extends Error {}
 export class ResearchSelectionConflictError extends Error {

@@ -18,7 +18,6 @@ import type {
   ResearchNodeRecord,
   ResearchNodeView,
   ResearchSelectionRecord,
-  ResearchSelectionTaskRecord,
   ResearchSemanticFragmentRecord,
   ResearchSessionRecord,
   ResearchTaskRecord,
@@ -261,22 +260,6 @@ export function makeSelection(overrides: Partial<ResearchSelectionRecord> = {}):
     anchor: { kind: "message", messageId: "m-out", blockOrdinal: 0, startOffset: 0, endOffset: 6, exact: "一段选区文字" },
     text: "一段选区文字",
     status: "active",
-    createdAt: "2026-07-20T08:00:00.000Z",
-    updatedAt: "2026-07-20T08:00:00.000Z",
-    ...overrides,
-  };
-}
-
-export function makeSelectionTask(overrides: Partial<ResearchSelectionTaskRecord> = {}): ResearchSelectionTaskRecord {
-  sequence += 1;
-  return {
-    id: `selection-task-${sequence}`,
-    sessionId: "session-1",
-    selectionId: "selection-1",
-    idempotencyKey: `sel-key-${sequence}`,
-    status: "queued",
-    retryable: false,
-    promptVersion: "selection-analysis-v1",
     createdAt: "2026-07-20T08:00:00.000Z",
     updatedAt: "2026-07-20T08:00:00.000Z",
     ...overrides,

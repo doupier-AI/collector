@@ -31,7 +31,6 @@ async function createHarness(options: HarnessOptions = {}) {
     autoRunRecentOrganization: false,
     autoRunResearchTasks: options.autoRunResearchTasks ?? true,
     autoRunResearchImports: false,
-    autoRunSelectionTasks: false,
     researchProvider: options.provider,
   });
   const server = createApiServer(service, auth);

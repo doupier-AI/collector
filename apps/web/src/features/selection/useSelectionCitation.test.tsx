@@ -41,7 +41,6 @@ describe("useSelectionCitation", () => {
     const createResearchSelection = vi.fn(
       async (_sessionId: string, _input: ResearchSelectionInput, _key: string): Promise<ResearchSelectionAccepted> => ({
         selection: makeSelection({ id: "sel-1", text: "一段选区文字" }),
-        task: { id: "task-1", status: "queued", selectionId: "sel-1", retryable: false, idempotencyKey: "sel:key", createdAt: "", updatedAt: "" } as any,
       }),
     );
     const { result } = renderCitationHook({ createResearchSelection });
@@ -62,7 +61,6 @@ describe("useSelectionCitation", () => {
   it("同一锚点不重复创建（幂等）", async () => {
     const createResearchSelection = vi.fn(async () => ({
       selection: makeSelection({ id: "sel-1" }),
-      task: { id: "task-1", status: "queued" } as any,
     }));
     const { result } = renderCitationHook({ createResearchSelection });
 
@@ -80,7 +78,6 @@ describe("useSelectionCitation", () => {
   it("remove 清除引用；显式再次 capture 同一锚点可重新引用（修订一 #9）", async () => {
     const createResearchSelection = vi.fn(async () => ({
       selection: makeSelection({ id: "sel-1" }),
-      task: { id: "task-1", status: "queued" } as any,
     }));
     const { result } = renderCitationHook({ createResearchSelection });
 
@@ -106,7 +103,6 @@ describe("useSelectionCitation", () => {
   it("clear 重置所有状态，允许同一锚点重新创建", async () => {
     const createResearchSelection = vi.fn(async () => ({
       selection: makeSelection({ id: "sel-1" }),
-      task: { id: "task-1", status: "queued" } as any,
     }));
     const { result } = renderCitationHook({ createResearchSelection });
 
@@ -134,7 +130,6 @@ describe("useSelectionCitation", () => {
   it("不同锚点各自独立创建", async () => {
     const createResearchSelection = vi.fn(async (_s: string, input: ResearchSelectionInput) => ({
       selection: makeSelection({ id: `sel-${input.anchor.startOffset}`, text: input.anchor.exact }),
-      task: { id: "task-1", status: "queued" } as any,
     }));
     const { result } = renderCitationHook({ createResearchSelection });
 
@@ -157,7 +152,6 @@ describe("useSelectionCitation", () => {
     const createResearchSelection = vi.fn(
       async (_sessionId: string, _input: ResearchSelectionInput, _key: string) => ({
         selection: makeSelection({ id: "sel-1" }),
-        task: { id: "task-1", status: "queued" } as any,
       }),
     );
     const { result } = renderCitationHook({ createResearchSelection }, { nodeId: "node-child-1" });

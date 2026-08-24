@@ -6,7 +6,7 @@ import { selectionExcerpt, CITATION_CAPSULE_CHARACTERS } from "./selection-highl
  *
  * 修订一 #9：Escape 不再移除引用——选区与胶囊的取消方式唯一为
  * "点击选取文字以外的屏幕区域"，引用的显式移除只经移除按钮。
- * 不渲染 AI 分析字段（difficulty / quickReadMinutes / deepStudyMinutes / prerequisites / relationToFocus）。
+ * 胶囊只展示引用原文，不触发或承载额外生成内容。
  */
 export function SelectionCapsule({
   text,

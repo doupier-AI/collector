@@ -2,7 +2,7 @@
  * 收尾阶段【真实模型 + 真实浏览器】端到端验收：DEVELOPMENT_START.md 第 8 节四场景。
  *
  * 与默认套件的本质区别：这里连接真实 DeepSeek 云模型（acceptance-real-harness.mjs），
- * 回答 / 选区分析 / 深入研究第一轮都是真实生成，非确定。因此：
+ * 回答 / 深入研究第一轮都是真实生成，非确定。因此：
  * - 不断言假模型的固定文案，改为断言“非演示标记 + 结构正确 + SQLite 一致”；
  * - 真实调用有网络延迟，等待上限放宽到 REAL_TIMEOUT；
  * - 服务进程由本文件自行启动 / 重启（场景二需要同一数据目录内重启进程验证恢复）。
@@ -316,7 +316,7 @@ async function selectAndOpenCapsuleWithRetry(page: Page): Promise<void> {
 // ---------------------------------------------------------------------------
 // 场景一：从 Chat 进入深入研究（节点生长）→ 返回原文 → 刷新保持
 // ---------------------------------------------------------------------------
-test("场景一：Chat 真实回答 → 选区真实分析 → 节点生长真实第一轮 → 返回原选区 → 刷新保持", async ({
+test("场景一：Chat 真实回答 → 框选原文 → 节点生长真实第一轮 → 返回原选区 → 刷新保持", async ({
   page,
 }) => {
   const apiRequests: Array<{ method: string; url: string; headers: Record<string, string> }> = [];
@@ -335,7 +335,7 @@ test("场景一：Chat 真实回答 → 选区真实分析 → 节点生长真�
   const answer = await waitCompletedAnswerText(page, 1);
   await assertRealMode(page);
 
-  // 选区 + 真实分析
+  // 框选原文，等待显式操作入口。
   const selected = await selectRealAnswerText(page);
   await waitForCapsuleReal(page, selected);
 
@@ -434,7 +434,7 @@ const DOC_CONTENT = [
 const DOC_FILE = "一致性笔记.txt";
 const DOC_SELECTED = "副本之间会在没有新写入时逐步收敛";
 
-test("场景二：文档导入 → 选区真实分析 → 带方向的节点生长真实第一轮 → 返回原文 → 服务重启后恢复", async ({
+test("场景二：文档导入 → 框选原文 → 带方向的节点生长真实第一轮 → 返回原文 → 服务重启后恢复", async ({
   page,
   browser,
 }) => {

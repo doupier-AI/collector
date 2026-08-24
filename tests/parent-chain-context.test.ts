@@ -258,19 +258,7 @@ test("node with originSelectionId includes selection text", async (t) => {
 
   // 在根节点创建选区。
   const selection = makeSelection(session.id, session.id, rootMsg.id, "这是选区的引用原文内容");
-  const selectionTask = {
-    id: randomUUID(),
-    sessionId: session.id,
-    selectionId: selection.id,
-    idempotencyKey: randomUUID(),
-    status: "completed" as const,
-    retryable: false,
-    promptVersion: "test",
-    createdAt: NOW,
-    updatedAt: NOW,
-    completedAt: NOW,
-  };
-  await store.createResearchSelection(selection, selectionTask);
+  await store.createResearchSelection(selection, randomUUID());
 
   // 创建带 originSelectionId 的子节点。
   const childNode = makeNode(session.id, {

@@ -26,7 +26,6 @@ function renderPage(api: Partial<ApiClient>) {
     api: api as ApiClient,
     connectTaskEvents: vi.fn(),
     connectImportEvents: vi.fn(),
-    connectSelectionEvents: vi.fn(),
   } as unknown as AppServices;
   return render(
     <ServicesProvider services={services}>

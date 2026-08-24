@@ -307,14 +307,13 @@ export function AiModelSettingsPage() {
 
 const PURPOSE_LABELS: Record<ModelPurpose, string> = {
   chat: "对话与问答",
-  selection: "选区分析",
   research: "深入研究",
   search: "联网搜索",
   document: "文档生成与整理",
   extraction: "事后语义抽取",
 };
 
-const PURPOSE_ORDER: ModelPurpose[] = ["chat", "selection", "research", "search", "document", "extraction"];
+const PURPOSE_ORDER: ModelPurpose[] = ["chat", "research", "search", "document", "extraction"];
 
 /**
  * 任务模型分配：按任务类型指定使用哪套已保存配置；
@@ -350,7 +349,7 @@ export function ModelRoutingSection({
     <section className="settings-profile-list" aria-label="任务模型分配">
       <h2 className="settings-profile-list__title">任务模型分配</h2>
       <p className="settings-form__hint">
-        不同任务可以使用不同配置，例如用更快的模型做选区分析、用更强的模型做深入研究。不指定时全部跟随当前配置。
+        不同任务可以使用不同配置，例如为深入研究使用更强的模型、为语义抽取使用更快的模型。不指定时全部跟随当前配置。
       </p>
       {PURPOSE_ORDER.map((purpose) => {
         const assigned = routing.routes.find((route) => route.purpose === purpose)?.profileId ?? "";

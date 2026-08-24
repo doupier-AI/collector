@@ -28,7 +28,6 @@ async function createHarness() {
     autoRunRecentOrganization: false,
     autoRunResearchTasks: false,
     autoRunResearchImports: false,
-    autoRunSelectionTasks: false,
   });
   const server = createApiServer(service, auth);
   await listenOnFetchSafePort(server);
@@ -108,7 +107,7 @@ async function createSelectionOn(
 ) {
   const response = await postJson(harness.base, harness.token, `/v1/research-sessions/${sessionId}/selections`, { anchor }, randomUUID());
   assert.equal(response.status, 201);
-  return await response.json() as { selection: { id: string; text: string }; task: { id: string } };
+  return await response.json() as { selection: { id: string; text: string } };
 }
 
 interface LaterView {

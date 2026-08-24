@@ -54,7 +54,7 @@ const EMPTY_MARKDOWN_PROJECTION = { text: "", citationBoundaries: [] } as const;
  * 把 AI 生成的 Markdown 文本渲染为安全 HTML。
  * - 安全白名单（不开 rehype-raw，模型输出的 <script> 被转义）
  * - [来源n] 由 remark 插件转为可悬停 CitationMarker
- * - variant="insight" 时适用较简洁排版
+ * - variant="insight" 用于术语预览和推理摘要等紧凑辅助内容
  * - 对极速流式更新做 useMemo 防止闪烁
  */
 export function MarkdownContent({ text, sources = [], citations = [], terms = [], fusionSources, variant = "message", className, titleAnchorId, highlights = [] }: MarkdownContentProps) {

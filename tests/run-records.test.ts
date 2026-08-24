@@ -36,7 +36,6 @@ async function createHarness(): Promise<Harness> {
     autoRunRecentOrganization: false,
     autoRunResearchTasks: false,
     autoRunResearchImports: false,
-    autoRunSelectionTasks: false,
   });
   const server = createApiServer(service, auth);
   await listenOnFetchSafePort(server);
@@ -212,9 +211,9 @@ test("run record API paginates, filters, restores related traces, and redacts se
   assert.equal(exportLines[3].type, "summary");
   assert.equal((exportLines[3] as unknown as { recordCount: number }).recordCount, 2);
 
-  const emptyExport = await fetch(`${harness.base}/v1/run-records/export?operationType=selection_analysis`, { headers: headers(harness.token) });
-  assert.equal(emptyExport.status, 404);
-  assert.equal((await emptyExport.json() as { error: { code: string } }).error.code, "no_export_records");
+  const retiredOperation = await fetch(`${harness.base}/v1/run-records/export?operationType=selection_analysis`, { headers: headers(harness.token) });
+  assert.equal(retiredOperation.status, 400);
+  assert.equal((await retiredOperation.json() as { error: { code: string } }).error.code, "invalid_request");
 });
 
 test("run record API exposes corrupt records safely and rejects invalid pagination", async (t) => {

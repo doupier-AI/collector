@@ -4378,14 +4378,6 @@ button.model-status {
   }
 }
 
-.selection-panel__later-saved {
-  margin-top: var(--space-2);
-  padding: var(--space-3);
-  border: 1px solid var(--color-later);
-  border-radius: var(--radius-control);
-  background: var(--color-canvas);
-}
-
 /* ---------- 统一研究地图（#40：专注脉络 + 关联画布/关系列表） ---------- */
 
 .research-map-overlay {
@@ -5774,7 +5766,7 @@ button.model-status {
   white-space: nowrap;
 }
 
-.run-records__status--success { color: var(--color-difficulty-low); }
+.run-records__status--success { color: var(--color-run-success); }
 .run-records__status--failure,
 .run-records__status--unavailable { color: var(--color-danger); }
 .run-records__status--active { color: var(--color-ai); }
@@ -6059,7 +6051,7 @@ button.model-status {
   line-height: 1.6;
 }
 
-/* ---------- 选区提示与选区智能窗口 ---------- */
+/* ---------- 选区提示与操作 ---------- */
 
 @keyframes selection-rise {
   from {
@@ -6072,20 +6064,8 @@ button.model-status {
   }
 }
 
-@keyframes selection-slide-up {
-  from {
-    opacity: 0;
-    transform: translateY(1.5rem);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .selection-hint,
-  .selection-panel {
+  .selection-hint {
     animation: none;
   }
 }
@@ -6132,48 +6112,7 @@ button.model-status {
   color: var(--color-ink);
 }
 
-.selection-panel {
-  position: fixed;
-  z-index: var(--z-capsule);
-  display: flex;
-  flex-direction: column;
-  width: var(--selection-panel-width);
-  max-height: min(70vh, 34rem);
-  background: var(--color-surface);
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-panel);
-  box-shadow: var(--shadow-panel);
-  animation: selection-rise var(--duration-mid) ease-out;
-}
-
-.selection-panel--drawer {
-  inset: auto 0 0;
-  width: auto;
-  max-height: 72vh;
-  border-right: none;
-  border-bottom: none;
-  border-left: none;
-  border-radius: var(--radius-panel) var(--radius-panel) 0 0;
-  animation: selection-slide-up var(--duration-slow) ease-out;
-}
-
-.selection-panel__header {
-  flex: none;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--color-line);
-}
-
-.selection-panel__title {
-  margin: 0;
-  font-size: var(--font-size-md);
-  font-weight: 650;
-  letter-spacing: 0.02em;
-}
-
-.selection-panel__close {
+.research-map-overlay__close {
   width: 1.75rem;
   height: 1.75rem;
   padding: 0;
@@ -6186,134 +6125,9 @@ button.model-status {
   cursor: pointer;
 }
 
-.selection-panel__close:hover {
+.research-map-overlay__close:hover {
   background: var(--color-canvas);
   color: var(--color-ink);
-}
-
-.selection-panel__body {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: grid;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  overflow-y: auto;
-}
-
-.selection-panel__field {
-  display: grid;
-  gap: var(--space-1);
-}
-
-.selection-panel__label {
-  margin: 0;
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  color: var(--color-muted);
-}
-
-.selection-panel__quote {
-  margin: 0;
-  padding: var(--space-2) var(--space-3);
-  border-left: 0.1875rem solid var(--color-selection-line);
-  border-radius: var(--radius-control);
-  background: color-mix(in srgb, var(--color-selection) 32%, var(--color-surface));
-  font-size: 0.9375rem;
-  line-height: 1.7;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.selection-panel__note {
-  margin: 0;
-  font-size: 0.75rem;
-  color: var(--color-later);
-}
-
-.selection-panel__text {
-  margin: 0;
-  font-size: 0.9375rem;
-  line-height: 1.7;
-  overflow-wrap: anywhere;
-}
-
-.selection-panel__muted {
-  margin: 0;
-  font-size: 0.875rem;
-  color: var(--color-muted);
-}
-
-.selection-panel__meta {
-  display: grid;
-  grid-template-columns: auto 1fr 1fr;
-  gap: var(--space-3);
-  align-items: start;
-}
-
-.selection-panel__chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.0625rem 0.625rem;
-  border: 1px solid currentColor;
-  border-radius: 999rem;
-  font-size: 0.8125rem;
-  font-weight: 600;
-}
-
-.selection-panel__chip[data-difficulty="低"] {
-  color: var(--color-difficulty-low);
-}
-
-.selection-panel__chip[data-difficulty="中"] {
-  color: var(--color-difficulty-mid);
-}
-
-.selection-panel__chip[data-difficulty="高"] {
-  color: var(--color-difficulty-high);
-}
-
-.selection-panel__status {
-  margin: 0;
-  font-size: 0.8125rem;
-  color: var(--color-muted);
-}
-
-.selection-panel__toggle {
-  justify-self: start;
-  padding: var(--space-1) 0;
-  border: none;
-  background: transparent;
-  color: var(--color-ai);
-  font-size: 0.875rem;
-  cursor: pointer;
-}
-
-.selection-panel__toggle:hover {
-  text-decoration: underline;
-}
-
-.selection-panel__details {
-  display: grid;
-  gap: var(--space-3);
-  padding-top: var(--space-3);
-  border-top: 1px dashed var(--color-line);
-}
-
-.selection-panel__list {
-  margin: 0;
-  padding-left: 1.25rem;
-  font-size: 0.9375rem;
-  line-height: 1.7;
-}
-
-.selection-panel__actions {
-  flex: none;
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
-  border-top: 1px solid var(--color-line);
 }
 
 /* 来源返回高亮（阶段 C/D 复用） */
@@ -6575,75 +6389,6 @@ button.model-status {
   color: var(--color-muted);
 }
 
-/* ---------- 选区窗口：深入研究二选一 ---------- */
-
-.selection-panel__chooser {
-  display: grid;
-  gap: var(--space-2);
-  padding-top: var(--space-3);
-  border-top: 1px dashed var(--color-line);
-}
-
-.selection-panel__options {
-  display: grid;
-  gap: var(--space-2);
-}
-
-.dr-option {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-button);
-  cursor: pointer;
-}
-
-.dr-option input {
-  flex: none;
-  margin-top: 0.2rem;
-  accent-color: var(--color-ai);
-}
-
-.dr-option--selected {
-  border-color: var(--color-ai);
-  background: color-mix(in srgb, var(--color-ai) 6%, var(--color-surface));
-}
-
-.dr-option__body {
-  display: grid;
-  gap: 0.125rem;
-}
-
-.dr-option__title {
-  font-size: 0.9375rem;
-  font-weight: 600;
-}
-
-.dr-option__desc {
-  font-size: 0.8125rem;
-  line-height: 1.6;
-  color: var(--color-muted);
-}
-
-.dr-direction {
-  width: 100%;
-  resize: vertical;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-control);
-  background: var(--color-surface);
-  color: var(--color-ink);
-  font: inherit;
-  font-size: 0.875rem;
-  line-height: 1.6;
-}
-
-.dr-direction:focus {
-  outline: 2px solid var(--color-ai);
-  outline-offset: 1px;
-}
-
 /* ---------- 来源悬停卡片 ---------- */
 
 .source-card {
@@ -6848,7 +6593,7 @@ button.model-status {
   border-radius: 0.125rem;
 }
 
-/* 选区分析窗口内 Markdown 更克制的标题 */
+/* 术语预览与推理摘要使用更紧凑的 Markdown 标题。 */
 .markdown-content--insight :where(h1, h2, h3) {
   margin-top: var(--space-2);
   margin-bottom: var(--space-1);

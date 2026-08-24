@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { SqliteStore } from "@collector/api";
+import { LATEST_SCHEMA_VERSION, SqliteStore } from "@collector/api";
 import { SemanticSearchSqliteStore } from "../apps/api/dist/semantic-search/store.js";
 
 const now = "2026-08-20T00:00:00.000Z";
@@ -56,7 +56,7 @@ test("migration v39 creates local semantic tables and replays both schema and mi
   await replay.init();
   replay.close();
   const checked = new DatabaseSync(databasePath, { readOnly: true });
-  assert.equal((checked.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 40);
+  assert.equal((checked.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, LATEST_SCHEMA_VERSION);
   checked.close();
 
   const factRollback = new DatabaseSync(databasePath);
@@ -69,7 +69,7 @@ test("migration v39 creates local semantic tables and replays both schema and mi
   const taskColumns = (factChecked.prepare("PRAGMA table_info(semantic_search_tasks)").all() as Array<{ name: string }>).map((column) => column.name);
   assert.equal(taskColumns.filter((name) => name === "source_key").length, 1);
   assert.equal(taskColumns.filter((name) => name === "embedding_key").length, 1);
-  assert.equal((factChecked.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, 40);
+  assert.equal((factChecked.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, LATEST_SCHEMA_VERSION);
   factChecked.close();
 });
 

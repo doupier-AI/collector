@@ -58,7 +58,7 @@ interface SelectionView {
   status: string;
 }
 
-test("未配置模型：选区仍然保存并出现胶囊，分析在后台失败但不影响用户操作", async ({
+test("未配置模型：选区保存与引用不依赖模型，也不创建后台 AI 任务", async ({
   page,
 }) => {
   test.setTimeout(45_000);
@@ -95,45 +95,27 @@ test("未配置模型：选区仍然保存并出现胶囊，分析在后台失�
     document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
   });
 
-  // 浮动胶囊【引用】后引用态胶囊出现（修订一 #9：不再弹旧分析面板，分析在后台静默进行）
+  // 浮动胶囊【引用】后引用态胶囊出现，不触发任何后台模型任务。
   const capsule = await citeCurrentSelection(page);
   await expect(capsule).toContainText("无模型也要保留选区原文");
-  await expect(page.getByTestId("selection-insight-panel")).toHaveCount(0);
 
-  // 选区已经落库（不因分析失败而丢失）
+  // 选区及稳定创建幂等键已经落库。
   const selections = await apiJson<SelectionView[]>(page, `/v1/research-sessions/${created.id}/selections`);
   expect(selections).toHaveLength(1);
   expect(selections[0]?.text).toBe("无模型也要保留选区原文");
   expect(selections[0]?.status).toBe("active");
 
-  // 分析任务在后台失败（SQLite 核对）
-  // 等待选区任务完成（后台分析是异步的）
-  await expect
-    .poll(
-      async () => {
-        const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
-        const tables = readResearchSelectionTables(dbPath);
-        const taskRows = tables.selectionTasks.filter((row) => row.sessionId === created.id);
-        return taskRows.length > 0 && taskRows[0]?.status !== "queued" && taskRows[0]?.status !== "running";
-      },
-      { timeout: 15_000, intervals: [200, 500, 1000] },
-    )
-    .toBe(true);
-
   const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
   const tables = readResearchSelectionTables(dbPath);
-  const taskRows = tables.selectionTasks.filter((row) => row.sessionId === created.id);
-  expect(taskRows).toHaveLength(1);
-  expect(taskRows[0]?.status).toBe("failed");
-  expect(taskRows[0]?.retryable).toBe(1);
-  const taskRecord = JSON.parse(taskRows[0]?.recordJson ?? "{}") as { error?: { code?: string } };
-  expect(taskRecord.error?.code).toBe("model_not_configured");
+  const saved = tables.selections.filter((row) => row.sessionId === created.id);
+  expect(saved).toHaveLength(1);
+  expect(saved[0]?.idempotencyKey).toMatch(/^sel:/);
 
-  // 胶囊仍在（分析失败不影响引用）
+  // 胶囊保持可用。
   await expect(capsule).toBeVisible();
 });
 
-test("未配置模型：分析失败仍可通过胶囊发起深入研究，来源关系保留、第一轮失败可重试", async ({
+test("未配置模型：仍可通过胶囊发起深入研究，来源关系保留、第一轮失败可重试", async ({
   page,
 }) => {
   test.setTimeout(60_000);

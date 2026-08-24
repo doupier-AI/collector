@@ -9,7 +9,7 @@ import { ApiRequestError, NetworkError } from "../../api/errors";
 import type { TaskEventStream } from "../../api/task-events";
 import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
-import { makeAssociationHint, makeAttachment, makeBodyVersion, makeFragment, makeFusionProposal, makeMessage, makeNode, makeNodeView, makeSelection, makeSelectionTask, makeSession, makeTask } from "../../test/fakes";
+import { makeAssociationHint, makeAttachment, makeBodyVersion, makeFragment, makeFusionProposal, makeMessage, makeNode, makeNodeView, makeSelection, makeSession, makeTask } from "../../test/fakes";
 import { ResearchNodePage } from "./ResearchNodePage";
 import { __clearBodyVersionCache } from "./fragment-locator";
 
@@ -500,7 +500,6 @@ describe("ResearchNodePage 带来源的根节点（旧独立会话）", () => {
     });
     const createResearchSelection = vi.fn(async () => ({
       selection,
-      task: makeSelectionTask({ id: "sel-task-1", status: "completed" }),
     }));
     renderNodePage(
       {
@@ -587,7 +586,6 @@ describe("ResearchNodePage 带来源的根节点（旧独立会话）", () => {
         getResearchSelection: async () => selection,
         createResearchSelection: async () => ({
           selection,
-          task: makeSelectionTask({ id: "sel-task-1", status: "completed" }),
         }),
       },
       "/nodes/session-1?sel=sel-1",
@@ -774,7 +772,6 @@ describe("ResearchNodePage 子节点", () => {
     const createResearchSelection = vi.fn(
       async (_sessionId: string, _input: ResearchSelectionInput, _idempotencyKey: string) => ({
         selection,
-        task: makeSelectionTask({ id: "sel-task-1", status: "completed" }),
       }),
     );
     renderNodePage(

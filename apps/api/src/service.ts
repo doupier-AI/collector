@@ -63,11 +63,7 @@ import {
   ResearchChapterParseService,
   type ResearchChapterParseProvider,
 } from "./research-chapters.js";
-import {
-  ResearchSelectionAnalysisError,
-  ResearchSelectionService,
-  type ResearchSelectionProvider,
-} from "./selection.js";
+import { ResearchSelectionService } from "./selection.js";
 import {
   DeepResearchService,
   NodeGrowthService,
@@ -195,7 +191,7 @@ export class CaptureService {
     private readonly store: CollectorStore,
     private readonly artifactRoot: string,
     private modelGateway?: ModelGateway,
-    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; selectionProvider?: ResearchSelectionProvider; similarityVerifier?: SimilarityVerificationGateway; associationHintEvaluator?: AssociationHintEvaluationGateway; chapterParseProvider?: ResearchChapterParseProvider; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunResearchChapters?: boolean; autoRunSelectionTasks?: boolean; mvpDemoMode?: boolean; researchRetrySleep?: (ms: number) => Promise<void> } = {},
+    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; similarityVerifier?: SimilarityVerificationGateway; associationHintEvaluator?: AssociationHintEvaluationGateway; chapterParseProvider?: ResearchChapterParseProvider; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunResearchChapters?: boolean; mvpDemoMode?: boolean; researchRetrySleep?: (ms: number) => Promise<void> } = {},
   ) {
     this.runRecords = new RunRecordsService(this.store);
     this.attachModelGateway(this.modelGateway);
@@ -233,10 +229,7 @@ export class CaptureService {
         this.researchChapters.enqueueForSnapshot(snapshot);
       },
     });
-    this.researchSelections = new ResearchSelectionService(this.store, {
-      provider: this.options.selectionProvider ?? this.selectionProviderFor(this.modelGateway),
-      autoRunTasks: this.options.autoRunSelectionTasks,
-    });
+    this.researchSelections = new ResearchSelectionService(this.store);
     this.deepResearch = new DeepResearchService(this.store, {
       research: this.research,
       autoRunTasks: this.options.autoRunResearchTasks,
@@ -279,7 +272,6 @@ export class CaptureService {
     this.purposeGatewaysStale = true;
     this.attachModelGateway(gateway);
     if (!this.options.researchProvider) this.research.setProvider(this.researchProviderFor(gateway));
-    if (!this.options.selectionProvider) this.researchSelections.setProvider(this.selectionProviderFor(gateway));
     if (!this.options.chapterParseProvider) this.researchChapters.setProvider(this.chapterParseProviderFor(gateway));
     if (this.options.autoRunResearchTasks !== false) void this.termPreviews.resumeTasks().catch(() => undefined);
   }
@@ -729,38 +721,6 @@ export class CaptureService {
             tokenBudget: FUSION_COMPOSE_TOKEN_BUDGET,
           } },
         );
-      },
-    };
-  }
-
-  private selectionProviderFor(gateway: ModelGateway | undefined): ResearchSelectionProvider | undefined {
-    if (!gateway) return undefined;
-    const service = this;
-    return {
-      provider: gateway.providerName,
-      model: gateway.modelName,
-      promptVersion: "selection-analysis-v1",
-      async analyze(request) {
-        const purposeGateway = await service.gatewayForPurpose("selection");
-        if (!purposeGateway) throw new Error("AI model is not configured");
-        try {
-          return await purposeGateway.analyzeSelection(
-            {
-              text: request.text,
-              contextBefore: request.contextBefore,
-              contextAfter: request.contextAfter,
-              contentTitle: request.contentTitle,
-              recentUserMessages: request.recentUserMessages,
-            },
-            { context: { workflowRunId: request.taskId, purpose: "selection_analysis", promptVersion: "selection-analysis-v1" } },
-          );
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "";
-          if (/invalid JSON|Selection analysis/.test(message)) {
-            throw new ResearchSelectionAnalysisError(message || "Selection analysis failed contract validation");
-          }
-          throw error;
-        }
       },
     };
   }

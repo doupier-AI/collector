@@ -184,7 +184,6 @@ test("grounded research persists all sources but views only expose cited origina
     autoRunResearchTasks: false,
     autoRunResearchImports: false,
     autoRunResearchChapters: false,
-    autoRunSelectionTasks: false,
   }).nodeGrowth.getNodeView(session.id);
   assert.deepEqual(nodeView.groundingSources?.map((item) => ({ id: item.id, ordinal: item.ordinal })), [
     { id: source.id, ordinal: 2 },

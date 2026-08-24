@@ -40,7 +40,6 @@ import type {
   ResearchSelectionAccepted,
   ResearchSelectionInput,
   ResearchSelectionRecord,
-  ResearchSelectionTaskRecord,
   ResearchSessionNodeTreeItem,
   ResearchSessionRecord,
   ResearchSessionView,
@@ -118,8 +117,6 @@ export interface ApiClient {
   createResearchSelection(sessionId: string, input: ResearchSelectionInput, idempotencyKey: string): Promise<ResearchSelectionAccepted>;
   listResearchSelections(sessionId: string): Promise<ResearchSelectionRecord[]>;
   getResearchSelection(selectionId: string): Promise<ResearchSelectionRecord>;
-  getResearchSelectionTask(taskId: string): Promise<ResearchSelectionTaskRecord>;
-  retryResearchSelectionTask(taskId: string): Promise<ResearchSelectionTaskRecord>;
   /** 从选区发起深入研究：分支或带来源的独立会话与第一轮任务先保存再生成。 */
   startDeepResearch(selectionId: string, input: DeepResearchInput, idempotencyKey: string): Promise<DeepResearchAccepted>;
   getResearchBranch(branchId: string): Promise<ResearchBranchView>;
@@ -439,20 +436,6 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
       return requestJson<ResearchSelectionRecord[]>(
         fetchFn,
         `/v1/research-sessions/${encodeURIComponent(sessionId)}/selections`,
-      );
-    },
-    getResearchSelectionTask(taskId: string) {
-      return requestJson<ResearchSelectionTaskRecord>(fetchFn, `/v1/research-selection-tasks/${encodeURIComponent(taskId)}`);
-    },
-    retryResearchSelectionTask(taskId: string) {
-      return requestJson<ResearchSelectionTaskRecord>(
-        fetchFn,
-        `/v1/research-selection-tasks/${encodeURIComponent(taskId)}/retry`,
-        {
-          method: "POST",
-          headers: JSON_HEADERS,
-          body: "{}",
-        },
       );
     },
     startDeepResearch(selectionId: string, input: DeepResearchInput, idempotencyKey: string) {
