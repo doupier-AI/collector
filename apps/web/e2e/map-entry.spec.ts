@@ -56,6 +56,13 @@ async function waitForEntryAnimation(page: import("@playwright/test").Page) {
   await expect(page.getByTestId("global-map-canvas")).toHaveAttribute("data-entry-animation", "complete");
 }
 
+async function clickCanvasNode(node: Locator, options?: { double?: boolean }) {
+  const core = node.locator(".global-map__node-core");
+  await expect(core).toBeVisible();
+  if (options?.double) await core.dblclick();
+  else await core.click();
+}
+
 async function findPanSurfacePoint(svg: Locator) {
   return svg.evaluate((element) => {
     const bounds = element.getBoundingClientRect();
@@ -107,7 +114,7 @@ test("全局研究图谱：两个会话的根节点进入同一真实观察结�
   const svg = wideCanvas.locator("svg");
   const viewBoxBeforeWheel = await svg.getAttribute("viewBox");
   await wideCanvas.evaluate((element) => element.setAttribute("data-e2e-mount", "stable"));
-  await wideFirstNode.click();
+  await clickCanvasNode(wideFirstNode);
   await expect(page).toHaveURL(new RegExp(`/map/focus/${firstNodeId}$`));
   await expect(wideCanvas).toHaveAttribute("data-e2e-mount", "stable");
   await expect(page.getByLabel("正在打开研究图谱")).toHaveCount(0);
@@ -155,7 +162,7 @@ test("全局研究图谱：两个会话的根节点进入同一真实观察结�
   const mouseOpenTarget = page.getByTestId("global-map-canvas").getByRole("button", { name: /全局地图测试一/ });
   await expect(mouseOpenTarget).toBeVisible();
   await waitForEntryAnimation(page);
-  await mouseOpenTarget.dblclick();
+  await clickCanvasNode(mouseOpenTarget, { double: true });
   await expect(page).toHaveURL(/\/nodes\/[^/]+$/);
   await page.goto("/map");
   const reopenedFirstNode = page.getByTestId("global-map-canvas").getByRole("button", { name: /全局地图测试一/ });
@@ -208,11 +215,11 @@ test("#68 地图 entry：专注链、节点打开、浏览器返回和刷新均�
 
   const canvas = page.getByTestId("global-map-canvas");
   await waitForEntryAnimation(page);
-  await canvas.getByRole("button", { name: /地图现场恢复一/ }).click();
+  await clickCanvasNode(canvas.getByRole("button", { name: /地图现场恢复一/ }));
   await expect(page).toHaveURL(new RegExp(`/map/focus/${firstNodeId}$`));
   const firstEntrySpatial = await readPersistedSpatialState(page);
 
-  await canvas.getByRole("button", { name: /地图现场恢复二/ }).click();
+  await clickCanvasNode(canvas.getByRole("button", { name: /地图现场恢复二/ }));
   await expect(page).toHaveURL(new RegExp(`/map/focus/${secondNodeId}$`));
   await openMapTool(page, "显示的关系");
   const fusionToggle = page.getByRole("button", { name: "融合来源" });
@@ -364,7 +371,7 @@ test("#65 同图专注：关系重算、方向与灰色节点持久坐标全程�
   // 专注前渲染与持久一致；此后以持久坐标为准，专注态渲染坐标会临时聚拢。
   const spatialState = await readPersistedSpatialState(page);
 
-  await canvas.getByRole("button", { name: /^证据链，/ }).click();
+  await clickCanvasNode(canvas.getByRole("button", { name: /^证据链，/ }));
   await expect(page).toHaveURL(/\/map\/focus\/map-blue$/);
   await expect(page.getByText(/正在专注：/)).toContainText("证据链");
   const blue = canvas.getByRole("button", { name: /^证据链，/ });
@@ -412,7 +419,7 @@ test("#65 同图专注：关系重算、方向与灰色节点持久坐标全程�
   await expect(fusionToggle).toHaveAttribute("aria-pressed", "true");
   await expect(fusion).toHaveClass(/global-map__node--connected/);
   await expect(canvas.locator(".global-map__edge-direction-flow")).toHaveCount(2);
-  await isolated.click();
+  await clickCanvasNode(isolated);
   await expect(page).toHaveURL(/\/map\/focus\/map-neutral$/);
   await expect(isolated).toHaveClass(/global-map__node--focus/);
   await expect(blue).toHaveClass(/global-map__node--unconnected/);
@@ -438,7 +445,7 @@ test("#65 同图专注：关系重算、方向与灰色节点持久坐标全程�
 
   await page.setViewportSize({ width: 1024, height: 768 });
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
-  await canvas.getByRole("button", { name: /^证据链，/ }).click();
+  await clickCanvasNode(canvas.getByRole("button", { name: /^证据链，/ }));
   await expect(page).toHaveURL(/\/map\/focus\/map-blue$/);
   await expect(canvas.locator(".global-map__edge-direction-flow").first()).toHaveCSS("display", "none");
   await expect(canvas.locator(".global-map__edge-direction-static").first()).toHaveCSS("display", "block");
@@ -536,7 +543,7 @@ test("#66 地图范围：项目、日期、生命周期、桥接和历史现场�
     lifecycles: ["active"],
   });
 
-  await nodeA.click();
+  await clickCanvasNode(nodeA);
   await expect(page).toHaveURL(/\/map\/focus\/filter-a$/);
   await expect(page.getByTestId("global-map-canvas").getByRole("button", { name: /^桥接节点 B，/ })).toHaveAccessibleName(/范围外桥接/);
   await page.reload();
