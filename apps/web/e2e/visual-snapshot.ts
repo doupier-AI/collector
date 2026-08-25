@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { expect, type Locator, type TestInfo } from "@playwright/test";
+import { expect, type Locator, type Page, type TestInfo } from "@playwright/test";
 import pixelmatch from "pixelmatch";
 import { PNG } from "pngjs";
 
@@ -99,6 +99,10 @@ interface FontRasterScreenshotOptions {
   maskColor?: string;
 }
 
+interface PageFontRasterScreenshotOptions extends FontRasterScreenshotOptions {
+  textLayoutTarget: Locator;
+}
+
 export interface FontRasterComparison {
   dimensionsMatch: boolean;
   expectedSize: { width: number; height: number };
@@ -182,6 +186,93 @@ export async function expectScreenshotWithFontRasterRegions(
     comparison.diffRatio,
     `${snapshotName} 排除已锁定字体栅格区域后仍有 ${comparison.diffPixels} 个差异像素（${(comparison.diffRatio * 100).toFixed(3)}%）`,
   ).toBeLessThanOrEqual(MAX_DIFF_PIXEL_RATIO);
+}
+
+/**
+ * Applies the same locked text regions used by an element screenshot to their exact viewport
+ * coordinates in a page screenshot. Regions outside the viewport are ignored and regions crossing
+ * its edge are clipped; no additional text or surrounding pixels enter the normalization area.
+ */
+export async function expectPageScreenshotWithFontRasterRegions(
+  page: Page,
+  snapshotName: string,
+  testInfo: TestInfo,
+  options: PageFontRasterScreenshotOptions,
+): Promise<void> {
+  expectExactTextLayoutContract(
+    await readTextLayoutContract(options.textLayoutTarget, options.textLayoutSelector),
+    options.expectedTextLayout,
+  );
+  const expectedPath = testInfo.snapshotPath(snapshotName);
+  const updateMode = testInfo.config.updateSnapshots;
+  if (
+    updateMode === "all"
+    || updateMode === "changed"
+    || (updateMode === "missing" && !existsSync(expectedPath))
+  ) {
+    await expect(page).toHaveScreenshot(snapshotName, {
+      animations: "disabled",
+      caret: "hide",
+      mask: options.mask,
+      maskColor: options.maskColor,
+    });
+    return;
+  }
+
+  const actual = await page.screenshot({
+    animations: "disabled",
+    caret: "hide",
+    mask: options.mask,
+    maskColor: options.maskColor,
+  });
+  const expected = await readFile(expectedPath);
+  const actualPng = PNG.sync.read(actual);
+  const layoutBox = await options.textLayoutTarget.boundingBox();
+  expect(layoutBox, "字体栅格区域对应的正文卡片必须可见").not.toBeNull();
+  const fontRasterRegions = translateAndClipSnapshotRects(
+    options.expectedTextLayout.regions.flatMap((region) => region.lines),
+    { x: layoutBox!.x, y: layoutBox!.y },
+    { width: actualPng.width, height: actualPng.height },
+  );
+  const comparison = compareScreenshotsWithFontRasterRegions(
+    expected,
+    actual,
+    fontRasterRegions,
+    options.fontColor,
+  );
+
+  if (!comparison.dimensionsMatch || comparison.diffRatio > MAX_DIFF_PIXEL_RATIO) {
+    await testInfo.attach(`${snapshotName}-expected`, { body: expected, contentType: "image/png" });
+    await testInfo.attach(`${snapshotName}-actual`, { body: actual, contentType: "image/png" });
+    if (comparison.diff) {
+      await testInfo.attach(`${snapshotName}-font-raster-masked-diff`, {
+        body: comparison.diff,
+        contentType: "image/png",
+      });
+    }
+  }
+
+  expect(comparison.actualSize, `${snapshotName} 尺寸必须与视觉基线一致`).toEqual(comparison.expectedSize);
+  expect(
+    comparison.diffRatio,
+    `${snapshotName} 排除已锁定字体栅格区域后仍有 ${comparison.diffPixels} 个差异像素（${(comparison.diffRatio * 100).toFixed(3)}%）`,
+  ).toBeLessThanOrEqual(MAX_DIFF_PIXEL_RATIO);
+}
+
+export function translateAndClipSnapshotRects(
+  regions: readonly SnapshotRect[],
+  offset: { x: number; y: number },
+  bounds: { width: number; height: number },
+): SnapshotRect[] {
+  return regions.flatMap((region) => {
+    const left = Math.max(0, region.x + offset.x);
+    const top = Math.max(0, region.y + offset.y);
+    const right = Math.min(bounds.width, region.x + offset.x + region.width);
+    const bottom = Math.min(bounds.height, region.y + offset.y + region.height);
+    return right > left && bottom > top
+      ? [{ x: left, y: top, width: right - left, height: bottom - top }]
+      : [];
+  });
 }
 
 export function compareScreenshotsWithFontRasterRegions(

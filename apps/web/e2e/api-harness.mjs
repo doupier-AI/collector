@@ -25,6 +25,7 @@ import { createSemanticModelArtifactInstaller } from "../../api/dist/semantic-se
 import { SemanticSearchSqliteStore } from "../../api/dist/semantic-search/store.js";
 
 const port = Number(process.env.E2E_API_PORT ?? "43211");
+const shutdownToken = process.env.E2E_SHUTDOWN_TOKEN;
 // e2e 放宽配对码 TTL 到 1 小时：长套件中测试排队消费现铸码，TTL 过短会触发限流级联。
 process.env.COLLECTOR_E2E_PAIRING_TTL_MS ??= String(60 * 60 * 1000);
 const modelMode = process.env.E2E_MODEL ?? "fake";
@@ -469,6 +470,21 @@ const server = createApiServer(service, auth, {
 // 实测 80 失败中约 35 个源自此级联）。现铸码取完立即使用、TTL 从取码起算，套件长短无关；
 // 静态池文件与消费游标全部退役，用例增删也不再需要同步调整池容量。
 const pairingServer = createServer((request, response) => {
+  if (request.url === "/__e2e/shutdown") {
+    if (
+      request.method !== "POST"
+      || !shutdownToken
+      || request.headers["x-e2e-shutdown-token"] !== shutdownToken
+    ) {
+      response.statusCode = 403;
+      response.end();
+      return;
+    }
+    response.statusCode = 202;
+    response.end();
+    setImmediate(() => { void gracefulShutdown("test lifecycle"); });
+    return;
+  }
   if (request.url !== "/pairing-code") {
     response.statusCode = 404;
     response.end();
@@ -499,7 +515,7 @@ async function gracefulShutdown(signal) {
   console.log(`[e2e-api] received ${signal}, closing server and store`);
   const forceExit = setTimeout(() => process.exit(1), 5_000);
   forceExit.unref();
-  pairingServer.close();
+  await new Promise((resolve) => pairingServer.close(resolve));
   await Promise.all([...browserBootstraps].map((bootstrap) => bootstrap.close().catch(() => undefined)));
   server.closeAllConnections?.();
   await new Promise((resolve) => server.close(resolve));
@@ -507,7 +523,7 @@ async function gracefulShutdown(signal) {
   try { semanticDatabase.close(); } catch { /* 进程退出阶段忽略关闭失败 */ }
   try { store.close(); } catch { /* 进程退出阶段忽略关闭失败 */ }
   clearTimeout(forceExit);
-  process.exit(0);
+  process.exitCode = 0;
 }
 process.on("SIGTERM", () => { void gracefulShutdown("SIGTERM"); });
 process.on("SIGINT", () => { void gracefulShutdown("SIGINT"); });

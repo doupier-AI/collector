@@ -4,6 +4,7 @@ import {
   compareScreenshotsWithFontRasterRegions,
   expectExactTextLayoutContract,
   readTextLayoutContract,
+  translateAndClipSnapshotRects,
   type SnapshotRect,
 } from "./visual-snapshot";
 
@@ -68,6 +69,21 @@ test.describe("Windows 字体栅格视觉门禁防弱化", () => {
     const comparison = compareScreenshotsWithFontRasterRegions(expected, actual, [FONT_REGION]);
     expect(comparison.dimensionsMatch).toBe(false);
     expect(comparison.diffRatio).toBe(1);
+  });
+
+  test("页面截图只平移并裁切既有文字行区域，不纳入周边像素", () => {
+    expect(translateAndClipSnapshotRects(
+      [
+        { x: 5, y: 6, width: 10, height: 8 },
+        { x: 5, y: 20, width: 10, height: 8 },
+        { x: 50, y: 50, width: 4, height: 4 },
+      ],
+      { x: 10, y: 5 },
+      { width: 40, height: 30 },
+    )).toEqual([
+      { x: 15, y: 11, width: 10, height: 8 },
+      { x: 15, y: 25, width: 10, height: 5 },
+    ]);
   });
 
   test("真实 DOM 的隐藏、1px 位移、改色、斜体、祖先淡化和改内容都独立改变严格契约", async ({ page }) => {

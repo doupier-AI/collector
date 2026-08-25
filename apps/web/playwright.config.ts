@@ -1,12 +1,16 @@
+import { randomBytes } from "node:crypto";
 import { defineConfig, devices } from "@playwright/test";
 
 // 端口基准可被 E2E_PORT_BASE 覆盖：六个 harness 依次占用 base+0..base+5。
 // 默认 43211 不变；真实模型验收长跑占用默认端口时，确定性套件可用另一组端口并行
 // （如 E2E_PORT_BASE=43221 npx playwright test），验收与日常开发互不挡路（#86 复盘）。
 const PORT_BASE = Number(process.env.E2E_PORT_BASE ?? "43211");
+const SHUTDOWN_TOKEN = process.env.E2E_SHUTDOWN_TOKEN ?? randomBytes(32).toString("base64url");
+process.env.E2E_SHUTDOWN_TOKEN = SHUTDOWN_TOKEN;
 
 export default defineConfig({
   testDir: "e2e",
+  globalSetup: "./e2e/global-setup.ts",
   workers: 1,
   timeout: 30_000,
   outputDir: "test-results",

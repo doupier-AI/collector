@@ -33,6 +33,7 @@ import {
   trackBrowserIssues,
 } from "./helpers";
 import {
+  expectPageScreenshotWithFontRasterRegions,
   expectScreenshotWithFontRasterRegions,
   type TextLayoutContract,
 } from "./visual-snapshot";
@@ -328,7 +329,7 @@ test.describe("#44 视觉回归基线", () => {
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
-  test("长文阅读页：右侧章节导航独立轨道像素基线（#95）", async ({ page }) => {
+  test("长文阅读页：右侧章节导航独立轨道像素基线（#95）", async ({ page }, testInfo) => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);
     await pinModelStatus(page);
@@ -345,14 +346,18 @@ test.describe("#44 视觉回归基线", () => {
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.waitForTimeout(200);
 
-    await expect(page).toHaveScreenshot("node-reading-chapter-right", {
+    await expectPageScreenshotWithFontRasterRegions(page, "node-reading-chapter-right", testInfo, {
+      textLayoutTarget: page.locator(".turn-card"),
+      textLayoutSelector: ".markdown-content p",
+      expectedTextLayout: LONG_TURN_CARD_TEXT_LAYOUT,
+      fontColor: [32, 35, 31, 255],
       mask: dynamicTimeMasks(page),
       maskColor: "#FFFFFF",
     });
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
-  test("长文 + 追问双轨：左轮次导航与右章节导航并存像素基线（#95）", async ({ page }) => {
+  test("长文 + 追问双轨：左轮次导航与右章节导航并存像素基线（#95）", async ({ page }, testInfo) => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);
     await pinModelStatus(page);
@@ -373,7 +378,11 @@ test.describe("#44 视觉回归基线", () => {
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.waitForTimeout(200);
 
-    await expect(page).toHaveScreenshot("node-reading-dual-rail", {
+    await expectPageScreenshotWithFontRasterRegions(page, "node-reading-dual-rail", testInfo, {
+      textLayoutTarget: page.locator(".turn-card").first(),
+      textLayoutSelector: ".markdown-content p",
+      expectedTextLayout: LONG_TURN_CARD_TEXT_LAYOUT,
+      fontColor: [32, 35, 31, 255],
       mask: dynamicTimeMasks(page),
       maskColor: "#FFFFFF",
     });
