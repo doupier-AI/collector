@@ -298,7 +298,10 @@ test.describe("统一研究地图（#40）", () => {
     const dialog = page.getByRole("dialog", { name: "研究地图" });
     await expect(dialog).toBeVisible();
     await expect(dialog).toHaveCSS("opacity", "1");
-    expect(graphGets.length, "打开研究地图只发 /graph").toBeGreaterThanOrEqual(1);
+    await expect.poll(() => graphGets.length, {
+      message: "打开研究地图只发 /graph",
+      timeout: 10_000,
+    }).toBeGreaterThanOrEqual(1);
     expect(treeGets, "研究地图不再整树拉取 /nodes").toHaveLength(0);
     await expect(dialog.getByTestId("map-mode-focus")).toHaveAttribute("aria-pressed", "true");
     const metrics = await page.evaluate(() => ({
@@ -383,7 +386,10 @@ test.describe("统一研究地图（#40）", () => {
     expect(metrics.scrollWidth, "320px 关联覆盖层不应横向溢出").toBeLessThanOrEqual(metrics.clientWidth + 1);
 
     expect(treeGets, "窄屏关联模式仍不整树拉取 /nodes").toHaveLength(0);
-    expect(graphGets.length, "研究地图只发 /graph").toBeGreaterThanOrEqual(1);
+    await expect.poll(() => graphGets.length, {
+      message: "研究地图只发 /graph",
+      timeout: 10_000,
+    }).toBeGreaterThanOrEqual(1);
     expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
   });
 

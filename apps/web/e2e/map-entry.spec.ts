@@ -56,6 +56,19 @@ async function waitForEntryAnimation(page: import("@playwright/test").Page) {
   await expect(page.getByTestId("global-map-canvas")).toHaveAttribute("data-entry-animation", "complete");
 }
 
+async function findPanSurfacePoint(svg: Locator) {
+  return svg.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    for (const yRatio of [0.25, 0.5, 0.75]) {
+      for (const xRatio of [0.25, 0.5, 0.75]) {
+        const point = { x: bounds.left + bounds.width * xRatio, y: bounds.top + bounds.height * yRatio };
+        if (document.elementFromPoint(point.x, point.y)?.classList.contains("global-map__pan-surface")) return point;
+      }
+    }
+    throw new Error("地图画布没有可接收拖拽的空白区域");
+  });
+}
+
 async function openMapTool(page: import("@playwright/test").Page, name: string) {
   const trigger = page.getByRole("navigation", { name: "研究图谱工具" }).getByRole("button", { name });
   if (await trigger.getAttribute("aria-expanded") !== "true") await trigger.click();
@@ -111,8 +124,7 @@ test("全局研究图谱：两个会话的根节点进入同一真实观察结�
   const viewBoxBeforePan = await svg.getAttribute("viewBox");
   const canvasBounds = await svg.boundingBox();
   expect(canvasBounds).not.toBeNull();
-  const panStart = { x: canvasBounds!.x + canvasBounds!.width / 2, y: canvasBounds!.y + canvasBounds!.height / 2 };
-  expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.getAttribute("class"), panStart)).toContain("global-map__pan-surface");
+  const panStart = await findPanSurfacePoint(svg);
   await page.mouse.move(panStart.x, panStart.y);
   await page.mouse.down();
   await expect(wideCanvas).toHaveClass(/global-map__canvas--dragging/);
@@ -489,12 +501,16 @@ test("#66 地图范围：项目、日期、生命周期、桥接和历史现场�
   await page.getByLabel("开始日期").fill("2026-08-18");
   await page.getByLabel("结束日期").fill("2026-08-18");
   await expect(page.getByLabel("当前筛选摘要")).toContainText("2026-08-18至2026-08-18");
+  const expectedDateRange = await page.evaluate(() => ({
+    createdFrom: new Date(2026, 7, 18).toISOString(),
+    createdBefore: new Date(2026, 7, 19).toISOString(),
+  }));
   await expect.poll(() => observationRequests.some((requestUrl) => {
     const url = new URL(requestUrl);
     return url.searchParams.getAll("projectId").join(",") === "project-one"
       && url.searchParams.getAll("lifecycle").join(",") === "active"
-      && url.searchParams.get("createdFrom") === new Date(2026, 7, 18).toISOString()
-      && url.searchParams.get("createdBefore") === new Date(2026, 7, 19).toISOString();
+      && url.searchParams.get("createdFrom") === expectedDateRange.createdFrom
+      && url.searchParams.get("createdBefore") === expectedDateRange.createdBefore;
   })).toBe(true);
   expect(await page.evaluate(() => window.history.state?.usr?.mapSceneV2?.filters)).toMatchObject({
     projectScope: { kind: "selected", projectIds: ["project-one"] },

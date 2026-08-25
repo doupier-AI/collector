@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "build": "tsc -b && npm run build -w @collector/web",
-    "test": "npm run build && node --test dist-tests/**/*.test.js",
+    "test": "npm run build && node --test dist-tests/**/*.test.js scripts/*.test.mjs",
     "start": "node apps/api/dist/launcher-main.js",
     "launch": "npm run build && node apps/api/dist/launcher-main.js",
     "launch:mvp": "npm run build && node scripts/launch-mvp.mjs",
@@ -21,6 +21,7 @@
     "check": "powershell -ExecutionPolicy Bypass -File scripts/check-project.ps1",
     "gate": "node scripts/gate.mjs",
     "clean": "node scripts/clean.mjs",
+    "worktree:remove": "node scripts/worktree-safety.mjs remove",
     "run:logged": "node scripts/run-logged.mjs",
     "visual:diff": "node scripts/visual-review.mjs"
   },

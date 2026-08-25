@@ -16,6 +16,24 @@ export function isFetchSafePort(port: number): boolean {
   return Number.isSafeInteger(port) && port > 0 && port <= 65_535 && !FETCH_FORBIDDEN_PORTS.has(port);
 }
 
+export async function fetchLoopback(
+  input: Parameters<typeof fetch>[0],
+  init?: Parameters<typeof fetch>[1],
+  fetchFn: typeof fetch = fetch,
+): Promise<Response> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await fetchFn(input, init);
+    } catch (error) {
+      const cause = error instanceof Error && "cause" in error ? error.cause : undefined;
+      const code = cause && typeof cause === "object" && "code" in cause ? cause.code : undefined;
+      if (attempt === 1 || (code !== "ECONNRESET" && code !== "ECONNREFUSED")) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  throw new Error("Unreachable loopback fetch retry state");
+}
+
 async function closeServer(server: Server): Promise<void> {
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 }

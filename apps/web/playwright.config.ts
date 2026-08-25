@@ -24,6 +24,10 @@ export default defineConfig({
   use: {
     screenshot: "only-on-failure",
     trace: "retain-on-failure",
+    // 浏览器宿主区域设置会改变原生日期输入占位符与日期格式；固定为产品默认中文环境，
+    // 避免本机 yyyy/mm/dd 与 GitHub Windows en-US mm/dd/yyyy 形成伪视觉回归。
+    locale: "zh-CN",
+    timezoneId: "Asia/Hong_Kong",
     // 快速失败（#86 复盘）：交互动作 15s 内不可达即报错并留取证快照，替代整测 30s 超时的模糊失败；
     // 个别确有需要的用例可用 test.use({ actionTimeout }) 或动作参数局部覆盖。真实验收侧见 playwright.acceptance.config.ts。
     actionTimeout: 15_000,

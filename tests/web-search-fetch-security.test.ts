@@ -83,7 +83,7 @@ test("fetchPublicResource: redirect without Location is rejected as redirect fai
   t.after(() => closeServer(server));
 
   await assert.rejects(
-    fetchPublicResource(`http://localhost:${port}/start`, { allowNonPublic: true }),
+    fetchPublicResource(`http://127.0.0.1:${port}/start`, { allowNonPublic: true }),
     /redirect limit exceeded/,
   );
 });

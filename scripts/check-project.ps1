@@ -37,6 +37,13 @@ try {
   Add-Issue "error" "node-missing" "Node.js is unavailable"
 }
 
+$worktreeSafety = & node (Join-Path $Root "scripts\worktree-safety.mjs") check --root $Root 2>&1
+if ($LASTEXITCODE -ne 0) {
+  foreach ($line in @($worktreeSafety)) {
+    if ($line) { Add-Issue "error" "worktree-safety" $line }
+  }
+}
+
 if (Test-Path -LiteralPath (Join-Path $Root "apps\desktop-capture")) {
   Add-Issue "error" "retired-desktop-source" "apps/desktop-capture must stay removed"
 }

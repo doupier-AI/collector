@@ -612,6 +612,24 @@ export function freezeClock(page: Page): void {
   void page.clock.setFixedTime(new Date("2026-08-02T08:00:00.000Z"));
 }
 
+/** 测试 harness 偶发重置本机转发连接时只补偿一次；持续断连与非连接错误仍立即暴露。 */
+export async function fetchFixtureRoute<T>(route: { fetch(): Promise<T> }): Promise<T> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await route.fetch();
+    } catch (error) {
+      const code = typeof error === "object" && error !== null && "code" in error
+        ? String(error.code)
+        : "";
+      const message = error instanceof Error ? error.message : String(error);
+      const transientConnectionFailure = /\b(?:ECONNRESET|ECONNREFUSED)\b/.test(`${code} ${message}`);
+      if (attempt === 1 || !transientConnectionFailure) throw error;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+    }
+  }
+  throw new Error("fixture route retry loop exhausted");
+}
+
 /**
  * #44 视觉基线：固定顶栏模型状态点。全量运行时 settings-ai-model 等先行测试会改变
  * 共享库配置状态——删除全部配置后服务端重建网关失败、modelError 置位，按钮文案从
@@ -621,7 +639,7 @@ export function freezeClock(page: Page): void {
  */
 export async function pinModelStatus(page: Page): Promise<void> {
   await page.route("**/v1/ai-configuration", async (route) => {
-    const response = await route.fetch();
+    const response = await fetchFixtureRoute(route);
     const view = await response.json();
     delete view.modelError;
     await route.fulfill({ response, json: view });

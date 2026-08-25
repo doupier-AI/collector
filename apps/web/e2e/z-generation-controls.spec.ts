@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { pairAndOpen, trackBrowserIssues } from "./helpers";
 
-const QUESTION = "什么是本地优先研究？";
+const QUESTION = "验证生成控制：什么是本地优先研究？";
 
 async function submitQuestion(page: Page): Promise<string> {
   await page.getByLabel("你的问题").fill(QUESTION);
@@ -18,6 +18,7 @@ test("暂停后继续：已生成部分保留、从断点续写完成、无重�
   // 等第一段正文出现后暂停。
   const assistantContent = page.locator(".message--assistant .message__content");
   await expect(assistantContent.first()).toContainText("你问的是", { timeout: 15_000 });
+  await expect(assistantContent.first()).not.toContainText("回答完毕");
   const composer = page.locator(".composer");
   const pause = composer.getByRole("button", { name: "暂停" });
   await expect(composer.getByRole("button", { name: "发送" })).toHaveCount(0);
@@ -50,6 +51,7 @@ test("停止：部分正文保留、状态「已停止」、不再继续生成",
 
   const assistantContent = page.locator(".message--assistant .message__content");
   await expect(assistantContent.first()).toContainText("你问的是", { timeout: 15_000 });
+  await expect(assistantContent.first()).not.toContainText("回答完毕");
   await page.getByRole("button", { name: "暂停" }).click();
   await expect(page.locator(".message__status")).toContainText("已暂停");
   await page.getByRole("button", { name: "停止" }).click();
