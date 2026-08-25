@@ -149,28 +149,13 @@ test("全局研究图谱：两个会话的根节点进入同一真实观察结�
   const secondNode = page.getByTestId("global-map-canvas").getByRole("button", { name: /全局地图测试二/ });
   await expect(secondNode).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("global-map-dark-reduced-motion.png"), fullPage: true });
-  const canvasNodes = page.getByTestId("global-map-canvas").locator("[data-node-id]");
-  let openTarget: Locator | undefined;
-  for (let attempt = 0; attempt < 4 && !openTarget; attempt += 1) {
-    for (let index = 0; index < await canvasNodes.count(); index += 1) {
-      const candidate = canvasNodes.nth(index);
-      await candidate.scrollIntoViewIfNeeded();
-      const bounds = await candidate.boundingBox();
-      const nodeId = await candidate.getAttribute("data-node-id");
-      if (!bounds || !nodeId) continue;
-      const hitNodeId = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest("[data-node-id]")?.getAttribute("data-node-id"), {
-        x: bounds.x + bounds.width / 2,
-        y: bounds.y + bounds.height / 2,
-      });
-      if (hitNodeId === nodeId) {
-        openTarget = candidate;
-        break;
-      }
-    }
-    if (!openTarget) await page.getByTestId("global-map-canvas").getByRole("button", { name: "缩小地图" }).click();
-  }
-  expect(openTarget, "缩放后应至少有一个节点不被工具坞或提示遮挡").toBeDefined();
-  await openTarget!.dblclick();
+  // 上面的持久现场故意把节点平移到视口边缘；双击契约从默认地图入口独立验证，
+  // 避免把“控件遮住已平移节点”误报成双击失效。
+  await page.goto("/map");
+  const mouseOpenTarget = page.getByTestId("global-map-canvas").getByRole("button", { name: /全局地图测试一/ });
+  await expect(mouseOpenTarget).toBeVisible();
+  await waitForEntryAnimation(page);
+  await mouseOpenTarget.dblclick();
   await expect(page).toHaveURL(/\/nodes\/[^/]+$/);
   await page.goto("/map");
   const reopenedFirstNode = page.getByTestId("global-map-canvas").getByRole("button", { name: /全局地图测试一/ });
