@@ -23,6 +23,8 @@ if (-not $packageJson) {
   $package = $packageJson | ConvertFrom-Json
   if (-not $package.scripts.test) { Add-Issue "error" "missing-tests" "package.json has no test script" }
   if ($package.scripts.'dev:desktop' -or $package.scripts.'test:gui') { Add-Issue "error" "retired-desktop-script" "Electron scripts remain in package.json" }
+  $ralphScripts = @($package.scripts.PSObject.Properties.Name | Where-Object { $_ -like 'ralph:*' })
+  if ($ralphScripts.Count -gt 0) { Add-Issue "error" "retired-ralph-script" "Retired local Markdown Issue runner scripts remain in package.json" }
   if ($package.devDependencies.electron -or $package.devDependencies.'electron-builder' -or $package.devDependencies.'@electron/packager') {
     Add-Issue "error" "retired-electron-dependency" "Electron dependencies remain in package.json"
   }
@@ -37,6 +39,11 @@ try {
 
 if (Test-Path -LiteralPath (Join-Path $Root "apps\desktop-capture")) {
   Add-Issue "error" "retired-desktop-source" "apps/desktop-capture must stay removed"
+}
+
+$ralphSource = Join-Path $Root "scripts\ralph"
+if ((Test-Path -LiteralPath $ralphSource) -and @(Get-ChildItem -LiteralPath $ralphSource -Recurse -File).Count -gt 0) {
+  Add-Issue "error" "retired-ralph-source" "scripts/ralph must stay removed; parallel work uses globally visible tasks and unified integration"
 }
 
 $http = Read-ProjectFile "apps\api\src\http.ts"
