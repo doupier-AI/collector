@@ -8,12 +8,94 @@ const PORT_BASE = Number(process.env.E2E_PORT_BASE ?? "43211");
 const SHUTDOWN_TOKEN = process.env.E2E_SHUTDOWN_TOKEN ?? randomBytes(32).toString("base64url");
 process.env.E2E_SHUTDOWN_TOKEN = SHUTDOWN_TOKEN;
 
+type ProjectName = "chromium" | "chromium-nomodel" | "chromium-autofusion" | "chromium-visual" | "chromium-hint-quiet" | "chromium-hint";
+type SuiteName = "full" | "functional" | "special" | "visual";
+
+const SUITES: Record<SuiteName, readonly ProjectName[]> = {
+  full: ["chromium", "chromium-nomodel", "chromium-autofusion", "chromium-visual", "chromium-hint-quiet", "chromium-hint"],
+  functional: ["chromium"],
+  special: ["chromium-nomodel", "chromium-autofusion", "chromium-hint-quiet", "chromium-hint"],
+  visual: ["chromium-visual"],
+} as const;
+
+const requestedSuite = process.env.E2E_SUITE ?? "full";
+if (!(requestedSuite in SUITES)) throw new Error(`Unknown E2E_SUITE: ${requestedSuite}`);
+const selectedProjects = new Set<ProjectName>(SUITES[requestedSuite as SuiteName]);
+
+const harnesses = [
+  // 页面、静态资源、/v1 与 SSE 均由 API 测试进程同源提供。
+  {
+    project: "chromium",
+    command: "node e2e/api-harness.mjs",
+    url: `http://127.0.0.1:${PORT_BASE}/health`,
+    reuseExistingServer: false,
+    env: { E2E_API_PORT: String(PORT_BASE), E2E_MODEL: "fake" },
+    stdout: "ignore" as const,
+    stderr: "pipe" as const,
+  },
+  {
+    // 未配置模型的独立路径。
+    project: "chromium-nomodel",
+    command: "node e2e/api-harness.mjs",
+    url: `http://127.0.0.1:${PORT_BASE + 1}/health`,
+    reuseExistingServer: false,
+    env: { E2E_API_PORT: String(PORT_BASE + 1), E2E_MODEL: "none" },
+    stdout: "ignore" as const,
+    stderr: "pipe" as const,
+  },
+  {
+    // 自动融合高置信路径：相似性核验恒判为 identity。
+    project: "chromium-autofusion",
+    command: "node e2e/api-harness.mjs",
+    url: `http://127.0.0.1:${PORT_BASE + 2}/health`,
+    reuseExistingServer: false,
+    env: { E2E_API_PORT: String(PORT_BASE + 2), E2E_MODEL: "fake", E2E_SIMILARITY_RELATION: "identity" },
+    stdout: "ignore" as const,
+    stderr: "pipe" as const,
+  },
+  {
+    // 像素基线独享数据库，不受其他设置测试污染。
+    project: "chromium-visual",
+    command: "node e2e/api-harness.mjs",
+    url: `http://127.0.0.1:${PORT_BASE + 3}/health`,
+    reuseExistingServer: false,
+    env: { E2E_API_PORT: String(PORT_BASE + 3), E2E_MODEL: "fake" },
+    stdout: "ignore" as const,
+    stderr: "pipe" as const,
+  },
+  {
+    // 关联提示安静路径：产品价值评估恒判不足。
+    project: "chromium-hint-quiet",
+    command: "node e2e/api-harness.mjs",
+    url: `http://127.0.0.1:${PORT_BASE + 4}/health`,
+    reuseExistingServer: false,
+    env: { E2E_API_PORT: String(PORT_BASE + 4), E2E_MODEL: "fake", E2E_SIMILARITY_RELATION: "unrelated", E2E_ASSOCIATION_HINT: "1" },
+    stdout: "ignore" as const,
+    stderr: "pipe" as const,
+  },
+  {
+    // 关联提示正向路径：独享数据库并开启提示扫描。
+    project: "chromium-hint",
+    command: "node e2e/api-harness.mjs",
+    url: `http://127.0.0.1:${PORT_BASE + 5}/health`,
+    reuseExistingServer: false,
+    env: { E2E_API_PORT: String(PORT_BASE + 5), E2E_MODEL: "fake", E2E_ASSOCIATION_HINT: "1" },
+    stdout: "ignore" as const,
+    stderr: "pipe" as const,
+  },
+];
+
+const selectedHarnesses = harnesses.filter(({ project }) => selectedProjects.has(project as ProjectName));
+process.env.E2E_SERVER_OFFSETS = selectedHarnesses
+  .map(({ env }) => Number(env.E2E_API_PORT) - PORT_BASE)
+  .join(",");
+
 export default defineConfig({
   testDir: "e2e",
   globalSetup: "./e2e/global-setup.ts",
   workers: 1,
   timeout: 30_000,
-  outputDir: "test-results",
+  outputDir: process.env.E2E_OUTPUT_DIR ?? "test-results",
   reporter: [["list"]],
   // #44 视觉基线：snapshot 去掉平台后缀（本仓库固定 win32+chromium），
   // 像素比较 1% 容差（系统字体渲染小抖动）与 0.2 阈值（防噪声误报）。
@@ -32,65 +114,7 @@ export default defineConfig({
     // 个别确有需要的用例可用 test.use({ actionTimeout }) 或动作参数局部覆盖。真实验收侧见 playwright.acceptance.config.ts。
     actionTimeout: 15_000,
   },
-  webServer: [
-    // 页面、静态资源、/v1 与 SSE 均由 API 测试进程同源提供，不再启动 Vite preview
-    {
-      command: "node e2e/api-harness.mjs",
-      url: `http://127.0.0.1:${PORT_BASE}/health`,
-      reuseExistingServer: false,
-      env: { E2E_API_PORT: String(PORT_BASE), E2E_MODEL: "fake" },
-      stdout: "ignore",
-      stderr: "pipe",
-    },
-    {
-      command: "node e2e/api-harness.mjs",
-      url: `http://127.0.0.1:${PORT_BASE + 1}/health`,
-      reuseExistingServer: false,
-      env: { E2E_API_PORT: String(PORT_BASE + 1), E2E_MODEL: "none" },
-      stdout: "ignore",
-      stderr: "pipe",
-    },
-    // #32 自动融合高置信路径：相似性核验恒判为 identity（同一实体）→ 自动融合。
-    {
-      command: "node e2e/api-harness.mjs",
-      url: `http://127.0.0.1:${PORT_BASE + 2}/health`,
-      reuseExistingServer: false,
-      env: { E2E_API_PORT: String(PORT_BASE + 2), E2E_MODEL: "fake", E2E_SIMILARITY_RELATION: "identity" },
-      stdout: "ignore",
-      stderr: "pipe",
-    },
-    // 视觉基线独立 harness：z-visual-baseline 等顺序敏感的像素基线必须跑在
-    // 独享数据库上，避免 settings-ai-model 等共享库配置测试改变服务端状态
-    // （modelError 置位→页头文案变化→整页像素偏移）导致基线失配（#61 复盘）。
-    {
-      command: "node e2e/api-harness.mjs",
-      url: `http://127.0.0.1:${PORT_BASE + 3}/health`,
-      reuseExistingServer: false,
-      env: { E2E_API_PORT: String(PORT_BASE + 3), E2E_MODEL: "fake" },
-      stdout: "ignore",
-      stderr: "pipe",
-    },
-    // #69/#70 临时关联提示安静路径：独享库 + 产品价值评估恒判不足（unrelated），
-    // 与共享库中其他套件的内容和对比型核验互不干扰。
-    {
-      command: "node e2e/api-harness.mjs",
-      url: `http://127.0.0.1:${PORT_BASE + 4}/health`,
-      reuseExistingServer: false,
-      env: { E2E_API_PORT: String(PORT_BASE + 4), E2E_MODEL: "fake", E2E_SIMILARITY_RELATION: "unrelated", E2E_ASSOCIATION_HINT: "1" },
-      stdout: "ignore",
-      stderr: "pipe",
-    },
-    // #69/#70 临时关联提示正向路径：独享库 + 对比型价值评估 + 接线提示扫描。
-    // 专项假评估只接受共享独占主题的候选，避免跨场景通用措辞污染数量与像素基线。
-    {
-      command: "node e2e/api-harness.mjs",
-      url: `http://127.0.0.1:${PORT_BASE + 5}/health`,
-      reuseExistingServer: false,
-      env: { E2E_API_PORT: String(PORT_BASE + 5), E2E_MODEL: "fake", E2E_ASSOCIATION_HINT: "1" },
-      stdout: "ignore",
-      stderr: "pipe",
-    },
-  ],
+  webServer: selectedHarnesses.map(({ project: _project, ...server }) => server),
   projects: [
     {
       name: "chromium",
@@ -132,5 +156,5 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"], baseURL: `http://127.0.0.1:${PORT_BASE + 5}` },
       testMatch: /z-association-hint\.spec\.ts/,
     },
-  ],
+  ].filter(({ name }) => selectedProjects.has(name as ProjectName)),
 });

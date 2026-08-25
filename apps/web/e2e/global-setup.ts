@@ -3,9 +3,17 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const PORT_BASE = Number(process.env.E2E_PORT_BASE ?? "43211");
-const SERVER_COUNT = 6;
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 const runtimeDir = join(dirname(fileURLToPath(import.meta.url)), ".runtime");
+
+function selectedServerOffsets(): number[] {
+  const raw = process.env.E2E_SERVER_OFFSETS ?? "0,1,2,3,4,5";
+  const offsets = raw.split(",").filter(Boolean).map(Number);
+  if (offsets.length === 0 || offsets.some((offset) => !Number.isInteger(offset) || offset < 0 || offset > 5)) {
+    throw new Error(`Invalid E2E_SERVER_OFFSETS: ${raw}`);
+  }
+  return offsets;
+}
 
 async function waitUntilUnavailable(url: string): Promise<void> {
   const deadline = Date.now() + SHUTDOWN_TIMEOUT_MS;
@@ -42,7 +50,7 @@ export default function globalSetup(): () => Promise<void> {
 
   return async () => {
     await Promise.all(
-      Array.from({ length: SERVER_COUNT }, (_, index) => shutdownServer(PORT_BASE + index, token)),
+      selectedServerOffsets().map((offset) => shutdownServer(PORT_BASE + offset, token)),
     );
   };
 }
