@@ -152,7 +152,11 @@ export async function selectAnswerText(page: Page, text: string): Promise<void> 
  * 选区由调用方以任意方式建立（selectAnswerText / 阅读页 evaluate / 真实拖选）。
  */
 export async function citeCurrentSelection(page: Page): Promise<ReturnType<Page["getByTestId"]>> {
-  await page.getByTestId("floating-capsule-cite").click();
+  // 选区刚变化时，旧胶囊会保留 120ms 淡出：它的 aria-hidden=true、tabIndex=-1 且
+  // pointer-events:none。按 test id 直接取按钮可能命中这个不可交互副本；从可访问
+  // 工具栏取按钮会自然等待新的可操作入口，仍保持真实指针点击，不用 force 绕过界面。
+  const citeButton = page.getByRole("toolbar", { name: "选区操作" }).getByRole("button", { name: "引用" });
+  await citeButton.click();
   const capsule = page.getByTestId("selection-capsule");
   await expect(capsule).toBeVisible();
   return capsule;
