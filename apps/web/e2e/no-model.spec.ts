@@ -324,6 +324,10 @@ test("未配置模型：导入长文获得规则锚点，章节导航可用且�
 
   // SQLite 核对：章节任务完成、规则来源、可重试
   const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
+  await expect.poll(() => {
+    const task = readResearchImportTables(dbPath).chapterTasks.find((row) => row.sessionId === created.id);
+    return task?.status;
+  }, { timeout: 15_000 }).toBe("completed");
   const tables = readResearchImportTables(dbPath);
   const chapterTasks = tables.chapterTasks.filter((row) => row.sessionId === created.id);
   expect(chapterTasks).toHaveLength(1);

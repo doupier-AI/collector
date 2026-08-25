@@ -7,7 +7,7 @@ import test from "node:test";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import JSZip from "jszip";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer } from "@collector/api";
-import { listenOnFetchSafePort } from "./test-http-server.js";
+import { fetchLoopback, listenOnFetchSafePort } from "./test-http-server.js";
 
 async function createHarness(autoRunResearchImports = true) {
   const root = await mkdtemp(join(tmpdir(), "collector-import-"));
@@ -48,7 +48,7 @@ function headers(token: string, key?: string, fileName?: string, contentType = "
 }
 
 async function createSession(base: string, token: string) {
-  const response = await fetch(`${base}/v1/research-sessions`, {
+  const response = await fetchLoopback(`${base}/v1/research-sessions`, {
     method: "POST", headers: headers(token, randomUUID()), body: "{}",
   });
   assert.equal(response.status, 201);
@@ -56,14 +56,14 @@ async function createSession(base: string, token: string) {
 }
 
 async function upload(base: string, token: string, sessionId: string, key: string, fileName: string, mimeType: string, bytes: Uint8Array) {
-  return fetch(`${base}/v1/research-sessions/${sessionId}/imports`, {
+  return fetchLoopback(`${base}/v1/research-sessions/${sessionId}/imports`, {
     method: "POST", headers: headers(token, key, fileName, mimeType), body: Buffer.from(bytes),
   });
 }
 
 async function waitForImport(base: string, token: string, taskId: string, status: "completed" | "failed") {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const response = await fetch(`${base}/v1/research-imports/${taskId}`, { headers: headers(token) });
+    const response = await fetchLoopback(`${base}/v1/research-imports/${taskId}`, { headers: headers(token) });
     assert.equal(response.status, 200);
     const task = await response.json() as { status: string; [key: string]: unknown };
     if (task.status === status) return task;

@@ -202,9 +202,13 @@ test.describe("选区捕获与浮动胶囊", () => {
       selection.removeAllRanges();
       selection.addRange(range);
     });
-    await page.keyboard.down("Shift");
-    await page.keyboard.up("ArrowRight");
-    await page.keyboard.up("Shift");
+    await page.evaluate(() => {
+      document.dispatchEvent(new KeyboardEvent("keyup", {
+        key: "ArrowRight",
+        shiftKey: true,
+        bubbles: true,
+      }));
+    });
 
     const floating = page.getByTestId("floating-selection-capsule");
     await expect(floating).toBeVisible();

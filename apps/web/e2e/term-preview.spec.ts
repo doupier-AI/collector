@@ -48,8 +48,11 @@ test("H3c 悬停生成一次预览、离开后恢复进度，并用预览内容�
   await expect(popover).toBeVisible();
   await expect.poll(() => previewPosts.length).toBe(1);
 
+  await expect.poll(async () => {
+    const task = await apiJson<{ status: string }>(page, `/v1/research-term-preview-tasks/${accepted.preview.id}`);
+    return task.status;
+  }, { timeout: 15_000 }).toBe("completed");
   const preview = await apiJson<{ content: string; status: string }>(page, `/v1/research-term-preview-tasks/${accepted.preview.id}`);
-  expect(preview.status).toBe("completed");
   expect(preview.content.length).toBeGreaterThan(0);
 
   await popover.getByRole("button", { name: "进入这个概念" }).click();

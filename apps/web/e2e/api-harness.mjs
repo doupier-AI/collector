@@ -285,6 +285,13 @@ const fakeProvider = {
           ? [`你问的是「${markedShort}」（第二版）。`, "\n\n重新生成的回答：本地优先会先把输入保存在本机。", "\n\n第二版渐进事件把后续内容写进同一条消息，回答完毕。"]
           : [`你问的是「${markedShort}」。`, "\n\n本地优先会先把输入保存在本机，再据此组织后续研究。", "\n\n渐进事件把后续内容写进同一条消息，回答完毕。"];
     const segments = request.resumeFrom ? fullSegments.slice(1) : fullSegments;
+    // 生成控制用例需要在任意 CI 规格下都留出可操作的真实流中窗口；只对专用问题
+    // 延长分段间隔，避免拖慢或改变其他浏览器夹具的行为。
+    // 需要操作或刷新中间态的用例使用专用慢流窗口。通用 250ms 在 CI 上可能短于
+    // 两次 Playwright 断言之间的调度间隔，导致用例观察到终态而误判为恢复失败。
+    const requiresObservableIntermediateState = question.startsWith("验证生成控制：")
+      || question === "断线时还能看到什么？";
+    const segmentDelayMs = requiresObservableIntermediateState ? 2_000 : 250;
     // 前导窗口分路径：深入研究子节点用旧 400ms（多级生长链测试在完成态到达前就会采样选区，
     // 前导过长会把整个生成推后、让采样落进无可引用块的流式窗口）；首问用 1500ms 给导航/视图/
     // SSE 连接留足余量，保证中间态可观测。
@@ -312,7 +319,7 @@ const fakeProvider = {
       }
       emitted += 1;
       yield segment;
-      await sleep(250);
+      await sleep(segmentDelayMs);
     }
     request.onStreamDone?.({ finishReason: "stop" });
   },

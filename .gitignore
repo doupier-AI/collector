@@ -8,7 +8,7 @@ dist-tests/
 apps/browser-extension/build/
 release/
 apps/web/dist/
-apps/web/test-results/
+apps/web/test-results*/
 apps/web/playwright-report/
 apps/web/e2e-artifacts/
 apps/web/e2e/.runtime/
