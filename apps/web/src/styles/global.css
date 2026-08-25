@@ -876,6 +876,7 @@ button {
   font-weight: 650;
   opacity: 0.62;
   paint-order: stroke;
+  pointer-events: none;
   stroke: var(--color-surface);
   stroke-width: 4px;
   transition: opacity var(--duration-fast) var(--ease-out);

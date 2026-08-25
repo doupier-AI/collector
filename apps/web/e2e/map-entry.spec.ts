@@ -166,6 +166,38 @@ test("全局研究图谱：两个会话的根节点进入同一真实观察结�
   expect(browserIssues.issues, browserIssues.issues.join("\n")).toEqual([]);
 });
 
+test("相邻节点文字覆盖目标核心时，指针仍命中目标节点", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await pairAndOpen(page, "/research/new");
+  await createSession(page, "地图命中测试一：目标节点");
+  await createSession(page, "地图命中测试二：覆盖文字");
+  await page.goto("/map");
+
+  const canvas = page.getByTestId("global-map-canvas");
+  await waitForEntryAnimation(page);
+  const target = canvas.getByRole("button", { name: /地图命中测试一/ });
+  const blocker = canvas.getByRole("button", { name: /地图命中测试二/ });
+  await expect(target).toBeVisible();
+  await expect(blocker).toBeVisible();
+
+  const hitNodeIds = await target.evaluate((targetElement, blockerElement) => {
+    targetElement.setAttribute("transform", "translate(500 320)");
+    blockerElement.setAttribute("transform", "translate(500 293)");
+    const targetId = targetElement.getAttribute("data-node-id");
+    const core = targetElement.querySelector(".global-map__node-core")!.getBoundingClientRect();
+    const hits = new Set<string | null>();
+    for (const xRatio of [0.25, 0.5, 0.75]) {
+      for (const yRatio of [0.25, 0.5, 0.75]) {
+        const hit = document.elementFromPoint(core.left + core.width * xRatio, core.top + core.height * yRatio);
+        hits.add(hit?.closest("[data-node-id]")?.getAttribute("data-node-id") ?? null);
+      }
+    }
+    return { targetId, hits: [...hits] };
+  }, await blocker.elementHandle());
+
+  expect(hitNodeIds.hits, "目标节点核心的任意采样点都不得被相邻节点文字截获").toEqual([hitNodeIds.targetId]);
+});
+
 test("#68 地图 entry：专注链、节点打开、浏览器返回和刷新均恢复各自现场", async ({ page }) => {
   const browserIssues = trackBrowserIssues(page);
   await page.setViewportSize({ width: 1440, height: 900 });

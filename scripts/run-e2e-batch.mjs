@@ -11,6 +11,7 @@ const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const npmExecPath = process.env.npm_execpath;
 const basePort = Number(process.env.E2E_PORT_BASE ?? "43211");
 const functionalShardCount = Number(process.env.E2E_FUNCTIONAL_SHARDS ?? "3");
+const trackConcurrency = Number(process.env.E2E_TRACK_CONCURRENCY ?? "2");
 const playwrightArgs = process.argv.slice(2);
 
 if (!npmExecPath) {
@@ -20,6 +21,10 @@ if (!npmExecPath) {
 
 if (!Number.isInteger(functionalShardCount) || functionalShardCount < 1 || functionalShardCount > 6) {
   console.error(`E2E_FUNCTIONAL_SHARDS 必须在 1..6，当前为 ${process.env.E2E_FUNCTIONAL_SHARDS ?? "3"}`);
+  process.exit(2);
+}
+if (!Number.isInteger(trackConcurrency) || trackConcurrency < 1 || trackConcurrency > 5) {
+  console.error(`E2E_TRACK_CONCURRENCY 必须在 1..5，当前为 ${process.env.E2E_TRACK_CONCURRENCY ?? "2"}`);
   process.exit(2);
 }
 const highestPort = basePort + functionalShardCount * 10 + 13;
@@ -46,9 +51,9 @@ const tracks = [
   { id: "visual", suite: "visual", args: playwrightArgs, portBase: basePort + (functionalShardCount + 1) * 10 },
 ];
 
-console.log(`\n── E2E 并行轨道：${tracks.map(({ id }) => id).join("、")}`);
+console.log(`\n── E2E 有界并行（最多 ${trackConcurrency} 条）：${tracks.map(({ id }) => id).join("、")}`);
 
-const results = await Promise.all(tracks.map((track) => new Promise((resolve) => {
+const runTrack = (track) => new Promise((resolve) => {
   const child = spawn(process.execPath, ["scripts/run-e2e.mjs", track.suite, ...track.args], {
     cwd: repositoryRoot,
     env: {
@@ -61,7 +66,17 @@ const results = await Promise.all(tracks.map((track) => new Promise((resolve) =>
   });
   child.on("error", (error) => resolve({ id: track.id, code: 1, error }));
   child.on("exit", (code) => resolve({ id: track.id, code: code ?? 1 }));
-})));
+});
+
+const results = new Array(tracks.length);
+let nextTrackIndex = 0;
+await Promise.all(Array.from({ length: Math.min(trackConcurrency, tracks.length) }, async () => {
+  while (nextTrackIndex < tracks.length) {
+    const index = nextTrackIndex;
+    nextTrackIndex += 1;
+    results[index] = await runTrack(tracks[index]);
+  }
+}));
 
 const failed = results.filter(({ code }) => code !== 0);
 for (const result of results) {
