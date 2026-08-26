@@ -84,7 +84,7 @@ async function waitForCompletedMessages(dbPath: string, nodeId: string, minCount
   throw new Error(`等待节点 ${nodeId} 已完成消息落库超时（要求 ≥${minCount} 条）`);
 }
 
-test("#31 确认式融合：弱提示 → 确认 → 融合节点 → 章节与引用回溯 → 原节点不变", async ({ page }) => {
+test("#31 确认式融合：核验 → 正式确认 → 融合节点 → 章节与引用回溯 → 原节点不变", async ({ page }) => {
   const { sessionId, rootNodeId } = await openSession(page);
   const childNodeId = await growSharedConceptChild(page, sessionId);
   const dbPath = joinDataDir(await readDataDir(apiPortForPage(page)));
@@ -110,21 +110,14 @@ test("#31 确认式融合：弱提示 → 确认 → 融合节点 → 章节与�
   const rootEvidence = await readNodeEvidence(page, rootNodeId, 1);
   const childEvidence = await readNodeEvidence(page, childNodeId, 0);
 
-  // 刷新根节点页：pending 提案呈现，点「融合为节点」。
-  await page.reload();
-  await expect(page.getByText("熟悉的概念再现，节点可融合").first()).toBeVisible({ timeout: 15_000 });
-  await page.getByText("熟悉的概念再现，节点可融合").first().click();
-  await page.getByRole("button", { name: "融合为节点" }).first().click();
-
-  // 跳转到融合节点页并等待生成完成。
-  await page.waitForURL(
-    (url) => {
-      const match = url.pathname.match(/^\/nodes\/([^/]+)$/);
-      return Boolean(match && match[1] && match[1] !== rootNodeId && match[1] !== childNodeId);
-    },
-    { timeout: 10_000 },
-  );
-  const fusionNodeId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
+  // T01 的当前节点页不再展示正式融合入口；正式融合仍是独立的确认式写入路径。
+  const confirmed = await page.request.post(`/v1/research-fusion-proposals/${encodeURIComponent(proposalId)}/fuse`, {
+    data: { idempotencyKey: `e2e-confirm:${proposalId}` },
+  });
+  expect(confirmed.ok()).toBeTruthy();
+  const { node: fusionNode } = (await confirmed.json()) as { node: { id: string } };
+  const fusionNodeId = fusionNode.id;
+  await page.goto(`/nodes/${encodeURIComponent(fusionNodeId)}`);
   await expect(page.getByRole("heading", { name: "融合节点" })).toBeVisible({ timeout: 10_000 });
 
   // 验收 7：共同核心 / 差异 / 综合推导 章节（#91 起短融合正文渲染为轮次卡片连续正文，汇总断言）。
