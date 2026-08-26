@@ -2435,6 +2435,8 @@ export interface ResearchGraphObservationInput {
   includeAssociationHints?: true;
   /** 只返回触及该节点的候选详情；总数与卫星计数同步限定为该子集。 */
   associationCandidateNodeId?: string;
+  /** 临时融合只在用户明确开启 B 面观察时投影；默认地图不携带候选正文或来源连接。 */
+  includeTemporaryFusions?: true;
 }
 
 export type ResearchGraphObservationConnectivity = "default" | "focus" | "connected" | "unconnected";
@@ -2473,6 +2475,10 @@ export interface ResearchGraphObservation {
   activeCandidateCount: number;
   /** 仅 includeAssociationHints=true 时返回，避免普通地图观察携带候选证据详情。 */
   associationHints?: ResearchAssociationHintRecord[];
+  /** 全局待核验候选数；关闭临时层时只提供这个数量，不返回 B 面投影。 */
+  temporaryFusionCount?: number;
+  /** 仅 includeTemporaryFusions=true 时返回，与 A 面共享同一坐标系但不属于永久连通图。 */
+  temporaryFusions?: ResearchTemporaryFusionMapNode[];
 }
 
 // ── Cross-session research search (Issue #67) ─────────────────────
@@ -3074,6 +3080,30 @@ export interface ResearchTemporaryFusionBundle {
   node: ResearchTemporaryFusionNodeRecord;
   activeDraft: ResearchFusionDraftVersionRecord;
   candidateSources: ResearchCandidateSourceConnectionRecord[];
+}
+
+/** 临时融合在列表、地图和搜索中共用的只读摘要；正文只经详情接口读取。 */
+export interface ResearchTemporaryFusionListItem {
+  node: ResearchTemporaryFusionNodeRecord;
+  label: string;
+  evidenceStatus: ResearchFusionEvidenceStatus;
+  candidateSources: ResearchCandidateSourceConnectionRecord[];
+}
+
+/** B 面地图投影。它不是 ResearchNodeRecord，不能作为永久边或正式连通路径的端点。 */
+export interface ResearchTemporaryFusionMapNode extends ResearchTemporaryFusionListItem {}
+
+export interface ResearchTemporaryFusionSearchInput {
+  query: string;
+  limit?: number;
+}
+
+export interface ResearchTemporaryFusionSearchMatch extends ResearchTemporaryFusionListItem {
+  preview: string;
+}
+
+export interface ResearchTemporaryFusionSearchResponse {
+  matches: ResearchTemporaryFusionSearchMatch[];
 }
 
 /** 统一客户端可消费的目标模型快照；不代表对应 HTTP 路径已在 T01 开放。 */

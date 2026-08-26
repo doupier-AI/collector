@@ -23,6 +23,7 @@ import {
   type ResearchTermPreviewInput,
   type ResearchTermPreviewRecord,
   type ResearchTurnAccepted,
+  type ResearchTemporaryFusionMapNode,
 } from "@collector/capture-contracts";
 import type { DeepResearchStore } from "./store.js";
 import { citedGroundingSources, DEEP_RESEARCH_PROMPT_VERSION, RESEARCH_CHAT_PROMPT_VERSION, isTrashed, type ResearchSessionService, type ResearchTurnOptions } from "./research.js";
@@ -481,7 +482,7 @@ export class NodeGrowthService {
     const activeAssociationHints = this.store.listAssociationHints("active");
     const allEdges = this.store.listAllResearchEdges();
     const evidenceHealthByFusionNodeId = deriveFusionEvidenceHealth(nodes, allEdges);
-    return buildResearchGraphObservation(
+    const observation = buildResearchGraphObservation(
       nodes,
       allEdges,
       sessions,
@@ -501,6 +502,27 @@ export class NodeGrowthService {
         },
       },
     );
+    const temporaryFusions = input.includeTemporaryFusions
+      ? this.listTemporaryFusionMapNodes()
+      : undefined;
+    return {
+      ...observation,
+      temporaryFusionCount: this.store.listTemporaryFusionNodes().length,
+      ...(temporaryFusions ? { temporaryFusions } : {}),
+    };
+  }
+
+  private listTemporaryFusionMapNodes(): ResearchTemporaryFusionMapNode[] {
+    return this.store.listTemporaryFusionNodes().flatMap((node) => {
+      const bundle = this.store.getTemporaryFusionBundle(node.id);
+      if (!bundle) return [];
+      return [{
+        node: bundle.node,
+        label: temporaryFusionLabel(bundle.activeDraft.body),
+        evidenceStatus: bundle.activeDraft.evidenceStatus,
+        candidateSources: bundle.candidateSources,
+      }];
+    });
   }
 
   private scheduleTask(id: string): void {
@@ -518,6 +540,11 @@ function defaultFirstTurnContent(selection: ResearchSelectionRecord): string {
 function excerptText(text: string, maxCharacters: number): string {
   const trimmed = text.trim().replace(/\s+/g, " ");
   return trimmed.length > maxCharacters ? `${trimmed.slice(0, maxCharacters)}…` : trimmed;
+}
+
+function temporaryFusionLabel(body: string): string {
+  const firstLine = body.split(/\r?\n/).map((line) => line.replace(/^#{1,6}\s*/, "").trim()).find(Boolean) ?? "临时融合";
+  return excerptText(firstLine, TREE_LABEL_CHARACTERS);
 }
 
 export class DeepResearchNotFoundError extends Error {}

@@ -8,6 +8,7 @@ import {
   type ResearchGraphObservationConnectivity,
   type ResearchGraphObservationNode,
   type ResearchPermanentEdgeKind,
+  type ResearchTemporaryFusionMapNode,
 } from "@collector/capture-contracts";
 import { stableNodePath } from "../../app/paths";
 import { createStableOrganicGraphLayout, type GraphPoint } from "./organicGraphLayout";
@@ -224,11 +225,13 @@ interface GlobalResearchMapProps {
   onSurfaceInteraction?: (restoreToolFocus: boolean) => void;
   /** #70 临时观察只借用当前坐标绘制，不参与永久关系和布局。 */
   associationHints?: readonly ResearchAssociationHintRecord[];
+  /** T02 B 面节点只作为叠加观察绘制，绝不进入 observation.edges 或正式布局。 */
+  temporaryFusions?: readonly ResearchTemporaryFusionMapNode[];
   candidateMode?: boolean;
   onOpenCandidates?: (scope: MapAssociationCandidateScene, trigger: Element) => void;
 }
 
-export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initialScene, onSceneChange, onOpenNode, nodeHref = stableNodePath, relationshipKinds = observation.appliedRelationshipKinds, onRelationshipKindToggle, filters = DEFAULT_RESEARCH_MAP_FILTER_STATE, preserveExistingLayout, revealNodeId, revealRequestId, onRevealHandled, search, presentation = "canvas", immersive = false, sceneKey, onSurfaceInteraction, associationHints = [], candidateMode = false, onOpenCandidates }: GlobalResearchMapProps) {
+export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initialScene, onSceneChange, onOpenNode, nodeHref = stableNodePath, relationshipKinds = observation.appliedRelationshipKinds, onRelationshipKindToggle, filters = DEFAULT_RESEARCH_MAP_FILTER_STATE, preserveExistingLayout, revealNodeId, revealRequestId, onRevealHandled, search, presentation = "canvas", immersive = false, sceneKey, onSurfaceInteraction, associationHints = [], temporaryFusions = [], candidateMode = false, onOpenCandidates }: GlobalResearchMapProps) {
   const filtering = preserveExistingLayout ?? !isDefaultResearchMapFilterState(filters);
   const layoutRef = useRef<ReturnType<typeof createStableOrganicGraphLayout> | undefined>(undefined);
   /** 用户拖动/键盘移动确认后的位置覆盖，随 Map Scene 持久化。 */
@@ -282,6 +285,15 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
     if (interactivePositions) for (const [id, point] of interactivePositions) merged.set(id, point);
     return merged;
   }, [enteringPositions, interactivePositions, orchestrationPositions, persistPositions]);
+  /** 临时节点锚在正式来源的几何中心附近；位置只在显示层计算，不写地图现场或业务数据。 */
+  const temporaryFusionPositions = useMemo(() => new Map(temporaryFusions.map((fusion, index) => {
+    const sourcePoints = fusion.candidateSources.map((source) => positions.get(source.sourceNodeId)).filter((point): point is GraphPoint => Boolean(point));
+    const center = sourcePoints.length
+      ? sourcePoints.reduce((sum, point) => ({ x: sum.x + point.x, y: sum.y + point.y }), { x: 0, y: 0 })
+      : { x: layout.world.width / 2, y: layout.world.height / 2 };
+    const denominator = Math.max(1, sourcePoints.length);
+    return [fusion.node.id, { x: center.x / denominator + 26 + (index % 3) * 14, y: center.y / denominator - 26 - (index % 2) * 16 }] as const;
+  })), [layout.world.height, layout.world.width, positions, temporaryFusions]);
   // Map Scene 为筛选恢复保留不可见节点坐标；所有直接交互共用同一份
   // 可见节点物理快照，避免隐藏节点占用被动预算或被悄悄写回。
   const visibleNodeIds = useMemo(() => new Set(observation.nodes.map((item) => item.node.id)), [observation.nodes]);
@@ -827,6 +839,20 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, initi
             if (!from || !to) return null;
             return <path key={hint.id} data-candidate-id={hint.id} className="global-map__candidate-edge" d={edgeCurvedPath(from, to, `candidate:${hint.id}`)} />;
           }) : null}
+          {temporaryFusions.map((fusion) => {
+            const position = temporaryFusionPositions.get(fusion.node.id);
+            if (!position) return null;
+            return <g key={fusion.node.id} className="global-map__temporary-fusion" data-temporary-fusion-id={fusion.node.id} role="img" aria-label={`${fusion.label}，临时融合，${fusion.evidenceStatus === "verified" ? "证据已核验" : "等待核验"}`}>
+              {fusion.candidateSources.map((source) => {
+                const sourcePosition = positions.get(source.sourceNodeId);
+                return sourcePosition ? <path key={source.id} className="global-map__temporary-fusion-edge" d={edgeCurvedPath(sourcePosition, position, `temporary:${fusion.node.id}:${source.id}`)} /> : null;
+              })}
+              <g transform={`translate(${position.x} ${position.y})`}>
+                <rect x="-13" y="-10" width="26" height="20" rx="5" />
+                <text textAnchor="middle" y="4" aria-hidden="true">临时</text>
+              </g>
+            </g>;
+          })}
           {visualEdges.map(({ id, fromNodeId, toNodeId, kinds, connectivity, directionConsistent, facts }, index) => {
             const from = positions.get(fromNodeId);
             const to = positions.get(toNodeId);

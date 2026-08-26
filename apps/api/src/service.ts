@@ -31,6 +31,10 @@ import {
   type ResearchNodeRecord,
   type ModelCallRecord,
   type ResearchNodeView,
+  type ResearchTemporaryFusionBundle,
+  type ResearchTemporaryFusionListItem,
+  type ResearchTemporaryFusionSearchInput,
+  type ResearchTemporaryFusionSearchResponse,
   resolveFragmentExcerpt,
   type ResearchBodyVersionRecord,
   type ResearchBodyVersionView,
@@ -101,6 +105,24 @@ import { AssociationHintService, type AssociationHintEvaluationGateway, type Ass
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
 class BudgetExceededError extends Error {}
+
+function temporaryFusionListItem(bundle: ResearchTemporaryFusionBundle): ResearchTemporaryFusionListItem {
+  const firstLine = bundle.activeDraft.body.split(/\r?\n/)
+    .map((line) => line.replace(/^#{1,6}\s*/, "").trim())
+    .find(Boolean) ?? "临时融合";
+  return {
+    node: bundle.node,
+    label: firstLine.length > 48 ? `${firstLine.slice(0, 47)}…` : firstLine,
+    evidenceStatus: bundle.activeDraft.evidenceStatus,
+    candidateSources: bundle.candidateSources,
+  };
+}
+
+function temporaryFusionPreview(body: string, index: number, queryLength: number): string {
+  const start = Math.max(0, index - 48);
+  const end = Math.min(body.length, index + queryLength + 96);
+  return `${start > 0 ? "…" : ""}${body.slice(start, end).replace(/\s+/g, " ").trim()}${end < body.length ? "…" : ""}`;
+}
 
 const FINAL_WRITER_EVIDENCE_MAX_CHARACTERS = 24_000;
 
@@ -839,6 +861,38 @@ export class CaptureService {
   /** 只读 B 面数量；关闭自动发现也不隐藏既有待核验候选。 */
   getTemporaryFusionCount(): { count: number } {
     return { count: this.store.listTemporaryFusionNodes().length };
+  }
+
+  /** T02：B 面只读列表。列表不携带草案正文，正文只能在显式详情读取中返回。 */
+  listTemporaryFusions(): ResearchTemporaryFusionListItem[] {
+    return this.store.listTemporaryFusionNodes().flatMap((node) => {
+      const bundle = this.store.getTemporaryFusionBundle(node.id);
+      return bundle ? [temporaryFusionListItem(bundle)] : [];
+    });
+  }
+
+  getTemporaryFusion(id: string): ResearchTemporaryFusionBundle {
+    const bundle = this.store.getTemporaryFusionBundle(id);
+    if (!bundle) throw new NotFoundError("Temporary fusion not found");
+    return bundle;
+  }
+
+  searchTemporaryFusions(input: ResearchTemporaryFusionSearchInput): ResearchTemporaryFusionSearchResponse {
+    const query = input.query.trim();
+    if (!query || query.length > 400) throw new ValidationError("query must contain 1 to 400 characters");
+    if (input.limit !== undefined && (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 50)) {
+      throw new ValidationError("limit must be an integer between 1 and 50");
+    }
+    const normalized = query.toLocaleLowerCase("zh-CN");
+    const matches = this.store.listTemporaryFusionNodes().flatMap((node) => {
+      const bundle = this.store.getTemporaryFusionBundle(node.id);
+      if (!bundle) return [];
+      const body = bundle.activeDraft.body;
+      const index = body.toLocaleLowerCase("zh-CN").indexOf(normalized);
+      if (index < 0) return [];
+      return [{ ...temporaryFusionListItem(bundle), preview: temporaryFusionPreview(body, index, query.length) }];
+    });
+    return { matches: matches.slice(0, input.limit ?? 50) };
   }
 
   async updateFusionAutoConfig(input: { enabled?: unknown }): Promise<{ enabled: boolean }> {

@@ -33,6 +33,10 @@ import type {
   ResearchAssociationHintRecord,
   ResearchSearchInput,
   ResearchSearchResponse,
+  ResearchTemporaryFusionBundle,
+  ResearchTemporaryFusionListItem,
+  ResearchTemporaryFusionSearchInput,
+  ResearchTemporaryFusionSearchResponse,
   ResearchFusionProposalDecision,
   ResearchFusionProposalRecord,
   ResearchFusionScanResult,
@@ -160,6 +164,10 @@ export interface ApiClient {
   updateFusionAutoConfig(enabled: boolean): Promise<{ enabled: boolean }>;
   /** 只读当前 B 面候选总数；不会触发模型扫描。 */
   getTemporaryFusionCount(): Promise<{ count: number }>;
+  /** T02：读取 B 面候选摘要与单个当前草案；不会创建或修改任何事实。 */
+  listTemporaryFusions(): Promise<ResearchTemporaryFusionListItem[]>;
+  getTemporaryFusion(id: string): Promise<ResearchTemporaryFusionBundle>;
+  searchTemporaryFusions(input: ResearchTemporaryFusionSearchInput): Promise<ResearchTemporaryFusionSearchResponse>;
   /** 从选区生长子节点：统一取代深入研究二选一。 */
   startChildNode(selectionId: string, input: CreateChildNodeInput, idempotencyKey: string): Promise<NodeGrowthAccepted>;
     /** 保存标记：幂等键命中返回首次保存的项目，保存不依赖 AI。 */
@@ -539,6 +547,7 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
       if (input.createdBefore) params.set("createdBefore", input.createdBefore);
       if (input.includeAssociationHints) params.set("includeAssociationHints", "true");
       if (input.associationCandidateNodeId) params.set("associationCandidateNodeId", input.associationCandidateNodeId);
+      if (input.includeTemporaryFusions) params.set("includeTemporaryFusions", "true");
       if (input.relationshipKinds !== undefined) {
         if (input.relationshipKinds.length === 0) params.append("relationshipKind", "");
         else for (const kind of input.relationshipKinds) params.append("relationshipKind", kind);
@@ -548,6 +557,19 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
     },
     searchResearch(input: ResearchSearchInput) {
       return requestJson<ResearchSearchResponse>(fetchFn, "/v1/semantic-search/search", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify(input),
+      });
+    },
+    listTemporaryFusions() {
+      return requestJson<ResearchTemporaryFusionListItem[]>(fetchFn, "/v1/research-temporary-fusions");
+    },
+    getTemporaryFusion(id: string) {
+      return requestJson<ResearchTemporaryFusionBundle>(fetchFn, `/v1/research-temporary-fusions/${encodeURIComponent(id)}`);
+    },
+    searchTemporaryFusions(input: ResearchTemporaryFusionSearchInput) {
+      return requestJson<ResearchTemporaryFusionSearchResponse>(fetchFn, "/v1/research-temporary-fusions/search", {
         method: "POST",
         headers: JSON_HEADERS,
         body: JSON.stringify(input),

@@ -210,6 +210,9 @@ export interface ResearchStore {
 export interface DeepResearchStore {
   listResearchSessions(): ResearchSessionRecord[];
   listProjects(): ProjectRecord[];
+  /** B 面候选只读投影；不把它们伪装成正式研究节点。 */
+  listTemporaryFusionNodes(): ResearchTemporaryFusionNodeRecord[];
+  getTemporaryFusionBundle(id: string): ResearchTemporaryFusionBundle | undefined;
   getResearchBranch(id: string): ResearchBranchRecord | undefined;
   listResearchBranches(sessionId: string): ResearchBranchRecord[];
   findResearchBranchByCreationKey(sessionId: string, idempotencyKey: string): ResearchBranchRecord | undefined;

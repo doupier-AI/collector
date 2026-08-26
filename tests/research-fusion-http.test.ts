@@ -346,6 +346,52 @@ test("#71 enabled discovery writes a B-side temporary fusion without changing fo
   assert.equal(formalView.status, 404, "B 面临时节点不进入正式节点读取路径");
 });
 
+test("T02 exposes temporary fusions only through explicit read and map-observation paths", async (t) => {
+  const harness = await createHarness({
+    similarityVerifier: {
+      async verifyResearchSimilarity() { return { relationType: "identity", reason: "两处材料指向同一实体。" }; },
+      async discoverTemporaryFusion(input) {
+        return {
+          hasNovelInsight: true,
+          body: "## 临时融合草稿\n\n两处材料形成一个待核验的新认识。[来源1][来源2]",
+          usedSourceNodeIds: input.sources.map((source) => source.nodeId),
+        };
+      },
+    },
+  });
+  t.after(harness.close);
+  await fetch(`${harness.base}/v1/settings/fusion`, { method: "PUT", headers: headers(harness.token), body: JSON.stringify({ enabled: true }) });
+  await fetch(`${harness.base}/v1/research-nodes/session-1/fusion-proposals/scan`, { method: "POST", headers: headers(harness.token), body: "{}" });
+
+  const list = await fetch(`${harness.base}/v1/research-temporary-fusions`, { headers: headers(harness.token) });
+  assert.equal(list.status, 200);
+  const [item] = await list.json() as Array<{ node: { id: string }; label: string; activeDraft?: unknown; candidateSources: Array<{ sourceNodeId: string }> }>;
+  assert.ok(item?.node.id);
+  assert.match(item?.label ?? "", /临时融合草稿/);
+  assert.equal(item?.activeDraft, undefined, "列表不泄露草案正文");
+  assert.equal(item?.candidateSources.length, 2);
+
+  const detail = await fetch(`${harness.base}/v1/research-temporary-fusions/${encodeURIComponent(item!.node.id)}`, { headers: headers(harness.token) });
+  assert.equal(detail.status, 200);
+  assert.match((await detail.json() as { activeDraft: { body: string } }).activeDraft.body, /待核验的新认识/);
+
+  const search = await fetch(`${harness.base}/v1/research-temporary-fusions/search`, {
+    method: "POST", headers: headers(harness.token), body: JSON.stringify({ query: "待核验" }),
+  });
+  assert.equal(search.status, 200);
+  assert.equal((await search.json() as { matches: Array<{ node: { id: string }; preview: string }> }).matches[0]?.node.id, item?.node.id);
+
+  const closedMap = await fetch(`${harness.base}/v1/research-map`, { headers: headers(harness.token) });
+  const closed = await closedMap.json() as { temporaryFusionCount?: number; temporaryFusions?: unknown[]; edges: unknown[] };
+  assert.equal(closed.temporaryFusionCount, 1);
+  assert.equal(closed.temporaryFusions, undefined, "默认 A 面不返回临时层");
+  const openedMap = await fetch(`${harness.base}/v1/research-map?includeTemporaryFusions=true`, { headers: headers(harness.token) });
+  const opened = await openedMap.json() as { temporaryFusions?: Array<{ node: { id: string }; candidateSources: Array<{ sourceNodeId: string }> }>; edges: Array<{ edge: { fromNodeId: string; toNodeId: string } }> };
+  assert.equal(opened.temporaryFusions?.[0]?.node.id, item?.node.id);
+  assert.equal(opened.temporaryFusions?.[0]?.candidateSources.length, 2);
+  assert.equal(opened.edges.some(({ edge }) => edge.fromNodeId === item?.node.id || edge.toNodeId === item?.node.id), false, "临时连接不进入永久边");
+});
+
 test("#71 enabled discovery keeps a pending proposal when no concrete new insight is found", async (t) => {
   const harness = await createHarness(); // 缺省 contrast 核验器
   t.after(harness.close);

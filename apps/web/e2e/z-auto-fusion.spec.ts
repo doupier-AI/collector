@@ -47,31 +47,53 @@ test("#71 开启后只在 B 面生成可追溯临时融合，页面不跳转", a
   const { sessionId, rootNodeId } = await openSession(page);
   await growSharedConceptChild(page, sessionId);
   const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
+  // Playwright retry 复用专项 harness 数据目录；以本次动作前的数据库状态为基线，
+  // 既证明本次确实写入一组候选，又不会把上一轮失败残留误判为产品重复创建。
+  const beforeTemporaryFusion = temporaryFusionState(dbPath);
 
   const put = await page.request.put("/v1/settings/fusion", { data: { enabled: true } });
   expect(put.ok()).toBeTruthy();
 
   await page.goto(`/nodes/${encodeURIComponent(rootNodeId)}`);
-  await expect(page.getByTestId("temporary-fusion-count")).toContainText("临时融合 1 条待核验", { timeout: 20_000 });
+  await expect(page.getByTestId("temporary-fusion-count")).toContainText(`临时融合 ${beforeTemporaryFusion.temporaryNodes + 1} 条待核验`, { timeout: 20_000 });
   expect(new URL(page.url()).pathname).toBe(`/nodes/${rootNodeId}`);
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(page.getByTestId("auto-fusion-notice")).toHaveCount(0);
 
-  expect(temporaryFusionState(dbPath)).toEqual({
-    temporaryNodes: 1,
-    candidateSources: 2,
-    formalFusionNodes: 0,
-    fusedFromEdges: 0,
+  const createdTemporaryFusion = temporaryFusionState(dbPath);
+  expect(createdTemporaryFusion).toEqual({
+    temporaryNodes: beforeTemporaryFusion.temporaryNodes + 1,
+    candidateSources: beforeTemporaryFusion.candidateSources + 2,
+    formalFusionNodes: beforeTemporaryFusion.formalFusionNodes,
+    fusedFromEdges: beforeTemporaryFusion.fusedFromEdges,
   });
 
+  // T02：地图默认仍只读取 A 面；用户显式开启后才在同一画布叠加 B 面，
+  // 可读当前草案并返回既有正式来源定位，不创建任何关系或新节点。
+  const mapRequests: string[] = [];
+  page.on("request", (request) => { if (request.url().includes("/v1/research-map")) mapRequests.push(request.url()); });
+  await page.goto("/map");
+  await expect(page.getByRole("button", { name: "临时融合（1）" })).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "临时融合（1）" }).click();
+  await page.getByRole("button", { name: "开启临时层" }).click();
+  const mapCanvas = page.getByTestId("global-map-canvas");
+  await expect(mapCanvas.locator("[data-temporary-fusion-id]")).toHaveCount(1);
+  await expect(page.getByRole("heading", { name: "临时融合观察" })).toBeVisible();
+  expect(mapRequests.some((url) => url.includes("includeTemporaryFusions=true"))).toBeTruthy();
+  await page.getByRole("button", { name: /临时融合草稿/ }).click();
+  await expect(page.locator(".temporary-fusion-observation__detail pre")).not.toBeEmpty();
+  await page.getByRole("button", { name: /返回来源节点/ }).first().click();
+  await page.waitForURL(/\/nodes\/[^/]+\?fragment=/, { timeout: 10_000 });
+  expect(temporaryFusionState(dbPath)).toEqual(createdTemporaryFusion);
+
   await page.reload();
-  await expect(page.getByTestId("temporary-fusion-count")).toContainText("临时融合 1 条待核验");
-  expect(temporaryFusionState(dbPath).temporaryNodes).toBe(1);
+  await expect(page.getByTestId("temporary-fusion-count")).toContainText(`临时融合 ${createdTemporaryFusion.temporaryNodes} 条待核验`);
+  expect(temporaryFusionState(dbPath).temporaryNodes).toBe(createdTemporaryFusion.temporaryNodes);
 
   await page.goto("/settings/fusion");
   await expect(page.getByRole("checkbox", { name: /自动发现临时融合/ })).toBeChecked({ timeout: 10_000 });
   const disabled = await page.request.put("/v1/settings/fusion", { data: { enabled: false } });
   expect(disabled.ok()).toBeTruthy();
   await page.goto(`/nodes/${encodeURIComponent(rootNodeId)}`);
-  await expect(page.getByTestId("temporary-fusion-count")).toContainText("临时融合 1 条待核验");
+  await expect(page.getByTestId("temporary-fusion-count")).toContainText(`临时融合 ${createdTemporaryFusion.temporaryNodes} 条待核验`);
 });

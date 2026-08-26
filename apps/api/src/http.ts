@@ -316,6 +316,23 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         await service.associationHints.reconcileActive();
         return json(response, 200, service.nodeGrowth.getGraphObservation(parseGraphObservationInput(url)));
       }
+      if (request.method === "GET" && url.pathname === "/v1/research-temporary-fusions") {
+        return json(response, 200, service.listTemporaryFusions());
+      }
+      if (request.method === "GET" && url.pathname === "/v1/research-temporary-fusions/count") {
+        return json(response, 200, service.getTemporaryFusionCount());
+      }
+      if (request.method === "POST" && url.pathname === "/v1/research-temporary-fusions/search") {
+        const body = await readJson(request) as { query?: unknown; limit?: unknown };
+        if (typeof body.query !== "string" || (body.limit !== undefined && typeof body.limit !== "number")) {
+          throw new ValidationError("query must be a string and limit must be a number when specified");
+        }
+        return json(response, 200, service.searchTemporaryFusions({ query: body.query, ...(body.limit === undefined ? {} : { limit: body.limit }) }));
+      }
+      const temporaryFusionMatch = url.pathname.match(/^\/v1\/research-temporary-fusions\/([^/]+)$/);
+      if (request.method === "GET" && temporaryFusionMatch) {
+        return json(response, 200, service.getTemporaryFusion(decodeURIComponent(temporaryFusionMatch[1])));
+      }
       const researchSessionGraphMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)\/graph$/);
       if (request.method === "GET" && researchSessionGraphMatch) {
         const focusNodeId = url.searchParams.get("focusNodeId") ?? undefined;
@@ -602,9 +619,6 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         return json(response, 200, await service.updateSearchConfig(searchBody));
       }
 // ── Fusion Auto Settings (#32) ────────────────────────
-      if (request.method === "GET" && url.pathname === "/v1/research-temporary-fusions/count") {
-        return json(response, 200, service.getTemporaryFusionCount());
-      }
       if (request.method === "GET" && url.pathname === "/v1/settings/fusion") {
         return json(response, 200, service.getFusionAutoConfig());
       }
@@ -674,6 +688,10 @@ function parseGraphObservationInput(url: URL): import("@collector/capture-contra
     throw new ResearchValidationError("associationCandidateNodeId must be specified at most once");
   }
   const associationCandidateNodeId = associationCandidateNodeIdValues[0]?.trim() || undefined;
+  const temporaryFusionValues = url.searchParams.getAll("includeTemporaryFusions");
+  if (temporaryFusionValues.length > 1 || (temporaryFusionValues.length === 1 && temporaryFusionValues[0] !== "true")) {
+    throw new ResearchValidationError("includeTemporaryFusions must be true when specified once");
+  }
   if (url.searchParams.has("includeArchived")) {
     throw new ResearchValidationError("includeArchived is no longer supported; use lifecycle");
   }
@@ -702,6 +720,7 @@ function parseGraphObservationInput(url: URL): import("@collector/capture-contra
     ...(includeUncategorized ? { includeUncategorized: true as const } : {}),
     ...(includeAssociationHintValues[0] === "true" ? { includeAssociationHints: true as const } : {}),
     ...(associationCandidateNodeId ? { associationCandidateNodeId } : {}),
+    ...(temporaryFusionValues[0] === "true" ? { includeTemporaryFusions: true as const } : {}),
     ...(lifecycleValues.length ? { lifecycles: lifecycleValues as Array<"active" | "archived"> } : {}),
     ...(createdFrom ? { createdFrom } : {}),
     ...(createdBefore ? { createdBefore } : {}),

@@ -29,6 +29,8 @@ export interface MapSceneV2 {
   search?: MapSearchScene;
   /** #70 临时关联候选观察；只属于当前 history entry，不进入业务库或 URL。 */
   associationCandidates?: MapAssociationCandidateScene;
+  /** T02 B 面临时融合观察开关；只属于当前 history entry。 */
+  temporaryFusionObservation?: true;
   viewBox: MapViewBox;
   layout: {
     world: GraphWorld;
@@ -95,6 +97,10 @@ function mapAssociationCandidates(value: unknown): MapAssociationCandidateScene 
     return { kind: "node", nodeId: candidate.nodeId };
   }
   return undefined;
+}
+
+function temporaryFusionObservation(value: unknown): true | undefined {
+  return value === true ? true : undefined;
 }
 
 function mapViewBox(value: unknown): MapViewBox | undefined {
@@ -165,6 +171,7 @@ export function serializeMapScene(input: {
   relationshipKinds: readonly ResearchPermanentEdgeKind[];
   search?: MapSearchScene;
   associationCandidates?: MapAssociationCandidateScene;
+  temporaryFusionObservation?: true;
   viewBox: MapViewBox;
   layout: Pick<StableOrganicGraphLayout, "world" | "positions" | "edgeKeys">;
 }): MapSceneV2 {
@@ -176,6 +183,7 @@ export function serializeMapScene(input: {
     relationshipKinds: [...new Set(input.relationshipKinds)],
     ...(input.search ? { search: mapSearch(input.search) } : {}),
     ...(input.associationCandidates ? { associationCandidates: mapAssociationCandidates(input.associationCandidates) } : {}),
+    ...(input.temporaryFusionObservation ? { temporaryFusionObservation: true as const } : {}),
     viewBox: { ...input.viewBox },
     layout: {
       world: { ...input.layout.world },
@@ -193,17 +201,20 @@ export function mapSceneFromRouteState(value: unknown): MapSceneV2 | undefined {
   const kinds = relationshipKinds(candidate.relationshipKinds);
   const search = mapSearch(candidate.search);
   const associationCandidates = mapAssociationCandidates(candidate.associationCandidates);
+  const temporaryFusions = temporaryFusionObservation(candidate.temporaryFusionObservation);
   const viewBox = mapViewBox(candidate.viewBox);
   const layout = mapLayout(candidate.layout);
   if (!filters || !kinds || !viewBox || !layout
     || (candidate.search !== undefined && !search)
-    || (candidate.associationCandidates !== undefined && !associationCandidates)) return undefined;
+    || (candidate.associationCandidates !== undefined && !associationCandidates)
+    || (candidate.temporaryFusionObservation !== undefined && !temporaryFusions)) return undefined;
   return {
     version: MAP_SCENE_VERSION,
     filters,
     relationshipKinds: kinds,
     ...(search ? { search } : {}),
     ...(associationCandidates ? { associationCandidates } : {}),
+    ...(temporaryFusions ? { temporaryFusionObservation: true as const } : {}),
     viewBox,
     layout,
   };

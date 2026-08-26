@@ -13,6 +13,7 @@ import { AssociationCandidatePanel } from "./AssociationCandidatePanel";
 import { ResearchMapFilters } from "./ResearchMapFilters";
 import { ResearchMapGlyph } from "./ResearchMapGlyph";
 import { ResearchMapSearch } from "./ResearchMapSearch";
+import { TemporaryFusionObservationPanel } from "./TemporaryFusionObservationPanel";
 import { researchSearchMatchTarget } from "./research-search-navigation";
 import {
   createMapReturn,
@@ -41,14 +42,15 @@ function sameRelationshipKinds(left: readonly ResearchPermanentEdgeKind[], right
   return left.length === right.length && left.every((kind, index) => kind === right[index]);
 }
 
-type MapTool = "search" | "filters" | "relationships" | "more";
+type MapTool = "search" | "filters" | "relationships" | "temporary" | "more";
 type MapPresentation = "canvas" | "list";
 
-function MapToolGlyph({ kind }: { kind: "back" | "search" | "filters" | "relationships" | "candidates" | "new" | "more" | "canvas" | "list" }) {
+function MapToolGlyph({ kind }: { kind: "back" | "search" | "filters" | "relationships" | "temporary" | "candidates" | "new" | "more" | "canvas" | "list" }) {
   if (kind === "back") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12.5 4.5-5.5 5.5 5.5 5.5M7.5 10H17" /></svg>;
   if (kind === "search") return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5" /><path d="m12.2 12.2 4.3 4.3" /></svg>;
   if (kind === "filters") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M5.5 10h9M8 15h4" /></svg>;
   if (kind === "relationships") return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4.5" cy="10" r="2" /><circle cx="15.5" cy="5" r="2" /><circle cx="15.5" cy="15" r="2" /><path d="m6.4 9.1 7.2-3.2M6.4 10.9l7.2 3.2" /></svg>;
+  if (kind === "temporary") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5.5h12v9H4z" /><path d="M7 8h6M7 11h4" strokeDasharray="2 1" /></svg>;
   if (kind === "candidates") return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8" cy="10" r="3" /><circle cx="14.5" cy="5.5" r="1.75" /><path d="M4 14.5c2.5 2 7.5 2.5 11-.5M10.5 8l2.6-1.5" strokeDasharray="2 2" /></svg>;
   if (kind === "new") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.5v13M3.5 10h13" /></svg>;
   if (kind === "canvas") return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="5" cy="11" r="2" /><circle cx="10" cy="5" r="2" /><circle cx="15" cy="12" r="2" /><path d="m6.2 9.4 2.6-2.8m2.5-.3 2.5 4" /></svg>;
@@ -135,6 +137,8 @@ export function ResearchMapLandingPage() {
   }, [entryScene, mapEntryKey]);
   const [searchEntry, setSearchEntry] = useState<{ entryKey: string; value?: MapSearchScene }>(() => ({ entryKey: mapEntryKey, value: entryScene?.search }));
   const search = searchEntry.entryKey === mapEntryKey ? searchEntry.value : entryScene?.search;
+  const [temporaryObservationEntry, setTemporaryObservationEntry] = useState(() => ({ entryKey: mapEntryKey, value: entryScene?.temporaryFusionObservation === true }));
+  const temporaryFusionObservation = temporaryObservationEntry.entryKey === mapEntryKey ? temporaryObservationEntry.value : entryScene?.temporaryFusionObservation === true;
   const [candidateEntry, setCandidateEntry] = useState<{ entryKey: string; value?: MapAssociationCandidateScene }>(() => ({ entryKey: mapEntryKey, value: entryScene?.associationCandidates }));
   const candidateScope = candidateEntry.entryKey === mapEntryKey ? candidateEntry.value : entryScene?.associationCandidates;
   const [candidateResult, setCandidateResult] = useState<{ hints: ResearchAssociationHintRecord[]; loading: boolean; error?: string }>({ hints: [], loading: false });
@@ -212,6 +216,16 @@ export function ResearchMapLandingPage() {
     if (currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(nextScene, routeStateRef.current);
   }, [mapEntryKey]);
 
+  const setTemporaryFusionObservation = useCallback((next: boolean) => {
+    setTemporaryObservationEntry({ entryKey: mapEntryKey, value: next });
+    const current = sceneRef.current;
+    if (!current) return;
+    const { temporaryFusionObservation: _previousObservation, ...withoutObservation } = current;
+    const nextScene: MapSceneV2 = next ? { ...withoutObservation, temporaryFusionObservation: true } : withoutObservation;
+    sceneRef.current = nextScene;
+    if (currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(nextScene, routeStateRef.current);
+  }, [mapEntryKey]);
+
   // 每个 browser history entry 独立拥有自己的临时地图现场；切换 entry 时只从该 entry 恢复。
   useEffect(() => {
     sceneRef.current = entryScene;
@@ -224,6 +238,7 @@ export function ResearchMapLandingPage() {
       return current.entryKey === mapEntryKey && current.value === nextFilters ? current : { entryKey: mapEntryKey, value: nextFilters };
     });
     setSearchEntry({ entryKey: mapEntryKey, value: entryScene?.search });
+    setTemporaryObservationEntry({ entryKey: mapEntryKey, value: entryScene?.temporaryFusionObservation === true });
     setCandidateEntry({ entryKey: mapEntryKey, value: entryScene?.associationCandidates });
   }, [entryScene, mapEntryKey]);
 
@@ -233,9 +248,11 @@ export function ResearchMapLandingPage() {
 
   const saveScene = useCallback((scene: MapSceneV2) => {
     const previous = sceneRef.current;
-    const sceneWithCandidates = previous?.associationCandidates
-      ? { ...scene, associationCandidates: previous.associationCandidates }
-      : scene;
+    const sceneWithCandidates = {
+      ...scene,
+      ...(previous?.associationCandidates ? { associationCandidates: previous.associationCandidates } : {}),
+      ...(previous?.temporaryFusionObservation ? { temporaryFusionObservation: true as const } : {}),
+    };
     const layoutStillFiltered = layoutFilterEntryRef.current.entryKey === sceneEntryKeyRef.current
       && !isDefaultResearchMapFilterState(layoutFilterEntryRef.current.filters);
     const preserveHiddenLayout = previous
@@ -342,7 +359,7 @@ export function ResearchMapLandingPage() {
     let stale = false;
     setError(null);
     setUpdating(true);
-    api.getResearchMap({ ...serializedFilters.input, ...(focusNodeId ? { focusNodeId } : {}), relationshipKinds }).then(
+    api.getResearchMap({ ...serializedFilters.input, ...(focusNodeId ? { focusNodeId } : {}), relationshipKinds, ...(temporaryFusionObservation ? { includeTemporaryFusions: true as const } : {}) }).then(
       (observation) => {
         if (!stale) {
           setObservationEntry({ entryKey: mapEntryKey, filters: serializedFilters.state, value: observation });
@@ -359,7 +376,7 @@ export function ResearchMapLandingPage() {
     return () => {
       stale = true;
     };
-  }, [api, focusNodeId, mapEntryKey, projectsReady, relationshipKinds, reloadNonce, serializedFilters]);
+  }, [api, focusNodeId, mapEntryKey, projectsReady, relationshipKinds, reloadNonce, serializedFilters, temporaryFusionObservation]);
 
   useEffect(() => {
     if (!candidateScope || !projectsReady || !serializedFilters.valid) {
@@ -492,10 +509,11 @@ export function ResearchMapLandingPage() {
   const filterValidation = serializedFilters.valid ? undefined : serializedFilters.reason;
   const hasFilters = !isDefaultResearchMapFilterState(filters);
   const focusSummary = focusNodeId ? observation.nodes.find((item) => item.node.id === focusNodeId) : undefined;
-  const toolDefinitions: Array<{ tool: MapTool; label: string; glyph: "search" | "filters" | "relationships" | "more"; active?: boolean }> = [
+  const toolDefinitions: Array<{ tool: MapTool; label: string; glyph: "search" | "filters" | "relationships" | "temporary" | "more"; active?: boolean }> = [
     { tool: "search", label: "搜索研究内容", glyph: "search", active: Boolean(search?.query) },
     { tool: "filters", label: "筛选地图", glyph: "filters", active: hasFilters },
     { tool: "relationships", label: "显示的关系", glyph: "relationships", active: relationshipKinds.length < RESEARCH_PERMANENT_EDGE_KINDS.length },
+    { tool: "temporary", label: `临时融合（${observation.temporaryFusionCount ?? 0}）`, glyph: "temporary", active: temporaryFusionObservation },
     { tool: "more", label: "更多地图功能", glyph: "more" },
   ];
 
@@ -603,6 +621,17 @@ export function ResearchMapLandingPage() {
               onOpenMatch={openSearchMatch}
             />
           ) : null}
+          {activeTool === "temporary" ? (
+            temporaryFusionObservation ? <TemporaryFusionObservationPanel
+              onCloseObservation={() => setTemporaryFusionObservation(false)}
+              onOpenSource={(source) => {
+                const scene = sceneRef.current;
+                if (scene && currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(scene, routeStateRef.current);
+                const mapReturn = createMapReturn(currentHistoryEntry(locationKeyRef.current), pathnameRef.current);
+                navigate(fragmentDeepLink(source.sourceNodeId, source.fragmentIds[0]!), { state: nodeEntryStateFromMapReturn(mapReturn) });
+              }}
+            /> : <div className="map-more-tools"><p>开启后在同一张地图上查看待核验的临时融合及其正式来源；不会创建关系或改变正式图谱。</p><button type="button" className="button button--primary" disabled={(observation.temporaryFusionCount ?? 0) === 0} onClick={() => setTemporaryFusionObservation(true)}>开启临时层</button></div>
+          ) : null}
           {activeTool === "relationships" ? (
             <div className="map-relationship-tools" role="group" aria-label="显示的关系">
               <p>控制专注和连线使用哪些永久关系；关闭关系不会删除事实或改变节点坐标。</p>
@@ -691,6 +720,7 @@ export function ResearchMapLandingPage() {
               current.includes(kind) ? current.filter((item) => item !== kind) : [...current, kind]
             ))}
             associationHints={candidateResult.hints}
+            temporaryFusions={observation.temporaryFusions}
             candidateMode={Boolean(candidateScope)}
             onOpenCandidates={openCandidates}
           />
