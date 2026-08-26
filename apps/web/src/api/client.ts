@@ -141,8 +141,8 @@ export interface ApiClient {
   getSemanticSearchStatus(): Promise<SemanticSearchStatusView>;
   executeSemanticSearchCommand(command: SemanticSearchCommand): Promise<SemanticSearchStatusView>;
   /**
-   * #32：手动触发当前节点的确定性相似候选扫描。返回本次扫描后的全部提案
-   * （含自动融合成功后已 accepted 的留痕提案）与本次新自动生成的融合节点摘要。
+   * 手动触发当前节点的确定性相似候选扫描。返回本次扫描后的全部提案
+   * 与当前 B 面临时融合候选总数；扫描不会创建正式节点或关系。
    * 模型核验失败时返回空提议而不降级猜测。
    */
   scanResearchFusionProposals(nodeId: string): Promise<ResearchFusionScanResult>;
@@ -154,9 +154,9 @@ export interface ApiClient {
   listAssociationHints(nodeId: string): Promise<ResearchAssociationHintRecord[]>;
   /** #69：明确忽略提示；幂等，重复忽略返回同一记录。忽略不创建任何永久事实。 */
   dismissAssociationHint(hintId: string): Promise<ResearchAssociationHintRecord>;
-  /** #32：读取自动融合开关（默认关闭）。 */
+  /** 读取临时融合发现开关（默认关闭）。 */
   getFusionAutoConfig(): Promise<{ enabled: boolean }>;
-  /** #32：写入自动融合开关，返回更新后的配置。 */
+  /** 写入临时融合发现开关，返回更新后的配置。 */
   updateFusionAutoConfig(enabled: boolean): Promise<{ enabled: boolean }>;
   /** 从选区生长子节点：统一取代深入研究二选一。 */
   startChildNode(selectionId: string, input: CreateChildNodeInput, idempotencyKey: string): Promise<NodeGrowthAccepted>;

@@ -90,6 +90,7 @@ function temporaryFusionBundle(id = "temporary-fusion-1") {
   const node: ResearchTemporaryFusionNodeRecord = {
     id,
     creationKey: "generation-task-1",
+    triggerProposalId: "fusion:proposal-1",
     activeDraftVersionId: `${id}:draft:1`,
     status: "active",
     createdAt: NOW,

@@ -29,8 +29,8 @@ const shutdownToken = process.env.E2E_SHUTDOWN_TOKEN;
 // e2e 放宽配对码 TTL 到 1 小时：长套件中测试排队消费现铸码，TTL 过短会触发限流级联。
 process.env.COLLECTOR_E2E_PAIRING_TTL_MS ??= String(60 * 60 * 1000);
 const modelMode = process.env.E2E_MODEL ?? "fake";
-// #32：相似性核验的确定性关系类型（identity | shared-concept | analogy | contrast）。
-// 缺省 contrast 与 #31 行为一致；identity 用于自动融合高置信路径的 e2e。
+// 相似性核验的确定性关系类型（identity | shared-concept | analogy | contrast）。
+// identity 用于 B 面临时融合的正向路径；其余关系用于“没有新认识”的负向路径。
 const similarityRelation = process.env.E2E_SIMILARITY_RELATION ?? "contrast";
 
 // #89 极端响应夹具：只由精确专用提问触发，避免改变默认 fake 输出及既有场景。
@@ -116,24 +116,24 @@ if (!existsSync(join(webRoot, "index.html"))) {
   throw new Error(`E2E WebUI production build not found at ${webRoot}. Run npm.cmd run build before test:e2e.`);
 }
 
-// #32 构建自检：dist 必须包含自动融合代码（/v1/settings/fusion 端点消费）。
+// 临时融合发现构建自检：dist 必须包含设置代码（/v1/settings/fusion 端点消费）。
 // 旧构建不含该标记时 e2e 会在页面行为断言上超时失败，且失败信息与真实缺陷难以区分——
 // 启动期即失败并提示 rebuild，比运行期 20 秒超时后再排查高效得多。
 {
   const fsPromises = await import("node:fs/promises");
   const files = await fsPromises.readdir(join(webRoot, "assets")).catch(() => []);
-  let hasAutoFusion = false;
+  let hasFusionSettings = false;
   for (const file of files) {
     if (!file.endsWith(".js")) continue;
     const code = await fsPromises.readFile(join(webRoot, "assets", file), "utf8");
     if (code.includes("/v1/settings/fusion")) {
-      hasAutoFusion = true;
+      hasFusionSettings = true;
       break;
     }
   }
-  if (!hasAutoFusion) {
+  if (!hasFusionSettings) {
     throw new Error(
-      `E2E WebUI build missing auto-fusion code (no /v1/settings/fusion in ${webRoot}/assets). ` +
+      `E2E WebUI build missing temporary-fusion settings code (no /v1/settings/fusion in ${webRoot}/assets). ` +
         "Run npm.cmd run build (tsc -b does NOT produce the vite dist) before test:e2e.",
     );
   }
@@ -391,8 +391,7 @@ const service = new CaptureService(store, join(dataDir, "artifacts"), undefined,
     model: "fake-research-e2e",
     parseImportChapters: (request) => fakeProvider.parseImportChapters(request),
   } : undefined,
-  // #31/#32：相似性核验的确定性假模型——共享概念按环境变量判为对比或同一实体，
-  // 使真实 scan 端点产出可确认的 pending 提案（contrast）或自动融合（identity）。
+  // 相似性与临时融合发现是两个独立调用：前者只创建待确认提案，后者才可能写 B 面草稿。
   // 只在 fake 模式注入：no-model harness 保持无任何模型能力的纯负路径。
   ...(modelMode === "fake" ? {
     similarityVerifier: {
@@ -402,6 +401,16 @@ const service = new CaptureService(store, join(dataDir, "artifacts"), undefined,
           reason: similarityRelation === "contrast"
             ? "同名概念来自不同作品或语境。"
             : "两处材料为同一实体或共享同一概念。",
+        };
+      },
+      async discoverTemporaryFusion(input) {
+        if (similarityRelation !== "identity") {
+          return { hasNovelInsight: false, body: "", usedSourceNodeIds: [] };
+        }
+        return {
+          hasNovelInsight: true,
+          body: "## 临时融合草稿\n\n两份材料共同说明本地优先需要在不同实践语境中核验其边界。[来源1][来源2]",
+          usedSourceNodeIds: input.sources.map((source) => source.nodeId),
         };
       },
     },

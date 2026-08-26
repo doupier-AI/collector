@@ -831,7 +831,7 @@ export class CaptureService {
     return getSearchConfigFromAgent();
   }
 
-  // ── 自动融合设置（#32）──────────────────────────────────
+  // ── 临时融合发现设置 ─────────────────────────────────────
   getFusionAutoConfig(): { enabled: boolean } {
     return { enabled: this.store.getSetting(AUTO_FUSION_SETTING_KEY) === "true" };
   }

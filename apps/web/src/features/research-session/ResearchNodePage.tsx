@@ -59,11 +59,10 @@ import {
   type FragmentLocatorFailureKind,
   type FragmentTarget,
 } from "./fragment-locator";
-import { FusionProposalNotice } from "./FusionProposalNotice";
 import { FusionSourceBar } from "./FusionSourceBar";
-import { AutoFusionNotice } from "./AutoFusionNotice";
+import { TemporaryFusionCount } from "./TemporaryFusionCount";
 import { TransientAssociationNotice } from "./TransientAssociationNotice";
-import type { ResearchFusionAutoResult, ResearchFusionProposalRecord, ResearchFusionSource } from "@collector/capture-contracts";
+import type { ResearchFusionSource } from "@collector/capture-contracts";
 
 const STREAM_NOTICE: Record<string, { title: string; body: string }> = {
   reconnecting: { title: "连接中断", body: "正在重新连接，已显示的内容不会丢失。" },
@@ -103,15 +102,16 @@ export function ResearchNodePage() {
   const node = useResearchNode(nodeId, { initialTurn: initialTurnRef.current });
   const termPreviews = useTermPreviews(nodeId, (error) => node.announce(apiErrorCopy(error).body));
   const [retryingTaskId, setRetryingTaskId] = useState<string | null>(null);
-  const [decidingFusionProposalId, setDecidingFusionProposalId] = useState<string | null>(null);
-  const [fusingProposalId, setFusingProposalId] = useState<string | null>(null);
-  // #32：本次挂载自动融合成功的融合节点摘要（顶部提示条数据源）。
-  const [autoFusionResults, setAutoFusionResults] = useState<ResearchFusionAutoResult[] | null>(null);
+  // B 面候选只在当前阅读面呈现总数，不暴露临时身份或自动跳转。
+  const [temporaryFusionCount, setTemporaryFusionCount] = useState(0);
   // #69/#70：当前节点的活跃临时关联提示已按产品价值排序；只突出第一条，其余留在候选层。
   const [associationHints, setAssociationHints] = useState<ResearchAssociationHintRecord[]>([]);
   const [dismissingHintId, setDismissingHintId] = useState<string | null>(null);
-  const autoScanNodeRef = useRef("");
+  const autoScanKeyRef = useRef("");
   const readyView = node.state.kind === "ready" ? node.state.view : undefined;
+  const latestCompletedAssistantId = readyView
+    ? [...readyView.messages].filter((message) => message.role === "assistant" && message.status === "completed").at(-1)?.id ?? ""
+    : "";
   // #61：会话上下文从已加载节点视图派生（稳定地址不携带会话 ID）；视图就绪前为空串。
   // ""→真实 ID 的翻转发生在内容首次渲染的同一提交，其 effect 重跑不得产生可见状态变化——
   // useResearchImports 的重置已做空集合守卫（返回原引用跳过渲染），
@@ -547,16 +547,15 @@ export function ResearchNodePage() {
     return () => window.clearTimeout(timer);
   }, [fragmentFocus, reducedMotion]);
 
-  // #32 自动融合：开关开启时，节点视图就绪后自动扫描一次相似候选（进入/刷新节点页触发）。
-  // 每节点只扫描一次（刷新=重挂载=重扫）；扫描与融合失败静默，不打断页面。
-  // 依赖 node.state.kind 而非 node 对象：node 控制器每次渲染重建，只有 kind 变化才真正
-  // 代表视图就绪；ref 只在 ready 且开始扫描时置位，避免加载期间提前置位挡住就绪后的扫描。
+  // 自动发现：开关开启时，在节点首次就绪、以及每一轮正式回答稳定后扫描；成功只更新 B 面数量。
+  // 以节点地址和最新完成回答共同去重，既不因控制器对象重建重复请求，也不会错过流式任务刚完成的内容。
   useEffect(() => {
     if (node.state.kind !== "ready") return;
-    if (autoScanNodeRef.current === nodeId) return;
+    const scanKey = `${nodeId}:${latestCompletedAssistantId}`;
+    if (autoScanKeyRef.current === scanKey) return;
     // 旧测试替身/客户端方法缺失时静默跳过。
     if (!api.getFusionAutoConfig || !api.scanResearchFusionProposals) return;
-    autoScanNodeRef.current = nodeId; // 同步置位防 StrictMode 双跑
+    autoScanKeyRef.current = scanKey; // 同步置位防 StrictMode 双跑
     let cancelled = false;
     void (async () => {
       try {
@@ -564,26 +563,19 @@ export function ResearchNodePage() {
         if (cancelled || !config.enabled) return;
         const result = await api.scanResearchFusionProposals(nodeId);
         if (cancelled) return;
-        node.updateView((current) => ({
-          ...current,
-          fusionProposals: mergeFusionProposals(current.fusionProposals ?? [], result.proposals),
-        }));
-        if (result.autoFused.length > 0) setAutoFusionResults(result.autoFused);
+        setTemporaryFusionCount(result.temporaryFusionCount);
       } catch {
-        // 扫描失败静默：弱提示仍走既有路径（节点视图自带的提案）。
+        // 临时发现是附加能力，失败不影响正文与普通关联提示。
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [api, node.state.kind, nodeId]);
+  }, [api, latestCompletedAssistantId, node.state.kind, nodeId]);
 
   // #69 临时关联提示：视图就绪时拉取一次；最新回答完成后按 0/2.5s/7s 补拉，
   // 等待服务端异步扫描落库。拉取失败静默——提示是附加发现，不影响正文阅读与手动搜索。
   const isReady = readyView !== undefined;
-  const latestCompletedAssistantId = readyView
-    ? [...readyView.messages].filter((message) => message.role === "assistant" && message.status === "completed").at(-1)?.id ?? ""
-    : "";
   useEffect(() => {
     if (!isReady || !nodeId) return;
     if (!api.listAssociationHints) return; // 旧测试替身缺方法时静默跳过
@@ -629,43 +621,6 @@ export function ResearchNodePage() {
   // ADR-0035 消息操作：重新生成与重新编辑。
   const handleRegenerate = (task: ResearchTaskRecord) => void node.regenerateTask(task);
   const handleEditMessage = (messageId: string, content: string) => void node.editMessage(messageId, content);
-
-  async function handleFusionDecision(proposalId: string, decision: "accepted" | "rejected") {
-    setDecidingFusionProposalId(proposalId);
-    try {
-      const result = await api.decideResearchFusionProposal(proposalId, decision);
-      // #42：accepted 用返回值替换本地提案（转为只读依据入口），rejected 从视图移除
-      node.updateView((current) => ({
-        ...current,
-        fusionProposals:
-          decision === "accepted"
-            ? (current.fusionProposals ?? []).map((proposal) => (proposal.id === proposalId ? result : proposal))
-            : (current.fusionProposals ?? []).filter((proposal) => proposal.id !== proposalId),
-      }));
-      node.announce(
-        decision === "accepted" ? "已保留这条概念关系，依据入口已转为只读。" : "已忽略这条融合提示，近期不会再次显示。 ",
-      );
-    } catch (error) {
-      node.announce(apiErrorCopy(error).body);
-    } finally {
-      setDecidingFusionProposalId(null);
-    }
-  }
-
-  /**
-   * #31 确认式融合：用户确认后创建融合节点并跳转。幂等键按提案确定性派生，
-   * 刷新/重复点击不产生重复节点（服务端按幂等键去重）。
-   */
-  async function handleFuseProposal(proposalId: string) {
-    setFusingProposalId(proposalId);
-    try {
-      const accepted = await api.fuseResearchFusionProposal(proposalId, `fuse:${proposalId}`);
-      navigate(stableNodePath(accepted.node.id), { state: nodeRouteStateWithMapReturn(location.state) });
-    } catch (error) {
-      node.announce(apiErrorCopy(error).body);
-      setFusingProposalId(null);
-    }
-  }
 
   /**
    * "深入研究这段"：以引用选区为来源创建子节点。
@@ -891,9 +846,6 @@ export function ResearchNodePage() {
             <>
               <h1 className="page__title">
                 {title}
-                {isFusionNode && view.node.isAutoFusionNode ? (
-                  <span className="fusion-auto-badge" data-testid="auto-fusion-badge">自动生成</span>
-                ) : null}
               </h1>
               {isRoot ? (
                 <div className="session-header__actions">
@@ -971,9 +923,7 @@ export function ResearchNodePage() {
         </p>
       ) : null}
 
-      {autoFusionResults && autoFusionResults.length > 0 ? (
-        <AutoFusionNotice results={autoFusionResults} />
-      ) : null}
+      <TemporaryFusionCount count={temporaryFusionCount} />
 
       {associationHints.length > 0 ? (
         <TransientAssociationNotice
@@ -991,16 +941,6 @@ export function ResearchNodePage() {
         <StatusMessage variant="info" role="status" title={notice.title}>
           <p>{notice.body}</p>
         </StatusMessage>
-      ) : null}
-
-      {view.fusionProposals?.length ? (
-        <FusionProposalNotice
-          proposals={view.fusionProposals}
-          decidingProposalId={decidingFusionProposalId}
-          onDecide={(proposalId, decision) => void handleFusionDecision(proposalId, decision)}
-          onFuse={(proposalId) => void handleFuseProposal(proposalId)}
-          fusingProposalId={fusingProposalId}
-        />
       ) : null}
 
       {activeHighlight?.kind === "fallback" && !("source" in activeHighlight) && restoredSelection ? (
@@ -1188,17 +1128,4 @@ export function ResearchNodePage() {
       {showSliceRail ? <SliceRailNav items={railItems} /> : null}
     </div>
   );
-}
-
-/**
- * #32：按 id 合并扫描返回的提案与视图既有提案，保留视图里未在扫描结果中的
- * 旧提案（如历史 accepted 依据入口）。扫描结果优先覆盖同 id 提案（状态可能已变化）。
- */
-function mergeFusionProposals(
-  view: ResearchFusionProposalRecord[],
-  scanned: ResearchFusionProposalRecord[],
-): ResearchFusionProposalRecord[] {
-  const byId = new Map(view.map((proposal) => [proposal.id, proposal]));
-  for (const proposal of scanned) byId.set(proposal.id, proposal);
-  return [...byId.values()];
 }

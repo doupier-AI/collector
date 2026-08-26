@@ -19,12 +19,12 @@ function renderPage(api: Partial<ApiClient>) {
   );
 }
 
-describe("FusionSettingsPage #32 自动融合设置", () => {
+describe("FusionSettingsPage 临时融合发现设置", () => {
   it("读取开关状态并渲染为复选框（默认关闭）", async () => {
     const getFusionAutoConfig = vi.fn(async () => ({ enabled: false }));
     renderPage({ getFusionAutoConfig });
     await waitFor(() => expect(getFusionAutoConfig).toHaveBeenCalled());
-    const checkbox = await screen.findByRole("checkbox", { name: /自动融合/ });
+    const checkbox = await screen.findByRole("checkbox", { name: /自动发现临时融合/ });
     expect(checkbox).not.toBeChecked();
   });
 
@@ -33,10 +33,10 @@ describe("FusionSettingsPage #32 自动融合设置", () => {
     const getFusionAutoConfig = vi.fn(async () => ({ enabled: false }));
     const updateFusionAutoConfig = vi.fn(async () => ({ enabled: true }));
     renderPage({ getFusionAutoConfig, updateFusionAutoConfig });
-    const checkbox = await screen.findByRole("checkbox", { name: /自动融合/ });
+    const checkbox = await screen.findByRole("checkbox", { name: /自动发现临时融合/ });
     await user.click(checkbox);
     await waitFor(() => expect(updateFusionAutoConfig).toHaveBeenCalledWith(true));
-    await waitFor(() => expect(screen.getByRole("checkbox", { name: /自动融合/ })).toBeChecked());
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: /自动发现临时融合/ })).toBeChecked());
   });
 
   it("保存失败显示错误文案且复选框保持原状态", async () => {
@@ -46,14 +46,14 @@ describe("FusionSettingsPage #32 自动融合设置", () => {
       throw new ApiRequestError(400, "invalid_body", "enabled must be a boolean");
     });
     renderPage({ getFusionAutoConfig, updateFusionAutoConfig });
-    const checkbox = await screen.findByRole("checkbox", { name: /自动融合/ });
+    const checkbox = await screen.findByRole("checkbox", { name: /自动发现临时融合/ });
     await user.click(checkbox);
     expect(await screen.findByRole("alert")).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: /自动融合/ })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /自动发现临时融合/ })).not.toBeChecked();
   });
 
   it("客户端方法缺失时给出明确提示", async () => {
     renderPage({});
-    expect(await screen.findByRole("alert")).toHaveTextContent(/不支持自动融合设置/);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/不支持临时融合发现设置/);
   });
 });

@@ -146,6 +146,7 @@ export function makeTemporaryFusionBundle(overrides: Partial<ResearchTemporaryFu
   const node = overrides.node ?? {
     id,
     creationKey: `generation-${sequence}`,
+    triggerProposalId: `proposal-${sequence}`,
     activeDraftVersionId: `${id}:draft:1`,
     status: "active" as const,
     createdAt: "2026-07-17T08:00:00.000Z",

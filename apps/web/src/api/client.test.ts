@@ -3,7 +3,7 @@ import { createApiClient } from "./client";
 
 describe("F1 fusion proposal API client", () => {
   it("calls scan, list, and decision endpoints with their stable paths and bodies", async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ proposals: [], autoFused: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ proposals: [], temporaryFusionCount: 0 }), { status: 200, headers: { "Content-Type": "application/json" } }));
     const client = createApiClient(fetchMock);
 
     await client.scanResearchFusionProposals("node / one");

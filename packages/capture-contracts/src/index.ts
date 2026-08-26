@@ -721,10 +721,6 @@ export interface ResearchNodeRecord {
   displayName?: string;
   /** #31：确认式融合创建的融合节点标记（存 record_json，零迁移）；无父链，来源关系由 fused-from 边表达。 */
   isFusionNode?: boolean;
-  /** #32：自动融合创建的融合节点标记（存 record_json，零迁移）；确认式融合不设。不变量：为 true 时 isFusionNode 也为 true。 */
-  isAutoFusionNode?: boolean;
-  /** #32：自动融合节点回链触发它的融合提议 ID（全程留痕）。 */
-  triggerFusionProposalId?: string;
   status: "active";
   createdAt: string;
   updatedAt: string;
@@ -3033,6 +3029,8 @@ export type ResearchFusionEvidenceStatus = "pending" | "verified" | "invalid";
 export interface ResearchTemporaryFusionNodeRecord {
   id: string;
   creationKey: string;
+  /** 触发本候选的内部核验记录；只用于本机审计与确定性去重。 */
+  triggerProposalId: string;
   activeDraftVersionId: string;
   status: "active";
   createdAt: string;
@@ -3094,7 +3092,7 @@ export function validateTemporaryFusionBundle(
   draft: ResearchFusionDraftVersionRecord,
   candidateSources: readonly ResearchCandidateSourceConnectionRecord[],
 ): void {
-  if (!node.id.trim() || !node.creationKey.trim() || !node.activeDraftVersionId.trim()) {
+  if (!node.id.trim() || !node.creationKey.trim() || !node.triggerProposalId.trim() || !node.activeDraftVersionId.trim()) {
     throw new Error("Temporary fusion identity and creation key are required");
   }
   if (draft.temporaryFusionNodeId !== node.id || draft.id !== node.activeDraftVersionId) {
@@ -3441,6 +3439,12 @@ export type {
 /** 相似性核验提示词版本；模型调用与本地提议留痕都使用这一稳定版本。 */
 export const SIMILARITY_VERIFICATION_PROMPT_VERSION = "similarity-verify-v1";
 
+/** B 面临时融合发现提示词版本；独立于相似性核验与正式融合写作。 */
+export const TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION = "temporary-fusion-discovery-v1";
+
+/** 临时融合完整草案的固定输出预算。 */
+export const TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET = 4_096;
+
 /** 融合正文生成的独立提示词版本（#31 F2）；模型调用与运行记录留痕都使用这一稳定版本。 */
 export const FUSION_COMPOSE_PROMPT_VERSION = "fusion-compose-v1";
 
@@ -3514,25 +3518,12 @@ export interface ResearchFusionProposalRecord {
 }
 
 /**
- * #32：一次自动融合的产物摘要（scan 响应携带，供 WebUI 提示条跳转融合节点页）。
- */
-export interface ResearchFusionAutoResult {
-  /** 触发自动融合的提议 ID。 */
-  proposalId: string;
-  /** 自动生成的融合节点 ID。 */
-  nodeId: string;
-  /** 融合节点所在会话 ID。 */
-  sessionId: string;
-}
-
-/**
- * #32：scan 响应形态。proposals 为本次扫描后与本节点相关的全部提案
- * （含自动融合成功后已 accepted 的留痕提案与维持弱提示的 pending 提案）；
- * autoFused 为本次新自动生成的融合节点摘要。
+ * 扫描响应只向当前阅读面暴露 B 面总数。临时节点身份、草案与来源连接
+ * 留在临时层，不作为正式节点地址或永久关系返回。
  */
 export interface ResearchFusionScanResult {
   proposals: ResearchFusionProposalRecord[];
-  autoFused: ResearchFusionAutoResult[];
+  temporaryFusionCount: number;
 }
 
 export interface ResearchFusionProposalDecisionInput {

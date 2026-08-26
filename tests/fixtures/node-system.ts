@@ -58,6 +58,7 @@ function temporaryFusion(
     node: {
       id,
       creationKey: `generation:${id}`,
+      triggerProposalId: `proposal:${id}`,
       activeDraftVersionId: `${id}:draft:1`,
       status: "active",
       createdAt: CREATED_AT,

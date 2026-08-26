@@ -11,7 +11,6 @@ import type {
   ResearchSliceRecord,
 } from "@collector/capture-contracts";
 import {
-  AUTO_FUSION_IDEMPOTENCY_PREFIX,
   AUTO_FUSION_SETTING_KEY,
   FUSION_PROPOSAL_COOLDOWN_DAYS,
   MIN_SIMILARITY_FALLBACK_UNIT_CHARACTERS,
@@ -20,13 +19,14 @@ import {
   buildSimilarityCandidates,
   deriveMessageBodyArtifacts,
   indexNodeSimilaritySignals,
-  isHighConfidenceFusion,
   type SimilarityVerificationGateway,
   TermDetectionService,
 } from "@collector/api";
 import {
   FUSION_COMPOSE_PROMPT_VERSION,
   SIMILARITY_VERIFICATION_PROMPT_VERSION,
+  TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION,
+  TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET,
   deriveBodyVersion,
   deriveMessageBlocks,
   resolveFragmentExcerpt,
@@ -349,19 +349,19 @@ test("verification failures and unrelated results do not create proposals", asyn
   const failing = new ResearchFusionProposalService(harness.store, new TermDetectionService(), async () => ({
     async verifyResearchSimilarity() { throw new Error("provider failed"); },
   }));
-  assert.deepEqual(await failing.scan("node-a"), { proposals: [], autoFused: [] });
+  assert.deepEqual(await failing.scan("node-a"), { proposals: [], temporaryFusionCount: 0 });
   assert.deepEqual(harness.store.listResearchFusionProposalsByNode("node-a"), []);
 
   const unrelated = new ResearchFusionProposalService(harness.store, new TermDetectionService(), async () => ({
     async verifyResearchSimilarity() { return { relationType: "unrelated", reason: "共享词不足以构成关系。" }; },
   }));
-  assert.deepEqual(await unrelated.scan("node-a"), { proposals: [], autoFused: [] });
+  assert.deepEqual(await unrelated.scan("node-a"), { proposals: [], temporaryFusionCount: 0 });
   assert.deepEqual(harness.store.listResearchFusionProposalsByNode("node-a"), []);
 
   const malformed = new ResearchFusionProposalService(harness.store, new TermDetectionService(), async () => ({
     async verifyResearchSimilarity() { return { relationType: "contrast", reason: null as unknown as string }; },
   }));
-  assert.deepEqual(await malformed.scan("node-a"), { proposals: [], autoFused: [] });
+  assert.deepEqual(await malformed.scan("node-a"), { proposals: [], temporaryFusionCount: 0 });
   assert.deepEqual(harness.store.listResearchFusionProposalsByNode("node-a"), []);
 });
 
@@ -467,6 +467,13 @@ async function createFusionHarness(options?: { similarityVerifier?: SimilarityVe
     similarityVerifier: options?.similarityVerifier ?? {
       async verifyResearchSimilarity() {
         return { relationType: "contrast", reason: "同名角色来自不同作品。" };
+      },
+      async discoverTemporaryFusion(input) {
+        return {
+          hasNovelInsight: true,
+          body: "## 新认识\n\n两个来源共同表明，同名角色的叙事功能随作品世界观而改变。[来源1][来源2]",
+          usedSourceNodeIds: input.sources.map((source) => source.nodeId),
+        };
       },
     },
   });
@@ -686,175 +693,202 @@ test("#31 composeFusion gateway uses the versioned prompt with three sections an
   );
 });
 
-// ── #32 F3 自动融合 ─────────────────────────────────────────────
+// ── B 面临时融合发现 ────────────────────────────────────────────
 
-test("#32 isHighConfidenceFusion classifies relation types", () => {
-  assert.equal(isHighConfidenceFusion("identity"), true);
-  assert.equal(isHighConfidenceFusion("shared-concept"), true);
-  assert.equal(isHighConfidenceFusion("analogy"), false);
-  assert.equal(isHighConfidenceFusion("contrast"), false);
+test("temporary fusion discovery gateway separates novelty from similarity and records its audit boundary", async () => {
+  const provider = new FakeProvider([JSON.stringify({
+    hasNovelInsight: true,
+    body: "## 新认识\n\n两个来源共同揭示同名角色承担不同叙事功能。[来源1][来源2]",
+    usedSourceNodeIds: ["node-a", "node-b"],
+  })]);
+  const gateway = new ModelGateway(provider, { model: "fake-temporary-fusion" });
+  const calls: Array<{ purpose?: string; promptVersion: string; tokenBudget?: number }> = [];
+  gateway.setCallListener((event) => {
+    calls.push({
+      purpose: event.context.purpose,
+      promptVersion: event.promptVersion,
+      tokenBudget: event.context.tokenBudget,
+    });
+  });
+  const result = await gateway.discoverTemporaryFusion({
+    sources: [
+      { nodeId: "node-a", title: "来源 A", excerpt: "西游记中的孙悟空推动反抗叙事。" },
+      { nodeId: "node-b", title: "来源 B", excerpt: "七龙珠中的孙悟空推动成长叙事。" },
+    ],
+    relationType: "contrast",
+  }, { context: { tokenBudget: TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET } });
+  assert.equal(result.hasNovelInsight, true);
+  assert.match(provider.calls[0]?.prompt ?? "", /相似、同名、共享主题、一般性比较或重复摘要本身不是新增认识/);
+  assert.deepEqual(calls, [{
+    purpose: "temporary_fusion_discovery",
+    promptVersion: TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION,
+    tokenBudget: TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET,
+  }]);
 });
 
-test("#32 auto fusion stays off by default: scan keeps weak hints and creates no fusion node", async (t) => {
+test("global scan includes active nodes from another untrashed session", async (t) => {
   const harness = await createHarness();
   t.after(harness.close);
+  const otherSession: ResearchSessionRecord = {
+    id: "session-2", title: "跨会话来源", status: "archived", isFavorite: false,
+    createdAt: harness.now, updatedAt: harness.now,
+  };
+  await harness.store.createResearchSession(otherSession, "session-2-key");
+  const otherNode: ResearchNodeRecord = {
+    id: "node-cross-session", sessionId: otherSession.id, status: "active",
+    createdAt: harness.now, updatedAt: harness.now,
+  };
+  await harness.store.createResearchNode(otherNode, "node:cross-session");
+  const otherMessage: ResearchMessageRecord = {
+    id: "message-cross-session", sessionId: otherSession.id, nodeId: otherNode.id, role: "assistant",
+    content: "另一场研究同样记录了天文观测的校验方法。", status: "completed",
+    createdAt: harness.now, updatedAt: harness.now,
+  };
+  const db = (harness.store as unknown as { db(): import("node:sqlite").DatabaseSync }).db();
+  db.prepare("INSERT INTO research_messages (id, session_id, node_id, branch_id, role, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(otherMessage.id, otherMessage.sessionId, otherMessage.nodeId!, null, otherMessage.role, otherMessage.status, otherMessage.createdAt, otherMessage.updatedAt, JSON.stringify(otherMessage));
+  await harness.store.replaceSlicesForMessage(otherMessage.id, [{
+    id: "slice:cross-session:0", nodeId: otherNode.id, messageId: otherMessage.id, ordinal: 0,
+    title: "跨会话天文", normalizedConcepts: ["天文观测"], sourceRefs: [], isProvisional: false, createdAt: harness.now,
+  }]);
+
+  const service = new ResearchFusionProposalService(harness.store, new TermDetectionService(), async () => ({
+    async verifyResearchSimilarity() { return { relationType: "shared-concept", reason: "两场研究都涉及天文观测。" }; },
+  }));
+  const result = await service.scan("node-c");
+  assert.equal(result.proposals.length, 1);
+  assert.deepEqual(
+    result.proposals[0]!.triggerSources.map((source) => source.nodeId).sort(),
+    ["node-c", "node-cross-session"],
+  );
+});
+
+test("temporary fusion discovery stays off by default", async (t) => {
+  const harness = await createHarness();
+  t.after(harness.close);
+  let discoveryCalls = 0;
   const service = new ResearchFusionProposalService(
     harness.store,
     new TermDetectionService(),
-    async () => ({ async verifyResearchSimilarity() { return { relationType: "identity", reason: "两处材料为同一实体。" }; } }),
+    async () => ({
+      async verifyResearchSimilarity() { return { relationType: "identity", reason: "两处材料为同一实体。" }; },
+      async discoverTemporaryFusion() {
+        discoveryCalls += 1;
+        return { hasNovelInsight: false, body: "", usedSourceNodeIds: [] };
+      },
+    }),
   );
   const result = await service.scan("node-a");
-  assert.equal(harness.store.getSetting(AUTO_FUSION_SETTING_KEY), undefined, "switch defaults to unset");
-  assert.deepEqual(result.autoFused, []);
-  assert.equal(result.proposals.length, 1);
+  assert.equal(harness.store.getSetting(AUTO_FUSION_SETTING_KEY), undefined);
+  assert.equal(discoveryCalls, 0);
+  assert.equal(result.temporaryFusionCount, 0);
   assert.equal(result.proposals[0]?.status, "pending");
-  // 即使高置信（identity），开关关闭也不建融合节点。
-  assert.ok(harness.store.listResearchNodes("session-1").every((node) => !node.isAutoFusionNode && !node.isFusionNode));
 });
 
-test("#32 auto fusion fuses high-confidence proposals when the switch is on and marks the node", async (t) => {
-  const harness = await createFusionHarness({
-    similarityVerifier: {
-      async verifyResearchSimilarity() {
-        return { relationType: "identity", reason: "两处材料为同一实体。" };
-      },
+function qualifyingTemporaryFusionGateway(): SimilarityVerificationGateway {
+  return {
+    async verifyResearchSimilarity() {
+      return { relationType: "contrast", reason: "两份材料具有可比较的叙事结构。" };
     },
-  });
-  t.after(harness.close);
-  const { store } = harness;
-  await store.saveSetting(AUTO_FUSION_SETTING_KEY, "true");
-  const result = await harness.service.fusionProposals.scan("node-a");
-
-  assert.equal(result.autoFused.length, 1);
-  const fused = result.autoFused[0]!;
-  assert.equal(fused.proposalId, result.proposals[0]?.id, "auto result links the triggering proposal");
-
-  const node = store.getResearchNode(fused.nodeId);
-  assert.ok(node, "auto fusion node exists");
-  assert.equal(node?.isFusionNode, true);
-  assert.equal(node?.isAutoFusionNode, true, "auto fusion node is explicitly marked");
-  assert.equal(node?.triggerFusionProposalId, fused.proposalId, "auto fusion node links back to the proposal");
-
-  // 提案已 accepted（留痕可见）；任务已排队；fused-from 边已建。
-  assert.equal(store.getResearchFusionProposal(fused.proposalId)?.status, "accepted");
-  assert.equal(result.proposals[0]?.status, "accepted", "accepted proposal is still returned for traceability");
-  const task = store.listResearchTasksByNode(fused.nodeId)[0];
-  assert.ok(task, "auto fusion task queued");
-  assert.equal(task.status, "queued");
-  assert.equal(task?.fusionPlan?.sources.length, 2);
-  assert.equal(store.listResearchEdgesByNode(fused.nodeId).filter((edge) => edge.kind === "fused-from").length, 2);
-
-  // 任务照常走研究管线生成融合正文。
-  await harness.service.research.processTask(task!.id);
-  const completed = store.getResearchTask(task!.id);
-  assert.equal(completed?.status, "completed");
-  assert.match(store.getResearchMessage(completed!.outputMessageId)?.content ?? "", /## 共同核心/);
-});
-
-test("#32 auto fusion keeps low-confidence proposals as weak hints", async (t) => {
-  const harness = await createFusionHarness();
-  t.after(harness.close);
-  const { store } = harness;
-  await store.saveSetting(AUTO_FUSION_SETTING_KEY, "true");
-  const result = await harness.service.fusionProposals.scan("node-a");
-
-  assert.deepEqual(result.autoFused, [], "contrast is low confidence and stays manual");
-  assert.equal(result.proposals.length, 1);
-  assert.equal(result.proposals[0]?.status, "pending", "weak hint remains pending for step-by-step confirmation");
-  assert.equal(store.listResearchFusionProposalsByNode("node-a").length, 1);
-});
-
-test("#32 auto fusion only fuses proposals that appear after the switch is on", async (t) => {
-  const harness = await createFusionHarness();
-  t.after(harness.close);
-  const { store } = harness;
-  // 先关开关扫描一次：pending 提案落库。
-  const first = await harness.service.fusionProposals.scan("node-a");
-  assert.equal(first.proposals[0]?.status, "pending");
-  assert.deepEqual(first.autoFused, []);
-
-  // 再开开关扫描：已存在提案不自动融合。
-  await store.saveSetting(AUTO_FUSION_SETTING_KEY, "true");
-  const second = await harness.service.fusionProposals.scan("node-a");
-  assert.deepEqual(second.autoFused, [], "pre-existing proposals never auto-fuse");
-  assert.equal(second.proposals[0]?.status, "pending");
-  assert.ok(store.listResearchNodes("session-1").every((node) => !node.isAutoFusionNode));
-});
-
-test("#32 auto fusion is idempotent across repeated scans", async (t) => {
-  const harness = await createFusionHarness({
-    similarityVerifier: {
-      async verifyResearchSimilarity() {
-        return { relationType: "shared-concept", reason: "两处材料共享同一概念。" };
-      },
+    async discoverTemporaryFusion(input, options) {
+      assert.equal(options?.context?.purpose, "temporary_fusion_discovery");
+      assert.equal(options?.context?.promptVersion, TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION);
+      return {
+        hasNovelInsight: true,
+        body: "## 新认识\n\n两个来源共同表明，角色身份差异会改变同名概念承担的叙事功能。[来源1][来源2]",
+        usedSourceNodeIds: input.sources.map((source) => source.nodeId),
+      };
     },
-  });
-  t.after(harness.close);
-  const { store } = harness;
-  await store.saveSetting(AUTO_FUSION_SETTING_KEY, "true");
-  const first = await harness.service.fusionProposals.scan("node-a");
-  assert.equal(first.autoFused.length, 1);
-
-  // 第二次扫描：提案已 accepted，verifyCandidate 短路返回，不重复自动融合。
-  const second = await harness.service.fusionProposals.scan("node-a");
-  assert.deepEqual(second.autoFused, []);
-  assert.equal(second.proposals[0]?.status, "accepted");
-  assert.equal(store.listResearchNodes("session-1").filter((node) => node.isAutoFusionNode).length, 1);
-  assert.equal(store.listAllResearchEdges().filter((edge) => edge.kind === "fused-from").length, 2);
-});
-
-test("#32 auto fusion degrades honestly when sources are not traceable", async (t) => {
-  const harness = await createFusionHarness();
-  t.after(harness.close);
-  const { store } = harness;
-  await store.saveSetting(AUTO_FUSION_SETTING_KEY, "true");
-  // 制造不可回溯来源：把全部触发来源替换成无 bodyVersionId/fragmentId 的孤儿。
-  const before = store.listResearchFusionProposalsByNode("node-a");
-  assert.equal(before.length, 0);
-  const proposal: ResearchFusionProposalRecord = {
-    id: researchFusionProposalId("node-a", "node-b"),
-    loNodeId: "node-a",
-    hiNodeId: "node-b",
-    relationType: "identity",
-    reason: "同一实体。",
-    status: "pending",
-    triggerSources: [
-      { nodeId: "node-a", sliceId: "slice:missing:0" },
-      { nodeId: "node-b", sliceId: "slice:missing:0" },
-    ],
-    verification: {
-      promptVersion: SIMILARITY_VERIFICATION_PROMPT_VERSION,
-      sourceSliceIds: ["slice:missing:0"],
-      tokenBudget: SIMILARITY_VERIFICATION_TOKEN_BUDGET,
-    },
-    createdAt: harness.now,
-    updatedAt: harness.now,
   };
-  await store.createResearchFusionProposal(proposal);
-  // 手动构造带不可回溯提案的服务并扫描：不抛错、不自动融合、保持 pending。
-  const service = new ResearchFusionProposalService(
-    store,
+}
+
+test("qualifying discovery persists one verified B-side bundle without formal nodes or permanent edges", async (t) => {
+  const harness = await createFusionHarness({ similarityVerifier: qualifyingTemporaryFusionGateway() });
+  t.after(harness.close);
+  await harness.store.saveSetting(AUTO_FUSION_SETTING_KEY, "true");
+  const formalBefore = harness.store.listResearchNodes("session-1").length;
+  const edgesBefore = harness.store.listResearchPermanentEdges();
+
+  const result = await harness.service.fusionProposals.scan("node-a");
+  assert.equal(result.temporaryFusionCount, 1);
+  assert.equal(result.proposals[0]?.status, "pending", "temporary creation is not formal confirmation");
+  assert.equal(harness.store.listResearchNodes("session-1").length, formalBefore);
+  assert.deepEqual(harness.store.listResearchPermanentEdges(), edgesBefore);
+
+  const temporary = harness.store.listTemporaryFusionNodes()[0]!;
+  const bundle = harness.store.getTemporaryFusionBundle(temporary.id)!;
+  assert.equal(temporary.triggerProposalId, result.proposals[0]?.id);
+  assert.equal(bundle.activeDraft.evidenceStatus, "verified");
+  assert.match(bundle.activeDraft.body, /\[来源1\]\[来源2\]/);
+  assert.equal(new Set(bundle.candidateSources.map((source) => source.sourceNodeId)).size, 2);
+  for (const source of bundle.candidateSources) {
+    assert.ok(harness.store.getBodyVersion(source.bodyVersionId));
+    assert.ok(source.fragmentIds.length > 0);
+  }
+});
+
+test("zero-source, one-source, no-novelty, and insufficient evidence never create a temporary fusion", async (t) => {
+  const cases: Array<{ name: string; discover: NonNullable<SimilarityVerificationGateway["discoverTemporaryFusion"]> }> = [
+    {
+      name: "no novelty",
+      async discover() { return { hasNovelInsight: false, body: "", usedSourceNodeIds: [] }; },
+    },
+    {
+      name: "one source",
+      async discover(input) { return { hasNovelInsight: true, body: "只有一个来源。[来源1]", usedSourceNodeIds: [input.sources[0]!.nodeId] }; },
+    },
+    {
+      name: "missing evidence citation",
+      async discover(input) { return { hasNovelInsight: true, body: "声称使用两个来源但只定位一个。[来源1]", usedSourceNodeIds: input.sources.map((source) => source.nodeId) }; },
+    },
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.name, async (subtest) => {
+      const harness = await createFusionHarness({
+        similarityVerifier: {
+          async verifyResearchSimilarity() { return { relationType: "shared-concept", reason: "存在相关性。" }; },
+          discoverTemporaryFusion: scenario.discover,
+        },
+      });
+      subtest.after(harness.close);
+      await harness.store.saveSetting(AUTO_FUSION_SETTING_KEY, "true");
+      const result = await harness.service.fusionProposals.scan("node-a");
+      assert.equal(result.temporaryFusionCount, 0);
+      assert.deepEqual(harness.store.listTemporaryFusionNodes(), []);
+    });
+  }
+});
+
+test("temporary fusion creation is stable across retry and service restart", async (t) => {
+  const gateway = qualifyingTemporaryFusionGateway();
+  const harness = await createFusionHarness({ similarityVerifier: gateway });
+  t.after(harness.close);
+  await harness.store.saveSetting(AUTO_FUSION_SETTING_KEY, "true");
+  const first = await harness.service.fusionProposals.scan("node-a");
+  const firstId = harness.store.listTemporaryFusionNodes()[0]?.id;
+  assert.equal(first.temporaryFusionCount, 1);
+
+  const restarted = new ResearchFusionProposalService(
+    harness.store,
     new TermDetectionService(),
-    async () => undefined,
+    async () => gateway,
     () => new Date(harness.now),
     harness.service.research,
   );
-  // verifyCandidate 不会重核验（已存在 pending），直接返回 existing。
-  const result = await service.scan("node-a");
-  assert.deepEqual(result.autoFused, []);
-  assert.equal(result.proposals[0]?.status, "pending", "untraceable source keeps weak hint");
+  const second = await restarted.scan("node-a");
+  assert.equal(second.temporaryFusionCount, 1);
+  assert.equal(harness.store.listTemporaryFusionNodes()[0]?.id, firstId);
+  assert.equal(harness.store.listTemporaryFusionNodes().length, 1);
 });
 
-test("#32 confirmFusion without options leaves the fusion node unmarked (manual path unaffected)", async (t) => {
+test("manual confirmation remains an explicit formal path", async (t) => {
   const harness = await createFusionHarness();
   t.after(harness.close);
   const { service, store } = harness;
   const { proposals: [proposal] } = await service.fusionProposals.scan("node-a");
   const accepted = await service.fusionProposals.confirmFusion(proposal!.id, "fusion-idempotency-manual");
-  const node = store.getResearchNode(accepted.node.id);
-  assert.equal(node?.isFusionNode, true);
-  assert.equal(node?.isAutoFusionNode, undefined, "manual confirmation is not marked as auto");
-  assert.equal(node?.triggerFusionProposalId, undefined);
+  assert.equal(store.getResearchNode(accepted.node.id)?.isFusionNode, true);
+  assert.equal(store.listTemporaryFusionNodes().length, 0);
   assert.equal(accepted.task.idempotencyKey, "fusion-idempotency-manual");
 });
 
@@ -866,7 +900,7 @@ async function addConceptNode(
 ) {
   const now = harness.now;
   await harness.store.createResearchNode(
-    { id, sessionId: "session-1", status: "active", createdAt: now, updatedAt: now, ...(options.fusion ? { isFusionNode: true, isAutoFusionNode: true } : {}) },
+    { id, sessionId: "session-1", status: "active", createdAt: now, updatedAt: now, ...(options.fusion ? { isFusionNode: true } : {}) },
     `node:${id}`,
   );
   const message: ResearchMessageRecord = {
@@ -906,7 +940,7 @@ test("融合护栏：融合成果不参与候选配对，也不作为扫描焦�
 
   const fusionFocus = await service.scan("node-f");
   assert.equal(verifierCalls, 1, "融合节点作为焦点时不产生任何新核验");
-  assert.deepEqual(fusionFocus.autoFused, []);
+  assert.equal(fusionFocus.temporaryFusionCount, 0);
 });
 
 test("融合护栏：单次扫描最多核验 12 个候选对", async (t) => {
@@ -932,11 +966,18 @@ test("融合护栏：单次扫描最多核验 12 个候选对", async (t) => {
   assert.equal(result.proposals.length, 12);
 });
 
-test("融合护栏：单轮自动融合最多 3 个，其余保留为待确认提议", async (t) => {
+test("融合护栏：单轮最多创建 3 个临时融合，其余提议保持待核验", async (t) => {
   const harness = await createFusionHarness({
     similarityVerifier: {
       async verifyResearchSimilarity() {
         return { relationType: "identity", reason: "两处材料为同一实体。" };
+      },
+      async discoverTemporaryFusion(input) {
+        return {
+          hasNovelInsight: true,
+          body: "## 新认识\n\n多个来源共同形成可定位的新认识。[来源1][来源2]",
+          usedSourceNodeIds: input.sources.map((source) => source.nodeId),
+        };
       },
     },
   });
@@ -948,14 +989,13 @@ test("融合护栏：单轮自动融合最多 3 个，其余保留为待确认�
   await harness.store.saveSetting(AUTO_FUSION_SETTING_KEY, "true");
 
   const result = await harness.service.fusionProposals.scan("node-a");
-  assert.equal(result.autoFused.length, 3, "自动融合数量被截断到单轮上限");
-  assert.equal(result.proposals.filter((proposal) => proposal.status === "accepted").length, 3);
-  assert.ok(result.proposals.some((proposal) => proposal.status === "pending"), "超出上限的提议保留为待确认");
-  const fusionNodes = harness.store.listResearchNodes("session-1").filter((node) => node.isFusionNode);
-  assert.equal(fusionNodes.length, 3);
+  assert.equal(result.temporaryFusionCount, 3, "临时融合数量被截断到单轮上限");
+  assert.ok(result.proposals.every((proposal) => proposal.status === "pending"));
+  assert.equal(harness.store.listResearchNodes("session-1").filter((node) => node.isFusionNode).length, 0);
+  assert.equal(harness.store.listResearchPermanentEdges().length, 0);
 });
 
-test("融合护栏：会话融合节点达到上限后扫描只返回既有提议", async (t) => {
+test("正式融合节点数量不阻塞独立的临时候选扫描", async (t) => {
   const harness = await createHarness();
   t.after(harness.close);
   for (let index = 0; index < 12; index += 1) {
@@ -968,15 +1008,15 @@ test("融合护栏：会话融合节点达到上限后扫描只返回既有提�
     async () => ({
       async verifyResearchSimilarity() {
         verifierCalls += 1;
-        return { relationType: "shared-concept", reason: "不应被调用。" };
+        return { relationType: "shared-concept", reason: "普通来源仍可核验。" };
       },
     }),
   );
 
   const result = await service.scan("node-a");
-  assert.equal(verifierCalls, 0, "达到上限后不再发起核验");
-  assert.deepEqual(result.proposals, []);
-  assert.deepEqual(result.autoFused, []);
+  assert.equal(verifierCalls, 1);
+  assert.equal(result.proposals.length, 1);
+  assert.equal(result.temporaryFusionCount, 0);
 });
 
 test("融合护栏：涉及融合节点的提议不再可确认；会话超上限也不可确认", async (t) => {

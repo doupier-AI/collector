@@ -7,8 +7,8 @@ type State =
   | { kind: "ready"; enabled: boolean };
 
 /**
- * #32 自动融合设置页：开关默认关闭；开启后进入/刷新研究节点页时自动扫描相似概念，
- * 同一实体 / 共享概念自动融合并标记「自动生成」，类比 / 对比保持逐条确认弱提示。
+ * 临时融合发现设置：开关默认关闭；开启后独立核验多来源新增认识，
+ * 合格结果只进入 B 面临时层，不创建正式节点或永久关系。
  */
 export function FusionSettingsPage() {
   const { api } = useServices();
@@ -18,7 +18,7 @@ export function FusionSettingsPage() {
 
   const load = useCallback(async () => {
     if (!api.getFusionAutoConfig) {
-      setState({ kind: "error", message: "当前客户端不支持自动融合设置" });
+      setState({ kind: "error", message: "当前客户端不支持临时融合发现设置" });
       return;
     }
     setState((current) => (current.kind === "ready" ? current : { kind: "loading" }));
@@ -26,7 +26,7 @@ export function FusionSettingsPage() {
       const config = await api.getFusionAutoConfig();
       setState({ kind: "ready", enabled: config.enabled });
     } catch (error) {
-      setState({ kind: "error", message: error instanceof Error ? error.message : "读取自动融合设置失败" });
+      setState({ kind: "error", message: error instanceof Error ? error.message : "读取临时融合发现设置失败" });
     }
   }, [api]);
 
@@ -43,7 +43,7 @@ export function FusionSettingsPage() {
         await api.updateFusionAutoConfig(enabled);
         setState({ kind: "ready", enabled });
       } catch (cause) {
-        setSaveError(cause instanceof Error ? cause.message : "保存自动融合设置失败");
+        setSaveError(cause instanceof Error ? cause.message : "保存临时融合发现设置失败");
       } finally {
         setSaving(false);
       }
@@ -54,7 +54,7 @@ export function FusionSettingsPage() {
   if (state.kind === "loading") {
     return (
       <div className="page">
-        <p className="settings-status">正在读取自动融合设置…</p>
+        <p className="settings-status">正在读取临时融合发现设置…</p>
       </div>
     );
   }
@@ -69,11 +69,11 @@ export function FusionSettingsPage() {
   }
 
   return (
-    <section className="page" aria-label="自动融合">
-      <h1 className="page__title">自动融合</h1>
+    <section className="page" aria-label="临时融合发现">
+      <h1 className="page__title">临时融合发现</h1>
       <p className="settings-form__hint">
-        开启后，进入或刷新研究节点页时自动扫描相似概念。同一实体与共享概念的提议自动生成融合节点并标记「自动生成」；
-        类比与对比保持逐条确认的弱提示。自动融合不改变来源可回溯与跨领域同名判定规则，只处理开启后新出现的提议。
+        开启后，进入或刷新研究节点页时会先查找相关正式内容，再独立判断是否形成了具体、多来源且证据可定位的新认识。
+        合格结果只保存为待核验的临时融合；当前阅读不会跳转、弹窗或新增对话消息。
       </p>
       <div className="settings-form__field">
         <label className="settings-form__label settings-form__label--toggle">
@@ -82,12 +82,12 @@ export function FusionSettingsPage() {
             checked={state.enabled}
             disabled={saving}
             onChange={(event) => void handleToggle(event.target.checked)}
-            aria-describedby="auto-fusion-hint"
+            aria-describedby="temporary-fusion-hint"
           />
-          自动融合
+          自动发现临时融合
         </label>
-        <p className="settings-form__hint" id="auto-fusion-hint">
-          {state.enabled ? "已开启：高置信提议将自动生成融合节点。" : "已关闭：核验成立的提议只呈现弱提示。"}
+        <p className="settings-form__hint" id="temporary-fusion-hint">
+          {state.enabled ? "已开启：合格的新认识会进入临时层等待核验。" : "已关闭：不会自动创建临时融合。"}
         </p>
       </div>
       {saveError ? <p className="settings-status settings-status--error" role="alert">{saveError}</p> : null}

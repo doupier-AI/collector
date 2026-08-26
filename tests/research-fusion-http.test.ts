@@ -91,14 +91,15 @@ test("fusion proposal HTTP scans, lists, decides, and exposes pending weak hints
     method: "POST", headers: headers(harness.token), body: "{}",
   });
   assert.equal(scan.status, 200);
-  const { proposals } = await scan.json() as { proposals: Array<{
+  const { proposals, temporaryFusionCount } = await scan.json() as { proposals: Array<{
     id: string;
     status: string;
     relationType: string;
     reason: string;
     triggerSources: FusionProposalTriggerSource[];
-  }>; autoFused: unknown[] };
+  }>; temporaryFusionCount: number };
   assert.equal(proposals.length, 1);
+  assert.equal(temporaryFusionCount, 0);
   assert.equal(proposals[0].status, "pending");
   assert.equal(proposals[0].relationType, "contrast");
   assert.match(proposals[0].reason, /不同作品/);
@@ -268,7 +269,7 @@ test("融合正文遇到显式 think 协议时只保留干净前缀且不生成�
   assert.equal(harness.store.getBodyVersionForMessage(accepted.task.outputMessageId), undefined);
 });
 
-// ── #32 自动融合 HTTP ─────────────────────────────────────────
+// ── 临时融合发现设置 HTTP ─────────────────────────────────────
 
 test("#32 fusion auto config defaults off, persists, and validates the body", async (t) => {
   const harness = await createHarness();
@@ -295,11 +296,18 @@ test("#32 fusion auto config defaults off, persists, and validates the body", as
   assert.equal(harness.store.getSetting("research_fusion_auto"), "true");
 });
 
-test("#32 fusion auto HTTP fuses high-confidence proposals with auto marking and accepted trace", async (t) => {
+test("#71 enabled discovery writes a B-side temporary fusion without changing formal nodes", async (t) => {
   const harness = await createHarness({
     similarityVerifier: {
       async verifyResearchSimilarity() {
         return { relationType: "identity", reason: "两处材料为同一实体。" };
+      },
+      async discoverTemporaryFusion(input) {
+        return {
+          hasNovelInsight: true,
+          body: "## 临时融合草稿\n\n两处材料指向同一实体，但需核验作品语境差异。[来源1][来源2]",
+          usedSourceNodeIds: input.sources.map((source) => source.nodeId),
+        };
       },
     },
   });
@@ -313,28 +321,24 @@ test("#32 fusion auto HTTP fuses high-confidence proposals with auto marking and
     method: "POST", headers: headers(harness.token), body: "{}",
   });
   assert.equal(scan.status, 200);
-  const result = await scan.json() as { proposals: Array<{ id: string; status: string }>; autoFused: Array<{ proposalId: string; nodeId: string; sessionId: string }> };
-  assert.equal(result.autoFused.length, 1);
-  const fused = result.autoFused[0]!;
-  assert.equal(fused.sessionId, "session-1");
-  assert.equal(result.proposals[0]?.id, fused.proposalId, "accepted proposal still returned for traceability");
-  assert.equal(result.proposals[0]?.status, "accepted");
+  const result = await scan.json() as { proposals: Array<{ id: string; status: string }>; temporaryFusionCount: number };
+  assert.equal(result.temporaryFusionCount, 1);
+  assert.equal(result.proposals[0]?.status, "pending", "临时融合不替代人工确认的正式融合提案");
 
-  // 自动融合节点视图：isAutoFusionNode 标记 + 来源可回溯 + accepted 提案留痕。
-  const node = await fetch(`${harness.base}/v1/research-nodes/${encodeURIComponent(fused.nodeId)}`, { headers: headers(harness.token) });
-  assert.equal(node.status, 200);
-  const view = await node.json() as { node: { isFusionNode?: boolean; isAutoFusionNode?: boolean; triggerFusionProposalId?: string } };
-  assert.equal(view.node.isFusionNode, true);
-  assert.equal(view.node.isAutoFusionNode, true);
-  assert.equal(view.node.triggerFusionProposalId, fused.proposalId);
+  const temporary = harness.store.listTemporaryFusionNodes();
+  assert.equal(temporary.length, 1);
+  const bundle = harness.store.getTemporaryFusionBundle(temporary[0]!.id)!;
+  assert.equal(bundle.node.triggerProposalId, result.proposals[0]?.id);
+  assert.equal(bundle.activeDraft.evidenceStatus, "verified");
+  assert.equal(bundle.candidateSources.length, 2);
+  assert.equal(harness.store.listResearchNodes("session-1").filter((node) => node.isFusionNode).length, 0);
+  assert.deepEqual(harness.store.listResearchPermanentEdges(), []);
 
-  // 来源节点视图仍携带 accepted 提案（留痕路径）。
-  const source = await fetch(`${harness.base}/v1/research-nodes/session-1`, { headers: headers(harness.token) });
-  const sourceView = await source.json() as { fusionProposals?: Array<{ id: string; status: string }> };
-  assert.equal(sourceView.fusionProposals?.some((entry) => entry.id === fused.proposalId && entry.status === "accepted"), true);
+  const formalView = await fetch(`${harness.base}/v1/research-nodes/${encodeURIComponent(temporary[0]!.id)}`, { headers: headers(harness.token) });
+  assert.equal(formalView.status, 404, "B 面临时节点不进入正式节点读取路径");
 });
 
-test("#32 fusion auto HTTP keeps low-confidence proposals as weak hints when enabled", async (t) => {
+test("#71 enabled discovery keeps a pending proposal when no concrete new insight is found", async (t) => {
   const harness = await createHarness(); // 缺省 contrast 核验器
   t.after(harness.close);
   const put = await fetch(`${harness.base}/v1/settings/fusion`, {
@@ -345,7 +349,7 @@ test("#32 fusion auto HTTP keeps low-confidence proposals as weak hints when ena
   const scan = await fetch(`${harness.base}/v1/research-nodes/session-1/fusion-proposals/scan`, {
     method: "POST", headers: headers(harness.token), body: "{}",
   });
-  const result = await scan.json() as { proposals: Array<{ id: string; status: string }>; autoFused: unknown[] };
-  assert.deepEqual(result.autoFused, []);
+  const result = await scan.json() as { proposals: Array<{ id: string; status: string }>; temporaryFusionCount: number };
+  assert.equal(result.temporaryFusionCount, 0);
   assert.equal(result.proposals[0]?.status, "pending");
 });

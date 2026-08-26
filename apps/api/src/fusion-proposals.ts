@@ -1,7 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   FUSION_COMPOSE_PROMPT_VERSION,
   SIMILARITY_VERIFICATION_PROMPT_VERSION,
+  TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION,
+  TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET,
   normalizeResearchFusionProposalPair,
   parseFusionReferences,
   researchEdgeId,
@@ -10,7 +12,7 @@ import {
   type FusionRelationType,
   type NodeGrowthAccepted,
   type ResearchEdgeRecord,
-  type ResearchFusionAutoResult,
+  type ResearchCandidateSourceConnectionRecord,
   type ResearchFusionProposalDecision,
   type ResearchFusionProposalRecord,
   type ResearchFusionProposalStatus,
@@ -20,6 +22,7 @@ import {
   type ResearchNodeRecord,
   type ResearchSliceRecord,
   type ResearchTaskRecord,
+  type ResearchTemporaryFusionBundle,
 } from "@collector/capture-contracts";
 import type { ModelCallContext } from "@collector/model-gateway";
 import type { CollectorStore } from "./store.js";
@@ -29,10 +32,10 @@ import type { ResearchSessionService } from "./research.js";
 
 export const SIMILARITY_VERIFICATION_TOKEN_BUDGET = 800;
 export const FUSION_PROPOSAL_COOLDOWN_DAYS = 30;
-/** #32：自动融合开关的 settings 键（"true"/"false"，缺省关闭）。 */
+/** 临时融合发现开关的 settings 键（"true"/"false"，缺省关闭）。 */
 export const AUTO_FUSION_SETTING_KEY = "research_fusion_auto";
-/** #32：自动融合的幂等键命名空间（与用户确认式 `fuse:` 隔离，跨重启稳定）。 */
-export const AUTO_FUSION_IDEMPOTENCY_PREFIX = "auto-fuse:";
+/** 临时融合身份的稳定命名空间；与正式确认式 `fuse:` 隔离。 */
+export const TEMPORARY_FUSION_CREATION_PREFIX = "temporary-fusion:";
 const MAX_VERIFICATION_CONTENT_CHARACTERS = 12_000;
 /**
  * #39：没有归一化概念的片段，只有摘录长度达到该字符数才允许用术语/内容词
@@ -50,8 +53,8 @@ export const MIN_SIMILARITY_FALLBACK_UNIT_CHARACTERS = 20;
  */
 /** 单次扫描最多核验的候选对数；其余留待下次扫描。 */
 export const FUSION_MAX_VERIFICATIONS_PER_SCAN = 12;
-/** 单轮扫描最多自动融合数；超出部分保留为待确认提议。 */
-export const FUSION_MAX_AUTO_FUSIONS_PER_SCAN = 3;
+/** 单轮扫描最多创建的临时融合候选数；其余候选留待后续扫描。 */
+export const FUSION_MAX_TEMPORARY_FUSIONS_PER_SCAN = 3;
 /** 单会话融合节点数上限；达到后扫描只返回既有提议。 */
 export const FUSION_MAX_NODES_PER_SESSION = 12;
 /** 同焦点同候选集合的重复扫描冷却窗口（毫秒）。 */
@@ -70,6 +73,21 @@ export interface SimilarityVerificationGateway {
     },
     options?: { maxTokens?: number; timeoutMs?: number; context?: ModelCallContext },
   ): Promise<{ relationType: FusionRelationType; reason: string }>;
+  discoverTemporaryFusion?(
+    input: {
+      sources: Array<{ nodeId: string; title: string; excerpt: string }>;
+      relationType: FusionRelationType;
+    },
+    options?: { maxTokens?: number; timeoutMs?: number; context?: ModelCallContext },
+  ): Promise<{ hasNovelInsight: boolean; body: string; usedSourceNodeIds: string[] }>;
+}
+
+interface TemporaryFusionSourceMaterial {
+  nodeId: string;
+  title: string;
+  bodyVersionId: string;
+  fragmentIds: string[];
+  excerpt: string;
 }
 
 interface SimilaritySignal {
@@ -238,15 +256,10 @@ export class ResearchFusionProposalService {
     // 护栏：融合成果是结果不是原料——融合节点不做扫描焦点。
     if (focus.isFusionNode) {
       console.log(`[fusion] 扫描跳过：节点 ${nodeId} 是融合成果，不再产生新提议`);
-      return { proposals: this.listExistingForScan(nodeId), autoFused: [] };
+      return this.scanResult(this.listExistingForScan(nodeId));
     }
-    const sessionNodes = this.store.listResearchNodes(focus.sessionId);
-    // 护栏：会话融合节点数达到上限后停止产生新提议（既有提议仍可见）。
-    if (sessionNodes.filter((node) => node.isFusionNode).length >= FUSION_MAX_NODES_PER_SESSION) {
-      console.log(`[fusion] 扫描跳过：会话 ${focus.sessionId} 融合节点数已达上限 ${FUSION_MAX_NODES_PER_SESSION}`);
-      return { proposals: this.listExistingForScan(nodeId), autoFused: [] };
-    }
-    const indexedNodes = sessionNodes
+    // 节点系统是全局观察面：归档节点保留，回收站与正式融合成果不作为候选来源。
+    const indexedNodes = this.store.listAllResearchNodes()
       .filter((node) => !node.isFusionNode)
       .sort((left, right) => left.id.localeCompare(right.id))
       .map((node) => indexNodeSimilaritySignals(
@@ -262,50 +275,50 @@ export class ResearchFusionProposalService {
     }
     const candidates = buildSimilarityCandidates(focus.id, indexedNodes);
     const proposals: ResearchFusionProposalRecord[] = [];
-    const autoFused: ResearchFusionAutoResult[] = [];
     const fingerprint = `${focus.id}\u0000${candidates.map((candidate) => `${candidate.lo.node.id}\u0000${candidate.hi.node.id}`).join("|")}`;
     // 护栏：同焦点同候选集合的重复扫描（进页即重扫、融合后跳转再扫）在冷却
     // 窗口内直接返回既有提议，阻断级联循环。
     const cooldown = this.scanCooldowns.get(nodeId);
     if (cooldown && cooldown.fingerprint === fingerprint && this.now().getTime() - cooldown.at < FUSION_SCAN_COOLDOWN_MS) {
       console.log(`[fusion] 扫描冷却：节点 ${nodeId} 候选集合未变化，${Math.round((FUSION_SCAN_COOLDOWN_MS - (this.now().getTime() - cooldown.at)) / 60000)} 分钟内不重复核验`);
-      return { proposals: this.listExistingForScan(nodeId), autoFused };
+      return this.scanResult(this.listExistingForScan(nodeId));
     }
     if (!candidates.length) {
       this.scanCooldowns.set(nodeId, { fingerprint, at: this.now().getTime() });
-      return { proposals, autoFused };
+      return this.scanResult(proposals);
     }
 
     let gateway: SimilarityVerificationGateway | undefined;
     try {
       gateway = await this.gatewayResolver();
     } catch {
-      // #32：模型不可用时仍返回既有提案（pending/accepted），不隐藏留痕；只是不产生新提议。
-      return { proposals: this.listExistingForScan(nodeId), autoFused };
+      // 模型不可用时仍返回既有提案与当前 B 面数量，不隐藏已持久化结果。
+      return this.scanResult(this.listExistingForScan(nodeId));
     }
-    if (!gateway) return { proposals: this.listExistingForScan(nodeId), autoFused };
+    if (!gateway) return this.scanResult(this.listExistingForScan(nodeId));
 
-    // #32：每次扫描读一次开关（低频用户动作，点读即最新值）。
+    // 每次扫描读一次开关（低频用户动作，点读即最新值）。
     const autoEnabled = this.store.getSetting(AUTO_FUSION_SETTING_KEY) === "true";
-    // #32：只处理"开启后新出现的提议"——扫描前已存在（含开关开启前落库）的 pending 不自动融合。
     const knownIds = new Set(this.store.listResearchFusionProposalsByNode(nodeId).map((proposal) => proposal.id));
     // 护栏：单次扫描只核验前 N 个候选，其余留待下次。
     let verified = 0;
+    let temporaryCreated = 0;
     for (const candidate of candidates.slice(0, FUSION_MAX_VERIFICATIONS_PER_SCAN)) {
       const proposal = await this.verifyCandidate(candidate, gateway);
       if (!proposal) continue;
       verified += 1;
-      if (autoEnabled && proposal.status === "pending" && !knownIds.has(proposal.id) && autoFused.length < FUSION_MAX_AUTO_FUSIONS_PER_SCAN) {
-        const fused = await this.tryAutoFuse(proposal);
-        if (fused) autoFused.push(fused);
+      if (autoEnabled && proposal.status === "pending" && temporaryCreated < FUSION_MAX_TEMPORARY_FUSIONS_PER_SCAN) {
+        if (await this.tryCreateTemporaryFusion(proposal, gateway)) temporaryCreated += 1;
       }
-      // 自动融合成功后提案在 store 中已 accepted——从 store 重读以返回最新状态（留痕可见）。
-      const current = this.store.getResearchFusionProposal(proposal.id) ?? proposal;
-      proposals.push(this.withResolvedFragmentRefs(current));
+      proposals.push(this.withResolvedFragmentRefs(proposal));
     }
     this.scanCooldowns.set(nodeId, { fingerprint, at: this.now().getTime() });
-    console.log(`[fusion] 扫描完成：节点 ${nodeId} 候选=${candidates.length} 核验通过=${verified} 新提议=${proposals.filter((proposal) => !knownIds.has(proposal.id)).length} 自动融合=${autoFused.length}${candidates.length > FUSION_MAX_VERIFICATIONS_PER_SCAN ? `（候选超上限，${candidates.length - FUSION_MAX_VERIFICATIONS_PER_SCAN} 个留待下次）` : ""}`);
-    return { proposals, autoFused };
+    console.log(`[fusion] 扫描完成：节点 ${nodeId} 候选=${candidates.length} 核验通过=${verified} 新提议=${proposals.filter((proposal) => !knownIds.has(proposal.id)).length} 新临时融合=${temporaryCreated}${candidates.length > FUSION_MAX_VERIFICATIONS_PER_SCAN ? `（候选超上限，${candidates.length - FUSION_MAX_VERIFICATIONS_PER_SCAN} 个留待下次）` : ""}`);
+    return this.scanResult(proposals);
+  }
+
+  private scanResult(proposals: ResearchFusionProposalRecord[]): ResearchFusionScanResult {
+    return { proposals, temporaryFusionCount: this.store.listTemporaryFusionNodes().length };
   }
 
   /**
@@ -315,22 +328,119 @@ export class ResearchFusionProposalService {
     return this.store.listResearchFusionProposalsByNode(nodeId).map((proposal) => this.withResolvedFragmentRefs(proposal));
   }
 
-  /**
-   * #32：自动融合。低置信（类比/对比）不自动，回退为弱提示逐条确认；
-   * 融合失败（可回溯来源不足、研究服务未接线等）诚实降级为逐条确认，不阻断整个扫描。
-   */
-  private async tryAutoFuse(proposal: ResearchFusionProposalRecord): Promise<ResearchFusionAutoResult | undefined> {
-    if (!isHighConfidenceFusion(proposal.relationType)) return undefined;
+  /** 相似性只产生候选；独立发现调用确认有新增认识后才事务写入 B 面。 */
+  private async tryCreateTemporaryFusion(
+    proposal: ResearchFusionProposalRecord,
+    gateway: SimilarityVerificationGateway,
+  ): Promise<boolean> {
+    if (!gateway.discoverTemporaryFusion) return false;
+    const creationKey = `${TEMPORARY_FUSION_CREATION_PREFIX}${proposal.id}`;
+    if (this.store.findTemporaryFusionNodeByCreationKey(creationKey)) return false;
     try {
-      const accepted = await this.confirmFusion(
-        proposal.id,
-        `${AUTO_FUSION_IDEMPOTENCY_PREFIX}${proposal.id}`,
-        { autoFused: true },
+      const materials = this.buildTemporaryFusionSourceMaterials(this.withResolvedFragmentRefs(proposal));
+      if (materials.length < 2) return false;
+      const discovery = await gateway.discoverTemporaryFusion(
+        {
+          sources: materials.map(({ nodeId, title, excerpt }) => ({ nodeId, title, excerpt })),
+          relationType: proposal.relationType,
+        },
+        {
+          maxTokens: TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET,
+          timeoutMs: 120_000,
+          context: {
+            workflowRunId: creationKey,
+            purpose: "temporary_fusion_discovery",
+            promptVersion: TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION,
+            sourceFragmentIds: materials.flatMap((source) => source.fragmentIds).sort(),
+            tokenBudget: TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET,
+          },
+        },
       );
-      return { proposalId: proposal.id, nodeId: accepted.node.id, sessionId: accepted.node.sessionId };
+      if (!discovery.hasNovelInsight) return false;
+      const usedIds = new Set(discovery.usedSourceNodeIds);
+      const usedMaterials = materials.filter((source) => usedIds.has(source.nodeId));
+      if (usedMaterials.length < 2 || usedMaterials.length !== usedIds.size) return false;
+      for (const source of usedMaterials) {
+        const ordinal = materials.findIndex((candidate) => candidate.nodeId === source.nodeId) + 1;
+        if (ordinal < 1 || !discovery.body.includes(`[来源${ordinal}]`)) return false;
+      }
+      const timestamp = this.now().toISOString();
+      const temporaryFusionId = randomUUID();
+      const bundle: ResearchTemporaryFusionBundle = {
+        node: {
+          id: temporaryFusionId,
+          creationKey,
+          triggerProposalId: proposal.id,
+          activeDraftVersionId: `${temporaryFusionId}:draft:1`,
+          status: "active",
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+        activeDraft: {
+          id: `${temporaryFusionId}:draft:1`,
+          temporaryFusionNodeId: temporaryFusionId,
+          version: 1,
+          body: discovery.body,
+          contentHash: `sha256:${createHash("sha256").update(discovery.body).digest("hex")}`,
+          evidenceStatus: "verified",
+          createdAt: timestamp,
+        },
+        candidateSources: usedMaterials.map<ResearchCandidateSourceConnectionRecord>((source, index) => ({
+          id: `${temporaryFusionId}:source:${index + 1}`,
+          temporaryFusionNodeId: temporaryFusionId,
+          sourceNodeId: source.nodeId,
+          sourceKind: "formal",
+          bodyVersionId: source.bodyVersionId,
+          fragmentIds: source.fragmentIds,
+          sourceHealth: "available",
+          createdAt: timestamp,
+        })),
+      };
+      const persisted = await this.store.createTemporaryFusionBundle(bundle);
+      return persisted.node.id === temporaryFusionId;
     } catch {
-      return undefined;
+      return false;
     }
+  }
+
+  private buildTemporaryFusionSourceMaterials(proposal: ResearchFusionProposalRecord): TemporaryFusionSourceMaterial[] {
+    const byNode = new Map<string, Map<string, Set<string>>>();
+    for (const source of proposal.triggerSources) {
+      if (!source.bodyVersionId || !source.fragmentId) continue;
+      const versions = byNode.get(source.nodeId) ?? new Map<string, Set<string>>();
+      const fragments = versions.get(source.bodyVersionId) ?? new Set<string>();
+      fragments.add(source.fragmentId);
+      versions.set(source.bodyVersionId, fragments);
+      byNode.set(source.nodeId, versions);
+    }
+    const result: TemporaryFusionSourceMaterial[] = [];
+    for (const [nodeId, versions] of [...byNode.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+      const candidates: TemporaryFusionSourceMaterial[] = [];
+      for (const [bodyVersionId, fragmentIds] of [...versions.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+        const version = this.store.getBodyVersion(bodyVersionId);
+        if (!version) continue;
+        const fragments = this.store.listFragmentsByBodyVersion(bodyVersionId);
+        const resolved = [...fragmentIds].sort().flatMap((fragmentId) => {
+          const fragment = fragments.find((entry) => entry.id === fragmentId);
+          const excerpt = fragment ? tryResolveFragmentExcerpt(version, fragment) : undefined;
+          return excerpt === undefined ? [] : [{ fragmentId, excerpt }];
+        });
+        if (resolved.length === 0) continue;
+        candidates.push({
+          nodeId,
+          title: this.sourceLabelFor(nodeId),
+          bodyVersionId,
+          fragmentIds: resolved.map((entry) => entry.fragmentId),
+          excerpt: resolved.map((entry) => entry.excerpt).join("\n\n"),
+        });
+      }
+      const selected = candidates.sort((left, right) =>
+        right.fragmentIds.length - left.fragmentIds.length
+        || right.excerpt.length - left.excerpt.length
+        || left.bodyVersionId.localeCompare(right.bodyVersionId))[0];
+      if (selected) result.push(selected);
+    }
+    return result;
   }
 
   async decide(id: string, decision: ResearchFusionProposalDecision): Promise<ResearchFusionProposalRecord> {
@@ -377,7 +487,6 @@ export class ResearchFusionProposalService {
   async confirmFusion(
     proposalId: string,
     idempotencyKey: string,
-    options?: { autoFused?: boolean },
   ): Promise<NodeGrowthAccepted> {
     if (!idempotencyKey.trim()) throw new ResearchFusionProposalValidationError("Idempotency-Key is required");
     if (idempotencyKey.length > 200) throw new ResearchFusionProposalValidationError("Idempotency-Key must not exceed 200 characters");
@@ -423,10 +532,6 @@ export class ResearchFusionProposalService {
         ?? this.store.getResearchNode(resolved.hiNodeId)?.sessionId
         ?? "",
       isFusionNode: true,
-      // #32：自动融合标记与触发提议回链（确认式不设；幂等键仍按调用方传入）。
-      ...(options?.autoFused
-        ? { isAutoFusionNode: true, triggerFusionProposalId: proposalId }
-        : {}),
       status: "active",
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
@@ -646,14 +751,6 @@ export class ResearchFusionProposalService {
       this.runningPairs.delete(pairKey);
     }
   }
-}
-
-/**
- * #32：高置信关系类型 → 自动融合；类比/对比低置信 → 保持逐条确认弱提示。
- * 与 #31 提示词语义同向：跨作品、跨领域的同名概念默认对比/联想，仅在证据支持时判为更强断言。
- */
-export function isHighConfidenceFusion(relationType: FusionRelationType): boolean {
-  return relationType === "identity" || relationType === "shared-concept";
 }
 
 function isVerifiedRelationship(value: unknown): value is { relationType: Exclude<FusionRelationType, "unrelated">; reason: string } {

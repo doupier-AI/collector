@@ -444,15 +444,15 @@ test("主题三态：手动选择优先、刷新保持、跟随系统实时响�
   expect(browserIssues.issues, browserIssues.issues.join("\n")).toEqual([]);
 });
 
-test("自动融合设置页：正文与左右侧栏之间保留页面留白", async ({ page }) => {
+test("临时融合发现设置页：正文与左右侧栏之间保留页面留白", async ({ page }) => {
   await pairAndOpen(page, "/settings/fusion");
 
   for (const width of [320, 1024, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     const geometry = await page.evaluate(() => {
       const main = document.querySelector<HTMLElement>(".app-main");
-      const heading = document.querySelector<HTMLElement>('[aria-label="自动融合"] :is(h1, h2)');
-      if (!main || !heading) throw new Error("自动融合设置页尚未渲染");
+      const heading = document.querySelector<HTMLElement>('[aria-label="临时融合发现"] :is(h1, h2)');
+      if (!main || !heading) throw new Error("临时融合发现设置页尚未渲染");
       const mainRect = main.getBoundingClientRect();
       const headingRect = heading.getBoundingClientRect();
       return {

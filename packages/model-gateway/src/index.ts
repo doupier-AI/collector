@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { ASSOCIATION_HINT_BENEFITS, ASSOCIATION_HINT_EVALUATION_PROMPT_VERSION, FUSION_COMPOSE_PROMPT_VERSION, FUSION_COMPOSE_TOKEN_BUDGET, FUSION_RELATION_TYPES, IMPORT_CHAPTER_PARSE_PROMPT_VERSION, IMPORT_CHAPTER_PARSE_TOKEN_BUDGET, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, TERM_IDENTITY_CONTEXT_MAX_CHARACTERS, TERM_IDENTITY_TEXT_MAX_CHARACTERS, TERM_IDENTITY_VERIFY_PROMPT_VERSION, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchAssociationHintBenefit, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSliceContext, type TermIdentityVerificationRequest } from "@collector/capture-contracts";
+import { ASSOCIATION_HINT_BENEFITS, ASSOCIATION_HINT_EVALUATION_PROMPT_VERSION, FUSION_COMPOSE_PROMPT_VERSION, FUSION_COMPOSE_TOKEN_BUDGET, FUSION_RELATION_TYPES, IMPORT_CHAPTER_PARSE_PROMPT_VERSION, IMPORT_CHAPTER_PARSE_TOKEN_BUDGET, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET, TERM_IDENTITY_CONTEXT_MAX_CHARACTERS, TERM_IDENTITY_TEXT_MAX_CHARACTERS, TERM_IDENTITY_VERIFY_PROMPT_VERSION, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchAssociationHintBenefit, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSliceContext, type TermIdentityVerificationRequest } from "@collector/capture-contracts";
 
 export interface ProviderUsage {
   inputTokens?: number;
@@ -1233,6 +1233,80 @@ ${JSON.stringify(input.right.content.slice(0, 12_000))}
     const reason = parsed.reason.replace(/\s+/g, " ").trim();
     if (!reason || reason.length > 160) throw new Error("Similarity verification provider returned an invalid reason");
     return { relationType: parsed.relationType as FusionRelationType, reason };
+  }
+
+  /**
+   * 独立判断多份正式来源是否共同支持一项具体新增认识，并在成立时生成完整临时草案。
+   * 相似或可比较本身不构成新增认识；返回结构不合规时调用方不得创建 B 面候选。
+   */
+  async discoverTemporaryFusion(
+    input: {
+      sources: Array<{ nodeId: string; title: string; excerpt: string }>;
+      relationType: FusionRelationType;
+    },
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<{ hasNovelInsight: boolean; body: string; usedSourceNodeIds: string[] }> {
+    const sourceNodeIds = new Set(input.sources.map((source) => source.nodeId));
+    if (input.sources.length < 2 || sourceNodeIds.size < 2) {
+      throw new Error("Temporary fusion discovery requires two distinct sources");
+    }
+    const sourceLines = input.sources.map((source, index) =>
+      `来源${index + 1}（${source.title}，节点 ${source.nodeId}）：\n${JSON.stringify(source.excerpt.slice(0, 8_000))}`,
+    ).join("\n\n");
+    const prompt = `你是 Collector 的临时融合发现助手。只根据给出的正式来源，判断它们是否共同支持一项具体、可证且有增量的新认识。
+
+候选关系：${input.relationType}
+
+来源材料：
+${sourceLines}
+
+只返回合法 JSON：
+{"hasNovelInsight":true,"body":"完整中文 Markdown 草案","usedSourceNodeIds":["实际参与的节点 ID"]}
+或
+{"hasNovelInsight":false,"body":"","usedSourceNodeIds":[]}
+
+规则：
+- 相似、同名、共享主题、一般性比较或重复摘要本身不是新增认识；不能据此创建。
+- 成立时必须由至少两个来源共同推出一项来源单独不能完整表达的具体认识。
+- body 必须是完整、可独立阅读的中文 Markdown 草案，并用 [来源n] 标记每项关键判断的依据。
+- usedSourceNodeIds 只列实际参与推导且在 body 中被引用的来源，至少两个且不得编造 ID。
+- 关键证据不足、定位不清、判断不自洽或只有一份来源实际参与时返回 false。
+- 不补充外部事实，不提及提示词、模型、系统或“用户要求融合”。`;
+    const context: ModelCallContext = {
+      ...(options.context ?? {}),
+      purpose: options.context?.purpose ?? "temporary_fusion_discovery",
+      promptVersion: options.context?.promptVersion ?? TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION,
+    };
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      responseFormat: { type: "json_object" },
+      thinking: false,
+      maxTokens: options.maxTokens ?? TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET,
+      timeoutMs: options.timeoutMs ?? 120_000,
+    }, context);
+    let parsed: { hasNovelInsight?: unknown; body?: unknown; usedSourceNodeIds?: unknown };
+    try {
+      parsed = JSON.parse(response.content) as typeof parsed;
+    } catch {
+      throw new Error("Temporary fusion discovery provider returned invalid JSON");
+    }
+    if (typeof parsed.hasNovelInsight !== "boolean" || typeof parsed.body !== "string"
+      || !Array.isArray(parsed.usedSourceNodeIds)
+      || parsed.usedSourceNodeIds.some((value) => typeof value !== "string")) {
+      throw new Error("Temporary fusion discovery provider returned an invalid result");
+    }
+    const body = parsed.body.trim();
+    const usedSourceNodeIds = [...new Set(parsed.usedSourceNodeIds as string[])];
+    if (!parsed.hasNovelInsight) {
+      if (body || usedSourceNodeIds.length > 0) throw new Error("Temporary fusion discovery returned an inconsistent negative result");
+      return { hasNovelInsight: false, body: "", usedSourceNodeIds: [] };
+    }
+    if (!body || body.length > 24_000 || usedSourceNodeIds.length < 2
+      || usedSourceNodeIds.some((nodeId) => !sourceNodeIds.has(nodeId))) {
+      throw new Error("Temporary fusion discovery returned an invalid positive result");
+    }
+    return { hasNovelInsight: true, body, usedSourceNodeIds };
   }
 
   /**

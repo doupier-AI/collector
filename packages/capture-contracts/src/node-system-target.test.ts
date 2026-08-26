@@ -96,6 +96,7 @@ describe("node system target contracts", () => {
     const node: ResearchTemporaryFusionNodeRecord = {
       id: "temporary-fusion-1",
       creationKey: "generation-task-1",
+      triggerProposalId: "fusion:proposal-1",
       activeDraftVersionId: "draft-1",
       status: "active",
       createdAt: "2026-08-13T00:00:00.000Z",

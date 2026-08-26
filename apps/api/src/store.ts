@@ -142,6 +142,8 @@ export interface ResearchStore {
   getResearchNode(id: string): ResearchNodeRecord | undefined;
   updateResearchNodeDisplayName(nodeId: string, displayName: string): Promise<ResearchNodeRecord | undefined>;
   listResearchNodes(sessionId: string): ResearchNodeRecord[];
+  /** 全局正式节点集合；排除已进入回收站的会话，保留归档节点。 */
+  listAllResearchNodes(): ResearchNodeRecord[];
   listChildNodes(parentNodeId: string): ResearchNodeRecord[];
   getResearchMessage(id: string): ResearchMessageRecord | undefined;
   listResearchMessages(sessionId: string): ResearchMessageRecord[];
@@ -286,6 +288,7 @@ export interface NodeSystemTargetStore {
   listResearchPermanentEdges(): ResearchPermanentEdgeRecord[];
   createTemporaryFusionBundle(bundle: ResearchTemporaryFusionBundle): Promise<ResearchTemporaryFusionBundle>;
   getTemporaryFusionNode(id: string): ResearchTemporaryFusionNodeRecord | undefined;
+  findTemporaryFusionNodeByCreationKey(creationKey: string): ResearchTemporaryFusionNodeRecord | undefined;
   getTemporaryFusionBundle(id: string): ResearchTemporaryFusionBundle | undefined;
   listTemporaryFusionNodes(): ResearchTemporaryFusionNodeRecord[];
   deleteTemporaryFusionNode(id: string): Promise<boolean>;
@@ -898,6 +901,16 @@ export class SqliteStore implements CollectorStore {
     return this.listRecords<ResearchNodeRecord>("SELECT record_json FROM research_nodes WHERE session_id = ? ORDER BY updated_at DESC, created_at DESC", sessionId);
   }
 
+  listAllResearchNodes(): ResearchNodeRecord[] {
+    return this.listRecords<ResearchNodeRecord>(`
+      SELECT n.record_json
+      FROM research_nodes n
+      INNER JOIN research_sessions s ON s.id = n.session_id
+      WHERE json_extract(s.record_json, '$.trashedAt') IS NULL
+      ORDER BY n.updated_at DESC, n.created_at DESC, n.id
+    `);
+  }
+
   listChildNodes(parentNodeId: string): ResearchNodeRecord[] {
     return this.listRecords<ResearchNodeRecord>("SELECT record_json FROM research_nodes WHERE parent_node_id = ? ORDER BY created_at, rowid", parentNodeId);
   }
@@ -1406,6 +1419,13 @@ export class SqliteStore implements CollectorStore {
     return this.getRecord<ResearchTemporaryFusionNodeRecord>(
       "SELECT record_json FROM research_temporary_fusion_nodes WHERE id = ?",
       id,
+    );
+  }
+
+  findTemporaryFusionNodeByCreationKey(creationKey: string): ResearchTemporaryFusionNodeRecord | undefined {
+    return this.getRecord<ResearchTemporaryFusionNodeRecord>(
+      "SELECT record_json FROM research_temporary_fusion_nodes WHERE creation_key = ?",
+      creationKey,
     );
   }
 
