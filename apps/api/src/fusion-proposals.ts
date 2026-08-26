@@ -261,8 +261,11 @@ export class ResearchFusionProposalService {
       return this.scanResult(this.listExistingForScan(nodeId));
     }
     // 节点系统是全局观察面：归档节点保留，回收站与正式融合成果不作为候选来源。
+    const discoverableSessionIds = new Set(this.store.listResearchSessions()
+      .filter((session) => !session.trashedAt)
+      .map((session) => session.id));
     const indexedNodes = this.store.listAllResearchNodes()
-      .filter((node) => !node.isFusionNode)
+      .filter((node) => discoverableSessionIds.has(node.sessionId) && !node.isFusionNode)
       .sort((left, right) => left.id.localeCompare(right.id))
       .map((node) => indexNodeSimilaritySignals(
         node,

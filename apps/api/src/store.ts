@@ -16,6 +16,7 @@ import {
   type ResearchFusionDraftRevalidationTaskRecord,
   type ResearchFusionEvidenceStatus,
   type ResearchPermanentEdgeRecord,
+  type ResearchSourceHealth,
   type ResearchTemporaryFusionBundle,
   type ResearchTemporaryFusionMessageRecord,
   type ResearchTemporaryFusionNodeRecord,
@@ -215,6 +216,7 @@ export interface ResearchStore {
 /** 深入研究所需的持久化能力：40 个方法。 */
 export interface DeepResearchStore {
   listResearchSessions(): ResearchSessionRecord[];
+  listTrashedResearchSessions(): ResearchSessionRecord[];
   listProjects(): ProjectRecord[];
   /** B 面候选只读投影；不把它们伪装成正式研究节点。 */
   listTemporaryFusionNodes(): ResearchTemporaryFusionNodeRecord[];
@@ -263,6 +265,8 @@ export interface DeepResearchStore {
   createResearchEdge(edge: ResearchEdgeRecord): Promise<ResearchEdgeRecord>;
   /** 查询全部活跃边（调用方按会话节点集合过滤）。 */
   listAllResearchEdges(): ResearchEdgeRecord[];
+  /** 已确认融合的直接来源当前健康投影；不修改确认快照。 */
+  listConfirmedFusionSourceHealth(): Array<{ fusionNodeId: string; sourceHealth: ResearchSourceHealth }>;
   listAssociationHints(status?: ResearchAssociationHintRecord["status"]): ResearchAssociationHintRecord[];
 }
 
@@ -804,6 +808,7 @@ export class SqliteStore implements CollectorStore {
       `).run(id);
       this.db().prepare("DELETE FROM semantic_search_units_fts WHERE rowid IN (SELECT rowid FROM semantic_search_units WHERE session_id = ?)").run(id);
       this.db().prepare("DELETE FROM semantic_search_units WHERE session_id = ?").run(id);
+      this.updateCandidateSourceHealthForSession(id, "temporarily-unavailable");
       this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
         .run(trashedAt, JSON.stringify(record), id);
     });
@@ -817,9 +822,35 @@ export class SqliteStore implements CollectorStore {
     delete (record as ResearchSessionRecord & { trashedAt?: string }).trashedAt;
     const now = new Date().toISOString();
     record.updatedAt = now;
-    this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
-      .run(now, JSON.stringify(record), id);
+    this.transaction(() => {
+      this.updateCandidateSourceHealthForSession(id, "available");
+      this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
+        .run(now, JSON.stringify(record), id);
+    });
     return true;
+  }
+
+  /**
+   * 候选来源连接只保存稳定身份、版本和片段定位。会话生命周期变化时同步健康状态，
+   * 不复制来源标题、正文或摘录；调用方必须已经处于同一 SQLite 事务内。
+   */
+  private updateCandidateSourceHealthForSession(sessionId: string, sourceHealth: ResearchSourceHealth): void {
+    const sources = this.listRecords<ResearchCandidateSourceConnectionRecord>(`
+      SELECT connection.record_json
+      FROM research_candidate_source_connections AS connection
+      JOIN research_nodes AS node ON node.id = connection.source_node_id
+      WHERE node.session_id = ?
+    `, sessionId);
+    const update = this.db().prepare(`
+      UPDATE research_candidate_source_connections
+      SET source_health = ?, record_json = ?
+      WHERE id = ?
+    `);
+    for (const source of sources) {
+      if (source.sourceHealth === sourceHealth) continue;
+      const updated = { ...source, sourceHealth };
+      update.run(updated.sourceHealth, JSON.stringify(updated), updated.id);
+    }
   }
 
   async deleteResearchSession(id: string): Promise<boolean> {
@@ -839,6 +870,8 @@ export class SqliteStore implements CollectorStore {
       `, id);
       del("DELETE FROM semantic_search_units_fts WHERE rowid IN (SELECT rowid FROM semantic_search_units WHERE session_id = ?)", id);
       del("DELETE FROM semantic_search_units WHERE session_id = ?", id);
+      // 连接只保存稳定身份和定位键；删除来源前标记缺失，不能保留正文副本。
+      this.updateCandidateSourceHealthForSession(id, "deleted");
       del(`DELETE FROM research_semantic_fragments WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
       del(`DELETE FROM research_body_versions WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
       del(`DELETE FROM research_slices WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
@@ -850,7 +883,9 @@ export class SqliteStore implements CollectorStore {
       del("DELETE FROM research_term_preview_events WHERE preview_id IN (SELECT id FROM research_term_previews WHERE session_id = ?)", id);
       del("DELETE FROM research_term_previews WHERE session_id = ?", id);
       del(`DELETE FROM research_fusion_proposals WHERE lo_node_id IN (${NODE_SCOPE}) OR hi_node_id IN (${NODE_SCOPE})`, id, id);
-      del(`DELETE FROM research_edges WHERE from_node_id IN (${NODE_SCOPE}) OR to_node_id IN (${NODE_SCOPE})`, id, id);
+      // 连接记录保存已确认融合的稳定来源身份；边本身不可指向已删除节点。
+      del(`DELETE FROM research_edges
+        WHERE from_node_id IN (${NODE_SCOPE}) OR to_node_id IN (${NODE_SCOPE})`, id, id);
       del("DELETE FROM research_import_tasks WHERE session_id = ?", id);
       del("DELETE FROM research_chapter_tasks WHERE session_id = ?", id);
       del("DELETE FROM research_content_snapshots WHERE session_id = ?", id);
@@ -1860,6 +1895,21 @@ export class SqliteStore implements CollectorStore {
     return this.getRecord<ResearchConfirmedFusionSnapshotRecord>(
       "SELECT record_json FROM research_confirmed_fusion_snapshots WHERE fusion_node_id = ?", fusionNodeId,
     );
+  }
+
+  listConfirmedFusionSourceHealth(): Array<{ fusionNodeId: string; sourceHealth: ResearchSourceHealth }> {
+    const snapshots = this.listRecords<ResearchConfirmedFusionSnapshotRecord>("SELECT record_json FROM research_confirmed_fusion_snapshots ORDER BY fusion_node_id");
+    return snapshots.flatMap((snapshot) => {
+      const draft = this.getRecord<ResearchFusionDraftVersionRecord>("SELECT record_json FROM research_fusion_draft_versions WHERE id = ?", snapshot.confirmedDraftVersionId);
+      if (!draft) return [];
+      const directSourceKeys = new Set(snapshot.directSources.map((source) => `${source.sourceNodeId}\u0000${source.bodyVersionId}`));
+      return this.listRecords<ResearchCandidateSourceConnectionRecord>(
+        "SELECT record_json FROM research_candidate_source_connections WHERE temporary_fusion_node_id = ? ORDER BY created_at, id",
+        draft.temporaryFusionNodeId,
+      ).flatMap((source) => directSourceKeys.has(`${source.sourceNodeId}\u0000${source.bodyVersionId}`)
+        ? [{ fusionNodeId: snapshot.fusionNodeId, sourceHealth: source.sourceHealth }]
+        : []);
+    });
   }
 
   /**

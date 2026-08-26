@@ -16,7 +16,7 @@ import {
   type ResearchSessionRecord,
   type ResearchTemporaryFusionNodeRecord,
 } from "@collector/capture-contracts";
-import { SqliteStore, TemporaryFusionDraftConflictError, TemporaryFusionDraftService } from "@collector/api";
+import { deriveFusionEvidenceHealth, SqliteStore, TemporaryFusionDraftConflictError, TemporaryFusionDraftService } from "@collector/api";
 
 const NOW = "2026-08-13T00:00:00.000Z";
 
@@ -255,6 +255,82 @@ test("T07 assigns a confirmed fusion to a project only when every direct source 
     undefined,
     "a source without a project prevents implicit project assignment",
   );
+});
+
+test("T08 changes source health across trash, restore, and permanent deletion without changing confirmed fusion facts", async (t) => {
+  const store = await makeStore(t);
+  const candidate = await createConfirmableTemporaryFusion(store, "t08-confirmed-source-health");
+  const confirmed = await store.confirmTemporaryFusionInPlace(candidate.node.id, candidate.activeDraft.id, NOW);
+  const originalSnapshot = structuredClone(confirmed.snapshot);
+
+  assert.equal(await store.trashResearchSession("session:node-source-a", NOW), true);
+  assert.equal(store.getTemporaryFusionBundle(candidate.node.id)?.candidateSources.find((source) => source.sourceNodeId === "node-source-a")?.sourceHealth, "temporarily-unavailable");
+  assert.equal(
+    deriveFusionEvidenceHealth(
+      [...store.listAllResearchNodes(), ...store.listResearchNodes("session:node-source-a")],
+      store.listAllResearchEdges(),
+      [...store.listResearchSessions(), ...store.listTrashedResearchSessions()],
+      store.listConfirmedFusionSourceHealth(),
+    ).get(candidate.node.id),
+    "temporarily-unavailable",
+  );
+  assert.deepEqual(store.getConfirmedFusionSnapshot(candidate.node.id), originalSnapshot, "trash never rewrites the confirmed snapshot");
+
+  assert.equal(await store.restoreResearchSession("session:node-source-a"), true);
+  assert.equal(store.getTemporaryFusionBundle(candidate.node.id)?.candidateSources.find((source) => source.sourceNodeId === "node-source-a")?.sourceHealth, "available");
+  assert.equal(
+    deriveFusionEvidenceHealth(store.listAllResearchNodes(), store.listAllResearchEdges(), store.listResearchSessions(), store.listConfirmedFusionSourceHealth()).get(candidate.node.id),
+    "available",
+  );
+
+  assert.equal(await store.deleteResearchSession("session:node-source-a"), true);
+  assert.equal(store.getResearchNode("node-source-a"), undefined);
+  assert.equal(store.getBodyVersion("body:node-source-a:v1"), undefined, "permanent deletion leaves no source body readable through the API store");
+  assert.equal(store.getTemporaryFusionBundle(candidate.node.id)?.candidateSources.find((source) => source.sourceNodeId === "node-source-a")?.sourceHealth, "deleted");
+  assert.deepEqual(store.getConfirmedFusionSnapshot(candidate.node.id), originalSnapshot, "permanent deletion keeps the fixed confirmed body and source identity unchanged");
+  assert.ok(!store.listResearchPermanentEdges().some((edge) => edge.fromNodeId === "node-source-a" || edge.toNodeId === "node-source-a"), "permanent deletion removes edges whose endpoint is no longer a formal node");
+  assert.equal(
+    deriveFusionEvidenceHealth(store.listAllResearchNodes(), store.listAllResearchEdges(), store.listResearchSessions(), store.listConfirmedFusionSourceHealth()).get(candidate.node.id),
+    "deleted",
+  );
+});
+
+test("T08 keeps an unconfirmed candidate visible but blocks confirmation when a direct source is unavailable", async (t) => {
+  const store = await makeStore(t);
+  const candidate = await createConfirmableTemporaryFusion(store, "t08-temporary-source-health");
+  assert.equal(await store.trashResearchSession("session:node-source-a", NOW), true);
+  const unavailable = store.getTemporaryFusionBundle(candidate.node.id)!;
+  assert.equal(unavailable.candidateSources.find((source) => source.sourceNodeId === "node-source-a")?.sourceHealth, "temporarily-unavailable");
+  await assert.rejects(
+    store.confirmTemporaryFusionInPlace(candidate.node.id, candidate.activeDraft.id, NOW),
+    /available direct sources/i,
+  );
+  assert.equal(await store.restoreResearchSession("session:node-source-a"), true);
+  assert.equal(store.getTemporaryFusionBundle(candidate.node.id)?.candidateSources.find((source) => source.sourceNodeId === "node-source-a")?.sourceHealth, "available");
+});
+
+test("T08 source-health lifecycle transactions roll back both session and connection state on an injected fault", async (t) => {
+  const store = await makeStore(t);
+  const candidate = await createConfirmableTemporaryFusion(store, "t08-transaction-fault");
+  const db = (store as unknown as { db(): import("node:sqlite").DatabaseSync }).db();
+  db.exec(`CREATE TRIGGER fail_t08_health_update
+    BEFORE UPDATE ON research_candidate_source_connections
+    WHEN NEW.source_health = 'temporarily-unavailable'
+    BEGIN SELECT RAISE(ABORT, 'injected T08 source health failure'); END;`);
+
+  await assert.rejects(store.trashResearchSession("session:node-source-a", NOW), /injected T08 source health failure/i);
+  assert.equal(store.getResearchSession("session:node-source-a")?.trashedAt, undefined, "failed trash must not move the session");
+  assert.equal(store.getTemporaryFusionBundle(candidate.node.id)?.candidateSources.find((source) => source.sourceNodeId === "node-source-a")?.sourceHealth, "available", "failed trash must not leave a changed connection");
+
+  db.exec("DROP TRIGGER fail_t08_health_update");
+  db.exec(`CREATE TRIGGER fail_t08_node_delete
+    BEFORE DELETE ON research_nodes
+    WHEN OLD.id = 'node-source-a'
+    BEGIN SELECT RAISE(ABORT, 'injected T08 node deletion failure'); END;`);
+  await assert.rejects(store.deleteResearchSession("session:node-source-a"), /injected T08 node deletion failure/i);
+  assert.ok(store.getResearchNode("node-source-a"), "failed permanent deletion must retain the source node");
+  assert.ok(store.getBodyVersion("body:node-source-a:v1"), "failed permanent deletion must retain source body atomically");
+  assert.equal(store.getTemporaryFusionBundle(candidate.node.id)?.candidateSources.find((source) => source.sourceNodeId === "node-source-a")?.sourceHealth, "available", "failed permanent deletion must roll back the deleted marker");
 });
 
 test("T06 rejects stale or unverified confirmation and rolls back every formal write on an injected edge failure", async (t) => {

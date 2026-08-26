@@ -58,22 +58,43 @@ export interface DeepResearchServiceOptions {
   autoRunTasks?: boolean;
 }
 
-/** 融合证据健康的保守摘要：至少两个仍属于普通全局范围的不同正式来源才算可用。 */
+/** 融合证据健康只从来源节点与会话生命周期派生，绝不回写确认正文、快照或永久边。 */
 export function deriveFusionEvidenceHealth(
   nodes: readonly ResearchNodeRecord[],
   edges: readonly ResearchEdgeRecord[],
-): Map<string, "available" | "incomplete"> {
+  sessions: readonly ResearchSessionRecord[] = [],
+  confirmedSourceHealth: readonly { fusionNodeId: string; sourceHealth: "available" | "temporarily-unavailable" | "deleted" }[] = [],
+): Map<string, "available" | "temporarily-unavailable" | "deleted" | "incomplete"> {
   const liveNodeIds = new Set(nodes.map((node) => node.id));
-  const sourcesByFusionNodeId = new Map<string, Set<string>>();
-  for (const node of nodes) if (node.isFusionNode) sourcesByFusionNodeId.set(node.id, new Set());
+  const sessionById = new Map(sessions.map((session) => [session.id, session]));
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const sourcesByFusionNodeId = new Map<string, Array<"available" | "temporarily-unavailable" | "deleted">>();
+  for (const node of nodes) if (node.isFusionNode) sourcesByFusionNodeId.set(node.id, []);
   for (const edge of edges) {
-    if (edge.status === "active" && edge.kind === "fused-from" && liveNodeIds.has(edge.fromNodeId)) {
-      sourcesByFusionNodeId.get(edge.toNodeId)?.add(edge.fromNodeId);
-    }
+    if (edge.status !== "active" || edge.kind !== "fused-from") continue;
+    const source = nodeById.get(edge.fromNodeId);
+    const health = !liveNodeIds.has(edge.fromNodeId)
+      ? "deleted"
+      : sessionById.get(source?.sessionId ?? "")?.trashedAt
+        ? "temporarily-unavailable"
+        : "available";
+    sourcesByFusionNodeId.get(edge.toNodeId)?.push(health);
   }
-  return new Map([...sourcesByFusionNodeId].map(([nodeId, sourceIds]) => [
+  return new Map([...sourcesByFusionNodeId].map(([nodeId, sourceHealth]) => [
     nodeId,
-    sourceIds.size >= 2 ? "available" as const : "incomplete" as const,
+    (() => {
+      const projectedHealth = confirmedSourceHealth
+        .filter((source) => source.fusionNodeId === nodeId)
+        .map((source) => source.sourceHealth);
+      const effectiveHealth = projectedHealth.length > 0 ? projectedHealth : sourceHealth;
+      return effectiveHealth.includes("deleted")
+        ? "deleted" as const
+        : effectiveHealth.includes("temporarily-unavailable")
+          ? "temporarily-unavailable" as const
+          : effectiveHealth.filter((health) => health === "available").length >= 2
+            ? "available" as const
+            : "incomplete" as const;
+    })(),
   ]));
 }
 
@@ -472,6 +493,7 @@ export class NodeGrowthService {
    */
   getGraphObservation(input: ResearchGraphObservationInput = {}): ResearchGraphObservation {
     const sessions = this.store.listResearchSessions();
+    const trashedSessions = this.store.listTrashedResearchSessions();
     if (input.focusNodeId) {
       const focusNode = this.store.getResearchNode(input.focusNodeId);
       if (!focusNode || !sessions.some((session) => session.id === focusNode.sessionId)) {
@@ -481,7 +503,13 @@ export class NodeGrowthService {
     const nodes = sessions.flatMap((session) => this.store.listResearchNodes(session.id));
     const activeAssociationHints = this.store.listAssociationHints("active");
     const allEdges = this.store.listAllResearchEdges();
-    const evidenceHealthByFusionNodeId = deriveFusionEvidenceHealth(nodes, allEdges);
+    const sourceHealthNodes = [...nodes, ...trashedSessions.flatMap((session) => this.store.listResearchNodes(session.id))];
+    const evidenceHealthByFusionNodeId = deriveFusionEvidenceHealth(
+      sourceHealthNodes,
+      allEdges,
+      [...sessions, ...trashedSessions],
+      this.store.listConfirmedFusionSourceHealth(),
+    );
     const observation = buildResearchGraphObservation(
       nodes,
       allEdges,

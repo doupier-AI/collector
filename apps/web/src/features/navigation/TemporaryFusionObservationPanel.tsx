@@ -16,6 +16,11 @@ function sourceLabel(source: ResearchCandidateSourceConnectionRecord): string {
   return `返回来源节点 ${source.sourceNodeId}`;
 }
 
+function sourceHealthLabel(source: ResearchCandidateSourceConnectionRecord): string | undefined {
+  if (source.sourceHealth === "available") return undefined;
+  return source.sourceHealth === "deleted" ? "来源已永久删除，不能打开" : "来源暂不可用，恢复后可打开";
+}
+
 function adjacentDraftDifference(current: string, previous: string): string {
   let prefix = 0;
   while (prefix < current.length && prefix < previous.length && current[prefix] === previous[prefix]) prefix += 1;
@@ -221,6 +226,7 @@ export function TemporaryFusionObservationPanel({ onCloseObservation, onOpenSour
   };
 
   const visible = matches ?? items;
+  const hasUnavailableSources = selected?.candidateSources.some((source) => source.sourceHealth !== "available") ?? false;
   return (
     <section className="temporary-fusion-observation" aria-labelledby="temporary-fusion-observation-title">
       <div className="temporary-fusion-observation__heading">
@@ -258,13 +264,13 @@ export function TemporaryFusionObservationPanel({ onCloseObservation, onOpenSour
           {draftEditing ? <><label htmlFor="temporary-fusion-draft-body">修改草案（只在保存后创建新版本）</label><textarea id="temporary-fusion-draft-body" className="input" value={draftBody} onChange={(event) => setDraftBody(event.target.value)} maxLength={100000} /><button type="button" className="button button--primary" disabled={busy || !draftBody.trim()} onClick={() => void saveDraft()}>保存为新版本并核验</button><button type="button" className="button button--secondary" disabled={busy} onClick={() => { setDraftBody(selected.activeDraft.body); setDraftEditing(false); }}>取消</button></> : <><pre>{selected.activeDraft.body}</pre><button type="button" className="button button--secondary" disabled={busy} onClick={() => setDraftEditing(true)}>修改草案</button></>}
           <section aria-label="草案版本历史"><h3>版本历史</h3>{(() => { const versions = draftHistory?.versions ?? []; const currentIndex = versions.findIndex((version) => version.id === selected.activeDraft.id); const previous = currentIndex >= 0 ? versions[currentIndex + 1] : undefined; return previous ? <p aria-label="相邻版本差异">{adjacentDraftDifference(selected.activeDraft.body, previous.body)}</p> : null; })()}<ol>{draftHistory?.versions.map((version) => <li key={version.id}><strong>v{version.version}</strong> · {version.evidenceStatus === "verified" ? "已核验" : version.evidenceStatus === "pending" ? "待核验" : "无效"}{version.id === selected.activeDraft.id ? "（当前）" : <button type="button" className="button button--secondary" disabled={busy} onClick={() => void restoreDraft(version.id)}>撤销到此版本</button>}</li>)}</ol></section>
           <h3>正式来源</h3>
-          <ul>{selected.candidateSources.map((source) => <li key={source.id}><button type="button" className="button button--secondary" onClick={() => onOpenSource(source)}>{sourceLabel(source)}</button></li>)}</ul>
+          <ul>{selected.candidateSources.map((source) => <li key={source.id}>{sourceHealthLabel(source) ? <span>{sourceHealthLabel(source)}：{source.sourceNodeId}</span> : <button type="button" className="button button--secondary" onClick={() => onOpenSource(source)}>{sourceLabel(source)}</button>}</li>)}</ul>
           <section className="temporary-fusion-observation__confirm" aria-label="确认当前融合草案">
             <h3>确认当前版本</h3>
             <p>确认对象是当前草案 v{selected.activeDraft.version} 及以上列出的直接来源；确认不会重新生成正文。</p>
-            {selected.activeDraft.evidenceStatus === "verified" ? (
+            {selected.activeDraft.evidenceStatus === "verified" && !hasUnavailableSources ? (
               <button type="button" className="button button--primary" disabled={busy} onClick={() => void confirmCurrentDraft()}>确认当前核验版本</button>
-            ) : <p>当前版本尚未通过核验，不能确认。</p>}
+            ) : <p>{hasUnavailableSources ? "直接来源当前不可用，恢复后才能确认。" : "当前版本尚未通过核验，不能确认。"}</p>}
           </section>
           <section className="temporary-fusion-observation__conversation" aria-label="临时融合讨论">
             <h3>临时讨论</h3>

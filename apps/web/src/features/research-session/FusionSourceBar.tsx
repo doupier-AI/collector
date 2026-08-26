@@ -22,13 +22,17 @@ export function FusionSourceBar({
         <ul className="fusion-source-bar__list">
           {sources.map((source) => (
             <li key={source.nodeId}>
-              <Link
-                className="fusion-source-bar__link"
-                to={stableNodePath(source.nodeId)}
-                state={navigationState}
-              >
-                {source.label || `节点 ${source.nodeId.slice(0, 8)}`}
-              </Link>
+              {source.health && source.health !== "available" ? (
+                <span>{source.health === "deleted" ? "来源已永久删除" : "来源暂不可用"}：{source.label || `节点 ${source.nodeId.slice(0, 8)}`}</span>
+              ) : (
+                <Link
+                  className="fusion-source-bar__link"
+                  to={stableNodePath(source.nodeId)}
+                  state={navigationState}
+                >
+                  {source.label || `节点 ${source.nodeId.slice(0, 8)}`}
+                </Link>
+              )}
             </li>
           ))}
         </ul>

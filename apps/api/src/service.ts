@@ -28,6 +28,7 @@ import {
   RESEARCH_GROUNDING_TEXT_MAX_CHARACTERS,
   type ResearchGroundingScopeStatus,
   type ResearchFusionSource,
+  type ResearchSourceHealth,
   type ResearchNodeRecord,
   type ModelCallRecord,
   type ResearchNodeView,
@@ -373,12 +374,28 @@ export class CaptureService {
             bodyVersionId: reference.bodyVersionId,
             fragmentId: reference.fragmentId,
             label,
+            health: this.fusionSourceHealth(reference.nodeId),
           });
         }
         fusionSources[message.id] = [...byNode.values()];
       }
     }
     const confirmedFusion = this.store.getConfirmedFusionSnapshot(nodeId);
+    const confirmedFusionSources = confirmedFusion?.directSources.flatMap((source) => {
+      const node = this.store.getResearchNode(source.sourceNodeId);
+      const label = node?.displayName?.trim()
+        ?? this.selectionLabelFor(node)
+        ?? this.firstUserMessageFor(source.sourceNodeId)
+        ?? `已删除来源 ${source.sourceNodeId.slice(0, 8)}`;
+      const fragmentId = source.fragmentIds[0];
+      return fragmentId ? [{
+        nodeId: source.sourceNodeId,
+        bodyVersionId: source.bodyVersionId,
+        fragmentId,
+        label,
+        health: this.fusionSourceHealth(source.sourceNodeId),
+      }] : [];
+    });
     return {
       ...view,
       termDetections,
@@ -386,6 +403,7 @@ export class CaptureService {
       bodyVersions,
       fusionSources: Object.keys(fusionSources).length > 0 ? fusionSources : undefined,
       ...(confirmedFusion ? { confirmedFusion } : {}),
+      ...(confirmedFusionSources?.length ? { confirmedFusionSources } : {}),
       fusionProposals: this.fusionProposals.listForNode(nodeId, ["pending", "accepted"]),
     };
   }
@@ -398,6 +416,15 @@ export class CaptureService {
     if (!text) return undefined;
     const compressed = text.replace(/\s+/g, " ");
     return compressed.length > 48 ? `${compressed.slice(0, 48)}…` : compressed;
+  }
+
+  /** 永久删除后只暴露稳定 ID 与缺失状态，不从任何派生物回读来源原文。 */
+  private fusionSourceHealth(nodeId: string): ResearchSourceHealth {
+    const node = this.store.getResearchNode(nodeId);
+    if (!node) return "deleted";
+    return this.store.getResearchSession(node.sessionId)?.trashedAt
+      ? "temporarily-unavailable"
+      : "available";
   }
 
   /** 来源节点标签回退：首条用户消息摘要。 */

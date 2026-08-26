@@ -116,7 +116,10 @@ function externalScopePresentation(summary: ResearchGraphObservationNode): { lab
 
 function evidenceStatus(summary: ResearchGraphObservationNode): string | undefined {
   if (summary.role !== "fusion") return undefined;
-  return summary.fusionEvidenceHealth === "available" ? "证据可用" : "证据不完整";
+  if (summary.fusionEvidenceHealth === "available") return "证据可用";
+  if (summary.fusionEvidenceHealth === "temporarily-unavailable") return "来源暂不可用";
+  if (summary.fusionEvidenceHealth === "deleted") return "来源已永久删除";
+  return "证据不完整";
 }
 
 function projectColorClass(summary: ResearchGraphObservationNode, prefix = "global-map__node"): string {

@@ -130,11 +130,12 @@ export function ResearchNodePage() {
   const readySlices = readyView?.slices;
   // #31：融合节点来源条（跨消息去重）。必须在所有早退返回之前计算（Hooks 规则）。
   const fusionSourceEntries = useMemo<ResearchFusionSource[]>(() => {
-    if (!readyView?.fusionSources) return [];
+    if (!readyView?.fusionSources && !readyView?.confirmedFusionSources) return [];
     const byNode = new Map<string, ResearchFusionSource>();
-    for (const sources of Object.values(readyView.fusionSources)) {
+    for (const sources of Object.values(readyView.fusionSources ?? {})) {
       for (const source of sources) byNode.set(source.nodeId, source);
     }
+    for (const source of readyView.confirmedFusionSources ?? []) byNode.set(source.nodeId, source);
     return [...byNode.values()];
   }, [readyView]);
   const railItems = useMemo<SliceRailItem[]>(() => {

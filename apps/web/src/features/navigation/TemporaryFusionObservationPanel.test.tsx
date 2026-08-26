@@ -143,4 +143,25 @@ describe("TemporaryFusionObservationPanel T03 management", () => {
     expect(await screen.findByText("当前版本尚未通过核验，不能确认。")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "确认当前核验版本" })).not.toBeInTheDocument();
   });
+
+  it("shows an unavailable direct source honestly and blocks confirmation until it recovers", async () => {
+    const availableCandidate = makeTemporaryFusionBundle();
+    const candidate = {
+      ...availableCandidate,
+      candidateSources: availableCandidate.candidateSources.map((source, index) => index === 0
+        ? { ...source, sourceHealth: "temporarily-unavailable" as const }
+        : source),
+    };
+    const listed: ResearchTemporaryFusionListItem = { node: candidate.node, label: "来源暂不可用候选", evidenceStatus: "verified", candidateSources: candidate.candidateSources };
+    renderPanel({
+      listTemporaryFusions: vi.fn(async () => [listed]), getTemporaryFusion: vi.fn(async () => candidate),
+      getTemporaryFusionConversation: vi.fn(async () => ({ bundle: candidate, messages: [], tasks: [] })), getTemporaryFusionDraftHistory: vi.fn(async () => ({ versions: [candidate.activeDraft], revalidationTasks: [] })),
+      confirmTemporaryFusion: vi.fn(), searchTemporaryFusions: vi.fn(), deleteTemporaryFusion: vi.fn(), deleteTemporaryFusions: vi.fn(), clearTemporaryFusions: vi.fn(),
+    });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /来源暂不可用候选/ }));
+    expect(await screen.findByText(/来源暂不可用，恢复后可打开/)).toBeInTheDocument();
+    expect(screen.getByText("直接来源当前不可用，恢复后才能确认。")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "确认当前核验版本" })).not.toBeInTheDocument();
+  });
 });

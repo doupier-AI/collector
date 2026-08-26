@@ -1203,6 +1203,8 @@ export interface ResearchNodeView {
   fusionSources?: Record<string, ResearchFusionSource[]>;
   /** 正式融合确认稿是独立于可继续对话消息的不可变正文。 */
   confirmedFusion?: ResearchConfirmedFusionSnapshotRecord;
+  /** 正式融合直接来源的当前健康投影；快照本身仍只保存确认时的固定事实。 */
+  confirmedFusionSources?: ResearchFusionSource[];
 }
 
 export interface ResearchTurnAccepted {
@@ -2441,7 +2443,8 @@ export interface ResearchGraphObservationInput {
 
 export type ResearchGraphObservationConnectivity = "default" | "focus" | "connected" | "unconnected";
 export type ResearchGraphObservationScope = "inside-current-filter" | "outside-boundary" | "outside-bridge";
-export type ResearchGraphFusionEvidenceHealth = "not-applicable" | "available" | "incomplete";
+/** 融合来源健康是当前投影，不改写确认时固定的正文、快照或来源身份。 */
+export type ResearchGraphFusionEvidenceHealth = "not-applicable" | "available" | "temporarily-unavailable" | "deleted" | "incomplete";
 
 /** 图谱扫读所需的最小节点摘要；不携带正文、候选详情或语义范围正文。 */
 export interface ResearchGraphObservationNode {
@@ -3731,6 +3734,8 @@ export interface ResearchFusionSource {
   fragmentId: string;
   /** 来源节点标签（displayName/选区摘要回退），供融合提示词与 UI 展示。 */
   label: string;
+  /** 当前来源可用性；缺失时兼容既有来源条并按 available 呈现。 */
+  health?: ResearchSourceHealth;
   /** 对应切片 ID（如有）；供运行记录 sourceSliceIds 记账。 */
   sliceId?: string;
 }
