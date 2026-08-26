@@ -106,6 +106,7 @@ import {
 } from "./fusion-proposals.js";
 import { AssociationHintService, type AssociationHintEvaluationGateway, type AssociationHintSearchGateway } from "./association-hints.js";
 import { TemporaryFusionConversationService, type TemporaryFusionConversationProvider } from "./temporary-fusion-conversation.js";
+import { TemporaryFusionConfirmationService } from "./temporary-fusion-confirmation.js";
 import { TemporaryFusionDraftService, type TemporaryFusionDraftEvidenceGateway } from "./temporary-fusion-drafts.js";
 
 export class ValidationError extends Error {}
@@ -204,6 +205,7 @@ export class CaptureService {
   readonly termPreviews: ResearchTermPreviewService;
   readonly associationHints: AssociationHintService;
   readonly temporaryFusionConversations: TemporaryFusionConversationService;
+  readonly temporaryFusionConfirmation: TemporaryFusionConfirmationService;
   readonly temporaryFusionDrafts: TemporaryFusionDraftService;
   /** 语义搜索模块由组合根构建后经 setter 接线（组合顺序：CaptureService 先于语义搜索模块）。 */
   private associationHintSearch?: AssociationHintSearchGateway;
@@ -295,6 +297,7 @@ export class CaptureService {
       this.options.temporaryFusionConversationProvider ?? (async () => this.temporaryFusionConversationProviderFor()),
       { autoRunTasks: this.options.autoRunTemporaryFusionTasks },
     );
+    this.temporaryFusionConfirmation = new TemporaryFusionConfirmationService(this.store);
     this.temporaryFusionDrafts = new TemporaryFusionDraftService(
       this.store,
       async () => this.options.temporaryFusionDraftEvidenceVerifier ?? this.modelGateway,
@@ -921,7 +924,7 @@ export class CaptureService {
 
   getTemporaryFusion(id: string): ResearchTemporaryFusionBundle {
     const bundle = this.store.getTemporaryFusionBundle(id);
-    if (!bundle) throw new NotFoundError("Temporary fusion not found");
+    if (!bundle || bundle.node.confirmedAt) throw new NotFoundError("Temporary fusion not found");
     return bundle;
   }
 

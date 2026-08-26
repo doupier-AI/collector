@@ -3039,6 +3039,8 @@ export interface ResearchTemporaryFusionNodeRecord {
   triggerProposalId: string;
   activeDraftVersionId: string;
   status: "active";
+  /** 已确认的聚合根保留审计事实，但不再属于临时观察层或可编辑草案。 */
+  confirmedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -3099,6 +3101,8 @@ export interface ResearchCandidateSourceConnectionRecord {
   id: string;
   temporaryFusionNodeId: string;
   sourceNodeId: string;
+  /** 草案正文 [来源n] 的原始序号；候选过滤后仍保持与正文一致。 */
+  citationOrdinal?: number;
   sourceKind: "formal";
   bodyVersionId: string;
   fragmentIds: string[];
@@ -3115,6 +3119,18 @@ export interface ResearchConfirmedFusionSnapshotRecord {
   directSources: Array<Pick<ResearchCandidateSourceConnectionRecord,
     "sourceNodeId" | "bodyVersionId" | "fragmentIds">>;
   confirmedAt: string;
+}
+
+/** 确认必须绑定当前草案版本，避免旧页面把已经变化的版本正式化。 */
+export interface ConfirmTemporaryFusionInput {
+  expectedDraftVersionId: string;
+}
+
+/** 原位确认的稳定结果；session 仅提供正式地图投影所需的根容器。 */
+export interface ConfirmTemporaryFusionResult {
+  fusionNode: ResearchNodeRecord;
+  session: ResearchSessionRecord;
+  snapshot: ResearchConfirmedFusionSnapshotRecord;
 }
 
 export interface ResearchTemporaryFusionBundle {

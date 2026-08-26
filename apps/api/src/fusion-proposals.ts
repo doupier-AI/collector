@@ -422,6 +422,7 @@ export class ResearchFusionProposalService {
           id: `${temporaryFusionId}:source:${index + 1}`,
           temporaryFusionNodeId: temporaryFusionId,
           sourceNodeId: source.nodeId,
+          citationOrdinal: materials.findIndex((candidate) => candidate.nodeId === source.nodeId) + 1,
           sourceKind: "formal",
           bodyVersionId: source.bodyVersionId,
           fragmentIds: source.fragmentIds,

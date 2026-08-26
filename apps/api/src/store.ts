@@ -4,6 +4,7 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchFusionReference, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId } from "@collector/capture-contracts";
 import {
   compareAssociationHintsByValue,
+  type ConfirmTemporaryFusionResult,
   isResearchPermanentEdge,
   nextProjectColorRole,
   validateTemporaryFusionBundle,
@@ -298,6 +299,7 @@ export interface NodeSystemTargetStore {
   getTemporaryFusionNode(id: string): ResearchTemporaryFusionNodeRecord | undefined;
   findTemporaryFusionNodeByCreationKey(creationKey: string): ResearchTemporaryFusionNodeRecord | undefined;
   getTemporaryFusionBundle(id: string): ResearchTemporaryFusionBundle | undefined;
+  confirmTemporaryFusionInPlace(temporaryFusionNodeId: string, expectedDraftVersionId: string, confirmedAt: string): Promise<ConfirmTemporaryFusionResult>;
   listTemporaryFusionNodes(): ResearchTemporaryFusionNodeRecord[];
   listTemporaryFusionDraftVersions(temporaryFusionNodeId: string): ResearchFusionDraftVersionRecord[];
   listTemporaryFusionDraftRevalidationTasks(temporaryFusionNodeId: string): ResearchFusionDraftRevalidationTaskRecord[];
@@ -468,7 +470,32 @@ export interface CollectorStore
  * `if (version < N+1)` 版本块（块内写入对应 schema_migrations 行）并递增本常量；
  * 测试以此常量断言「打开/重放后数据库实际到达声明版本」，无需再手工同步多处硬编码断言。
  */
-export const LATEST_SCHEMA_VERSION = 43;
+export const LATEST_SCHEMA_VERSION = 44;
+
+function directSourceIdsForConfirmedDraft(
+  draft: ResearchFusionDraftVersionRecord,
+  candidates: readonly ResearchCandidateSourceConnectionRecord[],
+): Set<string> {
+  if (draft.judgments?.length) {
+    if (draft.judgments.some((judgment) => judgment.evidenceStatus !== "verified")) {
+      throw new Error("Temporary fusion requires every active judgment to be verified");
+    }
+    return new Set(draft.judgments.flatMap((judgment) => judgment.sourceNodeIds));
+  }
+  // T01-T04 drafts predate claim-sized judgments. Their generation contract requires every
+  // adopted source to have an explicit [来源n] marker, so retain that exact correspondence.
+  return new Set([...draft.body.matchAll(/\[来源(\d+)\]/g)].flatMap((match) => {
+    const ordinal = Number(match[1]);
+    const candidate = candidates.find((source) => source.citationOrdinal === ordinal)
+      ?? (candidates.every((source) => source.citationOrdinal === undefined) ? candidates[ordinal - 1] : undefined);
+    return candidate ? [candidate.sourceNodeId] : [];
+  }));
+}
+
+function formalFusionTitle(body: string): string {
+  const firstLine = body.split(/\r?\n/, 1)[0]?.replace(/\s+/g, " ").trim() ?? "";
+  return firstLine.slice(0, RESEARCH_TITLE_MAX_CHARACTERS) || "融合成果";
+}
 
 export class SqliteStore implements CollectorStore {
   private database?: DatabaseSync;
@@ -1493,6 +1520,7 @@ export class SqliteStore implements CollectorStore {
     this.transaction(() => {
       const current = this.getTemporaryFusionNode(input.node.id);
       if (!current) throw new Error("Temporary fusion not found");
+      if (current.confirmedAt) throw new Error("Temporary fusion is already confirmed");
       if (current.activeDraftVersionId !== input.expectedDraftVersionId) throw new Error("Temporary fusion draft version conflict");
       if (input.draft.temporaryFusionNodeId !== current.id || input.node.activeDraftVersionId !== input.draft.id) throw new Error("Temporary fusion draft identity is invalid");
       const previous = this.getRecord<ResearchFusionDraftVersionRecord>("SELECT record_json FROM research_fusion_draft_versions WHERE id = ? AND temporary_fusion_node_id = ?", current.activeDraftVersionId, current.id);
@@ -1558,7 +1586,7 @@ export class SqliteStore implements CollectorStore {
 
   listTemporaryFusionNodes(): ResearchTemporaryFusionNodeRecord[] {
     return this.listRecords<ResearchTemporaryFusionNodeRecord>(
-      "SELECT record_json FROM research_temporary_fusion_nodes WHERE status = 'active' ORDER BY created_at, id",
+      "SELECT record_json FROM research_temporary_fusion_nodes WHERE status = 'active' AND confirmed_at IS NULL ORDER BY created_at, id",
     );
   }
 
@@ -1574,7 +1602,7 @@ export class SqliteStore implements CollectorStore {
     const uniqueIds = [...new Set(ids)];
     const deletedIds: string[] = [];
     this.transaction(() => {
-      const remove = this.db().prepare("DELETE FROM research_temporary_fusion_nodes WHERE id = ?");
+      const remove = this.db().prepare("DELETE FROM research_temporary_fusion_nodes WHERE id = ? AND confirmed_at IS NULL");
       for (const id of uniqueIds) {
         if (remove.run(id).changes === 1) deletedIds.push(id);
       }
@@ -1587,7 +1615,7 @@ export class SqliteStore implements CollectorStore {
   async clearTemporaryFusionNodes(): Promise<number> {
     let deletedCount = 0;
     this.transaction(() => {
-      deletedCount = Number(this.db().prepare("DELETE FROM research_temporary_fusion_nodes").run().changes);
+      deletedCount = Number(this.db().prepare("DELETE FROM research_temporary_fusion_nodes WHERE confirmed_at IS NULL").run().changes);
     });
     return deletedCount;
   }
@@ -1632,7 +1660,8 @@ export class SqliteStore implements CollectorStore {
         accepted = { inputMessage: existingInput, outputMessage: existingOutput, task: existing };
         return;
       }
-      if (!this.getTemporaryFusionNode(task.temporaryFusionNodeId)) throw new Error("Temporary fusion not found");
+      const node = this.getTemporaryFusionNode(task.temporaryFusionNodeId);
+      if (!node || node.confirmedAt) throw new Error("Temporary fusion not found");
       const insertMessage = this.db().prepare("INSERT INTO research_temporary_fusion_messages (id, temporary_fusion_node_id, role, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)");
       insertMessage.run(input.id, input.temporaryFusionNodeId, input.role, input.status, input.createdAt, input.updatedAt, JSON.stringify(input));
       insertMessage.run(output.id, output.temporaryFusionNodeId, output.role, output.status, output.createdAt, output.updatedAt, JSON.stringify(output));
@@ -1831,6 +1860,147 @@ export class SqliteStore implements CollectorStore {
     return this.getRecord<ResearchConfirmedFusionSnapshotRecord>(
       "SELECT record_json FROM research_confirmed_fusion_snapshots WHERE fusion_node_id = ?", fusionNodeId,
     );
+  }
+
+  /**
+   * T06：确认只转换同一临时身份，绝不重新生成正文或复制出第二个融合节点。
+   * 临时聚合根保留为已关闭的审计记录；正式节点、根容器、快照和永久来源边必须同成同败。
+   */
+  async confirmTemporaryFusionInPlace(
+    temporaryFusionNodeId: string,
+    expectedDraftVersionId: string,
+    confirmedAt: string,
+  ): Promise<ConfirmTemporaryFusionResult> {
+    let result: ConfirmTemporaryFusionResult | undefined;
+    this.transaction(() => {
+      const existingSnapshot = this.getConfirmedFusionSnapshot(temporaryFusionNodeId);
+      if (existingSnapshot) {
+        if (existingSnapshot.confirmedDraftVersionId !== expectedDraftVersionId) {
+          throw new Error("Temporary fusion draft version conflict");
+        }
+        const fusionNode = this.getResearchNode(temporaryFusionNodeId);
+        const session = this.getResearchSession(temporaryFusionNodeId);
+        if (!fusionNode?.isFusionNode || !session) throw new Error("Confirmed fusion identity is incomplete");
+        result = { fusionNode, session, snapshot: existingSnapshot };
+        return;
+      }
+
+      const temporary = this.getTemporaryFusionNode(temporaryFusionNodeId);
+      if (!temporary) throw new Error("Temporary fusion not found");
+      if (temporary.confirmedAt) throw new Error("Confirmed fusion snapshot is missing");
+      if (temporary.activeDraftVersionId !== expectedDraftVersionId) throw new Error("Temporary fusion draft version conflict");
+      const draft = this.getRecord<ResearchFusionDraftVersionRecord>(
+        "SELECT record_json FROM research_fusion_draft_versions WHERE id = ? AND temporary_fusion_node_id = ?",
+        temporary.activeDraftVersionId,
+        temporary.id,
+      );
+      if (!draft || draft.evidenceStatus !== "verified") {
+        throw new Error("Temporary fusion requires a verified active draft");
+      }
+
+      const candidates = this.listRecords<ResearchCandidateSourceConnectionRecord>(
+        "SELECT record_json FROM research_candidate_source_connections WHERE temporary_fusion_node_id = ? ORDER BY created_at, id",
+        temporary.id,
+      );
+      const usedSourceIds = directSourceIdsForConfirmedDraft(draft, candidates);
+      if ([...usedSourceIds].some((sourceNodeId) => !candidates.some((source) => source.sourceNodeId === sourceNodeId))) {
+        throw new Error("Temporary fusion requires direct-source evidence correspondence");
+      }
+      const directCandidates = candidates.filter((source) => usedSourceIds.has(source.sourceNodeId));
+      const sourceNodeIds = new Set(directCandidates.map((source) => source.sourceNodeId));
+      const sourcesAreValid = directCandidates.length >= 2
+        && sourceNodeIds.size === directCandidates.length
+        && directCandidates.every((source) => {
+          const bodyVersion = this.getBodyVersion(source.bodyVersionId);
+          return source.sourceKind === "formal"
+            && source.sourceHealth === "available"
+            && source.fragmentIds.length > 0
+            && this.getResearchNode(source.sourceNodeId)
+            && bodyVersion?.nodeId === source.sourceNodeId;
+        });
+      if (!sourcesAreValid) {
+        throw new Error("Temporary fusion requires two verified, available direct sources");
+      }
+      if (this.getResearchNode(temporary.id) || this.getResearchSession(temporary.id)) {
+        throw new Error("Temporary fusion identity is already formalized");
+      }
+
+      const title = formalFusionTitle(draft.body);
+      const session: ResearchSessionRecord = {
+        id: temporary.id,
+        title,
+        status: "active",
+        isFavorite: false,
+        createdAt: temporary.createdAt,
+        updatedAt: confirmedAt,
+      };
+      const fusionNode: ResearchNodeRecord = {
+        id: temporary.id,
+        sessionId: temporary.id,
+        displayName: title,
+        isFusionNode: true,
+        status: "active",
+        createdAt: temporary.createdAt,
+        updatedAt: confirmedAt,
+      };
+      const snapshot: ResearchConfirmedFusionSnapshotRecord = {
+        fusionNodeId: temporary.id,
+        confirmedDraftVersionId: draft.id,
+        body: draft.body,
+        contentHash: draft.contentHash,
+        directSources: directCandidates.map((source) => ({
+          sourceNodeId: source.sourceNodeId,
+          bodyVersionId: source.bodyVersionId,
+          fragmentIds: source.fragmentIds,
+        })),
+        confirmedAt,
+      };
+
+      this.db().prepare(`INSERT INTO research_sessions
+        (id, status, created_at, updated_at, creation_idempotency_key, project_id, is_favorite, record_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(session.id, session.status, session.createdAt, session.updatedAt, `temporary-fusion-confirm:${temporary.id}`, null, 0, JSON.stringify(session));
+      this.db().prepare(`INSERT INTO research_nodes
+        (id, session_id, parent_node_id, origin_selection_id, status, created_at, updated_at, creation_idempotency_key, record_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(fusionNode.id, fusionNode.sessionId, null, null, fusionNode.status, fusionNode.createdAt, fusionNode.updatedAt, `temporary-fusion-confirm:${temporary.id}`, JSON.stringify(fusionNode));
+      const insertEdge = this.db().prepare(`INSERT INTO research_edges
+        (id, kind, from_node_id, to_node_id, created_at, status, record_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`);
+      for (const source of directCandidates) {
+        const edge: ResearchPermanentEdgeRecord = {
+          id: researchEdgeId("fused-from", source.sourceNodeId, fusionNode.id),
+          kind: "fused-from",
+          fromNodeId: source.sourceNodeId,
+          toNodeId: fusionNode.id,
+          status: "active",
+          createdAt: confirmedAt,
+        };
+        insertEdge.run(edge.id, edge.kind, edge.fromNodeId, edge.toNodeId, edge.createdAt, edge.status, JSON.stringify(edge));
+      }
+      this.db().prepare(`INSERT INTO research_confirmed_fusion_snapshots
+        (fusion_node_id, confirmed_draft_version_id, confirmed_at, record_json) VALUES (?, ?, ?, ?)`)
+        .run(snapshot.fusionNodeId, snapshot.confirmedDraftVersionId, snapshot.confirmedAt, JSON.stringify(snapshot));
+      for (const task of this.listTemporaryFusionTasks(temporary.id)) {
+        if (task.status !== "queued" && task.status !== "running") continue;
+        const output = this.getTemporaryFusionMessage(task.outputMessageId);
+        if (output) this.updateTemporaryFusionMessage({ ...output, status: "cancelled", updatedAt: confirmedAt });
+        this.updateTemporaryFusionTask({
+          ...task,
+          status: "cancelled",
+          retryable: false,
+          updatedAt: confirmedAt,
+          completedAt: confirmedAt,
+        });
+      }
+      const closedTemporary = { ...temporary, confirmedAt, updatedAt: confirmedAt };
+      this.db().prepare(`UPDATE research_temporary_fusion_nodes
+        SET confirmed_at = ?, updated_at = ?, record_json = ? WHERE id = ? AND confirmed_at IS NULL`)
+        .run(confirmedAt, confirmedAt, JSON.stringify(closedTemporary), temporary.id);
+      result = { fusionNode, session, snapshot };
+    });
+    if (!result) throw new Error("Temporary fusion confirmation was not persisted");
+    return result;
   }
 
   async createResearchTermPreview(preview: ResearchTermPreviewRecord, selection: ResearchSelectionRecord): Promise<ResearchTermPreviewAccepted> {
@@ -4017,6 +4187,23 @@ export class SqliteStore implements CollectorStore {
         `);
       });
       version = 43;
+    }
+
+    if (version < 44) {
+      // T06：确认后保留临时草案与证据审计，但从临时观察和可变操作中关闭。
+      // table_info 防止迁移重放测试在已加列、仅回退版本号时重复 ALTER TABLE。
+      this.transaction(() => {
+        const columns = this.db().prepare("PRAGMA table_info(research_temporary_fusion_nodes)").all() as Array<{ name: string }>;
+        if (!columns.some((column) => column.name === "confirmed_at")) {
+          this.db().exec("ALTER TABLE research_temporary_fusion_nodes ADD COLUMN confirmed_at TEXT");
+        }
+        this.db().exec(`
+          CREATE INDEX IF NOT EXISTS research_temporary_fusion_nodes_confirmed_idx
+            ON research_temporary_fusion_nodes(confirmed_at, created_at, id);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (44, datetime('now'));
+        `);
+      });
+      version = 44;
     }
 
   }

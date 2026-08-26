@@ -118,7 +118,7 @@ export class TemporaryFusionDraftService {
 
   private requireBundle(id: string): ResearchTemporaryFusionBundle {
     const bundle = this.store.getTemporaryFusionBundle(id);
-    if (!bundle) throw new TemporaryFusionDraftNotFoundError("Temporary fusion not found");
+    if (!bundle || bundle.node.confirmedAt) throw new TemporaryFusionDraftNotFoundError("Temporary fusion not found");
     return bundle;
   }
 }
@@ -140,7 +140,7 @@ function deriveJudgments(body: string, sources: readonly ResearchCandidateSource
     const text = block.text.trim();
     if (!text) return [];
     const sourceNodeIds = [...new Set([...text.matchAll(/\[来源(\d+)\]/g)].flatMap((match) => {
-      const source = sources[Number(match[1]) - 1];
+      const source = sourceForCitationOrdinal(sources, Number(match[1]));
       return source ? [source.sourceNodeId] : [];
     }))].sort();
     // Headings and uncited connective prose are not independent judgments. A removed citation therefore
@@ -158,6 +158,17 @@ function deriveJudgments(body: string, sources: readonly ResearchCandidateSource
     }];
   });
   return judgments.length ? judgments : [{ id: `judgment:${sha256(body).slice("sha256:".length)}`, startOffset: 0, endOffset: body.length, contentHash: sha256(body), sourceNodeIds: [], evidenceStatus: "invalid" }];
+}
+
+function sourceForCitationOrdinal(
+  sources: readonly ResearchCandidateSourceConnectionRecord[],
+  ordinal: number,
+): ResearchCandidateSourceConnectionRecord | undefined {
+  const explicit = sources.find((source) => source.citationOrdinal === ordinal);
+  if (explicit) return explicit;
+  // Historical bundles did not record original ordinals. Positional fallback is safe only
+  // when every marker fits the pre-existing compact source sequence.
+  return sources.every((source) => source.citationOrdinal === undefined) ? sources[ordinal - 1] : undefined;
 }
 
 function sourceMaterial(store: CollectorStore, sources: readonly ResearchCandidateSourceConnectionRecord[], judgment: ResearchFusionDraftJudgmentRecord): Array<{ nodeId: string; content: string }> {

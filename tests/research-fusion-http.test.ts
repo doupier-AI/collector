@@ -439,6 +439,71 @@ test("T05 writes explicit immutable draft versions, rejects stale edits, and res
   assert.equal(result.bundle.activeDraft.body, "初始判断[来源1][来源2]");
 });
 
+test("T06 confirms only the current verified draft in place and removes it from temporary HTTP views", async (t) => {
+  const harness = await createHarness({
+    similarityVerifier: {
+      async verifyResearchSimilarity() { return { relationType: "identity", reason: "两处材料指向同一实体。" }; },
+      async discoverTemporaryFusion(input) {
+        return { hasNovelInsight: true, body: "已核验的新认识[来源1][来源2]", usedSourceNodeIds: input.sources.map((source) => source.nodeId) };
+      },
+    },
+  });
+  t.after(harness.close);
+  await fetch(`${harness.base}/v1/settings/fusion`, { method: "PUT", headers: headers(harness.token), body: JSON.stringify({ enabled: true }) });
+  await fetch(`${harness.base}/v1/research-nodes/session-1/fusion-proposals/scan`, { method: "POST", headers: headers(harness.token), body: "{}" });
+  const [candidate] = await (await fetch(`${harness.base}/v1/research-temporary-fusions`, { headers: headers(harness.token) })).json() as Array<{
+    node: { id: string; activeDraftVersionId: string };
+  }>;
+  assert.ok(candidate);
+
+  const invalidBody = await fetch(`${harness.base}/v1/research-temporary-fusions/${encodeURIComponent(candidate.node.id)}/confirm`, {
+    method: "POST", headers: headers(harness.token), body: "{}",
+  });
+  assert.equal(invalidBody.status, 400);
+  const stale = await fetch(`${harness.base}/v1/research-temporary-fusions/${encodeURIComponent(candidate.node.id)}/confirm`, {
+    method: "POST", headers: headers(harness.token), body: JSON.stringify({ expectedDraftVersionId: "draft:stale" }),
+  });
+  assert.equal(stale.status, 409);
+
+  const db = (harness.store as unknown as { db(): import("node:sqlite").DatabaseSync }).db();
+  const modelCallsBefore = (db.prepare("SELECT COUNT(*) AS count FROM model_calls").get() as { count: number }).count;
+  const confirmed = await fetch(`${harness.base}/v1/research-temporary-fusions/${encodeURIComponent(candidate.node.id)}/confirm`, {
+    method: "POST", headers: headers(harness.token), body: JSON.stringify({ expectedDraftVersionId: candidate.node.activeDraftVersionId }),
+  });
+  assert.equal(confirmed.status, 200);
+  const result = await confirmed.json() as {
+    fusionNode: { id: string; isFusionNode: boolean };
+    session: { id: string; projectId?: string };
+    snapshot: { body: string; contentHash: string; confirmedDraftVersionId: string; directSources: Array<{ sourceNodeId: string }> };
+  };
+  assert.equal(result.fusionNode.id, candidate.node.id);
+  assert.equal(result.fusionNode.isFusionNode, true);
+  assert.equal(result.session.id, candidate.node.id);
+  assert.equal(result.session.projectId, undefined);
+  assert.equal(result.snapshot.confirmedDraftVersionId, candidate.node.activeDraftVersionId);
+  assert.equal(result.snapshot.body, "已核验的新认识[来源1][来源2]");
+  assert.equal(result.snapshot.directSources.length, 2);
+  const modelCallsAfter = (db.prepare("SELECT COUNT(*) AS count FROM model_calls").get() as { count: number }).count;
+  assert.equal(modelCallsAfter, modelCallsBefore, "confirmation never invokes a body-generation model");
+
+  const retried = await fetch(`${harness.base}/v1/research-temporary-fusions/${encodeURIComponent(candidate.node.id)}/confirm`, {
+    method: "POST", headers: headers(harness.token), body: JSON.stringify({ expectedDraftVersionId: candidate.node.activeDraftVersionId }),
+  });
+  assert.equal(retried.status, 200);
+  assert.deepEqual((await retried.json() as { snapshot: unknown }).snapshot, result.snapshot, "repeat confirmation returns the same snapshot");
+  assert.deepEqual(await (await fetch(`${harness.base}/v1/research-temporary-fusions/count`, { headers: headers(harness.token) })).json(), { count: 0 });
+  assert.equal((await fetch(`${harness.base}/v1/research-temporary-fusions/${encodeURIComponent(candidate.node.id)}`, { headers: headers(harness.token) })).status, 404);
+
+  const map = await (await fetch(`${harness.base}/v1/research-map`, { headers: headers(harness.token) })).json() as {
+    nodes: Array<{ node: { id: string }; role: string }>;
+    edges: Array<{ edge: { kind: string; toNodeId: string } }>;
+    temporaryFusionCount?: number;
+  };
+  assert.ok(map.nodes.some((item) => item.node.id === candidate.node.id && item.role === "fusion"));
+  assert.equal(map.edges.filter((item) => item.edge.kind === "fused-from" && item.edge.toNodeId === candidate.node.id).length, 2);
+  assert.equal(map.temporaryFusionCount, 0);
+});
+
 test("T03 deletes single, explicit batches, and all temporary fusions without touching formal facts", async (t) => {
   const harness = await createHarness({
     similarityVerifier: {

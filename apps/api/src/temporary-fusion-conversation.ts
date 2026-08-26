@@ -38,7 +38,7 @@ export class TemporaryFusionConversationService {
 
   getConversation(temporaryFusionNodeId: string) {
     const bundle = this.store.getTemporaryFusionBundle(temporaryFusionNodeId);
-    if (!bundle) throw new TemporaryFusionConversationNotFoundError("Temporary fusion not found");
+    if (!bundle || bundle.node.confirmedAt) throw new TemporaryFusionConversationNotFoundError("Temporary fusion not found");
     return {
       bundle,
       messages: this.store.listTemporaryFusionMessages(bundle.node.id),
@@ -54,7 +54,7 @@ export class TemporaryFusionConversationService {
 
   async submit(temporaryFusionNodeId: string, content: string, idempotencyKey: string): Promise<ResearchTemporaryFusionTurnAccepted> {
     const bundle = this.store.getTemporaryFusionBundle(temporaryFusionNodeId);
-    if (!bundle) throw new TemporaryFusionConversationNotFoundError("Temporary fusion not found");
+    if (!bundle || bundle.node.confirmedAt) throw new TemporaryFusionConversationNotFoundError("Temporary fusion not found");
     const trimmed = content.trim();
     if (!trimmed) throw new TemporaryFusionConversationValidationError("Message content is required");
     if (trimmed.length > 20_000) throw new TemporaryFusionConversationValidationError("Message content must not exceed 20000 characters");
@@ -109,7 +109,7 @@ export class TemporaryFusionConversationService {
         return;
       }
       const bundle = this.store.getTemporaryFusionBundle(task.temporaryFusionNodeId);
-      if (!bundle) return;
+      if (!bundle || bundle.node.confirmedAt) return;
       const controller = new AbortController();
       this.abortControllers.set(task.id, controller);
       const answer = await provider.generate({ taskId: task.id, messages: this.modelMessages(bundle), signal: controller.signal });
