@@ -3128,6 +3128,48 @@ export interface ResearchTemporaryFusionClearResult {
   deletedCount: number;
 }
 
+/** 临时融合专属消息；它不属于正式会话或节点消息集合。 */
+export interface ResearchTemporaryFusionMessageRecord {
+  id: string;
+  temporaryFusionNodeId: string;
+  role: "user" | "assistant";
+  content: string;
+  status: "pending" | "streaming" | "completed" | "failed" | "cancelled";
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 临时融合专属生成任务；输入先持久化，重启后可安全恢复。 */
+export interface ResearchTemporaryFusionTaskRecord {
+  id: string;
+  temporaryFusionNodeId: string;
+  inputMessageId: string;
+  outputMessageId: string;
+  idempotencyKey: string;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  retryable: boolean;
+  provider?: string;
+  model?: string;
+  promptVersion: string;
+  error?: { code: string; message: string };
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface ResearchTemporaryFusionConversationView {
+  bundle: ResearchTemporaryFusionBundle;
+  messages: ResearchTemporaryFusionMessageRecord[];
+  tasks: ResearchTemporaryFusionTaskRecord[];
+}
+
+export interface ResearchTemporaryFusionTurnAccepted {
+  inputMessage: ResearchTemporaryFusionMessageRecord;
+  outputMessage: ResearchTemporaryFusionMessageRecord;
+  task: ResearchTemporaryFusionTaskRecord;
+}
+
 /** 统一客户端可消费的目标模型快照；不代表对应 HTTP 路径已在 T01 开放。 */
 export interface NodeSystemTargetClientPayload {
   permanentEdges: ResearchPermanentEdgeRecord[];

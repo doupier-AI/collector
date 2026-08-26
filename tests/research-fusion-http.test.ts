@@ -17,7 +17,7 @@ import { CaptureService, LocalAuth, SqliteStore, createApiServer, type Similarit
 import { FakeProvider, ModelGateway } from "@collector/model-gateway";
 import { projectCurrentSearchUnits } from "../apps/api/dist/semantic-search/projector.js";
 
-async function createHarness(options?: { similarityVerifier?: SimilarityVerificationGateway; fusionBody?: string }) {
+async function createHarness(options?: { similarityVerifier?: SimilarityVerificationGateway; fusionBody?: string; temporaryConversationAnswer?: string; temporaryConversationFailFirst?: boolean }) {
   const root = await mkdtemp(join(tmpdir(), "collector-fusion-http-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
@@ -29,9 +29,18 @@ async function createHarness(options?: { similarityVerifier?: SimilarityVerifica
       return { relationType: "contrast", reason: "两处材料共享孙悟空名称，但来自不同作品。" };
     },
   };
+  let temporaryConversationAttempts = 0;
   const service = new CaptureService(store, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
     autoRunResearchTasks: false,
+    autoRunTemporaryFusionTasks: false,
+    temporaryFusionConversationProvider: options?.temporaryConversationAnswer === undefined ? undefined : async () => ({
+      provider: "fake", model: "fake-temporary", async generate() {
+        temporaryConversationAttempts += 1;
+        if (options.temporaryConversationFailFirst && temporaryConversationAttempts === 1) throw new Error("temporary fake failure");
+        return options.temporaryConversationAnswer!;
+      },
+    }),
     similarityVerifier: verifier,
     researchProvider: {
       provider: "fake",
@@ -72,6 +81,7 @@ async function createHarness(options?: { similarityVerifier?: SimilarityVerifica
     base: `http://127.0.0.1:${address.port}`,
     token,
     store,
+    service,
     close: async () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       store.close();
@@ -437,6 +447,57 @@ test("T03 deletes single, explicit batches, and all temporary fusions without to
   assert.equal(harness.store.listTemporaryFusionNodes().length, 0);
   assert.equal(harness.store.listResearchNodes("session-1").length, 2, "formal nodes remain after every temporary deletion mode");
   assert.deepEqual(harness.store.listResearchPermanentEdges(), []);
+});
+
+test("T04 persists temporary discussion separately, resumes it, and removes it with the candidate", async (t) => {
+  const harness = await createHarness({
+    temporaryConversationAnswer: "这只是讨论结论，不会修改候选草案。",
+    temporaryConversationFailFirst: true,
+    similarityVerifier: {
+      async verifyResearchSimilarity() { return { relationType: "identity", reason: "两处材料指向同一实体。" }; },
+      async discoverTemporaryFusion(input) {
+        return { hasNovelInsight: true, body: "## 临时融合草稿\n\n两处材料形成一个待讨论的新认识。[来源1][来源2]", usedSourceNodeIds: input.sources.map((source) => source.nodeId) };
+      },
+    },
+  });
+  t.after(harness.close);
+  await fetch(`${harness.base}/v1/settings/fusion`, { method: "PUT", headers: headers(harness.token), body: JSON.stringify({ enabled: true }) });
+  await fetch(`${harness.base}/v1/research-nodes/session-1/fusion-proposals/scan`, { method: "POST", headers: headers(harness.token), body: "{}" });
+  const [candidate] = await (await fetch(`${harness.base}/v1/research-temporary-fusions`, { headers: headers(harness.token) })).json() as Array<{ node: { id: string } }>;
+  assert.ok(candidate);
+  const before = harness.store.getTemporaryFusionBundle(candidate.node.id)!.activeDraft;
+  const submit = await fetch(`${harness.base}/v1/research-temporary-fusions/${encodeURIComponent(candidate.node.id)}/messages`, {
+    method: "POST", headers: { ...headers(harness.token), "Idempotency-Key": "temporary-discussion-key" }, body: JSON.stringify({ content: "这条候选的证据边界是什么？" }),
+  });
+  assert.equal(submit.status, 202);
+  const accepted = await submit.json() as { task: { id: string } };
+  const retrySubmit = await fetch(`${harness.base}/v1/research-temporary-fusions/${encodeURIComponent(candidate.node.id)}/messages`, {
+    method: "POST", headers: { ...headers(harness.token), "Idempotency-Key": "temporary-discussion-key" }, body: JSON.stringify({ content: "重复请求" }),
+  });
+  assert.equal((await retrySubmit.json() as { task: { id: string } }).task.id, accepted.task.id, "idempotent retry must not create another temporary task");
+  assert.equal(harness.store.listResearchMessages("session-1").some((message) => message.content.includes("证据边界")), false, "temporary messages stay outside formal session APIs");
+  await harness.service.temporaryFusionConversations.resumeTasks();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const failed = await fetch(`${harness.base}/v1/research-temporary-fusion-tasks/${encodeURIComponent(accepted.task.id)}`, { headers: headers(harness.token) });
+  assert.equal((await failed.json() as { status: string }).status, "failed", "model failure preserves the temporary turn for retry");
+  const retry = await fetch(`${harness.base}/v1/research-temporary-fusion-tasks/${encodeURIComponent(accepted.task.id)}/retry`, { method: "POST", headers: headers(harness.token), body: "{}" });
+  assert.equal(retry.status, 200);
+  await harness.service.temporaryFusionConversations.resumeTasks();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const conversation = await fetch(`${harness.base}/v1/research-temporary-fusions/${encodeURIComponent(candidate.node.id)}/conversation`, { headers: headers(harness.token) });
+  const view = await conversation.json() as { messages: Array<{ content: string }>; tasks: Array<{ id: string; status: string }> };
+  assert.equal(view.tasks[0]?.status, "completed");
+  assert.ok(view.messages.some((message) => message.content.includes("不会修改候选草案")));
+  assert.deepEqual(harness.store.getTemporaryFusionBundle(candidate.node.id)!.activeDraft, before, "ordinary discussion must not modify draft identity or evidence");
+  const queued = await fetch(`${harness.base}/v1/research-temporary-fusions/${encodeURIComponent(candidate.node.id)}/messages`, {
+    method: "POST", headers: { ...headers(harness.token), "Idempotency-Key": "temporary-cancel-key" }, body: JSON.stringify({ content: "这条讨论应该取消。" }),
+  });
+  const cancellable = await queued.json() as { task: { id: string } };
+  const cancelled = await fetch(`${harness.base}/v1/research-temporary-fusion-tasks/${encodeURIComponent(cancellable.task.id)}/cancel`, { method: "POST", headers: headers(harness.token), body: "{}" });
+  assert.equal((await cancelled.json() as { status: string }).status, "cancelled");
+  await fetch(`${harness.base}/v1/research-temporary-fusions/${encodeURIComponent(candidate.node.id)}`, { method: "DELETE", headers: headers(harness.token) });
+  const deletedConversation = await fetch(`${harness.base}/v1/research-temporary-fusions/${encodeURIComponent(candidate.node.id)}/conversation`, { headers: headers(harness.token) });
+  assert.equal(deletedConversation.status, 404);
 });
 
 test("#71 enabled discovery keeps a pending proposal when no concrete new insight is found", async (t) => {

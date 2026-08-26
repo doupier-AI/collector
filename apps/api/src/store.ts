@@ -14,7 +14,10 @@ import {
   type ResearchFusionDraftVersionRecord,
   type ResearchPermanentEdgeRecord,
   type ResearchTemporaryFusionBundle,
+  type ResearchTemporaryFusionMessageRecord,
   type ResearchTemporaryFusionNodeRecord,
+  type ResearchTemporaryFusionTaskRecord,
+  type ResearchTemporaryFusionTurnAccepted,
 } from "@collector/capture-contracts";
 
 export type ObservabilityRecordSource = "research" | "import" | "fusion" | "chapter";
@@ -297,6 +300,20 @@ export interface NodeSystemTargetStore {
   deleteTemporaryFusionNode(id: string): Promise<boolean>;
   deleteTemporaryFusionNodes(ids: readonly string[]): Promise<{ deletedIds: string[]; missingIds: string[] }>;
   clearTemporaryFusionNodes(): Promise<number>;
+  getTemporaryFusionMessage(id: string): ResearchTemporaryFusionMessageRecord | undefined;
+  listTemporaryFusionMessages(temporaryFusionNodeId: string): ResearchTemporaryFusionMessageRecord[];
+  getTemporaryFusionTask(id: string): ResearchTemporaryFusionTaskRecord | undefined;
+  findTemporaryFusionTaskByIdempotencyKey(temporaryFusionNodeId: string, idempotencyKey: string): ResearchTemporaryFusionTaskRecord | undefined;
+  listTemporaryFusionTasks(temporaryFusionNodeId: string): ResearchTemporaryFusionTaskRecord[];
+  createTemporaryFusionTurn(input: ResearchTemporaryFusionMessageRecord, output: ResearchTemporaryFusionMessageRecord, task: ResearchTemporaryFusionTaskRecord): Promise<ResearchTemporaryFusionTurnAccepted>;
+  claimTemporaryFusionTask(id: string, provider?: string, model?: string): ResearchTemporaryFusionTaskRecord | undefined;
+  appendTemporaryFusionTaskDelta(id: string, delta: string): Promise<void>;
+  completeTemporaryFusionTask(id: string): Promise<void>;
+  failTemporaryFusionTask(task: ResearchTemporaryFusionTaskRecord, error: { code: string; message: string }): Promise<void>;
+  cancelTemporaryFusionTask(id: string): Promise<ResearchTemporaryFusionTaskRecord>;
+  retryTemporaryFusionTask(id: string): Promise<ResearchTemporaryFusionTaskRecord>;
+  listRecoverableTemporaryFusionTasks(): ResearchTemporaryFusionTaskRecord[];
+  requeueInterruptedTemporaryFusionTasks(): number;
   createAssociationHint(hint: ResearchAssociationHintRecord): Promise<ResearchAssociationHintRecord>;
   saveAssociationHint(hint: ResearchAssociationHintRecord): Promise<void>;
   listAssociationHints(status?: ResearchAssociationHintRecord["status"]): ResearchAssociationHintRecord[];
@@ -442,7 +459,7 @@ export interface CollectorStore
  * `if (version < N+1)` 版本块（块内写入对应 schema_migrations 行）并递增本常量；
  * 测试以此常量断言「打开/重放后数据库实际到达声明版本」，无需再手工同步多处硬编码断言。
  */
-export const LATEST_SCHEMA_VERSION = 41;
+export const LATEST_SCHEMA_VERSION = 42;
 
 export class SqliteStore implements CollectorStore {
   private database?: DatabaseSync;
@@ -1485,6 +1502,158 @@ export class SqliteStore implements CollectorStore {
     return deletedCount;
   }
 
+  getTemporaryFusionMessage(id: string): ResearchTemporaryFusionMessageRecord | undefined {
+    return this.getRecord<ResearchTemporaryFusionMessageRecord>("SELECT record_json FROM research_temporary_fusion_messages WHERE id = ?", id);
+  }
+
+  listTemporaryFusionMessages(temporaryFusionNodeId: string): ResearchTemporaryFusionMessageRecord[] {
+    return this.listRecords<ResearchTemporaryFusionMessageRecord>(
+      "SELECT record_json FROM research_temporary_fusion_messages WHERE temporary_fusion_node_id = ? ORDER BY created_at, id",
+      temporaryFusionNodeId,
+    );
+  }
+
+  getTemporaryFusionTask(id: string): ResearchTemporaryFusionTaskRecord | undefined {
+    return this.getRecord<ResearchTemporaryFusionTaskRecord>("SELECT record_json FROM research_temporary_fusion_tasks WHERE id = ?", id);
+  }
+
+  findTemporaryFusionTaskByIdempotencyKey(temporaryFusionNodeId: string, idempotencyKey: string): ResearchTemporaryFusionTaskRecord | undefined {
+    return this.getRecord<ResearchTemporaryFusionTaskRecord>(
+      "SELECT record_json FROM research_temporary_fusion_tasks WHERE temporary_fusion_node_id = ? AND idempotency_key = ?",
+      temporaryFusionNodeId, idempotencyKey,
+    );
+  }
+
+  listTemporaryFusionTasks(temporaryFusionNodeId: string): ResearchTemporaryFusionTaskRecord[] {
+    return this.listRecords<ResearchTemporaryFusionTaskRecord>(
+      "SELECT record_json FROM research_temporary_fusion_tasks WHERE temporary_fusion_node_id = ? ORDER BY created_at, id",
+      temporaryFusionNodeId,
+    );
+  }
+
+  async createTemporaryFusionTurn(input: ResearchTemporaryFusionMessageRecord, output: ResearchTemporaryFusionMessageRecord, task: ResearchTemporaryFusionTaskRecord): Promise<ResearchTemporaryFusionTurnAccepted> {
+    let accepted: ResearchTemporaryFusionTurnAccepted | undefined;
+    this.transaction(() => {
+      const existing = this.findTemporaryFusionTaskByIdempotencyKey(task.temporaryFusionNodeId, task.idempotencyKey);
+      if (existing) {
+        const existingInput = this.getTemporaryFusionMessage(existing.inputMessageId);
+        const existingOutput = this.getTemporaryFusionMessage(existing.outputMessageId);
+        if (!existingInput || !existingOutput) throw new Error("Temporary fusion task references incomplete messages");
+        accepted = { inputMessage: existingInput, outputMessage: existingOutput, task: existing };
+        return;
+      }
+      if (!this.getTemporaryFusionNode(task.temporaryFusionNodeId)) throw new Error("Temporary fusion not found");
+      const insertMessage = this.db().prepare("INSERT INTO research_temporary_fusion_messages (id, temporary_fusion_node_id, role, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)");
+      insertMessage.run(input.id, input.temporaryFusionNodeId, input.role, input.status, input.createdAt, input.updatedAt, JSON.stringify(input));
+      insertMessage.run(output.id, output.temporaryFusionNodeId, output.role, output.status, output.createdAt, output.updatedAt, JSON.stringify(output));
+      this.db().prepare("INSERT INTO research_temporary_fusion_tasks (id, temporary_fusion_node_id, input_message_id, output_message_id, idempotency_key, status, retryable, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(task.id, task.temporaryFusionNodeId, task.inputMessageId, task.outputMessageId, task.idempotencyKey, task.status, 0, task.createdAt, task.updatedAt, JSON.stringify(task));
+      accepted = { inputMessage: input, outputMessage: output, task };
+    });
+    if (!accepted) throw new Error("Temporary fusion turn was not persisted");
+    return accepted;
+  }
+
+  claimTemporaryFusionTask(id: string, provider?: string, model?: string): ResearchTemporaryFusionTaskRecord | undefined {
+    let claimed: ResearchTemporaryFusionTaskRecord | undefined;
+    this.transaction(() => {
+      const current = this.getTemporaryFusionTask(id);
+      if (!current || current.status !== "queued") return;
+      const now = new Date().toISOString();
+      const next: ResearchTemporaryFusionTaskRecord = { ...current, status: "running", retryable: false, provider, model, error: undefined, startedAt: now, completedAt: undefined, updatedAt: now };
+      const changed = this.db().prepare("UPDATE research_temporary_fusion_tasks SET status = ?, retryable = 0, updated_at = ?, record_json = ? WHERE id = ? AND status = 'queued'")
+        .run(next.status, now, JSON.stringify(next), id).changes;
+      if (changed !== 1) return;
+      this.updateTemporaryFusionMessage({ ...this.getTemporaryFusionMessage(next.outputMessageId)!, status: "streaming", updatedAt: now });
+      claimed = next;
+    });
+    return claimed;
+  }
+
+  async appendTemporaryFusionTaskDelta(id: string, delta: string): Promise<void> {
+    this.transaction(() => {
+      const task = this.getTemporaryFusionTask(id);
+      if (!task || task.status !== "running") throw new Error("Temporary fusion task is not running");
+      const message = this.getTemporaryFusionMessage(task.outputMessageId);
+      if (!message) throw new Error("Temporary fusion output message not found");
+      const now = new Date().toISOString();
+      this.updateTemporaryFusionMessage({ ...message, content: message.content + delta, status: "streaming", updatedAt: now });
+      this.updateTemporaryFusionTask({ ...task, updatedAt: now });
+    });
+  }
+
+  async completeTemporaryFusionTask(id: string): Promise<void> {
+    this.transaction(() => {
+      const task = this.getTemporaryFusionTask(id);
+      if (!task || task.status !== "running") throw new Error("Temporary fusion task is not running");
+      const message = this.getTemporaryFusionMessage(task.outputMessageId);
+      if (!message) throw new Error("Temporary fusion output message not found");
+      const now = new Date().toISOString();
+      this.updateTemporaryFusionMessage({ ...message, status: "completed", updatedAt: now });
+      this.updateTemporaryFusionTask({ ...task, status: "completed", retryable: false, updatedAt: now, completedAt: now });
+    });
+  }
+
+  async failTemporaryFusionTask(task: ResearchTemporaryFusionTaskRecord, error: { code: string; message: string }): Promise<void> {
+    this.transaction(() => {
+      const current = this.getTemporaryFusionTask(task.id);
+      if (!current || (current.status !== "queued" && current.status !== "running")) return;
+      const message = this.getTemporaryFusionMessage(current.outputMessageId);
+      if (!message) throw new Error("Temporary fusion output message not found");
+      const now = new Date().toISOString();
+      this.updateTemporaryFusionMessage({ ...message, status: "failed", updatedAt: now });
+      this.updateTemporaryFusionTask({ ...current, status: "failed", retryable: true, error, updatedAt: now, completedAt: now });
+    });
+  }
+
+  async cancelTemporaryFusionTask(id: string): Promise<ResearchTemporaryFusionTaskRecord> {
+    let cancelled: ResearchTemporaryFusionTaskRecord | undefined;
+    this.transaction(() => {
+      const current = this.getTemporaryFusionTask(id);
+      if (!current || (current.status !== "queued" && current.status !== "running")) throw new Error("Temporary fusion task is not cancellable");
+      const now = new Date().toISOString();
+      cancelled = { ...current, status: "cancelled", retryable: false, updatedAt: now, completedAt: now };
+      this.updateTemporaryFusionMessage({ ...this.getTemporaryFusionMessage(current.outputMessageId)!, status: "cancelled", updatedAt: now });
+      this.updateTemporaryFusionTask(cancelled);
+    });
+    if (!cancelled) throw new Error("Temporary fusion task was not cancelled");
+    return cancelled;
+  }
+
+  async retryTemporaryFusionTask(id: string): Promise<ResearchTemporaryFusionTaskRecord> {
+    let queued: ResearchTemporaryFusionTaskRecord | undefined;
+    this.transaction(() => {
+      const current = this.getTemporaryFusionTask(id);
+      if (!current || current.status !== "failed" || !current.retryable) throw new Error("Temporary fusion task is not retryable");
+      const now = new Date().toISOString();
+      queued = { ...current, status: "queued", retryable: false, error: undefined, updatedAt: now, startedAt: undefined, completedAt: undefined };
+      this.updateTemporaryFusionMessage({ ...this.getTemporaryFusionMessage(current.outputMessageId)!, content: "", status: "pending", updatedAt: now });
+      this.updateTemporaryFusionTask(queued);
+    });
+    if (!queued) throw new Error("Temporary fusion task was not retried");
+    return queued;
+  }
+
+  listRecoverableTemporaryFusionTasks(): ResearchTemporaryFusionTaskRecord[] {
+    return this.listRecords<ResearchTemporaryFusionTaskRecord>("SELECT record_json FROM research_temporary_fusion_tasks WHERE status = 'queued' ORDER BY created_at, id");
+  }
+
+  requeueInterruptedTemporaryFusionTasks(): number {
+    const interrupted = this.listRecords<ResearchTemporaryFusionTaskRecord>("SELECT record_json FROM research_temporary_fusion_tasks WHERE status = 'running'");
+    if (!interrupted.length) return 0;
+    this.transaction(() => {
+      for (const task of interrupted) {
+        const now = new Date().toISOString();
+        const queued: ResearchTemporaryFusionTaskRecord = { ...task, status: "queued", retryable: false, startedAt: undefined, updatedAt: now };
+        this.db().prepare("UPDATE research_temporary_fusion_tasks SET status = 'queued', retryable = 0, updated_at = ?, record_json = ? WHERE id = ? AND status = 'running'")
+          .run(now, JSON.stringify(queued), task.id);
+        const message = this.getTemporaryFusionMessage(task.outputMessageId);
+        if (message) this.updateTemporaryFusionMessage({ ...message, status: "pending", updatedAt: now });
+      }
+    });
+    return interrupted.length;
+  }
+
   async createAssociationHint(hint: ResearchAssociationHintRecord): Promise<ResearchAssociationHintRecord> {
     if (hint.status !== "active") throw new Error("A new association hint must be active");
     if (hint.anchorNodeId === hint.relatedNodeId || !hint.reason.trim() || !hint.evidenceContentKey.trim() || !hint.evidenceKey.trim()
@@ -2504,6 +2673,16 @@ export class SqliteStore implements CollectorStore {
   private updateResearchMessage(message: ResearchMessageRecord): void {
     this.db().prepare("UPDATE research_messages SET status = ?, updated_at = ?, record_json = ? WHERE id = ?")
       .run(message.status, message.updatedAt, JSON.stringify(message), message.id);
+  }
+
+  private updateTemporaryFusionMessage(message: ResearchTemporaryFusionMessageRecord): void {
+    this.db().prepare("UPDATE research_temporary_fusion_messages SET status = ?, updated_at = ?, record_json = ? WHERE id = ?")
+      .run(message.status, message.updatedAt, JSON.stringify(message), message.id);
+  }
+
+  private updateTemporaryFusionTask(task: ResearchTemporaryFusionTaskRecord): void {
+    this.db().prepare("UPDATE research_temporary_fusion_tasks SET status = ?, retryable = ?, updated_at = ?, record_json = ? WHERE id = ?")
+      .run(task.status, task.retryable ? 1 : 0, task.updatedAt, JSON.stringify(task), task.id);
   }
 
   private updateResearchTask(task: ResearchTaskRecord): void {
@@ -3688,6 +3867,43 @@ export class SqliteStore implements CollectorStore {
         `);
       });
       version = 41;
+    }
+
+    if (version < 42) {
+      // T04：临时融合讨论独立于正式 session/message/task；删除候选聚合根时整棵对话自动清理。
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE research_temporary_fusion_messages (
+            id TEXT PRIMARY KEY,
+            temporary_fusion_node_id TEXT NOT NULL REFERENCES research_temporary_fusion_nodes(id) ON DELETE CASCADE,
+            role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+            status TEXT NOT NULL CHECK(status IN ('pending', 'streaming', 'completed', 'failed', 'cancelled')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL
+          );
+          CREATE INDEX research_temporary_fusion_messages_node_idx
+            ON research_temporary_fusion_messages(temporary_fusion_node_id, created_at, id);
+
+          CREATE TABLE research_temporary_fusion_tasks (
+            id TEXT PRIMARY KEY,
+            temporary_fusion_node_id TEXT NOT NULL REFERENCES research_temporary_fusion_nodes(id) ON DELETE CASCADE,
+            input_message_id TEXT NOT NULL REFERENCES research_temporary_fusion_messages(id) ON DELETE CASCADE,
+            output_message_id TEXT NOT NULL REFERENCES research_temporary_fusion_messages(id) ON DELETE CASCADE,
+            idempotency_key TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
+            retryable INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            UNIQUE(temporary_fusion_node_id, idempotency_key)
+          );
+          CREATE INDEX research_temporary_fusion_tasks_node_idx
+            ON research_temporary_fusion_tasks(temporary_fusion_node_id, created_at, id);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (42, datetime('now'));
+        `);
+      });
+      version = 42;
     }
 
   }

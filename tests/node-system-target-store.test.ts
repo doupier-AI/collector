@@ -196,6 +196,34 @@ test("temporary candidate batch deletion cascades only through its own aggregate
   assert.equal(await store.clearTemporaryFusionNodes(), 0, "empty clear is idempotent");
 });
 
+test("temporary conversation is idempotent, recoverable, and cascades with its candidate", async (t) => {
+  const store = await makeStore(t);
+  for (const nodeId of ["node-source-a", "node-source-b"]) {
+    await seedNode(store, { id: nodeId, sessionId: `session:${nodeId}`, status: "active", createdAt: NOW, updatedAt: NOW });
+  }
+  const candidate = temporaryFusionBundle("temporary-conversation");
+  candidate.node.creationKey = "conversation-generation";
+  await store.createTemporaryFusionBundle(candidate);
+  const input = { id: "temp-message-input", temporaryFusionNodeId: candidate.node.id, role: "user" as const, content: "这条候选的证据边界是什么？", status: "completed" as const, createdAt: NOW, updatedAt: NOW };
+  const output = { id: "temp-message-output", temporaryFusionNodeId: candidate.node.id, role: "assistant" as const, content: "", status: "pending" as const, createdAt: NOW, updatedAt: NOW };
+  const task = { id: "temp-task", temporaryFusionNodeId: candidate.node.id, inputMessageId: input.id, outputMessageId: output.id, idempotencyKey: "temporary-turn-key", status: "queued" as const, retryable: false, promptVersion: "temporary-fusion-conversation-v1", createdAt: NOW, updatedAt: NOW };
+  const accepted = await store.createTemporaryFusionTurn(input, output, task);
+  assert.deepEqual(await store.createTemporaryFusionTurn({ ...input, id: "duplicate-input" }, { ...output, id: "duplicate-output" }, { ...task, id: "duplicate-task" }), accepted, "same idempotency key returns the original turn");
+  const claimed = store.claimTemporaryFusionTask(task.id, "fake", "fake-model");
+  assert.equal(claimed?.status, "running");
+  assert.equal(store.requeueInterruptedTemporaryFusionTasks(), 1);
+  assert.equal(store.getTemporaryFusionTask(task.id)?.status, "queued");
+  const reClaimed = store.claimTemporaryFusionTask(task.id);
+  assert.ok(reClaimed);
+  await store.appendTemporaryFusionTaskDelta(task.id, "只讨论，不改写草案。");
+  await store.completeTemporaryFusionTask(task.id);
+  assert.equal(store.getTemporaryFusionMessage(output.id)?.content, "只讨论，不改写草案。");
+  assert.deepEqual(store.getTemporaryFusionBundle(candidate.node.id)?.activeDraft, candidate.activeDraft, "discussion must not mutate the active draft");
+  await store.deleteTemporaryFusionNode(candidate.node.id);
+  assert.equal(store.getTemporaryFusionMessage(input.id), undefined);
+  assert.equal(store.getTemporaryFusionTask(task.id), undefined);
+});
+
 test("association hints stay temporary and confirmed fusion snapshots stay immutable", async (t) => {
   const store = await makeStore(t);
   for (const nodeId of ["node-a", "node-b"]) {

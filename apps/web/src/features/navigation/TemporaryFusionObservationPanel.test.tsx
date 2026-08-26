@@ -64,4 +64,26 @@ describe("TemporaryFusionObservationPanel T03 management", () => {
     await user.click(screen.getByRole("button", { name: "确认清空全部临时融合" }));
     expect(clearTemporaryFusions).toHaveBeenCalledTimes(1);
   });
+
+  it("keeps ordinary discussion beside the read-only draft and sends it to the temporary endpoint", async () => {
+    const candidate = makeTemporaryFusionBundle();
+    const listed: ResearchTemporaryFusionListItem = { node: candidate.node, label: "候选讨论", evidenceStatus: "verified", candidateSources: candidate.candidateSources };
+    const submitTemporaryFusionMessage = vi.fn(async () => ({
+      inputMessage: { id: "input", temporaryFusionNodeId: candidate.node.id, role: "user" as const, content: "证据是否充分？", status: "completed" as const, createdAt: "2026-08-26T00:00:00.000Z", updatedAt: "2026-08-26T00:00:00.000Z" },
+      outputMessage: { id: "output", temporaryFusionNodeId: candidate.node.id, role: "assistant" as const, content: "", status: "pending" as const, createdAt: "2026-08-26T00:00:00.000Z", updatedAt: "2026-08-26T00:00:00.000Z" },
+      task: { id: "task", temporaryFusionNodeId: candidate.node.id, inputMessageId: "input", outputMessageId: "output", idempotencyKey: "key", status: "queued" as const, retryable: false, promptVersion: "temporary-fusion-conversation-v1", createdAt: "2026-08-26T00:00:00.000Z", updatedAt: "2026-08-26T00:00:00.000Z" },
+    }));
+    renderPanel({
+      listTemporaryFusions: vi.fn(async () => [listed]), getTemporaryFusion: vi.fn(async () => candidate),
+      getTemporaryFusionConversation: vi.fn(async () => ({ bundle: candidate, messages: [], tasks: [] })), submitTemporaryFusionMessage,
+      searchTemporaryFusions: vi.fn(), deleteTemporaryFusion: vi.fn(), deleteTemporaryFusions: vi.fn(), clearTemporaryFusions: vi.fn(),
+    });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /候选讨论/ }));
+    await screen.findByRole("heading", { name: "临时讨论" });
+    expect(screen.getByText(/不会修改当前草案/)).toBeInTheDocument();
+    await user.type(screen.getByLabelText("围绕当前候选继续讨论"), "证据是否充分？");
+    await user.click(screen.getByRole("button", { name: "发送讨论" }));
+    await waitFor(() => expect(submitTemporaryFusionMessage).toHaveBeenCalledWith(candidate.node.id, "证据是否充分？", expect.any(String)));
+  });
 });

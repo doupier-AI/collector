@@ -37,6 +37,8 @@ function temporaryFusionState(dbPath: string) {
       candidateSources: (db.prepare("SELECT COUNT(*) AS count FROM research_candidate_source_connections").get() as { count: number }).count,
       formalFusionNodes: (db.prepare("SELECT COUNT(*) AS count FROM research_nodes WHERE json_extract(record_json, '$.isFusionNode') = 1").get() as { count: number }).count,
       fusedFromEdges: (db.prepare("SELECT COUNT(*) AS count FROM research_edges WHERE kind = 'fused-from'").get() as { count: number }).count,
+      temporaryMessages: (db.prepare("SELECT COUNT(*) AS count FROM research_temporary_fusion_messages").get() as { count: number }).count,
+      temporaryTasks: (db.prepare("SELECT COUNT(*) AS count FROM research_temporary_fusion_tasks").get() as { count: number }).count,
     };
   } finally {
     db.close();
@@ -66,6 +68,8 @@ test("#71 开启后只在 B 面生成可追溯临时融合，页面不跳转", a
     candidateSources: beforeTemporaryFusion.candidateSources + 2,
     formalFusionNodes: beforeTemporaryFusion.formalFusionNodes,
     fusedFromEdges: beforeTemporaryFusion.fusedFromEdges,
+    temporaryMessages: beforeTemporaryFusion.temporaryMessages,
+    temporaryTasks: beforeTemporaryFusion.temporaryTasks,
   });
 
   // T02：地图默认仍只读取 A 面；用户显式开启后才在同一画布叠加 B 面，
@@ -125,5 +129,43 @@ test("T03 清空临时层必须可取消，并且确认后不影响正式来源�
     candidateSources: 0,
     formalFusionNodes: created.formalFusionNodes,
     fusedFromEdges: created.fusedFromEdges,
+    temporaryMessages: 0,
+    temporaryTasks: 0,
   });
+});
+
+test("T04 临时讨论在刷新后可恢复，删除候选时会级联清理", async ({ page }) => {
+  const { sessionId, rootNodeId } = await openSession(page);
+  await growSharedConceptChild(page, sessionId);
+  const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
+  await page.request.put("/v1/settings/fusion", { data: { enabled: true } });
+  await page.goto(`/nodes/${encodeURIComponent(rootNodeId)}`);
+  await expect(page.getByTestId("temporary-fusion-count")).toContainText(/临时融合 \d+ 条待核验/, { timeout: 20_000 });
+
+  await page.goto("/map");
+  const beforeDiscussion = temporaryFusionState(dbPath);
+  const count = beforeDiscussion.temporaryNodes;
+  await page.getByRole("button", { name: `临时融合（${count}）` }).click();
+  await page.getByRole("button", { name: "开启临时层" }).click();
+  await page.getByRole("button", { name: /临时融合草稿/ }).first().click();
+  const discussion = page.locator(".temporary-fusion-observation__conversation");
+  await discussion.getByLabel("围绕当前候选继续讨论").fill("这条候选的证据边界是什么？");
+  await discussion.getByRole("button", { name: "发送讨论" }).click();
+  await expect(discussion).toContainText("这条候选的证据边界是什么？");
+  await expect(discussion).toContainText("回答完毕", { timeout: 15_000 });
+  expect(temporaryFusionState(dbPath).temporaryMessages).toBeGreaterThanOrEqual(beforeDiscussion.temporaryMessages + 2);
+  expect(temporaryFusionState(dbPath).temporaryTasks).toBeGreaterThanOrEqual(beforeDiscussion.temporaryTasks + 1);
+
+  await page.reload();
+  await page.getByRole("button", { name: `临时融合（${count}）` }).click();
+  const openLayer = page.getByRole("button", { name: "开启临时层" });
+  if (await openLayer.isVisible()) await openLayer.click();
+  await expect(page.getByRole("heading", { name: "临时融合观察" })).toBeVisible();
+  await page.getByRole("button", { name: /临时融合草稿/ }).first().click();
+  await expect(page.locator(".temporary-fusion-observation__conversation")).toContainText("这条候选的证据边界是什么？");
+  const beforeDelete = temporaryFusionState(dbPath);
+  await page.locator(".temporary-fusion-observation__list li").first().getByRole("button", { name: "删除" }).click();
+  await expect(page.locator(".temporary-fusion-observation__list li")).toHaveCount(count - 1);
+  expect(temporaryFusionState(dbPath).temporaryMessages).toBeLessThanOrEqual(beforeDelete.temporaryMessages - 2);
+  expect(temporaryFusionState(dbPath).temporaryTasks).toBeLessThanOrEqual(beforeDelete.temporaryTasks - 1);
 });

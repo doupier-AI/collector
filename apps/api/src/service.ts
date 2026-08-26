@@ -105,6 +105,7 @@ import {
   type SimilarityVerificationGateway,
 } from "./fusion-proposals.js";
 import { AssociationHintService, type AssociationHintEvaluationGateway, type AssociationHintSearchGateway } from "./association-hints.js";
+import { TemporaryFusionConversationService, type TemporaryFusionConversationProvider } from "./temporary-fusion-conversation.js";
 
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
@@ -201,6 +202,7 @@ export class CaptureService {
   readonly fusionProposals: ResearchFusionProposalService;
   readonly termPreviews: ResearchTermPreviewService;
   readonly associationHints: AssociationHintService;
+  readonly temporaryFusionConversations: TemporaryFusionConversationService;
   /** 语义搜索模块由组合根构建后经 setter 接线（组合顺序：CaptureService 先于语义搜索模块）。 */
   private associationHintSearch?: AssociationHintSearchGateway;
 
@@ -217,7 +219,7 @@ export class CaptureService {
     private readonly store: CollectorStore,
     private readonly artifactRoot: string,
     private modelGateway?: ModelGateway,
-    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; similarityVerifier?: SimilarityVerificationGateway; associationHintEvaluator?: AssociationHintEvaluationGateway; chapterParseProvider?: ResearchChapterParseProvider; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunResearchChapters?: boolean; mvpDemoMode?: boolean; researchRetrySleep?: (ms: number) => Promise<void> } = {},
+    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; similarityVerifier?: SimilarityVerificationGateway; associationHintEvaluator?: AssociationHintEvaluationGateway; chapterParseProvider?: ResearchChapterParseProvider; temporaryFusionConversationProvider?: () => Promise<TemporaryFusionConversationProvider | undefined>; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunResearchChapters?: boolean; autoRunTemporaryFusionTasks?: boolean; mvpDemoMode?: boolean; researchRetrySleep?: (ms: number) => Promise<void> } = {},
   ) {
     this.runRecords = new RunRecordsService(this.store);
     this.attachModelGateway(this.modelGateway);
@@ -286,9 +288,15 @@ export class CaptureService {
       evaluator: async () => this.options.associationHintEvaluator ?? this.gatewayForPurpose("research"),
       termDetection: this.termDetection,
     });
+    this.temporaryFusionConversations = new TemporaryFusionConversationService(
+      this.store,
+      this.options.temporaryFusionConversationProvider ?? (async () => this.temporaryFusionConversationProviderFor()),
+      { autoRunTasks: this.options.autoRunTemporaryFusionTasks },
+    );
     // #35：启动时对历史研究正文做确定性、幂等的正文版本与语义片段回填。
     // 不调用模型、不删除原文；同文同标识，重复执行无副作用。
     setImmediate(() => { void this.backfillResearchBodyVersions().catch(() => undefined); });
+    setImmediate(() => { void this.temporaryFusionConversations.resumeTasks().catch(() => undefined); });
   }
 
   setModelGateway(gateway: ModelGateway | undefined, route?: ActiveModelRoute): void {
@@ -494,6 +502,35 @@ export class CaptureService {
       };
       await this.store.saveModelCall(record);
     });
+  }
+
+  /** T04：临时讨论复用 chat 路由与调用留痕，但只消费临时融合专属消息。 */
+  private temporaryFusionConversationProviderFor(): TemporaryFusionConversationProvider {
+    const service = this;
+    return {
+      async generate(input) {
+        const gateway = await service.gatewayForPurpose("chat");
+        if (gateway) {
+          const answer = await gateway.answerResearchConversation(input.messages, {
+            context: { workflowRunId: input.taskId, purpose: "temporary_fusion_conversation", promptVersion: "temporary-fusion-conversation-v1" },
+          });
+          return input.signal.aborted ? "" : answer;
+        }
+        // 本地演示/确定性测试只有 ResearchGenerationProvider，没有云网关；仍保持临时消息边界。
+        const fallback = service.options.researchProvider;
+        if (!fallback) throw new Error("AI model is not configured");
+        const now = new Date().toISOString();
+        let answer = "";
+        for await (const delta of fallback.generate({
+          session: { id: `temporary-fusion:${input.taskId}`, title: "临时融合讨论", status: "active", isFavorite: false, createdAt: now, updatedAt: now },
+          messages: input.messages,
+          taskId: input.taskId,
+          nodeId: `temporary-fusion:${input.taskId}`,
+          outputMessageId: input.taskId,
+        })) answer += delta;
+        return input.signal.aborted ? "" : answer;
+      },
+    };
   }
 
   private researchProviderFor(gateway: ModelGateway | undefined): ResearchGenerationProvider | undefined {

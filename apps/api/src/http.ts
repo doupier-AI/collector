@@ -15,6 +15,7 @@ import { ResearchLaterNotFoundError, ResearchLaterValidationError } from "./rese
 import { ResearchTermPreviewNotFoundError, ResearchTermPreviewValidationError, ResearchTermPreviewConflictError } from "./term-preview.js";
 import { ResearchFusionProposalConflictError, ResearchFusionProposalNotFoundError, ResearchFusionProposalValidationError } from "./fusion-proposals.js";
 import { AssociationHintNotFoundError } from "./association-hints.js";
+import { TemporaryFusionConversationNotFoundError, TemporaryFusionConversationValidationError } from "./temporary-fusion-conversation.js";
 import { RunRecordsValidationError } from "./observability.js";
 import { streamRunRecordExport } from "./run-record-export.js";
 import { createStaticWebHandler } from "./static-web.js";
@@ -340,6 +341,32 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         await readJsonOptional(request);
         return json(response, 200, await service.clearTemporaryFusions());
       }
+      const temporaryFusionConversationMatch = url.pathname.match(/^\/v1\/research-temporary-fusions\/([^/]+)\/conversation$/);
+      if (request.method === "GET" && temporaryFusionConversationMatch) {
+        return json(response, 200, service.temporaryFusionConversations.getConversation(decodeURIComponent(temporaryFusionConversationMatch[1])));
+      }
+      const temporaryFusionMessagesMatch = url.pathname.match(/^\/v1\/research-temporary-fusions\/([^/]+)\/messages$/);
+      if (request.method === "POST" && temporaryFusionMessagesMatch) {
+        const body = await readJson(request) as { content?: unknown };
+        if (typeof body.content !== "string") throw new TemporaryFusionConversationValidationError("content must be a string");
+        return json(response, 202, await service.temporaryFusionConversations.submit(
+          decodeURIComponent(temporaryFusionMessagesMatch[1]), body.content, header(request, "idempotency-key") ?? "",
+        ));
+      }
+      const temporaryFusionRetryMatch = url.pathname.match(/^\/v1\/research-temporary-fusion-tasks\/([^/]+)\/retry$/);
+      if (request.method === "POST" && temporaryFusionRetryMatch) {
+        await readJsonOptional(request);
+        return json(response, 200, await service.temporaryFusionConversations.retry(decodeURIComponent(temporaryFusionRetryMatch[1])));
+      }
+      const temporaryFusionCancelMatch = url.pathname.match(/^\/v1\/research-temporary-fusion-tasks\/([^/]+)\/cancel$/);
+      if (request.method === "POST" && temporaryFusionCancelMatch) {
+        await readJsonOptional(request);
+        return json(response, 200, await service.temporaryFusionConversations.cancel(decodeURIComponent(temporaryFusionCancelMatch[1])));
+      }
+      const temporaryFusionTaskMatch = url.pathname.match(/^\/v1\/research-temporary-fusion-tasks\/([^/]+)$/);
+      if (request.method === "GET" && temporaryFusionTaskMatch) {
+        return json(response, 200, service.temporaryFusionConversations.getTask(decodeURIComponent(temporaryFusionTaskMatch[1])));
+      }
       const temporaryFusionMatch = url.pathname.match(/^\/v1\/research-temporary-fusions\/([^/]+)$/);
       if (request.method === "GET" && temporaryFusionMatch) {
         return json(response, 200, service.getTemporaryFusion(decodeURIComponent(temporaryFusionMatch[1])));
@@ -658,12 +685,12 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         const code = error instanceof ResearchFusionProposalConflictError ? "proposal_already_decided" : error instanceof ResearchConflictError || error instanceof ResearchTermPreviewConflictError || error instanceof DeepResearchConflictError ? "session_in_trash" : error.code;
         return json(response, 409, { error: { code, message: error.message } });
       }
-      if (error instanceof ValidationError || error instanceof ResearchValidationError || error instanceof ResearchImportValidationError || error instanceof ResearchSelectionValidationError || error instanceof DeepResearchValidationError || error instanceof ResearchLaterValidationError || error instanceof ResearchTermPreviewValidationError || error instanceof ResearchFusionProposalValidationError || error instanceof RunRecordsValidationError || error instanceof SyntaxError) {
+      if (error instanceof ValidationError || error instanceof TemporaryFusionConversationValidationError || error instanceof ResearchValidationError || error instanceof ResearchImportValidationError || error instanceof ResearchSelectionValidationError || error instanceof DeepResearchValidationError || error instanceof ResearchLaterValidationError || error instanceof ResearchTermPreviewValidationError || error instanceof ResearchFusionProposalValidationError || error instanceof RunRecordsValidationError || error instanceof SyntaxError) {
         const code = error instanceof ResearchImportValidationError ? error.code : "invalid_request";
         const status = code === "file_too_large" ? 413 : code === "unsupported_file_type" ? 415 : code === "invalid_file_content" ? 422 : 400;
         return json(response, status, { error: { code, message: error.message } });
       }
-      if (error instanceof NotFoundError || error instanceof ResearchNotFoundError || error instanceof ResearchImportNotFoundError || error instanceof ResearchSelectionNotFoundError || error instanceof DeepResearchNotFoundError || error instanceof ResearchLaterNotFoundError || error instanceof ResearchTermPreviewNotFoundError || error instanceof ResearchFusionProposalNotFoundError || error instanceof AssociationHintNotFoundError) return json(response, 404, { error: { code: "not_found", message: error.message } });
+      if (error instanceof NotFoundError || error instanceof TemporaryFusionConversationNotFoundError || error instanceof ResearchNotFoundError || error instanceof ResearchImportNotFoundError || error instanceof ResearchSelectionNotFoundError || error instanceof DeepResearchNotFoundError || error instanceof ResearchLaterNotFoundError || error instanceof ResearchTermPreviewNotFoundError || error instanceof ResearchFusionProposalNotFoundError || error instanceof AssociationHintNotFoundError) return json(response, 404, { error: { code: "not_found", message: error.message } });
       console.error(error);
       return json(response, 500, { error: { code: "internal_error", message: "Internal server error" } });
     }

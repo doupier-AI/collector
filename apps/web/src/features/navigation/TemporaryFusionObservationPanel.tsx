@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ResearchCandidateSourceConnectionRecord, ResearchTemporaryFusionBundle, ResearchTemporaryFusionListItem, ResearchTemporaryFusionSearchMatch } from "@collector/capture-contracts";
+import type { ResearchCandidateSourceConnectionRecord, ResearchTemporaryFusionBundle, ResearchTemporaryFusionConversationView, ResearchTemporaryFusionListItem, ResearchTemporaryFusionSearchMatch } from "@collector/capture-contracts";
 import { apiErrorCopy } from "../../api/errors";
 import { useServices } from "../../app/services";
 
@@ -19,6 +19,8 @@ export function TemporaryFusionObservationPanel({ onCloseObservation, onOpenSour
   const { api } = useServices();
   const [items, setItems] = useState<ResearchTemporaryFusionListItem[]>([]);
   const [selected, setSelected] = useState<ResearchTemporaryFusionBundle>();
+  const [conversation, setConversation] = useState<ResearchTemporaryFusionConversationView>();
+  const [messageDraft, setMessageDraft] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
   const [matches, setMatches] = useState<ResearchTemporaryFusionSearchMatch[] | undefined>();
@@ -41,6 +43,7 @@ export function TemporaryFusionObservationPanel({ onCloseObservation, onOpenSour
     setQuery("");
     setMatches(undefined);
     setSelected(undefined);
+    setConversation(undefined);
     api.listTemporaryFusions().then(
       (next) => {
         setItems(next);
@@ -53,8 +56,22 @@ export function TemporaryFusionObservationPanel({ onCloseObservation, onOpenSour
 
   const open = (id: string) => {
     setError(undefined);
-    api.getTemporaryFusion(id).then(setSelected, setError);
+    Promise.all([api.getTemporaryFusion(id), api.getTemporaryFusionConversation(id)]).then(
+      ([bundle, nextConversation]) => { setSelected(bundle); setConversation(nextConversation); },
+      setError,
+    );
   };
+
+  const refreshConversation = (id = selected?.node.id) => {
+    if (!id) return;
+    api.getTemporaryFusionConversation(id).then(setConversation, setError);
+  };
+
+  useEffect(() => {
+    if (!selected) return;
+    const timer = window.setInterval(() => refreshConversation(selected.node.id), 1000);
+    return () => window.clearInterval(timer);
+  }, [api, selected?.node.id]);
 
   const search = () => {
     const value = query.trim();
@@ -120,6 +137,37 @@ export function TemporaryFusionObservationPanel({ onCloseObservation, onOpenSour
     }
   };
 
+  const sendMessage = async () => {
+    if (!selected || busy || !messageDraft.trim()) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      await api.submitTemporaryFusionMessage(selected.node.id, messageDraft, crypto.randomUUID());
+      setMessageDraft("");
+      refreshConversation(selected.node.id);
+    } catch (nextError) {
+      setError(nextError);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancelTask = async (taskId: string) => {
+    if (busy) return;
+    setBusy(true);
+    try { await api.cancelTemporaryFusionTask(taskId); refreshConversation(); }
+    catch (nextError) { setError(nextError); }
+    finally { setBusy(false); }
+  };
+
+  const retryTask = async (taskId: string) => {
+    if (busy) return;
+    setBusy(true);
+    try { await api.retryTemporaryFusionTask(taskId); refreshConversation(); }
+    catch (nextError) { setError(nextError); }
+    finally { setBusy(false); }
+  };
+
   const visible = matches ?? items;
   return (
     <section className="temporary-fusion-observation" aria-labelledby="temporary-fusion-observation-title">
@@ -156,6 +204,24 @@ export function TemporaryFusionObservationPanel({ onCloseObservation, onOpenSour
           <h3>当前草案</h3><pre>{selected.activeDraft.body}</pre>
           <h3>正式来源</h3>
           <ul>{selected.candidateSources.map((source) => <li key={source.id}><button type="button" className="button button--secondary" onClick={() => onOpenSource(source)}>{sourceLabel(source)}</button></li>)}</ul>
+          <section className="temporary-fusion-observation__conversation" aria-label="临时融合讨论">
+            <h3>临时讨论</h3>
+            <p>讨论只产生临时消息，不会修改当前草案、核验结果或正式研究节点。</p>
+            <ol aria-label="临时讨论消息">
+              {conversation?.messages.map((message) => <li key={message.id}><strong>{message.role === "user" ? "你" : "助手"}</strong><p>{message.content || (message.status === "pending" || message.status === "streaming" ? "正在生成…" : "未生成内容")}</p></li>)}
+            </ol>
+            {conversation?.tasks.filter((task) => task.status === "queued" || task.status === "running" || task.status === "failed").map((task) => (
+              <p key={task.id} className="temporary-fusion-observation__task">
+                {task.status === "failed" ? `生成失败：${task.error?.message ?? "可重试"}` : task.status === "running" ? "正在生成回复" : "等待生成"}
+                {task.status === "failed" ? <button type="button" className="button button--secondary" disabled={busy} onClick={() => void retryTask(task.id)}>重试</button> : <button type="button" className="button button--secondary" disabled={busy} onClick={() => void cancelTask(task.id)}>取消</button>}
+              </p>
+            ))}
+            <form onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
+              <label htmlFor="temporary-fusion-message-input">围绕当前候选继续讨论</label>
+              <textarea id="temporary-fusion-message-input" className="input" value={messageDraft} onChange={(event) => setMessageDraft(event.target.value)} maxLength={20_000} />
+              <button type="submit" className="button button--primary" disabled={busy || !messageDraft.trim()}>发送讨论</button>
+            </form>
+          </section>
         </article>
       ) : null}
       {clearConfirmationOpen ? (
