@@ -295,6 +295,8 @@ export interface NodeSystemTargetStore {
   getTemporaryFusionBundle(id: string): ResearchTemporaryFusionBundle | undefined;
   listTemporaryFusionNodes(): ResearchTemporaryFusionNodeRecord[];
   deleteTemporaryFusionNode(id: string): Promise<boolean>;
+  deleteTemporaryFusionNodes(ids: readonly string[]): Promise<{ deletedIds: string[]; missingIds: string[] }>;
+  clearTemporaryFusionNodes(): Promise<number>;
   createAssociationHint(hint: ResearchAssociationHintRecord): Promise<ResearchAssociationHintRecord>;
   saveAssociationHint(hint: ResearchAssociationHintRecord): Promise<void>;
   listAssociationHints(status?: ResearchAssociationHintRecord["status"]): ResearchAssociationHintRecord[];
@@ -1454,7 +1456,33 @@ export class SqliteStore implements CollectorStore {
   }
 
   async deleteTemporaryFusionNode(id: string): Promise<boolean> {
-    return this.db().prepare("DELETE FROM research_temporary_fusion_nodes WHERE id = ?").run(id).changes === 1;
+    return (await this.deleteTemporaryFusionNodes([id])).deletedIds.length === 1;
+  }
+
+  /**
+   * T03：一次请求只删除明确给出的临时聚合根。SQLite 级联删除草案与候选来源连接；
+   * 正式节点、正文和永久边不在该外键树中，因此不会被此操作触及。
+   */
+  async deleteTemporaryFusionNodes(ids: readonly string[]): Promise<{ deletedIds: string[]; missingIds: string[] }> {
+    const uniqueIds = [...new Set(ids)];
+    const deletedIds: string[] = [];
+    this.transaction(() => {
+      const remove = this.db().prepare("DELETE FROM research_temporary_fusion_nodes WHERE id = ?");
+      for (const id of uniqueIds) {
+        if (remove.run(id).changes === 1) deletedIds.push(id);
+      }
+    });
+    const deletedSet = new Set(deletedIds);
+    return { deletedIds, missingIds: uniqueIds.filter((id) => !deletedSet.has(id)) };
+  }
+
+  /** T03：清空对象固定为全部临时融合聚合根，返回实际删除数以支持幂等重试。 */
+  async clearTemporaryFusionNodes(): Promise<number> {
+    let deletedCount = 0;
+    this.transaction(() => {
+      deletedCount = Number(this.db().prepare("DELETE FROM research_temporary_fusion_nodes").run().changes);
+    });
+    return deletedCount;
   }
 
   async createAssociationHint(hint: ResearchAssociationHintRecord): Promise<ResearchAssociationHintRecord> {

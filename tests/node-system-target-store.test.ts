@@ -171,6 +171,31 @@ test("deleting a temporary candidate cannot modify permanent relationships", asy
   assert.deepEqual(store.listResearchPermanentEdges(), [permanent]);
 });
 
+test("temporary candidate batch deletion cascades only through its own aggregate and reports missing ids", async (t) => {
+  const store = await makeStore(t);
+  for (const nodeId of ["node-source-a", "node-source-b"]) {
+    await seedNode(store, { id: nodeId, sessionId: `session:${nodeId}`, status: "active", createdAt: NOW, updatedAt: NOW });
+  }
+  const first = temporaryFusionBundle("temporary-fusion-first");
+  const second = temporaryFusionBundle("temporary-fusion-second");
+  second.node.creationKey = "generation-task-2";
+  second.activeDraft.id = second.node.activeDraftVersionId;
+  second.candidateSources = second.candidateSources.map((source) => ({
+    ...source,
+    id: `${second.node.id}:source:${source.sourceNodeId}`,
+    temporaryFusionNodeId: second.node.id,
+  }));
+  await store.createTemporaryFusionBundle(first);
+  await store.createTemporaryFusionBundle(second);
+
+  const deleted = await store.deleteTemporaryFusionNodes([first.node.id, "missing-temporary", second.node.id]);
+  assert.deepEqual(deleted, { deletedIds: [first.node.id, second.node.id], missingIds: ["missing-temporary"] });
+  assert.equal(store.getTemporaryFusionBundle(first.node.id), undefined);
+  assert.equal(store.getTemporaryFusionBundle(second.node.id), undefined);
+  assert.deepEqual(store.listResearchNodes("session:node-source-a").map((node) => node.id), ["node-source-a"], "formal source remains");
+  assert.equal(await store.clearTemporaryFusionNodes(), 0, "empty clear is idempotent");
+});
+
 test("association hints stay temporary and confirmed fusion snapshots stay immutable", async (t) => {
   const store = await makeStore(t);
   for (const nodeId of ["node-a", "node-b"]) {

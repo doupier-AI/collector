@@ -3106,6 +3106,28 @@ export interface ResearchTemporaryFusionSearchResponse {
   matches: ResearchTemporaryFusionSearchMatch[];
 }
 
+/** 单项删除保持幂等：目标已经不存在时 deleted 为 false，而不是把重试视为失败。 */
+export interface ResearchTemporaryFusionDeleteResult {
+  id: string;
+  deleted: boolean;
+}
+
+/** 批量删除只接受调用方明确给出的候选身份，绝不按搜索词或当前筛选范围扩展对象。 */
+export interface ResearchTemporaryFusionBatchDeleteInput {
+  ids: string[];
+}
+
+/** 不存在的 ID 不阻断同批其他删除，结果明确区分实际删除与本已不存在的项。 */
+export interface ResearchTemporaryFusionBatchDeleteResult {
+  deletedIds: string[];
+  missingIds: string[];
+}
+
+/** 清空操作只作用于临时融合聚合根；不包含正式节点、正文或永久关系。 */
+export interface ResearchTemporaryFusionClearResult {
+  deletedCount: number;
+}
+
 /** 统一客户端可消费的目标模型快照；不代表对应 HTTP 路径已在 T01 开放。 */
 export interface NodeSystemTargetClientPayload {
   permanentEdges: ResearchPermanentEdgeRecord[];

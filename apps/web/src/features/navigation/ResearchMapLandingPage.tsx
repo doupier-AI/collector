@@ -624,6 +624,7 @@ export function ResearchMapLandingPage() {
           {activeTool === "temporary" ? (
             temporaryFusionObservation ? <TemporaryFusionObservationPanel
               onCloseObservation={() => setTemporaryFusionObservation(false)}
+              onChanged={() => setReloadNonce((nonce) => nonce + 1)}
               onOpenSource={(source) => {
                 const scene = sceneRef.current;
                 if (scene && currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(scene, routeStateRef.current);

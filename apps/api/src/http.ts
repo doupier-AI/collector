@@ -329,9 +329,23 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         }
         return json(response, 200, service.searchTemporaryFusions({ query: body.query, ...(body.limit === undefined ? {} : { limit: body.limit }) }));
       }
+      if (request.method === "POST" && url.pathname === "/v1/research-temporary-fusions/batch-delete") {
+        const body = await readJson(request) as { ids?: unknown };
+        if (!Array.isArray(body.ids) || body.ids.some((id) => typeof id !== "string")) {
+          throw new ValidationError("ids must be an array of strings");
+        }
+        return json(response, 200, await service.deleteTemporaryFusions({ ids: body.ids }));
+      }
+      if (request.method === "POST" && url.pathname === "/v1/research-temporary-fusions/clear") {
+        await readJsonOptional(request);
+        return json(response, 200, await service.clearTemporaryFusions());
+      }
       const temporaryFusionMatch = url.pathname.match(/^\/v1\/research-temporary-fusions\/([^/]+)$/);
       if (request.method === "GET" && temporaryFusionMatch) {
         return json(response, 200, service.getTemporaryFusion(decodeURIComponent(temporaryFusionMatch[1])));
+      }
+      if (request.method === "DELETE" && temporaryFusionMatch) {
+        return json(response, 200, await service.deleteTemporaryFusion(decodeURIComponent(temporaryFusionMatch[1])));
       }
       const researchSessionGraphMatch = url.pathname.match(/^\/v1\/research-sessions\/([^/]+)\/graph$/);
       if (request.method === "GET" && researchSessionGraphMatch) {

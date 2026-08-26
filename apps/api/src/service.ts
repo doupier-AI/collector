@@ -32,6 +32,10 @@ import {
   type ModelCallRecord,
   type ResearchNodeView,
   type ResearchTemporaryFusionBundle,
+  type ResearchTemporaryFusionBatchDeleteInput,
+  type ResearchTemporaryFusionBatchDeleteResult,
+  type ResearchTemporaryFusionClearResult,
+  type ResearchTemporaryFusionDeleteResult,
   type ResearchTemporaryFusionListItem,
   type ResearchTemporaryFusionSearchInput,
   type ResearchTemporaryFusionSearchResponse,
@@ -893,6 +897,27 @@ export class CaptureService {
       return [{ ...temporaryFusionListItem(bundle), preview: temporaryFusionPreview(body, index, query.length) }];
     });
     return { matches: matches.slice(0, input.limit ?? 50) };
+  }
+
+  async deleteTemporaryFusion(id: string): Promise<ResearchTemporaryFusionDeleteResult> {
+    const normalizedId = id.trim();
+    if (!normalizedId) throw new ValidationError("temporary fusion id is required");
+    return { id: normalizedId, deleted: await this.store.deleteTemporaryFusionNode(normalizedId) };
+  }
+
+  async deleteTemporaryFusions(input: ResearchTemporaryFusionBatchDeleteInput): Promise<ResearchTemporaryFusionBatchDeleteResult> {
+    if (!Array.isArray(input.ids) || input.ids.length < 1 || input.ids.length > 100) {
+      throw new ValidationError("ids must contain between 1 and 100 temporary fusion ids");
+    }
+    const ids = input.ids.map((id) => typeof id === "string" ? id.trim() : "");
+    if (ids.some((id) => !id) || new Set(ids).size !== ids.length) {
+      throw new ValidationError("ids must contain non-empty, non-duplicated temporary fusion ids");
+    }
+    return this.store.deleteTemporaryFusionNodes(ids);
+  }
+
+  async clearTemporaryFusions(): Promise<ResearchTemporaryFusionClearResult> {
+    return { deletedCount: await this.store.clearTemporaryFusionNodes() };
   }
 
   async updateFusionAutoConfig(input: { enabled?: unknown }): Promise<{ enabled: boolean }> {

@@ -97,3 +97,33 @@ test("#71 开启后只在 B 面生成可追溯临时融合，页面不跳转", a
   await page.goto(`/nodes/${encodeURIComponent(rootNodeId)}`);
   await expect(page.getByTestId("temporary-fusion-count")).toContainText(`临时融合 ${createdTemporaryFusion.temporaryNodes} 条待核验`);
 });
+
+test("T03 清空临时层必须可取消，并且确认后不影响正式来源或永久关系", async ({ page }) => {
+  const { sessionId, rootNodeId } = await openSession(page);
+  await growSharedConceptChild(page, sessionId);
+  const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
+  const before = temporaryFusionState(dbPath);
+  await page.request.put("/v1/settings/fusion", { data: { enabled: true } });
+  await page.goto(`/nodes/${encodeURIComponent(rootNodeId)}`);
+  await expect(page.getByTestId("temporary-fusion-count")).toContainText(`临时融合 ${before.temporaryNodes + 1} 条待核验`, { timeout: 20_000 });
+  const created = temporaryFusionState(dbPath);
+
+  await page.goto("/map");
+  await page.getByRole("button", { name: `临时融合（${created.temporaryNodes}）` }).click();
+  await page.getByRole("button", { name: "开启临时层" }).click();
+  await page.getByRole("button", { name: "清空全部临时融合" }).click();
+  await expect(page.getByRole("alertdialog", { name: "清空全部临时融合？" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  expect(temporaryFusionState(dbPath)).toEqual(created);
+
+  await page.getByRole("button", { name: "清空全部临时融合" }).click();
+  await page.getByRole("button", { name: "确认清空全部临时融合" }).click();
+  await expect(page.getByRole("button", { name: "临时融合（0）" })).toBeVisible();
+  await expect(page.getByTestId("global-map-canvas").locator("[data-temporary-fusion-id]")).toHaveCount(0);
+  expect(temporaryFusionState(dbPath)).toEqual({
+    temporaryNodes: 0,
+    candidateSources: 0,
+    formalFusionNodes: created.formalFusionNodes,
+    fusedFromEdges: created.fusedFromEdges,
+  });
+});

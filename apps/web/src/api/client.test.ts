@@ -47,6 +47,21 @@ describe("#32 fusion auto config API client", () => {
   });
 });
 
+describe("T03 temporary fusion management API client", () => {
+  it("uses separate single, explicit batch, and clear endpoints", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const client = createApiClient(fetchMock);
+
+    await client.deleteTemporaryFusion("temporary / one");
+    await client.deleteTemporaryFusions(["temporary-1", "temporary-2"]);
+    await client.clearTemporaryFusions();
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/v1/research-temporary-fusions/temporary%20%2F%20one", expect.objectContaining({ method: "DELETE" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/v1/research-temporary-fusions/batch-delete", expect.objectContaining({ method: "POST", body: JSON.stringify({ ids: ["temporary-1", "temporary-2"] }) }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/v1/research-temporary-fusions/clear", expect.objectContaining({ method: "POST", body: "{}" }));
+  });
+});
+
 describe("#42 research body version API client", () => {
   it("calls the body version view endpoint with a stable encoded path", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ version: {}, fragments: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));

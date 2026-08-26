@@ -34,6 +34,9 @@ import type {
   ResearchSearchInput,
   ResearchSearchResponse,
   ResearchTemporaryFusionBundle,
+  ResearchTemporaryFusionBatchDeleteResult,
+  ResearchTemporaryFusionClearResult,
+  ResearchTemporaryFusionDeleteResult,
   ResearchTemporaryFusionListItem,
   ResearchTemporaryFusionSearchInput,
   ResearchTemporaryFusionSearchResponse,
@@ -168,6 +171,9 @@ export interface ApiClient {
   listTemporaryFusions(): Promise<ResearchTemporaryFusionListItem[]>;
   getTemporaryFusion(id: string): Promise<ResearchTemporaryFusionBundle>;
   searchTemporaryFusions(input: ResearchTemporaryFusionSearchInput): Promise<ResearchTemporaryFusionSearchResponse>;
+  deleteTemporaryFusion(id: string): Promise<ResearchTemporaryFusionDeleteResult>;
+  deleteTemporaryFusions(ids: string[]): Promise<ResearchTemporaryFusionBatchDeleteResult>;
+  clearTemporaryFusions(): Promise<ResearchTemporaryFusionClearResult>;
   /** 从选区生长子节点：统一取代深入研究二选一。 */
   startChildNode(selectionId: string, input: CreateChildNodeInput, idempotencyKey: string): Promise<NodeGrowthAccepted>;
     /** 保存标记：幂等键命中返回首次保存的项目，保存不依赖 AI。 */
@@ -573,6 +579,25 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
         method: "POST",
         headers: JSON_HEADERS,
         body: JSON.stringify(input),
+      });
+    },
+    deleteTemporaryFusion(id: string) {
+      return requestJson<ResearchTemporaryFusionDeleteResult>(fetchFn, `/v1/research-temporary-fusions/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+    },
+    deleteTemporaryFusions(ids: string[]) {
+      return requestJson<ResearchTemporaryFusionBatchDeleteResult>(fetchFn, "/v1/research-temporary-fusions/batch-delete", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ ids }),
+      });
+    },
+    clearTemporaryFusions() {
+      return requestJson<ResearchTemporaryFusionClearResult>(fetchFn, "/v1/research-temporary-fusions/clear", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: "{}",
       });
     },
     getSemanticSearchStatus() {

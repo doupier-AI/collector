@@ -392,6 +392,53 @@ test("T02 exposes temporary fusions only through explicit read and map-observati
   assert.equal(opened.edges.some(({ edge }) => edge.fromNodeId === item?.node.id || edge.toNodeId === item?.node.id), false, "临时连接不进入永久边");
 });
 
+test("T03 deletes single, explicit batches, and all temporary fusions without touching formal facts", async (t) => {
+  const harness = await createHarness({
+    similarityVerifier: {
+      async verifyResearchSimilarity() { return { relationType: "identity", reason: "两处材料指向同一实体。" }; },
+      async discoverTemporaryFusion(input) {
+        return { hasNovelInsight: true, body: "## 临时融合草稿\n\n两处材料形成一个待核验的新认识。[来源1][来源2]", usedSourceNodeIds: input.sources.map((source) => source.nodeId) };
+      },
+    },
+  });
+  t.after(harness.close);
+  await fetch(`${harness.base}/v1/settings/fusion`, { method: "PUT", headers: headers(harness.token), body: JSON.stringify({ enabled: true }) });
+  await fetch(`${harness.base}/v1/research-nodes/session-1/fusion-proposals/scan`, { method: "POST", headers: headers(harness.token), body: "{}" });
+  const first = harness.store.listTemporaryFusionNodes()[0]!;
+  const seed = harness.store.getTemporaryFusionBundle(first.id)!;
+  const createTemporary = async (id: string) => {
+    const node = { ...seed.node, id, creationKey: `${seed.node.creationKey}:${id}`, activeDraftVersionId: `${id}:draft:1` };
+    return harness.store.createTemporaryFusionBundle({
+      node,
+      activeDraft: { ...seed.activeDraft, id: node.activeDraftVersionId, temporaryFusionNodeId: id },
+      candidateSources: seed.candidateSources.map((source, index) => ({ ...source, id: `${id}:source:${index + 1}`, temporaryFusionNodeId: id })),
+    });
+  };
+
+  const single = await fetch(`${harness.base}/v1/research-temporary-fusions/${encodeURIComponent(first.id)}`, { method: "DELETE", headers: headers(harness.token) });
+  assert.equal(single.status, 200);
+  assert.deepEqual(await single.json(), { id: first.id, deleted: true });
+  const oldAddress = await fetch(`${harness.base}/v1/research-temporary-fusions/${encodeURIComponent(first.id)}`, { headers: headers(harness.token) });
+  assert.equal(oldAddress.status, 404);
+  const retried = await fetch(`${harness.base}/v1/research-temporary-fusions/${encodeURIComponent(first.id)}`, { method: "DELETE", headers: headers(harness.token) });
+  assert.deepEqual(await retried.json(), { id: first.id, deleted: false }, "single delete retries are idempotent");
+
+  const batchCandidate = await createTemporary("temporary-batch");
+  const batch = await fetch(`${harness.base}/v1/research-temporary-fusions/batch-delete`, {
+    method: "POST", headers: headers(harness.token), body: JSON.stringify({ ids: [batchCandidate.node.id, "missing-temporary"] }),
+  });
+  assert.equal(batch.status, 200);
+  assert.deepEqual(await batch.json(), { deletedIds: [batchCandidate.node.id], missingIds: ["missing-temporary"] });
+
+  await createTemporary("temporary-clear");
+  const clear = await fetch(`${harness.base}/v1/research-temporary-fusions/clear`, { method: "POST", headers: headers(harness.token), body: "{}" });
+  assert.equal(clear.status, 200);
+  assert.deepEqual(await clear.json(), { deletedCount: 1 });
+  assert.equal(harness.store.listTemporaryFusionNodes().length, 0);
+  assert.equal(harness.store.listResearchNodes("session-1").length, 2, "formal nodes remain after every temporary deletion mode");
+  assert.deepEqual(harness.store.listResearchPermanentEdges(), []);
+});
+
 test("#71 enabled discovery keeps a pending proposal when no concrete new insight is found", async (t) => {
   const harness = await createHarness(); // 缺省 contrast 核验器
   t.after(harness.close);
