@@ -881,6 +881,36 @@ test("temporary fusion creation is stable across retry and service restart", asy
   assert.equal(harness.store.listTemporaryFusionNodes().length, 1);
 });
 
+test("concurrent discovery for the same evidence creates one temporary bundle", async (t) => {
+  let arrivals = 0;
+  let release: (() => void) | undefined;
+  const bothStarted = new Promise<void>((resolve) => { release = resolve; });
+  const gateway: SimilarityVerificationGateway = {
+    async verifyResearchSimilarity() { return { relationType: "shared-concept", reason: "存在相关性。" }; },
+    async discoverTemporaryFusion(input) {
+      const invocation = ++arrivals;
+      if (arrivals === 2) release?.();
+      await bothStarted;
+      return {
+        hasNovelInsight: true,
+        body: invocation === 1
+          ? "## 新认识\n\n并发发现的第一种措辞。[来源1][来源2]"
+          : "## 新认识\n\n并发发现的第二种措辞。[来源1][来源2]",
+        usedSourceNodeIds: input.sources.map((source) => source.nodeId),
+      };
+    },
+  };
+  const harness = await createFusionHarness({ similarityVerifier: gateway });
+  t.after(harness.close);
+  await harness.service.fusionProposals.scan("node-a"); // 先持久化待决提议，避免并发争夺提议写入。
+  await harness.store.saveSetting(AUTO_FUSION_SETTING_KEY, "true");
+  const first = new ResearchFusionProposalService(harness.store, new TermDetectionService(), async () => gateway);
+  const second = new ResearchFusionProposalService(harness.store, new TermDetectionService(), async () => gateway);
+
+  await Promise.all([first.scan("node-a"), second.scan("node-a")]);
+  assert.equal(harness.store.listTemporaryFusionNodes().length, 1);
+});
+
 async function appendNewSharedConceptEvidence(store: SqliteStore): Promise<ResearchMessageRecord> {
   const nextMessage: ResearchMessageRecord = {
     id: "message-a-next",
@@ -943,6 +973,31 @@ test("new evidence does not duplicate an already discovered identical insight", 
 
   const result = await harness.service.fusionProposals.scan("node-a");
   assert.equal(result.temporaryFusionCount, 1);
+});
+
+test("identical draft wording from different source sets remains independently traceable", async (t) => {
+  const harness = await createFusionHarness({
+    similarityVerifier: {
+      async verifyResearchSimilarity() { return { relationType: "shared-concept", reason: "存在相关性。" }; },
+      async discoverTemporaryFusion(input) {
+        return {
+          hasNovelInsight: true,
+          body: "## 新认识\n\n同名概念需要在各自来源中核验。[来源1][来源2]",
+          usedSourceNodeIds: input.sources.map((source) => source.nodeId),
+        };
+      },
+    },
+  });
+  t.after(harness.close);
+  await addConceptNode(harness, "node-c");
+  await harness.store.saveSetting(AUTO_FUSION_SETTING_KEY, "true");
+
+  await harness.service.fusionProposals.scan("node-a");
+  const bundles = harness.store.listTemporaryFusionNodes();
+  assert.equal(bundles.length, 2);
+  const sourceDomains = bundles.map((node) => harness.store.getTemporaryFusionBundle(node.id)!.candidateSources
+    .map((source) => source.sourceNodeId).sort().join(","));
+  assert.deepEqual(sourceDomains.sort(), ["node-a,node-b", "node-a,node-c"]);
 });
 
 test("unchanged evidence never bypasses an existing user proposal decision", async (t) => {
@@ -1040,6 +1095,8 @@ test("融合护栏：单次扫描最多核验 12 个候选对", async (t) => {
   const result = await service.scan("node-a");
   assert.equal(verifierCalls, 12, "核验次数被截断到单次扫描上限");
   assert.equal(result.proposals.length, 12);
+  // 新的正式回答会改写证据指纹，但不得让轮转游标回到前 12 个候选。
+  await appendNewSharedConceptEvidence(harness.store);
   const restarted = new ResearchFusionProposalService(
     harness.store,
     new TermDetectionService(),
@@ -1051,7 +1108,7 @@ test("融合护栏：单次扫描最多核验 12 个候选对", async (t) => {
     }),
   );
   const remaining = await restarted.scan("node-a");
-  assert.equal(verifierCalls, 16, "重启后从持久化游标继续覆盖其余候选");
+  assert.equal(verifierCalls, 16, "新回答与重启后仍从持久化游标继续覆盖其余候选");
   assert.equal(remaining.proposals.length, 4);
 });
 
@@ -1171,5 +1228,5 @@ test("融合护栏：候选集合未变化的重复扫描在冷却窗口内不�
   await addConceptNode(harness, "node-z");
   const third = await service.scan("node-a");
   assert.equal(verifierCalls, 2, "候选集合变化后恢复核验新配对");
-  assert.equal(third.proposals.length, 2);
+  assert.equal(third.proposals.length, 1, "轮转扫描只返回本轮新核验的候选");
 });

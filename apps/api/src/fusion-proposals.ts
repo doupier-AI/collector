@@ -278,11 +278,11 @@ export class ResearchFusionProposalService {
     const candidates = buildSimilarityCandidates(focus.id, indexedNodes);
     const proposals: ResearchFusionProposalRecord[] = [];
     const fingerprint = `${focus.id}\u0000${candidates.map(candidateEvidenceKey).join("|")}`;
-    const candidateWindow = this.nextCandidateWindow(focus.id, fingerprint, candidates);
+    const candidateWindow = this.nextCandidateWindow(focus.id, candidates);
     // 护栏：同焦点同候选集合的重复扫描（进页即重扫、融合后跳转再扫）在冷却
     // 窗口内直接返回既有提议，阻断级联循环。
     const cooldown = this.scanCooldowns.get(nodeId);
-    if (cooldown && candidateWindow.startOffset === 0 && cooldown.fingerprint === fingerprint && this.now().getTime() - cooldown.at < FUSION_SCAN_COOLDOWN_MS) {
+    if (cooldown && candidateWindow.startsNewCycle && cooldown.fingerprint === fingerprint && this.now().getTime() - cooldown.at < FUSION_SCAN_COOLDOWN_MS) {
       console.log(`[fusion] 扫描冷却：节点 ${nodeId} 候选集合未变化，${Math.round((FUSION_SCAN_COOLDOWN_MS - (this.now().getTime() - cooldown.at)) / 60000)} 分钟内不重复核验`);
       return this.scanResult(this.listExistingForScan(nodeId));
     }
@@ -318,24 +318,29 @@ export class ResearchFusionProposalService {
       }
       proposals.push(this.withResolvedFragmentRefs(proposal));
     }
-    await this.saveCandidateWindow(focus.id, fingerprint, candidateWindow.nextOffset);
+    await this.saveCandidateWindow(focus.id, candidateWindow.nextPairKey);
     this.scanCooldowns.set(nodeId, { fingerprint, at: this.now().getTime() });
     console.log(`[fusion] 扫描完成：节点 ${nodeId} 候选=${candidates.length} 核验通过=${verified} 新提议=${proposals.filter((proposal) => !knownIds.has(proposal.id)).length} 新临时融合=${temporaryCreated}${candidates.length > FUSION_MAX_VERIFICATIONS_PER_SCAN ? `（候选超上限，${candidates.length - FUSION_MAX_VERIFICATIONS_PER_SCAN} 个留待下次）` : ""}`);
     return this.scanResult(proposals);
   }
 
   /** 超出单轮上限时持久化轮转游标，保证重启后也会到达后续正式候选。 */
-  private nextCandidateWindow(nodeId: string, fingerprint: string, candidates: readonly SimilarityCandidate[]) {
-    if (candidates.length === 0) return { candidates: [] as SimilarityCandidate[], startOffset: 0, nextOffset: 0 };
+  private nextCandidateWindow(nodeId: string, candidates: readonly SimilarityCandidate[]) {
+    if (candidates.length === 0) return { candidates: [] as SimilarityCandidate[], startsNewCycle: true, nextPairKey: "" };
     const saved = parseCandidateScanCursor(this.store.getSetting(`${FUSION_SCAN_CURSOR_PREFIX}${nodeId}`));
-    const startOffset = saved?.fingerprint === fingerprint ? saved.nextOffset % candidates.length : 0;
+    const afterPairKey = saved?.afterPairKey ?? "";
+    let startOffset = afterPairKey
+      ? candidates.findIndex((candidate) => candidatePairKey(candidate) > afterPairKey)
+      : 0;
+    const startsNewCycle = !afterPairKey || startOffset < 0;
+    if (startOffset < 0) startOffset = 0;
     const length = Math.min(FUSION_MAX_VERIFICATIONS_PER_SCAN, candidates.length - startOffset);
     const window = candidates.slice(startOffset, startOffset + length);
-    return { candidates: window, startOffset, nextOffset: startOffset + length === candidates.length ? 0 : startOffset + length };
+    return { candidates: window, startsNewCycle, nextPairKey: candidatePairKey(window.at(-1)!) };
   }
 
-  private async saveCandidateWindow(nodeId: string, fingerprint: string, nextOffset: number): Promise<void> {
-    await this.store.saveSetting(`${FUSION_SCAN_CURSOR_PREFIX}${nodeId}`, JSON.stringify({ fingerprint, nextOffset } satisfies CandidateScanCursor));
+  private async saveCandidateWindow(nodeId: string, afterPairKey: string): Promise<void> {
+    await this.store.saveSetting(`${FUSION_SCAN_CURSOR_PREFIX}${nodeId}`, JSON.stringify({ afterPairKey } satisfies CandidateScanCursor));
   }
 
   private scanResult(proposals: ResearchFusionProposalRecord[]): ResearchFusionScanResult {
@@ -389,9 +394,11 @@ export class ResearchFusionProposalService {
       const timestamp = this.now().toISOString();
       const temporaryFusionId = randomUUID();
       const contentHash = `sha256:${createHash("sha256").update(discovery.body).digest("hex")}`;
-      // 同一完整草案代表同一已发现认识；creation_key 的唯一约束同时处理并发写入。
-      const creationKey = `${TEMPORARY_FUSION_CREATION_PREFIX}insight:${contentHash}`;
+      // 创建键先锁定可回读证据，SQLite 唯一约束因此能抑制并发/重试的同一发现调用；
+      // 正文哈希只在同一来源集合内跨证据去重，不能把无关来源强制合并成一个认识。
+      const creationKey = `${TEMPORARY_FUSION_CREATION_PREFIX}evidence:${evidenceKey}`;
       if (this.store.findTemporaryFusionNodeByCreationKey(creationKey)) return false;
+      if (this.hasTemporaryFusionForInsight(usedMaterials, contentHash)) return false;
       const bundle: ResearchTemporaryFusionBundle = {
         node: {
           id: temporaryFusionId,
@@ -438,6 +445,16 @@ export class ResearchFusionProposalService {
         bodyVersionId: source.bodyVersionId,
         fragmentIds: source.fragmentIds,
       }))) === evidenceKey;
+    });
+  }
+
+  private hasTemporaryFusionForInsight(materials: readonly TemporaryFusionSourceMaterial[], contentHash: string): boolean {
+    const sourceDomain = temporaryFusionSourceDomainKey(materials);
+    return this.store.listTemporaryFusionNodes().some((node) => {
+      const bundle = this.store.getTemporaryFusionBundle(node.id);
+      return bundle !== undefined
+        && bundle.activeDraft.contentHash === contentHash
+        && temporaryFusionSourceDomainKey(bundle.candidateSources.map((source) => ({ nodeId: source.sourceNodeId }))) === sourceDomain;
     });
   }
 
@@ -826,8 +843,7 @@ export function contentWordSignals(content: string): string[] {
 }
 
 interface CandidateScanCursor {
-  fingerprint: string;
-  nextOffset: number;
+  afterPairKey: string;
 }
 
 /** 当前核验证据决定冷却与重试边界；节点对相同但正文版本不同必须重新核验。 */
@@ -841,13 +857,17 @@ function candidateEvidenceKey(candidate: SimilarityCandidate): string {
   return `${candidate.lo.node.id}\u0000${candidate.hi.node.id}\u0000${existingEvidenceKey(candidate.triggerSources)}`;
 }
 
+function candidatePairKey(candidate: SimilarityCandidate): string {
+  return `${candidate.lo.node.id}\u0000${candidate.hi.node.id}`;
+}
+
 function parseCandidateScanCursor(value: string | undefined): CandidateScanCursor | undefined {
   if (!value) return undefined;
   try {
     const parsed = JSON.parse(value) as Partial<CandidateScanCursor>;
-    const { fingerprint, nextOffset } = parsed;
-    if (typeof fingerprint !== "string" || typeof nextOffset !== "number" || !Number.isInteger(nextOffset) || nextOffset < 0) return undefined;
-    return { fingerprint, nextOffset };
+    const { afterPairKey } = parsed;
+    if (typeof afterPairKey !== "string") return undefined;
+    return { afterPairKey };
   } catch {
     return undefined;
   }
@@ -861,6 +881,10 @@ function temporaryFusionEvidenceKey(materials: ReadonlyArray<Pick<TemporaryFusio
       .sort()
       .join("\n"))
     .digest("hex");
+}
+
+function temporaryFusionSourceDomainKey(materials: ReadonlyArray<Pick<TemporaryFusionSourceMaterial, "nodeId">>): string {
+  return materials.map((source) => source.nodeId).sort().join("\u0000");
 }
 
 function triggerSourceKey(source: FusionProposalTriggerSource): string {
