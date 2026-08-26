@@ -34,6 +34,7 @@ export const SIMILARITY_VERIFICATION_TOKEN_BUDGET = 800;
 export const FUSION_PROPOSAL_COOLDOWN_DAYS = 30;
 /** 临时融合发现开关的 settings 键（"true"/"false"，缺省关闭）。 */
 export const AUTO_FUSION_SETTING_KEY = "research_fusion_auto";
+const FUSION_SCAN_CURSOR_PREFIX = "research_fusion_scan_cursor:";
 /** 临时融合身份的稳定命名空间；与正式确认式 `fuse:` 隔离。 */
 export const TEMPORARY_FUSION_CREATION_PREFIX = "temporary-fusion:";
 const MAX_VERIFICATION_CONTENT_CHARACTERS = 12_000;
@@ -277,10 +278,11 @@ export class ResearchFusionProposalService {
     const candidates = buildSimilarityCandidates(focus.id, indexedNodes);
     const proposals: ResearchFusionProposalRecord[] = [];
     const fingerprint = `${focus.id}\u0000${candidates.map(candidateEvidenceKey).join("|")}`;
+    const candidateWindow = this.nextCandidateWindow(focus.id, fingerprint, candidates);
     // 护栏：同焦点同候选集合的重复扫描（进页即重扫、融合后跳转再扫）在冷却
     // 窗口内直接返回既有提议，阻断级联循环。
     const cooldown = this.scanCooldowns.get(nodeId);
-    if (cooldown && cooldown.fingerprint === fingerprint && this.now().getTime() - cooldown.at < FUSION_SCAN_COOLDOWN_MS) {
+    if (cooldown && candidateWindow.startOffset === 0 && cooldown.fingerprint === fingerprint && this.now().getTime() - cooldown.at < FUSION_SCAN_COOLDOWN_MS) {
       console.log(`[fusion] 扫描冷却：节点 ${nodeId} 候选集合未变化，${Math.round((FUSION_SCAN_COOLDOWN_MS - (this.now().getTime() - cooldown.at)) / 60000)} 分钟内不重复核验`);
       return this.scanResult(this.listExistingForScan(nodeId));
     }
@@ -304,18 +306,36 @@ export class ResearchFusionProposalService {
     // 护栏：单次扫描只核验前 N 个候选，其余留待下次。
     let verified = 0;
     let temporaryCreated = 0;
-    for (const candidate of candidates.slice(0, FUSION_MAX_VERIFICATIONS_PER_SCAN)) {
+    for (const candidate of candidateWindow.candidates) {
+      const existing = this.store.findResearchFusionProposalByNodePair(candidate.lo.node.id, candidate.hi.node.id);
+      const evidenceChanged = !existing
+        || existingEvidenceKey(this.withResolvedFragmentRefs(existing).triggerSources) !== existingEvidenceKey(candidate.triggerSources);
       const proposal = await this.verifyCandidate(candidate, gateway);
       if (!proposal) continue;
       verified += 1;
-      if (autoEnabled && temporaryCreated < FUSION_MAX_TEMPORARY_FUSIONS_PER_SCAN) {
+      if (autoEnabled && (proposal.status === "pending" || evidenceChanged) && temporaryCreated < FUSION_MAX_TEMPORARY_FUSIONS_PER_SCAN) {
         if (await this.tryCreateTemporaryFusion(proposal, gateway)) temporaryCreated += 1;
       }
       proposals.push(this.withResolvedFragmentRefs(proposal));
     }
+    await this.saveCandidateWindow(focus.id, fingerprint, candidateWindow.nextOffset);
     this.scanCooldowns.set(nodeId, { fingerprint, at: this.now().getTime() });
     console.log(`[fusion] 扫描完成：节点 ${nodeId} 候选=${candidates.length} 核验通过=${verified} 新提议=${proposals.filter((proposal) => !knownIds.has(proposal.id)).length} 新临时融合=${temporaryCreated}${candidates.length > FUSION_MAX_VERIFICATIONS_PER_SCAN ? `（候选超上限，${candidates.length - FUSION_MAX_VERIFICATIONS_PER_SCAN} 个留待下次）` : ""}`);
     return this.scanResult(proposals);
+  }
+
+  /** 超出单轮上限时持久化轮转游标，保证重启后也会到达后续正式候选。 */
+  private nextCandidateWindow(nodeId: string, fingerprint: string, candidates: readonly SimilarityCandidate[]) {
+    if (candidates.length === 0) return { candidates: [] as SimilarityCandidate[], startOffset: 0, nextOffset: 0 };
+    const saved = parseCandidateScanCursor(this.store.getSetting(`${FUSION_SCAN_CURSOR_PREFIX}${nodeId}`));
+    const startOffset = saved?.fingerprint === fingerprint ? saved.nextOffset % candidates.length : 0;
+    const length = Math.min(FUSION_MAX_VERIFICATIONS_PER_SCAN, candidates.length - startOffset);
+    const window = candidates.slice(startOffset, startOffset + length);
+    return { candidates: window, startOffset, nextOffset: startOffset + length === candidates.length ? 0 : startOffset + length };
+  }
+
+  private async saveCandidateWindow(nodeId: string, fingerprint: string, nextOffset: number): Promise<void> {
+    await this.store.saveSetting(`${FUSION_SCAN_CURSOR_PREFIX}${nodeId}`, JSON.stringify({ fingerprint, nextOffset } satisfies CandidateScanCursor));
   }
 
   private scanResult(proposals: ResearchFusionProposalRecord[]): ResearchFusionScanResult {
@@ -338,9 +358,9 @@ export class ResearchFusionProposalService {
     try {
       const materials = this.buildTemporaryFusionSourceMaterials(this.withResolvedFragmentRefs(proposal));
       if (materials.length < 2) return false;
-      // 同一证据集合可安全重试；新正文版本则是新的候选，不能被旧 bundle 吞掉。
-      const creationKey = `${TEMPORARY_FUSION_CREATION_PREFIX}${proposal.id}:${temporaryFusionEvidenceKey(materials)}`;
-      if (this.store.findTemporaryFusionNodeByCreationKey(creationKey)) return false;
+      const evidenceKey = temporaryFusionEvidenceKey(materials);
+      // 同一证据集合可安全重试；不同证据集合仍允许核验新的认识。
+      if (this.hasTemporaryFusionForEvidence(materials, evidenceKey)) return false;
       const discovery = await gateway.discoverTemporaryFusion(
         {
           sources: materials.map(({ nodeId, title, excerpt }) => ({ nodeId, title, excerpt })),
@@ -350,7 +370,7 @@ export class ResearchFusionProposalService {
           maxTokens: TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET,
           timeoutMs: 120_000,
           context: {
-            workflowRunId: creationKey,
+            workflowRunId: `${TEMPORARY_FUSION_CREATION_PREFIX}evidence:${proposal.id}:${evidenceKey}`,
             purpose: "temporary_fusion_discovery",
             promptVersion: TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION,
             sourceFragmentIds: materials.flatMap((source) => source.fragmentIds).sort(),
@@ -368,6 +388,10 @@ export class ResearchFusionProposalService {
       }
       const timestamp = this.now().toISOString();
       const temporaryFusionId = randomUUID();
+      const contentHash = `sha256:${createHash("sha256").update(discovery.body).digest("hex")}`;
+      // 同一完整草案代表同一已发现认识；creation_key 的唯一约束同时处理并发写入。
+      const creationKey = `${TEMPORARY_FUSION_CREATION_PREFIX}insight:${contentHash}`;
+      if (this.store.findTemporaryFusionNodeByCreationKey(creationKey)) return false;
       const bundle: ResearchTemporaryFusionBundle = {
         node: {
           id: temporaryFusionId,
@@ -383,7 +407,7 @@ export class ResearchFusionProposalService {
           temporaryFusionNodeId: temporaryFusionId,
           version: 1,
           body: discovery.body,
-          contentHash: `sha256:${createHash("sha256").update(discovery.body).digest("hex")}`,
+          contentHash,
           evidenceStatus: "verified",
           createdAt: timestamp,
         },
@@ -403,6 +427,18 @@ export class ResearchFusionProposalService {
     } catch {
       return false;
     }
+  }
+
+  private hasTemporaryFusionForEvidence(materials: readonly TemporaryFusionSourceMaterial[], evidenceKey: string): boolean {
+    return this.store.listTemporaryFusionNodes().some((node) => {
+      const bundle = this.store.getTemporaryFusionBundle(node.id);
+      if (!bundle) return false;
+      return temporaryFusionEvidenceKey(bundle.candidateSources.map((source) => ({
+        nodeId: source.sourceNodeId,
+        bodyVersionId: source.bodyVersionId,
+        fragmentIds: source.fragmentIds,
+      }))) === evidenceKey;
+    });
   }
 
   private buildTemporaryFusionSourceMaterials(proposal: ResearchFusionProposalRecord): TemporaryFusionSourceMaterial[] {
@@ -789,6 +825,11 @@ export function contentWordSignals(content: string): string[] {
   return [...terms].map(normalizeSimilarityConcept).filter(Boolean).sort().slice(0, 120);
 }
 
+interface CandidateScanCursor {
+  fingerprint: string;
+  nextOffset: number;
+}
+
 /** 当前核验证据决定冷却与重试边界；节点对相同但正文版本不同必须重新核验。 */
 function existingEvidenceKey(sources: readonly FusionProposalTriggerSource[]): string {
   return createHash("sha256")
@@ -800,8 +841,20 @@ function candidateEvidenceKey(candidate: SimilarityCandidate): string {
   return `${candidate.lo.node.id}\u0000${candidate.hi.node.id}\u0000${existingEvidenceKey(candidate.triggerSources)}`;
 }
 
+function parseCandidateScanCursor(value: string | undefined): CandidateScanCursor | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as Partial<CandidateScanCursor>;
+    const { fingerprint, nextOffset } = parsed;
+    if (typeof fingerprint !== "string" || typeof nextOffset !== "number" || !Number.isInteger(nextOffset) || nextOffset < 0) return undefined;
+    return { fingerprint, nextOffset };
+  } catch {
+    return undefined;
+  }
+}
+
 /** B 面身份绑定实际提交模型的正文版本与片段，而不是宽泛的节点对。 */
-function temporaryFusionEvidenceKey(materials: readonly TemporaryFusionSourceMaterial[]): string {
+function temporaryFusionEvidenceKey(materials: ReadonlyArray<Pick<TemporaryFusionSourceMaterial, "nodeId" | "bodyVersionId" | "fragmentIds">>): string {
   return createHash("sha256")
     .update(materials
       .map((source) => [source.nodeId, source.bodyVersionId, ...source.fragmentIds].join("\u0000"))

@@ -881,14 +881,7 @@ test("temporary fusion creation is stable across retry and service restart", asy
   assert.equal(harness.store.listTemporaryFusionNodes().length, 1);
 });
 
-test("new stable evidence for the same node pair is reverified and receives a separate temporary identity", async (t) => {
-  const gateway = qualifyingTemporaryFusionGateway();
-  const harness = await createFusionHarness({ similarityVerifier: gateway });
-  t.after(harness.close);
-  await harness.store.saveSetting(AUTO_FUSION_SETTING_KEY, "true");
-
-  await harness.service.fusionProposals.scan("node-a");
-  const first = harness.store.listTemporaryFusionNodes()[0]!;
+async function appendNewSharedConceptEvidence(store: SqliteStore): Promise<ResearchMessageRecord> {
   const nextMessage: ResearchMessageRecord = {
     id: "message-a-next",
     sessionId: "session-1",
@@ -899,10 +892,10 @@ test("new stable evidence for the same node pair is reverified and receives a se
     createdAt: "2026-08-02T00:01:00.000Z",
     updatedAt: "2026-08-02T00:01:00.000Z",
   };
-  const db = (harness.store as unknown as { db(): import("node:sqlite").DatabaseSync }).db();
+  const db = (store as unknown as { db(): import("node:sqlite").DatabaseSync }).db();
   db.prepare("INSERT INTO research_messages (id, session_id, node_id, branch_id, role, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
     .run(nextMessage.id, nextMessage.sessionId, nextMessage.nodeId!, null, nextMessage.role, nextMessage.status, nextMessage.createdAt, nextMessage.updatedAt, JSON.stringify(nextMessage));
-  await harness.store.replaceSlicesForMessage(nextMessage.id, [{
+  await store.replaceSlicesForMessage(nextMessage.id, [{
     id: "slice:node-a:message-a-next:0",
     nodeId: "node-a",
     messageId: nextMessage.id,
@@ -913,6 +906,25 @@ test("new stable evidence for the same node pair is reverified and receives a se
     isProvisional: false,
     createdAt: nextMessage.createdAt,
   }]);
+  return nextMessage;
+}
+
+test("new stable evidence for the same node pair can create a distinct temporary insight", async (t) => {
+  const gateway = qualifyingTemporaryFusionGateway();
+  gateway.discoverTemporaryFusion = async (input) => ({
+    hasNovelInsight: true,
+    body: input.sources.some((source) => source.excerpt.includes("新材料"))
+      ? "## 新认识\n\n新的正式证据表明，成长叙事的差异需要单独核验。[来源1][来源2]"
+      : "## 新认识\n\n两个来源共同表明，角色身份差异会改变同名概念承担的叙事功能。[来源1][来源2]",
+    usedSourceNodeIds: input.sources.map((source) => source.nodeId),
+  });
+  const harness = await createFusionHarness({ similarityVerifier: gateway });
+  t.after(harness.close);
+  await harness.store.saveSetting(AUTO_FUSION_SETTING_KEY, "true");
+
+  await harness.service.fusionProposals.scan("node-a");
+  const first = harness.store.listTemporaryFusionNodes()[0]!;
+  const nextMessage = await appendNewSharedConceptEvidence(harness.store);
 
   const second = await harness.service.fusionProposals.scan("node-a");
   assert.equal(second.temporaryFusionCount, 2);
@@ -920,6 +932,29 @@ test("new stable evidence for the same node pair is reverified and receives a se
   assert.notEqual(bundles[1]?.id, first.id);
   const latest = harness.store.getTemporaryFusionBundle(bundles[1]!.id)!;
   assert.equal(latest.candidateSources.find((source) => source.sourceNodeId === "node-a")?.bodyVersionId, expectedVersionId("node-a", nextMessage));
+});
+
+test("new evidence does not duplicate an already discovered identical insight", async (t) => {
+  const harness = await createFusionHarness({ similarityVerifier: qualifyingTemporaryFusionGateway() });
+  t.after(harness.close);
+  await harness.store.saveSetting(AUTO_FUSION_SETTING_KEY, "true");
+  await harness.service.fusionProposals.scan("node-a");
+  await appendNewSharedConceptEvidence(harness.store);
+
+  const result = await harness.service.fusionProposals.scan("node-a");
+  assert.equal(result.temporaryFusionCount, 1);
+});
+
+test("unchanged evidence never bypasses an existing user proposal decision", async (t) => {
+  const harness = await createFusionHarness({ similarityVerifier: qualifyingTemporaryFusionGateway() });
+  t.after(harness.close);
+  const initial = await harness.service.fusionProposals.scan("node-a");
+  await harness.service.fusionProposals.decide(initial.proposals[0]!.id, "accepted");
+  await harness.store.saveSetting(AUTO_FUSION_SETTING_KEY, "true");
+
+  const result = await harness.service.fusionProposals.scan("node-a");
+  assert.equal(result.proposals[0]?.status, "accepted");
+  assert.equal(result.temporaryFusionCount, 0);
 });
 
 test("manual confirmation remains an explicit formal path", async (t) => {
@@ -1005,6 +1040,19 @@ test("融合护栏：单次扫描最多核验 12 个候选对", async (t) => {
   const result = await service.scan("node-a");
   assert.equal(verifierCalls, 12, "核验次数被截断到单次扫描上限");
   assert.equal(result.proposals.length, 12);
+  const restarted = new ResearchFusionProposalService(
+    harness.store,
+    new TermDetectionService(),
+    async () => ({
+      async verifyResearchSimilarity() {
+        verifierCalls += 1;
+        return { relationType: "contrast", reason: "仅作计数用途。" };
+      },
+    }),
+  );
+  const remaining = await restarted.scan("node-a");
+  assert.equal(verifierCalls, 16, "重启后从持久化游标继续覆盖其余候选");
+  assert.equal(remaining.proposals.length, 4);
 });
 
 test("融合护栏：单轮最多创建 3 个临时融合，其余提议保持待核验", async (t) => {
@@ -1016,7 +1064,7 @@ test("融合护栏：单轮最多创建 3 个临时融合，其余提议保持�
       async discoverTemporaryFusion(input) {
         return {
           hasNovelInsight: true,
-          body: "## 新认识\n\n多个来源共同形成可定位的新认识。[来源1][来源2]",
+          body: `## 新认识\n\n${input.sources.map((source) => source.nodeId).join("、")}共同形成可定位的新认识。[来源1][来源2]`,
           usedSourceNodeIds: input.sources.map((source) => source.nodeId),
         };
       },

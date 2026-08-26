@@ -527,49 +527,6 @@ export async function readNodeEvidence(page: Page, nodeId: string, fragmentOrdin
   return { nodeId, messageId: assistant.id, bodyVersionId, fragmentId: fragment.id };
 }
 
-/** 在根节点视图响应中注入 pending + accepted 融合提案（依据指向真实提取的片段）。 */
-export async function installProposalFixture(
-  page: Page,
-  rootNodeId: string,
-  rootEvidence: NodeEvidence,
-  childEvidence: NodeEvidence,
-): Promise<void> {
-  await page.route(`**/v1/research-nodes/${encodeURIComponent(rootNodeId)}`, async (route) => {
-    const response = await route.fetch();
-    const view = await response.json();
-    const pendingProposal = {
-      id: "e2e-proposal-pending",
-      loNodeId: rootNodeId,
-      hiNodeId: childEvidence.nodeId,
-      relationType: "shared-concept",
-      reason: "根节点与子节点共享本地优先概念。",
-      status: "pending",
-      triggerSources: [
-        {
-          nodeId: childEvidence.nodeId,
-          bodyVersionId: childEvidence.bodyVersionId,
-          fragmentId: childEvidence.fragmentId,
-        },
-        {
-          nodeId: rootNodeId,
-          bodyVersionId: rootEvidence.bodyVersionId,
-          fragmentId: rootEvidence.fragmentId,
-        },
-      ],
-      verification: { promptVersion: "similarity-verify-v1", sourceSliceIds: [], sourceFragmentIds: [], tokenBudget: 800 },
-      createdAt: "2026-08-02T00:00:00.000Z",
-      updatedAt: "2026-08-02T00:00:00.000Z",
-    };
-    const acceptedProposal = {
-      ...pendingProposal,
-      id: "e2e-proposal-accepted",
-      status: "accepted",
-    };
-    view.fusionProposals = [pendingProposal, acceptedProposal];
-    await route.fulfill({ response, json: view });
-  });
-}
-
 /**
  * 浏览器问题跟踪（#44 验收 7）：console error/warning + pageerror + requestfailed。
  * 返回收集器，测试末尾断言为空数组。配对前的 401 探测属预期流程（研究页 API
