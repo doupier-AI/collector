@@ -95,6 +95,50 @@ function headers(token: string) {
   return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 }
 
+test("disabling temporary fusion auto-run also skips startup task recovery", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "collector-fusion-startup-"));
+  const store = new SqliteStore(join(root, "collector.sqlite"));
+  await store.init();
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
+
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, {
+    autoRunRecentOrganization: false,
+    autoRunResearchTasks: false,
+    autoRunTemporaryFusionTasks: false,
+  });
+  let conversationRecoveries = 0;
+  let draftRecoveries = 0;
+  service.temporaryFusionConversations.resumeTasks = async () => { conversationRecoveries += 1; return 0; };
+  service.temporaryFusionDrafts.resumeTasks = () => { draftRecoveries += 1; };
+
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(conversationRecoveries, 0);
+  assert.equal(draftRecoveries, 0);
+});
+
+test("startup draft recovery isolates an unavailable store", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "collector-fusion-startup-"));
+  const store = new SqliteStore(join(root, "collector.sqlite"));
+  await store.init();
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
+
+  const service = new CaptureService(store, join(root, "artifacts"), undefined, {
+    autoRunRecentOrganization: false,
+    autoRunResearchTasks: false,
+    autoRunTemporaryFusionTasks: true,
+  });
+  let recoveryAttempts = 0;
+  service.temporaryFusionDrafts.resumeTasks = () => {
+    recoveryAttempts += 1;
+    throw new Error("store has already closed");
+  };
+
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(recoveryAttempts, 1);
+});
+
 test("fusion proposal HTTP scans, lists, decides, and exposes pending weak hints on the node view", async (t) => {
   const harness = await createHarness();
   t.after(harness.close);

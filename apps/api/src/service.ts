@@ -306,8 +306,16 @@ export class CaptureService {
     // #35：启动时对历史研究正文做确定性、幂等的正文版本与语义片段回填。
     // 不调用模型、不删除原文；同文同标识，重复执行无副作用。
     setImmediate(() => { void this.backfillResearchBodyVersions().catch(() => undefined); });
-    setImmediate(() => { void this.temporaryFusionConversations.resumeTasks().catch(() => undefined); });
-    setImmediate(() => this.temporaryFusionDrafts.resumeTasks());
+    if (this.options.autoRunTemporaryFusionTasks !== false) {
+      setImmediate(() => { void this.temporaryFusionConversations.resumeTasks().catch(() => undefined); });
+      setImmediate(() => {
+        try {
+          this.temporaryFusionDrafts.resumeTasks();
+        } catch {
+          // 服务关闭可先于延后恢复执行；与其他启动恢复一样安静结束。
+        }
+      });
+    }
   }
 
   setModelGateway(gateway: ModelGateway | undefined, route?: ActiveModelRoute): void {
