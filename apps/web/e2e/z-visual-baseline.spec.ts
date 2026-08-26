@@ -33,7 +33,6 @@ import {
 import {
   expectPageScreenshotWithFontRasterRegions,
   expectScreenshotWithFontRasterRegions,
-  type TextLayoutContract,
 } from "./visual-snapshot";
 
 test.describe.configure({ mode: "serial" });
@@ -79,152 +78,6 @@ async function openLongSession(page: import("@playwright/test").Page): Promise<s
   if (!match) throw new Error("unexpected long node url");
   return match[1];
 }
-
-const LONG_TURN_RENDERING_STYLE = {
-  display: "block",
-  visibility: "visible",
-  opacity: "1",
-  filter: "none",
-  backdropFilter: "none",
-  transform: "none",
-  clipPath: "none",
-  maskImage: "none",
-  mixBlendMode: "normal",
-  isolation: "auto",
-  perspective: "none",
-  overflow: "visible",
-  contain: "none",
-  contentVisibility: "visible",
-};
-
-function longTurnTextAncestors(sectionIndex: number) {
-  const sectionY = 17 + sectionIndex * 515.390625;
-  const contentAncestor = (className: string) => ({
-    tagName: "DIV",
-    className,
-    computedStyleSha256: "c8b8a5b1a05f2cb4b0c08fb9307fcb17abbe04b475e4e7f3b4ec6528902591fd",
-    beforeStyleSha256: "db1e6ec3d4b72055aeaa912ed14147febdf020f84c105bd251aa3462cf3dc5d3",
-    afterStyleSha256: "db1e6ec3d4b72055aeaa912ed14147febdf020f84c105bd251aa3462cf3dc5d3",
-    rect: { x: 25, y: sectionY + 16, width: 1038, height: 467.390625 },
-    renderingStyle: LONG_TURN_RENDERING_STYLE,
-  });
-  return [
-    contentAncestor("markdown-content"),
-    contentAncestor("message__content"),
-    {
-      tagName: "SECTION",
-      className: "turn-card__section",
-      computedStyleSha256: "ebdfc9549347b5048b397edbbb6538b7f4eda6d90edaf065aca45bba4a0a6388",
-      beforeStyleSha256: "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
-      afterStyleSha256: "29d227f0b72874aeb5ad2bdf48f6fe0801c8a8550499b8a358428ad3c9a17999",
-      rect: { x: 25, y: sectionY, width: 1038, height: 483.390625 },
-      renderingStyle: LONG_TURN_RENDERING_STYLE,
-    },
-  ];
-}
-
-const LONG_TURN_CARD_TEXT_LAYOUT: TextLayoutContract = {
-  root: {
-    width: 1088,
-    height: 1548.171875,
-    renderingStyle: {
-      display: "grid",
-      visibility: "visible",
-      opacity: "1",
-      filter: "none",
-      backdropFilter: "none",
-      transform: "none",
-      clipPath: "none",
-      maskImage: "none",
-      mixBlendMode: "normal",
-      isolation: "auto",
-      perspective: "none",
-      overflow: "visible",
-      contain: "none",
-      contentVisibility: "visible",
-    },
-  },
-  regions: [92.390625, 607.78125, 1123.171875].flatMap((sectionY, sectionIndex) =>
-    [0, 1, 2].map((paragraphIndex) => {
-      const y = sectionY + paragraphIndex * 148;
-      const sentence = `这是长文第${sectionIndex + 1}节的确定性正文，用于验证长文保留节卡与章节导航的呈现契约。`;
-      return {
-        text: sentence.repeat(7),
-        childElementCount: 0,
-        childNodeTypes: [3],
-        beforeContent: "none",
-        afterContent: "none",
-        computedStyleSha256: paragraphIndex === 2
-          ? "263b476622d43bf160a13cdd4f33f0cbab4adbf55db9fa989d034a6f57aec233"
-          : "88b10b0839a6a1a47e216b6deaf29e42deb37be417f957981a999879e8ca07df",
-        beforeStyleSha256: "db1e6ec3d4b72055aeaa912ed14147febdf020f84c105bd251aa3462cf3dc5d3",
-        afterStyleSha256: "db1e6ec3d4b72055aeaa912ed14147febdf020f84c105bd251aa3462cf3dc5d3",
-        rect: { x: 25, y, width: 1038, height: 112 },
-        lines: [1025.25, 1025.25, 1025.25, 792.625].map((width, lineIndex) => ({
-          x: 25,
-          y: y + 3 + lineIndex * 28,
-          width,
-          height: 21,
-        })),
-        ancestors: longTurnTextAncestors(sectionIndex),
-        style: {
-          display: "block",
-          visibility: "visible",
-          opacity: "1",
-          color: "rgb(32, 35, 31)",
-          webkitTextFillColor: "rgb(32, 35, 31)",
-          webkitTextStrokeColor: "rgb(32, 35, 31)",
-          webkitTextStrokeWidth: "0px",
-          textShadow: "none",
-          filter: "none",
-          transform: "none",
-          clipPath: "none",
-          maskImage: "none",
-          mixBlendMode: "normal",
-          fontFamily: "-apple-system, BlinkMacSystemFont, \"Segoe UI\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", \"Noto Sans CJK SC\", \"Source Han Sans SC\", sans-serif",
-          fontSize: "16px",
-          fontWeight: "400",
-          fontStyle: "normal",
-          lineHeight: "28px",
-          letterSpacing: "normal",
-          wordSpacing: "0px",
-          textIndent: "0px",
-          textTransform: "none",
-          whiteSpace: "pre-wrap",
-          overflowWrap: "anywhere",
-          textRendering: "auto",
-          backgroundColor: "rgba(0, 0, 0, 0)",
-          backgroundImage: "none",
-          boxShadow: "none",
-        },
-      };
-    }),
-  ),
-};
-
-const ASSOC_NARROW_CONTAINER_TEXT_STYLE: TextLayoutContract["regions"][number]["style"] = {
-  display: "flex", visibility: "visible", opacity: "1", color: "rgb(32, 35, 31)", webkitTextFillColor: "rgb(32, 35, 31)", webkitTextStrokeColor: "rgb(32, 35, 31)", webkitTextStrokeWidth: "0px", textShadow: "none", filter: "none", transform: "none", clipPath: "none", maskImage: "none", mixBlendMode: "normal", fontFamily: "-apple-system, BlinkMacSystemFont, \"Segoe UI\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", \"Noto Sans CJK SC\", \"Source Han Sans SC\", sans-serif", fontSize: "16px", fontWeight: "400", fontStyle: "normal", lineHeight: "25.6px", letterSpacing: "normal", wordSpacing: "0px", textIndent: "0px", textTransform: "none", whiteSpace: "normal", overflowWrap: "normal", textRendering: "auto", backgroundColor: "rgba(0, 0, 0, 0)", backgroundImage: "none", boxShadow: "none",
-};
-const ASSOC_NARROW_HINT_TEXT_STYLE: TextLayoutContract["regions"][number]["style"] = {
-  ...ASSOC_NARROW_CONTAINER_TEXT_STYLE,
-  display: "block", color: "rgb(107, 113, 104)", webkitTextFillColor: "rgb(107, 113, 104)", webkitTextStrokeColor: "rgb(107, 113, 104)", fontSize: "13px", lineHeight: "20.8px",
-};
-function assocNarrowRegion(
-  input: Omit<TextLayoutContract["regions"][number], "ancestors" | "style">,
-  style = ASSOC_NARROW_CONTAINER_TEXT_STYLE,
-) {
-  return { ...input, ancestors: [], style };
-}
-const ASSOC_NARROW_TEXT_LAYOUT: TextLayoutContract = {
-  root: { width: 320, height: 800, renderingStyle: { display: "flex", visibility: "visible", opacity: "1", filter: "none", backdropFilter: "none", transform: "none", clipPath: "none", maskImage: "none", mixBlendMode: "normal", isolation: "auto", perspective: "none", overflow: "hidden", contain: "none", contentVisibility: "visible" } },
-  regions: [
-    assocNarrowRegion({ text: "研究地图专注关联×", childElementCount: 3, childNodeTypes: [1, 1, 1], beforeContent: "none", afterContent: "none", computedStyleSha256: "8081fed284200d8aa7226dd92e828201801a9a328afc81bfb2c41542d21a9074", beforeStyleSha256: "ad690aa6a6f13986f67b11898f70a0c39947ce3786a1875e7898bcc12d1445e7", afterStyleSha256: "ad690aa6a6f13986f67b11898f70a0c39947ce3786a1875e7898bcc12d1445e7", rect: { x: 24, y: 16, width: 272, height: 35.59375 }, lines: [{ x: 24, y: 16, width: 72, height: 28.796875 }, { x: 24, y: 18, width: 72, height: 24 }, { x: 126, y: 16, width: 112, height: 35.59375 }, { x: 137, y: 23, width: 32, height: 21 }, { x: 195, y: 23, width: 32, height: 21 }, { x: 268, y: 16, width: 28, height: 28 }, { x: 275.828125, y: 18, width: 12.328125, height: 24 }] }),
-    assocNarrowRegion({ text: "显示关系：父子语义融合全部", childElementCount: 5, childNodeTypes: [1, 1, 1, 1, 1], beforeContent: "none", afterContent: "none", computedStyleSha256: "1fcbe6dc4bf3a86e71fa88f38f59f49ed3b33fec13e41831a5357c3762a382b2", beforeStyleSha256: "ad690aa6a6f13986f67b11898f70a0c39947ce3786a1875e7898bcc12d1445e7", afterStyleSha256: "ad690aa6a6f13986f67b11898f70a0c39947ce3786a1875e7898bcc12d1445e7", rect: { x: 24, y: 63.59375, width: 272, height: 75.1875 }, lines: [{ x: 24, y: 70.984375, width: 65, height: 20.796875 }, { x: 24, y: 71.984375, width: 65, height: 17 }, { x: 93, y: 63.59375, width: 54, height: 35.59375 }, { x: 104, y: 70.59375, width: 32, height: 21 }, { x: 151, y: 63.59375, width: 54, height: 35.59375 }, { x: 162, y: 70.59375, width: 32, height: 21 }, { x: 209, y: 63.59375, width: 54, height: 35.59375 }, { x: 220, y: 70.59375, width: 32, height: 21 }, { x: 24, y: 103.1875, width: 54, height: 35.59375 }, { x: 35, y: 110.1875, width: 32, height: 21 }] }),
-    assocNarrowRegion({ text: "返回当前页面", childElementCount: 1, childNodeTypes: [1], beforeContent: "none", afterContent: "none", computedStyleSha256: "763f2c06a7142e01869e07fd4950ce71e41bd277cdee71129bcd47404c972abd", beforeStyleSha256: "ad690aa6a6f13986f67b11898f70a0c39947ce3786a1875e7898bcc12d1445e7", afterStyleSha256: "ad690aa6a6f13986f67b11898f70a0c39947ce3786a1875e7898bcc12d1445e7", rect: { x: 24, y: 150.78125, width: 272, height: 35.59375 }, lines: [{ x: 24, y: 150.78125, width: 118, height: 35.59375 }, { x: 35, y: 157.78125, width: 96, height: 21 }] }),
-    assocNarrowRegion({ text: "焦点：本地优先会先把输入保存在本机父子关系←什么是本地优先研究邻居语义相关→语义关联节点邻居融合来源←融合来源节点邻居↑↓ 移动 · Enter 进入节点", childElementCount: 1, childNodeTypes: [1], beforeContent: "none", afterContent: "none", computedStyleSha256: "ae048d8eaaf4be5c9431417a41f51ea74ec1548a127f1f207b7939c2152fccfe", beforeStyleSha256: "ad690aa6a6f13986f67b11898f70a0c39947ce3786a1875e7898bcc12d1445e7", afterStyleSha256: "ad690aa6a6f13986f67b11898f70a0c39947ce3786a1875e7898bcc12d1445e7", rect: { x: 24, y: 198.375, width: 272, height: 552.828125 }, lines: [{ x: 24, y: 198.375, width: 272, height: 288.359375 }, { x: 24, y: 199.375, width: 42, height: 19 }, { x: 66, y: 199.375, width: 196, height: 19 }, { x: 24, y: 241.765625, width: 54.09375, height: 17 }, { x: 27.953125, y: 275.15625, width: 12.09375, height: 19 }, { x: 58, y: 274.5625, width: 144, height: 21 }, { x: 266, y: 276.765625, width: 24, height: 16 }, { x: 24, y: 318.15625, width: 54.09375, height: 17 }, { x: 27.953125, y: 351.546875, width: 12.09375, height: 19 }, { x: 58, y: 350.953125, width: 96, height: 21 }, { x: 266, y: 353.15625, width: 24, height: 16 }, { x: 24, y: 394.546875, width: 54.09375, height: 17 }, { x: 27.953125, y: 427.9375, width: 12.09375, height: 19 }, { x: 58, y: 427.34375, width: 96, height: 21 }, { x: 266, y: 429.546875, width: 24, height: 16 }, { x: 24, y: 466.9375, width: 137, height: 17 }] }),
-    assocNarrowRegion({ text: "t 专注 · g 关联 · Esc 关闭", childElementCount: 0, childNodeTypes: [3], beforeContent: "none", afterContent: "none", computedStyleSha256: "3a0414120ee5bd0814b83794653ee48811444c1b1723b5f56674d7b110077aa7", beforeStyleSha256: "04b7809c5f6e365c8f80641dfa062dfe1f7a0efc6fb3c42de4905c7396bbbf23", afterStyleSha256: "04b7809c5f6e365c8f80641dfa062dfe1f7a0efc6fb3c42de4905c7396bbbf23", rect: { x: 24, y: 763.203125, width: 272, height: 20.796875 }, lines: [{ x: 24, y: 764.203125, width: 138.734375, height: 17 }] }, ASSOC_NARROW_HINT_TEXT_STYLE),
-  ],
-};
 
 test.describe("#44 视觉回归基线", () => {
   // 会话建立 + 生长链 + 融合定位需要超过默认 30s 时限
@@ -308,7 +161,6 @@ test.describe("#44 视觉回归基线", () => {
     for (let sample = 0; sample < 2; sample += 1) {
       await expectScreenshotWithFontRasterRegions(turnCard, "turn-card-sectioned-default", testInfo, {
         textLayoutSelector: ".markdown-content p",
-        expectedTextLayout: LONG_TURN_CARD_TEXT_LAYOUT,
         fontColor: [32, 35, 31, 255],
         mask: dynamicTimeMasks(page),
         maskColor: "#FFFFFF",
@@ -320,7 +172,6 @@ test.describe("#44 视觉回归基线", () => {
     for (let sample = 0; sample < 2; sample += 1) {
       await expectScreenshotWithFontRasterRegions(turnCard, "turn-card-sectioned-hover", testInfo, {
         textLayoutSelector: ".markdown-content p",
-        expectedTextLayout: LONG_TURN_CARD_TEXT_LAYOUT,
         fontColor: [32, 35, 31, 255],
         mask: dynamicTimeMasks(page),
         maskColor: "#FFFFFF",
@@ -371,7 +222,6 @@ test.describe("#44 视觉回归基线", () => {
     await expectPageScreenshotWithFontRasterRegions(page, "node-reading-chapter-right", testInfo, {
       textLayoutTarget: page.locator(".turn-card"),
       textLayoutSelector: ".markdown-content p",
-      expectedTextLayout: LONG_TURN_CARD_TEXT_LAYOUT,
       fontColor: [32, 35, 31, 255],
       mask: dynamicTimeMasks(page),
       maskColor: "#FFFFFF",
@@ -403,7 +253,6 @@ test.describe("#44 视觉回归基线", () => {
     await expectPageScreenshotWithFontRasterRegions(page, "node-reading-dual-rail", testInfo, {
       textLayoutTarget: page.locator(".turn-card").first(),
       textLayoutSelector: ".markdown-content p",
-      expectedTextLayout: LONG_TURN_CARD_TEXT_LAYOUT,
       fontColor: [32, 35, 31, 255],
       mask: dynamicTimeMasks(page),
       maskColor: "#FFFFFF",
@@ -452,7 +301,6 @@ test.describe("#44 视觉回归基线", () => {
 
     await expectScreenshotWithFontRasterRegions(dialog, "assoc-narrow", testInfo, {
       textLayoutSelector: "header, .research-map-overlay__filters, .research-map-overlay__safe-exits, .research-map-overlay__body, .research-map-overlay__hint",
-      expectedTextLayout: ASSOC_NARROW_TEXT_LAYOUT,
       fontColor: [32, 35, 31, 255],
       mask: dynamicTimeMasks(page),
       maskColor: "#FFFFFF",
@@ -460,7 +308,7 @@ test.describe("#44 视觉回归基线", () => {
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
-  test("#64/#65 全局地图项目与专注视觉：浅色、深色与窄屏像素基线", async ({ page }) => {
+  test("#64/#65 全局地图项目与专注视觉：浅色、深色与窄屏像素基线", async ({ page }, testInfo) => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -474,7 +322,11 @@ test.describe("#44 视觉回归基线", () => {
     const filters = page.locator(".research-map-filters");
     const nativeDateMasks = [filters.getByLabel("开始日期"), filters.getByLabel("结束日期")];
     const nativeDateMaskOptions = { mask: nativeDateMasks, maskColor: "#7C3AED" };
-    await expect(filters).toHaveScreenshot("global-map-filters-light", nativeDateMaskOptions);
+    await expectScreenshotWithFontRasterRegions(filters, "global-map-filters-light", testInfo, {
+      textLayoutSelector: "h2, button, summary, legend, label, .research-map-filters__hint, .research-map-filters__summary",
+      fontColor: [32, 35, 31, 255],
+      ...nativeDateMaskOptions,
+    });
     await page.getByRole("button", { name: "关闭工具面板" }).click();
     const amberNode = canvas.getByRole("button", { name: /检索架构，知识工程/ });
     await expect(amberNode).toBeVisible();
@@ -488,7 +340,11 @@ test.describe("#44 视觉回归基线", () => {
     await page.setViewportSize({ width: 1024, height: 800 });
     await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
     await page.getByRole("button", { name: "筛选地图" }).click();
-    await expect(filters).toHaveScreenshot("global-map-filters-dark", nativeDateMaskOptions);
+    await expectScreenshotWithFontRasterRegions(filters, "global-map-filters-dark", testInfo, {
+      textLayoutSelector: "h2, button, summary, legend, label, .research-map-filters__hint, .research-map-filters__summary",
+      fontColor: [32, 35, 31, 255],
+      ...nativeDateMaskOptions,
+    });
     await page.getByRole("button", { name: "关闭工具面板" }).click();
     await expect(canvas).toBeVisible();
     await expect(page).toHaveScreenshot("global-map-project-dark");
@@ -497,7 +353,11 @@ test.describe("#44 视觉回归基线", () => {
     await expect(canvas).toBeVisible();
     await expect(page).toHaveScreenshot("global-map-project-narrow-canvas");
     await page.getByRole("button", { name: "筛选地图" }).click();
-    await expect(filters).toHaveScreenshot("global-map-filters-narrow", nativeDateMaskOptions);
+    await expectScreenshotWithFontRasterRegions(filters, "global-map-filters-narrow", testInfo, {
+      textLayoutSelector: "h2, button, summary, legend, label, .research-map-filters__hint, .research-map-filters__summary",
+      fontColor: [32, 35, 31, 255],
+      ...nativeDateMaskOptions,
+    });
     await page.getByRole("button", { name: "关闭工具面板" }).click();
     await page.getByRole("button", { name: "切换到节点列表" }).click();
     await expect(canvas).toBeHidden();
@@ -507,7 +367,6 @@ test.describe("#44 视觉回归基线", () => {
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 });
-
 test.describe("#44 最高 Seam 验证补充", () => {
   test("模式切换前后正文文本与顺序完全一致", async ({ page }) => {
     const issues = trackBrowserIssues(page);

@@ -25,8 +25,7 @@
   --color-on-ai: #FFFFFF;
 
   --font-sans:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
-    "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+    "Noto Sans SC Variable", "Noto Sans SC", sans-serif;
 
   /* 衬线显示字（ADR-0017 手稿阅读面）：只用于节标题/会话标题等显示位，不用于正文，
      保持长文阅读的黑体清晰；系统字体栈，零加载成本。 */

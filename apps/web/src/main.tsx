@@ -4,6 +4,7 @@ import { BrowserRouter } from "react-router-dom";
 import { App } from "./app/App";
 import { createDefaultServices, ServicesProvider } from "./app/services";
 import { initializeThemePreference } from "./features/theme/theme";
+import "@fontsource-variable/noto-sans-sc";
 import "./styles/tokens.css";
 import "./styles/global.css";
 import "./styles/utilities.css";

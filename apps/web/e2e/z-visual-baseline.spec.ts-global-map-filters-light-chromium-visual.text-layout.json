@@ -1,0 +1,1826 @@
+{
+  "root": {
+    "width": 478,
+    "height": 437.5,
+    "renderingStyle": {
+      "display": "grid",
+      "visibility": "visible",
+      "opacity": "1",
+      "filter": "none",
+      "backdropFilter": "none",
+      "transform": "none",
+      "clipPath": "none",
+      "maskImage": "none",
+      "mixBlendMode": "normal",
+      "isolation": "auto",
+      "perspective": "none",
+      "overflow": "visible",
+      "contain": "none",
+      "contentVisibility": "visible"
+    }
+  },
+  "regions": [
+    {
+      "text": "筛选地图",
+      "childElementCount": 0,
+      "childNodeTypes": [
+        3
+      ],
+      "beforeContent": "none",
+      "afterContent": "none",
+      "computedStyleSha256": "7032f6634c83d595bdef6438603cbbd5909123a7517389ca8b899e18abd23c5b",
+      "beforeStyleSha256": "afe7ab3ed53d6538e9538dc79a14ff504936cb6ffc45dece4e1badfced10daf8",
+      "afterStyleSha256": "afe7ab3ed53d6538e9538dc79a14ff504936cb6ffc45dece4e1badfced10daf8",
+      "rect": {
+        "x": 12,
+        "y": 12,
+        "width": 53.046875,
+        "height": 20.796875
+      },
+      "lines": [
+        {
+          "x": 12,
+          "y": 12,
+          "width": 53.046875,
+          "height": 19
+        }
+      ],
+      "ancestors": [
+        {
+          "tagName": "DIV",
+          "className": "research-map-filters__heading",
+          "computedStyleSha256": "796e0b639e31dff026d13cf71f03df2fea688ac9289bf1a7f5703929b137b0e5",
+          "beforeStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "afterStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "rect": {
+            "x": 12,
+            "y": 12,
+            "width": 454,
+            "height": 20.796875
+          },
+          "renderingStyle": {
+            "display": "flex",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        }
+      ],
+      "style": {
+        "display": "block",
+        "visibility": "visible",
+        "opacity": "1",
+        "color": "rgb(32, 35, 31)",
+        "webkitTextFillColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeWidth": "0px",
+        "textShadow": "none",
+        "filter": "none",
+        "transform": "none",
+        "clipPath": "none",
+        "maskImage": "none",
+        "mixBlendMode": "normal",
+        "fontFamily": "\"Noto Sans SC Variable\", \"Noto Sans SC\", sans-serif",
+        "fontSize": "13px",
+        "fontWeight": "700",
+        "fontStyle": "normal",
+        "lineHeight": "20.8px",
+        "letterSpacing": "0.26px",
+        "wordSpacing": "0px",
+        "textIndent": "0px",
+        "textTransform": "none",
+        "whiteSpace": "normal",
+        "overflowWrap": "normal",
+        "textRendering": "auto",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "none",
+        "boxShadow": "none"
+      }
+    },
+    {
+      "text": "清除筛选",
+      "childElementCount": 0,
+      "childNodeTypes": [
+        3
+      ],
+      "beforeContent": "none",
+      "afterContent": "none",
+      "computedStyleSha256": "0223c3c414dad8ad60efdb9d353a6a3dcb2f8700241981b1359fc7de0377115d",
+      "beforeStyleSha256": "2f498e7a3dc6b24c92c114c9be94f42b3f64537d547654fec9aa467e61eb0220",
+      "afterStyleSha256": "2f498e7a3dc6b24c92c114c9be94f42b3f64537d547654fec9aa467e61eb0220",
+      "rect": {
+        "x": 418,
+        "y": 12,
+        "width": 48,
+        "height": 19.1875
+      },
+      "lines": [
+        {
+          "x": 418,
+          "y": 13,
+          "width": 48,
+          "height": 17
+        }
+      ],
+      "ancestors": [
+        {
+          "tagName": "DIV",
+          "className": "research-map-filters__heading",
+          "computedStyleSha256": "796e0b639e31dff026d13cf71f03df2fea688ac9289bf1a7f5703929b137b0e5",
+          "beforeStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "afterStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "rect": {
+            "x": 12,
+            "y": 12,
+            "width": 454,
+            "height": 20.796875
+          },
+          "renderingStyle": {
+            "display": "flex",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        }
+      ],
+      "style": {
+        "display": "block",
+        "visibility": "visible",
+        "opacity": "1",
+        "color": "rgb(201, 100, 66)",
+        "webkitTextFillColor": "rgb(201, 100, 66)",
+        "webkitTextStrokeColor": "rgb(201, 100, 66)",
+        "webkitTextStrokeWidth": "0px",
+        "textShadow": "none",
+        "filter": "none",
+        "transform": "none",
+        "clipPath": "none",
+        "maskImage": "none",
+        "mixBlendMode": "normal",
+        "fontFamily": "\"Noto Sans SC Variable\", \"Noto Sans SC\", sans-serif",
+        "fontSize": "12px",
+        "fontWeight": "400",
+        "fontStyle": "normal",
+        "lineHeight": "19.2px",
+        "letterSpacing": "normal",
+        "wordSpacing": "0px",
+        "textIndent": "0px",
+        "textTransform": "none",
+        "whiteSpace": "normal",
+        "overflowWrap": "normal",
+        "textRendering": "auto",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "none",
+        "boxShadow": "none"
+      }
+    },
+    {
+      "text": "项目：全部项目",
+      "childElementCount": 0,
+      "childNodeTypes": [
+        3,
+        3
+      ],
+      "beforeContent": "none",
+      "afterContent": "none",
+      "computedStyleSha256": "80b006eba88be18860e5de839bf40c6e27ad8324c35dc2c4e2cae1c05e6cc7c8",
+      "beforeStyleSha256": "12c7fe30487e114b03ea48f2c07d357a9ef6f2a8c11ac99335f4eb0a4e012678",
+      "afterStyleSha256": "12c7fe30487e114b03ea48f2c07d357a9ef6f2a8c11ac99335f4eb0a4e012678",
+      "rect": {
+        "x": 12,
+        "y": 44.796875,
+        "width": 454,
+        "height": 20.796875
+      },
+      "lines": [
+        {
+          "x": 25.765625,
+          "y": 44.796875,
+          "width": 39,
+          "height": 19
+        },
+        {
+          "x": 64.765625,
+          "y": 44.796875,
+          "width": 52,
+          "height": 19
+        }
+      ],
+      "ancestors": [
+        {
+          "tagName": "DETAILS",
+          "className": "research-map-filters__projects",
+          "computedStyleSha256": "d0dd3a336cc341824e2c80184d0332e77d7f089c74189461223ab1fbb0339823",
+          "beforeStyleSha256": "d1252b30e7ac7c890c95136bb9bd1c4b3c6cc5826b4ba87e026c62e16c727633",
+          "afterStyleSha256": "d1252b30e7ac7c890c95136bb9bd1c4b3c6cc5826b4ba87e026c62e16c727633",
+          "rect": {
+            "x": 12,
+            "y": 44.796875,
+            "width": 454,
+            "height": 171.96875
+          },
+          "renderingStyle": {
+            "display": "block",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        }
+      ],
+      "style": {
+        "display": "list-item",
+        "visibility": "visible",
+        "opacity": "1",
+        "color": "rgb(32, 35, 31)",
+        "webkitTextFillColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeWidth": "0px",
+        "textShadow": "none",
+        "filter": "none",
+        "transform": "none",
+        "clipPath": "none",
+        "maskImage": "none",
+        "mixBlendMode": "normal",
+        "fontFamily": "\"Noto Sans SC Variable\", \"Noto Sans SC\", sans-serif",
+        "fontSize": "13px",
+        "fontWeight": "650",
+        "fontStyle": "normal",
+        "lineHeight": "20.8px",
+        "letterSpacing": "normal",
+        "wordSpacing": "0px",
+        "textIndent": "0px",
+        "textTransform": "none",
+        "whiteSpace": "normal",
+        "overflowWrap": "normal",
+        "textRendering": "auto",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "none",
+        "boxShadow": "none"
+      }
+    },
+    {
+      "text": "项目范围",
+      "childElementCount": 0,
+      "childNodeTypes": [
+        3
+      ],
+      "beforeContent": "none",
+      "afterContent": "none",
+      "computedStyleSha256": "e324b9a8938f4cb8bf622db0b2bb4566004e8574ff7be58fd14da94a84e8c395",
+      "beforeStyleSha256": "648bf4e0ea2dfbdd990484ba80b03aed8612814cbb06c8e80a02fbce75e701bb",
+      "afterStyleSha256": "648bf4e0ea2dfbdd990484ba80b03aed8612814cbb06c8e80a02fbce75e701bb",
+      "rect": {
+        "x": 12,
+        "y": 73.59375,
+        "width": 52,
+        "height": 19.1875
+      },
+      "lines": [
+        {
+          "x": 14,
+          "y": 74.59375,
+          "width": 48,
+          "height": 17
+        }
+      ],
+      "ancestors": [
+        {
+          "tagName": "FIELDSET",
+          "className": "research-map-filters__project-options",
+          "computedStyleSha256": "11eef691cb9a260049ce0eb47d508ca55b3af1878772cf2f400f237207a41822",
+          "beforeStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "afterStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "rect": {
+            "x": 12,
+            "y": 73.59375,
+            "width": 454,
+            "height": 143.171875
+          },
+          "renderingStyle": {
+            "display": "grid",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        },
+        {
+          "tagName": "DETAILS",
+          "className": "research-map-filters__projects",
+          "computedStyleSha256": "d0dd3a336cc341824e2c80184d0332e77d7f089c74189461223ab1fbb0339823",
+          "beforeStyleSha256": "d1252b30e7ac7c890c95136bb9bd1c4b3c6cc5826b4ba87e026c62e16c727633",
+          "afterStyleSha256": "d1252b30e7ac7c890c95136bb9bd1c4b3c6cc5826b4ba87e026c62e16c727633",
+          "rect": {
+            "x": 12,
+            "y": 44.796875,
+            "width": 454,
+            "height": 171.96875
+          },
+          "renderingStyle": {
+            "display": "block",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        }
+      ],
+      "style": {
+        "display": "block",
+        "visibility": "visible",
+        "opacity": "1",
+        "color": "rgb(107, 113, 104)",
+        "webkitTextFillColor": "rgb(107, 113, 104)",
+        "webkitTextStrokeColor": "rgb(107, 113, 104)",
+        "webkitTextStrokeWidth": "0px",
+        "textShadow": "none",
+        "filter": "none",
+        "transform": "none",
+        "clipPath": "none",
+        "maskImage": "none",
+        "mixBlendMode": "normal",
+        "fontFamily": "\"Noto Sans SC Variable\", \"Noto Sans SC\", sans-serif",
+        "fontSize": "12px",
+        "fontWeight": "650",
+        "fontStyle": "normal",
+        "lineHeight": "19.2px",
+        "letterSpacing": "normal",
+        "wordSpacing": "0px",
+        "textIndent": "0px",
+        "textTransform": "none",
+        "whiteSpace": "normal",
+        "overflowWrap": "normal",
+        "textRendering": "auto",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "none",
+        "boxShadow": "none"
+      }
+    },
+    {
+      "text": "全部项目（含未分类）",
+      "childElementCount": 2,
+      "childNodeTypes": [
+        1,
+        1
+      ],
+      "beforeContent": "none",
+      "afterContent": "none",
+      "computedStyleSha256": "57b962a2b9f679a357e4f9e16c3a120d83761e5e261d4be5df4b682652075347",
+      "beforeStyleSha256": "36f9f1416fd1a9f16abfb3f7b5586d117bc6d8e7b8c69f360689dfb083a8496f",
+      "afterStyleSha256": "36f9f1416fd1a9f16abfb3f7b5586d117bc6d8e7b8c69f360689dfb083a8496f",
+      "rect": {
+        "x": 12,
+        "y": 96.78125,
+        "width": 454,
+        "height": 20.796875
+      },
+      "lines": [
+        {
+          "x": 17,
+          "y": 102.171875,
+          "width": 13,
+          "height": 13
+        },
+        {
+          "x": 41,
+          "y": 96.78125,
+          "width": 130,
+          "height": 20.796875
+        },
+        {
+          "x": 41,
+          "y": 96.78125,
+          "width": 130,
+          "height": 19
+        }
+      ],
+      "ancestors": [
+        {
+          "tagName": "FIELDSET",
+          "className": "research-map-filters__project-options",
+          "computedStyleSha256": "11eef691cb9a260049ce0eb47d508ca55b3af1878772cf2f400f237207a41822",
+          "beforeStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "afterStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "rect": {
+            "x": 12,
+            "y": 73.59375,
+            "width": 454,
+            "height": 143.171875
+          },
+          "renderingStyle": {
+            "display": "grid",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        },
+        {
+          "tagName": "DETAILS",
+          "className": "research-map-filters__projects",
+          "computedStyleSha256": "d0dd3a336cc341824e2c80184d0332e77d7f089c74189461223ab1fbb0339823",
+          "beforeStyleSha256": "d1252b30e7ac7c890c95136bb9bd1c4b3c6cc5826b4ba87e026c62e16c727633",
+          "afterStyleSha256": "d1252b30e7ac7c890c95136bb9bd1c4b3c6cc5826b4ba87e026c62e16c727633",
+          "rect": {
+            "x": 12,
+            "y": 44.796875,
+            "width": 454,
+            "height": 171.96875
+          },
+          "renderingStyle": {
+            "display": "block",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        }
+      ],
+      "style": {
+        "display": "flex",
+        "visibility": "visible",
+        "opacity": "1",
+        "color": "rgb(32, 35, 31)",
+        "webkitTextFillColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeWidth": "0px",
+        "textShadow": "none",
+        "filter": "none",
+        "transform": "none",
+        "clipPath": "none",
+        "maskImage": "none",
+        "mixBlendMode": "normal",
+        "fontFamily": "\"Noto Sans SC Variable\", \"Noto Sans SC\", sans-serif",
+        "fontSize": "13px",
+        "fontWeight": "400",
+        "fontStyle": "normal",
+        "lineHeight": "20.8px",
+        "letterSpacing": "normal",
+        "wordSpacing": "0px",
+        "textIndent": "0px",
+        "textTransform": "none",
+        "whiteSpace": "normal",
+        "overflowWrap": "normal",
+        "textRendering": "auto",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "none",
+        "boxShadow": "none"
+      }
+    },
+    {
+      "text": "研究方法",
+      "childElementCount": 3,
+      "childNodeTypes": [
+        1,
+        1,
+        1
+      ],
+      "beforeContent": "none",
+      "afterContent": "none",
+      "computedStyleSha256": "57b962a2b9f679a357e4f9e16c3a120d83761e5e261d4be5df4b682652075347",
+      "beforeStyleSha256": "36f9f1416fd1a9f16abfb3f7b5586d117bc6d8e7b8c69f360689dfb083a8496f",
+      "afterStyleSha256": "36f9f1416fd1a9f16abfb3f7b5586d117bc6d8e7b8c69f360689dfb083a8496f",
+      "rect": {
+        "x": 12,
+        "y": 121.578125,
+        "width": 454,
+        "height": 20.796875
+      },
+      "lines": [
+        {
+          "x": 16,
+          "y": 125.46875,
+          "width": 13,
+          "height": 13
+        },
+        {
+          "x": 40,
+          "y": 126.78125,
+          "width": 10.390625,
+          "height": 10.390625
+        },
+        {
+          "x": 58.390625,
+          "y": 121.578125,
+          "width": 52,
+          "height": 20.796875
+        },
+        {
+          "x": 58.390625,
+          "y": 121.578125,
+          "width": 52,
+          "height": 19
+        }
+      ],
+      "ancestors": [
+        {
+          "tagName": "FIELDSET",
+          "className": "research-map-filters__project-options",
+          "computedStyleSha256": "11eef691cb9a260049ce0eb47d508ca55b3af1878772cf2f400f237207a41822",
+          "beforeStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "afterStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "rect": {
+            "x": 12,
+            "y": 73.59375,
+            "width": 454,
+            "height": 143.171875
+          },
+          "renderingStyle": {
+            "display": "grid",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        },
+        {
+          "tagName": "DETAILS",
+          "className": "research-map-filters__projects",
+          "computedStyleSha256": "d0dd3a336cc341824e2c80184d0332e77d7f089c74189461223ab1fbb0339823",
+          "beforeStyleSha256": "d1252b30e7ac7c890c95136bb9bd1c4b3c6cc5826b4ba87e026c62e16c727633",
+          "afterStyleSha256": "d1252b30e7ac7c890c95136bb9bd1c4b3c6cc5826b4ba87e026c62e16c727633",
+          "rect": {
+            "x": 12,
+            "y": 44.796875,
+            "width": 454,
+            "height": 171.96875
+          },
+          "renderingStyle": {
+            "display": "block",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        }
+      ],
+      "style": {
+        "display": "flex",
+        "visibility": "visible",
+        "opacity": "1",
+        "color": "rgb(32, 35, 31)",
+        "webkitTextFillColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeWidth": "0px",
+        "textShadow": "none",
+        "filter": "none",
+        "transform": "none",
+        "clipPath": "none",
+        "maskImage": "none",
+        "mixBlendMode": "normal",
+        "fontFamily": "\"Noto Sans SC Variable\", \"Noto Sans SC\", sans-serif",
+        "fontSize": "13px",
+        "fontWeight": "400",
+        "fontStyle": "normal",
+        "lineHeight": "20.8px",
+        "letterSpacing": "normal",
+        "wordSpacing": "0px",
+        "textIndent": "0px",
+        "textTransform": "none",
+        "whiteSpace": "normal",
+        "overflowWrap": "normal",
+        "textRendering": "auto",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "none",
+        "boxShadow": "none"
+      }
+    },
+    {
+      "text": "知识工程",
+      "childElementCount": 3,
+      "childNodeTypes": [
+        1,
+        1,
+        1
+      ],
+      "beforeContent": "none",
+      "afterContent": "none",
+      "computedStyleSha256": "57b962a2b9f679a357e4f9e16c3a120d83761e5e261d4be5df4b682652075347",
+      "beforeStyleSha256": "36f9f1416fd1a9f16abfb3f7b5586d117bc6d8e7b8c69f360689dfb083a8496f",
+      "afterStyleSha256": "36f9f1416fd1a9f16abfb3f7b5586d117bc6d8e7b8c69f360689dfb083a8496f",
+      "rect": {
+        "x": 12,
+        "y": 146.375,
+        "width": 454,
+        "height": 20.796875
+      },
+      "lines": [
+        {
+          "x": 16,
+          "y": 150.265625,
+          "width": 13,
+          "height": 13
+        },
+        {
+          "x": 40,
+          "y": 151.578125,
+          "width": 10.390625,
+          "height": 10.390625
+        },
+        {
+          "x": 58.390625,
+          "y": 146.375,
+          "width": 52,
+          "height": 20.796875
+        },
+        {
+          "x": 58.390625,
+          "y": 146.375,
+          "width": 52,
+          "height": 19
+        }
+      ],
+      "ancestors": [
+        {
+          "tagName": "FIELDSET",
+          "className": "research-map-filters__project-options",
+          "computedStyleSha256": "11eef691cb9a260049ce0eb47d508ca55b3af1878772cf2f400f237207a41822",
+          "beforeStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "afterStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "rect": {
+            "x": 12,
+            "y": 73.59375,
+            "width": 454,
+            "height": 143.171875
+          },
+          "renderingStyle": {
+            "display": "grid",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        },
+        {
+          "tagName": "DETAILS",
+          "className": "research-map-filters__projects",
+          "computedStyleSha256": "d0dd3a336cc341824e2c80184d0332e77d7f089c74189461223ab1fbb0339823",
+          "beforeStyleSha256": "d1252b30e7ac7c890c95136bb9bd1c4b3c6cc5826b4ba87e026c62e16c727633",
+          "afterStyleSha256": "d1252b30e7ac7c890c95136bb9bd1c4b3c6cc5826b4ba87e026c62e16c727633",
+          "rect": {
+            "x": 12,
+            "y": 44.796875,
+            "width": 454,
+            "height": 171.96875
+          },
+          "renderingStyle": {
+            "display": "block",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        }
+      ],
+      "style": {
+        "display": "flex",
+        "visibility": "visible",
+        "opacity": "1",
+        "color": "rgb(32, 35, 31)",
+        "webkitTextFillColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeWidth": "0px",
+        "textShadow": "none",
+        "filter": "none",
+        "transform": "none",
+        "clipPath": "none",
+        "maskImage": "none",
+        "mixBlendMode": "normal",
+        "fontFamily": "\"Noto Sans SC Variable\", \"Noto Sans SC\", sans-serif",
+        "fontSize": "13px",
+        "fontWeight": "400",
+        "fontStyle": "normal",
+        "lineHeight": "20.8px",
+        "letterSpacing": "normal",
+        "wordSpacing": "0px",
+        "textIndent": "0px",
+        "textTransform": "none",
+        "whiteSpace": "normal",
+        "overflowWrap": "normal",
+        "textRendering": "auto",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "none",
+        "boxShadow": "none"
+      }
+    },
+    {
+      "text": "综合成果",
+      "childElementCount": 3,
+      "childNodeTypes": [
+        1,
+        1,
+        1
+      ],
+      "beforeContent": "none",
+      "afterContent": "none",
+      "computedStyleSha256": "57b962a2b9f679a357e4f9e16c3a120d83761e5e261d4be5df4b682652075347",
+      "beforeStyleSha256": "36f9f1416fd1a9f16abfb3f7b5586d117bc6d8e7b8c69f360689dfb083a8496f",
+      "afterStyleSha256": "36f9f1416fd1a9f16abfb3f7b5586d117bc6d8e7b8c69f360689dfb083a8496f",
+      "rect": {
+        "x": 12,
+        "y": 171.171875,
+        "width": 454,
+        "height": 20.796875
+      },
+      "lines": [
+        {
+          "x": 16,
+          "y": 175.0625,
+          "width": 13,
+          "height": 13
+        },
+        {
+          "x": 40,
+          "y": 176.375,
+          "width": 10.390625,
+          "height": 10.390625
+        },
+        {
+          "x": 58.390625,
+          "y": 171.171875,
+          "width": 52,
+          "height": 20.796875
+        },
+        {
+          "x": 58.390625,
+          "y": 171.171875,
+          "width": 52,
+          "height": 19
+        }
+      ],
+      "ancestors": [
+        {
+          "tagName": "FIELDSET",
+          "className": "research-map-filters__project-options",
+          "computedStyleSha256": "11eef691cb9a260049ce0eb47d508ca55b3af1878772cf2f400f237207a41822",
+          "beforeStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "afterStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "rect": {
+            "x": 12,
+            "y": 73.59375,
+            "width": 454,
+            "height": 143.171875
+          },
+          "renderingStyle": {
+            "display": "grid",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        },
+        {
+          "tagName": "DETAILS",
+          "className": "research-map-filters__projects",
+          "computedStyleSha256": "d0dd3a336cc341824e2c80184d0332e77d7f089c74189461223ab1fbb0339823",
+          "beforeStyleSha256": "d1252b30e7ac7c890c95136bb9bd1c4b3c6cc5826b4ba87e026c62e16c727633",
+          "afterStyleSha256": "d1252b30e7ac7c890c95136bb9bd1c4b3c6cc5826b4ba87e026c62e16c727633",
+          "rect": {
+            "x": 12,
+            "y": 44.796875,
+            "width": 454,
+            "height": 171.96875
+          },
+          "renderingStyle": {
+            "display": "block",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        }
+      ],
+      "style": {
+        "display": "flex",
+        "visibility": "visible",
+        "opacity": "1",
+        "color": "rgb(32, 35, 31)",
+        "webkitTextFillColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeWidth": "0px",
+        "textShadow": "none",
+        "filter": "none",
+        "transform": "none",
+        "clipPath": "none",
+        "maskImage": "none",
+        "mixBlendMode": "normal",
+        "fontFamily": "\"Noto Sans SC Variable\", \"Noto Sans SC\", sans-serif",
+        "fontSize": "13px",
+        "fontWeight": "400",
+        "fontStyle": "normal",
+        "lineHeight": "20.8px",
+        "letterSpacing": "normal",
+        "wordSpacing": "0px",
+        "textIndent": "0px",
+        "textTransform": "none",
+        "whiteSpace": "normal",
+        "overflowWrap": "normal",
+        "textRendering": "auto",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "none",
+        "boxShadow": "none"
+      }
+    },
+    {
+      "text": "○未分类",
+      "childElementCount": 3,
+      "childNodeTypes": [
+        1,
+        1,
+        1
+      ],
+      "beforeContent": "none",
+      "afterContent": "none",
+      "computedStyleSha256": "57b962a2b9f679a357e4f9e16c3a120d83761e5e261d4be5df4b682652075347",
+      "beforeStyleSha256": "36f9f1416fd1a9f16abfb3f7b5586d117bc6d8e7b8c69f360689dfb083a8496f",
+      "afterStyleSha256": "36f9f1416fd1a9f16abfb3f7b5586d117bc6d8e7b8c69f360689dfb083a8496f",
+      "rect": {
+        "x": 12,
+        "y": 195.96875,
+        "width": 454,
+        "height": 20.796875
+      },
+      "lines": [
+        {
+          "x": 16,
+          "y": 199.859375,
+          "width": 13,
+          "height": 13
+        },
+        {
+          "x": 40,
+          "y": 198.890625,
+          "width": 14.953125,
+          "height": 14.953125
+        },
+        {
+          "x": 40,
+          "y": 194.890625,
+          "width": 14.953125,
+          "height": 21
+        },
+        {
+          "x": 62.953125,
+          "y": 195.96875,
+          "width": 39,
+          "height": 20.796875
+        },
+        {
+          "x": 62.953125,
+          "y": 195.96875,
+          "width": 39,
+          "height": 19
+        }
+      ],
+      "ancestors": [
+        {
+          "tagName": "FIELDSET",
+          "className": "research-map-filters__project-options",
+          "computedStyleSha256": "11eef691cb9a260049ce0eb47d508ca55b3af1878772cf2f400f237207a41822",
+          "beforeStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "afterStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "rect": {
+            "x": 12,
+            "y": 73.59375,
+            "width": 454,
+            "height": 143.171875
+          },
+          "renderingStyle": {
+            "display": "grid",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        },
+        {
+          "tagName": "DETAILS",
+          "className": "research-map-filters__projects",
+          "computedStyleSha256": "d0dd3a336cc341824e2c80184d0332e77d7f089c74189461223ab1fbb0339823",
+          "beforeStyleSha256": "d1252b30e7ac7c890c95136bb9bd1c4b3c6cc5826b4ba87e026c62e16c727633",
+          "afterStyleSha256": "d1252b30e7ac7c890c95136bb9bd1c4b3c6cc5826b4ba87e026c62e16c727633",
+          "rect": {
+            "x": 12,
+            "y": 44.796875,
+            "width": 454,
+            "height": 171.96875
+          },
+          "renderingStyle": {
+            "display": "block",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        }
+      ],
+      "style": {
+        "display": "flex",
+        "visibility": "visible",
+        "opacity": "1",
+        "color": "rgb(32, 35, 31)",
+        "webkitTextFillColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeWidth": "0px",
+        "textShadow": "none",
+        "filter": "none",
+        "transform": "none",
+        "clipPath": "none",
+        "maskImage": "none",
+        "mixBlendMode": "normal",
+        "fontFamily": "\"Noto Sans SC Variable\", \"Noto Sans SC\", sans-serif",
+        "fontSize": "13px",
+        "fontWeight": "400",
+        "fontStyle": "normal",
+        "lineHeight": "20.8px",
+        "letterSpacing": "normal",
+        "wordSpacing": "0px",
+        "textIndent": "0px",
+        "textTransform": "none",
+        "whiteSpace": "normal",
+        "overflowWrap": "normal",
+        "textRendering": "auto",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "none",
+        "boxShadow": "none"
+      }
+    },
+    {
+      "text": "创建日期",
+      "childElementCount": 0,
+      "childNodeTypes": [
+        3
+      ],
+      "beforeContent": "none",
+      "afterContent": "none",
+      "computedStyleSha256": "9055319ba17df62d1c4376cd8f127dc8320ade001aee14178993f7f46cbd54cd",
+      "beforeStyleSha256": "648bf4e0ea2dfbdd990484ba80b03aed8612814cbb06c8e80a02fbce75e701bb",
+      "afterStyleSha256": "648bf4e0ea2dfbdd990484ba80b03aed8612814cbb06c8e80a02fbce75e701bb",
+      "rect": {
+        "x": 12,
+        "y": 228.765625,
+        "width": 52,
+        "height": 19.1875
+      },
+      "lines": [
+        {
+          "x": 14,
+          "y": 229.765625,
+          "width": 48,
+          "height": 17
+        }
+      ],
+      "ancestors": [
+        {
+          "tagName": "FIELDSET",
+          "className": "research-map-filters__dates",
+          "computedStyleSha256": "8beed7f0390432d6ac4dd6eb9da71b8c5bb73761e8304211caaf310adfeeec95",
+          "beforeStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "afterStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "rect": {
+            "x": 12,
+            "y": 228.765625,
+            "width": 454,
+            "height": 82.375
+          },
+          "renderingStyle": {
+            "display": "grid",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        }
+      ],
+      "style": {
+        "display": "block",
+        "visibility": "visible",
+        "opacity": "1",
+        "color": "rgb(107, 113, 104)",
+        "webkitTextFillColor": "rgb(107, 113, 104)",
+        "webkitTextStrokeColor": "rgb(107, 113, 104)",
+        "webkitTextStrokeWidth": "0px",
+        "textShadow": "none",
+        "filter": "none",
+        "transform": "none",
+        "clipPath": "none",
+        "maskImage": "none",
+        "mixBlendMode": "normal",
+        "fontFamily": "\"Noto Sans SC Variable\", \"Noto Sans SC\", sans-serif",
+        "fontSize": "12px",
+        "fontWeight": "650",
+        "fontStyle": "normal",
+        "lineHeight": "19.2px",
+        "letterSpacing": "normal",
+        "wordSpacing": "0px",
+        "textIndent": "0px",
+        "textTransform": "none",
+        "whiteSpace": "normal",
+        "overflowWrap": "normal",
+        "textRendering": "auto",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "none",
+        "boxShadow": "none"
+      }
+    },
+    {
+      "text": "开始日期",
+      "childElementCount": 2,
+      "childNodeTypes": [
+        1,
+        1
+      ],
+      "beforeContent": "none",
+      "afterContent": "none",
+      "computedStyleSha256": "43bab9c45147154e1431b8e2d51f9e606424526aa85d2393f529073641541037",
+      "beforeStyleSha256": "198066d7459cf432f421e58383005b9f819d652d5b7ad1b0cc7fc6a52920582d",
+      "afterStyleSha256": "198066d7459cf432f421e58383005b9f819d652d5b7ad1b0cc7fc6a52920582d",
+      "rect": {
+        "x": 12,
+        "y": 251.953125,
+        "width": 223,
+        "height": 59.1875
+      },
+      "lines": [
+        {
+          "x": 12,
+          "y": 251.953125,
+          "width": 223,
+          "height": 19.1875
+        },
+        {
+          "x": 12,
+          "y": 252.953125,
+          "width": 48,
+          "height": 17
+        },
+        {
+          "x": 12,
+          "y": 275.140625,
+          "width": 223,
+          "height": 36
+        }
+      ],
+      "ancestors": [
+        {
+          "tagName": "FIELDSET",
+          "className": "research-map-filters__dates",
+          "computedStyleSha256": "8beed7f0390432d6ac4dd6eb9da71b8c5bb73761e8304211caaf310adfeeec95",
+          "beforeStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "afterStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "rect": {
+            "x": 12,
+            "y": 228.765625,
+            "width": 454,
+            "height": 82.375
+          },
+          "renderingStyle": {
+            "display": "grid",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        }
+      ],
+      "style": {
+        "display": "grid",
+        "visibility": "visible",
+        "opacity": "1",
+        "color": "rgb(107, 113, 104)",
+        "webkitTextFillColor": "rgb(107, 113, 104)",
+        "webkitTextStrokeColor": "rgb(107, 113, 104)",
+        "webkitTextStrokeWidth": "0px",
+        "textShadow": "none",
+        "filter": "none",
+        "transform": "none",
+        "clipPath": "none",
+        "maskImage": "none",
+        "mixBlendMode": "normal",
+        "fontFamily": "\"Noto Sans SC Variable\", \"Noto Sans SC\", sans-serif",
+        "fontSize": "12px",
+        "fontWeight": "400",
+        "fontStyle": "normal",
+        "lineHeight": "19.2px",
+        "letterSpacing": "normal",
+        "wordSpacing": "0px",
+        "textIndent": "0px",
+        "textTransform": "none",
+        "whiteSpace": "normal",
+        "overflowWrap": "normal",
+        "textRendering": "auto",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "none",
+        "boxShadow": "none"
+      }
+    },
+    {
+      "text": "结束日期",
+      "childElementCount": 2,
+      "childNodeTypes": [
+        1,
+        1
+      ],
+      "beforeContent": "none",
+      "afterContent": "none",
+      "computedStyleSha256": "43bab9c45147154e1431b8e2d51f9e606424526aa85d2393f529073641541037",
+      "beforeStyleSha256": "198066d7459cf432f421e58383005b9f819d652d5b7ad1b0cc7fc6a52920582d",
+      "afterStyleSha256": "198066d7459cf432f421e58383005b9f819d652d5b7ad1b0cc7fc6a52920582d",
+      "rect": {
+        "x": 243,
+        "y": 251.953125,
+        "width": 223,
+        "height": 59.1875
+      },
+      "lines": [
+        {
+          "x": 243,
+          "y": 251.953125,
+          "width": 223,
+          "height": 19.1875
+        },
+        {
+          "x": 243,
+          "y": 252.953125,
+          "width": 48,
+          "height": 17
+        },
+        {
+          "x": 243,
+          "y": 275.140625,
+          "width": 223,
+          "height": 36
+        }
+      ],
+      "ancestors": [
+        {
+          "tagName": "FIELDSET",
+          "className": "research-map-filters__dates",
+          "computedStyleSha256": "8beed7f0390432d6ac4dd6eb9da71b8c5bb73761e8304211caaf310adfeeec95",
+          "beforeStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "afterStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "rect": {
+            "x": 12,
+            "y": 228.765625,
+            "width": 454,
+            "height": 82.375
+          },
+          "renderingStyle": {
+            "display": "grid",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        }
+      ],
+      "style": {
+        "display": "grid",
+        "visibility": "visible",
+        "opacity": "1",
+        "color": "rgb(107, 113, 104)",
+        "webkitTextFillColor": "rgb(107, 113, 104)",
+        "webkitTextStrokeColor": "rgb(107, 113, 104)",
+        "webkitTextStrokeWidth": "0px",
+        "textShadow": "none",
+        "filter": "none",
+        "transform": "none",
+        "clipPath": "none",
+        "maskImage": "none",
+        "mixBlendMode": "normal",
+        "fontFamily": "\"Noto Sans SC Variable\", \"Noto Sans SC\", sans-serif",
+        "fontSize": "12px",
+        "fontWeight": "400",
+        "fontStyle": "normal",
+        "lineHeight": "19.2px",
+        "letterSpacing": "normal",
+        "wordSpacing": "0px",
+        "textIndent": "0px",
+        "textTransform": "none",
+        "whiteSpace": "normal",
+        "overflowWrap": "normal",
+        "textRendering": "auto",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "none",
+        "boxShadow": "none"
+      }
+    },
+    {
+      "text": "生命周期",
+      "childElementCount": 0,
+      "childNodeTypes": [
+        3
+      ],
+      "beforeContent": "none",
+      "afterContent": "none",
+      "computedStyleSha256": "a6be4f732ec1f36b72d4b5bf1017112c377f0e0b3b3e04b6300a776c338e1432",
+      "beforeStyleSha256": "648bf4e0ea2dfbdd990484ba80b03aed8612814cbb06c8e80a02fbce75e701bb",
+      "afterStyleSha256": "648bf4e0ea2dfbdd990484ba80b03aed8612814cbb06c8e80a02fbce75e701bb",
+      "rect": {
+        "x": 12,
+        "y": 323.140625,
+        "width": 454,
+        "height": 19.1875
+      },
+      "lines": [
+        {
+          "x": 14,
+          "y": 324.140625,
+          "width": 48,
+          "height": 17
+        }
+      ],
+      "ancestors": [
+        {
+          "tagName": "FIELDSET",
+          "className": "research-map-filters__lifecycles",
+          "computedStyleSha256": "6f266a3e60708df21458bf301caaef5c7cfc4132047e254328cc1ebd8aecef71",
+          "beforeStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "afterStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "rect": {
+            "x": 12,
+            "y": 323.140625,
+            "width": 454,
+            "height": 71.171875
+          },
+          "renderingStyle": {
+            "display": "flex",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        }
+      ],
+      "style": {
+        "display": "block",
+        "visibility": "visible",
+        "opacity": "1",
+        "color": "rgb(107, 113, 104)",
+        "webkitTextFillColor": "rgb(107, 113, 104)",
+        "webkitTextStrokeColor": "rgb(107, 113, 104)",
+        "webkitTextStrokeWidth": "0px",
+        "textShadow": "none",
+        "filter": "none",
+        "transform": "none",
+        "clipPath": "none",
+        "maskImage": "none",
+        "mixBlendMode": "normal",
+        "fontFamily": "\"Noto Sans SC Variable\", \"Noto Sans SC\", sans-serif",
+        "fontSize": "12px",
+        "fontWeight": "650",
+        "fontStyle": "normal",
+        "lineHeight": "19.2px",
+        "letterSpacing": "normal",
+        "wordSpacing": "0px",
+        "textIndent": "0px",
+        "textTransform": "none",
+        "whiteSpace": "normal",
+        "overflowWrap": "normal",
+        "textRendering": "auto",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "none",
+        "boxShadow": "none"
+      }
+    },
+    {
+      "text": "活跃",
+      "childElementCount": 2,
+      "childNodeTypes": [
+        1,
+        1
+      ],
+      "beforeContent": "none",
+      "afterContent": "none",
+      "computedStyleSha256": "6c197917c5cb48950ce7765a573f3faa9a7b1dd1dc6c8514e7667959c59eb1e2",
+      "beforeStyleSha256": "36f9f1416fd1a9f16abfb3f7b5586d117bc6d8e7b8c69f360689dfb083a8496f",
+      "afterStyleSha256": "36f9f1416fd1a9f16abfb3f7b5586d117bc6d8e7b8c69f360689dfb083a8496f",
+      "rect": {
+        "x": 12,
+        "y": 346.328125,
+        "width": 54,
+        "height": 20.796875
+      },
+      "lines": [
+        {
+          "x": 16,
+          "y": 350.21875,
+          "width": 13,
+          "height": 13
+        },
+        {
+          "x": 40,
+          "y": 346.328125,
+          "width": 26,
+          "height": 20.796875
+        },
+        {
+          "x": 40,
+          "y": 346.328125,
+          "width": 26,
+          "height": 19
+        }
+      ],
+      "ancestors": [
+        {
+          "tagName": "FIELDSET",
+          "className": "research-map-filters__lifecycles",
+          "computedStyleSha256": "6f266a3e60708df21458bf301caaef5c7cfc4132047e254328cc1ebd8aecef71",
+          "beforeStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "afterStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "rect": {
+            "x": 12,
+            "y": 323.140625,
+            "width": 454,
+            "height": 71.171875
+          },
+          "renderingStyle": {
+            "display": "flex",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        }
+      ],
+      "style": {
+        "display": "flex",
+        "visibility": "visible",
+        "opacity": "1",
+        "color": "rgb(32, 35, 31)",
+        "webkitTextFillColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeWidth": "0px",
+        "textShadow": "none",
+        "filter": "none",
+        "transform": "none",
+        "clipPath": "none",
+        "maskImage": "none",
+        "mixBlendMode": "normal",
+        "fontFamily": "\"Noto Sans SC Variable\", \"Noto Sans SC\", sans-serif",
+        "fontSize": "13px",
+        "fontWeight": "400",
+        "fontStyle": "normal",
+        "lineHeight": "20.8px",
+        "letterSpacing": "normal",
+        "wordSpacing": "0px",
+        "textIndent": "0px",
+        "textTransform": "none",
+        "whiteSpace": "normal",
+        "overflowWrap": "normal",
+        "textRendering": "auto",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "none",
+        "boxShadow": "none"
+      }
+    },
+    {
+      "text": "已归档",
+      "childElementCount": 2,
+      "childNodeTypes": [
+        1,
+        1
+      ],
+      "beforeContent": "none",
+      "afterContent": "none",
+      "computedStyleSha256": "c8c357e22478567c70cf9dacf5cdb8890bbfc2e4f47252554b28d029c211a1e4",
+      "beforeStyleSha256": "36f9f1416fd1a9f16abfb3f7b5586d117bc6d8e7b8c69f360689dfb083a8496f",
+      "afterStyleSha256": "36f9f1416fd1a9f16abfb3f7b5586d117bc6d8e7b8c69f360689dfb083a8496f",
+      "rect": {
+        "x": 78,
+        "y": 346.328125,
+        "width": 67,
+        "height": 20.796875
+      },
+      "lines": [
+        {
+          "x": 82,
+          "y": 350.21875,
+          "width": 13,
+          "height": 13
+        },
+        {
+          "x": 106,
+          "y": 346.328125,
+          "width": 39,
+          "height": 20.796875
+        },
+        {
+          "x": 106,
+          "y": 346.328125,
+          "width": 39,
+          "height": 19
+        }
+      ],
+      "ancestors": [
+        {
+          "tagName": "FIELDSET",
+          "className": "research-map-filters__lifecycles",
+          "computedStyleSha256": "6f266a3e60708df21458bf301caaef5c7cfc4132047e254328cc1ebd8aecef71",
+          "beforeStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "afterStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "rect": {
+            "x": 12,
+            "y": 323.140625,
+            "width": 454,
+            "height": 71.171875
+          },
+          "renderingStyle": {
+            "display": "flex",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        }
+      ],
+      "style": {
+        "display": "flex",
+        "visibility": "visible",
+        "opacity": "1",
+        "color": "rgb(32, 35, 31)",
+        "webkitTextFillColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeWidth": "0px",
+        "textShadow": "none",
+        "filter": "none",
+        "transform": "none",
+        "clipPath": "none",
+        "maskImage": "none",
+        "mixBlendMode": "normal",
+        "fontFamily": "\"Noto Sans SC Variable\", \"Noto Sans SC\", sans-serif",
+        "fontSize": "13px",
+        "fontWeight": "400",
+        "fontStyle": "normal",
+        "lineHeight": "20.8px",
+        "letterSpacing": "normal",
+        "wordSpacing": "0px",
+        "textIndent": "0px",
+        "textTransform": "none",
+        "whiteSpace": "normal",
+        "overflowWrap": "normal",
+        "textRendering": "auto",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "none",
+        "boxShadow": "none"
+      }
+    },
+    {
+      "text": "至少保留一项",
+      "childElementCount": 0,
+      "childNodeTypes": [
+        3
+      ],
+      "beforeContent": "none",
+      "afterContent": "none",
+      "computedStyleSha256": "6496d9fb3e43bc131ca4130a14435447a5e518a51f72de5e2dbdac1629a1c21f",
+      "beforeStyleSha256": "eb654858d3f2711fdf07e5a552819127e5b83fae849a23ecb2eb5a0789e8ae32",
+      "afterStyleSha256": "eb654858d3f2711fdf07e5a552819127e5b83fae849a23ecb2eb5a0789e8ae32",
+      "rect": {
+        "x": 12,
+        "y": 375.125,
+        "width": 454,
+        "height": 19.1875
+      },
+      "lines": [
+        {
+          "x": 12,
+          "y": 376.125,
+          "width": 72,
+          "height": 17
+        }
+      ],
+      "ancestors": [
+        {
+          "tagName": "FIELDSET",
+          "className": "research-map-filters__lifecycles",
+          "computedStyleSha256": "6f266a3e60708df21458bf301caaef5c7cfc4132047e254328cc1ebd8aecef71",
+          "beforeStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "afterStyleSha256": "e69865926af4bdfd943a204088afd71f88532fb8a43b961dde93bc13f85df64e",
+          "rect": {
+            "x": 12,
+            "y": 323.140625,
+            "width": 454,
+            "height": 71.171875
+          },
+          "renderingStyle": {
+            "display": "flex",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        }
+      ],
+      "style": {
+        "display": "block",
+        "visibility": "visible",
+        "opacity": "1",
+        "color": "rgb(107, 113, 104)",
+        "webkitTextFillColor": "rgb(107, 113, 104)",
+        "webkitTextStrokeColor": "rgb(107, 113, 104)",
+        "webkitTextStrokeWidth": "0px",
+        "textShadow": "none",
+        "filter": "none",
+        "transform": "none",
+        "clipPath": "none",
+        "maskImage": "none",
+        "mixBlendMode": "normal",
+        "fontFamily": "\"Noto Sans SC Variable\", \"Noto Sans SC\", sans-serif",
+        "fontSize": "12px",
+        "fontWeight": "400",
+        "fontStyle": "normal",
+        "lineHeight": "19.2px",
+        "letterSpacing": "normal",
+        "wordSpacing": "0px",
+        "textIndent": "0px",
+        "textTransform": "none",
+        "whiteSpace": "normal",
+        "overflowWrap": "normal",
+        "textRendering": "auto",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "none",
+        "boxShadow": "none"
+      }
+    },
+    {
+      "text": "时间：全部时间；生命周期：活跃和归档",
+      "childElementCount": 0,
+      "childNodeTypes": [
+        3,
+        3,
+        3,
+        3
+      ],
+      "beforeContent": "none",
+      "afterContent": "none",
+      "computedStyleSha256": "d43c896c61d8e96372cde8d3017d3f767a64f63e119a24d3df64c491acf4f33b",
+      "beforeStyleSha256": "eb654858d3f2711fdf07e5a552819127e5b83fae849a23ecb2eb5a0789e8ae32",
+      "afterStyleSha256": "eb654858d3f2711fdf07e5a552819127e5b83fae849a23ecb2eb5a0789e8ae32",
+      "rect": {
+        "x": 12,
+        "y": 406.3125,
+        "width": 454,
+        "height": 19.1875
+      },
+      "lines": [
+        {
+          "x": 12,
+          "y": 407.3125,
+          "width": 36,
+          "height": 17
+        },
+        {
+          "x": 48,
+          "y": 407.3125,
+          "width": 48,
+          "height": 17
+        },
+        {
+          "x": 96,
+          "y": 407.3125,
+          "width": 72,
+          "height": 17
+        },
+        {
+          "x": 168,
+          "y": 407.3125,
+          "width": 60,
+          "height": 17
+        }
+      ],
+      "ancestors": [],
+      "style": {
+        "display": "block",
+        "visibility": "visible",
+        "opacity": "1",
+        "color": "rgb(107, 113, 104)",
+        "webkitTextFillColor": "rgb(107, 113, 104)",
+        "webkitTextStrokeColor": "rgb(107, 113, 104)",
+        "webkitTextStrokeWidth": "0px",
+        "textShadow": "none",
+        "filter": "none",
+        "transform": "none",
+        "clipPath": "none",
+        "maskImage": "none",
+        "mixBlendMode": "normal",
+        "fontFamily": "\"Noto Sans SC Variable\", \"Noto Sans SC\", sans-serif",
+        "fontSize": "12px",
+        "fontWeight": "400",
+        "fontStyle": "normal",
+        "lineHeight": "19.2px",
+        "letterSpacing": "normal",
+        "wordSpacing": "0px",
+        "textIndent": "0px",
+        "textTransform": "none",
+        "whiteSpace": "normal",
+        "overflowWrap": "normal",
+        "textRendering": "auto",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "none",
+        "boxShadow": "none"
+      }
+    }
+  ]
+}
