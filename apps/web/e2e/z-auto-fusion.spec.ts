@@ -7,8 +7,24 @@ import { apiPortForPage, citeAnswerText, pairAndOpen, readDataDir } from "./help
 const QUESTION = "什么是本地优先研究？";
 const ROOT_EVIDENCE_TEXT = "本地优先会先把输入保存在本机";
 
+/** 专项 harness 在同一数据库中串行运行；每例只保留本例的 A 面来源和未确认 B 面。 */
+async function resetTemporaryFusionFixture(page: Page): Promise<void> {
+  const disabled = await page.request.put("/v1/settings/fusion", { data: { enabled: false } });
+  expect(disabled.ok()).toBeTruthy();
+  const sessionsResponse = await page.request.get("/v1/research-sessions");
+  expect(sessionsResponse.ok()).toBeTruthy();
+  const sessions = await sessionsResponse.json() as Array<{ id: string }>;
+  for (const session of sessions) {
+    const trashed = await page.request.put(`/v1/research-sessions/${encodeURIComponent(session.id)}/trash`, { data: {} });
+    expect(trashed.ok(), `测试隔离应将既有会话移入回收站：${session.id}`).toBeTruthy();
+  }
+  const cleared = await page.request.post("/v1/research-temporary-fusions/clear", { data: {} });
+  expect(cleared.ok()).toBeTruthy();
+}
+
 async function openSession(page: Page): Promise<{ sessionId: string; rootNodeId: string }> {
   await pairAndOpen(page, "/research/new");
+  await resetTemporaryFusionFixture(page);
   await page.getByLabel("你的问题").fill(QUESTION);
   await page.getByRole("button", { name: "开始研究" }).click();
   await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
