@@ -106,6 +106,7 @@ import {
 } from "./fusion-proposals.js";
 import { AssociationHintService, type AssociationHintEvaluationGateway, type AssociationHintSearchGateway } from "./association-hints.js";
 import { TemporaryFusionConversationService, type TemporaryFusionConversationProvider } from "./temporary-fusion-conversation.js";
+import { TemporaryFusionDraftService, type TemporaryFusionDraftEvidenceGateway } from "./temporary-fusion-drafts.js";
 
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
@@ -203,6 +204,7 @@ export class CaptureService {
   readonly termPreviews: ResearchTermPreviewService;
   readonly associationHints: AssociationHintService;
   readonly temporaryFusionConversations: TemporaryFusionConversationService;
+  readonly temporaryFusionDrafts: TemporaryFusionDraftService;
   /** 语义搜索模块由组合根构建后经 setter 接线（组合顺序：CaptureService 先于语义搜索模块）。 */
   private associationHintSearch?: AssociationHintSearchGateway;
 
@@ -219,7 +221,7 @@ export class CaptureService {
     private readonly store: CollectorStore,
     private readonly artifactRoot: string,
     private modelGateway?: ModelGateway,
-    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; similarityVerifier?: SimilarityVerificationGateway; associationHintEvaluator?: AssociationHintEvaluationGateway; chapterParseProvider?: ResearchChapterParseProvider; temporaryFusionConversationProvider?: () => Promise<TemporaryFusionConversationProvider | undefined>; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunResearchChapters?: boolean; autoRunTemporaryFusionTasks?: boolean; mvpDemoMode?: boolean; researchRetrySleep?: (ms: number) => Promise<void> } = {},
+    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; similarityVerifier?: SimilarityVerificationGateway; temporaryFusionDraftEvidenceVerifier?: TemporaryFusionDraftEvidenceGateway; associationHintEvaluator?: AssociationHintEvaluationGateway; chapterParseProvider?: ResearchChapterParseProvider; temporaryFusionConversationProvider?: () => Promise<TemporaryFusionConversationProvider | undefined>; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunResearchChapters?: boolean; autoRunTemporaryFusionTasks?: boolean; mvpDemoMode?: boolean; researchRetrySleep?: (ms: number) => Promise<void> } = {},
   ) {
     this.runRecords = new RunRecordsService(this.store);
     this.attachModelGateway(this.modelGateway);
@@ -293,10 +295,15 @@ export class CaptureService {
       this.options.temporaryFusionConversationProvider ?? (async () => this.temporaryFusionConversationProviderFor()),
       { autoRunTasks: this.options.autoRunTemporaryFusionTasks },
     );
+    this.temporaryFusionDrafts = new TemporaryFusionDraftService(
+      this.store,
+      async () => this.options.temporaryFusionDraftEvidenceVerifier ?? this.modelGateway,
+    );
     // #35：启动时对历史研究正文做确定性、幂等的正文版本与语义片段回填。
     // 不调用模型、不删除原文；同文同标识，重复执行无副作用。
     setImmediate(() => { void this.backfillResearchBodyVersions().catch(() => undefined); });
     setImmediate(() => { void this.temporaryFusionConversations.resumeTasks().catch(() => undefined); });
+    setImmediate(() => this.temporaryFusionDrafts.resumeTasks());
   }
 
   setModelGateway(gateway: ModelGateway | undefined, route?: ActiveModelRoute): void {

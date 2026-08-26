@@ -1235,6 +1235,32 @@ ${JSON.stringify(input.right.content.slice(0, 12_000))}
     return { relationType: parsed.relationType as FusionRelationType, reason };
   }
 
+  /** T05: check one changed fusion-draft judgement only against its cited formal sources. */
+  async verifyTemporaryFusionDraftEvidence(
+    input: { judgment: string; sources: Array<{ nodeId: string; content: string }> },
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<{ verified: boolean }> {
+    if (!input.judgment.trim() || input.sources.length < 2) throw new Error("Draft evidence verification requires one judgment and two sources");
+    const sources = input.sources.map((source, index) => `来源${index + 1}（节点 ${source.nodeId}）：\n${JSON.stringify(source.content.slice(0, 12_000))}`).join("\n\n");
+    const response = await this.complete({
+      prompt: `你是 Collector 的临时融合草案核验助手。只能根据给出的正式来源判断这一个草案判断是否被充分支持；不能补充外部事实。\n\n待核验判断：\n${JSON.stringify(input.judgment)}\n\n来源材料：\n${sources}\n\n只返回合法 JSON：{"verified":true} 或 {"verified":false}。如果判断缺少至少两个来源的可见支撑、引用与判断不相符或材料不足，必须返回 false。`,
+      model: options.model ?? this.modelName,
+      responseFormat: { type: "json_object" },
+      thinking: false,
+      maxTokens: options.maxTokens ?? 800,
+      timeoutMs: options.timeoutMs ?? 45_000,
+    }, {
+      ...(options.context ?? {}),
+      purpose: options.context?.purpose ?? "temporary_fusion_draft_revalidation",
+      promptVersion: options.context?.promptVersion ?? "temporary-fusion-draft-revalidation-v1",
+    });
+    let parsed: { verified?: unknown };
+    try { parsed = JSON.parse(response.content) as { verified?: unknown }; }
+    catch { throw new Error("Draft evidence verification provider returned invalid JSON"); }
+    if (typeof parsed.verified !== "boolean") throw new Error("Draft evidence verification provider returned an invalid result");
+    return { verified: parsed.verified };
+  }
+
   /**
    * 独立判断多份正式来源是否共同支持一项具体新增认识，并在成立时生成完整临时草案。
    * 相似或可比较本身不构成新增认识；返回结构不合规时调用方不得创建 B 面候选。

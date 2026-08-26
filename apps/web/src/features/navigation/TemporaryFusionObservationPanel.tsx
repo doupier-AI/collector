@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ResearchCandidateSourceConnectionRecord, ResearchTemporaryFusionBundle, ResearchTemporaryFusionConversationView, ResearchTemporaryFusionListItem, ResearchTemporaryFusionSearchMatch } from "@collector/capture-contracts";
+import type { ResearchCandidateSourceConnectionRecord, ResearchTemporaryFusionBundle, ResearchTemporaryFusionConversationView, ResearchTemporaryFusionDraftHistory, ResearchTemporaryFusionListItem, ResearchTemporaryFusionSearchMatch } from "@collector/capture-contracts";
 import { apiErrorCopy } from "../../api/errors";
 import { useServices } from "../../app/services";
 
@@ -14,12 +14,25 @@ function sourceLabel(source: ResearchCandidateSourceConnectionRecord): string {
   return `返回来源节点 ${source.sourceNodeId}`;
 }
 
+function adjacentDraftDifference(current: string, previous: string): string {
+  let prefix = 0;
+  while (prefix < current.length && prefix < previous.length && current[prefix] === previous[prefix]) prefix += 1;
+  let suffix = 0;
+  while (suffix < current.length - prefix && suffix < previous.length - prefix && current[current.length - suffix - 1] === previous[previous.length - suffix - 1]) suffix += 1;
+  const removed = previous.slice(prefix, previous.length - suffix);
+  const added = current.slice(prefix, current.length - suffix);
+  return `相对上一版：${removed ? `删除“${removed}”` : "无删除"}${added ? `；新增“${added}”` : "；无新增"}`;
+}
+
 /** T02 的 B 面只读观察器。它只读取当前草案和来源定位，不提供任何管理或确认动作。 */
 export function TemporaryFusionObservationPanel({ onCloseObservation, onOpenSource, onChanged }: TemporaryFusionObservationPanelProps) {
   const { api } = useServices();
   const [items, setItems] = useState<ResearchTemporaryFusionListItem[]>([]);
   const [selected, setSelected] = useState<ResearchTemporaryFusionBundle>();
   const [conversation, setConversation] = useState<ResearchTemporaryFusionConversationView>();
+  const [draftHistory, setDraftHistory] = useState<ResearchTemporaryFusionDraftHistory>();
+  const [draftEditing, setDraftEditing] = useState(false);
+  const [draftBody, setDraftBody] = useState("");
   const [messageDraft, setMessageDraft] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
@@ -56,10 +69,30 @@ export function TemporaryFusionObservationPanel({ onCloseObservation, onOpenSour
 
   const open = (id: string) => {
     setError(undefined);
-    Promise.all([api.getTemporaryFusion(id), api.getTemporaryFusionConversation(id)]).then(
-      ([bundle, nextConversation]) => { setSelected(bundle); setConversation(nextConversation); },
+    Promise.all([api.getTemporaryFusion(id), api.getTemporaryFusionConversation(id), api.getTemporaryFusionDraftHistory(id)]).then(
+      ([bundle, nextConversation, history]) => { setSelected(bundle); setConversation(nextConversation); setDraftHistory(history); setDraftBody(bundle.activeDraft.body); setDraftEditing(false); },
       setError,
     );
+  };
+
+  const saveDraft = async () => {
+    if (!selected || busy || !draftBody.trim()) return;
+    setBusy(true); setError(undefined);
+    try {
+      const result = await api.updateTemporaryFusionDraft(selected.node.id, { body: draftBody, expectedDraftVersionId: selected.activeDraft.id });
+      setSelected(result.bundle); setDraftBody(result.bundle.activeDraft.body); setDraftHistory(await api.getTemporaryFusionDraftHistory(selected.node.id)); setDraftEditing(false); onChanged();
+    } catch (nextError) { setError(nextError); }
+    finally { setBusy(false); }
+  };
+
+  const restoreDraft = async (versionId: string) => {
+    if (!selected || busy) return;
+    setBusy(true); setError(undefined);
+    try {
+      const result = await api.restoreTemporaryFusionDraft(selected.node.id, versionId, selected.activeDraft.id);
+      setSelected(result.bundle); setDraftBody(result.bundle.activeDraft.body); setDraftHistory(await api.getTemporaryFusionDraftHistory(selected.node.id)); setDraftEditing(false); onChanged();
+    } catch (nextError) { setError(nextError); }
+    finally { setBusy(false); }
   };
 
   const refreshConversation = (id = selected?.node.id) => {
@@ -201,7 +234,10 @@ export function TemporaryFusionObservationPanel({ onCloseObservation, onOpenSour
       {visible.length === 0 ? <p className="map-search__status">没有匹配的当前临时融合。</p> : null}
       {selected ? (
         <article className="temporary-fusion-observation__detail" aria-label={`${selected.node.id} 的当前草案`}>
-          <h3>当前草案</h3><pre>{selected.activeDraft.body}</pre>
+          <h3>当前草案 · v{selected.activeDraft.version}</h3>
+          <p>{selected.activeDraft.evidenceStatus === "verified" ? "当前版本的判断已核验。" : selected.activeDraft.evidenceStatus === "pending" ? "仅受修改影响的判断正在等待核验。" : "当前版本包含不能保持已核验的判断。"}</p>
+          {draftEditing ? <><label htmlFor="temporary-fusion-draft-body">修改草案（只在保存后创建新版本）</label><textarea id="temporary-fusion-draft-body" className="input" value={draftBody} onChange={(event) => setDraftBody(event.target.value)} maxLength={100000} /><button type="button" className="button button--primary" disabled={busy || !draftBody.trim()} onClick={() => void saveDraft()}>保存为新版本并核验</button><button type="button" className="button button--secondary" disabled={busy} onClick={() => { setDraftBody(selected.activeDraft.body); setDraftEditing(false); }}>取消</button></> : <><pre>{selected.activeDraft.body}</pre><button type="button" className="button button--secondary" disabled={busy} onClick={() => setDraftEditing(true)}>修改草案</button></>}
+          <section aria-label="草案版本历史"><h3>版本历史</h3>{(() => { const versions = draftHistory?.versions ?? []; const currentIndex = versions.findIndex((version) => version.id === selected.activeDraft.id); const previous = currentIndex >= 0 ? versions[currentIndex + 1] : undefined; return previous ? <p aria-label="相邻版本差异">{adjacentDraftDifference(selected.activeDraft.body, previous.body)}</p> : null; })()}<ol>{draftHistory?.versions.map((version) => <li key={version.id}><strong>v{version.version}</strong> · {version.evidenceStatus === "verified" ? "已核验" : version.evidenceStatus === "pending" ? "待核验" : "无效"}{version.id === selected.activeDraft.id ? "（当前）" : <button type="button" className="button button--secondary" disabled={busy} onClick={() => void restoreDraft(version.id)}>撤销到此版本</button>}</li>)}</ol></section>
           <h3>正式来源</h3>
           <ul>{selected.candidateSources.map((source) => <li key={source.id}><button type="button" className="button button--secondary" onClick={() => onOpenSource(source)}>{sourceLabel(source)}</button></li>)}</ul>
           <section className="temporary-fusion-observation__conversation" aria-label="临时融合讨论">

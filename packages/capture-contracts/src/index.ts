@@ -3050,7 +3050,48 @@ export interface ResearchFusionDraftVersionRecord {
   body: string;
   contentHash: string;
   evidenceStatus: ResearchFusionEvidenceStatus;
+  /** T05: judgement ranges are stable per body-and-citation content, not per mutable draft ordinal. */
+  judgments?: ResearchFusionDraftJudgmentRecord[];
   createdAt: string;
+}
+
+/** A claim-sized, cited Markdown range inside one immutable draft body version. */
+export interface ResearchFusionDraftJudgmentRecord {
+  id: string;
+  startOffset: number;
+  endOffset: number;
+  contentHash: string;
+  sourceNodeIds: string[];
+  evidenceStatus: ResearchFusionEvidenceStatus;
+}
+
+/** Revalidation is persisted so an interrupted local process never silently treats a new draft as verified. */
+export interface ResearchFusionDraftRevalidationTaskRecord {
+  id: string;
+  temporaryFusionNodeId: string;
+  draftVersionId: string;
+  judgmentId: string;
+  status: "queued" | "running" | "completed" | "failed";
+  retryable: boolean;
+  error?: { code: string; message: string };
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ResearchTemporaryFusionDraftHistory {
+  versions: ResearchFusionDraftVersionRecord[];
+  revalidationTasks: ResearchFusionDraftRevalidationTaskRecord[];
+}
+
+export interface UpdateTemporaryFusionDraftInput {
+  body: string;
+  expectedDraftVersionId: string;
+}
+
+export interface UpdateTemporaryFusionDraftResult {
+  bundle: ResearchTemporaryFusionBundle;
+  previousDraftVersionId: string;
+  revalidationTasks: ResearchFusionDraftRevalidationTaskRecord[];
 }
 
 /** B 面候选来源连接；仅确认时最终采用且核验通过的连接可转换为 fused-from。 */

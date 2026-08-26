@@ -13,11 +13,11 @@ import type {
   ResearchSliceRecord,
 } from "@collector/capture-contracts";
 import { deriveBodyVersion } from "@collector/capture-contracts";
-import { CaptureService, LocalAuth, SqliteStore, createApiServer, type SimilarityVerificationGateway } from "@collector/api";
+import { CaptureService, LocalAuth, SqliteStore, createApiServer, type SimilarityVerificationGateway, type TemporaryFusionDraftEvidenceGateway } from "@collector/api";
 import { FakeProvider, ModelGateway } from "@collector/model-gateway";
 import { projectCurrentSearchUnits } from "../apps/api/dist/semantic-search/projector.js";
 
-async function createHarness(options?: { similarityVerifier?: SimilarityVerificationGateway; fusionBody?: string; temporaryConversationAnswer?: string; temporaryConversationFailFirst?: boolean }) {
+async function createHarness(options?: { similarityVerifier?: SimilarityVerificationGateway; fusionBody?: string; temporaryConversationAnswer?: string; temporaryConversationFailFirst?: boolean; temporaryFusionDraftEvidenceVerifier?: TemporaryFusionDraftEvidenceGateway }) {
   const root = await mkdtemp(join(tmpdir(), "collector-fusion-http-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
@@ -42,6 +42,7 @@ async function createHarness(options?: { similarityVerifier?: SimilarityVerifica
       },
     }),
     similarityVerifier: verifier,
+    temporaryFusionDraftEvidenceVerifier: options?.temporaryFusionDraftEvidenceVerifier,
     researchProvider: {
       provider: "fake",
       model: "fake-fusion",
@@ -400,6 +401,42 @@ test("T02 exposes temporary fusions only through explicit read and map-observati
   assert.equal(opened.temporaryFusions?.[0]?.node.id, item?.node.id);
   assert.equal(opened.temporaryFusions?.[0]?.candidateSources.length, 2);
   assert.equal(opened.edges.some(({ edge }) => edge.fromNodeId === item?.node.id || edge.toNodeId === item?.node.id), false, "临时连接不进入永久边");
+});
+
+test("T05 writes explicit immutable draft versions, rejects stale edits, and restores through a new current version", async (t) => {
+  const harness = await createHarness({
+    similarityVerifier: {
+      async verifyResearchSimilarity() { return { relationType: "identity", reason: "两处材料指向同一实体。" }; },
+      async discoverTemporaryFusion(input) { return { hasNovelInsight: true, body: "初始判断[来源1][来源2]", usedSourceNodeIds: input.sources.map((source) => source.nodeId) }; },
+    },
+    temporaryFusionDraftEvidenceVerifier: { async verifyTemporaryFusionDraftEvidence() { return { verified: true }; } },
+  });
+  t.after(harness.close);
+  await fetch(`${harness.base}/v1/settings/fusion`, { method: "PUT", headers: headers(harness.token), body: JSON.stringify({ enabled: true }) });
+  await fetch(`${harness.base}/v1/research-nodes/session-1/fusion-proposals/scan`, { method: "POST", headers: headers(harness.token), body: "{}" });
+  const [candidate] = await (await fetch(`${harness.base}/v1/research-temporary-fusions`, { headers: headers(harness.token) })).json() as Array<{ node: { id: string; activeDraftVersionId: string } }>;
+  assert.ok(candidate);
+  const update = await fetch(`${harness.base}/v1/research-temporary-fusions/${encodeURIComponent(candidate.node.id)}/drafts`, {
+    method: "PUT", headers: headers(harness.token), body: JSON.stringify({ body: "修改后判断[来源1][来源2]", expectedDraftVersionId: candidate.node.activeDraftVersionId }),
+  });
+  assert.equal(update.status, 202);
+  const changed = await update.json() as { bundle: { activeDraft: { id: string; version: number; body: string } }; revalidationTasks: unknown[] };
+  assert.equal(changed.bundle.activeDraft.version, 2);
+  assert.equal(changed.bundle.activeDraft.body, "修改后判断[来源1][来源2]");
+  assert.equal(changed.revalidationTasks.length, 1);
+  const stale = await fetch(`${harness.base}/v1/research-temporary-fusions/${encodeURIComponent(candidate.node.id)}/drafts`, {
+    method: "PUT", headers: headers(harness.token), body: JSON.stringify({ body: "覆盖尝试", expectedDraftVersionId: candidate.node.activeDraftVersionId }),
+  });
+  assert.equal(stale.status, 409);
+  const history = await (await fetch(`${harness.base}/v1/research-temporary-fusions/${encodeURIComponent(candidate.node.id)}/drafts`, { headers: headers(harness.token) })).json() as { versions: Array<{ id: string; version: number; body: string }> };
+  assert.deepEqual(history.versions.map((version) => version.version), [2, 1]);
+  const restored = await fetch(`${harness.base}/v1/research-temporary-fusions/${encodeURIComponent(candidate.node.id)}/drafts/${encodeURIComponent(candidate.node.activeDraftVersionId)}/restore`, {
+    method: "POST", headers: headers(harness.token), body: JSON.stringify({ expectedDraftVersionId: changed.bundle.activeDraft.id }),
+  });
+  assert.equal(restored.status, 200);
+  const result = await restored.json() as { bundle: { activeDraft: { version: number; body: string } } };
+  assert.equal(result.bundle.activeDraft.version, 3);
+  assert.equal(result.bundle.activeDraft.body, "初始判断[来源1][来源2]");
 });
 
 test("T03 deletes single, explicit batches, and all temporary fusions without touching formal facts", async (t) => {

@@ -16,7 +16,7 @@ import {
   type ResearchSessionRecord,
   type ResearchTemporaryFusionNodeRecord,
 } from "@collector/capture-contracts";
-import { SqliteStore } from "@collector/api";
+import { SqliteStore, TemporaryFusionDraftConflictError, TemporaryFusionDraftService } from "@collector/api";
 
 const NOW = "2026-08-13T00:00:00.000Z";
 
@@ -144,6 +144,29 @@ test("temporary fusion bundle is transactional, idempotent, and restart-safe", a
   store = new SqliteStore(databasePath);
   await store.init();
   assert.deepEqual(store.getTemporaryFusionBundle(expected.node.id), expected);
+});
+
+test("explicit draft edits create immutable versions, preserve unaffected evidence, and reject a stale writer", async (t) => {
+  const store = await makeStore(t);
+  for (const nodeId of ["node-source-a", "node-source-b"]) {
+    await seedNode(store, { id: nodeId, sessionId: `session:${nodeId}`, status: "active", createdAt: NOW, updatedAt: NOW });
+    await store.createResearchBodyVersion({ id: `body:${nodeId}:v1`, messageId: `message:${nodeId}`, nodeId, version: 1, content: `正式来源 ${nodeId} 支持这项认识。`, contentHash: `sha256:${nodeId}`, origin: "generation", createdAt: NOW });
+  }
+  const candidate = temporaryFusionBundle("draft-versioning");
+  candidate.activeDraft.body = "原判断[来源1][来源2]";
+  candidate.activeDraft.contentHash = "sha256:original";
+  await store.createTemporaryFusionBundle(candidate);
+  const drafts = new TemporaryFusionDraftService(store, async () => ({ async verifyTemporaryFusionDraftEvidence() { return { verified: true }; } }));
+
+  const updated = await drafts.update(candidate.node.id, { body: "原判断[来源1][来源2]\n\n新增判断[来源1][来源2]", expectedDraftVersionId: candidate.activeDraft.id });
+  assert.equal(updated.bundle.activeDraft.version, 2);
+  assert.equal(updated.revalidationTasks.length, 1, "the unchanged cited judgment reuses its prior verified result");
+  assert.equal(store.listTemporaryFusionDraftVersions(candidate.node.id).length, 2);
+  assert.equal(store.listTemporaryFusionDraftVersions(candidate.node.id)[1]?.body, candidate.activeDraft.body, "old body remains immutable");
+  await assert.rejects(drafts.update(candidate.node.id, { body: "并发覆盖", expectedDraftVersionId: candidate.activeDraft.id }), TemporaryFusionDraftConflictError);
+  const restored = await drafts.restore(candidate.node.id, candidate.activeDraft.id, updated.bundle.activeDraft.id);
+  assert.equal(restored.bundle.activeDraft.version, 3, "restore creates a new current version instead of deleting history");
+  assert.equal(store.listTemporaryFusionDraftVersions(candidate.node.id).length, 3);
 });
 
 test("deleting a temporary candidate cannot modify permanent relationships", async (t) => {

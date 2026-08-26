@@ -62,6 +62,19 @@ describe("T03 temporary fusion management API client", () => {
   });
 });
 
+describe("T05 temporary fusion draft API client", () => {
+  it("uses explicit version endpoints and carries the current-version precondition", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ versions: [], revalidationTasks: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const client = createApiClient(fetchMock);
+    await client.getTemporaryFusionDraftHistory("temporary / one");
+    await client.updateTemporaryFusionDraft("temporary / one", { body: "修改草案", expectedDraftVersionId: "draft-v1" });
+    await client.restoreTemporaryFusionDraft("temporary / one", "draft-v1", "draft-v2");
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/v1/research-temporary-fusions/temporary%20%2F%20one/drafts", undefined);
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/v1/research-temporary-fusions/temporary%20%2F%20one/drafts", expect.objectContaining({ method: "PUT", body: JSON.stringify({ body: "修改草案", expectedDraftVersionId: "draft-v1" }) }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/v1/research-temporary-fusions/temporary%20%2F%20one/drafts/draft-v1/restore", expect.objectContaining({ method: "POST", body: JSON.stringify({ expectedDraftVersionId: "draft-v2" }) }));
+  });
+});
+
 describe("#42 research body version API client", () => {
   it("calls the body version view endpoint with a stable encoded path", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ version: {}, fragments: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));

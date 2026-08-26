@@ -45,6 +45,12 @@ function temporaryFusionState(dbPath: string) {
   }
 }
 
+function draftVersionCount(dbPath: string): number {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try { return (db.prepare("SELECT COUNT(*) AS count FROM research_fusion_draft_versions").get() as { count: number }).count; }
+  finally { db.close(); }
+}
+
 test("#71 开启后只在 B 面生成可追溯临时融合，页面不跳转", async ({ page }) => {
   const { sessionId, rootNodeId } = await openSession(page);
   await growSharedConceptChild(page, sessionId);
@@ -168,4 +174,33 @@ test("T04 临时讨论在刷新后可恢复，删除候选时会级联清理", a
   await expect(page.locator(".temporary-fusion-observation__list li")).toHaveCount(count - 1);
   expect(temporaryFusionState(dbPath).temporaryMessages).toBeLessThanOrEqual(beforeDelete.temporaryMessages - 2);
   expect(temporaryFusionState(dbPath).temporaryTasks).toBeLessThanOrEqual(beforeDelete.temporaryTasks - 1);
+});
+
+test("T05 只有明确保存才创建草案版本，撤销保留完整历史", async ({ page }) => {
+  const { sessionId, rootNodeId } = await openSession(page);
+  await growSharedConceptChild(page, sessionId);
+  const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
+  await page.request.put("/v1/settings/fusion", { data: { enabled: true } });
+  await page.goto(`/nodes/${encodeURIComponent(rootNodeId)}`);
+  await expect(page.getByTestId("temporary-fusion-count")).toContainText(/临时融合 \d+ 条待核验/, { timeout: 20_000 });
+  const before = temporaryFusionState(dbPath);
+  const beforeDraftVersions = draftVersionCount(dbPath);
+
+  await page.goto("/map");
+  await page.getByRole("button", { name: `临时融合（${before.temporaryNodes}）` }).click();
+  await page.getByRole("button", { name: "开启临时层" }).click();
+  await page.getByRole("button", { name: /临时融合草稿/ }).first().click();
+  await expect(page.getByText(/当前草案 · v1/)).toBeVisible();
+  expect(draftVersionCount(dbPath)).toBe(beforeDraftVersions, "打开和讨论入口不会创建版本");
+
+  await page.getByRole("button", { name: "修改草案" }).click();
+  await page.getByLabel(/修改草案/).fill("修改后的融合判断。[来源1][来源2]");
+  await page.getByRole("button", { name: "保存为新版本并核验" }).click();
+  await expect(page.getByText(/当前草案 · v2/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "撤销到此版本" })).toBeVisible();
+  expect(draftVersionCount(dbPath)).toBe(beforeDraftVersions + 1);
+
+  await page.getByRole("button", { name: "撤销到此版本" }).click();
+  await expect(page.getByText(/当前草案 · v3/)).toBeVisible();
+  expect(draftVersionCount(dbPath)).toBe(beforeDraftVersions + 2, "撤销产生新当前版本，不删除旧版本");
 });

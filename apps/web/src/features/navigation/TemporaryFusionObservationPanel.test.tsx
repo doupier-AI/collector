@@ -76,6 +76,7 @@ describe("TemporaryFusionObservationPanel T03 management", () => {
     renderPanel({
       listTemporaryFusions: vi.fn(async () => [listed]), getTemporaryFusion: vi.fn(async () => candidate),
       getTemporaryFusionConversation: vi.fn(async () => ({ bundle: candidate, messages: [], tasks: [] })), submitTemporaryFusionMessage,
+      getTemporaryFusionDraftHistory: vi.fn(async () => ({ versions: [candidate.activeDraft], revalidationTasks: [] })),
       searchTemporaryFusions: vi.fn(), deleteTemporaryFusion: vi.fn(), deleteTemporaryFusions: vi.fn(), clearTemporaryFusions: vi.fn(),
     });
     const user = userEvent.setup();
@@ -85,5 +86,24 @@ describe("TemporaryFusionObservationPanel T03 management", () => {
     await user.type(screen.getByLabelText("围绕当前候选继续讨论"), "证据是否充分？");
     await user.click(screen.getByRole("button", { name: "发送讨论" }));
     await waitFor(() => expect(submitTemporaryFusionMessage).toHaveBeenCalledWith(candidate.node.id, "证据是否充分？", expect.any(String)));
+  });
+
+  it("creates a new draft only after the explicit edit action", async () => {
+    const candidate = makeTemporaryFusionBundle();
+    const listed: ResearchTemporaryFusionListItem = { node: candidate.node, label: "候选草案", evidenceStatus: "verified", candidateSources: candidate.candidateSources };
+    const updateTemporaryFusionDraft = vi.fn(async () => ({ bundle: { ...candidate, node: { ...candidate.node, activeDraftVersionId: "draft-v2" }, activeDraft: { ...candidate.activeDraft, id: "draft-v2", version: 2, body: "修改后的判断[来源1][来源2]", evidenceStatus: "pending" as const } }, previousDraftVersionId: candidate.activeDraft.id, revalidationTasks: [] }));
+    renderPanel({
+      listTemporaryFusions: vi.fn(async () => [listed]), getTemporaryFusion: vi.fn(async () => candidate),
+      getTemporaryFusionConversation: vi.fn(async () => ({ bundle: candidate, messages: [], tasks: [] })), getTemporaryFusionDraftHistory: vi.fn(async () => ({ versions: [candidate.activeDraft], revalidationTasks: [] })),
+      updateTemporaryFusionDraft, restoreTemporaryFusionDraft: vi.fn(), searchTemporaryFusions: vi.fn(), deleteTemporaryFusion: vi.fn(), deleteTemporaryFusions: vi.fn(), clearTemporaryFusions: vi.fn(),
+    });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /候选草案/ }));
+    expect(updateTemporaryFusionDraft).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "修改草案" }));
+    await user.clear(screen.getByLabelText(/修改草案/));
+    await user.type(screen.getByLabelText(/修改草案/), "修改后的判断");
+    await user.click(screen.getByRole("button", { name: "保存为新版本并核验" }));
+    await waitFor(() => expect(updateTemporaryFusionDraft).toHaveBeenCalledWith(candidate.node.id, { body: "修改后的判断", expectedDraftVersionId: candidate.activeDraft.id }));
   });
 });

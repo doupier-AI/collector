@@ -16,6 +16,7 @@ import { ResearchTermPreviewNotFoundError, ResearchTermPreviewValidationError, R
 import { ResearchFusionProposalConflictError, ResearchFusionProposalNotFoundError, ResearchFusionProposalValidationError } from "./fusion-proposals.js";
 import { AssociationHintNotFoundError } from "./association-hints.js";
 import { TemporaryFusionConversationNotFoundError, TemporaryFusionConversationValidationError } from "./temporary-fusion-conversation.js";
+import { TemporaryFusionDraftConflictError, TemporaryFusionDraftNotFoundError, TemporaryFusionDraftValidationError } from "./temporary-fusion-drafts.js";
 import { RunRecordsValidationError } from "./observability.js";
 import { streamRunRecordExport } from "./run-record-export.js";
 import { createStaticWebHandler } from "./static-web.js";
@@ -340,6 +341,19 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (request.method === "POST" && url.pathname === "/v1/research-temporary-fusions/clear") {
         await readJsonOptional(request);
         return json(response, 200, await service.clearTemporaryFusions());
+      }
+      const temporaryFusionDraftRestoreMatch = url.pathname.match(/^\/v1\/research-temporary-fusions\/([^/]+)\/drafts\/([^/]+)\/restore$/);
+      if (request.method === "POST" && temporaryFusionDraftRestoreMatch) {
+        const body = await readJson(request) as { expectedDraftVersionId?: unknown };
+        if (typeof body.expectedDraftVersionId !== "string") throw new TemporaryFusionDraftValidationError("expectedDraftVersionId must be a string");
+        return json(response, 200, await service.temporaryFusionDrafts.restore(decodeURIComponent(temporaryFusionDraftRestoreMatch[1]), decodeURIComponent(temporaryFusionDraftRestoreMatch[2]), body.expectedDraftVersionId));
+      }
+      const temporaryFusionDraftsMatch = url.pathname.match(/^\/v1\/research-temporary-fusions\/([^/]+)\/drafts$/);
+      if (request.method === "GET" && temporaryFusionDraftsMatch) return json(response, 200, service.temporaryFusionDrafts.getHistory(decodeURIComponent(temporaryFusionDraftsMatch[1])));
+      if (request.method === "PUT" && temporaryFusionDraftsMatch) {
+        const body = await readJson(request) as { body?: unknown; expectedDraftVersionId?: unknown };
+        if (typeof body.body !== "string" || typeof body.expectedDraftVersionId !== "string") throw new TemporaryFusionDraftValidationError("body and expectedDraftVersionId must be strings");
+        return json(response, 202, await service.temporaryFusionDrafts.update(decodeURIComponent(temporaryFusionDraftsMatch[1]), { body: body.body, expectedDraftVersionId: body.expectedDraftVersionId }));
       }
       const temporaryFusionConversationMatch = url.pathname.match(/^\/v1\/research-temporary-fusions\/([^/]+)\/conversation$/);
       if (request.method === "GET" && temporaryFusionConversationMatch) {
@@ -681,16 +695,16 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       if (error instanceof LocalAccessError) {
         return json(response, 403, { error: { code: "local_access_denied", message: error.message } });
       }
-      if (error instanceof ResearchImportConflictError || error instanceof ResearchSelectionConflictError || error instanceof ResearchFusionProposalConflictError || error instanceof ResearchConflictError || error instanceof ResearchTermPreviewConflictError || error instanceof DeepResearchConflictError) {
-        const code = error instanceof ResearchFusionProposalConflictError ? "proposal_already_decided" : error instanceof ResearchConflictError || error instanceof ResearchTermPreviewConflictError || error instanceof DeepResearchConflictError ? "session_in_trash" : error.code;
+      if (error instanceof TemporaryFusionDraftConflictError || error instanceof ResearchImportConflictError || error instanceof ResearchSelectionConflictError || error instanceof ResearchFusionProposalConflictError || error instanceof ResearchConflictError || error instanceof ResearchTermPreviewConflictError || error instanceof DeepResearchConflictError) {
+        const code = error instanceof TemporaryFusionDraftConflictError ? "draft_version_conflict" : error instanceof ResearchFusionProposalConflictError ? "proposal_already_decided" : error instanceof ResearchConflictError || error instanceof ResearchTermPreviewConflictError || error instanceof DeepResearchConflictError ? "session_in_trash" : error.code;
         return json(response, 409, { error: { code, message: error.message } });
       }
-      if (error instanceof ValidationError || error instanceof TemporaryFusionConversationValidationError || error instanceof ResearchValidationError || error instanceof ResearchImportValidationError || error instanceof ResearchSelectionValidationError || error instanceof DeepResearchValidationError || error instanceof ResearchLaterValidationError || error instanceof ResearchTermPreviewValidationError || error instanceof ResearchFusionProposalValidationError || error instanceof RunRecordsValidationError || error instanceof SyntaxError) {
+      if (error instanceof ValidationError || error instanceof TemporaryFusionDraftValidationError || error instanceof TemporaryFusionConversationValidationError || error instanceof ResearchValidationError || error instanceof ResearchImportValidationError || error instanceof ResearchSelectionValidationError || error instanceof DeepResearchValidationError || error instanceof ResearchLaterValidationError || error instanceof ResearchTermPreviewValidationError || error instanceof ResearchFusionProposalValidationError || error instanceof RunRecordsValidationError || error instanceof SyntaxError) {
         const code = error instanceof ResearchImportValidationError ? error.code : "invalid_request";
         const status = code === "file_too_large" ? 413 : code === "unsupported_file_type" ? 415 : code === "invalid_file_content" ? 422 : 400;
         return json(response, status, { error: { code, message: error.message } });
       }
-      if (error instanceof NotFoundError || error instanceof TemporaryFusionConversationNotFoundError || error instanceof ResearchNotFoundError || error instanceof ResearchImportNotFoundError || error instanceof ResearchSelectionNotFoundError || error instanceof DeepResearchNotFoundError || error instanceof ResearchLaterNotFoundError || error instanceof ResearchTermPreviewNotFoundError || error instanceof ResearchFusionProposalNotFoundError || error instanceof AssociationHintNotFoundError) return json(response, 404, { error: { code: "not_found", message: error.message } });
+      if (error instanceof NotFoundError || error instanceof TemporaryFusionDraftNotFoundError || error instanceof TemporaryFusionConversationNotFoundError || error instanceof ResearchNotFoundError || error instanceof ResearchImportNotFoundError || error instanceof ResearchSelectionNotFoundError || error instanceof DeepResearchNotFoundError || error instanceof ResearchLaterNotFoundError || error instanceof ResearchTermPreviewNotFoundError || error instanceof ResearchFusionProposalNotFoundError || error instanceof AssociationHintNotFoundError) return json(response, 404, { error: { code: "not_found", message: error.message } });
       console.error(error);
       return json(response, 500, { error: { code: "internal_error", message: "Internal server error" } });
     }

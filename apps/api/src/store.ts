@@ -12,6 +12,8 @@ import {
   type ResearchChapterTaskRecord,
   type ResearchConfirmedFusionSnapshotRecord,
   type ResearchFusionDraftVersionRecord,
+  type ResearchFusionDraftRevalidationTaskRecord,
+  type ResearchFusionEvidenceStatus,
   type ResearchPermanentEdgeRecord,
   type ResearchTemporaryFusionBundle,
   type ResearchTemporaryFusionMessageRecord,
@@ -297,6 +299,13 @@ export interface NodeSystemTargetStore {
   findTemporaryFusionNodeByCreationKey(creationKey: string): ResearchTemporaryFusionNodeRecord | undefined;
   getTemporaryFusionBundle(id: string): ResearchTemporaryFusionBundle | undefined;
   listTemporaryFusionNodes(): ResearchTemporaryFusionNodeRecord[];
+  listTemporaryFusionDraftVersions(temporaryFusionNodeId: string): ResearchFusionDraftVersionRecord[];
+  listTemporaryFusionDraftRevalidationTasks(temporaryFusionNodeId: string): ResearchFusionDraftRevalidationTaskRecord[];
+  createTemporaryFusionDraftVersion(input: { node: ResearchTemporaryFusionNodeRecord; draft: ResearchFusionDraftVersionRecord; tasks: ResearchFusionDraftRevalidationTaskRecord[]; expectedDraftVersionId: string }): Promise<void>;
+  claimTemporaryFusionDraftRevalidationTask(id: string): ResearchFusionDraftRevalidationTaskRecord | undefined;
+  completeTemporaryFusionDraftRevalidationTask(id: string, status: ResearchFusionEvidenceStatus): Promise<void>;
+  failTemporaryFusionDraftRevalidationTask(id: string, error: { code: string; message: string }): Promise<void>;
+  requeueInterruptedTemporaryFusionDraftRevalidationTasks(): number;
   deleteTemporaryFusionNode(id: string): Promise<boolean>;
   deleteTemporaryFusionNodes(ids: readonly string[]): Promise<{ deletedIds: string[]; missingIds: string[] }>;
   clearTemporaryFusionNodes(): Promise<number>;
@@ -459,7 +468,7 @@ export interface CollectorStore
  * `if (version < N+1)` 版本块（块内写入对应 schema_migrations 行）并递增本常量；
  * 测试以此常量断言「打开/重放后数据库实际到达声明版本」，无需再手工同步多处硬编码断言。
  */
-export const LATEST_SCHEMA_VERSION = 42;
+export const LATEST_SCHEMA_VERSION = 43;
 
 export class SqliteStore implements CollectorStore {
   private database?: DatabaseSync;
@@ -1464,6 +1473,87 @@ export class SqliteStore implements CollectorStore {
       node.id,
     );
     return { node, activeDraft, candidateSources };
+  }
+
+  listTemporaryFusionDraftVersions(temporaryFusionNodeId: string): ResearchFusionDraftVersionRecord[] {
+    return this.listRecords<ResearchFusionDraftVersionRecord>(
+      "SELECT record_json FROM research_fusion_draft_versions WHERE temporary_fusion_node_id = ? ORDER BY version DESC, id DESC",
+      temporaryFusionNodeId,
+    );
+  }
+
+  listTemporaryFusionDraftRevalidationTasks(temporaryFusionNodeId: string): ResearchFusionDraftRevalidationTaskRecord[] {
+    return this.listRecords<ResearchFusionDraftRevalidationTaskRecord>(
+      "SELECT record_json FROM research_fusion_draft_revalidation_tasks WHERE temporary_fusion_node_id = ? ORDER BY created_at, id",
+      temporaryFusionNodeId,
+    );
+  }
+
+  async createTemporaryFusionDraftVersion(input: { node: ResearchTemporaryFusionNodeRecord; draft: ResearchFusionDraftVersionRecord; tasks: ResearchFusionDraftRevalidationTaskRecord[]; expectedDraftVersionId: string }): Promise<void> {
+    this.transaction(() => {
+      const current = this.getTemporaryFusionNode(input.node.id);
+      if (!current) throw new Error("Temporary fusion not found");
+      if (current.activeDraftVersionId !== input.expectedDraftVersionId) throw new Error("Temporary fusion draft version conflict");
+      if (input.draft.temporaryFusionNodeId !== current.id || input.node.activeDraftVersionId !== input.draft.id) throw new Error("Temporary fusion draft identity is invalid");
+      const previous = this.getRecord<ResearchFusionDraftVersionRecord>("SELECT record_json FROM research_fusion_draft_versions WHERE id = ? AND temporary_fusion_node_id = ?", current.activeDraftVersionId, current.id);
+      if (!previous || input.draft.version !== previous.version + 1) throw new Error("Temporary fusion draft version must advance by one");
+      this.db().prepare(`INSERT INTO research_fusion_draft_versions (id, temporary_fusion_node_id, version, evidence_status, created_at, record_json) VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(input.draft.id, input.draft.temporaryFusionNodeId, input.draft.version, input.draft.evidenceStatus, input.draft.createdAt, JSON.stringify(input.draft));
+      this.db().prepare(`UPDATE research_temporary_fusion_nodes SET active_draft_version_id = ?, updated_at = ?, record_json = ? WHERE id = ?`)
+        .run(input.node.activeDraftVersionId, input.node.updatedAt, JSON.stringify(input.node), input.node.id);
+      const insertTask = this.db().prepare(`INSERT INTO research_fusion_draft_revalidation_tasks (id, temporary_fusion_node_id, draft_version_id, judgment_id, status, retryable, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      for (const task of input.tasks) insertTask.run(task.id, task.temporaryFusionNodeId, task.draftVersionId, task.judgmentId, task.status, task.retryable ? 1 : 0, task.createdAt, task.updatedAt, JSON.stringify(task));
+    });
+  }
+
+  claimTemporaryFusionDraftRevalidationTask(id: string): ResearchFusionDraftRevalidationTaskRecord | undefined {
+    let claimed: ResearchFusionDraftRevalidationTaskRecord | undefined;
+    this.transaction(() => {
+      const task = this.getRecord<ResearchFusionDraftRevalidationTaskRecord>("SELECT record_json FROM research_fusion_draft_revalidation_tasks WHERE id = ?", id);
+      if (!task || task.status !== "queued") return;
+      claimed = { ...task, status: "running", retryable: false, updatedAt: new Date().toISOString() };
+      this.db().prepare(`UPDATE research_fusion_draft_revalidation_tasks SET status = ?, retryable = ?, updated_at = ?, record_json = ? WHERE id = ?`)
+        .run(claimed.status, 0, claimed.updatedAt, JSON.stringify(claimed), claimed.id);
+    });
+    return claimed;
+  }
+
+  async completeTemporaryFusionDraftRevalidationTask(id: string, status: ResearchFusionEvidenceStatus): Promise<void> {
+    this.transaction(() => {
+      const task = this.getRecord<ResearchFusionDraftRevalidationTaskRecord>("SELECT record_json FROM research_fusion_draft_revalidation_tasks WHERE id = ?", id);
+      if (!task || task.status !== "running") throw new Error("Temporary fusion draft revalidation task is not running");
+      const draft = this.getRecord<ResearchFusionDraftVersionRecord>("SELECT record_json FROM research_fusion_draft_versions WHERE id = ? AND temporary_fusion_node_id = ?", task.draftVersionId, task.temporaryFusionNodeId);
+      if (!draft) throw new Error("Temporary fusion draft revalidation task references a missing draft");
+      const judgments = (draft.judgments ?? []).map((judgment) => judgment.id === task.judgmentId ? { ...judgment, evidenceStatus: status } : judgment);
+      const evidenceStatus = judgments.some((judgment) => judgment.evidenceStatus === "invalid") ? "invalid" : judgments.some((judgment) => judgment.evidenceStatus === "pending") ? "pending" : "verified";
+      const updatedDraft = { ...draft, judgments, evidenceStatus };
+      const updatedTask = { ...task, status: "completed" as const, retryable: false, error: undefined, updatedAt: new Date().toISOString() };
+      this.db().prepare(`UPDATE research_fusion_draft_versions SET evidence_status = ?, record_json = ? WHERE id = ?`).run(updatedDraft.evidenceStatus, JSON.stringify(updatedDraft), updatedDraft.id);
+      this.db().prepare(`UPDATE research_fusion_draft_revalidation_tasks SET status = ?, retryable = ?, updated_at = ?, record_json = ? WHERE id = ?`).run(updatedTask.status, 0, updatedTask.updatedAt, JSON.stringify(updatedTask), updatedTask.id);
+    });
+  }
+
+  async failTemporaryFusionDraftRevalidationTask(id: string, error: { code: string; message: string }): Promise<void> {
+    this.transaction(() => {
+      const task = this.getRecord<ResearchFusionDraftRevalidationTaskRecord>("SELECT record_json FROM research_fusion_draft_revalidation_tasks WHERE id = ?", id);
+      if (!task || task.status !== "running") throw new Error("Temporary fusion draft revalidation task is not running");
+      const updated = { ...task, status: "failed" as const, retryable: true, error, updatedAt: new Date().toISOString() };
+      this.db().prepare(`UPDATE research_fusion_draft_revalidation_tasks SET status = ?, retryable = ?, updated_at = ?, record_json = ? WHERE id = ?`).run(updated.status, 1, updated.updatedAt, JSON.stringify(updated), updated.id);
+    });
+  }
+
+  requeueInterruptedTemporaryFusionDraftRevalidationTasks(): number {
+    let count = 0;
+    this.transaction(() => {
+      const tasks = this.listRecords<ResearchFusionDraftRevalidationTaskRecord>("SELECT record_json FROM research_fusion_draft_revalidation_tasks WHERE status = 'running' ORDER BY created_at, id");
+      const statement = this.db().prepare(`UPDATE research_fusion_draft_revalidation_tasks SET status = ?, retryable = ?, updated_at = ?, record_json = ? WHERE id = ?`);
+      for (const task of tasks) {
+        const updated = { ...task, status: "queued" as const, retryable: false, updatedAt: new Date().toISOString() };
+        statement.run(updated.status, 0, updated.updatedAt, JSON.stringify(updated), updated.id);
+        count += 1;
+      }
+    });
+    return count;
   }
 
   listTemporaryFusionNodes(): ResearchTemporaryFusionNodeRecord[] {
@@ -3873,7 +3963,7 @@ export class SqliteStore implements CollectorStore {
       // T04：临时融合讨论独立于正式 session/message/task；删除候选聚合根时整棵对话自动清理。
       this.transaction(() => {
         this.db().exec(`
-          CREATE TABLE research_temporary_fusion_messages (
+          CREATE TABLE IF NOT EXISTS research_temporary_fusion_messages (
             id TEXT PRIMARY KEY,
             temporary_fusion_node_id TEXT NOT NULL REFERENCES research_temporary_fusion_nodes(id) ON DELETE CASCADE,
             role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
@@ -3882,10 +3972,10 @@ export class SqliteStore implements CollectorStore {
             updated_at TEXT NOT NULL,
             record_json TEXT NOT NULL
           );
-          CREATE INDEX research_temporary_fusion_messages_node_idx
+          CREATE INDEX IF NOT EXISTS research_temporary_fusion_messages_node_idx
             ON research_temporary_fusion_messages(temporary_fusion_node_id, created_at, id);
 
-          CREATE TABLE research_temporary_fusion_tasks (
+          CREATE TABLE IF NOT EXISTS research_temporary_fusion_tasks (
             id TEXT PRIMARY KEY,
             temporary_fusion_node_id TEXT NOT NULL REFERENCES research_temporary_fusion_nodes(id) ON DELETE CASCADE,
             input_message_id TEXT NOT NULL REFERENCES research_temporary_fusion_messages(id) ON DELETE CASCADE,
@@ -3898,12 +3988,35 @@ export class SqliteStore implements CollectorStore {
             record_json TEXT NOT NULL,
             UNIQUE(temporary_fusion_node_id, idempotency_key)
           );
-          CREATE INDEX research_temporary_fusion_tasks_node_idx
+          CREATE INDEX IF NOT EXISTS research_temporary_fusion_tasks_node_idx
             ON research_temporary_fusion_tasks(temporary_fusion_node_id, created_at, id);
           INSERT INTO schema_migrations(version, applied_at) VALUES (42, datetime('now'));
         `);
       });
       version = 42;
+    }
+
+    if (version < 43) {
+      // T05: immutable bodies get durable, judgment-scoped evidence revalidation tasks.
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE IF NOT EXISTS research_fusion_draft_revalidation_tasks (
+            id TEXT PRIMARY KEY,
+            temporary_fusion_node_id TEXT NOT NULL REFERENCES research_temporary_fusion_nodes(id) ON DELETE CASCADE,
+            draft_version_id TEXT NOT NULL REFERENCES research_fusion_draft_versions(id) ON DELETE CASCADE,
+            judgment_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'completed', 'failed')),
+            retryable INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            UNIQUE(draft_version_id, judgment_id)
+          );
+          CREATE INDEX IF NOT EXISTS research_fusion_draft_revalidation_tasks_node_idx ON research_fusion_draft_revalidation_tasks(temporary_fusion_node_id, created_at, id);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (43, datetime('now'));
+        `);
+      });
+      version = 43;
     }
 
   }

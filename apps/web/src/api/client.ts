@@ -43,6 +43,9 @@ import type {
   ResearchTemporaryFusionSearchResponse,
   ResearchTemporaryFusionTaskRecord,
   ResearchTemporaryFusionTurnAccepted,
+  ResearchTemporaryFusionDraftHistory,
+  UpdateTemporaryFusionDraftInput,
+  UpdateTemporaryFusionDraftResult,
   ResearchFusionProposalDecision,
   ResearchFusionProposalRecord,
   ResearchFusionScanResult,
@@ -183,6 +186,9 @@ export interface ApiClient {
   getTemporaryFusionTask(id: string): Promise<ResearchTemporaryFusionTaskRecord>;
   retryTemporaryFusionTask(id: string): Promise<ResearchTemporaryFusionTaskRecord>;
   cancelTemporaryFusionTask(id: string): Promise<ResearchTemporaryFusionTaskRecord>;
+  getTemporaryFusionDraftHistory(id: string): Promise<ResearchTemporaryFusionDraftHistory>;
+  updateTemporaryFusionDraft(id: string, input: UpdateTemporaryFusionDraftInput): Promise<UpdateTemporaryFusionDraftResult>;
+  restoreTemporaryFusionDraft(id: string, versionId: string, expectedDraftVersionId: string): Promise<UpdateTemporaryFusionDraftResult>;
   /** 从选区生长子节点：统一取代深入研究二选一。 */
   startChildNode(selectionId: string, input: CreateChildNodeInput, idempotencyKey: string): Promise<NodeGrowthAccepted>;
     /** 保存标记：幂等键命中返回首次保存的项目，保存不依赖 AI。 */
@@ -628,6 +634,19 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
     cancelTemporaryFusionTask(id: string) {
       return requestJson<ResearchTemporaryFusionTaskRecord>(fetchFn, `/v1/research-temporary-fusion-tasks/${encodeURIComponent(id)}/cancel`, {
         method: "POST", headers: JSON_HEADERS, body: "{}",
+      });
+    },
+    getTemporaryFusionDraftHistory(id: string) {
+      return requestJson<ResearchTemporaryFusionDraftHistory>(fetchFn, `/v1/research-temporary-fusions/${encodeURIComponent(id)}/drafts`);
+    },
+    updateTemporaryFusionDraft(id: string, input: UpdateTemporaryFusionDraftInput) {
+      return requestJson<UpdateTemporaryFusionDraftResult>(fetchFn, `/v1/research-temporary-fusions/${encodeURIComponent(id)}/drafts`, {
+        method: "PUT", headers: JSON_HEADERS, body: JSON.stringify(input),
+      });
+    },
+    restoreTemporaryFusionDraft(id: string, versionId: string, expectedDraftVersionId: string) {
+      return requestJson<UpdateTemporaryFusionDraftResult>(fetchFn, `/v1/research-temporary-fusions/${encodeURIComponent(id)}/drafts/${encodeURIComponent(versionId)}/restore`, {
+        method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ expectedDraftVersionId }),
       });
     },
     getSemanticSearchStatus() {
