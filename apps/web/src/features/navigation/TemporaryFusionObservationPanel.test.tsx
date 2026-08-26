@@ -1,5 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import type { ResearchTemporaryFusionListItem } from "@collector/capture-contracts";
 import type { ApiClient } from "../../api/client";
@@ -22,7 +23,7 @@ function item(id: string): ResearchTemporaryFusionListItem {
 
 function renderPanel(api: Partial<ApiClient>, onChanged = vi.fn()) {
   const services = { api, connectTaskEvents: vi.fn() } as unknown as AppServices;
-  render(<ServicesProvider services={services}><TemporaryFusionObservationPanel onCloseObservation={vi.fn()} onOpenSource={vi.fn()} onChanged={onChanged} /></ServicesProvider>);
+  render(<MemoryRouter><ServicesProvider services={services}><TemporaryFusionObservationPanel onCloseObservation={vi.fn()} onOpenSource={vi.fn()} onChanged={onChanged} /></ServicesProvider></MemoryRouter>);
   return onChanged;
 }
 
@@ -105,5 +106,41 @@ describe("TemporaryFusionObservationPanel T03 management", () => {
     await user.type(screen.getByLabelText(/修改草案/), "修改后的判断");
     await user.click(screen.getByRole("button", { name: "保存为新版本并核验" }));
     await waitFor(() => expect(updateTemporaryFusionDraft).toHaveBeenCalledWith(candidate.node.id, { body: "修改后的判断", expectedDraftVersionId: candidate.activeDraft.id }));
+  });
+
+  it("confirms only the current verified draft, then opens its unchanged stable node address", async () => {
+    const candidate = makeTemporaryFusionBundle();
+    const listed: ResearchTemporaryFusionListItem = { node: candidate.node, label: "待确认候选", evidenceStatus: "verified", candidateSources: candidate.candidateSources };
+    const confirmTemporaryFusion = vi.fn(async () => ({
+      fusionNode: { id: candidate.node.id, sessionId: candidate.node.id, isFusionNode: true, status: "active" as const, createdAt: candidate.node.createdAt, updatedAt: candidate.node.updatedAt },
+      session: { id: candidate.node.id, title: "正式融合", status: "active" as const, isFavorite: false, createdAt: candidate.node.createdAt, updatedAt: candidate.node.updatedAt },
+      snapshot: { fusionNodeId: candidate.node.id, confirmedDraftVersionId: candidate.activeDraft.id, body: candidate.activeDraft.body, contentHash: candidate.activeDraft.contentHash, directSources: [], confirmedAt: candidate.node.updatedAt },
+    }));
+    const onChanged = renderPanel({
+      listTemporaryFusions: vi.fn(async () => [listed]), getTemporaryFusion: vi.fn(async () => candidate),
+      getTemporaryFusionConversation: vi.fn(async () => ({ bundle: candidate, messages: [], tasks: [] })), getTemporaryFusionDraftHistory: vi.fn(async () => ({ versions: [candidate.activeDraft], revalidationTasks: [] })),
+      confirmTemporaryFusion, searchTemporaryFusions: vi.fn(), deleteTemporaryFusion: vi.fn(), deleteTemporaryFusions: vi.fn(), clearTemporaryFusions: vi.fn(),
+    });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /待确认候选/ }));
+    expect(await screen.findByText(/确认对象是当前草案/)).toHaveTextContent(`v${candidate.activeDraft.version}`);
+    await user.click(screen.getByRole("button", { name: "确认当前核验版本" }));
+    await waitFor(() => expect(confirmTemporaryFusion).toHaveBeenCalledWith(candidate.node.id, candidate.activeDraft.id));
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it("does not offer confirmation for a draft still awaiting verification", async () => {
+    const verifiedCandidate = makeTemporaryFusionBundle();
+    const candidate = { ...verifiedCandidate, activeDraft: { ...verifiedCandidate.activeDraft, evidenceStatus: "pending" as const } };
+    const listed: ResearchTemporaryFusionListItem = { node: candidate.node, label: "待核验候选", evidenceStatus: "pending", candidateSources: candidate.candidateSources };
+    renderPanel({
+      listTemporaryFusions: vi.fn(async () => [listed]), getTemporaryFusion: vi.fn(async () => candidate),
+      getTemporaryFusionConversation: vi.fn(async () => ({ bundle: candidate, messages: [], tasks: [] })), getTemporaryFusionDraftHistory: vi.fn(async () => ({ versions: [candidate.activeDraft], revalidationTasks: [] })),
+      searchTemporaryFusions: vi.fn(), deleteTemporaryFusion: vi.fn(), deleteTemporaryFusions: vi.fn(), clearTemporaryFusions: vi.fn(),
+    });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /待核验候选/ }));
+    expect(await screen.findByText("当前版本尚未通过核验，不能确认。")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "确认当前核验版本" })).not.toBeInTheDocument();
   });
 });

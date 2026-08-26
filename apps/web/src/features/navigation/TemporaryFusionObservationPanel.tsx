@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import type { ResearchCandidateSourceConnectionRecord, ResearchTemporaryFusionBundle, ResearchTemporaryFusionConversationView, ResearchTemporaryFusionDraftHistory, ResearchTemporaryFusionListItem, ResearchTemporaryFusionSearchMatch } from "@collector/capture-contracts";
 import { apiErrorCopy } from "../../api/errors";
+import { stableNodePath } from "../../app/paths";
 import { useServices } from "../../app/services";
 
 interface TemporaryFusionObservationPanelProps {
@@ -24,9 +26,10 @@ function adjacentDraftDifference(current: string, previous: string): string {
   return `相对上一版：${removed ? `删除“${removed}”` : "无删除"}${added ? `；新增“${added}”` : "；无新增"}`;
 }
 
-/** T02 的 B 面只读观察器。它只读取当前草案和来源定位，不提供任何管理或确认动作。 */
+/** 临时观察器只在当前已核验草案上开放显式确认；其余 B 面操作不改变正式研究事实。 */
 export function TemporaryFusionObservationPanel({ onCloseObservation, onOpenSource, onChanged }: TemporaryFusionObservationPanelProps) {
   const { api } = useServices();
+  const navigate = useNavigate();
   const [items, setItems] = useState<ResearchTemporaryFusionListItem[]>([]);
   const [selected, setSelected] = useState<ResearchTemporaryFusionBundle>();
   const [conversation, setConversation] = useState<ResearchTemporaryFusionConversationView>();
@@ -93,6 +96,22 @@ export function TemporaryFusionObservationPanel({ onCloseObservation, onOpenSour
       setSelected(result.bundle); setDraftBody(result.bundle.activeDraft.body); setDraftHistory(await api.getTemporaryFusionDraftHistory(selected.node.id)); setDraftEditing(false); onChanged();
     } catch (nextError) { setError(nextError); }
     finally { setBusy(false); }
+  };
+
+  const confirmCurrentDraft = async () => {
+    if (!selected || busy || selected.activeDraft.evidenceStatus !== "verified") return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      const result = await api.confirmTemporaryFusion(selected.node.id, selected.activeDraft.id);
+      onChanged();
+      // 确认转换的是同一稳定身份；地址只从临时观察切到该正式节点，不新建或重放正文。
+      navigate(stableNodePath(result.fusionNode.id));
+    } catch (nextError) {
+      setError(nextError);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const refreshConversation = (id = selected?.node.id) => {
@@ -240,6 +259,13 @@ export function TemporaryFusionObservationPanel({ onCloseObservation, onOpenSour
           <section aria-label="草案版本历史"><h3>版本历史</h3>{(() => { const versions = draftHistory?.versions ?? []; const currentIndex = versions.findIndex((version) => version.id === selected.activeDraft.id); const previous = currentIndex >= 0 ? versions[currentIndex + 1] : undefined; return previous ? <p aria-label="相邻版本差异">{adjacentDraftDifference(selected.activeDraft.body, previous.body)}</p> : null; })()}<ol>{draftHistory?.versions.map((version) => <li key={version.id}><strong>v{version.version}</strong> · {version.evidenceStatus === "verified" ? "已核验" : version.evidenceStatus === "pending" ? "待核验" : "无效"}{version.id === selected.activeDraft.id ? "（当前）" : <button type="button" className="button button--secondary" disabled={busy} onClick={() => void restoreDraft(version.id)}>撤销到此版本</button>}</li>)}</ol></section>
           <h3>正式来源</h3>
           <ul>{selected.candidateSources.map((source) => <li key={source.id}><button type="button" className="button button--secondary" onClick={() => onOpenSource(source)}>{sourceLabel(source)}</button></li>)}</ul>
+          <section className="temporary-fusion-observation__confirm" aria-label="确认当前融合草案">
+            <h3>确认当前版本</h3>
+            <p>确认对象是当前草案 v{selected.activeDraft.version} 及以上列出的直接来源；确认不会重新生成正文。</p>
+            {selected.activeDraft.evidenceStatus === "verified" ? (
+              <button type="button" className="button button--primary" disabled={busy} onClick={() => void confirmCurrentDraft()}>确认当前核验版本</button>
+            ) : <p>当前版本尚未通过核验，不能确认。</p>}
+          </section>
           <section className="temporary-fusion-observation__conversation" aria-label="临时融合讨论">
             <h3>临时讨论</h3>
             <p>讨论只产生临时消息，不会修改当前草案、核验结果或正式研究节点。</p>

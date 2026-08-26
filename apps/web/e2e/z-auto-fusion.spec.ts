@@ -204,3 +204,68 @@ test("T05 只有明确保存才创建草案版本，撤销保留完整历史", a
   await expect(page.getByText(/当前草案 · v3/)).toBeVisible();
   expect(draftVersionCount(dbPath)).toBe(beforeDraftVersions + 2, "撤销产生新当前版本，不删除旧版本");
 });
+
+test("T07 确认当前核验版本后以同一身份进入正式会话，并可继续普通对话", async ({ page }) => {
+  const { sessionId, rootNodeId } = await openSession(page);
+  await growSharedConceptChild(page, sessionId);
+  const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
+  const projectResponse = await page.request.post("/v1/projects", {
+    headers: { "Idempotency-Key": crypto.randomUUID() },
+    data: { name: "融合来源项目" },
+  });
+  expect(projectResponse.status()).toBe(201);
+  const sourceProject = (await projectResponse.json()) as { id: string };
+  // 根节点与显式生长子节点属于同一会话，因此两条直接来源同属此项目。
+  expect((await page.request.patch(`/v1/research-sessions/${sessionId}`, { data: { projectId: sourceProject.id } })).ok()).toBeTruthy();
+  await page.request.put("/v1/settings/fusion", { data: { enabled: true } });
+  await page.goto(`/nodes/${encodeURIComponent(rootNodeId)}`);
+  await expect(page.getByTestId("temporary-fusion-count")).toContainText(/临时融合 \d+ 条待核验/, { timeout: 20_000 });
+
+  await page.goto("/map");
+  const before = temporaryFusionState(dbPath);
+  await page.getByRole("button", { name: `临时融合（${before.temporaryNodes}）` }).click();
+  await page.getByRole("button", { name: "开启临时层" }).click();
+  await page.getByRole("button", { name: /临时融合草稿/ }).first().click();
+  await expect(page.getByText(/确认对象是当前草案/)).toBeVisible();
+  await page.getByRole("button", { name: "确认当前核验版本" }).click();
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
+  const formalNodeId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
+  await expect(page.getByRole("heading", { name: "正式融合正文" })).toBeVisible();
+  const confirmedView = await page.request.get(`/v1/research-nodes/${encodeURIComponent(formalNodeId)}`);
+  const confirmedPayload = await confirmedView.json() as { session: { projectId?: string }; confirmedFusion: { body: string } };
+  expect(confirmedPayload.session.projectId).toBe(sourceProject.id);
+  const confirmedBody = confirmedPayload.confirmedFusion.body;
+  expect(temporaryFusionState(dbPath)).toEqual({
+    ...before,
+    formalFusionNodes: before.formalFusionNodes + 1,
+    fusedFromEdges: before.fusedFromEdges + 2,
+  });
+
+  // 同一个草案版本的重复提交返回同一正式身份，不增加会话、节点或来源边。
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  const draftId = (db.prepare("SELECT active_draft_version_id AS id FROM research_temporary_fusion_nodes WHERE id = ?").get(formalNodeId) as { id: string }).id;
+  db.close();
+  const repeated = await page.request.post(`/v1/research-temporary-fusions/${encodeURIComponent(formalNodeId)}/confirm`, { data: { expectedDraftVersionId: draftId } });
+  expect(repeated.ok()).toBeTruthy();
+  expect(temporaryFusionState(dbPath)).toEqual({
+    ...before,
+    formalFusionNodes: before.formalFusionNodes + 1,
+    fusedFromEdges: before.fusedFromEdges + 2,
+  });
+
+  // 正式节点之后走普通会话生命周期；组织和生命周期写入不回写确认快照。
+  expect((await page.request.patch(`/v1/research-sessions/${formalNodeId}`, { data: { projectId: null } })).ok()).toBeTruthy();
+  expect((await page.request.patch(`/v1/research-sessions/${formalNodeId}`, { data: { status: "archived" } })).ok()).toBeTruthy();
+  expect((await page.request.put(`/v1/research-sessions/${formalNodeId}/trash`)).ok()).toBeTruthy();
+  expect((await page.request.put(`/v1/research-sessions/${formalNodeId}/restore`)).ok()).toBeTruthy();
+  const afterLifecycle = await page.request.get(`/v1/research-nodes/${encodeURIComponent(formalNodeId)}`);
+  expect((await afterLifecycle.json() as { confirmedFusion: { body: string } }).confirmedFusion.body).toBe(confirmedBody);
+
+  await page.getByLabel("你的问题").fill("确认后继续讨论这项融合成果");
+  await page.getByRole("button", { name: "发送" }).click();
+  await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
+  await citeAnswerText(page, "回答完毕");
+  await page.getByRole("button", { name: "深入研究这段" }).click();
+  await page.waitForURL((url) => url.pathname.startsWith("/nodes/") && url.pathname !== `/nodes/${formalNodeId}`, { timeout: 10_000 });
+  await expect(page.getByText(/这是深入研究第一轮/)).toBeVisible({ timeout: 15_000 });
+});

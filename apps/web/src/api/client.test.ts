@@ -75,6 +75,18 @@ describe("T05 temporary fusion draft API client", () => {
   });
 });
 
+describe("T07 temporary fusion confirmation API client", () => {
+  it("confirms the visible current version through the stable temporary identity", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const client = createApiClient(fetchMock);
+    await client.confirmTemporaryFusion("temporary / one", "draft-v2");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/research-temporary-fusions/temporary%20%2F%20one/confirm",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ expectedDraftVersionId: "draft-v2" }) }),
+    );
+  });
+});
+
 describe("#42 research body version API client", () => {
   it("calls the body version view endpoint with a stable encoded path", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ version: {}, fragments: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));

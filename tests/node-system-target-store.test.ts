@@ -206,7 +206,7 @@ test("T06 confirms one verified draft in place, closes its temporary projection,
   const first = await store.confirmTemporaryFusionInPlace(candidate.node.id, candidate.activeDraft.id, "2026-08-26T01:02:03.000Z");
   assert.equal(first.fusionNode.id, candidate.node.id, "confirmation keeps the temporary identity");
   assert.equal(first.fusionNode.sessionId, candidate.node.id, "formal map projection has its own root container");
-  assert.equal(first.session.projectId, undefined, "T06 does not assign a project");
+  assert.equal(first.session.projectId, undefined, "all-unclassified sources keep the confirmed session unclassified");
   assert.equal(first.snapshot.body, candidate.activeDraft.body, "confirmation never regenerates the current body");
   assert.equal(first.snapshot.contentHash, candidate.activeDraft.contentHash);
   assert.deepEqual(first.snapshot.directSources.map((source) => source.sourceNodeId).sort(), ["node-source-a", "node-source-b"]);
@@ -223,6 +223,38 @@ test("T06 confirms one verified draft in place, closes its temporary projection,
   const retried = await store.confirmTemporaryFusionInPlace(candidate.node.id, candidate.activeDraft.id, "2026-08-26T01:03:04.000Z");
   assert.deepEqual(retried, first, "repeated confirmation returns the original snapshot without duplicate edges");
   assert.equal(await store.deleteTemporaryFusionNode(candidate.node.id), false, "confirmation audit cannot be deleted as a temporary candidate");
+});
+
+test("T07 assigns a confirmed fusion to a project only when every direct source belongs to that same project", async (t) => {
+  const store = await makeStore(t);
+  await store.createProject({ id: "project-a", name: "Project A", colorRole: "amber", createdAt: NOW, updatedAt: NOW }, "project:a");
+  await store.createProject({ id: "project-b", name: "Project B", colorRole: "violet", createdAt: NOW, updatedAt: NOW }, "project:b");
+  await createConfirmableTemporaryFusion(store, "confirmation-project-bootstrap");
+
+  await store.updateResearchSession("session:node-source-a", { projectId: "project-a" });
+  await store.updateResearchSession("session:node-source-b", { projectId: "project-a" });
+  const sameProject = await createConfirmableTemporaryFusion(store, "confirmation-same-project");
+  assert.equal(
+    (await store.confirmTemporaryFusionInPlace(sameProject.node.id, sameProject.activeDraft.id, NOW)).session.projectId,
+    "project-a",
+    "all direct sources in one project inherit that project",
+  );
+
+  await store.updateResearchSession("session:node-source-b", { projectId: "project-b" });
+  const crossProject = await createConfirmableTemporaryFusion(store, "confirmation-cross-project");
+  assert.equal(
+    (await store.confirmTemporaryFusionInPlace(crossProject.node.id, crossProject.activeDraft.id, NOW)).session.projectId,
+    undefined,
+    "cross-project direct sources default to unclassified",
+  );
+
+  await store.updateResearchSession("session:node-source-b", { projectId: null });
+  const includesUnclassified = await createConfirmableTemporaryFusion(store, "confirmation-unclassified-source");
+  assert.equal(
+    (await store.confirmTemporaryFusionInPlace(includesUnclassified.node.id, includesUnclassified.activeDraft.id, NOW)).session.projectId,
+    undefined,
+    "a source without a project prevents implicit project assignment",
+  );
 });
 
 test("T06 rejects stale or unverified confirmation and rolls back every formal write on an injected edge failure", async (t) => {

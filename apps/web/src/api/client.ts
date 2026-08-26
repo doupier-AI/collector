@@ -36,6 +36,7 @@ import type {
   ResearchTemporaryFusionBundle,
   ResearchTemporaryFusionBatchDeleteResult,
   ResearchTemporaryFusionClearResult,
+  ConfirmTemporaryFusionResult,
   ResearchTemporaryFusionConversationView,
   ResearchTemporaryFusionDeleteResult,
   ResearchTemporaryFusionListItem,
@@ -189,6 +190,8 @@ export interface ApiClient {
   getTemporaryFusionDraftHistory(id: string): Promise<ResearchTemporaryFusionDraftHistory>;
   updateTemporaryFusionDraft(id: string, input: UpdateTemporaryFusionDraftInput): Promise<UpdateTemporaryFusionDraftResult>;
   restoreTemporaryFusionDraft(id: string, versionId: string, expectedDraftVersionId: string): Promise<UpdateTemporaryFusionDraftResult>;
+  /** T07：确认当前已核验草案；返回同一身份的正式根节点。 */
+  confirmTemporaryFusion(id: string, expectedDraftVersionId: string): Promise<ConfirmTemporaryFusionResult>;
   /** 从选区生长子节点：统一取代深入研究二选一。 */
   startChildNode(selectionId: string, input: CreateChildNodeInput, idempotencyKey: string): Promise<NodeGrowthAccepted>;
     /** 保存标记：幂等键命中返回首次保存的项目，保存不依赖 AI。 */
@@ -646,6 +649,11 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
     },
     restoreTemporaryFusionDraft(id: string, versionId: string, expectedDraftVersionId: string) {
       return requestJson<UpdateTemporaryFusionDraftResult>(fetchFn, `/v1/research-temporary-fusions/${encodeURIComponent(id)}/drafts/${encodeURIComponent(versionId)}/restore`, {
+        method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ expectedDraftVersionId }),
+      });
+    },
+    confirmTemporaryFusion(id: string, expectedDraftVersionId: string) {
+      return requestJson<ConfirmTemporaryFusionResult>(fetchFn, `/v1/research-temporary-fusions/${encodeURIComponent(id)}/confirm`, {
         method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ expectedDraftVersionId }),
       });
     },

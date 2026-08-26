@@ -1925,12 +1925,22 @@ export class SqliteStore implements CollectorStore {
         throw new Error("Temporary fusion identity is already formalized");
       }
 
+      // T07：只有全部直接来源都在同一个实际项目内，确认结果才继承该项目。
+      // 未分类来源与跨项目来源都明确落到未分类，不能借由确认猜测用户的组织意图。
+      const directSourceProjectIds = new Set(directCandidates.map((source) => {
+        const sourceNode = this.getResearchNode(source.sourceNodeId);
+        return sourceNode ? this.getResearchSession(sourceNode.sessionId)?.projectId : undefined;
+      }));
+      const sharedProjectId = directSourceProjectIds.size === 1 ? [...directSourceProjectIds][0] : undefined;
+      const projectId = sharedProjectId && this.getProject(sharedProjectId) ? sharedProjectId : undefined;
+
       const title = formalFusionTitle(draft.body);
       const session: ResearchSessionRecord = {
         id: temporary.id,
         title,
         status: "active",
         isFavorite: false,
+        ...(projectId ? { projectId } : {}),
         createdAt: temporary.createdAt,
         updatedAt: confirmedAt,
       };
@@ -1959,7 +1969,7 @@ export class SqliteStore implements CollectorStore {
       this.db().prepare(`INSERT INTO research_sessions
         (id, status, created_at, updated_at, creation_idempotency_key, project_id, is_favorite, record_json)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(session.id, session.status, session.createdAt, session.updatedAt, `temporary-fusion-confirm:${temporary.id}`, null, 0, JSON.stringify(session));
+        .run(session.id, session.status, session.createdAt, session.updatedAt, `temporary-fusion-confirm:${temporary.id}`, projectId ?? null, 0, JSON.stringify(session));
       this.db().prepare(`INSERT INTO research_nodes
         (id, session_id, parent_node_id, origin_selection_id, status, created_at, updated_at, creation_idempotency_key, record_json)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
