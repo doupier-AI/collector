@@ -21,6 +21,151 @@
   },
   "regions": [
     {
+      "text": "长文第1节",
+      "childElementCount": 0,
+      "childNodeTypes": [
+        3
+      ],
+      "beforeContent": "none",
+      "afterContent": "none",
+      "computedStyleSha256": "42c81c26dfee8162d6b3ca429f5d4831b0ad3ccacb275bf64d56d8afcf5b5493",
+      "beforeStyleSha256": "f3d7c580ba646c39579a06acecc4cb535d36c1312830c85af71cf9e974b085f2",
+      "afterStyleSha256": "f3d7c580ba646c39579a06acecc4cb535d36c1312830c85af71cf9e974b085f2",
+      "rect": {
+        "x": 25,
+        "y": 33,
+        "width": 1038,
+        "height": 23.390625
+      },
+      "lines": [
+        {
+          "x": 25,
+          "y": 34,
+          "width": 81.34375,
+          "height": 20
+        }
+      ],
+      "ancestors": [
+        {
+          "tagName": "DIV",
+          "className": "markdown-content",
+          "computedStyleSha256": "3ff96da97a156b59443359ea131e9d0438d484342a3bce85d92499216a805405",
+          "beforeStyleSha256": "03bdb40ee89190da20b1072fac481419d7d59885599575802b16d584e8f74aaa",
+          "afterStyleSha256": "03bdb40ee89190da20b1072fac481419d7d59885599575802b16d584e8f74aaa",
+          "rect": {
+            "x": 25,
+            "y": 33,
+            "width": 1038,
+            "height": 467.390625
+          },
+          "renderingStyle": {
+            "display": "block",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        },
+        {
+          "tagName": "DIV",
+          "className": "message__content",
+          "computedStyleSha256": "3ff96da97a156b59443359ea131e9d0438d484342a3bce85d92499216a805405",
+          "beforeStyleSha256": "03bdb40ee89190da20b1072fac481419d7d59885599575802b16d584e8f74aaa",
+          "afterStyleSha256": "03bdb40ee89190da20b1072fac481419d7d59885599575802b16d584e8f74aaa",
+          "rect": {
+            "x": 25,
+            "y": 33,
+            "width": 1038,
+            "height": 467.390625
+          },
+          "renderingStyle": {
+            "display": "block",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        },
+        {
+          "tagName": "SECTION",
+          "className": "turn-card__section",
+          "computedStyleSha256": "7cef99a7a90d3ee87cb893cc0dca3fafa15ac8ed47eb30bcfeb0218d0aa7e246",
+          "beforeStyleSha256": "cf6af12adec9de3c30cfca909cceaa06a58ba96e7050ea424e143fe87cb6ef1c",
+          "afterStyleSha256": "cf6af12adec9de3c30cfca909cceaa06a58ba96e7050ea424e143fe87cb6ef1c",
+          "rect": {
+            "x": 25,
+            "y": 17,
+            "width": 1038,
+            "height": 483.390625
+          },
+          "renderingStyle": {
+            "display": "block",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        }
+      ],
+      "style": {
+        "display": "block",
+        "visibility": "visible",
+        "opacity": "1",
+        "color": "rgb(32, 35, 31)",
+        "webkitTextFillColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeWidth": "0px",
+        "textShadow": "none",
+        "filter": "none",
+        "transform": "none",
+        "clipPath": "none",
+        "maskImage": "none",
+        "mixBlendMode": "normal",
+        "fontFamily": "\"Songti SC\", STSong, \"Noto Serif CJK SC\", \"Source Han Serif SC\", SimSun, serif",
+        "fontSize": "18px",
+        "fontWeight": "700",
+        "fontStyle": "normal",
+        "lineHeight": "23.4px",
+        "letterSpacing": "0.18px",
+        "wordSpacing": "0px",
+        "textIndent": "0px",
+        "textTransform": "none",
+        "whiteSpace": "pre-wrap",
+        "overflowWrap": "anywhere",
+        "textRendering": "auto",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "none",
+        "boxShadow": "none"
+      }
+    },
+    {
       "text": "这是长文第1节的确定性正文，用于验证长文保留节卡与章节导航的呈现契约。这是长文第1节的确定性正文，用于验证长文保留节卡与章节导航的呈现契约。这是长文第1节的确定性正文，用于验证长文保留节卡与章节导航的呈现契约。这是长文第1节的确定性正文，用于验证长文保留节卡与章节导航的呈现契约。这是长文第1节的确定性正文，用于验证长文保留节卡与章节导航的呈现契约。这是长文第1节的确定性正文，用于验证长文保留节卡与章节导航的呈现契约。这是长文第1节的确定性正文，用于验证长文保留节卡与章节导航的呈现契约。",
       "childElementCount": 0,
       "childNodeTypes": [
@@ -510,6 +655,151 @@
       }
     },
     {
+      "text": "长文第2节",
+      "childElementCount": 0,
+      "childNodeTypes": [
+        3
+      ],
+      "beforeContent": "none",
+      "afterContent": "none",
+      "computedStyleSha256": "42c81c26dfee8162d6b3ca429f5d4831b0ad3ccacb275bf64d56d8afcf5b5493",
+      "beforeStyleSha256": "f3d7c580ba646c39579a06acecc4cb535d36c1312830c85af71cf9e974b085f2",
+      "afterStyleSha256": "f3d7c580ba646c39579a06acecc4cb535d36c1312830c85af71cf9e974b085f2",
+      "rect": {
+        "x": 25,
+        "y": 548.390625,
+        "width": 1038,
+        "height": 23.390625
+      },
+      "lines": [
+        {
+          "x": 25,
+          "y": 549.390625,
+          "width": 81.34375,
+          "height": 20
+        }
+      ],
+      "ancestors": [
+        {
+          "tagName": "DIV",
+          "className": "markdown-content",
+          "computedStyleSha256": "3ff96da97a156b59443359ea131e9d0438d484342a3bce85d92499216a805405",
+          "beforeStyleSha256": "03bdb40ee89190da20b1072fac481419d7d59885599575802b16d584e8f74aaa",
+          "afterStyleSha256": "03bdb40ee89190da20b1072fac481419d7d59885599575802b16d584e8f74aaa",
+          "rect": {
+            "x": 25,
+            "y": 548.390625,
+            "width": 1038,
+            "height": 467.390625
+          },
+          "renderingStyle": {
+            "display": "block",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        },
+        {
+          "tagName": "DIV",
+          "className": "message__content",
+          "computedStyleSha256": "3ff96da97a156b59443359ea131e9d0438d484342a3bce85d92499216a805405",
+          "beforeStyleSha256": "03bdb40ee89190da20b1072fac481419d7d59885599575802b16d584e8f74aaa",
+          "afterStyleSha256": "03bdb40ee89190da20b1072fac481419d7d59885599575802b16d584e8f74aaa",
+          "rect": {
+            "x": 25,
+            "y": 548.390625,
+            "width": 1038,
+            "height": 467.390625
+          },
+          "renderingStyle": {
+            "display": "block",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        },
+        {
+          "tagName": "SECTION",
+          "className": "turn-card__section",
+          "computedStyleSha256": "7cef99a7a90d3ee87cb893cc0dca3fafa15ac8ed47eb30bcfeb0218d0aa7e246",
+          "beforeStyleSha256": "cf6af12adec9de3c30cfca909cceaa06a58ba96e7050ea424e143fe87cb6ef1c",
+          "afterStyleSha256": "cf6af12adec9de3c30cfca909cceaa06a58ba96e7050ea424e143fe87cb6ef1c",
+          "rect": {
+            "x": 25,
+            "y": 532.390625,
+            "width": 1038,
+            "height": 483.390625
+          },
+          "renderingStyle": {
+            "display": "block",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        }
+      ],
+      "style": {
+        "display": "block",
+        "visibility": "visible",
+        "opacity": "1",
+        "color": "rgb(32, 35, 31)",
+        "webkitTextFillColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeWidth": "0px",
+        "textShadow": "none",
+        "filter": "none",
+        "transform": "none",
+        "clipPath": "none",
+        "maskImage": "none",
+        "mixBlendMode": "normal",
+        "fontFamily": "\"Songti SC\", STSong, \"Noto Serif CJK SC\", \"Source Han Serif SC\", SimSun, serif",
+        "fontSize": "18px",
+        "fontWeight": "700",
+        "fontStyle": "normal",
+        "lineHeight": "23.4px",
+        "letterSpacing": "0.18px",
+        "wordSpacing": "0px",
+        "textIndent": "0px",
+        "textTransform": "none",
+        "whiteSpace": "pre-wrap",
+        "overflowWrap": "anywhere",
+        "textRendering": "auto",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "none",
+        "boxShadow": "none"
+      }
+    },
+    {
       "text": "这是长文第2节的确定性正文，用于验证长文保留节卡与章节导航的呈现契约。这是长文第2节的确定性正文，用于验证长文保留节卡与章节导航的呈现契约。这是长文第2节的确定性正文，用于验证长文保留节卡与章节导航的呈现契约。这是长文第2节的确定性正文，用于验证长文保留节卡与章节导航的呈现契约。这是长文第2节的确定性正文，用于验证长文保留节卡与章节导航的呈现契约。这是长文第2节的确定性正文，用于验证长文保留节卡与章节导航的呈现契约。这是长文第2节的确定性正文，用于验证长文保留节卡与章节导航的呈现契约。",
       "childElementCount": 0,
       "childNodeTypes": [
@@ -987,6 +1277,151 @@
         "fontStyle": "normal",
         "lineHeight": "28px",
         "letterSpacing": "normal",
+        "wordSpacing": "0px",
+        "textIndent": "0px",
+        "textTransform": "none",
+        "whiteSpace": "pre-wrap",
+        "overflowWrap": "anywhere",
+        "textRendering": "auto",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "backgroundImage": "none",
+        "boxShadow": "none"
+      }
+    },
+    {
+      "text": "长文第3节",
+      "childElementCount": 0,
+      "childNodeTypes": [
+        3
+      ],
+      "beforeContent": "none",
+      "afterContent": "none",
+      "computedStyleSha256": "42c81c26dfee8162d6b3ca429f5d4831b0ad3ccacb275bf64d56d8afcf5b5493",
+      "beforeStyleSha256": "f3d7c580ba646c39579a06acecc4cb535d36c1312830c85af71cf9e974b085f2",
+      "afterStyleSha256": "f3d7c580ba646c39579a06acecc4cb535d36c1312830c85af71cf9e974b085f2",
+      "rect": {
+        "x": 25,
+        "y": 1063.78125,
+        "width": 1038,
+        "height": 23.390625
+      },
+      "lines": [
+        {
+          "x": 25,
+          "y": 1064.78125,
+          "width": 81.34375,
+          "height": 20
+        }
+      ],
+      "ancestors": [
+        {
+          "tagName": "DIV",
+          "className": "markdown-content",
+          "computedStyleSha256": "3ff96da97a156b59443359ea131e9d0438d484342a3bce85d92499216a805405",
+          "beforeStyleSha256": "03bdb40ee89190da20b1072fac481419d7d59885599575802b16d584e8f74aaa",
+          "afterStyleSha256": "03bdb40ee89190da20b1072fac481419d7d59885599575802b16d584e8f74aaa",
+          "rect": {
+            "x": 25,
+            "y": 1063.78125,
+            "width": 1038,
+            "height": 467.390625
+          },
+          "renderingStyle": {
+            "display": "block",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        },
+        {
+          "tagName": "DIV",
+          "className": "message__content",
+          "computedStyleSha256": "3ff96da97a156b59443359ea131e9d0438d484342a3bce85d92499216a805405",
+          "beforeStyleSha256": "03bdb40ee89190da20b1072fac481419d7d59885599575802b16d584e8f74aaa",
+          "afterStyleSha256": "03bdb40ee89190da20b1072fac481419d7d59885599575802b16d584e8f74aaa",
+          "rect": {
+            "x": 25,
+            "y": 1063.78125,
+            "width": 1038,
+            "height": 467.390625
+          },
+          "renderingStyle": {
+            "display": "block",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        },
+        {
+          "tagName": "SECTION",
+          "className": "turn-card__section",
+          "computedStyleSha256": "7cef99a7a90d3ee87cb893cc0dca3fafa15ac8ed47eb30bcfeb0218d0aa7e246",
+          "beforeStyleSha256": "cf6af12adec9de3c30cfca909cceaa06a58ba96e7050ea424e143fe87cb6ef1c",
+          "afterStyleSha256": "cf6af12adec9de3c30cfca909cceaa06a58ba96e7050ea424e143fe87cb6ef1c",
+          "rect": {
+            "x": 25,
+            "y": 1047.78125,
+            "width": 1038,
+            "height": 483.390625
+          },
+          "renderingStyle": {
+            "display": "block",
+            "visibility": "visible",
+            "opacity": "1",
+            "filter": "none",
+            "backdropFilter": "none",
+            "transform": "none",
+            "clipPath": "none",
+            "maskImage": "none",
+            "mixBlendMode": "normal",
+            "isolation": "auto",
+            "perspective": "none",
+            "overflow": "visible",
+            "contain": "none",
+            "contentVisibility": "visible"
+          }
+        }
+      ],
+      "style": {
+        "display": "block",
+        "visibility": "visible",
+        "opacity": "1",
+        "color": "rgb(32, 35, 31)",
+        "webkitTextFillColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeColor": "rgb(32, 35, 31)",
+        "webkitTextStrokeWidth": "0px",
+        "textShadow": "none",
+        "filter": "none",
+        "transform": "none",
+        "clipPath": "none",
+        "maskImage": "none",
+        "mixBlendMode": "normal",
+        "fontFamily": "\"Songti SC\", STSong, \"Noto Serif CJK SC\", \"Source Han Serif SC\", SimSun, serif",
+        "fontSize": "18px",
+        "fontWeight": "700",
+        "fontStyle": "normal",
+        "lineHeight": "23.4px",
+        "letterSpacing": "0.18px",
         "wordSpacing": "0px",
         "textIndent": "0px",
         "textTransform": "none",

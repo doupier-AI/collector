@@ -37,6 +37,8 @@ import {
 
 test.describe.configure({ mode: "serial" });
 
+const LONG_SLICE_TITLES = ["长文第1节", "长文第2节", "长文第3节"];
+
 /** 打开研究地图覆盖层（顶栏按钮）并等待淡入结束（不依赖动画名，等 opacity 稳定）。 */
 async function openResearchMap(page: import("@playwright/test").Page): Promise<import("@playwright/test").Locator> {
   await page.getByRole("button", { name: "研究地图" }).click();
@@ -152,6 +154,7 @@ test.describe("#44 视觉回归基线", () => {
     await openLongSession(page);
     await expect(page.locator(".turn-card")).toHaveCount(1);
     await expect(page.locator(".turn-card__section")).toHaveCount(3);
+    await expect(page.locator(".slice-card__title")).toHaveText(LONG_SLICE_TITLES);
     await closeSidebars(page);
 
     // 整轮长文（含三个章节）元素级截图——确认只有一个卡片边界。
@@ -160,7 +163,7 @@ test.describe("#44 视觉回归基线", () => {
     // 同一浏览器进程连续采样两次：跨进程冷启动波动由定向 repeat 验证，热进程也不能偶发变红。
     for (let sample = 0; sample < 2; sample += 1) {
       await expectScreenshotWithFontRasterRegions(turnCard, "turn-card-sectioned-default", testInfo, {
-        textLayoutSelector: ".markdown-content p",
+        textLayoutSelector: ".slice-card__title, .markdown-content p",
         fontColor: [32, 35, 31, 255],
         mask: dynamicTimeMasks(page),
         maskColor: "#FFFFFF",
@@ -171,7 +174,7 @@ test.describe("#44 视觉回归基线", () => {
     await turnCard.hover();
     for (let sample = 0; sample < 2; sample += 1) {
       await expectScreenshotWithFontRasterRegions(turnCard, "turn-card-sectioned-hover", testInfo, {
-        textLayoutSelector: ".markdown-content p",
+        textLayoutSelector: ".slice-card__title, .markdown-content p",
         fontColor: [32, 35, 31, 255],
         mask: dynamicTimeMasks(page),
         maskColor: "#FFFFFF",
