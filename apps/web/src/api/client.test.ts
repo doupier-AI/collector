@@ -29,16 +29,18 @@ describe("F1 fusion proposal API client", () => {
 });
 
 describe("#32 fusion auto config API client", () => {
-  it("reads and writes the auto fusion switch with stable paths and bodies", async () => {
+  it("reads the existing temporary count and writes the auto fusion switch with stable paths and bodies", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ enabled: true }), { status: 200, headers: { "Content-Type": "application/json" } }));
     const client = createApiClient(fetchMock);
 
+    await client.getTemporaryFusionCount();
     await client.getFusionAutoConfig();
     await client.updateFusionAutoConfig(true);
 
-    expect(fetchMock).toHaveBeenNthCalledWith(1, "/v1/settings/fusion", undefined);
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/v1/research-temporary-fusions/count", undefined);
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/v1/settings/fusion", undefined);
     expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
+      3,
       "/v1/settings/fusion",
       expect.objectContaining({ method: "PUT", body: JSON.stringify({ enabled: true }) }),
     );

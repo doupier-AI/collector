@@ -158,6 +158,8 @@ export interface ApiClient {
   getFusionAutoConfig(): Promise<{ enabled: boolean }>;
   /** 写入临时融合发现开关，返回更新后的配置。 */
   updateFusionAutoConfig(enabled: boolean): Promise<{ enabled: boolean }>;
+  /** 只读当前 B 面候选总数；不会触发模型扫描。 */
+  getTemporaryFusionCount(): Promise<{ count: number }>;
   /** 从选区生长子节点：统一取代深入研究二选一。 */
   startChildNode(selectionId: string, input: CreateChildNodeInput, idempotencyKey: string): Promise<NodeGrowthAccepted>;
     /** 保存标记：幂等键命中返回首次保存的项目，保存不依赖 AI。 */
@@ -577,6 +579,9 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
         headers: JSON_HEADERS,
         body: JSON.stringify({ enabled }),
       });
+    },
+    getTemporaryFusionCount() {
+      return requestJson<{ count: number }>(fetchFn, "/v1/research-temporary-fusions/count");
     },
     listResearchFusionProposals(nodeId: string, status?: ResearchFusionProposalRecord["status"]) {
       const query = status ? `?status=${encodeURIComponent(status)}` : "";

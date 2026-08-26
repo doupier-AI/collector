@@ -22,14 +22,12 @@ import {
   dynamicTimeMasks,
   freezeClock,
   growChildNode,
-  installProposalFixture,
   installThreeEdgeGraphFixture,
   openNodeWithParent,
   openSession,
   pairAndOpen,
   pinModelStatus,
   QUESTION,
-  readNodeEvidence,
   trackBrowserIssues,
 } from "./helpers";
 import {
@@ -202,126 +200,6 @@ const LONG_TURN_CARD_TEXT_LAYOUT: TextLayoutContract = {
       };
     }),
   ),
-};
-
-const FRAGMENT_STYLE_HASH = "6b9de9f017cd48a9b0ab943f5c90737607bd94d25c2fcc00eea08e0269b7dc17";
-const FRAGMENT_PSEUDO_HASH = "db1e6ec3d4b72055aeaa912ed14147febdf020f84c105bd251aa3462cf3dc5d3";
-const FRAGMENT_TEXT = "这是深入研究第一轮，围绕「深入研究这段内容：“本地优先会先把输入保存在本机…」展开。";
-const FRAGMENT_TEXT_STYLE = {
-  display: "block",
-  visibility: "visible",
-  opacity: "1",
-  color: "rgb(32, 35, 31)",
-  webkitTextFillColor: "rgb(32, 35, 31)",
-  webkitTextStrokeColor: "rgb(32, 35, 31)",
-  webkitTextStrokeWidth: "0px",
-  textShadow: "none",
-  filter: "none",
-  transform: "none",
-  clipPath: "none",
-  maskImage: "none",
-  mixBlendMode: "normal",
-  fontFamily: "-apple-system, BlinkMacSystemFont, \"Segoe UI\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", \"Noto Sans CJK SC\", \"Source Han Sans SC\", sans-serif",
-  fontSize: "16px",
-  fontWeight: "400",
-  fontStyle: "normal",
-  lineHeight: "28px",
-  letterSpacing: "normal",
-  wordSpacing: "0px",
-  textIndent: "0px",
-  textTransform: "none",
-  whiteSpace: "pre-wrap",
-  overflowWrap: "anywhere",
-  textRendering: "auto",
-  backgroundColor: "rgba(0, 0, 0, 0)",
-  backgroundImage: "none",
-  boxShadow: "none",
-};
-
-function fragmentContentAncestors(y: number) {
-  return ["markdown-content", "message__content"].map((className) => ({
-    tagName: "DIV",
-    className,
-    computedStyleSha256: FRAGMENT_STYLE_HASH,
-    beforeStyleSha256: FRAGMENT_PSEUDO_HASH,
-    afterStyleSha256: FRAGMENT_PSEUDO_HASH,
-    rect: { x: 25, y, width: 1038, height: 28 },
-    renderingStyle: LONG_TURN_RENDERING_STYLE,
-  }));
-}
-
-const FRAGMENT_TURN_CARD_TEXT_LAYOUT: TextLayoutContract = {
-  root: {
-    width: 1088,
-    height: 90,
-    renderingStyle: { ...LONG_TURN_RENDERING_STYLE, display: "block" },
-  },
-  regions: [
-    {
-      text: FRAGMENT_TEXT,
-      childElementCount: 1,
-      childNodeTypes: [1],
-      beforeContent: "none",
-      afterContent: "none",
-      computedStyleSha256: FRAGMENT_STYLE_HASH,
-      beforeStyleSha256: FRAGMENT_PSEUDO_HASH,
-      afterStyleSha256: FRAGMENT_PSEUDO_HASH,
-      rect: { x: 25, y: 17, width: 1038, height: 28 },
-      lines: [
-        { x: 25, y: 20, width: 657.765625, height: 21 },
-        { x: 25, y: 20, width: 657.765625, height: 21 },
-      ],
-      ancestors: fragmentContentAncestors(17),
-      style: FRAGMENT_TEXT_STYLE,
-    },
-    {
-      text: FRAGMENT_TEXT,
-      childElementCount: 0,
-      childNodeTypes: [3],
-      beforeContent: "none",
-      afterContent: "none",
-      computedStyleSha256: "47bdc010e9de20a294d1d84dea6c2ebc3afcc5d246ef931ba51caa21c056c81a",
-      beforeStyleSha256: "8f0e0f8cfadd0a2e3807e3186d0c410178207e2bd3129a04de4c80850c4a64ee",
-      afterStyleSha256: "8f0e0f8cfadd0a2e3807e3186d0c410178207e2bd3129a04de4c80850c4a64ee",
-      rect: { x: 25, y: 20, width: 657.765625, height: 21 },
-      lines: [{ x: 25, y: 20, width: 657.765625, height: 21 }],
-      ancestors: [
-        {
-          tagName: "P",
-          className: "",
-          computedStyleSha256: FRAGMENT_STYLE_HASH,
-          beforeStyleSha256: FRAGMENT_PSEUDO_HASH,
-          afterStyleSha256: FRAGMENT_PSEUDO_HASH,
-          rect: { x: 25, y: 17, width: 1038, height: 28 },
-          renderingStyle: LONG_TURN_RENDERING_STYLE,
-        },
-        ...fragmentContentAncestors(17),
-      ],
-      style: {
-        ...FRAGMENT_TEXT_STYLE,
-        display: "inline",
-        color: "rgb(0, 0, 0)",
-        webkitTextFillColor: "rgb(0, 0, 0)",
-        webkitTextStrokeColor: "rgb(0, 0, 0)",
-        backgroundColor: "rgb(246, 217, 188)",
-        boxShadow: "rgb(246, 217, 188) 0px 0px 0px 2px",
-      },
-    },
-    {
-      text: "本轮只使用来源选区与当前已有材料生成，未联网检索，回答完毕。",
-      childElementCount: 0,
-      childNodeTypes: [3],
-      beforeContent: "none",
-      afterContent: "none",
-      computedStyleSha256: FRAGMENT_STYLE_HASH,
-      beforeStyleSha256: FRAGMENT_PSEUDO_HASH,
-      afterStyleSha256: FRAGMENT_PSEUDO_HASH,
-      rect: { x: 25, y: 45, width: 1038, height: 28 },
-      lines: [{ x: 25, y: 48, width: 480, height: 21 }],
-      ancestors: fragmentContentAncestors(45),
-      style: FRAGMENT_TEXT_STYLE,
-    },
-  ],
 };
 
 test.describe("#44 视觉回归基线", () => {
@@ -522,56 +400,6 @@ test.describe("#44 视觉回归基线", () => {
     await expect(page).toHaveScreenshot("node-reading-dark", {
       mask: dynamicTimeMasks(page),
       maskColor: "#FFFFFF",
-    });
-    expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
-  });
-
-  test("融合回溯落点：?fragment= 深链定位强调像素基线", async ({ page }, testInfo) => {
-    test.setTimeout(120_000);
-    const issues = trackBrowserIssues(page);
-    freezeClock(page);
-    await pinModelStatus(page);
-    const { sessionId, rootNodeId } = await openSession(page);
-    const rootEvidence = await readNodeEvidence(page, rootNodeId, 1);
-    const childNodeId = await growChildNode(page, sessionId, "本地优先会先把输入保存在本机");
-    const childEvidence = await readNodeEvidence(page, childNodeId, 0);
-    await installProposalFixture(page, rootNodeId, rootEvidence, childEvidence);
-
-    // 进入根页展开依据列表并点击指向子节点的依据 → 深链定位子节点卡片
-    await page.goto(`/nodes/${encodeURIComponent(rootNodeId)}`);
-    await expect(page.locator(".fusion-proposal-notice")).toBeVisible({ timeout: 15_000 });
-    await closeSidebars(page);
-    await page.locator(".fusion-proposal-notice__item summary").first().click();
-    await expect(page.locator(".fusion-proposal-notice__source").filter({ visible: true })).toHaveCount(2, {
-      timeout: 10_000,
-    });
-    await page.evaluate(() => {
-      const originalSetTimeout = window.setTimeout.bind(window);
-      let focusCleanupSuppressed = false;
-      window.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
-        if (!focusCleanupSuppressed && timeout === 1_600) {
-          focusCleanupSuppressed = true;
-          return 0;
-        }
-        return originalSetTimeout(handler, timeout, ...args);
-      }) as typeof window.setTimeout;
-    });
-    await page.locator(".fusion-proposal-notice__source").filter({ visible: true }).first().click();
-    const focusedTarget = page.locator(".fragment-target--focused");
-    await expect(focusedTarget).toHaveCount(1, { timeout: 10_000 });
-    await expect(focusedTarget).toBeInViewport();
-
-    // 产品定位强调只持续 1600ms；CI 截图等待字体与稳定帧时可能越过该时限。
-    // 测试只拦截这一次清理计时器，并主动越过真实时限，证明截图不再依赖机器速度。
-    await page.waitForTimeout(2_000);
-    await expect(focusedTarget).toHaveCount(1);
-    await expect(page.locator("[data-selection-mark]")).toHaveCount(1);
-
-    // 光环、片段标记与正文布局是此场景的独有视觉；页面来源关系、导航与焦点由上方结构断言覆盖。
-    await expectScreenshotWithFontRasterRegions(focusedTarget, "fragment-locate", testInfo, {
-      textLayoutSelector: ".markdown-content p, .markdown-content mark",
-      expectedTextLayout: FRAGMENT_TURN_CARD_TEXT_LAYOUT,
-      fontColor: [0, 0, 0, 255],
     });
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });

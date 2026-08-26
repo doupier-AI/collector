@@ -602,6 +602,9 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         return json(response, 200, await service.updateSearchConfig(searchBody));
       }
 // ── Fusion Auto Settings (#32) ────────────────────────
+      if (request.method === "GET" && url.pathname === "/v1/research-temporary-fusions/count") {
+        return json(response, 200, service.getTemporaryFusionCount());
+      }
       if (request.method === "GET" && url.pathname === "/v1/settings/fusion") {
         return json(response, 200, service.getFusionAutoConfig());
       }

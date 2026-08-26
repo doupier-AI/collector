@@ -154,6 +154,14 @@ test("fusion proposal HTTP scans, lists, decides, and exposes pending weak hints
   assert.equal(invalid.status, 400);
 });
 
+test("temporary fusion count stays readable without triggering a scan", async (t) => {
+  const harness = await createHarness();
+  t.after(harness.close);
+  const response = await fetch(`${harness.base}/v1/research-temporary-fusions/count`, { headers: headers(harness.token) });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { count: 0 });
+});
+
 test("fusion proposal HTTP keeps accepted proposals readable on the node view (#42)", async (t) => {
   const harness = await createHarness();
   t.after(harness.close);

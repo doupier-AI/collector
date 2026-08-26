@@ -88,6 +88,7 @@ interface TemporaryFusionSourceMaterial {
   bodyVersionId: string;
   fragmentIds: string[];
   excerpt: string;
+  createdAt: string;
 }
 
 interface SimilaritySignal {
@@ -275,7 +276,7 @@ export class ResearchFusionProposalService {
     }
     const candidates = buildSimilarityCandidates(focus.id, indexedNodes);
     const proposals: ResearchFusionProposalRecord[] = [];
-    const fingerprint = `${focus.id}\u0000${candidates.map((candidate) => `${candidate.lo.node.id}\u0000${candidate.hi.node.id}`).join("|")}`;
+    const fingerprint = `${focus.id}\u0000${candidates.map(candidateEvidenceKey).join("|")}`;
     // 护栏：同焦点同候选集合的重复扫描（进页即重扫、融合后跳转再扫）在冷却
     // 窗口内直接返回既有提议，阻断级联循环。
     const cooldown = this.scanCooldowns.get(nodeId);
@@ -307,7 +308,7 @@ export class ResearchFusionProposalService {
       const proposal = await this.verifyCandidate(candidate, gateway);
       if (!proposal) continue;
       verified += 1;
-      if (autoEnabled && proposal.status === "pending" && temporaryCreated < FUSION_MAX_TEMPORARY_FUSIONS_PER_SCAN) {
+      if (autoEnabled && temporaryCreated < FUSION_MAX_TEMPORARY_FUSIONS_PER_SCAN) {
         if (await this.tryCreateTemporaryFusion(proposal, gateway)) temporaryCreated += 1;
       }
       proposals.push(this.withResolvedFragmentRefs(proposal));
@@ -334,11 +335,12 @@ export class ResearchFusionProposalService {
     gateway: SimilarityVerificationGateway,
   ): Promise<boolean> {
     if (!gateway.discoverTemporaryFusion) return false;
-    const creationKey = `${TEMPORARY_FUSION_CREATION_PREFIX}${proposal.id}`;
-    if (this.store.findTemporaryFusionNodeByCreationKey(creationKey)) return false;
     try {
       const materials = this.buildTemporaryFusionSourceMaterials(this.withResolvedFragmentRefs(proposal));
       if (materials.length < 2) return false;
+      // 同一证据集合可安全重试；新正文版本则是新的候选，不能被旧 bundle 吞掉。
+      const creationKey = `${TEMPORARY_FUSION_CREATION_PREFIX}${proposal.id}:${temporaryFusionEvidenceKey(materials)}`;
+      if (this.store.findTemporaryFusionNodeByCreationKey(creationKey)) return false;
       const discovery = await gateway.discoverTemporaryFusion(
         {
           sources: materials.map(({ nodeId, title, excerpt }) => ({ nodeId, title, excerpt })),
@@ -432,10 +434,12 @@ export class ResearchFusionProposalService {
           bodyVersionId,
           fragmentIds: resolved.map((entry) => entry.fragmentId),
           excerpt: resolved.map((entry) => entry.excerpt).join("\n\n"),
+          createdAt: version.createdAt,
         });
       }
       const selected = candidates.sort((left, right) =>
-        right.fragmentIds.length - left.fragmentIds.length
+        right.createdAt.localeCompare(left.createdAt)
+        || right.fragmentIds.length - left.fragmentIds.length
         || right.excerpt.length - left.excerpt.length
         || left.bodyVersionId.localeCompare(right.bodyVersionId))[0];
       if (selected) result.push(selected);
@@ -688,7 +692,7 @@ export class ResearchFusionProposalService {
     const pairKey = `${loNodeId}\u0000${hiNodeId}`;
     if (this.runningPairs.has(pairKey)) return undefined;
     const existing = this.store.findResearchFusionProposalByNodePair(loNodeId, hiNodeId);
-    if (existing?.status === "pending" || existing?.status === "accepted" || (existing?.cooldownUntil && existing.cooldownUntil > this.now().toISOString())) {
+    if (existing && existingEvidenceKey(this.withResolvedFragmentRefs(existing).triggerSources) === existingEvidenceKey(candidate.triggerSources)) {
       return existing;
     }
     if (!candidate.lo.verificationContent || !candidate.hi.verificationContent) return undefined;
@@ -743,8 +747,10 @@ export class ResearchFusionProposalService {
         updatedAt: timestamp,
       };
       if (existing) {
-        await this.store.saveResearchFusionProposal(record);
-        return record;
+        // 自动路径不得改变既有提案状态。只有仍待决的手动提案会刷新可回读证据；
+        // 已决定的提案只作为本轮临时发现的审计锚点，不会被重新打开。
+        if (existing.status === "pending") await this.store.saveResearchFusionProposal(record);
+        return existing.status === "pending" ? record : { ...record, status: existing.status, ...(existing.cooldownUntil ? { cooldownUntil: existing.cooldownUntil } : {}) };
       }
       return this.store.createResearchFusionProposal(record);
     } finally {
@@ -781,6 +787,27 @@ export function contentWordSignals(content: string): string[] {
     terms.add(normalizeSimilarityConcept(match[0]));
   }
   return [...terms].map(normalizeSimilarityConcept).filter(Boolean).sort().slice(0, 120);
+}
+
+/** 当前核验证据决定冷却与重试边界；节点对相同但正文版本不同必须重新核验。 */
+function existingEvidenceKey(sources: readonly FusionProposalTriggerSource[]): string {
+  return createHash("sha256")
+    .update(sources.map(triggerSourceKey).sort().join("\n"))
+    .digest("hex");
+}
+
+function candidateEvidenceKey(candidate: SimilarityCandidate): string {
+  return `${candidate.lo.node.id}\u0000${candidate.hi.node.id}\u0000${existingEvidenceKey(candidate.triggerSources)}`;
+}
+
+/** B 面身份绑定实际提交模型的正文版本与片段，而不是宽泛的节点对。 */
+function temporaryFusionEvidenceKey(materials: readonly TemporaryFusionSourceMaterial[]): string {
+  return createHash("sha256")
+    .update(materials
+      .map((source) => [source.nodeId, source.bodyVersionId, ...source.fragmentIds].join("\u0000"))
+      .sort()
+      .join("\n"))
+    .digest("hex");
 }
 
 function triggerSourceKey(source: FusionProposalTriggerSource): string {

@@ -103,7 +103,7 @@ export function ResearchNodePage() {
   const termPreviews = useTermPreviews(nodeId, (error) => node.announce(apiErrorCopy(error).body));
   const [retryingTaskId, setRetryingTaskId] = useState<string | null>(null);
   // B 面候选只在当前阅读面呈现总数，不暴露临时身份或自动跳转。
-  const [temporaryFusionCount, setTemporaryFusionCount] = useState(0);
+  const [temporaryFusionCount, setTemporaryFusionCount] = useState<number | undefined>(undefined);
   // #69/#70：当前节点的活跃临时关联提示已按产品价值排序；只突出第一条，其余留在候选层。
   const [associationHints, setAssociationHints] = useState<ResearchAssociationHintRecord[]>([]);
   const [dismissingHintId, setDismissingHintId] = useState<string | null>(null);
@@ -259,6 +259,17 @@ export function ResearchNodePage() {
   }, [readyView, searchParams]);
   const fusionSnapshotRef = useRef<HTMLElement>(null);
   const locatedFusionKeyRef = useRef("");
+  useEffect(() => {
+    if (node.state.kind !== "ready" || !api.getTemporaryFusionCount) return;
+    let cancelled = false;
+    void api.getTemporaryFusionCount()
+      .then(({ count }) => { if (!cancelled) setTemporaryFusionCount(count); })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [api, node.state.kind]);
+
   useEffect(() => {
     if (fusionSearchTarget?.kind !== "found") return;
     const key = `${location.key}:${fusionSearchTarget.snapshot.confirmedDraftVersionId}:${fusionSearchTarget.start}:${fusionSearchTarget.end}`;
@@ -923,7 +934,7 @@ export function ResearchNodePage() {
         </p>
       ) : null}
 
-      <TemporaryFusionCount count={temporaryFusionCount} />
+      <TemporaryFusionCount count={temporaryFusionCount ?? 0} />
 
       {associationHints.length > 0 ? (
         <TransientAssociationNotice

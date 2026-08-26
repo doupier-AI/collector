@@ -836,6 +836,11 @@ export class CaptureService {
     return { enabled: this.store.getSetting(AUTO_FUSION_SETTING_KEY) === "true" };
   }
 
+  /** 只读 B 面数量；关闭自动发现也不隐藏既有待核验候选。 */
+  getTemporaryFusionCount(): { count: number } {
+    return { count: this.store.listTemporaryFusionNodes().length };
+  }
+
   async updateFusionAutoConfig(input: { enabled?: unknown }): Promise<{ enabled: boolean }> {
     if (typeof input?.enabled !== "boolean") throw new ValidationError("enabled must be a boolean");
     await this.store.saveSetting(AUTO_FUSION_SETTING_KEY, String(input.enabled));

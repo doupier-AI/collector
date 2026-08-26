@@ -997,16 +997,18 @@ describe("B 面临时融合挂载扫描", () => {
     expect(screen.queryByRole("link", { name: /融合节点/ })).not.toBeInTheDocument();
   });
 
-  it("开关关闭：不调用扫描，不显示数量", async () => {
+  it("开关关闭：不调用扫描，但保留已存在的临时融合数量", async () => {
     const view = readyRootView();
     const scanResearchFusionProposals = vi.fn(async () => ({ proposals: [], temporaryFusionCount: 0 }));
     const getFusionAutoConfig = vi.fn(async () => ({ enabled: false }));
-    renderNodePage({ getResearchNodeView: async () => view, getFusionAutoConfig, scanResearchFusionProposals });
+    const getTemporaryFusionCount = vi.fn(async () => ({ count: 2 }));
+    renderNodePage({ getResearchNodeView: async () => view, getFusionAutoConfig, getTemporaryFusionCount, scanResearchFusionProposals });
 
     await screen.findByText("为什么需要多头注意力？");
     await waitFor(() => expect(getFusionAutoConfig).toHaveBeenCalled());
+    await waitFor(() => expect(getTemporaryFusionCount).toHaveBeenCalled());
     expect(scanResearchFusionProposals).not.toHaveBeenCalled();
-    expect(screen.queryByTestId("temporary-fusion-count")).not.toBeInTheDocument();
+    expect(await screen.findByTestId("temporary-fusion-count")).toHaveTextContent("临时融合 2 条待核验");
   });
 
   it("客户端方法缺失（旧替身）：静默跳过，不扫描不报错", async () => {

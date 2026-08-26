@@ -70,5 +70,8 @@ test("#71 开启后只在 B 面生成可追溯临时融合，页面不跳转", a
 
   await page.goto("/settings/fusion");
   await expect(page.getByRole("checkbox", { name: /自动发现临时融合/ })).toBeChecked({ timeout: 10_000 });
-  await page.request.put("/v1/settings/fusion", { data: { enabled: false } });
+  const disabled = await page.request.put("/v1/settings/fusion", { data: { enabled: false } });
+  expect(disabled.ok()).toBeTruthy();
+  await page.goto(`/nodes/${encodeURIComponent(rootNodeId)}`);
+  await expect(page.getByTestId("temporary-fusion-count")).toContainText("临时融合 1 条待核验");
 });

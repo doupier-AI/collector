@@ -881,6 +881,47 @@ test("temporary fusion creation is stable across retry and service restart", asy
   assert.equal(harness.store.listTemporaryFusionNodes().length, 1);
 });
 
+test("new stable evidence for the same node pair is reverified and receives a separate temporary identity", async (t) => {
+  const gateway = qualifyingTemporaryFusionGateway();
+  const harness = await createFusionHarness({ similarityVerifier: gateway });
+  t.after(harness.close);
+  await harness.store.saveSetting(AUTO_FUSION_SETTING_KEY, "true");
+
+  await harness.service.fusionProposals.scan("node-a");
+  const first = harness.store.listTemporaryFusionNodes()[0]!;
+  const nextMessage: ResearchMessageRecord = {
+    id: "message-a-next",
+    sessionId: "session-1",
+    nodeId: "node-a",
+    role: "assistant",
+    content: "孙悟空的新材料说明了两部作品在成长叙事上的具体差异。",
+    status: "completed",
+    createdAt: "2026-08-02T00:01:00.000Z",
+    updatedAt: "2026-08-02T00:01:00.000Z",
+  };
+  const db = (harness.store as unknown as { db(): import("node:sqlite").DatabaseSync }).db();
+  db.prepare("INSERT INTO research_messages (id, session_id, node_id, branch_id, role, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(nextMessage.id, nextMessage.sessionId, nextMessage.nodeId!, null, nextMessage.role, nextMessage.status, nextMessage.createdAt, nextMessage.updatedAt, JSON.stringify(nextMessage));
+  await harness.store.replaceSlicesForMessage(nextMessage.id, [{
+    id: "slice:node-a:message-a-next:0",
+    nodeId: "node-a",
+    messageId: nextMessage.id,
+    ordinal: 1,
+    title: "新证据",
+    normalizedConcepts: ["孙悟空"],
+    sourceRefs: [],
+    isProvisional: false,
+    createdAt: nextMessage.createdAt,
+  }]);
+
+  const second = await harness.service.fusionProposals.scan("node-a");
+  assert.equal(second.temporaryFusionCount, 2);
+  const bundles = harness.store.listTemporaryFusionNodes();
+  assert.notEqual(bundles[1]?.id, first.id);
+  const latest = harness.store.getTemporaryFusionBundle(bundles[1]!.id)!;
+  assert.equal(latest.candidateSources.find((source) => source.sourceNodeId === "node-a")?.bodyVersionId, expectedVersionId("node-a", nextMessage));
+});
+
 test("manual confirmation remains an explicit formal path", async (t) => {
   const harness = await createFusionHarness();
   t.after(harness.close);
