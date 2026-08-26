@@ -266,10 +266,13 @@ async function assertTextLayoutContract(
   if (updateMode === "all" || updateMode === "changed") {
     await writeFile(layoutSnapshotPath, serialized, "utf8");
   } else {
+    const expected = JSON.parse(
+      await readFile(layoutSnapshotPath, "utf8"),
+    ) as TextLayoutContract;
     expect(
-      serialized,
+      actual,
       "正文内容、颜色、字体度量、逐行布局和渲染祖先必须与文字布局基线完全一致",
-    ).toBe(await readFile(layoutSnapshotPath, "utf8"));
+    ).toEqual(expected);
   }
   return actual;
 }
