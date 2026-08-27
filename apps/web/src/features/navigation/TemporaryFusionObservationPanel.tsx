@@ -111,7 +111,7 @@ export function TemporaryFusionObservationPanel({ onCloseObservation, onOpenSour
       const result = await api.confirmTemporaryFusion(selected.node.id, selected.activeDraft.id);
       onChanged();
       // 确认转换的是同一稳定身份；地址只从临时观察切到该正式节点，不新建或重放正文。
-      navigate(stableNodePath(result.fusionNode.id));
+      navigate(stableNodePath(result.fusionNode.id), { replace: true });
     } catch (nextError) {
       setError(nextError);
     } finally {

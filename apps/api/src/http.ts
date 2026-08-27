@@ -670,6 +670,12 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         const fusionBody = await readJson(request) as { enabled?: unknown };
         return json(response, 200, await service.updateFusionAutoConfig(fusionBody));
       }
+      if (request.method === "GET" && url.pathname === "/v1/settings/research-map") {
+        return json(response, 200, service.getResearchMapSettings());
+      }
+      if (request.method === "PUT" && url.pathname === "/v1/settings/research-map") {
+        return json(response, 200, await service.updateResearchMapSettings(await readJson(request) as { defaultFocusFromNode?: unknown }));
+      }
 
       return json(response, 404, { error: { code: "not_found", message: "Route not found" } });
     } catch (error) {

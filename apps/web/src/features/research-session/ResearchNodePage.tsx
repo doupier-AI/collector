@@ -3,7 +3,7 @@ import type { DragEvent } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { hashBodyContent, type ResearchAssociationHintRecord, type ResearchSelectionAnchor, type ResearchSessionView, type ResearchTaskRecord } from "@collector/capture-contracts";
 import { isApiErrorCode, isUnauthorized, apiErrorCopy } from "../../api/errors";
-import { globalMapFocusPath, stableNodePath } from "../../app/paths";
+import { stableNodePath } from "../../app/paths";
 import { useServices } from "../../app/services";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { useMediaQuery } from "../../app/useMediaQuery";
@@ -30,12 +30,8 @@ import type { MarkResult } from "../selection/useSelectionMark";
 import { useSelectionMark } from "../selection/useSelectionMark";
 import { formatSessionTime } from "./format";
 import { notifySessionsChanged } from "../navigation/session-events";
-import {
-  mapReturnDelta,
-  mapReturnFromRouteState,
-  nodeRouteStateWithMapReturn,
-  stripOneShotRouteState,
-} from "../navigation/map-scene";
+import { nodeRouteStateWith, stripOneShotNodeRouteState } from "../navigation/node-route-state";
+import { enterMapFromNode } from "../navigation/map-entry-intent";
 import { MessageItem } from "./MessageItem";
 import { ModelStatusIndicator } from "./ModelStatusIndicator";
 import { NodeChildList } from "./NodeChildList";
@@ -98,7 +94,6 @@ export function ResearchNodePage() {
     const candidate = (location.state as { searchLocatorFallback?: unknown } | null)?.searchLocatorFallback;
     return typeof candidate === "string" && candidate.length <= 240 ? candidate : null;
   });
-  const mapReturn = mapReturnFromRouteState(location.state);
   const node = useResearchNode(nodeId, { initialTurn: initialTurnRef.current });
   const termPreviews = useTermPreviews(nodeId, (error) => node.announce(apiErrorCopy(error).body));
   const [retryingTaskId, setRetryingTaskId] = useState<string | null>(null);
@@ -445,19 +440,21 @@ export function ResearchNodePage() {
   useEffect(() => {
     const routeState = location.state as { firstTurn?: PendingFirstTurn; grew?: boolean; searchLocatorFallback?: unknown } | null;
     if (routeState?.firstTurn || routeState?.grew || routeState?.searchLocatorFallback) {
-      navigate(".", { replace: true, state: stripOneShotRouteState(location.state) });
+      navigate(`${location.pathname}${location.search}`, { replace: true, state: stripOneShotNodeRouteState(location.state) });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const returnToMap = useCallback(() => {
-    const delta = mapReturnDelta(mapReturn);
-    if (delta !== undefined) {
-      navigate(delta);
-      return;
+  const returnToMap = useCallback(async () => {
+    let preferFocus = false;
+    try {
+      preferFocus = (await api.getResearchMapSettings()).defaultFocusFromNode;
+    } catch {
+      // 设置不可用不阻塞图谱；按默认全局突出进入。
     }
-    navigate(globalMapFocusPath(nodeId));
-  }, [mapReturn, navigate, nodeId]);
+    enterMapFromNode({ nodeId, preferFocus });
+    navigate("/map");
+  }, [api, navigate, nodeId]);
 
   // #42 融合依据定位：?fragment=<fragmentId> 深链 → 目标元素滚动 + 短暂强调 + 焦点 + 播报。
   // 状态：fragmentFocus 携带 nonce——同目标重触发（nonce 递增）与快速切换（state 整体替换只留最新）都成立；
@@ -644,7 +641,7 @@ export function ResearchNodePage() {
       );
       removeCitation();
       navigate(stableNodePath(accepted.node.id), {
-        state: nodeRouteStateWithMapReturn(location.state, { grew: true }),
+        state: nodeRouteStateWith(location.state, { grew: true }),
       });
       return true;
     } catch (error) {
@@ -657,7 +654,7 @@ export function ResearchNodePage() {
     try {
       const accepted = await termPreviews.grow(preview, mention);
       navigate(stableNodePath(accepted.node.id), {
-        state: nodeRouteStateWithMapReturn(location.state, { grew: true }),
+        state: nodeRouteStateWith(location.state, { grew: true }),
       });
       return true;
     } catch (error) {
@@ -670,7 +667,7 @@ export function ResearchNodePage() {
     try {
       const accepted = await termPreviews.growMarker(messageId, marker);
       navigate(stableNodePath(accepted.node.id), {
-        state: nodeRouteStateWithMapReturn(location.state, { grew: true }),
+        state: nodeRouteStateWith(location.state, { grew: true }),
       });
       return true;
     } catch (error) {
@@ -805,12 +802,12 @@ export function ResearchNodePage() {
       <header className="session-header">
         <div className="session-header__map-action">
           <button type="button" className="button button--secondary" onClick={returnToMap}>
-            {mapReturn ? "返回图谱" : "在图谱中查看"}
+            在图谱中查看
           </button>
         </div>
         {!isRoot ? (
           <nav className="session-header__crumb" aria-label="节点位置">
-            <Link to={stableNodePath(view.session.id)} state={nodeRouteStateWithMapReturn(location.state)}>
+            <Link to={stableNodePath(view.session.id)} state={nodeRouteStateWith(location.state)}>
               {view.session.title}
             </Link>
             <span className="session-header__crumb-sep" aria-hidden="true">›</span>
@@ -1051,7 +1048,7 @@ export function ResearchNodePage() {
             onCancel={(taskId) => void imports.cancel(taskId)}
             onRetry={(taskId) => void imports.retry(taskId)}
             onRead={(contentSnapshotId) => navigate(`/research/${encodeURIComponent(sessionId)}/reading/${encodeURIComponent(contentSnapshotId)}`, {
-              state: nodeRouteStateWithMapReturn(location.state),
+              state: nodeRouteStateWith(location.state),
             })}
           />
 

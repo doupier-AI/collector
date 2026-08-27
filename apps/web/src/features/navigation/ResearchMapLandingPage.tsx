@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
-import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import { RESEARCH_PERMANENT_EDGE_KINDS, type ProjectRecord, type ResearchAssociationHintRecord, type ResearchGraphObservation, type ResearchPermanentEdgeKind, type ResearchSearchMatch, type ResearchSemanticRangeReference } from "@collector/capture-contracts";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { RESEARCH_PERMANENT_EDGE_KINDS, type ProjectRecord, type ResearchAssociationHintRecord, type ResearchGraphObservation, type ResearchSearchMatch, type ResearchSemanticRangeReference } from "@collector/capture-contracts";
 import { apiErrorCopy, isUnauthorized } from "../../api/errors";
-import { globalMapFocusPath, stableNodePath } from "../../app/paths";
+import { stableNodePath } from "../../app/paths";
 import { useServices } from "../../app/services";
 import { useMediaQuery } from "../../app/useMediaQuery";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
@@ -14,21 +14,10 @@ import { ResearchMapFilters } from "./ResearchMapFilters";
 import { ResearchMapGlyph } from "./ResearchMapGlyph";
 import { ResearchMapSearch } from "./ResearchMapSearch";
 import { TemporaryFusionObservationPanel } from "./TemporaryFusionObservationPanel";
+import { consumeMapEntryIntent } from "./map-entry-intent";
+import { filterResearchMapObservation, focusResearchMapObservation, withResearchMapIsolates } from "./research-map-observation";
 import { researchSearchMatchTarget } from "./research-search-navigation";
-import {
-  createMapReturn,
-  currentHistoryEntry,
-  mapSceneLayout,
-  mapSceneFromRouteState,
-  mergeRouteState,
-  nodeEntryStateFromMapReturn,
-  replaceCurrentMapScene,
-  serializeMapScene,
-  type MapSceneV2,
-  type MapAssociationCandidateScene,
-  type MapSearchScene,
-} from "./map-scene";
-import { GRAPH_WORLD_HEIGHT, GRAPH_WORLD_WIDTH } from "./organicGraphLayout";
+import { type MapAssociationCandidateScene, type MapSearchScene } from "./research-map-ui-state";
 import { fragmentDeepLink } from "../research-session/fragment-locator";
 import {
   DEFAULT_RESEARCH_MAP_FILTER_STATE,
@@ -38,18 +27,13 @@ import {
   type ResearchMapFilterState,
 } from "./research-map-filters";
 
-function sameRelationshipKinds(left: readonly ResearchPermanentEdgeKind[], right: readonly ResearchPermanentEdgeKind[]): boolean {
-  return left.length === right.length && left.every((kind, index) => kind === right[index]);
-}
-
-type MapTool = "search" | "filters" | "relationships" | "temporary" | "more";
+type MapTool = "search" | "filters" | "temporary" | "more";
 type MapPresentation = "canvas" | "list";
 
-function MapToolGlyph({ kind }: { kind: "back" | "search" | "filters" | "relationships" | "temporary" | "candidates" | "new" | "more" | "canvas" | "list" }) {
+function MapToolGlyph({ kind }: { kind: "back" | "search" | "filters" | "temporary" | "candidates" | "new" | "more" | "canvas" | "list" }) {
   if (kind === "back") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12.5 4.5-5.5 5.5 5.5 5.5M7.5 10H17" /></svg>;
   if (kind === "search") return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5" /><path d="m12.2 12.2 4.3 4.3" /></svg>;
   if (kind === "filters") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M5.5 10h9M8 15h4" /></svg>;
-  if (kind === "relationships") return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4.5" cy="10" r="2" /><circle cx="15.5" cy="5" r="2" /><circle cx="15.5" cy="15" r="2" /><path d="m6.4 9.1 7.2-3.2M6.4 10.9l7.2 3.2" /></svg>;
   if (kind === "temporary") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5.5h12v9H4z" /><path d="M7 8h6M7 11h4" strokeDasharray="2 1" /></svg>;
   if (kind === "candidates") return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8" cy="10" r="3" /><circle cx="14.5" cy="5.5" r="1.75" /><path d="M4 14.5c2.5 2 7.5 2.5 11-.5M10.5 8l2.6-1.5" strokeDasharray="2 2" /></svg>;
   if (kind === "new") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.5v13M3.5 10h13" /></svg>;
@@ -61,12 +45,10 @@ function MapToolGlyph({ kind }: { kind: "back" | "search" | "filters" | "relatio
 function MapStateDock({ onBack }: { onBack: () => void }) {
   return (
     <nav className="map-tool-dock" aria-label="研究图谱工具">
-      <button type="button" className="map-tool-button" aria-label="返回" title="返回" onClick={onBack}><MapToolGlyph kind="back" /></button>
       <button type="button" className="map-tool-button" aria-label="搜索研究内容" title="搜索研究内容" disabled><MapToolGlyph kind="search" /></button>
       <button type="button" className="map-tool-button" aria-label="筛选地图" title="筛选地图" disabled><MapToolGlyph kind="filters" /></button>
-      <button type="button" className="map-tool-button" aria-label="显示的关系" title="显示的关系" disabled><MapToolGlyph kind="relationships" /></button>
       <Link className="map-tool-button" aria-label="新建会话" title="新建会话" to="/research/new"><MapToolGlyph kind="new" /></Link>
-      <button type="button" className="map-tool-button" aria-label="更多地图功能" title="更多地图功能" disabled><MapToolGlyph kind="more" /></button>
+      <button type="button" className="map-tool-button" aria-label="退出研究图谱" title="退出研究图谱" onClick={onBack}><MapToolGlyph kind="back" /></button>
     </nav>
   );
 }
@@ -78,36 +60,46 @@ function MapStateDock({ onBack }: { onBack: () => void }) {
 export function ResearchMapLandingPage() {
   const { api } = useServices();
   const navigate = useNavigate();
-  const location = useLocation();
-  const { focusNodeId } = useParams();
+  const { focusNodeId: legacyFocusNodeId } = useParams();
+  const entryIntentRef = useRef(consumeMapEntryIntent());
+  const [focusNodeId, setFocusNodeId] = useState<string | undefined>(() => (
+    legacyFocusNodeId || entryIntentRef.current?.preferFocus ? (legacyFocusNodeId ?? entryIntentRef.current?.nodeId) : undefined
+  ));
+  const [highlightNodeId, setHighlightNodeId] = useState<string | undefined>(() => (
+    legacyFocusNodeId ?? entryIntentRef.current?.nodeId
+  ));
   const wide = useMediaQuery("(min-width: 900px)");
   const [activeTool, setActiveTool] = useState<MapTool | null>(null);
   const [presentation, setPresentation] = useState<MapPresentation>("canvas");
+  const [showArrows, setShowArrows] = useState(false);
+  const [nodeScale, setNodeScale] = useState(1);
+  const [titleOpacity, setTitleOpacity] = useState(0.62);
+  const [lineWidth, setLineWidth] = useState(1.25);
+  const [density, setDensity] = useState(1);
+  const [colorMode, setColorMode] = useState<"project" | "node-type" | "lifecycle">("project");
+  const [layoutResetToken, setLayoutResetToken] = useState(0);
+  const [showIsolates, setShowIsolates] = useState(true);
   const toolButtonRefs = useRef(new Map<MapTool, HTMLButtonElement>());
   const toolPanelRef = useRef<HTMLDivElement>(null);
-  const entryScene = useMemo(() => mapSceneFromRouteState(location.state), [location.key, location.state]);
-  const mapEntry = currentHistoryEntry(location.key);
-  const mapEntryKey = mapEntry ? `${mapEntry.idx}:${mapEntry.key}` : location.key;
+  // 地图现场只在当前组件实例中存在，不读写 URL 或 History State。
+  const mapEntryKey = "current-map";
   const [observationEntry, setObservationEntry] = useState<{ entryKey: string; filters: ResearchMapFilterState; value: ResearchGraphObservation } | null>(null);
-  // 专注 PUSH/浏览器 POP 期间保留同一画布；新观察只在响应到达后原位替换，
-  // 避免页面短暂塌成加载骨架把浏览器强制滚回顶部。
-  const observation = observationEntry?.value ?? null;
   const [projects, setProjects] = useState<ProjectRecord[] | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [projectError, setProjectError] = useState<unknown>(null);
   const [updating, setUpdating] = useState(true);
   const [reloadNonce, setReloadNonce] = useState(0);
-  const [filterEntry, setFilterEntry] = useState(() => ({ entryKey: mapEntryKey, value: entryScene?.filters ?? DEFAULT_RESEARCH_MAP_FILTER_STATE }));
-  const filters = filterEntry.entryKey === mapEntryKey ? filterEntry.value : entryScene?.filters ?? DEFAULT_RESEARCH_MAP_FILTER_STATE;
+  const [filterEntry, setFilterEntry] = useState(() => ({ entryKey: mapEntryKey, value: DEFAULT_RESEARCH_MAP_FILTER_STATE }));
+  const filters = filterEntry.value;
   const setFilters = useCallback((next: SetStateAction<ResearchMapFilterState>) => {
     setFilterEntry((current) => {
-      const base = current.entryKey === mapEntryKey ? current.value : entryScene?.filters ?? DEFAULT_RESEARCH_MAP_FILTER_STATE;
+      const base = current.value;
       return { entryKey: mapEntryKey, value: typeof next === "function" ? next(base) : next };
     });
-  }, [entryScene, mapEntryKey]);
+  }, [mapEntryKey]);
   const serializedFilters = useMemo(() => serializeResearchMapFilters(filters), [filters]);
   const projectsReady = projects !== null;
-  const lastValidFiltersRef = useRef<ResearchMapFilterState>(entryScene?.filters ?? DEFAULT_RESEARCH_MAP_FILTER_STATE);
+  const lastValidFiltersRef = useRef<ResearchMapFilterState>(DEFAULT_RESEARCH_MAP_FILTER_STATE);
   const layoutFilters = observationEntry?.entryKey === mapEntryKey
     ? observationEntry.filters
     : serializedFilters.valid ? serializedFilters.state : lastValidFiltersRef.current;
@@ -115,32 +107,22 @@ export function ResearchMapLandingPage() {
   const layoutFilterEntryRef = useRef({ entryKey: mapEntryKey, filters: layoutFilters });
   layoutFilterEntryRef.current = { entryKey: mapEntryKey, filters: layoutFilters };
   const sceneFilters = serializedFilters.valid ? serializedFilters.state : lastValidFiltersRef.current;
-  const sceneRef = useRef<MapSceneV2 | undefined>(entryScene);
-  const sceneEntryKeyRef = useRef(mapEntryKey);
-  if (sceneEntryKeyRef.current !== mapEntryKey) {
-    sceneEntryKeyRef.current = mapEntryKey;
-    sceneRef.current = entryScene;
-  }
-  const routeStateRef = useRef(location.state);
-  const pathnameRef = useRef(location.pathname);
-  const locationKeyRef = useRef(location.key);
-  routeStateRef.current = location.state;
-  pathnameRef.current = location.pathname;
-  locationKeyRef.current = location.key;
-  const [relationshipEntry, setRelationshipEntry] = useState(() => ({ entryKey: mapEntryKey, value: entryScene?.relationshipKinds ?? [...RESEARCH_PERMANENT_EDGE_KINDS] }));
-  const relationshipKinds = relationshipEntry.entryKey === mapEntryKey ? relationshipEntry.value : entryScene?.relationshipKinds ?? [...RESEARCH_PERMANENT_EDGE_KINDS];
-  const setRelationshipKinds = useCallback((next: SetStateAction<ResearchPermanentEdgeKind[]>) => {
-    setRelationshipEntry((current) => {
-      const base = current.entryKey === mapEntryKey ? current.value : entryScene?.relationshipKinds ?? [...RESEARCH_PERMANENT_EDGE_KINDS];
-      return { entryKey: mapEntryKey, value: typeof next === "function" ? next(base) : next };
-    });
-  }, [entryScene, mapEntryKey]);
-  const [searchEntry, setSearchEntry] = useState<{ entryKey: string; value?: MapSearchScene }>(() => ({ entryKey: mapEntryKey, value: entryScene?.search }));
-  const search = searchEntry.entryKey === mapEntryKey ? searchEntry.value : entryScene?.search;
-  const [temporaryObservationEntry, setTemporaryObservationEntry] = useState(() => ({ entryKey: mapEntryKey, value: entryScene?.temporaryFusionObservation === true }));
-  const temporaryFusionObservation = temporaryObservationEntry.entryKey === mapEntryKey ? temporaryObservationEntry.value : entryScene?.temporaryFusionObservation === true;
-  const [candidateEntry, setCandidateEntry] = useState<{ entryKey: string; value?: MapAssociationCandidateScene }>(() => ({ entryKey: mapEntryKey, value: entryScene?.associationCandidates }));
-  const candidateScope = candidateEntry.entryKey === mapEntryKey ? candidateEntry.value : entryScene?.associationCandidates;
+  const [searchEntry, setSearchEntry] = useState<{ entryKey: string; value?: MapSearchScene }>({ entryKey: mapEntryKey });
+  const search = searchEntry.value;
+  const [temporaryObservationEntry, setTemporaryObservationEntry] = useState({ entryKey: mapEntryKey, value: false });
+  const temporaryFusionObservation = temporaryObservationEntry.value;
+  // 请求始终保留完整正式观察；筛选、专注和临时来源背景只在当前组件实例内派生。
+  const observation = useMemo(() => {
+    if (!observationEntry) return null;
+    const filtered = filterResearchMapObservation(
+      observationEntry.value,
+      serializedFilters.valid ? serializedFilters.input : {},
+      temporaryFusionObservation,
+    );
+    return focusResearchMapObservation(withResearchMapIsolates(filtered, showIsolates, focusNodeId), focusNodeId);
+  }, [focusNodeId, observationEntry, serializedFilters, showIsolates, temporaryFusionObservation]);
+  const [candidateEntry, setCandidateEntry] = useState<{ entryKey: string; value?: MapAssociationCandidateScene }>({ entryKey: mapEntryKey });
+  const candidateScope = candidateEntry.value;
   const [candidateResult, setCandidateResult] = useState<{ hints: ResearchAssociationHintRecord[]; loading: boolean; error?: string }>({ hints: [], loading: false });
   const [candidateReloadNonce, setCandidateReloadNonce] = useState(0);
   const [dismissingCandidateId, setDismissingCandidateId] = useState<string>();
@@ -156,12 +138,6 @@ export function ResearchMapLandingPage() {
 
   const writeCandidateScope = useCallback((next: MapAssociationCandidateScene | undefined) => {
     setCandidateEntry({ entryKey: mapEntryKey, value: next });
-    const current = sceneRef.current;
-    if (!current) return;
-    const { associationCandidates: _previousCandidates, ...sceneWithoutCandidates } = current;
-    const nextScene: MapSceneV2 = next ? { ...sceneWithoutCandidates, associationCandidates: next } : sceneWithoutCandidates;
-    sceneRef.current = nextScene;
-    if (currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(nextScene, routeStateRef.current);
   }, [mapEntryKey]);
 
   const openCandidates = useCallback((scope: MapAssociationCandidateScene, trigger: Element) => {
@@ -208,127 +184,71 @@ export function ResearchMapLandingPage() {
 
   const setSceneSearch = useCallback((next: MapSearchScene | undefined) => {
     setSearchEntry({ entryKey: mapEntryKey, value: next });
-    const current = sceneRef.current;
-    if (!current) return;
-    const { search: _previousSearch, ...sceneWithoutSearch } = current;
-    const nextScene: MapSceneV2 = next ? { ...sceneWithoutSearch, search: next } : sceneWithoutSearch;
-    sceneRef.current = nextScene;
-    if (currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(nextScene, routeStateRef.current);
   }, [mapEntryKey]);
 
   const setTemporaryFusionObservation = useCallback((next: boolean) => {
     setTemporaryObservationEntry({ entryKey: mapEntryKey, value: next });
-    const current = sceneRef.current;
-    if (!current) return;
-    const { temporaryFusionObservation: _previousObservation, ...withoutObservation } = current;
-    const nextScene: MapSceneV2 = next ? { ...withoutObservation, temporaryFusionObservation: true } : withoutObservation;
-    sceneRef.current = nextScene;
-    if (currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(nextScene, routeStateRef.current);
   }, [mapEntryKey]);
-
-  // 每个 browser history entry 独立拥有自己的临时地图现场；切换 entry 时只从该 entry 恢复。
-  useEffect(() => {
-    sceneRef.current = entryScene;
-    const next = entryScene?.relationshipKinds ?? [...RESEARCH_PERMANENT_EDGE_KINDS];
-    setRelationshipEntry((current) => current.entryKey === mapEntryKey && sameRelationshipKinds(current.value, next)
-      ? current
-      : { entryKey: mapEntryKey, value: next });
-    setFilterEntry((current) => {
-      const nextFilters = entryScene?.filters ?? DEFAULT_RESEARCH_MAP_FILTER_STATE;
-      return current.entryKey === mapEntryKey && current.value === nextFilters ? current : { entryKey: mapEntryKey, value: nextFilters };
-    });
-    setSearchEntry({ entryKey: mapEntryKey, value: entryScene?.search });
-    setTemporaryObservationEntry({ entryKey: mapEntryKey, value: entryScene?.temporaryFusionObservation === true });
-    setCandidateEntry({ entryKey: mapEntryKey, value: entryScene?.associationCandidates });
-  }, [entryScene, mapEntryKey]);
 
   useEffect(() => {
     if (serializedFilters.valid) lastValidFiltersRef.current = serializedFilters.state;
   }, [serializedFilters]);
 
-  const saveScene = useCallback((scene: MapSceneV2) => {
-    const previous = sceneRef.current;
-    const sceneWithCandidates = {
-      ...scene,
-      ...(previous?.associationCandidates ? { associationCandidates: previous.associationCandidates } : {}),
-      ...(previous?.temporaryFusionObservation ? { temporaryFusionObservation: true as const } : {}),
-    };
-    const layoutStillFiltered = layoutFilterEntryRef.current.entryKey === sceneEntryKeyRef.current
-      && !isDefaultResearchMapFilterState(layoutFilterEntryRef.current.filters);
-    const preserveHiddenLayout = previous
-      && (layoutStillFiltered || !isDefaultResearchMapFilterState(previous.filters) || !isDefaultResearchMapFilterState(sceneWithCandidates.filters));
-    const next = preserveHiddenLayout ? {
-      ...sceneWithCandidates,
-      layout: {
-        world: {
-          width: Math.max(previous.layout.world.width, sceneWithCandidates.layout.world.width),
-          height: Math.max(previous.layout.world.height, sceneWithCandidates.layout.world.height),
-        },
-        positions: [...new Map([
-          ...previous.layout.positions.map((position) => [position[0], position] as const),
-          ...sceneWithCandidates.layout.positions.map((position) => [position[0], position] as const),
-        ]).values()].sort(([left], [right]) => left.localeCompare(right)),
-        edgeKeys: [...new Map([
-          ...previous.layout.edgeKeys.map((edge) => [edge[0], edge] as const),
-          ...sceneWithCandidates.layout.edgeKeys.map((edge) => [edge[0], edge] as const),
-        ]).values()].sort(([left], [right]) => left.localeCompare(right)),
-      },
-    } satisfies MapSceneV2 : sceneWithCandidates;
-    sceneRef.current = next;
-    if (currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(next, routeStateRef.current);
-  }, []);
+
+  useEffect(() => {
+    if (!legacyFocusNodeId) return;
+    navigate("/map", { replace: true });
+  }, [legacyFocusNodeId, navigate]);
 
   const pushFocus = useCallback((nodeId: string) => {
-    const scene = sceneRef.current;
-    if (scene && currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(scene, routeStateRef.current);
-    navigate(globalMapFocusPath(nodeId), { state: scene ? mergeRouteState({}, { mapSceneV2: scene }) : undefined });
-  }, [navigate]);
+    setFocusNodeId(nodeId);
+    setHighlightNodeId(nodeId);
+  }, []);
 
   const revealSequenceRef = useRef(0);
   const [revealRequest, setRevealRequest] = useState<{ nodeId: string; requestId: number } | null>(null);
+  useEffect(() => {
+    if (!highlightNodeId) return;
+    revealSequenceRef.current += 1;
+    setRevealRequest({ nodeId: highlightNodeId, requestId: revealSequenceRef.current });
+  }, [highlightNodeId]);
   const revealSearchNode = useCallback((nodeId: string) => {
     const next = { query: search?.query ?? "", selectedNodeId: nodeId };
     if (!next.query) return;
     setSceneSearch(next);
     revealSequenceRef.current += 1;
     setRevealRequest({ nodeId, requestId: revealSequenceRef.current });
-    if (focusNodeId !== nodeId) pushFocus(nodeId);
-  }, [focusNodeId, pushFocus, search?.query, setSceneSearch]);
+    setHighlightNodeId(nodeId);
+  }, [search?.query, setSceneSearch]);
   const finishReveal = useCallback((nodeId: string, requestId: number) => {
     setRevealRequest((current) => current?.nodeId === nodeId && current.requestId === requestId ? null : current);
   }, []);
 
-  const exitFocus = useCallback(() => {
-    const scene = sceneRef.current;
-    if (scene && currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(scene, routeStateRef.current);
-    navigate("/map", { state: scene ? mergeRouteState({}, { mapSceneV2: scene }) : undefined });
-  }, [navigate]);
+  const exitFocus = useCallback(() => setFocusNodeId(undefined), []);
 
   const openNode = useCallback((nodeId: string) => {
-    const scene = sceneRef.current;
-    if (scene && currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(scene, routeStateRef.current);
-    const mapReturn = createMapReturn(currentHistoryEntry(locationKeyRef.current), pathnameRef.current);
-    navigate(stableNodePath(nodeId), {
-      state: nodeEntryStateFromMapReturn(mapReturn),
-    });
+    navigate(stableNodePath(nodeId), { replace: true });
   }, [navigate]);
 
   const openSearchMatch = useCallback((nodeId: string, match: ResearchSearchMatch) => {
-    const scene = sceneRef.current;
-    if (scene && currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(scene, routeStateRef.current);
-    const mapReturn = createMapReturn(currentHistoryEntry(locationKeyRef.current), pathnameRef.current);
     const target = researchSearchMatchTarget(nodeId, match);
-    const mapState = nodeEntryStateFromMapReturn(mapReturn);
     navigate(target.path, {
-      state: target.fallback ? mergeRouteState(mapState, { searchLocatorFallback: target.fallback }) : mapState,
+      replace: true,
+      state: target.fallback ? { searchLocatorFallback: target.fallback } : undefined,
     });
   }, [navigate]);
 
-  const leaveMap = useCallback(() => {
-    const entry = currentHistoryEntry(locationKeyRef.current);
-    if (entry && entry.idx > 0) navigate(-1);
-    else navigate("/");
-  }, [navigate]);
+  const leaveMap = useCallback(() => navigate("/", { replace: true }), [navigate]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || activeTool || candidateScope) return;
+      event.preventDefault();
+      leaveMap();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [activeTool, candidateScope, leaveMap]);
 
   const toggleTool = useCallback((tool: MapTool) => {
     setActiveTool((current) => current === tool ? null : tool);
@@ -359,7 +279,7 @@ export function ResearchMapLandingPage() {
     let stale = false;
     setError(null);
     setUpdating(true);
-    api.getResearchMap({ ...serializedFilters.input, ...(focusNodeId ? { focusNodeId } : {}), relationshipKinds, ...(temporaryFusionObservation ? { includeTemporaryFusions: true as const } : {}) }).then(
+    api.getResearchMap({ ...(temporaryFusionObservation ? { includeTemporaryFusions: true as const } : {}) }).then(
       (observation) => {
         if (!stale) {
           setObservationEntry({ entryKey: mapEntryKey, filters: serializedFilters.state, value: observation });
@@ -376,7 +296,7 @@ export function ResearchMapLandingPage() {
     return () => {
       stale = true;
     };
-  }, [api, focusNodeId, mapEntryKey, projectsReady, relationshipKinds, reloadNonce, serializedFilters, temporaryFusionObservation]);
+  }, [api, mapEntryKey, projectsReady, reloadNonce, serializedFilters, temporaryFusionObservation]);
 
   useEffect(() => {
     if (!candidateScope || !projectsReady || !serializedFilters.valid) {
@@ -387,8 +307,6 @@ export function ResearchMapLandingPage() {
     setCandidateResult((current) => ({ ...current, loading: true, error: undefined }));
     api.getResearchMap({
       ...serializedFilters.input,
-      ...(focusNodeId ? { focusNodeId } : {}),
-      relationshipKinds,
       includeAssociationHints: true,
       ...(candidateScope.kind === "node" ? { associationCandidateNodeId: candidateScope.nodeId } : {}),
     }).then(
@@ -404,7 +322,7 @@ export function ResearchMapLandingPage() {
       },
     );
     return () => { stale = true; };
-  }, [api, candidateReloadNonce, candidateScope, focusNodeId, projectsReady, relationshipKinds, serializedFilters]);
+  }, [api, candidateReloadNonce, candidateScope, projectsReady, serializedFilters]);
 
   useEffect(() => {
     if (!candidateScope) return;
@@ -418,10 +336,7 @@ export function ResearchMapLandingPage() {
   }, [candidateScope, closeCandidates]);
 
   const openCandidateRange = useCallback((range: ResearchSemanticRangeReference) => {
-    const scene = sceneRef.current;
-    if (scene && currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(scene, routeStateRef.current);
-    const mapReturn = createMapReturn(currentHistoryEntry(locationKeyRef.current), pathnameRef.current);
-    navigate(fragmentDeepLink(range.nodeId, range.fragmentId), { state: nodeEntryStateFromMapReturn(mapReturn) });
+    navigate(fragmentDeepLink(range.nodeId, range.fragmentId), { replace: true });
   }, [navigate]);
 
   const dismissCandidate = useCallback(async (hintId: string) => {
@@ -437,24 +352,6 @@ export function ResearchMapLandingPage() {
       setDismissingCandidateId(undefined);
     }
   }, [api]);
-
-  // 空观察结果也必须拥有完整现场，否则筛选页不会渲染画布，刷新后会退回默认范围。
-  useEffect(() => {
-    if (!serializedFilters.valid || observation?.nodes.length !== 0) return;
-    const current = sceneRef.current;
-    const layout = current ? mapSceneLayout(current) : {
-      world: { width: GRAPH_WORLD_WIDTH, height: GRAPH_WORLD_HEIGHT },
-      positions: new Map(),
-      edgeKeys: new Map(),
-    };
-    saveScene(serializeMapScene({
-      filters: serializedFilters.state,
-      relationshipKinds,
-      ...(search ? { search } : {}),
-      viewBox: current?.viewBox ?? { x: 0, y: 0, width: GRAPH_WORLD_WIDTH, height: GRAPH_WORLD_HEIGHT },
-      layout,
-    }));
-  }, [observation, relationshipKinds, saveScene, search, serializedFilters]);
 
   if (!observation && !projectError && !error) {
     return (
@@ -509,22 +406,20 @@ export function ResearchMapLandingPage() {
   const filterValidation = serializedFilters.valid ? undefined : serializedFilters.reason;
   const hasFilters = !isDefaultResearchMapFilterState(filters);
   const focusSummary = focusNodeId ? observation.nodes.find((item) => item.node.id === focusNodeId) : undefined;
-  const toolDefinitions: Array<{ tool: MapTool; label: string; glyph: "search" | "filters" | "relationships" | "temporary" | "more"; active?: boolean }> = [
+  const toolDefinitions: Array<{ tool: MapTool; label: string; glyph: "search" | "filters" | "temporary" | "more"; active?: boolean }> = [
     { tool: "search", label: "搜索研究内容", glyph: "search", active: Boolean(search?.query) },
     { tool: "filters", label: "筛选地图", glyph: "filters", active: hasFilters },
-    { tool: "relationships", label: "显示的关系", glyph: "relationships", active: relationshipKinds.length < RESEARCH_PERMANENT_EDGE_KINDS.length },
     { tool: "temporary", label: `临时融合（${observation.temporaryFusionCount ?? 0}）`, glyph: "temporary", active: temporaryFusionObservation },
     { tool: "more", label: "更多地图功能", glyph: "more" },
   ];
 
   return (
-    <div className="map-landing map-landing--immersive">
+      <div className="map-landing map-landing--immersive">
       <h1 className="sr-only">研究图谱</h1>
-      <div className="map-landing__identity" aria-hidden="true"><ResearchMapGlyph size={22} /><span>研究图谱</span></div>
+      <button ref={mapBackButtonRef} type="button" className="map-landing__identity" aria-label="研究图谱" onClick={leaveMap}><ResearchMapGlyph size={22} /><span>研究图谱</span></button>
 
       <nav className="map-tool-dock" aria-label="研究图谱工具">
-        <button ref={mapBackButtonRef} type="button" className="map-tool-button" aria-label="返回" title="返回" onClick={leaveMap}><MapToolGlyph kind="back" /></button>
-        {toolDefinitions.slice(0, 3).map(({ tool, label, glyph, active }) => (
+        {toolDefinitions.slice(0, 2).map(({ tool, label, glyph, active }) => (
           <button
             key={tool}
             type="button"
@@ -553,7 +448,7 @@ export function ResearchMapLandingPage() {
           {observation.activeCandidateCount > 0 ? <span className="map-tool-button__count" aria-hidden="true">{observation.activeCandidateCount}</span> : null}
         </button>
         <Link className="map-tool-button" aria-disabled={candidateScope ? "true" : undefined} aria-label="新建会话" title="新建会话" to="/research/new" onClick={(event) => { if (candidateScope) event.preventDefault(); }}><MapToolGlyph kind="new" /></Link>
-        {toolDefinitions.slice(3).map(({ tool, label, glyph }) => (
+        {toolDefinitions.slice(2).map(({ tool, label, glyph }) => (
           <button
             key={tool}
             type="button"
@@ -626,22 +521,9 @@ export function ResearchMapLandingPage() {
               onCloseObservation={() => setTemporaryFusionObservation(false)}
               onChanged={() => setReloadNonce((nonce) => nonce + 1)}
               onOpenSource={(source) => {
-                const scene = sceneRef.current;
-                if (scene && currentHistoryEntry(locationKeyRef.current)) replaceCurrentMapScene(scene, routeStateRef.current);
-                const mapReturn = createMapReturn(currentHistoryEntry(locationKeyRef.current), pathnameRef.current);
-                navigate(fragmentDeepLink(source.sourceNodeId, source.fragmentIds[0]!), { state: nodeEntryStateFromMapReturn(mapReturn) });
+                navigate(fragmentDeepLink(source.sourceNodeId, source.fragmentIds[0]!), { replace: true });
               }}
             /> : <div className="map-more-tools"><p>开启后在同一张地图上查看待核验的临时融合及其正式来源；不会创建关系或改变正式图谱。</p><button type="button" className="button button--primary" disabled={(observation.temporaryFusionCount ?? 0) === 0} onClick={() => setTemporaryFusionObservation(true)}>开启临时层</button></div>
-          ) : null}
-          {activeTool === "relationships" ? (
-            <div className="map-relationship-tools" role="group" aria-label="显示的关系">
-              <p>控制专注和连线使用哪些永久关系；关闭关系不会删除事实或改变节点坐标。</p>
-              {RESEARCH_PERMANENT_EDGE_KINDS.map((kind) => (
-                <button key={kind} type="button" className="button button--secondary" aria-pressed={relationshipKinds.includes(kind)} onClick={() => setRelationshipKinds((current) => current.includes(kind) ? current.filter((item) => item !== kind) : [...current, kind])}>
-                  {kind === "parent-child" ? "父子生长" : "融合来源"}
-                </button>
-              ))}
-            </div>
           ) : null}
           {activeTool === "more" ? (
             <div className="map-more-tools">
@@ -662,6 +544,14 @@ export function ResearchMapLandingPage() {
                 <Link to="/settings/fusion">融合设置</Link>
               </div>
               <ThemeSwitcher variant="detail" />
+              <label className="map-more-tools__toggle">颜色模式<select aria-label="颜色模式" value={colorMode} onChange={(event) => setColorMode(event.target.value as typeof colorMode)}><option value="project">项目</option><option value="node-type">节点类型</option><option value="lifecycle">生命周期</option></select></label>
+              <label className="map-more-tools__toggle"><input type="checkbox" checked={showArrows} onChange={(event) => setShowArrows(event.target.checked)} />显示关系箭头</label>
+              <label className="map-more-tools__toggle">节点大小<input aria-label="节点大小" type="range" min="0.75" max="1.5" step="0.05" value={nodeScale} onChange={(event) => setNodeScale(Number(event.target.value))} /></label>
+              <label className="map-more-tools__toggle">标题透明度<input aria-label="标题透明度" type="range" min="0.35" max="1" step="0.05" value={titleOpacity} onChange={(event) => setTitleOpacity(Number(event.target.value))} /></label>
+              <label className="map-more-tools__toggle">连线粗细<input aria-label="连线粗细" type="range" min="1" max="3" step="0.25" value={lineWidth} onChange={(event) => setLineWidth(Number(event.target.value))} /></label>
+              <label className="map-more-tools__toggle">图谱密度<input aria-label="图谱密度" type="range" min="0.75" max="1.5" step="0.05" value={density} onChange={(event) => setDensity(Number(event.target.value))} /></label>
+              <label className="map-more-tools__toggle"><input aria-label="显示孤立节点" type="checkbox" checked={showIsolates} onChange={(event) => setShowIsolates(event.target.checked)} />显示孤立节点</label>
+              <button type="button" className="button button--secondary" onClick={() => setLayoutResetToken((token) => token + 1)}>重置本次布局</button>
               <p className="map-more-tools__hint">拖动画布平移 · 滚轮缩放 · 拖动节点整理 · Shift+方向键微调 · 单击或 Space 专注 · 双击或 Enter 打开</p>
             </div>
           ) : null}
@@ -700,14 +590,10 @@ export function ResearchMapLandingPage() {
         <div className="map-landing__surface" aria-busy={updating}>
           <GlobalResearchMap
             observation={observation}
-            initialScene={sceneRef.current}
-            sceneKey={mapEntryKey}
-            onSceneChange={saveScene}
             onFocusNode={pushFocus}
             onExitFocus={exitFocus}
             onOpenNode={openNode}
             nodeHref={stableNodePath}
-            relationshipKinds={relationshipKinds}
             filters={sceneFilters}
             search={search}
             immersive
@@ -717,12 +603,17 @@ export function ResearchMapLandingPage() {
             revealRequestId={revealRequest?.requestId}
             onRevealHandled={finishReveal}
             preserveExistingLayout={!isDefaultResearchMapFilterState(layoutFilters)}
-            onRelationshipKindToggle={(kind) => setRelationshipKinds((current) => (
-              current.includes(kind) ? current.filter((item) => item !== kind) : [...current, kind]
-            ))}
             associationHints={candidateResult.hints}
             temporaryFusions={observation.temporaryFusions}
+            hideTemporaryFusions={Boolean(focusNodeId)}
             candidateMode={Boolean(candidateScope)}
+            showArrows={showArrows}
+            nodeScale={nodeScale}
+            titleOpacity={titleOpacity}
+            lineWidth={lineWidth}
+            density={density}
+            colorMode={colorMode}
+            layoutResetToken={layoutResetToken}
             onOpenCandidates={openCandidates}
           />
         </div>

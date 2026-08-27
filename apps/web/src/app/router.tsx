@@ -9,6 +9,7 @@ import { ResearchNodePage } from "../features/research-session/ResearchNodePage"
 import { StartPage } from "../features/research-session/StartPage";
 import { AiModelSettingsPage } from "../features/settings/AiModelSettingsPage";
 import { FusionSettingsPage } from "../features/settings/FusionSettingsPage";
+import { ResearchMapSettingsPage } from "../features/settings/ResearchMapSettingsPage";
 import { SemanticSearchSettingsPage } from "../features/settings/SemanticSearchSettingsPage";
 import { RunRecordsPage } from "../features/run-records/RunRecordsPage";
 import { TrashPage } from "../features/trash/TrashPage";
@@ -82,6 +83,7 @@ export function AppRoutes() {
         <Route path="settings/ai-model" element={<AiModelSettingsPage />} />
         <Route path="settings/semantic-search" element={<SemanticSearchSettingsPage />} />
         <Route path="settings/fusion" element={<FusionSettingsPage />} />
+        <Route path="settings/research-map" element={<ResearchMapSettingsPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

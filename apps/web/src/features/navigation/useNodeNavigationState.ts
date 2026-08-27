@@ -1,11 +1,10 @@
 import { useLocation } from "react-router-dom";
-import { nodeRouteStateWithMapReturn } from "./map-scene";
+import { stripOneShotNodeRouteState } from "./node-route-state";
 
 /**
- * 节点正文里的后续节点跳转共用这一条 state 通道，避免沿子节点、融合来源或
- * 引用继续阅读时丢失最初地图 history entry 的返回标记。
+ * 节点正文里的后续节点跳转只转发调用方已携带的一次性状态；图谱现场不随节点导航传播。
  */
 export function useNodeNavigationState(): Record<string, unknown> {
   const location = useLocation();
-  return nodeRouteStateWithMapReturn(location.state);
+  return stripOneShotNodeRouteState(location.state);
 }

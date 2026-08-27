@@ -267,7 +267,7 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
     setSettingsOpen(true);
   }, []);
 
-  /* 底部设置聚合菜单（AI 模型 / 语义搜索 / 融合 / 运行记录 / 回收站），收起与展开两态共用。 */
+  /* 底部设置聚合菜单，收起与展开两态共用。 */
   const settingsMenu = settingsOpen ? (
     <div className="side-settings-menu" role="menu" aria-label="设置">
       <Link role="menuitem" className="side-settings-menu__item" to="/settings/ai-model" onClick={handleNavigate}>
@@ -278,6 +278,9 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
       </Link>
       <Link role="menuitem" className="side-settings-menu__item" to="/settings/fusion" onClick={handleNavigate}>
         融合设置
+      </Link>
+      <Link role="menuitem" className="side-settings-menu__item" to="/settings/research-map" onClick={handleNavigate}>
+        节点图谱
       </Link>
       <Link role="menuitem" className="side-settings-menu__item" to="/run-records" onClick={handleNavigate}>
         运行记录

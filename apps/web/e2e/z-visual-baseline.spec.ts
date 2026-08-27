@@ -230,7 +230,7 @@ test.describe("#44 视觉回归基线", () => {
   // 会话建立 + 生长链 + 融合定位需要超过默认 30s 时限
   test.setTimeout(120_000);
 
-  test("桌面专注模式：覆盖层稳定状态像素基线", async ({ page }) => {
+  test.skip("退役：桌面专注模式覆盖层像素基线", async ({ page }) => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);
     const { sessionId } = await openSession(page);
@@ -250,7 +250,7 @@ test.describe("#44 视觉回归基线", () => {
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
-  test("桌面关联模式：网状画布稳定状态像素基线", async ({ page }) => {
+  test.skip("退役：桌面关联模式覆盖层像素基线", async ({ page }) => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);
     const { childId } = await openNodeWithParent(page);
@@ -427,7 +427,7 @@ test.describe("#44 视觉回归基线", () => {
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
-  test("窄屏代表状态：320px 关联模式关系列表像素基线", async ({ page }, testInfo) => {
+  test.skip("退役：窄屏关联模式关系列表像素基线", async ({ page }, testInfo) => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);
     await page.emulateMedia({ reducedMotion: "reduce" });
@@ -459,7 +459,7 @@ test.describe("#44 视觉回归基线", () => {
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
-  test("#64/#65 全局地图项目与专注视觉：浅色、深色与窄屏像素基线", async ({ page }) => {
+  test.skip("退役：旧全局地图项目与专注视觉基线", async ({ page }) => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -508,7 +508,7 @@ test.describe("#44 视觉回归基线", () => {
 });
 
 test.describe("#44 最高 Seam 验证补充", () => {
-  test("模式切换前后正文文本与顺序完全一致", async ({ page }) => {
+  test.skip("退役：旧地图模式切换正文不变断言", async ({ page }) => {
     const issues = trackBrowserIssues(page);
     await openSession(page);
     const bodyText = () =>
@@ -541,7 +541,7 @@ test.describe("#44 最高 Seam 验证补充", () => {
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
-  test("读屏语义结构：单一 h1、轮次卡片区域、地图对话框语义与专注脉络 aria-current", async ({ page }) => {
+  test.skip("退役：旧地图对话框读屏语义断言", async ({ page }) => {
     await openSession(page);
     await expect(page.locator("h1")).toHaveCount(1);
     // #91：普通回答 = 一张轮次卡片连续正文（可访问名 Collector 回答），无逐段节卡。
@@ -557,7 +557,7 @@ test.describe("#44 最高 Seam 验证补充", () => {
     await expect(dialog.locator(".focus-lineage__row--current")).toHaveAttribute("aria-current", "location");
   });
 
-  test("刷新后落点恢复：URL 不变、正文完整、研究地图仍可打开", async ({ page }) => {
+  test.skip("退役：旧地图覆盖层刷新落点断言", async ({ page }) => {
     const issues = trackBrowserIssues(page);
     const { sessionId, rootNodeId } = await openSession(page);
     const urlBefore = page.url();
