@@ -95,3 +95,21 @@ export function focusResearchMapObservation(
     edges: observation.edges.filter(({ edge }) => edge.kind === "parent-child" && focusIds.has(edge.fromNodeId) && focusIds.has(edge.toNodeId)),
   };
 }
+
+/** 隐藏真正孤立的正式节点，不改变其余节点或边；临时观察所需的弱化来源始终保留。 */
+export function withResearchMapIsolates(
+  observation: ResearchGraphObservation,
+  showIsolates: boolean,
+  focusNodeId: string | undefined,
+): ResearchGraphObservation {
+  if (showIsolates) return observation;
+  const connected = new Set(observation.edges.flatMap(({ edge }) => [edge.fromNodeId, edge.toNodeId]));
+  const keptIds = new Set(observation.nodes
+    .filter((summary) => connected.has(summary.node.id) || summary.scope !== "inside-current-filter" || summary.node.id === focusNodeId)
+    .map((summary) => summary.node.id));
+  return {
+    ...observation,
+    nodes: observation.nodes.filter((summary) => keptIds.has(summary.node.id)),
+    edges: observation.edges.filter(({ edge }) => keptIds.has(edge.fromNodeId) && keptIds.has(edge.toNodeId)),
+  };
+}

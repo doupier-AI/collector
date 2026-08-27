@@ -180,7 +180,9 @@ export function createResearchMapLayout(observation: ResearchGraphObservation, d
     if (!sources.length || !rootPosition || !members.length) continue;
     const center = sources.reduce((sum, point) => ({ x: sum.x + point.x, y: sum.y + point.y }), { x: 0, y: 0 });
     const target = { x: center.x / sources.length, y: center.y / sources.length };
-    const delta = { x: target.x - rootPosition.x, y: target.y - rootPosition.y };
+    // 靠近证据中心但保持稳定的斜向留白，避免融合节点和其来源标题直接压叠。
+    const offset = { x: 94 * scale, y: -72 * scale };
+    const delta = { x: target.x + offset.x - rootPosition.x, y: target.y + offset.y - rootPosition.y };
     for (const id of members) {
       const point = positions.get(id);
       if (point) positions.set(id, { x: point.x + delta.x, y: point.y + delta.y });
@@ -189,11 +191,14 @@ export function createResearchMapLayout(observation: ResearchGraphObservation, d
 
   const isolates = nodes.filter((item) => !permanentIds.has(item.node.id));
   const columns = Math.max(1, Math.ceil(Math.sqrt(isolates.length)));
-  const outer = (Math.max(1, roots.length) + 1) * TREE_GAP * scale;
+  const placed = [...positions.values()];
+  const isolateOrigin = placed.length
+    ? { x: Math.max(...placed.map((point) => point.x)) + TREE_GAP * 0.8 * scale, y: Math.min(...placed.map((point) => point.y)) }
+    : { x: TREE_GAP * scale, y: 0 };
   isolates.forEach((item, index) => {
     const col = index % columns;
     const row = Math.floor(index / columns);
-    positions.set(item.node.id, { x: outer + col * ISOLATE_GAP * scale, y: outer + row * ISOLATE_GAP * scale });
+    positions.set(item.node.id, { x: isolateOrigin.x + col * ISOLATE_GAP * scale, y: isolateOrigin.y + row * ISOLATE_GAP * scale });
   });
 
   const values = [...positions.values()];

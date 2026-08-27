@@ -8,7 +8,7 @@ import {
 } from "@collector/capture-contracts";
 import { apiErrorCopy } from "../../api/errors";
 import { useServices } from "../../app/services";
-import type { MapSearchScene } from "./map-scene";
+import type { MapSearchScene } from "./research-map-ui-state";
 import "./research-map-search.css";
 
 interface ResearchMapSearchProps {

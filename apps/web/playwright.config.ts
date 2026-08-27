@@ -126,7 +126,7 @@ export default defineConfig({
       // 都移出本 project，使共享库不再触发常驻提示扫描（保持像素基线与计时敏感用例确定）。
       // 真实验收主场景及跨 worker 汇总只由 playwright.acceptance.config.ts 收集。
       // 基础设施契约仍留在默认门禁中，但它只启动无模型的临时 runtime。
-      testIgnore: /(?:no-model|z-acceptance-real(?:-summary)?|z-auto-fusion|z-visual-baseline|z-association-hint(?:-quiet)?)\.spec\.ts/,
+      testIgnore: /(?:no-model|z-acceptance-real(?:-summary)?|z-auto-fusion|z-(?:visual-baseline|map-visual)|z-association-hint(?:-quiet)?)\.spec\.ts/,
     },
     {
       name: "chromium-nomodel",
@@ -144,7 +144,7 @@ export default defineConfig({
     {
       name: "chromium-visual",
       use: { ...devices["Desktop Chrome"], baseURL: `http://127.0.0.1:${PORT_BASE + 3}` },
-      testMatch: /z-visual-baseline\.spec\.ts/,
+      testMatch: /z-(?:visual-baseline|map-visual)\.spec\.ts/,
     },
     {
       name: "chromium-hint-quiet",

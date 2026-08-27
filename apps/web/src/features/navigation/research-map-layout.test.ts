@@ -58,7 +58,9 @@ describe("createResearchMapLayout", () => {
 
     expect(point(withFusion, "source-root")).toEqual(point(withoutFusion, "source-root"));
     expect(point(withFusion, "source")).toEqual(point(withoutFusion, "source"));
-    expect(Math.hypot(point(withFusion, "fusion").x - point(withFusion, "source").x, point(withFusion, "fusion").y - point(withFusion, "source").y)).toBe(0);
+    const sourceDistance = Math.hypot(point(withFusion, "fusion").x - point(withFusion, "source").x, point(withFusion, "fusion").y - point(withFusion, "source").y);
+    expect(sourceDistance).toBeGreaterThan(80);
+    expect(sourceDistance).toBeLessThan(180);
     const direction = withFusion.treeDirections.get("fusion");
     expect(direction).toBeDefined();
     expect(isMonotonic(direction!, point(withFusion, "fusion"), point(withFusion, "fusion-child"))).toBe(true);

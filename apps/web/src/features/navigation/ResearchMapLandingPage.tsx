@@ -15,9 +15,9 @@ import { ResearchMapGlyph } from "./ResearchMapGlyph";
 import { ResearchMapSearch } from "./ResearchMapSearch";
 import { TemporaryFusionObservationPanel } from "./TemporaryFusionObservationPanel";
 import { consumeMapEntryIntent } from "./map-entry-intent";
-import { filterResearchMapObservation, focusResearchMapObservation } from "./research-map-observation";
+import { filterResearchMapObservation, focusResearchMapObservation, withResearchMapIsolates } from "./research-map-observation";
 import { researchSearchMatchTarget } from "./research-search-navigation";
-import { type MapAssociationCandidateScene, type MapSearchScene } from "./map-scene";
+import { type MapAssociationCandidateScene, type MapSearchScene } from "./research-map-ui-state";
 import { fragmentDeepLink } from "../research-session/fragment-locator";
 import {
   DEFAULT_RESEARCH_MAP_FILTER_STATE,
@@ -45,11 +45,10 @@ function MapToolGlyph({ kind }: { kind: "back" | "search" | "filters" | "tempora
 function MapStateDock({ onBack }: { onBack: () => void }) {
   return (
     <nav className="map-tool-dock" aria-label="研究图谱工具">
-      <button type="button" className="map-tool-button" aria-label="研究图谱" title="研究图谱" onClick={onBack}><ResearchMapGlyph size={20} /></button>
       <button type="button" className="map-tool-button" aria-label="搜索研究内容" title="搜索研究内容" disabled><MapToolGlyph kind="search" /></button>
       <button type="button" className="map-tool-button" aria-label="筛选地图" title="筛选地图" disabled><MapToolGlyph kind="filters" /></button>
       <Link className="map-tool-button" aria-label="新建会话" title="新建会话" to="/research/new"><MapToolGlyph kind="new" /></Link>
-      <button type="button" className="map-tool-button" aria-label="更多地图功能" title="更多地图功能" disabled><MapToolGlyph kind="more" /></button>
+      <button type="button" className="map-tool-button" aria-label="退出研究图谱" title="退出研究图谱" onClick={onBack}><MapToolGlyph kind="back" /></button>
     </nav>
   );
 }
@@ -77,6 +76,9 @@ export function ResearchMapLandingPage() {
   const [titleOpacity, setTitleOpacity] = useState(0.62);
   const [lineWidth, setLineWidth] = useState(1.25);
   const [density, setDensity] = useState(1);
+  const [colorMode, setColorMode] = useState<"project" | "node-type" | "lifecycle">("project");
+  const [layoutResetToken, setLayoutResetToken] = useState(0);
+  const [showIsolates, setShowIsolates] = useState(true);
   const toolButtonRefs = useRef(new Map<MapTool, HTMLButtonElement>());
   const toolPanelRef = useRef<HTMLDivElement>(null);
   // 地图现场只在当前组件实例中存在，不读写 URL 或 History State。
@@ -117,8 +119,8 @@ export function ResearchMapLandingPage() {
       serializedFilters.valid ? serializedFilters.input : {},
       temporaryFusionObservation,
     );
-    return focusResearchMapObservation(filtered, focusNodeId);
-  }, [focusNodeId, observationEntry, serializedFilters, temporaryFusionObservation]);
+    return focusResearchMapObservation(withResearchMapIsolates(filtered, showIsolates, focusNodeId), focusNodeId);
+  }, [focusNodeId, observationEntry, serializedFilters, showIsolates, temporaryFusionObservation]);
   const [candidateEntry, setCandidateEntry] = useState<{ entryKey: string; value?: MapAssociationCandidateScene }>({ entryKey: mapEntryKey });
   const candidateScope = candidateEntry.value;
   const [candidateResult, setCandidateResult] = useState<{ hints: ResearchAssociationHintRecord[]; loading: boolean; error?: string }>({ hints: [], loading: false });
@@ -414,10 +416,9 @@ export function ResearchMapLandingPage() {
   return (
       <div className="map-landing map-landing--immersive">
       <h1 className="sr-only">研究图谱</h1>
-      <button type="button" className="map-landing__identity" aria-label="研究图谱" onClick={leaveMap}><ResearchMapGlyph size={22} /><span>研究图谱</span></button>
+      <button ref={mapBackButtonRef} type="button" className="map-landing__identity" aria-label="研究图谱" onClick={leaveMap}><ResearchMapGlyph size={22} /><span>研究图谱</span></button>
 
       <nav className="map-tool-dock" aria-label="研究图谱工具">
-        <button ref={mapBackButtonRef} type="button" className="map-tool-button" aria-label="研究图谱" title="研究图谱" onClick={leaveMap}><ResearchMapGlyph size={20} /></button>
         {toolDefinitions.slice(0, 2).map(({ tool, label, glyph, active }) => (
           <button
             key={tool}
@@ -543,11 +544,14 @@ export function ResearchMapLandingPage() {
                 <Link to="/settings/fusion">融合设置</Link>
               </div>
               <ThemeSwitcher variant="detail" />
+              <label className="map-more-tools__toggle">颜色模式<select aria-label="颜色模式" value={colorMode} onChange={(event) => setColorMode(event.target.value as typeof colorMode)}><option value="project">项目</option><option value="node-type">节点类型</option><option value="lifecycle">生命周期</option></select></label>
               <label className="map-more-tools__toggle"><input type="checkbox" checked={showArrows} onChange={(event) => setShowArrows(event.target.checked)} />显示关系箭头</label>
               <label className="map-more-tools__toggle">节点大小<input aria-label="节点大小" type="range" min="0.75" max="1.5" step="0.05" value={nodeScale} onChange={(event) => setNodeScale(Number(event.target.value))} /></label>
               <label className="map-more-tools__toggle">标题透明度<input aria-label="标题透明度" type="range" min="0.35" max="1" step="0.05" value={titleOpacity} onChange={(event) => setTitleOpacity(Number(event.target.value))} /></label>
               <label className="map-more-tools__toggle">连线粗细<input aria-label="连线粗细" type="range" min="1" max="3" step="0.25" value={lineWidth} onChange={(event) => setLineWidth(Number(event.target.value))} /></label>
               <label className="map-more-tools__toggle">图谱密度<input aria-label="图谱密度" type="range" min="0.75" max="1.5" step="0.05" value={density} onChange={(event) => setDensity(Number(event.target.value))} /></label>
+              <label className="map-more-tools__toggle"><input aria-label="显示孤立节点" type="checkbox" checked={showIsolates} onChange={(event) => setShowIsolates(event.target.checked)} />显示孤立节点</label>
+              <button type="button" className="button button--secondary" onClick={() => setLayoutResetToken((token) => token + 1)}>重置本次布局</button>
               <p className="map-more-tools__hint">拖动画布平移 · 滚轮缩放 · 拖动节点整理 · Shift+方向键微调 · 单击或 Space 专注 · 双击或 Enter 打开</p>
             </div>
           ) : null}
@@ -608,6 +612,8 @@ export function ResearchMapLandingPage() {
             titleOpacity={titleOpacity}
             lineWidth={lineWidth}
             density={density}
+            colorMode={colorMode}
+            layoutResetToken={layoutResetToken}
             onOpenCandidates={openCandidates}
           />
         </div>

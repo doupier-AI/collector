@@ -30,7 +30,7 @@ import type { MarkResult } from "../selection/useSelectionMark";
 import { useSelectionMark } from "../selection/useSelectionMark";
 import { formatSessionTime } from "./format";
 import { notifySessionsChanged } from "../navigation/session-events";
-import { nodeRouteStateWithMapReturn, stripOneShotRouteState } from "../navigation/map-scene";
+import { nodeRouteStateWith, stripOneShotNodeRouteState } from "../navigation/node-route-state";
 import { enterMapFromNode } from "../navigation/map-entry-intent";
 import { MessageItem } from "./MessageItem";
 import { ModelStatusIndicator } from "./ModelStatusIndicator";
@@ -440,7 +440,7 @@ export function ResearchNodePage() {
   useEffect(() => {
     const routeState = location.state as { firstTurn?: PendingFirstTurn; grew?: boolean; searchLocatorFallback?: unknown } | null;
     if (routeState?.firstTurn || routeState?.grew || routeState?.searchLocatorFallback) {
-      navigate(".", { replace: true, state: stripOneShotRouteState(location.state) });
+      navigate(`${location.pathname}${location.search}`, { replace: true, state: stripOneShotNodeRouteState(location.state) });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -641,7 +641,7 @@ export function ResearchNodePage() {
       );
       removeCitation();
       navigate(stableNodePath(accepted.node.id), {
-        state: nodeRouteStateWithMapReturn(location.state, { grew: true }),
+        state: nodeRouteStateWith(location.state, { grew: true }),
       });
       return true;
     } catch (error) {
@@ -654,7 +654,7 @@ export function ResearchNodePage() {
     try {
       const accepted = await termPreviews.grow(preview, mention);
       navigate(stableNodePath(accepted.node.id), {
-        state: nodeRouteStateWithMapReturn(location.state, { grew: true }),
+        state: nodeRouteStateWith(location.state, { grew: true }),
       });
       return true;
     } catch (error) {
@@ -667,7 +667,7 @@ export function ResearchNodePage() {
     try {
       const accepted = await termPreviews.growMarker(messageId, marker);
       navigate(stableNodePath(accepted.node.id), {
-        state: nodeRouteStateWithMapReturn(location.state, { grew: true }),
+        state: nodeRouteStateWith(location.state, { grew: true }),
       });
       return true;
     } catch (error) {
@@ -807,7 +807,7 @@ export function ResearchNodePage() {
         </div>
         {!isRoot ? (
           <nav className="session-header__crumb" aria-label="节点位置">
-            <Link to={stableNodePath(view.session.id)} state={nodeRouteStateWithMapReturn(location.state)}>
+            <Link to={stableNodePath(view.session.id)} state={nodeRouteStateWith(location.state)}>
               {view.session.title}
             </Link>
             <span className="session-header__crumb-sep" aria-hidden="true">›</span>
@@ -1048,7 +1048,7 @@ export function ResearchNodePage() {
             onCancel={(taskId) => void imports.cancel(taskId)}
             onRetry={(taskId) => void imports.retry(taskId)}
             onRead={(contentSnapshotId) => navigate(`/research/${encodeURIComponent(sessionId)}/reading/${encodeURIComponent(contentSnapshotId)}`, {
-              state: nodeRouteStateWithMapReturn(location.state),
+              state: nodeRouteStateWith(location.state),
             })}
           />
 

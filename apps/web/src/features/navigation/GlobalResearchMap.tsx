@@ -31,8 +31,8 @@ import {
   stepGatherSimulation,
   type DragSimulation,
 } from "./mapInteractions";
-import { type MapAssociationCandidateScene, type MapSearchScene } from "./map-scene";
-import { DEFAULT_RESEARCH_MAP_FILTER_STATE, isDefaultResearchMapFilterState, type ResearchMapFilterState } from "./research-map-filters";
+import { type MapAssociationCandidateScene, type MapSearchScene } from "./research-map-ui-state";
+import { type ResearchMapFilterState } from "./research-map-filters";
 
 interface ViewBoxState {
   x: number;
@@ -139,7 +139,25 @@ function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
 }
 
+function colorClass(summary: ResearchGraphObservationNode, mode: "project" | "node-type" | "lifecycle", prefix = "global-map__node"): string {
+  return mode === "project" ? projectColorClass(summary, prefix) : `${prefix}--color-${mode}`;
+}
+
 function straightPath(from: GraphPoint, to: GraphPoint): string { return `M ${from.x} ${from.y} L ${to.x} ${to.y}`; }
+
+function viewBoxForPositions(positions: ReadonlyMap<string, GraphPoint>, fallback: { width: number; height: number }): ViewBoxState {
+  const points = [...positions.values()];
+  if (!points.length) return { x: 0, y: 0, width: fallback.width, height: fallback.height };
+  const minX = Math.min(...points.map((point) => point.x));
+  const maxX = Math.max(...points.map((point) => point.x));
+  const minY = Math.min(...points.map((point) => point.y));
+  const maxY = Math.max(...points.map((point) => point.y));
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
+  const width = clamp(Math.max(MIN_VIEW_WIDTH, maxX - minX + 440), MIN_VIEW_WIDTH, fallback.width);
+  const height = clamp(Math.max(220, maxY - minY + 320), 220, fallback.height);
+  return { x: centerX - width / 2, y: centerY - height / 2, width, height };
+}
 
 function titleLines(label: string): readonly [string, string | undefined] {
   const characters = [...label];
@@ -239,39 +257,41 @@ interface GlobalResearchMapProps {
   titleOpacity?: number;
   lineWidth?: number;
   density?: number;
+  colorMode?: "project" | "node-type" | "lifecycle";
+  layoutResetToken?: number;
   onOpenCandidates?: (scope: MapAssociationCandidateScene, trigger: Element) => void;
 }
 
-export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpenNode, nodeHref = stableNodePath, filters = DEFAULT_RESEARCH_MAP_FILTER_STATE, preserveExistingLayout, revealNodeId, revealRequestId, onRevealHandled, search, presentation = "canvas", immersive = false, onSurfaceInteraction, associationHints = [], temporaryFusions = [], hideTemporaryFusions = Boolean(observation.focusNodeId), candidateMode = false, showArrows = false, nodeScale = 1, titleOpacity = 0.62, lineWidth = 1.25, density = 1, onOpenCandidates }: GlobalResearchMapProps) {
-  const filtering = preserveExistingLayout ?? !isDefaultResearchMapFilterState(filters);
-  const layoutRef = useRef<Pick<ReturnType<typeof createResearchMapLayout>, "positions" | "world" | "edgeKeys"> | undefined>(undefined);
-  /** 用户拖动/键盘移动确认后的位置覆盖，随 Map Scene 持久化。 */
-  const [positionOverrides, setPositionOverrides] = useState<Map<string, GraphPoint>>(() => new Map());
+export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpenNode, nodeHref = stableNodePath, revealNodeId, revealRequestId, onRevealHandled, search, presentation = "canvas", immersive = false, onSurfaceInteraction, associationHints = [], temporaryFusions = [], hideTemporaryFusions = Boolean(observation.focusNodeId), candidateMode = false, showArrows = false, nodeScale = 1, titleOpacity = 0.62, lineWidth = 1.25, density = 1, colorMode = "project", layoutResetToken = 0, onOpenCandidates }: GlobalResearchMapProps) {
   const layout = useMemo(
     () => createResearchMapLayout(observation, density),
     [density, observation],
   );
+  /** 当前 /map 挂载期的唯一基础坐标；筛选、搜索和专注只读它，绝不重新排已有节点。 */
+  const [basePositions, setBasePositions] = useState<Map<string, GraphPoint>>(() => new Map(layout.positions));
+  const baseDensityRef = useRef(density);
+  const resetTokenRef = useRef(layoutResetToken);
+  const viewBoxResetTokenRef = useRef(layoutResetToken);
   useLayoutEffect(() => {
-    const previous = layoutRef.current;
-    layoutRef.current = filtering && previous ? {
-      world: {
-        width: Math.max(previous.world.width, layout.world.width),
-        height: Math.max(previous.world.height, layout.world.height),
-      },
-      positions: new Map([...previous.positions, ...layout.positions, ...positionOverrides]),
-      edgeKeys: new Map([...previous.edgeKeys, ...layout.edgeKeys]),
-    } : {
-      ...layout,
-      // 用户拖动/键盘移动过的位置在后续重算中保持（ADR-0042 持久坐标只对非交互路径稳定）。
-      positions: new Map([...layout.positions, ...positionOverrides]),
-    };
-  }, [filtering, layout, positionOverrides]);
-  // 持久层 = 布局 + 用户交互提交的覆盖；序列化与物理基准都基于它，编排预览不进持久层。
+    const shouldReset = resetTokenRef.current !== layoutResetToken || baseDensityRef.current !== density;
+    resetTokenRef.current = layoutResetToken;
+    baseDensityRef.current = density;
+    setBasePositions((current) => {
+      if (shouldReset) return new Map(layout.positions);
+      const next = new Map(current);
+      for (const [id, point] of layout.positions) if (!next.has(id)) next.set(id, point);
+      return next;
+    });
+  }, [density, layout, layoutResetToken]);
+  // 显示层只取当前可见节点；隐藏节点仍保留在 basePositions，恢复筛选时不闪回初始布局。
   const persistPositions = useMemo(() => {
-    const merged = new Map(layout.positions);
-    for (const [id, point] of positionOverrides) merged.set(id, point);
+    const merged = new Map<string, GraphPoint>();
+    for (const { node } of observation.nodes) {
+      const point = basePositions.get(node.id) ?? layout.positions.get(node.id);
+      if (point) merged.set(node.id, point);
+    }
     return merged;
-  }, [layout.positions, positionOverrides]);
+  }, [basePositions, layout.positions, observation.nodes]);
   const [interactivePositions, setInteractivePositions] = useState<Map<string, GraphPoint> | null>(null);
   const [orchestrationPositions, setOrchestrationPositions] = useState<Map<string, GraphPoint> | null>(null);
   // 入场展开层（ADR-0042）：新节点从终点附近的确定性偏移柔展开，只在显示层，不进 Map Scene。
@@ -309,7 +329,8 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
     [positions, visibleNodeIds],
   );
   const world = layout.world;
-  const [viewBox, setViewBox] = useState<ViewBoxState>(() => ({ x: 0, y: 0, width: world.width, height: world.height }));
+  const defaultViewBox = useMemo(() => viewBoxForPositions(persistPositions, world), [persistPositions, world]);
+  const [viewBox, setViewBox] = useState<ViewBoxState>(defaultViewBox);
   const [dragging, setDragging] = useState(false);
   const dragRef = useRef<DragState | null>(null);
   const nodeDragRef = useRef<NodeDragState | null>(null);
@@ -418,9 +439,11 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
     };
   }, [revealNodeId, revealRequestId, revealTargetAvailable]);
 
-  // 专注只改变显示层：完整父子脉络从左到右，其余节点沿原方位退到外围。
+  // 专注只改变显示层：第一次进入时冻结基础坐标和视口；连续切换节点始终据此重新编排。
   const orchestrationRafRef = useRef<number | undefined>(undefined);
   const orchestrationLatestRef = useRef<Map<string, GraphPoint> | null>(null);
+  const focusSnapshotRef = useRef<{ positions: Map<string, GraphPoint>; viewBox: ViewBoxState } | null>(null);
+  const previousFocusNodeIdRef = useRef<string | undefined>(undefined);
   useEffect(() => () => {
     const drag = nodeDragRef.current;
     if (drag) cancelAnimationFrame(drag.raf);
@@ -440,8 +463,15 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
       return;
     }
     const reduced = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const previousFocusNodeId = previousFocusNodeIdRef.current;
+    if (focusedNodeId && !previousFocusNodeId) {
+      focusSnapshotRef.current = { positions: new Map(persistPositions), viewBox: viewBoxRef.current };
+    }
+    previousFocusNodeIdRef.current = focusedNodeId;
     if (!focusedNodeId) {
       const current = orchestrationLatestRef.current;
+      const snapshot = focusSnapshotRef.current;
+      if (previousFocusNodeId && snapshot) setViewBox(snapshot.viewBox);
       if (!current) return;
       if (reduced) {
         orchestrationLatestRef.current = null;
@@ -457,6 +487,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
           orchestrationRafRef.current = undefined;
           orchestrationLatestRef.current = null;
           setOrchestrationPositions(null);
+          focusSnapshotRef.current = null;
           return;
         }
         const next = interpolatePoints(from, back, progress);
@@ -467,7 +498,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
       orchestrationRafRef.current = requestAnimationFrame(tick);
       return;
     }
-    const base = new Map(persistPositions);
+    const base = new Map(focusSnapshotRef.current?.positions ?? persistPositions);
     const target = createFocusMapPositions(observation, focusedNodeId, base);
     if (reduced) {
       orchestrationLatestRef.current = target;
@@ -543,14 +574,14 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
     };
   }, [nodeIdsKey]);
 
+  useEffect(() => {
+    if (viewBoxResetTokenRef.current === layoutResetToken) return;
+    viewBoxResetTokenRef.current = layoutResetToken;
+    setViewBox(defaultViewBox);
+  }, [defaultViewBox, layoutResetToken]);
+
   const commitNodePositions = useCallback((next: ReadonlyMap<string, GraphPoint>) => {
-    const seed = layoutRef.current;
-    if (seed) {
-      const merged = new Map(seed.positions);
-      for (const [id, point] of next) merged.set(id, point);
-      seed.positions = merged;
-    }
-    setPositionOverrides((current) => {
+    setBasePositions((current) => {
       const merged = new Map(current);
       for (const [id, point] of next) merged.set(id, point);
       return merged;
@@ -645,6 +676,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
   };
   const nudgeNode = (nodeId: string, key: string) => {
     if (nodeDragRef.current) return;
+    if (focusedNodeId) return;
     const start = physicsPersistentPositions.get(nodeId);
     if (!start) return;
     const delta = { x: 0, y: 0 };
@@ -681,7 +713,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
   const zoomAt = useCallback((factor: number, centerX: number, centerY: number) => {
     setViewBox((current) => {
       const width = clamp(current.width * factor, MIN_VIEW_WIDTH, Math.max(MAX_VIEW_WIDTH, world.width));
-      const height = width * (world.height / world.width);
+      const height = width * (current.height / current.width);
       const ratioX = (centerX - current.x) / current.width;
       const ratioY = (centerY - current.y) / current.height;
       return {
@@ -846,7 +878,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
               `global-map__node--${summary.lifecycle}`,
               `global-map__node--${summary.connectivity}`,
               externalScope ? `global-map__node--${externalScope.modifier}` : "",
-              projectColorClass(summary),
+              colorClass(summary, colorMode),
               interactionClass,
               focusedNodeId === summary.node.id ? "global-map__node--selected" : "",
               candidateMode && candidateEndpointIds.has(summary.node.id) ? "global-map__node--candidate-endpoint" : "",
@@ -1011,7 +1043,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
             return (
               <li key={summary.node.id}>
                 <button ref={(element) => { if (element) listNodeRefs.current.set(summary.node.id, element); else listNodeRefs.current.delete(summary.node.id); }} type="button" disabled={candidateMode} className={["global-map__list-link", `global-map__list-link--${summary.connectivity}`, externalScope ? `global-map__list-link--${externalScope.modifier}` : ""].filter(Boolean).join(" ")} aria-current={focusedNodeId === summary.node.id ? "true" : undefined} aria-pressed={focusedNodeId === summary.node.id} aria-label={[summary.label, nodeStatus(summary), connectivityStatus(summary.connectivity), "单击或 Space 专注", "Enter 打开"].filter(Boolean).join("，")} onClick={() => { if (!candidateMode) selectNode(summary.node.id); }} onFocus={() => setRovingNodeId(summary.node.id)} onKeyDown={(event) => { if (!candidateMode) handleKey(event, summary.node.id, listNodeRefs.current); }}>
-                  <span className={["global-map__list-dot", `global-map__list-dot--${summary.role}`, `global-map__list-dot--${summary.lifecycle}`, externalScope ? `global-map__list-dot--${externalScope.modifier}` : "", projectColorClass(summary, "global-map__list-dot")].filter(Boolean).join(" ")} aria-hidden="true" />
+                  <span className={["global-map__list-dot", `global-map__list-dot--${summary.role}`, `global-map__list-dot--${summary.lifecycle}`, externalScope ? `global-map__list-dot--${externalScope.modifier}` : "", colorClass(summary, colorMode, "global-map__list-dot")].filter(Boolean).join(" ")} aria-hidden="true" />
                   <span><strong>{summary.label}</strong><small>{summary.projectName ?? "未分类"} · {summary.sessionTitle} · {summary.role === "fusion" ? "融合成果" : "研究节点"}{summary.lifecycle === "archived" ? " · 已归档" : ""}{evidenceStatus(summary) ? ` · ${evidenceStatus(summary)}` : ""}{summary.connectivity === "focus" ? " · 当前专注" : summary.connectivity === "connected" ? " · 已连通" : summary.connectivity === "unconnected" ? " · 未连通" : ""}</small>{externalScope ? <span className="global-map__scope-badge">{externalScope.label}</span> : null}</span>
                 </button>
                 {!candidateMode && summary.candidateCount > 0 ? (

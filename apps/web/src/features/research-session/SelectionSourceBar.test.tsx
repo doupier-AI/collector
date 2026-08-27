@@ -11,20 +11,14 @@ function RouteStateProbe() {
 }
 
 describe("SelectionSourceBar", () => {
-  it("返回消息原文时继续携带地图返回现场", async () => {
-    const mapReturn = {
-      version: 1 as const,
-      sourceHistoryIndex: 0,
-      sourceEntryKey: "map-entry",
-      sourcePath: "/map/focus/source-node",
-    };
+  it("返回消息原文时不传播一次性到达标记", async () => {
     const selection = makeSelection({
       id: "selection-1",
       sessionId: "session-1",
       anchor: { kind: "message", messageId: "message-1", blockOrdinal: 0, startOffset: 0, endOffset: 2, exact: "原文" },
     });
     render(
-      <MemoryRouter initialEntries={[{ pathname: "/nodes/child", state: { mapReturn } }]}>
+      <MemoryRouter initialEntries={[{ pathname: "/nodes/child", state: { firstTurn: { query: "hello" }, grew: true, keep: "yes" } }]}>
         <Routes>
           <Route path="/nodes/child" element={<SelectionSourceBar sourceName="来源" selection={selection} />} />
           <Route path="/nodes/session-1" element={<RouteStateProbe />} />
@@ -33,6 +27,6 @@ describe("SelectionSourceBar", () => {
     );
 
     await userEvent.setup().click(screen.getByRole("link", { name: "← 返回原文" }));
-    expect(screen.getByRole("status")).toHaveTextContent(JSON.stringify({ mapReturn }));
+    expect(screen.getByRole("status")).toHaveTextContent(JSON.stringify({ keep: "yes" }));
   });
 });

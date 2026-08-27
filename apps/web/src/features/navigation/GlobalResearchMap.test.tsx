@@ -11,7 +11,8 @@ describe("GlobalResearchMap current-open scene", () => {
   it("uses fresh in-memory coordinates on every mount", () => {
     const observation = makeGraphObservation({ nodes: [makeGraphObservationNode("a", "节点 A")] });
     render(<MemoryRouter><GlobalResearchMap observation={observation} /></MemoryRouter>);
-    expect(canvas().querySelector("svg")).toHaveAttribute("viewBox", expect.stringMatching(/^0 0 /));
+    const firstViewBox = canvas().querySelector("svg")?.getAttribute("viewBox");
+    expect(firstViewBox).toMatch(/^-?\d+(?:\.\d+)? -?\d+(?:\.\d+)? \d+(?:\.\d+)? \d+(?:\.\d+)?$/);
   });
   it("draws straight lines and only renders arrows when switched on", () => {
     const observation = makeGraphObservation({ nodes: [makeGraphObservationNode("a", "节点 A"), makeGraphObservationNode("b", "节点 B")], edges: [{ edge: { ...makeEdge("parent-child", "a", "b"), kind: "parent-child" as const }, connectivity: "default" }] });

@@ -796,6 +796,11 @@ button {
 .global-map__node--project-teal { --global-map-project-color: var(--color-project-teal); }
 .global-map__node--project-rose { --global-map-project-color: var(--color-project-rose); }
 
+.global-map__node--color-node-type { --global-map-project-color: var(--color-user); }
+.global-map__node--color-node-type.global-map__node--fusion { --global-map-project-color: var(--color-ai); }
+.global-map__node--color-lifecycle { --global-map-project-color: var(--color-project-teal); }
+.global-map__node--color-lifecycle.global-map__node--archived { --global-map-project-color: var(--color-muted); }
+
 .global-map__node--fusion .global-map__node-core {
   fill: var(--color-surface);
   stroke: var(--global-map-project-color);
@@ -1205,6 +1210,10 @@ button {
   .global-map__list-dot--project-blue { --global-map-project-color: var(--color-project-blue); }
   .global-map__list-dot--project-teal { --global-map-project-color: var(--color-project-teal); }
   .global-map__list-dot--project-rose { --global-map-project-color: var(--color-project-rose); }
+  .global-map__list-dot--color-node-type { --global-map-project-color: var(--color-user); }
+  .global-map__list-dot--color-node-type.global-map__list-dot--fusion { --global-map-project-color: var(--color-ai); }
+  .global-map__list-dot--color-lifecycle { --global-map-project-color: var(--color-project-teal); }
+  .global-map__list-dot--color-lifecycle.global-map__list-dot--archived { --global-map-project-color: var(--color-muted); }
 
   .global-map__list-dot--fusion {
     border-width: 3px;
