@@ -14,11 +14,6 @@ const apiProxy = {
 
 export default defineConfig({
   plugins: [react()],
-  build: {
-    // 字体由生产 API 的 `font-src 'self'` 提供。禁止 Vite 将小型 woff2 内联成
-    // data:，既保留 CSP，也让 Playwright 能确实加载同一份 Noto 字形文件。
-    assetsInlineLimit: 0,
-  },
   server: {
     proxy: apiProxy,
   },

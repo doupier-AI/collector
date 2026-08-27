@@ -3,7 +3,7 @@ import type { KeyboardEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { stableNodePath } from "../../app/paths";
-import type { ResearchEdgeKind } from "@collector/capture-contracts";
+import type { ResearchPermanentEdgeKind } from "@collector/capture-contracts";
 import type { RelationshipItem } from "./useRelationships";
 import { ALL_EDGE_KINDS, groupRelationships, useRelationships } from "./useRelationships";
 
@@ -22,7 +22,7 @@ export function RelationshipList({
   sessionId: string;
   focusNodeId: string;
   onClose: () => void;
-  selectedEdgeKinds?: readonly ResearchEdgeKind[];
+  selectedEdgeKinds?: readonly ResearchPermanentEdgeKind[];
 }) {
   const navigate = useNavigate();
   const { state, groups: allGroups, focusNode, reload } = useRelationships(sessionId, focusNodeId, true);

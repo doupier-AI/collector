@@ -67,6 +67,13 @@ function draftVersionCount(dbPath: string): number {
   finally { db.close(); }
 }
 
+async function openTemporaryFusionDetail(page: Page): Promise<void> {
+  await page.getByRole("button", { name: "临时融合（1）" }).click();
+  const openLayer = page.getByRole("button", { name: "开启临时层" });
+  if (await openLayer.isVisible()) await openLayer.click();
+  await page.getByRole("button", { name: /临时融合草稿/ }).first().click();
+}
+
 test("#71 开启后只在 B 面生成可追溯临时融合，页面不跳转", async ({ page }) => {
   const { sessionId, rootNodeId } = await openSession(page);
   await growSharedConceptChild(page, sessionId);
@@ -284,4 +291,146 @@ test("T07 确认当前核验版本后以同一身份进入正式会话，并可�
   await page.getByRole("button", { name: "深入研究这段" }).click();
   await page.waitForURL((url) => url.pathname.startsWith("/nodes/") && url.pathname !== `/nodes/${formalNodeId}`, { timeout: 10_000 });
   await expect(page.getByText(/这是深入研究第一轮/)).toBeVisible({ timeout: 15_000 });
+});
+
+test("T08 临时融合来源回收、恢复和永久删除保持同一候选，并诚实阻止打开与确认", async ({ page }) => {
+  const { sessionId, rootNodeId } = await openSession(page);
+  await growSharedConceptChild(page, sessionId);
+  await page.request.put("/v1/settings/fusion", { data: { enabled: true } });
+  await page.goto(`/nodes/${encodeURIComponent(rootNodeId)}`);
+  await expect(page.getByTestId("temporary-fusion-count")).toContainText(/临时融合 \d+ 条待核验/, { timeout: 20_000 });
+
+  const listed = await (await page.request.get("/v1/research-temporary-fusions")).json() as Array<{
+    node: { id: string; activeDraftVersionId: string };
+    candidateSources: Array<{ id: string; sourceNodeId: string; sourceHealth: string }>;
+  }>;
+  expect(listed).toHaveLength(1);
+  const candidateId = listed[0]!.node.id;
+  const draftId = listed[0]!.node.activeDraftVersionId;
+  const connectionIds = listed[0]!.candidateSources.map((source) => source.id).sort();
+  const sourceNodeIds = listed[0]!.candidateSources.map((source) => source.sourceNodeId).sort();
+  expect(sourceNodeIds).toHaveLength(2);
+
+  expect((await page.request.put(`/v1/research-sessions/${encodeURIComponent(sessionId)}/trash`)).ok()).toBeTruthy();
+  const scanWhileTrashed = await page.request.post(`/v1/research-nodes/${encodeURIComponent(rootNodeId)}/fusion-proposals/scan`, { data: {} });
+  expect(scanWhileTrashed.ok()).toBeTruthy();
+  expect((await scanWhileTrashed.json() as { temporaryFusionCount: number }).temporaryFusionCount).toBe(1);
+
+  await page.goto("/map");
+  await openTemporaryFusionDetail(page);
+  await expect(page.getByText("来源暂不可用，恢复后可打开", { exact: false })).toHaveCount(2);
+  await expect(page.getByRole("button", { name: /返回来源节点/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "确认当前核验版本" })).toHaveCount(0);
+
+  expect((await page.request.put(`/v1/research-sessions/${encodeURIComponent(sessionId)}/restore`)).ok()).toBeTruthy();
+  await page.reload();
+  await openTemporaryFusionDetail(page);
+  await expect(page.getByRole("button", { name: /返回来源节点/ })).toHaveCount(2);
+  await expect(page.getByRole("button", { name: "确认当前核验版本" })).toBeVisible();
+
+  const restored = await (await page.request.get(`/v1/research-temporary-fusions/${encodeURIComponent(candidateId)}`)).json() as {
+    node: { id: string; activeDraftVersionId: string };
+    candidateSources: Array<{ id: string; sourceNodeId: string; sourceHealth: string }>;
+  };
+  expect(restored.node).toMatchObject({ id: candidateId, activeDraftVersionId: draftId });
+  expect(restored.candidateSources.map((source) => source.id).sort()).toEqual(connectionIds);
+  expect(restored.candidateSources.map((source) => source.sourceNodeId).sort()).toEqual(sourceNodeIds);
+  expect(restored.candidateSources.every((source) => source.sourceHealth === "available")).toBeTruthy();
+
+  expect((await page.request.put(`/v1/research-sessions/${encodeURIComponent(sessionId)}/trash`)).ok()).toBeTruthy();
+  expect((await page.request.delete(`/v1/research-sessions/${encodeURIComponent(sessionId)}`)).ok()).toBeTruthy();
+  await page.reload();
+  await openTemporaryFusionDetail(page);
+  await expect(page.getByText("来源已永久删除，不能打开", { exact: false })).toHaveCount(2);
+  await expect(page.getByRole("button", { name: /返回来源节点/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "确认当前核验版本" })).toHaveCount(0);
+
+  const deletedView = await page.request.get(`/v1/research-temporary-fusions/${encodeURIComponent(candidateId)}`);
+  expect(deletedView.ok()).toBeTruthy();
+  const deletedText = await deletedView.text();
+  const deleted = JSON.parse(deletedText) as {
+    node: { id: string; activeDraftVersionId: string };
+    candidateSources: Array<{ id: string; sourceNodeId: string; sourceHealth: string }>;
+  };
+  expect(deleted.node).toMatchObject({ id: candidateId, activeDraftVersionId: draftId });
+  expect(deleted.candidateSources.map((source) => source.id).sort()).toEqual(connectionIds);
+  expect(deleted.candidateSources.map((source) => source.sourceNodeId).sort()).toEqual(sourceNodeIds);
+  expect(deleted.candidateSources.every((source) => source.sourceHealth === "deleted")).toBeTruthy();
+  expect(deletedText).not.toContain(ROOT_EVIDENCE_TEXT);
+  expect(deletedText).not.toContain("这是深入研究第一轮");
+  expect((await page.request.get(`/v1/research-nodes/${encodeURIComponent(rootNodeId)}`)).status()).toBe(404);
+});
+
+test("T08 来源回收、恢复和永久删除只改变健康状态，不改确认稿或泄露来源原文", async ({ page }) => {
+  const { sessionId, rootNodeId } = await openSession(page);
+  await growSharedConceptChild(page, sessionId);
+  await page.request.put("/v1/settings/fusion", { data: { enabled: true } });
+  await page.goto(`/nodes/${encodeURIComponent(rootNodeId)}`);
+  await expect(page.getByTestId("temporary-fusion-count")).toContainText(/临时融合 \d+ 条待核验/, { timeout: 20_000 });
+
+  await page.goto("/map");
+  await page.getByRole("button", { name: "临时融合（1）" }).click();
+  await page.getByRole("button", { name: "开启临时层" }).click();
+  await page.getByRole("button", { name: /临时融合草稿/ }).first().click();
+  await page.getByRole("button", { name: "确认当前核验版本" }).click();
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
+  const formalNodeId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
+
+  const initialView = await page.request.get(`/v1/research-nodes/${encodeURIComponent(formalNodeId)}`);
+  expect(initialView.ok()).toBeTruthy();
+  const initialPayload = await initialView.json() as {
+    confirmedFusion: { body: string };
+    confirmedFusionSources: Array<{ nodeId: string; health?: string }>;
+  };
+  const confirmedBody = initialPayload.confirmedFusion.body;
+  expect(initialPayload.confirmedFusionSources).toHaveLength(2);
+  expect(initialPayload.confirmedFusionSources.every((source) => source.health === "available")).toBeTruthy();
+  await expect(page.getByTestId("fusion-source-bar").getByRole("link")).toHaveCount(2);
+
+  expect((await page.request.put(`/v1/research-sessions/${encodeURIComponent(sessionId)}/trash`)).ok()).toBeTruthy();
+  await page.reload();
+  await expect(page.getByTestId("fusion-source-bar")).toContainText("来源暂不可用");
+  await expect(page.getByTestId("fusion-source-bar").getByRole("link")).toHaveCount(0);
+  const trashedPayload = await (await page.request.get(`/v1/research-nodes/${encodeURIComponent(formalNodeId)}`)).json() as {
+    confirmedFusion: { body: string };
+    confirmedFusionSources: Array<{ health?: string }>;
+  };
+  expect(trashedPayload.confirmedFusion.body).toBe(confirmedBody);
+  expect(trashedPayload.confirmedFusionSources).toHaveLength(2);
+  expect(trashedPayload.confirmedFusionSources.every((source) => source.health === "temporarily-unavailable")).toBeTruthy();
+
+  expect((await page.request.put(`/v1/research-sessions/${encodeURIComponent(sessionId)}/restore`)).ok()).toBeTruthy();
+  await page.reload();
+  await expect(page.getByTestId("fusion-source-bar").getByRole("link")).toHaveCount(2);
+
+  expect((await page.request.put(`/v1/research-sessions/${encodeURIComponent(sessionId)}/trash`)).ok()).toBeTruthy();
+  expect((await page.request.delete(`/v1/research-sessions/${encodeURIComponent(sessionId)}`)).ok()).toBeTruthy();
+  await page.reload();
+  await expect(page.getByTestId("fusion-source-bar")).toContainText("来源已永久删除");
+  await expect(page.getByTestId("fusion-source-bar").getByRole("link")).toHaveCount(0);
+  expect((await page.request.get(`/v1/research-nodes/${encodeURIComponent(rootNodeId)}`)).status()).toBe(404);
+
+  const deletedView = await page.request.get(`/v1/research-nodes/${encodeURIComponent(formalNodeId)}`);
+  expect(deletedView.ok()).toBeTruthy();
+  const deletedText = await deletedView.text();
+  const deletedPayload = JSON.parse(deletedText) as {
+    confirmedFusion: { body: string };
+    confirmedFusionSources: Array<{ health?: string }>;
+  };
+  expect(deletedPayload.confirmedFusion.body).toBe(confirmedBody);
+  expect(deletedPayload.confirmedFusionSources).toHaveLength(2);
+  expect(deletedPayload.confirmedFusionSources.every((source) => source.health === "deleted")).toBeTruthy();
+  expect(deletedText).not.toContain(ROOT_EVIDENCE_TEXT);
+  expect(deletedText).not.toContain("这是深入研究第一轮");
+
+  const runRecords = await page.request.get("/v1/run-records?limit=50");
+  expect(runRecords.ok()).toBeTruthy();
+  const runRecordText = await runRecords.text();
+  expect(runRecordText).not.toContain(ROOT_EVIDENCE_TEXT);
+  expect(runRecordText).not.toContain("这是深入研究第一轮");
+  const exported = await page.request.get("/v1/run-records/export");
+  expect([200, 404]).toContain(exported.status());
+  const exportedText = await exported.text();
+  expect(exportedText).not.toContain(ROOT_EVIDENCE_TEXT);
+  expect(exportedText).not.toContain("这是深入研究第一轮");
 });

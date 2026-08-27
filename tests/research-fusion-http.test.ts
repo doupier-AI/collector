@@ -14,10 +14,8 @@ import type {
 } from "@collector/capture-contracts";
 import { deriveBodyVersion } from "@collector/capture-contracts";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer, type SimilarityVerificationGateway, type TemporaryFusionDraftEvidenceGateway } from "@collector/api";
-import { FakeProvider, ModelGateway } from "@collector/model-gateway";
-import { projectCurrentSearchUnits } from "../apps/api/dist/semantic-search/projector.js";
 
-async function createHarness(options?: { similarityVerifier?: SimilarityVerificationGateway; fusionBody?: string; temporaryConversationAnswer?: string; temporaryConversationFailFirst?: boolean; temporaryFusionDraftEvidenceVerifier?: TemporaryFusionDraftEvidenceGateway }) {
+async function createHarness(options?: { similarityVerifier?: SimilarityVerificationGateway; temporaryConversationAnswer?: string; temporaryConversationFailFirst?: boolean; temporaryFusionDraftEvidenceVerifier?: TemporaryFusionDraftEvidenceGateway }) {
   const root = await mkdtemp(join(tmpdir(), "collector-fusion-http-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
@@ -49,9 +47,6 @@ async function createHarness(options?: { similarityVerifier?: SimilarityVerifica
       promptVersion: "test",
       async *generate() { yield "unused"; },
       async writeBody() { return "unused"; },
-      async composeFusion() {
-        return options?.fusionBody ?? "## 共同核心\n\n来源一。[来源1]\n\n## 差异\n\n来源二。[来源2]\n\n## 综合推导\n\n综合结论。";
-      },
     } as never,
   });
   const now = "2026-08-02T00:00:00.000Z";
@@ -139,7 +134,7 @@ test("startup draft recovery isolates an unavailable store", async (t) => {
   assert.equal(recoveryAttempts, 1);
 });
 
-test("fusion proposal HTTP scans, lists, decides, and exposes pending weak hints on the node view", async (t) => {
+test("fusion proposal HTTP scans, lists, and exposes pending audit hints on the node view", async (t) => {
   const harness = await createHarness();
   t.after(harness.close);
   const scan = await fetch(`${harness.base}/v1/research-nodes/session-1/fusion-proposals/scan`, {
@@ -194,19 +189,10 @@ test("fusion proposal HTTP scans, lists, decides, and exposes pending weak hints
   const fragment = bodyView.fragments.find((entry) => entry.id === sourceA.fragmentId);
   assert.equal(fragment?.excerpt, "西游记中的孙悟空。");
 
-  const decide = await fetch(`${harness.base}/v1/research-fusion-proposals/${encodeURIComponent(proposals[0].id)}/decide`, {
+  const retiredDecision = await fetch(`${harness.base}/v1/research-fusion-proposals/${encodeURIComponent(proposals[0].id)}/decide`, {
     method: "POST", headers: headers(harness.token), body: JSON.stringify({ decision: "rejected" }),
   });
-  assert.equal(decide.status, 200);
-  assert.equal((await decide.json() as { status: string }).status, "rejected");
-
-  const noPending = await fetch(`${harness.base}/v1/research-nodes/session-1`, { headers: headers(harness.token) });
-  assert.deepEqual((await noPending.json() as { fusionProposals?: unknown[] }).fusionProposals, []);
-
-  const invalid = await fetch(`${harness.base}/v1/research-fusion-proposals/${encodeURIComponent(proposals[0].id)}/decide`, {
-    method: "POST", headers: headers(harness.token), body: JSON.stringify({ decision: "pending" }),
-  });
-  assert.equal(invalid.status, 400);
+  assert.equal(retiredDecision.status, 404);
 });
 
 test("temporary fusion count stays readable without triggering a scan", async (t) => {
@@ -217,39 +203,7 @@ test("temporary fusion count stays readable without triggering a scan", async (t
   assert.deepEqual(await response.json(), { count: 0 });
 });
 
-test("fusion proposal HTTP keeps accepted proposals readable on the node view (#42)", async (t) => {
-  const harness = await createHarness();
-  t.after(harness.close);
-  const scan = await fetch(`${harness.base}/v1/research-nodes/session-1/fusion-proposals/scan`, {
-    method: "POST", headers: headers(harness.token), body: "{}",
-  });
-  assert.equal(scan.status, 200);
-  const { proposals } = await scan.json() as { proposals: Array<{ id: string; status: string }> };
-  assert.equal(proposals.length, 1);
-
-  const accept = await fetch(`${harness.base}/v1/research-fusion-proposals/${encodeURIComponent(proposals[0].id)}/decide`, {
-    method: "POST", headers: headers(harness.token), body: JSON.stringify({ decision: "accepted" }),
-  });
-  assert.equal(accept.status, 200);
-  assert.equal((await accept.json() as { status: string }).status, "accepted");
-
-  // #42：accepted 提案仍出现在节点视图（只读依据入口的读取来源），
-  // 且触发来源经兼容映射携带可恢复定位的正文版本与片段标识。
-  const node = await fetch(`${harness.base}/v1/research-nodes/session-1`, { headers: headers(harness.token) });
-  assert.equal(node.status, 200);
-  const view = await node.json() as { fusionProposals?: Array<{
-    id: string; status: string;
-    triggerSources: FusionProposalTriggerSource[];
-  }> };
-  assert.equal(view.fusionProposals?.length, 1);
-  assert.equal(view.fusionProposals?.[0]?.id, proposals[0].id);
-  assert.equal(view.fusionProposals?.[0]?.status, "accepted");
-  for (const source of view.fusionProposals?.[0]?.triggerSources ?? []) {
-    assert.ok(source.nodeId && source.bodyVersionId && source.fragmentId);
-  }
-});
-
-test("#31 fusion HTTP creates a parentless fusion node with fused-from edges and returns NodeGrowthAccepted", async (t) => {
+test("legacy fusion proposal fuse route is retired", async (t) => {
   const harness = await createHarness();
   t.after(harness.close);
   const scan = await fetch(`${harness.base}/v1/research-nodes/session-1/fusion-proposals/scan`, {
@@ -262,74 +216,10 @@ test("#31 fusion HTTP creates a parentless fusion node with fused-from edges and
   const fuse = await fetch(`${harness.base}/v1/research-fusion-proposals/${encodeURIComponent(proposals[0].id)}/fuse`, {
     method: "POST", headers: headers(harness.token), body: JSON.stringify({ idempotencyKey: "fusion-http-key" }),
   });
-  assert.equal(fuse.status, 200);
-  const accepted = await fuse.json() as { node: { id: string; parentNodeId?: string; sessionId: string }; task: { id: string; outputMessageId: string; status: string; fusionPlan?: { sources: unknown[]; relationType: string } } };
-  assert.equal(accepted.node.parentNodeId, undefined, "fusion node has no parent lineage");
-  assert.equal(accepted.node.sessionId, "session-1");
-  assert.equal(accepted.task.status, "queued");
-  assert.equal(accepted.task.fusionPlan?.relationType, "contrast");
-  assert.equal(accepted.task.fusionPlan?.sources.length, 2);
-
-  for (let attempt = 0; attempt < 200 && harness.store.getResearchTask(accepted.task.id)?.status !== "completed"; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  assert.equal(harness.store.getResearchTask(accepted.task.id)?.status, "completed");
-  const formalUnits = projectCurrentSearchUnits(harness.store).filter((unit) => unit.field === "formal-fusion-body");
-  assert.ok(formalUnits.some((unit) => unit.locator.kind === "message-semantic-range"
-    && unit.locator.messageId === accepted.task.outputMessageId
-    && /共同核心/.test(unit.searchText)), "the production fusion output must retain its formal field identity in search");
-
-  // 融合节点视图可见；原节点消息逐字节不变（验收 6）。
-  const node = await fetch(`${harness.base}/v1/research-nodes/${encodeURIComponent(accepted.node.id)}`, { headers: headers(harness.token) });
-  assert.equal(node.status, 200);
-  const view = await node.json() as { messages: Array<{ id: string; content: string; role: string }> };
-  assert.ok(view.messages.some((message) => message.role === "user" && /综合以下研究来源/.test(message.content)));
-
-  // 幂等：同一幂等键重复 fuse 返回同一节点（不重复建）。
-  const again = await fetch(`${harness.base}/v1/research-fusion-proposals/${encodeURIComponent(proposals[0].id)}/fuse`, {
-    method: "POST", headers: headers(harness.token), body: JSON.stringify({ idempotencyKey: "fusion-http-key" }),
-  });
-  assert.equal(again.status, 200);
-  assert.equal((await again.json() as { node: { id: string } }).node.id, accepted.node.id);
-
-  // 已决策提案再 fuse → 409。
-  const conflict = await fetch(`${harness.base}/v1/research-fusion-proposals/${encodeURIComponent(proposals[0].id)}/fuse`, {
-    method: "POST", headers: headers(harness.token), body: JSON.stringify({ idempotencyKey: "fusion-http-key-2" }),
-  });
-  assert.equal(conflict.status, 409);
-
-  // 幂等键缺失 → 400。
-  const invalid = await fetch(`${harness.base}/v1/research-fusion-proposals/${encodeURIComponent(proposals[0].id)}/fuse`, {
-    method: "POST", headers: headers(harness.token), body: "{}",
-  });
-  assert.equal(invalid.status, 400);
-
-  // 不存在的提案 → 404。
-  const missing = await fetch(`${harness.base}/v1/research-fusion-proposals/fusion:missing/fuse`, {
-    method: "POST", headers: headers(harness.token), body: JSON.stringify({ idempotencyKey: "fusion-http-key-3" }),
-  });
-  assert.equal(missing.status, 404);
-});
-
-test("融合正文遇到显式 think 协议时只保留干净前缀且不生成正式派生", async (t) => {
-  const harness = await createHarness({ fusionBody: "融合干净前缀。<think>匿名融合草稿</think>" });
-  t.after(harness.close);
-  const scan = await fetch(`${harness.base}/v1/research-nodes/session-1/fusion-proposals/scan`, {
-    method: "POST", headers: headers(harness.token), body: "{}",
-  });
-  const { proposals } = await scan.json() as { proposals: Array<{ id: string }> };
-  const fuse = await fetch(`${harness.base}/v1/research-fusion-proposals/${encodeURIComponent(proposals[0]!.id)}/fuse`, {
-    method: "POST", headers: headers(harness.token), body: JSON.stringify({ idempotencyKey: "fusion-protocol-key" }),
-  });
-  assert.equal(fuse.status, 200);
-  const accepted = await fuse.json() as { task: { id: string; outputMessageId: string } };
-  for (let attempt = 0; attempt < 200 && harness.store.getResearchTask(accepted.task.id)?.status !== "failed"; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  assert.equal(harness.store.getResearchTask(accepted.task.id)?.status, "failed");
-  assert.equal(harness.store.getResearchMessage(accepted.task.outputMessageId)?.content, "融合干净前缀。");
-  assert.equal(harness.store.listSlicesByMessage(accepted.task.outputMessageId).length, 0);
-  assert.equal(harness.store.getBodyVersionForMessage(accepted.task.outputMessageId), undefined);
+  assert.equal(fuse.status, 404);
+  assert.deepEqual(await fuse.json(), { error: { code: "not_found", message: "Route not found" } });
+  assert.equal(harness.store.listResearchNodes("session-1").length, 2);
+  assert.deepEqual(harness.store.listAllResearchEdges().filter((edge) => edge.kind !== "parent-child"), []);
 });
 
 // ── 临时融合发现设置 HTTP ─────────────────────────────────────

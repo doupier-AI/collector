@@ -12,7 +12,6 @@ import type {
 } from "@collector/capture-contracts";
 import {
   AUTO_FUSION_SETTING_KEY,
-  FUSION_PROPOSAL_COOLDOWN_DAYS,
   MIN_SIMILARITY_FALLBACK_UNIT_CHARACTERS,
   ResearchFusionProposalService,
   SIMILARITY_VERIFICATION_TOKEN_BUDGET,
@@ -23,17 +22,15 @@ import {
   TermDetectionService,
 } from "@collector/api";
 import {
-  FUSION_COMPOSE_PROMPT_VERSION,
   SIMILARITY_VERIFICATION_PROMPT_VERSION,
   TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION,
   TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET,
   deriveBodyVersion,
-  deriveMessageBlocks,
   resolveFragmentExcerpt,
   researchFusionProposalId,
 } from "@collector/capture-contracts";
 import { FakeProvider, ModelGateway } from "@collector/model-gateway";
-import { CaptureService, ResearchSessionService, SqliteStore } from "@collector/api";
+import { CaptureService, SqliteStore } from "@collector/api";
 
 async function createHarness() {
   const root = await mkdtemp(join(tmpdir(), "collector-fusion-proposals-"));
@@ -332,14 +329,10 @@ test("legacy slice-only trigger sources gain fragment references through compat 
     assert.equal(fragments.length, messageSlices.length, "alignment gate holds (fragments and slices derive from the same body)");
   }
 
-  // 决策路径同样返回带引用的记录，且既有状态与冷却语义不回退。
-  const accepted = await service.decide(legacyId, "accepted");
-  assert.equal(accepted.status, "accepted");
-  assert.ok(accepted.triggerSources.every((source) => source.fragmentId));
-  assert.equal(calls, 0);
+  // 相同证据的重复扫描继续复用这一审计记录，不产生正式关系或新节点。
   const rescan = await service.scan("node-a");
   assert.equal(rescan.proposals[0]?.id, legacyId);
-  assert.equal(rescan.proposals[0]?.status, "accepted", "rescan reuses the decided record instead of reproposing");
+  assert.equal(rescan.proposals[0]?.status, "pending");
   assert.equal(calls, 0);
 });
 
@@ -365,46 +358,8 @@ test("verification failures and unrelated results do not create proposals", asyn
   assert.deepEqual(harness.store.listResearchFusionProposalsByNode("node-a"), []);
 });
 
-test("accepting creates one semantic-related edge; rejecting writes a deterministic cooldown", async (t) => {
-  const harness = await createHarness();
-  t.after(harness.close);
-  const now = new Date("2026-08-02T00:00:00.000Z");
-  const service = new ResearchFusionProposalService(
-    harness.store,
-    new TermDetectionService(),
-    async () => ({ async verifyResearchSimilarity() { return { relationType: "shared-concept", reason: "两处材料都讨论孙悟空。" }; } }),
-    () => now,
-  );
-  const { proposals: [proposal] } = await service.scan("node-a");
-  const accepted = await service.decide(proposal.id, "accepted");
-  assert.equal(accepted.status, "accepted");
-  assert.equal(harness.store.listResearchEdgesByNode("node-a").filter((edge) => edge.kind === "semantic-related").length, 1);
-  assert.deepEqual(await service.decide(proposal.id, "accepted"), accepted, "same decision is idempotent");
-
-  const secondHarness = await createHarness();
-  t.after(secondHarness.close);
-  const rejectedService = new ResearchFusionProposalService(
-    secondHarness.store,
-    new TermDetectionService(),
-    async () => ({ async verifyResearchSimilarity() { return { relationType: "contrast", reason: "两处材料来自不同作品。" }; } }),
-    () => now,
-  );
-  const { proposals: [rejectable] } = await rejectedService.scan("node-a");
-  const rejected = await rejectedService.decide(rejectable.id, "rejected");
-  assert.equal(rejected.status, "rejected");
-  assert.equal(
-    rejected.cooldownUntil,
-    new Date(now.getTime() + FUSION_PROPOSAL_COOLDOWN_DAYS * 24 * 60 * 60 * 1000).toISOString(),
-  );
-  assert.equal((await rejectedService.scan("node-a")).proposals[0]?.status, "rejected");
-});
-
-// ── #31 F2 确认式融合 ─────────────────────────────────────────────
-
 /**
- * 建立带真实 research 任务管线的融合 harness：
- * - 两个来源节点（孙悟空×2 场景：西游记 / 七龙珠），各自带正式切片与正文版本；
- * - CaptureService 注入确定性的 composeFusion provider，autoRunResearchTasks 关闭（手动驱动）。
+ * 建立临时融合发现 harness：两个来源节点各自带正式切片与正文版本。
  */
 async function createFusionHarness(options?: { similarityVerifier?: SimilarityVerificationGateway }) {
   const root = await mkdtemp(join(tmpdir(), "collector-fusion-node-"));
@@ -433,7 +388,7 @@ async function createFusionHarness(options?: { similarityVerifier?: SimilarityVe
   ];
   await store.replaceSlicesForMessage("message-a", [slices[0]!]);
   await store.replaceSlicesForMessage("message-b", [slices[1]!]);
-  // 正文版本 + 语义片段持久化（confirmFusion 生成时按 bodyVersionId+fragmentId 回读摘录）。
+  // 正文版本 + 语义片段持久化，供临时发现逐字回读证据。
   const bodyA = deriveBodyVersion({ messageId: "message-a", nodeId: "node-a", content: messages[0]!.content, origin: "backfill", createdAt: now });
   const bodyB = deriveBodyVersion({ messageId: "message-b", nodeId: "node-b", content: messages[1]!.content, origin: "backfill", createdAt: now });
   const { fragments: fragmentsA } = deriveMessageBodyArtifacts({ nodeId: "node-a", message: messages[0]!, slices: [slices[0]!] });
@@ -443,21 +398,12 @@ async function createFusionHarness(options?: { similarityVerifier?: SimilarityVe
   await store.createSemanticFragments(fragmentsA);
   await store.createSemanticFragments(fragmentsB);
 
-  let composeCalls = 0;
   const provider = {
     provider: "fake",
-    model: "fake-fusion",
+    model: "fake-research",
     promptVersion: "test",
     async *generate() { yield "unused"; },
     async writeBody() { return "unused"; },
-    async composeFusion(request: { fusion: { sources: Array<{ title: string }> } }) {
-      composeCalls += 1;
-      return [
-        `## 共同核心\n\n${request.fusion.sources[0]?.title ?? ""}与${request.fusion.sources[1]?.title ?? ""}共享[[concept:sun-wukong:孙悟空]]概念。[来源1]`,
-        "## 差异\n\n两者来自不同作品。[来源2]",
-        "## 综合推导\n\n两个孙悟空是不同作品中的同名角色。",
-      ].join("\n\n");
-    },
   } as never;
 
   const service = new CaptureService(store, join(root, "artifacts"), undefined, {
@@ -482,216 +428,9 @@ async function createFusionHarness(options?: { similarityVerifier?: SimilarityVe
     service,
     messages,
     now,
-    composeCalls: () => composeCalls,
     close: async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); },
   };
 }
-
-test("#31 confirmFusion creates semantic edge, fused-from edges, and a parentless fusion node with a fusion task", async (t) => {
-  const harness = await createFusionHarness();
-  t.after(harness.close);
-  const { service, store } = harness;
-  const { proposals: [proposal] } = await service.fusionProposals.scan("node-a");
-  assert.equal(proposal?.status, "pending");
-  const proposalId = proposal!.id;
-
-  const accepted = await service.fusionProposals.confirmFusion(proposalId, "fusion-idempotency-1");
-  assert.equal(accepted.node.parentNodeId, undefined, "fusion node has no parent lineage");
-  assert.equal(accepted.node.sessionId, "session-1");
-  assert.equal(accepted.task.status, "queued");
-  assert.equal(accepted.task.promptVersion, FUSION_COMPOSE_PROMPT_VERSION);
-  assert.equal(accepted.task.fusionPlan?.relationType, "contrast");
-  assert.equal(accepted.task.fusionPlan?.sources.length, 2);
-  for (const source of accepted.task.fusionPlan!.sources) {
-    assert.ok(source.bodyVersionId && source.fragmentId && source.label);
-  }
-
-  // 提案已 accepted；边：语义相关 1 条 + fused-from 2 条（来源→融合节点）。
-  assert.equal(store.getResearchFusionProposal(proposalId)?.status, "accepted");
-  const semanticEdges = store.listAllResearchEdges().filter((edge) => edge.kind === "semantic-related");
-  assert.equal(semanticEdges.length, 1);
-  assert.deepEqual([semanticEdges[0]!.fromNodeId, semanticEdges[0]!.toNodeId].sort(), ["node-a", "node-b"]);
-  const fusedEdges = store.listResearchEdgesByNode(accepted.node.id).filter((edge) => edge.kind === "fused-from");
-  assert.equal(fusedEdges.length, 2);
-  for (const edge of fusedEdges) {
-    assert.equal(edge.toNodeId, accepted.node.id, "fused-from points at the fusion node");
-    assert.ok(edge.sourceFragmentIds?.length === 1, "fused-from carries the contributing fragment");
-  }
-
-  // 幂等：同一提案 + 同一幂等键返回同一节点，不重复建边。
-  const again = await service.fusionProposals.confirmFusion(proposalId, "fusion-idempotency-1");
-  assert.equal(again.node.id, accepted.node.id);
-  assert.equal(store.listAllResearchEdges().filter((edge) => edge.kind === "fused-from").length, 2);
-
-  // 非 pending 提案拒绝。
-  await assert.rejects(
-    () => service.fusionProposals.confirmFusion(proposalId, "fusion-idempotency-2"),
-    /already been decided/,
-  );
-});
-
-test("#31 confirmFusion runs the fusion task through the research pipeline and records references", async (t) => {
-  const harness = await createFusionHarness();
-  t.after(harness.close);
-  const { service, store } = harness;
-  const { proposals: [proposal] } = await service.fusionProposals.scan("node-a");
-  const accepted = await service.fusionProposals.confirmFusion(proposal!.id, "fusion-idempotency-3");
-  const taskId = accepted.task.id;
-
-  await service.research.processTask(taskId);
-  const task = store.getResearchTask(taskId);
-  assert.equal(task?.status, "completed");
-  assert.ok(task?.fusionReferences && task.fusionReferences.length >= 2, "fusion references parsed from body");
-  for (const reference of task!.fusionReferences!) {
-    assert.ok(reference.nodeId && reference.bodyVersionId && reference.fragmentId);
-  }
-  const message = store.getResearchMessage(accepted.outputMessage.id);
-  assert.match(message?.content ?? "", /## 共同核心/);
-  assert.match(message?.content ?? "", /## 差异/);
-  assert.match(message?.content ?? "", /## 综合推导/);
-  assert.ok(!message?.content.includes("[["));
-  assert.deepEqual(message?.termMarkers?.map((marker) => marker.text), ["孙悟空"]);
-  const fusionBlocks = deriveMessageBlocks(message?.content ?? "");
-  for (const reference of task?.fusionReferences ?? []) {
-    assert.ok(
-      fusionBlocks[reference.blockOrdinal]?.text.slice(reference.markerOffset).startsWith(`[来源${reference.sourceOrdinal}]`),
-      "融合引用位置应对齐清洗后的正文",
-    );
-  }
-
-  // 来源节点逐字节不变（验收 6）。
-  assert.equal(store.getResearchMessage("message-a")?.content, "西游记中的孙悟空以反抗精神推动故事。");
-  assert.equal(store.getResearchMessage("message-b")?.content, "七龙珠中的孙悟空以赛亚人身份展开冒险。");
-
-  // 节点视图组装 fusionSources（验收 3：来源可回溯）。
-  const view = await service.getResearchNodeView(accepted.node.id);
-  const sources = view.fusionSources?.[accepted.outputMessage.id];
-  assert.equal(sources?.length, 2);
-  for (const source of sources ?? []) {
-    const version = store.getBodyVersion(source.bodyVersionId);
-    const fragment = store.listFragmentsByBodyVersion(source.bodyVersionId).find((entry) => entry.id === source.fragmentId);
-    assert.ok(version && fragment, "fusion source resolves to persisted artifacts");
-    assert.ok(resolveFragmentExcerpt(version!, fragment!), "excerpt resolves verbatim");
-  }
-});
-
-test("#31 confirmFusion rejects when sources are not traceable", async (t) => {
-  const harness = await createFusionHarness();
-  t.after(harness.close);
-  const { store } = harness;
-  // 构造只有 sliceId、无 fragmentId 的旧形态来源（#43 兼容映射补不齐）。
-  const legacyProposal: ResearchFusionProposalRecord = {
-    id: researchFusionProposalId("node-a", "node-b"),
-    loNodeId: "node-a",
-    hiNodeId: "node-b",
-    relationType: "contrast",
-    reason: "历史扫描遗留。",
-    status: "pending",
-    triggerSources: [
-      { nodeId: "node-a", sliceId: "slice:node-a:message-a:0" },
-      { nodeId: "node-b", sliceId: "slice:node-b:message-b:0" },
-    ],
-    verification: {
-      promptVersion: SIMILARITY_VERIFICATION_PROMPT_VERSION,
-      sourceSliceIds: ["slice:node-a:message-a:0", "slice:node-b:message-b:0"],
-      tokenBudget: SIMILARITY_VERIFICATION_TOKEN_BUDGET,
-    },
-    createdAt: harness.now,
-    updatedAt: harness.now,
-  };
-  await store.createResearchFusionProposal(legacyProposal);
-  // 兼容映射能补齐这两个来源（切片序数对齐门通过）→ 正常可融合。
-  const service = new ResearchFusionProposalService(
-    store,
-    new TermDetectionService(),
-    async () => undefined,
-    () => new Date("2026-08-02T00:00:00.000Z"),
-    harness.service.research,
-  );
-  const accepted = await service.confirmFusion(legacyProposal.id, "fusion-legacy");
-  assert.equal(accepted.task.fusionPlan?.sources.length, 2);
-
-  // 不可回溯来源（缺 bodyVersionId/fragmentId 且映射失败）→ 拒绝建节点。
-  // 用独立节点对避免 UNIQUE(lo,hi) 与 legacy 提案冲突。
-  await store.createResearchNode({ id: "node-x", sessionId: "session-1", status: "active", createdAt: harness.now, updatedAt: harness.now }, "node:x");
-  const orphanProposal: ResearchFusionProposalRecord = {
-    ...legacyProposal,
-    id: researchFusionProposalId("node-a", "node-x"),
-    loNodeId: "node-a",
-    hiNodeId: "node-x",
-    triggerSources: [{ nodeId: "node-a", sliceId: "slice:missing:0" }],
-  };
-  await store.createResearchFusionProposal(orphanProposal);
-  await assert.rejects(
-    () => service.confirmFusion(orphanProposal.id, "fusion-orphan"),
-    /at least two traceable source fragments/,
-  );
-});
-
-test("#31 composeFusion gateway uses the versioned prompt with three sections and records the audit context", async () => {
-  const provider = new FakeProvider(["## 共同核心\n\n共同点。[来源1]\n\n## 差异\n\n差异。[来源2]\n\n## 综合推导\n\n结论。"]);
-  const gateway = new ModelGateway(provider, { model: "fake-fusion" });
-  const calls: Array<{ purpose?: string; promptVersion: string; sourceSliceIds?: string[]; sourceFragmentIds?: string[]; tokenBudget?: number }> = [];
-  gateway.setCallListener((event) => {
-    calls.push({
-      purpose: event.context.purpose,
-      promptVersion: event.promptVersion,
-      sourceSliceIds: event.context.sourceSliceIds,
-      sourceFragmentIds: event.context.sourceFragmentIds,
-      tokenBudget: event.context.tokenBudget,
-    });
-  });
-  const content = await gateway.composeFusion(
-    {
-      sources: [
-        { nodeId: "node-a", title: "西游记孙悟空", excerpt: "西游记中的孙悟空以反抗精神推动故事。" },
-        { nodeId: "node-b", title: "七龙珠孙悟空", excerpt: "七龙珠中的孙悟空以赛亚人身份展开冒险。" },
-      ],
-      relationType: "contrast",
-    },
-    {
-      context: {
-        workflowRunId: "fusion-run-1",
-        purpose: "fusion_compose",
-        promptVersion: FUSION_COMPOSE_PROMPT_VERSION,
-        sourceSliceIds: ["slice:a", "slice:b"],
-        sourceFragmentIds: ["frag:a", "frag:b"],
-        tokenBudget: 4_000,
-      },
-    },
-  );
-  assert.match(content, /## 共同核心/);
-  assert.match(content, /## 差异/);
-  assert.match(content, /## 综合推导/);
-  // 提示词显式区分关系类型：contrast 指导跨作品对比，仅在证据支持时让位更强断言（验收 5）。
-  assert.match(provider.calls[0]?.prompt ?? "", /## 共同核心、## 差异、## 综合推导/);
-  assert.match(provider.calls[0]?.prompt ?? "", /跨作品、跨领域的同名概念默认是对比或联想/);
-  assert.deepEqual(calls, [{
-    purpose: "fusion_compose",
-    promptVersion: FUSION_COMPOSE_PROMPT_VERSION,
-    sourceSliceIds: ["slice:a", "slice:b"],
-    sourceFragmentIds: ["frag:a", "frag:b"],
-    tokenBudget: 4_000,
-  }]);
-
-  // 少于两个来源拒绝。
-  await assert.rejects(
-    () => gateway.composeFusion({ sources: [{ nodeId: "node-a", title: "A", excerpt: "x" }], relationType: "contrast" }),
-    /at least two sources/,
-  );
-  // 空正文拒绝。
-  const emptyGateway = new ModelGateway(new FakeProvider([""]), { model: "fake-fusion" });
-  await assert.rejects(
-    () => emptyGateway.composeFusion({
-      sources: [
-        { nodeId: "node-a", title: "A", excerpt: "x" },
-        { nodeId: "node-b", title: "B", excerpt: "y" },
-      ],
-      relationType: "contrast",
-    }),
-    /empty body/,
-  );
-});
 
 // ── B 面临时融合发现 ────────────────────────────────────────────
 
@@ -873,7 +612,6 @@ test("temporary fusion creation is stable across retry and service restart", asy
     new TermDetectionService(),
     async () => gateway,
     () => new Date(harness.now),
-    harness.service.research,
   );
   const second = await restarted.scan("node-a");
   assert.equal(second.temporaryFusionCount, 1);
@@ -998,29 +736,6 @@ test("identical draft wording from different source sets remains independently t
   const sourceDomains = bundles.map((node) => harness.store.getTemporaryFusionBundle(node.id)!.candidateSources
     .map((source) => source.sourceNodeId).sort().join(","));
   assert.deepEqual(sourceDomains.sort(), ["node-a,node-b", "node-a,node-c"]);
-});
-
-test("unchanged evidence never bypasses an existing user proposal decision", async (t) => {
-  const harness = await createFusionHarness({ similarityVerifier: qualifyingTemporaryFusionGateway() });
-  t.after(harness.close);
-  const initial = await harness.service.fusionProposals.scan("node-a");
-  await harness.service.fusionProposals.decide(initial.proposals[0]!.id, "accepted");
-  await harness.store.saveSetting(AUTO_FUSION_SETTING_KEY, "true");
-
-  const result = await harness.service.fusionProposals.scan("node-a");
-  assert.equal(result.proposals[0]?.status, "accepted");
-  assert.equal(result.temporaryFusionCount, 0);
-});
-
-test("manual confirmation remains an explicit formal path", async (t) => {
-  const harness = await createFusionHarness();
-  t.after(harness.close);
-  const { service, store } = harness;
-  const { proposals: [proposal] } = await service.fusionProposals.scan("node-a");
-  const accepted = await service.fusionProposals.confirmFusion(proposal!.id, "fusion-idempotency-manual");
-  assert.equal(store.getResearchNode(accepted.node.id)?.isFusionNode, true);
-  assert.equal(store.listTemporaryFusionNodes().length, 0);
-  assert.equal(accepted.task.idempotencyKey, "fusion-idempotency-manual");
 });
 
 /** 护栏测试共用的概念节点构造器（可选标记为融合成果）。 */
@@ -1163,41 +878,6 @@ test("正式融合节点数量不阻塞独立的临时候选扫描", async (t) =
   assert.equal(verifierCalls, 1);
   assert.equal(result.proposals.length, 1);
   assert.equal(result.temporaryFusionCount, 0);
-});
-
-test("融合护栏：涉及融合节点的提议不再可确认；会话超上限也不可确认", async (t) => {
-  const harness = await createHarness();
-  t.after(harness.close);
-  const now = harness.now;
-  const baseProposal: ResearchFusionProposalRecord = {
-    id: researchFusionProposalId("node-a", "node-b"),
-    loNodeId: "node-a",
-    hiNodeId: "node-b",
-    relationType: "identity",
-    reason: "测试用直接构造的提议。",
-    status: "pending",
-    triggerSources: [],
-    verification: { promptVersion: SIMILARITY_VERIFICATION_PROMPT_VERSION, sourceSliceIds: [], sourceFragmentIds: [], tokenBudget: SIMILARITY_VERIFICATION_TOKEN_BUDGET },
-    createdAt: now,
-    updatedAt: now,
-  };
-  await addConceptNode(harness, "node-f", { fusion: true });
-  await harness.store.createResearchFusionProposal({ ...baseProposal, id: researchFusionProposalId("node-a", "node-f"), hiNodeId: "node-f" });
-  const dummyResearch = {} as unknown as import("@collector/api").ResearchSessionService;
-  const service = new ResearchFusionProposalService(harness.store, new TermDetectionService(), async () => undefined, () => new Date(now), dummyResearch);
-  await assert.rejects(
-    () => service.confirmFusion(researchFusionProposalId("node-a", "node-f"), "fuse:fusion-pair"),
-    /not ingredients/,
-  );
-
-  for (let index = 0; index < 12; index += 1) {
-    await addConceptNode(harness, `node-fusion-${index}`, { fusion: true });
-  }
-  await harness.store.createResearchFusionProposal(baseProposal);
-  await assert.rejects(
-    () => service.confirmFusion(baseProposal.id, "fuse:cap"),
-    /fusion node limit/,
-  );
 });
 
 test("融合护栏：候选集合未变化的重复扫描在冷却窗口内不再核验", async (t) => {

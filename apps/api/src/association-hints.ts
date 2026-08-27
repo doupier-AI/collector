@@ -128,11 +128,10 @@ export class AssociationHintService {
   ) {}
 
   /**
-   * 任务完成钩子入口（fire-and-forget 也可 await）。融合任务的正文是综合产物，
-   * 其提示与 B 面候选观察一并由后续票据处理，本服务只扫普通研究回答。
+   * 任务完成钩子入口（fire-and-forget 也可 await）。
    */
   async scheduleScanForCompletedTask(task: ResearchTaskRecord): Promise<void> {
-    if (!task.nodeId || !task.outputMessageId || task.fusionPlan) return;
+    if (!task.nodeId || !task.outputMessageId) return;
     const nodeId = task.nodeId;
     const messageId = task.outputMessageId;
     const previous = this.scanChains.get(nodeId) ?? Promise.resolve();

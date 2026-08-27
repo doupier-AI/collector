@@ -47,7 +47,6 @@ import type {
   ResearchTemporaryFusionDraftHistory,
   UpdateTemporaryFusionDraftInput,
   UpdateTemporaryFusionDraftResult,
-  ResearchFusionProposalDecision,
   ResearchFusionProposalRecord,
   ResearchFusionScanResult,
   ResearchNodeView,
@@ -161,9 +160,6 @@ export interface ApiClient {
    */
   scanResearchFusionProposals(nodeId: string): Promise<ResearchFusionScanResult>;
   listResearchFusionProposals(nodeId: string, status?: ResearchFusionProposalRecord["status"]): Promise<ResearchFusionProposalRecord[]>;
-  decideResearchFusionProposal(proposalId: string, decision: ResearchFusionProposalDecision): Promise<ResearchFusionProposalRecord>;
-  /** #31：确认式融合——确认后创建融合节点并返回首轮结果，客户端跳转到融合节点页。 */
-  fuseResearchFusionProposal(proposalId: string, idempotencyKey: string): Promise<NodeGrowthAccepted>;
   /** #69/#70：按产品价值读取当前节点的活跃临时关联提示（客户端只突出第一条，其余留给候选观察）。 */
   listAssociationHints(nodeId: string): Promise<ResearchAssociationHintRecord[]>;
   /** #69：明确忽略提示；幂等，重复忽略返回同一记录。忽略不创建任何永久事实。 */
@@ -692,20 +688,6 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
       return requestJson<ResearchFusionProposalRecord[]>(
         fetchFn,
         `/v1/research-nodes/${encodeURIComponent(nodeId)}/fusion-proposals${query}`,
-      );
-    },
-    decideResearchFusionProposal(proposalId: string, decision: ResearchFusionProposalDecision) {
-      return requestJson<ResearchFusionProposalRecord>(
-        fetchFn,
-        `/v1/research-fusion-proposals/${encodeURIComponent(proposalId)}/decide`,
-        { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ decision }) },
-      );
-    },
-    fuseResearchFusionProposal(proposalId: string, idempotencyKey: string) {
-      return requestJson<NodeGrowthAccepted>(
-        fetchFn,
-        `/v1/research-fusion-proposals/${encodeURIComponent(proposalId)}/fuse`,
-        { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ idempotencyKey }) },
       );
     },
     listAssociationHints(nodeId: string) {

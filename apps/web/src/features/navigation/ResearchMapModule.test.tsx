@@ -10,18 +10,18 @@ import { makeEdge, makeGraphNodeSummary, makeGraphProjection, makeNode, makeNode
 import { ResearchMapModule } from "./ResearchMapModule";
 import type { ResearchMapMode } from "./useResearchMap";
 
-/** 焦点 + 父 + 子 + 语义邻居的投影：专注模式血统链与关联区都有内容。 */
+/** 焦点 + 父 + 子 + 融合来源的投影：专注模式血统链与关联区都有内容。 */
 function moduleProjection() {
   const parent = makeGraphNodeSummary("parent", "父节点", 1);
   const focus = makeGraphNodeSummary("focus", "当前节点", 0, { parentNodeId: "parent" });
   const child = makeGraphNodeSummary("child", "子节点", 1, { parentNodeId: "focus" });
-  const related = makeGraphNodeSummary("related", "语义邻居", 1);
+  const fused = makeGraphNodeSummary("fused", "融合来源", 1);
   const edges = [
     makeEdge("parent-child", "parent", "focus"),
     makeEdge("parent-child", "focus", "child"),
-    makeEdge("semantic-related", "focus", "related"),
+    makeEdge("fused-from", "fused", "focus"),
   ];
-  return makeGraphProjection({ nodes: [parent, focus, child, related], edges, focusNodeId: "focus" });
+  return makeGraphProjection({ nodes: [parent, focus, child, fused], edges, focusNodeId: "focus" });
 }
 
 /** 用真实 state 驱动 mode prop，使模式切换按钮可测试。 */
@@ -105,23 +105,22 @@ describe("ResearchMapModule", () => {
     expect(await within(dialog).findByRole("list", { name: "节点关系列表" })).toBeInTheDocument();
   });
 
-  it("筛选工具栏共享一份状态：专注模式关闭语义后，血统链与关联区同步更新", async () => {
+  it("筛选工具栏共享一份状态：专注模式关闭融合后，血统链与关联区同步更新", async () => {
     const user = userEvent.setup();
     renderModule({ getResearchGraph: async () => moduleProjection() });
 
     const dialog = screen.getByRole("dialog", { name: "研究地图" });
     await within(dialog).findByRole("list", { name: "专注脉络" });
-    // 语义邻居在关联区可见
-    expect(within(dialog).getByRole("button", { name: "语义邻居" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "融合来源" })).toBeInTheDocument();
 
-    await user.click(within(dialog).getByTestId("map-filter-semantic-related"));
-    expect(within(dialog).getByTestId("map-filter-semantic-related")).toHaveAttribute("aria-pressed", "false");
-    // 关联区空态（语义被过滤）
+    await user.click(within(dialog).getByTestId("map-filter-fused-from"));
+    expect(within(dialog).getByTestId("map-filter-fused-from")).toHaveAttribute("aria-pressed", "false");
+    // 关联区空态（融合来源被过滤）
     expect(await within(dialog).findByText("当前筛选没有可见的关系。")).toBeInTheDocument();
 
-    // 全部复位后语义邻居回来
+    // 全部复位后融合来源回来
     await user.click(within(dialog).getByTestId("map-filter-all"));
-    expect(await within(dialog).findByRole("button", { name: "语义邻居" })).toBeInTheDocument();
+    expect(await within(dialog).findByRole("button", { name: "融合来源" })).toBeInTheDocument();
   });
 
   it("Escape 关闭并回调 onClose；遮罩点击同样关闭", async () => {

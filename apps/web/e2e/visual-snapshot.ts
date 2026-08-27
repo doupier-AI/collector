@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { expect, type Locator, type Page, type TestInfo } from "@playwright/test";
 import pixelmatch from "pixelmatch";
 import { PNG } from "pngjs";
@@ -93,6 +93,7 @@ export interface TextLayoutContract {
 
 interface FontRasterScreenshotOptions {
   textLayoutSelector: string;
+  expectedTextLayout: TextLayoutContract;
   fontColor: readonly [number, number, number, number];
   mask?: Locator[];
   maskColor?: string;
@@ -129,7 +130,10 @@ export async function expectScreenshotWithFontRasterRegions(
   testInfo: TestInfo,
   options: FontRasterScreenshotOptions,
 ): Promise<void> {
-  const textLayout = await assertTextLayoutContract(target, snapshotName, testInfo, options);
+  expectExactTextLayoutContract(
+    await readTextLayoutContract(target, options.textLayoutSelector),
+    options.expectedTextLayout,
+  );
   const expectedPath = testInfo.snapshotPath(snapshotName);
   const updateMode = testInfo.config.updateSnapshots;
   if (
@@ -161,7 +165,7 @@ export async function expectScreenshotWithFontRasterRegions(
   const comparison = compareScreenshotsWithFontRasterRegions(
     expected,
     actual,
-    textLayout.regions.flatMap((region) => region.lines),
+    options.expectedTextLayout.regions.flatMap((region) => region.lines),
     options.fontColor,
   );
 
@@ -195,7 +199,10 @@ export async function expectPageScreenshotWithFontRasterRegions(
   testInfo: TestInfo,
   options: PageFontRasterScreenshotOptions,
 ): Promise<void> {
-  const textLayout = await assertTextLayoutContract(options.textLayoutTarget, snapshotName, testInfo, options);
+  expectExactTextLayoutContract(
+    await readTextLayoutContract(options.textLayoutTarget, options.textLayoutSelector),
+    options.expectedTextLayout,
+  );
   const expectedPath = testInfo.snapshotPath(snapshotName);
   const updateMode = testInfo.config.updateSnapshots;
   if (
@@ -223,7 +230,7 @@ export async function expectPageScreenshotWithFontRasterRegions(
   const layoutBox = await options.textLayoutTarget.boundingBox();
   expect(layoutBox, "字体栅格区域对应的正文卡片必须可见").not.toBeNull();
   const fontRasterRegions = translateAndClipSnapshotRects(
-    textLayout.regions.flatMap((region) => region.lines),
+    options.expectedTextLayout.regions.flatMap((region) => region.lines),
     { x: layoutBox!.x, y: layoutBox!.y },
     { width: actualPng.width, height: actualPng.height },
   );
@@ -250,31 +257,6 @@ export async function expectPageScreenshotWithFontRasterRegions(
     comparison.diffRatio,
     `${snapshotName} 排除已锁定字体栅格区域后仍有 ${comparison.diffPixels} 个差异像素（${(comparison.diffRatio * 100).toFixed(3)}%）`,
   ).toBeLessThanOrEqual(MAX_DIFF_PIXEL_RATIO);
-}
-
-async function assertTextLayoutContract(
-  target: Locator,
-  screenshotName: string,
-  testInfo: TestInfo,
-  options: FontRasterScreenshotOptions,
-): Promise<TextLayoutContract> {
-  const actual = await readTextLayoutContract(target, options.textLayoutSelector);
-  const imageSnapshotPath = testInfo.snapshotPath(screenshotName);
-  const layoutSnapshotPath = imageSnapshotPath.replace(/\.png$/, ".text-layout.json");
-  const serialized = `${JSON.stringify(actual, null, 2)}\n`;
-  const updateMode = testInfo.config.updateSnapshots;
-  if (updateMode === "all" || updateMode === "changed") {
-    await writeFile(layoutSnapshotPath, serialized, "utf8");
-  } else {
-    const expected = JSON.parse(
-      await readFile(layoutSnapshotPath, "utf8"),
-    ) as TextLayoutContract;
-    expect(
-      actual,
-      "正文内容、颜色、字体度量、逐行布局和渲染祖先必须与文字布局基线完全一致",
-    ).toEqual(expected);
-  }
-  return actual;
 }
 
 export function translateAndClipSnapshotRects(

@@ -669,9 +669,12 @@ test("migration v30 recreates research_fusion_proposals after a v29 rollback", a
 
   const database = new DatabaseSync(databasePath, { readOnly: true });
   const columns = (database.prepare("PRAGMA table_info(research_fusion_proposals)").all() as Array<{ name: string }>).map((column) => column.name);
-  for (const column of ["id", "lo_node_id", "hi_node_id", "relation_type", "reason", "status", "cooldown_until", "created_at", "record_json"]) {
+  for (const column of ["id", "lo_node_id", "hi_node_id", "relation_type", "reason", "status", "created_at", "updated_at", "record_json"]) {
     assert.ok(columns.includes(column), `migration v30 should recreate ${column}`);
   }
+  assert.ok(!columns.includes("cooldown_until"), "retired proposal decisions must not recreate cooldown state");
+  const tableSql = (database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'research_fusion_proposals'").get() as { sql: string }).sql;
+  assert.match(tableSql, /CHECK\s*\(status\s*=\s*'pending'\)/i, "proposal rows are read-only pending audit records");
   const indexes = database.prepare("PRAGMA index_list(research_fusion_proposals)").all() as Array<{ name: string; unique: number }>;
   assert.ok(indexes.some((index) => index.name === "research_fusion_proposals_status_idx"));
   assert.ok(indexes.some((index) => index.unique === 1), "normalized node pair must stay unique");

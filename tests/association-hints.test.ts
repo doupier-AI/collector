@@ -565,7 +565,7 @@ test("后台价值重评只有成功判为不足时才过期；评估失败保�
   assert.equal(harness.store.listAssociationHints("active")[0]?.id, fresh.id, "模型评估失败不能误过期已有候选");
 });
 
-test("任务包装：无输出消息或融合任务不触发扫描；同一消息重复调度只写一条", async (t) => {
+test("任务包装：无输出消息不触发扫描；同一消息重复调度只写一条", async (t) => {
   const harness = await createHarness({ search: { async search() { return searchResponseFor(harness!); } } });
   t.after(harness.close);
   let searchCalls = 0;
@@ -586,17 +586,13 @@ test("任务包装：无输出消息或融合任务不触发扫描；同一消�
   const callsAfterDirect = searchCalls;
   assert.ok(callsAfterDirect > 0);
 
-  // 融合任务：不触发。
-  await counting.scheduleScanForCompletedTask({ ...baseTask, id: "task-2", fusionPlan: { sources: [], relationType: "contrast" } } as unknown as ResearchTaskRecord);
-  assert.equal(searchCalls, callsAfterDirect, "融合任务不得触发提示扫描");
-
   // 无输出消息：不触发。
-  await counting.scheduleScanForCompletedTask({ ...baseTask, id: "task-3", outputMessageId: undefined } as unknown as ResearchTaskRecord);
+  await counting.scheduleScanForCompletedTask({ ...baseTask, id: "task-2", outputMessageId: undefined } as unknown as ResearchTaskRecord);
   assert.equal(searchCalls, callsAfterDirect);
 
   // 正常任务重复调度：幂等键相同，最终仍只有一条提示行。
   await counting.scheduleScanForCompletedTask(baseTask);
-  await counting.scheduleScanForCompletedTask({ ...baseTask, id: "task-4" });
+  await counting.scheduleScanForCompletedTask({ ...baseTask, id: "task-3" });
   assert.equal(harness.counts().hints, 1, "同一证据重复扫描仍只保留一条提示");
 });
 

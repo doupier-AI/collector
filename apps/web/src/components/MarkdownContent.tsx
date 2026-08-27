@@ -1,9 +1,8 @@
 import { type ReactNode, useMemo, useRef } from "react";
 import ReactMarkdown from "react-markdown";
-import type { ResearchCitationRecord, ResearchFusionSource, ResearchGroundingSourceRecord, TermMarker } from "@collector/capture-contracts";
+import type { ResearchCitationRecord, ResearchGroundingSourceRecord, TermMarker } from "@collector/capture-contracts";
 import { CitationMarker } from "./CitationMarker";
 import { buildCitationIndex, buildSourceMap } from "../features/research-session/citation-utils";
-import { FusionCitationMarker } from "../features/research-session/FusionCitationMarker";
 import {
   markdownRehypePlugins,
   markdownRemarkPlugins,
@@ -28,8 +27,6 @@ export interface MarkdownContentProps {
   sources?: readonly ResearchGroundingSourceRecord[];
   citations?: readonly ResearchCitationRecord[];
   terms?: readonly RenderedTermMarker[];
-  /** #31：融合正文的来源列表；存在时 [来源n] 渲染为可点击的融合引用标记。 */
-  fusionSources?: readonly ResearchFusionSource[];
   variant?: "message" | "insight";
   className?: string;
   /**
@@ -57,7 +54,7 @@ const EMPTY_MARKDOWN_PROJECTION = { text: "", citationBoundaries: [] } as const;
  * - variant="insight" 用于术语预览和推理摘要等紧凑辅助内容
  * - 对极速流式更新做 useMemo 防止闪烁
  */
-export function MarkdownContent({ text, sources = [], citations = [], terms = [], fusionSources, variant = "message", className, titleAnchorId, highlights = [] }: MarkdownContentProps) {
+export function MarkdownContent({ text, sources = [], citations = [], terms = [], variant = "message", className, titleAnchorId, highlights = [] }: MarkdownContentProps) {
   const sourceById = useMemo(() => buildSourceMap(sources), [sources]);
   const citationIndexById = useMemo(() => buildCitationIndex(citations), [citations]);
   // 仅提升"第一个"标题为卡片标题；用 ref 计数，ReactMarkdown 每次渲染重置。
@@ -117,12 +114,6 @@ export function MarkdownContent({ text, sources = [], citations = [], terms = []
   const components = {
     "cite-marker": ({ "data-source-ordinal": ordinalStr }: Record<string, unknown>): ReactNode => {
       const ordinal = Number(ordinalStr);
-      // #31 融合正文：优先按来源列表渲染为融合引用（[来源n] → 来源语义片段深链）。
-      if (fusionSources && fusionSources.length > 0) {
-        const source = fusionSources[ordinal - 1];
-        if (!source || Number.isNaN(ordinal)) return null;
-        return <FusionCitationMarker source={source} />;
-      }
       const citation = (citationByOrdinal.get(ordinal) ?? [])[0];
       if (!citation || Number.isNaN(ordinal)) return null;
       const source = sourceById.get(citation.sourceId);

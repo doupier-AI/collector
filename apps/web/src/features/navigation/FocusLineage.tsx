@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import type { ResearchEdgeKind } from "@collector/capture-contracts";
+import type { ResearchPermanentEdgeKind } from "@collector/capture-contracts";
 import { stableNodePath } from "../../app/paths";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { buildFocusLineage, focusLineageBySelectedKinds } from "./focus-lineage";
@@ -43,7 +43,7 @@ function depthLabel(depth: number): string {
 /**
  * 专注模式（#40）：以当前节点为锚点的局部研究脉络。
  * 祖先链 → 当前节点 → 直接子节点 → 同级（弱化）；底部可折叠「关联」区
- * 呈现语义相关与融合来源邻居（弱化但不删除）。桌面与窄屏共用同一组件，
+ * 呈现融合来源邻居（弱化但不删除）。桌面与窄屏共用同一组件，
  * 布局差异由 CSS 负责。
  */
 export function FocusLineage({
@@ -53,7 +53,7 @@ export function FocusLineage({
 }: {
   sessionId: string;
   focusNodeId: string;
-  selectedEdgeKinds: readonly ResearchEdgeKind[];
+  selectedEdgeKinds: readonly ResearchPermanentEdgeKind[];
 }) {
   const navigate = useNavigate();
   const { state, projection, reload } = useRelationships(sessionId, focusNodeId, true);

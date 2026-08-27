@@ -1157,10 +1157,6 @@ export interface ResearchTaskRecord {
   bodyPlan?: ResearchBodyPlan;
   /** 单轮流式断点：周期性落盘的已接收正文前缀；流被切断/重启后从断点续传，不整篇重来。 */
   streamCheckpoint?: { content: string; updatedAt: string; protocolPrefix?: string };
-  /** #31：融合节点生成的来源计划与关系类型；任务处理时消费，存于 record_json。 */
-  fusionPlan?: { sources: ResearchFusionSource[]; relationType: FusionRelationType };
-  /** #31：融合正文完成后解析出的 [来源n] 引用；存于 record_json，节点视图据此组装来源条。 */
-  fusionReferences?: ResearchFusionReference[];
   error?: ResearchTaskError;
   createdAt: string;
   updatedAt: string;
@@ -1199,8 +1195,6 @@ export interface ResearchNodeView {
   fusionProposals?: ResearchFusionProposalRecord[];
   /** #35：按消息 ID 返回正文版本；可选字段，缺失时前端按消息正文渲染。 */
   bodyVersions?: Record<string, ResearchBodyVersionRecord>;
-  /** #31：按消息 ID 返回该消息引用的融合来源；可选字段，缺失时前端不渲染来源条。 */
-  fusionSources?: Record<string, ResearchFusionSource[]>;
   /** 正式融合确认稿是独立于可继续对话消息的不可变正文。 */
   confirmedFusion?: ResearchConfirmedFusionSnapshotRecord;
   /** 正式融合直接来源的当前健康投影；快照本身仍只保存确认时的固定事实。 */
@@ -3599,21 +3593,12 @@ export const TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION = "temporary-fusion-disco
 /** 临时融合完整草案的固定输出预算。 */
 export const TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET = 4_096;
 
-/** 融合正文生成的独立提示词版本（#31 F2）；模型调用与运行记录留痕都使用这一稳定版本。 */
-export const FUSION_COMPOSE_PROMPT_VERSION = "fusion-compose-v1";
-
-/** 融合正文生成的固定令牌预算；与提示词 maxTokens 一致，随运行记录留痕。
- *  ADR-0031 起由 4_000 提高：融合正文同样注入弱标记指令，thinking 模型的推理与正文
- *  共用该预算，4_000 会被推理耗尽导致正文为空（#86 融合场景实测超时）。 */
-export const FUSION_COMPOSE_TOKEN_BUDGET = 8_192;
-
 /** 融合关系类型；identity 为同一实体，unrelated 为无关。 */
 export const FUSION_RELATION_TYPES = ["identity", "shared-concept", "analogy", "contrast", "unrelated"] as const;
 export type FusionRelationType = (typeof FUSION_RELATION_TYPES)[number];
 
-/** 融合提议状态：pending 待决策，accepted 已确认，rejected 已拒绝。 */
-export type ResearchFusionProposalStatus = "pending" | "accepted" | "rejected";
-export type ResearchFusionProposalDecision = Exclude<ResearchFusionProposalStatus, "pending">;
+/** 相似性核验记录只作为临时融合发现的审计锚点，不承载用户决策。 */
+export type ResearchFusionProposalStatus = "pending";
 
 /**
  * 触发来源：哪个语义片段命中触发此提议。
@@ -3661,8 +3646,6 @@ export interface ResearchFusionProposalRecord {
   relationType: FusionRelationType;
   reason: string;
   status: ResearchFusionProposalStatus;
-  /** 拒绝后的冷却截止时间（ISO 8601），冷却期内不重复提议。 */
-  cooldownUntil?: string;
   /** 触发来源信息。 */
   triggerSources: FusionProposalTriggerSource[];
   /** 模型核验的版本、所选切片和固定令牌预算，供本地审计。 */
@@ -3680,10 +3663,6 @@ export interface ResearchFusionScanResult {
   temporaryFusionCount: number;
 }
 
-export interface ResearchFusionProposalDecisionInput {
-  decision: ResearchFusionProposalDecision;
-}
-
 /** 将节点对统一为无方向的字典序键。 */
 export function normalizeResearchFusionProposalPair(nodeAId: string, nodeBId: string): { loNodeId: string; hiNodeId: string } {
   if (!nodeAId.trim() || !nodeBId.trim()) throw new Error("Fusion proposal node IDs are required");
@@ -3691,12 +3670,6 @@ export function normalizeResearchFusionProposalPair(nodeAId: string, nodeBId: st
   return nodeAId < nodeBId
     ? { loNodeId: nodeAId, hiNodeId: nodeBId }
     : { loNodeId: nodeBId, hiNodeId: nodeAId };
-}
-
-export function validateResearchFusionProposalDecisionInput(value: unknown): asserts value is ResearchFusionProposalDecisionInput {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Fusion proposal decision input must be an object");
-  const decision = (value as { decision?: unknown }).decision;
-  if (decision !== "accepted" && decision !== "rejected") throw new Error("decision must be accepted or rejected");
 }
 
 /**
@@ -3718,13 +3691,7 @@ function fusionFnv1a32(input: string): string {
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
-// ── Fusion Node Generation (F2) ───────────────────────────────────
-
-/**
- * #31：融合正文的一个来源（贡献切片）。由确认时的提案触发来源派生，
- * 携带正文版本与稳定片段标识——融合引用可经 `resolveFragmentExcerpt`
- * 逐字回读到来源原文。
- */
+/** 正式融合直接来源的稳定身份与当前健康投影。 */
 export interface ResearchFusionSource {
   /** 来源节点 ID。 */
   nodeId: string;
@@ -3732,60 +3699,10 @@ export interface ResearchFusionSource {
   bodyVersionId: string;
   /** 贡献语义片段 ID。 */
   fragmentId: string;
-  /** 来源节点标签（displayName/选区摘要回退），供融合提示词与 UI 展示。 */
+  /** 来源节点标签（displayName/选区摘要回退），供 UI 展示。 */
   label: string;
   /** 当前来源可用性；缺失时兼容既有来源条并按 available 呈现。 */
   health?: ResearchSourceHealth;
-  /** 对应切片 ID（如有）；供运行记录 sourceSliceIds 记账。 */
+  /** 对应切片 ID（如有）。 */
   sliceId?: string;
-}
-
-/**
- * #31：融合正文中的一条 [来源n] 引用。sourceOrdinal 为 1-based 序号，
- * 指向融合计划的 sources[sourceOrdinal - 1]；blockOrdinal/markerOffset
- * 与选区锚点同一派生规则（`deriveMessageBlocks`），可精确定位。
- * nodeId/bodyVersionId/fragmentId 为冗余快照，保证来源信息不随计划变化漂移。
- */
-export interface ResearchFusionReference {
-  sourceOrdinal: number;
-  blockOrdinal: number;
-  /** 标记在块文本内的字符偏移。 */
-  markerOffset: number;
-  nodeId: string;
-  bodyVersionId: string;
-  fragmentId: string;
-}
-
-/**
- * #31：从融合正文确定性解析 [来源n] 引用标记。n 必须在来源数组范围内，
- * 超界的标记静默丢弃（不产生引用，也不报错）。偏移按 `deriveMessageBlocks`
- * 的段落块计算：先按全文找 [来源n]，再把标记偏移归入所属块并转为块内偏移。
- */
-export function parseFusionReferences(
-  content: string,
-  sources: readonly ResearchFusionSource[],
-): ResearchFusionReference[] {
-  if (sources.length === 0) return [];
-  const blocks = deriveMessageBlocks(content);
-  const markerPattern = /\[来源(\d+)\]/g;
-  const references: ResearchFusionReference[] = [];
-  let match: RegExpExecArray | null;
-  while ((match = markerPattern.exec(content)) !== null) {
-    const sourceOrdinal = Number(match[1]);
-    const source = sources[sourceOrdinal - 1];
-    if (!source) continue;
-    const markerStart = match.index;
-    const block = blocks.find((candidate) => markerStart >= candidate.startOffset
-      && markerStart < candidate.startOffset + candidate.text.length);
-    if (!block) continue;
-    references.push({
-      sourceOrdinal,
-      blockOrdinal: block.ordinal,
-      markerOffset: markerStart - block.startOffset,
-      nodeId: source.nodeId,
-      bodyVersionId: source.bodyVersionId,
-      fragmentId: source.fragmentId,
-    });
-  }
-  return references;
 }

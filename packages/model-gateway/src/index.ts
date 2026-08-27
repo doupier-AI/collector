@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { ASSOCIATION_HINT_BENEFITS, ASSOCIATION_HINT_EVALUATION_PROMPT_VERSION, FUSION_COMPOSE_PROMPT_VERSION, FUSION_COMPOSE_TOKEN_BUDGET, FUSION_RELATION_TYPES, IMPORT_CHAPTER_PARSE_PROMPT_VERSION, IMPORT_CHAPTER_PARSE_TOKEN_BUDGET, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET, TERM_IDENTITY_CONTEXT_MAX_CHARACTERS, TERM_IDENTITY_TEXT_MAX_CHARACTERS, TERM_IDENTITY_VERIFY_PROMPT_VERSION, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchAssociationHintBenefit, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSliceContext, type TermIdentityVerificationRequest } from "@collector/capture-contracts";
+import { ASSOCIATION_HINT_BENEFITS, ASSOCIATION_HINT_EVALUATION_PROMPT_VERSION, FUSION_RELATION_TYPES, IMPORT_CHAPTER_PARSE_PROMPT_VERSION, IMPORT_CHAPTER_PARSE_TOKEN_BUDGET, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET, TERM_IDENTITY_CONTEXT_MAX_CHARACTERS, TERM_IDENTITY_TEXT_MAX_CHARACTERS, TERM_IDENTITY_VERIFY_PROMPT_VERSION, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchAssociationHintBenefit, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSliceContext, type TermIdentityVerificationRequest } from "@collector/capture-contracts";
 
 export interface ProviderUsage {
   inputTokens?: number;
@@ -300,7 +300,7 @@ export function formatResearchParentChainContext(
   return lines.join("\n");
 }
 
-export type MentionMarkupScenario = "conversation" | "long_form_section" | "deep_research" | "grounded" | "fusion";
+export type MentionMarkupScenario = "conversation" | "long_form_section" | "deep_research" | "grounded";
 
 /** AI 正文与弱标记共用的流内控制说明；场景只标识调用入口，深度决定是否/多少标记。 */
 export function formatMentionMarkupInstructions(input: { scenario: MentionMarkupScenario; nodeDepth: number }): string {
@@ -1333,69 +1333,6 @@ ${sourceLines}
       throw new Error("Temporary fusion discovery returned an invalid positive result");
     }
     return { hasNovelInsight: true, body, usedSourceNodeIds };
-  }
-
-  /**
-   * #31 F2：生成融合节点正文。输入各来源的片段摘录与关系类型，输出连贯中文
-   * Markdown 正文（自由正文，不返回 JSON）：必须含「共同核心 / 差异 / 综合推导」
-   * 三节，正文以 [来源n] 标记引用对应来源。关系类型指导显式区分同一实体/
-   * 同名异义/改编/类比/对比——跨作品、跨领域的同名概念默认对比或联想，
-   * 仅在证据支持时才让位更强断言（与相似性核验同一判断方向）。
-   */
-  async composeFusion(
-    input: {
-      sources: Array<{ nodeId: string; title: string; excerpt: string }>;
-      relationType: FusionRelationType;
-    },
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number } = {},
-  ): Promise<string> {
-    if (input.sources.length < 2) throw new Error("Fusion requires at least two sources");
-    const relationGuidance: Record<FusionRelationType, string> = {
-      identity: "这些来源描述同一实体：以合并共同核心为主，差异节说明同一实体的不同侧面。",
-      "shared-concept": "这些来源共享概念但不等同：共同核心节说明共享概念，差异节说明各自边界与侧重。",
-      analogy: "这些来源是类比或相似结构：差异节显式说明来源分属不同作品/领域，跨作品、跨领域的同名概念默认是类比或联想，仅在证据支持时才可让位更强的断言。",
-      contrast: "这些来源是可比较的差异或对照：差异节显式说明来源分属不同作品/领域，跨作品、跨领域的同名概念默认是对比或联想，仅在证据支持时才可让位更强的断言。",
-      unrelated: "这些来源没有可解释的关联：共同核心只写证据可见的交集，差异节说明材料不足以支持更强关系。",
-    };
-    const sourceLines = input.sources.map((source, index) => {
-      const ordinal = index + 1;
-      return `来源${ordinal}（${source.title}，节点 ${source.nodeId}）：\n${JSON.stringify(source.excerpt.slice(0, 8_000))}`;
-    }).join("\n\n");
-    const mentionInstructions = formatMentionMarkupInstructions({ scenario: "fusion", nodeDepth: options.nodeDepth ?? 0 });
-    const prompt = `你是 Collector 的融合总结助手。用户确认了 ${input.relationType} 关系，请把下面多个来源综合为一篇融合节点正文。
-
-关系判断：${relationGuidance[input.relationType]}
-
-来源材料：
-${sourceLines}
-
-输出要求：
-- 输出一篇连贯的中文 Markdown 正文，不使用代码围栏，不返回 JSON。
-- 正文必须按顺序包含三个二级标题章节：## 共同核心、## 差异、## 综合推导。
-  ## 共同核心 写各来源共同点；## 差异 写各来源差异（对比/类比关系时重点展开）；## 综合推导 写融合后的增量综合与结论。
-- 正文以 [来源n] 标记引用对应来源（n 为来源序号），同一处可同时引用多个来源如 [来源1][来源2]；每条断言都应可追溯到来源材料。
-- 只使用提供的来源材料，不补充外部事实、不编造来源。
-
-${mentionInstructions}`;
-    const context: ModelCallContext = {
-      ...(options.context ?? {}),
-      purpose: options.context?.purpose ?? "fusion_compose",
-      promptVersion: options.context?.promptVersion ?? FUSION_COMPOSE_PROMPT_VERSION,
-    };
-    const response = await this.complete({
-      prompt,
-      model: options.model ?? this.modelName,
-      // #86 直连探针证据：deepseek-v4-flash 思考模式在融合提示词（密度标记指令 + 固定章节 +
-      // [来源n] 引用 + 来源材料）下推理不收敛——8192 与 16384 预算均为 finish_reason=length、
-      // 推理耗尽、正文 0 字；关闭思考模式 10.5s 产出契约合规正文（finish_reason=stop）。
-      // 融合是给定来源材料的整理任务，固定关闭思考模式。
-      thinking: false,
-      maxTokens: options.maxTokens ?? FUSION_COMPOSE_TOKEN_BUDGET,
-      timeoutMs: options.timeoutMs ?? 120_000,
-    }, context);
-    const content = response.content.trim();
-    if (!content) throw new Error("Fusion provider returned an empty body");
-    return content;
   }
 
   /**

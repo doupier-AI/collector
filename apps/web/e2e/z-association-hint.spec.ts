@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import {
+  ASSOCIATION_PANEL_DESKTOP_TEXT_LAYOUT,
+  ASSOCIATION_PANEL_MOBILE_TEXT_LAYOUT,
   ASSOCIATION_PANEL_TEXT_SELECTOR,
 } from "./association-candidate-visual-contracts";
 import { pairAndOpen, trackBrowserIssues } from "./helpers";
@@ -35,7 +37,7 @@ test.describe("#69/#70 临时关联提示与地图候选观察", () => {
     page.on("request", (request) => {
       if (request.method() !== "POST") return;
       const url = request.url();
-      if (url.includes("/fusion-proposals") || url.includes("/research-edges") || url.includes("/fuse")) {
+      if (url.includes("/fusion-proposals") || url.includes("/research-edges")) {
         permanentWrites.push(`${request.method()} ${url}`);
       }
     });
@@ -101,6 +103,7 @@ test.describe("#69/#70 临时关联提示与地图候选观察", () => {
       testInfo,
       {
         textLayoutSelector: ASSOCIATION_PANEL_TEXT_SELECTOR,
+        expectedTextLayout: ASSOCIATION_PANEL_DESKTOP_TEXT_LAYOUT,
         fontColor: [32, 35, 31, 255],
       },
     );
@@ -178,6 +181,7 @@ test.describe("#69/#70 临时关联提示与地图候选观察", () => {
       testInfo,
       {
         textLayoutSelector: ASSOCIATION_PANEL_TEXT_SELECTOR,
+        expectedTextLayout: ASSOCIATION_PANEL_MOBILE_TEXT_LAYOUT,
         fontColor: [32, 35, 31, 255],
       },
     );

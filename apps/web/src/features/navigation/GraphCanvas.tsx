@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent, WheelEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import type {
-  ResearchEdgeKind,
+  ResearchPermanentEdgeKind,
   ResearchGraphNodeSummary,
 } from "@collector/capture-contracts";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
@@ -23,9 +23,8 @@ const NODE_RADIUS = 24;
 const RING_SPACING = 130;
 
 /** 边类型的 SVG 线型：实线 / 虚线 / 点划线。与颜色同时编码，色觉障碍可分辨。 */
-const EDGE_DASH: Record<ResearchEdgeKind, string> = {
+const EDGE_DASH: Record<ResearchPermanentEdgeKind, string> = {
   "parent-child": "none",
-  "semantic-related": "7 4",
   "fused-from": "10 3 3 3",
 };
 
@@ -93,8 +92,8 @@ export function GraphCanvas({
   sessionId: string;
   focusNodeId: string;
   onClose: () => void;
-  selectedEdgeKinds?: readonly ResearchEdgeKind[];
-  onToggleEdgeKind?: (kind: ResearchEdgeKind) => void;
+  selectedEdgeKinds?: readonly ResearchPermanentEdgeKind[];
+  onToggleEdgeKind?: (kind: ResearchPermanentEdgeKind) => void;
   onResetEdgeKinds?: () => void;
 }) {
   const navigate = useNavigate();
@@ -437,30 +436,13 @@ export function GraphCanvas({
                     if (!from || !to) return null;
                     const color = `var(--color-edge-${edge.kind})`;
                     const dash = EDGE_DASH[edge.kind];
-                    // #44 方向端点：父子边 父→子（toNodeId 为子）、融合来源边 来源→当前；
-                    // 语义相关无方向，不加箭头（方向不是其语义）。
+                    // 方向端点：父子边父→子（toNodeId 为子），融合来源边来源→成果。
                     const marker =
                       edge.kind === "parent-child"
                         ? "url(#arrow-parent-child)"
                         : edge.kind === "fused-from"
                           ? "url(#arrow-fused-from)"
                           : undefined;
-                    // 边中点：标签与箭头共享同一偏移点；融合边双线各偏 3px，标签置于两线之间。
-                    const midX = (from.x + to.x) / 2;
-                    const midY = (from.y + to.y) / 2;
-                    const edgeLabel =
-                      edge.kind === "semantic-related" ? (
-                        <text
-                          className="graph-canvas__edge-label"
-                          x={midX}
-                          y={midY - 6}
-                          textAnchor="middle"
-                          aria-hidden="true"
-                        >
-                          {EDGE_KIND_LABELS[edge.kind]}
-                        </text>
-                      ) : null;
-
                     if (edge.kind === "fused-from") {
                       // 双线加点划线：即使没有颜色也能与其他两类边区分；端点箭头落在收敛端（当前节点侧）。
                       const dx = to.x - from.x;
@@ -491,7 +473,6 @@ export function GraphCanvas({
                             strokeWidth={1.5}
                             strokeDasharray={dash}
                           />
-                          {edgeLabel}
                         </g>
                       );
                     }
@@ -509,7 +490,6 @@ export function GraphCanvas({
                           strokeDasharray={dash}
                           markerEnd={marker}
                         />
-                        {edgeLabel}
                       </g>
                     );
                   })}
@@ -605,12 +585,6 @@ export function GraphCanvas({
               <line x1="0" y1="4" x2="28" y2="4" stroke="var(--color-edge-parent-child)" strokeWidth="2" />
             </svg>
             {EDGE_KIND_LABELS["parent-child"]}（实线）
-          </span>
-          <span className="graph-canvas__legend-item">
-            <svg width="28" height="8" aria-hidden="true">
-              <line x1="0" y1="4" x2="28" y2="4" stroke="var(--color-edge-semantic-related)" strokeWidth="2" strokeDasharray="5 3" />
-            </svg>
-            {EDGE_KIND_LABELS["semantic-related"]}（虚线）
           </span>
           <span className="graph-canvas__legend-item">
             <svg width="28" height="8" aria-hidden="true">

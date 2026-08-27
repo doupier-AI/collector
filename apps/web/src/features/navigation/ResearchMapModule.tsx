@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import type { ResearchEdgeKind } from "@collector/capture-contracts";
+import type { ResearchPermanentEdgeKind } from "@collector/capture-contracts";
 import { useServices } from "../../app/services";
 import { FocusLineage } from "./FocusLineage";
 import { GraphCanvas } from "./GraphCanvas";
@@ -91,8 +91,8 @@ export function ResearchMapModule({
     onToggleEdgeKind: toggleEdgeKind,
     onResetEdgeKinds: resetEdgeKinds,
   } satisfies {
-    selectedEdgeKinds: readonly ResearchEdgeKind[];
-    onToggleEdgeKind: (kind: ResearchEdgeKind) => void;
+    selectedEdgeKinds: readonly ResearchPermanentEdgeKind[];
+    onToggleEdgeKind: (kind: ResearchPermanentEdgeKind) => void;
     onResetEdgeKinds: () => void;
   };
 
@@ -155,7 +155,7 @@ export function ResearchMapModule({
                 onClick={() => toggleEdgeKind(kind)}
                 data-testid={`map-filter-${kind}`}
               >
-                {kind === "parent-child" ? "父子" : kind === "semantic-related" ? "语义" : "融合"}
+                {kind === "parent-child" ? "父子" : "融合"}
               </button>
             );
           })}

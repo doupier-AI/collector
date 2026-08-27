@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchFusionReference, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId } from "@collector/capture-contracts";
 import {
   compareAssociationHintsByValue,
   type ConfirmTemporaryFusionResult,
@@ -179,8 +179,6 @@ export interface ResearchStore {
   getResearchTaskByInput(inputMessageId: string): ResearchTaskRecord | undefined;
   /** plan-then-write：持久化正文大纲与逐节进度，供断点续扩；record_json 整行覆盖。 */
   saveResearchTaskBodyPlan(taskId: string, bodyPlan: ResearchBodyPlan): Promise<void>;
-  /** #31：融合正文完成后写入解析出的 [来源n] 引用；record_json 整行覆盖。 */
-  saveResearchTaskFusionReferences(taskId: string, fusionReferences: ResearchFusionReference[]): Promise<void>;
   /** 单轮流式：持久化已接收的部分正文断点，供切断续传；record_json 整行覆盖。 */
   saveResearchTaskStreamCheckpoint(taskId: string, content: string, protocolPrefix?: string): Promise<void>;
   /** 单轮流式：任务完成后清除断点。 */
@@ -277,22 +275,6 @@ export interface ResearchFusionProposalStore {
   /** 同一规范化节点对幂等，已存在时返回既有记录。 */
   createResearchFusionProposal(proposal: ResearchFusionProposalRecord): Promise<ResearchFusionProposalRecord>;
   saveResearchFusionProposal(proposal: ResearchFusionProposalRecord): Promise<void>;
-  /** #31：按幂等键查找已创建的融合节点首轮任务（重复确认时返回既有结果，不重复建）。 */
-  findResearchFusionTaskByIdempotencyKey(idempotencyKey: string): ResearchTaskRecord | undefined;
-  /** #31：按幂等键查找已创建的融合节点（重复确认时返回既有结果，不重复建）。 */
-  findResearchFusionNodeByIdempotencyKey(idempotencyKey: string): ResearchNodeRecord | undefined;
-  /**
-   * #31：确认式融合事务——同一事务内把提案置为 accepted、幂等创建语义相关边与
-   * 融合来源边、创建融合节点（无父节点）与首轮消息、任务。按 idempotencyKey 幂等。
-   */
-  createResearchFusionTurn(
-    proposal: ResearchFusionProposalRecord,
-    fusedFromEdges: ResearchEdgeRecord[],
-    fusionNode: ResearchNodeRecord,
-    inputMessage: ResearchMessageRecord,
-    outputMessage: ResearchMessageRecord,
-    task: ResearchTaskRecord,
-  ): Promise<NodeGrowthAccepted>;
 }
 
 /** 节点系统目标路径使用的仓储接缝；旧边接口继续服务迁移期实现。 */
@@ -474,7 +456,7 @@ export interface CollectorStore
  * `if (version < N+1)` 版本块（块内写入对应 schema_migrations 行）并递增本常量；
  * 测试以此常量断言「打开/重放后数据库实际到达声明版本」，无需再手工同步多处硬编码断言。
  */
-export const LATEST_SCHEMA_VERSION = 44;
+export const LATEST_SCHEMA_VERSION = 45;
 
 function directSourceIdsForConfirmedDraft(
   draft: ResearchFusionDraftVersionRecord,
@@ -531,7 +513,7 @@ export class SqliteStore implements CollectorStore {
       { source: "research", operationType: "research", table: "research_tasks" },
       { source: "import", operationType: "document_import", table: "research_import_tasks" },
       { source: "chapter", operationType: "chapter_parse", table: "research_chapter_tasks" },
-      // 相似性核验在模型完成时已经结束；提议的 pending/accepted/rejected 是后续用户决定，不是运行状态。
+      // 相似性核验记录只保存已完成的候选审计；pending 是记录形态，不是仍在运行的任务状态。
       { source: "fusion", operationType: "similarity_verification", table: "research_fusion_proposals", statusExpression: "'completed'" },
     ];
     const union = sourceTables.map(({ source, operationType, table, operationColumn, statusExpression }) =>
@@ -883,9 +865,16 @@ export class SqliteStore implements CollectorStore {
       del("DELETE FROM research_term_preview_events WHERE preview_id IN (SELECT id FROM research_term_previews WHERE session_id = ?)", id);
       del("DELETE FROM research_term_previews WHERE session_id = ?", id);
       del(`DELETE FROM research_fusion_proposals WHERE lo_node_id IN (${NODE_SCOPE}) OR hi_node_id IN (${NODE_SCOPE})`, id, id);
-      // 连接记录保存已确认融合的稳定来源身份；边本身不可指向已删除节点。
+      // 只有已确认融合的直接来源边可在来源永久删除后保留：它只携带稳定 ID，
+      // 健康状态由确认快照与来源连接投影为 deleted，绝不回读正文。删除融合成果
+      // 本身时仍清理其入边，避免留下指向已删成果的关系。
       del(`DELETE FROM research_edges
-        WHERE from_node_id IN (${NODE_SCOPE}) OR to_node_id IN (${NODE_SCOPE})`, id, id);
+        WHERE (from_node_id IN (${NODE_SCOPE}) OR to_node_id IN (${NODE_SCOPE}))
+          AND NOT (
+            kind = 'fused-from'
+            AND from_node_id IN (${NODE_SCOPE})
+            AND to_node_id NOT IN (${NODE_SCOPE})
+          )`, id, id, id);
       del("DELETE FROM research_import_tasks WHERE session_id = ?", id);
       del("DELETE FROM research_chapter_tasks WHERE session_id = ?", id);
       del("DELETE FROM research_content_snapshots WHERE session_id = ?", id);
@@ -1393,15 +1382,6 @@ export class SqliteStore implements CollectorStore {
       const task = this.getResearchTask(taskId);
       if (!task) throw new Error("Research task not found");
       this.updateResearchTask({ ...task, bodyPlan, updatedAt: new Date().toISOString() });
-    });
-  }
-
-  /** #31：融合正文完成后写入解析出的 [来源n] 引用（record_json 整行覆盖）。 */
-  async saveResearchTaskFusionReferences(taskId: string, fusionReferences: ResearchFusionReference[]): Promise<void> {
-    this.transaction(() => {
-      const task = this.getResearchTask(taskId);
-      if (!task) throw new Error("Research task not found");
-      this.updateResearchTask({ ...task, fusionReferences, updatedAt: new Date().toISOString() });
     });
   }
 
@@ -2881,8 +2861,8 @@ export class SqliteStore implements CollectorStore {
         return;
       }
       this.db().prepare(`INSERT INTO research_fusion_proposals
-        (id, lo_node_id, hi_node_id, relation_type, reason, status, cooldown_until, created_at, updated_at, record_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        (id, lo_node_id, hi_node_id, relation_type, reason, status, created_at, updated_at, record_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(
           proposal.id,
           proposal.loNodeId,
@@ -2890,7 +2870,6 @@ export class SqliteStore implements CollectorStore {
           proposal.relationType,
           proposal.reason,
           proposal.status,
-          proposal.cooldownUntil ?? null,
           proposal.createdAt,
           proposal.updatedAt,
           JSON.stringify(proposal),
@@ -2904,90 +2883,16 @@ export class SqliteStore implements CollectorStore {
   async saveResearchFusionProposal(proposal: ResearchFusionProposalRecord): Promise<void> {
     if (proposal.loNodeId >= proposal.hiNodeId) throw new Error("Fusion proposal node pair must be normalized");
     this.db().prepare(`UPDATE research_fusion_proposals
-      SET relation_type = ?, reason = ?, status = ?, cooldown_until = ?, updated_at = ?, record_json = ?
+      SET relation_type = ?, reason = ?, status = ?, updated_at = ?, record_json = ?
       WHERE id = ?`)
       .run(
         proposal.relationType,
         proposal.reason,
         proposal.status,
-        proposal.cooldownUntil ?? null,
         proposal.updatedAt,
         JSON.stringify(proposal),
         proposal.id,
       );
-  }
-
-  /** #31：按幂等键查找已创建的融合节点首轮任务（重复确认时返回既有结果，不重复建）。 */
-  findResearchFusionTaskByIdempotencyKey(idempotencyKey: string): ResearchTaskRecord | undefined {
-    return this.getRecord<ResearchTaskRecord>("SELECT record_json FROM research_tasks WHERE idempotency_key = ?", idempotencyKey);
-  }
-
-  /** #31：按幂等键查找已创建的融合节点（重复确认时返回既有结果，不重复建）。 */
-  findResearchFusionNodeByIdempotencyKey(idempotencyKey: string): ResearchNodeRecord | undefined {
-    return this.getRecord<ResearchNodeRecord>("SELECT record_json FROM research_nodes WHERE creation_idempotency_key = ?", idempotencyKey);
-  }
-
-  /**
-   * #31：确认式融合事务。同一事务内把提案置为 accepted、幂等创建语义相关边
-   * 与融合来源边、创建融合节点（无父节点，来源关系全由 fused-from 边表达）与
-   * 首轮消息、任务。按 idempotencyKey 幂等：重复 fuse 返回首次创建的节点与任务。
-   */
-  async createResearchFusionTurn(
-    proposal: ResearchFusionProposalRecord,
-    fusedFromEdges: ResearchEdgeRecord[],
-    fusionNode: ResearchNodeRecord,
-    inputMessage: ResearchMessageRecord,
-    outputMessage: ResearchMessageRecord,
-    task: ResearchTaskRecord,
-  ): Promise<NodeGrowthAccepted> {
-    let accepted: NodeGrowthAccepted | undefined;
-    this.transaction(() => {
-      const existingNode = this.getRecord<ResearchNodeRecord>(
-        "SELECT record_json FROM research_nodes WHERE session_id = ? AND creation_idempotency_key = ?",
-        fusionNode.sessionId, task.idempotencyKey,
-      );
-      if (existingNode) {
-        const existingTask = this.findResearchTaskByIdempotencyKey(fusionNode.sessionId, task.idempotencyKey);
-        if (!existingTask) throw new Error("Research fusion node references a missing first task");
-        const existingInput = this.getResearchMessage(existingTask.inputMessageId);
-        const existingOutput = this.getResearchMessage(existingTask.outputMessageId);
-        const session = this.getResearchSession(existingNode.sessionId);
-        if (!existingInput || !existingOutput || !session) throw new Error("Research fusion node references incomplete persisted state");
-        accepted = { node: existingNode, session, selection: undefined, inputMessage: existingInput, outputMessage: existingOutput, task: existingTask };
-        return;
-      }
-      const session = this.getResearchSession(fusionNode.sessionId);
-      if (!session) throw new Error("Research fusion node references a missing session");
-      const updatedSession: ResearchSessionRecord = { ...session, updatedAt: task.createdAt };
-      // 提案置为 accepted（与 decide 一致：无冷却字段）。
-      const acceptedProposal: ResearchFusionProposalRecord = { ...proposal, status: "accepted", updatedAt: task.createdAt };
-      this.db().prepare("UPDATE research_fusion_proposals SET status = ?, updated_at = ?, record_json = ? WHERE id = ?")
-        .run(acceptedProposal.status, acceptedProposal.updatedAt, JSON.stringify(acceptedProposal), proposal.id);
-      this.db().prepare("INSERT INTO research_nodes (id, session_id, parent_node_id, origin_selection_id, status, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(fusionNode.id, fusionNode.sessionId, null, null, fusionNode.status, fusionNode.createdAt, fusionNode.updatedAt, task.idempotencyKey, JSON.stringify(fusionNode));
-      // 语义相关边 + 融合来源边：均幂等（INSERT OR IGNORE + UNIQUE 约束）。
-      const semanticEdge: ResearchEdgeRecord = {
-        id: researchEdgeId("semantic-related", proposal.loNodeId, proposal.hiNodeId),
-        kind: "semantic-related",
-        fromNodeId: proposal.loNodeId,
-        toNodeId: proposal.hiNodeId,
-        createdAt: task.createdAt,
-        status: "active",
-      };
-      const edges = [semanticEdge, ...fusedFromEdges];
-      for (const edge of edges) {
-        this.db().prepare("INSERT OR IGNORE INTO research_edges (id, kind, from_node_id, to_node_id, created_at, status, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
-          .run(edge.id, edge.kind, edge.fromNodeId, edge.toNodeId, edge.createdAt, edge.status, JSON.stringify(edge));
-      }
-      this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
-        .run(updatedSession.updatedAt, JSON.stringify(updatedSession), updatedSession.id);
-      this.insertResearchMessage(inputMessage);
-      this.insertResearchMessage(outputMessage);
-      this.insertResearchTask(task);
-      accepted = { node: fusionNode, session: updatedSession, selection: undefined, inputMessage, outputMessage, task };
-    });
-    if (!accepted) throw new Error("Research fusion node was not persisted");
-    return accepted;
   }
 
   private updateResearchMessage(message: ResearchMessageRecord): void {
@@ -3764,7 +3669,6 @@ export class SqliteStore implements CollectorStore {
             relation_type TEXT NOT NULL,
             reason TEXT NOT NULL,
             status TEXT NOT NULL,
-            cooldown_until TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             record_json TEXT NOT NULL,
@@ -3773,10 +3677,10 @@ export class SqliteStore implements CollectorStore {
             UNIQUE(lo_node_id, hi_node_id),
             CHECK(lo_node_id < hi_node_id),
             CHECK(relation_type IN ('identity', 'shared-concept', 'analogy', 'contrast', 'unrelated')),
-            CHECK(status IN ('pending', 'accepted', 'rejected'))
+            CHECK(status = 'pending')
           );
           CREATE INDEX research_fusion_proposals_status_idx
-            ON research_fusion_proposals(status, cooldown_until, created_at);
+            ON research_fusion_proposals(status, created_at);
           INSERT INTO schema_migrations(version, applied_at) VALUES (30, datetime('now'));
         `);
       });
@@ -4264,6 +4168,36 @@ export class SqliteStore implements CollectorStore {
         `);
       });
       version = 44;
+    }
+
+    if (version < 45) {
+      // 已确认融合的来源永久删除后，fused-from 仍须保留稳定来源身份。
+      // 关系端点因此不能依赖 research_nodes 外键；当前可用性由来源健康投影表达。
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE research_edges_v45 (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            from_node_id TEXT NOT NULL,
+            to_node_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            status TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            UNIQUE(kind, from_node_id, to_node_id)
+          );
+          INSERT INTO research_edges_v45
+            (id, kind, from_node_id, to_node_id, created_at, status, record_json)
+            SELECT id, kind, from_node_id, to_node_id, created_at, status, record_json
+            FROM research_edges;
+          DROP TABLE research_edges;
+          ALTER TABLE research_edges_v45 RENAME TO research_edges;
+          CREATE INDEX research_edges_from_node_idx ON research_edges(from_node_id, status);
+          CREATE INDEX research_edges_to_node_idx ON research_edges(to_node_id, status);
+          CREATE INDEX research_edges_kind_idx ON research_edges(kind, status);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (45, datetime('now'));
+        `);
+      });
+      version = 45;
     }
 
   }

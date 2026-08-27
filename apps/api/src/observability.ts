@@ -395,7 +395,7 @@ function operationTypeForRow(row: ObservabilityRecordRow): RunRecordOperationTyp
 }
 
 function statusForRow(row: ObservabilityRecordRow, record: Record<string, unknown>): RunRecordStatus {
-  // pending/accepted/rejected 是用户对提议的生命周期；核验调用本身完成后才出现这条本地运行记录。
+  // 相似性核验记录写入时模型调用已经结束；其 pending 审计形态不代表运行中。
   if (row.source === "fusion") return "completed";
   const status = stringValue(record.status) || row.status;
   if (status === "processing" || status === "waiting_for_budget") return "running";

@@ -288,7 +288,10 @@ test("T08 changes source health across trash, restore, and permanent deletion wi
   assert.equal(store.getBodyVersion("body:node-source-a:v1"), undefined, "permanent deletion leaves no source body readable through the API store");
   assert.equal(store.getTemporaryFusionBundle(candidate.node.id)?.candidateSources.find((source) => source.sourceNodeId === "node-source-a")?.sourceHealth, "deleted");
   assert.deepEqual(store.getConfirmedFusionSnapshot(candidate.node.id), originalSnapshot, "permanent deletion keeps the fixed confirmed body and source identity unchanged");
-  assert.ok(!store.listResearchPermanentEdges().some((edge) => edge.fromNodeId === "node-source-a" || edge.toNodeId === "node-source-a"), "permanent deletion removes edges whose endpoint is no longer a formal node");
+  assert.ok(
+    store.listResearchPermanentEdges().some((edge) => edge.kind === "fused-from" && edge.fromNodeId === "node-source-a" && edge.toNodeId === candidate.node.id),
+    "permanent deletion preserves the confirmed fused-from edge and stable source identity",
+  );
   assert.equal(
     deriveFusionEvidenceHealth(store.listAllResearchNodes(), store.listAllResearchEdges(), store.listResearchSessions(), store.listConfirmedFusionSourceHealth()).get(candidate.node.id),
     "deleted",

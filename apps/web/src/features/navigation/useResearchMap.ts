@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import type { ResearchEdgeKind } from "@collector/capture-contracts";
+import type { ResearchPermanentEdgeKind } from "@collector/capture-contracts";
 import { ALL_EDGE_KINDS } from "./useRelationships";
 
 /** 研究地图的两种呈现模式：专注（血统脉络）与关联（三类关系）。 */
@@ -11,9 +11,9 @@ export type ResearchMapMode = "focus" | "assoc";
  * 保证“渲染与键盘候选消费同一份筛选结果”的迁移期保护线。
  */
 export function useResearchMapFilters() {
-  const [selectedEdgeKinds, setSelectedEdgeKinds] = useState<ResearchEdgeKind[]>(ALL_EDGE_KINDS);
+  const [selectedEdgeKinds, setSelectedEdgeKinds] = useState<ResearchPermanentEdgeKind[]>(ALL_EDGE_KINDS);
 
-  const toggleEdgeKind = useCallback((kind: ResearchEdgeKind) => {
+  const toggleEdgeKind = useCallback((kind: ResearchPermanentEdgeKind) => {
     setSelectedEdgeKinds((current) =>
       current.includes(kind) ? current.filter((candidate) => candidate !== kind) : [...current, kind],
     );

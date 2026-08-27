@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   buildGraphProjection,
   buildResearchGraphObservation,
+  isResearchPermanentEdge,
   deriveDefaultResearchTitle,
   type CreateChildNodeInput,
   type DeepResearchAccepted,
@@ -470,7 +471,7 @@ export class NodeGrowthService {
     const nodes = this.store.listResearchNodes(sessionId);
     const nodeIds = new Set(nodes.map((node) => node.id));
     const allEdges = this.store.listAllResearchEdges();
-    const sessionEdges = allEdges.filter((edge) => nodeIds.has(edge.fromNodeId) && nodeIds.has(edge.toNodeId));
+    const sessionEdges = allEdges.filter((edge) => isResearchPermanentEdge(edge) && nodeIds.has(edge.fromNodeId) && nodeIds.has(edge.toNodeId));
     const focus = focusNodeId ?? sessionId;
     return buildGraphProjection(nodes, sessionEdges, focus, {
       ...(maxDepth === undefined ? {} : { maxDepth }),

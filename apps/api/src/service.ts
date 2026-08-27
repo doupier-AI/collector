@@ -6,8 +6,6 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  FUSION_COMPOSE_PROMPT_VERSION,
-  FUSION_COMPOSE_TOKEN_BUDGET,
   IMPORT_CHAPTER_PARSE_PROMPT_VERSION,
   IMPORT_CHAPTER_PARSE_TOKEN_BUDGET,
   MODEL_PURPOSES,
@@ -277,8 +275,6 @@ export class CaptureService {
       this.store,
       this.termDetection,
       async () => this.options.similarityVerifier ?? this.gatewayForPurpose("research"),
-      undefined,
-      this.research,
     );
     this.termPreviews = new ResearchTermPreviewService(this.store, {
       research: this.research,
@@ -344,7 +340,6 @@ export class CaptureService {
     const termDetections: NonNullable<ResearchNodeView["termDetections"]> = {};
     const slices: NonNullable<ResearchNodeView["slices"]> = {};
     const bodyVersions: NonNullable<ResearchNodeView["bodyVersions"]> = {};
-    const fusionSources: NonNullable<ResearchNodeView["fusionSources"]> = {};
     for (const message of view.messages) {
       if (message.role !== "assistant" || message.status !== "completed") continue;
       if (message.termMarkers !== undefined) {
@@ -365,28 +360,6 @@ export class CaptureService {
       }
       slices[message.id] = this.store.listSlicesByMessage(message.id);
       bodyVersions[message.id] = await this.getOrCreateBodyArtifacts(nodeId, message, view.citations ?? []);
-      // #31：融合正文的消息按任务 fusionReferences 组装来源（去重、补标签）。
-      const task = view.tasks.find((candidate) => candidate.outputMessageId === message.id);
-      const references = task?.fusionReferences ?? [];
-      if (references.length > 0) {
-        const byNode = new Map<string, ResearchFusionSource>();
-        for (const reference of references) {
-          if (byNode.has(reference.nodeId)) continue;
-          const node = this.store.getResearchNode(reference.nodeId);
-          const label = node?.displayName?.trim()
-            ?? this.selectionLabelFor(node)
-            ?? this.firstUserMessageFor(reference.nodeId)
-            ?? `节点 ${reference.nodeId.slice(0, 8)}`;
-          byNode.set(reference.nodeId, {
-            nodeId: reference.nodeId,
-            bodyVersionId: reference.bodyVersionId,
-            fragmentId: reference.fragmentId,
-            label,
-            health: this.fusionSourceHealth(reference.nodeId),
-          });
-        }
-        fusionSources[message.id] = [...byNode.values()];
-      }
     }
     const confirmedFusion = this.store.getConfirmedFusionSnapshot(nodeId);
     const confirmedFusionSources = confirmedFusion?.directSources.flatMap((source) => {
@@ -409,10 +382,9 @@ export class CaptureService {
       termDetections,
       slices,
       bodyVersions,
-      fusionSources: Object.keys(fusionSources).length > 0 ? fusionSources : undefined,
       ...(confirmedFusion ? { confirmedFusion } : {}),
       ...(confirmedFusionSources?.length ? { confirmedFusionSources } : {}),
-      fusionProposals: this.fusionProposals.listForNode(nodeId, ["pending", "accepted"]),
+      fusionProposals: this.fusionProposals.listForNode(nodeId, ["pending"]),
     };
   }
 
@@ -808,27 +780,6 @@ export class CaptureService {
         return purposeGateway.verifyTermIdentity(input, {
           context: { workflowRunId: "", purpose: "term_entity_verification", promptVersion: TERM_IDENTITY_VERIFY_PROMPT_VERSION },
         });
-      },
-      // #31：确认式融合正文生成。独立提示词版本；来源切片 ID、片段 ID 与令牌预算
-      // 随 context 落入模型会话轨迹（attachModelGateway 已记 ModelCallRecord，验收 4）。
-      // request.fusion.sources 由 research.ts 组装（含逐字可回读的片段摘录），这里只做网关适配。
-      async composeFusion(request) {
-        const purposeGateway = await service.gatewayForPurpose("research");
-        if (!purposeGateway) throw new Error("AI model is not configured");
-        const sources = request.fusion.sources;
-        const sourceSliceIds = [...new Set(sources.flatMap((source) => source.sliceId ? [source.sliceId] : []))].sort();
-        const sourceFragmentIds = [...new Set(sources.map((source) => source.fragmentId))].sort();
-        return purposeGateway.composeFusion(
-          { sources: sources.map((source) => ({ nodeId: source.nodeId, title: source.label, excerpt: source.excerpt })), relationType: request.fusion.relationType },
-          { nodeDepth: request.parentChainContext?.currentNodeDepth ?? 0, context: {
-            workflowRunId: request.taskId,
-            purpose: "fusion_compose",
-            promptVersion: FUSION_COMPOSE_PROMPT_VERSION,
-            ...(sourceSliceIds.length ? { sourceSliceIds } : {}),
-            ...(sourceFragmentIds.length ? { sourceFragmentIds } : {}),
-            tokenBudget: FUSION_COMPOSE_TOKEN_BUDGET,
-          } },
-        );
       },
     };
   }
