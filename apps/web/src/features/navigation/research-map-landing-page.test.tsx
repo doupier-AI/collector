@@ -28,12 +28,34 @@ function renderPage(api: Partial<ApiClient>, initialEntry: string | { pathname: 
   );
 }
 
-async function openMapTool(name: "搜索研究内容" | "筛选地图" | "显示的关系" | "更多地图功能") {
+async function openMapTool(name: "搜索研究内容" | "筛选地图" | "显示的关系" | "临时融合（1）" | "更多地图功能") {
   const button = screen.getByRole("button", { name });
   if (button.getAttribute("aria-expanded") !== "true") await userEvent.setup().click(button);
 }
 
 describe("ResearchMapLandingPage", () => {
+  it("临时融合只在当前地图现场显式开启，并通过详情读取当前草案", async () => {
+    const source = { id: "source-1", temporaryFusionNodeId: "temporary-1", sourceNodeId: "a", sourceKind: "formal" as const, bodyVersionId: "body-a", fragmentIds: ["fragment-a"], sourceHealth: "available" as const, createdAt: "2026-08-26T00:00:00.000Z" };
+    const item = { node: { id: "temporary-1", creationKey: "key", triggerProposalId: "proposal", activeDraftVersionId: "draft", status: "active" as const, createdAt: source.createdAt, updatedAt: source.createdAt }, label: "临时融合草稿", evidenceStatus: "verified" as const, candidateSources: [source] };
+    const getResearchMap = vi.fn(async (input: ResearchGraphObservationInput = {}) => ({
+      ...makeGraphObservation({ nodes: [makeGraphObservationNode("a", "节点 A")] }),
+      temporaryFusionCount: 1,
+      ...(input.includeTemporaryFusions ? { temporaryFusions: [item] } : {}),
+    }));
+    const getTemporaryFusion = vi.fn(async () => ({ ...item, activeDraft: { id: "draft", temporaryFusionNodeId: "temporary-1", version: 1, body: "当前临时草案", contentHash: "hash", evidenceStatus: "verified" as const, createdAt: source.createdAt } }));
+    renderPage({ getResearchMap, listTemporaryFusions: async () => [item], getTemporaryFusion, searchTemporaryFusions: async () => ({ matches: [] }) });
+    const user = userEvent.setup();
+    await screen.findByTestId("global-map-canvas");
+    await openMapTool("临时融合（1）");
+    expect(screen.getByText(/开启后在同一张地图上查看待核验的临时融合/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "开启临时层" }));
+    await waitFor(() => expect(getResearchMap).toHaveBeenLastCalledWith(expect.objectContaining({ includeTemporaryFusions: true })));
+    expect(screen.getByText("临时融合观察")).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: /临时融合草稿/ }));
+    expect(await screen.findByText("当前临时草案")).toBeInTheDocument();
+    expect(getTemporaryFusion).toHaveBeenCalledWith("temporary-1");
+  });
+
   it("读取期间呈现明确的加载状态", () => {
     renderPage({ getResearchMap: () => new Promise(() => {}) });
     expect(screen.getByLabelText("正在打开研究图谱")).toHaveAttribute("aria-busy", "true");

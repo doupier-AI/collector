@@ -431,8 +431,8 @@ export async function growChildNode(page: Page, sessionId: string, text: string)
   return page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
 }
 
-/** 向 /graph 响应注入语义相关与融合来源节点（隔离血统，只通过非父子边到达）。 */
-export async function installThreeEdgeGraphFixture(page: Page): Promise<void> {
+/** 向 /graph 响应注入融合来源节点（隔离血统，只通过永久融合边到达）。 */
+export async function installPermanentEdgeGraphFixture(page: Page): Promise<void> {
   await page.route("**/v1/research-sessions/*/graph**", async (route) => {
     const response = await route.fetch();
     const projection = await response.json();
@@ -454,19 +454,10 @@ export async function installThreeEdgeGraphFixture(page: Page): Promise<void> {
       label,
       depth: 1,
     });
-    const semanticId = `e2e-semantic-${projection.focusNodeId}`;
     const fusedId = `e2e-fused-${projection.focusNodeId}`;
-    projection.nodes = [...projection.nodes, makeNode(semanticId, "语义关联节点"), makeNode(fusedId, "融合来源节点")];
+    projection.nodes = [...projection.nodes, makeNode(fusedId, "融合来源节点")];
     projection.edges = [
       ...projection.edges,
-      {
-        id: `e2e-edge-semantic-${projection.focusNodeId}`,
-        kind: "semantic-related",
-        fromNodeId: projection.focusNodeId,
-        toNodeId: semanticId,
-        createdAt: "2026-08-02T08:00:00.000Z",
-        status: "active",
-      },
       {
         id: `e2e-edge-fused-${projection.focusNodeId}`,
         kind: "fused-from",

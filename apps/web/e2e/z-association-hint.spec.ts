@@ -37,7 +37,7 @@ test.describe("#69/#70 临时关联提示与地图候选观察", () => {
     page.on("request", (request) => {
       if (request.method() !== "POST") return;
       const url = request.url();
-      if (url.includes("/fusion-proposals") || url.includes("/research-edges") || url.includes("/fuse")) {
+      if (url.includes("/fusion-proposals") || url.includes("/research-edges")) {
         permanentWrites.push(`${request.method()} ${url}`);
       }
     });

@@ -11,7 +11,6 @@ import {
   type ResearchNodeRecord,
   type ResearchSemanticFragmentRecord,
   type ResearchSessionRecord,
-  type ResearchTaskRecord,
 } from "@collector/capture-contracts";
 import {
   projectCurrentSearchUnits,
@@ -36,7 +35,6 @@ function reader(input: {
   sessions: ResearchSessionRecord[];
   nodes: ResearchNodeRecord[];
   messages: ResearchMessageRecord[];
-  tasks?: ResearchTaskRecord[];
   attachments?: ResearchAttachmentRecord[];
   snapshots?: ResearchContentSnapshotRecord[];
   fusions?: ResearchConfirmedFusionSnapshotRecord[];
@@ -52,7 +50,6 @@ function reader(input: {
     listResearchSessions: () => input.sessions,
     listResearchNodes: (sessionId) => input.nodes.filter((item) => item.sessionId === sessionId),
     listResearchMessages: (sessionId) => input.messages.filter((item) => item.sessionId === sessionId),
-    listResearchTasks: (sessionId) => (input.tasks ?? []).filter((item) => item.sessionId === sessionId),
     listResearchAttachments: (sessionId) => (input.attachments ?? []).filter((item) => item.sessionId === sessionId),
     getResearchContentSnapshot: (id) => (input.snapshots ?? []).find((item) => item.id === id),
     getConfirmedFusionSnapshot: (nodeId) => (input.fusions ?? []).find((item) => item.fusionNodeId === nodeId),
@@ -118,30 +115,6 @@ test("confirmed fusion snapshot and every current completed fusion answer keep i
   assert.equal(bodyUnits.filter((unit) => unit.field === "formal-fusion-body" && unit.searchText === fusion.body).length, 1);
   assert.ok(bodyUnits.some((unit) => unit.locator.kind === "fusion-snapshot-range"));
   assert.ok(bodyUnits.some((unit) => unit.field === "ai-body" && unit.locator.kind === "message-semantic-range" && unit.locator.messageId === initial.id));
-});
-
-test("the completed output of the current production fusion task is formal while later answers stay AI body", () => {
-  const sessions = [session("fusion-session")];
-  const nodes = [node("fusion", "fusion-session", { isFusionNode: true, displayName: "融合结论" })];
-  const formal = message("fusion-output", "fusion-session", "fusion", "assistant", "现役融合任务生成的正式正文");
-  const later = message("later-output", "fusion-session", "fusion", "assistant", "确认后继续生长的普通回答");
-  const task: ResearchTaskRecord = {
-    id: "fusion-task", sessionId: "fusion-session", nodeId: "fusion", inputMessageId: "fusion-input", outputMessageId: formal.id,
-    idempotencyKey: "fusion-key", status: "completed", retryable: false, promptVersion: "fusion-compose-v1",
-    fusionPlan: { relationType: "shared-concept", sources: [
-      { nodeId: "a", bodyVersionId: "body-a", fragmentId: "fragment-a", label: "A" },
-      { nodeId: "b", bodyVersionId: "body-b", fragmentId: "fragment-b", label: "B" },
-    ] },
-    createdAt: NOW, updatedAt: NOW, completedAt: NOW,
-  };
-
-  const units = projectCurrentSearchUnits(reader({ sessions, nodes, messages: [formal, later], tasks: [task] }));
-  assert.ok(units.some((unit) => unit.field === "node-title" && unit.nodeId === "fusion" && unit.searchText === "融合结论"));
-  assert.ok(!units.some((unit) => unit.field === "node-title" && unit.nodeId === "fusion" && unit.searchText === "会话 fusion-session"));
-  assert.ok(units.some((unit) => unit.field === "formal-fusion-body" && unit.searchText === formal.content
-    && unit.locator.kind === "message-semantic-range" && unit.locator.messageId === formal.id));
-  assert.ok(units.some((unit) => unit.field === "ai-body" && unit.searchText === later.content
-    && unit.locator.kind === "message-semantic-range" && unit.locator.messageId === later.id));
 });
 
 test("long current text is deterministically windowed without losing canonical offsets", () => {

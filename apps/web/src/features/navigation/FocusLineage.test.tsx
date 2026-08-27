@@ -10,7 +10,7 @@ import { makeEdge, makeGraphNodeSummary, makeGraphProjection } from "../../test/
 import { FocusLineage } from "./FocusLineage";
 import { ALL_EDGE_KINDS } from "./useRelationships";
 
-/** 三级血统投影：root → parent → focus；focus 有子节点与同级，另有语义/融合邻居。 */
+/** 三级血统投影：root → parent → focus；focus 有子节点与同级，另有融合来源和一条遗留语义边。 */
 function lineageProjection() {
   const root = makeGraphNodeSummary("root", "根节点", 2);
   const parent = makeGraphNodeSummary("parent", "父节点", 1, { parentNodeId: "root" });
@@ -35,7 +35,7 @@ function lineageProjection() {
 function renderLineage(
   api: Partial<ApiClient>,
   focusNodeId = "focus",
-  selectedEdgeKinds: readonly ("parent-child" | "semantic-related" | "fused-from")[] = ALL_EDGE_KINDS,
+  selectedEdgeKinds: readonly ("parent-child" | "fused-from")[] = ALL_EDGE_KINDS,
 ) {
   const services = { api: api as ApiClient } as unknown as AppServices;
   return render(
@@ -84,17 +84,17 @@ describe("FocusLineage", () => {
     renderLineage({ getResearchGraph: async () => lineageProjection() });
 
     const toggle = await screen.findByTestId("focus-related-toggle");
-    expect(toggle).toHaveTextContent("关联（2）");
+    expect(toggle).toHaveTextContent("关联（1）");
     expect(toggle).toHaveAttribute("aria-expanded", "true");
 
-    // 语义与融合邻居出现在关联区，血统链不含它们
-    expect(screen.getByRole("button", { name: "语义邻居" })).toBeInTheDocument();
+    // 融合来源出现在关联区；遗留语义边不进入当前界面。
+    expect(screen.queryByRole("button", { name: "语义邻居" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "融合来源" })).toBeInTheDocument();
     expect(screen.queryByText("语义邻居", { selector: ".focus-lineage__chain *" })).not.toBeInTheDocument();
 
     await user.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByRole("button", { name: "语义邻居" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "融合来源" })).not.toBeInTheDocument();
   });
 
   it("筛选只选父子时，关联区显示空态；血统链保留", async () => {
@@ -105,8 +105,8 @@ describe("FocusLineage", () => {
     expect(screen.queryByRole("button", { name: "语义邻居" })).not.toBeInTheDocument();
   });
 
-  it("筛选关闭语义/融合后，血统链与关联区同步只剩当前节点", async () => {
-    renderLineage({ getResearchGraph: async () => lineageProjection() }, "focus", ["semantic-related"]);
+  it("只选融合来源后，血统链只剩当前节点", async () => {
+    renderLineage({ getResearchGraph: async () => lineageProjection() }, "focus", ["fused-from"]);
 
     const chain = await screen.findByRole("list", { name: "专注脉络" });
     const rows = within(chain).getAllByRole("listitem");

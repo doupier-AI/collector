@@ -2,13 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { createApiClient } from "./client";
 
 describe("F1 fusion proposal API client", () => {
-  it("calls scan, list, and decision endpoints with their stable paths and bodies", async () => {
+  it("calls scan and list endpoints with their stable paths and bodies", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ proposals: [], temporaryFusionCount: 0 }), { status: 200, headers: { "Content-Type": "application/json" } }));
     const client = createApiClient(fetchMock);
 
     await client.scanResearchFusionProposals("node / one");
     await client.listResearchFusionProposals("node / one", "pending");
-    await client.decideResearchFusionProposal("fusion:abc", "rejected");
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
@@ -19,11 +18,6 @@ describe("F1 fusion proposal API client", () => {
       2,
       "/v1/research-nodes/node%20%2F%20one/fusion-proposals?status=pending",
       undefined,
-    );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
-      "/v1/research-fusion-proposals/fusion%3Aabc/decide",
-      expect.objectContaining({ method: "POST", body: JSON.stringify({ decision: "rejected" }) }),
     );
   });
 });
@@ -43,6 +37,46 @@ describe("#32 fusion auto config API client", () => {
       3,
       "/v1/settings/fusion",
       expect.objectContaining({ method: "PUT", body: JSON.stringify({ enabled: true }) }),
+    );
+  });
+});
+
+describe("T03 temporary fusion management API client", () => {
+  it("uses separate single, explicit batch, and clear endpoints", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const client = createApiClient(fetchMock);
+
+    await client.deleteTemporaryFusion("temporary / one");
+    await client.deleteTemporaryFusions(["temporary-1", "temporary-2"]);
+    await client.clearTemporaryFusions();
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/v1/research-temporary-fusions/temporary%20%2F%20one", expect.objectContaining({ method: "DELETE" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/v1/research-temporary-fusions/batch-delete", expect.objectContaining({ method: "POST", body: JSON.stringify({ ids: ["temporary-1", "temporary-2"] }) }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/v1/research-temporary-fusions/clear", expect.objectContaining({ method: "POST", body: "{}" }));
+  });
+});
+
+describe("T05 temporary fusion draft API client", () => {
+  it("uses explicit version endpoints and carries the current-version precondition", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ versions: [], revalidationTasks: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const client = createApiClient(fetchMock);
+    await client.getTemporaryFusionDraftHistory("temporary / one");
+    await client.updateTemporaryFusionDraft("temporary / one", { body: "修改草案", expectedDraftVersionId: "draft-v1" });
+    await client.restoreTemporaryFusionDraft("temporary / one", "draft-v1", "draft-v2");
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/v1/research-temporary-fusions/temporary%20%2F%20one/drafts", undefined);
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/v1/research-temporary-fusions/temporary%20%2F%20one/drafts", expect.objectContaining({ method: "PUT", body: JSON.stringify({ body: "修改草案", expectedDraftVersionId: "draft-v1" }) }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/v1/research-temporary-fusions/temporary%20%2F%20one/drafts/draft-v1/restore", expect.objectContaining({ method: "POST", body: JSON.stringify({ expectedDraftVersionId: "draft-v2" }) }));
+  });
+});
+
+describe("T07 temporary fusion confirmation API client", () => {
+  it("confirms the visible current version through the stable temporary identity", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const client = createApiClient(fetchMock);
+    await client.confirmTemporaryFusion("temporary / one", "draft-v2");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/research-temporary-fusions/temporary%20%2F%20one/confirm",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ expectedDraftVersionId: "draft-v2" }) }),
     );
   });
 });

@@ -719,7 +719,6 @@ interface RealNodeView {
   tasks: Array<{ id: string; status: string; allowWebSearch?: boolean; groundingScope?: { status: string } }>;
   groundingSources?: Array<{ id: string }>;
   citations?: Array<{ id: string; messageId: string; blockOrdinal: number; markerOffset: number }>;
-  fusionSources?: Record<string, Array<{ nodeId: string; bodyVersionId: string; fragmentId: string }>>;
 }
 
 /** 记录真实模型语义观察（漏标、密度、类别分布），不构成失败。 */
@@ -1173,98 +1172,128 @@ test("弱标记场景八：联网回答的引用锚点与弱标记一致落位",
 });
 
 // ---------------------------------------------------------------------------
-// 弱标记场景九：融合正文——统一标记、[来源n] 引用与来源正文不变
+// 弱标记场景九：当前临时融合草案原位确认——正文、引用与来源保持完整
 // ---------------------------------------------------------------------------
-test("弱标记场景九：融合正文真实生成后的标记、引用与来源完整性", async ({ page }) => {
-  // 双来源生成 + 扫描 + 原子融合正文，真实模型下整链可能超过 20 分钟。
+test("弱标记场景九：临时融合草案原位确认后的正文、引用与来源完整性", async ({ page }) => {
+  // 两份真实回答、相似性核验与临时融合发现都访问真实模型，保留与旧场景一致的宽限。
   test.setTimeout(1_800_000);
   const consoleIssues = watchConsole(page);
   await pairAndOpen(page, "/research/new");
-  const sessionId = await submitQuestion(
+  const sourceANodeId = await submitQuestion(
     page,
-    "请用三到四句话解释 Transformer 的自注意力机制，包括查询、键、值各自的作用。",
+    "请用不超过三句话回答，并在第一句原样保留共同术语 LocalDataShield（LDS）。只说明这一事实：原始研究资料全程留在用户设备，只向外发送不可逆的聚合结果，因此减少网络传输暴露。不要讨论设备丢失、磁盘加密或完整安全策略。",
   );
-  const rootNodeId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? sessionId;
   await waitCompletedAnswerText(page, 1);
   await assertRealMode(page);
-  // 等回答完成落库、正文稳定后再选区（流式中段选区会被重渲染销毁）。
-  const rootContentBefore = (await waitLatestAssistantCompleted(page, rootNodeId, "融合来源根节点")).content;
+  const sourceAContentBefore = (await waitLatestAssistantCompleted(page, sourceANodeId, "融合来源 A")).content;
 
-  // 生长一个同主题的深入研究子节点作为第二来源。
-  await selectAndOpenCapsuleWithRetry(page);
-  await page.getByLabel("你的问题").fill("自注意力机制在 BERT 双向编码器中的应用");
-  await page.getByRole("button", { name: "深入研究这段", exact: true }).click();
-  const childNodeId = await waitChildNodeUrl(page, sessionId, rootNodeId, 60_000);
-  const childContentBefore = (await waitLatestAssistantCompleted(page, childNodeId, "融合来源子节点")).content;
-
-  // 真实相似性扫描（同主题应稳定产出提案；偶发为空时重扫一次）。
-  await page.goto(`/nodes/${encodeURIComponent(rootNodeId)}`);
-  let proposals: Array<{ id: string; status: string; relationType: string }> = [];
-  for (let attempt = 0; attempt < 2 && proposals.length === 0; attempt += 1) {
-    const scan = await page.request.post(`/v1/research-nodes/${encodeURIComponent(rootNodeId)}/fusion-proposals/scan`, {
-      data: {},
-    });
-    expect(scan.ok()).toBeTruthy();
-    proposals = ((await scan.json()) as { proposals: Array<{ id: string; status: string; relationType: string }> }).proposals;
-  }
-  expect(proposals.length, "同主题双来源应扫描出融合提案").toBeGreaterThanOrEqual(1);
-  recordWeakMarkerNote(`融合扫描：${proposals.length} 条提案，关系 ${proposals[0]!.relationType}`);
-
-  // 确认融合并等待真实融合正文（原子生成）。提案折叠在 details 里，先展开再点按钮。
-  await page.reload();
-  await expect(page.getByText("熟悉的概念再现，节点可融合").first()).toBeVisible({ timeout: 15_000 });
-  await page.getByText("熟悉的概念再现，节点可融合").first().click();
-  await page.getByRole("button", { name: "融合为节点" }).first().click();
-  const fusionNodeId = await waitChildNodeUrl(page, sessionId, rootNodeId, 60_000);
-
-  // 来源条数据只在融合正文完成后进视图（服务侧按 completed 消息组装），先等完成再刷新断言。
-  const fusionMessage = await waitLatestAssistantCompleted(page, fusionNodeId, "融合正文");
-  await page.reload();
-  await expect(page.getByTestId("fusion-source-bar")).toBeVisible({ timeout: 30_000 });
-  expectNoControlChars(fusionMessage.content, "融合正文");
-  const fusionMarkers = expectMarkersAligned(fusionMessage, "融合正文");
-  if (fusionMarkers.length === 0) {
-    recordWeakMarkerNote("融合正文：模型未输出弱标记（漏标记录不阻断；路径接入由确定性套件证明）");
-  }
-  expect(fusionMessage.content, "融合正文必须携带 [来源n] 引用").toMatch(/\[来源\d\]/);
-  recordWeakMarkerNote(`融合正文：${fusionMarkers.length} 个标记，来源引用 ${(fusionMessage.content.match(/\[来源\d\]/g) ?? []).length} 处`);
-
-  // 来源节点正文逐字节不变（融合是独立增量节点）。
-  const rootAfter = (await waitLatestAssistantCompleted(page, rootNodeId, "融合后根节点")).content;
-  const childAfter = (await waitLatestAssistantCompleted(page, childNodeId, "融合后子节点")).content;
-  expect(rootAfter, "融合不得改写根节点正文（阻断）").toBe(rootContentBefore);
-  expect(childAfter, "融合不得改写子节点正文（阻断）").toBe(childContentBefore);
-
-  // 真实融合正文的 [来源n] 点击后必须同时得到轮次卡片光环和文字级高亮。
-  const firstReference = fusionMessage.content.match(/\[来源(\d+)\]/);
-  expect(firstReference, "融合正文必须能解析第一条来源序号").toBeTruthy();
-  const fusionView = await fetchNodeView(page, fusionNodeId);
-  const source = fusionView.fusionSources?.[fusionMessage.id]?.[Number(firstReference?.[1] ?? 0) - 1];
-  expect(source, "第一条融合引用必须对应视图中的稳定来源").toBeTruthy();
-  const sourceBody = await apiJson<{
-    fragments: Array<{ id: string; messageId: string; excerpt: string }>;
-  }>(page, `/v1/research-body-versions/${encodeURIComponent(source!.bodyVersionId)}`);
-  const sourceFragment = sourceBody.fragments.find((fragment) => fragment.id === source!.fragmentId);
-  expect(sourceFragment, "融合引用的稳定片段必须能从正文版本逐字回读").toBeTruthy();
-  const expectedVisibleExcerpt = markdownVisibleText(sourceFragment!.excerpt);
-
-  const citation = page.locator(".fusion-citation-marker").first();
-  await expect(citation).toBeVisible();
-  await citation.click();
-  await page.waitForURL(
-    (url) => url.pathname.endsWith(`/nodes/${encodeURIComponent(source!.nodeId)}`) && url.searchParams.get("fragment") === source!.fragmentId,
-    { timeout: 20_000 },
+  // 两份独立来源只共享“本地数据安全”主题，各自刻意排除对方的风险面；
+  // “本地优先仍需静态加密”因此必须由二者共同推出，而不是把相似或重复摘要误当新洞见。
+  await page.goto("/research/new");
+  const sourceBNodeId = await submitQuestion(
+    page,
+    "请用不超过三句话回答，并在第一句原样保留共同术语 LocalDataShield（LDS）。只说明这一事实：设备丢失后，未加密磁盘可被挂载并直接读取扇区中的原始研究资料。不要讨论上传、网络传输或完整安全策略。",
   );
-  const restoredSourceCard = page.locator(".turn-card.fragment-target--focused[data-turn-card]");
-  await expect(restoredSourceCard).toHaveCount(1, { timeout: 20_000 });
-  await expect(restoredSourceCard).toHaveAttribute("id", `${sourceFragment!.messageId}-turn`);
-  const restoredMarks = restoredSourceCard.locator("[data-selection-mark]");
-  expect(await restoredMarks.count(), "融合引用回源必须有文字级高亮").toBeGreaterThan(0);
-  expect((await restoredMarks.allTextContents()).join(""), "高亮文字必须逐字对应点击来源片段的可见正文").toBe(expectedVisibleExcerpt);
+  await waitCompletedAnswerText(page, 1);
+  await assertRealMode(page);
+  const sourceBContentBefore = (await waitLatestAssistantCompleted(page, sourceBNodeId, "融合来源 B")).content;
 
-  // 跨场景总闸口由依赖本项目的 chromium-acceptance-summary 读取每场景原子证据执行；
-  // 并行 worker 间不再依赖进程内全局变量。
+  const enabled = await page.request.put("/v1/settings/fusion", { data: { enabled: true } });
+  expect(enabled.ok()).toBeTruthy();
+  const scan = await page.request.post(`/v1/research-nodes/${encodeURIComponent(sourceANodeId)}/fusion-proposals/scan`, {
+    data: {},
+  });
+  expect(scan.ok()).toBeTruthy();
+  const scanResult = await scan.json() as { proposals: unknown[]; temporaryFusionCount: number };
+  console.log(
+    `[acceptance:scenario9] proposals=${scanResult.proposals.length} temporary=${scanResult.temporaryFusionCount} `
+      + `sourceLengths=${sourceAContentBefore.length}/${sourceBContentBefore.length}`,
+  );
+  expect(scanResult.temporaryFusionCount, "同主题互补来源应形成 B 面临时融合").toBeGreaterThanOrEqual(1);
 
+  const candidates = await apiJson<Array<{
+    node: { id: string; activeDraftVersionId: string };
+    candidateSources: Array<{
+      sourceNodeId: string;
+      citationOrdinal?: number;
+      bodyVersionId: string;
+      fragmentIds: string[];
+      sourceHealth: string;
+    }>;
+  }>>(page, "/v1/research-temporary-fusions");
+  const listedCandidate = candidates.find((entry) => {
+    const sourceIds = new Set(entry.candidateSources.map((source) => source.sourceNodeId));
+    return sourceIds.has(sourceANodeId) && sourceIds.has(sourceBNodeId);
+  });
+  expect(listedCandidate, "临时融合必须保留当前两份真实来源").toBeTruthy();
+  const candidate = await apiJson<{
+    node: { id: string; activeDraftVersionId: string };
+    activeDraft: { id: string; body: string; contentHash: string; evidenceStatus: string };
+    candidateSources: Array<{
+      sourceNodeId: string;
+      citationOrdinal?: number;
+      bodyVersionId: string;
+      fragmentIds: string[];
+      sourceHealth: string;
+    }>;
+  }>(page, `/v1/research-temporary-fusions/${encodeURIComponent(listedCandidate!.node.id)}`);
+  expect(candidate!.activeDraft).toMatchObject({
+    id: candidate!.node.activeDraftVersionId,
+    evidenceStatus: "verified",
+  });
+  expect(candidate!.candidateSources).toHaveLength(2);
+  expect(candidate!.candidateSources.every((source) => source.sourceHealth === "available")).toBe(true);
+  expectNoControlChars(candidate!.activeDraft.body, "临时融合草案");
+  for (const source of candidate!.candidateSources) {
+    expect(source.citationOrdinal, "每份候选来源都应有稳定引用序号").toBeGreaterThan(0);
+    expect(candidate!.activeDraft.body, `草案必须引用来源 ${source.citationOrdinal}`).toContain(`[来源${source.citationOrdinal}]`);
+  }
+  recordWeakMarkerNote(
+    `临时融合草案：确认前正文 ${candidate!.activeDraft.body.length} 字，来源 ${candidate!.candidateSources.length} 条；确认不重新生成正文`,
+  );
+
+  // 从当前 B 面观察入口确认核验版本；确认后必须沿用同一稳定身份。
+  await page.goto("/map");
+  await page.getByRole("button", { name: /临时融合（\d+）/ }).click();
+  const openLayer = page.getByRole("button", { name: "开启临时层" });
+  if (await openLayer.isVisible()) await openLayer.click();
+  await page.getByRole("list", { name: "临时融合列表" }).getByRole("button", { name: /证据已核验/ }).first().click();
+  await expect(page.locator(".temporary-fusion-observation__detail pre")).toContainText(candidate!.activeDraft.body.slice(0, 40));
+  await page.getByRole("button", { name: "确认当前核验版本" }).click();
+  await page.waitForURL(new RegExp(`/nodes/${candidate!.node.id}$`), { timeout: 20_000 });
+  await expect(page.getByRole("heading", { name: "正式融合正文" })).toBeVisible();
+
+  const confirmed = await apiJson<{
+    node: { id: string; isFusionNode?: boolean };
+    confirmedFusion: {
+      fusionNodeId: string;
+      confirmedDraftVersionId: string;
+      body: string;
+      contentHash: string;
+      directSources: Array<{ sourceNodeId: string; bodyVersionId: string; fragmentIds: string[] }>;
+    };
+    confirmedFusionSources: Array<{ nodeId: string; bodyVersionId: string; fragmentId: string; health?: string }>;
+  }>(page, `/v1/research-nodes/${encodeURIComponent(candidate!.node.id)}`);
+  expect(confirmed.node).toMatchObject({ id: candidate!.node.id, isFusionNode: true });
+  expect(confirmed.confirmedFusion).toMatchObject({
+    fusionNodeId: candidate!.node.id,
+    confirmedDraftVersionId: candidate!.activeDraft.id,
+    body: candidate!.activeDraft.body,
+    contentHash: candidate!.activeDraft.contentHash,
+  });
+  expect(confirmed.confirmedFusion.directSources.map((source) => source.sourceNodeId).sort()).toEqual(
+    candidate!.candidateSources.map((source) => source.sourceNodeId).sort(),
+  );
+  expect(confirmed.confirmedFusionSources).toHaveLength(2);
+  expect(confirmed.confirmedFusionSources.every((source) => source.health === "available")).toBe(true);
+  await expect(page.getByTestId("fusion-source-bar").getByRole("link")).toHaveCount(2);
+
+  // 原位确认只固定草案和来源，不改写任何来源正文；来源条仍回到现有稳定节点。
+  expect((await waitLatestAssistantCompleted(page, sourceANodeId, "确认后来源 A")).content).toBe(sourceAContentBefore);
+  expect((await waitLatestAssistantCompleted(page, sourceBNodeId, "确认后来源 B")).content).toBe(sourceBContentBefore);
+  const firstSource = confirmed.confirmedFusionSources[0]!;
+  await page.getByTestId("fusion-source-bar").getByRole("link").first().click();
+  await page.waitForURL(new RegExp(`/nodes/${firstSource.nodeId}$`), { timeout: 20_000 });
   expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
 });
 

@@ -360,17 +360,6 @@ const fakeProvider = {
     if (content.includes("深入研究第一轮")) return { title: "深入研究", concepts: [] };
     return { title: "", concepts: [] };
   },
-  // #31 确认式融合：确定性融合正文——三节 + [来源n] 引用（验收 7 的章节断言与引用回溯）。
-  async composeFusion(request) {
-    const sources = request.fusion?.sources ?? [];
-    const labelA = sources[0]?.title ?? "来源一";
-    const labelB = sources[1]?.title ?? "来源二";
-    return [
-      `## 共同核心\n\n${labelA}与${labelB}共享同一主题。[来源1]`,
-      "## 差异\n\n两者来自不同作品。[来源2]",
-      "## 综合推导\n\n融合后的增量综合结论。",
-    ].join("\n\n");
-  },
   // T03 导入章节解析：确定性假模型按 [Bn] 编号取首/中/尾三块作为章节起点。
   // E2E_CHAPTER_PARSE=fail 时模拟 AI 解析失败（服务端应退化为规则锚点）。
   async parseImportChapters(request) {

@@ -16,7 +16,7 @@ test("creates formal versioned tables", async (t) => {
   store.close();
   const database = new DatabaseSync(databasePath, { readOnly: true });
   const tables = (database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>).map((row) => row.name);
-  for (const table of ["model_calls", "research_sessions", "research_messages", "research_tasks", "research_task_events", "research_attachments", "research_import_tasks", "research_content_snapshots", "research_import_task_events", "research_chapter_tasks", "research_selections", "research_branches", "research_later_items", "research_grounding_runs", "research_grounding_sources", "research_citations", "provider_credentials", "model_purpose_routes", "research_nodes", "research_edges", "research_slices", "research_fusion_proposals", "research_body_versions", "research_semantic_fragments", "projects", "research_association_hints", "research_temporary_fusion_nodes", "research_fusion_draft_versions", "research_candidate_source_connections", "research_confirmed_fusion_snapshots"]) assert.ok(tables.includes(table));
+  for (const table of ["model_calls", "research_sessions", "research_messages", "research_tasks", "research_task_events", "research_attachments", "research_import_tasks", "research_content_snapshots", "research_import_task_events", "research_chapter_tasks", "research_selections", "research_branches", "research_later_items", "research_grounding_runs", "research_grounding_sources", "research_citations", "provider_credentials", "model_purpose_routes", "research_nodes", "research_edges", "research_slices", "research_fusion_proposals", "research_body_versions", "research_semantic_fragments", "projects", "research_association_hints", "research_temporary_fusion_nodes", "research_fusion_draft_versions", "research_fusion_draft_revalidation_tasks", "research_candidate_source_connections", "research_confirmed_fusion_snapshots"]) assert.ok(tables.includes(table));
   assert.ok(!tables.includes("research_selection_tasks"));
   assert.ok(!tables.includes("research_selection_task_events"));
   assert.equal((database.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, LATEST_SCHEMA_VERSION);
@@ -110,7 +110,9 @@ test("migration v41 preserves selections while removing retired selection AI dat
     INSERT INTO model_calls
       (id, workflow_run_id, provider, model, purpose, prompt_version, status, input_tokens, output_tokens, cache_hit_tokens, estimated_cost_usd, latency_ms, retry_count, created_at, record_json)
       VALUES ('legacy-selection-call', 'legacy-selection-task', 'legacy', 'legacy', 'selection_analysis', 'legacy', 'succeeded', 1, 1, 0, 0, 1, 0, '2026-08-24T00:00:00.000Z', '{}');
-    DELETE FROM schema_migrations WHERE version = 41;
+    -- Replaying a migration requires rewinding later migration facts as well; otherwise MAX(version)
+    -- would skip v41 even though its row is absent.
+    DELETE FROM schema_migrations WHERE version >= 41;
   `);
   legacy.close();
 
@@ -169,6 +171,7 @@ test("migrations 15 to 21 preserve existing version 14 research sessions", async
     ALTER TABLE research_messages DROP COLUMN branch_id;
     DROP TABLE research_confirmed_fusion_snapshots;
     DROP TABLE research_candidate_source_connections;
+    DROP TABLE research_fusion_draft_revalidation_tasks;
     DROP TABLE research_fusion_draft_versions;
     DROP TABLE research_temporary_fusion_nodes;
     DROP TABLE research_association_hints;
@@ -263,6 +266,7 @@ test("migration v24 maps sessions and branches to nodes and backfills node_id", 
     DROP INDEX research_nodes_session_idx;
     DROP TABLE research_confirmed_fusion_snapshots;
     DROP TABLE research_candidate_source_connections;
+    DROP TABLE research_fusion_draft_revalidation_tasks;
     DROP TABLE research_fusion_draft_versions;
     DROP TABLE research_temporary_fusion_nodes;
     DROP TABLE research_association_hints;
@@ -556,6 +560,7 @@ test("migration v28 creates research_edges table and derives parent-child edges 
   raw.exec(`
     DROP TABLE IF EXISTS research_confirmed_fusion_snapshots;
     DROP TABLE IF EXISTS research_candidate_source_connections;
+    DROP TABLE IF EXISTS research_fusion_draft_revalidation_tasks;
     DROP TABLE IF EXISTS research_fusion_draft_versions;
     DROP TABLE IF EXISTS research_temporary_fusion_nodes;
     DROP TABLE IF EXISTS research_association_hints;
@@ -643,6 +648,7 @@ test("migration v30 recreates research_fusion_proposals after a v29 rollback", a
   rollback.exec(`
     DROP TABLE research_confirmed_fusion_snapshots;
     DROP TABLE research_candidate_source_connections;
+    DROP TABLE research_fusion_draft_revalidation_tasks;
     DROP TABLE research_fusion_draft_versions;
     DROP TABLE research_temporary_fusion_nodes;
     DROP TABLE research_association_hints;
@@ -663,9 +669,12 @@ test("migration v30 recreates research_fusion_proposals after a v29 rollback", a
 
   const database = new DatabaseSync(databasePath, { readOnly: true });
   const columns = (database.prepare("PRAGMA table_info(research_fusion_proposals)").all() as Array<{ name: string }>).map((column) => column.name);
-  for (const column of ["id", "lo_node_id", "hi_node_id", "relation_type", "reason", "status", "cooldown_until", "created_at", "record_json"]) {
+  for (const column of ["id", "lo_node_id", "hi_node_id", "relation_type", "reason", "status", "created_at", "updated_at", "record_json"]) {
     assert.ok(columns.includes(column), `migration v30 should recreate ${column}`);
   }
+  assert.ok(!columns.includes("cooldown_until"), "retired proposal decisions must not recreate cooldown state");
+  const tableSql = (database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'research_fusion_proposals'").get() as { sql: string }).sql;
+  assert.match(tableSql, /CHECK\s*\(status\s*=\s*'pending'\)/i, "proposal rows are read-only pending audit records");
   const indexes = database.prepare("PRAGMA index_list(research_fusion_proposals)").all() as Array<{ name: string; unique: number }>;
   assert.ok(indexes.some((index) => index.name === "research_fusion_proposals_status_idx"));
   assert.ok(indexes.some((index) => index.unique === 1), "normalized node pair must stay unique");

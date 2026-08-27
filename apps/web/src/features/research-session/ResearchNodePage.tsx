@@ -128,15 +128,10 @@ export function ResearchNodePage() {
   // 依赖原始 messages/slices 引用而非整个 view，减少因 view 包装对象变化导致的重建。
   const readyMessages = readyView?.messages;
   const readySlices = readyView?.slices;
-  // #31：融合节点来源条（跨消息去重）。必须在所有早退返回之前计算（Hooks 规则）。
+  // 正式融合来源条。必须在所有早退返回之前计算（Hooks 规则）。
   const fusionSourceEntries = useMemo<ResearchFusionSource[]>(() => {
-    if (!readyView?.fusionSources) return [];
-    const byNode = new Map<string, ResearchFusionSource>();
-    for (const sources of Object.values(readyView.fusionSources)) {
-      for (const source of sources) byNode.set(source.nodeId, source);
-    }
-    return [...byNode.values()];
-  }, [readyView]);
+    return readyView?.confirmedFusionSources ?? [];
+  }, [readyView?.confirmedFusionSources]);
   const railItems = useMemo<SliceRailItem[]>(() => {
     const items: SliceRailItem[] = [];
     if (!readyMessages) return items;
@@ -1037,7 +1032,6 @@ export function ResearchNodePage() {
                 onGrowTermMarker={handleGrowTermMarker}
                 slices={view.slices?.[message.id]}
                 fragmentTarget={fragmentFocus?.target}
-                fusionSources={view.fusionSources?.[message.id]}
                 multiTurn={showTurnRail}
               />
             );

@@ -316,13 +316,13 @@ test("buildGraphProjection filters out deleted edges", () => {
   assert.equal(projection.edges[0].status, "active");
 });
 
-test("fusion evidence health requires two distinct readable sources and stays incomplete when one source leaves the global range", () => {
+test("fusion evidence health requires two distinct readable sources and reports deleted when one source is permanently absent", () => {
   const sourceA = makeNode("source-a");
   const sourceB = makeNode("source-b");
   const fusion = makeNode("fusion", { isFusionNode: true });
   const edges = [makeEdge("fused-from", sourceA.id, fusion.id), makeEdge("fused-from", sourceB.id, fusion.id)];
 
   assert.equal(deriveFusionEvidenceHealth([sourceA, sourceB, fusion], edges).get(fusion.id), "available");
-  assert.equal(deriveFusionEvidenceHealth([sourceA, fusion], edges).get(fusion.id), "incomplete");
+  assert.equal(deriveFusionEvidenceHealth([sourceA, fusion], edges).get(fusion.id), "deleted");
   assert.equal(deriveFusionEvidenceHealth([sourceA, sourceB, fusion], [edges[0]]).get(fusion.id), "incomplete");
 });

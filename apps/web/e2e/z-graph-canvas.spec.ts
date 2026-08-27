@@ -1,7 +1,7 @@
 /**
  * 关联模式（研究地图内画布）端到端（#40）：确定性假模型。
- * 覆盖：研究地图入口进入关联模式、直接邻居的 maxDepth=1 请求、三类边筛选、
- * 缩放/减弱动效及窄屏关系列表回落。语义/融合边通过浏览器路由注入确定性投影。
+ * 覆盖：研究地图入口进入关联模式、直接邻居的 maxDepth=1 请求、两类永久边筛选、
+ * 缩放/减弱动效及窄屏关系列表回落。融合边通过浏览器路由注入确定性投影。
  */
 import { expect, test, type Page } from "@playwright/test";
 import { citeAnswerText, pairAndOpen } from "./helpers";
@@ -9,7 +9,7 @@ import { citeAnswerText, pairAndOpen } from "./helpers";
 const QUESTION = "什么是本地优先研究？";
 const SELECTED_TEXT = "本地优先会先把输入保存在本机";
 
-async function installThreeEdgeGraphFixture(page: Page): Promise<void> {
+async function installPermanentEdgeGraphFixture(page: Page): Promise<void> {
   await page.route("**/v1/research-sessions/*/graph**", async (route) => {
     const response = await route.fetch();
     const projection = await response.json();
@@ -30,23 +30,13 @@ async function installThreeEdgeGraphFixture(page: Page): Promise<void> {
       label,
       depth: 1,
     });
-    const semanticId = `e2e-semantic-${projection.focusNodeId}`;
     const fusedId = `e2e-fused-${projection.focusNodeId}`;
     projection.nodes = [
       ...projection.nodes,
-      makeNode(semanticId, "语义关联节点"),
       makeNode(fusedId, "融合来源节点"),
     ];
     projection.edges = [
       ...projection.edges,
-      {
-        id: `e2e-edge-semantic-${projection.focusNodeId}`,
-        kind: "semantic-related",
-        fromNodeId: projection.focusNodeId,
-        toNodeId: semanticId,
-        createdAt: "2026-08-02T08:00:00.000Z",
-        status: "active",
-      },
       {
         id: `e2e-edge-fused-${projection.focusNodeId}`,
         kind: "fused-from",
@@ -94,7 +84,7 @@ test.describe("研究地图关联模式画布", () => {
     });
 
     const { childId } = await openNodeWithParent(page);
-    await installThreeEdgeGraphFixture(page);
+    await installPermanentEdgeGraphFixture(page);
     page.on("console", (message) => {
       if (message.type() === "error" || message.type() === "warning") consoleIssues.push(message.text());
     });
@@ -111,7 +101,6 @@ test.describe("研究地图关联模式画布", () => {
     const svg = canvas.getByTestId("graph-canvas-svg");
     await expect(svg).toBeVisible();
     await expect(canvas.getByTestId(`graph-node-${childId}`)).toHaveAttribute("transform", "translate(0 0)");
-    await expect(canvas.getByTestId("graph-node-e2e-semantic-" + childId)).toBeVisible();
     await expect(canvas.getByTestId("graph-node-e2e-fused-" + childId)).toBeVisible();
     expect(graphRequests.some((url) => /[?&]maxDepth=1(?:&|$)/.test(url))).toBe(true);
     await canvas.getByTestId("graph-expand").click();
@@ -120,12 +109,9 @@ test.describe("研究地图关联模式画布", () => {
     const transform = canvas.locator(".graph-canvas__transform");
     await expect(transform).toHaveAttribute("style", /transition:\s*none/);
     // 模块级筛选工具栏同时作用于画布渲染与键盘候选
-    await dialog.getByTestId("map-filter-semantic-related").click();
     await dialog.getByTestId("map-filter-fused-from").click();
     await expect(dialog.getByTestId("map-filter-parent-child")).toHaveAttribute("aria-pressed", "true");
-    await expect(canvas.getByTestId("graph-node-e2e-semantic-" + childId)).toBeHidden();
     await expect(canvas.getByTestId("graph-node-e2e-fused-" + childId)).toBeHidden();
-    await expect(canvas.locator('[data-edge-kind="semantic-related"]')).toHaveCount(0);
     await expect(canvas.locator('[data-edge-kind="fused-from"]')).toHaveCount(0);
 
     await dialog.getByTestId("map-filter-all").click();
@@ -160,11 +146,8 @@ test.describe("研究地图关联模式画布", () => {
     const narrowDialog = page.getByRole("dialog", { name: "研究地图" });
     await expect(narrowDialog).toBeVisible();
     const relationshipList = narrowDialog.getByRole("list", { name: "节点关系列表" });
-    await expect(relationshipList.getByRole("button", { name: "语义关联节点" })).toBeVisible();
     await expect(relationshipList.getByRole("button", { name: "融合来源节点" })).toBeVisible();
-    await narrowDialog.getByTestId("map-filter-semantic-related").click();
     await narrowDialog.getByTestId("map-filter-fused-from").click();
-    await expect(relationshipList.getByRole("button", { name: "语义关联节点" })).toBeHidden();
     await expect(relationshipList.getByRole("button", { name: "融合来源节点" })).toBeHidden();
     await page.keyboard.press("Escape");
 

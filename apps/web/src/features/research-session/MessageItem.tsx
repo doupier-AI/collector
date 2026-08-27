@@ -1,7 +1,7 @@
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { ResearchCitationRecord, ResearchFusionSource, ResearchGroundingSourceRecord, ResearchMessageRecord, ResearchSliceRecord, ResearchTaskRecord, ResearchTermPreviewInput, ResearchTermPreviewRecord, TermMarker } from "@collector/capture-contracts";
+import type { ResearchCitationRecord, ResearchGroundingSourceRecord, ResearchMessageRecord, ResearchSliceRecord, ResearchTaskRecord, ResearchTermPreviewInput, ResearchTermPreviewRecord, TermMarker } from "@collector/capture-contracts";
 import { deriveMessageBlocks, messageContentBlockId, splitBlockHeading } from "@collector/capture-contracts";
 import { MarkdownContent, type RenderedTermMarker } from "../../components/MarkdownContent";
 import { subscribeToGroundingSourceReveal } from "../../components/grounding-source-navigation";
@@ -36,8 +36,6 @@ export interface MessageItemProps {
   terms?: TermMarker[];
   termPreviews?: Record<string, ResearchTermPreviewRecord>;
   onStartTermPreview?: (messageId: string, marker: TermMarker) => void;
-  /** #31：本条消息引用的融合来源（正文 [来源n] 渲染为可点击的融合引用）。 */
-  fusionSources?: ResearchFusionSource[];
   onRetryTermPreview?: (preview: ResearchTermPreviewRecord) => void;
   /** mention 为用户实际点击的那次提及；缺省时服务端回落为预览原始锚点（ADR-0029）。 */
   onGrowTermPreview?: (preview: ResearchTermPreviewRecord, mention?: ResearchTermPreviewInput) => Promise<boolean>;
@@ -51,7 +49,7 @@ export interface MessageItemProps {
 }
 
 /** 单条消息。用户消息靠右呈现，AI 回答保持完整阅读卡片。 */
-export function MessageItem({ message, task, retrying = false, onRetry, onRegenerateTask, onEditMessage, highlights = [], citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, onGrowTermMarker, slices, fragmentTarget, fusionSources, multiTurn = false }: MessageItemProps) {
+export function MessageItem({ message, task, retrying = false, onRetry, onRegenerateTask, onEditMessage, highlights = [], citations = [], groundingSources = [], terms = [], termPreviews = {}, onStartTermPreview, onRetryTermPreview, onGrowTermPreview, onGrowTermMarker, slices, fragmentTarget, multiTurn = false }: MessageItemProps) {
   // ADR-0035：版本切换索引（0=最新正文，1..N=versions[0..N-1]）。hooks 须在角色分支之前声明。
   const [versionIndex, setVersionIndex] = useState(0);
   const versions = message.versions ?? [];
@@ -100,7 +98,7 @@ export function MessageItem({ message, task, retrying = false, onRetry, onRegene
               onGrowMarker={onGrowTermMarker}
             >
               {message.status === "completed" ? (
-                <AssistantBlocks message={message} highlights={highlights} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} fragmentTarget={fragmentTarget} fusionSources={fusionSources} multiTurn={multiTurn} />
+                <AssistantBlocks message={message} highlights={highlights} citations={messageCitations} groundingSources={taskSources} terms={terms} slices={slices} fragmentTarget={fragmentTarget} multiTurn={multiTurn} />
               ) : (
                 <GeneratingBody message={message} task={task} terms={terms} multiTurn={multiTurn} />
               )}
@@ -306,7 +304,7 @@ const NO_TERMS: TermMarker[] = [];
  * ADR-0032 呈现契约：普通回答为一张轮次卡片内的连续正文；长文为一张轮次卡片内的多章节结构。不造重试卡
  * （那是 failed 的事），切片缺失时同样防御性降级为连续正文。
  */
-function AssistantBlocks({ message, highlights = [], citations, groundingSources, terms, slices, fragmentTarget, fusionSources, multiTurn = false }: { message: ResearchMessageRecord; highlights?: MessageHighlight[]; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[]; terms: TermMarker[]; slices?: ResearchSliceRecord[]; fragmentTarget?: FragmentTarget; fusionSources?: ResearchFusionSource[]; multiTurn?: boolean }) {
+function AssistantBlocks({ message, highlights = [], citations, groundingSources, terms, slices, fragmentTarget, multiTurn = false }: { message: ResearchMessageRecord; highlights?: MessageHighlight[]; citations: ResearchCitationRecord[]; groundingSources: ResearchGroundingSourceRecord[]; terms: TermMarker[]; slices?: ResearchSliceRecord[]; fragmentTarget?: FragmentTarget; multiTurn?: boolean }) {
   const blocks = deriveMessageBlocks(message.content);
   // 术语按块分组一次并保持数组身份稳定，避免无关背景刷新重建术语按钮并打断键盘焦点。
   const termsByBlock = useMemo(() => {
@@ -323,7 +321,7 @@ function AssistantBlocks({ message, highlights = [], citations, groundingSources
     }
     return grouped;
   }, [terms, message, slices]);
-  if (blocks.length === 0) return <MarkdownContent text={message.content} sources={groundingSources} citations={citations} variant="message" fusionSources={fusionSources} />;
+  if (blocks.length === 0) return <MarkdownContent text={message.content} sources={groundingSources} citations={citations} variant="message" />;
   const activeHighlights = highlights.filter((highlight) => highlight.blockOrdinal >= 0 && highlight.blockOrdinal < blocks.length);
 
   // 长文章节目标与章节导航同源派生；块对齐与 blockId 计算不再各自手工进行。
@@ -355,7 +353,6 @@ function AssistantBlocks({ message, highlights = [], citations, groundingSources
                 sources={groundingSources}
                 citations={citations}
                 terms={termsByBlock.get(target.blockOrdinal) ?? NO_TERMS}
-                fusionSources={fusionSources}
               />
             );
           })}
@@ -390,7 +387,6 @@ function AssistantBlocks({ message, highlights = [], citations, groundingSources
               sources={groundingSources}
               citations={citations}
               terms={termsByBlock.get(block.ordinal) ?? NO_TERMS}
-              fusionSources={fusionSources}
             />
           );
         })}
@@ -409,7 +405,7 @@ function AssistantBlocks({ message, highlights = [], citations, groundingSources
  * data-block-id 与 data-block-text 保留在内容容器上；data-slice-id 留作未来融合追溯关联钩。
  * 无标题切片退化为 aria-label = 正文摘要。
  */
-function TurnSection({ slice, blockText, blockId, anchorId, sectionId, highlights, sources, citations, terms, fusionSources }: {
+function TurnSection({ slice, blockText, blockId, anchorId, sectionId, highlights, sources, citations, terms }: {
   slice: ResearchSliceRecord;
   blockText: string;
   blockId: string;
@@ -419,8 +415,6 @@ function TurnSection({ slice, blockText, blockId, anchorId, sectionId, highlight
   sources: ResearchGroundingSourceRecord[];
   citations: ResearchCitationRecord[];
   terms: TermMarker[];
-  /** #31：融合正文引用来源（[来源n] 渲染为可点击的融合引用）。 */
-  fusionSources?: ResearchFusionSource[];
 }) {
   const title = slice.title.trim();
   // 正文首行节标题与切片标题一致 → 提升正文标题；否则补题需独立 <h3>。
@@ -447,7 +441,6 @@ function TurnSection({ slice, blockText, blockId, anchorId, sectionId, highlight
         sources={sources}
         citations={citations}
         terms={terms}
-        fusionSources={fusionSources}
       />
     </section>
   );
@@ -456,7 +449,7 @@ function TurnSection({ slice, blockText, blockId, anchorId, sectionId, highlight
 /** 单个消息块：Markdown 渲染 + React 管理的可见文字高亮。
     titleAnchorId 存在时，把正文首个标题元素提升为卡片标题（挂该 id 供导航定位）。
     elementId 存在时容器挂稳定 id 并可聚焦——轮次卡片内段落块是 ?fragment= 深链的落点。 */
-function MessageBlock({ blockText, blockId, elementId, titleAnchorId, highlights = [], sources, citations, terms, fusionSources }: { blockText: string; blockId: string; elementId?: string; titleAnchorId?: string; highlights?: readonly MessageHighlight[]; sources: ResearchGroundingSourceRecord[]; citations: ResearchCitationRecord[]; terms: TermMarker[]; fusionSources?: ResearchFusionSource[] }) {
+function MessageBlock({ blockText, blockId, elementId, titleAnchorId, highlights = [], sources, citations, terms }: { blockText: string; blockId: string; elementId?: string; titleAnchorId?: string; highlights?: readonly MessageHighlight[]; sources: ResearchGroundingSourceRecord[]; citations: ResearchCitationRecord[]; terms: TermMarker[] }) {
   const normalizedHighlights = mergeMessageHighlights(highlights, blockText);
 
   return (
@@ -467,7 +460,7 @@ function MessageBlock({ blockText, blockId, elementId, titleAnchorId, highlights
       data-block-id={blockId}
       data-block-text
     >
-      <MarkdownContent text={blockText} sources={sources} citations={citations} terms={terms} variant="message" titleAnchorId={titleAnchorId} fusionSources={fusionSources} highlights={normalizedHighlights} />
+      <MarkdownContent text={blockText} sources={sources} citations={citations} terms={terms} variant="message" titleAnchorId={titleAnchorId} highlights={normalizedHighlights} />
     </div>
   );
 }

@@ -13,7 +13,6 @@ import type {
   ResearchSemanticFragmentRecord,
   ResearchSessionRecord,
   ResearchSliceRecord,
-  ResearchTaskRecord,
 } from "@collector/capture-contracts";
 import { hashBodyContent } from "@collector/capture-contracts";
 import { getOrDeriveMessageBodyArtifacts, tryResolveFragmentExcerpt } from "../body-artifacts.js";
@@ -28,7 +27,6 @@ export interface CurrentSearchSourceReader {
   listResearchSessions(): ResearchSessionRecord[];
   listResearchNodes(sessionId: string): ResearchNodeRecord[];
   listResearchMessages(sessionId: string): ResearchMessageRecord[];
-  listResearchTasks(sessionId: string): ResearchTaskRecord[];
   listResearchAttachments(sessionId: string): ResearchAttachmentRecord[];
   getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined;
   getConfirmedFusionSnapshot(nodeId: string): ResearchConfirmedFusionSnapshotRecord | undefined;
@@ -54,9 +52,6 @@ export function projectCurrentSearchUnits(reader: CurrentSearchSourceReader): Pr
     if (session.trashedAt) continue;
     const nodes = reader.listResearchNodes(session.id);
     const messages = reader.listResearchMessages(session.id);
-    const formalFusionOutputMessageIds = new Set(reader.listResearchTasks(session.id)
-      .filter((task) => task.status === "completed" && task.fusionPlan)
-      .map((task) => task.outputMessageId));
     const messagesByNode = groupMessagesByNode(messages, session.id);
     for (const node of nodes) {
       const nodeMessages = messagesByNode.get(node.id) ?? [];
@@ -90,9 +85,9 @@ export function projectCurrentSearchUnits(reader: CurrentSearchSourceReader): Pr
         }
         // The confirmed snapshot and current assistant messages have independent
         // identities. Equal timestamps or byte-identical text cannot merge them.
-        projectCompletedAssistantBodies(reader, node, session.id, nodeMessages, units, new Set());
+        projectCompletedAssistantBodies(reader, node, session.id, nodeMessages, units);
       } else {
-        projectCompletedAssistantBodies(reader, node, session.id, nodeMessages, units, formalFusionOutputMessageIds);
+        projectCompletedAssistantBodies(reader, node, session.id, nodeMessages, units);
       }
     }
 
@@ -108,7 +103,6 @@ function projectCompletedAssistantBodies(
   sessionId: string,
   messages: readonly ResearchMessageRecord[],
   units: ProjectedSearchUnit[],
-  formalFusionOutputMessageIds: ReadonlySet<string>,
 ): void {
   for (const message of messages) {
     if (message.role !== "assistant" || message.status !== "completed" || !message.content.trim()) continue;
@@ -122,7 +116,7 @@ function projectCompletedAssistantBodies(
       const excerpt = tryResolveFragmentExcerpt(artifacts.version, fragment);
       if (!excerpt?.trim()) continue;
       for (const window of textWindows(excerpt, fragment.startOffset)) {
-        units.push(projectUnit(node.id, sessionId, formalFusionOutputMessageIds.has(message.id) ? "formal-fusion-body" : "ai-body", {
+        units.push(projectUnit(node.id, sessionId, "ai-body", {
           kind: "message-semantic-range",
           nodeId: node.id,
           messageId: message.id,

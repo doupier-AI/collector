@@ -6,8 +6,6 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  FUSION_COMPOSE_PROMPT_VERSION,
-  FUSION_COMPOSE_TOKEN_BUDGET,
   IMPORT_CHAPTER_PARSE_PROMPT_VERSION,
   IMPORT_CHAPTER_PARSE_TOKEN_BUDGET,
   MODEL_PURPOSES,
@@ -28,9 +26,18 @@ import {
   RESEARCH_GROUNDING_TEXT_MAX_CHARACTERS,
   type ResearchGroundingScopeStatus,
   type ResearchFusionSource,
+  type ResearchSourceHealth,
   type ResearchNodeRecord,
   type ModelCallRecord,
   type ResearchNodeView,
+  type ResearchTemporaryFusionBundle,
+  type ResearchTemporaryFusionBatchDeleteInput,
+  type ResearchTemporaryFusionBatchDeleteResult,
+  type ResearchTemporaryFusionClearResult,
+  type ResearchTemporaryFusionDeleteResult,
+  type ResearchTemporaryFusionListItem,
+  type ResearchTemporaryFusionSearchInput,
+  type ResearchTemporaryFusionSearchResponse,
   resolveFragmentExcerpt,
   type ResearchBodyVersionRecord,
   type ResearchBodyVersionView,
@@ -97,10 +104,31 @@ import {
   type SimilarityVerificationGateway,
 } from "./fusion-proposals.js";
 import { AssociationHintService, type AssociationHintEvaluationGateway, type AssociationHintSearchGateway } from "./association-hints.js";
+import { TemporaryFusionConversationService, type TemporaryFusionConversationProvider } from "./temporary-fusion-conversation.js";
+import { TemporaryFusionConfirmationService } from "./temporary-fusion-confirmation.js";
+import { TemporaryFusionDraftService, type TemporaryFusionDraftEvidenceGateway } from "./temporary-fusion-drafts.js";
 
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
 class BudgetExceededError extends Error {}
+
+function temporaryFusionListItem(bundle: ResearchTemporaryFusionBundle): ResearchTemporaryFusionListItem {
+  const firstLine = bundle.activeDraft.body.split(/\r?\n/)
+    .map((line) => line.replace(/^#{1,6}\s*/, "").trim())
+    .find(Boolean) ?? "临时融合";
+  return {
+    node: bundle.node,
+    label: firstLine.length > 48 ? `${firstLine.slice(0, 47)}…` : firstLine,
+    evidenceStatus: bundle.activeDraft.evidenceStatus,
+    candidateSources: bundle.candidateSources,
+  };
+}
+
+function temporaryFusionPreview(body: string, index: number, queryLength: number): string {
+  const start = Math.max(0, index - 48);
+  const end = Math.min(body.length, index + queryLength + 96);
+  return `${start > 0 ? "…" : ""}${body.slice(start, end).replace(/\s+/g, " ").trim()}${end < body.length ? "…" : ""}`;
+}
 
 const FINAL_WRITER_EVIDENCE_MAX_CHARACTERS = 24_000;
 
@@ -175,6 +203,9 @@ export class CaptureService {
   readonly fusionProposals: ResearchFusionProposalService;
   readonly termPreviews: ResearchTermPreviewService;
   readonly associationHints: AssociationHintService;
+  readonly temporaryFusionConversations: TemporaryFusionConversationService;
+  readonly temporaryFusionConfirmation: TemporaryFusionConfirmationService;
+  readonly temporaryFusionDrafts: TemporaryFusionDraftService;
   /** 语义搜索模块由组合根构建后经 setter 接线（组合顺序：CaptureService 先于语义搜索模块）。 */
   private associationHintSearch?: AssociationHintSearchGateway;
 
@@ -191,7 +222,7 @@ export class CaptureService {
     private readonly store: CollectorStore,
     private readonly artifactRoot: string,
     private modelGateway?: ModelGateway,
-    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; similarityVerifier?: SimilarityVerificationGateway; associationHintEvaluator?: AssociationHintEvaluationGateway; chapterParseProvider?: ResearchChapterParseProvider; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunResearchChapters?: boolean; mvpDemoMode?: boolean; researchRetrySleep?: (ms: number) => Promise<void> } = {},
+    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; similarityVerifier?: SimilarityVerificationGateway; temporaryFusionDraftEvidenceVerifier?: TemporaryFusionDraftEvidenceGateway; associationHintEvaluator?: AssociationHintEvaluationGateway; chapterParseProvider?: ResearchChapterParseProvider; temporaryFusionConversationProvider?: () => Promise<TemporaryFusionConversationProvider | undefined>; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunResearchChapters?: boolean; autoRunTemporaryFusionTasks?: boolean; mvpDemoMode?: boolean; researchRetrySleep?: (ms: number) => Promise<void> } = {},
   ) {
     this.runRecords = new RunRecordsService(this.store);
     this.attachModelGateway(this.modelGateway);
@@ -244,8 +275,6 @@ export class CaptureService {
       this.store,
       this.termDetection,
       async () => this.options.similarityVerifier ?? this.gatewayForPurpose("research"),
-      undefined,
-      this.research,
     );
     this.termPreviews = new ResearchTermPreviewService(this.store, {
       research: this.research,
@@ -260,9 +289,29 @@ export class CaptureService {
       evaluator: async () => this.options.associationHintEvaluator ?? this.gatewayForPurpose("research"),
       termDetection: this.termDetection,
     });
+    this.temporaryFusionConversations = new TemporaryFusionConversationService(
+      this.store,
+      this.options.temporaryFusionConversationProvider ?? (async () => this.temporaryFusionConversationProviderFor()),
+      { autoRunTasks: this.options.autoRunTemporaryFusionTasks },
+    );
+    this.temporaryFusionConfirmation = new TemporaryFusionConfirmationService(this.store);
+    this.temporaryFusionDrafts = new TemporaryFusionDraftService(
+      this.store,
+      async () => this.options.temporaryFusionDraftEvidenceVerifier ?? this.modelGateway,
+    );
     // #35：启动时对历史研究正文做确定性、幂等的正文版本与语义片段回填。
     // 不调用模型、不删除原文；同文同标识，重复执行无副作用。
     setImmediate(() => { void this.backfillResearchBodyVersions().catch(() => undefined); });
+    if (this.options.autoRunTemporaryFusionTasks !== false) {
+      setImmediate(() => { void this.temporaryFusionConversations.resumeTasks().catch(() => undefined); });
+      setImmediate(() => {
+        try {
+          this.temporaryFusionDrafts.resumeTasks();
+        } catch {
+          // 服务关闭可先于延后恢复执行；与其他启动恢复一样安静结束。
+        }
+      });
+    }
   }
 
   setModelGateway(gateway: ModelGateway | undefined, route?: ActiveModelRoute): void {
@@ -291,7 +340,6 @@ export class CaptureService {
     const termDetections: NonNullable<ResearchNodeView["termDetections"]> = {};
     const slices: NonNullable<ResearchNodeView["slices"]> = {};
     const bodyVersions: NonNullable<ResearchNodeView["bodyVersions"]> = {};
-    const fusionSources: NonNullable<ResearchNodeView["fusionSources"]> = {};
     for (const message of view.messages) {
       if (message.role !== "assistant" || message.status !== "completed") continue;
       if (message.termMarkers !== undefined) {
@@ -312,37 +360,31 @@ export class CaptureService {
       }
       slices[message.id] = this.store.listSlicesByMessage(message.id);
       bodyVersions[message.id] = await this.getOrCreateBodyArtifacts(nodeId, message, view.citations ?? []);
-      // #31：融合正文的消息按任务 fusionReferences 组装来源（去重、补标签）。
-      const task = view.tasks.find((candidate) => candidate.outputMessageId === message.id);
-      const references = task?.fusionReferences ?? [];
-      if (references.length > 0) {
-        const byNode = new Map<string, ResearchFusionSource>();
-        for (const reference of references) {
-          if (byNode.has(reference.nodeId)) continue;
-          const node = this.store.getResearchNode(reference.nodeId);
-          const label = node?.displayName?.trim()
-            ?? this.selectionLabelFor(node)
-            ?? this.firstUserMessageFor(reference.nodeId)
-            ?? `节点 ${reference.nodeId.slice(0, 8)}`;
-          byNode.set(reference.nodeId, {
-            nodeId: reference.nodeId,
-            bodyVersionId: reference.bodyVersionId,
-            fragmentId: reference.fragmentId,
-            label,
-          });
-        }
-        fusionSources[message.id] = [...byNode.values()];
-      }
     }
     const confirmedFusion = this.store.getConfirmedFusionSnapshot(nodeId);
+    const confirmedFusionSources = confirmedFusion?.directSources.flatMap((source) => {
+      const node = this.store.getResearchNode(source.sourceNodeId);
+      const label = node?.displayName?.trim()
+        ?? this.selectionLabelFor(node)
+        ?? this.firstUserMessageFor(source.sourceNodeId)
+        ?? `已删除来源 ${source.sourceNodeId.slice(0, 8)}`;
+      const fragmentId = source.fragmentIds[0];
+      return fragmentId ? [{
+        nodeId: source.sourceNodeId,
+        bodyVersionId: source.bodyVersionId,
+        fragmentId,
+        label,
+        health: this.fusionSourceHealth(source.sourceNodeId),
+      }] : [];
+    });
     return {
       ...view,
       termDetections,
       slices,
       bodyVersions,
-      fusionSources: Object.keys(fusionSources).length > 0 ? fusionSources : undefined,
       ...(confirmedFusion ? { confirmedFusion } : {}),
-      fusionProposals: this.fusionProposals.listForNode(nodeId, ["pending", "accepted"]),
+      ...(confirmedFusionSources?.length ? { confirmedFusionSources } : {}),
+      fusionProposals: this.fusionProposals.listForNode(nodeId, ["pending"]),
     };
   }
 
@@ -354,6 +396,15 @@ export class CaptureService {
     if (!text) return undefined;
     const compressed = text.replace(/\s+/g, " ");
     return compressed.length > 48 ? `${compressed.slice(0, 48)}…` : compressed;
+  }
+
+  /** 永久删除后只暴露稳定 ID 与缺失状态，不从任何派生物回读来源原文。 */
+  private fusionSourceHealth(nodeId: string): ResearchSourceHealth {
+    const node = this.store.getResearchNode(nodeId);
+    if (!node) return "deleted";
+    return this.store.getResearchSession(node.sessionId)?.trashedAt
+      ? "temporarily-unavailable"
+      : "available";
   }
 
   /** 来源节点标签回退：首条用户消息摘要。 */
@@ -468,6 +519,35 @@ export class CaptureService {
       };
       await this.store.saveModelCall(record);
     });
+  }
+
+  /** T04：临时讨论复用 chat 路由与调用留痕，但只消费临时融合专属消息。 */
+  private temporaryFusionConversationProviderFor(): TemporaryFusionConversationProvider {
+    const service = this;
+    return {
+      async generate(input) {
+        const gateway = await service.gatewayForPurpose("chat");
+        if (gateway) {
+          const answer = await gateway.answerResearchConversation(input.messages, {
+            context: { workflowRunId: input.taskId, purpose: "temporary_fusion_conversation", promptVersion: "temporary-fusion-conversation-v1" },
+          });
+          return input.signal.aborted ? "" : answer;
+        }
+        // 本地演示/确定性测试只有 ResearchGenerationProvider，没有云网关；仍保持临时消息边界。
+        const fallback = service.options.researchProvider;
+        if (!fallback) throw new Error("AI model is not configured");
+        const now = new Date().toISOString();
+        let answer = "";
+        for await (const delta of fallback.generate({
+          session: { id: `temporary-fusion:${input.taskId}`, title: "临时融合讨论", status: "active", isFavorite: false, createdAt: now, updatedAt: now },
+          messages: input.messages,
+          taskId: input.taskId,
+          nodeId: `temporary-fusion:${input.taskId}`,
+          outputMessageId: input.taskId,
+        })) answer += delta;
+        return input.signal.aborted ? "" : answer;
+      },
+    };
   }
 
   private researchProviderFor(gateway: ModelGateway | undefined): ResearchGenerationProvider | undefined {
@@ -701,27 +781,6 @@ export class CaptureService {
           context: { workflowRunId: "", purpose: "term_entity_verification", promptVersion: TERM_IDENTITY_VERIFY_PROMPT_VERSION },
         });
       },
-      // #31：确认式融合正文生成。独立提示词版本；来源切片 ID、片段 ID 与令牌预算
-      // 随 context 落入模型会话轨迹（attachModelGateway 已记 ModelCallRecord，验收 4）。
-      // request.fusion.sources 由 research.ts 组装（含逐字可回读的片段摘录），这里只做网关适配。
-      async composeFusion(request) {
-        const purposeGateway = await service.gatewayForPurpose("research");
-        if (!purposeGateway) throw new Error("AI model is not configured");
-        const sources = request.fusion.sources;
-        const sourceSliceIds = [...new Set(sources.flatMap((source) => source.sliceId ? [source.sliceId] : []))].sort();
-        const sourceFragmentIds = [...new Set(sources.map((source) => source.fragmentId))].sort();
-        return purposeGateway.composeFusion(
-          { sources: sources.map((source) => ({ nodeId: source.nodeId, title: source.label, excerpt: source.excerpt })), relationType: request.fusion.relationType },
-          { nodeDepth: request.parentChainContext?.currentNodeDepth ?? 0, context: {
-            workflowRunId: request.taskId,
-            purpose: "fusion_compose",
-            promptVersion: FUSION_COMPOSE_PROMPT_VERSION,
-            ...(sourceSliceIds.length ? { sourceSliceIds } : {}),
-            ...(sourceFragmentIds.length ? { sourceFragmentIds } : {}),
-            tokenBudget: FUSION_COMPOSE_TOKEN_BUDGET,
-          } },
-        );
-      },
     };
   }
 
@@ -839,6 +898,59 @@ export class CaptureService {
   /** 只读 B 面数量；关闭自动发现也不隐藏既有待核验候选。 */
   getTemporaryFusionCount(): { count: number } {
     return { count: this.store.listTemporaryFusionNodes().length };
+  }
+
+  /** T02：B 面只读列表。列表不携带草案正文，正文只能在显式详情读取中返回。 */
+  listTemporaryFusions(): ResearchTemporaryFusionListItem[] {
+    return this.store.listTemporaryFusionNodes().flatMap((node) => {
+      const bundle = this.store.getTemporaryFusionBundle(node.id);
+      return bundle ? [temporaryFusionListItem(bundle)] : [];
+    });
+  }
+
+  getTemporaryFusion(id: string): ResearchTemporaryFusionBundle {
+    const bundle = this.store.getTemporaryFusionBundle(id);
+    if (!bundle || bundle.node.confirmedAt) throw new NotFoundError("Temporary fusion not found");
+    return bundle;
+  }
+
+  searchTemporaryFusions(input: ResearchTemporaryFusionSearchInput): ResearchTemporaryFusionSearchResponse {
+    const query = input.query.trim();
+    if (!query || query.length > 400) throw new ValidationError("query must contain 1 to 400 characters");
+    if (input.limit !== undefined && (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 50)) {
+      throw new ValidationError("limit must be an integer between 1 and 50");
+    }
+    const normalized = query.toLocaleLowerCase("zh-CN");
+    const matches = this.store.listTemporaryFusionNodes().flatMap((node) => {
+      const bundle = this.store.getTemporaryFusionBundle(node.id);
+      if (!bundle) return [];
+      const body = bundle.activeDraft.body;
+      const index = body.toLocaleLowerCase("zh-CN").indexOf(normalized);
+      if (index < 0) return [];
+      return [{ ...temporaryFusionListItem(bundle), preview: temporaryFusionPreview(body, index, query.length) }];
+    });
+    return { matches: matches.slice(0, input.limit ?? 50) };
+  }
+
+  async deleteTemporaryFusion(id: string): Promise<ResearchTemporaryFusionDeleteResult> {
+    const normalizedId = id.trim();
+    if (!normalizedId) throw new ValidationError("temporary fusion id is required");
+    return { id: normalizedId, deleted: await this.store.deleteTemporaryFusionNode(normalizedId) };
+  }
+
+  async deleteTemporaryFusions(input: ResearchTemporaryFusionBatchDeleteInput): Promise<ResearchTemporaryFusionBatchDeleteResult> {
+    if (!Array.isArray(input.ids) || input.ids.length < 1 || input.ids.length > 100) {
+      throw new ValidationError("ids must contain between 1 and 100 temporary fusion ids");
+    }
+    const ids = input.ids.map((id) => typeof id === "string" ? id.trim() : "");
+    if (ids.some((id) => !id) || new Set(ids).size !== ids.length) {
+      throw new ValidationError("ids must contain non-empty, non-duplicated temporary fusion ids");
+    }
+    return this.store.deleteTemporaryFusionNodes(ids);
+  }
+
+  async clearTemporaryFusions(): Promise<ResearchTemporaryFusionClearResult> {
+    return { deletedCount: await this.store.clearTemporaryFusionNodes() };
   }
 
   async updateFusionAutoConfig(input: { enabled?: unknown }): Promise<{ enabled: boolean }> {

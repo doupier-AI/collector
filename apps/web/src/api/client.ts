@@ -33,7 +33,20 @@ import type {
   ResearchAssociationHintRecord,
   ResearchSearchInput,
   ResearchSearchResponse,
-  ResearchFusionProposalDecision,
+  ResearchTemporaryFusionBundle,
+  ResearchTemporaryFusionBatchDeleteResult,
+  ResearchTemporaryFusionClearResult,
+  ConfirmTemporaryFusionResult,
+  ResearchTemporaryFusionConversationView,
+  ResearchTemporaryFusionDeleteResult,
+  ResearchTemporaryFusionListItem,
+  ResearchTemporaryFusionSearchInput,
+  ResearchTemporaryFusionSearchResponse,
+  ResearchTemporaryFusionTaskRecord,
+  ResearchTemporaryFusionTurnAccepted,
+  ResearchTemporaryFusionDraftHistory,
+  UpdateTemporaryFusionDraftInput,
+  UpdateTemporaryFusionDraftResult,
   ResearchFusionProposalRecord,
   ResearchFusionScanResult,
   ResearchNodeView,
@@ -147,9 +160,6 @@ export interface ApiClient {
    */
   scanResearchFusionProposals(nodeId: string): Promise<ResearchFusionScanResult>;
   listResearchFusionProposals(nodeId: string, status?: ResearchFusionProposalRecord["status"]): Promise<ResearchFusionProposalRecord[]>;
-  decideResearchFusionProposal(proposalId: string, decision: ResearchFusionProposalDecision): Promise<ResearchFusionProposalRecord>;
-  /** #31：确认式融合——确认后创建融合节点并返回首轮结果，客户端跳转到融合节点页。 */
-  fuseResearchFusionProposal(proposalId: string, idempotencyKey: string): Promise<NodeGrowthAccepted>;
   /** #69/#70：按产品价值读取当前节点的活跃临时关联提示（客户端只突出第一条，其余留给候选观察）。 */
   listAssociationHints(nodeId: string): Promise<ResearchAssociationHintRecord[]>;
   /** #69：明确忽略提示；幂等，重复忽略返回同一记录。忽略不创建任何永久事实。 */
@@ -160,6 +170,24 @@ export interface ApiClient {
   updateFusionAutoConfig(enabled: boolean): Promise<{ enabled: boolean }>;
   /** 只读当前 B 面候选总数；不会触发模型扫描。 */
   getTemporaryFusionCount(): Promise<{ count: number }>;
+  /** T02：读取 B 面候选摘要与单个当前草案；不会创建或修改任何事实。 */
+  listTemporaryFusions(): Promise<ResearchTemporaryFusionListItem[]>;
+  getTemporaryFusion(id: string): Promise<ResearchTemporaryFusionBundle>;
+  searchTemporaryFusions(input: ResearchTemporaryFusionSearchInput): Promise<ResearchTemporaryFusionSearchResponse>;
+  deleteTemporaryFusion(id: string): Promise<ResearchTemporaryFusionDeleteResult>;
+  deleteTemporaryFusions(ids: string[]): Promise<ResearchTemporaryFusionBatchDeleteResult>;
+  clearTemporaryFusions(): Promise<ResearchTemporaryFusionClearResult>;
+  /** T04：临时候选的专属讨论，永不进入正式会话或节点消息。 */
+  getTemporaryFusionConversation(id: string): Promise<ResearchTemporaryFusionConversationView>;
+  submitTemporaryFusionMessage(id: string, content: string, idempotencyKey: string): Promise<ResearchTemporaryFusionTurnAccepted>;
+  getTemporaryFusionTask(id: string): Promise<ResearchTemporaryFusionTaskRecord>;
+  retryTemporaryFusionTask(id: string): Promise<ResearchTemporaryFusionTaskRecord>;
+  cancelTemporaryFusionTask(id: string): Promise<ResearchTemporaryFusionTaskRecord>;
+  getTemporaryFusionDraftHistory(id: string): Promise<ResearchTemporaryFusionDraftHistory>;
+  updateTemporaryFusionDraft(id: string, input: UpdateTemporaryFusionDraftInput): Promise<UpdateTemporaryFusionDraftResult>;
+  restoreTemporaryFusionDraft(id: string, versionId: string, expectedDraftVersionId: string): Promise<UpdateTemporaryFusionDraftResult>;
+  /** T07：确认当前已核验草案；返回同一身份的正式根节点。 */
+  confirmTemporaryFusion(id: string, expectedDraftVersionId: string): Promise<ConfirmTemporaryFusionResult>;
   /** 从选区生长子节点：统一取代深入研究二选一。 */
   startChildNode(selectionId: string, input: CreateChildNodeInput, idempotencyKey: string): Promise<NodeGrowthAccepted>;
     /** 保存标记：幂等键命中返回首次保存的项目，保存不依赖 AI。 */
@@ -539,6 +567,7 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
       if (input.createdBefore) params.set("createdBefore", input.createdBefore);
       if (input.includeAssociationHints) params.set("includeAssociationHints", "true");
       if (input.associationCandidateNodeId) params.set("associationCandidateNodeId", input.associationCandidateNodeId);
+      if (input.includeTemporaryFusions) params.set("includeTemporaryFusions", "true");
       if (input.relationshipKinds !== undefined) {
         if (input.relationshipKinds.length === 0) params.append("relationshipKind", "");
         else for (const kind of input.relationshipKinds) params.append("relationshipKind", kind);
@@ -551,6 +580,77 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
         method: "POST",
         headers: JSON_HEADERS,
         body: JSON.stringify(input),
+      });
+    },
+    listTemporaryFusions() {
+      return requestJson<ResearchTemporaryFusionListItem[]>(fetchFn, "/v1/research-temporary-fusions");
+    },
+    getTemporaryFusion(id: string) {
+      return requestJson<ResearchTemporaryFusionBundle>(fetchFn, `/v1/research-temporary-fusions/${encodeURIComponent(id)}`);
+    },
+    searchTemporaryFusions(input: ResearchTemporaryFusionSearchInput) {
+      return requestJson<ResearchTemporaryFusionSearchResponse>(fetchFn, "/v1/research-temporary-fusions/search", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify(input),
+      });
+    },
+    deleteTemporaryFusion(id: string) {
+      return requestJson<ResearchTemporaryFusionDeleteResult>(fetchFn, `/v1/research-temporary-fusions/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+    },
+    deleteTemporaryFusions(ids: string[]) {
+      return requestJson<ResearchTemporaryFusionBatchDeleteResult>(fetchFn, "/v1/research-temporary-fusions/batch-delete", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: JSON.stringify({ ids }),
+      });
+    },
+    clearTemporaryFusions() {
+      return requestJson<ResearchTemporaryFusionClearResult>(fetchFn, "/v1/research-temporary-fusions/clear", {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: "{}",
+      });
+    },
+    getTemporaryFusionConversation(id: string) {
+      return requestJson<ResearchTemporaryFusionConversationView>(fetchFn, `/v1/research-temporary-fusions/${encodeURIComponent(id)}/conversation`);
+    },
+    submitTemporaryFusionMessage(id: string, content: string, idempotencyKey: string) {
+      return requestJson<ResearchTemporaryFusionTurnAccepted>(fetchFn, `/v1/research-temporary-fusions/${encodeURIComponent(id)}/messages`, {
+        method: "POST", headers: { ...JSON_HEADERS, "Idempotency-Key": idempotencyKey }, body: JSON.stringify({ content }),
+      });
+    },
+    getTemporaryFusionTask(id: string) {
+      return requestJson<ResearchTemporaryFusionTaskRecord>(fetchFn, `/v1/research-temporary-fusion-tasks/${encodeURIComponent(id)}`);
+    },
+    retryTemporaryFusionTask(id: string) {
+      return requestJson<ResearchTemporaryFusionTaskRecord>(fetchFn, `/v1/research-temporary-fusion-tasks/${encodeURIComponent(id)}/retry`, {
+        method: "POST", headers: JSON_HEADERS, body: "{}",
+      });
+    },
+    cancelTemporaryFusionTask(id: string) {
+      return requestJson<ResearchTemporaryFusionTaskRecord>(fetchFn, `/v1/research-temporary-fusion-tasks/${encodeURIComponent(id)}/cancel`, {
+        method: "POST", headers: JSON_HEADERS, body: "{}",
+      });
+    },
+    getTemporaryFusionDraftHistory(id: string) {
+      return requestJson<ResearchTemporaryFusionDraftHistory>(fetchFn, `/v1/research-temporary-fusions/${encodeURIComponent(id)}/drafts`);
+    },
+    updateTemporaryFusionDraft(id: string, input: UpdateTemporaryFusionDraftInput) {
+      return requestJson<UpdateTemporaryFusionDraftResult>(fetchFn, `/v1/research-temporary-fusions/${encodeURIComponent(id)}/drafts`, {
+        method: "PUT", headers: JSON_HEADERS, body: JSON.stringify(input),
+      });
+    },
+    restoreTemporaryFusionDraft(id: string, versionId: string, expectedDraftVersionId: string) {
+      return requestJson<UpdateTemporaryFusionDraftResult>(fetchFn, `/v1/research-temporary-fusions/${encodeURIComponent(id)}/drafts/${encodeURIComponent(versionId)}/restore`, {
+        method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ expectedDraftVersionId }),
+      });
+    },
+    confirmTemporaryFusion(id: string, expectedDraftVersionId: string) {
+      return requestJson<ConfirmTemporaryFusionResult>(fetchFn, `/v1/research-temporary-fusions/${encodeURIComponent(id)}/confirm`, {
+        method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ expectedDraftVersionId }),
       });
     },
     getSemanticSearchStatus() {
@@ -588,20 +688,6 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
       return requestJson<ResearchFusionProposalRecord[]>(
         fetchFn,
         `/v1/research-nodes/${encodeURIComponent(nodeId)}/fusion-proposals${query}`,
-      );
-    },
-    decideResearchFusionProposal(proposalId: string, decision: ResearchFusionProposalDecision) {
-      return requestJson<ResearchFusionProposalRecord>(
-        fetchFn,
-        `/v1/research-fusion-proposals/${encodeURIComponent(proposalId)}/decide`,
-        { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ decision }) },
-      );
-    },
-    fuseResearchFusionProposal(proposalId: string, idempotencyKey: string) {
-      return requestJson<NodeGrowthAccepted>(
-        fetchFn,
-        `/v1/research-fusion-proposals/${encodeURIComponent(proposalId)}/fuse`,
-        { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ idempotencyKey }) },
       );
     },
     listAssociationHints(nodeId: string) {

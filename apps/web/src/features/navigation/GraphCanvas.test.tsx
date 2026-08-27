@@ -37,7 +37,7 @@ function projectionAtDepth(maxDepth = 1) {
 function renderCanvas(
   getResearchGraph = vi.fn(async (_sessionId: string, _focusNodeId?: string, maxDepth?: number) => projectionAtDepth(maxDepth)),
   focusNodeId = "focus",
-  selectedEdgeKinds: readonly ("parent-child" | "semantic-related" | "fused-from")[] = ALL_EDGE_KINDS,
+  selectedEdgeKinds: readonly ("parent-child" | "fused-from")[] = ALL_EDGE_KINDS,
 ) {
   const services = {
     api: { getResearchGraph } as Partial<ApiClient> as ApiClient,
@@ -90,26 +90,26 @@ describe("computeNodePositions", () => {
 describe("图筛选纯函数", () => {
   it("只返回选中的 active 边，并保留原始投影数据不变", () => {
     const projection = projectionAtDepth();
-    const filtered = filterEdgesByKind(projection.edges, ["semantic-related"]);
+    const filtered = filterEdgesByKind(projection.edges, ["fused-from"]);
 
-    expect(filtered.map((edge) => edge.kind)).toEqual(["semantic-related"]);
+    expect(filtered.map((edge) => edge.kind)).toEqual(["fused-from"]);
     expect(projection.edges).toHaveLength(4);
   });
 
   it("过滤节点只保留当前节点和关系端点，空筛选仍保留当前节点", () => {
     const projection = projectionAtDepth();
-    const semanticEdges = filterEdgesByKind(projection.edges, ["semantic-related"]);
+    const fusedEdges = filterEdgesByKind(projection.edges, ["fused-from"]);
 
-    expect(filterNodesByEdges(projection.nodes, semanticEdges, "focus").map((node) => node.node.id)).toEqual([
+    expect(filterNodesByEdges(projection.nodes, fusedEdges, "focus").map((node) => node.node.id)).toEqual([
       "focus",
-      "related",
+      "fused",
     ]);
     expect(navigationNodeIds(projection.nodes, [], "focus")).toEqual(["focus"]);
   });
 });
 
 describe("GraphCanvas", () => {
-  it("初始只请求直接邻居，并以线型、双线和可读关系摘要区分三类边", async () => {
+  it("初始只请求直接邻居，并以线型、双线和可读关系摘要区分两类永久边", async () => {
     const { getResearchGraph } = renderCanvas();
 
     await screen.findByRole("group", { name: "研究关系网状图" });
@@ -120,18 +120,14 @@ describe("GraphCanvas", () => {
       document.querySelector('[data-edge-kind="parent-child"] line') ??
         document.querySelector('[data-edge-kind="parent-child"]'),
     ).toHaveAttribute("stroke-dasharray", "none");
-    expect(
-      document.querySelector('[data-edge-kind="semantic-related"] line') ??
-        document.querySelector('[data-edge-kind="semantic-related"]'),
-    ).toHaveAttribute("stroke-dasharray", "7 4");
+    expect(document.querySelector('[data-edge-kind="semantic-related"]')).toBeNull();
     expect(document.querySelectorAll('[data-edge-kind="fused-from"] line')).toHaveLength(2);
     expect(screen.getByRole("group", { name: "边类型图例" })).toHaveTextContent("父子关系（实线）");
-    expect(screen.getByRole("group", { name: "边类型图例" })).toHaveTextContent("语义相关（虚线）");
     expect(screen.getByRole("group", { name: "边类型图例" })).toHaveTextContent("融合来源（双点划线）");
 
     const summary = screen.getByRole("region", { name: "关系列表" });
     expect(summary).toHaveTextContent("父子关系：深度学习基础");
-    expect(summary).toHaveTextContent("语义相关：Transformer 架构");
+    expect(summary).not.toHaveTextContent("语义相关");
     expect(summary).toHaveTextContent("融合来源：编码器融合");
   });
 
@@ -164,17 +160,17 @@ describe("GraphCanvas", () => {
       expect(screen.getByTestId("location-probe")).toHaveTextContent("/nodes/parent"),
     );
 
-    await user.click(screen.getByTestId("graph-node-related"));
+    await user.click(screen.getByTestId("graph-node-fused"));
     expect(screen.getByTestId("location-probe")).toHaveTextContent("/nodes/parent");
-    expect(screen.getByText(/已聚焦：/)).toHaveTextContent("位置编码");
+    expect(screen.getByText(/已聚焦：/)).toHaveTextContent("编码器融合");
 
     await user.click(screen.getByTestId("graph-return-current"));
     await waitFor(() => expect(focus).toHaveFocus());
 
-    await user.click(screen.getByTestId("graph-node-related"));
+    await user.click(screen.getByTestId("graph-node-fused"));
     await user.click(screen.getByTestId("graph-open-focused"));
     await waitFor(() =>
-      expect(screen.getByTestId("location-probe")).toHaveTextContent("/nodes/related"),
+      expect(screen.getByTestId("location-probe")).toHaveTextContent("/nodes/fused"),
     );
   });
 

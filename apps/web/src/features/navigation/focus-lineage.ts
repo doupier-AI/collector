@@ -1,5 +1,5 @@
 import type {
-  ResearchEdgeKind,
+  ResearchPermanentEdgeKind,
   ResearchGraphNodeSummary,
   ResearchGraphProjection,
 } from "@collector/capture-contracts";
@@ -73,7 +73,7 @@ export function focusLineageRovingIds(lineage: FocusLineage): string[] {
 export function focusLineageBySelectedKinds(
   projection: ResearchGraphProjection,
   focusNodeId: string,
-  selectedKinds: readonly ResearchEdgeKind[],
+  selectedKinds: readonly ResearchPermanentEdgeKind[],
 ): FocusLineage {
   const filteredEdges = filterEdgesByKind(projection.edges, selectedKinds);
   const filteredNodes = filterNodesByEdges(projection.nodes, filteredEdges, focusNodeId);

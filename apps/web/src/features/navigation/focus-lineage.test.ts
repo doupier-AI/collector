@@ -134,8 +134,8 @@ describe("focusLineageRovingIds", () => {
 });
 
 describe("focusLineageBySelectedKinds", () => {
-  it("只选语义时，血统只剩当前节点（父子边被过滤）", () => {
-    const lineage = focusLineageBySelectedKinds(lineageProjection(), "focus", ["semantic-related"]);
+  it("只选融合来源时，血统只剩当前节点（父子边被过滤）", () => {
+    const lineage = focusLineageBySelectedKinds(lineageProjection(), "focus", ["fused-from"]);
 
     expect(lineage.current?.node.id).toBe("focus");
     expect(lineage.ancestors).toEqual([]);

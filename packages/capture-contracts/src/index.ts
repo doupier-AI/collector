@@ -1157,10 +1157,6 @@ export interface ResearchTaskRecord {
   bodyPlan?: ResearchBodyPlan;
   /** 单轮流式断点：周期性落盘的已接收正文前缀；流被切断/重启后从断点续传，不整篇重来。 */
   streamCheckpoint?: { content: string; updatedAt: string; protocolPrefix?: string };
-  /** #31：融合节点生成的来源计划与关系类型；任务处理时消费，存于 record_json。 */
-  fusionPlan?: { sources: ResearchFusionSource[]; relationType: FusionRelationType };
-  /** #31：融合正文完成后解析出的 [来源n] 引用；存于 record_json，节点视图据此组装来源条。 */
-  fusionReferences?: ResearchFusionReference[];
   error?: ResearchTaskError;
   createdAt: string;
   updatedAt: string;
@@ -1199,10 +1195,10 @@ export interface ResearchNodeView {
   fusionProposals?: ResearchFusionProposalRecord[];
   /** #35：按消息 ID 返回正文版本；可选字段，缺失时前端按消息正文渲染。 */
   bodyVersions?: Record<string, ResearchBodyVersionRecord>;
-  /** #31：按消息 ID 返回该消息引用的融合来源；可选字段，缺失时前端不渲染来源条。 */
-  fusionSources?: Record<string, ResearchFusionSource[]>;
   /** 正式融合确认稿是独立于可继续对话消息的不可变正文。 */
   confirmedFusion?: ResearchConfirmedFusionSnapshotRecord;
+  /** 正式融合直接来源的当前健康投影；快照本身仍只保存确认时的固定事实。 */
+  confirmedFusionSources?: ResearchFusionSource[];
 }
 
 export interface ResearchTurnAccepted {
@@ -2435,11 +2431,14 @@ export interface ResearchGraphObservationInput {
   includeAssociationHints?: true;
   /** 只返回触及该节点的候选详情；总数与卫星计数同步限定为该子集。 */
   associationCandidateNodeId?: string;
+  /** 临时融合只在用户明确开启 B 面观察时投影；默认地图不携带候选正文或来源连接。 */
+  includeTemporaryFusions?: true;
 }
 
 export type ResearchGraphObservationConnectivity = "default" | "focus" | "connected" | "unconnected";
 export type ResearchGraphObservationScope = "inside-current-filter" | "outside-boundary" | "outside-bridge";
-export type ResearchGraphFusionEvidenceHealth = "not-applicable" | "available" | "incomplete";
+/** 融合来源健康是当前投影，不改写确认时固定的正文、快照或来源身份。 */
+export type ResearchGraphFusionEvidenceHealth = "not-applicable" | "available" | "temporarily-unavailable" | "deleted" | "incomplete";
 
 /** 图谱扫读所需的最小节点摘要；不携带正文、候选详情或语义范围正文。 */
 export interface ResearchGraphObservationNode {
@@ -2473,6 +2472,10 @@ export interface ResearchGraphObservation {
   activeCandidateCount: number;
   /** 仅 includeAssociationHints=true 时返回，避免普通地图观察携带候选证据详情。 */
   associationHints?: ResearchAssociationHintRecord[];
+  /** 全局待核验候选数；关闭临时层时只提供这个数量，不返回 B 面投影。 */
+  temporaryFusionCount?: number;
+  /** 仅 includeTemporaryFusions=true 时返回，与 A 面共享同一坐标系但不属于永久连通图。 */
+  temporaryFusions?: ResearchTemporaryFusionMapNode[];
 }
 
 // ── Cross-session research search (Issue #67) ─────────────────────
@@ -3033,6 +3036,8 @@ export interface ResearchTemporaryFusionNodeRecord {
   triggerProposalId: string;
   activeDraftVersionId: string;
   status: "active";
+  /** 已确认的聚合根保留审计事实，但不再属于临时观察层或可编辑草案。 */
+  confirmedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -3044,7 +3049,48 @@ export interface ResearchFusionDraftVersionRecord {
   body: string;
   contentHash: string;
   evidenceStatus: ResearchFusionEvidenceStatus;
+  /** T05: judgement ranges are stable per body-and-citation content, not per mutable draft ordinal. */
+  judgments?: ResearchFusionDraftJudgmentRecord[];
   createdAt: string;
+}
+
+/** A claim-sized, cited Markdown range inside one immutable draft body version. */
+export interface ResearchFusionDraftJudgmentRecord {
+  id: string;
+  startOffset: number;
+  endOffset: number;
+  contentHash: string;
+  sourceNodeIds: string[];
+  evidenceStatus: ResearchFusionEvidenceStatus;
+}
+
+/** Revalidation is persisted so an interrupted local process never silently treats a new draft as verified. */
+export interface ResearchFusionDraftRevalidationTaskRecord {
+  id: string;
+  temporaryFusionNodeId: string;
+  draftVersionId: string;
+  judgmentId: string;
+  status: "queued" | "running" | "completed" | "failed";
+  retryable: boolean;
+  error?: { code: string; message: string };
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ResearchTemporaryFusionDraftHistory {
+  versions: ResearchFusionDraftVersionRecord[];
+  revalidationTasks: ResearchFusionDraftRevalidationTaskRecord[];
+}
+
+export interface UpdateTemporaryFusionDraftInput {
+  body: string;
+  expectedDraftVersionId: string;
+}
+
+export interface UpdateTemporaryFusionDraftResult {
+  bundle: ResearchTemporaryFusionBundle;
+  previousDraftVersionId: string;
+  revalidationTasks: ResearchFusionDraftRevalidationTaskRecord[];
 }
 
 /** B 面候选来源连接；仅确认时最终采用且核验通过的连接可转换为 fused-from。 */
@@ -3052,6 +3098,8 @@ export interface ResearchCandidateSourceConnectionRecord {
   id: string;
   temporaryFusionNodeId: string;
   sourceNodeId: string;
+  /** 草案正文 [来源n] 的原始序号；候选过滤后仍保持与正文一致。 */
+  citationOrdinal?: number;
   sourceKind: "formal";
   bodyVersionId: string;
   fragmentIds: string[];
@@ -3070,10 +3118,110 @@ export interface ResearchConfirmedFusionSnapshotRecord {
   confirmedAt: string;
 }
 
+/** 确认必须绑定当前草案版本，避免旧页面把已经变化的版本正式化。 */
+export interface ConfirmTemporaryFusionInput {
+  expectedDraftVersionId: string;
+}
+
+/** 原位确认的稳定结果；session 仅提供正式地图投影所需的根容器。 */
+export interface ConfirmTemporaryFusionResult {
+  fusionNode: ResearchNodeRecord;
+  session: ResearchSessionRecord;
+  snapshot: ResearchConfirmedFusionSnapshotRecord;
+}
+
 export interface ResearchTemporaryFusionBundle {
   node: ResearchTemporaryFusionNodeRecord;
   activeDraft: ResearchFusionDraftVersionRecord;
   candidateSources: ResearchCandidateSourceConnectionRecord[];
+}
+
+/** 临时融合在列表、地图和搜索中共用的只读摘要；正文只经详情接口读取。 */
+export interface ResearchTemporaryFusionListItem {
+  node: ResearchTemporaryFusionNodeRecord;
+  label: string;
+  evidenceStatus: ResearchFusionEvidenceStatus;
+  candidateSources: ResearchCandidateSourceConnectionRecord[];
+}
+
+/** B 面地图投影。它不是 ResearchNodeRecord，不能作为永久边或正式连通路径的端点。 */
+export interface ResearchTemporaryFusionMapNode extends ResearchTemporaryFusionListItem {}
+
+export interface ResearchTemporaryFusionSearchInput {
+  query: string;
+  limit?: number;
+}
+
+export interface ResearchTemporaryFusionSearchMatch extends ResearchTemporaryFusionListItem {
+  preview: string;
+}
+
+export interface ResearchTemporaryFusionSearchResponse {
+  matches: ResearchTemporaryFusionSearchMatch[];
+}
+
+/** 单项删除保持幂等：目标已经不存在时 deleted 为 false，而不是把重试视为失败。 */
+export interface ResearchTemporaryFusionDeleteResult {
+  id: string;
+  deleted: boolean;
+}
+
+/** 批量删除只接受调用方明确给出的候选身份，绝不按搜索词或当前筛选范围扩展对象。 */
+export interface ResearchTemporaryFusionBatchDeleteInput {
+  ids: string[];
+}
+
+/** 不存在的 ID 不阻断同批其他删除，结果明确区分实际删除与本已不存在的项。 */
+export interface ResearchTemporaryFusionBatchDeleteResult {
+  deletedIds: string[];
+  missingIds: string[];
+}
+
+/** 清空操作只作用于临时融合聚合根；不包含正式节点、正文或永久关系。 */
+export interface ResearchTemporaryFusionClearResult {
+  deletedCount: number;
+}
+
+/** 临时融合专属消息；它不属于正式会话或节点消息集合。 */
+export interface ResearchTemporaryFusionMessageRecord {
+  id: string;
+  temporaryFusionNodeId: string;
+  role: "user" | "assistant";
+  content: string;
+  status: "pending" | "streaming" | "completed" | "failed" | "cancelled";
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 临时融合专属生成任务；输入先持久化，重启后可安全恢复。 */
+export interface ResearchTemporaryFusionTaskRecord {
+  id: string;
+  temporaryFusionNodeId: string;
+  inputMessageId: string;
+  outputMessageId: string;
+  idempotencyKey: string;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  retryable: boolean;
+  provider?: string;
+  model?: string;
+  promptVersion: string;
+  error?: { code: string; message: string };
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface ResearchTemporaryFusionConversationView {
+  bundle: ResearchTemporaryFusionBundle;
+  messages: ResearchTemporaryFusionMessageRecord[];
+  tasks: ResearchTemporaryFusionTaskRecord[];
+}
+
+export interface ResearchTemporaryFusionTurnAccepted {
+  inputMessage: ResearchTemporaryFusionMessageRecord;
+  outputMessage: ResearchTemporaryFusionMessageRecord;
+  task: ResearchTemporaryFusionTaskRecord;
 }
 
 /** 统一客户端可消费的目标模型快照；不代表对应 HTTP 路径已在 T01 开放。 */
@@ -3445,21 +3593,12 @@ export const TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION = "temporary-fusion-disco
 /** 临时融合完整草案的固定输出预算。 */
 export const TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET = 4_096;
 
-/** 融合正文生成的独立提示词版本（#31 F2）；模型调用与运行记录留痕都使用这一稳定版本。 */
-export const FUSION_COMPOSE_PROMPT_VERSION = "fusion-compose-v1";
-
-/** 融合正文生成的固定令牌预算；与提示词 maxTokens 一致，随运行记录留痕。
- *  ADR-0031 起由 4_000 提高：融合正文同样注入弱标记指令，thinking 模型的推理与正文
- *  共用该预算，4_000 会被推理耗尽导致正文为空（#86 融合场景实测超时）。 */
-export const FUSION_COMPOSE_TOKEN_BUDGET = 8_192;
-
 /** 融合关系类型；identity 为同一实体，unrelated 为无关。 */
 export const FUSION_RELATION_TYPES = ["identity", "shared-concept", "analogy", "contrast", "unrelated"] as const;
 export type FusionRelationType = (typeof FUSION_RELATION_TYPES)[number];
 
-/** 融合提议状态：pending 待决策，accepted 已确认，rejected 已拒绝。 */
-export type ResearchFusionProposalStatus = "pending" | "accepted" | "rejected";
-export type ResearchFusionProposalDecision = Exclude<ResearchFusionProposalStatus, "pending">;
+/** 相似性核验记录只作为临时融合发现的审计锚点，不承载用户决策。 */
+export type ResearchFusionProposalStatus = "pending";
 
 /**
  * 触发来源：哪个语义片段命中触发此提议。
@@ -3507,8 +3646,6 @@ export interface ResearchFusionProposalRecord {
   relationType: FusionRelationType;
   reason: string;
   status: ResearchFusionProposalStatus;
-  /** 拒绝后的冷却截止时间（ISO 8601），冷却期内不重复提议。 */
-  cooldownUntil?: string;
   /** 触发来源信息。 */
   triggerSources: FusionProposalTriggerSource[];
   /** 模型核验的版本、所选切片和固定令牌预算，供本地审计。 */
@@ -3526,10 +3663,6 @@ export interface ResearchFusionScanResult {
   temporaryFusionCount: number;
 }
 
-export interface ResearchFusionProposalDecisionInput {
-  decision: ResearchFusionProposalDecision;
-}
-
 /** 将节点对统一为无方向的字典序键。 */
 export function normalizeResearchFusionProposalPair(nodeAId: string, nodeBId: string): { loNodeId: string; hiNodeId: string } {
   if (!nodeAId.trim() || !nodeBId.trim()) throw new Error("Fusion proposal node IDs are required");
@@ -3537,12 +3670,6 @@ export function normalizeResearchFusionProposalPair(nodeAId: string, nodeBId: st
   return nodeAId < nodeBId
     ? { loNodeId: nodeAId, hiNodeId: nodeBId }
     : { loNodeId: nodeBId, hiNodeId: nodeAId };
-}
-
-export function validateResearchFusionProposalDecisionInput(value: unknown): asserts value is ResearchFusionProposalDecisionInput {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Fusion proposal decision input must be an object");
-  const decision = (value as { decision?: unknown }).decision;
-  if (decision !== "accepted" && decision !== "rejected") throw new Error("decision must be accepted or rejected");
 }
 
 /**
@@ -3564,13 +3691,7 @@ function fusionFnv1a32(input: string): string {
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
-// ── Fusion Node Generation (F2) ───────────────────────────────────
-
-/**
- * #31：融合正文的一个来源（贡献切片）。由确认时的提案触发来源派生，
- * 携带正文版本与稳定片段标识——融合引用可经 `resolveFragmentExcerpt`
- * 逐字回读到来源原文。
- */
+/** 正式融合直接来源的稳定身份与当前健康投影。 */
 export interface ResearchFusionSource {
   /** 来源节点 ID。 */
   nodeId: string;
@@ -3578,58 +3699,10 @@ export interface ResearchFusionSource {
   bodyVersionId: string;
   /** 贡献语义片段 ID。 */
   fragmentId: string;
-  /** 来源节点标签（displayName/选区摘要回退），供融合提示词与 UI 展示。 */
+  /** 来源节点标签（displayName/选区摘要回退），供 UI 展示。 */
   label: string;
-  /** 对应切片 ID（如有）；供运行记录 sourceSliceIds 记账。 */
+  /** 当前来源可用性；缺失时兼容既有来源条并按 available 呈现。 */
+  health?: ResearchSourceHealth;
+  /** 对应切片 ID（如有）。 */
   sliceId?: string;
-}
-
-/**
- * #31：融合正文中的一条 [来源n] 引用。sourceOrdinal 为 1-based 序号，
- * 指向融合计划的 sources[sourceOrdinal - 1]；blockOrdinal/markerOffset
- * 与选区锚点同一派生规则（`deriveMessageBlocks`），可精确定位。
- * nodeId/bodyVersionId/fragmentId 为冗余快照，保证来源信息不随计划变化漂移。
- */
-export interface ResearchFusionReference {
-  sourceOrdinal: number;
-  blockOrdinal: number;
-  /** 标记在块文本内的字符偏移。 */
-  markerOffset: number;
-  nodeId: string;
-  bodyVersionId: string;
-  fragmentId: string;
-}
-
-/**
- * #31：从融合正文确定性解析 [来源n] 引用标记。n 必须在来源数组范围内，
- * 超界的标记静默丢弃（不产生引用，也不报错）。偏移按 `deriveMessageBlocks`
- * 的段落块计算：先按全文找 [来源n]，再把标记偏移归入所属块并转为块内偏移。
- */
-export function parseFusionReferences(
-  content: string,
-  sources: readonly ResearchFusionSource[],
-): ResearchFusionReference[] {
-  if (sources.length === 0) return [];
-  const blocks = deriveMessageBlocks(content);
-  const markerPattern = /\[来源(\d+)\]/g;
-  const references: ResearchFusionReference[] = [];
-  let match: RegExpExecArray | null;
-  while ((match = markerPattern.exec(content)) !== null) {
-    const sourceOrdinal = Number(match[1]);
-    const source = sources[sourceOrdinal - 1];
-    if (!source) continue;
-    const markerStart = match.index;
-    const block = blocks.find((candidate) => markerStart >= candidate.startOffset
-      && markerStart < candidate.startOffset + candidate.text.length);
-    if (!block) continue;
-    references.push({
-      sourceOrdinal,
-      blockOrdinal: block.ordinal,
-      markerOffset: markerStart - block.startOffset,
-      nodeId: source.nodeId,
-      bodyVersionId: source.bodyVersionId,
-      fragmentId: source.fragmentId,
-    });
-  }
-  return references;
 }

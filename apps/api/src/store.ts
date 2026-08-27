@@ -1,9 +1,10 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchFusionReference, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId } from "@collector/capture-contracts";
 import {
   compareAssociationHintsByValue,
+  type ConfirmTemporaryFusionResult,
   isResearchPermanentEdge,
   nextProjectColorRole,
   validateTemporaryFusionBundle,
@@ -12,9 +13,15 @@ import {
   type ResearchChapterTaskRecord,
   type ResearchConfirmedFusionSnapshotRecord,
   type ResearchFusionDraftVersionRecord,
+  type ResearchFusionDraftRevalidationTaskRecord,
+  type ResearchFusionEvidenceStatus,
   type ResearchPermanentEdgeRecord,
+  type ResearchSourceHealth,
   type ResearchTemporaryFusionBundle,
+  type ResearchTemporaryFusionMessageRecord,
   type ResearchTemporaryFusionNodeRecord,
+  type ResearchTemporaryFusionTaskRecord,
+  type ResearchTemporaryFusionTurnAccepted,
 } from "@collector/capture-contracts";
 
 export type ObservabilityRecordSource = "research" | "import" | "fusion" | "chapter";
@@ -172,8 +179,6 @@ export interface ResearchStore {
   getResearchTaskByInput(inputMessageId: string): ResearchTaskRecord | undefined;
   /** plan-then-write：持久化正文大纲与逐节进度，供断点续扩；record_json 整行覆盖。 */
   saveResearchTaskBodyPlan(taskId: string, bodyPlan: ResearchBodyPlan): Promise<void>;
-  /** #31：融合正文完成后写入解析出的 [来源n] 引用；record_json 整行覆盖。 */
-  saveResearchTaskFusionReferences(taskId: string, fusionReferences: ResearchFusionReference[]): Promise<void>;
   /** 单轮流式：持久化已接收的部分正文断点，供切断续传；record_json 整行覆盖。 */
   saveResearchTaskStreamCheckpoint(taskId: string, content: string, protocolPrefix?: string): Promise<void>;
   /** 单轮流式：任务完成后清除断点。 */
@@ -209,7 +214,11 @@ export interface ResearchStore {
 /** 深入研究所需的持久化能力：40 个方法。 */
 export interface DeepResearchStore {
   listResearchSessions(): ResearchSessionRecord[];
+  listTrashedResearchSessions(): ResearchSessionRecord[];
   listProjects(): ProjectRecord[];
+  /** B 面候选只读投影；不把它们伪装成正式研究节点。 */
+  listTemporaryFusionNodes(): ResearchTemporaryFusionNodeRecord[];
+  getTemporaryFusionBundle(id: string): ResearchTemporaryFusionBundle | undefined;
   getResearchBranch(id: string): ResearchBranchRecord | undefined;
   listResearchBranches(sessionId: string): ResearchBranchRecord[];
   findResearchBranchByCreationKey(sessionId: string, idempotencyKey: string): ResearchBranchRecord | undefined;
@@ -254,6 +263,8 @@ export interface DeepResearchStore {
   createResearchEdge(edge: ResearchEdgeRecord): Promise<ResearchEdgeRecord>;
   /** 查询全部活跃边（调用方按会话节点集合过滤）。 */
   listAllResearchEdges(): ResearchEdgeRecord[];
+  /** 已确认融合的直接来源当前健康投影；不修改确认快照。 */
+  listConfirmedFusionSourceHealth(): Array<{ fusionNodeId: string; sourceHealth: ResearchSourceHealth }>;
   listAssociationHints(status?: ResearchAssociationHintRecord["status"]): ResearchAssociationHintRecord[];
 }
 
@@ -264,22 +275,6 @@ export interface ResearchFusionProposalStore {
   /** 同一规范化节点对幂等，已存在时返回既有记录。 */
   createResearchFusionProposal(proposal: ResearchFusionProposalRecord): Promise<ResearchFusionProposalRecord>;
   saveResearchFusionProposal(proposal: ResearchFusionProposalRecord): Promise<void>;
-  /** #31：按幂等键查找已创建的融合节点首轮任务（重复确认时返回既有结果，不重复建）。 */
-  findResearchFusionTaskByIdempotencyKey(idempotencyKey: string): ResearchTaskRecord | undefined;
-  /** #31：按幂等键查找已创建的融合节点（重复确认时返回既有结果，不重复建）。 */
-  findResearchFusionNodeByIdempotencyKey(idempotencyKey: string): ResearchNodeRecord | undefined;
-  /**
-   * #31：确认式融合事务——同一事务内把提案置为 accepted、幂等创建语义相关边与
-   * 融合来源边、创建融合节点（无父节点）与首轮消息、任务。按 idempotencyKey 幂等。
-   */
-  createResearchFusionTurn(
-    proposal: ResearchFusionProposalRecord,
-    fusedFromEdges: ResearchEdgeRecord[],
-    fusionNode: ResearchNodeRecord,
-    inputMessage: ResearchMessageRecord,
-    outputMessage: ResearchMessageRecord,
-    task: ResearchTaskRecord,
-  ): Promise<NodeGrowthAccepted>;
 }
 
 /** 节点系统目标路径使用的仓储接缝；旧边接口继续服务迁移期实现。 */
@@ -290,8 +285,32 @@ export interface NodeSystemTargetStore {
   getTemporaryFusionNode(id: string): ResearchTemporaryFusionNodeRecord | undefined;
   findTemporaryFusionNodeByCreationKey(creationKey: string): ResearchTemporaryFusionNodeRecord | undefined;
   getTemporaryFusionBundle(id: string): ResearchTemporaryFusionBundle | undefined;
+  confirmTemporaryFusionInPlace(temporaryFusionNodeId: string, expectedDraftVersionId: string, confirmedAt: string): Promise<ConfirmTemporaryFusionResult>;
   listTemporaryFusionNodes(): ResearchTemporaryFusionNodeRecord[];
+  listTemporaryFusionDraftVersions(temporaryFusionNodeId: string): ResearchFusionDraftVersionRecord[];
+  listTemporaryFusionDraftRevalidationTasks(temporaryFusionNodeId: string): ResearchFusionDraftRevalidationTaskRecord[];
+  createTemporaryFusionDraftVersion(input: { node: ResearchTemporaryFusionNodeRecord; draft: ResearchFusionDraftVersionRecord; tasks: ResearchFusionDraftRevalidationTaskRecord[]; expectedDraftVersionId: string }): Promise<void>;
+  claimTemporaryFusionDraftRevalidationTask(id: string): ResearchFusionDraftRevalidationTaskRecord | undefined;
+  completeTemporaryFusionDraftRevalidationTask(id: string, status: ResearchFusionEvidenceStatus): Promise<void>;
+  failTemporaryFusionDraftRevalidationTask(id: string, error: { code: string; message: string }): Promise<void>;
+  requeueInterruptedTemporaryFusionDraftRevalidationTasks(): number;
   deleteTemporaryFusionNode(id: string): Promise<boolean>;
+  deleteTemporaryFusionNodes(ids: readonly string[]): Promise<{ deletedIds: string[]; missingIds: string[] }>;
+  clearTemporaryFusionNodes(): Promise<number>;
+  getTemporaryFusionMessage(id: string): ResearchTemporaryFusionMessageRecord | undefined;
+  listTemporaryFusionMessages(temporaryFusionNodeId: string): ResearchTemporaryFusionMessageRecord[];
+  getTemporaryFusionTask(id: string): ResearchTemporaryFusionTaskRecord | undefined;
+  findTemporaryFusionTaskByIdempotencyKey(temporaryFusionNodeId: string, idempotencyKey: string): ResearchTemporaryFusionTaskRecord | undefined;
+  listTemporaryFusionTasks(temporaryFusionNodeId: string): ResearchTemporaryFusionTaskRecord[];
+  createTemporaryFusionTurn(input: ResearchTemporaryFusionMessageRecord, output: ResearchTemporaryFusionMessageRecord, task: ResearchTemporaryFusionTaskRecord): Promise<ResearchTemporaryFusionTurnAccepted>;
+  claimTemporaryFusionTask(id: string, provider?: string, model?: string): ResearchTemporaryFusionTaskRecord | undefined;
+  appendTemporaryFusionTaskDelta(id: string, delta: string): Promise<void>;
+  completeTemporaryFusionTask(id: string): Promise<void>;
+  failTemporaryFusionTask(task: ResearchTemporaryFusionTaskRecord, error: { code: string; message: string }): Promise<void>;
+  cancelTemporaryFusionTask(id: string): Promise<ResearchTemporaryFusionTaskRecord>;
+  retryTemporaryFusionTask(id: string): Promise<ResearchTemporaryFusionTaskRecord>;
+  listRecoverableTemporaryFusionTasks(): ResearchTemporaryFusionTaskRecord[];
+  requeueInterruptedTemporaryFusionTasks(): number;
   createAssociationHint(hint: ResearchAssociationHintRecord): Promise<ResearchAssociationHintRecord>;
   saveAssociationHint(hint: ResearchAssociationHintRecord): Promise<void>;
   listAssociationHints(status?: ResearchAssociationHintRecord["status"]): ResearchAssociationHintRecord[];
@@ -437,7 +456,32 @@ export interface CollectorStore
  * `if (version < N+1)` 版本块（块内写入对应 schema_migrations 行）并递增本常量；
  * 测试以此常量断言「打开/重放后数据库实际到达声明版本」，无需再手工同步多处硬编码断言。
  */
-export const LATEST_SCHEMA_VERSION = 41;
+export const LATEST_SCHEMA_VERSION = 45;
+
+function directSourceIdsForConfirmedDraft(
+  draft: ResearchFusionDraftVersionRecord,
+  candidates: readonly ResearchCandidateSourceConnectionRecord[],
+): Set<string> {
+  if (draft.judgments?.length) {
+    if (draft.judgments.some((judgment) => judgment.evidenceStatus !== "verified")) {
+      throw new Error("Temporary fusion requires every active judgment to be verified");
+    }
+    return new Set(draft.judgments.flatMap((judgment) => judgment.sourceNodeIds));
+  }
+  // T01-T04 drafts predate claim-sized judgments. Their generation contract requires every
+  // adopted source to have an explicit [来源n] marker, so retain that exact correspondence.
+  return new Set([...draft.body.matchAll(/\[来源(\d+)\]/g)].flatMap((match) => {
+    const ordinal = Number(match[1]);
+    const candidate = candidates.find((source) => source.citationOrdinal === ordinal)
+      ?? (candidates.every((source) => source.citationOrdinal === undefined) ? candidates[ordinal - 1] : undefined);
+    return candidate ? [candidate.sourceNodeId] : [];
+  }));
+}
+
+function formalFusionTitle(body: string): string {
+  const firstLine = body.split(/\r?\n/, 1)[0]?.replace(/\s+/g, " ").trim() ?? "";
+  return firstLine.slice(0, RESEARCH_TITLE_MAX_CHARACTERS) || "融合成果";
+}
 
 export class SqliteStore implements CollectorStore {
   private database?: DatabaseSync;
@@ -469,7 +513,7 @@ export class SqliteStore implements CollectorStore {
       { source: "research", operationType: "research", table: "research_tasks" },
       { source: "import", operationType: "document_import", table: "research_import_tasks" },
       { source: "chapter", operationType: "chapter_parse", table: "research_chapter_tasks" },
-      // 相似性核验在模型完成时已经结束；提议的 pending/accepted/rejected 是后续用户决定，不是运行状态。
+      // 相似性核验记录只保存已完成的候选审计；pending 是记录形态，不是仍在运行的任务状态。
       { source: "fusion", operationType: "similarity_verification", table: "research_fusion_proposals", statusExpression: "'completed'" },
     ];
     const union = sourceTables.map(({ source, operationType, table, operationColumn, statusExpression }) =>
@@ -746,6 +790,7 @@ export class SqliteStore implements CollectorStore {
       `).run(id);
       this.db().prepare("DELETE FROM semantic_search_units_fts WHERE rowid IN (SELECT rowid FROM semantic_search_units WHERE session_id = ?)").run(id);
       this.db().prepare("DELETE FROM semantic_search_units WHERE session_id = ?").run(id);
+      this.updateCandidateSourceHealthForSession(id, "temporarily-unavailable");
       this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
         .run(trashedAt, JSON.stringify(record), id);
     });
@@ -759,9 +804,35 @@ export class SqliteStore implements CollectorStore {
     delete (record as ResearchSessionRecord & { trashedAt?: string }).trashedAt;
     const now = new Date().toISOString();
     record.updatedAt = now;
-    this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
-      .run(now, JSON.stringify(record), id);
+    this.transaction(() => {
+      this.updateCandidateSourceHealthForSession(id, "available");
+      this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
+        .run(now, JSON.stringify(record), id);
+    });
     return true;
+  }
+
+  /**
+   * 候选来源连接只保存稳定身份、版本和片段定位。会话生命周期变化时同步健康状态，
+   * 不复制来源标题、正文或摘录；调用方必须已经处于同一 SQLite 事务内。
+   */
+  private updateCandidateSourceHealthForSession(sessionId: string, sourceHealth: ResearchSourceHealth): void {
+    const sources = this.listRecords<ResearchCandidateSourceConnectionRecord>(`
+      SELECT connection.record_json
+      FROM research_candidate_source_connections AS connection
+      JOIN research_nodes AS node ON node.id = connection.source_node_id
+      WHERE node.session_id = ?
+    `, sessionId);
+    const update = this.db().prepare(`
+      UPDATE research_candidate_source_connections
+      SET source_health = ?, record_json = ?
+      WHERE id = ?
+    `);
+    for (const source of sources) {
+      if (source.sourceHealth === sourceHealth) continue;
+      const updated = { ...source, sourceHealth };
+      update.run(updated.sourceHealth, JSON.stringify(updated), updated.id);
+    }
   }
 
   async deleteResearchSession(id: string): Promise<boolean> {
@@ -781,6 +852,8 @@ export class SqliteStore implements CollectorStore {
       `, id);
       del("DELETE FROM semantic_search_units_fts WHERE rowid IN (SELECT rowid FROM semantic_search_units WHERE session_id = ?)", id);
       del("DELETE FROM semantic_search_units WHERE session_id = ?", id);
+      // 连接只保存稳定身份和定位键；删除来源前标记缺失，不能保留正文副本。
+      this.updateCandidateSourceHealthForSession(id, "deleted");
       del(`DELETE FROM research_semantic_fragments WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
       del(`DELETE FROM research_body_versions WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
       del(`DELETE FROM research_slices WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
@@ -792,7 +865,16 @@ export class SqliteStore implements CollectorStore {
       del("DELETE FROM research_term_preview_events WHERE preview_id IN (SELECT id FROM research_term_previews WHERE session_id = ?)", id);
       del("DELETE FROM research_term_previews WHERE session_id = ?", id);
       del(`DELETE FROM research_fusion_proposals WHERE lo_node_id IN (${NODE_SCOPE}) OR hi_node_id IN (${NODE_SCOPE})`, id, id);
-      del(`DELETE FROM research_edges WHERE from_node_id IN (${NODE_SCOPE}) OR to_node_id IN (${NODE_SCOPE})`, id, id);
+      // 只有已确认融合的直接来源边可在来源永久删除后保留：它只携带稳定 ID，
+      // 健康状态由确认快照与来源连接投影为 deleted，绝不回读正文。删除融合成果
+      // 本身时仍清理其入边，避免留下指向已删成果的关系。
+      del(`DELETE FROM research_edges
+        WHERE (from_node_id IN (${NODE_SCOPE}) OR to_node_id IN (${NODE_SCOPE}))
+          AND NOT (
+            kind = 'fused-from'
+            AND from_node_id IN (${NODE_SCOPE})
+            AND to_node_id NOT IN (${NODE_SCOPE})
+          )`, id, id, id);
       del("DELETE FROM research_import_tasks WHERE session_id = ?", id);
       del("DELETE FROM research_chapter_tasks WHERE session_id = ?", id);
       del("DELETE FROM research_content_snapshots WHERE session_id = ?", id);
@@ -1303,15 +1385,6 @@ export class SqliteStore implements CollectorStore {
     });
   }
 
-  /** #31：融合正文完成后写入解析出的 [来源n] 引用（record_json 整行覆盖）。 */
-  async saveResearchTaskFusionReferences(taskId: string, fusionReferences: ResearchFusionReference[]): Promise<void> {
-    this.transaction(() => {
-      const task = this.getResearchTask(taskId);
-      if (!task) throw new Error("Research task not found");
-      this.updateResearchTask({ ...task, fusionReferences, updatedAt: new Date().toISOString() });
-    });
-  }
-
   listResearchTaskEvents(taskId: string, afterId = 0): ResearchTaskEvent[] {
     const rows = this.db().prepare("SELECT sequence, event_type, created_at, data_json FROM research_task_events WHERE task_id = ? AND sequence > ? ORDER BY sequence")
       .all(taskId, afterId) as Array<{ sequence: number; event_type: "delta" | "completed" | "failed" | "stopped"; created_at: string; data_json: string }>;
@@ -1444,14 +1517,275 @@ export class SqliteStore implements CollectorStore {
     return { node, activeDraft, candidateSources };
   }
 
+  listTemporaryFusionDraftVersions(temporaryFusionNodeId: string): ResearchFusionDraftVersionRecord[] {
+    return this.listRecords<ResearchFusionDraftVersionRecord>(
+      "SELECT record_json FROM research_fusion_draft_versions WHERE temporary_fusion_node_id = ? ORDER BY version DESC, id DESC",
+      temporaryFusionNodeId,
+    );
+  }
+
+  listTemporaryFusionDraftRevalidationTasks(temporaryFusionNodeId: string): ResearchFusionDraftRevalidationTaskRecord[] {
+    return this.listRecords<ResearchFusionDraftRevalidationTaskRecord>(
+      "SELECT record_json FROM research_fusion_draft_revalidation_tasks WHERE temporary_fusion_node_id = ? ORDER BY created_at, id",
+      temporaryFusionNodeId,
+    );
+  }
+
+  async createTemporaryFusionDraftVersion(input: { node: ResearchTemporaryFusionNodeRecord; draft: ResearchFusionDraftVersionRecord; tasks: ResearchFusionDraftRevalidationTaskRecord[]; expectedDraftVersionId: string }): Promise<void> {
+    this.transaction(() => {
+      const current = this.getTemporaryFusionNode(input.node.id);
+      if (!current) throw new Error("Temporary fusion not found");
+      if (current.confirmedAt) throw new Error("Temporary fusion is already confirmed");
+      if (current.activeDraftVersionId !== input.expectedDraftVersionId) throw new Error("Temporary fusion draft version conflict");
+      if (input.draft.temporaryFusionNodeId !== current.id || input.node.activeDraftVersionId !== input.draft.id) throw new Error("Temporary fusion draft identity is invalid");
+      const previous = this.getRecord<ResearchFusionDraftVersionRecord>("SELECT record_json FROM research_fusion_draft_versions WHERE id = ? AND temporary_fusion_node_id = ?", current.activeDraftVersionId, current.id);
+      if (!previous || input.draft.version !== previous.version + 1) throw new Error("Temporary fusion draft version must advance by one");
+      this.db().prepare(`INSERT INTO research_fusion_draft_versions (id, temporary_fusion_node_id, version, evidence_status, created_at, record_json) VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(input.draft.id, input.draft.temporaryFusionNodeId, input.draft.version, input.draft.evidenceStatus, input.draft.createdAt, JSON.stringify(input.draft));
+      this.db().prepare(`UPDATE research_temporary_fusion_nodes SET active_draft_version_id = ?, updated_at = ?, record_json = ? WHERE id = ?`)
+        .run(input.node.activeDraftVersionId, input.node.updatedAt, JSON.stringify(input.node), input.node.id);
+      const insertTask = this.db().prepare(`INSERT INTO research_fusion_draft_revalidation_tasks (id, temporary_fusion_node_id, draft_version_id, judgment_id, status, retryable, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      for (const task of input.tasks) insertTask.run(task.id, task.temporaryFusionNodeId, task.draftVersionId, task.judgmentId, task.status, task.retryable ? 1 : 0, task.createdAt, task.updatedAt, JSON.stringify(task));
+    });
+  }
+
+  claimTemporaryFusionDraftRevalidationTask(id: string): ResearchFusionDraftRevalidationTaskRecord | undefined {
+    let claimed: ResearchFusionDraftRevalidationTaskRecord | undefined;
+    this.transaction(() => {
+      const task = this.getRecord<ResearchFusionDraftRevalidationTaskRecord>("SELECT record_json FROM research_fusion_draft_revalidation_tasks WHERE id = ?", id);
+      if (!task || task.status !== "queued") return;
+      claimed = { ...task, status: "running", retryable: false, updatedAt: new Date().toISOString() };
+      this.db().prepare(`UPDATE research_fusion_draft_revalidation_tasks SET status = ?, retryable = ?, updated_at = ?, record_json = ? WHERE id = ?`)
+        .run(claimed.status, 0, claimed.updatedAt, JSON.stringify(claimed), claimed.id);
+    });
+    return claimed;
+  }
+
+  async completeTemporaryFusionDraftRevalidationTask(id: string, status: ResearchFusionEvidenceStatus): Promise<void> {
+    this.transaction(() => {
+      const task = this.getRecord<ResearchFusionDraftRevalidationTaskRecord>("SELECT record_json FROM research_fusion_draft_revalidation_tasks WHERE id = ?", id);
+      if (!task || task.status !== "running") throw new Error("Temporary fusion draft revalidation task is not running");
+      const draft = this.getRecord<ResearchFusionDraftVersionRecord>("SELECT record_json FROM research_fusion_draft_versions WHERE id = ? AND temporary_fusion_node_id = ?", task.draftVersionId, task.temporaryFusionNodeId);
+      if (!draft) throw new Error("Temporary fusion draft revalidation task references a missing draft");
+      const judgments = (draft.judgments ?? []).map((judgment) => judgment.id === task.judgmentId ? { ...judgment, evidenceStatus: status } : judgment);
+      const evidenceStatus = judgments.some((judgment) => judgment.evidenceStatus === "invalid") ? "invalid" : judgments.some((judgment) => judgment.evidenceStatus === "pending") ? "pending" : "verified";
+      const updatedDraft = { ...draft, judgments, evidenceStatus };
+      const updatedTask = { ...task, status: "completed" as const, retryable: false, error: undefined, updatedAt: new Date().toISOString() };
+      this.db().prepare(`UPDATE research_fusion_draft_versions SET evidence_status = ?, record_json = ? WHERE id = ?`).run(updatedDraft.evidenceStatus, JSON.stringify(updatedDraft), updatedDraft.id);
+      this.db().prepare(`UPDATE research_fusion_draft_revalidation_tasks SET status = ?, retryable = ?, updated_at = ?, record_json = ? WHERE id = ?`).run(updatedTask.status, 0, updatedTask.updatedAt, JSON.stringify(updatedTask), updatedTask.id);
+    });
+  }
+
+  async failTemporaryFusionDraftRevalidationTask(id: string, error: { code: string; message: string }): Promise<void> {
+    this.transaction(() => {
+      const task = this.getRecord<ResearchFusionDraftRevalidationTaskRecord>("SELECT record_json FROM research_fusion_draft_revalidation_tasks WHERE id = ?", id);
+      if (!task || task.status !== "running") throw new Error("Temporary fusion draft revalidation task is not running");
+      const updated = { ...task, status: "failed" as const, retryable: true, error, updatedAt: new Date().toISOString() };
+      this.db().prepare(`UPDATE research_fusion_draft_revalidation_tasks SET status = ?, retryable = ?, updated_at = ?, record_json = ? WHERE id = ?`).run(updated.status, 1, updated.updatedAt, JSON.stringify(updated), updated.id);
+    });
+  }
+
+  requeueInterruptedTemporaryFusionDraftRevalidationTasks(): number {
+    let count = 0;
+    this.transaction(() => {
+      const tasks = this.listRecords<ResearchFusionDraftRevalidationTaskRecord>("SELECT record_json FROM research_fusion_draft_revalidation_tasks WHERE status = 'running' ORDER BY created_at, id");
+      const statement = this.db().prepare(`UPDATE research_fusion_draft_revalidation_tasks SET status = ?, retryable = ?, updated_at = ?, record_json = ? WHERE id = ?`);
+      for (const task of tasks) {
+        const updated = { ...task, status: "queued" as const, retryable: false, updatedAt: new Date().toISOString() };
+        statement.run(updated.status, 0, updated.updatedAt, JSON.stringify(updated), updated.id);
+        count += 1;
+      }
+    });
+    return count;
+  }
+
   listTemporaryFusionNodes(): ResearchTemporaryFusionNodeRecord[] {
     return this.listRecords<ResearchTemporaryFusionNodeRecord>(
-      "SELECT record_json FROM research_temporary_fusion_nodes WHERE status = 'active' ORDER BY created_at, id",
+      "SELECT record_json FROM research_temporary_fusion_nodes WHERE status = 'active' AND confirmed_at IS NULL ORDER BY created_at, id",
     );
   }
 
   async deleteTemporaryFusionNode(id: string): Promise<boolean> {
-    return this.db().prepare("DELETE FROM research_temporary_fusion_nodes WHERE id = ?").run(id).changes === 1;
+    return (await this.deleteTemporaryFusionNodes([id])).deletedIds.length === 1;
+  }
+
+  /**
+   * T03：一次请求只删除明确给出的临时聚合根。SQLite 级联删除草案与候选来源连接；
+   * 正式节点、正文和永久边不在该外键树中，因此不会被此操作触及。
+   */
+  async deleteTemporaryFusionNodes(ids: readonly string[]): Promise<{ deletedIds: string[]; missingIds: string[] }> {
+    const uniqueIds = [...new Set(ids)];
+    const deletedIds: string[] = [];
+    this.transaction(() => {
+      const remove = this.db().prepare("DELETE FROM research_temporary_fusion_nodes WHERE id = ? AND confirmed_at IS NULL");
+      for (const id of uniqueIds) {
+        if (remove.run(id).changes === 1) deletedIds.push(id);
+      }
+    });
+    const deletedSet = new Set(deletedIds);
+    return { deletedIds, missingIds: uniqueIds.filter((id) => !deletedSet.has(id)) };
+  }
+
+  /** T03：清空对象固定为全部临时融合聚合根，返回实际删除数以支持幂等重试。 */
+  async clearTemporaryFusionNodes(): Promise<number> {
+    let deletedCount = 0;
+    this.transaction(() => {
+      deletedCount = Number(this.db().prepare("DELETE FROM research_temporary_fusion_nodes WHERE confirmed_at IS NULL").run().changes);
+    });
+    return deletedCount;
+  }
+
+  getTemporaryFusionMessage(id: string): ResearchTemporaryFusionMessageRecord | undefined {
+    return this.getRecord<ResearchTemporaryFusionMessageRecord>("SELECT record_json FROM research_temporary_fusion_messages WHERE id = ?", id);
+  }
+
+  listTemporaryFusionMessages(temporaryFusionNodeId: string): ResearchTemporaryFusionMessageRecord[] {
+    return this.listRecords<ResearchTemporaryFusionMessageRecord>(
+      "SELECT record_json FROM research_temporary_fusion_messages WHERE temporary_fusion_node_id = ? ORDER BY created_at, id",
+      temporaryFusionNodeId,
+    );
+  }
+
+  getTemporaryFusionTask(id: string): ResearchTemporaryFusionTaskRecord | undefined {
+    return this.getRecord<ResearchTemporaryFusionTaskRecord>("SELECT record_json FROM research_temporary_fusion_tasks WHERE id = ?", id);
+  }
+
+  findTemporaryFusionTaskByIdempotencyKey(temporaryFusionNodeId: string, idempotencyKey: string): ResearchTemporaryFusionTaskRecord | undefined {
+    return this.getRecord<ResearchTemporaryFusionTaskRecord>(
+      "SELECT record_json FROM research_temporary_fusion_tasks WHERE temporary_fusion_node_id = ? AND idempotency_key = ?",
+      temporaryFusionNodeId, idempotencyKey,
+    );
+  }
+
+  listTemporaryFusionTasks(temporaryFusionNodeId: string): ResearchTemporaryFusionTaskRecord[] {
+    return this.listRecords<ResearchTemporaryFusionTaskRecord>(
+      "SELECT record_json FROM research_temporary_fusion_tasks WHERE temporary_fusion_node_id = ? ORDER BY created_at, id",
+      temporaryFusionNodeId,
+    );
+  }
+
+  async createTemporaryFusionTurn(input: ResearchTemporaryFusionMessageRecord, output: ResearchTemporaryFusionMessageRecord, task: ResearchTemporaryFusionTaskRecord): Promise<ResearchTemporaryFusionTurnAccepted> {
+    let accepted: ResearchTemporaryFusionTurnAccepted | undefined;
+    this.transaction(() => {
+      const existing = this.findTemporaryFusionTaskByIdempotencyKey(task.temporaryFusionNodeId, task.idempotencyKey);
+      if (existing) {
+        const existingInput = this.getTemporaryFusionMessage(existing.inputMessageId);
+        const existingOutput = this.getTemporaryFusionMessage(existing.outputMessageId);
+        if (!existingInput || !existingOutput) throw new Error("Temporary fusion task references incomplete messages");
+        accepted = { inputMessage: existingInput, outputMessage: existingOutput, task: existing };
+        return;
+      }
+      const node = this.getTemporaryFusionNode(task.temporaryFusionNodeId);
+      if (!node || node.confirmedAt) throw new Error("Temporary fusion not found");
+      const insertMessage = this.db().prepare("INSERT INTO research_temporary_fusion_messages (id, temporary_fusion_node_id, role, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)");
+      insertMessage.run(input.id, input.temporaryFusionNodeId, input.role, input.status, input.createdAt, input.updatedAt, JSON.stringify(input));
+      insertMessage.run(output.id, output.temporaryFusionNodeId, output.role, output.status, output.createdAt, output.updatedAt, JSON.stringify(output));
+      this.db().prepare("INSERT INTO research_temporary_fusion_tasks (id, temporary_fusion_node_id, input_message_id, output_message_id, idempotency_key, status, retryable, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(task.id, task.temporaryFusionNodeId, task.inputMessageId, task.outputMessageId, task.idempotencyKey, task.status, 0, task.createdAt, task.updatedAt, JSON.stringify(task));
+      accepted = { inputMessage: input, outputMessage: output, task };
+    });
+    if (!accepted) throw new Error("Temporary fusion turn was not persisted");
+    return accepted;
+  }
+
+  claimTemporaryFusionTask(id: string, provider?: string, model?: string): ResearchTemporaryFusionTaskRecord | undefined {
+    let claimed: ResearchTemporaryFusionTaskRecord | undefined;
+    this.transaction(() => {
+      const current = this.getTemporaryFusionTask(id);
+      if (!current || current.status !== "queued") return;
+      const now = new Date().toISOString();
+      const next: ResearchTemporaryFusionTaskRecord = { ...current, status: "running", retryable: false, provider, model, error: undefined, startedAt: now, completedAt: undefined, updatedAt: now };
+      const changed = this.db().prepare("UPDATE research_temporary_fusion_tasks SET status = ?, retryable = 0, updated_at = ?, record_json = ? WHERE id = ? AND status = 'queued'")
+        .run(next.status, now, JSON.stringify(next), id).changes;
+      if (changed !== 1) return;
+      this.updateTemporaryFusionMessage({ ...this.getTemporaryFusionMessage(next.outputMessageId)!, status: "streaming", updatedAt: now });
+      claimed = next;
+    });
+    return claimed;
+  }
+
+  async appendTemporaryFusionTaskDelta(id: string, delta: string): Promise<void> {
+    this.transaction(() => {
+      const task = this.getTemporaryFusionTask(id);
+      if (!task || task.status !== "running") throw new Error("Temporary fusion task is not running");
+      const message = this.getTemporaryFusionMessage(task.outputMessageId);
+      if (!message) throw new Error("Temporary fusion output message not found");
+      const now = new Date().toISOString();
+      this.updateTemporaryFusionMessage({ ...message, content: message.content + delta, status: "streaming", updatedAt: now });
+      this.updateTemporaryFusionTask({ ...task, updatedAt: now });
+    });
+  }
+
+  async completeTemporaryFusionTask(id: string): Promise<void> {
+    this.transaction(() => {
+      const task = this.getTemporaryFusionTask(id);
+      if (!task || task.status !== "running") throw new Error("Temporary fusion task is not running");
+      const message = this.getTemporaryFusionMessage(task.outputMessageId);
+      if (!message) throw new Error("Temporary fusion output message not found");
+      const now = new Date().toISOString();
+      this.updateTemporaryFusionMessage({ ...message, status: "completed", updatedAt: now });
+      this.updateTemporaryFusionTask({ ...task, status: "completed", retryable: false, updatedAt: now, completedAt: now });
+    });
+  }
+
+  async failTemporaryFusionTask(task: ResearchTemporaryFusionTaskRecord, error: { code: string; message: string }): Promise<void> {
+    this.transaction(() => {
+      const current = this.getTemporaryFusionTask(task.id);
+      if (!current || (current.status !== "queued" && current.status !== "running")) return;
+      const message = this.getTemporaryFusionMessage(current.outputMessageId);
+      if (!message) throw new Error("Temporary fusion output message not found");
+      const now = new Date().toISOString();
+      this.updateTemporaryFusionMessage({ ...message, status: "failed", updatedAt: now });
+      this.updateTemporaryFusionTask({ ...current, status: "failed", retryable: true, error, updatedAt: now, completedAt: now });
+    });
+  }
+
+  async cancelTemporaryFusionTask(id: string): Promise<ResearchTemporaryFusionTaskRecord> {
+    let cancelled: ResearchTemporaryFusionTaskRecord | undefined;
+    this.transaction(() => {
+      const current = this.getTemporaryFusionTask(id);
+      if (!current || (current.status !== "queued" && current.status !== "running")) throw new Error("Temporary fusion task is not cancellable");
+      const now = new Date().toISOString();
+      cancelled = { ...current, status: "cancelled", retryable: false, updatedAt: now, completedAt: now };
+      this.updateTemporaryFusionMessage({ ...this.getTemporaryFusionMessage(current.outputMessageId)!, status: "cancelled", updatedAt: now });
+      this.updateTemporaryFusionTask(cancelled);
+    });
+    if (!cancelled) throw new Error("Temporary fusion task was not cancelled");
+    return cancelled;
+  }
+
+  async retryTemporaryFusionTask(id: string): Promise<ResearchTemporaryFusionTaskRecord> {
+    let queued: ResearchTemporaryFusionTaskRecord | undefined;
+    this.transaction(() => {
+      const current = this.getTemporaryFusionTask(id);
+      if (!current || current.status !== "failed" || !current.retryable) throw new Error("Temporary fusion task is not retryable");
+      const now = new Date().toISOString();
+      queued = { ...current, status: "queued", retryable: false, error: undefined, updatedAt: now, startedAt: undefined, completedAt: undefined };
+      this.updateTemporaryFusionMessage({ ...this.getTemporaryFusionMessage(current.outputMessageId)!, content: "", status: "pending", updatedAt: now });
+      this.updateTemporaryFusionTask(queued);
+    });
+    if (!queued) throw new Error("Temporary fusion task was not retried");
+    return queued;
+  }
+
+  listRecoverableTemporaryFusionTasks(): ResearchTemporaryFusionTaskRecord[] {
+    return this.listRecords<ResearchTemporaryFusionTaskRecord>("SELECT record_json FROM research_temporary_fusion_tasks WHERE status = 'queued' ORDER BY created_at, id");
+  }
+
+  requeueInterruptedTemporaryFusionTasks(): number {
+    const interrupted = this.listRecords<ResearchTemporaryFusionTaskRecord>("SELECT record_json FROM research_temporary_fusion_tasks WHERE status = 'running'");
+    if (!interrupted.length) return 0;
+    this.transaction(() => {
+      for (const task of interrupted) {
+        const now = new Date().toISOString();
+        const queued: ResearchTemporaryFusionTaskRecord = { ...task, status: "queued", retryable: false, startedAt: undefined, updatedAt: now };
+        this.db().prepare("UPDATE research_temporary_fusion_tasks SET status = 'queued', retryable = 0, updated_at = ?, record_json = ? WHERE id = ? AND status = 'running'")
+          .run(now, JSON.stringify(queued), task.id);
+        const message = this.getTemporaryFusionMessage(task.outputMessageId);
+        if (message) this.updateTemporaryFusionMessage({ ...message, status: "pending", updatedAt: now });
+      }
+    });
+    return interrupted.length;
   }
 
   async createAssociationHint(hint: ResearchAssociationHintRecord): Promise<ResearchAssociationHintRecord> {
@@ -1541,6 +1875,172 @@ export class SqliteStore implements CollectorStore {
     return this.getRecord<ResearchConfirmedFusionSnapshotRecord>(
       "SELECT record_json FROM research_confirmed_fusion_snapshots WHERE fusion_node_id = ?", fusionNodeId,
     );
+  }
+
+  listConfirmedFusionSourceHealth(): Array<{ fusionNodeId: string; sourceHealth: ResearchSourceHealth }> {
+    const snapshots = this.listRecords<ResearchConfirmedFusionSnapshotRecord>("SELECT record_json FROM research_confirmed_fusion_snapshots ORDER BY fusion_node_id");
+    return snapshots.flatMap((snapshot) => {
+      const draft = this.getRecord<ResearchFusionDraftVersionRecord>("SELECT record_json FROM research_fusion_draft_versions WHERE id = ?", snapshot.confirmedDraftVersionId);
+      if (!draft) return [];
+      const directSourceKeys = new Set(snapshot.directSources.map((source) => `${source.sourceNodeId}\u0000${source.bodyVersionId}`));
+      return this.listRecords<ResearchCandidateSourceConnectionRecord>(
+        "SELECT record_json FROM research_candidate_source_connections WHERE temporary_fusion_node_id = ? ORDER BY created_at, id",
+        draft.temporaryFusionNodeId,
+      ).flatMap((source) => directSourceKeys.has(`${source.sourceNodeId}\u0000${source.bodyVersionId}`)
+        ? [{ fusionNodeId: snapshot.fusionNodeId, sourceHealth: source.sourceHealth }]
+        : []);
+    });
+  }
+
+  /**
+   * T06：确认只转换同一临时身份，绝不重新生成正文或复制出第二个融合节点。
+   * 临时聚合根保留为已关闭的审计记录；正式节点、根容器、快照和永久来源边必须同成同败。
+   */
+  async confirmTemporaryFusionInPlace(
+    temporaryFusionNodeId: string,
+    expectedDraftVersionId: string,
+    confirmedAt: string,
+  ): Promise<ConfirmTemporaryFusionResult> {
+    let result: ConfirmTemporaryFusionResult | undefined;
+    this.transaction(() => {
+      const existingSnapshot = this.getConfirmedFusionSnapshot(temporaryFusionNodeId);
+      if (existingSnapshot) {
+        if (existingSnapshot.confirmedDraftVersionId !== expectedDraftVersionId) {
+          throw new Error("Temporary fusion draft version conflict");
+        }
+        const fusionNode = this.getResearchNode(temporaryFusionNodeId);
+        const session = this.getResearchSession(temporaryFusionNodeId);
+        if (!fusionNode?.isFusionNode || !session) throw new Error("Confirmed fusion identity is incomplete");
+        result = { fusionNode, session, snapshot: existingSnapshot };
+        return;
+      }
+
+      const temporary = this.getTemporaryFusionNode(temporaryFusionNodeId);
+      if (!temporary) throw new Error("Temporary fusion not found");
+      if (temporary.confirmedAt) throw new Error("Confirmed fusion snapshot is missing");
+      if (temporary.activeDraftVersionId !== expectedDraftVersionId) throw new Error("Temporary fusion draft version conflict");
+      const draft = this.getRecord<ResearchFusionDraftVersionRecord>(
+        "SELECT record_json FROM research_fusion_draft_versions WHERE id = ? AND temporary_fusion_node_id = ?",
+        temporary.activeDraftVersionId,
+        temporary.id,
+      );
+      if (!draft || draft.evidenceStatus !== "verified") {
+        throw new Error("Temporary fusion requires a verified active draft");
+      }
+
+      const candidates = this.listRecords<ResearchCandidateSourceConnectionRecord>(
+        "SELECT record_json FROM research_candidate_source_connections WHERE temporary_fusion_node_id = ? ORDER BY created_at, id",
+        temporary.id,
+      );
+      const usedSourceIds = directSourceIdsForConfirmedDraft(draft, candidates);
+      if ([...usedSourceIds].some((sourceNodeId) => !candidates.some((source) => source.sourceNodeId === sourceNodeId))) {
+        throw new Error("Temporary fusion requires direct-source evidence correspondence");
+      }
+      const directCandidates = candidates.filter((source) => usedSourceIds.has(source.sourceNodeId));
+      const sourceNodeIds = new Set(directCandidates.map((source) => source.sourceNodeId));
+      const sourcesAreValid = directCandidates.length >= 2
+        && sourceNodeIds.size === directCandidates.length
+        && directCandidates.every((source) => {
+          const bodyVersion = this.getBodyVersion(source.bodyVersionId);
+          return source.sourceKind === "formal"
+            && source.sourceHealth === "available"
+            && source.fragmentIds.length > 0
+            && this.getResearchNode(source.sourceNodeId)
+            && bodyVersion?.nodeId === source.sourceNodeId;
+        });
+      if (!sourcesAreValid) {
+        throw new Error("Temporary fusion requires two verified, available direct sources");
+      }
+      if (this.getResearchNode(temporary.id) || this.getResearchSession(temporary.id)) {
+        throw new Error("Temporary fusion identity is already formalized");
+      }
+
+      // T07：只有全部直接来源都在同一个实际项目内，确认结果才继承该项目。
+      // 未分类来源与跨项目来源都明确落到未分类，不能借由确认猜测用户的组织意图。
+      const directSourceProjectIds = new Set(directCandidates.map((source) => {
+        const sourceNode = this.getResearchNode(source.sourceNodeId);
+        return sourceNode ? this.getResearchSession(sourceNode.sessionId)?.projectId : undefined;
+      }));
+      const sharedProjectId = directSourceProjectIds.size === 1 ? [...directSourceProjectIds][0] : undefined;
+      const projectId = sharedProjectId && this.getProject(sharedProjectId) ? sharedProjectId : undefined;
+
+      const title = formalFusionTitle(draft.body);
+      const session: ResearchSessionRecord = {
+        id: temporary.id,
+        title,
+        status: "active",
+        isFavorite: false,
+        ...(projectId ? { projectId } : {}),
+        createdAt: temporary.createdAt,
+        updatedAt: confirmedAt,
+      };
+      const fusionNode: ResearchNodeRecord = {
+        id: temporary.id,
+        sessionId: temporary.id,
+        displayName: title,
+        isFusionNode: true,
+        status: "active",
+        createdAt: temporary.createdAt,
+        updatedAt: confirmedAt,
+      };
+      const snapshot: ResearchConfirmedFusionSnapshotRecord = {
+        fusionNodeId: temporary.id,
+        confirmedDraftVersionId: draft.id,
+        body: draft.body,
+        contentHash: draft.contentHash,
+        directSources: directCandidates.map((source) => ({
+          sourceNodeId: source.sourceNodeId,
+          bodyVersionId: source.bodyVersionId,
+          fragmentIds: source.fragmentIds,
+        })),
+        confirmedAt,
+      };
+
+      this.db().prepare(`INSERT INTO research_sessions
+        (id, status, created_at, updated_at, creation_idempotency_key, project_id, is_favorite, record_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(session.id, session.status, session.createdAt, session.updatedAt, `temporary-fusion-confirm:${temporary.id}`, projectId ?? null, 0, JSON.stringify(session));
+      this.db().prepare(`INSERT INTO research_nodes
+        (id, session_id, parent_node_id, origin_selection_id, status, created_at, updated_at, creation_idempotency_key, record_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(fusionNode.id, fusionNode.sessionId, null, null, fusionNode.status, fusionNode.createdAt, fusionNode.updatedAt, `temporary-fusion-confirm:${temporary.id}`, JSON.stringify(fusionNode));
+      const insertEdge = this.db().prepare(`INSERT INTO research_edges
+        (id, kind, from_node_id, to_node_id, created_at, status, record_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`);
+      for (const source of directCandidates) {
+        const edge: ResearchPermanentEdgeRecord = {
+          id: researchEdgeId("fused-from", source.sourceNodeId, fusionNode.id),
+          kind: "fused-from",
+          fromNodeId: source.sourceNodeId,
+          toNodeId: fusionNode.id,
+          status: "active",
+          createdAt: confirmedAt,
+        };
+        insertEdge.run(edge.id, edge.kind, edge.fromNodeId, edge.toNodeId, edge.createdAt, edge.status, JSON.stringify(edge));
+      }
+      this.db().prepare(`INSERT INTO research_confirmed_fusion_snapshots
+        (fusion_node_id, confirmed_draft_version_id, confirmed_at, record_json) VALUES (?, ?, ?, ?)`)
+        .run(snapshot.fusionNodeId, snapshot.confirmedDraftVersionId, snapshot.confirmedAt, JSON.stringify(snapshot));
+      for (const task of this.listTemporaryFusionTasks(temporary.id)) {
+        if (task.status !== "queued" && task.status !== "running") continue;
+        const output = this.getTemporaryFusionMessage(task.outputMessageId);
+        if (output) this.updateTemporaryFusionMessage({ ...output, status: "cancelled", updatedAt: confirmedAt });
+        this.updateTemporaryFusionTask({
+          ...task,
+          status: "cancelled",
+          retryable: false,
+          updatedAt: confirmedAt,
+          completedAt: confirmedAt,
+        });
+      }
+      const closedTemporary = { ...temporary, confirmedAt, updatedAt: confirmedAt };
+      this.db().prepare(`UPDATE research_temporary_fusion_nodes
+        SET confirmed_at = ?, updated_at = ?, record_json = ? WHERE id = ? AND confirmed_at IS NULL`)
+        .run(confirmedAt, confirmedAt, JSON.stringify(closedTemporary), temporary.id);
+      result = { fusionNode, session, snapshot };
+    });
+    if (!result) throw new Error("Temporary fusion confirmation was not persisted");
+    return result;
   }
 
   async createResearchTermPreview(preview: ResearchTermPreviewRecord, selection: ResearchSelectionRecord): Promise<ResearchTermPreviewAccepted> {
@@ -2361,8 +2861,8 @@ export class SqliteStore implements CollectorStore {
         return;
       }
       this.db().prepare(`INSERT INTO research_fusion_proposals
-        (id, lo_node_id, hi_node_id, relation_type, reason, status, cooldown_until, created_at, updated_at, record_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        (id, lo_node_id, hi_node_id, relation_type, reason, status, created_at, updated_at, record_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(
           proposal.id,
           proposal.loNodeId,
@@ -2370,7 +2870,6 @@ export class SqliteStore implements CollectorStore {
           proposal.relationType,
           proposal.reason,
           proposal.status,
-          proposal.cooldownUntil ?? null,
           proposal.createdAt,
           proposal.updatedAt,
           JSON.stringify(proposal),
@@ -2384,95 +2883,31 @@ export class SqliteStore implements CollectorStore {
   async saveResearchFusionProposal(proposal: ResearchFusionProposalRecord): Promise<void> {
     if (proposal.loNodeId >= proposal.hiNodeId) throw new Error("Fusion proposal node pair must be normalized");
     this.db().prepare(`UPDATE research_fusion_proposals
-      SET relation_type = ?, reason = ?, status = ?, cooldown_until = ?, updated_at = ?, record_json = ?
+      SET relation_type = ?, reason = ?, status = ?, updated_at = ?, record_json = ?
       WHERE id = ?`)
       .run(
         proposal.relationType,
         proposal.reason,
         proposal.status,
-        proposal.cooldownUntil ?? null,
         proposal.updatedAt,
         JSON.stringify(proposal),
         proposal.id,
       );
   }
 
-  /** #31：按幂等键查找已创建的融合节点首轮任务（重复确认时返回既有结果，不重复建）。 */
-  findResearchFusionTaskByIdempotencyKey(idempotencyKey: string): ResearchTaskRecord | undefined {
-    return this.getRecord<ResearchTaskRecord>("SELECT record_json FROM research_tasks WHERE idempotency_key = ?", idempotencyKey);
-  }
-
-  /** #31：按幂等键查找已创建的融合节点（重复确认时返回既有结果，不重复建）。 */
-  findResearchFusionNodeByIdempotencyKey(idempotencyKey: string): ResearchNodeRecord | undefined {
-    return this.getRecord<ResearchNodeRecord>("SELECT record_json FROM research_nodes WHERE creation_idempotency_key = ?", idempotencyKey);
-  }
-
-  /**
-   * #31：确认式融合事务。同一事务内把提案置为 accepted、幂等创建语义相关边
-   * 与融合来源边、创建融合节点（无父节点，来源关系全由 fused-from 边表达）与
-   * 首轮消息、任务。按 idempotencyKey 幂等：重复 fuse 返回首次创建的节点与任务。
-   */
-  async createResearchFusionTurn(
-    proposal: ResearchFusionProposalRecord,
-    fusedFromEdges: ResearchEdgeRecord[],
-    fusionNode: ResearchNodeRecord,
-    inputMessage: ResearchMessageRecord,
-    outputMessage: ResearchMessageRecord,
-    task: ResearchTaskRecord,
-  ): Promise<NodeGrowthAccepted> {
-    let accepted: NodeGrowthAccepted | undefined;
-    this.transaction(() => {
-      const existingNode = this.getRecord<ResearchNodeRecord>(
-        "SELECT record_json FROM research_nodes WHERE session_id = ? AND creation_idempotency_key = ?",
-        fusionNode.sessionId, task.idempotencyKey,
-      );
-      if (existingNode) {
-        const existingTask = this.findResearchTaskByIdempotencyKey(fusionNode.sessionId, task.idempotencyKey);
-        if (!existingTask) throw new Error("Research fusion node references a missing first task");
-        const existingInput = this.getResearchMessage(existingTask.inputMessageId);
-        const existingOutput = this.getResearchMessage(existingTask.outputMessageId);
-        const session = this.getResearchSession(existingNode.sessionId);
-        if (!existingInput || !existingOutput || !session) throw new Error("Research fusion node references incomplete persisted state");
-        accepted = { node: existingNode, session, selection: undefined, inputMessage: existingInput, outputMessage: existingOutput, task: existingTask };
-        return;
-      }
-      const session = this.getResearchSession(fusionNode.sessionId);
-      if (!session) throw new Error("Research fusion node references a missing session");
-      const updatedSession: ResearchSessionRecord = { ...session, updatedAt: task.createdAt };
-      // 提案置为 accepted（与 decide 一致：无冷却字段）。
-      const acceptedProposal: ResearchFusionProposalRecord = { ...proposal, status: "accepted", updatedAt: task.createdAt };
-      this.db().prepare("UPDATE research_fusion_proposals SET status = ?, updated_at = ?, record_json = ? WHERE id = ?")
-        .run(acceptedProposal.status, acceptedProposal.updatedAt, JSON.stringify(acceptedProposal), proposal.id);
-      this.db().prepare("INSERT INTO research_nodes (id, session_id, parent_node_id, origin_selection_id, status, created_at, updated_at, creation_idempotency_key, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(fusionNode.id, fusionNode.sessionId, null, null, fusionNode.status, fusionNode.createdAt, fusionNode.updatedAt, task.idempotencyKey, JSON.stringify(fusionNode));
-      // 语义相关边 + 融合来源边：均幂等（INSERT OR IGNORE + UNIQUE 约束）。
-      const semanticEdge: ResearchEdgeRecord = {
-        id: researchEdgeId("semantic-related", proposal.loNodeId, proposal.hiNodeId),
-        kind: "semantic-related",
-        fromNodeId: proposal.loNodeId,
-        toNodeId: proposal.hiNodeId,
-        createdAt: task.createdAt,
-        status: "active",
-      };
-      const edges = [semanticEdge, ...fusedFromEdges];
-      for (const edge of edges) {
-        this.db().prepare("INSERT OR IGNORE INTO research_edges (id, kind, from_node_id, to_node_id, created_at, status, record_json) VALUES (?, ?, ?, ?, ?, ?, ?)")
-          .run(edge.id, edge.kind, edge.fromNodeId, edge.toNodeId, edge.createdAt, edge.status, JSON.stringify(edge));
-      }
-      this.db().prepare("UPDATE research_sessions SET updated_at = ?, record_json = ? WHERE id = ?")
-        .run(updatedSession.updatedAt, JSON.stringify(updatedSession), updatedSession.id);
-      this.insertResearchMessage(inputMessage);
-      this.insertResearchMessage(outputMessage);
-      this.insertResearchTask(task);
-      accepted = { node: fusionNode, session: updatedSession, selection: undefined, inputMessage, outputMessage, task };
-    });
-    if (!accepted) throw new Error("Research fusion node was not persisted");
-    return accepted;
-  }
-
   private updateResearchMessage(message: ResearchMessageRecord): void {
     this.db().prepare("UPDATE research_messages SET status = ?, updated_at = ?, record_json = ? WHERE id = ?")
       .run(message.status, message.updatedAt, JSON.stringify(message), message.id);
+  }
+
+  private updateTemporaryFusionMessage(message: ResearchTemporaryFusionMessageRecord): void {
+    this.db().prepare("UPDATE research_temporary_fusion_messages SET status = ?, updated_at = ?, record_json = ? WHERE id = ?")
+      .run(message.status, message.updatedAt, JSON.stringify(message), message.id);
+  }
+
+  private updateTemporaryFusionTask(task: ResearchTemporaryFusionTaskRecord): void {
+    this.db().prepare("UPDATE research_temporary_fusion_tasks SET status = ?, retryable = ?, updated_at = ?, record_json = ? WHERE id = ?")
+      .run(task.status, task.retryable ? 1 : 0, task.updatedAt, JSON.stringify(task), task.id);
   }
 
   private updateResearchTask(task: ResearchTaskRecord): void {
@@ -3234,7 +3669,6 @@ export class SqliteStore implements CollectorStore {
             relation_type TEXT NOT NULL,
             reason TEXT NOT NULL,
             status TEXT NOT NULL,
-            cooldown_until TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             record_json TEXT NOT NULL,
@@ -3243,10 +3677,10 @@ export class SqliteStore implements CollectorStore {
             UNIQUE(lo_node_id, hi_node_id),
             CHECK(lo_node_id < hi_node_id),
             CHECK(relation_type IN ('identity', 'shared-concept', 'analogy', 'contrast', 'unrelated')),
-            CHECK(status IN ('pending', 'accepted', 'rejected'))
+            CHECK(status = 'pending')
           );
           CREATE INDEX research_fusion_proposals_status_idx
-            ON research_fusion_proposals(status, cooldown_until, created_at);
+            ON research_fusion_proposals(status, created_at);
           INSERT INTO schema_migrations(version, applied_at) VALUES (30, datetime('now'));
         `);
       });
@@ -3657,6 +4091,113 @@ export class SqliteStore implements CollectorStore {
         `);
       });
       version = 41;
+    }
+
+    if (version < 42) {
+      // T04：临时融合讨论独立于正式 session/message/task；删除候选聚合根时整棵对话自动清理。
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE IF NOT EXISTS research_temporary_fusion_messages (
+            id TEXT PRIMARY KEY,
+            temporary_fusion_node_id TEXT NOT NULL REFERENCES research_temporary_fusion_nodes(id) ON DELETE CASCADE,
+            role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+            status TEXT NOT NULL CHECK(status IN ('pending', 'streaming', 'completed', 'failed', 'cancelled')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS research_temporary_fusion_messages_node_idx
+            ON research_temporary_fusion_messages(temporary_fusion_node_id, created_at, id);
+
+          CREATE TABLE IF NOT EXISTS research_temporary_fusion_tasks (
+            id TEXT PRIMARY KEY,
+            temporary_fusion_node_id TEXT NOT NULL REFERENCES research_temporary_fusion_nodes(id) ON DELETE CASCADE,
+            input_message_id TEXT NOT NULL REFERENCES research_temporary_fusion_messages(id) ON DELETE CASCADE,
+            output_message_id TEXT NOT NULL REFERENCES research_temporary_fusion_messages(id) ON DELETE CASCADE,
+            idempotency_key TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
+            retryable INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            UNIQUE(temporary_fusion_node_id, idempotency_key)
+          );
+          CREATE INDEX IF NOT EXISTS research_temporary_fusion_tasks_node_idx
+            ON research_temporary_fusion_tasks(temporary_fusion_node_id, created_at, id);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (42, datetime('now'));
+        `);
+      });
+      version = 42;
+    }
+
+    if (version < 43) {
+      // T05: immutable bodies get durable, judgment-scoped evidence revalidation tasks.
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE IF NOT EXISTS research_fusion_draft_revalidation_tasks (
+            id TEXT PRIMARY KEY,
+            temporary_fusion_node_id TEXT NOT NULL REFERENCES research_temporary_fusion_nodes(id) ON DELETE CASCADE,
+            draft_version_id TEXT NOT NULL REFERENCES research_fusion_draft_versions(id) ON DELETE CASCADE,
+            judgment_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'completed', 'failed')),
+            retryable INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            UNIQUE(draft_version_id, judgment_id)
+          );
+          CREATE INDEX IF NOT EXISTS research_fusion_draft_revalidation_tasks_node_idx ON research_fusion_draft_revalidation_tasks(temporary_fusion_node_id, created_at, id);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (43, datetime('now'));
+        `);
+      });
+      version = 43;
+    }
+
+    if (version < 44) {
+      // T06：确认后保留临时草案与证据审计，但从临时观察和可变操作中关闭。
+      // table_info 防止迁移重放测试在已加列、仅回退版本号时重复 ALTER TABLE。
+      this.transaction(() => {
+        const columns = this.db().prepare("PRAGMA table_info(research_temporary_fusion_nodes)").all() as Array<{ name: string }>;
+        if (!columns.some((column) => column.name === "confirmed_at")) {
+          this.db().exec("ALTER TABLE research_temporary_fusion_nodes ADD COLUMN confirmed_at TEXT");
+        }
+        this.db().exec(`
+          CREATE INDEX IF NOT EXISTS research_temporary_fusion_nodes_confirmed_idx
+            ON research_temporary_fusion_nodes(confirmed_at, created_at, id);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (44, datetime('now'));
+        `);
+      });
+      version = 44;
+    }
+
+    if (version < 45) {
+      // 已确认融合的来源永久删除后，fused-from 仍须保留稳定来源身份。
+      // 关系端点因此不能依赖 research_nodes 外键；当前可用性由来源健康投影表达。
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE research_edges_v45 (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            from_node_id TEXT NOT NULL,
+            to_node_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            status TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            UNIQUE(kind, from_node_id, to_node_id)
+          );
+          INSERT INTO research_edges_v45
+            (id, kind, from_node_id, to_node_id, created_at, status, record_json)
+            SELECT id, kind, from_node_id, to_node_id, created_at, status, record_json
+            FROM research_edges;
+          DROP TABLE research_edges;
+          ALTER TABLE research_edges_v45 RENAME TO research_edges;
+          CREATE INDEX research_edges_from_node_idx ON research_edges(from_node_id, status);
+          CREATE INDEX research_edges_to_node_idx ON research_edges(to_node_id, status);
+          CREATE INDEX research_edges_kind_idx ON research_edges(kind, status);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (45, datetime('now'));
+        `);
+      });
+      version = 45;
     }
 
   }

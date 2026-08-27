@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
-  ResearchEdgeKind,
   ResearchEdgeRecord,
   ResearchGraphProjection,
   ResearchGraphNodeSummary,
+  ResearchPermanentEdgeKind,
+  ResearchPermanentEdgeRecord,
 } from "@collector/capture-contracts";
-import { RESEARCH_EDGE_KINDS } from "@collector/capture-contracts";
+import { RESEARCH_PERMANENT_EDGE_KINDS, isResearchPermanentEdge } from "@collector/capture-contracts";
 import { useServices } from "../../app/services";
 
 export type RelationshipState =
@@ -15,34 +16,33 @@ export type RelationshipState =
 
 /** 按边类型分组后的邻居条目，供渲染层直接消费。 */
 export interface RelationshipGroup {
-  kind: ResearchEdgeKind;
+  kind: ResearchPermanentEdgeKind;
   label: string;
   items: RelationshipItem[];
 }
 
 export interface RelationshipItem {
-  edge: ResearchEdgeRecord;
+  edge: ResearchPermanentEdgeRecord;
   neighbor: ResearchGraphNodeSummary;
   /** 导航方向："outgoing" 表示焦点 → 邻居，"incoming" 表示邻居 → 焦点。 */
   direction: "outgoing" | "incoming";
 }
 
 /** 边类型的中文标签。 */
-export const EDGE_KIND_LABELS: Record<ResearchEdgeKind, string> = {
+export const EDGE_KIND_LABELS: Record<ResearchPermanentEdgeKind, string> = {
   "parent-child": "父子关系",
-  "semantic-related": "语义相关",
   "fused-from": "融合来源",
 };
 
 /** 默认显示全部边类型；筛选只作用于当前呈现，不修改服务端投影。 */
-export const ALL_EDGE_KINDS: ResearchEdgeKind[] = [...RESEARCH_EDGE_KINDS];
+export const ALL_EDGE_KINDS: ResearchPermanentEdgeKind[] = [...RESEARCH_PERMANENT_EDGE_KINDS];
 
 export function filterEdgesByKind(
   edges: readonly ResearchEdgeRecord[],
-  selectedKinds: readonly ResearchEdgeKind[],
-): ResearchEdgeRecord[] {
+  selectedKinds: readonly ResearchPermanentEdgeKind[],
+): ResearchPermanentEdgeRecord[] {
   const allowed = new Set(selectedKinds);
-  return edges.filter((edge) => edge.status === "active" && allowed.has(edge.kind));
+  return edges.filter((edge): edge is ResearchPermanentEdgeRecord => edge.status === "active" && isResearchPermanentEdge(edge) && allowed.has(edge.kind));
 }
 
 /** 只保留当前节点和筛选后关系实际连接的节点，避免聚焦到无关节点。 */
@@ -71,20 +71,20 @@ export function navigationNodeIds(
 /** 按边类型分组，每组内按方向（出 / 入）排列；跳过已删除及未选中的边。 */
 export function groupRelationships(
   projection: ResearchGraphProjection,
-  selectedKinds: readonly ResearchEdgeKind[] = ALL_EDGE_KINDS,
+  selectedKinds: readonly ResearchPermanentEdgeKind[] = ALL_EDGE_KINDS,
 ): RelationshipGroup[] {
   const nodeMap = new Map<string, ResearchGraphNodeSummary>();
   for (const summary of projection.nodes) {
     nodeMap.set(summary.node.id, summary);
   }
 
-  const groups = new Map<ResearchEdgeKind, RelationshipItem[]>();
-  const kinds: ResearchEdgeKind[] = [...RESEARCH_EDGE_KINDS];
+  const groups = new Map<ResearchPermanentEdgeKind, RelationshipItem[]>();
+  const kinds: ResearchPermanentEdgeKind[] = [...RESEARCH_PERMANENT_EDGE_KINDS];
   const allowed = new Set(selectedKinds);
   for (const kind of kinds) groups.set(kind, []);
 
   for (const edge of projection.edges) {
-    if (edge.status !== "active" || !allowed.has(edge.kind)) continue;
+    if (edge.status !== "active" || !isResearchPermanentEdge(edge) || !allowed.has(edge.kind)) continue;
     const isOutgoing = edge.fromNodeId === projection.focusNodeId;
     const neighborId = isOutgoing ? edge.toNodeId : edge.fromNodeId;
     const neighbor = nodeMap.get(neighborId);

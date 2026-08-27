@@ -73,7 +73,7 @@ describe("groupRelationships 纯函数", () => {
     const projection = sampleProjection();
     const groups = groupRelationships(projection);
 
-    expect(groups).toHaveLength(3);
+    expect(groups).toHaveLength(2);
     expect(groups[0].kind).toBe("parent-child");
     expect(groups[0].label).toBe("父子关系");
     expect(groups[0].items).toHaveLength(2);
@@ -84,26 +84,20 @@ describe("groupRelationships 纯函数", () => {
     expect(incoming?.neighbor.label).toBe("深度学习基础");
     expect(outgoing?.neighbor.label).toBe("注意力头");
 
-    // 语义相关
-    expect(groups[1].kind).toBe("semantic-related");
+    // 遗留语义边不再是当前永久关系；融合来源继续显示。
+    expect(groups[1].kind).toBe("fused-from");
     expect(groups[1].items).toHaveLength(1);
-    expect(groups[1].items[0].neighbor.label).toBe("位置编码");
-
-    // 融合来源
-    expect(groups[2].kind).toBe("fused-from");
-    expect(groups[2].items).toHaveLength(1);
-    expect(groups[2].items[0].neighbor.label).toBe("编码器融合");
+    expect(groups[1].items[0].neighbor.label).toBe("编码器融合");
   });
 
-  it("只包含有数据的边类型分组", () => {
+  it("只包含当前永久边类型的数据分组", () => {
     const projection: ResearchGraphProjection = {
       focusNodeId: "focus",
       nodes: [graphNode("focus", "焦点", 0), graphNode("neighbor", "邻居", 1)],
       edges: [edge("semantic-related", "focus", "neighbor")],
     };
     const groups = groupRelationships(projection);
-    expect(groups).toHaveLength(1);
-    expect(groups[0].kind).toBe("semantic-related");
+    expect(groups).toHaveLength(0);
   });
 
   it("过滤掉已删除的边", () => {
@@ -120,7 +114,7 @@ describe("groupRelationships 纯函数", () => {
 function renderList(
   api: Partial<ApiClient>,
   focusNodeId = "focus-node",
-  selectedEdgeKinds: readonly ("parent-child" | "semantic-related" | "fused-from")[] = ALL_EDGE_KINDS,
+  selectedEdgeKinds: readonly ("parent-child" | "fused-from")[] = ALL_EDGE_KINDS,
 ) {
   const services = { api: api as ApiClient } as unknown as AppServices;
   return render(
@@ -144,7 +138,7 @@ function LocationProbe() {
 }
 
 describe("RelationshipList 组件", () => {
-  it("渲染焦点节点与三种边类型的分组", async () => {
+  it("渲染焦点节点与两种永久边类型的分组", async () => {
     renderList({ getResearchGraph: async () => sampleProjection() });
 
     // 等待加载完成
@@ -153,15 +147,15 @@ describe("RelationshipList 组件", () => {
     // 焦点节点显示
     expect(screen.getByText(/焦点：/)).toHaveTextContent("Transformer 架构");
 
-    // 三个分组标题
+    // 两个永久分组标题；遗留语义边不进入当前界面。
     expect(screen.getByText("父子关系")).toBeInTheDocument();
-    expect(screen.getByText("语义相关")).toBeInTheDocument();
     expect(screen.getByText("融合来源")).toBeInTheDocument();
+    expect(screen.queryByText("语义相关")).not.toBeInTheDocument();
 
     // 各邻居节点标签可见
     expect(screen.getByRole("button", { name: "深度学习基础" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "注意力头" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "位置编码" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "位置编码" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "编码器融合" })).toBeInTheDocument();
   });
 
@@ -192,7 +186,7 @@ describe("RelationshipList 组件", () => {
 
     // 焦点自动落在第一个条目
     const items = screen.getAllByRole("listitem");
-    expect(items.length).toBeGreaterThanOrEqual(4);
+    expect(items.length).toBeGreaterThanOrEqual(3);
     await waitFor(() => expect(items[0]).toHaveFocus());
 
     // ↓ 移到第二个条目
@@ -239,19 +233,19 @@ describe("RelationshipList 组件", () => {
       expect.stringContaining("上层"),
     );
 
-    // 语义相关 outgoing（focus → related），深度 1 → "邻居"
-    const semanticItem = items.find((item) =>
-      item.getAttribute("aria-label")?.includes("位置编码"),
+    // 融合来源 incoming（fused → focus），深度 1 → "邻居"
+    const fusedItem = items.find((item) =>
+      item.getAttribute("aria-label")?.includes("编码器融合"),
     );
-    expect(semanticItem).toHaveAttribute(
+    expect(fusedItem).toHaveAttribute(
       "aria-label",
-      expect.stringContaining("语义相关"),
+      expect.stringContaining("融合来源"),
     );
-    expect(semanticItem).toHaveAttribute(
+    expect(fusedItem).toHaveAttribute(
       "aria-label",
-      expect.stringContaining("→"),
+      expect.stringContaining("←"),
     );
-    expect(semanticItem).toHaveAttribute(
+    expect(fusedItem).toHaveAttribute(
       "aria-label",
       expect.stringContaining("邻居"),
     );
@@ -308,19 +302,18 @@ describe("RelationshipList 组件", () => {
     renderList({ getResearchGraph: async () => sampleProjection() });
 
     await screen.findByRole("list", { name: "节点关系列表" });
-    await user.click(screen.getByRole("button", { name: "位置编码" }));
+    await user.click(screen.getByRole("button", { name: "编码器融合" }));
     await waitFor(() =>
       expect(screen.getByTestId("location-probe")).toHaveTextContent(
-        "/nodes/related-node",
+        "/nodes/fused-node",
       ),
     );
   });
 });
 
 describe("EDGE_KIND_LABELS", () => {
-  it("三种边类型都有中文标签", () => {
+  it("两种永久边类型都有中文标签", () => {
     expect(EDGE_KIND_LABELS["parent-child"]).toBe("父子关系");
-    expect(EDGE_KIND_LABELS["semantic-related"]).toBe("语义相关");
     expect(EDGE_KIND_LABELS["fused-from"]).toBe("融合来源");
   });
 });

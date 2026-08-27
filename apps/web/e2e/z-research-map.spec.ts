@@ -3,7 +3,7 @@
  * 覆盖：单入口打开默认专注模式、t/g 快捷键与模式切换、模块级筛选共享
  * （画布渲染/键盘候选/专注脉络同一份筛选结果）、三级血统链与面包屑、
  * 四视口无横向溢出、网络契约（只发 /graph，不发 /nodes）。
- * 语义/融合边通过浏览器路由注入确定性投影，不写入数据库。
+ * 融合边通过浏览器路由注入确定性投影，不写入数据库。
  */
 import { mkdirSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
@@ -42,8 +42,8 @@ async function growChildNode(page: Page, sessionId: string, text: string): Promi
   return page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";
 }
 
-/** 向 /graph 响应注入语义相关与融合来源节点（隔离血统，只通过非父子边到达）。 */
-async function installThreeEdgeGraphFixture(page: Page): Promise<void> {
+/** 向 /graph 响应注入融合来源节点（隔离血统，只通过永久融合边到达）。 */
+async function installPermanentEdgeGraphFixture(page: Page): Promise<void> {
   await page.route("**/v1/research-sessions/*/graph**", async (route) => {
     const response = await route.fetch();
     const projection = await response.json();
@@ -65,19 +65,10 @@ async function installThreeEdgeGraphFixture(page: Page): Promise<void> {
       label,
       depth: 1,
     });
-    const semanticId = `e2e-semantic-${projection.focusNodeId}`;
     const fusedId = `e2e-fused-${projection.focusNodeId}`;
-    projection.nodes = [...projection.nodes, makeNode(semanticId, "语义关联节点"), makeNode(fusedId, "融合来源节点")];
+    projection.nodes = [...projection.nodes, makeNode(fusedId, "融合来源节点")];
     projection.edges = [
       ...projection.edges,
-      {
-        id: `e2e-edge-semantic-${projection.focusNodeId}`,
-        kind: "semantic-related",
-        fromNodeId: projection.focusNodeId,
-        toNodeId: semanticId,
-        createdAt: "2026-08-02T08:00:00.000Z",
-        status: "active",
-      },
       {
         id: `e2e-edge-fused-${projection.focusNodeId}`,
         kind: "fused-from",
@@ -135,29 +126,24 @@ test.describe("统一研究地图（#40）", () => {
     expect(consoleIssues, consoleIssues.join(" | ")).toEqual([]);
   });
 
-  test("模式切换与筛选共享：语义/融合只出现在关联区与画布，筛选同步三处消费方", async ({ page }) => {
+  test("模式切换与筛选共享：融合来源只出现在关联区与画布，筛选同步三处消费方", async ({ page }) => {
     test.setTimeout(90_000);
     const sessionId = await openSession(page);
     const childId = await growChildNode(page, sessionId, SELECTED_A);
-    await installThreeEdgeGraphFixture(page);
+    await installPermanentEdgeGraphFixture(page);
 
-    // t 打开专注模式：注入的语义/融合节点不在血统脉络，只在关联区
+    // t 打开专注模式：注入的融合来源不在血统脉络，只在关联区
     await page.keyboard.press("t");
     const dialog = page.getByRole("dialog", { name: "研究地图" });
     await expect(dialog).toBeVisible();
     const chain = dialog.getByRole("list", { name: "专注脉络" });
-    await expect(chain.getByRole("button", { name: "语义关联节点" })).toHaveCount(0);
-    await expect(dialog.getByRole("button", { name: "语义关联节点" })).toBeVisible();
     await expect(dialog.getByRole("button", { name: "融合来源节点" })).toBeVisible();
 
-    // g 切到关联模式：桌面画布显示注入节点；筛选关闭语义/融合后画布节点消失
+    // g 切到关联模式：桌面画布显示注入节点；筛选关闭融合后画布节点消失
     await page.keyboard.press("g");
     const canvas = dialog.getByRole("region", { name: "关系网状画布" });
     await expect(canvas).toBeVisible();
-    await expect(canvas.getByTestId(`graph-node-e2e-semantic-${childId}`)).toBeVisible();
-    await dialog.getByTestId("map-filter-semantic-related").click();
     await dialog.getByTestId("map-filter-fused-from").click();
-    await expect(canvas.getByTestId(`graph-node-e2e-semantic-${childId}`)).toBeHidden();
     await expect(canvas.getByTestId(`graph-node-e2e-fused-${childId}`)).toBeHidden();
     // 键盘候选同源：方向键遍历不到被筛掉的节点
     await expect(canvas.getByTestId(`graph-node-${childId}`)).toHaveCount(1);
@@ -165,11 +151,9 @@ test.describe("统一研究地图（#40）", () => {
     // 切回专注：筛选状态保持，关联区空态
     await dialog.getByTestId("map-mode-focus").click();
     await expect(dialog.getByText("当前筛选没有可见的关系。")).toBeVisible();
-    await expect(dialog.getByRole("button", { name: "语义关联节点" })).toHaveCount(0);
 
-    // 全部复位后语义/融合回到关联区
+    // 全部复位后融合来源回到关联区
     await dialog.getByTestId("map-filter-all").click();
-    await expect(dialog.getByRole("button", { name: "语义关联节点" })).toBeVisible();
     await expect(dialog.getByRole("button", { name: "融合来源节点" })).toBeVisible();
   });
 
@@ -332,7 +316,7 @@ test.describe("统一研究地图（#40）", () => {
     });
     page.on("pageerror", (error) => consoleIssues.push(error.message));
     const childId = await growChildNode(page, sessionId, SELECTED_A);
-    await installThreeEdgeGraphFixture(page);
+    await installPermanentEdgeGraphFixture(page);
 
     // 窄屏：t 打开专注模式 → g 切关联模式 → 关系列表呈现
     await page.setViewportSize({ width: 320, height: 800 });
@@ -344,9 +328,7 @@ test.describe("统一研究地图（#40）", () => {
     await page.keyboard.press("g");
     const list = dialog.getByRole("list", { name: "节点关系列表" });
     await expect(list).toBeVisible();
-    // 语义相关与融合来源分组清晰呈现，进入节点行为与画布一致
-    const semanticGroup = dialog.getByRole("group", { name: "语义相关" });
-    await expect(semanticGroup).toContainText("语义关联节点");
+    // 融合来源分组清晰呈现，进入节点行为与画布一致
     const fusedGroup = dialog.getByRole("group", { name: "融合来源" });
     await expect(fusedGroup).toContainText("融合来源节点");
     // 初始焦点落在第一条条目（父子组的根节点）
@@ -363,20 +345,17 @@ test.describe("统一研究地图（#40）", () => {
     await expect(dialog).toBeVisible();
     await expect(dialog.getByRole("list", { name: "专注脉络" })).toBeVisible();
 
-    // 关闭语义/融合筛选后切关联：父子关系保留为结构参照，语义/融合消失；切回专注一致
-    await dialog.getByTestId("map-filter-semantic-related").click();
+    // 关闭融合筛选后切关联：父子关系保留为结构参照，融合来源消失；切回专注一致
     await dialog.getByTestId("map-filter-fused-from").click();
     await page.keyboard.press("g");
     const listAfterFilter = dialog.getByRole("list", { name: "节点关系列表" });
     await expect(listAfterFilter).toBeVisible();
     await expect(listAfterFilter.getByRole("button", { name: "什么是本地优先研究" })).toBeVisible();
-    await expect(dialog.getByRole("button", { name: "语义关联节点" })).toHaveCount(0);
     await expect(dialog.getByRole("button", { name: "融合来源节点" })).toHaveCount(0);
     await page.keyboard.press("t");
-    await expect(dialog.getByRole("button", { name: "语义关联节点" })).toHaveCount(0);
     await expect(dialog.getByRole("button", { name: "融合来源节点" })).toHaveCount(0);
     await dialog.getByTestId("map-filter-all").click();
-    await expect(dialog.getByRole("button", { name: "语义关联节点" })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "融合来源节点" })).toBeVisible();
 
     // 窄屏关联覆盖层无横向溢出
     const metrics = await page.evaluate(() => ({

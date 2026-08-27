@@ -3,7 +3,7 @@
  *
  * 五个代表状态（验收 5，用户已选 Playwright 像素基线）：
  * 1. 桌面专注：研究地图覆盖层专注模式（当前节点 + 血统脉络 + 关联区）；
- * 2. 桌面关联：研究地图覆盖层关联模式（网状画布 + 三类边 + 图例）；
+ * 2. 桌面关联：研究地图覆盖层关联模式（网状画布 + 两类永久边 + 图例）；
  * 3. 轮次卡片常态：普通回答与长文分节都以轮次为卡片边界（含悬停态）；
  * 4. 融合回溯落点：?fragment= 深链定位后的强调卡片；
  * 5. 窄屏代表状态：320px 关联模式（关系列表呈现）。
@@ -22,7 +22,7 @@ import {
   dynamicTimeMasks,
   freezeClock,
   growChildNode,
-  installThreeEdgeGraphFixture,
+  installPermanentEdgeGraphFixture,
   openNodeWithParent,
   openSession,
   pairAndOpen,
@@ -202,6 +202,30 @@ const LONG_TURN_CARD_TEXT_LAYOUT: TextLayoutContract = {
   ),
 };
 
+const ASSOC_NARROW_CONTAINER_TEXT_STYLE: TextLayoutContract["regions"][number]["style"] = {
+  display: "flex", visibility: "visible", opacity: "1", color: "rgb(32, 35, 31)", webkitTextFillColor: "rgb(32, 35, 31)", webkitTextStrokeColor: "rgb(32, 35, 31)", webkitTextStrokeWidth: "0px", textShadow: "none", filter: "none", transform: "none", clipPath: "none", maskImage: "none", mixBlendMode: "normal", fontFamily: "-apple-system, BlinkMacSystemFont, \"Segoe UI\", \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", \"Noto Sans CJK SC\", \"Source Han Sans SC\", sans-serif", fontSize: "16px", fontWeight: "400", fontStyle: "normal", lineHeight: "25.6px", letterSpacing: "normal", wordSpacing: "0px", textIndent: "0px", textTransform: "none", whiteSpace: "normal", overflowWrap: "normal", textRendering: "auto", backgroundColor: "rgba(0, 0, 0, 0)", backgroundImage: "none", boxShadow: "none",
+};
+const ASSOC_NARROW_HINT_TEXT_STYLE: TextLayoutContract["regions"][number]["style"] = {
+  ...ASSOC_NARROW_CONTAINER_TEXT_STYLE,
+  display: "block", color: "rgb(107, 113, 104)", webkitTextFillColor: "rgb(107, 113, 104)", webkitTextStrokeColor: "rgb(107, 113, 104)", fontSize: "13px", lineHeight: "20.8px",
+};
+function assocNarrowRegion(
+  input: Omit<TextLayoutContract["regions"][number], "ancestors" | "style">,
+  style = ASSOC_NARROW_CONTAINER_TEXT_STYLE,
+) {
+  return { ...input, ancestors: [], style };
+}
+const ASSOC_NARROW_TEXT_LAYOUT: TextLayoutContract = {
+  root: { width: 320, height: 800, renderingStyle: { display: "flex", visibility: "visible", opacity: "1", filter: "none", backdropFilter: "none", transform: "none", clipPath: "none", maskImage: "none", mixBlendMode: "normal", isolation: "auto", perspective: "none", overflow: "hidden", contain: "none", contentVisibility: "visible" } },
+  regions: [
+    assocNarrowRegion({ text: "研究地图专注关联×", childElementCount: 3, childNodeTypes: [1, 1, 1], beforeContent: "none", afterContent: "none", computedStyleSha256: "8081fed284200d8aa7226dd92e828201801a9a328afc81bfb2c41542d21a9074", beforeStyleSha256: "ad690aa6a6f13986f67b11898f70a0c39947ce3786a1875e7898bcc12d1445e7", afterStyleSha256: "ad690aa6a6f13986f67b11898f70a0c39947ce3786a1875e7898bcc12d1445e7", rect: { x: 24, y: 16, width: 272, height: 35.59375 }, lines: [{ x: 24, y: 16, width: 72, height: 28.796875 }, { x: 24, y: 18, width: 72, height: 24 }, { x: 126, y: 16, width: 112, height: 35.59375 }, { x: 137, y: 23, width: 32, height: 21 }, { x: 195, y: 23, width: 32, height: 21 }, { x: 268, y: 16, width: 28, height: 28 }, { x: 275.828125, y: 18, width: 12.328125, height: 24 }] }),
+    assocNarrowRegion({ text: "显示关系：父子融合全部", childElementCount: 4, childNodeTypes: [1, 1, 1, 1], beforeContent: "none", afterContent: "none", computedStyleSha256: "dcb7c2da4ad7b1c3002c2ce4c69aaec252f2fe7c700383892b51604a9184cef7", beforeStyleSha256: "ad690aa6a6f13986f67b11898f70a0c39947ce3786a1875e7898bcc12d1445e7", afterStyleSha256: "ad690aa6a6f13986f67b11898f70a0c39947ce3786a1875e7898bcc12d1445e7", rect: { x: 24, y: 63.59375, width: 272, height: 35.59375 }, lines: [{ x: 24, y: 70.984375, width: 65, height: 20.796875 }, { x: 24, y: 71.984375, width: 65, height: 17 }, { x: 93, y: 63.59375, width: 54, height: 35.59375 }, { x: 104, y: 70.59375, width: 32, height: 21 }, { x: 151, y: 63.59375, width: 54, height: 35.59375 }, { x: 162, y: 70.59375, width: 32, height: 21 }, { x: 209, y: 63.59375, width: 54, height: 35.59375 }, { x: 220, y: 70.59375, width: 32, height: 21 }] }),
+    assocNarrowRegion({ text: "返回当前页面", childElementCount: 1, childNodeTypes: [1], beforeContent: "none", afterContent: "none", computedStyleSha256: "763f2c06a7142e01869e07fd4950ce71e41bd277cdee71129bcd47404c972abd", beforeStyleSha256: "ad690aa6a6f13986f67b11898f70a0c39947ce3786a1875e7898bcc12d1445e7", afterStyleSha256: "ad690aa6a6f13986f67b11898f70a0c39947ce3786a1875e7898bcc12d1445e7", rect: { x: 24, y: 111.1875, width: 272, height: 35.59375 }, lines: [{ x: 24, y: 111.1875, width: 118, height: 35.59375 }, { x: 35, y: 118.1875, width: 96, height: 21 }] }),
+    assocNarrowRegion({ text: "焦点：本地优先会先把输入保存在本机父子关系←什么是本地优先研究邻居融合来源←融合来源节点邻居↑↓ 移动 · Enter 进入节点", childElementCount: 1, childNodeTypes: [1], beforeContent: "none", afterContent: "none", computedStyleSha256: "d8c141ea5993e1ec9a987d6635e79a962579950ec277fabf4194114cb7754cdd", beforeStyleSha256: "ad690aa6a6f13986f67b11898f70a0c39947ce3786a1875e7898bcc12d1445e7", afterStyleSha256: "ad690aa6a6f13986f67b11898f70a0c39947ce3786a1875e7898bcc12d1445e7", rect: { x: 24, y: 158.78125, width: 272, height: 592.421875 }, lines: [{ x: 24, y: 158.78125, width: 272, height: 211.96875 }, { x: 24, y: 159.78125, width: 42, height: 19 }, { x: 66, y: 159.78125, width: 196, height: 19 }, { x: 24, y: 202.171875, width: 54.09375, height: 17 }, { x: 27.953125, y: 235.5625, width: 12.09375, height: 19 }, { x: 58, y: 234.96875, width: 144, height: 21 }, { x: 266, y: 237.171875, width: 24, height: 16 }, { x: 24, y: 278.5625, width: 54.09375, height: 17 }, { x: 27.953125, y: 311.953125, width: 12.09375, height: 19 }, { x: 58, y: 311.359375, width: 96, height: 21 }, { x: 266, y: 313.5625, width: 24, height: 16 }, { x: 24, y: 350.953125, width: 137, height: 17 }] }),
+    assocNarrowRegion({ text: "t 专注 · g 关联 · Esc 关闭", childElementCount: 0, childNodeTypes: [3], beforeContent: "none", afterContent: "none", computedStyleSha256: "3a0414120ee5bd0814b83794653ee48811444c1b1723b5f56674d7b110077aa7", beforeStyleSha256: "04b7809c5f6e365c8f80641dfa062dfe1f7a0efc6fb3c42de4905c7396bbbf23", afterStyleSha256: "04b7809c5f6e365c8f80641dfa062dfe1f7a0efc6fb3c42de4905c7396bbbf23", rect: { x: 24, y: 763.203125, width: 272, height: 20.796875 }, lines: [{ x: 24, y: 764.203125, width: 138.734375, height: 17 }] }, ASSOC_NARROW_HINT_TEXT_STYLE),
+  ],
+};
+
 test.describe("#44 视觉回归基线", () => {
   // 会话建立 + 生长链 + 融合定位需要超过默认 30s 时限
   test.setTimeout(120_000);
@@ -211,13 +235,13 @@ test.describe("#44 视觉回归基线", () => {
     freezeClock(page);
     const { sessionId } = await openSession(page);
     await growChildNode(page, sessionId, "本地优先会先把输入保存在本机");
-    await installThreeEdgeGraphFixture(page);
+    await installPermanentEdgeGraphFixture(page);
 
     const dialog = await openResearchMap(page);
     await expect(dialog.getByTestId("map-mode-focus")).toHaveAttribute("aria-pressed", "true");
-    // 血统脉络就绪：当前节点行 + 关联区（fixture 注入的语义/融合节点）
+    // 血统脉络就绪：当前节点行 + 关联区（fixture 注入的融合来源）
     await expect(dialog.locator(".focus-lineage__row--current")).toBeVisible();
-    await expect(dialog.getByRole("button", { name: "语义关联节点" })).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "融合来源节点" })).toBeVisible();
 
     await expect(dialog).toHaveScreenshot("focus-desktop", {
       mask: dynamicTimeMasks(page),
@@ -230,7 +254,7 @@ test.describe("#44 视觉回归基线", () => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);
     const { childId } = await openNodeWithParent(page);
-    await installThreeEdgeGraphFixture(page);
+    await installPermanentEdgeGraphFixture(page);
     await page.emulateMedia({ reducedMotion: "reduce" });
 
     await page.keyboard.press("g");
@@ -239,9 +263,8 @@ test.describe("#44 视觉回归基线", () => {
     await expect(dialog.getByTestId("map-mode-assoc")).toHaveAttribute("aria-pressed", "true");
     const canvas = dialog.getByRole("region", { name: "关系网状画布" });
     await expect(canvas.getByTestId("graph-canvas-svg")).toBeVisible();
-    // 确定性布局：当前节点居中，语义/融合邻居注入后稳定可见
+    // 确定性布局：当前节点居中，融合来源注入后稳定可见
     await expect(canvas.getByTestId(`graph-node-${childId}`)).toHaveAttribute("transform", "translate(0 0)");
-    await expect(canvas.getByTestId(`graph-node-e2e-semantic-${childId}`)).toBeVisible();
     await expect(canvas.getByTestId(`graph-node-e2e-fused-${childId}`)).toBeVisible();
 
     await expect(dialog).toHaveScreenshot("assoc-desktop", {
@@ -404,18 +427,18 @@ test.describe("#44 视觉回归基线", () => {
     expect(issues.issues, issues.issues.join(" | ")).toEqual([]);
   });
 
-  test("窄屏代表状态：320px 关联模式关系列表像素基线", async ({ page }) => {
+  test("窄屏代表状态：320px 关联模式关系列表像素基线", async ({ page }, testInfo) => {
     const issues = trackBrowserIssues(page);
     freezeClock(page);
+    await page.emulateMedia({ reducedMotion: "reduce" });
     await page.setViewportSize({ width: 320, height: 800 });
     const { childId } = await openNodeWithParent(page);
-    await installThreeEdgeGraphFixture(page);
+    await installPermanentEdgeGraphFixture(page);
 
     await page.keyboard.press("g");
     const dialog = page.getByRole("dialog", { name: "研究地图" });
     await expect(dialog).toBeVisible();
     const relationshipList = dialog.getByRole("list", { name: "节点关系列表" });
-    await expect(relationshipList.getByRole("button", { name: "语义关联节点" })).toBeVisible();
     await expect(relationshipList.getByRole("button", { name: "融合来源节点" })).toBeVisible();
 
     // 320px 无横向溢出（验收 7）
@@ -425,7 +448,11 @@ test.describe("#44 视觉回归基线", () => {
     }));
     expect(metrics.scrollWidth, "320px 关联覆盖层不应横向溢出").toBeLessThanOrEqual(metrics.clientWidth + 1);
 
-    await expect(dialog).toHaveScreenshot("assoc-narrow", {
+    const textLayoutSelector = "header, .research-map-overlay__filters, .research-map-overlay__safe-exits, .research-map-overlay__body, .research-map-overlay__hint";
+    await expectScreenshotWithFontRasterRegions(dialog, "assoc-narrow", testInfo, {
+      textLayoutSelector,
+      expectedTextLayout: ASSOC_NARROW_TEXT_LAYOUT,
+      fontColor: [32, 35, 31, 255],
       mask: dynamicTimeMasks(page),
       maskColor: "#FFFFFF",
     });

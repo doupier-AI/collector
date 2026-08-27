@@ -139,7 +139,7 @@ test("answerResearchConversation 可按需关闭弱标记指令（术语预览�
   assert.match(onPrompt, /不要再为它们输出弱标记/);
 });
 
-test("普通回答、深研、长文分节与融合正文共用回答内弱标记契约", async () => {
+test("普通回答、深研与长文分节共用回答内弱标记契约", async () => {
   const regular = makeProvider(() => "普通回答");
   await new ModelGateway(regular.provider).answerResearchConversation([{ role: "user", content: "解释" }]);
   assertUnifiedMentionContract(regular.requests[0]?.prompt ?? "");
@@ -161,15 +161,6 @@ test("普通回答、深研、长文分节与融合正文共用回答内弱标�
   });
   assertUnifiedMentionContract(section.requests[0]?.prompt ?? "");
 
-  const fusion = makeProvider(() => "## 共同核心\n\n融合正文。[来源1]\n\n## 差异\n\n差异。[来源2]\n\n## 综合推导\n\n结论。");
-  await new ModelGateway(fusion.provider).composeFusion({
-    sources: [
-      { nodeId: "a", title: "A", excerpt: "来源 A" },
-      { nodeId: "b", title: "B", excerpt: "来源 B" },
-    ],
-    relationType: "contrast",
-  });
-  assertUnifiedMentionContract(fusion.requests[0]?.prompt ?? "");
 });
 
 test("原生联网请求由网关注入统一弱标记契约和深度规则", async () => {

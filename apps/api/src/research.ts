@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
-  FUSION_COMPOSE_PROMPT_VERSION,
   RESEARCH_GROUNDING_MAX_SOURCES,
   deriveBodyVersion,
   deriveFragmentsFromBlocks,
@@ -9,7 +8,6 @@ import {
   deriveMessageBlocks,
   deriveMessageSlices,
   MentionMarkupStream,
-  parseFusionReferences,
   redactGroundingValue,
   sanitizeGroundingQueries,
   sanitizeGroundingUrl,
@@ -20,7 +18,6 @@ import {
   type GroundingEvidenceStatus,
   type ResearchBodyPlan,
   type ResearchCitationRecord,
-  type ResearchFusionSource,
   type ResearchSliceRecord,
   type ResearchGroundingTraceEntry,
   ResearchGroundingResult,
@@ -153,8 +150,6 @@ export interface ResearchGenerationRequest {
   parentChainContext?: ParentChainContextResult;
   /** 当前节点及其既有父链的有界语义切片上下文；与父链摘要独立预算。 */
   sliceContext?: import("@collector/capture-contracts").ResearchSliceContext;
-  /** #31：确认式融合生成计划；任务带 fusionPlan 时 provider 走 composeFusion。 */
-  fusionPlan?: { sources: ResearchFusionSource[]; relationType: import("@collector/capture-contracts").FusionRelationType };
   /**
    * 是否在提示词中注入弱标记语法指令（缺省注入）。术语预览置 false：预览是可独立阅读的
    * 解释片段，内容不经流内标记管线解析——模型若按指令输出 [[category:id:text]]，原始控制串
@@ -179,8 +174,6 @@ export interface ResearchGenerationProvider {
   writeGroundedFinalStream?(request: ResearchGenerationRequest, evidence: string, options: { resumeFrom?: string; signal?: AbortSignal; onStreamDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void }): AsyncIterable<string>;
   /** 生成自由化：自由写连续正文，不返回 JSON 切片结构。 */
   writeBody?(request: ResearchGenerationRequest): Promise<string>;
-  /** #31：融合节点正文生成；任务带 fusionPlan 时优先走本方法。来源材料含可回读的片段摘录。 */
-  composeFusion?(request: ResearchGenerationRequest & { fusion: { sources: Array<ResearchFusionSource & { excerpt: string }>; relationType: import("@collector/capture-contracts").FusionRelationType } }): Promise<string>;
   /** 真实模型逐字流式正文（方案 B）；缺省时退回 writeBody 原子写或 legacy generate 流式。onReasoning 旁路接收思考增量（ADR-0035）；signal 供暂停/停止中止物理流。 */
   writeBodyStream?(request: ResearchGenerationRequest & { resumeFrom?: string; onStreamDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; signal?: AbortSignal }): AsyncIterable<string>;
   /** plan-then-write 第一阶段：为长文生成有序大纲。 */
@@ -498,9 +491,8 @@ export class ResearchSessionService {
     return this.store.listResearchTaskEvents(id, afterId);
   }
 
-  /** 任务记录应写本次尝试实际使用的正文提示词版本；融合任务走 fusion-compose-v1，不得被通用研究版本覆盖（#86 场景九取证）。 */
-  private promptVersionForAttempt(task: ResearchTaskRecord): string {
-    if (task.fusionPlan) return FUSION_COMPOSE_PROMPT_VERSION;
+  /** 任务记录写本次尝试实际使用的正文提示词版本。 */
+  private promptVersionForAttempt(_task: ResearchTaskRecord): string {
     return this.provider?.promptVersion ?? PROMPT_VERSION;
   }
 
@@ -626,7 +618,6 @@ export class ResearchSessionService {
         ...(generation.deepResearch ? { deepResearch: generation.deepResearch } : {}),
         ...(generation.parentChainContext ? { parentChainContext: generation.parentChainContext } : {}),
         ...(generation.sliceContext ? { sliceContext: generation.sliceContext } : {}),
-        ...(generation.fusionPlan ? { fusionPlan: generation.fusionPlan } : {}),
       };
       this.mentionStreams.set(task.id, new MentionMarkupStream({
         messageId: task.outputMessageId,
@@ -680,11 +671,7 @@ export class ResearchSessionService {
           }
         } else {
           if (generationRequest.allowWebSearch) await this.saveGroundingStatus(task, scenario, "grounding_unsupported");
-          if (generationRequest.fusionPlan && provider.composeFusion) {
-            // #31：确认式融合——由融合计划生成融合正文（原子），收尾走同一派生切片路径。
-            content = await this.composeFusionBody(task, provider, generationRequest);
-            await this.appendGeneratedDelta(task, content);
-          } else if (provider.writeBody) {
+          if (provider.writeBody) {
             // 生成自由化：按预期长度自动选择单轮自由写或 plan-then-write 逐节扩写。
             // 真实逐字流式（方案 B）只用于单轮自由写；plan-then-write 仍按节增量落正文。
             const useLongForm = this.shouldPlanLongForm(generationRequest, provider);
@@ -712,10 +699,6 @@ export class ResearchSessionService {
         if (!markupFinished) content = (await this.finishGeneratedMarkup(task)).content;
         generatedCharacters = content.length;
         if (generatedCharacters > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
-        if (generationRequest.fusionPlan) {
-          const references = parseFusionReferences(content, generationRequest.fusionPlan.sources);
-          if (references.length > 0) await this.store.saveResearchTaskFusionReferences(task.id, references);
-        }
         // 正文定稿后统一派生正式切片（确定性边界 + 小模型事后标注），再落库与完成。
         await this.finalizeDerivedSlices(task, provider, nodeId, content, citations, titleHints);
         await this.store.completeResearchTask(task.id);
@@ -897,55 +880,6 @@ export class ResearchSessionService {
   }
 
   /**
-   * #31：确认式融合正文生成。按融合计划从各来源的正文版本 + 语义片段组装
-   * 摘录（复用与上下文/扫描同一取数路径，逐字可回溯），调用 provider.composeFusion，
-   * 返回原始模型正文；processTask 在统一清洗完成后才解析 [来源n] 引用并落库。
-   * 失败抛错由 processTask 统一转 failResearchTask（来源关系已先保存，可重试）。
-   */
-  private async composeFusionBody(
-    task: ResearchTaskRecord,
-    provider: ResearchGenerationProvider,
-    generationRequest: ResearchGenerationRequest,
-  ): Promise<string> {
-    const fusion = generationRequest.fusionPlan;
-    if (!fusion || !provider.composeFusion) throw new Error("Fusion plan is required for fusion body generation");
-    const sourceMaterials: Array<ResearchFusionSource & { excerpt: string }> = [];
-    for (const source of fusion.sources) {
-      const messages = this.store.listResearchMessagesByNode(source.nodeId)
-        .filter((message) => message.role === "assistant" && message.status === "completed");
-      const citations = this.store.listResearchCitationsForMessages(messages.map((message) => message.id));
-      let excerpt: string | undefined;
-      for (const message of messages) {
-        const slices = this.store.listSlicesByMessage(message.id);
-        const artifacts = getOrDeriveMessageBodyArtifacts(this.store, {
-          nodeId: source.nodeId,
-          message,
-          slices,
-          citations: citations.filter((citation) => citation.messageId === message.id),
-        });
-        const fragment = artifacts.fragments.find((entry) => entry.id === source.fragmentId);
-        if (!fragment) continue;
-        excerpt = tryResolveFragmentExcerpt(artifacts.version, fragment);
-        if (excerpt !== undefined) break;
-      }
-      if (excerpt === undefined) {
-        // 来源片段不可回溯（#43 诚实降级）：跳过该来源，由调用方决定是否仍可融合。
-        continue;
-      }
-      sourceMaterials.push({ ...source, excerpt });
-    }
-    if (sourceMaterials.length < 2) {
-      throw new Error("Fusion sources are not traceable at generation time");
-    }
-    const content = await provider.composeFusion({
-      ...generationRequest,
-      fusion: { sources: sourceMaterials, relationType: fusion.relationType },
-    });
-    const trimmed = content.trim();
-    if (!trimmed) throw new Error("Fusion provider returned an empty body");
-    return trimmed;
-  }
-
   /**
    * 逐块事后抽取标题/概念。titleHints 命中的块直接用大纲节标题（仍由小模型抽概念），
    * 其余块同时抽标题与概念。任何一块失败都降级为空标注，绝不抛出、绝不中断正文落库。
@@ -1588,7 +1522,6 @@ export class ResearchSessionService {
     deepResearch?: DeepResearchContext;
     parentChainContext?: ParentChainContextResult;
     sliceContext?: ResearchSliceContext;
-    fusionPlan?: { sources: ResearchFusionSource[]; relationType: import("@collector/capture-contracts").FusionRelationType };
   } {
     const all = this.store.listResearchMessages(task.sessionId);
     const output = all.find((message) => message.id === task.outputMessageId);
@@ -1607,23 +1540,18 @@ export class ResearchSessionService {
     // 根节点及失效父链保持现有提示词，避免注入空的“父链上下文”占位。
     const parentChainContext = parentChain.ancestors.length > 0 ? parentChain : undefined;
     const latestUserMessage = [...messages].reverse().find((message) => message.role === "user");
-    // #31：融合任务的计划直接透传（融合正文按计划组装来源摘录），不注入父链/切片上下文。
-    const fusionPlan = task.fusionPlan;
-    const sliceContext = fusionPlan
-      ? undefined
-      : this.sliceContextFor(
-          task,
-          contextNodeId,
-          latestUserMessage?.content ?? "",
-          parentChain,
-          deepResearch,
-        );
+    const sliceContext = this.sliceContextFor(
+      task,
+      contextNodeId,
+      latestUserMessage?.content ?? "",
+      parentChain,
+      deepResearch,
+    );
     return {
       messages: latestUserMessage ? [latestUserMessage] : messages,
       ...(deepResearch ? { deepResearch } : {}),
       ...(parentChainContext ? { parentChainContext } : {}),
       ...(sliceContext && sliceContext.items.length ? { sliceContext } : {}),
-      ...(fusionPlan ? { fusionPlan } : {}),
     };
   }
 
