@@ -3706,3 +3706,8 @@ export interface ResearchFusionSource {
   /** 对应切片 ID（如有）。 */
   sliceId?: string;
 }
+
+/** 唯一可跨打开保存的研究图谱偏好；地图现场始终只存在于当前组件实例。 */
+export interface ResearchMapSettings {
+  defaultFocusFromNode: boolean;
+}

@@ -3,7 +3,7 @@ import type { DragEvent } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { hashBodyContent, type ResearchAssociationHintRecord, type ResearchSelectionAnchor, type ResearchSessionView, type ResearchTaskRecord } from "@collector/capture-contracts";
 import { isApiErrorCode, isUnauthorized, apiErrorCopy } from "../../api/errors";
-import { globalMapFocusPath, stableNodePath } from "../../app/paths";
+import { stableNodePath } from "../../app/paths";
 import { useServices } from "../../app/services";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { useMediaQuery } from "../../app/useMediaQuery";
@@ -30,12 +30,8 @@ import type { MarkResult } from "../selection/useSelectionMark";
 import { useSelectionMark } from "../selection/useSelectionMark";
 import { formatSessionTime } from "./format";
 import { notifySessionsChanged } from "../navigation/session-events";
-import {
-  mapReturnDelta,
-  mapReturnFromRouteState,
-  nodeRouteStateWithMapReturn,
-  stripOneShotRouteState,
-} from "../navigation/map-scene";
+import { nodeRouteStateWithMapReturn, stripOneShotRouteState } from "../navigation/map-scene";
+import { enterMapFromNode } from "../navigation/map-entry-intent";
 import { MessageItem } from "./MessageItem";
 import { ModelStatusIndicator } from "./ModelStatusIndicator";
 import { NodeChildList } from "./NodeChildList";
@@ -98,7 +94,6 @@ export function ResearchNodePage() {
     const candidate = (location.state as { searchLocatorFallback?: unknown } | null)?.searchLocatorFallback;
     return typeof candidate === "string" && candidate.length <= 240 ? candidate : null;
   });
-  const mapReturn = mapReturnFromRouteState(location.state);
   const node = useResearchNode(nodeId, { initialTurn: initialTurnRef.current });
   const termPreviews = useTermPreviews(nodeId, (error) => node.announce(apiErrorCopy(error).body));
   const [retryingTaskId, setRetryingTaskId] = useState<string | null>(null);
@@ -450,14 +445,16 @@ export function ResearchNodePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const returnToMap = useCallback(() => {
-    const delta = mapReturnDelta(mapReturn);
-    if (delta !== undefined) {
-      navigate(delta);
-      return;
+  const returnToMap = useCallback(async () => {
+    let preferFocus = false;
+    try {
+      preferFocus = (await api.getResearchMapSettings()).defaultFocusFromNode;
+    } catch {
+      // 设置不可用不阻塞图谱；按默认全局突出进入。
     }
-    navigate(globalMapFocusPath(nodeId));
-  }, [mapReturn, navigate, nodeId]);
+    enterMapFromNode({ nodeId, preferFocus });
+    navigate("/map");
+  }, [api, navigate, nodeId]);
 
   // #42 融合依据定位：?fragment=<fragmentId> 深链 → 目标元素滚动 + 短暂强调 + 焦点 + 播报。
   // 状态：fragmentFocus 携带 nonce——同目标重触发（nonce 递增）与快速切换（state 整体替换只留最新）都成立；
@@ -805,7 +802,7 @@ export function ResearchNodePage() {
       <header className="session-header">
         <div className="session-header__map-action">
           <button type="button" className="button button--secondary" onClick={returnToMap}>
-            {mapReturn ? "返回图谱" : "在图谱中查看"}
+            在图谱中查看
           </button>
         </div>
         {!isRoot ? (

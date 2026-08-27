@@ -376,7 +376,7 @@ describe("ResearchNodePage 根节点", () => {
     expect(link).toHaveAttribute("href", "/nodes/node-child-1");
   });
 
-  it("从地图进入后沿子节点继续阅读仍保留同一返回现场", async () => {
+  it("沿子节点继续阅读不恢复图谱现场", async () => {
     const user = userEvent.setup();
     const root = makeNodeView({
       ...readyRootView(),
@@ -388,12 +388,6 @@ describe("ResearchNodePage 根节点", () => {
       messages: root.messages,
       tasks: root.tasks,
     });
-    const mapReturn = {
-      version: 1 as const,
-      sourceHistoryIndex: 2,
-      sourceEntryKey: "map-entry",
-      sourcePath: "/map/focus/session-1",
-    };
     renderNodePage(
       {
         getResearchNodeView: async (nodeId) => nodeId === "node-child-1" ? child : root,
@@ -401,11 +395,11 @@ describe("ResearchNodePage 根节点", () => {
         getResearchSelection: async () => makeSelection({ id: "sel-1", sessionId: "session-1", text: "沿子节点继续研究" }),
         getResearchSessionView: async () => ({ session: root.session, messages: root.messages, tasks: root.tasks }),
       },
-      { pathname: "/nodes/session-1", state: { mapReturn } },
+      { pathname: "/nodes/session-1" },
     );
 
     await user.click(await screen.findByRole("link", { name: /深入研究：沿子节点继续研究/ }));
-    expect(await screen.findByRole("button", { name: "返回图谱" })).toBeVisible();
+    expect(await screen.findByRole("button", { name: "在图谱中查看" })).toBeVisible();
   });
 });
 

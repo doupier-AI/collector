@@ -27,6 +27,7 @@ import {
   type ResearchGroundingScopeStatus,
   type ResearchFusionSource,
   type ResearchSourceHealth,
+  type ResearchMapSettings,
   type ResearchNodeRecord,
   type ModelCallRecord,
   type ResearchNodeView,
@@ -48,6 +49,8 @@ import {
   resolveResearchConvergence,
 } from "@collector/capture-contracts";
 import { CollectorStore } from "./store.js";
+
+const RESEARCH_MAP_DEFAULT_FOCUS_SETTING_KEY = "research_map_default_focus_from_node";
 
 import { deriveMessageBodyArtifacts } from "./body-artifacts.js";
 import {
@@ -893,6 +896,18 @@ export class CaptureService {
   // ── 临时融合发现设置 ─────────────────────────────────────
   getFusionAutoConfig(): { enabled: boolean } {
     return { enabled: this.store.getSetting(AUTO_FUSION_SETTING_KEY) === "true" };
+  }
+
+  getResearchMapSettings(): ResearchMapSettings {
+    return { defaultFocusFromNode: this.store.getSetting(RESEARCH_MAP_DEFAULT_FOCUS_SETTING_KEY) === "true" };
+  }
+
+  async updateResearchMapSettings(input: { defaultFocusFromNode?: unknown }): Promise<ResearchMapSettings> {
+    if (typeof input?.defaultFocusFromNode !== "boolean") {
+      throw new ValidationError("defaultFocusFromNode must be a boolean");
+    }
+    await this.store.saveSetting(RESEARCH_MAP_DEFAULT_FOCUS_SETTING_KEY, String(input.defaultFocusFromNode));
+    return { defaultFocusFromNode: input.defaultFocusFromNode };
   }
 
   /** 只读 B 面数量；关闭自动发现也不隐藏既有待核验候选。 */

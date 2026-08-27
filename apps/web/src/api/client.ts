@@ -168,6 +168,8 @@ export interface ApiClient {
   getFusionAutoConfig(): Promise<{ enabled: boolean }>;
   /** 写入临时融合发现开关，返回更新后的配置。 */
   updateFusionAutoConfig(enabled: boolean): Promise<{ enabled: boolean }>;
+  getResearchMapSettings(): Promise<{ defaultFocusFromNode: boolean }>;
+  updateResearchMapSettings(input: { defaultFocusFromNode: boolean }): Promise<{ defaultFocusFromNode: boolean }>;
   /** 只读当前 B 面候选总数；不会触发模型扫描。 */
   getTemporaryFusionCount(): Promise<{ count: number }>;
   /** T02：读取 B 面候选摘要与单个当前草案；不会创建或修改任何事实。 */
@@ -678,6 +680,14 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
         method: "PUT",
         headers: JSON_HEADERS,
         body: JSON.stringify({ enabled }),
+      });
+    },
+    getResearchMapSettings() {
+      return requestJson<{ defaultFocusFromNode: boolean }>(fetchFn, "/v1/settings/research-map");
+    },
+    updateResearchMapSettings(input) {
+      return requestJson<{ defaultFocusFromNode: boolean }>(fetchFn, "/v1/settings/research-map", {
+        method: "PUT", headers: JSON_HEADERS, body: JSON.stringify(input),
       });
     },
     getTemporaryFusionCount() {
