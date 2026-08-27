@@ -1,41 +1,759 @@
-import { expect, test } from "@playwright/test";
-import { pairAndOpen } from "./helpers";
+import { expect, test, type Locator } from "@playwright/test";
+import { installGlobalMapFilterFixture, installGlobalMapVisualFixture } from "./global-map-fixture";
+import { pairAndOpen, trackBrowserIssues } from "./helpers";
 
-async function createNode(page: import("@playwright/test").Page, question: string) {
+let sessionsCreatedByCurrentTest: string[] = [];
+
+test.beforeEach(() => {
+  sessionsCreatedByCurrentTest = [];
+});
+
+test.afterEach(async ({ page }) => {
+  for (const sessionId of sessionsCreatedByCurrentTest) {
+    const trashed = await page.request.put(`/v1/research-sessions/${sessionId}/trash`, { data: {} });
+    if (trashed.status() === 404) continue;
+    expect(trashed.ok(), `cleanup should trash ${sessionId}`).toBe(true);
+    const deleted = await page.request.delete(`/v1/research-sessions/${sessionId}`);
+    expect(deleted.ok(), `cleanup should permanently delete ${sessionId}`).toBe(true);
+  }
+});
+
+async function createSession(page: import("@playwright/test").Page, question: string): Promise<string> {
   await page.goto("/research/new");
   await page.getByLabel("你的问题").fill(question);
   await page.getByRole("button", { name: "开始研究" }).click();
-  await page.waitForURL(/\/nodes\/[^/]+$/);
-  await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕");
-  return new URL(page.url()).pathname.split("/").at(-1)!;
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
+  const sessionId = new URL(page.url()).pathname.split("/").at(-1)!;
+  sessionsCreatedByCurrentTest.push(sessionId);
+  await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
+  return sessionId;
 }
 
-test("研究图谱只使用 /map，专注不新增历史且 Escape 退出", async ({ page }) => {
+async function readGlobalMapSpatialState(page: import("@playwright/test").Page) {
+  const canvas = page.getByTestId("global-map-canvas");
+  return {
+    viewBox: await canvas.locator("svg").getAttribute("viewBox"),
+    nodes: await canvas.locator("[data-node-id]").evaluateAll((elements) => Object.fromEntries(
+      elements.map((element) => [element.getAttribute("data-node-id"), element.getAttribute("transform")]),
+    )),
+  };
+}
+
+// ADR-0042：持久坐标保存在 history entry 的 Map Scene 中；专注触发的临时编排
+// 预览只存在于渲染层，不写入这里。断言"不重排"应比对这份持久坐标。
+async function readPersistedSpatialState(page: import("@playwright/test").Page) {
+  return page.evaluate(() => {
+    const scene = (window.history.state as { usr?: { mapSceneV2?: { viewBox?: { x: number; y: number; width: number; height: number }; layout?: { positions?: Array<[string, number, number]> } } } }).usr?.mapSceneV2;
+    if (!scene) return { viewBox: "", nodes: {} as Record<string, string> };
+    return {
+      viewBox: `${scene.viewBox?.x} ${scene.viewBox?.y} ${scene.viewBox?.width} ${scene.viewBox?.height}`,
+      nodes: Object.fromEntries((scene.layout?.positions ?? []).map(([id, x, y]) => [id, `translate(${x} ${y})`])),
+    };
+  });
+}
+
+async function waitForEntryAnimation(page: import("@playwright/test").Page) {
+  await expect(page.getByTestId("global-map-canvas")).toHaveAttribute("data-entry-animation", "complete");
+}
+
+async function clickCanvasNode(node: Locator, options?: { double?: boolean }) {
+  const core = node.locator(".global-map__node-core");
+  await expect(core).toBeVisible();
+  if (options?.double) await core.dblclick();
+  else await core.click();
+}
+
+async function findPanSurfacePoint(svg: Locator) {
+  return svg.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    for (const yRatio of [0.25, 0.5, 0.75]) {
+      for (const xRatio of [0.25, 0.5, 0.75]) {
+        const point = { x: bounds.left + bounds.width * xRatio, y: bounds.top + bounds.height * yRatio };
+        if (document.elementFromPoint(point.x, point.y)?.classList.contains("global-map__pan-surface")) return point;
+      }
+    }
+    throw new Error("地图画布没有可接收拖拽的空白区域");
+  });
+}
+
+async function openMapTool(page: import("@playwright/test").Page, name: string) {
+  const trigger = page.getByRole("navigation", { name: "研究图谱工具" }).getByRole("button", { name });
+  if (await trigger.getAttribute("aria-expanded") !== "true") await trigger.click();
+  const panel = page.locator("#map-tool-panel");
+  await expect(panel).toBeVisible();
+  return panel;
+}
+
+async function showMapList(page: import("@playwright/test").Page) {
+  const closeTool = page.getByRole("button", { name: "关闭工具面板" });
+  if (await closeTool.isVisible()) await closeTool.click();
+  const canvas = page.getByTestId("global-map-canvas");
+  if (await canvas.isVisible()) await page.getByRole("button", { name: "切换到节点列表" }).click();
+  await expect(page.getByTestId("global-map-list")).toBeVisible();
+}
+
+test("全局研究图谱：两个会话的根节点进入同一真实观察结果，刷新后保持", async ({ page }, testInfo) => {
+  const browserIssues = trackBrowserIssues(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
   await pairAndOpen(page, "/research/new");
-  const nodeId = await createNode(page, "研究图谱新入口测试");
-  await page.getByRole("button", { name: "在图谱中查看" }).click();
-  await expect(page).toHaveURL("/map");
-  const canvas = page.getByRole("application", { name: "研究图谱画布" });
-  const node = canvas.getByRole("button", { name: /研究图谱新入口测试/ });
-  await expect(node).toBeVisible();
-  const historyBeforeFocus = await page.evaluate(() => history.length);
-  await node.click();
-  await expect(page).toHaveURL("/map");
-  expect(await page.evaluate(() => history.length)).toBe(historyBeforeFocus);
-  await page.keyboard.press("Escape");
-  await expect(page).toHaveURL("/");
-  expect(nodeId).toBeTruthy();
+  const firstNodeId = await createSession(page, "全局地图测试一：本地优先研究是什么？");
+  await createSession(page, "全局地图测试二：如何组织研究证据？");
+  await page.goto("/map");
+
+  await expect(page.locator(".app-shell")).toHaveClass(/app-shell--immersive-map/);
+  await expect(page.getByRole("navigation", { name: "内容导航" })).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "研究图谱工具" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "研究图谱", level: 1 })).toBeAttached();
+  await expect(page.getByTestId("global-map-canvas")).toBeVisible();
+  const wideCanvas = page.getByTestId("global-map-canvas");
+  const wideFirstNode = wideCanvas.getByRole("button", { name: /全局地图测试一/ });
+  await expect(wideFirstNode).toBeVisible();
+  await expect(wideCanvas.getByRole("button", { name: /全局地图测试二/ })).toBeVisible();
+  await waitForEntryAnimation(page);
+  const stablePersistentTransform = (await readPersistedSpatialState(page)).nodes[firstNodeId];
+  const svg = wideCanvas.locator("svg");
+  const viewBoxBeforeWheel = await svg.getAttribute("viewBox");
+  await wideCanvas.evaluate((element) => element.setAttribute("data-e2e-mount", "stable"));
+  await clickCanvasNode(wideFirstNode);
+  await expect(page).toHaveURL(new RegExp(`/map/focus/${firstNodeId}$`));
+  await expect(wideCanvas).toHaveAttribute("data-e2e-mount", "stable");
+  await expect(page.getByLabel("正在打开研究图谱")).toHaveCount(0);
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  await expect(wideFirstNode).toHaveAttribute("aria-pressed", "true");
+  expect((await readPersistedSpatialState(page)).nodes[firstNodeId]).toBe(stablePersistentTransform);
+  await svg.hover({ position: { x: 540, y: 240 } });
+  await page.mouse.wheel(0, -260);
+  await expect.poll(() => svg.getAttribute("viewBox")).not.toBe(viewBoxBeforeWheel);
+  const viewBoxBeforeZoom = await svg.getAttribute("viewBox");
+  await wideCanvas.getByRole("button", { name: "放大地图" }).click();
+  await expect.poll(() => svg.getAttribute("viewBox")).not.toBe(viewBoxBeforeZoom);
+  expect((await readPersistedSpatialState(page)).nodes[firstNodeId]).toBe(stablePersistentTransform);
+  const viewBoxBeforePan = await svg.getAttribute("viewBox");
+  const canvasBounds = await svg.boundingBox();
+  expect(canvasBounds).not.toBeNull();
+  const panStart = await findPanSurfacePoint(svg);
+  await page.mouse.move(panStart.x, panStart.y);
+  await page.mouse.down();
+  await expect(wideCanvas).toHaveClass(/global-map__canvas--dragging/);
+  await page.mouse.move(canvasBounds!.x + canvasBounds!.width - 104, canvasBounds!.y + canvasBounds!.height - 86);
+  await page.mouse.up();
+  await expect.poll(() => svg.getAttribute("viewBox")).not.toBe(viewBoxBeforePan);
+  expect((await readPersistedSpatialState(page)).nodes[firstNodeId]).toBe(stablePersistentTransform);
+  await expect(page.locator(".map-landing").getByRole("link", { name: "新建会话" })).toHaveAttribute("href", "/research/new");
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("global-map-1440.png"), fullPage: true });
+
+  await page.setViewportSize({ width: 1024, height: 800 });
+  expect((await readPersistedSpatialState(page)).nodes[firstNodeId]).toBe(stablePersistentTransform);
+  await page.reload();
+  const firstNode = page.getByTestId("global-map-canvas").getByRole("button", { name: /全局地图测试一/ });
+  await expect(firstNode).toBeVisible();
+  await waitForEntryAnimation(page);
+  expect((await readPersistedSpatialState(page)).nodes[firstNodeId]).toBe(stablePersistentTransform);
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("global-map-1024.png"), fullPage: true });
+  await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
+  const secondNode = page.getByTestId("global-map-canvas").getByRole("button", { name: /全局地图测试二/ });
+  await expect(secondNode).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("global-map-dark-reduced-motion.png"), fullPage: true });
+  // 上面的持久现场故意把节点平移到视口边缘；双击契约从默认地图入口独立验证，
+  // 避免把“控件遮住已平移节点”误报成双击失效。
+  await page.goto("/map");
+  const mouseOpenTarget = page.getByTestId("global-map-canvas").getByRole("button", { name: /全局地图测试一/ });
+  await expect(mouseOpenTarget).toBeVisible();
+  await waitForEntryAnimation(page);
+  await clickCanvasNode(mouseOpenTarget, { double: true });
+  await expect(page).toHaveURL(/\/nodes\/[^/]+$/);
+  await page.goto("/map");
+  const reopenedFirstNode = page.getByTestId("global-map-canvas").getByRole("button", { name: /全局地图测试一/ });
+  await expect(reopenedFirstNode).toBeVisible();
+  await reopenedFirstNode.focus();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/nodes\/[^/]+$/);
+  expect(browserIssues.issues, browserIssues.issues.join("\n")).toEqual([]);
 });
 
-test("旧专注链接立即替换为全局总览，窄屏控制为底部抽屉且没有横向页面溢出", async ({ page }) => {
+test("相邻节点文字覆盖目标核心时，指针仍命中目标节点", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
   await pairAndOpen(page, "/research/new");
-  const nodeId = await createNode(page, "旧链接兼容测试");
-  await page.goto(`/map/focus/${nodeId}`);
-  await expect(page).toHaveURL("/map");
-  await page.setViewportSize({ width: 320, height: 800 });
-  await page.getByRole("button", { name: "图谱控制" }).click();
-  await expect(page.getByRole("complementary", { name: "图谱控制" })).toBeVisible();
-  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
-  await expect(page.getByRole("button", { name: "返回" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /显示的关系/ })).toHaveCount(0);
+  await createSession(page, "地图命中测试一：目标节点");
+  await createSession(page, "地图命中测试二：覆盖文字");
+  await page.goto("/map");
+
+  const canvas = page.getByTestId("global-map-canvas");
+  await waitForEntryAnimation(page);
+  const target = canvas.getByRole("button", { name: /地图命中测试一/ });
+  const blocker = canvas.getByRole("button", { name: /地图命中测试二/ });
+  await expect(target).toBeVisible();
+  await expect(blocker).toBeVisible();
+
+  const hitNodeIds = await target.evaluate((targetElement, blockerElement) => {
+    targetElement.setAttribute("transform", "translate(500 320)");
+    blockerElement.setAttribute("transform", "translate(500 293)");
+    const targetId = targetElement.getAttribute("data-node-id");
+    const core = targetElement.querySelector(".global-map__node-core")!.getBoundingClientRect();
+    const hits = new Set<string | null>();
+    for (const xRatio of [0.25, 0.5, 0.75]) {
+      for (const yRatio of [0.25, 0.5, 0.75]) {
+        const hit = document.elementFromPoint(core.left + core.width * xRatio, core.top + core.height * yRatio);
+        hits.add(hit?.closest("[data-node-id]")?.getAttribute("data-node-id") ?? null);
+      }
+    }
+    return { targetId, hits: [...hits] };
+  }, await blocker.elementHandle());
+
+  expect(hitNodeIds.hits, "目标节点核心的任意采样点都不得被相邻节点文字截获").toEqual([hitNodeIds.targetId]);
+});
+
+test("#68 地图 entry：专注链、节点打开、浏览器返回和刷新均恢复各自现场", async ({ page }) => {
+  const browserIssues = trackBrowserIssues(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await pairAndOpen(page, "/research/new");
+  const firstNodeId = await createSession(page, "地图现场恢复一：如何验证返回路径？");
+  const secondNodeId = await createSession(page, "地图现场恢复二：如何保持图谱坐标？");
+  await page.goto("/map");
+
+  const canvas = page.getByTestId("global-map-canvas");
+  await waitForEntryAnimation(page);
+  await clickCanvasNode(canvas.getByRole("button", { name: /地图现场恢复一/ }));
+  await expect(page).toHaveURL(new RegExp(`/map/focus/${firstNodeId}$`));
+  const firstEntrySpatial = await readPersistedSpatialState(page);
+
+  await clickCanvasNode(canvas.getByRole("button", { name: /地图现场恢复二/ }));
+  await expect(page).toHaveURL(new RegExp(`/map/focus/${secondNodeId}$`));
+  await openMapTool(page, "显示的关系");
+  const fusionToggle = page.getByRole("button", { name: "融合来源" });
+  await fusionToggle.click();
+  await expect(fusionToggle).toHaveAttribute("aria-pressed", "false");
+  await canvas.getByRole("button", { name: "放大地图" }).click();
+  const svg = canvas.locator("svg");
+  const canvasBounds = await svg.boundingBox();
+  expect(canvasBounds).not.toBeNull();
+  await page.mouse.move(canvasBounds!.x + 80, canvasBounds!.y + 260);
+  await page.mouse.down();
+  await page.mouse.move(canvasBounds!.x + 138, canvasBounds!.y + 224);
+  await page.mouse.up();
+  const secondEntrySpatial = await readPersistedSpatialState(page);
+  expect(secondEntrySpatial.viewBox).not.toBe(firstEntrySpatial.viewBox);
+
+  await canvas.getByRole("button", { name: /地图现场恢复二/ }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(new RegExp(`/nodes/${secondNodeId}$`));
+  await page.reload();
+  const closeDrawer = page.getByRole("button", { name: "关闭", exact: true });
+  if (await closeDrawer.isVisible()) await closeDrawer.click();
+  await page.getByRole("button", { name: "返回图谱" }).click();
+  await expect(page).toHaveURL(new RegExp(`/map/focus/${secondNodeId}$`));
+  expect(await readPersistedSpatialState(page)).toEqual(secondEntrySpatial);
+  await openMapTool(page, "显示的关系");
+  await expect(page.getByRole("button", { name: "融合来源" })).toHaveAttribute("aria-pressed", "false");
+  await page.goBack();
+  await expect(page).toHaveURL(new RegExp(`/map/focus/${firstNodeId}$`));
+  expect(await readPersistedSpatialState(page)).toEqual(firstEntrySpatial);
+  await page.goBack();
+  await expect(page).toHaveURL(/\/map$/);
+  await page.goForward();
+  await expect(page).toHaveURL(new RegExp(`/map/focus/${firstNodeId}$`));
+  await page.goForward();
+  await expect(page).toHaveURL(new RegExp(`/map/focus/${secondNodeId}$`));
+  await page.reload();
+  expect(await readPersistedSpatialState(page)).toEqual(secondEntrySpatial);
+  await openMapTool(page, "显示的关系");
+  await expect(page.getByRole("button", { name: "融合来源" })).toHaveAttribute("aria-pressed", "false");
+
+  await page.setViewportSize({ width: 320, height: 760 });
+  await expect(canvas).toBeVisible();
+  await showMapList(page);
+  const narrowList = page.getByTestId("global-map-list");
+  const narrowSecondNode = narrowList.getByRole("button", { name: /地图现场恢复二/ });
+  await narrowSecondNode.focus();
+  await expect(narrowSecondNode).toBeFocused();
+  // #68 窄屏同款时序加固：全量套件负载下，聚焦断言与 Enter 之间的一次重渲染
+  // 可能把焦点移走；短等待未跳转则重新聚焦再按，而不是盲等长超时。
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await page.keyboard.press("Enter");
+    const navigated = await page.waitForURL(new RegExp(`/nodes/${secondNodeId}$`), { timeout: 2_000 }).then(() => true, () => false);
+    if (navigated) break;
+    await narrowSecondNode.focus();
+    await expect(narrowSecondNode).toBeFocused();
+  }
+  await expect(page).toHaveURL(new RegExp(`/nodes/${secondNodeId}$`));
+  await page.reload();
+  if (await closeDrawer.isVisible()) await closeDrawer.click();
+  await page.getByRole("button", { name: "返回图谱" }).click();
+  await expect(page).toHaveURL(new RegExp(`/map/focus/${secondNodeId}$`));
+  await openMapTool(page, "显示的关系");
+  await expect(page.getByRole("button", { name: "融合来源" })).toHaveAttribute("aria-pressed", "false");
+  expect(await readPersistedSpatialState(page)).toEqual(secondEntrySpatial);
+
+  await page.goto(`/nodes/${secondNodeId}`);
+  await expect(page.getByRole("button", { name: "在图谱中查看" })).toBeVisible();
+  await page.getByRole("button", { name: "在图谱中查看" }).click();
+  await expect(page).toHaveURL(new RegExp(`/map/focus/${secondNodeId}$`));
+  expect(browserIssues.issues, browserIssues.issues.join("\n")).toEqual([]);
+});
+
+test("#64 项目色：深浅主题、融合归档、焦点与窄屏语义保持独立", async ({ page }) => {
+  const browserIssues = trackBrowserIssues(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await pairAndOpen(page, "/research/new");
+  await installGlobalMapVisualFixture(page);
+  await page.goto("/map");
+
+  const canvas = page.getByTestId("global-map-canvas");
+  await waitForEntryAnimation(page);
+  const amberNode = canvas.getByRole("button", { name: /检索架构，知识工程，研究节点，活跃/ });
+  const fusionNode = canvas.getByRole("button", { name: /跨域综合，综合成果，融合成果，已归档/ });
+  await expect(amberNode).toHaveClass(/global-map__node--project-amber/);
+  await expect(fusionNode).toHaveClass(/global-map__node--project-violet/);
+  await expect(fusionNode).toHaveClass(/global-map__node--fusion/);
+  await expect(fusionNode).toHaveClass(/global-map__node--archived/);
+
+  const amberCore = amberNode.locator(".global-map__node-core");
+  const fusionCore = fusionNode.locator(".global-map__node-core");
+  const lightAmberFill = await amberCore.evaluate((element) => getComputedStyle(element).fill);
+  await expect(fusionCore).toHaveCSS("stroke-width", "4px");
+  await expect(amberNode.locator(".global-map__node-details")).toHaveCSS("opacity", "0");
+  await amberNode.hover();
+  await expect(amberNode.locator(".global-map__node-details")).toHaveCSS("opacity", "1");
+
+  await amberNode.focus();
+  await page.keyboard.press("Space");
+  await expect(amberNode).toHaveAttribute("aria-pressed", "true");
+  await expect(amberNode.locator(".global-map__node-focus-ring")).not.toHaveCSS("stroke", "rgba(0, 0, 0, 0)");
+  await expect(amberNode.locator(".global-map__node-selection-halo")).not.toHaveCSS("stroke", "rgba(0, 0, 0, 0)");
+  const stablePersistent = await readPersistedSpatialState(page);
+  const stableViewBox = await canvas.locator("svg").getAttribute("viewBox");
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
+
+  await page.setViewportSize({ width: 1024, height: 800 });
+  await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
+  expect((await readPersistedSpatialState(page)).nodes).toEqual(stablePersistent.nodes);
+  await expect(canvas.locator("svg")).toHaveAttribute("viewBox", stableViewBox!);
+  await expect(amberNode).toHaveCSS("transition-duration", "0s");
+  await expect.poll(() => amberCore.evaluate((element) => getComputedStyle(element).fill)).not.toBe(lightAmberFill);
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
+
+  await page.setViewportSize({ width: 320, height: 760 });
+  await expect(canvas).toBeVisible();
+  await showMapList(page);
+  const list = page.getByTestId("global-map-list");
+  const amberButton = list.getByRole("button", { name: /检索架构，知识工程，研究节点，活跃/ });
+  const archivedButton = list.getByRole("button", { name: /跨域综合，综合成果，融合成果，已归档/ });
+  await expect(amberButton).toContainText("知识工程");
+  await expect(amberButton.locator(".global-map__list-dot")).toHaveClass(/global-map__list-dot--project-amber/);
+  await expect(archivedButton.locator(".global-map__list-dot")).toHaveClass(/global-map__list-dot--fusion/);
+  await expect(archivedButton.locator(".global-map__list-dot")).toHaveClass(/global-map__list-dot--archived/);
+  await expect(list.getByRole("link", { name: "父子生长：检索架构 指向 证据链" })).toBeVisible();
+  await expect(list.getByRole("link", { name: "融合来源：证据链 指向 跨域综合" })).toBeVisible();
+  await amberButton.focus();
+  await expect(amberButton).toBeFocused();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
+  expect(browserIssues.issues, browserIssues.issues.join("\n")).toEqual([]);
+});
+
+test("#65 同图专注：关系重算、方向与灰色节点持久坐标全程不重排（专注仅临时物理聚拢）", async ({ page }) => {
+  const browserIssues = trackBrowserIssues(page);
+  const observationRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/v1/research-map")) observationRequests.push(request.url());
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await pairAndOpen(page, "/research/new");
+  await installGlobalMapVisualFixture(page);
+  await page.goto("/map");
+
+  const canvas = page.getByTestId("global-map-canvas");
+  const svg = canvas.locator("svg");
+  await expect(canvas.getByRole("button", { name: /^证据链，/ })).toBeVisible();
+  await expect(canvas).toHaveAttribute("data-entry-animation", "complete");
+  await canvas.getByRole("button", { name: "放大地图" }).click();
+  // 专注前渲染与持久一致；此后以持久坐标为准，专注态渲染坐标会临时聚拢。
+  const spatialState = await readPersistedSpatialState(page);
+
+  await clickCanvasNode(canvas.getByRole("button", { name: /^证据链，/ }));
+  await expect(page).toHaveURL(/\/map\/focus\/map-blue$/);
+  await expect(page.getByText(/正在专注：/)).toContainText("证据链");
+  const blue = canvas.getByRole("button", { name: /^证据链，/ });
+  const amber = canvas.getByRole("button", { name: /^检索架构，/ });
+  const fusion = canvas.getByRole("button", { name: /^跨域综合，/ });
+  const isolated = canvas.getByRole("button", { name: /^未分类观察，/ });
+  await expect(blue).toHaveClass(/global-map__node--focus/);
+  await expect(amber).toHaveClass(/global-map__node--connected/);
+  await expect(fusion).toHaveClass(/global-map__node--connected/);
+  await expect(fusion).toHaveAccessibleName(/证据不完整/);
+  await expect(isolated).toHaveClass(/global-map__node--unconnected/);
+  const connectedTextColor = await blue.locator("text").first().evaluate((element) => getComputedStyle(element).fill);
+  const unconnectedTextColor = await isolated.locator("text").first().evaluate((element) => getComputedStyle(element).fill);
+  expect(unconnectedTextColor).not.toBe(connectedTextColor);
+  await expect(canvas.locator("[data-connection-id]")).toHaveCount(2);
+  await expect(canvas.locator("[data-connection-id] > path.global-map__edge").first()).toHaveAttribute("d", / Q /);
+  await expect(canvas.locator(".global-map__edge-direction-flow")).toHaveCount(2);
+  await expect(canvas.locator(".global-map__edge-direction-flow").first()).toHaveCSS("animation-name", "global-map-edge-flow");
+  expect(await readPersistedSpatialState(page)).toEqual(spatialState);
+
+  await openMapTool(page, "显示的关系");
+  const fusionToggle = page.getByRole("button", { name: "融合来源" });
+  await fusionToggle.click();
+  await expect(fusionToggle).toHaveAttribute("aria-pressed", "false");
+  await expect(fusion).toHaveClass(/global-map__node--unconnected/);
+  await expect(canvas.locator('[data-edge-kind~="fused-from"]')).toHaveClass(/global-map__edge--unconnected/);
+  await expect(canvas.locator("[data-connection-id]")).toHaveCount(2);
+  await expect(canvas.locator(".global-map__edge-direction-flow")).toHaveCount(1);
+  expect(await readPersistedSpatialState(page)).toEqual(spatialState);
+
+  const parentToggle = page.getByRole("button", { name: "父子生长" });
+  await parentToggle.click();
+  await expect(parentToggle).toHaveAttribute("aria-pressed", "false");
+  await expect(amber).toHaveClass(/global-map__node--unconnected/);
+  await expect(fusion).toHaveClass(/global-map__node--unconnected/);
+  await expect(canvas.locator("[data-connection-id]")).toHaveCount(2);
+  await expect(canvas.locator(".global-map__edge-direction-flow")).toHaveCount(0);
+  expect(await readPersistedSpatialState(page)).toEqual(spatialState);
+
+  await parentToggle.click();
+  await expect(parentToggle).toHaveAttribute("aria-pressed", "true");
+  await expect(amber).toHaveClass(/global-map__node--connected/);
+  await expect(canvas.locator(".global-map__edge-direction-flow")).toHaveCount(1);
+  await fusionToggle.click();
+  await expect(fusionToggle).toHaveAttribute("aria-pressed", "true");
+  await expect(fusion).toHaveClass(/global-map__node--connected/);
+  await expect(canvas.locator(".global-map__edge-direction-flow")).toHaveCount(2);
+  await clickCanvasNode(isolated);
+  await expect(page).toHaveURL(/\/map\/focus\/map-neutral$/);
+  await expect(isolated).toHaveClass(/global-map__node--focus/);
+  await expect(blue).toHaveClass(/global-map__node--unconnected/);
+  await expect(canvas.locator(".global-map__edge-direction-flow")).toHaveCount(0);
+  expect(await readPersistedSpatialState(page)).toEqual(spatialState);
+
+  await page.goBack();
+  await expect(page).toHaveURL(/\/map\/focus\/map-blue$/);
+  await expect(blue).toHaveClass(/global-map__node--focus/);
+  expect(await readPersistedSpatialState(page)).toEqual(spatialState);
+  await page.goForward();
+  await expect(page).toHaveURL(/\/map\/focus\/map-neutral$/);
+  await expect(isolated).toHaveClass(/global-map__node--focus/);
+  expect(await readPersistedSpatialState(page)).toEqual(spatialState);
+  await page.goBack();
+  await expect(page).toHaveURL(/\/map\/focus\/map-blue$/);
+  await expect(blue).toHaveClass(/global-map__node--focus/);
+  expect(await readPersistedSpatialState(page)).toEqual(spatialState);
+  await page.getByRole("button", { name: "退出专注" }).click();
+  await expect(page).toHaveURL(/\/map$/);
+  await expect(page.getByRole("button", { name: "退出专注" })).toHaveCount(0);
+  expect(await readPersistedSpatialState(page)).toEqual(spatialState);
+
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
+  await clickCanvasNode(canvas.getByRole("button", { name: /^证据链，/ }));
+  await expect(page).toHaveURL(/\/map\/focus\/map-blue$/);
+  await expect(canvas.locator(".global-map__edge-direction-flow").first()).toHaveCSS("display", "none");
+  await expect(canvas.locator(".global-map__edge-direction-static").first()).toHaveCSS("display", "block");
+  expect(await readPersistedSpatialState(page)).toEqual(spatialState);
+
+  await page.setViewportSize({ width: 320, height: 760 });
+  await expect(canvas).toBeVisible();
+  await showMapList(page);
+  const list = page.getByTestId("global-map-list");
+  await expect(list.getByRole("button", { name: /^证据链，/ })).toHaveAttribute("aria-current", "true");
+  await expect(list.getByRole("button", { name: /^未分类观察，/ })).toContainText("未连通");
+  await expect(list.getByRole("button", { name: /^跨域综合，/ })).toContainText("证据不完整");
+  await expect(list.getByRole("link", { name: "融合来源：证据链 指向 跨域综合" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
+
+  expect(observationRequests.some((requestUrl) => {
+    const url = new URL(requestUrl);
+    return url.searchParams.get("focusNodeId") === "map-blue"
+      && url.searchParams.getAll("relationshipKind").includes("fused-from");
+  })).toBe(true);
+  expect(observationRequests.some((requestUrl) => {
+    const url = new URL(requestUrl);
+    return url.searchParams.get("focusNodeId") === "map-blue"
+      && url.searchParams.getAll("relationshipKind").length === 1
+      && url.searchParams.get("relationshipKind") === "parent-child";
+  })).toBe(true);
+  expect(browserIssues.issues, browserIssues.issues.join("\n")).toEqual([]);
+});
+
+test("#66 地图范围：项目、日期、生命周期、桥接和历史现场使用同一观察结果", async ({ page }) => {
+  const browserIssues = trackBrowserIssues(page);
+  const observationRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/v1/research-map")) observationRequests.push(request.url());
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await pairAndOpen(page, "/research/new");
+  await installGlobalMapFilterFixture(page);
+  await page.goto("/map");
+
+  const canvas = page.getByTestId("global-map-canvas");
+  await waitForEntryAnimation(page);
+  const initialSpatial = await readGlobalMapSpatialState(page);
+  let filterPanel = await openMapTool(page, "筛选地图");
+  const projectOne = page.getByRole("checkbox", { name: "项目一" });
+  await projectOne.click();
+  await expect(projectOne).toBeChecked();
+  const nodeA = canvas.getByRole("button", { name: /^项目一节点 A，/ });
+  const nodeB = canvas.getByRole("button", { name: /^桥接节点 B，/ });
+  const nodeC = canvas.getByRole("button", { name: /^项目一节点 C，/ });
+  await expect(nodeA).toBeVisible();
+  await expect(nodeB).toHaveAccessibleName(/范围边界/);
+  await expect(nodeC).toBeVisible();
+  await expect(canvas.getByRole("button", { name: /^未分类节点，/ })).toHaveCount(0);
+  const filteredSpatial = await readGlobalMapSpatialState(page);
+  expect(filteredSpatial.viewBox).toBe(initialSpatial.viewBox);
+  for (const nodeId of ["filter-a", "filter-b", "filter-c"]) {
+    expect(filteredSpatial.nodes[nodeId]).toBe(initialSpatial.nodes[nodeId]);
+  }
+
+  await filterPanel.getByRole("button", { name: "清除筛选" }).click();
+  await expect(canvas.getByRole("button", { name: /^未分类节点，/ })).toBeVisible();
+  await waitForEntryAnimation(page);
+  const clearedNonEmptySpatial = await readGlobalMapSpatialState(page);
+  expect(clearedNonEmptySpatial.viewBox).toBe(initialSpatial.viewBox);
+  for (const nodeId of ["filter-a", "filter-b", "filter-c", "filter-u"]) {
+    expect(clearedNonEmptySpatial.nodes[nodeId]).toBe(initialSpatial.nodes[nodeId]);
+  }
+  await projectOne.click();
+  await expect(projectOne).toBeChecked();
+  await expect(canvas.getByRole("button", { name: /^未分类节点，/ })).toHaveCount(0);
+
+  const archived = page.getByRole("checkbox", { name: "已归档" });
+  await archived.click();
+  await expect(archived).not.toBeChecked();
+  await expect(nodeC).toHaveCount(0);
+  await page.getByLabel("开始日期").fill("2026-08-18");
+  await page.getByLabel("结束日期").fill("2026-08-18");
+  await expect(page.getByLabel("当前筛选摘要")).toContainText("2026-08-18至2026-08-18");
+  const expectedDateRange = await page.evaluate(() => ({
+    createdFrom: new Date(2026, 7, 18).toISOString(),
+    createdBefore: new Date(2026, 7, 19).toISOString(),
+  }));
+  await expect.poll(() => observationRequests.some((requestUrl) => {
+    const url = new URL(requestUrl);
+    return url.searchParams.getAll("projectId").join(",") === "project-one"
+      && url.searchParams.getAll("lifecycle").join(",") === "active"
+      && url.searchParams.get("createdFrom") === expectedDateRange.createdFrom
+      && url.searchParams.get("createdBefore") === expectedDateRange.createdBefore;
+  })).toBe(true);
+  expect(await page.evaluate(() => window.history.state?.usr?.mapSceneV2?.filters)).toMatchObject({
+    projectScope: { kind: "selected", projectIds: ["project-one"] },
+    fromDate: "2026-08-18",
+    throughDate: "2026-08-18",
+    lifecycles: ["active"],
+  });
+
+  await clickCanvasNode(nodeA);
+  await expect(page).toHaveURL(/\/map\/focus\/filter-a$/);
+  await expect(page.getByTestId("global-map-canvas").getByRole("button", { name: /^桥接节点 B，/ })).toHaveAccessibleName(/范围外桥接/);
+  await page.reload();
+  filterPanel = await openMapTool(page, "筛选地图");
+  await expect(page.getByRole("checkbox", { name: "项目一" })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "已归档" })).not.toBeChecked();
+  await expect(page.getByLabel("开始日期")).toHaveValue("2026-08-18");
+  await expect(page.getByLabel("结束日期")).toHaveValue("2026-08-18");
+
+  await page.goBack();
+  await expect(page).toHaveURL(/\/map$/);
+  expect(await page.evaluate(() => window.history.state?.usr?.mapSceneV2?.filters)).toMatchObject({
+    projectScope: { kind: "selected", projectIds: ["project-one"] },
+    fromDate: "2026-08-18",
+    throughDate: "2026-08-18",
+    lifecycles: ["active"],
+  });
+  filterPanel = await openMapTool(page, "筛选地图");
+  await expect(page.getByRole("checkbox", { name: "项目一" })).toBeChecked();
+  await expect(page.getByLabel("开始日期")).toHaveValue("2026-08-18");
+  await expect(page.getByTestId("global-map-canvas").getByRole("button", { name: /^桥接节点 B，/ })).toHaveAccessibleName(/范围边界/);
+
+  await page.setViewportSize({ width: 320, height: 760 });
+  await expect(page.getByTestId("global-map-canvas")).toBeVisible();
+  await showMapList(page);
+  const list = page.getByTestId("global-map-list");
+  await expect(list.getByRole("button", { name: /^桥接节点 B，/ })).toContainText("范围边界");
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
+  const preEmptySpatial = await readGlobalMapSpatialState(page);
+
+  await openMapTool(page, "筛选地图");
+  await page.getByLabel("开始日期").fill("2026-08-22");
+  await page.getByLabel("结束日期").fill("2026-08-22");
+  await expect(page.getByText("当前筛选没有匹配的研究节点，地图事实没有被删除。")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.history.state?.usr?.mapSceneV2?.filters?.fromDate)).toBe("2026-08-22");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole("status").getByRole("button", { name: "清除筛选" }).click();
+  await expect(page.getByTestId("global-map-canvas")).toBeVisible();
+  await waitForEntryAnimation(page);
+  const restoredSpatial = await readGlobalMapSpatialState(page);
+  expect(restoredSpatial.viewBox).toBe(preEmptySpatial.viewBox);
+  for (const nodeId of ["filter-a", "filter-b", "filter-c", "filter-u"]) {
+    expect(restoredSpatial.nodes[nodeId]).toBe(initialSpatial.nodes[nodeId]);
+  }
+
+  await page.getByLabel("开始日期").fill("2026-08-22");
+  await page.getByLabel("结束日期").fill("2026-08-22");
+  await expect(page.getByText("当前筛选没有匹配的研究节点，地图事实没有被删除。")).toBeVisible();
+  await page.reload();
+  await openMapTool(page, "筛选地图");
+  await expect(page.getByLabel("开始日期")).toHaveValue("2026-08-22");
+  await expect(page.getByLabel("结束日期")).toHaveValue("2026-08-22");
+  await expect(page.getByText("当前筛选没有匹配的研究节点，地图事实没有被删除。")).toBeVisible();
+  expect(browserIssues.issues, browserIssues.issues.join("\n")).toEqual([]);
+});
+
+test("全局研究图谱：320px 使用同源列表，键盘移动且无横向溢出", async ({ page }, testInfo) => {
+  const browserIssues = trackBrowserIssues(page);
+  await page.setViewportSize({ width: 320, height: 760 });
+  await pairAndOpen(page, "/research/new");
+  const firstNodeId = await createSession(page, "窄屏地图测试一：节点如何生长？");
+  const secondNodeId = await createSession(page, "窄屏地图测试二：证据如何连接？");
+  await page.goto("/map");
+
+  const nav = page.getByRole("navigation", { name: "研究图谱工具" });
+  await expect(nav).toBeVisible();
+  await expect(page).toHaveURL(/\/map$/);
+  await expect(page.getByRole("heading", { name: "研究图谱", level: 1 })).toBeAttached();
+  await expect(nav.getByRole("link", { name: "新建会话" })).toBeVisible();
+  const morePanel = await openMapTool(page, "更多地图功能");
+  await expect(morePanel.getByRole("link", { name: "回收站", exact: true })).toBeVisible();
+  await expect(page.getByTestId("global-map-canvas")).toBeVisible();
+  await showMapList(page);
+  const list = page.getByTestId("global-map-list");
+  const firstButton = list.getByRole("button", { name: /窄屏地图测试一/ });
+  const secondButton = list.getByRole("button", { name: /窄屏地图测试二/ });
+  await expect(firstButton).toBeVisible();
+  await expect(secondButton).toBeVisible();
+  await firstButton.focus();
+  await page.keyboard.press("ArrowDown");
+  await expect(secondButton).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(page).toHaveURL(new RegExp(`/map/focus/${secondNodeId}$`));
+  await expect(secondButton).toHaveAttribute("aria-current", "true");
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("global-map-320.png"), fullPage: true });
+  expect(browserIssues.issues, browserIssues.issues.join("\n")).toEqual([]);
+});
+
+test("全局研究图谱：空态与服务错误都有安全出口", async ({ page }) => {
+  await page.route("**/v1/research-map*", (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ nodes: [], edges: [], appliedRelationshipKinds: ["parent-child", "fused-from"] }),
+  }), { times: 1 });
+  await pairAndOpen(page, "/map");
+  await expect(page.getByText(/还没有研究节点/)).toBeVisible();
+  await expect(page.getByRole("link", { name: "开始第一次研究" })).toHaveAttribute("href", "/research/new");
+
+  await page.route("**/v1/research-map*", (route) => route.fulfill({
+    status: 500,
+    contentType: "application/json",
+    body: JSON.stringify({ error: { code: "internal_error", message: "failed" } }),
+  }));
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "暂时无法打开研究图谱" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "重试" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "开始新研究" })).toHaveAttribute("href", "/research/new");
+});
+
+test("ADR-0042 拖动节点带动关系与无关系近邻，刷新保持位移且不新增关系", async ({ page }) => {
+  const browserIssues = trackBrowserIssues(page);
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await pairAndOpen(page, "/map");
+  await installGlobalMapVisualFixture(page);
+  await page.goto("/map");
+
+  const canvas = page.getByTestId("global-map-canvas");
+  await expect(canvas).toHaveAttribute("data-entry-animation", "complete");
+  await page.evaluate(() => {
+    const state = window.history.state as { usr?: { mapSceneV2?: { layout?: { positions?: Array<[string, number, number]> } } } };
+    const scene = state.usr?.mapSceneV2;
+    const blue = scene?.layout?.positions?.find(([id]) => id === "map-blue");
+    if (!scene?.layout?.positions || !blue) throw new Error("expected persisted visual fixture scene");
+    const positions = scene.layout.positions.map(([id, x, y]) => id === "map-neutral" ? [id, blue[1] + 48, blue[2]] as [string, number, number] : [id, x, y] as [string, number, number]);
+    window.history.replaceState({ ...state, usr: { ...state.usr, mapSceneV2: { ...scene, layout: { ...scene.layout, positions } } } }, "");
+  });
+  await page.reload();
+  await expect(canvas).toHaveAttribute("data-entry-animation", "complete");
+  // 先缩小视口让全部节点进入可视区（fixture 恢复的 viewBox 可能把个别节点
+  // 放到屏幕外，直接拖动会点到视口外）。
+  await canvas.getByRole("button", { name: "放大地图" }).click();
+  const node = canvas.locator('[data-node-id="map-blue"]');
+  const neighbor = canvas.locator('[data-node-id="map-amber"]');
+  const passiveNeighbor = canvas.locator('[data-node-id="map-neutral"]');
+  const edgeCountBefore = await canvas.locator("[data-connection-id]").count();
+  await expect(node).toBeVisible();
+  const before = await node.evaluate((element) => element.getAttribute("transform"));
+  const neighborBefore = await neighbor.evaluate((element) => element.getAttribute("transform"));
+  const passiveBefore = await passiveNeighbor.evaluate((element) => element.getAttribute("transform"));
+
+  const core = node.locator("circle.global-map__node-core");
+  await core.scrollIntoViewIfNeeded();
+  const coreBox = await core.boundingBox();
+  expect(coreBox).not.toBeNull();
+  await page.mouse.move(coreBox!.x + coreBox!.width / 2, coreBox!.y + coreBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(coreBox!.x + coreBox!.width / 2 + 120, coreBox!.y + coreBox!.height / 2 - 70, { steps: 6 });
+  await page.mouse.up();
+  await expect(canvas).toHaveAttribute("data-node-physics", "idle", { timeout: 8_000 });
+
+  await expect(async () => {
+    const moved = await node.evaluate((element) => element.getAttribute("transform"));
+    expect(moved).not.toBe(before);
+  }).toPass({ timeout: 5_000 });
+
+  const dragged = await node.evaluate((element) => {
+    const match = /translate\(([-0-9.]+) ([-0-9.]+)\)/.exec(element.getAttribute("transform") ?? "");
+    return match ? { x: Number(match[1]), y: Number(match[2]) } : null;
+  });
+  expect(dragged).not.toBeNull();
+  const neighborDragged = await neighbor.evaluate((element) => {
+    const match = /translate\(([-0-9.]+) ([-0-9.]+)\)/.exec(element.getAttribute("transform") ?? "");
+    return match ? { x: Number(match[1]), y: Number(match[2]) } : null;
+  });
+  expect(neighborDragged).not.toBeNull();
+  expect(await neighbor.evaluate((element) => element.getAttribute("transform"))).not.toBe(neighborBefore);
+  const passiveDragged = await passiveNeighbor.evaluate((element) => {
+    const match = /translate\(([-0-9.]+) ([-0-9.]+)\)/.exec(element.getAttribute("transform") ?? "");
+    return match ? { x: Number(match[1]), y: Number(match[2]) } : null;
+  });
+  expect(passiveDragged).not.toBeNull();
+  expect(await passiveNeighbor.evaluate((element) => element.getAttribute("transform"))).not.toBe(passiveBefore);
+  await expect(canvas.locator("[data-connection-id]")).toHaveCount(edgeCountBefore);
+
+  await expect.poll(async () => (await readPersistedSpatialState(page)).nodes["map-blue"]).toBe(`translate(${dragged!.x} ${dragged!.y})`);
+  await expect.poll(async () => (await readPersistedSpatialState(page)).nodes["map-amber"]).toBe(`translate(${neighborDragged!.x} ${neighborDragged!.y})`);
+  await expect.poll(async () => (await readPersistedSpatialState(page)).nodes["map-neutral"]).toBe(`translate(${passiveDragged!.x} ${passiveDragged!.y})`);
+
+  await page.reload();
+  await expect(canvas.locator('[data-node-id="map-blue"]')).toBeVisible();
+  await expect(canvas).toHaveAttribute("data-entry-animation", "complete");
+  await expect(async () => {
+    const restored = await node.evaluate((element) => {
+      const match = /translate\(([-0-9.]+) ([-0-9.]+)\)/.exec(element.getAttribute("transform") ?? "");
+      return match ? { x: Number(match[1]), y: Number(match[2]) } : null;
+    });
+    expect(restored).not.toBeNull();
+    expect(restored!.x).toBeCloseTo(dragged!.x, 0);
+    expect(restored!.y).toBeCloseTo(dragged!.y, 0);
+  }).toPass({ timeout: 5_000 });
+  await expect(async () => {
+    const restored = await neighbor.evaluate((element) => {
+      const match = /translate\(([-0-9.]+) ([-0-9.]+)\)/.exec(element.getAttribute("transform") ?? "");
+      return match ? { x: Number(match[1]), y: Number(match[2]) } : null;
+    });
+    expect(restored).not.toBeNull();
+    expect(restored!.x).toBeCloseTo(neighborDragged!.x, 0);
+    expect(restored!.y).toBeCloseTo(neighborDragged!.y, 0);
+  }).toPass({ timeout: 5_000 });
+  await expect(async () => {
+    const restored = await passiveNeighbor.evaluate((element) => {
+      const match = /translate\(([-0-9.]+) ([-0-9.]+)\)/.exec(element.getAttribute("transform") ?? "");
+      return match ? { x: Number(match[1]), y: Number(match[2]) } : null;
+    });
+    expect(restored).not.toBeNull();
+    expect(restored!.x).toBeCloseTo(passiveDragged!.x, 0);
+    expect(restored!.y).toBeCloseTo(passiveDragged!.y, 0);
+  }).toPass({ timeout: 5_000 });
+  await expect(canvas.locator("[data-connection-id]")).toHaveCount(edgeCountBefore);
+  expect(browserIssues.issues, browserIssues.issues.join("\n")).toEqual([]);
 });

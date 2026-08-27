@@ -376,7 +376,7 @@ describe("ResearchNodePage 根节点", () => {
     expect(link).toHaveAttribute("href", "/nodes/node-child-1");
   });
 
-  it("从旧地图状态进入后沿子节点继续阅读不恢复已退役的返回现场", async () => {
+  it("从地图进入后沿子节点继续阅读仍保留同一返回现场", async () => {
     const user = userEvent.setup();
     const root = makeNodeView({
       ...readyRootView(),
@@ -405,8 +405,7 @@ describe("ResearchNodePage 根节点", () => {
     );
 
     await user.click(await screen.findByRole("link", { name: /深入研究：沿子节点继续研究/ }));
-    expect(await screen.findByRole("button", { name: "在图谱中查看" })).toBeVisible();
-    expect(screen.queryByRole("button", { name: "返回图谱" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "返回图谱" })).toBeVisible();
   });
 });
 

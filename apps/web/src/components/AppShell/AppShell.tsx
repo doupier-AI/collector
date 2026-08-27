@@ -1,10 +1,15 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { useMediaQuery } from "../../app/useMediaQuery";
 import { ContentDrawer } from "../../features/navigation/ContentDrawer";
+import { ResearchMapModule } from "../../features/navigation/ResearchMapModule";
+import { ResearchMapGlyph } from "../../features/navigation/ResearchMapGlyph";
 import { SIDEBAR_DEFAULT_WIDTH } from "./sidebar-width";
+import type { ResearchMapMode } from "../../features/navigation/useResearchMap";
 
-/** 保留稳定节点地址判断，供壳层的研究区域语义使用。 */
+/** 顶栏“研究地图”按钮的目标：从当前路由解析会话与节点；不在研究页面时不提供入口。
+ *  #61：稳定节点地址 /nodes/:nodeId 不含会话——sessionId 为 null，
+ *  由 ResearchMapModule 打开时按节点视图解析（会话图投影在 T03 才换全局观察）。 */
 export function researchMapTargetForPath(pathname: string): { sessionId: string | null; nodeId: string } | null {
   const stableNodeMatch = pathname.match(/^\/nodes\/([^/]+)/);
   if (stableNodeMatch) {
@@ -39,14 +44,63 @@ export function AppShell() {
   const wide = useMediaQuery("(min-width: 900px)");
   const mode = wide ? "fixed" : "overlay";
   const [leftWidth, setLeftWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
+  const mapTriggerRef = useRef<HTMLButtonElement>(null);
   const location = useLocation();
   const immersiveMap = /^\/map\/?$/.test(location.pathname) || /^\/map\/focus\/[^/]+\/?$/.test(location.pathname);
+  const mapTarget = researchMapTargetForPath(location.pathname);
+  const [mapOpen, setMapOpen] = useState(false);
+  const [mapMode, setMapMode] = useState<ResearchMapMode>("focus");
+
+  const closeMap = useCallback(() => {
+    setMapOpen(false);
+    mapTriggerRef.current?.focus();
+  }, []);
+
+  // 路由变化时关闭研究地图（例如从地图中跳转到另一个节点后由组件自行关闭，此处兜底）
+  useEffect(() => {
+    setMapOpen(false);
+  }, [location.pathname]);
+
+  // 快捷键 t 唤出专注模式、g 唤出关联模式；已打开时同键切换模式；焦点在输入控件时不拦截
+  useEffect(() => {
+    if (!mapTarget) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (isEditableTarget(event.target)) return;
+      if (event.key === "t") {
+        event.preventDefault();
+        setMapOpen(true);
+        setMapMode("focus");
+      } else if (event.key === "g") {
+        event.preventDefault();
+        setMapOpen(true);
+        setMapMode("assoc");
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [mapTarget]);
 
   return (
     <div className={`app-shell${immersiveMap ? " app-shell--immersive-map" : ""}`}>
       <a className="skip-link" href="#main-content">
         跳到主要内容
       </a>
+      {!immersiveMap ? <header className="app-bar">
+        {mapTarget ? (
+          <button
+            type="button"
+            ref={mapTriggerRef}
+            className="app-bar__icon-button"
+            aria-label="研究地图"
+            aria-expanded={mapOpen}
+            aria-controls="research-map-overlay"
+            onClick={() => setMapOpen(true)}
+          >
+            <ResearchMapGlyph />
+          </button>
+        ) : null}
+      </header> : null}
       <div className="app-body">
         {!immersiveMap ? <ContentDrawer
           mode={mode}
@@ -57,6 +111,16 @@ export function AppShell() {
           <Outlet />
         </main>
       </div>
+      {mapOpen && mapTarget ? (
+        <ResearchMapModule
+          sessionId={mapTarget.sessionId}
+          focusNodeId={mapTarget.nodeId}
+          mode={mapMode}
+          wide={wide}
+          onModeChange={setMapMode}
+          onClose={closeMap}
+        />
+      ) : null}
     </div>
   );
 }

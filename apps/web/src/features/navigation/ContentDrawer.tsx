@@ -279,9 +279,6 @@ export function ContentDrawer({ mode, width, onWidthChange, onClose }: ContentDr
       <Link role="menuitem" className="side-settings-menu__item" to="/settings/fusion" onClick={handleNavigate}>
         融合设置
       </Link>
-      <Link role="menuitem" className="side-settings-menu__item" to="/settings/research-map" onClick={handleNavigate}>
-        节点图谱
-      </Link>
       <Link role="menuitem" className="side-settings-menu__item" to="/run-records" onClick={handleNavigate}>
         运行记录
       </Link>

@@ -6,3 +6,8 @@
 export function stableNodePath(nodeId: string): string {
   return `/nodes/${encodeURIComponent(nodeId)}`;
 }
+
+/** 同图专注地址：节点正文地址与地图观察状态各自独立且可分享。 */
+export function globalMapFocusPath(nodeId: string): string {
+  return `/map/focus/${encodeURIComponent(nodeId)}`;
+}

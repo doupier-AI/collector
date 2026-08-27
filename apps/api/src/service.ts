@@ -28,7 +28,6 @@ import {
   type ResearchFusionSource,
   type ResearchSourceHealth,
   type ResearchNodeRecord,
-  type ResearchMapSettings,
   type ModelCallRecord,
   type ResearchNodeView,
   type ResearchTemporaryFusionBundle,
@@ -108,8 +107,6 @@ import { AssociationHintService, type AssociationHintEvaluationGateway, type Ass
 import { TemporaryFusionConversationService, type TemporaryFusionConversationProvider } from "./temporary-fusion-conversation.js";
 import { TemporaryFusionConfirmationService } from "./temporary-fusion-confirmation.js";
 import { TemporaryFusionDraftService, type TemporaryFusionDraftEvidenceGateway } from "./temporary-fusion-drafts.js";
-
-const RESEARCH_MAP_DEFAULT_FOCUS_SETTING_KEY = "research_map_default_focus_from_node";
 
 export class ValidationError extends Error {}
 export class NotFoundError extends Error {}
@@ -960,18 +957,6 @@ export class CaptureService {
     if (typeof input?.enabled !== "boolean") throw new ValidationError("enabled must be a boolean");
     await this.store.saveSetting(AUTO_FUSION_SETTING_KEY, String(input.enabled));
     return { enabled: input.enabled };
-  }
-
-  getResearchMapSettings(): ResearchMapSettings {
-    return { defaultFocusFromNode: this.store.getSetting(RESEARCH_MAP_DEFAULT_FOCUS_SETTING_KEY) === "true" };
-  }
-
-  async updateResearchMapSettings(input: { defaultFocusFromNode?: unknown }): Promise<ResearchMapSettings> {
-    if (typeof input?.defaultFocusFromNode !== "boolean") {
-      throw new ValidationError("defaultFocusFromNode must be a boolean");
-    }
-    await this.store.saveSetting(RESEARCH_MAP_DEFAULT_FOCUS_SETTING_KEY, String(input.defaultFocusFromNode));
-    return { defaultFocusFromNode: input.defaultFocusFromNode };
   }
 
   getProviderCatalog(): ProviderDefinition[] { return DEFAULT_PROVIDER_REGISTRY.list(); }
