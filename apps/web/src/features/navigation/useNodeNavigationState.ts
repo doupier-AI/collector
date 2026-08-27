@@ -1,5 +1,4 @@
 import { useLocation } from "react-router-dom";
-import { nodeRouteStateWithMapReturn } from "./map-scene";
 
 /**
  * 节点正文里的后续节点跳转共用这一条 state 通道，避免沿子节点、融合来源或
@@ -7,5 +6,5 @@ import { nodeRouteStateWithMapReturn } from "./map-scene";
  */
 export function useNodeNavigationState(): Record<string, unknown> {
   const location = useLocation();
-  return nodeRouteStateWithMapReturn(location.state);
+  return typeof location.state === "object" && location.state !== null ? location.state as Record<string, unknown> : {};
 }

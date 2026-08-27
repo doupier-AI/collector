@@ -41,6 +41,17 @@ describe("#32 fusion auto config API client", () => {
   });
 });
 
+describe("research map settings API client", () => {
+  it("uses the stable settings endpoint and boolean body", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ defaultFocusFromNode: false }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const client = createApiClient(fetchMock);
+    await client.getResearchMapSettings();
+    await client.updateResearchMapSettings({ defaultFocusFromNode: true });
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/v1/settings/research-map", undefined);
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/v1/settings/research-map", expect.objectContaining({ method: "PUT", body: JSON.stringify({ defaultFocusFromNode: true }) }));
+  });
+});
+
 describe("T03 temporary fusion management API client", () => {
   it("uses separate single, explicit batch, and clear endpoints", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));

@@ -2415,6 +2415,11 @@ export function isResearchPermanentEdge(edge: ResearchEdgeRecord): edge is Resea
  */
 export type ResearchGraphLifecycle = "active" | "archived";
 
+/** 用户唯一可持久化的研究图谱偏好；地图现场始终只在当前组件实例中存在。 */
+export interface ResearchMapSettings {
+  defaultFocusFromNode: boolean;
+}
+
 export interface ResearchGraphObservationInput {
   focusNodeId?: string;
   projectIds?: string[];
