@@ -103,9 +103,10 @@ export interface SimilarityCandidate {
  * （正文版本上的语义片段），不再以切片内容副本为源。
  *
  * 每条消息确定性派生正文版本与片段（与持久化路径同一契约函数，同 ID）；
- * 片段摘录经正文范围解析后参与信号建立：首选对应切片的归一化概念（一级信号），
- * 概念全空且片段摘录达到最小长度时才回退术语弱标记与内容词，因此孤立短句
- * 不会成为融合依据。每条触发来源携带节点、正文版本与稳定片段标识，
+ * 片段摘录经正文范围解析后参与信号建立：对应切片的归一化概念是一级信号；
+ * 达到最小长度的片段同时保留正文中可确定检测的明确术语，避免旁路概念抽取差异
+ * 隐藏同一技术标识。只有概念全空时才回退宽泛内容词，因此孤立短句不会成为融合依据。
+ * 每条触发来源携带节点、正文版本与稳定片段标识，
  * 可经 `resolveFragmentExcerpt` 回读到正确原文。
  */
 export function indexNodeSimilaritySignals(
@@ -153,14 +154,14 @@ export function indexNodeSimilaritySignals(
         for (const concept of concepts) {
           conceptSignals.push({ concept, trigger: baseTrigger });
         }
-        continue;
       }
-      // 孤立短句门槛：过短且无概念的片段不参与术语/内容词回退信号。
+      // 孤立短句门槛：过短片段不以正文词面扩张候选；显式归一化概念仍可独立参与。
       if (excerpt.trim().length < MIN_SIMILARITY_FALLBACK_UNIT_CHARACTERS) continue;
       for (const marker of termDetection.detect(message.id, excerpt).terms) {
         const concept = normalizeSimilarityConcept(marker.text);
         if (concept) fallbackSignals.push({ concept, trigger: { ...baseTrigger, termText: marker.text } });
       }
+      if (concepts.length > 0) continue;
       for (const token of contentWordSignals(excerpt)) {
         fallbackSignals.push({ concept: token, trigger: { ...baseTrigger, termText: token } });
       }

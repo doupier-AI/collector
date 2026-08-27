@@ -105,6 +105,29 @@ test("deterministic candidate index prefers normalized concepts and carries stab
   ]);
 });
 
+test("explicit stable terms remain candidate signals when annotation concepts differ", () => {
+  const now = "2026-08-27T00:00:00.000Z";
+  const nodes: ResearchNodeRecord[] = [
+    { id: "node-a", sessionId: "session-1", status: "active", createdAt: now, updatedAt: now },
+    { id: "node-b", sessionId: "session-1", status: "active", createdAt: now, updatedAt: now },
+  ];
+  const messages: ResearchMessageRecord[] = [
+    { id: "message-a", sessionId: "session-1", nodeId: "node-a", role: "assistant", content: "LocalDataShield（LDS）只向外发送不可逆的聚合结果。", status: "completed", createdAt: now, updatedAt: now },
+    { id: "message-b", sessionId: "session-1", nodeId: "node-b", role: "assistant", content: "未加密磁盘使 LocalDataShield（LDS）资料可被离线读取。", status: "completed", createdAt: now, updatedAt: now },
+  ];
+  const slices: ResearchSliceRecord[] = [
+    { id: "slice:node-a:message-a:0", nodeId: "node-a", messageId: "message-a", ordinal: 0, title: "传输暴露", normalizedConcepts: ["数据最小化"], sourceRefs: [], isProvisional: false, createdAt: now },
+    { id: "slice:node-b:message-b:0", nodeId: "node-b", messageId: "message-b", ordinal: 0, title: "物理读取", normalizedConcepts: ["静态数据"], sourceRefs: [], isProvisional: false, createdAt: now },
+  ];
+
+  const indexed = nodes.map((node, index) =>
+    indexNodeSimilaritySignals(node, [slices[index]!], [messages[index]!], new TermDetectionService()));
+  const candidates = buildSimilarityCandidates("node-a", indexed);
+
+  assert.equal(candidates.length, 1, "相邻旁路概念不一致时，正文中的同一明确术语仍应进入模型核验");
+  assert.ok(candidates[0]!.triggerSources.some((source) => source.termText === "LDS"));
+});
+
 test("empty normalized concepts deterministically fall back to term and content-word signals", () => {
   const now = "2026-08-02T00:00:00.000Z";
   const nodes: ResearchNodeRecord[] = [
