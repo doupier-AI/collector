@@ -71,7 +71,7 @@ async function seedFullSession(store: SqliteStore, sid: string) {
     .run(randomUUID(), bodyVersionId.id, childOutput.id, childNode.id, 0, 0, 4, 0, NOW, JSON.stringify({ id: randomUUID(), bodyVersionId: bodyVersionId.id, messageId: childOutput.id, nodeId: childNode.id, ordinal: 0, startOffset: 0, endOffset: 4, isProvisional: false, createdAt: NOW }));
   // 融合提议：引用本会话根节点与子节点（lo < hi 的 CHECK 约束），级联删除时随之清理
   const [loId, hiId] = [sid, childNode.id].sort();
-  db.prepare("INSERT INTO research_fusion_proposals (id, lo_node_id, hi_node_id, relation_type, reason, status, cooldown_until, created_at, updated_at, record_json) VALUES (?, ?, ?, 'identity', ?, 'pending', NULL, ?, ?, ?)")
+  db.prepare("INSERT INTO research_fusion_proposals (id, lo_node_id, hi_node_id, relation_type, reason, status, created_at, updated_at, record_json) VALUES (?, ?, ?, 'identity', ?, 'pending', ?, ?, ?)")
     .run(randomUUID(), loId, hiId, "测试", NOW, NOW, JSON.stringify({ id: randomUUID(), loNodeId: loId, hiNodeId: hiId, relationType: "identity", reason: "测试", status: "pending", createdAt: NOW, updatedAt: NOW }));
 
   // 附件/导入
