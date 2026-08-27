@@ -68,6 +68,8 @@ interface NodeDragState {
 
 const MIN_VIEW_WIDTH = 320;
 const MAX_VIEW_WIDTH = 1_440;
+const INITIAL_VIEW_HORIZONTAL_PADDING = 180;
+const INITIAL_VIEW_VERTICAL_PADDING = 160;
 const POSITION_COMMIT_EPSILON = 0.5;
 
 function displacedPositions(
@@ -154,8 +156,9 @@ function viewBoxForPositions(positions: ReadonlyMap<string, GraphPoint>, fallbac
   const maxY = Math.max(...points.map((point) => point.y));
   const centerX = (minX + maxX) / 2;
   const centerY = (minY + maxY) / 2;
-  const width = clamp(Math.max(MIN_VIEW_WIDTH, maxX - minX + 440), MIN_VIEW_WIDTH, fallback.width);
-  const height = clamp(Math.max(220, maxY - minY + 320), 220, fallback.height);
+  // 首屏让节点标题仍可直接阅读；边缘留白只需容纳标签与拖拽手势，不应把稀疏小图缩到画布中央。
+  const width = clamp(Math.max(MIN_VIEW_WIDTH, maxX - minX + INITIAL_VIEW_HORIZONTAL_PADDING), MIN_VIEW_WIDTH, fallback.width);
+  const height = clamp(Math.max(220, maxY - minY + INITIAL_VIEW_VERTICAL_PADDING), 220, fallback.height);
   return { x: centerX - width / 2, y: centerY - height / 2, width, height };
 }
 
