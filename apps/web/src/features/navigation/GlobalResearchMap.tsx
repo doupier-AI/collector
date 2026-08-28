@@ -311,18 +311,43 @@ export function GlobalResearchMap({ observation, baseObservation, onFocusNode, o
     } else if (!resetRequested) {
       next = mergeIncrementalMapPositions(current, layout.positions, layoutObservation, stableTreeDirectionsRef.current);
     }
+    const newAnchorPoints = layoutObservation.nodes
+      .map(({ node }) => current.has(node.id) ? next.get(node.id) : undefined)
+      .filter((point): point is GraphPoint => Boolean(point));
     if ((densityChanged || resetRequested) && focusSnapshotRef.current) {
+      const snapshot = focusSnapshotRef.current;
+      let snapshotViewBox = snapshot.viewBox;
+      if (resetRequested) {
+        snapshotViewBox = fitViewBoxToPoints(next.values(), canvasAspectRatio);
+      } else {
+        const snapshotOldAnchorPoints = layoutObservation.nodes
+          .map(({ node }) => snapshot.positions.get(node.id))
+          .filter((point): point is GraphPoint => Boolean(point));
+        const snapshotNewAnchorPoints = layoutObservation.nodes
+          .map(({ node }) => snapshot.positions.has(node.id) ? next.get(node.id) : undefined)
+          .filter((point): point is GraphPoint => Boolean(point));
+        if (snapshotOldAnchorPoints.length && snapshotOldAnchorPoints.length === snapshotNewAnchorPoints.length) {
+          const centroid = (points: readonly GraphPoint[]) => points.reduce((sum, point) => ({
+            x: sum.x + point.x / points.length,
+            y: sum.y + point.y / points.length,
+          }), { x: 0, y: 0 });
+          const before = centroid(snapshotOldAnchorPoints);
+          const after = centroid(snapshotNewAnchorPoints);
+          snapshotViewBox = {
+            ...snapshotViewBox,
+            x: snapshotViewBox.x + after.x - before.x,
+            y: snapshotViewBox.y + after.y - before.y,
+          };
+        }
+      }
       focusSnapshotRef.current = {
         positions: new Map(next),
-        viewBox: fitViewBoxToPoints(next.values(), canvasAspectRatio),
+        viewBox: snapshotViewBox,
       };
     }
     basePositionsRef.current = next;
     setBasePositions(next);
     if (densityChanged && !resetRequested && !observation.focusNodeId) {
-      const newAnchorPoints = layoutObservation.nodes
-        .map(({ node }) => current.has(node.id) ? next.get(node.id) : undefined)
-        .filter((point): point is GraphPoint => Boolean(point));
       if (oldAnchorPoints.length && oldAnchorPoints.length === newAnchorPoints.length) {
         const centroid = (points: readonly GraphPoint[]) => points.reduce((sum, point) => ({
           x: sum.x + point.x / points.length,
@@ -459,14 +484,27 @@ export function GlobalResearchMap({ observation, baseObservation, onFocusNode, o
       });
       return;
     }
-    setViewBox(defaultViewBox);
+    setViewBox((current) => (
+      Math.abs(current.width / current.height - canvasAspectRatio) < 0.001 ? current : defaultViewBox
+    ));
   }, [canvasAspectRatio, defaultViewBox]);
   useLayoutEffect(() => {
     if (observation.focusNodeId || viewBox.height <= 0) return;
+    const restoredViewBox = focusSnapshotRef.current?.viewBox;
+    if (restoredViewBox) {
+      const mismatch = Math.max(
+        Math.abs(viewBox.x - restoredViewBox.x),
+        Math.abs(viewBox.y - restoredViewBox.y),
+        Math.abs(viewBox.width - restoredViewBox.width),
+        Math.abs(viewBox.height - restoredViewBox.height),
+      );
+      if (mismatch >= 0.001) setViewBox(restoredViewBox);
+      return;
+    }
     if (Math.abs(viewBox.width / viewBox.height - canvasAspectRatio) < 0.001) return;
     // 异步专注编排可能在退出提交后留下最后一帧旧比例；全局画布必须立即回到完整基础图。
     setViewBox(defaultViewBox);
-  }, [canvasAspectRatio, defaultViewBox, observation.focusNodeId, viewBox.height, viewBox.width]);
+  }, [canvasAspectRatio, defaultViewBox, observation.focusNodeId, viewBox.height, viewBox.width, viewBox.x, viewBox.y]);
   useEffect(() => {
     const svg = svgRef.current;
     if (!svg) return;
@@ -489,6 +527,8 @@ export function GlobalResearchMap({ observation, baseObservation, onFocusNode, o
   const directNeighbors = interactionNodeId ? adjacency.get(interactionNodeId) ?? new Set<string>() : new Set<string>();
   const zoomScale = world.width / viewBox.width;
   const focusedNodeId = observation.focusNodeId;
+  const focusedNodeIdRef = useRef(focusedNodeId);
+  focusedNodeIdRef.current = focusedNodeId;
   const focusSummary = focusedNodeId ? observation.nodes.find((summary) => summary.node.id === focusedNodeId) : undefined;
 
   useEffect(() => {
@@ -511,7 +551,8 @@ export function GlobalResearchMap({ observation, baseObservation, onFocusNode, o
     }
     const revealKey = revealRequestId === undefined ? revealNodeId : `${revealNodeId}:${revealRequestId}`;
     if (lastRevealKey.current === revealKey) return;
-    const point = positionsRef.current.get(revealNodeId);
+    // 搜索定位以稳定基础坐标为终点；若同时退出专注，不跟随尚在回位的显示编排坐标。
+    const point = persistPositionsRef.current.get(revealNodeId) ?? positionsRef.current.get(revealNodeId);
     if (!point) return;
     lastRevealKey.current = revealKey;
     pendingRevealRef.current = { nodeId: revealNodeId, requestId: revealRequestId };
@@ -597,11 +638,17 @@ export function GlobalResearchMap({ observation, baseObservation, onFocusNode, o
           : fitViewBoxToPoints(snapshot.positions.values(), canvasAspectRatio);
         focusSnapshotRef.current = { ...snapshot, viewBox: restoredViewBox };
         setViewBox(restoredViewBox);
+        // 搜索定位接管接下来的视口动画；不再让退出专注快照覆盖搜索目标。
+        if (revealNodeId) focusSnapshotRef.current = null;
       }
-      if (!current) return;
+      if (!current) {
+        focusSnapshotRef.current = null;
+        return;
+      }
       if (reduced) {
         orchestrationLatestRef.current = null;
         setOrchestrationPositions(null);
+        focusSnapshotRef.current = null;
         return;
       }
       const from = new Map(current);
@@ -642,6 +689,10 @@ export function GlobalResearchMap({ observation, baseObservation, onFocusNode, o
     const startAt = performance.now();
     const startViewBox = viewBoxRef.current;
     const tick = (now: number) => {
+      if (focusedNodeIdRef.current !== focusedNodeId) {
+        orchestrationRafRef.current = undefined;
+        return;
+      }
       const progress = Math.min(1, (now - startAt) / ORCHESTRATION_DURATION_MS);
       const next = interpolatePoints(startPositions, target, progress);
       orchestrationLatestRef.current = next;
@@ -656,7 +707,7 @@ export function GlobalResearchMap({ observation, baseObservation, onFocusNode, o
       else orchestrationRafRef.current = undefined;
     };
     orchestrationRafRef.current = requestAnimationFrame(tick);
-  }, [canvasAspectRatio, focusedNodeId, nodePhysicsActive, observation, persistPositions]);
+  }, [canvasAspectRatio, focusedNodeId, nodePhysicsActive, observation, persistPositions, revealNodeId]);
 
   // ADR-0042 入场展开：首次挂载与新增节点从各自终点附近的确定性偏移柔展开到位；
   // 纯显示层动画，不触发 Map Scene 序列化，reduced-motion 直接就位。
@@ -892,6 +943,7 @@ export function GlobalResearchMap({ observation, baseObservation, onFocusNode, o
     const currentSvg = screenPointToSvgPoint(drag.screenMatrix, { x: event.clientX, y: event.clientY });
     if (!currentSvg) return;
     drag.moved = drag.moved || Math.hypot(event.clientX - drag.clientX, event.clientY - drag.clientY) > 3;
+    if (!drag.moved) return;
     setViewBox({
       ...drag.viewBox,
       x: drag.viewBox.x - (currentSvg.x - drag.startSvg.x),

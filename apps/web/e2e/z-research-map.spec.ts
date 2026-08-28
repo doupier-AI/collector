@@ -84,6 +84,91 @@ test.describe("统一研究图谱", () => {
     await expect.poll(readLayout).toEqual(expected);
   });
 
+  test("专注内只修改密度，退出后保留原有缩放、平移与屏幕质心", async ({ page }) => {
+    await installGlobalMapVisualFixture(page);
+    await pairAndOpen(page, "/map");
+    const canvas = page.getByTestId("global-map-canvas");
+    await expect(canvas).toHaveAttribute("data-entry-animation", "complete");
+    const svg = canvas.locator("svg");
+    const graphScreenCentroid = () => canvas.locator("[data-node-id]").evaluateAll((nodes) => nodes.reduce((sum, node) => {
+      const matrix = (node as SVGGElement).getScreenCTM();
+      if (!matrix) return sum;
+      return { x: sum.x + matrix.e / nodes.length, y: sum.y + matrix.f / nodes.length };
+    }, { x: 0, y: 0 }));
+    await page.getByRole("button", { name: "放大地图" }).click();
+    const box = await svg.boundingBox();
+    if (!box) throw new Error("missing map canvas");
+    await page.mouse.move(box.x + 80, box.y + box.height - 80);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 170, box.y + box.height - 35);
+    await page.mouse.up();
+    const beforeViewBox = (await svg.getAttribute("viewBox"))!.split(" ").map(Number);
+    const beforeCentroid = await graphScreenCentroid();
+
+    const amber = canvas.locator("[data-node-id='map-amber']");
+    await amber.locator(".global-map__node-core").click();
+    await expect(amber).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("button", { name: "图谱呈现与布局" }).click();
+    await page.getByLabel("布局密度").selectOption("spacious");
+    await page.getByRole("button", { name: "关闭图谱呈现与布局" }).click();
+    await page.getByRole("button", { name: "退出专注" }).click();
+    await expect(amber).toHaveAttribute("aria-pressed", "false");
+
+    await expect.poll(async () => {
+      const next = (await svg.getAttribute("viewBox"))!.split(" ").map(Number);
+      return Math.max(Math.abs(next[2]! - beforeViewBox[2]!), Math.abs(next[3]! - beforeViewBox[3]!));
+    }).toBeLessThan(0.01);
+    await expect.poll(async () => {
+      const next = await graphScreenCentroid();
+      return Math.hypot(next.x - beforeCentroid.x, next.y - beforeCentroid.y);
+    }).toBeLessThanOrEqual(2);
+  });
+
+  test("专注中点击搜索定位会先返回全局总览，再突出目标", async ({ page }) => {
+    await installGlobalMapVisualFixture(page);
+    await page.route("**/v1/semantic-search/search", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        query: "跨域综合",
+        mode: "keyword-only",
+        degradationReason: "model-not-installed",
+        groups: [{
+          scope: "inside-current-scope",
+          nodes: [{
+            nodeId: "map-violet",
+            nodeLabel: "跨域综合",
+            matches: [{ field: "node-title", preview: "跨域综合", locator: { kind: "node-title", nodeId: "map-violet" } }],
+          }],
+        }],
+      }),
+    }));
+    await pairAndOpen(page, "/map");
+    const canvas = page.getByTestId("global-map-canvas");
+    const amber = canvas.locator("[data-node-id='map-amber']");
+    const violet = canvas.locator("[data-node-id='map-violet']");
+    await amber.locator(".global-map__node-core").click();
+    await expect(amber).toHaveAttribute("aria-pressed", "true");
+    await expect(violet).toHaveClass(/global-map__node--unconnected/);
+
+    await page.getByRole("button", { name: "搜索研究内容" }).click();
+    const searchbox = page.getByRole("searchbox", { name: "搜索全部研究内容" });
+    await searchbox.fill("跨域综合");
+    await searchbox.press("Enter");
+    await page.getByRole("button", { name: "跨域综合 在图谱中定位" }).click();
+
+    await expect(amber).toHaveAttribute("aria-pressed", "false");
+    await expect(violet).toBeFocused();
+    await expect(violet).toHaveClass(/global-map__node--search-selected/);
+    await expect(canvas.locator("[data-edge-kind='fused-from']")).toHaveCount(1);
+    await expect(violet).not.toHaveClass(/global-map__node--unconnected/);
+    await expect.poll(async () => violet.evaluate((node) => {
+      const matrix = node.getScreenCTM();
+      const rect = node.ownerSVGElement!.getBoundingClientRect();
+      return matrix ? Math.hypot(matrix.e - (rect.left + rect.width / 2), matrix.f - (rect.top + rect.height / 2)) : Number.POSITIVE_INFINITY;
+    })).toBeLessThanOrEqual(2);
+  });
+
   test("旧专注地址只消费一次意图，刷新后仍是无状态的 /map", async ({ page }) => {
     await installGlobalMapVisualFixture(page);
     await pairAndOpen(page, "/map/focus/map-amber");

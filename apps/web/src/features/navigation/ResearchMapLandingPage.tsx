@@ -65,7 +65,7 @@ export function ResearchMapLandingPage() {
   const [focusNodeId, setFocusNodeId] = useState<string | undefined>(() => (
     legacyFocusNodeId || entryIntentRef.current?.preferFocus ? (legacyFocusNodeId ?? entryIntentRef.current?.nodeId) : undefined
   ));
-  const [highlightNodeId, setHighlightNodeId] = useState<string | undefined>(() => (
+  const [highlightNodeId] = useState<string | undefined>(() => (
     legacyFocusNodeId ?? entryIntentRef.current?.nodeId
   ));
   const wide = useMediaQuery("(min-width: 900px)");
@@ -202,7 +202,6 @@ export function ResearchMapLandingPage() {
 
   const pushFocus = useCallback((nodeId: string) => {
     setFocusNodeId(nodeId);
-    setHighlightNodeId(nodeId);
   }, []);
 
   const revealSequenceRef = useRef(0);
@@ -215,10 +214,10 @@ export function ResearchMapLandingPage() {
   const revealSearchNode = useCallback((nodeId: string) => {
     const next = { query: search?.query ?? "", matchedNodeIds: search?.matchedNodeIds, selectedNodeId: nodeId };
     if (!next.query) return;
+    setFocusNodeId(undefined);
     setSceneSearch(next);
     revealSequenceRef.current += 1;
     setRevealRequest({ nodeId, requestId: revealSequenceRef.current });
-    setHighlightNodeId(nodeId);
   }, [search?.matchedNodeIds, search?.query, setSceneSearch]);
   const finishReveal = useCallback((nodeId: string, requestId: number) => {
     setRevealRequest((current) => current?.nodeId === nodeId && current.requestId === requestId ? null : current);
