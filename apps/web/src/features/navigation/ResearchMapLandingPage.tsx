@@ -7,12 +7,12 @@ import { useServices } from "../../app/services";
 import { useMediaQuery } from "../../app/useMediaQuery";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { PairingGate } from "../auth/PairingGate";
-import { ThemeSwitcher } from "../theme/theme";
 import { GlobalResearchMap } from "./GlobalResearchMap";
 import { AssociationCandidatePanel } from "./AssociationCandidatePanel";
 import { ResearchMapFilters } from "./ResearchMapFilters";
 import { ResearchMapGlyph } from "./ResearchMapGlyph";
 import { ResearchMapSearch } from "./ResearchMapSearch";
+import { DEFAULT_MAP_VISUAL_SETTINGS, ResearchMapVisualSettings } from "./ResearchMapVisualSettings";
 import { TemporaryFusionObservationPanel } from "./TemporaryFusionObservationPanel";
 import { consumeMapEntryIntent } from "./map-entry-intent";
 import { filterResearchMapObservation, focusResearchMapObservation, withResearchMapIsolates } from "./research-map-observation";
@@ -27,10 +27,10 @@ import {
   type ResearchMapFilterState,
 } from "./research-map-filters";
 
-type MapTool = "search" | "filters" | "temporary" | "more";
+type MapTool = "search" | "filters" | "temporary";
 type MapPresentation = "canvas" | "list";
 
-function MapToolGlyph({ kind }: { kind: "back" | "search" | "filters" | "temporary" | "candidates" | "new" | "more" | "canvas" | "list" }) {
+function MapToolGlyph({ kind }: { kind: "back" | "search" | "filters" | "temporary" | "candidates" | "new" | "canvas" | "list" }) {
   if (kind === "back") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m12.5 4.5-5.5 5.5 5.5 5.5M7.5 10H17" /></svg>;
   if (kind === "search") return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5" /><path d="m12.2 12.2 4.3 4.3" /></svg>;
   if (kind === "filters") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M5.5 10h9M8 15h4" /></svg>;
@@ -39,7 +39,7 @@ function MapToolGlyph({ kind }: { kind: "back" | "search" | "filters" | "tempora
   if (kind === "new") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.5v13M3.5 10h13" /></svg>;
   if (kind === "canvas") return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="5" cy="11" r="2" /><circle cx="10" cy="5" r="2" /><circle cx="15" cy="12" r="2" /><path d="m6.2 9.4 2.6-2.8m2.5-.3 2.5 4" /></svg>;
   if (kind === "list") return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 5h10M7 10h10M7 15h10" /><circle cx="3.5" cy="5" r=".75" /><circle cx="3.5" cy="10" r=".75" /><circle cx="3.5" cy="15" r=".75" /></svg>;
-  return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4" cy="10" r="1" /><circle cx="10" cy="10" r="1" /><circle cx="16" cy="10" r="1" /></svg>;
+  return null;
 }
 
 function MapStateDock({ onBack }: { onBack: () => void }) {
@@ -71,14 +71,9 @@ export function ResearchMapLandingPage() {
   const wide = useMediaQuery("(min-width: 900px)");
   const [activeTool, setActiveTool] = useState<MapTool | null>(null);
   const [presentation, setPresentation] = useState<MapPresentation>("canvas");
-  const [showArrows, setShowArrows] = useState(false);
-  const [nodeScale, setNodeScale] = useState(1);
-  const [titleOpacity, setTitleOpacity] = useState(0.62);
-  const [lineWidth, setLineWidth] = useState(1.25);
-  const [density, setDensity] = useState(1);
-  const [colorMode, setColorMode] = useState<"project" | "node-type" | "lifecycle">("project");
+  const [visualSettings, setVisualSettings] = useState(DEFAULT_MAP_VISUAL_SETTINGS);
+  const { showArrows, nodeScale, titleOpacity, lineWidth, density, colorMode, showIsolates } = visualSettings;
   const [layoutResetToken, setLayoutResetToken] = useState(0);
-  const [showIsolates, setShowIsolates] = useState(true);
   const toolButtonRefs = useRef(new Map<MapTool, HTMLButtonElement>());
   const toolPanelRef = useRef<HTMLDivElement>(null);
   // 地图现场只在当前组件实例中存在，不读写 URL 或 History State。
@@ -213,13 +208,13 @@ export function ResearchMapLandingPage() {
     setRevealRequest({ nodeId: highlightNodeId, requestId: revealSequenceRef.current });
   }, [highlightNodeId]);
   const revealSearchNode = useCallback((nodeId: string) => {
-    const next = { query: search?.query ?? "", selectedNodeId: nodeId };
+    const next = { query: search?.query ?? "", matchedNodeIds: search?.matchedNodeIds, selectedNodeId: nodeId };
     if (!next.query) return;
     setSceneSearch(next);
     revealSequenceRef.current += 1;
     setRevealRequest({ nodeId, requestId: revealSequenceRef.current });
     setHighlightNodeId(nodeId);
-  }, [search?.query, setSceneSearch]);
+  }, [search?.matchedNodeIds, search?.query, setSceneSearch]);
   const finishReveal = useCallback((nodeId: string, requestId: number) => {
     setRevealRequest((current) => current?.nodeId === nodeId && current.requestId === requestId ? null : current);
   }, []);
@@ -406,11 +401,10 @@ export function ResearchMapLandingPage() {
   const filterValidation = serializedFilters.valid ? undefined : serializedFilters.reason;
   const hasFilters = !isDefaultResearchMapFilterState(filters);
   const focusSummary = focusNodeId ? observation.nodes.find((item) => item.node.id === focusNodeId) : undefined;
-  const toolDefinitions: Array<{ tool: MapTool; label: string; glyph: "search" | "filters" | "temporary" | "more"; active?: boolean }> = [
+  const toolDefinitions: Array<{ tool: MapTool; label: string; glyph: "search" | "filters" | "temporary"; active?: boolean }> = [
     { tool: "search", label: "搜索研究内容", glyph: "search", active: Boolean(search?.query) },
     { tool: "filters", label: "筛选地图", glyph: "filters", active: hasFilters },
     { tool: "temporary", label: `临时融合（${observation.temporaryFusionCount ?? 0}）`, glyph: "temporary", active: temporaryFusionObservation },
-    { tool: "more", label: "更多地图功能", glyph: "more" },
   ];
 
   return (
@@ -463,6 +457,14 @@ export function ResearchMapLandingPage() {
           ><MapToolGlyph kind={glyph} /></button>
         ))}
       </nav>
+
+      <ResearchMapVisualSettings
+        settings={visualSettings}
+        nodeCount={observation.nodes.length}
+        edgeCount={observation.edges.length}
+        onChange={setVisualSettings}
+        onResetLayout={() => setLayoutResetToken((token) => token + 1)}
+      />
 
       {!wide ? (
         <button
@@ -524,36 +526,6 @@ export function ResearchMapLandingPage() {
                 navigate(fragmentDeepLink(source.sourceNodeId, source.fragmentIds[0]!), { replace: true });
               }}
             /> : <div className="map-more-tools"><p>开启后在同一张地图上查看待核验的临时融合及其正式来源；不会创建关系或改变正式图谱。</p><button type="button" className="button button--primary" disabled={(observation.temporaryFusionCount ?? 0) === 0} onClick={() => setTemporaryFusionObservation(true)}>开启临时层</button></div>
-          ) : null}
-          {activeTool === "more" ? (
-            <div className="map-more-tools">
-              <div className="map-more-tools__summary" aria-label="地图摘要">
-                <span><strong>{observation.nodes.length}</strong> 个节点</span>
-                <span><strong>{observation.edges.length}</strong> 条永久关系</span>
-                <span><strong>{observation.nodes.filter((item) => item.lifecycle === "archived").length}</strong> 个已归档</span>
-              </div>
-              <div className="map-more-tools__legend" aria-label="地图图例">
-                <span><i className="global-map__legend-node" />研究节点</span>
-                <span><i className="global-map__legend-node global-map__legend-node--fusion" />融合成果</span>
-                <span><i className="global-map__legend-line" />父子生长</span>
-                <span><i className="global-map__legend-line global-map__legend-line--fusion" />融合来源</span>
-              </div>
-              <div className="map-more-tools__links">
-                <Link to="/trash">回收站</Link><Link to="/run-records">运行记录</Link>
-                <Link to="/settings/ai-model">AI 模型设置</Link><Link to="/settings/semantic-search">语义搜索设置</Link>
-                <Link to="/settings/fusion">融合设置</Link>
-              </div>
-              <ThemeSwitcher variant="detail" />
-              <label className="map-more-tools__toggle">颜色模式<select aria-label="颜色模式" value={colorMode} onChange={(event) => setColorMode(event.target.value as typeof colorMode)}><option value="project">项目</option><option value="node-type">节点类型</option><option value="lifecycle">生命周期</option></select></label>
-              <label className="map-more-tools__toggle"><input type="checkbox" checked={showArrows} onChange={(event) => setShowArrows(event.target.checked)} />显示关系箭头</label>
-              <label className="map-more-tools__toggle">节点大小<input aria-label="节点大小" type="range" min="0.75" max="1.5" step="0.05" value={nodeScale} onChange={(event) => setNodeScale(Number(event.target.value))} /></label>
-              <label className="map-more-tools__toggle">标题透明度<input aria-label="标题透明度" type="range" min="0.35" max="1" step="0.05" value={titleOpacity} onChange={(event) => setTitleOpacity(Number(event.target.value))} /></label>
-              <label className="map-more-tools__toggle">连线粗细<input aria-label="连线粗细" type="range" min="1" max="3" step="0.25" value={lineWidth} onChange={(event) => setLineWidth(Number(event.target.value))} /></label>
-              <label className="map-more-tools__toggle">图谱密度<input aria-label="图谱密度" type="range" min="0.75" max="1.5" step="0.05" value={density} onChange={(event) => setDensity(Number(event.target.value))} /></label>
-              <label className="map-more-tools__toggle"><input aria-label="显示孤立节点" type="checkbox" checked={showIsolates} onChange={(event) => setShowIsolates(event.target.checked)} />显示孤立节点</label>
-              <button type="button" className="button button--secondary" onClick={() => setLayoutResetToken((token) => token + 1)}>重置本次布局</button>
-              <p className="map-more-tools__hint">拖动画布平移 · 滚轮缩放 · 拖动节点整理 · Shift+方向键微调 · 单击或 Space 专注 · 双击或 Enter 打开</p>
-            </div>
           ) : null}
         </div>
       ) : null}

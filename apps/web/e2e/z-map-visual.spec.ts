@@ -11,7 +11,7 @@ test.describe("研究图谱视觉基线", () => {
     await expect(page).toHaveScreenshot("research-map-global.png", { animations: "disabled" });
     await canvas.locator("[data-node-id='map-amber'] .global-map__node-core").click();
     await expect(canvas.locator("[data-node-id='map-amber']")).toHaveAttribute("aria-pressed", "true");
-    await page.getByRole("button", { name: "更多地图功能" }).click();
+    await page.getByRole("button", { name: "图谱呈现与布局" }).click();
     await expect(page).toHaveScreenshot("research-map-focus-controls.png", { animations: "disabled" });
   });
 
@@ -19,6 +19,10 @@ test.describe("研究图谱视觉基线", () => {
     await installGlobalMapVisualFixture(page);
     await pairAndOpen(page, "/map");
     await page.setViewportSize({ width: 320, height: 800 });
+    await page.getByRole("button", { name: "图谱呈现与布局" }).click();
+    await expect(page.getByRole("region", { name: "图谱呈现与布局" })).toBeVisible();
+    await expect(page).toHaveScreenshot("research-map-narrow-settings.png", { animations: "disabled" });
+    await page.getByRole("button", { name: "关闭图谱呈现与布局" }).click();
     await page.getByRole("button", { name: "切换到节点列表" }).click();
     await expect(page.getByTestId("global-map-list")).toBeVisible();
     await expect(page).toHaveScreenshot("research-map-narrow.png", { animations: "disabled" });

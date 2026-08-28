@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
@@ -23,9 +23,27 @@ describe("ResearchMapLandingPage", () => {
     await screen.findByTestId("global-map-canvas"); await userEvent.setup().click(screen.getAllByRole("button", { name: "研究图谱" })[0]!);
     expect(screen.getByText("研究首页")).toBeVisible();
   });
-  it("keeps temporary fusion opt-in and exposes the arrow switch", async () => {
+  it("keeps visual settings in an independent right-side panel with semantic density", async () => {
     renderPage({ getResearchMap: async () => ({ ...makeGraphObservation({ nodes: [makeGraphObservationNode("a", "节点 A")] }), temporaryFusionCount: 1 }) });
-    await screen.findByTestId("global-map-canvas"); const user = userEvent.setup(); await user.click(screen.getByRole("button", { name: "更多地图功能" }));
-    expect(screen.getByLabelText("显示关系箭头")).not.toBeChecked(); await user.click(screen.getByLabelText("显示关系箭头")); expect(screen.getByLabelText("显示关系箭头")).toBeChecked();
+    await screen.findByTestId("global-map-canvas");
+    const user = userEvent.setup();
+    expect(screen.queryByRole("button", { name: "更多地图功能" })).not.toBeInTheDocument();
+    const trigger = screen.getByRole("button", { name: "图谱呈现与布局" });
+    await user.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    const panel = screen.getByRole("region", { name: "图谱呈现与布局" });
+    expect(panel).toHaveTextContent("呈现");
+    expect(panel).toHaveTextContent("布局");
+    expect(screen.getByLabelText("显示关系箭头")).not.toBeChecked();
+    await user.click(screen.getByLabelText("显示关系箭头"));
+    expect(screen.getByLabelText("显示关系箭头")).toBeChecked();
+    await user.selectOptions(screen.getByLabelText("布局密度"), "spacious");
+    expect(screen.getByLabelText("布局密度")).toHaveValue("spacious");
+    expect(panel).toHaveTextContent("疏朗");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("region", { name: "图谱呈现与布局" })).not.toBeInTheDocument();
+    const closedTrigger = screen.getByRole("button", { name: "图谱呈现与布局" });
+    expect(closedTrigger).toHaveAttribute("aria-expanded", "false");
+    await waitFor(() => expect(closedTrigger).toHaveFocus());
   });
 });

@@ -14,12 +14,13 @@ export function filterResearchMapObservation(
   includeTemporarySources: boolean,
 ): ResearchGraphObservation {
   const selectedProjectIds = input.projectIds?.length ? new Set(input.projectIds) : undefined;
+  const hasProjectFilter = Boolean(selectedProjectIds || input.includeUncategorized === true);
   const selectedLifecycles = new Set(input.lifecycles ?? ["active", "archived"]);
   const inScope = (summary: ResearchGraphObservationNode) => {
     if (!selectedLifecycles.has(summary.lifecycle)) return false;
-    if (selectedProjectIds) {
+    if (hasProjectFilter) {
       const included = summary.projectId
-        ? selectedProjectIds.has(summary.projectId)
+        ? selectedProjectIds?.has(summary.projectId) === true
         : input.includeUncategorized === true;
       if (!included) return false;
     }

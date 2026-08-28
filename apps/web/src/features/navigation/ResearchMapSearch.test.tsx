@@ -6,7 +6,7 @@ import type { ApiClient } from "../../api/client";
 import { ServicesProvider, type AppServices } from "../../app/services";
 import { ResearchMapSearch } from "./ResearchMapSearch";
 
-function renderSearch(api: Partial<ApiClient>, search?: { query: string; selectedNodeId?: string }) {
+function renderSearch(api: Partial<ApiClient>, search?: { query: string; matchedNodeIds?: readonly string[]; selectedNodeId?: string }) {
   const onSearchChange = vi.fn();
   const onRevealNode = vi.fn();
   const onOpenMatch = vi.fn();
@@ -70,6 +70,7 @@ describe("ResearchMapSearch", () => {
     expect(screen.getByText("范围外相关内容")).toBeInTheDocument();
     expect(screen.getAllByText(/意思相近但用词不同的内容可能找不到/).length).toBeGreaterThan(0);
     expect(searchResearch).toHaveBeenCalledWith({ query: "向量数据库", insideNodeIds: ["inside"] });
+    expect(callbacks.onSearchChange).toHaveBeenCalledWith({ query: "向量数据库", matchedNodeIds: ["inside", "outside"] });
 
     await userEvent.setup().click(screen.getByRole("button", { name: /向量检索笔记/ }));
     expect(callbacks.onRevealNode).toHaveBeenCalledWith("inside");

@@ -24,9 +24,15 @@ test.describe("临时关联观察", () => {
     await installGlobalMapVisualFixture(page);
     await pairAndOpen(page, "/map");
     await page.setViewportSize({ width: 320, height: 800 });
-    await page.getByRole("button", { name: "更多地图功能" }).click();
+    await page.getByRole("button", { name: "图谱呈现与布局" }).click();
+    const panel = page.getByRole("region", { name: "图谱呈现与布局" });
     await expect(page.getByLabel("显示孤立节点")).toBeVisible();
-    await page.getByRole("button", { name: "关闭工具面板" }).click();
+    const panelBox = await panel.boundingBox();
+    expect(panelBox).not.toBeNull();
+    expect(panelBox!.x).toBe(0);
+    expect(panelBox!.width).toBe(320);
+    expect(Math.abs(panelBox!.y + panelBox!.height - 800)).toBeLessThanOrEqual(1);
+    await page.getByRole("button", { name: "关闭图谱呈现与布局" }).click();
     await page.getByRole("button", { name: "切换到节点列表" }).click();
     await expect(page.getByTestId("global-map-list")).toBeVisible();
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);

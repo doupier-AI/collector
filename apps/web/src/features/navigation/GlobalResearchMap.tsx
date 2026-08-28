@@ -11,7 +11,8 @@ import {
   type ResearchTemporaryFusionMapNode,
 } from "@collector/capture-contracts";
 import { stableNodePath } from "../../app/paths";
-import { createFocusMapPositions, createResearchMapLayout, type MapPoint as GraphPoint } from "./research-map-layout";
+import { createFocusMapPositions, createResearchMapLayout, rebaseMapPositions, type MapDensity, type MapPoint as GraphPoint } from "./research-map-layout";
+import { fitViewBoxToPoints, screenBoundedUserFontSize, screenPointToSvgPoint, svgPointFromClient, type SvgScreenMatrix } from "./research-map-geometry";
 import {
   beginDragSettlement,
   createDragSimulation,
@@ -45,6 +46,8 @@ interface DragState {
   pointerId: number;
   clientX: number;
   clientY: number;
+  startSvg: GraphPoint;
+  screenMatrix: SvgScreenMatrix;
   viewBox: ViewBoxState;
   moved: boolean;
 }
@@ -68,8 +71,6 @@ interface NodeDragState {
 
 const MIN_VIEW_WIDTH = 320;
 const MAX_VIEW_WIDTH = 1_440;
-const INITIAL_VIEW_HORIZONTAL_PADDING = 180;
-const INITIAL_VIEW_VERTICAL_PADDING = 160;
 const POSITION_COMMIT_EPSILON = 0.5;
 
 function displacedPositions(
@@ -141,25 +142,29 @@ function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
 }
 
+function nodeRadius(summary: ResearchGraphObservationNode, scale: number): number {
+  const baseRadius = summary.role === "fusion" ? 9 : 7;
+  return baseRadius * clamp(scale, 0.75, 1.5);
+}
+
 function colorClass(summary: ResearchGraphObservationNode, mode: "project" | "node-type" | "lifecycle", prefix = "global-map__node"): string {
   return mode === "project" ? projectColorClass(summary, prefix) : `${prefix}--color-${mode}`;
 }
 
 function straightPath(from: GraphPoint, to: GraphPoint): string { return `M ${from.x} ${from.y} L ${to.x} ${to.y}`; }
 
-function viewBoxForPositions(positions: ReadonlyMap<string, GraphPoint>, fallback: { width: number; height: number }): ViewBoxState {
-  const points = [...positions.values()];
-  if (!points.length) return { x: 0, y: 0, width: fallback.width, height: fallback.height };
-  const minX = Math.min(...points.map((point) => point.x));
-  const maxX = Math.max(...points.map((point) => point.x));
-  const minY = Math.min(...points.map((point) => point.y));
-  const maxY = Math.max(...points.map((point) => point.y));
-  const centerX = (minX + maxX) / 2;
-  const centerY = (minY + maxY) / 2;
-  // 首屏让节点标题仍可直接阅读；边缘留白只需容纳标签与拖拽手势，不应把稀疏小图缩到画布中央。
-  const width = clamp(Math.max(MIN_VIEW_WIDTH, maxX - minX + INITIAL_VIEW_HORIZONTAL_PADDING), MIN_VIEW_WIDTH, fallback.width);
-  const height = clamp(Math.max(220, maxY - minY + INITIAL_VIEW_VERTICAL_PADDING), 220, fallback.height);
-  return { x: centerX - width / 2, y: centerY - height / 2, width, height };
+function clippedStraightPath(from: GraphPoint, to: GraphPoint, fromRadius: number, toRadius: number, withArrow: boolean): string {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const distance = Math.hypot(dx, dy);
+  if (distance <= 0) return straightPath(from, to);
+  const unit = { x: dx / distance, y: dy / distance };
+  const desiredFromTrim = fromRadius + 2;
+  const desiredToTrim = toRadius + (withArrow ? 5 : 2);
+  const trimScale = Math.min(1, Math.max(0, distance - 1) / (desiredFromTrim + desiredToTrim));
+  const start = { x: from.x + unit.x * desiredFromTrim * trimScale, y: from.y + unit.y * desiredFromTrim * trimScale };
+  const end = { x: to.x - unit.x * desiredToTrim * trimScale, y: to.y - unit.y * desiredToTrim * trimScale };
+  return straightPath(start, end);
 }
 
 function titleLines(label: string): readonly [string, string | undefined] {
@@ -259,33 +264,52 @@ interface GlobalResearchMapProps {
   nodeScale?: number;
   titleOpacity?: number;
   lineWidth?: number;
-  density?: number;
+  density?: MapDensity;
   colorMode?: "project" | "node-type" | "lifecycle";
   layoutResetToken?: number;
   onOpenCandidates?: (scope: MapAssociationCandidateScene, trigger: Element) => void;
 }
 
-export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpenNode, nodeHref = stableNodePath, revealNodeId, revealRequestId, onRevealHandled, search, presentation = "canvas", immersive = false, onSurfaceInteraction, associationHints = [], temporaryFusions = [], hideTemporaryFusions = Boolean(observation.focusNodeId), candidateMode = false, showArrows = false, nodeScale = 1, titleOpacity = 0.62, lineWidth = 1.25, density = 1, colorMode = "project", layoutResetToken = 0, onOpenCandidates }: GlobalResearchMapProps) {
+export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpenNode, nodeHref = stableNodePath, revealNodeId, revealRequestId, onRevealHandled, search, presentation = "canvas", immersive = false, onSurfaceInteraction, associationHints = [], temporaryFusions = [], hideTemporaryFusions = Boolean(observation.focusNodeId), candidateMode = false, showArrows = false, nodeScale = 1, titleOpacity = 0.62, lineWidth = 1.25, density = "balanced", colorMode = "project", layoutResetToken = 0, onOpenCandidates }: GlobalResearchMapProps) {
+  const initialAspectRatioRef = useRef(typeof window === "undefined" ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight));
   const layout = useMemo(
-    () => createResearchMapLayout(observation, density),
+    () => createResearchMapLayout(observation, density, initialAspectRatioRef.current),
     [density, observation],
   );
   /** 当前 /map 挂载期的唯一基础坐标；筛选、搜索和专注只读它，绝不重新排已有节点。 */
   const [basePositions, setBasePositions] = useState<Map<string, GraphPoint>>(() => new Map(layout.positions));
+  const basePositionsRef = useRef(basePositions);
+  basePositionsRef.current = basePositions;
+  const systemLayoutPositionsRef = useRef<Map<string, GraphPoint>>(new Map(layout.positions));
   const baseDensityRef = useRef(density);
   const resetTokenRef = useRef(layoutResetToken);
   const viewBoxResetTokenRef = useRef(layoutResetToken);
   useLayoutEffect(() => {
-    const shouldReset = resetTokenRef.current !== layoutResetToken || baseDensityRef.current !== density;
+    const resetRequested = resetTokenRef.current !== layoutResetToken;
+    const densityChanged = baseDensityRef.current !== density;
+    const previousSystem = systemLayoutPositionsRef.current;
     resetTokenRef.current = layoutResetToken;
     baseDensityRef.current = density;
-    setBasePositions((current) => {
-      if (shouldReset) return new Map(layout.positions);
-      const next = new Map(current);
+    const current = basePositionsRef.current;
+    const next = resetRequested ? new Map(layout.positions) : new Map(current);
+    if (densityChanged && !resetRequested) {
+      for (const [id, point] of rebaseMapPositions(previousSystem, current, layout.positions)) next.set(id, point);
+    } else if (!resetRequested) {
       for (const [id, point] of layout.positions) if (!next.has(id)) next.set(id, point);
-      return next;
-    });
-  }, [density, layout, layoutResetToken]);
+    }
+    basePositionsRef.current = next;
+    setBasePositions(next);
+    if (densityChanged && !resetRequested && !observation.focusNodeId) {
+      const visible = observation.nodes.map(({ node }) => next.get(node.id)).filter((point): point is GraphPoint => Boolean(point));
+      setViewBox(fitViewBoxToPoints(visible, initialAspectRatioRef.current));
+    }
+    if (resetRequested) systemLayoutPositionsRef.current = new Map(layout.positions);
+    else {
+      const nextSystem = new Map(previousSystem);
+      for (const [id, point] of layout.positions) nextSystem.set(id, point);
+      systemLayoutPositionsRef.current = nextSystem;
+    }
+  }, [density, layout, layoutResetToken, observation.focusNodeId, observation.nodes]);
   // 显示层只取当前可见节点；隐藏节点仍保留在 basePositions，恢复筛选时不闪回初始布局。
   const persistPositions = useMemo(() => {
     const merged = new Map<string, GraphPoint>();
@@ -332,7 +356,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
     [positions, visibleNodeIds],
   );
   const world = layout.world;
-  const defaultViewBox = useMemo(() => viewBoxForPositions(persistPositions, world), [persistPositions, world]);
+  const defaultViewBox = useMemo(() => fitViewBoxToPoints(persistPositions.values(), initialAspectRatioRef.current), [persistPositions]);
   const [viewBox, setViewBox] = useState<ViewBoxState>(defaultViewBox);
   const [dragging, setDragging] = useState(false);
   const dragRef = useRef<DragState | null>(null);
@@ -343,8 +367,14 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
   const adjacency = useMemo(() => adjacencyFor(observation), [observation]);
   const visualEdges = useMemo(() => visualEdgesFor(observation), [observation]);
   const candidateEndpointIds = useMemo(() => new Set(associationHints.flatMap((hint) => [hint.anchorNodeId, hint.relatedNodeId])), [associationHints]);
+  const searchMatchIds = useMemo(() => new Set(search?.matchedNodeIds ?? (search?.selectedNodeId ? [search.selectedNodeId] : [])), [search?.matchedNodeIds, search?.selectedNodeId]);
+  const hasSearchFeedback = Boolean(search?.matchedNodeIds || search?.selectedNodeId);
   const nodeLabelsById = useMemo(
     () => new Map(observation.nodes.map((summary) => [summary.node.id, summary.label])),
+    [observation.nodes],
+  );
+  const nodeSummariesById = useMemo(
+    () => new Map(observation.nodes.map((summary) => [summary.node.id, summary])),
     [observation.nodes],
   );
   const nodeIdsKey = useMemo(
@@ -362,6 +392,26 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [keyboardNodeId, setKeyboardNodeId] = useState<string | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const [titleUserFontSize, setTitleUserFontSize] = useState(13);
+  const updateTitleUserFontSize = useCallback(() => {
+    const svg = svgRef.current;
+    const matrix = svg && typeof svg.getScreenCTM === "function" ? svg.getScreenCTM() : undefined;
+    if (!matrix) return;
+    const next = screenBoundedUserFontSize(Math.hypot(matrix.a, matrix.b));
+    setTitleUserFontSize((current) => Math.abs(current - next) < 0.001 ? current : next);
+  }, []);
+  useLayoutEffect(updateTitleUserFontSize, [updateTitleUserFontSize, viewBox]);
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(updateTitleUserFontSize);
+      observer.observe(svg);
+      return () => observer.disconnect();
+    }
+    window.addEventListener("resize", updateTitleUserFontSize);
+    return () => window.removeEventListener("resize", updateTitleUserFontSize);
+  }, [updateTitleUserFontSize]);
   const viewBoxRef = useRef(viewBox);
   viewBoxRef.current = viewBox;
   const canvasNodeRefs = useRef(new Map<string, SVGGElement>());
@@ -461,8 +511,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
       orchestrationRafRef.current = undefined;
     }
     if (nodePhysicsActive) {
-      orchestrationLatestRef.current = null;
-      setOrchestrationPositions(null);
+      // 专注拖动只在最高显示层叠加被拖节点；整套专注编排必须保持不动。
       return;
     }
     const reduced = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -503,17 +552,31 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
     }
     const base = new Map(focusSnapshotRef.current?.positions ?? persistPositions);
     const target = createFocusMapPositions(observation, focusedNodeId, base);
+    const focusPositions = observation.nodes
+      .filter((summary) => summary.connectivity === "focus" || summary.connectivity === "connected")
+      .map((summary) => target.get(summary.node.id))
+      .filter((point): point is GraphPoint => Boolean(point));
+    // 专注首屏只拟合完整父子树；外围节点仍保留在可平移到达的显示层，但不抢占首屏。
+    const targetViewBox = fitViewBoxToPoints(focusPositions, initialAspectRatioRef.current);
     if (reduced) {
       orchestrationLatestRef.current = target;
       setOrchestrationPositions(target);
+      setViewBox(targetViewBox);
       return;
     }
     const startAt = performance.now();
+    const startViewBox = viewBoxRef.current;
     const tick = (now: number) => {
       const progress = Math.min(1, (now - startAt) / ORCHESTRATION_DURATION_MS);
       const next = interpolatePoints(base, target, progress);
       orchestrationLatestRef.current = next;
       setOrchestrationPositions(next);
+      setViewBox({
+        x: startViewBox.x + (targetViewBox.x - startViewBox.x) * progress,
+        y: startViewBox.y + (targetViewBox.y - startViewBox.y) * progress,
+        width: startViewBox.width + (targetViewBox.width - startViewBox.width) * progress,
+        height: startViewBox.height + (targetViewBox.height - startViewBox.height) * progress,
+      });
       if (progress < 1) orchestrationRafRef.current = requestAnimationFrame(tick);
       else orchestrationRafRef.current = undefined;
     };
@@ -625,13 +688,8 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
     drag.raf = requestAnimationFrame(stepNodeDragFrame);
   }, [finishNodeDrag]);
   const toSvgPoint = useCallback((clientX: number, clientY: number): GraphPoint | undefined => {
-    const bounds = svgRef.current?.getBoundingClientRect();
-    if (!bounds) return undefined;
-    const view = viewBoxRef.current;
-    return {
-      x: view.x + ((clientX - bounds.left) / Math.max(1, bounds.width)) * view.width,
-      y: view.y + ((clientY - bounds.top) / Math.max(1, bounds.height)) * view.height,
-    };
+    const svg = svgRef.current;
+    return svg ? svgPointFromClient(svg, clientX, clientY) : undefined;
   }, []);
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -733,11 +791,8 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
     if (!svg || candidateMode) return;
     const handleWheel = (event: WheelEvent) => {
       event.preventDefault();
-      const current = viewBoxRef.current;
-      const bounds = svg.getBoundingClientRect();
-      const centerX = current.x + ((event.clientX - bounds.left) / Math.max(1, bounds.width)) * current.width;
-      const centerY = current.y + ((event.clientY - bounds.top) / Math.max(1, bounds.height)) * current.height;
-      zoomAt(event.deltaY > 0 ? 1.12 : 0.88, centerX, centerY);
+      const center = svgPointFromClient(svg, event.clientX, event.clientY);
+      if (center) zoomAt(event.deltaY > 0 ? 1.12 : 0.88, center.x, center.y);
     };
     svg.addEventListener("wheel", handleWheel, { passive: false });
     return () => svg.removeEventListener("wheel", handleWheel);
@@ -745,21 +800,27 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
 
   const startPan = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || (event.target as Element).closest("[data-node-id], .global-map__candidate-satellite, button, a")) return;
+    const svg = svgRef.current;
+    const matrix = svg && typeof svg.getScreenCTM === "function" ? svg.getScreenCTM() : undefined;
+    if (!matrix) return;
+    const screenMatrix = { a: matrix.a, b: matrix.b, c: matrix.c, d: matrix.d, e: matrix.e, f: matrix.f };
+    const startSvg = screenPointToSvgPoint(screenMatrix, { x: event.clientX, y: event.clientY });
+    if (!startSvg) return;
     event.currentTarget.setPointerCapture(event.pointerId);
-    dragRef.current = { pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY, viewBox, moved: false };
+    dragRef.current = { pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY, startSvg, screenMatrix, viewBox, moved: false };
     setDragging(true);
   };
 
   const continuePan = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    const bounds = svgRef.current?.getBoundingClientRect();
-    if (!bounds) return;
+    const currentSvg = screenPointToSvgPoint(drag.screenMatrix, { x: event.clientX, y: event.clientY });
+    if (!currentSvg) return;
     drag.moved = drag.moved || Math.hypot(event.clientX - drag.clientX, event.clientY - drag.clientY) > 3;
     setViewBox({
       ...drag.viewBox,
-      x: drag.viewBox.x - ((event.clientX - drag.clientX) / Math.max(1, bounds.width)) * drag.viewBox.width,
-      y: drag.viewBox.y - ((event.clientY - drag.clientY) / Math.max(1, bounds.height)) * drag.viewBox.height,
+      x: drag.viewBox.x - (currentSvg.x - drag.startSvg.x),
+      y: drag.viewBox.y - (currentSvg.y - drag.startSvg.y),
     });
   };
 
@@ -777,7 +838,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
   };
 
   return (
-    <section className={["global-map", immersive ? "global-map--immersive" : "", candidateMode ? "global-map--candidate-mode" : "", `global-map--presentation-${presentation}`].filter(Boolean).join(" ")} style={{ "--global-map-node-scale": nodeScale, "--global-map-title-opacity": titleOpacity, "--global-map-line-width": `${lineWidth}px` } as React.CSSProperties} aria-labelledby="global-map-title">
+    <section className={["global-map", immersive ? "global-map--immersive" : "", candidateMode ? "global-map--candidate-mode" : "", `global-map--presentation-${presentation}`].filter(Boolean).join(" ")} style={{ "--global-map-title-opacity": titleOpacity, "--global-map-line-width": `${lineWidth}px` } as React.CSSProperties} aria-labelledby="global-map-title">
       {!immersive ? <div className="global-map__summary" aria-label="地图摘要">
         <span><strong>{observation.nodes.length}</strong> 个节点</span>
         <span><strong>{observation.edges.length}</strong> 条永久关系</span>
@@ -816,8 +877,8 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
           viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`}
         >
           <defs>
-            <marker id="global-map-arrow-child" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5" markerHeight="5" orient="auto"><path d="M 0 0 L 8 4 L 0 8 z" fill="var(--color-muted)" /></marker>
-            <marker id="global-map-arrow-fusion" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5" markerHeight="5" orient="auto"><path d="M 0 0 L 8 4 L 0 8 z" fill="var(--color-muted)" /></marker>
+            <marker id="global-map-arrow-child" viewBox="0 0 8 8" refX="8" refY="4" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 8 4 L 0 8 z" fill="var(--color-muted)" /></marker>
+            <marker id="global-map-arrow-fusion" viewBox="0 0 8 8" refX="8" refY="4" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 8 4 L 0 8 z" fill="var(--color-muted)" /></marker>
           </defs>
           <rect className="global-map__pan-surface" x={viewBox.x} y={viewBox.y} width={viewBox.width} height={viewBox.height} />
           {candidateMode ? associationHints.map((hint) => {
@@ -844,7 +905,6 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
             const from = positions.get(fromNodeId);
             const to = positions.get(toNodeId);
             if (!from || !to) return null;
-            const edgePath = straightPath(from, to);
             const emphasized = interactionNodeId === fromNodeId || interactionNodeId === toNodeId;
             const edgeClasses = [
               "global-map__edge",
@@ -858,6 +918,15 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
               return `${relationshipName(fact.kind)}：${factFrom} 指向 ${factTo}`;
             }).join("；");
             const showDirection = showArrows && directionConsistent;
+            const fromSummary = nodeSummariesById.get(fromNodeId);
+            const toSummary = nodeSummariesById.get(toNodeId);
+            const edgePath = clippedStraightPath(
+              from,
+              to,
+              fromSummary ? nodeRadius(fromSummary, nodeScale) : 7 * nodeScale,
+              toSummary ? nodeRadius(toSummary, nodeScale) : 7 * nodeScale,
+              showDirection,
+            );
             return (
               <g key={id} data-connection-id={id} role="img" aria-label={`${directionDescription}，${connectivity === "connected" ? "当前专注脉络" : connectivity === "unconnected" ? "当前未连通" : "全局关系"}`}>
                 <path data-edge-kind={kinds.join(" ")} className={edgeClasses} d={edgePath} />
@@ -867,6 +936,11 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
           })}
           {observation.nodes.map((summary) => {
             const position = positions.get(summary.node.id)!;
+            const radius = nodeRadius(summary, nodeScale);
+            const [primaryTitle, secondaryTitle] = titleLines(summary.label);
+            const stableTextLineHeight = titleUserFontSize * 1.08;
+            const detailsY = 27 + stableTextLineHeight * (secondaryTitle ? 2 : 1);
+            const annotationFontSize = titleUserFontSize * (10 / 13);
             const current = summary.node.id === resolvedRovingNodeId;
             const evidence = evidenceStatus(summary);
             const externalScope = externalScopePresentation(summary);
@@ -874,6 +948,9 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
               ? summary.node.id === interactionNodeId
                 ? "global-map__node--emphasized"
                 : directNeighbors.has(summary.node.id) ? "global-map__node--neighbor" : "global-map__node--muted"
+              : "";
+            const searchClass = hasSearchFeedback
+              ? searchMatchIds.has(summary.node.id) ? "global-map__node--search-match" : "global-map__node--search-muted"
               : "";
             const classes = [
               "global-map__node",
@@ -883,6 +960,8 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
               externalScope ? `global-map__node--${externalScope.modifier}` : "",
               colorClass(summary, colorMode),
               interactionClass,
+              searchClass,
+              search?.selectedNodeId === summary.node.id ? "global-map__node--search-selected" : "",
               focusedNodeId === summary.node.id ? "global-map__node--selected" : "",
               candidateMode && candidateEndpointIds.has(summary.node.id) ? "global-map__node--candidate-endpoint" : "",
             ].filter(Boolean).join(" ");
@@ -996,14 +1075,14 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
                 onDoubleClick={() => { if (!candidateMode) { cancelPendingFocus(); onOpenNode?.(summary.node.id); } }}
                 onKeyDown={(event) => { if (!candidateMode) handleKey(event, summary.node.id, canvasNodeRefs.current); }}
               >
-                <circle className="global-map__node-selection-halo" r="14" />
-                <circle className="global-map__node-focus-ring" r="17" />
-                <circle className="global-map__node-core" r="7" />
+                <circle className="global-map__node-selection-halo" r={radius + 7} />
+                <circle className="global-map__node-focus-ring" r={radius + 10} />
+                <circle className="global-map__node-core" r={radius} />
                 <title>{summary.label}</title>
-                <text className="global-map__node-title" textAnchor="middle" y="27" aria-hidden="true"><tspan x="0">{titleLines(summary.label)[0]}</tspan>{titleLines(summary.label)[1] ? <tspan x="0" dy="14">{titleLines(summary.label)[1]}</tspan> : null}</text>
-                <text className="global-map__node-details" textAnchor="middle" y="43" aria-hidden="true">{compactNodeDetails(summary)}</text>
-                {evidence ? <text className={`global-map__node-evidence global-map__node-evidence--${summary.fusionEvidenceHealth}`} textAnchor="middle" y="58" aria-hidden="true">{evidence}</text> : null}
-                {externalScope ? <text className="global-map__node-scope" textAnchor="middle" y={evidence ? 73 : 58} aria-hidden="true">{externalScope.label}</text> : null}
+                <text className="global-map__node-title" textAnchor="middle" y="27" style={{ fontSize: titleUserFontSize }} aria-hidden="true"><tspan x="0">{primaryTitle}</tspan>{secondaryTitle ? <tspan x="0" dy={stableTextLineHeight}>{secondaryTitle}</tspan> : null}</text>
+                <text className="global-map__node-details" textAnchor="middle" y={detailsY} style={{ fontSize: annotationFontSize }} aria-hidden="true">{compactNodeDetails(summary)}</text>
+                {evidence ? <text className={`global-map__node-evidence global-map__node-evidence--${summary.fusionEvidenceHealth}`} textAnchor="middle" y={detailsY + stableTextLineHeight} style={{ fontSize: annotationFontSize }} aria-hidden="true">{evidence}</text> : null}
+                {externalScope ? <text className="global-map__node-scope" textAnchor="middle" y={detailsY + stableTextLineHeight * (evidence ? 2 : 1)} style={{ fontSize: annotationFontSize }} aria-hidden="true">{externalScope.label}</text> : null}
               </g>
             );
           })}
@@ -1011,12 +1090,13 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
             if (summary.candidateCount <= 0) return null;
             const position = positions.get(summary.node.id);
             if (!position) return null;
+            const satelliteOffset = nodeRadius(summary, nodeScale) + 10;
             return (
               <g
                 key={`candidate-satellite:${summary.node.id}`}
                 className="global-map__candidate-satellite"
                 data-candidate-trigger={`canvas:${summary.node.id}`}
-                transform={`translate(${position.x + 17} ${position.y - 17})`}
+                transform={`translate(${position.x + satelliteOffset} ${position.y - satelliteOffset})`}
                 role="button"
                 tabIndex={0}
                 aria-label={`查看${summary.label}的${summary.candidateCount}条关联候选`}

@@ -38,7 +38,7 @@ test.describe("统一研究图谱", () => {
   test("控制面板只暴露结果向控制，不暴露关系类型或力场参数", async ({ page }) => {
     await installGlobalMapVisualFixture(page);
     await pairAndOpen(page, "/map");
-    await page.getByRole("button", { name: "更多地图功能" }).click();
+    await page.getByRole("button", { name: "图谱呈现与布局" }).click();
     await expect(page.getByLabel("颜色模式")).toHaveValue("project");
     await expect(page.getByLabel("显示孤立节点")).toBeChecked();
     await expect(page.getByRole("button", { name: "重置本次布局" })).toBeVisible();

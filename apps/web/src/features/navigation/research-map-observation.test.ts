@@ -62,4 +62,17 @@ describe("research map observation derivation", () => {
     ]);
     expect(filtered.edges).toEqual([]);
   });
+
+  it("仅勾选未分类时不会把所有项目节点误当成未筛选", () => {
+    const observation = makeGraphObservation({
+      nodes: [
+        makeGraphObservationNode("project", "项目节点", { projectId: "project-a" }),
+        makeGraphObservationNode("uncategorized", "未分类节点", { projectId: undefined }),
+      ],
+    });
+
+    const filtered = filterResearchMapObservation(observation, { includeUncategorized: true }, false);
+
+    expect(filtered.nodes.map((summary) => summary.node.id)).toEqual(["uncategorized"]);
+  });
 });

@@ -64,6 +64,10 @@ export function ResearchMapSearch({ search, insideNodeIds, onSearchChange, onRev
         if (!stale) {
           setResponse(next);
           setLoading(false);
+          const matchedNodeIds = [...new Set(next.groups.flatMap((group) => group.nodes.map((node) => node.nodeId)))];
+          if (matchedNodeIds.join("\u0000") !== (search.matchedNodeIds ?? []).join("\u0000")) {
+            onSearchChange({ ...search, matchedNodeIds });
+          }
         }
       },
       (nextError) => {
