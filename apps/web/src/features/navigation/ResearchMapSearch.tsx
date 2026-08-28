@@ -45,7 +45,10 @@ export function ResearchMapSearch({ search, insideNodeIds, onSearchChange, onRev
   const insideKey = useMemo(() => [...insideNodeIds].sort().join("\0"), [insideNodeIds]);
   // Beyond the contract cap the scope set can no longer be shipped verbatim;
   // searching must keep working, so grouping degrades instead of failing.
-  const boundedInsideNodeIds = insideNodeIds.length <= RESEARCH_SEARCH_MAX_SCOPE_NODE_IDS ? insideNodeIds : undefined;
+  const boundedInsideNodeIds = useMemo(
+    () => insideNodeIds.length <= RESEARCH_SEARCH_MAX_SCOPE_NODE_IDS ? [...insideNodeIds] : undefined,
+    [insideKey],
+  );
 
   useEffect(() => setDraft(search?.query ?? ""), [search?.query]);
 

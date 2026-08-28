@@ -1,4 +1,5 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
@@ -28,6 +29,23 @@ function renderSearch(api: Partial<ApiClient>, search?: { query: string; matched
 }
 
 describe("ResearchMapSearch", () => {
+  it("把命中节点回写到场景时不会因等价范围数组重发查询", async () => {
+    const searchResearch = vi.fn(async () => ({
+      query: "向量数据库",
+      mode: "hybrid" as const,
+      groups: [{ scope: "inside-current-scope" as const, nodes: [{ nodeId: "inside", nodeLabel: "节点", matches: [{ field: "node-title" as const, preview: "节点", locator: { kind: "node-title" as const, nodeId: "inside" } }] }] }],
+    }));
+    const services = { api: { searchResearch }, connectTaskEvents: vi.fn() } as unknown as AppServices;
+    function Harness() {
+      const [search, setSearch] = useState({ query: "向量数据库" } as { query: string; matchedNodeIds?: readonly string[] });
+      return <ResearchMapSearch search={search} insideNodeIds={["inside"]} onSearchChange={(next) => { if (next) setSearch(next); }} onRevealNode={vi.fn()} onOpenMatch={vi.fn()} />;
+    }
+    render(<ServicesProvider services={services}><MemoryRouter><Harness /></MemoryRouter></ServicesProvider>);
+
+    expect(await screen.findByText("找到 1 个相关节点")).toBeVisible();
+    await waitFor(() => expect(searchResearch).toHaveBeenCalledTimes(1));
+  });
+
   it("打开地图不会自动搜索或下载，只有提交后才保存查询", async () => {
     const searchResearch = vi.fn();
     const { onSearchChange } = renderSearch({ searchResearch });
