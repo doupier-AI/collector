@@ -25,6 +25,31 @@ test.describe("统一研究图谱", () => {
     await expect.poll(async () => Promise.all([amber, blue, violet].map((node) => node.getAttribute("transform")))).toEqual(initial);
   });
 
+  test("专注动画中拖动节点时其他节点冻结，松手后从当前编排继续", async ({ page }) => {
+    await installGlobalMapVisualFixture(page);
+    await pairAndOpen(page, "/map");
+    const canvas = page.getByTestId("global-map-canvas");
+    await expect(canvas).toHaveAttribute("data-entry-animation", "complete");
+    const amber = canvas.locator("[data-node-id='map-amber']");
+    const blue = canvas.locator("[data-node-id='map-blue']");
+    await amber.locator(".global-map__node-core").click();
+    await expect(amber).toHaveAttribute("aria-pressed", "true");
+    await amber.locator(".global-map__node-core").hover();
+    await page.mouse.down();
+    await expect(canvas).toHaveAttribute("data-node-physics", "active");
+    const frozen = await blue.boundingBox();
+    await page.waitForTimeout(120);
+    const duringDrag = await blue.boundingBox();
+    if (!frozen || !duringDrag) throw new Error("missing untouched node");
+    expect(Math.hypot(duringDrag.x - frozen.x, duringDrag.y - frozen.y)).toBeLessThanOrEqual(1);
+    const activeBox = await amber.boundingBox();
+    if (!activeBox) throw new Error("missing focused node");
+    await page.mouse.move(activeBox.x + activeBox.width / 2 + 30, activeBox.y + activeBox.height / 2);
+    await page.mouse.up();
+    await expect(canvas).toHaveAttribute("data-node-physics", "idle");
+    await expect.poll(async () => blue.getAttribute("transform")).not.toBeNull();
+  });
+
   test("旧专注地址只消费一次意图，刷新后仍是无状态的 /map", async ({ page }) => {
     await installGlobalMapVisualFixture(page);
     await pairAndOpen(page, "/map/focus/map-amber");

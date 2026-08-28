@@ -40,7 +40,7 @@ export function fitViewBoxToPoints(
   verticalPadding = 160,
 ): MapViewBox {
   const values = [...points];
-  const ratio = Math.max(0.5, Math.min(2.5, aspectRatio));
+  const ratio = Number.isFinite(aspectRatio) ? Math.max(0.1, Math.min(10, aspectRatio)) : 16 / 9;
   if (!values.length) {
     const height = Math.max(220, 320 / ratio);
     return { x: 0, y: 0, width: height * ratio, height };
@@ -49,10 +49,10 @@ export function fitViewBoxToPoints(
   const maxX = Math.max(...values.map(({ x }) => x));
   const minY = Math.min(...values.map(({ y }) => y));
   const maxY = Math.max(...values.map(({ y }) => y));
-  const centerX = values.reduce((sum, point) => sum + point.x / values.length, 0);
-  const centerY = values.reduce((sum, point) => sum + point.y / values.length, 0);
-  const contentWidth = Math.max(centerX - minX, maxX - centerX) * 2 + horizontalPadding;
-  const contentHeight = Math.max(centerY - minY, maxY - centerY) * 2 + verticalPadding;
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
+  const contentWidth = maxX - minX + horizontalPadding;
+  const contentHeight = maxY - minY + verticalPadding;
   let width = Math.max(320, contentWidth, contentHeight * ratio);
   let height = width / ratio;
   if (height < Math.max(220, contentHeight)) {

@@ -15,7 +15,7 @@ import { ResearchMapSearch } from "./ResearchMapSearch";
 import { DEFAULT_MAP_VISUAL_SETTINGS, ResearchMapVisualSettings } from "./ResearchMapVisualSettings";
 import { TemporaryFusionObservationPanel } from "./TemporaryFusionObservationPanel";
 import { consumeMapEntryIntent } from "./map-entry-intent";
-import { filterResearchMapObservation, focusResearchMapObservation, withResearchMapIsolates } from "./research-map-observation";
+import { filterResearchMapObservation, focusResearchMapObservation, withResearchMapIsolates, withResearchMapRevealTarget } from "./research-map-observation";
 import { researchSearchMatchTarget } from "./research-search-navigation";
 import { type MapAssociationCandidateScene, type MapSearchScene } from "./research-map-ui-state";
 import { fragmentDeepLink } from "../research-session/fragment-locator";
@@ -114,8 +114,9 @@ export function ResearchMapLandingPage() {
       serializedFilters.valid ? serializedFilters.input : {},
       temporaryFusionObservation,
     );
-    return focusResearchMapObservation(withResearchMapIsolates(filtered, showIsolates, focusNodeId), focusNodeId);
-  }, [focusNodeId, observationEntry, serializedFilters, showIsolates, temporaryFusionObservation]);
+    const revealed = withResearchMapRevealTarget(filtered, observationEntry.value, search?.selectedNodeId);
+    return focusResearchMapObservation(withResearchMapIsolates(revealed, showIsolates, focusNodeId), focusNodeId);
+  }, [focusNodeId, observationEntry, search?.selectedNodeId, serializedFilters, showIsolates, temporaryFusionObservation]);
   const [candidateEntry, setCandidateEntry] = useState<{ entryKey: string; value?: MapAssociationCandidateScene }>({ entryKey: mapEntryKey });
   const candidateScope = candidateEntry.value;
   const [candidateResult, setCandidateResult] = useState<{ hints: ResearchAssociationHintRecord[]; loading: boolean; error?: string }>({ hints: [], loading: false });

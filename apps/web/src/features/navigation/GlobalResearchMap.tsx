@@ -11,7 +11,7 @@ import {
   type ResearchTemporaryFusionMapNode,
 } from "@collector/capture-contracts";
 import { stableNodePath } from "../../app/paths";
-import { createFocusMapPositions, createResearchMapLayout, rebaseMapPositions, type MapDensity, type MapPoint as GraphPoint } from "./research-map-layout";
+import { createFocusMapPositions, createResearchMapLayout, mergeIncrementalMapPositions, rebaseMapPositions, type MapDensity, type MapPoint as GraphPoint, type TreeDirection } from "./research-map-layout";
 import { fitViewBoxToPoints, screenBoundedUserFontSize, screenPointToSvgPoint, svgPointFromClient, type SvgScreenMatrix } from "./research-map-geometry";
 import {
   beginDragSettlement,
@@ -272,10 +272,17 @@ interface GlobalResearchMapProps {
 
 export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpenNode, nodeHref = stableNodePath, revealNodeId, revealRequestId, onRevealHandled, search, presentation = "canvas", immersive = false, onSurfaceInteraction, associationHints = [], temporaryFusions = [], hideTemporaryFusions = Boolean(observation.focusNodeId), candidateMode = false, showArrows = false, nodeScale = 1, titleOpacity = 0.62, lineWidth = 1.25, density = "balanced", colorMode = "project", layoutResetToken = 0, onOpenCandidates }: GlobalResearchMapProps) {
   const initialAspectRatioRef = useRef(typeof window === "undefined" ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight));
+  const [canvasAspectRatio, setCanvasAspectRatio] = useState(initialAspectRatioRef.current);
+  const stableTreeDirectionsRef = useRef<Map<string, TreeDirection>>(new Map());
   const layout = useMemo(
-    () => createResearchMapLayout(observation, density, initialAspectRatioRef.current),
+    () => createResearchMapLayout(observation, density, initialAspectRatioRef.current, stableTreeDirectionsRef.current),
     [density, observation],
   );
+  useLayoutEffect(() => {
+    for (const [rootId, direction] of layout.treeDirections) {
+      if (!stableTreeDirectionsRef.current.has(rootId)) stableTreeDirectionsRef.current.set(rootId, direction);
+    }
+  }, [layout.treeDirections]);
   /** 当前 /map 挂载期的唯一基础坐标；筛选、搜索和专注只读它，绝不重新排已有节点。 */
   const [basePositions, setBasePositions] = useState<Map<string, GraphPoint>>(() => new Map(layout.positions));
   const basePositionsRef = useRef(basePositions);
@@ -291,17 +298,35 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
     resetTokenRef.current = layoutResetToken;
     baseDensityRef.current = density;
     const current = basePositionsRef.current;
-    const next = resetRequested ? new Map(layout.positions) : new Map(current);
+    const oldAnchorPoints = observation.nodes
+      .map(({ node }) => current.get(node.id))
+      .filter((point): point is GraphPoint => Boolean(point));
+    let next = resetRequested ? new Map(layout.positions) : new Map(current);
     if (densityChanged && !resetRequested) {
       for (const [id, point] of rebaseMapPositions(previousSystem, current, layout.positions)) next.set(id, point);
     } else if (!resetRequested) {
-      for (const [id, point] of layout.positions) if (!next.has(id)) next.set(id, point);
+      next = mergeIncrementalMapPositions(current, layout.positions, observation, stableTreeDirectionsRef.current);
     }
     basePositionsRef.current = next;
     setBasePositions(next);
     if (densityChanged && !resetRequested && !observation.focusNodeId) {
-      const visible = observation.nodes.map(({ node }) => next.get(node.id)).filter((point): point is GraphPoint => Boolean(point));
-      setViewBox(fitViewBoxToPoints(visible, initialAspectRatioRef.current));
+      const newAnchorPoints = observation.nodes
+        .map(({ node }) => current.has(node.id) ? next.get(node.id) : undefined)
+        .filter((point): point is GraphPoint => Boolean(point));
+      if (oldAnchorPoints.length && oldAnchorPoints.length === newAnchorPoints.length) {
+        const centroid = (points: readonly GraphPoint[]) => points.reduce((sum, point) => ({
+          x: sum.x + point.x / points.length,
+          y: sum.y + point.y / points.length,
+        }), { x: 0, y: 0 });
+        const before = centroid(oldAnchorPoints);
+        const after = centroid(newAnchorPoints);
+        // 密度不是重置：保留用户缩放和平移，只补偿布局质心位移。
+        setViewBox((currentViewBox) => ({
+          ...currentViewBox,
+          x: currentViewBox.x + after.x - before.x,
+          y: currentViewBox.y + after.y - before.y,
+        }));
+      }
     }
     if (resetRequested) systemLayoutPositionsRef.current = new Map(layout.positions);
     else {
@@ -356,7 +381,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
     [positions, visibleNodeIds],
   );
   const world = layout.world;
-  const defaultViewBox = useMemo(() => fitViewBoxToPoints(persistPositions.values(), initialAspectRatioRef.current), [persistPositions]);
+  const defaultViewBox = useMemo(() => fitViewBoxToPoints(persistPositions.values(), canvasAspectRatio), [canvasAspectRatio, persistPositions]);
   const [viewBox, setViewBox] = useState<ViewBoxState>(defaultViewBox);
   const [dragging, setDragging] = useState(false);
   const dragRef = useRef<DragState | null>(null);
@@ -400,18 +425,36 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
     const next = screenBoundedUserFontSize(Math.hypot(matrix.a, matrix.b));
     setTitleUserFontSize((current) => Math.abs(current - next) < 0.001 ? current : next);
   }, []);
+  const updateCanvasAspectRatio = useCallback(() => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return;
+    const next = rect.width / rect.height;
+    setCanvasAspectRatio((current) => Math.abs(current - next) < 0.001 ? current : next);
+  }, []);
   useLayoutEffect(updateTitleUserFontSize, [updateTitleUserFontSize, viewBox]);
+  const previousCanvasAspectRatioRef = useRef(canvasAspectRatio);
+  useLayoutEffect(() => {
+    if (Math.abs(previousCanvasAspectRatioRef.current - canvasAspectRatio) < 0.001) return;
+    previousCanvasAspectRatioRef.current = canvasAspectRatio;
+    setViewBox((current) => {
+      const center = { x: current.x + current.width / 2, y: current.y + current.height / 2 };
+      const width = current.height * canvasAspectRatio;
+      return { x: center.x - width / 2, y: center.y - current.height / 2, width, height: current.height };
+    });
+  }, [canvasAspectRatio]);
   useEffect(() => {
     const svg = svgRef.current;
     if (!svg) return;
+    const update = () => { updateTitleUserFontSize(); updateCanvasAspectRatio(); };
+    update();
     if (typeof ResizeObserver !== "undefined") {
-      const observer = new ResizeObserver(updateTitleUserFontSize);
+      const observer = new ResizeObserver(update);
       observer.observe(svg);
       return () => observer.disconnect();
     }
-    window.addEventListener("resize", updateTitleUserFontSize);
-    return () => window.removeEventListener("resize", updateTitleUserFontSize);
-  }, [updateTitleUserFontSize]);
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, [updateCanvasAspectRatio, updateTitleUserFontSize]);
   const viewBoxRef = useRef(viewBox);
   viewBoxRef.current = viewBox;
   const canvasNodeRefs = useRef(new Map<string, SVGGElement>());
@@ -505,7 +548,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
     if (orchestrationRafRef.current !== undefined) cancelAnimationFrame(orchestrationRafRef.current);
     orchestrationRafRef.current = undefined;
   }, []);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (orchestrationRafRef.current !== undefined) {
       cancelAnimationFrame(orchestrationRafRef.current);
       orchestrationRafRef.current = undefined;
@@ -557,18 +600,19 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
       .map((summary) => target.get(summary.node.id))
       .filter((point): point is GraphPoint => Boolean(point));
     // 专注首屏只拟合完整父子树；外围节点仍保留在可平移到达的显示层，但不抢占首屏。
-    const targetViewBox = fitViewBoxToPoints(focusPositions, initialAspectRatioRef.current);
+    const targetViewBox = fitViewBoxToPoints(focusPositions, canvasAspectRatio);
     if (reduced) {
       orchestrationLatestRef.current = target;
       setOrchestrationPositions(target);
       setViewBox(targetViewBox);
       return;
     }
+    const startPositions = new Map(orchestrationLatestRef.current ?? base);
     const startAt = performance.now();
     const startViewBox = viewBoxRef.current;
     const tick = (now: number) => {
       const progress = Math.min(1, (now - startAt) / ORCHESTRATION_DURATION_MS);
-      const next = interpolatePoints(base, target, progress);
+      const next = interpolatePoints(startPositions, target, progress);
       orchestrationLatestRef.current = next;
       setOrchestrationPositions(next);
       setViewBox({
@@ -581,7 +625,7 @@ export function GlobalResearchMap({ observation, onFocusNode, onExitFocus, onOpe
       else orchestrationRafRef.current = undefined;
     };
     orchestrationRafRef.current = requestAnimationFrame(tick);
-  }, [focusedNodeId, nodePhysicsActive, observation, persistPositions]);
+  }, [canvasAspectRatio, focusedNodeId, nodePhysicsActive, observation, persistPositions]);
 
   // ADR-0042 入场展开：首次挂载与新增节点从各自终点附近的确定性偏移柔展开到位；
   // 纯显示层动画，不触发 Map Scene 序列化，reduced-motion 直接就位。

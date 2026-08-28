@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { makeEdge, makeGraphObservation, makeGraphObservationNode } from "../../test/fakes";
 import { createFocusMapPositions, createResearchMapLayout, rebaseMapPositions, type TreeDirection } from "./research-map-layout";
-import { fitViewBoxToPoints } from "./research-map-geometry";
 
 function point(layout: ReturnType<typeof createResearchMapLayout>, id: string) {
   const value = layout.positions.get(id);
@@ -50,6 +49,26 @@ describe("createResearchMapLayout", () => {
     expect(isMonotonic(direction!, point(first, "root"), point(first, "a"))).toBe(true);
     expect(isMonotonic(direction!, point(first, "root"), point(first, "b"))).toBe(true);
     expect(isMonotonic(direction!, point(first, "a"), point(first, "grandchild"))).toBe(true);
+  });
+
+  it("tidy-tree 让同一分支的后代保持连续，不与兄弟分支交错", () => {
+    const ids = ["root", "branch-a", "branch-b", "a-1", "a-2"];
+    const observation = makeGraphObservation({
+      nodes: ids.map((id) => makeGraphObservationNode(id, id)),
+      edges: [
+        ["root", "branch-a"], ["root", "branch-b"], ["branch-a", "a-1"], ["branch-a", "a-2"],
+      ].map(([from, to]) => ({
+        edge: { ...makeEdge("parent-child", from!, to!), kind: "parent-child" as const },
+        connectivity: "default" as const,
+      })),
+    });
+    const layout = createResearchMapLayout(observation);
+    const direction = layout.treeDirections.get("root")!;
+    const secondary = (id: string) => direction === "right" || direction === "left" ? point(layout, id).y : point(layout, id).x;
+    const aRange = [secondary("branch-a"), secondary("a-1"), secondary("a-2")];
+    const branchB = secondary("branch-b");
+
+    expect(Math.max(...aRange) < branchB || Math.min(...aRange) > branchB).toBe(true);
   });
 
   it("融合来源不改变来源父子树坐标，融合成果及其后代整体靠近来源", () => {
@@ -138,7 +157,35 @@ describe("createResearchMapLayout", () => {
     }
   });
 
-  it("语义密度单调改变组件内间距并把整图质心稳定在同一屏幕锚点", () => {
+  it("组件间净距随语义密度单调增大", () => {
+    const componentIds = [["a-root", "a-child"], ["b-root", "b-child"]];
+    const observation = makeGraphObservation({
+      nodes: componentIds.flat().map((id) => makeGraphObservationNode(id, id)),
+      edges: componentIds.map(([root, child]) => ({
+        edge: { ...makeEdge("parent-child", root!, child!), kind: "parent-child" as const },
+        connectivity: "default" as const,
+      })),
+    });
+    const clearance = (density: "compact" | "balanced" | "spacious") => {
+      const layout = createResearchMapLayout(observation, density, 2.5);
+      const bounds = componentIds.map((ids) => {
+        const points = ids.map((id) => point(layout, id));
+        return {
+          minX: Math.min(...points.map(({ x }) => x)),
+          maxX: Math.max(...points.map(({ x }) => x)),
+          minY: Math.min(...points.map(({ y }) => y)),
+          maxY: Math.max(...points.map(({ y }) => y)),
+        };
+      });
+      const [left, right] = bounds.sort((a, b) => a.minX - b.minX);
+      return Math.max(right!.minX - left!.maxX, right!.minY - left!.maxY);
+    };
+
+    expect(clearance("compact")).toBeLessThan(clearance("balanced"));
+    expect(clearance("balanced")).toBeLessThan(clearance("spacious"));
+  });
+
+  it("语义密度单调改变组件内间距", () => {
     const ids = ["root", "child-a", "child-b", "grandchild"];
     const nodes = ids.map((id) => makeGraphObservationNode(id, id));
     const edges = [
@@ -150,10 +197,6 @@ describe("createResearchMapLayout", () => {
     const compact = createResearchMapLayout(observation, "compact");
     const balanced = createResearchMapLayout(observation, "balanced");
     const spacious = createResearchMapLayout(observation, "spacious");
-    const centroid = (layout: ReturnType<typeof createResearchMapLayout>) => ids.reduce((sum, id) => {
-      const value = point(layout, id);
-      return { x: sum.x + value.x / ids.length, y: sum.y + value.y / ids.length };
-    }, { x: 0, y: 0 });
     const rootDistance = (layout: ReturnType<typeof createResearchMapLayout>) => Math.hypot(
       point(layout, "child-a").x - point(layout, "root").x,
       point(layout, "child-a").y - point(layout, "root").y,
@@ -161,14 +204,6 @@ describe("createResearchMapLayout", () => {
 
     expect(rootDistance(compact)).toBeLessThan(rootDistance(balanced));
     expect(rootDistance(balanced)).toBeLessThan(rootDistance(spacious));
-    const screenCentroid = (layout: ReturnType<typeof createResearchMapLayout>) => {
-      const center = centroid(layout);
-      const view = fitViewBoxToPoints(layout.positions.values(), 16 / 9);
-      return { x: (center.x - view.x) / view.width, y: (center.y - view.y) / view.height };
-    };
-    expect(screenCentroid(compact)).toEqual({ x: 0.5, y: 0.5 });
-    expect(screenCentroid(balanced)).toEqual({ x: 0.5, y: 0.5 });
-    expect(screenCentroid(spacious)).toEqual({ x: 0.5, y: 0.5 });
   });
 
   it("共享直接来源的多个融合成果选择不同空白方向而不重叠", () => {

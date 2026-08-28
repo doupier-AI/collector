@@ -23,12 +23,12 @@ describe("research map svg geometry", () => {
     expect(fitted.y + fitted.height).toBeGreaterThanOrEqual(180);
   });
 
-  it("keeps the arithmetic content centroid at the same screen anchor", () => {
+  it("centers the content bounding box instead of expanding around an outlier-skewed centroid", () => {
     const points = [{ x: 0, y: 0 }, { x: 0, y: 100 }, { x: 900, y: 0 }];
     const fitted = fitViewBoxToPoints(points, 2);
-    const centroid = points.reduce((sum, point) => ({ x: sum.x + point.x / points.length, y: sum.y + point.y / points.length }), { x: 0, y: 0 });
 
-    expect((centroid.x - fitted.x) / fitted.width).toBeCloseTo(0.5, 8);
-    expect((centroid.y - fitted.y) / fitted.height).toBeCloseTo(0.5, 8);
+    expect((450 - fitted.x) / fitted.width).toBeCloseTo(0.5, 8);
+    expect((50 - fitted.y) / fitted.height).toBeCloseTo(0.5, 8);
+    expect(fitted.width).toBe(1080);
   });
 });

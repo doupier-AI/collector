@@ -144,18 +144,39 @@ function levels(rootId: string, children: ReadonlyMap<string, readonly string[]>
 }
 
 function placeTree(rootId: string, direction: TreeDirection, origin: MapPoint, children: ReadonlyMap<string, readonly string[]>): Map<string, MapPoint> {
+  const raw = new Map<string, { depth: number; secondary: number }>();
+  const visiting = new Set<string>();
+  const placed = new Set<string>();
+  let leafSlot = 0;
+  const visit = (id: string, depth: number): number => {
+    const existing = raw.get(id);
+    if (existing) return existing.secondary;
+    if (visiting.has(id)) return leafSlot++;
+    visiting.add(id);
+    const childSlots = (children.get(id) ?? [])
+      .filter((childId) => !placed.has(childId))
+      .map((childId) => visit(childId, depth + 1));
+    const secondary = childSlots.length
+      ? (Math.min(...childSlots) + Math.max(...childSlots)) / 2
+      : leafSlot++;
+    visiting.delete(id);
+    placed.add(id);
+    raw.set(id, { depth, secondary });
+    return secondary;
+  };
+  visit(rootId, 0);
+  const secondaryCenter = raw.size
+    ? [...raw.values()].reduce((sum, item) => sum + item.secondary / raw.size, 0)
+    : 0;
   const result = new Map<string, MapPoint>();
-  for (const [depth, level] of levels(rootId, children).entries()) {
-    const centered = (level.length - 1) / 2;
-    for (const [index, id] of level.entries()) {
-      const primary = depth * LEVEL_GAP;
-      const secondary = (index - centered) * SIBLING_GAP;
-      const point = direction === "right" ? { x: origin.x + primary, y: origin.y + secondary }
-        : direction === "left" ? { x: origin.x - primary, y: origin.y + secondary }
-          : direction === "down" ? { x: origin.x + secondary, y: origin.y + primary }
-            : { x: origin.x + secondary, y: origin.y - primary };
-      result.set(id, point);
-    }
+  for (const [id, item] of raw) {
+    const primary = item.depth * LEVEL_GAP;
+    const secondary = (item.secondary - secondaryCenter) * SIBLING_GAP;
+    const point = direction === "right" ? { x: origin.x + primary, y: origin.y + secondary }
+      : direction === "left" ? { x: origin.x - primary, y: origin.y + secondary }
+        : direction === "down" ? { x: origin.x + secondary, y: origin.y + primary }
+          : { x: origin.x + secondary, y: origin.y - primary };
+    result.set(id, point);
   }
   return result;
 }
@@ -186,11 +207,115 @@ function stableDirection(rootId: string, treeLevels: readonly (readonly string[]
   return useHorizontal ? (seed % 2 === 0 ? "right" : "left") : (seed % 2 === 0 ? "down" : "up");
 }
 
+function pointAlong(direction: TreeDirection, origin: MapPoint, primary: number, secondary: number): MapPoint {
+  if (direction === "right") return { x: origin.x + primary, y: origin.y + secondary };
+  if (direction === "left") return { x: origin.x - primary, y: origin.y + secondary };
+  if (direction === "down") return { x: origin.x + secondary, y: origin.y + primary };
+  return { x: origin.x + secondary, y: origin.y - primary };
+}
+
+/**
+ * 当前打开期间新增节点不能迫使旧树重排。新父子节点沿已冻结的组件方向，
+ * 从现存父节点寻找第一个无碰撞的兄弟槽位；其余新节点才采用系统建议位置。
+ */
+export function mergeIncrementalMapPositions(
+  current: ReadonlyMap<string, MapPoint>,
+  nextSystem: ReadonlyMap<string, MapPoint>,
+  observation: ResearchGraphObservation,
+  treeDirections: ReadonlyMap<string, TreeDirection>,
+): Map<string, MapPoint> {
+  const result = new Map(current);
+  const occupied = [...current.values()];
+  const parents = new Map<string, string[]>();
+  const children = new Map<string, string[]>();
+  for (const { edge } of observation.edges) {
+    if (edge.kind !== "parent-child") continue;
+    const parentIds = parents.get(edge.toNodeId) ?? [];
+    parentIds.push(edge.fromNodeId);
+    parentIds.sort();
+    parents.set(edge.toNodeId, parentIds);
+    const childIds = children.get(edge.fromNodeId) ?? [];
+    childIds.push(edge.toNodeId);
+    childIds.sort();
+    children.set(edge.fromNodeId, childIds);
+  }
+  const directionFor = (id: string): TreeDirection | undefined => {
+    let cursor = id;
+    const seen = new Set<string>();
+    while (!seen.has(cursor)) {
+      seen.add(cursor);
+      const parent = parents.get(cursor)?.[0];
+      if (!parent) break;
+      cursor = parent;
+    }
+    return treeDirections.get(cursor);
+  };
+  const pending = [...nextSystem.keys()].filter((id) => !result.has(id)).sort();
+  const pendingIds = new Set(pending);
+  const isClear = (candidate: MapPoint) => occupied.every((point) => Math.hypot(candidate.x - point.x, candidate.y - point.y) >= 90);
+  let guard = pending.length * 2 + 1;
+  while (pending.length && guard-- > 0) {
+    let progressed = false;
+    for (let index = 0; index < pending.length;) {
+      const id = pending[index]!;
+      const parentId = parents.get(id)?.find((candidate) => result.has(candidate));
+      const childId = children.get(id)?.find((candidate) => result.has(candidate));
+      if (!parentId && parents.get(id)?.some((candidate) => pendingIds.has(candidate))) {
+        index += 1;
+        continue;
+      }
+      const direction = directionFor(id);
+      let candidate: MapPoint | undefined;
+      if (parentId && direction) {
+        const parent = result.get(parentId)!;
+        const systemParent = nextSystem.get(parentId);
+        const systemPoint = nextSystem.get(id);
+        const primaryGap = systemParent && systemPoint
+          ? Math.max(110, direction === "right" || direction === "left"
+            ? Math.abs(systemPoint.x - systemParent.x)
+            : Math.abs(systemPoint.y - systemParent.y))
+          : LEVEL_GAP;
+        for (let slot = 0; slot < 64; slot += 1) {
+          const lane = slot === 0 ? 0 : Math.ceil(slot / 2) * (slot % 2 === 1 ? -1 : 1);
+          const attempt = pointAlong(direction, parent, primaryGap, lane * SIBLING_GAP);
+          if (isClear(attempt)) { candidate = attempt; break; }
+        }
+      } else if (childId && direction) {
+        const child = result.get(childId)!;
+        candidate = pointAlong(direction, child, -LEVEL_GAP, 0);
+      }
+      const suggested = candidate ?? nextSystem.get(id)!;
+      if (!isClear(suggested)) {
+        for (let slot = 1; slot < 64; slot += 1) {
+          const angle = slot * Math.PI / 4;
+          const radius = Math.ceil(slot / 8) * ISOLATE_GAP;
+          const attempt = { x: suggested.x + Math.cos(angle) * radius, y: suggested.y + Math.sin(angle) * radius };
+          if (isClear(attempt)) { candidate = attempt; break; }
+        }
+      }
+      const placed = candidate ?? suggested;
+      result.set(id, placed);
+      occupied.push(placed);
+      pending.splice(index, 1);
+      pendingIds.delete(id);
+      progressed = true;
+    }
+    if (!progressed) break;
+  }
+  for (const id of pending) result.set(id, nextSystem.get(id)!);
+  return result;
+}
+
 /**
  * 稳定的父子树基础排布。融合来源只参与正式融合树的整体定位，从不参与树层级、
  * 邻接或坐标传播；无永久关系的节点在所有树之外以固定网格排开。
  */
-export function createResearchMapLayout(observation: ResearchGraphObservation, density: MapDensity | number = "balanced", aspectRatio = 16 / 9): ResearchMapLayout {
+export function createResearchMapLayout(
+  observation: ResearchGraphObservation,
+  density: MapDensity | number = "balanced",
+  aspectRatio = 16 / 9,
+  preferredDirections: ReadonlyMap<string, TreeDirection> = new Map(),
+): ResearchMapLayout {
   const scale = typeof density === "number"
     ? Math.max(0.75, Math.min(1.5, density))
     : density === "compact" ? 0.8 : density === "spacious" ? 1.25 : 1;
@@ -212,7 +337,8 @@ export function createResearchMapLayout(observation: ResearchGraphObservation, d
   const components = roots.map((rootId) => {
     const members = treeIds(rootId, children);
     const treeLevels = levels(rootId, children);
-    const direction = stableDirection(rootId, treeLevels, aspectRatio, nodeById.get(rootId)?.role === "fusion");
+    const direction = preferredDirections.get(rootId)
+      ?? stableDirection(rootId, treeLevels, aspectRatio, nodeById.get(rootId)?.role === "fusion");
     directions.set(rootId, direction);
     const balancedLocal = placeTree(rootId, direction, { x: 0, y: 0 }, children);
     const balancedPoints = [...balancedLocal.values()];
@@ -225,12 +351,13 @@ export function createResearchMapLayout(observation: ResearchGraphObservation, d
         x: center.x + (point.x - center.x) * scale,
         y: center.y + (point.y - center.y) * scale,
       }] as const));
-    return { rootId, members, local, bounds: boundsFor(balancedLocal.values()) };
+    return { rootId, members, local, bounds: boundsFor(local.values()) };
   });
+  const componentGap = COMPONENT_GAP * scale;
   const componentArea = components.reduce((sum, component) => sum
-    + (Math.max(80, component.bounds.width) + COMPONENT_GAP) * (Math.max(80, component.bounds.height) + COMPONENT_GAP), 0);
+    + (Math.max(80 * scale, component.bounds.width) + componentGap) * (Math.max(80 * scale, component.bounds.height) + componentGap), 0);
   const targetRowWidth = Math.max(
-    ...components.map((component) => Math.max(80, component.bounds.width)),
+    ...components.map((component) => Math.max(80 * scale, component.bounds.width)),
     Math.sqrt(componentArea * Math.max(0.5, Math.min(2.5, aspectRatio))),
     0,
   );
@@ -238,17 +365,17 @@ export function createResearchMapLayout(observation: ResearchGraphObservation, d
   let cursorY = 0;
   let rowHeight = 0;
   for (const component of components) {
-    const width = Math.max(80, component.bounds.width);
-    const height = Math.max(80, component.bounds.height);
+    const width = Math.max(80 * scale, component.bounds.width);
+    const height = Math.max(80 * scale, component.bounds.height);
     if (cursorX > 0 && cursorX + width > targetRowWidth) {
       cursorX = 0;
-      cursorY += rowHeight + COMPONENT_GAP;
+      cursorY += rowHeight + componentGap;
       rowHeight = 0;
     }
     const delta = { x: cursorX - component.bounds.minX, y: cursorY - component.bounds.minY };
     component.local.forEach((point, id) => positions.set(id, { x: point.x + delta.x, y: point.y + delta.y }));
     placedTrees.set(component.rootId, component.members);
-    cursorX += width + COMPONENT_GAP;
+    cursorX += width + componentGap;
     rowHeight = Math.max(rowHeight, height);
   }
 

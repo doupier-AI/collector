@@ -52,6 +52,26 @@ export function filterResearchMapObservation(
   };
 }
 
+/** 搜索定位可临时把完整观察中的一个范围外节点投影回画布；筛选和永久关系保持不变。 */
+export function withResearchMapRevealTarget(
+  observation: ResearchGraphObservation,
+  fullObservation: ResearchGraphObservation,
+  nodeId: string | undefined,
+): ResearchGraphObservation {
+  if (!nodeId || observation.nodes.some((summary) => summary.node.id === nodeId)) return observation;
+  const target = fullObservation.nodes.find((summary) => summary.node.id === nodeId);
+  if (!target) return observation;
+  return {
+    ...observation,
+    nodes: [...observation.nodes, {
+      ...target,
+      scope: "outside-boundary",
+      connectivity: "default",
+      candidateCount: 0,
+    }],
+  };
+}
+
 /** 父子专注只沿永久 parent-child 边计算全部祖先和后代，融合来源不参与。 */
 export function focusResearchMapObservation(
   observation: ResearchGraphObservation,

@@ -129,6 +129,45 @@ describe("GlobalResearchMap current-open scene", () => {
     expect([...before.values()]).not.toContain(canvas().querySelector('[data-node-id="node-4"]')?.getAttribute("transform"));
     Object.defineProperty(window, "matchMedia", { configurable: true, value: originalMatchMedia });
   });
+  it("adds a third child on the established tree axis without moving existing nodes", () => {
+    const originalMatchMedia = window.matchMedia;
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })),
+    });
+    const initialNodes = ["root", "child-a", "child-b"].map((id) => makeGraphObservationNode(id, id));
+    const edge = (to: string) => ({ edge: { ...makeEdge("parent-child", "root", to), kind: "parent-child" as const }, connectivity: "default" as const });
+    const initial = makeGraphObservation({ nodes: initialNodes, edges: [edge("child-a"), edge("child-b")] });
+    const { rerender } = render(<MemoryRouter><GlobalResearchMap observation={initial} /></MemoryRouter>);
+    const before = new Map(initialNodes.map((summary) => [summary.node.id, canvas().querySelector(`[data-node-id="${summary.node.id}"]`)?.getAttribute("transform")]));
+    const added = makeGraphObservationNode("child-c", "child-c");
+
+    rerender(<MemoryRouter><GlobalResearchMap observation={makeGraphObservation({ nodes: [...initialNodes, added], edges: [...initial.edges, edge("child-c")] })} /></MemoryRouter>);
+
+    for (const [id, transform] of before) expect(canvas().querySelector(`[data-node-id="${id}"]`)).toHaveAttribute("transform", transform);
+    const coordinate = (id: string) => [...canvas().querySelector(`[data-node-id="${id}"]`)!.getAttribute("transform")!.matchAll(/-?\d+(?:\.\d+)?/g)].map((match) => Number(match[0]));
+    const root = coordinate("root");
+    const first = coordinate("child-a");
+    const next = coordinate("child-c");
+    const horizontal = Math.abs(first[0]! - root[0]!) > Math.abs(first[1]! - root[1]!);
+    expect(horizontal ? next[0] : next[1]).toBeCloseTo(horizontal ? first[0]! : first[1]!, 5);
+    Object.defineProperty(window, "matchMedia", { configurable: true, value: originalMatchMedia });
+  });
+  it("places an incrementally added earlier-sorting component without overlapping the retained scene", () => {
+    const initialNodes = [makeGraphObservationNode("z-root", "旧根"), makeGraphObservationNode("z-child", "旧子")];
+    const parentEdge = (from: string, to: string) => ({ edge: { ...makeEdge("parent-child", from, to), kind: "parent-child" as const }, connectivity: "default" as const });
+    const initial = makeGraphObservation({ nodes: initialNodes, edges: [parentEdge("z-root", "z-child")] });
+    const { rerender } = render(<MemoryRouter><GlobalResearchMap observation={initial} /></MemoryRouter>);
+    const before = initialNodes.map((summary) => canvas().querySelector(`[data-node-id="${summary.node.id}"]`)?.getAttribute("transform"));
+    const addedNodes = [makeGraphObservationNode("a-root", "新根"), makeGraphObservationNode("a-child", "新子")];
+
+    rerender(<MemoryRouter><GlobalResearchMap observation={makeGraphObservation({ nodes: [...initialNodes, ...addedNodes], edges: [...initial.edges, parentEdge("a-root", "a-child")] })} /></MemoryRouter>);
+
+    expect(canvas().querySelector('[data-node-id="z-root"]')).toHaveAttribute("transform", before[0]!);
+    expect(canvas().querySelector('[data-node-id="z-child"]')).toHaveAttribute("transform", before[1]!);
+    const transforms = [...canvas().querySelectorAll<SVGGElement>("[data-node-id]")].map((element) => element.getAttribute("transform"));
+    expect(new Set(transforms).size).toBe(4);
+  });
   it("enters parent-child focus and restores base positions on exit", () => {
     const onFocusNode = vi.fn();
     const base = makeGraphObservation({ nodes: [makeGraphObservationNode("root", "根"), makeGraphObservationNode("focus", "焦点"), makeGraphObservationNode("child", "后代"), makeGraphObservationNode("outside", "外围")], edges: [{ edge: { ...makeEdge("parent-child", "root", "focus"), kind: "parent-child" as const }, connectivity: "default" }, { edge: { ...makeEdge("parent-child", "focus", "child"), kind: "parent-child" as const }, connectivity: "default" }] });

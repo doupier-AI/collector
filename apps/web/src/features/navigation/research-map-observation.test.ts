@@ -1,9 +1,23 @@
 import { describe, expect, it } from "vitest";
 import type { ResearchGraphObservation } from "@collector/capture-contracts";
 import { makeEdge, makeGraphObservation, makeGraphObservationNode } from "../../test/fakes";
-import { filterResearchMapObservation, focusResearchMapObservation } from "./research-map-observation";
+import { filterResearchMapObservation, focusResearchMapObservation, withResearchMapRevealTarget } from "./research-map-observation";
 
 describe("research map observation derivation", () => {
+  it("temporarily projects a selected search result outside the active filter without restoring its relationships", () => {
+    const full = makeGraphObservation({
+      nodes: [makeGraphObservationNode("inside", "范围内"), makeGraphObservationNode("outside", "范围外")],
+      edges: [{ edge: { ...makeEdge("parent-child", "inside", "outside"), kind: "parent-child" as const }, connectivity: "default" as const }],
+    });
+    const filtered = { ...full, nodes: [full.nodes[0]!], edges: [] };
+
+    const revealed = withResearchMapRevealTarget(filtered, full, "outside");
+
+    expect(revealed.nodes.map(({ node }) => node.id)).toEqual(["inside", "outside"]);
+    expect(revealed.nodes[1]).toMatchObject({ scope: "outside-boundary", connectivity: "default" });
+    expect(revealed.edges).toEqual([]);
+  });
+
   it("父子专注只标记祖先与后代，不把兄弟或融合来源带入脉络边", () => {
     const nodes = [
       makeGraphObservationNode("parent", "父节点"),
