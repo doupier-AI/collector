@@ -107,7 +107,7 @@ export function ResearchMapLandingPage() {
   const [temporaryObservationEntry, setTemporaryObservationEntry] = useState({ entryKey: mapEntryKey, value: false });
   const temporaryFusionObservation = temporaryObservationEntry.value;
   // 请求始终保留完整正式观察；筛选、专注和临时来源背景只在当前组件实例内派生。
-  const observation = useMemo(() => {
+  const baseObservation = useMemo(() => {
     if (!observationEntry) return null;
     const filtered = filterResearchMapObservation(
       observationEntry.value,
@@ -115,8 +115,12 @@ export function ResearchMapLandingPage() {
       temporaryFusionObservation,
     );
     const revealed = withResearchMapRevealTarget(filtered, observationEntry.value, search?.selectedNodeId);
-    return focusResearchMapObservation(withResearchMapIsolates(revealed, showIsolates, focusNodeId), focusNodeId);
+    return withResearchMapIsolates(revealed, showIsolates, focusNodeId);
   }, [focusNodeId, observationEntry, search?.selectedNodeId, serializedFilters, showIsolates, temporaryFusionObservation]);
+  const observation = useMemo(
+    () => baseObservation ? focusResearchMapObservation(baseObservation, focusNodeId) : null,
+    [baseObservation, focusNodeId],
+  );
   const [candidateEntry, setCandidateEntry] = useState<{ entryKey: string; value?: MapAssociationCandidateScene }>({ entryKey: mapEntryKey });
   const candidateScope = candidateEntry.value;
   const [candidateResult, setCandidateResult] = useState<{ hints: ResearchAssociationHintRecord[]; loading: boolean; error?: string }>({ hints: [], loading: false });
@@ -563,6 +567,7 @@ export function ResearchMapLandingPage() {
         <div className="map-landing__surface" aria-busy={updating}>
           <GlobalResearchMap
             observation={observation}
+            baseObservation={baseObservation ?? undefined}
             onFocusNode={pushFocus}
             onExitFocus={exitFocus}
             onOpenNode={openNode}

@@ -227,6 +227,52 @@ describe("createResearchMapLayout", () => {
     )).toBeGreaterThanOrEqual(80);
   });
 
+  it("疏朗布局中带后代的融合树移动后仍与其他组件包围盒分离", () => {
+    const fusion = (id: string) => makeGraphObservationNode(id, id, {
+      role: "fusion",
+      node: { ...makeGraphObservationNode(id, id).node, isFusionNode: true },
+    });
+    const groups = [
+      ["source-root", "source"],
+      ["fusion-a", "fusion-a-1", "fusion-a-2", "fusion-a-3"],
+      ["fusion-b", "fusion-b-1", "fusion-b-2", "fusion-b-3"],
+    ];
+    const observation = makeGraphObservation({
+      nodes: [
+        makeGraphObservationNode("source-root", "来源根"),
+        makeGraphObservationNode("source", "来源"),
+        fusion("fusion-a"), fusion("fusion-b"),
+        ...groups.slice(1).flatMap((ids) => ids.slice(1).map((id) => makeGraphObservationNode(id, id))),
+      ],
+      edges: [
+        { edge: { ...makeEdge("parent-child", "source-root", "source"), kind: "parent-child" as const }, connectivity: "default" as const },
+        ...groups.slice(1).flatMap((ids) => ids.slice(1).map((id) => ({
+          edge: { ...makeEdge("parent-child", ids[0]!, id), kind: "parent-child" as const },
+          connectivity: "default" as const,
+        }))),
+        { edge: { ...makeEdge("fused-from", "source", "fusion-a"), kind: "fused-from" as const }, connectivity: "default" as const },
+        { edge: { ...makeEdge("fused-from", "source", "fusion-b"), kind: "fused-from" as const }, connectivity: "default" as const },
+      ],
+    });
+    const layout = createResearchMapLayout(observation, "spacious");
+    const bounds = groups.map((ids) => {
+      const points = ids.map((id) => point(layout, id));
+      return {
+        minX: Math.min(...points.map(({ x }) => x)) - 50,
+        maxX: Math.max(...points.map(({ x }) => x)) + 50,
+        minY: Math.min(...points.map(({ y }) => y)) - 50,
+        maxY: Math.max(...points.map(({ y }) => y)) + 50,
+      };
+    });
+    for (let index = 0; index < bounds.length; index += 1) {
+      for (let other = index + 1; other < bounds.length; other += 1) {
+        const left = bounds[index]!;
+        const right = bounds[other]!;
+        expect(left.maxX <= right.minX || right.maxX <= left.minX || left.maxY <= right.minY || right.maxY <= left.minY).toBe(true);
+      }
+    }
+  });
+
   it("专注完整父子脉络从左到右，并以同一基础坐标重算外围节点", () => {
     const nodes = [makeGraphObservationNode("root", "根"), makeGraphObservationNode("focus", "焦点"), makeGraphObservationNode("child", "后代"), makeGraphObservationNode("outside", "外围")];
     const edges = [
@@ -273,5 +319,27 @@ describe("createResearchMapLayout", () => {
       || outside.y < bounds.minY - safeMargin
       || outside.y > bounds.maxY + safeMargin,
     ).toBe(true);
+  });
+
+  it("专注 tidy-tree 保持父分支连续，孙节点 ID 反序也不交叉", () => {
+    const ids = ["root", "branch-a", "branch-b", "z-grandchild", "a-grandchild"];
+    const observation = makeGraphObservation({
+      nodes: ids.map((id) => makeGraphObservationNode(id, id)),
+      edges: [
+        ["root", "branch-a"], ["root", "branch-b"], ["branch-a", "z-grandchild"], ["branch-b", "a-grandchild"],
+      ].map(([from, to]) => ({
+        edge: { ...makeEdge("parent-child", from!, to!), kind: "parent-child" as const },
+        connectivity: "default" as const,
+      })),
+    });
+    const base = new Map(ids.map((id, index) => [id, { x: index * 20, y: 0 }]));
+
+    const focused = createFocusMapPositions(observation, "root", base);
+
+    const branchA = focused.get("branch-a")!.y;
+    const branchB = focused.get("branch-b")!.y;
+    const grandchildA = focused.get("z-grandchild")!.y;
+    const grandchildB = focused.get("a-grandchild")!.y;
+    expect(Math.sign(branchA - branchB)).toBe(Math.sign(grandchildA - grandchildB));
   });
 });

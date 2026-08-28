@@ -144,6 +144,49 @@ test("宽屏打开后切到窄屏会按真实画布比例重框，不产生 SVG 
     const rect = element.getBoundingClientRect();
     return Math.abs(viewBox[2]! / viewBox[3]! - rect.width / rect.height);
   })).toBeLessThan(0.01);
+  await expect.poll(async () => svg.evaluate((element) => {
+    const viewBox = element.viewBox.baseVal;
+    return [...element.querySelectorAll<SVGGElement>("[data-node-id]")].every((node) => {
+      const x = Number(node.dataset.layoutX);
+      const y = Number(node.dataset.layoutY);
+      return x >= viewBox.x && x <= viewBox.x + viewBox.width && y >= viewBox.y && y <= viewBox.y + viewBox.height;
+    });
+  })).toBe(true);
+});
+
+test("专注期间从宽屏缩到窄屏，退出后仍按窄屏比例拟合完整基础图", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await installGlobalMapVisualFixture(page);
+  await pairAndOpen(page, "/map");
+  const canvas = page.getByTestId("global-map-canvas");
+  const svg = canvas.locator("svg");
+  const amber = canvas.locator("[data-node-id='map-amber']");
+  await amber.locator(".global-map__node-core").click();
+  await expect(amber).toHaveAttribute("aria-pressed", "true");
+  await page.setViewportSize({ width: 320, height: 800 });
+  await expect.poll(async () => svg.evaluate((element) => {
+    const viewBox = element.viewBox.baseVal;
+    const rect = element.getBoundingClientRect();
+    return Math.abs(viewBox.width / viewBox.height - rect.width / rect.height);
+  })).toBeLessThan(0.01);
+  const svgBox = await svg.boundingBox();
+  if (!svgBox) throw new Error("missing map canvas");
+  await page.mouse.click(svgBox.x + 8, svgBox.y + 8);
+  await expect(amber).toHaveAttribute("aria-pressed", "false");
+
+  await expect.poll(async () => svg.evaluate((element) => {
+    const viewBox = element.viewBox.baseVal;
+    const rect = element.getBoundingClientRect();
+    return Math.abs(viewBox.width / viewBox.height - rect.width / rect.height);
+  })).toBeLessThan(0.01);
+  await expect.poll(async () => svg.evaluate((element) => {
+    const viewBox = element.viewBox.baseVal;
+    return [...element.querySelectorAll<SVGGElement>("[data-node-id]")].every((node) => {
+      const x = Number(node.dataset.layoutX);
+      const y = Number(node.dataset.layoutY);
+      return x >= viewBox.x && x <= viewBox.x + viewBox.width && y >= viewBox.y && y <= viewBox.y + viewBox.height;
+    });
+  })).toBe(true);
 });
 
 for (const viewport of [

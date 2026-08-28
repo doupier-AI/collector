@@ -43,19 +43,24 @@ export function createFocusMapPositions(observation: ResearchGraphObservation, f
   }
   const focus = base.get(focusNodeId) ?? { x: 0, y: 0 };
   const roots = [...lineage].filter((id) => !(parents.get(id) ?? []).some((parent) => lineage.has(parent))).sort();
-  const depth = new Map<string, number>();
-  const queue = roots.map((id) => { depth.set(id, 0); return id; });
-  while (queue.length) {
-    const id = queue.shift()!;
-    for (const child of (children.get(id) ?? []).filter((item) => lineage.has(item)).sort()) if (!depth.has(child)) { depth.set(child, (depth.get(id) ?? 0) + 1); queue.push(child); }
+  const lineageChildren = new Map([...lineage].map((id) => [
+    id,
+    (children.get(id) ?? []).filter((childId) => lineage.has(childId)).sort(),
+  ]));
+  let layoutRoot = roots[0] ?? focusNodeId;
+  let hasSyntheticRoot = false;
+  if (roots.length > 1) {
+    hasSyntheticRoot = true;
+    layoutRoot = "\u0000focus-lineage-root";
+    while (lineage.has(layoutRoot)) layoutRoot += "\u0000";
+    lineageChildren.set(layoutRoot, roots);
   }
-  const focusDepth = depth.get(focusNodeId) ?? 0;
-  const levels = new Map<number, string[]>();
-  for (const id of lineage) { const level = depth.get(id) ?? focusDepth; const ids = levels.get(level) ?? []; ids.push(id); levels.set(level, ids); }
+  const local = placeTree(layoutRoot, "right", { x: 0, y: 0 }, lineageChildren);
+  if (hasSyntheticRoot) local.delete(layoutRoot);
+  const localFocus = local.get(focusNodeId) ?? { x: 0, y: 0 };
   const result = new Map(base);
-  for (const [level, ids] of levels) {
-    ids.sort(); const middle = (ids.length - 1) / 2;
-    ids.forEach((id, index) => result.set(id, { x: focus.x + (level - focusDepth) * LEVEL_GAP, y: focus.y + (index - middle) * SIBLING_GAP }));
+  for (const [id, point] of local) {
+    result.set(id, { x: focus.x + point.x - localFocus.x, y: focus.y + point.y - localFocus.y });
   }
   const lineagePoints = [...lineage].map((id) => result.get(id)!).filter(Boolean);
   const lineageBounds = {
@@ -193,6 +198,15 @@ function boundsFor(points: Iterable<MapPoint>): MapBounds {
   const minY = Math.min(...ys);
   const maxY = Math.max(...ys);
   return { minX, maxX, minY, maxY, width: maxX - minX, height: maxY - minY };
+}
+
+function boundsOverlap(left: MapBounds, right: MapBounds, padding: number): boolean {
+  return !(
+    left.maxX + padding <= right.minX - padding
+    || right.maxX + padding <= left.minX - padding
+    || left.maxY + padding <= right.minY - padding
+    || right.maxY + padding <= left.minY - padding
+  );
 }
 
 function stableDirection(rootId: string, treeLevels: readonly (readonly string[])[], aspectRatio: number, fusion: boolean): TreeDirection {
@@ -338,6 +352,7 @@ export function createResearchMapLayout(
     const members = treeIds(rootId, children);
     const treeLevels = levels(rootId, children);
     const direction = preferredDirections.get(rootId)
+      ?? members.map((id) => preferredDirections.get(id)).find((value): value is TreeDirection => Boolean(value))
       ?? stableDirection(rootId, treeLevels, aspectRatio, nodeById.get(rootId)?.role === "fusion");
     directions.set(rootId, direction);
     const balancedLocal = placeTree(rootId, direction, { x: 0, y: 0 }, children);
@@ -394,28 +409,33 @@ export function createResearchMapLayout(
     const center = sources.reduce((sum, point) => ({ x: sum.x + point.x, y: sum.y + point.y }), { x: 0, y: 0 });
     const target = { x: center.x / sources.length, y: center.y / sources.length };
     const memberSet = new Set(members);
-    const occupied = [...positions].filter(([id]) => !memberSet.has(id)).map(([, point]) => point);
+    const occupiedBounds = [...placedTrees.values()]
+      .filter((ids) => ids.every((id) => !memberSet.has(id)))
+      .map((ids) => boundsFor(ids.map((id) => positions.get(id)).filter((point): point is MapPoint => Boolean(point))));
     let delta: MapPoint | undefined;
-    for (let attempt = 0; attempt < 32; attempt += 1) {
+    for (let attempt = 0; attempt < 128; attempt += 1) {
       const slot = fusionPlacementIndex + attempt;
       const ring = Math.floor(slot / 8);
       const angle = slot % 8 * Math.PI / 4;
       const radius = (130 + ring * 120) * scale;
       const candidateRoot = { x: target.x + Math.cos(angle) * radius, y: target.y + Math.sin(angle) * radius };
       const candidateDelta = { x: candidateRoot.x - rootPosition.x, y: candidateRoot.y - rootPosition.y };
-      const collides = members.some((id) => {
-        const point = positions.get(id);
-        if (!point) return false;
-        const candidate = { x: point.x + candidateDelta.x, y: point.y + candidateDelta.y };
-        return occupied.some((other) => Math.hypot(candidate.x - other.x, candidate.y - other.y) < 100 * scale);
-      });
+      const candidateBounds = boundsFor(members
+        .map((id) => positions.get(id))
+        .filter((point): point is MapPoint => Boolean(point))
+        .map((point) => ({ x: point.x + candidateDelta.x, y: point.y + candidateDelta.y })));
+      const collides = occupiedBounds.some((occupied) => boundsOverlap(candidateBounds, occupied, 50));
       if (!collides) {
         delta = candidateDelta;
         fusionPlacementIndex = slot + 1;
         break;
       }
     }
-    delta ??= { x: target.x + (130 + fusionPlacementIndex * 20) * scale - rootPosition.x, y: target.y - rootPosition.y };
+    if (!delta) {
+      const currentBounds = boundsFor(members.map((id) => positions.get(id)).filter((point): point is MapPoint => Boolean(point)));
+      const occupiedMaxX = occupiedBounds.length ? Math.max(...occupiedBounds.map((bounds) => bounds.maxX)) : target.x;
+      delta = { x: occupiedMaxX + componentGap - currentBounds.minX, y: target.y - rootPosition.y };
+    }
     for (const id of members) {
       const point = positions.get(id);
       if (point) positions.set(id, { x: point.x + delta.x, y: point.y + delta.y });

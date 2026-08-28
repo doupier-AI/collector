@@ -153,6 +153,26 @@ describe("GlobalResearchMap current-open scene", () => {
     expect(horizontal ? next[0] : next[1]).toBeCloseTo(horizontal ? first[0]! : first[1]!, 5);
     Object.defineProperty(window, "matchMedia", { configurable: true, value: originalMatchMedia });
   });
+  it("prepends a parent using the established descendant direction without folding the tree", () => {
+    const oldNodes = [makeGraphObservationNode("root", "旧根"), makeGraphObservationNode("child", "旧子")];
+    const edge = (from: string, to: string) => ({ edge: { ...makeEdge("parent-child", from, to), kind: "parent-child" as const }, connectivity: "default" as const });
+    const initial = makeGraphObservation({ nodes: oldNodes, edges: [edge("root", "child")] });
+    const { rerender } = render(<MemoryRouter><GlobalResearchMap observation={initial} /></MemoryRouter>);
+    const before = oldNodes.map((summary) => canvas().querySelector(`[data-node-id="${summary.node.id}"]`)?.getAttribute("transform"));
+    const parent = makeGraphObservationNode("a", "新父");
+
+    rerender(<MemoryRouter><GlobalResearchMap observation={makeGraphObservation({ nodes: [parent, ...oldNodes], edges: [edge("a", "root"), ...initial.edges] })} /></MemoryRouter>);
+
+    expect(canvas().querySelector('[data-node-id="root"]')).toHaveAttribute("transform", before[0]!);
+    expect(canvas().querySelector('[data-node-id="child"]')).toHaveAttribute("transform", before[1]!);
+    const coordinate = (id: string) => [...canvas().querySelector(`[data-node-id="${id}"]`)!.getAttribute("transform")!.matchAll(/-?\d+(?:\.\d+)?/g)].map((match) => Number(match[0]));
+    const added = coordinate("a");
+    const root = coordinate("root");
+    const child = coordinate("child");
+    const firstVector = { x: root[0]! - added[0]!, y: root[1]! - added[1]! };
+    const secondVector = { x: child[0]! - root[0]!, y: child[1]! - root[1]! };
+    expect(firstVector.x * secondVector.x + firstVector.y * secondVector.y).toBeGreaterThan(0);
+  });
   it("places an incrementally added earlier-sorting component without overlapping the retained scene", () => {
     const initialNodes = [makeGraphObservationNode("z-root", "旧根"), makeGraphObservationNode("z-child", "旧子")];
     const parentEdge = (from: string, to: string) => ({ edge: { ...makeEdge("parent-child", from, to), kind: "parent-child" as const }, connectivity: "default" as const });

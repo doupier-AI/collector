@@ -50,6 +50,40 @@ test.describe("统一研究图谱", () => {
     await expect.poll(async () => blue.getAttribute("transform")).not.toBeNull();
   });
 
+  test("专注内修改密度并重置，退出后与完整基础图布局一致", async ({ page }) => {
+    await installGlobalMapVisualFixture(page);
+    await pairAndOpen(page, "/map");
+    const readLayout = () => page.getByTestId("global-map-canvas").locator("[data-node-id]").evaluateAll((nodes) =>
+      Object.fromEntries(nodes.map((node) => [
+        (node as SVGGElement).dataset.nodeId,
+        [(node as SVGGElement).dataset.layoutX, (node as SVGGElement).dataset.layoutY],
+      ])),
+    );
+    const changeDensityAndReset = async () => {
+      await page.getByRole("button", { name: "图谱呈现与布局" }).click();
+      await page.getByLabel("布局密度").selectOption("spacious");
+      await page.getByRole("button", { name: "重置本次布局" }).click();
+      await page.getByRole("button", { name: "关闭图谱呈现与布局" }).click();
+    };
+
+    await expect(page.getByTestId("global-map-canvas")).toHaveAttribute("data-entry-animation", "complete");
+    await changeDensityAndReset();
+    const expected = await readLayout();
+
+    await page.reload();
+    const canvas = page.getByTestId("global-map-canvas");
+    await expect(canvas).toHaveAttribute("data-entry-animation", "complete");
+    const amber = canvas.locator("[data-node-id='map-amber']");
+    await amber.locator(".global-map__node-core").click();
+    await expect(amber).toHaveAttribute("aria-pressed", "true");
+    await changeDensityAndReset();
+    const svgBox = await canvas.locator("svg").boundingBox();
+    if (!svgBox) throw new Error("missing map canvas");
+    await page.mouse.click(svgBox.x + 8, svgBox.y + 8);
+    await expect(amber).toHaveAttribute("aria-pressed", "false");
+    await expect.poll(readLayout).toEqual(expected);
+  });
+
   test("旧专注地址只消费一次意图，刷新后仍是无状态的 /map", async ({ page }) => {
     await installGlobalMapVisualFixture(page);
     await pairAndOpen(page, "/map/focus/map-amber");
