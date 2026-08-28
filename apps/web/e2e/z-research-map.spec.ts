@@ -169,6 +169,52 @@ test.describe("统一研究图谱", () => {
     })).toBeLessThanOrEqual(2);
   });
 
+  test("退出专注回位期间搜索定位仍接管视口并居中目标", async ({ page }) => {
+    await installGlobalMapVisualFixture(page);
+    await page.route("**/v1/semantic-search/search", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        query: "跨域综合",
+        mode: "keyword-only",
+        degradationReason: "model-not-installed",
+        groups: [{
+          scope: "inside-current-scope",
+          nodes: [{
+            nodeId: "map-violet",
+            nodeLabel: "跨域综合",
+            matches: [{ field: "node-title", preview: "跨域综合", locator: { kind: "node-title", nodeId: "map-violet" } }],
+          }],
+        }],
+      }),
+    }));
+    await pairAndOpen(page, "/map");
+    const canvas = page.getByTestId("global-map-canvas");
+    const amber = canvas.locator("[data-node-id='map-amber']");
+    const violet = canvas.locator("[data-node-id='map-violet']");
+    await amber.locator(".global-map__node-core").click();
+    await expect(amber).toHaveAttribute("aria-pressed", "true");
+
+    await page.getByRole("button", { name: "搜索研究内容" }).click();
+    const searchbox = page.getByRole("searchbox", { name: "搜索全部研究内容" });
+    await searchbox.fill("跨域综合");
+    await searchbox.press("Enter");
+    const locate = page.getByRole("button", { name: "跨域综合 在图谱中定位" });
+    await expect(locate).toBeVisible();
+
+    await page.getByRole("button", { name: "退出专注" }).click();
+    await locate.click();
+
+    await expect(amber).toHaveAttribute("aria-pressed", "false");
+    await expect(violet).toBeFocused();
+    await expect(violet).toHaveClass(/global-map__node--search-selected/);
+    await expect.poll(async () => violet.evaluate((node) => {
+      const matrix = node.getScreenCTM();
+      const rect = node.ownerSVGElement!.getBoundingClientRect();
+      return matrix ? Math.hypot(matrix.e - (rect.left + rect.width / 2), matrix.f - (rect.top + rect.height / 2)) : Number.POSITIVE_INFINITY;
+    })).toBeLessThanOrEqual(2);
+  });
+
   test("旧专注地址只消费一次意图，刷新后仍是无状态的 /map", async ({ page }) => {
     await installGlobalMapVisualFixture(page);
     await pairAndOpen(page, "/map/focus/map-amber");

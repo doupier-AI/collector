@@ -629,6 +629,9 @@ export function GlobalResearchMap({ observation, baseObservation, onFocusNode, o
     }
     previousFocusNodeIdRef.current = focusedNodeId;
     if (!focusedNodeId) {
+      // 搜索可能在退出专注的回位动画已经开始后才接管；此时上一专注 id 已被消费，
+      // 但快照仍会被视口守卫读取，因此必须按当前 reveal 意图无条件让渡。
+      if (revealNodeId) focusSnapshotRef.current = null;
       const current = orchestrationLatestRef.current;
       const snapshot = focusSnapshotRef.current;
       if (previousFocusNodeId && snapshot) {
@@ -638,8 +641,6 @@ export function GlobalResearchMap({ observation, baseObservation, onFocusNode, o
           : fitViewBoxToPoints(snapshot.positions.values(), canvasAspectRatio);
         focusSnapshotRef.current = { ...snapshot, viewBox: restoredViewBox };
         setViewBox(restoredViewBox);
-        // 搜索定位接管接下来的视口动画；不再让退出专注快照覆盖搜索目标。
-        if (revealNodeId) focusSnapshotRef.current = null;
       }
       if (!current) {
         focusSnapshotRef.current = null;
