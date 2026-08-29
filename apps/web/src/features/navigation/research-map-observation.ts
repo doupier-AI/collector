@@ -4,6 +4,16 @@ import type {
   ResearchGraphObservationNode,
 } from "@collector/capture-contracts";
 
+/** 根节点由完整正式父子关系确定；融合来源不改变节点树的根身份。 */
+export function researchMapRootNodeIds(observation: ResearchGraphObservation): ReadonlySet<string> {
+  const childNodeIds = new Set(observation.edges
+    .filter(({ edge }) => edge.kind === "parent-child")
+    .map(({ edge }) => edge.toNodeId));
+  return new Set(observation.nodes
+    .map(({ node }) => node.id)
+    .filter((nodeId) => !childNodeIds.has(nodeId)));
+}
+
 /**
  * 全局观察只请求一次完整正式图，再在当前打开的组件实例中派生筛选结果。
  * 临时融合仍不是正式节点；开启临时层时，仅把可用的直接来源补作弱化背景。

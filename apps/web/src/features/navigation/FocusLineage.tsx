@@ -168,7 +168,7 @@ export function FocusLineage({
                 onClick={() => selectNode(parentNode.node.id)}
                 data-testid="focus-open-parent"
               >
-                打开父节点
+                打开上一级节点
               </button>
             ) : null}
             <button

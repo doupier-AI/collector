@@ -191,7 +191,7 @@ describe("GraphCanvas", () => {
     expect(screen.getByTestId("graph-node-child")).toHaveFocus();
   });
 
-  it("提供父节点安全出口", async () => {
+  it("提供上一级节点安全出口", async () => {
     const user = userEvent.setup();
     const getResearchGraph = vi.fn(async () => ({
       ...projectionAtDepth(),
@@ -200,7 +200,7 @@ describe("GraphCanvas", () => {
     const { onClose } = renderCanvas(getResearchGraph, "child");
 
     await screen.findByTestId("graph-node-child");
-    expect(screen.getByTestId("graph-open-parent")).toBeInTheDocument();
+    expect(screen.getByTestId("graph-open-parent")).toHaveTextContent("打开上一级节点");
 
     await user.click(screen.getByTestId("graph-open-parent"));
     await waitFor(() =>

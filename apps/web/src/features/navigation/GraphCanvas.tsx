@@ -299,7 +299,7 @@ export function GraphCanvas({
                 onClick={openParentNode}
                 data-testid="graph-open-parent"
               >
-                打开父节点
+                打开上一级节点
               </button>
             ) : null}
           </div>

@@ -15,7 +15,7 @@ import { ResearchMapSearch } from "./ResearchMapSearch";
 import { DEFAULT_MAP_VISUAL_SETTINGS, ResearchMapVisualSettings } from "./ResearchMapVisualSettings";
 import { TemporaryFusionObservationPanel } from "./TemporaryFusionObservationPanel";
 import { consumeMapEntryIntent } from "./map-entry-intent";
-import { filterResearchMapObservation, focusResearchMapObservation, withResearchMapIsolates, withResearchMapRevealTarget } from "./research-map-observation";
+import { filterResearchMapObservation, focusResearchMapObservation, researchMapRootNodeIds, withResearchMapIsolates, withResearchMapRevealTarget } from "./research-map-observation";
 import { researchSearchMatchTarget } from "./research-search-navigation";
 import { type MapAssociationCandidateScene, type MapSearchScene } from "./research-map-ui-state";
 import { fragmentDeepLink } from "../research-session/fragment-locator";
@@ -120,6 +120,10 @@ export function ResearchMapLandingPage() {
   const observation = useMemo(
     () => baseObservation ? focusResearchMapObservation(baseObservation, focusNodeId) : null,
     [baseObservation, focusNodeId],
+  );
+  const rootNodeIds = useMemo(
+    () => observationEntry ? researchMapRootNodeIds(observationEntry.value) : new Set<string>(),
+    [observationEntry],
   );
   const [candidateEntry, setCandidateEntry] = useState<{ entryKey: string; value?: MapAssociationCandidateScene }>({ entryKey: mapEntryKey });
   const candidateScope = candidateEntry.value;
@@ -564,6 +568,7 @@ export function ResearchMapLandingPage() {
           <GlobalResearchMap
             observation={observation}
             baseObservation={baseObservation ?? undefined}
+            rootNodeIds={rootNodeIds}
             onFocusNode={pushFocus}
             onExitFocus={exitFocus}
             onOpenNode={openNode}

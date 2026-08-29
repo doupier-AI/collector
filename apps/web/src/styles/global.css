@@ -781,7 +781,7 @@ button {
   transition: r var(--duration-fast) var(--ease-out), stroke-width var(--duration-fast) var(--ease-out), filter var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out);
 }
 
-.global-map__parent-marker {
+.global-map__root-marker {
   fill: transparent;
   stroke: var(--color-edge-parent-child);
   stroke-dasharray: 3.25 2.25;
@@ -850,7 +850,7 @@ button {
 }
 
 .global-map__node--muted .global-map__node-core,
-.global-map__node--muted .global-map__parent-marker { opacity: 0.3; }
+.global-map__node--muted .global-map__root-marker { opacity: 0.3; }
 
 .global-map__node--unconnected .global-map__node-core {
   fill: color-mix(in srgb, var(--color-muted) 36%, var(--color-surface));
@@ -880,7 +880,7 @@ button {
 .global-map__node--search-muted .global-map__node-title { opacity: calc(var(--global-map-title-opacity, 0.62) * 0.42); }
 
 .global-map__node--search-muted .global-map__node-core,
-.global-map__node--search-muted .global-map__parent-marker { opacity: 0.24; }
+.global-map__node--search-muted .global-map__root-marker { opacity: 0.24; }
 
 .global-map__node--search-match .global-map__node-core { stroke-width: 3; }
 
@@ -972,7 +972,7 @@ button {
   background: transparent;
 }
 
-.global-map__legend-parent {
+.global-map__legend-root {
   width: 0.75rem;
   height: 0.75rem;
   border: 2px dashed var(--color-edge-parent-child);
@@ -1185,7 +1185,7 @@ button {
     background: var(--global-map-project-color);
   }
 
-  .global-map__list-dot--parent {
+  .global-map__list-dot--root {
     box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-edge-parent-child);
   }
 

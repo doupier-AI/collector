@@ -33,6 +33,7 @@ import {
   type DragSimulation,
 } from "./mapInteractions";
 import { type MapAssociationCandidateScene, type MapSearchScene } from "./research-map-ui-state";
+import { researchMapRootNodeIds } from "./research-map-observation";
 import { type ResearchMapFilterState } from "./research-map-filters";
 import { ResearchMapNodeLabelStack } from "./ResearchMapNodeLabelStack";
 
@@ -237,6 +238,8 @@ interface GlobalResearchMapProps {
   observation: ResearchGraphObservation;
   /** 系统布局始终读取专注裁边前的完整观察；observation 只负责当前显示关系。 */
   baseObservation?: ResearchGraphObservation;
+  /** 根身份来自筛选前的完整正式图，不能随当前可见投影改变。 */
+  rootNodeIds?: ReadonlySet<string>;
   onFocusNode?: (nodeId: string) => void;
   onExitFocus?: () => void;
   onOpenNode?: (nodeId: string) => void;
@@ -273,7 +276,7 @@ interface GlobalResearchMapProps {
   onOpenCandidates?: (scope: MapAssociationCandidateScene, trigger: Element) => void;
 }
 
-export function GlobalResearchMap({ observation, baseObservation, onFocusNode, onExitFocus, onOpenNode, nodeHref = stableNodePath, revealNodeId, revealRequestId, onRevealHandled, search, presentation = "canvas", immersive = false, onSurfaceInteraction, associationHints = [], temporaryFusions = [], hideTemporaryFusions = Boolean(observation.focusNodeId), candidateMode = false, showArrows = false, nodeScale = 1, titleOpacity = 0.62, lineWidth = 1.25, density = "balanced", colorMode = "project", layoutResetToken = 0, onOpenCandidates }: GlobalResearchMapProps) {
+export function GlobalResearchMap({ observation, baseObservation, rootNodeIds, onFocusNode, onExitFocus, onOpenNode, nodeHref = stableNodePath, revealNodeId, revealRequestId, onRevealHandled, search, presentation = "canvas", immersive = false, onSurfaceInteraction, associationHints = [], temporaryFusions = [], hideTemporaryFusions = Boolean(observation.focusNodeId), candidateMode = false, showArrows = false, nodeScale = 1, titleOpacity = 0.62, lineWidth = 1.25, density = "balanced", colorMode = "project", layoutResetToken = 0, onOpenCandidates }: GlobalResearchMapProps) {
   const initialAspectRatioRef = useRef(typeof window === "undefined" ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight));
   const [canvasAspectRatio, setCanvasAspectRatio] = useState(initialAspectRatioRef.current);
   const focusSnapshotRef = useRef<{ positions: Map<string, GraphPoint>; viewBox: ViewBoxState } | null>(null);
@@ -420,9 +423,8 @@ export function GlobalResearchMap({ observation, baseObservation, onFocusNode, o
   const lastDragMovedRef = useRef(false);
   const pendingFocusTimer = useRef<number | undefined>(undefined);
   const adjacency = useMemo(() => adjacencyFor(observation), [observation]);
-  const parentNodeIds = useMemo(() => new Set(layoutObservation.edges
-    .filter(({ edge }) => edge.kind === "parent-child")
-    .map(({ edge }) => edge.fromNodeId)), [layoutObservation.edges]);
+  const derivedRootNodeIds = useMemo(() => researchMapRootNodeIds(layoutObservation), [layoutObservation]);
+  const resolvedRootNodeIds = rootNodeIds ?? derivedRootNodeIds;
   const visualEdges = useMemo(() => visualEdgesFor(observation), [observation]);
   const candidateEndpointIds = useMemo(() => new Set(associationHints.flatMap((hint) => [hint.anchorNodeId, hint.relatedNodeId])), [associationHints]);
   const searchMatchIds = useMemo(() => new Set(search?.matchedNodeIds ?? (search?.selectedNodeId ? [search.selectedNodeId] : [])), [search?.matchedNodeIds, search?.selectedNodeId]);
@@ -1063,7 +1065,7 @@ export function GlobalResearchMap({ observation, baseObservation, onFocusNode, o
           {observation.nodes.map((summary) => {
             const position = positions.get(summary.node.id)!;
             const radius = nodeRadius(summary, nodeScale);
-            const parentNode = parentNodeIds.has(summary.node.id);
+            const rootNode = resolvedRootNodeIds.has(summary.node.id);
             const splitTitle = titleLines(summary.label);
             const current = summary.node.id === resolvedRovingNodeId;
             const evidence = evidenceStatus(summary);
@@ -1086,7 +1088,7 @@ export function GlobalResearchMap({ observation, baseObservation, onFocusNode, o
               `global-map__node--${summary.role}`,
               `global-map__node--${summary.lifecycle}`,
               `global-map__node--${summary.connectivity}`,
-              parentNode ? "global-map__node--parent" : "",
+              rootNode ? "global-map__node--root" : "",
               externalScope ? `global-map__node--${externalScope.modifier}` : "",
               colorClass(summary, colorMode),
               interactionClass,
@@ -1102,14 +1104,14 @@ export function GlobalResearchMap({ observation, baseObservation, onFocusNode, o
                 data-node-id={summary.node.id}
                 data-layout-x={position.x}
                 data-layout-y={position.y}
-                data-parent-node={parentNode ? "true" : undefined}
+                data-root-node={rootNode ? "true" : undefined}
                 ref={(element) => { if (element) canvasNodeRefs.current.set(summary.node.id, element); else canvasNodeRefs.current.delete(summary.node.id); }}
                 className={classes}
                 transform={`translate(${position.x} ${position.y})`}
                 role="button"
                 tabIndex={candidateMode ? -1 : current ? 0 : -1}
                 aria-pressed={focusedNodeId === summary.node.id}
-                aria-label={[summary.label, parentNode ? "父节点" : undefined, nodeStatus(summary), connectivityStatus(summary.connectivity), "单击或 Space 专注", "双击或 Enter 打开"].filter(Boolean).join("，")}
+                aria-label={[summary.label, rootNode ? "根节点" : undefined, nodeStatus(summary), connectivityStatus(summary.connectivity), "单击或 Space 专注", "双击或 Enter 打开"].filter(Boolean).join("，")}
                 onFocus={() => { setRovingNodeId(summary.node.id); setKeyboardNodeId(summary.node.id); }}
                 onBlur={() => setKeyboardNodeId((nodeId) => nodeId === summary.node.id ? null : nodeId)}
                 onPointerEnter={() => setHoveredNodeId(summary.node.id)}
@@ -1210,8 +1212,8 @@ export function GlobalResearchMap({ observation, baseObservation, onFocusNode, o
                 <circle className="global-map__node-selection-halo" r={radius + 7} />
                 <circle className="global-map__node-focus-ring" r={radius + 10} />
                 <circle className="global-map__node-core" r={radius} />
-                {parentNode ? <circle className="global-map__parent-marker" r={radius + 4.5} aria-hidden="true" /> : null}
-                <title>{summary.label}{parentNode ? "，父节点" : ""}</title>
+                {rootNode ? <circle className="global-map__root-marker" r={radius + 4.5} aria-hidden="true" /> : null}
+                <title>{summary.label}{rootNode ? "，根节点" : ""}</title>
                 <ResearchMapNodeLabelStack
                   title={splitTitle}
                   titleFontSize={titleUserFontSize}
@@ -1259,12 +1261,12 @@ export function GlobalResearchMap({ observation, baseObservation, onFocusNode, o
         <ul>
           {observation.nodes.map((summary) => {
             const externalScope = externalScopePresentation(summary);
-            const parentNode = parentNodeIds.has(summary.node.id);
+            const rootNode = resolvedRootNodeIds.has(summary.node.id);
             return (
               <li key={summary.node.id}>
-                <button ref={(element) => { if (element) listNodeRefs.current.set(summary.node.id, element); else listNodeRefs.current.delete(summary.node.id); }} type="button" disabled={candidateMode} className={["global-map__list-link", `global-map__list-link--${summary.connectivity}`, externalScope ? `global-map__list-link--${externalScope.modifier}` : ""].filter(Boolean).join(" ")} aria-current={focusedNodeId === summary.node.id ? "true" : undefined} aria-pressed={focusedNodeId === summary.node.id} aria-label={[summary.label, parentNode ? "父节点" : undefined, nodeStatus(summary), connectivityStatus(summary.connectivity), "单击或 Space 专注", "Enter 打开"].filter(Boolean).join("，")} onClick={() => { if (!candidateMode) selectNode(summary.node.id); }} onFocus={() => setRovingNodeId(summary.node.id)} onKeyDown={(event) => { if (!candidateMode) handleKey(event, summary.node.id, listNodeRefs.current); }}>
-                  <span className={["global-map__list-dot", parentNode ? "global-map__list-dot--parent" : "", `global-map__list-dot--${summary.role}`, `global-map__list-dot--${summary.lifecycle}`, externalScope ? `global-map__list-dot--${externalScope.modifier}` : "", colorClass(summary, colorMode, "global-map__list-dot")].filter(Boolean).join(" ")} aria-hidden="true" />
-                  <span><strong>{summary.label}</strong><small>{summary.projectName ?? "未分类"} · {summary.sessionTitle} · {summary.role === "fusion" ? "融合成果" : "研究节点"}{parentNode ? " · 父节点" : ""}{summary.lifecycle === "archived" ? " · 已归档" : ""}{evidenceStatus(summary) ? ` · ${evidenceStatus(summary)}` : ""}{summary.connectivity === "focus" ? " · 当前专注" : summary.connectivity === "connected" ? " · 已连通" : summary.connectivity === "unconnected" ? " · 未连通" : ""}</small>{externalScope ? <span className="global-map__scope-badge">{externalScope.label}</span> : null}</span>
+                <button ref={(element) => { if (element) listNodeRefs.current.set(summary.node.id, element); else listNodeRefs.current.delete(summary.node.id); }} type="button" disabled={candidateMode} className={["global-map__list-link", `global-map__list-link--${summary.connectivity}`, externalScope ? `global-map__list-link--${externalScope.modifier}` : ""].filter(Boolean).join(" ")} aria-current={focusedNodeId === summary.node.id ? "true" : undefined} aria-pressed={focusedNodeId === summary.node.id} aria-label={[summary.label, rootNode ? "根节点" : undefined, nodeStatus(summary), connectivityStatus(summary.connectivity), "单击或 Space 专注", "Enter 打开"].filter(Boolean).join("，")} onClick={() => { if (!candidateMode) selectNode(summary.node.id); }} onFocus={() => setRovingNodeId(summary.node.id)} onKeyDown={(event) => { if (!candidateMode) handleKey(event, summary.node.id, listNodeRefs.current); }}>
+                  <span className={["global-map__list-dot", rootNode ? "global-map__list-dot--root" : "", `global-map__list-dot--${summary.role}`, `global-map__list-dot--${summary.lifecycle}`, externalScope ? `global-map__list-dot--${externalScope.modifier}` : "", colorClass(summary, colorMode, "global-map__list-dot")].filter(Boolean).join(" ")} aria-hidden="true" />
+                  <span><strong>{summary.label}</strong><small>{summary.projectName ?? "未分类"} · {summary.sessionTitle} · {summary.role === "fusion" ? "融合成果" : "研究节点"}{rootNode ? " · 根节点" : ""}{summary.lifecycle === "archived" ? " · 已归档" : ""}{evidenceStatus(summary) ? ` · ${evidenceStatus(summary)}` : ""}{summary.connectivity === "focus" ? " · 当前专注" : summary.connectivity === "connected" ? " · 已连通" : summary.connectivity === "unconnected" ? " · 未连通" : ""}</small>{externalScope ? <span className="global-map__scope-badge">{externalScope.label}</span> : null}</span>
                 </button>
                 {!candidateMode && summary.candidateCount > 0 ? (
                   <button type="button" className="global-map__list-candidate" data-candidate-trigger={`list:${summary.node.id}`} aria-label={`查看${summary.label}的${summary.candidateCount}条关联候选`} onClick={(event) => onOpenCandidates?.({ kind: "node", nodeId: summary.node.id }, event.currentTarget)}>
@@ -1295,7 +1297,7 @@ export function GlobalResearchMap({ observation, baseObservation, onFocusNode, o
       {!immersive ? <div className="global-map__legend" aria-label="地图图例">
         <span><i className="global-map__legend-node" aria-hidden="true" />研究节点</span>
         <span><i className="global-map__legend-node global-map__legend-node--fusion" aria-hidden="true" />融合成果</span>
-        <span><i className="global-map__legend-parent" aria-hidden="true" />父节点</span>
+        <span><i className="global-map__legend-root" aria-hidden="true" />根节点</span>
         <span><i className="global-map__legend-line" aria-hidden="true" />父子生长</span>
         <span><i className="global-map__legend-line global-map__legend-line--fusion" aria-hidden="true" />融合来源</span>
       </div> : null}

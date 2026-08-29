@@ -1,9 +1,28 @@
 import { describe, expect, it } from "vitest";
 import type { ResearchGraphObservation } from "@collector/capture-contracts";
 import { makeEdge, makeGraphObservation, makeGraphObservationNode } from "../../test/fakes";
-import { filterResearchMapObservation, focusResearchMapObservation, withResearchMapRevealTarget } from "./research-map-observation";
+import { filterResearchMapObservation, focusResearchMapObservation, researchMapRootNodeIds, withResearchMapRevealTarget } from "./research-map-observation";
 
 describe("research map observation derivation", () => {
+  it("identifies one root per parent-child tree, including single-node and fusion-result trees", () => {
+    const observation = makeGraphObservation({
+      nodes: [
+        makeGraphObservationNode("root", "根节点"),
+        makeGraphObservationNode("middle", "中间节点"),
+        makeGraphObservationNode("leaf", "叶节点"),
+        makeGraphObservationNode("fusion", "融合根节点", { role: "fusion" }),
+        makeGraphObservationNode("single", "单节点树"),
+      ],
+      edges: [
+        { edge: { ...makeEdge("parent-child", "root", "middle"), kind: "parent-child" as const }, connectivity: "default" },
+        { edge: { ...makeEdge("parent-child", "middle", "leaf"), kind: "parent-child" as const }, connectivity: "default" },
+        { edge: { ...makeEdge("fused-from", "leaf", "fusion"), kind: "fused-from" as const }, connectivity: "default" },
+      ],
+    });
+
+    expect([...researchMapRootNodeIds(observation)].sort()).toEqual(["fusion", "root", "single"]);
+  });
+
   it("temporarily projects a selected search result outside the active filter without restoring its relationships", () => {
     const full = makeGraphObservation({
       nodes: [makeGraphObservationNode("inside", "范围内"), makeGraphObservationNode("outside", "范围外")],

@@ -21,24 +21,56 @@ describe("GlobalResearchMap current-open scene", () => {
     rerender(<MemoryRouter><GlobalResearchMap observation={observation} showArrows /></MemoryRouter>);
     expect(canvas().querySelector(".global-map__edge-arrow")).not.toBeNull();
   });
-  it("marks nodes with direct children independently from the active color mode", () => {
+  it("marks only tree roots, including single-node and fusion-result trees", () => {
     const observation = makeGraphObservation({
-      nodes: [makeGraphObservationNode("parent", "父节点示例"), makeGraphObservationNode("child", "子节点示例")],
-      edges: [{ edge: { ...makeEdge("parent-child", "parent", "child"), kind: "parent-child" as const }, connectivity: "default" }],
+      nodes: [
+        makeGraphObservationNode("root", "根节点示例"),
+        makeGraphObservationNode("middle", "中间节点示例"),
+        makeGraphObservationNode("leaf", "叶节点示例"),
+        makeGraphObservationNode("fusion", "融合根节点", { role: "fusion" }),
+        makeGraphObservationNode("single", "单节点树"),
+      ],
+      edges: [
+        { edge: { ...makeEdge("parent-child", "root", "middle"), kind: "parent-child" as const }, connectivity: "default" },
+        { edge: { ...makeEdge("parent-child", "middle", "leaf"), kind: "parent-child" as const }, connectivity: "default" },
+        { edge: { ...makeEdge("fused-from", "leaf", "fusion"), kind: "fused-from" as const }, connectivity: "default" },
+      ],
     });
     const { rerender } = render(<MemoryRouter><GlobalResearchMap observation={observation} colorMode="project" /></MemoryRouter>);
-    const parent = canvas().querySelector('[data-node-id="parent"]')!;
-    const child = canvas().querySelector('[data-node-id="child"]')!;
+    const root = canvas().querySelector('[data-node-id="root"]')!;
+    const middle = canvas().querySelector('[data-node-id="middle"]')!;
 
-    expect(parent).toHaveAttribute("data-parent-node", "true");
-    expect(parent.querySelector(".global-map__parent-marker")).not.toBeNull();
-    expect(parent).toHaveAccessibleName(/父节点示例，父节点/);
-    expect(child).not.toHaveAttribute("data-parent-node");
-    expect(child.querySelector(".global-map__parent-marker")).toBeNull();
-    expect(screen.getByLabelText("地图图例")).toHaveTextContent("父节点");
+    expect(root).toHaveAttribute("data-root-node", "true");
+    expect(root.querySelector(".global-map__root-marker")).not.toBeNull();
+    expect(root).toHaveAccessibleName(/根节点示例，根节点/);
+    expect(middle).not.toHaveAttribute("data-root-node");
+    expect(middle.querySelector(".global-map__root-marker")).toBeNull();
+    expect(canvas().querySelector('[data-node-id="leaf"]')).not.toHaveAttribute("data-root-node");
+    expect(canvas().querySelector('[data-node-id="fusion"]')).toHaveAttribute("data-root-node", "true");
+    expect(canvas().querySelector('[data-node-id="single"]')).toHaveAttribute("data-root-node", "true");
+    expect(screen.getByLabelText("地图图例")).toHaveTextContent("根节点");
 
     rerender(<MemoryRouter><GlobalResearchMap observation={observation} colorMode="lifecycle" /></MemoryRouter>);
-    expect(canvas().querySelector('[data-node-id="parent"] .global-map__parent-marker')).not.toBeNull();
+    expect(canvas().querySelector('[data-node-id="root"] .global-map__root-marker')).not.toBeNull();
+  });
+  it("does not promote an intermediate node when the active filter hides its root", () => {
+    const full = makeGraphObservation({
+      nodes: [
+        makeGraphObservationNode("root", "隐藏根节点"),
+        makeGraphObservationNode("middle", "可见中间节点"),
+        makeGraphObservationNode("leaf", "可见叶节点"),
+      ],
+      edges: [
+        { edge: { ...makeEdge("parent-child", "root", "middle"), kind: "parent-child" as const }, connectivity: "default" },
+        { edge: { ...makeEdge("parent-child", "middle", "leaf"), kind: "parent-child" as const }, connectivity: "default" },
+      ],
+    });
+    const filtered = { ...full, nodes: full.nodes.slice(1), edges: full.edges.slice(1) };
+
+    render(<MemoryRouter><GlobalResearchMap observation={filtered} rootNodeIds={new Set(["root"])} /></MemoryRouter>);
+
+    expect(canvas().querySelector('[data-node-id="middle"]')).not.toHaveAttribute("data-root-node");
+    expect(canvas().querySelector('[data-node-id="leaf"]')).not.toHaveAttribute("data-root-node");
   });
   it("changes concentric node radii without moving node centers or title geometry", () => {
     const normal = makeGraphObservationNode("a", "普通节点", { candidateCount: 1 });

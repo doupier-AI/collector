@@ -134,12 +134,14 @@ describe("FocusLineage", () => {
     );
   });
 
-  it("打开父节点出口跳转到父节点；回到当前节点把 roving 焦点移回", async () => {
+  it("打开上一级节点出口跳转到直接上级；回到当前节点把 roving 焦点移回", async () => {
     const user = userEvent.setup();
     renderLineage({ getResearchGraph: async () => lineageProjection() });
 
     await screen.findByRole("list", { name: "专注脉络" });
-    await user.click(screen.getByTestId("focus-open-parent"));
+    const openUpstream = screen.getByTestId("focus-open-parent");
+    expect(openUpstream).toHaveTextContent("打开上一级节点");
+    await user.click(openUpstream);
     await waitFor(() =>
       expect(screen.getByTestId("location-probe")).toHaveTextContent("/nodes/parent"),
     );
