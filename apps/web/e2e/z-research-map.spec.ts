@@ -236,6 +236,7 @@ test.describe("统一研究图谱", () => {
   });
 
   test("节点放大后标题、分类与证据状态仍然分层显示", async ({ page }) => {
+    await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
     await installGlobalMapVisualFixture(page);
     await page.unroute("**/v1/research-map*");
     const observation = structuredClone(GLOBAL_MAP_VISUAL_OBSERVATION);
@@ -287,5 +288,20 @@ test.describe("统一研究图谱", () => {
     }));
 
     expect(overlaps, JSON.stringify(labels, null, 2)).toEqual([]);
+
+    const labelPaint = await canvas.locator("[data-node-id='map-violet'] > text").evaluateAll((texts) =>
+      texts.map((text) => {
+        const style = getComputedStyle(text);
+        return {
+          className: text.getAttribute("class"),
+          stroke: style.stroke,
+          strokeWidth: style.strokeWidth,
+        };
+      }),
+    );
+    expect(
+      labelPaint.every(({ stroke, strokeWidth }) => stroke === "none" || Number.parseFloat(strokeWidth) === 0),
+      `节点文字不应使用会在放大后形成锯齿底框的 SVG 描边：${JSON.stringify(labelPaint, null, 2)}`,
+    ).toBe(true);
   });
 });

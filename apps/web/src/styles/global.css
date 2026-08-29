@@ -861,12 +861,8 @@ button {
   font-family: var(--font-sans);
   font-size: 13px;
   font-weight: 650;
-  paint-order: stroke;
   pointer-events: none;
-  stroke: var(--color-surface);
-  stroke-width: 2px;
   transition: opacity var(--duration-fast) var(--ease-out);
-  vector-effect: non-scaling-stroke;
 }
 
 .global-map__node--muted .global-map__node-title,
