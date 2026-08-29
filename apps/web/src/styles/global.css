@@ -917,10 +917,7 @@ button {
   opacity: 0.82;
 }
 
-.global-map__node--emphasized .global-map__node-details,
-.global-map__node--neighbor .global-map__node-details,
-.global-map__node--selected .global-map__node-details,
-.global-map__node:focus-visible .global-map__node-details {
+.global-map__node--details-visible:not(.global-map__node--archived) .global-map__node-details {
   opacity: 1;
 }
 

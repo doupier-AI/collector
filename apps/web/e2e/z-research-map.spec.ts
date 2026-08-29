@@ -304,4 +304,65 @@ test.describe("统一研究图谱", () => {
       `节点文字不应使用会在放大后形成锯齿底框的 SVG 描边：${JSON.stringify(labelPaint, null, 2)}`,
     ).toBe(true);
   });
+
+  test("单行标题下证据状态紧随可见标签，不为隐藏分类预留空行", async ({ page }) => {
+    await page.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" });
+    await installGlobalMapVisualFixture(page);
+    await page.unroute("**/v1/research-map*");
+    const observation = structuredClone(GLOBAL_MAP_VISUAL_OBSERVATION);
+    const fusion = observation.nodes.find((node) => node.node.id === "map-violet")!;
+    fusion.label = "注意力机制与ViT融合研究";
+    fusion.sessionTitle = `${fusion.label}会话`;
+    fusion.lifecycle = "active";
+    fusion.fusionEvidenceHealth = "available";
+    observation.nodes = [fusion];
+    observation.edges = [];
+    observation.activeCandidateCount = 0;
+    await page.route("**/v1/research-map*", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(observation),
+    }));
+    await pairAndOpen(page, "/map");
+    const node = page.getByTestId("global-map-canvas").locator("[data-node-id='map-violet']");
+    await expect(node).toBeVisible();
+
+    const spacing = await node.evaluate((element) => {
+      const title = element.querySelector<SVGTextElement>(":scope > .global-map__node-title")!;
+      const details = element.querySelector<SVGTextElement>(":scope > .global-map__node-details");
+      const evidence = element.querySelector<SVGTextElement>(":scope > .global-map__node-evidence")!;
+      const titleRect = title.getBoundingClientRect();
+      const evidenceRect = evidence.getBoundingClientRect();
+      return {
+        detailsVisible: details ? Number.parseFloat(getComputedStyle(details).opacity) > 0 : false,
+        evidenceHeight: evidenceRect.height,
+        evidenceTop: evidenceRect.top,
+        visualGap: evidenceRect.top - titleRect.bottom,
+      };
+    });
+
+    expect(spacing.detailsVisible).toBe(false);
+    expect(spacing.visualGap).toBeGreaterThanOrEqual(0);
+    expect(
+      spacing.visualGap,
+      `隐藏的分类行不应把证据状态推远：${JSON.stringify(spacing)}`,
+    ).toBeLessThanOrEqual(spacing.evidenceHeight * 0.75);
+
+    await node.locator(".global-map__node-core").hover();
+    await expect(node.locator(":scope > .global-map__node-details")).toBeVisible();
+    const expandedSpacing = await node.evaluate((element) => {
+      const detailsRect = element.querySelector<SVGTextElement>(":scope > .global-map__node-details")!.getBoundingClientRect();
+      const evidenceRect = element.querySelector<SVGTextElement>(":scope > .global-map__node-evidence")!.getBoundingClientRect();
+      return {
+        detailsBottom: detailsRect.bottom,
+        evidenceTop: evidenceRect.top,
+      };
+    });
+    expect(expandedSpacing.evidenceTop).toBeGreaterThan(spacing.evidenceTop);
+    expect(expandedSpacing.detailsBottom).toBeLessThanOrEqual(expandedSpacing.evidenceTop);
+
+    await page.mouse.move(1, 1);
+    await expect(node.locator(":scope > .global-map__node-details")).toHaveCount(0);
+    await expect.poll(async () => node.locator(":scope > .global-map__node-evidence").evaluate((evidence) => evidence.getBoundingClientRect().top)).toBe(spacing.evidenceTop);
+  });
 });

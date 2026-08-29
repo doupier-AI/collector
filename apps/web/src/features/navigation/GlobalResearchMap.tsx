@@ -34,6 +34,7 @@ import {
 } from "./mapInteractions";
 import { type MapAssociationCandidateScene, type MapSearchScene } from "./research-map-ui-state";
 import { type ResearchMapFilterState } from "./research-map-filters";
+import { ResearchMapNodeLabelStack } from "./ResearchMapNodeLabelStack";
 
 interface ViewBoxState {
   x: number;
@@ -71,7 +72,6 @@ interface NodeDragState {
 
 const MIN_VIEW_WIDTH = 320;
 const MAX_VIEW_WIDTH = 1_440;
-const NODE_LABEL_LINE_HEIGHT_RATIO = 1.7;
 const POSITION_COMMIT_EPSILON = 0.5;
 
 function displacedPositions(
@@ -1066,13 +1066,15 @@ export function GlobalResearchMap({ observation, baseObservation, onFocusNode, o
           {observation.nodes.map((summary) => {
             const position = positions.get(summary.node.id)!;
             const radius = nodeRadius(summary, nodeScale);
-            const [primaryTitle, secondaryTitle] = titleLines(summary.label);
-            const stableTextLineHeight = titleUserFontSize * NODE_LABEL_LINE_HEIGHT_RATIO;
-            const detailsY = 27 + stableTextLineHeight * (secondaryTitle ? 2 : 1);
-            const annotationFontSize = titleUserFontSize * (10 / 13);
+            const splitTitle = titleLines(summary.label);
             const current = summary.node.id === resolvedRovingNodeId;
             const evidence = evidenceStatus(summary);
             const externalScope = externalScopePresentation(summary);
+            const detailsVisible = summary.lifecycle === "archived"
+              || summary.node.id === interactionNodeId
+              || directNeighbors.has(summary.node.id)
+              || focusedNodeId === summary.node.id
+              || keyboardNodeId === summary.node.id;
             const interactionClass = interactionNodeId
               ? summary.node.id === interactionNodeId
                 ? "global-map__node--emphasized"
@@ -1092,6 +1094,7 @@ export function GlobalResearchMap({ observation, baseObservation, onFocusNode, o
               searchClass,
               search?.selectedNodeId === summary.node.id ? "global-map__node--search-selected" : "",
               focusedNodeId === summary.node.id ? "global-map__node--selected" : "",
+              detailsVisible ? "global-map__node--details-visible" : "",
               candidateMode && candidateEndpointIds.has(summary.node.id) ? "global-map__node--candidate-endpoint" : "",
             ].filter(Boolean).join(" ");
             return (
@@ -1208,10 +1211,13 @@ export function GlobalResearchMap({ observation, baseObservation, onFocusNode, o
                 <circle className="global-map__node-focus-ring" r={radius + 10} />
                 <circle className="global-map__node-core" r={radius} />
                 <title>{summary.label}</title>
-                <text className="global-map__node-title" textAnchor="middle" y="27" style={{ fontSize: titleUserFontSize }} aria-hidden="true"><tspan x="0">{primaryTitle}</tspan>{secondaryTitle ? <tspan x="0" dy={stableTextLineHeight}>{secondaryTitle}</tspan> : null}</text>
-                <text className="global-map__node-details" textAnchor="middle" y={detailsY} style={{ fontSize: annotationFontSize }} aria-hidden="true">{compactNodeDetails(summary)}</text>
-                {evidence ? <text className={`global-map__node-evidence global-map__node-evidence--${summary.fusionEvidenceHealth}`} textAnchor="middle" y={detailsY + stableTextLineHeight} style={{ fontSize: annotationFontSize }} aria-hidden="true">{evidence}</text> : null}
-                {externalScope ? <text className="global-map__node-scope" textAnchor="middle" y={detailsY + stableTextLineHeight * (evidence ? 2 : 1)} style={{ fontSize: annotationFontSize }} aria-hidden="true">{externalScope.label}</text> : null}
+                <ResearchMapNodeLabelStack
+                  title={splitTitle}
+                  titleFontSize={titleUserFontSize}
+                  details={detailsVisible ? compactNodeDetails(summary) : undefined}
+                  evidence={evidence ? { label: evidence, health: summary.fusionEvidenceHealth } : undefined}
+                  scopeLabel={externalScope?.label}
+                />
               </g>
             );
           })}
