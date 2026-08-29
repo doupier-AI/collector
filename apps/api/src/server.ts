@@ -24,11 +24,13 @@ import { createSemanticModelArtifactInstaller } from "./semantic-search/model-ar
 import { IsolatedSemanticInferenceAdapter } from "./semantic-search/inference-adapter.js";
 import { createSemanticSearchModule } from "./semantic-search/module.js";
 import { SemanticSearchSqliteStore } from "./semantic-search/store.js";
+import { resolvePreviewRuntimeConfig } from "./preview-runtime.js";
 
 // 直接运行服务时保留 43110 便于前端开发调试；正式启动器显式传入 0 由系统选择端口。
 const port = Number(process.env.COLLECTOR_PORT ?? "43110");
 if (!Number.isSafeInteger(port) || port < 0 || port > 65_535) throw new Error("COLLECTOR_PORT must be an integer from 0 to 65535");
 const paths = defaultDataPaths(process.env.COLLECTOR_DATA_DIR);
+const previewRuntime = resolvePreviewRuntimeConfig(process.env.COLLECTOR_PREVIEW_MODE);
 const instanceId = process.env.COLLECTOR_INSTANCE_ID?.trim() || randomUUID();
 const defaultWebRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../web/dist");
 const webRoot = resolve(process.env.COLLECTOR_WEB_ROOT?.trim() || defaultWebRoot);
@@ -37,8 +39,13 @@ if (suppliedRuntimeVersion && !isRuntimeVersion(suppliedRuntimeVersion)) {
   throw new Error("COLLECTOR_RUNTIME_VERSION must be a Collector runtime SHA-256 fingerprint");
 }
 const mvpDemoMode = process.env.COLLECTOR_MVP_DEMO === "1";
+const offlineDemoMode = mvpDemoMode || previewRuntime.offlineModelMode;
 const runtimeVersion = suppliedRuntimeVersion
-  || await calculateRuntimeVersion(dirname(fileURLToPath(import.meta.url)), webRoot, mvpDemoMode ? "mvp-demo" : "standard");
+  || await calculateRuntimeVersion(
+    dirname(fileURLToPath(import.meta.url)),
+    webRoot,
+    previewRuntime.enabled ? "branch-preview" : mvpDemoMode ? "mvp-demo" : "standard",
+  );
 const serviceLock = await acquireServiceLock(paths.root, { instanceId, pid: process.pid, runtimeVersion });
 const store = new SqliteStore(paths.database);
 try {
@@ -58,9 +65,9 @@ if (process.env.COLLECTOR_SHOW_PAIRING_CODE === "1") {
   console.log(`Collector development pairing code: ${pairing.code}`);
 }
 const consent = process.env.COLLECTOR_AI_CONSENT === "1";
-const legacyApiKey = process.env.DEEPSEEK_API_KEY;
-const apiKey = process.env.COLLECTOR_AI_API_KEY ?? legacyApiKey;
-const providerId = process.env.COLLECTOR_AI_PROVIDER ?? (legacyApiKey ? "deepseek" : undefined);
+const legacyApiKey = previewRuntime.enabled ? undefined : process.env.DEEPSEEK_API_KEY;
+const apiKey = previewRuntime.enabled ? undefined : process.env.COLLECTOR_AI_API_KEY ?? legacyApiKey;
+const providerId = previewRuntime.enabled ? undefined : process.env.COLLECTOR_AI_PROVIDER ?? (legacyApiKey ? "deepseek" : undefined);
 if (apiKey && !providerId) throw new Error("COLLECTOR_AI_PROVIDER is required when COLLECTOR_AI_API_KEY is configured");
 let activeProfile: ProviderProfile | undefined;
 // 环境变量只作为开发/测试的显式通道（真实模型验收 harness 依赖），常规启动器路径不传
@@ -95,8 +102,9 @@ if (providerId && consent) {
 await store.saveSetting("ai_configured", String(Boolean(activeProfile?.credentialConfigured)));
 const resolver = new ProviderRuntimeResolver(DEFAULT_PROVIDER_REGISTRY, async (profileId) => store.getProviderCredential(profileId));
 const service = new CaptureService(store, paths.artifacts, undefined, {
-  researchProvider: mvpDemoMode ? createMvpDemoResearchProvider() : undefined,
-  mvpDemoMode,
+  researchProvider: offlineDemoMode ? createMvpDemoResearchProvider() : undefined,
+  mvpDemoMode: offlineDemoMode,
+  ...previewRuntime.serviceOptions,
 });
 const semanticDatabase = new DatabaseSync(paths.database);
 semanticDatabase.exec("PRAGMA foreign_keys = ON");
@@ -120,7 +128,7 @@ service.setAssociationHintSearch(semanticSearch);
 // 配置不存在或不可用时网关为空，具体原因经 getAiConfiguration 暴露；恢复失败不阻断启动。
 await service.restoreModelGateway();
 service.setModelGatewayResolver(async (route) => {
-  if (mvpDemoMode) throw new Error("Cloud model workflows are disabled in Collector MVP demo mode");
+  if (offlineDemoMode) throw new Error("Cloud model workflows are disabled in Collector offline mode");
   const profile = store.getProviderProfile(route.providerProfileId);
   if (!profile || profile.providerId !== route.providerId || profile.model !== route.model || profile.configurationVersion !== route.configurationVersion || fingerprintBaseUrl(profile.baseUrl) !== route.baseUrlFingerprint) {
     throw new Error("Workflow provider configuration is unavailable or has changed");
@@ -178,9 +186,10 @@ await new Promise<void>((resolveListen, reject) => {
   });
 });
 
-scheduler.start();
+if (previewRuntime.startScheduler) scheduler.start();
 console.log(`Collector WebUI and API listening on http://127.0.0.1:${activePort}`);
 if (mvpDemoMode) console.log("Collector MVP demo mode enabled: research answers are deterministic local simulations without network access.");
+if (previewRuntime.enabled) console.log("Collector branch preview mode enabled: isolated data snapshot, offline model mode, and automatic workers disabled.");
 
 // 优雅关闭：监听 SIGTERM/SIGINT 信号
 let shuttingDown = false;
