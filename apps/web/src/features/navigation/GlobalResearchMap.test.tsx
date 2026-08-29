@@ -21,6 +21,25 @@ describe("GlobalResearchMap current-open scene", () => {
     rerender(<MemoryRouter><GlobalResearchMap observation={observation} showArrows /></MemoryRouter>);
     expect(canvas().querySelector(".global-map__edge-arrow")).not.toBeNull();
   });
+  it("marks nodes with direct children independently from the active color mode", () => {
+    const observation = makeGraphObservation({
+      nodes: [makeGraphObservationNode("parent", "父节点示例"), makeGraphObservationNode("child", "子节点示例")],
+      edges: [{ edge: { ...makeEdge("parent-child", "parent", "child"), kind: "parent-child" as const }, connectivity: "default" }],
+    });
+    const { rerender } = render(<MemoryRouter><GlobalResearchMap observation={observation} colorMode="project" /></MemoryRouter>);
+    const parent = canvas().querySelector('[data-node-id="parent"]')!;
+    const child = canvas().querySelector('[data-node-id="child"]')!;
+
+    expect(parent).toHaveAttribute("data-parent-node", "true");
+    expect(parent.querySelector(".global-map__parent-marker")).not.toBeNull();
+    expect(parent).toHaveAccessibleName(/父节点示例，父节点/);
+    expect(child).not.toHaveAttribute("data-parent-node");
+    expect(child.querySelector(".global-map__parent-marker")).toBeNull();
+    expect(screen.getByLabelText("地图图例")).toHaveTextContent("父节点");
+
+    rerender(<MemoryRouter><GlobalResearchMap observation={observation} colorMode="lifecycle" /></MemoryRouter>);
+    expect(canvas().querySelector('[data-node-id="parent"] .global-map__parent-marker')).not.toBeNull();
+  });
   it("changes concentric node radii without moving node centers or title geometry", () => {
     const normal = makeGraphObservationNode("a", "普通节点", { candidateCount: 1 });
     const fusion = makeGraphObservationNode("fusion", "融合成果", {
@@ -129,7 +148,7 @@ describe("GlobalResearchMap current-open scene", () => {
     expect([...before.values()]).not.toContain(canvas().querySelector('[data-node-id="node-4"]')?.getAttribute("transform"));
     Object.defineProperty(window, "matchMedia", { configurable: true, value: originalMatchMedia });
   });
-  it("adds a third child on the established tree axis without moving existing nodes", () => {
+  it("adds a third child near the shared spring radius without moving existing nodes", () => {
     const originalMatchMedia = window.matchMedia;
     Object.defineProperty(window, "matchMedia", {
       configurable: true,
@@ -147,13 +166,16 @@ describe("GlobalResearchMap current-open scene", () => {
     for (const [id, transform] of before) expect(canvas().querySelector(`[data-node-id="${id}"]`)).toHaveAttribute("transform", transform);
     const coordinate = (id: string) => [...canvas().querySelector(`[data-node-id="${id}"]`)!.getAttribute("transform")!.matchAll(/-?\d+(?:\.\d+)?/g)].map((match) => Number(match[0]));
     const root = coordinate("root");
-    const first = coordinate("child-a");
     const next = coordinate("child-c");
-    const horizontal = Math.abs(first[0]! - root[0]!) > Math.abs(first[1]! - root[1]!);
-    expect(horizontal ? next[0] : next[1]).toBeCloseTo(horizontal ? first[0]! : first[1]!, 5);
+    expect(Math.hypot(next[0]! - root[0]!, next[1]! - root[1]!)).toBeCloseTo(178, 4);
     Object.defineProperty(window, "matchMedia", { configurable: true, value: originalMatchMedia });
   });
-  it("prepends a parent using the established descendant direction without folding the tree", () => {
+  it("prepends a parent near the existing child without restoring a tree axis", () => {
+    const originalMatchMedia = window.matchMedia;
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })),
+    });
     const oldNodes = [makeGraphObservationNode("root", "旧根"), makeGraphObservationNode("child", "旧子")];
     const edge = (from: string, to: string) => ({ edge: { ...makeEdge("parent-child", from, to), kind: "parent-child" as const }, connectivity: "default" as const });
     const initial = makeGraphObservation({ nodes: oldNodes, edges: [edge("root", "child")] });
@@ -168,10 +190,8 @@ describe("GlobalResearchMap current-open scene", () => {
     const coordinate = (id: string) => [...canvas().querySelector(`[data-node-id="${id}"]`)!.getAttribute("transform")!.matchAll(/-?\d+(?:\.\d+)?/g)].map((match) => Number(match[0]));
     const added = coordinate("a");
     const root = coordinate("root");
-    const child = coordinate("child");
-    const firstVector = { x: root[0]! - added[0]!, y: root[1]! - added[1]! };
-    const secondVector = { x: child[0]! - root[0]!, y: child[1]! - root[1]! };
-    expect(firstVector.x * secondVector.x + firstVector.y * secondVector.y).toBeGreaterThan(0);
+    expect(Math.hypot(root[0]! - added[0]!, root[1]! - added[1]!)).toBeCloseTo(178, 4);
+    Object.defineProperty(window, "matchMedia", { configurable: true, value: originalMatchMedia });
   });
   it("places an incrementally added earlier-sorting component without overlapping the retained scene", () => {
     const initialNodes = [makeGraphObservationNode("z-root", "旧根"), makeGraphObservationNode("z-child", "旧子")];

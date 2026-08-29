@@ -16,9 +16,16 @@ export interface StableOrganicGraphLayout {
 }
 
 const WORLD_MARGIN = 36;
-const COLLISION_DISTANCE = 74;
-const SPRING_LENGTH = 138;
-const ITERATIONS = 72;
+const COLLISION_DISTANCE = 92;
+const SPRING_LENGTH = 178;
+const ITERATIONS = 240;
+const STABLE_COLLISION_DISTANCE = 74;
+const STABLE_SPRING_LENGTH = 138;
+
+export interface OrganicGraphLayoutOptions {
+  densityScale?: number;
+  aspectRatio?: number;
+}
 
 function hashText(value: string, salt: number): number {
   let hash = (2166136261 ^ salt) >>> 0;
@@ -33,17 +40,19 @@ function unitHash(value: string, salt: number): number {
   return hashText(value, salt) / 0xffffffff;
 }
 
-function seedPoint(nodeId: string): GraphPoint {
-  return {
-    x: WORLD_MARGIN + unitHash(nodeId, 0x9e3779b9) * (GRAPH_WORLD_WIDTH - WORLD_MARGIN * 2),
-    y: WORLD_MARGIN + unitHash(nodeId, 0x85ebca6b) * (GRAPH_WORLD_HEIGHT - WORLD_MARGIN * 2),
-  };
+function simulationWorld(count: number, scale: number, aspectRatio: number): GraphWorld {
+  const safeAspectRatio = Math.max(0.65, Math.min(2.25, aspectRatio));
+  const spacing = COLLISION_DISTANCE * scale;
+  const area = Math.max(12, count) * spacing * spacing * 1.45;
+  const width = Math.max(560 * scale, Math.sqrt(area * safeAspectRatio));
+  const height = Math.max(420 * scale, Math.sqrt(area / safeAspectRatio));
+  return { width: width + WORLD_MARGIN * 2, height: height + WORLD_MARGIN * 2 };
 }
 
-function clampPoint(point: GraphPoint): GraphPoint {
+function seedPoint(nodeId: string, world: GraphWorld): GraphPoint {
   return {
-    x: Math.max(WORLD_MARGIN, Math.min(GRAPH_WORLD_WIDTH - WORLD_MARGIN, point.x)),
-    y: Math.max(WORLD_MARGIN, Math.min(GRAPH_WORLD_HEIGHT - WORLD_MARGIN, point.y)),
+    x: WORLD_MARGIN + unitHash(nodeId, 0x9e3779b9) * (world.width - WORLD_MARGIN * 2),
+    y: WORLD_MARGIN + unitHash(nodeId, 0x85ebca6b) * (world.height - WORLD_MARGIN * 2),
   };
 }
 
@@ -57,15 +66,21 @@ function clampPoint(point: GraphPoint): GraphPoint {
 export function createOrganicGraphLayout(
   nodes: readonly ResearchGraphObservationNode[],
   edges: readonly ResearchGraphObservationEdge[],
+  options: OrganicGraphLayoutOptions = {},
 ): ReadonlyMap<string, GraphPoint> {
+  const scale = Math.max(0.75, Math.min(1.5, options.densityScale ?? 1));
   const nodeIds = nodes.map((summary) => summary.node.id).sort((left, right) => left.localeCompare(right));
   const nodeIdSet = new Set(nodeIds);
-  const positions = new Map(nodeIds.map((nodeId) => [nodeId, seedPoint(nodeId)]));
-  const anchors = new Map([...positions].map(([nodeId, point]) => [nodeId, { ...point }]));
+  const world = simulationWorld(nodeIds.length, scale, options.aspectRatio ?? 16 / 9);
+  const positions = new Map(nodeIds.map((nodeId) => [nodeId, seedPoint(nodeId, world)]));
   const springs = edges
     .filter(({ edge }) => nodeIdSet.has(edge.fromNodeId) && nodeIdSet.has(edge.toNodeId) && edge.fromNodeId !== edge.toNodeId)
-    .map(({ edge }) => [edge.fromNodeId, edge.toNodeId] as const)
-    .sort(([leftFrom, leftTo], [rightFrom, rightTo]) => leftFrom.localeCompare(rightFrom) || leftTo.localeCompare(rightTo));
+    .map(({ edge }) => ({ fromId: edge.fromNodeId, toId: edge.toNodeId, kind: edge.kind }))
+    .sort((left, right) => left.fromId.localeCompare(right.fromId) || left.toId.localeCompare(right.toId) || left.kind.localeCompare(right.kind));
+
+  const collisionDistance = COLLISION_DISTANCE * scale;
+  const springLength = SPRING_LENGTH * scale;
+  const repulsionDistance = springLength * 1.45;
 
   for (let iteration = 0; iteration < ITERATIONS; iteration += 1) {
     const forces = new Map(nodeIds.map((nodeId) => [nodeId, { x: 0, y: 0 }]));
@@ -73,8 +88,8 @@ export function createOrganicGraphLayout(
 
     for (const nodeId of nodeIds) {
       const point = positions.get(nodeId)!;
-      const cellX = Math.floor(point.x / COLLISION_DISTANCE);
-      const cellY = Math.floor(point.y / COLLISION_DISTANCE);
+      const cellX = Math.floor(point.x / repulsionDistance);
+      const cellY = Math.floor(point.y / repulsionDistance);
       const key = `${cellX}:${cellY}`;
       const bucket = buckets.get(key) ?? [];
       bucket.push(nodeId);
@@ -83,8 +98,8 @@ export function createOrganicGraphLayout(
 
     for (const nodeId of nodeIds) {
       const point = positions.get(nodeId)!;
-      const cellX = Math.floor(point.x / COLLISION_DISTANCE);
-      const cellY = Math.floor(point.y / COLLISION_DISTANCE);
+      const cellX = Math.floor(point.x / repulsionDistance);
+      const cellY = Math.floor(point.y / repulsionDistance);
       for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
         for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
           for (const otherId of buckets.get(`${cellX + offsetX}:${cellY + offsetY}`) ?? []) {
@@ -93,13 +108,15 @@ export function createOrganicGraphLayout(
             let deltaX = other.x - point.x;
             let deltaY = other.y - point.y;
             let distance = Math.hypot(deltaX, deltaY);
-            if (distance >= COLLISION_DISTANCE) continue;
+            if (distance >= repulsionDistance) continue;
             if (distance < 0.01) {
               deltaX = unitHash(`${nodeId}:${otherId}`, 17) - 0.5;
               deltaY = unitHash(`${otherId}:${nodeId}`, 31) - 0.5;
               distance = Math.max(0.01, Math.hypot(deltaX, deltaY));
             }
-            const strength = (COLLISION_DISTANCE - distance) * 0.055;
+            const strength = distance < collisionDistance
+              ? (collisionDistance - distance) * 0.07 + (repulsionDistance - collisionDistance) * 0.004
+              : (repulsionDistance - distance) * 0.004;
             const forceX = (deltaX / distance) * strength;
             const forceY = (deltaY / distance) * strength;
             forces.get(nodeId)!.x -= forceX;
@@ -111,38 +128,44 @@ export function createOrganicGraphLayout(
       }
     }
 
-    for (const [fromId, toId] of springs) {
+    for (const { fromId, toId, kind } of springs) {
       const from = positions.get(fromId)!;
       const to = positions.get(toId)!;
       const deltaX = to.x - from.x;
       const deltaY = to.y - from.y;
       const distance = Math.max(1, Math.hypot(deltaX, deltaY));
-      const strength = (distance - SPRING_LENGTH) * 0.018;
+      const strength = (distance - springLength) * (kind === "parent-child" ? 0.085 : 0.028);
       const forceX = (deltaX / distance) * strength;
       const forceY = (deltaY / distance) * strength;
-      forces.get(fromId)!.x += forceX;
-      forces.get(fromId)!.y += forceY;
+      // 融合来源只把融合成果拉向来源，不通过关系弹簧反向重排来源节点。
+      if (kind === "parent-child") {
+        forces.get(fromId)!.x += forceX;
+        forces.get(fromId)!.y += forceY;
+      }
       forces.get(toId)!.x -= forceX;
       forces.get(toId)!.y -= forceY;
     }
 
-    const cooling = 0.68 - (iteration / ITERATIONS) * 0.5;
+    const cooling = 0.96 - (iteration / ITERATIONS) * 0.68;
     for (const nodeId of nodeIds) {
       const point = positions.get(nodeId)!;
-      const anchor = anchors.get(nodeId)!;
       const force = forces.get(nodeId)!;
-      force.x += (anchor.x - point.x) * 0.012 + (GRAPH_WORLD_WIDTH / 2 - point.x) * 0.0012;
-      force.y += (anchor.y - point.y) * 0.012 + (GRAPH_WORLD_HEIGHT / 2 - point.y) * 0.0012;
-      positions.set(nodeId, clampPoint({
-        x: point.x + Math.max(-9, Math.min(9, force.x)) * cooling,
-        y: point.y + Math.max(-9, Math.min(9, force.y)) * cooling,
-      }));
+      force.x += (world.width / 2 - point.x) * 0.0005;
+      force.y += (world.height / 2 - point.y) * 0.0005;
+      positions.set(nodeId, {
+        x: point.x + Math.max(-12, Math.min(12, force.x)) * cooling,
+        y: point.y + Math.max(-12, Math.min(12, force.y)) * cooling,
+      });
     }
   }
 
+  const values = [...positions.values()];
+  const minX = values.length ? Math.min(...values.map(({ x }) => x)) : WORLD_MARGIN;
+  const minY = values.length ? Math.min(...values.map(({ y }) => y)) : WORLD_MARGIN;
+  const shift = { x: WORLD_MARGIN - minX, y: WORLD_MARGIN - minY };
   return new Map([...positions].map(([nodeId, point]) => [nodeId, {
-    x: Number(point.x.toFixed(2)),
-    y: Number(point.y.toFixed(2)),
+    x: Number((point.x + shift.x).toFixed(2)),
+    y: Number((point.y + shift.y).toFixed(2)),
   }]));
 }
 
@@ -197,11 +220,11 @@ export function createStableOrganicGraphLayout(
     const point = positions.get(id)!; let fx = 0; let fy = 0;
     for (const otherId of ids) {
       if (otherId === id) continue; const other = positions.get(otherId)!; let dx = point.x - other.x; let dy = point.y - other.y; let distance = Math.hypot(dx, dy);
-      if (distance >= COLLISION_DISTANCE) continue;
+      if (distance >= STABLE_COLLISION_DISTANCE) continue;
       if (distance < .01) { dx = unitHash(`${id}:${otherId}`, 17) - .5; dy = unitHash(`${otherId}:${id}`, 31) - .5; distance = Math.max(.01, Math.hypot(dx, dy)); }
-      const strength = (COLLISION_DISTANCE - distance) * .06; fx += dx / distance * strength; fy += dy / distance * strength;
+      const strength = (STABLE_COLLISION_DISTANCE - distance) * .06; fx += dx / distance * strength; fy += dy / distance * strength;
     }
-    for (const neighbor of adjacency.get(id) ?? []) { const other = positions.get(neighbor)!; const dx = other.x - point.x; const dy = other.y - point.y; const distance = Math.max(1, Math.hypot(dx, dy)); const strength = (distance - SPRING_LENGTH) * .012; fx += dx / distance * strength; fy += dy / distance * strength; }
+    for (const neighbor of adjacency.get(id) ?? []) { const other = positions.get(neighbor)!; const dx = other.x - point.x; const dy = other.y - point.y; const distance = Math.max(1, Math.hypot(dx, dy)); const strength = (distance - STABLE_SPRING_LENGTH) * .012; fx += dx / distance * strength; fy += dy / distance * strength; }
     positions.set(id, clampScaled({ x: point.x + Math.max(-8, Math.min(8, fx)), y: point.y + Math.max(-8, Math.min(8, fy)) }, world));
   }
   return { positions: new Map([...positions].map(([id, point]) => [id, { x: Number(point.x.toFixed(2)), y: Number(point.y.toFixed(2)) }])), world, edgeKeys };

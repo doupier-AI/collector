@@ -11,6 +11,10 @@ test.describe("统一研究图谱", () => {
     const amber = canvas.locator("[data-node-id='map-amber']");
     const blue = canvas.locator("[data-node-id='map-blue']");
     const violet = canvas.locator("[data-node-id='map-violet']");
+    await expect(amber).toHaveAttribute("data-parent-node", "true");
+    await expect(amber.locator(".global-map__parent-marker")).toBeVisible();
+    await expect(amber).toHaveAccessibleName(/检索架构，父节点/);
+    await expect(blue).not.toHaveAttribute("data-parent-node", "true");
     const initial = await Promise.all([amber, blue, violet].map((node) => node.getAttribute("transform")));
 
     await amber.locator(".global-map__node-core").click();

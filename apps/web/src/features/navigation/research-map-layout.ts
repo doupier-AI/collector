@@ -1,4 +1,5 @@
-import type { ResearchGraphObservation, ResearchGraphObservationNode } from "@collector/capture-contracts";
+import type { ResearchGraphObservation } from "@collector/capture-contracts";
+import { createOrganicGraphLayout } from "./organicGraphLayout";
 
 export interface MapPoint { x: number; y: number; }
 export type TreeDirection = "right" | "down" | "left" | "up";
@@ -6,7 +7,6 @@ export type MapDensity = "compact" | "balanced" | "spacious";
 
 export interface ResearchMapLayout {
   positions: ReadonlyMap<string, MapPoint>;
-  treeDirections: ReadonlyMap<string, TreeDirection>;
   world: { width: number; height: number };
   edgeKeys: ReadonlyMap<string, readonly [string, string]>;
 }
@@ -96,13 +96,14 @@ export function createFocusMapPositions(observation: ResearchGraphObservation, f
 
 const LEVEL_GAP = 190;
 const SIBLING_GAP = 118;
-const TREE_GAP = 420;
-const COMPONENT_GAP = 160;
-const ISOLATE_GAP = 170;
+const GLOBAL_SPRING_LENGTH = 178;
+const GLOBAL_COLLISION_DISTANCE = 92;
 const WORLD_MARGIN = 140;
 
-function compareNode(left: ResearchGraphObservationNode, right: ResearchGraphObservationNode): number {
-  return left.node.id.localeCompare(right.node.id);
+function densityScale(density: MapDensity | number): number {
+  return typeof density === "number"
+    ? Math.max(0.75, Math.min(1.5, density))
+    : density === "compact" ? 0.8 : density === "spacious" ? 1.25 : 1;
 }
 
 function childrenByParent(observation: ResearchGraphObservation): ReadonlyMap<string, readonly string[]> {
@@ -114,38 +115,6 @@ function childrenByParent(observation: ResearchGraphObservation): ReadonlyMap<st
   }
   for (const ids of children.values()) ids.sort((left, right) => left.localeCompare(right));
   return children;
-}
-
-function parentIds(observation: ResearchGraphObservation): ReadonlySet<string> {
-  return new Set(observation.edges.filter(({ edge }) => edge.kind === "parent-child").map(({ edge }) => edge.toNodeId));
-}
-
-function treeIds(rootId: string, children: ReadonlyMap<string, readonly string[]>): readonly string[] {
-  const result: string[] = [];
-  const queue = [rootId];
-  const seen = new Set<string>();
-  while (queue.length) {
-    const id = queue.shift()!;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    result.push(id);
-    queue.push(...(children.get(id) ?? []));
-  }
-  return result;
-}
-
-function levels(rootId: string, children: ReadonlyMap<string, readonly string[]>): readonly (readonly string[])[] {
-  const result: string[][] = [];
-  let current = [rootId];
-  const seen = new Set<string>();
-  while (current.length) {
-    const level = current.filter((id) => !seen.has(id)).sort((left, right) => left.localeCompare(right));
-    if (!level.length) break;
-    level.forEach((id) => seen.add(id));
-    result.push(level);
-    current = level.flatMap((id) => children.get(id) ?? []);
-  }
-  return result;
 }
 
 function placeTree(rootId: string, direction: TreeDirection, origin: MapPoint, children: ReadonlyMap<string, readonly string[]>): Map<string, MapPoint> {
@@ -186,128 +155,85 @@ function placeTree(rootId: string, direction: TreeDirection, origin: MapPoint, c
   return result;
 }
 
-interface MapBounds { minX: number; maxX: number; minY: number; maxY: number; width: number; height: number; }
-
-function boundsFor(points: Iterable<MapPoint>): MapBounds {
-  const values = [...points];
-  if (!values.length) return { minX: 0, maxX: 0, minY: 0, maxY: 0, width: 0, height: 0 };
-  const xs = values.map(({ x }) => x);
-  const ys = values.map(({ y }) => y);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
-  return { minX, maxX, minY, maxY, width: maxX - minX, height: maxY - minY };
-}
-
-function boundsOverlap(left: MapBounds, right: MapBounds, padding: number): boolean {
-  return !(
-    left.maxX + padding <= right.minX - padding
-    || right.maxX + padding <= left.minX - padding
-    || left.maxY + padding <= right.minY - padding
-    || right.maxY + padding <= left.minY - padding
-  );
-}
-
-function stableDirection(rootId: string, treeLevels: readonly (readonly string[])[], aspectRatio: number, fusion: boolean): TreeDirection {
-  const depth = Math.max(1, treeLevels.length);
-  const breadth = Math.max(1, ...treeLevels.map((level) => level.length));
-  const horizontal = { width: (depth - 1) * LEVEL_GAP, height: (breadth - 1) * SIBLING_GAP };
-  const vertical = { width: horizontal.height, height: horizontal.width };
-  const safeAspectRatio = Math.max(0.5, Math.min(2.5, aspectRatio));
-  const useHorizontal = horizontal.width / safeAspectRatio + horizontal.height <= vertical.width / safeAspectRatio + vertical.height;
-  if (fusion) return useHorizontal ? "right" : "down";
-  const seed = [...rootId].reduce((sum, character) => sum + character.charCodeAt(0), 0);
-  return useHorizontal ? (seed % 2 === 0 ? "right" : "left") : (seed % 2 === 0 ? "down" : "up");
-}
-
-function pointAlong(direction: TreeDirection, origin: MapPoint, primary: number, secondary: number): MapPoint {
-  if (direction === "right") return { x: origin.x + primary, y: origin.y + secondary };
-  if (direction === "left") return { x: origin.x - primary, y: origin.y + secondary };
-  if (direction === "down") return { x: origin.x + secondary, y: origin.y + primary };
-  return { x: origin.x + secondary, y: origin.y - primary };
+function stableAngle(id: string): number {
+  let hash = 2166136261 >>> 0;
+  for (const character of id) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash / 0xffffffff) * Math.PI * 2;
 }
 
 /**
- * 当前打开期间新增节点不能迫使旧树重排。新父子节点沿已冻结的组件方向，
- * 从现存父节点寻找第一个无碰撞的兄弟槽位；其余新节点才采用系统建议位置。
+ * 当前打开期间新增节点不能迫使整张图重新洗牌。新节点优先围绕已经存在的
+ * 直接关系邻居落位，并在统一弹簧半径附近寻找空位；没有既有邻居时才采用
+ * 与当前现场对齐后的系统建议位置。
  */
 export function mergeIncrementalMapPositions(
   current: ReadonlyMap<string, MapPoint>,
   nextSystem: ReadonlyMap<string, MapPoint>,
   observation: ResearchGraphObservation,
-  treeDirections: ReadonlyMap<string, TreeDirection>,
+  density: MapDensity | number = "balanced",
 ): Map<string, MapPoint> {
   const result = new Map(current);
   const occupied = [...current.values()];
-  const parents = new Map<string, string[]>();
-  const children = new Map<string, string[]>();
+  const neighbors = new Map(observation.nodes.map(({ node }) => [node.id, new Set<string>()]));
   for (const { edge } of observation.edges) {
-    if (edge.kind !== "parent-child") continue;
-    const parentIds = parents.get(edge.toNodeId) ?? [];
-    parentIds.push(edge.fromNodeId);
-    parentIds.sort();
-    parents.set(edge.toNodeId, parentIds);
-    const childIds = children.get(edge.fromNodeId) ?? [];
-    childIds.push(edge.toNodeId);
-    childIds.sort();
-    children.set(edge.fromNodeId, childIds);
-  }
-  const directionFor = (id: string): TreeDirection | undefined => {
-    let cursor = id;
-    const seen = new Set<string>();
-    while (!seen.has(cursor)) {
-      seen.add(cursor);
-      const parent = parents.get(cursor)?.[0];
-      if (!parent) break;
-      cursor = parent;
+    if (edge.kind === "parent-child") {
+      neighbors.get(edge.fromNodeId)?.add(edge.toNodeId);
+      neighbors.get(edge.toNodeId)?.add(edge.fromNodeId);
+    } else {
+      // 新融合成果靠近既有来源；新增来源不能反向牵动已经存在的融合成果。
+      neighbors.get(edge.toNodeId)?.add(edge.fromNodeId);
     }
-    return treeDirections.get(cursor);
-  };
+  }
+  const sharedIds = [...nextSystem.keys()].filter((id) => current.has(id));
+  const systemCenter = sharedIds.reduce((sum, id) => {
+    const point = nextSystem.get(id)!;
+    return { x: sum.x + point.x / Math.max(1, sharedIds.length), y: sum.y + point.y / Math.max(1, sharedIds.length) };
+  }, { x: 0, y: 0 });
+  const currentCenter = sharedIds.reduce((sum, id) => {
+    const point = current.get(id)!;
+    return { x: sum.x + point.x / Math.max(1, sharedIds.length), y: sum.y + point.y / Math.max(1, sharedIds.length) };
+  }, { x: 0, y: 0 });
+  const alignment = { x: currentCenter.x - systemCenter.x, y: currentCenter.y - systemCenter.y };
+  const scale = densityScale(density);
+  const targetLength = GLOBAL_SPRING_LENGTH * scale;
+  const minimumDistance = GLOBAL_COLLISION_DISTANCE * scale;
   const pending = [...nextSystem.keys()].filter((id) => !result.has(id)).sort();
   const pendingIds = new Set(pending);
-  const isClear = (candidate: MapPoint) => occupied.every((point) => Math.hypot(candidate.x - point.x, candidate.y - point.y) >= 90);
+  const isClear = (candidate: MapPoint) => occupied.every((point) => Math.hypot(candidate.x - point.x, candidate.y - point.y) >= minimumDistance);
+  const clearCandidate = (id: string, origin: MapPoint, baseRadius: number): MapPoint | undefined => {
+    const angle = stableAngle(id);
+    for (let slot = 0; slot < 64; slot += 1) {
+      const ring = Math.floor(slot / 16);
+      const candidateAngle = angle + (slot % 16) * Math.PI / 8;
+      const radius = baseRadius + ring * minimumDistance;
+      const candidate = { x: origin.x + Math.cos(candidateAngle) * radius, y: origin.y + Math.sin(candidateAngle) * radius };
+      if (isClear(candidate)) return candidate;
+    }
+    return undefined;
+  };
   let guard = pending.length * 2 + 1;
   while (pending.length && guard-- > 0) {
     let progressed = false;
     for (let index = 0; index < pending.length;) {
       const id = pending[index]!;
-      const parentId = parents.get(id)?.find((candidate) => result.has(candidate));
-      const childId = children.get(id)?.find((candidate) => result.has(candidate));
-      if (!parentId && parents.get(id)?.some((candidate) => pendingIds.has(candidate))) {
+      const relationIds = [...(neighbors.get(id) ?? [])].filter((candidate) => result.has(candidate)).sort();
+      if (!relationIds.length && [...(neighbors.get(id) ?? [])].some((candidate) => pendingIds.has(candidate))) {
         index += 1;
         continue;
       }
-      const direction = directionFor(id);
-      let candidate: MapPoint | undefined;
-      if (parentId && direction) {
-        const parent = result.get(parentId)!;
-        const systemParent = nextSystem.get(parentId);
-        const systemPoint = nextSystem.get(id);
-        const primaryGap = systemParent && systemPoint
-          ? Math.max(110, direction === "right" || direction === "left"
-            ? Math.abs(systemPoint.x - systemParent.x)
-            : Math.abs(systemPoint.y - systemParent.y))
-          : LEVEL_GAP;
-        for (let slot = 0; slot < 64; slot += 1) {
-          const lane = slot === 0 ? 0 : Math.ceil(slot / 2) * (slot % 2 === 1 ? -1 : 1);
-          const attempt = pointAlong(direction, parent, primaryGap, lane * SIBLING_GAP);
-          if (isClear(attempt)) { candidate = attempt; break; }
-        }
-      } else if (childId && direction) {
-        const child = result.get(childId)!;
-        candidate = pointAlong(direction, child, -LEVEL_GAP, 0);
-      }
-      const suggested = candidate ?? nextSystem.get(id)!;
-      if (!isClear(suggested)) {
-        for (let slot = 1; slot < 64; slot += 1) {
-          const angle = slot * Math.PI / 4;
-          const radius = Math.ceil(slot / 8) * ISOLATE_GAP;
-          const attempt = { x: suggested.x + Math.cos(angle) * radius, y: suggested.y + Math.sin(angle) * radius };
-          if (isClear(attempt)) { candidate = attempt; break; }
-        }
-      }
-      const placed = candidate ?? suggested;
+      const suggested = nextSystem.get(id)!;
+      const alignedSuggestion = { x: suggested.x + alignment.x, y: suggested.y + alignment.y };
+      const relationCenter = relationIds.length ? relationIds.reduce((sum, relationId) => {
+        const point = result.get(relationId)!;
+        return { x: sum.x + point.x / relationIds.length, y: sum.y + point.y / relationIds.length };
+      }, { x: 0, y: 0 }) : undefined;
+      const candidate = relationCenter
+        ? clearCandidate(id, relationCenter, targetLength)
+        : isClear(alignedSuggestion) ? alignedSuggestion : clearCandidate(id, alignedSuggestion, minimumDistance);
+      const placed = candidate ?? alignedSuggestion;
       result.set(id, placed);
       occupied.push(placed);
       pending.splice(index, 1);
@@ -316,143 +242,25 @@ export function mergeIncrementalMapPositions(
     }
     if (!progressed) break;
   }
-  for (const id of pending) result.set(id, nextSystem.get(id)!);
+  for (const id of pending) {
+    const suggested = nextSystem.get(id)!;
+    result.set(id, { x: suggested.x + alignment.x, y: suggested.y + alignment.y });
+  }
   return result;
 }
 
 /**
- * 稳定的父子树基础排布。融合来源只参与正式融合树的整体定位，从不参与树层级、
- * 邻接或坐标传播；无永久关系的节点在所有树之外以固定网格排开。
+ * 全局总览以整张图的自然形态为主：所有节点进入同一个稳定力导向空间，父子边
+ * 共享目标长度；融合来源只把融合成果拉向来源，不反向施力给来源节点。
  */
 export function createResearchMapLayout(
   observation: ResearchGraphObservation,
   density: MapDensity | number = "balanced",
   aspectRatio = 16 / 9,
-  preferredDirections: ReadonlyMap<string, TreeDirection> = new Map(),
 ): ResearchMapLayout {
-  const scale = typeof density === "number"
-    ? Math.max(0.75, Math.min(1.5, density))
-    : density === "compact" ? 0.8 : density === "spacious" ? 1.25 : 1;
-  const nodes = [...observation.nodes].sort(compareNode);
-  const nodeById = new Map(nodes.map((item) => [item.node.id, item]));
-  const children = childrenByParent(observation);
-  const childIds = parentIds(observation);
-  const permanentIds = new Set(observation.edges.flatMap(({ edge }) => [edge.fromNodeId, edge.toNodeId]));
-  const roots = nodes
-    .filter((item) => permanentIds.has(item.node.id) && !childIds.has(item.node.id))
-    .map((item) => item.node.id)
-    .sort((left, right) => {
-      const roleOrder = Number(nodeById.get(left)?.role === "fusion") - Number(nodeById.get(right)?.role === "fusion");
-      return roleOrder || left.localeCompare(right);
-    });
-  const positions = new Map<string, MapPoint>();
-  const directions = new Map<string, TreeDirection>();
-  const placedTrees = new Map<string, readonly string[]>();
-  const components = roots.map((rootId) => {
-    const members = treeIds(rootId, children);
-    const treeLevels = levels(rootId, children);
-    const direction = preferredDirections.get(rootId)
-      ?? members.map((id) => preferredDirections.get(id)).find((value): value is TreeDirection => Boolean(value))
-      ?? stableDirection(rootId, treeLevels, aspectRatio, nodeById.get(rootId)?.role === "fusion");
-    directions.set(rootId, direction);
-    const balancedLocal = placeTree(rootId, direction, { x: 0, y: 0 }, children);
-    const balancedPoints = [...balancedLocal.values()];
-    const center = balancedPoints.reduce((sum, point) => ({
-      x: sum.x + point.x / Math.max(1, balancedPoints.length),
-      y: sum.y + point.y / Math.max(1, balancedPoints.length),
-    }), { x: 0, y: 0 });
-    const local = new Map([...balancedLocal]
-      .map(([id, point]) => [id, {
-        x: center.x + (point.x - center.x) * scale,
-        y: center.y + (point.y - center.y) * scale,
-      }] as const));
-    return { rootId, members, local, bounds: boundsFor(local.values()) };
-  });
-  const componentGap = COMPONENT_GAP * scale;
-  const componentArea = components.reduce((sum, component) => sum
-    + (Math.max(80 * scale, component.bounds.width) + componentGap) * (Math.max(80 * scale, component.bounds.height) + componentGap), 0);
-  const targetRowWidth = Math.max(
-    ...components.map((component) => Math.max(80 * scale, component.bounds.width)),
-    Math.sqrt(componentArea * Math.max(0.5, Math.min(2.5, aspectRatio))),
-    0,
-  );
-  let cursorX = 0;
-  let cursorY = 0;
-  let rowHeight = 0;
-  for (const component of components) {
-    const width = Math.max(80 * scale, component.bounds.width);
-    const height = Math.max(80 * scale, component.bounds.height);
-    if (cursorX > 0 && cursorX + width > targetRowWidth) {
-      cursorX = 0;
-      cursorY += rowHeight + componentGap;
-      rowHeight = 0;
-    }
-    const delta = { x: cursorX - component.bounds.minX, y: cursorY - component.bounds.minY };
-    component.local.forEach((point, id) => positions.set(id, { x: point.x + delta.x, y: point.y + delta.y }));
-    placedTrees.set(component.rootId, component.members);
-    cursorX += width + componentGap;
-    rowHeight = Math.max(rowHeight, height);
-  }
-
-  // 正式融合成果独立成树后，整体向直接来源几何中心靠近，但不改变来源树坐标。
-  let fusionPlacementIndex = 0;
-  for (const rootId of roots) {
-    const root = nodeById.get(rootId);
-    if (root?.role !== "fusion") continue;
-    const sources = observation.edges
-      .filter(({ edge }) => edge.kind === "fused-from" && edge.toNodeId === rootId)
-      .map(({ edge }) => positions.get(edge.fromNodeId))
-      .filter((point): point is MapPoint => Boolean(point));
-    const members = placedTrees.get(rootId) ?? [];
-    const rootPosition = positions.get(rootId);
-    if (!sources.length || !rootPosition || !members.length) continue;
-    const center = sources.reduce((sum, point) => ({ x: sum.x + point.x, y: sum.y + point.y }), { x: 0, y: 0 });
-    const target = { x: center.x / sources.length, y: center.y / sources.length };
-    const memberSet = new Set(members);
-    const occupiedBounds = [...placedTrees.values()]
-      .filter((ids) => ids.every((id) => !memberSet.has(id)))
-      .map((ids) => boundsFor(ids.map((id) => positions.get(id)).filter((point): point is MapPoint => Boolean(point))));
-    let delta: MapPoint | undefined;
-    for (let attempt = 0; attempt < 128; attempt += 1) {
-      const slot = fusionPlacementIndex + attempt;
-      const ring = Math.floor(slot / 8);
-      const angle = slot % 8 * Math.PI / 4;
-      const radius = (130 + ring * 120) * scale;
-      const candidateRoot = { x: target.x + Math.cos(angle) * radius, y: target.y + Math.sin(angle) * radius };
-      const candidateDelta = { x: candidateRoot.x - rootPosition.x, y: candidateRoot.y - rootPosition.y };
-      const candidateBounds = boundsFor(members
-        .map((id) => positions.get(id))
-        .filter((point): point is MapPoint => Boolean(point))
-        .map((point) => ({ x: point.x + candidateDelta.x, y: point.y + candidateDelta.y })));
-      const collides = occupiedBounds.some((occupied) => boundsOverlap(candidateBounds, occupied, 50));
-      if (!collides) {
-        delta = candidateDelta;
-        fusionPlacementIndex = slot + 1;
-        break;
-      }
-    }
-    if (!delta) {
-      const currentBounds = boundsFor(members.map((id) => positions.get(id)).filter((point): point is MapPoint => Boolean(point)));
-      const occupiedMaxX = occupiedBounds.length ? Math.max(...occupiedBounds.map((bounds) => bounds.maxX)) : target.x;
-      delta = { x: occupiedMaxX + componentGap - currentBounds.minX, y: target.y - rootPosition.y };
-    }
-    for (const id of members) {
-      const point = positions.get(id);
-      if (point) positions.set(id, { x: point.x + delta.x, y: point.y + delta.y });
-    }
-  }
-
-  const isolates = nodes.filter((item) => !permanentIds.has(item.node.id));
-  // 列数只由首次画布比例决定，不能因新增一个节点重排整组孤立节点。
-  const columns = Math.max(1, Math.min(6, Math.round(Math.max(0.5, Math.min(2.5, aspectRatio)) * 2.25)));
-  const placed = [...positions.values()];
-  const isolateOrigin = placed.length
-    ? { x: Math.max(...placed.map((point) => point.x)) + TREE_GAP * 0.8 * scale, y: Math.min(...placed.map((point) => point.y)) }
-    : { x: 0, y: 0 };
-  isolates.forEach((item, index) => {
-    const col = index % columns;
-    const row = Math.floor(index / columns);
-    positions.set(item.node.id, { x: isolateOrigin.x + col * ISOLATE_GAP * scale, y: isolateOrigin.y + row * ISOLATE_GAP * scale });
+  const positions = createOrganicGraphLayout(observation.nodes, observation.edges, {
+    densityScale: densityScale(density),
+    aspectRatio,
   });
 
   const values = [...positions.values()];
@@ -472,5 +280,5 @@ export function createResearchMapLayout(
     .filter(({ edge }) => edge.kind === "parent-child" && normalizedPositions.has(edge.fromNodeId) && normalizedPositions.has(edge.toNodeId))
     .map(({ edge }) => [`${edge.id}:${edge.fromNodeId}:${edge.toNodeId}`, [edge.fromNodeId, edge.toNodeId] as const]));
 
-  return { positions: normalizedPositions, treeDirections: directions, world, edgeKeys };
+  return { positions: normalizedPositions, world, edgeKeys };
 }
