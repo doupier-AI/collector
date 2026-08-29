@@ -71,6 +71,7 @@ interface NodeDragState {
 
 const MIN_VIEW_WIDTH = 320;
 const MAX_VIEW_WIDTH = 1_440;
+const NODE_LABEL_LINE_HEIGHT_RATIO = 1.7;
 const POSITION_COMMIT_EPSILON = 0.5;
 
 function displacedPositions(
@@ -1066,7 +1067,7 @@ export function GlobalResearchMap({ observation, baseObservation, onFocusNode, o
             const position = positions.get(summary.node.id)!;
             const radius = nodeRadius(summary, nodeScale);
             const [primaryTitle, secondaryTitle] = titleLines(summary.label);
-            const stableTextLineHeight = titleUserFontSize * 1.08;
+            const stableTextLineHeight = titleUserFontSize * NODE_LABEL_LINE_HEIGHT_RATIO;
             const detailsY = 27 + stableTextLineHeight * (secondaryTitle ? 2 : 1);
             const annotationFontSize = titleUserFontSize * (10 / 13);
             const current = summary.node.id === resolvedRovingNodeId;

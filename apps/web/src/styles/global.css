@@ -864,8 +864,9 @@ button {
   paint-order: stroke;
   pointer-events: none;
   stroke: var(--color-surface);
-  stroke-width: 4px;
+  stroke-width: 2px;
   transition: opacity var(--duration-fast) var(--ease-out);
+  vector-effect: non-scaling-stroke;
 }
 
 .global-map__node--muted .global-map__node-title,

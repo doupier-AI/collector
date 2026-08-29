@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { installGlobalMapVisualFixture } from "./global-map-fixture";
+import { GLOBAL_MAP_VISUAL_OBSERVATION, installGlobalMapVisualFixture } from "./global-map-fixture";
 import { pairAndOpen } from "./helpers";
 
 test.describe("统一研究图谱", () => {
@@ -233,5 +233,59 @@ test.describe("统一研究图谱", () => {
     await expect(page.getByLabel("显示孤立节点")).toBeChecked();
     await expect(page.getByRole("button", { name: "重置本次布局" })).toBeVisible();
     await expect(page.getByText(/关系类型|弹簧|斥力/)).toHaveCount(0);
+  });
+
+  test("节点放大后标题、分类与证据状态仍然分层显示", async ({ page }) => {
+    await installGlobalMapVisualFixture(page);
+    await page.unroute("**/v1/research-map*");
+    const observation = structuredClone(GLOBAL_MAP_VISUAL_OBSERVATION);
+    const fusion = observation.nodes.find((node) => node.node.id === "map-violet")!;
+    fusion.label = "Transformer 架构模型对比详解";
+    fusion.sessionTitle = `${fusion.label}会话`;
+    observation.nodes = [fusion];
+    observation.edges = [];
+    observation.activeCandidateCount = 0;
+    await page.route("**/v1/research-map*", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(observation),
+    }));
+    await pairAndOpen(page, "/map");
+    const canvas = page.getByTestId("global-map-canvas");
+    await expect(canvas).toHaveAttribute("data-entry-animation", "complete");
+
+    for (let step = 0; step < 6; step += 1) {
+      await page.getByRole("button", { name: "放大地图" }).click();
+    }
+
+    const labels = await canvas.locator("[data-node-id='map-violet']").evaluate((node) =>
+      [...node.querySelectorAll(":scope > text")].flatMap((label) => {
+        const lines = [...label.querySelectorAll(":scope > tspan")];
+        return lines.length > 0 ? lines : [label];
+      }).map((label) => {
+        const rect = label.getBoundingClientRect();
+        const ownerText = label.closest("text") as SVGTextElement;
+        const style = getComputedStyle(ownerText);
+        const matrix = ownerText.getScreenCTM();
+        const screenScale = matrix ? Math.hypot(matrix.a, matrix.b) : 1;
+        const strokeRadius = Number.parseFloat(style.strokeWidth) / 2
+          * (style.vectorEffect === "non-scaling-stroke" ? 1 : screenScale);
+        return {
+          text: label.textContent?.trim() ?? "",
+          left: rect.left - strokeRadius,
+          right: rect.right + strokeRadius,
+          top: rect.top - strokeRadius,
+          bottom: rect.bottom + strokeRadius,
+        };
+      }).filter((label) => label.text.length > 0),
+    );
+    expect(labels.length).toBeGreaterThanOrEqual(3);
+    const overlaps = labels.flatMap((label, index) => labels.slice(index + 1).flatMap((other) => {
+      const horizontal = Math.min(label.right, other.right) - Math.max(label.left, other.left);
+      const vertical = Math.min(label.bottom, other.bottom) - Math.max(label.top, other.top);
+      return horizontal > 0.5 && vertical > 0.5 ? [[label.text, other.text]] : [];
+    }));
+
+    expect(overlaps, JSON.stringify(labels, null, 2)).toEqual([]);
   });
 });
