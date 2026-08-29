@@ -53,3 +53,4 @@ export { acquireServiceLock, isProcessRunning, isServiceLockHeld, type ServiceLo
 export { calculateRuntimeVersion, isRuntimeVersion } from "./runtime-version.js";
 export { createMvpDemoResearchProvider, DEMO_NOTICE } from "./mvp-demo-research.js";
 export { launchCollector, openDefaultBrowser, type LaunchCollectorOptions, type LaunchCollectorResult } from "./launcher.js";
+export { resolvePreviewRuntimeConfig, type PreviewRuntimeConfig } from "./preview-runtime.js";

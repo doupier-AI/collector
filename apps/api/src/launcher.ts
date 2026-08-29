@@ -51,7 +51,9 @@ export async function launchCollector(options: LaunchCollectorOptions = {}): Pro
   const dataRoot = resolve(options.dataRoot ?? defaultDataPaths(process.env.COLLECTOR_DATA_DIR).root);
   const serverEntry = resolve(options.serverEntry ?? fileURLToPath(new URL("./server.js", import.meta.url)));
   const webRoot = resolve(process.env.COLLECTOR_WEB_ROOT?.trim() || resolve(dirname(serverEntry), "../../web/dist"));
-  const runtimeMode = process.env.COLLECTOR_MVP_DEMO === "1" ? "mvp-demo" : "standard";
+  const runtimeMode = process.env.COLLECTOR_PREVIEW_MODE === "1"
+    ? "branch-preview"
+    : process.env.COLLECTOR_MVP_DEMO === "1" ? "mvp-demo" : "standard";
   const runtimeVersion = options.runtimeVersion ?? await calculateRuntimeVersion(
     dirname(serverEntry),
     webRoot,

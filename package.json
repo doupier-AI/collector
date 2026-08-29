@@ -28,7 +28,9 @@
     "clean": "node scripts/clean.mjs",
     "worktree:remove": "node scripts/worktree-safety.mjs remove",
     "run:logged": "node scripts/run-logged.mjs",
-    "visual:diff": "node scripts/visual-review.mjs"
+    "visual:diff": "node scripts/visual-review.mjs",
+    "preview:data": "node scripts/preview-data.mjs --snapshot-only",
+    "preview:from-main": "npm run build && node scripts/preview-data.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

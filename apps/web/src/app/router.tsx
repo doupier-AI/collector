@@ -13,6 +13,7 @@ import { ResearchMapSettingsPage } from "../features/settings/ResearchMapSetting
 import { SemanticSearchSettingsPage } from "../features/settings/SemanticSearchSettingsPage";
 import { RunRecordsPage } from "../features/run-records/RunRecordsPage";
 import { TrashPage } from "../features/trash/TrashPage";
+import { TemporaryFusionPage } from "../features/temporary-fusion/TemporaryFusionPage";
 
 /**
  * 旧会话路由重定向（阶段 H2）：根节点 ID 与会话 ID 相同，
@@ -77,6 +78,7 @@ export function AppRoutes() {
         <Route path="nodes/:nodeId" element={<ResearchNodePage />} />
         <Route path="map" element={<ResearchMapLandingPage />} />
         <Route path="map/focus/:focusNodeId" element={<ResearchMapLandingPage />} />
+        <Route path="temporary-fusions/:temporaryFusionId" element={<TemporaryFusionPage />} />
         <Route path="run-records" element={<RunRecordsPage />} />
         <Route path="run-records/:runId" element={<RunRecordsPage />} />
         <Route path="trash" element={<TrashPage />} />
