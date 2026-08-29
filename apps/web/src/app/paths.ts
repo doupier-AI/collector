@@ -11,3 +11,8 @@ export function stableNodePath(nodeId: string): string {
 export function globalMapFocusPath(nodeId: string): string {
   return `/map/focus/${encodeURIComponent(nodeId)}`;
 }
+
+/** 临时融合候选的独立工作页；身份稳定，但确认前不冒充正式节点地址。 */
+export function temporaryFusionPath(temporaryFusionId: string): string {
+  return `/temporary-fusions/${encodeURIComponent(temporaryFusionId)}`;
+}

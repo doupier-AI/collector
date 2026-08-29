@@ -71,7 +71,8 @@ async function openTemporaryFusionDetail(page: Page): Promise<void> {
   await page.getByRole("button", { name: "临时融合（1）" }).click();
   const openLayer = page.getByRole("button", { name: "开启临时层" });
   if (await openLayer.isVisible()) await openLayer.click();
-  await page.getByRole("button", { name: /临时融合草稿/ }).first().click();
+  await page.getByRole("link", { name: /临时融合草稿/ }).first().click();
+  await page.waitForURL(/\/temporary-fusions\/[^/]+$/, { timeout: 10_000 });
 }
 
 test("#71 开启后只在 B 面生成可追溯临时融合，页面不跳转", async ({ page }) => {
@@ -113,9 +114,9 @@ test("#71 开启后只在 B 面生成可追溯临时融合，页面不跳转", a
   await expect(mapCanvas.locator("[data-temporary-fusion-id]")).toHaveCount(1);
   await expect(page.getByRole("heading", { name: "临时融合观察" })).toBeVisible();
   expect(mapRequests.some((url) => url.includes("includeTemporaryFusions=true"))).toBeTruthy();
-  await page.getByRole("button", { name: /临时融合草稿/ }).click();
-  await expect(page.locator(".temporary-fusion-observation__detail pre")).not.toBeEmpty();
-  await page.getByRole("button", { name: /返回来源节点/ }).first().click();
+  await page.getByRole("link", { name: /临时融合草稿/ }).click();
+  await expect(page.locator(".temporary-fusion-draft__body")).not.toBeEmpty();
+  await page.getByRole("link", { name: "打开来源位置" }).first().click();
   await page.waitForURL(/\/nodes\/[^/]+\?fragment=/, { timeout: 10_000 });
   expect(temporaryFusionState(dbPath)).toEqual(createdTemporaryFusion);
 
@@ -176,8 +177,8 @@ test("T04 临时讨论在刷新后可恢复，删除候选时会级联清理", a
   const count = beforeDiscussion.temporaryNodes;
   await page.getByRole("button", { name: `临时融合（${count}）` }).click();
   await page.getByRole("button", { name: "开启临时层" }).click();
-  await page.getByRole("button", { name: /临时融合草稿/ }).first().click();
-  const discussion = page.locator(".temporary-fusion-observation__conversation");
+  await page.getByRole("link", { name: /临时融合草稿/ }).first().click();
+  const discussion = page.locator(".temporary-fusion-conversation");
   await discussion.getByLabel("围绕当前候选继续讨论").fill("这条候选的证据边界是什么？");
   await discussion.getByRole("button", { name: "发送讨论" }).click();
   await expect(discussion).toContainText("这条候选的证据边界是什么？");
@@ -186,13 +187,13 @@ test("T04 临时讨论在刷新后可恢复，删除候选时会级联清理", a
   expect(temporaryFusionState(dbPath).temporaryTasks).toBeGreaterThanOrEqual(beforeDiscussion.temporaryTasks + 1);
 
   await page.reload();
+  await expect(page.getByRole("heading", { name: "围绕候选继续对话" })).toBeVisible();
+  await expect(page.locator(".temporary-fusion-conversation")).toContainText("这条候选的证据边界是什么？");
+  const beforeDelete = temporaryFusionState(dbPath);
+  await page.goto("/map");
   await page.getByRole("button", { name: `临时融合（${count}）` }).click();
   const openLayer = page.getByRole("button", { name: "开启临时层" });
   if (await openLayer.isVisible()) await openLayer.click();
-  await expect(page.getByRole("heading", { name: "临时融合观察" })).toBeVisible();
-  await page.getByRole("button", { name: /临时融合草稿/ }).first().click();
-  await expect(page.locator(".temporary-fusion-observation__conversation")).toContainText("这条候选的证据边界是什么？");
-  const beforeDelete = temporaryFusionState(dbPath);
   await page.locator(".temporary-fusion-observation__list li").first().getByRole("button", { name: "删除" }).click();
   await expect(page.locator(".temporary-fusion-observation__list li")).toHaveCount(count - 1);
   expect(temporaryFusionState(dbPath).temporaryMessages).toBeLessThanOrEqual(beforeDelete.temporaryMessages - 2);
@@ -212,7 +213,7 @@ test("T05 只有明确保存才创建草案版本，撤销保留完整历史", a
   await page.goto("/map");
   await page.getByRole("button", { name: `临时融合（${before.temporaryNodes}）` }).click();
   await page.getByRole("button", { name: "开启临时层" }).click();
-  await page.getByRole("button", { name: /临时融合草稿/ }).first().click();
+  await page.getByRole("link", { name: /临时融合草稿/ }).first().click();
   await expect(page.getByText(/当前草案 · v1/)).toBeVisible();
   expect(draftVersionCount(dbPath)).toBe(beforeDraftVersions, "打开和讨论入口不会创建版本");
 
@@ -248,7 +249,7 @@ test("T07 确认当前核验版本后以同一身份进入正式会话，并可�
   const before = temporaryFusionState(dbPath);
   await page.getByRole("button", { name: `临时融合（${before.temporaryNodes}）` }).click();
   await page.getByRole("button", { name: "开启临时层" }).click();
-  await page.getByRole("button", { name: /临时融合草稿/ }).first().click();
+  await page.getByRole("link", { name: /临时融合草稿/ }).first().click();
   await expect(page.getByText(/确认对象是当前草案/)).toBeVisible();
   await page.getByRole("button", { name: "确认当前核验版本" }).click();
   await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
@@ -319,13 +320,12 @@ test("T08 临时融合来源回收、恢复和永久删除保持同一候选，�
   await page.goto("/map");
   await openTemporaryFusionDetail(page);
   await expect(page.getByText("来源暂不可用，恢复后可打开", { exact: false })).toHaveCount(2);
-  await expect(page.getByRole("button", { name: /返回来源节点/ })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "打开来源位置" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "确认当前核验版本" })).toHaveCount(0);
 
   expect((await page.request.put(`/v1/research-sessions/${encodeURIComponent(sessionId)}/restore`)).ok()).toBeTruthy();
   await page.reload();
-  await openTemporaryFusionDetail(page);
-  await expect(page.getByRole("button", { name: /返回来源节点/ })).toHaveCount(2);
+  await expect(page.getByRole("link", { name: "打开来源位置" })).toHaveCount(2);
   await expect(page.getByRole("button", { name: "确认当前核验版本" })).toBeVisible();
 
   const restored = await (await page.request.get(`/v1/research-temporary-fusions/${encodeURIComponent(candidateId)}`)).json() as {
@@ -340,9 +340,8 @@ test("T08 临时融合来源回收、恢复和永久删除保持同一候选，�
   expect((await page.request.put(`/v1/research-sessions/${encodeURIComponent(sessionId)}/trash`)).ok()).toBeTruthy();
   expect((await page.request.delete(`/v1/research-sessions/${encodeURIComponent(sessionId)}`)).ok()).toBeTruthy();
   await page.reload();
-  await openTemporaryFusionDetail(page);
   await expect(page.getByText("来源已永久删除，不能打开", { exact: false })).toHaveCount(2);
-  await expect(page.getByRole("button", { name: /返回来源节点/ })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "打开来源位置" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "确认当前核验版本" })).toHaveCount(0);
 
   const deletedView = await page.request.get(`/v1/research-temporary-fusions/${encodeURIComponent(candidateId)}`);
@@ -371,7 +370,7 @@ test("T08 来源回收、恢复和永久删除只改变健康状态，不改确�
   await page.goto("/map");
   await page.getByRole("button", { name: "临时融合（1）" }).click();
   await page.getByRole("button", { name: "开启临时层" }).click();
-  await page.getByRole("button", { name: /临时融合草稿/ }).first().click();
+  await page.getByRole("link", { name: /临时融合草稿/ }).first().click();
   await page.getByRole("button", { name: "确认当前核验版本" }).click();
   await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
   const formalNodeId = page.url().split("/nodes/")[1]?.split(/[?#]/)[0] ?? "";

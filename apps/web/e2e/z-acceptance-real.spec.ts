@@ -1257,8 +1257,8 @@ test("弱标记场景九：临时融合草案原位确认后的正文、引用�
   await page.getByRole("button", { name: /临时融合（\d+）/ }).click();
   const openLayer = page.getByRole("button", { name: "开启临时层" });
   if (await openLayer.isVisible()) await openLayer.click();
-  await page.getByRole("list", { name: "临时融合列表" }).getByRole("button", { name: /证据已核验/ }).first().click();
-  await expect(page.locator(".temporary-fusion-observation__detail pre")).toContainText(candidate!.activeDraft.body.slice(0, 40));
+  await page.getByRole("list", { name: "临时融合列表" }).getByRole("link", { name: /证据已核验/ }).first().click();
+  await expect(page.locator(".temporary-fusion-draft__body")).toContainText(candidate!.activeDraft.body.slice(0, 40));
   await page.getByRole("button", { name: "确认当前核验版本" }).click();
   await page.waitForURL(new RegExp(`/nodes/${candidate!.node.id}$`), { timeout: 20_000 });
   await expect(page.getByRole("heading", { name: "正式融合正文" })).toBeVisible();

@@ -526,9 +526,6 @@ export function ResearchMapLandingPage() {
             temporaryFusionObservation ? <TemporaryFusionObservationPanel
               onCloseObservation={() => setTemporaryFusionObservation(false)}
               onChanged={() => setReloadNonce((nonce) => nonce + 1)}
-              onOpenSource={(source) => {
-                navigate(fragmentDeepLink(source.sourceNodeId, source.fragmentIds[0]!), { replace: true });
-              }}
             /> : <div className="map-more-tools"><p>开启后在同一张地图上查看待核验的临时融合及其正式来源；不会创建关系或改变正式图谱。</p><button type="button" className="button button--primary" disabled={(observation.temporaryFusionCount ?? 0) === 0} onClick={() => setTemporaryFusionObservation(true)}>开启临时层</button></div>
           ) : null}
         </div>
