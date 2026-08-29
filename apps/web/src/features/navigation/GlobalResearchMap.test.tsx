@@ -21,19 +21,22 @@ describe("GlobalResearchMap current-open scene", () => {
     rerender(<MemoryRouter><GlobalResearchMap observation={observation} showArrows /></MemoryRouter>);
     expect(canvas().querySelector(".global-map__edge-arrow")).not.toBeNull();
   });
-  it("marks only tree roots, including single-node and fusion-result trees", () => {
+  it("marks ordinary roots and only marks fusion roots after parent-child growth", () => {
     const observation = makeGraphObservation({
       nodes: [
         makeGraphObservationNode("root", "根节点示例"),
         makeGraphObservationNode("middle", "中间节点示例"),
         makeGraphObservationNode("leaf", "叶节点示例"),
-        makeGraphObservationNode("fusion", "融合根节点", { role: "fusion" }),
+        makeGraphObservationNode("fusion", "空融合根节点", { role: "fusion" }),
+        makeGraphObservationNode("grown-fusion", "已生长融合根节点", { role: "fusion" }),
+        makeGraphObservationNode("fusion-child", "融合后续节点"),
         makeGraphObservationNode("single", "单节点树"),
       ],
       edges: [
         { edge: { ...makeEdge("parent-child", "root", "middle"), kind: "parent-child" as const }, connectivity: "default" },
         { edge: { ...makeEdge("parent-child", "middle", "leaf"), kind: "parent-child" as const }, connectivity: "default" },
         { edge: { ...makeEdge("fused-from", "leaf", "fusion"), kind: "fused-from" as const }, connectivity: "default" },
+        { edge: { ...makeEdge("parent-child", "grown-fusion", "fusion-child"), kind: "parent-child" as const }, connectivity: "default" },
       ],
     });
     const { rerender } = render(<MemoryRouter><GlobalResearchMap observation={observation} colorMode="project" /></MemoryRouter>);
@@ -46,7 +49,9 @@ describe("GlobalResearchMap current-open scene", () => {
     expect(middle).not.toHaveAttribute("data-root-node");
     expect(middle.querySelector(".global-map__root-marker")).toBeNull();
     expect(canvas().querySelector('[data-node-id="leaf"]')).not.toHaveAttribute("data-root-node");
-    expect(canvas().querySelector('[data-node-id="fusion"]')).toHaveAttribute("data-root-node", "true");
+    expect(canvas().querySelector('[data-node-id="fusion"]')).not.toHaveAttribute("data-root-node");
+    expect(canvas().querySelector('[data-node-id="grown-fusion"]')).toHaveAttribute("data-root-node", "true");
+    expect(canvas().querySelector('[data-node-id="fusion-child"]')).not.toHaveAttribute("data-root-node");
     expect(canvas().querySelector('[data-node-id="single"]')).toHaveAttribute("data-root-node", "true");
     expect(screen.getByLabelText("地图图例")).toHaveTextContent("根节点");
 
@@ -67,7 +72,7 @@ describe("GlobalResearchMap current-open scene", () => {
     });
     const filtered = { ...full, nodes: full.nodes.slice(1), edges: full.edges.slice(1) };
 
-    render(<MemoryRouter><GlobalResearchMap observation={filtered} rootNodeIds={new Set(["root"])} /></MemoryRouter>);
+    render(<MemoryRouter><GlobalResearchMap observation={filtered} rootMarkerNodeIds={new Set(["root"])} /></MemoryRouter>);
 
     expect(canvas().querySelector('[data-node-id="middle"]')).not.toHaveAttribute("data-root-node");
     expect(canvas().querySelector('[data-node-id="leaf"]')).not.toHaveAttribute("data-root-node");

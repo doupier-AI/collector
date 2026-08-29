@@ -33,7 +33,7 @@ import {
   type DragSimulation,
 } from "./mapInteractions";
 import { type MapAssociationCandidateScene, type MapSearchScene } from "./research-map-ui-state";
-import { researchMapRootNodeIds } from "./research-map-observation";
+import { researchMapRootMarkerNodeIds } from "./research-map-observation";
 import { type ResearchMapFilterState } from "./research-map-filters";
 import { ResearchMapNodeLabelStack } from "./ResearchMapNodeLabelStack";
 
@@ -238,8 +238,8 @@ interface GlobalResearchMapProps {
   observation: ResearchGraphObservation;
   /** 系统布局始终读取专注裁边前的完整观察；observation 只负责当前显示关系。 */
   baseObservation?: ResearchGraphObservation;
-  /** 根身份来自筛选前的完整正式图，不能随当前可见投影改变。 */
-  rootNodeIds?: ReadonlySet<string>;
+  /** 根节点色标来自筛选前的完整正式图，不能随当前可见投影改变。 */
+  rootMarkerNodeIds?: ReadonlySet<string>;
   onFocusNode?: (nodeId: string) => void;
   onExitFocus?: () => void;
   onOpenNode?: (nodeId: string) => void;
@@ -276,7 +276,7 @@ interface GlobalResearchMapProps {
   onOpenCandidates?: (scope: MapAssociationCandidateScene, trigger: Element) => void;
 }
 
-export function GlobalResearchMap({ observation, baseObservation, rootNodeIds, onFocusNode, onExitFocus, onOpenNode, nodeHref = stableNodePath, revealNodeId, revealRequestId, onRevealHandled, search, presentation = "canvas", immersive = false, onSurfaceInteraction, associationHints = [], temporaryFusions = [], hideTemporaryFusions = Boolean(observation.focusNodeId), candidateMode = false, showArrows = false, nodeScale = 1, titleOpacity = 0.62, lineWidth = 1.25, density = "balanced", colorMode = "project", layoutResetToken = 0, onOpenCandidates }: GlobalResearchMapProps) {
+export function GlobalResearchMap({ observation, baseObservation, rootMarkerNodeIds, onFocusNode, onExitFocus, onOpenNode, nodeHref = stableNodePath, revealNodeId, revealRequestId, onRevealHandled, search, presentation = "canvas", immersive = false, onSurfaceInteraction, associationHints = [], temporaryFusions = [], hideTemporaryFusions = Boolean(observation.focusNodeId), candidateMode = false, showArrows = false, nodeScale = 1, titleOpacity = 0.62, lineWidth = 1.25, density = "balanced", colorMode = "project", layoutResetToken = 0, onOpenCandidates }: GlobalResearchMapProps) {
   const initialAspectRatioRef = useRef(typeof window === "undefined" ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight));
   const [canvasAspectRatio, setCanvasAspectRatio] = useState(initialAspectRatioRef.current);
   const focusSnapshotRef = useRef<{ positions: Map<string, GraphPoint>; viewBox: ViewBoxState } | null>(null);
@@ -423,8 +423,8 @@ export function GlobalResearchMap({ observation, baseObservation, rootNodeIds, o
   const lastDragMovedRef = useRef(false);
   const pendingFocusTimer = useRef<number | undefined>(undefined);
   const adjacency = useMemo(() => adjacencyFor(observation), [observation]);
-  const derivedRootNodeIds = useMemo(() => researchMapRootNodeIds(layoutObservation), [layoutObservation]);
-  const resolvedRootNodeIds = rootNodeIds ?? derivedRootNodeIds;
+  const derivedRootMarkerNodeIds = useMemo(() => researchMapRootMarkerNodeIds(layoutObservation), [layoutObservation]);
+  const resolvedRootMarkerNodeIds = rootMarkerNodeIds ?? derivedRootMarkerNodeIds;
   const visualEdges = useMemo(() => visualEdgesFor(observation), [observation]);
   const candidateEndpointIds = useMemo(() => new Set(associationHints.flatMap((hint) => [hint.anchorNodeId, hint.relatedNodeId])), [associationHints]);
   const searchMatchIds = useMemo(() => new Set(search?.matchedNodeIds ?? (search?.selectedNodeId ? [search.selectedNodeId] : [])), [search?.matchedNodeIds, search?.selectedNodeId]);
@@ -1065,7 +1065,7 @@ export function GlobalResearchMap({ observation, baseObservation, rootNodeIds, o
           {observation.nodes.map((summary) => {
             const position = positions.get(summary.node.id)!;
             const radius = nodeRadius(summary, nodeScale);
-            const rootNode = resolvedRootNodeIds.has(summary.node.id);
+            const rootNode = resolvedRootMarkerNodeIds.has(summary.node.id);
             const splitTitle = titleLines(summary.label);
             const current = summary.node.id === resolvedRovingNodeId;
             const evidence = evidenceStatus(summary);
@@ -1261,7 +1261,7 @@ export function GlobalResearchMap({ observation, baseObservation, rootNodeIds, o
         <ul>
           {observation.nodes.map((summary) => {
             const externalScope = externalScopePresentation(summary);
-            const rootNode = resolvedRootNodeIds.has(summary.node.id);
+            const rootNode = resolvedRootMarkerNodeIds.has(summary.node.id);
             return (
               <li key={summary.node.id}>
                 <button ref={(element) => { if (element) listNodeRefs.current.set(summary.node.id, element); else listNodeRefs.current.delete(summary.node.id); }} type="button" disabled={candidateMode} className={["global-map__list-link", `global-map__list-link--${summary.connectivity}`, externalScope ? `global-map__list-link--${externalScope.modifier}` : ""].filter(Boolean).join(" ")} aria-current={focusedNodeId === summary.node.id ? "true" : undefined} aria-pressed={focusedNodeId === summary.node.id} aria-label={[summary.label, rootNode ? "根节点" : undefined, nodeStatus(summary), connectivityStatus(summary.connectivity), "单击或 Space 专注", "Enter 打开"].filter(Boolean).join("，")} onClick={() => { if (!candidateMode) selectNode(summary.node.id); }} onFocus={() => setRovingNodeId(summary.node.id)} onKeyDown={(event) => { if (!candidateMode) handleKey(event, summary.node.id, listNodeRefs.current); }}>

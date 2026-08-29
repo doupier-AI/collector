@@ -15,7 +15,7 @@ test.describe("统一研究图谱", () => {
     await expect(amber.locator(".global-map__root-marker")).toBeVisible();
     await expect(amber).toHaveAccessibleName(/检索架构，根节点/);
     await expect(blue).not.toHaveAttribute("data-root-node", "true");
-    await expect(violet).toHaveAttribute("data-root-node", "true");
+    await expect(violet).not.toHaveAttribute("data-root-node", "true");
     await expect(canvas.locator("[data-node-id='map-neutral']")).toHaveAttribute("data-root-node", "true");
     const initial = await Promise.all([amber, blue, violet].map((node) => node.getAttribute("transform")));
 

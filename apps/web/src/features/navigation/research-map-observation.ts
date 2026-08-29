@@ -14,6 +14,18 @@ export function researchMapRootNodeIds(observation: ResearchGraphObservation): R
     .filter((nodeId) => !childNodeIds.has(nodeId)));
 }
 
+/** 空的正式融合树暂不显示根节点色标；融合来源不算父子生长。 */
+export function researchMapRootMarkerNodeIds(observation: ResearchGraphObservation): ReadonlySet<string> {
+  const rootNodeIds = researchMapRootNodeIds(observation);
+  const parentNodeIds = new Set(observation.edges
+    .filter(({ edge }) => edge.kind === "parent-child")
+    .map(({ edge }) => edge.fromNodeId));
+  return new Set(observation.nodes
+    .filter((summary) => rootNodeIds.has(summary.node.id)
+      && (summary.role !== "fusion" || parentNodeIds.has(summary.node.id)))
+    .map(({ node }) => node.id));
+}
+
 /**
  * 全局观察只请求一次完整正式图，再在当前打开的组件实例中派生筛选结果。
  * 临时融合仍不是正式节点；开启临时层时，仅把可用的直接来源补作弱化背景。
