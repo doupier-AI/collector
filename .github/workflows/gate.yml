@@ -32,7 +32,9 @@ jobs:
         run: npm run gate:fast
       - name: Install Chromium
         run: npx playwright install chromium
-      - name: Run parallel E2E gate
+      - name: Run serialized E2E gate
+        env:
+          E2E_TRACK_CONCURRENCY: "1"
         run: npm run gate:e2e
       - name: Upload failure evidence
         if: failure()

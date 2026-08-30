@@ -30,6 +30,13 @@ if (-not $packageJson) {
   }
 }
 
+$gateWorkflow = Read-ProjectFile ".github\workflows\gate.yml"
+if (-not $gateWorkflow) {
+  Add-Issue "error" "missing-gate-workflow" ".github/workflows/gate.yml was not found"
+} elseif ($gateWorkflow -notmatch '(?m)^\s+E2E_TRACK_CONCURRENCY:\s*["'']?1["'']?\s*$') {
+  Add-Issue "error" "remote-e2e-concurrency" "GitHub E2E gate must set E2E_TRACK_CONCURRENCY to 1 for runner stability"
+}
+
 try {
   $nodeMajor = [int]((& node --version).TrimStart('v').Split('.')[0])
   if ($nodeMajor -lt 24) { Add-Issue "error" "node-version" "Collector requires Node 24+; found Node $nodeMajor" }
