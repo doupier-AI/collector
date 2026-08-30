@@ -16,7 +16,7 @@ const catalog: ProviderDefinition[] = [
     defaultBaseUrl: "https://api.openai.com/v1",
     defaultModel: "gpt-4.1-mini",
     models: ["gpt-4.1-mini"],
-    capabilities: { structuredJson: false, thinkingMode: "none", modelDiscovery: false, webGrounding: "unsupported" },
+    capabilities: { structuredJson: false, reasoningOutput: "none", thinkingMode: "none", modelDiscovery: false, webGrounding: "unsupported" },
   },
   {
     id: "deepseek",
@@ -26,7 +26,7 @@ const catalog: ProviderDefinition[] = [
     defaultBaseUrl: "https://api.deepseek.com",
     defaultModel: "deepseek-v4-flash",
     models: ["deepseek-v4-flash"],
-    capabilities: { structuredJson: true, thinkingMode: "deepseek", modelDiscovery: false, webGrounding: "unsupported" },
+    capabilities: { structuredJson: true, reasoningOutput: "deepseek_reasoning_content", thinkingMode: "deepseek", modelDiscovery: false, webGrounding: "unsupported" },
   },
   {
     id: "custom",
@@ -36,7 +36,7 @@ const catalog: ProviderDefinition[] = [
     defaultBaseUrl: "",
     defaultModel: "",
     models: [],
-    capabilities: { structuredJson: false, thinkingMode: "none", modelDiscovery: false, webGrounding: "unsupported" },
+    capabilities: { structuredJson: false, reasoningOutput: "none", thinkingMode: "none", modelDiscovery: false, webGrounding: "unsupported" },
   },
 ];
 

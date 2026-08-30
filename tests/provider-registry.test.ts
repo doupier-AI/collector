@@ -20,7 +20,7 @@ const compatibleDefinition: ProviderDefinition = {
   defaultBaseUrl: "https://models.example.com/v1/",
   defaultModel: "example-model",
   models: ["example-model"],
-  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
+  capabilities: { structuredJson: true, reasoningOutput: "none", thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
 };
 
 test("provider registry validates, clones, and rejects duplicate definitions", () => {
@@ -30,6 +30,10 @@ test("provider registry validates, clones, and rejects duplicate definitions", (
   assert.deepEqual(registry.get("compatible-cloud").models, ["example-model"]);
   assert.throws(() => registry.register(compatibleDefinition), /already registered/);
   assert.throws(() => new ProviderRegistry([{ ...compatibleDefinition, defaultBaseUrl: "http://models.example.com" }]), /HTTPS/);
+  assert.throws(
+    () => new ProviderRegistry([{ ...compatibleDefinition, capabilities: { ...compatibleDefinition.capabilities, reasoningOutput: "unknown" as never } }]),
+    /reasoningOutput/,
+  );
 });
 
 test("DeepSeek is a normal built-in provider definition", () => {
@@ -37,6 +41,8 @@ test("DeepSeek is a normal built-in provider definition", () => {
   const definition = DEFAULT_PROVIDER_REGISTRY.get("deepseek");
   assert.equal(definition.apiMode, "openai_chat_completions");
   assert.equal(definition.capabilities.thinkingMode, "deepseek");
+  assert.equal(definition.capabilities.reasoningOutput, "deepseek_reasoning_content");
+  assert.ok(BUILTIN_PROVIDER_DEFINITIONS.filter((candidate) => candidate.id !== "deepseek").every((candidate) => candidate.capabilities.reasoningOutput === "none"));
 });
 
 test("OpenAI-compatible adapter translates capabilities without brand branches", async () => {

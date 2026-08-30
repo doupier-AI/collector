@@ -355,7 +355,7 @@ export const BUILTIN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [{
   defaultBaseUrl: "https://api.deepseek.com",
   defaultModel: "deepseek-v4-flash",
   models: ["deepseek-v4-flash", "deepseek-v4-pro"],
-  capabilities: { structuredJson: true, thinkingMode: "deepseek", modelDiscovery: true, webGrounding: "unsupported" },
+  capabilities: { structuredJson: true, reasoningOutput: "deepseek_reasoning_content", thinkingMode: "deepseek", modelDiscovery: true, webGrounding: "unsupported" },
   pricing: {
     "deepseek-v4-flash": { inputCacheHitPerMillion: 0.0028, inputCacheMissPerMillion: 0.14, outputPerMillion: 0.28 },
     "deepseek-v4-pro": { inputCacheHitPerMillion: 0.003625, inputCacheMissPerMillion: 0.435, outputPerMillion: 0.87 },
@@ -368,7 +368,7 @@ export const BUILTIN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [{
   defaultBaseUrl: "https://api.openai.com/v1",
   defaultModel: "gpt-4.1-mini",
   models: ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"],
-  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true, webGrounding: "openai_web_search" },
+  capabilities: { structuredJson: true, reasoningOutput: "none", thinkingMode: "none", modelDiscovery: true, webGrounding: "openai_web_search" },
 }, {
   id: "gemini",
   label: "Google Gemini",
@@ -377,7 +377,7 @@ export const BUILTIN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [{
   defaultBaseUrl: "https://generativelanguage.googleapis.com/v1beta",
   defaultModel: "gemini-2.5-flash",
   models: ["gemini-2.5-flash", "gemini-2.5-pro"],
-  capabilities: { structuredJson: false, thinkingMode: "none", modelDiscovery: true, webGrounding: "gemini_google_search" },
+  capabilities: { structuredJson: false, reasoningOutput: "none", thinkingMode: "none", modelDiscovery: true, webGrounding: "gemini_google_search" },
 }, {
   id: "anthropic",
   label: "Anthropic",
@@ -386,7 +386,7 @@ export const BUILTIN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [{
   defaultBaseUrl: "https://api.anthropic.com/v1",
   defaultModel: "claude-sonnet-5",
   models: ["claude-sonnet-5", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
-  capabilities: { structuredJson: false, thinkingMode: "none", modelDiscovery: true, webGrounding: "anthropic_web_search" },
+  capabilities: { structuredJson: false, reasoningOutput: "none", thinkingMode: "none", modelDiscovery: true, webGrounding: "anthropic_web_search" },
 }, {
   id: "openrouter",
   label: "OpenRouter",
@@ -395,7 +395,7 @@ export const BUILTIN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [{
   defaultBaseUrl: "https://openrouter.ai/api/v1",
   defaultModel: "openai/gpt-4.1-mini",
   models: ["openai/gpt-4.1-mini", "anthropic/claude-sonnet-4", "google/gemini-2.5-flash"],
-  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
+  capabilities: { structuredJson: true, reasoningOutput: "none", thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
 }, {
   id: "dashscope",
   label: "Alibaba Cloud Model Studio",
@@ -404,7 +404,7 @@ export const BUILTIN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [{
   defaultBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
   defaultModel: "qwen-plus",
   models: ["qwen-plus", "qwen-max", "qwen-turbo"],
-  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
+  capabilities: { structuredJson: true, reasoningOutput: "none", thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
 }, {
   id: "moonshot",
   label: "Kimi (Moonshot AI)",
@@ -413,7 +413,7 @@ export const BUILTIN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [{
   defaultBaseUrl: "https://api.moonshot.cn/v1",
   defaultModel: "kimi-k2.5",
   models: ["kimi-k2.5", "kimi-k2-0711-preview", "moonshot-v1-32k"],
-  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
+  capabilities: { structuredJson: true, reasoningOutput: "none", thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
 }, {
   id: "zhipu",
   label: "Zhipu GLM",
@@ -422,7 +422,7 @@ export const BUILTIN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [{
   defaultBaseUrl: "https://open.bigmodel.cn/api/paas/v4",
   defaultModel: "glm-4.6",
   models: ["glm-4.6", "glm-4.5", "glm-4.5-flash"],
-  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
+  capabilities: { structuredJson: true, reasoningOutput: "none", thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
 }, {
   id: "siliconflow",
   label: "SiliconFlow",
@@ -431,7 +431,7 @@ export const BUILTIN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [{
   defaultBaseUrl: "https://api.siliconflow.cn/v1",
   defaultModel: "deepseek-ai/DeepSeek-V3.2",
   models: ["deepseek-ai/DeepSeek-V3.2", "Qwen/Qwen3-235B-A22B", "Pro/deepseek-ai/DeepSeek-V3.2"],
-  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
+  capabilities: { structuredJson: true, reasoningOutput: "none", thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
 }, {
   id: "custom",
   label: "Custom OpenAI-Compatible",
@@ -440,7 +440,7 @@ export const BUILTIN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [{
   defaultBaseUrl: "https://example.invalid/v1",
   defaultModel: "custom-model",
   models: [],
-  capabilities: { structuredJson: true, thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
+  capabilities: { structuredJson: true, reasoningOutput: "none", thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
 }, {
   id: "custom-anthropic",
   label: "Custom Anthropic-Compatible",
@@ -449,7 +449,7 @@ export const BUILTIN_PROVIDER_DEFINITIONS: ProviderDefinition[] = [{
   defaultBaseUrl: "https://example.invalid/v1",
   defaultModel: "custom-model",
   models: [],
-  capabilities: { structuredJson: false, thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
+  capabilities: { structuredJson: false, reasoningOutput: "none", thinkingMode: "none", modelDiscovery: true, webGrounding: "unsupported" },
 }];
 
 export const DEFAULT_PROVIDER_REGISTRY = new ProviderRegistry(BUILTIN_PROVIDER_DEFINITIONS);
@@ -1899,7 +1899,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
       response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/chat/completions`, {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        signal: controller.signal,
+        signal: combinedAbortSignal(request.signal, controller),
         redirect: "error",
         body: JSON.stringify(body),
       });
@@ -1925,11 +1925,14 @@ export class OpenAiCompatibleProvider implements ModelProvider {
         const payload = JSON.parse(event.data);
         if (typeof payload?.model === "string") model = payload.model;
         const choice = payload?.choices?.[0];
+        // 只有供应商定义明确声明且适配器已验证的专用字段拥有 reasoning 资格；
+        // 同一帧里先发 reasoning、再发正文，保证服务端持久化顺序与供应商语义一致。
+        if (this.options.definition.capabilities.reasoningOutput === "deepseek_reasoning_content") {
+          const reasoning = choice?.delta?.reasoning_content;
+          if (typeof reasoning === "string" && reasoning) yield { type: "reasoning", text: reasoning };
+        }
         const text = choice?.delta?.content;
         if (typeof text === "string" && text) yield { type: "delta", text };
-        // ADR-0035：思考增量作为独立 reasoning 事件产出（不计入正文），供网关转发到思考展示区。
-        const reasoning = choice?.delta?.reasoning_content;
-        if (typeof reasoning === "string" && reasoning) yield { type: "reasoning", text: reasoning };
         if (typeof choice?.finish_reason === "string" && choice.finish_reason) finishReason = choice.finish_reason;
         if (payload?.usage) {
           usage = {
