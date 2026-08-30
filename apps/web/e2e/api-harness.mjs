@@ -23,6 +23,7 @@ import { IsolatedSemanticInferenceAdapter } from "../../api/dist/semantic-search
 import { createSemanticSearchModule } from "../../api/dist/semantic-search/module.js";
 import { createSemanticModelArtifactInstaller } from "../../api/dist/semantic-search/model-artifacts.js";
 import { SemanticSearchSqliteStore } from "../../api/dist/semantic-search/store.js";
+import { MARKDOWN_POSITION_FIXTURE } from "../../../tests/fixtures/markdown-position.mjs";
 
 const port = Number(process.env.E2E_API_PORT ?? "43211");
 const shutdownToken = process.env.E2E_SHUTDOWN_TOKEN;
@@ -192,6 +193,24 @@ const fakeProvider = {
   // 其余联网请求维持既有 unsupported 语义，避免改变联网开关回归用例。
   async prepareGrounded(request) {
     const question = request.messages.at(-1)?.content ?? "";
+    if (question === MARKDOWN_POSITION_FIXTURE.trigger) {
+      return {
+        kind: "confirmed_final",
+        content: MARKDOWN_POSITION_FIXTURE.body.replace(
+          MARKDOWN_POSITION_FIXTURE.term.exact,
+          marker("abbreviation", "markdown-position-rest", MARKDOWN_POSITION_FIXTURE.term.exact),
+        ),
+        status: "grounded",
+        queries: [MARKDOWN_POSITION_FIXTURE.search.exact],
+        sources: [{
+          title: MARKDOWN_POSITION_FIXTURE.citation.sourceTitle,
+          url: MARKDOWN_POSITION_FIXTURE.citation.sourceUrl,
+          snippet: "共享夹具用于验证同一正文位置在跨功能链路中的一致性。",
+          evidenceStatus: "full",
+        }],
+        citations: [],
+      };
+    }
     if (question.includes("验证最终正文污染")) {
       return {
         kind: "confirmed_final",

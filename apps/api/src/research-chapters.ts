@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   IMPORT_CHAPTER_PARSE_PROMPT_VERSION,
+  attachResearchChapterLocations,
   deriveImportRuleChapters,
   formatImportChapterParseInput,
   importSnapshotNeedsChapterParse,
@@ -96,7 +97,9 @@ export class ResearchChapterParseService {
     const snapshot = this.store.getResearchContentSnapshot(snapshotId);
     if (!snapshot) throw new ResearchImportNotFoundError("Research content snapshot not found");
     const task = this.store.getResearchChapterTaskBySnapshot(snapshotId);
-    return task ? { ...snapshot, chapterParse: chapterParseView(task) } : { ...snapshot };
+    return task
+      ? { ...snapshot, chapterParse: chapterParseView(task, attachResearchChapterLocations(snapshot, task.chapters)) }
+      : { ...snapshot };
   }
 
   async retryTaskBySnapshot(snapshotId: string): Promise<ResearchChapterTaskRecord> {
@@ -232,11 +235,13 @@ export class ResearchChapterParseService {
     },
   ): Promise<void> {
     const now = new Date().toISOString();
+    const snapshot = this.store.getResearchContentSnapshot(task.snapshotId);
+    const chapters = snapshot ? attachResearchChapterLocations(snapshot, outcome.chapters) : outcome.chapters;
     const updated: ResearchChapterTaskRecord = {
       ...task,
       status: outcome.status,
       retryable: outcome.retryable,
-      chapters: outcome.chapters,
+      chapters,
       ...(outcome.source ? { source: outcome.source } : { source: undefined }),
       ...(outcome.fallbackReason ? { fallbackReason: outcome.fallbackReason } : { fallbackReason: undefined }),
       ...(outcome.error ? { error: outcome.error } : { error: undefined }),
@@ -263,14 +268,14 @@ export class ResearchChapterParseService {
   }
 }
 
-function chapterParseView(task: ResearchChapterTaskRecord): ResearchChapterParseView {
+function chapterParseView(task: ResearchChapterTaskRecord, chapters: ResearchChapterAnchor[] = task.chapters): ResearchChapterParseView {
   return {
     taskId: task.id,
     status: task.status,
     retryable: task.retryable,
     ...(task.source ? { source: task.source } : {}),
     ...(task.fallbackReason ? { fallbackReason: task.fallbackReason } : {}),
-    chapters: task.chapters,
+    chapters,
     ...(task.error ? { error: task.error } : {}),
     updatedAt: task.updatedAt,
   };

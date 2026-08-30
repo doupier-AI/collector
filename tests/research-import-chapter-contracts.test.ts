@@ -5,6 +5,7 @@ import {
   IMPORT_CHAPTER_PARSE_MAX_INPUT_CHARS,
   IMPORT_CHAPTER_TITLE_MAX_CHARACTERS,
   LONG_TEXT_CHAR_THRESHOLD,
+  attachResearchChapterLocations,
   deriveImportRuleChapters,
   formatImportChapterParseInput,
   importSnapshotNeedsChapterParse,
@@ -50,6 +51,19 @@ test("deriveImportRuleChapters 原文标题块成为章节锚点", () => {
   assert.deepEqual(chapters.map((chapter) => chapter.title), ["绪论", "方法", "结论"]);
   assert.deepEqual(chapters.map((chapter) => chapter.blockOrdinal), [0, 2, 4]);
   assert.deepEqual(chapters.map((chapter) => chapter.ordinal), [0, 1, 2]);
+});
+
+test("旧章节锚点可从快照惰性派生稳定位置而不复制正文事实", () => {
+  const blocks = textBlocks(["重复段落", "重复段落"]);
+  const chapters = attachResearchChapterLocations({ id: "snapshot-v1", blocks }, [
+    { ordinal: 0, title: "第二处", blockOrdinal: 1 },
+  ]);
+  assert.deepEqual(chapters[0]?.location, {
+    contentId: "b1",
+    bodyVersionId: "snapshot-v1",
+    sourceRange: { startOffset: 0, endOffset: 4 },
+    exact: "重复段落",
+  });
 });
 
 test("deriveImportRuleChapters 标题过多时均匀抽样且保留首尾", () => {

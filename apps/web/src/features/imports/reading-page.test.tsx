@@ -7,6 +7,7 @@ import type { ApiClient } from "../../api/client";
 import { ApiRequestError } from "../../api/errors";
 import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
+import { projectMarkdownVisibleText } from "../../components/markdown-projection";
 import { makeSession } from "../../test/fakes";
 import { ReadingPage } from "./ReadingPage";
 
@@ -39,9 +40,9 @@ function snapshotWithAllAnchors(): ResearchContentSnapshotRecord {
     title: "混合文档.md",
     createdAt,
     blocks: [
-      { id: "b-1", ordinal: 0, text: "第一章", anchor: { kind: "markdown", startLine: 1, endLine: 1, blockType: "heading", heading: "第一章", exact: "第一章" } },
+      { id: "b-1", ordinal: 0, text: "# 第一章", anchor: { kind: "markdown", startLine: 1, endLine: 1, blockType: "heading", heading: "第一章", exact: "# 第一章" } },
       { id: "b-2", ordinal: 1, text: "正文段落", anchor: { kind: "markdown", startLine: 3, endLine: 5, blockType: "paragraph", exact: "正文段落" } },
-      { id: "b-3", ordinal: 2, text: "const a = 1;", anchor: { kind: "markdown", startLine: 7, endLine: 9, blockType: "code", exact: "const a = 1;" } },
+      { id: "b-3", ordinal: 2, text: "```ts\nconst a = 1;\n```", anchor: { kind: "markdown", startLine: 7, endLine: 9, blockType: "code", exact: "```ts\nconst a = 1;\n```" } },
       { id: "b-4", ordinal: 3, text: "纯文本行", anchor: { kind: "text", startLine: 12, endLine: 12, exact: "纯文本行" } },
       { id: "b-5", ordinal: 4, text: "DOCX 段落", anchor: { kind: "docx", paragraphIndex: 2, blockType: "paragraph", exact: "DOCX 段落" } },
       { id: "b-6", ordinal: 5, text: "PDF 页面文本", anchor: { kind: "pdf", pageNumber: 4, exact: "PDF 页面文本" } },
@@ -58,7 +59,7 @@ describe("阅读视图", () => {
     expect(getResearchContent).toHaveBeenCalledWith("snap-1");
 
     // Markdown 标题块渲染为标题，其余按块类型渲染
-    expect(screen.getByRole("heading", { name: "第一章", level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "第一章", level: 1 })).toBeInTheDocument();
     expect(screen.getByText("const a = 1;").closest("pre")).not.toBeNull();
     expect(screen.getByText("第 3–5 行")).toBeInTheDocument();
     expect(screen.getByText("第 12 行")).toBeInTheDocument();
@@ -66,6 +67,35 @@ describe("阅读视图", () => {
     expect(screen.getByText("第 4 页")).toBeInTheDocument();
     expect(screen.getByText("共 6 个内容块")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "返回研究会话" })).toHaveAttribute("href", "/nodes/session-1");
+  });
+
+  it("Markdown 导入与回答使用同一投影渲染表格、换行、代码和公式", async () => {
+    const source = [
+      "## 统一投影",
+      "",
+      "第一行  ",
+      "第二行含 $E = mc^2$。",
+      "",
+      "| 列 | 值 |",
+      "| --- | --- |",
+      "| A | `code` |",
+    ].join("\n");
+    const snapshot = snapshotWithAllAnchors();
+    snapshot.blocks = [{
+      id: "b-mixed",
+      ordinal: 0,
+      text: source,
+      anchor: { kind: "markdown", startLine: 1, endLine: 8, blockType: "paragraph", exact: source.slice(0, 500) },
+    }];
+    const { container } = renderReadingPage({ getResearchContent: async () => snapshot });
+
+    expect(await screen.findByRole("heading", { name: "统一投影", level: 2 })).toBeInTheDocument();
+    const rendered = container.querySelector('[data-block-id="b-mixed"] .markdown-content');
+    expect(rendered?.textContent).toBe(projectMarkdownVisibleText(source).text);
+    expect(rendered?.querySelector("br")).not.toBeNull();
+    expect(rendered?.querySelector("table")).not.toBeNull();
+    expect(rendered?.querySelector("code")?.textContent).toBe("code");
+    expect(rendered?.querySelector(".katex")).not.toBeNull();
   });
 
   it("快照不存在时显示可返回的 404 状态", async () => {
@@ -156,6 +186,45 @@ describe("阅读视图来源返回", () => {
     );
 
     expect(await screen.findByText("正文", { selector: "[data-selection-mark]" })).toBeInTheDocument();
+  });
+
+  it("搜索命中的快照版本变化时只打开资料并明确降级，不猜同名块", async () => {
+    const { container } = renderReadingPage(
+      { getResearchContent: async () => snapshotWithAllAnchors() },
+      "/research/session-1/reading/snap-1?searchBlock=b-2&searchStart=2&searchEnd=4&searchVersion=stale-snapshot",
+    );
+
+    expect(await screen.findByRole("status")).toHaveTextContent("精确位置已不存在");
+    expect(container.querySelector("[data-selection-mark]")).toBeNull();
+  });
+
+  it("历史源码偏移在 Markdown 格式符附近恢复为可见高亮", async () => {
+    const snapshot = snapshotWithAllAnchors();
+    snapshot.blocks[1] = {
+      ...snapshot.blocks[1],
+      text: "**正文**段落",
+      anchor: { kind: "markdown", startLine: 3, endLine: 3, blockType: "paragraph", exact: "**正文**段落" },
+    };
+    renderReadingPage(
+      {
+        getResearchContent: async () => snapshot,
+        getResearchSelection: async () => snapshotSelection({
+          anchor: {
+            kind: "snapshot",
+            contentSnapshotId: "snap-1",
+            blockId: "b-2",
+            startOffset: 2,
+            endOffset: 4,
+            exact: "正文",
+          },
+        }),
+      },
+      "/research/session-1/reading/snap-1?sel=sel-1",
+    );
+
+    const mark = await screen.findByText("正文", { selector: "[data-selection-mark]" });
+    expect(mark.closest("strong")).not.toBeNull();
+    expect(screen.queryByText("**", { exact: true })).not.toBeInTheDocument();
   });
 
   it("原文无法匹配时降级展示保存原文与位置说明", async () => {

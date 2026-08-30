@@ -78,6 +78,8 @@ export interface ResearchSelectionStore {
   saveResearchSelection(record: ResearchSelectionRecord): Promise<void>;
   getResearchSession(id: string): ResearchSessionRecord | undefined;
   getResearchMessageBody(id: string): ResearchMessageBodyRecord | undefined;
+  getBodyVersionForMessage(messageId: string): ResearchBodyVersionRecord | undefined;
+  listSlicesByMessage(messageId: string): ResearchSliceRecord[];
   getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined;
   getResearchNode(id: string): ResearchNodeRecord | undefined;
 }

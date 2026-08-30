@@ -32,6 +32,7 @@ export function researchSearchMatchTarget(nodeId: string, match: ResearchSearchM
         searchStart: String(locator.startOffset),
         searchEnd: String(locator.endOffset),
       });
+      if (locator.location) params.set("searchVersion", locator.location.bodyVersionId);
       return {
         path: `/research/${encodeURIComponent(nodeId)}/reading/${encodeURIComponent(locator.contentSnapshotId)}?${params}`,
       };

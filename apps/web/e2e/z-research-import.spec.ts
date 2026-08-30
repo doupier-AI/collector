@@ -187,9 +187,9 @@ test("拖放上传完成，刷新与关闭重开后附件与阅读内容一致�
   const view = await apiJson<SessionView>(reopened, `/v1/research-sessions/${sessionId}`);
   await reopened.goto(`/research/${sessionId}/reading/${view.attachments![0].contentSnapshotId}`);
   await expect(reopened.getByRole("heading", { name: "拖放笔记.md" })).toBeVisible();
-  await expect(reopened.getByRole("heading", { name: "拖放标题", level: 2 })).toBeVisible();
+  await expect(reopened.getByRole("heading", { name: "拖放标题", level: 1 })).toBeVisible();
   await reopened.reload();
-  await expect(reopened.getByRole("heading", { name: "拖放标题", level: 2 })).toBeVisible();
+  await expect(reopened.getByRole("heading", { name: "拖放标题", level: 1 })).toBeVisible();
 
   expect(consoleIssues).toEqual([]);
 });
@@ -342,11 +342,13 @@ test("阅读视图在 320/768/1024/1440 视口无横向溢出并留截图", asyn
   await page.locator('input[type="file"]').setInputFiles({
     name: "视口.md",
     mimeType: "text/markdown",
-    buffer: Buffer.from("# 视口验证标题\n\n第一段：在不同宽度下阅读保持稳定，不出现横向滚动。\n\n- 列表项一\n- 列表项二\n\n```\nconst code = '代码块';\n```", "utf8"),
+    buffer: Buffer.from("# 视口验证标题\n\n第一段：在不同宽度下阅读保持稳定，不出现横向滚动。\n\n| 列 | 值 |\n| --- | --- |\n| 公式 | $E=mc^2$ |\n\n- 列表项一\n- 列表项二\n\n```\nconst code = '代码块';\n```", "utf8"),
   });
   await expect(page.getByText("已导入")).toBeVisible({ timeout: 15_000 });
   await page.getByRole("button", { name: "阅读" }).click();
-  await expect(page.getByRole("heading", { name: "视口验证标题", level: 2 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "视口验证标题", level: 1 })).toBeVisible();
+  await expect(page.locator(".reading table")).toBeVisible();
+  await expect(page.locator(".reading .katex")).toBeVisible();
 
   mkdirSync("e2e-artifacts", { recursive: true });
   for (const width of [320, 768, 1024, 1440]) {

@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import {
   TERM_IDENTITY_CONTEXT_MAX_CHARACTERS,
   deriveMessageBlocks,
+  researchBodyVersionId,
+  researchBodyVersionIsContentPrefix,
   validateResearchTermPreviewInput,
   type ResearchMessageBodyRecord,
   type ResearchNodeRecord,
@@ -199,7 +201,7 @@ export class ResearchTermPreviewService {
   }
 
   private validatedMarker(message: ResearchMessageBodyRecord, requested: TermMarker, node: ResearchNodeRecord): TermMarker {
-    const valid = validateTermMarkers(message.content, [requested]);
+    const valid = validateTermMarkers(message.content, [rebaseAppendOnlyMarkerLocation(message, requested)]);
     if (!valid.length) throw new ResearchTermPreviewValidationError("Term marker no longer matches the message");
     const nodeDepth = this.options.parentChainContext.buildParentChainContext(node.id).currentNodeDepth;
     const detected = message.termMarkers !== undefined
@@ -298,6 +300,42 @@ export class ResearchTermPreviewService {
       void this.resumeTasks().catch(() => undefined);
     });
   }
+}
+
+/**
+ * A closed term keeps the same absolute range while an answer appends later
+ * content. The request may reach the service while generation is still streaming
+ * or just after it completed. Rebase only when content identity, legacy block
+ * offsets, and the exact source slice all still agree; any rewrite still fails.
+ */
+function rebaseAppendOnlyMarkerLocation(message: ResearchMessageBodyRecord, marker: TermMarker): TermMarker {
+  if ((message.status !== "streaming" && message.status !== "completed")
+    || !marker.location
+    || marker.location.contentId !== message.id) return marker;
+  const block = deriveMessageBlocks(message.content)[marker.blockOrdinal];
+  if (!block) return marker;
+  const sourceRange = {
+    startOffset: block.startOffset + marker.startOffset,
+    endOffset: block.startOffset + marker.endOffset,
+  };
+  if (marker.location.sourceRange.startOffset !== sourceRange.startOffset
+    || marker.location.sourceRange.endOffset !== sourceRange.endOffset
+    || marker.location.exact !== marker.text
+    || message.content.slice(sourceRange.startOffset, sourceRange.endOffset) !== marker.text
+    || !researchBodyVersionIsContentPrefix(
+      message.id,
+      marker.location.bodyVersionId,
+      message.content,
+      sourceRange.endOffset,
+    )) return marker;
+  return {
+    ...marker,
+    location: {
+      ...marker.location,
+      bodyVersionId: researchBodyVersionId(message.id, message.content),
+      sourceRange,
+    },
+  };
 }
 
 export function termPreviewMarkerKey(messageId: string, marker: TermMarker): string {

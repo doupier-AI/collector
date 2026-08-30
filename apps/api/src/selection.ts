@@ -1,12 +1,23 @@
 import { randomUUID } from "node:crypto";
 import {
+  composeSectionUnits,
+  deriveBodyVersion,
   deriveMessageBlocks,
+  messageUsesSectionCards,
   RESEARCH_SELECTION_CONTEXT_CHARACTERS,
+  resolveResearchStableLocation,
   type ResearchSelectionAccepted,
   type ResearchSelectionAnchor,
   type ResearchSelectionInput,
   type ResearchSelectionRecord,
+  type ResearchStableLocation,
 } from "@collector/capture-contracts";
+import {
+  projectMarkdownDocument,
+  projectMarkdownSourceRange,
+  markdownStableVisibleText,
+  resolveMarkdownVisibleRange,
+} from "@collector/markdown-projection";
 import type { ResearchSelectionStore } from "./store.js";
 import { isTrashed } from "./research.js";
 
@@ -26,7 +37,7 @@ export class ResearchSelectionService {
     if (idempotencyKey.length > 200) throw new ResearchSelectionValidationError("Idempotency-Key must not exceed 200 characters");
 
     const existing = this.store.findResearchSelectionByIdempotencyKey(sessionId, idempotencyKey);
-    if (existing) return { selection: existing };
+    if (existing) return { selection: this.withStableLocation(existing) };
 
     const resolved = this.resolveAnchor(sessionId, input.anchor);
     const ownerNodeId = this.resolveOwnerNodeId(sessionId, input.nodeId);
@@ -50,12 +61,12 @@ export class ResearchSelectionService {
   getSelection(id: string): ResearchSelectionRecord {
     const selection = this.store.getResearchSelection(id);
     if (!selection) throw new ResearchSelectionNotFoundError("Research selection not found");
-    return selection;
+    return this.withStableLocation(selection);
   }
 
   listSelections(sessionId: string): ResearchSelectionRecord[] {
     if (!this.store.getResearchSession(sessionId)) throw new ResearchSelectionNotFoundError("Research session not found");
-    return this.store.listResearchSelections(sessionId);
+    return this.store.listResearchSelections(sessionId).map((selection) => this.withStableLocation(selection));
   }
 
   /**
@@ -79,20 +90,69 @@ export class ResearchSelectionService {
       const message = this.store.getResearchMessageBody(anchor.messageId);
       if (!message || message.sessionId !== sessionId) throw new ResearchSelectionNotFoundError("Anchor message not found in this session");
       const blocks = deriveMessageBlocks(message.content);
-      const block = blocks[anchor.blockOrdinal];
-      if (!block) throw new ResearchSelectionValidationError("anchor.blockOrdinal does not exist in the message");
-      const slice = block.text.slice(anchor.startOffset, anchor.endOffset);
-      if (slice === anchor.exact) {
+      const slices = this.store.listSlicesByMessage(message.id);
+      const unit = messageUsesSectionCards(message.content, slices)
+        ? composeSectionUnits(blocks)[anchor.blockOrdinal]
+        : undefined;
+      const block = unit ? blocks[unit.firstBlockOrdinal] : blocks[anchor.blockOrdinal];
+      const source = unit?.content ?? block?.text;
+      if (!block || source === undefined) throw new ResearchSelectionValidationError("anchor.blockOrdinal does not exist in the message");
+      const bodyVersion = this.store.getBodyVersionForMessage(message.id) ?? deriveBodyVersion({
+        messageId: message.id,
+        nodeId: message.nodeId ?? sessionId,
+        content: message.content,
+        origin: "backfill",
+        createdAt: message.updatedAt,
+      });
+      const projection = projectMarkdownDocument(message.content);
+      if (anchor.location) {
+        const resolved = resolveResearchStableLocation(anchor.location, {
+          contentId: message.id,
+          bodyVersionId: bodyVersion.id,
+          source: message.content,
+          visibleText: markdownStableVisibleText(projection),
+          projectSourceRange: (range) => {
+            const projected = projectMarkdownSourceRange(projection, { start: range.startOffset, end: range.endOffset });
+            return projected ? { startOffset: projected.visibleRange.start, endOffset: projected.visibleRange.end } : undefined;
+          },
+        });
+        if (resolved.kind === "degraded") return { anchor: { ...anchor, startOffset: 0, endOffset: 0 }, status: "stale" };
+        const localStart = anchor.location.sourceRange.startOffset - block.startOffset;
+        const localEnd = anchor.location.sourceRange.endOffset - block.startOffset;
+        if (localStart < 0 || localEnd > source.length || localEnd <= localStart) {
+          return { anchor: { ...anchor, startOffset: 0, endOffset: 0 }, status: "stale" };
+        }
         return {
-          anchor: { ...anchor, ...anchorContext(block.text, anchor.startOffset, anchor.endOffset, anchor.prefix, anchor.suffix) },
+          anchor: {
+            ...anchor,
+            startOffset: localStart,
+            endOffset: localEnd,
+            ...anchorContext(source, localStart, localEnd, anchor.prefix, anchor.suffix),
+          },
           status: "active",
         };
       }
-      const relocated = relocateWithinBlock(block.text, anchor);
-      if (relocated) {
-        const [startOffset, endOffset] = relocated;
+      const local = resolveLegacyMarkdownRange(source, anchor);
+      if (local) {
+        const absolute = { start: block.startOffset + local.sourceRange.start, end: block.startOffset + local.sourceRange.end };
+        const visible = projectMarkdownSourceRange(projection, absolute);
+        const location: ResearchStableLocation = {
+          contentId: message.id,
+          bodyVersionId: bodyVersion.id,
+          sourceRange: { startOffset: absolute.start, endOffset: absolute.end },
+          exact: anchor.exact,
+          ...(visible?.exact === anchor.exact ? {
+            visibleRange: { startOffset: visible.visibleRange.start, endOffset: visible.visibleRange.end },
+          } : {}),
+        };
         return {
-          anchor: { ...anchor, startOffset, endOffset, ...anchorContext(block.text, startOffset, endOffset, undefined, undefined) },
+          anchor: {
+            ...anchor,
+            startOffset: local.sourceRange.start,
+            endOffset: local.sourceRange.end,
+            location,
+            ...anchorContext(source, local.sourceRange.start, local.sourceRange.end, undefined, undefined),
+          },
           status: "active",
         };
       }
@@ -103,25 +163,104 @@ export class ResearchSelectionService {
     if (!snapshot || snapshot.sessionId !== sessionId) throw new ResearchSelectionNotFoundError("Anchor content snapshot not found in this session");
     const block = snapshot.blocks.find((candidate) => candidate.id === anchor.blockId);
     if (!block) throw new ResearchSelectionValidationError("anchor.blockId does not exist in the content snapshot");
-    const slice = block.text.slice(anchor.startOffset, anchor.endOffset);
-    if (slice === anchor.exact) {
-      return {
-        anchor: { ...anchor, ...anchorContext(block.text, anchor.startOffset, anchor.endOffset, anchor.prefix, anchor.suffix) },
-        status: "active",
-      };
+    if (anchor.location) {
+      const projection = block.anchor.kind === "markdown" ? projectMarkdownDocument(block.text) : undefined;
+      const resolved = resolveResearchStableLocation(anchor.location, {
+        contentId: block.id,
+        bodyVersionId: snapshot.id,
+        source: block.text,
+        ...(projection ? {
+          visibleText: markdownStableVisibleText(projection),
+          projectSourceRange: (range) => {
+            const projected = projectMarkdownSourceRange(projection, { start: range.startOffset, end: range.endOffset });
+            return projected ? { startOffset: projected.visibleRange.start, endOffset: projected.visibleRange.end } : undefined;
+          },
+        } : {}),
+      });
+      if (resolved.kind === "degraded") return { anchor: { ...anchor, startOffset: 0, endOffset: 0 }, status: "stale" };
+      return { anchor, status: "active" };
     }
-    const relocated = relocateWithinBlock(block.text, anchor);
-    if (relocated) {
-      const [startOffset, endOffset] = relocated;
+    const local = block.anchor.kind === "markdown"
+      ? resolveLegacyMarkdownRange(block.text, anchor)
+      : resolveLegacyPlainRange(block.text, anchor);
+    if (local) {
+      const location: ResearchStableLocation = {
+        contentId: block.id,
+        bodyVersionId: snapshot.id,
+        sourceRange: { startOffset: local.sourceRange.start, endOffset: local.sourceRange.end },
+        exact: anchor.exact,
+        ...(block.anchor.kind === "markdown" && local.visibleRange ? {
+          visibleRange: { startOffset: local.visibleRange.start, endOffset: local.visibleRange.end },
+        } : {}),
+      };
       return {
-        anchor: { ...anchor, startOffset, endOffset, ...anchorContext(block.text, startOffset, endOffset, undefined, undefined) },
+        anchor: {
+          ...anchor,
+          startOffset: local.sourceRange.start,
+          endOffset: local.sourceRange.end,
+          location,
+          ...anchorContext(block.text, local.sourceRange.start, local.sourceRange.end, undefined, undefined),
+        },
         status: "active",
       };
     }
     return { anchor: { ...anchor, startOffset: 0, endOffset: 0 }, status: "stale" };
   }
 
+  /** Lazy compatibility adapter: old JSON records gain the current location view without a lossy rewrite migration. */
+  private withStableLocation(selection: ResearchSelectionRecord): ResearchSelectionRecord {
+    if (selection.anchor.location || selection.status === "stale") return selection;
+    try {
+      const resolved = this.resolveAnchor(selection.sessionId, selection.anchor);
+      return { ...selection, anchor: resolved.anchor, status: resolved.status };
+    } catch {
+      return selection;
+    }
+  }
+
 }
+
+function resolveLegacyMarkdownRange(source: string, anchor: ResearchSelectionAnchor) {
+  const projection = projectMarkdownDocument(source);
+  const raw = resolveLegacyPlainRange(source, anchor);
+  if (raw) {
+    const visible = projectMarkdownSourceRange(projection, raw.sourceRange);
+    return { ...raw, ...(visible?.exact === anchor.exact ? { visibleRange: visible.visibleRange } : {}) };
+  }
+  const visible = resolveMarkdownVisibleRange(
+    projection,
+    { start: anchor.startOffset, end: anchor.endOffset },
+    anchor.exact,
+  );
+  if (visible) return visible;
+  const relocated = relocateWithinBlock(source, anchor);
+  if (!relocated) return undefined;
+  const sourceRange = { start: relocated[0], end: relocated[1] };
+  const projected = projectMarkdownSourceRange(projection, sourceRange);
+  return {
+    sourceRange,
+    ...(projected?.exact === anchor.exact ? { visibleRange: projected.visibleRange } : {}),
+    exact: anchor.exact,
+  };
+}
+
+function resolveLegacyPlainRange(source: string, anchor: ResearchSelectionAnchor) {
+  if (source.slice(anchor.startOffset, anchor.endOffset) === anchor.exact) {
+    return {
+      sourceRange: { start: anchor.startOffset, end: anchor.endOffset },
+      visibleRange: { start: anchor.startOffset, end: anchor.endOffset },
+      exact: anchor.exact,
+    };
+  }
+  const relocated = relocateWithinBlock(source, anchor);
+  if (!relocated) return undefined;
+  return {
+    sourceRange: { start: relocated[0], end: relocated[1] },
+    visibleRange: { start: relocated[0], end: relocated[1] },
+    exact: anchor.exact,
+  };
+}
+
 
 /** 块内上下文摘录；调用方已提供的 prefix/suffix 原样保留，缺失时由服务端补齐。 */
 function anchorContext(

@@ -4,7 +4,19 @@ import type {
   ResearchSelectionAnchor,
   ResearchSliceRecord,
 } from "@collector/capture-contracts";
-import { composeSectionUnits, deriveMessageBlocks, messageContentBlockId, messageUsesSectionCards } from "@collector/capture-contracts";
+import {
+  composeSectionUnits,
+  deriveMessageBlocks,
+  messageContentBlockId,
+  messageUsesSectionCards,
+  researchBodyVersionId,
+  resolveResearchStableLocation,
+} from "@collector/capture-contracts";
+import {
+  markdownStableVisibleText,
+  projectMarkdownDocument,
+  projectMarkdownSourceRange,
+} from "@collector/markdown-projection";
 import { messageBlockCaption } from "../../app/anchorCaption";
 import { stableNodePath } from "../../app/paths";
 import { projectMarkdownVisibleText, type MarkdownVisibleProjection } from "../../components/markdown-projection";
@@ -49,7 +61,7 @@ export function selectionAnchorKey(anchor: ResearchSelectionAnchor): string {
 
 /**
  * 在块文本中解析高亮范围：优先校验锚点偏移切片与保存原文一致；
- * 内容发生细微变化时用原文在块内重新定位；两者都失败返回 null，
+ * 内容发生细微变化时只在原文唯一出现时重新定位；重复或不存在都返回 null，
  * 由调用方降级为保存原文与粗粒度位置说明。
  */
 export function resolveHighlight(
@@ -60,7 +72,9 @@ export function resolveHighlight(
     return { start: target.startOffset, end: target.endOffset };
   }
   const index = target.exact.length > 0 ? text.indexOf(target.exact) : -1;
-  if (index >= 0) return { start: index, end: index + target.exact.length };
+  if (index >= 0 && text.indexOf(target.exact, index + target.exact.length) < 0) {
+    return { start: index, end: index + target.exact.length };
+  }
   return null;
 }
 
@@ -123,16 +137,16 @@ function visibleRanges(projection: MarkdownVisibleProjection, start: number, end
 /** 源 Markdown 的一个片段投影为实际 DOM 可见文本的一个或多个不跨来源角标的范围。 */
 export function markdownSourceHighlightRanges(source: string, sourceStart: number, sourceEnd: number): Array<{ start: number; end: number; exact: string }> {
   if (sourceStart < 0 || sourceEnd > source.length || sourceStart >= sourceEnd) return [];
+  const documentProjection = projectMarkdownDocument(source);
+  const mapped = projectMarkdownSourceRange(documentProjection, { start: sourceStart, end: sourceEnd });
+  if (!mapped?.exact) return [];
   const projection = projectMarkdownVisibleText(source);
-  const selected = projectMarkdownVisibleText(source.slice(sourceStart, sourceEnd));
-  if (!selected.text) return [];
-  let start = sourceStart === 0 && sourceEnd === source.length ? 0 : projection.text.indexOf(selected.text);
-  if (start < 0 || projection.text.indexOf(selected.text, start + selected.text.length) >= 0) return [];
+  if (projection.text.slice(mapped.visibleRange.start, mapped.visibleRange.end) !== mapped.exact) return [];
   const relocated: MarkdownVisibleProjection = {
     text: projection.text,
-    citationBoundaries: selected.citationBoundaries.map((boundary) => start + boundary),
+    citationBoundaries: projection.citationBoundaries,
   };
-  return visibleRanges(relocated, start, start + selected.text.length);
+  return visibleRanges(relocated, mapped.visibleRange.start, mapped.visibleRange.end);
 }
 
 /** 选区偏移本来处于可见 DOM 文本空间；原位置不再匹配时只接受唯一的 exact 重定位。 */
@@ -177,6 +191,38 @@ export function highlightForMessages(
   const blockOrdinal = unit?.firstBlockOrdinal ?? blocks[anchor.blockOrdinal]?.ordinal;
   const blockText = unit?.content ?? blocks[anchor.blockOrdinal]?.text;
   if (blockOrdinal === undefined || blockText === undefined) return { kind: "fallback", caption };
+  if (anchor.location) {
+    const projection = projectMarkdownDocument(message.content);
+    const bodyVersionId = researchBodyVersionId(message.id, message.content);
+    const stable = resolveResearchStableLocation(anchor.location, {
+      contentId: message.id,
+      bodyVersionId,
+      source: message.content,
+      visibleText: markdownStableVisibleText(projection),
+      projectSourceRange: (range) => {
+        const mapped = projectMarkdownSourceRange(projection, { start: range.startOffset, end: range.endOffset });
+        return mapped ? { startOffset: mapped.visibleRange.start, endOffset: mapped.visibleRange.end } : undefined;
+      },
+    });
+    if (stable.kind === "degraded") return { kind: "fallback", caption };
+    const blockSourceStart = blocks[blockOrdinal]?.startOffset;
+    if (blockSourceStart === undefined) return { kind: "fallback", caption };
+    const localStart = anchor.location.sourceRange.startOffset - blockSourceStart;
+    const localEnd = anchor.location.sourceRange.endOffset - blockSourceStart;
+    const highlights = markdownSourceHighlightRanges(blockText, localStart, localEnd);
+    if (highlights.length === 0 || highlights.map((highlight) => highlight.exact).join("") !== exact) {
+      return { kind: "fallback", caption };
+    }
+    return {
+      kind: "found",
+      messageId: message.id,
+      blockId: messageContentBlockId(message.id, blockOrdinal),
+      blockOrdinal,
+      start: highlights[0]!.start,
+      end: highlights.at(-1)!.end,
+      highlights,
+    };
+  }
   const highlights = resolveMarkdownVisibleHighlights(blockText, {
     startOffset: anchor.startOffset,
     endOffset: anchor.endOffset,

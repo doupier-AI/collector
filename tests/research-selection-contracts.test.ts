@@ -3,6 +3,8 @@ import test from "node:test";
 import {
   evaluateSelectionQuality,
   RESEARCH_SELECTION_MAX_CHARACTERS,
+  resolveResearchStableLocation,
+  validateResearchStableLocation,
   validateResearchSelectionInput,
 } from "@collector/capture-contracts";
 
@@ -71,4 +73,55 @@ test("evaluateSelectionQuality enforces shared thresholds", () => {
   assert.deepEqual(evaluateSelectionQuality({ text: "一段合适选区", blockCount: 1 }), { level: "ok" });
   // 跨块优先于长度：先提示调整选区范围
   assert.deepEqual(evaluateSelectionQuality({ text: "短", blockCount: 3 }), { level: "cross_block" });
+});
+
+test("stable location validates canonical identity, version, source, and visible ranges without guessing", () => {
+  const location = {
+    contentId: "m-1#p0",
+    bodyVersionId: "body:m-1:v1",
+    sourceRange: { startOffset: 2, endOffset: 8 },
+    exact: "重复文本",
+    visibleRange: { startOffset: 0, endOffset: 4 },
+  };
+  assert.doesNotThrow(() => validateResearchStableLocation(location));
+  assert.deepEqual(resolveResearchStableLocation(location, {
+    contentId: "m-1#p0",
+    bodyVersionId: "body:m-1:v1",
+    source: "**重复文本**与重复文本",
+    visibleText: "重复文本与重复文本",
+    projectSourceRange: () => ({ startOffset: 0, endOffset: 4 }),
+  }), { kind: "found", location });
+
+  assert.equal(resolveResearchStableLocation(location, {
+    contentId: "m-1#p0",
+    bodyVersionId: "body:m-1:v2",
+    source: "**重复文本**与重复文本",
+    visibleText: "重复文本与重复文本",
+    projectSourceRange: () => ({ startOffset: 0, endOffset: 4 }),
+  }).kind, "degraded");
+  assert.deepEqual(resolveResearchStableLocation({ ...location, visibleRange: { startOffset: 5, endOffset: 9 } }, {
+    contentId: "m-1#p0",
+    bodyVersionId: "body:m-1:v1",
+    source: "**重复文本**与重复文本",
+    visibleText: "重复文本与重复文本",
+    projectSourceRange: () => ({ startOffset: 0, endOffset: 4 }),
+  }), {
+    kind: "degraded",
+    reason: "visible-range-invalid",
+    contentId: "m-1#p0",
+    bodyVersionId: "body:m-1:v1",
+  });
+});
+
+test("selection location cannot contradict the legacy coarse anchor", () => {
+  assert.throws(() => validateResearchSelectionInput({
+    anchor: messageAnchor({
+      location: {
+        contentId: "other-block",
+        bodyVersionId: "body:m-1:v1",
+        sourceRange: { startOffset: 0, endOffset: 8 },
+        exact: "一段选区文字",
+      },
+    }),
+  }), /contentId/);
 });

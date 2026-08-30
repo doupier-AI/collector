@@ -6031,8 +6031,8 @@ button.model-status {
   display: grid;
   gap: var(--space-4);
   max-width: var(--measure);
-  /* grid 子项默认 min-width:auto 会按 min-content 撑破容器（如 pre 代码块最长行）；
-   * 允许子项收缩，配合 .reading__code 的 overflow-x:auto 自行滚动而不撑破正文。 */
+  /* grid 子项默认 min-width:auto 会按 min-content 撑破容器（如 Markdown 代码块最长行）；
+   * 允许子项收缩，让共享投影中的 pre 自行横向滚动而不撑破正文。 */
   grid-template-columns: minmax(0, 1fr);
 }
 
@@ -6061,17 +6061,12 @@ button.model-status {
   overflow-wrap: anywhere;
 }
 
-.reading__code {
-  margin: 0;
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-control);
-  background: var(--color-surface);
-  overflow-x: auto;
-  /* 长行代码在 grid 轨道内自身横向滚动，不撑破正文容器（窄屏 rail 占位后正文更窄）。 */
-  max-width: 100%;
-  font-size: var(--font-size-caption);
-  line-height: 1.6;
+.reading__markdown {
+  min-width: 0;
+}
+
+.reading__markdown .markdown-content > :first-child {
+  margin-top: 0;
 }
 
 /* ---------- 选区提示与操作 ---------- */
@@ -7156,6 +7151,38 @@ button.model-status {
 
 .markdown-content :where(a) {
   color: var(--color-ai);
+}
+
+.markdown-content :where(.katex-display) {
+  max-width: 100%;
+  margin: var(--space-3) 0;
+  padding-block: var(--space-1);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.markdown-content :where(.math-source-fallback, .markdown-image-fallback) {
+  padding: 0.0625rem 0.25rem;
+  border-radius: var(--radius-control);
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  overflow-wrap: anywhere;
+}
+
+.markdown-content :where(.math-source-fallback--display) {
+  display: block;
+  max-width: 100%;
+  margin: var(--space-3) 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-line);
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.markdown-content :where(.math-source-fallback__code) {
+  padding: 0;
+  background: none;
 }
 
 .markdown-content mark {

@@ -106,45 +106,56 @@ export async function pairAndOpen(page: Page, path = "/", fromEnd = false): Prom
  * 生长链类用例常在完成态到达前就调用本函数。因此先等目标文字在某个可引用块内真的可选，
  * 再执行圈选，消除"文字已显示、锚点未就绪"的采样竞态；超时仍按原有信息报错。
  */
-export async function selectAnswerText(page: Page, text: string): Promise<void> {
-  await page.waitForFunction((target) => {
+export async function selectAnswerText(page: Page, text: string, occurrence = 0): Promise<void> {
+  await page.waitForFunction(({ target, ordinal }) => {
+    let seen = 0;
     const blocks = Array.from(document.querySelectorAll(".message--assistant [data-block-text]"));
     for (const block of blocks) {
       const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, null);
       while (walker.nextNode()) {
-        if ((walker.currentNode as Text).data.includes(target)) return true;
+        const value = (walker.currentNode as Text).data;
+        let cursor = 0;
+        while (cursor <= value.length) {
+          const offset = value.indexOf(target, cursor);
+          if (offset < 0) break;
+          if (seen === ordinal) return true;
+          seen += 1;
+          cursor = offset + target.length;
+        }
       }
     }
     return false;
-  }, text, { timeout: 15_000 });
-  await page.evaluate((target) => {
+  }, { target: text, ordinal: occurrence }, { timeout: 15_000 });
+  await page.evaluate(({ target, ordinal }) => {
     const blocks = Array.from(document.querySelectorAll(".message--assistant [data-block-text]"));
     if (!blocks.length) throw new Error("未找到 AI 回答块");
-    let foundNode: Text | null = null;
-    let foundOffset = -1;
+    let seen = 0;
     for (const block of blocks) {
       const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, null);
       while (walker.nextNode()) {
         const node = walker.currentNode as Text;
-        const offset = node.data.indexOf(target);
-        if (offset >= 0) {
-          foundNode = node;
-          foundOffset = offset;
-          break;
+        let cursor = 0;
+        while (cursor <= node.data.length) {
+          const offset = node.data.indexOf(target, cursor);
+          if (offset < 0) break;
+          if (seen === ordinal) {
+            const range = document.createRange();
+            range.setStart(node, offset);
+            range.setEnd(node, offset + target.length);
+            const selection = window.getSelection();
+            if (!selection) throw new Error("浏览器不支持 Selection");
+            selection.removeAllRanges();
+            selection.addRange(range);
+            document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+            return;
+          }
+          seen += 1;
+          cursor = offset + target.length;
         }
       }
-      if (foundNode) break;
     }
-    if (!foundNode || foundOffset < 0) throw new Error(`回答中未找到「${target}」`);
-    const range = document.createRange();
-    range.setStart(foundNode, foundOffset);
-    range.setEnd(foundNode, foundOffset + target.length);
-    const selection = window.getSelection();
-    if (!selection) throw new Error("浏览器不支持 Selection");
-    selection.removeAllRanges();
-    selection.addRange(range);
-    document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
-  }, text);
+    throw new Error(`回答中未找到第 ${ordinal + 1} 处「${target}」`);
+  }, { target: text, ordinal: occurrence });
 }
 
 /**

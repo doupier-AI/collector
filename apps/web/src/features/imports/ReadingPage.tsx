@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import type { ResearchContentBlock, ResearchContentView, ResearchSelectionAnchor } from "@collector/capture-contracts";
+import { resolveResearchStableLocation, type ResearchContentBlock, type ResearchContentView, type ResearchSelectionAnchor } from "@collector/capture-contracts";
+import { markdownStableVisibleText, projectMarkdownDocument, projectMarkdownSourceRange } from "@collector/markdown-projection";
 import { isApiErrorCode, isUnauthorized, apiErrorCopy } from "../../api/errors";
 import { anchorCaption } from "../../app/anchorCaption";
 import { stableNodePath } from "../../app/paths";
 import { usePrefersReducedMotion } from "../../app/usePrefersReducedMotion";
 import { useServices } from "../../app/services";
+import { MarkdownContent } from "../../components/MarkdownContent";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
 import { HighlightedText } from "../selection/HighlightedText";
 import { SelectionSurface } from "../selection/SelectionSurface";
@@ -13,6 +15,7 @@ import { MarkNoteEditor } from "../selection/MarkNoteEditor";
 import {
   childNodeIdempotencyKey,
   focusComposerTextarea,
+  markdownSourceHighlightRanges,
   resolveHighlight,
   selectionExactDigest,
 } from "../selection/selection-highlight";
@@ -34,16 +37,16 @@ type ReaderState =
 
 function isHeading(block: ResearchContentBlock): boolean {
   const anchor = block.anchor;
-  return (anchor.kind === "markdown" || anchor.kind === "docx") && anchor.blockType === "heading";
+  return anchor.kind === "docx" && anchor.blockType === "heading";
 }
 
-function isCode(block: ResearchContentBlock): boolean {
-  return block.anchor.kind === "markdown" && block.anchor.blockType === "code";
+function isMarkdown(block: ResearchContentBlock): boolean {
+  return block.anchor.kind === "markdown";
 }
 
 /**
  * 研究阅读视图：以稳定 contentSnapshotId 读取内容块，按锚点联合类型渲染。
- * 文本一律按不可信内容以纯文本渲染，不保存 DOM 路径，不猜 MIME 字段。
+ * Markdown 走共享安全投影；其他格式保持不可信纯文本块。不保存 DOM 路径，不猜 MIME 字段。
  * 页面底部提供 ChatComposer，可对当前文档直接提问，消息回到所属会话。
  * 阶段 H4a：选区引用胶囊在输入框区域显示，支持"在此追问"与"深入研究这段"双模发送。
  */
@@ -168,6 +171,31 @@ export function ReadingPage() {
     if (!block) {
       return { kind: "fallback" as const, caption: `《${state.snapshot.title}》内` };
     }
+    if (anchor.location) {
+      const projection = isMarkdown(block) ? projectMarkdownDocument(block.text) : undefined;
+      const resolved = resolveResearchStableLocation(anchor.location, {
+        contentId: block.id,
+        bodyVersionId: state.snapshot.id,
+        source: block.text,
+        ...(projection ? {
+          visibleText: markdownStableVisibleText(projection),
+          projectSourceRange: (range) => {
+            const mapped = projectMarkdownSourceRange(projection, {
+              start: range.startOffset,
+              end: range.endOffset,
+            });
+            return mapped ? { startOffset: mapped.visibleRange.start, endOffset: mapped.visibleRange.end } : undefined;
+          },
+        } : {}),
+      });
+      if (resolved.kind === "degraded") return { kind: "fallback" as const, caption: anchorCaption(block) };
+      return {
+        kind: "found" as const,
+        blockId: block.id,
+        start: anchor.location.sourceRange.startOffset,
+        end: anchor.location.sourceRange.endOffset,
+      };
+    }
     const resolved = resolveHighlight(block.text, {
       startOffset: anchor.startOffset,
       endOffset: anchor.endOffset,
@@ -179,11 +207,13 @@ export function ReadingPage() {
   const searchRestore = useMemo(() => {
     if (state.kind !== "ready") return null;
     const blockId = searchParams.get("searchBlock");
+    const expectedVersion = searchParams.get("searchVersion");
     const start = Number(searchParams.get("searchStart"));
     const end = Number(searchParams.get("searchEnd"));
     if (!blockId) return null;
     const block = state.snapshot.blocks.find((candidate) => candidate.id === blockId);
-    if (!block || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end <= start || end > block.text.length) {
+    if ((expectedVersion !== null && expectedVersion !== state.snapshot.id)
+      || !block || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end <= start || end > block.text.length) {
       return { kind: "fallback" as const, source: "search" as const };
     }
     return { kind: "found" as const, source: "search" as const, blockId, start, end };
@@ -309,6 +339,7 @@ export function ReadingPage() {
       {snapshot.chapterParse ? (
         <ReadingChapterNav
           parse={snapshot.chapterParse}
+          snapshotId={snapshot.id}
           blocks={snapshot.blocks}
           reducedMotion={reducedMotion}
           retryPending={chapterRetryPending}
@@ -343,6 +374,9 @@ export function ReadingPage() {
           {snapshot.blocks.map((block) => {
             const highlight =
               foundBlockId === block.id && activeSnapshotRestore?.kind === "found" ? activeSnapshotRestore : null;
+            const markdownHighlights = highlight && isMarkdown(block)
+              ? markdownSourceHighlightRanges(block.text, highlight.start, highlight.end)
+              : [];
             const text = highlight ? (
               <HighlightedText text={block.text} start={highlight.start} end={highlight.end} />
             ) : (
@@ -351,14 +385,14 @@ export function ReadingPage() {
             return (
               <section className="reading__block" key={block.id} data-block-id={block.id}>
                 <p className="reading__anchor">{anchorCaption(block)}</p>
-                {isHeading(block) ? (
+                {isMarkdown(block) ? (
+                  <div className="reading__markdown" data-block-text>
+                    <MarkdownContent text={block.text} highlights={markdownHighlights} />
+                  </div>
+                ) : isHeading(block) ? (
                   <h2 className="reading__heading" data-block-text>
                     {text}
                   </h2>
-                ) : isCode(block) ? (
-                  <pre className="reading__code" data-block-text>
-                    <code>{text}</code>
-                  </pre>
                 ) : (
                   <p className="reading__text" data-block-text>
                     {text}

@@ -37,12 +37,13 @@ describe("深度思考折叠区（ADR-0035）", () => {
 
   it("完成后：折叠区保留可回看，标题为「思考过程」", async () => {
     const user = userEvent.setup();
-    renderMessage({ reasoning: "完整推理记录" });
+    renderMessage({ reasoning: "## 完整推理记录\n\n$E=mc^2$" });
 
     const toggle = screen.getByRole("button", { name: "展开思考过程" });
     expect(toggle).toBeInTheDocument();
     await user.click(toggle);
-    expect(screen.getByText("完整推理记录")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "完整推理记录", level: 2 })).toBeInTheDocument();
+    expect(document.querySelector(".reasoning .katex")).not.toBeNull();
   });
 
   it("无思考内容时不渲染折叠区，生成中只显示诚实状态", () => {

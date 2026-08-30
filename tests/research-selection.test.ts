@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { deriveMessageBlocks } from "@collector/capture-contracts";
+import { deriveMessageBlocks, hashBodyContent } from "@collector/capture-contracts";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer } from "@collector/api";
 import { listenOnFetchSafePort } from "./test-http-server.js";
 
@@ -50,7 +50,7 @@ async function postJson(base: string, token: string, path: string, body: unknown
   return fetch(`${base}${path}`, { method: "POST", headers: headers(token, key), body: JSON.stringify(body) });
 }
 
-async function createSessionWithAnswer(harness: Awaited<ReturnType<typeof createHarness>>) {
+async function createSessionWithAnswer(harness: Awaited<ReturnType<typeof createHarness>>, content = ASSISTANT_CONTENT) {
   const sessionResponse = await postJson(harness.base, harness.token, "/v1/research-sessions", {}, randomUUID());
   assert.equal(sessionResponse.status, 201);
   const session = await sessionResponse.json() as { id: string };
@@ -61,7 +61,7 @@ async function createSessionWithAnswer(harness: Awaited<ReturnType<typeof create
   };
   const assistantMessage = {
     id: randomUUID(), sessionId: session.id, role: "assistant" as const,
-    content: ASSISTANT_CONTENT, status: "completed" as const, createdAt: now, updatedAt: now,
+    content, status: "completed" as const, createdAt: now, updatedAt: now,
   };
   const task = {
     id: randomUUID(), sessionId: session.id,
@@ -177,4 +177,63 @@ test("selection validation rejects malformed and cross-session anchors", async (
   assert.equal((await postJson(harness.base, harness.token, `/v1/research-sessions/${session.id}/selections`, {
     anchor: anchorForSelection(assistantMessage.id, 0, "本地优先研究"),
   })).status, 400);
+});
+
+test("complex Markdown selection records one versioned source and visible range and never jumps to repeated text", async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.close());
+  const content = "**重复文本**与重复文本[来源1]\n\n| 列 | 值 |\n| --- | --- |\n| A | `code` |";
+  const { session, assistantMessage } = await createSessionWithAnswer(harness, content);
+  const secondSourceStart = content.indexOf("重复文本", content.indexOf("重复文本") + 4);
+
+  const response = await postJson(harness.base, harness.token, `/v1/research-sessions/${session.id}/selections`, {
+    // Browser offsets are in the projected block: the second occurrence starts after "重复文本与".
+    anchor: { kind: "message", messageId: assistantMessage.id, blockOrdinal: 0, startOffset: 5, endOffset: 9, exact: "重复文本" },
+  }, randomUUID());
+  assert.equal(response.status, 201);
+  const accepted = await response.json() as {
+    selection: {
+      status: string;
+      anchor: {
+        startOffset: number;
+        endOffset: number;
+        location: {
+          contentId: string;
+          bodyVersionId: string;
+          sourceRange: { startOffset: number; endOffset: number };
+          visibleRange: { startOffset: number; endOffset: number };
+          exact: string;
+        };
+      };
+    };
+  };
+  assert.equal(accepted.selection.status, "active");
+  assert.deepEqual(accepted.selection.anchor.location.sourceRange, {
+    startOffset: secondSourceStart,
+    endOffset: secondSourceStart + 4,
+  });
+  assert.deepEqual(accepted.selection.anchor.location.visibleRange, { startOffset: 5, endOffset: 9 });
+  assert.equal(accepted.selection.anchor.location.contentId, assistantMessage.id);
+  assert.equal(accepted.selection.anchor.location.bodyVersionId, `body:${assistantMessage.id}:${hashBodyContent(content)}`);
+
+  const firstSourceStart = content.indexOf("重复文本");
+  const forged = await postJson(harness.base, harness.token, `/v1/research-sessions/${session.id}/selections`, {
+    anchor: {
+      kind: "message",
+      messageId: assistantMessage.id,
+      blockOrdinal: 0,
+      startOffset: 5,
+      endOffset: 9,
+      exact: "重复文本",
+      location: {
+        contentId: assistantMessage.id,
+        bodyVersionId: `body:${assistantMessage.id}:${hashBodyContent(content)}`,
+        sourceRange: { startOffset: firstSourceStart, endOffset: firstSourceStart + 4 },
+        visibleRange: { startOffset: 5, endOffset: 9 },
+        exact: "重复文本",
+      },
+    },
+  }, randomUUID());
+  assert.equal(forged.status, 201);
+  assert.equal((await forged.json() as { selection: { status: string } }).selection.status, "stale");
 });

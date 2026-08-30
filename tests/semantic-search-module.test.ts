@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
+import { hashBodyContent } from "@collector/capture-contracts";
 import type {
   ResearchAttachmentRecord,
   ResearchBodyVersionRecord,
@@ -792,7 +793,15 @@ test("search responses carry real stable locators for each hit range", async (t)
   const question = "量子纠缠如何工作";
   assert.deepEqual(
     { ...questionMatch.locator, contentHash: "<elided>" },
-    { kind: "message-text-range", nodeId: "inside", messageId: "question-inside", contentHash: "<elided>", startOffset: 0, endOffset: [...question].length },
+    {
+      kind: "message-text-range", nodeId: "inside", messageId: "question-inside", contentHash: "<elided>", startOffset: 0, endOffset: [...question].length,
+      location: {
+        contentId: "question-inside",
+        bodyVersionId: `body:question-inside:${hashBodyContent(question)}`,
+        sourceRange: { startOffset: 0, endOffset: [...question].length },
+        exact: question,
+      },
+    },
   );
 });
 

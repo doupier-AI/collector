@@ -93,6 +93,16 @@ test("projector keeps current source fields separate, includes archived content,
   assert.ok(units.every((unit) => !["历史旧正文", "停止但不完整", "仍在流式生成", "暂停中的内容", "失败的内容", "回收站秘密"].some((excluded) => unit.searchText.includes(excluded))));
   assert.doesNotMatch(JSON.stringify(units), new RegExp(reasoningSentinel), "搜索与知识库投影不得包含思考哨兵");
   assert.ok(units.filter((unit) => unit.field === "import-body").every((unit) => unit.nodeId === "root"));
+  for (const unit of units) {
+    if (unit.locator.kind === "node-title") continue;
+    assert.ok(unit.locator.location, `${unit.field} must expose a stable location`);
+    if (!unit.locator.location) continue;
+    assert.equal(unit.locator.location.exact, unit.searchText);
+    assert.deepEqual(unit.locator.location.sourceRange, {
+      startOffset: unit.locator.startOffset,
+      endOffset: unit.locator.endOffset,
+    });
+  }
 });
 
 test("confirmed fusion snapshot and every current completed fusion answer keep independent field identities", () => {
@@ -117,6 +127,9 @@ test("confirmed fusion snapshot and every current completed fusion answer keep i
   assert.equal(bodyUnits.filter((unit) => unit.field === "ai-body" && unit.searchText === later.content).length, 1);
   assert.equal(bodyUnits.filter((unit) => unit.field === "formal-fusion-body" && unit.searchText === fusion.body).length, 1);
   assert.ok(bodyUnits.some((unit) => unit.locator.kind === "fusion-snapshot-range"));
+  const fusionUnit = bodyUnits.find((unit) => unit.locator.kind === "fusion-snapshot-range");
+  assert.equal(fusionUnit?.locator.location?.contentId, fusion.fusionNodeId);
+  assert.equal(fusionUnit?.locator.location?.bodyVersionId, fusion.confirmedDraftVersionId);
   assert.ok(bodyUnits.some((unit) => unit.field === "ai-body" && unit.locator.kind === "message-semantic-range" && unit.locator.messageId === initial.id));
 });
 

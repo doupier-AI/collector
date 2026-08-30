@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ResearchSelectionRecord } from "@collector/capture-contracts";
+import { hashBodyContent, type ResearchSelectionRecord } from "@collector/capture-contracts";
 import { makeMessage, makeSelection } from "../../test/fakes";
 import {
   backRouteForSelection,
@@ -28,6 +28,14 @@ describe("resolveHighlight", () => {
 
   it("原文在块中不存在时返回 null，交由调用方降级", () => {
     expect(resolveHighlight("完全不同的段落内容", target)).toBeNull();
+  });
+
+  it("旧锚点失配且原文重复时不猜测第一处同名文本", () => {
+    expect(resolveHighlight("重复文本与重复文本", {
+      startOffset: 1,
+      endOffset: 5,
+      exact: "重复文本",
+    })).toBeNull();
   });
 });
 
@@ -186,6 +194,30 @@ describe("highlightForMessages", () => {
     expect(highlightForMessages([repeated], undefined, {
       kind: "message", messageId: "m-out", blockOrdinal: 0, startOffset: 2, endOffset: 4, exact: "目标",
     }, "目标")).toEqual({ kind: "fallback", caption: "段落 1" });
+  });
+
+  it("稳定位置用源码与可见范围共同锁定重复文本，不接受同名位置伪造", () => {
+    const content = "**重复文本**与重复文本[来源1]";
+    const repeated = makeMessage({ id: "m-out", content });
+    const secondSourceStart = content.indexOf("重复文本", content.indexOf("重复文本") + 4);
+    const location = {
+      contentId: "m-out",
+      bodyVersionId: `body:m-out:${hashBodyContent(content)}`,
+      sourceRange: { startOffset: secondSourceStart, endOffset: secondSourceStart + 4 },
+      visibleRange: { startOffset: 5, endOffset: 9 },
+      exact: "重复文本",
+    };
+    expect(highlightForMessages([repeated], undefined, {
+      kind: "message", messageId: "m-out", blockOrdinal: 0, startOffset: 5, endOffset: 9, exact: "重复文本", location,
+    }, "重复文本")).toMatchObject({ kind: "found", start: 5, end: 9 });
+
+    expect(highlightForMessages([repeated], undefined, {
+      kind: "message", messageId: "m-out", blockOrdinal: 0, startOffset: 5, endOffset: 9, exact: "重复文本",
+      location: {
+        ...location,
+        sourceRange: { startOffset: content.indexOf("重复文本"), endOffset: content.indexOf("重复文本") + 4 },
+      },
+    }, "重复文本")).toEqual({ kind: "fallback", caption: "段落 1" });
   });
 
   it("选区跨零文本来源角标时拆成两个真实范围，不把角标当正文", () => {

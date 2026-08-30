@@ -245,6 +245,8 @@ test("文本型来源标记在弱标记清洗后的正文上解析", async (t) =
   const citation = harness.store.listResearchCitationsForMessages([turn.task.outputMessageId])[0];
   assert.ok(citation);
   assert.equal(citation.markerOffset, "本地优先强调数据留在设备上。".length);
+  assert.equal(citation.location?.exact, "[来源1]");
+  assert.equal(citation.location?.contentId, turn.task.outputMessageId);
 });
 
 test("仅证据的联网准备必须经独立最终写作，工作区文本永不写入正文", async (t) => {

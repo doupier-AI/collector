@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  hashBodyContent,
   redactGroundingValue,
   sanitizeGroundingQueries,
   sanitizeGroundingUrl,
@@ -33,9 +34,22 @@ test("grounding citations must reference a source in the same run and a valid me
       capability: "openai_web_search", scenario: "chat", status: "grounded", queries: [], attempt: 1, createdAt: "2026-07-22T00:00:00.000Z",
     },
     sources: [{ id: "source-1", runId: "run-1", ordinal: 1, title: "Source", createdAt: "2026-07-22T00:00:00.000Z" }],
-    citations: [{ id: "citation-1", messageId: "message-1", runId: "run-1", sourceId: "source-1", blockOrdinal: 0, markerOffset: 2, createdAt: "2026-07-22T00:00:00.000Z" }],
+    citations: [{
+      id: "citation-1", messageId: "message-1", runId: "run-1", sourceId: "source-1", blockOrdinal: 0, markerOffset: 2,
+      location: {
+        contentId: "message-1",
+        bodyVersionId: `body:message-1:${hashBodyContent("第一段内容。\n\n第二段内容。")}`,
+        sourceRange: { startOffset: 0, endOffset: 3 },
+        exact: "第一段",
+      },
+      createdAt: "2026-07-22T00:00:00.000Z",
+    }],
   };
   assert.doesNotThrow(() => validateResearchGroundingResult(result));
   assert.throws(() => validateResearchGroundingResult({ ...result, citations: [{ ...result.citations[0], sourceId: "other" }] }), /same grounding run/);
   assert.throws(() => validateResearchGroundingResult({ ...result, citations: [{ ...result.citations[0], markerOffset: 99 }] }), /positioned/);
+  assert.throws(() => validateResearchGroundingResult({
+    ...result,
+    citations: [{ ...result.citations[0], location: { ...result.citations[0].location!, bodyVersionId: "body:message-1:stale" } }],
+  }), /version-mismatch/);
 });

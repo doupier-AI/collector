@@ -1,11 +1,11 @@
 import { type ReactNode, useMemo, useRef } from "react";
-import ReactMarkdown from "react-markdown";
+import "katex/dist/katex.min.css";
 import type { ResearchCitationRecord, ResearchGroundingSourceRecord, TermMarker } from "@collector/capture-contracts";
+import { projectMarkdownDocument, projectMarkdownSourceRange } from "@collector/markdown-projection";
 import { CitationMarker } from "./CitationMarker";
 import { buildCitationIndex, buildSourceMap } from "../features/research-session/citation-utils";
 import {
-  markdownRehypePlugins,
-  markdownRemarkPlugins,
+  projectMarkdownReact,
   projectMarkdownVisibleText,
   renderMarkdownVisibleHighlights,
   type MarkdownVisibleHighlight,
@@ -50,14 +50,13 @@ const EMPTY_MARKDOWN_PROJECTION = { text: "", citationBoundaries: [] } as const;
 /**
  * 把 AI 生成的 Markdown 文本渲染为安全 HTML。
  * - 安全白名单（不开 rehype-raw，模型输出的 <script> 被转义）
- * - [来源n] 由 remark 插件转为可悬停 CitationMarker
+ * - [来源n] 由共享投影适配为可悬停 CitationMarker
  * - variant="insight" 用于术语预览和推理摘要等紧凑辅助内容
- * - 对极速流式更新做 useMemo 防止闪烁
  */
 export function MarkdownContent({ text, sources = [], citations = [], terms = [], variant = "message", className, titleAnchorId, highlights = [] }: MarkdownContentProps) {
   const sourceById = useMemo(() => buildSourceMap(sources), [sources]);
   const citationIndexById = useMemo(() => buildCitationIndex(citations), [citations]);
-  // 仅提升"第一个"标题为卡片标题；用 ref 计数，ReactMarkdown 每次渲染重置。
+  // 仅提升"第一个"标题为卡片标题；用 ref 计数，每次共享投影渲染前重置。
   const promotedTitleRef = useRef(false);
   promotedTitleRef.current = false;
 
@@ -79,6 +78,10 @@ export function MarkdownContent({ text, sources = [], citations = [], terms = []
     () => (highlights.length === 0 && terms.length === 0 ? EMPTY_MARKDOWN_PROJECTION : projectMarkdownVisibleText(text)),
     [highlights.length, terms.length, text],
   );
+  const locationProjection = useMemo(
+    () => (terms.length === 0 ? undefined : projectMarkdownDocument(text)),
+    [terms.length, text],
+  );
   const validHighlights = useMemo(() => {
     if (highlights.length === 0) return [];
     return highlights.filter((highlight) =>
@@ -95,14 +98,15 @@ export function MarkdownContent({ text, sources = [], citations = [], terms = []
       .filter((term) => isValidTermMarker(text, term))
       .sort((left, right) => renderedStart(left) - renderedStart(right) || renderedEnd(left) - renderedEnd(right))
       .flatMap<MarkdownVisibleTerm>((term) => {
-        // 同名术语按"源文本第 N 次出现"对应"渲染可见文字第 N 次出现"定位。渲染器随后
-        // 在 React 树中排除链接、按钮和代码节点，保持既有不可交互区域的丢弃语义。
-        const occurrence = countOccurrences(text.slice(0, renderedStart(term)), term.text);
-        const start = findOccurrence(projection.text, term.text, occurrence);
-        if (start < 0) return [];
+        const mapped = locationProjection && projectMarkdownSourceRange(locationProjection, {
+          start: renderedStart(term),
+          end: renderedEnd(term),
+        });
+        if (!mapped || mapped.exact !== term.text
+          || projection.text.slice(mapped.visibleRange.start, mapped.visibleRange.end) !== term.text) return [];
         return [{
-          start,
-          end: start + term.text.length,
+          start: mapped.visibleRange.start,
+          end: mapped.visibleRange.end,
           text: term.text,
           category: term.category,
           blockOrdinal: term.blockOrdinal,
@@ -110,8 +114,12 @@ export function MarkdownContent({ text, sources = [], citations = [], terms = []
           sourceEndOffset: term.endOffset,
         }];
       })
-  ), [projection.text, terms, text]);
+  ), [locationProjection, projection.text, terms, text]);
   const components = {
+    // 产品安全边界不加载模型或正文提供的任意远程图片；保留可读、可复制的替代文字。
+    img: ({ alt }: React.ImgHTMLAttributes<HTMLImageElement>): ReactNode => (
+      alt ? <span className="markdown-image-fallback">{`[图片：${alt}]`}</span> : null
+    ),
     "cite-marker": ({ "data-source-ordinal": ordinalStr }: Record<string, unknown>): ReactNode => {
       const ordinal = Number(ordinalStr);
       const citation = (citationByOrdinal.get(ordinal) ?? [])[0];
@@ -125,12 +133,7 @@ export function MarkdownContent({ text, sources = [], citations = [], terms = []
     // 卡片标题提升：正文首个标题（## / ###…）成为卡片大标题并挂导航锚点。
     ...(titleAnchorId ? buildPromotedHeadingComponents(titleAnchorId, promotedTitleRef) : {}),
   } as Record<string, React.ComponentType<any>>;
-  const markdownTree = ReactMarkdown({
-    children: text,
-    remarkPlugins: [...markdownRemarkPlugins],
-    rehypePlugins: [...markdownRehypePlugins],
-    components,
-  });
+  const markdownTree = projectMarkdownReact(text, components).tree;
   const renderedTree = renderMarkdownVisibleHighlights(markdownTree, validHighlights, visibleTerms);
 
   return (
@@ -193,29 +196,4 @@ function renderedStart(marker: RenderedTermMarker): number {
 
 function renderedEnd(marker: RenderedTermMarker): number {
   return marker.renderedEndOffset ?? marker.endOffset;
-}
-
-/** 源文本中 needle 在 haystack 里的不重叠出现次数（与渲染侧逐个出现的计数口径一致）。 */
-function countOccurrences(haystack: string, needle: string): number {
-  if (!needle) return 0;
-  let count = 0;
-  let from = 0;
-  for (;;) {
-    const index = haystack.indexOf(needle, from);
-    if (index < 0) return count;
-    count += 1;
-    from = index + needle.length;
-  }
-}
-
-function findOccurrence(haystack: string, needle: string, occurrenceIndex: number): number {
-  if (!needle) return -1;
-  let index = -1;
-  let from = 0;
-  for (let seen = 0; seen <= occurrenceIndex; seen += 1) {
-    index = haystack.indexOf(needle, from);
-    if (index < 0) return -1;
-    from = index + needle.length;
-  }
-  return index;
 }

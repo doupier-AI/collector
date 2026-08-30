@@ -184,6 +184,17 @@ test("validateTermMarkers: Valid markers pass validation", () => {
   assert.deepEqual(validated, markers);
 });
 
+test("detectTermMarkers: 新结果携带正文版本位置，正文变化后不猜同名术语", () => {
+  const content = "REST API 与另一处 REST API 都需要稳定位置校验。";
+  const markers = detectTermMarkers(content, "message-stable");
+  const marker = markers.find((candidate) => candidate.text === "REST");
+  assert.ok(marker?.location);
+  assert.equal(marker.location.contentId, "message-stable");
+  assert.equal(content.slice(marker.location.sourceRange.startOffset, marker.location.sourceRange.endOffset), "REST");
+  assert.deepEqual(validateTermMarkers(content, [marker]), [marker]);
+  assert.deepEqual(validateTermMarkers(`前缀${content}`, [marker]), []);
+});
+
 test("validateTermMarkers: Invalid blockOrdinal is discarded", () => {
   const content = "REST API is useful.";
   const invalidMarkers: TermMarker[] = [

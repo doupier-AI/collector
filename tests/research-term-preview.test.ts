@@ -4,13 +4,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { type ResearchMessageRecord, type ResearchNodeRecord, type ResearchTaskRecord, type TermMarker } from "@collector/capture-contracts";
+import { researchBodyVersionId, type ResearchMessageRecord, type ResearchNodeRecord, type ResearchTaskRecord, type TermMarker } from "@collector/capture-contracts";
 import {
   CaptureService,
   LocalAuth,
   type ResearchGenerationRequest,
   SqliteStore,
   createApiServer,
+  detectTermMarkers,
   type ResearchGenerationProvider,
 } from "@collector/api";
 import { listenOnFetchSafePort } from "./test-http-server.js";
@@ -674,6 +675,79 @@ test("streaming assistant messages can start a term preview; failed messages can
   await assert.rejects(
     () => harness.service.termPreviews.start(node.id, { messageId: failedMessage.id, marker }, "failed-preview-start"),
     /streaming or completed/,
+  );
+});
+
+test("an append-only generation handoff safely rebases the same closed term marker", async (t) => {
+  const harness = await createHarness({ autoRunResearchTasks: false });
+  t.after(() => harness.close());
+  const session = await harness.service.research.createSession("Streaming marker rebase", randomUUID());
+  const node = harness.store.getResearchNode(session.id);
+  assert.ok(node);
+  const now = new Date().toISOString();
+  const partial = "REST API is being generated.";
+  const content = `${partial} More content arrives later.`;
+  for (const status of ["streaming", "completed"] as const) {
+    const outputMessageId = randomUUID();
+    const staleMarker = detectTermMarkers(partial, outputMessageId).find((candidate) => candidate.text === "REST");
+    const currentMarker = detectTermMarkers(content, outputMessageId).find((candidate) => candidate.text === "REST");
+    assert.ok(staleMarker?.location);
+    assert.ok(currentMarker?.location);
+    assert.notEqual(staleMarker.location.bodyVersionId, researchBodyVersionId(outputMessageId, content));
+    const inputMessage: ResearchMessageRecord = {
+      id: randomUUID(), sessionId: session.id, nodeId: node.id, role: "user", content: "Explain REST", status: "completed", createdAt: now, updatedAt: now,
+    };
+    const outputMessage: ResearchMessageRecord = {
+      id: outputMessageId, sessionId: session.id, nodeId: node.id, role: "assistant", content, status, termMarkers: [currentMarker], createdAt: now, updatedAt: now,
+    };
+    const task: ResearchTaskRecord = {
+      id: randomUUID(), sessionId: session.id, nodeId: node.id, inputMessageId: inputMessage.id, outputMessageId,
+      idempotencyKey: randomUUID(), status: status === "streaming" ? "running" : "completed", retryable: false, promptVersion: "test", createdAt: now, updatedAt: now,
+    };
+    await harness.store.createResearchTurnForNode(node, inputMessage, outputMessage, task);
+
+    const accepted = await harness.service.termPreviews.start(
+      node.id,
+      { messageId: outputMessageId, marker: staleMarker },
+      `${status}-marker-rebase`,
+    );
+    assert.equal(accepted.preview.marker.location?.bodyVersionId, researchBodyVersionId(outputMessageId, content));
+  }
+});
+
+test("a rewritten streaming body cannot rebase a stale term marker", async (t) => {
+  const harness = await createHarness({ autoRunResearchTasks: false });
+  t.after(() => harness.close());
+  const session = await harness.service.research.createSession("Streaming marker rewrite", randomUUID());
+  const node = harness.store.getResearchNode(session.id);
+  assert.ok(node);
+  const now = new Date().toISOString();
+  const partial = "REST API is being generated.";
+  const content = "REST API was rewritten before more content arrived.";
+  const outputMessageId = randomUUID();
+  const staleMarker = detectTermMarkers(partial, outputMessageId).find((candidate) => candidate.text === "REST");
+  const currentMarker = detectTermMarkers(content, outputMessageId).find((candidate) => candidate.text === "REST");
+  assert.ok(staleMarker?.location);
+  assert.ok(currentMarker?.location);
+  const inputMessage: ResearchMessageRecord = {
+    id: randomUUID(), sessionId: session.id, nodeId: node.id, role: "user", content: "Explain REST", status: "completed", createdAt: now, updatedAt: now,
+  };
+  const outputMessage: ResearchMessageRecord = {
+    id: outputMessageId, sessionId: session.id, nodeId: node.id, role: "assistant", content, status: "streaming", termMarkers: [currentMarker], createdAt: now, updatedAt: now,
+  };
+  const task: ResearchTaskRecord = {
+    id: randomUUID(), sessionId: session.id, nodeId: node.id, inputMessageId: inputMessage.id, outputMessageId,
+    idempotencyKey: randomUUID(), status: "running", retryable: false, promptVersion: "test", createdAt: now, updatedAt: now,
+  };
+  await harness.store.createResearchTurnForNode(node, inputMessage, outputMessage, task);
+
+  await assert.rejects(
+    () => harness.service.termPreviews.start(
+      node.id,
+      { messageId: outputMessageId, marker: staleMarker },
+      "streaming-marker-rewrite",
+    ),
+    /no longer matches/,
   );
 });
 
