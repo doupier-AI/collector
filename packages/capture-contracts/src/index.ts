@@ -1481,6 +1481,52 @@ function validResearchTextRange(range: ResearchTextRange, length: number): boole
     && range.endOffset <= length;
 }
 
+// ── Versioned sidecar enhancements ─────────────────────────────────────
+
+/**
+ * Shared identity and lifecycle for derived reading enhancements.
+ *
+ * This record intentionally contains no citation, term-marker, or chapter payload.
+ * Each enhancement family keeps its own typed data and references this header, so
+ * the shared store cannot become an untyped JSON content container.
+ */
+export type ResearchSidecarKind = "citation" | "term-marker" | "chapter";
+export type ResearchSidecarStatus = "pending" | "ready" | "invalid";
+export type ResearchSidecarPrecision = "exact" | "block" | "content";
+export type ResearchSidecarSource =
+  | { kind: "model"; referenceId?: string }
+  | { kind: "provider"; referenceId?: string }
+  | { kind: "rule"; referenceId?: string };
+
+export type ResearchSidecarInvalidReason =
+  | "body-version-superseded"
+  | "content-deleted"
+  | "range-invalid"
+  | "generation-failed"
+  | "service-restarted"
+  | "source-unavailable";
+
+export interface ResearchSidecarRecord {
+  id: string;
+  kind: ResearchSidecarKind;
+  bodyVersionId: string;
+  location: ResearchStableLocation;
+  generationAttempt: number;
+  status: ResearchSidecarStatus;
+  source: ResearchSidecarSource;
+  precision: ResearchSidecarPrecision;
+  invalidReason?: ResearchSidecarInvalidReason;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ResearchSidecarRecordQuery {
+  bodyVersionId?: string;
+  contentId?: string;
+  kind?: ResearchSidecarKind;
+  statuses?: readonly ResearchSidecarStatus[];
+}
+
 /**
  * 选区锚点统一两种内容来源。offsets 是相对该锚定块文本的字符偏移
  * （UTF-16 code unit，与浏览器 Selection / String.prototype.slice 一致）。

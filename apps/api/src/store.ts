@@ -1,8 +1,9 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchContextAssemblySnapshot, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageBodyRecord, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchReasoningRecord, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId, toResearchMessageBody } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, hashBodyContent, researchBodyVersionId, resolveResearchStableLocation, validateResearchStableLocation, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchContextAssemblySnapshot, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSidecarInvalidReason, type ResearchSidecarRecord, type ResearchSidecarRecordQuery, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageBodyRecord, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchReasoningRecord, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId, toResearchMessageBody } from "@collector/capture-contracts";
 import { contextExplanationCodes, observeContextAssembly } from "@collector/capture-contracts";
+import { markdownStableVisibleText, projectMarkdownDocument, projectMarkdownSourceRange } from "@collector/markdown-projection";
 import {
   compareAssociationHintsByValue,
   type ConfirmTemporaryFusionResult,
@@ -123,6 +124,19 @@ export interface ResearchChapterStore {
   requeueInterruptedResearchChapterTasks(): number;
   getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined;
   getResearchSession(id: string): ResearchSessionRecord | undefined;
+}
+
+/** Shared lifecycle only; citation, term-marker, and chapter payloads stay typed in their owning stores. */
+export interface ResearchSidecarStore {
+  createResearchSidecarRecord(record: ResearchSidecarRecord): Promise<ResearchSidecarRecord>;
+  getResearchSidecarRecord(id: string): ResearchSidecarRecord | undefined;
+  listResearchSidecarRecords(query?: ResearchSidecarRecordQuery): ResearchSidecarRecord[];
+  completeResearchSidecarRecord(id: string, updatedAt: string): Promise<ResearchSidecarRecord>;
+  recomputeResearchSidecarRecord(id: string, updatedAt: string): Promise<ResearchSidecarRecord>;
+  invalidateResearchSidecarRecord(id: string, reason: ResearchSidecarInvalidReason, updatedAt: string): Promise<ResearchSidecarRecord>;
+  deleteResearchSidecarRecord(id: string): Promise<boolean>;
+  /** Restart recovery: unfinished sidecar work becomes explicitly invalid and can be recomputed. */
+  invalidateInterruptedResearchSidecarRecords(updatedAt: string): number;
 }
 
 /** 研究会话生命周期所需的持久化能力：28 个方法。 */
@@ -332,7 +346,7 @@ export interface NodeSystemTargetStore {
 }
 
 export interface CollectorStore
-  extends ResearchLaterStore, ResearchSelectionStore, ResearchImportStore, ResearchChapterStore, ResearchStore, DeepResearchStore, ResearchFusionProposalStore, NodeSystemTargetStore {
+  extends ResearchLaterStore, ResearchSelectionStore, ResearchImportStore, ResearchChapterStore, ResearchSidecarStore, ResearchStore, DeepResearchStore, ResearchFusionProposalStore, NodeSystemTargetStore {
   init(): Promise<void>;
   /** 返回当前库文件路径（MemoryStore 为 ":memory:"）；持久化重开测试据此复开同一库。 */
   getDataFilePath(): string | undefined;
@@ -473,7 +487,7 @@ export interface CollectorStore
  * `if (version < N+1)` 版本块（块内写入对应 schema_migrations 行）并递增本常量；
  * 测试以此常量断言「打开/重放后数据库实际到达声明版本」，无需再手工同步多处硬编码断言。
  */
-export const LATEST_SCHEMA_VERSION = 46;
+export const LATEST_SCHEMA_VERSION = 47;
 
 function directSourceIdsForConfirmedDraft(
   draft: ResearchFusionDraftVersionRecord,
@@ -512,6 +526,7 @@ export class SqliteStore implements CollectorStore {
     this.database.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
     this.createSchema();
     this.migrateSchema();
+    this.invalidateInterruptedResearchSidecarRecords(new Date().toISOString());
     await this.migrateLegacyProviderProfile();
   }
 
@@ -609,6 +624,7 @@ export class SqliteStore implements CollectorStore {
       this.db().exec("DELETE FROM semantic_search_index_generations");
       // 语义片段引用正文版本，正文版本与切片引用消息/节点：这些是最下游引用方（不被任何表
       // 引用），必须在删除 nodes/messages/selections 之前先删，避免外键约束失败。
+      this.db().exec("DELETE FROM research_sidecar_records");
       this.db().exec("DELETE FROM research_semantic_fragments");
       this.db().exec("DELETE FROM research_body_versions");
       this.db().exec("DELETE FROM research_slices");
@@ -872,6 +888,7 @@ export class SqliteStore implements CollectorStore {
       del("DELETE FROM semantic_search_units WHERE session_id = ?", id);
       // 连接只保存稳定身份和定位键；删除来源前标记缺失，不能保留正文副本。
       this.updateCandidateSourceHealthForSession(id, "deleted");
+      del("DELETE FROM research_sidecar_records WHERE session_id = ?", id);
       del(`DELETE FROM research_semantic_fragments WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
       del(`DELETE FROM research_body_versions WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
       del(`DELETE FROM research_slices WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
@@ -2846,6 +2863,183 @@ export class SqliteStore implements CollectorStore {
     return this.listRecords<ResearchCitationRecord>(`SELECT record_json FROM research_citations WHERE message_id IN (${placeholders}) ORDER BY message_id, block_ordinal, marker_offset, rowid`, ...messageIds);
   }
 
+  // ── Versioned sidecar enhancement headers (SIDE-01) ───────────
+
+  async createResearchSidecarRecord(record: ResearchSidecarRecord): Promise<ResearchSidecarRecord> {
+    const sessionId = this.validateResearchSidecarRecord(record);
+    const existing = this.getResearchSidecarRecord(record.id);
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(record)) throw new Error("Research sidecar id already exists with different content");
+      return existing;
+    }
+    this.db().prepare(`
+      INSERT INTO research_sidecar_records
+        (id, session_id, kind, body_version_id, content_id, start_offset, end_offset, generation_attempt, status, source_kind, precision, invalid_reason, created_at, updated_at, record_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      record.id,
+      sessionId,
+      record.kind,
+      record.bodyVersionId,
+      record.location.contentId,
+      record.location.sourceRange.startOffset,
+      record.location.sourceRange.endOffset,
+      record.generationAttempt,
+      record.status,
+      record.source.kind,
+      record.precision,
+      record.invalidReason ?? null,
+      record.createdAt,
+      record.updatedAt,
+      JSON.stringify(record),
+    );
+    return record;
+  }
+
+  getResearchSidecarRecord(id: string): ResearchSidecarRecord | undefined {
+    return this.getRecord<ResearchSidecarRecord>("SELECT record_json FROM research_sidecar_records WHERE id = ?", id);
+  }
+
+  listResearchSidecarRecords(query: ResearchSidecarRecordQuery = {}): ResearchSidecarRecord[] {
+    const where: string[] = [];
+    const values: SQLInputValue[] = [];
+    if (query.bodyVersionId) { where.push("body_version_id = ?"); values.push(query.bodyVersionId); }
+    if (query.contentId) { where.push("content_id = ?"); values.push(query.contentId); }
+    if (query.kind) { where.push("kind = ?"); values.push(query.kind); }
+    if (query.statuses?.length) {
+      where.push(`status IN (${query.statuses.map(() => "?").join(", ")})`);
+      values.push(...query.statuses);
+    }
+    return this.listRecords<ResearchSidecarRecord>(
+      `SELECT record_json FROM research_sidecar_records${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at, id`,
+      ...values,
+    );
+  }
+
+  async completeResearchSidecarRecord(id: string, updatedAt: string): Promise<ResearchSidecarRecord> {
+    const current = this.requireResearchSidecarRecord(id);
+    if (current.status !== "pending") throw new Error("Only pending research sidecars can complete");
+    const completed: ResearchSidecarRecord = { ...current, status: "ready", invalidReason: undefined, updatedAt };
+    this.validateResearchSidecarRecord(completed);
+    this.updateResearchSidecarRecord(completed);
+    return completed;
+  }
+
+  async recomputeResearchSidecarRecord(id: string, updatedAt: string): Promise<ResearchSidecarRecord> {
+    const current = this.requireResearchSidecarRecord(id);
+    if (current.status === "pending") throw new Error("Pending research sidecar is already awaiting computation");
+    const recomputing: ResearchSidecarRecord = {
+      ...current,
+      generationAttempt: current.generationAttempt + 1,
+      status: "pending",
+      invalidReason: undefined,
+      updatedAt,
+    };
+    this.validateResearchSidecarRecord(recomputing);
+    this.updateResearchSidecarRecord(recomputing);
+    return recomputing;
+  }
+
+  async invalidateResearchSidecarRecord(id: string, reason: ResearchSidecarInvalidReason, updatedAt: string): Promise<ResearchSidecarRecord> {
+    const current = this.requireResearchSidecarRecord(id);
+    const invalid: ResearchSidecarRecord = { ...current, status: "invalid", invalidReason: reason, updatedAt };
+    this.validateResearchSidecarRecord(invalid);
+    this.updateResearchSidecarRecord(invalid);
+    return invalid;
+  }
+
+  async deleteResearchSidecarRecord(id: string): Promise<boolean> {
+    return this.db().prepare("DELETE FROM research_sidecar_records WHERE id = ?").run(id).changes === 1;
+  }
+
+  invalidateInterruptedResearchSidecarRecords(updatedAt: string): number {
+    const interrupted = this.listResearchSidecarRecords({ statuses: ["pending"] });
+    if (!interrupted.length) return 0;
+    this.transaction(() => {
+      for (const record of interrupted) {
+        this.updateResearchSidecarRecord({ ...record, status: "invalid", invalidReason: "service-restarted", updatedAt });
+      }
+    });
+    return interrupted.length;
+  }
+
+  private requireResearchSidecarRecord(id: string): ResearchSidecarRecord {
+    const record = this.getResearchSidecarRecord(id);
+    if (!record) throw new Error(`Research sidecar not found: ${id}`);
+    return record;
+  }
+
+  private updateResearchSidecarRecord(record: ResearchSidecarRecord): void {
+    this.db().prepare(`
+      UPDATE research_sidecar_records
+      SET generation_attempt = ?, status = ?, invalid_reason = ?, updated_at = ?, record_json = ?
+      WHERE id = ?
+    `).run(record.generationAttempt, record.status, record.invalidReason ?? null, record.updatedAt, JSON.stringify(record), record.id);
+  }
+
+  private validateResearchSidecarRecord(record: ResearchSidecarRecord): string {
+    if (!record.id.trim()) throw new Error("Research sidecar id is required");
+    if (!["citation", "term-marker", "chapter"].includes(record.kind)) throw new Error("Unsupported research sidecar kind");
+    if (!["pending", "ready", "invalid"].includes(record.status)) throw new Error("Unsupported research sidecar status");
+    if (!["model", "provider", "rule"].includes(record.source.kind)) throw new Error("Unsupported research sidecar source");
+    if (!["exact", "block", "content"].includes(record.precision)) throw new Error("Unsupported research sidecar precision");
+    if (!Number.isSafeInteger(record.generationAttempt) || record.generationAttempt < 1) throw new Error("Research sidecar generationAttempt must be positive");
+    if (record.status === "invalid" ? !record.invalidReason : record.invalidReason !== undefined) {
+      throw new Error("Research sidecar invalidReason must match invalid status");
+    }
+    if (record.invalidReason && ![
+      "body-version-superseded", "content-deleted", "range-invalid", "generation-failed", "service-restarted", "source-unavailable",
+    ].includes(record.invalidReason)) throw new Error("Unsupported research sidecar invalidation reason");
+    validateResearchStableLocation(record.location);
+    if (record.location.bodyVersionId !== record.bodyVersionId) throw new Error("Research sidecar location must reference its body version");
+
+    const version = this.getBodyVersion(record.bodyVersionId);
+    if (version) {
+      if (version.id !== researchBodyVersionId(version.messageId, version.content)
+        || version.contentHash !== hashBodyContent(version.content)) {
+        throw new Error("Research sidecar cannot bind an invalid body version");
+      }
+      const message = this.getResearchMessage(version.messageId);
+      if (!message) throw new Error("Research sidecar body message is missing");
+      const projection = record.location.visibleRange ? projectMarkdownDocument(version.content) : undefined;
+      const resolution = resolveResearchStableLocation(record.location, {
+        contentId: version.messageId,
+        bodyVersionId: version.id,
+        source: version.content,
+        ...(projection ? {
+          visibleText: markdownStableVisibleText(projection),
+          projectSourceRange: (range) => {
+            const projected = projectMarkdownSourceRange(projection, { start: range.startOffset, end: range.endOffset });
+            return projected ? { startOffset: projected.visibleRange.start, endOffset: projected.visibleRange.end } : undefined;
+          },
+        } : {}),
+      });
+      if (resolution.kind === "degraded") throw new Error(`Research sidecar range is invalid: ${resolution.reason}`);
+      return message.sessionId;
+    }
+
+    const snapshot = this.getResearchContentSnapshot(record.bodyVersionId);
+    const block = snapshot?.blocks.find((candidate) => candidate.id === record.location.contentId);
+    if (!snapshot || !block) throw new Error("Research sidecar cannot bind an unfinished or missing content version");
+    const projection = record.location.visibleRange && block.anchor.kind === "markdown"
+      ? projectMarkdownDocument(block.text)
+      : undefined;
+    const resolution = resolveResearchStableLocation(record.location, {
+      contentId: block.id,
+      bodyVersionId: snapshot.id,
+      source: block.text,
+      ...(projection ? {
+        visibleText: markdownStableVisibleText(projection),
+        projectSourceRange: (range) => {
+          const projected = projectMarkdownSourceRange(projection, { start: range.startOffset, end: range.endOffset });
+          return projected ? { startOffset: projected.visibleRange.start, endOffset: projected.visibleRange.end } : undefined;
+        },
+      } : {}),
+    });
+    if (resolution.kind === "degraded") throw new Error(`Research sidecar range is invalid: ${resolution.reason}`);
+    return snapshot.sessionId;
+  }
+
   // ── Semantic Slices (E1) ──────────────────────────────────────
 
   /** E2：正式生成成功后原子删除同一消息的临时切片，再写入完整正式集合。 */
@@ -4503,6 +4697,45 @@ export class SqliteStore implements CollectorStore {
         this.db().exec("INSERT INTO schema_migrations(version, applied_at) VALUES (46, datetime('now'))");
       });
       version = 46;
+    }
+
+    if (version < 47) {
+      // SIDE-01: common identity/lifecycle only. Typed citation, term-marker, and
+      // chapter payloads remain in their owning tables and reference this header.
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE IF NOT EXISTS research_sidecar_records (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK(kind IN ('citation', 'term-marker', 'chapter')),
+            body_version_id TEXT NOT NULL,
+            content_id TEXT NOT NULL,
+            start_offset INTEGER NOT NULL CHECK(start_offset >= 0),
+            end_offset INTEGER NOT NULL CHECK(end_offset > start_offset),
+            generation_attempt INTEGER NOT NULL CHECK(generation_attempt > 0),
+            status TEXT NOT NULL CHECK(status IN ('pending', 'ready', 'invalid')),
+            source_kind TEXT NOT NULL CHECK(source_kind IN ('model', 'provider', 'rule')),
+            precision TEXT NOT NULL CHECK(precision IN ('exact', 'block', 'content')),
+            invalid_reason TEXT CHECK(invalid_reason IS NULL OR invalid_reason IN (
+              'body-version-superseded', 'content-deleted', 'range-invalid',
+              'generation-failed', 'service-restarted', 'source-unavailable'
+            )),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            CHECK((status = 'invalid' AND invalid_reason IS NOT NULL)
+              OR (status != 'invalid' AND invalid_reason IS NULL))
+          );
+          CREATE INDEX IF NOT EXISTS research_sidecar_records_version_idx
+            ON research_sidecar_records(body_version_id, kind, status, start_offset, end_offset);
+          CREATE INDEX IF NOT EXISTS research_sidecar_records_content_idx
+            ON research_sidecar_records(content_id, kind, status);
+          CREATE INDEX IF NOT EXISTS research_sidecar_records_session_idx
+            ON research_sidecar_records(session_id, created_at, id);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (47, datetime('now'));
+        `);
+      });
+      version = 47;
     }
 
   }
