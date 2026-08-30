@@ -299,7 +299,7 @@ const NO_TERMS: TermMarker[] = [];
 /**
  * 完成的 AI 回答按确定性段落块渲染。
  * 块 ID 与后端选区锚点使用同一派生规则。
- * Markdown 由 MarkdownContent 安全渲染；[来源n] 由 remark 插件转可悬停角标。
+ * Markdown 由 MarkdownContent 的共享安全投影渲染；[来源n] 由适配层转为可悬停角标。
  * 返回高亮与弱标记先投影到同一可见文字空间，再由 React 组合渲染，避免两套 DOM 包裹互相破坏。
  * 生成自由化：长文章节由派生切片渲染（deriveSliceCardTargets 与章节导航共用同一份对齐），
  * 但呈现层始终以整条 AI 回答为卡片边界；节标题来自大纲或小模型事后抽取，可为空。

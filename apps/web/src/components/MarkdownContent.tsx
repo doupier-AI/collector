@@ -1,12 +1,10 @@
 import { type ReactNode, useMemo, useRef } from "react";
-import ReactMarkdown from "react-markdown";
 import "katex/dist/katex.min.css";
 import type { ResearchCitationRecord, ResearchGroundingSourceRecord, TermMarker } from "@collector/capture-contracts";
 import { CitationMarker } from "./CitationMarker";
 import { buildCitationIndex, buildSourceMap } from "../features/research-session/citation-utils";
 import {
-  markdownRehypePlugins,
-  markdownRemarkPlugins,
+  projectMarkdownReact,
   projectMarkdownVisibleText,
   renderMarkdownVisibleHighlights,
   type MarkdownVisibleHighlight,
@@ -51,14 +49,13 @@ const EMPTY_MARKDOWN_PROJECTION = { text: "", citationBoundaries: [] } as const;
 /**
  * 把 AI 生成的 Markdown 文本渲染为安全 HTML。
  * - 安全白名单（不开 rehype-raw，模型输出的 <script> 被转义）
- * - [来源n] 由 remark 插件转为可悬停 CitationMarker
+ * - [来源n] 由共享投影适配为可悬停 CitationMarker
  * - variant="insight" 用于术语预览和推理摘要等紧凑辅助内容
- * - 对极速流式更新做 useMemo 防止闪烁
  */
 export function MarkdownContent({ text, sources = [], citations = [], terms = [], variant = "message", className, titleAnchorId, highlights = [] }: MarkdownContentProps) {
   const sourceById = useMemo(() => buildSourceMap(sources), [sources]);
   const citationIndexById = useMemo(() => buildCitationIndex(citations), [citations]);
-  // 仅提升"第一个"标题为卡片标题；用 ref 计数，ReactMarkdown 每次渲染重置。
+  // 仅提升"第一个"标题为卡片标题；用 ref 计数，每次共享投影渲染前重置。
   const promotedTitleRef = useRef(false);
   promotedTitleRef.current = false;
 
@@ -130,12 +127,7 @@ export function MarkdownContent({ text, sources = [], citations = [], terms = []
     // 卡片标题提升：正文首个标题（## / ###…）成为卡片大标题并挂导航锚点。
     ...(titleAnchorId ? buildPromotedHeadingComponents(titleAnchorId, promotedTitleRef) : {}),
   } as Record<string, React.ComponentType<any>>;
-  const markdownTree = ReactMarkdown({
-    children: text,
-    remarkPlugins: [...markdownRemarkPlugins],
-    rehypePlugins: [...markdownRehypePlugins],
-    components,
-  });
+  const markdownTree = projectMarkdownReact(text, components).tree;
   const renderedTree = renderMarkdownVisibleHighlights(markdownTree, validHighlights, visibleTerms);
 
   return (

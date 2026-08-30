@@ -1,32 +1,8 @@
-import { cloneElement, createElement, isValidElement, type ReactNode } from "react";
-import ReactMarkdown from "react-markdown";
-import type { Options as ReactMarkdownOptions } from "react-markdown";
-import rehypeKatex from "rehype-katex";
-import remarkGfm from "remark-gfm";
-import remarkBreaks from "remark-breaks";
-import remarkMath from "remark-math";
-import rehypeSanitize from "rehype-sanitize";
-import { MARKDOWN_MATH_OPTIONS, MARKDOWN_SANITIZE_SCHEMA, rehypeMathSourceFallback } from "@collector/markdown-projection";
-import { remarkCitationMarkers } from "../features/research-session/remark-citation-markers";
-
-/** MarkdownContent 与所有定位逻辑共享的解析/清洗管线。 */
-export const markdownRemarkPlugins: NonNullable<ReactMarkdownOptions["remarkPlugins"]> = [remarkGfm, remarkBreaks, remarkMath, remarkCitationMarkers];
-
-/** rehype-sanitize 默认 schema 上的安全扩展：放行 cite-marker 与内联容器标签。 */
-export const markdownSafeSchema = {
-  ...MARKDOWN_SANITIZE_SCHEMA,
-  tagNames: [...(MARKDOWN_SANITIZE_SCHEMA.tagNames ?? []), "cite-marker", "del", "input"],
-  attributes: {
-    ...MARKDOWN_SANITIZE_SCHEMA.attributes,
-    "cite-marker": ["data-source-ordinal", "class", "role", "tabindex", "aria-label", "aria-expanded", "aria-describedby"],
-  },
-};
-
-export const markdownRehypePlugins: NonNullable<ReactMarkdownOptions["rehypePlugins"]> = [
-  [rehypeSanitize, markdownSafeSchema],
-  rehypeMathSourceFallback,
-  [rehypeKatex, MARKDOWN_MATH_OPTIONS],
-];
+import { cloneElement, createElement, isValidElement, type ComponentType, type ReactNode } from "react";
+import { Fragment, jsx, jsxs } from "react/jsx-runtime";
+import { toJsxRuntime } from "hast-util-to-jsx-runtime";
+import type { Element, Root, RootContent, Text } from "hast";
+import { projectMarkdownDocument, type MarkdownProjectionNode } from "@collector/markdown-projection";
 
 export interface MarkdownVisibleProjection {
   /** 与 MarkdownContent 实际 DOM textContent 一致、但不包含零文本来源角标的正文。 */
@@ -51,23 +27,38 @@ export interface MarkdownVisibleTerm {
   sourceEndOffset: number;
 }
 
-/** 只作为 ReactMarkdown 解析结果中的可识别边界，不真正渲染。 */
+/** 只作为共享投影 React 树中的可识别边界，不真正渲染。 */
 function ProjectionCitationBoundary() {
   return null;
 }
 
-/**
- * 使用与 MarkdownContent 完全相同的 ReactMarkdown/GFM/换行/引用/清洗管线，
- * 读取它将交给 React 的文本子节点。这样列表、引用、代码、表格、图片等格式
- * 不需要在定位层维护第二套 Markdown 解释器。
- */
-export function projectMarkdownVisibleText(source: string): MarkdownVisibleProjection {
-  const tree = ReactMarkdown({
-    children: source,
-    remarkPlugins: [...markdownRemarkPlugins],
-    rehypePlugins: [...markdownRehypePlugins],
-    components: { "cite-marker": ProjectionCitationBoundary } as ReactMarkdownOptions["components"],
+export interface MarkdownReactProjection {
+  tree: ReactNode;
+  visible: MarkdownVisibleProjection;
+}
+
+/** 把共享安全投影适配为 React；解析、范围和渲染不再各自维护 Markdown 解释器。 */
+export function projectMarkdownReact(
+  source: string,
+  components: Record<string, ComponentType<any>> = {},
+): MarkdownReactProjection {
+  const projection = projectMarkdownDocument(source);
+  const hast = projectionToHast(projection.root);
+  const tree = toJsxRuntime(hast, {
+    Fragment,
+    jsx,
+    jsxs,
+    passKeys: true,
+    components: { "cite-marker": ProjectionCitationBoundary, ...components },
   });
+  return { tree, visible: visibleProjection(tree) };
+}
+
+export function projectMarkdownVisibleText(source: string): MarkdownVisibleProjection {
+  return projectMarkdownReact(source).visible;
+}
+
+function visibleProjection(tree: ReactNode): MarkdownVisibleProjection {
   let text = "";
   const citationBoundaries: number[] = [];
   const visit = (node: ReactNode): void => {
@@ -90,8 +81,44 @@ export function projectMarkdownVisibleText(source: string): MarkdownVisibleProje
   return { text, citationBoundaries };
 }
 
+function projectionToHast(node: MarkdownProjectionNode): Root {
+  return { type: "root", children: node.children.flatMap((child) => projectionChildren(child, true)) };
+}
+
+const CITATION_TOKEN = /\[来源(\d+)\]/g;
+
+function projectionChildren(node: MarkdownProjectionNode, citationsAllowed: boolean): RootContent[] {
+  if (node.kind === "text") {
+    const value = node.value ?? "";
+    if (!citationsAllowed) return [{ type: "text", value } satisfies Text];
+    const children: RootContent[] = [];
+    let cursor = 0;
+    CITATION_TOKEN.lastIndex = 0;
+    for (const match of value.matchAll(CITATION_TOKEN)) {
+      if (match.index > cursor) children.push({ type: "text", value: value.slice(cursor, match.index) });
+      children.push({
+        type: "element",
+        tagName: "cite-marker",
+        properties: { "data-source-ordinal": match[1] ?? "" },
+        children: [],
+      } as Element);
+      cursor = match.index + match[0].length;
+    }
+    if (cursor < value.length) children.push({ type: "text", value: value.slice(cursor) });
+    return children;
+  }
+  if (node.kind !== "element" || !node.tagName) return [];
+  const allowChildren = citationsAllowed && node.tagName !== "code" && node.tagName !== "pre";
+  return [{
+    type: "element",
+    tagName: node.tagName,
+    properties: { ...(node.properties ?? {}) },
+    children: node.children.flatMap((child) => projectionChildren(child, allowChildren)),
+  } as Element];
+}
+
 /**
- * 在 ReactMarkdown 交给 React 之前，按同一可见文字偏移组合定位 mark 与术语按钮。
+ * 在共享投影交给 React 之前，按同一可见文字偏移组合定位 mark 与术语按钮。
  *
  * 旧实现会在 useLayoutEffect 中用 DOM Range 搬动已经由 React 管理的标题、段落和
  * 弱标记节点；高亮到期后 React 按原树恢复时会因父子关系已被改写而崩溃。

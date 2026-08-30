@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { MarkdownContent } from "./MarkdownContent";
+import { projectMarkdownVisibleText } from "./markdown-projection";
 
 describe("MarkdownContent formula and safety rendering", () => {
   it("renders accessible inline and block formulas while preserving tables and code", () => {
@@ -22,6 +23,28 @@ describe("MarkdownContent formula and safety rendering", () => {
     expect(container.querySelector(".katex-display")).not.toBeNull();
     expect(container.querySelector("table")).not.toBeNull();
     expect(screen.getByText("const x = 1")).toBeInTheDocument();
+  });
+
+  it("keeps the rendered answer text on the shared projection for mixed Markdown", () => {
+    const source = [
+      "## 结论",
+      "",
+      "第一行  ",
+      "第二行含 $E = mc^2$。",
+      "",
+      "- 列表",
+      "",
+      "| 列 | 值 |",
+      "| --- | --- |",
+      "| A | `code` |",
+    ].join("\n");
+    const { container } = render(<MarkdownContent text={source} />);
+
+    expect(container.querySelector(".markdown-content")?.textContent).toBe(projectMarkdownVisibleText(source).text);
+    expect(container.querySelector("h2")?.textContent).toBe("结论");
+    expect(container.querySelector("table")).not.toBeNull();
+    expect(container.querySelector("code")?.textContent).toBe("code");
+    expect(container.querySelector(".katex")).not.toBeNull();
   });
 
   it("keeps malformed formula source visible and copyable", () => {

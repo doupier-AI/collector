@@ -40,7 +40,7 @@ describe("消息操作（ADR-0035）", () => {
   });
 
   it("版本切换：有旧版本时显示左右箭头，可查看旧版并回到最新", async () => {
-    const versions = [{ content: "旧版正文", createdAt: "2026-08-19T00:00:00.000Z" }];
+    const versions = [{ content: "## 旧版正文\n\n| 列 | 值 |\n| --- | --- |\n| A | 1 |", createdAt: "2026-08-19T00:00:00.000Z" }];
     const user = userEvent.setup();
     render(
       <ul>
@@ -55,7 +55,8 @@ describe("消息操作（ADR-0035）", () => {
     expect(screen.queryByText("旧版正文")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "上一个版本" }));
-    expect(screen.getByText("旧版正文")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "旧版正文", level: 2 })).toBeInTheDocument();
+    expect(screen.getByRole("table")).toBeInTheDocument();
     expect(screen.queryByText("新版正文")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "回到最新版本" }));
