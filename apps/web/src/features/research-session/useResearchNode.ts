@@ -88,6 +88,15 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
     batchersRef.current.clear();
   }, []);
 
+  // 重试、继续、重新生成与重新编辑都会复用 task id；旧流可能已经内部终止，
+  // 却仍等待终态确认留在注册表中。先完整退役，queued 状态才能建立新流。
+  const retireTaskStream = useCallback((taskId: string) => {
+    streamsRef.current.get(taskId)?.close();
+    streamsRef.current.delete(taskId);
+    batchersRef.current.get(taskId)?.cancel();
+    batchersRef.current.delete(taskId);
+  }, []);
+
   /** 取某任务的批渲器；不存在则建一个（flush 把一帧事件折叠进视图，单次 setState）。 */
   const batcherFor = useCallback((taskId: string): DeltaBatcher<ResearchTaskEvent> => {
     let batcher = batchersRef.current.get(taskId);
@@ -296,6 +305,7 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
         // 重试沿用原任务与 AI 消息，前端不新增第二条占位消息；
         // queued 状态进入视图后由事件连接重新接管生成过程。
         const updated = await api.retryResearchTask(task.id);
+        retireTaskStream(updated.id);
         setState((previous) =>
           previous.kind === "ready"
             ? { kind: "ready", view: { ...previous.view, tasks: upsertTask(previous.view.tasks, updated) } }
@@ -311,7 +321,7 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
         }
       }
     },
-    [api, closeAllStreams],
+    [api, closeAllStreams, retireTaskStream],
   );
 
   /** ADR-0035：暂停/继续/停止——把服务端返回的任务合并进视图；终态由事件连接收尾。 */
@@ -347,6 +357,7 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
       setActionError(null);
       try {
         const updated = await api.resumeResearchTask(task.id);
+        retireTaskStream(updated.id);
         applyTaskUpdate(updated);
         setLiveMessage("继续生成");
       } catch (error) {
@@ -358,7 +369,7 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
         }
       }
     },
-    [api, applyTaskUpdate, closeAllStreams],
+    [api, applyTaskUpdate, closeAllStreams, retireTaskStream],
   );
 
   const stopTask = useCallback(
@@ -385,6 +396,7 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
       setActionError(null);
       try {
         const updated = await api.regenerateResearchTask(task.id);
+        retireTaskStream(updated.id);
         applyTaskUpdate(updated);
         setLiveMessage("正在重新生成");
       } catch (error) {
@@ -396,7 +408,7 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
         }
       }
     },
-    [api, applyTaskUpdate, closeAllStreams],
+    [api, applyTaskUpdate, closeAllStreams, retireTaskStream],
   );
 
   const editMessage = useCallback(
@@ -404,6 +416,7 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
       setActionError(null);
       try {
         const updated = await api.editResearchMessage(messageId, content);
+        retireTaskStream(updated.id);
         // 直接替换：用户消息显示新内容，输出消息清空重置为 pending 等待重新生成（不保留旧版）。
         setState((previous) => {
           if (previous.kind !== "ready") return previous;
@@ -429,7 +442,7 @@ export function useResearchNode(nodeId: string, options?: { initialTurn?: Pendin
         }
       }
     },
-    [api, closeAllStreams],
+    [api, closeAllStreams, retireTaskStream],
   );
 
   const reload = useCallback(() => setReloadNonce((nonce) => nonce + 1), []);

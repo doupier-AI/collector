@@ -97,21 +97,49 @@ test("重新生成：第二版内容替换展示，旧版可经左右箭头回�
 
 test("重新编辑：改写问题后新回答直接替换旧回答，不显示版本切换", async ({ page }) => {
   const browserIssues = trackBrowserIssues(page);
+  const taskEventRequests: string[] = [];
+  page.on("request", (request) => {
+    if (/\/v1\/research-tasks\/[^/]+\/events(?:\?|$)/.test(request.url())) taskEventRequests.push(request.url());
+  });
+  // 正文已经可读、旧流的终态确认仍在途时，用户也可以立即编辑；
+  // 新一轮复用同一 task id，必须主动建立第二条事件订阅。
+  let releaseTerminalConfirmation!: () => void;
+  let markTerminalConfirmationStarted!: () => void;
+  const terminalConfirmationRelease = new Promise<void>((resolve) => { releaseTerminalConfirmation = resolve; });
+  const terminalConfirmationStarted = new Promise<void>((resolve) => { markTerminalConfirmationStarted = resolve; });
+  let heldTerminalConfirmation = false;
+  await page.route(/\/v1\/research-tasks\/[^/?]+$/, async (route) => {
+    if (route.request().method() !== "GET" || heldTerminalConfirmation) {
+      await route.continue();
+      return;
+    }
+    heldTerminalConfirmation = true;
+    markTerminalConfirmationStarted();
+    await terminalConfirmationRelease;
+    await route.continue();
+  });
   await pairAndOpen(page, "/research/new");
   await submitQuestion(page);
   const content = page.locator(".message--assistant .message__content");
   await expect(content.last()).toContainText("回答完毕", { timeout: 15_000 });
+  await terminalConfirmationStarted;
 
   // 编辑用户消息：内联输入框改写问题，保存并重新生成。
   await page.getByRole("button", { name: "重新编辑" }).click();
   const textarea = page.getByLabel("修改问题");
   await textarea.fill("请解释本地优先研究（修改后）");
+  const editAccepted = page.waitForResponse((response) =>
+    response.request().method() === "POST" && /\/v1\/research-messages\/[^/]+\/edit$/.test(response.url()) && response.status() === 202,
+  );
   await page.getByRole("button", { name: "保存并重新生成" }).click();
+  await editAccepted;
+  releaseTerminalConfirmation();
 
-  await expect(page.locator("[aria-live=polite]")).toHaveText("已完成", { timeout: 15_000 });
+  await expect(page.locator("[aria-live=polite]")).toHaveText("已完成", { timeout: 5_000 });
   // 用户消息显示新问题；回答为第二次生成内容（第二版），直接替换。
   await expect(page.getByText("请解释本地优先研究（修改后）", { exact: true })).toBeVisible();
   await expect(content.last()).toContainText("第二版渐进事件", { timeout: 15_000 });
+  expect(taskEventRequests.length).toBeGreaterThanOrEqual(2);
   // 编辑场景不支持查看旧版本：无版本切换器。
   await expect(page.getByRole("group", { name: "回答版本" })).toHaveCount(0);
   expect(browserIssues.issues, browserIssues.issues.join("\n")).toEqual([]);
