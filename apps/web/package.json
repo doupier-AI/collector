@@ -21,6 +21,7 @@
   },
   "devDependencies": {
     "@collector/capture-contracts": "^0.1.0",
+    "@collector/markdown-projection": "^0.1.0",
     "@playwright/test": "^1.61.1",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",

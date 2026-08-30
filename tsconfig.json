@@ -1,6 +1,7 @@
 {
   "files": [],
   "references": [
+    { "path": "packages/markdown-projection" },
     { "path": "packages/capture-contracts" },
     { "path": "packages/model-gateway" },
     { "path": "apps/api" },

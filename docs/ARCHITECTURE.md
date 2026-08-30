@@ -22,7 +22,9 @@ Node API and domain services
 
 ```text
 apps/web  ───────────────→ packages/capture-contracts
+apps/web  ───────────────→ packages/markdown-projection
 apps/api  ───────────────→ packages/capture-contracts
+apps/api  ───────────────→ packages/markdown-projection
 apps/api  ───────────────→ packages/model-gateway
 packages/model-gateway ──→ packages/capture-contracts
 ```
@@ -44,6 +46,7 @@ packages/model-gateway ──→ packages/capture-contracts
 | 地图关系、融合与关联提示 | `apps/api/src/fusion-proposals.ts`、`apps/api/src/association-hints.ts`、`apps/api/src/semantic-search` |
 | SQLite、迁移、删除级联与派生索引清理 | `apps/api/src/store.ts` |
 | 共享领域与传输契约 | `packages/capture-contracts/src/index.ts` |
+| 共享 Markdown 解析、安全渲染与源码/可见范围投影 | `packages/markdown-projection/src/index.ts` |
 | 模型供应商、模型路由和联网能力适配 | `packages/model-gateway/src/index.ts` |
 | 服务端与共享测试 | `tests` |
 | Web 组件与浏览器测试 | `apps/web/src/**/*.test.tsx`、`apps/web/e2e` |
