@@ -97,6 +97,7 @@ async function seedResearchTask(
     id, sessionId: session.id, inputMessageId: input.id, outputMessageId: output.id,
     idempotencyKey: `${id}-idempotency`, status: "queued", retryable: false,
     promptVersion: "run-record-prompt-v1", sliceCount: 2, createdAt, updatedAt: createdAt,
+    ...(id === "task-run-records" ? { contextExplanations: ["imported_material_used" as const] } : {}),
   };
   await store.createResearchTurn(session, input, output, task);
   const claimed = store.claimResearchTask(id, "test-provider", "test-model", "run-record-prompt-v2");
@@ -113,6 +114,21 @@ async function seedModelCall(store: SqliteStore, workflowRunId: string, status: 
     purpose: "research", promptVersion: "run-record-prompt-v2", status,
     inputTokens: 120, outputTokens: 80, cacheHitTokens: 4, estimatedCostUsd: 0.002,
     latencyMs: 850, retryCount: status === "failed" ? 1 : 0,
+    contextAssembly: {
+      status: "assembled",
+      purpose: "research_chat",
+      budget: { maxInputTokens: 16_000, reservedOutputTokens: 4_000, usedInputTokens: 120, remainingInputTokens: 15_880 },
+      adoptedCount: 2,
+      rejectedCount: 1,
+      adoptedCategories: [
+        { channel: "factual_evidence", category: "imported_material", sourceKind: "imported_material", count: 1 },
+        { channel: "user_adaptation", category: "user_profile", sourceKind: "user_profile", count: 1 },
+      ],
+      rejectedCategories: [{ channel: "factual_evidence", category: "conversation_history", sourceKind: "conversation", reason: "budget_exhausted", count: 1 }],
+      systemPrompt: "SYSTEM_PROMPT_SENTINEL",
+      candidateContent: "REJECTED_CONTEXT_SENTINEL",
+      reasoning: "MODEL_REASONING_SENTINEL",
+    } as ModelCallRecord["contextAssembly"],
     ...(status === "failed" ? { errorMessage: "authorization: Bearer sk-model-secret" } : {}),
     createdAt: "2026-07-31T00:04:00.000Z", completedAt: "2026-07-31T00:04:01.000Z",
   };
@@ -147,6 +163,25 @@ test("run record API paginates, filters, restores related traces, and redacts se
   const session = await seedSession(harness.store);
   const reasoningSentinel = "RSN05_REASONING_SENTINEL_7f5c";
   const task = await seedResearchTask(harness.store, session, "task-run-records", "2026-07-31T00:03:00.000Z", "completed", reasoningSentinel);
+  await harness.store.saveResearchTaskContextAssemblySnapshot(task.id, {
+    schemaVersion: 1,
+    generationAttempt: 1,
+    reassemblyRule: "same_attempt_same_sources;new_attempt_reassemble;continuation_incremental",
+    sourceFingerprint: "run-record-context-fingerprint",
+    sources: [{ candidateId: "imported-1", channel: "factual_evidence", sourceKind: "imported_material", sourceId: "import-1", sourceVersion: "v1" }],
+    assemblies: [{
+      workflowStepId: "answer",
+      recordedAt: "2026-07-31T00:03:30.000Z",
+      audit: {
+        status: "assembled",
+        purpose: "research_chat",
+        modelPurpose: "chat",
+        budget: { maxInputTokens: 16_000, reservedOutputTokens: 4_000, usedInputTokens: 120, remainingInputTokens: 15_880 },
+        adopted: [{ candidateId: "imported-1", channel: "factual_evidence", category: "imported_material", sourceKind: "imported_material", sourceId: "import-1", sourceVersion: "v1", reason: "explicit_selection", estimatedTokens: 120, redactionReasons: [] }],
+        rejected: [],
+      },
+    }],
+  });
   await seedModelCall(harness.store, task.id);
   await seedSearch(harness.store, task.id, session.id);
   await seedResearchTask(harness.store, session, "task-run-records-failed", "2026-07-31T00:02:00.000Z", "failed");
@@ -173,8 +208,9 @@ test("run record API paginates, filters, restores related traces, and redacts se
   assert.equal(filtered.body.items[0].outcome, "failure");
 
   const detail = await responseJson<{
-    task?: { provider?: string; model?: string; promptVersion?: string; sliceCount?: number };
-    modelCalls: Array<{ inputTokens: number; outputTokens: number }>;
+    task?: { provider?: string; model?: string; promptVersion?: string; sliceCount?: number; contextExplanations?: string[] };
+    contextExplanations?: string[];
+    modelCalls: Array<{ inputTokens: number; outputTokens: number; contextAssembly?: { adoptedCount: number; rejectedCount: number; adoptedCategories: Array<{ category?: string; count: number }>; budget?: { usedInputTokens: number; reservedOutputTokens: number } } }>;
     searches: Array<{ queries: string[]; responseSummary?: Record<string, unknown>; sources: Array<{ url?: string }> }>;
     errors: Array<{ message: string }>;
   }>(harness, `/v1/run-records/${encodeURIComponent(`research:${task.id}`)}`);
@@ -185,13 +221,20 @@ test("run record API paginates, filters, restores related traces, and redacts se
   assert.equal(detail.body.task?.sliceCount, 2);
   assert.equal(detail.body.modelCalls[0].inputTokens, 120);
   assert.equal(detail.body.modelCalls[0].outputTokens, 80);
+  assert.deepEqual(detail.body.contextExplanations, ["imported_material_used", "personalization_used", "context_reduced"]);
+  assert.deepEqual(detail.body.task?.contextExplanations, ["imported_material_used"]);
+  assert.equal(detail.body.modelCalls[0].contextAssembly?.adoptedCount, 2);
+  assert.equal(detail.body.modelCalls[0].contextAssembly?.rejectedCount, 1);
+  assert.deepEqual(detail.body.modelCalls[0].contextAssembly?.adoptedCategories.map(({ category, count }) => [category, count]), [["imported_material", 1], ["user_profile", 1]]);
+  assert.equal(detail.body.modelCalls[0].contextAssembly?.budget?.usedInputTokens, 120);
+  assert.equal(detail.body.modelCalls[0].contextAssembly?.budget?.reservedOutputTokens, 4_000);
   assert.equal(detail.body.searches[0].queries[0], "安全查询 api_key=[REDACTED]");
   assert.equal(detail.body.searches[0].sources[0].url, "https://example.com/article?safe=1");
   assert.ok(detail.body.searches[0].responseSummary);
   assert.equal(detail.body.searches[0].responseSummary?.apiKey, "[REDACTED]");
   assert.ok(detail.body.errors.some((error) => error.message.includes("[REDACTED]")));
   const serialized = JSON.stringify(detail.body);
-  assert.doesNotMatch(serialized, /sk-model-secret|sk-search-secret|source-secret|Bearer/);
+  assert.doesNotMatch(serialized, /sk-model-secret|sk-search-secret|source-secret|Bearer|SYSTEM_PROMPT_SENTINEL|REJECTED_CONTEXT_SENTINEL|MODEL_REASONING_SENTINEL/);
   assert.doesNotMatch(serialized, new RegExp(reasoningSentinel), "运行记录详情不得包含思考哨兵");
 
   const unauthorizedExport = await fetch(`${harness.base}/v1/run-records/export`);
@@ -209,7 +252,7 @@ test("run record API paginates, filters, restores related traces, and redacts se
   assert.equal(exportedRecord.searches[0].queries[0], "安全查询 api_key=[REDACTED]");
   assert.equal(exportedRecord.searches[0].sources[0].url, "https://example.com/article?safe=1");
   assert.ok(exportedRecord.errors.some((error) => error.message.includes("[REDACTED]")));
-  assert.doesNotMatch(JSON.stringify(exportLines), /sk-model-secret|sk-search-secret|source-secret|Bearer/);
+  assert.doesNotMatch(JSON.stringify(exportLines), /sk-model-secret|sk-search-secret|source-secret|Bearer|SYSTEM_PROMPT_SENTINEL|REJECTED_CONTEXT_SENTINEL|MODEL_REASONING_SENTINEL/);
   assert.doesNotMatch(JSON.stringify(exportLines), new RegExp(reasoningSentinel), "运行记录导出不得包含思考哨兵");
   assert.equal(exportLines[2].type, "record");
   assert.equal((exportLines[2].record as { id: string }).id, "research:task-run-records-failed");

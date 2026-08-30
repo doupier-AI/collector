@@ -14,6 +14,10 @@ interface SectionCall {
   continuation?: { priorSectionContent: string };
   repairHint?: string;
   targetCharsOverride?: number;
+  contextAssembly?: {
+    purpose: string;
+    adopted: Array<{ candidate: { channel: string; evidenceKind?: string; content: string } }>;
+  };
 }
 
 /**
@@ -90,6 +94,11 @@ test("两节一次成功：每节恰一次 expand 调用，正文完整拼接", 
   assert.equal(expandCalls[0]?.sectionIndex, 0);
   assert.equal(expandCalls[1]?.sectionIndex, 1);
   assert.match(expandCalls[1]?.writtenSoFar ?? "", /\[\[concept:origin:第一节正文\]\]/, "后续节可复用前文的回答内对象身份");
+  assert.equal(expandCalls[1]?.contextAssembly?.purpose, "research_body_section");
+  const continuationState = expandCalls[1]?.contextAssembly?.adopted
+    .find((item) => item.candidate.evidenceKind === "continuation_state")?.candidate.content ?? "";
+  assert.match(continuationState, /writtenSoFarTail/);
+  assert.match(continuationState, /第一节正文/, "前文只作为已准入续写状态进入分节模型调用");
   const content = store.getResearchMessage(outputMessageId)!.content;
   assert.ok(content.startsWith("## 起源\n\n"), "合规节标题原样保留在正文首部");
   assert.ok(content.includes("第一节正文，论述起源。"));

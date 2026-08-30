@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { assembleContext } from "@collector/api";
 import { ModelGateway, parseBodyOutline, parseSliceAnnotation, trimStream, type GroundingModelProvider, type ModelCallEvent, type ModelProvider, type ModelProviderRequest, type ModelProviderStreamEvent } from "@collector/model-gateway";
 
 async function* toAsync(chunks: string[]): AsyncIterable<string> {
@@ -27,6 +28,32 @@ function assertUnifiedMentionContract(prompt: string): void {
   assert.match(prompt, /同一对象的重复提及必须复用同一个对象身份/);
   assert.match(prompt, /同名异义对象必须使用不同对象身份/);
 }
+
+test("已装配主链入口只转换准入候选，不把拒绝材料或内部来源 ID 送给供应商", async () => {
+  const assembly = assembleContext({
+    purpose: "research_body",
+    candidates: [
+      {
+        id: "question", channel: "factual_evidence", evidenceKind: "current_question", content: "允许的问题",
+        source: { kind: "conversation", id: "internal-message-id", version: "internal-version", scope: "turn" },
+        permission: { status: "required", basis: "task_contract" }, sensitivity: "private", priority: "task_required", protection: "required",
+      },
+      {
+        id: "denied", channel: "factual_evidence", evidenceKind: "conversation_history", content: "不得进入的旧历史",
+        source: { kind: "conversation", id: "denied-message-id", scope: "turn" },
+        permission: { status: "denied", basis: "source_authorization" }, sensitivity: "private", priority: "turn", protection: "optional",
+      },
+    ],
+  });
+  assert.equal(assembly.status, "assembled");
+  if (assembly.status !== "assembled") return;
+  const { provider, requests } = makeProvider(() => "正文");
+  await new ModelGateway(provider).writeResearchBodyFromContext(assembly);
+  const prompt = requests[0]?.prompt ?? "";
+  assert.match(prompt, /允许的问题/);
+  assert.match(prompt, /current_question/);
+  assert.doesNotMatch(prompt, /不得进入的旧历史|internal-message-id|internal-version|denied-message-id/);
+});
 
 test("writeResearchBody 以自由文本请求正文，不强制 JSON 输出", async () => {
   const { provider, requests } = makeProvider(() => "第一节连贯正文。\n\n第二节继续展开。");

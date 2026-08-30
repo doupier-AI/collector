@@ -89,6 +89,351 @@ export type ProviderModelDiscoveryResult = { ok: true; models: string[] } | { ok
 export const MODEL_PURPOSES = ["chat", "research", "search", "document", "extraction"] as const;
 export type ModelPurpose = (typeof MODEL_PURPOSES)[number];
 
+/** 每次模型调用都必须声明的装配用途；粗粒度用途同时作为模型路由的公开入口。 */
+export const CONTEXT_PURPOSES = [
+  "chat",
+  "research",
+  "search",
+  "document",
+  "extraction",
+  "connection_test",
+  "research_chat",
+  "deep_research",
+  "research_grounding",
+  "research_body",
+  "research_body_outline",
+  "research_body_section",
+  "research_slice_annotation",
+  "term_preview",
+  "term_entity_verification",
+  "session_titling",
+  "node_naming",
+  "import_chapter_parsing",
+  "association_hint_evaluation",
+  "similarity_verification",
+  "temporary_fusion_discovery",
+  "temporary_fusion_conversation",
+  "temporary_fusion_draft_revalidation",
+  "query_reformulation",
+  "agent_search",
+  "cluster_materials",
+  "document_outline",
+  "document_sections",
+  "incremental_document_update",
+] as const;
+export type ContextPurpose = (typeof CONTEXT_PURPOSES)[number];
+
+export const CONTEXT_CHANNELS = ["behavior_rule", "factual_evidence", "user_adaptation"] as const;
+export type ContextChannel = (typeof CONTEXT_CHANNELS)[number];
+
+export type ContextSourceKind =
+  | "product_rule"
+  | "task_rule"
+  | "user_instruction"
+  | "conversation"
+  | "research_content"
+  | "imported_material"
+  | "web_source"
+  | "tool_result"
+  | "continuation"
+  | "user_profile"
+  | "long_term_memory"
+  | "mastered_knowledge"
+  | "system_probe";
+
+/** 只保存稳定身份与作用域；候选正文不进入运行记录。 */
+export interface ContextSourceIdentity {
+  kind: ContextSourceKind;
+  id: string;
+  version?: string;
+  scope: "turn" | "project" | "user" | "global" | "system";
+  projectId?: string;
+}
+
+export interface ContextCandidatePermission {
+  status: "required" | "eligible" | "denied";
+  basis: "product_boundary" | "task_contract" | "user_choice" | "source_authorization";
+  allowedPurposes?: readonly ContextPurpose[];
+}
+
+export type ContextSensitivity = "standard" | "private" | "sensitive" | "secret";
+export type ContextCandidatePriority = "hard_boundary" | "task_required" | "turn" | "project" | "global" | "low_weight";
+export type ContextCandidateProtection = "required" | "preferred" | "optional";
+
+interface ContextCandidateBase {
+  id: string;
+  content: string;
+  source: ContextSourceIdentity;
+  permission: ContextCandidatePermission;
+  sensitivity: ContextSensitivity;
+  priority: ContextCandidatePriority;
+  protection: ContextCandidateProtection;
+  /** 同一语义槽的候选可以声明冲突键；事实冲突保留，规则与适应冲突按优先级裁决。 */
+  conflictKey?: string;
+}
+
+export interface BehaviorRuleContextCandidate extends ContextCandidateBase {
+  channel: "behavior_rule";
+  ruleKind: "product_boundary" | "task_contract" | "safety" | "turn_instruction" | "project_instruction" | "global_instruction";
+}
+
+export interface FactualEvidenceContextCandidate extends ContextCandidateBase {
+  channel: "factual_evidence";
+  evidenceKind: "current_question" | "explicit_material" | "conversation_history" | "research_context" | "imported_material" | "web_evidence" | "tool_result" | "continuation_state";
+  /** 只允许在同一上游内解释次序，不允许跨搜索、RAG 或工具横向比较。 */
+  upstreamRank?: { source: "conversation" | "research" | "selection" | "web" | "rag" | "tool"; rank: number };
+}
+
+export interface UserAdaptationContextCandidate extends ContextCandidateBase {
+  channel: "user_adaptation";
+  adaptationKind: "user_profile" | "long_term_memory" | "mastered_knowledge";
+}
+
+export type ContextCandidate = BehaviorRuleContextCandidate | FactualEvidenceContextCandidate | UserAdaptationContextCandidate;
+
+export interface ContextBudget {
+  maxInputTokens: number;
+  reservedOutputTokens: number;
+  channelLimits?: Partial<Record<ContextChannel, number>>;
+}
+
+export interface ContextAssemblyRequest {
+  /** 运行时保持 string，确保未知用途经过默认拒绝而不是绕过注册表。 */
+  purpose: string;
+  workflowRunId?: string;
+  workflowStepId?: string;
+  projectId?: string;
+  budget?: ContextBudget;
+  candidates: readonly ContextCandidate[];
+}
+
+export type ContextAdoptionReason = "required" | "explicit_selection" | "within_scope" | "ranked_for_task" | "supports_continuation" | "user_adaptation_enabled" | "conflict_preserved";
+export type ContextRejectionReason =
+  | "unknown_purpose"
+  | "channel_not_allowed"
+  | "purpose_not_allowed"
+  | "permission_denied"
+  | "scope_mismatch"
+  | "source_revoked"
+  | "secret"
+  | "sensitivity_not_allowed"
+  | "duplicate"
+  | "conflict"
+  | "budget_exhausted"
+  | "lower_priority"
+  | "invalid_candidate";
+
+export interface ContextRedaction {
+  field: string;
+  reason: "credential" | "secret" | "sensitive_value" | "personal_data";
+}
+
+export interface ContextAdoptedCandidate {
+  candidate: ContextCandidate;
+  reason: ContextAdoptionReason;
+  estimatedTokens: number;
+  redactions: readonly ContextRedaction[];
+}
+
+export interface ContextRejectedCandidate {
+  candidateId: string;
+  channel: ContextChannel;
+  category: string;
+  source: ContextSourceIdentity;
+  reason: ContextRejectionReason;
+}
+
+export interface ContextBudgetUsage extends ContextBudget {
+  usedInputTokens: number;
+  remainingInputTokens: number;
+}
+
+export type ContextAssemblyResult =
+  | {
+    status: "assembled";
+    purpose: ContextPurpose;
+    modelPurpose: ModelPurpose;
+    budget: ContextBudgetUsage;
+    adopted: readonly ContextAdoptedCandidate[];
+    rejected: readonly ContextRejectedCandidate[];
+  }
+  | {
+    status: "rejected";
+    purpose: string;
+    reason: "unknown_purpose" | "required_candidate_exceeds_budget";
+    modelPurpose?: ModelPurpose;
+    budget?: ContextBudgetUsage;
+    adopted: readonly [];
+    rejected: readonly ContextRejectedCandidate[];
+  };
+
+export interface ContextAssemblyAuditAdoption {
+  candidateId: string;
+  channel: ContextChannel;
+  category: string;
+  sourceKind: ContextSourceKind;
+  sourceId: string;
+  sourceVersion?: string;
+  reason: ContextAdoptionReason;
+  estimatedTokens: number;
+  redactionReasons: readonly ContextRedaction["reason"][];
+}
+
+export interface ContextAssemblyAuditRejection {
+  candidateId: string;
+  channel: ContextChannel;
+  category: string;
+  sourceKind: ContextSourceKind;
+  sourceId: string;
+  sourceVersion?: string;
+  reason: ContextRejectionReason;
+}
+
+/** 可进入运行记录的无正文视图。 */
+export interface ContextAssemblyAudit {
+  status: ContextAssemblyResult["status"];
+  purpose: string;
+  modelPurpose?: ModelPurpose;
+  budget?: ContextBudgetUsage;
+  adopted: readonly ContextAssemblyAuditAdoption[];
+  rejected: readonly ContextAssemblyAuditRejection[];
+}
+
+export interface ContextAssemblyCategoryCount {
+  channel: ContextChannel;
+  category?: string;
+  sourceKind: ContextSourceKind;
+  count: number;
+}
+
+export interface ContextAssemblyRejectionCount extends ContextAssemblyCategoryCount {
+  reason: ContextRejectionReason;
+}
+
+/** Run-record projection: counts and categories only; never candidate IDs, source IDs or content. */
+export interface ContextAssemblyObservation {
+  status: ContextAssemblyResult["status"];
+  purpose: string;
+  modelPurpose?: ModelPurpose;
+  budget?: ContextBudgetUsage;
+  adoptedCount: number;
+  rejectedCount: number;
+  adoptedCategories: readonly ContextAssemblyCategoryCount[];
+  rejectedCategories: readonly ContextAssemblyRejectionCount[];
+}
+
+export type ContextExplanationCode =
+  | "imported_material_used"
+  | "history_used"
+  | "personalization_used"
+  | "personalization_not_used"
+  | "context_reduced"
+  | "retrieval_degraded";
+
+export function contextCandidateCategory(candidate: ContextCandidate): string {
+  return candidate.channel === "factual_evidence"
+    ? candidate.evidenceKind
+    : candidate.channel === "behavior_rule"
+      ? candidate.ruleKind
+      : candidate.adaptationKind;
+}
+
+function countContextCategories(entries: ReadonlyArray<{ channel: ContextChannel; category?: string; sourceKind: ContextSourceKind }>): ContextAssemblyCategoryCount[] {
+  const counts = new Map<string, ContextAssemblyCategoryCount>();
+  for (const entry of entries) {
+    const key = `${entry.channel}\u0000${entry.category ?? ""}\u0000${entry.sourceKind}`;
+    const current = counts.get(key);
+    if (current) current.count += 1;
+    else counts.set(key, { ...entry, count: 1 });
+  }
+  return [...counts.values()].sort((left, right) => left.channel.localeCompare(right.channel)
+    || (left.category ?? "").localeCompare(right.category ?? "")
+    || left.sourceKind.localeCompare(right.sourceKind));
+}
+
+export function observeContextAssembly(input: ContextAssemblyResult | ContextAssemblyAudit): ContextAssemblyObservation {
+  const adopted = input.adopted.map((item) => "candidate" in item
+    ? { channel: item.candidate.channel, category: contextCandidateCategory(item.candidate), sourceKind: item.candidate.source.kind }
+    : { channel: item.channel, category: item.category, sourceKind: item.sourceKind });
+  const rejected = input.rejected.map((item) => ({
+    channel: item.channel,
+    category: item.category,
+    sourceKind: "source" in item ? item.source.kind : item.sourceKind,
+    reason: item.reason,
+  }));
+  const rejectedCounts = new Map<string, ContextAssemblyRejectionCount>();
+  for (const entry of rejected) {
+    const key = `${entry.channel}\u0000${entry.category}\u0000${entry.sourceKind}\u0000${entry.reason}`;
+    const current = rejectedCounts.get(key);
+    if (current) current.count += 1;
+    else rejectedCounts.set(key, { ...entry, count: 1 });
+  }
+  return {
+    status: input.status,
+    purpose: input.purpose,
+    ...(input.modelPurpose ? { modelPurpose: input.modelPurpose } : {}),
+    ...(input.budget ? { budget: { ...input.budget, ...(input.budget.channelLimits ? { channelLimits: { ...input.budget.channelLimits } } : {}) } } : {}),
+    adoptedCount: input.adopted.length,
+    rejectedCount: input.rejected.length,
+    adoptedCategories: countContextCategories(adopted),
+    rejectedCategories: [...rejectedCounts.values()].sort((left, right) => left.channel.localeCompare(right.channel)
+      || left.reason.localeCompare(right.reason)
+      || left.sourceKind.localeCompare(right.sourceKind)),
+  };
+}
+
+export function contextExplanationCodes(observations: readonly ContextAssemblyObservation[], retrievalDegraded = false): ContextExplanationCode[] {
+  const adopted = observations.flatMap((item) => item.adoptedCategories);
+  const rejected = observations.flatMap((item) => item.rejectedCategories);
+  const codes: ContextExplanationCode[] = [];
+  if (adopted.some((item) => item.sourceKind === "imported_material" || item.category === "imported_material")) codes.push("imported_material_used");
+  if (adopted.some((item) => item.category === "conversation_history")) codes.push("history_used");
+  if (adopted.some((item) => item.channel === "user_adaptation")) codes.push("personalization_used");
+  else if (rejected.some((item) => item.channel === "user_adaptation")) codes.push("personalization_not_used");
+  if (rejected.some((item) => item.reason === "budget_exhausted") || observations.some((item) => item.status === "rejected")) codes.push("context_reduced");
+  if (retrievalDegraded) codes.push("retrieval_degraded");
+  return codes;
+}
+
+/** 主研究任务保存的无正文上下文来源快照；正文始终从消息、选区与正文版本事实源重建。 */
+export interface ResearchContextSourceSnapshot {
+  candidateId: string;
+  channel: ContextChannel;
+  sourceKind: ContextSourceKind;
+  sourceId: string;
+  sourceVersion?: string;
+}
+
+/**
+ * 暂停/恢复的上下文稳定边界。同一 generationAttempt 必须解析到完全相同的基础来源；
+ * 新生成尝试允许按现行来源重装配。续写正文是该基础快照之外唯一允许增量重装配的状态。
+ */
+export interface ResearchContextAssemblySnapshot {
+  schemaVersion: 1;
+  generationAttempt: number;
+  reassemblyRule: "same_attempt_same_sources;new_attempt_reassemble;continuation_incremental";
+  sourceFingerprint: string;
+  sources: readonly ResearchContextSourceSnapshot[];
+  /** 最近一次各模型步骤的无正文准入审计，按 workflowStepId 覆盖。 */
+  assemblies: ReadonlyArray<{
+    workflowStepId: string;
+    recordedAt: string;
+    audit: ContextAssemblyAudit;
+  }>;
+}
+
+export interface ContextPurposePolicy {
+  purpose: ContextPurpose;
+  modelPurpose: ModelPurpose;
+  allowedChannels: readonly ContextChannel[];
+  maximumSensitivity: Exclude<ContextSensitivity, "secret">;
+  defaultBudget: ContextBudget;
+}
+
+export type ContextPurposeResolution =
+  | { allowed: true; policy: ContextPurposePolicy }
+  | { allowed: false; purpose: string; reason: "unknown_purpose" };
+
 export interface ModelPurposeRoute {
   purpose: ModelPurpose;
   profileId: string;
@@ -170,6 +515,7 @@ export interface ModelCallRecord {
   sourceFragmentIds?: string[];
   /** 调用时固定的输出令牌预算；缺省表示旧记录未提供此审计字段。 */
   tokenBudget?: number;
+  contextAssembly?: ContextAssemblyObservation;
   status: "completed" | "failed";
   inputTokens: number;
   outputTokens: number;
@@ -215,6 +561,7 @@ export interface RunRecordModelCallView {
   promptVersion: string;
   sourceSliceIds?: string[];
   tokenBudget?: number;
+  contextAssembly?: ContextAssemblyObservation;
   status: "completed" | "failed" | "corrupt";
   inputTokens: number;
   outputTokens: number;
@@ -262,6 +609,7 @@ export interface RunRecordTaskView {
   /** E2：已完成研究任务实际持久化的正式切片数量。 */
   sliceCount?: number;
   retryable?: boolean;
+  contextExplanations?: ContextExplanationCode[];
 }
 
 export interface RunRecordDetail extends RunRecordSummary {
@@ -269,6 +617,7 @@ export interface RunRecordDetail extends RunRecordSummary {
   modelCalls: RunRecordModelCallView[];
   searches: RunRecordSearchView[];
   errors: RunRecordErrorView[];
+  contextExplanations?: ContextExplanationCode[];
 }
 
 export interface RunRecordPage {
@@ -1362,6 +1711,10 @@ export interface ResearchTaskRecord {
   bodyPlan?: ResearchBodyPlan;
   /** 单轮流式断点：周期性落盘的已接收正文前缀；流被切断/重启后从断点续传，不整篇重来。 */
   streamCheckpoint?: { content: string; updatedAt: string; protocolPrefix?: string };
+  /** 主回答上下文的无正文来源快照与准入审计；用于暂停/恢复稳定性校验。 */
+  contextAssemblySnapshot?: ResearchContextAssemblySnapshot;
+  /** Category-only explanation for the current answer; never contains candidate text or hidden prompts. */
+  contextExplanations?: ContextExplanationCode[];
   error?: ResearchTaskError;
   createdAt: string;
   updatedAt: string;

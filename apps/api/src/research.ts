@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   RESEARCH_GROUNDING_MAX_SOURCES,
@@ -16,9 +16,13 @@ import {
   validateResearchGroundingResult,
   type DeepResearchContext,
   type DeepResearchMode,
+  type ContextAssemblyResult,
+  type ContextCandidate,
+  type ContextPurpose,
   type GroundingEvidenceStatus,
   type ResearchBodyPlan,
   type ResearchCitationRecord,
+  type ResearchContextAssemblySnapshot,
   type ResearchSliceRecord,
   type ResearchGroundingTraceEntry,
   ResearchGroundingResult,
@@ -46,6 +50,7 @@ import type { ResearchBodyOutline, ResearchSliceAnnotation } from "@collector/mo
 import { ModelProviderAbortedError, ModelProviderHttpError, ModelProviderTimeoutError } from "@collector/model-gateway";
 import { isLongText, joinContinuation, LONG_TEXT_CHAR_THRESHOLD } from "@collector/capture-contracts";
 import { filterCitationsByEvidence, parseAgentCitations } from "./web-search-agent.js";
+import { assembleContext, contextAssemblyAudit } from "./context-assembly.js";
 
 export const RESEARCH_CHAT_PROMPT_VERSION = "research-chat-v1";
 export const DEEP_RESEARCH_PROMPT_VERSION = "deep-research-v1";
@@ -78,6 +83,57 @@ const REASONING_FLUSH_MIN_CHARS = 400;
 /** 原生联网端点通常只返回整篇终稿；小正文保持细粒度，超长正文最多发布 32 次，限制累计写放大。 */
 const CONFIRMED_FINAL_MIN_CHUNK_CHARACTERS = 24;
 const CONFIRMED_FINAL_MAX_DELTAS = 32;
+
+function contextContentVersion(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+function factualContextCandidate(input: {
+  id: string;
+  content: string;
+  sourceKind: Extract<ContextCandidate["source"]["kind"], "conversation" | "research_content" | "web_source" | "continuation">;
+  sourceId: string;
+  sourceVersion?: string;
+  evidenceKind: Extract<ContextCandidate, { channel: "factual_evidence" }>["evidenceKind"];
+  permission: ContextCandidate["permission"];
+  priority?: ContextCandidate["priority"];
+  protection?: ContextCandidate["protection"];
+  upstreamRank?: Extract<ContextCandidate, { channel: "factual_evidence" }>["upstreamRank"];
+}): ContextCandidate {
+  return {
+    id: input.id,
+    channel: "factual_evidence",
+    evidenceKind: input.evidenceKind,
+    content: input.content,
+    source: {
+      kind: input.sourceKind,
+      id: input.sourceId,
+      version: input.sourceVersion ?? contextContentVersion(input.content),
+      scope: "turn",
+    },
+    permission: input.permission,
+    sensitivity: input.sourceKind === "web_source" ? "standard" : "private",
+    priority: input.priority ?? "turn",
+    protection: input.protection ?? "preferred",
+    ...(input.upstreamRank ? { upstreamRank: input.upstreamRank } : {}),
+  };
+}
+
+function contextSourceSnapshots(candidates: readonly ContextCandidate[]): ResearchContextAssemblySnapshot["sources"] {
+  return [...candidates]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((candidate) => ({
+      candidateId: candidate.id,
+      channel: candidate.channel,
+      sourceKind: candidate.source.kind,
+      sourceId: candidate.source.id,
+      ...(candidate.source.version ? { sourceVersion: candidate.source.version } : {}),
+    }));
+}
+
+function contextSourceFingerprint(sources: ResearchContextAssemblySnapshot["sources"]): string {
+  return createHash("sha256").update(JSON.stringify(sources)).digest("hex");
+}
 
 /**
  * reasoning 回调是同步的，SQLite 写入是异步的：本队列把每段内容只取出一次并串行落库。
@@ -197,7 +253,15 @@ export interface ResearchGenerationRequest {
    * 会原样落库并泄漏到弹层与生长子节点正文（#86 真实验收复现）。
    */
   mentionMarkup?: boolean;
+  /** 主研究链的原始候选；只有 API 策略层可以把它们装配为模型输入。 */
+  contextCandidates?: readonly ContextCandidate[];
+  /** 主链模型调用的已准入视图；辅助调用在 #158 迁移前可暂时缺省。 */
+  contextAssembly?: Extract<ContextAssemblyResult, { status: "assembled" }>;
 }
+
+export type AssembledResearchGenerationRequest = ResearchGenerationRequest & {
+  contextAssembly: Extract<ContextAssemblyResult, { status: "assembled" }>;
+};
 
 /** 实体核验请求结构集中在 @collector/capture-contracts（ADR-0027），研究任务与模型网关共用一份定义。 */
 export type { TermIdentityVerificationRequest } from "@collector/capture-contracts";
@@ -210,17 +274,17 @@ export interface ResearchGenerationProvider {
   /** H3c 术语预览仍复用文本流，不参与节点回答的正式切片生成。 */
   generate(request: ResearchGenerationRequest): AsyncIterable<string>;
   /** 联网准备阶段只交付已确认定稿，或可追溯证据；不得把工作区文本伪装成正文。 */
-  prepareGrounded?(request: ResearchGenerationRequest & { scenario: ResearchGroundingScenario }): Promise<ResearchGroundedPreparation>;
+  prepareGrounded?(request: AssembledResearchGenerationRequest & { scenario: ResearchGroundingScenario }): Promise<ResearchGroundedPreparation>;
   /** 仅证据准备结果必须经独立最终写作流转成用户正文。 */
-  writeGroundedFinalStream?(request: ResearchGenerationRequest, evidence: string, options: { resumeFrom?: string; signal?: AbortSignal; onStreamDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void }): AsyncIterable<string>;
+  writeGroundedFinalStream?(request: AssembledResearchGenerationRequest, evidence: string, options: { resumeFrom?: string; signal?: AbortSignal; onStreamDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void }): AsyncIterable<string>;
   /** 生成自由化：自由写连续正文，不返回 JSON 切片结构。 */
-  writeBody?(request: ResearchGenerationRequest): Promise<string>;
+  writeBody?(request: AssembledResearchGenerationRequest): Promise<string>;
   /** 真实模型逐字流式正文（方案 B）；缺省时退回 writeBody 原子写或 legacy generate 流式。onReasoning 旁路接收思考增量（ADR-0035）；signal 供暂停/停止中止物理流。 */
-  writeBodyStream?(request: ResearchGenerationRequest & { resumeFrom?: string; onStreamDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; signal?: AbortSignal }): AsyncIterable<string>;
+  writeBodyStream?(request: AssembledResearchGenerationRequest & { resumeFrom?: string; onStreamDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; signal?: AbortSignal }): AsyncIterable<string>;
   /** plan-then-write 第一阶段：为长文生成有序大纲。 */
-  generateOutline?(request: ResearchGenerationRequest): Promise<ResearchBodyOutline>;
+  generateOutline?(request: AssembledResearchGenerationRequest): Promise<ResearchBodyOutline>;
   /** plan-then-write 第二阶段：在大纲与前文前提下串行扩写某节；支持断点续写/空节修复提示/降级目标字数。 */
-  expandSection?(request: ResearchGenerationRequest & { outline: ResearchBodyOutline; sectionIndex: number; writtenSoFar: string; continuation?: { priorSectionContent: string }; repairHint?: string; targetCharsOverride?: number }): Promise<{ content: string; finishReason?: string }>;
+  expandSection?(request: AssembledResearchGenerationRequest & { outline: ResearchBodyOutline; sectionIndex: number; writtenSoFar: string; continuation?: { priorSectionContent: string }; repairHint?: string; targetCharsOverride?: number }): Promise<{ content: string; finishReason?: string }>;
   /** 事后语义标注：从一段正文抽取标题/概念（独立抽取模型，temperature=0）。 */
   deriveAnnotations?(input: { content: string }): Promise<ResearchSliceAnnotation>;
   /** 同一节点不同消息中的同名提及，只有经最小局部语境核验后才可共享预览。 */
@@ -679,6 +743,7 @@ export class ResearchSessionService {
         ...(generation.deepResearch ? { deepResearch: generation.deepResearch } : {}),
         ...(generation.parentChainContext ? { parentChainContext: generation.parentChainContext } : {}),
         ...(generation.sliceContext ? { sliceContext: generation.sliceContext } : {}),
+        contextCandidates: generation.contextCandidates,
       };
       this.mentionStreams.set(task.id, new MentionMarkupStream({
         messageId: task.outputMessageId,
@@ -689,6 +754,7 @@ export class ResearchSessionService {
       this.finalBodySinks.set(task.id, new FinalBodySink(task.streamCheckpoint?.protocolPrefix));
       let generatedCharacters = 0;
       try {
+        await this.ensureContextSourceSnapshot(task, generation.contextCandidates);
         const scenario: ResearchGroundingScenario = generation.deepResearch
           ? "deep_research_first_round"
           : this.isBranchFollowUp(task.id) ? "branch_follow_up" : "chat";
@@ -700,7 +766,12 @@ export class ResearchSessionService {
           // 联网先准备可追溯证据；只有显式确认的最终通道才可直入正文，
           // 否则必须由独立最终写作阶段产出用户可见内容。
           try {
-            const grounded = await provider.prepareGrounded({ ...generationRequest, scenario });
+            const groundingRequest = await this.assembleGenerationRequest(
+              generationRequest,
+              "research_grounding",
+              "grounding",
+            );
+            const grounded = await provider.prepareGrounded({ ...groundingRequest, scenario });
             if (grounded.kind === "confirmed_final") {
               if (!grounded.content.trim()) throw new Error("Confirmed final provider response was empty");
               // 原生联网适配器已在完整响应上确认最终通道；这里把终稿按小段逐步发布，
@@ -747,7 +818,11 @@ export class ResearchSessionService {
                 content = planned.content;
                 titleHints = planned.titleHints;
               } else {
-                content = await provider.writeBody(generationRequest);
+                content = await provider.writeBody(await this.assembleGenerationRequest(
+                  generationRequest,
+                  "research_body",
+                  "body",
+                ));
                 await this.appendGeneratedDelta(task, content);
               }
             }
@@ -809,7 +884,12 @@ export class ResearchSessionService {
     request: ResearchGenerationRequest,
   ): Promise<void> {
     let content = "";
-    for await (const delta of provider.generate(request)) {
+    const assembledRequest = await this.assembleGenerationRequest(
+      request,
+      request.deepResearch ? "deep_research" : "research_chat",
+      request.deepResearch ? "deep-research" : "chat",
+    );
+    for await (const delta of provider.generate(assembledRequest)) {
       if (!delta) continue;
       content += delta;
       if (content.length > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
@@ -1055,6 +1135,18 @@ export class ResearchSessionService {
     for (;;) {
       let doneFinish: string | undefined;
       const resumeFrom = rawStreamed || undefined;
+      const additions: ContextCandidate[] = [];
+      if (groundedEvidence !== undefined) additions.push(
+        this.groundedFinalRuleCandidate(task.id),
+        this.webEvidenceCandidate(task.id, groundedEvidence),
+      );
+      if (resumeFrom) additions.push(this.continuationCandidate(task.id, "single-turn", resumeFrom));
+      const assembledGenerationRequest = await this.assembleGenerationRequest(
+        generationRequest,
+        "research_body",
+        groundedEvidence === undefined ? `body-stream:${continuations}` : `grounded-final:${continuations}`,
+        additions,
+      );
       try {
         // 内层：整段流消费包一次分类退避重试；每次重入都是独立物理调用（emitCall 恰好一次）。
         await this.withProviderRetry(async () => {
@@ -1062,7 +1154,7 @@ export class ResearchSessionService {
           // 否则会被误当成普通正文写出。
           if (physicalCalls++ > 0) this.finalBodySinks.get(task.id)?.discardPending();
           const streamOptions = {
-            ...generationRequest,
+            ...assembledGenerationRequest,
             ...(resumeFrom ? { resumeFrom } : {}),
             ...(this.abortControllers.get(task.id)?.signal ? { signal: this.abortControllers.get(task.id)!.signal } : {}),
             onStreamDone: (done: { finishReason?: string }) => { doneFinish = done.finishReason; },
@@ -1070,7 +1162,7 @@ export class ResearchSessionService {
           };
           const stream = groundedEvidence === undefined
             ? provider.writeBodyStream!(streamOptions)
-            : provider.writeGroundedFinalStream!(generationRequest, groundedEvidence, streamOptions);
+            : provider.writeGroundedFinalStream!(assembledGenerationRequest, groundedEvidence, streamOptions);
           for await (const delta of stream) {
             if (!delta) continue;
             this.throwIfUserInterrupted(task.id);
@@ -1188,7 +1280,11 @@ export class ResearchSessionService {
     if (!plan || plan.sections.length === 0) {
       // 大纲失败降级：回退单轮 writeBody（由调用方在拿到 undefined 后走 writeBody），不阻断生成。
       try {
-        const outline = await provider.generateOutline(request);
+        const outline = await provider.generateOutline(await this.assembleGenerationRequest(
+          request,
+          "research_body_outline",
+          "body-outline",
+        ));
         plan = { sections: outline.sections.map((section) => ({ ...section, status: "pending" as const })) };
         await this.store.saveResearchTaskBodyPlan(task.id, plan);
       } catch (error) {
@@ -1326,12 +1422,28 @@ export class ResearchSessionService {
     const target = outline.sections[sectionIndex];
     const targetChars = target?.targetChars ?? 0;
     const expand = async (args: { continuation?: { priorSectionContent: string }; repairHint?: string; targetCharsOverride?: number }) =>
-      this.withProviderRetry(() => provider.expandSection!({
-        ...request, outline, sectionIndex, writtenSoFar,
-        ...(args.continuation ? { continuation: args.continuation } : {}),
-        ...(args.repairHint ? { repairHint: args.repairHint } : {}),
-        ...(args.targetCharsOverride !== undefined ? { targetCharsOverride: args.targetCharsOverride } : {}),
-      }));
+      this.withProviderRetry(async () => {
+        const state = JSON.stringify({
+          outline,
+          sectionIndex,
+          writtenSoFarTail: writtenSoFar.slice(-4_000),
+          ...(args.continuation ? { continuationTail: args.continuation.priorSectionContent.slice(-500) } : {}),
+          ...(args.repairHint ? { repairHint: args.repairHint } : {}),
+          ...(args.targetCharsOverride !== undefined ? { targetCharsOverride: args.targetCharsOverride } : {}),
+        });
+        const assembledRequest = await this.assembleGenerationRequest(
+          request,
+          "research_body_section",
+          `body-section:${sectionIndex}`,
+          [this.continuationCandidate(task.id, `section:${sectionIndex}`, state)],
+        );
+        return provider.expandSection!({
+          ...assembledRequest, outline, sectionIndex, writtenSoFar,
+          ...(args.continuation ? { continuation: args.continuation } : {}),
+          ...(args.repairHint ? { repairHint: args.repairHint } : {}),
+          ...(args.targetCharsOverride !== undefined ? { targetCharsOverride: args.targetCharsOverride } : {}),
+        });
+      });
 
     let assembled = section.partialContent ?? "";
     let continuations = 0;
@@ -1588,6 +1700,94 @@ export class ResearchSessionService {
     return [...unique.values()];
   }
 
+  private async ensureContextSourceSnapshot(task: ResearchTaskRecord, candidates: readonly ContextCandidate[]): Promise<void> {
+    const sources = contextSourceSnapshots(candidates);
+    const sourceFingerprint = contextSourceFingerprint(sources);
+    const generationAttempt = task.generationAttempt ?? 1;
+    const current = this.store.getResearchTask(task.id)?.contextAssemblySnapshot;
+    if (current?.generationAttempt === generationAttempt) {
+      if (current.sourceFingerprint !== sourceFingerprint) {
+        throw new Error("Research context sources changed within the same generation attempt");
+      }
+      return;
+    }
+    await this.store.saveResearchTaskContextAssemblySnapshot(task.id, {
+      schemaVersion: 1,
+      generationAttempt,
+      reassemblyRule: "same_attempt_same_sources;new_attempt_reassemble;continuation_incremental",
+      sourceFingerprint,
+      sources,
+      assemblies: [],
+    });
+  }
+
+  private async assembleGenerationRequest(
+    request: ResearchGenerationRequest,
+    purpose: ContextPurpose,
+    workflowStepId: string,
+    additions: readonly ContextCandidate[] = [],
+  ): Promise<AssembledResearchGenerationRequest> {
+    const assembled = assembleContext({
+      purpose,
+      workflowRunId: request.taskId,
+      workflowStepId,
+      ...(request.session.projectId ? { projectId: request.session.projectId } : {}),
+      candidates: [...(request.contextCandidates ?? []), ...additions],
+    });
+    if (assembled.status !== "assembled") throw new Error(`Research context assembly rejected: ${assembled.reason}`);
+    const task = this.store.getResearchTask(request.taskId);
+    const snapshot = task?.contextAssemblySnapshot;
+    if (!task || !snapshot) throw new Error("Research context source snapshot is missing");
+    const assemblies = [
+      ...snapshot.assemblies.filter((entry) => entry.workflowStepId !== workflowStepId),
+      { workflowStepId, recordedAt: new Date().toISOString(), audit: contextAssemblyAudit(assembled) },
+    ].sort((left, right) => left.workflowStepId.localeCompare(right.workflowStepId));
+    await this.store.saveResearchTaskContextAssemblySnapshot(task.id, { ...snapshot, assemblies });
+    return { ...request, contextAssembly: assembled };
+  }
+
+  private continuationCandidate(taskId: string, kind: string, content: string): ContextCandidate {
+    return factualContextCandidate({
+      id: `continuation:${taskId}:${kind}`,
+      content,
+      sourceKind: "continuation",
+      sourceId: `${taskId}:${kind}`,
+      evidenceKind: "continuation_state",
+      permission: { status: "required", basis: "task_contract" },
+      priority: "task_required",
+      protection: "required",
+      upstreamRank: { source: "tool", rank: 0 },
+    });
+  }
+
+  private webEvidenceCandidate(taskId: string, evidence: string): ContextCandidate {
+    return factualContextCandidate({
+      id: `web-evidence:${taskId}`,
+      content: evidence,
+      sourceKind: "web_source",
+      sourceId: taskId,
+      evidenceKind: "web_evidence",
+      permission: { status: "required", basis: "user_choice", allowedPurposes: ["research_body"] },
+      priority: "turn",
+      protection: "required",
+      upstreamRank: { source: "web", rank: 0 },
+    });
+  }
+
+  private groundedFinalRuleCandidate(taskId: string): ContextCandidate {
+    return {
+      id: `grounded-final-rule:${taskId}`,
+      channel: "behavior_rule",
+      ruleKind: "task_contract",
+      content: "只输出直接给用户阅读的最终 Markdown 回答；不要描述搜索、工具、草稿、推理或内部工作。只使用已准入的带编号联网证据，涉及外部事实时使用对应的 [来源n] 标记。",
+      source: { kind: "task_rule", id: "research-grounded-final-v1", version: "1", scope: "global" },
+      permission: { status: "required", basis: "task_contract", allowedPurposes: ["research_body"] },
+      sensitivity: "standard",
+      priority: "task_required",
+      protection: "required",
+    };
+  }
+
   /**
    * 生成上下文按任务所属节点构建：任务记录 nodeId 优先；
    * 旧数据无 nodeId 时按 branch_id / session 主线回退。
@@ -1599,6 +1799,7 @@ export class ResearchSessionService {
     deepResearch?: DeepResearchContext;
     parentChainContext?: ParentChainContextResult;
     sliceContext?: ResearchSliceContext;
+    contextCandidates: ContextCandidate[];
   } {
     const all = this.store.listResearchMessageBodies(task.sessionId);
     const output = all.find((message) => message.id === task.outputMessageId);
@@ -1624,8 +1825,70 @@ export class ResearchSessionService {
       parentChain,
       deepResearch,
     );
+    const contextCandidates: ContextCandidate[] = [];
+    if (latestUserMessage) {
+      contextCandidates.push(factualContextCandidate({
+        id: `question:${task.inputMessageId}`,
+        content: latestUserMessage.content,
+        sourceKind: "conversation",
+        sourceId: task.inputMessageId,
+        evidenceKind: "current_question",
+        permission: { status: "required", basis: "task_contract" },
+        priority: "task_required",
+        protection: "required",
+        upstreamRank: { source: "conversation", rank: 0 },
+      }));
+    }
+    parentChain.ancestors.forEach((ancestor, index) => {
+      const content = JSON.stringify({
+        label: ancestor.label,
+        ...(ancestor.originText ? { originText: ancestor.originText } : {}),
+        ...(ancestor.firstUserMessage ? { firstUserMessage: ancestor.firstUserMessage } : {}),
+        ...(ancestor.coveredTerms?.length ? { coveredTerms: ancestor.coveredTerms } : {}),
+      });
+      contextCandidates.push(factualContextCandidate({
+        id: `parent:${ancestor.nodeId}`,
+        content,
+        sourceKind: "research_content",
+        sourceId: ancestor.nodeId,
+        evidenceKind: "research_context",
+        permission: { status: "eligible", basis: "source_authorization" },
+        priority: "project",
+        protection: "preferred",
+        upstreamRank: { source: "research", rank: index },
+      }));
+    });
+    sliceContext.items.forEach((item, index) => {
+      contextCandidates.push(factualContextCandidate({
+        id: `slice:${item.fragmentId}`,
+        content: JSON.stringify({ title: item.title, content: item.content, concepts: item.normalizedConcepts }),
+        sourceKind: "research_content",
+        sourceId: item.fragmentId,
+        sourceVersion: item.bodyVersionId,
+        evidenceKind: "research_context",
+        permission: { status: "eligible", basis: "source_authorization" },
+        priority: item.parentDistance === 0 ? "turn" : "project",
+        protection: "optional",
+        upstreamRank: { source: "research", rank: index },
+      }));
+    });
+    if (deepResearch) {
+      const selectionId = this.originSelectionIdFor(task.sessionId, contextNodeId) ?? `task:${task.id}`;
+      contextCandidates.push(factualContextCandidate({
+        id: `selection:${selectionId}`,
+        content: JSON.stringify(deepResearch),
+        sourceKind: "research_content",
+        sourceId: selectionId,
+        evidenceKind: "explicit_material",
+        permission: { status: "required", basis: "user_choice" },
+        priority: "turn",
+        protection: "required",
+        upstreamRank: { source: "selection", rank: 0 },
+      }));
+    }
     return {
       messages: latestUserMessage ? [latestUserMessage] : messages,
+      contextCandidates,
       ...(deepResearch ? { deepResearch } : {}),
       ...(parentChainContext ? { parentChainContext } : {}),
       ...(sliceContext && sliceContext.items.length ? { sliceContext } : {}),

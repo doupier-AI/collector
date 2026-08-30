@@ -1,4 +1,4 @@
-import type { RunRecordDetail as RunRecordDetailModel } from "@collector/capture-contracts";
+import type { ContextAssemblyCategoryCount, ContextExplanationCode, RunRecordDetail as RunRecordDetailModel, RunRecordModelCallView } from "@collector/capture-contracts";
 import { errorCategoryLabels, formatDateTime, formatDuration, formatTokens, operationLabels, outcomeLabels, statusLabels } from "./format";
 
 export function RunRecordDetail({ detail }: { detail: RunRecordDetailModel }) {
@@ -41,6 +41,15 @@ export function RunRecordDetail({ detail }: { detail: RunRecordDetailModel }) {
         </section>
       ) : null}
 
+      {detail.contextExplanations?.length ? (
+        <section className="run-records__subsection" aria-labelledby="run-record-context-title">
+          <h3 id="run-record-context-title">本轮上下文说明</h3>
+          <ul className="run-records__context-notes">
+            {detail.contextExplanations.map((code) => <li key={code}>{contextExplanationLabels[code]}</li>)}
+          </ul>
+        </section>
+      ) : null}
+
       <section className="run-records__subsection" aria-labelledby="run-record-model-title">
         <h3 id="run-record-model-title">模型调用</h3>
         {detail.modelCalls.length === 0 ? <p className="run-records__muted">没有记录到模型调用。</p> : (
@@ -55,6 +64,7 @@ export function RunRecordDetail({ detail }: { detail: RunRecordDetailModel }) {
                       <span>{call.provider} · {call.purpose}</span>
                       {call.sourceSliceIds?.length ? <span>来源切片：{call.sourceSliceIds.join("、")}</span> : null}
                       {call.tokenBudget !== undefined ? <span>令牌预算：{formatTokens(call.tokenBudget)}</span> : null}
+                      {call.contextAssembly ? <ContextAssemblySummary call={call} /> : null}
                     </td>
                     <td>{call.promptVersion}</td>
                     <td>{call.status === "corrupt" ? "记录损坏" : call.status === "completed" ? "已完成" : "失败"}</td>
@@ -107,5 +117,52 @@ export function RunRecordDetail({ detail }: { detail: RunRecordDetailModel }) {
         )}
       </section>
     </section>
+  );
+}
+
+const contextExplanationLabels: Record<ContextExplanationCode, string> = {
+  imported_material_used: "使用了导入材料",
+  history_used: "使用了对话历史",
+  personalization_used: "使用了个性化信息",
+  personalization_not_used: "个性化候选未被采用",
+  context_reduced: "部分候选因边界或预算未采用",
+  retrieval_degraded: "检索发生降级",
+};
+
+const contextCategoryLabels: Record<string, string> = {
+  product_boundary: "产品边界",
+  task_contract: "任务规则",
+  safety: "安全规则",
+  turn_instruction: "本轮要求",
+  project_instruction: "项目要求",
+  global_instruction: "全局要求",
+  current_question: "当前问题",
+  explicit_material: "明确材料",
+  conversation_history: "对话历史",
+  research_context: "研究材料",
+  imported_material: "导入材料",
+  web_evidence: "联网证据",
+  tool_result: "工具结果",
+  continuation_state: "续写状态",
+  user_profile: "用户画像",
+  long_term_memory: "长期记忆",
+  mastered_knowledge: "已掌握知识",
+};
+
+function categorySummary(items: readonly ContextAssemblyCategoryCount[]): string {
+  if (!Array.isArray(items) || items.length === 0) return "无";
+  return items.map((item) => `${contextCategoryLabels[item.category ?? ""] ?? "其他类别"} ${item.count}`).join("、");
+}
+
+function ContextAssemblySummary({ call }: { call: RunRecordModelCallView }) {
+  const context = call.contextAssembly;
+  if (!context) return null;
+  return (
+    <span className="run-records__context-summary">
+      <span>上下文：采用 {context.adoptedCount}，未采用 {context.rejectedCount}</span>
+      <span>采用类别：{categorySummary(context.adoptedCategories)}</span>
+      {context.rejectedCount ? <span>未采用类别：{categorySummary(context.rejectedCategories)}</span> : null}
+      {context.budget ? <span>输入预算：{formatTokens(context.budget.usedInputTokens)} / {formatTokens(context.budget.maxInputTokens)}；输出预留：{formatTokens(context.budget.reservedOutputTokens)}</span> : null}
+    </span>
   );
 }

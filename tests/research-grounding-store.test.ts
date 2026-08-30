@@ -253,6 +253,7 @@ test("仅证据的联网准备必须经独立最终写作，工作区文本永�
   const harness = await createStore();
   t.after(() => harness.close());
   const finalInputs: string[] = [];
+  const finalAssemblies: unknown[] = [];
   const provider: ResearchGenerationProvider = {
     provider: "agent-fake", model: "agent-model",
     async *generate() { yield "ordinary fallback"; },
@@ -264,8 +265,9 @@ test("仅证据的联网准备必须经独立最终写作，工作区文本永�
         sources: [{ title: "Source", url: "https://example.com/source", snippet: "可回读的证据摘录。", evidenceStatus: "partial" }], citations: [],
       };
     },
-    async *writeGroundedFinalStream(_request, evidence, options) {
+    async *writeGroundedFinalStream(request, evidence, options) {
       finalInputs.push(evidence);
+      finalAssemblies.push(structuredClone(request.contextAssembly));
       yield "这是独立最终写作的正文。[来源1]";
       options.onStreamDone?.({ finishReason: "stop" });
     },
@@ -276,6 +278,10 @@ test("仅证据的联网准备必须经独立最终写作，工作区文本永�
   await service.processTask(turn.task.id);
 
   assert.deepEqual(finalInputs, ["[来源1] 可回读的证据摘录。"]);
+  const finalAssembly = finalAssemblies[0] as { purpose?: string; adopted?: Array<{ candidate?: { channel?: string; evidenceKind?: string; ruleKind?: string; content?: string } }> };
+  assert.equal(finalAssembly.purpose, "research_body");
+  assert.ok(finalAssembly.adopted?.some((item) => item.candidate?.evidenceKind === "web_evidence"));
+  assert.ok(finalAssembly.adopted?.some((item) => item.candidate?.ruleKind === "task_contract"));
   assert.equal(harness.store.getResearchMessage(turn.task.outputMessageId)?.content, "这是独立最终写作的正文。[来源1]");
   assert.equal(service.getTask(turn.task.id).status, "completed");
 });

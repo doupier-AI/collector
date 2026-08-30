@@ -1,7 +1,8 @@
 import type { ResearchMessageBodyRecord, ResearchNodeRecord } from "@collector/capture-contracts";
-import type { ModelGateway, ResearchParentChainContext } from "@collector/model-gateway";
+import type { AssembledModelContext, ModelGateway, ResearchParentChainContext } from "@collector/model-gateway";
 import { extractNodeGrowthSelectionText } from "./deep-research.js";
 import { ParentChainContextService } from "./parent-chain-context.js";
+import { assemblePurposeContext } from "./model-context.js";
 
 export const NODE_DISPLAY_NAME_MAX_CHARACTERS = 20;
 
@@ -38,6 +39,10 @@ export interface NodeNamingGateway {
     input: { content: string; parentChainContext?: ResearchParentChainContext },
     options?: { model?: string; maxTokens?: number; timeoutMs?: number; context?: { purpose?: string; promptVersion?: string } },
   ): Promise<string>;
+  generateNodeDisplayNameFromContext?(
+    assembly: AssembledModelContext,
+    options?: { model?: string; maxTokens?: number; timeoutMs?: number; context?: { purpose?: string; promptVersion?: string } },
+  ): Promise<string>;
 }
 
 export class NodeNamingService {
@@ -62,13 +67,18 @@ export class NodeNamingService {
         const gateway = await this.gatewayResolver();
         if (gateway) {
           const parentChain = this.parentChainContext.buildParentChainContext(nodeId);
-          const generated = await gateway.generateNodeDisplayName(
-            {
+          const assembly = assemblePurposeContext({
+            purpose: "node_naming",
+            workflowRunId: nodeId,
+            materials: [{ id: `node:${nodeId}`, content: JSON.stringify({
               content: messages.map((message) => `${message.role}: ${message.content}`).join("\n").slice(0, 4000),
               parentChainContext: parentChain.ancestors.length > 0 ? parentChain : undefined,
-            },
-            { maxTokens: 128, timeoutMs: 30_000, context: { purpose: "research", promptVersion: "node-naming-v1" } },
-          );
+            }) }],
+          });
+          const options = { maxTokens: 128, timeoutMs: 30_000, context: { purpose: "node_naming", promptVersion: "node-naming-v1" } };
+          const generated = gateway.generateNodeDisplayNameFromContext
+            ? await gateway.generateNodeDisplayNameFromContext(assembly, options)
+            : await gateway.generateNodeDisplayName(JSON.parse(assembly.adopted[0].candidate.content), options);
           displayName = validateNodeDisplayName(generated) ?? fallback;
         }
       } catch {
@@ -82,5 +92,5 @@ export class NodeNamingService {
 }
 
 export function isModelGateway(value: unknown): value is ModelGateway {
-  return typeof value === "object" && value !== null && typeof (value as { generateNodeDisplayName?: unknown }).generateNodeDisplayName === "function";
+  return typeof value === "object" && value !== null && typeof (value as { generateNodeDisplayNameFromContext?: unknown }).generateNodeDisplayNameFromContext === "function";
 }

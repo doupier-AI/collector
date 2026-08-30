@@ -86,4 +86,46 @@ describe("RunRecordDetail", () => {
     expect(screen.getByText("3 个")).toBeInTheDocument();
     expect(screen.getByText("research-slices-v1")).toBeInTheDocument();
   });
+
+  it("shows only category-level context explanations and budgets", () => {
+    const detail: RunRecordDetailModel = {
+      ...summary,
+      contextExplanations: ["imported_material_used", "personalization_not_used", "context_reduced"],
+      task: { id: "task-1", retryable: false },
+      modelCalls: [{
+        id: "call-1",
+        provider: "local-provider",
+        model: "local-model",
+        purpose: "research_chat",
+        promptVersion: "context-v1",
+        status: "completed",
+        inputTokens: 120,
+        outputTokens: 40,
+        cacheHitTokens: 0,
+        latencyMs: 10,
+        retryCount: 0,
+        createdAt: "2026-07-31T00:00:00.000Z",
+        contextAssembly: {
+          status: "assembled",
+          purpose: "research_chat",
+          budget: { maxInputTokens: 16_000, reservedOutputTokens: 4_000, usedInputTokens: 120, remainingInputTokens: 15_880 },
+          adoptedCount: 1,
+          rejectedCount: 1,
+          adoptedCategories: [{ channel: "factual_evidence", category: "imported_material", sourceKind: "imported_material", count: 1 }],
+          rejectedCategories: [{ channel: "user_adaptation", category: "user_profile", sourceKind: "user_profile", reason: "budget_exhausted", count: 1 }],
+        },
+      }],
+      searches: [],
+      errors: [],
+    };
+    render(<RunRecordDetail detail={detail} />);
+    expect(screen.getByRole("heading", { name: "本轮上下文说明" })).toBeInTheDocument();
+    expect(screen.getByText("使用了导入材料")).toBeInTheDocument();
+    expect(screen.getByText("个性化候选未被采用")).toBeInTheDocument();
+    expect(screen.getByText("上下文：采用 1，未采用 1")).toBeInTheDocument();
+    expect(screen.getByText("采用类别：导入材料 1")).toBeInTheDocument();
+    expect(screen.getByText("未采用类别：用户画像 1")).toBeInTheDocument();
+    expect(screen.getByText("输入预算：120 / 16,000；输出预留：4,000")).toBeInTheDocument();
+    expect(screen.queryByText(/prompt body|candidate content|reasoning/i)).not.toBeInTheDocument();
+  });
 });
