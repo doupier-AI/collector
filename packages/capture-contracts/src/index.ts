@@ -815,7 +815,8 @@ export type ResearchImportTaskEvent =
 // 退化为规则锚点。章节锚点一律落在既有内容块（ResearchContentBlock.ordinal）上，
 // 不另立第二套锚点事实；界面按 source/fallbackReason 诚实呈现锚点来源。
 
-export const IMPORT_CHAPTER_PARSE_PROMPT_VERSION = "import-chapter-parse-v1";
+/** 导入材料与回答正文共用的章节解析提示版本。 */
+export const IMPORT_CHAPTER_PARSE_PROMPT_VERSION = "research-chapter-parse-v2";
 /** 章节解析输出预算；JSON 结构有界，2048 足够覆盖上限章节数。 */
 export const IMPORT_CHAPTER_PARSE_TOKEN_BUDGET = 2_048;
 /** 送入模型的正文上限（字符）；超出部分按块边界截断，锚点仍只落在被送入的既有块上。 */
@@ -832,8 +833,13 @@ export type ResearchChapterErrorCode =
   | "model_not_configured"
   | "provider_error"
   | "invalid_output"
+  | "content_missing"
   | "snapshot_missing"
   | "service_restarted";
+
+export type ResearchChapterTarget =
+  | { kind: "import"; snapshotId: string }
+  | { kind: "answer"; messageId: string; bodyVersionId: string; nodeId: string };
 
 /** 章节锚点：节标题 + 既有内容块下标。标题由 AI 理解生成或规则派生（原文标题/段落首句）。 */
 export interface ResearchChapterAnchor {
@@ -849,7 +855,9 @@ export interface ResearchChapterAnchor {
 export interface ResearchChapterTaskRecord {
   id: string;
   sessionId: string;
-  snapshotId: string;
+  target?: ResearchChapterTarget;
+  /** 旧记录兼容字段；新导入任务的目标只写 target。 */
+  snapshotId?: string;
   /** 运行记录列表标题（导入文件名）。 */
   title: string;
   status: ResearchChapterTaskStatus;
@@ -881,6 +889,19 @@ export interface ResearchChapterParseView {
   chapters: ResearchChapterAnchor[];
   error?: { code: string; message: string };
   updatedAt: string;
+}
+
+export function researchChapterTargetKey(target: ResearchChapterTarget): string {
+  return target.kind === "import" ? `import:${target.snapshotId}` : `answer:${target.bodyVersionId}`;
+}
+
+/** 旧导入任务惰性适配到统一目标，不改写历史 record_json。 */
+export function resolveResearchChapterTarget(
+  task: Pick<ResearchChapterTaskRecord, "target" | "snapshotId">,
+): ResearchChapterTarget {
+  if (task.target) return task.target;
+  if (task.snapshotId) return { kind: "import", snapshotId: task.snapshotId };
+  throw new Error("Research chapter task target is missing");
 }
 
 /** 阅读内容 HTTP 视图：快照 + 章节解析状态（只有达到长文阈值的快照携带 chapterParse）。 */
@@ -976,6 +997,65 @@ function ruleChapterTitle(blockText: string): string {
   const match = cleaned.match(/^[^。！？!?；;\n]+[。！？!?；;]?/);
   const sentence = (match?.[0] ?? cleaned).trim().replace(/\s+/g, " ");
   return truncateChapterTitle(sentence || "开始", IMPORT_CHAPTER_TITLE_MAX_CHARACTERS);
+}
+
+/** 回答章节的确定性降级路径；只保存当前正文版本的真实范围与标题。 */
+export function deriveAnswerRuleChapters(
+  version: Pick<ResearchBodyVersionRecord, "id" | "messageId" | "content">,
+  slices: readonly ResearchSliceRecord[] = [],
+): ResearchChapterAnchor[] {
+  if (!isLongText(version.content)) return [];
+  const blocks = deriveMessageBlocks(version.content);
+  const units = composeSectionUnits(blocks);
+  const formal = slices.filter((slice) => !slice.isProvisional).sort((a, b) => a.ordinal - b.ordinal);
+  return units.slice(0, IMPORT_CHAPTER_MAX_COUNT).map((unit, ordinal) => {
+    const first = blocks[unit.firstBlockOrdinal];
+    const startOffset = first?.startOffset ?? 0;
+    const exact = version.content.slice(startOffset, startOffset + unit.content.length);
+    const title = unit.title || formal[ordinal]?.title || ruleChapterTitle(unit.content);
+    return {
+      ordinal,
+      title: truncateChapterTitle(title.trim().replace(/\s+/g, " "), IMPORT_CHAPTER_TITLE_MAX_CHARACTERS),
+      blockOrdinal: unit.firstBlockOrdinal,
+      location: {
+        contentId: version.messageId,
+        bodyVersionId: version.id,
+        sourceRange: { startOffset, endOffset: startOffset + exact.length },
+        exact,
+      },
+    };
+  });
+}
+
+/** 把 AI 返回的块起点适配为回答正文版本的真实节范围。 */
+export function attachAnswerChapterLocations(
+  version: Pick<ResearchBodyVersionRecord, "id" | "messageId" | "content">,
+  chapters: readonly ResearchChapterAnchor[],
+): ResearchChapterAnchor[] {
+  const blocks = deriveMessageBlocks(version.content);
+  const units = composeSectionUnits(blocks);
+  return chapters.flatMap((chapter) => {
+    if (chapter.location?.bodyVersionId === version.id && chapter.location.contentId === version.messageId) {
+      return [chapter];
+    }
+    const unit = units.find((candidate) => candidate.firstBlockOrdinal === chapter.blockOrdinal)
+      ?? units.find((candidate) => chapter.blockOrdinal >= candidate.firstBlockOrdinal
+        && chapter.blockOrdinal < candidate.firstBlockOrdinal + candidate.blockCount);
+    if (!unit) return [];
+    const first = blocks[unit.firstBlockOrdinal];
+    if (!first) return [];
+    const startOffset = first.startOffset;
+    const exact = version.content.slice(startOffset, startOffset + unit.content.length);
+    return [{
+      ...chapter,
+      location: {
+        contentId: version.messageId,
+        bodyVersionId: version.id,
+        sourceRange: { startOffset, endOffset: startOffset + exact.length },
+        exact,
+      },
+    }];
+  }).map((chapter, ordinal) => ({ ...chapter, ordinal }));
 }
 
 /**
@@ -1800,6 +1880,8 @@ export interface ResearchNodeView {
   fusionProposals?: ResearchFusionProposalRecord[];
   /** #35：按消息 ID 返回正文版本；可选字段，缺失时前端按消息正文渲染。 */
   bodyVersions?: Record<string, ResearchBodyVersionRecord>;
+  /** 长回答按消息 ID 返回与当前正文版本绑定的统一章节旁路视图。 */
+  chapters?: Record<string, ResearchChapterParseView>;
   /** 正式融合确认稿是独立于可继续对话消息的不可变正文。 */
   confirmedFusion?: ResearchConfirmedFusionSnapshotRecord;
   /** 正式融合直接来源的当前健康投影；快照本身仍只保存确认时的固定事实。 */

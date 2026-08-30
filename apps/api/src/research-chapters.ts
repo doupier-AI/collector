@@ -1,10 +1,16 @@
 import { randomUUID } from "node:crypto";
 import {
   IMPORT_CHAPTER_PARSE_PROMPT_VERSION,
+  IMPORT_CHAPTER_PARSE_MAX_INPUT_CHARS,
+  attachAnswerChapterLocations,
   attachResearchChapterLocations,
+  deriveAnswerRuleChapters,
   deriveImportRuleChapters,
+  deriveMessageBlocks,
   formatImportChapterParseInput,
   importSnapshotNeedsChapterParse,
+  isLongText,
+  resolveResearchChapterTarget,
   validateImportChapterPlan,
   type ResearchChapterAnchor,
   type ResearchChapterFallbackReason,
@@ -12,6 +18,8 @@ import {
   type ResearchChapterTaskRecord,
   type ResearchContentSnapshotRecord,
   type ResearchContentView,
+  type ResearchBodyVersionRecord,
+  type ResearchMessageRecord,
 } from "@collector/capture-contracts";
 import type { ResearchChapterStore } from "./store.js";
 import { isTrashed } from "./research.js";
@@ -21,7 +29,7 @@ import { ResearchImportConflictError, ResearchImportNotFoundError } from "./rese
 export interface ResearchChapterParseProvider {
   readonly provider: string;
   readonly model: string;
-  parseImportChapters(request: { taskId: string; content: string }): Promise<string>;
+  parseImportChapters(request: { taskId: string; content: string; targetKind: "import" | "answer" }): Promise<string>;
 }
 
 export interface ResearchChapterParseServiceOptions {
@@ -76,7 +84,7 @@ export class ResearchChapterParseService {
       const record: ResearchChapterTaskRecord = {
         id: randomUUID(),
         sessionId: snapshot.sessionId,
-        snapshotId: snapshot.id,
+        target: { kind: "import", snapshotId: snapshot.id },
         title: snapshot.title,
         status: "queued",
         retryable: false,
@@ -93,6 +101,38 @@ export class ResearchChapterParseService {
     }
   }
 
+  /** 回答正文版本达到长文阈值时创建独立章节旁路任务；同一正文版本幂等。 */
+  async enqueueForAnswer(message: ResearchMessageRecord, version: ResearchBodyVersionRecord): Promise<void> {
+    try {
+      if (message.role !== "assistant" || message.status !== "completed" || !isLongText(version.content)) return;
+      const session = this.store.getResearchSession(message.sessionId);
+      if (!session || isTrashed(session)) return;
+      const existing = this.store.getResearchChapterTaskByBodyVersion(version.id);
+      if (existing) {
+        if (existing.status === "queued" && this.options.autoRunTasks !== false) this.scheduleTask(existing.id);
+        return;
+      }
+      const nodeId = message.nodeId ?? message.branchId ?? message.sessionId;
+      const now = new Date().toISOString();
+      const record: ResearchChapterTaskRecord = {
+        id: randomUUID(),
+        sessionId: message.sessionId,
+        target: { kind: "answer", messageId: message.id, bodyVersionId: version.id, nodeId },
+        title: session.title,
+        status: "queued",
+        retryable: false,
+        chapters: [],
+        attempts: 0,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const task = await this.store.createResearchChapterTask(record);
+      if (task.id === record.id && this.options.autoRunTasks !== false) this.scheduleTask(task.id);
+    } catch {
+      // 章节旁路不得回灌回答完成主流程。
+    }
+  }
+
   getContentView(snapshotId: string): ResearchContentView {
     const snapshot = this.store.getResearchContentSnapshot(snapshotId);
     if (!snapshot) throw new ResearchImportNotFoundError("Research content snapshot not found");
@@ -105,6 +145,10 @@ export class ResearchChapterParseService {
   async retryTaskBySnapshot(snapshotId: string): Promise<ResearchChapterTaskRecord> {
     const task = this.store.getResearchChapterTaskBySnapshot(snapshotId);
     if (!task) throw new ResearchImportNotFoundError("Research chapter task not found");
+    return this.retryTask(task);
+  }
+
+  private async retryTask(task: ResearchChapterTaskRecord): Promise<ResearchChapterTaskRecord> {
     if (!task.retryable || (task.status !== "failed" && task.status !== "completed")) {
       throw new ResearchImportConflictError("Research chapter task is not retryable", "chapter_not_retryable");
     }
@@ -127,6 +171,17 @@ export class ResearchChapterParseService {
     return updated;
   }
 
+  getAnswerView(bodyVersionId: string): ResearchChapterParseView | undefined {
+    const task = this.store.getResearchChapterTaskByBodyVersion(bodyVersionId);
+    return task ? chapterParseView(task) : undefined;
+  }
+
+  async retryTaskByBodyVersion(bodyVersionId: string): Promise<ResearchChapterTaskRecord> {
+    const task = this.store.getResearchChapterTaskByBodyVersion(bodyVersionId);
+    if (!task) throw new ResearchImportNotFoundError("Research chapter task not found");
+    return this.retryTask(task);
+  }
+
   /** 重启恢复：running 回排队，随后重跑全部 queued 任务（幂等）。 */
   async resumeTasks(): Promise<number> {
     const requeued = this.store.requeueInterruptedResearchChapterTasks();
@@ -146,40 +201,48 @@ export class ResearchChapterParseService {
       if (!session || isTrashed(session)) return;
       const task = this.store.claimResearchChapterTask(id);
       if (!task) return;
-      const snapshot = this.store.getResearchContentSnapshot(task.snapshotId);
-      if (!snapshot) {
+      const target = resolveResearchChapterTarget(task);
+      const snapshot = target.kind === "import" ? this.store.getResearchContentSnapshot(target.snapshotId) : undefined;
+      const bodyVersion = target.kind === "answer" ? this.store.getBodyVersion(target.bodyVersionId) : undefined;
+      const message = target.kind === "answer" ? this.store.getResearchMessage(target.messageId) : undefined;
+      if ((target.kind === "import" && !snapshot) || (target.kind === "answer" && (!bodyVersion || !message))) {
         await this.finishTask(task, {
           status: "failed",
           retryable: false,
           chapters: [],
           source: undefined,
           fallbackReason: undefined,
-          error: { code: "snapshot_missing", message: "导入内容快照不存在，无法解析章节。" },
+          error: target.kind === "import"
+            ? { code: "snapshot_missing", message: "导入内容快照不存在，无法解析章节。" }
+            : { code: "content_missing", message: "回答正文版本不存在，无法解析章节。" },
         });
         return;
       }
+      const ruleChapters = snapshot
+        ? deriveImportRuleChapters(snapshot.blocks)
+        : deriveAnswerRuleChapters(bodyVersion!, this.store.listSlicesByMessage(message!.id));
+      const input = snapshot ? formatImportChapterParseInput(snapshot.blocks) : formatAnswerChapterParseInput(bodyVersion!.content);
       const provider = this.options.provider;
       if (!provider) {
         // 无可用模型：不发起任何外部请求，规则锚点直接可用；配置模型后可重试获得 AI 章节。
         await this.finishTask(task, {
           status: "completed",
           retryable: true,
-          chapters: deriveImportRuleChapters(snapshot.blocks),
+          chapters: ruleChapters,
           source: "rule",
           fallbackReason: "no_model",
           error: undefined,
         });
         return;
       }
-      const input = formatImportChapterParseInput(snapshot.blocks);
       let raw: string;
       try {
-        raw = await provider.parseImportChapters({ taskId: task.id, content: input.content });
+        raw = await provider.parseImportChapters({ taskId: task.id, content: input.content, targetKind: target.kind });
       } catch {
         await this.finishTask(task, {
           status: "failed",
           retryable: true,
-          chapters: deriveImportRuleChapters(snapshot.blocks),
+          chapters: ruleChapters,
           source: "rule",
           fallbackReason: "ai_failed",
           error: { code: "provider_error", message: "AI 章节解析失败，已按原文结构生成章节锚点，可以重试。" },
@@ -194,7 +257,7 @@ export class ResearchChapterParseService {
         await this.finishTask(task, {
           status: "failed",
           retryable: true,
-          chapters: deriveImportRuleChapters(snapshot.blocks),
+          chapters: ruleChapters,
           source: "rule",
           fallbackReason: "ai_invalid",
           error: { code: "invalid_output", message: "AI 章节解析结果不符合契约，已按原文结构生成章节锚点，可以重试。" },
@@ -235,8 +298,14 @@ export class ResearchChapterParseService {
     },
   ): Promise<void> {
     const now = new Date().toISOString();
-    const snapshot = this.store.getResearchContentSnapshot(task.snapshotId);
-    const chapters = snapshot ? attachResearchChapterLocations(snapshot, outcome.chapters) : outcome.chapters;
+    const target = resolveResearchChapterTarget(task);
+    const snapshot = target.kind === "import" ? this.store.getResearchContentSnapshot(target.snapshotId) : undefined;
+    const bodyVersion = target.kind === "answer" ? this.store.getBodyVersion(target.bodyVersionId) : undefined;
+    const chapters = snapshot
+      ? attachResearchChapterLocations(snapshot, outcome.chapters)
+      : bodyVersion
+        ? attachAnswerChapterLocations(bodyVersion, outcome.chapters)
+        : outcome.chapters;
     const updated: ResearchChapterTaskRecord = {
       ...task,
       status: outcome.status,
@@ -279,4 +348,16 @@ function chapterParseView(task: ResearchChapterTaskRecord, chapters: ResearchCha
     ...(task.error ? { error: task.error } : {}),
     updatedAt: task.updatedAt,
   };
+}
+
+function formatAnswerChapterParseInput(content: string): { content: string; blockCount: number } {
+  const parts: string[] = [];
+  let length = 0;
+  for (const block of deriveMessageBlocks(content)) {
+    const part = `[B${block.ordinal}] ${block.text}`.slice(0, IMPORT_CHAPTER_PARSE_MAX_INPUT_CHARS);
+    if (parts.length > 0 && length + part.length + 2 > IMPORT_CHAPTER_PARSE_MAX_INPUT_CHARS) break;
+    parts.push(part);
+    length += part.length + 2;
+  }
+  return { content: parts.join("\n\n"), blockCount: parts.length };
 }

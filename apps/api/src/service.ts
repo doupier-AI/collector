@@ -264,11 +264,12 @@ export class CaptureService {
       onTaskCompleted: async (task) => {
         // full review 要把精确范围写成 sidecar；先持久化当前正文版本，避免独立任务
         // 抢在节点视图的惰性回填之前执行并因缺失版本而把已抽取标记清空。
-        const message = this.store.getResearchMessageBody(task.outputMessageId);
+        const message = this.store.getResearchMessage(task.outputMessageId);
         if (message?.role === "assistant" && message.content.trim()) {
           const scopeNodeId = message.nodeId ?? message.branchId ?? task.nodeId ?? task.sessionId;
           const citations = this.store.listResearchCitationsForMessages([message.id]);
-          await this.getOrCreateBodyArtifacts(scopeNodeId, message, citations);
+          const version = await this.getOrCreateBodyArtifacts(scopeNodeId, message, citations);
+          await this.researchChapters.enqueueForAnswer(message, version);
         }
         await this.termMarkers.enqueueForResearchTask(task, true);
         void this.nodeNaming.nameNode(task.nodeId ?? task.sessionId);
@@ -369,6 +370,7 @@ export class CaptureService {
     const termDetections: NonNullable<ResearchNodeView["termDetections"]> = {};
     const slices: NonNullable<ResearchNodeView["slices"]> = {};
     const bodyVersions: NonNullable<ResearchNodeView["bodyVersions"]> = {};
+    const chapters: NonNullable<ResearchNodeView["chapters"]> = {};
     for (const message of view.messages) {
       if (message.role !== "assistant" || message.status !== "completed") continue;
       if (message.termMarkers !== undefined) {
@@ -388,7 +390,11 @@ export class CaptureService {
         termDetections[message.id] = this.termDetection.detect(message.id, message.content, { nodeDepth });
       }
       slices[message.id] = this.store.listSlicesByMessage(message.id);
-      bodyVersions[message.id] = await this.getOrCreateBodyArtifacts(nodeId, message, view.citations ?? []);
+      const version = await this.getOrCreateBodyArtifacts(nodeId, message, view.citations ?? []);
+      bodyVersions[message.id] = version;
+      await this.researchChapters.enqueueForAnswer(message, version);
+      const chapterView = this.researchChapters.getAnswerView(version.id);
+      if (chapterView) chapters[message.id] = chapterView;
     }
     const confirmedFusion = this.store.getConfirmedFusionSnapshot(nodeId);
     const confirmedFusionSources = confirmedFusion?.directSources.flatMap((source) => {
@@ -411,6 +417,7 @@ export class CaptureService {
       termDetections,
       slices,
       bodyVersions,
+      chapters,
       ...(confirmedFusion ? { confirmedFusion } : {}),
       ...(confirmedFusionSources?.length ? { confirmedFusionSources } : {}),
       fusionProposals: this.fusionProposals.listForNode(nodeId, ["pending"]),
@@ -851,10 +858,7 @@ export class CaptureService {
     };
   }
 
-  /**
-   * T03 章节解析供应商适配：网关经 purpose 路由在调用时解析，随 context 落入运行记录。
-   * 返回模型原始输出；契约校验与规则降级由章节服务完成。
-   */
+  /** 导入与回答共用章节供应商适配；目标类型决定材料身份，正文不进入运行记录。 */
   private chapterParseProviderFor(gateway: ModelGateway | undefined): ResearchChapterParseProvider | undefined {
     if (!gateway) return undefined;
     const service = this;
@@ -867,7 +871,12 @@ export class CaptureService {
         const assembly = assemblePurposeContext({
           purpose: "import_chapter_parsing",
           workflowRunId: request.taskId,
-          materials: [{ id: `import:${request.taskId}`, content: JSON.stringify({ content: request.content }), sourceKind: "imported_material", evidenceKind: "imported_material" }],
+          materials: [{
+            id: `${request.targetKind}:${request.taskId}`,
+            content: JSON.stringify({ content: request.content }),
+            sourceKind: request.targetKind === "import" ? "imported_material" : "research_content",
+            evidenceKind: request.targetKind === "import" ? "imported_material" : "research_context",
+          }],
         });
         return purposeGateway.parseImportChaptersFromContext(
           assembly,

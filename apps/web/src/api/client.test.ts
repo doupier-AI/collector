@@ -110,6 +110,16 @@ describe("#42 research body version API client", () => {
       undefined,
     );
   });
+
+  it("retries answer chapters through the body-version-scoped endpoint", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ id: "chapter-1" }), { status: 202, headers: { "Content-Type": "application/json" } }));
+    const client = createApiClient(fetchMock);
+    await client.retryAnswerChapterParse("body:m-out:v2");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/v1/research-body-versions/body%3Am-out%3Av2/chapters/retry",
+      expect.objectContaining({ method: "POST", body: "{}" }),
+    );
+  });
 });
 
 describe("#61 stable node address API client", () => {

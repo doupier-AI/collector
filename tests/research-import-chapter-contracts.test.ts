@@ -6,6 +6,10 @@ import {
   IMPORT_CHAPTER_TITLE_MAX_CHARACTERS,
   LONG_TEXT_CHAR_THRESHOLD,
   attachResearchChapterLocations,
+  attachAnswerChapterLocations,
+  deriveAnswerRuleChapters,
+  deriveBodyVersion,
+  deriveMessageSlices,
   deriveImportRuleChapters,
   formatImportChapterParseInput,
   importSnapshotNeedsChapterParse,
@@ -151,4 +155,34 @@ test("validateImportChapterPlan 拒绝不合契约输出", () => {
   for (const item of cases) {
     assert.equal(validateImportChapterPlan(item.raw, item.blockCount), null, `应拒绝：${item.raw.slice(0, 60)}`);
   }
+});
+
+test("长回答规则章节绑定正文版本真实范围，不复制或改写正文", () => {
+  const content = [
+    `## 背景\n\n${"背景事实。".repeat(260)}`,
+    `## 方法\n\n${"方法步骤。".repeat(260)}`,
+    `## 结论\n\n${"结论说明。".repeat(260)}`,
+  ].join("\n\n");
+  const version = deriveBodyVersion({ messageId: "answer-1", nodeId: "node-1", content, origin: "generation", createdAt: "2026-08-31T00:00:00.000Z" });
+  const slices = deriveMessageSlices("node-1", "answer-1", content);
+  const chapters = deriveAnswerRuleChapters(version, slices);
+  assert.deepEqual(chapters.map((chapter) => chapter.title), ["背景", "方法", "结论"]);
+  assert.ok(chapters.every((chapter) => chapter.location?.bodyVersionId === version.id));
+  for (const chapter of chapters) {
+    const range = chapter.location!.sourceRange;
+    assert.equal(content.slice(range.startOffset, range.endOffset), chapter.location!.exact);
+  }
+  assert.equal(version.content, content);
+});
+
+test("AI 回答章节块起点统一适配为正文版本范围", () => {
+  const content = `## 第一章\n\n${"第一章正文。".repeat(220)}\n\n## 第二章\n\n${"第二章正文。".repeat(220)}`;
+  const version = deriveBodyVersion({ messageId: "answer-2", nodeId: "node-1", content, origin: "generation", createdAt: "2026-08-31T00:00:00.000Z" });
+  const chapters = attachAnswerChapterLocations(version, [
+    { ordinal: 0, title: "自然标题一", blockOrdinal: 0 },
+    { ordinal: 1, title: "自然标题二", blockOrdinal: 2 },
+  ]);
+  assert.deepEqual(chapters.map((chapter) => chapter.title), ["自然标题一", "自然标题二"]);
+  assert.deepEqual(chapters.map((chapter) => chapter.location?.bodyVersionId), [version.id, version.id]);
+  assert.ok(chapters[1]!.location!.sourceRange.startOffset > chapters[0]!.location!.sourceRange.startOffset);
 });

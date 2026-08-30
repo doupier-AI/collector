@@ -1411,7 +1411,7 @@ test("T03 有模型：导入长文立即可读，AI 章节解析异步补齐并�
       .all(view.taskId) as Array<{ recordJson: string }>;
     const calls = rows.map((row) => JSON.parse(row.recordJson) as { promptVersion?: string; tokenBudget?: number; status?: string });
     expect(calls.length).toBeGreaterThanOrEqual(1);
-    expect(calls[0]?.promptVersion).toBe("import-chapter-parse-v1");
+    expect(calls[0]?.promptVersion).toBe("research-chapter-parse-v2");
     expect(calls[0]?.tokenBudget).toBe(2048);
     expect(calls[0]?.status).toBe("completed");
   } finally {

@@ -1330,7 +1330,7 @@ ${JSON.stringify(input.content)}`;
   }
 
   /**
-   * T03 导入章节解析：通读按 `[B<ordinal>]` 编号的导入内容块，输出章节起点块号与标题。
+   * 统一章节解析：通读按 `[B<ordinal>]` 编号的导入材料或回答正文，输出章节起点块号与标题。
    * 返回模型原始 JSON 文本；合法性校验（块号范围/递增/标题）由调用方经
    * validateImportChapterPlan 完成，不合契约时调用方退化为规则锚点。
    * 给定材料的结构化整理任务，固定关闭思考模式（融合正文同源教训：thinking 耗尽预算）。
@@ -1339,7 +1339,7 @@ ${JSON.stringify(input.content)}`;
     input: { content: string },
     options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
   ): Promise<string> {
-    const prompt = `你是 Collector 的文档章节解析助手。下面是一篇导入文章，已按段落块编号（[B0]、[B1]……）。请通读全文，按文章真实结构划分章节，并为每章给出起始段落块编号与章节标题。
+    const prompt = `你是 Collector 的长内容章节解析助手。下面是一份导入材料或回答正文，已按段落块编号（[B0]、[B1]……）。请通读全文，按内容真实结构划分章节，并为每章给出起始段落块编号与章节标题。
 
 只返回合法 JSON：{"chapters":[{"block":0,"title":"第一章标题"}]}
 

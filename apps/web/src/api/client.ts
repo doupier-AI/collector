@@ -21,6 +21,7 @@ import type {
   ResearchBodyVersionView,
   ResearchBranchView,
   ResearchContentView,
+  ResearchChapterTaskRecord,
   ResearchImportAccepted,
   ResearchImportTaskRecord,
   ResearchLaterItemInput,
@@ -138,6 +139,7 @@ export interface ApiClient {
   getResearchNodeView(nodeId: string): Promise<ResearchNodeView>;
   /** #35 正文版本视图：版本 + 运行时派生的语义片段（含 excerpt）；#42 起前端定位依据片段使用。 */
   getResearchBodyVersion(bodyVersionId: string): Promise<ResearchBodyVersionView>;
+  retryAnswerChapterParse(bodyVersionId: string): Promise<ResearchChapterTaskRecord>;
   /** 节点内追问：根节点与子节点统一的提交入口。 */
   submitResearchNodeMessage(nodeId: string, content: string, idempotencyKey: string, options?: { allowWebSearch?: boolean }): Promise<ResearchTurnAccepted>;
   startResearchTermPreview(nodeId: string, input: ResearchTermPreviewInput, idempotencyKey: string): Promise<ResearchTermPreviewAccepted>;
@@ -447,6 +449,13 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
       return requestJson<ResearchContentView>(
         fetchFn,
         `/v1/research-content/${encodeURIComponent(contentSnapshotId)}/chapters/retry`,
+        { method: "POST", headers: JSON_HEADERS, body: "{}" },
+      );
+    },
+    retryAnswerChapterParse(bodyVersionId: string) {
+      return requestJson<ResearchChapterTaskRecord>(
+        fetchFn,
+        `/v1/research-body-versions/${encodeURIComponent(bodyVersionId)}/chapters/retry`,
         { method: "POST", headers: JSON_HEADERS, body: "{}" },
       );
     },

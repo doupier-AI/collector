@@ -7,6 +7,8 @@ import type { ResearchCitationCandidate } from "@collector/capture-contracts";
 import { markdownStableVisibleText, projectMarkdownDocument, projectMarkdownSourceRange } from "@collector/markdown-projection";
 import {
   compareAssociationHintsByValue,
+  researchChapterTargetKey,
+  resolveResearchChapterTarget,
   type ConfirmTemporaryFusionResult,
   isResearchPermanentEdge,
   nextProjectColorRole,
@@ -112,11 +114,12 @@ export interface ResearchImportStore {
   getResearchSession(id: string): ResearchSessionRecord | undefined;
 }
 
-/** 导入章节解析任务（T03）所需的持久化能力：快照与任务一对一，snapshot_id 唯一即幂等。 */
+/** 导入与回答共用章节任务；目标键由快照或回答正文版本确定。 */
 export interface ResearchChapterStore {
   getResearchChapterTask(id: string): ResearchChapterTaskRecord | undefined;
   getResearchChapterTaskBySnapshot(snapshotId: string): ResearchChapterTaskRecord | undefined;
-  /** 按 snapshot_id 幂等创建：已存在时原样返回既有任务，不产生重复锚点任务。 */
+  getResearchChapterTaskByBodyVersion(bodyVersionId: string): ResearchChapterTaskRecord | undefined;
+  /** 按统一目标键幂等创建：已存在时原样返回既有任务。 */
   createResearchChapterTask(record: ResearchChapterTaskRecord): Promise<ResearchChapterTaskRecord>;
   /** CAS 认领：queued → running，原子累加 attempts；已被认领返回 undefined。 */
   claimResearchChapterTask(id: string): ResearchChapterTaskRecord | undefined;
@@ -126,6 +129,9 @@ export interface ResearchChapterStore {
   /** 重启恢复：running 回 queued（模型调用未落库，重跑即幂等），返回受影响数。 */
   requeueInterruptedResearchChapterTasks(): number;
   getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined;
+  getResearchMessage(id: string): ResearchMessageRecord | undefined;
+  getBodyVersion(id: string): ResearchBodyVersionRecord | undefined;
+  listSlicesByMessage(messageId: string): ResearchSliceRecord[];
   getResearchSession(id: string): ResearchSessionRecord | undefined;
 }
 
@@ -508,7 +514,7 @@ export interface CollectorStore
  * `if (version < N+1)` 版本块（块内写入对应 schema_migrations 行）并递增本常量；
  * 测试以此常量断言「打开/重放后数据库实际到达声明版本」，无需再手工同步多处硬编码断言。
  */
-export const LATEST_SCHEMA_VERSION = 48;
+export const LATEST_SCHEMA_VERSION = 49;
 
 function directSourceIdsForConfirmedDraft(
   draft: ResearchFusionDraftVersionRecord,
@@ -2535,19 +2541,38 @@ export class SqliteStore implements CollectorStore {
   }
 
   getResearchChapterTaskBySnapshot(snapshotId: string): ResearchChapterTaskRecord | undefined {
-    return this.getRecord<ResearchChapterTaskRecord>("SELECT record_json FROM research_chapter_tasks WHERE snapshot_id = ?", snapshotId);
+    return this.getRecord<ResearchChapterTaskRecord>("SELECT record_json FROM research_chapter_tasks WHERE target_key = ? OR snapshot_id = ?", `import:${snapshotId}`, snapshotId);
+  }
+
+  getResearchChapterTaskByBodyVersion(bodyVersionId: string): ResearchChapterTaskRecord | undefined {
+    return this.getRecord<ResearchChapterTaskRecord>("SELECT record_json FROM research_chapter_tasks WHERE target_key = ?", `answer:${bodyVersionId}`);
   }
 
   async createResearchChapterTask(record: ResearchChapterTaskRecord): Promise<ResearchChapterTaskRecord> {
     let created: ResearchChapterTaskRecord | undefined;
     this.transaction(() => {
-      const existing = this.getResearchChapterTaskBySnapshot(record.snapshotId);
+      const target = resolveResearchChapterTarget(record);
+      const targetKey = researchChapterTargetKey(target);
+      const existing = this.getRecord<ResearchChapterTaskRecord>("SELECT record_json FROM research_chapter_tasks WHERE target_key = ?", targetKey);
       if (existing) {
         created = existing;
         return;
       }
-      this.db().prepare("INSERT INTO research_chapter_tasks (id, session_id, snapshot_id, status, retryable, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(record.id, record.sessionId, record.snapshotId, record.status, record.retryable ? 1 : 0, record.createdAt, record.updatedAt, JSON.stringify(record));
+      this.db().prepare("INSERT INTO research_chapter_tasks (id, session_id, target_key, target_kind, snapshot_id, message_id, body_version_id, status, retryable, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(
+          record.id,
+          record.sessionId,
+          targetKey,
+          target.kind,
+          target.kind === "import" ? target.snapshotId : null,
+          target.kind === "answer" ? target.messageId : null,
+          target.kind === "answer" ? target.bodyVersionId : null,
+          record.status,
+          record.retryable ? 1 : 0,
+          record.createdAt,
+          record.updatedAt,
+          JSON.stringify(record),
+        );
       created = record;
     });
     if (!created) throw new Error("Research chapter task was not persisted");
@@ -4958,6 +4983,42 @@ export class SqliteStore implements CollectorStore {
         `);
       });
       version = 48;
+    }
+
+    if (version < 49) {
+      // SIDE-06：导入快照与回答正文版本共用章节任务表。target_key 是统一幂等键；
+      // snapshot_id 保留为旧导入记录的查询适配，回答记录不伪造快照。
+      const columns = (this.db().prepare("PRAGMA table_info(research_chapter_tasks)").all() as Array<{ name: string }>).map((column) => column.name);
+      this.transaction(() => {
+        if (!columns.includes("target_key")) {
+          this.db().exec(`
+            ALTER TABLE research_chapter_tasks RENAME TO research_chapter_tasks_legacy;
+            CREATE TABLE research_chapter_tasks (
+              id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              target_key TEXT NOT NULL UNIQUE,
+              target_kind TEXT NOT NULL,
+              snapshot_id TEXT,
+              message_id TEXT,
+              body_version_id TEXT,
+              status TEXT NOT NULL,
+              retryable INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              record_json TEXT NOT NULL
+            );
+            INSERT INTO research_chapter_tasks (
+              id, session_id, target_key, target_kind, snapshot_id, status, retryable, created_at, updated_at, record_json
+            )
+            SELECT id, session_id, 'import:' || snapshot_id, 'import', snapshot_id, status, retryable, created_at, updated_at, record_json
+            FROM research_chapter_tasks_legacy;
+            DROP TABLE research_chapter_tasks_legacy;
+            CREATE INDEX research_chapter_tasks_status_idx ON research_chapter_tasks(status, created_at);
+          `);
+        }
+        this.db().exec("INSERT INTO schema_migrations(version, applied_at) VALUES (49, datetime('now'))");
+      });
+      version = 49;
     }
 
   }
