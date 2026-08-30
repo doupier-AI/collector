@@ -303,6 +303,57 @@ test("思考增量与正文分离落库：message.reasoning 累计、正文不�
   assert.ok(events.some((event) => event.type === "delta" && event.message?.reasoning?.includes("先思考")), "delta 事件快照含思考累计");
   const last = [...events].reverse().find((event) => event.type === "completed");
   assert.equal(last?.message?.reasoning, "先思考再推演", "完成事件快照含完整思考");
+  assert.equal(events.at(-1)?.type, "completed", "reasoning 与正文 delta 全部先于完成事件");
+  assert.equal(events.filter((event) => event.type === "delta" && event.delta === "").length, 2, "每段 reasoning 恰好一次落库");
+  store.close();
+});
+
+test("reasoning 失败内容不进入普通日志，只以稳定错误类别记录", async (t) => {
+  const privateReasoning = "token=reasoning-secret 用户私密推演";
+  const provider = makeStreamProvider({
+    calls: [],
+    script: [() => ({ reasonings: [privateReasoning], deltas: ["不会到达的正文"], cutAfter: 0, cutError: "fatal400" })],
+  });
+  const { store, service } = await makeService(t, provider, undefined, false);
+  const accepted = await service.research.submitMessage("session-1", "问题", "k-reasoning-log");
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args.join(" ")); };
+  try {
+    await service.research.processTask(accepted.task.id);
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.equal(store.getResearchTask(accepted.task.id)?.status, "failed");
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)?.reasoning, privateReasoning);
+  assert.doesNotMatch(warnings.join("\n"), /reasoning-secret|用户私密推演|token=/);
+  store.close();
+});
+
+test("reasoning 持久化失败不被吞掉：任务失败且正文与完成事件均不越过故障", async (t) => {
+  const provider = makeStreamProvider({
+    calls: [],
+    script: [() => ({ reasonings: ["必须持久化的过程"], deltas: ["不得越过故障的正文"], finishReason: "stop" })],
+  });
+  const { store, service } = await makeService(t, provider, undefined, false);
+  const originalAppend = store.appendResearchTaskDelta.bind(store);
+  store.appendResearchTaskDelta = async (id, delta, termMarkers, reasoningDelta) => {
+    if (reasoningDelta) throw new Error("injected reasoning persistence failure");
+    await originalAppend(id, delta, termMarkers, reasoningDelta);
+  };
+  const accepted = await service.research.submitMessage("session-1", "问题", "k-reasoning-persistence-error");
+  const originalWarn = console.warn;
+  console.warn = () => undefined;
+  try {
+    await service.research.processTask(accepted.task.id);
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(store.getResearchTask(accepted.task.id)?.status, "failed");
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)?.content, "");
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)?.reasoning, undefined);
+  assert.equal(store.listResearchTaskEvents(accepted.task.id).some((event) => event.type === "completed"), false);
   store.close();
 });
 
@@ -423,6 +474,52 @@ test("思考阶段暂停：reasoning 已落、正文空，暂停后继续从断�
   assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.reasoning, "思考第一段思考第二段", "继续后思考追加");
   // 思考阶段暂停时正文为空、无断点：继续是新物理调用从空重写（第一次调用剩余部分随中止丢弃）。
   assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "续写完成。", "无断点时继续从空重写");
+  store.close();
+});
+
+test("思考尾段仍在节流缓冲时暂停：先恰好一次落库完整 reasoning，再进入 paused", async (t) => {
+  const provider = makeStreamProvider({
+    calls: [],
+    script: [
+      () => ({ reasonings: ["已落首段", "缓冲尾段"], sleepAfterReasoningsMs: 60, deltas: ["暂停后不得写入"], finishReason: "stop" }),
+      () => ({ deltas: ["恢复后的正文。"], finishReason: "stop" }),
+    ],
+  });
+  const { store, service } = await makeService(t, provider);
+  const accepted = await service.research.submitMessage("session-1", "问题", "k-pause-buffered-reasoning");
+  for (let i = 0; i < 200 && store.getResearchMessage(accepted.outputMessage.id)?.reasoning !== "已落首段"; i++) await new Promise((r) => setImmediate(r));
+  await service.research.pauseTask(accepted.task.id);
+
+  assert.equal(store.getResearchTask(accepted.task.id)?.status, "paused");
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)?.reasoning, "已落首段缓冲尾段");
+  const pausedEvents = store.listResearchTaskEvents(accepted.task.id);
+  assert.equal(pausedEvents.filter((event) => event.type === "delta" && event.delta === "").length, 2, "首段与尾段各落一次");
+  assert.equal(pausedEvents.at(-1)?.message?.reasoning, "已落首段缓冲尾段", "暂停前最后快照已包含尾段");
+
+  await new Promise((r) => setTimeout(r, 100));
+  await service.research.resumeTask(accepted.task.id);
+  for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)?.status !== "completed"; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)?.reasoning, "已落首段缓冲尾段", "继续不重复旧 reasoning");
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)?.content, "恢复后的正文。");
+  store.close();
+});
+
+test("思考尾段仍在节流缓冲时停止：reasoning delta 先于唯一 stopped 终态事件", async (t) => {
+  const provider = makeStreamProvider({
+    calls: [],
+    script: [() => ({ reasonings: ["已落首段", "停止尾段"], sleepAfterReasoningsMs: 60, deltas: ["停止后不得写入"], finishReason: "stop" })],
+  });
+  const { store, service } = await makeService(t, provider);
+  const accepted = await service.research.submitMessage("session-1", "问题", "k-stop-buffered-reasoning");
+  for (let i = 0; i < 200 && store.getResearchMessage(accepted.outputMessage.id)?.reasoning !== "已落首段"; i++) await new Promise((r) => setImmediate(r));
+  await service.research.stopTask(accepted.task.id);
+
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)?.reasoning, "已落首段停止尾段");
+  const events = store.listResearchTaskEvents(accepted.task.id);
+  assert.equal(events.filter((event) => event.type === "delta" && event.delta === "").length, 2);
+  assert.equal(events.filter((event) => event.type === "stopped").length, 1);
+  assert.equal(events.at(-1)?.type, "stopped");
+  assert.equal(events.at(-1)?.message?.reasoning, "已落首段停止尾段");
   store.close();
 });
 

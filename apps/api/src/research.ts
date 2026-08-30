@@ -77,6 +77,45 @@ const REASONING_FLUSH_MIN_CHARS = 400;
 const CONFIRMED_FINAL_MIN_CHUNK_CHARACTERS = 24;
 const CONFIRMED_FINAL_MAX_DELTAS = 32;
 
+/**
+ * reasoning 回调是同步的，SQLite 写入是异步的：本队列把每段内容只取出一次并串行落库。
+ * close() 同步封住用户暂停/停止边界，边界后的供应商字节不再获得当前尝试的展示资格。
+ */
+class ReasoningPersistenceQueue {
+  private buffer = "";
+  private lastFlushAt = 0;
+  private chain: Promise<void> = Promise.resolve();
+  private closed = false;
+
+  constructor(private readonly persist: (chunk: string) => Promise<void>) {}
+
+  push(text: string): void {
+    if (this.closed || !text) return;
+    this.buffer += text;
+    if (Date.now() - this.lastFlushAt >= REASONING_FLUSH_MIN_INTERVAL_MS || this.buffer.length >= REASONING_FLUSH_MIN_CHARS) {
+      this.lastFlushAt = Date.now();
+      this.flush();
+    }
+  }
+
+  flush(): Promise<void> {
+    if (this.buffer) {
+      const chunk = this.buffer;
+      this.buffer = "";
+      this.chain = this.chain.then(() => this.persist(chunk));
+      // 提前标记拒绝已被观察，避免回调触发的异步写在主流程 await 前形成未处理拒绝；
+      // 原 chain 仍保持 rejected，后续 flush/close 会把错误交给任务主流程。
+      void this.chain.catch(() => undefined);
+    }
+    return this.chain;
+  }
+
+  close(): Promise<void> {
+    this.closed = true;
+    return this.flush();
+  }
+}
+
 function confirmedFinalDisplayDeltas(content: string): string[] {
   const characters = Array.from(content);
   const chunkCharacters = Math.max(
@@ -232,6 +271,10 @@ export class ResearchSessionService {
   private readonly finalBodySinks = new Map<string, FinalBodySink>();
   /** ADR-0035 暂停/停止：每个运行中任务的中止控制器；pause/stop 触发 abort 中止物理 provider 流。 */
   private readonly abortControllers = new Map<string, AbortController>();
+  /** 当前单轮流的 reasoning 串行持久化边界；暂停/停止必须先封口并冲洗，再写终态。 */
+  private readonly reasoningQueues = new Map<string, ReasoningPersistenceQueue>();
+  /** 用户操作已取得终态优先权但尚在冲洗 reasoning；防止完成事件越过暂停/停止边界。 */
+  private readonly requestedInterrupts = new Map<string, "paused" | "stopped">();
 
   constructor(private readonly store: ResearchStore, private readonly options: ResearchServiceOptions = {}) {
     this.provider = options.provider;
@@ -514,11 +557,19 @@ export class ResearchSessionService {
     return task;
   }
 
-  /** ADR-0035 暂停：任务置 paused（保留已写正文与断点）后中止物理 provider 流。 */
+  /** ADR-0035 暂停：封住 reasoning 边界并中止物理流，尾段落库完成后再置 paused。 */
   async pauseTask(id: string): Promise<ResearchTaskRecord> {
-    const task = await this.store.pauseResearchTask(id);
+    const current = this.getTask(id);
+    if (current.status !== "running") return this.store.pauseResearchTask(id);
+    this.requestedInterrupts.set(id, "paused");
+    const pendingReasoning = this.reasoningQueues.get(id)?.close();
     this.abortControllers.get(id)?.abort();
-    return task;
+    try {
+      if (pendingReasoning) await pendingReasoning;
+      return await this.store.pauseResearchTask(id);
+    } finally {
+      if (this.requestedInterrupts.get(id) === "paused") this.requestedInterrupts.delete(id);
+    }
   }
 
   /** ADR-0035 继续：paused → queued 重新入队，从断点续写（正文/思考/断点全部保留）。 */
@@ -535,11 +586,19 @@ export class ResearchSessionService {
     return task;
   }
 
-  /** ADR-0035 停止：任务置 stopped 终态（保留已写内容）后中止物理 provider 流。 */
+  /** ADR-0035 停止：封住 reasoning 边界并中止物理流，尾段落库后再写 stopped 终态事件。 */
   async stopTask(id: string): Promise<ResearchTaskRecord> {
-    const task = await this.store.stopResearchTask(id);
+    const current = this.getTask(id);
+    if (current.status !== "running") return this.store.stopResearchTask(id);
+    this.requestedInterrupts.set(id, "stopped");
+    const pendingReasoning = this.reasoningQueues.get(id)?.close();
     this.abortControllers.get(id)?.abort();
-    return task;
+    try {
+      if (pendingReasoning) await pendingReasoning;
+      return await this.store.stopResearchTask(id);
+    } finally {
+      if (this.requestedInterrupts.get(id) === "stopped") this.requestedInterrupts.delete(id);
+    }
   }
 
   /** ADR-0035 重新生成：旧回答快照进 versions（保留可回看），任务 queued 重跑。 */
@@ -696,11 +755,13 @@ export class ResearchSessionService {
             return;
           }
         }
+        this.throwIfUserInterrupted(task.id);
         if (!markupFinished) content = (await this.finishGeneratedMarkup(task)).content;
         generatedCharacters = content.length;
         if (generatedCharacters > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
         // 正文定稿后统一派生正式切片（确定性边界 + 小模型事后标注），再落库与完成。
         await this.finalizeDerivedSlices(task, provider, nodeId, content, citations, titleHints);
+        this.throwIfUserInterrupted(task.id);
         await this.store.completeResearchTask(task.id);
         try {
           await this.options.onTaskCompleted?.(this.getTask(task.id));
@@ -708,7 +769,7 @@ export class ResearchSessionService {
           // 附加任务失败不能把已经完成的研究回答改判为失败。
         }
       } catch (error) {
-        // ADR-0035：暂停/停止中止的生成循环静默收尾——任务状态已由 pause/stop 落库，不判失败、不发失败事件。
+        // ADR-0035：暂停/停止已取得终态优先权；生成循环静默收尾，不判失败、不发失败事件。
         if (error instanceof TaskPausedByUserError) return;
         if (error instanceof FinalBodyProtocolError) {
           // 长文逐节、融合与单轮共享此终态收口：协议污染绝不能留下 completed section 供 retry 保留。
@@ -727,10 +788,16 @@ export class ResearchSessionService {
       }
     } finally {
       this.abortControllers.delete(id);
+      this.reasoningQueues.delete(id);
       this.mentionStreams.delete(id);
       this.finalBodySinks.delete(id);
       this.running.delete(id);
     }
+  }
+
+  private throwIfUserInterrupted(taskId: string): void {
+    const requested = this.requestedInterrupts.get(taskId);
+    if (requested) throw new TaskPausedByUserError(requested);
   }
 
   /** 旧的测试/扩展 provider 未实现 E2 原生输出时保持既有流式兼容；真实 gateway 不走此分支。 */
@@ -978,18 +1045,11 @@ export class ResearchSessionService {
     let physicalCalls = 0;
     let lastCheckpointAt = 0;
     let checkpointedLength = seedLength;
-    // 思考增量缓冲与保序落库链：回调只推缓冲，flush 排队执行；正文 append 前先等链清空。
-    let reasoningBuffer = "";
-    let lastReasoningFlushAt = 0;
-    let reasoningChain: Promise<void> = Promise.resolve();
-    const queueReasoningFlush = (): void => {
-      if (!reasoningBuffer) return;
-      const chunk = reasoningBuffer;
-      reasoningBuffer = "";
-      reasoningChain = reasoningChain
-        .then(async () => { await this.appendGeneratedDelta(task, "", chunk); })
-        .catch(() => { /* 落库失败由主流程错误承载，不打断思考缓冲链 */ });
-    };
+    // 思考增量缓冲与保序落库链：回调只推队列；正文 append 前先等全部先行 reasoning 落库。
+    const reasoning = new ReasoningPersistenceQueue(async (chunk) => {
+      await this.appendGeneratedDelta(task, "", chunk);
+    });
+    this.reasoningQueues.set(task.id, reasoning);
     for (;;) {
       let doneFinish: string | undefined;
       const resumeFrom = rawStreamed || undefined;
@@ -1004,19 +1064,14 @@ export class ResearchSessionService {
             ...(resumeFrom ? { resumeFrom } : {}),
             ...(this.abortControllers.get(task.id)?.signal ? { signal: this.abortControllers.get(task.id)!.signal } : {}),
             onStreamDone: (done: { finishReason?: string }) => { doneFinish = done.finishReason; },
-            onReasoning: (text: string) => {
-              reasoningBuffer += text;
-              if (Date.now() - lastReasoningFlushAt >= REASONING_FLUSH_MIN_INTERVAL_MS || reasoningBuffer.length >= REASONING_FLUSH_MIN_CHARS) {
-                lastReasoningFlushAt = Date.now();
-                queueReasoningFlush();
-              }
-            },
+            onReasoning: (text: string) => reasoning.push(text),
           };
           const stream = groundedEvidence === undefined
             ? provider.writeBodyStream!(streamOptions)
             : provider.writeGroundedFinalStream!(generationRequest, groundedEvidence, streamOptions);
           for await (const delta of stream) {
             if (!delta) continue;
+            this.throwIfUserInterrupted(task.id);
             // ADR-0035：任务离开 running（暂停/停止/恢复重入队等）即退出本生成循环，
             // 防止旧循环在任务状态已被新操作改写后继续 append（与 store 的 running 校验同源）。
             const statusNow = this.store.getResearchTask(task.id)?.status;
@@ -1025,8 +1080,7 @@ export class ResearchSessionService {
             const suffix = next.slice(rawStreamed.length);
             if (suffix) {
               // 先落已缓冲的思考（保序），再落正文增量。
-              queueReasoningFlush();
-              await reasoningChain;
+              await reasoning.flush();
               const update = await this.appendGeneratedDelta(task, suffix);
               // 续写/去重只以已通过 FinalBodySink 的原始正文为种子。像 "<thi" 这样的
               // 协议前缀会留在 sink.pending，物理重试不能把它误当成可展示前缀再拼回来。
@@ -1054,15 +1108,13 @@ export class ResearchSessionService {
         }
         // 状态检查触发的退出（含 resume 竞态下任务被改写为 queued）：静默重抛，由 runTask 收尾。
         if (error instanceof TaskPausedByUserError) {
-          queueReasoningFlush();
-          await reasoningChain;
+          await reasoning.flush();
           throw error;
         }
         // ADR-0035：外部中止（暂停/停止触发）——无论任务状态已被改写为 paused/queued/stopped
         // （resume 竞态下状态先于旧循环退出被改写），都落断点并静默退出，绝不判失败。
         if (error instanceof ModelProviderAbortedError) {
-          queueReasoningFlush();
-          await reasoningChain;
+          await reasoning.flush();
           if (visibleStreamed.trim() || this.finalBodySinks.get(task.id)?.protocolPrefix()) {
             await this.store.saveResearchTaskStreamCheckpoint(task.id, visibleStreamed, this.finalBodySinks.get(task.id)?.protocolPrefix());
           }
@@ -1071,16 +1123,14 @@ export class ResearchSessionService {
         // ADR-0035：暂停/停止中止——先落已缓冲思考与断点，再以内部信号退出（runTask 静默收尾）。
         const status = this.store.getResearchTask(task.id)?.status;
         if (status === "paused" || status === "stopped") {
-          queueReasoningFlush();
-          await reasoningChain;
+          await reasoning.flush();
           if (visibleStreamed.trim() || this.finalBodySinks.get(task.id)?.protocolPrefix()) {
             await this.store.saveResearchTaskStreamCheckpoint(task.id, visibleStreamed, this.finalBodySinks.get(task.id)?.protocolPrefix());
           }
           throw new TaskPausedByUserError(status);
         }
         // 流被切断/重试耗尽：落断点保留已写部分后抛错（failResearchTask → 可重试从断点续传）。
-        queueReasoningFlush();
-        await reasoningChain;
+        await reasoning.flush();
         if (visibleStreamed.trim() || this.finalBodySinks.get(task.id)?.protocolPrefix()) {
           await this.store.saveResearchTaskStreamCheckpoint(task.id, visibleStreamed, this.finalBodySinks.get(task.id)?.protocolPrefix());
         }
@@ -1090,8 +1140,8 @@ export class ResearchSessionService {
       // 完成判定：length 截断 / 无果断信号，且非空、未超续写上限 → 续写；否则完成。
       const truncated = doneFinish === "length";
       const noDecisiveSignal = !doneFinish;
-      queueReasoningFlush();
-      await reasoningChain;
+      this.throwIfUserInterrupted(task.id);
+      await reasoning.flush();
       if (!visibleStreamed.trim()) throw new Error("Provider returned an empty body");
       if (!truncated && !noDecisiveSignal) break;
       continuations += 1;
@@ -1107,6 +1157,7 @@ export class ResearchSessionService {
       }
       if (truncated) console.warn(`[research] 单轮流式被截断触发续写 task=${task.id} chars=${visibleStreamed.length}`);
     }
+    await reasoning.close();
     await this.store.clearResearchTaskStreamCheckpoint(task.id);
     // seed 前缀已在库里，返回完整正文供 finalizeDerivedSlices 派生。
     return visibleStreamed;

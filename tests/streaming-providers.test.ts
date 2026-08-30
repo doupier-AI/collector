@@ -5,6 +5,7 @@ import {
   FakeProvider,
   GeminiGroundingProvider,
   ModelGateway,
+  ModelProviderAbortedError,
   ModelProviderHttpError,
   ModelProviderTimeoutError,
   OpenAiCompatibleProvider,
@@ -82,7 +83,7 @@ test("OpenAI 兼容 provider 流式：delta.content 逐字、终帧 usage、[DON
   assert.deepEqual(done.usage, { inputTokens: 11, outputTokens: 22, inputCacheHitTokens: 3, inputCacheMissTokens: 8 });
 });
 
-test("OpenAI 兼容 provider 流式：reasoning_content 作为独立 reasoning 事件产出，不计入正文", async () => {
+test("已验证 reasoning 输出能力：专用字段先于同帧正文产出，空值忽略且不计入正文", async () => {
   let body: Record<string, unknown> | undefined;
   const provider = createProvider(DEFAULT_PROVIDER_REGISTRY.get("deepseek"), {
     apiKey: () => "deepseek-secret",
@@ -91,6 +92,7 @@ test("OpenAI 兼容 provider 流式：reasoning_content 作为独立 reasoning �
       return sseResponse([
         { data: JSON.stringify({ model: "deepseek-v4-flash", choices: [{ delta: { reasoning_content: "先想" } }] }) },
         { data: JSON.stringify({ model: "deepseek-v4-flash", choices: [{ delta: { content: "你好", reasoning_content: "再想" } }] }) },
+        { data: JSON.stringify({ model: "deepseek-v4-flash", choices: [{ delta: { reasoning_content: "" } }] }) },
         { data: JSON.stringify({ model: "deepseek-v4-flash", choices: [{ delta: { content: "世界" } }] }) },
         { data: "[DONE]" },
       ]);
@@ -100,7 +102,30 @@ test("OpenAI 兼容 provider 流式：reasoning_content 作为独立 reasoning �
   assert.equal(deltasOf(events), "你好世界");
   const reasoning = events.filter((event): event is Extract<ModelProviderStreamEvent, { type: "reasoning" }> => event.type === "reasoning").map((event) => event.text).join("");
   assert.equal(reasoning, "先想再想");
+  assert.deepEqual(events.map((event) => event.type === "done" ? "done" : `${event.type}:${event.text}`), [
+    "reasoning:先想",
+    "reasoning:再想",
+    "delta:你好",
+    "delta:世界",
+    "done",
+  ]);
   doneOf(events);
+});
+
+test("未声明 reasoning 输出能力的兼容端点忽略同名字段，只产出正文与 done", async () => {
+  const provider = createProvider(DEFAULT_PROVIDER_REGISTRY.get("openrouter"), {
+    apiKey: () => "openrouter-secret",
+    fetchImpl: async () =>
+      sseResponse([
+        { data: JSON.stringify({ choices: [{ delta: { reasoning_content: "不可信伪过程" } }] }) },
+        { data: JSON.stringify({ choices: [{ delta: { content: "可信正文", reasoning_content: "仍不可信" } }] }) },
+        { data: "[DONE]" },
+      ]),
+  });
+  const events = await collect(provider.completeStream!({ prompt: "问题", model: "openai/gpt-4.1-mini" }));
+  assert.equal(deltasOf(events), "可信正文");
+  assert.equal(events.some((event) => event.type === "reasoning"), false);
+  assert.deepEqual(events.map((event) => event.type), ["delta", "done"]);
 });
 
 test("网关 writeResearchBodyStream：reasoning 经 onReasoning 旁路转发，正文走 trim 通道互不污染", async () => {
@@ -229,13 +254,41 @@ function sseHangResponse(frames: Array<{ event?: string; data: string }>, signal
         return;
       }
       // 数据推完后不再 enqueue、也不 close —— 流挂起。注册 abort：模拟网络层对中止的响应。
-      if (!signal?.aborted) {
-        signal?.addEventListener("abort", () => controller.error(signal.reason ?? new Error("aborted")), { once: true });
-      }
+      if (signal?.aborted) controller.error(signal.reason ?? new Error("aborted"));
+      else signal?.addEventListener("abort", () => controller.error(signal.reason ?? new Error("aborted")), { once: true });
     },
   });
   return new Response(stream, { status: 200 });
 }
+
+test("OpenAI 兼容流式接入外部中止信号，暂停/停止不会退化为空闲超时", async () => {
+  const external = new AbortController();
+  let requestSignal: AbortSignal | null | undefined;
+  let markFetchStarted: (() => void) | undefined;
+  const fetchStarted = new Promise<void>((resolve) => { markFetchStarted = resolve; });
+  const provider = createProvider(DEFAULT_PROVIDER_REGISTRY.get("deepseek"), {
+    apiKey: () => "deepseek-secret",
+    fetchImpl: async (_input, init) => {
+      requestSignal = init?.signal;
+      markFetchStarted?.();
+      return sseHangResponse([{ data: JSON.stringify({ choices: [{ delta: { reasoning_content: "已收到过程" } }] }) }], init?.signal);
+    },
+  });
+  const pending = collect(provider.completeStream!({
+    prompt: "问题",
+    model: "deepseek-v4-flash",
+    signal: external.signal,
+    timeoutMs: 1_000,
+  }));
+  await fetchStarted;
+  await new Promise((resolve) => setImmediate(resolve));
+  external.abort();
+  await assert.rejects(pending, (error: unknown) => {
+    assert.ok(error instanceof ModelProviderAbortedError);
+    return true;
+  });
+  assert.equal(requestSignal?.aborted, true);
+});
 
 /** 按 intervalMs 间隔逐块推流（间隔 > timeoutMs 时总时长远超 timeoutMs，但单块间隔 < timeoutMs）。 */
 function sseDripResponse(frames: Array<{ event?: string; data: string }>, intervalMs: number): Response {

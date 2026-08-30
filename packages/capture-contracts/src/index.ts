@@ -1,10 +1,13 @@
 export type ProviderApiMode = "openai_chat_completions" | "openai_responses" | "gemini_generate_content" | "anthropic_messages";
 export type ProviderAuthMode = "bearer" | "api_key_header";
 export type ProviderThinkingMode = "none" | "deepseek";
+export type ProviderReasoningOutput = "none" | "deepseek_reasoning_content";
 export type ProviderWebGrounding = "unsupported" | "openai_web_search" | "gemini_google_search" | "anthropic_web_search";
 
 export interface ProviderCapabilities {
   structuredJson: boolean;
+  /** 当前供应商适配器已验证、可与回答正文分离的 reasoning 输出通道。 */
+  reasoningOutput: ProviderReasoningOutput;
   thinkingMode: ProviderThinkingMode;
   modelDiscovery: boolean;
   /** 当前供应商协议已验证的联网能力；自定义兼容端点必须显式保持 unsupported。 */
@@ -2382,6 +2385,7 @@ export function validateProviderDefinition(value: unknown): asserts value is Pro
   if (!definition.defaultModel?.trim()) throw new Error("Provider defaultModel is required");
   if (!Array.isArray(definition.models) || definition.models.some((model) => typeof model !== "string" || !model.trim())) throw new Error("Provider models must be non-empty strings");
   if (!definition.capabilities || typeof definition.capabilities.structuredJson !== "boolean" || typeof definition.capabilities.modelDiscovery !== "boolean") throw new Error("Provider capabilities are required");
+  if (!(["none", "deepseek_reasoning_content"] as ProviderReasoningOutput[]).includes(definition.capabilities.reasoningOutput)) throw new Error("Invalid provider reasoningOutput");
   if (!(["none", "deepseek"] as ProviderThinkingMode[]).includes(definition.capabilities.thinkingMode)) throw new Error("Invalid provider thinkingMode");
   if (!(["unsupported", "openai_web_search", "gemini_google_search", "anthropic_web_search"] as ProviderWebGrounding[]).includes(definition.capabilities.webGrounding)) throw new Error("Invalid provider webGrounding");
 }
