@@ -41,6 +41,7 @@ import { taskForMessage } from "./session-view";
 import { useResearchNode } from "./useResearchNode";
 import type { PendingFirstTurn } from "./useResearchNode";
 import { useTermPreviews } from "./useTermPreviews";
+import { currentBodyTermMarkers } from "./term-marker-view";
 import { deriveSliceCardTargets, sliceCardAccessibleName } from "./slice-cards";
 import { SliceRailNav } from "./SliceRailNav";
 import type { SliceRailItem } from "./SliceRailNav";
@@ -107,6 +108,9 @@ export function ResearchNodePage() {
   const latestCompletedAssistantId = readyView
     ? [...readyView.messages].filter((message) => message.role === "assistant" && message.status === "completed").at(-1)?.id ?? ""
     : "";
+  const hasActiveResearchTask = readyView?.tasks.some((task) =>
+    task.status === "queued" || task.status === "running" || task.status === "paused",
+  ) ?? false;
   // #61：会话上下文从已加载节点视图派生（稳定地址不携带会话 ID）；视图就绪前为空串。
   // ""→真实 ID 的翻转发生在内容首次渲染的同一提交，其 effect 重跑不得产生可见状态变化——
   // useResearchImports 的重置已做空集合守卫（返回原引用跳过渲染），
@@ -596,6 +600,31 @@ export function ResearchNodePage() {
     };
   }, [api, isReady, nodeId, latestCompletedAssistantId]);
 
+  // 弱标记抽取是回答生成之外的独立 sidecar 任务；主任务完成事件可能先到。
+  // 在最新回答稳定后的短窗口内渐进对齐节点视图，让标记稍后落库也能自动出现，
+  // 同时保持现有正文可读，不把页面退回 loading。
+  useEffect(() => {
+    if (!latestCompletedAssistantId || !nodeId || hasActiveResearchTask) return;
+    let cancelled = false;
+    const timers: number[] = [];
+    const refresh = async () => {
+      try {
+        const fresh = await api.getResearchNodeView(nodeId);
+        if (cancelled || fresh.node.id !== nodeId) return;
+        node.updateView(() => fresh);
+      } catch {
+        // 弱标记是附加阅读能力；对齐失败不遮挡正文，也不伪造标记。
+      }
+    };
+    for (const delay of [600, 1_500, 3_500, 7_500, 15_000, 30_000]) {
+      timers.push(window.setTimeout(() => { void refresh(); }, delay));
+    }
+    return () => {
+      cancelled = true;
+      for (const timer of timers) window.clearTimeout(timer);
+    };
+  }, [api, hasActiveResearchTask, latestCompletedAssistantId, node.updateView, nodeId]);
+
   async function handleDismissAssociationHint(hintId: string) {
     setDismissingHintId(hintId);
     try {
@@ -1021,7 +1050,7 @@ export function ResearchNodePage() {
                 }
                 citations={view.citations}
                 groundingSources={view.groundingSources}
-                terms={message.termMarkers ?? view.termDetections?.[message.id]?.terms}
+                terms={currentBodyTermMarkers(message, view.bodyVersions?.[message.id]?.id)}
                 termPreviews={termPreviews.previews}
                 onStartTermPreview={termPreviews.start}
                 onRetryTermPreview={termPreviews.retry}

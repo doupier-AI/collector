@@ -12,6 +12,7 @@ import {
   SqliteStore,
   createApiServer,
   detectTermMarkers,
+  termPreviewMarkerKey,
   type ResearchGenerationProvider,
   type ResearchTermMarkerExtractionProvider,
 } from "@collector/api";
@@ -97,6 +98,16 @@ function providerWithAnswer(answer: string, requests: ResearchGenerationRequest[
     },
   };
 }
+
+test("term preview marker identity is scoped to the current body version", () => {
+  const messageId = "versioned-answer";
+  const oldMarker = detectTermMarkers("REST is the old answer.", messageId).find((candidate) => candidate.text === "REST");
+  const newMarker = detectTermMarkers("REST is the rewritten answer.", messageId).find((candidate) => candidate.text === "REST");
+  assert.ok(oldMarker?.location);
+  assert.ok(newMarker?.location);
+  assert.notEqual(oldMarker.location.bodyVersionId, newMarker.location.bodyVersionId);
+  assert.notEqual(termPreviewMarkerKey(messageId, oldMarker), termPreviewMarkerKey(messageId, newMarker));
+});
 
 function extractionProvider(entries: Array<{ text: string; entityId: string; occurrence?: number }>): ResearchTermMarkerExtractionProvider {
   return {
@@ -762,6 +773,38 @@ test("an append-only generation handoff safely rebases the same closed term mark
     );
     assert.equal(accepted.preview.marker.location?.bodyVersionId, researchBodyVersionId(outputMessageId, content));
   }
+});
+
+test("an append-only body version change reuses the already-started preview task", async (t) => {
+  const harness = await createHarness({ autoRunResearchTasks: false });
+  t.after(() => harness.close());
+  const session = await harness.service.research.createSession("Append-only preview reuse", randomUUID());
+  const node = harness.store.getResearchNode(session.id);
+  assert.ok(node);
+  const now = new Date().toISOString();
+  const partial = "REST is already closed.";
+  const appended = `${partial} More text arrives later.`;
+  const outputMessageId = randomUUID();
+  const partialMarker = detectTermMarkers(partial, outputMessageId).find((candidate) => candidate.text === "REST");
+  const appendedMarker = detectTermMarkers(appended, outputMessageId).find((candidate) => candidate.text === "REST");
+  assert.ok(partialMarker?.location);
+  assert.ok(appendedMarker?.location);
+  const inputMessage: ResearchMessageRecord = {
+    id: randomUUID(), sessionId: session.id, nodeId: node.id, role: "user", content: "Explain REST", status: "completed", createdAt: now, updatedAt: now,
+  };
+  const outputMessage: ResearchMessageRecord = {
+    id: outputMessageId, sessionId: session.id, nodeId: node.id, role: "assistant", content: partial, status: "streaming", termMarkers: [partialMarker], createdAt: now, updatedAt: now,
+  };
+  const task: ResearchTaskRecord = {
+    id: randomUUID(), sessionId: session.id, nodeId: node.id, inputMessageId: inputMessage.id, outputMessageId,
+    idempotencyKey: randomUUID(), status: "running", retryable: false, promptVersion: "test", createdAt: now, updatedAt: now,
+  };
+  await harness.store.createResearchTurnForNode(node, inputMessage, outputMessage, task);
+  const first = await harness.service.termPreviews.start(node.id, { messageId: outputMessageId, marker: partialMarker }, "append-preview-first");
+  await harness.store.appendResearchTaskDelta(task.id, appended.slice(partial.length), [appendedMarker]);
+  const second = await harness.service.termPreviews.start(node.id, { messageId: outputMessageId, marker: appendedMarker }, "append-preview-second");
+
+  assert.equal(second.preview.id, first.preview.id);
 });
 
 test("a rewritten streaming body cannot rebase a stale term marker", async (t) => {

@@ -35,7 +35,7 @@ const modelMode = process.env.E2E_MODEL ?? "fake";
 const similarityRelation = process.env.E2E_SIMILARITY_RELATION ?? "contrast";
 
 // #89 极端响应夹具：只由精确专用提问触发，避免改变默认 fake 输出及既有场景。
-// 这些是 E2E 验收参数，不是产品配置；原始文本仍经服务端流内标记清洗与落库路径。
+// 这些是 E2E 验收参数，不是产品配置；正文保持干净，弱标记由独立抽取假模型旁路生成。
 const EXTREME_RESPONSE_TRIGGERS = Object.freeze({
   longBody: "E2E 极端形态：多段长正文",
   unbrokenLine: "E2E 极端形态：超长无断行",
@@ -47,7 +47,9 @@ const EXTREME_RESPONSE_SHAPE = Object.freeze({
   longBodyParagraphCharacters: 320,
   unbrokenLineCharacters: 1_000,
   denseMarkerCount: 20,
-  denseMarkerParagraphCharacters: 180,
+  // 20 段仍保持长列表与滚动压力，但总正文低于 1200 字收敛阈值；
+  // 超过阈值时产品契约只保留 4 个标记，不能用测试夹具绕过。
+  denseMarkerParagraphCharacters: 24,
   longChineseMarkerMinimumCharacters: 48,
   streamChunkCount: 4,
 });
@@ -56,9 +58,7 @@ function repeatToLength(seed, length) {
   return seed.repeat(Math.ceil(length / seed.length)).slice(0, length);
 }
 
-function marker(category, entityId, text) {
-  return `[[${category}:${entityId}:${text}]]`;
-}
+const LONG_CHINESE_MARKER_TEXT = "面向本地优先研究的长期知识沉淀与可追溯证据协作机制需要在跨轮次阅读中保持完整语义边界并支持长期可审计的知识演进记录";
 
 function streamParagraphs(paragraphs) {
   const chunkSize = Math.ceil(paragraphs.length / EXTREME_RESPONSE_SHAPE.streamChunkCount);
@@ -74,23 +74,21 @@ function createExtremeResponseFixtures() {
     return `${prefix}${repeatToLength("本地事实、证据关系与渐进阅读需要保持可追溯。", EXTREME_RESPONSE_SHAPE.longBodyParagraphCharacters)}`;
   });
   const unbrokenLine = repeatToLength("超长无断行文本用于验证浏览器对连续中文内容的换行与溢出处理。", EXTREME_RESPONSE_SHAPE.unbrokenLineCharacters);
-  const longChineseMarkerText = "面向本地优先研究的长期知识沉淀与可追溯证据协作机制需要在跨轮次阅读中保持完整语义边界并支持长期可审计的知识演进记录";
-  if (longChineseMarkerText.length < EXTREME_RESPONSE_SHAPE.longChineseMarkerMinimumCharacters) {
+  if (LONG_CHINESE_MARKER_TEXT.length < EXTREME_RESPONSE_SHAPE.longChineseMarkerMinimumCharacters) {
     throw new Error("E2E long Chinese marker fixture is shorter than its contract minimum");
   }
   const markerCategories = ["concept", "entity", "abbreviation", "notation"];
   const denseParagraphs = Array.from({ length: EXTREME_RESPONSE_SHAPE.denseMarkerCount }, (_, index) => {
     const category = markerCategories[index % markerCategories.length];
     const text = index === EXTREME_RESPONSE_SHAPE.denseMarkerCount - 1
-      ? longChineseMarkerText
+      ? LONG_CHINESE_MARKER_TEXT
       : category === "concept" ? `概念${index + 1}`
         : category === "entity" ? `实体${index + 1}`
           : category === "abbreviation" ? `E2E${index + 1}`
             : `O(${index + 1})`;
-    const marked = marker(category, `extreme-${category}-${index + 1}`, text);
-    return `密集标记第${index + 1}段包含${marked}。${repeatToLength("该段补足稳定长度，以便验证长内容中标记的定位、悬停与点击。", EXTREME_RESPONSE_SHAPE.denseMarkerParagraphCharacters)}`;
+    return `密集标记第${index + 1}段包含${text}。${repeatToLength("该段补足稳定长度，以便验证长内容中标记的定位、悬停与点击。", EXTREME_RESPONSE_SHAPE.denseMarkerParagraphCharacters)}`;
   });
-  const longChineseMarkerParagraph = `这个专用夹具只标记一个完整术语：${marker("concept", "long-chinese-multiword", longChineseMarkerText)}。`;
+  const longChineseMarkerParagraph = `这个专用夹具只标记一个完整术语：${LONG_CHINESE_MARKER_TEXT}。`;
 
   const response = (paragraphs) => ({ body: paragraphs.join("\n\n"), segments: streamParagraphs(paragraphs) });
   return Object.freeze({
@@ -196,10 +194,7 @@ const fakeProvider = {
     if (question === MARKDOWN_POSITION_FIXTURE.trigger) {
       return {
         kind: "confirmed_final",
-        content: MARKDOWN_POSITION_FIXTURE.body.replace(
-          MARKDOWN_POSITION_FIXTURE.term.exact,
-          marker("abbreviation", "markdown-position-rest", MARKDOWN_POSITION_FIXTURE.term.exact),
-        ),
+        content: MARKDOWN_POSITION_FIXTURE.body,
         status: "grounded",
         queries: [MARKDOWN_POSITION_FIXTURE.search.exact],
         sources: [{
@@ -291,11 +286,6 @@ const fakeProvider = {
   async *writeBodyStream(request) {
     const question = request.messages.at(-1)?.content ?? "";
     const short = question.length > 24 ? `${question.slice(0, 24)}…` : question;
-    // 确定性假模型也遵守生产环境的流内弱标记契约；可见正文清洗后仍与 short 逐字一致。
-    const markedShort = short
-      .replace(/\bREST\b/g, "[[abbreviation:rest:REST]]")
-      .replace(/\bAPI\b/g, "[[abbreviation:api:API]]")
-      .replace(/\bHTTP\b/g, "[[abbreviation:http:HTTP]]");
     const cutAfter = process.env.E2E_STREAM_CUT_AFTER ? Number(process.env.E2E_STREAM_CUT_AFTER) : undefined;
     const longSections = this.longSections();
     const extremeResponse = extremeResponseForQuestion(question);
@@ -314,8 +304,8 @@ const fakeProvider = {
         : request.deepResearch
         ? [`这是深入研究第一轮，围绕「${short}」展开。`, "\n\n本轮只使用来源选区与当前已有材料生成，未联网检索，回答完毕。"]
         : secondEdition
-          ? [`你问的是「${markedShort}」（第二版）。`, "\n\n重新生成的回答：本地优先会先把输入保存在本机。", "\n\n第二版渐进事件把后续内容写进同一条消息，回答完毕。"]
-          : [`你问的是「${markedShort}」。`, "\n\n本地优先会先把输入保存在本机，再据此组织后续研究。", "\n\n渐进事件把后续内容写进同一条消息，回答完毕。"];
+          ? [`你问的是「${short}」（第二版）。`, "\n\n重新生成的回答：本地优先会先把输入保存在本机。", "\n\n第二版渐进事件把后续内容写进同一条消息，回答完毕。"]
+          : [`你问的是「${short}」。`, "\n\n本地优先会先把输入保存在本机，再据此组织后续研究。", "\n\n渐进事件把后续内容写进同一条消息，回答完毕。"];
     const segments = request.resumeFrom ? fullSegments.slice(1) : fullSegments;
     // 生成控制用例需要在任意 CI 规格下都留出可操作的真实流中窗口；只对专用问题
     // 延长分段间隔，避免拖慢或改变其他浏览器夹具的行为。
@@ -403,9 +393,52 @@ const fakeProvider = {
   },
 };
 
+const fakeTermMarkerExtractionProvider = {
+  provider: "e2e-fake",
+  model: "fake-term-marker-e2e",
+  async extractTermMarkers(input) {
+    const mentions = [];
+    const addMatches = (block, expression, category, entityPrefix) => {
+      for (const match of block.text.matchAll(expression)) {
+        const text = match[0];
+        const startOffset = match.index;
+        if (startOffset === undefined) continue;
+        mentions.push({
+          blockOrdinal: block.ordinal,
+          startOffset,
+          endOffset: startOffset + text.length,
+          text,
+          category,
+          entityId: `${entityPrefix}-${text.normalize("NFKC").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32) || `${block.ordinal}-${startOffset}`}`,
+        });
+      }
+    };
+    for (const block of input.blocks) {
+      addMatches(block, /\b(?:REST|API|HTTP)\b/g, "abbreviation", "standard");
+      addMatches(block, /概念\d+/g, "concept", "extreme-concept");
+      addMatches(block, /实体\d+/g, "entity", "extreme-entity");
+      addMatches(block, /E2E\d+/g, "abbreviation", "extreme-abbreviation");
+      addMatches(block, /O\(\d+\)/g, "notation", "extreme-notation");
+      const longStart = block.text.indexOf(LONG_CHINESE_MARKER_TEXT);
+      if (longStart >= 0) {
+        mentions.push({
+          blockOrdinal: block.ordinal,
+          startOffset: longStart,
+          endOffset: longStart + LONG_CHINESE_MARKER_TEXT.length,
+          text: LONG_CHINESE_MARKER_TEXT,
+          category: "concept",
+          entityId: "long-chinese-multiword",
+        });
+      }
+    }
+    return JSON.stringify({ mentions });
+  },
+};
+
 const service = new CaptureService(store, join(dataDir, "artifacts"), undefined, {
   autoRunRecentOrganization: false,
   researchProvider: modelMode === "fake" ? fakeProvider : undefined,
+  termMarkerExtractionProvider: modelMode === "fake" ? fakeTermMarkerExtractionProvider : undefined,
   // T03 章节解析假模型：与正文生成同源注入；no-model harness 不注入，走规则锚点负路径。
   chapterParseProvider: modelMode === "fake" ? {
     provider: "e2e-fake",

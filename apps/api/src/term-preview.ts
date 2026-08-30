@@ -76,7 +76,12 @@ export class ResearchTermPreviewService {
 
     const marker = this.validatedMarker(message, input.marker, node);
     const markerKey = termPreviewMarkerKey(message.id, marker);
-    const existing = this.store.findResearchTermPreview(node.id, markerKey);
+    const existing = this.store.findResearchTermPreview(node.id, markerKey)
+      ?? this.store.listResearchTermPreviewsByNode(node.id).find((candidate) => {
+        if (candidate.messageId !== message.id) return false;
+        const rebased = validateTermMarkers(message.content, [rebaseAppendOnlyMarkerLocation(message, candidate.marker)])[0];
+        return Boolean(rebased && sameMarker(rebased, marker));
+      });
     if (existing) {
       const selection = this.store.getResearchSelection(existing.selectionId);
       if (!selection) throw new Error("Term preview references a missing selection");
@@ -339,9 +344,10 @@ function rebaseAppendOnlyMarkerLocation(message: ResearchMessageBodyRecord, mark
 }
 
 export function termPreviewMarkerKey(messageId: string, marker: TermMarker): string {
+  const bodyVersionId = marker.location?.bodyVersionId ?? "legacy";
   return marker.entityId
-    ? [messageId, marker.entityId].join(":")
-    : [messageId, marker.blockOrdinal, marker.startOffset, marker.endOffset, marker.text].join(":");
+    ? [messageId, bodyVersionId, marker.entityId].join(":")
+    : [messageId, bodyVersionId, marker.blockOrdinal, marker.startOffset, marker.endOffset, marker.text].join(":");
 }
 
 /**

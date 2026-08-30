@@ -82,6 +82,49 @@ describe("消息操作（ADR-0035）", () => {
     expect(screen.getByText("新版正文")).toBeInTheDocument();
   });
 
+  it("历史版本保持只读，不借用当前正文的术语标记与生长入口", async () => {
+    const content = "当前正文包含 REST。";
+    const startOffset = content.indexOf("REST");
+    const marker = {
+      text: "REST",
+      blockOrdinal: 0,
+      startOffset,
+      endOffset: startOffset + 4,
+      category: "abbreviation" as const,
+      location: {
+        contentId: "answer",
+        bodyVersionId: researchBodyVersionId("answer", content),
+        sourceRange: { startOffset, endOffset: startOffset + 4 },
+        exact: "REST",
+      },
+    };
+    const onStart = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <ul>
+        <MessageItem
+          message={makeMessage({
+            id: "answer",
+            role: "assistant",
+            status: "completed",
+            content,
+            termMarkers: [marker],
+            versions: [{ content: "历史正文同样写了 REST。", createdAt: "2026-08-19T00:00:00.000Z" }],
+          })}
+          task={makeTask({ outputMessageId: "answer", status: "completed" })}
+          terms={[marker]}
+          onStartTermPreview={onStart}
+        />
+      </ul>,
+    );
+
+    expect(screen.getByRole("button", { name: "解释术语 REST" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "上一个版本" }));
+    expect(screen.getByText("历史正文同样写了 REST。")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "解释术语 REST" })).not.toBeInTheDocument();
+    expect(onStart).not.toHaveBeenCalled();
+  });
+
   it("无旧版本时不显示版本切换器", () => {
     render(
       <ul>

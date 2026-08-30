@@ -532,7 +532,7 @@ interface ActiveTermPreview {
 
 /** 悬注意图键：块位置与提及文本稳定标识同一提及，与 DOM 元素身份无关。 */
 function termHoverKey(marker: TermMarker): string {
-  return `${marker.blockOrdinal}:${marker.startOffset}:${marker.endOffset}:${marker.text}`;
+  return `${marker.location?.bodyVersionId ?? "legacy"}:${marker.mentionId ?? ""}:${marker.blockOrdinal}:${marker.startOffset}:${marker.endOffset}:${marker.text}`;
 }
 
 function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, onGrow, onGrowMarker, children }: TermPreviewInteractionProps) {
@@ -801,11 +801,21 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
   // 流式期间正文随增量重渲染，标记按钮会被替换：弹层锚点失效时按数据属性找回新元素，
   // 找不到（提及不再有效）时诚实关闭弹层。子树 MarkdownContent 的包裹先于本布局效应执行。
   useLayoutEffect(() => {
-    if (!active || active.element.isConnected) return;
+    if (!active) return;
+    const currentMarker = terms.find((marker) => termHoverKey(marker) === termHoverKey(active.marker));
+    if (!currentMarker) {
+      closePopover();
+      return;
+    }
+    if (currentMarker !== active.marker) {
+      setActive({ element: active.element, marker: currentMarker });
+      return;
+    }
+    if (active.element.isConnected) return;
     const replacement = resolveMarkerElement(active.marker);
     if (replacement) setActive({ element: replacement, marker: active.marker });
     else closePopover();
-  });
+  }, [active, closePopover, resolveMarkerElement, terms]);
 
   const activePreview = active ? previews[termPreviewClientKey(messageId, active.marker)] : undefined;
 

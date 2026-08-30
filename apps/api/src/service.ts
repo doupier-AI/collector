@@ -261,8 +261,16 @@ export class CaptureService {
       onBodyUpdated: (task) => {
         void this.termMarkers.enqueueForResearchTask(task, false);
       },
-      onTaskCompleted: (task) => {
-        void this.termMarkers.enqueueForResearchTask(task, true);
+      onTaskCompleted: async (task) => {
+        // full review 要把精确范围写成 sidecar；先持久化当前正文版本，避免独立任务
+        // 抢在节点视图的惰性回填之前执行并因缺失版本而把已抽取标记清空。
+        const message = this.store.getResearchMessageBody(task.outputMessageId);
+        if (message?.role === "assistant" && message.content.trim()) {
+          const scopeNodeId = message.nodeId ?? message.branchId ?? task.nodeId ?? task.sessionId;
+          const citations = this.store.listResearchCitationsForMessages([message.id]);
+          await this.getOrCreateBodyArtifacts(scopeNodeId, message, citations);
+        }
+        await this.termMarkers.enqueueForResearchTask(task, true);
         void this.nodeNaming.nameNode(task.nodeId ?? task.sessionId);
         // #69：回答完成且内容稳定后异步评估跨会话临时关联提示；扫描失败在内部安静降级。
         void this.associationHints.scheduleScanForCompletedTask(task);

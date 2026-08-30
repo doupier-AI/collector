@@ -7,12 +7,39 @@ import type { AppServices } from "../../app/services";
 import { makeMessage, makeNode, makeNodeView, makeSelection, makeSession, makeTask } from "../../test/fakes";
 import { ResearchNodePage } from "./ResearchNodePage";
 import type { ResearchNodeView, ResearchSliceRecord } from "@collector/capture-contracts";
-import { deriveBodyVersion, deriveFragmentsFromSlices, deriveMessageSlices, researchBodyVersionId } from "@collector/capture-contracts";
+import { deriveBodyVersion, deriveFragmentsFromSlices, deriveMessageBlocks, deriveMessageSlices, researchBodyVersionId } from "@collector/capture-contracts";
 import { captureSelection, readContentContext, resolveBlockRange } from "../selection/selection-capture";
 
 function renderNodePage(api: Partial<ApiClient>, entry = "/nodes/session-1") {
+  const getResearchNodeView = api.getResearchNodeView;
+  const fixtureApi: Partial<ApiClient> = getResearchNodeView ? {
+    ...api,
+    getResearchNodeView: async (nodeId) => {
+      const view = await getResearchNodeView(nodeId);
+      for (const [messageId, detection] of Object.entries(view.termDetections ?? {})) {
+        const message = view.messages.find((candidate) => candidate.id === messageId);
+        if (!message || message.termMarkers !== undefined) continue;
+        const blocks = deriveMessageBlocks(message.content);
+        message.termMarkers = detection.terms.map((marker) => {
+          const block = blocks[marker.blockOrdinal];
+          const absoluteStart = (block?.startOffset ?? 0) + marker.startOffset;
+          const absoluteEnd = (block?.startOffset ?? 0) + marker.endOffset;
+          return {
+            ...marker,
+            location: {
+              contentId: message.id,
+              bodyVersionId: researchBodyVersionId(message.id, message.content),
+              sourceRange: { startOffset: absoluteStart, endOffset: absoluteEnd },
+              exact: marker.text,
+            },
+          };
+        });
+      }
+      return view;
+    },
+  } : api;
   const services = {
-    api: api as ApiClient,
+    api: fixtureApi as ApiClient,
     connectTaskEvents: vi.fn(() => ({ close: () => {}, syncNow: () => {}, mode: "closed", lastEventId: 0 })),
   } as unknown as AppServices;
   return render(
