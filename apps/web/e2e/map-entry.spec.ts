@@ -41,6 +41,30 @@ test("控制面板默认关闭箭头，并在开关后显示直线箭头", async
   await expect(canvas.locator(".global-map__edge-arrow")).toHaveCount(2);
 });
 
+test("右侧控制浮层打开后，专注父子脉络仍完整留在未遮挡区域", async ({ page }) => {
+  await installGlobalMapVisualFixture(page);
+  await pairAndOpen(page, "/map");
+  const canvas = page.getByTestId("global-map-canvas");
+  const amber = canvas.locator("[data-node-id='map-amber']");
+  await expect(canvas).toHaveAttribute("data-entry-animation", "complete");
+  await amber.locator(".global-map__node-core").click();
+  await expect(amber).toHaveAttribute("aria-pressed", "true");
+  await expect(canvas).toHaveAttribute("data-focus-orchestration", "complete");
+
+  await page.getByRole("button", { name: "图谱呈现与布局" }).click();
+  const panel = page.getByRole("region", { name: "图谱呈现与布局" });
+  await expect(panel).toBeVisible();
+
+  await expect.poll(async () => {
+    const panelBox = await panel.boundingBox();
+    const lineageBoxes = await Promise.all(["map-amber", "map-blue"].map((nodeId) =>
+      canvas.locator(`[data-node-id='${nodeId}']`).boundingBox(),
+    ));
+    if (!panelBox || lineageBoxes.some((box) => !box)) return false;
+    return lineageBoxes.every((box) => box!.x >= 0 && box!.x + box!.width <= panelBox.x - 8);
+  }).toBe(true);
+});
+
 test("节点图谱修复在真实 SVG 中保持屏幕几何与右侧控制位置", async ({ page }) => {
   await installGlobalMapVisualFixture(page);
   await pairAndOpen(page, "/map");

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { MapDensity } from "./research-map-layout";
 
 export interface MapVisualSettings {
@@ -27,14 +27,38 @@ interface ResearchMapVisualSettingsProps {
   edgeCount: number;
   onChange: (settings: MapVisualSettings) => void;
   onResetLayout: () => void;
+  onRightOcclusionChange?: (rightInsetRatio: number) => void;
 }
 
 const densityLabels: Record<MapDensity, string> = { compact: "紧凑", balanced: "均衡", spacious: "疏朗" };
 
-export function ResearchMapVisualSettings({ settings, nodeCount, edgeCount, onChange, onResetLayout }: ResearchMapVisualSettingsProps) {
+export function ResearchMapVisualSettings({ settings, nodeCount, edgeCount, onChange, onResetLayout, onRightOcclusionChange }: ResearchMapVisualSettingsProps) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
   const update = <Key extends keyof MapVisualSettings>(key: Key, value: MapVisualSettings[Key]) => onChange({ ...settings, [key]: value });
+
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    if (!open || !panel || !onRightOcclusionChange) {
+      onRightOcclusionChange?.(0);
+      return;
+    }
+    const measure = () => {
+      const viewportWidth = Math.max(1, document.documentElement.clientWidth || window.innerWidth);
+      const bounds = panel.getBoundingClientRect();
+      onRightOcclusionChange(Math.max(0, Math.min(0.75, (viewportWidth - bounds.left) / viewportWidth)));
+    };
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(measure);
+    observer?.observe(panel);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+      onRightOcclusionChange(0);
+    };
+  }, [onRightOcclusionChange, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -63,7 +87,7 @@ export function ResearchMapVisualSettings({ settings, nodeCount, edgeCount, onCh
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5h12M6.5 10h7M8.5 15h3" /><circle cx="8" cy="5" r="1.5" /><circle cx="12" cy="10" r="1.5" /><circle cx="10" cy="15" r="1.5" /></svg>
       </button>
       {open ? (
-        <aside id="map-visual-settings-panel" className="map-visual-settings" role="region" aria-labelledby="map-visual-settings-title">
+        <aside ref={panelRef} id="map-visual-settings-panel" className="map-visual-settings" role="region" aria-labelledby="map-visual-settings-title">
           <header className="map-visual-settings__header">
             <div><h2 id="map-visual-settings-title">图谱呈现与布局</h2><p>{nodeCount} 个节点 · {edgeCount} 条永久关系</p></div>
             <button type="button" aria-label="关闭图谱呈现与布局" onClick={() => { setOpen(false); requestAnimationFrame(() => triggerRef.current?.focus()); }}>×</button>

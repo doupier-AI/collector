@@ -61,3 +61,24 @@ export function fitViewBoxToPoints(
   }
   return { x: centerX - width / 2, y: centerY - height / 2, width, height };
 }
+
+/**
+ * 在不缩小真实 SVG 画布的前提下，把内容拟合进右侧浮层之外的可见区域。
+ * 返回的 viewBox 仍保持完整画布宽高比；右侧扩出的用户坐标只落在浮层下方。
+ */
+export function fitViewBoxToPointsWithRightInset(
+  points: Iterable<MapPoint>,
+  aspectRatio: number,
+  rightInsetRatio: number,
+  horizontalPadding = 180,
+  verticalPadding = 160,
+): MapViewBox {
+  const visibleWidthRatio = 1 - Math.max(0, Math.min(0.75, rightInsetRatio));
+  const visible = fitViewBoxToPoints(
+    points,
+    aspectRatio * visibleWidthRatio,
+    horizontalPadding,
+    verticalPadding,
+  );
+  return { ...visible, width: visible.width / visibleWidthRatio };
+}

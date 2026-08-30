@@ -12,7 +12,7 @@ import {
 } from "@collector/capture-contracts";
 import { stableNodePath } from "../../app/paths";
 import { createFocusMapPositions, createResearchMapLayout, mergeIncrementalMapPositions, rebaseMapPositions, type MapDensity, type MapPoint as GraphPoint } from "./research-map-layout";
-import { fitViewBoxToPoints, screenBoundedUserFontSize, screenPointToSvgPoint, svgPointFromClient, type SvgScreenMatrix } from "./research-map-geometry";
+import { fitViewBoxToPoints, fitViewBoxToPointsWithRightInset, screenBoundedUserFontSize, screenPointToSvgPoint, svgPointFromClient, type SvgScreenMatrix } from "./research-map-geometry";
 import {
   beginDragSettlement,
   createDragSimulation,
@@ -273,10 +273,12 @@ interface GlobalResearchMapProps {
   density?: MapDensity;
   colorMode?: "project" | "node-type" | "lifecycle";
   layoutResetToken?: number;
+  /** 右侧浮层占用的屏幕宽度比例；只改变专注取景，不缩小或持久化画布。 */
+  rightOverlayInsetRatio?: number;
   onOpenCandidates?: (scope: MapAssociationCandidateScene, trigger: Element) => void;
 }
 
-export function GlobalResearchMap({ observation, baseObservation, rootMarkerNodeIds, onFocusNode, onExitFocus, onOpenNode, nodeHref = stableNodePath, revealNodeId, revealRequestId, onRevealHandled, search, presentation = "canvas", immersive = false, onSurfaceInteraction, associationHints = [], temporaryFusions = [], hideTemporaryFusions = Boolean(observation.focusNodeId), candidateMode = false, showArrows = false, nodeScale = 1, titleOpacity = 0.62, lineWidth = 1.25, density = "balanced", colorMode = "project", layoutResetToken = 0, onOpenCandidates }: GlobalResearchMapProps) {
+export function GlobalResearchMap({ observation, baseObservation, rootMarkerNodeIds, onFocusNode, onExitFocus, onOpenNode, nodeHref = stableNodePath, revealNodeId, revealRequestId, onRevealHandled, search, presentation = "canvas", immersive = false, onSurfaceInteraction, associationHints = [], temporaryFusions = [], hideTemporaryFusions = Boolean(observation.focusNodeId), candidateMode = false, showArrows = false, nodeScale = 1, titleOpacity = 0.62, lineWidth = 1.25, density = "balanced", colorMode = "project", layoutResetToken = 0, rightOverlayInsetRatio = 0, onOpenCandidates }: GlobalResearchMapProps) {
   const initialAspectRatioRef = useRef(typeof window === "undefined" ? 16 / 9 : window.innerWidth / Math.max(1, window.innerHeight));
   const [canvasAspectRatio, setCanvasAspectRatio] = useState(initialAspectRatioRef.current);
   const focusSnapshotRef = useRef<{ positions: Map<string, GraphPoint>; viewBox: ViewBoxState } | null>(null);
@@ -605,6 +607,7 @@ export function GlobalResearchMap({ observation, baseObservation, rootMarkerNode
   const orchestrationRafRef = useRef<number | undefined>(undefined);
   const orchestrationLatestRef = useRef<Map<string, GraphPoint> | null>(null);
   const previousFocusNodeIdRef = useRef<string | undefined>(undefined);
+  const [focusOrchestrationState, setFocusOrchestrationState] = useState<"running" | "complete">("complete");
   useEffect(() => () => {
     const drag = nodeDragRef.current;
     if (drag) cancelAnimationFrame(drag.raf);
@@ -620,6 +623,7 @@ export function GlobalResearchMap({ observation, baseObservation, rootMarkerNode
     }
     if (nodePhysicsActive) {
       // 专注拖动只在最高显示层叠加被拖节点；整套专注编排必须保持不动。
+      if (focusedNodeId) setFocusOrchestrationState("running");
       return;
     }
     const reduced = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -644,14 +648,17 @@ export function GlobalResearchMap({ observation, baseObservation, rootMarkerNode
       }
       if (!current) {
         focusSnapshotRef.current = null;
+        setFocusOrchestrationState("complete");
         return;
       }
       if (reduced) {
         orchestrationLatestRef.current = null;
         setOrchestrationPositions(null);
         focusSnapshotRef.current = null;
+        setFocusOrchestrationState("complete");
         return;
       }
+      setFocusOrchestrationState("running");
       const from = new Map(current);
       const back = new Map([...from.keys()].map((id) => [id, persistPositions.get(id) ?? from.get(id)!]));
       const startAt = performance.now();
@@ -662,6 +669,7 @@ export function GlobalResearchMap({ observation, baseObservation, rootMarkerNode
           orchestrationLatestRef.current = null;
           setOrchestrationPositions(null);
           focusSnapshotRef.current = null;
+          setFocusOrchestrationState("complete");
           return;
         }
         const next = interpolatePoints(from, back, progress);
@@ -679,13 +687,15 @@ export function GlobalResearchMap({ observation, baseObservation, rootMarkerNode
       .map((summary) => target.get(summary.node.id))
       .filter((point): point is GraphPoint => Boolean(point));
     // 专注首屏只拟合完整父子树；外围节点仍保留在可平移到达的显示层，但不抢占首屏。
-    const targetViewBox = fitViewBoxToPoints(focusPositions, canvasAspectRatio);
+    const targetViewBox = fitViewBoxToPointsWithRightInset(focusPositions, canvasAspectRatio, rightOverlayInsetRatio);
     if (reduced) {
       orchestrationLatestRef.current = target;
       setOrchestrationPositions(target);
       setViewBox(targetViewBox);
+      setFocusOrchestrationState("complete");
       return;
     }
+    setFocusOrchestrationState("running");
     const startPositions = new Map(orchestrationLatestRef.current ?? base);
     const startAt = performance.now();
     const startViewBox = viewBoxRef.current;
@@ -705,10 +715,13 @@ export function GlobalResearchMap({ observation, baseObservation, rootMarkerNode
         height: startViewBox.height + (targetViewBox.height - startViewBox.height) * progress,
       });
       if (progress < 1) orchestrationRafRef.current = requestAnimationFrame(tick);
-      else orchestrationRafRef.current = undefined;
+      else {
+        orchestrationRafRef.current = undefined;
+        setFocusOrchestrationState("complete");
+      }
     };
     orchestrationRafRef.current = requestAnimationFrame(tick);
-  }, [canvasAspectRatio, focusedNodeId, nodePhysicsActive, observation, persistPositions, revealNodeId]);
+  }, [canvasAspectRatio, focusedNodeId, nodePhysicsActive, observation, persistPositions, revealNodeId, rightOverlayInsetRatio]);
 
   // ADR-0042 入场展开：首次挂载与新增节点从各自终点附近的确定性偏移柔展开到位；
   // 纯显示层动画，不触发 Map Scene 序列化，reduced-motion 直接就位。
@@ -984,6 +997,7 @@ export function GlobalResearchMap({ observation, baseObservation, rootMarkerNode
         className={`global-map__canvas${dragging ? " global-map__canvas--dragging" : ""}`}
         data-testid="global-map-canvas"
         data-entry-animation={entryAnimationState}
+        data-focus-orchestration={focusOrchestrationState}
         data-node-physics={nodePhysicsActive ? "active" : "idle"}
         onPointerDownCapture={(event) => onSurfaceInteraction?.(!(event.target as Element).closest("[data-node-id], .global-map__candidate-satellite, button, a[href]"))}
         onPointerDown={candidateMode ? undefined : startPan}

@@ -3,6 +3,21 @@ import { GLOBAL_MAP_VISUAL_OBSERVATION, installGlobalMapVisualFixture } from "./
 import { pairAndOpen } from "./helpers";
 
 test.describe("统一研究图谱", () => {
+  test("专注选中后等待父子编排完成，才公开稳定状态", async ({ page }) => {
+    await installGlobalMapVisualFixture(page);
+    await pairAndOpen(page, "/map");
+    const canvas = page.getByTestId("global-map-canvas");
+    const amber = canvas.locator("[data-node-id='map-amber']");
+    await expect(canvas).toHaveAttribute("data-entry-animation", "complete");
+    await expect(canvas).toHaveAttribute("data-focus-orchestration", "complete");
+
+    await amber.locator(".global-map__node-core").click();
+
+    await expect(amber).toHaveAttribute("aria-pressed", "true");
+    await expect(canvas).toHaveAttribute("data-focus-orchestration", "running");
+    await expect(canvas).toHaveAttribute("data-focus-orchestration", "complete");
+  });
+
   test("专注只展开父子脉络，切换专注和退出均恢复首次快照", async ({ page }) => {
     await installGlobalMapVisualFixture(page);
     await pairAndOpen(page, "/map");

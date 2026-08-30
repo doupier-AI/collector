@@ -72,6 +72,7 @@ export function ResearchMapLandingPage() {
   const [activeTool, setActiveTool] = useState<MapTool | null>(null);
   const [presentation, setPresentation] = useState<MapPresentation>("canvas");
   const [visualSettings, setVisualSettings] = useState(DEFAULT_MAP_VISUAL_SETTINGS);
+  const [visualSettingsRightInsetRatio, setVisualSettingsRightInsetRatio] = useState(0);
   const { showArrows, nodeScale, titleOpacity, lineWidth, density, colorMode, showIsolates } = visualSettings;
   const [layoutResetToken, setLayoutResetToken] = useState(0);
   const toolButtonRefs = useRef(new Map<MapTool, HTMLButtonElement>());
@@ -132,6 +133,10 @@ export function ResearchMapLandingPage() {
   const [dismissingCandidateId, setDismissingCandidateId] = useState<string>();
   const candidateTriggerKeyRef = useRef<string | undefined>(undefined);
   const mapBackButtonRef = useRef<HTMLButtonElement | null>(null);
+  const updateVisualSettingsOcclusion = useCallback((rightInsetRatio: number) => {
+    const next = wide ? rightInsetRatio : 0;
+    setVisualSettingsRightInsetRatio((current) => Math.abs(current - next) < 0.001 ? current : next);
+  }, [wide]);
 
   const closeTool = useCallback((restoreFocus = false) => {
     setActiveTool((current) => {
@@ -472,6 +477,7 @@ export function ResearchMapLandingPage() {
         edgeCount={observation.edges.length}
         onChange={setVisualSettings}
         onResetLayout={() => setLayoutResetToken((token) => token + 1)}
+        onRightOcclusionChange={updateVisualSettingsOcclusion}
       />
 
       {!wide ? (
@@ -593,6 +599,7 @@ export function ResearchMapLandingPage() {
             density={density}
             colorMode={colorMode}
             layoutResetToken={layoutResetToken}
+            rightOverlayInsetRatio={visualSettingsRightInsetRatio}
             onOpenCandidates={openCandidates}
           />
         </div>

@@ -11,7 +11,15 @@ test.describe("研究图谱视觉基线", () => {
     await expect(page).toHaveScreenshot("research-map-global.png", { animations: "disabled" });
     await canvas.locator("[data-node-id='map-amber'] .global-map__node-core").click();
     await expect(canvas.locator("[data-node-id='map-amber']")).toHaveAttribute("aria-pressed", "true");
+    await expect(canvas).toHaveAttribute("data-focus-orchestration", "complete");
     await page.getByRole("button", { name: "图谱呈现与布局" }).click();
+    const panel = page.getByRole("region", { name: "图谱呈现与布局" });
+    await expect.poll(async () => {
+      const panelBox = await panel.boundingBox();
+      const blueBox = await canvas.locator("[data-node-id='map-blue']").boundingBox();
+      return panelBox && blueBox ? blueBox.x + blueBox.width <= panelBox.x - 8 : false;
+    }).toBe(true);
+    await expect(canvas).toHaveAttribute("data-focus-orchestration", "complete");
     await expect(page).toHaveScreenshot("research-map-focus-controls.png", { animations: "disabled" });
   });
 
