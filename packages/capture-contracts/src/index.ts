@@ -296,6 +296,33 @@ export interface ContextAssemblyAudit {
   rejected: readonly ContextAssemblyAuditRejection[];
 }
 
+/** 主研究任务保存的无正文上下文来源快照；正文始终从消息、选区与正文版本事实源重建。 */
+export interface ResearchContextSourceSnapshot {
+  candidateId: string;
+  channel: ContextChannel;
+  sourceKind: ContextSourceKind;
+  sourceId: string;
+  sourceVersion?: string;
+}
+
+/**
+ * 暂停/恢复的上下文稳定边界。同一 generationAttempt 必须解析到完全相同的基础来源；
+ * 新生成尝试允许按现行来源重装配。续写正文是该基础快照之外唯一允许增量重装配的状态。
+ */
+export interface ResearchContextAssemblySnapshot {
+  schemaVersion: 1;
+  generationAttempt: number;
+  reassemblyRule: "same_attempt_same_sources;new_attempt_reassemble;continuation_incremental";
+  sourceFingerprint: string;
+  sources: readonly ResearchContextSourceSnapshot[];
+  /** 最近一次各模型步骤的无正文准入审计，按 workflowStepId 覆盖。 */
+  assemblies: ReadonlyArray<{
+    workflowStepId: string;
+    recordedAt: string;
+    audit: ContextAssemblyAudit;
+  }>;
+}
+
 export interface ContextPurposePolicy {
   purpose: ContextPurpose;
   modelPurpose: ModelPurpose;
@@ -1581,6 +1608,8 @@ export interface ResearchTaskRecord {
   bodyPlan?: ResearchBodyPlan;
   /** 单轮流式断点：周期性落盘的已接收正文前缀；流被切断/重启后从断点续传，不整篇重来。 */
   streamCheckpoint?: { content: string; updatedAt: string; protocolPrefix?: string };
+  /** 主回答上下文的无正文来源快照与准入审计；用于暂停/恢复稳定性校验。 */
+  contextAssemblySnapshot?: ResearchContextAssemblySnapshot;
   error?: ResearchTaskError;
   createdAt: string;
   updatedAt: string;

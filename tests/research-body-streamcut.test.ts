@@ -331,6 +331,9 @@ test("后续回答的模型请求、RAG 候选和派生记录都排除 reasoning
   assert.match(downstream, /继续追问/);
   assert.match(downstream, /第一轮公开正文/, "后续请求确实携带同一正文路径的 RAG 片段");
   assert.doesNotMatch(downstream, new RegExp(sentinel), "后续模型消息和 RAG 片段不得携带思考哨兵");
+  const secondRequest = calls[1]?.request as { contextAssembly?: { status?: string; adopted?: Array<{ candidate?: { evidenceKind?: string } }> } } | undefined;
+  assert.equal(secondRequest?.contextAssembly?.status, "assembled");
+  assert.ok(secondRequest?.contextAssembly?.adopted?.some((item) => item.candidate?.evidenceKind === "current_question"));
   assert.doesNotMatch(JSON.stringify(store.listSlicesByMessage(first.outputMessage.id)), new RegExp(sentinel));
   assert.doesNotMatch(JSON.stringify(store.getBodyVersionForMessage(first.outputMessage.id)), new RegExp(sentinel));
   assert.doesNotMatch(JSON.stringify(store.getResearchMessage(first.outputMessage.id)?.termMarkers ?? []), new RegExp(sentinel));
@@ -432,6 +435,8 @@ test("暂停：中止物理流保留已写内容与断点，任务/消息置 pau
   assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.status, "paused", "消息置 paused");
   assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "第一段正文。", "已写部分保留");
   assert.ok(pausedTask.streamCheckpoint?.content.includes("第一段正文"), "断点已落盘");
+  const pausedFingerprint = pausedTask.contextAssemblySnapshot?.sourceFingerprint;
+  assert.ok(pausedFingerprint, "暂停前已经持久化无正文来源快照");
   // 等待一个静默窗口：物理流中止后其余 delta 不得继续落库（含旧生成循环完全退出）。
   await new Promise((r) => setTimeout(r, 250));
   assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "第一段正文。", "中止后无新增正文");
@@ -443,6 +448,10 @@ test("暂停：中止物理流保留已写内容与断点，任务/消息置 pau
   assert.equal(store.getResearchTask(accepted.task.id)!.status, "completed");
   assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "第一段正文。续写补全。续写完成。", "从断点续写、无重复");
   assert.ok(calls[1]?.resumeFrom?.includes("第一段正文"), "继续携带断点 resumeFrom");
+  const resumedSnapshot = store.getResearchTask(accepted.task.id)?.contextAssemblySnapshot;
+  assert.equal(resumedSnapshot?.sourceFingerprint, pausedFingerprint, "同一生成尝试恢复时基础来源保持不变");
+  const resumedAudit = resumedSnapshot?.assemblies.find((entry) => entry.workflowStepId === "body-stream:0")?.audit;
+  assert.ok(resumedAudit?.adopted.some((item) => item.sourceKind === "continuation"), "断点按明确规则作为续写状态增量装配");
   assert.equal(store.getResearchTask(accepted.task.id)!.streamCheckpoint, undefined, "完成后清断点");
   store.close();
 });
@@ -566,6 +575,8 @@ test("重新生成：旧正文/思考快照进 versions，消息清空重跑，�
   const accepted = await service.research.submitMessage("session-1", "问题", "k-regenerate");
   for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)!.status !== "completed"; i++) await new Promise((r) => setImmediate(r));
   assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "第一轮正文。");
+  const firstSnapshot = store.getResearchTask(accepted.task.id)?.contextAssemblySnapshot;
+  assert.ok(firstSnapshot);
 
   await service.research.regenerateTask(accepted.task.id);
   const queued = store.getResearchTask(accepted.task.id)!;
@@ -582,6 +593,9 @@ test("重新生成：旧正文/思考快照进 versions，消息清空重跑，�
   assert.equal(done.content, "第二轮正文。", "新回答落位");
   assert.equal(done.versions?.length, 1, "版本保留");
   assert.equal(done.versions?.[0]?.content, "第一轮正文。", "旧版可回看");
+  const regeneratedSnapshot = store.getResearchTask(accepted.task.id)?.contextAssemblySnapshot;
+  assert.equal(regeneratedSnapshot?.generationAttempt, (firstSnapshot?.generationAttempt ?? 0) + 1, "重新生成是新的装配尝试");
+  assert.equal(regeneratedSnapshot?.sourceFingerprint, firstSnapshot?.sourceFingerprint, "来源未变时新尝试可确定性重装配同一基础材料");
   store.close();
 });
 

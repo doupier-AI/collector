@@ -55,8 +55,6 @@ const RESEARCH_MAP_DEFAULT_FOCUS_SETTING_KEY = "research_map_default_focus_from_
 import { deriveMessageBodyArtifacts } from "./body-artifacts.js";
 import {
   DEFAULT_PROVIDER_REGISTRY,
-  formatResearchParentChainContext,
-  formatResearchSliceContext,
   ModelGateway,
   ProviderRuntimeResolver,
   discoverProviderModels as discoverProviderModelsViaGateway,
@@ -565,32 +563,18 @@ export class CaptureService {
       async prepareGrounded(request) {
         const purposeGateway = await service.gatewayForPurpose("search");
         if (!purposeGateway) throw new Error("AI model is not configured");
-        const direction = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
-        const parentContext = formatResearchParentChainContext(request.parentChainContext);
         const nodeDepth = request.parentChainContext?.currentNodeDepth ?? 0;
-        let userMessage = [direction, parentContext, formatResearchSliceContext(request.sliceContext)].filter(Boolean).join("\n\n");
-        if (request.deepResearch) {
-          userMessage = [
-            `用户选区原文：${request.deepResearch.selectionText}`,
-            `研究方向：${direction}`,
-            request.deepResearch.contextBefore ? `选区前文：${request.deepResearch.contextBefore}` : "",
-            request.deepResearch.contextAfter ? `选区后文：${request.deepResearch.contextAfter}` : "",
-            parentContext,
-            formatResearchSliceContext(request.sliceContext),
-            "请基于这些材料并联网搜索最新信息后回答。",
-          ].filter(Boolean).join("\n\n");
-        }
 
         if (purposeGateway.providerGroundingCapability !== "unsupported") {
           try {
-            const grounded = await purposeGateway.generateGroundedResearch(userMessage, {
+            const grounded = await purposeGateway.generateGroundedResearchFromContext(request.contextAssembly, {
               taskId: request.taskId,
               scenario: request.scenario,
               requireGrounding: true,
               promptVersion: RESEARCH_SLICE_PROMPT_VERSION,
             }, {
               nodeDepth,
-              context: { workflowRunId: request.taskId, purpose: "research", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
+              context: { workflowRunId: request.taskId, purpose: "research_grounding", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
             });
             const hasTraceableSource = grounded.status === "grounded"
               && grounded.sources.some((source) => Boolean(sanitizeGroundingUrl(source.url)));
@@ -610,8 +594,8 @@ export class CaptureService {
 
         // F2: Agent 式多轮工具调用搜索——模型通过 web_search/web_fetch 工具自主完成搜索过程
 
-        const result = await purposeGateway.runAgentSearchLoop(
-          userMessage,
+        const result = await purposeGateway.runAgentSearchLoopFromContext(
+          request.contextAssembly,
           {
             webSearch: async (query, maxResults) => {
               const startedAt = Date.now();
@@ -639,7 +623,7 @@ export class CaptureService {
           {
             maxTurns: 10,
             nodeDepth,
-            context: { workflowRunId: request.taskId, purpose: "research", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
+            context: { workflowRunId: request.taskId, purpose: "research_grounding", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
           },
         );
 
@@ -669,51 +653,43 @@ export class CaptureService {
           ...(searchCtx.toTrace().length ? { trace: searchCtx.toTrace() } : {}),
         };
       },
-      async *writeGroundedFinalStream(request, evidence, streamOptions) {
+      async *writeGroundedFinalStream(request, _evidence, streamOptions) {
         const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
         if (!purposeGateway) throw new Error("AI model is not configured");
-        const direction = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
-        const finalRequest = [
-          "请只输出直接给用户阅读的最终 Markdown 回答。不要描述搜索、工具调用、草稿、推理或内部工作。",
-          "只使用下列带编号的证据；涉及外部事实时使用对应的 [来源n] 标记。",
-          `用户问题：${direction}`,
-          "证据：",
-          evidence,
-        ].join("\n\n");
-        yield* purposeGateway.writeResearchBodyStream([{ role: "user", content: finalRequest }], {
+        yield* purposeGateway.writeResearchBodyStreamFromContext(request.contextAssembly, {
           ...(streamOptions.resumeFrom ? { resumeFrom: streamOptions.resumeFrom } : {}),
           ...(streamOptions.signal ? { signal: streamOptions.signal } : {}),
           ...(streamOptions.onStreamDone ? { onDone: streamOptions.onStreamDone } : {}),
           ...(streamOptions.onReasoning ? { onReasoning: streamOptions.onReasoning } : {}),
-          parentChainContext: request.parentChainContext,
-          sliceContext: request.sliceContext,
+          nodeDepth: request.parentChainContext?.currentNodeDepth ?? 0,
           context: { workflowRunId: request.taskId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
         });
       },
       async *generate(request) {
         const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
         if (!purposeGateway) throw new Error("AI model is not configured");
-        if (request.deepResearch) {
-          const direction = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
-          const answer = await purposeGateway.generateDeepResearchRound(
-            {
-              mode: request.deepResearch.mode,
-              selectionText: request.deepResearch.selectionText,
-              direction,
-              contentTitle: request.deepResearch.contentTitle,
-              contextBefore: request.deepResearch.contextBefore,
-              contextAfter: request.deepResearch.contextAfter,
-              parentChainContext: request.parentChainContext,
-              sliceContext: request.sliceContext,
-            },
-            { context: { workflowRunId: request.taskId, purpose: "deep_research", promptVersion: "deep-research-v1" } },
-          );
+        // #158 之前仅术语预览等辅助调用可能没有 ContextAssembly；主任务 processTask 始终携带。
+        if (!request.contextAssembly) {
+          const answer = await purposeGateway.answerResearchConversation(request.messages, {
+            parentChainContext: request.parentChainContext,
+            sliceContext: request.sliceContext,
+            ...(request.mentionMarkup !== undefined ? { mentionMarkup: request.mentionMarkup } : {}),
+            context: { workflowRunId: request.taskId, purpose: "term_preview", promptVersion: "term-preview-v1" },
+          });
           for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);
           return;
         }
-        const answer = await purposeGateway.answerResearchConversation(request.messages, {
-          parentChainContext: request.parentChainContext,
-          sliceContext: request.sliceContext,
+        if (request.deepResearch) {
+          const answer = await purposeGateway.generateDeepResearchRoundFromContext(request.contextAssembly, {
+            mode: request.deepResearch.mode,
+            nodeDepth: request.parentChainContext?.currentNodeDepth ?? 0,
+            context: { workflowRunId: request.taskId, purpose: "deep_research", promptVersion: "deep-research-v1" },
+          });
+          for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);
+          return;
+        }
+        const answer = await purposeGateway.answerResearchConversationFromContext(request.contextAssembly, {
+          nodeDepth: request.parentChainContext?.currentNodeDepth ?? 0,
           ...(request.mentionMarkup !== undefined ? { mentionMarkup: request.mentionMarkup } : {}),
           context: { workflowRunId: request.taskId, purpose: "research_chat", promptVersion: "research-chat-v1" },
         });
@@ -722,9 +698,8 @@ export class CaptureService {
       async writeBody(request) {
         const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
         if (!purposeGateway) throw new Error("AI model is not configured");
-        return purposeGateway.writeResearchBody(request.messages, {
-          parentChainContext: request.parentChainContext,
-          sliceContext: request.sliceContext,
+        return purposeGateway.writeResearchBodyFromContext(request.contextAssembly, {
+          nodeDepth: request.parentChainContext?.currentNodeDepth ?? 0,
           context: { workflowRunId: request.taskId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
         });
       },
@@ -732,9 +707,8 @@ export class CaptureService {
       async *writeBodyStream(request) {
         const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
         if (!purposeGateway) throw new Error("AI model is not configured");
-        yield* purposeGateway.writeResearchBodyStream(request.messages, {
-          parentChainContext: request.parentChainContext,
-          sliceContext: request.sliceContext,
+        yield* purposeGateway.writeResearchBodyStreamFromContext(request.contextAssembly, {
+          nodeDepth: request.parentChainContext?.currentNodeDepth ?? 0,
           ...(request.resumeFrom !== undefined ? { resumeFrom: request.resumeFrom } : {}),
           ...(request.onStreamDone ? { onDone: request.onStreamDone } : {}),
           ...(request.onReasoning ? { onReasoning: request.onReasoning } : {}),
@@ -745,18 +719,17 @@ export class CaptureService {
       async generateOutline(request) {
         const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
         if (!purposeGateway) throw new Error("AI model is not configured");
-        return purposeGateway.generateBodyOutline(request.messages, {
-          parentChainContext: request.parentChainContext,
-          sliceContext: request.sliceContext,
+        return purposeGateway.generateBodyOutlineFromContext(request.contextAssembly, {
           context: { workflowRunId: request.taskId, purpose: "research_body_outline", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
         });
       },
       async expandSection(request) {
         const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
         if (!purposeGateway) throw new Error("AI model is not configured");
-        return purposeGateway.expandBodySection(
+        return purposeGateway.expandBodySectionFromContext(
+          request.contextAssembly,
           {
-            goal: [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "",
+            goal: "已装配上下文",
             outline: request.outline,
             sectionIndex: request.sectionIndex,
             writtenSoFar: request.writtenSoFar,

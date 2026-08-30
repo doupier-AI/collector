@@ -191,6 +191,14 @@ test("branch deep research creates branch before generation, completes, and keep
   assert.equal(generation.deepResearch?.contextBefore, "前文摘录");
   assert.equal(generation.deepResearch?.contextAfter, "后文摘录");
   assert.deepEqual(generation.messages, [{ role: "user", content: accepted.inputMessage.content }]);
+  assert.equal(generation.contextAssembly?.purpose, "deep_research");
+  const admittedKinds = generation.contextAssembly?.adopted
+    .map((item) => item.candidate.channel === "factual_evidence" ? item.candidate.evidenceKind : item.candidate.channel);
+  assert.ok(admittedKinds?.includes("current_question"));
+  assert.ok(admittedKinds?.includes("explicit_material"), "用户选区必须以显式材料候选准入");
+  const snapshot = harness.store.getResearchTask(accepted.task.id)?.contextAssemblySnapshot;
+  assert.equal(snapshot?.reassemblyRule, "same_attempt_same_sources;new_attempt_reassemble;continuation_incremental");
+  assert.doesNotMatch(JSON.stringify(snapshot), /选区如何连接阅读与研究|前文摘录|后文摘录/, "任务快照只保存来源身份与审计，不复制正文");
 
   // 分支视图返回来源选区、分支消息与任务
   const viewResponse = await fetch(`${harness.base}/v1/research-branches/${accepted.branch.id}`, { headers: headers(harness.token) });

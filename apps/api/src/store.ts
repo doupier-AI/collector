@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageBodyRecord, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchReasoningRecord, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId, toResearchMessageBody } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchContextAssemblySnapshot, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageBodyRecord, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchReasoningRecord, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId, toResearchMessageBody } from "@collector/capture-contracts";
 import {
   compareAssociationHintsByValue,
   type ConfirmTemporaryFusionResult,
@@ -190,6 +190,8 @@ export interface ResearchStore {
   saveResearchTaskStreamCheckpoint(taskId: string, content: string, protocolPrefix?: string): Promise<void>;
   /** 单轮流式：任务完成后清除断点。 */
   clearResearchTaskStreamCheckpoint(taskId: string): Promise<void>;
+  /** 主回答上下文：保存无正文来源快照与准入审计。 */
+  saveResearchTaskContextAssemblySnapshot(taskId: string, snapshot: ResearchContextAssemblySnapshot): Promise<void>;
   listResearchTaskEvents(taskId: string, afterId?: number): ResearchTaskEvent[];
   listRecoverableResearchTasks(): ResearchTaskRecord[];
   failInterruptedResearchTasks(): number;
@@ -397,6 +399,7 @@ export interface CollectorStore
   saveResearchTaskBodyPlan(taskId: string, bodyPlan: ResearchBodyPlan): Promise<void>;
   saveResearchTaskStreamCheckpoint(taskId: string, content: string, protocolPrefix?: string): Promise<void>;
   clearResearchTaskStreamCheckpoint(taskId: string): Promise<void>;
+  saveResearchTaskContextAssemblySnapshot(taskId: string, snapshot: ResearchContextAssemblySnapshot): Promise<void>;
   listResearchTaskEvents(taskId: string, afterId?: number): ResearchTaskEvent[];
   listRecoverableResearchTasks(): ResearchTaskRecord[];
   failInterruptedResearchTasks(): number;
@@ -1457,6 +1460,14 @@ export class SqliteStore implements CollectorStore {
       const task = this.getResearchTask(taskId);
       if (!task) throw new Error("Research task not found");
       this.updateResearchTask({ ...task, bodyPlan, updatedAt: new Date().toISOString() });
+    });
+  }
+
+  async saveResearchTaskContextAssemblySnapshot(taskId: string, snapshot: ResearchContextAssemblySnapshot): Promise<void> {
+    this.transaction(() => {
+      const task = this.getResearchTask(taskId);
+      if (!task) throw new Error("Research task not found");
+      this.updateResearchTask({ ...task, contextAssemblySnapshot: snapshot, updatedAt: new Date().toISOString() });
     });
   }
 

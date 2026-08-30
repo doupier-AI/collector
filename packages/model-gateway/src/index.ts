@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { ASSOCIATION_HINT_BENEFITS, ASSOCIATION_HINT_EVALUATION_PROMPT_VERSION, FUSION_RELATION_TYPES, IMPORT_CHAPTER_PARSE_PROMPT_VERSION, IMPORT_CHAPTER_PARSE_TOKEN_BUDGET, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET, TERM_IDENTITY_CONTEXT_MAX_CHARACTERS, TERM_IDENTITY_TEXT_MAX_CHARACTERS, TERM_IDENTITY_VERIFY_PROMPT_VERSION, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchAssociationHintBenefit, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSliceContext, type TermIdentityVerificationRequest } from "@collector/capture-contracts";
+import { ASSOCIATION_HINT_BENEFITS, ASSOCIATION_HINT_EVALUATION_PROMPT_VERSION, FUSION_RELATION_TYPES, IMPORT_CHAPTER_PARSE_PROMPT_VERSION, IMPORT_CHAPTER_PARSE_TOKEN_BUDGET, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET, TERM_IDENTITY_CONTEXT_MAX_CHARACTERS, TERM_IDENTITY_TEXT_MAX_CHARACTERS, TERM_IDENTITY_VERIFY_PROMPT_VERSION, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type ContextAssemblyResult, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchAssociationHintBenefit, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSliceContext, type TermIdentityVerificationRequest } from "@collector/capture-contracts";
 
 export interface ProviderUsage {
   inputTokens?: number;
@@ -70,6 +70,29 @@ export interface ModelProviderRequest {
  * 8_000 在 thinking 模式下会被推理耗尽、正文为空（#86 真实探针两次复现），故提高。
  */
 export const RESEARCH_BODY_DEFAULT_MAX_TOKENS = 16_000;
+
+/** 业务模型入口只接收策略层已经准入的候选；rejected 结果不能继续转换成供应商输入。 */
+export type AssembledModelContext = Extract<ContextAssemblyResult, { status: "assembled" }>;
+
+/**
+ * 唯一的已装配上下文到模型文本转换边界。服务层不得再自行拼接候选正文；
+ * rejected 候选与审计元数据不会进入供应商提示，来源标签仅用于防止材料冒充规则。
+ */
+export function formatAssembledModelContext(assembly: AssembledModelContext): string {
+  return JSON.stringify({
+    purpose: assembly.purpose,
+    context: assembly.adopted.map(({ candidate }) => ({
+      channel: candidate.channel,
+      category: candidate.channel === "factual_evidence"
+        ? candidate.evidenceKind
+        : candidate.channel === "behavior_rule"
+          ? candidate.ruleKind
+          : candidate.adaptationKind,
+      sourceKind: candidate.source.kind,
+      content: candidate.content,
+    })),
+  });
+}
 
 export interface ModelProvider {
   readonly name: string;
@@ -647,6 +670,91 @@ export class ModelGateway {
   }
 
   get promptVersion(): string { return this.options.promptVersion ?? "knowledge-extraction-v1"; }
+
+  /** 主研究链的新入口：所有业务材料已由 ContextAssembly 准入，旧文本入口仅供尚未迁移的辅助用途。 */
+  async generateGroundedResearchFromContext(
+    assembly: AssembledModelContext,
+    grounding: ResearchGroundingRequest,
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number } = {},
+  ): Promise<GroundedResearchResponse> {
+    return this.generateGroundedResearch(formatAssembledModelContext(assembly), grounding, options);
+  }
+
+  async answerResearchConversationFromContext(
+    assembly: AssembledModelContext,
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; mentionMarkup?: boolean; context?: ModelCallContext; nodeDepth?: number } = {},
+  ): Promise<string> {
+    return this.answerResearchConversation(
+      [{ role: "user", content: formatAssembledModelContext(assembly) }],
+      { ...options, parentChainContext: { currentNodeDepth: options.nodeDepth ?? 0, ancestors: [], truncated: false, cycleDetected: false } },
+    );
+  }
+
+  async writeResearchBodyFromContext(
+    assembly: AssembledModelContext,
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number } = {},
+  ): Promise<string> {
+    return this.writeResearchBody(
+      [{ role: "user", content: formatAssembledModelContext(assembly) }],
+      { ...options, parentChainContext: { currentNodeDepth: options.nodeDepth ?? 0, ancestors: [], truncated: false, cycleDetected: false } },
+    );
+  }
+
+  async *writeResearchBodyStreamFromContext(
+    assembly: AssembledModelContext,
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number; resumeFrom?: string; onDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; signal?: AbortSignal } = {},
+  ): AsyncIterable<string> {
+    const admittedResume = options.resumeFrom ? "[续写正文见已准入 continuation_state]" : undefined;
+    yield* this.writeResearchBodyStream(
+      [{ role: "user", content: formatAssembledModelContext(assembly) }],
+      {
+        ...options,
+        ...(admittedResume ? { resumeFrom: admittedResume } : {}),
+        parentChainContext: { currentNodeDepth: options.nodeDepth ?? 0, ancestors: [], truncated: false, cycleDetected: false },
+      },
+    );
+  }
+
+  async generateBodyOutlineFromContext(
+    assembly: AssembledModelContext,
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<ResearchBodyOutline> {
+    return this.generateBodyOutline([{ role: "user", content: formatAssembledModelContext(assembly) }], options);
+  }
+
+  async expandBodySectionFromContext(
+    assembly: AssembledModelContext,
+    input: Parameters<ModelGateway["expandBodySection"]>[0],
+    options: Parameters<ModelGateway["expandBodySection"]>[1] = {},
+  ): Promise<{ content: string; finishReason?: string }> {
+    return this.expandBodySection({
+      ...input,
+      goal: formatAssembledModelContext(assembly),
+      writtenSoFar: "",
+      ...(input.continuation ? { continuation: { priorSectionContent: "" } } : {}),
+      ...(input.repairHint ? { repairHint: "按已准入的修复状态重试" } : {}),
+    }, options);
+  }
+
+  async generateDeepResearchRoundFromContext(
+    assembly: AssembledModelContext,
+    options: { mode: "branch" | "session"; nodeDepth?: number; model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext },
+  ): Promise<string> {
+    return this.generateDeepResearchRound({
+      mode: options.mode,
+      selectionText: formatAssembledModelContext(assembly),
+      direction: "围绕已准入的当前问题和材料展开研究。",
+      parentChainContext: { currentNodeDepth: options.nodeDepth ?? 0, ancestors: [], truncated: false, cycleDetected: false },
+    }, options);
+  }
+
+  async runAgentSearchLoopFromContext(
+    assembly: AssembledModelContext,
+    tools: AgentSearchToolContext,
+    options: { maxTurns?: number; systemPrompt?: string; context?: ModelCallContext; nodeDepth?: number } = {},
+  ): Promise<AgentSearchResult> {
+    return this.runAgentSearchLoop(formatAssembledModelContext(assembly), tools, options);
+  }
 
   /** 供应商原生联网：统一注入正文弱标记契约，原始引用范围交由服务层在清洗后校正。 */
   async generateGroundedResearch(
