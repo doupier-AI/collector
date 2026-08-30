@@ -49,7 +49,7 @@ function reader(input: {
   return {
     listResearchSessions: () => input.sessions,
     listResearchNodes: (sessionId) => input.nodes.filter((item) => item.sessionId === sessionId),
-    listResearchMessages: (sessionId) => input.messages.filter((item) => item.sessionId === sessionId),
+    listResearchMessageBodies: (sessionId) => input.messages.filter((item) => item.sessionId === sessionId),
     listResearchAttachments: (sessionId) => (input.attachments ?? []).filter((item) => item.sessionId === sessionId),
     getResearchContentSnapshot: (id) => (input.snapshots ?? []).find((item) => item.id === id),
     getConfirmedFusionSnapshot: (nodeId) => (input.fusions ?? []).find((item) => item.fusionNodeId === nodeId),
@@ -64,7 +64,9 @@ test("projector keeps current source fields separate, includes archived content,
   const sessions = [session("root"), session("archived", { status: "archived" }), session("trash", { trashedAt: NOW })];
   const nodes = [node("root", "root"), node("child", "root", { parentNodeId: "root", displayName: "量子节点" }), node("archived", "archived"), node("trash", "trash")];
   const completed = message("a1", "root", "child", "assistant", "当前完整 AI 正文");
-  completed.versions = [{ content: "历史旧正文", createdAt: NOW }];
+  const reasoningSentinel = "RSN05_REASONING_SENTINEL_7f5c";
+  completed.reasoning = reasoningSentinel;
+  completed.versions = [{ content: "历史旧正文", reasoning: reasoningSentinel, createdAt: NOW }];
   const messages = [
     message("q1", "root", "child", "user", "量子纠缠是什么"),
     completed,
@@ -89,6 +91,7 @@ test("projector keeps current source fields separate, includes archived content,
   assert.ok(units.some((unit) => unit.searchText === "当前完整 AI 正文"));
   assert.ok(units.some((unit) => unit.searchText === "归档内容仍可搜索"));
   assert.ok(units.every((unit) => !["历史旧正文", "停止但不完整", "仍在流式生成", "暂停中的内容", "失败的内容", "回收站秘密"].some((excluded) => unit.searchText.includes(excluded))));
+  assert.doesNotMatch(JSON.stringify(units), new RegExp(reasoningSentinel), "搜索与知识库投影不得包含思考哨兵");
   assert.ok(units.filter((unit) => unit.field === "import-body").every((unit) => unit.nodeId === "root"));
 });
 

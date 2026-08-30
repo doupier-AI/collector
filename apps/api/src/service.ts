@@ -42,7 +42,7 @@ import {
   resolveFragmentExcerpt,
   type ResearchBodyVersionRecord,
   type ResearchBodyVersionView,
-  type ResearchMessageRecord,
+  type ResearchMessageBodyRecord,
   measureResearchContentLength,
   redactGroundingValue,
   sanitizeGroundingUrl,
@@ -412,7 +412,7 @@ export class CaptureService {
 
   /** 来源节点标签回退：首条用户消息摘要。 */
   private firstUserMessageFor(nodeId: string): string | undefined {
-    const first = this.store.listResearchMessagesByNode(nodeId).find((message) => message.role === "user");
+    const first = this.store.listResearchMessageBodiesByNode(nodeId).find((message) => message.role === "user");
     const content = first?.content?.trim();
     if (!content) return undefined;
     const compressed = content.replace(/\s+/g, " ");
@@ -428,7 +428,7 @@ export class CaptureService {
    */
   private async getOrCreateBodyArtifacts(
     nodeId: string,
-    message: Pick<ResearchMessageRecord, "id" | "nodeId" | "branchId" | "sessionId" | "content" | "createdAt">,
+    message: Pick<ResearchMessageBodyRecord, "id" | "nodeId" | "branchId" | "sessionId" | "content" | "createdAt">,
     citations: import("@collector/capture-contracts").ResearchCitationRecord[],
   ): Promise<ResearchBodyVersionRecord> {
     const scopeNodeId = message.nodeId ?? message.branchId ?? nodeId;
@@ -462,7 +462,7 @@ export class CaptureService {
     let processed = 0;
     let created = 0;
     for (const session of this.store.listResearchSessions()) {
-      for (const message of this.store.listResearchMessages(session.id)) {
+      for (const message of this.store.listResearchMessageBodies(session.id)) {
         if (message.role !== "assistant" || message.status !== "completed" || !message.content.trim()) continue;
         processed += 1;
         try {

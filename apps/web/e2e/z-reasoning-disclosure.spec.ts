@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { pairAndOpen } from "./helpers";
 
 const THINKING_QUESTION = "请深入思考：什么是本地优先研究？";
+const REASONING_SENTINEL = "推理第一步：先拆解问题的核心概念。推理第二步：组织回答的结构与顺序。";
 
 async function submitThinkingQuestion(page: Page): Promise<void> {
   await page.getByLabel("你的问题").fill(THINKING_QUESTION);
@@ -10,6 +11,7 @@ async function submitThinkingQuestion(page: Page): Promise<void> {
 }
 
 test("思考触发词：思考过程折叠流式展示、与正文分离、完成后可回看", async ({ page }) => {
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   await pairAndOpen(page, "/research/new");
 
   // 配对前未带凭证的探测请求会返回 401 并被 Chromium 记为资源加载错误，属于预期流程；
@@ -50,10 +52,15 @@ test("思考触发词：思考过程折叠流式展示、与正文分离、完�
   const doneToggle = page.locator(".reasoning__toggle");
   await expect(doneToggle).toContainText("思考过程");
   await expect(doneToggle).toHaveAttribute("aria-expanded", "true");
-  await expect(reasoningBody).toContainText("推理第二步");
+  await expect(reasoningBody).toContainText(REASONING_SENTINEL);
   // 思考文字不进入正文
   const fullText = (await assistantContent.allTextContents()).join("");
   expect(fullText).not.toContain("推理第一步");
+
+  await page.locator(".message--assistant").getByRole("button", { name: "复制" }).click();
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copied).toContain("回答完毕");
+  expect(copied).not.toContain(REASONING_SENTINEL);
 
   expect(consoleIssues, `浏览器控制台不应有错误和警告: ${consoleIssues.join(" | ")}`).toEqual([]);
 });

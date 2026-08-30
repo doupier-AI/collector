@@ -99,7 +99,7 @@ export class ResearchLaterService {
     const originText = originSelection ? excerptText(originSelection.text) : undefined;
     if (originText) return { id: nodeId, label: originText };
 
-    const firstUserMessage = this.store.listResearchMessagesByNode?.(nodeId)?.find((message) => message.role === "user");
+    const firstUserMessage = this.store.listResearchMessageBodiesByNode(nodeId).find((message) => message.role === "user");
     const firstMessage = firstUserMessage ? excerptText(firstUserMessage.content) : undefined;
     return { id: nodeId, label: firstMessage ?? "子节点" };
   }

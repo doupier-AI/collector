@@ -83,6 +83,7 @@ async function seedResearchTask(
   id: string,
   createdAt: string,
   status: "completed" | "failed" = "completed",
+  reasoning?: string,
 ): Promise<ResearchTaskRecord> {
   const input: ResearchMessageRecord = {
     id: `${id}-input`, sessionId: session.id, role: "user", content: "本地运行记录测试输入",
@@ -100,6 +101,7 @@ async function seedResearchTask(
   await store.createResearchTurn(session, input, output, task);
   const claimed = store.claimResearchTask(id, "test-provider", "test-model", "run-record-prompt-v2");
   assert.ok(claimed);
+  if (reasoning) await store.appendResearchTaskDelta(id, "", undefined, reasoning);
   if (status === "completed") await store.completeResearchTask(id);
   else await store.failResearchTask(claimed, { code: "provider_error", message: "provider failed" });
   return store.getResearchTask(id)!;
@@ -143,7 +145,8 @@ test("run record API paginates, filters, restores related traces, and redacts se
   const harness = await createHarness();
   t.after(() => harness.close());
   const session = await seedSession(harness.store);
-  const task = await seedResearchTask(harness.store, session, "task-run-records", "2026-07-31T00:03:00.000Z");
+  const reasoningSentinel = "RSN05_REASONING_SENTINEL_7f5c";
+  const task = await seedResearchTask(harness.store, session, "task-run-records", "2026-07-31T00:03:00.000Z", "completed", reasoningSentinel);
   await seedModelCall(harness.store, task.id);
   await seedSearch(harness.store, task.id, session.id);
   await seedResearchTask(harness.store, session, "task-run-records-failed", "2026-07-31T00:02:00.000Z", "failed");
@@ -189,6 +192,7 @@ test("run record API paginates, filters, restores related traces, and redacts se
   assert.ok(detail.body.errors.some((error) => error.message.includes("[REDACTED]")));
   const serialized = JSON.stringify(detail.body);
   assert.doesNotMatch(serialized, /sk-model-secret|sk-search-secret|source-secret|Bearer/);
+  assert.doesNotMatch(serialized, new RegExp(reasoningSentinel), "运行记录详情不得包含思考哨兵");
 
   const unauthorizedExport = await fetch(`${harness.base}/v1/run-records/export`);
   assert.equal(unauthorizedExport.status, 401);
@@ -206,6 +210,7 @@ test("run record API paginates, filters, restores related traces, and redacts se
   assert.equal(exportedRecord.searches[0].sources[0].url, "https://example.com/article?safe=1");
   assert.ok(exportedRecord.errors.some((error) => error.message.includes("[REDACTED]")));
   assert.doesNotMatch(JSON.stringify(exportLines), /sk-model-secret|sk-search-secret|source-secret|Bearer/);
+  assert.doesNotMatch(JSON.stringify(exportLines), new RegExp(reasoningSentinel), "运行记录导出不得包含思考哨兵");
   assert.equal(exportLines[2].type, "record");
   assert.equal((exportLines[2].record as { id: string }).id, "research:task-run-records-failed");
   assert.equal(exportLines[3].type, "summary");

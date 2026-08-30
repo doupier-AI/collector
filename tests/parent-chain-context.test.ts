@@ -300,7 +300,7 @@ test("cycle detection: broken parentNodeId loop", async () => {
     getResearchNode: (id) => nodes[id],
     getResearchSession: () => ({ id: "S", title: "循环会话", status: "active", isFavorite: false, createdAt: NOW, updatedAt: NOW }),
     getResearchSelection: () => undefined,
-    listResearchMessagesByNode: () => [],
+    listResearchMessageBodiesByNode: () => [],
   };
 
   const service = new ParentChainContextService(mockStore);

@@ -1,4 +1,4 @@
-import type { ResearchMessageRecord, ResearchSessionRecord } from "@collector/capture-contracts";
+import type { ResearchMessageBodyRecord, ResearchSessionRecord } from "@collector/capture-contracts";
 import { RESEARCH_TITLE_MAX_CHARACTERS, deriveDefaultResearchTitle } from "@collector/capture-contracts";
 import type { ModelGateway } from "@collector/model-gateway";
 
@@ -8,12 +8,12 @@ export const DEFAULT_RESEARCH_SESSION_TITLE = "新研究会话";
 export interface SessionTitlingStore {
   getResearchSession(id: string): ResearchSessionRecord | undefined;
   /** 根节点的消息（nodeId === sessionId）；子节点消息不参与会话标题提炼。 */
-  listResearchMessagesByNode(nodeId: string): ResearchMessageRecord[];
+  listResearchMessageBodiesByNode(nodeId: string): ResearchMessageBodyRecord[];
   updateResearchSessionTitle(sessionId: string, title: string): Promise<ResearchSessionRecord | undefined>;
 }
 
 /** 从根节点用户消息生成稳定标题；没有根用户消息时保留默认标题。 */
-export function deterministicSessionTitle(messages: readonly Pick<ResearchMessageRecord, "role" | "content">[]): string {
+export function deterministicSessionTitle(messages: readonly Pick<ResearchMessageBodyRecord, "role" | "content">[]): string {
   const firstUser = messages.find((message) => message.role === "user" && message.content.trim());
   if (!firstUser) return DEFAULT_RESEARCH_SESSION_TITLE;
   // deriveDefaultResearchTitle 超长时返回 40 字 + 省略号（41 字符），store 校验上限 40 字，这里收口到合法长度。
@@ -53,7 +53,7 @@ export class SessionTitlingService {
     const session = this.store.getResearchSession(sessionId);
     if (!session || session.titleEdited) return session;
     if (session.title !== DEFAULT_RESEARCH_SESSION_TITLE) return session;
-    const messages = this.store.listResearchMessagesByNode(sessionId);
+    const messages = this.store.listResearchMessageBodiesByNode(sessionId);
     return this.store.updateResearchSessionTitle(sessionId, deterministicSessionTitle(messages));
   }
 
@@ -67,7 +67,7 @@ export class SessionTitlingService {
     try {
       const gateway = await this.gatewayResolver();
       if (!gateway) return this.store.getResearchSession(sessionId);
-      const messages = this.store.listResearchMessagesByNode(sessionId);
+      const messages = this.store.listResearchMessageBodiesByNode(sessionId);
       const generated = await gateway.generateSessionTitle(
         { content: messages.map((message) => `${message.role}: ${message.content}`).join("\n").slice(0, 4000) },
         { maxTokens: 128, timeoutMs: 30_000, context: { purpose: "research", promptVersion: "session-titling-v1" } },

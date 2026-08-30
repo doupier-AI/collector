@@ -238,7 +238,7 @@ export class AssociationHintService {
     if (!node) return undefined;
 
     // 过期守卫：只给节点当前最新稳定回答写提示；追问/重新生成后的旧版本扫描结果丢弃。
-    const latestCompleted = this.store.listResearchMessagesByNode(nodeId)
+    const latestCompleted = this.store.listResearchMessageBodiesByNode(nodeId)
       .filter((message) => message.role === "assistant" && message.status === "completed")
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
       .at(-1);
@@ -439,7 +439,7 @@ export class AssociationHintService {
   }
 
   private latestCompletedContent(nodeId: string): string | undefined {
-    return this.store.listResearchMessagesByNode(nodeId)
+    return this.store.listResearchMessageBodiesByNode(nodeId)
       .filter((message) => message.role === "assistant" && message.status === "completed")
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
       .at(-1)?.content;

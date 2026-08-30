@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchReasoningRecord, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageBodyRecord, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchReasoningRecord, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId, toResearchMessageBody } from "@collector/capture-contracts";
 import {
   compareAssociationHintsByValue,
   type ConfirmTemporaryFusionResult,
@@ -66,7 +66,7 @@ export interface ResearchLaterStore {
   getResearchSession(id: string): ResearchSessionRecord | undefined;
   /** 节点投影由 CollectorStore 的节点能力提供；旧 JsonStore 返回空值。 */
   getResearchNode(id: string): ResearchNodeRecord | undefined;
-  listResearchMessagesByNode(nodeId: string): ResearchMessageRecord[];
+  listResearchMessageBodiesByNode(nodeId: string): ResearchMessageBodyRecord[];
 }
 
 /** 选区、稳定锚点与来源返回所需的持久化能力。 */
@@ -77,7 +77,7 @@ export interface ResearchSelectionStore {
   createResearchSelection(selection: ResearchSelectionRecord, idempotencyKey: string): Promise<ResearchSelectionAccepted>;
   saveResearchSelection(record: ResearchSelectionRecord): Promise<void>;
   getResearchSession(id: string): ResearchSessionRecord | undefined;
-  getResearchMessage(id: string): ResearchMessageRecord | undefined;
+  getResearchMessageBody(id: string): ResearchMessageBodyRecord | undefined;
   getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined;
   getResearchNode(id: string): ResearchNodeRecord | undefined;
 }
@@ -155,6 +155,9 @@ export interface ResearchStore {
   getResearchMessage(id: string): ResearchMessageRecord | undefined;
   listResearchMessages(sessionId: string): ResearchMessageRecord[];
   listResearchMessagesByNode(nodeId: string): ResearchMessageRecord[];
+  getResearchMessageBody(id: string): ResearchMessageBodyRecord | undefined;
+  listResearchMessageBodies(sessionId: string): ResearchMessageBodyRecord[];
+  listResearchMessageBodiesByNode(nodeId: string): ResearchMessageBodyRecord[];
   getResearchReasoningRecord(id: string): ResearchReasoningRecord | undefined;
   listResearchReasoningRecords(messageId: string): ResearchReasoningRecord[];
   getResearchTask(id: string): ResearchTaskRecord | undefined;
@@ -233,11 +236,14 @@ export interface DeepResearchStore {
   listChildNodes(parentNodeId: string): ResearchNodeRecord[];
   getResearchSession(id: string): ResearchSessionRecord | undefined;
   getResearchMessage(id: string): ResearchMessageRecord | undefined;
+  getResearchMessageBody(id: string): ResearchMessageBodyRecord | undefined;
   getResearchSelection(id: string): ResearchSelectionRecord | undefined;
   /** 术语生长按锚点复用既有选区：需要会话级选区清单（ADR-0029）。 */
   listResearchSelections(sessionId: string): ResearchSelectionRecord[];
   listResearchMessages(sessionId: string): ResearchMessageRecord[];
   listResearchMessagesByNode(nodeId: string): ResearchMessageRecord[];
+  listResearchMessageBodies(sessionId: string): ResearchMessageBodyRecord[];
+  listResearchMessageBodiesByNode(nodeId: string): ResearchMessageBodyRecord[];
   listResearchTasks(sessionId: string): ResearchTaskRecord[];
   listResearchTasksByNode(nodeId: string): ResearchTaskRecord[];
   findResearchTaskByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchTaskRecord | undefined;
@@ -366,6 +372,9 @@ export interface CollectorStore
   listTrashedResearchSessions(): ResearchSessionRecord[];
   getResearchMessage(id: string): ResearchMessageRecord | undefined;
   listResearchMessages(sessionId: string): ResearchMessageRecord[];
+  getResearchMessageBody(id: string): ResearchMessageBodyRecord | undefined;
+  listResearchMessageBodies(sessionId: string): ResearchMessageBodyRecord[];
+  listResearchMessageBodiesByNode(nodeId: string): ResearchMessageBodyRecord[];
   getResearchTask(id: string): ResearchTaskRecord | undefined;
   findResearchTaskByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchTaskRecord | undefined;
   listResearchTasks(sessionId: string): ResearchTaskRecord[];
@@ -1044,6 +1053,25 @@ export class SqliteStore implements CollectorStore {
     return this.hydrateResearchMessagesReasoning(
       this.listRecords<ResearchMessageRecord>("SELECT record_json FROM research_messages WHERE node_id = ? ORDER BY created_at, rowid", nodeId),
     );
+  }
+
+  getResearchMessageBody(id: string): ResearchMessageBodyRecord | undefined {
+    const message = this.getRecord<ResearchMessageRecord>("SELECT record_json FROM research_messages WHERE id = ?", id);
+    return message ? toResearchMessageBody(message) : undefined;
+  }
+
+  listResearchMessageBodies(sessionId: string): ResearchMessageBodyRecord[] {
+    return this.listRecords<ResearchMessageRecord>(
+      "SELECT record_json FROM research_messages WHERE session_id = ? ORDER BY created_at, rowid",
+      sessionId,
+    ).map(toResearchMessageBody);
+  }
+
+  listResearchMessageBodiesByNode(nodeId: string): ResearchMessageBodyRecord[] {
+    return this.listRecords<ResearchMessageRecord>(
+      "SELECT record_json FROM research_messages WHERE node_id = ? ORDER BY created_at, rowid",
+      nodeId,
+    ).map(toResearchMessageBody);
   }
 
   getResearchReasoningRecord(id: string): ResearchReasoningRecord | undefined {

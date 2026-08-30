@@ -16,7 +16,7 @@ const NOW = "2026-08-05T00:00:00.000Z";
  */
 function makeStreamProvider(opts: {
   script: Array<(resumeFrom: string | undefined) => { deltas: string[]; reasonings?: string[]; sleepAfterReasoningsMs?: number; sleepBetweenDeltasMs?: number; finishReason?: string; cutAfter?: number; cutError?: "timeout" | "fatal500" | "fatal400" | "network" }>;
-  calls: Array<{ resumeFrom: string | undefined }>;
+  calls: Array<{ resumeFrom: string | undefined; request?: unknown }>;
 }): Record<string, unknown> {
   return {
     provider: "fake",
@@ -25,7 +25,7 @@ function makeStreamProvider(opts: {
     async *generate() { yield "unused"; },
     async writeBody() { return "短正文占位（触发流式分支前置）。"; },
     async *writeBodyStream(request: { resumeFrom?: string; onStreamDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void }) {
-      opts.calls.push({ resumeFrom: request.resumeFrom });
+      opts.calls.push({ resumeFrom: request.resumeFrom, request });
       const next = opts.script.shift();
       if (!next) throw new Error("writeBodyStream called more than scripted");
       const { deltas, reasonings = [], sleepAfterReasoningsMs = 0, sleepBetweenDeltasMs = 0, finishReason, cutAfter, cutError = "timeout" } = next(request.resumeFrom);
@@ -308,8 +308,38 @@ test("思考增量与正文分离落库：message.reasoning 累计、正文不�
   store.close();
 });
 
+test("后续回答的模型请求、RAG 候选和派生记录都排除 reasoning 哨兵", async (t) => {
+  const sentinel = "RSN05_REASONING_SENTINEL_7f5c";
+  const calls: Array<{ resumeFrom: string | undefined; request?: unknown }> = [];
+  const provider = makeStreamProvider({
+    calls,
+    script: [
+      () => ({ reasonings: [sentinel], deltas: ["第一轮公开正文。"], finishReason: "stop" }),
+      () => ({ deltas: ["第二轮公开正文。"], finishReason: "stop" }),
+    ],
+  });
+  const { store, service } = await makeService(t, provider);
+
+  const first = await service.research.submitMessage("session-1", "第一问", "k-reasoning-context-1");
+  for (let i = 0; i < 200 && store.getResearchTask(first.task.id)?.status !== "completed"; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(store.getResearchMessage(first.outputMessage.id)?.reasoning, sentinel);
+
+  const second = await service.research.submitMessage("session-1", "继续追问", "k-reasoning-context-2");
+  for (let i = 0; i < 200 && store.getResearchTask(second.task.id)?.status !== "completed"; i++) await new Promise((resolve) => setImmediate(resolve));
+
+  const downstream = JSON.stringify(calls[1]?.request);
+  assert.match(downstream, /继续追问/);
+  assert.match(downstream, /第一轮公开正文/, "后续请求确实携带同一正文路径的 RAG 片段");
+  assert.doesNotMatch(downstream, new RegExp(sentinel), "后续模型消息和 RAG 片段不得携带思考哨兵");
+  assert.doesNotMatch(JSON.stringify(store.listSlicesByMessage(first.outputMessage.id)), new RegExp(sentinel));
+  assert.doesNotMatch(JSON.stringify(store.getBodyVersionForMessage(first.outputMessage.id)), new RegExp(sentinel));
+  assert.doesNotMatch(JSON.stringify(store.getResearchMessage(first.outputMessage.id)?.termMarkers ?? []), new RegExp(sentinel));
+  assert.doesNotMatch(JSON.stringify(store.listResearchCitationsForMessages([first.outputMessage.id])), new RegExp(sentinel));
+  store.close();
+});
+
 test("reasoning 失败内容不进入普通日志，只以稳定错误类别记录", async (t) => {
-  const privateReasoning = "token=reasoning-secret 用户私密推演";
+  const privateReasoning = "RSN05_REASONING_SENTINEL_7f5c token=reasoning-secret 用户私密推演";
   const provider = makeStreamProvider({
     calls: [],
     script: [() => ({ reasonings: [privateReasoning], deltas: ["不会到达的正文"], cutAfter: 0, cutError: "fatal400" })],
@@ -326,7 +356,7 @@ test("reasoning 失败内容不进入普通日志，只以稳定错误类别记�
   }
   assert.equal(store.getResearchTask(accepted.task.id)?.status, "failed");
   assert.equal(store.getResearchMessage(accepted.outputMessage.id)?.reasoning, privateReasoning);
-  assert.doesNotMatch(warnings.join("\n"), /reasoning-secret|用户私密推演|token=/);
+  assert.doesNotMatch(warnings.join("\n"), /RSN05_REASONING_SENTINEL_7f5c|reasoning-secret|用户私密推演|token=/);
   store.close();
 });
 

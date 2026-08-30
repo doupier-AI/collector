@@ -5,6 +5,7 @@ import {
   resolveFragmentExcerpt,
   type ResearchBodyVersionRecord,
   type ResearchCitationRecord,
+  type ResearchMessageBodyRecord,
   type ResearchSemanticFragmentRecord,
   type ResearchSliceRecord,
 } from "@collector/capture-contracts";
@@ -20,7 +21,7 @@ import {
 
 export interface MessageBodyArtifactsInput {
   nodeId: string;
-  message: { id: string; content: string; createdAt?: string };
+  message: Pick<ResearchMessageBodyRecord, "id" | "content"> & { createdAt?: string };
   slices?: readonly ResearchSliceRecord[];
   citations?: readonly ResearchCitationRecord[];
 }

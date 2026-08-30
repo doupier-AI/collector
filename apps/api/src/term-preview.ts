@@ -3,7 +3,7 @@ import {
   TERM_IDENTITY_CONTEXT_MAX_CHARACTERS,
   deriveMessageBlocks,
   validateResearchTermPreviewInput,
-  type ResearchMessageRecord,
+  type ResearchMessageBodyRecord,
   type ResearchNodeRecord,
   type ResearchSelectionRecord,
   type ResearchSessionRecord,
@@ -65,7 +65,7 @@ export class ResearchTermPreviewService {
     const session = this.store.getResearchSession(node.sessionId);
     if (!session) throw new Error("Research node references a missing session");
     if (isTrashed(session)) throw new ResearchTermPreviewConflictError("Research session is in trash");
-    const message = this.store.listResearchMessagesByNode(nodeId).find((candidate) => candidate.id === input.messageId);
+    const message = this.store.listResearchMessageBodiesByNode(nodeId).find((candidate) => candidate.id === input.messageId);
     // ADR-0029：流式期间即可启动预览。提及闭合后其上下文已固定（正文只往后追加），
     // 失败消息不渲染标记、不提供预览入口。
     if (!message || message.role !== "assistant" || message.status === "failed") {
@@ -156,7 +156,7 @@ export class ResearchTermPreviewService {
       if (!current || current.status !== "queued") return;
       const session = this.store.getResearchSession(current.sessionId);
       const node = this.store.getResearchNode(current.nodeId);
-      const message = this.store.getResearchMessage(current.messageId);
+      const message = this.store.getResearchMessageBody(current.messageId);
       if (!session || !node || !message) throw new Error("Research term preview references incomplete state");
 
       const task = this.store.claimResearchTermPreview(
@@ -198,7 +198,7 @@ export class ResearchTermPreviewService {
     }
   }
 
-  private validatedMarker(message: ResearchMessageRecord, requested: TermMarker, node: ResearchNodeRecord): TermMarker {
+  private validatedMarker(message: ResearchMessageBodyRecord, requested: TermMarker, node: ResearchNodeRecord): TermMarker {
     const valid = validateTermMarkers(message.content, [requested]);
     if (!valid.length) throw new ResearchTermPreviewValidationError("Term marker no longer matches the message");
     const nodeDepth = this.options.parentChainContext.buildParentChainContext(node.id).currentNodeDepth;
@@ -218,7 +218,7 @@ export class ResearchTermPreviewService {
    */
   private async findReusablePreviewInNode(
     node: ResearchNodeRecord,
-    message: ResearchMessageRecord,
+    message: ResearchMessageBodyRecord,
     marker: TermMarker,
   ): Promise<ResearchTermPreviewAccepted | undefined> {
     const normalizedText = normalizeMentionText(marker.text);
@@ -228,7 +228,7 @@ export class ResearchTermPreviewService {
       && normalizeMentionText(candidate.marker.text) === normalizedText,
     );
     for (const candidate of candidates) {
-      const priorMessage = this.store.getResearchMessage(candidate.messageId);
+      const priorMessage = this.store.getResearchMessageBody(candidate.messageId);
       if (!priorMessage || priorMessage.role !== "assistant" || priorMessage.status !== "completed") continue;
       const priorMarker = validateTermMarkers(priorMessage.content, [candidate.marker])[0];
       if (!priorMarker) continue;
@@ -256,7 +256,7 @@ export class ResearchTermPreviewService {
     preview: ResearchTermPreviewRecord,
     session: ResearchSessionRecord,
     node: ResearchNodeRecord,
-    message: ResearchMessageRecord,
+    message: ResearchMessageBodyRecord,
   ): ResearchGenerationRequest {
     const blocks = deriveMessageBlocks(message.content);
     const block = blocks[preview.marker.blockOrdinal];
@@ -313,7 +313,7 @@ export function termPreviewMarkerKey(messageId: string, marker: TermMarker): str
 export function buildTermMentionSelection(
   session: ResearchSessionRecord,
   node: ResearchNodeRecord,
-  message: ResearchMessageRecord,
+  message: ResearchMessageBodyRecord,
   marker: TermMarker,
 ): ResearchSelectionRecord {
   const now = new Date().toISOString();
@@ -367,7 +367,7 @@ function sameMarker(left: TermMarker, right: TermMarker): boolean {
     && left.endOffset === right.endOffset;
 }
 
-function selectionContext(message: ResearchMessageRecord, marker: TermMarker): { prefix?: string; suffix?: string } {
+function selectionContext(message: ResearchMessageBodyRecord, marker: TermMarker): { prefix?: string; suffix?: string } {
   const block = deriveMessageBlocks(message.content)[marker.blockOrdinal];
   if (!block) return {};
   const prefix = block.text.slice(Math.max(0, marker.startOffset - MAX_CONTEXT_EXCERPT_CHARACTERS), marker.startOffset);
@@ -378,7 +378,7 @@ function selectionContext(message: ResearchMessageRecord, marker: TermMarker): {
   };
 }
 
-function termIdentityContext(message: ResearchMessageRecord, marker: TermMarker): string {
+function termIdentityContext(message: ResearchMessageBodyRecord, marker: TermMarker): string {
   const block = deriveMessageBlocks(message.content)[marker.blockOrdinal];
   if (!block) return "";
   const markerLength = Math.max(0, marker.endOffset - marker.startOffset);

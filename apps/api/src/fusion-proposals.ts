@@ -11,7 +11,7 @@ import {
   type ResearchFusionProposalRecord,
   type ResearchFusionProposalStatus,
   type ResearchFusionScanResult,
-  type ResearchMessageRecord,
+  type ResearchMessageBodyRecord,
   type ResearchNodeRecord,
   type ResearchSliceRecord,
   type ResearchTemporaryFusionBundle,
@@ -112,7 +112,7 @@ export interface SimilarityCandidate {
 export function indexNodeSimilaritySignals(
   node: ResearchNodeRecord,
   slices: readonly ResearchSliceRecord[],
-  messages: readonly ResearchMessageRecord[],
+  messages: readonly ResearchMessageBodyRecord[],
   termDetection: TermDetectionService,
 ): IndexedNode {
   const completedAssistantMessages = messages.filter((message) => message.role === "assistant" && message.status === "completed");
@@ -257,7 +257,7 @@ export class ResearchFusionProposalService {
       .map((node) => indexNodeSimilaritySignals(
         node,
         this.store.listSlicesByNode(node.id),
-        this.store.listResearchMessagesByNode(node.id),
+        this.store.listResearchMessageBodiesByNode(node.id),
         this.termDetection,
       ));
     // #39：提案保存的片段引用必须指向可回读的持久化正文版本与片段。
@@ -495,7 +495,7 @@ export class ResearchFusionProposalService {
     if (node.displayName?.trim()) return node.displayName.trim();
     const selection = node.originSelectionId ? this.store.getResearchSelection(node.originSelectionId) : undefined;
     if (selection?.text?.trim()) return excerptText(selection.text.trim(), 48);
-    const firstUser = this.store.listResearchMessagesByNode(nodeId).find((message) => message.role === "user");
+    const firstUser = this.store.listResearchMessageBodiesByNode(nodeId).find((message) => message.role === "user");
     if (firstUser?.content?.trim()) return excerptText(firstUser.content.trim(), 48);
     return `节点 ${nodeId.slice(0, 8)}`;
   }
@@ -505,7 +505,7 @@ export class ResearchFusionProposalService {
    * 与启动回填、节点视图惰性派生同一派生规则；按消息隔离失败。
    */
   private async persistMissingBodyArtifacts(nodeId: string): Promise<void> {
-    const messages = this.store.listResearchMessagesByNode(nodeId)
+    const messages = this.store.listResearchMessageBodiesByNode(nodeId)
       .filter((message) => message.role === "assistant" && message.status === "completed" && message.content.trim());
     for (const message of messages) {
       if (this.store.getBodyVersionForMessage(message.id)) continue;
@@ -548,7 +548,7 @@ export class ResearchFusionProposalService {
     if (!source.sliceId) return source;
     const slice = this.store.listSlicesByNode(source.nodeId).find((entry) => entry.id === source.sliceId);
     if (!slice) return source;
-    const message = this.store.getResearchMessage(slice.messageId);
+    const message = this.store.getResearchMessageBody(slice.messageId);
     if (!message || message.role !== "assistant" || message.status !== "completed") return source;
     const messageSlices = this.store.listSlicesByMessage(message.id)
       .slice()

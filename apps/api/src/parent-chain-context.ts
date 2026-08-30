@@ -1,5 +1,5 @@
 import type {
-  ResearchMessageRecord,
+  ResearchMessageBodyRecord,
   ResearchNodeRecord,
   ResearchSelectionRecord,
   ResearchSessionRecord,
@@ -29,7 +29,7 @@ export interface ParentChainContextStore {
   getResearchNode(id: string): ResearchNodeRecord | undefined;
   getResearchSession(id: string): ResearchSessionRecord | undefined;
   getResearchSelection(id: string): ResearchSelectionRecord | undefined;
-  listResearchMessagesByNode(nodeId: string): ResearchMessageRecord[];
+  listResearchMessageBodiesByNode(nodeId: string): ResearchMessageBodyRecord[];
 }
 
 // ── 结果类型 ────────────────────────────────────────────────
@@ -176,7 +176,7 @@ export class ParentChainContextService {
   private extractNodeContext(node: ResearchNodeRecord, depth: number): AncestorContext {
     const isRoot = !node.parentNodeId;
     const maxChars = this.bounds.perAncestorCharacters;
-    const messages = this.store.listResearchMessagesByNode(node.id);
+    const messages = this.store.listResearchMessageBodiesByNode(node.id);
 
     // 标签：根节点取会话标题；子节点优先来源选区摘要，其次首条用户消息。
     let label: string;
@@ -215,7 +215,7 @@ export class ParentChainContextService {
     };
   }
 
-  private deriveChildLabel(node: ResearchNodeRecord, maxChars: number, messages: ResearchMessageRecord[]): string {
+  private deriveChildLabel(node: ResearchNodeRecord, maxChars: number, messages: ResearchMessageBodyRecord[]): string {
     if (node.originSelectionId) {
       const selection = this.store.getResearchSelection(node.originSelectionId);
       if (selection?.text) return this.excerpt(selection.text, maxChars);
@@ -230,7 +230,7 @@ export class ParentChainContextService {
    * 同节点内按规范化文本去重、保持出现顺序；只读取持久化标记，
    * 不做词法回退，避免把旧数据噪声带入下游提示词。
    */
-  private collectCoveredTerms(messages: ResearchMessageRecord[]): string[] | undefined {
+  private collectCoveredTerms(messages: ResearchMessageBodyRecord[]): string[] | undefined {
     const seen = new Set<string>();
     const terms: string[] = [];
     for (const message of messages) {

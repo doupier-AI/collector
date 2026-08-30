@@ -328,7 +328,7 @@ export class NodeGrowthService {
         this.store.listResearchTasksByNode(node.id)[0]?.idempotencyKey === growthKeyConvention);
     if (existingNode) {
       const existingTask = this.store.listResearchTasksByNode(existingNode.id)[0];
-      const existingMessages = this.store.listResearchMessagesByNode(existingNode.id);
+      const existingMessages = this.store.listResearchMessageBodiesByNode(existingNode.id);
       const inputMessage = existingTask ? this.store.getResearchMessage(existingTask.inputMessageId) : undefined;
       const outputMessage = existingTask ? this.store.getResearchMessage(existingTask.outputMessageId) : undefined;
       if (existingTask && inputMessage && outputMessage) return { node: existingNode, session, selection, inputMessage, outputMessage, task: existingTask };
@@ -377,7 +377,7 @@ export class NodeGrowthService {
     const node = this.store.getResearchNode(preview.nodeId);
     const session = this.store.getResearchSession(preview.sessionId);
     if (!node || !session) throw new Error("Research term preview references incomplete node state");
-    const message = this.store.getResearchMessage(mention.messageId);
+    const message = this.store.getResearchMessageBody(mention.messageId);
     // 点击后可以等待预览完成再生长，此时正文可能仍在流式追加；失败消息不提供生长入口。
     if (!message || message.nodeId !== node.id || message.role !== "assistant" || message.status === "failed") {
       throw new DeepResearchValidationError("Growth mention must reference a streaming or completed assistant message in the same node");
@@ -453,7 +453,7 @@ export class NodeGrowthService {
       const originText = selection ? excerptText(selection.text, TREE_LABEL_CHARACTERS) : undefined;
       if (node.displayName) return { node, label: node.displayName, ...(originText ? { originText } : {}) };
       if (originText) return { node, label: originText, originText };
-      const firstUser = this.store.listResearchMessagesByNode(node.id).find((message) => message.role === "user");
+      const firstUser = this.store.listResearchMessageBodiesByNode(node.id).find((message) => message.role === "user");
       const firstMessage = firstUser ? excerptText(firstUser.content, TREE_LABEL_CHARACTERS) : undefined;
       return { node, label: firstMessage ?? "子节点", ...(firstMessage ? { firstMessage } : {}) };
     });
@@ -481,7 +481,7 @@ export class NodeGrowthService {
         const selection = node.originSelectionId ? this.store.getResearchSelection(node.originSelectionId) : undefined;
         const originText = selection ? excerptText(selection.text, TREE_LABEL_CHARACTERS) : undefined;
         if (originText) return originText;
-        const firstUser = this.store.listResearchMessagesByNode(node.id).find((message) => message.role === "user");
+        const firstUser = this.store.listResearchMessageBodiesByNode(node.id).find((message) => message.role === "user");
         if (firstUser) return excerptText(firstUser.content, TREE_LABEL_CHARACTERS);
         return "子节点";
       },
@@ -526,7 +526,7 @@ export class NodeGrowthService {
           const selection = node.originSelectionId ? this.store.getResearchSelection(node.originSelectionId) : undefined;
           const originText = selection ? excerptText(selection.text, TREE_LABEL_CHARACTERS) : undefined;
           if (originText) return originText;
-          const firstUser = this.store.listResearchMessagesByNode(node.id).find((message) => message.role === "user");
+          const firstUser = this.store.listResearchMessageBodiesByNode(node.id).find((message) => message.role === "user");
           return firstUser ? excerptText(firstUser.content, TREE_LABEL_CHARACTERS) : "子节点";
         },
       },

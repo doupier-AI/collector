@@ -76,7 +76,7 @@ export class ResearchSelectionService {
    */
   private resolveAnchor(sessionId: string, anchor: ResearchSelectionAnchor): ResolvedAnchor {
     if (anchor.kind === "message") {
-      const message = this.store.getResearchMessage(anchor.messageId);
+      const message = this.store.getResearchMessageBody(anchor.messageId);
       if (!message || message.sessionId !== sessionId) throw new ResearchSelectionNotFoundError("Anchor message not found in this session");
       const blocks = deriveMessageBlocks(message.content);
       const block = blocks[anchor.blockOrdinal];

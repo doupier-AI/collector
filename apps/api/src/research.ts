@@ -24,6 +24,7 @@ import {
   ResearchGroundingScenario,
   ResearchGroundingScopeStatus,
   ResearchGroundingSourceRecord,
+  ResearchMessageBodyRecord,
   ResearchMessageRecord,
   ResearchNodeRecord,
   ResearchSessionRecord,
@@ -175,7 +176,7 @@ function sectionStartsWithHeading(content: string): boolean {
 
 export interface ResearchGenerationRequest {
   session: ResearchSessionRecord;
-  messages: Array<Pick<ResearchMessageRecord, "role" | "content">>;
+  messages: Array<Pick<ResearchMessageBodyRecord, "role" | "content">>;
   taskId: string;
   /** E2：正式切片的稳定归属与本节点中的起始序号；任务处理时始终提供，旧测试/术语预览可省略。 */
   nodeId?: string;
@@ -550,7 +551,7 @@ export class ResearchSessionService {
     // 半篇正文续到来源 B，并最终只保存 B 的来源。该路径必须把 retry 当成一次全新尝试。
     const restartGroundedEvidence = current.allowWebSearch === true
       && Boolean(this.provider?.prepareGrounded)
-      && (hasStreamCheckpoint || Boolean(this.store.getResearchMessage(current.outputMessageId)?.content.trim()));
+      && (hasStreamCheckpoint || Boolean(this.store.getResearchMessageBody(current.outputMessageId)?.content.trim()));
     const preserveContent = !restartGroundedEvidence && (hasCompletedSection || hasStreamCheckpoint);
     const task = await this.store.retryResearchTask(current, this.provider?.provider, this.provider?.model, this.promptVersionForAttempt(current), { preserveContent });
     if (this.options.autoRunTasks !== false) this.scheduleTask(task.id);
@@ -663,7 +664,7 @@ export class ResearchSessionService {
       }
 
       const messages = generation.messages;
-      const outputMessage = this.store.getResearchMessage(task.outputMessageId);
+      const outputMessage = this.store.getResearchMessageBody(task.outputMessageId);
       if (!outputMessage) throw new Error("Research output message not found");
       const nodeId = task.nodeId ?? outputMessage.nodeId ?? outputMessage.branchId ?? task.sessionId;
       const generationRequest: ResearchGenerationRequest = {
@@ -825,7 +826,7 @@ export class ResearchSessionService {
     if (content.length > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
     if (!alreadyAppended) await this.appendGeneratedDelta(task, content);
     content = (await this.finishGeneratedMarkup(task)).content;
-    const nodeId = task.nodeId ?? this.store.getResearchMessage(task.outputMessageId)?.nodeId ?? task.sessionId;
+    const nodeId = task.nodeId ?? this.store.getResearchMessageBody(task.outputMessageId)?.nodeId ?? task.sessionId;
     await this.finalizeDerivedSlices(task, provider, nodeId, content, []);
     await this.store.completeResearchTask(task.id);
     try {
@@ -1035,7 +1036,7 @@ export class ResearchSessionService {
     generationRequest: ResearchGenerationRequest,
     groundedEvidence?: string,
   ): Promise<string> {
-    let visibleStreamed = this.store.getResearchMessage(task.outputMessageId)?.content
+    let visibleStreamed = this.store.getResearchMessageBody(task.outputMessageId)?.content
       ?? this.store.getResearchTask(task.id)?.streamCheckpoint?.content
       ?? "";
     // 同一物理回答的续写提示保留原始流内身份；消息与持久化断点始终只保存干净正文。
@@ -1199,7 +1200,7 @@ export class ResearchSessionService {
     const outline: ResearchBodyOutline = { sections };
 
     // 断点续扩：preserveContent 重试时正文已非空，直接以 plan 为准重建 writtenSoFar，不重 append。
-    const existing = this.store.getResearchMessage(task.outputMessageId)?.content ?? "";
+    const existing = this.store.getResearchMessageBody(task.outputMessageId)?.content ?? "";
     let writtenSoFar = sections
       .filter((section) => section.status === "completed" && section.content)
       .map((section) => section.content as string)
@@ -1445,7 +1446,7 @@ export class ResearchSessionService {
     if (!task) return false;
     const nodeId = task.nodeId;
     if (!nodeId) return false;
-    const thread = this.store.listResearchMessages(task.sessionId).filter((message) => (message.nodeId ?? message.branchId) === nodeId && message.role === "user");
+    const thread = this.store.listResearchMessageBodies(task.sessionId).filter((message) => (message.nodeId ?? message.branchId) === nodeId && message.role === "user");
     return thread.length > 1;
   }
 
@@ -1569,12 +1570,12 @@ export class ResearchSessionService {
    * 节点内追问与后续对话不重复注入。
    */
   private buildGenerationRequest(task: ResearchTaskRecord): {
-    messages: Array<Pick<ResearchMessageRecord, "role" | "content">>;
+    messages: Array<Pick<ResearchMessageBodyRecord, "role" | "content">>;
     deepResearch?: DeepResearchContext;
     parentChainContext?: ParentChainContextResult;
     sliceContext?: ResearchSliceContext;
   } {
-    const all = this.store.listResearchMessages(task.sessionId);
+    const all = this.store.listResearchMessageBodies(task.sessionId);
     const output = all.find((message) => message.id === task.outputMessageId);
     const nodeId = task.nodeId;
     const thread = nodeId
@@ -1627,7 +1628,7 @@ export class ResearchSessionService {
     const originSelectionId = this.originSelectionIdFor(task.sessionId, nodeId);
     const candidates: ResearchFragmentContextCandidate[] = [];
     for (const node of nodeIds) {
-      const messages = this.store.listResearchMessagesByNode(node.id)
+      const messages = this.store.listResearchMessageBodiesByNode(node.id)
         .filter((message) => message.role === "assistant" && message.status === "completed");
       if (messages.length === 0) continue;
       const citations = this.store.listResearchCitationsForMessages(messages.map((message) => message.id));
@@ -1699,7 +1700,7 @@ export class ResearchSessionService {
     });
   }
 
-  private deepResearchContextFor(task: ResearchTaskRecord, nodeOrBranchId: string | undefined, thread: ResearchMessageRecord[]): DeepResearchContext | undefined {
+  private deepResearchContextFor(task: ResearchTaskRecord, nodeOrBranchId: string | undefined, thread: ResearchMessageBodyRecord[]): DeepResearchContext | undefined {
     const firstUserMessage = thread.find((message) => message.role === "user");
     if (!firstUserMessage || firstUserMessage.id !== task.inputMessageId) return undefined;
     let selectionId: string | undefined;
