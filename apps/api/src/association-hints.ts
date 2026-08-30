@@ -13,6 +13,8 @@ import {
 import { getOrDeriveMessageBodyArtifacts } from "./body-artifacts.js";
 import { contentWordSignals, MIN_SIMILARITY_FALLBACK_UNIT_CHARACTERS } from "./fusion-proposals.js";
 import type { CollectorStore } from "./store.js";
+import type { AssembledModelContext } from "@collector/model-gateway";
+import { assemblePurposeContext } from "./model-context.js";
 
 export class AssociationHintNotFoundError extends Error {
   constructor(id: string) {
@@ -39,12 +41,25 @@ export interface AssociationHintTermDetection {
  * 它刻意不复用融合核验：提示既不能创建融合，也不能把融合的置信度当作用户价值。
  */
 export interface AssociationHintEvaluationGateway {
-  evaluateAssociationHint(input: {
-    left: { nodeId: string; content: string; currentContext: string };
-    right: { nodeId: string; content: string; currentContext: string };
-    /** 同一节点对已被用户忽略或因价值不足过期的理由；只用于判断是否真的有新理由。 */
-    terminalReasons: string[];
-  }): Promise<AssociationHintEvaluation>;
+  evaluateAssociationHint(input: AssociationHintEvaluationInput): Promise<AssociationHintEvaluation>;
+  evaluateAssociationHintFromContext?(assembly: AssembledModelContext): Promise<AssociationHintEvaluation>;
+}
+
+export interface AssociationHintEvaluationInput {
+  left: { nodeId: string; content: string; currentContext: string };
+  right: { nodeId: string; content: string; currentContext: string };
+  terminalReasons: string[];
+}
+
+async function evaluateWithContext(evaluator: AssociationHintEvaluationGateway, input: AssociationHintEvaluationInput, workflowRunId: string): Promise<AssociationHintEvaluation> {
+  const assembly = assemblePurposeContext({
+    purpose: "association_hint_evaluation",
+    workflowRunId,
+    materials: [{ id: `association:${workflowRunId}`, content: JSON.stringify(input) }],
+  });
+  return evaluator.evaluateAssociationHintFromContext
+    ? evaluator.evaluateAssociationHintFromContext(assembly)
+    : evaluator.evaluateAssociationHint(input);
 }
 
 export interface AssociationHintEvaluation {
@@ -186,7 +201,7 @@ export class AssociationHintService {
       if (!snapshot || hint.valueAssessment?.contextKey === snapshot.contextKey) continue;
       let evaluation: AssociationHintEvaluation;
       try {
-        evaluation = await evaluator.evaluateAssociationHint(snapshot.input);
+        evaluation = await evaluateWithContext(evaluator, snapshot.input, hint.id);
       } catch {
         continue;
       }
@@ -370,7 +385,7 @@ export class AssociationHintService {
       let evaluation: AssociationHintEvaluation;
       const terminalReasons = this.terminalReasonsFor(nodeId, candidate.nodeId);
       try {
-        evaluation = await evaluator.evaluateAssociationHint({
+        const input = {
           left: { nodeId, content: anchorExcerpt, currentContext: `${latestCompleted.content}${markerHint}` },
           right: {
             nodeId: candidate.nodeId,
@@ -378,7 +393,8 @@ export class AssociationHintService {
             currentContext: this.latestCompletedContent(candidate.nodeId) ?? candidate.excerpt,
           },
           terminalReasons,
-        });
+        };
+        evaluation = await evaluateWithContext(evaluator, input, `${nodeId}:${candidate.nodeId}`);
       } catch {
         continue; // 单个评估失败不影响其他候选，也不阻断整体安静降级。
       }
@@ -464,7 +480,7 @@ export class AssociationHintService {
 
   private evaluationInputFor(hint: ResearchAssociationHintRecord): {
     contextKey: string;
-    input: Parameters<AssociationHintEvaluationGateway["evaluateAssociationHint"]>[0];
+    input: AssociationHintEvaluationInput;
   } | undefined {
     const excerptFor = (ranges: ResearchSemanticRangeReference[]): string | undefined => {
       const excerpts = ranges.map((range) => {

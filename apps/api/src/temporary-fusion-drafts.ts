@@ -12,6 +12,8 @@ import {
   type UpdateTemporaryFusionDraftResult,
 } from "@collector/capture-contracts";
 import type { CollectorStore } from "./store.js";
+import type { AssembledModelContext } from "@collector/model-gateway";
+import { assemblePurposeContext } from "./model-context.js";
 
 export const TEMPORARY_FUSION_DRAFT_REVALIDATION_PROMPT_VERSION = "temporary-fusion-draft-revalidation-v1";
 
@@ -22,6 +24,10 @@ export class TemporaryFusionDraftConflictError extends Error {}
 export interface TemporaryFusionDraftEvidenceGateway {
   verifyTemporaryFusionDraftEvidence(
     input: { judgment: string; sources: Array<{ nodeId: string; content: string }> },
+    options?: { maxTokens?: number; timeoutMs?: number; context?: { workflowRunId?: string; purpose?: string; promptVersion?: string; tokenBudget?: number } },
+  ): Promise<{ verified: boolean }>;
+  verifyTemporaryFusionDraftEvidenceFromContext?(
+    assembly: AssembledModelContext,
     options?: { maxTokens?: number; timeoutMs?: number; context?: { workflowRunId?: string; purpose?: string; promptVersion?: string; tokenBudget?: number } },
   ): Promise<{ verified: boolean }>;
 }
@@ -105,10 +111,16 @@ export class TemporaryFusionDraftService {
         }
         const gateway = await this.gateway();
         if (!gateway) throw new Error("AI model is not configured");
-        const result = await gateway.verifyTemporaryFusionDraftEvidence(
-          { judgment: draft.body.slice(judgment.startOffset, judgment.endOffset), sources },
-          { maxTokens: 800, timeoutMs: 45_000, context: { workflowRunId: claimed.id, purpose: "temporary_fusion_draft_revalidation", promptVersion: TEMPORARY_FUSION_DRAFT_REVALIDATION_PROMPT_VERSION, tokenBudget: 800 } },
-        );
+        const input = { judgment: draft.body.slice(judgment.startOffset, judgment.endOffset), sources };
+        const assembly = assemblePurposeContext({
+          purpose: "temporary_fusion_draft_revalidation",
+          workflowRunId: claimed.id,
+          materials: [{ id: `draft-revalidation:${claimed.id}`, content: JSON.stringify(input) }],
+        });
+        const options = { maxTokens: 800, timeoutMs: 45_000, context: { workflowRunId: claimed.id, purpose: "temporary_fusion_draft_revalidation", promptVersion: TEMPORARY_FUSION_DRAFT_REVALIDATION_PROMPT_VERSION, tokenBudget: 800 } };
+        const result = gateway.verifyTemporaryFusionDraftEvidenceFromContext
+          ? await gateway.verifyTemporaryFusionDraftEvidenceFromContext(assembly, options)
+          : await gateway.verifyTemporaryFusionDraftEvidence(input, options);
         await this.store.completeTemporaryFusionDraftRevalidationTask(claimed.id, result.verified ? "verified" : "invalid");
       } catch (error) {
         await this.store.failTemporaryFusionDraftRevalidationTask(claimed.id, { code: "revalidation_failed", message: error instanceof Error ? error.message.slice(0, 240) : "Draft revalidation failed" });

@@ -16,8 +16,9 @@ import {
   type ResearchSliceRecord,
   type ResearchTemporaryFusionBundle,
 } from "@collector/capture-contracts";
-import type { ModelCallContext } from "@collector/model-gateway";
+import type { AssembledModelContext, ModelCallContext } from "@collector/model-gateway";
 import type { CollectorStore } from "./store.js";
+import { assemblePurposeContext } from "./model-context.js";
 import { TermDetectionService } from "./term-detection.js";
 import { deriveMessageBodyArtifacts, getOrDeriveMessageBodyArtifacts, tryResolveFragmentExcerpt } from "./body-artifacts.js";
 
@@ -61,11 +62,19 @@ export interface SimilarityVerificationGateway {
     },
     options?: { maxTokens?: number; timeoutMs?: number; context?: ModelCallContext },
   ): Promise<{ relationType: FusionRelationType; reason: string }>;
+  verifyResearchSimilarityFromContext?(
+    assembly: AssembledModelContext,
+    options?: { maxTokens?: number; timeoutMs?: number; context?: ModelCallContext },
+  ): Promise<{ relationType: FusionRelationType; reason: string }>;
   discoverTemporaryFusion?(
     input: {
       sources: Array<{ nodeId: string; title: string; excerpt: string }>;
       relationType: FusionRelationType;
     },
+    options?: { maxTokens?: number; timeoutMs?: number; context?: ModelCallContext },
+  ): Promise<{ hasNovelInsight: boolean; body: string; usedSourceNodeIds: string[] }>;
+  discoverTemporaryFusionFromContext?(
+    assembly: AssembledModelContext,
     options?: { maxTokens?: number; timeoutMs?: number; context?: ModelCallContext },
   ): Promise<{ hasNovelInsight: boolean; body: string; usedSourceNodeIds: string[] }>;
 }
@@ -346,30 +355,37 @@ export class ResearchFusionProposalService {
     proposal: ResearchFusionProposalRecord,
     gateway: SimilarityVerificationGateway,
   ): Promise<boolean> {
-    if (!gateway.discoverTemporaryFusion) return false;
+    if (!gateway.discoverTemporaryFusionFromContext && !gateway.discoverTemporaryFusion) return false;
     try {
       const materials = this.buildTemporaryFusionSourceMaterials(this.withResolvedFragmentRefs(proposal));
       if (materials.length < 2) return false;
       const evidenceKey = temporaryFusionEvidenceKey(materials);
       // 同一证据集合可安全重试；不同证据集合仍允许核验新的认识。
       if (this.hasTemporaryFusionForEvidence(materials, evidenceKey)) return false;
-      const discovery = await gateway.discoverTemporaryFusion(
-        {
-          sources: materials.map(({ nodeId, title, excerpt }) => ({ nodeId, title, excerpt })),
-          relationType: proposal.relationType,
+      const input = {
+        sources: materials.map(({ nodeId, title, excerpt }) => ({ nodeId, title, excerpt })),
+        relationType: proposal.relationType,
+      };
+      const workflowRunId = `${TEMPORARY_FUSION_CREATION_PREFIX}evidence:${proposal.id}:${evidenceKey}`;
+      const assembly = assemblePurposeContext({
+        purpose: "temporary_fusion_discovery",
+        workflowRunId,
+        materials: [{ id: `temporary-fusion:${evidenceKey}`, content: JSON.stringify(input) }],
+      });
+      const options = {
+        maxTokens: TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET,
+        timeoutMs: 120_000,
+        context: {
+          workflowRunId,
+          purpose: "temporary_fusion_discovery",
+          promptVersion: TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION,
+          sourceFragmentIds: materials.flatMap((source) => source.fragmentIds).sort(),
+          tokenBudget: TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET,
         },
-        {
-          maxTokens: TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET,
-          timeoutMs: 120_000,
-          context: {
-            workflowRunId: `${TEMPORARY_FUSION_CREATION_PREFIX}evidence:${proposal.id}:${evidenceKey}`,
-            purpose: "temporary_fusion_discovery",
-            promptVersion: TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION,
-            sourceFragmentIds: materials.flatMap((source) => source.fragmentIds).sort(),
-            tokenBudget: TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET,
-          },
-        },
-      );
+      };
+      const discovery = gateway.discoverTemporaryFusionFromContext
+        ? await gateway.discoverTemporaryFusionFromContext(assembly, options)
+        : await gateway.discoverTemporaryFusion!(input, options);
       if (!discovery.hasNovelInsight) return false;
       const usedIds = new Set(discovery.usedSourceNodeIds);
       const usedMaterials = materials.filter((source) => usedIds.has(source.nodeId));
@@ -584,24 +600,30 @@ export class ResearchFusionProposalService {
     try {
       let verification: { relationType: FusionRelationType; reason: string };
       try {
-        verification = await gateway.verifyResearchSimilarity(
-          {
-            left: { nodeId: loNodeId, content: candidate.lo.verificationContent },
-            right: { nodeId: hiNodeId, content: candidate.hi.verificationContent },
+        const input = {
+          left: { nodeId: loNodeId, content: candidate.lo.verificationContent },
+          right: { nodeId: hiNodeId, content: candidate.hi.verificationContent },
+        };
+        const assembly = assemblePurposeContext({
+          purpose: "similarity_verification",
+          workflowRunId: proposalId,
+          materials: [{ id: `similarity:${proposalId}`, content: JSON.stringify(input) }],
+        });
+        const options = {
+          maxTokens: SIMILARITY_VERIFICATION_TOKEN_BUDGET,
+          timeoutMs: 45_000,
+          context: {
+            workflowRunId: proposalId,
+            purpose: "similarity_verification",
+            promptVersion: SIMILARITY_VERIFICATION_PROMPT_VERSION,
+            sourceSliceIds,
+            sourceFragmentIds,
+            tokenBudget: SIMILARITY_VERIFICATION_TOKEN_BUDGET,
           },
-          {
-            maxTokens: SIMILARITY_VERIFICATION_TOKEN_BUDGET,
-            timeoutMs: 45_000,
-            context: {
-              workflowRunId: proposalId,
-              purpose: "similarity_verification",
-              promptVersion: SIMILARITY_VERIFICATION_PROMPT_VERSION,
-              sourceSliceIds,
-              sourceFragmentIds,
-              tokenBudget: SIMILARITY_VERIFICATION_TOKEN_BUDGET,
-            },
-          },
-        );
+        };
+        verification = gateway.verifyResearchSimilarityFromContext
+          ? await gateway.verifyResearchSimilarityFromContext(assembly, options)
+          : await gateway.verifyResearchSimilarity(input, options);
       } catch {
         // 核验失败、安全校验失败或模型不可用时，绝不把未经核验的宽候选呈现给用户。
         return undefined;

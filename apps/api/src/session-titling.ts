@@ -1,6 +1,7 @@
 import type { ResearchMessageBodyRecord, ResearchSessionRecord } from "@collector/capture-contracts";
 import { RESEARCH_TITLE_MAX_CHARACTERS, deriveDefaultResearchTitle } from "@collector/capture-contracts";
-import type { ModelGateway } from "@collector/model-gateway";
+import type { AssembledModelContext, ModelGateway } from "@collector/model-gateway";
+import { assemblePurposeContext } from "./model-context.js";
 
 /** 未指定标题创建会话时的默认占位标题；首轮任务入队后由自动标题服务替换。 */
 export const DEFAULT_RESEARCH_SESSION_TITLE = "新研究会话";
@@ -32,6 +33,10 @@ export function validateSessionTitle(value: unknown): string | undefined {
 export interface SessionTitlingGateway {
   generateSessionTitle(
     input: { content: string },
+    options?: { model?: string; maxTokens?: number; timeoutMs?: number; context?: { purpose?: string; promptVersion?: string } },
+  ): Promise<string>;
+  generateSessionTitleFromContext?(
+    assembly: AssembledModelContext,
     options?: { model?: string; maxTokens?: number; timeoutMs?: number; context?: { purpose?: string; promptVersion?: string } },
   ): Promise<string>;
 }
@@ -68,10 +73,15 @@ export class SessionTitlingService {
       const gateway = await this.gatewayResolver();
       if (!gateway) return this.store.getResearchSession(sessionId);
       const messages = this.store.listResearchMessageBodiesByNode(sessionId);
-      const generated = await gateway.generateSessionTitle(
-        { content: messages.map((message) => `${message.role}: ${message.content}`).join("\n").slice(0, 4000) },
-        { maxTokens: 128, timeoutMs: 30_000, context: { purpose: "research", promptVersion: "session-titling-v1" } },
-      );
+      const assembly = assemblePurposeContext({
+        purpose: "session_titling",
+        workflowRunId: sessionId,
+        materials: [{ id: `session:${sessionId}`, content: JSON.stringify({ content: messages.map((message) => `${message.role}: ${message.content}`).join("\n").slice(0, 4000) }), sourceKind: "conversation", evidenceKind: "conversation_history" }],
+      });
+      const options = { maxTokens: 128, timeoutMs: 30_000, context: { purpose: "session_titling", promptVersion: "session-titling-v1" } };
+      const generated = gateway.generateSessionTitleFromContext
+        ? await gateway.generateSessionTitleFromContext(assembly, options)
+        : await gateway.generateSessionTitle(JSON.parse(assembly.adopted[0].candidate.content), options);
       const title = validateSessionTitle(generated);
       if (!title) return this.store.getResearchSession(sessionId);
       // 提炼落库前重读最新记录：提炼期间用户可能已改名，此时同样让位。
@@ -88,5 +98,5 @@ export class SessionTitlingService {
 }
 
 export function isModelGateway(value: unknown): value is ModelGateway {
-  return typeof value === "object" && value !== null && typeof (value as { generateSessionTitle?: unknown }).generateSessionTitle === "function";
+  return typeof value === "object" && value !== null && typeof (value as { generateSessionTitleFromContext?: unknown }).generateSessionTitleFromContext === "function";
 }

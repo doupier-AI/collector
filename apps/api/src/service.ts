@@ -49,6 +49,7 @@ import {
   resolveResearchConvergence,
 } from "@collector/capture-contracts";
 import { CollectorStore } from "./store.js";
+import { assembleConnectionTestContext, assemblePurposeContext, reassemblePurposeContext } from "./model-context.js";
 
 const RESEARCH_MAP_DEFAULT_FOCUS_SETTING_KEY = "research_map_default_focus_from_node";
 
@@ -529,7 +530,12 @@ export class CaptureService {
       async generate(input) {
         const gateway = await service.gatewayForPurpose("chat");
         if (gateway) {
-          const answer = await gateway.answerResearchConversation(input.messages, {
+          const assembly = assemblePurposeContext({
+            purpose: "temporary_fusion_conversation",
+            workflowRunId: input.taskId,
+            materials: [{ id: `temporary-fusion:${input.taskId}`, content: JSON.stringify({ messages: input.messages }), sourceKind: "conversation", evidenceKind: "conversation_history" }],
+          });
+          const answer = await gateway.answerResearchConversationFromContext(assembly, {
             context: { workflowRunId: input.taskId, purpose: "temporary_fusion_conversation", promptVersion: "temporary-fusion-conversation-v1" },
           });
           return input.signal.aborted ? "" : answer;
@@ -594,8 +600,13 @@ export class CaptureService {
 
         // F2: Agent 式多轮工具调用搜索——模型通过 web_search/web_fetch 工具自主完成搜索过程
 
+        const agentAssembly = reassemblePurposeContext({
+          purpose: "agent_search",
+          workflowRunId: request.taskId,
+          candidates: request.contextAssembly.adopted.map((item) => item.candidate),
+        });
         const result = await purposeGateway.runAgentSearchLoopFromContext(
-          request.contextAssembly,
+          agentAssembly,
           {
             webSearch: async (query, maxResults) => {
               const startedAt = Date.now();
@@ -623,7 +634,7 @@ export class CaptureService {
           {
             maxTurns: 10,
             nodeDepth,
-            context: { workflowRunId: request.taskId, purpose: "research_grounding", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
+            context: { workflowRunId: request.taskId, purpose: "agent_search", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
           },
         );
 
@@ -668,11 +679,18 @@ export class CaptureService {
       async *generate(request) {
         const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
         if (!purposeGateway) throw new Error("AI model is not configured");
-        // #158 之前仅术语预览等辅助调用可能没有 ContextAssembly；主任务 processTask 始终携带。
         if (!request.contextAssembly) {
-          const answer = await purposeGateway.answerResearchConversation(request.messages, {
-            parentChainContext: request.parentChainContext,
-            sliceContext: request.sliceContext,
+          const assembly = assemblePurposeContext({
+            purpose: "term_preview",
+            workflowRunId: request.taskId,
+            materials: [{
+              id: `term-preview:${request.taskId}`,
+              content: JSON.stringify({ messages: request.messages, parentChainContext: request.parentChainContext, sliceContext: request.sliceContext }),
+              sourceKind: "conversation",
+              evidenceKind: "current_question",
+            }],
+          });
+          const answer = await purposeGateway.answerResearchConversationFromContext(assembly, {
             ...(request.mentionMarkup !== undefined ? { mentionMarkup: request.mentionMarkup } : {}),
             context: { workflowRunId: request.taskId, purpose: "term_preview", promptVersion: "term-preview-v1" },
           });
@@ -746,14 +764,22 @@ export class CaptureService {
       async deriveAnnotations(input) {
         const purposeGateway = await service.gatewayForPurpose("extraction");
         if (!purposeGateway) throw new Error("AI model is not configured");
-        return purposeGateway.deriveSliceAnnotations(input, {
+        const assembly = assemblePurposeContext({
+          purpose: "research_slice_annotation",
+          materials: [{ id: "slice-annotation", content: JSON.stringify(input) }],
+        });
+        return purposeGateway.deriveSliceAnnotationsFromContext(assembly, {
           context: { workflowRunId: "", purpose: "research_slice_annotation", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
         });
       },
       async verifyTermIdentity(input) {
         const purposeGateway = await service.gatewayForPurpose("extraction");
         if (!purposeGateway) throw new Error("AI model is not configured");
-        return purposeGateway.verifyTermIdentity(input, {
+        const assembly = assemblePurposeContext({
+          purpose: "term_entity_verification",
+          materials: [{ id: "term-identity", content: JSON.stringify(input) }],
+        });
+        return purposeGateway.verifyTermIdentityFromContext(assembly, {
           context: { workflowRunId: "", purpose: "term_entity_verification", promptVersion: TERM_IDENTITY_VERIFY_PROMPT_VERSION },
         });
       },
@@ -773,12 +799,17 @@ export class CaptureService {
       async parseImportChapters(request) {
         const purposeGateway = await service.gatewayForPurpose("research");
         if (!purposeGateway) throw new Error("AI model is not configured");
-        return purposeGateway.parseImportChapters(
-          { content: request.content },
+        const assembly = assemblePurposeContext({
+          purpose: "import_chapter_parsing",
+          workflowRunId: request.taskId,
+          materials: [{ id: `import:${request.taskId}`, content: JSON.stringify({ content: request.content }), sourceKind: "imported_material", evidenceKind: "imported_material" }],
+        });
+        return purposeGateway.parseImportChaptersFromContext(
+          assembly,
           {
             context: {
               workflowRunId: request.taskId,
-              purpose: "research",
+              purpose: "import_chapter_parsing",
               promptVersion: IMPORT_CHAPTER_PARSE_PROMPT_VERSION,
               tokenBudget: IMPORT_CHAPTER_PARSE_TOKEN_BUDGET,
             },
@@ -1174,7 +1205,7 @@ export class CaptureService {
     try {
       const runtime = await resolver.resolve(profile);
       const startedAt = performance.now();
-      const result = await runtime.gateway.testConnection();
+      const result = await runtime.gateway.testConnectionFromContext(assembleConnectionTestContext());
       return result.ok ? { ...result, durationMs: Math.round(performance.now() - startedAt) } : result;
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : "模型连接测试失败" };
@@ -1208,7 +1239,7 @@ export class CaptureService {
     try {
       const runtime = await resolver.resolve(profile);
       const startedAt = performance.now();
-      const result = await runtime.gateway.testConnection();
+      const result = await runtime.gateway.testConnectionFromContext(assembleConnectionTestContext());
       return result.ok ? { ...result, durationMs: Math.round(performance.now() - startedAt) } : result;
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : "模型连接测试失败" };
@@ -1238,7 +1269,7 @@ export class CaptureService {
 
   async testAiConnection(): Promise<{ ok: true; model: string } | { ok: false; error: string }> {
     if (!this.modelGateway) return { ok: false, error: "Model gateway is not configured" };
-    return this.modelGateway.testConnection();
+    return this.modelGateway.testConnectionFromContext(assembleConnectionTestContext());
   }
 
 

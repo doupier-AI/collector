@@ -671,13 +671,25 @@ export class ModelGateway {
 
   get promptVersion(): string { return this.options.promptVersion ?? "knowledge-extraction-v1"; }
 
-  /** 主研究链的新入口：所有业务材料已由 ContextAssembly 准入，旧文本入口仅供尚未迁移的辅助用途。 */
+  private contextOptions<T extends { maxTokens?: number }>(assembly: AssembledModelContext, options: T): T {
+    const maxTokens = Math.min(options.maxTokens ?? assembly.budget.reservedOutputTokens, assembly.budget.reservedOutputTokens);
+    return { ...options, maxTokens };
+  }
+
+  private contextPayload<T>(assembly: AssembledModelContext): T {
+    const payload = assembly.adopted.map((item) => item.candidate.content).join("\n").trim();
+    if (!payload) throw new Error(`Assembled context for ${assembly.purpose} contains no admitted material`);
+    try { return JSON.parse(payload) as T; }
+    catch { throw new Error(`Assembled context for ${assembly.purpose} does not contain a structured payload`); }
+  }
+
+  /** Context-native business entries: all user/business material has already passed ContextAssembly. */
   async generateGroundedResearchFromContext(
     assembly: AssembledModelContext,
     grounding: ResearchGroundingRequest,
     options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number } = {},
   ): Promise<GroundedResearchResponse> {
-    return this.generateGroundedResearch(formatAssembledModelContext(assembly), grounding, options);
+    return this.generateGroundedResearch(formatAssembledModelContext(assembly), grounding, this.contextOptions(assembly, options));
   }
 
   async answerResearchConversationFromContext(
@@ -686,7 +698,7 @@ export class ModelGateway {
   ): Promise<string> {
     return this.answerResearchConversation(
       [{ role: "user", content: formatAssembledModelContext(assembly) }],
-      { ...options, parentChainContext: { currentNodeDepth: options.nodeDepth ?? 0, ancestors: [], truncated: false, cycleDetected: false } },
+      { ...this.contextOptions(assembly, options), parentChainContext: { currentNodeDepth: options.nodeDepth ?? 0, ancestors: [], truncated: false, cycleDetected: false } },
     );
   }
 
@@ -696,7 +708,7 @@ export class ModelGateway {
   ): Promise<string> {
     return this.writeResearchBody(
       [{ role: "user", content: formatAssembledModelContext(assembly) }],
-      { ...options, parentChainContext: { currentNodeDepth: options.nodeDepth ?? 0, ancestors: [], truncated: false, cycleDetected: false } },
+      { ...this.contextOptions(assembly, options), parentChainContext: { currentNodeDepth: options.nodeDepth ?? 0, ancestors: [], truncated: false, cycleDetected: false } },
     );
   }
 
@@ -708,7 +720,7 @@ export class ModelGateway {
     yield* this.writeResearchBodyStream(
       [{ role: "user", content: formatAssembledModelContext(assembly) }],
       {
-        ...options,
+        ...this.contextOptions(assembly, options),
         ...(admittedResume ? { resumeFrom: admittedResume } : {}),
         parentChainContext: { currentNodeDepth: options.nodeDepth ?? 0, ancestors: [], truncated: false, cycleDetected: false },
       },
@@ -719,7 +731,7 @@ export class ModelGateway {
     assembly: AssembledModelContext,
     options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
   ): Promise<ResearchBodyOutline> {
-    return this.generateBodyOutline([{ role: "user", content: formatAssembledModelContext(assembly) }], options);
+    return this.generateBodyOutline([{ role: "user", content: formatAssembledModelContext(assembly) }], this.contextOptions(assembly, options));
   }
 
   async expandBodySectionFromContext(
@@ -733,7 +745,7 @@ export class ModelGateway {
       writtenSoFar: "",
       ...(input.continuation ? { continuation: { priorSectionContent: "" } } : {}),
       ...(input.repairHint ? { repairHint: "按已准入的修复状态重试" } : {}),
-    }, options);
+    }, this.contextOptions(assembly, options));
   }
 
   async generateDeepResearchRoundFromContext(
@@ -745,17 +757,88 @@ export class ModelGateway {
       selectionText: formatAssembledModelContext(assembly),
       direction: "围绕已准入的当前问题和材料展开研究。",
       parentChainContext: { currentNodeDepth: options.nodeDepth ?? 0, ancestors: [], truncated: false, cycleDetected: false },
-    }, options);
+    }, this.contextOptions(assembly, options));
   }
 
   async runAgentSearchLoopFromContext(
     assembly: AssembledModelContext,
     tools: AgentSearchToolContext,
-    options: { maxTurns?: number; systemPrompt?: string; context?: ModelCallContext; nodeDepth?: number } = {},
+    options: { maxTurns?: number; maxTokens?: number; systemPrompt?: string; context?: ModelCallContext; nodeDepth?: number } = {},
   ): Promise<AgentSearchResult> {
-    return this.runAgentSearchLoop(formatAssembledModelContext(assembly), tools, options);
+    return this.runAgentSearchLoop(formatAssembledModelContext(assembly), tools, this.contextOptions(assembly, options));
   }
 
+  async deriveSliceAnnotationsFromContext(assembly: AssembledModelContext, options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): Promise<ResearchSliceAnnotation> {
+    return this.deriveSliceAnnotations(this.contextPayload(assembly), this.contextOptions(assembly, options));
+  }
+
+  async verifyTermIdentityFromContext(assembly: AssembledModelContext, options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): Promise<boolean> {
+    return this.verifyTermIdentity(this.contextPayload(assembly), this.contextOptions(assembly, options));
+  }
+
+  async generateSessionTitleFromContext(assembly: AssembledModelContext, options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): Promise<string> {
+    return this.generateSessionTitle(this.contextPayload(assembly), this.contextOptions(assembly, options));
+  }
+
+  async generateNodeDisplayNameFromContext(assembly: AssembledModelContext, options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): Promise<string> {
+    return this.generateNodeDisplayName(this.contextPayload(assembly), this.contextOptions(assembly, options));
+  }
+
+  async parseImportChaptersFromContext(assembly: AssembledModelContext, options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): Promise<string> {
+    return this.parseImportChapters(this.contextPayload(assembly), this.contextOptions(assembly, options));
+  }
+
+  async evaluateAssociationHintFromContext(assembly: AssembledModelContext, options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): ReturnType<ModelGateway["evaluateAssociationHint"]> {
+    return this.evaluateAssociationHint(this.contextPayload(assembly), this.contextOptions(assembly, options));
+  }
+
+  async verifyResearchSimilarityFromContext(assembly: AssembledModelContext, options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): ReturnType<ModelGateway["verifyResearchSimilarity"]> {
+    return this.verifyResearchSimilarity(this.contextPayload(assembly), this.contextOptions(assembly, options));
+  }
+
+  async verifyTemporaryFusionDraftEvidenceFromContext(assembly: AssembledModelContext, options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): ReturnType<ModelGateway["verifyTemporaryFusionDraftEvidence"]> {
+    return this.verifyTemporaryFusionDraftEvidence(this.contextPayload(assembly), this.contextOptions(assembly, options));
+  }
+
+  async discoverTemporaryFusionFromContext(assembly: AssembledModelContext, options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): ReturnType<ModelGateway["discoverTemporaryFusion"]> {
+    return this.discoverTemporaryFusion(this.contextPayload(assembly), this.contextOptions(assembly, options));
+  }
+
+  async reformulateSearchQueryFromContext(assembly: AssembledModelContext, options: { model?: string; timeoutMs?: number; context?: ModelCallContext } = {}): Promise<string> {
+    const input = this.contextPayload<{ query: string }>(assembly);
+    return this.reformulateSearchQuery(input.query, options);
+  }
+
+  async clusterMaterialsFromContext(assembly: AssembledModelContext, options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): ReturnType<ModelGateway["clusterMaterials"]> {
+    const input = this.contextPayload<{ materials: Array<{ id: string; content: string }> }>(assembly);
+    return this.clusterMaterials(input.materials, this.contextOptions(assembly, options));
+  }
+
+  async generateDocumentOutlineFromContext(assembly: AssembledModelContext, options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): ReturnType<ModelGateway["generateDocumentOutline"]> {
+    const input = this.contextPayload<{ materials: Array<{ id: string; content: string }>; topicTitle: string }>(assembly);
+    return this.generateDocumentOutline(input.materials, input.topicTitle, this.contextOptions(assembly, options));
+  }
+
+  async generateDocumentSectionsFromContext(assembly: AssembledModelContext, options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): ReturnType<ModelGateway["generateDocumentSections"]> {
+    const input = this.contextPayload<{ outline: { title: string; sections: Array<{ heading: string; keyPoints: string[] }> }; materials: Array<{ id: string; content: string; fragmentIds: string[] }> }>(assembly);
+    return this.generateDocumentSections(input.outline, input.materials, this.contextOptions(assembly, options));
+  }
+
+  async generateDocumentUpdateAdditionsFromContext(assembly: AssembledModelContext, options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): ReturnType<ModelGateway["generateDocumentUpdateAdditions"]> {
+    const input = this.contextPayload<{ materials: Array<{ id: string; content: string; fragmentIds: string[] }> }>(assembly);
+    return this.generateDocumentUpdateAdditions(input.materials, this.contextOptions(assembly, options));
+  }
+
+  async testConnectionFromContext(assembly: AssembledModelContext, options: { model?: string; timeoutMs?: number; context?: ModelCallContext } = {}): ReturnType<ModelGateway["testConnection"]> {
+    return this.testConnection({ ...options, context: options.context ?? { purpose: assembly.purpose } });
+  }
+
+  /**
+   * @internal
+   * The typed methods below are prompt implementations retained for provider/unit compatibility.
+   * API business orchestration must use the corresponding *FromContext entry; a source-boundary
+   * test rejects direct legacy calls from the orchestration layer.
+   */
   /** 供应商原生联网：统一注入正文弱标记契约，原始引用范围交由服务层在清洗后校正。 */
   async generateGroundedResearch(
     prompt: string,
@@ -1550,6 +1633,7 @@ ${mentionInstructions}`;
     tools: AgentSearchToolContext,
     options: {
       maxTurns?: number;
+      maxTokens?: number;
       systemPrompt?: string;
       context?: ModelCallContext;
       nodeDepth?: number;
@@ -1584,7 +1668,7 @@ ${mentionInstructions}`;
       const startedAt = Date.now();
       const response = await provider.agentChat(messages, AGENT_SEARCH_TOOLS, {
         model: this.modelName,
-        maxTokens: 4096,
+        maxTokens: options.maxTokens ?? 4096,
         thinking: this.options.thinking ?? false,
       });
       console.log(`[web-search] agentLoop turn=${turn} finishReason=${response.finishReason} latency=${Date.now() - startedAt}ms`);
