@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, hashBodyContent, researchBodyVersionId, resolveResearchStableLocation, validateResearchStableLocation, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchContextAssemblySnapshot, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSidecarInvalidReason, type ResearchSidecarRecord, type ResearchSidecarRecordQuery, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageBodyRecord, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchReasoningRecord, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId, toResearchMessageBody } from "@collector/capture-contracts";
 import { contextExplanationCodes, observeContextAssembly } from "@collector/capture-contracts";
+import type { ResearchCitationCandidate } from "@collector/capture-contracts";
 import { markdownStableVisibleText, projectMarkdownDocument, projectMarkdownSourceRange } from "@collector/markdown-projection";
 import {
   compareAssociationHintsByValue,
@@ -140,7 +141,7 @@ export interface ResearchSidecarStore {
 }
 
 /** 研究会话生命周期所需的持久化能力：28 个方法。 */
-export interface ResearchStore {
+export interface ResearchStore extends ResearchSidecarStore {
   saveResearchSession(record: ResearchSessionRecord): Promise<void>;
   createResearchSession(record: ResearchSessionRecord, idempotencyKey: string): Promise<ResearchSessionRecord>;
   getResearchSession(id: string): ResearchSessionRecord | undefined;
@@ -185,6 +186,7 @@ export interface ResearchStore {
   createResearchTurnForNode(node: ResearchNodeRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<ResearchTurnAccepted>;
   claimResearchTask(id: string, provider?: string, model?: string, promptVersion?: string): ResearchTaskRecord | undefined;
   appendResearchTaskDelta(id: string, delta: string, termMarkers?: readonly import("@collector/capture-contracts").TermMarker[], reasoningDelta?: string): Promise<void>;
+  appendResearchTaskCitationCandidate(id: string, candidate: ResearchCitationCandidate): Promise<void>;
   completeResearchTask(id: string): Promise<void>;
   failResearchTask(task: ResearchTaskRecord, error: ResearchTaskError): Promise<void>;
   retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string, options?: { preserveContent?: boolean }): Promise<ResearchTaskRecord>;
@@ -400,6 +402,7 @@ export interface CollectorStore
   createResearchTurn(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<ResearchTurnAccepted>;
   claimResearchTask(id: string, provider?: string, model?: string, promptVersion?: string): ResearchTaskRecord | undefined;
   appendResearchTaskDelta(id: string, delta: string, termMarkers?: readonly import("@collector/capture-contracts").TermMarker[], reasoningDelta?: string): Promise<void>;
+  appendResearchTaskCitationCandidate(id: string, candidate: ResearchCitationCandidate): Promise<void>;
   completeResearchTask(id: string): Promise<void>;
   failResearchTask(task: ResearchTaskRecord, error: ResearchTaskError): Promise<void>;
   retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string, options?: { preserveContent?: boolean }): Promise<ResearchTaskRecord>;
@@ -512,6 +515,19 @@ function directSourceIdsForConfirmedDraft(
 function formalFusionTitle(body: string): string {
   const firstLine = body.split(/\r?\n/, 1)[0]?.replace(/\s+/g, " ").trim() ?? "";
   return firstLine.slice(0, RESEARCH_TITLE_MAX_CHARACTERS) || "融合成果";
+}
+
+function validateCitationCandidate(candidate: ResearchCitationCandidate): void {
+  if (!Number.isSafeInteger(candidate.sourceOrdinal) || candidate.sourceOrdinal < 1) {
+    throw new Error("Research citation candidate sourceOrdinal must be positive");
+  }
+  const hasStart = candidate.startOffset !== undefined;
+  const hasEnd = candidate.endOffset !== undefined;
+  if (hasStart !== hasEnd) throw new Error("Research citation candidate must provide both offsets or neither");
+  if (hasStart && (!Number.isSafeInteger(candidate.startOffset) || !Number.isSafeInteger(candidate.endOffset)
+    || candidate.startOffset! < 0 || candidate.endOffset! <= candidate.startOffset!)) {
+    throw new Error("Research citation candidate range must be a non-empty UTF-16 range");
+  }
 }
 
 export class SqliteStore implements CollectorStore {
@@ -1228,6 +1244,19 @@ export class SqliteStore implements CollectorStore {
     });
   }
 
+  async appendResearchTaskCitationCandidate(id: string, candidate: ResearchCitationCandidate): Promise<void> {
+    this.transaction(() => {
+      const task = this.getResearchTask(id);
+      if (!task || task.status !== "running") throw new Error("Research task is not running");
+      const message = this.getResearchMessage(task.outputMessageId);
+      if (!message) throw new Error("Research output message not found");
+      validateCitationCandidate(candidate);
+      const now = new Date().toISOString();
+      this.updateResearchTask({ ...task, updatedAt: now });
+      this.insertResearchEvent(id, "citation_candidate", now, { candidate, message });
+    });
+  }
+
   async completeResearchTask(id: string): Promise<void> {
     this.transaction(() => {
       const task = this.getResearchTask(id);
@@ -1497,7 +1526,7 @@ export class SqliteStore implements CollectorStore {
 
   listResearchTaskEvents(taskId: string, afterId = 0): ResearchTaskEvent[] {
     const rows = this.db().prepare("SELECT sequence, event_type, created_at, data_json FROM research_task_events WHERE task_id = ? AND sequence > ? ORDER BY sequence")
-      .all(taskId, afterId) as Array<{ sequence: number; event_type: "delta" | "completed" | "failed" | "stopped"; created_at: string; data_json: string }>;
+      .all(taskId, afterId) as Array<{ sequence: number; event_type: "delta" | "citation_candidate" | "completed" | "failed" | "stopped"; created_at: string; data_json: string }>;
     return rows.map((row) => ({ id: row.sequence, type: row.event_type, createdAt: row.created_at, ...JSON.parse(row.data_json) }) as ResearchTaskEvent);
   }
 
@@ -3077,10 +3106,23 @@ export class SqliteStore implements CollectorStore {
 
   /** 幂等写入正文版本：id 由 messageId+contentHash 决定，重复写入被忽略（同文同标识）。 */
   async createResearchBodyVersion(version: ResearchBodyVersionRecord): Promise<void> {
-    this.db().prepare(`
-      INSERT OR IGNORE INTO research_body_versions (id, message_id, node_id, version, content_hash, origin, created_at, record_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(version.id, version.messageId, version.nodeId, version.version, version.contentHash, version.origin, version.createdAt, JSON.stringify(version));
+    this.transaction(() => {
+      const inserted = this.db().prepare(`
+        INSERT OR IGNORE INTO research_body_versions (id, message_id, node_id, version, content_hash, origin, created_at, record_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(version.id, version.messageId, version.nodeId, version.version, version.contentHash, version.origin, version.createdAt, JSON.stringify(version));
+      if (inserted.changes !== 1) return;
+      const superseded = this.listResearchSidecarRecords({ contentId: version.messageId, statuses: ["pending", "ready"] })
+        .filter((record) => record.bodyVersionId !== version.id);
+      for (const record of superseded) {
+        this.updateResearchSidecarRecord({
+          ...record,
+          status: "invalid",
+          invalidReason: "body-version-superseded",
+          updatedAt: version.createdAt,
+        });
+      }
+    });
   }
 
   /** 幂等批量写入语义片段（事务内，冲突忽略）。 */
@@ -3300,7 +3342,7 @@ export class SqliteStore implements CollectorStore {
       .run(task.status, task.retryable ? 1 : 0, task.updatedAt, JSON.stringify(task), task.id);
   }
 
-  private insertResearchEvent(taskId: string, type: "delta" | "completed" | "failed" | "stopped", createdAt: string, data: unknown): void {
+  private insertResearchEvent(taskId: string, type: "delta" | "citation_candidate" | "completed" | "failed" | "stopped", createdAt: string, data: unknown): void {
     this.db().prepare("INSERT INTO research_task_events (task_id, event_type, created_at, data_json) VALUES (?, ?, ?, ?)")
       .run(taskId, type, createdAt, JSON.stringify(data));
   }

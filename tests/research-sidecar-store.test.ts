@@ -158,6 +158,27 @@ test("version queries isolate old and current enhancements without borrowing acr
   assert.deepEqual(harness.store.listResearchSidecarRecords({ bodyVersionId: second.id }).map((record) => record.id), ["sidecar-v2"]);
 });
 
+test("creating a new answer body version invalidates existing citation sidecars from the superseded version", async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.close());
+  const { message, version: first } = await seedAnswer(harness.store, "第一版回答正文。");
+  await harness.store.createResearchSidecarRecord(sidecar(first, { id: "citation-v1", status: "ready" }));
+  const second = deriveBodyVersion({
+    messageId: message.id,
+    nodeId: message.nodeId!,
+    content: "第二版回答正文。",
+    version: 2,
+    origin: "generation",
+    createdAt: LATER,
+  });
+  await harness.store.createResearchBodyVersion(second);
+
+  const invalidated = harness.store.getResearchSidecarRecord("citation-v1");
+  assert.equal(invalidated?.status, "invalid");
+  assert.equal(invalidated?.invalidReason, "body-version-superseded");
+  assert.equal(invalidated?.updatedAt, LATER);
+});
+
 test("import snapshots are valid sidecar versions and session deletion removes their headers", async (t) => {
   const harness = await createHarness();
   t.after(() => harness.close());

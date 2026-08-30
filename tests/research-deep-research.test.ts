@@ -267,7 +267,7 @@ test("branch view keeps all grounded sources in store but only returns cited sou
     model: "grounding-model",
     async *generate() { yield "ordinary fallback"; },
     async prepareGrounded() {
-      const content = "深入研究结论。[来源3]";
+      const content = "深入研究结论。";
       return {
         kind: "confirmed_final" as const,
         content,
@@ -278,7 +278,7 @@ test("branch view keeps all grounded sources in store but only returns cited sou
           { title: "未引用二", url: "https://example.com/two" },
           { title: "实际引用", url: "https://example.com/three" },
         ],
-        citations: [],
+        citations: [{ sourceOrdinal: 3, startOffset: 0, endOffset: content.length }],
       };
     },
   };

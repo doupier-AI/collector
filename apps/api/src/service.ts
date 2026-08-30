@@ -143,8 +143,7 @@ function safeEvidenceText(value: string | undefined): string {
 export function formatFinalWriterEvidence(
   entries: ReadonlyArray<{ sourceOrdinal: number; source: { title: string; url?: string; evidenceStatus?: "full" | "partial" | "none" }; content?: string }>,
 ): string {
-  let total = 0;
-  const formatted: string[] = [];
+  const sources: Array<{ sourceOrdinal: number; title: string; url?: string; evidenceStatus?: "full" | "partial"; evidence: string }> = [];
   for (const entry of entries) {
     // 供应商持久化来源序号从 1 开始；只取前 20 个原始来源，不能因过滤而改写引用号。
     if (entry.sourceOrdinal < 1 || entry.sourceOrdinal > RESEARCH_GROUNDING_MAX_SOURCES) continue;
@@ -153,16 +152,20 @@ export function formatFinalWriterEvidence(
     if (!text) continue;
     const title = safeEvidenceText(entry.source.title) || "未命名来源";
     const url = sanitizeGroundingUrl(entry.source.url);
-    const evidenceStatus = entry.source.evidenceStatus === "partial"
-      ? "\n证据状态：部分证据（仅搜索摘要，未获取全文）"
-      : "";
-    const block = `[来源${entry.sourceOrdinal}] ${title}${evidenceStatus}\n${text}${url ? `\n${url}` : ""}`;
-    const separatorLength = formatted.length ? 2 : 0;
-    if (total + separatorLength + block.length > FINAL_WRITER_EVIDENCE_MAX_CHARACTERS) break;
-    formatted.push(block);
-    total += separatorLength + block.length;
+    const source = {
+      sourceOrdinal: entry.sourceOrdinal,
+      title,
+      ...(url ? { url } : {}),
+      ...(entry.source.evidenceStatus === "partial" || entry.source.evidenceStatus === "full"
+        ? { evidenceStatus: entry.source.evidenceStatus }
+        : {}),
+      evidence: text,
+    };
+    const next = JSON.stringify({ sources: [...sources, source] });
+    if (next.length > FINAL_WRITER_EVIDENCE_MAX_CHARACTERS) break;
+    sources.push(source);
   }
-  return formatted.join("\n\n");
+  return sources.length ? JSON.stringify({ sources }) : "";
 }
 
 function formatGroundingEvidence(sources: ReadonlyArray<{ title: string; url?: string; snippet?: string; evidenceStatus?: "full" | "partial" | "none" }>): string {
@@ -652,7 +655,7 @@ export class CaptureService {
             snippet: source.snippet ?? "",
             ...(source.evidenceStatus ? { evidenceStatus: source.evidenceStatus } : {}),
           })),
-          // 文本型 [来源n] 必须等正文经过统一清洗后再解析；研究服务统一完成。
+          // Agent 只交付结构化来源与证据；引用候选由独立最终写作旁路事件产生。
           citations: [],
           responseSummary: {
             searchStatus: "completed",
@@ -673,6 +676,8 @@ export class CaptureService {
           ...(streamOptions.signal ? { signal: streamOptions.signal } : {}),
           ...(streamOptions.onStreamDone ? { onDone: streamOptions.onStreamDone } : {}),
           ...(streamOptions.onReasoning ? { onReasoning: streamOptions.onReasoning } : {}),
+          ...(streamOptions.onCitation ? { onCitation: streamOptions.onCitation } : {}),
+          citationSources: streamOptions.sources,
           nodeDepth: request.parentChainContext?.currentNodeDepth ?? 0,
           context: { workflowRunId: request.taskId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
         });

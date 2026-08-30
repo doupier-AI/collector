@@ -47,7 +47,7 @@ class GroundingFallbackProbeGateway extends ModelGateway {
   }
 
   override async *writeResearchBodyStream(...args: Parameters<ModelGateway["writeResearchBodyStream"]>) {
-    yield "Agent 回退终稿。[来源1]";
+    yield "Agent 回退终稿。";
     args[1]?.onDone?.({ finishReason: "stop" });
   }
 }
@@ -80,7 +80,7 @@ test("原生联网无来源或请求失败时都切换 Agent 取证，再由独�
     assert.equal(gateway.nativeCalls, 1);
     assert.equal(gateway.agentCalls, 1);
     assert.equal(capture.research.getTask(turn.task.id).status, "completed");
-    assert.equal(harness.store.getResearchMessage(turn.task.outputMessageId)?.content, "Agent 回退终稿。[来源1]");
+    assert.equal(harness.store.getResearchMessage(turn.task.outputMessageId)?.content, "Agent 回退终稿。");
   }
 });
 
@@ -102,11 +102,15 @@ test("最终写作证据保留原来源序号，并在发送前限额、净化 U
   ]);
 
   assert.ok(evidence.length <= 24_000, "最终写作证据总预算不超过 24000 字符");
-  assert.match(evidence, /\[来源1\]/);
-  assert.match(evidence, /\[来源3\] 来源三\n证据状态：部分证据（仅搜索摘要，未获取全文）\n保留原序号/);
-  assert.doesNotMatch(evidence, /\[来源2\]|\[来源21\]|不得进入/);
+  const structured = JSON.parse(evidence) as { sources: Array<{ sourceOrdinal: number; title: string; evidenceStatus: string; evidence: string; url?: string }> };
+  assert.deepEqual(structured.sources.slice(0, 2).map((source) => source.sourceOrdinal), [1, 3]);
+  assert.equal(structured.sources[1]?.title, "来源三");
+  assert.equal(structured.sources[1]?.evidenceStatus, "partial");
+  assert.equal(structured.sources[1]?.evidence, "保留原序号");
+  assert.equal(structured.sources.some((source) => source.sourceOrdinal === 2 || source.sourceOrdinal === 21), false);
+  assert.doesNotMatch(evidence, /不得进入/);
   assert.doesNotMatch(evidence, /title-secret|body-secret|url-secret|user:pass/);
-  assert.match(evidence, /https:\/\/example\.com\/a\?keep=yes/);
+  assert.equal(structured.sources[0]?.url, "https://example.com/a?keep=yes");
   assert.match(evidence, /…/, "单条证据超过 2000 字符时截断");
 });
 
@@ -220,18 +224,20 @@ test("联网引用端点落在隐藏控制字段内时不伪造精确位置", as
   assert.equal(service.getSession(session.id).groundingSources, undefined);
 });
 
-test("文本型来源标记在弱标记清洗后的正文上解析", async (t) => {
+test("供应商原生定位经正文清洗后映射为精确旁路范围", async (t) => {
   const harness = await createStore();
   t.after(() => harness.close());
   const provider: ResearchGenerationProvider = {
     provider: "agent-fake", model: "agent-model",
     async *generate() { yield "ordinary fallback"; },
     async prepareGrounded() {
+      const content = "[[concept:local-first:本地优先]]强调数据留在设备上。";
+      const startOffset = content.indexOf("数据");
       return {
-        kind: "confirmed_final" as const, content: "[[concept:local-first:本地优先]]强调数据留在设备上。[来源1]",
+        kind: "confirmed_final" as const, content,
         status: "grounded", queries: ["本地优先"],
         sources: [{ title: "Source", url: "https://example.com/source", evidenceStatus: "full" }],
-        citations: [],
+        citations: [{ sourceOrdinal: 1, startOffset, endOffset: startOffset + "数据留在设备上".length, providerCitationId: "native-1" }],
       };
     },
   };
@@ -241,12 +247,12 @@ test("文本型来源标记在弱标记清洗后的正文上解析", async (t) =
   await service.processTask(turn.task.id);
 
   const output = harness.store.getResearchMessage(turn.task.outputMessageId);
-  assert.equal(output?.content, "本地优先强调数据留在设备上。[来源1]");
+  assert.equal(output?.content, "本地优先强调数据留在设备上。");
   const citation = harness.store.listResearchCitationsForMessages([turn.task.outputMessageId])[0];
   assert.ok(citation);
-  assert.equal(citation.markerOffset, "本地优先强调数据留在设备上。".length);
-  assert.equal(citation.location?.exact, "[来源1]");
+  assert.equal(citation.location?.exact, "数据留在设备上");
   assert.equal(citation.location?.contentId, turn.task.outputMessageId);
+  assert.equal(citation.providerCitationId, "native-1");
 });
 
 test("仅证据的联网准备必须经独立最终写作，工作区文本永不写入正文", async (t) => {
@@ -254,13 +260,14 @@ test("仅证据的联网准备必须经独立最终写作，工作区文本永�
   t.after(() => harness.close());
   const finalInputs: string[] = [];
   const finalAssemblies: unknown[] = [];
+  const finalSources: unknown[] = [];
   const provider: ResearchGenerationProvider = {
     provider: "agent-fake", model: "agent-model",
     async *generate() { yield "ordinary fallback"; },
     async prepareGrounded() {
       return {
         kind: "evidence" as const,
-        evidence: "[来源1] 可回读的证据摘录。",
+        evidence: '{"sources":[{"sourceOrdinal":1,"evidence":"可回读的证据摘录。"}]}',
         status: "grounded", queries: ["查询"],
         sources: [{ title: "Source", url: "https://example.com/source", snippet: "可回读的证据摘录。", evidenceStatus: "partial" }], citations: [],
       };
@@ -268,7 +275,10 @@ test("仅证据的联网准备必须经独立最终写作，工作区文本永�
     async *writeGroundedFinalStream(request, evidence, options) {
       finalInputs.push(evidence);
       finalAssemblies.push(structuredClone(request.contextAssembly));
-      yield "这是独立最终写作的正文。[来源1]";
+      finalSources.push(structuredClone(options.sources));
+      options.onCitation?.({ sourceOrdinal: 1, startOffset: 0, endOffset: 12, providerCitationId: "provider-citation-1" });
+      yield "这是独立最终";
+      yield "写作的正文。";
       options.onStreamDone?.({ finishReason: "stop" });
     },
   };
@@ -277,12 +287,25 @@ test("仅证据的联网准备必须经独立最终写作，工作区文本永�
   const turn = await service.submitMessage(session.id, "解释", "final-writer-turn", { allowWebSearch: true });
   await service.processTask(turn.task.id);
 
-  assert.deepEqual(finalInputs, ["[来源1] 可回读的证据摘录。"]);
+  assert.deepEqual(finalInputs, ['{"sources":[{"sourceOrdinal":1,"evidence":"可回读的证据摘录。"}]}']);
   const finalAssembly = finalAssemblies[0] as { purpose?: string; adopted?: Array<{ candidate?: { channel?: string; evidenceKind?: string; ruleKind?: string; content?: string } }> };
   assert.equal(finalAssembly.purpose, "research_body");
   assert.ok(finalAssembly.adopted?.some((item) => item.candidate?.evidenceKind === "web_evidence"));
   assert.ok(finalAssembly.adopted?.some((item) => item.candidate?.ruleKind === "task_contract"));
-  assert.equal(harness.store.getResearchMessage(turn.task.outputMessageId)?.content, "这是独立最终写作的正文。[来源1]");
+  assert.deepEqual(finalSources, [[{
+    sourceOrdinal: 1,
+    title: "Source",
+    url: "https://example.com/source",
+    evidenceStatus: "partial",
+  }]]);
+  assert.equal(harness.store.getResearchMessage(turn.task.outputMessageId)?.content, "这是独立最终写作的正文。");
+  const citation = harness.store.listResearchCitationsForMessages([turn.task.outputMessageId])[0];
+  assert.equal(citation?.location?.exact, "这是独立最终写作的正文。");
+  assert.equal(citation?.providerCitationId, "provider-citation-1");
+  const sidecar = harness.store.listResearchSidecarRecords({ bodyVersionId: citation?.location?.bodyVersionId, kind: "citation" })[0];
+  assert.equal(sidecar?.status, "ready");
+  assert.equal(sidecar?.precision, "exact");
+  assert.ok(harness.store.listResearchTaskEvents(turn.task.id).some((event) => event.type === "citation_candidate"));
   assert.equal(service.getTask(turn.task.id).status, "completed");
 });
 
@@ -359,12 +382,14 @@ test("独立最终写作暂停后重新取证并清空旧正文，来源和正�
       evidences.push(_evidence);
       writes += 1;
       if (writes === 1) {
+        options.onCitation?.({ sourceOrdinal: 1 });
         yield "已确认前缀。";
         await new Promise((resolve) => setTimeout(resolve, 35));
         yield "旧流不得写入。";
         return;
       }
-      yield "正文B。[来源1]";
+      options.onCitation?.({ sourceOrdinal: 1, startOffset: 0, endOffset: 4 });
+      yield "正文B。";
       options.onStreamDone?.({ finishReason: "stop" });
     },
   };
@@ -377,14 +402,17 @@ test("独立最终写作暂停后重新取证并清空旧正文，来源和正�
   await firstRun;
   assert.equal(service.getTask(turn.task.id).status, "paused");
   assert.equal(harness.store.getResearchMessage(turn.task.outputMessageId)?.content, "已确认前缀。", "暂停后旧流增量不落库");
+  assert.ok(harness.store.listResearchTaskEvents(turn.task.id).some((event) => event.type === "citation_candidate"), "暂停尝试已持久化粗粒度候选");
 
   await service.resumeTask(turn.task.id);
+  assert.equal(harness.store.listResearchTaskEvents(turn.task.id).some((event) => event.type === "citation_candidate"), false, "重新取证清除旧尝试候选");
   await service.processTask(turn.task.id);
   assert.equal(service.getTask(turn.task.id).status, "completed");
-  assert.equal(harness.store.getResearchMessage(turn.task.outputMessageId)?.content, "正文B。[来源1]");
+  assert.equal(harness.store.getResearchMessage(turn.task.outputMessageId)?.content, "正文B。");
   assert.deepEqual(evidences, ["[来源1] 证据A。", "[来源1] 证据B。"]);
   const runId = service.getTask(turn.task.id).groundingScope?.runId;
   assert.equal(harness.store.listResearchGroundingSources(runId!)[0]?.title, "Source B");
+  assert.equal(harness.store.listResearchCitationsForMessages([turn.task.outputMessageId])[0]?.location?.exact, "正文B。");
 });
 
 test("独立最终写作仅产生思考时暂停，恢复也会清空旧思考和事件后重新取证", async (t) => {
@@ -520,7 +548,7 @@ test("独立最终写作失败重试后重新取证并清空旧正文，来源�
   assert.equal(harness.store.listResearchGroundingSources(runId!)[0]?.title, "Source B");
 });
 
-test("仅证据最终写作不沿用原生草稿偏移，没有 [来源n] 时不创建引用", async (t) => {
+test("仅证据最终写作不沿用原生草稿偏移，粗粒度候选只保留来源与旁路事件", async (t) => {
   const harness = await createStore();
   t.after(() => harness.close());
   const provider: ResearchGenerationProvider = {
@@ -529,13 +557,56 @@ test("仅证据最终写作不沿用原生草稿偏移，没有 [来源n] 时不
     async prepareGrounded() {
       return { kind: "evidence" as const, evidence: "[来源1] 证据", status: "grounded", queries: [], sources: [{ title: "Source", evidenceStatus: "full" }], citations: [{ sourceOrdinal: 1, startOffset: 0, endOffset: 3 }] };
     },
-    async *writeGroundedFinalStream(_request, _evidence, options) { yield "不带来源标记的独立正文。"; options.onStreamDone?.({ finishReason: "stop" }); },
+    async *writeGroundedFinalStream(_request, _evidence, options) {
+      options.onCitation?.({ sourceOrdinal: 1 });
+      yield "不带来源标记的独立正文。";
+      options.onStreamDone?.({ finishReason: "stop" });
+    },
   };
   const service = new ResearchSessionService(harness.store, { provider, autoRunTasks: false });
   const session = await service.createSession("测试", "evidence-no-citation-session");
   const turn = await service.submitMessage(session.id, "解释", "evidence-no-citation-turn", { allowWebSearch: true });
   await service.processTask(turn.task.id);
   assert.equal(harness.store.listResearchCitationsForMessages([turn.task.outputMessageId]).length, 0);
+  const runId = service.getTask(turn.task.id).groundingScope?.runId;
+  assert.equal(harness.store.listResearchGroundingSources(runId!).length, 1);
+  const candidateEvent = harness.store.listResearchTaskEvents(turn.task.id).find((event) => event.type === "citation_candidate");
+  assert.deepEqual(candidateEvent?.type === "citation_candidate" ? candidateEvent.candidate : undefined, { sourceOrdinal: 1 });
+});
+
+test("结构化引用旁路去重重复候选，并保留同一来源支撑多处陈述", async (t) => {
+  const harness = await createStore();
+  t.after(() => harness.close());
+  const provider: ResearchGenerationProvider = {
+    provider: "agent-fake", model: "agent-model",
+    async *generate() { yield "unused"; },
+    async prepareGrounded() {
+      return {
+        kind: "evidence" as const,
+        evidence: '{"sources":[{"sourceOrdinal":1,"evidence":"证据"}]}',
+        status: "grounded", queries: [],
+        sources: [{ title: "Source", evidenceStatus: "full" }],
+        citations: [],
+      };
+    },
+    async *writeGroundedFinalStream(_request, _evidence, options) {
+      options.onCitation?.({ sourceOrdinal: 1, startOffset: 0, endOffset: 4, providerCitationId: "c-1" });
+      yield "第一句。";
+      options.onCitation?.({ sourceOrdinal: 1, startOffset: 4, endOffset: 8, providerCitationId: "c-2" });
+      options.onCitation?.({ sourceOrdinal: 1, startOffset: 0, endOffset: 4, providerCitationId: "c-1" });
+      yield "第二句。";
+      options.onStreamDone?.({ finishReason: "stop" });
+    },
+  };
+  const service = new ResearchSessionService(harness.store, { provider, autoRunTasks: false });
+  const session = await service.createSession("测试", "citation-repeat-session");
+  const turn = await service.submitMessage(session.id, "解释", "citation-repeat-turn", { allowWebSearch: true });
+  await service.processTask(turn.task.id);
+
+  const citations = harness.store.listResearchCitationsForMessages([turn.task.outputMessageId]);
+  assert.deepEqual(citations.map((citation) => citation.location?.exact), ["第一句。", "第二句。"]);
+  assert.equal(new Set(citations.map((citation) => citation.sourceId)).size, 1);
+  assert.equal(harness.store.listResearchSidecarRecords({ kind: "citation" }).length, 2);
 });
 
 test("已确认原生最终回答仍须经过正文准入边界", async (t) => {

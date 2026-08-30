@@ -1815,6 +1815,7 @@ export interface ResearchTurnAccepted {
 export type ResearchTaskEvent =
   | { id?: number; type: "snapshot"; task: ResearchTaskRecord; message: ResearchMessageRecord; createdAt: string }
   | { id: number; type: "delta"; delta: string; message: ResearchMessageRecord; createdAt: string }
+  | { id: number; type: "citation_candidate"; candidate: ResearchCitationCandidate; message: ResearchMessageRecord; createdAt: string }
   | { id: number; type: "completed"; task: ResearchTaskRecord; message: ResearchMessageRecord; createdAt: string }
   | { id: number; type: "failed"; task: ResearchTaskRecord; message: ResearchMessageRecord; createdAt: string }
   | { id: number; type: "stopped"; task: ResearchTaskRecord; message: ResearchMessageRecord; createdAt: string };
@@ -2503,6 +2504,28 @@ export interface ResearchCitationRecord {
   location?: ResearchStableLocation;
   providerCitationId?: string;
   createdAt: string;
+}
+
+/**
+ * Final-writer citation side-channel. A candidate without offsets only says that
+ * the source participated in the answer; consumers must not invent a placement.
+ * Exact offsets are UTF-16 ranges in the final writer's raw body stream and are
+ * mapped through the same cleaning boundary as visible text before persistence.
+ */
+export interface ResearchCitationCandidate {
+  sourceOrdinal: number;
+  startOffset?: number;
+  endOffset?: number;
+  providerCitationId?: string;
+}
+
+/** Structured source identity supplied to a grounded final writer. */
+export interface ResearchCitationSourceIdentity {
+  sourceOrdinal: number;
+  providerSourceId?: string;
+  title: string;
+  url?: string;
+  evidenceStatus?: GroundingEvidenceStatus;
 }
 
 export interface ResearchGroundingResult {

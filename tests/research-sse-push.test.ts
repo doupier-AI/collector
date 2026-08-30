@@ -145,3 +145,39 @@ test("多连接扇出：每个 SSE 连接各收一次 completed", async (t) => {
   assert.ok(r1.completedAtMs !== undefined, "连接 1 应收到 completed");
   assert.ok(r2.completedAtMs !== undefined, "连接 2 应收到 completed（扇出不漏）");
 });
+
+test("结构化引用候选作为独立命名事件进入 SSE，不混入正文 delta", async (t) => {
+  const provider = {
+    provider: "citation-fake",
+    model: "citation-model",
+    async *generate() { yield "unused"; },
+    async prepareGrounded() {
+      return {
+        kind: "evidence" as const,
+        evidence: '{"sources":[{"sourceOrdinal":1,"evidence":"证据"}]}',
+        status: "grounded" as const,
+        queries: [],
+        sources: [{ title: "Source", evidenceStatus: "full" as const }],
+        citations: [],
+      };
+    },
+    async *writeGroundedFinalStream(_request: unknown, _evidence: string, options: { onCitation?: (candidate: { sourceOrdinal: number; startOffset?: number; endOffset?: number }) => void; onStreamDone?: (done: { finishReason?: string }) => void }) {
+      options.onCitation?.({ sourceOrdinal: 1, startOffset: 0, endOffset: 3 });
+      yield "正文。";
+      options.onStreamDone?.({ finishReason: "stop" });
+    },
+  };
+  const harness = await createHarness(provider);
+  t.after(harness.close);
+  const submitted = await (await fetch(`${harness.base}/v1/research-sessions/session-1/messages`, {
+    method: "POST",
+    headers: { ...headers(harness.token), "Content-Type": "application/json", "Idempotency-Key": `k-${randomUUID()}` },
+    body: JSON.stringify({ content: "联网问题", allowWebSearch: true }),
+  })).json();
+
+  const { types } = await readTaskEventStream(`${harness.base}/v1/research-tasks/${submitted.task.id}/events`, harness.token, 10_000);
+  assert.ok(types.includes("citation_candidate"));
+  assert.ok(types.includes("delta"));
+  assert.ok(types.includes("completed"));
+  assert.equal(harness.store.getResearchMessage(submitted.task.outputMessageId)?.content, "正文。");
+});

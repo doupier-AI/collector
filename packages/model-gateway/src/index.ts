@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { ASSOCIATION_HINT_BENEFITS, ASSOCIATION_HINT_EVALUATION_PROMPT_VERSION, FUSION_RELATION_TYPES, IMPORT_CHAPTER_PARSE_PROMPT_VERSION, IMPORT_CHAPTER_PARSE_TOKEN_BUDGET, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET, TERM_IDENTITY_CONTEXT_MAX_CHARACTERS, TERM_IDENTITY_TEXT_MAX_CHARACTERS, TERM_IDENTITY_VERIFY_PROMPT_VERSION, observeContextAssembly, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type ContextAssemblyObservation, type ContextAssemblyResult, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchAssociationHintBenefit, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSliceContext, type TermIdentityVerificationRequest } from "@collector/capture-contracts";
+import { ASSOCIATION_HINT_BENEFITS, ASSOCIATION_HINT_EVALUATION_PROMPT_VERSION, FUSION_RELATION_TYPES, IMPORT_CHAPTER_PARSE_PROMPT_VERSION, IMPORT_CHAPTER_PARSE_TOKEN_BUDGET, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET, TERM_IDENTITY_CONTEXT_MAX_CHARACTERS, TERM_IDENTITY_TEXT_MAX_CHARACTERS, TERM_IDENTITY_VERIFY_PROMPT_VERSION, observeContextAssembly, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type ContextAssemblyObservation, type ContextAssemblyResult, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchAssociationHintBenefit, type ResearchCitationCandidate, type ResearchCitationSourceIdentity, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSliceContext, type TermIdentityVerificationRequest } from "@collector/capture-contracts";
 
 export interface ProviderUsage {
   inputTokens?: number;
@@ -62,6 +62,8 @@ export interface ModelProviderRequest {
   timeoutMs?: number;
   /** 外部中止信号（暂停/停止）：与传输层内部超时信号组合，中止后抛 ModelProviderAbortedError。 */
   signal?: AbortSignal;
+  /** Grounded final-writer sources used only to map provider-native citation metadata. */
+  citationSources?: readonly ResearchCitationSourceIdentity[];
 }
 
 /**
@@ -101,8 +103,9 @@ export interface ModelProvider {
   complete(request: ModelProviderRequest): Promise<ModelProviderResponse>;
   /**
    * 真实模型逐字流式（方案 B）：能流式的 provider 在 complete() 之外另实现本方法。
-   * 逐字增量以 {type:"delta"} 事件产出；usage/model 只在终帧到达，由 {type:"done"} 事件带外承载，
-   * 供网关恰好一次记账。缺省本方法的 provider 由网关退回非流式 complete() 单发。
+   * 逐字增量以 {type:"delta"} 事件产出；供应商确认的引用元数据以 {type:"citation"}
+   * 旁路产出；usage/model 只在终帧到达，由 {type:"done"} 事件带外承载，供网关恰好一次
+   * 记账。缺省本方法的 provider 由网关退回非流式 complete() 单发。
    */
   completeStream?(request: ModelProviderRequest): AsyncIterable<ModelProviderStreamEvent>;
 }
@@ -111,9 +114,11 @@ export interface ModelProvider {
 export interface ModelProviderStreamDelta { type: "delta"; text: string }
 /** 流式思考增量事件（ADR-0035）：模型的推理过程逐字片段，不计入正文，与 delta 交错到达。 */
 export interface ModelProviderStreamReasoning { type: "reasoning"; text: string }
+/** Structured citation metadata; offsets are relative to this physical body stream. */
+export type ModelProviderStreamCitation = { type: "citation"; text?: never } & ResearchCitationCandidate;
 /** 流式终帧事件：模型名与 usage（token/成本记账依据，仅在流结束时可用）。 */
 export interface ModelProviderStreamDone { type: "done"; model: string; usage?: ProviderUsage; finishReason?: string }
-export type ModelProviderStreamEvent = ModelProviderStreamDelta | ModelProviderStreamReasoning | ModelProviderStreamDone;
+export type ModelProviderStreamEvent = ModelProviderStreamDelta | ModelProviderStreamReasoning | ModelProviderStreamCitation | ModelProviderStreamDone;
 
 /** plan-then-write 大纲的节数边界，防止模型产出过多碎节。 */
 export const RESEARCH_BODY_OUTLINE_MIN_SECTIONS = 1;
@@ -724,7 +729,7 @@ export class ModelGateway {
 
   async *writeResearchBodyStreamFromContext(
     assembly: AssembledModelContext,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number; resumeFrom?: string; onDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; signal?: AbortSignal } = {},
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number; resumeFrom?: string; onDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; onCitation?: (candidate: ResearchCitationCandidate) => void; citationSources?: readonly ResearchCitationSourceIdentity[]; signal?: AbortSignal } = {},
   ): AsyncIterable<string> {
     const admittedResume = options.resumeFrom ? "[续写正文见已准入 continuation_state]" : undefined;
     yield* this.writeResearchBodyStream(
@@ -732,6 +737,7 @@ export class ModelGateway {
       {
         ...this.contextOptions(assembly, options),
         ...(admittedResume ? { resumeFrom: admittedResume } : {}),
+        ...(options.resumeFrom ? { citationOffsetBase: options.resumeFrom.length } : {}),
         parentChainContext: { currentNodeDepth: options.nodeDepth ?? 0, ancestors: [], truncated: false, cycleDetected: false },
       },
     );
@@ -975,7 +981,7 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
    */
   async *writeResearchBodyStream(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext; resumeFrom?: string; onDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; signal?: AbortSignal } = {},
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext; resumeFrom?: string; citationOffsetBase?: number; onDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; onCitation?: (candidate: ResearchCitationCandidate) => void; citationSources?: readonly ResearchCitationSourceIdentity[]; signal?: AbortSignal } = {},
   ): AsyncIterable<string> {
     if (!messages.length) throw new Error("Research body requires at least one message");
     const basePrompt = this.researchBodyPrompt(messages, options.parentChainContext, options.sliceContext);
@@ -991,6 +997,7 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
       maxTokens: options.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS,
       timeoutMs: options.timeoutMs ?? 120_000,
       ...(options.signal ? { signal: options.signal } : {}),
+      ...(options.citationSources?.length ? { citationSources: options.citationSources } : {}),
     };
     const context = options.context ?? { purpose: "research_body" };
     // 窄化 provider：非流式回退分支后，后续引用 guaranteed 有 completeStream。
@@ -1007,6 +1014,26 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
     // doneRef 由本调用局部持有（非实例字段），并发/交错调用互不干扰。
     const doneRef: { model: string; usage?: ProviderUsage; finishReason?: string } = { model: request.model };
     let assembled = "";
+    let rawAssembled = "";
+    const citationCandidates: ResearchCitationCandidate[] = [];
+    const offsetBase = options.citationOffsetBase ?? 0;
+    const emitCitation = (candidate: ResearchCitationCandidate): boolean => {
+      if (candidate.startOffset === undefined || candidate.endOffset === undefined) {
+        options.onCitation?.(candidate);
+        return true;
+      }
+      const leadingTrim = rawAssembled.length - rawAssembled.trimStart().length;
+      const startOffset = candidate.startOffset - leadingTrim;
+      const endOffset = candidate.endOffset - leadingTrim;
+      // Provider annotations may arrive before their cited text. Defer those until
+      // enough visible body has passed the trim boundary; never guess a future range.
+      if (startOffset < 0 || endOffset <= startOffset || endOffset > assembled.length) return false;
+      options.onCitation?.({ ...candidate, startOffset: offsetBase + startOffset, endOffset: offsetBase + endOffset });
+      return true;
+    };
+    const flushCitationCandidates = () => {
+      while (citationCandidates[0] && emitCitation(citationCandidates[0])) citationCandidates.shift();
+    };
     try {
       // reasoning 旁路：思考事件经 onReasoning 转发、不进入 trim/记账；delta/done 走原通道。
       // completeStream 在窄化作用域内调用（async generator 惰性执行，调用本身不发起请求）。
@@ -1014,12 +1041,25 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
       const textEvents = (async function* () {
         for await (const event of streamEvents) {
           if (event.type === "reasoning") { options.onReasoning?.(event.text); continue; }
+          if (event.type === "citation") {
+            const candidate = {
+              sourceOrdinal: event.sourceOrdinal,
+              ...(event.startOffset !== undefined ? { startOffset: event.startOffset } : {}),
+              ...(event.endOffset !== undefined ? { endOffset: event.endOffset } : {}),
+              ...(event.providerCitationId ? { providerCitationId: event.providerCitationId } : {}),
+            };
+            citationCandidates.push(candidate);
+            flushCitationCandidates();
+            continue;
+          }
+          if (event.type === "delta") rawAssembled += event.text;
           yield event;
         }
       })();
       for await (const trimmed of trimStream(extractStreamDeltas(textEvents, doneRef))) {
         assembled += trimmed;
         yield trimmed;
+        flushCitationCandidates();
       }
       await this.emitCompleted(context, request, startedAt, createdAt, { content: assembled, model: doneRef.model, usage: doneRef.usage });
     } catch (error) {
@@ -1027,6 +1067,8 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
       throw error;
     }
     if (!assembled.trim()) throw new Error("Research body provider returned an empty body");
+    for (const candidate of citationCandidates) emitCitation(candidate);
+    citationCandidates.length = 0;
     // 回报终帧 finishReason，供调用方判断是否需要续写（length = 被 max_tokens 截断）。
     options.onDone?.({ ...(doneRef.finishReason !== undefined ? { finishReason: doneRef.finishReason } : {}) });
   }
@@ -2135,6 +2177,10 @@ export class OpenAiCompatibleProvider implements ModelProvider {
         }
         const text = choice?.delta?.content;
         if (typeof text === "string" && text) yield { type: "delta", text };
+        for (const annotation of choice?.delta?.annotations ?? []) {
+          const citation = citationCandidateFromAnnotation(annotation?.url_citation ?? annotation, request.citationSources);
+          if (citation) yield { type: "citation", ...citation };
+        }
         if (typeof choice?.finish_reason === "string" && choice.finish_reason) finishReason = choice.finish_reason;
         if (payload?.usage) {
           usage = {
@@ -2304,6 +2350,9 @@ export class OpenAiResponsesProvider implements GroundingModelProvider {
         const type = payload?.type;
         if (type === "response.output_text.delta") {
           if (typeof payload.delta === "string" && payload.delta) yield { type: "delta", text: payload.delta };
+        } else if (type === "response.output_text.annotation.added") {
+          const citation = citationCandidateFromAnnotation(payload.annotation, request.citationSources);
+          if (citation) yield { type: "citation", ...citation };
         } else if (type === "response.completed") {
           model = payload?.response?.model ?? model;
           usage = openAiUsage(payload?.response?.usage);
@@ -2430,12 +2479,30 @@ export class GeminiGroundingProvider implements GroundingModelProvider {
     }
     let usage: ProviderUsage | undefined;
     let finishReason: string | undefined;
+    const emittedCitations = new Set<string>();
     try {
       for await (const event of iterateServerSentEvents(response.body)) {
         idle.reset();
         const payload = JSON.parse(event.data);
         const text = geminiText(payload);
         if (text) yield { type: "delta", text };
+        const metadata = payload?.candidates?.[0]?.groundingMetadata;
+        const chunks = Array.isArray(metadata?.groundingChunks) ? metadata.groundingChunks : [];
+        for (const support of metadata?.groundingSupports ?? []) {
+          for (const index of support?.groundingChunkIndices ?? []) {
+            const annotation = {
+              url: chunks[index]?.web?.uri,
+              start_index: support?.segment?.startIndex,
+              end_index: support?.segment?.endIndex,
+            };
+            const citation = citationCandidateFromAnnotation(annotation, request.citationSources);
+            if (!citation) continue;
+            const key = `${citation.sourceOrdinal}:${citation.startOffset ?? ""}:${citation.endOffset ?? ""}`;
+            if (emittedCitations.has(key)) continue;
+            emittedCitations.add(key);
+            yield { type: "citation", ...citation };
+          }
+        }
         const candidateFinish = payload?.candidates?.[0]?.finishReason;
         if (typeof candidateFinish === "string" && candidateFinish) finishReason = candidateFinish === "MAX_TOKENS" ? "length" : candidateFinish;
         if (payload?.usageMetadata) usage = geminiUsage(payload.usageMetadata);
@@ -2817,6 +2884,28 @@ function safeHttpUrl(value: unknown): string | undefined {
     const url = new URL(value);
     return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : undefined;
   } catch { return undefined; }
+}
+
+function citationCandidateFromAnnotation(
+  annotation: any,
+  sources: readonly ResearchCitationSourceIdentity[] | undefined,
+): ResearchCitationCandidate | undefined {
+  if (!sources?.length) return undefined;
+  const url = safeHttpUrl(annotation?.url ?? annotation?.uri);
+  const providerSourceId = typeof annotation?.provider_source_id === "string" ? annotation.provider_source_id : undefined;
+  const source = sources.find((candidate) =>
+    (url && safeHttpUrl(candidate.url) === url)
+      || (providerSourceId && candidate.providerSourceId === providerSourceId),
+  );
+  if (!source) return undefined;
+  const startOffset = annotation?.start_index ?? annotation?.startIndex;
+  const endOffset = annotation?.end_index ?? annotation?.endIndex;
+  const exact = Number.isSafeInteger(startOffset) && Number.isSafeInteger(endOffset) && startOffset >= 0 && endOffset > startOffset;
+  return {
+    sourceOrdinal: source.sourceOrdinal,
+    ...(exact ? { startOffset, endOffset } : {}),
+    ...(typeof annotation?.id === "string" ? { providerCitationId: annotation.id } : {}),
+  };
 }
 
 /** 日志只保留净化后的 host，绝不输出带查询参数/凭证的原始 URL。 */

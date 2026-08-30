@@ -13,6 +13,7 @@ import {
   createProvider,
   iterateServerSentEvents,
   DEFAULT_PROVIDER_REGISTRY,
+  type ModelProvider,
   type ModelProviderStreamEvent,
 } from "@collector/model-gateway";
 
@@ -152,6 +153,33 @@ test("网关 writeResearchBodyStream：thinking 显式开启时透传到请求",
   assert.equal(provider.calls[0]?.thinking, true);
 });
 
+test("网关把引用候选从正文分片旁路输出，并按 trim 与续写前缀映射精确范围", async () => {
+  const provider: ModelProvider = {
+    name: "citation-fake",
+    async complete(request) { return { content: "", model: request.model }; },
+    async *completeStream(request) {
+      yield { type: "delta", text: "  正文" };
+      yield { type: "citation", sourceOrdinal: 1, startOffset: 2, endOffset: 6, providerCitationId: "native-1" };
+      yield { type: "delta", text: "内容  " };
+      yield { type: "citation", sourceOrdinal: 2 };
+      yield { type: "done", model: request.model, finishReason: "stop" };
+    },
+  };
+  const gateway = new ModelGateway(provider, { model: "citation-model" });
+  const citations: Array<{ sourceOrdinal: number; startOffset?: number; endOffset?: number; providerCitationId?: string }> = [];
+  const deltas: string[] = [];
+  for await (const delta of gateway.writeResearchBodyStream([{ role: "user", content: "问题" }], {
+    citationOffsetBase: 10,
+    onCitation: (candidate) => citations.push(candidate),
+  })) deltas.push(delta);
+
+  assert.equal(deltas.join(""), "正文内容");
+  assert.deepEqual(citations, [
+    { sourceOrdinal: 1, startOffset: 10, endOffset: 14, providerCitationId: "native-1" },
+    { sourceOrdinal: 2 },
+  ]);
+});
+
 test("OpenAI Responses provider 流式：output_text.delta 逐字、completed 帧 usage、failed 只抛稳定错误", async () => {
   const provider = createProvider(DEFAULT_PROVIDER_REGISTRY.get("openai"), {
     apiKey: () => "openai-secret",
@@ -159,12 +187,20 @@ test("OpenAI Responses provider 流式：output_text.delta 逐字、completed �
       sseResponse([
         { event: "response.output_text.delta", data: JSON.stringify({ type: "response.output_text.delta", delta: "有来" }) },
         { event: "response.output_text.delta", data: JSON.stringify({ type: "response.output_text.delta", delta: "源回答" }) },
+        { event: "response.output_text.annotation.added", data: JSON.stringify({ type: "response.output_text.annotation.added", annotation: { id: "oa-citation-1", type: "url_citation", url: "https://example.com/source", start_index: 0, end_index: 5 } }) },
         { event: "response.completed", data: JSON.stringify({ type: "response.completed", response: { model: "gpt-4.1", usage: { input_tokens: 5, output_tokens: 9, input_tokens_details: { cached_tokens: 2 } } } }) },
       ]),
   });
   assert.ok(provider instanceof OpenAiResponsesProvider);
-  const events = await collect(provider.completeStream!({ prompt: "问题", model: "gpt-4.1" }));
+  const events = await collect(provider.completeStream!({
+    prompt: "问题",
+    model: "gpt-4.1",
+    citationSources: [{ sourceOrdinal: 3, title: "Source", url: "https://example.com/source" }],
+  }));
   assert.equal(deltasOf(events), "有来源回答");
+  assert.deepEqual(events.find((event) => event.type === "citation"), {
+    type: "citation", sourceOrdinal: 3, startOffset: 0, endOffset: 5, providerCitationId: "oa-citation-1",
+  });
   const done = doneOf(events);
   assert.equal(done.model, "gpt-4.1");
   assert.deepEqual(done.usage, { inputTokens: 5, outputTokens: 9, inputCacheHitTokens: 2, inputCacheMissTokens: 5 });
@@ -189,13 +225,26 @@ test("Gemini provider 流式：parts[].text 逐字、usageMetadata 终帧", asyn
     apiKey: () => "AIza-test-key",
     fetchImpl: async () =>
       sseResponse([
-        { data: JSON.stringify({ candidates: [{ content: { parts: [{ text: "Gemini " }] } }] }) },
+        { data: JSON.stringify({ candidates: [{
+          content: { parts: [{ text: "Gemini " }] },
+          groundingMetadata: {
+            groundingChunks: [{ web: { uri: "https://example.com/gemini" } }],
+            groundingSupports: [{ segment: { startIndex: 0, endIndex: 6 }, groundingChunkIndices: [0] }],
+          },
+        }] }) },
         { data: JSON.stringify({ candidates: [{ content: { parts: [{ text: "流式回答" }] } }], usageMetadata: { promptTokenCount: 7, candidatesTokenCount: 13 } }) },
       ]),
   });
   assert.ok(provider instanceof GeminiGroundingProvider);
-  const events = await collect(provider.completeStream!({ prompt: "问题", model: "gemini-2.5-flash" }));
+  const events = await collect(provider.completeStream!({
+    prompt: "问题",
+    model: "gemini-2.5-flash",
+    citationSources: [{ sourceOrdinal: 2, title: "Gemini source", url: "https://example.com/gemini" }],
+  }));
   assert.equal(deltasOf(events), "Gemini 流式回答");
+  assert.deepEqual(events.find((event) => event.type === "citation"), {
+    type: "citation", sourceOrdinal: 2, startOffset: 0, endOffset: 6,
+  });
   const done = doneOf(events);
   assert.deepEqual(done.usage, { inputTokens: 7, outputTokens: 13 });
 });
