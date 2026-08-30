@@ -48,7 +48,7 @@ function makeStreamProvider(opts: {
   };
 }
 
-async function makeService(t: test.TestContext, provider: Record<string, unknown>, sleeps?: number[], autoRunResearchTasks = true): Promise<{ store: SqliteStore; service: CaptureService }> {
+async function makeService(t: test.TestContext, provider: Record<string, unknown>, sleeps?: number[], autoRunResearchTasks = true, termMarkerExtractionProvider?: Record<string, unknown>): Promise<{ store: SqliteStore; service: CaptureService }> {
   const root = await mkdtemp(join(tmpdir(), "collector-streamcut-"));
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const store = new SqliteStore(join(root, "collector.sqlite"));
@@ -59,6 +59,7 @@ async function makeService(t: test.TestContext, provider: Record<string, unknown
     autoRunRecentOrganization: false,
     autoRunResearchTasks,
     researchProvider: provider as never,
+    ...(termMarkerExtractionProvider ? { termMarkerExtractionProvider: termMarkerExtractionProvider as never } : {}),
     researchRetrySleep: async (ms) => { sleeps?.push(ms); },
   });
   return { store, service };
@@ -106,18 +107,35 @@ test("单轮流式 finishReason=length 触发续写（≤3），最终完成不�
   const provider = makeStreamProvider({
     calls,
     script: [
-      () => ({ deltas: ["[[concept:streamed-section:前半段]]被截断"], finishReason: "length" }),
+      () => ({ deltas: ["前半段被截断"], finishReason: "length" }),
       (resumeFrom) => ({ deltas: ["，续写补全后半段。"], finishReason: "stop" }),
     ],
   });
-  const { store, service } = await makeService(t, provider);
+  const termMarkerExtractionProvider = {
+    provider: "fake-extraction",
+    model: "fake-extraction-1",
+    async extractTermMarkers(input: { blocks: Array<{ ordinal: number; text: string }> }) {
+      const block = input.blocks[0]!;
+      const startOffset = block.text.indexOf("前半段");
+      return JSON.stringify({ mentions: startOffset < 0 ? [] : [{
+        blockOrdinal: block.ordinal,
+        startOffset,
+        endOffset: startOffset + "前半段".length,
+        text: "前半段",
+        category: "concept",
+        entityId: "streamed-section",
+      }] });
+    },
+  };
+  const { store, service } = await makeService(t, provider, undefined, true, termMarkerExtractionProvider);
   const accepted = await service.research.submitMessage("session-1", "问题", "k-length");
   for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)!.status !== "completed"; i++) await new Promise((r) => setImmediate(r));
   assert.equal(store.getResearchTask(accepted.task.id)!.status, "completed");
   assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "前半段被截断，续写补全后半段。", "截断续写拼接完成");
+  for (let i = 0; i < 200 && store.getResearchTermMarkerTaskByMessage(accepted.outputMessage.id)?.status !== "completed"; i++) await new Promise((r) => setImmediate(r));
   assert.deepEqual(store.getResearchMessage(accepted.outputMessage.id)?.termMarkers?.map((marker) => marker.text), ["前半段"]);
   assert.equal(calls.length, 2, "截断 + 一次续写");
-  assert.ok(calls[1]?.resumeFrom?.includes("streamed-section:前半段"), "续写提示保留回答内对象身份");
+  assert.ok(calls[1]?.resumeFrom?.includes("前半段"), "续写提示只保留干净正文断点");
   store.close();
 });
 
@@ -161,6 +179,22 @@ test("显式 think 协议跨流片段出现时：污染不展示，干净前缀�
   assert.equal(store.listResearchTaskEvents(accepted.task.id).length, 0, "协议污染后默认重试清空旧事件快照");
   for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)!.status !== "completed"; i++) await new Promise((r) => setImmediate(r));
   assert.equal(store.getResearchMessage(accepted.outputMessage.id)?.content, "重试后的干净正文。", "新尝试可以干净完成");
+  store.close();
+});
+
+test("旧术语控制协议跨流片段出现时：控制串与可见词都不进入正文", async (t) => {
+  const provider = makeStreamProvider({
+    calls: [],
+    script: [() => ({ deltas: ["干净前缀。", "[[con", "cept:legacy:不得展示]]"], finishReason: "stop" })],
+  });
+  const { store, service } = await makeService(t, provider);
+  const accepted = await service.research.submitMessage("session-1", "问题", "k-term-marker-protocol");
+  for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)!.status !== "failed"; i++) await new Promise((r) => setImmediate(r));
+
+  assert.equal(store.getResearchTask(accepted.task.id)?.status, "failed");
+  assert.equal(store.getResearchMessage(accepted.outputMessage.id)?.content, "干净前缀。");
+  assert.ok(store.listResearchTaskEvents(accepted.task.id).every((event) => !/\[\[con|不得展示/.test(event.message?.content ?? "")));
+  assert.equal(store.getBodyVersionForMessage(accepted.outputMessage.id), undefined);
   store.close();
 });
 

@@ -78,7 +78,7 @@ function sidecar(version: ResearchBodyVersionRecord, overrides: Partial<Research
   };
 }
 
-test("v47 migration creates the typed sidecar header table without payload columns", async (t) => {
+test("v47-v48 migrations create typed sidecar headers and durable term-marker tasks", async (t) => {
   const harness = await createHarness();
   t.after(() => harness.close());
   const db = (harness.store as unknown as { db(): DatabaseSync }).db();
@@ -87,6 +87,10 @@ test("v47 migration creates the typed sidecar header table without payload colum
     assert.ok(columns.includes(name), `missing sidecar header column ${name}`);
   }
   assert.ok(!columns.includes("payload_json"), "shared sidecar storage must not become an untyped payload container");
+  const taskColumns = (db.prepare("PRAGMA table_info(research_term_marker_tasks)").all() as Array<{ name: string }>).map((column) => column.name);
+  for (const name of ["id", "message_id", "body_version_id", "generation_attempt", "status", "record_json"]) {
+    assert.ok(taskColumns.includes(name), `missing term-marker task column ${name}`);
+  }
   assert.equal((db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, LATEST_SCHEMA_VERSION);
 });
 
@@ -234,10 +238,11 @@ test("restart invalidates interrupted sidecars and migration replay preserves re
   const { version } = await seedAnswer(harness.store);
   harness.store.close();
 
-  // Real v46 shape: the new table and migration fact are both absent.
+  // Real v46 shape: both newer tables and migration facts are absent.
   const rollback = new DatabaseSync(harness.databasePath);
   rollback.exec("DROP TABLE research_sidecar_records");
-  rollback.prepare("DELETE FROM schema_migrations WHERE version = 47").run();
+  rollback.exec("DROP TABLE research_term_marker_tasks");
+  rollback.prepare("DELETE FROM schema_migrations WHERE version >= 47").run();
   rollback.close();
 
   upgraded = new SqliteStore(harness.databasePath);
@@ -249,7 +254,7 @@ test("restart invalidates interrupted sidecars and migration replay preserves re
 
   // Migration-fact replay keeps the already-created typed table and its data.
   const replay = new DatabaseSync(harness.databasePath);
-  replay.prepare("DELETE FROM schema_migrations WHERE version = 47").run();
+  replay.prepare("DELETE FROM schema_migrations WHERE version >= 47").run();
   replay.close();
 
   replayed = new SqliteStore(harness.databasePath);

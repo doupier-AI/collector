@@ -25,6 +25,8 @@ import {
   type ResearchTemporaryFusionNodeRecord,
   type ResearchTemporaryFusionTaskRecord,
   type ResearchTemporaryFusionTurnAccepted,
+  type ResearchTermMarkerTaskRecord,
+  type TermMarker,
 } from "@collector/capture-contracts";
 
 export type ObservabilityRecordSource = "research" | "import" | "fusion" | "chapter";
@@ -140,8 +142,24 @@ export interface ResearchSidecarStore {
   invalidateInterruptedResearchSidecarRecords(updatedAt: string): number;
 }
 
+/** 独立弱标记任务只保存任务状态和经验证的范围，不保存正文副本。 */
+export interface ResearchTermMarkerStore extends ResearchSidecarStore {
+  getResearchTermMarkerTask(id: string): ResearchTermMarkerTaskRecord | undefined;
+  getResearchTermMarkerTaskByMessage(messageId: string): ResearchTermMarkerTaskRecord | undefined;
+  upsertResearchTermMarkerTask(record: ResearchTermMarkerTaskRecord): Promise<ResearchTermMarkerTaskRecord>;
+  claimResearchTermMarkerTask(id: string): ResearchTermMarkerTaskRecord | undefined;
+  updateResearchTermMarkerTask(record: ResearchTermMarkerTaskRecord): Promise<ResearchTermMarkerTaskRecord>;
+  listRecoverableResearchTermMarkerTasks(): ResearchTermMarkerTaskRecord[];
+  requeueInterruptedResearchTermMarkerTasks(): number;
+  requeueRetryableResearchTermMarkerTasks(): number;
+  replaceResearchMessageTermMarkers(messageId: string, bodyVersionId: string, markers: readonly TermMarker[]): Promise<boolean>;
+  getResearchMessage(id: string): ResearchMessageRecord | undefined;
+  getResearchTask(id: string): ResearchTaskRecord | undefined;
+  getBodyVersion(id: string): ResearchBodyVersionRecord | undefined;
+}
+
 /** 研究会话生命周期所需的持久化能力：28 个方法。 */
-export interface ResearchStore extends ResearchSidecarStore {
+export interface ResearchStore extends ResearchSidecarStore, ResearchTermMarkerStore {
   saveResearchSession(record: ResearchSessionRecord): Promise<void>;
   createResearchSession(record: ResearchSessionRecord, idempotencyKey: string): Promise<ResearchSessionRecord>;
   getResearchSession(id: string): ResearchSessionRecord | undefined;
@@ -490,7 +508,7 @@ export interface CollectorStore
  * `if (version < N+1)` 版本块（块内写入对应 schema_migrations 行）并递增本常量；
  * 测试以此常量断言「打开/重放后数据库实际到达声明版本」，无需再手工同步多处硬编码断言。
  */
-export const LATEST_SCHEMA_VERSION = 47;
+export const LATEST_SCHEMA_VERSION = 48;
 
 function directSourceIdsForConfirmedDraft(
   draft: ResearchFusionDraftVersionRecord,
@@ -641,6 +659,7 @@ export class SqliteStore implements CollectorStore {
       // 语义片段引用正文版本，正文版本与切片引用消息/节点：这些是最下游引用方（不被任何表
       // 引用），必须在删除 nodes/messages/selections 之前先删，避免外键约束失败。
       this.db().exec("DELETE FROM research_sidecar_records");
+      this.db().exec("DELETE FROM research_term_marker_tasks");
       this.db().exec("DELETE FROM research_semantic_fragments");
       this.db().exec("DELETE FROM research_body_versions");
       this.db().exec("DELETE FROM research_slices");
@@ -905,6 +924,7 @@ export class SqliteStore implements CollectorStore {
       // 连接只保存稳定身份和定位键；删除来源前标记缺失，不能保留正文副本。
       this.updateCandidateSourceHealthForSession(id, "deleted");
       del("DELETE FROM research_sidecar_records WHERE session_id = ?", id);
+      del("DELETE FROM research_term_marker_tasks WHERE session_id = ?", id);
       del(`DELETE FROM research_semantic_fragments WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
       del(`DELETE FROM research_body_versions WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
       del(`DELETE FROM research_slices WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
@@ -3069,6 +3089,141 @@ export class SqliteStore implements CollectorStore {
     return snapshot.sessionId;
   }
 
+  // ── Independent term-marker extraction tasks (SIDE-04) ───────
+
+  getResearchTermMarkerTask(id: string): ResearchTermMarkerTaskRecord | undefined {
+    return this.getRecord<ResearchTermMarkerTaskRecord>("SELECT record_json FROM research_term_marker_tasks WHERE id = ?", id);
+  }
+
+  getResearchTermMarkerTaskByMessage(messageId: string): ResearchTermMarkerTaskRecord | undefined {
+    return this.getRecord<ResearchTermMarkerTaskRecord>("SELECT record_json FROM research_term_marker_tasks WHERE message_id = ?", messageId);
+  }
+
+  async upsertResearchTermMarkerTask(record: ResearchTermMarkerTaskRecord): Promise<ResearchTermMarkerTaskRecord> {
+    this.validateResearchTermMarkerTask(record);
+    this.db().prepare(`
+      INSERT INTO research_term_marker_tasks
+        (id, session_id, node_id, message_id, body_version_id, generation_attempt, status, created_at, updated_at, record_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(message_id) DO UPDATE SET
+        id = excluded.id,
+        session_id = excluded.session_id,
+        node_id = excluded.node_id,
+        body_version_id = excluded.body_version_id,
+        generation_attempt = excluded.generation_attempt,
+        status = excluded.status,
+        updated_at = excluded.updated_at,
+        record_json = excluded.record_json
+    `).run(
+      record.id, record.sessionId, record.nodeId, record.messageId, record.bodyVersionId,
+      record.generationAttempt, record.status, record.createdAt, record.updatedAt, JSON.stringify(record),
+    );
+    return record;
+  }
+
+  claimResearchTermMarkerTask(id: string): ResearchTermMarkerTaskRecord | undefined {
+    let claimed: ResearchTermMarkerTaskRecord | undefined;
+    this.transaction(() => {
+      const current = this.getResearchTermMarkerTask(id);
+      if (!current || current.status !== "queued") return;
+      const now = new Date().toISOString();
+      const next: ResearchTermMarkerTaskRecord = {
+        ...current,
+        status: "running",
+        attempts: current.attempts + 1,
+        startedAt: now,
+        updatedAt: now,
+        error: undefined,
+      };
+      const result = this.db().prepare("UPDATE research_term_marker_tasks SET status = 'running', updated_at = ?, record_json = ? WHERE id = ? AND status = 'queued'")
+        .run(now, JSON.stringify(next), id);
+      if (result.changes === 1) claimed = next;
+    });
+    return claimed;
+  }
+
+  async updateResearchTermMarkerTask(record: ResearchTermMarkerTaskRecord): Promise<ResearchTermMarkerTaskRecord> {
+    this.validateResearchTermMarkerTask(record);
+    const result = this.db().prepare(`
+      UPDATE research_term_marker_tasks
+      SET body_version_id = ?, generation_attempt = ?, status = ?, updated_at = ?, record_json = ?
+      WHERE id = ?
+    `).run(record.bodyVersionId, record.generationAttempt, record.status, record.updatedAt, JSON.stringify(record), record.id);
+    if (result.changes !== 1) throw new Error("Research term-marker task was not persisted");
+    return record;
+  }
+
+  listRecoverableResearchTermMarkerTasks(): ResearchTermMarkerTaskRecord[] {
+    return this.listRecords<ResearchTermMarkerTaskRecord>("SELECT record_json FROM research_term_marker_tasks WHERE status = 'queued' ORDER BY created_at, id");
+  }
+
+  requeueInterruptedResearchTermMarkerTasks(): number {
+    const interrupted = this.listRecords<ResearchTermMarkerTaskRecord>("SELECT record_json FROM research_term_marker_tasks WHERE status = 'running' ORDER BY created_at, id");
+    if (!interrupted.length) return 0;
+    const now = new Date().toISOString();
+    this.transaction(() => {
+      for (const task of interrupted) {
+        const requeued: ResearchTermMarkerTaskRecord = {
+          ...task,
+          status: "queued",
+          retryable: true,
+          error: { code: "service_restarted", message: "弱标记抽取在服务重启后继续。" },
+          updatedAt: now,
+          startedAt: undefined,
+          completedAt: undefined,
+        };
+        this.db().prepare("UPDATE research_term_marker_tasks SET status = 'queued', updated_at = ?, record_json = ? WHERE id = ?")
+          .run(now, JSON.stringify(requeued), task.id);
+      }
+    });
+    return interrupted.length;
+  }
+
+  requeueRetryableResearchTermMarkerTasks(): number {
+    const failed = this.listRecords<ResearchTermMarkerTaskRecord>("SELECT record_json FROM research_term_marker_tasks WHERE status = 'failed' ORDER BY created_at, id")
+      .filter((task) => task.retryable);
+    if (!failed.length) return 0;
+    const now = new Date().toISOString();
+    this.transaction(() => {
+      for (const task of failed) {
+        const queued: ResearchTermMarkerTaskRecord = {
+          ...task,
+          status: "queued",
+          error: undefined,
+          updatedAt: now,
+          startedAt: undefined,
+          completedAt: undefined,
+        };
+        this.db().prepare("UPDATE research_term_marker_tasks SET status = 'queued', updated_at = ?, record_json = ? WHERE id = ? AND status = 'failed'")
+          .run(now, JSON.stringify(queued), task.id);
+      }
+    });
+    return failed.length;
+  }
+
+  async replaceResearchMessageTermMarkers(messageId: string, bodyVersionId: string, markers: readonly TermMarker[]): Promise<boolean> {
+    let replaced = false;
+    this.transaction(() => {
+      const message = this.getResearchMessage(messageId);
+      if (!message || researchBodyVersionId(message.id, message.content) !== bodyVersionId) return;
+      this.updateResearchMessage({ ...message, termMarkers: [...markers], updatedAt: new Date().toISOString() });
+      replaced = true;
+    });
+    return replaced;
+  }
+
+  private validateResearchTermMarkerTask(record: ResearchTermMarkerTaskRecord): void {
+    if (!record.id.trim() || !record.sessionId.trim() || !record.nodeId.trim() || !record.messageId.trim()) {
+      throw new Error("Research term-marker task identity is required");
+    }
+    if (!["queued", "running", "completed", "failed"].includes(record.status)) throw new Error("Invalid research term-marker task status");
+    if (!Number.isSafeInteger(record.generationAttempt) || record.generationAttempt < 1) throw new Error("Research term-marker generation attempt must be positive");
+    if (!Number.isSafeInteger(record.attempts) || record.attempts < 0) throw new Error("Research term-marker attempts must be non-negative");
+    if (record.bodyVersionId !== researchBodyVersionId(record.messageId, this.getResearchMessage(record.messageId)?.content ?? "")) {
+      throw new Error("Research term-marker task must reference the current message body version");
+    }
+  }
+
   // ── Semantic Slices (E1) ──────────────────────────────────────
 
   /** E2：正式生成成功后原子删除同一消息的临时切片，再写入完整正式集合。 */
@@ -4778,6 +4933,31 @@ export class SqliteStore implements CollectorStore {
         `);
       });
       version = 47;
+    }
+
+    if (version < 48) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE IF NOT EXISTS research_term_marker_tasks (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            message_id TEXT NOT NULL UNIQUE,
+            body_version_id TEXT NOT NULL,
+            generation_attempt INTEGER NOT NULL CHECK(generation_attempt > 0),
+            status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'completed', 'failed')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS research_term_marker_tasks_status_idx
+            ON research_term_marker_tasks(status, created_at, id);
+          CREATE INDEX IF NOT EXISTS research_term_marker_tasks_session_idx
+            ON research_term_marker_tasks(session_id, created_at, id);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (48, datetime('now'));
+        `);
+      });
+      version = 48;
     }
 
   }

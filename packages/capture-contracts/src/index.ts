@@ -104,6 +104,7 @@ export const CONTEXT_PURPOSES = [
   "research_body_outline",
   "research_body_section",
   "research_slice_annotation",
+  "term_marker_extraction",
   "term_preview",
   "term_entity_verification",
   "session_titling",
@@ -3076,6 +3077,54 @@ export interface TermMarker {
   category: TermCategory;
   /** 新检测结果指向消息规范正文；旧结果仍可按块内偏移验证后使用。 */
   location?: ResearchStableLocation;
+}
+
+export const TERM_MARKER_EXTRACTION_PROMPT_VERSION = "term-marker-extraction-v1";
+
+export type ResearchTermMarkerTaskStatus = "queued" | "running" | "completed" | "failed";
+export type ResearchTermMarkerTaskErrorCode =
+  | "model_not_configured"
+  | "provider_error"
+  | "invalid_output"
+  | "message_missing"
+  | "service_restarted";
+
+/** 模型抽取的窄候选；服务必须用正文块逐字复核后才能提升为 TermMarker。 */
+export interface ResearchTermMarkerCandidate {
+  blockOrdinal: number;
+  startOffset: number;
+  endOffset: number;
+  text: string;
+  category: TermCategory;
+  /** 只在当前回答内有效；服务会验证字符集与长度。 */
+  entityId: string;
+}
+
+/**
+ * 独立弱标记任务。正文不复制进记录；bodyVersionId 指向当前观察到的规范正文。
+ * processedBlockKeys 只用于避免对同一已闭合段落重复发起模型调用。
+ */
+export interface ResearchTermMarkerTaskRecord {
+  id: string;
+  sessionId: string;
+  nodeId: string;
+  messageId: string;
+  bodyVersionId: string;
+  generationAttempt: number;
+  status: ResearchTermMarkerTaskStatus;
+  retryable: boolean;
+  fullReviewRequested: boolean;
+  processedBlockKeys: string[];
+  markers: TermMarker[];
+  provider?: string;
+  model?: string;
+  promptVersion?: string;
+  attempts: number;
+  error?: { code: ResearchTermMarkerTaskErrorCode; message: string };
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
 }
 
 export type ResearchPermanentEdgeRecord = Omit<ResearchEdgeRecord, "kind"> & {

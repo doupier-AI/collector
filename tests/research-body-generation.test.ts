@@ -20,13 +20,10 @@ function makeProvider(respond: (request: ModelProviderRequest) => string): { pro
   return { provider, requests };
 }
 
-function assertUnifiedMentionContract(prompt: string): void {
-  assert.match(prompt, /\[\[concept:concept-1:短语\]\]/);
-  assert.match(prompt, /\[\[entity:entity-1:短语\]\]/);
-  assert.match(prompt, /\[\[abbreviation:abbr-1:短语\]\]/);
-  assert.match(prompt, /\[\[notation:notation-1:短语\]\]/);
-  assert.match(prompt, /同一对象的重复提及必须复用同一个对象身份/);
-  assert.match(prompt, /同名异义对象必须使用不同对象身份/);
+function assertCleanBodyContract(prompt: string): void {
+  assert.match(prompt, /只输出干净正文/);
+  assert.match(prompt, /弱标记由独立/);
+  assert.doesNotMatch(prompt, /每个段落中首次出现的重要概念都要标记|最多标记 4 个/);
 }
 
 test("已装配主链入口只转换准入候选，不把拒绝材料或内部来源 ID 送给供应商", async () => {
@@ -78,8 +75,7 @@ test("T02：普通回答提示词收敛为连续行文，不再鼓励 ## 分节�
   assert.match(prompt, /连续的行文/);
   assert.match(prompt, /不要用 Markdown 标题把内容拆成小节/);
   assert.match(prompt, /碎片化的小标题/);
-  // 弱标记契约不受提示词收敛影响（四类对象与身份规则原样保留）。
-  assertUnifiedMentionContract(prompt);
+  assertCleanBodyContract(prompt);
 });
 
 test("T02：长文扩写提示词保留首行 ## 节标题硬约束（#92）", async () => {
@@ -92,20 +88,12 @@ test("T02：长文扩写提示词保留首行 ## 节标题硬约束（#92）", a
   assert.match(prompt, /## 引言/);
 });
 
-test("research body prompt uses the four explainable-object types and stops mention markup at depth four", async () => {
+test("research body prompt always produces clean text; depth no longer changes an inline marker protocol", async () => {
   const shallow = makeProvider(() => "正文");
   const shallowGateway = new ModelGateway(shallow.provider);
   await shallowGateway.writeResearchBody([{ role: "user", content: "解释" }]);
   const shallowPrompt = shallow.requests[0]?.prompt ?? "";
-  assert.match(shallowPrompt, /\[\[concept:concept-1:短语\]\]/);
-  assert.match(shallowPrompt, /\[\[entity:entity-1:短语\]\]/);
-  assert.match(shallowPrompt, /\[\[abbreviation:abbr-1:短语\]\]/);
-  assert.match(shallowPrompt, /\[\[notation:notation-1:短语\]\]/);
-  assert.match(shallowPrompt, /同一对象的重复提及必须复用同一个对象身份/);
-  assert.match(shallowPrompt, /同名异义对象必须使用不同对象身份/);
-  // 浅层（full 密度）：每段首次出现的重要概念应标尽标，完整标题不得拆成碎片。
-  assert.match(shallowPrompt, /每个段落中首次出现的重要概念都要标记/);
-  assert.match(shallowPrompt, /完整标题作为一个整体标记，不得拆成碎片/);
+  assertCleanBodyContract(shallowPrompt);
 
   for (const currentNodeDepth of [2, 3]) {
     const reduced = makeProvider(() => "短正文");
@@ -118,7 +106,7 @@ test("research body prompt uses the four explainable-object types and stops ment
         cycleDetected: false,
       },
     });
-    assert.match(reduced.requests[0]?.prompt ?? "", /最多标记 4 个/);
+    assertCleanBodyContract(reduced.requests[0]?.prompt ?? "");
   }
 
   const deep = makeProvider(() => "正文");
@@ -131,7 +119,7 @@ test("research body prompt uses the four explainable-object types and stops ment
       cycleDetected: false,
     },
   });
-  assert.match(deep.requests[0]?.prompt ?? "", /不要输出任何 \[\[/);
+  assertCleanBodyContract(deep.requests[0]?.prompt ?? "");
 });
 
 test("answerResearchConversation 可按需关闭弱标记指令（术语预览路径）", async () => {
@@ -166,10 +154,10 @@ test("answerResearchConversation 可按需关闭弱标记指令（术语预览�
   assert.match(onPrompt, /不要再为它们输出弱标记/);
 });
 
-test("普通回答、深研与长文分节共用回答内弱标记契约", async () => {
+test("正式普通回答、深研与长文分节都只生成干净正文", async () => {
   const regular = makeProvider(() => "普通回答");
-  await new ModelGateway(regular.provider).answerResearchConversation([{ role: "user", content: "解释" }]);
-  assertUnifiedMentionContract(regular.requests[0]?.prompt ?? "");
+  await new ModelGateway(regular.provider).writeResearchBody([{ role: "user", content: "解释" }]);
+  assertCleanBodyContract(regular.requests[0]?.prompt ?? "");
 
   const deepResearch = makeProvider(() => "深入研究回答");
   await new ModelGateway(deepResearch.provider).generateDeepResearchRound({
@@ -177,7 +165,7 @@ test("普通回答、深研与长文分节共用回答内弱标记契约", async
     selectionText: "选区",
     direction: "继续研究",
   });
-  assertUnifiedMentionContract(deepResearch.requests[0]?.prompt ?? "");
+  assertCleanBodyContract(deepResearch.requests[0]?.prompt ?? "");
 
   const section = makeProvider(() => "分节正文");
   await new ModelGateway(section.provider).expandBodySection({
@@ -186,11 +174,11 @@ test("普通回答、深研与长文分节共用回答内弱标记契约", async
     sectionIndex: 0,
     writtenSoFar: "",
   });
-  assertUnifiedMentionContract(section.requests[0]?.prompt ?? "");
+  assertCleanBodyContract(section.requests[0]?.prompt ?? "");
 
 });
 
-test("原生联网请求由网关注入统一弱标记契约和深度规则", async () => {
+test("原生联网请求只允许干净正文，弱标记由独立旁路产生", async () => {
   let prompt = "";
   const provider: GroundingModelProvider = {
     name: "grounded-fake",
@@ -208,8 +196,25 @@ test("原生联网请求由网关注入统一弱标记契约和深度规则", as
     promptVersion: "grounding-v1",
   }, { nodeDepth: 3 });
 
-  assertUnifiedMentionContract(prompt);
-  assert.match(prompt, /最多标记 4 个/);
+  assertCleanBodyContract(prompt);
+});
+
+test("independent term-marker extraction requests typed ranges without keyword fallback", async () => {
+  const { provider, requests } = makeProvider(() => '{"mentions":[]}');
+  const gateway = new ModelGateway(provider);
+  assert.equal(await gateway.extractTermMarkers({
+    phase: "full",
+    blocks: [{ ordinal: 0, text: "REST API 是正文。" }],
+    coveredTerms: ["REST"],
+    nodeDepth: 2,
+  }), '{"mentions":[]}');
+  const prompt = requests[0]?.prompt ?? "";
+  assert.match(prompt, /startOffset\/endOffset/);
+  assert.match(prompt, /concept、entity、abbreviation、notation/);
+  assert.match(prompt, /coveredTerms 中的祖先对象/);
+  assert.match(prompt, /不要用关键词扫描补齐/);
+  assert.deepEqual(requests[0]?.responseFormat, { type: "json_object" });
+  assert.equal(requests[0]?.temperature, 0);
 });
 
 test("generateBodyOutline 用 JSON 输出有序有界大纲", async () => {

@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { CaptureService, ResearchSessionService, RunRecordsService, SqliteStore, citedGroundingSources, formatFinalWriterEvidence, type ResearchGenerationProvider } from "@collector/api";
+import { CaptureService, ResearchSessionService, RunRecordsService, SqliteStore, citedGroundingSources, formatFinalWriterEvidence, type ResearchGenerationProvider, type ResearchTermMarkerExtractionProvider } from "@collector/api";
 import { FakeProvider, ModelGateway } from "@collector/model-gateway";
 
 async function createStore() {
@@ -121,7 +121,7 @@ test("grounded research persists all sources but views only expose cited origina
     provider: "grounding-fake", model: "grounding-model", promptVersion: "grounding-test-v1",
     async *generate() { yield "ordinary fallback"; },
     async prepareGrounded() {
-      const content = "[[concept:web-grounding:联网回答]]内容与补充证据。";
+      const content = "联网回答内容与补充证据。";
       const firstCitation = content.indexOf("内容");
       const secondCitation = content.indexOf("证据");
       return {
@@ -151,10 +151,40 @@ test("grounded research persists all sources but views only expose cited origina
       };
     },
   };
-  const service = new ResearchSessionService(harness.store, { provider, autoRunTasks: false });
+  const termMarkerExtractionProvider: ResearchTermMarkerExtractionProvider = {
+    provider: "term-marker-fake",
+    model: "term-marker-1",
+    async extractTermMarkers(input) {
+      const block = input.blocks.find((candidate) => candidate.text.includes("联网回答"));
+      if (!block) return '{"mentions":[]}';
+      const startOffset = block.text.indexOf("联网回答");
+      return JSON.stringify({ mentions: [{
+        blockOrdinal: block.ordinal,
+        startOffset,
+        endOffset: startOffset + "联网回答".length,
+        text: "联网回答",
+        entityId: "web-grounding",
+        category: "concept",
+      }] });
+    },
+  };
+  const capture = new CaptureService(harness.store, join(harness.root, "artifacts"), undefined, {
+    autoRunResearchTasks: false,
+    autoRunRecentOrganization: false,
+    researchProvider: provider,
+    termMarkerExtractionProvider,
+  });
+  const service = capture.research;
   const session = await service.createSession("测试", "session-key");
   const turn = await service.submitMessage(session.id, "解释联网研究", "turn-key", { allowWebSearch: true });
   await service.processTask(turn.task.id);
+  let termMarkerTask = harness.store.getResearchTermMarkerTaskByMessage(turn.task.outputMessageId);
+  for (let attempt = 0; attempt < 100 && !termMarkerTask; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+    termMarkerTask = harness.store.getResearchTermMarkerTaskByMessage(turn.task.outputMessageId);
+  }
+  assert.ok(termMarkerTask);
+  await capture.termMarkers.processTask(termMarkerTask.id);
   const task = service.getTask(turn.task.id);
   assert.deepEqual(task.groundingScope && { status: task.groundingScope.status, sourceCount: task.groundingScope.sourceCount, citationCount: task.groundingScope.citationCount }, { status: "grounded", sourceCount: 5, citationCount: 2 });
   const run = harness.store.listResearchGroundingRuns(turn.task.id)[0];
@@ -195,11 +225,11 @@ test("grounded research persists all sources but views only expose cited origina
   ]);
 });
 
-test("联网引用端点落在隐藏控制字段内时不伪造精确位置", async (t) => {
+test("联网引用端点越过干净正文范围时不伪造精确位置", async (t) => {
   const harness = await createStore();
   t.after(() => harness.close());
-  const content = "结论来自 [[concept:hidden-id:本地优先]]。";
-  const hiddenStart = content.indexOf("hidden-id");
+  const content = "结论来自本地优先。";
+  const invalidStart = content.length + 5;
   const provider: ResearchGenerationProvider = {
     provider: "grounding-fake", model: "grounding-model",
     async *generate() { yield "ordinary fallback"; },
@@ -207,7 +237,7 @@ test("联网引用端点落在隐藏控制字段内时不伪造精确位置", as
       return {
         kind: "confirmed_final" as const, content, status: "grounded", queries: [],
         sources: [{ title: "Source", url: "https://example.com/source" }],
-        citations: [{ sourceOrdinal: 1, startOffset: hiddenStart, endOffset: hiddenStart + 4 }],
+        citations: [{ sourceOrdinal: 1, startOffset: invalidStart, endOffset: invalidStart + 4 }],
       };
     },
   };
@@ -217,21 +247,21 @@ test("联网引用端点落在隐藏控制字段内时不伪造精确位置", as
   await service.processTask(turn.task.id);
 
   const output = harness.store.getResearchMessage(turn.task.outputMessageId);
-  assert.equal(output?.content, "结论来自 本地优先。");
+  assert.equal(output?.content, content);
   assert.equal(harness.store.listResearchCitationsForMessages([turn.task.outputMessageId]).length, 0);
   assert.equal(service.getTask(turn.task.id).groundingScope?.citationCount, 0);
   assert.equal(harness.store.listResearchGroundingSources(service.getTask(turn.task.id).groundingScope!.runId!).length, 1);
   assert.equal(service.getSession(session.id).groundingSources, undefined);
 });
 
-test("供应商原生定位经正文清洗后映射为精确旁路范围", async (t) => {
+test("供应商原生定位直接绑定干净正文中的精确旁路范围", async (t) => {
   const harness = await createStore();
   t.after(() => harness.close());
   const provider: ResearchGenerationProvider = {
     provider: "agent-fake", model: "agent-model",
     async *generate() { yield "ordinary fallback"; },
     async prepareGrounded() {
-      const content = "[[concept:local-first:本地优先]]强调数据留在设备上。";
+      const content = "本地优先强调数据留在设备上。";
       const startOffset = content.indexOf("数据");
       return {
         kind: "confirmed_final" as const, content,

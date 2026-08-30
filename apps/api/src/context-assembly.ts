@@ -59,6 +59,7 @@ export const DEFAULT_CONTEXT_PURPOSE_POLICIES: readonly ContextPurposePolicy[] =
   policy("research_body_outline", "research", RULES_AND_EVIDENCE, EXTRACTION_BUDGET),
   policy("research_body_section", "research", ALL_CHANNELS, RESEARCH_BUDGET),
   policy("research_slice_annotation", "extraction", RULES_AND_EVIDENCE, SMALL_EXTRACTION_BUDGET),
+  policy("term_marker_extraction", "extraction", RULES_AND_EVIDENCE, EXTRACTION_BUDGET),
   policy("term_preview", "chat", RULES_AND_EVIDENCE, ANSWER_BUDGET),
   policy("term_entity_verification", "extraction", RULES_AND_EVIDENCE, SMALL_EXTRACTION_BUDGET),
   policy("session_titling", "extraction", RULES_AND_EVIDENCE, SMALL_EXTRACTION_BUDGET),

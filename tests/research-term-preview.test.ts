@@ -13,11 +13,13 @@ import {
   createApiServer,
   detectTermMarkers,
   type ResearchGenerationProvider,
+  type ResearchTermMarkerExtractionProvider,
 } from "@collector/api";
 import { listenOnFetchSafePort } from "./test-http-server.js";
 
 interface HarnessOptions {
   provider?: ResearchGenerationProvider;
+  termMarkerExtractionProvider?: ResearchTermMarkerExtractionProvider;
   autoRunResearchTasks?: boolean;
 }
 
@@ -33,6 +35,7 @@ async function createHarness(options: HarnessOptions = {}) {
     autoRunResearchTasks: options.autoRunResearchTasks ?? true,
     autoRunResearchImports: false,
     researchProvider: options.provider,
+    termMarkerExtractionProvider: options.termMarkerExtractionProvider,
   });
   const server = createApiServer(service, auth);
   await listenOnFetchSafePort(server);
@@ -95,6 +98,46 @@ function providerWithAnswer(answer: string, requests: ResearchGenerationRequest[
   };
 }
 
+function extractionProvider(entries: Array<{ text: string; entityId: string; occurrence?: number }>): ResearchTermMarkerExtractionProvider {
+  return {
+    provider: "term-marker-extraction-fake",
+    model: "term-marker-extraction-1",
+    async extractTermMarkers(input) {
+      const mentions = entries.flatMap((entry) => {
+        const occurrence = entry.occurrence ?? 0;
+        for (const block of input.blocks) {
+          let startOffset = -1;
+          let from = 0;
+          for (let index = 0; index <= occurrence; index += 1) {
+            startOffset = block.text.indexOf(entry.text, from);
+            if (startOffset < 0) break;
+            from = startOffset + entry.text.length;
+          }
+          if (startOffset >= 0) return [{
+            blockOrdinal: block.ordinal,
+            startOffset,
+            endOffset: startOffset + entry.text.length,
+            text: entry.text,
+            category: "abbreviation",
+            entityId: entry.entityId,
+          }];
+        }
+        return [];
+      });
+      return JSON.stringify({ mentions });
+    },
+  };
+}
+
+async function waitForTermMarkerTask(store: SqliteStore, messageId: string) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const task = store.getResearchTermMarkerTaskByMessage(messageId);
+    if (task?.status === "completed") return task;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Term marker extraction did not complete");
+}
+
 async function createCompletedAssistant(harness: Awaited<ReturnType<typeof createHarness>>, content: string) {
   const session = await harness.service.research.createSession("Term preview session", randomUUID());
   const node = harness.store.getResearchNode(session.id);
@@ -148,7 +191,7 @@ async function appendCompletedAssistant(
 test("term preview is persisted, streamed once, and grows a child from the exact preview", async (t) => {
   const requests: ResearchGenerationRequest[] = [];
   const answer = "REST API explains how HTTP clients communicate with a service.";
-  const mainAnswer = "[[abbreviation:rest:REST]] API explains how HTTP clients communicate with a service.";
+  const mainAnswer = "REST API explains how HTTP clients communicate with a service.";
   const provider: ResearchGenerationProvider = {
     provider: "term-preview-provider",
     model: "term-preview-model",
@@ -160,7 +203,9 @@ test("term preview is persisted, streamed once, and grows a child from the exact
       yield output.slice(Math.ceil(output.length / 2));
     },
   };
-  const harness = await createHarness({ provider });
+  const harness = await createHarness({ provider, termMarkerExtractionProvider: extractionProvider([
+    { text: "REST", entityId: "rest" },
+  ]) });
   t.after(() => harness.close());
 
   const sessionResponse = await postJson(harness.base, harness.token, "/v1/research-sessions", {}, randomUUID());
@@ -174,13 +219,9 @@ test("term preview is persisted, streamed once, and grows a child from the exact
     randomUUID(),
   );
   assert.equal(turnResponse.status, 202);
-  const turn = await turnResponse.json() as { task: { id: string } };
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    const response = await fetch(`${harness.base}/v1/research-tasks/${turn.task.id}`, { headers: headers(harness.token) });
-    const task = await response.json() as { status: string };
-    if (task.status === "completed") break;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+  const turn = await turnResponse.json() as { task: { id: string }; outputMessage: { id: string } };
+  await waitForTask(harness.base, harness.token, turn.task.id, "completed");
+  await waitForTermMarkerTask(harness.store, turn.outputMessage.id);
 
   const viewResponse = await fetch(`${harness.base}/v1/research-nodes/${session.id}`, { headers: headers(harness.token) });
   assert.equal(viewResponse.status, 200);
@@ -464,14 +505,17 @@ test("same text with different answer-local identities in one answer gets separa
     async *generate(request) {
       yield request.messages[0]?.content.includes("请解释当前回答中的")
         ? "preview"
-        : "[[abbreviation:rest-style:REST]] as an architectural style, while [[abbreviation:rest-break:REST]] means taking a break.";
+        : "REST as an architectural style, while REST means taking a break.";
     },
     async verifyTermIdentity() {
       identityChecks += 1;
       return true;
     },
   };
-  const harness = await createHarness({ provider });
+  const harness = await createHarness({ provider, termMarkerExtractionProvider: extractionProvider([
+    { text: "REST", entityId: "rest-style", occurrence: 0 },
+    { text: "REST", entityId: "rest-break", occurrence: 1 },
+  ]) });
   t.after(() => harness.close());
 
   const sessionResponse = await postJson(harness.base, harness.token, "/v1/research-sessions", {}, randomUUID());
@@ -485,8 +529,9 @@ test("same text with different answer-local identities in one answer gets separa
     randomUUID(),
   );
   assert.equal(turnResponse.status, 202);
-  const turn = await turnResponse.json() as { task: { id: string } };
+  const turn = await turnResponse.json() as { task: { id: string }; outputMessage: { id: string } };
   await waitForTask(harness.base, harness.token, turn.task.id, "completed");
+  await waitForTermMarkerTask(harness.store, turn.outputMessage.id);
 
   const viewResponse = await fetch(`${harness.base}/v1/research-nodes/${session.id}`, { headers: headers(harness.token) });
   assert.equal(viewResponse.status, 200);
@@ -574,7 +619,7 @@ test("same-node reuse is skipped entirely when no model is available for verific
 
 test("body, markers, and completed preview survive a process restart", async (t) => {
   const previewAnswer = "REST API explains how HTTP clients communicate with a service.";
-  const mainAnswer = "[[abbreviation:rest:REST]] API explains how [[abbreviation:http:HTTP]] clients communicate with a service.";
+  const mainAnswer = "REST API explains how HTTP clients communicate with a service.";
   const provider: ResearchGenerationProvider = {
     provider: "restart-consistency-provider",
     model: "restart-consistency-model",
@@ -582,7 +627,10 @@ test("body, markers, and completed preview survive a process restart", async (t)
       yield request.messages[0]?.content.includes("请解释当前回答中的") ? previewAnswer : mainAnswer;
     },
   };
-  const harness = await createHarness({ provider });
+  const harness = await createHarness({ provider, termMarkerExtractionProvider: extractionProvider([
+    { text: "REST", entityId: "rest" },
+    { text: "HTTP", entityId: "http" },
+  ]) });
   t.after(() => harness.close());
 
   const sessionResponse = await postJson(harness.base, harness.token, "/v1/research-sessions", {}, randomUUID());
@@ -596,8 +644,9 @@ test("body, markers, and completed preview survive a process restart", async (t)
     randomUUID(),
   );
   assert.equal(turnResponse.status, 202);
-  const turn = await turnResponse.json() as { task: { id: string } };
+  const turn = await turnResponse.json() as { task: { id: string }; outputMessage: { id: string } };
   await waitForTask(harness.base, harness.token, turn.task.id, "completed");
+  await waitForTermMarkerTask(harness.store, turn.outputMessage.id);
 
   const viewResponse = await fetch(`${harness.base}/v1/research-nodes/${session.id}`, { headers: headers(harness.token) });
   assert.equal(viewResponse.status, 200);

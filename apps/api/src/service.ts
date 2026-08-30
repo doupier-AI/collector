@@ -9,6 +9,7 @@ import {
   IMPORT_CHAPTER_PARSE_PROMPT_VERSION,
   IMPORT_CHAPTER_PARSE_TOKEN_BUDGET,
   MODEL_PURPOSES,
+  TERM_MARKER_EXTRACTION_PROMPT_VERSION,
   TERM_IDENTITY_VERIFY_PROMPT_VERSION,
   type AiConfigurationView,
   type ActiveModelRoute,
@@ -72,6 +73,10 @@ import {
   ResearchChapterParseService,
   type ResearchChapterParseProvider,
 } from "./research-chapters.js";
+import {
+  ResearchTermMarkerExtractionService,
+  type ResearchTermMarkerExtractionProvider,
+} from "./term-marker-extraction.js";
 import { ResearchSelectionService } from "./selection.js";
 import {
   DeepResearchService,
@@ -204,6 +209,7 @@ export class CaptureService {
   readonly deepResearch: DeepResearchService;
   readonly nodeGrowth: NodeGrowthService;
   readonly researchLater: ResearchLaterService;
+  readonly termMarkers: ResearchTermMarkerExtractionService;
   readonly termDetection: TermDetectionService;
   readonly fusionProposals: ResearchFusionProposalService;
   readonly termPreviews: ResearchTermPreviewService;
@@ -227,7 +233,7 @@ export class CaptureService {
     private readonly store: CollectorStore,
     private readonly artifactRoot: string,
     private modelGateway?: ModelGateway,
-    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; similarityVerifier?: SimilarityVerificationGateway; temporaryFusionDraftEvidenceVerifier?: TemporaryFusionDraftEvidenceGateway; associationHintEvaluator?: AssociationHintEvaluationGateway; chapterParseProvider?: ResearchChapterParseProvider; temporaryFusionConversationProvider?: () => Promise<TemporaryFusionConversationProvider | undefined>; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunResearchChapters?: boolean; autoRunTemporaryFusionTasks?: boolean; mvpDemoMode?: boolean; researchRetrySleep?: (ms: number) => Promise<void> } = {},
+    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; termMarkerExtractionProvider?: ResearchTermMarkerExtractionProvider; similarityVerifier?: SimilarityVerificationGateway; temporaryFusionDraftEvidenceVerifier?: TemporaryFusionDraftEvidenceGateway; associationHintEvaluator?: AssociationHintEvaluationGateway; chapterParseProvider?: ResearchChapterParseProvider; temporaryFusionConversationProvider?: () => Promise<TemporaryFusionConversationProvider | undefined>; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunResearchChapters?: boolean; autoRunTemporaryFusionTasks?: boolean; mvpDemoMode?: boolean; researchRetrySleep?: (ms: number) => Promise<void> } = {},
   ) {
     this.runRecords = new RunRecordsService(this.store);
     this.attachModelGateway(this.modelGateway);
@@ -235,6 +241,11 @@ export class CaptureService {
     this.projects = new ResearchProjectService(this.store);
     this.nodeNaming = new NodeNamingService(this.store, async () => this.gatewayForPurpose("research"), this.parentChainContext);
     this.sessionTitling = new SessionTitlingService(this.store, async () => this.gatewayForPurpose("research"));
+    this.termMarkers = new ResearchTermMarkerExtractionService(this.store, {
+      provider: this.options.termMarkerExtractionProvider ?? this.termMarkerExtractionProviderFor(this.modelGateway),
+      autoRunTasks: this.options.autoRunResearchTasks,
+      parentContext: (nodeId) => this.parentChainContext.buildParentChainContext(nodeId),
+    });
     this.research = new ResearchSessionService(this.store, {
       provider: this.options.researchProvider ?? this.researchProviderFor(this.modelGateway),
       autoRunTasks: this.options.autoRunResearchTasks,
@@ -247,7 +258,11 @@ export class CaptureService {
           void this.sessionTitling.refineSessionTitle(task.sessionId);
         }
       },
+      onBodyUpdated: (task) => {
+        void this.termMarkers.enqueueForResearchTask(task, false);
+      },
       onTaskCompleted: (task) => {
+        void this.termMarkers.enqueueForResearchTask(task, true);
         void this.nodeNaming.nameNode(task.nodeId ?? task.sessionId);
         // #69：回答完成且内容稳定后异步评估跨会话临时关联提示；扫描失败在内部安静降级。
         void this.associationHints.scheduleScanForCompletedTask(task);
@@ -327,6 +342,7 @@ export class CaptureService {
     this.attachModelGateway(gateway);
     if (!this.options.researchProvider) this.research.setProvider(this.researchProviderFor(gateway));
     if (!this.options.chapterParseProvider) this.researchChapters.setProvider(this.chapterParseProviderFor(gateway));
+    if (!this.options.termMarkerExtractionProvider) this.termMarkers.setProvider(this.termMarkerExtractionProviderFor(gateway));
     if (this.options.autoRunResearchTasks !== false) void this.termPreviews.resumeTasks().catch(() => undefined);
   }
 
@@ -714,7 +730,7 @@ export class CaptureService {
         }
         const answer = await purposeGateway.answerResearchConversationFromContext(request.contextAssembly, {
           nodeDepth: request.parentChainContext?.currentNodeDepth ?? 0,
-          ...(request.mentionMarkup !== undefined ? { mentionMarkup: request.mentionMarkup } : {}),
+          mentionMarkup: false,
           context: { workflowRunId: request.taskId, purpose: "research_chat", promptVersion: "research-chat-v1" },
         });
         for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);
@@ -787,6 +803,41 @@ export class CaptureService {
         });
         return purposeGateway.verifyTermIdentityFromContext(assembly, {
           context: { workflowRunId: "", purpose: "term_entity_verification", promptVersion: TERM_IDENTITY_VERIFY_PROMPT_VERSION },
+        });
+      },
+    };
+  }
+
+  private termMarkerExtractionProviderFor(gateway: ModelGateway | undefined): ResearchTermMarkerExtractionProvider | undefined {
+    if (!gateway) return undefined;
+    const service = this;
+    return {
+      provider: gateway.providerName,
+      model: gateway.modelName,
+      async extractTermMarkers(input) {
+        const purposeGateway = await service.gatewayForPurpose("extraction");
+        if (!purposeGateway) throw new Error("AI model is not configured");
+        const assembly = assemblePurposeContext({
+          purpose: "term_marker_extraction",
+          workflowRunId: input.taskId,
+          materials: [{
+            id: `term-marker:${input.taskId}:${input.phase}`,
+            content: JSON.stringify({
+              phase: input.phase,
+              blocks: input.blocks,
+              coveredTerms: input.coveredTerms,
+              nodeDepth: input.nodeDepth,
+            }),
+            sourceKind: "research_content",
+            evidenceKind: "current_question",
+          }],
+        });
+        return purposeGateway.extractTermMarkersFromContext(assembly, {
+          context: {
+            workflowRunId: input.taskId,
+            purpose: "term_marker_extraction",
+            promptVersion: TERM_MARKER_EXTRACTION_PROMPT_VERSION,
+          },
         });
       },
     };

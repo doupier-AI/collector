@@ -788,6 +788,10 @@ export class ModelGateway {
     return this.deriveSliceAnnotations(this.contextPayload(assembly), this.contextOptions(assembly, options));
   }
 
+  async extractTermMarkersFromContext(assembly: AssembledModelContext, options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): Promise<string> {
+    return this.extractTermMarkers(this.contextPayload(assembly), this.contextOptions(assembly, options));
+  }
+
   async verifyTermIdentityFromContext(assembly: AssembledModelContext, options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): Promise<boolean> {
     return this.verifyTermIdentity(this.contextPayload(assembly), this.contextOptions(assembly, options));
   }
@@ -855,7 +859,7 @@ export class ModelGateway {
    * API business orchestration must use the corresponding *FromContext entry; a source-boundary
    * test rejects direct legacy calls from the orchestration layer.
    */
-  /** 供应商原生联网：统一注入正文弱标记契约，原始引用范围交由服务层在清洗后校正。 */
+  /** 供应商原生联网：只生成干净正文；引用与弱标记都通过独立旁路产生。 */
   async generateGroundedResearch(
     prompt: string,
     grounding: ResearchGroundingRequest,
@@ -866,7 +870,7 @@ export class ModelGateway {
       throw new Error("Configured provider does not support native web grounding");
     }
     const request: ModelProviderRequest = {
-      prompt: `${prompt}\n\n${formatMentionMarkupInstructions({ scenario: "grounded", nodeDepth: options.nodeDepth ?? 0 })}`,
+      prompt: `${prompt}\n\n只输出干净正文，不要输出 [[concept:...]] 等内部控制格式；引用与弱标记由独立旁路产生。`,
       model: options.model ?? this.modelName,
       maxTokens: options.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS,
       timeoutMs: options.timeoutMs ?? 120_000,
@@ -951,10 +955,6 @@ export class ModelGateway {
   ): string {
     const parentContext = formatResearchParentChainContext(parentChainContext);
     const sliceContextText = formatResearchSliceContext(sliceContext);
-    const mentionInstructions = formatMentionMarkupInstructions({
-      scenario: "conversation",
-      nodeDepth: parentChainContext?.currentNodeDepth ?? 0,
-    });
     return `你是 Collector 的研究助手。请回答用户最新的问题，输出一篇连贯、完整的中文正文。
 
 要求：
@@ -963,8 +963,7 @@ export class ModelGateway {
 - 内容详实、论述充分，长度服从内容需要，不要刻意压缩或拆成孤立的碎片要点。
 - 保持来源事实与不确定性，不编造来源、链接或引用。
 - 不要使用 Markdown 代码围栏包裹整篇回答，不要返回 JSON 或任何字段结构，只输出正文本身。
-
-${mentionInstructions}
+- 只输出干净正文，不要输出 [[concept:...]]、[[entity:...]]、[[abbreviation:...]] 或 [[notation:...]] 等内部控制格式；弱标记由独立抽取任务产生。
 
 对话：
 ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContextText ? `\n\n${sliceContextText}` : ""}`;
@@ -1142,10 +1141,6 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
     const continuation = input.continuation;
     // 断点前文只取尾部一段作衔接上下文，避免整节重复进入提示。
     const continuationTail = continuation ? continuation.priorSectionContent.slice(-500) : "";
-    const mentionInstructions = formatMentionMarkupInstructions({
-      scenario: "long_form_section",
-      nodeDepth: options.nodeDepth ?? 0,
-    });
     const prompt = `你是 Collector 的研究助手。你正在按大纲逐节撰写一篇连贯的中文长文，现在请只扩写其中一节。
 
 写作目标：${input.goal}
@@ -1160,8 +1155,7 @@ ${continuation ? "- 直接从断点继续写正文，不要重复上面的内容
 - 与前文自然衔接、保持同一主题与语气；内容详实，服从该节目标字数。
 - 保持来源事实与不确定性，不编造来源、链接或引用。
 - 不要使用 Markdown 代码围栏，不要返回 JSON 或大纲字段，只输出该节标题与正文。
-
-${mentionInstructions}`;
+- 只输出干净正文，不要输出 [[concept:...]] 等内部控制格式；弱标记由独立抽取任务产生。`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
@@ -1206,6 +1200,42 @@ ${JSON.stringify(input.content)}`;
       timeoutMs: options.timeoutMs ?? 30_000,
     }, options.context ?? { purpose: "research_slice_annotation" });
     return parseSliceAnnotation(response.content);
+  }
+
+  /** 独立弱标记抽取：只返回候选范围 JSON；正文与最终范围资格由 API 服务验证。 */
+  async extractTermMarkers(
+    input: {
+      phase: "paragraph" | "full";
+      blocks: Array<{ ordinal: number; text: string }>;
+      coveredTerms: string[];
+      nodeDepth: number;
+    },
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<string> {
+    const prompt = `你是 Collector 的弱标记抽取助手。请只从给定正文块中选择理解当前论述确实需要解释的重要对象。
+
+只返回合法 JSON，不要使用 Markdown 代码围栏：
+{"mentions":[{"blockOrdinal":0,"startOffset":0,"endOffset":4,"text":"原文切片","category":"concept","entityId":"answer-local-id"}]}
+
+规则：
+- category 只能是 concept、entity、abbreviation、notation。
+- startOffset/endOffset 是相对对应 block.text 的 UTF-16 下标；text 必须与该切片逐字一致。
+- entityId 只在当前回答内有效，使用 1–64 位英文字母、数字、连字符或下划线；同一对象复用身份，同名异义使用不同身份。
+- 不标记 Markdown 标题、普通名词、日期、网址、引用编号、完整句子或已经充分解释的对象。
+- coveredTerms 中的祖先对象已经展开，不得再次标记。
+- 不要用关键词扫描补齐；不确定时省略。phase=paragraph 时只判断给定已闭合段落，phase=full 时复核整篇并返回最终集合。
+
+输入：${JSON.stringify(input)}`;
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      responseFormat: { type: "json_object" },
+      temperature: 0,
+      thinking: false,
+      maxTokens: options.maxTokens ?? 2_048,
+      timeoutMs: options.timeoutMs ?? 30_000,
+    }, options.context ?? { purpose: "term_marker_extraction" });
+    return response.content;
   }
 
   /**
@@ -1599,10 +1629,6 @@ ${sourceLines}
     if (!input.direction.trim()) throw new Error("Deep research requires a research direction");
     const parentContext = formatResearchParentChainContext(input.parentChainContext);
     const sliceContext = formatResearchSliceContext(input.sliceContext);
-    const mentionInstructions = formatMentionMarkupInstructions({
-      scenario: "deep_research",
-      nodeDepth: input.parentChainContext?.currentNodeDepth ?? 0,
-    });
     // 自由正文：旧式流式深入研究复用此能力，输出连续文本而非 {"answer":...} JSON 包装。
     const prompt = `你是 Collector 的深入研究助手。用户从一段选区发起了深入研究第一轮。只使用下面提供的当前已有材料生成研究内容，不要联网检索，不要编造来源、链接或引用。只输出一段连贯的中文纯文本，不要返回 JSON、字段包装或 Markdown 代码围栏。
 
@@ -1621,9 +1647,8 @@ ${parentContext ? `\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext
 - 围绕用户方向，基于选区与上下文展开解释、拆解或延伸；
 - 只依据提供的材料，不编造外部事实、链接或来源；
 - 材料不足以支撑时在回答中如实说明不确定性；
-- 使用中文。
-
-${mentionInstructions}`;
+- 使用中文；
+- 只输出干净正文，不要输出 [[concept:...]] 等内部控制格式；弱标记由独立抽取任务产生。`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,

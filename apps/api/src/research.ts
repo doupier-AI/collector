@@ -7,7 +7,6 @@ import {
   deriveFragmentsFromSlices,
   deriveMessageBlocks,
   deriveMessageSlices,
-  MentionMarkupStream,
   researchBodyVersionId,
   redactGroundingValue,
   sanitizeGroundingQueries,
@@ -312,6 +311,8 @@ export interface ResearchServiceOptions {
   parentChainContext?: ParentChainContextService;
   /** 任务入队（提交成功、持久化完成）后的非阻塞附加动作（例如会话自动标题，与生成并行）。 */
   onTaskQueued?: (task: ResearchTaskRecord) => void | Promise<void>;
+  /** 正文增量已经安全落库后的非阻塞旁路通知。 */
+  onBodyUpdated?: (task: ResearchTaskRecord) => void;
   /** 生成成功后的非阻塞附加动作（例如 H6 节点命名）。 */
   onTaskCompleted?: (task: ResearchTaskRecord) => void | Promise<void>;
   /** 退避重试的等待实现；测试注入以确定性记录退避序列，默认真实 sleep。 */
@@ -332,9 +333,7 @@ export class ResearchSessionService {
   private readonly retrySleep: (ms: number) => Promise<void>;
   /** 任务事件推送（#38）：每次落库插入研究事件后发裸"唤醒"信号；SSE 循环仍按 sequence>cursor 重读，DB 是恰好一次来源。 */
   private readonly taskEvents = new EventEmitter();
-  /** 每个运行中任务唯一的流内提及解析器；任务结束即释放。 */
-  private readonly mentionStreams = new Map<string, MentionMarkupStream>();
-  /** 所有可展示正文在进入弱标记清洗和持久化前必须经过同一个准入边界。 */
+  /** 所有可展示正文在持久化前必须经过同一个准入边界。 */
   private readonly finalBodySinks = new Map<string, FinalBodySink>();
   /** ADR-0035 暂停/停止：每个运行中任务的中止控制器；pause/stop 触发 abort 中止物理 provider 流。 */
   private readonly abortControllers = new Map<string, AbortController>();
@@ -746,12 +745,6 @@ export class ResearchSessionService {
         ...(generation.sliceContext ? { sliceContext: generation.sliceContext } : {}),
         contextCandidates: generation.contextCandidates,
       };
-      this.mentionStreams.set(task.id, new MentionMarkupStream({
-        messageId: task.outputMessageId,
-        nodeDepth: generation.parentChainContext?.currentNodeDepth ?? 0,
-        seedContent: outputMessage.content,
-        seedMarkers: outputMessage.termMarkers,
-      }));
       this.finalBodySinks.set(task.id, new FinalBodySink(task.streamCheckpoint?.protocolPrefix));
       let generatedCharacters = 0;
       try {
@@ -872,7 +865,6 @@ export class ResearchSessionService {
     } finally {
       this.abortControllers.delete(id);
       this.reasoningQueues.delete(id);
-      this.mentionStreams.delete(id);
       this.finalBodySinks.delete(id);
       this.running.delete(id);
     }
@@ -923,11 +915,8 @@ export class ResearchSessionService {
     }
   }
 
-  /** 把模型原始增量转换为可立即展示的干净正文，并与独立提及范围原子落入同一消息记录。
-   *  reasoningDelta 与正文增量同事务落库（ADR-0035）：思考累计在消息 reasoning 字段，不经过弱标记清洗。 */
-  private async appendGeneratedDelta(task: ResearchTaskRecord, rawDelta: string, reasoningDelta?: string): Promise<ReturnType<MentionMarkupStream["push"]> & { acceptedRawDelta: string }> {
-    const stream = this.mentionStreams.get(task.id);
-    if (!stream) throw new Error("Mention markup stream is not initialized");
+  /** 把已通过正文协议准入的增量直接落库；弱标记由独立任务稍后抽取。 */
+  private async appendGeneratedDelta(task: ResearchTaskRecord, rawDelta: string, reasoningDelta?: string): Promise<{ content: string; delta: string; acceptedRawDelta: string }> {
     const sink = this.finalBodySinks.get(task.id);
     if (!sink) throw new Error("Final body sink is not initialized");
     let acceptedDelta: string;
@@ -935,38 +924,36 @@ export class ResearchSessionService {
       acceptedDelta = sink.accept(rawDelta);
     } catch (error) {
       if (error instanceof FinalBodyProtocolError && error.acceptedDelta) {
-        const accepted = stream.push(error.acceptedDelta);
-        if (accepted.delta || accepted.markers.length > 0) await this.store.appendResearchTaskDelta(task.id, accepted.delta, accepted.markers);
+        await this.store.appendResearchTaskDelta(task.id, error.acceptedDelta);
+        this.options.onBodyUpdated?.(task);
       }
       throw error;
     }
-    const update = stream.push(acceptedDelta);
-    if (update.delta || update.markers.length > 0 || reasoningDelta) {
-      await this.store.appendResearchTaskDelta(task.id, update.delta, update.markers, reasoningDelta);
+    if (acceptedDelta || reasoningDelta) {
+      await this.store.appendResearchTaskDelta(task.id, acceptedDelta, undefined, reasoningDelta);
+      if (acceptedDelta) this.options.onBodyUpdated?.(task);
     }
+    const content = this.store.getResearchMessageBody(task.outputMessageId)?.content ?? "";
     const checkpointBefore = this.store.getResearchTask(task.id)?.streamCheckpoint;
     const protocolPrefix = sink.protocolPrefix();
     if (protocolPrefix || checkpointBefore?.protocolPrefix) {
-      await this.store.saveResearchTaskStreamCheckpoint(task.id, update.content, protocolPrefix);
+      await this.store.saveResearchTaskStreamCheckpoint(task.id, content, protocolPrefix);
     }
-    return { ...update, acceptedRawDelta: acceptedDelta };
+    return { content, delta: acceptedDelta, acceptedRawDelta: acceptedDelta };
   }
 
-  /** 完成时冲洗未闭合/非法控制串：丢标记但保正文，控制符永不进入消息。 */
-  private async finishGeneratedMarkup(task: ResearchTaskRecord, preserveStreamCheckpoint = false): Promise<ReturnType<MentionMarkupStream["finish"]>> {
-    const stream = this.mentionStreams.get(task.id);
-    if (!stream) throw new Error("Mention markup stream is not initialized");
+  /** 完成时只释放可确认不是协议前缀的正文尾部。 */
+  private async finishGeneratedMarkup(task: ResearchTaskRecord, preserveStreamCheckpoint = false): Promise<{ content: string; delta: string; markers: never[] }> {
     const sink = this.finalBodySinks.get(task.id);
     if (!sink) throw new Error("Final body sink is not initialized");
     const trailing = sink.finish();
     if (trailing) {
-      const accepted = stream.push(trailing);
-      if (accepted.delta || accepted.markers.length > 0) await this.store.appendResearchTaskDelta(task.id, accepted.delta, accepted.markers);
+      await this.store.appendResearchTaskDelta(task.id, trailing);
+      this.options.onBodyUpdated?.(task);
     }
-    const update = stream.finish();
-    if (update.delta) await this.store.appendResearchTaskDelta(task.id, update.delta, update.markers);
+    const content = this.store.getResearchMessageBody(task.outputMessageId)?.content ?? "";
     if (!preserveStreamCheckpoint && this.store.getResearchTask(task.id)?.streamCheckpoint) await this.store.clearResearchTaskStreamCheckpoint(task.id);
-    return update;
+    return { content, delta: trailing, markers: [] };
   }
 
   /**
@@ -1671,16 +1658,12 @@ export class ResearchSessionService {
     return result;
   }
 
-  /**
-   * 联网回答的引用统一从持久化旁路事件收口：供应商原始范围经同一个流内清洗器换算。
-   * 粗粒度候选保留为任务事件与来源记录，不创建伪造正文位置的引用行。
-   */
+  /** 联网回答的引用统一从持久化旁路事件收口；正文已无控制串，范围直接逐字校验。 */
   private groundedCitationsAfterCleaning(
     task: ResearchTaskRecord,
     grounded: ResearchGroundingMetadata,
   ): Array<{ sourceOrdinal: number; startOffset: number; endOffset: number; providerCitationId?: string }> {
-    const stream = this.mentionStreams.get(task.id);
-    if (!stream) throw new Error("Mention markup stream is not initialized");
+    const content = this.store.getResearchMessageBody(task.outputMessageId)?.content ?? "";
     const sourceExistsWithEvidence = (sourceOrdinal: number): boolean => {
       const source = grounded.sources[sourceOrdinal - 1];
       return source !== undefined && source.evidenceStatus !== "none";
@@ -1691,12 +1674,13 @@ export class ResearchSessionService {
     const exactCitations = candidates.flatMap((citation) => {
       if (!sourceExistsWithEvidence(citation.sourceOrdinal)) return [];
       if (citation.startOffset === undefined || citation.endOffset === undefined) return [];
-      const mapped = stream.mapRawRange(citation.startOffset, citation.endOffset);
-      return mapped ? [{
+      if (citation.startOffset < 0 || citation.endOffset <= citation.startOffset || citation.endOffset > content.length) return [];
+      return [{
         sourceOrdinal: citation.sourceOrdinal,
-        ...mapped,
+        startOffset: citation.startOffset,
+        endOffset: citation.endOffset,
         ...(citation.providerCitationId ? { providerCitationId: citation.providerCitationId } : {}),
-      }] : [];
+      }];
     });
     const unique = new Map<string, (typeof exactCitations)[number]>();
     for (const citation of exactCitations) {
