@@ -12,7 +12,7 @@ function nthRange(source, exact, occurrence) {
 const body = [
   "## 跨功能位置回归",
   "",
-  "**重复锚点** 与重复锚点[来源1] 保持一致。",
+  "**重复锚点** 与重复锚点保持一致。",
   "",
   "| 能力 | 目标 |",
   "| --- | --- |",
@@ -43,7 +43,7 @@ export const MARKDOWN_POSITION_FIXTURE = Object.freeze({
     sourceRange: nthRange(body, "重复锚点", 1),
   }),
   citation: Object.freeze({
-    token: "[来源1]",
+    sourceRange: nthRange(body, "重复锚点", 1),
     sourceTitle: "共享位置夹具来源",
     sourceUrl: "https://example.com/markdown-position-fixture",
   }),

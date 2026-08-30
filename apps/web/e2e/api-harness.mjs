@@ -208,7 +208,11 @@ const fakeProvider = {
           snippet: "共享夹具用于验证同一正文位置在跨功能链路中的一致性。",
           evidenceStatus: "full",
         }],
-        citations: [],
+        citations: [{
+          sourceOrdinal: 1,
+          startOffset: MARKDOWN_POSITION_FIXTURE.citation.sourceRange.start,
+          endOffset: MARKDOWN_POSITION_FIXTURE.citation.sourceRange.end,
+        }],
       };
     }
     if (question.includes("验证最终正文污染")) {
@@ -232,7 +236,10 @@ const fakeProvider = {
     }
     return {
       kind: "evidence",
-      evidence: "[来源3] 实际引用来源\n第三条来源支撑可打开的结论。\nhttps://example.com/cited-three\n\n[来源4] 无链接引用来源\n第四条来源提供供应商定位信息。",
+      evidence: JSON.stringify({ sources: [
+        { sourceOrdinal: 3, title: "实际引用来源", evidence: "第三条来源支撑可打开的结论。", url: "https://example.com/cited-three" },
+        { sourceOrdinal: 4, title: "无链接引用来源", evidence: "第四条来源提供供应商定位信息。" },
+      ] }),
       status: "grounded",
       queries: ["验证来源过滤"],
       sources: [
@@ -245,10 +252,16 @@ const fakeProvider = {
     };
   },
   async *writeGroundedFinalStream(_request, evidence, options) {
-    if (!evidence.includes("来源3")) throw new Error("final writer did not receive grounded evidence");
-    yield "第三条来源支撑可打开的结论。[来源3] ";
+    if (!evidence.includes('"sourceOrdinal":3') || !options.sources.some((source) => source.sourceOrdinal === 3)) {
+      throw new Error("final writer did not receive structured grounded evidence");
+    }
+    const first = "第三条来源支撑可打开的结论。";
+    options.onCitation?.({ sourceOrdinal: 3, startOffset: 0, endOffset: first.length });
+    yield `${first} `;
     await sleep(120);
-    yield "第四条来源提供供应商定位信息。[来源4]";
+    const second = "第四条来源提供供应商定位信息。";
+    options.onCitation?.({ sourceOrdinal: 4, startOffset: first.length + 1, endOffset: first.length + 1 + second.length });
+    yield second;
     options.onStreamDone?.({ finishReason: "stop" });
   },
   // 生成自由化：模型只产出自由正文（\n\n 分段），切片由服务层按段落块确定性派生，

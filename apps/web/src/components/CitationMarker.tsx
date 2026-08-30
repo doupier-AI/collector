@@ -12,7 +12,7 @@ export interface CitationMarkerProps {
 
 /** 可悬停的行内引用角标。数字由 CSS ::after 绘制，元素文本为空，不进入选区 textContent。 */
 export function CitationMarker({ index, citation, source }: CitationMarkerProps) {
-  const title = source?.title || "来源元数据不足";
+  const title = source?.title || "来源记录已失效";
   const label = source?.url ? `打开来源 ${index}：${title}` : `查看来源 ${index}：${title}`;
   const { state, anchorRef, overlayRef, open: showCard, close: hideCard } = useHoverCard();
   const marker = <sup data-citation-marker aria-hidden="true" data-citation-index={index} />;
