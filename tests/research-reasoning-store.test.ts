@@ -109,6 +109,36 @@ test("v46 migrates current and historical inline reasoning into replay-safe inde
   replayed.close();
 });
 
+test("正文只读投影以字段白名单排除当前和历史 reasoning", async (t) => {
+  const { store } = await makeStore(t);
+  const { output, task } = await seedTurn(store, "body-boundary");
+  const sentinel = "RSN05_REASONING_SENTINEL_7f5c";
+
+  store.claimResearchTask(task.id);
+  await store.appendResearchTaskDelta(task.id, "可公开正文", undefined, sentinel);
+  await store.completeResearchTask(task.id);
+
+  assert.equal(store.getResearchMessage(output.id)?.reasoning, sentinel, "独立思考视图仍可读取哨兵");
+  for (const body of [
+    store.getResearchMessageBody(output.id),
+    store.listResearchMessageBodies("session-1").find((message) => message.id === output.id),
+    store.listResearchMessageBodiesByNode("session-1").find((message) => message.id === output.id),
+  ]) {
+    assert.ok(body);
+    assert.equal(body.content, "可公开正文");
+    assert.equal(Object.hasOwn(body, "reasoning"), false);
+    assert.equal(Object.hasOwn(body, "reasoningRecordId"), false);
+    assert.equal(Object.hasOwn(body, "versions"), false);
+    assert.doesNotMatch(JSON.stringify(body), new RegExp(sentinel));
+  }
+
+  await store.regenerateResearchTask(store.getResearchTask(task.id)!);
+  assert.equal(store.getResearchMessage(output.id)?.versions?.[0]?.reasoning, sentinel, "历史思考仍只在展示视图可回看");
+  const regeneratedBody = store.getResearchMessageBody(output.id)!;
+  assert.equal(Object.hasOwn(regeneratedBody, "versions"), false);
+  assert.doesNotMatch(JSON.stringify(regeneratedBody), new RegExp(sentinel));
+});
+
 test("reasoning lifecycle keeps continuations together and isolates retry, regenerate, and edit attempts", async (t) => {
   const { store, databasePath } = await makeStore(t);
   const { input, output, task } = await seedTurn(store);

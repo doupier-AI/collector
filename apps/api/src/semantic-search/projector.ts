@@ -5,7 +5,7 @@ import type {
   ResearchCitationRecord,
   ResearchConfirmedFusionSnapshotRecord,
   ResearchContentSnapshotRecord,
-  ResearchMessageRecord,
+  ResearchMessageBodyRecord,
   ResearchNodeRecord,
   ResearchSearchField,
   ResearchSearchLocator,
@@ -26,7 +26,7 @@ const SEARCH_WINDOW_OVERLAP = 80;
 export interface CurrentSearchSourceReader {
   listResearchSessions(): ResearchSessionRecord[];
   listResearchNodes(sessionId: string): ResearchNodeRecord[];
-  listResearchMessages(sessionId: string): ResearchMessageRecord[];
+  listResearchMessageBodies(sessionId: string): ResearchMessageBodyRecord[];
   listResearchAttachments(sessionId: string): ResearchAttachmentRecord[];
   getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined;
   getConfirmedFusionSnapshot(nodeId: string): ResearchConfirmedFusionSnapshotRecord | undefined;
@@ -51,7 +51,7 @@ export function projectCurrentSearchUnits(reader: CurrentSearchSourceReader): Pr
   for (const session of reader.listResearchSessions()) {
     if (session.trashedAt) continue;
     const nodes = reader.listResearchNodes(session.id);
-    const messages = reader.listResearchMessages(session.id);
+    const messages = reader.listResearchMessageBodies(session.id);
     const messagesByNode = groupMessagesByNode(messages, session.id);
     for (const node of nodes) {
       const nodeMessages = messagesByNode.get(node.id) ?? [];
@@ -101,7 +101,7 @@ function projectCompletedAssistantBodies(
   reader: CurrentSearchSourceReader,
   node: ResearchNodeRecord,
   sessionId: string,
-  messages: readonly ResearchMessageRecord[],
+  messages: readonly ResearchMessageBodyRecord[],
   units: ProjectedSearchUnit[],
 ): void {
   for (const message of messages) {
@@ -155,8 +155,8 @@ function projectImportedBodies(
   }
 }
 
-function groupMessagesByNode(messages: readonly ResearchMessageRecord[], rootNodeId: string): Map<string, ResearchMessageRecord[]> {
-  const grouped = new Map<string, ResearchMessageRecord[]>();
+function groupMessagesByNode(messages: readonly ResearchMessageBodyRecord[], rootNodeId: string): Map<string, ResearchMessageBodyRecord[]> {
+  const grouped = new Map<string, ResearchMessageBodyRecord[]>();
   for (const message of messages) {
     const nodeId = message.nodeId ?? message.branchId ?? rootNodeId;
     const values = grouped.get(nodeId) ?? [];
@@ -166,7 +166,7 @@ function groupMessagesByNode(messages: readonly ResearchMessageRecord[], rootNod
   return grouped;
 }
 
-function nodeLabel(node: ResearchNodeRecord, session: ResearchSessionRecord, messages: readonly ResearchMessageRecord[]): string {
+function nodeLabel(node: ResearchNodeRecord, session: ResearchSessionRecord, messages: readonly ResearchMessageBodyRecord[]): string {
   if (node.id === session.id) return session.title.trim();
   if (node.displayName?.trim()) return node.displayName.trim();
   const firstQuestion = messages.find((message) => message.role === "user" && message.content.trim())?.content.trim();

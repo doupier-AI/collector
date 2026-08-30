@@ -61,7 +61,7 @@ function source(input: { title?: string; extraNode?: boolean; empty?: boolean } 
   return {
     listResearchSessions: () => sessions,
     listResearchNodes: (sessionId) => nodes.filter((node) => node.sessionId === sessionId),
-    listResearchMessages: (sessionId) => messages.filter((message) => message.sessionId === sessionId),
+    listResearchMessageBodies: (sessionId) => messages.filter((message) => message.sessionId === sessionId),
     listResearchAttachments: () => [] as ResearchAttachmentRecord[],
     getResearchContentSnapshot: () => undefined as ResearchContentSnapshotRecord | undefined,
     getConfirmedFusionSnapshot: () => undefined as ResearchConfirmedFusionSnapshotRecord | undefined,
@@ -713,7 +713,7 @@ function proxyReader(getCurrent: () => CurrentSearchSourceReader): CurrentSearch
   return {
     listResearchSessions: () => getCurrent().listResearchSessions(),
     listResearchNodes: (sessionId) => getCurrent().listResearchNodes(sessionId),
-    listResearchMessages: (sessionId) => getCurrent().listResearchMessages(sessionId),
+    listResearchMessageBodies: (sessionId) => getCurrent().listResearchMessageBodies(sessionId),
     listResearchAttachments: (sessionId) => getCurrent().listResearchAttachments(sessionId),
     getResearchContentSnapshot: (id) => getCurrent().getResearchContentSnapshot(id),
     getConfirmedFusionSnapshot: (nodeId) => getCurrent().getConfirmedFusionSnapshot(nodeId),

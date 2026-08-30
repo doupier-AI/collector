@@ -751,6 +751,38 @@ export interface ResearchMessageRecord {
   updatedAt: string;
 }
 
+/**
+ * 正文消费者专用的当前消息投影。字段采用显式白名单，刻意不暴露 reasoning、
+ * reasoning 关联或历史版本；复制、搜索、派生正文、证据与模型上下文只能接收此形态。
+ */
+export interface ResearchMessageBodyRecord {
+  id: string;
+  sessionId: string;
+  nodeId?: string;
+  branchId?: string;
+  role: ResearchMessageRole;
+  content: string;
+  termMarkers?: TermMarker[];
+  status: ResearchMessageStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export function toResearchMessageBody(message: ResearchMessageRecord): ResearchMessageBodyRecord {
+  return {
+    id: message.id,
+    sessionId: message.sessionId,
+    ...(message.nodeId ? { nodeId: message.nodeId } : {}),
+    ...(message.branchId ? { branchId: message.branchId } : {}),
+    role: message.role,
+    content: message.content,
+    ...(message.termMarkers ? { termMarkers: message.termMarkers } : {}),
+    status: message.status,
+    createdAt: message.createdAt,
+    updatedAt: message.updatedAt,
+  };
+}
+
 /** 消息旧版本快照：只读历史，不参与选区/弱标记/切片派生。 */
 export interface ResearchMessageVersion {
   content: string;

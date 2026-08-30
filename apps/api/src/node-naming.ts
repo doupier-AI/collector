@@ -1,4 +1,4 @@
-import type { ResearchMessageRecord, ResearchNodeRecord } from "@collector/capture-contracts";
+import type { ResearchMessageBodyRecord, ResearchNodeRecord } from "@collector/capture-contracts";
 import type { ModelGateway, ResearchParentChainContext } from "@collector/model-gateway";
 import { extractNodeGrowthSelectionText } from "./deep-research.js";
 import { ParentChainContextService } from "./parent-chain-context.js";
@@ -7,12 +7,12 @@ export const NODE_DISPLAY_NAME_MAX_CHARACTERS = 20;
 
 export interface NodeNamingStore {
   getResearchNode(id: string): ResearchNodeRecord | undefined;
-  listResearchMessagesByNode(nodeId: string): ResearchMessageRecord[];
+  listResearchMessageBodiesByNode(nodeId: string): ResearchMessageBodyRecord[];
   updateResearchNodeDisplayName(nodeId: string, displayName: string): Promise<ResearchNodeRecord | undefined>;
 }
 
 /** 从已有用户内容生成稳定短名，模型不可用时也能保证导航可读。 */
-export function deterministicNodeDisplayName(messages: readonly Pick<ResearchMessageRecord, "role" | "content">[]): string {
+export function deterministicNodeDisplayName(messages: readonly Pick<ResearchMessageBodyRecord, "role" | "content">[]): string {
   const source = messages.find((message) => message.role === "user" && message.content.trim())
     ?? messages.find((message) => message.role === "assistant" && message.content.trim());
   let normalized = source?.content
@@ -55,7 +55,7 @@ export class NodeNamingService {
     if (!node || node.displayName) return node;
     this.running.add(nodeId);
     try {
-      const messages = this.store.listResearchMessagesByNode(nodeId);
+      const messages = this.store.listResearchMessageBodiesByNode(nodeId);
       const fallback = deterministicNodeDisplayName(messages);
       let displayName = fallback;
       try {

@@ -66,8 +66,10 @@ export function MessageItem({ message, task, retrying = false, onRetry, onRegene
     ? groundingSources.filter((source) => source.runId === task.groundingScope?.runId)
     : [];
 
-  const reasoning = message.reasoning ?? "";
-  const thinkingInProgress = reasoning.length > 0 && message.status !== "completed" && message.status !== "failed";
+  const selectedReasoning = viewingVersion ? viewingVersion.reasoning : message.reasoning;
+  const reasoningState = selectedReasoning?.trim()
+    ? (viewingVersion ? "history" : currentReasoningState(message, task))
+    : undefined;
   // ADR-0035：操作入口只在完成/停止后显示；复制取当前查看版本（旧版切换时复制旧版）。
   const viewContent = viewingVersion?.content ?? message.content;
   const showActions = (message.status === "completed" || message.status === "stopped") && !viewingVersion;
@@ -75,7 +77,7 @@ export function MessageItem({ message, task, retrying = false, onRetry, onRegene
 
   return (
     <li className="message message--assistant" data-message-id={message.id}>
-      {reasoning ? <ReasoningDisclosure reasoning={viewingVersion?.reasoning ?? reasoning} streaming={thinkingInProgress && !viewingVersion} /> : null}
+      {reasoningState ? <ReasoningDisclosure key={versionIndex} reasoning={selectedReasoning!} state={reasoningState} /> : null}
       {message.status === "failed" ? (
         <FailedBody message={message} task={task} retrying={retrying} onRetry={onRetry} />
       ) : (
@@ -953,19 +955,39 @@ function GroundingScopeNote({ task }: { task?: ResearchTaskRecord }) {
  * ADR-0035：深度思考折叠区。生成期间默认折叠、展开后逐字流式显示推理内容；
  * 完成后折叠区保留，可随时展开回看完整思考过程。思考文字不进入正文与弱标记管线。
  */
-function ReasoningDisclosure({ reasoning, streaming }: { reasoning: string; streaming: boolean }) {
+type ReasoningDisclosureState = "streaming" | "completed" | "paused" | "stopped" | "failed" | "history";
+
+function currentReasoningState(message: ResearchMessageRecord, task?: ResearchTaskRecord): Exclude<ReasoningDisclosureState, "history"> {
+  if (message.status === "failed" || task?.status === "failed") return "failed";
+  if (message.status === "stopped" || task?.status === "stopped") return "stopped";
+  if (message.status === "paused" || task?.status === "paused") return "paused";
+  if (message.status === "completed" || task?.status === "completed") return "completed";
+  return "streaming";
+}
+
+const REASONING_LABELS: Record<ReasoningDisclosureState, string> = {
+  streaming: "深度思考中…",
+  completed: "思考过程",
+  paused: "思考过程（已暂停）",
+  stopped: "思考过程（已停止）",
+  failed: "思考过程（生成失败）",
+  history: "历史思考过程",
+};
+
+function ReasoningDisclosure({ reasoning, state }: { reasoning: string; state: ReasoningDisclosureState }) {
   const [expanded, setExpanded] = useState(false);
-  const label = streaming ? "深度思考中…" : "思考过程";
+  const bodyId = useId();
+  const label = REASONING_LABELS[state];
   const toggleLabel = expanded ? `收起${label}` : `展开${label}`;
   return (
-    <div className="reasoning" data-reasoning-state={streaming ? "streaming" : "done"}>
-      <button type="button" className="reasoning__toggle" aria-expanded={expanded} aria-label={toggleLabel} onClick={() => setExpanded((current) => !current)}>
+    <div className="reasoning" data-reasoning-state={state} aria-busy={state === "streaming"}>
+      <button type="button" className="reasoning__toggle" aria-expanded={expanded} aria-controls={bodyId} aria-label={toggleLabel} onClick={() => setExpanded((current) => !current)}>
         <span className={expanded ? "reasoning__chevron reasoning__chevron--open" : "reasoning__chevron"} aria-hidden="true">▸</span>
         <span>{label}</span>
-        {streaming ? <span className="reasoning__pulse" aria-hidden="true" /> : null}
+        {state === "streaming" ? <span className="reasoning__pulse" aria-hidden="true" /> : null}
       </button>
       {expanded ? (
-        <div className="reasoning__body">
+        <div id={bodyId} className="reasoning__body" role="region" aria-label={label}>
           <MarkdownContent text={reasoning} variant="insight" />
         </div>
       ) : null}
@@ -975,7 +997,7 @@ function ReasoningDisclosure({ reasoning, streaming }: { reasoning: string; stre
 
 function GeneratingBody({ message, task, terms, multiTurn = false }: { message: ResearchMessageRecord; task?: ResearchTaskRecord; terms: TermMarker[]; multiTurn?: boolean }) {
   const hasContent = message.content.trim().length > 0;
-  const thinking = !hasContent && (message.reasoning?.length ?? 0) > 0;
+  const thinking = !hasContent && (message.reasoning?.trim().length ?? 0) > 0;
   const paused = task?.status === "paused" || message.status === "paused";
   const stopped = task?.status === "stopped" || message.status === "stopped";
   const status = stopped
