@@ -1,6 +1,6 @@
 export { createApiServer, type ApiServerOptions } from "./http.js";
 export { CaptureService, NotFoundError, ValidationError, formatFinalWriterEvidence } from "./service.js";
-export { ContextPurposeRegistry, DEFAULT_CONTEXT_PURPOSE_POLICIES, DEFAULT_CONTEXT_PURPOSE_REGISTRY } from "./context-assembly.js";
+export { ContextPurposeRegistry, DEFAULT_CONTEXT_PURPOSE_POLICIES, DEFAULT_CONTEXT_PURPOSE_REGISTRY, assembleContext, contextAssemblyAudit, estimateContextTokens } from "./context-assembly.js";
 export { RunRecordsService, RunRecordsValidationError, type RunRecordListInput } from "./observability.js";
 export { MemoryStore, SqliteStore, defaultDataPaths, LATEST_SCHEMA_VERSION, type CollectorStore } from "./store.js";
 export { LocalAuth, PairingRateLimitError, hashToken } from "./auth.js";

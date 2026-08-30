@@ -168,6 +168,8 @@ interface ContextCandidateBase {
   sensitivity: ContextSensitivity;
   priority: ContextCandidatePriority;
   protection: ContextCandidateProtection;
+  /** 同一语义槽的候选可以声明冲突键；事实冲突保留，规则与适应冲突按优先级裁决。 */
+  conflictKey?: string;
 }
 
 export interface BehaviorRuleContextCandidate extends ContextCandidateBase {
@@ -200,16 +202,18 @@ export interface ContextAssemblyRequest {
   purpose: string;
   workflowRunId?: string;
   workflowStepId?: string;
+  projectId?: string;
   budget?: ContextBudget;
   candidates: readonly ContextCandidate[];
 }
 
-export type ContextAdoptionReason = "required" | "explicit_selection" | "within_scope" | "ranked_for_task" | "supports_continuation" | "user_adaptation_enabled";
+export type ContextAdoptionReason = "required" | "explicit_selection" | "within_scope" | "ranked_for_task" | "supports_continuation" | "user_adaptation_enabled" | "conflict_preserved";
 export type ContextRejectionReason =
   | "unknown_purpose"
   | "channel_not_allowed"
   | "purpose_not_allowed"
   | "permission_denied"
+  | "scope_mismatch"
   | "source_revoked"
   | "secret"
   | "sensitivity_not_allowed"
@@ -255,10 +259,42 @@ export type ContextAssemblyResult =
   | {
     status: "rejected";
     purpose: string;
-    reason: "unknown_purpose";
+    reason: "unknown_purpose" | "required_candidate_exceeds_budget";
+    modelPurpose?: ModelPurpose;
+    budget?: ContextBudgetUsage;
     adopted: readonly [];
     rejected: readonly ContextRejectedCandidate[];
   };
+
+export interface ContextAssemblyAuditAdoption {
+  candidateId: string;
+  channel: ContextChannel;
+  sourceKind: ContextSourceKind;
+  sourceId: string;
+  sourceVersion?: string;
+  reason: ContextAdoptionReason;
+  estimatedTokens: number;
+  redactionReasons: readonly ContextRedaction["reason"][];
+}
+
+export interface ContextAssemblyAuditRejection {
+  candidateId: string;
+  channel: ContextChannel;
+  sourceKind: ContextSourceKind;
+  sourceId: string;
+  sourceVersion?: string;
+  reason: ContextRejectionReason;
+}
+
+/** 可进入运行记录的无正文视图。 */
+export interface ContextAssemblyAudit {
+  status: ContextAssemblyResult["status"];
+  purpose: string;
+  modelPurpose?: ModelPurpose;
+  budget?: ContextBudgetUsage;
+  adopted: readonly ContextAssemblyAuditAdoption[];
+  rejected: readonly ContextAssemblyAuditRejection[];
+}
 
 export interface ContextPurposePolicy {
   purpose: ContextPurpose;
