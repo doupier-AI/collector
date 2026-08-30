@@ -19,6 +19,7 @@ import {
   type ContextRejectedCandidate,
   type ContextRedaction,
   type ModelPurpose,
+  contextCandidateCategory,
 } from "@collector/capture-contracts";
 
 const ANSWER_BUDGET = { maxInputTokens: 16_000, reservedOutputTokens: 4_000 } as const;
@@ -168,7 +169,7 @@ function effectiveBudget(requested: ContextBudget | undefined, policyBudget: Con
 }
 
 function rejectedCandidate(candidate: ContextCandidate, reason: ContextRejectedCandidate["reason"]): ContextRejectedCandidate {
-  return { candidateId: candidate.id, channel: candidate.channel, source: { ...candidate.source }, reason };
+  return { candidateId: candidate.id, channel: candidate.channel, category: contextCandidateCategory(candidate), source: { ...candidate.source }, reason };
 }
 
 function normalizeCandidate(candidate: ContextCandidate): ContextCandidate {
@@ -397,6 +398,7 @@ export function contextAssemblyAudit(result: ContextAssemblyResult): ContextAsse
     adopted: result.adopted.map((item) => ({
       candidateId: item.candidate.id,
       channel: item.candidate.channel,
+      category: contextCandidateCategory(item.candidate),
       sourceKind: item.candidate.source.kind,
       sourceId: item.candidate.source.id,
       ...(item.candidate.source.version ? { sourceVersion: item.candidate.source.version } : {}),
@@ -407,6 +409,7 @@ export function contextAssemblyAudit(result: ContextAssemblyResult): ContextAsse
     rejected: result.rejected.map((item) => ({
       candidateId: item.candidateId,
       channel: item.channel,
+      category: item.category,
       sourceKind: item.source.kind,
       sourceId: item.source.id,
       ...(item.source.version ? { sourceVersion: item.source.version } : {}),

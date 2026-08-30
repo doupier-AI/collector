@@ -238,6 +238,7 @@ export interface ContextAdoptedCandidate {
 export interface ContextRejectedCandidate {
   candidateId: string;
   channel: ContextChannel;
+  category: string;
   source: ContextSourceIdentity;
   reason: ContextRejectionReason;
 }
@@ -269,6 +270,7 @@ export type ContextAssemblyResult =
 export interface ContextAssemblyAuditAdoption {
   candidateId: string;
   channel: ContextChannel;
+  category: string;
   sourceKind: ContextSourceKind;
   sourceId: string;
   sourceVersion?: string;
@@ -280,6 +282,7 @@ export interface ContextAssemblyAuditAdoption {
 export interface ContextAssemblyAuditRejection {
   candidateId: string;
   channel: ContextChannel;
+  category: string;
   sourceKind: ContextSourceKind;
   sourceId: string;
   sourceVersion?: string;
@@ -294,6 +297,102 @@ export interface ContextAssemblyAudit {
   budget?: ContextBudgetUsage;
   adopted: readonly ContextAssemblyAuditAdoption[];
   rejected: readonly ContextAssemblyAuditRejection[];
+}
+
+export interface ContextAssemblyCategoryCount {
+  channel: ContextChannel;
+  category?: string;
+  sourceKind: ContextSourceKind;
+  count: number;
+}
+
+export interface ContextAssemblyRejectionCount extends ContextAssemblyCategoryCount {
+  reason: ContextRejectionReason;
+}
+
+/** Run-record projection: counts and categories only; never candidate IDs, source IDs or content. */
+export interface ContextAssemblyObservation {
+  status: ContextAssemblyResult["status"];
+  purpose: string;
+  modelPurpose?: ModelPurpose;
+  budget?: ContextBudgetUsage;
+  adoptedCount: number;
+  rejectedCount: number;
+  adoptedCategories: readonly ContextAssemblyCategoryCount[];
+  rejectedCategories: readonly ContextAssemblyRejectionCount[];
+}
+
+export type ContextExplanationCode =
+  | "imported_material_used"
+  | "history_used"
+  | "personalization_used"
+  | "personalization_not_used"
+  | "context_reduced"
+  | "retrieval_degraded";
+
+export function contextCandidateCategory(candidate: ContextCandidate): string {
+  return candidate.channel === "factual_evidence"
+    ? candidate.evidenceKind
+    : candidate.channel === "behavior_rule"
+      ? candidate.ruleKind
+      : candidate.adaptationKind;
+}
+
+function countContextCategories(entries: ReadonlyArray<{ channel: ContextChannel; category?: string; sourceKind: ContextSourceKind }>): ContextAssemblyCategoryCount[] {
+  const counts = new Map<string, ContextAssemblyCategoryCount>();
+  for (const entry of entries) {
+    const key = `${entry.channel}\u0000${entry.category ?? ""}\u0000${entry.sourceKind}`;
+    const current = counts.get(key);
+    if (current) current.count += 1;
+    else counts.set(key, { ...entry, count: 1 });
+  }
+  return [...counts.values()].sort((left, right) => left.channel.localeCompare(right.channel)
+    || (left.category ?? "").localeCompare(right.category ?? "")
+    || left.sourceKind.localeCompare(right.sourceKind));
+}
+
+export function observeContextAssembly(input: ContextAssemblyResult | ContextAssemblyAudit): ContextAssemblyObservation {
+  const adopted = input.adopted.map((item) => "candidate" in item
+    ? { channel: item.candidate.channel, category: contextCandidateCategory(item.candidate), sourceKind: item.candidate.source.kind }
+    : { channel: item.channel, category: item.category, sourceKind: item.sourceKind });
+  const rejected = input.rejected.map((item) => ({
+    channel: item.channel,
+    category: item.category,
+    sourceKind: "source" in item ? item.source.kind : item.sourceKind,
+    reason: item.reason,
+  }));
+  const rejectedCounts = new Map<string, ContextAssemblyRejectionCount>();
+  for (const entry of rejected) {
+    const key = `${entry.channel}\u0000${entry.category}\u0000${entry.sourceKind}\u0000${entry.reason}`;
+    const current = rejectedCounts.get(key);
+    if (current) current.count += 1;
+    else rejectedCounts.set(key, { ...entry, count: 1 });
+  }
+  return {
+    status: input.status,
+    purpose: input.purpose,
+    ...(input.modelPurpose ? { modelPurpose: input.modelPurpose } : {}),
+    ...(input.budget ? { budget: { ...input.budget, ...(input.budget.channelLimits ? { channelLimits: { ...input.budget.channelLimits } } : {}) } } : {}),
+    adoptedCount: input.adopted.length,
+    rejectedCount: input.rejected.length,
+    adoptedCategories: countContextCategories(adopted),
+    rejectedCategories: [...rejectedCounts.values()].sort((left, right) => left.channel.localeCompare(right.channel)
+      || left.reason.localeCompare(right.reason)
+      || left.sourceKind.localeCompare(right.sourceKind)),
+  };
+}
+
+export function contextExplanationCodes(observations: readonly ContextAssemblyObservation[], retrievalDegraded = false): ContextExplanationCode[] {
+  const adopted = observations.flatMap((item) => item.adoptedCategories);
+  const rejected = observations.flatMap((item) => item.rejectedCategories);
+  const codes: ContextExplanationCode[] = [];
+  if (adopted.some((item) => item.sourceKind === "imported_material" || item.category === "imported_material")) codes.push("imported_material_used");
+  if (adopted.some((item) => item.category === "conversation_history")) codes.push("history_used");
+  if (adopted.some((item) => item.channel === "user_adaptation")) codes.push("personalization_used");
+  else if (rejected.some((item) => item.channel === "user_adaptation")) codes.push("personalization_not_used");
+  if (rejected.some((item) => item.reason === "budget_exhausted") || observations.some((item) => item.status === "rejected")) codes.push("context_reduced");
+  if (retrievalDegraded) codes.push("retrieval_degraded");
+  return codes;
 }
 
 /** 主研究任务保存的无正文上下文来源快照；正文始终从消息、选区与正文版本事实源重建。 */
@@ -416,6 +515,7 @@ export interface ModelCallRecord {
   sourceFragmentIds?: string[];
   /** 调用时固定的输出令牌预算；缺省表示旧记录未提供此审计字段。 */
   tokenBudget?: number;
+  contextAssembly?: ContextAssemblyObservation;
   status: "completed" | "failed";
   inputTokens: number;
   outputTokens: number;
@@ -461,6 +561,7 @@ export interface RunRecordModelCallView {
   promptVersion: string;
   sourceSliceIds?: string[];
   tokenBudget?: number;
+  contextAssembly?: ContextAssemblyObservation;
   status: "completed" | "failed" | "corrupt";
   inputTokens: number;
   outputTokens: number;
@@ -508,6 +609,7 @@ export interface RunRecordTaskView {
   /** E2：已完成研究任务实际持久化的正式切片数量。 */
   sliceCount?: number;
   retryable?: boolean;
+  contextExplanations?: ContextExplanationCode[];
 }
 
 export interface RunRecordDetail extends RunRecordSummary {
@@ -515,6 +617,7 @@ export interface RunRecordDetail extends RunRecordSummary {
   modelCalls: RunRecordModelCallView[];
   searches: RunRecordSearchView[];
   errors: RunRecordErrorView[];
+  contextExplanations?: ContextExplanationCode[];
 }
 
 export interface RunRecordPage {
@@ -1610,6 +1713,8 @@ export interface ResearchTaskRecord {
   streamCheckpoint?: { content: string; updatedAt: string; protocolPrefix?: string };
   /** 主回答上下文的无正文来源快照与准入审计；用于暂停/恢复稳定性校验。 */
   contextAssemblySnapshot?: ResearchContextAssemblySnapshot;
+  /** Category-only explanation for the current answer; never contains candidate text or hidden prompts. */
+  contextExplanations?: ContextExplanationCode[];
   error?: ResearchTaskError;
   createdAt: string;
   updatedAt: string;

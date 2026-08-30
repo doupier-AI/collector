@@ -4,7 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { CONTEXT_PURPOSES, type ContextPurpose } from "@collector/capture-contracts";
 import { assembleConnectionTestContext, assemblePurposeContext, reassemblePurposeContext } from "@collector/api";
-import { FakeProvider, ModelGateway } from "@collector/model-gateway";
+import { FakeProvider, ModelGateway, type ModelCallEvent } from "@collector/model-gateway";
 
 const AUXILIARY_PURPOSES: readonly ContextPurpose[] = [
   "research_slice_annotation",
@@ -70,11 +70,15 @@ test("API orchestration has no direct legacy ModelGateway business calls", () =>
 
 test("context-native gateway entry applies the purpose output budget", async () => {
   const provider = new FakeProvider([JSON.stringify({ title: "标题", concepts: [] })]);
-  const gateway = new ModelGateway(provider);
+  let emitted: ModelCallEvent | undefined;
+  const gateway = new ModelGateway(provider, { onCall: (event) => { emitted = event; } });
   const assembly = assemblePurposeContext({
     purpose: "research_slice_annotation",
-    materials: [{ id: "paragraph", content: JSON.stringify({ content: "一段正文" }) }],
+    materials: [{ id: "paragraph", content: JSON.stringify({ content: "MODEL_CONTEXT_BODY_SENTINEL" }) }],
   });
   await gateway.deriveSliceAnnotationsFromContext(assembly, { maxTokens: 99_999 });
   assert.equal(provider.calls[0].maxTokens, assembly.budget.reservedOutputTokens);
+  assert.equal(emitted?.context.contextAssembly?.adoptedCount, 1);
+  assert.equal(emitted?.context.contextAssembly?.purpose, "research_slice_annotation");
+  assert.doesNotMatch(JSON.stringify(emitted?.context.contextAssembly), /MODEL_CONTEXT_BODY_SENTINEL|candidateId|sourceId/);
 });

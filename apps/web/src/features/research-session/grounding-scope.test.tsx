@@ -15,4 +15,17 @@ describe("联网研究状态", () => {
     expect(screen.getByTestId("grounding-scope-note")).toHaveTextContent("联网尝试失败");
     expect(screen.getByTestId("grounding-scope-note")).toHaveTextContent("未完成外部核验");
   });
+
+  it("只显示必要的上下文类别说明并由联网状态负责降级文案", () => {
+    render(<ul><MessageItem message={makeMessage({ id: "answer", role: "assistant", status: "completed", content: "回答" })} task={makeTask({
+      outputMessageId: "answer",
+      status: "completed",
+      groundingScope: { status: "grounding_failed", sourceCount: 0, citationCount: 0, runId: "run" },
+      contextExplanations: ["imported_material_used", "personalization_not_used", "retrieval_degraded"],
+    })} /></ul>);
+    expect(screen.getByTestId("context-explanation-note")).toHaveTextContent("使用了你导入的材料");
+    expect(screen.getByTestId("context-explanation-note")).toHaveTextContent("已考虑但未使用个性化信息");
+    expect(screen.getByTestId("context-explanation-note")).not.toHaveTextContent("检索");
+    expect(screen.getByTestId("grounding-scope-note")).toHaveTextContent("联网尝试失败");
+  });
 });

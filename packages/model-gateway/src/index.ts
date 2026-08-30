@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { ASSOCIATION_HINT_BENEFITS, ASSOCIATION_HINT_EVALUATION_PROMPT_VERSION, FUSION_RELATION_TYPES, IMPORT_CHAPTER_PARSE_PROMPT_VERSION, IMPORT_CHAPTER_PARSE_TOKEN_BUDGET, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET, TERM_IDENTITY_CONTEXT_MAX_CHARACTERS, TERM_IDENTITY_TEXT_MAX_CHARACTERS, TERM_IDENTITY_VERIFY_PROMPT_VERSION, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type ContextAssemblyResult, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchAssociationHintBenefit, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSliceContext, type TermIdentityVerificationRequest } from "@collector/capture-contracts";
+import { ASSOCIATION_HINT_BENEFITS, ASSOCIATION_HINT_EVALUATION_PROMPT_VERSION, FUSION_RELATION_TYPES, IMPORT_CHAPTER_PARSE_PROMPT_VERSION, IMPORT_CHAPTER_PARSE_TOKEN_BUDGET, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET, TERM_IDENTITY_CONTEXT_MAX_CHARACTERS, TERM_IDENTITY_TEXT_MAX_CHARACTERS, TERM_IDENTITY_VERIFY_PROMPT_VERSION, observeContextAssembly, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type ContextAssemblyObservation, type ContextAssemblyResult, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchAssociationHintBenefit, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSliceContext, type TermIdentityVerificationRequest } from "@collector/capture-contracts";
 
 export interface ProviderUsage {
   inputTokens?: number;
@@ -526,6 +526,7 @@ export interface ModelCallContext {
   sourceFragmentIds?: string[];
   /** Fixed output-token budget for explaining the call boundary in run records. */
   tokenBudget?: number;
+  contextAssembly?: ContextAssemblyObservation;
 }
 export interface ModelCallEvent {
   context: ModelCallContext;
@@ -671,9 +672,18 @@ export class ModelGateway {
 
   get promptVersion(): string { return this.options.promptVersion ?? "knowledge-extraction-v1"; }
 
-  private contextOptions<T extends { maxTokens?: number }>(assembly: AssembledModelContext, options: T): T {
+  private contextOptions<T extends { maxTokens?: number; context?: ModelCallContext }>(assembly: AssembledModelContext, options: T): T {
     const maxTokens = Math.min(options.maxTokens ?? assembly.budget.reservedOutputTokens, assembly.budget.reservedOutputTokens);
-    return { ...options, maxTokens };
+    return {
+      ...options,
+      maxTokens,
+      context: {
+        ...(options.context ?? {}),
+        purpose: options.context?.purpose ?? assembly.purpose,
+        tokenBudget: maxTokens,
+        contextAssembly: observeContextAssembly(assembly),
+      },
+    };
   }
 
   private contextPayload<T>(assembly: AssembledModelContext): T {
@@ -806,7 +816,7 @@ export class ModelGateway {
 
   async reformulateSearchQueryFromContext(assembly: AssembledModelContext, options: { model?: string; timeoutMs?: number; context?: ModelCallContext } = {}): Promise<string> {
     const input = this.contextPayload<{ query: string }>(assembly);
-    return this.reformulateSearchQuery(input.query, options);
+    return this.reformulateSearchQuery(input.query, this.contextOptions(assembly, options));
   }
 
   async clusterMaterialsFromContext(assembly: AssembledModelContext, options: { model?: string; thinking?: boolean; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): ReturnType<ModelGateway["clusterMaterials"]> {
@@ -830,7 +840,7 @@ export class ModelGateway {
   }
 
   async testConnectionFromContext(assembly: AssembledModelContext, options: { model?: string; timeoutMs?: number; context?: ModelCallContext } = {}): ReturnType<ModelGateway["testConnection"]> {
-    return this.testConnection({ ...options, context: options.context ?? { purpose: assembly.purpose } });
+    return this.testConnection(this.contextOptions(assembly, options));
   }
 
   /**

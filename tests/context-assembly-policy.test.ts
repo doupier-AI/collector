@@ -7,6 +7,7 @@ import type {
   FactualEvidenceContextCandidate,
   UserAdaptationContextCandidate,
 } from "@collector/capture-contracts";
+import { contextExplanationCodes, observeContextAssembly } from "@collector/capture-contracts";
 import { assembleContext, contextAssemblyAudit, estimateContextTokens } from "@collector/api";
 
 function evidence(
@@ -162,10 +163,39 @@ test("upstream ranks are compared only within the same upstream and ties stay de
 });
 
 test("audit projection contains identities and reasons but no candidate content", () => {
-  const result = assembleContext(request([evidence("private", "never serialize this body")])) ;
+  const result = assembleContext(request([
+    evidence("private", "never serialize this body", {
+      evidenceKind: "imported_material",
+      source: { kind: "imported_material", id: "import:private", version: "v1", scope: "turn" },
+    }),
+  ]));
   const audit = contextAssemblyAudit(result);
+  const observation = observeContextAssembly(audit);
   const serialized = JSON.stringify(audit);
   assert.equal(serialized.includes("never serialize this body"), false);
   assert.equal(audit.adopted[0]?.candidateId, "private");
+  assert.equal(audit.adopted[0]?.category, "imported_material");
   assert.equal(audit.budget?.usedInputTokens, estimateContextTokens("never serialize this body") + 12);
+  assert.deepEqual(observation.adoptedCategories, [{
+    channel: "factual_evidence",
+    category: "imported_material",
+    sourceKind: "imported_material",
+    count: 1,
+  }]);
+  assert.deepEqual(contextExplanationCodes([observation]), ["imported_material_used"]);
+});
+
+test("observation reports rejected categories and user-facing explanation codes without bodies", () => {
+  const current = evidence("current", "当前问题", { evidenceKind: "current_question", priority: "global" });
+  const history = evidence("history", "PRIVATE_HISTORY_BODY".repeat(20), { evidenceKind: "conversation_history" });
+  const profile = adaptation("profile", "PRIVATE_PROFILE_BODY".repeat(20));
+  const result = assembleContext(request([profile, history, current], { maxInputTokens: 20, reservedOutputTokens: 100 }));
+  assert.equal(result.status, "assembled");
+  const observation = observeContextAssembly(result);
+  assert.deepEqual(observation.rejectedCategories, [
+    { channel: "factual_evidence", category: "conversation_history", sourceKind: "research_content", reason: "budget_exhausted", count: 1 },
+    { channel: "user_adaptation", category: "user_profile", sourceKind: "user_profile", reason: "budget_exhausted", count: 1 },
+  ]);
+  assert.deepEqual(contextExplanationCodes([observation], true), ["personalization_not_used", "context_reduced", "retrieval_degraded"]);
+  assert.doesNotMatch(JSON.stringify(observation), /PRIVATE_HISTORY_BODY|PRIVATE_PROFILE_BODY/);
 });

@@ -507,6 +507,7 @@ export class CaptureService {
         ...(event.context.sourceSliceIds ? { sourceSliceIds: [...new Set(event.context.sourceSliceIds)].sort() } : {}),
         ...(event.context.sourceFragmentIds ? { sourceFragmentIds: [...new Set(event.context.sourceFragmentIds)].sort() } : {}),
         ...(event.context.tokenBudget !== undefined ? { tokenBudget: event.context.tokenBudget } : {}),
+        ...(event.context.contextAssembly ? { contextAssembly: event.context.contextAssembly } : {}),
         status: event.status,
         inputTokens: usage?.inputTokens ?? 0,
         outputTokens: usage?.outputTokens ?? 0,

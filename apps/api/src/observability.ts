@@ -1,7 +1,11 @@
 import {
+  CONTEXT_PURPOSES,
+  contextExplanationCodes,
   redactGroundingValue,
   sanitizeGroundingUrl,
   type ModelCallRecord,
+  type ContextAssemblyObservation,
+  type ContextExplanationCode,
   type ResearchGroundingRunRecord,
   type ResearchGroundingSourceRecord,
   type ResearchGroundingTraceEntry,
@@ -210,12 +214,19 @@ export class RunRecordsService {
     const modelCalls = this.modelCalls(row.id);
     const searches = row.source === "research" ? this.searches(row.id) : [];
     const errors = errorsFor(row.source, parsed.value, modelCalls, searches);
+    const observedContexts = modelCalls.flatMap((call) => call.contextAssembly ? [call.contextAssembly] : []);
+    const retrievalDegraded = searches.some((search) => !["grounded", "completed"].includes(search.status));
+    const contextExplanations = [...new Set([
+      ...(task?.contextExplanations ?? []),
+      ...contextExplanationCodes(observedContexts, retrievalDegraded),
+    ])];
     return {
       ...summary,
       ...(task ? { task } : {}),
       modelCalls,
       searches,
       errors,
+      ...(contextExplanations.length ? { contextExplanations } : {}),
     };
   }
 
@@ -433,7 +444,7 @@ function titleFor(record: Record<string, unknown>): string | undefined {
 function taskView(source: ObservabilityRecordSource, record: Record<string, unknown>): RunRecordTaskView | undefined {
   if (source === "research") {
     const task = record as Partial<ResearchTaskRecord>;
-    return { id: safeId(task.id), ...(safeText(task.sessionId) ? { sessionId: safeText(task.sessionId) } : {}), ...(safeText(task.provider) ? { provider: safeText(task.provider) } : {}), ...(safeText(task.model) ? { model: safeText(task.model) } : {}), ...(safeText(task.promptVersion) ? { promptVersion: safeText(task.promptVersion) } : {}), ...(Number.isSafeInteger(task.sliceCount) && (task.sliceCount ?? -1) >= 0 ? { sliceCount: task.sliceCount ?? 0 } : {}), ...(typeof task.retryable === "boolean" ? { retryable: task.retryable } : {}) };
+    return { id: safeId(task.id), ...(safeText(task.sessionId) ? { sessionId: safeText(task.sessionId) } : {}), ...(safeText(task.provider) ? { provider: safeText(task.provider) } : {}), ...(safeText(task.model) ? { model: safeText(task.model) } : {}), ...(safeText(task.promptVersion) ? { promptVersion: safeText(task.promptVersion) } : {}), ...(Number.isSafeInteger(task.sliceCount) && (task.sliceCount ?? -1) >= 0 ? { sliceCount: task.sliceCount ?? 0 } : {}), ...(typeof task.retryable === "boolean" ? { retryable: task.retryable } : {}), ...(safeContextExplanationCodes(task.contextExplanations).length ? { contextExplanations: safeContextExplanationCodes(task.contextExplanations) } : {}) };
   }
   if (source === "import") {
     const task = record as Partial<ResearchImportTaskRecord>;
@@ -452,6 +463,7 @@ function modelCallView(row: ObservabilityRelatedRow): RunRecordModelCallView {
   if (parsed.corrupt) return { id: publicRelatedId(row.id), provider: "unknown", model: "unknown", purpose: "unknown", promptVersion: "unknown", status: "corrupt", inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, latencyMs: 0, retryCount: 0, createdAt: row.createdAt, errorMessage: "这次模型调用无法读取，原始内容已隐藏。" };
   const call = parsed.value as Partial<ModelCallRecord>;
   const status = call.status === "completed" || call.status === "failed" ? call.status : "corrupt";
+  const contextAssembly = safeContextObservation(call.contextAssembly);
   return {
     id: publicRelatedId(safeId(call.id, row.id)),
     provider: safeText(call.provider),
@@ -461,6 +473,7 @@ function modelCallView(row: ObservabilityRelatedRow): RunRecordModelCallView {
     ...(Array.isArray(call.sourceSliceIds) ? { sourceSliceIds: call.sourceSliceIds.map((id) => safeId(id)).filter((id) => id !== "unknown").slice(0, 200) } : {}),
     ...(Array.isArray(call.sourceFragmentIds) ? { sourceFragmentIds: call.sourceFragmentIds.map((id) => safeId(id)).filter((id) => id !== "unknown").slice(0, 200) } : {}),
     ...(typeof call.tokenBudget === "number" && Number.isFinite(call.tokenBudget) && call.tokenBudget >= 0 ? { tokenBudget: Math.trunc(call.tokenBudget) } : {}),
+    ...(contextAssembly ? { contextAssembly } : {}),
     status,
     inputTokens: nonNegativeNumber(call.inputTokens),
     outputTokens: nonNegativeNumber(call.outputTokens),
@@ -472,6 +485,57 @@ function modelCallView(row: ObservabilityRelatedRow): RunRecordModelCallView {
     ...(call.errorMessage ? { errorMessage: safeText(call.errorMessage) } : {}),
     createdAt: safeText(call.createdAt, row.createdAt),
     ...(validDate(call.completedAt) ? { completedAt: safeText(call.completedAt) } : {}),
+  };
+}
+
+const SAFE_CONTEXT_CHANNELS = new Set(["behavior_rule", "factual_evidence", "user_adaptation"]);
+const SAFE_CONTEXT_CATEGORIES = new Set([
+  "product_boundary", "task_contract", "safety", "turn_instruction", "project_instruction", "global_instruction",
+  "current_question", "explicit_material", "conversation_history", "research_context", "imported_material", "web_evidence", "tool_result", "continuation_state",
+  "user_profile", "long_term_memory", "mastered_knowledge",
+]);
+const SAFE_CONTEXT_SOURCE_KINDS = new Set(["product_rule", "task_rule", "user_instruction", "conversation", "research_content", "imported_material", "web_source", "tool_result", "continuation", "user_profile", "long_term_memory", "mastered_knowledge", "system_probe"]);
+const SAFE_CONTEXT_REJECTION_REASONS = new Set(["unknown_purpose", "channel_not_allowed", "purpose_not_allowed", "permission_denied", "scope_mismatch", "source_revoked", "sensitivity_not_allowed", "secret", "invalid_candidate", "duplicate", "conflict", "budget_exhausted", "lower_priority"]);
+const SAFE_CONTEXT_EXPLANATIONS = new Set<ContextExplanationCode>(["imported_material_used", "history_used", "personalization_used", "personalization_not_used", "context_reduced", "retrieval_degraded"]);
+
+function safeContextExplanationCodes(value: unknown): ContextExplanationCode[] {
+  return Array.isArray(value) ? [...new Set(value.filter((code): code is ContextExplanationCode => typeof code === "string" && SAFE_CONTEXT_EXPLANATIONS.has(code as ContextExplanationCode)))].slice(0, 6) : [];
+}
+
+function safeContextObservation(value: unknown): ContextAssemblyObservation | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const input = value as Record<string, unknown>;
+  if (input.status !== "assembled" && input.status !== "rejected") return undefined;
+  const purpose = typeof input.purpose === "string" && (CONTEXT_PURPOSES as readonly string[]).includes(input.purpose) ? input.purpose : "unknown";
+  const categories = (items: unknown, rejected: boolean) => Array.isArray(items) ? items.slice(0, 50).flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const item = entry as Record<string, unknown>;
+    if (typeof item.channel !== "string" || !SAFE_CONTEXT_CHANNELS.has(item.channel)
+      || typeof item.sourceKind !== "string" || !SAFE_CONTEXT_SOURCE_KINDS.has(item.sourceKind)) return [];
+    const count = nonNegativeNumber(item.count);
+    if (count < 1) return [];
+    const category = typeof item.category === "string" && SAFE_CONTEXT_CATEGORIES.has(item.category) ? item.category : undefined;
+    const reason = typeof item.reason === "string" && SAFE_CONTEXT_REJECTION_REASONS.has(item.reason) ? item.reason : undefined;
+    if (rejected && !reason) return [];
+    return [{ channel: item.channel, ...(category ? { category } : {}), sourceKind: item.sourceKind, count, ...(reason ? { reason } : {}) }];
+  }) : [];
+  const adoptedCategories = categories(input.adoptedCategories, false) as ContextAssemblyObservation["adoptedCategories"];
+  const rejectedCategories = categories(input.rejectedCategories, true) as ContextAssemblyObservation["rejectedCategories"];
+  const budgetInput = input.budget && typeof input.budget === "object" ? input.budget as Record<string, unknown> : undefined;
+  const budget = budgetInput ? {
+    maxInputTokens: nonNegativeNumber(budgetInput.maxInputTokens),
+    reservedOutputTokens: nonNegativeNumber(budgetInput.reservedOutputTokens),
+    usedInputTokens: nonNegativeNumber(budgetInput.usedInputTokens),
+    remainingInputTokens: nonNegativeNumber(budgetInput.remainingInputTokens),
+  } : undefined;
+  return {
+    status: input.status,
+    purpose,
+    adoptedCount: nonNegativeNumber(input.adoptedCount),
+    rejectedCount: nonNegativeNumber(input.rejectedCount),
+    adoptedCategories,
+    rejectedCategories,
+    ...(budget ? { budget } : {}),
   };
 }
 

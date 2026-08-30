@@ -1,7 +1,7 @@
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { ResearchCitationRecord, ResearchGroundingSourceRecord, ResearchMessageRecord, ResearchSliceRecord, ResearchTaskRecord, ResearchTermPreviewInput, ResearchTermPreviewRecord, TermMarker } from "@collector/capture-contracts";
+import type { ContextExplanationCode, ResearchCitationRecord, ResearchGroundingSourceRecord, ResearchMessageRecord, ResearchSliceRecord, ResearchTaskRecord, ResearchTermPreviewInput, ResearchTermPreviewRecord, TermMarker } from "@collector/capture-contracts";
 import { deriveMessageBlocks, messageContentBlockId, splitBlockHeading } from "@collector/capture-contracts";
 import { MarkdownContent, type RenderedTermMarker } from "../../components/MarkdownContent";
 import { subscribeToGroundingSourceReveal } from "../../components/grounding-source-navigation";
@@ -109,6 +109,7 @@ export function MessageItem({ message, task, retrying = false, onRetry, onRegene
           {message.status === "completed" && !viewingVersion ? (
             <>
               <GroundingScopeNote task={task} />
+              <ContextExplanationNote task={task} />
               <GroundingSources sources={taskSources} />
             </>
           ) : null}
@@ -949,6 +950,21 @@ function GroundingScopeNote({ task }: { task?: ResearchTaskRecord }) {
           ? "本轮已尝试联网，但未获得可核验引用。"
           : "本轮未请求联网。";
   return <p className="message__status message__grounding-scope" data-testid="grounding-scope-note">{message}</p>;
+}
+
+const CONTEXT_EXPLANATION_COPY: Record<ContextExplanationCode, string> = {
+  imported_material_used: "使用了你导入的材料",
+  history_used: "参考了本次研究的对话历史",
+  personalization_used: "使用了已启用的个性化信息",
+  personalization_not_used: "已考虑但未使用个性化信息",
+  context_reduced: "部分上下文候选因范围或预算未采用",
+  retrieval_degraded: "检索未取得完整可用证据",
+};
+
+function ContextExplanationNote({ task }: { task?: ResearchTaskRecord }) {
+  const codes = task?.contextExplanations?.filter((code) => code !== "retrieval_degraded") ?? [];
+  if (codes.length === 0) return null;
+  return <p className="message__status message__context-scope" data-testid="context-explanation-note">本轮上下文：{codes.map((code) => CONTEXT_EXPLANATION_COPY[code]).join("；")}。</p>;
 }
 
 /**

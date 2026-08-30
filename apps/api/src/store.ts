@@ -2,6 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchContextAssemblySnapshot, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageBodyRecord, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchReasoningRecord, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId, toResearchMessageBody } from "@collector/capture-contracts";
+import { contextExplanationCodes, observeContextAssembly } from "@collector/capture-contracts";
 import {
   compareAssociationHintsByValue,
   type ConfirmTemporaryFusionResult,
@@ -1467,7 +1468,13 @@ export class SqliteStore implements CollectorStore {
     this.transaction(() => {
       const task = this.getResearchTask(taskId);
       if (!task) throw new Error("Research task not found");
-      this.updateResearchTask({ ...task, contextAssemblySnapshot: snapshot, updatedAt: new Date().toISOString() });
+      const observations = snapshot.assemblies.map((entry) => observeContextAssembly(entry.audit));
+      this.updateResearchTask({
+        ...task,
+        contextAssemblySnapshot: snapshot,
+        contextExplanations: contextExplanationCodes(observations, task.contextExplanations?.includes("retrieval_degraded")),
+        updatedAt: new Date().toISOString(),
+      });
     });
   }
 
@@ -2808,7 +2815,16 @@ export class SqliteStore implements CollectorStore {
       const citationStatement = this.db().prepare("INSERT INTO research_citations (id, message_id, run_id, source_id, block_ordinal, marker_offset, created_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
       for (const citation of result.citations) citationStatement.run(citation.id, citation.messageId, citation.runId, citation.sourceId, citation.blockOrdinal, citation.markerOffset, citation.createdAt, JSON.stringify(citation));
       const task = this.getResearchTask(result.run.taskId);
-      if (task) this.updateResearchTask({ ...task, groundingScope: result.scope, updatedAt: result.run.completedAt ?? new Date().toISOString() });
+      if (task) {
+        const observations = task.contextAssemblySnapshot?.assemblies.map((entry) => observeContextAssembly(entry.audit)) ?? [];
+        const retrievalDegraded = result.scope.status !== "grounded";
+        this.updateResearchTask({
+          ...task,
+          groundingScope: result.scope,
+          contextExplanations: contextExplanationCodes(observations, retrievalDegraded),
+          updatedAt: result.run.completedAt ?? new Date().toISOString(),
+        });
+      }
     });
   }
 
