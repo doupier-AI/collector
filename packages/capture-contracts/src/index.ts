@@ -735,22 +735,40 @@ export interface ResearchMessageRecord {
   branchId?: string;
   role: ResearchMessageRole;
   content: string;
-  /** 深度思考过程全文（ADR-0035）：开关开启时随生成流式累计，与正文分开存储；完成后可回看。 */
+  /** HTTP/事件视图字段：由 reasoningRecordId 指向的独立记录组装，不写入消息 record_json。 */
   reasoning?: string;
+  /** 当前生成尝试的独立 reasoning 记录；缺失表示供应商没有返回可展示内容。 */
+  reasoningRecordId?: string;
   /** AI 正文生成时与干净正文一起落下的提及范围；不含任何模型控制符。 */
   termMarkers?: TermMarker[];
-  /** ADR-0035 旧版本快照（重新生成保留旧版）：最新正文在 content/reasoning；旧版本按时间倒序（最新在前）。仅重新生成场景写入，重新编辑直接替换不写版本。 */
+  /** 旧版本快照按时间倒序；reasoning 只作为组装视图，持久化关联见 reasoningRecordId。 */
   versions?: ResearchMessageVersion[];
   status: ResearchMessageStatus;
   createdAt: string;
   updatedAt: string;
 }
 
-/** 消息旧版本快照（ADR-0035）：只读历史，不参与选区/弱标记/切片派生。 */
+/** 消息旧版本快照：只读历史，不参与选区/弱标记/切片派生。 */
 export interface ResearchMessageVersion {
   content: string;
+  /** HTTP/事件视图字段：由 reasoningRecordId 组装，不写入消息 record_json。 */
   reasoning?: string;
+  reasoningRecordId?: string;
   createdAt: string;
+}
+
+/**
+ * 供应商独立通道返回的思考过程记录。它与一条回答消息和一次生成尝试绑定，
+ * 不是正文、证据、搜索材料或后续模型上下文。
+ */
+export interface ResearchReasoningRecord {
+  id: string;
+  messageId: string;
+  taskId: string;
+  generationAttempt: number;
+  content: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 /**
@@ -1148,6 +1166,8 @@ export interface ResearchTaskRecord {
   provider?: string;
   model?: string;
   promptVersion: string;
+  /** 当前生成尝试序号；暂停/继续和保留式断流续传不递增，新的生成尝试递增。 */
+  generationAttempt?: number;
   /** E2：只有完整正式切片落库后才写入；存于既有 research_tasks.record_json。 */
   sliceCount?: number;
   /** 本次任务是否获得用户明确授权使用联网搜索；缺省值只兼容旧任务，服务端按 false 处理。 */

@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchReasoningRecord, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId } from "@collector/capture-contracts";
 import {
   compareAssociationHintsByValue,
   type ConfirmTemporaryFusionResult,
@@ -155,6 +155,8 @@ export interface ResearchStore {
   getResearchMessage(id: string): ResearchMessageRecord | undefined;
   listResearchMessages(sessionId: string): ResearchMessageRecord[];
   listResearchMessagesByNode(nodeId: string): ResearchMessageRecord[];
+  getResearchReasoningRecord(id: string): ResearchReasoningRecord | undefined;
+  listResearchReasoningRecords(messageId: string): ResearchReasoningRecord[];
   getResearchTask(id: string): ResearchTaskRecord | undefined;
   findResearchTaskByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchTaskRecord | undefined;
   listResearchTasks(sessionId: string): ResearchTaskRecord[];
@@ -456,7 +458,7 @@ export interface CollectorStore
  * `if (version < N+1)` 版本块（块内写入对应 schema_migrations 行）并递增本常量；
  * 测试以此常量断言「打开/重放后数据库实际到达声明版本」，无需再手工同步多处硬编码断言。
  */
-export const LATEST_SCHEMA_VERSION = 45;
+export const LATEST_SCHEMA_VERSION = 46;
 
 function directSourceIdsForConfirmedDraft(
   draft: ResearchFusionDraftVersionRecord,
@@ -595,6 +597,7 @@ export class SqliteStore implements CollectorStore {
       this.db().exec("DELETE FROM research_semantic_fragments");
       this.db().exec("DELETE FROM research_body_versions");
       this.db().exec("DELETE FROM research_slices");
+      this.db().exec("DELETE FROM research_reasoning_records");
       this.db().exec("DELETE FROM research_import_task_events");
       this.db().exec("DELETE FROM research_chapter_tasks");
       this.db().exec("DELETE FROM research_content_snapshots");
@@ -857,6 +860,7 @@ export class SqliteStore implements CollectorStore {
       del(`DELETE FROM research_semantic_fragments WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
       del(`DELETE FROM research_body_versions WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
       del(`DELETE FROM research_slices WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
+      del(`DELETE FROM research_reasoning_records WHERE message_id IN (${MESSAGE_SCOPE})`, id);
       del(`DELETE FROM research_citations WHERE message_id IN (${MESSAGE_SCOPE})`, id);
       del("DELETE FROM research_grounding_sources WHERE run_id IN (SELECT id FROM research_grounding_runs WHERE session_id = ?)", id);
       del("DELETE FROM research_grounding_runs WHERE session_id = ?", id);
@@ -1026,15 +1030,31 @@ export class SqliteStore implements CollectorStore {
   }
 
   getResearchMessage(id: string): ResearchMessageRecord | undefined {
-    return this.getRecord<ResearchMessageRecord>("SELECT record_json FROM research_messages WHERE id = ?", id);
+    const message = this.getRecord<ResearchMessageRecord>("SELECT record_json FROM research_messages WHERE id = ?", id);
+    return message ? this.hydrateResearchMessagesReasoning([message])[0] : undefined;
   }
 
   listResearchMessages(sessionId: string): ResearchMessageRecord[] {
-    return this.listRecords<ResearchMessageRecord>("SELECT record_json FROM research_messages WHERE session_id = ? ORDER BY created_at, rowid", sessionId);
+    return this.hydrateResearchMessagesReasoning(
+      this.listRecords<ResearchMessageRecord>("SELECT record_json FROM research_messages WHERE session_id = ? ORDER BY created_at, rowid", sessionId),
+    );
   }
 
   listResearchMessagesByNode(nodeId: string): ResearchMessageRecord[] {
-    return this.listRecords<ResearchMessageRecord>("SELECT record_json FROM research_messages WHERE node_id = ? ORDER BY created_at, rowid", nodeId);
+    return this.hydrateResearchMessagesReasoning(
+      this.listRecords<ResearchMessageRecord>("SELECT record_json FROM research_messages WHERE node_id = ? ORDER BY created_at, rowid", nodeId),
+    );
+  }
+
+  getResearchReasoningRecord(id: string): ResearchReasoningRecord | undefined {
+    return this.getRecord<ResearchReasoningRecord>("SELECT record_json FROM research_reasoning_records WHERE id = ?", id);
+  }
+
+  listResearchReasoningRecords(messageId: string): ResearchReasoningRecord[] {
+    return this.listRecords<ResearchReasoningRecord>(
+      "SELECT record_json FROM research_reasoning_records WHERE message_id = ? ORDER BY generation_attempt, rowid",
+      messageId,
+    );
   }
 
   getResearchTask(id: string): ResearchTaskRecord | undefined {
@@ -1118,6 +1138,7 @@ export class SqliteStore implements CollectorStore {
       const now = new Date().toISOString();
       const next: ResearchTaskRecord = {
         ...current, status: "running", retryable: false, provider, model, promptVersion,
+        generationAttempt: current.generationAttempt ?? 1,
         error: undefined, updatedAt: now, startedAt: now, completedAt: undefined,
       };
       const result = this.db().prepare("UPDATE research_tasks SET status = ?, retryable = 0, updated_at = ?, record_json = ? WHERE id = ? AND status = 'queued'")
@@ -1139,11 +1160,12 @@ export class SqliteStore implements CollectorStore {
       const current = this.getResearchMessage(task.outputMessageId);
       if (!current) throw new Error("Research output message not found");
       const now = new Date().toISOString();
+      const reasoningMessage = reasoningDelta
+        ? this.appendReasoningDelta(task, current, reasoningDelta, now)
+        : current;
       const message: ResearchMessageRecord = {
-        ...current,
-        content: current.content + delta,
-        // ADR-0035：思考增量与正文分开累计，不进入正文与弱标记管线；仅在有思考时携带字段。
-        ...(reasoningDelta ? { reasoning: (current.reasoning ?? "") + reasoningDelta } : {}),
+        ...reasoningMessage,
+        content: reasoningMessage.content + delta,
         ...(termMarkers ? { termMarkers: [...termMarkers] } : {}),
         status: "streaming",
         updatedAt: now,
@@ -1196,13 +1218,17 @@ export class SqliteStore implements CollectorStore {
       const { bodyPlan: _bodyPlan, streamCheckpoint: _streamCheckpoint, sliceCount: _sliceCount, ...freshTask } = current;
       const queued: ResearchTaskRecord = {
         ...(options?.preserveContent ? current : freshTask), status: "queued", retryable: false, provider, model, promptVersion,
+        generationAttempt: options?.preserveContent
+          ? current.generationAttempt
+          : (current.generationAttempt ?? 0) + 1,
         error: undefined, updatedAt: now, startedAt: undefined, completedAt: undefined,
       };
       // preserveContent：保留已写部分正文与事件流，供断流续传/截断续写从断点继续；默认清空重来。
       // 默认重试清空正文时必须同事务清掉流内弱标记：标记只在当前正文版本有效（ADR-0028），
       // 残留旧标记会让空正文消息携带不一致派生状态，甚至被下一次生成误当种子复用。
-      // 思考过程同样清空（ADR-0035）：重试是新一轮生成，旧思考与新回答无关。
-      const { termMarkers: _staleMarkers, reasoning: _staleReasoning, ...clearedMessage } = currentMessage;
+      // 默认重试是新的生成尝试：删除当前独立 reasoning；保留式断流续传沿用同一尝试。
+      const reasoningMessage = options?.preserveContent ? currentMessage : this.deleteCurrentReasoning(currentMessage);
+      const { termMarkers: _staleMarkers, ...clearedMessage } = reasoningMessage;
       const message: ResearchMessageRecord = options?.preserveContent
         ? { ...currentMessage, updatedAt: now }
         : { ...clearedMessage, content: "", status: "pending", updatedAt: now };
@@ -1257,8 +1283,17 @@ export class SqliteStore implements CollectorStore {
       if (!message) throw new Error("Research output message not found");
       const now = new Date().toISOString();
       const { bodyPlan: _bodyPlan, streamCheckpoint: _checkpoint, sliceCount: _sliceCount, ...freshTask } = task;
-      queued = { ...freshTask, status: "queued", retryable: false, updatedAt: now, startedAt: undefined, completedAt: undefined };
-      const { termMarkers: _markers, reasoning: _reasoning, ...freshMessage } = message;
+      queued = {
+        ...freshTask,
+        status: "queued",
+        retryable: false,
+        generationAttempt: (task.generationAttempt ?? 0) + 1,
+        updatedAt: now,
+        startedAt: undefined,
+        completedAt: undefined,
+      };
+      const withoutReasoning = this.deleteCurrentReasoning(message);
+      const { termMarkers: _markers, ...freshMessage } = withoutReasoning;
       this.updateResearchTask(queued);
       this.updateResearchMessage({ ...freshMessage, content: "", status: "pending", updatedAt: now });
       this.db().prepare("DELETE FROM research_task_events WHERE task_id = ?").run(id);
@@ -1286,7 +1321,7 @@ export class SqliteStore implements CollectorStore {
     return stopped;
   }
 
-  /** ADR-0035 重新生成：当前正文/思考快照进 versions，清空正文/思考/标记后 queued 重跑（旧版保留可切换）。 */
+  /** 重新生成：当前正文与 reasoning 关联进入旧版本，新尝试使用新的独立记录。 */
   async regenerateResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion = "research-chat-v1"): Promise<ResearchTaskRecord> {
     let queued: ResearchTaskRecord | undefined;
     this.transaction(() => {
@@ -1298,13 +1333,14 @@ export class SqliteStore implements CollectorStore {
       const version: ResearchMessageVersion = {
         content: currentMessage.content,
         ...(currentMessage.reasoning !== undefined ? { reasoning: currentMessage.reasoning } : {}),
+        ...(currentMessage.reasoningRecordId ? { reasoningRecordId: currentMessage.reasoningRecordId } : {}),
         createdAt: now,
       };
       const versions = [version, ...(currentMessage.versions ?? [])];
+      const { reasoning: _reasoningView, reasoningRecordId: _reasoningRecordId, ...messageWithoutCurrentReasoning } = currentMessage;
       const message: ResearchMessageRecord = {
-        ...currentMessage,
+        ...messageWithoutCurrentReasoning,
         content: "",
-        reasoning: undefined,
         termMarkers: undefined,
         versions,
         status: "pending",
@@ -1313,6 +1349,7 @@ export class SqliteStore implements CollectorStore {
       this.updateResearchMessage(message);
       queued = {
         ...current, status: "queued", retryable: false, provider, model, promptVersion,
+        generationAttempt: (current.generationAttempt ?? 0) + 1,
         error: undefined, updatedAt: now, startedAt: undefined, completedAt: undefined,
       };
       this.updateResearchTask(queued);
@@ -1344,11 +1381,19 @@ export class SqliteStore implements CollectorStore {
       const now = new Date().toISOString();
       this.updateResearchMessage({ ...inputMessage, content, updatedAt: now });
       // 直接替换：旧回答与旧版本全部清空，不保留可回看历史（用户裁决：编辑后生成不支持查看旧版本）。
-      const { versions: _dropped, termMarkers: _staleMarkers, reasoning: _staleReasoning, ...restMessage } = currentMessage;
+      this.db().prepare("DELETE FROM research_reasoning_records WHERE message_id = ?").run(currentMessage.id);
+      const {
+        versions: _dropped,
+        termMarkers: _staleMarkers,
+        reasoning: _staleReasoningView,
+        reasoningRecordId: _staleReasoningRecordId,
+        ...restMessage
+      } = currentMessage;
       const cleared: ResearchMessageRecord = { ...restMessage, content: "", status: "pending", updatedAt: now };
       this.updateResearchMessage(cleared);
       queued = {
         ...current, status: "queued", retryable: false, provider, model, promptVersion,
+        generationAttempt: (current.generationAttempt ?? 0) + 1,
         error: undefined, updatedAt: now, startedAt: undefined, completedAt: undefined,
       };
       this.updateResearchTask(queued);
@@ -2487,8 +2532,9 @@ export class SqliteStore implements CollectorStore {
   }
 
   private insertResearchMessage(message: ResearchMessageRecord): void {
+    const persisted = this.persistedResearchMessage(message);
     this.db().prepare("INSERT INTO research_messages (id, session_id, node_id, branch_id, role, status, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(message.id, message.sessionId, message.nodeId ?? null, message.branchId ?? null, message.role, message.status, message.createdAt, message.updatedAt, JSON.stringify(message));
+      .run(message.id, message.sessionId, message.nodeId ?? null, message.branchId ?? null, message.role, message.status, message.createdAt, message.updatedAt, JSON.stringify(persisted));
   }
 
   private insertResearchTask(task: ResearchTaskRecord): void {
@@ -2896,8 +2942,96 @@ export class SqliteStore implements CollectorStore {
   }
 
   private updateResearchMessage(message: ResearchMessageRecord): void {
+    const persisted = this.persistedResearchMessage(message);
     this.db().prepare("UPDATE research_messages SET status = ?, updated_at = ?, record_json = ? WHERE id = ?")
-      .run(message.status, message.updatedAt, JSON.stringify(message), message.id);
+      .run(message.status, message.updatedAt, JSON.stringify(persisted), message.id);
+  }
+
+  /** 消息 JSON 只保存正文与独立记录关联；reasoning 文本始终由专表组装。 */
+  private persistedResearchMessage(message: ResearchMessageRecord): ResearchMessageRecord {
+    const { reasoning: _reasoningView, ...persisted } = message;
+    if (!persisted.versions) return persisted;
+    return {
+      ...persisted,
+      versions: persisted.versions.map(({ reasoning: _versionReasoningView, ...version }) => version),
+    };
+  }
+
+  private hydrateResearchMessagesReasoning(messages: ResearchMessageRecord[]): ResearchMessageRecord[] {
+    if (!messages.length) return [];
+    const placeholders = messages.map(() => "?").join(", ");
+    const records = this.listRecords<ResearchReasoningRecord>(
+      `SELECT record_json FROM research_reasoning_records WHERE message_id IN (${placeholders})`,
+      ...messages.map((message) => message.id),
+    );
+    const byId = new Map(records.map((record) => [record.id, record]));
+    return messages.map((message) => this.hydrateResearchMessageReasoning(message, byId));
+  }
+
+  private hydrateResearchMessageReasoning(
+    message: ResearchMessageRecord,
+    recordsById: ReadonlyMap<string, ResearchReasoningRecord>,
+  ): ResearchMessageRecord {
+    const resolve = (id: string | undefined): ResearchReasoningRecord | undefined => {
+      if (!id) return undefined;
+      const record = recordsById.get(id);
+      if (!record || record.messageId !== message.id) {
+        throw new Error(`Research message ${message.id} references missing reasoning record ${id}`);
+      }
+      return record;
+    };
+    const current = resolve(message.reasoningRecordId);
+    const versions = message.versions?.map((version) => {
+      const reasoning = resolve(version.reasoningRecordId);
+      return reasoning ? { ...version, reasoning: reasoning.content } : version;
+    });
+    return {
+      ...message,
+      ...(current ? { reasoning: current.content } : {}),
+      ...(versions ? { versions } : {}),
+    };
+  }
+
+  private reasoningRecordId(taskId: string, generationAttempt: number): string {
+    return `reasoning:${taskId}:${generationAttempt}`;
+  }
+
+  private appendReasoningDelta(
+    task: ResearchTaskRecord,
+    message: ResearchMessageRecord,
+    delta: string,
+    updatedAt: string,
+  ): ResearchMessageRecord {
+    const generationAttempt = task.generationAttempt ?? 1;
+    const id = message.reasoningRecordId ?? this.reasoningRecordId(task.id, generationAttempt);
+    const existing = this.getResearchReasoningRecord(id);
+    if (existing && (existing.taskId !== task.id || existing.messageId !== message.id || existing.generationAttempt !== generationAttempt)) {
+      throw new Error("Research reasoning record does not match its generation attempt");
+    }
+    const record: ResearchReasoningRecord = {
+      id,
+      messageId: message.id,
+      taskId: task.id,
+      generationAttempt,
+      content: (existing?.content ?? "") + delta,
+      createdAt: existing?.createdAt ?? updatedAt,
+      updatedAt,
+    };
+    this.db().prepare(`
+      INSERT INTO research_reasoning_records
+        (id, message_id, task_id, generation_attempt, created_at, updated_at, record_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, record_json = excluded.record_json
+    `).run(record.id, record.messageId, record.taskId, record.generationAttempt, record.createdAt, record.updatedAt, JSON.stringify(record));
+    return { ...message, reasoningRecordId: record.id, reasoning: record.content };
+  }
+
+  private deleteCurrentReasoning(message: ResearchMessageRecord): ResearchMessageRecord {
+    if (message.reasoningRecordId) {
+      this.db().prepare("DELETE FROM research_reasoning_records WHERE id = ?").run(message.reasoningRecordId);
+    }
+    const { reasoning: _reasoningView, reasoningRecordId: _reasoningRecordId, ...cleared } = message;
+    return cleared;
   }
 
   private updateTemporaryFusionMessage(message: ResearchTemporaryFusionMessageRecord): void {
@@ -4198,6 +4332,120 @@ export class SqliteStore implements CollectorStore {
         `);
       });
       version = 45;
+    }
+
+    if (version < 46) {
+      // reasoning 从普通消息 JSON 迁到按任务生成尝试唯一的独立记录；消息与旧版本只保留关联。
+      // CREATE/INSERT OR IGNORE 使迁移事实回滚后的重放保持幂等，正文和 reasoning 均不丢失。
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE IF NOT EXISTS research_reasoning_records (
+            id TEXT PRIMARY KEY,
+            message_id TEXT NOT NULL REFERENCES research_messages(id) ON DELETE CASCADE,
+            task_id TEXT NOT NULL REFERENCES research_tasks(id) ON DELETE CASCADE,
+            generation_attempt INTEGER NOT NULL CHECK(generation_attempt > 0),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            UNIQUE(task_id, generation_attempt)
+          );
+          CREATE INDEX IF NOT EXISTS research_reasoning_records_message_idx
+            ON research_reasoning_records(message_id, generation_attempt);
+        `);
+
+        const taskRows = this.db().prepare("SELECT id, output_message_id, record_json FROM research_tasks").all() as Array<{
+          id: string;
+          output_message_id: string;
+          record_json: string;
+        }>;
+        const taskByMessage = new Map(taskRows.map((row) => [row.output_message_id, row]));
+        const messageRows = this.db().prepare("SELECT id, record_json FROM research_messages").all() as Array<{
+          id: string;
+          record_json: string;
+        }>;
+        const insertReasoning = this.db().prepare(`
+          INSERT OR IGNORE INTO research_reasoning_records
+            (id, message_id, task_id, generation_attempt, created_at, updated_at, record_json)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `);
+        const updateMessage = this.db().prepare("UPDATE research_messages SET record_json = ? WHERE id = ?");
+        const updateTask = this.db().prepare("UPDATE research_tasks SET record_json = ? WHERE id = ?");
+
+        for (const row of messageRows) {
+          const message = JSON.parse(row.record_json) as ResearchMessageRecord;
+          const hasInlineReasoning = message.reasoning !== undefined
+            || (message.versions ?? []).some((entry) => entry.reasoning !== undefined);
+          const taskRow = taskByMessage.get(message.id);
+          if (!taskRow) {
+            if (hasInlineReasoning) throw new Error(`Reasoning message ${message.id} has no generation task`);
+            continue;
+          }
+          const task = JSON.parse(taskRow.record_json) as ResearchTaskRecord;
+          const versions = (message.versions ?? []).map((entry) => ({ ...entry }));
+          let generationAttempt = 0;
+
+          for (let index = versions.length - 1; index >= 0; index -= 1) {
+            generationAttempt += 1;
+            const versionEntry = versions[index];
+            if (!versionEntry || versionEntry.reasoning === undefined) continue;
+            const id = this.reasoningRecordId(task.id, generationAttempt);
+            const reasoning: ResearchReasoningRecord = {
+              id,
+              messageId: message.id,
+              taskId: task.id,
+              generationAttempt,
+              content: versionEntry.reasoning,
+              createdAt: versionEntry.createdAt,
+              updatedAt: versionEntry.createdAt,
+            };
+            insertReasoning.run(id, message.id, task.id, generationAttempt, reasoning.createdAt, reasoning.updatedAt, JSON.stringify(reasoning));
+            const { reasoning: _inlineReasoning, ...persistedVersion } = versionEntry;
+            versions[index] = { ...persistedVersion, reasoningRecordId: id };
+          }
+
+          const currentAttempt = versions.length + 1;
+          let currentReasoningRecordId = message.reasoningRecordId;
+          if (message.reasoning !== undefined) {
+            generationAttempt = currentAttempt;
+            currentReasoningRecordId = this.reasoningRecordId(task.id, currentAttempt);
+            const reasoning: ResearchReasoningRecord = {
+              id: currentReasoningRecordId,
+              messageId: message.id,
+              taskId: task.id,
+              generationAttempt: currentAttempt,
+              content: message.reasoning,
+              createdAt: message.createdAt,
+              updatedAt: message.updatedAt,
+            };
+            insertReasoning.run(
+              reasoning.id,
+              reasoning.messageId,
+              reasoning.taskId,
+              reasoning.generationAttempt,
+              reasoning.createdAt,
+              reasoning.updatedAt,
+              JSON.stringify(reasoning),
+            );
+          }
+          if (message.status !== "pending" || message.content.length > 0) {
+            generationAttempt = Math.max(generationAttempt, currentAttempt);
+          }
+
+          const { reasoning: _inlineCurrentReasoning, ...persistedMessage } = message;
+          updateMessage.run(JSON.stringify({
+            ...persistedMessage,
+            ...(currentReasoningRecordId ? { reasoningRecordId: currentReasoningRecordId } : {}),
+            ...(message.versions ? { versions } : {}),
+          }), message.id);
+
+          if (generationAttempt > (task.generationAttempt ?? 0)) {
+            updateTask.run(JSON.stringify({ ...task, generationAttempt }), task.id);
+          }
+        }
+
+        this.db().exec("INSERT INTO schema_migrations(version, applied_at) VALUES (46, datetime('now'))");
+      });
+      version = 46;
     }
 
   }
