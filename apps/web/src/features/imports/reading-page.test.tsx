@@ -188,6 +188,16 @@ describe("阅读视图来源返回", () => {
     expect(await screen.findByText("正文", { selector: "[data-selection-mark]" })).toBeInTheDocument();
   });
 
+  it("搜索命中的快照版本变化时只打开资料并明确降级，不猜同名块", async () => {
+    const { container } = renderReadingPage(
+      { getResearchContent: async () => snapshotWithAllAnchors() },
+      "/research/session-1/reading/snap-1?searchBlock=b-2&searchStart=2&searchEnd=4&searchVersion=stale-snapshot",
+    );
+
+    expect(await screen.findByRole("status")).toHaveTextContent("精确位置已不存在");
+    expect(container.querySelector("[data-selection-mark]")).toBeNull();
+  });
+
   it("历史源码偏移在 Markdown 格式符附近恢复为可见高亮", async () => {
     const snapshot = snapshotWithAllAnchors();
     snapshot.blocks[1] = {

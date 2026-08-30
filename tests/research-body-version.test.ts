@@ -7,6 +7,8 @@ import {
   deriveFragmentsFromSlices,
   hashBodyContent,
   normalizeBodyContent,
+  researchBodyVersionId,
+  researchBodyVersionIsContentPrefix,
   resolveFragmentExcerpt,
   type ResearchCitationRecord,
   type ResearchSliceRecord,
@@ -34,6 +36,20 @@ test("hashBodyContent is deterministic and CRLF-insensitive", () => {
   assert.strictEqual(hashBodyContent(CONTENT), hashBodyContent(CONTENT));
   assert.strictEqual(hashBodyContent("a\r\nb"), hashBodyContent("a\nb"));
   assert.notStrictEqual(hashBodyContent("a"), hashBodyContent("b"));
+});
+
+test("researchBodyVersionId is the single deterministic body identity constructor", () => {
+  assert.strictEqual(researchBodyVersionId("msg-1", "a\r\nb"), `body:msg-1:${hashBodyContent("a\nb")}`);
+  assert.strictEqual(makeVersion().id, researchBodyVersionId("msg-1", CONTENT));
+});
+
+test("researchBodyVersionIsContentPrefix proves append-only revisions without text guessing", () => {
+  const partial = "REST API is being generated.\r\n";
+  const current = `${partial}More content arrives later.`;
+  const versionId = researchBodyVersionId("msg-stream", partial);
+  assert.equal(researchBodyVersionIsContentPrefix("msg-stream", versionId, current, 4), true);
+  assert.equal(researchBodyVersionIsContentPrefix("msg-stream", versionId, "REST API was rewritten.", 4), false);
+  assert.equal(researchBodyVersionIsContentPrefix("other", versionId, current, 4), false);
 });
 
 test("deriveBodyVersion is deterministic — same message+content yields same id", () => {

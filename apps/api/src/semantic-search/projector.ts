@@ -14,7 +14,7 @@ import type {
   ResearchSessionRecord,
   ResearchSliceRecord,
 } from "@collector/capture-contracts";
-import { hashBodyContent } from "@collector/capture-contracts";
+import { hashBodyContent, researchBodyVersionId } from "@collector/capture-contracts";
 import { getOrDeriveMessageBodyArtifacts, tryResolveFragmentExcerpt } from "../body-artifacts.js";
 
 // The lightweight BGE model truncates at 512 tokens. A conservative 400-character
@@ -61,6 +61,7 @@ export function projectCurrentSearchUnits(reader: CurrentSearchSourceReader): Pr
       for (const message of nodeMessages) {
         if (message.role !== "user" || message.status !== "completed" || !message.content.trim()) continue;
         for (const window of textWindows(message.content)) {
+          const bodyVersionId = researchBodyVersionId(message.id, message.content);
           units.push(projectUnit(node.id, session.id, "user-question", {
             kind: "message-text-range",
             nodeId: node.id,
@@ -68,6 +69,12 @@ export function projectCurrentSearchUnits(reader: CurrentSearchSourceReader): Pr
             contentHash: hashBodyContent(message.content),
             startOffset: window.startOffset,
             endOffset: window.endOffset,
+            location: {
+              contentId: message.id,
+              bodyVersionId,
+              sourceRange: { startOffset: window.startOffset, endOffset: window.endOffset },
+              exact: window.text,
+            },
           }, window.text));
         }
       }
@@ -81,6 +88,12 @@ export function projectCurrentSearchUnits(reader: CurrentSearchSourceReader): Pr
             confirmedDraftVersionId: confirmedFusion.confirmedDraftVersionId,
             startOffset: window.startOffset,
             endOffset: window.endOffset,
+            location: {
+              contentId: confirmedFusion.fusionNodeId,
+              bodyVersionId: confirmedFusion.confirmedDraftVersionId,
+              sourceRange: { startOffset: window.startOffset, endOffset: window.endOffset },
+              exact: window.text,
+            },
           }, window.text));
         }
         // The confirmed snapshot and current assistant messages have independent
@@ -124,6 +137,12 @@ function projectCompletedAssistantBodies(
           fragmentId: fragment.id,
           startOffset: window.startOffset,
           endOffset: window.endOffset,
+          location: {
+            contentId: message.id,
+            bodyVersionId: artifacts.version.id,
+            sourceRange: { startOffset: window.startOffset, endOffset: window.endOffset },
+            exact: window.text,
+          },
         }, window.text));
       }
     }
@@ -149,6 +168,12 @@ function projectImportedBodies(
           blockId: block.id,
           startOffset: window.startOffset,
           endOffset: window.endOffset,
+          location: {
+            contentId: block.id,
+            bodyVersionId: snapshot.id,
+            sourceRange: { startOffset: window.startOffset, endOffset: window.endOffset },
+            exact: window.text,
+          },
         }, window.text));
       }
     }

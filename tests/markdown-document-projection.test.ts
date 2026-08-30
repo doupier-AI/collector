@@ -2,7 +2,9 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   MARKDOWN_PROJECTION_CONFIG,
+  projectMarkdownSourceRange,
   projectMarkdownDocument,
+  resolveMarkdownVisibleRange,
   type MarkdownProjectionNode,
 } from "@collector/markdown-projection";
 
@@ -109,6 +111,38 @@ describe("unified Markdown document projection", () => {
     assert.equal(projection.source.length, source.length);
     assert.match(projection.visibleText, /^long/);
     assert.equal(projection.diagnostics.some((diagnostic) => diagnostic.code === "parse-failed"), false);
+  });
+
+  it("maps formatting, repeated text, tables, code, and zero-width citation annotations without guessing", () => {
+    const source = [
+      "**重复文本**与重复文本[来源1]",
+      "",
+      "| 列 | 值 |",
+      "| --- | --- |",
+      "| A | `code` |",
+    ].join("\n");
+    const projection = projectMarkdownDocument(source);
+    const firstSource = { start: source.indexOf("重复文本"), end: source.indexOf("重复文本") + 4 };
+    const secondStart = source.indexOf("重复文本", firstSource.end);
+    const first = projectMarkdownSourceRange(projection, firstSource);
+    const second = projectMarkdownSourceRange(projection, { start: secondStart, end: secondStart + 4 });
+
+    assert.equal(first?.exact, "重复文本");
+    assert.equal(second?.exact, "重复文本");
+    assert.notDeepEqual(first?.visibleRange, second?.visibleRange);
+    assert.deepEqual(resolveMarkdownVisibleRange(projection, first!.visibleRange, "重复文本")?.sourceRange, firstSource);
+    assert.equal(projectMarkdownSourceRange(projection, {
+      start: source.indexOf("[来源1]"),
+      end: source.indexOf("[来源1]") + "[来源1]".length,
+    }), undefined);
+
+    const codeStart = source.indexOf("code");
+    const code = projectMarkdownSourceRange(projection, { start: codeStart, end: codeStart + 4 });
+    assert.equal(code?.exact, "code");
+    assert.deepEqual(resolveMarkdownVisibleRange(projection, code!.visibleRange, "code")?.sourceRange, {
+      start: codeStart,
+      end: codeStart + 4,
+    });
   });
 });
 

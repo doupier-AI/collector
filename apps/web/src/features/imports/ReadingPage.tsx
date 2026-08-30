@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import type { ResearchContentBlock, ResearchContentView, ResearchSelectionAnchor } from "@collector/capture-contracts";
+import { resolveResearchStableLocation, type ResearchContentBlock, type ResearchContentView, type ResearchSelectionAnchor } from "@collector/capture-contracts";
+import { markdownStableVisibleText, projectMarkdownDocument, projectMarkdownSourceRange } from "@collector/markdown-projection";
 import { isApiErrorCode, isUnauthorized, apiErrorCopy } from "../../api/errors";
 import { anchorCaption } from "../../app/anchorCaption";
 import { stableNodePath } from "../../app/paths";
@@ -170,6 +171,31 @@ export function ReadingPage() {
     if (!block) {
       return { kind: "fallback" as const, caption: `《${state.snapshot.title}》内` };
     }
+    if (anchor.location) {
+      const projection = isMarkdown(block) ? projectMarkdownDocument(block.text) : undefined;
+      const resolved = resolveResearchStableLocation(anchor.location, {
+        contentId: block.id,
+        bodyVersionId: state.snapshot.id,
+        source: block.text,
+        ...(projection ? {
+          visibleText: markdownStableVisibleText(projection),
+          projectSourceRange: (range) => {
+            const mapped = projectMarkdownSourceRange(projection, {
+              start: range.startOffset,
+              end: range.endOffset,
+            });
+            return mapped ? { startOffset: mapped.visibleRange.start, endOffset: mapped.visibleRange.end } : undefined;
+          },
+        } : {}),
+      });
+      if (resolved.kind === "degraded") return { kind: "fallback" as const, caption: anchorCaption(block) };
+      return {
+        kind: "found" as const,
+        blockId: block.id,
+        start: anchor.location.sourceRange.startOffset,
+        end: anchor.location.sourceRange.endOffset,
+      };
+    }
     const resolved = resolveHighlight(block.text, {
       startOffset: anchor.startOffset,
       endOffset: anchor.endOffset,
@@ -181,11 +207,13 @@ export function ReadingPage() {
   const searchRestore = useMemo(() => {
     if (state.kind !== "ready") return null;
     const blockId = searchParams.get("searchBlock");
+    const expectedVersion = searchParams.get("searchVersion");
     const start = Number(searchParams.get("searchStart"));
     const end = Number(searchParams.get("searchEnd"));
     if (!blockId) return null;
     const block = state.snapshot.blocks.find((candidate) => candidate.id === blockId);
-    if (!block || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end <= start || end > block.text.length) {
+    if ((expectedVersion !== null && expectedVersion !== state.snapshot.id)
+      || !block || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end <= start || end > block.text.length) {
       return { kind: "fallback" as const, source: "search" as const };
     }
     return { kind: "found" as const, source: "search" as const, blockId, start, end };
@@ -311,6 +339,7 @@ export function ReadingPage() {
       {snapshot.chapterParse ? (
         <ReadingChapterNav
           parse={snapshot.chapterParse}
+          snapshotId={snapshot.id}
           blocks={snapshot.blocks}
           reducedMotion={reducedMotion}
           retryPending={chapterRetryPending}

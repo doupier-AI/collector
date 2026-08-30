@@ -1,9 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ResearchChapterParseView, ResearchContentBlock } from "@collector/capture-contracts";
+import {
+  resolveResearchStableLocation,
+  type ResearchChapterAnchor,
+  type ResearchChapterParseView,
+  type ResearchContentBlock,
+} from "@collector/capture-contracts";
+import {
+  markdownStableVisibleText,
+  projectMarkdownDocument,
+  projectMarkdownSourceRange,
+} from "@collector/markdown-projection";
 import { useMediaQuery } from "../../app/useMediaQuery";
 
 export interface ReadingChapterNavProps {
   parse: ResearchChapterParseView;
+  snapshotId: string;
   blocks: readonly ResearchContentBlock[];
   reducedMotion: boolean;
   retryPending: boolean;
@@ -12,6 +23,52 @@ export interface ReadingChapterNavProps {
 
 /** 章节导航可呈现的最小章节数；不足时不渲染线列（短文无导航成本）。 */
 export const READING_CHAPTER_NAV_MIN_COUNT = 2;
+
+export type ResolvedChapterTarget =
+  | { kind: "stable" | "coarse"; blockId: string; blockOrdinal: number }
+  | { kind: "unavailable" };
+
+/** Resolve a chapter through the shared stable-location contract, then degrade only to its recorded block. */
+export function resolveChapterTarget(
+  chapter: ResearchChapterAnchor,
+  snapshotId: string,
+  blocks: readonly ResearchContentBlock[],
+): ResolvedChapterTarget {
+  const coarseBlock = blocks.find((block) => block.ordinal === chapter.blockOrdinal);
+  if (!chapter.location) {
+    return coarseBlock
+      ? { kind: "coarse", blockId: coarseBlock.id, blockOrdinal: coarseBlock.ordinal }
+      : { kind: "unavailable" };
+  }
+  const locatedBlock = blocks.find((block) => block.id === chapter.location?.contentId);
+  if (locatedBlock) {
+    const projection = locatedBlock.anchor.kind === "markdown" ? projectMarkdownDocument(locatedBlock.text) : undefined;
+    const resolved = resolveResearchStableLocation(chapter.location, {
+      contentId: locatedBlock.id,
+      bodyVersionId: snapshotId,
+      source: locatedBlock.text,
+      ...(projection ? {
+        visibleText: markdownStableVisibleText(projection),
+        projectSourceRange: (range) => {
+          const projected = projectMarkdownSourceRange(projection, {
+            start: range.startOffset,
+            end: range.endOffset,
+          });
+          return projected ? {
+            startOffset: projected.visibleRange.start,
+            endOffset: projected.visibleRange.end,
+          } : undefined;
+        },
+      } : {}),
+    });
+    if (resolved.kind === "found") {
+      return { kind: "stable", blockId: locatedBlock.id, blockOrdinal: locatedBlock.ordinal };
+    }
+  }
+  return coarseBlock
+    ? { kind: "coarse", blockId: coarseBlock.id, blockOrdinal: coarseBlock.ordinal }
+    : { kind: "unavailable" };
+}
 
 /** 锚点来源状态的诚实文案：界面必须如实反映章节是 AI 理解还是规则派生。 */
 export function chapterParseStatusCopy(parse: ResearchChapterParseView): string {
@@ -30,18 +87,18 @@ export function chapterParseStatusCopy(parse: ResearchChapterParseView): string 
  * （Escape/遮罩关闭，焦点回到入口）。
  * 状态行如实呈现锚点来源（AI/规则）与降级原因；规则降级或失败时提供重试入口。
  */
-export function ReadingChapterNav({ parse, blocks, reducedMotion, retryPending, onRetry }: ReadingChapterNavProps) {
+export function ReadingChapterNav({ parse, snapshotId, blocks, reducedMotion, retryPending, onRetry }: ReadingChapterNavProps) {
   const wide = useMediaQuery("(min-width: 900px)");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [activeOrdinal, setActiveOrdinal] = useState<number | null>(null);
   const entryButtonRef = useRef<HTMLButtonElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
 
-  const blockIdByOrdinal = useMemo(() => {
-    const map = new Map<number, string>();
-    for (const block of blocks) map.set(block.ordinal, block.id);
+  const chapterTargets = useMemo(() => {
+    const map = new Map<number, ResolvedChapterTarget>();
+    for (const chapter of parse.chapters) map.set(chapter.ordinal, resolveChapterTarget(chapter, snapshotId, blocks));
     return map;
-  }, [blocks]);
+  }, [blocks, parse.chapters, snapshotId]);
 
   const chapters = parse.chapters;
   const visible = chapters.length >= READING_CHAPTER_NAV_MIN_COUNT;
@@ -50,15 +107,15 @@ export function ReadingChapterNav({ parse, blocks, reducedMotion, retryPending, 
   const canRetry = parse.retryable && (parse.status === "failed" || parse.source === "rule");
 
   const jumpToChapter = useCallback(
-    (blockOrdinal: number) => {
-      const blockId = blockIdByOrdinal.get(blockOrdinal);
-      if (!blockId) return;
-      const element = document.querySelector(`[data-block-id="${CSS.escape(blockId)}"]`);
+    (chapterOrdinal: number) => {
+      const target = chapterTargets.get(chapterOrdinal);
+      if (!target || target.kind === "unavailable") return;
+      const element = document.querySelector(`[data-block-id="${CSS.escape(target.blockId)}"]`);
       if (!(element instanceof HTMLElement)) return;
       element.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "start" });
-      setActiveOrdinal(blockOrdinal);
+      setActiveOrdinal(chapterOrdinal);
     },
-    [blockIdByOrdinal, reducedMotion],
+    [chapterTargets, reducedMotion],
   );
 
   // 阅读位置跟踪：最近一条越过上方注视带的章节为当前章节（只读投影，不抢占点击反馈）。
@@ -70,14 +127,14 @@ export function ReadingChapterNav({ parse, blocks, reducedMotion, retryPending, 
       const focusLine = window.innerHeight * 0.35;
       let current: number | null = null;
       for (const chapter of chapters) {
-        const blockId = blockIdByOrdinal.get(chapter.blockOrdinal);
-        if (!blockId) continue;
-        const element = document.querySelector(`[data-block-id="${CSS.escape(blockId)}"]`);
+        const target = chapterTargets.get(chapter.ordinal);
+        if (!target || target.kind === "unavailable") continue;
+        const element = document.querySelector(`[data-block-id="${CSS.escape(target.blockId)}"]`);
         if (!(element instanceof HTMLElement)) continue;
-        if (element.getBoundingClientRect().top <= focusLine) current = chapter.blockOrdinal;
+        if (element.getBoundingClientRect().top <= focusLine) current = chapter.ordinal;
         else break;
       }
-      setActiveOrdinal(current ?? chapters[0]?.blockOrdinal ?? null);
+      setActiveOrdinal(current ?? chapters[0]?.ordinal ?? null);
     };
     const onScroll = () => {
       if (frame) return;
@@ -91,7 +148,7 @@ export function ReadingChapterNav({ parse, blocks, reducedMotion, retryPending, 
       window.removeEventListener("scroll", onScroll);
       window.removeEventListener("resize", onScroll);
     };
-  }, [visible, chapters, blockIdByOrdinal]);
+  }, [visible, chapters, chapterTargets]);
 
   // 窄屏抽屉：打开时焦点进入关闭按钮，Escape 关闭并归还焦点给浮动入口。
   useEffect(() => {
@@ -117,17 +174,21 @@ export function ReadingChapterNav({ parse, blocks, reducedMotion, retryPending, 
   const list = (
     <ol className="chapter-nav__list">
       {chapters.map((chapter) => {
-        const active = activeOrdinal === chapter.blockOrdinal;
+        const target = chapterTargets.get(chapter.ordinal);
+        const active = activeOrdinal === chapter.ordinal;
         return (
           <li key={chapter.ordinal}>
             <button
               type="button"
               className={`chapter-nav__item${active ? " chapter-nav__item--active" : ""}`}
               data-chapter-ordinal={chapter.ordinal}
-              data-block-target={blockIdByOrdinal.get(chapter.blockOrdinal) ?? ""}
+              data-block-target={target?.kind === "unavailable" ? "" : target?.blockId ?? ""}
+              data-location-resolution={target?.kind ?? "unavailable"}
+              title={target?.kind === "coarse" ? "正文位置已变化，将跳转到原章节附近" : undefined}
+              disabled={target?.kind === "unavailable"}
               aria-current={active ? "true" : undefined}
               onClick={() => {
-                jumpToChapter(chapter.blockOrdinal);
+                jumpToChapter(chapter.ordinal);
                 if (!wide) setDrawerOpen(false);
               }}
             >

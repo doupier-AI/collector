@@ -8,6 +8,7 @@ import {
   deriveMessageBlocks,
   deriveMessageSlices,
   MentionMarkupStream,
+  researchBodyVersionId,
   redactGroundingValue,
   sanitizeGroundingQueries,
   sanitizeGroundingUrl,
@@ -1484,7 +1485,31 @@ export class ResearchSessionService {
       const source = sourceByOrdinal.get(citation.sourceOrdinal);
       const block = blocks.find((candidate) => citation.startOffset >= candidate.startOffset && citation.startOffset <= candidate.startOffset + candidate.text.length);
       if (!source || !block) return [];
-      return [{ id: randomUUID(), messageId: task.outputMessageId, runId, sourceId: source.id, blockOrdinal: block.ordinal, markerOffset: Math.max(0, Math.min(citation.startOffset - block.startOffset, block.text.length)), ...(citation.providerCitationId ? { providerCitationId: citation.providerCitationId } : {}), createdAt }];
+      const markerToken = `[来源${citation.sourceOrdinal}]`;
+      const sourceEnd = citation.endOffset > citation.startOffset
+        ? citation.endOffset
+        : grounded.content.startsWith(markerToken, citation.startOffset)
+          ? citation.startOffset + markerToken.length
+          : citation.startOffset;
+      const exact = grounded.content.slice(citation.startOffset, sourceEnd);
+      return [{
+        id: randomUUID(),
+        messageId: task.outputMessageId,
+        runId,
+        sourceId: source.id,
+        blockOrdinal: block.ordinal,
+        markerOffset: Math.max(0, Math.min(citation.startOffset - block.startOffset, block.text.length)),
+        ...(exact ? {
+          location: {
+            contentId: task.outputMessageId,
+            bodyVersionId: researchBodyVersionId(task.outputMessageId, grounded.content),
+            sourceRange: { startOffset: citation.startOffset, endOffset: sourceEnd },
+            exact,
+          },
+        } : {}),
+        ...(citation.providerCitationId ? { providerCitationId: citation.providerCitationId } : {}),
+        createdAt,
+      }];
     });
     const scope = { status: grounded.status, sourceCount: sources.length, citationCount: citations.length, runId };
     const result: ResearchGroundingResult = {

@@ -492,6 +492,8 @@ export interface ResearchChapterAnchor {
   title: string;
   /** 章节起始内容块在快照 blocks 中的 ordinal（导航跳转目标恒存在于既有块）。 */
   blockOrdinal: number;
+  /** 新记录指向快照中的既有块；旧记录缺省时仍按 blockOrdinal 粗粒度导航。 */
+  location?: ResearchStableLocation;
 }
 
 export interface ResearchChapterTaskRecord {
@@ -534,6 +536,27 @@ export interface ResearchChapterParseView {
 /** 阅读内容 HTTP 视图：快照 + 章节解析状态（只有达到长文阈值的快照携带 chapterParse）。 */
 export interface ResearchContentView extends ResearchContentSnapshotRecord {
   chapterParse?: ResearchChapterParseView;
+}
+
+/** 为新旧章节结果派生同一稳定位置；不复制、改写或持久化块正文。 */
+export function attachResearchChapterLocations(
+  snapshot: Pick<ResearchContentSnapshotRecord, "id" | "blocks">,
+  chapters: readonly ResearchChapterAnchor[],
+): ResearchChapterAnchor[] {
+  return chapters.map((chapter) => {
+    const block = snapshot.blocks.find((candidate) => candidate.ordinal === chapter.blockOrdinal);
+    const { location: _oldLocation, ...base } = chapter;
+    if (!block?.text) return base;
+    return {
+      ...base,
+      location: {
+        contentId: block.id,
+        bodyVersionId: snapshot.id,
+        sourceRange: { startOffset: 0, endOffset: block.text.length },
+        exact: block.text,
+      },
+    };
+  });
 }
 
 /** 导入快照是否需要章节解析：全文超过长文阈值才触发（与 T01 阈值常量同源）。 */
@@ -993,6 +1016,122 @@ export interface AiConfigurationView {
 
 // ── Research Selection ─────────────────────────────────────────────
 
+/** UTF-16 code-unit range over one canonical content body. */
+export interface ResearchTextRange {
+  startOffset: number;
+  endOffset: number;
+}
+
+/**
+ * Stable pointer into an existing canonical body version.
+ *
+ * `exact` is a validation witness, not another writable body. For plain text it
+ * equals the source slice. Markdown locations may additionally carry a visible
+ * range; then `exact` equals that projected visible slice while `sourceRange`
+ * still points at the canonical Markdown source.
+ */
+export interface ResearchStableLocation {
+  contentId: string;
+  bodyVersionId: string;
+  sourceRange: ResearchTextRange;
+  exact: string;
+  visibleRange?: ResearchTextRange;
+}
+
+export type ResearchStableLocationFailureReason =
+  | "content-mismatch"
+  | "version-mismatch"
+  | "source-range-invalid"
+  | "visible-range-invalid"
+  | "exact-mismatch";
+
+export type ResearchStableLocationResolution =
+  | { kind: "found"; location: ResearchStableLocation }
+  | {
+      kind: "degraded";
+      reason: ResearchStableLocationFailureReason;
+      contentId: string;
+      bodyVersionId: string;
+    };
+
+export interface ResearchStableLocationCandidate {
+  contentId: string;
+  bodyVersionId: string;
+  source: string;
+  /** Current visible projection. Required only when the location has visibleRange. */
+  visibleText?: string;
+  /** Projects the source range through the current renderer; required with visibleRange. */
+  projectSourceRange?: (sourceRange: ResearchTextRange) => ResearchTextRange | undefined;
+}
+
+/** Structural validation shared by HTTP contracts and persisted derived records. */
+export function validateResearchStableLocation(value: unknown): asserts value is ResearchStableLocation {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Stable location must be an object");
+  const location = value as Record<string, unknown>;
+  if (typeof location.contentId !== "string" || !location.contentId.trim()) throw new Error("location.contentId is required");
+  if (typeof location.bodyVersionId !== "string" || !location.bodyVersionId.trim()) throw new Error("location.bodyVersionId is required");
+  validateResearchTextRange(location.sourceRange, "location.sourceRange");
+  if (typeof location.exact !== "string" || !location.exact) throw new Error("location.exact is required");
+  if (location.visibleRange !== undefined) validateResearchTextRange(location.visibleRange, "location.visibleRange");
+}
+
+function validateResearchTextRange(value: unknown, field: string): asserts value is ResearchTextRange {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${field} is required`);
+  const range = value as Record<string, unknown>;
+  if (!Number.isSafeInteger(range.startOffset) || (range.startOffset as number) < 0) {
+    throw new Error(`${field}.startOffset must be a non-negative integer`);
+  }
+  if (!Number.isSafeInteger(range.endOffset) || (range.endOffset as number) <= (range.startOffset as number)) {
+    throw new Error(`${field}.endOffset must be greater than startOffset`);
+  }
+}
+
+/**
+ * Resolve without fuzzy search. A mismatch returns a coarse-grained degradation
+ * reason so callers can keep the content identity while refusing a wrong exact
+ * location, including repeated-text cases.
+ */
+export function resolveResearchStableLocation(
+  location: ResearchStableLocation,
+  candidate: ResearchStableLocationCandidate,
+): ResearchStableLocationResolution {
+  const degraded = (reason: ResearchStableLocationFailureReason): ResearchStableLocationResolution => ({
+    kind: "degraded",
+    reason,
+    contentId: location.contentId,
+    bodyVersionId: location.bodyVersionId,
+  });
+  if (candidate.contentId !== location.contentId) return degraded("content-mismatch");
+  if (candidate.bodyVersionId !== location.bodyVersionId) return degraded("version-mismatch");
+  const sourceRange = location.sourceRange;
+  if (!validResearchTextRange(sourceRange, candidate.source.length)) return degraded("source-range-invalid");
+  if (location.visibleRange) {
+    if (candidate.visibleText === undefined || !validResearchTextRange(location.visibleRange, candidate.visibleText.length)) {
+      return degraded("visible-range-invalid");
+    }
+    const projected = candidate.projectSourceRange?.(sourceRange);
+    if (!projected
+      || projected.startOffset !== location.visibleRange.startOffset
+      || projected.endOffset !== location.visibleRange.endOffset) {
+      return degraded("visible-range-invalid");
+    }
+    if (candidate.visibleText.slice(location.visibleRange.startOffset, location.visibleRange.endOffset) !== location.exact) {
+      return degraded("exact-mismatch");
+    }
+  } else if (candidate.source.slice(sourceRange.startOffset, sourceRange.endOffset) !== location.exact) {
+    return degraded("exact-mismatch");
+  }
+  return { kind: "found", location };
+}
+
+function validResearchTextRange(range: ResearchTextRange, length: number): boolean {
+  return Number.isSafeInteger(range.startOffset)
+    && Number.isSafeInteger(range.endOffset)
+    && range.startOffset >= 0
+    && range.endOffset > range.startOffset
+    && range.endOffset <= length;
+}
+
 /**
  * 选区锚点统一两种内容来源。offsets 是相对该锚定块文本的字符偏移
  * （UTF-16 code unit，与浏览器 Selection / String.prototype.slice 一致）。
@@ -1007,6 +1146,8 @@ export type ResearchSelectionAnchor =
       startOffset: number;
       endOffset: number;
       exact: string;
+      /** Service-resolved stable location; omitted by legacy clients and stale records. */
+      location?: ResearchStableLocation;
       prefix?: string;
       suffix?: string;
     }
@@ -1017,6 +1158,8 @@ export type ResearchSelectionAnchor =
       startOffset: number;
       endOffset: number;
       exact: string;
+      /** Service-resolved stable location; omitted by legacy clients and stale records. */
+      location?: ResearchStableLocation;
       prefix?: string;
       suffix?: string;
     };
@@ -1096,6 +1239,13 @@ export function validateResearchSelectionInput(value: unknown): asserts value is
   }
   if (candidate.exact.length > RESEARCH_SELECTION_MAX_CHARACTERS) {
     throw new Error(`Selection must not exceed ${RESEARCH_SELECTION_MAX_CHARACTERS} characters`);
+  }
+  if (candidate.location !== undefined) {
+    validateResearchStableLocation(candidate.location);
+    const location = candidate.location as ResearchStableLocation;
+    const expectedContentId = candidate.kind === "message" ? candidate.messageId : candidate.blockId;
+    if (location.contentId !== expectedContentId) throw new Error("anchor.location.contentId must match the anchored content");
+    if (location.exact !== candidate.exact) throw new Error("anchor.location.exact must match anchor.exact");
   }
   for (const field of RESEARCH_SELECTION_ANCHOR_CONTEXT_FIELDS) {
     const excerpt = candidate[field];
@@ -1396,6 +1546,10 @@ export function validateResearchTermPreviewInput(value: unknown): asserts value 
   const categories: TermCategory[] = ["concept", "entity", "abbreviation", "notation"];
   if (!categories.includes(marker.category as TermCategory)) {
     throw new Error("marker.category is invalid");
+  }
+  if (marker.location !== undefined) {
+    validateResearchStableLocation(marker.location);
+    if (marker.location.contentId !== input.messageId) throw new Error("marker.location must reference messageId");
   }
 }
 
@@ -1946,6 +2100,8 @@ export interface ResearchCitationRecord {
   sourceId: string;
   blockOrdinal: number;
   markerOffset: number;
+  /** 新记录直接指向最终保存回答中的引用原文；旧记录保留 markerOffset 降级。 */
+  location?: ResearchStableLocation;
   providerCitationId?: string;
   createdAt: string;
 }
@@ -2012,6 +2168,16 @@ export function validateResearchGroundingResult(result: ResearchGroundingResult)
     if (citation.runId !== result.run.id || !sourceIds.has(citation.sourceId)) throw new Error("Citation must reference a source from the same grounding run");
     const block = blocks[citation.blockOrdinal];
     if (!block || citation.markerOffset < 0 || citation.markerOffset > block.text.length) throw new Error("Citation marker must be positioned in the final message text");
+    if (citation.location) {
+      validateResearchStableLocation(citation.location);
+      if (citation.location.contentId !== citation.messageId) throw new Error("Citation location must reference its final message");
+      const resolved = resolveResearchStableLocation(citation.location, {
+        contentId: citation.messageId,
+        bodyVersionId: researchBodyVersionId(citation.messageId, result.content),
+        source: result.content,
+      });
+      if (resolved.kind === "degraded") throw new Error(`Citation stable location is invalid: ${resolved.reason}`);
+    }
   }
 }
 
@@ -2269,6 +2435,39 @@ export function hashBodyContent(content: string): string {
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
+/** Shared constructor for the canonical identity of one message body revision. */
+export function researchBodyVersionId(messageId: string, content: string): string {
+  return `body:${messageId}:${hashBodyContent(content)}`;
+}
+
+/**
+ * Prove that a body identity belongs to an exact prefix of the current content.
+ * This is used only for append-only streaming handoff; it never searches by text.
+ */
+export function researchBodyVersionIsContentPrefix(
+  messageId: string,
+  bodyVersionId: string,
+  currentContent: string,
+  minimumSourceEnd = 0,
+): boolean {
+  if (!Number.isSafeInteger(minimumSourceEnd) || minimumSourceEnd < 0 || minimumSourceEnd > currentContent.length) return false;
+  const idPrefix = `body:${messageId}:`;
+  if (!bodyVersionId.startsWith(idPrefix)) return false;
+  const hashText = bodyVersionId.slice(idPrefix.length);
+  if (!/^[0-9a-f]{8}$/.test(hashText)) return false;
+  const targetHash = Number.parseInt(hashText, 16) >>> 0;
+  const normalized = normalizeBodyContent(currentContent);
+  const minimumLength = normalizeBodyContent(currentContent.slice(0, minimumSourceEnd)).length;
+  let hash = 0x811c9dc5;
+  if (minimumLength === 0 && (hash >>> 0) === targetHash) return true;
+  for (let index = 0; index < normalized.length; index += 1) {
+    hash ^= normalized.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+    if (index + 1 >= minimumLength && (hash >>> 0) === targetHash) return true;
+  }
+  return false;
+}
+
 /**
  * 确定性派生正文版本（纯函数）。同一 messageId + 同一归一化正文恒得同一记录，
  * 不依赖时钟之外的任何可变状态；createdAt 由调用方注入以保证可复现。
@@ -2286,7 +2485,7 @@ export function deriveBodyVersion(input: {
   const contentHash = hashBodyContent(content);
   const version = input.version ?? 1;
   return {
-    id: `body:${input.messageId}:${contentHash}`,
+    id: researchBodyVersionId(input.messageId, content),
     messageId: input.messageId,
     nodeId: input.nodeId,
     version,
@@ -2453,6 +2652,8 @@ export interface TermMarker {
   endOffset: number;
   /** 术语分类。 */
   category: TermCategory;
+  /** 新检测结果指向消息规范正文；旧结果仍可按块内偏移验证后使用。 */
+  location?: ResearchStableLocation;
 }
 
 export type ResearchPermanentEdgeRecord = Omit<ResearchEdgeRecord, "kind"> & {
@@ -2572,6 +2773,7 @@ export interface ResearchSearchMessageSemanticRangeLocator {
   fragmentId: string;
   startOffset: number;
   endOffset: number;
+  location?: ResearchStableLocation;
 }
 
 /** 用户问题没有正文版本副本；定位使用当前消息及其确定性字符范围。 */
@@ -2583,6 +2785,7 @@ export interface ResearchSearchMessageTextRangeLocator {
   contentHash: string;
   startOffset: number;
   endOffset: number;
+  location?: ResearchStableLocation;
 }
 
 /** 导入正文命中始终回到既有内容快照的一个 block。 */
@@ -2593,6 +2796,7 @@ export interface ResearchSearchImportBlockLocator {
   blockId: string;
   startOffset: number;
   endOffset: number;
+  location?: ResearchStableLocation;
 }
 
 /** 正式融合正文以确认快照为不可变事实源，并保留窗口在该快照中的字符范围。 */
@@ -2602,6 +2806,7 @@ export interface ResearchSearchFusionSnapshotRangeLocator {
   confirmedDraftVersionId: string;
   startOffset: number;
   endOffset: number;
+  location?: ResearchStableLocation;
 }
 
 export type ResearchSearchLocator =
@@ -3579,6 +3784,14 @@ function projectAbsoluteMentions(
       startOffset,
       endOffset,
       category: mention.category,
+      ...(messageId !== "legacy" ? {
+        location: {
+          contentId: messageId,
+          bodyVersionId: researchBodyVersionId(messageId, content),
+          sourceRange: { startOffset: absoluteStart, endOffset: absoluteEnd },
+          exact: mention.text,
+        },
+      } : {}),
     });
   }
   return result;

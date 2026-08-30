@@ -1,6 +1,7 @@
 import { type ReactNode, useMemo, useRef } from "react";
 import "katex/dist/katex.min.css";
 import type { ResearchCitationRecord, ResearchGroundingSourceRecord, TermMarker } from "@collector/capture-contracts";
+import { projectMarkdownDocument, projectMarkdownSourceRange } from "@collector/markdown-projection";
 import { CitationMarker } from "./CitationMarker";
 import { buildCitationIndex, buildSourceMap } from "../features/research-session/citation-utils";
 import {
@@ -77,6 +78,10 @@ export function MarkdownContent({ text, sources = [], citations = [], terms = []
     () => (highlights.length === 0 && terms.length === 0 ? EMPTY_MARKDOWN_PROJECTION : projectMarkdownVisibleText(text)),
     [highlights.length, terms.length, text],
   );
+  const locationProjection = useMemo(
+    () => (terms.length === 0 ? undefined : projectMarkdownDocument(text)),
+    [terms.length, text],
+  );
   const validHighlights = useMemo(() => {
     if (highlights.length === 0) return [];
     return highlights.filter((highlight) =>
@@ -93,14 +98,15 @@ export function MarkdownContent({ text, sources = [], citations = [], terms = []
       .filter((term) => isValidTermMarker(text, term))
       .sort((left, right) => renderedStart(left) - renderedStart(right) || renderedEnd(left) - renderedEnd(right))
       .flatMap<MarkdownVisibleTerm>((term) => {
-        // 同名术语按"源文本第 N 次出现"对应"渲染可见文字第 N 次出现"定位。渲染器随后
-        // 在 React 树中排除链接、按钮和代码节点，保持既有不可交互区域的丢弃语义。
-        const occurrence = countOccurrences(text.slice(0, renderedStart(term)), term.text);
-        const start = findOccurrence(projection.text, term.text, occurrence);
-        if (start < 0) return [];
+        const mapped = locationProjection && projectMarkdownSourceRange(locationProjection, {
+          start: renderedStart(term),
+          end: renderedEnd(term),
+        });
+        if (!mapped || mapped.exact !== term.text
+          || projection.text.slice(mapped.visibleRange.start, mapped.visibleRange.end) !== term.text) return [];
         return [{
-          start,
-          end: start + term.text.length,
+          start: mapped.visibleRange.start,
+          end: mapped.visibleRange.end,
           text: term.text,
           category: term.category,
           blockOrdinal: term.blockOrdinal,
@@ -108,7 +114,7 @@ export function MarkdownContent({ text, sources = [], citations = [], terms = []
           sourceEndOffset: term.endOffset,
         }];
       })
-  ), [projection.text, terms, text]);
+  ), [locationProjection, projection.text, terms, text]);
   const components = {
     // 产品安全边界不加载模型或正文提供的任意远程图片；保留可读、可复制的替代文字。
     img: ({ alt }: React.ImgHTMLAttributes<HTMLImageElement>): ReactNode => (
@@ -190,29 +196,4 @@ function renderedStart(marker: RenderedTermMarker): number {
 
 function renderedEnd(marker: RenderedTermMarker): number {
   return marker.renderedEndOffset ?? marker.endOffset;
-}
-
-/** 源文本中 needle 在 haystack 里的不重叠出现次数（与渲染侧逐个出现的计数口径一致）。 */
-function countOccurrences(haystack: string, needle: string): number {
-  if (!needle) return 0;
-  let count = 0;
-  let from = 0;
-  for (;;) {
-    const index = haystack.indexOf(needle, from);
-    if (index < 0) return count;
-    count += 1;
-    from = index + needle.length;
-  }
-}
-
-function findOccurrence(haystack: string, needle: string, occurrenceIndex: number): number {
-  if (!needle) return -1;
-  let index = -1;
-  let from = 0;
-  for (let seen = 0; seen <= occurrenceIndex; seen += 1) {
-    index = haystack.indexOf(needle, from);
-    if (index < 0) return -1;
-    from = index + needle.length;
-  }
-  return index;
 }

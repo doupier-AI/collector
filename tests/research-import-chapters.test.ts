@@ -146,6 +146,15 @@ test("导入长文：AI 章节解析异步完成、幂等不重复、HTTP 视图
   assert.deepEqual(ordinals, [...ordinals].sort((a, b) => a - b));
   assert.ok(ordinals.every((blockOrdinal) => blockOrdinal >= 0 && blockOrdinal < snapshot.blocks.length));
   assert.ok(task.chapters.every((chapter) => chapter.title === "章节1" || chapter.title === "章节2" || chapter.title === "章节3"));
+  for (const chapter of task.chapters) {
+    const block = snapshot.blocks[chapter.blockOrdinal]!;
+    assert.deepEqual(chapter.location, {
+      contentId: block.id,
+      bodyVersionId: snapshot.id,
+      sourceRange: { startOffset: 0, endOffset: block.text.length },
+      exact: block.text,
+    });
+  }
 
   // 幂等：重复触发不产生重复任务（快照唯一约束），任务 ID 不变。
   harness.service.researchChapters.enqueueForSnapshot(snapshot);

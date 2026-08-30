@@ -56,6 +56,12 @@ export interface MarkdownDocumentProjection {
   diagnostics: MarkdownParseDiagnostic[];
 }
 
+export interface MarkdownStableRangeProjection {
+  sourceRange: MarkdownRange;
+  visibleRange: MarkdownRange;
+  exact: string;
+}
+
 /** One versioned policy for every Node/browser projection consumer. */
 export const MARKDOWN_PROJECTION_CONFIG = Object.freeze({
   version: 1,
@@ -158,6 +164,159 @@ export function projectMarkdownDocument(source: string): MarkdownDocumentProject
       }],
     };
   }
+}
+
+/**
+ * Resolve a visible selection to one exact source range using the shared tree.
+ * Collector citation tokens are annotations and therefore contribute no visible
+ * characters. Generated renderer output (for example KaTeX glyph trees) is not
+ * guessed back into source coordinates.
+ */
+export function resolveMarkdownVisibleRange(
+  projection: MarkdownDocumentProjection,
+  visibleRange: MarkdownRange,
+  exact: string,
+): MarkdownStableRangeProjection | undefined {
+  const characters = markdownLocationCharacters(projection);
+  const visibleText = characters.map((character) => character.value).join("");
+  if (!validMarkdownRange(visibleRange, characters.length)
+    || visibleText.slice(visibleRange.start, visibleRange.end) !== exact) return undefined;
+  const selected = characters.slice(visibleRange.start, visibleRange.end);
+  const first = selected[0];
+  const last = selected.at(-1);
+  if (!first?.sourceRange || !last?.sourceRange || first.structural || last.structural
+    || selected.some((character) => !character.sourceRange)) return undefined;
+  return {
+    sourceRange: { start: first.sourceRange.start, end: last.sourceRange.end },
+    visibleRange: { ...visibleRange },
+    exact,
+  };
+}
+
+/** Project one canonical source range to the exact visible range it currently owns. */
+export function projectMarkdownSourceRange(
+  projection: MarkdownDocumentProjection,
+  sourceRange: MarkdownRange,
+): MarkdownStableRangeProjection | undefined {
+  if (!validMarkdownRange(sourceRange, projection.source.length)) return undefined;
+  const characters = markdownLocationCharacters(projection);
+  const included = characters.flatMap((character, index) => character.sourceRange
+    && (character.structural
+      ? character.sourceRange.start >= sourceRange.start && character.sourceRange.start <= sourceRange.end
+      : character.sourceRange.start >= sourceRange.start && character.sourceRange.end <= sourceRange.end)
+    ? [{ character: character as MarkdownLocationCharacter & { sourceRange: MarkdownRange }, index }]
+    : []);
+  const first = included[0];
+  const last = included.at(-1);
+  if (!first || !last) return undefined;
+  if (included.every(({ character }) => character.structural)) return undefined;
+  if (first.character.sourceRange.start < sourceRange.start || last.character.sourceRange.end > sourceRange.end) return undefined;
+  for (let index = 1; index < included.length; index += 1) {
+    if (included[index]!.index !== included[index - 1]!.index + 1) return undefined;
+  }
+  return {
+    sourceRange: { ...sourceRange },
+    visibleRange: { start: first.index, end: last.index + 1 },
+    exact: included.map(({ character }) => character.value).join(""),
+  };
+}
+
+interface MarkdownLocationCharacter {
+  value: string;
+  sourceRange?: MarkdownRange;
+  structural?: boolean;
+}
+
+const COLLECTOR_CITATION_TOKEN = /\[来源\d+\]/g;
+
+function markdownLocationCharacters(projection: MarkdownDocumentProjection): MarkdownLocationCharacter[] {
+  const result: MarkdownLocationCharacter[] = [];
+  const visit = (node: MarkdownProjectionNode, insideTable = false, codeSourceRange?: MarkdownRange): void => {
+    const tableContext = insideTable || node.tagName === "table";
+    const classNames = Array.isArray(node.properties?.className) ? node.properties.className : [];
+    const isSourceCode = node.tagName === "code"
+      && !classNames.includes("language-math")
+      && !classNames.includes("math-inline")
+      && !classNames.includes("math-display");
+    const codeContext = isSourceCode && !node.generated ? node.sourceRange : codeSourceRange;
+    if (node.kind === "text" && node.value) {
+      if (tableContext && node.generated && node.value.trim() === "") return;
+      const mapped = node.generated && codeContext
+        ? mapRenderedCharacters(
+            node.value,
+            projection.source.slice(codeContext.start, codeContext.end),
+            codeContext.start,
+          )
+        : node.generated
+        ? Array.from({ length: node.value.length }, (_, index) => ({
+            value: node.value![index]!,
+            ...(node.value!.trim() === "" ? { sourceRange: { ...node.sourceRange }, structural: true } : {}),
+          }))
+        : mapRenderedCharacters(node.value, projection.source.slice(node.sourceRange.start, node.sourceRange.end), node.sourceRange.start);
+      if (mapped) {
+        const omitted = new Set<number>();
+        for (const match of node.value.matchAll(COLLECTOR_CITATION_TOKEN)) {
+          for (let index = match.index; index < match.index + match[0].length; index += 1) omitted.add(index);
+        }
+        mapped.forEach((character, index) => {
+          if (!omitted.has(index)) result.push(character);
+        });
+      }
+      return;
+    }
+    node.children.forEach((child) => visit(child, tableContext, codeContext));
+  };
+  visit(projection.root);
+  return result;
+}
+
+/** Visible text used by stable locations: renderer output minus zero-width citation annotations. */
+export function markdownStableVisibleText(projection: MarkdownDocumentProjection): string {
+  return markdownLocationCharacters(projection).map((character) => character.value).join("");
+}
+
+function mapRenderedCharacters(value: string, raw: string, baseOffset: number): MarkdownLocationCharacter[] | undefined {
+  if (value === raw) {
+    return Array.from({ length: value.length }, (_, index) => ({
+      value: value[index]!,
+      sourceRange: { start: baseOffset + index, end: baseOffset + index + 1 },
+    }));
+  }
+  const exactIndex = raw.indexOf(value);
+  if (exactIndex >= 0 && raw.indexOf(value, exactIndex + value.length) < 0) {
+    return Array.from({ length: value.length }, (_, index) => ({
+      value: value[index]!,
+      sourceRange: {
+        start: baseOffset + exactIndex + index,
+        end: baseOffset + exactIndex + index + 1,
+      },
+    }));
+  }
+  const characters: MarkdownLocationCharacter[] = [];
+  let rawOffset = 0;
+  for (let valueOffset = 0; valueOffset < value.length; valueOffset += 1) {
+    const character = value[valueOffset]!;
+    if (raw[rawOffset] === character) {
+      characters.push({ value: character, sourceRange: { start: baseOffset + rawOffset, end: baseOffset + rawOffset + 1 } });
+      rawOffset += 1;
+      continue;
+    }
+    if (raw[rawOffset] === "\\" && raw[rawOffset + 1] === character) {
+      characters.push({ value: character, sourceRange: { start: baseOffset + rawOffset, end: baseOffset + rawOffset + 2 } });
+      rawOffset += 2;
+      continue;
+    }
+    return undefined;
+  }
+  return characters;
+}
+
+function validMarkdownRange(range: MarkdownRange, length: number): boolean {
+  return Number.isSafeInteger(range.start)
+    && Number.isSafeInteger(range.end)
+    && range.start >= 0
+    && range.end > range.start
+    && range.end <= length;
 }
 
 function collectRenderedDiagnostics(

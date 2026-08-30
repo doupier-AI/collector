@@ -12,8 +12,14 @@ describe("researchSearchMatchTarget", () => {
     expect(researchSearchMatchTarget("session-a", {
       field: "import-body",
       preview: "导入正文命中",
-      locator: { kind: "import-block", nodeId: "session-a", contentSnapshotId: "snapshot-a", blockId: "block-a", startOffset: 12, endOffset: 24 },
-    })).toEqual({ path: "/research/session-a/reading/snapshot-a?searchBlock=block-a&searchStart=12&searchEnd=24" });
+      locator: {
+        kind: "import-block", nodeId: "session-a", contentSnapshotId: "snapshot-a", blockId: "block-a", startOffset: 12, endOffset: 24,
+        location: {
+          contentId: "block-a", bodyVersionId: "snapshot-a",
+          sourceRange: { startOffset: 12, endOffset: 24 }, exact: "导入正文命中",
+        },
+      },
+    })).toEqual({ path: "/research/session-a/reading/snapshot-a?searchBlock=block-a&searchStart=12&searchEnd=24&searchVersion=snapshot-a" });
   });
 
   it("用户问题可按当前消息范围定位；标题直接打开；确认融合快照诚实降级", () => {

@@ -2,6 +2,7 @@ import {
   deriveMessageBlocks,
   measureResearchContentLength,
   normalizeResearchNodeDepth,
+  researchBodyVersionId,
   resolveResearchConvergence,
   selectResearchTermMarkers,
   type MessageContentBlock,
@@ -103,6 +104,17 @@ export function detectTermMarkers(content: string, messageId = "legacy"): TermMa
         startOffset: match.startOffset,
         endOffset: match.endOffset,
         category: match.category,
+        ...(messageId !== "legacy" ? {
+          location: {
+            contentId: messageId,
+            bodyVersionId: researchBodyVersionId(messageId, content),
+            sourceRange: {
+              startOffset: block.startOffset + match.startOffset,
+              endOffset: block.startOffset + match.endOffset,
+            },
+            exact: match.text,
+          },
+        } : {}),
       });
     }
   }
@@ -209,6 +221,15 @@ export function validateTermMarkers(content: string, markers: TermMarker[]): Ter
     // 验证文本切片与块文本一致
     const sliced = block.text.slice(marker.startOffset, marker.endOffset);
     if (sliced !== marker.text) continue;
+    if (marker.location) {
+      const expectedVersion = researchBodyVersionId(marker.location.contentId, content);
+      const range = marker.location.sourceRange;
+      if (marker.location.bodyVersionId !== expectedVersion
+        || marker.location.exact !== marker.text
+        || range.startOffset !== block.startOffset + marker.startOffset
+        || range.endOffset !== block.startOffset + marker.endOffset
+        || content.slice(range.startOffset, range.endOffset) !== marker.text) continue;
+    }
 
     valid.push(marker);
   }

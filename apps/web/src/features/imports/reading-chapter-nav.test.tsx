@@ -2,7 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ResearchChapterParseView, ResearchContentBlock } from "@collector/capture-contracts";
-import { ReadingChapterNav } from "./ReadingChapterNav";
+import { ReadingChapterNav, resolveChapterTarget } from "./ReadingChapterNav";
 
 function stubMatchMedia(wide: boolean) {
   window.matchMedia = vi.fn().mockImplementation((query: string) => ({
@@ -67,13 +67,49 @@ function renderNav(overrides: Partial<ResearchChapterParseView> = {}, options: {
   const reactRoot = document.createElement("div");
   wrapper.appendChild(reactRoot);
   const view = render(
-    <ReadingChapterNav parse={parse(overrides)} blocks={blocks()} reducedMotion onRetry={onRetry} retryPending={retryPending} />,
+    <ReadingChapterNav
+      parse={parse(overrides)}
+      snapshotId="snapshot-current"
+      blocks={blocks()}
+      reducedMotion
+      onRetry={onRetry}
+      retryPending={retryPending}
+    />,
     { container: reactRoot },
   );
   return { view, onRetry, container: wrapper };
 }
 
 describe("导入阅读页章节导航", () => {
+  it("优先校验稳定位置，并在位置失效时只降级到原章节块", () => {
+    const currentBlocks = blocks();
+    const stable = resolveChapterTarget({
+      ordinal: 1,
+      title: "方法与材料",
+      blockOrdinal: 3,
+      location: {
+        contentId: "block-7",
+        bodyVersionId: "snapshot-current",
+        sourceRange: { startOffset: 0, endOffset: 2 },
+        exact: "块7",
+      },
+    }, "snapshot-current", currentBlocks);
+    expect(stable).toEqual({ kind: "stable", blockId: "block-7", blockOrdinal: 7 });
+
+    const stale = resolveChapterTarget({
+      ordinal: 1,
+      title: "方法与材料",
+      blockOrdinal: 3,
+      location: {
+        contentId: "block-7",
+        bodyVersionId: "snapshot-old",
+        sourceRange: { startOffset: 0, endOffset: 2 },
+        exact: "块7",
+      },
+    }, "snapshot-current", currentBlocks);
+    expect(stale).toEqual({ kind: "coarse", blockId: "block-3", blockOrdinal: 3 });
+  });
+
   it("宽屏渲染右侧线列与 AI 来源状态；点击锚点滚动到既有块", async () => {
     const user = userEvent.setup();
     const { onRetry, container } = renderNav();

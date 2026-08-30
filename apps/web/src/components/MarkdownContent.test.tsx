@@ -56,6 +56,21 @@ describe("MarkdownContent formula and safety rendering", () => {
     expect(fallback).toHaveTextContent(source);
   });
 
+  it("maps a repeated weak marker from its source range instead of guessing the first visible match", () => {
+    const source = "**REST** 与 REST";
+    const secondStart = source.lastIndexOf("REST");
+    const { container } = render(<MarkdownContent text={source} terms={[{
+      text: "REST",
+      blockOrdinal: 0,
+      startOffset: secondStart,
+      endOffset: secondStart + 4,
+      category: "abbreviation",
+    }]} />);
+
+    expect(container.querySelector("strong [data-term-marker]")).toBeNull();
+    expect(container.querySelectorAll("[data-term-marker]")).toHaveLength(1);
+  });
+
   it("does not execute HTML or create script, SVG, data-image, remote-image, or formula links", () => {
     delete (globalThis as { __markdownExecuted?: boolean }).__markdownExecuted;
     const { container } = render(<MarkdownContent text={[
