@@ -1,5 +1,6 @@
 import { type ReactNode, useMemo, useRef } from "react";
 import ReactMarkdown from "react-markdown";
+import "katex/dist/katex.min.css";
 import type { ResearchCitationRecord, ResearchGroundingSourceRecord, TermMarker } from "@collector/capture-contracts";
 import { CitationMarker } from "./CitationMarker";
 import { buildCitationIndex, buildSourceMap } from "../features/research-session/citation-utils";
@@ -112,6 +113,10 @@ export function MarkdownContent({ text, sources = [], citations = [], terms = []
       })
   ), [projection.text, terms, text]);
   const components = {
+    // 产品安全边界不加载模型或正文提供的任意远程图片；保留可读、可复制的替代文字。
+    img: ({ alt }: React.ImgHTMLAttributes<HTMLImageElement>): ReactNode => (
+      alt ? <span className="markdown-image-fallback">{`[图片：${alt}]`}</span> : null
+    ),
     "cite-marker": ({ "data-source-ordinal": ordinalStr }: Record<string, unknown>): ReactNode => {
       const ordinal = Number(ordinalStr);
       const citation = (citationByOrdinal.get(ordinal) ?? [])[0];

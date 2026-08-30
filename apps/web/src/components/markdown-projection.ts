@@ -1,25 +1,32 @@
 import { cloneElement, createElement, isValidElement, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import type { Options as ReactMarkdownOptions } from "react-markdown";
+import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
-import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
+import remarkMath from "remark-math";
+import rehypeSanitize from "rehype-sanitize";
+import { MARKDOWN_MATH_OPTIONS, MARKDOWN_SANITIZE_SCHEMA, rehypeMathSourceFallback } from "@collector/markdown-projection";
 import { remarkCitationMarkers } from "../features/research-session/remark-citation-markers";
 
 /** MarkdownContent 与所有定位逻辑共享的解析/清洗管线。 */
-export const markdownRemarkPlugins: NonNullable<ReactMarkdownOptions["remarkPlugins"]> = [remarkGfm, remarkBreaks, remarkCitationMarkers];
+export const markdownRemarkPlugins: NonNullable<ReactMarkdownOptions["remarkPlugins"]> = [remarkGfm, remarkBreaks, remarkMath, remarkCitationMarkers];
 
 /** rehype-sanitize 默认 schema 上的安全扩展：放行 cite-marker 与内联容器标签。 */
 export const markdownSafeSchema = {
-  ...defaultSchema,
-  tagNames: [...(defaultSchema.tagNames ?? []), "cite-marker", "del", "input"],
+  ...MARKDOWN_SANITIZE_SCHEMA,
+  tagNames: [...(MARKDOWN_SANITIZE_SCHEMA.tagNames ?? []), "cite-marker", "del", "input"],
   attributes: {
-    ...defaultSchema.attributes,
+    ...MARKDOWN_SANITIZE_SCHEMA.attributes,
     "cite-marker": ["data-source-ordinal", "class", "role", "tabindex", "aria-label", "aria-expanded", "aria-describedby"],
   },
 };
 
-export const markdownRehypePlugins: NonNullable<ReactMarkdownOptions["rehypePlugins"]> = [[rehypeSanitize, markdownSafeSchema]];
+export const markdownRehypePlugins: NonNullable<ReactMarkdownOptions["rehypePlugins"]> = [
+  [rehypeSanitize, markdownSafeSchema],
+  rehypeMathSourceFallback,
+  [rehypeKatex, MARKDOWN_MATH_OPTIONS],
+];
 
 export interface MarkdownVisibleProjection {
   /** 与 MarkdownContent 实际 DOM textContent 一致、但不包含零文本来源角标的正文。 */

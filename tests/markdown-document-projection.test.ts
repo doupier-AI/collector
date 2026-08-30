@@ -75,6 +75,19 @@ describe("unified Markdown document projection", () => {
     ]);
   });
 
+  it("renders formulas through the shared safe pipeline and diagnoses source fallback", () => {
+    const valid = projectMarkdownDocument("行内 $E=mc^2$\n\n$$\n\\frac{1}{2}\n$$");
+    assert.equal(findElement(valid.root, "math")?.tagName, "math");
+    assert.equal(valid.diagnostics.length, 0);
+
+    const source = "\\frac{1}{";
+    const invalid = projectMarkdownDocument(`$$\n${source}\n$$`);
+    const fallback = findElementByClass(invalid.root, "math-source-fallback");
+    assert.ok(fallback);
+    assert.match(invalid.visibleText, /frac/);
+    assert.deepEqual(invalid.diagnostics.map((diagnostic) => diagnostic.code), ["math-render-failed"]);
+  });
+
   it("publishes the single GFM, line-break, and safety configuration", () => {
     assert.deepEqual(MARKDOWN_PROJECTION_CONFIG, {
       version: 1,
@@ -82,8 +95,20 @@ describe("unified Markdown document projection", () => {
       softBreaks: "line-break",
       rawHtml: "remove",
       mdx: false,
+      math: "katex",
       sanitizeSchema: "github-safe-v1",
     });
+  });
+  it("projects a multiline document at the 20 MiB import boundary", () => {
+    const maxBytes = 20 * 1024 * 1024;
+    const line = `${"long".repeat(255)}x\n`;
+    const source = line.repeat(Math.ceil(maxBytes / line.length)).slice(0, maxBytes);
+    const projection = projectMarkdownDocument(source);
+
+    assert.equal(Buffer.byteLength(source, "utf8"), maxBytes);
+    assert.equal(projection.source.length, source.length);
+    assert.match(projection.visibleText, /^long/);
+    assert.equal(projection.diagnostics.some((diagnostic) => diagnostic.code === "parse-failed"), false);
   });
 });
 
@@ -100,6 +125,16 @@ function findElement(node: MarkdownProjectionNode, tagName: string): MarkdownPro
   if (node.tagName === tagName) return node;
   for (const child of node.children) {
     const found = findElement(child, tagName);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function findElementByClass(node: MarkdownProjectionNode, className: string): MarkdownProjectionNode | undefined {
+  const classNames = Array.isArray(node.properties?.className) ? node.properties.className : [];
+  if (classNames.includes(className)) return node;
+  for (const child of node.children) {
+    const found = findElementByClass(child, className);
     if (found) return found;
   }
   return undefined;

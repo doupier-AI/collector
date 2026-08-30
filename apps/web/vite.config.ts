@@ -14,6 +14,10 @@ const apiProxy = {
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    // CSP 只允许同源字体；禁止 Vite 把小型 KaTeX 字体转成 data: URL。
+    assetsInlineLimit: 0,
+  },
   server: {
     proxy: apiProxy,
   },

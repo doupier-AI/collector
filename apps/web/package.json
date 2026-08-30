@@ -11,17 +11,20 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@collector/markdown-projection": "^0.1.0",
+    "katex": "^0.18.4",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-markdown": "^10.1.0",
     "react-router-dom": "^7.18.1",
+    "rehype-katex": "^7.0.1",
     "rehype-sanitize": "^6.0.0",
     "remark-breaks": "^4.0.0",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0"
   },
   "devDependencies": {
     "@collector/capture-contracts": "^0.1.0",
-    "@collector/markdown-projection": "^0.1.0",
     "@playwright/test": "^1.61.1",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",

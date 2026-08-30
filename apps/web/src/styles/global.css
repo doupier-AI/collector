@@ -7158,6 +7158,38 @@ button.model-status {
   color: var(--color-ai);
 }
 
+.markdown-content :where(.katex-display) {
+  max-width: 100%;
+  margin: var(--space-3) 0;
+  padding-block: var(--space-1);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.markdown-content :where(.math-source-fallback, .markdown-image-fallback) {
+  padding: 0.0625rem 0.25rem;
+  border-radius: var(--radius-control);
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  overflow-wrap: anywhere;
+}
+
+.markdown-content :where(.math-source-fallback--display) {
+  display: block;
+  max-width: 100%;
+  margin: var(--space-3) 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-line);
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.markdown-content :where(.math-source-fallback__code) {
+  padding: 0;
+  background: none;
+}
+
 .markdown-content mark {
   background: var(--color-selection);
   box-shadow: 0 0 0 0.125rem var(--color-selection);
