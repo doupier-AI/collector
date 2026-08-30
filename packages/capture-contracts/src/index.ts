@@ -89,6 +89,189 @@ export type ProviderModelDiscoveryResult = { ok: true; models: string[] } | { ok
 export const MODEL_PURPOSES = ["chat", "research", "search", "document", "extraction"] as const;
 export type ModelPurpose = (typeof MODEL_PURPOSES)[number];
 
+/** 每次模型调用都必须声明的装配用途；粗粒度用途同时作为模型路由的公开入口。 */
+export const CONTEXT_PURPOSES = [
+  "chat",
+  "research",
+  "search",
+  "document",
+  "extraction",
+  "connection_test",
+  "research_chat",
+  "deep_research",
+  "research_grounding",
+  "research_body",
+  "research_body_outline",
+  "research_body_section",
+  "research_slice_annotation",
+  "term_preview",
+  "term_entity_verification",
+  "session_titling",
+  "node_naming",
+  "import_chapter_parsing",
+  "association_hint_evaluation",
+  "similarity_verification",
+  "temporary_fusion_discovery",
+  "temporary_fusion_conversation",
+  "temporary_fusion_draft_revalidation",
+  "query_reformulation",
+  "agent_search",
+  "cluster_materials",
+  "document_outline",
+  "document_sections",
+  "incremental_document_update",
+] as const;
+export type ContextPurpose = (typeof CONTEXT_PURPOSES)[number];
+
+export const CONTEXT_CHANNELS = ["behavior_rule", "factual_evidence", "user_adaptation"] as const;
+export type ContextChannel = (typeof CONTEXT_CHANNELS)[number];
+
+export type ContextSourceKind =
+  | "product_rule"
+  | "task_rule"
+  | "user_instruction"
+  | "conversation"
+  | "research_content"
+  | "imported_material"
+  | "web_source"
+  | "tool_result"
+  | "continuation"
+  | "user_profile"
+  | "long_term_memory"
+  | "mastered_knowledge"
+  | "system_probe";
+
+/** 只保存稳定身份与作用域；候选正文不进入运行记录。 */
+export interface ContextSourceIdentity {
+  kind: ContextSourceKind;
+  id: string;
+  version?: string;
+  scope: "turn" | "project" | "user" | "global" | "system";
+  projectId?: string;
+}
+
+export interface ContextCandidatePermission {
+  status: "required" | "eligible" | "denied";
+  basis: "product_boundary" | "task_contract" | "user_choice" | "source_authorization";
+  allowedPurposes?: readonly ContextPurpose[];
+}
+
+export type ContextSensitivity = "standard" | "private" | "sensitive" | "secret";
+export type ContextCandidatePriority = "hard_boundary" | "task_required" | "turn" | "project" | "global" | "low_weight";
+export type ContextCandidateProtection = "required" | "preferred" | "optional";
+
+interface ContextCandidateBase {
+  id: string;
+  content: string;
+  source: ContextSourceIdentity;
+  permission: ContextCandidatePermission;
+  sensitivity: ContextSensitivity;
+  priority: ContextCandidatePriority;
+  protection: ContextCandidateProtection;
+}
+
+export interface BehaviorRuleContextCandidate extends ContextCandidateBase {
+  channel: "behavior_rule";
+  ruleKind: "product_boundary" | "task_contract" | "safety" | "turn_instruction" | "project_instruction" | "global_instruction";
+}
+
+export interface FactualEvidenceContextCandidate extends ContextCandidateBase {
+  channel: "factual_evidence";
+  evidenceKind: "current_question" | "explicit_material" | "conversation_history" | "research_context" | "imported_material" | "web_evidence" | "tool_result" | "continuation_state";
+  /** 只允许在同一上游内解释次序，不允许跨搜索、RAG 或工具横向比较。 */
+  upstreamRank?: { source: "conversation" | "research" | "selection" | "web" | "rag" | "tool"; rank: number };
+}
+
+export interface UserAdaptationContextCandidate extends ContextCandidateBase {
+  channel: "user_adaptation";
+  adaptationKind: "user_profile" | "long_term_memory" | "mastered_knowledge";
+}
+
+export type ContextCandidate = BehaviorRuleContextCandidate | FactualEvidenceContextCandidate | UserAdaptationContextCandidate;
+
+export interface ContextBudget {
+  maxInputTokens: number;
+  reservedOutputTokens: number;
+  channelLimits?: Partial<Record<ContextChannel, number>>;
+}
+
+export interface ContextAssemblyRequest {
+  /** 运行时保持 string，确保未知用途经过默认拒绝而不是绕过注册表。 */
+  purpose: string;
+  workflowRunId?: string;
+  workflowStepId?: string;
+  budget?: ContextBudget;
+  candidates: readonly ContextCandidate[];
+}
+
+export type ContextAdoptionReason = "required" | "explicit_selection" | "within_scope" | "ranked_for_task" | "supports_continuation" | "user_adaptation_enabled";
+export type ContextRejectionReason =
+  | "unknown_purpose"
+  | "channel_not_allowed"
+  | "purpose_not_allowed"
+  | "permission_denied"
+  | "source_revoked"
+  | "secret"
+  | "sensitivity_not_allowed"
+  | "duplicate"
+  | "conflict"
+  | "budget_exhausted"
+  | "lower_priority"
+  | "invalid_candidate";
+
+export interface ContextRedaction {
+  field: string;
+  reason: "credential" | "secret" | "sensitive_value" | "personal_data";
+}
+
+export interface ContextAdoptedCandidate {
+  candidate: ContextCandidate;
+  reason: ContextAdoptionReason;
+  estimatedTokens: number;
+  redactions: readonly ContextRedaction[];
+}
+
+export interface ContextRejectedCandidate {
+  candidateId: string;
+  channel: ContextChannel;
+  source: ContextSourceIdentity;
+  reason: ContextRejectionReason;
+}
+
+export interface ContextBudgetUsage extends ContextBudget {
+  usedInputTokens: number;
+  remainingInputTokens: number;
+}
+
+export type ContextAssemblyResult =
+  | {
+    status: "assembled";
+    purpose: ContextPurpose;
+    modelPurpose: ModelPurpose;
+    budget: ContextBudgetUsage;
+    adopted: readonly ContextAdoptedCandidate[];
+    rejected: readonly ContextRejectedCandidate[];
+  }
+  | {
+    status: "rejected";
+    purpose: string;
+    reason: "unknown_purpose";
+    adopted: readonly [];
+    rejected: readonly ContextRejectedCandidate[];
+  };
+
+export interface ContextPurposePolicy {
+  purpose: ContextPurpose;
+  modelPurpose: ModelPurpose;
+  allowedChannels: readonly ContextChannel[];
+  maximumSensitivity: Exclude<ContextSensitivity, "secret">;
+  defaultBudget: ContextBudget;
+}
+
+export type ContextPurposeResolution =
+  | { allowed: true; policy: ContextPurposePolicy }
+  | { allowed: false; purpose: string; reason: "unknown_purpose" };
+
 export interface ModelPurposeRoute {
   purpose: ModelPurpose;
   profileId: string;
