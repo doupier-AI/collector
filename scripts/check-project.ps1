@@ -51,6 +51,13 @@ if ($LASTEXITCODE -ne 0) {
   }
 }
 
+$answerQualityBoundary = & node (Join-Path $Root "scripts\check-answer-quality-boundary.mjs") 2>&1
+if ($LASTEXITCODE -ne 0) {
+  foreach ($line in @($answerQualityBoundary)) {
+    if ($line) { Add-Issue "error" "answer-quality-boundary" $line }
+  }
+}
+
 if (Test-Path -LiteralPath (Join-Path $Root "apps\desktop-capture")) {
   Add-Issue "error" "retired-desktop-source" "apps/desktop-capture must stay removed"
 }

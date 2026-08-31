@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": ["node"]
+  },
+  "references": [
+    { "path": "../../packages/capture-contracts" },
+    { "path": "../../packages/model-gateway" },
+    { "path": "../../apps/api" }
+  ],
+  "include": ["src/**/*.ts"]
+}

@@ -5,6 +5,7 @@
     { "path": "packages/capture-contracts" },
     { "path": "packages/model-gateway" },
     { "path": "apps/api" },
+    { "path": "evals/answer-quality" },
     { "path": "tests" }
   ]
 }

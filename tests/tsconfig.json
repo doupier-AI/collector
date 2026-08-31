@@ -9,7 +9,8 @@
     { "path": "../packages/markdown-projection" },
     { "path": "../packages/capture-contracts" },
     { "path": "../packages/model-gateway" },
-    { "path": "../apps/api" }
+    { "path": "../apps/api" },
+    { "path": "../evals/answer-quality" }
   ],
   "include": ["**/*.ts"]
 }

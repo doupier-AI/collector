@@ -1,9 +1,11 @@
 {
-  "name": "@collector/tests",
+  "name": "@collector/answer-quality-evals",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "dependencies": {
-    "@collector/answer-quality-evals": "0.1.0",
     "@collector/api": "0.1.0",
     "@collector/capture-contracts": "0.1.0",
     "@collector/model-gateway": "0.1.0"

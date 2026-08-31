@@ -5,6 +5,7 @@
   "type": "module",
   "workspaces": [
     "apps/*",
+    "evals/*",
     "packages/*"
   ],
   "scripts": {
@@ -25,6 +26,7 @@
     "gate": "node scripts/gate.mjs",
     "gate:fast": "node scripts/gate.mjs fast",
     "gate:e2e": "node scripts/gate.mjs e2e",
+    "eval:answer-quality": "npm run build && node scripts/run-answer-quality-eval.mjs",
     "clean": "node scripts/clean.mjs",
     "worktree:remove": "node scripts/worktree-safety.mjs remove",
     "run:logged": "node scripts/run-logged.mjs",
