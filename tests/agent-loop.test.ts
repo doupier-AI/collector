@@ -5,6 +5,7 @@ import {
   FakeProvider,
   type AgentChatMessage,
   type AgentChatResponse,
+  type ModelCallEvent,
   type ToolDefinition,
 } from "@collector/model-gateway";
 
@@ -112,6 +113,34 @@ test("agent loop: single turn — model searches once then answers", async () =>
   assert.match(provider.systemPrompts[0] ?? "", /只负责调用工具收集可追溯证据/);
   assert.doesNotMatch(provider.systemPrompts[0] ?? "", /\[\[concept:/, "取证工作区不接收弱标记协议");
   assert.doesNotMatch(provider.systemPrompts[0] ?? "", /最终回答只输出/, "取证工作区不被要求生成最终正文");
+});
+
+test("agent loop records each physical model turn with envelope, budget, usage and tool counts", async () => {
+  const provider = new ProgrammableAgentProvider();
+  provider.setAgentChatSequence([
+    {
+      finishReason: "tool_calls",
+      message: { role: "assistant", content: null, toolCalls: [{ id: "search-1", type: "function", function: { name: "web_search", arguments: "{\"query\":\"证据\"}" } }] },
+      model: "test-model",
+      usage: { inputTokens: 20, outputTokens: 5 },
+    },
+    {
+      finishReason: "stop",
+      message: { role: "assistant", content: "workspace done" },
+      model: "test-model",
+      usage: { inputTokens: 30, outputTokens: 4 },
+    },
+  ]);
+  const events: ModelCallEvent[] = [];
+  const gateway = new ModelGateway(provider as any, { model: "test-model", thinking: false, onCall: (event) => { events.push(event); } });
+  await gateway.runAgentSearchLoop("找证据", createTestTools().tools);
+
+  assert.equal(events.length, 2);
+  assert.deepEqual(events.map((event) => event.toolCallCount), [1, 0]);
+  assert.deepEqual(events.map((event) => event.finishReason), ["tool_calls", "stop"]);
+  assert.deepEqual(events.map((event) => event.usage?.inputTokens), [20, 30]);
+  assert.ok(events.every((event) => event.envelope.outputContract.format === "tool_calls"));
+  assert.ok(events.every((event) => event.requestedBudget.maxOutputTokens === event.resolvedBudget.maxOutputTokens));
 });
 
 test("agent loop: stop content stays in the anonymous tool workspace", async () => {

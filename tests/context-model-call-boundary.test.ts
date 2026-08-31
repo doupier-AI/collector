@@ -68,7 +68,7 @@ test("API orchestration has no direct legacy ModelGateway business calls", () =>
   }
 });
 
-test("context-native gateway entry applies the purpose output budget", async () => {
+test("context-native gateway resolves the requested output budget without silently using ContextAssembly reserve", async () => {
   const provider = new FakeProvider([JSON.stringify({ title: "标题", concepts: [] })]);
   let emitted: ModelCallEvent | undefined;
   const gateway = new ModelGateway(provider, { onCall: (event) => { emitted = event; } });
@@ -77,7 +77,11 @@ test("context-native gateway entry applies the purpose output budget", async () 
     materials: [{ id: "paragraph", content: JSON.stringify({ content: "MODEL_CONTEXT_BODY_SENTINEL" }) }],
   });
   await gateway.deriveSliceAnnotationsFromContext(assembly, { maxTokens: 99_999 });
-  assert.equal(provider.calls[0].maxTokens, assembly.budget.reservedOutputTokens);
+  assert.equal(provider.calls[0].maxTokens, 16_000);
+  assert.equal(emitted?.requestedBudget.maxOutputTokens, 99_999);
+  assert.equal(emitted?.resolvedBudget.maxOutputTokens, 16_000);
+  assert.equal(emitted?.appliedBudget.maxOutputTokens, 16_000);
+  assert.notEqual(provider.calls[0].maxTokens, assembly.budget.reservedOutputTokens);
   assert.equal(emitted?.context.contextAssembly?.adoptedCount, 1);
   assert.equal(emitted?.context.contextAssembly?.purpose, "research_slice_annotation");
   assert.doesNotMatch(JSON.stringify(emitted?.context.contextAssembly), /MODEL_CONTEXT_BODY_SENTINEL|candidateId|sourceId/);

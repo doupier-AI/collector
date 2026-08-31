@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ModelProviderHttpError, ModelProviderTimeoutError } from "@collector/model-gateway";
+import { ModelBudgetReassemblyRequiredError, ModelProviderHttpError, ModelProviderTimeoutError } from "@collector/model-gateway";
 import { CaptureService, SqliteStore } from "@collector/api";
 
 const NOW = "2026-08-05T00:00:00.000Z";
@@ -64,6 +64,57 @@ async function makeService(t: test.TestContext, provider: Record<string, unknown
   });
   return { store, service };
 }
+
+test("模型预算预检只触发一次可追溯重装配，并保留两次装配审计", async (t) => {
+  const calls: Array<{ previousBudgetResolutionAttemptId?: string; assemblyAttemptId?: string; maxInputTokens?: number }> = [];
+  let first = true;
+  const provider = {
+    provider: "fake",
+    model: "fake-1",
+    promptVersion: "test",
+    async *generate() { yield "unused"; },
+    async writeBody() { return "unused"; },
+    async *writeBodyStream(request: {
+      previousBudgetResolutionAttemptId?: string;
+      contextAssembly: { assemblyAttemptId: string; budget: { maxInputTokens: number } };
+      onStreamDone?: (done: { finishReason?: string }) => void;
+    }) {
+      calls.push({
+        previousBudgetResolutionAttemptId: request.previousBudgetResolutionAttemptId,
+        assemblyAttemptId: request.contextAssembly.assemblyAttemptId,
+        maxInputTokens: request.contextAssembly.budget.maxInputTokens,
+      });
+      if (first) {
+        first = false;
+        throw new ModelBudgetReassemblyRequiredError({
+          status: "reassembly_required",
+          budgetResolutionAttemptId: "budget-attempt-1",
+          estimatedInputTokens: 100,
+          maximumInputTokens: 5_000,
+          minimumBodyTokens: 1_024,
+          reason: "context_window_requires_smaller_input",
+        });
+      }
+      yield "重装配后的完整正文。";
+      request.onStreamDone?.({ finishReason: "stop" });
+    },
+  };
+  const { store, service } = await makeService(t, provider);
+  const accepted = await service.research.submitMessage("session-1", "需要较多材料的问题", "k-budget-reassembly");
+  for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)!.status !== "completed"; i++) await new Promise((resolve) => setImmediate(resolve));
+
+  const task = store.getResearchTask(accepted.task.id)!;
+  assert.equal(task.status, "completed");
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0]?.previousBudgetResolutionAttemptId, undefined);
+  assert.equal(calls[1]?.previousBudgetResolutionAttemptId, "budget-attempt-1");
+  assert.notEqual(calls[0]?.assemblyAttemptId, calls[1]?.assemblyAttemptId);
+  assert.ok((calls[1]?.maxInputTokens ?? Infinity) < (calls[0]?.maxInputTokens ?? 0));
+  const audits = task.contextAssemblySnapshot?.assemblies.filter((entry) => entry.workflowStepId === "body-stream:0") ?? [];
+  assert.equal(audits.length, 2);
+  assert.equal(audits[1]?.audit.previousAssemblyAttemptId, audits[0]?.audit.assemblyAttemptId);
+  store.close();
+});
 
 test("单轮流式切断→重试从断点续传：部分正文保留、不重复、事件流不丢", async (t) => {
   const calls: Array<{ resumeFrom: string | undefined }> = [];
@@ -484,7 +535,7 @@ test("暂停：中止物理流保留已写内容与断点，任务/消息置 pau
   assert.ok(calls[1]?.resumeFrom?.includes("第一段正文"), "继续携带断点 resumeFrom");
   const resumedSnapshot = store.getResearchTask(accepted.task.id)?.contextAssemblySnapshot;
   assert.equal(resumedSnapshot?.sourceFingerprint, pausedFingerprint, "同一生成尝试恢复时基础来源保持不变");
-  const resumedAudit = resumedSnapshot?.assemblies.find((entry) => entry.workflowStepId === "body-stream:0")?.audit;
+  const resumedAudit = resumedSnapshot?.assemblies.filter((entry) => entry.workflowStepId === "body-stream:0").at(-1)?.audit;
   assert.ok(resumedAudit?.adopted.some((item) => item.sourceKind === "continuation"), "断点按明确规则作为续写状态增量装配");
   assert.equal(store.getResearchTask(accepted.task.id)!.streamCheckpoint, undefined, "完成后清断点");
   store.close();

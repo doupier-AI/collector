@@ -219,7 +219,7 @@ function artifactBindingsFor(testCase: AnswerQualityCase, availability: readonly
 }
 
 function normalizeValue(value: unknown, key?: string): unknown {
-  if (["createdAt", "completedAt", "capturedAt", "latencyMs", "taskId", "workflowRunId", "inputMessageId", "outputMessageId", "bodyVersionId"].includes(key ?? "")) return undefined;
+  if (["createdAt", "completedAt", "capturedAt", "latencyMs", "taskId", "workflowRunId", "inputMessageId", "outputMessageId", "bodyVersionId", "assemblyAttemptId", "previousAssemblyAttemptId", "budgetResolutionAttemptId", "previousBudgetResolutionAttemptId"].includes(key ?? "")) return undefined;
   if (Array.isArray(value)) return value.map((entry) => normalizeValue(entry)).filter((entry) => entry !== undefined);
   if (value && typeof value === "object") {
     return Object.fromEntries(Object.entries(value as Record<string, unknown>)

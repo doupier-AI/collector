@@ -233,7 +233,7 @@ export class CaptureService {
     private readonly store: CollectorStore,
     private readonly artifactRoot: string,
     private modelGateway?: ModelGateway,
-    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; termMarkerExtractionProvider?: ResearchTermMarkerExtractionProvider; similarityVerifier?: SimilarityVerificationGateway; temporaryFusionDraftEvidenceVerifier?: TemporaryFusionDraftEvidenceGateway; associationHintEvaluator?: AssociationHintEvaluationGateway; chapterParseProvider?: ResearchChapterParseProvider; temporaryFusionConversationProvider?: () => Promise<TemporaryFusionConversationProvider | undefined>; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunResearchChapters?: boolean; autoRunTemporaryFusionTasks?: boolean; mvpDemoMode?: boolean; researchRetrySleep?: (ms: number) => Promise<void> } = {},
+    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; termMarkerExtractionProvider?: ResearchTermMarkerExtractionProvider; similarityVerifier?: SimilarityVerificationGateway; temporaryFusionDraftEvidenceVerifier?: TemporaryFusionDraftEvidenceGateway; associationHintEvaluator?: AssociationHintEvaluationGateway; chapterParseProvider?: ResearchChapterParseProvider; temporaryFusionConversationProvider?: () => Promise<TemporaryFusionConversationProvider | undefined>; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunResearchChapters?: boolean; autoRunTemporaryFusionTasks?: boolean; mvpDemoMode?: boolean; runtimeVersion?: string; researchRetrySleep?: (ms: number) => Promise<void> } = {},
   ) {
     this.runRecords = new RunRecordsService(this.store);
     this.attachModelGateway(this.modelGateway);
@@ -534,10 +534,20 @@ export class CaptureService {
         model: event.model,
         purpose: event.context.purpose ?? "unknown",
         promptVersion: event.promptVersion,
+        envelope: event.envelope,
+        availability: event.availability,
+        requestedBudget: event.requestedBudget,
+        resolvedBudget: event.resolvedBudget,
+        appliedBudget: event.appliedBudget,
         ...(event.context.sourceSliceIds ? { sourceSliceIds: [...new Set(event.context.sourceSliceIds)].sort() } : {}),
         ...(event.context.sourceFragmentIds ? { sourceFragmentIds: [...new Set(event.context.sourceFragmentIds)].sort() } : {}),
         ...(event.context.tokenBudget !== undefined ? { tokenBudget: event.context.tokenBudget } : {}),
         ...(event.context.contextAssembly ? { contextAssembly: event.context.contextAssembly } : {}),
+        ...(event.finishReason ? { finishReason: event.finishReason } : {}),
+        ...(event.completionDiagnostic ? { completionDiagnostic: event.completionDiagnostic } : {}),
+        toolCallCount: event.toolCallCount,
+        ...(event.errorCategory ? { errorCategory: event.errorCategory } : {}),
+        buildFingerprint: this.options.runtimeVersion ?? event.buildFingerprint,
         status: event.status,
         inputTokens: usage?.inputTokens ?? 0,
         outputTokens: usage?.outputTokens ?? 0,
@@ -611,7 +621,7 @@ export class CaptureService {
               promptVersion: RESEARCH_SLICE_PROMPT_VERSION,
             }, {
               nodeDepth,
-              context: { workflowRunId: request.taskId, purpose: "research_grounding", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
+              context: { workflowRunId: request.taskId, purpose: "research_grounding", promptVersion: RESEARCH_SLICE_PROMPT_VERSION, ...(request.previousBudgetResolutionAttemptId ? { previousBudgetResolutionAttemptId: request.previousBudgetResolutionAttemptId } : {}) },
             });
             const hasTraceableSource = grounded.status === "grounded"
               && grounded.sources.some((source) => Boolean(sanitizeGroundingUrl(source.url)));
@@ -706,7 +716,7 @@ export class CaptureService {
           ...(streamOptions.onCitation ? { onCitation: streamOptions.onCitation } : {}),
           citationSources: streamOptions.sources,
           nodeDepth: request.parentChainContext?.currentNodeDepth ?? 0,
-          context: { workflowRunId: request.taskId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
+          context: { workflowRunId: request.taskId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION, ...(request.previousBudgetResolutionAttemptId ? { previousBudgetResolutionAttemptId: request.previousBudgetResolutionAttemptId } : {}) },
         });
       },
       async *generate(request) {
@@ -733,14 +743,14 @@ export class CaptureService {
           const answer = await purposeGateway.generateDeepResearchRoundFromContext(request.contextAssembly, {
             mode: request.deepResearch.mode,
             nodeDepth: request.parentChainContext?.currentNodeDepth ?? 0,
-            context: { workflowRunId: request.taskId, purpose: "deep_research", promptVersion: "deep-research-v1" },
+            context: { workflowRunId: request.taskId, purpose: "deep_research", promptVersion: "deep-research-v1", ...(request.previousBudgetResolutionAttemptId ? { previousBudgetResolutionAttemptId: request.previousBudgetResolutionAttemptId } : {}) },
           });
           for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);
           return;
         }
         const answer = await purposeGateway.answerResearchConversationFromContext(request.contextAssembly, {
           nodeDepth: request.parentChainContext?.currentNodeDepth ?? 0,
-          context: { workflowRunId: request.taskId, purpose: "research_chat", promptVersion: "research-chat-v1" },
+          context: { workflowRunId: request.taskId, purpose: "research_chat", promptVersion: "research-chat-v1", ...(request.previousBudgetResolutionAttemptId ? { previousBudgetResolutionAttemptId: request.previousBudgetResolutionAttemptId } : {}) },
         });
         for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);
       },
@@ -749,7 +759,7 @@ export class CaptureService {
         if (!purposeGateway) throw new Error("AI model is not configured");
         return purposeGateway.writeResearchBodyFromContext(request.contextAssembly, {
           nodeDepth: request.parentChainContext?.currentNodeDepth ?? 0,
-          context: { workflowRunId: request.taskId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
+          context: { workflowRunId: request.taskId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION, ...(request.previousBudgetResolutionAttemptId ? { previousBudgetResolutionAttemptId: request.previousBudgetResolutionAttemptId } : {}) },
         });
       },
       // 真实逐字流式（方案 B）：委托网关 writeResearchBodyStream，逐字产出文本增量；思考增量经 onReasoning 旁路转发（ADR-0035）；signal 供暂停/停止中止物理流。
@@ -762,14 +772,14 @@ export class CaptureService {
           ...(request.onStreamDone ? { onDone: request.onStreamDone } : {}),
           ...(request.onReasoning ? { onReasoning: request.onReasoning } : {}),
           ...(request.signal ? { signal: request.signal } : {}),
-          context: { workflowRunId: request.taskId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
+          context: { workflowRunId: request.taskId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION, ...(request.previousBudgetResolutionAttemptId ? { previousBudgetResolutionAttemptId: request.previousBudgetResolutionAttemptId } : {}) },
         });
       },
       async generateOutline(request) {
         const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
         if (!purposeGateway) throw new Error("AI model is not configured");
         return purposeGateway.generateBodyOutlineFromContext(request.contextAssembly, {
-          context: { workflowRunId: request.taskId, purpose: "research_body_outline", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
+          context: { workflowRunId: request.taskId, purpose: "research_body_outline", promptVersion: RESEARCH_SLICE_PROMPT_VERSION, ...(request.previousBudgetResolutionAttemptId ? { previousBudgetResolutionAttemptId: request.previousBudgetResolutionAttemptId } : {}) },
         });
       },
       async expandSection(request) {
@@ -788,7 +798,7 @@ export class CaptureService {
           },
           {
             nodeDepth: request.parentChainContext?.currentNodeDepth ?? 0,
-            context: { workflowRunId: request.taskId, purpose: "research_body_section", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
+            context: { workflowRunId: request.taskId, purpose: "research_body_section", promptVersion: RESEARCH_SLICE_PROMPT_VERSION, ...(request.previousBudgetResolutionAttemptId ? { previousBudgetResolutionAttemptId: request.previousBudgetResolutionAttemptId } : {}) },
           },
         );
       },
