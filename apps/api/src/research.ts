@@ -19,6 +19,7 @@ import {
   type ContextBudget,
   type ContextCandidate,
   type ContextPurpose,
+  type ConversationContext,
   type GroundingEvidenceStatus,
   type ResearchBodyPlan,
   type ResearchCitationCandidate,
@@ -52,6 +53,11 @@ import type { ResearchBodyOutline, ResearchSliceAnnotation } from "@collector/mo
 import { ModelBudgetReassemblyRequiredError, ModelProviderAbortedError, ModelProviderHttpError, ModelProviderTimeoutError } from "@collector/model-gateway";
 import { isLongText, joinContinuation, LONG_TEXT_CHAR_THRESHOLD } from "@collector/capture-contracts";
 import { assembleContext, contextAssemblyAudit } from "./context-assembly.js";
+import {
+  ConversationContextResolver,
+  conversationContextCandidate,
+  DEFAULT_CONVERSATION_CONTEXT_INPUT_TOKENS,
+} from "./conversation-context.js";
 
 export const RESEARCH_CHAT_PROMPT_VERSION = "research-chat-v1";
 export const DEEP_RESEARCH_PROMPT_VERSION = "deep-research-v1";
@@ -255,6 +261,8 @@ export interface ResearchGenerationRequest {
   /** E2：正式切片的稳定归属与本节点中的起始序号；任务处理时始终提供，旧测试/术语预览可省略。 */
   nodeId?: string;
   outputMessageId?: string;
+  /** Dialogue-only semantic snapshot. Selection/relation internals remain separate from ContextAssembly admission. */
+  conversationContext?: ConversationContext;
   sliceOrdinalStart?: number;
   /** 本次请求是否获得用户明确授权使用联网搜索。 */
   allowWebSearch?: boolean;
@@ -330,6 +338,8 @@ export interface ResearchServiceOptions {
   onTaskCompleted?: (task: ResearchTaskRecord) => void | Promise<void>;
   /** 退避重试的等待实现；测试注入以确定性记录退避序列，默认真实 sleep。 */
   retrySleep?: (ms: number) => Promise<void>;
+  /** Binds reusable conversation snapshots to the running application build. */
+  buildFingerprint?: string;
 }
 
 export interface ResearchTurnOptions {
@@ -342,6 +352,7 @@ export class ResearchSessionService {
   private readonly running = new Set<string>();
   private recoveryScheduled = false;
   private readonly parentChainContext: ParentChainContextService;
+  private readonly conversationContextResolver: ConversationContextResolver;
   /** 退避重试的等待实现；测试注入以确定性记录退避序列。 */
   private readonly retrySleep: (ms: number) => Promise<void>;
   /** 任务事件推送（#38）：每次落库插入研究事件后发裸"唤醒"信号；SSE 循环仍按 sequence>cursor 重读，DB 是恰好一次来源。 */
@@ -358,6 +369,7 @@ export class ResearchSessionService {
   constructor(private readonly store: ResearchStore, private readonly options: ResearchServiceOptions = {}) {
     this.provider = options.provider;
     this.parentChainContext = options.parentChainContext ?? new ParentChainContextService(store);
+    this.conversationContextResolver = new ConversationContextResolver({ buildFingerprint: options.buildFingerprint });
     this.retrySleep = options.retrySleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
     this.taskEvents.setMaxListeners(0);
     // 集中接线：所有落库插入研究事件的 store 方法都包一层发布"唤醒"信号（不再靠 100ms 轮询发现）。
@@ -751,6 +763,7 @@ export class ResearchSessionService {
         taskId: task.id,
         nodeId,
         outputMessageId: task.outputMessageId,
+        conversationContext: generation.conversationContext,
         sliceOrdinalStart: this.sliceOrdinalStartFor(nodeId, task.outputMessageId),
         allowWebSearch: task.allowWebSearch === true,
         ...(generation.deepResearch ? { deepResearch: generation.deepResearch } : {}),
@@ -761,6 +774,7 @@ export class ResearchSessionService {
       this.finalBodySinks.set(task.id, new FinalBodySink(task.streamCheckpoint?.protocolPrefix));
       let generatedCharacters = 0;
       try {
+        await this.store.saveResearchTaskConversationContextSnapshot(task.id, generation.conversationContext);
         await this.ensureContextSourceSnapshot(task, generation.contextCandidates);
         const scenario: ResearchGroundingScenario = generation.deepResearch
           ? "deep_research_first_round"
@@ -1921,6 +1935,7 @@ export class ResearchSessionService {
    */
   private buildGenerationRequest(task: ResearchTaskRecord): {
     messages: Array<Pick<ResearchMessageBodyRecord, "role" | "content">>;
+    conversationContext: ConversationContext;
     deepResearch?: DeepResearchContext;
     parentChainContext?: ParentChainContextResult;
     sliceContext?: ResearchSliceContext;
@@ -1934,36 +1949,49 @@ export class ResearchSessionService {
       : output?.branchId
         ? all.filter((message) => message.branchId === output.branchId)
         : all.filter((message) => message.branchId === undefined);
-    const messages = thread
-      .filter((message) => message.id !== task.outputMessageId)
-      .map(({ role, content }) => ({ role, content }));
+    const history = thread.filter((message) => message.id !== task.outputMessageId);
     const deepResearch = this.deepResearchContextFor(task, nodeId ?? output?.branchId, thread);
     const contextNodeId = nodeId ?? output?.branchId ?? task.sessionId;
     const parentChain = this.parentChainContext.buildParentChainContext(contextNodeId);
     // 根节点及失效父链保持现有提示词，避免注入空的“父链上下文”占位。
     const parentChainContext = parentChain.ancestors.length > 0 ? parentChain : undefined;
-    const latestUserMessage = [...messages].reverse().find((message) => message.role === "user");
+    const currentMessage = history.find((message) => message.id === task.inputMessageId)
+      ?? [...history].reverse().find((message) => message.role === "user");
+    if (!currentMessage) throw new Error("Research input message not found");
+    const conversationContext = this.conversationContextResolver.resolve({
+      taskId: task.id,
+      generationAttempt: task.generationAttempt ?? 1,
+      inputMessageId: task.inputMessageId,
+      outputMessageId: task.outputMessageId,
+      nodeId: contextNodeId,
+      currentMessage,
+      messages: history,
+      maxInputTokens: DEFAULT_CONVERSATION_CONTEXT_INPUT_TOKENS,
+      existing: task.conversationContextSnapshot,
+    });
     const sliceContext = this.sliceContextFor(
       task,
       contextNodeId,
-      latestUserMessage?.content ?? "",
+      currentMessage.content,
       parentChain,
       deepResearch,
     );
     const contextCandidates: ContextCandidate[] = [];
-    if (latestUserMessage) {
-      contextCandidates.push(factualContextCandidate({
-        id: `question:${task.inputMessageId}`,
-        content: latestUserMessage.content,
-        sourceKind: "conversation",
-        sourceId: task.inputMessageId,
-        evidenceKind: "current_question",
-        permission: { status: "required", basis: "task_contract" },
-        priority: "task_required",
-        protection: "required",
-        upstreamRank: { source: "conversation", rank: 0 },
-      }));
-    }
+    const currentContextItem = conversationContext.items.find((item) => item.source.messageId === currentMessage.id);
+    contextCandidates.push(factualContextCandidate({
+      id: `question:${task.inputMessageId}`,
+      content: currentMessage.content,
+      sourceKind: "conversation",
+      sourceId: task.inputMessageId,
+      sourceVersion: currentContextItem?.source.messageVersionId,
+      evidenceKind: "current_question",
+      permission: { status: "required", basis: "task_contract" },
+      priority: "task_required",
+      protection: "required",
+      upstreamRank: { source: "conversation", rank: 0 },
+    }));
+    const conversationCandidate = conversationContextCandidate(conversationContext);
+    if (conversationCandidate) contextCandidates.push(conversationCandidate);
     parentChain.ancestors.forEach((ancestor, index) => {
       const content = JSON.stringify({
         label: ancestor.label,
@@ -2012,7 +2040,9 @@ export class ResearchSessionService {
       }));
     }
     return {
-      messages: latestUserMessage ? [latestUserMessage] : messages,
+      // Conversation history reaches providers only through ContextAssembly; this legacy field stays current-turn-only.
+      messages: [{ role: currentMessage.role, content: currentMessage.content }],
+      conversationContext,
       contextCandidates,
       ...(deepResearch ? { deepResearch } : {}),
       ...(parentChainContext ? { parentChainContext } : {}),

@@ -8,6 +8,7 @@ export { LocalAuth, PairingRateLimitError, hashToken } from "./auth.js";
 export { assertPublicUrl, extractReadableText, fetchPublicResource, parseMarkdown, parsePdf, resolvePublicUrl, splitPlainText, type PublicUrlDnsLookup } from "./parsers.js";
 export { WorkflowScheduler, type WorkflowSchedulerOptions } from "./scheduler.js";
 export { ResearchSessionService, ResearchNotFoundError, ResearchValidationError, citedGroundingSources, DEEP_RESEARCH_PROMPT_VERSION, RESEARCH_CHAT_PROMPT_VERSION, type ResearchGenerationProvider, type ResearchGenerationRequest, type ResearchServiceOptions } from "./research.js";
+export { ConversationContextResolver, conversationContextCandidate, DEFAULT_CONVERSATION_CONTEXT_INPUT_TOKENS, type ConversationContextResolveInput, type ConversationContextResolverOptions } from "./conversation-context.js";
 export { DEFAULT_RESEARCH_SLICE_CONTEXT_TOKEN_BUDGET, buildResearchSliceContext, estimateResearchSliceContextItemTokens, estimateResearchSliceTokens, type ResearchFragmentContextCandidate } from "./slice-context.js";
 export { deriveMessageBodyArtifacts, getOrDeriveMessageBodyArtifacts, matchSliceForFragment, tryResolveFragmentExcerpt, type BodyArtifactsStoreLookup, type MessageBodyArtifacts, type MessageBodyArtifactsInput } from "./body-artifacts.js";
 export { ResearchImportService, ResearchImportConflictError, ResearchImportNotFoundError, ResearchImportValidationError, type ResearchImportServiceOptions } from "./research-import.js";
