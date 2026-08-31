@@ -2,15 +2,18 @@ name: Collector gate
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [master]
   workflow_dispatch:
+  schedule:
+    - cron: "0 18 * * *"
 
 permissions:
   contents: read
 
 concurrency:
-  group: collector-gate-${{ github.event.pull_request.number || github.ref }}
+  group: collector-gate-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -20,16 +23,52 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
       - name: Show toolchain
         run: git --version; node --version; npm --version
+      - name: Determine required validation
+        id: scope
+        shell: pwsh
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/ci-change-scope.mjs --base "$env:BASE_SHA" --head "$env:HEAD_SHA" --github-output "$env:GITHUB_OUTPUT"
+      - name: Validate lightweight change
+        if: steps.scope.outputs.run_fast != 'true'
+        shell: pwsh
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: git diff --check "$env:BASE_SHA" "$env:HEAD_SHA"
       - name: Install dependencies
+        if: steps.scope.outputs.run_fast == 'true'
         run: npm ci
       - name: Run fast gate
+        if: steps.scope.outputs.run_fast == 'true'
         run: npm run gate:fast
+
+  full-gate:
+    name: full-gate
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-gate'))
+    needs: gate
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
       - name: Install Chromium
         run: npx playwright install chromium
       - name: Run serialized E2E gate

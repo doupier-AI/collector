@@ -33,8 +33,31 @@ if (-not $packageJson) {
 $gateWorkflow = Read-ProjectFile ".github\workflows\gate.yml"
 if (-not $gateWorkflow) {
   Add-Issue "error" "missing-gate-workflow" ".github/workflows/gate.yml was not found"
-} elseif ($gateWorkflow -notmatch '(?m)^\s+E2E_TRACK_CONCURRENCY:\s*["'']?1["'']?\s*$') {
-  Add-Issue "error" "remote-e2e-concurrency" "GitHub E2E gate must set E2E_TRACK_CONCURRENCY to 1 for runner stability"
+} else {
+  $workflowSections = $gateWorkflow -split '(?m)^  full-gate:\s*$'
+  if ($workflowSections.Count -ne 2) {
+    Add-Issue "error" "ci-validation-levels" "GitHub workflow must keep separate daily gate and opt-in full-gate jobs"
+  } else {
+    $dailyGate = $workflowSections[0]
+    $fullGate = $workflowSections[1]
+    if ($dailyGate -notmatch 'npm run gate:fast') {
+      Add-Issue "error" "daily-fast-gate" "Daily GitHub gate must run gate:fast for product-code changes"
+    }
+    if ($dailyGate -match 'npm run gate:e2e|npx playwright install chromium') {
+      Add-Issue "error" "daily-full-e2e" "Daily GitHub gate must not install Chromium or run the full E2E gate"
+    }
+    if ($fullGate -notmatch 'npm run gate:e2e') {
+      Add-Issue "error" "missing-full-e2e" "Opt-in full-gate must run gate:e2e"
+    }
+    foreach ($trigger in @('schedule', 'workflow_dispatch', 'full-gate')) {
+      if ($fullGate -notmatch [regex]::Escape($trigger)) {
+        Add-Issue "error" "missing-full-trigger" "Opt-in full-gate must support $trigger"
+      }
+    }
+  }
+  if ($gateWorkflow -notmatch '(?m)^\s+E2E_TRACK_CONCURRENCY:\s*["'']?1["'']?\s*$') {
+    Add-Issue "error" "remote-e2e-concurrency" "GitHub full E2E gate must set E2E_TRACK_CONCURRENCY to 1 for runner stability"
+  }
 }
 
 try {
