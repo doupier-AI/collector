@@ -710,7 +710,7 @@ interface RealAssistantMessage {
   role: string;
   status: string;
   content: string;
-  termMarkers?: RealTermMarker[];
+  sidecarTermMarkers?: RealTermMarker[];
 }
 
 interface RealNodeView {
@@ -719,6 +719,7 @@ interface RealNodeView {
   tasks: Array<{ id: string; status: string; allowWebSearch?: boolean; groundingScope?: { status: string } }>;
   groundingSources?: Array<{ id: string }>;
   citations?: Array<{ id: string; messageId: string; blockOrdinal: number; markerOffset: number }>;
+  termDetections?: Record<string, { terms: RealTermMarker[] }>;
 }
 
 /** 记录真实模型语义观察（漏标、密度、类别分布），不构成失败。 */
@@ -740,7 +741,7 @@ function expectNoControlChars(content: string, label: string): void {
 
 /** 阻断：每个弱标记的范围切片必须与块文本逐字相等（不错位、不损坏正文）。 */
 function expectMarkersAligned(message: RealAssistantMessage, label: string): RealTermMarker[] {
-  const markers = message.termMarkers ?? [];
+  const markers = message.sidecarTermMarkers ?? [];
   const blocks = deriveMessageBlocks(message.content);
   for (const marker of markers) {
     const block = blocks[marker.blockOrdinal];
@@ -767,7 +768,9 @@ async function waitLatestAssistantCompleted(page: Page, nodeId: string, label: s
   const latest = await pollUntil(`${label}：等待最新 AI 消息完成落库`, async () => {
     const view = await fetchNodeView(page, nodeId);
     const candidate = [...view.messages].reverse().find((row) => row.role === "assistant");
-    return candidate?.status === "completed" ? candidate : undefined;
+    return candidate?.status === "completed"
+      ? { ...candidate, sidecarTermMarkers: view.termDetections?.[candidate.id]?.terms ?? [] }
+      : undefined;
   }, timeoutMs);
   expect(latest, `${label}：应存在 AI 消息`).toBeTruthy();
   return latest;
@@ -1215,7 +1218,6 @@ test("弱标记场景九：临时融合草案原位确认后的正文、引用�
     node: { id: string; activeDraftVersionId: string };
     candidateSources: Array<{
       sourceNodeId: string;
-      citationOrdinal?: number;
       bodyVersionId: string;
       fragmentIds: string[];
       sourceHealth: string;
@@ -1228,10 +1230,9 @@ test("弱标记场景九：临时融合草案原位确认后的正文、引用�
   expect(listedCandidate, "临时融合必须保留当前两份真实来源").toBeTruthy();
   const candidate = await apiJson<{
     node: { id: string; activeDraftVersionId: string };
-    activeDraft: { id: string; body: string; contentHash: string; evidenceStatus: string };
+    activeDraft: { id: string; body: string; contentHash: string; evidenceStatus: string; judgments?: Array<{ startOffset: number; endOffset: number; sourceNodeIds: string[]; evidenceStatus: string }> };
     candidateSources: Array<{
       sourceNodeId: string;
-      citationOrdinal?: number;
       bodyVersionId: string;
       fragmentIds: string[];
       sourceHealth: string;
@@ -1244,10 +1245,11 @@ test("弱标记场景九：临时融合草案原位确认后的正文、引用�
   expect(candidate!.candidateSources).toHaveLength(2);
   expect(candidate!.candidateSources.every((source) => source.sourceHealth === "available")).toBe(true);
   expectNoControlChars(candidate!.activeDraft.body, "临时融合草案");
-  for (const source of candidate!.candidateSources) {
-    expect(source.citationOrdinal, "每份候选来源都应有稳定引用序号").toBeGreaterThan(0);
-    expect(candidate!.activeDraft.body, `草案必须引用来源 ${source.citationOrdinal}`).toContain(`[来源${source.citationOrdinal}]`);
-  }
+  expect(candidate!.activeDraft.judgments?.length, "草案必须用独立判断范围关联来源").toBeGreaterThan(0);
+  const judgmentSources = new Set(candidate!.activeDraft.judgments?.flatMap((judgment) => judgment.sourceNodeIds));
+  expect(judgmentSources).toEqual(new Set(candidate!.candidateSources.map((source) => source.sourceNodeId)));
+  expect(candidate!.activeDraft.judgments?.every((judgment) => judgment.evidenceStatus === "verified"
+    && candidate!.activeDraft.body.slice(judgment.startOffset, judgment.endOffset).trim().length > 0)).toBe(true);
   recordWeakMarkerNote(
     `临时融合草案：确认前正文 ${candidate!.activeDraft.body.length} 字，来源 ${candidate!.candidateSources.length} 条；确认不重新生成正文`,
   );

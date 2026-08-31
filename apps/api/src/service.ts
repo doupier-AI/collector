@@ -308,7 +308,6 @@ export class CaptureService {
     this.termPreviews = new ResearchTermPreviewService(this.store, {
       research: this.research,
       parentChainContext: this.parentChainContext,
-      termDetection: this.termDetection,
       autoRunTasks: this.options.autoRunResearchTasks,
     });
     // #70：普通关联提示有独立的价值评估适配，不能借用融合核验或其调用方。
@@ -361,7 +360,7 @@ export class CaptureService {
 
   /**
    * 节点页 HTTP 视图：在已有节点消息数据上附加 H3b 术语检测结果与 E1 切片。
-   * 检测失败由 TermDetectionService 降级为空数组，不影响原消息返回。
+   * 弱标记只从独立旁路任务读取；没有可用结果时返回空数组，不影响原消息。
    * #43 起切片只读（卡片骨架），不再惰性派生临时切片——正式生成路径已写入。
    */
   async getResearchNodeView(nodeId: string): Promise<ResearchNodeView> {
@@ -373,22 +372,19 @@ export class CaptureService {
     const chapters: NonNullable<ResearchNodeView["chapters"]> = {};
     for (const message of view.messages) {
       if (message.role !== "assistant" || message.status !== "completed") continue;
-      if (message.termMarkers !== undefined) {
-        const terms = validateTermMarkers(message.content, message.termMarkers);
-        termDetections[message.id] = {
-          messageId: message.id,
-          terms,
-          detectedAt: message.updatedAt,
-          convergence: resolveResearchConvergence({
-            nodeDepth,
-            contentLength: measureResearchContentLength(message.content),
-          }),
-          suppressedCount: message.termMarkers.length - terms.length,
-        };
-      } else {
-        // 仅为尚未经过流内标记生成的旧开发数据保留确定性词法回退。
-        termDetections[message.id] = this.termDetection.detect(message.id, message.content, { nodeDepth });
-      }
+      const markerTask = this.store.getResearchTermMarkerTaskByMessage(message.id);
+      const markers = markerTask?.markers ?? [];
+      const terms = validateTermMarkers(message.content, markers);
+      termDetections[message.id] = {
+        messageId: message.id,
+        terms,
+        detectedAt: markerTask?.updatedAt ?? message.updatedAt,
+        convergence: resolveResearchConvergence({
+          nodeDepth,
+          contentLength: measureResearchContentLength(message.content),
+        }),
+        suppressedCount: markers.length - terms.length,
+      };
       slices[message.id] = this.store.listSlicesByMessage(message.id);
       const version = await this.getOrCreateBodyArtifacts(nodeId, message, view.citations ?? []);
       bodyVersions[message.id] = version;
@@ -728,7 +724,6 @@ export class CaptureService {
             }],
           });
           const answer = await purposeGateway.answerResearchConversationFromContext(assembly, {
-            ...(request.mentionMarkup !== undefined ? { mentionMarkup: request.mentionMarkup } : {}),
             context: { workflowRunId: request.taskId, purpose: "term_preview", promptVersion: "term-preview-v1" },
           });
           for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);
@@ -745,7 +740,6 @@ export class CaptureService {
         }
         const answer = await purposeGateway.answerResearchConversationFromContext(request.contextAssembly, {
           nodeDepth: request.parentChainContext?.currentNodeDepth ?? 0,
-          mentionMarkup: false,
           context: { workflowRunId: request.taskId, purpose: "research_chat", promptVersion: "research-chat-v1" },
         });
         for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);

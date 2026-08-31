@@ -108,7 +108,6 @@ describe("消息操作（ADR-0035）", () => {
             role: "assistant",
             status: "completed",
             content,
-            termMarkers: [marker],
             versions: [{ content: "历史正文同样写了 REST。", createdAt: "2026-08-19T00:00:00.000Z" }],
           })}
           task={makeTask({ outputMessageId: "answer", status: "completed" })}

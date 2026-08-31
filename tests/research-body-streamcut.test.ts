@@ -133,7 +133,7 @@ test("单轮流式 finishReason=length 触发续写（≤3），最终完成不�
   assert.equal(store.getResearchTask(accepted.task.id)!.status, "completed");
   assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "前半段被截断，续写补全后半段。", "截断续写拼接完成");
   for (let i = 0; i < 200 && store.getResearchTermMarkerTaskByMessage(accepted.outputMessage.id)?.status !== "completed"; i++) await new Promise((r) => setImmediate(r));
-  assert.deepEqual(store.getResearchMessage(accepted.outputMessage.id)?.termMarkers?.map((marker) => marker.text), ["前半段"]);
+  assert.deepEqual(store.getResearchTermMarkerTaskByMessage(accepted.outputMessage.id)?.markers.map((marker) => marker.text), ["前半段"]);
   assert.equal(calls.length, 2, "截断 + 一次续写");
   assert.ok(calls[1]?.resumeFrom?.includes("前半段"), "续写提示只保留干净正文断点");
   store.close();
@@ -370,7 +370,7 @@ test("后续回答的模型请求、RAG 候选和派生记录都排除 reasoning
   assert.ok(secondRequest?.contextAssembly?.adopted?.some((item) => item.candidate?.evidenceKind === "current_question"));
   assert.doesNotMatch(JSON.stringify(store.listSlicesByMessage(first.outputMessage.id)), new RegExp(sentinel));
   assert.doesNotMatch(JSON.stringify(store.getBodyVersionForMessage(first.outputMessage.id)), new RegExp(sentinel));
-  assert.doesNotMatch(JSON.stringify(store.getResearchMessage(first.outputMessage.id)?.termMarkers ?? []), new RegExp(sentinel));
+  assert.doesNotMatch(JSON.stringify(store.getResearchTermMarkerTaskByMessage(first.outputMessage.id)?.markers ?? []), new RegExp(sentinel));
   assert.doesNotMatch(JSON.stringify(store.listResearchCitationsForMessages([first.outputMessage.id])), new RegExp(sentinel));
   store.close();
 });
@@ -404,9 +404,9 @@ test("reasoning 持久化失败不被吞掉：任务失败且正文与完成事�
   });
   const { store, service } = await makeService(t, provider, undefined, false);
   const originalAppend = store.appendResearchTaskDelta.bind(store);
-  store.appendResearchTaskDelta = async (id, delta, termMarkers, reasoningDelta) => {
+  store.appendResearchTaskDelta = async (id, delta, reasoningDelta) => {
     if (reasoningDelta) throw new Error("injected reasoning persistence failure");
-    await originalAppend(id, delta, termMarkers, reasoningDelta);
+    await originalAppend(id, delta, reasoningDelta);
   };
   const accepted = await service.research.submitMessage("session-1", "问题", "k-reasoning-persistence-error");
   const originalWarn = console.warn;

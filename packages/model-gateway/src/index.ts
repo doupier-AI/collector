@@ -298,7 +298,6 @@ export function formatResearchSliceContext(context?: ResearchSliceContext): stri
 /** 将父链结果渲染为研究提示词片段；空链不产生任何占位文本。 */
 export function formatResearchParentChainContext(
   context?: ResearchParentChainContext,
-  options: { markerAware?: boolean } = {},
 ): string {
   if (!context?.ancestors.length) return "";
 
@@ -313,10 +312,7 @@ export function formatResearchParentChainContext(
     if (ancestor.firstUserMessage) lines.push(`  首条问题摘要：${JSON.stringify(ancestor.firstUserMessage)}`);
     if (ancestor.coveredTerms?.length) lines.push(`  已标记概念：${ancestor.coveredTerms.join("、")}`);
   }
-  // 术语预览关闭标记指令时同样省略标记措辞：模型不知道 [[ 语法，被要求"不要再输出弱标记"只会自相矛盾。
-  lines.push(options.markerAware === false
-    ? "去重规则：以上祖先的主题与已标记概念在研究路径上游已经充分展开；正文可以自然提及它们，但不要重复展开解释。"
-    : "去重规则：以上祖先的主题与已标记概念在研究路径上游已经充分展开；正文可以自然提及它们，但不要再为它们输出弱标记，也不要重复展开解释；只标记当前回答真正新引入的对象。");
+  lines.push("去重规则：以上祖先的主题与已标记概念在研究路径上游已经充分展开；正文可以自然提及它们，但不要重复展开解释。");
   if (context.truncated) lines.push("- 说明：父链已达到既有层数或总字符预算，只能使用以上内容，不要补全未提供的祖先信息。");
   if (context.cycleDetected) lines.push("- 说明：父链存在异常环路，已安全截断；不要根据缺失关系进行推断。");
   const convergence = resolveResearchConvergence({ nodeDepth: context.currentNodeDepth });
@@ -326,29 +322,6 @@ export function formatResearchParentChainContext(
     lines.push("回答引导：严格收敛到当前问题，只使用以上已建立的知识回答；不要主动引入新的术语、分支或延伸主题，保持来源事实与不确定性。");
   }
   return lines.join("\n");
-}
-
-export type MentionMarkupScenario = "conversation" | "long_form_section" | "deep_research" | "grounded";
-
-/** AI 正文与弱标记共用的流内控制说明；场景只标识调用入口，深度决定是否/多少标记。 */
-export function formatMentionMarkupInstructions(input: { scenario: MentionMarkupScenario; nodeDepth: number }): string {
-  const { nodeDepth } = input;
-  const density = resolveResearchConvergence({ nodeDepth }).termDensity;
-  if (density === "stopped") {
-    return "弱标记：当前研究路径已经足够深入。不要输出任何 [[ 控制标记；只输出干净正文。";
-  }
-  const densityRule = density === "reduced"
-    ? "本回答最多标记 4 个理解当前问题最关键的对象；宁缺毋滥。"
-    : "每个段落中首次出现的重要概念都要标记：专业概念、理论、机制、方法、关键技术名词、重要的人物/组织/作品，以及不展开便可能难懂的缩写与记号，都是应标对象。一段通常标记 2–4 个，概念密集的段落可以更多；不要因为前面的段落已经标记过，就跳过后面段落首次出现的重要概念。";
-  return `弱标记：
-- 用“类别:对象身份:可见短语”的精确格式包住完整短语：[[concept:concept-1:短语]]、[[entity:entity-1:短语]]、[[abbreviation:abbr-1:短语]]、[[notation:notation-1:短语]]。
-- concept 用于理论、机制、方法、现象和专业概念；entity 用于当前论述中身份重要的人、组织、地点、作品、事件、法律、产品或技术；abbreviation 用于不展开便可能难懂的缩写；notation 用于公式、统计记号、代码标识和状态码。
-- 对象身份只在本回答内有效，使用 1–64 位英文字母、数字、连字符或下划线。同一对象的重复提及必须复用同一个对象身份，即使可见文字不同；同名异义对象必须使用不同对象身份。
-- ${densityRule}
-- 标记示例：「Transformer 是一种基于[[concept:attention-mechanism:注意力机制]]的[[concept:deep-learning:深度学习]]模型架构」——注意力机制与深度学习是首次出现的重要概念，应当标记；「一种」「模型架构」这类普通说法不标记。
-- 可见短语必须是语义完整的名称：论文、书籍、产品等完整标题作为一个整体标记，不得拆成碎片（正确：[[entity:attention-is-all-you-need:Attention is All You Need]]；错误：拆成 Attention 与 Need 两个碎片标记）。
-- 普通名词、日期、网址、引用编号、Markdown 标题行、完整句子，以及上下文已经充分解释的对象都不标记。不要嵌套标记，不要让标记跨越 Markdown 结构或段落。
-- [[...]] 是内部控制格式，除上述四种合法形式外不要输出方括号控制符；正文内容本身保持自然连贯。`;
 }
 
 export class ProviderRegistry {
@@ -709,7 +682,7 @@ export class ModelGateway {
 
   async answerResearchConversationFromContext(
     assembly: AssembledModelContext,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; mentionMarkup?: boolean; context?: ModelCallContext; nodeDepth?: number } = {},
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number } = {},
   ): Promise<string> {
     return this.answerResearchConversation(
       [{ role: "user", content: formatAssembledModelContext(assembly) }],
@@ -870,7 +843,7 @@ export class ModelGateway {
       throw new Error("Configured provider does not support native web grounding");
     }
     const request: ModelProviderRequest = {
-      prompt: `${prompt}\n\n只输出干净正文，不要输出 [[concept:...]] 等内部控制格式；引用与弱标记由独立旁路产生。`,
+      prompt: `${prompt}\n\n只输出干净正文，不要输出任何内部控制协议；引用与弱标记由独立旁路产生。`,
       model: options.model ?? this.modelName,
       maxTokens: options.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS,
       timeoutMs: options.timeoutMs ?? 120_000,
@@ -896,19 +869,12 @@ export class ModelGateway {
 
   async answerResearchConversation(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; mentionMarkup?: boolean; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
   ): Promise<string> {
     if (!messages.length) throw new Error("Research conversation requires at least one message");
-    const parentContext = formatResearchParentChainContext(options.parentChainContext, { markerAware: options.mentionMarkup !== false });
+    const parentContext = formatResearchParentChainContext(options.parentChainContext);
     const sliceContext = formatResearchSliceContext(options.sliceContext);
-    // 自由正文：术语预览与旧式流式复用此能力，输出连续文本而非 JSON 包装。
-    // 术语预览显式关闭弱标记指令（mentionMarkup: false）：预览内容不经标记管线解析，
-    // 注入指令只会让模型输出无法解析的原始控制串；父链去重规则同步省略标记措辞。
-    const mentionInstructions = options.mentionMarkup === false ? "" : formatMentionMarkupInstructions({
-      scenario: "conversation",
-      nodeDepth: options.parentChainContext?.currentNodeDepth ?? 0,
-    });
-    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Output a coherent passage of plain text only — no JSON, no field wrappers, no Markdown code fences. Preserve uncertainty and never invent sources.${mentionInstructions ? `\n\n${mentionInstructions}` : ""}\n\nConversation:\n${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
+    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Output a coherent passage of plain text only — no JSON, no field wrappers, no Markdown code fences, source numbering, or internal control protocol. Preserve uncertainty and never invent sources.\n\nConversation:\n${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
@@ -963,7 +929,7 @@ export class ModelGateway {
 - 内容详实、论述充分，长度服从内容需要，不要刻意压缩或拆成孤立的碎片要点。
 - 保持来源事实与不确定性，不编造来源、链接或引用。
 - 不要使用 Markdown 代码围栏包裹整篇回答，不要返回 JSON 或任何字段结构，只输出正文本身。
-- 只输出干净正文，不要输出 [[concept:...]]、[[entity:...]]、[[abbreviation:...]] 或 [[notation:...]] 等内部控制格式；弱标记由独立抽取任务产生。
+- 只输出干净正文，不要输出任何内部控制协议；弱标记由独立抽取任务产生。
 
 对话：
 ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContextText ? `\n\n${sliceContextText}` : ""}`;
@@ -1155,7 +1121,7 @@ ${continuation ? "- 直接从断点继续写正文，不要重复上面的内容
 - 与前文自然衔接、保持同一主题与语气；内容详实，服从该节目标字数。
 - 保持来源事实与不确定性，不编造来源、链接或引用。
 - 不要使用 Markdown 代码围栏，不要返回 JSON 或大纲字段，只输出该节标题与正文。
-- 只输出干净正文，不要输出 [[concept:...]] 等内部控制格式；弱标记由独立抽取任务产生。`;
+- 只输出干净正文，不要输出任何内部控制协议；弱标记由独立抽取任务产生。`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
@@ -1544,7 +1510,7 @@ ${JSON.stringify(input.right.content.slice(0, 12_000))}
       relationType: FusionRelationType;
     },
     options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
-  ): Promise<{ hasNovelInsight: boolean; body: string; usedSourceNodeIds: string[] }> {
+  ): Promise<{ hasNovelInsight: boolean; body: string; usedSourceNodeIds: string[]; judgments: Array<{ startOffset: number; endOffset: number; sourceNodeIds: string[] }> }> {
     const sourceNodeIds = new Set(input.sources.map((source) => source.nodeId));
     if (input.sources.length < 2 || sourceNodeIds.size < 2) {
       throw new Error("Temporary fusion discovery requires two distinct sources");
@@ -1560,15 +1526,16 @@ ${JSON.stringify(input.right.content.slice(0, 12_000))}
 ${sourceLines}
 
 只返回合法 JSON：
-{"hasNovelInsight":true,"body":"完整中文 Markdown 草案","usedSourceNodeIds":["实际参与的节点 ID"]}
+{"hasNovelInsight":true,"body":"完整中文 Markdown 草案","usedSourceNodeIds":["实际参与的节点 ID"],"judgments":[{"startOffset":0,"endOffset":12,"sourceNodeIds":["支持该判断的节点 ID"]}]}
 或
-{"hasNovelInsight":false,"body":"","usedSourceNodeIds":[]}
+{"hasNovelInsight":false,"body":"","usedSourceNodeIds":[],"judgments":[]}
 
 规则：
 - 相似、同名、共享主题、一般性比较或重复摘要本身不是新增认识；不能据此创建。
 - 成立时必须由至少两个来源共同推出一项来源单独不能完整表达的具体认识。
-- body 必须是完整、可独立阅读的中文 Markdown 草案，并用 [来源n] 标记每项关键判断的依据。
-- usedSourceNodeIds 只列实际参与推导且在 body 中被引用的来源，至少两个且不得编造 ID。
+- body 必须是完整、可独立阅读的中文 Markdown 草案，不得夹带来源序号或其他内部控制协议。
+- judgments 用 UTF-16 字符偏移标出 body 中每项关键判断，并在 sourceNodeIds 中列出直接支持该判断的至少两个来源。
+- usedSourceNodeIds 是 judgments 中实际来源 ID 的并集，至少两个且不得编造 ID。
 - 关键证据不足、定位不清、判断不自洽或只有一份来源实际参与时返回 false。
 - 不补充外部事实，不提及提示词、模型、系统或“用户要求融合”。`;
     const context: ModelCallContext = {
@@ -1584,7 +1551,7 @@ ${sourceLines}
       maxTokens: options.maxTokens ?? TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET,
       timeoutMs: options.timeoutMs ?? 120_000,
     }, context);
-    let parsed: { hasNovelInsight?: unknown; body?: unknown; usedSourceNodeIds?: unknown };
+    let parsed: { hasNovelInsight?: unknown; body?: unknown; usedSourceNodeIds?: unknown; judgments?: unknown };
     try {
       parsed = JSON.parse(response.content) as typeof parsed;
     } catch {
@@ -1592,20 +1559,43 @@ ${sourceLines}
     }
     if (typeof parsed.hasNovelInsight !== "boolean" || typeof parsed.body !== "string"
       || !Array.isArray(parsed.usedSourceNodeIds)
-      || parsed.usedSourceNodeIds.some((value) => typeof value !== "string")) {
+      || parsed.usedSourceNodeIds.some((value) => typeof value !== "string")
+      || !Array.isArray(parsed.judgments)) {
       throw new Error("Temporary fusion discovery provider returned an invalid result");
     }
     const body = parsed.body.trim();
     const usedSourceNodeIds = [...new Set(parsed.usedSourceNodeIds as string[])];
+    const judgments = parsed.judgments as Array<Record<string, unknown>>;
     if (!parsed.hasNovelInsight) {
-      if (body || usedSourceNodeIds.length > 0) throw new Error("Temporary fusion discovery returned an inconsistent negative result");
-      return { hasNovelInsight: false, body: "", usedSourceNodeIds: [] };
+      if (body || usedSourceNodeIds.length > 0 || judgments.length > 0) throw new Error("Temporary fusion discovery returned an inconsistent negative result");
+      return { hasNovelInsight: false, body: "", usedSourceNodeIds: [], judgments: [] };
     }
     if (!body || body.length > 24_000 || usedSourceNodeIds.length < 2
       || usedSourceNodeIds.some((nodeId) => !sourceNodeIds.has(nodeId))) {
       throw new Error("Temporary fusion discovery returned an invalid positive result");
     }
-    return { hasNovelInsight: true, body, usedSourceNodeIds };
+    const normalizedJudgments = judgments.map((judgment) => {
+      const startOffset = judgment.startOffset;
+      const endOffset = judgment.endOffset;
+      const ids = judgment.sourceNodeIds;
+      if (!Number.isSafeInteger(startOffset) || !Number.isSafeInteger(endOffset)
+        || (startOffset as number) < 0 || (endOffset as number) <= (startOffset as number) || (endOffset as number) > body.length
+        || !body.slice(startOffset as number, endOffset as number).trim()
+        || !Array.isArray(ids) || ids.some((value) => typeof value !== "string")) {
+        throw new Error("Temporary fusion discovery returned invalid judgment ranges");
+      }
+      const sourceIds = [...new Set(ids as string[])];
+      if (sourceIds.length < 2 || sourceIds.some((nodeId) => !sourceNodeIds.has(nodeId) || !usedSourceNodeIds.includes(nodeId))) {
+        throw new Error("Temporary fusion discovery returned invalid judgment sources");
+      }
+      return { startOffset: startOffset as number, endOffset: endOffset as number, sourceNodeIds: sourceIds };
+    });
+    const judgmentSourceIds = new Set(normalizedJudgments.flatMap((judgment) => judgment.sourceNodeIds));
+    if (!normalizedJudgments.length || judgmentSourceIds.size !== usedSourceNodeIds.length
+      || usedSourceNodeIds.some((nodeId) => !judgmentSourceIds.has(nodeId))) {
+      throw new Error("Temporary fusion discovery returned inconsistent judgment coverage");
+    }
+    return { hasNovelInsight: true, body, usedSourceNodeIds, judgments: normalizedJudgments };
   }
 
   /**
@@ -1648,7 +1638,7 @@ ${parentContext ? `\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext
 - 只依据提供的材料，不编造外部事实、链接或来源；
 - 材料不足以支撑时在回答中如实说明不确定性；
 - 使用中文；
-- 只输出干净正文，不要输出 [[concept:...]] 等内部控制格式；弱标记由独立抽取任务产生。`;
+- 只输出干净正文，不要输出任何内部控制协议；弱标记由独立抽取任务产生。`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
@@ -1839,14 +1829,14 @@ ${parentContext ? `\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext
               const snippet = source?.snippet?.trim() ?? "";
               if (source && snippet) {
                 source.evidenceStatus = "partial";
-                contentText = `抓取失败: ${result.errorMessage}\n\n[来源${existingOrdinal} 部分证据（搜索摘要）]\n${snippet}`;
+                contentText = `抓取失败: ${result.errorMessage}\n\n来源 ${existingOrdinal} 的部分证据（搜索摘要）：\n${snippet}`;
               } else {
                 contentText = `抓取失败: ${result.errorMessage}`;
               }
             } else {
               if (existingOrdinal > 0) sources[existingOrdinal - 1].evidenceStatus = "full";
               if (existingOrdinal > 0 && result.content.trim()) evidenceBySource.set(existingOrdinal, result.content.trim());
-              contentText = `[来源${existingOrdinal || "?"} 完整内容]\n${result.content}`;
+              contentText = `来源 ${existingOrdinal || "?"} 的完整内容：\n${result.content}`;
             }
 
             messages.push({ role: "tool" as const, tool_call_id: tc.id, content: contentText });

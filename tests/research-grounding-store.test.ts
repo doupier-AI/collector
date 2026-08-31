@@ -203,7 +203,7 @@ test("grounded research persists all sources but views only expose cited origina
   const output = harness.store.getResearchMessage(turn.task.outputMessageId);
   assert.ok(output);
   assert.equal(output.content, "联网回答内容与补充证据。");
-  assert.deepEqual(output.termMarkers?.map((marker) => marker.text), ["联网回答"]);
+  assert.deepEqual(harness.store.getResearchTermMarkerTaskByMessage(output.id)?.markers.map((marker) => marker.text), ["联网回答"]);
   const citations = harness.store.listResearchCitationsForMessages([output.id]);
   assert.equal(citations.length, 2);
   assert.equal(citations[0]?.markerOffset, output.content.indexOf("内容"));
@@ -348,7 +348,7 @@ test("独立最终写作在 length 截断后从断点续写，仍只保存最终
     provider: "agent-fake", model: "agent-model",
     async *generate() { yield "ordinary fallback"; },
     async prepareGrounded() {
-      return { kind: "evidence" as const, evidence: "[来源3] 有界证据。", status: "grounded", queries: ["查询"], sources: [{ title: "Source", evidenceStatus: "full" }], citations: [] };
+      return { kind: "evidence" as const, evidence: "有界证据。", status: "grounded", queries: ["查询"], sources: [{ title: "Source", evidenceStatus: "full" }], citations: [] };
     },
     async *writeGroundedFinalStream(_request, _evidence, options) {
       resumes.push(options.resumeFrom);
@@ -380,7 +380,7 @@ test("独立最终写作连续 length 超上限时失败为 partial，不派生�
   let calls = 0;
   const provider: ResearchGenerationProvider = {
     provider: "agent-fake", model: "agent-model", async *generate() { yield "unused"; },
-    async prepareGrounded() { return { kind: "evidence" as const, evidence: "[来源1] 证据", status: "grounded", queries: [], sources: [{ title: "S", evidenceStatus: "full" }], citations: [] }; },
+    async prepareGrounded() { return { kind: "evidence" as const, evidence: "证据", status: "grounded", queries: [], sources: [{ title: "S", evidenceStatus: "full" }], citations: [] }; },
     async *writeGroundedFinalStream(_request, _evidence, options) { calls += 1; yield `片段${calls}`; options.onStreamDone?.({ finishReason: "length" }); },
   };
   const service = new ResearchSessionService(harness.store, { provider, autoRunTasks: false });
@@ -406,7 +406,7 @@ test("独立最终写作暂停后重新取证并清空旧正文，来源和正�
     async prepareGrounded() {
       preparations += 1;
       const current = preparations === 1 ? "A" : "B";
-      return { kind: "evidence" as const, evidence: `[来源1] 证据${current}。`, status: "grounded", queries: ["查询"], sources: [{ title: `Source ${current}`, evidenceStatus: "full" }], citations: [] };
+      return { kind: "evidence" as const, evidence: `证据${current}。`, status: "grounded", queries: ["查询"], sources: [{ title: `Source ${current}`, evidenceStatus: "full" }], citations: [] };
     },
     async *writeGroundedFinalStream(_request, _evidence, options) {
       evidences.push(_evidence);
@@ -439,7 +439,7 @@ test("独立最终写作暂停后重新取证并清空旧正文，来源和正�
   await service.processTask(turn.task.id);
   assert.equal(service.getTask(turn.task.id).status, "completed");
   assert.equal(harness.store.getResearchMessage(turn.task.outputMessageId)?.content, "正文B。");
-  assert.deepEqual(evidences, ["[来源1] 证据A。", "[来源1] 证据B。"]);
+  assert.deepEqual(evidences, ["证据A。", "证据B。"]);
   const runId = service.getTask(turn.task.id).groundingScope?.runId;
   assert.equal(harness.store.listResearchGroundingSources(runId!)[0]?.title, "Source B");
   assert.equal(harness.store.listResearchCitationsForMessages([turn.task.outputMessageId])[0]?.location?.exact, "正文B。");
@@ -456,7 +456,7 @@ test("独立最终写作仅产生思考时暂停，恢复也会清空旧思考�
     async prepareGrounded() {
       preparations += 1;
       const current = preparations === 1 ? "A" : "B";
-      return { kind: "evidence" as const, evidence: `[来源1] 证据${current}。`, status: "grounded", queries: ["查询"], sources: [{ title: `Source ${current}`, evidenceStatus: "full" }], citations: [] };
+      return { kind: "evidence" as const, evidence: `证据${current}。`, status: "grounded", queries: ["查询"], sources: [{ title: `Source ${current}`, evidenceStatus: "full" }], citations: [] };
     },
     async *writeGroundedFinalStream(_request, _evidence, options) {
       if (preparations === 1) {
@@ -465,7 +465,7 @@ test("独立最终写作仅产生思考时暂停，恢复也会清空旧思考�
         yield "旧流不得写入。";
         return;
       }
-      yield "正文B。[来源1]";
+      yield "正文B。";
       options.onStreamDone?.({ finishReason: "stop" });
     },
   };
@@ -485,7 +485,7 @@ test("独立最终写作仅产生思考时暂停，恢复也会清空旧思考�
   await service.processTask(turn.task.id);
 
   assert.equal(service.getTask(turn.task.id).status, "completed");
-  assert.equal(harness.store.getResearchMessage(turn.task.outputMessageId)?.content, "正文B。[来源1]");
+  assert.equal(harness.store.getResearchMessage(turn.task.outputMessageId)?.content, "正文B。");
   assert.equal(harness.store.getResearchMessage(turn.task.outputMessageId)?.reasoning, undefined);
   assert.equal(preparations, 2);
 });
@@ -500,7 +500,7 @@ test("Agent 证据最终写作暂停重启后遇到显式 think 协议，只保�
     async prepareGrounded() {
       preparations += 1;
       const current = preparations === 1 ? "A" : "B";
-      return { kind: "evidence" as const, evidence: `[来源1] Agent 证据${current}。`, status: "grounded", queries: ["查询"], sources: [{ title: `Source ${current}`, evidenceStatus: "full" }], citations: [] };
+      return { kind: "evidence" as const, evidence: `Agent 证据${current}。`, status: "grounded", queries: ["查询"], sources: [{ title: `Source ${current}`, evidenceStatus: "full" }], citations: [] };
     },
     async *writeGroundedFinalStream(_request, _evidence, options) {
       if (preparations === 1) {
@@ -544,7 +544,7 @@ test("独立最终写作失败重试后重新取证并清空旧正文，来源�
     async prepareGrounded() {
       preparations += 1;
       const current = preparations === 1 ? "A" : "B";
-      return { kind: "evidence" as const, evidence: `[来源1] 证据${current}。`, status: "grounded", queries: ["查询"], sources: [{ title: `Source ${current}`, evidenceStatus: "full" }], citations: [] };
+      return { kind: "evidence" as const, evidence: `证据${current}。`, status: "grounded", queries: ["查询"], sources: [{ title: `Source ${current}`, evidenceStatus: "full" }], citations: [] };
     },
     async *writeGroundedFinalStream(_request, evidence, options) {
       evidences.push(evidence);
@@ -553,7 +553,7 @@ test("独立最终写作失败重试后重新取证并清空旧正文，来源�
         if (physicalWrites === 1) yield "来源A的半篇正文。";
         throw new TypeError("simulated network interruption");
       }
-      yield "正文B。[来源1]";
+      yield "正文B。";
       options.onStreamDone?.({ finishReason: "stop" });
     },
   };
@@ -571,9 +571,9 @@ test("独立最终写作失败重试后重新取证并清空旧正文，来源�
   await service.processTask(turn.task.id);
 
   assert.equal(service.getTask(turn.task.id).status, "completed");
-  assert.equal(harness.store.getResearchMessage(turn.task.outputMessageId)?.content, "正文B。[来源1]");
+  assert.equal(harness.store.getResearchMessage(turn.task.outputMessageId)?.content, "正文B。");
   assert.equal(evidences.filter((item) => item.includes("证据A")).length, 4, "首次证据只用于该次有界物理重试");
-  assert.equal(evidences.at(-1), "[来源1] 证据B。");
+  assert.equal(evidences.at(-1), "证据B。");
   const runId = service.getTask(turn.task.id).groundingScope?.runId;
   assert.equal(harness.store.listResearchGroundingSources(runId!)[0]?.title, "Source B");
 });
@@ -585,7 +585,7 @@ test("仅证据最终写作不沿用原生草稿偏移，粗粒度候选只保�
     provider: "agent-fake", model: "agent-model",
     async *generate() { yield "unused"; },
     async prepareGrounded() {
-      return { kind: "evidence" as const, evidence: "[来源1] 证据", status: "grounded", queries: [], sources: [{ title: "Source", evidenceStatus: "full" }], citations: [{ sourceOrdinal: 1, startOffset: 0, endOffset: 3 }] };
+      return { kind: "evidence" as const, evidence: "证据", status: "grounded", queries: [], sources: [{ title: "Source", evidenceStatus: "full" }], citations: [{ sourceOrdinal: 1, startOffset: 0, endOffset: 3 }] };
     },
     async *writeGroundedFinalStream(_request, _evidence, options) {
       options.onCitation?.({ sourceOrdinal: 1 });
@@ -667,7 +667,7 @@ test("已确认原生最终回答仍须经过正文准入边界", async (t) => {
 test("已确认原生终稿按多个正文 delta 渐进发布，事件拼接与保存正文一致", async (t) => {
   const harness = await createStore();
   t.after(() => harness.close());
-  const content = `${"原生联网终稿按稳定小段渐进发布。".repeat(200)}[来源1]`;
+  const content = `${"原生联网终稿按稳定小段渐进发布。".repeat(200)}`;
   const provider: ResearchGenerationProvider = {
     provider: "native-fake", model: "native-model",
     async *generate() { yield "ordinary fallback"; },
@@ -705,7 +705,7 @@ test("最终写作供应商错误不会把远端正文或凭证写进控制台",
     async prepareGrounded() {
       return {
         kind: "evidence" as const,
-        evidence: "[来源1] 可追溯证据",
+        evidence: "可追溯证据",
         status: "grounded", queries: [],
         sources: [{ title: "Source", url: "https://example.com/source", evidenceStatus: "full" }],
         citations: [],

@@ -3,6 +3,7 @@ import type {
   ResearchNodeRecord,
   ResearchSelectionRecord,
   ResearchSessionRecord,
+  ResearchTermMarkerTaskRecord,
 } from "@collector/capture-contracts";
 
 // ── 配置默认值 ──────────────────────────────────────────────
@@ -30,6 +31,7 @@ export interface ParentChainContextStore {
   getResearchSession(id: string): ResearchSessionRecord | undefined;
   getResearchSelection(id: string): ResearchSelectionRecord | undefined;
   listResearchMessageBodiesByNode(nodeId: string): ResearchMessageBodyRecord[];
+  getResearchTermMarkerTaskByMessage(messageId: string): ResearchTermMarkerTaskRecord | undefined;
 }
 
 // ── 结果类型 ────────────────────────────────────────────────
@@ -234,8 +236,8 @@ export class ParentChainContextService {
     const seen = new Set<string>();
     const terms: string[] = [];
     for (const message of messages) {
-      if (message.role !== "assistant" || message.status !== "completed" || !message.termMarkers?.length) continue;
-      for (const marker of message.termMarkers) {
+      if (message.role !== "assistant" || message.status !== "completed") continue;
+      for (const marker of this.store.getResearchTermMarkerTaskByMessage(message.id)?.markers ?? []) {
         const text = marker.text.trim();
         if (!text) continue;
         const key = text.toLowerCase();

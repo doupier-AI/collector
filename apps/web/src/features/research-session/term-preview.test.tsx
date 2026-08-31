@@ -39,7 +39,7 @@ function viewWithTerms(status: "completed" | "streaming" = "completed"): { view:
     session: makeSession({ id: "session-1", title: "Term preview" }),
     messages: [
       makeMessage({ id: "m-in", role: "user", content: "Explain REST" }),
-      makeMessage({ id: "m-out", role: "assistant", status, content, termMarkers: [marker] }),
+      makeMessage({ id: "m-out", role: "assistant", status, content }),
     ],
     tasks: [makeTask({ id: "task-1", status: status === "completed" ? "completed" : "running", inputMessageId: "m-in", outputMessageId: "m-out" })],
   });
@@ -107,9 +107,6 @@ describe("术语预览交互", () => {
   it("独立抽取任务晚于回答完成时，页面无闪烁对齐并自动显示当前版本标记", async () => {
     const { view } = viewWithTerms();
     const beforeSidecar = structuredClone(view);
-    beforeSidecar.messages = beforeSidecar.messages.map((message) => (
-      message.id === "m-out" ? { ...message, termMarkers: [] } : message
-    ));
     beforeSidecar.termDetections = {};
     const getResearchNodeView = vi.fn()
       .mockResolvedValueOnce(beforeSidecar)

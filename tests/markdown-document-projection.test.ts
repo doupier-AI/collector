@@ -113,9 +113,9 @@ describe("unified Markdown document projection", () => {
     assert.equal(projection.diagnostics.some((diagnostic) => diagnostic.code === "parse-failed"), false);
   });
 
-  it("maps formatting, repeated text, tables, code, and zero-width citation annotations without guessing", () => {
+  it("maps formatting, repeated text, tables, and code without guessing", () => {
     const source = [
-      "**重复文本**与重复文本[来源1]",
+      "**重复文本**与重复文本。",
       "",
       "| 列 | 值 |",
       "| --- | --- |",
@@ -131,11 +131,6 @@ describe("unified Markdown document projection", () => {
     assert.equal(second?.exact, "重复文本");
     assert.notDeepEqual(first?.visibleRange, second?.visibleRange);
     assert.deepEqual(resolveMarkdownVisibleRange(projection, first!.visibleRange, "重复文本")?.sourceRange, firstSource);
-    assert.equal(projectMarkdownSourceRange(projection, {
-      start: source.indexOf("[来源1]"),
-      end: source.indexOf("[来源1]") + "[来源1]".length,
-    }), undefined);
-
     const codeStart = source.indexOf("code");
     const code = projectMarkdownSourceRange(projection, { start: codeStart, end: codeStart + 4 });
     assert.equal(code?.exact, "code");

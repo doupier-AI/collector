@@ -247,12 +247,6 @@ export interface ResearchGenerationRequest {
   parentChainContext?: ParentChainContextResult;
   /** 当前节点及其既有父链的有界语义切片上下文；与父链摘要独立预算。 */
   sliceContext?: import("@collector/capture-contracts").ResearchSliceContext;
-  /**
-   * 是否在提示词中注入弱标记语法指令（缺省注入）。术语预览置 false：预览是可独立阅读的
-   * 解释片段，内容不经流内标记管线解析——模型若按指令输出 [[category:id:text]]，原始控制串
-   * 会原样落库并泄漏到弹层与生长子节点正文（#86 真实验收复现）。
-   */
-  mentionMarkup?: boolean;
   /** 主研究链的原始候选；只有 API 策略层可以把它们装配为模型输入。 */
   contextCandidates?: readonly ContextCandidate[];
   /** 主链模型调用的已准入视图；辅助调用在 #158 迁移前可暂时缺省。 */
@@ -930,7 +924,7 @@ export class ResearchSessionService {
       throw error;
     }
     if (acceptedDelta || reasoningDelta) {
-      await this.store.appendResearchTaskDelta(task.id, acceptedDelta, undefined, reasoningDelta);
+      await this.store.appendResearchTaskDelta(task.id, acceptedDelta, reasoningDelta);
       if (acceptedDelta) this.options.onBodyUpdated?.(task);
     }
     const content = this.store.getResearchMessageBody(task.outputMessageId)?.content ?? "";
@@ -943,7 +937,7 @@ export class ResearchSessionService {
   }
 
   /** 完成时只释放可确认不是协议前缀的正文尾部。 */
-  private async finishGeneratedMarkup(task: ResearchTaskRecord, preserveStreamCheckpoint = false): Promise<{ content: string; delta: string; markers: never[] }> {
+  private async finishGeneratedMarkup(task: ResearchTaskRecord, preserveStreamCheckpoint = false): Promise<{ content: string; delta: string }> {
     const sink = this.finalBodySinks.get(task.id);
     if (!sink) throw new Error("Final body sink is not initialized");
     const trailing = sink.finish();
@@ -953,7 +947,7 @@ export class ResearchSessionService {
     }
     const content = this.store.getResearchMessageBody(task.outputMessageId)?.content ?? "";
     if (!preserveStreamCheckpoint && this.store.getResearchTask(task.id)?.streamCheckpoint) await this.store.clearResearchTaskStreamCheckpoint(task.id);
-    return { content, delta: trailing, markers: [] };
+    return { content, delta: trailing };
   }
 
   /**

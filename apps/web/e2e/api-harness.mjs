@@ -459,12 +459,15 @@ const service = new CaptureService(store, join(dataDir, "artifacts"), undefined,
       },
       async discoverTemporaryFusion(input) {
         if (similarityRelation !== "identity") {
-          return { hasNovelInsight: false, body: "", usedSourceNodeIds: [] };
+          return { hasNovelInsight: false, body: "", usedSourceNodeIds: [], judgments: [] };
         }
+        const body = "## 临时融合草稿\n\n两份材料共同说明本地优先需要在不同实践语境中核验其边界。";
+        const sourceNodeIds = input.sources.map((source) => source.nodeId);
         return {
           hasNovelInsight: true,
-          body: "## 临时融合草稿\n\n两份材料共同说明本地优先需要在不同实践语境中核验其边界。[来源1][来源2]",
-          usedSourceNodeIds: input.sources.map((source) => source.nodeId),
+          body,
+          usedSourceNodeIds: sourceNodeIds,
+          judgments: [{ startOffset: body.indexOf("两份材料"), endOffset: body.length, sourceNodeIds }],
         };
       },
     },

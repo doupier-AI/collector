@@ -97,7 +97,7 @@ export function TemporaryFusionDetails({ bundle, history, busy, onRestoreDraft, 
             const health = sourceHealthLabel(source);
             return (
               <li key={source.id}>
-                <span className="temporary-fusion-source-list__ordinal">{source.citationOrdinal ?? index + 1}</span>
+                <span className="temporary-fusion-source-list__ordinal">{index + 1}</span>
                 <div>
                   <strong>来源节点 {source.sourceNodeId}</strong>
                   {health ? <p>{health}</p> : <Link to={fragmentDeepLink(source.sourceNodeId, source.fragmentIds[0]!)}>打开来源位置</Link>}

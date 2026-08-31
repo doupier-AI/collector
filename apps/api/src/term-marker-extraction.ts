@@ -161,7 +161,7 @@ export class ResearchTermMarkerExtractionService {
           const additions = validateCandidates(message.id, message.content, raw, new Set([block.ordinal]), coveredTerms);
           markers = selectMarkers([...markers, ...additions], nodeDepth, message.content);
           processed.add(key);
-          await this.store.replaceResearchMessageTermMarkers(message.id, bodyVersionId, markers);
+          if (!await this.persistProgress(task, markers, processed)) return;
         }
         if (task.fullReviewRequested) {
           const raw = await provider.extractTermMarkers({
@@ -172,7 +172,7 @@ export class ResearchTermMarkerExtractionService {
             nodeDepth,
           });
           markers = selectMarkers(validateCandidates(message.id, message.content, raw, new Set(blocks.map((block) => block.ordinal)), coveredTerms), nodeDepth, message.content);
-          await this.store.replaceResearchMessageTermMarkers(message.id, bodyVersionId, markers);
+          if (!await this.persistProgress(task, markers, processed)) return;
           if (!this.isCurrentClaim(task)) return;
           await this.persistSidecars(task, markers);
         }
@@ -182,8 +182,10 @@ export class ResearchTermMarkerExtractionService {
       }
       if (!this.isCurrentClaim(task)) return;
       const now = new Date().toISOString();
+      const current = this.store.getResearchTermMarkerTask(task.id);
+      if (!current) return;
       await this.store.updateResearchTermMarkerTask({
-        ...task,
+        ...current,
         status: "completed",
         retryable: false,
         processedBlockKeys: [...processed],
@@ -209,6 +211,26 @@ export class ResearchTermMarkerExtractionService {
       && current.bodyVersionId === task.bodyVersionId
       && current.generationAttempt === task.generationAttempt
       && current.fullReviewRequested === task.fullReviewRequested;
+  }
+
+  /** 独立任务记录是弱标记 payload 的唯一事实源；正文消息不再兼容双写。 */
+  private async persistProgress(
+    task: ResearchTermMarkerTaskRecord,
+    markers: readonly TermMarker[],
+    processed: ReadonlySet<string>,
+  ): Promise<boolean> {
+    const current = this.store.getResearchTermMarkerTask(task.id);
+    if (current?.status !== "running"
+      || current.bodyVersionId !== task.bodyVersionId
+      || current.generationAttempt !== task.generationAttempt
+      || current.fullReviewRequested !== task.fullReviewRequested) return false;
+    await this.store.updateResearchTermMarkerTask({
+      ...current,
+      markers: [...markers],
+      processedBlockKeys: [...processed],
+      updatedAt: new Date().toISOString(),
+    });
+    return true;
   }
 
   private async persistSidecars(task: ResearchTermMarkerTaskRecord, markers: readonly TermMarker[]): Promise<void> {
@@ -248,10 +270,10 @@ export class ResearchTermMarkerExtractionService {
   ): Promise<void> {
     if (!this.isCurrentClaim(task)) return;
     const now = new Date().toISOString();
-    await this.store.replaceResearchMessageTermMarkers(task.messageId, task.bodyVersionId, []);
-    if (!this.isCurrentClaim(task)) return;
+    const current = this.store.getResearchTermMarkerTask(task.id);
+    if (!current || !this.isCurrentClaim(task)) return;
     await this.store.updateResearchTermMarkerTask({
-      ...task,
+      ...current,
       status: "failed",
       retryable,
       markers: [],

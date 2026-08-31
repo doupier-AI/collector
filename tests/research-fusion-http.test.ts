@@ -15,6 +15,16 @@ import type {
 import { deriveBodyVersion } from "@collector/capture-contracts";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer, type SimilarityVerificationGateway, type TemporaryFusionDraftEvidenceGateway } from "@collector/api";
 
+function structuredDiscovery(input: { sources: Array<{ nodeId: string }> }, body: string) {
+  const sourceNodeIds = input.sources.map((source) => source.nodeId);
+  return {
+    hasNovelInsight: true as const,
+    body,
+    usedSourceNodeIds: sourceNodeIds,
+    judgments: [{ startOffset: 0, endOffset: body.length, sourceNodeIds }],
+  };
+}
+
 async function createHarness(options?: { similarityVerifier?: SimilarityVerificationGateway; temporaryConversationAnswer?: string; temporaryConversationFailFirst?: boolean; temporaryFusionDraftEvidenceVerifier?: TemporaryFusionDraftEvidenceGateway }) {
   const root = await mkdtemp(join(tmpdir(), "collector-fusion-http-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
@@ -256,11 +266,7 @@ test("#71 enabled discovery writes a B-side temporary fusion without changing fo
         return { relationType: "identity", reason: "两处材料为同一实体。" };
       },
       async discoverTemporaryFusion(input) {
-        return {
-          hasNovelInsight: true,
-          body: "## 临时融合草稿\n\n两处材料指向同一实体，但需核验作品语境差异。[来源1][来源2]",
-          usedSourceNodeIds: input.sources.map((source) => source.nodeId),
-        };
+        return structuredDiscovery(input, "## 临时融合草稿\n\n两处材料指向同一实体，但需核验作品语境差异。");
       },
     },
   });
@@ -296,11 +302,7 @@ test("T02 exposes temporary fusions only through explicit read and map-observati
     similarityVerifier: {
       async verifyResearchSimilarity() { return { relationType: "identity", reason: "两处材料指向同一实体。" }; },
       async discoverTemporaryFusion(input) {
-        return {
-          hasNovelInsight: true,
-          body: "## 临时融合草稿\n\n两处材料形成一个待核验的新认识。[来源1][来源2]",
-          usedSourceNodeIds: input.sources.map((source) => source.nodeId),
-        };
+        return structuredDiscovery(input, "## 临时融合草稿\n\n两处材料形成一个待核验的新认识。");
       },
     },
   });
@@ -341,7 +343,7 @@ test("T05 writes explicit immutable draft versions, rejects stale edits, and res
   const harness = await createHarness({
     similarityVerifier: {
       async verifyResearchSimilarity() { return { relationType: "identity", reason: "两处材料指向同一实体。" }; },
-      async discoverTemporaryFusion(input) { return { hasNovelInsight: true, body: "初始判断[来源1][来源2]", usedSourceNodeIds: input.sources.map((source) => source.nodeId) }; },
+      async discoverTemporaryFusion(input) { return structuredDiscovery(input, "初始判断"); },
     },
     temporaryFusionDraftEvidenceVerifier: { async verifyTemporaryFusionDraftEvidence() { return { verified: true }; } },
   });
@@ -351,12 +353,12 @@ test("T05 writes explicit immutable draft versions, rejects stale edits, and res
   const [candidate] = await (await fetch(`${harness.base}/v1/research-temporary-fusions`, { headers: headers(harness.token) })).json() as Array<{ node: { id: string; activeDraftVersionId: string } }>;
   assert.ok(candidate);
   const update = await fetch(`${harness.base}/v1/research-temporary-fusions/${encodeURIComponent(candidate.node.id)}/drafts`, {
-    method: "PUT", headers: headers(harness.token), body: JSON.stringify({ body: "修改后判断[来源1][来源2]", expectedDraftVersionId: candidate.node.activeDraftVersionId }),
+    method: "PUT", headers: headers(harness.token), body: JSON.stringify({ body: "修改后判断", expectedDraftVersionId: candidate.node.activeDraftVersionId }),
   });
   assert.equal(update.status, 202);
   const changed = await update.json() as { bundle: { activeDraft: { id: string; version: number; body: string } }; revalidationTasks: unknown[] };
   assert.equal(changed.bundle.activeDraft.version, 2);
-  assert.equal(changed.bundle.activeDraft.body, "修改后判断[来源1][来源2]");
+  assert.equal(changed.bundle.activeDraft.body, "修改后判断");
   assert.equal(changed.revalidationTasks.length, 1);
   const stale = await fetch(`${harness.base}/v1/research-temporary-fusions/${encodeURIComponent(candidate.node.id)}/drafts`, {
     method: "PUT", headers: headers(harness.token), body: JSON.stringify({ body: "覆盖尝试", expectedDraftVersionId: candidate.node.activeDraftVersionId }),
@@ -370,7 +372,7 @@ test("T05 writes explicit immutable draft versions, rejects stale edits, and res
   assert.equal(restored.status, 200);
   const result = await restored.json() as { bundle: { activeDraft: { version: number; body: string } } };
   assert.equal(result.bundle.activeDraft.version, 3);
-  assert.equal(result.bundle.activeDraft.body, "初始判断[来源1][来源2]");
+  assert.equal(result.bundle.activeDraft.body, "初始判断");
 });
 
 test("T06 confirms only the current verified draft in place and removes it from temporary HTTP views", async (t) => {
@@ -378,7 +380,7 @@ test("T06 confirms only the current verified draft in place and removes it from 
     similarityVerifier: {
       async verifyResearchSimilarity() { return { relationType: "identity", reason: "两处材料指向同一实体。" }; },
       async discoverTemporaryFusion(input) {
-        return { hasNovelInsight: true, body: "已核验的新认识[来源1][来源2]", usedSourceNodeIds: input.sources.map((source) => source.nodeId) };
+        return structuredDiscovery(input, "已核验的新认识");
       },
     },
   });
@@ -415,7 +417,7 @@ test("T06 confirms only the current verified draft in place and removes it from 
   assert.equal(result.session.id, candidate.node.id);
   assert.equal(result.session.projectId, undefined);
   assert.equal(result.snapshot.confirmedDraftVersionId, candidate.node.activeDraftVersionId);
-  assert.equal(result.snapshot.body, "已核验的新认识[来源1][来源2]");
+  assert.equal(result.snapshot.body, "已核验的新认识");
   assert.equal(result.snapshot.directSources.length, 2);
   const modelCallsAfter = (db.prepare("SELECT COUNT(*) AS count FROM model_calls").get() as { count: number }).count;
   assert.equal(modelCallsAfter, modelCallsBefore, "confirmation never invokes a body-generation model");
@@ -443,7 +445,7 @@ test("T03 deletes single, explicit batches, and all temporary fusions without to
     similarityVerifier: {
       async verifyResearchSimilarity() { return { relationType: "identity", reason: "两处材料指向同一实体。" }; },
       async discoverTemporaryFusion(input) {
-        return { hasNovelInsight: true, body: "## 临时融合草稿\n\n两处材料形成一个待核验的新认识。[来源1][来源2]", usedSourceNodeIds: input.sources.map((source) => source.nodeId) };
+        return structuredDiscovery(input, "## 临时融合草稿\n\n两处材料形成一个待核验的新认识。");
       },
     },
   });
@@ -492,7 +494,7 @@ test("T04 persists temporary discussion separately, resumes it, and removes it w
     similarityVerifier: {
       async verifyResearchSimilarity() { return { relationType: "identity", reason: "两处材料指向同一实体。" }; },
       async discoverTemporaryFusion(input) {
-        return { hasNovelInsight: true, body: "## 临时融合草稿\n\n两处材料形成一个待讨论的新认识。[来源1][来源2]", usedSourceNodeIds: input.sources.map((source) => source.nodeId) };
+        return structuredDiscovery(input, "## 临时融合草稿\n\n两处材料形成一个待讨论的新认识。");
       },
     },
   });

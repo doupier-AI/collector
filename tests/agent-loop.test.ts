@@ -92,7 +92,7 @@ test("agent loop: single turn — model searches once then answers", async () =>
     },
     {
       finishReason: "stop",
-      message: { role: "assistant", content: "根据搜索，AI 技术正在快速发展[来源1]。" },
+      message: { role: "assistant", content: "根据搜索，AI 技术正在快速发展。" },
       model: "test-model",
     },
   ]);
@@ -208,7 +208,7 @@ test("agent loop: search then fetch then answer", async () => {
     },
     {
       finishReason: "stop",
-      message: { role: "assistant", content: "TypeScript 5.8 新增了诸多特性[来源1]。" },
+      message: { role: "assistant", content: "TypeScript 5.8 新增了诸多特性。" },
       model: "test-model",
     },
   ]);
@@ -276,7 +276,7 @@ test("agent loop: re-search with different query when first attempt insufficient
     // Answer with all sources
     {
       finishReason: "stop",
-      message: { role: "assistant", content: "Python 性能可以通过多种方式优化[来源1][来源2]。" },
+      message: { role: "assistant", content: "Python 性能可以通过多种方式优化。" },
       model: "test-model",
     },
   ]);
@@ -322,7 +322,7 @@ test("agent loop: search cap at 5 — further searches blocked", async () => {
   // The 6th search is blocked, so the model gets a "stop" message — it should then answer
   responses.push({
     finishReason: "stop",
-    message: { role: "assistant", content: "基于已有信息，这里是我的回答[来源1]。" },
+    message: { role: "assistant", content: "基于已有信息，这里是我的回答。" },
     model: "test-model",
   });
   provider.setAgentChatSequence(responses);
@@ -389,7 +389,7 @@ test("agent loop: parallel tool calls in same turn", async () => {
     },
     {
       finishReason: "stop",
-      message: { role: "assistant", content: "React 19 带来了许多改进[来源1]。" },
+      message: { role: "assistant", content: "React 19 带来了许多改进。" },
       model: "test-model",
     },
   ]);
@@ -439,7 +439,7 @@ test("agent loop: URL deduplication across multiple searches", async () => {
     },
     {
       finishReason: "stop",
-      message: { role: "assistant", content: "回答包含[来源1][来源2][来源3]。" },
+      message: { role: "assistant", content: "回答包含三份来源共同支持的结论。" },
       model: "test-model",
     },
   ]);
@@ -532,7 +532,7 @@ test("agent loop: web_fetch still works after search cap reached", async () => {
   // Turn 7: model answers
   responses.push({
     finishReason: "stop",
-    message: { role: "assistant", content: "回答[来源1]。" },
+    message: { role: "assistant", content: "回答。" },
     model: "test-model",
   });
   provider.setAgentChatSequence(responses);
@@ -584,7 +584,7 @@ test("agent loop: failed fetch with snippet injects marked partial evidence into
     },
     {
       finishReason: "stop",
-      message: { role: "assistant", content: "结论基于摘要[来源1]。" },
+      message: { role: "assistant", content: "结论基于摘要。" },
       model: "test-model",
     },
   ]);
@@ -651,7 +651,7 @@ test("agent loop: successful fetch upgrades source evidenceStatus to full", asyn
     },
     {
       finishReason: "stop",
-      message: { role: "assistant", content: "回答[来源1]。" },
+      message: { role: "assistant", content: "回答。" },
       model: "test-model",
     },
   ]);
@@ -699,7 +699,7 @@ test("agent loop: failed fetch without snippet keeps evidenceStatus none", async
     },
     {
       finishReason: "stop",
-      message: { role: "assistant", content: "回答[来源1]。" },
+      message: { role: "assistant", content: "回答。" },
       model: "test-model",
     },
   ]);

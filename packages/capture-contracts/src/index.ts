@@ -1195,8 +1195,6 @@ export interface ResearchMessageRecord {
   reasoning?: string;
   /** 当前生成尝试的独立 reasoning 记录；缺失表示供应商没有返回可展示内容。 */
   reasoningRecordId?: string;
-  /** AI 正文生成时与干净正文一起落下的提及范围；不含任何模型控制符。 */
-  termMarkers?: TermMarker[];
   /** 旧版本快照按时间倒序；reasoning 只作为组装视图，持久化关联见 reasoningRecordId。 */
   versions?: ResearchMessageVersion[];
   status: ResearchMessageStatus;
@@ -1215,7 +1213,6 @@ export interface ResearchMessageBodyRecord {
   branchId?: string;
   role: ResearchMessageRole;
   content: string;
-  termMarkers?: TermMarker[];
   status: ResearchMessageStatus;
   createdAt: string;
   updatedAt: string;
@@ -1229,7 +1226,6 @@ export function toResearchMessageBody(message: ResearchMessageRecord): ResearchM
     ...(message.branchId ? { branchId: message.branchId } : {}),
     role: message.role,
     content: message.content,
-    ...(message.termMarkers ? { termMarkers: message.termMarkers } : {}),
     status: message.status,
     createdAt: message.createdAt,
     updatedAt: message.updatedAt,
@@ -3912,8 +3908,6 @@ export interface ResearchCandidateSourceConnectionRecord {
   id: string;
   temporaryFusionNodeId: string;
   sourceNodeId: string;
-  /** 草案正文 [来源n] 的原始序号；候选过滤后仍保持与正文一致。 */
-  citationOrdinal?: number;
   sourceKind: "formal";
   bodyVersionId: string;
   fragmentIds: string[];
@@ -4077,115 +4071,9 @@ export function validateTemporaryFusionBundle(
   }
 }
 
-export interface MentionMarkupUpdate {
-  /** 截至当前已经可以安全展示的干净正文。 */
-  content: string;
-  /** 相对上一次 push/finish 新增的干净正文。 */
-  delta: string;
-  /** 截至当前已经闭合且通过数量边界的提及。 */
-  markers: TermMarker[];
-}
-
-interface AbsoluteMention {
-  text: string;
-  startOffset: number;
-  endOffset: number;
-  category: TermCategory;
-  /** 模型分配、只在当前回答内有效的隐藏对象身份。 */
-  answerLocalEntityId: string;
-}
-
-const MENTION_MARKUP_MAX_TEXT_CHARACTERS = 120;
-const MENTION_MARKUP_MAX_ENTITY_ID_CHARACTERS = 64;
-const MENTION_MARKUP_MAX_CONTROL_CHARACTERS = MENTION_MARKUP_MAX_TEXT_CHARACTERS
-  + MENTION_MARKUP_MAX_ENTITY_ID_CHARACTERS
-  + 32;
-const MENTION_MARKUP_FULL_MAX_COUNT = 24;
-const MENTION_MARKUP_REDUCED_MAX_COUNT = 4;
-
-/**
- * 模型流内提及解析模块。
- *
- * Interface 只有 push/finish：调用方永远只拿到可展示的干净正文和独立范围，
- * 不需要理解控制符跨 delta、格式错误、块偏移或深度数量边界。
- */
-export class MentionMarkupStream {
-  private raw = "";
-  private lastContent: string;
-  private finished = false;
-  private rawToContentOffsets: Array<number | undefined> = [0];
-
-  constructor(private readonly input: {
-    messageId: string;
-    nodeDepth: number;
-    seedContent?: string;
-    seedMarkers?: readonly TermMarker[];
-  }) {
-    this.lastContent = input.seedContent ?? "";
-  }
-
-  push(rawDelta: string): MentionMarkupUpdate {
-    if (this.finished) throw new Error("Mention markup stream is already finished");
-    this.raw += rawDelta;
-    return this.snapshot(false);
-  }
-
-  finish(): MentionMarkupUpdate {
-    if (this.finished) return this.snapshot(true);
-    this.finished = true;
-    return this.snapshot(true);
-  }
-
-  /**
-   * 把供应商基于原始模型输出给出的 UTF-16 范围换算到干净正文。
-   * 只有完成清洗后范围才稳定；端点落在被移除的控制字段内时返回 undefined，
-   * 让调用方诚实丢弃精确定位，而不是猜测一个看似接近的位置。
-   */
-  mapRawRange(startOffset: number, endOffset: number): { startOffset: number; endOffset: number } | undefined {
-    if (!this.finished
-      || !Number.isSafeInteger(startOffset)
-      || !Number.isSafeInteger(endOffset)
-      || startOffset < 0
-      || endOffset < startOffset
-      || endOffset > this.raw.length) return undefined;
-    const cleanStart = this.rawToContentOffsets[startOffset];
-    const cleanEnd = this.rawToContentOffsets[endOffset];
-    const seedOffset = this.input.seedContent?.length ?? 0;
-    return cleanStart !== undefined && cleanEnd !== undefined && cleanEnd >= cleanStart
-      ? { startOffset: seedOffset + cleanStart, endOffset: seedOffset + cleanEnd }
-      : undefined;
-  }
-
-  private snapshot(final: boolean): MentionMarkupUpdate {
-    const parsed = parseMentionMarkup(this.raw, final);
-    this.rawToContentOffsets = parsed.rawToContentOffsets;
-    const seedContent = this.input.seedContent ?? "";
-    const content = seedContent + parsed.content;
-    if (!content.startsWith(this.lastContent)) {
-      throw new Error("Mention markup parser attempted to rewrite visible content");
-    }
-    const delta = content.slice(this.lastContent.length);
-    this.lastContent = content;
-
-    const maxMarkers = this.input.nodeDepth >= 4
-      ? 0
-      : this.input.nodeDepth >= 2
-        ? MENTION_MARKUP_REDUCED_MAX_COUNT
-        : MENTION_MARKUP_FULL_MAX_COUNT;
-    const accepted = parsed.mentions.slice(0, maxMarkers);
-    const projected = projectAbsoluteMentions(content, accepted, this.input.messageId, seedContent.length);
-    const existing = (this.input.seedMarkers ?? []).filter((marker) => validateProjectedMarker(content, marker));
-    const byMention = new Map<string, TermMarker>();
-    for (const marker of [...existing, ...projected]) {
-      byMention.set(marker.mentionId ?? markerLocationKey(marker), marker);
-    }
-    return { content, delta, markers: [...byMention.values()] };
-  }
-}
-
 /** 同形候选查找键；它不是实体身份，跨内容复用前仍需语境核验。 */
 export function termEntityCandidateKey(marker: Pick<TermMarker, "category" | "text">): string {
-  return `${marker.category}:${normalizeMentionText(marker.text)}`;
+  return `${marker.category}:${marker.text.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase()}`;
 }
 
 // ── 节点内跨回答实体核验（ADR-0027） ─────────────────────────────
@@ -4212,164 +4100,6 @@ export interface TermIdentityMention {
 export interface TermIdentityVerificationRequest {
   left: TermIdentityMention;
   right: TermIdentityMention;
-}
-
-function parseMentionMarkup(raw: string, final: boolean): {
-  content: string;
-  mentions: AbsoluteMention[];
-  rawToContentOffsets: Array<number | undefined>;
-} {
-  let content = "";
-  const mentions: AbsoluteMention[] = [];
-  const rawToContentOffsets: Array<number | undefined> = new Array(raw.length + 1).fill(undefined);
-  const appendVisibleRaw = (start: number, end: number): void => {
-    const cleanStart = content.length;
-    content += raw.slice(start, end);
-    for (let offset = start; offset <= end; offset += 1) {
-      rawToContentOffsets[offset] = cleanStart + offset - start;
-    }
-  };
-  let cursor = 0;
-  while (cursor < raw.length) {
-    const open = raw.indexOf("[[", cursor);
-    if (open < 0) {
-      const end = !final && raw.endsWith("[") ? raw.length - 1 : raw.length;
-      appendVisibleRaw(cursor, end);
-      break;
-    }
-    appendVisibleRaw(cursor, open);
-    const close = raw.indexOf("]]", open + 2);
-    if (close < 0) {
-      const inner = raw.slice(open + 2);
-      const definitelyMalformed = inner.includes("\n") || inner.length > MENTION_MARKUP_MAX_CONTROL_CHARACTERS;
-      if (!final && !definitelyMalformed) break;
-      content += fallbackMentionText(inner);
-      rawToContentOffsets[raw.length] = content.length;
-      break;
-    }
-
-    const inner = raw.slice(open + 2, close);
-    const parsed = parseClosedMention(inner);
-    if (!parsed) {
-      content += fallbackMentionText(inner);
-    } else {
-      const startOffset = content.length;
-      content += parsed.text;
-      mentions.push({ ...parsed, startOffset, endOffset: content.length });
-      const rawTextStart = open + 2 + parsed.textStartOffset;
-      const rawTextEnd = open + 2 + parsed.textEndOffset;
-      for (let offset = rawTextStart; offset <= rawTextEnd; offset += 1) {
-        rawToContentOffsets[offset] = startOffset + offset - rawTextStart;
-      }
-    }
-    rawToContentOffsets[open] ??= content.length - (parsed?.text.length ?? fallbackMentionText(inner).length);
-    rawToContentOffsets[close] = content.length;
-    rawToContentOffsets[close + 2] = content.length;
-    cursor = close + 2;
-  }
-  if (raw.length === 0) rawToContentOffsets[0] = 0;
-  return { content, mentions, rawToContentOffsets };
-}
-
-function parseClosedMention(inner: string): Pick<AbsoluteMention, "text" | "category" | "answerLocalEntityId"> & {
-  textStartOffset: number;
-  textEndOffset: number;
-} | undefined {
-  if (inner.includes("\n") || inner.includes("[[") || inner.includes("]]")) return undefined;
-  const categorySeparator = inner.indexOf(":");
-  const identitySeparator = inner.indexOf(":", categorySeparator + 1);
-  if (categorySeparator <= 0 || identitySeparator <= categorySeparator + 1) return undefined;
-  const category = inner.slice(0, categorySeparator).trim();
-  const answerLocalEntityId = inner.slice(categorySeparator + 1, identitySeparator).trim();
-  const rawText = inner.slice(identitySeparator + 1);
-  const leadingWhitespace = rawText.length - rawText.trimStart().length;
-  const trailingWhitespace = rawText.length - rawText.trimEnd().length;
-  const textStartOffset = identitySeparator + 1 + leadingWhitespace;
-  const textEndOffset = inner.length - trailingWhitespace;
-  const text = inner.slice(textStartOffset, textEndOffset);
-  if (!isTermCategory(category)
-    || !isAnswerLocalEntityId(answerLocalEntityId)
-    || !text
-    || text.length > MENTION_MARKUP_MAX_TEXT_CHARACTERS) return undefined;
-  return { text, category, answerLocalEntityId, textStartOffset, textEndOffset };
-}
-
-function fallbackMentionText(inner: string): string {
-  const withoutControls = inner.replaceAll("[[", "").replaceAll("]]", "");
-  const categorySeparator = withoutControls.indexOf(":");
-  const identitySeparator = withoutControls.indexOf(":", categorySeparator + 1);
-  const visibleStart = identitySeparator >= 0 ? identitySeparator + 1 : categorySeparator + 1;
-  return (categorySeparator >= 0 ? withoutControls.slice(visibleStart) : withoutControls).trim();
-}
-
-function isTermCategory(value: string): value is TermCategory {
-  return value === "concept" || value === "entity" || value === "abbreviation" || value === "notation";
-}
-
-function isAnswerLocalEntityId(value: string): boolean {
-  return value.length <= MENTION_MARKUP_MAX_ENTITY_ID_CHARACTERS
-    && /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(value);
-}
-
-function projectAbsoluteMentions(
-  content: string,
-  mentions: readonly AbsoluteMention[],
-  messageId: string,
-  baseOffset: number,
-): TermMarker[] {
-  const blocks = deriveMessageBlocks(content);
-  const result: TermMarker[] = [];
-  for (const mention of mentions) {
-    const absoluteStart = baseOffset + mention.startOffset;
-    const absoluteEnd = baseOffset + mention.endOffset;
-    const block = blocks.find((candidate) =>
-      absoluteStart >= candidate.startOffset && absoluteEnd <= candidate.startOffset + candidate.text.length,
-    );
-    if (!block) continue;
-    const startOffset = absoluteStart - block.startOffset;
-    const endOffset = absoluteEnd - block.startOffset;
-    if (block.text.slice(startOffset, endOffset) !== mention.text) continue;
-    result.push({
-      mentionId: `mention:${stableMentionHash(`${messageId}:${absoluteStart}:${absoluteEnd}:${mention.answerLocalEntityId}`)}`,
-      entityId: `entity:${stableMentionHash(`${messageId}:${mention.answerLocalEntityId}`)}`,
-      text: mention.text,
-      blockOrdinal: block.ordinal,
-      startOffset,
-      endOffset,
-      category: mention.category,
-      ...(messageId !== "legacy" ? {
-        location: {
-          contentId: messageId,
-          bodyVersionId: researchBodyVersionId(messageId, content),
-          sourceRange: { startOffset: absoluteStart, endOffset: absoluteEnd },
-          exact: mention.text,
-        },
-      } : {}),
-    });
-  }
-  return result;
-}
-
-function normalizeMentionText(text: string): string {
-  return text.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
-}
-
-function stableMentionHash(value: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0");
-}
-
-function validateProjectedMarker(content: string, marker: TermMarker): boolean {
-  const block = deriveMessageBlocks(content)[marker.blockOrdinal];
-  return Boolean(block && block.text.slice(marker.startOffset, marker.endOffset) === marker.text);
-}
-
-function markerLocationKey(marker: TermMarker): string {
-  return [marker.blockOrdinal, marker.startOffset, marker.endOffset, marker.category, marker.text].join(":");
 }
 
 /** 消息术语检测结果。检测失败或无需检测时 terms 为空数组。 */
@@ -4410,7 +4140,7 @@ export type {
 export const SIMILARITY_VERIFICATION_PROMPT_VERSION = "similarity-verify-v1";
 
 /** B 面临时融合发现提示词版本；独立于相似性核验与正式融合写作。 */
-export const TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION = "temporary-fusion-discovery-v1";
+export const TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION = "temporary-fusion-discovery-v2";
 
 /** 临时融合完整草案的固定输出预算。 */
 export const TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET = 4_096;

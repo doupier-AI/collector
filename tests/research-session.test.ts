@@ -99,7 +99,7 @@ async function waitForTask(base: string, token: string, taskId: string, status: 
 
 async function waitForTermMarkers(store: SqliteStore, messageId: string, expected: string[]) {
   for (let attempt = 0; attempt < 200; attempt += 1) {
-    const actual = store.getResearchMessage(messageId)?.termMarkers?.map((marker) => marker.text) ?? [];
+    const actual = store.getResearchTermMarkerTaskByMessage(messageId)?.markers.map((marker) => marker.text) ?? [];
     if (actual.length === expected.length && actual.every((item, index) => item === expected[index])) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -207,12 +207,13 @@ test("research generation persists clean text and independent mention ranges", a
   const message = harness.store.getResearchMessage(accepted.outputMessage.id);
   assert.equal(message?.content, "理解 反向传播 与 RAG。");
   assert.ok(!message?.content.includes("[["));
-  assert.deepEqual(message?.termMarkers?.map((marker) => ({ text: marker.text, category: marker.category })), [
+  const markers = harness.store.getResearchTermMarkerTaskByMessage(accepted.outputMessage.id)?.markers;
+  assert.deepEqual(markers?.map((marker) => ({ text: marker.text, category: marker.category })), [
     { text: "反向传播", category: "concept" },
     { text: "RAG", category: "abbreviation" },
   ]);
-  assert.equal(message?.termMarkers?.[0]?.blockOrdinal, 0);
-  assert.equal(message?.termMarkers?.[0]?.startOffset, 3);
+  assert.equal(markers?.[0]?.blockOrdinal, 0);
+  assert.equal(markers?.[0]?.startOffset, 3);
 });
 
 test("新 AI 消息的独立抽取返回空结果时保存明确空数组，不启用旧词法补标", async (t) => {
@@ -235,7 +236,7 @@ test("新 AI 消息的独立抽取返回空结果时保存明确空数组，不�
 
   const message = harness.store.getResearchMessage(accepted.outputMessage.id);
   assert.equal(message?.content, "REST API 使用旧格式正文。");
-  assert.deepEqual(message?.termMarkers, []);
+  assert.deepEqual(harness.store.getResearchTermMarkerTaskByMessage(accepted.outputMessage.id)?.markers, []);
   const view = await harness.service.getResearchNodeView(session.id);
   assert.deepEqual(view.termDetections?.[accepted.outputMessage.id]?.terms, []);
 });
@@ -585,17 +586,17 @@ test("失败任务默认重试清空正文时同步清空弱标记（保留式�
   const failedMessage = harness.store.getResearchMessage(accepted.outputMessage.id);
   assert.equal(failedMessage?.status, "failed");
   assert.ok(failedMessage && failedMessage.content.length > 0);
-  assert.ok((failedMessage.termMarkers ?? []).length > 0);
+  assert.ok((harness.store.getResearchTermMarkerTaskByMessage(accepted.outputMessage.id)?.markers ?? []).length > 0);
 
   const retried = await harness.service.research.retryTask(accepted.task.id);
   assert.equal(retried.status, "queued");
   const cleared = harness.store.getResearchMessage(accepted.outputMessage.id);
   assert.equal(cleared?.content, "");
-  assert.equal(cleared?.termMarkers, undefined);
+  assert.deepEqual(harness.store.getResearchTermMarkerTaskByMessage(accepted.outputMessage.id)?.markers ?? [], []);
 
   await waitForTask(harness.base, harness.token, accepted.task.id, "completed");
   await waitForTermMarkers(harness.store, accepted.outputMessage.id, ["本地优先"]);
   const regenerated = harness.store.getResearchMessage(accepted.outputMessage.id);
   assert.equal(regenerated?.content, "完整回答 本地优先。");
-  assert.deepEqual(regenerated?.termMarkers?.map((marker) => marker.text), ["本地优先"]);
+  assert.deepEqual(harness.store.getResearchTermMarkerTaskByMessage(accepted.outputMessage.id)?.markers.map((marker) => marker.text), ["本地优先"]);
 });

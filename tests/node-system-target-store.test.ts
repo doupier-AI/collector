@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -103,6 +104,10 @@ function temporaryFusionBundle(id = "temporary-fusion-1") {
     body: "来源 A 与来源 B 形成一条可核验的新认识。",
     contentHash: "sha256:draft-1",
     evidenceStatus: "verified",
+    judgments: [{
+      id: `judgment:${id}:1`, startOffset: 0, endOffset: "来源 A 与来源 B 形成一条可核验的新认识。".length,
+      contentHash: `sha256:${id}:judgment:1`, sourceNodeIds: ["node-source-a", "node-source-b"], evidenceStatus: "verified",
+    }],
     createdAt: NOW,
   };
   const candidateSources: ResearchCandidateSourceConnectionRecord[] = ["node-source-a", "node-source-b"].map((sourceNodeId) => ({
@@ -132,7 +137,11 @@ async function createConfirmableTemporaryFusion(store: SqliteStore, id = "tempor
   }
   const bundle = temporaryFusionBundle(id);
   bundle.node.creationKey = `confirmation:${id}`;
-  bundle.activeDraft.body = "已核验判断[来源1][来源2]";
+  bundle.activeDraft.body = "已核验判断";
+  bundle.activeDraft.judgments = [{
+    id: `judgment:${id}`, startOffset: 0, endOffset: bundle.activeDraft.body.length,
+    contentHash: `sha256:${id}:judgment`, sourceNodeIds: ["node-source-a", "node-source-b"], evidenceStatus: "verified",
+  }];
   bundle.activeDraft.contentHash = `sha256:${id}`;
   bundle.candidateSources = bundle.candidateSources.map((source) => ({
     ...source,
@@ -178,12 +187,17 @@ test("explicit draft edits create immutable versions, preserve unaffected eviden
     await store.createResearchBodyVersion({ id: `body:${nodeId}:v1`, messageId: `message:${nodeId}`, nodeId, version: 1, content: `正式来源 ${nodeId} 支持这项认识。`, contentHash: `sha256:${nodeId}`, origin: "generation", createdAt: NOW });
   }
   const candidate = temporaryFusionBundle("draft-versioning");
-  candidate.activeDraft.body = "原判断[来源1][来源2]";
+  candidate.activeDraft.body = "原判断";
+  const originalJudgmentHash = createHash("sha256").update(`原判断\u0000node-source-a\u0000node-source-b`).digest("hex");
+  candidate.activeDraft.judgments = [{
+    id: "judgment:original", startOffset: 0, endOffset: candidate.activeDraft.body.length,
+    contentHash: `sha256:${originalJudgmentHash}`, sourceNodeIds: ["node-source-a", "node-source-b"], evidenceStatus: "verified",
+  }];
   candidate.activeDraft.contentHash = "sha256:original";
   await store.createTemporaryFusionBundle(candidate);
   const drafts = new TemporaryFusionDraftService(store, async () => ({ async verifyTemporaryFusionDraftEvidence() { return { verified: true }; } }));
 
-  const updated = await drafts.update(candidate.node.id, { body: "原判断[来源1][来源2]\n\n新增判断[来源1][来源2]", expectedDraftVersionId: candidate.activeDraft.id });
+  const updated = await drafts.update(candidate.node.id, { body: "原判断\n\n新增判断", expectedDraftVersionId: candidate.activeDraft.id });
   assert.equal(updated.bundle.activeDraft.version, 2);
   assert.equal(updated.revalidationTasks.length, 1, "the unchanged cited judgment reuses its prior verified result");
   assert.equal(store.listTemporaryFusionDraftVersions(candidate.node.id).length, 2);
@@ -380,11 +394,15 @@ test("T06 preserves original citation ordinals when a confirmed draft adopts non
   });
   const candidate = temporaryFusionBundle("temporary-non-contiguous-sources");
   candidate.node.creationKey = "confirmation:non-contiguous";
-  candidate.activeDraft.body = "来源一与来源三共同支持判断[来源1][来源3]";
+  candidate.activeDraft.body = "来源一与来源三共同支持判断";
+  candidate.activeDraft.judgments = [{
+    id: "judgment:non-contiguous", startOffset: 0, endOffset: candidate.activeDraft.body.length,
+    contentHash: "sha256:non-contiguous-judgment", sourceNodeIds: ["node-source-a", "node-source-c"], evidenceStatus: "verified",
+  }];
   candidate.activeDraft.contentHash = "sha256:non-contiguous";
   candidate.candidateSources = [
-    { ...candidate.candidateSources[0]!, id: "non-contiguous:source:a", temporaryFusionNodeId: candidate.node.id, citationOrdinal: 1 },
-    { ...candidate.candidateSources[1]!, id: "non-contiguous:source:c", temporaryFusionNodeId: candidate.node.id, sourceNodeId: "node-source-c", bodyVersionId: "body:node-source-c:v1", fragmentIds: ["fragment:node-source-c:1"], citationOrdinal: 3 },
+    { ...candidate.candidateSources[0]!, id: "non-contiguous:source:a", temporaryFusionNodeId: candidate.node.id },
+    { ...candidate.candidateSources[1]!, id: "non-contiguous:source:c", temporaryFusionNodeId: candidate.node.id, sourceNodeId: "node-source-c", bodyVersionId: "body:node-source-c:v1", fragmentIds: ["fragment:node-source-c:1"] },
   ];
   await store.createTemporaryFusionBundle(candidate);
 

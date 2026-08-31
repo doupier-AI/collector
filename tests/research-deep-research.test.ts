@@ -245,8 +245,7 @@ test("branch deep research creates branch before generation, completes, and keep
   assert.equal(view.selection.text, "选区如何连接阅读与研究");
   assert.deepEqual(view.messages.map((message) => message.role), ["user", "assistant"]);
   assert.equal(view.messages[1].content, "第一轮研究内容：选区与上下文形成确定性回答。");
-  const deepOutput = harness.store.getResearchMessage(accepted.outputMessage.id);
-  assert.deepEqual(deepOutput?.termMarkers?.map((marker) => marker.text), ["选区与上下文"]);
+  assert.deepEqual(harness.store.getResearchTermMarkerTaskByMessage(accepted.outputMessage.id)?.markers.map((marker) => marker.text), ["选区与上下文"]);
   assert.ok(view.messages.every((message) => message.branchId === accepted.branch!.id));
   assert.deepEqual(view.tasks.map((task) => task.id), [accepted.task.id]);
 

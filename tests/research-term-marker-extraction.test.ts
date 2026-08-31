@@ -84,7 +84,7 @@ test("closed paragraphs are extracted incrementally without changing the clean b
   const message = harness.store.getResearchMessage(harness.task.outputMessageId)!;
   assert.equal(message.content, body);
   assert.doesNotMatch(message.content, /\[\[(?:concept|entity|abbreviation|notation):/);
-  assert.deepEqual(message.termMarkers?.map((marker) => marker.text), ["本地优先"]);
+  assert.deepEqual(harness.store.getResearchTermMarkerTaskByMessage(message.id)?.markers.map((marker) => marker.text), ["本地优先"]);
   assert.equal(harness.store.getResearchTermMarkerTaskByMessage(message.id)?.status, "completed");
 });
 
@@ -162,14 +162,14 @@ test("restart requeues an interrupted extraction and append-only growth rebases 
   const restarted = new ResearchTermMarkerExtractionService(harness.store, { provider, autoRunTasks: false });
   assert.equal(await restarted.resumeTasks(), 2);
   assert.equal(harness.store.getResearchTermMarkerTask(interrupted.id)?.status, "completed");
-  assert.deepEqual(harness.store.getResearchMessage(harness.task.outputMessageId)?.termMarkers?.map((marker) => marker.text), ["旧段落"]);
+  assert.deepEqual(harness.store.getResearchTermMarkerTaskByMessage(harness.task.outputMessageId)?.markers.map((marker) => marker.text), ["旧段落"]);
 
   await harness.store.appendResearchTaskDelta(harness.task.id, "新段落已经闭合。\n\n");
   const changed = await restarted.enqueueForResearchTask(harness.task, false);
   assert.ok(changed);
   await restarted.processTask(changed.id);
-  assert.deepEqual(harness.store.getResearchMessage(harness.task.outputMessageId)?.termMarkers?.map((marker) => marker.text), ["旧段落", "新段落"]);
-  assert.ok(harness.store.getResearchMessage(harness.task.outputMessageId)?.termMarkers?.every((marker) =>
+  assert.deepEqual(harness.store.getResearchTermMarkerTaskByMessage(harness.task.outputMessageId)?.markers.map((marker) => marker.text), ["旧段落", "新段落"]);
+  assert.ok(harness.store.getResearchTermMarkerTaskByMessage(harness.task.outputMessageId)?.markers.every((marker) =>
     marker.location?.bodyVersionId === researchBodyVersionId(harness.task.outputMessageId, "旧段落已经闭合。\n\n新段落已经闭合。\n\n")));
 });
 
@@ -216,7 +216,7 @@ test("full review is authoritative, applies ancestor dedupe and depth quota, and
   const reviewedAgain = await service.enqueueForResearchTask(harness.task, true);
   assert.ok(reviewedAgain);
   await service.processTask(reviewedAgain.id);
-  assert.deepEqual(harness.store.getResearchMessage(harness.task.outputMessageId)?.termMarkers?.map((marker) => marker.text), ["Alpha"]);
+  assert.deepEqual(harness.store.getResearchTermMarkerTaskByMessage(harness.task.outputMessageId)?.markers.map((marker) => marker.text), ["Alpha"]);
   assert.equal(harness.store.listResearchSidecarRecords({ bodyVersionId: version.id, kind: "term-marker" }).length, 1,
     "a later full review replaces stale term-marker sidecars instead of accumulating them");
 });
@@ -238,7 +238,7 @@ test("provider failure and empty model output degrade to no markers without keyw
   assert.ok(failedTask);
   await errorService.processTask(failedTask.id);
   assert.equal(failing.store.getResearchTermMarkerTask(failedTask.id)?.status, "failed");
-  assert.deepEqual(failing.store.getResearchMessage(failing.task.outputMessageId)?.termMarkers, []);
+  assert.deepEqual(failing.store.getResearchTermMarkerTaskByMessage(failing.task.outputMessageId)?.markers, []);
   assert.equal(failing.store.getResearchMessage(failing.task.outputMessageId)?.content, body);
   errorService.setProvider({ provider: "recovered", model: "fake", async extractTermMarkers() { return '{"mentions":[]}'; } });
   assert.ok(await errorService.resumeTasks() > 0);
@@ -255,5 +255,5 @@ test("provider failure and empty model output degrade to no markers without keyw
   const emptyTask = await emptyService.enqueueForResearchTask(empty.task, false);
   assert.ok(emptyTask);
   await emptyService.processTask(emptyTask.id);
-  assert.deepEqual(empty.store.getResearchMessage(empty.task.outputMessageId)?.termMarkers, []);
+  assert.deepEqual(empty.store.getResearchTermMarkerTaskByMessage(empty.task.outputMessageId)?.markers, []);
 });

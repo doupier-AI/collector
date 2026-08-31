@@ -265,3 +265,48 @@ test("restart invalidates interrupted sidecars and migration replay preserves re
   const db = (replayed as unknown as { db(): DatabaseSync }).db();
   assert.equal((db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, LATEST_SCHEMA_VERSION);
 });
+
+test("v50 cleans only generated legacy controls and migrates inline markers to typed sidecars", async (t) => {
+  const harness = await createHarness("collector-sidecar-v50-");
+  let migrated: SqliteStore | undefined;
+  t.after(async () => {
+    migrated?.close();
+    harness.store.close();
+    await rm(harness.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  const rawAssistant = "前[[concept:legacy-term:术语]]后结论[来源1]";
+  const { message } = await seedAnswer(harness.store, rawAssistant);
+  const db = (harness.store as unknown as { db(): DatabaseSync }).db();
+  const legacyMessage = {
+    ...message,
+    content: rawAssistant,
+    termMarkers: [{ text: "术语", blockOrdinal: 0, startOffset: 1, endOffset: 3, category: "concept" }],
+  };
+  db.prepare("UPDATE research_messages SET record_json = ? WHERE id = ?").run(JSON.stringify(legacyMessage), message.id);
+  const userMessage: ResearchMessageRecord = {
+    id: "user-control-like", sessionId: message.sessionId, nodeId: message.nodeId, role: "user",
+    content: rawAssistant, status: "completed", createdAt: NOW, updatedAt: NOW,
+  };
+  db.prepare(`INSERT INTO research_messages
+    (id, session_id, node_id, branch_id, role, status, created_at, updated_at, record_json)
+    VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`)
+    .run(userMessage.id, userMessage.sessionId, userMessage.nodeId!, userMessage.role, userMessage.status, userMessage.createdAt, userMessage.updatedAt, JSON.stringify(userMessage));
+  db.prepare("DELETE FROM schema_migrations WHERE version = 50").run();
+  harness.store.close();
+
+  migrated = new SqliteStore(harness.databasePath);
+  await migrated.init();
+  assert.equal(migrated.getResearchMessage(message.id)?.content, "前术语后结论");
+  assert.equal(migrated.getResearchMessage(userMessage.id)?.content, rawAssistant, "user-authored lookalike text must never be rewritten");
+  const task = migrated.getResearchTermMarkerTaskByMessage(message.id);
+  assert.deepEqual(task?.markers.map((marker) => marker.text), ["术语"]);
+  assert.ok(task?.markers[0]?.location?.bodyVersionId === task?.bodyVersionId);
+  const sidecars = migrated.listResearchSidecarRecords({ bodyVersionId: task?.bodyVersionId, kind: "term-marker" });
+  assert.equal(sidecars.length, 1);
+  assert.equal(sidecars[0]?.status, "ready");
+  const checked = new DatabaseSync(harness.databasePath, { readOnly: true });
+  const persisted = JSON.parse((checked.prepare("SELECT record_json FROM research_messages WHERE id = ?").get(message.id) as { record_json: string }).record_json) as Record<string, unknown>;
+  assert.equal(Object.hasOwn(persisted, "termMarkers"), false, "message JSON must not retain the compatibility dual write");
+  assert.equal((checked.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as { version: number }).version, LATEST_SCHEMA_VERSION);
+  checked.close();
+});

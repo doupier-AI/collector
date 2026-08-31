@@ -122,9 +122,7 @@ test("research body prompt always produces clean text; depth no longer changes a
   assertCleanBodyContract(deep.requests[0]?.prompt ?? "");
 });
 
-test("answerResearchConversation 可按需关闭弱标记指令（术语预览路径）", async () => {
-  // 术语预览显式关闭（mentionMarkup: false）：预览内容不经标记管线解析，
-  // 注入指令只会让模型输出无法解析的原始控制串（#86 真实验收复现）。
+test("answerResearchConversation 始终输出干净正文（术语预览路径）", async () => {
   const parentChain = {
     currentNodeDepth: 1,
     ancestors: [{ depth: 1, isRoot: true, label: "Transformer 架构", coveredTerms: ["注意力机制"] }],
@@ -134,7 +132,7 @@ test("answerResearchConversation 可按需关闭弱标记指令（术语预览�
   const off = makeProvider(() => "预览解释正文");
   await new ModelGateway(off.provider).answerResearchConversation(
     [{ role: "user", content: "请解释当前回答中的概念" }],
-    { mentionMarkup: false, parentChainContext: parentChain },
+    { parentChainContext: parentChain },
   );
   const offPrompt = off.requests[0]?.prompt ?? "";
   assert.doesNotMatch(offPrompt, /\[\[concept:/);
@@ -143,15 +141,18 @@ test("answerResearchConversation 可按需关闭弱标记指令（术语预览�
   assert.doesNotMatch(offPrompt, /不要再为它们输出弱标记/);
   assert.match(offPrompt, /不要重复展开解释/);
 
-  // 缺省行为不变：普通回答仍注入统一弱标记契约与完整的去重规则措辞。
+  // 普通回答同样只生成干净正文；弱标记由独立任务观察正文后产出。
   const on = makeProvider(() => "普通回答");
   await new ModelGateway(on.provider).answerResearchConversation(
     [{ role: "user", content: "解释" }],
     { parentChainContext: parentChain },
   );
   const onPrompt = on.requests[0]?.prompt ?? "";
-  assert.match(onPrompt, /每个段落中首次出现的重要概念都要标记/);
-  assert.match(onPrompt, /不要再为它们输出弱标记/);
+  assert.match(onPrompt, /plain text only/);
+  assert.match(onPrompt, /no .*internal control protocol/);
+  assert.doesNotMatch(onPrompt, /\[\[concept:|每个段落中首次出现的重要概念都要标记|最多标记 4 个/);
+  assert.doesNotMatch(onPrompt, /不要再为它们输出弱标记/);
+  assert.match(onPrompt, /不要重复展开解释/);
 });
 
 test("正式普通回答、深研与长文分节都只生成干净正文", async () => {

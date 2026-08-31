@@ -2,7 +2,7 @@
  * 最终正文的最末准入边界。
  *
  * 不尝试猜测自然语言是否像工具草稿；工具工作区必须在调用此处之前被结构隔离。
- * 此处只拦截供应商明确的内部协议（reasoning 与旧术语控制串），并在跨流片段时先缓冲协议前缀，
+ * 此处只拒绝供应商明确的内部协议边界（不解析、不清洗、不恢复），并在跨流片段时先缓冲协议前缀，
  * 保证污染起始字符不会短暂进入 SSE 或持久化正文。
  */
 const EXPLICIT_PROTOCOL_BOUNDARIES = [
@@ -12,6 +12,7 @@ const EXPLICIT_PROTOCOL_BOUNDARIES = [
   "[[entity:",
   "[[abbreviation:",
   "[[notation:",
+  "[来源",
 ] as const;
 
 export class FinalBodyProtocolError extends Error {

@@ -18,9 +18,9 @@ function renderNodePage(api: Partial<ApiClient>, entry = "/nodes/session-1") {
       const view = await getResearchNodeView(nodeId);
       for (const [messageId, detection] of Object.entries(view.termDetections ?? {})) {
         const message = view.messages.find((candidate) => candidate.id === messageId);
-        if (!message || message.termMarkers !== undefined) continue;
+        if (!message) continue;
         const blocks = deriveMessageBlocks(message.content);
-        message.termMarkers = detection.terms.map((marker) => {
+        detection.terms = detection.terms.map((marker) => {
           const block = blocks[marker.blockOrdinal];
           const absoluteStart = (block?.startOffset ?? 0) + marker.startOffset;
           const absoluteEnd = (block?.startOffset ?? 0) + marker.endOffset;

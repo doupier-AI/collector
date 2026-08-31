@@ -1106,7 +1106,11 @@ export function ResearchNodePage() {
                 }
                 citations={view.citations}
                 groundingSources={view.groundingSources}
-                terms={currentBodyTermMarkers(message, view.bodyVersions?.[message.id]?.id)}
+                terms={currentBodyTermMarkers(
+                  message,
+                  view.termDetections?.[message.id]?.terms ?? [],
+                  view.bodyVersions?.[message.id]?.id,
+                )}
                 termPreviews={termPreviews.previews}
                 onStartTermPreview={termPreviews.start}
                 onRetryTermPreview={termPreviews.retry}

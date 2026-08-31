@@ -218,7 +218,7 @@ test("T05 只有明确保存才创建草案版本，撤销保留完整历史", a
   expect(draftVersionCount(dbPath)).toBe(beforeDraftVersions, "打开和讨论入口不会创建版本");
 
   await page.getByRole("button", { name: "修改草案" }).click();
-  await page.getByLabel(/修改草案/).fill("修改后的融合判断。[来源1][来源2]");
+  await page.getByLabel(/修改草案/).fill("修改后的融合判断，由两份候选材料共同支持。");
   await page.getByRole("button", { name: "保存为新版本并核验" }).click();
   await expect(page.getByText(/当前草案 · v2/)).toBeVisible();
   await expect(page.getByRole("button", { name: "撤销到此版本" })).toBeVisible();

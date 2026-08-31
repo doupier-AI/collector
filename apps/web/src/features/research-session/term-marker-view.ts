@@ -12,14 +12,15 @@ import {
  */
 export function currentBodyTermMarkers(
   message: ResearchMessageRecord,
+  markers: readonly TermMarker[],
   currentBodyVersionId?: string,
 ): TermMarker[] {
-  if (message.role !== "assistant" || message.status === "failed" || !message.termMarkers?.length) return [];
+  if (message.role !== "assistant" || message.status === "failed" || !markers.length) return [];
   const expectedVersionId = researchBodyVersionId(message.id, message.content);
   if (message.status === "completed" && currentBodyVersionId && currentBodyVersionId !== expectedVersionId) return [];
   const blocks = deriveMessageBlocks(message.content);
 
-  return message.termMarkers.filter((marker) => {
+  return markers.filter((marker) => {
     const block = blocks[marker.blockOrdinal];
     const location = marker.location;
     if (!block || !location || location.contentId !== message.id || location.exact !== marker.text) return false;
