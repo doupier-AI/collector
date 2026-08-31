@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   ANSWER_QUALITY_CAPABILITIES,
@@ -253,6 +254,12 @@ test("human calibration rejects edits to the blind sample", () => {
     () => calculateHumanCalibrationReport(HUMAN_CALIBRATION_CANDIDATES, packet),
     /Judge 输入被改动/,
   );
+});
+
+test("tracked human calibration evidence reproduces the committed report", () => {
+  const review = JSON.parse(readFileSync("evals/answer-quality/reviews/aq-corpus-v1-human-review.json", "utf8")) as unknown;
+  const report = JSON.parse(readFileSync("evals/answer-quality/reviews/aq-corpus-v1-human-calibration-report.json", "utf8")) as unknown;
+  assert.deepEqual(calculateHumanCalibrationReport(HUMAN_CALIBRATION_CANDIDATES, review), report);
 });
 
 test("pairwise diagnostics explain repeat consistency and order flips", () => {

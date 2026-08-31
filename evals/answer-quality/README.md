@@ -39,6 +39,8 @@ npm.cmd run eval:answer-quality -- --mode=human-calibration --review=evals/answe
 
 工具只有在复核人、时间、全部标签和理由齐全，且样本内容未经改动时，才输出 `human_reviewed` 以及一致率、假阳性、假阴性和分维度偏差。在此之前，校准状态保持 `pending_human_review`。
 
+当前语料版本的已完成人工判断保存在 `reviews/aq-corpus-v1-human-review.json`，可复算报告保存在 `reviews/aq-corpus-v1-human-calibration-report.json`。报告必须与上述命令的输出完全一致。
+
 案例版本变化时可以生成新的盲化文件；输出路径必须不存在，避免覆盖已经填写的人工判断：
 
 ```powershell

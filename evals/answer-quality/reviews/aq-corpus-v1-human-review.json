@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "corpusVersion": "aq-corpus-v1",
   "status": "pending_human_review",
-  "reviewer": "",
-  "reviewedAt": "",
+  "reviewer": "User",
+  "reviewedAt": "2026-08-31T13:05:59.281Z",
   "items": [
     {
       "sampleId": "aq-corpus-v1:01:1",
@@ -31,8 +31,8 @@
         ],
         "validCitations": []
       },
-      "humanVerdict": "",
-      "rationale": ""
+      "humanVerdict": "pass",
+      "rationale": "正文围绕“向量检索为何语义相近但事实错误”的请求主题展开，覆盖语义相似、事实核验与来源，回答与任务相关。"
     },
     {
       "sampleId": "aq-corpus-v1:01:2",
@@ -51,8 +51,8 @@
         "admittedEvidence": [],
         "validCitations": []
       },
-      "humanVerdict": "",
-      "rationale": ""
+      "humanVerdict": "fail",
+      "rationale": "正文只点名“语义相似”一项，未解释语义相近导致事实错误的概念机制，且无已准入证据支撑，概念不准确。"
     },
     {
       "sampleId": "aq-corpus-v1:02:1",
@@ -80,8 +80,8 @@
         ],
         "validCitations": []
       },
-      "humanVerdict": "",
-      "rationale": ""
+      "humanVerdict": "fail",
+      "rationale": "正文建议安排团队聚餐，与用户要求比较全文检索与向量检索在企业知识库中的适用边界完全无关。"
     },
     {
       "sampleId": "aq-corpus-v1:02:2",
@@ -100,8 +100,8 @@
         "admittedEvidence": [],
         "validCitations": []
       },
-      "humanVerdict": "",
-      "rationale": ""
+      "humanVerdict": "pass",
+      "rationale": "正文同时覆盖全文检索与向量检索两侧并逐项说明，比较对象对称完整。"
     },
     {
       "sampleId": "aq-corpus-v1:03:1",
@@ -129,8 +129,8 @@
         ],
         "validCitations": []
       },
-      "humanVerdict": "",
-      "rationale": ""
+      "humanVerdict": "pass",
+      "rationale": "正文围绕本季度优先级判断展开，覆盖约束、优先级与来源，回答与任务相关。"
     },
     {
       "sampleId": "aq-corpus-v1:03:2",
@@ -149,8 +149,8 @@
         "admittedEvidence": [],
         "validCitations": []
       },
-      "humanVerdict": "",
-      "rationale": ""
+      "humanVerdict": "fail",
+      "rationale": "正文只回答“约束”一项，未给出检索质量与个性化之间的取舍与代价，权衡不透明。"
     },
     {
       "sampleId": "aq-corpus-v1:04:1",
@@ -178,8 +178,8 @@
         ],
         "validCitations": []
       },
-      "humanVerdict": "",
-      "rationale": ""
+      "humanVerdict": "fail",
+      "rationale": "正文建议安排团队聚餐，与用户要求制定十二周行动计划完全无关。"
     },
     {
       "sampleId": "aq-corpus-v1:04:2",
@@ -198,8 +198,8 @@
         "admittedEvidence": [],
         "validCitations": []
       },
-      "humanVerdict": "",
-      "rationale": ""
+      "humanVerdict": "pass",
+      "rationale": "正文覆盖十二周周期与可验证成果并逐项列出，步骤框架完整可执行。"
     },
     {
       "sampleId": "aq-corpus-v1:05:1",
@@ -227,8 +227,8 @@
         ],
         "validCitations": []
       },
-      "humanVerdict": "",
-      "rationale": ""
+      "humanVerdict": "pass",
+      "rationale": "正文围绕“搜索有结果但缺少可靠来源”的诊断主题展开，覆盖候选、合格证据与来源，回答与任务相关。"
     },
     {
       "sampleId": "aq-corpus-v1:05:2",
@@ -247,8 +247,8 @@
         "admittedEvidence": [],
         "validCitations": []
       },
-      "humanVerdict": "",
-      "rationale": ""
+      "humanVerdict": "fail",
+      "rationale": "正文只回答“候选”一项，未分层给出从搜索返回到合格证据缺失的原因链，原因分层不完整。"
     },
     {
       "sampleId": "aq-corpus-v1:06:1",
@@ -276,8 +276,8 @@
         ],
         "validCitations": []
       },
-      "humanVerdict": "",
-      "rationale": ""
+      "humanVerdict": "fail",
+      "rationale": "正文建议安排团队聚餐，与用户要求说明产品发布门禁的状态完全无关。"
     },
     {
       "sampleId": "aq-corpus-v1:06:2",
@@ -296,8 +296,8 @@
         "admittedEvidence": [],
         "validCitations": []
       },
-      "humanVerdict": "",
-      "rationale": ""
+      "humanVerdict": "pass",
+      "rationale": "正文逐项覆盖能力、可用性与执行三类状态，与请求要求按材料说明的状态一一对应，事实可追溯。"
     },
     {
       "sampleId": "aq-corpus-v1:07:1",
@@ -325,8 +325,8 @@
         ],
         "validCitations": []
       },
-      "humanVerdict": "",
-      "rationale": ""
+      "humanVerdict": "pass",
+      "rationale": "正文围绕企业 RAG 评测易被忽略风险的请求主题展开，覆盖证据泄漏、弱势切片与来源，回答与任务相关。"
     },
     {
       "sampleId": "aq-corpus-v1:07:2",
@@ -345,8 +345,8 @@
         "admittedEvidence": [],
         "validCitations": []
       },
-      "humanVerdict": "",
-      "rationale": ""
+      "humanVerdict": "fail",
+      "rationale": "正文只回答“证据泄漏”一项，未跨来源综合弱势切片等其他易被忽略的风险，综合不完整。"
     },
     {
       "sampleId": "aq-corpus-v1:08:1",
@@ -374,8 +374,8 @@
         ],
         "validCitations": []
       },
-      "humanVerdict": "",
-      "rationale": ""
+      "humanVerdict": "fail",
+      "rationale": "正文建议安排团队聚餐，与用户要求压缩长文为面向管理层的摘要完全无关。"
     },
     {
       "sampleId": "aq-corpus-v1:08:2",
@@ -394,8 +394,8 @@
         "admittedEvidence": [],
         "validCitations": []
       },
-      "humanVerdict": "",
-      "rationale": ""
+      "humanVerdict": "pass",
+      "rationale": "正文覆盖核心结论与限制条件并逐项呈现，压缩后关键信息保留完整。"
     },
     {
       "sampleId": "aq-corpus-v1:09:1",
@@ -423,8 +423,8 @@
         ],
         "validCitations": []
       },
-      "humanVerdict": "",
-      "rationale": ""
+      "humanVerdict": "pass",
+      "rationale": "正文围绕把技术说明改写为产品语言的请求主题展开，覆盖原意与产品语言，回答与任务相关。"
     },
     {
       "sampleId": "aq-corpus-v1:09:2",
@@ -443,8 +443,8 @@
         "admittedEvidence": [],
         "validCitations": []
       },
-      "humanVerdict": "",
-      "rationale": ""
+      "humanVerdict": "fail",
+      "rationale": "正文只回答“原意”一项，未给出自然、克制的产品语言改写结果，改写不完整。"
     },
     {
       "sampleId": "aq-corpus-v1:10:1",
@@ -472,8 +472,8 @@
         ],
         "validCitations": []
       },
-      "humanVerdict": "",
-      "rationale": ""
+      "humanVerdict": "fail",
+      "rationale": "正文建议安排团队聚餐，与用户要求先诊断、再比较修复路径并给出执行顺序完全无关。"
     },
     {
       "sampleId": "aq-corpus-v1:10:2",
@@ -492,8 +492,8 @@
         "admittedEvidence": [],
         "validCitations": []
       },
-      "humanVerdict": "",
-      "rationale": ""
+      "humanVerdict": "pass",
+      "rationale": "正文覆盖诊断、比较与执行顺序三项操作并逐项说明，操作齐全。"
     }
   ]
 }
