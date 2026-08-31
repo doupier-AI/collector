@@ -1,0 +1,499 @@
+{
+  "schemaVersion": 1,
+  "corpusVersion": "aq-corpus-v1",
+  "status": "pending_human_review",
+  "reviewer": "User",
+  "reviewedAt": "2026-08-31T13:05:59.281Z",
+  "items": [
+    {
+      "sampleId": "aq-corpus-v1:01:1",
+      "caseId": "AQ-EXP-005",
+      "caseVersion": "aq-corpus-v1.1.5",
+      "layer": "generic_semantic",
+      "dimension": "任务相关性",
+      "judgeInput": {
+        "userRequest": "解释向量检索为什么会出现语义相近但事实错误的结果。联网证据顺序可能变化，结论不得依赖返回顺序",
+        "explicitSettings": {
+          "format": "table",
+          "language": "zh-CN",
+          "preserveUncertainty": true
+        },
+        "finalBody": "围绕用户问题，回答重点是语义相似、事实核验、来源，并结合显式限制给出结论。",
+        "admittedEvidence": [
+          {
+            "id": "source-a",
+            "text": "规范说明能力、可用性和执行是不同状态。"
+          },
+          {
+            "id": "source-b",
+            "text": "验证报告说明来源顺序不应改变证据结论。"
+          }
+        ],
+        "validCitations": []
+      },
+      "humanVerdict": "pass",
+      "rationale": "正文围绕“向量检索为何语义相近但事实错误”的请求主题展开，覆盖语义相似、事实核验与来源，回答与任务相关。"
+    },
+    {
+      "sampleId": "aq-corpus-v1:01:2",
+      "caseId": "AQ-EXP-007",
+      "caseVersion": "aq-corpus-v1.1.7",
+      "layer": "task_family",
+      "dimension": "概念准确",
+      "judgeInput": {
+        "userRequest": "解释向量检索为什么会出现语义相近但事实错误的结果。逐项覆盖用户要求，不能用“已完成”替代正文里的实际内容",
+        "explicitSettings": {
+          "format": "numbered_steps",
+          "language": "zh-CN",
+          "preserveUncertainty": true
+        },
+        "finalBody": "只回答其中一项：语义相似。其他要求暂不说明。",
+        "admittedEvidence": [],
+        "validCitations": []
+      },
+      "humanVerdict": "fail",
+      "rationale": "正文只点名“语义相似”一项，未解释语义相近导致事实错误的概念机制，且无已准入证据支撑，概念不准确。"
+    },
+    {
+      "sampleId": "aq-corpus-v1:02:1",
+      "caseId": "AQ-CMP-005",
+      "caseVersion": "aq-corpus-v1.2.5",
+      "layer": "generic_semantic",
+      "dimension": "任务相关性",
+      "judgeInput": {
+        "userRequest": "比较全文检索与向量检索在企业知识库中的适用边界。联网证据顺序可能变化，结论不得依赖返回顺序",
+        "explicitSettings": {
+          "format": "table",
+          "language": "zh-CN",
+          "preserveUncertainty": true
+        },
+        "finalBody": "建议先安排一次团队聚餐，菜单和座位可以下周再讨论。",
+        "admittedEvidence": [
+          {
+            "id": "source-b",
+            "text": "验证报告说明来源顺序不应改变证据结论。"
+          },
+          {
+            "id": "source-a",
+            "text": "规范说明能力、可用性和执行是不同状态。"
+          }
+        ],
+        "validCitations": []
+      },
+      "humanVerdict": "fail",
+      "rationale": "正文建议安排团队聚餐，与用户要求比较全文检索与向量检索在企业知识库中的适用边界完全无关。"
+    },
+    {
+      "sampleId": "aq-corpus-v1:02:2",
+      "caseId": "AQ-CMP-007",
+      "caseVersion": "aq-corpus-v1.2.7",
+      "layer": "task_family",
+      "dimension": "比较维度对称",
+      "judgeInput": {
+        "userRequest": "比较全文检索与向量检索在企业知识库中的适用边界。逐项覆盖用户要求，不能用“已完成”替代正文里的实际内容",
+        "explicitSettings": {
+          "format": "numbered_steps",
+          "language": "zh-CN",
+          "preserveUncertainty": true
+        },
+        "finalBody": "完整回答包括：全文检索；向量检索；逐项。",
+        "admittedEvidence": [],
+        "validCitations": []
+      },
+      "humanVerdict": "pass",
+      "rationale": "正文同时覆盖全文检索与向量检索两侧并逐项说明，比较对象对称完整。"
+    },
+    {
+      "sampleId": "aq-corpus-v1:03:1",
+      "caseId": "AQ-DEC-005",
+      "caseVersion": "aq-corpus-v1.3.5",
+      "layer": "generic_semantic",
+      "dimension": "任务相关性",
+      "judgeInput": {
+        "userRequest": "根据给定约束判断本季度应先做检索质量还是个性化。联网证据顺序可能变化，结论不得依赖返回顺序",
+        "explicitSettings": {
+          "format": "table",
+          "language": "zh-CN",
+          "preserveUncertainty": true
+        },
+        "finalBody": "围绕用户问题，回答重点是约束、优先级、来源，并结合显式限制给出结论。",
+        "admittedEvidence": [
+          {
+            "id": "source-a",
+            "text": "规范说明能力、可用性和执行是不同状态。"
+          },
+          {
+            "id": "source-b",
+            "text": "验证报告说明来源顺序不应改变证据结论。"
+          }
+        ],
+        "validCitations": []
+      },
+      "humanVerdict": "pass",
+      "rationale": "正文围绕本季度优先级判断展开，覆盖约束、优先级与来源，回答与任务相关。"
+    },
+    {
+      "sampleId": "aq-corpus-v1:03:2",
+      "caseId": "AQ-DEC-007",
+      "caseVersion": "aq-corpus-v1.3.7",
+      "layer": "task_family",
+      "dimension": "权衡透明",
+      "judgeInput": {
+        "userRequest": "根据给定约束判断本季度应先做检索质量还是个性化。逐项覆盖用户要求，不能用“已完成”替代正文里的实际内容",
+        "explicitSettings": {
+          "format": "numbered_steps",
+          "language": "zh-CN",
+          "preserveUncertainty": true
+        },
+        "finalBody": "只回答其中一项：约束。其他要求暂不说明。",
+        "admittedEvidence": [],
+        "validCitations": []
+      },
+      "humanVerdict": "fail",
+      "rationale": "正文只回答“约束”一项，未给出检索质量与个性化之间的取舍与代价，权衡不透明。"
+    },
+    {
+      "sampleId": "aq-corpus-v1:04:1",
+      "caseId": "AQ-PLN-005",
+      "caseVersion": "aq-corpus-v1.4.5",
+      "layer": "generic_semantic",
+      "dimension": "任务相关性",
+      "judgeInput": {
+        "userRequest": "为转型 AI 产品经理制定一个十二周行动计划。联网证据顺序可能变化，结论不得依赖返回顺序",
+        "explicitSettings": {
+          "format": "table",
+          "language": "zh-CN",
+          "preserveUncertainty": true
+        },
+        "finalBody": "建议先安排一次团队聚餐，菜单和座位可以下周再讨论。",
+        "admittedEvidence": [
+          {
+            "id": "source-b",
+            "text": "验证报告说明来源顺序不应改变证据结论。"
+          },
+          {
+            "id": "source-a",
+            "text": "规范说明能力、可用性和执行是不同状态。"
+          }
+        ],
+        "validCitations": []
+      },
+      "humanVerdict": "fail",
+      "rationale": "正文建议安排团队聚餐，与用户要求制定十二周行动计划完全无关。"
+    },
+    {
+      "sampleId": "aq-corpus-v1:04:2",
+      "caseId": "AQ-PLN-007",
+      "caseVersion": "aq-corpus-v1.4.7",
+      "layer": "task_family",
+      "dimension": "步骤可执行",
+      "judgeInput": {
+        "userRequest": "为转型 AI 产品经理制定一个十二周行动计划。逐项覆盖用户要求，不能用“已完成”替代正文里的实际内容",
+        "explicitSettings": {
+          "format": "numbered_steps",
+          "language": "zh-CN",
+          "preserveUncertainty": true
+        },
+        "finalBody": "完整回答包括：十二周；可验证成果；逐项。",
+        "admittedEvidence": [],
+        "validCitations": []
+      },
+      "humanVerdict": "pass",
+      "rationale": "正文覆盖十二周周期与可验证成果并逐项列出，步骤框架完整可执行。"
+    },
+    {
+      "sampleId": "aq-corpus-v1:05:1",
+      "caseId": "AQ-DIA-005",
+      "caseVersion": "aq-corpus-v1.5.5",
+      "layer": "generic_semantic",
+      "dimension": "任务相关性",
+      "judgeInput": {
+        "userRequest": "诊断搜索有结果但最终回答没有可靠来源的原因。联网证据顺序可能变化，结论不得依赖返回顺序",
+        "explicitSettings": {
+          "format": "table",
+          "language": "zh-CN",
+          "preserveUncertainty": true
+        },
+        "finalBody": "围绕用户问题，回答重点是候选、合格证据、来源，并结合显式限制给出结论。",
+        "admittedEvidence": [
+          {
+            "id": "source-a",
+            "text": "规范说明能力、可用性和执行是不同状态。"
+          },
+          {
+            "id": "source-b",
+            "text": "验证报告说明来源顺序不应改变证据结论。"
+          }
+        ],
+        "validCitations": []
+      },
+      "humanVerdict": "pass",
+      "rationale": "正文围绕“搜索有结果但缺少可靠来源”的诊断主题展开，覆盖候选、合格证据与来源，回答与任务相关。"
+    },
+    {
+      "sampleId": "aq-corpus-v1:05:2",
+      "caseId": "AQ-DIA-007",
+      "caseVersion": "aq-corpus-v1.5.7",
+      "layer": "task_family",
+      "dimension": "原因分层",
+      "judgeInput": {
+        "userRequest": "诊断搜索有结果但最终回答没有可靠来源的原因。逐项覆盖用户要求，不能用“已完成”替代正文里的实际内容",
+        "explicitSettings": {
+          "format": "numbered_steps",
+          "language": "zh-CN",
+          "preserveUncertainty": true
+        },
+        "finalBody": "只回答其中一项：候选。其他要求暂不说明。",
+        "admittedEvidence": [],
+        "validCitations": []
+      },
+      "humanVerdict": "fail",
+      "rationale": "正文只回答“候选”一项，未分层给出从搜索返回到合格证据缺失的原因链，原因分层不完整。"
+    },
+    {
+      "sampleId": "aq-corpus-v1:06:1",
+      "caseId": "AQ-FAC-005",
+      "caseVersion": "aq-corpus-v1.6.5",
+      "layer": "generic_semantic",
+      "dimension": "任务相关性",
+      "judgeInput": {
+        "userRequest": "说明当前材料中产品发布门禁包含哪些状态。联网证据顺序可能变化，结论不得依赖返回顺序",
+        "explicitSettings": {
+          "format": "table",
+          "language": "zh-CN",
+          "preserveUncertainty": true
+        },
+        "finalBody": "建议先安排一次团队聚餐，菜单和座位可以下周再讨论。",
+        "admittedEvidence": [
+          {
+            "id": "source-b",
+            "text": "验证报告说明来源顺序不应改变证据结论。"
+          },
+          {
+            "id": "source-a",
+            "text": "规范说明能力、可用性和执行是不同状态。"
+          }
+        ],
+        "validCitations": []
+      },
+      "humanVerdict": "fail",
+      "rationale": "正文建议安排团队聚餐，与用户要求说明产品发布门禁的状态完全无关。"
+    },
+    {
+      "sampleId": "aq-corpus-v1:06:2",
+      "caseId": "AQ-FAC-007",
+      "caseVersion": "aq-corpus-v1.6.7",
+      "layer": "task_family",
+      "dimension": "事实可追溯",
+      "judgeInput": {
+        "userRequest": "说明当前材料中产品发布门禁包含哪些状态。逐项覆盖用户要求，不能用“已完成”替代正文里的实际内容",
+        "explicitSettings": {
+          "format": "numbered_steps",
+          "language": "zh-CN",
+          "preserveUncertainty": true
+        },
+        "finalBody": "完整回答包括：能力；可用性；执行；逐项。",
+        "admittedEvidence": [],
+        "validCitations": []
+      },
+      "humanVerdict": "pass",
+      "rationale": "正文逐项覆盖能力、可用性与执行三类状态，与请求要求按材料说明的状态一一对应，事实可追溯。"
+    },
+    {
+      "sampleId": "aq-corpus-v1:07:1",
+      "caseId": "AQ-SYN-005",
+      "caseVersion": "aq-corpus-v1.7.5",
+      "layer": "generic_semantic",
+      "dimension": "任务相关性",
+      "judgeInput": {
+        "userRequest": "综合三份材料，说明企业 RAG 评测最容易被忽略的风险。联网证据顺序可能变化，结论不得依赖返回顺序",
+        "explicitSettings": {
+          "format": "table",
+          "language": "zh-CN",
+          "preserveUncertainty": true
+        },
+        "finalBody": "围绕用户问题，回答重点是证据泄漏、弱势切片、来源，并结合显式限制给出结论。",
+        "admittedEvidence": [
+          {
+            "id": "source-a",
+            "text": "规范说明能力、可用性和执行是不同状态。"
+          },
+          {
+            "id": "source-b",
+            "text": "验证报告说明来源顺序不应改变证据结论。"
+          }
+        ],
+        "validCitations": []
+      },
+      "humanVerdict": "pass",
+      "rationale": "正文围绕企业 RAG 评测易被忽略风险的请求主题展开，覆盖证据泄漏、弱势切片与来源，回答与任务相关。"
+    },
+    {
+      "sampleId": "aq-corpus-v1:07:2",
+      "caseId": "AQ-SYN-007",
+      "caseVersion": "aq-corpus-v1.7.7",
+      "layer": "task_family",
+      "dimension": "跨来源综合",
+      "judgeInput": {
+        "userRequest": "综合三份材料，说明企业 RAG 评测最容易被忽略的风险。逐项覆盖用户要求，不能用“已完成”替代正文里的实际内容",
+        "explicitSettings": {
+          "format": "numbered_steps",
+          "language": "zh-CN",
+          "preserveUncertainty": true
+        },
+        "finalBody": "只回答其中一项：证据泄漏。其他要求暂不说明。",
+        "admittedEvidence": [],
+        "validCitations": []
+      },
+      "humanVerdict": "fail",
+      "rationale": "正文只回答“证据泄漏”一项，未跨来源综合弱势切片等其他易被忽略的风险，综合不完整。"
+    },
+    {
+      "sampleId": "aq-corpus-v1:08:1",
+      "caseId": "AQ-SUM-005",
+      "caseVersion": "aq-corpus-v1.8.5",
+      "layer": "generic_semantic",
+      "dimension": "任务相关性",
+      "judgeInput": {
+        "userRequest": "把长文压缩成面向管理层的摘要，同时保留限制条件。联网证据顺序可能变化，结论不得依赖返回顺序",
+        "explicitSettings": {
+          "format": "table",
+          "language": "zh-CN",
+          "preserveUncertainty": true
+        },
+        "finalBody": "建议先安排一次团队聚餐，菜单和座位可以下周再讨论。",
+        "admittedEvidence": [
+          {
+            "id": "source-b",
+            "text": "验证报告说明来源顺序不应改变证据结论。"
+          },
+          {
+            "id": "source-a",
+            "text": "规范说明能力、可用性和执行是不同状态。"
+          }
+        ],
+        "validCitations": []
+      },
+      "humanVerdict": "fail",
+      "rationale": "正文建议安排团队聚餐，与用户要求压缩长文为面向管理层的摘要完全无关。"
+    },
+    {
+      "sampleId": "aq-corpus-v1:08:2",
+      "caseId": "AQ-SUM-007",
+      "caseVersion": "aq-corpus-v1.8.7",
+      "layer": "task_family",
+      "dimension": "压缩有效",
+      "judgeInput": {
+        "userRequest": "把长文压缩成面向管理层的摘要，同时保留限制条件。逐项覆盖用户要求，不能用“已完成”替代正文里的实际内容",
+        "explicitSettings": {
+          "format": "numbered_steps",
+          "language": "zh-CN",
+          "preserveUncertainty": true
+        },
+        "finalBody": "完整回答包括：核心结论；限制条件；逐项。",
+        "admittedEvidence": [],
+        "validCitations": []
+      },
+      "humanVerdict": "pass",
+      "rationale": "正文覆盖核心结论与限制条件并逐项呈现，压缩后关键信息保留完整。"
+    },
+    {
+      "sampleId": "aq-corpus-v1:09:1",
+      "caseId": "AQ-REW-005",
+      "caseVersion": "aq-corpus-v1.9.5",
+      "layer": "generic_semantic",
+      "dimension": "任务相关性",
+      "judgeInput": {
+        "userRequest": "把这段技术说明改写成自然、克制的产品语言。联网证据顺序可能变化，结论不得依赖返回顺序",
+        "explicitSettings": {
+          "format": "table",
+          "language": "zh-CN",
+          "preserveUncertainty": true
+        },
+        "finalBody": "围绕用户问题，回答重点是原意、产品语言、来源，并结合显式限制给出结论。",
+        "admittedEvidence": [
+          {
+            "id": "source-a",
+            "text": "规范说明能力、可用性和执行是不同状态。"
+          },
+          {
+            "id": "source-b",
+            "text": "验证报告说明来源顺序不应改变证据结论。"
+          }
+        ],
+        "validCitations": []
+      },
+      "humanVerdict": "pass",
+      "rationale": "正文围绕把技术说明改写为产品语言的请求主题展开，覆盖原意与产品语言，回答与任务相关。"
+    },
+    {
+      "sampleId": "aq-corpus-v1:09:2",
+      "caseId": "AQ-REW-007",
+      "caseVersion": "aq-corpus-v1.9.7",
+      "layer": "task_family",
+      "dimension": "忠实改写",
+      "judgeInput": {
+        "userRequest": "把这段技术说明改写成自然、克制的产品语言。逐项覆盖用户要求，不能用“已完成”替代正文里的实际内容",
+        "explicitSettings": {
+          "format": "numbered_steps",
+          "language": "zh-CN",
+          "preserveUncertainty": true
+        },
+        "finalBody": "只回答其中一项：原意。其他要求暂不说明。",
+        "admittedEvidence": [],
+        "validCitations": []
+      },
+      "humanVerdict": "fail",
+      "rationale": "正文只回答“原意”一项，未给出自然、克制的产品语言改写结果，改写不完整。"
+    },
+    {
+      "sampleId": "aq-corpus-v1:10:1",
+      "caseId": "AQ-MIX-005",
+      "caseVersion": "aq-corpus-v1.10.5",
+      "layer": "generic_semantic",
+      "dimension": "任务相关性",
+      "judgeInput": {
+        "userRequest": "先诊断当前方案，再比较两种修复路径并给出执行顺序。联网证据顺序可能变化，结论不得依赖返回顺序",
+        "explicitSettings": {
+          "format": "table",
+          "language": "zh-CN",
+          "preserveUncertainty": true
+        },
+        "finalBody": "建议先安排一次团队聚餐，菜单和座位可以下周再讨论。",
+        "admittedEvidence": [
+          {
+            "id": "source-b",
+            "text": "验证报告说明来源顺序不应改变证据结论。"
+          },
+          {
+            "id": "source-a",
+            "text": "规范说明能力、可用性和执行是不同状态。"
+          }
+        ],
+        "validCitations": []
+      },
+      "humanVerdict": "fail",
+      "rationale": "正文建议安排团队聚餐，与用户要求先诊断、再比较修复路径并给出执行顺序完全无关。"
+    },
+    {
+      "sampleId": "aq-corpus-v1:10:2",
+      "caseId": "AQ-MIX-007",
+      "caseVersion": "aq-corpus-v1.10.7",
+      "layer": "task_family",
+      "dimension": "多操作齐全",
+      "judgeInput": {
+        "userRequest": "先诊断当前方案，再比较两种修复路径并给出执行顺序。逐项覆盖用户要求，不能用“已完成”替代正文里的实际内容",
+        "explicitSettings": {
+          "format": "numbered_steps",
+          "language": "zh-CN",
+          "preserveUncertainty": true
+        },
+        "finalBody": "完整回答包括：诊断；比较；执行顺序；逐项。",
+        "admittedEvidence": [],
+        "validCitations": []
+      },
+      "humanVerdict": "pass",
+      "rationale": "正文覆盖诊断、比较与执行顺序三项操作并逐项说明，操作齐全。"
+    }
+  ]
+}

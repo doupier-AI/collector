@@ -1,0 +1,57 @@
+{
+  "corpusVersion": "aq-corpus-v1",
+  "reviewer": "User",
+  "reviewedAt": "2026-08-31T13:05:59.281Z",
+  "sampleCount": 20,
+  "taskFamilyCount": 10,
+  "agreementRate": 1,
+  "falsePositiveCount": 0,
+  "falseNegativeCount": 0,
+  "dimensionBias": {
+    "generic_semantic:任务相关性": {
+      "sampleCount": 10,
+      "passRateDelta": 0
+    },
+    "task_family:概念准确": {
+      "sampleCount": 1,
+      "passRateDelta": 0
+    },
+    "task_family:比较维度对称": {
+      "sampleCount": 1,
+      "passRateDelta": 0
+    },
+    "task_family:权衡透明": {
+      "sampleCount": 1,
+      "passRateDelta": 0
+    },
+    "task_family:步骤可执行": {
+      "sampleCount": 1,
+      "passRateDelta": 0
+    },
+    "task_family:原因分层": {
+      "sampleCount": 1,
+      "passRateDelta": 0
+    },
+    "task_family:事实可追溯": {
+      "sampleCount": 1,
+      "passRateDelta": 0
+    },
+    "task_family:跨来源综合": {
+      "sampleCount": 1,
+      "passRateDelta": 0
+    },
+    "task_family:压缩有效": {
+      "sampleCount": 1,
+      "passRateDelta": 0
+    },
+    "task_family:忠实改写": {
+      "sampleCount": 1,
+      "passRateDelta": 0
+    },
+    "task_family:多操作齐全": {
+      "sampleCount": 1,
+      "passRateDelta": 0
+    }
+  },
+  "status": "human_reviewed"
+}
