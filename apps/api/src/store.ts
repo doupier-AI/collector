@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, hashBodyContent, researchBodyVersionId, resolveResearchStableLocation, validateResearchStableLocation, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchContextAssemblySnapshot, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSidecarInvalidReason, type ResearchSidecarRecord, type ResearchSidecarRecordQuery, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageBodyRecord, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchReasoningRecord, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId, toResearchMessageBody } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, hashBodyContent, researchBodyVersionId, resolveResearchStableLocation, validateResearchStableLocation, type ConversationContext, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchContextAssemblySnapshot, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSidecarInvalidReason, type ResearchSidecarRecord, type ResearchSidecarRecordQuery, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageBodyRecord, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchReasoningRecord, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId, toResearchMessageBody } from "@collector/capture-contracts";
 import { contextExplanationCodes, deriveMessageBlocks, observeContextAssembly } from "@collector/capture-contracts";
 import type { ResearchCitationCandidate } from "@collector/capture-contracts";
 import { markdownStableVisibleText, projectMarkdownDocument, projectMarkdownSourceRange } from "@collector/markdown-projection";
@@ -234,6 +234,8 @@ export interface ResearchStore extends ResearchSidecarStore, ResearchTermMarkerS
   clearResearchTaskStreamCheckpoint(taskId: string): Promise<void>;
   /** 主回答上下文：保存无正文来源快照与准入审计。 */
   saveResearchTaskContextAssemblySnapshot(taskId: string, snapshot: ResearchContextAssemblySnapshot): Promise<void>;
+  /** 对话语义：保存当前生成尝试的版本化 Resolver 快照。 */
+  saveResearchTaskConversationContextSnapshot(taskId: string, snapshot: ConversationContext): Promise<void>;
   listResearchTaskEvents(taskId: string, afterId?: number): ResearchTaskEvent[];
   listRecoverableResearchTasks(): ResearchTaskRecord[];
   failInterruptedResearchTasks(): number;
@@ -444,6 +446,7 @@ export interface CollectorStore
   saveResearchTaskStreamCheckpoint(taskId: string, content: string, protocolPrefix?: string): Promise<void>;
   clearResearchTaskStreamCheckpoint(taskId: string): Promise<void>;
   saveResearchTaskContextAssemblySnapshot(taskId: string, snapshot: ResearchContextAssemblySnapshot): Promise<void>;
+  saveResearchTaskConversationContextSnapshot(taskId: string, snapshot: ConversationContext): Promise<void>;
   listResearchTaskEvents(taskId: string, afterId?: number): ResearchTaskEvent[];
   listRecoverableResearchTasks(): ResearchTaskRecord[];
   failInterruptedResearchTasks(): number;
@@ -1628,6 +1631,20 @@ export class SqliteStore implements CollectorStore {
         contextExplanations: contextExplanationCodes(observations, task.contextExplanations?.includes("retrieval_degraded")),
         updatedAt: new Date().toISOString(),
       });
+    });
+  }
+
+  async saveResearchTaskConversationContextSnapshot(taskId: string, snapshot: ConversationContext): Promise<void> {
+    this.transaction(() => {
+      const task = this.getResearchTask(taskId);
+      if (!task) throw new Error("Research task not found");
+      if ((task.generationAttempt ?? 1) !== snapshot.generationAttempt) {
+        throw new Error("Conversation context generation attempt does not match the research task");
+      }
+      if (task.id !== snapshot.taskId || task.inputMessageId !== snapshot.inputMessageId) {
+        throw new Error("Conversation context identity does not match the research task");
+      }
+      this.updateResearchTask({ ...task, conversationContextSnapshot: structuredClone(snapshot), updatedAt: new Date().toISOString() });
     });
   }
 

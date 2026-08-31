@@ -198,6 +198,124 @@ export interface ContextBudget {
   channelLimits?: Partial<Record<ContextChannel, number>>;
 }
 
+export const CONVERSATION_CONTEXT_SCHEMA_VERSION = 1 as const;
+export const CONVERSATION_CONTEXT_RESOLVER_VERSION = "conversation-context-resolver-v1" as const;
+
+export type ConversationContextAuthority = "current_user" | "user_source" | "assistant_body" | "derived_summary";
+export type ConversationContextSemanticCategory = "current_request" | "explicit_constraint" | "user_turn" | "assistant_body" | "summary_statement";
+export type ConversationContextSelectionReason =
+  | "current_request"
+  | "explicit_correction"
+  | "active_constraint"
+  | "reference_candidate"
+  | "relevant_history"
+  | "recent_user_fallback"
+  | "summary_recall"
+  | "not_relevant"
+  | "budget_exhausted"
+  | "incomplete_assistant";
+
+export interface ConversationContextMessageRange {
+  startMessageId: string;
+  endMessageId: string;
+  startIndex: number;
+  endIndex: number;
+}
+
+export interface ConversationContextMessageReference {
+  messageId: string;
+  nodeId: string;
+  messageVersionId: string;
+  bodyVersionId?: string;
+  originalRole: "user" | "assistant";
+  sourceMessageRange: ConversationContextMessageRange;
+}
+
+export interface ConversationContextItem {
+  id: string;
+  content: string;
+  source: ConversationContextMessageReference;
+  semanticCategory: ConversationContextSemanticCategory;
+  authority: ConversationContextAuthority;
+  selection: "selected" | "omitted";
+  selectionReason: ConversationContextSelectionReason;
+  estimatedTokens: number;
+}
+
+export interface ConversationContextSummaryStatement {
+  content: string;
+  source: ConversationContextMessageReference;
+  semanticCategory: "summary_statement";
+  authority: "derived_summary";
+}
+
+export interface ConversationContextSummary {
+  id: string;
+  summaryVersion: string;
+  resolutionStatus: "deterministic" | "degraded";
+  sourceMessageRange: ConversationContextMessageRange;
+  selection: "selected" | "omitted";
+  selectionReason: "summary_recall" | "not_relevant" | "budget_exhausted";
+  statements: readonly ConversationContextSummaryStatement[];
+  estimatedTokens: number;
+}
+
+export type ConversationContextRelationKind =
+  | "ordinal_reference"
+  | "pronoun_reference"
+  | "user_intent_correction"
+  | "external_fact_conflict"
+  | "constraint_carryover"
+  | "constraint_replacement"
+  | "instruction_retraction"
+  | "assistant_conclusion_rejected";
+
+export interface ConversationContextRelationCandidate {
+  source: ConversationContextMessageReference;
+  excerpt: string;
+}
+
+export interface ConversationContextRelation {
+  id: string;
+  kind: ConversationContextRelationKind;
+  status: "resolved" | "ambiguous" | "unresolved";
+  expression: string;
+  candidates: readonly ConversationContextRelationCandidate[];
+  resolvedMessageId?: string;
+  fromValue?: string;
+  toValue?: string;
+}
+
+/**
+ * Versioned conversation-only semantic snapshot. It records resolver selection separately from
+ * ContextAssembly admission; parent-chain, RAG, web evidence and user adaptation never enter it.
+ */
+export interface ConversationContext {
+  schemaVersion: typeof CONVERSATION_CONTEXT_SCHEMA_VERSION;
+  contextId: string;
+  resolverVersion: string;
+  buildFingerprint: string;
+  taskId: string;
+  generationAttempt: number;
+  inputMessageId: string;
+  outputMessageId?: string;
+  nodeId: string;
+  sourceFingerprint: string;
+  resolution: {
+    status: "resolved" | "degraded";
+    mode: "deterministic";
+    reason?: "invalid_history" | "invalid_budget" | "budget_exhausted" | "internal_error";
+  };
+  budget: {
+    maxInputTokens: number;
+    usedInputTokens: number;
+    remainingInputTokens: number;
+  };
+  items: readonly ConversationContextItem[];
+  summaries: readonly ConversationContextSummary[];
+  relations: readonly ConversationContextRelation[];
+}
+
 export const PROMPT_ENVELOPE_VERSION = "prompt-envelope-v1" as const;
 
 export type PromptEnvelopeRole = "system" | "user" | "assistant" | "tool";
@@ -1968,6 +2086,8 @@ export interface ResearchTaskRecord {
   streamCheckpoint?: { content: string; updatedAt: string; protocolPrefix?: string };
   /** 主回答上下文的无正文来源快照与准入审计；用于暂停/恢复稳定性校验。 */
   contextAssemblySnapshot?: ResearchContextAssemblySnapshot;
+  /** 当前生成尝试使用的版本化对话语义快照；暂停/恢复复用，新生成尝试重新解析。 */
+  conversationContextSnapshot?: ConversationContext;
   /** Category-only explanation for the current answer; never contains candidate text or hidden prompts. */
   contextExplanations?: ContextExplanationCode[];
   error?: ResearchTaskError;

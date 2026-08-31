@@ -250,6 +250,7 @@ export class CaptureService {
       provider: this.options.researchProvider ?? this.researchProviderFor(this.modelGateway),
       autoRunTasks: this.options.autoRunResearchTasks,
       parentChainContext: this.parentChainContext,
+      buildFingerprint: this.options.runtimeVersion ?? "development",
       onTaskQueued: async (task) => {
         // 根节点任务入队即落库确定性标题（无模型 I/O，快）：回答完成事件后客户端重拉视图即为新标题。
         if (task.nodeId === task.sessionId) {

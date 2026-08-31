@@ -139,6 +139,8 @@ test("单轮流式切断→重试从断点续传：部分正文保留、不重�
   assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "第一段正文。", "已写部分保留（第一段）");
   assert.ok(store.listResearchTaskEvents(accepted.task.id).length >= 1, "事件流保留");
   assert.ok(task.streamCheckpoint?.content.includes("第一段正文"), "断点已落盘");
+  const firstConversationContext = task.conversationContextSnapshot;
+  assert.ok(firstConversationContext, "首次生成已持久化对话语义快照");
 
   // 重试：从断点续传。
   await service.research.retryTask(accepted.task.id);
@@ -150,6 +152,11 @@ test("单轮流式切断→重试从断点续传：部分正文保留、不重�
   assert.ok(calls[1]?.resumeFrom?.includes("第一段正文"), "重试携带断点 resumeFrom");
   assert.equal(sleeps.length, 0, "致命 500 不退避（直接失败、由用户重试续传）");
   assert.equal(store.getResearchTask(accepted.task.id)!.streamCheckpoint, undefined, "完成后清断点");
+  assert.equal(
+    store.getResearchTask(accepted.task.id)?.conversationContextSnapshot?.contextId,
+    firstConversationContext?.contextId,
+    "同一生成尝试的断点续传复用同一对话快照",
+  );
   store.close();
 });
 
@@ -661,7 +668,9 @@ test("重新生成：旧正文/思考快照进 versions，消息清空重跑，�
   for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)!.status !== "completed"; i++) await new Promise((r) => setImmediate(r));
   assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "第一轮正文。");
   const firstSnapshot = store.getResearchTask(accepted.task.id)?.contextAssemblySnapshot;
+  const firstConversationContext = store.getResearchTask(accepted.task.id)?.conversationContextSnapshot;
   assert.ok(firstSnapshot);
+  assert.ok(firstConversationContext);
 
   await service.research.regenerateTask(accepted.task.id);
   const queued = store.getResearchTask(accepted.task.id)!;
@@ -679,8 +688,11 @@ test("重新生成：旧正文/思考快照进 versions，消息清空重跑，�
   assert.equal(done.versions?.length, 1, "版本保留");
   assert.equal(done.versions?.[0]?.content, "第一轮正文。", "旧版可回看");
   const regeneratedSnapshot = store.getResearchTask(accepted.task.id)?.contextAssemblySnapshot;
+  const regeneratedConversationContext = store.getResearchTask(accepted.task.id)?.conversationContextSnapshot;
   assert.equal(regeneratedSnapshot?.generationAttempt, (firstSnapshot?.generationAttempt ?? 0) + 1, "重新生成是新的装配尝试");
   assert.equal(regeneratedSnapshot?.sourceFingerprint, firstSnapshot?.sourceFingerprint, "来源未变时新尝试可确定性重装配同一基础材料");
+  assert.equal(regeneratedConversationContext?.generationAttempt, (firstConversationContext?.generationAttempt ?? 0) + 1);
+  assert.notEqual(regeneratedConversationContext?.contextId, firstConversationContext?.contextId, "重新生成必须重解析新快照");
   store.close();
 });
 
@@ -703,6 +715,7 @@ test("重新编辑：用户消息改写、旧回答直接替换不写版本、�
   for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)!.status !== "completed"; i++) await new Promise((r) => setImmediate(r));
   assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "第二版回答。");
   assert.equal((store.getResearchMessage(accepted.outputMessage.id)?.versions?.length ?? 0) >= 1, true, "重生成后有旧版本");
+  const beforeEditContext = store.getResearchTask(accepted.task.id)?.conversationContextSnapshot;
 
   await service.research.editMessage(accepted.inputMessage.id, "修改后的问题");
   assert.equal(store.getResearchMessage(accepted.inputMessage.id)!.content, "修改后的问题", "用户消息已改写");
@@ -713,5 +726,7 @@ test("重新编辑：用户消息改写、旧回答直接替换不写版本、�
   for (let i = 0; i < 200 && store.getResearchTask(accepted.task.id)!.status !== "completed"; i++) await new Promise((r) => setImmediate(r));
   assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "第三版回答。", "新回答落位");
   assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.versions, undefined, "编辑生成不写版本");
+  const afterEditContext = store.getResearchTask(accepted.task.id)?.conversationContextSnapshot;
+  assert.notEqual(afterEditContext?.sourceFingerprint, beforeEditContext?.sourceFingerprint, "消息正文版本变化必须重解析");
   store.close();
 });

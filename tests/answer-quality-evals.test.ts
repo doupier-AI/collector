@@ -30,6 +30,7 @@ import {
   type AnswerQualityRun,
   type PairwiseJudgment,
 } from "@collector/answer-quality-evals";
+import type { ConversationContext } from "@collector/capture-contracts";
 
 test("versioned corpus covers the required cross-task matrix", () => {
   assert.match(ANSWER_QUALITY_CORPUS_VERSION, /^aq-corpus-v\d+$/);
@@ -113,7 +114,27 @@ test("fixed-provider mode binds the complete sample identity and uses production
   assert.equal(run.identity.thinking, target.environment.thinking);
   assert.equal(run.identity.buildFingerprint, "build:test");
   assert.equal(run.trace.providerRequests.length, 1);
+  assert.ok(run.trace.conversationContext);
   assert.ok(run.trace.contextAssembly);
+});
+
+test("AQ-01 multi-turn and correction slices execute the production Conversation Context capability", async () => {
+  const slices = ANSWER_QUALITY_CORPUS.filter((entry) => entry.coverage.robustness.some((tag) => ["multi_turn_reference", "correction_and_negation"].includes(tag)));
+  assert.ok(slices.length >= 20);
+  for (const target of slices) {
+    const run = await runFixedProviderCase(target, { response: "固定正文", buildFingerprint: "build:test" });
+    const context = run.trace.conversationContext as ConversationContext;
+    assert.equal(run.facts.runExecution.find((entry) => entry.capabilityId === "conversation_context")?.state, "completed");
+    assert.ok(context.items.some((item) => item.semanticCategory === "current_request" && item.selection === "selected"));
+    assert.ok(context.items.some((item) => item.source.originalRole === "user" && item.semanticCategory !== "current_request" && item.selection === "selected"));
+    if (target.coverage.robustness.includes("multi_turn_reference")) {
+      assert.ok(context.relations.some((relation) => relation.kind === "pronoun_reference"));
+    }
+    if (target.coverage.robustness.includes("correction_and_negation")) {
+      assert.equal(context.relations.find((relation) => relation.kind === "instruction_retraction")?.status, "resolved");
+      assert.equal(context.relations.find((relation) => relation.kind === "assistant_conclusion_rejected")?.status, "resolved");
+    }
+  }
 });
 
 test("canaries and evaluation-only mutations cannot alter normalized production traces", async () => {

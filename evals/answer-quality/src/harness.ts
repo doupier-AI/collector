@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { assembleContext, contextAssemblyAudit } from "@collector/api";
-import { researchBodyVersionId, type ContextCandidate } from "@collector/capture-contracts";
+import { assembleContext, contextAssemblyAudit, ConversationContextResolver, conversationContextCandidate } from "@collector/api";
+import { researchBodyVersionId, type ContextCandidate, type ResearchMessageBodyRecord } from "@collector/capture-contracts";
 import { FakeProvider, ModelGateway, type ModelCallEvent, type ModelProviderResponse } from "@collector/model-gateway";
 import { createCurrentBuildCapabilities, createEvaluationFacts } from "./facts.js";
 import {
@@ -46,7 +46,14 @@ export async function runFixedProviderCase(testCase: AnswerQualityCase, options:
   const inputMessageId = `aq-input:${id()}`;
   const outputMessageId = `aq-output:${id()}`;
   const availabilityCapturedAt = clock();
-  const candidates = productionCandidates(scenario, taskId);
+  const { candidates, conversationContext } = productionCandidates(
+    scenario,
+    taskId,
+    inputMessageId,
+    outputMessageId,
+    availabilityCapturedAt,
+    options.buildFingerprint,
+  );
   const assembly = assembleContext({ purpose: "research_body", workflowRunId: taskId, workflowStepId: "final-writing", candidates });
   if (assembly.status !== "assembled") throw new Error(`Fixed-provider context assembly failed: ${assembly.reason}`);
   const provider = new FakeProvider([options.response]);
@@ -76,6 +83,7 @@ export async function runFixedProviderCase(testCase: AnswerQualityCase, options:
     : { capabilityId: "final_writing", state: "completed", artifactId: outputMessageId };
   const availability = availabilityFacts(testCase, availabilityCapturedAt, options.unavailableReason);
   const execution: RunExecutionFact[] = [
+    { capabilityId: "conversation_context", state: "completed", artifactId: conversationContext.contextId },
     { capabilityId: "context_assembly", state: "completed", artifactId: `${taskId}:context-assembly` },
     finalWritingState,
     { capabilityId: "production_run_record", state: "completed", artifactId: `${taskId}:model-call` },
@@ -89,6 +97,7 @@ export async function runFixedProviderCase(testCase: AnswerQualityCase, options:
   });
   const artifactBindings = artifactBindingsFor(testCase, availability, execution);
   const trace: ProductionTrace = {
+    conversationContext,
     contextAssembly: {
       request: { purpose: "research_body", candidates },
       audit: contextAssemblyAudit(assembly),
@@ -149,7 +158,44 @@ export function normalizeProductionTrace(trace: ProductionTrace): unknown {
   return normalizeValue(trace);
 }
 
-function productionCandidates(scenario: ProductionScenario, taskId: string): ContextCandidate[] {
+function productionCandidates(
+  scenario: ProductionScenario,
+  taskId: string,
+  inputMessageId: string,
+  outputMessageId: string,
+  timestamp: string,
+  buildFingerprint: string,
+): { candidates: ContextCandidate[]; conversationContext: ReturnType<ConversationContextResolver["resolve"]> } {
+  const nodeId = `${taskId}:node`;
+  const history: ResearchMessageBodyRecord[] = scenario.conversation.map((turn, index) => ({
+    id: `${taskId}:history:${index}`,
+    sessionId: taskId,
+    nodeId,
+    role: turn.role,
+    content: turn.content,
+    status: "completed",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  }));
+  const currentMessage: ResearchMessageBodyRecord = {
+    id: inputMessageId,
+    sessionId: taskId,
+    nodeId,
+    role: "user",
+    content: scenario.userRequest,
+    status: "completed",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  const conversationContext = new ConversationContextResolver({ buildFingerprint }).resolve({
+    taskId,
+    generationAttempt: 1,
+    inputMessageId,
+    outputMessageId,
+    nodeId,
+    currentMessage,
+    messages: [...history, currentMessage],
+  });
   const candidates: ContextCandidate[] = [{
     id: `${taskId}:current-question`,
     channel: "factual_evidence",
@@ -172,25 +218,14 @@ function productionCandidates(scenario: ProductionScenario, taskId: string): Con
     protection: "required",
     ruleKind: "turn_instruction",
   }];
-  for (const [index, turn] of scenario.conversation.entries()) {
-    candidates.push({
-      id: `${taskId}:history:${index}`,
-      channel: "factual_evidence",
-      content: JSON.stringify(turn),
-      source: { kind: "conversation", id: `${taskId}:history:${index}`, scope: "turn" },
-      permission: { status: "eligible", basis: "task_contract", allowedPurposes: ["research_body"] },
-      sensitivity: "private",
-      priority: "turn",
-      protection: "preferred",
-      evidenceKind: "conversation_history",
-      upstreamRank: { source: "conversation", rank: index + 1 },
-    });
-  }
-  return candidates;
+  const conversationCandidate = conversationContextCandidate(conversationContext);
+  if (conversationCandidate) candidates.push(conversationCandidate);
+  return { candidates, conversationContext };
 }
 
 function availabilityFacts(testCase: AnswerQualityCase, capturedAt: string, finalWritingUnavailableReason?: string): RunAvailabilityFact[] {
   const facts: RunAvailabilityFact[] = [
+    { capabilityId: "conversation_context", state: "available", capturedAt },
     { capabilityId: "context_assembly", state: "available", capturedAt },
     finalWritingUnavailableReason
       ? { capabilityId: "final_writing", state: "unavailable", reason: finalWritingUnavailableReason, capturedAt }
@@ -229,7 +264,11 @@ function normalizeValue(value: unknown, key?: string): unknown {
         return normalized === undefined ? [] : [[entryKey, normalized]];
       }));
   }
-  if (typeof value === "string") return value.replace(/aq-task:[0-9a-f-]{36}/gi, "aq-task:<normalized>");
+  if (typeof value === "string") return value
+    .replace(/aq-task:[0-9a-f-]{36}/gi, "aq-task:<normalized>")
+    .replace(/aq-input:[0-9a-f-]{36}/gi, "aq-input:<normalized>")
+    .replace(/aq-output:[0-9a-f-]{36}/gi, "aq-output:<normalized>")
+    .replace(/\b[0-9a-f]{64}\b/gi, "<sha256>");
   return value;
 }
 
