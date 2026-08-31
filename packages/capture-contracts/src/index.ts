@@ -104,6 +104,7 @@ export const CONTEXT_PURPOSES = [
   "research_body_outline",
   "research_body_section",
   "research_slice_annotation",
+  "term_marker_extraction",
   "term_preview",
   "term_entity_verification",
   "session_titling",
@@ -814,7 +815,8 @@ export type ResearchImportTaskEvent =
 // 退化为规则锚点。章节锚点一律落在既有内容块（ResearchContentBlock.ordinal）上，
 // 不另立第二套锚点事实；界面按 source/fallbackReason 诚实呈现锚点来源。
 
-export const IMPORT_CHAPTER_PARSE_PROMPT_VERSION = "import-chapter-parse-v1";
+/** 导入材料与回答正文共用的章节解析提示版本。 */
+export const IMPORT_CHAPTER_PARSE_PROMPT_VERSION = "research-chapter-parse-v2";
 /** 章节解析输出预算；JSON 结构有界，2048 足够覆盖上限章节数。 */
 export const IMPORT_CHAPTER_PARSE_TOKEN_BUDGET = 2_048;
 /** 送入模型的正文上限（字符）；超出部分按块边界截断，锚点仍只落在被送入的既有块上。 */
@@ -831,8 +833,13 @@ export type ResearchChapterErrorCode =
   | "model_not_configured"
   | "provider_error"
   | "invalid_output"
+  | "content_missing"
   | "snapshot_missing"
   | "service_restarted";
+
+export type ResearchChapterTarget =
+  | { kind: "import"; snapshotId: string }
+  | { kind: "answer"; messageId: string; bodyVersionId: string; nodeId: string };
 
 /** 章节锚点：节标题 + 既有内容块下标。标题由 AI 理解生成或规则派生（原文标题/段落首句）。 */
 export interface ResearchChapterAnchor {
@@ -848,7 +855,9 @@ export interface ResearchChapterAnchor {
 export interface ResearchChapterTaskRecord {
   id: string;
   sessionId: string;
-  snapshotId: string;
+  target?: ResearchChapterTarget;
+  /** 旧记录兼容字段；新导入任务的目标只写 target。 */
+  snapshotId?: string;
   /** 运行记录列表标题（导入文件名）。 */
   title: string;
   status: ResearchChapterTaskStatus;
@@ -880,6 +889,19 @@ export interface ResearchChapterParseView {
   chapters: ResearchChapterAnchor[];
   error?: { code: string; message: string };
   updatedAt: string;
+}
+
+export function researchChapterTargetKey(target: ResearchChapterTarget): string {
+  return target.kind === "import" ? `import:${target.snapshotId}` : `answer:${target.bodyVersionId}`;
+}
+
+/** 旧导入任务惰性适配到统一目标，不改写历史 record_json。 */
+export function resolveResearchChapterTarget(
+  task: Pick<ResearchChapterTaskRecord, "target" | "snapshotId">,
+): ResearchChapterTarget {
+  if (task.target) return task.target;
+  if (task.snapshotId) return { kind: "import", snapshotId: task.snapshotId };
+  throw new Error("Research chapter task target is missing");
 }
 
 /** 阅读内容 HTTP 视图：快照 + 章节解析状态（只有达到长文阈值的快照携带 chapterParse）。 */
@@ -975,6 +997,65 @@ function ruleChapterTitle(blockText: string): string {
   const match = cleaned.match(/^[^。！？!?；;\n]+[。！？!?；;]?/);
   const sentence = (match?.[0] ?? cleaned).trim().replace(/\s+/g, " ");
   return truncateChapterTitle(sentence || "开始", IMPORT_CHAPTER_TITLE_MAX_CHARACTERS);
+}
+
+/** 回答章节的确定性降级路径；只保存当前正文版本的真实范围与标题。 */
+export function deriveAnswerRuleChapters(
+  version: Pick<ResearchBodyVersionRecord, "id" | "messageId" | "content">,
+  slices: readonly ResearchSliceRecord[] = [],
+): ResearchChapterAnchor[] {
+  if (!isLongText(version.content)) return [];
+  const blocks = deriveMessageBlocks(version.content);
+  const units = composeSectionUnits(blocks);
+  const formal = slices.filter((slice) => !slice.isProvisional).sort((a, b) => a.ordinal - b.ordinal);
+  return units.slice(0, IMPORT_CHAPTER_MAX_COUNT).map((unit, ordinal) => {
+    const first = blocks[unit.firstBlockOrdinal];
+    const startOffset = first?.startOffset ?? 0;
+    const exact = version.content.slice(startOffset, startOffset + unit.content.length);
+    const title = unit.title || formal[ordinal]?.title || ruleChapterTitle(unit.content);
+    return {
+      ordinal,
+      title: truncateChapterTitle(title.trim().replace(/\s+/g, " "), IMPORT_CHAPTER_TITLE_MAX_CHARACTERS),
+      blockOrdinal: unit.firstBlockOrdinal,
+      location: {
+        contentId: version.messageId,
+        bodyVersionId: version.id,
+        sourceRange: { startOffset, endOffset: startOffset + exact.length },
+        exact,
+      },
+    };
+  });
+}
+
+/** 把 AI 返回的块起点适配为回答正文版本的真实节范围。 */
+export function attachAnswerChapterLocations(
+  version: Pick<ResearchBodyVersionRecord, "id" | "messageId" | "content">,
+  chapters: readonly ResearchChapterAnchor[],
+): ResearchChapterAnchor[] {
+  const blocks = deriveMessageBlocks(version.content);
+  const units = composeSectionUnits(blocks);
+  return chapters.flatMap((chapter) => {
+    if (chapter.location?.bodyVersionId === version.id && chapter.location.contentId === version.messageId) {
+      return [chapter];
+    }
+    const unit = units.find((candidate) => candidate.firstBlockOrdinal === chapter.blockOrdinal)
+      ?? units.find((candidate) => chapter.blockOrdinal >= candidate.firstBlockOrdinal
+        && chapter.blockOrdinal < candidate.firstBlockOrdinal + candidate.blockCount);
+    if (!unit) return [];
+    const first = blocks[unit.firstBlockOrdinal];
+    if (!first) return [];
+    const startOffset = first.startOffset;
+    const exact = version.content.slice(startOffset, startOffset + unit.content.length);
+    return [{
+      ...chapter,
+      location: {
+        contentId: version.messageId,
+        bodyVersionId: version.id,
+        sourceRange: { startOffset, endOffset: startOffset + exact.length },
+        exact,
+      },
+    }];
+  }).map((chapter, ordinal) => ({ ...chapter, ordinal }));
 }
 
 /**
@@ -1114,8 +1195,6 @@ export interface ResearchMessageRecord {
   reasoning?: string;
   /** 当前生成尝试的独立 reasoning 记录；缺失表示供应商没有返回可展示内容。 */
   reasoningRecordId?: string;
-  /** AI 正文生成时与干净正文一起落下的提及范围；不含任何模型控制符。 */
-  termMarkers?: TermMarker[];
   /** 旧版本快照按时间倒序；reasoning 只作为组装视图，持久化关联见 reasoningRecordId。 */
   versions?: ResearchMessageVersion[];
   status: ResearchMessageStatus;
@@ -1134,7 +1213,6 @@ export interface ResearchMessageBodyRecord {
   branchId?: string;
   role: ResearchMessageRole;
   content: string;
-  termMarkers?: TermMarker[];
   status: ResearchMessageStatus;
   createdAt: string;
   updatedAt: string;
@@ -1148,7 +1226,6 @@ export function toResearchMessageBody(message: ResearchMessageRecord): ResearchM
     ...(message.branchId ? { branchId: message.branchId } : {}),
     role: message.role,
     content: message.content,
-    ...(message.termMarkers ? { termMarkers: message.termMarkers } : {}),
     status: message.status,
     createdAt: message.createdAt,
     updatedAt: message.updatedAt,
@@ -1481,6 +1558,52 @@ function validResearchTextRange(range: ResearchTextRange, length: number): boole
     && range.endOffset <= length;
 }
 
+// ── Versioned sidecar enhancements ─────────────────────────────────────
+
+/**
+ * Shared identity and lifecycle for derived reading enhancements.
+ *
+ * This record intentionally contains no citation, term-marker, or chapter payload.
+ * Each enhancement family keeps its own typed data and references this header, so
+ * the shared store cannot become an untyped JSON content container.
+ */
+export type ResearchSidecarKind = "citation" | "term-marker" | "chapter";
+export type ResearchSidecarStatus = "pending" | "ready" | "invalid";
+export type ResearchSidecarPrecision = "exact" | "block" | "content";
+export type ResearchSidecarSource =
+  | { kind: "model"; referenceId?: string }
+  | { kind: "provider"; referenceId?: string }
+  | { kind: "rule"; referenceId?: string };
+
+export type ResearchSidecarInvalidReason =
+  | "body-version-superseded"
+  | "content-deleted"
+  | "range-invalid"
+  | "generation-failed"
+  | "service-restarted"
+  | "source-unavailable";
+
+export interface ResearchSidecarRecord {
+  id: string;
+  kind: ResearchSidecarKind;
+  bodyVersionId: string;
+  location: ResearchStableLocation;
+  generationAttempt: number;
+  status: ResearchSidecarStatus;
+  source: ResearchSidecarSource;
+  precision: ResearchSidecarPrecision;
+  invalidReason?: ResearchSidecarInvalidReason;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ResearchSidecarRecordQuery {
+  bodyVersionId?: string;
+  contentId?: string;
+  kind?: ResearchSidecarKind;
+  statuses?: readonly ResearchSidecarStatus[];
+}
+
 /**
  * 选区锚点统一两种内容来源。offsets 是相对该锚定块文本的字符偏移
  * （UTF-16 code unit，与浏览器 Selection / String.prototype.slice 一致）。
@@ -1753,6 +1876,8 @@ export interface ResearchNodeView {
   fusionProposals?: ResearchFusionProposalRecord[];
   /** #35：按消息 ID 返回正文版本；可选字段，缺失时前端按消息正文渲染。 */
   bodyVersions?: Record<string, ResearchBodyVersionRecord>;
+  /** 长回答按消息 ID 返回与当前正文版本绑定的统一章节旁路视图。 */
+  chapters?: Record<string, ResearchChapterParseView>;
   /** 正式融合确认稿是独立于可继续对话消息的不可变正文。 */
   confirmedFusion?: ResearchConfirmedFusionSnapshotRecord;
   /** 正式融合直接来源的当前健康投影；快照本身仍只保存确认时的固定事实。 */
@@ -1769,6 +1894,7 @@ export interface ResearchTurnAccepted {
 export type ResearchTaskEvent =
   | { id?: number; type: "snapshot"; task: ResearchTaskRecord; message: ResearchMessageRecord; createdAt: string }
   | { id: number; type: "delta"; delta: string; message: ResearchMessageRecord; createdAt: string }
+  | { id: number; type: "citation_candidate"; candidate: ResearchCitationCandidate; message: ResearchMessageRecord; createdAt: string }
   | { id: number; type: "completed"; task: ResearchTaskRecord; message: ResearchMessageRecord; createdAt: string }
   | { id: number; type: "failed"; task: ResearchTaskRecord; message: ResearchMessageRecord; createdAt: string }
   | { id: number; type: "stopped"; task: ResearchTaskRecord; message: ResearchMessageRecord; createdAt: string };
@@ -2459,6 +2585,28 @@ export interface ResearchCitationRecord {
   createdAt: string;
 }
 
+/**
+ * Final-writer citation side-channel. A candidate without offsets only says that
+ * the source participated in the answer; consumers must not invent a placement.
+ * Exact offsets are UTF-16 ranges in the final writer's raw body stream and are
+ * mapped through the same cleaning boundary as visible text before persistence.
+ */
+export interface ResearchCitationCandidate {
+  sourceOrdinal: number;
+  startOffset?: number;
+  endOffset?: number;
+  providerCitationId?: string;
+}
+
+/** Structured source identity supplied to a grounded final writer. */
+export interface ResearchCitationSourceIdentity {
+  sourceOrdinal: number;
+  providerSourceId?: string;
+  title: string;
+  url?: string;
+  evidenceStatus?: GroundingEvidenceStatus;
+}
+
 export interface ResearchGroundingResult {
   content: string;
   scope: ResearchGroundingScope;
@@ -3007,6 +3155,54 @@ export interface TermMarker {
   category: TermCategory;
   /** 新检测结果指向消息规范正文；旧结果仍可按块内偏移验证后使用。 */
   location?: ResearchStableLocation;
+}
+
+export const TERM_MARKER_EXTRACTION_PROMPT_VERSION = "term-marker-extraction-v1";
+
+export type ResearchTermMarkerTaskStatus = "queued" | "running" | "completed" | "failed";
+export type ResearchTermMarkerTaskErrorCode =
+  | "model_not_configured"
+  | "provider_error"
+  | "invalid_output"
+  | "message_missing"
+  | "service_restarted";
+
+/** 模型抽取的窄候选；服务必须用正文块逐字复核后才能提升为 TermMarker。 */
+export interface ResearchTermMarkerCandidate {
+  blockOrdinal: number;
+  startOffset: number;
+  endOffset: number;
+  text: string;
+  category: TermCategory;
+  /** 只在当前回答内有效；服务会验证字符集与长度。 */
+  entityId: string;
+}
+
+/**
+ * 独立弱标记任务。正文不复制进记录；bodyVersionId 指向当前观察到的规范正文。
+ * processedBlockKeys 只用于避免对同一已闭合段落重复发起模型调用。
+ */
+export interface ResearchTermMarkerTaskRecord {
+  id: string;
+  sessionId: string;
+  nodeId: string;
+  messageId: string;
+  bodyVersionId: string;
+  generationAttempt: number;
+  status: ResearchTermMarkerTaskStatus;
+  retryable: boolean;
+  fullReviewRequested: boolean;
+  processedBlockKeys: string[];
+  markers: TermMarker[];
+  provider?: string;
+  model?: string;
+  promptVersion?: string;
+  attempts: number;
+  error?: { code: ResearchTermMarkerTaskErrorCode; message: string };
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  completedAt?: string;
 }
 
 export type ResearchPermanentEdgeRecord = Omit<ResearchEdgeRecord, "kind"> & {
@@ -3712,8 +3908,6 @@ export interface ResearchCandidateSourceConnectionRecord {
   id: string;
   temporaryFusionNodeId: string;
   sourceNodeId: string;
-  /** 草案正文 [来源n] 的原始序号；候选过滤后仍保持与正文一致。 */
-  citationOrdinal?: number;
   sourceKind: "formal";
   bodyVersionId: string;
   fragmentIds: string[];
@@ -3877,115 +4071,9 @@ export function validateTemporaryFusionBundle(
   }
 }
 
-export interface MentionMarkupUpdate {
-  /** 截至当前已经可以安全展示的干净正文。 */
-  content: string;
-  /** 相对上一次 push/finish 新增的干净正文。 */
-  delta: string;
-  /** 截至当前已经闭合且通过数量边界的提及。 */
-  markers: TermMarker[];
-}
-
-interface AbsoluteMention {
-  text: string;
-  startOffset: number;
-  endOffset: number;
-  category: TermCategory;
-  /** 模型分配、只在当前回答内有效的隐藏对象身份。 */
-  answerLocalEntityId: string;
-}
-
-const MENTION_MARKUP_MAX_TEXT_CHARACTERS = 120;
-const MENTION_MARKUP_MAX_ENTITY_ID_CHARACTERS = 64;
-const MENTION_MARKUP_MAX_CONTROL_CHARACTERS = MENTION_MARKUP_MAX_TEXT_CHARACTERS
-  + MENTION_MARKUP_MAX_ENTITY_ID_CHARACTERS
-  + 32;
-const MENTION_MARKUP_FULL_MAX_COUNT = 24;
-const MENTION_MARKUP_REDUCED_MAX_COUNT = 4;
-
-/**
- * 模型流内提及解析模块。
- *
- * Interface 只有 push/finish：调用方永远只拿到可展示的干净正文和独立范围，
- * 不需要理解控制符跨 delta、格式错误、块偏移或深度数量边界。
- */
-export class MentionMarkupStream {
-  private raw = "";
-  private lastContent: string;
-  private finished = false;
-  private rawToContentOffsets: Array<number | undefined> = [0];
-
-  constructor(private readonly input: {
-    messageId: string;
-    nodeDepth: number;
-    seedContent?: string;
-    seedMarkers?: readonly TermMarker[];
-  }) {
-    this.lastContent = input.seedContent ?? "";
-  }
-
-  push(rawDelta: string): MentionMarkupUpdate {
-    if (this.finished) throw new Error("Mention markup stream is already finished");
-    this.raw += rawDelta;
-    return this.snapshot(false);
-  }
-
-  finish(): MentionMarkupUpdate {
-    if (this.finished) return this.snapshot(true);
-    this.finished = true;
-    return this.snapshot(true);
-  }
-
-  /**
-   * 把供应商基于原始模型输出给出的 UTF-16 范围换算到干净正文。
-   * 只有完成清洗后范围才稳定；端点落在被移除的控制字段内时返回 undefined，
-   * 让调用方诚实丢弃精确定位，而不是猜测一个看似接近的位置。
-   */
-  mapRawRange(startOffset: number, endOffset: number): { startOffset: number; endOffset: number } | undefined {
-    if (!this.finished
-      || !Number.isSafeInteger(startOffset)
-      || !Number.isSafeInteger(endOffset)
-      || startOffset < 0
-      || endOffset < startOffset
-      || endOffset > this.raw.length) return undefined;
-    const cleanStart = this.rawToContentOffsets[startOffset];
-    const cleanEnd = this.rawToContentOffsets[endOffset];
-    const seedOffset = this.input.seedContent?.length ?? 0;
-    return cleanStart !== undefined && cleanEnd !== undefined && cleanEnd >= cleanStart
-      ? { startOffset: seedOffset + cleanStart, endOffset: seedOffset + cleanEnd }
-      : undefined;
-  }
-
-  private snapshot(final: boolean): MentionMarkupUpdate {
-    const parsed = parseMentionMarkup(this.raw, final);
-    this.rawToContentOffsets = parsed.rawToContentOffsets;
-    const seedContent = this.input.seedContent ?? "";
-    const content = seedContent + parsed.content;
-    if (!content.startsWith(this.lastContent)) {
-      throw new Error("Mention markup parser attempted to rewrite visible content");
-    }
-    const delta = content.slice(this.lastContent.length);
-    this.lastContent = content;
-
-    const maxMarkers = this.input.nodeDepth >= 4
-      ? 0
-      : this.input.nodeDepth >= 2
-        ? MENTION_MARKUP_REDUCED_MAX_COUNT
-        : MENTION_MARKUP_FULL_MAX_COUNT;
-    const accepted = parsed.mentions.slice(0, maxMarkers);
-    const projected = projectAbsoluteMentions(content, accepted, this.input.messageId, seedContent.length);
-    const existing = (this.input.seedMarkers ?? []).filter((marker) => validateProjectedMarker(content, marker));
-    const byMention = new Map<string, TermMarker>();
-    for (const marker of [...existing, ...projected]) {
-      byMention.set(marker.mentionId ?? markerLocationKey(marker), marker);
-    }
-    return { content, delta, markers: [...byMention.values()] };
-  }
-}
-
 /** 同形候选查找键；它不是实体身份，跨内容复用前仍需语境核验。 */
 export function termEntityCandidateKey(marker: Pick<TermMarker, "category" | "text">): string {
-  return `${marker.category}:${normalizeMentionText(marker.text)}`;
+  return `${marker.category}:${marker.text.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase()}`;
 }
 
 // ── 节点内跨回答实体核验（ADR-0027） ─────────────────────────────
@@ -4012,164 +4100,6 @@ export interface TermIdentityMention {
 export interface TermIdentityVerificationRequest {
   left: TermIdentityMention;
   right: TermIdentityMention;
-}
-
-function parseMentionMarkup(raw: string, final: boolean): {
-  content: string;
-  mentions: AbsoluteMention[];
-  rawToContentOffsets: Array<number | undefined>;
-} {
-  let content = "";
-  const mentions: AbsoluteMention[] = [];
-  const rawToContentOffsets: Array<number | undefined> = new Array(raw.length + 1).fill(undefined);
-  const appendVisibleRaw = (start: number, end: number): void => {
-    const cleanStart = content.length;
-    content += raw.slice(start, end);
-    for (let offset = start; offset <= end; offset += 1) {
-      rawToContentOffsets[offset] = cleanStart + offset - start;
-    }
-  };
-  let cursor = 0;
-  while (cursor < raw.length) {
-    const open = raw.indexOf("[[", cursor);
-    if (open < 0) {
-      const end = !final && raw.endsWith("[") ? raw.length - 1 : raw.length;
-      appendVisibleRaw(cursor, end);
-      break;
-    }
-    appendVisibleRaw(cursor, open);
-    const close = raw.indexOf("]]", open + 2);
-    if (close < 0) {
-      const inner = raw.slice(open + 2);
-      const definitelyMalformed = inner.includes("\n") || inner.length > MENTION_MARKUP_MAX_CONTROL_CHARACTERS;
-      if (!final && !definitelyMalformed) break;
-      content += fallbackMentionText(inner);
-      rawToContentOffsets[raw.length] = content.length;
-      break;
-    }
-
-    const inner = raw.slice(open + 2, close);
-    const parsed = parseClosedMention(inner);
-    if (!parsed) {
-      content += fallbackMentionText(inner);
-    } else {
-      const startOffset = content.length;
-      content += parsed.text;
-      mentions.push({ ...parsed, startOffset, endOffset: content.length });
-      const rawTextStart = open + 2 + parsed.textStartOffset;
-      const rawTextEnd = open + 2 + parsed.textEndOffset;
-      for (let offset = rawTextStart; offset <= rawTextEnd; offset += 1) {
-        rawToContentOffsets[offset] = startOffset + offset - rawTextStart;
-      }
-    }
-    rawToContentOffsets[open] ??= content.length - (parsed?.text.length ?? fallbackMentionText(inner).length);
-    rawToContentOffsets[close] = content.length;
-    rawToContentOffsets[close + 2] = content.length;
-    cursor = close + 2;
-  }
-  if (raw.length === 0) rawToContentOffsets[0] = 0;
-  return { content, mentions, rawToContentOffsets };
-}
-
-function parseClosedMention(inner: string): Pick<AbsoluteMention, "text" | "category" | "answerLocalEntityId"> & {
-  textStartOffset: number;
-  textEndOffset: number;
-} | undefined {
-  if (inner.includes("\n") || inner.includes("[[") || inner.includes("]]")) return undefined;
-  const categorySeparator = inner.indexOf(":");
-  const identitySeparator = inner.indexOf(":", categorySeparator + 1);
-  if (categorySeparator <= 0 || identitySeparator <= categorySeparator + 1) return undefined;
-  const category = inner.slice(0, categorySeparator).trim();
-  const answerLocalEntityId = inner.slice(categorySeparator + 1, identitySeparator).trim();
-  const rawText = inner.slice(identitySeparator + 1);
-  const leadingWhitespace = rawText.length - rawText.trimStart().length;
-  const trailingWhitespace = rawText.length - rawText.trimEnd().length;
-  const textStartOffset = identitySeparator + 1 + leadingWhitespace;
-  const textEndOffset = inner.length - trailingWhitespace;
-  const text = inner.slice(textStartOffset, textEndOffset);
-  if (!isTermCategory(category)
-    || !isAnswerLocalEntityId(answerLocalEntityId)
-    || !text
-    || text.length > MENTION_MARKUP_MAX_TEXT_CHARACTERS) return undefined;
-  return { text, category, answerLocalEntityId, textStartOffset, textEndOffset };
-}
-
-function fallbackMentionText(inner: string): string {
-  const withoutControls = inner.replaceAll("[[", "").replaceAll("]]", "");
-  const categorySeparator = withoutControls.indexOf(":");
-  const identitySeparator = withoutControls.indexOf(":", categorySeparator + 1);
-  const visibleStart = identitySeparator >= 0 ? identitySeparator + 1 : categorySeparator + 1;
-  return (categorySeparator >= 0 ? withoutControls.slice(visibleStart) : withoutControls).trim();
-}
-
-function isTermCategory(value: string): value is TermCategory {
-  return value === "concept" || value === "entity" || value === "abbreviation" || value === "notation";
-}
-
-function isAnswerLocalEntityId(value: string): boolean {
-  return value.length <= MENTION_MARKUP_MAX_ENTITY_ID_CHARACTERS
-    && /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(value);
-}
-
-function projectAbsoluteMentions(
-  content: string,
-  mentions: readonly AbsoluteMention[],
-  messageId: string,
-  baseOffset: number,
-): TermMarker[] {
-  const blocks = deriveMessageBlocks(content);
-  const result: TermMarker[] = [];
-  for (const mention of mentions) {
-    const absoluteStart = baseOffset + mention.startOffset;
-    const absoluteEnd = baseOffset + mention.endOffset;
-    const block = blocks.find((candidate) =>
-      absoluteStart >= candidate.startOffset && absoluteEnd <= candidate.startOffset + candidate.text.length,
-    );
-    if (!block) continue;
-    const startOffset = absoluteStart - block.startOffset;
-    const endOffset = absoluteEnd - block.startOffset;
-    if (block.text.slice(startOffset, endOffset) !== mention.text) continue;
-    result.push({
-      mentionId: `mention:${stableMentionHash(`${messageId}:${absoluteStart}:${absoluteEnd}:${mention.answerLocalEntityId}`)}`,
-      entityId: `entity:${stableMentionHash(`${messageId}:${mention.answerLocalEntityId}`)}`,
-      text: mention.text,
-      blockOrdinal: block.ordinal,
-      startOffset,
-      endOffset,
-      category: mention.category,
-      ...(messageId !== "legacy" ? {
-        location: {
-          contentId: messageId,
-          bodyVersionId: researchBodyVersionId(messageId, content),
-          sourceRange: { startOffset: absoluteStart, endOffset: absoluteEnd },
-          exact: mention.text,
-        },
-      } : {}),
-    });
-  }
-  return result;
-}
-
-function normalizeMentionText(text: string): string {
-  return text.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
-}
-
-function stableMentionHash(value: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0");
-}
-
-function validateProjectedMarker(content: string, marker: TermMarker): boolean {
-  const block = deriveMessageBlocks(content)[marker.blockOrdinal];
-  return Boolean(block && block.text.slice(marker.startOffset, marker.endOffset) === marker.text);
-}
-
-function markerLocationKey(marker: TermMarker): string {
-  return [marker.blockOrdinal, marker.startOffset, marker.endOffset, marker.category, marker.text].join(":");
 }
 
 /** 消息术语检测结果。检测失败或无需检测时 terms 为空数组。 */
@@ -4210,7 +4140,7 @@ export type {
 export const SIMILARITY_VERIFICATION_PROMPT_VERSION = "similarity-verify-v1";
 
 /** B 面临时融合发现提示词版本；独立于相似性核验与正式融合写作。 */
-export const TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION = "temporary-fusion-discovery-v1";
+export const TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION = "temporary-fusion-discovery-v2";
 
 /** 临时融合完整草案的固定输出预算。 */
 export const TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET = 4_096;

@@ -11,6 +11,7 @@ import { markdownVisibleText } from "../selection/selection-highlight";
 import { HighlightedText } from "../selection/HighlightedText";
 import { taskErrorReason } from "./format";
 import type { FragmentTarget } from "./fragment-locator";
+import { buildCitationIndex, buildSourceMap, citationsForRenderedBody, resolveCitationLocation, type RenderedCitationRecord } from "./citation-utils";
 import { deriveSliceCardTargets, sliceCardAccessibleName, turnCardId } from "./slice-cards";
 import { termPreviewClientKey } from "./useTermPreviews";
 
@@ -110,7 +111,7 @@ export function MessageItem({ message, task, retrying = false, onRetry, onRegene
             <>
               <GroundingScopeNote task={task} />
               <ContextExplanationNote task={task} />
-              <GroundingSources sources={taskSources} />
+              <GroundingSources sources={taskSources} citations={messageCitations} message={message} />
             </>
           ) : null}
           {showActions || showVersionSwitcher ? (
@@ -300,7 +301,7 @@ const NO_TERMS: TermMarker[] = [];
 /**
  * 完成的 AI 回答按确定性段落块渲染。
  * 块 ID 与后端选区锚点使用同一派生规则。
- * Markdown 由 MarkdownContent 的共享安全投影渲染；[来源n] 由适配层转为可悬停角标。
+ * Markdown 由 MarkdownContent 的共享安全投影渲染；引用按版本化稳定范围旁路插入。
  * 返回高亮与弱标记先投影到同一可见文字空间，再由 React 组合渲染，避免两套 DOM 包裹互相破坏。
  * 生成自由化：长文章节由派生切片渲染（deriveSliceCardTargets 与章节导航共用同一份对齐），
  * 但呈现层始终以整条 AI 回答为卡片边界；节标题来自大纲或小模型事后抽取，可为空。
@@ -324,7 +325,14 @@ function AssistantBlocks({ message, highlights = [], citations, groundingSources
     }
     return grouped;
   }, [terms, message, slices]);
-  if (blocks.length === 0) return <MarkdownContent text={message.content} sources={groundingSources} citations={citations} variant="message" />;
+  if (blocks.length === 0) return (
+    <MarkdownContent
+      text={message.content}
+      sources={groundingSources}
+      citations={citationsForRenderedBody(message, citations, message.content, 0)}
+      variant="message"
+    />
+  );
   const activeHighlights = highlights.filter((highlight) => highlight.blockOrdinal >= 0 && highlight.blockOrdinal < blocks.length);
 
   // 长文章节目标与章节导航同源派生；块对齐与 blockId 计算不再各自手工进行。
@@ -354,7 +362,7 @@ function AssistantBlocks({ message, highlights = [], citations, groundingSources
                 sectionId={target.cardId}
                 highlights={[...thisHighlights, ...thisFragmentHighlights]}
                 sources={groundingSources}
-                citations={citations}
+                citations={citationsForRenderedBody(message, citations, target.blockText, target.blockOrdinal)}
                 terms={termsByBlock.get(target.blockOrdinal) ?? NO_TERMS}
               />
             );
@@ -388,7 +396,7 @@ function AssistantBlocks({ message, highlights = [], citations, groundingSources
               elementId={blockId}
               highlights={[...thisHighlights, ...thisFragmentHighlights]}
               sources={groundingSources}
-              citations={citations}
+              citations={citationsForRenderedBody(message, citations, block.text, block.ordinal)}
               terms={termsByBlock.get(block.ordinal) ?? NO_TERMS}
             />
           );
@@ -416,7 +424,7 @@ function TurnSection({ slice, blockText, blockId, anchorId, sectionId, highlight
   sectionId: string;
   highlights: readonly MessageHighlight[];
   sources: ResearchGroundingSourceRecord[];
-  citations: ResearchCitationRecord[];
+  citations: RenderedCitationRecord[];
   terms: TermMarker[];
 }) {
   const title = slice.title.trim();
@@ -452,7 +460,7 @@ function TurnSection({ slice, blockText, blockId, anchorId, sectionId, highlight
 /** 单个消息块：Markdown 渲染 + React 管理的可见文字高亮。
     titleAnchorId 存在时，把正文首个标题元素提升为卡片标题（挂该 id 供导航定位）。
     elementId 存在时容器挂稳定 id 并可聚焦——轮次卡片内段落块是 ?fragment= 深链的落点。 */
-function MessageBlock({ blockText, blockId, elementId, titleAnchorId, highlights = [], sources, citations, terms }: { blockText: string; blockId: string; elementId?: string; titleAnchorId?: string; highlights?: readonly MessageHighlight[]; sources: ResearchGroundingSourceRecord[]; citations: ResearchCitationRecord[]; terms: TermMarker[] }) {
+function MessageBlock({ blockText, blockId, elementId, titleAnchorId, highlights = [], sources, citations, terms }: { blockText: string; blockId: string; elementId?: string; titleAnchorId?: string; highlights?: readonly MessageHighlight[]; sources: ResearchGroundingSourceRecord[]; citations: RenderedCitationRecord[]; terms: TermMarker[] }) {
   const normalizedHighlights = mergeMessageHighlights(highlights, blockText);
 
   return (
@@ -524,7 +532,7 @@ interface ActiveTermPreview {
 
 /** 悬注意图键：块位置与提及文本稳定标识同一提及，与 DOM 元素身份无关。 */
 function termHoverKey(marker: TermMarker): string {
-  return `${marker.blockOrdinal}:${marker.startOffset}:${marker.endOffset}:${marker.text}`;
+  return `${marker.location?.bodyVersionId ?? "legacy"}:${marker.mentionId ?? ""}:${marker.blockOrdinal}:${marker.startOffset}:${marker.endOffset}:${marker.text}`;
 }
 
 function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, onGrow, onGrowMarker, children }: TermPreviewInteractionProps) {
@@ -793,11 +801,21 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
   // 流式期间正文随增量重渲染，标记按钮会被替换：弹层锚点失效时按数据属性找回新元素，
   // 找不到（提及不再有效）时诚实关闭弹层。子树 MarkdownContent 的包裹先于本布局效应执行。
   useLayoutEffect(() => {
-    if (!active || active.element.isConnected) return;
+    if (!active) return;
+    const currentMarker = terms.find((marker) => termHoverKey(marker) === termHoverKey(active.marker));
+    if (!currentMarker) {
+      closePopover();
+      return;
+    }
+    if (currentMarker !== active.marker) {
+      setActive({ element: active.element, marker: currentMarker });
+      return;
+    }
+    if (active.element.isConnected) return;
     const replacement = resolveMarkerElement(active.marker);
     if (replacement) setActive({ element: replacement, marker: active.marker });
     else closePopover();
-  });
+  }, [active, closePopover, resolveMarkerElement, terms]);
 
   const activePreview = active ? previews[termPreviewClientKey(messageId, active.marker)] : undefined;
 
@@ -863,16 +881,55 @@ function TermPreviewInteraction({ messageId, terms, previews, onStart, onRetry, 
   );
 }
 
-function GroundingSources({ sources }: { sources: ResearchGroundingSourceRecord[] }) {
+interface GroundingSourceEntry {
+  id: string;
+  index: number;
+  source?: ResearchGroundingSourceRecord;
+  locationUnavailable: boolean;
+}
+
+function GroundingSources({
+  sources,
+  citations,
+  message,
+}: {
+  sources: ResearchGroundingSourceRecord[];
+  citations: ResearchCitationRecord[];
+  message: ResearchMessageRecord;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [targetSourceId, setTargetSourceId] = useState<string>();
   const listId = `grounding-sources-${useId().replaceAll(":", "")}`;
   const reducedMotion = usePrefersReducedMotion();
   const revealFrameRef = useRef<number | undefined>(undefined);
   const clearTargetRef = useRef<number | undefined>(undefined);
+  const entries = useMemo<GroundingSourceEntry[]>(() => {
+    const sourceById = buildSourceMap(sources);
+    const citationIndex = buildCitationIndex(citations);
+    const available = sources.map((source) => {
+      const sourceCitations = citations.filter((citation) => citation.sourceId === source.id);
+      return {
+        id: source.id,
+        index: source.ordinal,
+        source,
+        locationUnavailable: sourceCitations.length > 0
+          && sourceCitations.every((citation) => resolveCitationLocation(message, citation).kind === "degraded"),
+      };
+    });
+    const missing = new Map<string, GroundingSourceEntry>();
+    for (const citation of citations) {
+      if (sourceById.has(citation.sourceId) || missing.has(citation.sourceId)) continue;
+      missing.set(citation.sourceId, {
+        id: citation.sourceId,
+        index: citationIndex.get(citation.id) ?? missing.size + 1,
+        locationUnavailable: false,
+      });
+    }
+    return [...available, ...missing.values()].sort((left, right) => left.index - right.index || left.id.localeCompare(right.id));
+  }, [citations, message, sources]);
 
   useEffect(() => subscribeToGroundingSourceReveal((sourceId) => {
-    if (!sources.some((source) => source.id === sourceId)) return;
+    if (!entries.some((entry) => entry.id === sourceId)) return;
     setExpanded(true);
     setTargetSourceId(sourceId);
     if (revealFrameRef.current !== undefined) window.cancelAnimationFrame(revealFrameRef.current);
@@ -884,14 +941,14 @@ function GroundingSources({ sources }: { sources: ResearchGroundingSourceRecord[
       });
       clearTargetRef.current = window.setTimeout(() => setTargetSourceId(undefined), 1_600);
     });
-  }), [reducedMotion, sources]);
+  }), [entries, reducedMotion]);
 
   useEffect(() => () => {
     if (revealFrameRef.current !== undefined) window.cancelAnimationFrame(revealFrameRef.current);
     if (clearTargetRef.current !== undefined) window.clearTimeout(clearTargetRef.current);
   }, []);
 
-  if (sources.length === 0) return null;
+  if (entries.length === 0) return null;
   return (
     <section className="grounding-sources" aria-label="本轮引用来源">
       <button
@@ -904,30 +961,38 @@ function GroundingSources({ sources }: { sources: ResearchGroundingSourceRecord[
           setTargetSourceId(undefined);
         }}
       >
-        <span>本轮引用了 {sources.length} 个来源</span>
+        <span>本轮引用了 {entries.length} 个来源</span>
         <span className="grounding-sources__chevron" aria-hidden="true">{expanded ? "▾" : "▸"}</span>
       </button>
       <ol id={listId} className="grounding-sources__list" aria-label="本轮引用来源列表" hidden={!expanded}>
-        {sources.map((source) => (
+        {entries.map((entry) => (
           <li
-            className={`grounding-source${targetSourceId === source.id ? " grounding-source--target" : ""}`}
-            id={`grounding-source-${source.id}`}
-            key={source.id}
+            className={`grounding-source${targetSourceId === entry.id ? " grounding-source--target" : ""}`}
+            id={`grounding-source-${entry.id}`}
+            key={entry.id}
           >
             <details>
               <summary>
-                <span className="grounding-source__ordinal">来源 {source.ordinal}</span>
-                <span className="grounding-source__title">{source.title || "来源元数据不足"}</span>
+                <span className="grounding-source__ordinal">来源 {entry.index}</span>
+                <span className="grounding-source__title">{entry.source?.title || "来源记录已失效"}</span>
               </summary>
               <div className="grounding-source__preview">
-                {source.url ? (
-                  <a href={source.url} target="_blank" rel="noopener noreferrer" className="grounding-source__link">
+                {!entry.source ? (
+                  <p className="grounding-source__missing">这条引用的来源记录已不可用，无法打开或精确返回。</p>
+                ) : entry.source.url ? (
+                  <a href={entry.source.url} target="_blank" rel="noopener noreferrer" className="grounding-source__link">
                     打开原始来源
                   </a>
                 ) : <p className="grounding-source__missing">供应商没有提供可安全打开的来源链接。</p>}
-                {source.snippet ? <p className="grounding-source__snippet">{source.snippet}</p> : null}
-                {source.locator ? <p className="grounding-source__locator">定位信息：{source.locator}</p> : null}
-                {source.publishedAt ? <p className="grounding-source__published">发布于 {source.publishedAt}</p> : null}
+                {entry.locationUnavailable ? (
+                  <p className="grounding-source__missing">正文中的精确引用位置已失效；现有来源信息仍可查看。</p>
+                ) : null}
+                {entry.source?.evidenceStatus === "none" ? (
+                  <p className="grounding-source__missing">来源内容当前不可用，无法核验精确位置。</p>
+                ) : null}
+                {entry.source?.snippet ? <p className="grounding-source__snippet">{entry.source.snippet}</p> : null}
+                {entry.source?.locator ? <p className="grounding-source__locator">定位信息：{entry.source.locator}</p> : null}
+                {entry.source?.publishedAt ? <p className="grounding-source__published">发布于 {entry.source.publishedAt}</p> : null}
               </div>
             </details>
           </li>

@@ -5,6 +5,7 @@ import type {
   ResearchTermPreviewRecord,
   TermMarker,
 } from "@collector/capture-contracts";
+import { hashBodyContent } from "@collector/capture-contracts";
 import { useServices } from "../../app/services";
 import type { TermPreviewEventStream } from "../../api/term-preview-events";
 
@@ -19,9 +20,10 @@ export interface TermPreviewController {
 }
 
 export function termPreviewClientKey(messageId: string, marker: TermMarker): string {
+  const bodyVersionId = marker.location?.bodyVersionId;
   return marker.entityId
-    ? [messageId, marker.entityId].join(":")
-    : [messageId, marker.blockOrdinal, marker.startOffset, marker.endOffset, marker.text].join(":");
+    ? [messageId, bodyVersionId ?? "legacy", marker.entityId].join(":")
+    : [messageId, bodyVersionId ?? "legacy", marker.blockOrdinal, marker.startOffset, marker.endOffset, marker.text].join(":");
 }
 
 export function useTermPreviews(nodeId: string, onError?: (error: unknown) => void): TermPreviewController {
@@ -116,7 +118,9 @@ export function useTermPreviews(nodeId: string, onError?: (error: unknown) => vo
     const pending = requestsRef.current.get(key);
     if (pending) return pending;
     const identity = marker.entityId ?? `${marker.blockOrdinal}:${marker.startOffset}:${marker.endOffset}`;
-    const idempotencyKey = `term-preview:${nodeId}:${messageId}:${identity}`;
+    const bodyVersionId = marker.location?.bodyVersionId ?? "legacy";
+    const identityFingerprint = hashBodyContent(`${bodyVersionId}:${identity}`);
+    const idempotencyKey = `term-preview:${nodeId}:${messageId}:${identityFingerprint}`;
     const request = api.startResearchTermPreview(nodeId, { messageId, marker }, idempotencyKey).then((accepted) => {
       updatePreview(accepted.preview, key);
       connect(accepted.preview);

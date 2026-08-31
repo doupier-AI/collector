@@ -83,8 +83,8 @@ test("两节一次成功：每节恰一次 expand 调用，正文完整拼接", 
   const provider = makeProvider({
     expandCalls,
     expandScript: [
-      () => ({ content: "## 起源\n\n[[concept:origin:第一节正文]]，论述起源。", finishReason: "stop" }),
-      () => ({ content: "## 实践\n\n[[concept:practice:第二节正文]]，论述实践。", finishReason: "stop" }),
+      () => ({ content: "## 起源\n\n第一节正文，论述起源。", finishReason: "stop" }),
+      () => ({ content: "## 实践\n\n第二节正文，论述实践。", finishReason: "stop" }),
     ],
   });
   const { store, service } = await makeService(t, provider);
@@ -93,7 +93,7 @@ test("两节一次成功：每节恰一次 expand 调用，正文完整拼接", 
   assert.equal(expandCalls.length, 2, "两节各一次调用");
   assert.equal(expandCalls[0]?.sectionIndex, 0);
   assert.equal(expandCalls[1]?.sectionIndex, 1);
-  assert.match(expandCalls[1]?.writtenSoFar ?? "", /\[\[concept:origin:第一节正文\]\]/, "后续节可复用前文的回答内对象身份");
+  assert.match(expandCalls[1]?.writtenSoFar ?? "", /第一节正文/, "后续节只接收已生成的干净前文");
   assert.equal(expandCalls[1]?.contextAssembly?.purpose, "research_body_section");
   const continuationState = expandCalls[1]?.contextAssembly?.adopted
     .find((item) => item.candidate.evidenceKind === "continuation_state")?.candidate.content ?? "";
@@ -105,7 +105,7 @@ test("两节一次成功：每节恰一次 expand 调用，正文完整拼接", 
   assert.ok(content.includes("第二节正文，论述实践。"));
   assert.ok(!content.includes("[本节生成失败"), "成功路径无失败标记");
   assert.ok(!content.includes("[["), "分节控制信息不进入正文");
-  assert.deepEqual(store.getResearchMessage(outputMessageId)?.termMarkers?.map((marker) => marker.text), ["第一节正文", "第二节正文"]);
+  assert.ok(!store.getResearchMessage(outputMessageId)?.content.includes("[["));
   store.close();
 });
 
@@ -180,8 +180,8 @@ test("单节截断续写一次成功：恰两次调用、第二次带 continuati
     expandCalls,
     expandScript: [
       // 第一节：先截断（length），后续写完成；标题在首个增量中已给出。
-      () => ({ content: "## 起源\n\n[[concept:section-one:第一节正文]]被截断在中途", finishReason: "length" }),
-      (call) => ({ content: "，续写补全第一节并使用 [[abbreviation:rag:RAG]]。", finishReason: "stop" }),
+      () => ({ content: "## 起源\n\n第一节正文被截断在中途", finishReason: "length" }),
+      (call) => ({ content: "，续写补全第一节并使用 RAG。", finishReason: "stop" }),
       () => ({ content: "## 实践\n\n第二节正文。", finishReason: "stop" }),
     ],
   });
@@ -191,12 +191,12 @@ test("单节截断续写一次成功：恰两次调用、第二次带 continuati
   // 第一节两次（截断+续写），第二节一次。
   assert.equal(expandCalls.length, 3);
   assert.equal(expandCalls[1]?.sectionIndex, 0, "第二次调用仍是第一节（续写）");
-  assert.ok(expandCalls[1]?.continuation?.priorSectionContent.includes("section-one:第一节正文"), "续写携带含回答内身份的断点前文");
+  assert.ok(expandCalls[1]?.continuation?.priorSectionContent.includes("第一节正文"), "续写携带干净断点前文");
   const content = store.getResearchMessage(outputMessageId)!.content;
   assert.ok(content.includes("第一节正文被截断在中途"));
   assert.ok(content.includes("续写补全第一节"));
   assert.ok(!content.includes("[本节生成失败"));
-  assert.deepEqual(store.getResearchMessage(outputMessageId)?.termMarkers?.map((marker) => marker.text), ["第一节正文", "RAG"]);
+  assert.ok(!content.includes("[["));
   store.close();
 });
 

@@ -1,31 +1,23 @@
 import { type ReactNode, useMemo, useRef } from "react";
 import "katex/dist/katex.min.css";
-import type { ResearchCitationRecord, ResearchGroundingSourceRecord, TermMarker } from "@collector/capture-contracts";
+import type { ResearchGroundingSourceRecord, TermMarker } from "@collector/capture-contracts";
 import { projectMarkdownDocument, projectMarkdownSourceRange } from "@collector/markdown-projection";
 import { CitationMarker } from "./CitationMarker";
 import { buildCitationIndex, buildSourceMap } from "../features/research-session/citation-utils";
+import type { RenderedCitationRecord } from "../features/research-session/citation-utils";
 import {
   projectMarkdownReact,
   projectMarkdownVisibleText,
+  renderMarkdownVisibleAnnotations,
   renderMarkdownVisibleHighlights,
   type MarkdownVisibleHighlight,
   type MarkdownVisibleTerm,
 } from "./markdown-projection";
 
-declare global {
-  namespace JSX {
-    interface IntrinsicElements {
-      "cite-marker": React.DetailedHTMLProps<React.HTMLAttributes<HTMLElement>, HTMLElement> & {
-        "data-source-ordinal"?: string;
-      };
-    }
-  }
-}
-
 export interface MarkdownContentProps {
   text: string;
   sources?: readonly ResearchGroundingSourceRecord[];
-  citations?: readonly ResearchCitationRecord[];
+  citations?: readonly RenderedCitationRecord[];
   terms?: readonly RenderedTermMarker[];
   variant?: "message" | "insight";
   className?: string;
@@ -50,7 +42,7 @@ const EMPTY_MARKDOWN_PROJECTION = { text: "", citationBoundaries: [] } as const;
 /**
  * 把 AI 生成的 Markdown 文本渲染为安全 HTML。
  * - 安全白名单（不开 rehype-raw，模型输出的 <script> 被转义）
- * - [来源n] 由共享投影适配为可悬停 CitationMarker
+ * - 引用只按当前正文版本的稳定旁路范围插入，不读取正文控制串
  * - variant="insight" 用于术语预览和推理摘要等紧凑辅助内容
  */
 export function MarkdownContent({ text, sources = [], citations = [], terms = [], variant = "message", className, titleAnchorId, highlights = [] }: MarkdownContentProps) {
@@ -60,27 +52,14 @@ export function MarkdownContent({ text, sources = [], citations = [], terms = []
   const promotedTitleRef = useRef(false);
   promotedTitleRef.current = false;
 
-  // 按 source ordinal → 引用记录（用于 cite-marker 根据 data-source-ordinal 查找来源）
-  const citationByOrdinal = useMemo(() => {
-    const map = new Map<number, ResearchCitationRecord[]>();
-    for (const c of citations) {
-      const source = sourceById.get(c.sourceId);
-      if (!source) continue;
-      const list = map.get(source.ordinal);
-      if (list) list.push(c);
-      else map.set(source.ordinal, [c]);
-    }
-    return map;
-  }, [citations, sourceById]);
-
   const rootClass = variant === "insight" ? "markdown-content markdown-content--insight" : "markdown-content";
   const projection = useMemo(
     () => (highlights.length === 0 && terms.length === 0 ? EMPTY_MARKDOWN_PROJECTION : projectMarkdownVisibleText(text)),
     [highlights.length, terms.length, text],
   );
   const locationProjection = useMemo(
-    () => (terms.length === 0 ? undefined : projectMarkdownDocument(text)),
-    [terms.length, text],
+    () => (terms.length === 0 && citations.length === 0 ? undefined : projectMarkdownDocument(text)),
+    [citations.length, terms.length, text],
   );
   const validHighlights = useMemo(() => {
     if (highlights.length === 0) return [];
@@ -120,21 +99,31 @@ export function MarkdownContent({ text, sources = [], citations = [], terms = []
     img: ({ alt }: React.ImgHTMLAttributes<HTMLImageElement>): ReactNode => (
       alt ? <span className="markdown-image-fallback">{`[图片：${alt}]`}</span> : null
     ),
-    "cite-marker": ({ "data-source-ordinal": ordinalStr }: Record<string, unknown>): ReactNode => {
-      const ordinal = Number(ordinalStr);
-      const citation = (citationByOrdinal.get(ordinal) ?? [])[0];
-      if (!citation || Number.isNaN(ordinal)) return null;
-      const source = sourceById.get(citation.sourceId);
-      // #98：过滤后的来源数组可能只剩 2、5、7；角标必须沿用来源原始序号，
-      // 不能再按当前消息内引用的数组位置从 1 重新编号。
-      const index = source?.ordinal ?? citationIndexById.get(citation.id) ?? ordinal;
-      return <CitationMarker index={index} citation={citation} source={source} />;
-    },
     // 卡片标题提升：正文首个标题（## / ###…）成为卡片大标题并挂导航锚点。
     ...(titleAnchorId ? buildPromotedHeadingComponents(titleAnchorId, promotedTitleRef) : {}),
   } as Record<string, React.ComponentType<any>>;
   const markdownTree = projectMarkdownReact(text, components).tree;
-  const renderedTree = renderMarkdownVisibleHighlights(markdownTree, validHighlights, visibleTerms);
+  const citationAnnotations = citations.flatMap((citation) => {
+    if (!locationProjection || citation.renderedStartOffset < 0
+      || citation.renderedEndOffset <= citation.renderedStartOffset
+      || citation.renderedEndOffset > text.length) return [];
+    const mapped = projectMarkdownSourceRange(locationProjection, {
+      start: citation.renderedStartOffset,
+      end: citation.renderedEndOffset,
+    });
+    if (!mapped) return [];
+    const source = sourceById.get(citation.sourceId);
+    // 过滤后的来源可能只剩 2、5、7；可用来源沿用原始序号。来源记录失效时
+    // 使用当前消息内的稳定引用序号，并通过来源区给出明确降级说明。
+    const index = source?.ordinal ?? citation.displayIndex ?? citationIndexById.get(citation.id) ?? 1;
+    return [{
+      offset: mapped.visibleRange.end,
+      key: `citation-marker-${citation.id}`,
+      node: <CitationMarker index={index} citation={citation} source={source} />,
+    }];
+  });
+  const annotatedTree = renderMarkdownVisibleAnnotations(markdownTree, citationAnnotations);
+  const renderedTree = renderMarkdownVisibleHighlights(annotatedTree, validHighlights, visibleTerms);
 
   return (
     <div className={`${rootClass}${className ? ` ${className}` : ""}`}>

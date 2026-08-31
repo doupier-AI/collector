@@ -352,9 +352,6 @@ export class NodeGrowthService {
     const outputMessage: ResearchMessageRecord = {
       id: randomUUID(), sessionId: selection.sessionId, nodeId: node.id, role: "assistant",
       content: preview.content, status: "completed", createdAt: now, updatedAt: now,
-      // 预览内容不经流内标记管线生成：显式空标记声明"本条回答无标记"，
-      // 避免节点视图把它当作无标记字段的旧数据退回词法检测（那会把完整标题拆碎、重标上游已覆盖概念）。
-      termMarkers: [],
     };
     const task: ResearchTaskRecord = {
       id: randomUUID(), sessionId: selection.sessionId, nodeId: node.id,
@@ -385,15 +382,16 @@ export class NodeGrowthService {
     const marker = validateTermMarkers(message.content, [mention.marker])[0];
     if (!marker) throw new DeepResearchValidationError("Growth mention no longer matches the message");
     // 提及必须是该消息上真实存在的弱标记，不能把任意正文位置伪装成生长来源。
-    if (message.termMarkers !== undefined) {
-      const available = validateTermMarkers(message.content, message.termMarkers);
-      const matches = available.some((candidate) =>
-        candidate.text === marker.text
-        && candidate.blockOrdinal === marker.blockOrdinal
-        && candidate.startOffset === marker.startOffset
-        && candidate.endOffset === marker.endOffset);
-      if (!matches) throw new DeepResearchValidationError("Growth mention is not a term marker of the message");
-    }
+    const available = validateTermMarkers(
+      message.content,
+      this.store.getResearchTermMarkerTaskByMessage(message.id)?.markers ?? [],
+    );
+    const matches = available.some((candidate) =>
+      candidate.text === marker.text
+      && candidate.blockOrdinal === marker.blockOrdinal
+      && candidate.startOffset === marker.startOffset
+      && candidate.endOffset === marker.endOffset);
+    if (!matches) throw new DeepResearchValidationError("Growth mention is not a term marker of the message");
     // 点击提及必须与预览指向同一对象（跨消息复用已在预览启动时按同文同类候选核验）。
     if (normalizeMentionText(marker.text) !== normalizeMentionText(preview.marker.text) || marker.category !== preview.marker.category) {
       throw new DeepResearchValidationError("Growth mention does not match the preview entity");

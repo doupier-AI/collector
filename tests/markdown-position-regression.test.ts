@@ -69,7 +69,8 @@ test("共享 Markdown 正文的位置在选择、引用、章节、搜索和弱�
   const firstVisible = projection.visibleText.indexOf(fixture.selection.exact);
   assert.notEqual(firstVisible, selected.visibleRange.start, "重复锚点不得退回第一处同名文字");
 
-  const citationStart = fixture.body.indexOf(fixture.citation.token);
+  const citationStart = fixture.citation.sourceRange.start;
+  const citationEnd = fixture.citation.sourceRange.end;
   const blocks = deriveMessageBlocks(fixture.body);
   const citationBlock = blocks.find((block) =>
     citationStart >= block.startOffset && citationStart <= block.startOffset + block.text.length,
@@ -116,9 +117,9 @@ test("共享 Markdown 正文的位置在选择、引用、章节、搜索和弱�
         bodyVersionId: `body:${messageId}:${hashBodyContent(fixture.body)}`,
         sourceRange: {
           startOffset: citationStart,
-          endOffset: citationStart + fixture.citation.token.length,
+          endOffset: citationEnd,
         },
-        exact: fixture.citation.token,
+        exact: fixture.body.slice(citationStart, citationEnd),
       },
       createdAt: NOW,
     }],

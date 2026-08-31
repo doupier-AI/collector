@@ -71,6 +71,41 @@ describe("MarkdownContent formula and safety rendering", () => {
     expect(container.querySelectorAll("[data-term-marker]")).toHaveLength(1);
   });
 
+  it("inserts sidecar citations by stable range across repeated text, code, and tables without changing copied text", () => {
+    const source = [
+      "重复结论与重复结论。",
+      "",
+      "代码：`const cited = true`",
+      "",
+      "| 结论 | 依据 |",
+      "| --- | --- |",
+      "| 稳定 | 可复核 |",
+    ].join("\n");
+    const repeatedStart = source.lastIndexOf("重复结论");
+    const codeStart = source.indexOf("const cited = true");
+    const tableStart = source.lastIndexOf("稳定");
+    const sources = [
+      { id: "source-1", runId: "run", ordinal: 1, title: "重复文字来源", url: "https://example.test/repeated", createdAt: "2026-08-31T00:00:00.000Z" },
+      { id: "source-2", runId: "run", ordinal: 2, title: "代码来源", url: "https://example.test/code", createdAt: "2026-08-31T00:00:00.000Z" },
+      { id: "source-3", runId: "run", ordinal: 3, title: "表格来源", url: "https://example.test/table", createdAt: "2026-08-31T00:00:00.000Z" },
+    ];
+    const citations = [
+      { id: "citation-1", messageId: "message", runId: "run", sourceId: "source-1", blockOrdinal: 0, markerOffset: 0, renderedStartOffset: repeatedStart, renderedEndOffset: repeatedStart + 4, createdAt: "2026-08-31T00:00:00.000Z" },
+      { id: "citation-2", messageId: "message", runId: "run", sourceId: "source-2", blockOrdinal: 1, markerOffset: 0, renderedStartOffset: codeStart, renderedEndOffset: codeStart + "const cited = true".length, createdAt: "2026-08-31T00:00:00.000Z" },
+      { id: "citation-3", messageId: "message", runId: "run", sourceId: "source-3", blockOrdinal: 2, markerOffset: 0, renderedStartOffset: tableStart, renderedEndOffset: tableStart + 2, createdAt: "2026-08-31T00:00:00.000Z" },
+    ];
+    const { container } = render(<MarkdownContent text={source} sources={sources} citations={citations} />);
+
+    const repeated = screen.getByLabelText("打开来源 1：重复文字来源");
+    const code = screen.getByText("const cited = true", { selector: "code" });
+    const codeCitation = screen.getByLabelText("打开来源 2：代码来源");
+    const tableCitation = screen.getByLabelText("打开来源 3：表格来源");
+    expect(repeated.closest("strong")).toBeNull();
+    expect(codeCitation.previousElementSibling).toBe(code);
+    expect(tableCitation.closest("td")).not.toBeNull();
+    expect(container.querySelector(".markdown-content")?.textContent).toBe(projectMarkdownVisibleText(source).text);
+  });
+
   it("does not execute HTML or create script, SVG, data-image, remote-image, or formula links", () => {
     delete (globalThis as { __markdownExecuted?: boolean }).__markdownExecuted;
     const { container } = render(<MarkdownContent text={[

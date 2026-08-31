@@ -2,10 +2,18 @@
  * 最终正文的最末准入边界。
  *
  * 不尝试猜测自然语言是否像工具草稿；工具工作区必须在调用此处之前被结构隔离。
- * 此处只拦截供应商明确的 reasoning 协议，并在跨流片段时先缓冲协议前缀，
+ * 此处只拒绝供应商明确的内部协议边界（不解析、不清洗、不恢复），并在跨流片段时先缓冲协议前缀，
  * 保证污染起始字符不会短暂进入 SSE 或持久化正文。
  */
-const EXPLICIT_PROTOCOL_BOUNDARIES = ["<think>", "</think>"] as const;
+const EXPLICIT_PROTOCOL_BOUNDARIES = [
+  "<think>",
+  "</think>",
+  "[[concept:",
+  "[[entity:",
+  "[[abbreviation:",
+  "[[notation:",
+  "[来源",
+] as const;
 
 export class FinalBodyProtocolError extends Error {
   readonly acceptedDelta: string;
@@ -71,7 +79,7 @@ export class FinalBodySink {
     return this.pending || this.quarantinedPending || undefined;
   }
 
-  /** 失败收尾只冲洗弱标记，不得把可能的协议前缀当普通正文释放。 */
+  /** 失败收尾丢弃未确认协议前缀，不得把它当普通正文释放。 */
   abort(): void {
     this.pending = "";
     this.quarantinedPending = "";

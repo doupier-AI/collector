@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { hashBodyContent, type ResearchAssociationHintRecord, type ResearchSelectionAnchor, type ResearchSessionView, type ResearchTaskRecord } from "@collector/capture-contracts";
+import { deriveMessageBlocks, hashBodyContent, type ResearchAssociationHintRecord, type ResearchSelectionAnchor, type ResearchSessionView, type ResearchTaskRecord } from "@collector/capture-contracts";
 import { isApiErrorCode, isUnauthorized, apiErrorCopy } from "../../api/errors";
 import { stableNodePath } from "../../app/paths";
 import { useServices } from "../../app/services";
@@ -41,6 +41,7 @@ import { taskForMessage } from "./session-view";
 import { useResearchNode } from "./useResearchNode";
 import type { PendingFirstTurn } from "./useResearchNode";
 import { useTermPreviews } from "./useTermPreviews";
+import { currentBodyTermMarkers } from "./term-marker-view";
 import { deriveSliceCardTargets, sliceCardAccessibleName } from "./slice-cards";
 import { SliceRailNav } from "./SliceRailNav";
 import type { SliceRailItem } from "./SliceRailNav";
@@ -107,6 +108,38 @@ export function ResearchNodePage() {
   const latestCompletedAssistantId = readyView
     ? [...readyView.messages].filter((message) => message.role === "assistant" && message.status === "completed").at(-1)?.id ?? ""
     : "";
+  const hasActiveResearchTask = readyView?.tasks.some((task) =>
+    task.status === "queued" || task.status === "running" || task.status === "paused",
+  ) ?? false;
+  const hasActiveChapterTask = Object.values(readyView?.chapters ?? {}).some(
+    (parse) => parse.status === "queued" || parse.status === "running",
+  );
+
+  // 回答章节是独立旁路任务，不占用正文生成 SSE。只在存在活跃章节任务时轻量刷新节点视图；
+  // 更新就地替换 ready view，不把页面切回 loading，章节标题完成后原子替换规则/占位状态。
+  useEffect(() => {
+    if (!hasActiveChapterTask || !nodeId) return;
+    let cancelled = false;
+    let timer = 0;
+    const poll = async () => {
+      try {
+        const fresh = await api.getResearchNodeView(nodeId);
+        if (cancelled) return;
+        node.updateView(() => fresh);
+        const active = Object.values(fresh.chapters ?? {}).some(
+          (parse) => parse.status === "queued" || parse.status === "running",
+        );
+        if (active) timer = window.setTimeout(poll, 300);
+      } catch {
+        if (!cancelled) timer = window.setTimeout(poll, 1_000);
+      }
+    };
+    timer = window.setTimeout(poll, 300);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [api, hasActiveChapterTask, node.updateView, nodeId]);
   // #61：会话上下文从已加载节点视图派生（稳定地址不携带会话 ID）；视图就绪前为空串。
   // ""→真实 ID 的翻转发生在内容首次渲染的同一提交，其 effect 重跑不得产生可见状态变化——
   // useResearchImports 的重置已做空集合守卫（返回原引用跳过渲染），
@@ -123,6 +156,8 @@ export function ResearchNodePage() {
   // 依赖原始 messages/slices 引用而非整个 view，减少因 view 包装对象变化导致的重建。
   const readyMessages = readyView?.messages;
   const readySlices = readyView?.slices;
+  const readyChapters = readyView?.chapters;
+  const readyBodyVersions = readyView?.bodyVersions;
   // 正式融合来源条。必须在所有早退返回之前计算（Hooks 规则）。
   const fusionSourceEntries = useMemo<ResearchFusionSource[]>(() => {
     return readyView?.confirmedFusionSources ?? [];
@@ -132,12 +167,37 @@ export function ResearchNodePage() {
     if (!readyMessages) return items;
     for (const message of readyMessages) {
       if (message.role !== "assistant" || message.status !== "completed") continue;
-      for (const target of deriveSliceCardTargets(message, readySlices?.[message.id])) {
-        items.push({ cardId: target.cardId, groupKey: message.id, title: target.slice.title, excerpt: target.blockText });
+      const targets = deriveSliceCardTargets(message, readySlices?.[message.id]);
+      const parse = readyChapters?.[message.id];
+      const blocks = deriveMessageBlocks(message.content);
+      const chapterByBlock = new Map(parse?.chapters.flatMap((chapter) => {
+        const start = chapter.location?.sourceRange.startOffset;
+        if (start === undefined) return [];
+        const block = [...blocks].reverse().find((candidate) => candidate.startOffset <= start);
+        return block ? [[block.ordinal, chapter] as const] : [];
+      }) ?? []);
+      const navigableTargets = parse?.chapters.length
+        ? targets.filter((target) => chapterByBlock.has(target.blockOrdinal))
+        : targets;
+      for (const target of navigableTargets) {
+        const chapter = chapterByBlock.get(target.blockOrdinal);
+        items.push({
+          cardId: target.cardId,
+          groupKey: message.id,
+          title: chapter?.title ?? target.slice.title,
+          excerpt: target.blockText,
+          ...(parse ? {
+            bodyVersionId: readyBodyVersions?.[message.id]?.id,
+            chapterStatus: parse.status,
+            chapterSource: parse.source,
+            chapterFallbackReason: parse.fallbackReason,
+            chapterRetryable: parse.retryable,
+          } : {}),
+        });
       }
     }
     return items;
-  }, [readyMessages, readySlices]);
+  }, [readyBodyVersions, readyChapters, readyMessages, readySlices]);
   // #94 轮次导航（ADR-0032 左侧轨道）：一条 AI 回答 = 一轮，线绑定该轮起始消息
   // （用户提问；无提问时为 AI 回答本身）——消息元素恒存在，锚点由导航组件现场解析。
   // 出现条件：轮次 ≥2；此时长文章节导航让位（长文暂由轮次导航覆盖，章节导航右移归 T05）。
@@ -596,6 +656,31 @@ export function ResearchNodePage() {
     };
   }, [api, isReady, nodeId, latestCompletedAssistantId]);
 
+  // 弱标记抽取是回答生成之外的独立 sidecar 任务；主任务完成事件可能先到。
+  // 在最新回答稳定后的短窗口内渐进对齐节点视图，让标记稍后落库也能自动出现，
+  // 同时保持现有正文可读，不把页面退回 loading。
+  useEffect(() => {
+    if (!latestCompletedAssistantId || !nodeId || hasActiveResearchTask) return;
+    let cancelled = false;
+    const timers: number[] = [];
+    const refresh = async () => {
+      try {
+        const fresh = await api.getResearchNodeView(nodeId);
+        if (cancelled || fresh.node.id !== nodeId) return;
+        node.updateView(() => fresh);
+      } catch {
+        // 弱标记是附加阅读能力；对齐失败不遮挡正文，也不伪造标记。
+      }
+    };
+    for (const delay of [600, 1_500, 3_500, 7_500, 15_000, 30_000]) {
+      timers.push(window.setTimeout(() => { void refresh(); }, delay));
+    }
+    return () => {
+      cancelled = true;
+      for (const timer of timers) window.clearTimeout(timer);
+    };
+  }, [api, hasActiveResearchTask, latestCompletedAssistantId, node.updateView, nodeId]);
+
   async function handleDismissAssociationHint(hintId: string) {
     setDismissingHintId(hintId);
     try {
@@ -1021,7 +1106,11 @@ export function ResearchNodePage() {
                 }
                 citations={view.citations}
                 groundingSources={view.groundingSources}
-                terms={message.termMarkers ?? view.termDetections?.[message.id]?.terms}
+                terms={currentBodyTermMarkers(
+                  message,
+                  view.termDetections?.[message.id]?.terms ?? [],
+                  view.bodyVersions?.[message.id]?.id,
+                )}
                 termPreviews={termPreviews.previews}
                 onStartTermPreview={termPreviews.start}
                 onRetryTermPreview={termPreviews.retry}
@@ -1127,7 +1216,12 @@ export function ResearchNodePage() {
         {node.liveMessage}
       </p>
       </div>
-      {showSliceRail ? <SliceRailNav items={railItems} /> : null}
+      {showSliceRail ? <SliceRailNav items={railItems} onRetry={(bodyVersionId) => {
+        void api.retryAnswerChapterParse(bodyVersionId).then(() => {
+          node.announce("正在重新整理章节");
+          node.reload();
+        }).catch(() => node.escalateError("章节重算没有成功，请稍后再试。"));
+      }} /> : null}
     </div>
   );
 }

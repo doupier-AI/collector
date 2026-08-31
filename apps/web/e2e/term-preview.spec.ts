@@ -65,7 +65,7 @@ test("H3c 悬停生成一次预览、离开后恢复进度，并用预览内容�
   expect(sessionId).toBeTruthy();
 });
 
-test("H3d 流式生成期间标记即可交互：回答未完成时悬停启动预览（ADR-0029）", async ({ page }) => {
+test("SIDE-05 独立抽取晚于回答完成时，标记自动出现并可悬停启动预览", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   const previewPosts: string[] = [];
   page.on("request", (request) => {
@@ -79,10 +79,10 @@ test("H3d 流式生成期间标记即可交互：回答未完成时悬停启动�
   await page.getByRole("button", { name: "开始研究" }).click();
   await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
 
-  // 回答仍在生成（状态行可见）时标记已随流出现，且不再是"可见但无响应"。
+  // 正文先独立完成；sidecar 任务随后落库，页面通过渐进对齐自动显示标记。
+  await expect(page.locator(".message--assistant [data-block-text]").last()).toContainText("回答完毕", { timeout: 15_000 });
   const marker = page.locator(".term-preview-surface [data-term-marker]").first();
   await expect(marker).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText("正在生成", { exact: true })).toBeVisible();
 
   const startResponse = page.waitForResponse((response) =>
     response.request().method() === "POST" && /\/v1\/research-nodes\/[^/]+\/term-previews$/.test(response.url()),

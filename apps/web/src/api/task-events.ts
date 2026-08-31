@@ -49,7 +49,7 @@ export interface TaskEventStream {
   readonly lastEventId: number;
 }
 
-const STREAM_EVENT_TYPES = ["snapshot", "delta", "completed", "failed", "stopped"] as const;
+const STREAM_EVENT_TYPES = ["snapshot", "delta", "citation_candidate", "completed", "failed", "stopped"] as const;
 
 function defaultCreateEventSource(url: string): EventSourceLike {
   return new EventSource(url);

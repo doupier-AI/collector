@@ -9,6 +9,7 @@ import {
   IMPORT_CHAPTER_PARSE_PROMPT_VERSION,
   IMPORT_CHAPTER_PARSE_TOKEN_BUDGET,
   MODEL_PURPOSES,
+  TERM_MARKER_EXTRACTION_PROMPT_VERSION,
   TERM_IDENTITY_VERIFY_PROMPT_VERSION,
   type AiConfigurationView,
   type ActiveModelRoute,
@@ -72,6 +73,10 @@ import {
   ResearchChapterParseService,
   type ResearchChapterParseProvider,
 } from "./research-chapters.js";
+import {
+  ResearchTermMarkerExtractionService,
+  type ResearchTermMarkerExtractionProvider,
+} from "./term-marker-extraction.js";
 import { ResearchSelectionService } from "./selection.js";
 import {
   DeepResearchService,
@@ -143,8 +148,7 @@ function safeEvidenceText(value: string | undefined): string {
 export function formatFinalWriterEvidence(
   entries: ReadonlyArray<{ sourceOrdinal: number; source: { title: string; url?: string; evidenceStatus?: "full" | "partial" | "none" }; content?: string }>,
 ): string {
-  let total = 0;
-  const formatted: string[] = [];
+  const sources: Array<{ sourceOrdinal: number; title: string; url?: string; evidenceStatus?: "full" | "partial"; evidence: string }> = [];
   for (const entry of entries) {
     // 供应商持久化来源序号从 1 开始；只取前 20 个原始来源，不能因过滤而改写引用号。
     if (entry.sourceOrdinal < 1 || entry.sourceOrdinal > RESEARCH_GROUNDING_MAX_SOURCES) continue;
@@ -153,16 +157,20 @@ export function formatFinalWriterEvidence(
     if (!text) continue;
     const title = safeEvidenceText(entry.source.title) || "未命名来源";
     const url = sanitizeGroundingUrl(entry.source.url);
-    const evidenceStatus = entry.source.evidenceStatus === "partial"
-      ? "\n证据状态：部分证据（仅搜索摘要，未获取全文）"
-      : "";
-    const block = `[来源${entry.sourceOrdinal}] ${title}${evidenceStatus}\n${text}${url ? `\n${url}` : ""}`;
-    const separatorLength = formatted.length ? 2 : 0;
-    if (total + separatorLength + block.length > FINAL_WRITER_EVIDENCE_MAX_CHARACTERS) break;
-    formatted.push(block);
-    total += separatorLength + block.length;
+    const source = {
+      sourceOrdinal: entry.sourceOrdinal,
+      title,
+      ...(url ? { url } : {}),
+      ...(entry.source.evidenceStatus === "partial" || entry.source.evidenceStatus === "full"
+        ? { evidenceStatus: entry.source.evidenceStatus }
+        : {}),
+      evidence: text,
+    };
+    const next = JSON.stringify({ sources: [...sources, source] });
+    if (next.length > FINAL_WRITER_EVIDENCE_MAX_CHARACTERS) break;
+    sources.push(source);
   }
-  return formatted.join("\n\n");
+  return sources.length ? JSON.stringify({ sources }) : "";
 }
 
 function formatGroundingEvidence(sources: ReadonlyArray<{ title: string; url?: string; snippet?: string; evidenceStatus?: "full" | "partial" | "none" }>): string {
@@ -201,6 +209,7 @@ export class CaptureService {
   readonly deepResearch: DeepResearchService;
   readonly nodeGrowth: NodeGrowthService;
   readonly researchLater: ResearchLaterService;
+  readonly termMarkers: ResearchTermMarkerExtractionService;
   readonly termDetection: TermDetectionService;
   readonly fusionProposals: ResearchFusionProposalService;
   readonly termPreviews: ResearchTermPreviewService;
@@ -224,7 +233,7 @@ export class CaptureService {
     private readonly store: CollectorStore,
     private readonly artifactRoot: string,
     private modelGateway?: ModelGateway,
-    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; similarityVerifier?: SimilarityVerificationGateway; temporaryFusionDraftEvidenceVerifier?: TemporaryFusionDraftEvidenceGateway; associationHintEvaluator?: AssociationHintEvaluationGateway; chapterParseProvider?: ResearchChapterParseProvider; temporaryFusionConversationProvider?: () => Promise<TemporaryFusionConversationProvider | undefined>; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunResearchChapters?: boolean; autoRunTemporaryFusionTasks?: boolean; mvpDemoMode?: boolean; researchRetrySleep?: (ms: number) => Promise<void> } = {},
+    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; termMarkerExtractionProvider?: ResearchTermMarkerExtractionProvider; similarityVerifier?: SimilarityVerificationGateway; temporaryFusionDraftEvidenceVerifier?: TemporaryFusionDraftEvidenceGateway; associationHintEvaluator?: AssociationHintEvaluationGateway; chapterParseProvider?: ResearchChapterParseProvider; temporaryFusionConversationProvider?: () => Promise<TemporaryFusionConversationProvider | undefined>; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunResearchChapters?: boolean; autoRunTemporaryFusionTasks?: boolean; mvpDemoMode?: boolean; researchRetrySleep?: (ms: number) => Promise<void> } = {},
   ) {
     this.runRecords = new RunRecordsService(this.store);
     this.attachModelGateway(this.modelGateway);
@@ -232,6 +241,11 @@ export class CaptureService {
     this.projects = new ResearchProjectService(this.store);
     this.nodeNaming = new NodeNamingService(this.store, async () => this.gatewayForPurpose("research"), this.parentChainContext);
     this.sessionTitling = new SessionTitlingService(this.store, async () => this.gatewayForPurpose("research"));
+    this.termMarkers = new ResearchTermMarkerExtractionService(this.store, {
+      provider: this.options.termMarkerExtractionProvider ?? this.termMarkerExtractionProviderFor(this.modelGateway),
+      autoRunTasks: this.options.autoRunResearchTasks,
+      parentContext: (nodeId) => this.parentChainContext.buildParentChainContext(nodeId),
+    });
     this.research = new ResearchSessionService(this.store, {
       provider: this.options.researchProvider ?? this.researchProviderFor(this.modelGateway),
       autoRunTasks: this.options.autoRunResearchTasks,
@@ -244,7 +258,20 @@ export class CaptureService {
           void this.sessionTitling.refineSessionTitle(task.sessionId);
         }
       },
-      onTaskCompleted: (task) => {
+      onBodyUpdated: (task) => {
+        void this.termMarkers.enqueueForResearchTask(task, false);
+      },
+      onTaskCompleted: async (task) => {
+        // full review 要把精确范围写成 sidecar；先持久化当前正文版本，避免独立任务
+        // 抢在节点视图的惰性回填之前执行并因缺失版本而把已抽取标记清空。
+        const message = this.store.getResearchMessage(task.outputMessageId);
+        if (message?.role === "assistant" && message.content.trim()) {
+          const scopeNodeId = message.nodeId ?? message.branchId ?? task.nodeId ?? task.sessionId;
+          const citations = this.store.listResearchCitationsForMessages([message.id]);
+          const version = await this.getOrCreateBodyArtifacts(scopeNodeId, message, citations);
+          await this.researchChapters.enqueueForAnswer(message, version);
+        }
+        await this.termMarkers.enqueueForResearchTask(task, true);
         void this.nodeNaming.nameNode(task.nodeId ?? task.sessionId);
         // #69：回答完成且内容稳定后异步评估跨会话临时关联提示；扫描失败在内部安静降级。
         void this.associationHints.scheduleScanForCompletedTask(task);
@@ -281,7 +308,6 @@ export class CaptureService {
     this.termPreviews = new ResearchTermPreviewService(this.store, {
       research: this.research,
       parentChainContext: this.parentChainContext,
-      termDetection: this.termDetection,
       autoRunTasks: this.options.autoRunResearchTasks,
     });
     // #70：普通关联提示有独立的价值评估适配，不能借用融合核验或其调用方。
@@ -324,6 +350,7 @@ export class CaptureService {
     this.attachModelGateway(gateway);
     if (!this.options.researchProvider) this.research.setProvider(this.researchProviderFor(gateway));
     if (!this.options.chapterParseProvider) this.researchChapters.setProvider(this.chapterParseProviderFor(gateway));
+    if (!this.options.termMarkerExtractionProvider) this.termMarkers.setProvider(this.termMarkerExtractionProviderFor(gateway));
     if (this.options.autoRunResearchTasks !== false) void this.termPreviews.resumeTasks().catch(() => undefined);
   }
 
@@ -333,7 +360,7 @@ export class CaptureService {
 
   /**
    * 节点页 HTTP 视图：在已有节点消息数据上附加 H3b 术语检测结果与 E1 切片。
-   * 检测失败由 TermDetectionService 降级为空数组，不影响原消息返回。
+   * 弱标记只从独立旁路任务读取；没有可用结果时返回空数组，不影响原消息。
    * #43 起切片只读（卡片骨架），不再惰性派生临时切片——正式生成路径已写入。
    */
   async getResearchNodeView(nodeId: string): Promise<ResearchNodeView> {
@@ -342,26 +369,28 @@ export class CaptureService {
     const termDetections: NonNullable<ResearchNodeView["termDetections"]> = {};
     const slices: NonNullable<ResearchNodeView["slices"]> = {};
     const bodyVersions: NonNullable<ResearchNodeView["bodyVersions"]> = {};
+    const chapters: NonNullable<ResearchNodeView["chapters"]> = {};
     for (const message of view.messages) {
       if (message.role !== "assistant" || message.status !== "completed") continue;
-      if (message.termMarkers !== undefined) {
-        const terms = validateTermMarkers(message.content, message.termMarkers);
-        termDetections[message.id] = {
-          messageId: message.id,
-          terms,
-          detectedAt: message.updatedAt,
-          convergence: resolveResearchConvergence({
-            nodeDepth,
-            contentLength: measureResearchContentLength(message.content),
-          }),
-          suppressedCount: message.termMarkers.length - terms.length,
-        };
-      } else {
-        // 仅为尚未经过流内标记生成的旧开发数据保留确定性词法回退。
-        termDetections[message.id] = this.termDetection.detect(message.id, message.content, { nodeDepth });
-      }
+      const markerTask = this.store.getResearchTermMarkerTaskByMessage(message.id);
+      const markers = markerTask?.markers ?? [];
+      const terms = validateTermMarkers(message.content, markers);
+      termDetections[message.id] = {
+        messageId: message.id,
+        terms,
+        detectedAt: markerTask?.updatedAt ?? message.updatedAt,
+        convergence: resolveResearchConvergence({
+          nodeDepth,
+          contentLength: measureResearchContentLength(message.content),
+        }),
+        suppressedCount: markers.length - terms.length,
+      };
       slices[message.id] = this.store.listSlicesByMessage(message.id);
-      bodyVersions[message.id] = await this.getOrCreateBodyArtifacts(nodeId, message, view.citations ?? []);
+      const version = await this.getOrCreateBodyArtifacts(nodeId, message, view.citations ?? []);
+      bodyVersions[message.id] = version;
+      await this.researchChapters.enqueueForAnswer(message, version);
+      const chapterView = this.researchChapters.getAnswerView(version.id);
+      if (chapterView) chapters[message.id] = chapterView;
     }
     const confirmedFusion = this.store.getConfirmedFusionSnapshot(nodeId);
     const confirmedFusionSources = confirmedFusion?.directSources.flatMap((source) => {
@@ -384,6 +413,7 @@ export class CaptureService {
       termDetections,
       slices,
       bodyVersions,
+      chapters,
       ...(confirmedFusion ? { confirmedFusion } : {}),
       ...(confirmedFusionSources?.length ? { confirmedFusionSources } : {}),
       fusionProposals: this.fusionProposals.listForNode(nodeId, ["pending"]),
@@ -652,7 +682,7 @@ export class CaptureService {
             snippet: source.snippet ?? "",
             ...(source.evidenceStatus ? { evidenceStatus: source.evidenceStatus } : {}),
           })),
-          // 文本型 [来源n] 必须等正文经过统一清洗后再解析；研究服务统一完成。
+          // Agent 只交付结构化来源与证据；引用候选由独立最终写作旁路事件产生。
           citations: [],
           responseSummary: {
             searchStatus: "completed",
@@ -673,6 +703,8 @@ export class CaptureService {
           ...(streamOptions.signal ? { signal: streamOptions.signal } : {}),
           ...(streamOptions.onStreamDone ? { onDone: streamOptions.onStreamDone } : {}),
           ...(streamOptions.onReasoning ? { onReasoning: streamOptions.onReasoning } : {}),
+          ...(streamOptions.onCitation ? { onCitation: streamOptions.onCitation } : {}),
+          citationSources: streamOptions.sources,
           nodeDepth: request.parentChainContext?.currentNodeDepth ?? 0,
           context: { workflowRunId: request.taskId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
         });
@@ -692,7 +724,6 @@ export class CaptureService {
             }],
           });
           const answer = await purposeGateway.answerResearchConversationFromContext(assembly, {
-            ...(request.mentionMarkup !== undefined ? { mentionMarkup: request.mentionMarkup } : {}),
             context: { workflowRunId: request.taskId, purpose: "term_preview", promptVersion: "term-preview-v1" },
           });
           for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);
@@ -709,7 +740,6 @@ export class CaptureService {
         }
         const answer = await purposeGateway.answerResearchConversationFromContext(request.contextAssembly, {
           nodeDepth: request.parentChainContext?.currentNodeDepth ?? 0,
-          ...(request.mentionMarkup !== undefined ? { mentionMarkup: request.mentionMarkup } : {}),
           context: { workflowRunId: request.taskId, purpose: "research_chat", promptVersion: "research-chat-v1" },
         });
         for (let index = 0; index < answer.length; index += 80) yield answer.slice(index, index + 80);
@@ -787,10 +817,42 @@ export class CaptureService {
     };
   }
 
-  /**
-   * T03 章节解析供应商适配：网关经 purpose 路由在调用时解析，随 context 落入运行记录。
-   * 返回模型原始输出；契约校验与规则降级由章节服务完成。
-   */
+  private termMarkerExtractionProviderFor(gateway: ModelGateway | undefined): ResearchTermMarkerExtractionProvider | undefined {
+    if (!gateway) return undefined;
+    const service = this;
+    return {
+      provider: gateway.providerName,
+      model: gateway.modelName,
+      async extractTermMarkers(input) {
+        const purposeGateway = await service.gatewayForPurpose("extraction");
+        if (!purposeGateway) throw new Error("AI model is not configured");
+        const assembly = assemblePurposeContext({
+          purpose: "term_marker_extraction",
+          workflowRunId: input.taskId,
+          materials: [{
+            id: `term-marker:${input.taskId}:${input.phase}`,
+            content: JSON.stringify({
+              phase: input.phase,
+              blocks: input.blocks,
+              coveredTerms: input.coveredTerms,
+              nodeDepth: input.nodeDepth,
+            }),
+            sourceKind: "research_content",
+            evidenceKind: "current_question",
+          }],
+        });
+        return purposeGateway.extractTermMarkersFromContext(assembly, {
+          context: {
+            workflowRunId: input.taskId,
+            purpose: "term_marker_extraction",
+            promptVersion: TERM_MARKER_EXTRACTION_PROMPT_VERSION,
+          },
+        });
+      },
+    };
+  }
+
+  /** 导入与回答共用章节供应商适配；目标类型决定材料身份，正文不进入运行记录。 */
   private chapterParseProviderFor(gateway: ModelGateway | undefined): ResearchChapterParseProvider | undefined {
     if (!gateway) return undefined;
     const service = this;
@@ -803,7 +865,12 @@ export class CaptureService {
         const assembly = assemblePurposeContext({
           purpose: "import_chapter_parsing",
           workflowRunId: request.taskId,
-          materials: [{ id: `import:${request.taskId}`, content: JSON.stringify({ content: request.content }), sourceKind: "imported_material", evidenceKind: "imported_material" }],
+          materials: [{
+            id: `${request.targetKind}:${request.taskId}`,
+            content: JSON.stringify({ content: request.content }),
+            sourceKind: request.targetKind === "import" ? "imported_material" : "research_content",
+            evidenceKind: request.targetKind === "import" ? "imported_material" : "research_context",
+          }],
         });
         return purposeGateway.parseImportChaptersFromContext(
           assembly,

@@ -7,7 +7,6 @@ import {
   deriveFragmentsFromSlices,
   deriveMessageBlocks,
   deriveMessageSlices,
-  MentionMarkupStream,
   researchBodyVersionId,
   redactGroundingValue,
   sanitizeGroundingQueries,
@@ -21,7 +20,9 @@ import {
   type ContextPurpose,
   type GroundingEvidenceStatus,
   type ResearchBodyPlan,
+  type ResearchCitationCandidate,
   type ResearchCitationRecord,
+  type ResearchCitationSourceIdentity,
   type ResearchContextAssemblySnapshot,
   type ResearchSliceRecord,
   type ResearchGroundingTraceEntry,
@@ -49,7 +50,6 @@ import { getOrDeriveMessageBodyArtifacts, matchSliceForFragment, tryResolveFragm
 import type { ResearchBodyOutline, ResearchSliceAnnotation } from "@collector/model-gateway";
 import { ModelProviderAbortedError, ModelProviderHttpError, ModelProviderTimeoutError } from "@collector/model-gateway";
 import { isLongText, joinContinuation, LONG_TEXT_CHAR_THRESHOLD } from "@collector/capture-contracts";
-import { filterCitationsByEvidence, parseAgentCitations } from "./web-search-agent.js";
 import { assembleContext, contextAssemblyAudit } from "./context-assembly.js";
 
 export const RESEARCH_CHAT_PROMPT_VERSION = "research-chat-v1";
@@ -247,12 +247,6 @@ export interface ResearchGenerationRequest {
   parentChainContext?: ParentChainContextResult;
   /** 当前节点及其既有父链的有界语义切片上下文；与父链摘要独立预算。 */
   sliceContext?: import("@collector/capture-contracts").ResearchSliceContext;
-  /**
-   * 是否在提示词中注入弱标记语法指令（缺省注入）。术语预览置 false：预览是可独立阅读的
-   * 解释片段，内容不经流内标记管线解析——模型若按指令输出 [[category:id:text]]，原始控制串
-   * 会原样落库并泄漏到弹层与生长子节点正文（#86 真实验收复现）。
-   */
-  mentionMarkup?: boolean;
   /** 主研究链的原始候选；只有 API 策略层可以把它们装配为模型输入。 */
   contextCandidates?: readonly ContextCandidate[];
   /** 主链模型调用的已准入视图；辅助调用在 #158 迁移前可暂时缺省。 */
@@ -276,7 +270,7 @@ export interface ResearchGenerationProvider {
   /** 联网准备阶段只交付已确认定稿，或可追溯证据；不得把工作区文本伪装成正文。 */
   prepareGrounded?(request: AssembledResearchGenerationRequest & { scenario: ResearchGroundingScenario }): Promise<ResearchGroundedPreparation>;
   /** 仅证据准备结果必须经独立最终写作流转成用户正文。 */
-  writeGroundedFinalStream?(request: AssembledResearchGenerationRequest, evidence: string, options: { resumeFrom?: string; signal?: AbortSignal; onStreamDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void }): AsyncIterable<string>;
+  writeGroundedFinalStream?(request: AssembledResearchGenerationRequest, evidence: string, options: { sources: readonly ResearchCitationSourceIdentity[]; resumeFrom?: string; signal?: AbortSignal; onStreamDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; onCitation?: (candidate: ResearchCitationCandidate) => void }): AsyncIterable<string>;
   /** 生成自由化：自由写连续正文，不返回 JSON 切片结构。 */
   writeBody?(request: AssembledResearchGenerationRequest): Promise<string>;
   /** 真实模型逐字流式正文（方案 B）；缺省时退回 writeBody 原子写或 legacy generate 流式。onReasoning 旁路接收思考增量（ADR-0035）；signal 供暂停/停止中止物理流。 */
@@ -311,6 +305,8 @@ export interface ResearchServiceOptions {
   parentChainContext?: ParentChainContextService;
   /** 任务入队（提交成功、持久化完成）后的非阻塞附加动作（例如会话自动标题，与生成并行）。 */
   onTaskQueued?: (task: ResearchTaskRecord) => void | Promise<void>;
+  /** 正文增量已经安全落库后的非阻塞旁路通知。 */
+  onBodyUpdated?: (task: ResearchTaskRecord) => void;
   /** 生成成功后的非阻塞附加动作（例如 H6 节点命名）。 */
   onTaskCompleted?: (task: ResearchTaskRecord) => void | Promise<void>;
   /** 退避重试的等待实现；测试注入以确定性记录退避序列，默认真实 sleep。 */
@@ -331,9 +327,7 @@ export class ResearchSessionService {
   private readonly retrySleep: (ms: number) => Promise<void>;
   /** 任务事件推送（#38）：每次落库插入研究事件后发裸"唤醒"信号；SSE 循环仍按 sequence>cursor 重读，DB 是恰好一次来源。 */
   private readonly taskEvents = new EventEmitter();
-  /** 每个运行中任务唯一的流内提及解析器；任务结束即释放。 */
-  private readonly mentionStreams = new Map<string, MentionMarkupStream>();
-  /** 所有可展示正文在进入弱标记清洗和持久化前必须经过同一个准入边界。 */
+  /** 所有可展示正文在持久化前必须经过同一个准入边界。 */
   private readonly finalBodySinks = new Map<string, FinalBodySink>();
   /** ADR-0035 暂停/停止：每个运行中任务的中止控制器；pause/stop 触发 abort 中止物理 provider 流。 */
   private readonly abortControllers = new Map<string, AbortController>();
@@ -350,7 +344,7 @@ export class ResearchSessionService {
     // 集中接线：所有落库插入研究事件的 store 方法都包一层发布"唤醒"信号（不再靠 100ms 轮询发现）。
     // DB 仍是恰好一次来源；这里只通知 SSE 端"有新事件，按游标重读"。
     const storeAny = store as unknown as Record<string, unknown>;
-    for (const method of ["appendResearchTaskDelta", "completeResearchTask", "failResearchTask"] as const) {
+    for (const method of ["appendResearchTaskDelta", "appendResearchTaskCitationCandidate", "completeResearchTask", "failResearchTask"] as const) {
       const original = storeAny[method] as ((...args: never[]) => Promise<unknown>) | undefined;
       if (typeof original !== "function") continue;
       storeAny[method] = async (...args: unknown[]) => {
@@ -745,12 +739,6 @@ export class ResearchSessionService {
         ...(generation.sliceContext ? { sliceContext: generation.sliceContext } : {}),
         contextCandidates: generation.contextCandidates,
       };
-      this.mentionStreams.set(task.id, new MentionMarkupStream({
-        messageId: task.outputMessageId,
-        nodeDepth: generation.parentChainContext?.currentNodeDepth ?? 0,
-        seedContent: outputMessage.content,
-        seedMarkers: outputMessage.termMarkers,
-      }));
       this.finalBodySinks.set(task.id, new FinalBodySink(task.streamCheckpoint?.protocolPrefix));
       let generatedCharacters = 0;
       try {
@@ -779,10 +767,15 @@ export class ResearchSessionService {
               for (const delta of confirmedFinalDisplayDeltas(grounded.content)) {
                 await this.appendGeneratedDelta(task, delta);
               }
+              const citationSources = this.citationSourceIdentities(grounded);
+              for (const citation of grounded.citations) {
+                const candidate = this.normalizeCitationCandidate(citation, citationSources);
+                if (candidate) await this.store.appendResearchTaskCitationCandidate(task.id, candidate);
+              }
             } else {
               if (!grounded.evidence.trim()) throw new Error("Grounding preparation returned no traceable evidence");
               if (!provider.writeGroundedFinalStream) throw new Error("Grounding preparation requires a final writing stream");
-              await this.writeGroundedFinalBody(task, provider, generationRequest, grounded.evidence);
+              await this.writeGroundedFinalBody(task, provider, generationRequest, grounded.evidence, this.citationSourceIdentities(grounded));
             }
             const cleaned = await this.finishGeneratedMarkup(task);
             markupFinished = true;
@@ -790,9 +783,8 @@ export class ResearchSessionService {
             const correctedGrounding = {
               ...grounded,
               content,
-              // evidence 是新一轮最终写作的输入，原生草稿的字符偏移绝不能借用到新正文；
-              // 此路径只从最终干净正文里的 [来源n] 重新解析引用。
-              citations: this.groundedCitationsAfterCleaning(task, grounded, content, grounded.kind === "confirmed_final"),
+              // 引用只来自独立旁路事件；正文不再承担来源控制协议。
+              citations: this.groundedCitationsAfterCleaning(task, grounded),
             };
             const result = this.groundingResultFor(task, correctedGrounding, scenario);
             await this.store.saveResearchGroundingResult(result);
@@ -838,6 +830,7 @@ export class ResearchSessionService {
         if (generatedCharacters > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
         // 正文定稿后统一派生正式切片（确定性边界 + 小模型事后标注），再落库与完成。
         await this.finalizeDerivedSlices(task, provider, nodeId, content, citations, titleHints);
+        await this.persistCitationSidecars(task, citations);
         this.throwIfUserInterrupted(task.id);
         await this.store.completeResearchTask(task.id);
         try {
@@ -866,7 +859,6 @@ export class ResearchSessionService {
     } finally {
       this.abortControllers.delete(id);
       this.reasoningQueues.delete(id);
-      this.mentionStreams.delete(id);
       this.finalBodySinks.delete(id);
       this.running.delete(id);
     }
@@ -917,11 +909,8 @@ export class ResearchSessionService {
     }
   }
 
-  /** 把模型原始增量转换为可立即展示的干净正文，并与独立提及范围原子落入同一消息记录。
-   *  reasoningDelta 与正文增量同事务落库（ADR-0035）：思考累计在消息 reasoning 字段，不经过弱标记清洗。 */
-  private async appendGeneratedDelta(task: ResearchTaskRecord, rawDelta: string, reasoningDelta?: string): Promise<ReturnType<MentionMarkupStream["push"]> & { acceptedRawDelta: string }> {
-    const stream = this.mentionStreams.get(task.id);
-    if (!stream) throw new Error("Mention markup stream is not initialized");
+  /** 把已通过正文协议准入的增量直接落库；弱标记由独立任务稍后抽取。 */
+  private async appendGeneratedDelta(task: ResearchTaskRecord, rawDelta: string, reasoningDelta?: string): Promise<{ content: string; delta: string; acceptedRawDelta: string }> {
     const sink = this.finalBodySinks.get(task.id);
     if (!sink) throw new Error("Final body sink is not initialized");
     let acceptedDelta: string;
@@ -929,38 +918,36 @@ export class ResearchSessionService {
       acceptedDelta = sink.accept(rawDelta);
     } catch (error) {
       if (error instanceof FinalBodyProtocolError && error.acceptedDelta) {
-        const accepted = stream.push(error.acceptedDelta);
-        if (accepted.delta || accepted.markers.length > 0) await this.store.appendResearchTaskDelta(task.id, accepted.delta, accepted.markers);
+        await this.store.appendResearchTaskDelta(task.id, error.acceptedDelta);
+        this.options.onBodyUpdated?.(task);
       }
       throw error;
     }
-    const update = stream.push(acceptedDelta);
-    if (update.delta || update.markers.length > 0 || reasoningDelta) {
-      await this.store.appendResearchTaskDelta(task.id, update.delta, update.markers, reasoningDelta);
+    if (acceptedDelta || reasoningDelta) {
+      await this.store.appendResearchTaskDelta(task.id, acceptedDelta, reasoningDelta);
+      if (acceptedDelta) this.options.onBodyUpdated?.(task);
     }
+    const content = this.store.getResearchMessageBody(task.outputMessageId)?.content ?? "";
     const checkpointBefore = this.store.getResearchTask(task.id)?.streamCheckpoint;
     const protocolPrefix = sink.protocolPrefix();
     if (protocolPrefix || checkpointBefore?.protocolPrefix) {
-      await this.store.saveResearchTaskStreamCheckpoint(task.id, update.content, protocolPrefix);
+      await this.store.saveResearchTaskStreamCheckpoint(task.id, content, protocolPrefix);
     }
-    return { ...update, acceptedRawDelta: acceptedDelta };
+    return { content, delta: acceptedDelta, acceptedRawDelta: acceptedDelta };
   }
 
-  /** 完成时冲洗未闭合/非法控制串：丢标记但保正文，控制符永不进入消息。 */
-  private async finishGeneratedMarkup(task: ResearchTaskRecord, preserveStreamCheckpoint = false): Promise<ReturnType<MentionMarkupStream["finish"]>> {
-    const stream = this.mentionStreams.get(task.id);
-    if (!stream) throw new Error("Mention markup stream is not initialized");
+  /** 完成时只释放可确认不是协议前缀的正文尾部。 */
+  private async finishGeneratedMarkup(task: ResearchTaskRecord, preserveStreamCheckpoint = false): Promise<{ content: string; delta: string }> {
     const sink = this.finalBodySinks.get(task.id);
     if (!sink) throw new Error("Final body sink is not initialized");
     const trailing = sink.finish();
     if (trailing) {
-      const accepted = stream.push(trailing);
-      if (accepted.delta || accepted.markers.length > 0) await this.store.appendResearchTaskDelta(task.id, accepted.delta, accepted.markers);
+      await this.store.appendResearchTaskDelta(task.id, trailing);
+      this.options.onBodyUpdated?.(task);
     }
-    const update = stream.finish();
-    if (update.delta) await this.store.appendResearchTaskDelta(task.id, update.delta, update.markers);
+    const content = this.store.getResearchMessageBody(task.outputMessageId)?.content ?? "";
     if (!preserveStreamCheckpoint && this.store.getResearchTask(task.id)?.streamCheckpoint) await this.store.clearResearchTaskStreamCheckpoint(task.id);
-    return update;
+    return { content, delta: trailing };
   }
 
   /**
@@ -1095,10 +1082,11 @@ export class ResearchSessionService {
     provider: ResearchGenerationProvider,
     request: ResearchGenerationRequest,
     evidence: string,
+    sources: readonly ResearchCitationSourceIdentity[],
   ): Promise<string> {
     if (!provider.writeGroundedFinalStream) throw new Error("Grounding preparation requires a final writing stream");
     // 最终写作不是另一套简化流：复用普通单轮的断流续传、暂停与幂等拼接状态机。
-    return this.writeSingleTurnBodyStream(task, provider, request, evidence);
+    return this.writeSingleTurnBodyStream(task, provider, request, evidence, sources);
   }
 
   /**
@@ -1116,6 +1104,7 @@ export class ResearchSessionService {
     provider: ResearchGenerationProvider,
     generationRequest: ResearchGenerationRequest,
     groundedEvidence?: string,
+    groundedSources: readonly ResearchCitationSourceIdentity[] = [],
   ): Promise<string> {
     let visibleStreamed = this.store.getResearchMessageBody(task.outputMessageId)?.content
       ?? this.store.getResearchTask(task.id)?.streamCheckpoint?.content
@@ -1153,17 +1142,31 @@ export class ResearchSessionService {
           // 网络重试是新的物理流。上一个流末尾未准入的 `<thi` 不能与新流的开头组合，
           // 否则会被误当成普通正文写出。
           if (physicalCalls++ > 0) this.finalBodySinks.get(task.id)?.discardPending();
+          const pendingCitations: ResearchCitationCandidate[] = [];
           const streamOptions = {
             ...assembledGenerationRequest,
+            sources: groundedSources,
             ...(resumeFrom ? { resumeFrom } : {}),
             ...(this.abortControllers.get(task.id)?.signal ? { signal: this.abortControllers.get(task.id)!.signal } : {}),
             onStreamDone: (done: { finishReason?: string }) => { doneFinish = done.finishReason; },
             onReasoning: (text: string) => reasoning.push(text),
+            ...(groundedEvidence !== undefined ? {
+              onCitation: (candidate: ResearchCitationCandidate) => {
+                const normalized = this.normalizeCitationCandidate(candidate, groundedSources);
+                if (normalized) pendingCitations.push(normalized);
+              },
+            } : {}),
+          };
+          const flushCitations = async () => {
+            while (pendingCitations.length) {
+              await this.store.appendResearchTaskCitationCandidate(task.id, pendingCitations.shift()!);
+            }
           };
           const stream = groundedEvidence === undefined
             ? provider.writeBodyStream!(streamOptions)
             : provider.writeGroundedFinalStream!(assembledGenerationRequest, groundedEvidence, streamOptions);
           for await (const delta of stream) {
+            await flushCitations();
             if (!delta) continue;
             this.throwIfUserInterrupted(task.id);
             // ADR-0035：任务离开 running（暂停/停止/恢复重入队等）即退出本生成循环，
@@ -1190,6 +1193,7 @@ export class ResearchSessionService {
               }
             }
           }
+          await flushCitations();
         });
       } catch (error) {
         // 显式协议污染的干净前缀可展示为 failed partial，但绝不能成为“可续写”断点；
@@ -1597,12 +1601,7 @@ export class ResearchSessionService {
       const source = sourceByOrdinal.get(citation.sourceOrdinal);
       const block = blocks.find((candidate) => citation.startOffset >= candidate.startOffset && citation.startOffset <= candidate.startOffset + candidate.text.length);
       if (!source || !block) return [];
-      const markerToken = `[来源${citation.sourceOrdinal}]`;
-      const sourceEnd = citation.endOffset > citation.startOffset
-        ? citation.endOffset
-        : grounded.content.startsWith(markerToken, citation.startOffset)
-          ? citation.startOffset + markerToken.length
-          : citation.startOffset;
+      const sourceEnd = citation.endOffset;
       const exact = grounded.content.slice(citation.startOffset, sourceEnd);
       return [{
         id: randomUUID(),
@@ -1653,51 +1652,83 @@ export class ResearchSessionService {
     return result;
   }
 
-  /**
-   * 联网回答的引用统一在正文清洗完成后收口：供应商原始范围经同一个流内清洗器换算，
-   * 文本型 [来源n] 则直接在干净正文上解析。无法换算的精确范围被丢弃。
-   */
+  /** 联网回答的引用统一从持久化旁路事件收口；正文已无控制串，范围直接逐字校验。 */
   private groundedCitationsAfterCleaning(
     task: ResearchTaskRecord,
     grounded: ResearchGroundingMetadata,
-    cleanContent: string,
-    includeProviderRanges = true,
   ): Array<{ sourceOrdinal: number; startOffset: number; endOffset: number; providerCitationId?: string }> {
-    const stream = this.mentionStreams.get(task.id);
-    if (!stream) throw new Error("Mention markup stream is not initialized");
+    const content = this.store.getResearchMessageBody(task.outputMessageId)?.content ?? "";
     const sourceExistsWithEvidence = (sourceOrdinal: number): boolean => {
       const source = grounded.sources[sourceOrdinal - 1];
       return source !== undefined && source.evidenceStatus !== "none";
     };
-    const providerCitations = (includeProviderRanges ? grounded.citations : []).flatMap((citation) => {
+    const candidates = this.store.listResearchTaskEvents(task.id).flatMap((event) =>
+      event.type === "citation_candidate" ? [event.candidate] : [],
+    );
+    const exactCitations = candidates.flatMap((citation) => {
       if (!sourceExistsWithEvidence(citation.sourceOrdinal)) return [];
-      const mapped = stream.mapRawRange(citation.startOffset, citation.endOffset);
-      return mapped ? [{
+      if (citation.startOffset === undefined || citation.endOffset === undefined) return [];
+      if (citation.startOffset < 0 || citation.endOffset <= citation.startOffset || citation.endOffset > content.length) return [];
+      return [{
         sourceOrdinal: citation.sourceOrdinal,
-        ...mapped,
+        startOffset: citation.startOffset,
+        endOffset: citation.endOffset,
         ...(citation.providerCitationId ? { providerCitationId: citation.providerCitationId } : {}),
-      }] : [];
+      }];
     });
-    const sourceRecords: ResearchGroundingSourceRecord[] = grounded.sources.map((source, index) => ({
-      id: "",
-      runId: "",
-      ordinal: index + 1,
-      title: source.title || `来源 ${index + 1}`,
-      createdAt: "",
-    }));
-    const textCitations = filterCitationsByEvidence(
-      parseAgentCitations(cleanContent, sourceRecords).citations,
-      grounded.sources,
-    ).map((citation) => ({
-      sourceOrdinal: citation.sourceOrdinal,
-      startOffset: citation.markerOffset,
-      endOffset: citation.markerOffset,
-    }));
-    const unique = new Map<string, (typeof providerCitations)[number] | (typeof textCitations)[number]>();
-    for (const citation of [...providerCitations, ...textCitations]) {
-      unique.set(`${citation.sourceOrdinal}:${citation.startOffset}:${citation.endOffset}`, citation);
+    const unique = new Map<string, (typeof exactCitations)[number]>();
+    for (const citation of exactCitations) {
+      unique.set(`${citation.sourceOrdinal}:${citation.startOffset}:${citation.endOffset}:${citation.providerCitationId ?? ""}`, citation);
     }
     return [...unique.values()];
+  }
+
+  private citationSourceIdentities(grounded: ResearchGroundingMetadata): ResearchCitationSourceIdentity[] {
+    return grounded.sources.map((source, index) => ({
+      sourceOrdinal: index + 1,
+      ...(source.providerSourceId ? { providerSourceId: source.providerSourceId } : {}),
+      title: source.title || `来源 ${index + 1}`,
+      ...(sanitizeGroundingUrl(source.url) ? { url: sanitizeGroundingUrl(source.url) } : {}),
+      ...(source.evidenceStatus ? { evidenceStatus: source.evidenceStatus } : {}),
+    }));
+  }
+
+  private normalizeCitationCandidate(
+    candidate: ResearchCitationCandidate,
+    sources: readonly ResearchCitationSourceIdentity[],
+  ): ResearchCitationCandidate | undefined {
+    if (!Number.isSafeInteger(candidate.sourceOrdinal) || candidate.sourceOrdinal < 1
+      || !sources.some((source) => source.sourceOrdinal === candidate.sourceOrdinal && source.evidenceStatus !== "none")) {
+      return undefined;
+    }
+    const exact = Number.isSafeInteger(candidate.startOffset) && Number.isSafeInteger(candidate.endOffset)
+      && candidate.startOffset! >= 0 && candidate.endOffset! > candidate.startOffset!;
+    return {
+      sourceOrdinal: candidate.sourceOrdinal,
+      ...(exact ? { startOffset: candidate.startOffset, endOffset: candidate.endOffset } : {}),
+      ...(candidate.providerCitationId ? { providerCitationId: candidate.providerCitationId } : {}),
+    };
+  }
+
+  private async persistCitationSidecars(task: ResearchTaskRecord, citations: readonly ResearchCitationRecord[]): Promise<void> {
+    const generationAttempt = task.generationAttempt ?? 1;
+    for (const citation of citations) {
+      if (!citation.location) continue;
+      await this.store.createResearchSidecarRecord({
+        id: `citation:${citation.id}`,
+        kind: "citation",
+        bodyVersionId: citation.location.bodyVersionId,
+        location: citation.location,
+        generationAttempt,
+        status: "ready",
+        source: citation.providerCitationId
+          ? { kind: "provider", referenceId: citation.providerCitationId }
+          : { kind: "model", referenceId: citation.sourceId },
+        precision: "exact",
+        createdAt: citation.createdAt,
+        updatedAt: citation.createdAt,
+      });
+    }
   }
 
   private async ensureContextSourceSnapshot(task: ResearchTaskRecord, candidates: readonly ContextCandidate[]): Promise<void> {
@@ -1779,8 +1810,8 @@ export class ResearchSessionService {
       id: `grounded-final-rule:${taskId}`,
       channel: "behavior_rule",
       ruleKind: "task_contract",
-      content: "只输出直接给用户阅读的最终 Markdown 回答；不要描述搜索、工具、草稿、推理或内部工作。只使用已准入的带编号联网证据，涉及外部事实时使用对应的 [来源n] 标记。",
-      source: { kind: "task_rule", id: "research-grounded-final-v1", version: "1", scope: "global" },
+      content: "只输出直接给用户阅读的最终 Markdown 回答；不要描述搜索、工具、草稿、推理或内部工作。只使用已准入的结构化联网证据；正文不得写来源编号或引用控制串，引用关系只能通过供应商结构化旁路事件返回。",
+      source: { kind: "task_rule", id: "research-grounded-final-v2", version: "2", scope: "global" },
       permission: { status: "required", basis: "task_contract", allowedPurposes: ["research_body"] },
       sensitivity: "standard",
       priority: "task_required",

@@ -818,6 +818,50 @@ describe("#36 连续语义卡片与章节导航", () => {
     expect(ticks[2]).toHaveAttribute("aria-label", "收束");
   });
 
+  it("章节旁路进行中时原位轮询，完成后用正文版本范围标题替换且页面不回 loading", async () => {
+    const queued = viewWithSlices();
+    const assistant = queued.messages.find((message) => message.role === "assistant")!;
+    const version = deriveBodyVersion({
+      messageId: assistant.id,
+      nodeId: "session-1",
+      content: assistant.content,
+      origin: "generation",
+      createdAt: "2026-08-31T00:00:00.000Z",
+    });
+    queued.bodyVersions = { [assistant.id]: version };
+    queued.chapters = {
+      [assistant.id]: { taskId: "chapter-1", status: "queued", retryable: false, chapters: [], updatedAt: version.createdAt },
+    };
+    const completed = structuredClone(queued);
+    completed.chapters![assistant.id] = {
+      taskId: "chapter-1",
+      status: "completed",
+      retryable: false,
+      source: "ai",
+      chapters: [{
+        ordinal: 0,
+        title: "自然开篇",
+        blockOrdinal: 0,
+        location: {
+          contentId: assistant.id,
+          bodyVersionId: version.id,
+          sourceRange: { startOffset: 0, endOffset: "第一段。".length },
+          exact: "第一段。",
+        },
+      }],
+      updatedAt: "2026-08-31T00:00:01.000Z",
+    };
+    const getResearchNodeView = vi.fn()
+      .mockResolvedValueOnce(queued)
+      .mockResolvedValue(completed);
+    renderNodePage({ getResearchNodeView });
+    await screen.findByText("第一段。");
+    expect(screen.getByRole("button", { name: "起点" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "自然开篇" })).toBeInTheDocument(), { timeout: 1_500 });
+    expect(screen.queryByTestId("skeleton")).not.toBeInTheDocument();
+    expect(getResearchNodeView.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
   it("导航降级：无正式切片时不渲染线列", async () => {
     const { container } = renderNodePage({ getResearchNodeView: async () => readyRootView() });
     await screen.findByText("因为不同头可以关注不同位置。");

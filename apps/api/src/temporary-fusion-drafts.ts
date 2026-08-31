@@ -137,9 +137,8 @@ export class TemporaryFusionDraftService {
 
 function judgmentsForDraft(draft: ResearchFusionDraftVersionRecord, sources: readonly ResearchCandidateSourceConnectionRecord[]): ResearchFusionDraftJudgmentRecord[] {
   if (draft.judgments) return draft.judgments;
-  // T04 records predate claim rows. Their already-recorded aggregate evidence status is the only
-  // authoritative status available for unchanged cited ranges, so preserve it rather than rechecking
-  // the whole legacy draft merely because T05 introduced finer granularity.
+  // 历史草案没有结构化判断时，只能保留既有聚合核验状态并把候选来源作为粗粒度对应；
+  // 后续任何正文编辑都会逐块重新核验，不再读取正文控制串。
   return deriveJudgments(draft.body, sources, []).map((judgment) => ({
     ...judgment,
     evidenceStatus: judgment.sourceNodeIds.length >= 2 ? draft.evidenceStatus : "invalid",
@@ -148,16 +147,12 @@ function judgmentsForDraft(draft: ResearchFusionDraftVersionRecord, sources: rea
 
 function deriveJudgments(body: string, sources: readonly ResearchCandidateSourceConnectionRecord[], previous: readonly ResearchFusionDraftJudgmentRecord[]): ResearchFusionDraftJudgmentRecord[] {
   const blocks = deriveMessageBlocks(body);
-  const judgments = blocks.flatMap((block) => {
+  const sourceIds = [...new Set(sources.map((source) => source.sourceNodeId))].sort();
+  const previousOrdered = [...previous].sort((left, right) => left.startOffset - right.startOffset || left.endOffset - right.endOffset);
+  const judgments = blocks.flatMap((block, blockIndex) => {
     const text = block.text.trim();
-    if (!text) return [];
-    const sourceNodeIds = [...new Set([...text.matchAll(/\[来源(\d+)\]/g)].flatMap((match) => {
-      const source = sourceForCitationOrdinal(sources, Number(match[1]));
-      return source ? [source.sourceNodeId] : [];
-    }))].sort();
-    // Headings and uncited connective prose are not independent judgments. A removed citation therefore
-    // produces no verified replacement judgment and falls through to the invalid-document guard below.
-    if (sourceNodeIds.length === 0) return [];
+    if (!text || /^#{1,6}\s/.test(text)) return [];
+    const sourceNodeIds = previousOrdered[blockIndex]?.sourceNodeIds.filter((id) => sourceIds.includes(id)).sort() ?? sourceIds;
     const contentHash = sha256(`${text.replace(/\s+/g, " ").trim()}\u0000${sourceNodeIds.join("\u0000")}`);
     const previousJudgment = previous.find((item) => item.contentHash === contentHash);
     return [{
@@ -170,17 +165,6 @@ function deriveJudgments(body: string, sources: readonly ResearchCandidateSource
     }];
   });
   return judgments.length ? judgments : [{ id: `judgment:${sha256(body).slice("sha256:".length)}`, startOffset: 0, endOffset: body.length, contentHash: sha256(body), sourceNodeIds: [], evidenceStatus: "invalid" }];
-}
-
-function sourceForCitationOrdinal(
-  sources: readonly ResearchCandidateSourceConnectionRecord[],
-  ordinal: number,
-): ResearchCandidateSourceConnectionRecord | undefined {
-  const explicit = sources.find((source) => source.citationOrdinal === ordinal);
-  if (explicit) return explicit;
-  // Historical bundles did not record original ordinals. Positional fallback is safe only
-  // when every marker fits the pre-existing compact source sequence.
-  return sources.every((source) => source.citationOrdinal === undefined) ? sources[ordinal - 1] : undefined;
 }
 
 function sourceMaterial(store: CollectorStore, sources: readonly ResearchCandidateSourceConnectionRecord[], judgment: ResearchFusionDraftJudgmentRecord): Array<{ nodeId: string; content: string }> {

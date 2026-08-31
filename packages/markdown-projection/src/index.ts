@@ -168,9 +168,8 @@ export function projectMarkdownDocument(source: string): MarkdownDocumentProject
 
 /**
  * Resolve a visible selection to one exact source range using the shared tree.
- * Collector citation tokens are annotations and therefore contribute no visible
- * characters. Generated renderer output (for example KaTeX glyph trees) is not
- * guessed back into source coordinates.
+ * Generated renderer output (for example KaTeX glyph trees) is not guessed back
+ * into source coordinates.
  */
 export function resolveMarkdownVisibleRange(
   projection: MarkdownDocumentProjection,
@@ -227,8 +226,6 @@ interface MarkdownLocationCharacter {
   structural?: boolean;
 }
 
-const COLLECTOR_CITATION_TOKEN = /\[来源\d+\]/g;
-
 function markdownLocationCharacters(projection: MarkdownDocumentProjection): MarkdownLocationCharacter[] {
   const result: MarkdownLocationCharacter[] = [];
   const visit = (node: MarkdownProjectionNode, insideTable = false, codeSourceRange?: MarkdownRange): void => {
@@ -253,15 +250,7 @@ function markdownLocationCharacters(projection: MarkdownDocumentProjection): Mar
             ...(node.value!.trim() === "" ? { sourceRange: { ...node.sourceRange }, structural: true } : {}),
           }))
         : mapRenderedCharacters(node.value, projection.source.slice(node.sourceRange.start, node.sourceRange.end), node.sourceRange.start);
-      if (mapped) {
-        const omitted = new Set<number>();
-        for (const match of node.value.matchAll(COLLECTOR_CITATION_TOKEN)) {
-          for (let index = match.index; index < match.index + match[0].length; index += 1) omitted.add(index);
-        }
-        mapped.forEach((character, index) => {
-          if (!omitted.has(index)) result.push(character);
-        });
-      }
+      if (mapped) result.push(...mapped);
       return;
     }
     node.children.forEach((child) => visit(child, tableContext, codeContext));

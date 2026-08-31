@@ -3,8 +3,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer, type Server } from "node:http";
 import test from "node:test";
 import { fetchPublicResource, PublicFetchError, type PublicUrlDnsLookup } from "../apps/api/dist/parsers.js";
-import { sanitizeGroundingUrl } from "@collector/capture-contracts";
-import { webFetch, createSearchRunContext, filterCitationsByEvidence, parseAgentCitations } from "../apps/api/dist/web-search-agent.js";
+import { researchBodyVersionId, sanitizeGroundingUrl, validateResearchGroundingResult } from "@collector/capture-contracts";
+import { webFetch, createSearchRunContext, filterCitationsByEvidence } from "../apps/api/dist/web-search-agent.js";
 import { listenOnFetchSafePort } from "./test-http-server.js";
 
 /**
@@ -121,20 +121,27 @@ test("failure classification: transient vs permanent (message text unchanged)", 
   );
 });
 
-test("citation offsets align with the final clean message", () => {
-  const content = "开头[来源1]，中间内容[来源2]。";
-  const sources = [1, 2].map((ordinal) => ({
-    id: `source-${ordinal}`,
-    runId: "run-1",
-    ordinal,
-    title: `Source ${ordinal}`,
-    createdAt: "2026-08-14T00:00:00.000Z",
-  }));
-
-  assert.deepEqual(parseAgentCitations(content, sources).citations, [
-    { sourceOrdinal: 1, markerOffset: content.indexOf("[来源1]") },
-    { sourceOrdinal: 2, markerOffset: content.indexOf("[来源2]") },
-  ]);
+test("structured citation offsets align with the final clean message", () => {
+  const content = "开头结论，中间内容。";
+  const messageId = "message-1";
+  const createdAt = "2026-08-14T00:00:00.000Z";
+  const result = {
+    content,
+    scope: { scenario: "chat" as const, status: "grounded" as const, queries: [], sourceCount: 1, citationCount: 1 },
+    run: { id: "run-1", taskId: "task-1", sessionId: "session-1", provider: "fake", model: "fake", capability: "openai_web_search" as const, scenario: "chat" as const, status: "grounded" as const, queries: [], attempt: 1, createdAt },
+    sources: [{ id: "source-1", runId: "run-1", ordinal: 1, title: "Source 1", evidenceStatus: "full" as const, createdAt }],
+    citations: [{
+      id: "citation-1", messageId, runId: "run-1", sourceId: "source-1", blockOrdinal: 0,
+      markerOffset: 2,
+      location: { contentId: messageId, bodyVersionId: researchBodyVersionId(messageId, content), sourceRange: { startOffset: 2, endOffset: 4 }, exact: "结论" },
+      createdAt,
+    }],
+  };
+  assert.doesNotThrow(() => validateResearchGroundingResult(result));
+  assert.throws(() => validateResearchGroundingResult({
+    ...result,
+    citations: [{ ...result.citations[0]!, location: { ...result.citations[0]!.location, exact: "错位" } }],
+  }), /exact-mismatch/);
 });
 
 // ── 重试：瞬时失败退避重试成功后成功 ──────────────────────────────────

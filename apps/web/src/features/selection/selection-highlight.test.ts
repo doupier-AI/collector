@@ -64,12 +64,11 @@ describe("setRangeFromOffsets", () => {
 });
 
 describe("Markdown 源文本到可见正文投影", () => {
-  it("剥离标题、强调、链接地址，并把来源角标两侧拆成独立可见范围", () => {
-    const source = "## 标题\n\n**加粗**和[链接](https://example.test)[来源1]后文";
+  it("剥离标题、强调与链接地址，正文不再携带引用控制串", () => {
+    const source = "## 标题\n\n**加粗**和[链接](https://example.test)后文";
     expect(markdownVisibleText(source)).toBe("标题\n加粗和链接后文");
     expect(markdownSourceHighlightRanges(source, 0, source.length)).toEqual([
-      { start: 0, end: 8, exact: "标题\n加粗和链接" },
-      { start: 8, end: 10, exact: "后文" },
+      { start: 0, end: 10, exact: "标题\n加粗和链接后文" },
     ]);
   });
 
@@ -197,7 +196,7 @@ describe("highlightForMessages", () => {
   });
 
   it("稳定位置用源码与可见范围共同锁定重复文本，不接受同名位置伪造", () => {
-    const content = "**重复文本**与重复文本[来源1]";
+    const content = "**重复文本**与重复文本";
     const repeated = makeMessage({ id: "m-out", content });
     const secondSourceStart = content.indexOf("重复文本", content.indexOf("重复文本") + 4);
     const location = {
@@ -220,8 +219,8 @@ describe("highlightForMessages", () => {
     }, "重复文本")).toEqual({ kind: "fallback", caption: "段落 1" });
   });
 
-  it("选区跨零文本来源角标时拆成两个真实范围，不把角标当正文", () => {
-    const cited = makeMessage({ id: "m-out", content: "前[来源1]后" });
+  it("干净正文的选区保持一个真实范围，旁路角标由渲染层独立分隔", () => {
+    const cited = makeMessage({ id: "m-out", content: "前后" });
     const result = highlightForMessages([cited], undefined, {
       kind: "message", messageId: "m-out", blockOrdinal: 0, startOffset: 0, endOffset: 2, exact: "前后",
     }, "前后");
@@ -232,10 +231,7 @@ describe("highlightForMessages", () => {
       blockOrdinal: 0,
       start: 0,
       end: 2,
-      highlights: [
-        { start: 0, end: 1, exact: "前" },
-        { start: 1, end: 2, exact: "后" },
-      ],
+      highlights: [{ start: 0, end: 2, exact: "前后" }],
     });
   });
 

@@ -7,12 +7,39 @@ import type { AppServices } from "../../app/services";
 import { makeMessage, makeNode, makeNodeView, makeSelection, makeSession, makeTask } from "../../test/fakes";
 import { ResearchNodePage } from "./ResearchNodePage";
 import type { ResearchNodeView, ResearchSliceRecord } from "@collector/capture-contracts";
-import { deriveBodyVersion, deriveFragmentsFromSlices, deriveMessageSlices } from "@collector/capture-contracts";
+import { deriveBodyVersion, deriveFragmentsFromSlices, deriveMessageBlocks, deriveMessageSlices, researchBodyVersionId } from "@collector/capture-contracts";
 import { captureSelection, readContentContext, resolveBlockRange } from "../selection/selection-capture";
 
 function renderNodePage(api: Partial<ApiClient>, entry = "/nodes/session-1") {
+  const getResearchNodeView = api.getResearchNodeView;
+  const fixtureApi: Partial<ApiClient> = getResearchNodeView ? {
+    ...api,
+    getResearchNodeView: async (nodeId) => {
+      const view = await getResearchNodeView(nodeId);
+      for (const [messageId, detection] of Object.entries(view.termDetections ?? {})) {
+        const message = view.messages.find((candidate) => candidate.id === messageId);
+        if (!message) continue;
+        const blocks = deriveMessageBlocks(message.content);
+        detection.terms = detection.terms.map((marker) => {
+          const block = blocks[marker.blockOrdinal];
+          const absoluteStart = (block?.startOffset ?? 0) + marker.startOffset;
+          const absoluteEnd = (block?.startOffset ?? 0) + marker.endOffset;
+          return {
+            ...marker,
+            location: {
+              contentId: message.id,
+              bodyVersionId: researchBodyVersionId(message.id, message.content),
+              sourceRange: { startOffset: absoluteStart, endOffset: absoluteEnd },
+              exact: marker.text,
+            },
+          };
+        });
+      }
+      return view;
+    },
+  } : api;
   const services = {
-    api: api as ApiClient,
+    api: fixtureApi as ApiClient,
     connectTaskEvents: vi.fn(() => ({ close: () => {}, syncNow: () => {}, mode: "closed", lastEventId: 0 })),
   } as unknown as AppServices;
   return render(
@@ -36,6 +63,24 @@ function viewWithAssistant(content: string): ResearchNodeView {
     ],
     tasks: [makeTask({ id: "task-1", status: "completed", inputMessageId: "m-in", outputMessageId: "m-out" })],
   });
+}
+
+function citationFor(content: string, input: { id: string; sourceId: string; start: number; end: number; blockOrdinal?: number }) {
+  return {
+    id: input.id,
+    messageId: "m-out",
+    runId: "run-1",
+    sourceId: input.sourceId,
+    blockOrdinal: input.blockOrdinal ?? 0,
+    markerOffset: 0,
+    location: {
+      contentId: "m-out",
+      bodyVersionId: researchBodyVersionId("m-out", content),
+      sourceRange: { startOffset: input.start, endOffset: input.end },
+      exact: content.slice(input.start, input.end),
+    },
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
 }
 
 describe("AI 回答分块渲染", () => {
@@ -202,8 +247,9 @@ describe("AI 回答分块渲染", () => {
     expect(container.querySelector("[data-term-marker]")).toBeNull();
   });
 
-  it("引用标记由 remark 插件从 [来源n] token 渲染为可悬停角标，编号与文末列表一致", async () => {
-    const view = viewWithAssistant("[来源2]第一段文字。[来源5]\n\n第二段文字。");
+  it("引用角标按稳定旁路范围渲染，编号与文末列表一致且正文没有控制串", async () => {
+    const content = "第一段文字。\n\n第二段文字。";
+    const view = viewWithAssistant(content);
     view.tasks[0] = makeTask({
       id: "task-1",
       status: "completed",
@@ -216,8 +262,8 @@ describe("AI 回答分块渲染", () => {
       { id: "source-5", runId: "run-1", ordinal: 5, title: "第五个来源", url: "https://example.com/five", createdAt: "2026-01-01T00:00:00.000Z" },
     ];
     view.citations = [
-      { id: "citation-2", messageId: "m-out", runId: "run-1", sourceId: "source-2", blockOrdinal: 0, markerOffset: 2, createdAt: "2026-01-01T00:00:00.000Z" },
-      { id: "citation-5", messageId: "m-out", runId: "run-1", sourceId: "source-5", blockOrdinal: 0, markerOffset: 12, createdAt: "2026-01-01T00:00:00.000Z" },
+      citationFor(content, { id: "citation-2", sourceId: "source-2", start: 0, end: 6 }),
+      citationFor(content, { id: "citation-5", sourceId: "source-5", start: 8, end: content.length, blockOrdinal: 1 }),
     ];
     renderNodePage({ getResearchNodeView: async () => view });
 
@@ -248,7 +294,8 @@ describe("AI 回答分块渲染", () => {
   });
 
   it("无 URL 引用点击后先展开来源区域，再定位并短暂强调对应条目", async () => {
-    const view = viewWithAssistant("这条结论来自供应商定位信息。[来源4]");
+    const content = "这条结论来自供应商定位信息。";
+    const view = viewWithAssistant(content);
     view.tasks[0] = makeTask({
       id: "task-1",
       status: "completed",
@@ -260,7 +307,7 @@ describe("AI 回答分块渲染", () => {
       { id: "source-4", runId: "run-1", ordinal: 4, title: "无链接来源", locator: "第 4 段", createdAt: "2026-01-01T00:00:00.000Z" },
     ];
     view.citations = [
-      { id: "citation-4", messageId: "m-out", runId: "run-1", sourceId: "source-4", blockOrdinal: 0, markerOffset: 16, createdAt: "2026-01-01T00:00:00.000Z" },
+      citationFor(content, { id: "citation-4", sourceId: "source-4", start: 0, end: content.length }),
     ];
     const scrollIntoView = vi.fn();
     Element.prototype.scrollIntoView = scrollIntoView;
@@ -275,6 +322,33 @@ describe("AI 回答分块渲染", () => {
     const target = document.getElementById("grounding-source-source-4");
     expect(target).toHaveClass("grounding-source--target");
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "nearest" }));
+  });
+
+  it("正文版本失效时不猜角标位置，缺失来源仍提供可点击的明确降级说明", async () => {
+    const content = "当前正文包含两条可核验陈述。";
+    const view = viewWithAssistant(content);
+    view.tasks[0] = makeTask({
+      id: "task-1",
+      status: "completed",
+      inputMessageId: "m-in",
+      outputMessageId: "m-out",
+      groundingScope: { status: "grounded", sourceCount: 2, citationCount: 2, runId: "run-1" },
+    });
+    view.groundingSources = [
+      { id: "source-stale", runId: "run-1", ordinal: 1, title: "仍可查看的来源", url: "https://example.test/stale", createdAt: "2026-08-31T00:00:00.000Z" },
+    ];
+    const stale = citationFor(content, { id: "citation-1", sourceId: "source-stale", start: 0, end: 4 });
+    view.citations = [
+      { ...stale, location: { ...stale.location, bodyVersionId: "body:m-out:stale" } },
+      citationFor(content, { id: "citation-2", sourceId: "source-deleted", start: 4, end: content.length }),
+    ];
+    renderNodePage({ getResearchNodeView: async () => view });
+
+    expect(await screen.findByLabelText("查看来源 2：来源记录已失效")).toBeInTheDocument();
+    expect(screen.queryByLabelText("打开来源 1：仍可查看的来源")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "本轮引用了 2 个来源" })).toBeInTheDocument();
+    expect(screen.getByText("正文中的精确引用位置已失效；现有来源信息仍可查看。")).toBeInTheDocument();
+    expect(screen.getByText("这条引用的来源记录已不可用，无法打开或精确返回。")).toBeInTheDocument();
   });
 });
 
@@ -549,7 +623,7 @@ describe("长文轮次卡片内章节结构", () => {
   });
 
   it("?sel 选区跨来源角标时恢复为两个文字标记，角标仍保持独立可点击", async () => {
-    const content = "前[来源1]后";
+    const content = "前后";
     const selection = makeSelection({
       id: "sel-citation",
       sessionId: "session-1",
@@ -562,7 +636,7 @@ describe("长文轮次卡片内章节结构", () => {
       messages: [makeMessage({ id: "m-in", role: "user", content: "问题" }), makeMessage({ id: "m-out", role: "assistant", status: "completed", content })],
       tasks: [makeTask({ id: "task-1", status: "completed", inputMessageId: "m-in", outputMessageId: "m-out", groundingScope: { status: "grounded", sourceCount: 1, citationCount: 1, runId: "run-1" } })],
       groundingSources: [{ id: "source-1", runId: "run-1", ordinal: 1, title: "来源一", url: "https://example.test/one", createdAt: "2026-08-02T00:00:00.000Z" }],
-      citations: [{ id: "citation-1", messageId: "m-out", runId: "run-1", sourceId: "source-1", blockOrdinal: 0, markerOffset: 1, createdAt: "2026-08-02T00:00:00.000Z" }],
+      citations: [citationFor(content, { id: "citation-1", sourceId: "source-1", start: 0, end: 1 })],
     });
     const { container } = renderNodePage(
       { getResearchNodeView: async () => view, getResearchSelection: async () => selection },
@@ -704,7 +778,7 @@ describe("#91 普通回答轮次卡片", () => {
   });
 
   it("片段跨来源角标时分别高亮角标两侧正文，不把引用按钮包进 mark", async () => {
-    const content = "前文[来源1]后文";
+    const content = "前文后文";
     const version = deriveBodyVersion({ messageId: "m-out", nodeId: "session-1", content, origin: "backfill", createdAt: "2026-08-02T00:00:00.000Z" });
     const slices = deriveMessageSlices("session-1", "m-out", content, 0, []);
     const fragments = deriveFragmentsFromSlices(version, slices, []);
@@ -716,7 +790,7 @@ describe("#91 普通回答轮次卡片", () => {
       slices: { "m-out": slices },
       bodyVersions: { "m-out": version },
       groundingSources: [{ id: "source-1", runId: "run-1", ordinal: 1, title: "来源一", url: "https://example.test/one", createdAt: "2026-08-02T00:00:00.000Z" }],
-      citations: [{ id: "citation-1", messageId: "m-out", runId: "run-1", sourceId: "source-1", blockOrdinal: 0, markerOffset: 2, createdAt: "2026-08-02T00:00:00.000Z" }],
+      citations: [citationFor(content, { id: "citation-1", sourceId: "source-1", start: 0, end: 2 })],
     });
     view.termDetections = {
       "m-out": {

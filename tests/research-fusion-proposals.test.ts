@@ -84,6 +84,16 @@ function expectedVersionId(nodeId: string, message: ResearchMessageRecord): stri
   }).id;
 }
 
+function structuredDiscovery(input: { sources: Array<{ nodeId: string }> }, body: string) {
+  const sourceNodeIds = input.sources.map((source) => source.nodeId);
+  return {
+    hasNovelInsight: true as const,
+    body,
+    usedSourceNodeIds: sourceNodeIds,
+    judgments: [{ startOffset: 0, endOffset: body.length, sourceNodeIds }],
+  };
+}
+
 test("deterministic candidate index prefers normalized concepts and carries stable fragment references", async (t) => {
   const harness = await createHarness();
   t.after(harness.close);
@@ -438,11 +448,7 @@ async function createFusionHarness(options?: { similarityVerifier?: SimilarityVe
         return { relationType: "contrast", reason: "同名角色来自不同作品。" };
       },
       async discoverTemporaryFusion(input) {
-        return {
-          hasNovelInsight: true,
-          body: "## 新认识\n\n两个来源共同表明，同名角色的叙事功能随作品世界观而改变。[来源1][来源2]",
-          usedSourceNodeIds: input.sources.map((source) => source.nodeId),
-        };
+        return structuredDiscovery(input, "## 新认识\n\n两个来源共同表明，同名角色的叙事功能随作品世界观而改变。");
       },
     },
   });
@@ -460,8 +466,9 @@ async function createFusionHarness(options?: { similarityVerifier?: SimilarityVe
 test("temporary fusion discovery gateway separates novelty from similarity and records its audit boundary", async () => {
   const provider = new FakeProvider([JSON.stringify({
     hasNovelInsight: true,
-    body: "## 新认识\n\n两个来源共同揭示同名角色承担不同叙事功能。[来源1][来源2]",
+    body: "## 新认识\n\n两个来源共同揭示同名角色承担不同叙事功能。",
     usedSourceNodeIds: ["node-a", "node-b"],
+    judgments: [{ startOffset: 0, endOffset: "## 新认识\n\n两个来源共同揭示同名角色承担不同叙事功能。".length, sourceNodeIds: ["node-a", "node-b"] }],
   })]);
   const gateway = new ModelGateway(provider, { model: "fake-temporary-fusion" });
   const calls: Array<{ purpose?: string; promptVersion: string; tokenBudget?: number }> = [];
@@ -480,6 +487,7 @@ test("temporary fusion discovery gateway separates novelty from similarity and r
     relationType: "contrast",
   }, { context: { tokenBudget: TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET } });
   assert.equal(result.hasNovelInsight, true);
+  assert.deepEqual(result.judgments[0]?.sourceNodeIds, ["node-a", "node-b"]);
   assert.match(provider.calls[0]?.prompt ?? "", /相似、同名、共享主题、一般性比较或重复摘要本身不是新增认识/);
   assert.deepEqual(calls, [{
     purpose: "temporary_fusion_discovery",
@@ -536,7 +544,7 @@ test("temporary fusion discovery stays off by default", async (t) => {
       async verifyResearchSimilarity() { return { relationType: "identity", reason: "两处材料为同一实体。" }; },
       async discoverTemporaryFusion() {
         discoveryCalls += 1;
-        return { hasNovelInsight: false, body: "", usedSourceNodeIds: [] };
+        return { hasNovelInsight: false, body: "", usedSourceNodeIds: [], judgments: [] };
       },
     }),
   );
@@ -555,11 +563,7 @@ function qualifyingTemporaryFusionGateway(): SimilarityVerificationGateway {
     async discoverTemporaryFusion(input, options) {
       assert.equal(options?.context?.purpose, "temporary_fusion_discovery");
       assert.equal(options?.context?.promptVersion, TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION);
-      return {
-        hasNovelInsight: true,
-        body: "## 新认识\n\n两个来源共同表明，角色身份差异会改变同名概念承担的叙事功能。[来源1][来源2]",
-        usedSourceNodeIds: input.sources.map((source) => source.nodeId),
-      };
+      return structuredDiscovery(input, "## 新认识\n\n两个来源共同表明，角色身份差异会改变同名概念承担的叙事功能。");
     },
   };
 }
@@ -581,7 +585,8 @@ test("qualifying discovery persists one verified B-side bundle without formal no
   const bundle = harness.store.getTemporaryFusionBundle(temporary.id)!;
   assert.equal(temporary.triggerProposalId, result.proposals[0]?.id);
   assert.equal(bundle.activeDraft.evidenceStatus, "verified");
-  assert.match(bundle.activeDraft.body, /\[来源1\]\[来源2\]/);
+  assert.ok(bundle.activeDraft.judgments?.length);
+  assert.deepEqual(new Set(bundle.activeDraft.judgments?.flatMap((judgment) => judgment.sourceNodeIds)), new Set(bundle.candidateSources.map((source) => source.sourceNodeId)));
   assert.equal(new Set(bundle.candidateSources.map((source) => source.sourceNodeId)).size, 2);
   for (const source of bundle.candidateSources) {
     assert.ok(harness.store.getBodyVersion(source.bodyVersionId));
@@ -593,15 +598,15 @@ test("zero-source, one-source, no-novelty, and insufficient evidence never creat
   const cases: Array<{ name: string; discover: NonNullable<SimilarityVerificationGateway["discoverTemporaryFusion"]> }> = [
     {
       name: "no novelty",
-      async discover() { return { hasNovelInsight: false, body: "", usedSourceNodeIds: [] }; },
+      async discover() { return { hasNovelInsight: false, body: "", usedSourceNodeIds: [], judgments: [] }; },
     },
     {
       name: "one source",
-      async discover(input) { return { hasNovelInsight: true, body: "只有一个来源。[来源1]", usedSourceNodeIds: [input.sources[0]!.nodeId] }; },
+      async discover(input) { return { hasNovelInsight: true, body: "只有一个来源。", usedSourceNodeIds: [input.sources[0]!.nodeId], judgments: [{ startOffset: 0, endOffset: 7, sourceNodeIds: [input.sources[0]!.nodeId] }] }; },
     },
     {
       name: "missing evidence citation",
-      async discover(input) { return { hasNovelInsight: true, body: "声称使用两个来源但只定位一个。[来源1]", usedSourceNodeIds: input.sources.map((source) => source.nodeId) }; },
+      async discover(input) { return { hasNovelInsight: true, body: "声称使用两个来源但只定位一个。", usedSourceNodeIds: input.sources.map((source) => source.nodeId), judgments: [{ startOffset: 0, endOffset: 15, sourceNodeIds: [input.sources[0]!.nodeId] }] }; },
     },
   ];
   for (const scenario of cases) {
@@ -652,13 +657,9 @@ test("concurrent discovery for the same evidence creates one temporary bundle", 
       const invocation = ++arrivals;
       if (arrivals === 2) release?.();
       await bothStarted;
-      return {
-        hasNovelInsight: true,
-        body: invocation === 1
-          ? "## 新认识\n\n并发发现的第一种措辞。[来源1][来源2]"
-          : "## 新认识\n\n并发发现的第二种措辞。[来源1][来源2]",
-        usedSourceNodeIds: input.sources.map((source) => source.nodeId),
-      };
+      return structuredDiscovery(input, invocation === 1
+        ? "## 新认识\n\n并发发现的第一种措辞。"
+        : "## 新认识\n\n并发发现的第二种措辞。");
     },
   };
   const harness = await createFusionHarness({ similarityVerifier: gateway });
@@ -702,13 +703,10 @@ async function appendNewSharedConceptEvidence(store: SqliteStore): Promise<Resea
 
 test("new stable evidence for the same node pair can create a distinct temporary insight", async (t) => {
   const gateway = qualifyingTemporaryFusionGateway();
-  gateway.discoverTemporaryFusion = async (input) => ({
-    hasNovelInsight: true,
-    body: input.sources.some((source) => source.excerpt.includes("新材料"))
-      ? "## 新认识\n\n新的正式证据表明，成长叙事的差异需要单独核验。[来源1][来源2]"
-      : "## 新认识\n\n两个来源共同表明，角色身份差异会改变同名概念承担的叙事功能。[来源1][来源2]",
-    usedSourceNodeIds: input.sources.map((source) => source.nodeId),
-  });
+  gateway.discoverTemporaryFusion = async (input) => structuredDiscovery(input,
+    input.sources.some((source) => source.excerpt.includes("新材料"))
+      ? "## 新认识\n\n新的正式证据表明，成长叙事的差异需要单独核验。"
+      : "## 新认识\n\n两个来源共同表明，角色身份差异会改变同名概念承担的叙事功能。");
   const harness = await createFusionHarness({ similarityVerifier: gateway });
   t.after(harness.close);
   await harness.store.saveSetting(AUTO_FUSION_SETTING_KEY, "true");
@@ -741,11 +739,7 @@ test("identical draft wording from different source sets remains independently t
     similarityVerifier: {
       async verifyResearchSimilarity() { return { relationType: "shared-concept", reason: "存在相关性。" }; },
       async discoverTemporaryFusion(input) {
-        return {
-          hasNovelInsight: true,
-          body: "## 新认识\n\n同名概念需要在各自来源中核验。[来源1][来源2]",
-          usedSourceNodeIds: input.sources.map((source) => source.nodeId),
-        };
+        return structuredDiscovery(input, "## 新认识\n\n同名概念需要在各自来源中核验。");
       },
     },
   });
@@ -857,11 +851,7 @@ test("融合护栏：单轮最多创建 3 个临时融合，其余提议保持�
         return { relationType: "identity", reason: "两处材料为同一实体。" };
       },
       async discoverTemporaryFusion(input) {
-        return {
-          hasNovelInsight: true,
-          body: `## 新认识\n\n${input.sources.map((source) => source.nodeId).join("、")}共同形成可定位的新认识。[来源1][来源2]`,
-          usedSourceNodeIds: input.sources.map((source) => source.nodeId),
-        };
+        return structuredDiscovery(input, `## 新认识\n\n${input.sources.map((source) => source.nodeId).join("、")}共同形成可定位的新认识。`);
       },
     },
   });

@@ -13,7 +13,7 @@ export interface MarkdownPositionFixture {
     readonly sourceRange: MarkdownPositionFixtureRange;
   };
   readonly citation: {
-    readonly token: string;
+    readonly sourceRange: MarkdownPositionFixtureRange;
     readonly sourceTitle: string;
     readonly sourceUrl: string;
   };

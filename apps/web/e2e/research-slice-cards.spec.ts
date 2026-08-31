@@ -8,7 +8,8 @@ import { apiJson, pairAndOpen } from "./helpers";
  * - 长文（共享阈值 2000 字以上）：同样只有一张轮次卡片，章节作为卡内结构并保留导航。
  */
 
-const LONG_SLICE_TITLES = ["长文第1节", "长文第2节", "长文第3节"];
+const LONG_BODY_TITLES = ["长文第1节", "长文第2节", "长文第3节"];
+const LONG_CHAPTER_TITLES = ["第1章", "第2章", "第3章"];
 
 /** 提交普通问题并等待一张轮次卡片渲染完成。 */
 async function openNormalAnswer(page: import("@playwright/test").Page): Promise<void> {
@@ -27,8 +28,18 @@ async function openLongAnswer(page: import("@playwright/test").Page): Promise<vo
   await page.getByLabel("你的问题").fill("写一份完整的长文报告");
   await page.getByRole("button", { name: "开始研究" }).click();
   await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
-  for (const title of LONG_SLICE_TITLES) {
+  for (const title of LONG_BODY_TITLES) {
     await expect(page.locator(".slice-card__title", { hasText: title })).toBeVisible({ timeout: 15_000 });
+  }
+  // SIDE-06：回答完成与章节旁路完成是两个状态。后续导航断言只观察已稳定的 AI 章节结果，
+  // 避免在异步原位替换标题时把正文派生标题与最终章节标题混为一次交互。
+  if ((page.viewportSize()?.width ?? 0) >= 900) {
+    await expect(page.getByRole("navigation", { name: "章节导航" })).toHaveAttribute("data-chapter-source", "ai", { timeout: 15_000 });
+  } else {
+    await page.getByTestId("slice-chapter-entry").click();
+    const drawer = page.getByTestId("slice-chapter-drawer");
+    await expect(drawer.getByText("AI 章节", { exact: true })).toBeVisible({ timeout: 15_000 });
+    await drawer.getByRole("button", { name: "关闭" }).click();
   }
   await expect(page.locator(".turn-card")).toHaveCount(1);
   await expect(page.locator(".turn-card__section")).toHaveCount(3);
@@ -118,8 +129,8 @@ test.describe("长文轮次卡片与章节导航", () => {
     const ticks = page.locator(".slice-rail__tick");
     await expect(ticks).toHaveCount(3);
     // 每条线 aria-label = 节标题
-    for (let i = 0; i < LONG_SLICE_TITLES.length; i += 1) {
-      await expect(ticks.nth(i)).toHaveAttribute("aria-label", LONG_SLICE_TITLES[i]);
+    for (let i = 0; i < LONG_CHAPTER_TITLES.length; i += 1) {
+      await expect(ticks.nth(i)).toHaveAttribute("aria-label", LONG_CHAPTER_TITLES[i]);
     }
 
     // 当前线：第一条默认高亮（aria-current）
@@ -129,7 +140,7 @@ test.describe("长文轮次卡片与章节导航", () => {
     await ticks.nth(1).hover();
     const preview = page.locator(".slice-rail__preview");
     await expect(preview).toBeVisible({ timeout: 2_000 });
-    await expect(preview.locator(".slice-rail__preview-title")).toHaveText("长文第2节");
+    await expect(preview.locator(".slice-rail__preview-title")).toHaveText("第2章");
     await expect(preview.locator(".slice-rail__preview-excerpt")).toContainText("这是长文第2节的确定性正文");
 
     // 点击第三条 → 当前线高亮跟随到最后一张
@@ -286,12 +297,12 @@ test.describe("#95 长文窄屏：浮动入口 + 抽屉", () => {
     await expect(drawer).toBeVisible();
     await expect(entry).toHaveAttribute("aria-expanded", "true");
     // 抽屉列出当前长文轮的节标题。
-    for (const title of LONG_SLICE_TITLES) {
+    for (const title of LONG_CHAPTER_TITLES) {
       await expect(drawer.getByRole("button", { name: title })).toBeVisible();
     }
 
-    // 点「长文第3节」→ 精确跳到对应卡内章节并关闭抽屉。
-    await drawer.getByRole("button", { name: "长文第3节" }).click();
+    // 点 AI 章节标题「第3章」→ 精确跳到正文中的第三节并关闭抽屉。
+    await drawer.getByRole("button", { name: "第3章" }).click();
     await expect(page.getByTestId("slice-chapter-drawer")).toHaveCount(0);
     await expect(page.locator(".slice-card__title", { hasText: "长文第3节" })).toBeInViewport({ timeout: 5_000 });
 

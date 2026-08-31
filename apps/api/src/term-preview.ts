@@ -18,7 +18,7 @@ import {
 import type { DeepResearchStore } from "./store.js";
 import { ParentChainContextService } from "./parent-chain-context.js";
 import { ResearchSessionService, isTrashed, type ResearchGenerationRequest } from "./research.js";
-import { TermDetectionService, validateTermMarkers } from "./term-detection.js";
+import { validateTermMarkers } from "./term-detection.js";
 
 export const TERM_PREVIEW_PROMPT_VERSION = "term-preview-v2";
 export const TERM_PREVIEW_MAX_CHARACTERS = 320;
@@ -34,7 +34,6 @@ export class ResearchTermPreviewConflictError extends Error {}
 export interface ResearchTermPreviewServiceOptions {
   research: ResearchSessionService;
   parentChainContext: ParentChainContextService;
-  termDetection: TermDetectionService;
   autoRunTasks?: boolean;
 }
 
@@ -76,7 +75,12 @@ export class ResearchTermPreviewService {
 
     const marker = this.validatedMarker(message, input.marker, node);
     const markerKey = termPreviewMarkerKey(message.id, marker);
-    const existing = this.store.findResearchTermPreview(node.id, markerKey);
+    const existing = this.store.findResearchTermPreview(node.id, markerKey)
+      ?? this.store.listResearchTermPreviewsByNode(node.id).find((candidate) => {
+        if (candidate.messageId !== message.id) return false;
+        const rebased = validateTermMarkers(message.content, [rebaseAppendOnlyMarkerLocation(message, candidate.marker)])[0];
+        return Boolean(rebased && sameMarker(rebased, marker));
+      });
     if (existing) {
       const selection = this.store.getResearchSelection(existing.selectionId);
       if (!selection) throw new Error("Term preview references a missing selection");
@@ -203,10 +207,10 @@ export class ResearchTermPreviewService {
   private validatedMarker(message: ResearchMessageBodyRecord, requested: TermMarker, node: ResearchNodeRecord): TermMarker {
     const valid = validateTermMarkers(message.content, [rebaseAppendOnlyMarkerLocation(message, requested)]);
     if (!valid.length) throw new ResearchTermPreviewValidationError("Term marker no longer matches the message");
-    const nodeDepth = this.options.parentChainContext.buildParentChainContext(node.id).currentNodeDepth;
-    const detected = message.termMarkers !== undefined
-      ? validateTermMarkers(message.content, message.termMarkers)
-      : this.options.termDetection.detect(message.id, message.content, { nodeDepth }).terms;
+    const detected = validateTermMarkers(
+      message.content,
+      this.store.getResearchTermMarkerTaskByMessage(message.id)?.markers ?? [],
+    );
     const marker = valid[0];
     if (!detected.some((candidate) => sameMarker(candidate, marker))) {
       throw new ResearchTermPreviewValidationError("Term marker is not available for preview");
@@ -282,7 +286,6 @@ export class ResearchTermPreviewService {
       allowWebSearch: false,
       // 预览内容是纯解释文本：不注入弱标记指令，模型不知道控制串语法就不会输出，
       // 从源头杜绝原始标记泄漏进弹层与生长子节点正文。
-      mentionMarkup: false,
       ...(parentChain.ancestors.length ? { parentChainContext: parentChain } : {}),
     };
   }
@@ -339,9 +342,10 @@ function rebaseAppendOnlyMarkerLocation(message: ResearchMessageBodyRecord, mark
 }
 
 export function termPreviewMarkerKey(messageId: string, marker: TermMarker): string {
+  const bodyVersionId = marker.location?.bodyVersionId ?? "legacy";
   return marker.entityId
-    ? [messageId, marker.entityId].join(":")
-    : [messageId, marker.blockOrdinal, marker.startOffset, marker.endOffset, marker.text].join(":");
+    ? [messageId, bodyVersionId, marker.entityId].join(":")
+    : [messageId, bodyVersionId, marker.blockOrdinal, marker.startOffset, marker.endOffset, marker.text].join(":");
 }
 
 /**

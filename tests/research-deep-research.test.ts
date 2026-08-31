@@ -14,6 +14,7 @@ import {
   SqliteStore,
   type ResearchGenerationProvider,
   type ResearchGenerationRequest,
+  type ResearchTermMarkerExtractionProvider,
 } from "@collector/api";
 import { listenOnFetchSafePort } from "./test-http-server.js";
 
@@ -22,6 +23,7 @@ const SESSION_TITLE = "测试会话";
 
 interface HarnessOptions {
   researchProvider?: ResearchGenerationProvider;
+  termMarkerExtractionProvider?: ResearchTermMarkerExtractionProvider;
   autoRunResearchTasks?: boolean;
 }
 
@@ -37,6 +39,7 @@ async function createHarness(options: HarnessOptions = {}) {
     autoRunResearchTasks: options.autoRunResearchTasks ?? true,
     autoRunResearchImports: false,
     researchProvider: options.researchProvider,
+    termMarkerExtractionProvider: options.termMarkerExtractionProvider,
   });
   const server = createApiServer(service, auth);
   await listenOnFetchSafePort(server);
@@ -148,9 +151,35 @@ async function waitForResearchTask(base: string, token: string, taskId: string, 
   throw new Error(`Research task did not reach ${status}`);
 }
 
+async function waitForTermMarkerTask(store: SqliteStore, messageId: string) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const task = store.getResearchTermMarkerTaskByMessage(messageId);
+    if (task?.status === "completed") return task;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Term marker extraction task did not complete");
+}
+
 test("branch deep research creates branch before generation, completes, and keeps origin out of the main view", async (t) => {
-  const recording = recordingProvider("第一轮研究内容：[[concept:selection-context:选区与上下文]]形成确定性回答。");
-  const harness = await createHarness({ researchProvider: recording.provider });
+  const recording = recordingProvider("第一轮研究内容：选区与上下文形成确定性回答。");
+  const termMarkerExtractionProvider: ResearchTermMarkerExtractionProvider = {
+    provider: "term-marker-fake",
+    model: "term-marker-1",
+    async extractTermMarkers(input) {
+      const block = input.blocks.find((candidate) => candidate.text.includes("选区与上下文"));
+      if (!block) return '{"mentions":[]}';
+      const startOffset = block.text.indexOf("选区与上下文");
+      return JSON.stringify({ mentions: [{
+        blockOrdinal: block.ordinal,
+        startOffset,
+        endOffset: startOffset + "选区与上下文".length,
+        text: "选区与上下文",
+        entityId: "selection-context",
+        category: "concept",
+      }] });
+    },
+  };
+  const harness = await createHarness({ researchProvider: recording.provider, termMarkerExtractionProvider });
   t.after(() => harness.close());
   const { session, userMessage, assistantMessage } = await createSessionWithAnswer(harness);
   const anchor = anchorForSelection(assistantMessage.id, 1, "选区如何连接阅读与研究");
@@ -181,6 +210,7 @@ test("branch deep research creates branch before generation, completes, and keep
   assert.equal(accepted.task.promptVersion, "deep-research-v1");
 
   await waitForResearchTask(harness.base, harness.token, accepted.task.id, "completed");
+  await waitForTermMarkerTask(harness.store, accepted.outputMessage.id);
 
   // 第一轮生成上下文只包含当前已有材料
   assert.equal(recording.requests.length, 1);
@@ -215,8 +245,7 @@ test("branch deep research creates branch before generation, completes, and keep
   assert.equal(view.selection.text, "选区如何连接阅读与研究");
   assert.deepEqual(view.messages.map((message) => message.role), ["user", "assistant"]);
   assert.equal(view.messages[1].content, "第一轮研究内容：选区与上下文形成确定性回答。");
-  const deepOutput = harness.store.getResearchMessage(accepted.outputMessage.id);
-  assert.deepEqual(deepOutput?.termMarkers?.map((marker) => marker.text), ["选区与上下文"]);
+  assert.deepEqual(harness.store.getResearchTermMarkerTaskByMessage(accepted.outputMessage.id)?.markers.map((marker) => marker.text), ["选区与上下文"]);
   assert.ok(view.messages.every((message) => message.branchId === accepted.branch!.id));
   assert.deepEqual(view.tasks.map((task) => task.id), [accepted.task.id]);
 
@@ -267,7 +296,7 @@ test("branch view keeps all grounded sources in store but only returns cited sou
     model: "grounding-model",
     async *generate() { yield "ordinary fallback"; },
     async prepareGrounded() {
-      const content = "深入研究结论。[来源3]";
+      const content = "深入研究结论。";
       return {
         kind: "confirmed_final" as const,
         content,
@@ -278,7 +307,7 @@ test("branch view keeps all grounded sources in store but only returns cited sou
           { title: "未引用二", url: "https://example.com/two" },
           { title: "实际引用", url: "https://example.com/three" },
         ],
-        citations: [],
+        citations: [{ sourceOrdinal: 3, startOffset: 0, endOffset: content.length }],
       };
     },
   };

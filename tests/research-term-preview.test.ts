@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { researchBodyVersionId, type ResearchMessageRecord, type ResearchNodeRecord, type ResearchTaskRecord, type TermMarker } from "@collector/capture-contracts";
+import { deriveBodyVersion, deriveMessageBlocks, researchBodyVersionId, type ResearchMessageRecord, type ResearchNodeRecord, type ResearchTaskRecord, type TermMarker } from "@collector/capture-contracts";
 import {
   CaptureService,
   LocalAuth,
@@ -12,12 +12,15 @@ import {
   SqliteStore,
   createApiServer,
   detectTermMarkers,
+  termPreviewMarkerKey,
   type ResearchGenerationProvider,
+  type ResearchTermMarkerExtractionProvider,
 } from "@collector/api";
 import { listenOnFetchSafePort } from "./test-http-server.js";
 
 interface HarnessOptions {
   provider?: ResearchGenerationProvider;
+  termMarkerExtractionProvider?: ResearchTermMarkerExtractionProvider;
   autoRunResearchTasks?: boolean;
 }
 
@@ -33,6 +36,7 @@ async function createHarness(options: HarnessOptions = {}) {
     autoRunResearchTasks: options.autoRunResearchTasks ?? true,
     autoRunResearchImports: false,
     researchProvider: options.provider,
+    termMarkerExtractionProvider: options.termMarkerExtractionProvider,
   });
   const server = createApiServer(service, auth);
   await listenOnFetchSafePort(server);
@@ -95,6 +99,81 @@ function providerWithAnswer(answer: string, requests: ResearchGenerationRequest[
   };
 }
 
+test("term preview marker identity is scoped to the current body version", () => {
+  const messageId = "versioned-answer";
+  const oldMarker = detectTermMarkers("REST is the old answer.", messageId).find((candidate) => candidate.text === "REST");
+  const newMarker = detectTermMarkers("REST is the rewritten answer.", messageId).find((candidate) => candidate.text === "REST");
+  assert.ok(oldMarker?.location);
+  assert.ok(newMarker?.location);
+  assert.notEqual(oldMarker.location.bodyVersionId, newMarker.location.bodyVersionId);
+  assert.notEqual(termPreviewMarkerKey(messageId, oldMarker), termPreviewMarkerKey(messageId, newMarker));
+});
+
+function extractionProvider(entries: Array<{ text: string; entityId: string; occurrence?: number }>): ResearchTermMarkerExtractionProvider {
+  return {
+    provider: "term-marker-extraction-fake",
+    model: "term-marker-extraction-1",
+    async extractTermMarkers(input) {
+      const mentions = entries.flatMap((entry) => {
+        const occurrence = entry.occurrence ?? 0;
+        for (const block of input.blocks) {
+          let startOffset = -1;
+          let from = 0;
+          for (let index = 0; index <= occurrence; index += 1) {
+            startOffset = block.text.indexOf(entry.text, from);
+            if (startOffset < 0) break;
+            from = startOffset + entry.text.length;
+          }
+          if (startOffset >= 0) return [{
+            blockOrdinal: block.ordinal,
+            startOffset,
+            endOffset: startOffset + entry.text.length,
+            text: entry.text,
+            category: "abbreviation",
+            entityId: entry.entityId,
+          }];
+        }
+        return [];
+      });
+      return JSON.stringify({ mentions });
+    },
+  };
+}
+
+async function waitForTermMarkerTask(store: SqliteStore, messageId: string) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const task = store.getResearchTermMarkerTaskByMessage(messageId);
+    if (task?.status === "completed") return task;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Term marker extraction did not complete");
+}
+
+async function persistMarkerTask(store: SqliteStore, message: ResearchMessageRecord, markers: readonly TermMarker[]) {
+  const bodyVersion = deriveBodyVersion({
+    messageId: message.id, nodeId: message.nodeId ?? message.sessionId, content: message.content,
+    origin: "backfill", createdAt: message.updatedAt,
+  });
+  await store.createResearchBodyVersion(bodyVersion);
+  const blocks = deriveMessageBlocks(message.content);
+  const located = markers.flatMap((marker) => {
+    const block = blocks[marker.blockOrdinal];
+    if (!block || block.text.slice(marker.startOffset, marker.endOffset) !== marker.text) return [];
+    const startOffset = block.startOffset + marker.startOffset;
+    const endOffset = block.startOffset + marker.endOffset;
+    return [{ ...marker, location: {
+      contentId: message.id, bodyVersionId: bodyVersion.id,
+      sourceRange: { startOffset, endOffset }, exact: marker.text,
+    } }];
+  });
+  return store.upsertResearchTermMarkerTask({
+    id: `marker-task:${message.id}`, sessionId: message.sessionId, nodeId: message.nodeId ?? message.sessionId,
+    messageId: message.id, bodyVersionId: bodyVersion.id, generationAttempt: 1, status: "completed",
+    retryable: false, fullReviewRequested: true, processedBlockKeys: [], markers: located,
+    attempts: 1, createdAt: message.createdAt, updatedAt: message.updatedAt, completedAt: message.updatedAt,
+  });
+}
+
 async function createCompletedAssistant(harness: Awaited<ReturnType<typeof createHarness>>, content: string) {
   const session = await harness.service.research.createSession("Term preview session", randomUUID());
   const node = harness.store.getResearchNode(session.id);
@@ -111,6 +190,7 @@ async function createCompletedAssistant(harness: Awaited<ReturnType<typeof creat
     idempotencyKey: randomUUID(), status: "completed", retryable: false, promptVersion: "test", createdAt: now, updatedAt: now, completedAt: now,
   };
   await harness.store.createResearchTurnForNode(node, inputMessage, outputMessage, task);
+  await persistMarkerTask(harness.store, outputMessage, detectTermMarkers(content, outputMessage.id));
   const view = await harness.service.getResearchNodeView(node.id);
   const assistant = view.messages.find((message: ResearchMessageRecord) => message.id === outputMessage.id);
   assert.ok(assistant);
@@ -137,6 +217,7 @@ async function appendCompletedAssistant(
     idempotencyKey: randomUUID(), status: "completed", retryable: false, promptVersion: "test", createdAt: now, updatedAt: now, completedAt: now,
   };
   await harness.store.createResearchTurnForNode(node, inputMessage, outputMessage, task);
+  await persistMarkerTask(harness.store, outputMessage, detectTermMarkers(content, outputMessage.id));
   const view = await harness.service.getResearchNodeView(node.id);
   const assistant = view.messages.find((message: ResearchMessageRecord) => message.id === outputMessage.id);
   assert.ok(assistant);
@@ -148,7 +229,7 @@ async function appendCompletedAssistant(
 test("term preview is persisted, streamed once, and grows a child from the exact preview", async (t) => {
   const requests: ResearchGenerationRequest[] = [];
   const answer = "REST API explains how HTTP clients communicate with a service.";
-  const mainAnswer = "[[abbreviation:rest:REST]] API explains how HTTP clients communicate with a service.";
+  const mainAnswer = "REST API explains how HTTP clients communicate with a service.";
   const provider: ResearchGenerationProvider = {
     provider: "term-preview-provider",
     model: "term-preview-model",
@@ -160,7 +241,9 @@ test("term preview is persisted, streamed once, and grows a child from the exact
       yield output.slice(Math.ceil(output.length / 2));
     },
   };
-  const harness = await createHarness({ provider });
+  const harness = await createHarness({ provider, termMarkerExtractionProvider: extractionProvider([
+    { text: "REST", entityId: "rest" },
+  ]) });
   t.after(() => harness.close());
 
   const sessionResponse = await postJson(harness.base, harness.token, "/v1/research-sessions", {}, randomUUID());
@@ -174,13 +257,9 @@ test("term preview is persisted, streamed once, and grows a child from the exact
     randomUUID(),
   );
   assert.equal(turnResponse.status, 202);
-  const turn = await turnResponse.json() as { task: { id: string } };
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    const response = await fetch(`${harness.base}/v1/research-tasks/${turn.task.id}`, { headers: headers(harness.token) });
-    const task = await response.json() as { status: string };
-    if (task.status === "completed") break;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+  const turn = await turnResponse.json() as { task: { id: string }; outputMessage: { id: string } };
+  await waitForTask(harness.base, harness.token, turn.task.id, "completed");
+  await waitForTermMarkerTask(harness.store, turn.outputMessage.id);
 
   const viewResponse = await fetch(`${harness.base}/v1/research-nodes/${session.id}`, { headers: headers(harness.token) });
   assert.equal(viewResponse.status, 200);
@@ -208,8 +287,7 @@ test("term preview is persisted, streamed once, and grows a child from the exact
   assert.equal(requests.filter((request) => request.messages[0]?.content.includes("请解释当前回答中的缩写")).length, 1);
   const previewRequest = requests.find((request) => request.messages[0]?.content.includes("请解释当前回答中的缩写"));
   const previewPrompt = previewRequest?.messages[0]?.content ?? "";
-  // 预览请求显式关闭弱标记指令：预览内容不经标记管线解析，注入指令会让模型输出原始控制串（#86）。
-  assert.equal(previewRequest?.mentionMarkup, false);
+  // 预览请求只生成干净正文，弱标记由独立任务处理。
   assert.match(previewPrompt, /60–120 字/);
   assert.match(previewPrompt, /120–220 字/);
   assert.match(previewPrompt, /220–300 字/);
@@ -224,12 +302,10 @@ test("term preview is persisted, streamed once, and grows a child from the exact
 
   const growResponse = await postJson(harness.base, harness.token, `/v1/research-term-previews/${accepted.preview.id}/grow`, {}, "term-grow-one");
   assert.equal(growResponse.status, 202);
-  const grown = await growResponse.json() as { node: { id: string; originSelectionId?: string }; selection: { id: string }; outputMessage: { content: string; status: string; termMarkers?: TermMarker[] }; task: { status: string } };
+  const grown = await growResponse.json() as { node: { id: string; originSelectionId?: string }; selection: { id: string }; outputMessage: { content: string; status: string }; task: { status: string } };
   assert.equal(grown.node.originSelectionId, grown.selection.id);
   assert.equal(grown.outputMessage.content, answer);
   assert.equal(grown.outputMessage.status, "completed");
-  // 生长落库显式空标记：预览内容不经流内标记管线，声明"本条无标记"。
-  assert.deepEqual(grown.outputMessage.termMarkers, []);
   assert.equal(grown.task.status, "completed");
 
   // 节点视图不得把显式空标记的新消息退回词法检测——否则 "REST"/"API"/"HTTP" 会被乱标。
@@ -464,14 +540,17 @@ test("same text with different answer-local identities in one answer gets separa
     async *generate(request) {
       yield request.messages[0]?.content.includes("请解释当前回答中的")
         ? "preview"
-        : "[[abbreviation:rest-style:REST]] as an architectural style, while [[abbreviation:rest-break:REST]] means taking a break.";
+        : "REST as an architectural style, while REST means taking a break.";
     },
     async verifyTermIdentity() {
       identityChecks += 1;
       return true;
     },
   };
-  const harness = await createHarness({ provider });
+  const harness = await createHarness({ provider, termMarkerExtractionProvider: extractionProvider([
+    { text: "REST", entityId: "rest-style", occurrence: 0 },
+    { text: "REST", entityId: "rest-break", occurrence: 1 },
+  ]) });
   t.after(() => harness.close());
 
   const sessionResponse = await postJson(harness.base, harness.token, "/v1/research-sessions", {}, randomUUID());
@@ -485,8 +564,9 @@ test("same text with different answer-local identities in one answer gets separa
     randomUUID(),
   );
   assert.equal(turnResponse.status, 202);
-  const turn = await turnResponse.json() as { task: { id: string } };
+  const turn = await turnResponse.json() as { task: { id: string }; outputMessage: { id: string } };
   await waitForTask(harness.base, harness.token, turn.task.id, "completed");
+  await waitForTermMarkerTask(harness.store, turn.outputMessage.id);
 
   const viewResponse = await fetch(`${harness.base}/v1/research-nodes/${session.id}`, { headers: headers(harness.token) });
   assert.equal(viewResponse.status, 200);
@@ -574,7 +654,7 @@ test("same-node reuse is skipped entirely when no model is available for verific
 
 test("body, markers, and completed preview survive a process restart", async (t) => {
   const previewAnswer = "REST API explains how HTTP clients communicate with a service.";
-  const mainAnswer = "[[abbreviation:rest:REST]] API explains how [[abbreviation:http:HTTP]] clients communicate with a service.";
+  const mainAnswer = "REST API explains how HTTP clients communicate with a service.";
   const provider: ResearchGenerationProvider = {
     provider: "restart-consistency-provider",
     model: "restart-consistency-model",
@@ -582,7 +662,10 @@ test("body, markers, and completed preview survive a process restart", async (t)
       yield request.messages[0]?.content.includes("请解释当前回答中的") ? previewAnswer : mainAnswer;
     },
   };
-  const harness = await createHarness({ provider });
+  const harness = await createHarness({ provider, termMarkerExtractionProvider: extractionProvider([
+    { text: "REST", entityId: "rest" },
+    { text: "HTTP", entityId: "http" },
+  ]) });
   t.after(() => harness.close());
 
   const sessionResponse = await postJson(harness.base, harness.token, "/v1/research-sessions", {}, randomUUID());
@@ -596,8 +679,9 @@ test("body, markers, and completed preview survive a process restart", async (t)
     randomUUID(),
   );
   assert.equal(turnResponse.status, 202);
-  const turn = await turnResponse.json() as { task: { id: string } };
+  const turn = await turnResponse.json() as { task: { id: string }; outputMessage: { id: string } };
   await waitForTask(harness.base, harness.token, turn.task.id, "completed");
+  await waitForTermMarkerTask(harness.store, turn.outputMessage.id);
 
   const viewResponse = await fetch(`${harness.base}/v1/research-nodes/${session.id}`, { headers: headers(harness.token) });
   assert.equal(viewResponse.status, 200);
@@ -617,7 +701,8 @@ test("body, markers, and completed preview survive a process restart", async (t)
 
   const persisted = harness.store.getResearchMessage(assistant.id);
   assert.ok(persisted);
-  assert.ok((persisted.termMarkers ?? []).length >= 2);
+  const persistedMarkers = harness.store.getResearchTermMarkerTaskByMessage(assistant.id)?.markers;
+  assert.ok((persistedMarkers ?? []).length >= 2);
   const databasePath = harness.store.getDataFilePath()!;
   harness.store.close();
 
@@ -627,7 +712,7 @@ test("body, markers, and completed preview survive a process restart", async (t)
   assert.ok(restoredMessage);
   assert.equal(restoredMessage.content, persisted.content);
   assert.ok(!restoredMessage.content.includes("[["));
-  assert.deepEqual(restoredMessage.termMarkers, persisted.termMarkers);
+  assert.deepEqual(reopenedStore.getResearchTermMarkerTaskByMessage(assistant.id)?.markers, persistedMarkers);
   const restoredPreview = reopenedStore.getResearchTermPreview(accepted.preview.id);
   assert.equal(restoredPreview?.status, "completed");
   assert.equal(restoredPreview?.content, previewAnswer);
@@ -651,13 +736,14 @@ test("streaming assistant messages can start a term preview; failed messages can
       id: randomUUID(), sessionId: session.id, nodeId: node.id, role: "user", content: "Explain the terms", status: "completed", createdAt: now, updatedAt: now,
     };
     const outputMessage: ResearchMessageRecord = {
-      id: randomUUID(), sessionId: session.id, nodeId: node.id, role: "assistant", content, status, termMarkers: [marker], createdAt: now, updatedAt: now,
+      id: randomUUID(), sessionId: session.id, nodeId: node.id, role: "assistant", content, status, createdAt: now, updatedAt: now,
     };
     const task: ResearchTaskRecord = {
       id: randomUUID(), sessionId: session.id, nodeId: node.id, inputMessageId: inputMessage.id, outputMessageId: outputMessage.id,
       idempotencyKey: randomUUID(), status: status === "failed" ? "failed" : "running", retryable: false, promptVersion: "test", createdAt: now, updatedAt: now,
     };
     await harness.store.createResearchTurnForNode(node, inputMessage, outputMessage, task);
+    await persistMarkerTask(harness.store, outputMessage, [marker]);
     return outputMessage;
   };
 
@@ -698,13 +784,14 @@ test("an append-only generation handoff safely rebases the same closed term mark
       id: randomUUID(), sessionId: session.id, nodeId: node.id, role: "user", content: "Explain REST", status: "completed", createdAt: now, updatedAt: now,
     };
     const outputMessage: ResearchMessageRecord = {
-      id: outputMessageId, sessionId: session.id, nodeId: node.id, role: "assistant", content, status, termMarkers: [currentMarker], createdAt: now, updatedAt: now,
+      id: outputMessageId, sessionId: session.id, nodeId: node.id, role: "assistant", content, status, createdAt: now, updatedAt: now,
     };
     const task: ResearchTaskRecord = {
       id: randomUUID(), sessionId: session.id, nodeId: node.id, inputMessageId: inputMessage.id, outputMessageId,
       idempotencyKey: randomUUID(), status: status === "streaming" ? "running" : "completed", retryable: false, promptVersion: "test", createdAt: now, updatedAt: now,
     };
     await harness.store.createResearchTurnForNode(node, inputMessage, outputMessage, task);
+    await persistMarkerTask(harness.store, outputMessage, [currentMarker]);
 
     const accepted = await harness.service.termPreviews.start(
       node.id,
@@ -713,6 +800,40 @@ test("an append-only generation handoff safely rebases the same closed term mark
     );
     assert.equal(accepted.preview.marker.location?.bodyVersionId, researchBodyVersionId(outputMessageId, content));
   }
+});
+
+test("an append-only body version change reuses the already-started preview task", async (t) => {
+  const harness = await createHarness({ autoRunResearchTasks: false });
+  t.after(() => harness.close());
+  const session = await harness.service.research.createSession("Append-only preview reuse", randomUUID());
+  const node = harness.store.getResearchNode(session.id);
+  assert.ok(node);
+  const now = new Date().toISOString();
+  const partial = "REST is already closed.";
+  const appended = `${partial} More text arrives later.`;
+  const outputMessageId = randomUUID();
+  const partialMarker = detectTermMarkers(partial, outputMessageId).find((candidate) => candidate.text === "REST");
+  const appendedMarker = detectTermMarkers(appended, outputMessageId).find((candidate) => candidate.text === "REST");
+  assert.ok(partialMarker?.location);
+  assert.ok(appendedMarker?.location);
+  const inputMessage: ResearchMessageRecord = {
+    id: randomUUID(), sessionId: session.id, nodeId: node.id, role: "user", content: "Explain REST", status: "completed", createdAt: now, updatedAt: now,
+  };
+  const outputMessage: ResearchMessageRecord = {
+    id: outputMessageId, sessionId: session.id, nodeId: node.id, role: "assistant", content: partial, status: "streaming", createdAt: now, updatedAt: now,
+  };
+  const task: ResearchTaskRecord = {
+    id: randomUUID(), sessionId: session.id, nodeId: node.id, inputMessageId: inputMessage.id, outputMessageId,
+    idempotencyKey: randomUUID(), status: "running", retryable: false, promptVersion: "test", createdAt: now, updatedAt: now,
+  };
+  await harness.store.createResearchTurnForNode(node, inputMessage, outputMessage, task);
+  await persistMarkerTask(harness.store, outputMessage, [partialMarker]);
+  const first = await harness.service.termPreviews.start(node.id, { messageId: outputMessageId, marker: partialMarker }, "append-preview-first");
+  await harness.store.appendResearchTaskDelta(task.id, appended.slice(partial.length));
+  await persistMarkerTask(harness.store, { ...outputMessage, content: appended }, [appendedMarker]);
+  const second = await harness.service.termPreviews.start(node.id, { messageId: outputMessageId, marker: appendedMarker }, "append-preview-second");
+
+  assert.equal(second.preview.id, first.preview.id);
 });
 
 test("a rewritten streaming body cannot rebase a stale term marker", async (t) => {
@@ -733,13 +854,14 @@ test("a rewritten streaming body cannot rebase a stale term marker", async (t) =
     id: randomUUID(), sessionId: session.id, nodeId: node.id, role: "user", content: "Explain REST", status: "completed", createdAt: now, updatedAt: now,
   };
   const outputMessage: ResearchMessageRecord = {
-    id: outputMessageId, sessionId: session.id, nodeId: node.id, role: "assistant", content, status: "streaming", termMarkers: [currentMarker], createdAt: now, updatedAt: now,
+    id: outputMessageId, sessionId: session.id, nodeId: node.id, role: "assistant", content, status: "streaming", createdAt: now, updatedAt: now,
   };
   const task: ResearchTaskRecord = {
     id: randomUUID(), sessionId: session.id, nodeId: node.id, inputMessageId: inputMessage.id, outputMessageId,
     idempotencyKey: randomUUID(), status: "running", retryable: false, promptVersion: "test", createdAt: now, updatedAt: now,
   };
   await harness.store.createResearchTurnForNode(node, inputMessage, outputMessage, task);
+  await persistMarkerTask(harness.store, outputMessage, [currentMarker]);
 
   await assert.rejects(
     () => harness.service.termPreviews.start(

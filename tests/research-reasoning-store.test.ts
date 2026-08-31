@@ -115,7 +115,7 @@ test("正文只读投影以字段白名单排除当前和历史 reasoning", asyn
   const sentinel = "RSN05_REASONING_SENTINEL_7f5c";
 
   store.claimResearchTask(task.id);
-  await store.appendResearchTaskDelta(task.id, "可公开正文", undefined, sentinel);
+  await store.appendResearchTaskDelta(task.id, "可公开正文", sentinel);
   await store.completeResearchTask(task.id);
 
   assert.equal(store.getResearchMessage(output.id)?.reasoning, sentinel, "独立思考视图仍可读取哨兵");
@@ -144,11 +144,11 @@ test("reasoning lifecycle keeps continuations together and isolates retry, regen
   const { input, output, task } = await seedTurn(store);
 
   store.claimResearchTask(task.id);
-  await store.appendResearchTaskDelta(task.id, "正文一", undefined, "思考一");
+  await store.appendResearchTaskDelta(task.id, "正文一", "思考一");
   await store.pauseResearchTask(task.id);
   await store.resumeResearchTask(task.id);
   store.claimResearchTask(task.id);
-  await store.appendResearchTaskDelta(task.id, "正文二", undefined, "思考二");
+  await store.appendResearchTaskDelta(task.id, "正文二", "思考二");
   await store.completeResearchTask(task.id);
 
   let message = store.getResearchMessage(output.id)!;
@@ -161,7 +161,7 @@ test("reasoning lifecycle keeps continuations together and isolates retry, regen
   assert.equal(message.reasoning, undefined);
   assert.equal(message.versions?.[0]?.reasoning, "思考一思考二");
   store.claimResearchTask(task.id);
-  await store.appendResearchTaskDelta(task.id, "新正文", undefined, "新思考");
+  await store.appendResearchTaskDelta(task.id, "新正文", "新思考");
   await store.failResearchTask(store.getResearchTask(task.id)!, { code: "provider_error", message: "失败" });
   assert.equal(store.listResearchReasoningRecords(output.id).length, 2);
 
@@ -169,7 +169,7 @@ test("reasoning lifecycle keeps continuations together and isolates retry, regen
   assert.equal(store.getResearchMessage(output.id)?.reasoning, undefined, "default retry must not reuse failed-attempt reasoning");
   assert.equal(store.listResearchReasoningRecords(output.id).length, 1, "default retry deletes only the unversioned failed attempt");
   store.claimResearchTask(task.id);
-  await store.appendResearchTaskDelta(task.id, "第三正文", undefined, "第三思考");
+  await store.appendResearchTaskDelta(task.id, "第三正文", "第三思考");
   await store.completeResearchTask(task.id);
   assert.equal(store.getResearchTask(task.id)?.generationAttempt, 3);
 

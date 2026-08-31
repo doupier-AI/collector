@@ -279,8 +279,9 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       }
       const researchChapterRetryMatch = url.pathname.match(/^\/v1\/research-content\/([^/]+)\/chapters\/retry$/);
       if (request.method === "POST" && researchChapterRetryMatch) {
-        const task = await service.researchChapters.retryTaskBySnapshot(decodeURIComponent(researchChapterRetryMatch[1]));
-        return json(response, 202, service.researchChapters.getContentView(task.snapshotId));
+        const snapshotId = decodeURIComponent(researchChapterRetryMatch[1]);
+        await service.researchChapters.retryTaskBySnapshot(snapshotId);
+        return json(response, 202, service.researchChapters.getContentView(snapshotId));
       }
       const researchImportEventsMatch = url.pathname.match(/^\/v1\/research-imports\/([^/]+)\/events$/);
       if (request.method === "GET" && researchImportEventsMatch) {
@@ -617,6 +618,10 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
       const researchBodyVersionMatch = url.pathname.match(/^\/v1\/research-body-versions\/([^/]+)$/);
       if (request.method === "GET" && researchBodyVersionMatch) {
         return json(response, 200, service.getResearchBodyVersionView(decodeURIComponent(researchBodyVersionMatch[1])));
+      }
+      const researchAnswerChapterRetryMatch = url.pathname.match(/^\/v1\/research-body-versions\/([^/]+)\/chapters\/retry$/);
+      if (request.method === "POST" && researchAnswerChapterRetryMatch) {
+        return json(response, 202, await service.researchChapters.retryTaskByBodyVersion(decodeURIComponent(researchAnswerChapterRetryMatch[1])));
       }
       const researchNodeChildrenMatch = url.pathname.match(/^\/v1\/research-nodes\/([^/]+)\/children$/);
       if (request.method === "GET" && researchNodeChildrenMatch) {

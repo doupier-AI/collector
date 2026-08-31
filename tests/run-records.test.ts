@@ -102,7 +102,7 @@ async function seedResearchTask(
   await store.createResearchTurn(session, input, output, task);
   const claimed = store.claimResearchTask(id, "test-provider", "test-model", "run-record-prompt-v2");
   assert.ok(claimed);
-  if (reasoning) await store.appendResearchTaskDelta(id, "", undefined, reasoning);
+  if (reasoning) await store.appendResearchTaskDelta(id, "", reasoning);
   if (status === "completed") await store.completeResearchTask(id);
   else await store.failResearchTask(claimed, { code: "provider_error", message: "provider failed" });
   return store.getResearchTask(id)!;

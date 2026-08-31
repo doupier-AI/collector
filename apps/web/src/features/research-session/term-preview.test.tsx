@@ -1,7 +1,7 @@
 import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
-import type { ResearchNodeView, ResearchTermPreviewRecord, TermMarker } from "@collector/capture-contracts";
+import { researchBodyVersionId, type ResearchNodeView, type ResearchTermPreviewRecord, type TermMarker } from "@collector/capture-contracts";
 import type { ApiClient } from "../../api/client";
 import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
@@ -14,9 +14,21 @@ function noopStream(): TermPreviewEventStream {
   return { close: () => {}, syncNow: () => {}, mode: "closed", lastEventId: 0 };
 }
 
-function markerFor(content: string, text: string, category: TermMarker["category"] = "abbreviation"): TermMarker {
+function markerFor(content: string, text: string, category: TermMarker["category"] = "abbreviation", messageId = "m-out"): TermMarker {
   const startOffset = content.indexOf(text);
-  return { text, blockOrdinal: 0, startOffset, endOffset: startOffset + text.length, category };
+  return {
+    text,
+    blockOrdinal: 0,
+    startOffset,
+    endOffset: startOffset + text.length,
+    category,
+    location: {
+      contentId: messageId,
+      bodyVersionId: researchBodyVersionId(messageId, content),
+      sourceRange: { startOffset, endOffset: startOffset + text.length },
+      exact: text,
+    },
+  };
 }
 
 function viewWithTerms(status: "completed" | "streaming" = "completed"): { view: ResearchNodeView; marker: TermMarker } {
@@ -50,7 +62,7 @@ function previewFor(marker: TermMarker): ResearchTermPreviewRecord {
     nodeId: "session-1",
     messageId: "m-out",
     marker,
-    markerKey: ["m-out", marker.blockOrdinal, marker.startOffset, marker.endOffset, marker.text].join(":"),
+    markerKey: ["m-out", marker.location?.bodyVersionId ?? "legacy", marker.blockOrdinal, marker.startOffset, marker.endOffset, marker.text].join(":"),
     idempotencyKey: "term-preview-key",
     selectionId: "selection-1",
     status: "completed",
@@ -92,6 +104,27 @@ function grownResult(view: ResearchNodeView, preview: ResearchTermPreviewRecord)
 }
 
 describe("术语预览交互", () => {
+  it("独立抽取任务晚于回答完成时，页面无闪烁对齐并自动显示当前版本标记", async () => {
+    const { view } = viewWithTerms();
+    const beforeSidecar = structuredClone(view);
+    beforeSidecar.termDetections = {};
+    const getResearchNodeView = vi.fn()
+      .mockResolvedValueOnce(beforeSidecar)
+      .mockResolvedValue(view);
+    renderPage({ getResearchNodeView });
+
+    expect(await screen.findByText(/REST API is documented/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "解释术语 REST" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "解释术语 REST" }, { timeout: 2_000 })).toBeInTheDocument();
+    expect(getResearchNodeView).toHaveBeenCalledTimes(2);
+  });
+
+  it("客户端预览身份包含正文版本，消息重生成后不复用旧版本缓存", () => {
+    const oldMarker = markerFor("REST old", "REST");
+    const newMarker = markerFor("REST new", "REST");
+    expect(termPreviewClientKey("m-out", oldMarker)).not.toBe(termPreviewClientKey("m-out", newMarker));
+  });
+
   it("键盘可到达提及，Escape 只关闭弹层，首次点击会生成预览并直接进入概念节点", async () => {
     const { view, marker } = viewWithTerms();
     const preview = previewFor(marker);
@@ -270,8 +303,8 @@ describe("术语预览交互", () => {
   });
 
   it("同节点另一条消息复用既有预览时仍映射到当前提及", async () => {
-    const oldMarker = { ...markerFor("REST was introduced earlier.", "REST"), entityId: "entity-rest" };
-    const currentMarker = { ...markerFor("REST is used again here.", "REST"), entityId: "entity-rest" };
+    const oldMarker = { ...markerFor("REST was introduced earlier.", "REST", "abbreviation", "m-old"), entityId: "entity-rest" };
+    const currentMarker = { ...markerFor("REST is used again here.", "REST", "abbreviation", "m-current"), entityId: "entity-rest" };
     const reused = previewFor(oldMarker);
     reused.messageId = "m-old";
     const startResearchTermPreview = vi.fn(async () => ({ preview: reused, selection: makeSelection({ id: "selection-1" }) }));

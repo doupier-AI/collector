@@ -27,11 +27,6 @@ export interface MarkdownVisibleTerm {
   sourceEndOffset: number;
 }
 
-/** 只作为共享投影 React 树中的可识别边界，不真正渲染。 */
-function ProjectionCitationBoundary() {
-  return null;
-}
-
 export interface MarkdownReactProjection {
   tree: ReactNode;
   visible: MarkdownVisibleProjection;
@@ -49,7 +44,7 @@ export function projectMarkdownReact(
     jsx,
     jsxs,
     passKeys: true,
-    components: { "cite-marker": ProjectionCitationBoundary, ...components },
+    components,
   });
   return { tree, visible: visibleProjection(tree) };
 }
@@ -71,10 +66,6 @@ function visibleProjection(tree: ReactNode): MarkdownVisibleProjection {
       return;
     }
     if (!isValidElement<{ children?: ReactNode }>(node)) return;
-    if (node.type === ProjectionCitationBoundary) {
-      citationBoundaries.push(text.length);
-      return;
-    }
     visit(node.props.children);
   };
   visit(tree);
@@ -82,39 +73,97 @@ function visibleProjection(tree: ReactNode): MarkdownVisibleProjection {
 }
 
 function projectionToHast(node: MarkdownProjectionNode): Root {
-  return { type: "root", children: node.children.flatMap((child) => projectionChildren(child, true)) };
+  return { type: "root", children: node.children.flatMap(projectionChildren) };
 }
 
-const CITATION_TOKEN = /\[来源(\d+)\]/g;
-
-function projectionChildren(node: MarkdownProjectionNode, citationsAllowed: boolean): RootContent[] {
+function projectionChildren(node: MarkdownProjectionNode): RootContent[] {
   if (node.kind === "text") {
     const value = node.value ?? "";
-    if (!citationsAllowed) return [{ type: "text", value } satisfies Text];
-    const children: RootContent[] = [];
-    let cursor = 0;
-    CITATION_TOKEN.lastIndex = 0;
-    for (const match of value.matchAll(CITATION_TOKEN)) {
-      if (match.index > cursor) children.push({ type: "text", value: value.slice(cursor, match.index) });
-      children.push({
-        type: "element",
-        tagName: "cite-marker",
-        properties: { "data-source-ordinal": match[1] ?? "" },
-        children: [],
-      } as Element);
-      cursor = match.index + match[0].length;
-    }
-    if (cursor < value.length) children.push({ type: "text", value: value.slice(cursor) });
-    return children;
+    return [{ type: "text", value } satisfies Text];
   }
   if (node.kind !== "element" || !node.tagName) return [];
-  const allowChildren = citationsAllowed && node.tagName !== "code" && node.tagName !== "pre";
   return [{
     type: "element",
     tagName: node.tagName,
     properties: { ...(node.properties ?? {}) },
-    children: node.children.flatMap((child) => projectionChildren(child, allowChildren)),
+    children: node.children.flatMap(projectionChildren),
   } as Element];
+}
+
+export interface MarkdownVisibleAnnotation {
+  offset: number;
+  key: string;
+  node: ReactNode;
+}
+
+/**
+ * 在共享 Markdown 可见文字空间的稳定边界插入零正文注解。链接、按钮和代码中的
+ * 范围把注解放到整个交互/代码元素之后，避免嵌套交互控件，同时保留精确范围身份。
+ */
+export function renderMarkdownVisibleAnnotations(
+  tree: ReactNode,
+  annotations: readonly MarkdownVisibleAnnotation[],
+): ReactNode {
+  if (annotations.length === 0) return tree;
+  const sorted = [...annotations]
+    .filter((annotation) => Number.isSafeInteger(annotation.offset) && annotation.offset > 0)
+    .sort((left, right) => left.offset - right.offset || left.key.localeCompare(right.key));
+  const consumed = new Set<string>();
+  let visibleOffset = 0;
+
+  const annotationsWithin = (start: number, end: number): MarkdownVisibleAnnotation[] => sorted.filter((annotation) =>
+    !consumed.has(annotation.key) && annotation.offset > start && annotation.offset <= end,
+  );
+  const annotationNodes = (items: readonly MarkdownVisibleAnnotation[]): ReactNode[] => items.map((annotation) => {
+    consumed.add(annotation.key);
+    return cloneElement(
+      isValidElement(annotation.node) ? annotation.node : createElement(Fragment, null, annotation.node),
+      { key: annotation.key },
+    );
+  });
+  const advance = (node: ReactNode): ReactNode => {
+    if (typeof node === "string" || typeof node === "number") {
+      visibleOffset += String(node).length;
+      return node;
+    }
+    if (Array.isArray(node)) return node.map(advance);
+    if (!isValidElement<{ children?: ReactNode }>(node) || node.props.children === undefined) return node;
+    return cloneElement(node, undefined, advance(node.props.children));
+  };
+  const visit = (node: ReactNode): ReactNode => {
+    if (typeof node === "string" || typeof node === "number") {
+      const value = String(node);
+      const nodeStart = visibleOffset;
+      const nodeEnd = nodeStart + value.length;
+      visibleOffset = nodeEnd;
+      const local = annotationsWithin(nodeStart, nodeEnd);
+      if (local.length === 0) return value;
+      const pieces: ReactNode[] = [];
+      let cursor = 0;
+      for (const offset of [...new Set(local.map((annotation) => annotation.offset))]) {
+        const next = offset - nodeStart;
+        if (next > cursor) pieces.push(value.slice(cursor, next));
+        pieces.push(...annotationNodes(local.filter((annotation) => annotation.offset === offset)));
+        cursor = next;
+      }
+      if (cursor < value.length) pieces.push(value.slice(cursor));
+      return pieces;
+    }
+    if (Array.isArray(node)) return node.map(visit);
+    if (!isValidElement<{ children?: ReactNode }>(node) || node.props.children === undefined) return node;
+    const nodeType = typeof node.type === "string" ? node.type : undefined;
+    if (nodeType === "a" || nodeType === "button" || nodeType === "code" || nodeType === "pre") {
+      const start = visibleOffset;
+      const advanced = cloneElement(node, undefined, advance(node.props.children));
+      const trailing = annotationNodes(annotationsWithin(start, visibleOffset));
+      return trailing.length ? [advanced, ...trailing] : advanced;
+    }
+    return cloneElement(node, undefined, visit(node.props.children));
+  };
+
+  const rendered = visit(tree);
+  const trailing = annotationNodes(sorted.filter((annotation) => !consumed.has(annotation.key) && annotation.offset === visibleOffset));
+  return trailing.length ? [rendered, ...trailing] : rendered;
 }
 
 /**

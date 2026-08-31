@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { ASSOCIATION_HINT_BENEFITS, ASSOCIATION_HINT_EVALUATION_PROMPT_VERSION, FUSION_RELATION_TYPES, IMPORT_CHAPTER_PARSE_PROMPT_VERSION, IMPORT_CHAPTER_PARSE_TOKEN_BUDGET, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET, TERM_IDENTITY_CONTEXT_MAX_CHARACTERS, TERM_IDENTITY_TEXT_MAX_CHARACTERS, TERM_IDENTITY_VERIFY_PROMPT_VERSION, observeContextAssembly, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type ContextAssemblyObservation, type ContextAssemblyResult, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchAssociationHintBenefit, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSliceContext, type TermIdentityVerificationRequest } from "@collector/capture-contracts";
+import { ASSOCIATION_HINT_BENEFITS, ASSOCIATION_HINT_EVALUATION_PROMPT_VERSION, FUSION_RELATION_TYPES, IMPORT_CHAPTER_PARSE_PROMPT_VERSION, IMPORT_CHAPTER_PARSE_TOKEN_BUDGET, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET, TERM_IDENTITY_CONTEXT_MAX_CHARACTERS, TERM_IDENTITY_TEXT_MAX_CHARACTERS, TERM_IDENTITY_VERIFY_PROMPT_VERSION, observeContextAssembly, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type ContextAssemblyObservation, type ContextAssemblyResult, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchAssociationHintBenefit, type ResearchCitationCandidate, type ResearchCitationSourceIdentity, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSliceContext, type TermIdentityVerificationRequest } from "@collector/capture-contracts";
 
 export interface ProviderUsage {
   inputTokens?: number;
@@ -62,6 +62,8 @@ export interface ModelProviderRequest {
   timeoutMs?: number;
   /** 外部中止信号（暂停/停止）：与传输层内部超时信号组合，中止后抛 ModelProviderAbortedError。 */
   signal?: AbortSignal;
+  /** Grounded final-writer sources used only to map provider-native citation metadata. */
+  citationSources?: readonly ResearchCitationSourceIdentity[];
 }
 
 /**
@@ -101,8 +103,9 @@ export interface ModelProvider {
   complete(request: ModelProviderRequest): Promise<ModelProviderResponse>;
   /**
    * 真实模型逐字流式（方案 B）：能流式的 provider 在 complete() 之外另实现本方法。
-   * 逐字增量以 {type:"delta"} 事件产出；usage/model 只在终帧到达，由 {type:"done"} 事件带外承载，
-   * 供网关恰好一次记账。缺省本方法的 provider 由网关退回非流式 complete() 单发。
+   * 逐字增量以 {type:"delta"} 事件产出；供应商确认的引用元数据以 {type:"citation"}
+   * 旁路产出；usage/model 只在终帧到达，由 {type:"done"} 事件带外承载，供网关恰好一次
+   * 记账。缺省本方法的 provider 由网关退回非流式 complete() 单发。
    */
   completeStream?(request: ModelProviderRequest): AsyncIterable<ModelProviderStreamEvent>;
 }
@@ -111,9 +114,11 @@ export interface ModelProvider {
 export interface ModelProviderStreamDelta { type: "delta"; text: string }
 /** 流式思考增量事件（ADR-0035）：模型的推理过程逐字片段，不计入正文，与 delta 交错到达。 */
 export interface ModelProviderStreamReasoning { type: "reasoning"; text: string }
+/** Structured citation metadata; offsets are relative to this physical body stream. */
+export type ModelProviderStreamCitation = { type: "citation"; text?: never } & ResearchCitationCandidate;
 /** 流式终帧事件：模型名与 usage（token/成本记账依据，仅在流结束时可用）。 */
 export interface ModelProviderStreamDone { type: "done"; model: string; usage?: ProviderUsage; finishReason?: string }
-export type ModelProviderStreamEvent = ModelProviderStreamDelta | ModelProviderStreamReasoning | ModelProviderStreamDone;
+export type ModelProviderStreamEvent = ModelProviderStreamDelta | ModelProviderStreamReasoning | ModelProviderStreamCitation | ModelProviderStreamDone;
 
 /** plan-then-write 大纲的节数边界，防止模型产出过多碎节。 */
 export const RESEARCH_BODY_OUTLINE_MIN_SECTIONS = 1;
@@ -293,7 +298,6 @@ export function formatResearchSliceContext(context?: ResearchSliceContext): stri
 /** 将父链结果渲染为研究提示词片段；空链不产生任何占位文本。 */
 export function formatResearchParentChainContext(
   context?: ResearchParentChainContext,
-  options: { markerAware?: boolean } = {},
 ): string {
   if (!context?.ancestors.length) return "";
 
@@ -308,10 +312,7 @@ export function formatResearchParentChainContext(
     if (ancestor.firstUserMessage) lines.push(`  首条问题摘要：${JSON.stringify(ancestor.firstUserMessage)}`);
     if (ancestor.coveredTerms?.length) lines.push(`  已标记概念：${ancestor.coveredTerms.join("、")}`);
   }
-  // 术语预览关闭标记指令时同样省略标记措辞：模型不知道 [[ 语法，被要求"不要再输出弱标记"只会自相矛盾。
-  lines.push(options.markerAware === false
-    ? "去重规则：以上祖先的主题与已标记概念在研究路径上游已经充分展开；正文可以自然提及它们，但不要重复展开解释。"
-    : "去重规则：以上祖先的主题与已标记概念在研究路径上游已经充分展开；正文可以自然提及它们，但不要再为它们输出弱标记，也不要重复展开解释；只标记当前回答真正新引入的对象。");
+  lines.push("去重规则：以上祖先的主题与已标记概念在研究路径上游已经充分展开；正文可以自然提及它们，但不要重复展开解释。");
   if (context.truncated) lines.push("- 说明：父链已达到既有层数或总字符预算，只能使用以上内容，不要补全未提供的祖先信息。");
   if (context.cycleDetected) lines.push("- 说明：父链存在异常环路，已安全截断；不要根据缺失关系进行推断。");
   const convergence = resolveResearchConvergence({ nodeDepth: context.currentNodeDepth });
@@ -321,29 +322,6 @@ export function formatResearchParentChainContext(
     lines.push("回答引导：严格收敛到当前问题，只使用以上已建立的知识回答；不要主动引入新的术语、分支或延伸主题，保持来源事实与不确定性。");
   }
   return lines.join("\n");
-}
-
-export type MentionMarkupScenario = "conversation" | "long_form_section" | "deep_research" | "grounded";
-
-/** AI 正文与弱标记共用的流内控制说明；场景只标识调用入口，深度决定是否/多少标记。 */
-export function formatMentionMarkupInstructions(input: { scenario: MentionMarkupScenario; nodeDepth: number }): string {
-  const { nodeDepth } = input;
-  const density = resolveResearchConvergence({ nodeDepth }).termDensity;
-  if (density === "stopped") {
-    return "弱标记：当前研究路径已经足够深入。不要输出任何 [[ 控制标记；只输出干净正文。";
-  }
-  const densityRule = density === "reduced"
-    ? "本回答最多标记 4 个理解当前问题最关键的对象；宁缺毋滥。"
-    : "每个段落中首次出现的重要概念都要标记：专业概念、理论、机制、方法、关键技术名词、重要的人物/组织/作品，以及不展开便可能难懂的缩写与记号，都是应标对象。一段通常标记 2–4 个，概念密集的段落可以更多；不要因为前面的段落已经标记过，就跳过后面段落首次出现的重要概念。";
-  return `弱标记：
-- 用“类别:对象身份:可见短语”的精确格式包住完整短语：[[concept:concept-1:短语]]、[[entity:entity-1:短语]]、[[abbreviation:abbr-1:短语]]、[[notation:notation-1:短语]]。
-- concept 用于理论、机制、方法、现象和专业概念；entity 用于当前论述中身份重要的人、组织、地点、作品、事件、法律、产品或技术；abbreviation 用于不展开便可能难懂的缩写；notation 用于公式、统计记号、代码标识和状态码。
-- 对象身份只在本回答内有效，使用 1–64 位英文字母、数字、连字符或下划线。同一对象的重复提及必须复用同一个对象身份，即使可见文字不同；同名异义对象必须使用不同对象身份。
-- ${densityRule}
-- 标记示例：「Transformer 是一种基于[[concept:attention-mechanism:注意力机制]]的[[concept:deep-learning:深度学习]]模型架构」——注意力机制与深度学习是首次出现的重要概念，应当标记；「一种」「模型架构」这类普通说法不标记。
-- 可见短语必须是语义完整的名称：论文、书籍、产品等完整标题作为一个整体标记，不得拆成碎片（正确：[[entity:attention-is-all-you-need:Attention is All You Need]]；错误：拆成 Attention 与 Need 两个碎片标记）。
-- 普通名词、日期、网址、引用编号、Markdown 标题行、完整句子，以及上下文已经充分解释的对象都不标记。不要嵌套标记，不要让标记跨越 Markdown 结构或段落。
-- [[...]] 是内部控制格式，除上述四种合法形式外不要输出方括号控制符；正文内容本身保持自然连贯。`;
 }
 
 export class ProviderRegistry {
@@ -704,7 +682,7 @@ export class ModelGateway {
 
   async answerResearchConversationFromContext(
     assembly: AssembledModelContext,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; mentionMarkup?: boolean; context?: ModelCallContext; nodeDepth?: number } = {},
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number } = {},
   ): Promise<string> {
     return this.answerResearchConversation(
       [{ role: "user", content: formatAssembledModelContext(assembly) }],
@@ -724,7 +702,7 @@ export class ModelGateway {
 
   async *writeResearchBodyStreamFromContext(
     assembly: AssembledModelContext,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number; resumeFrom?: string; onDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; signal?: AbortSignal } = {},
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number; resumeFrom?: string; onDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; onCitation?: (candidate: ResearchCitationCandidate) => void; citationSources?: readonly ResearchCitationSourceIdentity[]; signal?: AbortSignal } = {},
   ): AsyncIterable<string> {
     const admittedResume = options.resumeFrom ? "[续写正文见已准入 continuation_state]" : undefined;
     yield* this.writeResearchBodyStream(
@@ -732,6 +710,7 @@ export class ModelGateway {
       {
         ...this.contextOptions(assembly, options),
         ...(admittedResume ? { resumeFrom: admittedResume } : {}),
+        ...(options.resumeFrom ? { citationOffsetBase: options.resumeFrom.length } : {}),
         parentChainContext: { currentNodeDepth: options.nodeDepth ?? 0, ancestors: [], truncated: false, cycleDetected: false },
       },
     );
@@ -780,6 +759,10 @@ export class ModelGateway {
 
   async deriveSliceAnnotationsFromContext(assembly: AssembledModelContext, options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): Promise<ResearchSliceAnnotation> {
     return this.deriveSliceAnnotations(this.contextPayload(assembly), this.contextOptions(assembly, options));
+  }
+
+  async extractTermMarkersFromContext(assembly: AssembledModelContext, options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): Promise<string> {
+    return this.extractTermMarkers(this.contextPayload(assembly), this.contextOptions(assembly, options));
   }
 
   async verifyTermIdentityFromContext(assembly: AssembledModelContext, options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): Promise<boolean> {
@@ -849,7 +832,7 @@ export class ModelGateway {
    * API business orchestration must use the corresponding *FromContext entry; a source-boundary
    * test rejects direct legacy calls from the orchestration layer.
    */
-  /** 供应商原生联网：统一注入正文弱标记契约，原始引用范围交由服务层在清洗后校正。 */
+  /** 供应商原生联网：只生成干净正文；引用与弱标记都通过独立旁路产生。 */
   async generateGroundedResearch(
     prompt: string,
     grounding: ResearchGroundingRequest,
@@ -860,7 +843,7 @@ export class ModelGateway {
       throw new Error("Configured provider does not support native web grounding");
     }
     const request: ModelProviderRequest = {
-      prompt: `${prompt}\n\n${formatMentionMarkupInstructions({ scenario: "grounded", nodeDepth: options.nodeDepth ?? 0 })}`,
+      prompt: `${prompt}\n\n只输出干净正文，不要输出任何内部控制协议；引用与弱标记由独立旁路产生。`,
       model: options.model ?? this.modelName,
       maxTokens: options.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS,
       timeoutMs: options.timeoutMs ?? 120_000,
@@ -886,19 +869,12 @@ export class ModelGateway {
 
   async answerResearchConversation(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; mentionMarkup?: boolean; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
   ): Promise<string> {
     if (!messages.length) throw new Error("Research conversation requires at least one message");
-    const parentContext = formatResearchParentChainContext(options.parentChainContext, { markerAware: options.mentionMarkup !== false });
+    const parentContext = formatResearchParentChainContext(options.parentChainContext);
     const sliceContext = formatResearchSliceContext(options.sliceContext);
-    // 自由正文：术语预览与旧式流式复用此能力，输出连续文本而非 JSON 包装。
-    // 术语预览显式关闭弱标记指令（mentionMarkup: false）：预览内容不经标记管线解析，
-    // 注入指令只会让模型输出无法解析的原始控制串；父链去重规则同步省略标记措辞。
-    const mentionInstructions = options.mentionMarkup === false ? "" : formatMentionMarkupInstructions({
-      scenario: "conversation",
-      nodeDepth: options.parentChainContext?.currentNodeDepth ?? 0,
-    });
-    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Output a coherent passage of plain text only — no JSON, no field wrappers, no Markdown code fences. Preserve uncertainty and never invent sources.${mentionInstructions ? `\n\n${mentionInstructions}` : ""}\n\nConversation:\n${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
+    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Output a coherent passage of plain text only — no JSON, no field wrappers, no Markdown code fences, source numbering, or internal control protocol. Preserve uncertainty and never invent sources.\n\nConversation:\n${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
@@ -945,10 +921,6 @@ export class ModelGateway {
   ): string {
     const parentContext = formatResearchParentChainContext(parentChainContext);
     const sliceContextText = formatResearchSliceContext(sliceContext);
-    const mentionInstructions = formatMentionMarkupInstructions({
-      scenario: "conversation",
-      nodeDepth: parentChainContext?.currentNodeDepth ?? 0,
-    });
     return `你是 Collector 的研究助手。请回答用户最新的问题，输出一篇连贯、完整的中文正文。
 
 要求：
@@ -957,8 +929,7 @@ export class ModelGateway {
 - 内容详实、论述充分，长度服从内容需要，不要刻意压缩或拆成孤立的碎片要点。
 - 保持来源事实与不确定性，不编造来源、链接或引用。
 - 不要使用 Markdown 代码围栏包裹整篇回答，不要返回 JSON 或任何字段结构，只输出正文本身。
-
-${mentionInstructions}
+- 只输出干净正文，不要输出任何内部控制协议；弱标记由独立抽取任务产生。
 
 对话：
 ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContextText ? `\n\n${sliceContextText}` : ""}`;
@@ -975,7 +946,7 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
    */
   async *writeResearchBodyStream(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
-    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext; resumeFrom?: string; onDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; signal?: AbortSignal } = {},
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext; resumeFrom?: string; citationOffsetBase?: number; onDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; onCitation?: (candidate: ResearchCitationCandidate) => void; citationSources?: readonly ResearchCitationSourceIdentity[]; signal?: AbortSignal } = {},
   ): AsyncIterable<string> {
     if (!messages.length) throw new Error("Research body requires at least one message");
     const basePrompt = this.researchBodyPrompt(messages, options.parentChainContext, options.sliceContext);
@@ -991,6 +962,7 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
       maxTokens: options.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS,
       timeoutMs: options.timeoutMs ?? 120_000,
       ...(options.signal ? { signal: options.signal } : {}),
+      ...(options.citationSources?.length ? { citationSources: options.citationSources } : {}),
     };
     const context = options.context ?? { purpose: "research_body" };
     // 窄化 provider：非流式回退分支后，后续引用 guaranteed 有 completeStream。
@@ -1007,6 +979,26 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
     // doneRef 由本调用局部持有（非实例字段），并发/交错调用互不干扰。
     const doneRef: { model: string; usage?: ProviderUsage; finishReason?: string } = { model: request.model };
     let assembled = "";
+    let rawAssembled = "";
+    const citationCandidates: ResearchCitationCandidate[] = [];
+    const offsetBase = options.citationOffsetBase ?? 0;
+    const emitCitation = (candidate: ResearchCitationCandidate): boolean => {
+      if (candidate.startOffset === undefined || candidate.endOffset === undefined) {
+        options.onCitation?.(candidate);
+        return true;
+      }
+      const leadingTrim = rawAssembled.length - rawAssembled.trimStart().length;
+      const startOffset = candidate.startOffset - leadingTrim;
+      const endOffset = candidate.endOffset - leadingTrim;
+      // Provider annotations may arrive before their cited text. Defer those until
+      // enough visible body has passed the trim boundary; never guess a future range.
+      if (startOffset < 0 || endOffset <= startOffset || endOffset > assembled.length) return false;
+      options.onCitation?.({ ...candidate, startOffset: offsetBase + startOffset, endOffset: offsetBase + endOffset });
+      return true;
+    };
+    const flushCitationCandidates = () => {
+      while (citationCandidates[0] && emitCitation(citationCandidates[0])) citationCandidates.shift();
+    };
     try {
       // reasoning 旁路：思考事件经 onReasoning 转发、不进入 trim/记账；delta/done 走原通道。
       // completeStream 在窄化作用域内调用（async generator 惰性执行，调用本身不发起请求）。
@@ -1014,12 +1006,25 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
       const textEvents = (async function* () {
         for await (const event of streamEvents) {
           if (event.type === "reasoning") { options.onReasoning?.(event.text); continue; }
+          if (event.type === "citation") {
+            const candidate = {
+              sourceOrdinal: event.sourceOrdinal,
+              ...(event.startOffset !== undefined ? { startOffset: event.startOffset } : {}),
+              ...(event.endOffset !== undefined ? { endOffset: event.endOffset } : {}),
+              ...(event.providerCitationId ? { providerCitationId: event.providerCitationId } : {}),
+            };
+            citationCandidates.push(candidate);
+            flushCitationCandidates();
+            continue;
+          }
+          if (event.type === "delta") rawAssembled += event.text;
           yield event;
         }
       })();
       for await (const trimmed of trimStream(extractStreamDeltas(textEvents, doneRef))) {
         assembled += trimmed;
         yield trimmed;
+        flushCitationCandidates();
       }
       await this.emitCompleted(context, request, startedAt, createdAt, { content: assembled, model: doneRef.model, usage: doneRef.usage });
     } catch (error) {
@@ -1027,6 +1032,8 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
       throw error;
     }
     if (!assembled.trim()) throw new Error("Research body provider returned an empty body");
+    for (const candidate of citationCandidates) emitCitation(candidate);
+    citationCandidates.length = 0;
     // 回报终帧 finishReason，供调用方判断是否需要续写（length = 被 max_tokens 截断）。
     options.onDone?.({ ...(doneRef.finishReason !== undefined ? { finishReason: doneRef.finishReason } : {}) });
   }
@@ -1100,10 +1107,6 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
     const continuation = input.continuation;
     // 断点前文只取尾部一段作衔接上下文，避免整节重复进入提示。
     const continuationTail = continuation ? continuation.priorSectionContent.slice(-500) : "";
-    const mentionInstructions = formatMentionMarkupInstructions({
-      scenario: "long_form_section",
-      nodeDepth: options.nodeDepth ?? 0,
-    });
     const prompt = `你是 Collector 的研究助手。你正在按大纲逐节撰写一篇连贯的中文长文，现在请只扩写其中一节。
 
 写作目标：${input.goal}
@@ -1118,8 +1121,7 @@ ${continuation ? "- 直接从断点继续写正文，不要重复上面的内容
 - 与前文自然衔接、保持同一主题与语气；内容详实，服从该节目标字数。
 - 保持来源事实与不确定性，不编造来源、链接或引用。
 - 不要使用 Markdown 代码围栏，不要返回 JSON 或大纲字段，只输出该节标题与正文。
-
-${mentionInstructions}`;
+- 只输出干净正文，不要输出任何内部控制协议；弱标记由独立抽取任务产生。`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
@@ -1164,6 +1166,42 @@ ${JSON.stringify(input.content)}`;
       timeoutMs: options.timeoutMs ?? 30_000,
     }, options.context ?? { purpose: "research_slice_annotation" });
     return parseSliceAnnotation(response.content);
+  }
+
+  /** 独立弱标记抽取：只返回候选范围 JSON；正文与最终范围资格由 API 服务验证。 */
+  async extractTermMarkers(
+    input: {
+      phase: "paragraph" | "full";
+      blocks: Array<{ ordinal: number; text: string }>;
+      coveredTerms: string[];
+      nodeDepth: number;
+    },
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<string> {
+    const prompt = `你是 Collector 的弱标记抽取助手。请只从给定正文块中选择理解当前论述确实需要解释的重要对象。
+
+只返回合法 JSON，不要使用 Markdown 代码围栏：
+{"mentions":[{"blockOrdinal":0,"startOffset":0,"endOffset":4,"text":"原文切片","category":"concept","entityId":"answer-local-id"}]}
+
+规则：
+- category 只能是 concept、entity、abbreviation、notation。
+- startOffset/endOffset 是相对对应 block.text 的 UTF-16 下标；text 必须与该切片逐字一致。
+- entityId 只在当前回答内有效，使用 1–64 位英文字母、数字、连字符或下划线；同一对象复用身份，同名异义使用不同身份。
+- 不标记 Markdown 标题、普通名词、日期、网址、引用编号、完整句子或已经充分解释的对象。
+- coveredTerms 中的祖先对象已经展开，不得再次标记。
+- 不要用关键词扫描补齐；不确定时省略。phase=paragraph 时只判断给定已闭合段落，phase=full 时复核整篇并返回最终集合。
+
+输入：${JSON.stringify(input)}`;
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      responseFormat: { type: "json_object" },
+      temperature: 0,
+      thinking: false,
+      maxTokens: options.maxTokens ?? 2_048,
+      timeoutMs: options.timeoutMs ?? 30_000,
+    }, options.context ?? { purpose: "term_marker_extraction" });
+    return response.content;
   }
 
   /**
@@ -1258,7 +1296,7 @@ ${JSON.stringify(input.content)}`;
   }
 
   /**
-   * T03 导入章节解析：通读按 `[B<ordinal>]` 编号的导入内容块，输出章节起点块号与标题。
+   * 统一章节解析：通读按 `[B<ordinal>]` 编号的导入材料或回答正文，输出章节起点块号与标题。
    * 返回模型原始 JSON 文本；合法性校验（块号范围/递增/标题）由调用方经
    * validateImportChapterPlan 完成，不合契约时调用方退化为规则锚点。
    * 给定材料的结构化整理任务，固定关闭思考模式（融合正文同源教训：thinking 耗尽预算）。
@@ -1267,7 +1305,7 @@ ${JSON.stringify(input.content)}`;
     input: { content: string },
     options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
   ): Promise<string> {
-    const prompt = `你是 Collector 的文档章节解析助手。下面是一篇导入文章，已按段落块编号（[B0]、[B1]……）。请通读全文，按文章真实结构划分章节，并为每章给出起始段落块编号与章节标题。
+    const prompt = `你是 Collector 的长内容章节解析助手。下面是一份导入材料或回答正文，已按段落块编号（[B0]、[B1]……）。请通读全文，按内容真实结构划分章节，并为每章给出起始段落块编号与章节标题。
 
 只返回合法 JSON：{"chapters":[{"block":0,"title":"第一章标题"}]}
 
@@ -1472,7 +1510,7 @@ ${JSON.stringify(input.right.content.slice(0, 12_000))}
       relationType: FusionRelationType;
     },
     options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
-  ): Promise<{ hasNovelInsight: boolean; body: string; usedSourceNodeIds: string[] }> {
+  ): Promise<{ hasNovelInsight: boolean; body: string; usedSourceNodeIds: string[]; judgments: Array<{ startOffset: number; endOffset: number; sourceNodeIds: string[] }> }> {
     const sourceNodeIds = new Set(input.sources.map((source) => source.nodeId));
     if (input.sources.length < 2 || sourceNodeIds.size < 2) {
       throw new Error("Temporary fusion discovery requires two distinct sources");
@@ -1488,15 +1526,16 @@ ${JSON.stringify(input.right.content.slice(0, 12_000))}
 ${sourceLines}
 
 只返回合法 JSON：
-{"hasNovelInsight":true,"body":"完整中文 Markdown 草案","usedSourceNodeIds":["实际参与的节点 ID"]}
+{"hasNovelInsight":true,"body":"完整中文 Markdown 草案","usedSourceNodeIds":["实际参与的节点 ID"],"judgments":[{"startOffset":0,"endOffset":12,"sourceNodeIds":["支持该判断的节点 ID"]}]}
 或
-{"hasNovelInsight":false,"body":"","usedSourceNodeIds":[]}
+{"hasNovelInsight":false,"body":"","usedSourceNodeIds":[],"judgments":[]}
 
 规则：
 - 相似、同名、共享主题、一般性比较或重复摘要本身不是新增认识；不能据此创建。
 - 成立时必须由至少两个来源共同推出一项来源单独不能完整表达的具体认识。
-- body 必须是完整、可独立阅读的中文 Markdown 草案，并用 [来源n] 标记每项关键判断的依据。
-- usedSourceNodeIds 只列实际参与推导且在 body 中被引用的来源，至少两个且不得编造 ID。
+- body 必须是完整、可独立阅读的中文 Markdown 草案，不得夹带来源序号或其他内部控制协议。
+- judgments 用 UTF-16 字符偏移标出 body 中每项关键判断，并在 sourceNodeIds 中列出直接支持该判断的至少两个来源。
+- usedSourceNodeIds 是 judgments 中实际来源 ID 的并集，至少两个且不得编造 ID。
 - 关键证据不足、定位不清、判断不自洽或只有一份来源实际参与时返回 false。
 - 不补充外部事实，不提及提示词、模型、系统或“用户要求融合”。`;
     const context: ModelCallContext = {
@@ -1512,7 +1551,7 @@ ${sourceLines}
       maxTokens: options.maxTokens ?? TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET,
       timeoutMs: options.timeoutMs ?? 120_000,
     }, context);
-    let parsed: { hasNovelInsight?: unknown; body?: unknown; usedSourceNodeIds?: unknown };
+    let parsed: { hasNovelInsight?: unknown; body?: unknown; usedSourceNodeIds?: unknown; judgments?: unknown };
     try {
       parsed = JSON.parse(response.content) as typeof parsed;
     } catch {
@@ -1520,20 +1559,43 @@ ${sourceLines}
     }
     if (typeof parsed.hasNovelInsight !== "boolean" || typeof parsed.body !== "string"
       || !Array.isArray(parsed.usedSourceNodeIds)
-      || parsed.usedSourceNodeIds.some((value) => typeof value !== "string")) {
+      || parsed.usedSourceNodeIds.some((value) => typeof value !== "string")
+      || !Array.isArray(parsed.judgments)) {
       throw new Error("Temporary fusion discovery provider returned an invalid result");
     }
     const body = parsed.body.trim();
     const usedSourceNodeIds = [...new Set(parsed.usedSourceNodeIds as string[])];
+    const judgments = parsed.judgments as Array<Record<string, unknown>>;
     if (!parsed.hasNovelInsight) {
-      if (body || usedSourceNodeIds.length > 0) throw new Error("Temporary fusion discovery returned an inconsistent negative result");
-      return { hasNovelInsight: false, body: "", usedSourceNodeIds: [] };
+      if (body || usedSourceNodeIds.length > 0 || judgments.length > 0) throw new Error("Temporary fusion discovery returned an inconsistent negative result");
+      return { hasNovelInsight: false, body: "", usedSourceNodeIds: [], judgments: [] };
     }
     if (!body || body.length > 24_000 || usedSourceNodeIds.length < 2
       || usedSourceNodeIds.some((nodeId) => !sourceNodeIds.has(nodeId))) {
       throw new Error("Temporary fusion discovery returned an invalid positive result");
     }
-    return { hasNovelInsight: true, body, usedSourceNodeIds };
+    const normalizedJudgments = judgments.map((judgment) => {
+      const startOffset = judgment.startOffset;
+      const endOffset = judgment.endOffset;
+      const ids = judgment.sourceNodeIds;
+      if (!Number.isSafeInteger(startOffset) || !Number.isSafeInteger(endOffset)
+        || (startOffset as number) < 0 || (endOffset as number) <= (startOffset as number) || (endOffset as number) > body.length
+        || !body.slice(startOffset as number, endOffset as number).trim()
+        || !Array.isArray(ids) || ids.some((value) => typeof value !== "string")) {
+        throw new Error("Temporary fusion discovery returned invalid judgment ranges");
+      }
+      const sourceIds = [...new Set(ids as string[])];
+      if (sourceIds.length < 2 || sourceIds.some((nodeId) => !sourceNodeIds.has(nodeId) || !usedSourceNodeIds.includes(nodeId))) {
+        throw new Error("Temporary fusion discovery returned invalid judgment sources");
+      }
+      return { startOffset: startOffset as number, endOffset: endOffset as number, sourceNodeIds: sourceIds };
+    });
+    const judgmentSourceIds = new Set(normalizedJudgments.flatMap((judgment) => judgment.sourceNodeIds));
+    if (!normalizedJudgments.length || judgmentSourceIds.size !== usedSourceNodeIds.length
+      || usedSourceNodeIds.some((nodeId) => !judgmentSourceIds.has(nodeId))) {
+      throw new Error("Temporary fusion discovery returned inconsistent judgment coverage");
+    }
+    return { hasNovelInsight: true, body, usedSourceNodeIds, judgments: normalizedJudgments };
   }
 
   /**
@@ -1557,10 +1619,6 @@ ${sourceLines}
     if (!input.direction.trim()) throw new Error("Deep research requires a research direction");
     const parentContext = formatResearchParentChainContext(input.parentChainContext);
     const sliceContext = formatResearchSliceContext(input.sliceContext);
-    const mentionInstructions = formatMentionMarkupInstructions({
-      scenario: "deep_research",
-      nodeDepth: input.parentChainContext?.currentNodeDepth ?? 0,
-    });
     // 自由正文：旧式流式深入研究复用此能力，输出连续文本而非 {"answer":...} JSON 包装。
     const prompt = `你是 Collector 的深入研究助手。用户从一段选区发起了深入研究第一轮。只使用下面提供的当前已有材料生成研究内容，不要联网检索，不要编造来源、链接或引用。只输出一段连贯的中文纯文本，不要返回 JSON、字段包装或 Markdown 代码围栏。
 
@@ -1579,9 +1637,8 @@ ${parentContext ? `\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext
 - 围绕用户方向，基于选区与上下文展开解释、拆解或延伸；
 - 只依据提供的材料，不编造外部事实、链接或来源；
 - 材料不足以支撑时在回答中如实说明不确定性；
-- 使用中文。
-
-${mentionInstructions}`;
+- 使用中文；
+- 只输出干净正文，不要输出任何内部控制协议；弱标记由独立抽取任务产生。`;
     const response = await this.complete({
       prompt,
       model: options.model ?? this.modelName,
@@ -1772,14 +1829,14 @@ ${mentionInstructions}`;
               const snippet = source?.snippet?.trim() ?? "";
               if (source && snippet) {
                 source.evidenceStatus = "partial";
-                contentText = `抓取失败: ${result.errorMessage}\n\n[来源${existingOrdinal} 部分证据（搜索摘要）]\n${snippet}`;
+                contentText = `抓取失败: ${result.errorMessage}\n\n来源 ${existingOrdinal} 的部分证据（搜索摘要）：\n${snippet}`;
               } else {
                 contentText = `抓取失败: ${result.errorMessage}`;
               }
             } else {
               if (existingOrdinal > 0) sources[existingOrdinal - 1].evidenceStatus = "full";
               if (existingOrdinal > 0 && result.content.trim()) evidenceBySource.set(existingOrdinal, result.content.trim());
-              contentText = `[来源${existingOrdinal || "?"} 完整内容]\n${result.content}`;
+              contentText = `来源 ${existingOrdinal || "?"} 的完整内容：\n${result.content}`;
             }
 
             messages.push({ role: "tool" as const, tool_call_id: tc.id, content: contentText });
@@ -2135,6 +2192,10 @@ export class OpenAiCompatibleProvider implements ModelProvider {
         }
         const text = choice?.delta?.content;
         if (typeof text === "string" && text) yield { type: "delta", text };
+        for (const annotation of choice?.delta?.annotations ?? []) {
+          const citation = citationCandidateFromAnnotation(annotation?.url_citation ?? annotation, request.citationSources);
+          if (citation) yield { type: "citation", ...citation };
+        }
         if (typeof choice?.finish_reason === "string" && choice.finish_reason) finishReason = choice.finish_reason;
         if (payload?.usage) {
           usage = {
@@ -2304,6 +2365,9 @@ export class OpenAiResponsesProvider implements GroundingModelProvider {
         const type = payload?.type;
         if (type === "response.output_text.delta") {
           if (typeof payload.delta === "string" && payload.delta) yield { type: "delta", text: payload.delta };
+        } else if (type === "response.output_text.annotation.added") {
+          const citation = citationCandidateFromAnnotation(payload.annotation, request.citationSources);
+          if (citation) yield { type: "citation", ...citation };
         } else if (type === "response.completed") {
           model = payload?.response?.model ?? model;
           usage = openAiUsage(payload?.response?.usage);
@@ -2430,12 +2494,30 @@ export class GeminiGroundingProvider implements GroundingModelProvider {
     }
     let usage: ProviderUsage | undefined;
     let finishReason: string | undefined;
+    const emittedCitations = new Set<string>();
     try {
       for await (const event of iterateServerSentEvents(response.body)) {
         idle.reset();
         const payload = JSON.parse(event.data);
         const text = geminiText(payload);
         if (text) yield { type: "delta", text };
+        const metadata = payload?.candidates?.[0]?.groundingMetadata;
+        const chunks = Array.isArray(metadata?.groundingChunks) ? metadata.groundingChunks : [];
+        for (const support of metadata?.groundingSupports ?? []) {
+          for (const index of support?.groundingChunkIndices ?? []) {
+            const annotation = {
+              url: chunks[index]?.web?.uri,
+              start_index: support?.segment?.startIndex,
+              end_index: support?.segment?.endIndex,
+            };
+            const citation = citationCandidateFromAnnotation(annotation, request.citationSources);
+            if (!citation) continue;
+            const key = `${citation.sourceOrdinal}:${citation.startOffset ?? ""}:${citation.endOffset ?? ""}`;
+            if (emittedCitations.has(key)) continue;
+            emittedCitations.add(key);
+            yield { type: "citation", ...citation };
+          }
+        }
         const candidateFinish = payload?.candidates?.[0]?.finishReason;
         if (typeof candidateFinish === "string" && candidateFinish) finishReason = candidateFinish === "MAX_TOKENS" ? "length" : candidateFinish;
         if (payload?.usageMetadata) usage = geminiUsage(payload.usageMetadata);
@@ -2817,6 +2899,28 @@ function safeHttpUrl(value: unknown): string | undefined {
     const url = new URL(value);
     return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : undefined;
   } catch { return undefined; }
+}
+
+function citationCandidateFromAnnotation(
+  annotation: any,
+  sources: readonly ResearchCitationSourceIdentity[] | undefined,
+): ResearchCitationCandidate | undefined {
+  if (!sources?.length) return undefined;
+  const url = safeHttpUrl(annotation?.url ?? annotation?.uri);
+  const providerSourceId = typeof annotation?.provider_source_id === "string" ? annotation.provider_source_id : undefined;
+  const source = sources.find((candidate) =>
+    (url && safeHttpUrl(candidate.url) === url)
+      || (providerSourceId && candidate.providerSourceId === providerSourceId),
+  );
+  if (!source) return undefined;
+  const startOffset = annotation?.start_index ?? annotation?.startIndex;
+  const endOffset = annotation?.end_index ?? annotation?.endIndex;
+  const exact = Number.isSafeInteger(startOffset) && Number.isSafeInteger(endOffset) && startOffset >= 0 && endOffset > startOffset;
+  return {
+    sourceOrdinal: source.sourceOrdinal,
+    ...(exact ? { startOffset, endOffset } : {}),
+    ...(typeof annotation?.id === "string" ? { providerCitationId: annotation.id } : {}),
+  };
 }
 
 /** 日志只保留净化后的 host，绝不输出带查询参数/凭证的原始 URL。 */

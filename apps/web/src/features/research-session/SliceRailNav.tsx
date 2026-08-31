@@ -36,6 +36,21 @@ export interface SliceRailItem {
   title: string;
   /** 正文开头摘要（用于无标题卡片的可访问名、预览与抽屉条目）。 */
   excerpt: string;
+  bodyVersionId?: string;
+  chapterStatus?: "queued" | "running" | "completed" | "failed";
+  chapterSource?: "ai" | "rule";
+  chapterFallbackReason?: "no_model" | "ai_failed" | "ai_invalid";
+  chapterRetryable?: boolean;
+}
+
+export function answerChapterStatusCopy(item: SliceRailItem): string {
+  if (item.chapterStatus === "queued" || item.chapterStatus === "running") return "AI 正在整理章节";
+  if (item.chapterSource === "ai") return "AI 章节";
+  if (item.chapterFallbackReason === "no_model") return "规则章节 · 未配置模型";
+  if (item.chapterFallbackReason === "ai_failed") return "规则章节 · AI 失败，可重算";
+  if (item.chapterFallbackReason === "ai_invalid") return "规则章节 · AI 结果无效，可重算";
+  if (item.chapterStatus === "failed") return "章节解析失败";
+  return "规则章节";
 }
 
 /** 悬停/聚焦后弹出预览的延迟（与轮次导航一致，约半秒）。 */
@@ -54,7 +69,7 @@ function itemAccessibleName(item: SliceRailItem): string {
   return item.title.trim() ? item.title : makeExcerpt(item.excerpt);
 }
 
-export const SliceRailNav = memo(function SliceRailNav({ items }: { items: SliceRailItem[] }) {
+export const SliceRailNav = memo(function SliceRailNav({ items, onRetry }: { items: SliceRailItem[]; onRetry?: (bodyVersionId: string) => void }) {
   const reducedMotion = usePrefersReducedMotion();
   // 宽屏（≥900px）右侧线列；窄屏浮动入口 + 覆盖抽屉。
   const wide = useMediaQuery("(min-width: 900px)");
@@ -306,6 +321,8 @@ export const SliceRailNav = memo(function SliceRailNav({ items }: { items: Slice
     });
     return entries;
   }, [items, activeGroupKey]);
+  const activeChapterStatus = visibleEntries[0] ? answerChapterStatusCopy(visibleEntries[0].item) : "";
+  const retryTarget = visibleEntries.find(({ item }) => item.chapterRetryable && item.bodyVersionId)?.item;
 
   const preview = previewIndex !== null ? items[previewIndex] : null;
   const previewExcerpt = useMemo(() => (preview ? makeExcerpt(preview.excerpt) : ""), [preview]);
@@ -359,6 +376,10 @@ export const SliceRailNav = memo(function SliceRailNav({ items }: { items: Slice
                 关闭
               </button>
             </div>
+            {activeChapterStatus ? <p className="chapter-nav__status">{activeChapterStatus}</p> : null}
+            {retryTarget?.bodyVersionId && onRetry ? (
+              <button type="button" className="button button--quiet" onClick={() => onRetry(retryTarget.bodyVersionId!)}>重新整理章节</button>
+            ) : null}
             <ol className="chapter-nav__list">
               {visibleEntries.map(({ item, flatIndex }) => {
                 const active = flatIndex === activeIndex;
@@ -398,7 +419,11 @@ export const SliceRailNav = memo(function SliceRailNav({ items }: { items: Slice
 
   // 宽屏：右侧线列，只渲染当前轮的节。
   return (
-    <nav className="slice-rail" role="navigation" aria-label="章节导航" ref={railRef}>
+    <nav className="slice-rail" role="navigation" aria-label="章节导航" ref={railRef} data-chapter-source={visibleEntries[0]?.item.chapterSource ?? "pending"}>
+      <span className="slice-rail__source">{activeChapterStatus}</span>
+      {retryTarget?.bodyVersionId && onRetry ? (
+        <button type="button" className="slice-rail__retry" aria-label="重新整理章节" title={activeChapterStatus} onClick={() => onRetry(retryTarget.bodyVersionId!)}>↻</button>
+      ) : null}
       <div className="slice-rail__track">
         {visibleEntries.map(({ item, flatIndex }) => (
           <button
@@ -425,6 +450,7 @@ export const SliceRailNav = memo(function SliceRailNav({ items }: { items: Slice
       {preview && previewIndex !== null ? (
         <div ref={previewRef} className="slice-rail__preview" role="tooltip" style={{ top: `${previewPosition.top}px`, left: `${previewPosition.left}px` }}>
           {preview.title.trim() ? <p className="slice-rail__preview-title">{preview.title}</p> : null}
+          <p className="slice-rail__preview-source">{answerChapterStatusCopy(preview)}</p>
           <p className="slice-rail__preview-excerpt">{previewExcerpt}</p>
         </div>
       ) : null}

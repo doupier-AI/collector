@@ -182,7 +182,7 @@ test("selection validation rejects malformed and cross-session anchors", async (
 test("complex Markdown selection records one versioned source and visible range and never jumps to repeated text", async (t) => {
   const harness = await createHarness();
   t.after(() => harness.close());
-  const content = "**重复文本**与重复文本[来源1]\n\n| 列 | 值 |\n| --- | --- |\n| A | `code` |";
+  const content = "**重复文本**与重复文本。\n\n| 列 | 值 |\n| --- | --- |\n| A | `code` |";
   const { session, assistantMessage } = await createSessionWithAnswer(harness, content);
   const secondSourceStart = content.indexOf("重复文本", content.indexOf("重复文本") + 4);
 

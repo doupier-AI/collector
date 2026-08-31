@@ -5,7 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { ResearchGenerationProvider } from "@collector/api";
+import type { ResearchGenerationProvider, ResearchTermMarkerExtractionProvider } from "@collector/api";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer } from "@collector/api";
 import { composeSectionUnits, deriveMessageBlocks } from "@collector/capture-contracts";
 import { listenOnFetchSafePort } from "./test-http-server.js";
@@ -22,7 +22,30 @@ const deterministicProvider: ResearchGenerationProvider = {
   },
 };
 
-async function createHarness(provider?: ResearchGenerationProvider) {
+function termMarkerProvider(entries: Array<{ text: string; entityId: string; category: "concept" | "entity" | "abbreviation" | "notation" }>): ResearchTermMarkerExtractionProvider {
+  return {
+    provider: "term-marker-fake",
+    model: "term-marker-1",
+    async extractTermMarkers(input) {
+      const mentions = entries.flatMap((entry) => {
+        const block = input.blocks.find((candidate) => candidate.text.includes(entry.text));
+        if (!block) return [];
+        const startOffset = block.text.indexOf(entry.text);
+        return [{
+          blockOrdinal: block.ordinal,
+          startOffset,
+          endOffset: startOffset + entry.text.length,
+          text: entry.text,
+          entityId: entry.entityId,
+          category: entry.category,
+        }];
+      });
+      return JSON.stringify({ mentions });
+    },
+  };
+}
+
+async function createHarness(provider?: ResearchGenerationProvider, termMarkerExtractionProvider?: ResearchTermMarkerExtractionProvider) {
   const root = await mkdtemp(join(tmpdir(), "collector-research-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
@@ -32,6 +55,7 @@ async function createHarness(provider?: ResearchGenerationProvider) {
   const service = new CaptureService(store, join(root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
     researchProvider: provider,
+    termMarkerExtractionProvider,
   });
   const server = createApiServer(service, auth);
   await listenOnFetchSafePort(server);
@@ -71,6 +95,15 @@ async function waitForTask(base: string, token: string, taskId: string, status: 
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`Research task did not reach ${status}`);
+}
+
+async function waitForTermMarkers(store: SqliteStore, messageId: string, expected: string[]) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const actual = store.getResearchTermMarkerTaskByMessage(messageId)?.markers.map((marker) => marker.text) ?? [];
+    if (actual.length === expected.length && actual.every((item, index) => item === expected[index])) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Term markers did not reach ${expected.join(",")}`);
 }
 
 test("research API persists an idempotent turn, streams fake-provider events, and restores the view", async (t) => {
@@ -150,52 +183,60 @@ test("research API persists an idempotent turn, streams fake-provider events, an
   reopened.close();
 });
 
-test("research generation persists clean text and in-stream mention ranges instead of control markup", async (t) => {
+test("research generation persists clean text and independent mention ranges", async (t) => {
   const provider: ResearchGenerationProvider = {
     provider: "mention-stream-fake",
     model: "mention-stream-1",
     promptVersion: "mention-stream-v1",
     async *generate() {
-      yield "理解 [[con";
-      yield "cept:backprop:反向传播]] 与 [[abbreviation:rag:RAG]]。";
+      yield "理解 反向";
+      yield "传播 与 RAG。";
     },
   };
-  const harness = await createHarness(provider);
+  const harness = await createHarness(provider, termMarkerProvider([
+    { text: "反向传播", entityId: "backprop", category: "concept" },
+    { text: "RAG", entityId: "rag", category: "abbreviation" },
+  ]));
   t.after(() => harness.close());
 
   const session = await harness.service.research.createSession("流内提及", randomUUID());
   const accepted = await harness.service.research.submitMessage(session.id, "解释概念", randomUUID());
   await waitForTask(harness.base, harness.token, accepted.task.id, "completed");
+  await waitForTermMarkers(harness.store, accepted.outputMessage.id, ["反向传播", "RAG"]);
 
   const message = harness.store.getResearchMessage(accepted.outputMessage.id);
   assert.equal(message?.content, "理解 反向传播 与 RAG。");
   assert.ok(!message?.content.includes("[["));
-  assert.deepEqual(message?.termMarkers?.map((marker) => ({ text: marker.text, category: marker.category })), [
+  const markers = harness.store.getResearchTermMarkerTaskByMessage(accepted.outputMessage.id)?.markers;
+  assert.deepEqual(markers?.map((marker) => ({ text: marker.text, category: marker.category })), [
     { text: "反向传播", category: "concept" },
     { text: "RAG", category: "abbreviation" },
   ]);
-  assert.equal(message?.termMarkers?.[0]?.blockOrdinal, 0);
-  assert.equal(message?.termMarkers?.[0]?.startOffset, 3);
+  assert.equal(markers?.[0]?.blockOrdinal, 0);
+  assert.equal(markers?.[0]?.startOffset, 3);
 });
 
-test("新 AI 消息缺少有效流内标记时保存明确空数组，不启用旧词法补标", async (t) => {
+test("新 AI 消息的独立抽取返回空结果时保存明确空数组，不启用旧词法补标", async (t) => {
   const provider: ResearchGenerationProvider = {
     provider: "invalid-mention-fake",
     model: "invalid-mention-1",
     async *generate() {
-      yield "REST API 使用 [[concept:旧格式正文]]。";
+      yield "REST API 使用旧格式正文。";
     },
   };
-  const harness = await createHarness(provider);
+  const harness = await createHarness(provider, termMarkerProvider([]));
   t.after(() => harness.close());
 
   const session = await harness.service.research.createSession("错误标记", randomUUID());
   const accepted = await harness.service.research.submitMessage(session.id, "解释", randomUUID());
   await waitForTask(harness.base, harness.token, accepted.task.id, "completed");
+  for (let attempt = 0; attempt < 200 && harness.store.getResearchTermMarkerTaskByMessage(accepted.outputMessage.id)?.status !== "completed"; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 
   const message = harness.store.getResearchMessage(accepted.outputMessage.id);
-  assert.equal(message?.content, "REST API 使用 旧格式正文。");
-  assert.deepEqual(message?.termMarkers, []);
+  assert.equal(message?.content, "REST API 使用旧格式正文。");
+  assert.deepEqual(harness.store.getResearchTermMarkerTaskByMessage(accepted.outputMessage.id)?.markers, []);
   const view = await harness.service.getResearchNodeView(session.id);
   assert.deepEqual(view.termDetections?.[accepted.outputMessage.id]?.terms, []);
 });
@@ -207,10 +248,14 @@ test("research node view exposes validated H3b term positions without changing m
     model: "term-marker-1",
     promptVersion: "test-research-v1",
     async *generate() {
-      yield "**[[abbreviation:rest:REST]] [[abbreviation:api:API]]** 在中文中也可读，[[abbreviation:http:HTTP]] 继续出现。";
+      yield content;
     },
   };
-  const harness = await createHarness(provider);
+  const harness = await createHarness(provider, termMarkerProvider([
+    { text: "REST", entityId: "rest", category: "abbreviation" },
+    { text: "API", entityId: "api", category: "abbreviation" },
+    { text: "HTTP", entityId: "http", category: "abbreviation" },
+  ]));
   t.after(() => harness.close());
 
   const sessionResponse = await fetch(`${harness.base}/v1/research-sessions`, {
@@ -228,6 +273,9 @@ test("research node view exposes validated H3b term positions without changing m
   assert.equal(turnResponse.status, 202);
   const turn = await turnResponse.json() as { task: { id: string } };
   await waitForTask(harness.base, harness.token, turn.task.id, "completed");
+  const outputMessage = harness.store.getResearchTask(turn.task.id)?.outputMessageId;
+  assert.ok(outputMessage);
+  await waitForTermMarkers(harness.store, outputMessage, ["REST", "API", "HTTP"]);
 
   const nodeResponse = await fetch(`${harness.base}/v1/research-nodes/${session.id}`, {
     headers: authHeaders(harness.token),
@@ -519,31 +567,36 @@ test("失败任务默认重试清空正文时同步清空弱标记（保留式�
     async *generate() {
       attempt += 1;
       if (attempt === 1) {
-        yield "前半段提到 [[abbreviation:rag:RAG]]";
+        yield "前半段提到 RAG。\n\n";
         throw new Error("provider crashed mid-stream");
       }
-      yield "完整回答 [[concept:local-first:本地优先]]。";
+      yield "完整回答 本地优先。";
     },
   };
-  const harness = await createHarness(provider);
+  const harness = await createHarness(provider, termMarkerProvider([
+    { text: "RAG", entityId: "rag", category: "abbreviation" },
+    { text: "本地优先", entityId: "local-first", category: "concept" },
+  ]));
   t.after(() => harness.close());
   const session = await harness.service.research.createSession("重试清标记", randomUUID());
   const accepted = await harness.service.research.submitMessage(session.id, "解释", randomUUID());
   await waitForTask(harness.base, harness.token, accepted.task.id, "failed");
+  await waitForTermMarkers(harness.store, accepted.outputMessage.id, ["RAG"]);
 
   const failedMessage = harness.store.getResearchMessage(accepted.outputMessage.id);
   assert.equal(failedMessage?.status, "failed");
   assert.ok(failedMessage && failedMessage.content.length > 0);
-  assert.ok((failedMessage.termMarkers ?? []).length > 0);
+  assert.ok((harness.store.getResearchTermMarkerTaskByMessage(accepted.outputMessage.id)?.markers ?? []).length > 0);
 
   const retried = await harness.service.research.retryTask(accepted.task.id);
   assert.equal(retried.status, "queued");
   const cleared = harness.store.getResearchMessage(accepted.outputMessage.id);
   assert.equal(cleared?.content, "");
-  assert.equal(cleared?.termMarkers, undefined);
+  assert.deepEqual(harness.store.getResearchTermMarkerTaskByMessage(accepted.outputMessage.id)?.markers ?? [], []);
 
   await waitForTask(harness.base, harness.token, accepted.task.id, "completed");
+  await waitForTermMarkers(harness.store, accepted.outputMessage.id, ["本地优先"]);
   const regenerated = harness.store.getResearchMessage(accepted.outputMessage.id);
   assert.equal(regenerated?.content, "完整回答 本地优先。");
-  assert.deepEqual(regenerated?.termMarkers?.map((marker) => marker.text), ["本地优先"]);
+  assert.deepEqual(harness.store.getResearchTermMarkerTaskByMessage(accepted.outputMessage.id)?.markers.map((marker) => marker.text), ["本地优先"]);
 });

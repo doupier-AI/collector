@@ -42,6 +42,7 @@ export function applyTaskEvent(view: ResearchSessionView, event: ResearchTaskEve
         tasks: upsertTask(view.tasks, event.task),
       };
     case "delta":
+    case "citation_candidate":
       return { ...view, messages: upsertMessage(view.messages, event.message) };
   }
 }

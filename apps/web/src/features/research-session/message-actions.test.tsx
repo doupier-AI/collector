@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { MessageItem } from "./MessageItem";
 import { makeMessage, makeTask } from "../../test/fakes";
+import { researchBodyVersionId } from "@collector/capture-contracts";
 
 /** navigator.clipboard 在测试环境不可用：覆盖 window.navigator.clipboard 记录复制内容。 */
 function mockClipboard() {
@@ -18,19 +19,37 @@ function mockClipboard() {
 describe("消息操作（ADR-0035）", () => {
   it("AI 回答：复制写入正文并显示「已复制」反馈；重新生成回调任务", async () => {
     const onRegenerate = vi.fn();
-    const task = makeTask({ outputMessageId: "answer", status: "completed" });
+    const content = "正文回答";
+    const task = makeTask({ outputMessageId: "answer", status: "completed", groundingScope: { status: "grounded", sourceCount: 1, citationCount: 1, runId: "run" } });
     // userEvent.setup 会接管剪贴板，mock 必须在 setup 之后。
     const user = userEvent.setup();
     const written = mockClipboard();
     render(
       <ul>
         <MessageItem
-          message={makeMessage({ id: "answer", role: "assistant", status: "completed", content: "正文回答" })}
+          message={makeMessage({ id: "answer", role: "assistant", status: "completed", content })}
           task={task}
+          groundingSources={[{ id: "source", runId: "run", ordinal: 1, title: "来源", url: "https://example.test/source", createdAt: "2026-08-31T00:00:00.000Z" }]}
+          citations={[{
+            id: "citation",
+            messageId: "answer",
+            runId: "run",
+            sourceId: "source",
+            blockOrdinal: 0,
+            markerOffset: 0,
+            location: {
+              contentId: "answer",
+              bodyVersionId: researchBodyVersionId("answer", content),
+              sourceRange: { startOffset: 0, endOffset: content.length },
+              exact: content,
+            },
+            createdAt: "2026-08-31T00:00:00.000Z",
+          }]}
           onRegenerateTask={onRegenerate}
         />
       </ul>,
     );
+    expect(screen.getByLabelText("打开来源 1：来源")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "复制" }));
     expect(written).toEqual(["正文回答"]);
     expect(await screen.findByRole("button", { name: "已复制" })).toBeInTheDocument();
@@ -61,6 +80,48 @@ describe("消息操作（ADR-0035）", () => {
 
     await user.click(screen.getByRole("button", { name: "回到最新版本" }));
     expect(screen.getByText("新版正文")).toBeInTheDocument();
+  });
+
+  it("历史版本保持只读，不借用当前正文的术语标记与生长入口", async () => {
+    const content = "当前正文包含 REST。";
+    const startOffset = content.indexOf("REST");
+    const marker = {
+      text: "REST",
+      blockOrdinal: 0,
+      startOffset,
+      endOffset: startOffset + 4,
+      category: "abbreviation" as const,
+      location: {
+        contentId: "answer",
+        bodyVersionId: researchBodyVersionId("answer", content),
+        sourceRange: { startOffset, endOffset: startOffset + 4 },
+        exact: "REST",
+      },
+    };
+    const onStart = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <ul>
+        <MessageItem
+          message={makeMessage({
+            id: "answer",
+            role: "assistant",
+            status: "completed",
+            content,
+            versions: [{ content: "历史正文同样写了 REST。", createdAt: "2026-08-19T00:00:00.000Z" }],
+          })}
+          task={makeTask({ outputMessageId: "answer", status: "completed" })}
+          terms={[marker]}
+          onStartTermPreview={onStart}
+        />
+      </ul>,
+    );
+
+    expect(screen.getByRole("button", { name: "解释术语 REST" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "上一个版本" }));
+    expect(screen.getByText("历史正文同样写了 REST。")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "解释术语 REST" })).not.toBeInTheDocument();
+    expect(onStart).not.toHaveBeenCalled();
   });
 
   it("无旧版本时不显示版本切换器", () => {

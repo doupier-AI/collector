@@ -4,6 +4,7 @@ import {
   TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION,
   TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET,
   normalizeResearchFusionProposalPair,
+  deriveMessageBlocks,
   researchFusionProposalId,
   type FusionProposalTriggerSource,
   type FusionRelationType,
@@ -72,11 +73,11 @@ export interface SimilarityVerificationGateway {
       relationType: FusionRelationType;
     },
     options?: { maxTokens?: number; timeoutMs?: number; context?: ModelCallContext },
-  ): Promise<{ hasNovelInsight: boolean; body: string; usedSourceNodeIds: string[] }>;
+  ): Promise<{ hasNovelInsight: boolean; body: string; usedSourceNodeIds: string[]; judgments?: Array<{ startOffset: number; endOffset: number; sourceNodeIds: string[] }> }>;
   discoverTemporaryFusionFromContext?(
     assembly: AssembledModelContext,
     options?: { maxTokens?: number; timeoutMs?: number; context?: ModelCallContext },
-  ): Promise<{ hasNovelInsight: boolean; body: string; usedSourceNodeIds: string[] }>;
+  ): Promise<{ hasNovelInsight: boolean; body: string; usedSourceNodeIds: string[]; judgments?: Array<{ startOffset: number; endOffset: number; sourceNodeIds: string[] }> }>;
 }
 
 interface TemporaryFusionSourceMaterial {
@@ -390,10 +391,8 @@ export class ResearchFusionProposalService {
       const usedIds = new Set(discovery.usedSourceNodeIds);
       const usedMaterials = materials.filter((source) => usedIds.has(source.nodeId));
       if (usedMaterials.length < 2 || usedMaterials.length !== usedIds.size) return false;
-      for (const source of usedMaterials) {
-        const ordinal = materials.findIndex((candidate) => candidate.nodeId === source.nodeId) + 1;
-        if (ordinal < 1 || !discovery.body.includes(`[来源${ordinal}]`)) return false;
-      }
+      const judgments = normalizeDiscoveryJudgments(discovery.body, discovery.judgments, usedIds);
+      if (!judgments.length || new Set(judgments.flatMap((judgment) => judgment.sourceNodeIds)).size < 2) return false;
       const timestamp = this.now().toISOString();
       const temporaryFusionId = randomUUID();
       const contentHash = `sha256:${createHash("sha256").update(discovery.body).digest("hex")}`;
@@ -419,13 +418,21 @@ export class ResearchFusionProposalService {
           body: discovery.body,
           contentHash,
           evidenceStatus: "verified",
+          judgments: judgments.map((judgment) => {
+            const judgmentHash = createHash("sha256").update(`${discovery.body.slice(judgment.startOffset, judgment.endOffset)}\u0000${judgment.sourceNodeIds.join("\u0000")}`).digest("hex");
+            return {
+              id: `judgment:${judgmentHash}`,
+              ...judgment,
+              contentHash: `sha256:${judgmentHash}`,
+              evidenceStatus: "verified" as const,
+            };
+          }),
           createdAt: timestamp,
         },
         candidateSources: usedMaterials.map<ResearchCandidateSourceConnectionRecord>((source, index) => ({
           id: `${temporaryFusionId}:source:${index + 1}`,
           temporaryFusionNodeId: temporaryFusionId,
           sourceNodeId: source.nodeId,
-          citationOrdinal: materials.findIndex((candidate) => candidate.nodeId === source.nodeId) + 1,
           sourceKind: "formal",
           bodyVersionId: source.bodyVersionId,
           fragmentIds: source.fragmentIds,
@@ -657,6 +664,27 @@ export class ResearchFusionProposalService {
       this.runningPairs.delete(pairKey);
     }
   }
+}
+
+function normalizeDiscoveryJudgments(
+  body: string,
+  raw: Array<{ startOffset: number; endOffset: number; sourceNodeIds: string[] }> | undefined,
+  usedSourceNodeIds: ReadonlySet<string>,
+): Array<{ startOffset: number; endOffset: number; sourceNodeIds: string[] }> {
+  const candidates = raw?.length ? raw : deriveMessageBlocks(body)
+    .filter((block) => !/^\s*#{1,6}\s/.test(block.text))
+    .map((block) => ({
+      startOffset: block.startOffset,
+      endOffset: block.startOffset + block.text.length,
+      sourceNodeIds: [...usedSourceNodeIds].sort(),
+    }));
+  return candidates.flatMap((candidate) => {
+    const sourceNodeIds = [...new Set(candidate.sourceNodeIds)].filter((id) => usedSourceNodeIds.has(id)).sort();
+    if (!Number.isSafeInteger(candidate.startOffset) || !Number.isSafeInteger(candidate.endOffset)
+      || candidate.startOffset < 0 || candidate.endOffset <= candidate.startOffset || candidate.endOffset > body.length
+      || !body.slice(candidate.startOffset, candidate.endOffset).trim() || sourceNodeIds.length < 2) return [];
+    return [{ startOffset: candidate.startOffset, endOffset: candidate.endOffset, sourceNodeIds }];
+  }).sort((left, right) => left.startOffset - right.startOffset || left.endOffset - right.endOffset);
 }
 
 function isVerifiedRelationship(value: unknown): value is { relationType: Exclude<FusionRelationType, "unrelated">; reason: string } {

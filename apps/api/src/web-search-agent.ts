@@ -432,7 +432,7 @@ export function createSearchRunContext(): SearchRunContext {
 
 /**
  * 只保留指向"实际取得证据"来源的引用（#49 引用完整性）。
- * 全部来源保留入库（序数稠密，正文 [来源n] 不改写），
+ * 全部来源保留入库（序数稠密），
  * 仅丢弃指向 none（无任何内容取得）来源的引用记录。
  * 越界序号视为无效丢弃。
  */
@@ -444,26 +444,4 @@ export function filterCitationsByEvidence(
     const source = sources[citation.sourceOrdinal - 1];
     return source !== undefined && source.evidenceStatus !== "none";
   });
-}
-
-/**
- * 解析模型回答中的 [来源n] 引用标记。
- * 返回引用位置列表（sourceOrdinal + markerOffset），供持久化到 research_citations 表。
- */
-export function parseAgentCitations(
-  content: string,
-  sources: ResearchGroundingSourceRecord[],
-): { citations: Array<{ sourceOrdinal: number; markerOffset: number }> } {
-  const sourceCount = sources.length;
-  const markerPattern = /\[来源(\d+)\]/g;
-  const citations: Array<{ sourceOrdinal: number; markerOffset: number }> = [];
-  let match: RegExpExecArray | null;
-  while ((match = markerPattern.exec(content)) !== null) {
-    const sourceNum = Number(match[1]);
-    if (sourceNum >= 1 && sourceNum <= sourceCount) {
-      // 正文已经过隐藏控制信息清洗；位置直接对齐最终消息文本。
-      citations.push({ sourceOrdinal: sourceNum, markerOffset: match.index });
-    }
-  }
-  return { citations };
 }

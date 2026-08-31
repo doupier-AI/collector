@@ -58,7 +58,7 @@ describe("TemporaryFusionPage", () => {
 
   it("presents the draft and temporary discussion as a dedicated conversation page", async () => {
     const base = makeTemporaryFusionBundle();
-    const bundle = { ...base, activeDraft: { ...base.activeDraft, body: "跨来源判断。[来源1][来源2]" } };
+    const bundle = { ...base, activeDraft: { ...base.activeDraft, body: "跨来源判断。" } };
     const messages: ResearchTemporaryFusionConversationView["messages"] = [];
     const submitTemporaryFusionMessage = vi.fn(async (_id: string, content: string) => {
       messages.push({ id: "input", temporaryFusionNodeId: bundle.node.id, role: "user", content, status: "completed", createdAt: bundle.node.createdAt, updatedAt: bundle.node.updatedAt });
@@ -73,7 +73,7 @@ describe("TemporaryFusionPage", () => {
     renderPage(api, bundle.node.id);
 
     expect(await screen.findByRole("heading", { name: "跨来源的新认识" })).toBeInTheDocument();
-    expect(screen.getByText("跨来源判断。[来源1][来源2]")).toBeInTheDocument();
+    expect(screen.getByText("跨来源判断。")).toBeInTheDocument();
     expect(screen.getByText(/讨论不会改写这份草案/)).toBeInTheDocument();
 
     const user = userEvent.setup();

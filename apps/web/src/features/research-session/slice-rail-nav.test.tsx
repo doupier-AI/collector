@@ -93,7 +93,7 @@ function stubMatchMedia(options: { wide?: boolean; reducedMotion?: boolean } = {
 }
 
 /** 渲染各节卡片（只有恒在的容器，不挂标题锚点）+ 导航，返回卡片元素（按传入顺序）。 */
-function setup(items: SliceRailItem[], options: { wide?: boolean; reducedMotion?: boolean } = {}) {
+function setup(items: SliceRailItem[], options: { wide?: boolean; reducedMotion?: boolean; onRetry?: (bodyVersionId: string) => void } = {}) {
   observedElements = [];
   const media = stubMatchMedia(options);
   const { container } = render(
@@ -103,7 +103,7 @@ function setup(items: SliceRailItem[], options: { wide?: boolean; reducedMotion?
           {item.title}
         </section>
       ))}
-      <SliceRailNav items={items} />
+      <SliceRailNav items={items} onRetry={options.onRetry} />
     </div>,
   );
   const cards = items.map((item) => container.querySelector<HTMLElement>(`#${CSS.escape(item.cardId)}`)!);
@@ -156,6 +156,30 @@ describe("SliceRailNav 章节导航", () => {
     expect(observedElements.map((el) => el.id)).toEqual(["m-out#p0-card", "m-out#p1-card", "m-out#p2-card"]);
     expect(screen.getAllByRole("button")).toHaveLength(3);
     expect(activeTick()?.className).toContain("slice-rail__tick");
+  });
+
+  it("宽屏与窄屏都诚实区分规则降级并可按正文版本重算", () => {
+    const onRetry = vi.fn();
+    const degraded = ITEMS_SINGLE.map((item) => ({
+      ...item,
+      bodyVersionId: "body:m-out:v2",
+      chapterStatus: "failed" as const,
+      chapterSource: "rule" as const,
+      chapterFallbackReason: "ai_failed" as const,
+      chapterRetryable: true,
+    }));
+    const wide = setup(degraded, { onRetry });
+    expect(screen.getByRole("navigation", { name: "章节导航" })).toHaveAttribute("data-chapter-source", "rule");
+    fireEvent.click(screen.getByRole("button", { name: "重新整理章节" }));
+    expect(onRetry).toHaveBeenCalledWith("body:m-out:v2");
+    cleanup();
+
+    setup(degraded, { wide: false, onRetry });
+    fireEvent.click(screen.getByRole("button", { name: "打开章节导航" }));
+    expect(screen.getByText("规则章节 · AI 失败，可重算")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重新整理章节" }));
+    expect(onRetry).toHaveBeenLastCalledWith("body:m-out:v2");
+    expect(wide.cards).toHaveLength(3);
   });
 
   it("findSliceCardElement 现场解析卡片容器，不缓存", () => {

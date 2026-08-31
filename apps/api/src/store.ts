@@ -1,10 +1,15 @@
 import { mkdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchContextAssemblySnapshot, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageBodyRecord, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchReasoningRecord, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId, toResearchMessageBody } from "@collector/capture-contracts";
-import { contextExplanationCodes, observeContextAssembly } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, hashBodyContent, researchBodyVersionId, resolveResearchStableLocation, validateResearchStableLocation, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchContextAssemblySnapshot, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSidecarInvalidReason, type ResearchSidecarRecord, type ResearchSidecarRecordQuery, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageBodyRecord, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchReasoningRecord, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId, toResearchMessageBody } from "@collector/capture-contracts";
+import { contextExplanationCodes, deriveMessageBlocks, observeContextAssembly } from "@collector/capture-contracts";
+import type { ResearchCitationCandidate } from "@collector/capture-contracts";
+import { markdownStableVisibleText, projectMarkdownDocument, projectMarkdownSourceRange } from "@collector/markdown-projection";
 import {
   compareAssociationHintsByValue,
+  researchChapterTargetKey,
+  resolveResearchChapterTarget,
   type ConfirmTemporaryFusionResult,
   isResearchPermanentEdge,
   nextProjectColorRole,
@@ -23,6 +28,8 @@ import {
   type ResearchTemporaryFusionNodeRecord,
   type ResearchTemporaryFusionTaskRecord,
   type ResearchTemporaryFusionTurnAccepted,
+  type ResearchTermMarkerTaskRecord,
+  type TermMarker,
 } from "@collector/capture-contracts";
 
 export type ObservabilityRecordSource = "research" | "import" | "fusion" | "chapter";
@@ -68,6 +75,7 @@ export interface ResearchLaterStore {
   /** 节点投影由 CollectorStore 的节点能力提供；旧 JsonStore 返回空值。 */
   getResearchNode(id: string): ResearchNodeRecord | undefined;
   listResearchMessageBodiesByNode(nodeId: string): ResearchMessageBodyRecord[];
+  getResearchTermMarkerTaskByMessage(messageId: string): ResearchTermMarkerTaskRecord | undefined;
 }
 
 /** 选区、稳定锚点与来源返回所需的持久化能力。 */
@@ -108,11 +116,12 @@ export interface ResearchImportStore {
   getResearchSession(id: string): ResearchSessionRecord | undefined;
 }
 
-/** 导入章节解析任务（T03）所需的持久化能力：快照与任务一对一，snapshot_id 唯一即幂等。 */
+/** 导入与回答共用章节任务；目标键由快照或回答正文版本确定。 */
 export interface ResearchChapterStore {
   getResearchChapterTask(id: string): ResearchChapterTaskRecord | undefined;
   getResearchChapterTaskBySnapshot(snapshotId: string): ResearchChapterTaskRecord | undefined;
-  /** 按 snapshot_id 幂等创建：已存在时原样返回既有任务，不产生重复锚点任务。 */
+  getResearchChapterTaskByBodyVersion(bodyVersionId: string): ResearchChapterTaskRecord | undefined;
+  /** 按统一目标键幂等创建：已存在时原样返回既有任务。 */
   createResearchChapterTask(record: ResearchChapterTaskRecord): Promise<ResearchChapterTaskRecord>;
   /** CAS 认领：queued → running，原子累加 attempts；已被认领返回 undefined。 */
   claimResearchChapterTask(id: string): ResearchChapterTaskRecord | undefined;
@@ -122,11 +131,42 @@ export interface ResearchChapterStore {
   /** 重启恢复：running 回 queued（模型调用未落库，重跑即幂等），返回受影响数。 */
   requeueInterruptedResearchChapterTasks(): number;
   getResearchContentSnapshot(id: string): ResearchContentSnapshotRecord | undefined;
+  getResearchMessage(id: string): ResearchMessageRecord | undefined;
+  getBodyVersion(id: string): ResearchBodyVersionRecord | undefined;
+  listSlicesByMessage(messageId: string): ResearchSliceRecord[];
   getResearchSession(id: string): ResearchSessionRecord | undefined;
 }
 
+/** Shared lifecycle only; citation, term-marker, and chapter payloads stay typed in their owning stores. */
+export interface ResearchSidecarStore {
+  createResearchSidecarRecord(record: ResearchSidecarRecord): Promise<ResearchSidecarRecord>;
+  getResearchSidecarRecord(id: string): ResearchSidecarRecord | undefined;
+  listResearchSidecarRecords(query?: ResearchSidecarRecordQuery): ResearchSidecarRecord[];
+  completeResearchSidecarRecord(id: string, updatedAt: string): Promise<ResearchSidecarRecord>;
+  recomputeResearchSidecarRecord(id: string, updatedAt: string): Promise<ResearchSidecarRecord>;
+  invalidateResearchSidecarRecord(id: string, reason: ResearchSidecarInvalidReason, updatedAt: string): Promise<ResearchSidecarRecord>;
+  deleteResearchSidecarRecord(id: string): Promise<boolean>;
+  /** Restart recovery: unfinished sidecar work becomes explicitly invalid and can be recomputed. */
+  invalidateInterruptedResearchSidecarRecords(updatedAt: string): number;
+}
+
+/** 独立弱标记任务只保存任务状态和经验证的范围，不保存正文副本。 */
+export interface ResearchTermMarkerStore extends ResearchSidecarStore {
+  getResearchTermMarkerTask(id: string): ResearchTermMarkerTaskRecord | undefined;
+  getResearchTermMarkerTaskByMessage(messageId: string): ResearchTermMarkerTaskRecord | undefined;
+  upsertResearchTermMarkerTask(record: ResearchTermMarkerTaskRecord): Promise<ResearchTermMarkerTaskRecord>;
+  claimResearchTermMarkerTask(id: string): ResearchTermMarkerTaskRecord | undefined;
+  updateResearchTermMarkerTask(record: ResearchTermMarkerTaskRecord): Promise<ResearchTermMarkerTaskRecord>;
+  listRecoverableResearchTermMarkerTasks(): ResearchTermMarkerTaskRecord[];
+  requeueInterruptedResearchTermMarkerTasks(): number;
+  requeueRetryableResearchTermMarkerTasks(): number;
+  getResearchMessage(id: string): ResearchMessageRecord | undefined;
+  getResearchTask(id: string): ResearchTaskRecord | undefined;
+  getBodyVersion(id: string): ResearchBodyVersionRecord | undefined;
+}
+
 /** 研究会话生命周期所需的持久化能力：28 个方法。 */
-export interface ResearchStore {
+export interface ResearchStore extends ResearchSidecarStore, ResearchTermMarkerStore {
   saveResearchSession(record: ResearchSessionRecord): Promise<void>;
   createResearchSession(record: ResearchSessionRecord, idempotencyKey: string): Promise<ResearchSessionRecord>;
   getResearchSession(id: string): ResearchSessionRecord | undefined;
@@ -170,7 +210,8 @@ export interface ResearchStore {
   createResearchTurn(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<ResearchTurnAccepted>;
   createResearchTurnForNode(node: ResearchNodeRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<ResearchTurnAccepted>;
   claimResearchTask(id: string, provider?: string, model?: string, promptVersion?: string): ResearchTaskRecord | undefined;
-  appendResearchTaskDelta(id: string, delta: string, termMarkers?: readonly import("@collector/capture-contracts").TermMarker[], reasoningDelta?: string): Promise<void>;
+  appendResearchTaskDelta(id: string, delta: string, reasoningDelta?: string): Promise<void>;
+  appendResearchTaskCitationCandidate(id: string, candidate: ResearchCitationCandidate): Promise<void>;
   completeResearchTask(id: string): Promise<void>;
   failResearchTask(task: ResearchTaskRecord, error: ResearchTaskError): Promise<void>;
   retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string, options?: { preserveContent?: boolean }): Promise<ResearchTaskRecord>;
@@ -249,6 +290,7 @@ export interface DeepResearchStore {
   listResearchMessagesByNode(nodeId: string): ResearchMessageRecord[];
   listResearchMessageBodies(sessionId: string): ResearchMessageBodyRecord[];
   listResearchMessageBodiesByNode(nodeId: string): ResearchMessageBodyRecord[];
+  getResearchTermMarkerTaskByMessage(messageId: string): ResearchTermMarkerTaskRecord | undefined;
   listResearchTasks(sessionId: string): ResearchTaskRecord[];
   listResearchTasksByNode(nodeId: string): ResearchTaskRecord[];
   findResearchTaskByIdempotencyKey(sessionId: string, idempotencyKey: string): ResearchTaskRecord | undefined;
@@ -332,7 +374,7 @@ export interface NodeSystemTargetStore {
 }
 
 export interface CollectorStore
-  extends ResearchLaterStore, ResearchSelectionStore, ResearchImportStore, ResearchChapterStore, ResearchStore, DeepResearchStore, ResearchFusionProposalStore, NodeSystemTargetStore {
+  extends ResearchLaterStore, ResearchSelectionStore, ResearchImportStore, ResearchChapterStore, ResearchSidecarStore, ResearchStore, DeepResearchStore, ResearchFusionProposalStore, NodeSystemTargetStore {
   init(): Promise<void>;
   /** 返回当前库文件路径（MemoryStore 为 ":memory:"）；持久化重开测试据此复开同一库。 */
   getDataFilePath(): string | undefined;
@@ -385,7 +427,8 @@ export interface CollectorStore
   listResearchTasks(sessionId: string): ResearchTaskRecord[];
   createResearchTurn(session: ResearchSessionRecord, inputMessage: ResearchMessageRecord, outputMessage: ResearchMessageRecord, task: ResearchTaskRecord): Promise<ResearchTurnAccepted>;
   claimResearchTask(id: string, provider?: string, model?: string, promptVersion?: string): ResearchTaskRecord | undefined;
-  appendResearchTaskDelta(id: string, delta: string, termMarkers?: readonly import("@collector/capture-contracts").TermMarker[], reasoningDelta?: string): Promise<void>;
+  appendResearchTaskDelta(id: string, delta: string, reasoningDelta?: string): Promise<void>;
+  appendResearchTaskCitationCandidate(id: string, candidate: ResearchCitationCandidate): Promise<void>;
   completeResearchTask(id: string): Promise<void>;
   failResearchTask(task: ResearchTaskRecord, error: ResearchTaskError): Promise<void>;
   retryResearchTask(task: ResearchTaskRecord, provider?: string, model?: string, promptVersion?: string, options?: { preserveContent?: boolean }): Promise<ResearchTaskRecord>;
@@ -473,7 +516,91 @@ export interface CollectorStore
  * `if (version < N+1)` 版本块（块内写入对应 schema_migrations 行）并递增本常量；
  * 测试以此常量断言「打开/重放后数据库实际到达声明版本」，无需再手工同步多处硬编码断言。
  */
-export const LATEST_SCHEMA_VERSION = 46;
+export const LATEST_SCHEMA_VERSION = 50;
+
+type LegacyGeneratedBodyMigration = {
+  content: string;
+  rawToContentOffsets: Array<number | undefined>;
+  mentions: Array<{ startOffset: number; endOffset: number; text: string; category: TermMarker["category"]; entityKey: string }>;
+};
+
+/** v50 专用的一次性适配器；只由迁移调用，运行时生成与读取路径不再识别正文控制协议。 */
+function migrateLegacyGeneratedBody(raw: string): LegacyGeneratedBodyMigration {
+  const token = /\[\[(concept|entity|abbreviation|notation):([A-Za-z0-9][A-Za-z0-9_-]{0,127}):([^\]\r\n]{1,400})\]\]|\[来源\d+\]/g;
+  const rawToContentOffsets: Array<number | undefined> = new Array(raw.length + 1).fill(undefined);
+  const mentions: LegacyGeneratedBodyMigration["mentions"] = [];
+  let content = "";
+  let cursor = 0;
+  const copy = (start: number, end: number): void => {
+    const cleanStart = content.length;
+    content += raw.slice(start, end);
+    for (let offset = start; offset <= end; offset += 1) rawToContentOffsets[offset] = cleanStart + offset - start;
+  };
+  for (const match of raw.matchAll(token)) {
+    const start = match.index;
+    copy(cursor, start);
+    const cleanStart = content.length;
+    if (match[1] && match[2] && match[3]) {
+      const text = match[3].trim();
+      content += text;
+      mentions.push({
+        startOffset: cleanStart,
+        endOffset: cleanStart + text.length,
+        text,
+        category: match[1] as TermMarker["category"],
+        entityKey: match[2],
+      });
+      rawToContentOffsets[start] = cleanStart;
+      rawToContentOffsets[start + match[0].length] = content.length;
+    } else {
+      rawToContentOffsets[start] = cleanStart;
+      rawToContentOffsets[start + match[0].length] = cleanStart;
+    }
+    cursor = start + match[0].length;
+  }
+  copy(cursor, raw.length);
+  if (raw.length === 0) rawToContentOffsets[0] = 0;
+  return { content, rawToContentOffsets, mentions };
+}
+
+function stableLegacySidecarHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function migratedTermMarker(
+  messageId: string,
+  content: string,
+  absoluteStart: number,
+  absoluteEnd: number,
+  input: Pick<TermMarker, "text" | "category"> & { entityKey?: string; mentionId?: string; entityId?: string },
+): TermMarker | undefined {
+  if (absoluteStart < 0 || absoluteEnd <= absoluteStart || content.slice(absoluteStart, absoluteEnd) !== input.text) return undefined;
+  const block = deriveMessageBlocks(content).find((candidate) =>
+    absoluteStart >= candidate.startOffset && absoluteEnd <= candidate.startOffset + candidate.text.length,
+  );
+  if (!block) return undefined;
+  const entityKey = input.entityKey ?? input.entityId ?? `${input.category}:${input.text}`;
+  return {
+    mentionId: input.mentionId ?? `mention:${stableLegacySidecarHash(`${messageId}:${absoluteStart}:${absoluteEnd}:${entityKey}`)}`,
+    entityId: input.entityId ?? `entity:${stableLegacySidecarHash(`${messageId}:${entityKey}`)}`,
+    text: input.text,
+    blockOrdinal: block.ordinal,
+    startOffset: absoluteStart - block.startOffset,
+    endOffset: absoluteEnd - block.startOffset,
+    category: input.category,
+    location: {
+      contentId: messageId,
+      bodyVersionId: researchBodyVersionId(messageId, content),
+      sourceRange: { startOffset: absoluteStart, endOffset: absoluteEnd },
+      exact: input.text,
+    },
+  };
+}
 
 function directSourceIdsForConfirmedDraft(
   draft: ResearchFusionDraftVersionRecord,
@@ -485,19 +612,28 @@ function directSourceIdsForConfirmedDraft(
     }
     return new Set(draft.judgments.flatMap((judgment) => judgment.sourceNodeIds));
   }
-  // T01-T04 drafts predate claim-sized judgments. Their generation contract requires every
-  // adopted source to have an explicit [来源n] marker, so retain that exact correspondence.
-  return new Set([...draft.body.matchAll(/\[来源(\d+)\]/g)].flatMap((match) => {
-    const ordinal = Number(match[1]);
-    const candidate = candidates.find((source) => source.citationOrdinal === ordinal)
-      ?? (candidates.every((source) => source.citationOrdinal === undefined) ? candidates[ordinal - 1] : undefined);
-    return candidate ? [candidate.sourceNodeId] : [];
-  }));
+  // 历史草案没有判断 payload 时只保留其既有聚合核验边界；候选连接是唯一来源事实。
+  return draft.evidenceStatus === "verified"
+    ? new Set(candidates.map((candidate) => candidate.sourceNodeId))
+    : new Set<string>();
 }
 
 function formalFusionTitle(body: string): string {
   const firstLine = body.split(/\r?\n/, 1)[0]?.replace(/\s+/g, " ").trim() ?? "";
   return firstLine.slice(0, RESEARCH_TITLE_MAX_CHARACTERS) || "融合成果";
+}
+
+function validateCitationCandidate(candidate: ResearchCitationCandidate): void {
+  if (!Number.isSafeInteger(candidate.sourceOrdinal) || candidate.sourceOrdinal < 1) {
+    throw new Error("Research citation candidate sourceOrdinal must be positive");
+  }
+  const hasStart = candidate.startOffset !== undefined;
+  const hasEnd = candidate.endOffset !== undefined;
+  if (hasStart !== hasEnd) throw new Error("Research citation candidate must provide both offsets or neither");
+  if (hasStart && (!Number.isSafeInteger(candidate.startOffset) || !Number.isSafeInteger(candidate.endOffset)
+    || candidate.startOffset! < 0 || candidate.endOffset! <= candidate.startOffset!)) {
+    throw new Error("Research citation candidate range must be a non-empty UTF-16 range");
+  }
 }
 
 export class SqliteStore implements CollectorStore {
@@ -512,6 +648,7 @@ export class SqliteStore implements CollectorStore {
     this.database.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
     this.createSchema();
     this.migrateSchema();
+    this.invalidateInterruptedResearchSidecarRecords(new Date().toISOString());
     await this.migrateLegacyProviderProfile();
   }
 
@@ -609,6 +746,8 @@ export class SqliteStore implements CollectorStore {
       this.db().exec("DELETE FROM semantic_search_index_generations");
       // 语义片段引用正文版本，正文版本与切片引用消息/节点：这些是最下游引用方（不被任何表
       // 引用），必须在删除 nodes/messages/selections 之前先删，避免外键约束失败。
+      this.db().exec("DELETE FROM research_sidecar_records");
+      this.db().exec("DELETE FROM research_term_marker_tasks");
       this.db().exec("DELETE FROM research_semantic_fragments");
       this.db().exec("DELETE FROM research_body_versions");
       this.db().exec("DELETE FROM research_slices");
@@ -872,6 +1011,8 @@ export class SqliteStore implements CollectorStore {
       del("DELETE FROM semantic_search_units WHERE session_id = ?", id);
       // 连接只保存稳定身份和定位键；删除来源前标记缺失，不能保留正文副本。
       this.updateCandidateSourceHealthForSession(id, "deleted");
+      del("DELETE FROM research_sidecar_records WHERE session_id = ?", id);
+      del("DELETE FROM research_term_marker_tasks WHERE session_id = ?", id);
       del(`DELETE FROM research_semantic_fragments WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
       del(`DELETE FROM research_body_versions WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
       del(`DELETE FROM research_slices WHERE node_id IN (${NODE_SCOPE}) OR message_id IN (${MESSAGE_SCOPE})`, id, id);
@@ -1187,7 +1328,7 @@ export class SqliteStore implements CollectorStore {
     return claimed;
   }
 
-  async appendResearchTaskDelta(id: string, delta: string, termMarkers?: readonly import("@collector/capture-contracts").TermMarker[], reasoningDelta?: string): Promise<void> {
+  async appendResearchTaskDelta(id: string, delta: string, reasoningDelta?: string): Promise<void> {
     this.transaction(() => {
       const task = this.getResearchTask(id);
       if (!task || task.status !== "running") throw new Error("Research task is not running");
@@ -1200,7 +1341,6 @@ export class SqliteStore implements CollectorStore {
       const message: ResearchMessageRecord = {
         ...reasoningMessage,
         content: reasoningMessage.content + delta,
-        ...(termMarkers ? { termMarkers: [...termMarkers] } : {}),
         status: "streaming",
         updatedAt: now,
       };
@@ -1208,6 +1348,19 @@ export class SqliteStore implements CollectorStore {
       const updatedTask: ResearchTaskRecord = { ...task, updatedAt: now };
       this.updateResearchTask(updatedTask);
       this.insertResearchEvent(id, "delta", now, { delta, message });
+    });
+  }
+
+  async appendResearchTaskCitationCandidate(id: string, candidate: ResearchCitationCandidate): Promise<void> {
+    this.transaction(() => {
+      const task = this.getResearchTask(id);
+      if (!task || task.status !== "running") throw new Error("Research task is not running");
+      const message = this.getResearchMessage(task.outputMessageId);
+      if (!message) throw new Error("Research output message not found");
+      validateCitationCandidate(candidate);
+      const now = new Date().toISOString();
+      this.updateResearchTask({ ...task, updatedAt: now });
+      this.insertResearchEvent(id, "citation_candidate", now, { candidate, message });
     });
   }
 
@@ -1258,17 +1411,17 @@ export class SqliteStore implements CollectorStore {
         error: undefined, updatedAt: now, startedAt: undefined, completedAt: undefined,
       };
       // preserveContent：保留已写部分正文与事件流，供断流续传/截断续写从断点继续；默认清空重来。
-      // 默认重试清空正文时必须同事务清掉流内弱标记：标记只在当前正文版本有效（ADR-0028），
-      // 残留旧标记会让空正文消息携带不一致派生状态，甚至被下一次生成误当种子复用。
       // 默认重试是新的生成尝试：删除当前独立 reasoning；保留式断流续传沿用同一尝试。
       const reasoningMessage = options?.preserveContent ? currentMessage : this.deleteCurrentReasoning(currentMessage);
-      const { termMarkers: _staleMarkers, ...clearedMessage } = reasoningMessage;
       const message: ResearchMessageRecord = options?.preserveContent
         ? { ...currentMessage, updatedAt: now }
-        : { ...clearedMessage, content: "", status: "pending", updatedAt: now };
+        : { ...reasoningMessage, content: "", status: "pending", updatedAt: now };
       this.updateResearchMessage(message);
       this.updateResearchTask(queued);
-      if (!options?.preserveContent) this.db().prepare("DELETE FROM research_task_events WHERE task_id = ?").run(task.id);
+      if (!options?.preserveContent) {
+        this.clearResearchTermMarkerTask(current.outputMessageId);
+        this.db().prepare("DELETE FROM research_task_events WHERE task_id = ?").run(task.id);
+      }
       retried = queued;
     });
     if (!retried) throw new Error("Research task retry was not persisted");
@@ -1326,10 +1479,10 @@ export class SqliteStore implements CollectorStore {
         startedAt: undefined,
         completedAt: undefined,
       };
-      const withoutReasoning = this.deleteCurrentReasoning(message);
-      const { termMarkers: _markers, ...freshMessage } = withoutReasoning;
+      const freshMessage = this.deleteCurrentReasoning(message);
       this.updateResearchTask(queued);
       this.updateResearchMessage({ ...freshMessage, content: "", status: "pending", updatedAt: now });
+      this.clearResearchTermMarkerTask(task.outputMessageId);
       this.db().prepare("DELETE FROM research_task_events WHERE task_id = ?").run(id);
     });
     if (!queued) throw new Error("Research task restart was not persisted");
@@ -1375,7 +1528,6 @@ export class SqliteStore implements CollectorStore {
       const message: ResearchMessageRecord = {
         ...messageWithoutCurrentReasoning,
         content: "",
-        termMarkers: undefined,
         versions,
         status: "pending",
         updatedAt: now,
@@ -1387,6 +1539,7 @@ export class SqliteStore implements CollectorStore {
         error: undefined, updatedAt: now, startedAt: undefined, completedAt: undefined,
       };
       this.updateResearchTask(queued);
+      this.clearResearchTermMarkerTask(current.outputMessageId);
       // 清空旧事件流：新生成是全新一轮，旧 delta/completed 重放会提前终止前端连接
       // 并把旧任务快照覆盖回视图（与 retry 默认清空的先例一致）。
       this.db().prepare("DELETE FROM research_task_events WHERE task_id = ?").run(task.id);
@@ -1418,7 +1571,6 @@ export class SqliteStore implements CollectorStore {
       this.db().prepare("DELETE FROM research_reasoning_records WHERE message_id = ?").run(currentMessage.id);
       const {
         versions: _dropped,
-        termMarkers: _staleMarkers,
         reasoning: _staleReasoningView,
         reasoningRecordId: _staleReasoningRecordId,
         ...restMessage
@@ -1431,6 +1583,7 @@ export class SqliteStore implements CollectorStore {
         error: undefined, updatedAt: now, startedAt: undefined, completedAt: undefined,
       };
       this.updateResearchTask(queued);
+      this.clearResearchTermMarkerTask(current.outputMessageId);
       // 清空旧事件流：编辑生成是全新一轮（与 regenerate 同理由）。
       this.db().prepare("DELETE FROM research_task_events WHERE task_id = ?").run(current.id);
     });
@@ -1480,7 +1633,7 @@ export class SqliteStore implements CollectorStore {
 
   listResearchTaskEvents(taskId: string, afterId = 0): ResearchTaskEvent[] {
     const rows = this.db().prepare("SELECT sequence, event_type, created_at, data_json FROM research_task_events WHERE task_id = ? AND sequence > ? ORDER BY sequence")
-      .all(taskId, afterId) as Array<{ sequence: number; event_type: "delta" | "completed" | "failed" | "stopped"; created_at: string; data_json: string }>;
+      .all(taskId, afterId) as Array<{ sequence: number; event_type: "delta" | "citation_candidate" | "completed" | "failed" | "stopped"; created_at: string; data_json: string }>;
     return rows.map((row) => ({ id: row.sequence, type: row.event_type, createdAt: row.created_at, ...JSON.parse(row.data_json) }) as ResearchTaskEvent);
   }
 
@@ -2469,19 +2622,38 @@ export class SqliteStore implements CollectorStore {
   }
 
   getResearchChapterTaskBySnapshot(snapshotId: string): ResearchChapterTaskRecord | undefined {
-    return this.getRecord<ResearchChapterTaskRecord>("SELECT record_json FROM research_chapter_tasks WHERE snapshot_id = ?", snapshotId);
+    return this.getRecord<ResearchChapterTaskRecord>("SELECT record_json FROM research_chapter_tasks WHERE target_key = ? OR snapshot_id = ?", `import:${snapshotId}`, snapshotId);
+  }
+
+  getResearchChapterTaskByBodyVersion(bodyVersionId: string): ResearchChapterTaskRecord | undefined {
+    return this.getRecord<ResearchChapterTaskRecord>("SELECT record_json FROM research_chapter_tasks WHERE target_key = ?", `answer:${bodyVersionId}`);
   }
 
   async createResearchChapterTask(record: ResearchChapterTaskRecord): Promise<ResearchChapterTaskRecord> {
     let created: ResearchChapterTaskRecord | undefined;
     this.transaction(() => {
-      const existing = this.getResearchChapterTaskBySnapshot(record.snapshotId);
+      const target = resolveResearchChapterTarget(record);
+      const targetKey = researchChapterTargetKey(target);
+      const existing = this.getRecord<ResearchChapterTaskRecord>("SELECT record_json FROM research_chapter_tasks WHERE target_key = ?", targetKey);
       if (existing) {
         created = existing;
         return;
       }
-      this.db().prepare("INSERT INTO research_chapter_tasks (id, session_id, snapshot_id, status, retryable, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(record.id, record.sessionId, record.snapshotId, record.status, record.retryable ? 1 : 0, record.createdAt, record.updatedAt, JSON.stringify(record));
+      this.db().prepare("INSERT INTO research_chapter_tasks (id, session_id, target_key, target_kind, snapshot_id, message_id, body_version_id, status, retryable, created_at, updated_at, record_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(
+          record.id,
+          record.sessionId,
+          targetKey,
+          target.kind,
+          target.kind === "import" ? target.snapshotId : null,
+          target.kind === "answer" ? target.messageId : null,
+          target.kind === "answer" ? target.bodyVersionId : null,
+          record.status,
+          record.retryable ? 1 : 0,
+          record.createdAt,
+          record.updatedAt,
+          JSON.stringify(record),
+        );
       created = record;
     });
     if (!created) throw new Error("Research chapter task was not persisted");
@@ -2846,6 +3018,307 @@ export class SqliteStore implements CollectorStore {
     return this.listRecords<ResearchCitationRecord>(`SELECT record_json FROM research_citations WHERE message_id IN (${placeholders}) ORDER BY message_id, block_ordinal, marker_offset, rowid`, ...messageIds);
   }
 
+  // ── Versioned sidecar enhancement headers (SIDE-01) ───────────
+
+  async createResearchSidecarRecord(record: ResearchSidecarRecord): Promise<ResearchSidecarRecord> {
+    const sessionId = this.validateResearchSidecarRecord(record);
+    const existing = this.getResearchSidecarRecord(record.id);
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(record)) throw new Error("Research sidecar id already exists with different content");
+      return existing;
+    }
+    this.db().prepare(`
+      INSERT INTO research_sidecar_records
+        (id, session_id, kind, body_version_id, content_id, start_offset, end_offset, generation_attempt, status, source_kind, precision, invalid_reason, created_at, updated_at, record_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      record.id,
+      sessionId,
+      record.kind,
+      record.bodyVersionId,
+      record.location.contentId,
+      record.location.sourceRange.startOffset,
+      record.location.sourceRange.endOffset,
+      record.generationAttempt,
+      record.status,
+      record.source.kind,
+      record.precision,
+      record.invalidReason ?? null,
+      record.createdAt,
+      record.updatedAt,
+      JSON.stringify(record),
+    );
+    return record;
+  }
+
+  getResearchSidecarRecord(id: string): ResearchSidecarRecord | undefined {
+    return this.getRecord<ResearchSidecarRecord>("SELECT record_json FROM research_sidecar_records WHERE id = ?", id);
+  }
+
+  listResearchSidecarRecords(query: ResearchSidecarRecordQuery = {}): ResearchSidecarRecord[] {
+    const where: string[] = [];
+    const values: SQLInputValue[] = [];
+    if (query.bodyVersionId) { where.push("body_version_id = ?"); values.push(query.bodyVersionId); }
+    if (query.contentId) { where.push("content_id = ?"); values.push(query.contentId); }
+    if (query.kind) { where.push("kind = ?"); values.push(query.kind); }
+    if (query.statuses?.length) {
+      where.push(`status IN (${query.statuses.map(() => "?").join(", ")})`);
+      values.push(...query.statuses);
+    }
+    return this.listRecords<ResearchSidecarRecord>(
+      `SELECT record_json FROM research_sidecar_records${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at, id`,
+      ...values,
+    );
+  }
+
+  async completeResearchSidecarRecord(id: string, updatedAt: string): Promise<ResearchSidecarRecord> {
+    const current = this.requireResearchSidecarRecord(id);
+    if (current.status !== "pending") throw new Error("Only pending research sidecars can complete");
+    const completed: ResearchSidecarRecord = { ...current, status: "ready", invalidReason: undefined, updatedAt };
+    this.validateResearchSidecarRecord(completed);
+    this.updateResearchSidecarRecord(completed);
+    return completed;
+  }
+
+  async recomputeResearchSidecarRecord(id: string, updatedAt: string): Promise<ResearchSidecarRecord> {
+    const current = this.requireResearchSidecarRecord(id);
+    if (current.status === "pending") throw new Error("Pending research sidecar is already awaiting computation");
+    const recomputing: ResearchSidecarRecord = {
+      ...current,
+      generationAttempt: current.generationAttempt + 1,
+      status: "pending",
+      invalidReason: undefined,
+      updatedAt,
+    };
+    this.validateResearchSidecarRecord(recomputing);
+    this.updateResearchSidecarRecord(recomputing);
+    return recomputing;
+  }
+
+  async invalidateResearchSidecarRecord(id: string, reason: ResearchSidecarInvalidReason, updatedAt: string): Promise<ResearchSidecarRecord> {
+    const current = this.requireResearchSidecarRecord(id);
+    const invalid: ResearchSidecarRecord = { ...current, status: "invalid", invalidReason: reason, updatedAt };
+    this.validateResearchSidecarRecord(invalid);
+    this.updateResearchSidecarRecord(invalid);
+    return invalid;
+  }
+
+  async deleteResearchSidecarRecord(id: string): Promise<boolean> {
+    return this.db().prepare("DELETE FROM research_sidecar_records WHERE id = ?").run(id).changes === 1;
+  }
+
+  invalidateInterruptedResearchSidecarRecords(updatedAt: string): number {
+    const interrupted = this.listResearchSidecarRecords({ statuses: ["pending"] });
+    if (!interrupted.length) return 0;
+    this.transaction(() => {
+      for (const record of interrupted) {
+        this.updateResearchSidecarRecord({ ...record, status: "invalid", invalidReason: "service-restarted", updatedAt });
+      }
+    });
+    return interrupted.length;
+  }
+
+  private requireResearchSidecarRecord(id: string): ResearchSidecarRecord {
+    const record = this.getResearchSidecarRecord(id);
+    if (!record) throw new Error(`Research sidecar not found: ${id}`);
+    return record;
+  }
+
+  private updateResearchSidecarRecord(record: ResearchSidecarRecord): void {
+    this.db().prepare(`
+      UPDATE research_sidecar_records
+      SET generation_attempt = ?, status = ?, invalid_reason = ?, updated_at = ?, record_json = ?
+      WHERE id = ?
+    `).run(record.generationAttempt, record.status, record.invalidReason ?? null, record.updatedAt, JSON.stringify(record), record.id);
+  }
+
+  private validateResearchSidecarRecord(record: ResearchSidecarRecord): string {
+    if (!record.id.trim()) throw new Error("Research sidecar id is required");
+    if (!["citation", "term-marker", "chapter"].includes(record.kind)) throw new Error("Unsupported research sidecar kind");
+    if (!["pending", "ready", "invalid"].includes(record.status)) throw new Error("Unsupported research sidecar status");
+    if (!["model", "provider", "rule"].includes(record.source.kind)) throw new Error("Unsupported research sidecar source");
+    if (!["exact", "block", "content"].includes(record.precision)) throw new Error("Unsupported research sidecar precision");
+    if (!Number.isSafeInteger(record.generationAttempt) || record.generationAttempt < 1) throw new Error("Research sidecar generationAttempt must be positive");
+    if (record.status === "invalid" ? !record.invalidReason : record.invalidReason !== undefined) {
+      throw new Error("Research sidecar invalidReason must match invalid status");
+    }
+    if (record.invalidReason && ![
+      "body-version-superseded", "content-deleted", "range-invalid", "generation-failed", "service-restarted", "source-unavailable",
+    ].includes(record.invalidReason)) throw new Error("Unsupported research sidecar invalidation reason");
+    validateResearchStableLocation(record.location);
+    if (record.location.bodyVersionId !== record.bodyVersionId) throw new Error("Research sidecar location must reference its body version");
+
+    const version = this.getBodyVersion(record.bodyVersionId);
+    if (version) {
+      if (version.id !== researchBodyVersionId(version.messageId, version.content)
+        || version.contentHash !== hashBodyContent(version.content)) {
+        throw new Error("Research sidecar cannot bind an invalid body version");
+      }
+      const message = this.getResearchMessage(version.messageId);
+      if (!message) throw new Error("Research sidecar body message is missing");
+      const projection = record.location.visibleRange ? projectMarkdownDocument(version.content) : undefined;
+      const resolution = resolveResearchStableLocation(record.location, {
+        contentId: version.messageId,
+        bodyVersionId: version.id,
+        source: version.content,
+        ...(projection ? {
+          visibleText: markdownStableVisibleText(projection),
+          projectSourceRange: (range) => {
+            const projected = projectMarkdownSourceRange(projection, { start: range.startOffset, end: range.endOffset });
+            return projected ? { startOffset: projected.visibleRange.start, endOffset: projected.visibleRange.end } : undefined;
+          },
+        } : {}),
+      });
+      if (resolution.kind === "degraded") throw new Error(`Research sidecar range is invalid: ${resolution.reason}`);
+      return message.sessionId;
+    }
+
+    const snapshot = this.getResearchContentSnapshot(record.bodyVersionId);
+    const block = snapshot?.blocks.find((candidate) => candidate.id === record.location.contentId);
+    if (!snapshot || !block) throw new Error("Research sidecar cannot bind an unfinished or missing content version");
+    const projection = record.location.visibleRange && block.anchor.kind === "markdown"
+      ? projectMarkdownDocument(block.text)
+      : undefined;
+    const resolution = resolveResearchStableLocation(record.location, {
+      contentId: block.id,
+      bodyVersionId: snapshot.id,
+      source: block.text,
+      ...(projection ? {
+        visibleText: markdownStableVisibleText(projection),
+        projectSourceRange: (range) => {
+          const projected = projectMarkdownSourceRange(projection, { start: range.startOffset, end: range.endOffset });
+          return projected ? { startOffset: projected.visibleRange.start, endOffset: projected.visibleRange.end } : undefined;
+        },
+      } : {}),
+    });
+    if (resolution.kind === "degraded") throw new Error(`Research sidecar range is invalid: ${resolution.reason}`);
+    return snapshot.sessionId;
+  }
+
+  // ── Independent term-marker extraction tasks (SIDE-04) ───────
+
+  getResearchTermMarkerTask(id: string): ResearchTermMarkerTaskRecord | undefined {
+    return this.getRecord<ResearchTermMarkerTaskRecord>("SELECT record_json FROM research_term_marker_tasks WHERE id = ?", id);
+  }
+
+  getResearchTermMarkerTaskByMessage(messageId: string): ResearchTermMarkerTaskRecord | undefined {
+    return this.getRecord<ResearchTermMarkerTaskRecord>("SELECT record_json FROM research_term_marker_tasks WHERE message_id = ?", messageId);
+  }
+
+  async upsertResearchTermMarkerTask(record: ResearchTermMarkerTaskRecord): Promise<ResearchTermMarkerTaskRecord> {
+    this.validateResearchTermMarkerTask(record);
+    this.db().prepare(`
+      INSERT INTO research_term_marker_tasks
+        (id, session_id, node_id, message_id, body_version_id, generation_attempt, status, created_at, updated_at, record_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(message_id) DO UPDATE SET
+        id = excluded.id,
+        session_id = excluded.session_id,
+        node_id = excluded.node_id,
+        body_version_id = excluded.body_version_id,
+        generation_attempt = excluded.generation_attempt,
+        status = excluded.status,
+        updated_at = excluded.updated_at,
+        record_json = excluded.record_json
+    `).run(
+      record.id, record.sessionId, record.nodeId, record.messageId, record.bodyVersionId,
+      record.generationAttempt, record.status, record.createdAt, record.updatedAt, JSON.stringify(record),
+    );
+    return record;
+  }
+
+  claimResearchTermMarkerTask(id: string): ResearchTermMarkerTaskRecord | undefined {
+    let claimed: ResearchTermMarkerTaskRecord | undefined;
+    this.transaction(() => {
+      const current = this.getResearchTermMarkerTask(id);
+      if (!current || current.status !== "queued") return;
+      const now = new Date().toISOString();
+      const next: ResearchTermMarkerTaskRecord = {
+        ...current,
+        status: "running",
+        attempts: current.attempts + 1,
+        startedAt: now,
+        updatedAt: now,
+        error: undefined,
+      };
+      const result = this.db().prepare("UPDATE research_term_marker_tasks SET status = 'running', updated_at = ?, record_json = ? WHERE id = ? AND status = 'queued'")
+        .run(now, JSON.stringify(next), id);
+      if (result.changes === 1) claimed = next;
+    });
+    return claimed;
+  }
+
+  async updateResearchTermMarkerTask(record: ResearchTermMarkerTaskRecord): Promise<ResearchTermMarkerTaskRecord> {
+    this.validateResearchTermMarkerTask(record);
+    const result = this.db().prepare(`
+      UPDATE research_term_marker_tasks
+      SET body_version_id = ?, generation_attempt = ?, status = ?, updated_at = ?, record_json = ?
+      WHERE id = ?
+    `).run(record.bodyVersionId, record.generationAttempt, record.status, record.updatedAt, JSON.stringify(record), record.id);
+    if (result.changes !== 1) throw new Error("Research term-marker task was not persisted");
+    return record;
+  }
+
+  listRecoverableResearchTermMarkerTasks(): ResearchTermMarkerTaskRecord[] {
+    return this.listRecords<ResearchTermMarkerTaskRecord>("SELECT record_json FROM research_term_marker_tasks WHERE status = 'queued' ORDER BY created_at, id");
+  }
+
+  requeueInterruptedResearchTermMarkerTasks(): number {
+    const interrupted = this.listRecords<ResearchTermMarkerTaskRecord>("SELECT record_json FROM research_term_marker_tasks WHERE status = 'running' ORDER BY created_at, id");
+    if (!interrupted.length) return 0;
+    const now = new Date().toISOString();
+    this.transaction(() => {
+      for (const task of interrupted) {
+        const requeued: ResearchTermMarkerTaskRecord = {
+          ...task,
+          status: "queued",
+          retryable: true,
+          error: { code: "service_restarted", message: "弱标记抽取在服务重启后继续。" },
+          updatedAt: now,
+          startedAt: undefined,
+          completedAt: undefined,
+        };
+        this.db().prepare("UPDATE research_term_marker_tasks SET status = 'queued', updated_at = ?, record_json = ? WHERE id = ?")
+          .run(now, JSON.stringify(requeued), task.id);
+      }
+    });
+    return interrupted.length;
+  }
+
+  requeueRetryableResearchTermMarkerTasks(): number {
+    const failed = this.listRecords<ResearchTermMarkerTaskRecord>("SELECT record_json FROM research_term_marker_tasks WHERE status = 'failed' ORDER BY created_at, id")
+      .filter((task) => task.retryable);
+    if (!failed.length) return 0;
+    const now = new Date().toISOString();
+    this.transaction(() => {
+      for (const task of failed) {
+        const queued: ResearchTermMarkerTaskRecord = {
+          ...task,
+          status: "queued",
+          error: undefined,
+          updatedAt: now,
+          startedAt: undefined,
+          completedAt: undefined,
+        };
+        this.db().prepare("UPDATE research_term_marker_tasks SET status = 'queued', updated_at = ?, record_json = ? WHERE id = ? AND status = 'failed'")
+          .run(now, JSON.stringify(queued), task.id);
+      }
+    });
+    return failed.length;
+  }
+
+  private validateResearchTermMarkerTask(record: ResearchTermMarkerTaskRecord): void {
+    if (!record.id.trim() || !record.sessionId.trim() || !record.nodeId.trim() || !record.messageId.trim()) {
+      throw new Error("Research term-marker task identity is required");
+    }
+    if (!["queued", "running", "completed", "failed"].includes(record.status)) throw new Error("Invalid research term-marker task status");
+    if (!Number.isSafeInteger(record.generationAttempt) || record.generationAttempt < 1) throw new Error("Research term-marker generation attempt must be positive");
+    if (!Number.isSafeInteger(record.attempts) || record.attempts < 0) throw new Error("Research term-marker attempts must be non-negative");
+    if (record.bodyVersionId !== researchBodyVersionId(record.messageId, this.getResearchMessage(record.messageId)?.content ?? "")) {
+      throw new Error("Research term-marker task must reference the current message body version");
+    }
+  }
+
   // ── Semantic Slices (E1) ──────────────────────────────────────
 
   /** E2：正式生成成功后原子删除同一消息的临时切片，再写入完整正式集合。 */
@@ -2883,10 +3356,23 @@ export class SqliteStore implements CollectorStore {
 
   /** 幂等写入正文版本：id 由 messageId+contentHash 决定，重复写入被忽略（同文同标识）。 */
   async createResearchBodyVersion(version: ResearchBodyVersionRecord): Promise<void> {
-    this.db().prepare(`
-      INSERT OR IGNORE INTO research_body_versions (id, message_id, node_id, version, content_hash, origin, created_at, record_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(version.id, version.messageId, version.nodeId, version.version, version.contentHash, version.origin, version.createdAt, JSON.stringify(version));
+    this.transaction(() => {
+      const inserted = this.db().prepare(`
+        INSERT OR IGNORE INTO research_body_versions (id, message_id, node_id, version, content_hash, origin, created_at, record_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(version.id, version.messageId, version.nodeId, version.version, version.contentHash, version.origin, version.createdAt, JSON.stringify(version));
+      if (inserted.changes !== 1) return;
+      const superseded = this.listResearchSidecarRecords({ contentId: version.messageId, statuses: ["pending", "ready"] })
+        .filter((record) => record.bodyVersionId !== version.id);
+      for (const record of superseded) {
+        this.updateResearchSidecarRecord({
+          ...record,
+          status: "invalid",
+          invalidReason: "body-version-superseded",
+          updatedAt: version.createdAt,
+        });
+      }
+    });
   }
 
   /** 幂等批量写入语义片段（事务内，冲突忽略）。 */
@@ -3106,7 +3592,7 @@ export class SqliteStore implements CollectorStore {
       .run(task.status, task.retryable ? 1 : 0, task.updatedAt, JSON.stringify(task), task.id);
   }
 
-  private insertResearchEvent(taskId: string, type: "delta" | "completed" | "failed" | "stopped", createdAt: string, data: unknown): void {
+  private insertResearchEvent(taskId: string, type: "delta" | "citation_candidate" | "completed" | "failed" | "stopped", createdAt: string, data: unknown): void {
     this.db().prepare("INSERT INTO research_task_events (task_id, event_type, created_at, data_json) VALUES (?, ?, ?, ?)")
       .run(taskId, type, createdAt, JSON.stringify(data));
   }
@@ -4505,6 +4991,328 @@ export class SqliteStore implements CollectorStore {
       version = 46;
     }
 
+    if (version < 47) {
+      // SIDE-01: common identity/lifecycle only. Typed citation, term-marker, and
+      // chapter payloads remain in their owning tables and reference this header.
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE IF NOT EXISTS research_sidecar_records (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK(kind IN ('citation', 'term-marker', 'chapter')),
+            body_version_id TEXT NOT NULL,
+            content_id TEXT NOT NULL,
+            start_offset INTEGER NOT NULL CHECK(start_offset >= 0),
+            end_offset INTEGER NOT NULL CHECK(end_offset > start_offset),
+            generation_attempt INTEGER NOT NULL CHECK(generation_attempt > 0),
+            status TEXT NOT NULL CHECK(status IN ('pending', 'ready', 'invalid')),
+            source_kind TEXT NOT NULL CHECK(source_kind IN ('model', 'provider', 'rule')),
+            precision TEXT NOT NULL CHECK(precision IN ('exact', 'block', 'content')),
+            invalid_reason TEXT CHECK(invalid_reason IS NULL OR invalid_reason IN (
+              'body-version-superseded', 'content-deleted', 'range-invalid',
+              'generation-failed', 'service-restarted', 'source-unavailable'
+            )),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            CHECK((status = 'invalid' AND invalid_reason IS NOT NULL)
+              OR (status != 'invalid' AND invalid_reason IS NULL))
+          );
+          CREATE INDEX IF NOT EXISTS research_sidecar_records_version_idx
+            ON research_sidecar_records(body_version_id, kind, status, start_offset, end_offset);
+          CREATE INDEX IF NOT EXISTS research_sidecar_records_content_idx
+            ON research_sidecar_records(content_id, kind, status);
+          CREATE INDEX IF NOT EXISTS research_sidecar_records_session_idx
+            ON research_sidecar_records(session_id, created_at, id);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (47, datetime('now'));
+        `);
+      });
+      version = 47;
+    }
+
+    if (version < 48) {
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE IF NOT EXISTS research_term_marker_tasks (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            message_id TEXT NOT NULL UNIQUE,
+            body_version_id TEXT NOT NULL,
+            generation_attempt INTEGER NOT NULL CHECK(generation_attempt > 0),
+            status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'completed', 'failed')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS research_term_marker_tasks_status_idx
+            ON research_term_marker_tasks(status, created_at, id);
+          CREATE INDEX IF NOT EXISTS research_term_marker_tasks_session_idx
+            ON research_term_marker_tasks(session_id, created_at, id);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (48, datetime('now'));
+        `);
+      });
+      version = 48;
+    }
+
+    if (version < 49) {
+      // SIDE-06：导入快照与回答正文版本共用章节任务表。target_key 是统一幂等键；
+      // snapshot_id 保留为旧导入记录的查询适配，回答记录不伪造快照。
+      const columns = (this.db().prepare("PRAGMA table_info(research_chapter_tasks)").all() as Array<{ name: string }>).map((column) => column.name);
+      this.transaction(() => {
+        if (!columns.includes("target_key")) {
+          this.db().exec(`
+            ALTER TABLE research_chapter_tasks RENAME TO research_chapter_tasks_legacy;
+            CREATE TABLE research_chapter_tasks (
+              id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              target_key TEXT NOT NULL UNIQUE,
+              target_kind TEXT NOT NULL,
+              snapshot_id TEXT,
+              message_id TEXT,
+              body_version_id TEXT,
+              status TEXT NOT NULL,
+              retryable INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              record_json TEXT NOT NULL
+            );
+            INSERT INTO research_chapter_tasks (
+              id, session_id, target_key, target_kind, snapshot_id, status, retryable, created_at, updated_at, record_json
+            )
+            SELECT id, session_id, 'import:' || snapshot_id, 'import', snapshot_id, status, retryable, created_at, updated_at, record_json
+            FROM research_chapter_tasks_legacy;
+            DROP TABLE research_chapter_tasks_legacy;
+            CREATE INDEX research_chapter_tasks_status_idx ON research_chapter_tasks(status, created_at);
+          `);
+        }
+        this.db().exec("INSERT INTO schema_migrations(version, applied_at) VALUES (49, datetime('now'))");
+      });
+      version = 49;
+    }
+
+    if (version < 50) {
+      // SIDE-07：一次性迁移系统生成正文中的旧控制串，并把旧消息内弱标记提升到独立任务/sidecar。
+      // 用户消息永不进入此适配器；无法逐字验证的派生定位降级而不猜测。
+      this.transaction(() => {
+        const messageRows = this.db().prepare("SELECT id, record_json FROM research_messages WHERE role = 'assistant'").all() as Array<{ id: string; record_json: string }>;
+        const updateMessage = this.db().prepare("UPDATE research_messages SET record_json = ? WHERE id = ?");
+        const insertBodyVersion = this.db().prepare(`
+          INSERT OR IGNORE INTO research_body_versions
+            (id, message_id, node_id, version, content_hash, origin, created_at, record_json)
+          VALUES (?, ?, ?, ?, ?, 'backfill', ?, ?)
+        `);
+        const upsertMarkerTask = this.db().prepare(`
+          INSERT INTO research_term_marker_tasks
+            (id, session_id, node_id, message_id, body_version_id, generation_attempt, status, created_at, updated_at, record_json)
+          VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?)
+          ON CONFLICT(message_id) DO UPDATE SET
+            body_version_id = excluded.body_version_id,
+            generation_attempt = excluded.generation_attempt,
+            status = excluded.status,
+            updated_at = excluded.updated_at,
+            record_json = excluded.record_json
+        `);
+        const insertMarkerSidecar = this.db().prepare(`
+          INSERT OR REPLACE INTO research_sidecar_records
+            (id, session_id, kind, body_version_id, content_id, start_offset, end_offset,
+             generation_attempt, status, source_kind, precision, invalid_reason, created_at, updated_at, record_json)
+          VALUES (?, ?, 'term-marker', ?, ?, ?, ?, ?, 'ready', 'rule', 'exact', NULL, ?, ?, ?)
+        `);
+
+        for (const row of messageRows) {
+          const legacy = JSON.parse(row.record_json) as ResearchMessageRecord & { termMarkers?: TermMarker[] };
+          const migrated = migrateLegacyGeneratedBody(legacy.content);
+          const content = migrated.content;
+          const oldBlocks = deriveMessageBlocks(legacy.content);
+          const existingTaskRow = this.db().prepare("SELECT record_json FROM research_term_marker_tasks WHERE message_id = ?").get(legacy.id) as { record_json: string } | undefined;
+          const existingTask = existingTaskRow ? JSON.parse(existingTaskRow.record_json) as ResearchTermMarkerTaskRecord : undefined;
+          const candidateMarkers = [...(existingTask?.markers ?? []), ...(legacy.termMarkers ?? [])];
+          const markers: TermMarker[] = [];
+          for (const marker of candidateMarkers) {
+            const oldBlock = oldBlocks[marker.blockOrdinal];
+            if (!oldBlock) continue;
+            const oldStart = oldBlock.startOffset + marker.startOffset;
+            const oldEnd = oldBlock.startOffset + marker.endOffset;
+            const start = migrated.rawToContentOffsets[oldStart];
+            const end = migrated.rawToContentOffsets[oldEnd];
+            if (start === undefined || end === undefined) continue;
+            const rebased = migratedTermMarker(legacy.id, content, start, end, marker);
+            if (rebased) markers.push(rebased);
+          }
+          for (const mention of migrated.mentions) {
+            const marker = migratedTermMarker(legacy.id, content, mention.startOffset, mention.endOffset, mention);
+            if (marker) markers.push(marker);
+          }
+          const uniqueMarkers = [...new Map(markers.map((marker) => [
+            `${marker.blockOrdinal}:${marker.startOffset}:${marker.endOffset}:${marker.category}:${marker.text}`,
+            marker,
+          ])).values()];
+
+          const bodyVersionId = researchBodyVersionId(legacy.id, content);
+          const maxVersion = (this.db().prepare("SELECT COALESCE(MAX(version), 0) AS version FROM research_body_versions WHERE message_id = ?").get(legacy.id) as { version: number }).version;
+          const bodyVersion: ResearchBodyVersionRecord = {
+            id: bodyVersionId,
+            messageId: legacy.id,
+            nodeId: legacy.nodeId ?? legacy.sessionId,
+            version: maxVersion + 1,
+            content,
+            contentHash: hashBodyContent(content),
+            origin: "backfill",
+            createdAt: legacy.updatedAt,
+          };
+          insertBodyVersion.run(bodyVersion.id, bodyVersion.messageId, bodyVersion.nodeId, bodyVersion.version, bodyVersion.contentHash, bodyVersion.createdAt, JSON.stringify(bodyVersion));
+
+          const cleanedVersions = legacy.versions?.map((entry) => ({
+            ...entry,
+            content: migrateLegacyGeneratedBody(entry.content).content,
+          }));
+          const { termMarkers: _legacyMarkers, ...withoutInlineMarkers } = legacy;
+          updateMessage.run(JSON.stringify({
+            ...withoutInlineMarkers,
+            content,
+            ...(cleanedVersions ? { versions: cleanedVersions } : {}),
+          }), legacy.id);
+
+          if (uniqueMarkers.length || existingTask || legacy.termMarkers !== undefined) {
+            const taskRow = this.db().prepare("SELECT record_json FROM research_tasks WHERE output_message_id = ? ORDER BY created_at DESC LIMIT 1").get(legacy.id) as { record_json: string } | undefined;
+            const generationTask = taskRow ? JSON.parse(taskRow.record_json) as ResearchTaskRecord : undefined;
+            const generationAttempt = Math.max(1, existingTask?.generationAttempt ?? generationTask?.generationAttempt ?? 1);
+            const task: ResearchTermMarkerTaskRecord = {
+              id: existingTask?.id ?? `term-marker:migration:${legacy.id}`,
+              sessionId: legacy.sessionId,
+              nodeId: legacy.nodeId ?? legacy.sessionId,
+              messageId: legacy.id,
+              bodyVersionId,
+              generationAttempt,
+              status: "completed",
+              retryable: false,
+              fullReviewRequested: true,
+              processedBlockKeys: existingTask?.processedBlockKeys ?? [],
+              markers: uniqueMarkers,
+              ...(existingTask?.provider ? { provider: existingTask.provider } : {}),
+              ...(existingTask?.model ? { model: existingTask.model } : {}),
+              ...(existingTask?.promptVersion ? { promptVersion: existingTask.promptVersion } : {}),
+              attempts: existingTask?.attempts ?? 0,
+              createdAt: existingTask?.createdAt ?? legacy.createdAt,
+              updatedAt: legacy.updatedAt,
+              completedAt: legacy.updatedAt,
+            };
+            upsertMarkerTask.run(task.id, task.sessionId, task.nodeId, task.messageId, task.bodyVersionId, task.generationAttempt, task.createdAt, task.updatedAt, JSON.stringify(task));
+            const oldSidecars = this.db().prepare("SELECT id, record_json FROM research_sidecar_records WHERE content_id = ? AND kind = 'term-marker'").all(legacy.id) as Array<{ id: string; record_json: string }>;
+            for (const old of oldSidecars) {
+              const record = JSON.parse(old.record_json) as ResearchSidecarRecord;
+              if (record.bodyVersionId === bodyVersionId) continue;
+              const invalid = { ...record, status: "invalid" as const, invalidReason: "body-version-superseded" as const, updatedAt: legacy.updatedAt };
+              this.db().prepare("UPDATE research_sidecar_records SET status = 'invalid', invalid_reason = 'body-version-superseded', updated_at = ?, record_json = ? WHERE id = ?")
+                .run(legacy.updatedAt, JSON.stringify(invalid), record.id);
+            }
+            for (const marker of uniqueMarkers) {
+              if (!marker.location) continue;
+              const id = `sidecar:term-marker:${legacy.id}:${generationAttempt}:${marker.mentionId}`;
+              const sidecar: ResearchSidecarRecord = {
+                id,
+                kind: "term-marker",
+                bodyVersionId,
+                location: marker.location,
+                generationAttempt,
+                status: "ready",
+                source: { kind: "rule", referenceId: task.id },
+                precision: "exact",
+                createdAt: legacy.updatedAt,
+                updatedAt: legacy.updatedAt,
+              };
+              insertMarkerSidecar.run(id, legacy.sessionId, bodyVersionId, legacy.id, marker.location.sourceRange.startOffset,
+                marker.location.sourceRange.endOffset, generationAttempt, legacy.updatedAt, legacy.updatedAt, JSON.stringify(sidecar));
+            }
+          }
+
+          const citationRows = this.db().prepare("SELECT id, record_json FROM research_citations WHERE message_id = ?").all(legacy.id) as Array<{ id: string; record_json: string }>;
+          const newBlocks = deriveMessageBlocks(content);
+          for (const citationRow of citationRows) {
+            const citation = JSON.parse(citationRow.record_json) as ResearchCitationRecord;
+            let location = citation.location;
+            if (location) {
+              const start = migrated.rawToContentOffsets[location.sourceRange.startOffset];
+              const end = migrated.rawToContentOffsets[location.sourceRange.endOffset];
+              location = start !== undefined && end !== undefined && end > start && content.slice(start, end) === location.exact
+                ? { ...location, bodyVersionId, sourceRange: { startOffset: start, endOffset: end } }
+                : undefined;
+            }
+            const absolute = location?.sourceRange.startOffset;
+            const block = absolute === undefined ? undefined : newBlocks.find((candidate) => absolute >= candidate.startOffset && absolute <= candidate.startOffset + candidate.text.length);
+            const updated: ResearchCitationRecord = {
+              ...citation,
+              blockOrdinal: block?.ordinal ?? Math.min(citation.blockOrdinal, Math.max(0, newBlocks.length - 1)),
+              markerOffset: block && absolute !== undefined ? absolute - block.startOffset : 0,
+              ...(location ? { location } : {}),
+            };
+            if (!location) delete updated.location;
+            this.db().prepare("UPDATE research_citations SET block_ordinal = ?, marker_offset = ?, record_json = ? WHERE id = ?")
+              .run(updated.blockOrdinal, updated.markerOffset, JSON.stringify(updated), updated.id);
+            const sidecarRow = this.db().prepare("SELECT record_json FROM research_sidecar_records WHERE id = ?").get(`citation:${citation.id}`) as { record_json: string } | undefined;
+            if (sidecarRow) {
+              const sidecar = JSON.parse(sidecarRow.record_json) as ResearchSidecarRecord;
+              if (location) {
+                const next = { ...sidecar, bodyVersionId, location, status: "ready" as const, invalidReason: undefined, updatedAt: legacy.updatedAt };
+                this.db().prepare("UPDATE research_sidecar_records SET body_version_id = ?, start_offset = ?, end_offset = ?, status = 'ready', invalid_reason = NULL, updated_at = ?, record_json = ? WHERE id = ?")
+                  .run(bodyVersionId, location.sourceRange.startOffset, location.sourceRange.endOffset, legacy.updatedAt, JSON.stringify(next), sidecar.id);
+              } else {
+                const next = { ...sidecar, status: "invalid" as const, invalidReason: "range-invalid" as const, updatedAt: legacy.updatedAt };
+                this.db().prepare("UPDATE research_sidecar_records SET status = 'invalid', invalid_reason = 'range-invalid', updated_at = ?, record_json = ? WHERE id = ?")
+                  .run(legacy.updatedAt, JSON.stringify(next), sidecar.id);
+              }
+            }
+          }
+        }
+
+        const draftRows = this.db().prepare("SELECT id, temporary_fusion_node_id, record_json FROM research_fusion_draft_versions").all() as Array<{ id: string; temporary_fusion_node_id: string; record_json: string }>;
+        for (const row of draftRows) {
+          const draft = JSON.parse(row.record_json) as ResearchFusionDraftVersionRecord;
+          const migrated = migrateLegacyGeneratedBody(draft.body);
+          if (migrated.content === draft.body && draft.judgments?.length) continue;
+          const sourceRows = this.db().prepare("SELECT record_json FROM research_candidate_source_connections WHERE temporary_fusion_node_id = ?").all(row.temporary_fusion_node_id) as Array<{ record_json: string }>;
+          const sourceNodeIds = sourceRows.map((source) => (JSON.parse(source.record_json) as ResearchCandidateSourceConnectionRecord).sourceNodeId).sort();
+          const rebased = draft.judgments?.flatMap((judgment) => {
+            const start = migrated.rawToContentOffsets[judgment.startOffset];
+            const end = migrated.rawToContentOffsets[judgment.endOffset];
+            if (start === undefined || end === undefined || end <= start || !migrated.content.slice(start, end).trim()) return [];
+            const contentHash = `sha256:${createHash("sha256").update(`${migrated.content.slice(start, end)}\u0000${judgment.sourceNodeIds.join("\u0000")}`).digest("hex")}`;
+            return [{ ...judgment, startOffset: start, endOffset: end, contentHash }];
+          });
+          const judgments = rebased?.length ? rebased : draft.evidenceStatus === "verified" && sourceNodeIds.length >= 2
+            ? deriveMessageBlocks(migrated.content).filter((block) => block.text.trim() && !/^#{1,6}\s/.test(block.text.trim())).map((block) => {
+                const startOffset = block.startOffset;
+                const endOffset = block.startOffset + block.text.length;
+                const contentHash = `sha256:${createHash("sha256").update(`${block.text}\u0000${sourceNodeIds.join("\u0000")}`).digest("hex")}`;
+                return { id: `judgment:${contentHash.slice(7)}`, startOffset, endOffset, contentHash, sourceNodeIds, evidenceStatus: "verified" as const };
+              })
+            : undefined;
+          const contentHash = `sha256:${createHash("sha256").update(migrated.content).digest("hex")}`;
+          const updated = { ...draft, body: migrated.content, contentHash, ...(judgments ? { judgments } : {}) };
+          this.db().prepare("UPDATE research_fusion_draft_versions SET record_json = ? WHERE id = ?").run(JSON.stringify(updated), draft.id);
+        }
+
+        const snapshotRows = this.db().prepare("SELECT fusion_node_id, record_json FROM research_confirmed_fusion_snapshots").all() as Array<{ fusion_node_id: string; record_json: string }>;
+        for (const row of snapshotRows) {
+          const snapshot = JSON.parse(row.record_json) as ResearchConfirmedFusionSnapshotRecord;
+          const body = migrateLegacyGeneratedBody(snapshot.body).content;
+          if (body === snapshot.body) continue;
+          const updated = { ...snapshot, body, contentHash: `sha256:${createHash("sha256").update(body).digest("hex")}` };
+          this.db().prepare("UPDATE research_confirmed_fusion_snapshots SET record_json = ? WHERE fusion_node_id = ?").run(JSON.stringify(updated), row.fusion_node_id);
+        }
+
+        this.db().exec("INSERT INTO schema_migrations(version, applied_at) VALUES (50, datetime('now'))");
+      });
+      version = 50;
+    }
+
+  }
+
+  /** 新生成尝试不继承上一版正文的派生弱标记；payload 与生命周期头一起删除。 */
+  private clearResearchTermMarkerTask(messageId: string): void {
+    this.db().prepare("DELETE FROM research_sidecar_records WHERE content_id = ? AND kind = 'term-marker'").run(messageId);
+    this.db().prepare("DELETE FROM research_term_marker_tasks WHERE message_id = ?").run(messageId);
   }
 
   private async migrateLegacyProviderProfile(): Promise<void> {
