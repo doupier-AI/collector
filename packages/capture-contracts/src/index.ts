@@ -198,11 +198,111 @@ export interface ContextBudget {
   channelLimits?: Partial<Record<ContextChannel, number>>;
 }
 
+export const PROMPT_ENVELOPE_VERSION = "prompt-envelope-v1" as const;
+
+export type PromptEnvelopeRole = "system" | "user" | "assistant" | "tool";
+export type PromptEnvelopeOutputFormat = "text" | "json_object" | "tool_calls";
+
+export interface PromptEnvelopeMessage {
+  role: PromptEnvelopeRole;
+  content: string | null;
+  toolCallId?: string;
+  toolCalls?: ReadonlyArray<{
+    id: string;
+    name: string;
+    arguments: string;
+  }>;
+}
+
+export interface PromptEnvelopeOutputContract {
+  format: PromptEnvelopeOutputFormat;
+  contractVersion: string;
+  /** The minimum visible-body space required for a useful result. */
+  minimumBodyTokens: number;
+}
+
+/**
+ * Provider-independent physical-call input. Rules, user material, assistant history and tool
+ * results retain their roles until the concrete provider Adapter maps them to its wire format.
+ */
+export interface PromptEnvelope {
+  version: typeof PROMPT_ENVELOPE_VERSION;
+  purpose: string;
+  promptVersion: string;
+  messages: readonly PromptEnvelopeMessage[];
+  outputContract: PromptEnvelopeOutputContract;
+}
+
+/** Run-record projection: roles and sizing only; never message or tool content. */
+export interface PromptEnvelopeObservation {
+  version: typeof PROMPT_ENVELOPE_VERSION;
+  purpose: string;
+  promptVersion: string;
+  messageCount: number;
+  roleCounts: Partial<Record<PromptEnvelopeRole, number>>;
+  estimatedInputTokens: number;
+  outputContract: PromptEnvelopeOutputContract;
+}
+
+export interface RequestedModelBudget {
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  minimumBodyTokens: number;
+  thinking: boolean;
+}
+
+export interface ModelBudgetLimits {
+  contextWindowTokens: number;
+  maxOutputTokens: number;
+  reasoningBudgetMode: "none" | "shared_output" | "separate";
+}
+
+export interface ResolvedModelBudget {
+  status: "resolved";
+  budgetResolutionAttemptId: string;
+  previousBudgetResolutionAttemptId?: string;
+  estimatedInputTokens: number;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+  minimumBodyTokens: number;
+  thinking: boolean;
+  reasoningBudgetMode: ModelBudgetLimits["reasoningBudgetMode"];
+}
+
+export interface ModelBudgetReassemblyRequired {
+  status: "reassembly_required";
+  budgetResolutionAttemptId: string;
+  previousBudgetResolutionAttemptId?: string;
+  estimatedInputTokens: number;
+  maximumInputTokens: number;
+  minimumBodyTokens: number;
+  reason: "context_window_requires_smaller_input";
+}
+
+export interface UnsatisfiableModelBudget {
+  status: "unsatisfiable";
+  budgetResolutionAttemptId: string;
+  previousBudgetResolutionAttemptId?: string;
+  estimatedInputTokens: number;
+  minimumBodyTokens: number;
+  reason: "provider_output_limit_below_minimum" | "context_window_below_minimum";
+}
+
+export type ModelBudgetResolution = ResolvedModelBudget | ModelBudgetReassemblyRequired | UnsatisfiableModelBudget;
+
+/** Exact physical parameters after provider-independent resolution and before Adapter mapping. */
+export interface AppliedModelBudget {
+  maxOutputTokens: number;
+  thinking: boolean;
+}
+
 export interface ContextAssemblyRequest {
   /** 运行时保持 string，确保未知用途经过默认拒绝而不是绕过注册表。 */
   purpose: string;
   workflowRunId?: string;
   workflowStepId?: string;
+  assemblyAttemptId?: string;
+  previousAssemblyAttemptId?: string;
   projectId?: string;
   budget?: ContextBudget;
   candidates: readonly ContextCandidate[];
@@ -252,6 +352,8 @@ export interface ContextBudgetUsage extends ContextBudget {
 export type ContextAssemblyResult =
   | {
     status: "assembled";
+    assemblyAttemptId: string;
+    previousAssemblyAttemptId?: string;
     purpose: ContextPurpose;
     modelPurpose: ModelPurpose;
     budget: ContextBudgetUsage;
@@ -260,6 +362,8 @@ export type ContextAssemblyResult =
   }
   | {
     status: "rejected";
+    assemblyAttemptId: string;
+    previousAssemblyAttemptId?: string;
     purpose: string;
     reason: "unknown_purpose" | "required_candidate_exceeds_budget";
     modelPurpose?: ModelPurpose;
@@ -293,6 +397,9 @@ export interface ContextAssemblyAuditRejection {
 /** 可进入运行记录的无正文视图。 */
 export interface ContextAssemblyAudit {
   status: ContextAssemblyResult["status"];
+  /** Missing only on persisted records created before prompt-envelope-v1. */
+  assemblyAttemptId?: string;
+  previousAssemblyAttemptId?: string;
   purpose: string;
   modelPurpose?: ModelPurpose;
   budget?: ContextBudgetUsage;
@@ -314,6 +421,9 @@ export interface ContextAssemblyRejectionCount extends ContextAssemblyCategoryCo
 /** Run-record projection: counts and categories only; never candidate IDs, source IDs or content. */
 export interface ContextAssemblyObservation {
   status: ContextAssemblyResult["status"];
+  /** Missing only on persisted records created before prompt-envelope-v1. */
+  assemblyAttemptId?: string;
+  previousAssemblyAttemptId?: string;
   purpose: string;
   modelPurpose?: ModelPurpose;
   budget?: ContextBudgetUsage;
@@ -371,6 +481,8 @@ export function observeContextAssembly(input: ContextAssemblyResult | ContextAss
   }
   return {
     status: input.status,
+    assemblyAttemptId: input.assemblyAttemptId,
+    ...(input.previousAssemblyAttemptId ? { previousAssemblyAttemptId: input.previousAssemblyAttemptId } : {}),
     purpose: input.purpose,
     ...(input.modelPurpose ? { modelPurpose: input.modelPurpose } : {}),
     ...(input.budget ? { budget: { ...input.budget, ...(input.budget.channelLimits ? { channelLimits: { ...input.budget.channelLimits } } : {}) } } : {}),
@@ -415,7 +527,7 @@ export interface ResearchContextAssemblySnapshot {
   reassemblyRule: "same_attempt_same_sources;new_attempt_reassemble;continuation_incremental";
   sourceFingerprint: string;
   sources: readonly ResearchContextSourceSnapshot[];
-  /** 最近一次各模型步骤的无正文准入审计，按 workflowStepId 覆盖。 */
+  /** 每次装配尝试的无正文准入审计；重装配追加记录，不覆盖首次尝试。 */
   assemblies: ReadonlyArray<{
     workflowStepId: string;
     recordedAt: string;
@@ -510,6 +622,11 @@ export interface ModelCallRecord {
   model: string;
   purpose: string;
   promptVersion: string;
+  envelope?: PromptEnvelopeObservation;
+  availability?: { status: "available" | "unavailable"; reason?: string };
+  requestedBudget?: RequestedModelBudget;
+  resolvedBudget?: ResolvedModelBudget;
+  appliedBudget?: AppliedModelBudget;
   /** F1 等切片感知调用记录实际送入核验的本地切片，不保存提示词正文。 */
   sourceSliceIds?: string[];
   /** #39 起片段感知调用同时记录语义片段 ID；与 sourceSliceIds 同为本地引用。 */
@@ -517,6 +634,11 @@ export interface ModelCallRecord {
   /** 调用时固定的输出令牌预算；缺省表示旧记录未提供此审计字段。 */
   tokenBudget?: number;
   contextAssembly?: ContextAssemblyObservation;
+  finishReason?: string;
+  completionDiagnostic?: "length" | "empty_body" | "task_mismatch_truncation";
+  toolCallCount?: number;
+  errorCategory?: "authentication" | "network" | "validation" | "provider" | "budget" | "unknown";
+  buildFingerprint?: string;
   status: "completed" | "failed";
   inputTokens: number;
   outputTokens: number;
@@ -560,9 +682,19 @@ export interface RunRecordModelCallView {
   model: string;
   purpose: string;
   promptVersion: string;
+  envelope?: PromptEnvelopeObservation;
+  availability?: { status: "available" | "unavailable"; reason?: string };
+  requestedBudget?: RequestedModelBudget;
+  resolvedBudget?: ResolvedModelBudget;
+  appliedBudget?: AppliedModelBudget;
   sourceSliceIds?: string[];
   tokenBudget?: number;
   contextAssembly?: ContextAssemblyObservation;
+  finishReason?: string;
+  completionDiagnostic?: ModelCallRecord["completionDiagnostic"];
+  toolCallCount?: number;
+  errorCategory?: ModelCallRecord["errorCategory"];
+  buildFingerprint?: string;
   status: "completed" | "failed" | "corrupt";
   inputTokens: number;
   outputTokens: number;

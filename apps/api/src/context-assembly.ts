@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   CONTEXT_CHANNELS,
   CONTEXT_PURPOSES,
@@ -277,10 +278,16 @@ export function assembleContext(
   request: ContextAssemblyRequest,
   registry: ContextPurposeRegistry = DEFAULT_CONTEXT_PURPOSE_REGISTRY,
 ): ContextAssemblyResult {
+  const assemblyAttemptId = request.assemblyAttemptId ?? randomUUID();
+  const attemptIdentity = {
+    assemblyAttemptId,
+    ...(request.previousAssemblyAttemptId ? { previousAssemblyAttemptId: request.previousAssemblyAttemptId } : {}),
+  };
   const resolution = registry.resolve(request.purpose);
   if (!resolution.allowed) {
     return {
       status: "rejected",
+      ...attemptIdentity,
       purpose: request.purpose,
       reason: "unknown_purpose",
       adopted: [],
@@ -359,6 +366,7 @@ export function assembleContext(
       if (item.candidate.protection === "required") {
         return {
           status: "rejected",
+          ...attemptIdentity,
           purpose: policy.purpose,
           modelPurpose: policy.modelPurpose,
           reason: "required_candidate_exceeds_budget",
@@ -381,6 +389,7 @@ export function assembleContext(
 
   return {
     status: "assembled",
+    ...attemptIdentity,
     purpose: policy.purpose,
     modelPurpose: policy.modelPurpose,
     budget: { ...budget, usedInputTokens, remainingInputTokens: budget.maxInputTokens - usedInputTokens },
@@ -393,6 +402,8 @@ export function assembleContext(
 export function contextAssemblyAudit(result: ContextAssemblyResult): ContextAssemblyAudit {
   return {
     status: result.status,
+    assemblyAttemptId: result.assemblyAttemptId,
+    ...(result.previousAssemblyAttemptId ? { previousAssemblyAttemptId: result.previousAssemblyAttemptId } : {}),
     purpose: result.purpose,
     ...(result.modelPurpose ? { modelPurpose: result.modelPurpose } : {}),
     ...(result.budget ? { budget: { ...result.budget, ...(result.budget.channelLimits ? { channelLimits: { ...result.budget.channelLimits } } : {}) } } : {}),

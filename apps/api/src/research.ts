@@ -16,6 +16,7 @@ import {
   type DeepResearchContext,
   type DeepResearchMode,
   type ContextAssemblyResult,
+  type ContextBudget,
   type ContextCandidate,
   type ContextPurpose,
   type GroundingEvidenceStatus,
@@ -48,7 +49,7 @@ import { DEFAULT_RESEARCH_SESSION_TITLE } from "./session-titling.js";
 import { buildResearchSliceContext, DEFAULT_RESEARCH_SLICE_CONTEXT_TOKEN_BUDGET, type ResearchFragmentContextCandidate } from "./slice-context.js";
 import { getOrDeriveMessageBodyArtifacts, matchSliceForFragment, tryResolveFragmentExcerpt } from "./body-artifacts.js";
 import type { ResearchBodyOutline, ResearchSliceAnnotation } from "@collector/model-gateway";
-import { ModelProviderAbortedError, ModelProviderHttpError, ModelProviderTimeoutError } from "@collector/model-gateway";
+import { ModelBudgetReassemblyRequiredError, ModelProviderAbortedError, ModelProviderHttpError, ModelProviderTimeoutError } from "@collector/model-gateway";
 import { isLongText, joinContinuation, LONG_TEXT_CHAR_THRESHOLD } from "@collector/capture-contracts";
 import { assembleContext, contextAssemblyAudit } from "./context-assembly.js";
 
@@ -77,6 +78,22 @@ const PROVIDER_RETRY_MAX_DELAY_MS = 30_000;
 /** 单轮流式断点落盘节流：时间间隔与最小字符增量，避免逐 token 写放大。 */
 const STREAM_CHECKPOINT_MIN_INTERVAL_MS = 2_000;
 const STREAM_CHECKPOINT_MIN_CHARS = 2_000;
+
+function reducedContextBudget(
+  assembly: Extract<ContextAssemblyResult, { status: "assembled" }>,
+  error: ModelBudgetReassemblyRequiredError,
+): ContextBudget {
+  const formattingOverhead = Math.max(
+    64,
+    error.resolution.estimatedInputTokens - assembly.budget.usedInputTokens,
+  );
+  const resolvedMaximum = Math.max(1, error.resolution.maximumInputTokens - formattingOverhead);
+  const strictlySmaller = Math.max(1, assembly.budget.maxInputTokens - Math.max(64, Math.ceil(assembly.budget.maxInputTokens * 0.05)));
+  return {
+    maxInputTokens: Math.min(resolvedMaximum, strictlySmaller),
+    reservedOutputTokens: assembly.budget.reservedOutputTokens,
+  };
+}
 /** ADR-0035：思考增量落库节流——思考期间正文可能长时间零增量，思考须独立及时落库且不逐 token 写放大。 */
 const REASONING_FLUSH_MIN_INTERVAL_MS = 250;
 const REASONING_FLUSH_MIN_CHARS = 400;
@@ -251,6 +268,8 @@ export interface ResearchGenerationRequest {
   contextCandidates?: readonly ContextCandidate[];
   /** 主链模型调用的已准入视图；辅助调用在 #158 迁移前可暂时缺省。 */
   contextAssembly?: Extract<ContextAssemblyResult, { status: "assembled" }>;
+  /** Set only on the single bounded retry so budget-attempt lineage reaches the physical call record. */
+  previousBudgetResolutionAttemptId?: string;
 }
 
 export type AssembledResearchGenerationRequest = ResearchGenerationRequest & {
@@ -754,12 +773,13 @@ export class ResearchSessionService {
           // 联网先准备可追溯证据；只有显式确认的最终通道才可直入正文，
           // 否则必须由独立最终写作阶段产出用户可见内容。
           try {
-            const groundingRequest = await this.assembleGenerationRequest(
+            const grounded = await this.invokeWithBudgetReassembly(
               generationRequest,
               "research_grounding",
               "grounding",
+              [],
+              (groundingRequest) => provider.prepareGrounded!({ ...groundingRequest, scenario }),
             );
-            const grounded = await provider.prepareGrounded({ ...groundingRequest, scenario });
             if (grounded.kind === "confirmed_final") {
               if (!grounded.content.trim()) throw new Error("Confirmed final provider response was empty");
               // 原生联网适配器已在完整响应上确认最终通道；这里把终稿按小段逐步发布，
@@ -810,11 +830,13 @@ export class ResearchSessionService {
                 content = planned.content;
                 titleHints = planned.titleHints;
               } else {
-                content = await provider.writeBody(await this.assembleGenerationRequest(
+                content = await this.invokeWithBudgetReassembly(
                   generationRequest,
                   "research_body",
                   "body",
-                ));
+                  [],
+                  (assembled) => provider.writeBody!(assembled),
+                );
                 await this.appendGeneratedDelta(task, content);
               }
             }
@@ -876,12 +898,14 @@ export class ResearchSessionService {
     request: ResearchGenerationRequest,
   ): Promise<void> {
     let content = "";
-    const assembledRequest = await this.assembleGenerationRequest(
+    const stream = this.streamWithBudgetReassembly(
       request,
       request.deepResearch ? "deep_research" : "research_chat",
       request.deepResearch ? "deep-research" : "chat",
+      [],
+      (assembled) => provider.generate(assembled),
     );
-    for await (const delta of provider.generate(assembledRequest)) {
+    for await (const delta of stream) {
       if (!delta) continue;
       content += delta;
       if (content.length > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
@@ -1130,12 +1154,7 @@ export class ResearchSessionService {
         this.webEvidenceCandidate(task.id, groundedEvidence),
       );
       if (resumeFrom) additions.push(this.continuationCandidate(task.id, "single-turn", resumeFrom));
-      const assembledGenerationRequest = await this.assembleGenerationRequest(
-        generationRequest,
-        "research_body",
-        groundedEvidence === undefined ? `body-stream:${continuations}` : `grounded-final:${continuations}`,
-        additions,
-      );
+      const workflowStepId = groundedEvidence === undefined ? `body-stream:${continuations}` : `grounded-final:${continuations}`;
       try {
         // 内层：整段流消费包一次分类退避重试；每次重入都是独立物理调用（emitCall 恰好一次）。
         await this.withProviderRetry(async () => {
@@ -1143,28 +1162,36 @@ export class ResearchSessionService {
           // 否则会被误当成普通正文写出。
           if (physicalCalls++ > 0) this.finalBodySinks.get(task.id)?.discardPending();
           const pendingCitations: ResearchCitationCandidate[] = [];
-          const streamOptions = {
-            ...assembledGenerationRequest,
-            sources: groundedSources,
-            ...(resumeFrom ? { resumeFrom } : {}),
-            ...(this.abortControllers.get(task.id)?.signal ? { signal: this.abortControllers.get(task.id)!.signal } : {}),
-            onStreamDone: (done: { finishReason?: string }) => { doneFinish = done.finishReason; },
-            onReasoning: (text: string) => reasoning.push(text),
-            ...(groundedEvidence !== undefined ? {
-              onCitation: (candidate: ResearchCitationCandidate) => {
-                const normalized = this.normalizeCitationCandidate(candidate, groundedSources);
-                if (normalized) pendingCitations.push(normalized);
-              },
-            } : {}),
-          };
           const flushCitations = async () => {
             while (pendingCitations.length) {
               await this.store.appendResearchTaskCitationCandidate(task.id, pendingCitations.shift()!);
             }
           };
-          const stream = groundedEvidence === undefined
-            ? provider.writeBodyStream!(streamOptions)
-            : provider.writeGroundedFinalStream!(assembledGenerationRequest, groundedEvidence, streamOptions);
+          const stream = this.streamWithBudgetReassembly(
+            generationRequest,
+            "research_body",
+            workflowStepId,
+            additions,
+            (assembledGenerationRequest) => {
+              const streamOptions = {
+                ...assembledGenerationRequest,
+                sources: groundedSources,
+                ...(resumeFrom ? { resumeFrom } : {}),
+                ...(this.abortControllers.get(task.id)?.signal ? { signal: this.abortControllers.get(task.id)!.signal } : {}),
+                onStreamDone: (done: { finishReason?: string }) => { doneFinish = done.finishReason; },
+                onReasoning: (text: string) => reasoning.push(text),
+                ...(groundedEvidence !== undefined ? {
+                  onCitation: (candidate: ResearchCitationCandidate) => {
+                    const normalized = this.normalizeCitationCandidate(candidate, groundedSources);
+                    if (normalized) pendingCitations.push(normalized);
+                  },
+                } : {}),
+              };
+              return groundedEvidence === undefined
+                ? provider.writeBodyStream!(streamOptions)
+                : provider.writeGroundedFinalStream!(assembledGenerationRequest, groundedEvidence, streamOptions);
+            },
+          );
           for await (const delta of stream) {
             await flushCitations();
             if (!delta) continue;
@@ -1284,11 +1311,13 @@ export class ResearchSessionService {
     if (!plan || plan.sections.length === 0) {
       // 大纲失败降级：回退单轮 writeBody（由调用方在拿到 undefined 后走 writeBody），不阻断生成。
       try {
-        const outline = await provider.generateOutline(await this.assembleGenerationRequest(
+        const outline = await this.invokeWithBudgetReassembly(
           request,
           "research_body_outline",
           "body-outline",
-        ));
+          [],
+          (assembled) => provider.generateOutline!(assembled),
+        );
         plan = { sections: outline.sections.map((section) => ({ ...section, status: "pending" as const })) };
         await this.store.saveResearchTaskBodyPlan(task.id, plan);
       } catch (error) {
@@ -1435,18 +1464,18 @@ export class ResearchSessionService {
           ...(args.repairHint ? { repairHint: args.repairHint } : {}),
           ...(args.targetCharsOverride !== undefined ? { targetCharsOverride: args.targetCharsOverride } : {}),
         });
-        const assembledRequest = await this.assembleGenerationRequest(
+        return this.invokeWithBudgetReassembly(
           request,
           "research_body_section",
           `body-section:${sectionIndex}`,
           [this.continuationCandidate(task.id, `section:${sectionIndex}`, state)],
+          (assembledRequest) => provider.expandSection!({
+            ...assembledRequest, outline, sectionIndex, writtenSoFar,
+            ...(args.continuation ? { continuation: args.continuation } : {}),
+            ...(args.repairHint ? { repairHint: args.repairHint } : {}),
+            ...(args.targetCharsOverride !== undefined ? { targetCharsOverride: args.targetCharsOverride } : {}),
+          }),
         );
-        return provider.expandSection!({
-          ...assembledRequest, outline, sectionIndex, writtenSoFar,
-          ...(args.continuation ? { continuation: args.continuation } : {}),
-          ...(args.repairHint ? { repairHint: args.repairHint } : {}),
-          ...(args.targetCharsOverride !== undefined ? { targetCharsOverride: args.targetCharsOverride } : {}),
-        });
       });
 
     let assembled = section.partialContent ?? "";
@@ -1757,12 +1786,19 @@ export class ResearchSessionService {
     purpose: ContextPurpose,
     workflowStepId: string,
     additions: readonly ContextCandidate[] = [],
+    options: {
+      budget?: ContextBudget;
+      previousAssemblyAttemptId?: string;
+      previousBudgetResolutionAttemptId?: string;
+    } = {},
   ): Promise<AssembledResearchGenerationRequest> {
     const assembled = assembleContext({
       purpose,
       workflowRunId: request.taskId,
       workflowStepId,
+      ...(options.previousAssemblyAttemptId ? { previousAssemblyAttemptId: options.previousAssemblyAttemptId } : {}),
       ...(request.session.projectId ? { projectId: request.session.projectId } : {}),
+      ...(options.budget ? { budget: options.budget } : {}),
       candidates: [...(request.contextCandidates ?? []), ...additions],
     });
     if (assembled.status !== "assembled") throw new Error(`Research context assembly rejected: ${assembled.reason}`);
@@ -1770,11 +1806,69 @@ export class ResearchSessionService {
     const snapshot = task?.contextAssemblySnapshot;
     if (!task || !snapshot) throw new Error("Research context source snapshot is missing");
     const assemblies = [
-      ...snapshot.assemblies.filter((entry) => entry.workflowStepId !== workflowStepId),
+      ...snapshot.assemblies,
       { workflowStepId, recordedAt: new Date().toISOString(), audit: contextAssemblyAudit(assembled) },
-    ].sort((left, right) => left.workflowStepId.localeCompare(right.workflowStepId));
+    ];
     await this.store.saveResearchTaskContextAssemblySnapshot(task.id, { ...snapshot, assemblies });
-    return { ...request, contextAssembly: assembled };
+    return {
+      ...request,
+      contextAssembly: assembled,
+      ...(options.previousBudgetResolutionAttemptId
+        ? { previousBudgetResolutionAttemptId: options.previousBudgetResolutionAttemptId }
+        : {}),
+    };
+  }
+
+  /**
+   * Model Budget Policy may reject an oversized envelope before a physical call starts. The
+   * generation owner is the only layer allowed to reassemble, and it does so at most once.
+   */
+  private async invokeWithBudgetReassembly<T>(
+    request: ResearchGenerationRequest,
+    purpose: ContextPurpose,
+    workflowStepId: string,
+    additions: readonly ContextCandidate[],
+    invoke: (assembled: AssembledResearchGenerationRequest) => Promise<T>,
+  ): Promise<T> {
+    const first = await this.assembleGenerationRequest(request, purpose, workflowStepId, additions);
+    try {
+      return await invoke(first);
+    } catch (error) {
+      if (!(error instanceof ModelBudgetReassemblyRequiredError)) throw error;
+      const second = await this.assembleGenerationRequest(request, purpose, workflowStepId, additions, {
+        budget: reducedContextBudget(first.contextAssembly, error),
+        previousAssemblyAttemptId: first.contextAssembly.assemblyAttemptId,
+        previousBudgetResolutionAttemptId: error.resolution.budgetResolutionAttemptId,
+      });
+      return invoke(second);
+    }
+  }
+
+  /** Reassembly is permitted only before the first body delta proves that execution started. */
+  private async *streamWithBudgetReassembly(
+    request: ResearchGenerationRequest,
+    purpose: ContextPurpose,
+    workflowStepId: string,
+    additions: readonly ContextCandidate[],
+    invoke: (assembled: AssembledResearchGenerationRequest) => AsyncIterable<string>,
+  ): AsyncIterable<string> {
+    const first = await this.assembleGenerationRequest(request, purpose, workflowStepId, additions);
+    let yielded = false;
+    try {
+      for await (const delta of invoke(first)) {
+        yielded = true;
+        yield delta;
+      }
+      return;
+    } catch (error) {
+      if (yielded || !(error instanceof ModelBudgetReassemblyRequiredError)) throw error;
+      const second = await this.assembleGenerationRequest(request, purpose, workflowStepId, additions, {
+        budget: reducedContextBudget(first.contextAssembly, error),
+        previousAssemblyAttemptId: first.contextAssembly.assemblyAttemptId,
+        previousBudgetResolutionAttemptId: error.resolution.budgetResolutionAttemptId,
+      });
+      yield* invoke(second);
+    }
   }
 
   private continuationCandidate(taskId: string, kind: string, content: string): ContextCandidate {

@@ -4,8 +4,12 @@ import {
   redactGroundingValue,
   sanitizeGroundingUrl,
   type ModelCallRecord,
+  type AppliedModelBudget,
   type ContextAssemblyObservation,
   type ContextExplanationCode,
+  type PromptEnvelopeObservation,
+  type RequestedModelBudget,
+  type ResolvedModelBudget,
   type ResearchGroundingRunRecord,
   type ResearchGroundingSourceRecord,
   type ResearchGroundingTraceEntry,
@@ -464,16 +468,32 @@ function modelCallView(row: ObservabilityRelatedRow): RunRecordModelCallView {
   const call = parsed.value as Partial<ModelCallRecord>;
   const status = call.status === "completed" || call.status === "failed" ? call.status : "corrupt";
   const contextAssembly = safeContextObservation(call.contextAssembly);
+  const envelope = safeEnvelopeObservation(call.envelope);
+  const requestedBudget = safeRequestedBudget(call.requestedBudget);
+  const resolvedBudget = safeResolvedBudget(call.resolvedBudget);
+  const appliedBudget = safeAppliedBudget(call.appliedBudget);
   return {
     id: publicRelatedId(safeId(call.id, row.id)),
     provider: safeText(call.provider),
     model: safeText(call.model),
     purpose: safeText(call.purpose),
     promptVersion: safeText(call.promptVersion),
+    ...(envelope ? { envelope } : {}),
+    ...(call.availability?.status === "available" || call.availability?.status === "unavailable" ? { availability: { status: call.availability.status, ...(call.availability.reason ? { reason: safeText(call.availability.reason) } : {}) } } : {}),
+    ...(requestedBudget ? { requestedBudget } : {}),
+    ...(resolvedBudget ? { resolvedBudget } : {}),
+    ...(appliedBudget ? { appliedBudget } : {}),
     ...(Array.isArray(call.sourceSliceIds) ? { sourceSliceIds: call.sourceSliceIds.map((id) => safeId(id)).filter((id) => id !== "unknown").slice(0, 200) } : {}),
     ...(Array.isArray(call.sourceFragmentIds) ? { sourceFragmentIds: call.sourceFragmentIds.map((id) => safeId(id)).filter((id) => id !== "unknown").slice(0, 200) } : {}),
     ...(typeof call.tokenBudget === "number" && Number.isFinite(call.tokenBudget) && call.tokenBudget >= 0 ? { tokenBudget: Math.trunc(call.tokenBudget) } : {}),
     ...(contextAssembly ? { contextAssembly } : {}),
+    ...(call.finishReason ? { finishReason: safeText(call.finishReason, "unknown", 80) } : {}),
+    ...(["length", "empty_body", "task_mismatch_truncation"].includes(call.completionDiagnostic ?? "")
+      ? { completionDiagnostic: call.completionDiagnostic as RunRecordModelCallView["completionDiagnostic"] }
+      : {}),
+    ...(typeof call.toolCallCount === "number" ? { toolCallCount: Math.trunc(nonNegativeNumber(call.toolCallCount)) } : {}),
+    ...(safeModelCallErrorCategory(call.errorCategory) ? { errorCategory: safeModelCallErrorCategory(call.errorCategory) } : {}),
+    ...(call.buildFingerprint ? { buildFingerprint: safeText(call.buildFingerprint, "development", 200) } : {}),
     status,
     inputTokens: nonNegativeNumber(call.inputTokens),
     outputTokens: nonNegativeNumber(call.outputTokens),
@@ -486,6 +506,90 @@ function modelCallView(row: ObservabilityRelatedRow): RunRecordModelCallView {
     createdAt: safeText(call.createdAt, row.createdAt),
     ...(validDate(call.completedAt) ? { completedAt: safeText(call.completedAt) } : {}),
   };
+}
+
+function safeEnvelopeObservation(value: unknown): PromptEnvelopeObservation | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const input = value as Record<string, unknown>;
+  if (input.version !== "prompt-envelope-v1") return undefined;
+  const output = input.outputContract && typeof input.outputContract === "object"
+    ? input.outputContract as Record<string, unknown>
+    : undefined;
+  if (!output || !["text", "json_object", "tool_calls"].includes(stringValue(output.format) ?? "")) return undefined;
+  const roles = input.roleCounts && typeof input.roleCounts === "object"
+    ? input.roleCounts as Record<string, unknown>
+    : {};
+  return {
+    version: "prompt-envelope-v1",
+    purpose: safeText(input.purpose, "unknown", 120),
+    promptVersion: safeText(input.promptVersion, "unknown", 120),
+    messageCount: Math.trunc(nonNegativeNumber(input.messageCount)),
+    roleCounts: {
+      ...positiveRoleCount("system", roles.system),
+      ...positiveRoleCount("user", roles.user),
+      ...positiveRoleCount("assistant", roles.assistant),
+      ...positiveRoleCount("tool", roles.tool),
+    },
+    estimatedInputTokens: Math.trunc(nonNegativeNumber(input.estimatedInputTokens)),
+    outputContract: {
+      format: stringValue(output.format) as PromptEnvelopeObservation["outputContract"]["format"],
+      contractVersion: safeText(output.contractVersion, "unknown", 120),
+      minimumBodyTokens: Math.trunc(nonNegativeNumber(output.minimumBodyTokens)),
+    },
+  };
+}
+
+function positiveRoleCount(role: "system" | "user" | "assistant" | "tool", value: unknown): Partial<Record<typeof role, number>> {
+  const count = Math.trunc(nonNegativeNumber(value));
+  return count > 0 ? { [role]: count } : {};
+}
+
+function safeRequestedBudget(value: unknown): RequestedModelBudget | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const input = value as Record<string, unknown>;
+  if (typeof input.thinking !== "boolean") return undefined;
+  return {
+    maxInputTokens: Math.trunc(nonNegativeNumber(input.maxInputTokens)),
+    maxOutputTokens: Math.trunc(nonNegativeNumber(input.maxOutputTokens)),
+    minimumBodyTokens: Math.trunc(nonNegativeNumber(input.minimumBodyTokens)),
+    thinking: input.thinking,
+  };
+}
+
+function safeResolvedBudget(value: unknown): ResolvedModelBudget | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const input = value as Record<string, unknown>;
+  if (input.status !== "resolved" || typeof input.thinking !== "boolean"
+    || !["none", "shared_output", "separate"].includes(stringValue(input.reasoningBudgetMode) ?? "")) return undefined;
+  return {
+    status: "resolved",
+    budgetResolutionAttemptId: safeId(input.budgetResolutionAttemptId),
+    ...(typeof input.previousBudgetResolutionAttemptId === "string"
+      ? { previousBudgetResolutionAttemptId: safeId(input.previousBudgetResolutionAttemptId) }
+      : {}),
+    estimatedInputTokens: Math.trunc(nonNegativeNumber(input.estimatedInputTokens)),
+    maxInputTokens: Math.trunc(nonNegativeNumber(input.maxInputTokens)),
+    maxOutputTokens: Math.trunc(nonNegativeNumber(input.maxOutputTokens)),
+    minimumBodyTokens: Math.trunc(nonNegativeNumber(input.minimumBodyTokens)),
+    thinking: input.thinking,
+    reasoningBudgetMode: stringValue(input.reasoningBudgetMode) as ResolvedModelBudget["reasoningBudgetMode"],
+  };
+}
+
+function safeAppliedBudget(value: unknown): AppliedModelBudget | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const input = value as Record<string, unknown>;
+  if (typeof input.thinking !== "boolean") return undefined;
+  return {
+    maxOutputTokens: Math.trunc(nonNegativeNumber(input.maxOutputTokens)),
+    thinking: input.thinking,
+  };
+}
+
+function safeModelCallErrorCategory(value: unknown): ModelCallRecord["errorCategory"] | undefined {
+  return typeof value === "string" && ["authentication", "network", "validation", "provider", "budget", "unknown"].includes(value)
+    ? value as ModelCallRecord["errorCategory"]
+    : undefined;
 }
 
 const SAFE_CONTEXT_CHANNELS = new Set(["behavior_rule", "factual_evidence", "user_adaptation"]);
@@ -530,6 +634,8 @@ function safeContextObservation(value: unknown): ContextAssemblyObservation | un
   } : undefined;
   return {
     status: input.status,
+    assemblyAttemptId: safeId(input.assemblyAttemptId, "legacy"),
+    ...(typeof input.previousAssemblyAttemptId === "string" ? { previousAssemblyAttemptId: safeId(input.previousAssemblyAttemptId) } : {}),
     purpose,
     adoptedCount: nonNegativeNumber(input.adoptedCount),
     rejectedCount: nonNegativeNumber(input.rejectedCount),

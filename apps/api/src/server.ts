@@ -102,6 +102,7 @@ if (providerId && consent) {
 await store.saveSetting("ai_configured", String(Boolean(activeProfile?.credentialConfigured)));
 const resolver = new ProviderRuntimeResolver(DEFAULT_PROVIDER_REGISTRY, async (profileId) => store.getProviderCredential(profileId));
 const service = new CaptureService(store, paths.artifacts, undefined, {
+  runtimeVersion,
   researchProvider: offlineDemoMode ? createMvpDemoResearchProvider() : undefined,
   mvpDemoMode: offlineDemoMode,
   ...previewRuntime.serviceOptions,

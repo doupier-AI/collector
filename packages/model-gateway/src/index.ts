@@ -2,6 +2,32 @@ import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { ASSOCIATION_HINT_BENEFITS, ASSOCIATION_HINT_EVALUATION_PROMPT_VERSION, FUSION_RELATION_TYPES, IMPORT_CHAPTER_PARSE_PROMPT_VERSION, IMPORT_CHAPTER_PARSE_TOKEN_BUDGET, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET, TERM_IDENTITY_CONTEXT_MAX_CHARACTERS, TERM_IDENTITY_TEXT_MAX_CHARACTERS, TERM_IDENTITY_VERIFY_PROMPT_VERSION, observeContextAssembly, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type ContextAssemblyObservation, type ContextAssemblyResult, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchAssociationHintBenefit, type ResearchCitationCandidate, type ResearchCitationSourceIdentity, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSliceContext, type TermIdentityVerificationRequest } from "@collector/capture-contracts";
+import type { AppliedModelBudget, ModelBudgetLimits, PromptEnvelope, PromptEnvelopeObservation, RequestedModelBudget, ResolvedModelBudget } from "@collector/capture-contracts";
+import {
+  DEFAULT_MODEL_BUDGET_LIMITS,
+  ModelBudgetReassemblyRequiredError,
+  ModelBudgetUnsatisfiableError,
+  appliedModelBudget,
+  assertResolvedBudget,
+  createPromptEnvelope,
+  observePromptEnvelope,
+  promptEnvelopeText,
+  resolveModelBudget,
+} from "./model-call.js";
+
+export {
+  DEFAULT_MODEL_BUDGET_LIMITS,
+  ModelBudgetReassemblyRequiredError,
+  ModelBudgetUnsatisfiableError,
+  appliedModelBudget,
+  assertResolvedBudget,
+  createPromptEnvelope,
+  estimatePromptEnvelopeTokens,
+  estimatePromptTokens,
+  observePromptEnvelope,
+  promptEnvelopeText,
+  resolveModelBudget,
+} from "./model-call.js";
 
 export interface ProviderUsage {
   inputTokens?: number;
@@ -51,6 +77,12 @@ export class ModelProviderAbortedError extends Error {
 }
 
 export interface ModelProviderRequest {
+  /** Provider-independent role-preserving input. Production gateway calls always supply this. */
+  envelope?: PromptEnvelope;
+  requestedBudget?: RequestedModelBudget;
+  resolvedBudget?: ResolvedModelBudget;
+  appliedBudget?: AppliedModelBudget;
+  /** @deprecated Low-level Adapter tests only; business orchestration must use envelope. */
   prompt: string;
   model: string;
   /** 要求 JSON 输出时传入；自由正文（生成自由化）缺省，传输层不再强制 JSON。 */
@@ -242,7 +274,7 @@ export type GroundedResearchResponse =
   | (Omit<GroundedResearchMetadata, "content"> & { bodyKind: "evidence" });
 
 export interface GroundingModelProvider extends ModelProvider {
-  generateGroundedResearch(request: { prompt: string; model: string; grounding: ResearchGroundingRequest; maxTokens?: number; timeoutMs?: number }): Promise<GroundedResearchResponse>;
+  generateGroundedResearch(request: ModelProviderRequest & { grounding: ResearchGroundingRequest }): Promise<GroundedResearchResponse>;
 }
 
 /** 研究节点提示词可消费的有界父链结果。由 API 层的 ParentChainContextService 提供。 */
@@ -505,17 +537,29 @@ export interface ModelCallContext {
   /** Fixed output-token budget for explaining the call boundary in run records. */
   tokenBudget?: number;
   contextAssembly?: ContextAssemblyObservation;
+  previousBudgetResolutionAttemptId?: string;
+  buildFingerprint?: string;
 }
 export interface ModelCallEvent {
   context: ModelCallContext;
   provider: string;
   model: string;
   promptVersion: string;
+  envelope: PromptEnvelopeObservation;
+  availability: { status: "available" | "unavailable"; reason?: string };
+  requestedBudget: RequestedModelBudget;
+  resolvedBudget: ResolvedModelBudget;
+  appliedBudget: AppliedModelBudget;
   status: "completed" | "failed";
   usage?: ProviderUsage;
   estimatedCostUsd?: number;
   latencyMs: number;
   retryCount: number;
+  finishReason?: string;
+  completionDiagnostic?: "length" | "empty_body" | "task_mismatch_truncation";
+  toolCallCount: number;
+  errorCategory?: "authentication" | "network" | "validation" | "provider" | "budget" | "unknown";
+  buildFingerprint: string;
   errorMessage?: string;
   createdAt: string;
   completedAt: string;
@@ -602,7 +646,7 @@ const MAX_AGENT_TURNS = 10;
 
 export class ModelGateway {
   private callListener?: (event: ModelCallEvent) => void | Promise<void>;
-  constructor(private readonly provider: ModelProvider, private readonly options: { model?: string; promptVersion?: string; thinking?: boolean; pricing?: Record<string, ModelPricing>; onCall?: (event: ModelCallEvent) => void | Promise<void> } = {}) { this.callListener = options.onCall; }
+  constructor(private readonly provider: ModelProvider, private readonly options: { model?: string; promptVersion?: string; thinking?: boolean; pricing?: Record<string, ModelPricing>; budgetLimits?: ModelBudgetLimits; buildFingerprint?: string; onCall?: (event: ModelCallEvent) => void | Promise<void> } = {}) { this.callListener = options.onCall; }
 
   get providerName(): string { return this.provider.name; }
   get modelName(): string { return this.options.model ?? this.provider.defaultModel ?? "default"; }
@@ -619,31 +663,84 @@ export class ModelGateway {
   }
 
   /** 成功记账：usage/成本/延迟，流式与非流式共用同一口径，恰好一次。 */
-  private async emitCompleted(context: ModelCallContext, request: ModelProviderRequest, startedAt: number, createdAt: string, response: ModelProviderResponse): Promise<void> {
+  private async emitCompleted(context: ModelCallContext, request: ModelProviderRequest, startedAt: number, createdAt: string, response: ModelProviderResponse, toolCallCount = 0): Promise<void> {
+    if (!request.envelope || !request.requestedBudget || !request.resolvedBudget || !request.appliedBudget) throw new Error("Prepared model request metadata is missing");
     await this.emitCall({
       context, provider: this.providerName, model: response.model ?? request.model, promptVersion: context.promptVersion ?? this.promptVersion, status: "completed",
+      envelope: observePromptEnvelope(request.envelope), availability: { status: "available" }, requestedBudget: request.requestedBudget,
+      resolvedBudget: request.resolvedBudget, appliedBudget: request.appliedBudget,
       usage: response.usage, estimatedCostUsd: estimateCost(response.model ?? request.model, response.usage, this.options.pricing ?? this.provider.pricing),
-      latencyMs: Date.now() - startedAt, retryCount: context.retryCount ?? 0, createdAt, completedAt: new Date().toISOString(),
+      latencyMs: Date.now() - startedAt, retryCount: context.retryCount ?? 0, finishReason: response.finishReason, toolCallCount,
+      ...((response.finishReason === "length" || !response.content.trim())
+        ? { completionDiagnostic: response.finishReason === "length" ? "length" as const : "empty_body" as const }
+        : {}),
+      buildFingerprint: context.buildFingerprint ?? this.options.buildFingerprint ?? "development", createdAt, completedAt: new Date().toISOString(),
     });
   }
 
   /** 失败记账：脱敏错误信息，流式与非流式共用同一口径。 */
   private async emitFailed(context: ModelCallContext, request: ModelProviderRequest, startedAt: number, createdAt: string, error: unknown): Promise<void> {
+    if (!request.envelope || !request.requestedBudget || !request.resolvedBudget || !request.appliedBudget) throw new Error("Prepared model request metadata is missing");
     await this.emitCall({
       context, provider: this.providerName, model: request.model, promptVersion: context.promptVersion ?? this.promptVersion, status: "failed",
+      envelope: observePromptEnvelope(request.envelope), availability: { status: "available" }, requestedBudget: request.requestedBudget,
+      resolvedBudget: request.resolvedBudget, appliedBudget: request.appliedBudget,
       latencyMs: Date.now() - startedAt, retryCount: context.retryCount ?? 0, errorMessage: redactError(error), createdAt, completedAt: new Date().toISOString(),
+      toolCallCount: 0, errorCategory: modelCallErrorCategory(error), buildFingerprint: context.buildFingerprint ?? this.options.buildFingerprint ?? "development",
     });
   }
 
+  private prepareRequest(request: ModelProviderRequest, context: ModelCallContext): ModelProviderRequest {
+    const promptVersion = context.promptVersion ?? this.promptVersion;
+    const maxOutputTokens = request.requestedBudget?.maxOutputTokens ?? request.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS;
+    const minimumBodyTokens = request.requestedBudget?.minimumBodyTokens
+      ?? Math.min(maxOutputTokens, context.purpose === "research_body" || context.purpose === "research_body_section" ? 1_024 : 1);
+    const envelope = request.envelope ?? createPromptEnvelope({
+      purpose: context.purpose ?? "unknown",
+      promptVersion,
+      user: request.prompt,
+      outputContract: {
+        format: request.responseFormat?.type === "json_object" ? "json_object" : "text",
+        contractVersion: `${promptVersion}:output`,
+        minimumBodyTokens,
+      },
+    });
+    const requestedBudget: RequestedModelBudget = request.requestedBudget ?? {
+      maxInputTokens: context.contextAssembly?.budget?.maxInputTokens ?? DEFAULT_MODEL_BUDGET_LIMITS.contextWindowTokens,
+      maxOutputTokens,
+      minimumBodyTokens: envelope.outputContract.minimumBodyTokens,
+      thinking: request.thinking ?? this.options.thinking ?? false,
+    };
+    const resolvedBudget = request.resolvedBudget ?? assertResolvedBudget(resolveModelBudget({
+      envelope,
+      requested: requestedBudget,
+      limits: this.options.budgetLimits ?? DEFAULT_MODEL_BUDGET_LIMITS,
+      ...(context.previousBudgetResolutionAttemptId ? { previousBudgetResolutionAttemptId: context.previousBudgetResolutionAttemptId } : {}),
+    }));
+    const appliedBudget = request.appliedBudget ?? appliedModelBudget(resolvedBudget);
+    return {
+      ...request,
+      envelope,
+      requestedBudget,
+      resolvedBudget,
+      appliedBudget,
+      prompt: promptEnvelopeText(envelope),
+      responseFormat: envelope.outputContract.format === "json_object" ? { type: "json_object" } : undefined,
+      thinking: appliedBudget.thinking,
+      maxTokens: appliedBudget.maxOutputTokens,
+    };
+  }
+
   private async complete(request: ModelProviderRequest, context: ModelCallContext): Promise<ModelProviderResponse> {
+    const prepared = this.prepareRequest(request, context);
     const createdAt = new Date().toISOString();
     const startedAt = Date.now();
     try {
-      const response = await this.provider.complete(request);
-      await this.emitCompleted(context, request, startedAt, createdAt, response);
+      const response = await this.provider.complete(prepared);
+      await this.emitCompleted(context, prepared, startedAt, createdAt, response);
       return response;
     } catch (error) {
-      await this.emitFailed(context, request, startedAt, createdAt, error);
+      await this.emitFailed(context, prepared, startedAt, createdAt, error);
       throw error;
     }
   }
@@ -651,14 +748,14 @@ export class ModelGateway {
   get promptVersion(): string { return this.options.promptVersion ?? "knowledge-extraction-v1"; }
 
   private contextOptions<T extends { maxTokens?: number; context?: ModelCallContext }>(assembly: AssembledModelContext, options: T): T {
-    const maxTokens = Math.min(options.maxTokens ?? assembly.budget.reservedOutputTokens, assembly.budget.reservedOutputTokens);
+    const maxTokens = options.maxTokens;
     return {
       ...options,
-      maxTokens,
+      ...(maxTokens !== undefined ? { maxTokens } : {}),
       context: {
         ...(options.context ?? {}),
         purpose: options.context?.purpose ?? assembly.purpose,
-        tokenBudget: maxTokens,
+        ...(maxTokens !== undefined ? { tokenBudget: maxTokens } : {}),
         contextAssembly: observeContextAssembly(assembly),
       },
     };
@@ -843,26 +940,32 @@ export class ModelGateway {
       throw new Error("Configured provider does not support native web grounding");
     }
     const request: ModelProviderRequest = {
+      envelope: createPromptEnvelope({
+        purpose: options.context?.purpose ?? "research_grounding",
+        promptVersion: options.context?.promptVersion ?? grounding.promptVersion,
+        system: "Use the configured grounding capability. Return only a clean final body through the provider's confirmed final channel; citation metadata stays separate. 只输出干净正文，不要输出任何内部控制协议；引用与弱标记由独立旁路产生。",
+        user: prompt,
+        outputContract: { format: "text", contractVersion: "grounded-research-body-v1", minimumBodyTokens: 1_024 },
+      }),
       prompt: `${prompt}\n\n只输出干净正文，不要输出任何内部控制协议；引用与弱标记由独立旁路产生。`,
       model: options.model ?? this.modelName,
       maxTokens: options.maxTokens ?? RESEARCH_BODY_DEFAULT_MAX_TOKENS,
       timeoutMs: options.timeoutMs ?? 120_000,
     };
     const context = options.context ?? { purpose: "research_grounding", promptVersion: grounding.promptVersion };
+    const prepared = this.prepareRequest(request, context);
     const createdAt = new Date().toISOString();
     const startedAt = Date.now();
     try {
-      const result = await provider.generateGroundedResearch({
-        prompt: request.prompt,
-        model: request.model,
-        grounding,
-        maxTokens: request.maxTokens,
-        timeoutMs: request.timeoutMs,
+      const result = await provider.generateGroundedResearch({ ...prepared, grounding });
+      // Evidence-only grounding is a valid non-empty physical result even though it is not yet user-visible body.
+      await this.emitCompleted(context, prepared, startedAt, createdAt, {
+        content: result.bodyKind === "confirmed_final" ? result.content : "grounding-evidence",
+        model: prepared.model,
       });
-      await this.emitCompleted(context, request, startedAt, createdAt, { content: result.bodyKind === "confirmed_final" ? result.content : "", model: request.model });
       return result;
     } catch (error) {
-      await this.emitFailed(context, request, startedAt, createdAt, error);
+      await this.emitFailed(context, prepared, startedAt, createdAt, error);
       throw error;
     }
   }
@@ -874,8 +977,11 @@ export class ModelGateway {
     if (!messages.length) throw new Error("Research conversation requires at least one message");
     const parentContext = formatResearchParentChainContext(options.parentChainContext);
     const sliceContext = formatResearchSliceContext(options.sliceContext);
-    const prompt = `You are Collector's research assistant. Answer the latest user message using the conversation context. Output a coherent passage of plain text only — no JSON, no field wrappers, no Markdown code fences, source numbering, or internal control protocol. Preserve uncertainty and never invent sources.\n\nConversation:\n${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
+    const system = "You are Collector's research assistant. Answer the latest user message using the conversation context. Output a coherent passage of plain text only — no JSON, no field wrappers, no Markdown code fences, source numbering, or internal control protocol. Preserve uncertainty and never invent sources.";
+    const user = `Conversation:\n${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
+    const prompt = `${system}\n\n${user}`;
     const response = await this.complete({
+      envelope: createPromptEnvelope({ purpose: options.context?.purpose ?? "research_chat", promptVersion: options.context?.promptVersion ?? this.promptVersion, system, user, outputContract: { format: "text", contractVersion: "research-conversation-text-v1", minimumBodyTokens: 512 } }),
       prompt,
       model: options.model ?? this.modelName,
       thinking: this.options.thinking ?? false,
@@ -902,6 +1008,7 @@ export class ModelGateway {
     if (!messages.length) throw new Error("Research body requires at least one message");
     const prompt = this.researchBodyPrompt(messages, options.parentChainContext, options.sliceContext);
     const response = await this.complete({
+      envelope: this.researchBodyEnvelope(messages, options.parentChainContext, options.sliceContext, options.context),
       prompt,
       model: options.model ?? this.modelName,
       thinking: this.options.thinking ?? false,
@@ -935,6 +1042,26 @@ export class ModelGateway {
 ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContextText ? `\n\n${sliceContextText}` : ""}`;
   }
 
+  private researchBodyEnvelope(
+    messages: Array<{ role: "user" | "assistant"; content: string }>,
+    parentChainContext?: ResearchParentChainContext,
+    sliceContext?: ResearchSliceContext,
+    context?: ModelCallContext,
+  ): PromptEnvelope {
+    const prompt = this.researchBodyPrompt(messages, parentChainContext, sliceContext);
+    const separator = "\n\n对话：\n";
+    const splitAt = prompt.indexOf(separator);
+    const system = splitAt >= 0 ? prompt.slice(0, splitAt) : "Write the final Collector answer under the declared output contract.";
+    const user = splitAt >= 0 ? prompt.slice(splitAt + separator.length) : prompt;
+    return createPromptEnvelope({
+      purpose: context?.purpose ?? "research_body",
+      promptVersion: context?.promptVersion ?? this.promptVersion,
+      system,
+      user,
+      outputContract: { format: "text", contractVersion: "research-body-markdown-v1", minimumBodyTokens: 1_024 },
+    });
+  }
+
   /**
    * 真实逐字流式正文（方案 B）：模型边生成边产出正文增量，对调用方只 yield 文本增量。
    * 与 writeResearchBody 同一提示词、同一记账口径；usage/model 在终帧由 done 事件捕获，
@@ -955,7 +1082,13 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
     const prompt = options.resumeFrom
       ? `${basePrompt}\n\n正文已写到断点，请从断点处继续，不要重复已写内容：\n……${resumeTail}`
       : basePrompt;
+    const baseEnvelope = this.researchBodyEnvelope(messages, options.parentChainContext, options.sliceContext, options.context);
+    const envelope: PromptEnvelope = options.resumeFrom ? {
+      ...baseEnvelope,
+      messages: [...baseEnvelope.messages, { role: "user", content: `正文已写到断点，请从断点处继续，不要重复已写内容：\n……${resumeTail}` }],
+    } : baseEnvelope;
     const request: ModelProviderRequest = {
+      envelope,
       prompt,
       model: options.model ?? this.modelName,
       thinking: this.options.thinking ?? false,
@@ -974,10 +1107,11 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
       yield content;
       return;
     }
+    const prepared = this.prepareRequest(request, context);
     const createdAt = new Date().toISOString();
     const startedAt = Date.now();
     // doneRef 由本调用局部持有（非实例字段），并发/交错调用互不干扰。
-    const doneRef: { model: string; usage?: ProviderUsage; finishReason?: string } = { model: request.model };
+    const doneRef: { model: string; usage?: ProviderUsage; finishReason?: string } = { model: prepared.model };
     let assembled = "";
     let rawAssembled = "";
     const citationCandidates: ResearchCitationCandidate[] = [];
@@ -1002,7 +1136,7 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
     try {
       // reasoning 旁路：思考事件经 onReasoning 转发、不进入 trim/记账；delta/done 走原通道。
       // completeStream 在窄化作用域内调用（async generator 惰性执行，调用本身不发起请求）。
-      const streamEvents = provider.completeStream(request);
+      const streamEvents = provider.completeStream(prepared);
       const textEvents = (async function* () {
         for await (const event of streamEvents) {
           if (event.type === "reasoning") { options.onReasoning?.(event.text); continue; }
@@ -1026,9 +1160,9 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
         yield trimmed;
         flushCitationCandidates();
       }
-      await this.emitCompleted(context, request, startedAt, createdAt, { content: assembled, model: doneRef.model, usage: doneRef.usage });
+      await this.emitCompleted(context, prepared, startedAt, createdAt, { content: assembled, model: doneRef.model, usage: doneRef.usage, finishReason: doneRef.finishReason });
     } catch (error) {
-      await this.emitFailed(context, request, startedAt, createdAt, error);
+      await this.emitFailed(context, prepared, startedAt, createdAt, error);
       throw error;
     }
     if (!assembled.trim()) throw new Error("Research body provider returned an empty body");
@@ -1732,12 +1866,48 @@ ${parentContext ? `\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext
 
     for (let turn = 1; turn <= maxTurns; turn += 1) {
       console.log(`[web-search] agentLoop turn=${turn} messagesLen=${messages.length} searchCalls=${searchCallCount} fetchCalls=${fetchCallCount}`);
-      const startedAt = Date.now();
-      const response = await provider.agentChat(messages, AGENT_SEARCH_TOOLS, {
+      const callContext: ModelCallContext = {
+        ...(options.context ?? {}),
+        purpose: options.context?.purpose ?? "agent_search",
+        workflowStepId: `${options.context?.workflowStepId ?? "agent-search"}:turn:${turn}`,
+      };
+      const envelope = createPromptEnvelope({
+        purpose: callContext.purpose ?? "agent_search",
+        promptVersion: callContext.promptVersion ?? this.promptVersion,
+        messages: messages.map((message) => ({
+          role: message.role,
+          content: message.content,
+          ...(message.tool_call_id ? { toolCallId: message.tool_call_id } : {}),
+          ...(message.tool_calls?.length ? { toolCalls: message.tool_calls.map((call) => ({ id: call.id, name: call.function.name, arguments: call.function.arguments })) } : {}),
+        })),
+        outputContract: { format: "tool_calls", contractVersion: "agent-search-tools-v1", minimumBodyTokens: 1 },
+      });
+      const physicalRequest = this.prepareRequest({
+        envelope,
+        prompt: userMessage,
         model: this.modelName,
         maxTokens: options.maxTokens ?? 4096,
         thinking: this.options.thinking ?? false,
-      });
+      }, callContext);
+      const startedAt = Date.now();
+      const createdAt = new Date().toISOString();
+      let response: AgentChatResponse;
+      try {
+        response = await provider.agentChat(messages, AGENT_SEARCH_TOOLS, {
+          model: physicalRequest.model,
+          maxTokens: physicalRequest.appliedBudget?.maxOutputTokens,
+          thinking: physicalRequest.appliedBudget?.thinking,
+        });
+        await this.emitCompleted(callContext, physicalRequest, startedAt, createdAt, {
+          content: response.message.content ?? "",
+          model: response.model,
+          usage: response.usage,
+          finishReason: response.finishReason,
+        }, response.message.toolCalls?.length ?? 0);
+      } catch (error) {
+        await this.emitFailed(callContext, physicalRequest, startedAt, createdAt, error);
+        throw error;
+      }
       console.log(`[web-search] agentLoop turn=${turn} finishReason=${response.finishReason} latency=${Date.now() - startedAt}ms`);
 
       if (response.finishReason === "stop") {
@@ -2092,17 +2262,15 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     let payload: any;
     try {
       const wantsJson = request.responseFormat?.type === "json_object";
-      const messages: Array<{ role: string; content: string }> = wantsJson
-        ? [{ role: "system", content: "Return valid json only. Fragment IDs and capture IDs are different identifier types and must never be interchanged." }, { role: "user", content: request.prompt }]
-        : [{ role: "user", content: request.prompt }];
+      const messages = mapPromptEnvelopeToOpenAiMessages(request);
       const body: Record<string, unknown> = {
         model: request.model,
         messages,
-        max_tokens: request.maxTokens,
+        max_tokens: request.appliedBudget?.maxOutputTokens ?? request.maxTokens,
       };
       if (wantsJson) body.response_format = request.responseFormat;
       if (typeof request.temperature === "number") body.temperature = request.temperature;
-      if (this.options.definition.capabilities.thinkingMode === "deepseek") body.thinking = { type: request.thinking ? "enabled" : "disabled" };
+      if (this.options.definition.capabilities.thinkingMode === "deepseek") body.thinking = { type: (request.appliedBudget?.thinking ?? request.thinking) ? "enabled" : "disabled" };
       response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/chat/completions`, {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
@@ -2142,19 +2310,17 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     let response: Response;
     try {
       const wantsJson = request.responseFormat?.type === "json_object";
-      const messages: Array<{ role: string; content: string }> = wantsJson
-        ? [{ role: "system", content: "Return valid json only. Fragment IDs and capture IDs are different identifier types and must never be interchanged." }, { role: "user", content: request.prompt }]
-        : [{ role: "user", content: request.prompt }];
+      const messages = mapPromptEnvelopeToOpenAiMessages(request);
       const body: Record<string, unknown> = {
         model: request.model,
         messages,
-        max_tokens: request.maxTokens,
+        max_tokens: request.appliedBudget?.maxOutputTokens ?? request.maxTokens,
         stream: true,
         stream_options: { include_usage: true },
       };
       if (wantsJson) body.response_format = request.responseFormat;
       if (typeof request.temperature === "number") body.temperature = request.temperature;
-      if (this.options.definition.capabilities.thinkingMode === "deepseek") body.thinking = { type: request.thinking ? "enabled" : "disabled" };
+      if (this.options.definition.capabilities.thinkingMode === "deepseek") body.thinking = { type: (request.appliedBudget?.thinking ?? request.thinking) ? "enabled" : "disabled" };
       response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/chat/completions`, {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
@@ -2319,7 +2485,7 @@ export class OpenAiResponsesProvider implements GroundingModelProvider {
   }
 
   async complete(request: ModelProviderRequest): Promise<ModelProviderResponse> {
-    const body: Record<string, unknown> = { model: request.model, input: request.prompt, max_output_tokens: request.maxTokens };
+    const body: Record<string, unknown> = { model: request.model, input: mapPromptEnvelopeToOpenAiMessages(request), max_output_tokens: request.appliedBudget?.maxOutputTokens ?? request.maxTokens };
     if (typeof request.temperature === "number") body.temperature = request.temperature;
     const response = await this.request(body);
     const content = openAiOutputText(response);
@@ -2338,7 +2504,7 @@ export class OpenAiResponsesProvider implements GroundingModelProvider {
     const idle = createIdleTimer(request.timeoutMs ?? 75_000, () => controller.abort(new ModelProviderTimeoutError(`${this.options.definition.label} stream idle timed out`)));
     let response: Response;
     try {
-      const body: Record<string, unknown> = { model: request.model, input: request.prompt, max_output_tokens: request.maxTokens, stream: true };
+      const body: Record<string, unknown> = { model: request.model, input: mapPromptEnvelopeToOpenAiMessages(request), max_output_tokens: request.appliedBudget?.maxOutputTokens ?? request.maxTokens, stream: true };
       if (typeof request.temperature === "number") body.temperature = request.temperature;
       response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/responses`, {
         method: "POST", headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" }, signal: combinedAbortSignal(request.signal, controller), redirect: "error", body: JSON.stringify(body),
@@ -2388,11 +2554,11 @@ export class OpenAiResponsesProvider implements GroundingModelProvider {
     yield { type: "done", model, usage, finishReason };
   }
 
-  async generateGroundedResearch(request: { prompt: string; model: string; grounding: ResearchGroundingRequest; maxTokens?: number; timeoutMs?: number }): Promise<GroundedResearchResponse> {
+  async generateGroundedResearch(request: ModelProviderRequest & { grounding: ResearchGroundingRequest }): Promise<GroundedResearchResponse> {
     const payload = await this.request({
       model: request.model,
-      input: request.prompt,
-      max_output_tokens: request.maxTokens,
+      input: mapPromptEnvelopeToOpenAiMessages(request),
+      max_output_tokens: request.appliedBudget?.maxOutputTokens ?? request.maxTokens,
       tools: [{ type: "web_search" }],
       tool_choice: "required",
     }, request.timeoutMs);
@@ -2454,10 +2620,10 @@ export class GeminiGroundingProvider implements GroundingModelProvider {
 
   async complete(request: ModelProviderRequest): Promise<ModelProviderResponse> {
     const wantsJson = request.responseFormat?.type === "json_object";
-    const generationConfig: Record<string, unknown> = { maxOutputTokens: request.maxTokens };
+    const generationConfig: Record<string, unknown> = { maxOutputTokens: request.appliedBudget?.maxOutputTokens ?? request.maxTokens };
     if (wantsJson) generationConfig.responseMimeType = "application/json";
     if (typeof request.temperature === "number") generationConfig.temperature = request.temperature;
-    const payload = await this.request(request.model, { contents: [{ role: "user", parts: [{ text: request.prompt }] }], generationConfig }, request.timeoutMs);
+    const payload = await this.request(request.model, { ...mapPromptEnvelopeToGeminiRequest(request), generationConfig }, request.timeoutMs);
     return { content: geminiText(payload), model: request.model, usage: geminiUsage(payload?.usageMetadata) };
   }
 
@@ -2469,7 +2635,7 @@ export class GeminiGroundingProvider implements GroundingModelProvider {
     const apiKey = await this.options.apiKey();
     if (!apiKey) throw new Error(`${this.options.definition.label} API key is not configured`);
     const wantsJson = request.responseFormat?.type === "json_object";
-    const generationConfig: Record<string, unknown> = { maxOutputTokens: request.maxTokens };
+    const generationConfig: Record<string, unknown> = { maxOutputTokens: request.appliedBudget?.maxOutputTokens ?? request.maxTokens };
     if (wantsJson) generationConfig.responseMimeType = "application/json";
     if (typeof request.temperature === "number") generationConfig.temperature = request.temperature;
     const controller = new AbortController();
@@ -2478,7 +2644,7 @@ export class GeminiGroundingProvider implements GroundingModelProvider {
     try {
       response = await this.fetchImpl(
         `${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/models/${encodeURIComponent(request.model)}:streamGenerateContent?alt=sse`,
-        { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey }, signal: combinedAbortSignal(request.signal, controller), redirect: "error", body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: request.prompt }] }], generationConfig }) },
+        { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey }, signal: combinedAbortSignal(request.signal, controller), redirect: "error", body: JSON.stringify({ ...mapPromptEnvelopeToGeminiRequest(request), generationConfig }) },
       );
     } catch (error) {
       idle.clear();
@@ -2531,11 +2697,11 @@ export class GeminiGroundingProvider implements GroundingModelProvider {
     yield { type: "done", model: request.model, usage, finishReason };
   }
 
-  async generateGroundedResearch(request: { prompt: string; model: string; grounding: ResearchGroundingRequest; maxTokens?: number; timeoutMs?: number }): Promise<GroundedResearchResponse> {
+  async generateGroundedResearch(request: ModelProviderRequest & { grounding: ResearchGroundingRequest }): Promise<GroundedResearchResponse> {
     const payload = await this.request(request.model, {
-      contents: [{ role: "user", parts: [{ text: request.prompt }] }],
+      ...mapPromptEnvelopeToGeminiRequest(request),
       tools: [{ google_search: {} }],
-      generationConfig: { maxOutputTokens: request.maxTokens },
+      generationConfig: { maxOutputTokens: request.appliedBudget?.maxOutputTokens ?? request.maxTokens },
     }, request.timeoutMs);
     const candidate = payload?.candidates?.[0];
     const metadata = candidate?.groundingMetadata ?? {};
@@ -2586,11 +2752,12 @@ export class AnthropicMessagesProvider implements GroundingModelProvider {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
-  async generateGroundedResearch(request: { prompt: string; model: string; grounding: ResearchGroundingRequest; maxTokens?: number; timeoutMs?: number }): Promise<GroundedResearchResponse> {
+  async generateGroundedResearch(request: ModelProviderRequest & { grounding: ResearchGroundingRequest }): Promise<GroundedResearchResponse> {
     const apiKey = await this.options.apiKey();
     if (!apiKey) throw new Error(`${this.options.definition.label} API key is not configured`);
     const deadline = Date.now() + (request.timeoutMs ?? 120_000);
-    const messages: Array<Record<string, unknown>> = [{ role: "user", content: request.prompt }];
+    const mappedEnvelope = mapPromptEnvelopeToAnthropicRequest(request);
+    const messages: Array<Record<string, unknown>> = mappedEnvelope.messages.map((message) => ({ ...message }));
     let payload: any;
     for (let continuation = 0; continuation <= MAX_ANTHROPIC_SERVER_TOOL_CONTINUATIONS; continuation += 1) {
       const remainingMs = deadline - Date.now();
@@ -2605,8 +2772,8 @@ export class AnthropicMessagesProvider implements GroundingModelProvider {
           redirect: "error",
           body: JSON.stringify({
             model: request.model,
-            max_tokens: request.maxTokens ?? 8_000,
-            system: "Answer the research request. Use the web search tool before answering and cite only its returned sources.",
+            max_tokens: request.appliedBudget?.maxOutputTokens ?? request.maxTokens ?? 8_000,
+            system: [mappedEnvelope.system, "Answer the research request. Use the web search tool before answering and cite only its returned sources."].filter(Boolean).join("\n\n"),
             messages,
             tools: [{ type: "web_search_20260209", name: "web_search" }, { type: "web_fetch_20260209", name: "web_fetch" }],
           }),
@@ -2661,12 +2828,14 @@ export class AnthropicMessagesProvider implements GroundingModelProvider {
     let response: Response;
     let payload: any;
     const wantsJson = request.responseFormat?.type === "json_object";
+    const mappedEnvelope = mapPromptEnvelopeToAnthropicRequest(request);
     const body: Record<string, unknown> = {
       model: request.model,
-      max_tokens: request.maxTokens ?? 4000,
-      messages: [{ role: "user", content: request.prompt }],
+      max_tokens: request.appliedBudget?.maxOutputTokens ?? request.maxTokens ?? 4000,
+      messages: mappedEnvelope.messages,
     };
-    if (wantsJson) body.system = "Return valid JSON only. Fragment IDs and capture IDs are different identifier types and must never be interchanged.";
+    const system = [mappedEnvelope.system, wantsJson ? "Return valid JSON only. Fragment IDs and capture IDs are different identifier types and must never be interchanged." : undefined].filter(Boolean).join("\n\n");
+    if (system) body.system = system;
     if (typeof request.temperature === "number") body.temperature = request.temperature;
     try {
       response = await this.fetchImpl(`${normalizeBaseUrl(this.options.baseUrl ?? this.options.definition.defaultBaseUrl)}/messages`, {
@@ -2707,13 +2876,15 @@ export class AnthropicMessagesProvider implements GroundingModelProvider {
     const controller = new AbortController();
     const idle = createIdleTimer(request.timeoutMs ?? 75_000, () => controller.abort(new ModelProviderTimeoutError(`${this.options.definition.label} stream idle timed out`)));
     const wantsJson = request.responseFormat?.type === "json_object";
+    const mappedEnvelope = mapPromptEnvelopeToAnthropicRequest(request);
     const body: Record<string, unknown> = {
       model: request.model,
-      max_tokens: request.maxTokens ?? 4000,
-      messages: [{ role: "user", content: request.prompt }],
+      max_tokens: request.appliedBudget?.maxOutputTokens ?? request.maxTokens ?? 4000,
+      messages: mappedEnvelope.messages,
       stream: true,
     };
-    if (wantsJson) body.system = "Return valid JSON only. Fragment IDs and capture IDs are different identifier types and must never be interchanged.";
+    const system = [mappedEnvelope.system, wantsJson ? "Return valid JSON only. Fragment IDs and capture IDs are different identifier types and must never be interchanged." : undefined].filter(Boolean).join("\n\n");
+    if (system) body.system = system;
     if (typeof request.temperature === "number") body.temperature = request.temperature;
     let response: Response;
     try {
@@ -2970,6 +3141,45 @@ function redactError(error: unknown): string {
   if (error instanceof ModelProviderTimeoutError) return "模型供应商请求超时";
   if (error instanceof ModelProviderAbortedError) return "模型供应商请求已中止";
   return safeProviderErrorSummary(error);
+}
+
+function requestEnvelopeMessages(request: ModelProviderRequest): PromptEnvelope["messages"] {
+  return request.envelope?.messages ?? [{ role: "user", content: request.prompt }];
+}
+
+export function mapPromptEnvelopeToOpenAiMessages(request: ModelProviderRequest): Array<Record<string, unknown>> {
+  return requestEnvelopeMessages(request).map((message) => ({
+    role: message.role,
+    ...(message.content !== null ? { content: message.content } : {}),
+    ...(message.toolCallId ? { tool_call_id: message.toolCallId } : {}),
+    ...(message.toolCalls?.length ? { tool_calls: message.toolCalls.map((call) => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } })) } : {}),
+  }));
+}
+
+export function mapPromptEnvelopeToGeminiRequest(request: ModelProviderRequest): { systemInstruction?: { parts: Array<{ text: string }> }; contents: Array<{ role: "user" | "model"; parts: Array<{ text: string }> }> } {
+  const system = requestEnvelopeMessages(request).filter((message) => message.role === "system" && message.content).map((message) => message.content).join("\n\n");
+  const contents = requestEnvelopeMessages(request).filter((message) => message.role !== "system").map((message) => ({
+    role: message.role === "assistant" ? "model" as const : "user" as const,
+    parts: [{ text: message.role === "tool" ? `[tool${message.toolCallId ? `:${message.toolCallId}` : ""}]\n${message.content ?? ""}` : (message.content ?? "") }],
+  }));
+  return { ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}), contents };
+}
+
+export function mapPromptEnvelopeToAnthropicRequest(request: ModelProviderRequest): { system?: string; messages: Array<{ role: "user" | "assistant"; content: string }> } {
+  const system = requestEnvelopeMessages(request).filter((message) => message.role === "system" && message.content).map((message) => message.content).join("\n\n");
+  const messages = requestEnvelopeMessages(request).filter((message) => message.role !== "system").map((message) => ({
+    role: message.role === "assistant" ? "assistant" as const : "user" as const,
+    content: message.role === "tool" ? `[tool${message.toolCallId ? `:${message.toolCallId}` : ""}]\n${message.content ?? ""}` : (message.content ?? ""),
+  }));
+  return { ...(system ? { system } : {}), messages };
+}
+
+function modelCallErrorCategory(error: unknown): ModelCallEvent["errorCategory"] {
+  if (error instanceof ModelBudgetReassemblyRequiredError || error instanceof ModelBudgetUnsatisfiableError) return "budget";
+  if (error instanceof ModelProviderTimeoutError || error instanceof TypeError) return "network";
+  if (error instanceof ModelProviderHttpError) return error.status === 401 || error.status === 403 ? "authentication" : "provider";
+  if (error instanceof SyntaxError || error instanceof RangeError) return "validation";
+  return "unknown";
 }
 
 function normalizeBaseUrl(value: string): string { return value.replace(/\/+$/, ""); }
