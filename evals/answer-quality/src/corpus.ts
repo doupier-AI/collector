@@ -8,8 +8,8 @@ import {
   type ExplicitFormat,
   type FactRisk,
   type FixedSearchResult,
+  type HumanCalibrationCandidate,
   type ProviderSlice,
-  type ReferenceCalibration,
   type RobustnessTag,
   type TaskFamily,
 } from "./types.js";
@@ -77,21 +77,44 @@ export const ANSWER_QUALITY_CORPUS: readonly AnswerQualityCase[] = FAMILY_BLUEPR
   SCENARIO_BLUEPRINTS.map((scenario, scenarioIndex) => createCase(family, scenario, familyIndex, scenarioIndex)),
 );
 
-export const REFERENCE_CALIBRATIONS: readonly ReferenceCalibration[] = FAMILY_BLUEPRINTS.flatMap((family, familyIndex) => {
-  return [0, 1].map((offset) => {
-    const index = familyIndex * SCENARIO_BLUEPRINTS.length + offset;
-    const referenceVerdict = index % 2 === 0 ? "pass" : "fail";
-    const evaluatorVerdict = index === 3 ? "pass" : index === 8 ? "fail" : referenceVerdict;
+export const HUMAN_CALIBRATION_CANDIDATES: readonly HumanCalibrationCandidate[] = FAMILY_BLUEPRINTS.flatMap((family, familyIndex) => {
+  return [4, 6].map((scenarioIndex, offset) => {
+    const index = familyIndex * SCENARIO_BLUEPRINTS.length + scenarioIndex;
+    const testCase = ANSWER_QUALITY_CORPUS[index]!;
+    const layer = offset === 0 ? "generic_semantic" as const : "task_family" as const;
+    const dimension = offset === 0 ? "任务相关性" : family.taskDimensions[0]!;
+    const evaluatorVerdict = (familyIndex + offset) % 2 === 0 ? "pass" : "fail";
     return {
-      caseId: ANSWER_QUALITY_CORPUS[index]!.id,
+      sampleId: `${ANSWER_QUALITY_CORPUS_VERSION}:${String(familyIndex + 1).padStart(2, "0")}:${offset + 1}`,
+      caseId: testCase.id,
+      caseVersion: testCase.caseVersion,
       taskFamily: family.family,
-      dimension: offset === 0 ? "任务相关性" : "覆盖完整性",
-      referenceVerdict,
+      layer,
+      dimension,
       evaluatorVerdict,
-      note: "静态参考标签；需要独立人工复核后才能升级为人类校准证据。",
+      judgeInput: {
+        userRequest: testCase.user.request,
+        explicitSettings: { ...testCase.user.explicitSettings },
+        finalBody: calibrationBody(testCase, dimension, evaluatorVerdict),
+        admittedEvidence: testCase.environment.fixedSearchResults
+          .filter((entry) => entry.qualified)
+          .map((entry) => ({ id: entry.id, text: entry.snippet })),
+        validCitations: [],
+      },
     };
   });
 });
+
+function calibrationBody(testCase: AnswerQualityCase, dimension: string, verdict: "pass" | "fail"): string {
+  if (dimension === "任务相关性") {
+    return verdict === "pass"
+      ? `围绕用户问题，回答重点是${testCase.expectation.mustCover.join("、")}，并结合显式限制给出结论。`
+      : "建议先安排一次团队聚餐，菜单和座位可以下周再讨论。";
+  }
+  return verdict === "pass"
+    ? `完整回答包括：${testCase.expectation.mustCover.join("；")}。`
+    : `只回答其中一项：${testCase.expectation.mustCover[0]}。其他要求暂不说明。`;
+}
 
 function createCase(family: FamilyBlueprint, scenario: ScenarioBlueprint, familyIndex: number, scenarioIndex: number): AnswerQualityCase {
   const isCareerRegression = family.family === "planning" && scenarioIndex === 0;

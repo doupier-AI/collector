@@ -1,5 +1,5 @@
 import { evaluateReplay } from "./evaluator.js";
-import type { AnswerQualityCase, BaselineSummary, CalibrationReport, ReferenceCalibration, ReplayFixture } from "./types.js";
+import type { AnswerQualityCase, BaselineSummary, ReplayFixture } from "./types.js";
 
 export function summarizeBaseline(corpus: readonly AnswerQualityCase[], replays: readonly ReplayFixture[]): BaselineSummary {
   const evaluated = replays.map((replay) => {
@@ -22,26 +22,5 @@ export function summarizeBaseline(corpus: readonly AnswerQualityCase[], replays:
     defectClasses: [...classes].sort(),
     hardFailureCount: evaluated.flatMap((run) => run.findings).filter((finding) => finding.layer === "hard_constraint" && finding.verdict === "fail").length,
     scoringRejectedCount: evaluated.filter((run) => run.scoringStatus === "rejected_missing_identity").length,
-  };
-}
-
-export function calculateCalibrationReport(samples: readonly ReferenceCalibration[]): CalibrationReport {
-  const agreements = samples.filter((entry) => entry.referenceVerdict === entry.evaluatorVerdict).length;
-  const falsePositiveCount = samples.filter((entry) => entry.referenceVerdict === "fail" && entry.evaluatorVerdict === "pass").length;
-  const falseNegativeCount = samples.filter((entry) => entry.referenceVerdict === "pass" && entry.evaluatorVerdict === "fail").length;
-  const dimensions = [...new Set(samples.map((entry) => entry.dimension))];
-  const dimensionBias = Object.fromEntries(dimensions.map((dimension) => {
-    const entries = samples.filter((entry) => entry.dimension === dimension);
-    const referencePassRate = entries.filter((entry) => entry.referenceVerdict === "pass").length / entries.length;
-    const evaluatorPassRate = entries.filter((entry) => entry.evaluatorVerdict === "pass").length / entries.length;
-    return [dimension, { sampleCount: entries.length, passRateDelta: evaluatorPassRate - referencePassRate }];
-  }));
-  return {
-    sampleCount: samples.length,
-    agreementRate: samples.length ? agreements / samples.length : 0,
-    falsePositiveCount,
-    falseNegativeCount,
-    dimensionBias,
-    status: "reference_only_pending_human_review",
   };
 }

@@ -8,3 +8,4 @@ export * from "./evaluator.js";
 export * from "./report.js";
 export * from "./blind-ab.js";
 export * from "./metamorphic.js";
+export * from "./calibration.js";

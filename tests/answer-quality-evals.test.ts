@@ -5,12 +5,13 @@ import {
   ANSWER_QUALITY_CORPUS,
   ANSWER_QUALITY_CORPUS_VERSION,
   BASELINE_REPLAYS,
-  REFERENCE_CALIBRATIONS,
+  HUMAN_CALIBRATION_CANDIDATES,
   buildJudgeInput,
-  calculateCalibrationReport,
+  calculateHumanCalibrationReport,
   comparePairwiseJudgments,
   createCurrentBuildCapabilities,
   createEvaluationFacts,
+  createHumanCalibrationReviewPacket,
   createRequiredMetamorphicVariants,
   createUnavailableRealModelReport,
   evaluateCapabilityFacts,
@@ -22,6 +23,7 @@ import {
   productionScenarioFromCase,
   runRealModelBlindAB,
   runFixedProviderCase,
+  summarizeHumanCalibrationPreparation,
   summarizeBaseline,
   type AnswerQualityCapabilityId,
   type AnswerQualityRun,
@@ -197,14 +199,60 @@ test("offline baseline exposes multiple stable defect classes without averaging 
   assert.ok(report.hardFailureCount > 0);
 });
 
-test("reference calibration set covers 20 cases and reports agreement, false positives, false negatives and dimension bias", () => {
-  assert.ok(REFERENCE_CALIBRATIONS.length >= 20);
-  assert.ok(new Set(REFERENCE_CALIBRATIONS.map((entry) => entry.taskFamily)).size >= 6);
-  const report = calculateCalibrationReport(REFERENCE_CALIBRATIONS);
-  assert.ok(report.agreementRate >= 0 && report.agreementRate <= 1);
-  assert.ok(Number.isInteger(report.falsePositiveCount));
-  assert.ok(Number.isInteger(report.falseNegativeCount));
+test("human calibration packet is blind, complete and limited to Judge-visible inputs", () => {
+  const preparation = summarizeHumanCalibrationPreparation(HUMAN_CALIBRATION_CANDIDATES);
+  assert.equal(preparation.sampleCount, 20);
+  assert.ok(preparation.taskFamilyCount >= 6);
+  assert.deepEqual(new Set(HUMAN_CALIBRATION_CANDIDATES.map((entry) => entry.layer)), new Set(["generic_semantic", "task_family"]));
+  assert.equal(preparation.status, "pending_human_review");
+  const packet = createHumanCalibrationReviewPacket(HUMAN_CALIBRATION_CANDIDATES);
+  assert.equal(packet.items.length, 20);
+  const serialized = JSON.stringify(packet);
+  for (const forbidden of ["evaluatorVerdict", "referenceVerdict", "caseExpectation", "mustCover", "mustAvoid", "referenceAnswer", "rubric"]) {
+    assert.ok(!serialized.includes(forbidden), forbidden);
+  }
+  for (const item of packet.items) {
+    assert.deepEqual(Object.keys(item.judgeInput).sort(), ["admittedEvidence", "explicitSettings", "finalBody", "userRequest", "validCitations"]);
+    assert.equal(item.humanVerdict, "");
+    assert.equal(item.rationale, "");
+  }
+});
+
+test("human calibration requires every independent label before reporting metrics", () => {
+  const packet = createHumanCalibrationReviewPacket(HUMAN_CALIBRATION_CANDIDATES);
+  assert.throws(
+    () => calculateHumanCalibrationReport(HUMAN_CALIBRATION_CANDIDATES, packet),
+    /reviewer 尚未填写|humanVerdict 尚未填写/,
+  );
+  const candidatesById = new Map(HUMAN_CALIBRATION_CANDIDATES.map((entry) => [entry.sampleId, entry]));
+  const completed = {
+    ...packet,
+    reviewer: "independent-reviewer",
+    reviewedAt: "2026-08-31T12:00:00.000Z",
+    items: packet.items.map((item, index) => ({
+      ...item,
+      humanVerdict: index === 0
+        ? (candidatesById.get(item.sampleId)!.evaluatorVerdict === "pass" ? "fail" as const : "pass" as const)
+        : candidatesById.get(item.sampleId)!.evaluatorVerdict,
+      rationale: "根据公开请求、正文和证据独立判断。",
+    })),
+  };
+  const report = calculateHumanCalibrationReport(HUMAN_CALIBRATION_CANDIDATES, completed);
+  assert.equal(report.status, "human_reviewed");
+  assert.equal(report.sampleCount, 20);
+  assert.ok(report.taskFamilyCount >= 6);
+  assert.equal(report.agreementRate, 0.95);
+  assert.equal(report.falsePositiveCount + report.falseNegativeCount, 1);
   assert.ok(Object.keys(report.dimensionBias).length > 0);
+});
+
+test("human calibration rejects edits to the blind sample", () => {
+  const packet = createHumanCalibrationReviewPacket(HUMAN_CALIBRATION_CANDIDATES);
+  packet.items[0]!.judgeInput.finalBody = "被改动的正文";
+  assert.throws(
+    () => calculateHumanCalibrationReport(HUMAN_CALIBRATION_CANDIDATES, packet),
+    /Judge 输入被改动/,
+  );
 });
 
 test("pairwise diagnostics explain repeat consistency and order flips", () => {

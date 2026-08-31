@@ -20,4 +20,27 @@ npm.cmd run eval:answer-quality -- --mode=real-ab
 
 离线与固定 Provider 模式不需要 API Key。没有外部运行器或 Judge 凭据时，真实模型模式返回 `unverified`，不产生绿色结论。
 
-`REFERENCE_CALIBRATIONS` 当前是 20 个静态参考标签，覆盖 10 个任务族；报告状态固定为 `reference_only_pending_human_review`。在独立人工复核前，不得把它表述为人类校准证据。
+## 人工校准
+
+人工复核文件位于 `reviews/aq-corpus-v1-human-review.json`。它包含 20 个盲化样本，覆盖 10 个任务族；每个样本只展示评分维度以及 Judge 可见的用户请求、显式设置、最终正文、已准入证据和有效引用，不展示评测器结论或案例期望。
+
+复核人只修改以下字段：
+
+- 根级 `reviewer`：填写可识别本次复核人的名字或代号。
+- 根级 `reviewedAt`：填写 ISO 8601 时间，例如 `2026-08-31T20:00:00+08:00`。
+- 每个样本的 `humanVerdict`：只针对该样本标明的 `layer` 和 `dimension` 判断，填 `pass` 或 `fail`，不要改成对整篇回答的综合评分。
+- 每个样本的 `rationale`：填写仅基于当前可见输入的判断理由。
+
+不要修改样本身份、评分层、评分维度或 `judgeInput`。完成全部 20 条后运行：
+
+```powershell
+npm.cmd run eval:answer-quality -- --mode=human-calibration --review=evals/answer-quality/reviews/aq-corpus-v1-human-review.json
+```
+
+工具只有在复核人、时间、全部标签和理由齐全，且样本内容未经改动时，才输出 `human_reviewed` 以及一致率、假阳性、假阴性和分维度偏差。在此之前，校准状态保持 `pending_human_review`。
+
+案例版本变化时可以生成新的盲化文件；输出路径必须不存在，避免覆盖已经填写的人工判断：
+
+```powershell
+npm.cmd run eval:answer-quality -- --mode=prepare-human-review --output=evals/answer-quality/reviews/<new-review-file>.json
+```

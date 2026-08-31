@@ -282,22 +282,57 @@ export interface PairwiseDiagnostic {
   reasons: readonly string[];
 }
 
-export interface ReferenceCalibration {
+export type CalibrationVerdict = "pass" | "fail";
+
+export interface HumanCalibrationCandidate {
+  sampleId: string;
   caseId: string;
+  caseVersion: string;
   taskFamily: TaskFamily;
+  layer: "generic_semantic" | "task_family";
   dimension: string;
-  referenceVerdict: "pass" | "fail";
-  evaluatorVerdict: "pass" | "fail";
-  note: string;
+  evaluatorVerdict: CalibrationVerdict;
+  judgeInput: JudgeInput;
+}
+
+export interface HumanCalibrationReviewItem {
+  sampleId: string;
+  caseId: string;
+  caseVersion: string;
+  layer: "generic_semantic" | "task_family";
+  dimension: string;
+  judgeInput: JudgeInput;
+  humanVerdict: CalibrationVerdict | "";
+  rationale: string;
+}
+
+export interface HumanCalibrationReviewPacket {
+  schemaVersion: 1;
+  corpusVersion: typeof ANSWER_QUALITY_CORPUS_VERSION;
+  status: "pending_human_review";
+  reviewer: string;
+  reviewedAt: string;
+  items: HumanCalibrationReviewItem[];
+}
+
+export interface CalibrationPreparationSummary {
+  sampleCount: number;
+  taskFamilyCount: number;
+  dimensions: string[];
+  status: "pending_human_review";
 }
 
 export interface CalibrationReport {
+  corpusVersion: typeof ANSWER_QUALITY_CORPUS_VERSION;
+  reviewer: string;
+  reviewedAt: string;
   sampleCount: number;
+  taskFamilyCount: number;
   agreementRate: number;
   falsePositiveCount: number;
   falseNegativeCount: number;
   dimensionBias: Record<string, { sampleCount: number; passRateDelta: number }>;
-  status: "reference_only_pending_human_review";
+  status: "human_reviewed";
 }
 
 export interface BaselineSummary {
