@@ -20,6 +20,14 @@ npm.cmd run eval:answer-quality -- --mode=real-ab
 
 离线与固定 Provider 模式不需要 API Key。没有外部运行器或 Judge 凭据时，真实模型模式返回 `unverified`，不产生绿色结论。
 
+长文跨节状态的真实模型强制裁决使用已冻结的预注册包，并只读消费指定数据库中的当前 Provider 配置：
+
+```powershell
+npm.cmd run eval:long-form-gate -- --database=<collector.sqlite 的绝对路径>
+```
+
+该命令固定执行三类候选各三次，并把 Answer Plan、ConversationContext、ContextAssembly、预算、usage、成本、首字/完整延迟、盲化对比和唯一 `activated` / `not_activated` 结论写入未存在的结果文件；不会保存 Provider 凭据，也不会在观察结果后追加样本。
+
 ## 人工校准
 
 人工复核文件位于 `reviews/aq-corpus-v1-human-review.json`。它包含 20 个盲化样本，覆盖 10 个任务族；每个样本只展示评分维度以及 Judge 可见的用户请求、显式设置、最终正文、已准入证据和有效引用，不展示评测器结论或案例期望。
