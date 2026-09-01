@@ -130,7 +130,7 @@ function hardConstraintFindings(testCase: AnswerQualityCase, run: AnswerQualityR
     || format === "continuous_prose" && !/^#{1,6}\s/m.test(body)
     || format === "bullet_list" && /^\s*[-*]\s/m.test(body)
     || format === "table" && /^\s*\|.+\|\s*$/m.test(body)
-    || format === "numbered_steps" && /^\s*\d+[.)、]\s*/m.test(body);
+    || format === "numbered_steps" && /^\s*(?:#{1,6}\s+)?\d+[.)、]\s*/m.test(body);
   findings.push({ code: formatPass ? "format_satisfied" : "format_missing", layer: "hard_constraint", verdict: formatPass ? "pass" : "fail", reason: formatPass ? "正文满足显式格式。" : `正文未满足显式格式：${format}` });
   return findings;
 }

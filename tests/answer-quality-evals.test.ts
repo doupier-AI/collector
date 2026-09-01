@@ -627,6 +627,20 @@ test("case coverage accepts the calibrated conclusion-summary equivalence withou
   assert.ok(!evaluation.findings.some((finding) => finding.code === "case_coverage_missing"));
 });
 
+test("numbered-step hard constraint accepts Markdown numbered headings but not unnumbered sections", async () => {
+  const target = ANSWER_QUALITY_CORPUS.find((entry) => entry.id === ANSWER_QUALITY_REAL_MODEL_CASE_IDS[0])!;
+  const numbered = await runFixedProviderCase(target, {
+    response: "## 1. 全文检索边界\n\n## 2. 向量检索边界\n\n## 3. 结论\n\n两者按查询意图组合。",
+    buildFingerprint: "build:test",
+  });
+  const unnumbered = await runFixedProviderCase(target, {
+    response: "## 全文检索边界\n\n## 向量检索边界\n\n## 结论\n\n两者按查询意图组合。",
+    buildFingerprint: "build:test",
+  });
+  assert.ok(evaluateAnswerQualityRun(target, numbered).findings.some((finding) => finding.code === "format_satisfied"));
+  assert.ok(evaluateAnswerQualityRun(target, unnumbered).findings.some((finding) => finding.code === "format_missing"));
+});
+
 test("Release Profile result matrix is exhaustive, mutually exclusive and priority ordered", () => {
   const target = ANSWER_QUALITY_CORPUS.find((entry) => entry.id === ANSWER_QUALITY_QUICK_CASE_IDS[0])!;
   const buildFingerprint = "release-candidate:test";
