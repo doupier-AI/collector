@@ -51,6 +51,9 @@ jobs:
       - name: Run fast gate
         if: steps.scope.outputs.run_fast == 'true'
         run: npm run gate:fast
+      - name: Run affected answer-quality corpus and probes
+        if: steps.scope.outputs.run_aq_full == 'true'
+        run: node scripts/run-answer-quality-affected.mjs
 
   full-gate:
     name: full-gate

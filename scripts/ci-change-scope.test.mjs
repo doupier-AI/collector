@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { requiresFastGate } from "./ci-change-scope.mjs";
+import { requiresAnswerQualityFullGate, requiresFastGate } from "./ci-change-scope.mjs";
 
 test("documentation and task-rule changes skip product tests", () => {
   assert.equal(requiresFastGate(["docs/ENGINEERING.md", "AGENTS.md", ".github/pull_request_template.md"]), false);
@@ -26,4 +26,19 @@ test("mixed changes keep the fast gate", () => {
 
 test("an unknown or empty diff fails safe by keeping the fast gate", () => {
   assert.equal(requiresFastGate([]), true);
+});
+
+test("answer-quality-sensitive seams trigger the complete offline corpus gate", () => {
+  for (const path of [
+    "evals/answer-quality/src/release-profile.ts",
+    "apps/api/src/answer-planning.ts",
+    "apps/api/src/conversation-context.ts",
+    "apps/api/src/evidence-preparation.ts",
+    "apps/api/src/citation-attribution.ts",
+    "packages/model-gateway/src/index.ts",
+    "packages/capture-contracts/src/index.ts",
+    "scripts/run-answer-quality-release-real.mjs",
+    "tests/answer-quality-evals.test.ts",
+  ]) assert.equal(requiresAnswerQualityFullGate([path]), true, path);
+  assert.equal(requiresAnswerQualityFullGate(["apps/web/src/App.tsx", "docs/ENGINEERING.md"]), false);
 });

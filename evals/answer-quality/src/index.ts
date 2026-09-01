@@ -10,3 +10,6 @@ export * from "./blind-ab.js";
 export * from "./metamorphic.js";
 export * from "./calibration.js";
 export * from "./long-form-gate.js";
+export * from "./release-profile.js";
+export * from "./release-config.js";
+export * from "./release-fixtures.js";

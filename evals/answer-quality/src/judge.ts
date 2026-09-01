@@ -24,13 +24,16 @@ export function buildJudgeInput(run: JudgeSourceRun): JudgeInput {
 
 export function createLayeredJudgePrompt(input: JudgeInput): string {
   return JSON.stringify({
-    instruction: "只根据公开用户请求、显式设置、最终正文、已准入证据和有效引用评分。不要推测隐藏计划、推理或供应商能力。",
+    instruction: `只根据公开用户请求、显式设置、最终正文、已准入证据和有效引用评分。不要推测隐藏计划、推理或供应商能力。响应根对象只能有 dimensions 键，不得使用 outputContract 或 layers 包装。evidenceLocations 使用 JavaScript 字符偏移，必须满足 0 <= startOffset < endOffset <= ${input.finalBody.length}；无法精确定位时返回空数组。`,
+    finalBodyLength: input.finalBody.length,
     layers: {
-      generic: ["任务相关性", "显式指令遵循", "覆盖完整性", "事实克制", "正文连贯性"],
-      taskFamily: ["解释", "比较", "决策", "规划", "诊断", "事实查询", "研究综合", "总结", "改写", "混合任务"],
+      generic_semantic: ["任务相关性", "显式指令遵循", "覆盖完整性", "事实克制", "正文连贯性"],
+      task_family: ["解释", "比较", "决策", "规划", "诊断", "事实查询", "研究综合", "总结", "改写", "混合任务"],
     },
-    outputContract: {
-      dimensions: [{ layer: "generic_semantic|task_family", dimension: "string", verdict: "pass|fail|not_applicable", reason: "string", evidenceLocations: [{ startOffset: 0, endOffset: 1 }], confidence: 0.5 }],
+    responseRequirements: {
+      rootKey: "dimensions",
+      requiredLayers: ["generic_semantic", "task_family"],
+      dimensionSchema: { layer: { enum: ["generic_semantic", "task_family"] }, dimension: "string", verdict: { enum: ["pass", "fail", "not_applicable"] }, reason: "string", evidenceLocations: [{ startOffset: 0, endOffset: 1 }], confidence: 0.5 },
     },
     input,
   });
@@ -49,6 +52,8 @@ export interface OpenAiCompatibleJudgeOptions {
   apiKey: () => Promise<string | undefined> | string | undefined;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  maxTokens?: number;
+  thinking?: boolean;
 }
 
 /** Evaluation-only external adapter. It never becomes a production dependency. */
@@ -61,38 +66,113 @@ export class OpenAiCompatibleJudgeAdapter implements AnswerJudgeAdapter {
   async judge(input: JudgeInput): Promise<JudgeResult> {
     const apiKey = await this.options.apiKey();
     if (!apiKey) throw new Error("Judge credential is unavailable");
-    const response = await this.fetchImpl(`${this.options.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      redirect: "error",
-      signal: AbortSignal.timeout(this.options.timeoutMs ?? 60_000),
-      body: JSON.stringify({
-        model: this.options.model,
-        temperature: 0,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: "Return valid JSON only. Evaluate the supplied final answer without hidden reasoning or provider assumptions." },
-          { role: "user", content: createLayeredJudgePrompt(input) },
-        ],
-      }),
-    });
-    const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }>; error?: { message?: string } };
-    if (!response.ok) throw new Error(`Judge request failed with HTTP ${response.status}`);
-    const content = payload.choices?.[0]?.message?.content;
-    if (!content) throw new Error("Judge returned no structured result");
-    return parseJudgeResult(JSON.parse(content) as unknown, input.finalBody.length);
+    const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
+      { role: "system", content: 'Return valid JSON only. The response root must be exactly {"dimensions":[...]}; never wrap it in outputContract or layers. Evaluate the supplied final answer without hidden reasoning or provider assumptions. Evidence offsets outside the declared finalBodyLength are invalid.' },
+      { role: "user", content: createLayeredJudgePrompt(input) },
+    ];
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const response = await this.fetchImpl(`${this.options.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        redirect: "error",
+        signal: AbortSignal.timeout(this.options.timeoutMs ?? 60_000),
+        body: JSON.stringify({
+          model: this.options.model,
+          temperature: 0,
+          response_format: { type: "json_object" },
+          ...(this.options.maxTokens !== undefined ? { max_tokens: this.options.maxTokens } : {}),
+          ...(this.options.thinking !== undefined ? { thinking: { type: this.options.thinking ? "enabled" : "disabled" } } : {}),
+          messages,
+        }),
+      });
+      const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+      if (!response.ok) throw new Error(`Judge request failed with HTTP ${response.status}`);
+      const content = payload.choices?.[0]?.message?.content;
+      if (!content) throw new Error("Judge returned no structured result");
+      try {
+        return parseJudgeResult(parseJudgeJsonContent(content), input.finalBody.length);
+      } catch (error) {
+        if (attempt === 2) throw error;
+        messages.push(
+          { role: "assistant", content },
+          { role: "user", content: `上一结果不符合输出契约：${error instanceof Error ? error.message : "invalid result"}。仅返回根对象 {"dimensions":[...]}，不得使用 outputContract 或 layers 包装；所有 evidenceLocations 必须落在 0..${input.finalBody.length}，不确定时用空数组。` },
+        );
+      }
+    }
+    throw new Error("Judge did not return a valid result");
   }
 }
 
+/** Accepts one JSON object, a standard JSON fence, or byte-equivalent repeated objects. */
+export function parseJudgeJsonContent(content: string): unknown {
+  const trimmed = content.trim();
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch (strictError) {
+    const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
+    if (fenced) return JSON.parse(fenced[1]!) as unknown;
+    const objects = splitConcatenatedJsonObjects(trimmed);
+    if (objects?.length && objects.length > 1) {
+      const parsed = objects.map((entry) => JSON.parse(entry) as unknown);
+      const canonical = JSON.stringify(parsed[0]);
+      if (parsed.every((entry) => JSON.stringify(entry) === canonical)) return parsed[0];
+      throw new Error("Judge returned different concatenated JSON objects");
+    }
+    throw strictError;
+  }
+}
+
+function splitConcatenatedJsonObjects(content: string): string[] | undefined {
+  const objects: string[] = [];
+  let cursor = 0;
+  while (cursor < content.length) {
+    while (/\s/.test(content[cursor] ?? "")) cursor += 1;
+    if (cursor >= content.length) break;
+    if (content[cursor] !== "{") return undefined;
+    const start = cursor;
+    let depth = 0;
+    let quoted = false;
+    let escaped = false;
+    for (; cursor < content.length; cursor += 1) {
+      const character = content[cursor]!;
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === '"') quoted = false;
+        continue;
+      }
+      if (character === '"') quoted = true;
+      else if (character === "{") depth += 1;
+      else if (character === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          objects.push(content.slice(start, cursor + 1));
+          cursor += 1;
+          break;
+        }
+      }
+    }
+    if (depth !== 0 || quoted) return undefined;
+  }
+  return objects.length ? objects : undefined;
+}
+
 export function parseJudgeResult(value: unknown, bodyLength: number): JudgeResult {
-  if (!value || typeof value !== "object" || !Array.isArray((value as { dimensions?: unknown }).dimensions)) throw new Error("Judge result has no dimensions");
-  const dimensions = (value as { dimensions: unknown[] }).dimensions.map((entry): JudgeDimensionResult => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Judge result must be an object");
+  const parsed = value as Record<string, unknown>;
+  const wrapped = parsed.outputContract;
+  const result = !Array.isArray(parsed.dimensions) && wrapped && typeof wrapped === "object" && !Array.isArray(wrapped)
+    ? wrapped as Record<string, unknown>
+    : parsed;
+  const dimensionEntries = Array.isArray(result.dimensions) ? result.dimensions : dimensionsFromLayerMap(result.layers);
+  if (!dimensionEntries) throw new Error(`Judge result has no dimensions: shape=${judgeResultShape(result)}`);
+  const dimensions = dimensionEntries.map((entry): JudgeDimensionResult => {
     if (!entry || typeof entry !== "object") throw new Error("Judge dimension must be an object");
     const item = entry as Record<string, unknown>;
     const layer = item.layer;
     const verdict = item.verdict;
-    if (layer !== "generic_semantic" && layer !== "task_family") throw new Error("Judge dimension layer is invalid");
-    if (verdict !== "pass" && verdict !== "fail" && verdict !== "not_applicable") throw new Error("Judge dimension verdict is invalid");
+    if (layer !== "generic_semantic" && layer !== "task_family") throw new Error(`Judge dimension layer is invalid: ${String(layer).slice(0, 40)}`);
+    if (verdict !== "pass" && verdict !== "fail" && verdict !== "not_applicable") throw new Error(`Judge dimension verdict is invalid: ${String(verdict).slice(0, 40)}`);
     const locations = Array.isArray(item.evidenceLocations) ? item.evidenceLocations.map((location) => {
       const candidate = location as Record<string, unknown>;
       const startOffset = Number(candidate.startOffset);
@@ -111,6 +191,33 @@ export function parseJudgeResult(value: unknown, bodyLength: number): JudgeResul
     };
   });
   return { dimensions };
+}
+
+function dimensionsFromLayerMap(value: unknown): unknown[] | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const layers = value as Record<string, unknown>;
+  const keys = Object.keys(layers).sort();
+  if (keys.length !== 2 || keys[0] !== "generic_semantic" || keys[1] !== "task_family") return undefined;
+  const genericSemantic = layers.generic_semantic;
+  const taskFamily = layers.task_family;
+  if (!Array.isArray(genericSemantic) || !Array.isArray(taskFamily)) return undefined;
+  const entries = { generic_semantic: genericSemantic, task_family: taskFamily };
+  return (["generic_semantic", "task_family"] as const).flatMap((layer) => entries[layer].map((entry: unknown) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+    const dimension = entry as Record<string, unknown>;
+    return dimension.layer === undefined ? { ...dimension, layer } : dimension;
+  }));
+}
+
+function judgeResultShape(value: Record<string, unknown>): string {
+  return Object.entries(value).slice(0, 8).map(([key, entry]) => {
+    if (Array.isArray(entry)) return `${key}:array`;
+    if (entry && typeof entry === "object") {
+      const nested = Object.entries(entry as Record<string, unknown>).slice(0, 8).map(([nestedKey, nestedEntry]) => `${nestedKey}:${Array.isArray(nestedEntry) ? "array" : typeof nestedEntry}`);
+      return `${key}:object(${nested.join("|")})`;
+    }
+    return `${key}:${typeof entry}`;
+  }).join(",");
 }
 
 export function comparePairwiseJudgments(judgments: readonly PairwiseJudgment[]): PairwiseDiagnostic {

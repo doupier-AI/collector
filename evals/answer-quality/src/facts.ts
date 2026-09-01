@@ -10,7 +10,8 @@ export function createCurrentBuildCapabilities(): BuildCapabilityFact[] {
   return [
     { capabilityId: "conversation_context", supported: true, version: "conversation-context-resolver-v1" },
     { capabilityId: "answer_plan", supported: true, version: "answer-planner-v1" },
-    { capabilityId: "prompt_envelope", supported: false },
+    { capabilityId: "prompt_envelope", supported: true, version: "prompt-envelope-v1" },
+    { capabilityId: "model_budget_policy", supported: true, version: "model-budget-policy-v1" },
     { capabilityId: "context_assembly", supported: true, version: "context-assembly-v1" },
     { capabilityId: "evidence_preparation", supported: true, version: "evidence-preparation-v1" },
     { capabilityId: "citation_attribution", supported: true, version: "citation-sidecar-v1" },

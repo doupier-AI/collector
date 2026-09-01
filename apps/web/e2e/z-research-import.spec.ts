@@ -229,13 +229,30 @@ test("解析失败显示稳定原因，重试后仍失败保持可重试状态",
 
   const retryButton = page.getByRole("button", { name: "重试" });
   await expect(retryButton).toBeVisible();
+  const retryResponsePromise = page.waitForResponse(
+    (response) => response.request().method() === "POST" && response.url().endsWith("/retry"),
+  );
   await retryButton.click();
-  // 重试保留同一任务与附件，再次稳定失败，不新增附件
+  const retryResponse = await retryResponsePromise;
+  expect(retryResponse.status()).toBe(202);
+
+  const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
+  // 重试保留同一任务与附件；等待第二轮持久化终态，不能命中仍在页面上的首次失败提示。
+  await expect
+    .poll(
+      () => {
+        const tables = readResearchImportTables(dbPath);
+        return tables.importTasks.find((row) => row.sessionId === sessionId)?.status;
+      },
+      { timeout: 10_000 },
+    )
+    .toBe("failed");
+
+  // 第二轮再次稳定失败，不新增附件
   await expect(page.getByText("无法解析这个文件，可能已损坏或不含可读文本。")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole("button", { name: "重试" })).toBeVisible();
   await expect(page.locator(".attachment__name")).toHaveCount(1);
 
-  const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
   const tables = readResearchImportTables(dbPath);
   const sessionAttachments = tables.attachments.filter((row) => row.sessionId === sessionId);
   const sessionTasks = tables.importTasks.filter((row) => row.sessionId === sessionId);
