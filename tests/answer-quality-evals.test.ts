@@ -401,6 +401,17 @@ test("long-form gate activates only when the frozen quality and resource thresho
   });
   assert.equal(tooSlow.verdict, "not_activated");
   assert.equal(tooSlow.checks.resourcesWithinLimits, false);
+
+  const unavailableResourceEvidence = decideLongFormGate({
+    runs: runs.map((entry) => entry.candidateId === "long_form_state_prototype" && entry.repetition === 1
+      ? { ...entry, evidenceVerified: false }
+      : entry),
+    pairwise: [1, 2, 3].map((repetition) => ({ repetition, canonicalWinner: "long_form_state_prototype" as const })),
+    repetitions: 3,
+    thresholds: decisionThresholdsForTest(),
+  });
+  assert.equal(unavailableResourceEvidence.checks.resourcesWithinLimits, false);
+  assert.equal(unavailableResourceEvidence.resourceIncreaseRatios.outputTokens, null);
 });
 
 function decisionThresholdsForTest() {

@@ -63,7 +63,7 @@ export interface LongFormGateDecision {
   longFormStatePassRateGain: number;
   pairwiseLongFormStateWins: number;
   dimensionRegressions: LongFormGateDimension[];
-  resourceIncreaseRatios: LongFormGateRunMetrics;
+  resourceIncreaseRatios: Record<keyof LongFormGateRunMetrics, number | null>;
   checks: {
     evidenceComplete: boolean;
     currentDefectStable: boolean;
@@ -152,8 +152,16 @@ export function decideLongFormGate(input: {
   const dimensionRegressions = input.thresholds.noDimensionRegression
     ? LONG_FORM_GATE_DIMENSIONS.filter((dimension) => passCount(grouped.long_form_state_prototype, dimension) < passCount(grouped.minimal_prompt_adjustment, dimension))
     : [];
-  const resourceIncreaseRatios = resourceRatios(grouped.minimal_prompt_adjustment, grouped.long_form_state_prototype);
-  const resourcesWithinLimits = resourceIncreaseRatios.outputTokens <= input.thresholds.maximumOutputTokenIncreaseRatio
+  const resourceEvidenceComplete = grouped.minimal_prompt_adjustment.every((run) => run.evidenceVerified)
+    && grouped.long_form_state_prototype.every((run) => run.evidenceVerified);
+  const resourceIncreaseRatios = resourceEvidenceComplete
+    ? resourceRatios(grouped.minimal_prompt_adjustment, grouped.long_form_state_prototype)
+    : { outputTokens: null, estimatedCostUsd: null, firstCharacterLatencyMs: null, completeLatencyMs: null };
+  const resourcesWithinLimits = resourceIncreaseRatios.outputTokens !== null
+    && resourceIncreaseRatios.estimatedCostUsd !== null
+    && resourceIncreaseRatios.firstCharacterLatencyMs !== null
+    && resourceIncreaseRatios.completeLatencyMs !== null
+    && resourceIncreaseRatios.outputTokens <= input.thresholds.maximumOutputTokenIncreaseRatio
     && resourceIncreaseRatios.estimatedCostUsd <= input.thresholds.maximumEstimatedCostIncreaseRatio
     && resourceIncreaseRatios.firstCharacterLatencyMs <= input.thresholds.maximumFirstCharacterLatencyIncreaseRatio
     && resourceIncreaseRatios.completeLatencyMs <= input.thresholds.maximumCompleteLatencyIncreaseRatio;
