@@ -27,11 +27,12 @@ export function createLayeredJudgePrompt(input: JudgeInput): string {
     instruction: `只根据公开用户请求、显式设置、最终正文、已准入证据和有效引用评分。不要推测隐藏计划、推理或供应商能力。evidenceLocations 使用 JavaScript 字符偏移，必须满足 0 <= startOffset < endOffset <= ${input.finalBody.length}；无法精确定位时返回空数组。`,
     finalBodyLength: input.finalBody.length,
     layers: {
-      generic: ["任务相关性", "显式指令遵循", "覆盖完整性", "事实克制", "正文连贯性"],
-      taskFamily: ["解释", "比较", "决策", "规划", "诊断", "事实查询", "研究综合", "总结", "改写", "混合任务"],
+      generic_semantic: ["任务相关性", "显式指令遵循", "覆盖完整性", "事实克制", "正文连贯性"],
+      task_family: ["解释", "比较", "决策", "规划", "诊断", "事实查询", "研究综合", "总结", "改写", "混合任务"],
     },
     outputContract: {
-      dimensions: [{ layer: "generic_semantic|task_family", dimension: "string", verdict: "pass|fail|not_applicable", reason: "string", evidenceLocations: [{ startOffset: 0, endOffset: 1 }], confidence: 0.5 }],
+      requiredLayers: ["generic_semantic", "task_family"],
+      dimensions: [{ layer: { enum: ["generic_semantic", "task_family"] }, dimension: "string", verdict: { enum: ["pass", "fail", "not_applicable"] }, reason: "string", evidenceLocations: [{ startOffset: 0, endOffset: 1 }], confidence: 0.5 }],
     },
     input,
   });
@@ -108,8 +109,8 @@ export function parseJudgeResult(value: unknown, bodyLength: number): JudgeResul
     const item = entry as Record<string, unknown>;
     const layer = item.layer;
     const verdict = item.verdict;
-    if (layer !== "generic_semantic" && layer !== "task_family") throw new Error("Judge dimension layer is invalid");
-    if (verdict !== "pass" && verdict !== "fail" && verdict !== "not_applicable") throw new Error("Judge dimension verdict is invalid");
+    if (layer !== "generic_semantic" && layer !== "task_family") throw new Error(`Judge dimension layer is invalid: ${String(layer).slice(0, 40)}`);
+    if (verdict !== "pass" && verdict !== "fail" && verdict !== "not_applicable") throw new Error(`Judge dimension verdict is invalid: ${String(verdict).slice(0, 40)}`);
     const locations = Array.isArray(item.evidenceLocations) ? item.evidenceLocations.map((location) => {
       const candidate = location as Record<string, unknown>;
       const startOffset = Number(candidate.startOffset);

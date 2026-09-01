@@ -13,6 +13,7 @@ import {
   OpenAiCompatibleJudgeAdapter,
   OpenAiCompatiblePairwiseJudgeAdapter,
   buildJudgeInput,
+  createLayeredJudgePrompt,
   calculateHumanCalibrationReport,
   comparePairwiseJudgments,
   createCurrentBuildCapabilities,
@@ -241,6 +242,10 @@ test("judge input is a whitelist and cannot see hidden reasoning, provider brand
   const serialized = JSON.stringify(buildJudgeInput(run));
   assert.ok(serialized.includes("可评分正文"));
   for (const sentinel of ["CANARY_REASONING", "CANARY_PROVIDER", "CANARY_PLAN", "CANARY_EXPECTATION"]) assert.ok(!serialized.includes(sentinel));
+  const prompt = JSON.parse(createLayeredJudgePrompt(buildJudgeInput(run)));
+  assert.deepEqual(Object.keys(prompt.layers).sort(), ["generic_semantic", "task_family"]);
+  assert.deepEqual(prompt.outputContract.requiredLayers, ["generic_semantic", "task_family"]);
+  assert.deepEqual(prompt.outputContract.dimensions[0].layer.enum, ["generic_semantic", "task_family"]);
 });
 
 test("missing identity on a supported applicable artifact rejects semantic scoring", () => {
