@@ -51,7 +51,14 @@ export class OpenAiCompatiblePairwiseJudgeAdapter implements BlindPairwiseJudgeA
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
         redirect: "error",
         signal: AbortSignal.timeout(this.options.timeoutMs ?? 120_000),
-        body: JSON.stringify({ model: this.options.model, temperature: 0, response_format: { type: "json_object" }, messages }),
+        body: JSON.stringify({
+          model: this.options.model,
+          temperature: 0,
+          response_format: { type: "json_object" },
+          ...(this.options.maxTokens !== undefined ? { max_tokens: this.options.maxTokens } : {}),
+          ...(this.options.thinking !== undefined ? { thinking: { type: this.options.thinking ? "enabled" : "disabled" } } : {}),
+          messages,
+        }),
       });
       const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
       if (!response.ok) throw new Error(`Pairwise Judge request failed with HTTP ${response.status}`);

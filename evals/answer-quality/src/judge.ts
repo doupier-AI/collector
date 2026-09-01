@@ -50,6 +50,8 @@ export interface OpenAiCompatibleJudgeOptions {
   apiKey: () => Promise<string | undefined> | string | undefined;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  maxTokens?: number;
+  thinking?: boolean;
 }
 
 /** Evaluation-only external adapter. It never becomes a production dependency. */
@@ -76,6 +78,8 @@ export class OpenAiCompatibleJudgeAdapter implements AnswerJudgeAdapter {
           model: this.options.model,
           temperature: 0,
           response_format: { type: "json_object" },
+          ...(this.options.maxTokens !== undefined ? { max_tokens: this.options.maxTokens } : {}),
+          ...(this.options.thinking !== undefined ? { thinking: { type: this.options.thinking ? "enabled" : "disabled" } } : {}),
           messages,
         }),
       });

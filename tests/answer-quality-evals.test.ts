@@ -10,6 +10,7 @@ import {
   ANSWER_QUALITY_RELEASE_PROFILE_V1,
   BASELINE_REPLAYS,
   HUMAN_CALIBRATION_CANDIDATES,
+  OpenAiCompatibleJudgeAdapter,
   OpenAiCompatiblePairwiseJudgeAdapter,
   buildJudgeInput,
   calculateHumanCalibrationReport,
@@ -523,6 +524,56 @@ test("pairwise Judge accepts the observed outputContract result wrapper without 
   });
   const result = await adapter.compare({ userRequest: run.userRequest, explicitSettings: run.explicitSettings, first: input, second: input });
   assert.deepEqual(result, { winner: "b", reason: "第二项更完整", confidence: 0.9 });
+});
+
+test("real DeepSeek Judge requests disable thinking and bound structured output", async () => {
+  const target = ANSWER_QUALITY_CORPUS[0]!;
+  const run = await runFixedProviderCase(target, { response: "固定正文", buildFingerprint: "build:test" });
+  const input = buildJudgeInput({
+    userRequest: run.userRequest,
+    explicitSettings: run.explicitSettings,
+    finalBody: run.trace.finalBody,
+    admittedEvidence: run.admittedEvidence,
+    validCitations: run.validCitations,
+  });
+  let requestBody: Record<string, unknown> | undefined;
+  const adapter = new OpenAiCompatiblePairwiseJudgeAdapter({
+    baseUrl: "https://judge.test/v1",
+    model: "judge-test",
+    apiKey: () => "test-key",
+    maxTokens: 1_024,
+    thinking: false,
+    fetchImpl: async (_url, init) => {
+      requestBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ winner: "tie", reason: "等价", confidence: 0.8 }) } }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    },
+  });
+  await adapter.compare({ userRequest: run.userRequest, explicitSettings: run.explicitSettings, first: input, second: input });
+  assert.equal(requestBody?.max_tokens, 1_024);
+  assert.deepEqual(requestBody?.thinking, { type: "disabled" });
+
+  let absoluteRequestBody: Record<string, unknown> | undefined;
+  const absoluteAdapter = new OpenAiCompatibleJudgeAdapter({
+    baseUrl: "https://judge.test/v1",
+    model: "judge-test",
+    apiKey: () => "test-key",
+    maxTokens: 1_024,
+    thinking: false,
+    fetchImpl: async (_url, init) => {
+      absoluteRequestBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ dimensions: [
+          { layer: "generic_semantic", dimension: "相关性", verdict: "pass", reason: "符合", evidenceLocations: [], confidence: 0.8 },
+          { layer: "task_family", dimension: "比较", verdict: "pass", reason: "符合", evidenceLocations: [], confidence: 0.8 },
+        ] }) } }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    },
+  });
+  await absoluteAdapter.judge(input);
+  assert.equal(absoluteRequestBody?.max_tokens, 1_024);
+  assert.deepEqual(absoluteRequestBody?.thinking, { type: "disabled" });
 });
 
 test("production Final Writer translates admitted explicit format codes into concrete output rules", async () => {

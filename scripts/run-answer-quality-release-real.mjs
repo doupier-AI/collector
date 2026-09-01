@@ -21,14 +21,21 @@ import { createProvider, DEFAULT_PROVIDER_REGISTRY } from "@collector/model-gate
 const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const candidateBuildFingerprint = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8", windowsHide: true }).trim();
 const module = new ReleaseQualityModule(ANSWER_QUALITY_RELEASE_PROFILE_V1);
+let activeStage = "prerequisite";
+let calibration;
 
 try {
+  activeStage = "runtime";
   const runtime = readRealModelRuntime();
+  activeStage = "calibration";
+  calibration = JSON.parse(readFileSync(join(repositoryRoot, "evals/answer-quality/reviews/aq-corpus-v1-human-calibration-report.json"), "utf8"));
   const judgeOptions = {
     baseUrl: runtime.baseUrl,
     model: runtime.model,
     apiKey: () => runtime.apiKey,
     timeoutMs: 120_000,
+    maxTokens: 1_024,
+    thinking: false,
   };
   const judge = new OpenAiCompatibleJudgeAdapter(judgeOptions);
   const pairwiseJudge = new OpenAiCompatiblePairwiseJudgeAdapter(judgeOptions);
@@ -50,6 +57,7 @@ try {
         stream: true,
       }),
     });
+    activeStage = `${caseId}:blind-ab`;
     const comparison = await runRepeatedRealModelBlindAB({
       testCase,
       repetitions: ANSWER_QUALITY_RELEASE_PROFILE_V1.gates.release_candidate.repetitions,
@@ -57,19 +65,18 @@ try {
       runnerB: realRunner("answer-quality-release-candidate-v1"),
       judge: pairwiseJudge,
     });
-    const evaluatedRuns = await Promise.all(comparison.runs.map(async ({ repetition, runA, runB }) => ({
-      repetition,
-      baseline: await evaluateAnswerQualityRunWithJudge(testCase, runA, judge),
-      candidate: await evaluateAnswerQualityRunWithJudge(testCase, runB, judge),
-    })));
-    for (const { repetition, baseline, candidate } of evaluatedRuns) {
+    for (const { repetition, runA, runB } of comparison.runs) {
+      activeStage = `${caseId}:baseline:${repetition}:absolute-judge`;
+      const baseline = await evaluateAnswerQualityRunWithJudge(testCase, runA, judge);
+      activeStage = `${caseId}:candidate:${repetition}:absolute-judge`;
+      const candidate = await evaluateAnswerQualityRunWithJudge(testCase, runB, judge);
       baselineRuns.push(releaseEvidenceFromEvaluatedRun(testCase, baseline, "real_model_judge", repetition, baseline.metrics));
       candidateRuns.push(releaseEvidenceFromEvaluatedRun(testCase, candidate, "real_model_judge", repetition, candidate.metrics));
     }
     pairwise.push(...comparison.judgments.map((entry) => ({ caseId, ...entry })));
   }
 
-  const calibration = JSON.parse(readFileSync(join(repositoryRoot, "evals/answer-quality/reviews/aq-corpus-v1-human-calibration-report.json"), "utf8"));
+  activeStage = "release-evaluation";
   const report = module.evaluate({
     gateId: "release_candidate",
     candidateBuildFingerprint,
@@ -82,10 +89,16 @@ try {
   console.log(JSON.stringify(safeSummary(report, runtime), null, 2));
   await finish(report.verdict === "passed" ? 0 : 1);
 } catch (error) {
-  const report = module.evaluate({ gateId: "release_candidate", candidateBuildFingerprint, candidateRuns: [] });
+  const report = module.evaluate({
+    gateId: "release_candidate",
+    candidateBuildFingerprint,
+    candidateRuns: [],
+    ...(calibration ? { calibration } : {}),
+    longFormDecision: { ...ANSWER_QUALITY_RELEASE_PROFILE_V1.longFormDecision },
+  });
   console.log(JSON.stringify({
     ...safeSummary(report),
-    prerequisite: { status: "not_verified", reason: safeError(error) },
+    prerequisite: { status: "not_verified", stage: activeStage, reason: safeError(error) },
   }, null, 2));
   await finish(1);
 }
