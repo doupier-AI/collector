@@ -3318,8 +3318,9 @@ export function sanitizeGroundingQueries(queries: readonly string[]): string[] {
 
 /** 验证引用只能关联同一次联网运行的来源，且锚点可映射到最终回答块。 */
 export function validateResearchGroundingResult(result: ResearchGroundingResult): void {
-  if (result.run.evidenceBundle) {
-    const bundle = result.run.evidenceBundle;
+  const evidenceBundle = result.run.evidenceBundle;
+  if (evidenceBundle) {
+    const bundle = evidenceBundle;
     validateEvidenceBundle(bundle);
     if (bundle.taskId !== result.run.taskId) throw new Error("Evidence bundle must reference its grounding task");
     if (result.run.status === "grounded") throw new Error("Evidence policy coverage must not be mapped to a grounded run");
@@ -3347,6 +3348,25 @@ export function validateResearchGroundingResult(result: ResearchGroundingResult)
       || attribution.acceptancePolicyVersion !== CITATION_SUPPORT_ACCEPTANCE_POLICY_VERSION) {
       throw new Error("Citation attribution version is unsupported");
     }
+    const validRunStatuses = new Set<CitationAttributionRunStatus>(["completed", "partial", "failed", "not_required"]);
+    const validAttributionStatuses = new Set<CitationAttributionStatus>(["accepted", "rejected"]);
+    const validRejectionReasons = new Set<CitationAttributionRejectionReason>([
+      "source_not_found", "source_not_admitted", "source_content_unavailable", "claim_range_missing",
+      "claim_range_invalid", "claim_text_mismatch", "claim_text_not_found", "claim_text_ambiguous",
+      "evidence_range_invalid", "evidence_text_mismatch", "evidence_text_not_found", "evidence_text_ambiguous",
+      "native_candidate_mismatch", "support_not_confirmed", "confidence_below_threshold", "duplicate",
+      "producer_unavailable", "producer_failed", "invalid_producer_output",
+    ]);
+    if (!validRunStatuses.has(attribution.status)
+      || !Number.isSafeInteger(attribution.generationAttempt) || attribution.generationAttempt < 1
+      || !Number.isSafeInteger(attribution.invalidProposalCount) || attribution.invalidProposalCount < 0
+      || attribution.producerCalls.some((call) => (call.mode !== "verify_native" && call.mode !== "discover")
+        || !["completed", "unavailable", "failed", "invalid_output"].includes(call.status)
+        || call.producerVersion !== CITATION_ATTRIBUTION_PRODUCER_VERSION
+        || !call.batchId.trim()
+        || ((call.status === "completed" || call.status === "invalid_output") && (!call.provider?.trim() || !call.model?.trim())))) {
+      throw new Error("Citation attribution run metadata is invalid");
+    }
     if (attribution.taskId !== result.run.taskId || attribution.groundingRunId !== result.run.id
       || (result.citations.length > 0 && attribution.messageId !== result.citations[0]?.messageId)
       || attribution.bodyVersionId !== researchBodyVersionId(attribution.messageId, result.content)) {
@@ -3364,6 +3384,17 @@ export function validateResearchGroundingResult(result: ResearchGroundingResult)
         || item.acceptancePolicyVersion !== attribution.acceptancePolicyVersion) {
         throw new Error("Citation attribution record identity is inconsistent");
       }
+      if (!validAttributionStatuses.has(item.status)
+        || !item.id.trim() || !item.candidateId.trim()
+        || !Number.isSafeInteger(item.evidenceIdentity.sourceOrdinal) || item.evidenceIdentity.sourceOrdinal < 1
+        || !validCitationAttributionProducer(item.candidateProducer)
+        || item.rejectionReasons.some((reason) => !validRejectionReasons.has(reason))
+        || (item.supportCandidate && (!validCitationAttributionProducer(item.supportCandidate.producer, "independent_model")
+          || typeof item.supportCandidate.support !== "boolean"
+          || !Number.isFinite(item.supportCandidate.confidence)
+          || item.supportCandidate.confidence < 0 || item.supportCandidate.confidence > 1))) {
+        throw new Error("Citation attribution record metadata is invalid");
+      }
       for (const range of [item.claimRange, item.evidenceRange]) {
         if (range && (!Number.isSafeInteger(range.startOffset) || !Number.isSafeInteger(range.endOffset)
           || range.startOffset < 0 || range.endOffset <= range.startOffset
@@ -3379,6 +3410,10 @@ export function validateResearchGroundingResult(result: ResearchGroundingResult)
       }
       if (item.status === "accepted") {
         const source = item.evidenceIdentity.sourceId ? sourceById.get(item.evidenceIdentity.sourceId) : undefined;
+        const preparedEvidence = evidenceBundle && item.evidenceIdentity.preparedEvidenceId
+          ? evidenceBundle.evidence.find((evidence) => evidence.id === item.evidenceIdentity.preparedEvidenceId)
+          : undefined;
+        const canonicalEvidence = preparedEvidence?.excerpt ?? source?.snippet;
         if (item.rejectionReasons.length || !source
           || source.ordinal !== item.evidenceIdentity.sourceOrdinal || source.evidenceStatus === "none"
           || !item.evidenceIdentity.sourceVersion
@@ -3389,12 +3424,23 @@ export function validateResearchGroundingResult(result: ResearchGroundingResult)
           || item.supportCandidate.confidence > 1) {
           throw new Error("Accepted citation attribution is incomplete");
         }
+        if ((evidenceBundle && (!preparedEvidence
+          || source.providerSourceId !== preparedEvidence.id
+          || item.evidenceIdentity.sourceVersion !== preparedEvidence.contentDigest))
+          || !canonicalEvidence
+          || item.evidenceRange.endOffset > canonicalEvidence.length
+          || canonicalEvidence.slice(item.evidenceRange.startOffset, item.evidenceRange.endOffset) !== item.evidenceRange.exact) {
+          throw new Error("Accepted citation attribution evidence range is stale");
+        }
         if (result.content.slice(item.claimRange.startOffset, item.claimRange.endOffset) !== item.claimRange.exact) {
           throw new Error("Accepted citation attribution claim range is stale");
         }
       } else if (!item.rejectionReasons.length) {
         throw new Error("Rejected citation attribution requires a reason");
       }
+    }
+    if ((attribution.status === "failed" || attribution.status === "not_required") && accepted.length > 0) {
+      throw new Error("Citation attribution run status is inconsistent with accepted records");
     }
     const citedAttributionIds = new Set(result.citations.flatMap((citation) => citation.attributionId ? [citation.attributionId] : []));
     if (accepted.length !== result.citations.length || citedAttributionIds.size !== accepted.length
@@ -3440,6 +3486,15 @@ export function validateResearchGroundingResult(result: ResearchGroundingResult)
       throw new Error("Citation must retain its accepted attribution identity and policy version");
     }
   }
+}
+
+function validCitationAttributionProducer(
+  producer: CitationAttributionProducerIdentity,
+  expectedKind?: CitationAttributionProducerIdentity["kind"],
+): boolean {
+  return (producer.kind === "provider_native" || producer.kind === "independent_model")
+    && (!expectedKind || producer.kind === expectedKind)
+    && Boolean(producer.provider.trim() && producer.model.trim() && producer.version.trim());
 }
 
 export interface ApiError {

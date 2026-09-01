@@ -224,7 +224,7 @@ function resolveExactSelector(
   notFound: CitationAttributionRejectionReason,
   ambiguous: CitationAttributionRejectionReason,
 ): { range?: { startOffset: number; endOffset: number; exact: string }; reasons: CitationAttributionRejectionReason[] } {
-  if (!exact || exact.length > maximumCharacters) return { reasons: [rangeInvalid] };
+  if (!exact || exact !== exact.trim() || exact.length > maximumCharacters) return { reasons: [rangeInvalid] };
   if (startHint !== undefined && endHint !== undefined) {
     const localStart = startHint - baseOffset;
     const localEnd = endHint - baseOffset;

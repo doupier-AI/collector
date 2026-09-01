@@ -100,6 +100,27 @@ test("ambiguous exact-text selectors are rejected instead of guessing a range", 
   assert.deepEqual(result.run.attributions[0]?.rejectionReasons, ["claim_text_ambiguous"]);
 });
 
+test("selectors with leading or trailing whitespace are rejected instead of targeting block separators", async () => {
+  const result = await new CitationAttributionModule(model({
+    attributions: [{
+      sourceOrdinal: 1,
+      claimText: " Supported claim. ",
+      evidenceText: "Evidence text.",
+      support: true,
+      confidence: 0.99,
+    }],
+  }), now).attribute(input({
+    body: "Supported claim.",
+    sources: [{
+      sourceId: "source-1", sourceOrdinal: 1, sourceVersion: "digest-1",
+      content: "Evidence text.", evidenceStatus: "full", admitted: true,
+    }],
+  }));
+
+  assert.equal(result.accepted.length, 0);
+  assert.deepEqual(result.run.attributions[0]?.rejectionReasons, ["claim_range_invalid"]);
+});
+
 test("provider-native metadata remains a candidate and low-confidence semantic support cannot auto-promote it", async () => {
   const value = input({ providerCandidates: [{ sourceOrdinal: 1, startOffset: 0, endOffset: 7, providerCitationId: "native-1" }] });
   const evidenceText = "Node 24";

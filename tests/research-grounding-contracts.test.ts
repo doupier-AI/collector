@@ -97,7 +97,7 @@ test("accepted attribution exclusively owns citation source, range, and grounded
       },
     },
     sources: [
-      { id: "source-1", runId: "run-207", ordinal: 1, title: "Source 1", evidenceStatus: "full", createdAt },
+      { id: "source-1", runId: "run-207", ordinal: 1, title: "Source 1", snippet: "Node 24 is LTS", evidenceStatus: "full", createdAt },
       { id: "source-2", runId: "run-207", ordinal: 2, title: "Source 2", evidenceStatus: "full", createdAt },
     ],
     citations: [{
@@ -116,4 +116,18 @@ test("accepted attribution exclusively owns citation source, range, and grounded
     ...result,
     run: { ...result.run, citationAttribution: { ...result.run.citationAttribution!, attributions: [{ ...attribution, supportCandidate: { ...attribution.supportCandidate, confidence: 0.5 } }] } },
   }), /incomplete/);
+  assert.throws(() => validateResearchGroundingResult({
+    ...result,
+    run: {
+      ...result.run,
+      citationAttribution: {
+        ...result.run.citationAttribution!,
+        attributions: [{ ...attribution, evidenceRange: { ...attribution.evidenceRange, exact: "Node 25 is LTS" } }],
+      },
+    },
+  }), /evidence range is stale/);
+  assert.throws(() => validateResearchGroundingResult({
+    ...result,
+    run: { ...result.run, citationAttribution: { ...result.run.citationAttribution!, status: "failed" } },
+  }), /status is inconsistent/);
 });
