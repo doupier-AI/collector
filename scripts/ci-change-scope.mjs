@@ -11,9 +11,21 @@ const LIGHTWEIGHT_PATHS = [
   /(?:^|\/)README\.md$/i,
 ];
 
+const ANSWER_QUALITY_AFFECTED_PATHS = [
+  /^evals\/answer-quality\//i,
+  /^packages\/(?:capture-contracts|model-gateway)\/src\//i,
+  /^apps\/api\/src\/(?:answer-planning|answer-completion|citation-attribution|context-assembly|conversation-context|evidence-preparation|research)\.ts$/i,
+  /^scripts\/(?:probe-(?:answer-planning|conversation-context|evidence-preparation)|run-answer-quality-(?:eval|release(?:-real)?|affected))\.mjs$/i,
+  /^tests\/answer-quality-evals\.test\.ts$/i,
+];
+
 export function requiresFastGate(paths) {
   const changed = paths.map((path) => path.replaceAll("\\", "/")).filter(Boolean);
   return changed.length === 0 || changed.some((path) => !LIGHTWEIGHT_PATHS.some((pattern) => pattern.test(path)));
+}
+
+export function requiresAnswerQualityFullGate(paths) {
+  return paths.map((path) => path.replaceAll("\\", "/")).some((path) => ANSWER_QUALITY_AFFECTED_PATHS.some((pattern) => pattern.test(path)));
 }
 
 export function changedPaths(base, head, cwd = process.cwd()) {
@@ -46,7 +58,8 @@ if (process.argv[1] && resolve(process.argv[1]) === resolve(import.meta.filename
     const options = parseArguments(process.argv.slice(2));
     const paths = changedPaths(options.base, options.head);
     const runFast = requiresFastGate(paths);
-    const output = `run_fast=${runFast}\nchange_count=${paths.length}\n`;
+    const runAnswerQualityFull = requiresAnswerQualityFullGate(paths);
+    const output = `run_fast=${runFast}\nrun_aq_full=${runAnswerQualityFull}\nchange_count=${paths.length}\n`;
     if (options.githubOutput) appendFileSync(options.githubOutput, output, "utf8");
     process.stdout.write(`${output}changed_paths=${paths.join(",")}\n`);
   } catch (error) {

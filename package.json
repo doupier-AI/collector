@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "build": "tsc -b && npm run build -w @collector/web",
-    "test": "npm run build && node --test dist-tests/**/*.test.js scripts/*.test.mjs",
+    "test": "npm run build && node --test dist-tests/**/*.test.js scripts/*.test.mjs && node scripts/run-answer-quality-release.mjs --mode=quick",
     "start": "node apps/api/dist/launcher-main.js",
     "launch": "npm run build && node apps/api/dist/launcher-main.js",
     "launch:mvp": "npm run build && node scripts/launch-mvp.mjs",
@@ -27,6 +27,8 @@
     "gate:fast": "node scripts/gate.mjs fast",
     "gate:e2e": "node scripts/gate.mjs e2e",
     "eval:answer-quality": "npm run build && node scripts/run-answer-quality-eval.mjs",
+    "eval:answer-quality:release": "npm run build && node scripts/run-answer-quality-release.mjs --mode=full",
+    "eval:answer-quality:real": "npm run build && node scripts/run-answer-quality-release-real.mjs",
     "eval:long-form-gate": "npm run build && node scripts/run-long-form-gate.mjs",
     "probe:evidence-preparation": "npm run build && node scripts/probe-evidence-preparation.mjs",
     "probe:citation-attribution": "npm run build && node scripts/probe-citation-attribution.mjs",

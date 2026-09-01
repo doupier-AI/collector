@@ -24,7 +24,8 @@ export function buildJudgeInput(run: JudgeSourceRun): JudgeInput {
 
 export function createLayeredJudgePrompt(input: JudgeInput): string {
   return JSON.stringify({
-    instruction: "只根据公开用户请求、显式设置、最终正文、已准入证据和有效引用评分。不要推测隐藏计划、推理或供应商能力。",
+    instruction: `只根据公开用户请求、显式设置、最终正文、已准入证据和有效引用评分。不要推测隐藏计划、推理或供应商能力。evidenceLocations 使用 JavaScript 字符偏移，必须满足 0 <= startOffset < endOffset <= ${input.finalBody.length}；无法精确定位时返回空数组。`,
+    finalBodyLength: input.finalBody.length,
     layers: {
       generic: ["任务相关性", "显式指令遵循", "覆盖完整性", "事实克制", "正文连贯性"],
       taskFamily: ["解释", "比较", "决策", "规划", "诊断", "事实查询", "研究综合", "总结", "改写", "混合任务"],
@@ -61,26 +62,38 @@ export class OpenAiCompatibleJudgeAdapter implements AnswerJudgeAdapter {
   async judge(input: JudgeInput): Promise<JudgeResult> {
     const apiKey = await this.options.apiKey();
     if (!apiKey) throw new Error("Judge credential is unavailable");
-    const response = await this.fetchImpl(`${this.options.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      redirect: "error",
-      signal: AbortSignal.timeout(this.options.timeoutMs ?? 60_000),
-      body: JSON.stringify({
-        model: this.options.model,
-        temperature: 0,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: "Return valid JSON only. Evaluate the supplied final answer without hidden reasoning or provider assumptions." },
-          { role: "user", content: createLayeredJudgePrompt(input) },
-        ],
-      }),
-    });
-    const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }>; error?: { message?: string } };
-    if (!response.ok) throw new Error(`Judge request failed with HTTP ${response.status}`);
-    const content = payload.choices?.[0]?.message?.content;
-    if (!content) throw new Error("Judge returned no structured result");
-    return parseJudgeResult(JSON.parse(content) as unknown, input.finalBody.length);
+    const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
+      { role: "system", content: "Return valid JSON only. Evaluate the supplied final answer without hidden reasoning or provider assumptions. Evidence offsets outside the declared finalBodyLength are invalid." },
+      { role: "user", content: createLayeredJudgePrompt(input) },
+    ];
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const response = await this.fetchImpl(`${this.options.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        redirect: "error",
+        signal: AbortSignal.timeout(this.options.timeoutMs ?? 60_000),
+        body: JSON.stringify({
+          model: this.options.model,
+          temperature: 0,
+          response_format: { type: "json_object" },
+          messages,
+        }),
+      });
+      const payload = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+      if (!response.ok) throw new Error(`Judge request failed with HTTP ${response.status}`);
+      const content = payload.choices?.[0]?.message?.content;
+      if (!content) throw new Error("Judge returned no structured result");
+      try {
+        return parseJudgeResult(JSON.parse(content) as unknown, input.finalBody.length);
+      } catch (error) {
+        if (attempt === 2) throw error;
+        messages.push(
+          { role: "assistant", content },
+          { role: "user", content: `上一结果不符合输出契约：${error instanceof Error ? error.message : "invalid result"}。重新返回完整 JSON；所有 evidenceLocations 必须落在 0..${input.finalBody.length}，不确定时用空数组。` },
+        );
+      }
+    }
+    throw new Error("Judge did not return a valid result");
   }
 }
 

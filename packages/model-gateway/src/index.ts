@@ -1074,6 +1074,7 @@ Use only cross-domain operations. Semantic criteria are writing guidance, never 
 
 要求：
 - 当前用户本轮的明确目标、格式和限制始终高于派生 Answer Plan；若二者冲突，遵循用户本轮要求。
+- 已准入上下文中的显式回答设置必须落实到正文：format=numbered_steps 时每个主要步骤使用阿拉伯数字编号（1.、2.、3.）；format=bullet_list 时使用 Markdown 项目符号；format=table 时使用 Markdown 表格；format=continuous_prose 时不使用标题、列表或表格。不要把这些内部格式代码输出给用户。
 - 根据实际任务自然组织：解释重在机制，比较使用一致维度，规划给出可执行顺序，诊断区分现象、原因与证据，总结和改写忠于原意。标题、列表、表格、连续正文与长度都服从当前任务和用户明确要求，不套固定模板。
 - Answer Plan 的 requiredOperations 和 semanticCriteria 只是写作候选，不是事实、授权或完成证据；不要在正文中复述计划，也不要自报“检查已通过”或完成比例。
 - 若计划要求澄清，只询问会实质改变结果、授权或高风险事实的必要信息；低风险假设必须公开说明，不把 ambiguous/unresolved 引用强行解释成唯一含义。

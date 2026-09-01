@@ -177,7 +177,8 @@ function capabilityExpectations(scenario: ScenarioBlueprint, webAuthorized: bool
   const values = Object.fromEntries(ANSWER_QUALITY_CAPABILITIES.map((id) => [id, "optional"])) as Record<AnswerQualityCapabilityId, CapabilityExpectation>;
   values.conversation_context = scenario.multiTurn || scenario.tag === "correction_and_negation" ? "required" : "optional";
   values.answer_plan = "required";
-  values.prompt_envelope = scenario.thinking ? "required" : "optional";
+  values.prompt_envelope = "required";
+  values.model_budget_policy = "required";
   values.context_assembly = "required";
   values.evidence_preparation = webAuthorized ? "required" : "not_applicable";
   values.citation_attribution = scenario.tag === "source_order" ? "required" : "not_applicable";

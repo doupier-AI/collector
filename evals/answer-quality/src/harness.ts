@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { AnswerPlanningModule, EvidencePreparationModule, assembleContext, contextAssemblyAudit, ConversationContextResolver, conversationContextCandidate, evidenceBundleContextCandidates } from "@collector/api";
+import { AnswerPlanningModule, CitationAttributionModule, EvidencePreparationModule, assembleContext, contextAssemblyAudit, ConversationContextResolver, conversationContextCandidate, evidenceBundleContextCandidates } from "@collector/api";
 import { researchBodyVersionId, type ContextCandidate, type ResearchMessageBodyRecord } from "@collector/capture-contracts";
-import { FakeProvider, ModelGateway, type ModelCallEvent, type ModelProviderResponse } from "@collector/model-gateway";
+import { FakeProvider, ModelGateway, type ModelCallEvent, type ModelProvider, type ModelProviderResponse } from "@collector/model-gateway";
 import { createCurrentBuildCapabilities, createEvaluationFacts } from "./facts.js";
 import {
   ANSWER_QUALITY_CAPABILITIES,
@@ -17,8 +17,23 @@ import {
 
 export interface FixedProviderRunOptions {
   response: string | Error | ModelProviderResponse;
+  citationResponse?: string | Error | ModelProviderResponse;
   buildFingerprint: string;
   unavailableReason?: string;
+  clock?: () => string;
+  id?: () => string;
+}
+
+export interface ProviderCaseRunOptions {
+  provider: ModelProvider;
+  buildFingerprint: string;
+  mode?: AnswerQualityRun["mode"];
+  model?: string;
+  thinking?: boolean;
+  promptVersion?: string;
+  stream?: boolean;
+  unavailableReason?: string;
+  enableCitationAttribution?: boolean;
   clock?: () => string;
   id?: () => string;
 }
@@ -39,6 +54,21 @@ export function productionScenarioFromCase(testCase: AnswerQualityCase): Product
 }
 
 export async function runFixedProviderCase(testCase: AnswerQualityCase, options: FixedProviderRunOptions): Promise<AnswerQualityRun> {
+  const provider = new FakeProvider([
+    options.response,
+    ...(options.citationResponse !== undefined ? [options.citationResponse] : []),
+  ]);
+  return runProviderCase(testCase, {
+    provider,
+    buildFingerprint: options.buildFingerprint,
+    ...(options.unavailableReason ? { unavailableReason: options.unavailableReason } : {}),
+    ...(options.citationResponse !== undefined ? { enableCitationAttribution: true } : {}),
+    ...(options.clock ? { clock: options.clock } : {}),
+    ...(options.id ? { id: options.id } : {}),
+  });
+}
+
+export async function runProviderCase(testCase: AnswerQualityCase, options: ProviderCaseRunOptions): Promise<AnswerQualityRun> {
   const clock = options.clock ?? (() => new Date().toISOString());
   const id = options.id ?? randomUUID;
   const scenario = productionScenarioFromCase(testCase);
@@ -101,39 +131,133 @@ export async function runFixedProviderCase(testCase: AnswerQualityCase, options:
   if (evidencePreparation) candidates.push(...evidenceBundleContextCandidates(evidencePreparation.bundle));
   const assembly = assembleContext({ purpose: "research_body", workflowRunId: taskId, workflowStepId: "final-writing", candidates });
   if (assembly.status !== "assembled") throw new Error(`Fixed-provider context assembly failed: ${assembly.reason}`);
-  const provider = new FakeProvider([options.response]);
+  const provider = options.provider;
+  const promptVersion = options.promptVersion ?? "answer-quality-fixed-provider-v1";
   const callEvents: ModelCallEvent[] = [];
   const gateway = new ModelGateway(provider, {
-    model: scenario.environment.model,
-    promptVersion: "answer-quality-fixed-provider-v1",
-    thinking: scenario.environment.thinking,
+    model: options.model ?? scenario.environment.model,
+    promptVersion,
+    thinking: options.thinking ?? scenario.environment.thinking,
+    buildFingerprint: options.buildFingerprint,
     onCall: (event) => { callEvents.push(event); },
   });
   let finalBody = "";
+  const generationStartedAt = Date.now();
+  let firstCharacterLatencyMs: number | undefined;
+  let completeLatencyMs: number | undefined;
   let error: AnswerQualityRun["error"];
   if (!options.unavailableReason) {
     try {
-      finalBody = await gateway.writeResearchBodyFromContext(assembly, {
-        maxTokens: scenario.environment.outputBudgetTokens,
-        context: { workflowRunId: taskId, workflowStepId: "final-writing", purpose: "research_body", promptVersion: "answer-quality-fixed-provider-v1" },
-      });
+      if (options.stream) {
+        for await (const chunk of gateway.writeResearchBodyStreamFromContext(assembly, {
+          maxTokens: scenario.environment.outputBudgetTokens,
+          context: { workflowRunId: taskId, workflowStepId: "final-writing", purpose: "research_body", promptVersion },
+        })) {
+          if (firstCharacterLatencyMs === undefined && chunk.length) firstCharacterLatencyMs = Date.now() - generationStartedAt;
+          finalBody += chunk;
+        }
+        finalBody = finalBody.trim();
+      } else {
+        finalBody = await gateway.writeResearchBodyFromContext(assembly, {
+          maxTokens: scenario.environment.outputBudgetTokens,
+          context: { workflowRunId: taskId, workflowStepId: "final-writing", purpose: "research_body", promptVersion },
+        });
+      }
+      completeLatencyMs = Date.now() - generationStartedAt;
+      firstCharacterLatencyMs ??= completeLatencyMs;
     } catch (cause) {
       error = { category: "provider", message: safeError(cause) };
     }
   }
+  const bodyVersionId = researchBodyVersionId(outputMessageId, finalBody);
+  let citationAttribution: Awaited<ReturnType<CitationAttributionModule["attribute"]>> | undefined;
+  if (!error && finalBody && evidencePreparation?.bundle.evidence.length && options.enableCitationAttribution
+    && testCase.expectation.capabilities.citation_attribution === "required") {
+    citationAttribution = await new CitationAttributionModule({
+      async produce(batch) {
+        const workflowStepId = `citation-attribution:${batch.batchId}`;
+        const attributionAssembly = assembleContext({
+          purpose: "citation_attribution",
+          workflowRunId: taskId,
+          workflowStepId,
+          candidates: [{
+            id: `${workflowStepId}:input`,
+            channel: "factual_evidence",
+            evidenceKind: "research_context",
+            content: JSON.stringify(batch),
+            source: { kind: "research_content", id: outputMessageId, version: bodyVersionId, scope: "turn" },
+            permission: { status: "required", basis: "task_contract", allowedPurposes: ["citation_attribution"] },
+            sensitivity: "private",
+            priority: "task_required",
+            protection: "required",
+          }],
+        });
+        if (attributionAssembly.status !== "assembled") throw new Error(`Citation attribution context failed: ${attributionAssembly.reason}`);
+        return {
+          output: await gateway.produceCitationAttributionsFromContext(attributionAssembly, {
+            context: { workflowRunId: taskId, workflowStepId, purpose: "citation_attribution", promptVersion: "citation-attribution-producer-v1" },
+          }),
+          provider: gateway.providerName,
+          model: gateway.modelName,
+          producerVersion: "citation-attribution-producer-v1",
+        };
+      },
+    }, () => new Date(availabilityCapturedAt)).attribute({
+      taskId,
+      messageId: outputMessageId,
+      groundingRunId: `${taskId}:grounding`,
+      bodyVersionId,
+      generationAttempt: 1,
+      body: finalBody,
+      writer: { provider: gateway.providerName, model: gateway.modelName, version: "answer-quality-final-writer-v1" },
+      sources: evidencePreparation.bundle.evidence.map((item, index) => ({
+        sourceId: item.id,
+        sourceOrdinal: index + 1,
+        preparedEvidenceId: item.id,
+        ...(item.contentDigest ? { sourceVersion: item.contentDigest } : {}),
+        content: item.excerpt,
+        evidenceStatus: item.availability,
+        admitted: true,
+      })),
+      providerCandidates: [],
+    });
+  }
+  const finalCallEvent = callEvents.find((event) => event.context.workflowStepId === "final-writing");
   const finalWritingState: RunExecutionFact = options.unavailableReason
     ? { capabilityId: "final_writing", state: "not_executed" }
     : error
-    ? { capabilityId: "final_writing", state: "failed", errorCategory: error.category }
+    ? { capabilityId: "final_writing", state: "failed", artifactId: finalCallEvent ? `${taskId}:final-writing-call` : undefined, errorCategory: error.category }
     : { capabilityId: "final_writing", state: "completed", artifactId: outputMessageId };
-  const availability = availabilityFacts(testCase, availabilityCapturedAt, options.unavailableReason);
+  const promptEnvelopeState: RunExecutionFact = finalCallEvent
+    ? { capabilityId: "prompt_envelope", state: "completed", artifactId: `${taskId}:prompt-envelope:${finalCallEvent.envelope.version}` }
+    : { capabilityId: "prompt_envelope", state: "not_executed" };
+  const modelBudgetState: RunExecutionFact = finalCallEvent
+    ? { capabilityId: "model_budget_policy", state: "completed", artifactId: finalCallEvent.resolvedBudget.budgetResolutionAttemptId }
+    : { capabilityId: "model_budget_policy", state: "not_executed" };
+  const citationState: RunExecutionFact | undefined = testCase.expectation.capabilities.citation_attribution === "not_applicable"
+    ? undefined
+    : citationAttribution?.run.status === "completed"
+      ? { capabilityId: "citation_attribution", state: "completed", artifactId: citationAttribution.run.id }
+      : citationAttribution
+        ? { capabilityId: "citation_attribution", state: "failed", artifactId: citationAttribution.run.id, errorCategory: citationAttribution.run.status }
+        : { capabilityId: "citation_attribution", state: "not_executed" };
+  const productionRunRecordState: RunExecutionFact = finalCallEvent
+    ? { capabilityId: "production_run_record", state: "completed", artifactId: `${taskId}:model-call` }
+    : { capabilityId: "production_run_record", state: "not_executed" };
+  const availability = availabilityFacts(testCase, availabilityCapturedAt, {
+    finalWritingUnavailableReason: options.unavailableReason,
+    citationAttributionAvailable: Boolean(options.enableCitationAttribution && evidencePreparation?.bundle.evidence.length),
+  });
   const execution: RunExecutionFact[] = [
     { capabilityId: "conversation_context", state: "completed", artifactId: conversationContext.contextId },
     { capabilityId: "answer_plan", state: "completed", artifactId: answerPlanning.plan.planId },
+    promptEnvelopeState,
+    modelBudgetState,
     ...(evidencePreparation ? [{ capabilityId: "evidence_preparation" as const, state: "completed" as const, artifactId: evidencePreparation.bundle.bundleId }] : []),
     { capabilityId: "context_assembly", state: "completed", artifactId: `${taskId}:context-assembly` },
     finalWritingState,
-    { capabilityId: "production_run_record", state: "completed", artifactId: `${taskId}:model-call` },
+    ...(citationState ? [citationState] : []),
+    productionRunRecordState,
   ];
   const facts = createEvaluationFacts({
     caseExpectation: { capabilities: { ...testCase.expectation.capabilities } },
@@ -152,23 +276,24 @@ export async function runFixedProviderCase(testCase: AnswerQualityCase, options:
       request: { purpose: "research_body", candidates },
       audit: contextAssemblyAudit(assembly),
     },
+    ...(finalCallEvent ? { promptEnvelope: finalCallEvent.envelope } : {}),
     toolCalls: [],
-    providerRequests: provider.calls.map((request) => ({ ...request, signal: undefined })),
+    providerRequests: provider instanceof FakeProvider ? provider.calls.map((request) => ({ ...request, signal: undefined })) : [],
     finalBody,
     productionRunRecords: callEvents.map((event) => ({ ...event, context: { ...event.context } })),
   };
   return {
-    mode: "fixed_provider",
+    mode: options.mode ?? "fixed_provider",
     identity: {
       caseVersion: testCase.caseVersion,
       caseId: testCase.id,
       taskId,
       inputMessageId,
       outputMessageId,
-      bodyVersionId: researchBodyVersionId(outputMessageId, finalBody),
+      bodyVersionId,
       generationAttempt: 1,
-      model: scenario.environment.model,
-      thinking: scenario.environment.thinking,
+      model: options.model ?? scenario.environment.model,
+      thinking: options.thinking ?? scenario.environment.thinking,
       buildFingerprint: options.buildFingerprint,
     },
     facts,
@@ -177,7 +302,17 @@ export async function runFixedProviderCase(testCase: AnswerQualityCase, options:
     userRequest: scenario.userRequest,
     explicitSettings: scenario.explicitSettings,
     admittedEvidence: evidencePreparation?.bundle.evidence.map((item) => ({ id: item.id, text: item.excerpt })) ?? [],
-    validCitations: [],
+    validCitations: citationAttribution?.accepted.flatMap((entry) => entry.claimRange && entry.evidenceIdentity.sourceId
+      ? [{ sourceId: entry.evidenceIdentity.sourceId, startOffset: entry.claimRange.startOffset, endOffset: entry.claimRange.endOffset }]
+      : []) ?? [],
+    ...(finalCallEvent && completeLatencyMs !== undefined && firstCharacterLatencyMs !== undefined ? {
+      metrics: {
+        outputTokens: finalCallEvent.usage?.outputTokens ?? 0,
+        estimatedCostUsd: finalCallEvent.estimatedCostUsd ?? 0,
+        firstCharacterLatencyMs,
+        completeLatencyMs,
+      },
+    } : {}),
     ...(error ? { error } : {}),
   };
 }
@@ -273,13 +408,19 @@ function productionCandidates(
   return { candidates, conversationContext };
 }
 
-function availabilityFacts(testCase: AnswerQualityCase, capturedAt: string, finalWritingUnavailableReason?: string): RunAvailabilityFact[] {
+function availabilityFacts(
+  testCase: AnswerQualityCase,
+  capturedAt: string,
+  options: { finalWritingUnavailableReason?: string; citationAttributionAvailable: boolean },
+): RunAvailabilityFact[] {
   const facts: RunAvailabilityFact[] = [
     { capabilityId: "conversation_context", state: "available", capturedAt },
     { capabilityId: "answer_plan", state: "available", capturedAt },
+    { capabilityId: "prompt_envelope", state: "available", capturedAt },
+    { capabilityId: "model_budget_policy", state: "available", capturedAt },
     { capabilityId: "context_assembly", state: "available", capturedAt },
-    finalWritingUnavailableReason
-      ? { capabilityId: "final_writing", state: "unavailable", reason: finalWritingUnavailableReason, capturedAt }
+    options.finalWritingUnavailableReason
+      ? { capabilityId: "final_writing", state: "unavailable", reason: options.finalWritingUnavailableReason, capturedAt }
       : { capabilityId: "final_writing", state: "available", capturedAt },
     { capabilityId: "production_run_record", state: "available", capturedAt },
   ];
@@ -287,7 +428,9 @@ function availabilityFacts(testCase: AnswerQualityCase, capturedAt: string, fina
     facts.push({ capabilityId: "evidence_preparation", state: "available", capturedAt });
   }
   if (testCase.expectation.capabilities.citation_attribution !== "not_applicable") {
-    facts.push({ capabilityId: "citation_attribution", state: "unavailable", reason: "fixed-provider-has-no-qualified-citation-events", capturedAt });
+    facts.push(options.citationAttributionAvailable
+      ? { capabilityId: "citation_attribution", state: "available", capturedAt }
+      : { capabilityId: "citation_attribution", state: "unavailable", reason: "citation-attribution-runner-not-configured", capturedAt });
   }
   return facts;
 }
@@ -301,7 +444,7 @@ function artifactBindingsFor(testCase: AnswerQualityCase, availability: readonly
     if (!builds.get(capabilityId)?.supported) return { capabilityId, status: "not_supported_by_build" };
     if (available.get(capabilityId)?.state === "unavailable") return { capabilityId, status: "unavailable", reason: available.get(capabilityId)?.reason };
     const executionFact = executed.get(capabilityId);
-    if (executionFact?.state === "failed") return { capabilityId, status: "failed", reason: executionFact.errorCategory };
+    if (executionFact?.state === "failed") return { capabilityId, status: "failed", ...(executionFact.artifactId ? { artifactId: executionFact.artifactId } : {}), reason: executionFact.errorCategory };
     if (executionFact?.state === "completed" && executionFact.artifactId) return { capabilityId, status: "bound", artifactId: executionFact.artifactId };
     return { capabilityId, status: testCase.expectation.capabilities[capabilityId] === "optional" ? "not_applicable" : "unavailable", reason: "no-artifact-produced" };
   });

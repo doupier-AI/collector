@@ -4,6 +4,7 @@ export const ANSWER_QUALITY_CAPABILITIES = [
   "conversation_context",
   "answer_plan",
   "prompt_envelope",
+  "model_budget_policy",
   "context_assembly",
   "evidence_preparation",
   "citation_attribution",
@@ -215,6 +216,12 @@ export interface AnswerQualityRun {
   explicitSettings: Readonly<Record<string, string | boolean | number>>;
   admittedEvidence: readonly EvidenceForJudge[];
   validCitations: readonly CitationForJudge[];
+  metrics?: {
+    outputTokens: number;
+    estimatedCostUsd: number;
+    firstCharacterLatencyMs: number;
+    completeLatencyMs: number;
+  };
   error?: { category: string; message: string };
 }
 

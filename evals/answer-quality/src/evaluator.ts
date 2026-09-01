@@ -1,5 +1,6 @@
 import { researchBodyVersionId } from "@collector/capture-contracts";
 import { evaluateCapabilityFacts } from "./facts.js";
+import { buildJudgeInput, type AnswerJudgeAdapter } from "./judge.js";
 import type {
   AnswerQualityCase,
   AnswerQualityRun,
@@ -60,6 +61,32 @@ export function evaluateAnswerQualityRun(testCase: AnswerQualityCase, run: Answe
   };
 }
 
+export async function evaluateAnswerQualityRunWithJudge(
+  testCase: AnswerQualityCase,
+  run: AnswerQualityRun,
+  judge: AnswerJudgeAdapter,
+): Promise<EvaluatedRun> {
+  const deterministic = evaluateAnswerQualityRun(testCase, run);
+  if (deterministic.scoringStatus === "rejected_missing_identity") return deterministic;
+  const judged = await judge.judge(buildJudgeInput({
+    userRequest: run.userRequest,
+    explicitSettings: run.explicitSettings,
+    finalBody: run.trace.finalBody,
+    admittedEvidence: run.admittedEvidence,
+    validCitations: run.validCitations,
+  }));
+  const findings = deterministic.findings.filter((finding) => finding.code !== "llm_judge_not_run");
+  findings.push(...judged.dimensions.map((dimension) => ({
+    code: `judge_${dimension.layer}_${dimension.dimension}`,
+    layer: dimension.layer,
+    verdict: dimension.verdict,
+    reason: dimension.reason,
+    evidenceLocations: dimension.evidenceLocations,
+    confidence: dimension.confidence,
+  } as const)));
+  return { ...deterministic, findings };
+}
+
 function missingIdentityBindings(run: AnswerQualityRun): string[] {
   const builds = new Map(run.facts.buildCapabilities.map((entry) => [entry.capabilityId, entry]));
   const availability = new Map(run.facts.runAvailability.map((entry) => [entry.capabilityId, entry]));
@@ -69,9 +96,11 @@ function missingIdentityBindings(run: AnswerQualityRun): string[] {
   for (const [capabilityId, expectation] of Object.entries(run.facts.caseExpectation.capabilities)) {
     const id = capabilityId as keyof typeof run.facts.caseExpectation.capabilities;
     if (expectation === "not_applicable" || !builds.get(id)?.supported) continue;
-    if (availability.get(id)?.state !== "available" || execution.get(id)?.state !== "completed") continue;
+    const executionState = execution.get(id)?.state;
+    if (availability.get(id)?.state !== "available" || (executionState !== "completed" && executionState !== "failed")) continue;
     const binding = bindings.get(id);
-    if (!binding || binding.status !== "bound" || !binding.artifactId) missing.push(id);
+    const expectedStatus = executionState === "failed" ? "failed" : "bound";
+    if (!binding || binding.status !== expectedStatus || !binding.artifactId) missing.push(id);
   }
   const baseIdentity = run.identity;
   if (!baseIdentity.caseVersion || !baseIdentity.caseId || !baseIdentity.taskId || !baseIdentity.inputMessageId || !baseIdentity.outputMessageId || !baseIdentity.bodyVersionId || !baseIdentity.model || !baseIdentity.buildFingerprint || baseIdentity.generationAttempt < 1) missing.push("sample_identity");
