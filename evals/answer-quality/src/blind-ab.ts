@@ -1,4 +1,4 @@
-import { buildJudgeInput, comparePairwiseJudgments } from "./judge.js";
+import { buildJudgeInput, comparePairwiseJudgments, parseJudgeJsonContent } from "./judge.js";
 import type { OpenAiCompatibleJudgeOptions } from "./judge.js";
 import type { AnswerQualityCase, AnswerQualityRun, JudgeInput, PairwiseDiagnostic, PairwiseJudgment } from "./types.js";
 
@@ -65,7 +65,7 @@ export class OpenAiCompatiblePairwiseJudgeAdapter implements BlindPairwiseJudgeA
       const content = payload.choices?.[0]?.message?.content;
       if (!content) throw new Error("Pairwise Judge returned no structured result");
       try {
-        return parsePairwiseResult(JSON.parse(content) as Record<string, unknown>);
+        return parsePairwiseResult(parseJudgeJsonContent(content) as Record<string, unknown>);
       } catch (error) {
         if (attempt === 2) throw error;
         messages.push(

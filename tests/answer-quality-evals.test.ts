@@ -32,6 +32,7 @@ import {
   normalizedQualifiedEvidenceIdentities,
   productionScenarioFromCase,
   passingBody,
+  parseJudgeJsonContent,
   parseJudgeResult,
   releaseEvidenceFromEvaluatedRun,
   ReleaseQualityModule,
@@ -261,6 +262,16 @@ test("absolute Judge normalizes only the exact observed two-layer array wrapper"
   assert.deepEqual(result.dimensions.map((entry) => entry.layer), ["generic_semantic", "task_family"]);
   assert.throws(() => parseJudgeResult({ layers: { generic_semantic: [], unexpected: [] } }, 4), /has no dimensions/);
   assert.throws(() => parseJudgeResult({ layers: { generic_semantic: {}, task_family: [] } }, 4), /has no dimensions/);
+});
+
+test("Judge JSON decoding accepts only unambiguous provider serialization noise", () => {
+  const payload = { dimensions: [{ layer: "generic_semantic", dimension: "相关性", verdict: "pass" }] };
+  const json = JSON.stringify(payload);
+  assert.deepEqual(parseJudgeJsonContent(json), payload);
+  assert.deepEqual(parseJudgeJsonContent(`\`\`\`json\n${json}\n\`\`\``), payload);
+  assert.deepEqual(parseJudgeJsonContent(`${json}\n${json}`), payload);
+  assert.throws(() => parseJudgeJsonContent(`${json}\n${JSON.stringify({ dimensions: [] })}`), /different concatenated/);
+  assert.throws(() => parseJudgeJsonContent(`${json}\n说明`), SyntaxError);
 });
 
 test("missing identity on a supported applicable artifact rejects semantic scoring", () => {

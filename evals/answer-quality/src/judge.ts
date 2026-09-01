@@ -90,7 +90,7 @@ export class OpenAiCompatibleJudgeAdapter implements AnswerJudgeAdapter {
       const content = payload.choices?.[0]?.message?.content;
       if (!content) throw new Error("Judge returned no structured result");
       try {
-        return parseJudgeResult(JSON.parse(content) as unknown, input.finalBody.length);
+        return parseJudgeResult(parseJudgeJsonContent(content), input.finalBody.length);
       } catch (error) {
         if (attempt === 2) throw error;
         messages.push(
@@ -101,6 +101,60 @@ export class OpenAiCompatibleJudgeAdapter implements AnswerJudgeAdapter {
     }
     throw new Error("Judge did not return a valid result");
   }
+}
+
+/** Accepts one JSON object, a standard JSON fence, or byte-equivalent repeated objects. */
+export function parseJudgeJsonContent(content: string): unknown {
+  const trimmed = content.trim();
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch (strictError) {
+    const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
+    if (fenced) return JSON.parse(fenced[1]!) as unknown;
+    const objects = splitConcatenatedJsonObjects(trimmed);
+    if (objects?.length && objects.length > 1) {
+      const parsed = objects.map((entry) => JSON.parse(entry) as unknown);
+      const canonical = JSON.stringify(parsed[0]);
+      if (parsed.every((entry) => JSON.stringify(entry) === canonical)) return parsed[0];
+      throw new Error("Judge returned different concatenated JSON objects");
+    }
+    throw strictError;
+  }
+}
+
+function splitConcatenatedJsonObjects(content: string): string[] | undefined {
+  const objects: string[] = [];
+  let cursor = 0;
+  while (cursor < content.length) {
+    while (/\s/.test(content[cursor] ?? "")) cursor += 1;
+    if (cursor >= content.length) break;
+    if (content[cursor] !== "{") return undefined;
+    const start = cursor;
+    let depth = 0;
+    let quoted = false;
+    let escaped = false;
+    for (; cursor < content.length; cursor += 1) {
+      const character = content[cursor]!;
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === '"') quoted = false;
+        continue;
+      }
+      if (character === '"') quoted = true;
+      else if (character === "{") depth += 1;
+      else if (character === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          objects.push(content.slice(start, cursor + 1));
+          cursor += 1;
+          break;
+        }
+      }
+    }
+    if (depth !== 0 || quoted) return undefined;
+  }
+  return objects.length ? objects : undefined;
 }
 
 export function parseJudgeResult(value: unknown, bodyLength: number): JudgeResult {
