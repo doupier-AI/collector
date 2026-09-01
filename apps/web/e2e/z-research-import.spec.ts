@@ -2,7 +2,16 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { expect, test, type Page } from "@playwright/test";
-import { apiJson, apiPortForPage, pairAndOpen, readDataDir, readResearchImportTables } from "./helpers";
+import type { ResearchImportTaskRecord } from "@collector/capture-contracts";
+import {
+  apiJson,
+  apiPortForPage,
+  pairAndOpen,
+  performAcceptedJsonAction,
+  readDataDir,
+  readResearchImportTables,
+  waitForPersistedState,
+} from "./helpers";
 
 // 本文件按字母序最后执行：e2e harness 在每个端口共享同一数据库，
 // 这些场景会创建会话与附件，不能影响其他规格对空状态的假设。
@@ -229,31 +238,27 @@ test("解析失败显示稳定原因，重试后仍失败保持可重试状态",
 
   const retryButton = page.getByRole("button", { name: "重试" });
   await expect(retryButton).toBeVisible();
-  const retryResponsePromise = page.waitForResponse(
-    (response) => response.request().method() === "POST" && response.url().endsWith("/retry"),
+  const retriedTask = await performAcceptedJsonAction<ResearchImportTaskRecord>(
+    page,
+    { method: "POST", pathname: /^\/v1\/research-imports\/[^/]+\/retry$/, status: 202 },
+    () => retryButton.click(),
   );
-  await retryButton.click();
-  const retryResponse = await retryResponsePromise;
-  expect(retryResponse.status()).toBe(202);
 
   const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
-  // 重试保留同一任务与附件；等待第二轮持久化终态，不能命中仍在页面上的首次失败提示。
-  await expect
-    .poll(
-      () => {
-        const tables = readResearchImportTables(dbPath);
-        return tables.importTasks.find((row) => row.sessionId === sessionId)?.status;
-      },
-      { timeout: 10_000 },
-    )
-    .toBe("failed");
+  // 重试保留同一任务与附件；按动作返回的 task 身份等待第二轮持久化终态，
+  // 不能命中仍在页面上的首次失败提示或同会话的其他任务。
+  const tables = await waitForPersistedState(
+    () => readResearchImportTables(dbPath),
+    (value) => value.importTasks.some((task) =>
+      task.id === retriedTask.id && task.sessionId === sessionId && task.status === "failed"),
+    { description: `导入任务 ${retriedTask.id} 的重试进入 failed 终态` },
+  );
 
   // 第二轮再次稳定失败，不新增附件
   await expect(page.getByText("无法解析这个文件，可能已损坏或不含可读文本。")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole("button", { name: "重试" })).toBeVisible();
   await expect(page.locator(".attachment__name")).toHaveCount(1);
 
-  const tables = readResearchImportTables(dbPath);
   const sessionAttachments = tables.attachments.filter((row) => row.sessionId === sessionId);
   const sessionTasks = tables.importTasks.filter((row) => row.sessionId === sessionId);
   expect(sessionAttachments).toHaveLength(1);

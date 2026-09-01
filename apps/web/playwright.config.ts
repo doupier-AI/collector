@@ -132,14 +132,11 @@ export default defineConfig({
       name: "chromium-nomodel",
       use: { ...devices["Desktop Chrome"], baseURL: `http://127.0.0.1:${PORT_BASE + 1}` },
       testMatch: /no-model\.spec\.ts/,
-      // 配对码现铸端点已根治 TTL 过期抖动；retries 保留为一般基础设施防抖。
-      retries: 1,
     },
     {
       name: "chromium-autofusion",
       use: { ...devices["Desktop Chrome"], baseURL: `http://127.0.0.1:${PORT_BASE + 2}` },
       testMatch: /z-auto-fusion\.spec\.ts/,
-      retries: 1,
     },
     {
       name: "chromium-visual",

@@ -19,6 +19,7 @@
     "dev:web": "npm run dev -w @collector/web",
     "test:web": "npm run test -w @collector/web",
     "test:e2e": "node scripts/run-e2e-batch.mjs",
+    "test:e2e:sentinel": "node scripts/run-e2e-sentinel.mjs",
     "test:e2e:functional": "npm run build && node scripts/run-e2e.mjs functional",
     "test:e2e:special": "npm run build && node scripts/run-e2e.mjs special",
     "test:e2e:visual": "npm run build && node scripts/run-e2e.mjs visual",

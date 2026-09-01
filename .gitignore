@@ -12,6 +12,7 @@ apps/web/test-results*/
 apps/web/playwright-report/
 apps/web/e2e-artifacts/
 apps/web/e2e/.runtime/
+e2e-artifacts/
 
 # 收尾验收本地产物：含凭证的启动入口与本次人工验收手册仅本机使用，不入库
 Collector-真实模型.cmd

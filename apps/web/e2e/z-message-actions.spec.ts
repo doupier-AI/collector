@@ -1,5 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
-import { pairAndOpen, trackBrowserIssues } from "./helpers";
+import type { ResearchTaskRecord } from "@collector/capture-contracts";
+import {
+  pairAndOpen,
+  performAcceptedJsonAction,
+  trackBrowserIssues,
+  waitForTaskAttemptTerminalAndUi,
+} from "./helpers";
 
 const QUESTION = "什么是本地优先研究？";
 
@@ -128,17 +134,20 @@ test("重新编辑：改写问题后新回答直接替换旧回答，不显示�
   await page.getByRole("button", { name: "重新编辑" }).click();
   const textarea = page.getByLabel("修改问题");
   await textarea.fill("请解释本地优先研究（修改后）");
-  const editAccepted = page.waitForResponse((response) =>
-    response.request().method() === "POST" && /\/v1\/research-messages\/[^/]+\/edit$/.test(response.url()) && response.status() === 202,
+  const editedTask = await performAcceptedJsonAction<ResearchTaskRecord>(
+    page,
+    { method: "POST", pathname: /^\/v1\/research-messages\/[^/]+\/edit$/, status: 202 },
+    () => page.getByRole("button", { name: "保存并重新生成" }).click(),
   );
-  await page.getByRole("button", { name: "保存并重新生成" }).click();
-  await editAccepted;
   releaseTerminalConfirmation();
 
-  await expect(page.locator("[aria-live=polite]")).toHaveText("已完成", { timeout: 5_000 });
+  await waitForTaskAttemptTerminalAndUi(page, editedTask, {
+    status: "completed",
+    liveMessage: "已完成",
+    content: { locator: content.last(), text: "第二版渐进事件" },
+  });
   // 用户消息显示新问题；回答为第二次生成内容（第二版），直接替换。
   await expect(page.getByText("请解释本地优先研究（修改后）", { exact: true })).toBeVisible();
-  await expect(content.last()).toContainText("第二版渐进事件", { timeout: 15_000 });
   expect(taskEventRequests.length).toBeGreaterThanOrEqual(2);
   // 编辑场景不支持查看旧版本：无版本切换器。
   await expect(page.getByRole("group", { name: "回答版本" })).toHaveCount(0);

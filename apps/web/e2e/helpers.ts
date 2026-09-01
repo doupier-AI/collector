@@ -2,8 +2,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
-import { expect, type Page } from "@playwright/test";
-import { LONG_TEXT_CHAR_THRESHOLD, isLongText } from "@collector/capture-contracts";
+import { expect, type Locator, type Page } from "@playwright/test";
+import {
+  LONG_TEXT_CHAR_THRESHOLD,
+  isLongText,
+  type ResearchTaskRecord,
+  type ResearchTaskStatus,
+} from "@collector/capture-contracts";
 
 const runtimeDir = join(dirname(fileURLToPath(import.meta.url)), ".runtime");
 
@@ -173,6 +178,11 @@ export async function citeCurrentSelection(page: Page): Promise<ReturnType<Page[
   return capsule;
 }
 
+/** 只定位当前可访问、可操作的选区动作，避开淡出中的旧胶囊 DOM。 */
+export function activeSelectionAction(page: Page, name: string): Locator {
+  return page.getByRole("toolbar", { name: "选区操作" }).getByRole("button", { name, exact: true });
+}
+
 /** 修订一 #9：选中最后一条回答中的指定文字并显式引用，返回输入框引用态胶囊定位器。 */
 export async function citeAnswerText(page: Page, text: string): Promise<ReturnType<Page["getByTestId"]>> {
   await selectAnswerText(page, text);
@@ -184,6 +194,115 @@ export async function apiJson<T>(page: Page, path: string): Promise<T> {
   const response = await page.request.get(path);
   if (!response.ok()) throw new Error(`API GET ${path} → ${response.status()}`);
   return (await response.json()) as T;
+}
+
+export interface AcceptedJsonResponseMatch {
+  method: string;
+  pathname: string | RegExp;
+  status?: number | readonly number[];
+  timeout?: number;
+}
+
+/**
+ * 在动作发生前注册响应等待，并只在匹配的 HTTP 动作已受理后返回 JSON。
+ * 调用方应先保存返回的 Promise，再触发 UI 动作；这样不会漏掉快速响应。
+ */
+export function waitForAcceptedJsonResponse<T>(
+  page: Page,
+  match: AcceptedJsonResponseMatch,
+): Promise<T> {
+  const method = match.method.toUpperCase();
+  const responsePromise = page.waitForResponse((response) => {
+    if (response.request().method().toUpperCase() !== method) return false;
+    const pathname = new URL(response.url()).pathname;
+    return typeof match.pathname === "string" ? pathname === match.pathname : match.pathname.test(pathname);
+  }, { timeout: match.timeout ?? 15_000 });
+
+  return responsePromise.then(async (response) => {
+    const expectedStatuses = match.status === undefined
+      ? undefined
+      : Array.isArray(match.status) ? match.status : [match.status];
+    if (expectedStatuses ? !expectedStatuses.includes(response.status()) : !response.ok()) {
+      throw new Error(
+        `动作未受理：${method} ${new URL(response.url()).pathname} → ${response.status()}`,
+      );
+    }
+    return (await response.json()) as T;
+  });
+}
+
+/** 注册动作响应后再执行 UI 动作，返回服务端确认的稳定身份。 */
+export async function performAcceptedJsonAction<T>(
+  page: Page,
+  match: AcceptedJsonResponseMatch,
+  action: () => Promise<unknown>,
+): Promise<T> {
+  const accepted = waitForAcceptedJsonResponse<T>(page, match);
+  const [payload] = await Promise.all([accepted, action()]);
+  return payload;
+}
+
+/**
+ * 轮询 Node 侧事实源，直到目标记录满足持久化语义；用于 UI 动作后的 SQLite/API 终态核对。
+ */
+export async function waitForPersistedState<T>(
+  read: () => T | Promise<T>,
+  matches: (value: T) => boolean,
+  options: { description: string; timeout?: number },
+): Promise<T> {
+  let observed: T | undefined;
+  await expect.poll(
+    async () => {
+      observed = await read();
+      return matches(observed);
+    },
+    {
+      message: `等待持久化语义：${options.description}`,
+      timeout: options.timeout ?? 10_000,
+      intervals: [50, 100, 250, 500],
+    },
+  ).toBe(true);
+  return observed as T;
+}
+
+/**
+ * 锁定动作返回的 task + generationAttempt，等待同一尝试进入持久化终态，再核对 UI。
+ * task id 会在重试/重新生成/重新编辑中复用，仅比较 id 会误把旧尝试当作新结果。
+ */
+export async function waitForTaskAttemptTerminalAndUi(
+  page: Page,
+  acceptedTask: Pick<ResearchTaskRecord, "id" | "generationAttempt">,
+  options: {
+    status: Extract<ResearchTaskStatus, "completed" | "failed" | "stopped">;
+    liveMessage?: string | RegExp;
+    content?: { locator: Locator; text: string | RegExp };
+    timeout?: number;
+  },
+): Promise<ResearchTaskRecord> {
+  const generationAttempt = acceptedTask.generationAttempt ?? 1;
+  const task = await waitForPersistedState(
+    () => apiJson<ResearchTaskRecord>(page, `/v1/research-tasks/${encodeURIComponent(acceptedTask.id)}`),
+    (candidate) =>
+      candidate.id === acceptedTask.id
+      && (candidate.generationAttempt ?? 1) === generationAttempt
+      && candidate.status === options.status,
+    {
+      description: `任务 ${acceptedTask.id} 第 ${generationAttempt} 次尝试进入 ${options.status}`,
+      timeout: options.timeout ?? 15_000,
+    },
+  );
+
+  if (options.liveMessage !== undefined) {
+    await expect(page.locator("[aria-live=polite]")).toHaveText(options.liveMessage, {
+      timeout: options.timeout ?? 15_000,
+    });
+  }
+  if (options.content) {
+    await expect(options.content.locator).toContainText(options.content.text, {
+      timeout: options.timeout ?? 15_000,
+    });
+  }
+  return task;
 }
 
 export async function readDataDir(apiPort: number): Promise<string> {

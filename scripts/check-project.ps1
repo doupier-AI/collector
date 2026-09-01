@@ -22,6 +22,7 @@ if (-not $packageJson) {
 } else {
   $package = $packageJson | ConvertFrom-Json
   if (-not $package.scripts.test) { Add-Issue "error" "missing-tests" "package.json has no test script" }
+  if (-not $package.scripts.'test:e2e:sentinel') { Add-Issue "error" "missing-e2e-sentinel" "package.json has no high-risk E2E sentinel script" }
   if ($package.scripts.'dev:desktop' -or $package.scripts.'test:gui') { Add-Issue "error" "retired-desktop-script" "Electron scripts remain in package.json" }
   $ralphScripts = @($package.scripts.PSObject.Properties.Name | Where-Object { $_ -like 'ralph:*' })
   if ($ralphScripts.Count -gt 0) { Add-Issue "error" "retired-ralph-script" "Retired local Markdown Issue runner scripts remain in package.json" }
@@ -49,6 +50,11 @@ if (-not $gateWorkflow) {
     if ($fullGate -notmatch 'npm run gate:e2e') {
       Add-Issue "error" "missing-full-e2e" "Opt-in full-gate must run gate:e2e"
     }
+    if ($fullGate -notmatch 'npm run test:e2e:sentinel') {
+      Add-Issue "error" "missing-e2e-sentinel" "Opt-in full-gate must run the high-risk E2E sentinel"
+    } elseif ($fullGate.IndexOf('npm run test:e2e:sentinel') -gt $fullGate.IndexOf('npm run gate:e2e')) {
+      Add-Issue "error" "late-e2e-sentinel" "High-risk E2E sentinel must run before the complete E2E gate"
+    }
     foreach ($trigger in @('schedule', 'workflow_dispatch', 'full-gate')) {
       if ($fullGate -notmatch [regex]::Escape($trigger)) {
         Add-Issue "error" "missing-full-trigger" "Opt-in full-gate must support $trigger"
@@ -58,6 +64,13 @@ if (-not $gateWorkflow) {
   if ($gateWorkflow -notmatch '(?m)^\s+E2E_TRACK_CONCURRENCY:\s*["'']?1["'']?\s*$') {
     Add-Issue "error" "remote-e2e-concurrency" "GitHub full E2E gate must set E2E_TRACK_CONCURRENCY to 1 for runner stability"
   }
+}
+
+$playwrightConfig = Read-ProjectFile "apps\web\playwright.config.ts"
+if (-not $playwrightConfig) {
+  Add-Issue "error" "missing-playwright-config" "apps/web/playwright.config.ts was not found"
+} elseif ($playwrightConfig -match '(?m)^\s*retries:\s*[1-9]\d*\s*,?\s*$') {
+  Add-Issue "error" "e2e-retry-masks-failure" "Playwright retries must stay disabled; classification reruns cannot turn a first failure green"
 }
 
 try {

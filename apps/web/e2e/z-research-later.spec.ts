@@ -2,6 +2,7 @@
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import {
+  activeSelectionAction,
   apiJson,
   apiPortForPage,
   pairAndOpen,
@@ -10,10 +11,32 @@ import {
   readResearchSelectionTables,
   citeAnswerText,
   selectAnswerText,
+  waitForAcceptedJsonResponse,
+  waitForPersistedState,
 } from "./helpers";
 
 const QUESTION = "什么是本地优先研究？";
 const SELECTED = "本地优先会先把输入保存在本机";
+
+interface LaterItemResponse {
+  item: { id: string; note?: string };
+}
+
+function waitForMarkAccepted(page: Page): Promise<LaterItemResponse> {
+  return waitForAcceptedJsonResponse<LaterItemResponse>(page, {
+    method: "POST",
+    pathname: "/v1/research-later-items",
+    status: 201,
+  });
+}
+
+function waitForNoteAccepted(page: Page, itemId: string): Promise<LaterItemResponse> {
+  return waitForAcceptedJsonResponse<LaterItemResponse>(page, {
+    method: "PUT",
+    pathname: `/v1/research-later-items/${itemId}`,
+    status: 200,
+  });
+}
 
 async function submitFirstQuestion(page: Page, question = QUESTION): Promise<string> {
   await page.getByLabel("你的问题").fill(question);
@@ -83,8 +106,8 @@ test.describe("标记列表 API 与持久化", () => {
     });
 
     await selectAnswerText(page, SELECTED);
-    await expect(page.getByTestId("floating-capsule-mark")).toBeVisible();
-    await page.getByTestId("floating-capsule-mark").click();
+    const firstMarkAccepted = waitForMarkAccepted(page);
+    await activeSelectionAction(page, "标记").click();
 
     const editor = page.getByTestId("mark-note-editor");
     const input = page.getByTestId("mark-note-input");
@@ -105,29 +128,54 @@ test.describe("标记列表 API 与持久化", () => {
     expect(Math.abs((afterScroll?.y ?? 0) - (beforeScroll?.y ?? 0))).toBeLessThanOrEqual(1);
 
     await input.fill("这一段要反复验证");
+    const firstMark = await firstMarkAccepted;
+    const firstNoteAccepted = waitForNoteAccepted(page, firstMark.item.id);
     await page.mouse.click(12, 12);
     await expect(editor).toHaveCount(0);
+    await firstNoteAccepted;
 
     const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
-    const firstTables = readResearchLaterTables(dbPath);
+    const firstTables = await waitForPersistedState(
+      () => readResearchLaterTables(dbPath),
+      (tables) => {
+        const items = tables.laterItems.filter((row) => row.sessionId === sessionId);
+        if (items.length !== 1) return false;
+        const record = JSON.parse(items[0]?.recordJson ?? "{}") as { note?: string };
+        return record.note === "这一段要反复验证";
+      },
+      { description: "首次标记及笔记写入同一会话" },
+    );
     const firstItems = firstTables.laterItems.filter((row) => row.sessionId === sessionId);
     expect(firstItems).toHaveLength(1);
     const firstRecord = JSON.parse(firstItems[0]?.recordJson ?? "{}") as { note?: string };
     expect(firstRecord.note).toBe("这一段要反复验证");
 
-    const listed = await apiJson<Array<{ item: { id: string; note?: string } }>>(page, "/v1/research-later-items");
-    expect(listed.filter((entry) => entry.item.note === "这一段要反复验证")).toHaveLength(1);
+    const listed = await apiJson<Array<{ item: { id: string; sessionId: string; note?: string } }>>(page, "/v1/research-later-items");
+    expect(listed.filter((entry) =>
+      entry.item.sessionId === sessionId && entry.item.note === "这一段要反复验证"),
+    ).toHaveLength(1);
     const firstItemId = firstItems[0]?.id;
 
     // 同一选区再次标记：服务端幂等返回原记录，并回填既有笔记而不是新增一条。
     await selectAnswerText(page, SELECTED);
-    await page.getByTestId("floating-capsule-mark").click();
+    const secondMarkAccepted = waitForMarkAccepted(page);
+    await activeSelectionAction(page, "标记").click();
     await expect(input).toHaveValue("这一段要反复验证");
     expect(await page.getByTestId("mark-note-editor").count()).toBe(1);
+    const secondMark = await secondMarkAccepted;
+    const secondNoteAccepted = waitForNoteAccepted(page, secondMark.item.id);
     await page.mouse.click(12, 12);
     await expect(editor).toHaveCount(0);
+    await secondNoteAccepted;
 
-    const secondTables = readResearchLaterTables(dbPath);
+    const secondTables = await waitForPersistedState(
+      () => readResearchLaterTables(dbPath),
+      (tables) => {
+        const items = tables.laterItems.filter((row) => row.sessionId === sessionId);
+        return items.length === 1 && items[0]?.id === firstItemId;
+      },
+      { description: "重复标记复用首次记录" },
+    );
     const secondItems = secondTables.laterItems.filter((row) => row.sessionId === sessionId);
     expect(secondItems).toHaveLength(1);
     expect(secondItems[0]?.id).toBe(firstItemId);
@@ -142,13 +190,28 @@ test.describe("标记列表 API 与持久化", () => {
       timeout: 15_000,
     });
 
+    // 放大已知竞态：编辑器按 UI 计时收起时，创建标记的请求仍可能在途。
+    await page.route("**/v1/research-later-items", async (route) => {
+      if (route.request().method() === "POST") {
+        await new Promise((resolve) => setTimeout(resolve, 5_000));
+      }
+      await route.continue();
+    });
+
     await selectAnswerText(page, SELECTED);
-    await page.getByTestId("floating-capsule-mark").click();
+    const markAccepted = waitForMarkAccepted(page);
+    await activeSelectionAction(page, "标记").click();
     await expect(page.getByTestId("mark-note-editor")).toBeVisible();
     await expect(page.getByTestId("mark-note-editor")).toBeHidden({ timeout: 3_000 });
+    await markAccepted;
 
     const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
-    const items = readResearchLaterTables(dbPath).laterItems.filter((row) => row.sessionId === sessionId);
+    const tables = await waitForPersistedState(
+      () => readResearchLaterTables(dbPath),
+      (value) => value.laterItems.filter((row) => row.sessionId === sessionId).length === 1,
+      { description: "自动收起后的纯标记已持久化" },
+    );
+    const items = tables.laterItems.filter((row) => row.sessionId === sessionId);
     expect(items).toHaveLength(1);
     const record = JSON.parse(items[0]?.recordJson ?? "{}") as { note?: string };
     expect(record.note).toBeUndefined();
@@ -161,14 +224,27 @@ test.describe("标记列表 API 与持久化", () => {
     await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
 
     await selectAnswerText(page, SELECTED);
-    await page.getByTestId("floating-capsule-mark").click();
+    const markAccepted = waitForMarkAccepted(page);
+    await activeSelectionAction(page, "标记").click();
     const input = page.getByTestId("mark-note-input");
     await input.fill("从列表回来继续验证");
+    const marked = await markAccepted;
+    const noteAccepted = waitForNoteAccepted(page, marked.item.id);
     await page.mouse.click(12, 12);
     await expect(page.getByTestId("mark-note-editor")).toHaveCount(0);
+    await noteAccepted;
 
     const dbPath = join(await readDataDir(apiPortForPage(page)), "collector.sqlite");
-    const item = readResearchLaterTables(dbPath).laterItems.find((row) => row.sessionId === sessionId);
+    const persisted = await waitForPersistedState(
+      () => readResearchLaterTables(dbPath),
+      (tables) => tables.laterItems.some((row) => {
+        if (row.sessionId !== sessionId) return false;
+        const record = JSON.parse(row.recordJson) as { note?: string };
+        return record.note === "从列表回来继续验证";
+      }),
+      { description: "标记笔记在打开列表前完成持久化" },
+    );
+    const item = persisted.laterItems.find((row) => row.sessionId === sessionId);
     expect(item).toBeDefined();
     await expect(page.getByRole("complementary", { name: "标记" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "标记", exact: true })).toHaveCount(0);
@@ -229,9 +305,11 @@ test.describe("标记列表 API 与持久化", () => {
     await expect(page.locator(".message--assistant .message__content").last()).toContainText("回答完毕", { timeout: 15_000 });
 
     await selectAnswerText(page, SELECTED);
-    await page.getByTestId("floating-capsule-mark").click();
+    const markAccepted = waitForMarkAccepted(page);
+    await activeSelectionAction(page, "标记").click();
     await page.mouse.click(12, 12);
     await expect(page.getByTestId("mark-note-editor")).toHaveCount(0);
+    await markAccepted;
 
     await page.setViewportSize({ width: 320, height: 568 });
     await page.getByRole("button", { name: /的会话菜单$/ }).click();

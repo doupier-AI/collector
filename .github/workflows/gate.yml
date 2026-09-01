@@ -74,6 +74,10 @@ jobs:
         run: npm ci
       - name: Install Chromium
         run: npx playwright install chromium
+      - name: Run high-risk E2E sentinel
+        env:
+          E2E_SENTINEL_REPEAT_EACH: "2"
+        run: npm run test:e2e:sentinel
       - name: Run serialized E2E gate
         env:
           E2E_TRACK_CONCURRENCY: "1"
