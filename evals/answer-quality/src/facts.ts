@@ -12,7 +12,7 @@ export function createCurrentBuildCapabilities(): BuildCapabilityFact[] {
     { capabilityId: "answer_plan", supported: true, version: "answer-planner-v1" },
     { capabilityId: "prompt_envelope", supported: false },
     { capabilityId: "context_assembly", supported: true, version: "context-assembly-v1" },
-    { capabilityId: "evidence_preparation", supported: false },
+    { capabilityId: "evidence_preparation", supported: true, version: "evidence-preparation-v1" },
     { capabilityId: "citation_attribution", supported: true, version: "citation-sidecar-v1" },
     { capabilityId: "final_writing", supported: true, version: "research-body-context-v1" },
     { capabilityId: "production_run_record", supported: true, version: "model-call-record-v1" },

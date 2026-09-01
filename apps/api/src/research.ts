@@ -21,6 +21,8 @@ import {
   type ContextCandidate,
   type ContextPurpose,
   type ConversationContext,
+  type EvidenceBundle,
+  type EvidencePolicyStatus,
   type GroundingEvidenceStatus,
   type ResearchBodyPlan,
   type ResearchCitationCandidate,
@@ -61,6 +63,7 @@ import {
 } from "./conversation-context.js";
 import { AnswerPlanningModule, type AnswerPlanningModelAdapter } from "./answer-planning.js";
 import { assertAnswerCompletion } from "./answer-completion.js";
+import { evidenceBundleContextCandidates } from "./evidence-preparation.js";
 
 export const RESEARCH_CHAT_PROMPT_VERSION = "research-chat-v1";
 export const DEEP_RESEARCH_PROMPT_VERSION = "deep-research-v1";
@@ -321,6 +324,8 @@ export interface ResearchGenerationProvider {
 
 type ResearchGroundingMetadata = {
   status: ResearchGroundingScopeStatus;
+  evidencePolicyStatus?: EvidencePolicyStatus;
+  evidenceBundle?: EvidenceBundle;
   queries: string[];
   sources: Array<{ providerSourceId?: string; title: string; url?: string; snippet?: string; publishedAt?: string; locator?: string; evidenceStatus?: GroundingEvidenceStatus }>;
   citations: Array<{ sourceOrdinal: number; startOffset: number; endOffset: number; providerCitationId?: string }>;
@@ -833,6 +838,15 @@ export class ResearchSessionService {
               [],
               (groundingRequest) => provider.prepareGrounded!({ ...groundingRequest, scenario }),
             );
+            if (grounded.evidenceBundle) {
+              // Qualified packed evidence and its policy ledger enter the same audited admission
+              // boundary as every other final-writer input. Required protection makes the source
+              // identities passed below share one admission fate with their candidate bodies.
+              generationRequest.contextCandidates = [
+                ...(generationRequest.contextCandidates ?? []),
+                ...evidenceBundleContextCandidates(grounded.evidenceBundle),
+              ];
+            }
             if (grounded.kind === "confirmed_final") {
               if (!grounded.content.trim()) throw new Error("Confirmed final provider response was empty");
               // 原生联网适配器已在完整响应上确认最终通道；这里把终稿按小段逐步发布，
@@ -1206,10 +1220,15 @@ export class ResearchSessionService {
       let doneFinish: string | undefined;
       const resumeFrom = rawStreamed || undefined;
       const additions: ContextCandidate[] = [];
-      if (groundedEvidence !== undefined) additions.push(
-        this.groundedFinalRuleCandidate(task.id),
-        this.webEvidenceCandidate(task.id, groundedEvidence),
-      );
+      if (groundedEvidence !== undefined) {
+        additions.push(this.groundedFinalRuleCandidate(task.id));
+        const hasPreparedBundleCandidates = (generationRequest.contextCandidates ?? [])
+          .some((candidate) => candidate.id.endsWith(":ledger") && candidate.source.kind === "tool_result");
+        // Legacy evidence providers still need one aggregate candidate. #206 bundles already add
+        // a separate ledger and one required candidate per packed source, so duplicating the raw
+        // aggregate would break source/admission identity and waste input budget.
+        if (!hasPreparedBundleCandidates) additions.push(this.webEvidenceCandidate(task.id, groundedEvidence));
+      }
       if (resumeFrom) additions.push(this.continuationCandidate(task.id, "single-turn", resumeFrom));
       const workflowStepId = groundedEvidence === undefined ? `body-stream:${continuations}` : `grounded-final:${continuations}`;
       try {
@@ -1660,6 +1679,19 @@ export class ResearchSessionService {
   ): ResearchGroundingResult {
     const createdAt = new Date().toISOString();
     const runId = randomUUID();
+    if (grounded.evidenceBundle) {
+      const bodyAssembly = [...(this.store.getResearchTask(task.id)?.contextAssemblySnapshot?.assemblies ?? [])]
+        .reverse()
+        .find((entry) => entry.audit.purpose === "research_body")?.audit;
+      const adoptedSourceIds = new Set(bodyAssembly?.adopted.map((item) => item.sourceId) ?? []);
+      for (const item of grounded.evidenceBundle.evidence) {
+        if (!adoptedSourceIds.has(item.id)) throw new Error("Final writer source identity was not admitted by ContextAssembly");
+      }
+      const sourceEvidenceIds = new Set(grounded.sources.flatMap((source) => source.providerSourceId ? [source.providerSourceId] : []));
+      if (grounded.evidenceBundle.evidence.some((item) => !sourceEvidenceIds.has(item.id))) {
+        throw new Error("Final writer source identities do not match the packed EvidenceBundle");
+      }
+    }
     const sourceByOrdinal = new Map<number, ResearchGroundingSourceRecord>();
     const sources = grounded.sources.map((source, index) => {
       const title = groundingText(source.title, "来源元数据不足");
@@ -1708,7 +1740,13 @@ export class ResearchSessionService {
         createdAt,
       }];
     });
-    const scope = { status: grounded.status, sourceCount: sources.length, citationCount: citations.length, runId };
+    const scope = {
+      status: grounded.status,
+      sourceCount: sources.length,
+      citationCount: citations.length,
+      runId,
+      ...(grounded.evidencePolicyStatus ? { evidencePolicyStatus: grounded.evidencePolicyStatus } : {}),
+    };
     const result: ResearchGroundingResult = {
       content: grounded.content,
       scope,
@@ -1723,6 +1761,7 @@ export class ResearchSessionService {
         status: grounded.status,
         queries: sanitizeGroundingQueries(grounded.queries),
         ...(grounded.trace?.length ? { trace: sanitizeGroundingTrace(grounded.trace) } : {}),
+        ...(grounded.evidenceBundle ? { evidenceBundle: grounded.evidenceBundle } : {}),
         ...(grounded.responseSummary ? { responseSummary: groundingRecord(grounded.responseSummary) } : {}),
         // 供应商错误正文可能回显提示词、用户内容或凭证。这里只保留稳定状态，
         // 具体可诊断信息应留在供应商侧，而不是进入运行记录或其公开投影。
@@ -1958,11 +1997,11 @@ export class ResearchSessionService {
 
   private groundedFinalRuleCandidate(taskId: string): ContextCandidate {
     return {
-      id: `grounded-final-rule:${taskId}`,
+      id: `evidence-final-rule:${taskId}`,
       channel: "behavior_rule",
       ruleKind: "task_contract",
-      content: "只输出直接给用户阅读的最终 Markdown 回答；不要描述搜索、工具、草稿、推理或内部工作。只使用已准入的结构化联网证据；正文不得写来源编号或引用控制串，引用关系只能通过供应商结构化旁路事件返回。",
-      source: { kind: "task_rule", id: "research-grounded-final-v2", version: "2", scope: "global" },
+      content: "只输出直接给用户阅读的最终 Markdown 回答；不要描述搜索、工具、草稿、推理或内部工作。外部事实只使用已准入的结构化联网证据；证据政策未满足或存在冲突时明确说明对应限制，不得补造结论。正文不得写来源编号或引用控制串，引用关系只能通过结构化旁路事件返回。",
+      source: { kind: "task_rule", id: "research-evidence-final-v3", version: "3", scope: "global" },
       permission: { status: "required", basis: "task_contract", allowedPurposes: ["research_body"] },
       sensitivity: "standard",
       priority: "task_required",

@@ -30,7 +30,7 @@ import {
   type AnswerQualityRun,
   type PairwiseJudgment,
 } from "@collector/answer-quality-evals";
-import type { AnswerPlan, ConversationContext } from "@collector/capture-contracts";
+import type { AnswerPlan, ConversationContext, EvidenceBundle } from "@collector/capture-contracts";
 
 test("versioned corpus covers the required cross-task matrix", () => {
   assert.match(ANSWER_QUALITY_CORPUS_VERSION, /^aq-corpus-v\d+$/);
@@ -90,7 +90,7 @@ test("release requirements can fail a candidate while a historical baseline cont
   });
   const findings = evaluateCapabilityFacts(facts);
   assert.equal(findings.find((entry) => entry.capabilityId === "answer_plan")?.releaseBlocking, false);
-  assert.equal(findings.find((entry) => entry.capabilityId === "evidence_preparation")?.releaseBlocking, true);
+  assert.equal(findings.find((entry) => entry.capabilityId === "evidence_preparation")?.releaseBlocking, false);
   assert.equal(findings.find((entry) => entry.capabilityId === "final_writing")?.releaseBlocking, true);
   assert.ok(findings.some((entry) => entry.capabilityId === "context_assembly" && entry.outcome === "missing_execution"));
 });
@@ -118,10 +118,24 @@ test("fixed-provider mode binds the complete sample identity and uses production
   assert.equal(run.trace.providerRequests.length, 1);
   assert.ok(run.trace.conversationContext);
   assert.ok(run.trace.contextAssembly);
+  assert.ok(run.trace.evidencePreparationRequest);
   const answerPlan = run.trace.answerPlan as AnswerPlan;
   assert.equal(run.facts.runExecution.find((entry) => entry.capabilityId === "answer_plan")?.artifactId, answerPlan.planId);
+  assert.equal(run.facts.runExecution.find((entry) => entry.capabilityId === "evidence_preparation")?.state, "completed");
+  const evidenceBundle = (run.trace.evidencePreparationRequest as { bundle: EvidenceBundle }).bundle;
+  assert.equal(Object.hasOwn(evidenceBundle, "grounded"), false);
   assert.ok(answerPlan.taskFamily === "planning" || answerPlan.taskFamily === "mixed");
   assert.match(JSON.stringify(run.trace.providerRequests[0]), /answer_plan/);
+});
+
+test("AQ-01 web slice executes Evidence Preparation and keeps no-qualified evidence explicit", async () => {
+  const target = ANSWER_QUALITY_CORPUS.find((entry) => entry.coverage.taskFamily === "factual_query" && entry.coverage.robustness.includes("no_qualified_evidence"))!;
+  const run = await runFixedProviderCase(target, { response: "无法根据现有结果核实。", buildFingerprint: "build:test", clock: () => "2026-09-01T00:00:00.000Z" });
+  const bundle = (run.trace.evidencePreparationRequest as { bundle: EvidenceBundle }).bundle;
+  assert.equal(bundle.evidencePolicyStatus, "not_satisfied");
+  assert.equal(bundle.stopReason, "no_more_candidates");
+  assert.deepEqual(run.admittedEvidence, []);
+  assert.equal(run.facts.runExecution.find((entry) => entry.capabilityId === "evidence_preparation")?.artifactId, bundle.bundleId);
 });
 
 test("AQ-01 multi-turn and correction slices execute the production Conversation Context capability", async () => {

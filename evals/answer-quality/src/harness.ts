@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { AnswerPlanningModule, assembleContext, contextAssemblyAudit, ConversationContextResolver, conversationContextCandidate } from "@collector/api";
+import { AnswerPlanningModule, EvidencePreparationModule, assembleContext, contextAssemblyAudit, ConversationContextResolver, conversationContextCandidate, evidenceBundleContextCandidates } from "@collector/api";
 import { researchBodyVersionId, type ContextCandidate, type ResearchMessageBodyRecord } from "@collector/capture-contracts";
 import { FakeProvider, ModelGateway, type ModelCallEvent, type ModelProviderResponse } from "@collector/model-gateway";
 import { createCurrentBuildCapabilities, createEvaluationFacts } from "./facts.js";
@@ -70,6 +70,35 @@ export async function runFixedProviderCase(testCase: AnswerQualityCase, options:
   };
   const answerPlanning = await new AnswerPlanningModule({ buildFingerprint: options.buildFingerprint }).plan(answerPlanInput);
   candidates.push(answerPlanning.candidate);
+  const evidencePreparationRequest = scenario.environment.webAuthorized ? {
+    currentQuestion: scenario.userRequest,
+    answerPlan: answerPlanning.plan,
+    webAuthorization: "authorized" as const,
+    budget: { maxQueries: 2, maxCandidates: 8, maxFetches: 8, maxPackedTokens: 4_000 },
+  } : undefined;
+  const fixedResultsByUrl = new Map(scenario.environment.fixedSearchResults.map((result) => [result.url, result]));
+  const evidencePreparation = evidencePreparationRequest
+    ? await new EvidencePreparationModule({
+      async search(query) {
+        return { query, results: scenario.environment.fixedSearchResults.map((result) => ({ sourceId: result.id, title: result.title, url: result.url, snippet: result.snippet })) };
+      },
+      async fetch(url) {
+        const result = fixedResultsByUrl.get(url);
+        return { url, content: result?.snippet ?? "", ...(result ? {} : { errorMessage: "missing fixed result" }) };
+      },
+      async assess({ candidate, needIds }) {
+        const result = fixedResultsByUrl.get(candidate.canonicalUrl);
+        return {
+          relevance: result?.qualified ? "relevant" : "irrelevant",
+          authorityClass: result?.qualified ? "primary" : "unknown",
+          coveredNeedIds: result?.qualified ? needIds : [],
+          producer: "answer-quality-fixed-search",
+          version: "v1",
+        };
+      },
+    }, () => new Date(availabilityCapturedAt)).prepare(evidencePreparationRequest)
+    : undefined;
+  if (evidencePreparation) candidates.push(...evidenceBundleContextCandidates(evidencePreparation.bundle));
   const assembly = assembleContext({ purpose: "research_body", workflowRunId: taskId, workflowStepId: "final-writing", candidates });
   if (assembly.status !== "assembled") throw new Error(`Fixed-provider context assembly failed: ${assembly.reason}`);
   const provider = new FakeProvider([options.response]);
@@ -101,6 +130,7 @@ export async function runFixedProviderCase(testCase: AnswerQualityCase, options:
   const execution: RunExecutionFact[] = [
     { capabilityId: "conversation_context", state: "completed", artifactId: conversationContext.contextId },
     { capabilityId: "answer_plan", state: "completed", artifactId: answerPlanning.plan.planId },
+    ...(evidencePreparation ? [{ capabilityId: "evidence_preparation" as const, state: "completed" as const, artifactId: evidencePreparation.bundle.bundleId }] : []),
     { capabilityId: "context_assembly", state: "completed", artifactId: `${taskId}:context-assembly` },
     finalWritingState,
     { capabilityId: "production_run_record", state: "completed", artifactId: `${taskId}:model-call` },
@@ -117,6 +147,7 @@ export async function runFixedProviderCase(testCase: AnswerQualityCase, options:
     conversationContext,
     answerPlanInput,
     answerPlan: answerPlanning.plan,
+    ...(evidencePreparationRequest && evidencePreparation ? { evidencePreparationRequest: { request: evidencePreparationRequest, bundle: evidencePreparation.bundle } } : {}),
     contextAssembly: {
       request: { purpose: "research_body", candidates },
       audit: contextAssemblyAudit(assembly),
@@ -145,7 +176,7 @@ export async function runFixedProviderCase(testCase: AnswerQualityCase, options:
     trace,
     userRequest: scenario.userRequest,
     explicitSettings: scenario.explicitSettings,
-    admittedEvidence: [],
+    admittedEvidence: evidencePreparation?.bundle.evidence.map((item) => ({ id: item.id, text: item.excerpt })) ?? [],
     validCitations: [],
     ...(error ? { error } : {}),
   };
@@ -252,6 +283,9 @@ function availabilityFacts(testCase: AnswerQualityCase, capturedAt: string, fina
       : { capabilityId: "final_writing", state: "available", capturedAt },
     { capabilityId: "production_run_record", state: "available", capturedAt },
   ];
+  if (testCase.expectation.capabilities.evidence_preparation !== "not_applicable") {
+    facts.push({ capabilityId: "evidence_preparation", state: "available", capturedAt });
+  }
   if (testCase.expectation.capabilities.citation_attribution !== "not_applicable") {
     facts.push({ capabilityId: "citation_attribution", state: "unavailable", reason: "fixed-provider-has-no-qualified-citation-events", capturedAt });
   }
@@ -274,7 +308,7 @@ function artifactBindingsFor(testCase: AnswerQualityCase, availability: readonly
 }
 
 function normalizeValue(value: unknown, key?: string): unknown {
-  if (["createdAt", "completedAt", "capturedAt", "latencyMs", "taskId", "workflowRunId", "inputMessageId", "outputMessageId", "bodyVersionId", "assemblyAttemptId", "previousAssemblyAttemptId", "budgetResolutionAttemptId", "previousBudgetResolutionAttemptId"].includes(key ?? "")) return undefined;
+  if (["createdAt", "completedAt", "preparedAt", "capturedAt", "latencyMs", "taskId", "workflowRunId", "inputMessageId", "outputMessageId", "bodyVersionId", "bundleId", "assemblyAttemptId", "previousAssemblyAttemptId", "budgetResolutionAttemptId", "previousBudgetResolutionAttemptId"].includes(key ?? "")) return undefined;
   if (Array.isArray(value)) return value.map((entry) => normalizeValue(entry)).filter((entry) => entry !== undefined);
   if (value && typeof value === "object") {
     return Object.fromEntries(Object.entries(value as Record<string, unknown>)
@@ -288,6 +322,7 @@ function normalizeValue(value: unknown, key?: string): unknown {
     .replace(/aq-task:[0-9a-f-]{36}/gi, "aq-task:<normalized>")
     .replace(/aq-input:[0-9a-f-]{36}/gi, "aq-input:<normalized>")
     .replace(/aq-output:[0-9a-f-]{36}/gi, "aq-output:<normalized>")
+    .replace(/evidence-bundle:[0-9a-f]{20}/gi, "evidence-bundle:<normalized>")
     .replace(/\b[0-9a-f]{64}\b/gi, "<sha256>");
   return value;
 }

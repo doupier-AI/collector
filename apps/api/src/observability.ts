@@ -219,7 +219,7 @@ export class RunRecordsService {
     const searches = row.source === "research" ? this.searches(row.id) : [];
     const errors = errorsFor(row.source, parsed.value, modelCalls, searches);
     const observedContexts = modelCalls.flatMap((call) => call.contextAssembly ? [call.contextAssembly] : []);
-    const retrievalDegraded = searches.some((search) => !["grounded", "completed"].includes(search.status));
+    const retrievalDegraded = searches.some((search) => !["grounded", "evidence_prepared", "completed"].includes(search.status));
     const contextExplanations = [...new Set([
       ...(task?.contextExplanations ?? []),
       ...contextExplanationCodes(observedContexts, retrievalDegraded),

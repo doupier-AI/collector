@@ -1005,7 +1005,15 @@ function GroundingSources({
 function GroundingScopeNote({ task }: { task?: ResearchTaskRecord }) {
   const scope = task?.groundingScope;
   if (!scope) return null;
-  const message = scope.status === "grounded"
+  const message = scope.status === "evidence_prepared"
+    ? "本轮已按当前证据政策准备来源；这不表示事实已验证、正文已采用或引用已经成立。"
+    : scope.status === "evidence_incomplete"
+      ? scope.evidencePolicyStatus === "partially_satisfied"
+        ? "本轮来源仅部分满足当前证据政策；回答会保留未覆盖范围。"
+        : "本轮来源未满足当前证据政策；回答会说明外部证据限制。"
+      : scope.status === "evidence_conflicting"
+        ? "本轮合格来源存在冲突；证据政策未形成单一结论。"
+        : scope.status === "grounded"
     ? "本轮已联网核验。"
     : scope.status === "grounding_failed"
       ? "联网尝试失败，本回答仅基于当前会话材料生成，未完成外部核验。"

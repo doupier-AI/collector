@@ -3025,7 +3025,7 @@ export class SqliteStore implements CollectorStore {
       const task = this.getResearchTask(result.run.taskId);
       if (task) {
         const observations = task.contextAssemblySnapshot?.assemblies.map((entry) => observeContextAssembly(entry.audit)) ?? [];
-        const retrievalDegraded = result.scope.status !== "grounded";
+        const retrievalDegraded = result.scope.status !== "grounded" && result.scope.status !== "evidence_prepared";
         this.updateResearchTask({
           ...task,
           groundingScope: result.scope,

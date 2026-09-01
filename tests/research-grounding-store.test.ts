@@ -3,53 +3,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { CaptureService, ResearchSessionService, RunRecordsService, SqliteStore, citedGroundingSources, formatFinalWriterEvidence, type ResearchGenerationProvider, type ResearchTermMarkerExtractionProvider } from "@collector/api";
-import { FakeProvider, ModelGateway } from "@collector/model-gateway";
+import { CaptureService, EvidencePreparationModule, ResearchSessionService, RunRecordsService, SqliteStore, citedGroundingSources, formatFinalWriterEvidence, type ResearchGenerationProvider, type ResearchTermMarkerExtractionProvider } from "@collector/api";
 
 async function createStore() {
   const root = await mkdtemp(join(tmpdir(), "collector-grounding-store-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));
   await store.init();
   return { root, store, close: async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } };
-}
-
-class GroundingFallbackProbeGateway extends ModelGateway {
-  nativeCalls = 0;
-  agentCalls = 0;
-
-  constructor(private readonly nativeResult: "no_sources" | "error") {
-    super(new FakeProvider([]), { model: "fallback-probe" });
-  }
-
-  override get providerGroundingCapability(): "openai_web_search" {
-    return "openai_web_search";
-  }
-
-  override async generateGroundedResearch(..._args: Parameters<ModelGateway["generateGroundedResearch"]>) {
-    this.nativeCalls += 1;
-    if (this.nativeResult === "error") throw new Error("token=native-secret 私人正文");
-    return {
-      bodyKind: "evidence" as const,
-      status: "no_verifiable_sources" as const,
-      queries: [],
-      sources: [],
-      citations: [],
-    };
-  }
-
-  override async runAgentSearchLoop(..._args: Parameters<ModelGateway["runAgentSearchLoop"]>) {
-    this.agentCalls += 1;
-    return {
-      queries: ["fallback query"],
-      sources: [{ title: "Fallback source", url: "https://example.com/fallback", snippet: "可追溯证据", evidenceStatus: "partial" as const }],
-      evidence: [{ sourceOrdinal: 1, content: "可追溯证据" }],
-    };
-  }
-
-  override async *writeResearchBodyStream(...args: Parameters<ModelGateway["writeResearchBodyStream"]>) {
-    yield "Agent 回退终稿。";
-    args[1]?.onDone?.({ finishReason: "stop" });
-  }
 }
 
 test("引用来源过滤同时匹配 runId 与 sourceId", () => {
@@ -63,25 +23,72 @@ test("引用来源过滤同时匹配 runId 与 sourceId", () => {
   assert.deepEqual(citedGroundingSources(sources, citations).map((source) => [source.runId, source.ordinal]), [["run-b", 5]]);
 });
 
-test("原生联网无来源或请求失败时都切换 Agent 取证，再由独立终稿流写正文", async (t) => {
-  for (const nativeResult of ["no_sources", "error"] as const) {
-    const harness = await createStore();
-    t.after(() => harness.close());
-    const gateway = new GroundingFallbackProbeGateway(nativeResult);
-    const capture = new CaptureService(harness.store, join(harness.root, "artifacts"), gateway, {
-      autoRunResearchTasks: false,
-      autoRunRecentOrganization: false,
-    });
-    const session = await capture.research.createSession("测试", `fallback-${nativeResult}-session`);
-    const turn = await capture.research.submitMessage(session.id, "需要联网核验", `fallback-${nativeResult}-turn`, { allowWebSearch: true });
+test("EvidenceBundle policy status reaches storage and API without becoming grounded", async (t) => {
+  const harness = await createStore();
+  t.after(() => harness.close());
+  let admittedEvidenceIds: string[] = [];
+  let finalWriterSourceIds: Array<string | undefined> = [];
+  const provider: ResearchGenerationProvider = {
+    provider: "evidence-fake", model: "evidence-model", promptVersion: "evidence-test-v1",
+    async *generate() { yield "ordinary fallback"; },
+    async prepareGrounded(request) {
+      assert.ok(request.answerPlan);
+      const url = "https://docs.example/node";
+      const result = await new EvidencePreparationModule({
+        async search(query) { return { query, results: [{ title: "Current Node release", url, snippet: "Current Node release" }] }; },
+        async fetch() { return { url, content: "The current Node release documentation contains complete release information." }; },
+      }, () => new Date("2026-09-01T00:00:00.000Z")).prepare({
+        currentQuestion: request.messages[0]?.content ?? "",
+        answerPlan: request.answerPlan,
+        webAuthorization: "authorized",
+        budget: { maxQueries: 2, maxCandidates: 5, maxFetches: 5, maxPackedTokens: 2_000 },
+      });
+      return {
+        kind: "evidence" as const,
+        evidence: result.writerEvidence,
+        evidenceBundle: result.bundle,
+        evidencePolicyStatus: result.bundle.evidencePolicyStatus,
+        status: "evidence_prepared" as const,
+        queries: [...result.bundle.queries],
+        sources: result.bundle.evidence.map((item) => ({
+          providerSourceId: item.id,
+          title: item.title,
+          url: item.finalUrl,
+          snippet: item.excerpt,
+          evidenceStatus: item.availability,
+        })),
+        citations: [],
+      };
+    },
+    async *writeGroundedFinalStream(request, _evidence, options) {
+      admittedEvidenceIds = request.contextAssembly.adopted
+        .filter((item) => item.candidate.source.kind === "web_source")
+        .map((item) => item.candidate.source.id);
+      finalWriterSourceIds = options.sources.map((source) => source.providerSourceId);
+      yield "Evidence-prepared final answer.";
+      options.onStreamDone?.({ finishReason: "stop" });
+    },
+  };
+  const service = new ResearchSessionService(harness.store, { provider, autoRunTasks: false, buildFingerprint: "build:test" });
+  const session = await service.createSession("Evidence", "evidence-session");
+  const turn = await service.submitMessage(session.id, "Verify the latest Node release", "evidence-turn", { allowWebSearch: true });
+  await service.processTask(turn.task.id);
 
-    await capture.research.processTask(turn.task.id);
-
-    assert.equal(gateway.nativeCalls, 1);
-    assert.equal(gateway.agentCalls, 1);
-    assert.equal(capture.research.getTask(turn.task.id).status, "completed");
-    assert.equal(harness.store.getResearchMessage(turn.task.outputMessageId)?.content, "Agent 回退终稿。");
-  }
+  const task = service.getTask(turn.task.id);
+  assert.equal(task.status, "completed");
+  assert.equal(task.groundingScope?.status, "evidence_prepared");
+  assert.equal(task.groundingScope?.evidencePolicyStatus, "policy_satisfied");
+  assert.equal(task.groundingScope?.citationCount, 0);
+  assert.equal(admittedEvidenceIds.length, 1);
+  assert.deepEqual(admittedEvidenceIds, finalWriterSourceIds);
+  const run = harness.store.listResearchGroundingRuns(turn.task.id)[0];
+  assert.ok(run.evidenceBundle);
+  assert.equal(run.evidenceBundle.evidencePolicyStatus, "policy_satisfied");
+  assert.equal(Object.hasOwn(run.evidenceBundle, "grounded"), false);
+  assert.notEqual(run.status, "grounded");
+  const viewTask = service.getSession(session.id).tasks.find((item) => item.id === turn.task.id);
+  assert.equal(viewTask?.groundingScope?.evidencePolicyStatus, "policy_satisfied");
+  assert.notEqual(viewTask?.groundingScope?.status, "grounded");
 });
 
 test("最终写作证据保留原来源序号，并在发送前限额、净化 URL 与脱敏", () => {

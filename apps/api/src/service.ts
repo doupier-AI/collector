@@ -50,7 +50,7 @@ import {
   resolveResearchConvergence,
 } from "@collector/capture-contracts";
 import { CollectorStore } from "./store.js";
-import { assembleConnectionTestContext, assemblePurposeContext, reassemblePurposeContext } from "./model-context.js";
+import { assembleConnectionTestContext, assemblePurposeContext } from "./model-context.js";
 
 const RESEARCH_MAP_DEFAULT_FOCUS_SETTING_KEY = "research_map_default_focus_from_node";
 
@@ -105,6 +105,7 @@ import {
 } from "./web-search-agent.js";
 import { ALL_SEARCH_BACKEND_IDS } from "./search-backends/index.js";
 import { RunRecordsService } from "./observability.js";
+import { EvidencePreparationModule } from "./evidence-preparation.js";
 import {
   AUTO_FUSION_SETTING_KEY,
   ResearchFusionProposalService,
@@ -171,27 +172,6 @@ export function formatFinalWriterEvidence(
     sources.push(source);
   }
   return sources.length ? JSON.stringify({ sources }) : "";
-}
-
-function formatGroundingEvidence(sources: ReadonlyArray<{ title: string; url?: string; snippet?: string; evidenceStatus?: "full" | "partial" | "none" }>): string {
-  return formatFinalWriterEvidence(sources.flatMap((source, index) => (
-    sanitizeGroundingUrl(source.url)
-      ? [{ sourceOrdinal: index + 1, source, content: source.snippet }]
-      : []
-  )));
-}
-
-function formatAgentEvidence(
-  sources: ReadonlyArray<{ title: string; url?: string; evidenceStatus?: "full" | "partial" | "none" }>,
-  evidence: ReadonlyArray<{ sourceOrdinal: number; content: string }>,
-): string {
-  const sourceByOrdinal = new Map(sources.map((source, index) => [index + 1, source]));
-  return formatFinalWriterEvidence(evidence.map((item) => {
-    const source = sourceByOrdinal.get(item.sourceOrdinal);
-    return source && sanitizeGroundingUrl(source.url)
-      ? { sourceOrdinal: item.sourceOrdinal, source, content: item.content }
-      : undefined;
-  }).filter((entry): entry is { sourceOrdinal: number; source: { title: string; url?: string; evidenceStatus?: "full" | "partial" | "none" }; content: string } => entry !== undefined));
 }
 
 export class CaptureService {
@@ -610,101 +590,63 @@ export class CaptureService {
       promptVersion: RESEARCH_SLICE_PROMPT_VERSION,
       groundingCapability,
       async prepareGrounded(request) {
-        const purposeGateway = await service.gatewayForPurpose("search");
-        if (!purposeGateway) throw new Error("AI model is not configured");
-        const nodeDepth = request.parentChainContext?.currentNodeDepth ?? 0;
-
-        if (purposeGateway.providerGroundingCapability !== "unsupported") {
-          try {
-            const grounded = await purposeGateway.generateGroundedResearchFromContext(request.contextAssembly, {
-              taskId: request.taskId,
-              scenario: request.scenario,
-              requireGrounding: true,
-              promptVersion: RESEARCH_SLICE_PROMPT_VERSION,
-            }, {
-              nodeDepth,
-              context: { workflowRunId: request.taskId, purpose: "research_grounding", promptVersion: RESEARCH_SLICE_PROMPT_VERSION, ...(request.previousBudgetResolutionAttemptId ? { previousBudgetResolutionAttemptId: request.previousBudgetResolutionAttemptId } : {}) },
-            });
-            const hasTraceableSource = grounded.status === "grounded"
-              && grounded.sources.some((source) => Boolean(sanitizeGroundingUrl(source.url)));
-            if (grounded.bodyKind === "confirmed_final" && hasTraceableSource) {
-              return { kind: "confirmed_final" as const, ...grounded };
-            }
-            const evidence = formatGroundingEvidence(grounded.sources);
-            if (evidence) return { kind: "evidence" as const, evidence, ...grounded };
-            // 原生适配器无法确认最终文本、也没有可回读证据时，改走本地 Agent 取证。
-          } catch {
-            // 原生联网失败也按 ADR-0044 切换 Agent；远端错误正文可能回显私密输入，故不写普通日志。
-          }
-        }
-
-        // #49 证据管线上下文：一次研究调用一个实例，任务间隔离（并发任务互不污染）。
+        if (!request.answerPlan) throw new Error("Evidence preparation requires an admitted Answer Plan");
+        // Safety retry/circuit state remains scoped to this single preparation run.
         const searchCtx = createSearchRunContext();
-
-        // F2: Agent 式多轮工具调用搜索——模型通过 web_search/web_fetch 工具自主完成搜索过程
-
-        const agentAssembly = reassemblePurposeContext({
-          purpose: "agent_search",
-          workflowRunId: request.taskId,
-          candidates: request.contextAssembly.adopted.map((item) => item.candidate),
+        const preparation = new EvidencePreparationModule({
+          search: async (query, maxResults) => {
+            const startedAt = Date.now();
+            const result = await webSearch(query, maxResults);
+            searchCtx.recordEntry({
+              stage: "search",
+              domain: "search",
+              status: result.errorMessage ? "backend_error" : result.results.length ? "completed" : "no_results",
+              latencyMs: Date.now() - startedAt,
+              ...(result.errorMessage ? { errorCategory: "backend" as const, retryReason: "search_backend_error" } : {}),
+              ...(result.usedFallback ? { fallbackReason: "backend_fallback" } : {}),
+            });
+            return { query: result.query, results: result.results, errorMessage: result.errorMessage };
+          },
+          fetch: async (url) => {
+            const result = await webFetch(url, { context: searchCtx });
+            return { url: result.url, content: result.content, errorMessage: result.errorMessage };
+          },
         });
-        const result = await purposeGateway.runAgentSearchLoopFromContext(
-          agentAssembly,
-          {
-            webSearch: async (query, maxResults) => {
-              const startedAt = Date.now();
-              const r = await webSearch(query, maxResults);
-              // #49 失败留痕：搜索阶段不做重试（安全红线：不改变后端选择/回退行为），
-              // 只在出错时记录轨迹供运行记录查询。
-              if (r.errorMessage) {
-                searchCtx.recordEntry({
-                  stage: "search",
-                  domain: "search",
-                  status: r.usedFallback ? "backend_error" : "no_results",
-                  latencyMs: Date.now() - startedAt,
-                  errorCategory: "backend",
-                  retryReason: r.errorMessage,
-                  fallbackReason: r.usedFallback ? "backend_fallback" : undefined,
-                });
-              }
-              return { query: r.query, total_results: r.total_results, results: r.results, errorMessage: r.errorMessage };
-            },
-            webFetch: async (url) => {
-              const r = await webFetch(url, { context: searchCtx });
-              return { url: r.url, content: r.content, errorMessage: r.errorMessage };
-            },
-          },
-          {
-            maxTurns: 10,
-            nodeDepth,
-            context: { workflowRunId: request.taskId, purpose: "agent_search", promptVersion: RESEARCH_SLICE_PROMPT_VERSION },
-          },
-        );
-
-        const scopeStatus: ResearchGroundingScopeStatus = result.sources.length ? "grounded" : "no_verifiable_sources";
+        const result = await preparation.prepare({
+          currentQuestion: request.messages[0]?.content ?? request.answerPlan.userGoal,
+          answerPlan: request.answerPlan,
+          webAuthorization: request.allowWebSearch === true ? "authorized" : "not_authorized",
+          budget: { maxQueries: 2, maxCandidates: 10, maxFetches: 8, maxPackedTokens: 6_000 },
+        });
+        const scopeStatus: ResearchGroundingScopeStatus = result.bundle.evidencePolicyStatus === "policy_satisfied"
+          ? "evidence_prepared"
+          : result.bundle.evidencePolicyStatus === "conflicting" ? "evidence_conflicting" : "evidence_incomplete";
         return {
           kind: "evidence" as const,
-          evidence: formatAgentEvidence(result.sources, result.evidence),
+          evidence: result.writerEvidence,
           status: scopeStatus,
-          queries: result.queries,
-          sources: result.sources.map((source, i) => ({
-            providerSourceId: source.providerSourceId,
-            title: source.title ?? `来源 ${i + 1}`,
-            url: source.url ?? "",
-            snippet: source.snippet ?? "",
-            ...(source.evidenceStatus ? { evidenceStatus: source.evidenceStatus } : {}),
+          evidencePolicyStatus: result.bundle.evidencePolicyStatus,
+          evidenceBundle: result.bundle,
+          queries: [...result.bundle.queries],
+          sources: result.bundle.evidence.map((source) => ({
+            providerSourceId: source.id,
+            title: source.title,
+            url: source.finalUrl,
+            snippet: source.excerpt,
+            evidenceStatus: source.availability,
+            ...(source.publishedAt ? { publishedAt: source.publishedAt } : {}),
           })),
-          // Agent 只交付结构化来源与证据；引用候选由独立最终写作旁路事件产生。
           citations: [],
           responseSummary: {
-            searchStatus: "completed",
-            sourceCount: result.sources.length,
+            searchStatus: result.bundle.stopReason,
+            evidencePolicyStatus: result.bundle.evidencePolicyStatus,
+            sourceCount: result.bundle.evidence.length,
             citationCount: 0,
-            queryCount: result.queries.length,
-            method: "agent-loop-v2",
+            queryCount: result.bundle.queries.length,
+            method: "evidence-preparation-v1",
             searchBackend: getSearchConfigFromAgent().backend,
           },
-          ...(searchCtx.toTrace().length ? { trace: searchCtx.toTrace() } : {}),
+          ...([...searchCtx.toTrace(), ...result.trace].length ? { trace: [...searchCtx.toTrace(), ...result.trace] } : {}),
         };
       },
       async *writeGroundedFinalStream(request, _evidence, streamOptions) {
@@ -976,7 +918,7 @@ export class CaptureService {
       await this.store.saveSetting(key, value);
     }
 
-    // 同步到 Agent 搜索层
+    // 同步到 Evidence Preparation 的生产搜索 Adapter
     const backend = (update.search_backend ?? this.store.getSetting("search_backend") ?? "bing") as SearchBackendId;
     const fallback = (update.search_fallback ?? this.store.getSetting("search_fallback") ?? "true") === "true";
     updateSearchConfigInAgent({
