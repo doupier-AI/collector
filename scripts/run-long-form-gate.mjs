@@ -20,7 +20,9 @@ const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const argumentValue = (name) => process.argv.slice(2).find((argument) => argument.startsWith(`${name}=`))?.slice(name.length + 1);
 const preregistrationPath = repositoryPath(argumentValue("--preregistration") ?? "evals/answer-quality/decisions/aq-long-form-gate-v1-preregistration.json");
 const outputPath = repositoryPath(argumentValue("--output") ?? "evals/answer-quality/decisions/aq-long-form-gate-v1-result.json");
+const checkpointPath = repositoryPath(argumentValue("--checkpoint") ?? ".scratch/aq-long-form-gate-v1-checkpoint.json");
 const databasePath = resolve(argumentValue("--database") ?? process.env.COLLECTOR_REAL_MODEL_DATABASE ?? join(repositoryRoot, ".collector-data", "collector.sqlite"));
+const invalidatedInfrastructureAttempts = Number(argumentValue("--invalidated-attempts") ?? "0");
 const preregistration = JSON.parse(await readFile(preregistrationPath, "utf8"));
 validatePreregistration(preregistration);
 
@@ -39,9 +41,14 @@ const baseCandidates = preparation.trace.contextAssembly?.request?.candidates;
 if (!Array.isArray(baseCandidates)) throw new Error("Answer-quality preparation did not expose ContextAssembly candidates");
 
 const harnessSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8" }).trim();
-const generatedRuns = [];
+const checkpoint = await readCheckpoint(checkpointPath, preregistration, harnessSha);
+const generatedRuns = checkpoint?.runs ?? [];
 for (let repetition = 1; repetition <= preregistration.sampleProtocol.generationRepetitions; repetition += 1) {
   for (const candidateId of preregistration.sampleProtocol.runOrderPerRepetition) {
+    if (generatedRuns.some((run) => run.repetition === repetition && run.candidateId === candidateId)) {
+      process.stderr.write(`[long-form-gate] resume repetition=${repetition} candidate=${candidateId}\n`);
+      continue;
+    }
     process.stderr.write(`[long-form-gate] repetition=${repetition} candidate=${candidateId}\n`);
     generatedRuns.push(await runCandidate({
       candidateId,
@@ -53,16 +60,22 @@ for (let repetition = 1; repetition <= preregistration.sampleProtocol.generation
       profileRuntime,
       definition,
     }));
+    await writeCheckpoint(checkpointPath, preregistration, harnessSha, generatedRuns, checkpoint?.pairwise ?? []);
   }
 }
 
-const pairwise = [];
+const pairwise = checkpoint?.pairwise ?? [];
 for (let repetition = 1; repetition <= preregistration.sampleProtocol.generationRepetitions; repetition += 1) {
+  if (pairwise.some((entry) => entry.repetition === repetition)) {
+    process.stderr.write(`[long-form-gate] resume pairwise repetition=${repetition}\n`);
+    continue;
+  }
   const minimal = generatedRuns.find((run) => run.repetition === repetition && run.candidateId === "minimal_prompt_adjustment");
   const state = generatedRuns.find((run) => run.repetition === repetition && run.candidateId === "long_form_state_prototype");
   if (!minimal || !state) throw new Error(`Missing pairwise bodies for repetition ${repetition}`);
   process.stderr.write(`[long-form-gate] pairwise repetition=${repetition}\n`);
   pairwise.push(await compareCandidateBodies({ repetition, minimal, state, testCase, profileRuntime }));
+  await writeCheckpoint(checkpointPath, preregistration, harnessSha, generatedRuns, pairwise);
 }
 
 const decision = decideLongFormGate({
@@ -99,6 +112,7 @@ const result = {
     promptEnvelopeVersion: preregistration.releaseProfile.promptEnvelopeVersion,
     generationRepetitions: preregistration.sampleProtocol.generationRepetitions,
     additionalRuns: 0,
+    invalidatedInfrastructureAttempts,
   },
   upstreamIdentities: {
     answerPlanId: preparation.trace.answerPlan?.planId,
@@ -532,6 +546,38 @@ function validatePreregistration(packet) {
   if (packet.schemaVersion !== 1 || packet.status !== "preregistered") throw new Error("Unsupported long-form preregistration packet");
   if (packet.sampleProtocol.generationRepetitions !== 3 || packet.sampleProtocol.additionalRunLimit !== 0) throw new Error("Preregistered sample protocol was changed");
   if (JSON.stringify(packet.rubric.mustPassDimensions) !== JSON.stringify(LONG_FORM_GATE_DIMENSIONS)) throw new Error("Preregistered long-form dimensions do not match the evaluator");
+}
+
+async function readCheckpoint(path, packet, harnessSha) {
+  let checkpoint;
+  try {
+    checkpoint = JSON.parse(await readFile(path, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return undefined;
+    throw error;
+  }
+  if (checkpoint.schemaVersion !== 1
+    || checkpoint.decisionId !== packet.decisionId
+    || checkpoint.candidateSha !== packet.candidateSha
+    || checkpoint.evaluationHarnessSha !== harnessSha
+    || !Array.isArray(checkpoint.runs)
+    || !Array.isArray(checkpoint.pairwise)) {
+    throw new Error("Existing long-form checkpoint does not match the frozen execution identity");
+  }
+  return checkpoint;
+}
+
+async function writeCheckpoint(path, packet, harnessSha, runs, pairwise) {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${JSON.stringify({
+    schemaVersion: 1,
+    decisionId: packet.decisionId,
+    candidateSha: packet.candidateSha,
+    evaluationHarnessSha: harnessSha,
+    updatedAt: new Date().toISOString(),
+    runs,
+    pairwise,
+  }, null, 2)}\n`);
 }
 
 function repositoryPath(value) {
