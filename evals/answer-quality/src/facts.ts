@@ -9,7 +9,7 @@ import {
 export function createCurrentBuildCapabilities(): BuildCapabilityFact[] {
   return [
     { capabilityId: "conversation_context", supported: true, version: "conversation-context-resolver-v1" },
-    { capabilityId: "answer_plan", supported: false },
+    { capabilityId: "answer_plan", supported: true, version: "answer-planner-v1" },
     { capabilityId: "prompt_envelope", supported: false },
     { capabilityId: "context_assembly", supported: true, version: "context-assembly-v1" },
     { capabilityId: "evidence_preparation", supported: false },

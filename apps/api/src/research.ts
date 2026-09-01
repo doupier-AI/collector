@@ -13,6 +13,7 @@ import {
   sanitizeGroundingUrl,
   validateDerivedSlices,
   validateResearchGroundingResult,
+  type AnswerPlan,
   type DeepResearchContext,
   type DeepResearchMode,
   type ContextAssemblyResult,
@@ -58,6 +59,8 @@ import {
   conversationContextCandidate,
   DEFAULT_CONVERSATION_CONTEXT_INPUT_TOKENS,
 } from "./conversation-context.js";
+import { AnswerPlanningModule, type AnswerPlanningModelAdapter } from "./answer-planning.js";
+import { assertAnswerCompletion } from "./answer-completion.js";
 
 export const RESEARCH_CHAT_PROMPT_VERSION = "research-chat-v1";
 export const DEEP_RESEARCH_PROMPT_VERSION = "deep-research-v1";
@@ -263,6 +266,8 @@ export interface ResearchGenerationRequest {
   outputMessageId?: string;
   /** Dialogue-only semantic snapshot. Selection/relation internals remain separate from ContextAssembly admission. */
   conversationContext?: ConversationContext;
+  /** Versioned derived writing plan; lower authority than every explicit user rule. */
+  answerPlan?: AnswerPlan;
   sliceOrdinalStart?: number;
   /** 本次请求是否获得用户明确授权使用联网搜索。 */
   allowWebSearch?: boolean;
@@ -298,12 +303,14 @@ export interface ResearchGenerationProvider {
   prepareGrounded?(request: AssembledResearchGenerationRequest & { scenario: ResearchGroundingScenario }): Promise<ResearchGroundedPreparation>;
   /** 仅证据准备结果必须经独立最终写作流转成用户正文。 */
   writeGroundedFinalStream?(request: AssembledResearchGenerationRequest, evidence: string, options: { sources: readonly ResearchCitationSourceIdentity[]; resumeFrom?: string; signal?: AbortSignal; onStreamDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; onCitation?: (candidate: ResearchCitationCandidate) => void }): AsyncIterable<string>;
-  /** 生成自由化：自由写连续正文，不返回 JSON 切片结构。 */
+  /** 最终写作：按当前任务与显式用户约束输出自由形态 Markdown，不返回 JSON 切片结构。 */
   writeBody?(request: AssembledResearchGenerationRequest): Promise<string>;
   /** 真实模型逐字流式正文（方案 B）；缺省时退回 writeBody 原子写或 legacy generate 流式。onReasoning 旁路接收思考增量（ADR-0035）；signal 供暂停/停止中止物理流。 */
   writeBodyStream?(request: AssembledResearchGenerationRequest & { resumeFrom?: string; onStreamDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; signal?: AbortSignal }): AsyncIterable<string>;
   /** plan-then-write 第一阶段：为长文生成有序大纲。 */
   generateOutline?(request: AssembledResearchGenerationRequest): Promise<ResearchBodyOutline>;
+  /** AnswerPlanningModule 的内部模型 Adapter；外部业务调用仍只有 module.plan(input)。 */
+  planAnswer?(assembly: Parameters<AnswerPlanningModelAdapter["plan"]>[0], context: Parameters<AnswerPlanningModelAdapter["plan"]>[1]): Promise<string>;
   /** plan-then-write 第二阶段：在大纲与前文前提下串行扩写某节；支持断点续写/空节修复提示/降级目标字数。 */
   expandSection?(request: AssembledResearchGenerationRequest & { outline: ResearchBodyOutline; sectionIndex: number; writtenSoFar: string; continuation?: { priorSectionContent: string }; repairHint?: string; targetCharsOverride?: number }): Promise<{ content: string; finishReason?: string }>;
   /** 事后语义标注：从一段正文抽取标题/概念（独立抽取模型，temperature=0）。 */
@@ -340,6 +347,8 @@ export interface ResearchServiceOptions {
   retrySleep?: (ms: number) => Promise<void>;
   /** Binds reusable conversation snapshots to the running application build. */
   buildFingerprint?: string;
+  /** Test seam for the deep Answer Planning Module. */
+  answerPlanner?: AnswerPlanningModule;
 }
 
 export interface ResearchTurnOptions {
@@ -353,6 +362,7 @@ export class ResearchSessionService {
   private recoveryScheduled = false;
   private readonly parentChainContext: ParentChainContextService;
   private readonly conversationContextResolver: ConversationContextResolver;
+  private readonly answerPlanner: AnswerPlanningModule;
   /** 退避重试的等待实现；测试注入以确定性记录退避序列。 */
   private readonly retrySleep: (ms: number) => Promise<void>;
   /** 任务事件推送（#38）：每次落库插入研究事件后发裸"唤醒"信号；SSE 循环仍按 sequence>cursor 重读，DB 是恰好一次来源。 */
@@ -370,6 +380,15 @@ export class ResearchSessionService {
     this.provider = options.provider;
     this.parentChainContext = options.parentChainContext ?? new ParentChainContextService(store);
     this.conversationContextResolver = new ConversationContextResolver({ buildFingerprint: options.buildFingerprint });
+    this.answerPlanner = options.answerPlanner ?? new AnswerPlanningModule({
+      buildFingerprint: options.buildFingerprint,
+      model: {
+        plan: async (assembly, context) => {
+          if (!this.provider?.planAnswer) throw new Error("Structured answer planning is unavailable");
+          return this.provider.planAnswer(assembly, context);
+        },
+      },
+    });
     this.retrySleep = options.retrySleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
     this.taskEvents.setMaxListeners(0);
     // 集中接线：所有落库插入研究事件的 store 方法都包一层发布"唤醒"信号（不再靠 100ms 轮询发现）。
@@ -775,7 +794,27 @@ export class ResearchSessionService {
       let generatedCharacters = 0;
       try {
         await this.store.saveResearchTaskConversationContextSnapshot(task.id, generation.conversationContext);
-        await this.ensureContextSourceSnapshot(task, generation.contextCandidates);
+        const answerPlanning = await this.answerPlanner.plan({
+          taskId: task.id,
+          generationAttempt: task.generationAttempt ?? 1,
+          inputMessageId: task.inputMessageId,
+          outputMessageId: task.outputMessageId,
+          currentQuestion: messages[0]?.content ?? "",
+          conversationContext: generation.conversationContext,
+          explicitAnswerSettings: {},
+          adoptedAdaptationCategories: [],
+          capabilities: {
+            structuredPlanning: provider.planAnswer ? "available" : "unavailable",
+            webSearch: task.allowWebSearch === true
+              ? "authorized"
+              : provider.prepareGrounded ? "not_authorized" : "unavailable",
+          },
+          existing: task.answerPlanSnapshot,
+        });
+        await this.store.saveResearchTaskAnswerPlanSnapshot(task.id, answerPlanning.plan);
+        generationRequest.answerPlan = answerPlanning.plan;
+        generationRequest.contextCandidates = [...generation.contextCandidates, answerPlanning.candidate];
+        await this.ensureContextSourceSnapshot(task, generationRequest.contextCandidates);
         const scenario: ResearchGroundingScenario = generation.deepResearch
           ? "deep_research_first_round"
           : this.isBranchFollowUp(task.id) ? "branch_follow_up" : "chat";
@@ -864,6 +903,7 @@ export class ResearchSessionService {
         if (!markupFinished) content = (await this.finishGeneratedMarkup(task)).content;
         generatedCharacters = content.length;
         if (generatedCharacters > MAX_GENERATED_CHARACTERS) throw new Error("Provider output exceeded the local response limit");
+        assertAnswerCompletion(answerPlanning.plan, { body: content, truncated: false });
         // 正文定稿后统一派生正式切片（确定性边界 + 小模型事后标注），再落库与完成。
         await this.finalizeDerivedSlices(task, provider, nodeId, content, citations, titleHints);
         await this.persistCitationSidecars(task, citations);
@@ -1096,12 +1136,15 @@ export class ResearchSessionService {
   }
 
   /**
-   * 预期长度自动判断：默认单轮自由写，仅当明确的长文诉求才启动 plan-then-write。
+   * 预期长度自动判断：默认单轮任务自适应写作，仅当明确的长文诉求才启动 plan-then-write。
    * 误判代价不对称——误判为长文只多一次无害的大纲调用，误判为短文则长文被压短
    * （默认短文墙），故启发式偏向触发。要求 provider 同时具备大纲与扩写能力。
    */
   private shouldPlanLongForm(request: ResearchGenerationRequest, provider: ResearchGenerationProvider): boolean {
     if (!provider.generateOutline || !provider.expandSection) return false;
+    const explicitFormat = request.answerPlan?.completionContract.machineChecks
+      .find((check) => check.kind === "format" && check.source === "explicit_constraint")?.expected;
+    if (explicitFormat === "continuous_prose" || request.answerPlan?.uncertaintyHandling.action === "request_clarification") return false;
     if (request.deepResearch) return true;
     const latestUser = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
     if (/(长文|长篇|详细论述|深入论述|完整论述|系统梳理|全面阐述|连载|小说|报告)/.test(latestUser)) return true;

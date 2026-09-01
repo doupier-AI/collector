@@ -175,6 +175,7 @@ export interface CitationForJudge {
 export interface ProductionTrace {
   conversationContext?: unknown;
   answerPlanInput?: unknown;
+  answerPlan?: unknown;
   evidencePreparationRequest?: unknown;
   contextAssembly?: unknown;
   promptEnvelope?: unknown;

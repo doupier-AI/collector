@@ -478,6 +478,7 @@ function modelCallView(row: ObservabilityRelatedRow): RunRecordModelCallView {
     model: safeText(call.model),
     purpose: safeText(call.purpose),
     promptVersion: safeText(call.promptVersion),
+    ...(call.answerPlanId ? { answerPlanId: safeId(call.answerPlanId) } : {}),
     ...(envelope ? { envelope } : {}),
     ...(call.availability?.status === "available" || call.availability?.status === "unavailable" ? { availability: { status: call.availability.status, ...(call.availability.reason ? { reason: safeText(call.availability.reason) } : {}) } } : {}),
     ...(requestedBudget ? { requestedBudget } : {}),

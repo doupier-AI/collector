@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { assembleContext, contextAssemblyAudit, ConversationContextResolver, conversationContextCandidate } from "@collector/api";
+import { AnswerPlanningModule, assembleContext, contextAssemblyAudit, ConversationContextResolver, conversationContextCandidate } from "@collector/api";
 import { researchBodyVersionId, type ContextCandidate, type ResearchMessageBodyRecord } from "@collector/capture-contracts";
 import { FakeProvider, ModelGateway, type ModelCallEvent, type ModelProviderResponse } from "@collector/model-gateway";
 import { createCurrentBuildCapabilities, createEvaluationFacts } from "./facts.js";
@@ -54,6 +54,22 @@ export async function runFixedProviderCase(testCase: AnswerQualityCase, options:
     availabilityCapturedAt,
     options.buildFingerprint,
   );
+  const answerPlanInput = {
+    taskId,
+    generationAttempt: 1,
+    inputMessageId,
+    outputMessageId,
+    currentQuestion: scenario.userRequest,
+    conversationContext,
+    explicitAnswerSettings: scenario.explicitSettings,
+    adoptedAdaptationCategories: [],
+    capabilities: {
+      structuredPlanning: "unavailable" as const,
+      webSearch: scenario.environment.webAuthorized ? "authorized" as const : "not_authorized" as const,
+    },
+  };
+  const answerPlanning = await new AnswerPlanningModule({ buildFingerprint: options.buildFingerprint }).plan(answerPlanInput);
+  candidates.push(answerPlanning.candidate);
   const assembly = assembleContext({ purpose: "research_body", workflowRunId: taskId, workflowStepId: "final-writing", candidates });
   if (assembly.status !== "assembled") throw new Error(`Fixed-provider context assembly failed: ${assembly.reason}`);
   const provider = new FakeProvider([options.response]);
@@ -84,6 +100,7 @@ export async function runFixedProviderCase(testCase: AnswerQualityCase, options:
   const availability = availabilityFacts(testCase, availabilityCapturedAt, options.unavailableReason);
   const execution: RunExecutionFact[] = [
     { capabilityId: "conversation_context", state: "completed", artifactId: conversationContext.contextId },
+    { capabilityId: "answer_plan", state: "completed", artifactId: answerPlanning.plan.planId },
     { capabilityId: "context_assembly", state: "completed", artifactId: `${taskId}:context-assembly` },
     finalWritingState,
     { capabilityId: "production_run_record", state: "completed", artifactId: `${taskId}:model-call` },
@@ -98,6 +115,8 @@ export async function runFixedProviderCase(testCase: AnswerQualityCase, options:
   const artifactBindings = artifactBindingsFor(testCase, availability, execution);
   const trace: ProductionTrace = {
     conversationContext,
+    answerPlanInput,
+    answerPlan: answerPlanning.plan,
     contextAssembly: {
       request: { purpose: "research_body", candidates },
       audit: contextAssemblyAudit(assembly),
@@ -226,6 +245,7 @@ function productionCandidates(
 function availabilityFacts(testCase: AnswerQualityCase, capturedAt: string, finalWritingUnavailableReason?: string): RunAvailabilityFact[] {
   const facts: RunAvailabilityFact[] = [
     { capabilityId: "conversation_context", state: "available", capturedAt },
+    { capabilityId: "answer_plan", state: "available", capturedAt },
     { capabilityId: "context_assembly", state: "available", capturedAt },
     finalWritingUnavailableReason
       ? { capabilityId: "final_writing", state: "unavailable", reason: finalWritingUnavailableReason, capturedAt }

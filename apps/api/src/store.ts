@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, hashBodyContent, researchBodyVersionId, resolveResearchStableLocation, validateResearchStableLocation, type ConversationContext, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchContextAssemblySnapshot, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSidecarInvalidReason, type ResearchSidecarRecord, type ResearchSidecarRecordQuery, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageBodyRecord, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchReasoningRecord, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId, toResearchMessageBody } from "@collector/capture-contracts";
+import { LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, hashBodyContent, researchBodyVersionId, resolveResearchStableLocation, validateResearchStableLocation, type AnswerPlan, type ConversationContext, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchContextAssemblySnapshot, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSidecarInvalidReason, type ResearchSidecarRecord, type ResearchSidecarRecordQuery, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageBodyRecord, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchReasoningRecord, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId, toResearchMessageBody } from "@collector/capture-contracts";
 import { contextExplanationCodes, deriveMessageBlocks, observeContextAssembly } from "@collector/capture-contracts";
 import type { ResearchCitationCandidate } from "@collector/capture-contracts";
 import { markdownStableVisibleText, projectMarkdownDocument, projectMarkdownSourceRange } from "@collector/markdown-projection";
@@ -236,6 +236,8 @@ export interface ResearchStore extends ResearchSidecarStore, ResearchTermMarkerS
   saveResearchTaskContextAssemblySnapshot(taskId: string, snapshot: ResearchContextAssemblySnapshot): Promise<void>;
   /** 对话语义：保存当前生成尝试的版本化 Resolver 快照。 */
   saveResearchTaskConversationContextSnapshot(taskId: string, snapshot: ConversationContext): Promise<void>;
+  /** 回答规划：保存当前生成尝试的版本化派生计划。 */
+  saveResearchTaskAnswerPlanSnapshot(taskId: string, snapshot: AnswerPlan): Promise<void>;
   listResearchTaskEvents(taskId: string, afterId?: number): ResearchTaskEvent[];
   listRecoverableResearchTasks(): ResearchTaskRecord[];
   failInterruptedResearchTasks(): number;
@@ -447,6 +449,7 @@ export interface CollectorStore
   clearResearchTaskStreamCheckpoint(taskId: string): Promise<void>;
   saveResearchTaskContextAssemblySnapshot(taskId: string, snapshot: ResearchContextAssemblySnapshot): Promise<void>;
   saveResearchTaskConversationContextSnapshot(taskId: string, snapshot: ConversationContext): Promise<void>;
+  saveResearchTaskAnswerPlanSnapshot(taskId: string, snapshot: AnswerPlan): Promise<void>;
   listResearchTaskEvents(taskId: string, afterId?: number): ResearchTaskEvent[];
   listRecoverableResearchTasks(): ResearchTaskRecord[];
   failInterruptedResearchTasks(): number;
@@ -1405,7 +1408,7 @@ export class SqliteStore implements CollectorStore {
       const currentMessage = this.getResearchMessage(current.outputMessageId);
       if (!currentMessage) throw new Error("Research output message not found");
       const now = new Date().toISOString();
-      const { bodyPlan: _bodyPlan, streamCheckpoint: _streamCheckpoint, sliceCount: _sliceCount, ...freshTask } = current;
+      const { bodyPlan: _bodyPlan, streamCheckpoint: _streamCheckpoint, sliceCount: _sliceCount, answerPlanSnapshot: _answerPlan, ...freshTask } = current;
       const queued: ResearchTaskRecord = {
         ...(options?.preserveContent ? current : freshTask), status: "queued", retryable: false, provider, model, promptVersion,
         generationAttempt: options?.preserveContent
@@ -1472,7 +1475,7 @@ export class SqliteStore implements CollectorStore {
       const message = this.getResearchMessage(task.outputMessageId);
       if (!message) throw new Error("Research output message not found");
       const now = new Date().toISOString();
-      const { bodyPlan: _bodyPlan, streamCheckpoint: _checkpoint, sliceCount: _sliceCount, ...freshTask } = task;
+      const { bodyPlan: _bodyPlan, streamCheckpoint: _checkpoint, sliceCount: _sliceCount, answerPlanSnapshot: _answerPlan, ...freshTask } = task;
       queued = {
         ...freshTask,
         status: "queued",
@@ -1536,8 +1539,9 @@ export class SqliteStore implements CollectorStore {
         updatedAt: now,
       };
       this.updateResearchMessage(message);
+      const { answerPlanSnapshot: _answerPlan, ...currentWithoutAnswerPlan } = current;
       queued = {
-        ...current, status: "queued", retryable: false, provider, model, promptVersion,
+        ...currentWithoutAnswerPlan, status: "queued", retryable: false, provider, model, promptVersion,
         generationAttempt: (current.generationAttempt ?? 0) + 1,
         error: undefined, updatedAt: now, startedAt: undefined, completedAt: undefined,
       };
@@ -1580,8 +1584,9 @@ export class SqliteStore implements CollectorStore {
       } = currentMessage;
       const cleared: ResearchMessageRecord = { ...restMessage, content: "", status: "pending", updatedAt: now };
       this.updateResearchMessage(cleared);
+      const { answerPlanSnapshot: _answerPlan, ...currentWithoutAnswerPlan } = current;
       queued = {
-        ...current, status: "queued", retryable: false, provider, model, promptVersion,
+        ...currentWithoutAnswerPlan, status: "queued", retryable: false, provider, model, promptVersion,
         generationAttempt: (current.generationAttempt ?? 0) + 1,
         error: undefined, updatedAt: now, startedAt: undefined, completedAt: undefined,
       };
@@ -1645,6 +1650,20 @@ export class SqliteStore implements CollectorStore {
         throw new Error("Conversation context identity does not match the research task");
       }
       this.updateResearchTask({ ...task, conversationContextSnapshot: structuredClone(snapshot), updatedAt: new Date().toISOString() });
+    });
+  }
+
+  async saveResearchTaskAnswerPlanSnapshot(taskId: string, snapshot: AnswerPlan): Promise<void> {
+    this.transaction(() => {
+      const task = this.getResearchTask(taskId);
+      if (!task) throw new Error("Research task not found");
+      if ((task.generationAttempt ?? 1) !== snapshot.generationAttempt) {
+        throw new Error("Answer plan generation attempt does not match the research task");
+      }
+      if (task.id !== snapshot.taskId || task.inputMessageId !== snapshot.inputMessageId || task.outputMessageId !== snapshot.outputMessageId) {
+        throw new Error("Answer plan identity does not match the research task");
+      }
+      this.updateResearchTask({ ...task, answerPlanSnapshot: structuredClone(snapshot), updatedAt: new Date().toISOString() });
     });
   }
 

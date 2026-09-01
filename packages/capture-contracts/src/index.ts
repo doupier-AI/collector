@@ -99,6 +99,7 @@ export const CONTEXT_PURPOSES = [
   "connection_test",
   "research_chat",
   "deep_research",
+  "answer_planning",
   "research_grounding",
   "research_body",
   "research_body_outline",
@@ -175,7 +176,7 @@ interface ContextCandidateBase {
 
 export interface BehaviorRuleContextCandidate extends ContextCandidateBase {
   channel: "behavior_rule";
-  ruleKind: "product_boundary" | "task_contract" | "safety" | "turn_instruction" | "project_instruction" | "global_instruction";
+  ruleKind: "product_boundary" | "task_contract" | "safety" | "turn_instruction" | "project_instruction" | "global_instruction" | "answer_plan";
 }
 
 export interface FactualEvidenceContextCandidate extends ContextCandidateBase {
@@ -314,6 +315,108 @@ export interface ConversationContext {
   items: readonly ConversationContextItem[];
   summaries: readonly ConversationContextSummary[];
   relations: readonly ConversationContextRelation[];
+}
+
+export const ANSWER_PLAN_SCHEMA_VERSION = 1 as const;
+export const ANSWER_PLANNER_VERSION = "answer-planner-v1" as const;
+
+export const ANSWER_TASK_FAMILIES = [
+  "explanation",
+  "comparison",
+  "decision",
+  "planning",
+  "diagnosis",
+  "factual_query",
+  "research_synthesis",
+  "summarization",
+  "rewriting",
+  "mixed",
+  "direct_response",
+] as const;
+export type AnswerTaskFamily = (typeof ANSWER_TASK_FAMILIES)[number];
+
+export const ANSWER_PLAN_OPERATIONS = [
+  "answer_directly",
+  "explain",
+  "compare",
+  "recommend",
+  "plan_steps",
+  "diagnose",
+  "propose_actions",
+  "verify_facts",
+  "synthesize",
+  "summarize",
+  "rewrite",
+  "state_assumptions",
+  "request_clarification",
+] as const;
+export type AnswerPlanOperation = (typeof ANSWER_PLAN_OPERATIONS)[number];
+
+export interface AnswerPlanConstraint {
+  kind: "format" | "length" | "language" | "tone" | "scope" | "intent" | "other";
+  value: string;
+  source: "current_turn" | "conversation_context" | "explicit_setting";
+  sourceMessageId?: string;
+}
+
+export interface AnswerPlanAssumption {
+  statement: string;
+  risk: "low" | "material";
+  source: "planner" | "conversation_context";
+}
+
+export interface AnswerEvidencePolicy {
+  mode: "none" | "available_context" | "provided_only" | "web_if_authorized" | "clarify_authorization";
+  requiresCurrentFacts: boolean;
+  access: "not_required" | "authorized" | "not_authorized" | "unavailable";
+  conflictHandling: "preserve_for_evidence_chain";
+}
+
+export interface AnswerUncertaintyHandling {
+  action: "proceed" | "proceed_with_disclosed_assumptions" | "preserve_ambiguity" | "request_clarification" | "state_limitations";
+  reasons: readonly string[];
+}
+
+export interface AnswerPlanMachineCheck {
+  id: string;
+  kind: "non_empty" | "format" | "required_heading" | "forbidden_string" | "truncation" | "body_version" | "citation_range";
+  expected?: string;
+  source: "product" | "explicit_constraint" | "plan";
+}
+
+export interface AnswerCompletionContract {
+  machineChecks: readonly AnswerPlanMachineCheck[];
+  semanticCriteria: readonly string[];
+}
+
+/**
+ * Versioned, cross-domain writing plan. It is derived behaviour context only: it never owns facts,
+ * identity, authorization or safety decisions and it is not a user-visible body or evaluation rubric.
+ */
+export interface AnswerPlan {
+  schemaVersion: typeof ANSWER_PLAN_SCHEMA_VERSION;
+  planId: string;
+  plannerVersion: string;
+  buildFingerprint: string;
+  taskId: string;
+  generationAttempt: number;
+  inputMessageId: string;
+  outputMessageId?: string;
+  conversationContextId: string;
+  planning: {
+    mode: "deterministic" | "model_assisted" | "fallback";
+    modelCall: "not_needed" | "completed" | "unavailable" | "failed";
+    reason?: "simple_clear_task" | "complex_task" | "material_ambiguity" | "model_unavailable" | "invalid_model_output" | "internal_error";
+  };
+  taskFamily: AnswerTaskFamily;
+  userGoal: string;
+  audience: { description: string; source: "explicit" | "unspecified" };
+  explicitConstraints: readonly AnswerPlanConstraint[];
+  requiredOperations: readonly AnswerPlanOperation[];
+  assumptions: readonly AnswerPlanAssumption[];
+  evidencePolicy: AnswerEvidencePolicy;
+  uncertaintyHandling: AnswerUncertaintyHandling;
+  completionContract: AnswerCompletionContract;
 }
 
 export const PROMPT_ENVELOPE_VERSION = "prompt-envelope-v1" as const;
@@ -736,6 +839,7 @@ export interface ModelCallRecord {
   id: string;
   workflowRunId?: string;
   workflowStepId?: string;
+  answerPlanId?: string;
   provider: string;
   model: string;
   purpose: string;
@@ -800,6 +904,7 @@ export interface RunRecordModelCallView {
   model: string;
   purpose: string;
   promptVersion: string;
+  answerPlanId?: string;
   envelope?: PromptEnvelopeObservation;
   availability?: { status: "available" | "unavailable"; reason?: string };
   requestedBudget?: RequestedModelBudget;
@@ -2088,6 +2193,8 @@ export interface ResearchTaskRecord {
   contextAssemblySnapshot?: ResearchContextAssemblySnapshot;
   /** 当前生成尝试使用的版本化对话语义快照；暂停/恢复复用，新生成尝试重新解析。 */
   conversationContextSnapshot?: ConversationContext;
+  /** 当前生成尝试使用的版本化派生回答计划；不属于正文、事实、搜索或普通导出。 */
+  answerPlanSnapshot?: AnswerPlan;
   /** Category-only explanation for the current answer; never contains candidate text or hidden prompts. */
   contextExplanations?: ContextExplanationCode[];
   error?: ResearchTaskError;

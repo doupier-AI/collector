@@ -60,21 +60,22 @@ test("writeResearchBody 以自由文本请求正文，不强制 JSON 输出", as
   assert.equal(requests.length, 1);
   // 自由正文不携带 responseFormat，传输层不再强制 JSON。
   assert.equal(requests[0]?.responseFormat, undefined);
-  assert.match(requests[0]?.prompt ?? "", /连贯、完整/);
+  assert.match(requests[0]?.prompt ?? "", /根据实际任务自然组织/);
+  assert.match(requests[0]?.prompt ?? "", /标题、列表、表格、连续正文与长度都服从当前任务和用户明确要求/);
 });
 
-test("T02：普通回答提示词收敛为连续行文，不再鼓励 ## 分节（#92）", async () => {
+test("AQ-03：普通回答不再被全局连续正文或禁止标题策略锁死", async () => {
   const { provider, requests } = makeProvider(() => "连续正文。");
   const gateway = new ModelGateway(provider);
   await gateway.writeResearchBody([{ role: "user", content: "解释本地优先这个概念" }]);
   const prompt = requests[0]?.prompt ?? "";
-  // 旧「需要分节时…二级标题」鼓励措辞整体移除。
+  // 旧的固定分节与固定连续正文策略都不再存在。
   assert.doesNotMatch(prompt, /需要分节时/);
   assert.doesNotMatch(prompt, /二级标题/);
-  // 新的连续行文约束在场。
-  assert.match(prompt, /连续的行文/);
-  assert.match(prompt, /不要用 Markdown 标题把内容拆成小节/);
-  assert.match(prompt, /碎片化的小标题/);
+  assert.doesNotMatch(prompt, /不要用 Markdown 标题把内容拆成小节/);
+  assert.doesNotMatch(prompt, /内容详实、论述充分/);
+  assert.match(prompt, /不套固定模板/);
+  assert.match(prompt, /当前用户本轮的明确目标、格式和限制始终高于派生 Answer Plan/);
   assertCleanBodyContract(prompt);
 });
 
@@ -148,7 +149,8 @@ test("answerResearchConversation 始终输出干净正文（术语预览路径�
     { parentChainContext: parentChain },
   );
   const onPrompt = on.requests[0]?.prompt ?? "";
-  assert.match(onPrompt, /plain text only/);
+  assert.match(onPrompt, /clean Markdown only/);
+  assert.match(onPrompt, /explicit user format and intent rules/);
   assert.match(onPrompt, /no .*internal control protocol/);
   assert.doesNotMatch(onPrompt, /\[\[concept:|每个段落中首次出现的重要概念都要标记|最多标记 4 个/);
   assert.doesNotMatch(onPrompt, /不要再为它们输出弱标记/);

@@ -669,8 +669,10 @@ test("重新生成：旧正文/思考快照进 versions，消息清空重跑，�
   assert.equal(store.getResearchMessage(accepted.outputMessage.id)!.content, "第一轮正文。");
   const firstSnapshot = store.getResearchTask(accepted.task.id)?.contextAssemblySnapshot;
   const firstConversationContext = store.getResearchTask(accepted.task.id)?.conversationContextSnapshot;
+  const firstAnswerPlan = store.getResearchTask(accepted.task.id)?.answerPlanSnapshot;
   assert.ok(firstSnapshot);
   assert.ok(firstConversationContext);
+  assert.ok(firstAnswerPlan);
 
   await service.research.regenerateTask(accepted.task.id);
   const queued = store.getResearchTask(accepted.task.id)!;
@@ -689,10 +691,15 @@ test("重新生成：旧正文/思考快照进 versions，消息清空重跑，�
   assert.equal(done.versions?.[0]?.content, "第一轮正文。", "旧版可回看");
   const regeneratedSnapshot = store.getResearchTask(accepted.task.id)?.contextAssemblySnapshot;
   const regeneratedConversationContext = store.getResearchTask(accepted.task.id)?.conversationContextSnapshot;
+  const regeneratedAnswerPlan = store.getResearchTask(accepted.task.id)?.answerPlanSnapshot;
   assert.equal(regeneratedSnapshot?.generationAttempt, (firstSnapshot?.generationAttempt ?? 0) + 1, "重新生成是新的装配尝试");
-  assert.equal(regeneratedSnapshot?.sourceFingerprint, firstSnapshot?.sourceFingerprint, "来源未变时新尝试可确定性重装配同一基础材料");
+  const baseSources = (snapshot: typeof firstSnapshot) => snapshot?.sources.filter((source) => !source.candidateId.startsWith("answer-plan-context:"));
+  assert.deepEqual(baseSources(regeneratedSnapshot), baseSources(firstSnapshot), "重新生成时用户问题与事实来源保持稳定");
+  assert.notEqual(regeneratedSnapshot?.sourceFingerprint, firstSnapshot?.sourceFingerprint, "版本化 Answer Plan 作为派生来源随新尝试更新");
   assert.equal(regeneratedConversationContext?.generationAttempt, (firstConversationContext?.generationAttempt ?? 0) + 1);
   assert.notEqual(regeneratedConversationContext?.contextId, firstConversationContext?.contextId, "重新生成必须重解析新快照");
+  assert.equal(regeneratedAnswerPlan?.generationAttempt, (firstAnswerPlan?.generationAttempt ?? 0) + 1);
+  assert.notEqual(regeneratedAnswerPlan?.planId, firstAnswerPlan?.planId, "重新生成必须形成新的版本化 Answer Plan");
   store.close();
 });
 
