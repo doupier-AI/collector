@@ -32,6 +32,7 @@ import {
   normalizedQualifiedEvidenceIdentities,
   productionScenarioFromCase,
   passingBody,
+  parseJudgeResult,
   releaseEvidenceFromEvaluatedRun,
   ReleaseQualityModule,
   decideLongFormGate,
@@ -244,8 +245,22 @@ test("judge input is a whitelist and cannot see hidden reasoning, provider brand
   for (const sentinel of ["CANARY_REASONING", "CANARY_PROVIDER", "CANARY_PLAN", "CANARY_EXPECTATION"]) assert.ok(!serialized.includes(sentinel));
   const prompt = JSON.parse(createLayeredJudgePrompt(buildJudgeInput(run)));
   assert.deepEqual(Object.keys(prompt.layers).sort(), ["generic_semantic", "task_family"]);
-  assert.deepEqual(prompt.outputContract.requiredLayers, ["generic_semantic", "task_family"]);
-  assert.deepEqual(prompt.outputContract.dimensions[0].layer.enum, ["generic_semantic", "task_family"]);
+  assert.equal(prompt.responseRequirements.rootKey, "dimensions");
+  assert.deepEqual(prompt.responseRequirements.requiredLayers, ["generic_semantic", "task_family"]);
+  assert.deepEqual(prompt.responseRequirements.dimensionSchema.layer.enum, ["generic_semantic", "task_family"]);
+  assert.match(prompt.instruction, /响应根对象只能有 dimensions 键/);
+});
+
+test("absolute Judge normalizes only the exact observed two-layer array wrapper", () => {
+  const result = parseJudgeResult({
+    layers: {
+      generic_semantic: [{ dimension: "相关性", verdict: "pass", reason: "符合", evidenceLocations: [], confidence: 0.8 }],
+      task_family: [{ dimension: "比较", verdict: "pass", reason: "符合", evidenceLocations: [], confidence: 0.8 }],
+    },
+  }, 4);
+  assert.deepEqual(result.dimensions.map((entry) => entry.layer), ["generic_semantic", "task_family"]);
+  assert.throws(() => parseJudgeResult({ layers: { generic_semantic: [], unexpected: [] } }, 4), /has no dimensions/);
+  assert.throws(() => parseJudgeResult({ layers: { generic_semantic: {}, task_family: [] } }, 4), /has no dimensions/);
 });
 
 test("missing identity on a supported applicable artifact rejects semantic scoring", () => {

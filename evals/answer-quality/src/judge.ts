@@ -24,15 +24,16 @@ export function buildJudgeInput(run: JudgeSourceRun): JudgeInput {
 
 export function createLayeredJudgePrompt(input: JudgeInput): string {
   return JSON.stringify({
-    instruction: `只根据公开用户请求、显式设置、最终正文、已准入证据和有效引用评分。不要推测隐藏计划、推理或供应商能力。evidenceLocations 使用 JavaScript 字符偏移，必须满足 0 <= startOffset < endOffset <= ${input.finalBody.length}；无法精确定位时返回空数组。`,
+    instruction: `只根据公开用户请求、显式设置、最终正文、已准入证据和有效引用评分。不要推测隐藏计划、推理或供应商能力。响应根对象只能有 dimensions 键，不得使用 outputContract 或 layers 包装。evidenceLocations 使用 JavaScript 字符偏移，必须满足 0 <= startOffset < endOffset <= ${input.finalBody.length}；无法精确定位时返回空数组。`,
     finalBodyLength: input.finalBody.length,
     layers: {
       generic_semantic: ["任务相关性", "显式指令遵循", "覆盖完整性", "事实克制", "正文连贯性"],
       task_family: ["解释", "比较", "决策", "规划", "诊断", "事实查询", "研究综合", "总结", "改写", "混合任务"],
     },
-    outputContract: {
+    responseRequirements: {
+      rootKey: "dimensions",
       requiredLayers: ["generic_semantic", "task_family"],
-      dimensions: [{ layer: { enum: ["generic_semantic", "task_family"] }, dimension: "string", verdict: { enum: ["pass", "fail", "not_applicable"] }, reason: "string", evidenceLocations: [{ startOffset: 0, endOffset: 1 }], confidence: 0.5 }],
+      dimensionSchema: { layer: { enum: ["generic_semantic", "task_family"] }, dimension: "string", verdict: { enum: ["pass", "fail", "not_applicable"] }, reason: "string", evidenceLocations: [{ startOffset: 0, endOffset: 1 }], confidence: 0.5 },
     },
     input,
   });
@@ -66,7 +67,7 @@ export class OpenAiCompatibleJudgeAdapter implements AnswerJudgeAdapter {
     const apiKey = await this.options.apiKey();
     if (!apiKey) throw new Error("Judge credential is unavailable");
     const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
-      { role: "system", content: "Return valid JSON only. Evaluate the supplied final answer without hidden reasoning or provider assumptions. Evidence offsets outside the declared finalBodyLength are invalid." },
+      { role: "system", content: 'Return valid JSON only. The response root must be exactly {"dimensions":[...]}; never wrap it in outputContract or layers. Evaluate the supplied final answer without hidden reasoning or provider assumptions. Evidence offsets outside the declared finalBodyLength are invalid.' },
       { role: "user", content: createLayeredJudgePrompt(input) },
     ];
     for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -94,7 +95,7 @@ export class OpenAiCompatibleJudgeAdapter implements AnswerJudgeAdapter {
         if (attempt === 2) throw error;
         messages.push(
           { role: "assistant", content },
-          { role: "user", content: `上一结果不符合输出契约：${error instanceof Error ? error.message : "invalid result"}。重新返回完整 JSON；所有 evidenceLocations 必须落在 0..${input.finalBody.length}，不确定时用空数组。` },
+          { role: "user", content: `上一结果不符合输出契约：${error instanceof Error ? error.message : "invalid result"}。仅返回根对象 {"dimensions":[...]}，不得使用 outputContract 或 layers 包装；所有 evidenceLocations 必须落在 0..${input.finalBody.length}，不确定时用空数组。` },
         );
       }
     }
@@ -109,8 +110,9 @@ export function parseJudgeResult(value: unknown, bodyLength: number): JudgeResul
   const result = !Array.isArray(parsed.dimensions) && wrapped && typeof wrapped === "object" && !Array.isArray(wrapped)
     ? wrapped as Record<string, unknown>
     : parsed;
-  if (!Array.isArray(result.dimensions)) throw new Error(`Judge result has no dimensions: keys=${Object.keys(result).slice(0, 8).join(",")}`);
-  const dimensions = result.dimensions.map((entry): JudgeDimensionResult => {
+  const dimensionEntries = Array.isArray(result.dimensions) ? result.dimensions : dimensionsFromLayerMap(result.layers);
+  if (!dimensionEntries) throw new Error(`Judge result has no dimensions: shape=${judgeResultShape(result)}`);
+  const dimensions = dimensionEntries.map((entry): JudgeDimensionResult => {
     if (!entry || typeof entry !== "object") throw new Error("Judge dimension must be an object");
     const item = entry as Record<string, unknown>;
     const layer = item.layer;
@@ -135,6 +137,33 @@ export function parseJudgeResult(value: unknown, bodyLength: number): JudgeResul
     };
   });
   return { dimensions };
+}
+
+function dimensionsFromLayerMap(value: unknown): unknown[] | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const layers = value as Record<string, unknown>;
+  const keys = Object.keys(layers).sort();
+  if (keys.length !== 2 || keys[0] !== "generic_semantic" || keys[1] !== "task_family") return undefined;
+  const genericSemantic = layers.generic_semantic;
+  const taskFamily = layers.task_family;
+  if (!Array.isArray(genericSemantic) || !Array.isArray(taskFamily)) return undefined;
+  const entries = { generic_semantic: genericSemantic, task_family: taskFamily };
+  return (["generic_semantic", "task_family"] as const).flatMap((layer) => entries[layer].map((entry: unknown) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+    const dimension = entry as Record<string, unknown>;
+    return dimension.layer === undefined ? { ...dimension, layer } : dimension;
+  }));
+}
+
+function judgeResultShape(value: Record<string, unknown>): string {
+  return Object.entries(value).slice(0, 8).map(([key, entry]) => {
+    if (Array.isArray(entry)) return `${key}:array`;
+    if (entry && typeof entry === "object") {
+      const nested = Object.entries(entry as Record<string, unknown>).slice(0, 8).map(([nestedKey, nestedEntry]) => `${nestedKey}:${Array.isArray(nestedEntry) ? "array" : typeof nestedEntry}`);
+      return `${key}:object(${nested.join("|")})`;
+    }
+    return `${key}:${typeof entry}`;
+  }).join(",");
 }
 
 export function comparePairwiseJudgments(judgments: readonly PairwiseJudgment[]): PairwiseDiagnostic {
