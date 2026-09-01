@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "decisionId": "aq-long-form-gate-v1",
+  "preregisteredAt": "2026-09-01T15:18:01.7373798+08:00",
+  "status": "preregistered",
+  "candidateSha": "834af0c040cecfb3223542cde2db59f7e1dcaac8",
+  "case": {
+    "corpusVersion": "aq-corpus-v1",
+    "caseId": "AQ-MIX-004",
+    "caseVersion": "aq-corpus-v1.10.4",
+    "robustnessTag": "long_form_coherence"
+  },
+  "rubric": {
+    "version": "aq-long-form-rubric-v1",
+    "mustPassDimensions": [
+      "cross_section_repetition",
+      "cross_section_contradiction",
+      "required_operation_coverage",
+      "terminology_consistency",
+      "completion_integrity"
+    ],
+    "judgeCalibration": {
+      "corpusVersion": "aq-corpus-v1",
+      "report": "evals/answer-quality/reviews/aq-corpus-v1-human-calibration-report.json",
+      "agreementRate": 1,
+      "scopeBoundary": "The existing calibration supports the generic evaluation protocol. Activation additionally requires deterministic hard checks and stable long-form results; the long-form semantic dimensions are not treated as human-calibrated in isolation."
+    }
+  },
+  "releaseProfile": {
+    "version": "aq-long-form-release-v1",
+    "model": {
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "thinking": true,
+      "configurationVersion": 1
+    },
+    "promptEnvelopeVersion": "research-slices-v1",
+    "contextBudget": {
+      "maxInputTokens": 24000,
+      "reservedOutputTokens": 6000
+    },
+    "outlineOutputBudgetTokens": 4000,
+    "sectionOutputBudgetTokens": 16000
+  },
+  "sampleProtocol": {
+    "generationRepetitions": 3,
+    "runOrderPerRepetition": [
+      "current_final_writing",
+      "minimal_prompt_adjustment",
+      "long_form_state_prototype"
+    ],
+    "additionalRunLimit": 0,
+    "stopRule": "Run all preregistered repetitions unless a credential, provider, or protocol failure makes the packet unverifiable; do not add or remove runs after observing quality results."
+  },
+  "candidates": [
+    {
+      "id": "current_final_writing",
+      "description": "Current production plan-then-write behavior: outline plus the existing continuation_state carrying outline, section index, and the last 4000 characters of written body."
+    },
+    {
+      "id": "minimal_prompt_adjustment",
+      "description": "Current behavior plus one admitted task-contract rule requiring each section to advance its own outline item, preserve established terms and conclusions, avoid restating completed sections, and leave the requested conclusion explicit. Budgets are unchanged."
+    },
+    {
+      "id": "long_form_state_prototype",
+      "description": "Evaluation-only versioned state snapshot containing plan progress, outline-derived terminology conventions, completed-section summaries, unresolved outline items, recent body tail, generation attempt, body version, and empty evidence allocations. It is not production implementation."
+    }
+  ],
+  "decisionThresholds": {
+    "stableDefectMinimumRuns": 2,
+    "releaseLineMinimumFullyPassingRuns": 2,
+    "minimumLongFormStateDimensionPassRateGain": 0.2,
+    "minimumLongFormStatePairwiseWinsAgainstMinimal": 2,
+    "maximumOutputTokenIncreaseRatio": 0.2,
+    "maximumEstimatedCostIncreaseRatio": 0.2,
+    "maximumFirstCharacterLatencyIncreaseRatio": 0.25,
+    "maximumCompleteLatencyIncreaseRatio": 0.25,
+    "noDimensionRegression": true
+  },
+  "aggregation": {
+    "dimensionPassRate": "passed must-pass dimension results divided by 15 candidate-run dimension results",
+    "fullyPassingRun": "all five must-pass dimensions pass and deterministic completion checks pass",
+    "resourceMetric": "arithmetic mean across the three completed generation runs",
+    "resourceIncreaseRatio": "(long_form_state_prototype mean - minimal_prompt_adjustment mean) / minimal_prompt_adjustment mean",
+    "firstCharacterLatency": "wall time from candidate start until the first completed section becomes available, matching the current non-streaming per-section production path",
+    "pairwise": "For each generation repetition, compare minimal_prompt_adjustment with long_form_state_prototype in both display orders. The repetition counts as a LongFormState win only when both orders select the same canonical LongFormState body; tie or disagreement is not a win."
+  },
+  "decisionRule": {
+    "activated": "Only if the same must-pass defect is stable in current_final_writing, minimal_prompt_adjustment does not reach the release line, long_form_state_prototype reaches the release line, gains at least the preregistered pass-rate margin, wins the preregistered blind comparisons, has no dimension regression, and stays within every resource limit.",
+    "notActivated": "Use not_activated when current or minimal reaches the release line, the LongFormState benefit is unstable or below threshold, any required evidence is unavailable, or any resource/non-regression limit is missed."
+  },
+  "identityRequirements": [
+    "candidate SHA",
+    "case and rubric versions",
+    "provider, model, thinking and Prompt Envelope version",
+    "requested, resolved, applied and provider usage budgets",
+    "Answer Plan identity",
+    "ConversationContext identity",
+    "qualified and admitted evidence identities, including an explicit empty set",
+    "ContextAssembly attempt identities",
+    "generation attempt and body version",
+    "estimated cost, first-character latency and complete latency"
+  ]
+}
