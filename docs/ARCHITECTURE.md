@@ -42,6 +42,7 @@ packages/model-gateway ──→ packages/capture-contracts
 | 会话、消息、任务和回答生成 | `apps/api/src/research.ts` |
 | 回答计划与确定性完成检查 | `apps/api/src/answer-planning.ts`、`apps/api/src/answer-completion.ts` |
 | 联网证据准备、政策覆盖账本、资格与装箱 | `apps/api/src/evidence-preparation.ts`、`apps/api/src/web-search-agent.ts` |
+| 最终正文到已准入证据的引用归因、支持判定与批次记录 | `apps/api/src/citation-attribution.ts` |
 | 深入研究和节点生长 | `apps/api/src/deep-research.ts` |
 | 导入、解析与章节 | `apps/api/src/research-import.ts`、`apps/api/src/research-chapters.ts`、`apps/api/src/parsers.ts` |
 | 选区、标记、术语与稍后处理的历史实现 | `apps/api/src/selection.ts`、`apps/api/src/research-later.ts`、`apps/api/src/term-preview.ts` |
@@ -69,6 +70,7 @@ packages/model-gateway ──→ packages/capture-contracts
 - AI 回答与生成消费经准入的上下文与证据，只由最终写作阶段写正文。
 - 阅读与内容操作拥有正文呈现、导入内容、稳定位置和用户选区动作。
 - 来源与证据拥有来源身份、健康、定位和候选证据；不决定最终答案。
+- 引用归因只根据最终正文版本和已准入证据生成 accepted/rejected 记录；它派生引用与 grounded 状态，但不改写正文。
 - 研究地图与知识关系只投影节点与关系，不保存正文副本。
 - 学习适应只提供低权重、用户可控的适应信息。
 - 本地运行与控制拥有认证、凭证、模型配置、调度和观测，不拥有产品内容语义。

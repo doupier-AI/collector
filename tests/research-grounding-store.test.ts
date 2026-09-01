@@ -12,6 +12,62 @@ async function createStore() {
   return { root, store, close: async () => { store.close(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } };
 }
 
+const acceptNativeAttributions: NonNullable<ResearchGenerationProvider["attributeCitations"]> = async (assembly) => {
+  const payload = JSON.parse(assembly.adopted.map((item) => item.candidate.content).join("\n")) as {
+    nativeCandidates: Array<{ candidateId: string; sourceOrdinal: number; startOffset: number; endOffset: number; claimText: string }>;
+    sources: Array<{ sourceOrdinal: number; content: string }>;
+  };
+  return {
+    output: JSON.stringify({
+      attributions: payload.nativeCandidates.map((candidate) => {
+        const source = payload.sources.find((item) => item.sourceOrdinal === candidate.sourceOrdinal);
+        const evidenceText = source?.content ?? "";
+        return {
+          nativeCandidateId: candidate.candidateId,
+          sourceOrdinal: candidate.sourceOrdinal,
+          claimStartOffset: candidate.startOffset,
+          claimEndOffset: candidate.endOffset,
+          claimText: candidate.claimText,
+          evidenceStartOffset: 0,
+          evidenceEndOffset: evidenceText.length,
+          evidenceText,
+          support: true,
+          confidence: 0.95,
+        };
+      }),
+    }),
+    provider: "attribution-fake",
+    model: "attribution-model",
+    producerVersion: "citation-attribution-producer-v1",
+  };
+};
+
+const acceptDiscoveredAttribution: NonNullable<ResearchGenerationProvider["attributeCitations"]> = async (assembly) => {
+  const payload = JSON.parse(assembly.adopted.map((item) => item.candidate.content).join("\n")) as {
+    body: { startOffset: number; content: string };
+    sources: Array<{ sourceOrdinal: number; content: string }>;
+  };
+  const source = payload.sources[0]!;
+  return {
+    output: JSON.stringify({
+      attributions: [{
+        sourceOrdinal: source.sourceOrdinal,
+        claimStartOffset: payload.body.startOffset,
+        claimEndOffset: payload.body.startOffset + payload.body.content.length,
+        claimText: payload.body.content,
+        evidenceStartOffset: 0,
+        evidenceEndOffset: source.content.length,
+        evidenceText: source.content,
+        support: true,
+        confidence: 0.95,
+      }],
+    }),
+    provider: "attribution-fake",
+    model: "attribution-model",
+    producerVersion: "citation-attribution-producer-v1",
+  };
+};
+
 test("引用来源过滤同时匹配 runId 与 sourceId", () => {
   const createdAt = "2026-01-01T00:00:00.000Z";
   const sources = [
@@ -23,7 +79,7 @@ test("引用来源过滤同时匹配 runId 与 sourceId", () => {
   assert.deepEqual(citedGroundingSources(sources, citations).map((source) => [source.runId, source.ordinal]), [["run-b", 5]]);
 });
 
-test("EvidenceBundle policy status reaches storage and API without becoming grounded", async (t) => {
+test("EvidenceBundle policy remains separate while accepted attribution derives grounded", async (t) => {
   const harness = await createStore();
   t.after(() => harness.close());
   let admittedEvidenceIds: string[] = [];
@@ -65,9 +121,10 @@ test("EvidenceBundle policy status reaches storage and API without becoming grou
         .filter((item) => item.candidate.source.kind === "web_source")
         .map((item) => item.candidate.source.id);
       finalWriterSourceIds = options.sources.map((source) => source.providerSourceId);
-      yield "Evidence-prepared final answer.";
+      yield "The current Node release documentation contains complete release information.";
       options.onStreamDone?.({ finishReason: "stop" });
     },
+    attributeCitations: acceptDiscoveredAttribution,
   };
   const service = new ResearchSessionService(harness.store, { provider, autoRunTasks: false, buildFingerprint: "build:test" });
   const session = await service.createSession("Evidence", "evidence-session");
@@ -76,9 +133,10 @@ test("EvidenceBundle policy status reaches storage and API without becoming grou
 
   const task = service.getTask(turn.task.id);
   assert.equal(task.status, "completed");
-  assert.equal(task.groundingScope?.status, "evidence_prepared");
+  assert.equal(task.groundingScope?.status, "grounded");
   assert.equal(task.groundingScope?.evidencePolicyStatus, "policy_satisfied");
-  assert.equal(task.groundingScope?.citationCount, 0);
+  assert.equal(task.groundingScope?.sourceCount, 1);
+  assert.equal(task.groundingScope?.citationCount, 1);
   assert.equal(admittedEvidenceIds.length, 1);
   assert.deepEqual(admittedEvidenceIds, finalWriterSourceIds);
   const run = harness.store.listResearchGroundingRuns(turn.task.id)[0];
@@ -86,9 +144,12 @@ test("EvidenceBundle policy status reaches storage and API without becoming grou
   assert.equal(run.evidenceBundle.evidencePolicyStatus, "policy_satisfied");
   assert.equal(Object.hasOwn(run.evidenceBundle, "grounded"), false);
   assert.notEqual(run.status, "grounded");
+  assert.equal(run.citationAttribution?.attributions[0]?.status, "accepted");
+  assert.equal(run.citationAttribution?.attributions[0]?.candidateProducer.kind, "independent_model");
+  assert.equal(run.citationAttribution?.attributions[0]?.bodyVersionId, harness.store.getBodyVersionForMessage(turn.task.outputMessageId)?.id);
   const viewTask = service.getSession(session.id).tasks.find((item) => item.id === turn.task.id);
   assert.equal(viewTask?.groundingScope?.evidencePolicyStatus, "policy_satisfied");
-  assert.notEqual(viewTask?.groundingScope?.status, "grounded");
+  assert.equal(viewTask?.groundingScope?.status, "grounded");
 });
 
 test("最终写作证据保留原来源序号，并在发送前限额、净化 URL 与脱敏", () => {
@@ -121,7 +182,7 @@ test("最终写作证据保留原来源序号，并在发送前限额、净化 U
   assert.match(evidence, /…/, "单条证据超过 2000 字符时截断");
 });
 
-test("grounded research persists all sources but views only expose cited original ordinals", async (t) => {
+test("provider-native citations cannot bypass final-context admission", async (t) => {
   const harness = await createStore();
   t.after(() => harness.close());
   const provider: ResearchGenerationProvider = {
@@ -193,7 +254,7 @@ test("grounded research persists all sources but views only expose cited origina
   assert.ok(termMarkerTask);
   await capture.termMarkers.processTask(termMarkerTask.id);
   const task = service.getTask(turn.task.id);
-  assert.deepEqual(task.groundingScope && { status: task.groundingScope.status, sourceCount: task.groundingScope.sourceCount, citationCount: task.groundingScope.citationCount }, { status: "grounded", sourceCount: 5, citationCount: 2 });
+  assert.deepEqual(task.groundingScope && { status: task.groundingScope.status, sourceCount: task.groundingScope.sourceCount, citationCount: task.groundingScope.citationCount }, { status: "no_verifiable_sources", sourceCount: 0, citationCount: 0 });
   const run = harness.store.listResearchGroundingRuns(turn.task.id)[0];
   assert.equal(run.queries[0], "collector web search");
   assert.equal(run.responseSummary?.authorization, "[REDACTED]");
@@ -202,7 +263,6 @@ test("grounded research persists all sources but views only expose cited origina
   const storedSources = harness.store.listResearchGroundingSources(run.id);
   assert.equal(storedSources.length, 5);
   const source = storedSources[1];
-  const secondSource = storedSources[4];
   assert.equal(source.url, "https://example.com/source");
   assert.equal(source.title, "Source api-key=[REDACTED]");
   assert.equal(source.snippet, "摘要 authorization=[REDACTED]");
@@ -212,24 +272,21 @@ test("grounded research persists all sources but views only expose cited origina
   assert.equal(output.content, "联网回答内容与补充证据。");
   assert.deepEqual(harness.store.getResearchTermMarkerTaskByMessage(output.id)?.markers.map((marker) => marker.text), ["联网回答"]);
   const citations = harness.store.listResearchCitationsForMessages([output.id]);
-  assert.equal(citations.length, 2);
-  assert.equal(citations[0]?.markerOffset, output.content.indexOf("内容"));
-  const view = service.getSession(session.id);
-  assert.deepEqual(view.groundingSources?.map((item) => ({ id: item.id, ordinal: item.ordinal })), [
-    { id: source.id, ordinal: 2 },
-    { id: secondSource.id, ordinal: 5 },
+  assert.equal(citations.length, 0);
+  assert.deepEqual(run.citationAttribution?.attributions.map((item) => item.rejectionReasons), [
+    ["source_not_admitted"],
+    ["source_not_admitted", "source_content_unavailable"],
   ]);
-  assert.equal(view.citations?.[0]?.sourceId, source.id);
+  const view = service.getSession(session.id);
+  assert.equal(view.groundingSources, undefined);
+  assert.deepEqual(view.citations, []);
   const nodeView = new CaptureService(harness.store, join(harness.root, "artifacts"), undefined, {
     autoRunRecentOrganization: false,
     autoRunResearchTasks: false,
     autoRunResearchImports: false,
     autoRunResearchChapters: false,
   }).nodeGrowth.getNodeView(session.id);
-  assert.deepEqual(nodeView.groundingSources?.map((item) => ({ id: item.id, ordinal: item.ordinal })), [
-    { id: source.id, ordinal: 2 },
-    { id: secondSource.id, ordinal: 5 },
-  ]);
+  assert.equal(nodeView.groundingSources, undefined);
 });
 
 test("联网引用端点越过干净正文范围时不伪造精确位置", async (t) => {
@@ -261,7 +318,7 @@ test("联网引用端点越过干净正文范围时不伪造精确位置", async
   assert.equal(service.getSession(session.id).groundingSources, undefined);
 });
 
-test("供应商原生定位直接绑定干净正文中的精确旁路范围", async (t) => {
+test("供应商原生定位未进入最终上下文时只保留拒绝记录", async (t) => {
   const harness = await createStore();
   t.after(() => harness.close());
   const provider: ResearchGenerationProvider = {
@@ -286,10 +343,10 @@ test("供应商原生定位直接绑定干净正文中的精确旁路范围", as
   const output = harness.store.getResearchMessage(turn.task.outputMessageId);
   assert.equal(output?.content, "本地优先强调数据留在设备上。");
   const citation = harness.store.listResearchCitationsForMessages([turn.task.outputMessageId])[0];
-  assert.ok(citation);
-  assert.equal(citation.location?.exact, "数据留在设备上");
-  assert.equal(citation.location?.contentId, turn.task.outputMessageId);
-  assert.equal(citation.providerCitationId, "native-1");
+  assert.equal(citation, undefined);
+  const run = harness.store.listResearchGroundingRuns(turn.task.id)[0];
+  assert.equal(run.citationAttribution?.attributions[0]?.candidateProducer.kind, "provider_native");
+  assert.deepEqual(run.citationAttribution?.attributions[0]?.rejectionReasons, ["source_not_admitted", "source_content_unavailable"]);
 });
 
 test("仅证据的联网准备必须经独立最终写作，工作区文本永不写入正文", async (t) => {
@@ -318,6 +375,7 @@ test("仅证据的联网准备必须经独立最终写作，工作区文本永�
       yield "写作的正文。";
       options.onStreamDone?.({ finishReason: "stop" });
     },
+    attributeCitations: acceptNativeAttributions,
   };
   const service = new ResearchSessionService(harness.store, { provider, autoRunTasks: false });
   const session = await service.createSession("测试", "final-writer-session");
@@ -413,7 +471,7 @@ test("独立最终写作暂停后重新取证并清空旧正文，来源和正�
     async prepareGrounded() {
       preparations += 1;
       const current = preparations === 1 ? "A" : "B";
-      return { kind: "evidence" as const, evidence: `证据${current}。`, status: "grounded", queries: ["查询"], sources: [{ title: `Source ${current}`, evidenceStatus: "full" }], citations: [] };
+      return { kind: "evidence" as const, evidence: `证据${current}。`, status: "grounded", queries: ["查询"], sources: [{ title: `Source ${current}`, snippet: `证据${current}。`, evidenceStatus: "full" }], citations: [] };
     },
     async *writeGroundedFinalStream(_request, _evidence, options) {
       evidences.push(_evidence);
@@ -429,6 +487,7 @@ test("独立最终写作暂停后重新取证并清空旧正文，来源和正�
       yield "正文B。";
       options.onStreamDone?.({ finishReason: "stop" });
     },
+    attributeCitations: acceptNativeAttributions,
   };
   const service = new ResearchSessionService(harness.store, { provider, autoRunTasks: false });
   const session = await service.createSession("测试", "grounded-pause-session");
@@ -585,7 +644,7 @@ test("独立最终写作失败重试后重新取证并清空旧正文，来源�
   assert.equal(harness.store.listResearchGroundingSources(runId!)[0]?.title, "Source B");
 });
 
-test("仅证据最终写作不沿用原生草稿偏移，粗粒度候选只保留来源与旁路事件", async (t) => {
+test("仅证据最终写作不沿用原生草稿偏移，粗粒度候选留下拒绝记录", async (t) => {
   const harness = await createStore();
   t.after(() => harness.close());
   const provider: ResearchGenerationProvider = {
@@ -609,6 +668,8 @@ test("仅证据最终写作不沿用原生草稿偏移，粗粒度候选只保�
   assert.equal(harness.store.listResearchGroundingSources(runId!).length, 1);
   const candidateEvent = harness.store.listResearchTaskEvents(turn.task.id).find((event) => event.type === "citation_candidate");
   assert.deepEqual(candidateEvent?.type === "citation_candidate" ? candidateEvent.candidate : undefined, { sourceOrdinal: 1 });
+  const run = harness.store.getResearchGroundingRun(runId!);
+  assert.deepEqual(run?.citationAttribution?.attributions[0]?.rejectionReasons, ["source_not_admitted", "source_content_unavailable", "claim_range_missing"]);
 });
 
 test("结构化引用旁路去重重复候选，并保留同一来源支撑多处陈述", async (t) => {
@@ -622,7 +683,7 @@ test("结构化引用旁路去重重复候选，并保留同一来源支撑多�
         kind: "evidence" as const,
         evidence: '{"sources":[{"sourceOrdinal":1,"evidence":"证据"}]}',
         status: "grounded", queries: [],
-        sources: [{ title: "Source", evidenceStatus: "full" }],
+        sources: [{ title: "Source", snippet: "证据", evidenceStatus: "full" }],
         citations: [],
       };
     },
@@ -634,6 +695,7 @@ test("结构化引用旁路去重重复候选，并保留同一来源支撑多�
       yield "第二句。";
       options.onStreamDone?.({ finishReason: "stop" });
     },
+    attributeCitations: acceptNativeAttributions,
   };
   const service = new ResearchSessionService(harness.store, { provider, autoRunTasks: false });
   const session = await service.createSession("测试", "citation-repeat-session");

@@ -255,7 +255,7 @@ describe("AI 回答分块渲染", () => {
       status: "completed",
       inputMessageId: "m-in",
       outputMessageId: "m-out",
-      groundingScope: { status: "grounded", sourceCount: 5, citationCount: 2, runId: "run-1" },
+      groundingScope: { status: "grounded", sourceCount: 2, citationCount: 2, runId: "run-1" },
     });
     view.groundingSources = [
       { id: "source-2", runId: "run-1", ordinal: 2, title: "第二个来源", url: "https://example.com/two", createdAt: "2026-01-01T00:00:00.000Z" },

@@ -13,6 +13,7 @@ import { expect, test, type Page } from "@playwright/test";
 import {
   apiJson,
   apiPortForPage,
+  citeCurrentSelection,
   pairAndOpen,
   readDataDir,
   readResearchNodeTables,
@@ -59,7 +60,7 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     // 旧面板不再出现
 
     // 点击【引用】：浮动胶囊关闭，输入框区域呈现引用态（文本截取 + 移除按钮）
-    await page.getByTestId("floating-capsule-cite").click();
+    await citeCurrentSelection(page);
     await expect(floating).toBeHidden();
     const capsule = page.getByTestId("selection-capsule");
     await expect(capsule).toBeVisible();
@@ -137,7 +138,7 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
 
     const selected = "本地优先会先把输入保存在本机";
     await selectAnswerText(page, selected);
-    await page.getByTestId("floating-capsule-cite").click();
+    await citeCurrentSelection(page);
     await expect(page.getByTestId("selection-capsule")).toBeVisible();
 
     // 模式二：深入研究这段（不输入 query）
@@ -174,7 +175,7 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     });
 
     await selectAnswerText(page, "本地优先会先把输入保存在本机");
-    await page.getByTestId("floating-capsule-cite").click();
+    await citeCurrentSelection(page);
     await expect(page.getByTestId("selection-capsule")).toBeVisible();
 
     // 输入追问方向后再点击"深入研究这段"
@@ -199,7 +200,7 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     });
 
     await selectAnswerText(page, "本地优先会先把输入保存在本机");
-    await page.getByTestId("floating-capsule-cite").click();
+    await citeCurrentSelection(page);
     const capsule = page.getByTestId("selection-capsule");
     await expect(capsule).toBeVisible();
     await expect(capsule).toContainText("本地优先会先把输入保存在本机");
@@ -208,7 +209,7 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     const second = "渐进事件把后续内容写进同一条消息";
     await selectAnswerText(page, second);
     await expect(page.getByTestId("floating-selection-capsule")).toBeVisible();
-    await page.getByTestId("floating-capsule-cite").click();
+    await citeCurrentSelection(page);
     await expect(capsule).toContainText(second);
   });
 
@@ -221,7 +222,7 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
 
     // 创建选区并引用
     await selectAnswerText(page, "本地优先会先把输入保存在本机");
-    await page.getByTestId("floating-capsule-cite").click();
+    await citeCurrentSelection(page);
     await expect(page.getByTestId("selection-capsule")).toBeVisible();
 
     // 通过深入研究创建子节点（这样选区记录会在数据库中，来源返回可以恢复）
@@ -265,7 +266,7 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
 
     // 引用一次使选区持久化（引用即落库，无需创建子节点）
     await selectAnswerText(page, "本地优先会先把输入保存在本机");
-    await page.getByTestId("floating-capsule-cite").click();
+    await citeCurrentSelection(page);
     await expect(page.getByTestId("selection-capsule")).toBeVisible();
 
     const selections = await apiJson<Array<{ id: string }>>(page, `/v1/research-sessions/${sessionId}/selections`);
@@ -289,7 +290,7 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     await expect(mark).toBeHidden();
     await expect(page.getByTestId("floating-selection-capsule")).toBeVisible();
     await expect(page.getByTestId("floating-selection-capsule")).toHaveCount(1);
-    await page.getByTestId("floating-capsule-cite").click();
+    await citeCurrentSelection(page);
     await expect(page.getByTestId("selection-capsule")).toContainText("渐进事件把后续内容写进同一条消息");
   });
 
@@ -301,7 +302,7 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     });
 
     await selectAnswerText(page, "本地优先会先把输入保存在本机");
-    await page.getByTestId("floating-capsule-cite").click();
+    await citeCurrentSelection(page);
     const capsule = page.getByTestId("selection-capsule");
     await expect(capsule).toBeVisible();
 
@@ -360,7 +361,7 @@ test.describe("浮动胶囊与引用闭环（修订一 #9）", () => {
     await expect(page.getByTestId("floating-selection-capsule")).toBeVisible();
 
     // 引用单字选区
-    await page.getByTestId("floating-capsule-cite").click();
+    await citeCurrentSelection(page);
     const capsule = page.getByTestId("selection-capsule");
     await expect(capsule).toBeVisible();
     await expect(capsule).toContainText("本");
@@ -433,7 +434,7 @@ test.describe("窄屏钳制（修订一 #11）", () => {
     expect(box!.x + box!.width).toBeLessThanOrEqual(320);
     expect(box!.y + box!.height).toBeLessThanOrEqual(568);
 
-    await page.getByTestId("floating-capsule-cite").click();
+    await citeCurrentSelection(page);
     await expect(page.getByTestId("selection-capsule")).toBeVisible();
   });
 });

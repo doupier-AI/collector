@@ -64,6 +64,12 @@ import {
 import { AnswerPlanningModule, type AnswerPlanningModelAdapter } from "./answer-planning.js";
 import { assertAnswerCompletion } from "./answer-completion.js";
 import { evidenceBundleContextCandidates } from "./evidence-preparation.js";
+import {
+  CitationAttributionModule,
+  type CitationAttributionModelBatch,
+  type CitationAttributionModelResult,
+  type CitationAttributionSourceInput,
+} from "./citation-attribution.js";
 
 export const RESEARCH_CHAT_PROMPT_VERSION = "research-chat-v1";
 export const DEEP_RESEARCH_PROMPT_VERSION = "deep-research-v1";
@@ -306,6 +312,8 @@ export interface ResearchGenerationProvider {
   prepareGrounded?(request: AssembledResearchGenerationRequest & { scenario: ResearchGroundingScenario }): Promise<ResearchGroundedPreparation>;
   /** 仅证据准备结果必须经独立最终写作流转成用户正文。 */
   writeGroundedFinalStream?(request: AssembledResearchGenerationRequest, evidence: string, options: { sources: readonly ResearchCitationSourceIdentity[]; resumeFrom?: string; signal?: AbortSignal; onStreamDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; onCitation?: (candidate: ResearchCitationCandidate) => void }): AsyncIterable<string>;
+  /** #207 independent citation producer; acceptance remains owned by CitationAttributionModule. */
+  attributeCitations?(assembly: Extract<ContextAssemblyResult, { status: "assembled" }>, input: { taskId: string }): Promise<CitationAttributionModelResult>;
   /** 最终写作：按当前任务与显式用户约束输出自由形态 Markdown，不返回 JSON 切片结构。 */
   writeBody?(request: AssembledResearchGenerationRequest): Promise<string>;
   /** 真实模型逐字流式正文（方案 B）；缺省时退回 writeBody 原子写或 legacy generate 流式。onReasoning 旁路接收思考增量（ADR-0035）；signal 供暂停/停止中止物理流。 */
@@ -328,7 +336,7 @@ type ResearchGroundingMetadata = {
   evidenceBundle?: EvidenceBundle;
   queries: string[];
   sources: Array<{ providerSourceId?: string; title: string; url?: string; snippet?: string; publishedAt?: string; locator?: string; evidenceStatus?: GroundingEvidenceStatus }>;
-  citations: Array<{ sourceOrdinal: number; startOffset: number; endOffset: number; providerCitationId?: string }>;
+  citations: ResearchCitationCandidate[];
   responseSummary?: Record<string, unknown>;
   errorMessage?: string;
   trace?: ResearchGroundingTraceEntry[];
@@ -854,9 +862,8 @@ export class ResearchSessionService {
               for (const delta of confirmedFinalDisplayDeltas(grounded.content)) {
                 await this.appendGeneratedDelta(task, delta);
               }
-              const citationSources = this.citationSourceIdentities(grounded);
               for (const citation of grounded.citations) {
-                const candidate = this.normalizeCitationCandidate(citation, citationSources);
+                const candidate = this.normalizeCitationCandidate(citation);
                 if (candidate) await this.store.appendResearchTaskCitationCandidate(task.id, candidate);
               }
             } else {
@@ -870,10 +877,10 @@ export class ResearchSessionService {
             const correctedGrounding = {
               ...grounded,
               content,
-              // 引用只来自独立旁路事件；正文不再承担来源控制协议。
-              citations: this.groundedCitationsAfterCleaning(task, grounded),
+              // 供应商候选只来自独立旁路事件；正文不再承担来源控制协议。
+              citations: this.citationCandidatesAfterCleaning(task),
             };
-            const result = this.groundingResultFor(task, correctedGrounding, scenario);
+            const result = await this.groundingResultFor(task, correctedGrounding, scenario, provider);
             await this.store.saveResearchGroundingResult(result);
             citations = result.citations;
           } catch (error) {
@@ -1258,7 +1265,7 @@ export class ResearchSessionService {
                 onReasoning: (text: string) => reasoning.push(text),
                 ...(groundedEvidence !== undefined ? {
                   onCitation: (candidate: ResearchCitationCandidate) => {
-                    const normalized = this.normalizeCitationCandidate(candidate, groundedSources);
+                    const normalized = this.normalizeCitationCandidate(candidate);
                     if (normalized) pendingCitations.push(normalized);
                   },
                 } : {}),
@@ -1672,18 +1679,20 @@ export class ResearchSessionService {
     return thread.length > 1;
   }
 
-  private groundingResultFor(
+  private async groundingResultFor(
     task: ResearchTaskRecord,
-    grounded: ResearchGroundingMetadata & { content: string },
+    grounded: ResearchGroundedPreparation & { content: string },
     scenario: ResearchGroundingScenario,
-  ): ResearchGroundingResult {
+    provider: ResearchGenerationProvider,
+  ): Promise<ResearchGroundingResult> {
     const createdAt = new Date().toISOString();
     const runId = randomUUID();
+    const bodyVersionId = researchBodyVersionId(task.outputMessageId, grounded.content);
+    const bodyAssembly = [...(this.store.getResearchTask(task.id)?.contextAssemblySnapshot?.assemblies ?? [])]
+      .reverse()
+      .find((entry) => entry.audit.purpose === "research_body")?.audit;
+    const adoptedSourceIds = new Set(bodyAssembly?.adopted.map((item) => item.sourceId) ?? []);
     if (grounded.evidenceBundle) {
-      const bodyAssembly = [...(this.store.getResearchTask(task.id)?.contextAssemblySnapshot?.assemblies ?? [])]
-        .reverse()
-        .find((entry) => entry.audit.purpose === "research_body")?.audit;
-      const adoptedSourceIds = new Set(bodyAssembly?.adopted.map((item) => item.sourceId) ?? []);
       for (const item of grounded.evidenceBundle.evidence) {
         if (!adoptedSourceIds.has(item.id)) throw new Error("Final writer source identity was not admitted by ContextAssembly");
       }
@@ -1692,7 +1701,6 @@ export class ResearchSessionService {
         throw new Error("Final writer source identities do not match the packed EvidenceBundle");
       }
     }
-    const sourceByOrdinal = new Map<number, ResearchGroundingSourceRecord>();
     const sources = grounded.sources.map((source, index) => {
       const title = groundingText(source.title, "来源元数据不足");
       const snippet = groundingText(source.snippet);
@@ -1711,38 +1719,83 @@ export class ResearchSessionService {
         ...(evidenceStatus ? { evidenceStatus } : {}),
         createdAt,
       };
-      sourceByOrdinal.set(index + 1, record);
       return record;
     });
+    const evidenceById = new Map(grounded.evidenceBundle?.evidence.map((item) => [item.id, item]) ?? []);
+    const legacyAggregateAdmitted = !grounded.evidenceBundle && grounded.kind === "evidence" && Boolean(bodyAssembly?.adopted.some((item) =>
+      item.sourceKind === "web_source" && item.sourceId === task.id,
+    ));
+    const legacyEvidenceVersion = legacyAggregateAdmitted && grounded.kind === "evidence"
+      ? contextContentVersion(grounded.evidence)
+      : undefined;
+    const attributionSources: CitationAttributionSourceInput[] = sources.map((source) => {
+      const prepared = source.providerSourceId ? evidenceById.get(source.providerSourceId) : undefined;
+      const content = prepared?.excerpt ?? source.snippet ?? "";
+      const legacySourceAdmitted = legacyAggregateAdmitted && grounded.kind === "evidence"
+        && Boolean(content && grounded.evidence.includes(content));
+      return {
+        sourceId: source.id,
+        sourceOrdinal: source.ordinal,
+        ...(source.providerSourceId ? { providerSourceId: source.providerSourceId } : {}),
+        ...(prepared ? { preparedEvidenceId: prepared.id } : {}),
+        ...(prepared?.contentDigest ? { sourceVersion: prepared.contentDigest } : legacySourceAdmitted && legacyEvidenceVersion ? { sourceVersion: legacyEvidenceVersion } : {}),
+        content,
+        ...(source.evidenceStatus ? { evidenceStatus: source.evidenceStatus } : {}),
+        admitted: prepared ? adoptedSourceIds.has(prepared.id) : legacySourceAdmitted,
+      };
+    });
+    const attribution = await new CitationAttributionModule(provider.attributeCitations ? {
+      produce: async (batch: CitationAttributionModelBatch) => provider.attributeCitations!(
+        await this.assembleCitationAttributionBatch(task, bodyVersionId, batch),
+        { taskId: task.id },
+      ),
+    } : undefined).attribute({
+      taskId: task.id,
+      messageId: task.outputMessageId,
+      groundingRunId: runId,
+      bodyVersionId,
+      generationAttempt: task.generationAttempt ?? 1,
+      body: grounded.content,
+      writer: {
+        provider: provider.provider,
+        model: provider.model,
+        version: provider.promptVersion ?? task.promptVersion,
+      },
+      sources: attributionSources,
+      providerCandidates: grounded.citations,
+    });
     const blocks = deriveMessageBlocks(grounded.content);
-    const citations = grounded.citations.flatMap((citation) => {
-      const source = sourceByOrdinal.get(citation.sourceOrdinal);
-      const block = blocks.find((candidate) => citation.startOffset >= candidate.startOffset && citation.startOffset <= candidate.startOffset + candidate.text.length);
+    const citations = attribution.accepted.flatMap((accepted) => {
+      const sourceId = accepted.evidenceIdentity.sourceId;
+      const claim = accepted.claimRange;
+      if (!sourceId || !claim) return [];
+      const source = sources.find((item) => item.id === sourceId);
+      const block = blocks.find((candidate) => claim.startOffset >= candidate.startOffset && claim.startOffset <= candidate.startOffset + candidate.text.length);
       if (!source || !block) return [];
-      const sourceEnd = citation.endOffset;
-      const exact = grounded.content.slice(citation.startOffset, sourceEnd);
       return [{
         id: randomUUID(),
         messageId: task.outputMessageId,
         runId,
-        sourceId: source.id,
+        sourceId,
         blockOrdinal: block.ordinal,
-        markerOffset: Math.max(0, Math.min(citation.startOffset - block.startOffset, block.text.length)),
-        ...(exact ? {
-          location: {
-            contentId: task.outputMessageId,
-            bodyVersionId: researchBodyVersionId(task.outputMessageId, grounded.content),
-            sourceRange: { startOffset: citation.startOffset, endOffset: sourceEnd },
-            exact,
-          },
-        } : {}),
-        ...(citation.providerCitationId ? { providerCitationId: citation.providerCitationId } : {}),
+        markerOffset: Math.max(0, Math.min(claim.startOffset - block.startOffset, block.text.length)),
+        location: {
+          contentId: task.outputMessageId,
+          bodyVersionId,
+          sourceRange: { startOffset: claim.startOffset, endOffset: claim.endOffset },
+          exact: claim.exact,
+        },
+        ...(accepted.providerCitationId ? { providerCitationId: accepted.providerCitationId } : {}),
+        attributionId: accepted.id,
+        acceptancePolicyVersion: accepted.acceptancePolicyVersion,
         createdAt,
       }];
     });
+    const citedSourceCount = new Set(citations.map((citation) => citation.sourceId)).size;
+    const unattributedStatus = grounded.status === "grounded" ? "no_verifiable_sources" as const : grounded.status;
     const scope = {
-      status: grounded.status,
-      sourceCount: sources.length,
+      status: citations.length ? "grounded" as const : unattributedStatus,
+      sourceCount: citedSourceCount,
       citationCount: citations.length,
       runId,
       ...(grounded.evidencePolicyStatus ? { evidencePolicyStatus: grounded.evidencePolicyStatus } : {}),
@@ -1762,6 +1815,7 @@ export class ResearchSessionService {
         queries: sanitizeGroundingQueries(grounded.queries),
         ...(grounded.trace?.length ? { trace: sanitizeGroundingTrace(grounded.trace) } : {}),
         ...(grounded.evidenceBundle ? { evidenceBundle: grounded.evidenceBundle } : {}),
+        citationAttribution: attribution.run,
         ...(grounded.responseSummary ? { responseSummary: groundingRecord(grounded.responseSummary) } : {}),
         // 供应商错误正文可能回显提示词、用户内容或凭证。这里只保留稳定状态，
         // 具体可诊断信息应留在供应商侧，而不是进入运行记录或其公开投影。
@@ -1777,33 +1831,57 @@ export class ResearchSessionService {
     return result;
   }
 
-  /** 联网回答的引用统一从持久化旁路事件收口；正文已无控制串，范围直接逐字校验。 */
-  private groundedCitationsAfterCleaning(
+  private async assembleCitationAttributionBatch(
     task: ResearchTaskRecord,
-    grounded: ResearchGroundingMetadata,
-  ): Array<{ sourceOrdinal: number; startOffset: number; endOffset: number; providerCitationId?: string }> {
-    const content = this.store.getResearchMessageBody(task.outputMessageId)?.content ?? "";
-    const sourceExistsWithEvidence = (sourceOrdinal: number): boolean => {
-      const source = grounded.sources[sourceOrdinal - 1];
-      return source !== undefined && source.evidenceStatus !== "none";
-    };
+    bodyVersionId: string,
+    batch: CitationAttributionModelBatch,
+  ): Promise<Extract<ContextAssemblyResult, { status: "assembled" }>> {
+    const workflowStepId = `citation-attribution:${batch.batchId}`;
+    const assembled = assembleContext({
+      purpose: "citation_attribution",
+      workflowRunId: task.id,
+      workflowStepId,
+      candidates: [{
+        id: `${workflowStepId}:${bodyVersionId}`,
+        channel: "factual_evidence",
+        evidenceKind: "research_context",
+        content: JSON.stringify(batch),
+        source: { kind: "research_content", id: task.outputMessageId, version: bodyVersionId, scope: "turn" },
+        permission: { status: "required", basis: "task_contract", allowedPurposes: ["citation_attribution"] },
+        sensitivity: "private",
+        priority: "task_required",
+        protection: "required",
+      }],
+    });
+    if (assembled.status !== "assembled") throw new Error(`Citation attribution context rejected: ${assembled.reason}`);
+    const current = this.store.getResearchTask(task.id)?.contextAssemblySnapshot;
+    if (!current) throw new Error("Citation attribution context source snapshot is missing");
+    await this.store.saveResearchTaskContextAssemblySnapshot(task.id, {
+      ...current,
+      assemblies: [
+        ...current.assemblies,
+        { workflowStepId, recordedAt: new Date().toISOString(), audit: contextAssemblyAudit(assembled) },
+      ],
+    });
+    return assembled;
+  }
+
+  /** 供应商引用声明只从持久化旁路事件收口；粗粒度或越界声明仍交给归因模块留下拒绝记录。 */
+  private citationCandidatesAfterCleaning(task: ResearchTaskRecord): ResearchCitationCandidate[] {
     const candidates = this.store.listResearchTaskEvents(task.id).flatMap((event) =>
       event.type === "citation_candidate" ? [event.candidate] : [],
     );
-    const exactCitations = candidates.flatMap((citation) => {
-      if (!sourceExistsWithEvidence(citation.sourceOrdinal)) return [];
-      if (citation.startOffset === undefined || citation.endOffset === undefined) return [];
-      if (citation.startOffset < 0 || citation.endOffset <= citation.startOffset || citation.endOffset > content.length) return [];
-      return [{
+    const cleaned = candidates.map((citation) => {
+      const hasRange = citation.startOffset !== undefined && citation.endOffset !== undefined;
+      return {
         sourceOrdinal: citation.sourceOrdinal,
-        startOffset: citation.startOffset,
-        endOffset: citation.endOffset,
+        ...(hasRange ? { startOffset: citation.startOffset, endOffset: citation.endOffset } : {}),
         ...(citation.providerCitationId ? { providerCitationId: citation.providerCitationId } : {}),
-      }];
+      };
     });
-    const unique = new Map<string, (typeof exactCitations)[number]>();
-    for (const citation of exactCitations) {
-      unique.set(`${citation.sourceOrdinal}:${citation.startOffset}:${citation.endOffset}:${citation.providerCitationId ?? ""}`, citation);
+    const unique = new Map<string, ResearchCitationCandidate>();
+    for (const citation of cleaned) {
+      unique.set(`${citation.sourceOrdinal}:${citation.startOffset ?? "coarse"}:${citation.endOffset ?? "coarse"}:${citation.providerCitationId ?? ""}`, citation);
     }
     return [...unique.values()];
   }
@@ -1818,12 +1896,8 @@ export class ResearchSessionService {
     }));
   }
 
-  private normalizeCitationCandidate(
-    candidate: ResearchCitationCandidate,
-    sources: readonly ResearchCitationSourceIdentity[],
-  ): ResearchCitationCandidate | undefined {
-    if (!Number.isSafeInteger(candidate.sourceOrdinal) || candidate.sourceOrdinal < 1
-      || !sources.some((source) => source.sourceOrdinal === candidate.sourceOrdinal && source.evidenceStatus !== "none")) {
+  private normalizeCitationCandidate(candidate: ResearchCitationCandidate): ResearchCitationCandidate | undefined {
+    if (!Number.isSafeInteger(candidate.sourceOrdinal) || candidate.sourceOrdinal < 1) {
       return undefined;
     }
     const exact = Number.isSafeInteger(candidate.startOffset) && Number.isSafeInteger(candidate.endOffset)

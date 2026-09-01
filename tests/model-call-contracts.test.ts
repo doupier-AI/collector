@@ -12,6 +12,7 @@ import {
   observePromptEnvelope,
   resolveModelBudget,
   type ModelCallEvent,
+  type ModelProviderRequest,
 } from "@collector/model-gateway";
 
 const envelope = createPromptEnvelope({
@@ -119,4 +120,35 @@ test("empty and length-limited provider results produce stable diagnostics", asy
   await gateway.answerResearchConversation([{ role: "user", content: "question" }]);
   assert.equal(events[0]?.completionDiagnostic, "empty_body");
   assert.equal(events[1]?.completionDiagnostic, "length");
+});
+
+test("citation attribution uses a dedicated JSON-only non-thinking model purpose", async () => {
+  let request: ModelProviderRequest | undefined;
+  let event: ModelCallEvent | undefined;
+  const gateway = new ModelGateway({
+    name: "attribution-provider",
+    async complete(value) {
+      request = value;
+      return { model: "attribution-model", content: '{"attributions":[]}', finishReason: "stop" };
+    },
+  }, { onCall: (value) => { event = value; } });
+
+  const output = await gateway.produceCitationAttributions({
+    batchId: "body-1",
+    mode: "discover",
+    body: { startOffset: 0, endOffset: 7, content: "Node 24" },
+    sources: [{ sourceOrdinal: 1, content: "Node 24 is LTS." }],
+    nativeCandidates: [],
+  });
+
+  assert.equal(output, '{"attributions":[]}');
+  assert.deepEqual(request?.responseFormat, { type: "json_object" });
+  assert.equal(request?.thinking, false);
+  assert.equal(request?.temperature, 0);
+  assert.equal(request?.maxTokens, 4_096);
+  assert.match(request?.prompt ?? "", /exact text selectors/);
+  assert.match(request?.prompt ?? "", /JavaScript UTF-16 ranges/);
+  assert.equal(event?.context.purpose, "citation_attribution");
+  assert.equal(event?.promptVersion, "citation-attribution-producer-v1");
+  assert.equal(event?.envelope.outputContract.format, "json_object");
 });

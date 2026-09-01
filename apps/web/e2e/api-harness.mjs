@@ -192,22 +192,22 @@ const fakeProvider = {
   async prepareGrounded(request) {
     const question = request.messages.at(-1)?.content ?? "";
     if (question === MARKDOWN_POSITION_FIXTURE.trigger) {
+      const evidence = MARKDOWN_POSITION_FIXTURE.body.slice(
+        MARKDOWN_POSITION_FIXTURE.citation.sourceRange.start,
+        MARKDOWN_POSITION_FIXTURE.citation.sourceRange.end,
+      );
       return {
-        kind: "confirmed_final",
-        content: MARKDOWN_POSITION_FIXTURE.body,
+        kind: "evidence",
+        evidence: JSON.stringify({ sources: [{ sourceOrdinal: 1, evidence }] }),
         status: "grounded",
         queries: [MARKDOWN_POSITION_FIXTURE.search.exact],
         sources: [{
           title: MARKDOWN_POSITION_FIXTURE.citation.sourceTitle,
           url: MARKDOWN_POSITION_FIXTURE.citation.sourceUrl,
-          snippet: "共享夹具用于验证同一正文位置在跨功能链路中的一致性。",
+          snippet: evidence,
           evidenceStatus: "full",
         }],
-        citations: [{
-          sourceOrdinal: 1,
-          startOffset: MARKDOWN_POSITION_FIXTURE.citation.sourceRange.start,
-          endOffset: MARKDOWN_POSITION_FIXTURE.citation.sourceRange.end,
-        }],
+        citations: [],
       };
     }
     if (question.includes("验证最终正文污染")) {
@@ -246,7 +246,18 @@ const fakeProvider = {
       citations: [],
     };
   },
-  async *writeGroundedFinalStream(_request, evidence, options) {
+  async *writeGroundedFinalStream(request, evidence, options) {
+    const question = request.messages.at(-1)?.content ?? "";
+    if (question === MARKDOWN_POSITION_FIXTURE.trigger) {
+      options.onCitation?.({
+        sourceOrdinal: 1,
+        startOffset: MARKDOWN_POSITION_FIXTURE.citation.sourceRange.start,
+        endOffset: MARKDOWN_POSITION_FIXTURE.citation.sourceRange.end,
+      });
+      yield MARKDOWN_POSITION_FIXTURE.body;
+      options.onStreamDone?.({ finishReason: "stop" });
+      return;
+    }
     if (!evidence.includes('"sourceOrdinal":3') || !options.sources.some((source) => source.sourceOrdinal === 3)) {
       throw new Error("final writer did not receive structured grounded evidence");
     }
@@ -258,6 +269,28 @@ const fakeProvider = {
     options.onCitation?.({ sourceOrdinal: 4, startOffset: first.length + 1, endOffset: first.length + 1 + second.length });
     yield second;
     options.onStreamDone?.({ finishReason: "stop" });
+  },
+  async attributeCitations(assembly) {
+    const payload = JSON.parse(assembly.adopted.map((item) => item.candidate.content).join("\n"));
+    return {
+      output: JSON.stringify({
+        attributions: payload.nativeCandidates.map((candidate) => {
+          const source = payload.sources.find((item) => item.sourceOrdinal === candidate.sourceOrdinal);
+          const evidenceText = source?.content ?? "";
+          return {
+            nativeCandidateId: candidate.candidateId,
+            sourceOrdinal: candidate.sourceOrdinal,
+            claimText: candidate.claimText,
+            evidenceText,
+            support: true,
+            confidence: 0.95,
+          };
+        }),
+      }),
+      provider: "e2e-attribution-fake",
+      model: "fake-citation-attribution-e2e",
+      producerVersion: "citation-attribution-producer-v1",
+    };
   },
   // 生成自由化：模型只产出自由正文（\n\n 分段），切片由服务层按段落块确定性派生，
   // 标题/概念由 deriveAnnotations 事后抽取。三段正文与三条标注一一对应，

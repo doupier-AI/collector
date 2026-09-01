@@ -663,6 +663,23 @@ export class CaptureService {
           context: { workflowRunId: request.taskId, answerPlanId: request.answerPlan?.planId, purpose: "research_body", promptVersion: RESEARCH_SLICE_PROMPT_VERSION, ...(request.previousBudgetResolutionAttemptId ? { previousBudgetResolutionAttemptId: request.previousBudgetResolutionAttemptId } : {}) },
         });
       },
+      async attributeCitations(assembly, input) {
+        const purposeGateway = await service.gatewayForPurpose("extraction");
+        if (!purposeGateway) throw new Error("Citation attribution model is not configured");
+        const output = await purposeGateway.produceCitationAttributionsFromContext(assembly, {
+          context: {
+            workflowRunId: input.taskId,
+            purpose: "citation_attribution",
+            promptVersion: "citation-attribution-producer-v1",
+          },
+        });
+        return {
+          output,
+          provider: purposeGateway.providerName,
+          model: purposeGateway.modelName,
+          producerVersion: "citation-attribution-producer-v1",
+        };
+      },
       async *generate(request) {
         const purposeGateway = await service.gatewayForPurpose(request.deepResearch ? "research" : "chat");
         if (!purposeGateway) throw new Error("AI model is not configured");

@@ -6,12 +6,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { listenOnFetchSafePort } from "./test-http-server.js";
-import type {
-  ModelCallRecord,
-  ResearchGroundingResult,
-  ResearchMessageRecord,
-  ResearchSessionRecord,
-  ResearchTaskRecord,
+import {
+  hashBodyContent,
+  type ModelCallRecord,
+  type ResearchGroundingResult,
+  type ResearchMessageRecord,
+  type ResearchSessionRecord,
+  type ResearchTaskRecord,
 } from "@collector/capture-contracts";
 import { CaptureService, LocalAuth, SqliteStore, createApiServer } from "@collector/api";
 
@@ -136,9 +137,13 @@ async function seedModelCall(store: SqliteStore, workflowRunId: string, status: 
 }
 
 async function seedSearch(store: SqliteStore, taskId: string, sessionId: string): Promise<void> {
+  const content = "本地搜索测试回答";
+  const messageId = `${taskId}-output`;
+  const bodyVersionId = `body:${messageId}:${hashBodyContent(content)}`;
+  const createdAt = "2026-07-31T00:04:03.000Z";
   const result: ResearchGroundingResult = {
-    content: "本地搜索测试回答",
-    scope: { status: "grounded", sourceCount: 1, citationCount: 0, runId: `${taskId}-search` },
+    content,
+    scope: { status: "grounded", sourceCount: 1, citationCount: 1, runId: `${taskId}-search` },
     run: {
       id: `${taskId}-search`, taskId, sessionId, provider: "test-search", model: "search-model",
       capability: "unsupported", scenario: "chat", status: "grounded",
@@ -146,13 +151,44 @@ async function seedSearch(store: SqliteStore, taskId: string, sessionId: string)
       responseSummary: { apiKey: "sk-search-secret", safe: "summary" },
       errorMessage: "authorization: Bearer sk-search-secret",
       attempt: 2, createdAt: "2026-07-31T00:04:02.000Z", completedAt: "2026-07-31T00:04:03.000Z",
+      citationAttribution: {
+        schemaVersion: "citation-attribution-run-v1", id: `${taskId}-attribution-run`, taskId, messageId,
+        groundingRunId: `${taskId}-search`, bodyVersionId, generationAttempt: 2, status: "completed",
+        acceptancePolicyVersion: "citation-support-acceptance-v1", invalidProposalCount: 0,
+        producerCalls: [{
+          batchId: "body-1", mode: "discover", provider: "test-provider", model: "test-model",
+          producerVersion: "citation-attribution-producer-v1", status: "completed",
+        }],
+        attributions: [{
+          id: `${taskId}-attribution`, candidateId: "model:body-1:1", taskId, messageId,
+          runId: `${taskId}-search`, bodyVersionId, generationAttempt: 2,
+          candidateProducer: { kind: "independent_model", provider: "test-provider", model: "test-model", version: "citation-attribution-producer-v1" },
+          evidenceIdentity: {
+            sourceId: `${taskId}-source`, sourceOrdinal: 1, preparedEvidenceId: "prepared-1",
+            sourceVersion: "source-version-1",
+          },
+          claimRange: { startOffset: 0, endOffset: content.length, exact: content },
+          evidenceRange: { startOffset: 0, endOffset: "安全摘要".length, exact: "安全摘要" },
+          supportCandidate: {
+            support: true, confidence: 0.94,
+            producer: { kind: "independent_model", provider: "test-provider", model: "test-model", version: "citation-attribution-producer-v1" },
+          },
+          acceptancePolicyVersion: "citation-support-acceptance-v1", status: "accepted", rejectionReasons: [], createdAt,
+        }],
+        createdAt, completedAt: createdAt,
+      },
     },
     sources: [{
       id: `${taskId}-source`, runId: `${taskId}-search`, ordinal: 1, title: "安全来源",
       url: "https://example.com/article?api_key=source-secret&safe=1", snippet: "安全摘要",
-      createdAt: "2026-07-31T00:04:03.000Z",
+      evidenceStatus: "partial", createdAt,
     }],
-    citations: [],
+    citations: [{
+      id: `${taskId}-citation`, messageId, runId: `${taskId}-search`, sourceId: `${taskId}-source`,
+      blockOrdinal: 0, markerOffset: 0,
+      location: { contentId: messageId, bodyVersionId, sourceRange: { startOffset: 0, endOffset: content.length }, exact: content },
+      attributionId: `${taskId}-attribution`, acceptancePolicyVersion: "citation-support-acceptance-v1", createdAt,
+    }],
   };
   await store.saveResearchGroundingResult(result);
 }
@@ -211,7 +247,17 @@ test("run record API paginates, filters, restores related traces, and redacts se
     task?: { provider?: string; model?: string; promptVersion?: string; sliceCount?: number; contextExplanations?: string[] };
     contextExplanations?: string[];
     modelCalls: Array<{ answerPlanId?: string; inputTokens: number; outputTokens: number; contextAssembly?: { adoptedCount: number; rejectedCount: number; adoptedCategories: Array<{ category?: string; count: number }>; budget?: { usedInputTokens: number; reservedOutputTokens: number } } }>;
-    searches: Array<{ queries: string[]; responseSummary?: Record<string, unknown>; sources: Array<{ url?: string }> }>;
+    searches: Array<{
+      queries: string[];
+      citationCount: number;
+      responseSummary?: Record<string, unknown>;
+      sources: Array<{ url?: string }>;
+      citationAttribution?: {
+        status: string;
+        producerCalls: Array<{ status: string }>;
+        attributions: Array<{ status: string; claimRange?: { startOffset: number; endOffset: number }; evidenceRange?: { startOffset: number; endOffset: number } }>;
+      };
+    }>;
     errors: Array<{ message: string }>;
   }>(harness, `/v1/run-records/${encodeURIComponent(`research:${task.id}`)}`);
   assert.equal(detail.status, 200);
@@ -231,6 +277,12 @@ test("run record API paginates, filters, restores related traces, and redacts se
   assert.equal(detail.body.modelCalls[0].contextAssembly?.budget?.reservedOutputTokens, 4_000);
   assert.equal(detail.body.searches[0].queries[0], "安全查询 api_key=[REDACTED]");
   assert.equal(detail.body.searches[0].sources[0].url, "https://example.com/article?safe=1");
+  assert.equal(detail.body.searches[0].citationCount, 1);
+  assert.equal(detail.body.searches[0].citationAttribution?.status, "completed");
+  assert.equal(detail.body.searches[0].citationAttribution?.producerCalls[0]?.status, "completed");
+  assert.equal(detail.body.searches[0].citationAttribution?.attributions[0]?.status, "accepted");
+  assert.deepEqual(detail.body.searches[0].citationAttribution?.attributions[0]?.claimRange, { startOffset: 0, endOffset: 8 });
+  assert.doesNotMatch(JSON.stringify(detail.body.searches[0].citationAttribution), /本地搜索测试回答|安全摘要|"exact"/);
   assert.ok(detail.body.searches[0].responseSummary);
   assert.equal(detail.body.searches[0].responseSummary?.apiKey, "[REDACTED]");
   assert.ok(detail.body.errors.some((error) => error.message.includes("[REDACTED]")));
