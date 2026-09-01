@@ -569,10 +569,10 @@ test("real DeepSeek Judge requests disable thinking and bound structured output"
     fetchImpl: async (_url, init) => {
       absoluteRequestBody = JSON.parse(String(init?.body));
       return new Response(JSON.stringify({
-        choices: [{ message: { content: JSON.stringify({ dimensions: [
+        choices: [{ message: { content: JSON.stringify({ outputContract: { dimensions: [
           { layer: "generic_semantic", dimension: "相关性", verdict: "pass", reason: "符合", evidenceLocations: [], confidence: 0.8 },
           { layer: "task_family", dimension: "比较", verdict: "pass", reason: "符合", evidenceLocations: [], confidence: 0.8 },
-        ] }) } }],
+        ] } }) } }],
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     },
   });

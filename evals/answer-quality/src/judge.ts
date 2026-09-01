@@ -103,8 +103,14 @@ export class OpenAiCompatibleJudgeAdapter implements AnswerJudgeAdapter {
 }
 
 export function parseJudgeResult(value: unknown, bodyLength: number): JudgeResult {
-  if (!value || typeof value !== "object" || !Array.isArray((value as { dimensions?: unknown }).dimensions)) throw new Error("Judge result has no dimensions");
-  const dimensions = (value as { dimensions: unknown[] }).dimensions.map((entry): JudgeDimensionResult => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Judge result must be an object");
+  const parsed = value as Record<string, unknown>;
+  const wrapped = parsed.outputContract;
+  const result = !Array.isArray(parsed.dimensions) && wrapped && typeof wrapped === "object" && !Array.isArray(wrapped)
+    ? wrapped as Record<string, unknown>
+    : parsed;
+  if (!Array.isArray(result.dimensions)) throw new Error(`Judge result has no dimensions: keys=${Object.keys(result).slice(0, 8).join(",")}`);
+  const dimensions = result.dimensions.map((entry): JudgeDimensionResult => {
     if (!entry || typeof entry !== "object") throw new Error("Judge dimension must be an object");
     const item = entry as Record<string, unknown>;
     const layer = item.layer;
