@@ -34,7 +34,7 @@ try {
     model: runtime.model,
     apiKey: () => runtime.apiKey,
     timeoutMs: 120_000,
-    maxTokens: 1_024,
+    maxTokens: 2_048,
     thinking: false,
   };
   const judge = new OpenAiCompatibleJudgeAdapter(judgeOptions);

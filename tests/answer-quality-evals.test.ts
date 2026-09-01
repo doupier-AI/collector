@@ -541,7 +541,7 @@ test("real DeepSeek Judge requests disable thinking and bound structured output"
     baseUrl: "https://judge.test/v1",
     model: "judge-test",
     apiKey: () => "test-key",
-    maxTokens: 1_024,
+    maxTokens: 2_048,
     thinking: false,
     fetchImpl: async (_url, init) => {
       requestBody = JSON.parse(String(init?.body));
@@ -551,7 +551,7 @@ test("real DeepSeek Judge requests disable thinking and bound structured output"
     },
   });
   await adapter.compare({ userRequest: run.userRequest, explicitSettings: run.explicitSettings, first: input, second: input });
-  assert.equal(requestBody?.max_tokens, 1_024);
+  assert.equal(requestBody?.max_tokens, 2_048);
   assert.deepEqual(requestBody?.thinking, { type: "disabled" });
 
   let absoluteRequestBody: Record<string, unknown> | undefined;
@@ -559,7 +559,7 @@ test("real DeepSeek Judge requests disable thinking and bound structured output"
     baseUrl: "https://judge.test/v1",
     model: "judge-test",
     apiKey: () => "test-key",
-    maxTokens: 1_024,
+    maxTokens: 2_048,
     thinking: false,
     fetchImpl: async (_url, init) => {
       absoluteRequestBody = JSON.parse(String(init?.body));
@@ -572,7 +572,7 @@ test("real DeepSeek Judge requests disable thinking and bound structured output"
     },
   });
   await absoluteAdapter.judge(input);
-  assert.equal(absoluteRequestBody?.max_tokens, 1_024);
+  assert.equal(absoluteRequestBody?.max_tokens, 2_048);
   assert.deepEqual(absoluteRequestBody?.thinking, { type: "disabled" });
 });
 
