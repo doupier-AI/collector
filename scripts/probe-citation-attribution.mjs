@@ -8,6 +8,7 @@
  *   node scripts/probe-citation-attribution.mjs
  */
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -18,13 +19,24 @@ import { createProvider, DEFAULT_PROVIDER_REGISTRY, ModelGateway } from "@collec
 
 function locateDatabase() {
   if (process.env.COLLECTOR_REAL_MODEL_DATABASE?.trim()) return process.env.COLLECTOR_REAL_MODEL_DATABASE.trim();
+  try {
+    const commonGitDirectory = execFileSync(
+      "git",
+      ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+      { cwd: process.cwd(), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    ).trim();
+    const primaryWorktreeDatabase = join(dirname(commonGitDirectory), ".collector-data", "collector.sqlite");
+    if (existsSync(primaryWorktreeDatabase)) return primaryWorktreeDatabase;
+  } catch {
+    // The ancestor scan below also supports a source tree that is not a Git checkout.
+  }
   let current = dirname(fileURLToPath(import.meta.url));
   for (let depth = 0; depth < 8; depth += 1) {
     const candidate = join(current, ".collector-data", "collector.sqlite");
     if (existsSync(candidate)) return candidate;
     current = join(current, "..");
   }
-  return join(process.cwd(), ".collector-data", "collector.sqlite");
+  throw new Error("Probe prerequisite missing: no formal Collector database was found");
 }
 
 const databasePath = locateDatabase();

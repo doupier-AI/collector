@@ -1057,6 +1057,57 @@ export interface RunRecordModelCallView {
   completedAt?: string;
 }
 
+/**
+ * Sanitized attribution trace exposed by local Run Records. Exact claim and
+ * evidence text remain in the canonical grounding record and are deliberately
+ * omitted here so an observability export cannot duplicate research content.
+ */
+export interface RunRecordCitationAttributionView {
+  schemaVersion: string;
+  id: string;
+  messageId: string;
+  groundingRunId: string;
+  bodyVersionId: string;
+  generationAttempt: number;
+  status: string;
+  acceptancePolicyVersion: string;
+  invalidProposalCount: number;
+  producerCalls: Array<{
+    batchId: string;
+    mode: string;
+    provider?: string;
+    model?: string;
+    producerVersion: string;
+    status: string;
+    errorCode?: string;
+  }>;
+  attributions: Array<{
+    id: string;
+    candidateId: string;
+    status: string;
+    rejectionReasons: string[];
+    candidateProducer: { kind: string; provider: string; model: string; version: string };
+    evidenceIdentity: {
+      sourceId?: string;
+      sourceOrdinal: number;
+      providerSourceId?: string;
+      preparedEvidenceId?: string;
+      sourceVersion?: string;
+    };
+    claimRange?: { startOffset: number; endOffset: number };
+    evidenceRange?: { startOffset: number; endOffset: number };
+    supportCandidate?: {
+      support: boolean;
+      confidence: number;
+      producer: { kind: string; provider: string; model: string; version: string };
+    };
+    providerCitationId?: string;
+    createdAt: string;
+  }>;
+  createdAt: string;
+  completedAt: string;
+}
+
 export interface RunRecordSearchView {
   id: string;
   provider: string;
@@ -1070,6 +1121,8 @@ export interface RunRecordSearchView {
   responseSummary?: Record<string, unknown>;
   /** #49：搜索/抓取各阶段失败留痕（脱敏）。 */
   trace?: ResearchGroundingTraceEntry[];
+  /** #207：accepted/rejected 归因决策的脱敏投影；不重复正文或证据原文。 */
+  citationAttribution?: RunRecordCitationAttributionView;
   errorMessage?: string;
   createdAt: string;
   completedAt?: string;

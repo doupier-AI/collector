@@ -20,6 +20,7 @@ import {
   type RunRecordErrorCategory,
   type RunRecordErrorView,
   type RunRecordExportFilters,
+  type RunRecordCitationAttributionView,
   type RunRecordModelCallView,
   type RunRecordOperationType,
   type RunRecordOutcome,
@@ -264,6 +265,7 @@ export class RunRecordsService {
       const run = parsed.value;
       const sources = safeRows(() => this.store.listRunGroundingSourceRows(stringValue(run.id) || row.id))
         .map((source) => sourceView(source));
+      const citationAttribution = citationAttributionView(run.citationAttribution);
       return {
         id: safeId(run.id, row.id),
         provider: safeText(run.provider),
@@ -273,9 +275,12 @@ export class RunRecordsService {
         attempt: positiveNumber(run.attempt, 1),
         queries: arrayValue(run.queries).map((query) => safeQuery(query)),
         sourceCount: numberValue(run.sourceCount) || sources.length,
-        citationCount: numberValue(run.citationCount),
+        citationCount: citationAttribution
+          ? citationAttribution.attributions.filter((item) => item.status === "accepted").length
+          : numberValue(run.citationCount),
         ...(run.responseSummary && typeof run.responseSummary === "object" ? { responseSummary: safeObject(run.responseSummary) } : {}),
         ...(run.trace && Array.isArray(run.trace) ? { trace: safeSearchTrace(run.trace) } : {}),
+        ...(citationAttribution ? { citationAttribution } : {}),
         ...(run.errorMessage ? { errorMessage: safeText(run.errorMessage) } : {}),
         createdAt: safeText(run.createdAt, row.createdAt),
         ...(stringValue(run.completedAt) ? { completedAt: safeText(run.completedAt) } : {}),
@@ -283,6 +288,96 @@ export class RunRecordsService {
       };
     });
   }
+}
+
+function citationAttributionView(value: unknown): RunRecordCitationAttributionView | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const run = value as Record<string, unknown>;
+  return {
+    schemaVersion: safeText(run.schemaVersion),
+    id: safeId(run.id),
+    messageId: safeId(run.messageId),
+    groundingRunId: safeId(run.groundingRunId),
+    bodyVersionId: safeId(run.bodyVersionId),
+    generationAttempt: positiveNumber(run.generationAttempt, 1),
+    status: safeText(run.status, "unknown", 40),
+    acceptancePolicyVersion: safeText(run.acceptancePolicyVersion, "unknown", 120),
+    invalidProposalCount: nonNegativeNumber(run.invalidProposalCount),
+    producerCalls: arrayValue(run.producerCalls).map((value) => {
+      const call = recordValue(value);
+      return {
+        batchId: safeId(call.batchId),
+        mode: safeText(call.mode, "unknown", 40),
+        ...(stringValue(call.provider) ? { provider: safeText(call.provider, "", 120) } : {}),
+        ...(stringValue(call.model) ? { model: safeText(call.model, "", 180) } : {}),
+        producerVersion: safeText(call.producerVersion, "unknown", 120),
+        status: safeText(call.status, "unknown", 40),
+        ...(stringValue(call.errorCode) ? { errorCode: safeText(call.errorCode, "", 80) } : {}),
+      };
+    }),
+    attributions: arrayValue(run.attributions).map((value) => {
+      const attribution = recordValue(value);
+      const evidenceIdentity = recordValue(attribution.evidenceIdentity);
+      const candidateProducer = producerIdentityView(attribution.candidateProducer);
+      const supportCandidate = recordValue(attribution.supportCandidate);
+      const supportProducer = producerIdentityView(supportCandidate.producer);
+      const claimRange = rangeView(attribution.claimRange);
+      const evidenceRange = rangeView(attribution.evidenceRange);
+      return {
+        id: safeId(attribution.id),
+        candidateId: safeId(attribution.candidateId),
+        status: safeText(attribution.status, "unknown", 40),
+        rejectionReasons: arrayValue(attribution.rejectionReasons)
+          .slice(0, 32)
+          .map((reason) => safeText(reason, "unknown", 80)),
+        candidateProducer,
+        evidenceIdentity: {
+          ...(stringValue(evidenceIdentity.sourceId) ? { sourceId: safeId(evidenceIdentity.sourceId) } : {}),
+          sourceOrdinal: nonNegativeNumber(evidenceIdentity.sourceOrdinal),
+          ...(stringValue(evidenceIdentity.providerSourceId) ? { providerSourceId: safeId(evidenceIdentity.providerSourceId) } : {}),
+          ...(stringValue(evidenceIdentity.preparedEvidenceId) ? { preparedEvidenceId: safeId(evidenceIdentity.preparedEvidenceId) } : {}),
+          ...(stringValue(evidenceIdentity.sourceVersion) ? { sourceVersion: safeId(evidenceIdentity.sourceVersion) } : {}),
+        },
+        ...(claimRange ? { claimRange } : {}),
+        ...(evidenceRange ? { evidenceRange } : {}),
+        ...(typeof supportCandidate.support === "boolean" && Number.isFinite(supportCandidate.confidence)
+          ? {
+              supportCandidate: {
+                support: supportCandidate.support,
+                confidence: numberValue(supportCandidate.confidence),
+                producer: supportProducer,
+              },
+            }
+          : {}),
+        ...(stringValue(attribution.providerCitationId) ? { providerCitationId: safeId(attribution.providerCitationId) } : {}),
+        createdAt: safeText(attribution.createdAt),
+      };
+    }),
+    createdAt: safeText(run.createdAt),
+    completedAt: safeText(run.completedAt),
+  };
+}
+
+function producerIdentityView(value: unknown): { kind: string; provider: string; model: string; version: string } {
+  const producer = recordValue(value);
+  return {
+    kind: safeText(producer.kind, "unknown", 40),
+    provider: safeText(producer.provider, "unknown", 120),
+    model: safeText(producer.model, "unknown", 180),
+    version: safeText(producer.version, "unknown", 120),
+  };
+}
+
+function rangeView(value: unknown): { startOffset: number; endOffset: number } | undefined {
+  const range = recordValue(value);
+  if (!Number.isSafeInteger(range.startOffset) || !Number.isSafeInteger(range.endOffset)) return undefined;
+  const startOffset = nonNegativeNumber(range.startOffset);
+  const endOffset = nonNegativeNumber(range.endOffset);
+  return endOffset > startOffset ? { startOffset, endOffset } : undefined;
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function sourceForOperation(operation: RunRecordOperationType): ObservabilityRecordSource {
