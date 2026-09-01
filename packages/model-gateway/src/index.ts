@@ -1048,7 +1048,8 @@ Use only cross-domain operations. Semantic criteria are writing guidance, never 
     options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
   ): Promise<string> {
     if (!messages.length) throw new Error("Research body requires at least one message");
-    const prompt = this.researchBodyPrompt(messages, options.parentChainContext, options.sliceContext);
+    const promptVersion = options.context?.promptVersion ?? this.promptVersion;
+    const prompt = this.researchBodyPrompt(messages, options.parentChainContext, options.sliceContext, promptVersion);
     const response = await this.complete({
       envelope: this.researchBodyEnvelope(messages, options.parentChainContext, options.sliceContext, options.context),
       prompt,
@@ -1067,14 +1068,17 @@ Use only cross-domain operations. Semantic criteria are writing guidance, never 
     messages: Array<{ role: "user" | "assistant"; content: string }>,
     parentChainContext?: ResearchParentChainContext,
     sliceContext?: ResearchSliceContext,
+    promptVersion = this.promptVersion,
   ): string {
     const parentContext = formatResearchParentChainContext(parentChainContext);
     const sliceContextText = formatResearchSliceContext(sliceContext);
+    const explicitSettingsRule = promptVersion === "answer-quality-release-baseline-v1"
+      ? ""
+      : "\n- 已准入上下文中的显式回答设置必须落实到正文：format=numbered_steps 时每个主要步骤使用阿拉伯数字编号（1.、2.、3.）；format=bullet_list 时使用 Markdown 项目符号；format=table 时使用 Markdown 表格；format=continuous_prose 时不使用标题、列表或表格。不要把这些内部格式代码输出给用户。";
     return `你是 Collector 的最终写作阶段。请只根据已准入上下文回答当前用户请求，输出可直接给用户阅读的干净 Markdown 正文。
 
 要求：
-- 当前用户本轮的明确目标、格式和限制始终高于派生 Answer Plan；若二者冲突，遵循用户本轮要求。
-- 已准入上下文中的显式回答设置必须落实到正文：format=numbered_steps 时每个主要步骤使用阿拉伯数字编号（1.、2.、3.）；format=bullet_list 时使用 Markdown 项目符号；format=table 时使用 Markdown 表格；format=continuous_prose 时不使用标题、列表或表格。不要把这些内部格式代码输出给用户。
+- 当前用户本轮的明确目标、格式和限制始终高于派生 Answer Plan；若二者冲突，遵循用户本轮要求。${explicitSettingsRule}
 - 根据实际任务自然组织：解释重在机制，比较使用一致维度，规划给出可执行顺序，诊断区分现象、原因与证据，总结和改写忠于原意。标题、列表、表格、连续正文与长度都服从当前任务和用户明确要求，不套固定模板。
 - Answer Plan 的 requiredOperations 和 semanticCriteria 只是写作候选，不是事实、授权或完成证据；不要在正文中复述计划，也不要自报“检查已通过”或完成比例。
 - 若计划要求澄清，只询问会实质改变结果、授权或高风险事实的必要信息；低风险假设必须公开说明，不把 ambiguous/unresolved 引用强行解释成唯一含义。
@@ -1092,7 +1096,7 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
     sliceContext?: ResearchSliceContext,
     context?: ModelCallContext,
   ): PromptEnvelope {
-    const prompt = this.researchBodyPrompt(messages, parentChainContext, sliceContext);
+    const prompt = this.researchBodyPrompt(messages, parentChainContext, sliceContext, context?.promptVersion ?? this.promptVersion);
     const separator = "\n\n对话：\n";
     const splitAt = prompt.indexOf(separator);
     const system = splitAt >= 0 ? prompt.slice(0, splitAt) : "Write the final Collector answer under the declared output contract.";
@@ -1120,7 +1124,8 @@ ${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${slice
     options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext; resumeFrom?: string; citationOffsetBase?: number; onDone?: (done: { finishReason?: string }) => void; onReasoning?: (text: string) => void; onCitation?: (candidate: ResearchCitationCandidate) => void; citationSources?: readonly ResearchCitationSourceIdentity[]; signal?: AbortSignal } = {},
   ): AsyncIterable<string> {
     if (!messages.length) throw new Error("Research body requires at least one message");
-    const basePrompt = this.researchBodyPrompt(messages, options.parentChainContext, options.sliceContext);
+    const promptVersion = options.context?.promptVersion ?? this.promptVersion;
+    const basePrompt = this.researchBodyPrompt(messages, options.parentChainContext, options.sliceContext, promptVersion);
     // 断点续写：把已写正文尾部作衔接，指令模型从断点继续、不要重复。
     const resumeTail = options.resumeFrom ? options.resumeFrom.slice(-500) : "";
     const prompt = options.resumeFrom

@@ -42,6 +42,8 @@ try {
   const candidateRuns = [];
   const baselineRuns = [];
   const pairwise = [];
+  const promptProfiles = ANSWER_QUALITY_RELEASE_PROFILE_V1.gates.release_candidate.promptProfiles;
+  if (!promptProfiles) throw new Error("release-candidate-prompt-profiles-missing");
 
   for (const caseId of ANSWER_QUALITY_REAL_MODEL_CASE_IDS) {
     const testCase = ANSWER_QUALITY_CORPUS.find((entry) => entry.id === caseId);
@@ -61,8 +63,8 @@ try {
     const comparison = await runRepeatedRealModelBlindAB({
       testCase,
       repetitions: ANSWER_QUALITY_RELEASE_PROFILE_V1.gates.release_candidate.repetitions,
-      runnerA: realRunner("answer-quality-release-baseline-v1"),
-      runnerB: realRunner("answer-quality-release-candidate-v1"),
+      runnerA: realRunner(promptProfiles.baseline),
+      runnerB: realRunner(promptProfiles.candidate),
       judge: pairwiseJudge,
     });
     for (const { repetition, runA, runB } of comparison.runs) {

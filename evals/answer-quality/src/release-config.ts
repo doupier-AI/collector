@@ -56,6 +56,10 @@ export const ANSWER_QUALITY_RELEASE_PROFILE_V1: AnswerQualityReleaseProfile = {
       requireBaseline: true,
       requirePairwise: true,
       requireMetrics: true,
+      promptProfiles: {
+        baseline: "answer-quality-release-baseline-v1",
+        candidate: "answer-quality-release-candidate-v1",
+      },
     },
   },
   calibration: {

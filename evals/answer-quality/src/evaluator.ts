@@ -139,12 +139,19 @@ function caseExtensionFindings(testCase: AnswerQualityCase, run: AnswerQualityRu
   const body = run.trace.finalBody;
   const findings: EvaluationFinding[] = [];
   for (const required of testCase.expectation.mustCover) {
-    findings.push(body.includes(required)
-      ? { code: "case_coverage_present", layer: "case_extension", verdict: "pass", reason: `正文覆盖“${required}”。` }
+    const matched = coverageTerms(required).find((term) => body.includes(term));
+    findings.push(matched
+      ? { code: "case_coverage_present", layer: "case_extension", verdict: "pass", reason: matched === required ? `正文覆盖“${required}”。` : `正文以等价表述“${matched}”覆盖“${required}”。` }
       : { code: "case_coverage_missing", layer: "case_extension", verdict: "fail", reason: `正文未覆盖“${required}”。` });
   }
   for (const forbidden of testCase.expectation.mustAvoid) {
     if (body.includes(forbidden)) findings.push({ code: "case_forbidden_present", layer: "case_extension", verdict: "fail", reason: `正文出现禁止内容“${forbidden}”。` });
   }
   return findings;
+}
+
+/** Bounded, reviewable equivalents for lexical case criteria; semantic Judge scoring stays separate. */
+function coverageTerms(required: string): readonly string[] {
+  if (required === "结论") return [required, "总结"];
+  return [required];
 }

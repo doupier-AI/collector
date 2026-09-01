@@ -41,6 +41,10 @@ export interface ReleaseGateRequirement {
   requireBaseline: boolean;
   requirePairwise: boolean;
   requireMetrics: boolean;
+  promptProfiles?: {
+    baseline: string;
+    candidate: string;
+  };
 }
 
 export interface AnswerQualityReleaseProfile {
@@ -398,6 +402,9 @@ function validateReleaseProfile(profile: AnswerQualityReleaseProfile): void {
     if (!gate.caseIds.length || new Set(gate.caseIds).size !== gate.caseIds.length) throw new Error(`${gateId} gate case identities must be non-empty and unique`);
     if (!Number.isSafeInteger(gate.repetitions) || gate.repetitions < 1) throw new Error(`${gateId} gate repetitions must be positive`);
     if (!gate.runModes.length || !gate.verificationMethods.length) throw new Error(`${gateId} gate must declare accepted run and verification modes`);
+    if (gate.requirePairwise && (!gate.promptProfiles?.baseline || !gate.promptProfiles.candidate || gate.promptProfiles.baseline === gate.promptProfiles.candidate)) {
+      throw new Error(`${gateId} pairwise gate must declare distinct baseline and candidate prompt profiles`);
+    }
   }
   const thresholdValues = [
     profile.calibration.minimumAgreementRate,

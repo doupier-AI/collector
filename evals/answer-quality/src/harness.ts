@@ -19,6 +19,7 @@ export interface FixedProviderRunOptions {
   response: string | Error | ModelProviderResponse;
   citationResponse?: string | Error | ModelProviderResponse;
   buildFingerprint: string;
+  promptVersion?: string;
   unavailableReason?: string;
   clock?: () => string;
   id?: () => string;
@@ -61,6 +62,7 @@ export async function runFixedProviderCase(testCase: AnswerQualityCase, options:
   return runProviderCase(testCase, {
     provider,
     buildFingerprint: options.buildFingerprint,
+    ...(options.promptVersion ? { promptVersion: options.promptVersion } : {}),
     ...(options.unavailableReason ? { unavailableReason: options.unavailableReason } : {}),
     ...(options.citationResponse !== undefined ? { enableCitationAttribution: true } : {}),
     ...(options.clock ? { clock: options.clock } : {}),

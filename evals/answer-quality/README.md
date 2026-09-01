@@ -15,7 +15,7 @@
 
 - `quick`：10 个快速代表案例，以 FakeProvider 穿过生产 Interface；
 - `full_offline`：完整 70 案例离线可复评报告；
-- `release_candidate`：固定真实模型、基线/候选相同条件、三次新运行、A/B 顺序交换、人工校准、成本与延迟，以及 `aq-long-form-gate-v1=not_activated` 裁决。
+- `release_candidate`：固定真实模型、基线/候选相同案例与上下文条件、Profile 声明的两个不同 Prompt profile、三次新运行、A/B 顺序交换、人工校准、成本与延迟，以及 `aq-long-form-gate-v1=not_activated` 裁决。基线使用不含显式格式翻译的冻结 Final Writer profile，候选使用当前 profile；除此之外授权、上下文、证据和模型配置一致。
 
 三次真实 A/B 至少形成 `2/3` 重复共识，展示顺序不一致最多允许 `1/3`；胜负与持平分别报告，同配置运行不要求虚构候选胜出。
 

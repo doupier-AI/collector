@@ -596,12 +596,24 @@ test("real DeepSeek Judge requests disable thinking and bound structured output"
   assert.deepEqual(absoluteRequestBody?.thinking, { type: "disabled" });
 });
 
-test("production Final Writer translates admitted explicit format codes into concrete output rules", async () => {
+test("production Final Writer A/B keeps a versioned baseline and translates explicit format codes only in the candidate", async () => {
   const target = ANSWER_QUALITY_CORPUS.find((entry) => entry.id === ANSWER_QUALITY_REAL_MODEL_CASE_IDS[0])!;
-  const run = await runFixedProviderCase(target, { response: passingBody(target), buildFingerprint: "build:test" });
-  const request = run.trace.providerRequests[0] as { prompt?: string } | undefined;
-  assert.match(request?.prompt ?? "", /format=numbered_steps[^\n]*1\.、2\.、3\./);
-  assert.doesNotMatch(run.trace.finalBody, /format=numbered_steps/);
+  const baseline = await runFixedProviderCase(target, { response: passingBody(target), buildFingerprint: "build:test", promptVersion: "answer-quality-release-baseline-v1" });
+  const candidate = await runFixedProviderCase(target, { response: passingBody(target), buildFingerprint: "build:test", promptVersion: "answer-quality-release-candidate-v1" });
+  const baselineRequest = baseline.trace.providerRequests[0] as { prompt?: string } | undefined;
+  const candidateRequest = candidate.trace.providerRequests[0] as { prompt?: string } | undefined;
+  assert.doesNotMatch(baselineRequest?.prompt ?? "", /format=numbered_steps[^\n]*1\.、2\.、3\./);
+  assert.match(candidateRequest?.prompt ?? "", /format=numbered_steps[^\n]*1\.、2\.、3\./);
+  assert.doesNotMatch(candidate.trace.finalBody, /format=numbered_steps/);
+});
+
+test("case coverage accepts the calibrated conclusion-summary equivalence without broad fuzzy matching", async () => {
+  const target = ANSWER_QUALITY_CORPUS.find((entry) => entry.id === ANSWER_QUALITY_REAL_MODEL_CASE_IDS[0])!;
+  const response = "1. 全文检索适合精确词项。\n\n2. 向量检索适合语义召回。\n\n3. 总结：两者边界不同，应按查询意图组合。";
+  const run = await runFixedProviderCase(target, { response, buildFingerprint: "build:test" });
+  const evaluation = evaluateAnswerQualityRun(target, run);
+  assert.ok(evaluation.findings.some((finding) => finding.code === "case_coverage_present" && /等价表述“总结”覆盖“结论”/.test(finding.reason)));
+  assert.ok(!evaluation.findings.some((finding) => finding.code === "case_coverage_missing"));
 });
 
 test("Release Profile result matrix is exhaustive, mutually exclusive and priority ordered", () => {
@@ -741,6 +753,10 @@ test("quick Release Profile executes production seams with FakeProvider includin
 });
 
 test("release candidate requires three matched blind runs, calibration, metrics and #210 verdict", () => {
+  assert.deepEqual(ANSWER_QUALITY_RELEASE_PROFILE_V1.gates.release_candidate.promptProfiles, {
+    baseline: "answer-quality-release-baseline-v1",
+    candidate: "answer-quality-release-candidate-v1",
+  });
   const candidateBuildFingerprint = "release-candidate:test";
   const baselineBuildFingerprint = "release-baseline:test";
   const candidateRuns: ReleaseRunEvidence[] = [];
