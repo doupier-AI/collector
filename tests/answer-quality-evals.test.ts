@@ -17,11 +17,14 @@ import {
   createUnavailableRealModelReport,
   evaluateCapabilityFacts,
   evaluateAnswerQualityRun,
+  evaluateLongFormCompletion,
   evaluateReplay,
+  findCrossSectionExactRepetitions,
   injectEvaluationCanaries,
   normalizeProductionTrace,
   normalizedQualifiedEvidenceIdentities,
   productionScenarioFromCase,
+  decideLongFormGate,
   runRealModelBlindAB,
   runFixedProviderCase,
   summarizeHumanCalibrationPreparation,
@@ -29,6 +32,9 @@ import {
   type AnswerQualityCapabilityId,
   type AnswerQualityRun,
   type PairwiseJudgment,
+  type LongFormGateCandidateId,
+  type LongFormGateDimension,
+  type LongFormGateRunResult,
 } from "@collector/answer-quality-evals";
 import type { AnswerPlan, ConversationContext, EvidenceBundle } from "@collector/capture-contracts";
 
@@ -315,6 +321,112 @@ test("pairwise diagnostics explain repeat consistency and order flips", () => {
   assert.equal(report.orderFlipRate, 0);
   assert.equal(report.repeatAgreementRate, 1);
 });
+
+test("long-form deterministic checks detect cross-section repetition and incomplete headings", () => {
+  const repeated = "这一段足够长，用来证明两个不同章节重复了同一段完整内容，而且不是标题或短语巧合。";
+  assert.deepEqual(findCrossSectionExactRepetitions([
+    `## 第一节\n\n${repeated}`,
+    `## 第二节\n\n${repeated}`,
+  ]), [repeated]);
+  assert.equal(evaluateLongFormCompletion({
+    sections: ["## 第一节\n\n正文", "## 错误标题\n\n正文"],
+    expectedHeadings: ["第一节", "第二节"],
+    finishReasons: ["stop", "stop"],
+  }).verdict, "fail");
+});
+
+test("long-form gate activates only when the frozen quality and resource thresholds all pass", () => {
+  const dimensions = [
+    "cross_section_repetition",
+    "cross_section_contradiction",
+    "required_operation_coverage",
+    "terminology_consistency",
+    "completion_integrity",
+  ] as const satisfies readonly LongFormGateDimension[];
+  const run = (candidateId: LongFormGateCandidateId, repetition: number, failed: readonly LongFormGateDimension[], metrics = {
+    outputTokens: 1_000,
+    estimatedCostUsd: 0.01,
+    firstCharacterLatencyMs: 1_000,
+    completeLatencyMs: 5_000,
+  }): LongFormGateRunResult => ({
+    candidateId,
+    repetition,
+    evidenceVerified: true,
+    dimensions: Object.fromEntries(dimensions.map((dimension) => [dimension, {
+      verdict: failed.includes(dimension) ? "fail" : "pass",
+      reason: failed.includes(dimension) ? "failed" : "passed",
+    }])) as LongFormGateRunResult["dimensions"],
+    metrics,
+  });
+  const runs: LongFormGateRunResult[] = [
+    run("current_final_writing", 1, ["cross_section_repetition"]),
+    run("current_final_writing", 2, ["cross_section_repetition"]),
+    run("current_final_writing", 3, ["required_operation_coverage"]),
+    run("minimal_prompt_adjustment", 1, ["cross_section_repetition"]),
+    run("minimal_prompt_adjustment", 2, ["cross_section_contradiction"]),
+    run("minimal_prompt_adjustment", 3, ["required_operation_coverage"]),
+    run("long_form_state_prototype", 1, [], { outputTokens: 1_100, estimatedCostUsd: 0.011, firstCharacterLatencyMs: 1_100, completeLatencyMs: 5_500 }),
+    run("long_form_state_prototype", 2, [], { outputTokens: 1_100, estimatedCostUsd: 0.011, firstCharacterLatencyMs: 1_100, completeLatencyMs: 5_500 }),
+    run("long_form_state_prototype", 3, [], { outputTokens: 1_100, estimatedCostUsd: 0.011, firstCharacterLatencyMs: 1_100, completeLatencyMs: 5_500 }),
+  ];
+  const decision = decideLongFormGate({
+    runs,
+    pairwise: [1, 2, 3].map((repetition) => ({ repetition, canonicalWinner: repetition < 3 ? "long_form_state_prototype" as const : "tie" as const })),
+    repetitions: 3,
+    thresholds: {
+      stableDefectMinimumRuns: 2,
+      releaseLineMinimumFullyPassingRuns: 2,
+      minimumLongFormStateDimensionPassRateGain: 0.2,
+      minimumLongFormStatePairwiseWinsAgainstMinimal: 2,
+      maximumOutputTokenIncreaseRatio: 0.2,
+      maximumEstimatedCostIncreaseRatio: 0.2,
+      maximumFirstCharacterLatencyIncreaseRatio: 0.25,
+      maximumCompleteLatencyIncreaseRatio: 0.25,
+      noDimensionRegression: true,
+    },
+  });
+  assert.equal(decision.verdict, "activated");
+  assert.deepEqual(decision.stableCurrentDefects, ["cross_section_repetition"]);
+  assert.equal(decision.fullyPassingRuns.long_form_state_prototype, 3);
+
+  const tooSlow = decideLongFormGate({
+    runs: runs.map((entry) => entry.candidateId === "long_form_state_prototype"
+      ? { ...entry, metrics: { ...entry.metrics, completeLatencyMs: 7_000 } }
+      : entry),
+    pairwise: [1, 2, 3].map((repetition) => ({ repetition, canonicalWinner: "long_form_state_prototype" as const })),
+    repetitions: 3,
+    thresholds: {
+      ...decisionThresholdsForTest(),
+    },
+  });
+  assert.equal(tooSlow.verdict, "not_activated");
+  assert.equal(tooSlow.checks.resourcesWithinLimits, false);
+
+  const unavailableResourceEvidence = decideLongFormGate({
+    runs: runs.map((entry) => entry.candidateId === "long_form_state_prototype" && entry.repetition === 1
+      ? { ...entry, evidenceVerified: false }
+      : entry),
+    pairwise: [1, 2, 3].map((repetition) => ({ repetition, canonicalWinner: "long_form_state_prototype" as const })),
+    repetitions: 3,
+    thresholds: decisionThresholdsForTest(),
+  });
+  assert.equal(unavailableResourceEvidence.checks.resourcesWithinLimits, false);
+  assert.equal(unavailableResourceEvidence.resourceIncreaseRatios.outputTokens, null);
+});
+
+function decisionThresholdsForTest() {
+  return {
+    stableDefectMinimumRuns: 2,
+    releaseLineMinimumFullyPassingRuns: 2,
+    minimumLongFormStateDimensionPassRateGain: 0.2,
+    minimumLongFormStatePairwiseWinsAgainstMinimal: 2,
+    maximumOutputTokenIncreaseRatio: 0.2,
+    maximumEstimatedCostIncreaseRatio: 0.2,
+    maximumFirstCharacterLatencyIncreaseRatio: 0.25,
+    maximumCompleteLatencyIncreaseRatio: 0.25,
+    noDimensionRegression: true,
+  };
+}
 
 test("real blind A/B mode keeps provider identity away from pairwise Judge input", async () => {
   const target = ANSWER_QUALITY_CORPUS[0]!;
