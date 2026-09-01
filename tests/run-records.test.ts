@@ -111,7 +111,7 @@ async function seedResearchTask(
 async function seedModelCall(store: SqliteStore, workflowRunId: string, status: ModelCallRecord["status"] = "completed") {
   const call: ModelCallRecord = {
     id: `${workflowRunId}-model-call`, workflowRunId, provider: "test-provider", model: "test-model",
-    purpose: "research", promptVersion: "run-record-prompt-v2", status,
+    purpose: "research", promptVersion: "run-record-prompt-v2", answerPlanId: "answer-plan:run-records-v1", status,
     inputTokens: 120, outputTokens: 80, cacheHitTokens: 4, estimatedCostUsd: 0.002,
     latencyMs: 850, retryCount: status === "failed" ? 1 : 0,
     contextAssembly: {
@@ -210,7 +210,7 @@ test("run record API paginates, filters, restores related traces, and redacts se
   const detail = await responseJson<{
     task?: { provider?: string; model?: string; promptVersion?: string; sliceCount?: number; contextExplanations?: string[] };
     contextExplanations?: string[];
-    modelCalls: Array<{ inputTokens: number; outputTokens: number; contextAssembly?: { adoptedCount: number; rejectedCount: number; adoptedCategories: Array<{ category?: string; count: number }>; budget?: { usedInputTokens: number; reservedOutputTokens: number } } }>;
+    modelCalls: Array<{ answerPlanId?: string; inputTokens: number; outputTokens: number; contextAssembly?: { adoptedCount: number; rejectedCount: number; adoptedCategories: Array<{ category?: string; count: number }>; budget?: { usedInputTokens: number; reservedOutputTokens: number } } }>;
     searches: Array<{ queries: string[]; responseSummary?: Record<string, unknown>; sources: Array<{ url?: string }> }>;
     errors: Array<{ message: string }>;
   }>(harness, `/v1/run-records/${encodeURIComponent(`research:${task.id}`)}`);
@@ -221,6 +221,7 @@ test("run record API paginates, filters, restores related traces, and redacts se
   assert.equal(detail.body.task?.sliceCount, 2);
   assert.equal(detail.body.modelCalls[0].inputTokens, 120);
   assert.equal(detail.body.modelCalls[0].outputTokens, 80);
+  assert.equal(detail.body.modelCalls[0].answerPlanId, "answer-plan:run-records-v1");
   assert.deepEqual(detail.body.contextExplanations, ["imported_material_used", "personalization_used", "context_reduced"]);
   assert.deepEqual(detail.body.task?.contextExplanations, ["imported_material_used"]);
   assert.equal(detail.body.modelCalls[0].contextAssembly?.adoptedCount, 2);

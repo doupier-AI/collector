@@ -409,7 +409,7 @@ test("free body generation persists derived non-provisional slices and records s
     provider: "free-body-fake",
     model: "free-body-1",
     promptVersion: "research-body-v1",
-    // 生成自由化：模型只产出自由正文，切片由服务层按段落块确定性派生、标题由小模型事后抽取。
+    // 最终写作只产出任务自适应正文，切片由服务层按段落块确定性派生、标题由小模型事后抽取。
     async writeBody() {
       if (shouldFail) throw new Error("provider generation failed");
       return "本地优先把研究内容保留在用户可以检查和备份的环境中。\n\n持久化任务状态让失败后的研究可以从同一上下文重新开始。";

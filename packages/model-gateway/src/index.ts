@@ -527,6 +527,7 @@ export class ProviderRuntimeResolver {
 export interface ModelCallContext {
   workflowRunId?: string;
   workflowStepId?: string;
+  answerPlanId?: string;
   purpose?: string;
   promptVersion?: string;
   retryCount?: number;
@@ -787,6 +788,13 @@ export class ModelGateway {
     );
   }
 
+  async planAnswerFromContext(
+    assembly: AssembledModelContext,
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<string> {
+    return this.planAnswer(formatAssembledModelContext(assembly), this.contextOptions(assembly, options));
+  }
+
   async writeResearchBodyFromContext(
     assembly: AssembledModelContext,
     options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; nodeDepth?: number } = {},
@@ -977,7 +985,7 @@ export class ModelGateway {
     if (!messages.length) throw new Error("Research conversation requires at least one message");
     const parentContext = formatResearchParentChainContext(options.parentChainContext);
     const sliceContext = formatResearchSliceContext(options.sliceContext);
-    const system = "You are Collector's research assistant. Answer the latest user message using the conversation context. Output a coherent passage of plain text only — no JSON, no field wrappers, no Markdown code fences, source numbering, or internal control protocol. Preserve uncertainty and never invent sources.";
+    const system = "You are Collector's final writer. Answer the latest user request using only admitted context. Follow explicit user format and intent rules before any derived answer plan, and choose a natural structure for the actual task instead of forcing one universal style. Output clean Markdown only — no JSON wrapper, source numbering, internal control protocol, or claims that semantic checks passed. Preserve uncertainty and never invent sources.";
     const user = `Conversation:\n${JSON.stringify(messages)}${parentContext ? `\n\n${parentContext}` : ""}${sliceContext ? `\n\n${sliceContext}` : ""}`;
     const prompt = `${system}\n\n${user}`;
     const response = await this.complete({
@@ -994,13 +1002,43 @@ export class ModelGateway {
   }
 
   /**
-   * 生成自由化：让模型自由写连续 markdown 正文，不返回任何 JSON 结构、不拆切片。
-   * 正文是唯一事实源；结构边界（卡片/锚点）由确定性 `deriveMessageBlocks` 事后派生。
-   * 提示词用正向格式指令（流畅段落、连续行文不分节），不混入 JSON——参见调研：
-   * 结构化约束对"自由创作"有害，对"数据提取"有益，故正文走自由文本、大纲走 JSON。
-   * T02（#92）：本提示词服务普通回答与长文大纲失败回退——普通回答不再鼓励碎片化
-   * 小标题（轮次卡片呈现连续正文，ADR-0032）；长文的分节架构由 plan-then-write 承担。
+   * Structured Answer Planning implementation. The API orchestration layer must enter through
+   * planAnswerFromContext so only ContextAssembly-admitted production inputs reach this prompt.
+   * Schema validation, authority preservation and fallback remain owned by AnswerPlanningModule.
    */
+  async planAnswer(
+    admittedContext: string,
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<string> {
+    const system = `You plan Collector answers across domains. Return one bounded JSON object and no prose.
+
+The current user request and explicit user rules have higher authority than your proposal. Do not decide facts, infer identity, grant authorization, override safety, resolve ambiguous references to one meaning, or emit domain-specific template fields. External fact conflicts remain for the evidence chain.
+
+Allowed shape:
+{"taskFamily":"explanation|comparison|decision|planning|diagnosis|factual_query|research_synthesis|summarization|rewriting|mixed|direct_response","requiredOperations":["answer_directly|explain|compare|recommend|plan_steps|diagnose|propose_actions|verify_facts|synthesize|summarize|rewrite|state_assumptions|request_clarification"],"assumptions":[{"statement":"...","risk":"low|material"}],"semanticCriteria":["..."]}
+
+Use only cross-domain operations. Semantic criteria are writing guidance, never claims that checks passed. Keep every array short.`;
+    const user = `Production context admitted for answer planning:\n${admittedContext}`;
+    const response = await this.complete({
+      envelope: createPromptEnvelope({
+        purpose: options.context?.purpose ?? "answer_planning",
+        promptVersion: options.context?.promptVersion ?? this.promptVersion,
+        system,
+        user,
+        outputContract: { format: "json_object", contractVersion: "answer-plan-proposal-v1", minimumBodyTokens: 1 },
+      }),
+      prompt: `${system}\n\n${user}`,
+      model: options.model ?? this.modelName,
+      responseFormat: { type: "json_object" },
+      thinking: false,
+      maxTokens: options.maxTokens ?? 1_500,
+      timeoutMs: options.timeoutMs ?? 60_000,
+      temperature: 0,
+    }, options.context ?? { purpose: "answer_planning" });
+    return response.content.trim();
+  }
+
+  /** Final writing stays free-form Markdown; task structure comes from admitted user rules and Answer Plan. */
   async writeResearchBody(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
     options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext; parentChainContext?: ResearchParentChainContext; sliceContext?: ResearchSliceContext } = {},
@@ -1028,12 +1066,13 @@ export class ModelGateway {
   ): string {
     const parentContext = formatResearchParentChainContext(parentChainContext);
     const sliceContextText = formatResearchSliceContext(sliceContext);
-    return `你是 Collector 的研究助手。请回答用户最新的问题，输出一篇连贯、完整的中文正文。
+    return `你是 Collector 的最终写作阶段。请只根据已准入上下文回答当前用户请求，输出可直接给用户阅读的干净 Markdown 正文。
 
 要求：
-- 由流畅的自然段落组成，段落之间用一个空行分隔。
-- 写连续的行文：不要用 Markdown 标题把内容拆成小节，不要写碎片化的小标题；内容的层次用段落之间的自然过渡表达，全文一气呵成。
-- 内容详实、论述充分，长度服从内容需要，不要刻意压缩或拆成孤立的碎片要点。
+- 当前用户本轮的明确目标、格式和限制始终高于派生 Answer Plan；若二者冲突，遵循用户本轮要求。
+- 根据实际任务自然组织：解释重在机制，比较使用一致维度，规划给出可执行顺序，诊断区分现象、原因与证据，总结和改写忠于原意。标题、列表、表格、连续正文与长度都服从当前任务和用户明确要求，不套固定模板。
+- Answer Plan 的 requiredOperations 和 semanticCriteria 只是写作候选，不是事实、授权或完成证据；不要在正文中复述计划，也不要自报“检查已通过”或完成比例。
+- 若计划要求澄清，只询问会实质改变结果、授权或高风险事实的必要信息；低风险假设必须公开说明，不把 ambiguous/unresolved 引用强行解释成唯一含义。
 - 保持来源事实与不确定性，不编造来源、链接或引用。
 - 不要使用 Markdown 代码围栏包裹整篇回答，不要返回 JSON 或任何字段结构，只输出正文本身。
 - 只输出干净正文，不要输出任何内部控制协议；弱标记由独立抽取任务产生。

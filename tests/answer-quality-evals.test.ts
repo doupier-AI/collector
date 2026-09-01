@@ -30,7 +30,7 @@ import {
   type AnswerQualityRun,
   type PairwiseJudgment,
 } from "@collector/answer-quality-evals";
-import type { ConversationContext } from "@collector/capture-contracts";
+import type { AnswerPlan, ConversationContext } from "@collector/capture-contracts";
 
 test("versioned corpus covers the required cross-task matrix", () => {
   assert.match(ANSWER_QUALITY_CORPUS_VERSION, /^aq-corpus-v\d+$/);
@@ -66,7 +66,7 @@ test("five fact owners preserve unsupported, unavailable, failed and missing as 
     releaseRequirement: { id: "future-release", capabilities: { final_writing: { mustImplement: true, mustBeAvailable: true, mustSucceed: true } } },
   });
   const byId = new Map(evaluateCapabilityFacts(facts).map((finding) => [finding.capabilityId, finding.outcome]));
-  assert.equal(byId.get("answer_plan"), "not_supported_by_build");
+  assert.equal(byId.get("answer_plan"), "missing_execution");
   assert.equal(byId.get("citation_attribution"), "unavailable");
   assert.equal(byId.get("context_assembly"), "execution_failed");
   assert.equal(byId.get("final_writing"), "missing_execution");
@@ -83,12 +83,14 @@ test("release requirements can fail a candidate while a historical baseline cont
       id: "release-target",
       capabilities: {
         answer_plan: { mustImplement: true },
+        evidence_preparation: { mustImplement: true },
         final_writing: { mustBeAvailable: true, mustSucceed: true },
       },
     },
   });
   const findings = evaluateCapabilityFacts(facts);
-  assert.equal(findings.find((entry) => entry.capabilityId === "answer_plan")?.releaseBlocking, true);
+  assert.equal(findings.find((entry) => entry.capabilityId === "answer_plan")?.releaseBlocking, false);
+  assert.equal(findings.find((entry) => entry.capabilityId === "evidence_preparation")?.releaseBlocking, true);
   assert.equal(findings.find((entry) => entry.capabilityId === "final_writing")?.releaseBlocking, true);
   assert.ok(findings.some((entry) => entry.capabilityId === "context_assembly" && entry.outcome === "missing_execution"));
 });
@@ -116,6 +118,10 @@ test("fixed-provider mode binds the complete sample identity and uses production
   assert.equal(run.trace.providerRequests.length, 1);
   assert.ok(run.trace.conversationContext);
   assert.ok(run.trace.contextAssembly);
+  const answerPlan = run.trace.answerPlan as AnswerPlan;
+  assert.equal(run.facts.runExecution.find((entry) => entry.capabilityId === "answer_plan")?.artifactId, answerPlan.planId);
+  assert.ok(answerPlan.taskFamily === "planning" || answerPlan.taskFamily === "mixed");
+  assert.match(JSON.stringify(run.trace.providerRequests[0]), /answer_plan/);
 });
 
 test("AQ-01 multi-turn and correction slices execute the production Conversation Context capability", async () => {

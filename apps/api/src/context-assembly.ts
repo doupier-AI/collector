@@ -55,6 +55,7 @@ export const DEFAULT_CONTEXT_PURPOSE_POLICIES: readonly ContextPurposePolicy[] =
   policy("connection_test", "chat", RULES_ONLY, PROBE_BUDGET, "standard"),
   policy("research_chat", "chat", ALL_CHANNELS, ANSWER_BUDGET),
   policy("deep_research", "research", ALL_CHANNELS, RESEARCH_BUDGET),
+  policy("answer_planning", "chat", ALL_CHANNELS, EXTRACTION_BUDGET),
   policy("research_grounding", "search", RULES_AND_EVIDENCE, SEARCH_BUDGET),
   policy("research_body", "research", ALL_CHANNELS, RESEARCH_BUDGET),
   policy("research_body_outline", "research", RULES_AND_EVIDENCE, EXTRACTION_BUDGET),
@@ -186,8 +187,11 @@ function normalizeCandidate(candidate: ContextCandidate): ContextCandidate {
           ? "turn"
           : candidate.ruleKind === "project_instruction"
             ? "project"
-            : "global";
+            : candidate.ruleKind === "answer_plan"
+              ? "low_weight"
+              : "global";
     if (priority === "hard_boundary" || priority === "task_required") protection = "required";
+    else if (candidate.ruleKind === "answer_plan") protection = "optional";
   } else if (candidate.channel === "factual_evidence") {
     if (candidate.evidenceKind === "current_question" || candidate.evidenceKind === "continuation_state") {
       priority = "task_required";
