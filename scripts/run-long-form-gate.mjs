@@ -23,6 +23,7 @@ const outputPath = repositoryPath(argumentValue("--output") ?? "evals/answer-qua
 const checkpointPath = repositoryPath(argumentValue("--checkpoint") ?? ".scratch/aq-long-form-gate-v1-checkpoint.json");
 const databasePath = resolve(argumentValue("--database") ?? process.env.COLLECTOR_REAL_MODEL_DATABASE ?? join(repositoryRoot, ".collector-data", "collector.sqlite"));
 const invalidatedInfrastructureAttempts = Number(argumentValue("--invalidated-attempts") ?? "0");
+const compatibleCheckpointHarnessSha = argumentValue("--checkpoint-harness-sha");
 const preregistration = JSON.parse(await readFile(preregistrationPath, "utf8"));
 validatePreregistration(preregistration);
 
@@ -41,8 +42,11 @@ const baseCandidates = preparation.trace.contextAssembly?.request?.candidates;
 if (!Array.isArray(baseCandidates)) throw new Error("Answer-quality preparation did not expose ContextAssembly candidates");
 
 const harnessSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8" }).trim();
-const checkpoint = await readCheckpoint(checkpointPath, preregistration, harnessSha);
-const generatedRuns = checkpoint?.runs ?? [];
+const checkpoint = await readCheckpoint(checkpointPath, preregistration, harnessSha, compatibleCheckpointHarnessSha);
+const generatedRuns = (checkpoint?.runs ?? []).map((run) => ({
+  ...run,
+  evaluationHarnessSha: run.evaluationHarnessSha ?? checkpoint.evaluationHarnessSha,
+}));
 for (let repetition = 1; repetition <= preregistration.sampleProtocol.generationRepetitions; repetition += 1) {
   for (const candidateId of preregistration.sampleProtocol.runOrderPerRepetition) {
     if (generatedRuns.some((run) => run.repetition === repetition && run.candidateId === candidateId)) {
@@ -59,12 +63,16 @@ for (let repetition = 1; repetition <= preregistration.sampleProtocol.generation
       baseCandidates,
       profileRuntime,
       definition,
+      harnessSha,
     }));
     await writeCheckpoint(checkpointPath, preregistration, harnessSha, generatedRuns, checkpoint?.pairwise ?? []);
   }
 }
 
-const pairwise = checkpoint?.pairwise ?? [];
+const pairwise = (checkpoint?.pairwise ?? []).map((entry) => ({
+  ...entry,
+  evaluationHarnessSha: entry.evaluationHarnessSha ?? checkpoint.evaluationHarnessSha,
+}));
 for (let repetition = 1; repetition <= preregistration.sampleProtocol.generationRepetitions; repetition += 1) {
   if (pairwise.some((entry) => entry.repetition === repetition)) {
     process.stderr.write(`[long-form-gate] resume pairwise repetition=${repetition}\n`);
@@ -74,7 +82,7 @@ for (let repetition = 1; repetition <= preregistration.sampleProtocol.generation
   const state = generatedRuns.find((run) => run.repetition === repetition && run.candidateId === "long_form_state_prototype");
   if (!minimal || !state) throw new Error(`Missing pairwise bodies for repetition ${repetition}`);
   process.stderr.write(`[long-form-gate] pairwise repetition=${repetition}\n`);
-  pairwise.push(await compareCandidateBodies({ repetition, minimal, state, testCase, profileRuntime }));
+  pairwise.push({ ...(await compareCandidateBodies({ repetition, minimal, state, testCase, profileRuntime })), evaluationHarnessSha: harnessSha });
   await writeCheckpoint(checkpointPath, preregistration, harnessSha, generatedRuns, pairwise);
 }
 
@@ -103,6 +111,7 @@ const result = {
   execution: {
     candidateSha: preregistration.candidateSha,
     evaluationHarnessSha: harnessSha,
+    evaluationHarnessShas: [...new Set([...generatedRuns, ...pairwise].map((entry) => entry.evaluationHarnessSha))],
     case: preregistration.case,
     rubricVersion: preregistration.rubric.version,
     releaseProfileVersion: preregistration.releaseProfile.version,
@@ -139,7 +148,7 @@ console.log(JSON.stringify({
   resourceIncreaseRatios: decision.resourceIncreaseRatios,
 }, null, 2));
 
-async function runCandidate({ candidateId, repetition, preregistration: packet, testCase: target, preparation: prepared, baseCandidates: initialCandidates, profileRuntime: runtime, definition: providerDefinition }) {
+async function runCandidate({ candidateId, repetition, preregistration: packet, testCase: target, preparation: prepared, baseCandidates: initialCandidates, profileRuntime: runtime, definition: providerDefinition, harnessSha: evaluationHarnessSha }) {
   const taskId = `${packet.decisionId}:${candidateId}:${repetition}`;
   const outputMessageId = `${taskId}:output`;
   const events = [];
@@ -162,10 +171,10 @@ async function runCandidate({ candidateId, repetition, preregistration: packet, 
     candidates: [...structuredClone(initialCandidates), ...ruleCandidates],
   }), "outline");
   const startedAt = Date.now();
-  const outline = await gateway.generateBodyOutlineFromContext(outlineAssembly, {
+  const outline = await withTransientRetry((retryCount) => gateway.generateBodyOutlineFromContext(outlineAssembly, {
     maxTokens: packet.releaseProfile.outlineOutputBudgetTokens,
-    context: modelContext(taskId, "body-outline", "research_body_outline", prepared.trace.answerPlan?.planId, packet),
-  });
+    context: modelContext(taskId, "body-outline", "research_body_outline", prepared.trace.answerPlan?.planId, packet, retryCount),
+  }));
   const sections = [];
   const finishReasons = [];
   const contextAssemblyAttemptIds = [outlineAssembly.assemblyAttemptId];
@@ -197,16 +206,16 @@ async function runCandidate({ candidateId, repetition, preregistration: packet, 
         ],
       }), `section ${sectionIndex + 1}`);
       contextAssemblyAttemptIds.push(sectionAssembly.assemblyAttemptId);
-      const result = await gateway.expandBodySectionFromContext(sectionAssembly, {
-        goal: "admitted-context",
-        outline,
-        sectionIndex,
-        writtenSoFar: "",
-        ...(continuation > 0 ? { continuation: { priorSectionContent: "admitted-continuation-state" } } : {}),
-      }, {
-        maxTokens: packet.releaseProfile.sectionOutputBudgetTokens,
-        context: modelContext(taskId, `body-section:${sectionIndex}`, "research_body_section", prepared.trace.answerPlan?.planId, packet),
-      });
+      const result = await withTransientRetry((retryCount) => gateway.expandBodySectionFromContext(sectionAssembly, {
+          goal: "admitted-context",
+          outline,
+          sectionIndex,
+          writtenSoFar: "",
+          ...(continuation > 0 ? { continuation: { priorSectionContent: "admitted-continuation-state" } } : {}),
+        }, {
+          maxTokens: packet.releaseProfile.sectionOutputBudgetTokens,
+          context: modelContext(taskId, `body-section:${sectionIndex}`, "research_body_section", prepared.trace.answerPlan?.planId, packet, retryCount),
+        }));
       sectionContent = sectionContent ? joinContinuation(sectionContent, result.content) : result.content.trim();
       finishReason = result.finishReason;
       if (finishReason !== "length") break;
@@ -228,16 +237,18 @@ async function runCandidate({ candidateId, repetition, preregistration: packet, 
   });
   const missingCoverageTerms = target.expectation.mustCover.filter((term) => !body.includes(term));
   const dimensions = combineDimensions({ semanticJudge, completion, exactRepetitions, missingCoverageTerms });
-  const usageVerified = events.length > 0 && events.every((event) => event.status === "completed" && event.usage && event.estimatedCostUsd !== undefined);
+  const completedEvents = events.filter((event) => event.status === "completed");
+  const usageVerified = completedEvents.length > 0 && completedEvents.every((event) => event.usage && event.estimatedCostUsd !== undefined);
   const metrics = {
-    outputTokens: events.reduce((sum, event) => sum + (event.usage?.outputTokens ?? 0), 0),
-    estimatedCostUsd: round(events.reduce((sum, event) => sum + (event.estimatedCostUsd ?? 0), 0), 12),
+    outputTokens: completedEvents.reduce((sum, event) => sum + (event.usage?.outputTokens ?? 0), 0),
+    estimatedCostUsd: round(completedEvents.reduce((sum, event) => sum + (event.estimatedCostUsd ?? 0), 0), 12),
     firstCharacterLatencyMs: firstCharacterLatencyMs ?? completeLatencyMs,
     completeLatencyMs,
   };
   return {
     candidateId,
     repetition,
+    evaluationHarnessSha,
     evidenceVerified: usageVerified && LONG_FORM_GATE_DIMENSIONS.every((dimension) => dimensions[dimension].verdict !== "unverified"),
     identity: {
       taskId,
@@ -336,25 +347,33 @@ async function compareCandidateBodies({ repetition, minimal, state, testCase: ta
 async function openAiCompatibleJson(runtime, prompt, system) {
   const baseUrl = (runtime.profile.baseUrl || DEFAULT_PROVIDER_REGISTRY.get(runtime.profile.providerId).defaultBaseUrl).replace(/\/+$/, "");
   const startedAt = Date.now();
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${runtime.apiKey}`, "Content-Type": "application/json" },
-    redirect: "error",
-    signal: AbortSignal.timeout(120_000),
-    body: JSON.stringify({
-      model: runtime.profile.model,
-      temperature: 0,
-      response_format: { type: "json_object" },
-      messages: [{ role: "system", content: system }, { role: "user", content: prompt }],
-    }),
+  const { response, payload, retryCount } = await withTransientRetry(async (attempt) => {
+    const candidate = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${runtime.apiKey}`, "Content-Type": "application/json" },
+      redirect: "error",
+      signal: AbortSignal.timeout(120_000),
+      body: JSON.stringify({
+        model: runtime.profile.model,
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [{ role: "system", content: system }, { role: "user", content: prompt }],
+      }),
+    });
+    const body = await candidate.json();
+    if (!candidate.ok) {
+      const error = new Error(`Evaluation Judge failed with HTTP ${candidate.status}`);
+      error.status = candidate.status;
+      throw error;
+    }
+    return { response: candidate, payload: body, retryCount: attempt };
   });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(`Evaluation Judge failed with HTTP ${response.status}`);
   const content = payload.choices?.[0]?.message?.content;
   if (typeof content !== "string" || !content.trim()) throw new Error("Evaluation Judge returned no structured content");
   return {
     content,
     latencyMs: Date.now() - startedAt,
+    retryCount,
     usage: payload.usage ? {
       inputTokens: Number(payload.usage.prompt_tokens ?? 0),
       outputTokens: Number(payload.usage.completion_tokens ?? 0),
@@ -441,7 +460,7 @@ function continuationCandidate(taskId, sectionIndex, content) {
   };
 }
 
-function modelContext(taskId, workflowStepId, purpose, answerPlanId, packet) {
+function modelContext(taskId, workflowStepId, purpose, answerPlanId, packet, retryCount = 0) {
   return {
     workflowRunId: taskId,
     workflowStepId,
@@ -449,6 +468,7 @@ function modelContext(taskId, workflowStepId, purpose, answerPlanId, packet) {
     purpose,
     promptVersion: packet.releaseProfile.promptEnvelopeVersion,
     buildFingerprint: packet.candidateSha,
+    retryCount,
   };
 }
 
@@ -548,7 +568,7 @@ function validatePreregistration(packet) {
   if (JSON.stringify(packet.rubric.mustPassDimensions) !== JSON.stringify(LONG_FORM_GATE_DIMENSIONS)) throw new Error("Preregistered long-form dimensions do not match the evaluator");
 }
 
-async function readCheckpoint(path, packet, harnessSha) {
+async function readCheckpoint(path, packet, harnessSha, compatibleHarnessSha) {
   let checkpoint;
   try {
     checkpoint = JSON.parse(await readFile(path, "utf8"));
@@ -559,12 +579,34 @@ async function readCheckpoint(path, packet, harnessSha) {
   if (checkpoint.schemaVersion !== 1
     || checkpoint.decisionId !== packet.decisionId
     || checkpoint.candidateSha !== packet.candidateSha
-    || checkpoint.evaluationHarnessSha !== harnessSha
+    || (checkpoint.evaluationHarnessSha !== harnessSha && checkpoint.evaluationHarnessSha !== compatibleHarnessSha)
     || !Array.isArray(checkpoint.runs)
     || !Array.isArray(checkpoint.pairwise)) {
     throw new Error("Existing long-form checkpoint does not match the frozen execution identity");
   }
   return checkpoint;
+}
+
+async function withTransientRetry(operation) {
+  let lastError;
+  for (let retryCount = 0; retryCount <= 2; retryCount += 1) {
+    try {
+      return await operation(retryCount);
+    } catch (error) {
+      lastError = error;
+      if (!isTransient(error) || retryCount === 2) throw error;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 1_000 * 2 ** retryCount));
+    }
+  }
+  throw lastError;
+}
+
+function isTransient(error) {
+  const status = Number(error?.status);
+  return error instanceof TypeError
+    || error?.cause?.code === "UND_ERR_CONNECT_TIMEOUT"
+    || status === 429
+    || status >= 500;
 }
 
 async function writeCheckpoint(path, packet, harnessSha, runs, pairwise) {
