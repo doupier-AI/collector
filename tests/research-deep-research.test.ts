@@ -298,16 +298,42 @@ test("branch view keeps all grounded sources in store but only returns cited sou
     async prepareGrounded() {
       const content = "深入研究结论。";
       return {
-        kind: "confirmed_final" as const,
-        content,
+        kind: "evidence" as const,
+        evidence: content,
         status: "grounded",
         queries: ["branch grounding"],
         sources: [
           { title: "未引用一", url: "https://example.com/one" },
           { title: "未引用二", url: "https://example.com/two" },
-          { title: "实际引用", url: "https://example.com/three" },
+          { title: "实际引用", url: "https://example.com/three", snippet: content, evidenceStatus: "full" as const },
         ],
-        citations: [{ sourceOrdinal: 3, startOffset: 0, endOffset: content.length }],
+        citations: [],
+      };
+    },
+    async *writeGroundedFinalStream(_request, _evidence, options) {
+      options.onCitation?.({ sourceOrdinal: 3, startOffset: 0, endOffset: "深入研究结论。".length });
+      yield "深入研究结论。";
+      options.onStreamDone?.({ finishReason: "stop" });
+    },
+    async attributeCitations(assembly) {
+      const batch = JSON.parse(assembly.adopted.map((item) => item.candidate.content).join("\n")) as {
+        nativeCandidates: Array<{ candidateId: string; sourceOrdinal: number; claimText: string }>;
+        sources: Array<{ sourceOrdinal: number; content: string }>;
+      };
+      const candidate = batch.nativeCandidates[0]!;
+      const source = batch.sources.find((item) => item.sourceOrdinal === candidate.sourceOrdinal)!;
+      return {
+        output: JSON.stringify({ attributions: [{
+          nativeCandidateId: candidate.candidateId,
+          sourceOrdinal: candidate.sourceOrdinal,
+          claimText: candidate.claimText,
+          evidenceText: source.content,
+          support: true,
+          confidence: 0.95,
+        }] }),
+        provider: "attribution-stub",
+        model: "attribution-model",
+        producerVersion: "citation-attribution-producer-v1",
       };
     },
   };

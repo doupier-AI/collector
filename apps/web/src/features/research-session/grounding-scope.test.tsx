@@ -5,21 +5,21 @@ import { makeMessage, makeTask } from "../../test/fakes";
 
 describe("联网研究状态", () => {
   it("证据政策满足不显示为事实已验证或 grounded", () => {
-    render(<ul><MessageItem message={makeMessage({ id: "answer", role: "assistant", status: "completed", content: "回答" })} task={makeTask({ outputMessageId: "answer", status: "completed", groundingScope: { status: "evidence_prepared", evidencePolicyStatus: "policy_satisfied", sourceCount: 2, citationCount: 0, runId: "run" } })} /></ul>);
+    render(<ul><MessageItem message={makeMessage({ id: "answer", role: "assistant", status: "completed", content: "回答" })} task={makeTask({ outputMessageId: "answer", status: "completed", groundingScope: { status: "evidence_prepared", evidencePolicyStatus: "policy_satisfied", sourceCount: 0, citationCount: 0, runId: "run" } })} /></ul>);
     expect(screen.getByTestId("grounding-scope-note")).toHaveTextContent("按当前证据政策准备来源");
     expect(screen.getByTestId("grounding-scope-note")).toHaveTextContent("不表示事实已验证");
     expect(screen.getByTestId("grounding-scope-note")).not.toHaveTextContent("已联网核验");
   });
 
   it("部分满足与冲突使用不同的诚实停止文案", () => {
-    const { rerender } = render(<ul><MessageItem message={makeMessage({ id: "answer", role: "assistant", status: "completed", content: "回答" })} task={makeTask({ outputMessageId: "answer", status: "completed", groundingScope: { status: "evidence_incomplete", evidencePolicyStatus: "partially_satisfied", sourceCount: 1, citationCount: 0, runId: "run" } })} /></ul>);
+    const { rerender } = render(<ul><MessageItem message={makeMessage({ id: "answer", role: "assistant", status: "completed", content: "回答" })} task={makeTask({ outputMessageId: "answer", status: "completed", groundingScope: { status: "evidence_incomplete", evidencePolicyStatus: "partially_satisfied", sourceCount: 0, citationCount: 0, runId: "run" } })} /></ul>);
     expect(screen.getByTestId("grounding-scope-note")).toHaveTextContent("仅部分满足");
-    rerender(<ul><MessageItem message={makeMessage({ id: "answer", role: "assistant", status: "completed", content: "回答" })} task={makeTask({ outputMessageId: "answer", status: "completed", groundingScope: { status: "evidence_conflicting", evidencePolicyStatus: "conflicting", sourceCount: 2, citationCount: 0, runId: "run" } })} /></ul>);
+    rerender(<ul><MessageItem message={makeMessage({ id: "answer", role: "assistant", status: "completed", content: "回答" })} task={makeTask({ outputMessageId: "answer", status: "completed", groundingScope: { status: "evidence_conflicting", evidencePolicyStatus: "conflicting", sourceCount: 0, citationCount: 0, runId: "run" } })} /></ul>);
     expect(screen.getByTestId("grounding-scope-note")).toHaveTextContent("合格来源存在冲突");
   });
 
   it("联网成功文案不混用完整搜索来源数量", () => {
-    render(<ul><MessageItem message={makeMessage({ id: "answer", role: "assistant", status: "completed", content: "回答" })} task={makeTask({ outputMessageId: "answer", status: "completed", groundingScope: { status: "grounded", sourceCount: 2, citationCount: 1, runId: "run" } })} /></ul>);
+    render(<ul><MessageItem message={makeMessage({ id: "answer", role: "assistant", status: "completed", content: "回答" })} task={makeTask({ outputMessageId: "answer", status: "completed", groundingScope: { status: "grounded", sourceCount: 1, citationCount: 1, runId: "run" } })} /></ul>);
     expect(screen.getByTestId("grounding-scope-note")).toHaveTextContent("本轮已联网核验。");
     expect(screen.getByTestId("grounding-scope-note")).not.toHaveTextContent("2 个");
   });

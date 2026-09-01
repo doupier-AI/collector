@@ -870,6 +870,10 @@ export class ModelGateway {
     return this.extractTermMarkers(this.contextPayload(assembly), this.contextOptions(assembly, options));
   }
 
+  async produceCitationAttributionsFromContext(assembly: AssembledModelContext, options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): Promise<string> {
+    return this.produceCitationAttributions(this.contextPayload(assembly), this.contextOptions(assembly, options));
+  }
+
   async verifyTermIdentityFromContext(assembly: AssembledModelContext, options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {}): Promise<boolean> {
     return this.verifyTermIdentity(this.contextPayload(assembly), this.contextOptions(assembly, options));
   }
@@ -1374,6 +1378,48 @@ ${JSON.stringify(input.content)}`;
       maxTokens: options.maxTokens ?? 2_048,
       timeoutMs: options.timeoutMs ?? 30_000,
     }, options.context ?? { purpose: "term_marker_extraction" });
+    return response.content;
+  }
+
+  /**
+   * #207 citation producer: proposes support ranges only. The API-owned attribution Module
+   * performs identity/range checks and the versioned acceptance decision.
+   */
+  async produceCitationAttributions(
+    input: {
+      batchId: string;
+      mode: "verify_native" | "discover";
+      body: { startOffset: number; endOffset: number; content: string };
+      sources: Array<{ sourceOrdinal: number; content: string }>;
+      nativeCandidates: Array<{ candidateId: string; sourceOrdinal: number; startOffset: number; endOffset: number; claimText: string }>;
+    },
+    options: { model?: string; maxTokens?: number; timeoutMs?: number; context?: ModelCallContext } = {},
+  ): Promise<string> {
+    const prompt = `You are Collector's citation attribution producer. You propose claim-to-evidence support ranges; you do not accept citations and you do not decide whether a claim is objectively true.
+
+Return valid JSON only, without Markdown fences:
+{"attributions":[{"nativeCandidateId":"provider:1","sourceOrdinal":1,"claimText":"exact final-body text","evidenceText":"exact source text","support":true,"confidence":0.92}]}
+
+Rules:
+- claimText and evidenceText are exact text selectors, not summaries. Copy them verbatim from body.content and the selected source.content. The deterministic policy resolves their JavaScript UTF-16 ranges and rejects selectors that are missing, repeated, too broad, or ambiguous.
+- support=true only when the evidence text directly supports the complete claim without relying on unstated assumptions. Otherwise return support=false or omit the proposal.
+- confidence is from 0 to 1 and measures this exact claim/source support relation.
+- Use only listed sourceOrdinal values. Never cite a title, URL, source number, or search presence as support by itself.
+- Do not output broad paragraph ranges when a shorter complete claim is available.
+- In verify_native mode, return exactly one proposal for each nativeCandidates item, preserve its candidateId as nativeCandidateId, sourceOrdinal, and claimText, and do not invent additional candidates. The native offsets are already owned and checked by the deterministic policy; do not recalculate them.
+- In discover mode, omit nativeCandidateId and return only independently discovered supported claims. Writer self-reports are not evidence and are not present in this input.
+- When no relation is supportable, return {"attributions":[]}.
+
+Input: ${JSON.stringify(input)}`;
+    const response = await this.complete({
+      prompt,
+      model: options.model ?? this.modelName,
+      responseFormat: { type: "json_object" },
+      temperature: 0,
+      thinking: false,
+      maxTokens: options.maxTokens ?? 4_096,
+      timeoutMs: options.timeoutMs ?? 60_000,
+    }, options.context ?? { purpose: "citation_attribution", promptVersion: "citation-attribution-producer-v1" });
     return response.content;
   }
 

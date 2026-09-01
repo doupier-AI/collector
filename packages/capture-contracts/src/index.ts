@@ -102,6 +102,7 @@ export const CONTEXT_PURPOSES = [
   "answer_planning",
   "research_grounding",
   "research_body",
+  "citation_attribution",
   "research_body_outline",
   "research_body_section",
   "research_slice_annotation",
@@ -2247,7 +2248,9 @@ export type ResearchGroundingScopeStatus =
 /** 提供给任务视图和界面的联网结果摘要；不包含任何供应商原始响应或凭证。 */
 export interface ResearchGroundingScope {
   status: ResearchGroundingScopeStatus;
+  /** Number of distinct sources with accepted attribution in this final body; zero otherwise. */
   sourceCount: number;
+  /** Number of accepted attribution records projected as citations in this final body. */
   citationCount: number;
   runId?: string;
   /** Evidence-policy coverage only; never a factual-verification or grounded projection. */
@@ -3040,6 +3043,8 @@ export interface ResearchGroundingRunRecord {
   trace?: ResearchGroundingTraceEntry[];
   /** #206 policy ledger and packed qualified evidence. This object has no grounded truth field. */
   evidenceBundle?: EvidenceBundle;
+  /** #207 provider-independent accepted/rejected attribution decisions for the final body version. */
+  citationAttribution?: CitationAttributionRunRecord;
   errorMessage?: string;
   attempt: number;
   createdAt: string;
@@ -3073,12 +3078,16 @@ export interface ResearchCitationRecord {
   /** 新记录直接指向最终保存回答中的引用原文；旧记录保留 markerOffset 降级。 */
   location?: ResearchStableLocation;
   providerCitationId?: string;
+  /** Present on #207 records; older persisted citations can omit it. */
+  attributionId?: string;
+  /** Present on #207 records; accepted means only this named policy accepted the attribution. */
+  acceptancePolicyVersion?: typeof CITATION_SUPPORT_ACCEPTANCE_POLICY_VERSION;
   createdAt: string;
 }
 
 /**
- * Final-writer citation side-channel. A candidate without offsets only says that
- * the source participated in the answer; consumers must not invent a placement.
+ * Final-writer citation side-channel. A candidate without offsets only claims that
+ * the source participated in the answer; consumers must not trust it or invent a placement.
  * Exact offsets are UTF-16 ranges in the final writer's raw body stream and are
  * mapped through the same cleaning boundary as visible text before persistence.
  */
@@ -3087,6 +3096,113 @@ export interface ResearchCitationCandidate {
   startOffset?: number;
   endOffset?: number;
   providerCitationId?: string;
+}
+
+export const CITATION_ATTRIBUTION_SCHEMA_VERSION = "citation-attribution-run-v1" as const;
+export const CITATION_ATTRIBUTION_PRODUCER_VERSION = "citation-attribution-producer-v1" as const;
+export const CITATION_SUPPORT_ACCEPTANCE_POLICY_VERSION = "citation-support-acceptance-v1" as const;
+export const CITATION_SUPPORT_ACCEPTANCE_MIN_CONFIDENCE = 0.8;
+
+export type CitationAttributionStatus = "accepted" | "rejected";
+export type CitationAttributionRunStatus = "completed" | "partial" | "failed" | "not_required";
+export type CitationAttributionRejectionReason =
+  | "source_not_found"
+  | "source_not_admitted"
+  | "source_content_unavailable"
+  | "claim_range_missing"
+  | "claim_range_invalid"
+  | "claim_text_mismatch"
+  | "claim_text_not_found"
+  | "claim_text_ambiguous"
+  | "evidence_range_invalid"
+  | "evidence_text_mismatch"
+  | "evidence_text_not_found"
+  | "evidence_text_ambiguous"
+  | "native_candidate_mismatch"
+  | "support_not_confirmed"
+  | "confidence_below_threshold"
+  | "duplicate"
+  | "producer_unavailable"
+  | "producer_failed"
+  | "invalid_producer_output";
+
+export interface CitationAttributionProducerIdentity {
+  kind: "provider_native" | "independent_model";
+  provider: string;
+  model: string;
+  version: string;
+}
+
+export interface CitationAttributionTextRange {
+  startOffset: number;
+  endOffset: number;
+  exact: string;
+}
+
+export interface CitationAttributionEvidenceIdentity {
+  /** Missing only when a rejected candidate referenced no source in this grounding run. */
+  sourceId?: string;
+  sourceOrdinal: number;
+  providerSourceId?: string;
+  preparedEvidenceId?: string;
+  sourceVersion?: string;
+}
+
+export interface CitationAttributionSupportCandidate {
+  support: boolean;
+  confidence: number;
+  producer: CitationAttributionProducerIdentity;
+}
+
+/** One immutable attribution decision. It does not claim objective truth. */
+export interface ResearchCitationAttributionRecord {
+  id: string;
+  candidateId: string;
+  taskId: string;
+  messageId: string;
+  runId: string;
+  bodyVersionId: string;
+  generationAttempt: number;
+  candidateProducer: CitationAttributionProducerIdentity;
+  evidenceIdentity: CitationAttributionEvidenceIdentity;
+  claimRange?: CitationAttributionTextRange;
+  evidenceRange?: CitationAttributionTextRange;
+  supportCandidate?: CitationAttributionSupportCandidate;
+  acceptancePolicyVersion: typeof CITATION_SUPPORT_ACCEPTANCE_POLICY_VERSION;
+  status: CitationAttributionStatus;
+  rejectionReasons: readonly CitationAttributionRejectionReason[];
+  providerCitationId?: string;
+  /** Optional, untrusted diagnostics only; never participates in acceptance. */
+  writerUsageClaimIds?: readonly string[];
+  createdAt: string;
+}
+
+export interface CitationAttributionProducerCallRecord {
+  batchId: string;
+  mode: "verify_native" | "discover";
+  provider?: string;
+  model?: string;
+  producerVersion: typeof CITATION_ATTRIBUTION_PRODUCER_VERSION;
+  status: "completed" | "unavailable" | "failed" | "invalid_output";
+  errorCode?: "producer_unavailable" | "producer_failed" | "invalid_producer_output";
+}
+
+/** Durable #207 run record stored beside, but separate from, evidence preparation facts. */
+export interface CitationAttributionRunRecord {
+  schemaVersion: typeof CITATION_ATTRIBUTION_SCHEMA_VERSION;
+  id: string;
+  taskId: string;
+  messageId: string;
+  groundingRunId: string;
+  bodyVersionId: string;
+  generationAttempt: number;
+  status: CitationAttributionRunStatus;
+  acceptancePolicyVersion: typeof CITATION_SUPPORT_ACCEPTANCE_POLICY_VERSION;
+  producerCalls: readonly CitationAttributionProducerCallRecord[];
+  invalidProposalCount: number;
+  attributions: readonly ResearchCitationAttributionRecord[];
+  createdAt: string;
+  completedAt: string;
 }
 
 /** Structured source identity supplied to a grounded final writer. */
@@ -3153,24 +3269,104 @@ export function validateResearchGroundingResult(result: ResearchGroundingResult)
     const bundle = result.run.evidenceBundle;
     validateEvidenceBundle(bundle);
     if (bundle.taskId !== result.run.taskId) throw new Error("Evidence bundle must reference its grounding task");
-    if (result.run.status === "grounded" || result.scope.status === "grounded") {
-      throw new Error("Evidence policy coverage must not be mapped to grounded");
-    }
+    if (result.run.status === "grounded") throw new Error("Evidence policy coverage must not be mapped to a grounded run");
     const expectedScopeStatus: ResearchGroundingScopeStatus = bundle.evidencePolicyStatus === "policy_satisfied"
       ? "evidence_prepared"
       : bundle.evidencePolicyStatus === "conflicting" ? "evidence_conflicting" : "evidence_incomplete";
-    if (result.run.status !== expectedScopeStatus || result.scope.status !== expectedScopeStatus) {
-      throw new Error("Evidence policy coverage must use the named evidence scope status");
+    if (result.run.status !== expectedScopeStatus || (result.scope.status !== expectedScopeStatus && result.scope.status !== "grounded")) {
+      throw new Error("Evidence policy coverage must keep its named run status until accepted attribution derives grounded");
     }
     if (result.scope.evidencePolicyStatus !== bundle.evidencePolicyStatus) {
       throw new Error("Grounding scope evidencePolicyStatus must match its evidence bundle");
     }
   }
   const sourceIds = new Set(result.sources.map((source) => source.id));
+  if (sourceIds.size !== result.sources.length) throw new Error("Grounding source identities must be unique");
+  const sourceById = new Map(result.sources.map((source) => [source.id, source]));
   if (result.sources.some((source, index) => source.runId !== result.run.id || source.ordinal !== index + 1)) throw new Error("Grounding sources must be densely ordered for their run");
   const validEvidence = new Set<GroundingEvidenceStatus>(["full", "partial", "none"]);
   if (result.sources.some((source) => source.evidenceStatus !== undefined && !validEvidence.has(source.evidenceStatus))) {
     throw new Error("Grounding source evidenceStatus must be one of full, partial, none");
+  }
+  const attribution = result.run.citationAttribution;
+  if (attribution) {
+    if (attribution.schemaVersion !== CITATION_ATTRIBUTION_SCHEMA_VERSION
+      || attribution.acceptancePolicyVersion !== CITATION_SUPPORT_ACCEPTANCE_POLICY_VERSION) {
+      throw new Error("Citation attribution version is unsupported");
+    }
+    if (attribution.taskId !== result.run.taskId || attribution.groundingRunId !== result.run.id
+      || (result.citations.length > 0 && attribution.messageId !== result.citations[0]?.messageId)
+      || attribution.bodyVersionId !== researchBodyVersionId(attribution.messageId, result.content)) {
+      throw new Error("Citation attribution identity must match its grounding result");
+    }
+    const attributionIds = new Set(attribution.attributions.map((item) => item.id));
+    const candidateIds = new Set(attribution.attributions.map((item) => item.candidateId));
+    if (attributionIds.size !== attribution.attributions.length || candidateIds.size !== attribution.attributions.length) {
+      throw new Error("Citation attribution identities must be unique");
+    }
+    const accepted = attribution.attributions.filter((item) => item.status === "accepted");
+    for (const item of attribution.attributions) {
+      if (item.taskId !== attribution.taskId || item.messageId !== attribution.messageId || item.runId !== attribution.groundingRunId
+        || item.bodyVersionId !== attribution.bodyVersionId || item.generationAttempt !== attribution.generationAttempt
+        || item.acceptancePolicyVersion !== attribution.acceptancePolicyVersion) {
+        throw new Error("Citation attribution record identity is inconsistent");
+      }
+      for (const range of [item.claimRange, item.evidenceRange]) {
+        if (range && (!Number.isSafeInteger(range.startOffset) || !Number.isSafeInteger(range.endOffset)
+          || range.startOffset < 0 || range.endOffset <= range.startOffset
+          || range.exact.length !== range.endOffset - range.startOffset)) {
+          throw new Error("Citation attribution range is invalid");
+        }
+      }
+      if (item.evidenceIdentity.sourceId) {
+        const identifiedSource = sourceById.get(item.evidenceIdentity.sourceId);
+        if (!identifiedSource || identifiedSource.ordinal !== item.evidenceIdentity.sourceOrdinal) {
+          throw new Error("Citation attribution evidence identity is inconsistent");
+        }
+      }
+      if (item.status === "accepted") {
+        const source = item.evidenceIdentity.sourceId ? sourceById.get(item.evidenceIdentity.sourceId) : undefined;
+        if (item.rejectionReasons.length || !source
+          || source.ordinal !== item.evidenceIdentity.sourceOrdinal || source.evidenceStatus === "none"
+          || !item.evidenceIdentity.sourceVersion
+          || !item.claimRange || !item.evidenceRange || item.supportCandidate?.support !== true
+          || item.supportCandidate.producer.kind !== "independent_model"
+          || !Number.isFinite(item.supportCandidate.confidence)
+          || item.supportCandidate.confidence < CITATION_SUPPORT_ACCEPTANCE_MIN_CONFIDENCE
+          || item.supportCandidate.confidence > 1) {
+          throw new Error("Accepted citation attribution is incomplete");
+        }
+        if (result.content.slice(item.claimRange.startOffset, item.claimRange.endOffset) !== item.claimRange.exact) {
+          throw new Error("Accepted citation attribution claim range is stale");
+        }
+      } else if (!item.rejectionReasons.length) {
+        throw new Error("Rejected citation attribution requires a reason");
+      }
+    }
+    const citedAttributionIds = new Set(result.citations.flatMap((citation) => citation.attributionId ? [citation.attributionId] : []));
+    if (accepted.length !== result.citations.length || citedAttributionIds.size !== accepted.length
+      || accepted.some((item) => !citedAttributionIds.has(item.id))) {
+      throw new Error("Only accepted citation attributions may become citations");
+    }
+    const acceptedById = new Map(accepted.map((item) => [item.id, item]));
+    for (const citation of result.citations) {
+      const acceptedAttribution = citation.attributionId ? acceptedById.get(citation.attributionId) : undefined;
+      if (!acceptedAttribution || acceptedAttribution.messageId !== citation.messageId
+        || acceptedAttribution.evidenceIdentity.sourceId !== citation.sourceId
+        || !citation.location
+        || citation.location.bodyVersionId !== acceptedAttribution.bodyVersionId
+        || citation.location.sourceRange.startOffset !== acceptedAttribution.claimRange?.startOffset
+        || citation.location.sourceRange.endOffset !== acceptedAttribution.claimRange?.endOffset
+        || citation.location.exact !== acceptedAttribution.claimRange?.exact) {
+        throw new Error("Citation must preserve its accepted attribution source and claim range");
+      }
+    }
+    const expectedGrounded = accepted.length > 0;
+    if ((result.scope.status === "grounded") !== expectedGrounded) throw new Error("Grounded scope must be derived from accepted attribution");
+    if (result.scope.citationCount !== result.citations.length
+      || result.scope.sourceCount !== new Set(result.citations.map((citation) => citation.sourceId)).size) {
+      throw new Error("Grounding scope counts must describe accepted citations only");
+    }
   }
   const blocks = deriveMessageBlocks(result.content);
   for (const citation of result.citations) {
@@ -3186,6 +3382,9 @@ export function validateResearchGroundingResult(result: ResearchGroundingResult)
         source: result.content,
       });
       if (resolved.kind === "degraded") throw new Error(`Citation stable location is invalid: ${resolved.reason}`);
+    }
+    if (attribution && (!citation.attributionId || citation.acceptancePolicyVersion !== attribution.acceptancePolicyVersion)) {
+      throw new Error("Citation must retain its accepted attribution identity and policy version");
     }
   }
 }

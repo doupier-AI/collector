@@ -29,6 +29,7 @@ const SEARCH_BUDGET = { maxInputTokens: 12_000, reservedOutputTokens: 2_000 } as
 const DOCUMENT_BUDGET = { maxInputTokens: 24_000, reservedOutputTokens: 6_000 } as const;
 const EXTRACTION_BUDGET = { maxInputTokens: 8_000, reservedOutputTokens: 1_000 } as const;
 const SMALL_EXTRACTION_BUDGET = { maxInputTokens: 4_000, reservedOutputTokens: 512 } as const;
+const CITATION_ATTRIBUTION_BUDGET = { maxInputTokens: 16_000, reservedOutputTokens: 4_096 } as const;
 const PROBE_BUDGET = { maxInputTokens: 256, reservedOutputTokens: 16 } as const;
 
 const ALL_CHANNELS = [...CONTEXT_CHANNELS] as const;
@@ -58,6 +59,7 @@ export const DEFAULT_CONTEXT_PURPOSE_POLICIES: readonly ContextPurposePolicy[] =
   policy("answer_planning", "chat", ALL_CHANNELS, EXTRACTION_BUDGET),
   policy("research_grounding", "search", RULES_AND_EVIDENCE, SEARCH_BUDGET),
   policy("research_body", "research", ALL_CHANNELS, RESEARCH_BUDGET),
+  policy("citation_attribution", "extraction", RULES_AND_EVIDENCE, CITATION_ATTRIBUTION_BUDGET),
   policy("research_body_outline", "research", RULES_AND_EVIDENCE, EXTRACTION_BUDGET),
   policy("research_body_section", "research", ALL_CHANNELS, RESEARCH_BUDGET),
   policy("research_slice_annotation", "extraction", RULES_AND_EVIDENCE, SMALL_EXTRACTION_BUDGET),

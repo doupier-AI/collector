@@ -29,6 +29,7 @@
     "eval:answer-quality": "npm run build && node scripts/run-answer-quality-eval.mjs",
     "eval:long-form-gate": "npm run build && node scripts/run-long-form-gate.mjs",
     "probe:evidence-preparation": "npm run build && node scripts/probe-evidence-preparation.mjs",
+    "probe:citation-attribution": "npm run build && node scripts/probe-citation-attribution.mjs",
     "clean": "node scripts/clean.mjs",
     "worktree:remove": "node scripts/worktree-safety.mjs remove",
     "run:logged": "node scripts/run-logged.mjs",
