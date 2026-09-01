@@ -41,6 +41,7 @@ packages/model-gateway ──→ packages/capture-contracts
 | 服务组合与供应商运行时解析 | `apps/api/src/service.ts` |
 | 会话、消息、任务和回答生成 | `apps/api/src/research.ts` |
 | 回答计划与确定性完成检查 | `apps/api/src/answer-planning.ts`、`apps/api/src/answer-completion.ts` |
+| 联网证据准备、政策覆盖账本、资格与装箱 | `apps/api/src/evidence-preparation.ts`、`apps/api/src/web-search-agent.ts` |
 | 深入研究和节点生长 | `apps/api/src/deep-research.ts` |
 | 导入、解析与章节 | `apps/api/src/research-import.ts`、`apps/api/src/research-chapters.ts`、`apps/api/src/parsers.ts` |
 | 选区、标记、术语与稍后处理的历史实现 | `apps/api/src/selection.ts`、`apps/api/src/research-later.ts`、`apps/api/src/term-preview.ts` |

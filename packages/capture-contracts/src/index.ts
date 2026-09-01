@@ -419,6 +419,131 @@ export interface AnswerPlan {
   completionContract: AnswerCompletionContract;
 }
 
+export const EVIDENCE_BUNDLE_SCHEMA_VERSION = "evidence-bundle-v1" as const;
+export const EVIDENCE_POLICY_VERSION = "evidence-policy-v1" as const;
+
+/** Policy coverage is deliberately narrower than truth, use, attribution, or grounded state. */
+export type EvidencePolicyStatus = "not_satisfied" | "partially_satisfied" | "policy_satisfied" | "conflicting";
+export type EvidencePreparationStopReason = "not_required" | "policy_satisfied" | "budget_exhausted" | "no_more_candidates" | "provider_failed";
+export type EvidenceContentAvailability = "full" | "partial" | "none";
+export type EvidenceAuthorityClass = "authoritative" | "primary" | "secondary" | "unknown";
+export type EvidenceFreshness = "current" | "stale" | "unknown";
+
+export interface EvidenceDecisionProvenance {
+  producer: "evidence-preparation";
+  producerVersion: string;
+  policyVersion: typeof EVIDENCE_POLICY_VERSION;
+  inputSourceIds: readonly string[];
+  outcome: string;
+  reason: string;
+  proposalProducer?: string;
+  proposalVersion?: string;
+}
+
+export interface EvidenceNeedLedgerEntry {
+  id: string;
+  description: string;
+  required: boolean;
+  searched: boolean;
+  candidateSourceIds: readonly string[];
+  qualifiedEvidenceIds: readonly string[];
+  policyStatus: EvidencePolicyStatus;
+  stopReason: EvidencePreparationStopReason;
+  decision: EvidenceDecisionProvenance;
+}
+
+export interface PreparedEvidenceItem {
+  id: string;
+  title: string;
+  canonicalUrl: string;
+  finalUrl: string;
+  contentDigest?: string;
+  excerpt: string;
+  availability: EvidenceContentAvailability;
+  authorityClass: EvidenceAuthorityClass;
+  freshness: EvidenceFreshness;
+  publishedAt?: string;
+  coveredNeedIds: readonly string[];
+  tokenCost: number;
+  decisions: {
+    relevance: EvidenceDecisionProvenance;
+    authority: EvidenceDecisionProvenance;
+    freshness: EvidenceDecisionProvenance;
+    coverage: EvidenceDecisionProvenance;
+    conflict: EvidenceDecisionProvenance;
+    qualification: EvidenceDecisionProvenance;
+    packing: EvidenceDecisionProvenance;
+  };
+  conflictKey?: string;
+  conflictStance?: string;
+}
+
+/**
+ * Versioned evidence-policy result. It intentionally has no grounded boolean or status: policy
+ * coverage cannot prove factual correctness, writer use, attribution, or the final body.
+ */
+export interface EvidenceBundle {
+  schemaVersion: typeof EVIDENCE_BUNDLE_SCHEMA_VERSION;
+  bundleId: string;
+  taskId: string;
+  answerPlanId: string;
+  policyVersion: typeof EVIDENCE_POLICY_VERSION;
+  preparedAt: string;
+  evidencePolicyStatus: EvidencePolicyStatus;
+  stopReason: EvidencePreparationStopReason;
+  queries: readonly string[];
+  needs: readonly EvidenceNeedLedgerEntry[];
+  evidence: readonly PreparedEvidenceItem[];
+  packedEvidenceIds: readonly string[];
+  budget: {
+    maxQueries: number;
+    maxCandidates: number;
+    maxFetches: number;
+    maxPackedTokens: number;
+    usedQueries: number;
+    consideredCandidates: number;
+    usedFetches: number;
+    packedTokens: number;
+  };
+}
+
+export function validateEvidenceBundle(bundle: EvidenceBundle): void {
+  if (bundle.schemaVersion !== EVIDENCE_BUNDLE_SCHEMA_VERSION || bundle.policyVersion !== EVIDENCE_POLICY_VERSION) {
+    throw new Error("Evidence bundle version is unsupported");
+  }
+  if (!bundle.bundleId || !bundle.taskId || !bundle.answerPlanId) throw new Error("Evidence bundle identity is required");
+  if (Object.hasOwn(bundle, "grounded")) throw new Error("Evidence bundle must not own grounded state");
+  const statuses = new Set<EvidencePolicyStatus>(["not_satisfied", "partially_satisfied", "policy_satisfied", "conflicting"]);
+  const stops = new Set<EvidencePreparationStopReason>(["not_required", "policy_satisfied", "budget_exhausted", "no_more_candidates", "provider_failed"]);
+  if (!statuses.has(bundle.evidencePolicyStatus) || !stops.has(bundle.stopReason)) throw new Error("Evidence bundle policy state is invalid");
+  if (bundle.stopReason === "policy_satisfied" && bundle.evidencePolicyStatus !== "policy_satisfied") {
+    throw new Error("Evidence bundle policy_satisfied stop requires policy_satisfied coverage");
+  }
+  const needIds = new Set(bundle.needs.map((need) => need.id));
+  if (needIds.size !== bundle.needs.length) throw new Error("Evidence bundle need identities must be unique");
+  const evidenceIds = new Set(bundle.evidence.map((item) => item.id));
+  if (evidenceIds.size !== bundle.evidence.length) throw new Error("Evidence bundle item identities must be unique");
+  if (bundle.packedEvidenceIds.length !== bundle.evidence.length
+    || bundle.packedEvidenceIds.some((id, index) => id !== bundle.evidence[index]?.id)) {
+    throw new Error("Evidence bundle packed identities must match its ordered evidence items");
+  }
+  for (const need of bundle.needs) {
+    if (!statuses.has(need.policyStatus) || !stops.has(need.stopReason)) throw new Error("Evidence need policy state is invalid");
+    if (need.qualifiedEvidenceIds.some((id) => !evidenceIds.has(id))) throw new Error("Evidence need references an unpacked item");
+  }
+  for (const item of bundle.evidence) {
+    if (item.coveredNeedIds.some((id) => !needIds.has(id))) throw new Error("Prepared evidence references an unknown need");
+    if (!item.finalUrl || !item.canonicalUrl || !item.title || !item.excerpt) throw new Error("Prepared evidence identity and content are required");
+    if (!Number.isSafeInteger(item.tokenCost) || item.tokenCost < 1) throw new Error("Prepared evidence token cost must be positive");
+  }
+  const budgetValues = Object.values(bundle.budget);
+  if (budgetValues.some((value) => !Number.isSafeInteger(value) || value < 0)) throw new Error("Evidence preparation budget must be non-negative integers");
+  if (bundle.budget.usedQueries > bundle.budget.maxQueries || bundle.budget.consideredCandidates > bundle.budget.maxCandidates
+    || bundle.budget.usedFetches > bundle.budget.maxFetches || bundle.budget.packedTokens > bundle.budget.maxPackedTokens) {
+    throw new Error("Evidence preparation usage exceeds its resource budget");
+  }
+}
+
 export const PROMPT_ENVELOPE_VERSION = "prompt-envelope-v1" as const;
 
 export type PromptEnvelopeRole = "system" | "user" | "assistant" | "tool";
@@ -2115,7 +2240,9 @@ export interface ResearchTaskError {
   message: string;
 }
 
-export type ResearchGroundingScopeStatus = "grounded" | "grounding_failed" | "grounding_unsupported" | "no_verifiable_sources" | "not_requested";
+export type ResearchGroundingScopeStatus =
+  | "evidence_prepared" | "evidence_incomplete" | "evidence_conflicting"
+  | "grounded" | "grounding_failed" | "grounding_unsupported" | "no_verifiable_sources" | "not_requested";
 
 /** 提供给任务视图和界面的联网结果摘要；不包含任何供应商原始响应或凭证。 */
 export interface ResearchGroundingScope {
@@ -2123,6 +2250,8 @@ export interface ResearchGroundingScope {
   sourceCount: number;
   citationCount: number;
   runId?: string;
+  /** Evidence-policy coverage only; never a factual-verification or grounded projection. */
+  evidencePolicyStatus?: EvidencePolicyStatus;
 }
 
 /**
@@ -2869,12 +2998,13 @@ export type FetchErrorCategory =
 
 /** 一次搜索/抓取阶段的失败留痕条目（#49 证据管线）。持久化前经脱敏。 */
 export interface ResearchGroundingTraceEntry {
-  stage: "search" | "fetch";
+  stage: "search" | "fetch" | "qualify" | "pack";
   domain: string;
   url?: string;
   status:
     | "completed" | "partial" | "permanent_failed" | "retry_exhausted"
-    | "circuit_open" | "no_results" | "backend_error";
+    | "circuit_open" | "no_results" | "backend_error"
+    | "qualified" | "rejected" | "packed" | "omitted";
   /** 实际尝试次数（1 起；重试耗尽时 = 总尝试数）。 */
   attempts?: number;
   latencyMs: number;
@@ -2908,6 +3038,8 @@ export interface ResearchGroundingRunRecord {
   responseSummary?: Record<string, unknown>;
   /** #49：搜索/抓取各阶段失败留痕（脱敏）。 */
   trace?: ResearchGroundingTraceEntry[];
+  /** #206 policy ledger and packed qualified evidence. This object has no grounded truth field. */
+  evidenceBundle?: EvidenceBundle;
   errorMessage?: string;
   attempt: number;
   createdAt: string;
@@ -3017,6 +3149,23 @@ export function sanitizeGroundingQueries(queries: readonly string[]): string[] {
 
 /** 验证引用只能关联同一次联网运行的来源，且锚点可映射到最终回答块。 */
 export function validateResearchGroundingResult(result: ResearchGroundingResult): void {
+  if (result.run.evidenceBundle) {
+    const bundle = result.run.evidenceBundle;
+    validateEvidenceBundle(bundle);
+    if (bundle.taskId !== result.run.taskId) throw new Error("Evidence bundle must reference its grounding task");
+    if (result.run.status === "grounded" || result.scope.status === "grounded") {
+      throw new Error("Evidence policy coverage must not be mapped to grounded");
+    }
+    const expectedScopeStatus: ResearchGroundingScopeStatus = bundle.evidencePolicyStatus === "policy_satisfied"
+      ? "evidence_prepared"
+      : bundle.evidencePolicyStatus === "conflicting" ? "evidence_conflicting" : "evidence_incomplete";
+    if (result.run.status !== expectedScopeStatus || result.scope.status !== expectedScopeStatus) {
+      throw new Error("Evidence policy coverage must use the named evidence scope status");
+    }
+    if (result.scope.evidencePolicyStatus !== bundle.evidencePolicyStatus) {
+      throw new Error("Grounding scope evidencePolicyStatus must match its evidence bundle");
+    }
+  }
   const sourceIds = new Set(result.sources.map((source) => source.id));
   if (result.sources.some((source, index) => source.runId !== result.run.id || source.ordinal !== index + 1)) throw new Error("Grounding sources must be densely ordered for their run");
   const validEvidence = new Set<GroundingEvidenceStatus>(["full", "partial", "none"]);
