@@ -26,6 +26,7 @@ const invalidatedInfrastructureAttempts = Number(argumentValue("--invalidated-at
 const compatibleCheckpointHarnessSha = argumentValue("--checkpoint-harness-sha");
 const preregistration = JSON.parse(await readFile(preregistrationPath, "utf8"));
 validatePreregistration(preregistration);
+const recordedFailure = parseRecordedFailure(argumentValue("--record-failure"), argumentValue("--record-failure-harness-sha"));
 
 const profileRuntime = readActiveProfile(databasePath);
 validateProfile(profileRuntime.profile, preregistration.releaseProfile.model);
@@ -47,6 +48,10 @@ const generatedRuns = (checkpoint?.runs ?? []).map((run) => ({
   ...run,
   evaluationHarnessSha: run.evaluationHarnessSha ?? checkpoint.evaluationHarnessSha,
 }));
+if (recordedFailure && !generatedRuns.some((run) => run.repetition === recordedFailure.repetition && run.candidateId === recordedFailure.candidateId)) {
+  generatedRuns.push(failedRunRecord(recordedFailure));
+  await writeCheckpoint(checkpointPath, preregistration, harnessSha, generatedRuns, checkpoint?.pairwise ?? []);
+}
 for (let repetition = 1; repetition <= preregistration.sampleProtocol.generationRepetitions; repetition += 1) {
   for (const candidateId of preregistration.sampleProtocol.runOrderPerRepetition) {
     if (generatedRuns.some((run) => run.repetition === repetition && run.candidateId === candidateId)) {
@@ -54,17 +59,27 @@ for (let repetition = 1; repetition <= preregistration.sampleProtocol.generation
       continue;
     }
     process.stderr.write(`[long-form-gate] repetition=${repetition} candidate=${candidateId}\n`);
-    generatedRuns.push(await runCandidate({
-      candidateId,
-      repetition,
-      preregistration,
-      testCase,
-      preparation,
-      baseCandidates,
-      profileRuntime,
-      definition,
-      harnessSha,
-    }));
+    try {
+      generatedRuns.push(await runCandidate({
+        candidateId,
+        repetition,
+        preregistration,
+        testCase,
+        preparation,
+        baseCandidates,
+        profileRuntime,
+        definition,
+        harnessSha,
+      }));
+    } catch (error) {
+      generatedRuns.push(failedRunRecord({
+        candidateId,
+        repetition,
+        category: failureCategory(error),
+        reason: safeFailure(error),
+        evaluationHarnessSha: harnessSha,
+      }));
+    }
     await writeCheckpoint(checkpointPath, preregistration, harnessSha, generatedRuns, checkpoint?.pairwise ?? []);
   }
 }
@@ -82,7 +97,17 @@ for (let repetition = 1; repetition <= preregistration.sampleProtocol.generation
   const state = generatedRuns.find((run) => run.repetition === repetition && run.candidateId === "long_form_state_prototype");
   if (!minimal || !state) throw new Error(`Missing pairwise bodies for repetition ${repetition}`);
   process.stderr.write(`[long-form-gate] pairwise repetition=${repetition}\n`);
-  pairwise.push({ ...(await compareCandidateBodies({ repetition, minimal, state, testCase, profileRuntime })), evaluationHarnessSha: harnessSha });
+  try {
+    pairwise.push({ ...(await compareCandidateBodies({ repetition, minimal, state, testCase, profileRuntime })), evaluationHarnessSha: harnessSha });
+  } catch (error) {
+    pairwise.push({
+      repetition,
+      canonicalWinner: "inconclusive",
+      judgments: [],
+      unavailableReason: safeFailure(error),
+      evaluationHarnessSha: harnessSha,
+    });
+  }
   await writeCheckpoint(checkpointPath, preregistration, harnessSha, generatedRuns, pairwise);
 }
 
@@ -311,6 +336,14 @@ async function judgeLongForm({ target, body, sections, runtime }) {
 }
 
 async function compareCandidateBodies({ repetition, minimal, state, testCase: target, profileRuntime: runtime }) {
+  if (!minimal.body?.trim() || !state.body?.trim() || !minimal.evidenceVerified || !state.evidenceVerified) {
+    return {
+      repetition,
+      canonicalWinner: "inconclusive",
+      judgments: [],
+      unavailableReason: "A preregistered candidate run did not produce verified final-body evidence.",
+    };
+  }
   const compare = async (order) => {
     const first = order === "minimal-state" ? minimal.body : state.body;
     const second = order === "minimal-state" ? state.body : minimal.body;
@@ -566,6 +599,61 @@ function validatePreregistration(packet) {
   if (packet.schemaVersion !== 1 || packet.status !== "preregistered") throw new Error("Unsupported long-form preregistration packet");
   if (packet.sampleProtocol.generationRepetitions !== 3 || packet.sampleProtocol.additionalRunLimit !== 0) throw new Error("Preregistered sample protocol was changed");
   if (JSON.stringify(packet.rubric.mustPassDimensions) !== JSON.stringify(LONG_FORM_GATE_DIMENSIONS)) throw new Error("Preregistered long-form dimensions do not match the evaluator");
+}
+
+function parseRecordedFailure(value, harnessSha) {
+  if (!value) return undefined;
+  const [repetitionText, candidateId, category, ...reasonParts] = value.split(":");
+  const repetition = Number(repetitionText);
+  if (!Number.isSafeInteger(repetition) || repetition < 1
+    || !preregistration.sampleProtocol.runOrderPerRepetition.includes(candidateId)
+    || !category
+    || !reasonParts.length
+    || !harnessSha) {
+    throw new Error("--record-failure requires repetition:candidate:category:reason and --record-failure-harness-sha");
+  }
+  return { repetition, candidateId, category, reason: reasonParts.join(":"), evaluationHarnessSha: harnessSha };
+}
+
+function failedRunRecord({ candidateId, repetition, category, reason, evaluationHarnessSha }) {
+  return {
+    candidateId,
+    repetition,
+    evaluationHarnessSha,
+    evidenceVerified: false,
+    identity: {
+      taskId: `${preregistration.decisionId}:${candidateId}:${repetition}`,
+      generationAttempt: repetition,
+      candidateSha: preregistration.candidateSha,
+    },
+    outline: null,
+    sections: [],
+    finishReasons: [],
+    body: "",
+    exactRepeatedParagraphs: [],
+    missingCoverageTerms: [...testCase.expectation.mustCover],
+    dimensions: Object.fromEntries(LONG_FORM_GATE_DIMENSIONS.map((dimension) => [dimension, {
+      verdict: "unverified",
+      reason: `Candidate execution failed before a verifiable final body: ${category}.`,
+    }])),
+    metrics: { outputTokens: 0, estimatedCostUsd: 0, firstCharacterLatencyMs: 0, completeLatencyMs: 0 },
+    modelCalls: [],
+    semanticJudge: null,
+    error: { category, reason: String(reason).slice(0, 500) },
+  };
+}
+
+function failureCategory(error) {
+  if (error instanceof SyntaxError) return "protocol";
+  if (isTransient(error)) return "network";
+  const status = Number(error?.status);
+  if (status >= 400 && status < 500) return "provider_validation";
+  return "unknown";
+}
+
+function safeFailure(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/\b(?:sk|AIza|ghp|xox[baprs]-)[-_A-Za-z0-9]{8,}\b/gi, "[REDACTED]").slice(0, 500);
 }
 
 async function readCheckpoint(path, packet, harnessSha, compatibleHarnessSha) {
