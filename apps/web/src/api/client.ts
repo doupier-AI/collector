@@ -5,6 +5,7 @@ import type {
   DeepResearchAccepted,
   DeepResearchInput,
   ModelPurpose,
+  ModelCapabilityStatusView,
   ModelRoutingView,
   NodeSystemTargetClientPayload,
   NodeGrowthAccepted,
@@ -219,6 +220,8 @@ export interface ApiClient {
   testProviderProfile(id: string): Promise<ProviderTestResult>;
   testProviderProfileConfig(input: ProviderProfileTestInput): Promise<ProviderTestResult>;
   discoverProviderModels(input: ProviderModelDiscoveryInput): Promise<ProviderModelDiscoveryResult>;
+  getModelCapabilityStatus?(id: string): Promise<ModelCapabilityStatusView>;
+  reprobeModelCapabilities?(id: string): Promise<ModelCapabilityStatusView>;
   getModelRouting(): Promise<ModelRoutingView>;
   /** profileId 为 null 时清除该任务类型的分配，恢复跟随当前激活配置。 */
   setModelRouting(purpose: ModelPurpose, profileId: string | null): Promise<ModelRoutingView>;
@@ -902,6 +905,16 @@ export function createApiClient(fetchImpl?: FetchLike): ApiClient {
         method: "POST",
         headers: JSON_HEADERS,
         body: JSON.stringify(input),
+      });
+    },
+    getModelCapabilityStatus(id: string) {
+      return requestJson<ModelCapabilityStatusView>(fetchFn, `/v1/provider-profiles/${encodeURIComponent(id)}/capabilities`);
+    },
+    reprobeModelCapabilities(id: string) {
+      return requestJson<ModelCapabilityStatusView>(fetchFn, `/v1/provider-profiles/${encodeURIComponent(id)}/capabilities`, {
+        method: "POST",
+        headers: JSON_HEADERS,
+        body: "{}",
       });
     },
     getModelRouting() {

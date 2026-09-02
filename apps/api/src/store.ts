@@ -5,6 +5,7 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { DEFAULT_COMPOSER_PREFERENCES, LEGACY_DEEPSEEK_PROFILE_ID, RESEARCH_TITLE_MAX_CHARACTERS, hashBodyContent, researchBodyVersionId, resolveResearchStableLocation, validateResearchStableLocation, type AnswerPlan, type ComposerPreferences, type ConversationContext, type DeepResearchAccepted, type ModelPurpose, type ModelPurposeRoute, type NodeGrowthAccepted, type ResearchBranchRecord, type ResearchContextAssemblySnapshot, type ResearchEdgeRecord, type ResearchFusionProposalRecord, type ResearchFusionProposalStatus, type ResearchNodeRecord, type ResearchBodyPlan, type ResearchBodyVersionRecord, type ResearchSemanticFragmentRecord, type ResearchSidecarInvalidReason, type ResearchSidecarRecord, type ResearchSidecarRecordQuery, type ResearchSliceRecord, type ModelCallRecord, type ProviderProfile, type ResearchAttachmentRecord, type ResearchContentSnapshotRecord, type ResearchGroundingResult, type ResearchGroundingRunRecord, type ResearchGroundingSourceRecord, type ResearchCitationRecord, type ResearchImportAccepted, type ResearchImportError, type ResearchImportTaskEvent, type ResearchImportTaskRecord, type ResearchLaterItemRecord, type ResearchLaterItemStatus, type ResearchMessageBodyRecord, type ResearchMessageRecord, type ResearchMessageVersion, type ResearchReasoningRecord, type ResearchSelectionAccepted, type ResearchSelectionRecord, type ResearchSessionRecord, type ResearchTaskError, type ResearchTaskEvent, type ResearchTaskRecord, type ResearchTermPreviewAccepted, type ResearchTermPreviewEvent, type ResearchTermPreviewError, type ResearchTermPreviewRecord, type ResearchTurnAccepted, type ProjectRecord, researchEdgeId, toResearchMessageBody } from "@collector/capture-contracts";
 import { contextExplanationCodes, deriveMessageBlocks, observeContextAssembly } from "@collector/capture-contracts";
 import type { ResearchCitationCandidate } from "@collector/capture-contracts";
+import type { ModelCapabilityProbeTask, ModelCapabilitySnapshot } from "@collector/capture-contracts";
 import { markdownStableVisibleText, projectMarkdownDocument, projectMarkdownSourceRange } from "@collector/markdown-projection";
 import {
   compareAssociationHintsByValue,
@@ -400,6 +401,14 @@ export interface CollectorStore
   getProviderCredential(id: string): string | undefined;
   saveProviderCredential(id: string, apiKey: string): Promise<void>;
   deleteProviderCredential(id: string): Promise<void>;
+  getModelCapabilitySnapshot(profileId: string, configurationVersion: number, modelId: string): ModelCapabilitySnapshot | undefined;
+  saveModelCapabilitySnapshot(snapshot: ModelCapabilitySnapshot): Promise<void>;
+  getLatestModelCapabilityProbeTask(profileId: string, configurationVersion: number, modelId: string): ModelCapabilityProbeTask | undefined;
+  enqueueModelCapabilityProbeTask(task: ModelCapabilityProbeTask): Promise<ModelCapabilityProbeTask>;
+  claimNextModelCapabilityProbeTask(leaseOwner: string, now: string, leaseExpiresAt: string): ModelCapabilityProbeTask | undefined;
+  updateModelCapabilityProbeTask(task: ModelCapabilityProbeTask): Promise<void>;
+  listRecoverableModelCapabilityProbeTasks(): ModelCapabilityProbeTask[];
+  requeueInterruptedModelCapabilityProbeTasks(now: string): number;
   /** 按任务类型的模型分配；删除 profile 时联动清理。 */
   listModelPurposeRoutes(): ModelPurposeRoute[];
   setModelPurposeRoute(purpose: ModelPurpose, profileId: string): Promise<void>;
@@ -528,7 +537,7 @@ export interface CollectorStore
  * `if (version < N+1)` 版本块（块内写入对应 schema_migrations 行）并递增本常量；
  * 测试以此常量断言「打开/重放后数据库实际到达声明版本」，无需再手工同步多处硬编码断言。
  */
-export const LATEST_SCHEMA_VERSION = 50;
+export const LATEST_SCHEMA_VERSION = 51;
 
 type LegacyGeneratedBodyMigration = {
   content: string;
@@ -844,6 +853,67 @@ export class SqliteStore implements CollectorStore {
   }
   async deleteProviderCredential(id: string): Promise<void> {
     this.db().prepare("DELETE FROM provider_credentials WHERE id = ?").run(id);
+  }
+  getModelCapabilitySnapshot(profileId: string, configurationVersion: number, modelId: string): ModelCapabilitySnapshot | undefined {
+    return this.getRecord<ModelCapabilitySnapshot>(
+      "SELECT record_json FROM model_capability_snapshots WHERE profile_id = ? AND configuration_version = ? AND model_id = ?",
+      profileId, configurationVersion, modelId,
+    );
+  }
+  async saveModelCapabilitySnapshot(snapshot: ModelCapabilitySnapshot): Promise<void> {
+    this.db().prepare(`
+      INSERT INTO model_capability_snapshots (profile_id, configuration_version, model_id, updated_at, record_json)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(profile_id, configuration_version, model_id) DO UPDATE SET updated_at=excluded.updated_at, record_json=excluded.record_json
+    `).run(snapshot.profileId, snapshot.configurationVersion, snapshot.modelId, snapshot.updatedAt, JSON.stringify(snapshot));
+  }
+  getLatestModelCapabilityProbeTask(profileId: string, configurationVersion: number, modelId: string): ModelCapabilityProbeTask | undefined {
+    return this.getRecord<ModelCapabilityProbeTask>(
+      "SELECT record_json FROM model_capability_probe_tasks WHERE profile_id = ? AND configuration_version = ? AND model_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+      profileId, configurationVersion, modelId,
+    );
+  }
+  async enqueueModelCapabilityProbeTask(task: ModelCapabilityProbeTask): Promise<ModelCapabilityProbeTask> {
+    const existing = this.getLatestModelCapabilityProbeTask(task.profileId, task.configurationVersion, task.modelId);
+    if (existing && (existing.status === "queued" || existing.status === "running")) return existing;
+    this.db().prepare(`
+      INSERT INTO model_capability_probe_tasks
+        (id, profile_id, configuration_version, model_id, status, lease_owner, lease_expires_at, created_at, updated_at, record_json)
+      VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)
+    `).run(task.id, task.profileId, task.configurationVersion, task.modelId, task.status, task.createdAt, task.updatedAt, JSON.stringify(task));
+    return task;
+  }
+  claimNextModelCapabilityProbeTask(leaseOwner: string, now: string, leaseExpiresAt: string): ModelCapabilityProbeTask | undefined {
+    let claimed: ModelCapabilityProbeTask | undefined;
+    this.transaction(() => {
+      const row = this.db().prepare(`
+        SELECT record_json FROM model_capability_probe_tasks
+        WHERE status = 'queued' OR (status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at <= ?))
+        ORDER BY created_at, id LIMIT 1
+      `).get(now) as { record_json: string } | undefined;
+      if (!row) return;
+      const task = JSON.parse(row.record_json) as ModelCapabilityProbeTask;
+      claimed = { ...task, status: "running", attempts: task.attempts + 1, leaseOwner, leaseExpiresAt, updatedAt: now };
+      this.db().prepare("UPDATE model_capability_probe_tasks SET status='running', lease_owner=?, lease_expires_at=?, updated_at=?, record_json=? WHERE id=?")
+        .run(leaseOwner, leaseExpiresAt, now, JSON.stringify(claimed), task.id);
+    });
+    return claimed;
+  }
+  async updateModelCapabilityProbeTask(task: ModelCapabilityProbeTask): Promise<void> {
+    this.db().prepare("UPDATE model_capability_probe_tasks SET status=?, lease_owner=?, lease_expires_at=?, updated_at=?, record_json=? WHERE id=?")
+      .run(task.status, task.leaseOwner ?? null, task.leaseExpiresAt ?? null, task.updatedAt, JSON.stringify(task), task.id);
+  }
+  listRecoverableModelCapabilityProbeTasks(): ModelCapabilityProbeTask[] {
+    return this.listRecords<ModelCapabilityProbeTask>("SELECT record_json FROM model_capability_probe_tasks WHERE status IN ('queued', 'running') ORDER BY created_at, id");
+  }
+  requeueInterruptedModelCapabilityProbeTasks(now: string): number {
+    const running = this.listRecords<ModelCapabilityProbeTask>("SELECT record_json FROM model_capability_probe_tasks WHERE status = 'running'");
+    for (const task of running) {
+      const queued: ModelCapabilityProbeTask = { ...task, status: "queued", leaseOwner: undefined, leaseExpiresAt: undefined, updatedAt: now };
+      this.db().prepare("UPDATE model_capability_probe_tasks SET status='queued', lease_owner=NULL, lease_expires_at=NULL, updated_at=?, record_json=? WHERE id=?")
+        .run(now, JSON.stringify(queued), task.id);
+    }
+    return running.length;
   }
   listModelPurposeRoutes(): ModelPurposeRoute[] {
     return (this.db().prepare("SELECT purpose, profile_id FROM model_purpose_routes ORDER BY purpose").all() as Array<{ purpose: string; profile_id: string }>)
@@ -5373,6 +5443,40 @@ export class SqliteStore implements CollectorStore {
         this.db().exec("INSERT INTO schema_migrations(version, applied_at) VALUES (50, datetime('now'))");
       });
       version = 50;
+    }
+
+    if (version < 51) {
+      // 模型能力快照与探测任务只保存稳定身份、状态和脱敏证据；凭证继续留在 provider_credentials。
+      this.transaction(() => {
+        this.db().exec(`
+          CREATE TABLE IF NOT EXISTS model_capability_snapshots (
+            profile_id TEXT NOT NULL,
+            configuration_version INTEGER NOT NULL,
+            model_id TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            PRIMARY KEY(profile_id, configuration_version, model_id),
+            FOREIGN KEY(profile_id) REFERENCES provider_profiles(id) ON DELETE CASCADE
+          );
+          CREATE TABLE IF NOT EXISTS model_capability_probe_tasks (
+            id TEXT PRIMARY KEY,
+            profile_id TEXT NOT NULL,
+            configuration_version INTEGER NOT NULL,
+            model_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            lease_owner TEXT,
+            lease_expires_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            FOREIGN KEY(profile_id) REFERENCES provider_profiles(id) ON DELETE CASCADE
+          );
+          CREATE INDEX IF NOT EXISTS model_capability_probe_tasks_queue_idx
+            ON model_capability_probe_tasks(status, lease_expires_at, created_at);
+          INSERT INTO schema_migrations(version, applied_at) VALUES (51, datetime('now'));
+        `);
+      });
+      version = 51;
     }
 
   }

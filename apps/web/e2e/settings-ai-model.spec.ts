@@ -70,3 +70,49 @@ test("模型设置：新建入口、Key 暗文持久与眼睛切换、配置启�
     await page.request.delete(`/v1/provider-profiles/${profile.id}`);
   }
 });
+
+test("MiMo Token Plan：发现模型、保存后检测、刷新保持并启用深度思考", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(String(error)));
+  await pairAndOpen(page, "/settings/ai-model");
+
+  // 保证该场景从空配置开始，避免共享 harness 中前序失败留下配置。
+  const existing = await page.request.get("/v1/provider-profiles").then((response) => response.json() as Promise<Array<{ id: string }>>);
+  for (const profile of existing) await page.request.delete(`/v1/provider-profiles/${profile.id}`);
+  await page.reload();
+
+  await page.getByLabel("模型供应商", { exact: true }).selectOption("custom");
+  await page.getByLabel("配置名称").fill("MiMo Token Plan");
+  await page.getByLabel("模型", { exact: true }).fill("MIMO-V2.5-Pro");
+  await page.getByLabel("Base URL").fill("https://token-plan-cn-hz.xiaomimimo.com/v1");
+  await page.getByLabel("API Key", { exact: true }).fill("sk-e2e-mimo");
+  await page.getByRole("button", { name: "获取模型" }).click();
+
+  const discovered = page.locator(".settings-model-picker__item").filter({ hasText: "MIMO-V2.5-Pro" });
+  await expect(discovered).toBeVisible();
+  await expect(discovered.getByRole("checkbox")).toBeChecked();
+  await page.getByRole("button", { name: "保存并启用（1）" }).click();
+
+  const saved = page.locator(".settings-profile-item").filter({ hasText: "MiMo Token Plan · MIMO-V2.5-Pro" });
+  await expect(saved).toBeVisible();
+  await expect(saved.locator(".settings-capability-matrix__item").filter({ hasText: "深度思考支持" })).toBeVisible({ timeout: 15_000 });
+  await expect(saved.getByRole("button", { name: "重新检测" })).toBeEnabled({ timeout: 15_000 });
+
+  await page.reload();
+  const restored = page.locator(".settings-profile-item").filter({ hasText: "MiMo Token Plan · MIMO-V2.5-Pro" });
+  await expect(restored.locator(".settings-capability-matrix__item").filter({ hasText: "深度思考支持" })).toBeVisible();
+
+  await page.goto("/research/new");
+  const thinking = page.getByRole("button", { name: "开启深度思考" });
+  await expect(thinking).toHaveAttribute("aria-disabled", "false");
+  await thinking.click();
+  await expect(page.getByRole("button", { name: "关闭深度思考" })).toHaveAttribute("aria-pressed", "true");
+  await page.getByLabel("你的问题").fill("验证 MiMo Token Plan 深度思考");
+  await page.getByRole("button", { name: "开始研究" }).click();
+  await page.waitForURL(/\/nodes\/[^/]+$/, { timeout: 10_000 });
+  await expect(page.locator("[aria-live=polite]")).toHaveText("已完成", { timeout: 15_000 });
+  expect(pageErrors).toEqual([]);
+
+  const profiles = await page.request.get("/v1/provider-profiles").then((response) => response.json() as Promise<Array<{ id: string }>>);
+  for (const profile of profiles) await page.request.delete(`/v1/provider-profiles/${profile.id}`);
+});

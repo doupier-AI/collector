@@ -1,12 +1,60 @@
 import { useCallback, useEffect, useState } from "react";
-import type { ModelPurpose, ModelRoutingView, ProviderDefinition, ProviderProfile } from "@collector/capture-contracts";
+import { MODEL_CAPABILITY_NAMES, type ModelCapabilityMatrix, type ModelCapabilityName, type ModelCapabilityStatusView, type ModelPurpose, type ModelRoutingView, type ProviderDefinition, type ProviderProfile } from "@collector/capture-contracts";
 import { useServices } from "../../app/services";
 import { Skeleton } from "../../components/Skeleton/Skeleton";
+import { notifyAiConfigurationChanged } from "../research-session/ai-configuration-events";
 
 type State =
   | { kind: "loading" }
   | { kind: "error"; message: string }
-  | { kind: "ready"; catalog: ProviderDefinition[]; activeProfile?: ProviderProfile; profiles: ProviderProfile[]; routing: ModelRoutingView };
+  | { kind: "ready"; catalog: ProviderDefinition[]; activeProfile?: ProviderProfile; profiles: ProviderProfile[]; routing: ModelRoutingView; capabilityStatus: Record<string, ModelCapabilityStatusView> };
+
+const CAPABILITY_LABELS: Record<ModelCapabilityName, string> = {
+  thinking: "深度思考",
+  reasoningOutput: "独立推理流",
+  collectorWebSearch: "Collector 联网",
+  nativeWebSearch: "模型原生联网",
+  structuredOutput: "结构化输出",
+  toolCalling: "工具调用",
+  visionInput: "视觉输入",
+  streamingOutput: "流式输出",
+};
+
+const CAPABILITY_STATUS_LABELS = {
+  supported: "支持",
+  unsupported: "不支持",
+  unknown: "未知",
+  probing: "检测中",
+  probe_failed: "检测失败",
+} as const;
+
+function capabilityTitle(matrix: ModelCapabilityMatrix, name: ModelCapabilityName): string {
+  const item = matrix[name];
+  const evidence = item.evidence.length ? item.evidence.map((entry) => `${entry.source}:${entry.code}`).join("；") : "无可用证据";
+  const checked = item.checkedAt ? new Date(item.checkedAt).toLocaleString() : "尚未检测";
+  const usability = item.status === "supported" && !item.usable ? "；供应商支持，但 Collector 适配器暂不可用" : "";
+  return `${CAPABILITY_LABELS[name]}：${CAPABILITY_STATUS_LABELS[item.status]}${usability}；证据 ${evidence}；检测时间 ${checked}；原因 ${item.reasonCode}`;
+}
+
+export function CapabilityMatrixView({ matrix, compact = false }: { matrix?: ModelCapabilityMatrix; compact?: boolean }) {
+  if (!matrix) return <p className="settings-form__hint">能力状态尚未读取。</p>;
+  return (
+    <dl className={`settings-capability-matrix${compact ? " settings-capability-matrix--compact" : ""}`} aria-label="模型能力矩阵">
+      {MODEL_CAPABILITY_NAMES.map((name) => {
+        const item = matrix[name];
+        const description = capabilityTitle(matrix, name);
+        return (
+          <div key={name} className="settings-capability-matrix__item" title={description} aria-label={description} tabIndex={0}>
+            <dt>{CAPABILITY_LABELS[name]}</dt>
+            <dd data-status={item.status}>
+              {CAPABILITY_STATUS_LABELS[item.status]}{item.status === "supported" && !item.usable ? " · 未适配" : ""}
+            </dd>
+          </div>
+        );
+      })}
+    </dl>
+  );
+}
 
 /** 表单入口：closed = 只显示「新建模型供应商」按钮；new / edit 时表单展开。 */
 type FormState = { kind: "closed" } | { kind: "new" } | { kind: "edit"; profile: ProviderProfile };
@@ -68,6 +116,8 @@ export function ProviderProfileList({
   onEdit,
   onDelete,
   onToggleEnabled,
+  capabilityStatus,
+  onReprobe,
 }: {
   profiles: ProviderProfile[];
   catalog: ProviderDefinition[];
@@ -78,6 +128,8 @@ export function ProviderProfileList({
   onEdit: (profile: ProviderProfile) => void;
   onDelete: (id: string) => void;
   onToggleEnabled: (profile: ProviderProfile) => void;
+  capabilityStatus: Record<string, ModelCapabilityStatusView>;
+  onReprobe: (profile: ProviderProfile) => void;
 }) {
   if (!profiles.length) return null;
   return (
@@ -115,6 +167,8 @@ export function ProviderProfileList({
                     {profile.credentialConfigured ? "" : " · 未配置 Key"}
                     {profile.enabled ? "" : " · 已停用"}
                   </p>
+                  <CapabilityMatrixView matrix={capabilityStatus[profile.id]?.capabilities} compact />
+                  <p className="settings-form__hint">Collector 联网由独立搜索后端提供，始终与“模型原生联网”分开。</p>
                 </div>
                 <div className="settings-profile-item__actions">
                   {!isActive && profile.enabled && profile.credentialConfigured ? (
@@ -124,6 +178,15 @@ export function ProviderProfileList({
                   ) : null}
                   <button type="button" className="button button--secondary" onClick={() => onEdit(profile)}>
                     编辑
+                  </button>
+                  <button
+                    type="button"
+                    className="button button--secondary"
+                    disabled={pendingId === profile.id || !profile.credentialConfigured || capabilityStatus[profile.id]?.task?.status === "queued" || capabilityStatus[profile.id]?.task?.status === "running"}
+                    title="会产生最多六次小型供应商调用，可能产生少量费用"
+                    onClick={() => onReprobe(profile)}
+                  >
+                    {capabilityStatus[profile.id]?.task?.status === "queued" || capabilityStatus[profile.id]?.task?.status === "running" ? "检测中…" : "重新检测"}
                   </button>
                   <button type="button" className="button button--ghost" disabled={pendingId === profile.id} onClick={() => onDelete(profile.id)}>
                     删除
@@ -162,7 +225,11 @@ export function AiModelSettingsPage() {
         // 旧客户端或测试替身可能不提供该接口；分配区块按全部跟随当前配置展示
         api.getModelRouting?.().catch(() => ({ routes: [] })) ?? Promise.resolve({ routes: [] }),
       ]);
-      setState({ kind: "ready", catalog, profiles, activeProfile, routing });
+      const statuses = api.getModelCapabilityStatus
+        ? await Promise.all(profiles.map((profile) => api.getModelCapabilityStatus!(profile.id).catch(() => undefined)))
+        : [];
+      const capabilityStatus = Object.fromEntries(statuses.flatMap((status) => status ? [[status.profileId, status]] : []));
+      setState({ kind: "ready", catalog, profiles, activeProfile, routing, capabilityStatus });
       // 首次使用（还没有任何配置）时直接展开新建表单，给出明确起点
       setForm((current) => (current.kind === "closed" && profiles.length === 0 ? { kind: "new" } : current));
     } catch (error) {
@@ -173,6 +240,19 @@ export function AiModelSettingsPage() {
   useEffect(() => {
     void load();
   }, [load, reloadNonce]);
+
+  useEffect(() => {
+    if (state.kind !== "ready" || !api.getModelCapabilityStatus) return;
+    if (!Object.values(state.capabilityStatus).some((status) => status.task?.status === "queued" || status.task?.status === "running")) return;
+    const timer = window.setTimeout(async () => {
+      const statuses = await Promise.all(state.profiles.map((profile) => api.getModelCapabilityStatus!(profile.id).catch(() => undefined)));
+      const capabilityStatus = Object.fromEntries(statuses.flatMap((status) => status ? [[status.profileId, status]] : []));
+      setState((current) => current.kind === "ready" ? { ...current, capabilityStatus } : current);
+      const stillRunning = statuses.some((status) => status?.task?.status === "queued" || status?.task?.status === "running");
+      if (!stillRunning) api.getAiConfiguration().then(notifyAiConfigurationChanged).catch(() => undefined);
+    }, 1_200);
+    return () => window.clearTimeout(timer);
+  }, [api, state]);
 
   const reload = useCallback(() => setReloadNonce((nonce) => nonce + 1), []);
 
@@ -224,6 +304,15 @@ export function AiModelSettingsPage() {
     }),
     [api, runListAction],
   );
+
+  const handleReprobe = useCallback((profile: ProviderProfile) => {
+    if (!api.reprobeModelCapabilities) {
+      setListError("当前客户端不支持能力重新检测");
+      return;
+    }
+    if (!window.confirm(`重新检测「${profile.displayName}」会产生最多六次小型供应商调用，并可能产生少量费用。是否继续？`)) return;
+    return runListAction(profile.id, () => api.reprobeModelCapabilities!(profile.id));
+  }, [api, runListAction]);
 
   const handleRoutingChange = useCallback(
     async (purpose: ModelPurpose, profileId: string | null) => {
@@ -294,6 +383,8 @@ export function AiModelSettingsPage() {
         onEdit={handleEdit}
         onDelete={handleDelete}
         onToggleEnabled={handleToggleEnabled}
+        capabilityStatus={state.capabilityStatus}
+        onReprobe={handleReprobe}
       />
       <ModelRoutingSection
         profiles={state.profiles}
@@ -417,6 +508,7 @@ function ProviderProfileForm({ catalog, activeProfile, profiles, editingProfile,
   const [baseUrl, setBaseUrl] = useState(editingProfile?.baseUrl ?? activeProfile?.baseUrl ?? "");
   const [displayName, setDisplayName] = useState(editingProfile?.displayName ?? activeProfile?.displayName ?? "");
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
+  const [discoveredCapabilities, setDiscoveredCapabilities] = useState<Record<string, ModelCapabilityMatrix>>({});
   const [checkedModels, setCheckedModels] = useState<string[]>([]);
   const [status, setStatus] = useState<FormStatus>({ kind: "idle" });
 
@@ -463,6 +555,7 @@ function ProviderProfileForm({ catalog, activeProfile, profiles, editingProfile,
       setDisplayName(nextDefinition.label);
     }
     setDiscoveredModels([]);
+    setDiscoveredCapabilities({});
     setCheckedModels([]);
   };
 
@@ -511,11 +604,14 @@ function ProviderProfileForm({ catalog, activeProfile, profiles, editingProfile,
       const result = await api.discoverProviderModels(buildDiscoveryPayload());
       if (result.ok) {
         setDiscoveredModels(result.models);
+        setDiscoveredCapabilities(result.modelCapabilities ?? {});
         // 新建模式默认勾选当前模型（如果在获取结果中且尚未保存过），其余由用户自行勾选
         setCheckedModels(!editing && result.models.includes(effectiveModel) && !existingModels.has(effectiveModel) ? [effectiveModel] : []);
         setStatus({
           kind: "success",
-          message: editing
+          message: result.listSource === "unavailable"
+            ? result.warning ?? "供应商未提供模型列表，请手动填写模型名称。"
+            : editing
             ? `已获取 ${result.models.length} 个可调用模型：勾选后随本次保存批量添加，共用同一个 Key`
             : `已获取 ${result.models.length} 个可调用模型：勾选多个模型后保存，将为每个模型各生成一套配置（共用同一个 Key）`,
         });
@@ -693,6 +789,7 @@ function ProviderProfileForm({ catalog, activeProfile, profiles, editingProfile,
                       />
                       <span className="settings-model-picker__model">{item}</span>
                       {exists ? <span className="settings-model-picker__badge">已保存</span> : null}
+                      {discoveredCapabilities[item] ? <CapabilityMatrixView matrix={discoveredCapabilities[item]} compact /> : null}
                     </label>
                   );
                 })}

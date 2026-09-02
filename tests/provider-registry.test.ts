@@ -137,5 +137,8 @@ test("custom provider URLs require public HTTPS addresses", async () => {
   await assert.rejects(() => validateExternalProviderBaseUrl("http://models.example.com/v1", publicLookup), /HTTPS/);
   await assert.rejects(() => validateExternalProviderBaseUrl("https://localhost/v1", publicLookup), /public host/);
   await assert.rejects(() => validateExternalProviderBaseUrl("https://models.example.com/v1", privateLookup), /non-public/);
-  assert.equal(await validateExternalProviderBaseUrl("https://models.example.com/v1/?token=secret#fragment", publicLookup), "https://models.example.com/v1");
+  await assert.rejects(() => validateExternalProviderBaseUrl("https://user@models.example.com/v1", publicLookup), /credentials/);
+  await assert.rejects(() => validateExternalProviderBaseUrl("https://models.example.com/v1?token=secret", publicLookup), /query parameters/);
+  await assert.rejects(() => validateExternalProviderBaseUrl("https://models.example.com/v1#fragment", publicLookup), /query parameters/);
+  assert.equal(await validateExternalProviderBaseUrl("https://models.example.com/v1/", publicLookup), "https://models.example.com/v1");
 });

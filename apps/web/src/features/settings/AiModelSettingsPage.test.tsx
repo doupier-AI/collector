@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { ProviderDefinition, ProviderProfile } from "@collector/capture-contracts";
+import { MODEL_CAPABILITY_NAMES, type ModelCapabilityMatrix, type ProviderDefinition, type ProviderProfile } from "@collector/capture-contracts";
 import type { ApiClient } from "../../api/client";
 import { ServicesProvider } from "../../app/services";
 import type { AppServices } from "../../app/services";
@@ -57,6 +57,18 @@ function makeProfile(overrides: Partial<ProviderProfile> = {}): ProviderProfile 
   };
 }
 
+function capabilityMatrix(): ModelCapabilityMatrix {
+  return Object.fromEntries(MODEL_CAPABILITY_NAMES.map((name) => [name, {
+    name,
+    status: name === "thinking" ? "probing" : name === "reasoningOutput" ? "unsupported" : "supported",
+    usable: name === "streamingOutput",
+    protocol: name === "streamingOutput" ? "openai_chat_completions" : "none",
+    evidence: [{ source: "active_probe", code: `probe_${name}`, observedAt: "2026-07-29T00:00:00.000Z" }],
+    reasonCode: name === "thinking" ? "probe_in_progress" : name === "streamingOutput" ? "probe_observed" : "collector_adapter_unavailable",
+    checkedAt: "2026-07-29T00:00:00.000Z",
+  }])) as ModelCapabilityMatrix;
+}
+
 function renderSettings(api: Partial<ApiClient>) {
   const services = { api: api as ApiClient } as unknown as AppServices;
   return render(
@@ -95,6 +107,34 @@ describe("groupModelsByFamily", () => {
 });
 
 describe("AiModelSettingsPage", () => {
+  it("展示完整能力矩阵并在重新检测前说明供应商调用费用", async () => {
+    const user = userEvent.setup();
+    const profile = makeProfile();
+    const getModelCapabilityStatus = vi.fn<NonNullable<ApiClient["getModelCapabilityStatus"]>>().mockResolvedValue({
+      profileId: profile.id,
+      configurationVersion: 1,
+      modelId: profile.model,
+      task: { id: "probe-1", profileId: profile.id, configurationVersion: 1, modelId: profile.model, status: "completed", attempts: 1, createdAt: "2026-07-29T00:00:00.000Z", updatedAt: "2026-07-29T00:00:00.000Z" },
+      capabilities: capabilityMatrix(),
+    });
+    const reprobeModelCapabilities = vi.fn<NonNullable<ApiClient["reprobeModelCapabilities"]>>().mockResolvedValue({
+      profileId: profile.id, configurationVersion: 1, modelId: profile.model, capabilities: capabilityMatrix(),
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderSettings(baseApi({
+      listProviderProfiles: vi.fn<ApiClient["listProviderProfiles"]>().mockResolvedValue([profile]),
+      getActiveProviderProfile: vi.fn<ApiClient["getActiveProviderProfile"]>().mockResolvedValue(profile),
+      getModelCapabilityStatus,
+      reprobeModelCapabilities,
+    }));
+    expect(await screen.findByTitle(/模型原生联网：支持；供应商支持，但 Collector 适配器暂不可用/)).toBeInTheDocument();
+    expect(screen.getByText("检测中")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "重新检测" }));
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("最多六次小型供应商调用"));
+    await waitFor(() => expect(reprobeModelCapabilities).toHaveBeenCalledWith(profile.id));
+    confirm.mockRestore();
+  });
+
   it("保存并启用时提交 apiKey，保存后 Key 以暗文停留在输入框", async () => {
     const user = userEvent.setup();
     const saveProviderProfile = vi.fn<ApiClient["saveProviderProfile"]>().mockResolvedValue(makeProfile());

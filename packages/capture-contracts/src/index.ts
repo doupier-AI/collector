@@ -70,6 +70,74 @@ export interface ProviderProfileTestInput {
 
 export type ProviderTestResult = { ok: true; model: string; durationMs?: number } | { ok: false; error: string };
 
+/** Collector 对单个模型统一识别的能力。thinking 与 reasoningOutput 分开，避免把请求开关与独立响应通道混为一谈。 */
+export const MODEL_CAPABILITY_NAMES = [
+  "thinking",
+  "reasoningOutput",
+  "collectorWebSearch",
+  "nativeWebSearch",
+  "structuredOutput",
+  "toolCalling",
+  "visionInput",
+  "streamingOutput",
+] as const;
+export type ModelCapabilityName = (typeof MODEL_CAPABILITY_NAMES)[number];
+export type CapabilityStatus = "supported" | "unsupported" | "unknown" | "probing" | "probe_failed";
+export type CapabilityEvidenceSource = "provider_metadata" | "collector_catalog" | "active_probe";
+
+export interface ModelCapabilityEvidence {
+  source: CapabilityEvidenceSource;
+  /** 不含凭证、请求正文或供应商原始错误的稳定证据代码。 */
+  code: string;
+  observedAt?: string;
+}
+
+export interface ModelCapabilityAssessment {
+  name: ModelCapabilityName;
+  /** 供应商能力判断；unknown 绝不等价于 unsupported。 */
+  status: CapabilityStatus;
+  /** 供应商支持且 Collector 当前适配器已实现时才为 true。 */
+  usable: boolean;
+  protocol: ProviderApiMode | "none";
+  evidence: ModelCapabilityEvidence[];
+  reasonCode: string;
+  /** 本次评估形成时间；目录与供应商声明同样记录评估时刻。 */
+  checkedAt: string;
+}
+
+export type ModelCapabilityMatrix = Record<ModelCapabilityName, ModelCapabilityAssessment>;
+
+export interface ModelCapabilitySnapshot {
+  profileId: string;
+  configurationVersion: number;
+  modelId: string;
+  assessments: ModelCapabilityMatrix;
+  updatedAt: string;
+}
+
+export type ModelCapabilityProbeTaskStatus = "queued" | "running" | "completed" | "failed";
+export interface ModelCapabilityProbeTask {
+  id: string;
+  profileId: string;
+  configurationVersion: number;
+  modelId: string;
+  status: ModelCapabilityProbeTaskStatus;
+  attempts: number;
+  createdAt: string;
+  updatedAt: string;
+  leaseOwner?: string;
+  leaseExpiresAt?: string;
+  errorCode?: string;
+}
+
+export interface ModelCapabilityStatusView {
+  profileId: string;
+  configurationVersion: number;
+  modelId: string;
+  task?: ModelCapabilityProbeTask;
+  capabilities: ModelCapabilityMatrix;
+}
+
 /** 从供应商端点发现可调用模型列表的输入。apiKey 仅用于本次请求，响应永不回传。 */
 export interface ProviderModelDiscoveryInput {
   providerId: string;
@@ -79,7 +147,18 @@ export interface ProviderModelDiscoveryInput {
   profileId?: string;
 }
 
-export type ProviderModelDiscoveryResult = { ok: true; models: string[] } | { ok: false; error: string };
+export type ProviderModelListSource = "provider" | "unavailable";
+export type ProviderModelDiscoveryResult =
+  | {
+      ok: true;
+      /** 兼容既有客户端。供应商没有列表端点时为空数组，用户仍可手填模型。 */
+      models: string[];
+      modelCapabilities?: Record<string, ModelCapabilityMatrix>;
+      listSource?: ProviderModelListSource;
+      partial?: boolean;
+      warning?: string;
+    }
+  | { ok: false; error: string; errorCode?: "authentication" | "rate_limited" | "timeout" | "provider" | "network" | "invalid_response" };
 
 /** 可按任务类型分配模型的用途；未分配时跟随当前激活配置。 */
 export const MODEL_PURPOSES = ["chat", "research", "search", "document", "extraction"] as const;
@@ -1970,6 +2049,8 @@ export interface AiRouteConfigurationView {
   providerProfileId?: string;
   /** 只由集中式能力解析器根据实际端点与模型身份给出；未知身份恒为 false。 */
   thinkingSupported: boolean;
+  /** 实际用途路由的完整能力矩阵；旧档案缺少快照时返回 unknown 矩阵。 */
+  capabilities?: ModelCapabilityMatrix;
   /** 路由配置或能力读取失败时提供克制的用户可见原因。 */
   unavailableReason?: string;
 }
@@ -3968,6 +4049,7 @@ export function validateProviderDefinition(value: unknown): asserts value is Pro
   if (!(["bearer", "api_key_header"] as ProviderAuthMode[]).includes(definition.authMode as ProviderAuthMode)) throw new Error("Invalid provider authMode");
   const baseUrl = parseProviderBaseUrl(definition.defaultBaseUrl);
   if (baseUrl.protocol !== "https:") throw new Error("Provider base URL must use HTTPS");
+  if (baseUrl.username || baseUrl.password || baseUrl.search || baseUrl.hash) throw new Error("Provider base URL cannot contain credentials, query parameters, or fragments");
   if (!definition.defaultModel?.trim()) throw new Error("Provider defaultModel is required");
   if (!Array.isArray(definition.models) || definition.models.some((model) => typeof model !== "string" || !model.trim())) throw new Error("Provider models must be non-empty strings");
   if (!definition.capabilities || typeof definition.capabilities.structuredJson !== "boolean" || typeof definition.capabilities.modelDiscovery !== "boolean") throw new Error("Provider capabilities are required");

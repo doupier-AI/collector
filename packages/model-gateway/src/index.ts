@@ -3,6 +3,7 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { ASSOCIATION_HINT_BENEFITS, ASSOCIATION_HINT_EVALUATION_PROMPT_VERSION, FUSION_RELATION_TYPES, IMPORT_CHAPTER_PARSE_PROMPT_VERSION, IMPORT_CHAPTER_PARSE_TOKEN_BUDGET, RESEARCH_NATIVE_SLICE_MAX_CONCEPTS, RESEARCH_NATIVE_SLICE_MAX_CONCEPT_CHARACTERS, RESEARCH_NATIVE_SLICE_MAX_TITLE_CHARACTERS, SIMILARITY_VERIFICATION_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_PROMPT_VERSION, TEMPORARY_FUSION_DISCOVERY_TOKEN_BUDGET, TERM_IDENTITY_CONTEXT_MAX_CHARACTERS, TERM_IDENTITY_TEXT_MAX_CHARACTERS, TERM_IDENTITY_VERIFY_PROMPT_VERSION, observeContextAssembly, resolveResearchConvergence, validateProviderDefinition, type ActiveModelRoute, type ContextAssemblyObservation, type ContextAssemblyResult, type FusionRelationType, type GroundingEvidenceStatus, type ProviderDefinition, type ProviderModelDiscoveryResult, type ProviderProfile, type ResearchAssociationHintBenefit, type ResearchCitationCandidate, type ResearchCitationSourceIdentity, type ResearchGroundingRequest, type ResearchGroundingScopeStatus, type ResearchSliceContext, type TermIdentityVerificationRequest } from "@collector/capture-contracts";
 import type { AppliedModelBudget, ModelBudgetLimits, PromptEnvelope, PromptEnvelopeObservation, RequestedModelBudget, ResolvedModelBudget } from "@collector/capture-contracts";
+import type { ModelCapabilityMatrix } from "@collector/capture-contracts";
 import {
   DEFAULT_MODEL_BUDGET_LIMITS,
   ModelBudgetReassemblyRequiredError,
@@ -14,10 +15,12 @@ import {
   promptEnvelopeText,
   resolveModelBudget,
 } from "./model-call.js";
-import { resolveModelThinkingCapability } from "./model-capabilities.js";
+import { declaredProviderCapabilities, mergeCapabilityMatrices, resolveCatalogCapabilities, resolveModelThinkingCapability } from "./model-capabilities.js";
 
-export { OFFICIAL_MIMO_OPENAI_BASE_URL, resolveModelThinkingCapability } from "./model-capabilities.js";
+export { MODEL_CAPABILITY_CATALOG, OFFICIAL_MIMO_OPENAI_BASE_URL, createCapabilityMatrix, declaredProviderCapabilities, isOfficialMimoEndpoint, mergeCapabilityMatrices, resolveCatalogCapabilities, resolveModelThinkingCapability } from "./model-capabilities.js";
 export type { ModelCapabilityIdentity, ModelThinkingCapability, ThinkingProtocol } from "./model-capabilities.js";
+export { probeModelCapabilities } from "./model-capability-probe.js";
+export type { CapabilityProbeFailureCode, CapabilityProbeResult, ProbeModelCapabilitiesOptions } from "./model-capability-probe.js";
 
 export {
   DEFAULT_MODEL_BUDGET_LIMITS,
@@ -505,12 +508,16 @@ export class ProviderRuntimeResolver {
     private readonly pricing?: Record<string, ModelPricing>,
   ) {}
 
-  async resolve(profile: ProviderProfile): Promise<ResolvedProviderRuntime> {
+  async resolve(profile: ProviderProfile, capabilities?: ModelCapabilityMatrix): Promise<ResolvedProviderRuntime> {
     if (!profile.enabled) throw new Error("Provider profile is disabled");
     const definition = this.registry.get(profile.providerId);
     const apiKey = await this.credential(profile.id);
     if (!apiKey) throw new Error(`Credential is unavailable for provider profile: ${profile.id}`);
-    const gateway = new ModelGateway(createProvider(definition, { apiKey: () => apiKey, baseUrl: profile.baseUrl }), {
+    const gateway = new ModelGateway(createProvider(definition, {
+      apiKey: () => apiKey,
+      baseUrl: profile.baseUrl,
+      ...(capabilities ? { thinkingSupported: () => capabilities.thinking.usable } : {}),
+    }), {
       model: profile.model,
       pricing: this.pricing,
     });
@@ -2333,6 +2340,8 @@ export interface OpenAiCompatibleProviderOptions {
   apiKey: () => Promise<string | undefined> | string | undefined;
   baseUrl?: string;
   fetchImpl?: typeof fetch;
+  /** 由当前配置版本的能力快照提供；省略时只使用 Collector 本地目录。 */
+  thinkingSupported?: (model: string) => boolean | undefined;
 }
 
 export class OpenAiCompatibleProvider implements ModelProvider {
@@ -2350,6 +2359,8 @@ export class OpenAiCompatibleProvider implements ModelProvider {
   }
 
   supportsThinking(model: string): boolean {
+    const assessed = this.options.thinkingSupported?.(model);
+    if (assessed !== undefined) return assessed;
     return resolveModelThinkingCapability({
       providerId: this.options.definition.id,
       apiMode: this.options.definition.apiMode,
@@ -3095,20 +3106,32 @@ export async function discoverProviderModels(
         ? { "x-goog-api-key": apiKey }
         : { Authorization: `Bearer ${apiKey}` };
     const response = await fetchImpl(`${root}/models`, { method: "GET", headers, signal: controller.signal, redirect: "error" });
-    if (response.status === 401 || response.status === 403) return { ok: false, error: "认证失败：请检查 API Key 是否正确" };
-    if (response.status === 404 || response.status === 405) return { ok: false, error: "该供应商未提供模型列表端点，请手动填写模型名称" };
-    if (!response.ok) return { ok: false, error: `模型列表请求失败（HTTP ${response.status}）` };
+    if (response.status === 401 || response.status === 403) return { ok: false, error: "认证失败：请检查 API Key 是否正确", errorCode: "authentication" };
+    if (response.status === 404 || response.status === 405) return {
+      ok: true,
+      models: [],
+      modelCapabilities: {},
+      listSource: "unavailable",
+      partial: true,
+      warning: "该供应商未提供模型列表端点，请手动填写模型名称",
+    };
+    if (response.status === 429) return { ok: false, error: "模型列表请求受到限流，请稍后重试", errorCode: "rate_limited" };
+    if (!response.ok) return { ok: false, error: `模型列表请求失败（HTTP ${response.status}）`, errorCode: "provider" };
     const payload = await response.json().catch(() => undefined);
     const raw: unknown[] | undefined = definition.apiMode === "gemini_generate_content"
       ? (Array.isArray(payload?.models) ? payload.models.map((entry: any) => typeof entry?.name === "string" ? entry.name.replace(/^models\//, "") : undefined) : undefined)
       : (Array.isArray(payload?.data) ? payload.data.map((entry: any) => typeof entry?.id === "string" ? entry.id : undefined) : undefined);
     const models = raw ? [...new Set(raw.filter((entry): entry is string => typeof entry === "string" && entry.length > 0))] : [];
-    if (!models.length) return { ok: false, error: "模型列表解析失败：返回内容不符合预期格式，请手动填写模型名称" };
-    return { ok: true, models };
+    if (!models.length) return { ok: false, error: "模型列表解析失败：返回内容不符合预期格式，请手动填写模型名称", errorCode: "invalid_response" };
+    const modelCapabilities = Object.fromEntries(models.map((model) => {
+      const identity = { providerId: definition.id, apiMode: definition.apiMode, baseUrl, model };
+      return [model, mergeCapabilityMatrices(declaredProviderCapabilities(definition, identity), resolveCatalogCapabilities(identity))];
+    }));
+    return { ok: true, models, modelCapabilities, listSource: "provider", partial: false };
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
-    if (/timed out|timeout|abort/i.test(message)) return { ok: false, error: "模型列表请求超时，请稍后重试或检查网络" };
-    return { ok: false, error: "模型列表请求失败，请检查网络后重试" };
+    if (/timed out|timeout|abort/i.test(message)) return { ok: false, error: "模型列表请求超时，请稍后重试或检查网络", errorCode: "timeout" };
+    return { ok: false, error: "模型列表请求失败，请检查网络后重试", errorCode: "network" };
   } finally {
     clearTimeout(timer);
   }
@@ -3287,7 +3310,16 @@ function modelCallErrorCategory(error: unknown): ModelCallEvent["errorCategory"]
   return "unknown";
 }
 
-function normalizeBaseUrl(value: string): string { return value.replace(/\/+$/, ""); }
+function normalizeBaseUrl(value: string): string {
+  let url: URL;
+  try { url = new URL(value); }
+  catch { throw new Error("Provider base URL must be an absolute URL"); }
+  if (url.protocol !== "https:") throw new Error("Provider base URL must use HTTPS");
+  if (url.username || url.password) throw new Error("Provider base URL cannot contain credentials");
+  if (url.search || url.hash) throw new Error("Provider base URL cannot contain query parameters or fragments");
+  const pathname = url.pathname.replace(/\/+$/, "");
+  return `${url.protocol}//${url.host}${pathname}`;
+}
 
 /**
  * 解析 SSE（Server-Sent Events）响应体为事件流，供四家真实供应商的流式 completeStream 复用。
@@ -3432,12 +3464,11 @@ export async function validateExternalProviderBaseUrl(
   catch { throw new Error("Provider base URL must be an absolute URL"); }
   if (url.protocol !== "https:") throw new Error("Provider base URL must use HTTPS");
   if (url.username || url.password) throw new Error("Provider base URL cannot contain credentials");
+  if (url.search || url.hash) throw new Error("Provider base URL cannot contain query parameters or fragments");
   const hostname = url.hostname.toLocaleLowerCase().replace(/^\[|\]$/g, "");
   if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local") || hostname.endsWith(".internal")) throw new Error("Provider base URL must use a public host");
   const addresses = isIP(hostname) ? [{ address: hostname, family: isIP(hostname) }] : await lookupImpl(hostname, { all: true, verbatim: true });
   if (!addresses.length || addresses.some(({ address }) => !isPublicIpAddress(address))) throw new Error("Provider base URL resolved to a non-public address");
-  url.hash = "";
-  url.search = "";
   return normalizeBaseUrl(url.toString());
 }
 

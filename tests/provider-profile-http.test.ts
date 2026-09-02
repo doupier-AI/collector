@@ -104,6 +104,33 @@ test("provider profile test endpoint validates custom baseUrl", async (t) => {
   assert.equal(body.error.code, "invalid_request");
 });
 
+test("capability status and manual reprobe APIs keep profile responses credential-free", async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.close());
+  const create = await fetch(`${harness.base}/v1/provider-profiles`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${harness.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ providerId: "openai", displayName: "Probe", model: "gpt-4.1-mini", apiKey: "sk-http-probe" }),
+  });
+  const profile = await create.json() as { id: string };
+  const statusResponse = await fetch(`${harness.base}/v1/provider-profiles/${profile.id}/capabilities`, {
+    headers: { Authorization: `Bearer ${harness.token}` },
+  });
+  assert.equal(statusResponse.status, 200);
+  const statusText = await statusResponse.text();
+  assert.equal(statusText.includes("sk-http-probe"), false);
+  const status = JSON.parse(statusText) as { task?: { status: string }; capabilities: { thinking: { status: string } } };
+  assert.equal(status.task?.status, "queued");
+  assert.ok(["supported", "probing"].includes(status.capabilities.thinking.status));
+
+  const reprobe = await fetch(`${harness.base}/v1/provider-profiles/${profile.id}/capabilities`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${harness.token}`, "Content-Type": "application/json" },
+    body: "{}",
+  });
+  assert.equal(reprobe.status, 202);
+});
+
 test("provider model discovery endpoint returns models without leaking credentials", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "collector-discovery-http-"));
   const store = new SqliteStore(join(root, "collector.sqlite"));

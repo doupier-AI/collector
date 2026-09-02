@@ -105,6 +105,7 @@ const service = new CaptureService(store, paths.artifacts, undefined, {
   runtimeVersion,
   researchProvider: offlineDemoMode ? createMvpDemoResearchProvider() : undefined,
   mvpDemoMode: offlineDemoMode,
+  autoRunCapabilityProbes: !offlineDemoMode && !previewRuntime.enabled,
   ...previewRuntime.serviceOptions,
 });
 const semanticDatabase = new DatabaseSync(paths.database);
@@ -134,7 +135,7 @@ service.setModelGatewayResolver(async (route) => {
   if (!profile || profile.providerId !== route.providerId || profile.model !== route.model || profile.configurationVersion !== route.configurationVersion || fingerprintBaseUrl(profile.baseUrl) !== route.baseUrlFingerprint) {
     throw new Error("Workflow provider configuration is unavailable or has changed");
   }
-  return (await resolver.resolve(profile)).gateway;
+  return (await resolver.resolve(profile, service.getModelCapabilityStatus(profile.id).capabilities)).gateway;
 });
 const webIndex = join(webRoot, "index.html");
 const webIndexStat = await stat(webIndex).catch(() => undefined);

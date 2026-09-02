@@ -4,6 +4,8 @@ import {
   DEFAULT_PROVIDER_REGISTRY,
   OFFICIAL_MIMO_OPENAI_BASE_URL,
   createProvider,
+  isOfficialMimoEndpoint,
+  resolveCatalogCapabilities,
   resolveModelThinkingCapability,
   type ModelProviderStreamEvent,
 } from "@collector/model-gateway";
@@ -42,6 +44,20 @@ test("集中能力解析大小写不敏感，未知模型与非官方 MiMo 端�
   assert.equal(resolveModelThinkingCapability({
     providerId: "deepseek", apiMode: "openai_chat_completions", baseUrl: "https://api.deepseek.com", model: "future-model",
   }).thinkingSupported, false);
+  assert.equal(resolveModelThinkingCapability({
+    providerId: "custom", apiMode: "openai_chat_completions", baseUrl: "https://token-plan-cn-hz.xiaomimimo.com/v1", model: "MIMO-V2.5-PRO",
+  }).thinkingSupported, true);
+  assert.equal(isOfficialMimoEndpoint("https://token-plan-us-west.xiaomimimo.com/v1/"), true);
+  for (const spoofed of [
+    "https://token-plan-us-west.xiaomimimo.com.evil.example/v1",
+    "https://xiaomimimo.com.evil.example/v1",
+    "https://user@token-plan-us.xiaomimimo.com/v1",
+    "https://token-plan-us.xiaomimimo.com/v1?token=secret",
+    "http://token-plan-us.xiaomimimo.com/v1",
+    "https://token-plan-us.xiaomimimo.com/v2",
+  ]) assert.equal(isOfficialMimoEndpoint(spoofed), false, spoofed);
+  const unknown = resolveCatalogCapabilities({ providerId: "custom", apiMode: "openai_chat_completions", baseUrl: "https://proxy.example/v1", model: "mimo-v2.5" });
+  assert.equal(unknown.thinking.status, "unknown");
 });
 
 test("OpenAI-Compatible thinking.type 对支持模型发 enabled/disabled，对未知模型完全省略", async () => {
@@ -64,6 +80,34 @@ test("OpenAI-Compatible thinking.type 对支持模型发 enabled/disabled，对�
   assert.equal(bodies[0]?.model, "MiMo-V2.5-Pro", "实际发包 model ID 必须保持原样");
   assert.deepEqual(bodies[1]?.thinking, { type: "disabled" });
   assert.equal(Object.hasOwn(bodies[2] ?? {}, "thinking"), false);
+});
+
+test("当前能力快照显式覆盖目录，实际发包不回退到过期支持结论", async () => {
+  const blockedBodies: Array<Record<string, unknown>> = [];
+  const blocked = createProvider(DEFAULT_PROVIDER_REGISTRY.get("custom"), {
+    apiKey: () => "secret",
+    baseUrl: OFFICIAL_MIMO_OPENAI_BASE_URL,
+    thinkingSupported: () => false,
+    fetchImpl: async (_input, init) => {
+      blockedBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return jsonResponse();
+    },
+  });
+  await blocked.complete({ prompt: "q", model: "mimo-v2.5", thinking: true });
+  assert.equal(Object.hasOwn(blockedBodies[0] ?? {}, "thinking"), false);
+
+  const enabledBodies: Array<Record<string, unknown>> = [];
+  const enabled = createProvider(DEFAULT_PROVIDER_REGISTRY.get("custom"), {
+    apiKey: () => "secret",
+    baseUrl: "https://models.example.com/v1",
+    thinkingSupported: () => true,
+    fetchImpl: async (_input, init) => {
+      enabledBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return jsonResponse();
+    },
+  });
+  await enabled.complete({ prompt: "q", model: "verified-custom-model", thinking: true });
+  assert.deepEqual(enabledBodies[0]?.thinking, { type: "enabled" });
 });
 
 test("官方 MiMo reasoning_content 作为独立推理事件流，不混入正文", async () => {

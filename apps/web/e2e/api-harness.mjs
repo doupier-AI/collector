@@ -468,8 +468,30 @@ const fakeTermMarkerExtractionProvider = {
   },
 };
 
+function capabilityProbeResponse(_input, init) {
+  const body = JSON.parse(String(init?.body ?? "{}"));
+  const model = String(body.model ?? "");
+  if (!/^mimo-v2\.5(?:-pro)?$/i.test(model)) {
+    return new Response(JSON.stringify({ error: { code: "unsupported_parameter", message: "thinking reasoning web_search response_format tool function_call image vision stream are not supported" } }), {
+      status: 400, headers: { "content-type": "application/json" },
+    });
+  }
+  if (body.stream) {
+    return new Response("data: {\"choices\":[{\"delta\":{\"content\":\"OK\"}}]}\n\ndata: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
+  }
+  if (body.thinking) return new Response(JSON.stringify({ choices: [{ message: { content: "OK", reasoning_content: "reason" } }] }), { headers: { "content-type": "application/json" } });
+  if (body.response_format) return new Response(JSON.stringify({ choices: [{ message: { content: "{\"ok\":true}" } }] }), { headers: { "content-type": "application/json" } });
+  if (body.tool_choice) return new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: { name: "capability_probe", arguments: "{\"value\":\"OK\"}" } }] } }] }), { headers: { "content-type": "application/json" } });
+  if (Array.isArray(body.messages?.[0]?.content)) return new Response(JSON.stringify({ choices: [{ message: { content: "OK" } }] }), { headers: { "content-type": "application/json" } });
+  return new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ type: "web_search", function: { name: "web_search" } }] } }] }), { headers: { "content-type": "application/json" } });
+}
+
 const service = new CaptureService(store, join(dataDir, "artifacts"), undefined, {
   autoRunRecentOrganization: false,
+  autoRunCapabilityProbes: true,
+  providerBaseUrlValidator: async (value) => value.replace(/\/+$/, ""),
+  modelDiscoveryFetch: async () => new Response(JSON.stringify({ data: [{ id: "MIMO-V2.5-Pro" }] }), { headers: { "content-type": "application/json" } }),
+  modelCapabilityProbeFetch: capabilityProbeResponse,
   researchProvider: modelMode === "fake" ? fakeProvider : undefined,
   termMarkerExtractionProvider: modelMode === "fake" ? fakeTermMarkerExtractionProvider : undefined,
   // T03 章节解析假模型：与正文生成同源注入；no-model harness 不注入，走规则锚点负路径。

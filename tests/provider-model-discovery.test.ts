@@ -16,7 +16,12 @@ test("model discovery lists OpenAI-compatible models with bearer auth and dedupe
     return jsonResponse({ data: [{ id: "model-a" }, { id: "model-b" }, { id: "model-a" }, { nope: 1 }] });
   };
   const result = await discoverProviderModels(DEFAULT_PROVIDER_REGISTRY.get("deepseek"), "https://api.deepseek.com/", "sk-secret", { fetchImpl });
-  assert.deepEqual(result, { ok: true, models: ["model-a", "model-b"] });
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.deepEqual(result.models, ["model-a", "model-b"]);
+    assert.equal(result.listSource, "provider");
+    assert.equal(result.modelCapabilities?.["model-a"]?.thinking.status, "unknown");
+  }
   assert.equal(captured?.url, "https://api.deepseek.com/models");
   assert.equal(captured?.headers.get("authorization"), "Bearer sk-secret");
 });
@@ -28,7 +33,8 @@ test("model discovery lists Anthropic models with native headers", async () => {
     return jsonResponse({ data: [{ id: "claude-sonnet-5" }, { id: "claude-haiku-4-5-20251001" }] });
   };
   const result = await discoverProviderModels(DEFAULT_PROVIDER_REGISTRY.get("anthropic"), "https://api.anthropic.com/v1", "anthropic-secret", { fetchImpl });
-  assert.deepEqual(result, { ok: true, models: ["claude-sonnet-5", "claude-haiku-4-5-20251001"] });
+  assert.equal(result.ok, true);
+  if (result.ok) assert.deepEqual(result.models, ["claude-sonnet-5", "claude-haiku-4-5-20251001"]);
   assert.equal(captured?.url, "https://api.anthropic.com/v1/models");
   assert.equal(captured?.headers.get("x-api-key"), "anthropic-secret");
   assert.equal(captured?.headers.get("anthropic-version"), "2023-06-01");
@@ -41,7 +47,12 @@ test("model discovery lists Gemini models and strips the models/ prefix", async 
     return jsonResponse({ models: [{ name: "models/gemini-2.5-flash" }, { name: "models/gemini-2.5-pro" }] });
   };
   const result = await discoverProviderModels(DEFAULT_PROVIDER_REGISTRY.get("gemini"), "https://generativelanguage.googleapis.com/v1beta", "gemini-secret", { fetchImpl });
-  assert.deepEqual(result, { ok: true, models: ["gemini-2.5-flash", "gemini-2.5-pro"] });
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.deepEqual(result.models, ["gemini-2.5-flash", "gemini-2.5-pro"]);
+    assert.equal(result.modelCapabilities?.["gemini-2.5-flash"]?.nativeWebSearch.status, "supported");
+    assert.equal(result.modelCapabilities?.["gemini-2.5-flash"]?.nativeWebSearch.usable, false);
+  }
   assert.equal(captured?.url, "https://generativelanguage.googleapis.com/v1beta/models");
   assert.equal(captured?.headers.get("x-goog-api-key"), "gemini-secret");
 });
@@ -49,16 +60,23 @@ test("model discovery lists Gemini models and strips the models/ prefix", async 
 test("model discovery classifies auth, unsupported endpoint, parse, and network failures", async () => {
   const definition = DEFAULT_PROVIDER_REGISTRY.get("openai");
   const withStatus = (status: number): typeof fetch => async () => jsonResponse({}, status);
-  assert.deepEqual(await discoverProviderModels(definition, "https://api.openai.com/v1", "sk-bad", { fetchImpl: withStatus(401) }), { ok: false, error: "认证失败：请检查 API Key 是否正确" });
-  assert.deepEqual(await discoverProviderModels(definition, "https://api.openai.com/v1", "sk-bad", { fetchImpl: withStatus(403) }), { ok: false, error: "认证失败：请检查 API Key 是否正确" });
-  assert.deepEqual(await discoverProviderModels(definition, "https://api.openai.com/v1", "sk-ok", { fetchImpl: withStatus(404) }), { ok: false, error: "该供应商未提供模型列表端点，请手动填写模型名称" });
+  assert.equal((await discoverProviderModels(definition, "https://api.openai.com/v1", "sk-bad", { fetchImpl: withStatus(401) }) as { errorCode?: string }).errorCode, "authentication");
+  assert.equal((await discoverProviderModels(definition, "https://api.openai.com/v1", "sk-bad", { fetchImpl: withStatus(403) }) as { errorCode?: string }).errorCode, "authentication");
+  const unavailable = await discoverProviderModels(definition, "https://api.openai.com/v1", "sk-ok", { fetchImpl: withStatus(404) });
+  assert.equal(unavailable.ok, true);
+  if (unavailable.ok) assert.deepEqual({ models: unavailable.models, source: unavailable.listSource, partial: unavailable.partial }, { models: [], source: "unavailable", partial: true });
+  const limited = await discoverProviderModels(definition, "https://api.openai.com/v1", "sk-ok", { fetchImpl: withStatus(429) });
+  assert.equal(limited.ok, false);
+  if (!limited.ok) assert.equal(limited.errorCode, "rate_limited");
   const serverError = await discoverProviderModels(definition, "https://api.openai.com/v1", "sk-ok", { fetchImpl: withStatus(500) });
   assert.equal(serverError.ok, false);
   if (!serverError.ok) assert.match(serverError.error, /HTTP 500/);
   const parseFailure = await discoverProviderModels(definition, "https://api.openai.com/v1", "sk-ok", { fetchImpl: async () => jsonResponse({ unexpected: true }) });
-  assert.deepEqual(parseFailure, { ok: false, error: "模型列表解析失败：返回内容不符合预期格式，请手动填写模型名称" });
+  assert.equal(parseFailure.ok, false);
+  if (!parseFailure.ok) assert.equal(parseFailure.errorCode, "invalid_response");
   const timeout = await discoverProviderModels(definition, "https://api.openai.com/v1", "sk-ok", { fetchImpl: async () => { throw new Error("The operation timed out"); } });
-  assert.deepEqual(timeout, { ok: false, error: "模型列表请求超时，请稍后重试或检查网络" });
+  assert.equal(timeout.ok, false);
+  if (!timeout.ok) assert.equal(timeout.errorCode, "timeout");
 });
 
 test("builtin catalog includes the domestic OpenAI-compatible presets", () => {
@@ -90,7 +108,8 @@ test("service discovery reuses the stored credential when apiKey is omitted", as
     apiKey: "sk-stored",
   });
   const result = await service.discoverProviderModels({ providerId: "openai", profileId: profile.id });
-  assert.deepEqual(result, { ok: true, models: ["gpt-4.1-mini"] });
+  assert.equal(result.ok, true);
+  if (result.ok) assert.deepEqual(result.models, ["gpt-4.1-mini"]);
   assert.equal(seenAuthorization, "Bearer sk-stored");
 
   const noKey = await service.discoverProviderModels({ providerId: "openai" });

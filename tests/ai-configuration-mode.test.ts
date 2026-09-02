@@ -114,11 +114,13 @@ test("ai-configuration reports the actual chat and research route identities and
   await harness.store.setModelPurposeRoute("research", research.id);
 
   const config = await getConfiguration(harness.base, harness.token);
-  assert.deepEqual(config.routes?.chat, {
+  assert.deepEqual({ ...config.routes?.chat, capabilities: undefined }, {
     provider: "openai", model: "gpt-4.1-mini", providerProfileId: "chat-profile", thinkingSupported: false,
-    unavailableReason: "当前模型不支持深度思考。",
+    unavailableReason: "尚无足够证据确认当前模型支持深度思考。", capabilities: undefined,
   });
-  assert.deepEqual(config.routes?.research, {
-    provider: "deepseek", model: "DeepSeek-V4-Pro", providerProfileId: "research-profile", thinkingSupported: true,
+  assert.equal(config.routes?.chat.capabilities?.thinking.status, "unknown");
+  assert.deepEqual({ ...config.routes?.research, capabilities: undefined }, {
+    provider: "deepseek", model: "DeepSeek-V4-Pro", providerProfileId: "research-profile", thinkingSupported: true, capabilities: undefined,
   });
+  assert.equal(config.routes?.research.capabilities?.thinking.usable, true);
 });

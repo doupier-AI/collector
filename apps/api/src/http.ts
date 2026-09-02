@@ -231,6 +231,13 @@ export function createApiServer(service: CaptureService, auth: LocalAuth, option
         const result = await service.testProviderProfile(decodeURIComponent(providerProfileTestMatch[1]));
         return json(response, result.ok ? 200 : 502, result);
       }
+      const providerProfileCapabilitiesMatch = url.pathname.match(/^\/v1\/provider-profiles\/([^/]+)\/capabilities$/);
+      if (request.method === "GET" && providerProfileCapabilitiesMatch) {
+        return json(response, 200, service.getModelCapabilityStatus(decodeURIComponent(providerProfileCapabilitiesMatch[1])));
+      }
+      if (request.method === "POST" && providerProfileCapabilitiesMatch) {
+        return json(response, 202, await service.reprobeModelCapabilities(decodeURIComponent(providerProfileCapabilitiesMatch[1])));
+      }
       const providerProfileMatch = url.pathname.match(/^\/v1\/provider-profiles\/([^/]+)$/);
       if (request.method === "DELETE" && providerProfileMatch) {
         const deleted = await service.deleteProviderProfile(decodeURIComponent(providerProfileMatch[1]));

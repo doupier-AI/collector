@@ -15,6 +15,10 @@ import {
   type ComposerPreferences,
   type ActiveModelRoute,
   type ModelPurpose,
+  type ModelCapabilityMatrix,
+  type ModelCapabilityProbeTask,
+  type ModelCapabilityStatusView,
+  type ModelCapabilitySnapshot,
   type ModelRoutingView,
   type ProviderDefinition,
   type ProviderModelDiscoveryInput,
@@ -60,8 +64,12 @@ import {
   DEFAULT_PROVIDER_REGISTRY,
   ModelGateway,
   ProviderRuntimeResolver,
+  createCapabilityMatrix,
+  declaredProviderCapabilities,
   discoverProviderModels as discoverProviderModelsViaGateway,
-  resolveModelThinkingCapability,
+  mergeCapabilityMatrices,
+  probeModelCapabilities,
+  resolveCatalogCapabilities,
   validateExternalProviderBaseUrl,
 } from "@collector/model-gateway";
 
@@ -186,6 +194,8 @@ export class CaptureService {
   private purposeGatewaysStale = true;
   /** 网关重建失败的具体原因（停用/缺 Key/解析失败），经 getAiConfiguration 暴露给界面。 */
   private modelGatewayError?: string;
+  private capabilityProbeDrain?: Promise<void>;
+  private readonly capabilityProbeLeaseOwner = `collector-capability-probe:${randomUUID()}`;
   readonly research: ResearchSessionService;
   readonly researchImports: ResearchImportService;
   readonly researchChapters: ResearchChapterParseService;
@@ -217,7 +227,7 @@ export class CaptureService {
     private readonly store: CollectorStore,
     private readonly artifactRoot: string,
     private modelGateway?: ModelGateway,
-    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; researchProvider?: ResearchGenerationProvider; termMarkerExtractionProvider?: ResearchTermMarkerExtractionProvider; similarityVerifier?: SimilarityVerificationGateway; temporaryFusionDraftEvidenceVerifier?: TemporaryFusionDraftEvidenceGateway; associationHintEvaluator?: AssociationHintEvaluationGateway; chapterParseProvider?: ResearchChapterParseProvider; temporaryFusionConversationProvider?: () => Promise<TemporaryFusionConversationProvider | undefined>; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunResearchChapters?: boolean; autoRunTemporaryFusionTasks?: boolean; mvpDemoMode?: boolean; runtimeVersion?: string; researchRetrySleep?: (ms: number) => Promise<void> } = {},
+    private readonly options: { autoRunRecentOrganization?: boolean; recentLeaseMs?: number; providerBaseUrlValidator?: (value: string) => Promise<string>; modelDiscoveryFetch?: typeof fetch; modelCapabilityProbeFetch?: typeof fetch; autoRunCapabilityProbes?: boolean; researchProvider?: ResearchGenerationProvider; termMarkerExtractionProvider?: ResearchTermMarkerExtractionProvider; similarityVerifier?: SimilarityVerificationGateway; temporaryFusionDraftEvidenceVerifier?: TemporaryFusionDraftEvidenceGateway; associationHintEvaluator?: AssociationHintEvaluationGateway; chapterParseProvider?: ResearchChapterParseProvider; temporaryFusionConversationProvider?: () => Promise<TemporaryFusionConversationProvider | undefined>; autoRunResearchTasks?: boolean; autoRunResearchImports?: boolean; autoRunResearchChapters?: boolean; autoRunTemporaryFusionTasks?: boolean; mvpDemoMode?: boolean; runtimeVersion?: string; researchRetrySleep?: (ms: number) => Promise<void> } = {},
   ) {
     this.runRecords = new RunRecordsService(this.store);
     this.attachModelGateway(this.modelGateway);
@@ -594,11 +604,13 @@ export class CaptureService {
       promptVersion: RESEARCH_SLICE_PROMPT_VERSION,
       groundingCapability,
       async resolveTaskRoute(deepResearch, requestedThinking) {
-        const purposeGateway = await service.gatewayForPurpose(deepResearch ? "research" : "chat");
+        const purpose = deepResearch ? "research" : "chat";
+        const purposeGateway = await service.gatewayForPurpose(purpose);
+        const routeCapability = service.aiRouteConfiguration(purpose);
         return {
           provider: purposeGateway?.providerName,
           model: purposeGateway?.modelName,
-          thinkingEnabled: requestedThinking && purposeGateway?.thinkingSupported === true,
+          thinkingEnabled: requestedThinking && routeCapability.thinkingSupported && purposeGateway?.thinkingSupported === true,
         };
       },
       async prepareGrounded(request) {
@@ -938,24 +950,28 @@ export class CaptureService {
       : active?.enabled && active.credentialConfigured ? active
         : undefined;
     if (!profile) {
+      const capabilities = createCapabilityMatrix({ apiMode: "openai_chat_completions" }, "unknown", "route_unavailable");
       return {
         thinkingSupported: false,
+        capabilities,
         unavailableReason: this.modelGatewayError ?? "模型不可用，无法启用深度思考。",
       };
     }
-    const definition = DEFAULT_PROVIDER_REGISTRY.get(profile.providerId);
-    const capability = resolveModelThinkingCapability({
-      providerId: profile.providerId,
-      apiMode: definition.apiMode,
-      baseUrl: profile.baseUrl,
-      model: profile.model,
-    });
+    const status = this.getModelCapabilityStatus(profile.id);
+    const thinking = status.capabilities.thinking;
+    const unavailableReason = thinking.usable ? undefined
+      : status.task?.status === "queued" || status.task?.status === "running" ? "正在检测当前模型的深度思考能力。"
+        : thinking.status === "probe_failed" ? "能力检测失败，深度思考保持关闭；可在设置中重新检测。"
+          : thinking.status === "unknown" ? "尚无足够证据确认当前模型支持深度思考。"
+            : thinking.status === "supported" ? "供应商支持深度思考，但 Collector 尚未适配此协议。"
+              : "供应商已明确表示当前模型不支持深度思考。";
     return {
       provider: profile.providerId,
       model: profile.model,
       providerProfileId: profile.id,
-      thinkingSupported: capability.thinkingSupported,
-      ...(!capability.thinkingSupported ? { unavailableReason: "当前模型不支持深度思考。" } : {}),
+      thinkingSupported: thinking.usable,
+      capabilities: status.capabilities,
+      ...(unavailableReason ? { unavailableReason } : {}),
     };
   }
   async setAiConfiguration(consent: boolean, configured: boolean): Promise<void> {
@@ -1132,13 +1148,15 @@ export class CaptureService {
    */
   async saveProviderProfileWithCredential(input: ProviderProfileInput): Promise<ProviderProfile> {
     const hasApiKey = typeof input.apiKey === "string";
+    const previousKey = input.id ? this.store.getProviderCredential(input.id) : undefined;
     let credentialConfigured: boolean;
     if (hasApiKey) {
       credentialConfigured = input.apiKey!.trim().length > 0;
     } else {
       credentialConfigured = input.id ? (this.store.getProviderProfile(input.id)?.credentialConfigured ?? false) : false;
     }
-    const profile = await this.saveProviderProfile(input, credentialConfigured);
+    const credentialChanged = hasApiKey && previousKey !== input.apiKey!.trim();
+    const profile = await this.saveProviderProfile(input, credentialConfigured, credentialChanged);
     if (hasApiKey) {
       if (credentialConfigured) {
         await this.store.saveProviderCredential(profile.id, input.apiKey!.trim());
@@ -1148,10 +1166,11 @@ export class CaptureService {
     }
     // 配置内容或凭证变化可能使按任务类型的网关快照失效
     this.purposeGatewaysStale = true;
+    if (profile.credentialConfigured) await this.enqueueModelCapabilityProbe(profile);
     return profile;
   }
 
-  async saveProviderProfile(input: ProviderProfileInput, credentialConfigured: boolean): Promise<ProviderProfile> {
+  async saveProviderProfile(input: ProviderProfileInput, credentialConfigured: boolean, credentialChanged = false): Promise<ProviderProfile> {
     const definition = DEFAULT_PROVIDER_REGISTRY.get(input.providerId);
     const existing = input.id ? this.store.getProviderProfile(input.id) : undefined;
     if (input.id && !existing) throw new NotFoundError("Provider profile not found");
@@ -1166,7 +1185,7 @@ export class CaptureService {
       if (!requested) throw new ValidationError("Custom provider base URL is required");
       baseUrl = await (this.options.providerBaseUrlValidator ?? validateExternalProviderBaseUrl)(requested);
     }
-    const changed = !existing || existing.baseUrl !== baseUrl || existing.model !== model || existing.providerId !== input.providerId;
+    const changed = !existing || existing.baseUrl !== baseUrl || existing.model !== model || existing.providerId !== input.providerId || credentialChanged;
     const now = new Date().toISOString();
     const profile: ProviderProfile = {
       id: existing?.id ?? randomUUID(),
@@ -1233,7 +1252,7 @@ export class CaptureService {
       async (profileId) => this.store.getProviderCredential(profileId),
     );
     try {
-      const runtime = await resolver.resolve(profile);
+      const runtime = await resolver.resolve(profile, this.getModelCapabilityStatus(profile.id).capabilities);
       this.setModelGateway(runtime.gateway, runtime.route);
       return undefined;
     } catch (error) {
@@ -1249,8 +1268,116 @@ export class CaptureService {
    * 失败原因经 getAiConfiguration 暴露，供界面显示具体原因。恢复失败不阻断服务启动。
    */
   async restoreModelGateway(): Promise<void> {
+    this.store.requeueInterruptedModelCapabilityProbeTasks(new Date().toISOString());
     await this.rebuildActiveGateway();
     this.refreshPurposeGateways();
+    this.scheduleCapabilityProbeDrain();
+  }
+
+  private baseCapabilities(profile: ProviderProfile): ModelCapabilityMatrix {
+    const definition = DEFAULT_PROVIDER_REGISTRY.get(profile.providerId);
+    const identity = { providerId: profile.providerId, apiMode: definition.apiMode, baseUrl: profile.baseUrl, model: profile.model };
+    return mergeCapabilityMatrices(declaredProviderCapabilities(definition, identity), resolveCatalogCapabilities(identity));
+  }
+
+  getModelCapabilityStatus(profileId: string): ModelCapabilityStatusView {
+    const profile = this.store.getProviderProfile(profileId);
+    if (!profile) throw new NotFoundError("Provider profile not found");
+    const snapshot = this.store.getModelCapabilitySnapshot(profile.id, profile.configurationVersion, profile.model);
+    const task = this.store.getLatestModelCapabilityProbeTask(profile.id, profile.configurationVersion, profile.model);
+    const capabilities = structuredClone(snapshot?.assessments ?? this.baseCapabilities(profile));
+    if (task?.status === "queued" || task?.status === "running") {
+      for (const capability of Object.values(capabilities)) {
+        if (capability.status === "unknown" || capability.status === "probe_failed") {
+          capability.status = "probing";
+          capability.usable = false;
+          capability.reasonCode = "probe_in_progress";
+        }
+      }
+    }
+    return { profileId: profile.id, configurationVersion: profile.configurationVersion, modelId: profile.model, task, capabilities };
+  }
+
+  async reprobeModelCapabilities(profileId: string): Promise<ModelCapabilityStatusView> {
+    const profile = this.store.getProviderProfile(profileId);
+    if (!profile) throw new NotFoundError("Provider profile not found");
+    if (!profile.credentialConfigured) throw new ValidationError("Provider credential is not configured");
+    await this.enqueueModelCapabilityProbe(profile, true);
+    return this.getModelCapabilityStatus(profile.id);
+  }
+
+  private async enqueueModelCapabilityProbe(profile: ProviderProfile, force = false): Promise<ModelCapabilityProbeTask> {
+    const current = this.store.getLatestModelCapabilityProbeTask(profile.id, profile.configurationVersion, profile.model);
+    if (!force && current && (current.status === "queued" || current.status === "running")) return current;
+    const now = new Date().toISOString();
+    const task: ModelCapabilityProbeTask = {
+      id: randomUUID(), profileId: profile.id, configurationVersion: profile.configurationVersion, modelId: profile.model,
+      status: "queued", attempts: 0, createdAt: now, updatedAt: now,
+    };
+    const queued = await this.store.enqueueModelCapabilityProbeTask(task);
+    this.scheduleCapabilityProbeDrain();
+    return queued;
+  }
+
+  private scheduleCapabilityProbeDrain(): void {
+    if (!this.options.autoRunCapabilityProbes || this.options.mvpDemoMode || this.capabilityProbeDrain) return;
+    this.capabilityProbeDrain = this.drainCapabilityProbeQueue().finally(() => {
+      this.capabilityProbeDrain = undefined;
+      // 覆盖“队列刚判空、当前 drain 尚未 finally 时又有新任务入队”的窄竞态。
+      if (this.store.listRecoverableModelCapabilityProbeTasks().some((task) => task.status === "queued")) this.scheduleCapabilityProbeDrain();
+    });
+  }
+
+  private async drainCapabilityProbeQueue(): Promise<void> {
+    for (;;) {
+      const now = new Date();
+      const task = this.store.claimNextModelCapabilityProbeTask(this.capabilityProbeLeaseOwner, now.toISOString(), new Date(now.getTime() + 60_000).toISOString());
+      if (!task) return;
+      const profile = this.store.getProviderProfile(task.profileId);
+      if (!profile || profile.configurationVersion !== task.configurationVersion || profile.model !== task.modelId) {
+        await this.store.updateModelCapabilityProbeTask({ ...task, status: "failed", errorCode: "stale_configuration", leaseOwner: undefined, leaseExpiresAt: undefined, updatedAt: new Date().toISOString() });
+        continue;
+      }
+      const apiKey = this.store.getProviderCredential(profile.id);
+      if (!apiKey) {
+        await this.store.updateModelCapabilityProbeTask({ ...task, status: "failed", errorCode: "missing_credential", leaseOwner: undefined, leaseExpiresAt: undefined, updatedAt: new Date().toISOString() });
+        continue;
+      }
+      const definition = DEFAULT_PROVIDER_REGISTRY.get(profile.providerId);
+      const previous = this.store.getModelCapabilitySnapshot(profile.id, profile.configurationVersion, profile.model)?.assessments ?? this.baseCapabilities(profile);
+      let result: Awaited<ReturnType<typeof probeModelCapabilities>>;
+      try {
+        result = await probeModelCapabilities(definition, profile.baseUrl, profile.model, apiKey, { fetchImpl: this.options.modelCapabilityProbeFetch, previous });
+      } catch {
+        const failedAt = new Date().toISOString();
+        const capabilities = structuredClone(previous);
+        for (const capability of Object.values(capabilities)) {
+          if (capability.name === "collectorWebSearch" || capability.status === "supported" || capability.status === "unsupported") continue;
+          capability.status = "probe_failed";
+          capability.usable = false;
+          capability.reasonCode = "probe_internal_error";
+          capability.checkedAt = failedAt;
+          capability.evidence = [...capability.evidence, { source: "active_probe", code: "internal_error", observedAt: failedAt }];
+        }
+        await this.store.saveModelCapabilitySnapshot({
+          profileId: profile.id, configurationVersion: profile.configurationVersion, modelId: profile.model,
+          assessments: capabilities, updatedAt: failedAt,
+        });
+        await this.store.updateModelCapabilityProbeTask({
+          ...task, status: "failed", errorCode: "internal_error", leaseOwner: undefined, leaseExpiresAt: undefined, updatedAt: failedAt,
+        });
+        continue;
+      }
+      const completedAt = new Date().toISOString();
+      const snapshot: ModelCapabilitySnapshot = { profileId: profile.id, configurationVersion: profile.configurationVersion, modelId: profile.model, assessments: result.capabilities, updatedAt: completedAt };
+      await this.store.saveModelCapabilitySnapshot(snapshot);
+      await this.store.updateModelCapabilityProbeTask({
+        ...task, status: result.failureCode ? "failed" : "completed", ...(result.failureCode ? { errorCode: result.failureCode } : {}),
+        leaseOwner: undefined, leaseExpiresAt: undefined, updatedAt: completedAt,
+      });
+      this.purposeGatewaysStale = true;
+      if (this.store.getActiveProviderProfile()?.id === profile.id) await this.rebuildActiveGateway();
+    }
   }
 
   /** 读取按任务类型的模型分配；未分配的用途在使用时跟随当前激活配置。 */
@@ -1285,7 +1412,7 @@ export class CaptureService {
         const profile = this.store.getProviderProfile(route.profileId);
         if (!profile?.enabled || !profile.credentialConfigured) continue;
         try {
-          const runtime = await resolver.resolve(profile);
+          const runtime = await resolver.resolve(profile, this.getModelCapabilityStatus(profile.id).capabilities);
           this.attachModelGateway(runtime.gateway);
           next.set(route.purpose, runtime.gateway);
         } catch {
@@ -1315,7 +1442,7 @@ export class CaptureService {
       async (profileId) => this.store.getProviderCredential(profileId),
     );
     try {
-      const runtime = await resolver.resolve(profile);
+      const runtime = await resolver.resolve(profile, this.getModelCapabilityStatus(profile.id).capabilities);
       const startedAt = performance.now();
       const result = await runtime.gateway.testConnectionFromContext(assembleConnectionTestContext());
       return result.ok ? { ...result, durationMs: Math.round(performance.now() - startedAt) } : result;
@@ -1349,7 +1476,7 @@ export class CaptureService {
       async () => input.apiKey,
     );
     try {
-      const runtime = await resolver.resolve(profile);
+      const runtime = await resolver.resolve(profile, this.baseCapabilities(profile));
       const startedAt = performance.now();
       const result = await runtime.gateway.testConnectionFromContext(assembleConnectionTestContext());
       return result.ok ? { ...result, durationMs: Math.round(performance.now() - startedAt) } : result;
